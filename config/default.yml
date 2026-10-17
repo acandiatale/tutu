@@ -72,6 +72,9 @@ build:
   skip_tests: true
   allow_skip_test_compile_fallback: true
   timeout_minutes: 30
+  source_encoding_policy: set-property   # set-property | convert-utf8 (legacy MS949/EUC-KR sources)
+  enforcer_policy: relax-rule            # relax-rule | skip | keep
+  werror_policy: remove
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
 
 loop:
@@ -86,6 +89,16 @@ loop:
   revert_on_regression: true
   regression_ratio: 1.5
   always_final_verify: true
+  oscillation_window: 4
+  max_llm_attempts_per_cluster: 2
+  blocked_policy:                # LLM attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
+    external_javax_api: 0        # dependency still exposes javax.* → library upgrade, not a code fix
+    external_api_incompatible: 1
+    artifact_not_found: 0
+    parent_not_found: 0
+    plugin_incompatible: 1
+    unsupported_source: 0
+    encoding: 0
 
 llm:
   provider: openai_compatible      # openai_compatible | anthropic | fake
@@ -115,6 +128,7 @@ kb:
 plan:
   advisor: none
   intermediate_builds: true
+  optional_bump_phase: spring      # in-house optional artifacts are bumped before the first spring-phase build
 
 report:
   formats: [md, json]

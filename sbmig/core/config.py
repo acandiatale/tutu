@@ -112,6 +112,7 @@ class OpenRewriteConfig(BaseModel):
     base_recipe_dir: str = "knowledge/recipes/base"    # project-owned declarative recipes (relative to repo root)
     timeout_minutes: int = 40
     jvm_args: list[str] = Field(default_factory=lambda: ["-Xmx4g"])
+    oom_retry_jvm_args: list[str] = Field(default_factory=lambda: ["-Xmx8g"])   # one retry after OutOfMemoryError
     fail_on_dry_run_results: bool = False
     plugin_goal: str = "run"                            # run | dryRun
 
@@ -127,6 +128,11 @@ class BuildConfig(BaseModel):
     allow_skip_test_compile_fallback: bool = True       # -Dmaven.test.skip=true as last resort (flagged in report)
     timeout_minutes: int = 30
     env: dict[str, str] = Field(default_factory=dict)
+    # legacy source encodings (JDK 18+ defaults to UTF-8 → "unmappable character" on MS949/EUC-KR sources)
+    source_encoding_policy: Literal["set-property", "convert-utf8"] = "set-property"
+    encoding_candidates: list[str] = Field(default_factory=lambda: ["utf-8", "cp949", "euc-kr", "shift_jis", "latin-1"])
+    enforcer_policy: Literal["relax-rule", "skip", "keep"] = "relax-rule"    # requireJavaVersion/convergence failures
+    werror_policy: Literal["remove", "keep"] = "remove"                       # -Werror makes JDK 21 deprecations fatal
     # package prefixes treated as *library* code in error signatures (project-owned FQCNs are masked as '*').
     # In-house library namespaces (parent/mandatory/optional group ids) are added automatically.
     external_package_prefixes: list[str] = Field(default_factory=list)
@@ -151,6 +157,15 @@ class LoopConfig(BaseModel):
     revert_on_regression: bool = True
     regression_ratio: float = 1.5            # errors_after > errors_before * ratio → regression
     always_final_verify: bool = True         # `mvn clean package` at the end no matter what
+    oscillation_window: int = 4              # error-set history compared for A↔B toggling (≥ stall detection window)
+    max_llm_attempts_per_cluster: int = 2    # LLM tries per cluster signature set before it is BLOCKED(repeated_failure)
+    # how many LLM attempts a cluster of this BlockReason may get before it is blocked (0 = block immediately)
+    blocked_policy: dict[str, int] = Field(default_factory=lambda: {
+        "external_javax_api": 0, "external_api_incompatible": 1, "artifact_not_found": 0, "parent_not_found": 0,
+        "plugin_incompatible": 1, "unsupported_source": 0, "encoding": 0,
+    })
+    structural_regression_kinds: list[str] = Field(default_factory=lambda: [
+        "pom_invalid", "parent_resolution", "plugin_resolution"])   # appearing after a pom edit ⇒ revert regardless of count
 
 
 class LLMConfig(BaseModel):
@@ -186,6 +201,8 @@ class KBConfig(BaseModel):
 class PlanConfig(BaseModel):
     advisor: Literal["none", "llm"] = "none"   # optional LLM review of the rule-based plan
     intermediate_builds: bool = True           # build after jdk21 phase before spring phase
+    optional_bump_phase: Literal["spring", "restructure"] = "spring"   # bump in-house optional artifacts right after the
+                                             # spring rewrite so jakarta builds of in-house libs are on the classpath before the first build
 
 
 class ReportConfig(BaseModel):

@@ -71,9 +71,45 @@ class DecisionKind(str, Enum):
     LLM_FIX = "llm_fix"
     SKIP = "skip"              # masked by another cluster this iteration
     ESCALATE = "escalate"      # give up on this cluster; goes to report
+    BLOCKED = "blocked"        # cannot be fixed inside this project (external library / infra) → skip now, report
 
 
-AttemptOutcome = Literal["pending", "improved", "no_change", "regressed", "reverted", "build_ok", "apply_failed"]
+AttemptOutcome = Literal["pending", "improved", "no_change", "regressed", "reverted", "build_ok", "apply_failed",
+                         "blocked"]
+
+
+class BlockReason(str, Enum):
+    EXTERNAL_JAVAX_API = "external_javax_api"            # a dependency still exposes javax.* types in its API
+    EXTERNAL_API_INCOMPATIBLE = "external_api_incompatible"  # dependency API changed/removed (non-javax)
+    ARTIFACT_NOT_FOUND = "artifact_not_found"            # dependency/plugin not in any repository
+    PARENT_NOT_FOUND = "parent_not_found"
+    PLUGIN_INCOMPATIBLE = "plugin_incompatible"          # a build plugin fails on JDK 21 and has no known floor
+    UNSUPPORTED_SOURCE = "unsupported_source"            # kotlin/groovy/scala/generated code we do not handle
+    ENCODING = "encoding"                                # source encoding could not be determined
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    LLM_UNAVAILABLE = "llm_unavailable"
+    REPEATED_FAILURE = "repeated_failure"                # escalated after the allowed attempts
+    OSCILLATION = "oscillation"                          # fixes keep toggling between the same error sets
+
+
+class BlockedItem(BaseModel):
+    """One cluster the agent deliberately stopped working on. Rendered as the 'Blocked — needs human/library action'
+    section of the report, with the most actionable context we could extract."""
+    id: str
+    reason: BlockReason
+    phase: Phase
+    cluster_id: str
+    signatures: list[str] = Field(default_factory=list)
+    files: list[str] = Field(default_factory=list)
+    errors: list[BuildError] = Field(default_factory=list)      # sanitized, max ~10
+    artifact: Optional[GAV] = None                              # offending library / artifact when attributed
+    owner_class: Optional[str] = None                           # library class exposing the incompatible API
+    required_type: Optional[str] = None                         # e.g. javax.servlet.http.HttpServletRequest
+    found_type: Optional[str] = None                            # e.g. jakarta.servlet.http.HttpServletRequest
+    suggestion: str = ""                                        # concrete human action
+    attempts: int = 0                                           # fix attempts made before blocking
+    first_seen_iteration: int = 0
+    notes: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +455,7 @@ class PhaseResult(BaseModel):
     finished_at: Optional[datetime] = None
     notes: list[str] = Field(default_factory=list)
     skipped: bool = False
+    blocked: list[BlockedItem] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +531,7 @@ class RunReport(BaseModel):
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
     harvest: Optional[HarvestResult] = None
     unresolved: list[BuildError] = Field(default_factory=list)
+    blocked: list[BlockedItem] = Field(default_factory=list)       # deliberately skipped: needs library/infra/human action
     manual_followups: list[str] = Field(default_factory=list)    # things the as-is owner must do (runtime concerns)
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
