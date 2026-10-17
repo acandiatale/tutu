@@ -38,7 +38,7 @@ Contracts all WS code against: `sbmig/core/{models,config,interfaces,workspace}.
 
 ## Risks / open items for the company environment
 * Exact in-house parent/mandatory/optional coordinates and whether the parent manages Boot/Java versions.
-* Nexus must proxy `org.openrewrite.*` artifacts (plugin 6.46.1, recipe BOM 3.38.0) and Boot 4.1.0.
+* Nexus must proxy `org.openrewrite.*` artifacts (plugin 6.46.1, recipe BOM 3.37.0) and Boot 4.1.0.
 * Projects that need JDK 8 to *build as-is* are never built as-is; we only build after `UpgradeToJava21`.
 * Non-Maven (Ant/Gradle) projects are detected and rejected with a clear message.
 * web.xml / JSP / XML bean wiring are compile-neutral; they are reported as manual follow-ups for runtime owners.
