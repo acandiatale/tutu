@@ -1,0 +1,24 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": ["junit4"],
+  "optional_artifacts_in_use": ["org.apache.commons:commons-lang3"],
+  "main_classes": [],
+  "catalog": ["E1"],
+  "source_encoding": "cp949",
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": ["regex:source-encoding-set:(cp949|ms949|euc-kr|euc_kr)"],
+    "post_checks": [
+      {"file_decodes_as": {"path": "**/com/example/greeting/Greeting.java", "encoding": "cp949", "contains": "안녕하세요"}},
+      {"file_decodes_as": {"path": "**/com/example/greeting/notice/NoticeFormatter.java", "encoding": "cp949", "contains": "공지사항"}}
+    ]
+  }
+}

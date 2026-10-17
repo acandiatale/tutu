@@ -11,8 +11,8 @@ from sbmig.plan.planner import artifact_for, ee_javax_packages
 from tests.analyze.helpers import (make_boot27, make_boot33, make_pure_java, make_servlet, make_spring_legacy, pom,
                                    write)
 
-ORDER = ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.loop", "restructure.apply", "restructure.loop",
-         "verify.build"]
+ORDER = ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.optional_bump", "spring.loop", "restructure.apply",
+         "restructure.loop", "verify.build"]
 
 
 def _ids(plan):
@@ -117,7 +117,8 @@ def test_intermediate_builds_off_and_disabled_loop(tmp_path: Path, cfg) -> None:
     cfg.plan.intermediate_builds = False
     cfg.loop.phases["restructure"].enabled = False
     plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
-    assert _ids(plan) == ["jdk21.rewrite", "spring.rewrite", "spring.loop", "restructure.apply", "verify.build"]
+    assert _ids(plan) == ["jdk21.rewrite", "spring.rewrite", "spring.optional_bump", "spring.loop", "restructure.apply",
+                          "verify.build"]
     assert any("intermediate_builds=false" in n for n in plan.notes)
     assert any("restructure build-fix loop omitted" in n for n in plan.notes)
 
@@ -170,7 +171,7 @@ def test_msa_plan_with_aggregator(tmp_path: Path, cfg) -> None:
     make_boot33(tmp_path, module="billing", artifact="billing")
     profile = analyze_path(tmp_path, cfg)
     plan = build_plan(profile, cfg, kb=FakeKB(["com.company.kb.FixA"], ["/kb/a.yml"]))
-    per = ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.loop"]
+    per = ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.optional_bump", "spring.loop"]
     order = [s.name for s in profile.services]
     expected = [f"{i}@{svc}" for svc in order for i in per] + ["restructure.msa_pom", "restructure.loop", "verify.build"]
     assert _ids(plan) == expected

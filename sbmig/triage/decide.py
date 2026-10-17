@@ -1,19 +1,32 @@
-"""Decision engine (ARCHITECTURE §4): HANDLER > KB_RECIPE > KB_PATCH > LLM_FIX > ESCALATE, plus masking."""
+"""Decision engine (ARCHITECTURE §4, ERROR-HANDLING §1/§3):
+
+    run-wide blocked registry → HANDLER > KB_RECIPE > KB_PATCH > blocked check (cfg.loop.blocked_policy) > LLM_FIX
+    → BLOCKED(repeated_failure | budget_exhausted | llm_unavailable)
+
+plus masking. A BLOCKED decision never calls the LLM; the build-fix loop records a BlockedItem for it and keeps
+working on everything else."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import (DecisionKind, ErrorCluster, FixAttempt, KBMatch, Phase, ProjectProfile, RecipeRef,
-                               TriageDecision)
+from sbmig.core.models import (BlockReason, DecisionKind, ErrorCluster, FixAttempt, KBMatch, Phase, ProjectProfile,
+                               RecipeRef, TriageDecision)
 
+from .blocked import BlockedCandidate, classify_blocked
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
 from .rules import RecipeRules
 
 SUCCESS_OUTCOMES = frozenset({"improved", "build_ok"})
 # attempts that are still "pending" were applied this iteration and not yet scored → they count as tried
 FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "pending"})
+# LLM attempts that produced nothing usable (no patches parsed / nothing applied / llm-error)
+GARBAGE_OUTCOMES = frozenset({"apply_failed"})
+
+
+def blocked_rationale(reason: BlockReason, detail: str) -> str:
+    return f"blocked: {reason.value} — {detail}"
 
 
 @dataclass
@@ -73,6 +86,12 @@ class DecisionEngine:
         self.rules = rules
         self.recipes_run_by_phase: dict[Phase, set[str]] = {}
         self.recipes_run_any: set[str] = set()
+        # run-wide state attached by the build-fix loop (see Triager.attach_run)
+        self.blocked_registry = None            # sbmig.loop.blocked_registry.BlockedRegistry
+        self.ws = None                          # Workspace: project-class checks for the blocked rules
+        self.llm_unavailable: Optional[str] = None
+        # cluster id → why it was blocked (read by the loop to build the BlockedItem)
+        self.blocked_info: dict[str, BlockedCandidate] = {}
 
     # -- bookkeeping from the loop/orchestrator ------------------------
     def mark_recipes_run(self, recipe_ids: Iterable[str], phase: Optional[Phase] = None) -> None:
@@ -90,11 +109,31 @@ class DecisionEngine:
         return out
 
     # -- main ----------------------------------------------------------
+    def _blocked(self, cluster: ErrorCluster, cand: BlockedCandidate, extra: str = "") -> TriageDecision:
+        self.blocked_info[cluster.id] = cand
+        return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.BLOCKED,
+                              rationale=blocked_rationale(cand.reason, cand.detail()) + extra)
+
     def decide(self, cluster: ErrorCluster, kb_match: Optional[KBMatch], ctx, profile: ProjectProfile) -> TriageDecision:
         kb_match = kb_match or KBMatch()
         prev = related_attempts(cluster, ctx.previous_attempts)
         failed = [a for a in prev if a.outcome in FAILED_OUTCOMES]
         label = cluster_label(cluster)
+        self.blocked_info.pop(cluster.id, None)
+
+        # 0. already blocked earlier in this run (any phase) → no handler re-runs, no LLM
+        reg = self.blocked_registry
+        if reg is not None:
+            item = reg.covering(cluster)
+            if item is not None:
+                cand = BlockedCandidate(reason=item.reason, required_type=item.required_type,
+                                        found_type=item.found_type, owner_class=item.owner_class,
+                                        evidence=[f"already blocked earlier in this run ({item.id})"],
+                                        errors=list(cluster.errors))
+                self.blocked_info[cluster.id] = cand
+                return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.BLOCKED,
+                                      rationale=f"blocked: {item.reason.value} — already blocked earlier in this run "
+                                                f"({item.id}, {item.phase.value}); skipped")
 
         # 1. deterministic handler
         tried = {a.decision.handler_id for a in failed if a.decision.kind == DecisionKind.HANDLER}
@@ -139,20 +178,46 @@ class DecisionEngine:
                                       rationale=f"replay KB case {c.id} (same signature, search text still present)"
                                                 + (f": {c.summary}" if c.summary else ""))
 
-        # 4. LLM (bounded) → 5. escalate
         llm_failed = [a for a in failed if a.decision.kind == DecisionKind.LLM_FIX]
-        limit = self.cfg.loop.stall_limit + 1
-        if len(llm_failed) >= limit:
-            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
-                                  rationale=f"escalated: {len(llm_failed)} LLM attempt(s) on {label} did not resolve it "
-                                            f"(limit {limit}); needs a human")
+        garbage = [a for a in llm_failed if a.outcome in GARBAGE_OUTCOMES]
+
+        # 4. blocked check: cannot be fixed inside the project → blocked_policy[reason] LLM attempts, then BLOCKED
+        policy_note = ""
+        try:
+            cand = classify_blocked(cluster, profile, self.cfg, ws=self.ws)
+        except Exception:  # a classifier bug must never stop the loop
+            cand = None
+        if cand is not None:
+            allowed = int(self.cfg.loop.blocked_policy.get(cand.reason.value, 0))
+            if len(llm_failed) >= allowed:
+                extra = (f" (after {len(llm_failed)} LLM attempt(s))" if llm_failed else
+                         " (policy: no LLM attempt for this reason)")
+                return self._blocked(cluster, cand, extra)
+            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM attempt "
+                           f"{len(llm_failed) + 1}/{allowed} before blocking")
+
+        # 5. LLM (bounded) → BLOCKED
+        if self.llm_unavailable:
+            return self._blocked(cluster, BlockedCandidate(
+                reason=BlockReason.LLM_UNAVAILABLE, errors=list(cluster.errors),
+                evidence=[f"LLM unavailable ({self.llm_unavailable}); no deterministic fix for {label}"]))
+        max_garbage = max(1, int(self.cfg.loop.max_llm_attempts_per_cluster))
+        limit = max(max_garbage, self.cfg.loop.stall_limit + 1)
+        if len(garbage) >= max_garbage or len(llm_failed) >= limit:
+            why = (f"{len(garbage)} LLM attempt(s) on {label} produced no usable patch (limit {max_garbage})"
+                   if len(garbage) >= max_garbage else
+                   f"{len(llm_failed)} LLM attempt(s) on {label} did not resolve it (limit {limit})")
+            return self._blocked(cluster, BlockedCandidate(
+                reason=BlockReason.REPEATED_FAILURE, errors=list(cluster.errors),
+                evidence=[why + "; needs a human"]))
         if ctx.llm_calls_used >= ctx.llm_calls_budget:
-            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
-                                  rationale=f"escalated: LLM budget exhausted ({ctx.llm_calls_used}/{ctx.llm_calls_budget}"
-                                            f" calls) and no deterministic fix for {label}")
+            return self._blocked(cluster, BlockedCandidate(
+                reason=BlockReason.BUDGET_EXHAUSTED, errors=list(cluster.errors),
+                evidence=[f"LLM budget exhausted ({ctx.llm_calls_used}/{ctx.llm_calls_budget} calls) and no "
+                          f"deterministic fix for {label}"]))
         why = f"no handler/recipe/KB patch for {label} → LLM fix"
         if llm_failed:
             why += f" (attempt {len(llm_failed) + 1}/{limit}, previous attempts included in the prompt)"
         if ctx.stall_level:
             why += f"; stall level {ctx.stall_level}"
-        return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.LLM_FIX, rationale=why)
+        return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.LLM_FIX, rationale=why + policy_note)

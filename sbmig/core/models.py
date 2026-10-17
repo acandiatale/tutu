@@ -204,10 +204,11 @@ class LibraryUsage(BaseModel):
 
 
 class ServiceInfo(BaseModel):
-    """One deployable unit inside an MSA repo."""
+    """One deployable unit inside an MSA repo — or (kind="library") a shared library root that must be migrated too."""
     name: str
     root_pom: str                   # relative path to the service's top pom
     case_type: CaseType
+    kind: Literal["service", "library"] = "service"
     poms: list[str] = Field(default_factory=list)
     main_classes: list[str] = Field(default_factory=list)
     spring_boot_version: Optional[str] = None

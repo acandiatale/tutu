@@ -78,9 +78,10 @@ def test_stall_detection_escalation_model_and_escalate(cfg, ws, profile):
     assert levels[:4] == [0, 1, 2, 3]
     assert [c.use_escalation_model for c in fixer.contexts][:3] == [False, False, True]
     assert fixer.contexts[1].previous_attempts            # previous failed attempt fed back
-    escal = [d for r in pr.iteration_records for d in r.decisions if d.kind == DecisionKind.ESCALATE]
-    assert escal and "needs a human" in escal[0].rationale
+    blocked = [d for r in pr.iteration_records for d in r.decisions if d.kind == DecisionKind.BLOCKED]
+    assert blocked and "repeated_failure" in blocked[0].rationale and "needs a human" in blocked[0].rationale
     assert not pr.ok
+    assert pr.blocked and pr.blocked[0].reason.value == "repeated_failure" and pr.blocked[0].attempts == 3
     assert any(e["event"] == "stall" for e in journal_events(ws))
     assert any("escalation model" in n for a in pr.attempts for n in a.notes)
 
@@ -154,10 +155,12 @@ def test_llm_budget_exhaustion(cfg, ws, profile):
     loop = make_loop(cfg, ws, profile, fixer=fixer, budget=budget)
     pr = loop.run(Phase.SPRING, "compile", 5)
     assert not pr.ok and budget.llm_calls == 1
-    escal = [d for r in pr.iteration_records for d in r.decisions if d.kind == DecisionKind.ESCALATE]
-    assert any("budget" in d.rationale for d in escal)
-    assert "escalate" not in [a.decision.kind.value for a in pr.attempts]
-    assert any("no actionable fixes" in n for n in pr.notes)
+    blocked = [d for r in pr.iteration_records for d in r.decisions if d.kind == DecisionKind.BLOCKED]
+    assert any("budget_exhausted" in d.rationale for d in blocked)
+    assert "blocked" not in [a.decision.kind.value for a in pr.attempts]
+    # both clusters end up blocked(budget_exhausted) → the phase ends without burning iterations
+    assert {b.reason.value for b in pr.blocked} == {"budget_exhausted"} and len(pr.blocked) == 2
+    assert any("only blocked" in n for n in pr.notes)
 
 
 def test_apply_failed_and_propose_exception(cfg, ws, profile):
@@ -174,8 +177,10 @@ def test_apply_failed_and_propose_exception(cfg, ws, profile):
     pr = loop.run(Phase.SPRING, "compile", 3)
     assert {a.outcome for a in pr.attempts} == {"apply_failed"}
     assert any("llm down" in e for a in pr.attempts for e in a.apply_errors)
-    assert loop.budget.llm_calls == 2                # counted even when empty/failed
-    assert not ws.is_dirty()
+    # counted even when empty/failed; nothing applied → asked again on the same build (no rebuild), then blocked
+    assert loop.budget.llm_calls == 4 and pr.iterations == 1
+    assert {b.reason.value for b in pr.blocked} == {"repeated_failure"} and len(pr.blocked) == 2
+    assert not ws.is_dirty() and loop.llm_unavailable is None     # failures were not consecutive transport errors
 
 
 def test_test_compile_fallback(cfg, ws, profile):

@@ -30,9 +30,11 @@ class BlockFailure:
 class _Overlay:
     """Virtual file system on top of the workspace: path -> text (None = deleted)."""
 
-    def __init__(self, ws: Workspace, base: Optional[dict[str, Optional[str]]] = None):
+    def __init__(self, ws: Workspace, base: Optional[dict[str, Optional[str]]] = None,
+                 encodings: Optional[dict[str, str]] = None):
         self.ws = ws
         self.files: dict[str, Optional[str]] = dict(base or {})
+        self.encodings: dict[str, str] = dict(encodings or {})   # path → encoding to write it with (renames)
 
     def exists(self, path: str) -> bool:
         if path in self.files:
@@ -45,7 +47,13 @@ class _Overlay:
         p = self.ws.abs(path)
         if not p.is_file():
             return None
-        return p.read_bytes().decode("utf-8", errors="replace")
+        # through the Workspace: decoded in the file's detected encoding (cp949/euc-kr legacy sources), newlines kept
+        return self.ws.read(path)
+
+    def encoding_for(self, path: str) -> Optional[str]:
+        """Encoding to write `path` with: carried over from a rename source, else None (= Workspace decides:
+        the existing file's encoding, utf-8 for new files)."""
+        return self.encodings.get(path)
 
 
 def _split_style(text: str) -> tuple[str, str]:
@@ -153,9 +161,8 @@ class PatchApplier:
                 if self.ws.exists(path):
                     self.ws.delete(path)
             else:
-                p = self.ws.abs(path)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_bytes(text.encode("utf-8"))      # bytes: keep \r\n exactly as computed
+                # Workspace.write keeps \r\n exactly as computed and re-encodes in the file's own encoding
+                self.ws.write(path, text, encoding=overlay.encoding_for(path))
         if applied:
             log.info("applied %d change(s) to %d file(s); %d error(s)", len(applied),
                      len({c.path for c in applied}), len(errors))
@@ -192,7 +199,7 @@ class PatchApplier:
             groups.setdefault(path, []).append(ch.model_copy(update={"path": path, "new_path": new_path}))
 
         for path, group in groups.items():
-            g_overlay = _Overlay(self.ws, overlay.files)
+            g_overlay = _Overlay(self.ws, overlay.files, overlay.encodings)
             g_errors, g_failures = self._apply_group(path, group, g_overlay)
             if g_errors:
                 errors.extend(g_errors)
@@ -202,6 +209,7 @@ class PatchApplier:
                 failures.extend(g_failures)
                 continue
             overlay.files = g_overlay.files
+            overlay.encodings = g_overlay.encodings
             applied.extend(group)
         return applied, errors, failures, overlay
 
@@ -302,5 +310,7 @@ class PatchApplier:
             content = content.replace("\n", "\r\n")
         if cur_path != path:
             ov.files[path] = None
+            if self.ws.abs(path).is_file():
+                ov.encodings[cur_path] = ov.encodings.get(path) or self.ws.encoding_of(path)
         ov.files[cur_path] = content
         return [], []

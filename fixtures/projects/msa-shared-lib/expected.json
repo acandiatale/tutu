@@ -1,0 +1,38 @@
+{
+  "case_type": "msa",
+  "java_version": null,
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "pom",
+  "libraries": ["lombok", "validation", "jpa", "servlet"],
+  "optional_artifacts_in_use": ["org.projectlombok:lombok"],
+  "main_classes": ["com.example.shop.order.OrderServiceApplication", "com.example.shop.user.UserServiceApplication"],
+  "services": [
+    {"name": "order-service", "root_pom": "order-service/pom.xml", "case_type": "spring_boot", "spring_boot_version": "2.7.18", "java_version": "11"},
+    {"name": "user-service", "root_pom": "user-service/pom.xml", "case_type": "spring_boot", "spring_boot_version": "3.3.13", "java_version": "17"}
+  ],
+  "libraries_modules": [
+    {"name": "common", "root_pom": "common/pom.xml", "case_type": "pure_java", "java_version": "1.8"}
+  ],
+  "catalog": ["S1"],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "post_checks": [
+      {"file_contains": {"path": "**/com/example/shop/common/web/TraceIdFilter.java",
+                         "contains": "jakarta.servlet.Filter", "not_contains": "javax.servlet"}},
+      {"file_contains": {"path": "**/com/example/shop/common/web/TraceIdFilter.java",
+                         "contains": "jakarta.annotation.PostConstruct"}},
+      {"file_contains": {"path": "**/com/example/shop/order/web/OrderController.java",
+                         "contains": "jakarta.validation.Valid", "not_contains": "javax.validation"}},
+      {"pom_parent": {"path": "common/pom.xml", "group_id": "org.springframework.boot",
+                      "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
+      {"pom_dependency_absent": {"path": "common/pom.xml",
+                                 "artifacts": ["org.springframework.boot:spring-boot-starter-validation",
+                                               "org.springframework.boot:spring-boot-starter-actuator"]}}
+    ]
+  }
+}

@@ -4,7 +4,30 @@
   "spring_boot_version": "2.7.18",
   "spring_version": null,
   "packaging": "jar",
-  "libraries": ["spring-security", "jpa", "lombok", "validation", "junit5", "mockito"],
-  "optional_artifacts_in_use": ["org.apache.commons:commons-lang3", "org.projectlombok:lombok"],
-  "main_classes": ["com.example.members.MemberApiApplication"]
+  "libraries": [
+    "spring-security",
+    "jpa",
+    "lombok",
+    "validation",
+    "junit5",
+    "mockito"
+  ],
+  "optional_artifacts_in_use": [
+    "org.apache.commons:commons-lang3",
+    "org.projectlombok:lombok"
+  ],
+  "main_classes": [
+    "com.example.members.MemberApiApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "optional_bumped": [
+      "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$"
+    ]
+  }
 }

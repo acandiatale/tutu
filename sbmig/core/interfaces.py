@@ -123,7 +123,9 @@ class RestructureResult(BaseModel):
 
 @runtime_checkable
 class RestructurerLike(Protocol):
-    def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *, mode: Literal["layout", "msa_pom"]) -> RestructureResult: ...
+    def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *,
+              mode: Literal["layout", "msa_pom", "optional_bump"],
+              params: Optional[dict] = None) -> RestructureResult: ...
 
 
 # ---------------------------------------------------------------------------

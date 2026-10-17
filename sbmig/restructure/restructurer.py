@@ -4,8 +4,21 @@ mode="layout"   non-MSA: root becomes an aggregator (parent = in-house parent, p
                 module/<comp-jar> (all as-is sources + deps) and module/<boot-jar> (Application, boot resources,
                 spring-boot-maven-plugin repackage). As-is multi-module projects are wrapped (or merged).
 mode="msa_pom"  MSA: pom-only edits (parent / mandatory / optional / BOM / java props) per service root; no moves.
+                `params["library_roots"]` (pom paths or directories) and the library entries of `profile.services`
+                (see `sbmig.analyze.is_library_root`) get parent swap + optional bumps + remove_when_present but no
+                mandatory dependencies. Also used for pom-only projects (no sources, S3).
+mode="optional_bump"
+                only the optional-artifact bumps (aliases → canonical rename, property indirection, `<artifactId>.version`
+                convention) and `remove_when_present` on every project pom (or, with `params["target"]`, the poms below
+                that directory plus their in-repo parents); no moves, no parent change. Idempotent: a later `layout` /
+                `msa_pom` run finds nothing left to bump and reports nothing.
 
-Optional artifact bumps and `remove_when_present` are applied to every project pom in both modes.
+Optional artifact bumps and `remove_when_present` are applied to every project pom in all modes.
+
+Edge cases (docs/ERROR-HANDLING.md): system-scoped jars are copied next to the module that declares them (E7);
+`<module>` entries outside the project root abort the layout with ok=False before anything moves (S5); nested
+`<modules>` / `<parent><relativePath>` are recomputed after a wrap; WAR modules are wrapped unchanged (S7); an
+already restructured project is left alone apart from the idempotent pom pass (S2).
 """
 from __future__ import annotations
 
@@ -13,6 +26,7 @@ import fnmatch
 import logging
 import posixpath
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -21,10 +35,11 @@ import jinja2
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import RestructureResult
-from sbmig.core.models import GAV, CaseType, ProjectProfile
+from sbmig.core.models import GAV, CaseType, PluginInfo, ProjectProfile
 from sbmig.core.workspace import GitError, Workspace
 
 from .pom_editor import PomEditError, PomEditor, property_ref
+from sbmig.plan.versions import version_lt
 
 log = logging.getLogger("sbmig.restructure")
 
@@ -32,6 +47,7 @@ BOOT_GROUP = "org.springframework.boot"
 BOOT_PLUGIN = (BOOT_GROUP, "spring-boot-maven-plugin")
 WAR_PLUGIN = ("org.apache.maven.plugins", "maven-war-plugin")
 COMPILER_PLUGIN = ("org.apache.maven.plugins", "maven-compiler-plugin")
+JAR_PLUGIN = ("org.apache.maven.plugins", "maven-jar-plugin")
 JAVA_PROPS = ("maven.compiler.source", "maven.compiler.target", "maven.compiler.release", "java.version")
 SERVLET_COMPONENT_SCAN_FQCN = "org.springframework.boot.web.server.servlet.context.ServletComponentScan"  # verified in spring-boot-web-server-4.1.0.jar
 FALLBACK_PACKAGE = "com.company.app"
@@ -171,9 +187,10 @@ class Restructurer:
 
     # ================================================================== entry point
     def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *,
-              mode: Literal["layout", "msa_pom"] = "layout",
+              mode: Literal["layout", "msa_pom", "optional_bump"] = "layout",
               params: dict[str, Any] | None = None) -> RestructureResult:
-        """params (optional, from the PlanStep): starter, split_policy, multi_module_policy."""
+        """params (optional, from the PlanStep): starter, split_policy, multi_module_policy (layout);
+        library_roots (msa_pom); target (optional_bump: restrict to the poms below this directory)."""
         result = RestructureResult(ok=True)
         c = _Ctx(ws, profile, cfg, result, dict(params or {}), self.commit_enabled)
         try:
@@ -181,6 +198,8 @@ class Restructurer:
                 self._layout(c)
             elif mode == "msa_pom":
                 self._msa(c)
+            elif mode == "optional_bump":
+                self._optional_bump(c)
             else:
                 raise RestructureError(f"unknown restructure mode: {mode}")
         except (RestructureError, PomEditError, OSError) as e:
@@ -201,9 +220,30 @@ class Restructurer:
         comp_mod = f"{L.module_dir}/{L.comp_module}"
         boot_mod = f"{L.module_dir}/{L.boot_module}"
         mods = [m.strip().rstrip("/") for m in root.modules()]
-        if root.packaging() == "pom" and comp_mod in mods and boot_mod in mods:
+        if root.packaging() == "pom" and boot_mod in mods and (
+                comp_mod in mods or all(posixpath.normpath(m).startswith(L.module_dir + "/") for m in mods)):
             c.note("already restructured")
+            parent = root.get_parent()
+            if parent is None or parent.key != c.cfg.artifacts.parent.key:
+                c.note(f"already restructured but {root_rel} does not inherit {c.cfg.artifacts.parent.key}; "
+                       "parent left unchanged")
+            self._all_poms_pass(c, java_fix=False)
+            c.commit("restructure: optional artifact versions / cleanup (already restructured)")
             return
+        parent = root.get_parent()
+        if parent is not None and parent.key == c.cfg.artifacts.parent.key:
+            c.note(f"{root_rel} already inherits the in-house parent {parent.key}; splitting into the company layout")
+        outside = []
+        for m in mods:
+            tgt = posixpath.normpath(posixpath.join(c.base or ".", m))
+            if m.startswith("/") or tgt == ".." or tgt.startswith("../"):
+                outside.append(f"'{m}' → {tgt}")
+        if outside:
+            msg = (f"module(s) declared in {root_rel} resolve outside the project root: {', '.join(outside)}; the "
+                   "layout restructure cannot move them — nothing was changed (move the module into the project or "
+                   "migrate it separately)")
+            c.note(msg)
+            raise RestructureError(msg)
         coords = self._root_coords(root, c.profile)
         policy = c.params.get("multi_module_policy", L.multi_module_policy)
         if mods:
@@ -272,38 +312,56 @@ class Restructurer:
 
     # ------------------------------------------------------------------ multi-module: wrap
     def _wrap(self, c: _Ctx, root: PomEditor, mods: list[str], coords: GAV) -> None:
+        """Move every as-is module under module/ unchanged and add boot-jar depending on the **jar** modules.
+
+        WAR modules keep building as WARs (S7): no class is taken out of them and boot-jar does not depend on them.
+        Nested `<modules>` and `<parent><relativePath>` of moved poms are recomputed (S5)."""
         L = c.cfg.layout
         md = L.module_dir
         boot = c.p(md, L.boot_module)
         mapping: dict[str, str] = {}
         for m in mods:
-            if m.startswith(md + "/") or not c.ws.exists(c.p(m)):
-                if not c.ws.exists(c.p(m)):
+            mn = posixpath.normpath(m)
+            if mn.endswith(".xml"):
+                mn = posixpath.dirname(mn) or "."
+            if mn.startswith(md + "/") or not c.ws.exists(c.p(mn)):
+                if not c.ws.exists(c.p(mn)):
                     c.note(f"module directory {m} not found; left as declared")
                 mapping[m] = m
                 continue
-            new = f"{md}/{m}"
-            c.move(c.p(m), c.p(new))
+            new = f"{md}/{mn}"
+            c.move(c.p(mn), c.p(new))
             mapping[m] = new
-        self._fix_child_parents(c, {c.p(o): c.p(n) for o, n in mapping.items() if o != n})
+        old2new = {}
+        for o, n in mapping.items():
+            on = posixpath.normpath(o)
+            on = (posixpath.dirname(on) or ".") if on.endswith(".xml") else on
+            if c.p(on) != c.p(n):
+                old2new[c.p(on)] = c.p(n)
+        self._fix_child_parents(c, old2new)
         module_eds: dict[str, PomEditor] = {}
-        for new in mapping.values():
+        war_modules: list[str] = []
+        for o, new in mapping.items():
             pom = c.p(new, "pom.xml")
             if not c.ws.exists(pom):
                 continue
             ed = PomEditor(c.ws.abs(pom))
             if ed.packaging() == "war":
-                ed.set_packaging("jar")
-                ed.remove_plugin(*WAR_PLUGIN)
-                c.followup(f"WAR packaging of module {new} converted to jar; the executable artifact is "
-                           f"{md}/{L.boot_module}")
-            if ed.remove_plugin(*BOOT_PLUGIN):
+                war_modules.append(new)
+                c.followup(f"WAR module {new} kept as-is (still packaged as a WAR, not a dependency of "
+                           f"{md}/{L.boot_module}); embedded deployment needs conversion (move its web layer to a jar "
+                           "module or convert it to the boot-jar)")
+            elif ed.remove_plugin(*BOOT_PLUGIN):
                 c.note(f"spring-boot-maven-plugin removed from {new} (repackage happens in {L.boot_module})")
             self._fix_java(c, ed, top=False)
+            asis = posixpath.normpath(posixpath.join(c.base or ".", o))
+            asis = (posixpath.dirname(asis) or ".") if asis.endswith(".xml") else asis
+            self._relocate_module_system_deps(c, ed, "" if asis == "." else asis, c.p(new))
             c.save(ed)
             module_eds[new] = ed
         c.commit("restructure: wrap as-is modules under module/")
 
+        jar_modules = [n for n, ed in module_eds.items() if ed.packaging() == "jar"]
         main_dirs: list[str] = []
         main_roots = {new: c.p(new, "src/main/java") for new in module_eds}
         for fqcn in c.profile.source.main_classes:
@@ -311,10 +369,13 @@ class Restructurer:
             if f:
                 for new, r in main_roots.items():
                     if f.startswith(r + "/") and new not in main_dirs:
-                        main_dirs.append(new)
+                        if new in war_modules:
+                            c.note(f"@SpringBootApplication {fqcn} stays in WAR module {new}")
+                        elif new in jar_modules:
+                            main_dirs.append(new)
         if not main_dirs:
-            main_dirs = [n for n, ed in module_eds.items() if ed.packaging() == "jar"]
-            c.note("no @SpringBootApplication class found in modules; boot-jar depends on all jar modules")
+            main_dirs = list(jar_modules)
+            c.note("no @SpringBootApplication class found in jar modules; boot-jar depends on all jar modules")
         lib_deps = []
         asis_deps = list(root.dependencies())
         for new in main_dirs:
@@ -332,7 +393,7 @@ class Restructurer:
         c.commit("restructure: boot-jar added to wrapped multi-module project")
 
     def _fix_child_parents(self, c: _Ctx, old2new: dict[str, str]) -> None:
-        """Re-point <parent><relativePath> of every pom below moved directories."""
+        """Re-point `<parent><relativePath>` and nested `<modules>` of every pom below moved directories."""
         if not old2new:
             return
 
@@ -352,27 +413,42 @@ class Restructurer:
             if not any(pom_new.startswith(n + "/") for n in old2new.values()) or "/src/" in pom_new:
                 continue
             ed = PomEditor(c.ws.abs(pom_new))
+            new_dir = posixpath.dirname(pom_new) or "."
+            old_dir = posixpath.dirname(unmap_path(pom_new)) or "."
+            # nested <modules> (e.g. <module>../shared</module>) keep pointing at the same (possibly moved) module
+            mods = ed.modules()
+            if mods:
+                fixed = []
+                for m in mods:
+                    old_t = posixpath.normpath(posixpath.join(old_dir, m))
+                    new_t = posixpath.relpath(map_path(old_t), new_dir)
+                    fixed.append(new_t if new_t != posixpath.normpath(m) else m)
+                if fixed != mods:
+                    ed.set_modules(fixed)
+                    c.note(f"<modules> of {pom_new} recomputed: {', '.join(fixed)}")
             parent = ed.get_parent()
             rp = ed.parent_relative_path()
-            if parent is None or rp == "":
-                continue
-            current = rp or "../pom.xml"
-            old_dir = posixpath.dirname(unmap_path(pom_new))
-            old_target = posixpath.normpath(posixpath.join(old_dir, current))
-            if not old_target.endswith(".xml"):
-                old_target = posixpath.join(old_target, "pom.xml")
-            new_target = map_path(old_target)
-            if not c.ws.exists(new_target):
-                continue
-            try:
-                if PomEditor(c.ws.abs(new_target)).artifact_id() != parent.artifact_id:
-                    continue
-            except PomEditError:
-                continue
-            new_rp = posixpath.relpath(new_target, posixpath.dirname(pom_new) or ".")
-            if new_rp != current:
-                ed.set_parent_relative_path(new_rp)
-                c.save(ed)
+            if parent is not None and rp != "":
+                current = rp or "../pom.xml"
+                old_target = posixpath.normpath(posixpath.join(old_dir, current))
+                if not old_target.endswith(".xml"):
+                    old_target = posixpath.join(old_target, "pom.xml")
+                new_target = map_path(old_target)
+                outside = new_target == ".." or new_target.startswith("../")
+                ok = False
+                if outside:
+                    ok = True
+                    c.note(f"parent of {pom_new} lives outside the project ({old_target}); relativePath recomputed")
+                elif c.ws.exists(new_target):
+                    try:
+                        ok = PomEditor(c.ws.abs(new_target)).artifact_id() == parent.artifact_id
+                    except PomEditError:
+                        ok = False
+                if ok:
+                    new_rp = posixpath.relpath(new_target, new_dir)
+                    if new_rp != current:
+                        ed.set_parent_relative_path(new_rp)
+            c.save(ed)
 
     # ------------------------------------------------------------------ multi-module: merge
     def _merge(self, c: _Ctx, root: PomEditor, mods: list[str], coords: GAV) -> None:
@@ -443,6 +519,8 @@ class Restructurer:
         seen_deps: set[str] = set()
         seen_plugins: set[str] = set()
         for src in sources:
+            asis_dir = posixpath.dirname(c.ws.rel(src.path))
+            asis_dir = "" if asis_dir in ("", ".") else asis_dir
             for d in src.dependency_elements(False):
                 g = src.gav_of(d)
                 ident = f"{g.key}:{g.type or 'jar'}:{g.classifier or ''}"
@@ -453,7 +531,8 @@ class Restructurer:
                     c.note("provided spring-boot-starter-tomcat dropped (WAR → executable jar)")
                     continue
                 seen_deps.add(ident)
-                ed.copy_into(ed.ensure_path("dependencies"), d)
+                new_el = ed.copy_into(ed.ensure_path("dependencies"), d)
+                self._relocate_system_dep(c, ed, new_el, asis_dir, comp, src.properties())
             build = src.find("build")
             if build is None:
                 continue
@@ -474,6 +553,53 @@ class Restructurer:
                     ed.set_property(k, v)
         self._fix_java(c, ed, top=False)
         ed.save()
+
+    # ------------------------------------------------------------------ system-scoped jars (E7)
+    def _relocate_system_dep(self, c: _Ctx, ed: PomEditor, el: Any, asis_dir: str, module_dir: str,
+                             props: dict[str, str] | None = None) -> None:
+        """Keep a `system`-scoped dependency's jar reachable from the module that now declares it: copy the jar to
+        `<module>/lib/<name>` and point `systemPath` at `${project.basedir}/lib/<name>`. Missing / external jars keep
+        their declaration and get a follow-up."""
+        from sbmig.analyze.edges import resolve_system_path
+
+        g = ed.gav_of(el)
+        raw = ed.text_of(el, "systemPath")
+        if (g.scope or "") != "system" or not raw:
+            return
+        install = (f"mvn install:install-file -Dfile=<jar> -DgroupId={g.group_id} -DartifactId={g.artifact_id} "
+                   f"-Dversion={g.version or '<version>'} -Dpackaging=jar")
+        resolved, inside = resolve_system_path(raw, asis_dir, {**ed.properties(), **(props or {})}, c.ws.root)
+        if resolved is None or not inside:
+            c.followup(f"system-scoped dependency {g.key} ({raw}) points outside the project or cannot be resolved; "
+                       f"declaration kept — install the jar into Nexus ({install}) and use a normal dependency")
+            return
+        cur = c.new_location(resolved)
+        name = posixpath.basename(resolved)
+        if not c.ws.abs(cur).is_file():
+            c.followup(f"system-scoped jar `{name}` ({g.key}, systemPath {raw}) is missing from the project; "
+                       f"declaration kept — install it into Nexus ({install.replace('<jar>', name)}) and use a "
+                       "normal dependency")
+            return
+        dst = f"{module_dir}/lib/{name}"
+        if dst != cur:
+            if c.ws.abs(dst).exists() and c.ws.abs(dst).read_bytes() != c.ws.abs(cur).read_bytes():
+                name = f"{g.artifact_id}-{name}"
+                dst = f"{module_dir}/lib/{name}"
+            if not c.ws.abs(dst).exists():
+                c.ws.abs(dst).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(c.ws.abs(cur), c.ws.abs(dst))
+                c.changed.add(dst)
+                c.note(f"system-scoped jar {cur} copied to {dst} ({g.key})")
+        new_path = f"${{project.basedir}}/lib/{name}"
+        if raw.strip() != new_path:
+            ed.set_child_text(el, "systemPath", new_path)
+            c.note(f"systemPath of {g.key} in {module_dir}/pom.xml rewritten to {new_path}")
+        c.followup(f"system-scoped jar `{name}` ({g.key}) should be installed into Nexus "
+                   f"({install.replace('<jar>', dst)}) and declared as a normal dependency")
+
+    def _relocate_module_system_deps(self, c: _Ctx, ed: PomEditor, asis_dir: str, module_dir: str) -> None:
+        for el in [*ed.dependency_elements(False), *ed.dependency_elements(True)]:
+            self._relocate_system_dep(c, ed, el, asis_dir, module_dir)
 
     # ------------------------------------------------------------------ boot-jar content
     def _populate_boot(self, c: _Ctx, src_dirs: list[str], boot: str) -> tuple[list[str], list[str]]:
@@ -514,8 +640,9 @@ class Restructurer:
             c.move(f, f"{boot}/src/test/java/{f[len(root) + 1:]}")
             moved_tests.append(fqcn)
         if moved_tests:
-            c.followup(f"@SpringBootTest tests moved to {L.module_dir}/{L.boot_module} ({len(moved_tests)}); "
-                       "test helpers they use from comp-jar's src/test are not on the boot-jar test classpath")
+            c.followup(f"@SpringBootTest tests moved to {L.module_dir}/{L.boot_module} ({len(moved_tests)}); test "
+                       "helpers they reference from comp-jar's src/test are wired through a comp test-jar dependency "
+                       "when detected, test resources outside the boot resource globs stay in comp-jar")
         for r in main_roots:
             rabs = c.ws.abs(r)
             if not rabs.exists():
@@ -595,6 +722,17 @@ class Restructurer:
             # runtime-scoped deps (embedded DB drivers etc.) are needed to boot the context in tests
             deps.extend(d for d in asis_deps if d.scope == "runtime" and d.key not in have
                         and d.key not in {t.key for t in test_deps})
+            # test helpers the moved tests use from comp-jar's src/test → comp test-jar on the boot test classpath
+            for lib, comp_dir in zip(lib_deps, comp_dirs):
+                refs = self._test_helper_refs(c, comp_dir, boot)
+                if not refs:
+                    continue
+                deps.append(GAV(group_id=lib.group_id, artifact_id=lib.artifact_id, version=lib.version,
+                                type="test-jar", scope="test"))
+                self._add_test_jar_goal(c, comp_dir)
+                c.note(f"moved @SpringBootTest classes use test classes of {comp_dir} ({', '.join(refs[:5])}"
+                       f"{' …' if len(refs) > 5 else ''}) → {lib.artifact_id} test-jar dependency added to "
+                       f"{L.boot_module} and maven-jar-plugin test-jar goal added to {comp_dir}")
         plugin_version = None if A.parent_manages_spring_boot else c.cfg.target.spring_boot_version
         main_class = moved_main[0] if len(moved_main) > 1 else None
         if main_class:
@@ -607,6 +745,41 @@ class Restructurer:
         if not moved_main:
             self._generate_application(c, boot, comp_dirs)
         self._web_followups(c)
+
+    def _test_helper_refs(self, c: _Ctx, comp_dir: str, boot: str) -> list[str]:
+        """Simple names of test classes left in `comp_dir/src/test/java` referenced by boot-jar's test sources."""
+        helpers_root = c.ws.abs(f"{comp_dir}/src/test/java")
+        boot_tests = c.ws.abs(f"{boot}/src/test/java")
+        if not helpers_root.is_dir() or not boot_tests.is_dir():
+            return []
+        moved = sorted(boot_tests.rglob("*.java"))
+        names = sorted({f.stem for f in helpers_root.rglob("*.java")} - {f.stem for f in moved})
+        if not names:
+            return []
+        text = "\n".join(f.read_text(encoding="utf-8", errors="replace") for f in moved)
+        text = re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
+        return [n for n in names if re.search(rf"\b{re.escape(n)}\b", text)]
+
+    def _add_test_jar_goal(self, c: _Ctx, comp_dir: str) -> None:
+        pom = f"{comp_dir}/pom.xml"
+        if not c.ws.exists(pom):
+            return
+        ed = PomEditor(c.ws.abs(pom))
+        existing = ed.find_plugins(*JAR_PLUGIN, where="build")
+        if not existing:
+            ed.add_plugin(PluginInfo(group_id=JAR_PLUGIN[0], artifact_id=JAR_PLUGIN[1]),
+                          executions=[{"goals": ["test-jar"]}])
+        else:
+            p = existing[0]
+            goals = [(g.text or "").strip() for g in p.iter()
+                     if isinstance(g.tag, str) and PomEditor.local_name(g) == "goal"]
+            if "test-jar" not in goals:
+                ex = ed.child(p, "executions")
+                if ex is None:
+                    ex = ed._build_value(p, "executions", None)
+                ed._build_value(ex, "execution", {"goals": ["test-jar"]})
+                ed.reindent(p)
+        c.save(ed)
 
     def _generate_application(self, c: _Ctx, boot: str, comp_dirs: list[str]) -> None:
         L = c.cfg.layout
@@ -781,7 +954,10 @@ class Restructurer:
                 if "/src/" not in f"/{p}" and (not c.base or p.startswith(c.base + "/")) and p != root_rel]
         return ([root_rel] if c.ws.exists(root_rel) else []) + poms
 
-    def _all_poms_pass(self, c: _Ctx, *, java_fix: bool, boot_plugin_fix: bool = False) -> None:
+    def _all_poms_pass(self, c: _Ctx, *, java_fix: bool, boot_plugin_fix: bool = False,
+                       only: set[str] | None = None) -> None:
+        """remove_when_present (+ java / boot plugin fixes) and optional bumps on every project pom, or only on the
+        poms in `only` (property owners may still be any project pom)."""
         paths = self._project_poms(c)
         eds: dict[str, PomEditor] = {}
         for p in paths:
@@ -790,14 +966,42 @@ class Restructurer:
             except PomEditError as e:
                 c.note(f"skipped unparsable pom {p}: {e}")
         for p, ed in eds.items():
+            if only is not None and p not in only:
+                continue
             self._remove_unwanted(c, ed)
             if java_fix:
                 self._fix_java(c, ed, top=False)
             if boot_plugin_fix:
                 self._fix_boot_plugin(c, ed)
-        self._bump_optionals(c, eds)
+        self._bump_optionals(c, eds, editable=only)
         for ed in eds.values():
             c.save(ed)
+
+    # ================================================================== optional bump only (spring phase)
+    def _optional_bump(self, c: _Ctx) -> None:
+        root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
+        c.base = posixpath.dirname(root_rel) if c.ws.exists(root_rel) else ""
+        target = c.params.get("target")
+        only: set[str] | None = None
+        if target and posixpath.normpath(str(target)) not in ("", "."):
+            t = posixpath.normpath(str(target))
+            if t.endswith(".xml"):
+                t = posixpath.dirname(t)
+            c.base = ""
+            below = [p for p in self._project_poms(c) if p == f"{t}/pom.xml" or p.startswith(t + "/")]
+            if not below:
+                c.note(f"optional_bump: no pom below {t}; nothing to do")
+                return
+            only = set(below)
+            for p in below:
+                only.update(self._chain(c, p))
+        before = len(c.result.optional_bumped)
+        self._all_poms_pass(c, java_fix=False, only=only)
+        n = len(c.result.optional_bumped) - before
+        where = f" below {target}" if only is not None else ""
+        c.note(f"optional_bump: {n} optional artifact version(s) bumped{where}" if n
+               else f"optional_bump: nothing to bump{where}")
+        c.commit("spring: optional artifact bumps" + (f" ({target})" if only is not None else ""))
 
     def _fix_boot_plugin(self, c: _Ctx, ed: PomEditor) -> None:
         manages = c.cfg.artifacts.parent_manages_spring_boot
@@ -808,12 +1012,17 @@ class Restructurer:
             elif not manages and v and v != c.cfg.target.spring_boot_version and not property_ref(v):
                 ed.set_child_text(p, "version", c.cfg.target.spring_boot_version)
 
-    def _bump_optionals(self, c: _Ctx, eds: dict[str, PomEditor]) -> None:
+    def _bump_optionals(self, c: _Ctx, eds: dict[str, PomEditor], editable: set[str] | None = None) -> None:
+        """Shared by every mode. `editable` restricts which poms' references are touched (None = all); property
+        owners may be any pom in `eds`. Idempotent: an already bumped project produces no `optional_bumped` entry.
+        Only declared references are bumped (dependencies, dependencyManagement, plugin dependencies,
+        annotationProcessorPaths); an optional artifact that arrives only transitively is never added (S6)."""
         keys = c.cfg.optional_keys()
         if not keys or not eds:
             return
         root_path = next(iter(eds))
-        for p, ed in eds.items():                      # 1. alias → canonical coordinates
+        targets = {p: ed for p, ed in eds.items() if editable is None or p in editable}
+        for p, ed in targets.items():                  # 1. alias → canonical coordinates
             for ref in ed.artifact_refs():
                 spec = keys.get(ref.key)
                 if spec and ref.key != spec.key:
@@ -828,12 +1037,27 @@ class Restructurer:
                     return cand, eds[cand]
             return None
 
+        policy = getattr(c.cfg.artifacts, "optional_version_policy", "floor")
+
+        def needs(cur: str | None, target: str) -> bool:
+            """pin: any difference; floor: only when the current version is unknown/unparsable or older."""
+            if cur == target:
+                return False
+            if policy != "floor" or cur is None or property_ref(cur):
+                return True
+            lt = version_lt(cur, target)
+            if lt is None:                 # unparsable → be conservative and set the configured version
+                return True
+            if not lt:
+                c.note(f"{target}: kept newer as-is version {cur} (optional_version_policy=floor)")
+            return lt
+
         def record(key: str, old: str | None, new: str) -> None:
             entry = f"{key} {old or 'managed'}→{new}"
             if entry not in c.result.optional_bumped:
                 c.result.optional_bumped.append(entry)
 
-        for p, ed in eds.items():                      # 2. versions
+        for p, ed in targets.items():                  # 2. versions
             for ref in ed.artifact_refs():
                 spec = keys.get(ref.key)
                 if not spec or not spec.version:
@@ -847,7 +1071,7 @@ class Restructurer:
                             continue
                         done_props.add((own[0], prop))
                         cur = own[1].get_property(prop)
-                        if cur != spec.version:
+                        if needs(cur, spec.version):
                             own[1].set_property(prop, spec.version)
                             record(spec.key, cur, spec.version)
                         continue
@@ -857,12 +1081,12 @@ class Restructurer:
                     own = owner_of(spec.property_name, p) if spec.property_name else None
                     if own is not None:
                         cur = own[1].get_property(spec.property_name or "")
-                        if cur != spec.version:
+                        if needs(cur, spec.version):
                             own[1].set_property(spec.property_name or "", spec.version)
                         ed.set_ref_version(ref.element, f"${{{spec.property_name}}}")
                         if old != spec.version or cur != spec.version:
                             record(spec.key, old, spec.version)
-                    elif old != spec.version:
+                    elif needs(old, spec.version):
                         ed.set_ref_version(ref.element, spec.version)
                         record(spec.key, old, spec.version)
                 else:
@@ -880,7 +1104,7 @@ class Restructurer:
                             continue
                         done_props.add((own[0], conv))
                         cur = own[1].get_property(conv)
-                        if cur != spec.version:
+                        if needs(cur, spec.version):
                             own[1].set_property(conv, spec.version)
                             record(spec.key, cur, spec.version)
                         continue
@@ -892,11 +1116,26 @@ class Restructurer:
         L = c.cfg.layout
         A = c.cfg.artifacts
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
+        from sbmig.analyze.classifier import is_library_root
+
+        lib_entries = [s for s in c.profile.services if is_library_root(s, c.profile)]
+        svc_entries = [s for s in c.profile.services if s not in lib_entries]
+        lib_poms: list[str] = [s.root_pom for s in lib_entries]
+        for x in c.params.get("library_roots") or []:
+            x = posixpath.normpath(str(x))
+            x = x if x.endswith(".xml") else posixpath.join(x, "pom.xml")
+            if x not in lib_poms:
+                lib_poms.append(x)
         if L.msa_parent_policy == "top-aggregator":
             targets = [root_rel]
+            if lib_poms:
+                c.note("top-aggregator policy: library roots " + ", ".join(lib_poms) + " only get optional bumps / "
+                       "remove_when_present (the parent is set on the top aggregator only)")
+            lib_poms = []
         else:
-            targets = [s.root_pom for s in c.profile.services] or \
-                      [p.path for p in c.profile.poms if p.is_root] or [root_rel]
+            targets = [s.root_pom for s in svc_entries] or \
+                      ([] if lib_poms else [p.path for p in c.profile.poms if p.is_root]) or \
+                      ([] if lib_poms else [root_rel])
         resolved: list[str] = []
         for t in targets:
             if not c.ws.exists(t):
@@ -907,8 +1146,31 @@ class Restructurer:
                 c.note(f"{t} inherits from in-repo {top}; parent set on {top}")
             if top not in resolved:
                 resolved.append(top)
-        if not resolved:
+        lib_resolved: list[str] = []
+        for t in lib_poms:
+            if not c.ws.exists(t):
+                c.note(f"library root pom {t} not found; skipped")
+                continue
+            top = self._climb(c, t)
+            if top != t:
+                c.note(f"library {t} inherits from in-repo {top}; parent set on {top}")
+            if top not in resolved and top not in lib_resolved:
+                lib_resolved.append(top)
+        if not resolved and not lib_resolved:
             raise RestructureError("msa_pom: no service poms found")
+        for t in lib_resolved:
+            ed = PomEditor(c.ws.abs(t))
+            old_parent = ed.get_parent()
+            if old_parent is not None:
+                if not ed.group_id() and old_parent.group_id:
+                    ed.set_coordinate("groupId", old_parent.group_id)
+                if not ed.version() and old_parent.version:
+                    ed.set_coordinate("version", old_parent.version)
+            ed.set_parent(A.parent.gav(), None)
+            self._fix_java(c, ed, top=True)
+            self._boot_bom(c, ed)
+            c.save(ed)
+            c.note(f"msa_pom: patched library root {t} (parent only, no mandatory dependencies)")
         for t in resolved:
             ed = PomEditor(c.ws.abs(t))
             old_parent = ed.get_parent()
@@ -928,23 +1190,32 @@ class Restructurer:
 
     def _climb(self, c: _Ctx, pom: str) -> str:
         """Follow in-repo <parent> links upwards; returns the top-most in-repo pom of the chain."""
+        return self._chain(c, pom)[-1]
+
+    def _chain(self, c: _Ctx, pom: str) -> list[str]:
+        """[pom, its in-repo parent, …, top-most in-repo ancestor]."""
+        out = [pom]
         cur = pom
         for _ in range(20):
-            ed = PomEditor(c.ws.abs(cur))
+            try:
+                ed = PomEditor(c.ws.abs(cur))
+            except PomEditError:
+                break
             parent = ed.get_parent()
             rp = ed.parent_relative_path()
             if parent is None or rp == "":
-                return cur
+                break
             target = posixpath.normpath(posixpath.join(posixpath.dirname(cur), rp or "../pom.xml"))
             if not target.endswith(".xml"):
                 target = posixpath.join(target, "pom.xml")
-            if target.startswith("..") or not c.ws.exists(target):
-                return cur
+            if target.startswith("..") or not c.ws.exists(target) or target in out:
+                break
             try:
                 ped = PomEditor(c.ws.abs(target))
             except PomEditError:
-                return cur
+                break
             if ped.artifact_id() != parent.artifact_id:
-                return cur
+                break
+            out.append(target)
             cur = target
-        return cur
+        return out

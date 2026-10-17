@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from sbmig.core.models import RunReport
 
-from .markdown import group_by_file, render_markdown
+from .markdown import BLOCKED_TITLE, blocked_count_line, group_by_file, render_markdown
 
 log = logging.getLogger("sbmig.report")
 
@@ -35,6 +35,8 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     console = console or Console()
     ok = "[bold green]BUILD SUCCESS[/]" if report.success else "[bold red]NOT BUILDING[/]"
     console.print(f"\n[bold]{report.project_name}[/] ({report.case_type.value}) — {ok}   run {report.run_id}")
+    if report.blocked:
+        console.print(f"[bold yellow]blocked:[/] {blocked_count_line(report.blocked)}")
     t = Table(title="phases", show_lines=False)
     for col in ("phase", "builds", "build ok", "attempts", "outcomes", "left"):
         t.add_column(col)
@@ -46,6 +48,15 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     u = report.llm_usage
     console.print(f"LLM: {u.calls} call(s), {u.input_tokens}/{u.output_tokens} tokens"
                   + (f"   flags: {', '.join(report.flags)}" if report.flags else ""))
+    if report.blocked:
+        bt = Table(title=f"{BLOCKED_TITLE} ({len(report.blocked)})")
+        for col in ("reason", "artifact / owner", "files", "suggestion"):
+            bt.add_column(col, overflow="fold")
+        for b in report.blocked[:15]:
+            who = b.artifact.coordinates if b.artifact else (b.owner_class or "-")
+            bt.add_row(b.reason.value, who, ", ".join(b.files[:3]) + (" …" if len(b.files) > 3 else ""),
+                       b.suggestion[:200])
+        console.print(bt)
     if report.unresolved:
         ut = Table(title=f"unresolved ({len(report.unresolved)})")
         ut.add_column("file")

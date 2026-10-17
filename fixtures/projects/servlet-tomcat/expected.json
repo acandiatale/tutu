@@ -4,7 +4,23 @@
   "spring_boot_version": null,
   "spring_version": null,
   "packaging": "war",
-  "libraries": ["servlet", "junit4"],
-  "optional_artifacts_in_use": ["commons-io:commons-io"],
-  "main_classes": []
+  "libraries": [
+    "servlet",
+    "junit4"
+  ],
+  "optional_artifacts_in_use": [
+    "commons-io:commons-io"
+  ],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "optional_bumped": [
+      "regex:^commons-io:commons-io \\S+→2\\.19\\.0$"
+    ]
+  }
 }

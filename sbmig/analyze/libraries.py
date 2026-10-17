@@ -7,6 +7,10 @@ testcontainers, log4j2, logback, javax-servlet, jakarta-servlet, jsp, jaxb, java
 thymeleaf, flyway, liquibase, undertow, jetty, tomcat-embed, spring-webflux, spring-webmvc, spring-context,
 spring-retry, elasticsearch, mongodb.
 
+Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
+groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
+maven-jaxb2-plugin, querydsl-maven-plugin), legacy-encoding (evidence = detected encodings).
+
 Evidence strings: `pom:<g>:<a>[:<v>]`, `import:<prefix>`, `file:<what>`.
 """
 from __future__ import annotations

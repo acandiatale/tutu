@@ -38,6 +38,15 @@ versions:
   org.junit.jupiter:junit-jupiter: 5.12.2
   org.mockito:mockito-core: 5.18.0
   org.assertj:assertj-core: 3.27.3
+  # G1 (carry-over-managed-version fallback / floor): libraries old in-house or Boot parents managed that the
+  # company parent may not. Checked on Maven Central 2026-10-18.
+  commons-codec:commons-codec: 1.23.0
+  org.apache.commons:commons-text: 1.15.0
+  commons-beanutils:commons-beanutils: 1.11.0
+  org.apache.httpcomponents.client5:httpclient5: 5.6.5
+  org.apache.poi:poi: 5.5.1
+  org.apache.poi:poi-ooxml: 5.5.1
+  org.bouncycastle:bcprov-jdk18on: "1.86"
 plugins:
   org.apache.maven.plugins:maven-compiler-plugin: 3.14.0
   org.apache.maven.plugins:maven-surefire-plugin: 3.5.3

@@ -63,13 +63,14 @@ def test_order_handler_recipe_patch_llm_escalate(cfg, profile):
     assert "stall level 2" in d.rationale
     # LLM budget
     d = t.decide(c, m, ctx(previous_attempts=prev, llm_calls_used=5, llm_calls_budget=5), profile)
-    assert d.kind == DecisionKind.ESCALATE and "budget" in d.rationale
-    # repeated LLM failures → escalate (stall_limit 2 → 3 attempts)
+    assert d.kind == DecisionKind.BLOCKED and "budget_exhausted" in d.rationale
+    assert t.engine.blocked_info[c.id].reason.value == "budget_exhausted"
+    # repeated LLM failures → blocked(repeated_failure) (stall_limit 2 → 3 attempts)
     llm = [attempt(c, DecisionKind.LLM_FIX) for _ in range(cfg.loop.stall_limit + 1)]
     d = t.decide(c, m, ctx(previous_attempts=prev + llm[:2]), profile)
     assert d.kind == DecisionKind.LLM_FIX and "attempt 3/3" in d.rationale
     d = t.decide(c, m, ctx(previous_attempts=prev + llm), profile)
-    assert d.kind == DecisionKind.ESCALATE and "needs a human" in d.rationale
+    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "needs a human" in d.rationale
 
 
 def test_improved_attempts_do_not_exclude_and_kb_recipes(cfg, profile):

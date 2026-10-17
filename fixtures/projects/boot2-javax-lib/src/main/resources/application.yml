@@ -1,0 +1,20 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: member-api
+  datasource:
+    url: jdbc:h2:mem:members;DB_CLOSE_DELAY=-1
+    username: sa
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+  redis:
+    host: redis.internal.example.com
+    port: 6379
+
+logging:
+  level:
+    com.example.members: DEBUG

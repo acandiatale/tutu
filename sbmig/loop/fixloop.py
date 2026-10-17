@@ -3,21 +3,29 @@
 Invariant: every applied change is followed by a real build. A loop round is
     build → score previous attempts (revert regressions) → stop on BUILD SUCCESS → cluster → decide → apply+commit
 and the loop only exits *after* a build: on success, when the fix rounds are used up (the last round's changes are
-still built and scored), when nothing actionable is left, or when the run's time budget is exceeded.
+still built and scored), when nothing actionable is left, when only blocked clusters remain, or when the run's time
+budget is exceeded.
+
+Loop safety (docs/ERROR-HANDLING.md §3): blocked clusters (run-wide `BlockedRegistry`) are skipped in every later
+iteration and phase; oscillation (A↔B↔A) counts as a stall and, when it repeats, blocks the involved clusters;
+structural kinds (pom_invalid / parent / plugin resolution) appearing after a pom edit revert that attempt regardless
+of error counts; two LLM transport/config failures in a row mark the LLM unavailable for the run.
 """
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
-from sbmig.core.models import (BuildResult, DecisionKind, ErrorCluster, ErrorKind, FixAttempt,
-                               IterationRecord, KBMatch, Phase, PhaseResult, ProjectProfile, RecipeRef,
+from sbmig.core.models import (GAV, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster, ErrorKind,
+                               FixAttempt, IterationRecord, KBMatch, Phase, PhaseResult, ProjectProfile, RecipeRef,
                                TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
+from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, error_key
 from .budget import LoopBudget
 from .components import profile_summary
 
@@ -25,6 +33,44 @@ log = logging.getLogger("sbmig.loop")
 
 TEST_COMPILING_GOALS = ("test-compile", "package", "verify", "install", "deploy", "test")
 RESOLUTION_PREFIXES = ("parent_resolution:", "pom_invalid:", "dependency_resolution:", "plugin_resolution:")
+# fixer analysis of a transport/config failure (vs. a protocol-garbage response, which is the model's fault)
+_LLM_TRANSPORT_RE = re.compile(r"(?i)request failed|status=|\bhttp\b|timed? ?out|timeout|connect|connection|refused|"
+                               r"unreachable|ssl|certificate|api[_ ]?key|unauthori[sz]ed|forbidden|\b40[13]\b|\b5\d\d\b|"
+                               r"llmconfigerror|not set|config|unknown llm\.provider|missing component|cannot be imported")
+_BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
+
+
+def is_llm_transport_error(analysis: str) -> bool:
+    a = (analysis or "").strip()
+    if not a.lower().startswith("llm-error:"):
+        return False
+    if "did not follow the protocol" in a:
+        return False
+    return bool(_LLM_TRANSPORT_RE.search(a))
+
+
+def build_target_args(profile: Optional[ProjectProfile], target: Optional[str]) -> tuple[Optional[str], list[str]]:
+    """(module, extra_args) for building `target`. When a root aggregator pom lists the target among its modules, build
+    from the root with `-pl <target> -am` (in-repo library roots get built too, error paths stay root-relative);
+    otherwise build inside the target directory."""
+    if not target or profile is None:
+        return target, []
+    t = target.strip("/")
+    for p in profile.poms or []:
+        if p.path == "pom.xml" and p.modules:
+            mods = {m.strip("/").removeprefix("./") for m in p.modules}
+            if t in mods:
+                return None, ["-pl", t, "-am"]
+    return target, []
+
+
+def _reduced(c: ErrorCluster, errors: list[BuildError]) -> ErrorCluster:
+    sigs: list[str] = []
+    for e in errors:
+        s = e.signature or f"{e.kind.value}|{e.message}"
+        if s not in sigs:
+            sigs.append(s)
+    return c.model_copy(update={"errors": list(errors), "signatures": sigs})
 
 
 @dataclass
@@ -41,6 +87,7 @@ class _Round:
     decisions: list = field(default_factory=list)
     recipe_batch: list = field(default_factory=list)
     hopeless: set = field(default_factory=set)
+    handlers_applied: set = field(default_factory=set)
 
 
 @dataclass
@@ -68,7 +115,8 @@ class BuildFixLoop:
     def __init__(self, cfg: Config, ws: Workspace, build_runner: Any, triager: Any, handlers: Any, fixer: Any,
                  kb: Any, rewrite_runner: Any, profile: ProjectProfile, plan_notes: Optional[list[str]] = None,
                  budget: Optional[LoopBudget] = None, *, dry_run: bool = False,
-                 history: Optional[list[FixAttempt]] = None):
+                 history: Optional[list[FixAttempt]] = None, blocked: Optional[BlockedRegistry] = None,
+                 locator: Any = None):
         self.cfg = cfg
         self.ws = ws
         self.build_runner = build_runner
@@ -88,14 +136,32 @@ class BuildFixLoop:
         self.escalated: dict[str, TriageDecision] = {}
         self.test_compile_skipped = False
         self._profile_summary: Optional[str] = None
+        # run-wide blocked state (shared by every phase of the run through the orchestrator)
+        self.blocked = blocked if blocked is not None else BlockedRegistry()
+        self.locator = locator                   # owner class → artifact (sbmig.build.classpath); None = no attribution
+        self.llm_unavailable: Optional[str] = None
+        self.aborted: Optional[str] = None       # set when the run must stop (configured parent not resolvable)
+        self._llm_streak: list[tuple[ErrorCluster, str]] = []
+        self._phase_items: list[str] = []
+        self._cur_phase: Phase = Phase.JDK21
+        attach = getattr(triager, "attach_run", None)
+        if callable(attach):
+            try:
+                attach(blocked_registry=self.blocked, ws=ws)
+            except Exception as e:  # pragma: no cover - a foreign triager
+                log.warning("triager.attach_run failed: %s", e)
 
     # ------------------------------------------------------------------ public
     def run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None) -> PhaseResult:
         pr = PhaseResult(phase=phase)
+        self._phase_items = []
+        self._cur_phase = phase
         self.ws.journal({"event": "loop_start", "phase": phase.value, "goal": goal, "max_iterations": max_iterations,
-                         "target": target, "dry_run": self.dry_run})
+                         "target": target, "dry_run": self.dry_run, "blocked_known": len(self.blocked)})
         prev_build: Optional[BuildResult] = None
         prev_multiset: Optional[dict[str, int]] = None
+        window: list[dict[str, int]] = []        # error multisets of the previous builds (oscillation detection)
+        oscillations = 0
         stall_level = 0
         pending: list[_Pending] = []
         fix_rounds = 0
@@ -117,13 +183,28 @@ class BuildFixLoop:
             if reverted:
                 pr.notes.append(f"build {build_no}: regressed attempt(s) reverted → rebuilding the reverted tree")
                 continue
+            if self._parent_abort(pr, phase, build, build_no):
+                break
             multiset = build.signature_multiset()
             stalled = prev_multiset is not None and multiset == prev_multiset
-            stall_level = stall_level + 1 if stalled else 0
-            rec.stalled, rec.stall_level = stalled, stall_level
+            oscillating = (not stalled) and any(m == multiset for m in window[:-1])
+            stall_level = stall_level + 1 if (stalled or oscillating) else 0
+            rec.stalled, rec.stall_level = (stalled or oscillating), stall_level
             if stalled:
                 self.ws.journal({"event": "stall", "phase": phase.value, "iteration": build_no,
                                  "stall_level": stall_level, "error_count": build.error_count})
+            if oscillating:
+                oscillations += 1
+                self.ws.journal({"event": "oscillation", "phase": phase.value, "iteration": build_no,
+                                 "count": oscillations, "stall_level": stall_level, "error_count": build.error_count})
+                pr.notes.append(f"build {build_no}: error set equals an earlier one (oscillation #{oscillations}) — "
+                                "treated as a stall")
+            window = (window + [multiset])[-max(2, self.cfg.loop.oscillation_window):]
+            clusters = self.triager.cluster(build.errors, self.profile)
+            if oscillating and oscillations >= 2:
+                self._block_oscillation(pr, phase, build_no, clusters)
+            if self._only_blocked(pr, clusters, build_no):
+                break
             if fix_rounds >= max_iterations:
                 pr.notes.append(f"max iterations ({max_iterations}) reached with {build.error_count} error(s) left")
                 break
@@ -131,35 +212,200 @@ class BuildFixLoop:
                 pr.notes.append("run time budget exhausted: stopping the build-fix loop")
                 self._flag("time-budget-exhausted")
                 self.ws.journal({"event": "budget_exhausted", "phase": phase.value, "kind": "time"})
+                self._block_remaining(pr, phase, build_no, clusters, BlockReason.BUDGET_EXHAUSTED,
+                                      f"run time budget ({self.cfg.loop.max_total_minutes} min) exhausted before this "
+                                      "cluster was fixed")
                 break
-            fix_rounds += 1
-            new_pending, applied_any, decisions = self._fix_round(pr, phase, build_no, build, target, stall_level)
-            rec.decisions = decisions
-            rec.cluster_count = len(decisions)
-            rec.attempt_ids = [a.id for a in pr.attempts if a.iteration == build_no]
+            applied_any = False
+            new_pending: list[_Pending] = []
+            while True:
+                fix_rounds += 1
+                new_pending, applied_any, decisions, llm_tried = self._fix_round(pr, phase, build_no, build, target,
+                                                                                 stall_level, clusters)
+                rec.decisions += decisions
+                rec.cluster_count = len(rec.decisions)
+                rec.attempt_ids = [a.id for a in pr.attempts if a.iteration == build_no]
+                if self.dry_run or applied_any or not llm_tried or fix_rounds >= max_iterations \
+                        or self.budget.time_exceeded() or all(self.blocked.covering(c) for c in clusters):
+                    break
+                # the LLM produced nothing applicable: the tree is unchanged, so a rebuild would show the same errors —
+                # ask again on the same build (bounded by max_llm_attempts_per_cluster, then BLOCKED)
+                self.ws.journal({"event": "reround", "phase": phase.value, "iteration": build_no,
+                                 "fix_round": fix_rounds + 1})
             pending = new_pending
             if self.dry_run:
                 pr.notes.append("dry-run: decisions computed and journaled, nothing applied")
                 break
             if not applied_any:
-                pr.notes.append(f"build {build_no}: no actionable fixes (all clusters skipped/escalated/failed to "
-                                "apply) — rebuilding would not change anything")
+                if self._only_blocked(pr, clusters, build_no):
+                    break
+                pr.notes.append(f"build {build_no}: no actionable fixes (all clusters skipped/escalated/blocked/failed "
+                                "to apply) — rebuilding would not change anything")
                 break
             prev_build, prev_multiset = build, multiset
 
         assert last is not None
-        if not pr.build_ok and not self.dry_run:
+        if not pr.build_ok and not self.dry_run and not self.aborted:
             self._maybe_skip_test_compile(pr, phase, goal, target, last)
         if pr.build_ok and not self.test_compile_skipped_in(pr):
             pr.remaining_errors = []
         elif not pr.remaining_errors:
             pr.remaining_errors = list(last.errors)
         pr.ok = pr.build_ok
+        pr.blocked = [it for it in (self.blocked.get(i) for i in self._phase_items) if it is not None]
         pr.finished_at = utcnow()
         self.ws.journal({"event": "loop_end", "phase": phase.value, "ok": pr.ok, "iterations": pr.iterations,
                          "attempts": len(pr.attempts), "remaining_errors": len(pr.remaining_errors),
-                         "llm_calls_used": self.budget.llm_calls})
+                         "blocked": [b.id for b in pr.blocked], "llm_calls_used": self.budget.llm_calls,
+                         "aborted": self.aborted})
         return pr
+
+    # ------------------------------------------------------------------ blocked bookkeeping
+    def _touch_item(self, item_id: str) -> None:
+        if item_id not in self._phase_items:
+            self._phase_items.append(item_id)
+
+    def _only_blocked(self, pr: PhaseResult, clusters: list[ErrorCluster], build_no: int) -> bool:
+        if not clusters:
+            return False
+        items = [self.blocked.covering(c) for c in clusters]
+        if not all(items):
+            return False
+        for it in items:
+            self._touch_item(it.id)
+        ids = list(dict.fromkeys(it.id for it in items))
+        pr.notes.append(f"build {build_no}: only blocked cluster(s) remain ({len(clusters)} cluster(s), "
+                        f"{len(ids)} blocked item(s)) — ending the phase; see 'Blocked' in the report")
+        self.ws.journal({"event": "only_blocked", "phase": pr.phase.value, "iteration": build_no,
+                         "clusters": [c.id for c in clusters], "blocked": ids})
+        return True
+
+    def _candidate_for(self, c: ErrorCluster, d: TriageDecision):
+        from sbmig.triage.blocked import BlockedCandidate
+        getter = getattr(self.triager, "blocked_candidate", None)
+        cand = None
+        if callable(getter):
+            try:
+                cand = getter(c.id)
+            except Exception:  # pragma: no cover
+                cand = None
+        if cand is None:
+            m = _BLOCKED_RAT_RE.search(d.rationale or "")
+            try:
+                reason = BlockReason(m.group("r")) if m else BlockReason.REPEATED_FAILURE
+            except ValueError:
+                reason = BlockReason.REPEATED_FAILURE
+            cand = BlockedCandidate(reason=reason, evidence=[d.rationale], errors=list(c.errors))
+        return cand
+
+    def _register_blocked(self, phase: Phase, iteration: int, c: ErrorCluster, cand, rationale: str,
+                          target: Optional[str] = None) -> list[BuildError]:
+        """Record a BlockedItem for the errors `cand` covers; returns the cluster errors that are NOT blocked."""
+        covered = {error_key(e) for e in (cand.errors or c.errors)}
+        errs = [e for e in c.errors if error_key(e) in covered] or list(c.errors)
+        rest = [e for e in c.errors if error_key(e) not in covered]
+        attempts = len(_related(c, self.history))
+        reason = cand.reason
+        artifact: Optional[GAV] = None
+        owner = cand.owner_class
+        notes: list[str] = []
+        required, found = cand.required_type, cand.found_type
+        if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
+            owner, required, found = self._classpath_hints(errs, owner, required, found)
+            artifact, owner, notes = attribute(self.locator, self.ws, self.cfg, owner, errs, c.module or target)
+        elif reason in (BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PARENT_NOT_FOUND):
+            artifact = next((e.artifact for e in errs if e.artifact is not None), None)
+        elif getattr(cand, "plugin", None):
+            try:
+                artifact = GAV.parse(cand.plugin)
+            except ValueError:
+                artifact = None
+        item, created = self.blocked.block(c, reason, phase, errors=errs, iteration=iteration, attempts=attempts,
+                                           required_type=required, found_type=found,
+                                           owner_class=owner, artifact=artifact, notes=[rationale, *notes])
+        if created or not item.suggestion:
+            extra = ""
+            if reason == BlockReason.PLUGIN_INCOMPATIBLE:
+                extra = getattr(cand, "plugin", None) or ""
+            elif reason == BlockReason.LLM_UNAVAILABLE:
+                extra = self.llm_unavailable or ""
+            item.suggestion = compose_suggestion(item, self.cfg, settings_file=self.cfg.build.settings_file,
+                                                 repositories=list(getattr(cand, "repositories", []) or []),
+                                                 extra=extra)
+        self._touch_item(item.id)
+        self.ws.journal({"event": "blocked", "phase": phase.value, "iteration": iteration, "id": item.id,
+                         "created": created, "reason": reason.value, "cluster": c.id,
+                         "signatures": [e.signature for e in errs][:10], "files": item.files[:10],
+                         "artifact": item.artifact.coordinates if item.artifact else None,
+                         "owner_class": item.owner_class, "required_type": item.required_type,
+                         "found_type": item.found_type, "attempts": item.attempts, "suggestion": item.suggestion,
+                         "rest_errors": len(rest)})
+        return rest
+
+    def _classpath_hints(self, errs: list[BuildError], owner: Optional[str], required: Optional[str],
+                         found: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Fill gaps with sbmig.build.classpath.owner_fqcn / type_mismatch (G1) when the locator provides them."""
+        loc = self.locator
+        if loc is None:
+            return owner, required, found
+        for e in errs[:3]:
+            try:
+                if owner is None and hasattr(loc, "owner_fqcn"):
+                    o = loc.owner_fqcn(e)
+                    if o and not o.startswith(("javax.", "jakarta.")):   # a bare mismatch names the type, not an owner
+                        owner = o
+                if (required is None or found is None) and hasattr(loc, "type_mismatch"):
+                    r, f = loc.type_mismatch(e)
+                    required, found = required or r, found or f
+            except Exception as ex:  # pragma: no cover - attribution is best effort
+                log.debug("classpath hints failed: %s", ex)
+        return owner, required, found
+
+    def _block_simple(self, phase: Phase, iteration: int, c: ErrorCluster, reason: BlockReason, why: str) -> None:
+        from sbmig.triage.blocked import BlockedCandidate
+        _blocked, rest = self.blocked.partition(c)
+        if not rest:
+            return
+        cc = _reduced(c, rest)
+        self._register_blocked(phase, iteration, cc, BlockedCandidate(reason=reason, evidence=[why], errors=rest),
+                               f"blocked: {reason.value} — {why}")
+
+    def _block_remaining(self, pr: PhaseResult, phase: Phase, iteration: int, clusters: list[ErrorCluster],
+                         reason: BlockReason, why: str) -> None:
+        for c in clusters:
+            self._block_simple(phase, iteration, c, reason, why)
+
+    def _block_oscillation(self, pr: PhaseResult, phase: Phase, iteration: int, clusters: list[ErrorCluster]) -> None:
+        phase_attempted = {a.cluster_id for a in pr.attempts} | {s for a in pr.attempts for s in a.cluster_signatures}
+        involved = [c for c in clusters if c.id in phase_attempted or set(c.signatures) & phase_attempted] or clusters
+        why = "fixes keep toggling between the same error sets (A↔B↔A) within loop.oscillation_window"
+        pr.notes.append(f"build {iteration}: oscillation repeated → blocking {len(involved)} cluster(s)")
+        self._block_remaining(pr, phase, iteration, involved, BlockReason.OSCILLATION, why)
+
+    def _parent_abort(self, pr: PhaseResult, phase: Phase, build: BuildResult, iteration: int) -> bool:
+        """The configured in-house parent is not resolvable → nothing can build: abort the run with a clear item."""
+        parent = self.cfg.artifacts.parent
+        keys = {parent.key, *parent.aliases}
+        errs = [e for e in build.errors if e.kind == ErrorKind.PARENT_RESOLUTION
+                and e.artifact is not None and e.artifact.key in keys]
+        if not errs:
+            return False
+        from sbmig.triage.blocked import BlockedCandidate, repositories_in
+        c = self.triager.cluster(errs, self.profile)[0]
+        coords = errs[0].artifact.coordinates
+        cand = BlockedCandidate(reason=BlockReason.PARENT_NOT_FOUND, errors=errs,
+                                repositories=repositories_in("\n".join(f"{e.message}\n{e.raw}" for e in errs)),
+                                evidence=[errs[0].message[:300]])
+        self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — configured parent {coords} "
+                                                          "is not resolvable; run aborted")
+        self.aborted = (f"the configured in-house parent {coords} is not resolvable (settings: "
+                        f"{self.cfg.build.settings_file or 'default'}) — fix the repository/settings or "
+                        "artifacts.parent and rerun")
+        self._flag("aborted:parent-not-found")
+        self._followup(f"run aborted: {self.aborted}")
+        pr.notes.append(f"build {iteration}: {self.aborted}")
+        self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
+        return True
 
     @staticmethod
     def test_compile_skipped_in(pr: PhaseResult) -> bool:
@@ -168,9 +414,14 @@ class BuildFixLoop:
     # ------------------------------------------------------------------ build
     def _build(self, goal: str, target: Optional[str], label: str, phase: Phase, iteration: int,
                skip_test_compile: bool = False) -> BuildResult:
-        res = self.build_runner.run(goal, module=target, label=label, skip_test_compile=skip_test_compile)
+        module, extra = build_target_args(self.profile, target)
+        if extra:
+            res = self.build_runner.run(goal, module=module, extra_args=extra, label=label,
+                                        skip_test_compile=skip_test_compile)
+        else:
+            res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_test_compile)
         self.ws.journal({"event": "build", "phase": phase.value, "iteration": iteration, "goal": goal,
-                         "target": target, "ok": res.ok, "exit_code": res.exit_code, "errors": res.error_count,
+                         "target": target, "extra_args": extra, "ok": res.ok, "exit_code": res.exit_code, "errors": res.error_count,
                          "duration_s": res.duration_s, "log": res.log_path, "skip_test_compile": skip_test_compile})
         return res
 
@@ -184,6 +435,10 @@ class BuildFixLoop:
         prev_sigs = {e.signature for e in prev.errors} if prev is not None else set()
         total = build.error_count
         ratio = self.cfg.loop.regression_ratio
+        struct_kinds = set(self.cfg.loop.structural_regression_kinds)
+        prev_kinds = {e.kind.value for e in prev.errors} if prev is not None else set()
+        new_struct = sorted({e.kind.value for e in build.errors if e.kind.value in struct_kinds} - prev_kinds)
+        structural: set[str] = set()
         for p in pending:
             a = p.attempt
             a.errors_after = total
@@ -197,6 +452,12 @@ class BuildFixLoop:
             if build.ok:
                 continue
             touched = {c.path for c in a.changes} | {c.new_path for c in a.changes if c.new_path}
+            if new_struct and any(t and t.replace("\\", "/").rsplit("/", 1)[-1] == "pom.xml" for t in touched):
+                a.outcome = "regressed"
+                a.notes.append(f"regressed: structural error kind(s) {', '.join(new_struct)} appeared after this "
+                               "attempt edited a pom.xml → reverted regardless of error counts")
+                structural.add(a.id)
+                continue
             new_in_touched = [e for e in build.errors if e.file and e.file in touched and e.signature not in prev_sigs]
             ratio_regress = (not any_resolved) and total > max(a.errors_before, 1) * ratio
             if not a.cluster_resolved and (new_in_touched or ratio_regress):
@@ -232,6 +493,23 @@ class BuildFixLoop:
                     p.attempt.notes.append(f"reverted to {group[0].pre_sha[:10]}")
                 self.ws.journal({"event": "revert", "phase": pr.phase.value, "to": group[0].pre_sha,
                                  "commit": sha, "attempts": [p.attempt.id for p in group]})
+            # structural regressions are reverted even when later commits of the round depend on them (git revert)
+            for p in pending:
+                a = p.attempt
+                if a.outcome != "regressed" or a.id not in structural:
+                    continue
+                group = [q for q in pending if q.post_sha == p.post_sha]
+                res = self.ws._git("revert", "--no-edit", p.post_sha, check=False)   # noqa: SLF001
+                if res.returncode != 0:
+                    self.ws._git("revert", "--abort", check=False)                      # noqa: SLF001
+                    a.notes.append(f"structural revert of {p.post_sha[:10]} failed: {(res.stderr or '').strip()[:200]}")
+                    continue
+                reverted = True
+                for q in group:
+                    q.attempt.outcome = "reverted"
+                    q.attempt.notes.append(f"reverted commit {p.post_sha[:10]} (git revert: structural regression)")
+                self.ws.journal({"event": "revert", "phase": pr.phase.value, "commit": p.post_sha, "mode": "git-revert",
+                                 "structural": new_struct, "attempts": [q.attempt.id for q in group]})
             for p in pending:
                 if p.attempt.outcome == "regressed":
                     p.attempt.notes.append("not reverted: later commits that improved things depend on it")
@@ -269,8 +547,11 @@ class BuildFixLoop:
                                   rationale=f"triage failed: {type(e).__name__}: {e}")
 
     def _fix_round(self, pr: PhaseResult, phase: Phase, iteration: int, build: BuildResult, target: Optional[str],
-                   stall_level: int) -> tuple[list[_Pending], bool, list[TriageDecision]]:
-        clusters = self.triager.cluster(build.errors, self.profile)
+                   stall_level: int, clusters: Optional[list[ErrorCluster]] = None
+                   ) -> tuple[list[_Pending], bool, list[TriageDecision], bool]:
+        """One fix round. Returns (pending attempts, anything applied, decisions, an LLM attempt was made)."""
+        if clusters is None:
+            clusters = self.triager.cluster(build.errors, self.profile)
         planned = self._plan(clusters)
         limit = max(1, self.cfg.loop.max_clusters_per_iteration)
         self.ws.journal({"event": "triage", "phase": phase.value, "iteration": iteration,
@@ -281,19 +562,24 @@ class BuildFixLoop:
                     others={c.id: _label(c) for c in clusters})
         masked: list[tuple[ErrorCluster, TriageDecision, list[str]]] = []
         handled = 0
+        llm_before = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.LLM_FIX)
         for c, skip, by in planned:
+            c2 = self._unblocked_part(st, c)
+            if c2 is None:
+                continue
             if skip is not None:
-                masked.append((c, skip, by))
+                masked.append((c2, skip, by))
                 continue
             if handled >= limit:
                 continue
-            handled += 1
-            self._handle_cluster(pr, st, c)
+            if self._handle_cluster(pr, st, c2) != "blocked":
+                handled += 1
         # unmask: a masker that cannot be acted upon must not hide compile errors we could fix
         for c, skip, by in masked:
             if by and all(b in st.hopeless for b in by) and handled < limit:
-                handled += 1
-                self._handle_cluster(pr, st, c, prefix="(unmasked: its pom problem was escalated) ")
+                if self._handle_cluster(pr, st, c, prefix="(unmasked: its pom problem was escalated/blocked) ") \
+                        != "blocked":
+                    handled += 1
             else:
                 st.decisions.append(skip)
                 self._journal_decision(st, skip)
@@ -305,24 +591,52 @@ class BuildFixLoop:
                 retry, st.recipe_batch = st.recipe_batch, []
                 for c, _d, _m in retry:
                     self._handle_cluster(pr, st, c, prefix="(after a no-op recipe run) ", allow_recipes=False)
-        return st.pending, st.applied_any, st.decisions
+        llm_tried = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.LLM_FIX) > llm_before
+        return st.pending, st.applied_any, st.decisions, llm_tried
+
+    def _unblocked_part(self, st: "_Round", c: ErrorCluster) -> Optional[ErrorCluster]:
+        """Drop the errors the run already blocked; None when nothing is left (decision BLOCKED is recorded)."""
+        blocked, rest = self.blocked.partition(c)
+        if not blocked:
+            return c
+        if rest:
+            return _reduced(c, rest)
+        item = self.blocked.covering(c)
+        assert item is not None
+        self._touch_item(item.id)
+        st.hopeless.add(c.id)
+        d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
+                           rationale=f"blocked: {item.reason.value} — already blocked ({item.id}, first seen in "
+                                     f"{item.phase.value}); skipped")
+        st.decisions.append(d)
+        self._journal_decision(st, d)
+        return None
 
     def _journal_decision(self, st: "_Round", d: TriageDecision) -> None:
         self.ws.journal({"event": "decision", "phase": st.phase.value, "iteration": st.iteration,
                          **d.model_dump(mode="json")})
 
     def _handle_cluster(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, prefix: str = "",
-                        allow_recipes: bool = True) -> None:
-        """Decide → apply → commit; a deterministic option that changes nothing falls through to the next one."""
+                        allow_recipes: bool = True) -> str:
+        """Decide → apply → commit; a deterministic option that changes nothing falls through to the next one.
+        Returns "blocked" (nothing left to do for this cluster), "escalated", "skipped", "recipe" or "attempted"."""
+        from sbmig.triage.blocked import BlockedCandidate
         m = self._kb_match(c)
-        for _ in range(4):
+        for _ in range(6):
             d = self._decide(st.phase, st.iteration, st.stall_level, c, m)
             if prefix:
                 d.rationale = prefix + d.rationale
-            if d.kind == DecisionKind.LLM_FIX and not self.budget.llm_allowed():
-                d = TriageDecision(cluster_id=c.id, kind=DecisionKind.ESCALATE,
-                                   rationale=f"escalated: LLM budget exhausted ({self.budget.llm_calls}/"
-                                             f"{self.budget.max_llm_calls} calls)")
+            forced = None
+            if d.kind == DecisionKind.LLM_FIX and self.llm_unavailable:
+                forced = BlockedCandidate(reason=BlockReason.LLM_UNAVAILABLE, errors=list(c.errors),
+                                          evidence=[f"LLM unavailable ({self.llm_unavailable})"])
+            elif d.kind == DecisionKind.LLM_FIX and not self.budget.llm_allowed():
+                forced = BlockedCandidate(reason=BlockReason.BUDGET_EXHAUSTED, errors=list(c.errors),
+                                          evidence=[f"LLM budget exhausted ({self.budget.llm_calls}/"
+                                                    f"{self.budget.max_llm_calls} calls)"])
+            if forced is not None:
+                d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
+                                   rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
             if d.kind == DecisionKind.KB_RECIPE and not allow_recipes:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.ESCALATE,
                                    rationale=prefix + "escalated: only recipes left and they changed nothing")
@@ -331,18 +645,36 @@ class BuildFixLoop:
             if d.kind == DecisionKind.ESCALATE:
                 self.escalated[c.id] = d
                 st.hopeless.add(c.id)
-                return
+                return "escalated"
+            if d.kind == DecisionKind.BLOCKED:
+                cand = forced or self._candidate_for(c, d)
+                rest = self._register_blocked(st.phase, st.iteration, c, cand, d.rationale, st.target)
+                if not rest:
+                    st.hopeless.add(c.id)
+                    return "blocked"
+                # only part of the cluster is blocked: keep working on the rest of the file
+                c = _reduced(c, rest)
+                prefix = "(rest of a partially blocked cluster) "
+                continue
             if d.kind == DecisionKind.SKIP or self.dry_run:
-                return
+                return "skipped"
             if d.kind == DecisionKind.KB_RECIPE:
                 st.recipe_batch.append((c, d, m))
-                return
+                return "recipe"
             st.n += 1
             att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
             pre = self.ws.head()
             if d.kind == DecisionKind.HANDLER:
                 self._apply_handler(att, c)
                 msg = f"fix(handler:{d.handler_id}): {c.id}"
+                if att.outcome == "apply_failed" and d.handler_id in st.handlers_applied:
+                    # whole-module handler (source-encoding, strip-utf8-bom …) already fixed this cluster's module in
+                    # this iteration: not a failure — wait for the rebuild instead of falling through to the LLM
+                    att.outcome, att.apply_errors = "no_change", []
+                    att.notes.append(f"handler {d.handler_id} already applied in this iteration (module-wide fix); "
+                                     "waiting for the rebuild")
+                    self._record(pr, att)
+                    return "attempted"
             elif d.kind == DecisionKind.KB_PATCH:
                 self._apply_kb_patch(att, c, m)
                 msg = f"fix(kb-patch:{','.join(d.kb_case_ids)}): {c.id}"
@@ -358,9 +690,12 @@ class BuildFixLoop:
                     att.applied, att.commit = True, sha
                     st.pending.append(_Pending(att, pre, sha))
                     st.applied_any = True
+                    if d.kind == DecisionKind.HANDLER and d.handler_id:
+                        st.handlers_applied.add(d.handler_id)
             self._record(pr, att)
             if att.applied or d.kind == DecisionKind.LLM_FIX:
-                return          # never call the LLM twice for one cluster in one round
+                return "attempted"      # never call the LLM twice for one cluster in one round
+        return "attempted"
 
     def _new_attempt(self, phase: Phase, iteration: int, n: int, c: ErrorCluster, d: TriageDecision,
                      build: BuildResult) -> FixAttempt:
@@ -403,6 +738,13 @@ class BuildFixLoop:
             log.exception("handler %s failed", h.id)
             return self._fail(att, f"handler {h.id} failed: {type(e).__name__}: {e}")
         att.analysis = h.description
+        for f in list(getattr(h, "flags", None) or []):
+            self._flag(str(f))
+        for n in list(getattr(h, "notes", None) or []):
+            if n not in att.notes:
+                att.notes.append(str(n))
+            if self.cfg is not None and str(n).lower().startswith(("install", "followup", "follow-up")):
+                self._followup(str(n))
         if not att.changes:
             self._fail(att, f"handler {h.id} found nothing to change")
 
@@ -437,10 +779,17 @@ class BuildFixLoop:
         except Exception as e:
             self.budget.charge_llm(1)
             log.warning("fixer.propose failed for %s: %s", c.id, e)
-            return self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
+            self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
+            self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
+            return
         self.budget.charge_llm(max(1, proposal.llm_usage.calls))
         att.model, att.prompt_hash, att.llm_usage = proposal.model, proposal.prompt_hash, proposal.llm_usage
         att.analysis = proposal.analysis
+        if is_llm_transport_error(proposal.analysis):
+            self._fail(att, proposal.analysis.strip()[:300])
+            self._llm_transport_failure(att, c, proposal.analysis.strip()[len("llm-error:"):].strip()[:300])
+            return
+        self._llm_streak = []
         if ctx.use_escalation_model:
             att.notes.append(f"escalation model requested (stall level {stall_level})")
         if not proposal.changes:
@@ -455,6 +804,26 @@ class BuildFixLoop:
         att.changes, att.apply_errors = list(applied), list(errs)
         if not applied:
             self._fail(att, "no patch block applied")
+
+    def _llm_transport_failure(self, att: FixAttempt, c: ErrorCluster, why: str) -> None:
+        """Two transport/config failures in a row → the LLM is unavailable for the rest of the run (L5)."""
+        self._llm_streak.append((c, why))
+        att.notes.append(f"LLM transport/config failure: {why[:200]}")
+        if self.llm_unavailable or len(self._llm_streak) < 2:
+            return
+        self.llm_unavailable = why[:300] or "LLM transport errors"
+        self._flag("llm-unavailable")
+        setter = getattr(self.triager, "set_llm_unavailable", None)
+        if callable(setter):
+            setter(self.llm_unavailable)
+        self._followup(f"the LLM was unavailable during this run ({self.llm_unavailable}); clusters that needed it "
+                       "are listed as blocked (llm_unavailable) — deterministic handlers and recipes still ran")
+        self.ws.journal({"event": "llm_unavailable", "phase": att.phase.value, "iteration": att.iteration,
+                         "reason": self.llm_unavailable, "clusters": [x.id for x, _ in self._llm_streak]})
+        for x, _w in self._llm_streak:
+            self._block_simple(att.phase, att.iteration, x, BlockReason.LLM_UNAVAILABLE,
+                               f"LLM unavailable ({self.llm_unavailable})")
+        self._llm_streak = []
 
     def _run_recipe_batch(self, pr: PhaseResult, st: "_Round") -> bool:
         phase, iteration, batch, build, target, pending = (st.phase, st.iteration, st.recipe_batch, st.build,

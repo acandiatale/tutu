@@ -28,3 +28,5 @@ On **JDK 21** the same command fails with
 Expected migration hot spots: lombok floor, javax → jakarta (persistence, validation), Security 7 DSL
 (`WebSecurityConfigurerAdapter` → `SecurityFilterChain` bean, `antMatchers` → `requestMatchers`, lambda DSL),
 `spring.redis.*` → `spring.data.redis.*`, `@MockBean` → `@MockitoBean`, Boot 4 starter renames.
+
+Note: lombok is not expected in `optional_bumped` — `UpgradeToJava21` already raises it above the configured 1.18.38 and `artifacts.optional_version_policy: floor` (default) never downgrades.

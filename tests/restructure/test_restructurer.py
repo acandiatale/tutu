@@ -424,19 +424,24 @@ def test_layout_multi_module_wrap(tmp_path: Path, cfg: Config) -> None:
     for m in ("core", "web"):
         c = xml(root / f"module/{m}/pom.xml")
         assert t(c, "parent/relativePath") == "../../pom.xml"
+    # S7: the WAR module is wrapped unchanged (still a WAR, keeps its boot plugin and its classes)
     web = PomEditor(root / "module/web/pom.xml")
-    assert web.packaging() == "jar" and not web.has_plugin("org.springframework.boot", "spring-boot-maven-plugin")
+    assert web.packaging() == "war" and web.has_plugin("org.springframework.boot", "spring-boot-maven-plugin")
     core = PomEditor(root / "module/core/pom.xml")
     assert core.dependencies()[0].version == "33.4.8-jre"
     boot = root / "module/boot-jar"
-    assert (boot / "src/main/java/com/acme/suite/SuiteApplication.java").exists()
-    assert (boot / "src/main/resources/application.properties").exists()
+    assert (root / "module/web/src/main/java/com/acme/suite/SuiteApplication.java").exists()
+    assert (root / "module/web/src/main/resources/application.properties").exists()
     assert (root / "module/web/src/main/java/com/acme/suite/web/Ctl.java").exists()
+    assert not (boot / "src/main/java/com/acme/suite/SuiteApplication.java").exists()
+    assert (boot / "src/main/java/com/acme/suite/Application.java").exists()       # generated: no jar main class
     b = PomEditor(boot / "pom.xml")
-    assert [d.key for d in b.dependencies()] == ["${project.groupId}:suite-web",
+    assert [d.key for d in b.dependencies()] == ["${project.groupId}:suite-core",          # jar modules only
                                                  "org.springframework.boot:spring-boot-starter"]   # auto: none as-is
     assert b.get_parent().artifact_id == "suite"
-    assert any("WAR packaging of module module/web" in f for f in res.manual_followups)
+    assert any("WAR module module/web kept as-is" in f and "embedded deployment needs conversion" in f
+               for f in res.manual_followups)
+    assert any("SuiteApplication stays in WAR module module/web" in n for n in res.notes)
     assert "com.google.guava:guava 31.0-jre→33.4.8-jre" in res.optional_bumped
 
 
@@ -629,7 +634,9 @@ def test_boot_jar_inherits_asis_test_and_runtime_deps_when_tests_move(tmp_path: 
 
 
 def test_optional_bump_prefers_conventional_override_property(tmp_path: Path, cfg_rm: Config) -> None:
-    """lombok has no version (managed by the parent) but the project defines <lombok.version> → bump the property."""
+    """lombok has no version (managed by the parent) but the project defines <lombok.version> → bump the property
+    (policy pin: the configured version is set exactly, even if lower)."""
+    cfg_rm.artifacts.optional_version_policy = "pin"
     files = boot2_files()
     files["pom.xml"] = files["pom.xml"].replace(
         "        <guava.version>30.0-jre</guava.version>\n",
@@ -643,3 +650,23 @@ def test_optional_bump_prefers_conventional_override_property(tmp_path: Path, cf
     cdeps = {f"{t(d, 'groupId')}:{t(d, 'artifactId')}": d for d in all_(c, "dependencies/dependency")}
     assert t(cdeps["org.projectlombok:lombok"], "version") is None
     assert any(e.startswith("org.projectlombok:lombok 1.18.48→1.18.38") for e in res.optional_bumped)
+
+
+def test_optional_bump_floor_policy_never_downgrades(tmp_path: Path, cfg_rm: Config) -> None:
+    """Default policy `floor`: a newer as-is/recipe version (lombok 1.18.48 > configured 1.18.38) is kept, while an
+    older one (guava 30.0-jre < 33.4.8-jre) is still raised."""
+    assert cfg_rm.artifacts.optional_version_policy == "floor"
+    files = boot2_files()
+    files["pom.xml"] = files["pom.xml"].replace(
+        "        <guava.version>30.0-jre</guava.version>\n",
+        "        <guava.version>30.0-jre</guava.version>\n        <lombok.version>1.18.48</lombok.version>\n")
+    ws = make_ws(tmp_path, files, "boot2-floor")
+    res = Restructurer().apply(ws, boot2_profile(ws), cfg_rm, mode="layout")
+    assert res.ok, res.error
+    r = xml(ws.root / "pom.xml")
+    assert t(r, "properties/lombok.version") == "1.18.48"
+    assert t(r, "properties/guava.version") == "33.4.8-jre"
+    # the property (1.18.48) is kept; only the older annotationProcessorPaths entry (1.18.20) is raised
+    assert not any(e.startswith("org.projectlombok:lombok 1.18.48") for e in res.optional_bumped)
+    assert any(e.startswith("com.google.guava:guava 30.0-jre→33.4.8-jre") for e in res.optional_bumped)
+    assert any("optional_version_policy=floor" in n for n in res.notes)

@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import posixpath
-from typing import Iterable, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 from sbmig.core.models import CaseType, LibraryUsage, PomInfo, ServiceInfo, SourceStats
 
 from .libraries import detect_libraries
 from .pom_parser import BOOT_GROUP, owning_pom, pom_dir
 from .source_scanner import ScanResult
+
+if TYPE_CHECKING:  # pragma: no cover
+    from sbmig.core.models import ProjectProfile
 
 SPRING_GROUPS = ("org.springframework", "org.springframework.security", "org.springframework.data",
                  "org.springframework.batch", "org.springframework.integration")
@@ -85,6 +88,10 @@ def classify_single(poms: list[PomInfo], source: SourceStats, libraries: list[Li
     if source.java_files:
         return CaseType.PURE_JAVA, 0.8 if poms else 0.6, [
             f"pure_java: {source.java_files} java file(s), no Spring/servlet signals"]
+    if poms:
+        # pom-only aggregator / BOM / parent: classified by its poms; nothing to rewrite (S3)
+        return CaseType.PURE_JAVA, 0.3, ["pure_java (low confidence): pom-only project, no java sources and no "
+                                         "Spring/servlet signals in the poms"]
     return CaseType.UNKNOWN, 0.2, ["no java sources and no Spring/servlet signals"]
 
 
@@ -182,6 +189,100 @@ def build_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult) 
         else:
             seen[s.name] = 1
     return services
+
+
+# ---------------------------------------------------------------------------
+# MSA shared library roots (S1)
+# ---------------------------------------------------------------------------
+LIBRARY_CASE_MAP = {CaseType.SPRING_BOOT: CaseType.SPRING_LEGACY, CaseType.SERVLET_TOMCAT: CaseType.PURE_JAVA,
+                    CaseType.UNKNOWN: CaseType.PURE_JAVA, CaseType.MSA: CaseType.SPRING_LEGACY}
+
+
+def library_roots(poms: list[PomInfo], service_root_poms: list[str], scan: Optional[ScanResult]) -> list[PomInfo]:
+    """Top-most in-repo poms of shared, non-deployable modules (e.g. `common/`) that live outside every service.
+
+    A candidate is a jar-packaged pom without spring-boot-maven-plugin and without @SpringBootApplication, not inside
+    a service directory; it is lifted to the highest ancestor directory pom that contains no service."""
+    svc_dirs = [pom_dir(p) for p in service_root_poms]
+    app_modules = _boot_app_modules(poms, scan)
+
+    def in_service(d: str) -> bool:
+        return any(_contains(sd, d) for sd in svc_dirs)
+
+    def holds_service(d: str) -> bool:
+        return any(_contains(d, sd) for sd in svc_dirs)
+
+    by_dir = {pom_dir(p.path): p for p in poms}
+    out: list[PomInfo] = []
+    for p in poms:
+        d = pom_dir(p.path)
+        if p.packaging in ("pom", "war") or p.has_spring_boot_plugin or p.path in app_modules or in_service(d) \
+                or holds_service(d):
+            continue
+        cur = p
+        while d:
+            d = posixpath.dirname(d)
+            anc = by_dir.get(d)
+            if anc is None:
+                continue
+            if holds_service(d) or anc.packaging == "war" or anc.has_spring_boot_plugin:
+                break
+            cur = anc
+        if cur not in out:
+            out.append(cur)
+    return out
+
+
+def build_library_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult,
+                           taken: Iterable[str] = ()) -> list[ServiceInfo]:
+    """Library roots as `ServiceInfo` entries (convention: `main_classes == []`, `spring_boot_version is None`,
+    case mapped so a library never gets the Boot umbrella)."""
+    out: list[ServiceInfo] = []
+    names = set(taken)
+    for r in roots:
+        d = pom_dir(r.path)
+        sub_poms = [p for p in poms if _contains(d, pom_dir(p.path))]
+        sub_scan = scan.subset(d)
+        case, _, _ = classify_single(sub_poms, sub_scan.stats(), detect_libraries(sub_poms, sub_scan), sub_scan)
+        case = LIBRARY_CASE_MAP.get(case, case)
+        name = posixpath.basename(d) if d else r.artifact_id
+        base, i = name, 1
+        while name in names:
+            i += 1
+            name = f"{base}-{i}"
+        names.add(name)
+        out.append(ServiceInfo(name=name, root_pom=r.path, case_type=case, kind="library", poms=[p.path for p in sub_poms],
+                               main_classes=[], spring_boot_version=None,
+                               java_version=r.java_version or next((p.java_version for p in sub_poms
+                                                                    if p.java_version), None)))
+    return out
+
+
+def is_library_root(svc: ServiceInfo, profile: Optional["ProjectProfile"] = None) -> bool:
+    """True for MSA `services` entries that are shared library roots (not deployables).
+
+    Convention (no dedicated model field): `main_classes == []` and `spring_boot_version is None`; with `profile`
+    given, additionally its poms must be known to `profile.poms` and none of them is a WAR or carries spring-boot-maven-plugin (so a plain WAR service
+    without Boot is never mistaken for a library). Always pass the profile when you have it."""
+    if getattr(svc, "kind", "service") == "library":      # explicit model field (set by the analyzer)
+        return True
+    if svc.main_classes or svc.spring_boot_version is not None:
+        return False
+    if profile is None:
+        return True
+    by_path = {p.path: p for p in profile.poms}
+    sub = [by_path[x] for x in (svc.poms or [svc.root_pom]) if x in by_path]
+    if not sub:          # poms unknown to the profile → cannot prove it is a library; treat as a deployable
+        return False
+    return not any(p.packaging == "war" or p.has_spring_boot_plugin for p in sub)
+
+
+def library_services(profile: "ProjectProfile") -> list[ServiceInfo]:
+    return [s for s in profile.services if is_library_root(s, profile)]
+
+
+def deployable_services(profile: "ProjectProfile") -> list[ServiceInfo]:
+    return [s for s in profile.services if not is_library_root(s, profile)]
 
 
 def classify(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUsage],

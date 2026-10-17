@@ -1,9 +1,20 @@
 """Rule-based migration planner (no LLM): ProjectProfile + Config (+ KB) → MigrationPlan.
 
-Step ids (non-MSA):  jdk21.rewrite, jdk21.loop, spring.rewrite, spring.loop, restructure.apply,
-restructure.loop, verify.build.  MSA: per service `jdk21.rewrite@<svc>`, `jdk21.loop@<svc>`,
-`spring.rewrite@<svc>`, `spring.loop@<svc>` (target = service root dir), then `restructure.msa_pom`,
-`restructure.loop` and `verify.build` (or `verify.build@<svc>` per service when there is no root aggregator).
+Step ids (non-MSA):  jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, spring.loop,
+restructure.apply, restructure.loop, verify.build.
+
+* `spring.optional_bump` (StepKind.RESTRUCTURE, phase SPRING, params {"mode": "optional_bump"}, optional=True) is
+  emitted when `cfg.plan.optional_bump_phase == "spring"` and optional / remove_when_present artifacts are configured;
+  with `"restructure"` the bumps happen inside the restructure step only (previous behaviour).
+* MSA: per target `jdk21.rewrite@<x>`, `jdk21.loop@<x>`, `spring.rewrite@<x>`, `spring.optional_bump@<x>`
+  (params also carry `service` / `target`), `spring.loop@<x>` (target = root dir) — shared **library roots first**
+  (dependency / reactor order), then the services; then `restructure.msa_pom` (params `services`, `parent_policy`,
+  `library_roots` = library root pom paths), `restructure.loop` and `verify.build` (or `verify.build@<x>` per target
+  when there is no root aggregator). With `layout.msa_parent_policy == "top-aggregator"` and a root aggregator whose
+  reactor covers every target, a single un-suffixed rewrite/loop chain runs at the repo root instead.
+* No java sources (pom-only, S3): no jdk21/spring steps; `restructure.pom_only` (StepKind.MSA_POM, mode msa_pom) or
+  `restructure.msa_pom`, the restructure loop and verify.
+* `profile.build_tool != "maven"` (S4): zero steps and a note (the orchestrator aborts).
 """
 from __future__ import annotations
 
@@ -174,8 +185,29 @@ def _loop_step(phase_key: str, phase: Phase, cfg: Config, reason: str, *, step_i
                     max_iterations=pc.max_iterations, target=target, reason=reason, params=params or {})
 
 
+def _optional_bump_wanted(cfg: Config) -> bool:
+    return cfg.plan.optional_bump_phase == "spring" and bool(cfg.artifacts.optional or cfg.artifacts.remove_when_present)
+
+
+def _optional_bump_step(svc: Optional[str], target: Optional[str]) -> PlanStep:
+    params: dict[str, Any] = {"mode": "optional_bump"}
+    if svc:
+        params["service"] = svc
+        params["target"] = target
+    return PlanStep(
+        id="spring.optional_bump" + _sfx(svc), kind=StepKind.RESTRUCTURE, phase=Phase.SPRING,
+        title="bump in-house optional artifacts (+ remove_when_present)" + (f" ({svc})" if svc else ""),
+        params=params, target=target, optional=True,
+        reason="jakarta builds of in-house libraries must be on the classpath before the first spring build "
+               "(plan.optional_bump_phase=spring); no moves, no parent change")
+
+
 def _recipe_phase_steps(facts: _Facts, cfg: Config, kb_refs: list[RecipeRef], notes: list[str], *,
-                        svc: Optional[str] = None, target: Optional[str] = None) -> list[PlanStep]:
+                        svc: Optional[str] = None, target: Optional[str] = None,
+                        recipes: Optional[list[RecipeRef]] = None, title_case: Optional[str] = None) -> list[PlanStep]:
+    """jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, spring.loop (ids suffixed `@svc`).
+
+    `recipes` overrides the per-case spring recipes (MSA single root rewrite: union of the services' recipes)."""
     steps: list[PlanStep] = []
     params = {"service": svc} if svc else {}
     jdk = [recipe_ref(i, cfg) for i in cfg.openrewrite.recipes.jdk21]
@@ -190,16 +222,20 @@ def _recipe_phase_steps(facts: _Facts, cfg: Config, kb_refs: list[RecipeRef], no
         if s:
             steps.append(s)
     label = svc or ""
-    recipes = spring_recipes(facts, cfg, notes, label)
-    recipes += [r for r in kb_refs if not any(x.id == r.id for x in recipes)]
+    if recipes is None:
+        recipes = spring_recipes(facts, cfg, notes, label)
+    recipes = list(recipes) + [r for r in kb_refs if not any(x.id == r.id for x in recipes)]
     if recipes:
         steps.append(PlanStep(
             id="spring.rewrite" + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.SPRING,
-            title=f"OpenRewrite: {facts.case.value} → jakarta / Spring Boot 4.1" + (f" ({svc})" if svc else ""),
+            title=f"OpenRewrite: {title_case or facts.case.value} → jakarta / Spring Boot 4.1"
+                  + (f" ({svc})" if svc else ""),
             recipes=recipes, target=target, params=dict(params),
-            reason=f"case {facts.case.value}: recipes per ARCHITECTURE §2 case matrix"))
+            reason=f"case {title_case or facts.case.value}: recipes per ARCHITECTURE §2 case matrix"))
     else:
         notes.append(f"spring{f' [{label}]' if label else ''}: no spring-phase recipes apply → spring.rewrite omitted")
+    if _optional_bump_wanted(cfg):
+        steps.append(_optional_bump_step(svc, target))
     s = _loop_step("spring", Phase.SPRING, cfg, "gate: sources and tests must compile after the Spring phase",
                    step_id="spring.loop" + _sfx(svc), target=target, params=dict(params))
     if s:
@@ -229,67 +265,197 @@ def _service_dir(s: ServiceInfo) -> str:
     return posixpath.dirname(s.root_pom) or "."
 
 
+def _module_path(pom_path: str, m: str) -> str:
+    t = posixpath.normpath(posixpath.join(posixpath.dirname(pom_path) or ".", m))
+    if not t.endswith(".xml"):
+        t = posixpath.join(t, "pom.xml")
+    return posixpath.normpath(t)
+
+
+def _reactor_reach(profile: ProjectProfile, start: str) -> set[str]:
+    by_path = {p.path: p for p in profile.poms}
+    seen: set[str] = set()
+    todo = [start]
+    while todo:
+        cur = todo.pop()
+        if cur in seen or cur not in by_path:
+            continue
+        seen.add(cur)
+        todo += [_module_path(cur, m) for m in by_path[cur].modules]
+    return seen
+
+
+def _aggregator_covers(profile: ProjectProfile, targets: list[ServiceInfo]) -> bool:
+    rp = profile.root_pom
+    if rp is None or not rp.is_aggregator:
+        return False
+    reach = _reactor_reach(profile, rp.path)
+    return all(t.root_pom in reach for t in targets)
+
+
+def _order_libraries(profile: ProjectProfile, libs: list[ServiceInfo]) -> list[ServiceInfo]:
+    """Libraries in dependency order (a library another library depends on comes first), ties by reactor order."""
+    from sbmig.analyze.pom_parser import module_order
+
+    order = {p: i for i, p in enumerate(module_order(profile.poms))}
+    by_path = {p.path: p for p in profile.poms}
+    produced = {lib.name: {f"{by_path[x].group_id}:{by_path[x].artifact_id}" for x in lib.poms if x in by_path}
+                for lib in libs}
+    needs = {lib.name: {d.key for x in lib.poms if x in by_path for d in by_path[x].dependencies} for lib in libs}
+    remaining = sorted(libs, key=lambda s: order.get(s.root_pom, 10 ** 6))
+    out: list[ServiceInfo] = []
+    while remaining:
+        ready = [s for s in remaining
+                 if not any(o.name != s.name and needs[s.name] & produced[o.name] for o in remaining)]
+        nxt = ready[0] if ready else remaining[0]          # cycle → reactor order
+        out.append(nxt)
+        remaining.remove(nxt)
+    return out
+
+
+def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str]) -> list[PlanStep]:
+    from sbmig.analyze.classifier import is_library_root
+
+    steps: list[PlanStep] = []
+    libs = _order_libraries(profile, [s for s in profile.services if is_library_root(s, profile)])
+    svcs = [s for s in profile.services if not is_library_root(s, profile)]
+    targets = libs + svcs
+    for lib in libs:
+        notes.append(f"msa library root {lib.name} ({_service_dir(lib)}): shared module, migrated before the services "
+                     f"as sub-case {lib.case_type.value} (jakarta / Framework recipes, never the Boot umbrella)")
+    facts_of: dict[str, _Facts] = {}
+    for t in targets:
+        case = t.case_type
+        if t in libs and case in (CaseType.SPRING_BOOT, CaseType.MSA):
+            case = CaseType.SPRING_LEGACY
+        facts_of[t.name] = _Facts(case, _service_libs(profile, t), profile.source.javax_imports)
+        if t in svcs:
+            notes.append(f"msa service {t.name} ({_service_dir(t)}): sub-case {t.case_type.value}, "
+                         f"boot {t.spring_boot_version or '-'}, java {t.java_version or '-'}")
+    no_sources = profile.source.java_files == 0
+    single = cfg.layout.msa_parent_policy == "top-aggregator" and _aggregator_covers(profile, targets)
+    if no_sources:
+        notes.append("msa: no java sources → no OpenRewrite / build-fix steps for jdk21 and spring (pom edits + verify)")
+    elif single:
+        union: list[RecipeRef] = []
+        for t in targets:
+            for r in spring_recipes(facts_of[t.name], cfg, notes, t.name):
+                if not any(x.id == r.id for x in union):
+                    union.append(r)
+        notes.append(f"msa: top-aggregator policy and {profile.root_pom.path if profile.root_pom else 'pom.xml'} "
+                     "aggregates every service/library → one rewrite + loop at the repo root (union of the "
+                     "sub-case recipes) instead of per service")
+        steps += _recipe_phase_steps(_Facts(CaseType.MSA, set(), profile.source.javax_imports), cfg, kb_refs, notes,
+                                     recipes=union, title_case="msa (all services)")
+    else:
+        for t in targets:
+            steps += _recipe_phase_steps(facts_of[t.name], cfg, kb_refs, notes, svc=t.name, target=_service_dir(t))
+    params: dict[str, Any] = {"mode": "msa_pom", "services": [s.name for s in svcs],
+                              "parent_policy": cfg.layout.msa_parent_policy}
+    if libs:
+        params["library_roots"] = [s.root_pom for s in libs]
+    steps.append(PlanStep(
+        id="restructure.msa_pom", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
+        title="MSA: pom-only parent / mandatory / optional edits on each service root",
+        params=params,
+        reason="msa: directory structure is kept; only service poms are aligned to the in-house parent"))
+    notes.append(f"restructure: msa → pom-only edits ({cfg.layout.msa_parent_policy}), no module split")
+    if libs:
+        notes.append("restructure: library roots " + ", ".join(s.root_pom for s in libs) + " get the parent swap + "
+                     "optional bumps + remove_when_present, but no mandatory dependencies (those go to deployables)")
+    s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: every service must package after pom edits",
+                   step_id="restructure.loop")
+    if s:
+        steps.append(s)
+    rp = profile.root_pom
+    if rp is not None and rp.is_aggregator:
+        steps.append(_verify())
+        notes.append(f"verify: root aggregator {rp.path} → one mvn clean package for the whole repo")
+    else:
+        for t in targets:
+            steps.append(_verify(target=_service_dir(t), svc=t.name))
+        notes.append("verify: no root aggregator pom → one mvn clean package per service"
+                     + (" and library root" if libs else ""))
+    return steps
+
+
+def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str]) -> list[PlanStep]:
+    steps: list[PlanStep] = []
+    case = profile.case_type
+    if case == CaseType.MSA:
+        notes.append("msa without discovered services → planned as a single project")
+    libs = {lib.name for lib in profile.libraries}
+    libs_facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports)
+    if profile.source.java_files == 0 and profile.poms:
+        # S3: pom-only aggregator / BOM / parent → pom edits only (parent, mandatory, optional, cleanup) + verify
+        notes.append("no java sources → no OpenRewrite / build-fix steps for jdk21 and spring; restructure is "
+                     "limited to pom edits (no module split, no Application)")
+        steps.append(PlanStep(
+            id="restructure.pom_only", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
+            title="pom-only parent / mandatory / optional edits (no sources)",
+            params={"mode": "msa_pom", "services": [], "parent_policy": cfg.layout.msa_parent_policy,
+                    "pom_only": True},
+            reason="pom-only project: nothing to split; align the root pom(s) to the in-house parent"))
+        s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: the poms must package after the edits",
+                       step_id="restructure.loop")
+        if s:
+            steps.append(s)
+        steps.append(_verify())
+        return steps
+    steps += _recipe_phase_steps(libs_facts, cfg, kb_refs, notes)
+    starter = cfg.layout.starter_by_case.get(libs_facts.case.value, "auto")
+    steps.append(PlanStep(
+        id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
+        title="restructure into module/{comp-jar,boot-jar} with the in-house parent",
+        params={"mode": "layout", "starter": starter},
+        reason=f"non-msa: company layout; boot-jar starter '{starter}' for {libs_facts.case.value}"))
+    notes.append(f"restructure: layout split, starter '{starter}'"
+                 + (f", multi-module policy '{cfg.layout.multi_module_policy}'" if profile.is_multi_module else ""))
+    if libs_facts.case == CaseType.SERVLET_TOMCAT and profile.source.has_web_xml:
+        notes.append("followup: web.xml wiring is not migrated automatically (runtime owners)")
+    if libs_facts.case == CaseType.SPRING_LEGACY and profile.source.xml_bean_configs:
+        notes.append(f"restructure: {len(profile.source.xml_bean_configs)} XML bean config(s) → @ImportResource")
+    s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: the restructured project must package",
+                   step_id="restructure.loop")
+    if s:
+        steps.append(s)
+    steps.append(_verify())
+    return steps
+
+
 def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None) -> MigrationPlan:
     notes: list[str] = []
     steps: list[PlanStep] = []
     case = profile.case_type
     notes.append(f"case {case.value} (confidence {profile.confidence:.2f}): "
                  + ("; ".join(profile.reasons[:2]) if profile.reasons else "no reasons recorded"))
+    if profile.build_tool != "maven":
+        why = profile.warnings[0] if profile.warnings else "no pom.xml"
+        notes.append(f"build tool '{profile.build_tool}' is not supported (only Maven): {why} → empty plan, the run "
+                     "is aborted")
+        for w in profile.warnings[1:]:
+            notes.append(f"warning: {w}")
+        return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=[], notes=notes)
     if not cfg.plan.intermediate_builds:
         notes.append("plan.intermediate_builds=false → no jdk21 build-fix loop (JDK 21 errors are fixed in the spring loop)")
     for key, pc in cfg.loop.phases.items():
         if not pc.enabled:
             notes.append(f"loop.phases.{key}.enabled=false → {key} build-fix loop omitted")
+    if cfg.plan.optional_bump_phase == "spring":
+        if _optional_bump_wanted(cfg):
+            notes.append("optional artifacts: bumped right after spring.rewrite (spring.optional_bump, "
+                         "plan.optional_bump_phase=spring) so jakarta builds of in-house libraries are on the "
+                         "classpath before the first spring build; restructure finds nothing left to bump")
+        else:
+            notes.append("optional artifacts: none configured → no spring.optional_bump step")
+    else:
+        notes.append("optional artifacts: bumped during restructure (plan.optional_bump_phase=restructure)")
     kb_refs = kb_recipes(kb, cfg, notes)
-    libs = {lib.name for lib in profile.libraries}
 
     if case == CaseType.MSA and profile.services:
-        for svc in profile.services:
-            facts = _Facts(svc.case_type, _service_libs(profile, svc), profile.source.javax_imports)
-            notes.append(f"msa service {svc.name} ({_service_dir(svc)}): sub-case {svc.case_type.value}, "
-                         f"boot {svc.spring_boot_version or '-'}, java {svc.java_version or '-'}")
-            steps += _recipe_phase_steps(facts, cfg, kb_refs, notes, svc=svc.name, target=_service_dir(svc))
-        steps.append(PlanStep(
-            id="restructure.msa_pom", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
-            title="MSA: pom-only parent / mandatory / optional edits on each service root",
-            params={"mode": "msa_pom", "services": [s.name for s in profile.services],
-                    "parent_policy": cfg.layout.msa_parent_policy},
-            reason="msa: directory structure is kept; only service poms are aligned to the in-house parent"))
-        notes.append(f"restructure: msa → pom-only edits ({cfg.layout.msa_parent_policy}), no module split")
-        s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: every service must package after pom edits",
-                       step_id="restructure.loop")
-        if s:
-            steps.append(s)
-        rp = profile.root_pom
-        if rp is not None and rp.is_aggregator:
-            steps.append(_verify())
-            notes.append(f"verify: root aggregator {rp.path} → one mvn clean package for the whole repo")
-        else:
-            for svc in profile.services:
-                steps.append(_verify(target=_service_dir(svc), svc=svc.name))
-            notes.append("verify: no root aggregator pom → one mvn clean package per service")
+        steps += _msa_steps(profile, cfg, kb_refs, notes)
     else:
-        if case == CaseType.MSA:
-            notes.append("msa without discovered services → planned as a single project")
-        libs_facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports)
-        steps += _recipe_phase_steps(libs_facts, cfg, kb_refs, notes)
-        starter = cfg.layout.starter_by_case.get(libs_facts.case.value, "auto")
-        steps.append(PlanStep(
-            id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
-            title="restructure into module/{comp-jar,boot-jar} with the in-house parent",
-            params={"mode": "layout", "starter": starter},
-            reason=f"non-msa: company layout; boot-jar starter '{starter}' for {libs_facts.case.value}"))
-        notes.append(f"restructure: layout split, starter '{starter}'"
-                     + (f", multi-module policy '{cfg.layout.multi_module_policy}'" if profile.is_multi_module else ""))
-        if libs_facts.case == CaseType.SERVLET_TOMCAT and profile.source.has_web_xml:
-            notes.append("followup: web.xml wiring is not migrated automatically (runtime owners)")
-        if libs_facts.case == CaseType.SPRING_LEGACY and profile.source.xml_bean_configs:
-            notes.append(f"restructure: {len(profile.source.xml_bean_configs)} XML bean config(s) → @ImportResource")
-        s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: the restructured project must package",
-                       step_id="restructure.loop")
-        if s:
-            steps.append(s)
-        steps.append(_verify())
+        steps += _single_steps(profile, cfg, kb_refs, notes)
 
     pre = pre_handler_reasons(profile, cfg)
     if pre:

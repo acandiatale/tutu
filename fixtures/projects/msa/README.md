@@ -25,3 +25,5 @@ order-service with `java.lang.NoSuchFieldError: … JCTree$JCImport … qualid` 
 Expected migration behaviour: MSA mode → `msa_pom` only (parent / mandatory / optional on each service root pom,
 directory structure untouched); per-service sub-case recipes (order-service: Boot 2 → 4 incl. javax → jakarta and
 lombok floor; user-service: Boot 3 → 4).
+
+Note: lombok is not expected in `optional_bumped` — `UpgradeToJava21` already raises it above the configured 1.18.38 and `artifacts.optional_version_policy: floor` (default) never downgrades.

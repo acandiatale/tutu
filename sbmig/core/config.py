@@ -51,6 +51,9 @@ class ArtifactsConfig(BaseModel):
     mandatory: list[ArtifactSpec] = Field(default_factory=list)   # exactly 2 in production config
     optional: list[ArtifactSpec] = Field(default_factory=list)    # 8 in production config
     remove_when_present: list[str] = Field(default_factory=list)  # "g:a" keys to drop (e.g. old in-house parents' BOMs)
+    # floor: only raise an optional artifact to its configured version (never downgrade a newer as-is/recipe version)
+    # pin  : always set exactly the configured version
+    optional_version_policy: Literal["floor", "pin"] = "floor"
 
 
 class LayoutConfig(BaseModel):

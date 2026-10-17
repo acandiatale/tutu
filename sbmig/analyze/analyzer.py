@@ -1,4 +1,15 @@
-"""`analyze_project(ws, cfg) -> ProjectProfile`: pom graph + source scan + libraries + classification."""
+"""`analyze_project(ws, cfg) -> ProjectProfile`: pom graph + source scan + libraries + classification.
+
+Edge cases (docs/ERROR-HANDLING.md) surface as `profile.warnings` plus `LibraryUsage` entries:
+`system-scope-jars` (E7), `kotlin` / `groovy` / `scala` / `codegen:<plugin artifactId>` (X6), `legacy-encoding` (E1),
+pom-only projects (S3), Gradle / Ant (S4: `warnings[0]` explains, `build_tool != "maven"`), Java ≤ 1.7 levels.
+
+MSA library-root convention (S1): `profile.services` lists the deployables **and** the shared library roots
+(in-repo modules outside every service without spring-boot-maven-plugin / @SpringBootApplication, e.g. `common/`).
+A library root is a `ServiceInfo` with `main_classes == []` and `spring_boot_version is None`, `name` = its
+directory name, `case_type` PURE_JAVA or SPRING_LEGACY (never SPRING_BOOT). Library entries come after the
+deployables; use `sbmig.analyze.is_library_root(svc, profile)` / `library_services(profile)` to tell them apart.
+"""
 from __future__ import annotations
 
 import logging
@@ -9,7 +20,9 @@ from typing import Optional
 from sbmig.core.config import ArtifactSpec, Config
 from sbmig.core.models import GAV, CaseType, PomInfo, ProjectProfile
 
-from .classifier import build_services, classify, msa_deployables, service_roots
+from .classifier import build_library_services, build_services, classify, library_roots, msa_deployables, service_roots
+from .edges import (encoding_findings, java_level_findings, language_findings, normalize_java_version,
+                    system_dep_findings, system_dependencies)
 from .libraries import detect_libraries
 from .pom_parser import WorkspaceView, module_order, parse_poms
 from .source_scanner import scan_sources
@@ -89,29 +102,48 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     source = scan.stats()
     libraries = detect_libraries(poms, scan)
 
-    # build tool
+    # build tool (S4): the explanation must be warnings[0] — the orchestrator aborts on build_tool != "maven"
     build_tool = "maven"
     if not poms:
         if ws.glob("build.gradle") or ws.glob("build.gradle.kts"):
             build_tool = "gradle"
-            warnings.append("Gradle build detected and no pom.xml: only Maven projects are supported")
+            warnings.insert(0, "Gradle build detected and no pom.xml: only Maven projects are supported "
+                               "(convert the build to Maven first)")
+        elif ws.glob("build.xml"):
+            build_tool = "none"
+            warnings.insert(0, "Ant build.xml detected and no pom.xml: only Maven projects are supported "
+                               "(convert the build to Maven first)")
         else:
             build_tool = "none"
-            warnings.append("no pom.xml found (no supported build tool)")
-    if ws.glob("build.xml") and not poms:
-        warnings.append("Ant build.xml detected: only Maven projects are supported")
+            warnings.insert(0, "no pom.xml found (no supported build tool): only Maven projects are supported")
     elif ws.glob("build.xml"):
         warnings.append("Ant build.xml present next to Maven poms: it is ignored")
     if source.java_files == 0:
         warnings.append("no java sources found")
-    if source.kotlin_files:
-        warnings.append(f"{source.kotlin_files} Kotlin file(s) present: not migrated by sbmig")
+        if poms:
+            warnings.append("pom-only project (aggregator / BOM / parent): no OpenRewrite or build-fix steps are "
+                            "planned, only pom edits and the final verify")
+    lang_warn, lang_libs = language_findings(ws, poms)
+    warnings += lang_warn
+    sys_warn, sys_lib = system_dep_findings(system_dependencies(ws, poms)) if poms else ([], None)
+    warnings += sys_warn
+    enc_warn, enc_lib = encoding_findings(ws, poms, [j.path for j in scan.files]) if scan.files else ([], None)
+    warnings += enc_warn
+    warnings += java_level_findings(poms)
+    libraries = libraries + lang_libs + [x for x in (sys_lib, enc_lib) if x is not None]
 
     case, confidence, reasons = classify(poms, source, libraries, scan)
     services = []
     if case == CaseType.MSA:
         deployables, _ = msa_deployables(poms, scan)
-        services = build_services(service_roots(deployables, poms), poms, scan)
+        roots = service_roots(deployables, poms)
+        services = build_services(roots, poms, scan)
+        libs = build_library_services(library_roots(poms, [r.path for r in roots], scan), poms, scan,
+                                      taken=[s.name for s in services])
+        if libs:
+            reasons.append("msa: shared library roots (migrated before the services): "
+                           + ", ".join(f"{s.name} ({s.root_pom})" for s in libs))
+        services += libs
 
     root_pom = by_path.get("pom.xml")
     if root_pom is None:
@@ -119,7 +151,8 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         root_pom = roots[0] if len(roots) == 1 else None
     name = root_pom.artifact_id if root_pom else root.name
 
-    java_version = (root_pom.java_version if root_pom else None) or _pick([p.java_version for p in poms])
+    java_version = normalize_java_version(
+        (root_pom.java_version if root_pom else None) or _pick([p.java_version for p in poms]))
     boot_version = (root_pom.spring_boot_version if root_pom else None) or next(
         (p.spring_boot_version for p in poms if p.spring_boot_version), None)
     spring_version = (root_pom.spring_version if root_pom else None) or next(

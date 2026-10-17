@@ -1,0 +1,14 @@
+# Per-fixture config override, appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# (`--config config/artifacts.local-e2e.yml --config fixtures/projects/boot2-javax-lib-optional/sbmig.e2e.yml`).
+# Lists replace (deep_merge), so this is the complete optional list: still exactly 8 artifacts —
+# org.slf4j:slf4j-api is swapped for the in-house com.company.legacy:legacy-web-lib 2.0.0 (jakarta build).
+artifacts:
+  optional:
+    - { group_id: org.apache.commons, artifact_id: commons-lang3,  version: 3.17.0 }
+    - { group_id: com.google.guava,   artifact_id: guava,          version: 33.4.8-jre }
+    - { group_id: org.projectlombok,  artifact_id: lombok,         version: 1.18.38 }
+    - { group_id: org.mapstruct,      artifact_id: mapstruct,      version: 1.6.3 }
+    - { group_id: com.fasterxml.jackson.core, artifact_id: jackson-databind, version: 2.19.2 }
+    - { group_id: org.apache.commons, artifact_id: commons-collections4, version: 4.5.0 }
+    - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
+    - { group_id: com.company.legacy, artifact_id: legacy-web-lib, version: 2.0.0 }

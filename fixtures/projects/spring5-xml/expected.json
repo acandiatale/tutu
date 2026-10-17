@@ -4,7 +4,28 @@
   "spring_boot_version": null,
   "spring_version": "5.3.31",
   "packaging": "war",
-  "libraries": ["spring-webmvc", "spring-jdbc", "jackson", "servlet", "junit4", "mockito"],
-  "optional_artifacts_in_use": ["com.fasterxml.jackson.core:jackson-databind", "org.slf4j:slf4j-api"],
-  "main_classes": []
+  "libraries": [
+    "spring-webmvc",
+    "spring-jdbc",
+    "jackson",
+    "servlet",
+    "junit4",
+    "mockito"
+  ],
+  "optional_artifacts_in_use": [
+    "com.fasterxml.jackson.core:jackson-databind",
+    "org.slf4j:slf4j-api"
+  ],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 2,
+    "blocked": [],
+    "unresolved_max": 0,
+    "optional_bumped": [
+      "regex:^org\\.slf4j:slf4j-api \\S+→2\\.0\\.17$"
+    ]
+  }
 }

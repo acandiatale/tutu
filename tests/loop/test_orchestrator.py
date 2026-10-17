@@ -118,11 +118,14 @@ def test_failed_loops_still_verify(cfg, ws):
     report = make_orch(cfg, ws, build=build, fixer=FakeFixer(fn=lambda w, c, ctx: write_fix(FOO, "class F { broken 2 }"))).run()
     assert not report.success
     assert build.calls[-1]["label"] == "verify"
-    assert report.unresolved and report.unresolved[0].file == FOO
+    # L6: the LLM budget ran out → the remaining LLM-only cluster is BLOCKED(budget_exhausted), not "unresolved"
+    assert report.unresolved == []
+    assert [b.reason.value for b in report.blocked] == ["budget_exhausted"] and report.blocked[0].files == [FOO]
     assert "llm-budget-exhausted" in report.flags
     assert not report.phases[0].ok
     md = (ws.run_dir / "report.md").read_text()
-    assert "NOT BUILDING" in md and FOO in md and "Escalated clusters" in md
+    assert "NOT BUILDING" in md and FOO in md and "Blocked — needs human / library action" in md
+    assert "(blocked clusters excluded)" not in md          # nothing unresolved left
 
 
 def test_verify_skipped_when_disabled_after_failure(cfg, ws):

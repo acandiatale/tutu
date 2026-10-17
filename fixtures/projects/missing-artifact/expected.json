@@ -1,0 +1,19 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": ["junit4"],
+  "optional_artifacts_in_use": ["org.apache.commons:commons-lang3"],
+  "main_classes": [],
+  "catalog": ["X3"],
+  "requires_absent": ["com.company.nonexistent:ghost-lib:1.2.3"],
+  "expect": {
+    "success": false,
+    "exit_code": 2,
+    "max_llm_calls": 0,
+    "max_duration_s": 240,
+    "blocked": [{"reason": "artifact_not_found", "artifact": "com.company.nonexistent:ghost-lib"}]
+  }
+}

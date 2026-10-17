@@ -5,7 +5,7 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Iterable, Optional
 
-from sbmig.core.models import BuildError, FixAttempt, PhaseResult, RunReport
+from sbmig.core.models import BlockedItem, BuildError, FixAttempt, PhaseResult, RunReport
 
 FLAG_HELP = {
     "test-compile-skipped": "main code builds, but test sources only compile with `-Dmaven.test.skip=true` "
@@ -15,7 +15,57 @@ FLAG_HELP = {
     "dry-run": "dry run: decisions were computed but nothing was applied",
     "aborted": "the run stopped early (see follow-ups for the reason)",
     "mvn-not-found": "Maven was not runnable on this machine",
+    "llm-unavailable": "the LLM failed twice in a row (transport/config); LLM-only clusters are listed as blocked "
+                       "(llm_unavailable) — handlers and recipes still ran",
+    "aborted:parent-not-found": "the configured in-house parent POM is not resolvable — nothing can build until it is "
+                                "(see Blocked)",
+    "enforcer-relaxed": "a maven-enforcer rule that fails on JDK 21 was relaxed in the pom",
+    "enforcer-skipped": "maven-enforcer is skipped (-Denforcer.skip=true) — review the rules",
+    "werror-removed": "-Werror was removed from the compiler configuration (JDK 21 deprecations would be fatal)",
 }
+FLAG_PREFIX_HELP = {
+    "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",
+    "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
+    "aborted:": "the run stopped early (see Blocked / follow-ups)",
+}
+BLOCKED_TITLE = "Blocked — needs human / library action"
+
+
+def flag_help(flag: str) -> Optional[str]:
+    if flag in FLAG_HELP:
+        return FLAG_HELP[flag]
+    return next((h for p, h in FLAG_PREFIX_HELP.items() if flag.startswith(p)), None)
+
+
+def blocked_count_line(items: list[BlockedItem]) -> str:
+    reasons = Counter(b.reason.value for b in items)
+    return f"{len(items)} item(s) — " + ", ".join(f"{k} {v}" for k, v in reasons.most_common())
+
+
+def _blocked_who(b: BlockedItem) -> str:
+    if b.artifact is not None:
+        who = f"`{b.artifact.coordinates}`"
+        return who + (f" (class `{b.owner_class}`)" if b.owner_class else "")
+    if b.owner_class:
+        return f"class `{b.owner_class}`"
+    return "-"
+
+
+def _blocked_types(b: BlockedItem) -> str:
+    if b.required_type or b.found_type:
+        return f"`{b.required_type or '?'}` → `{b.found_type or '?'}`"
+    return "-"
+
+
+def blocked_rows(items: list[BlockedItem]) -> list[str]:
+    rows = ["| reason | artifact / owner class | required → found | files | attempts | suggestion |",
+            "|---|---|---|---|---|---|"]
+    for b in items:
+        files = ", ".join(f"`{f}`" for f in b.files[:5]) + (f" (+{len(b.files) - 5})" if len(b.files) > 5 else "")
+        rows.append(f"| `{b.reason.value}` ({b.phase.value}) | {_cell(_blocked_who(b), 160)} | "
+                    f"{_cell(_blocked_types(b), 200)} | {_cell(files or '-', 400)} | {b.attempts} | "
+                    f"{_cell(b.suggestion, 500)} |")
+    return rows
 
 
 def _cell(text: object, limit: int = 160) -> str:
@@ -92,16 +142,42 @@ def render_markdown(report: RunReport) -> str:
              f"{f' ({u.model})' if u.model else ''} |")
     if r.flags:
         L.append(f"| Flags | {', '.join(f'`{f}`' for f in r.flags)} |")
+    if r.blocked:
+        L.append(f"| **Blocked** | {blocked_count_line(r.blocked)} (see below) |")
     L.append("")
 
-    # ---- unresolved first: it is what the reader acts on
+    # ---- blocked first: deliberately skipped, each row says what a human / the library owner must do
+    if r.blocked:
+        L.append(f"## {BLOCKED_TITLE}")
+        L.append("")
+        L.append(f"{len(r.blocked)} cluster(s) were deliberately left unchanged because the fix is outside this "
+                 "project (a library, a repository, the environment) or the agent gave up on them. The rest of the "
+                 "migration continued.")
+        L.append("")
+        L += blocked_rows(r.blocked)
+        L.append("")
+        for b in r.blocked:
+            if not b.errors:
+                continue
+            L.append(f"<details><summary><code>{b.id}</code> — {len(b.errors)} error(s)</summary>")
+            L.append("")
+            for e in b.errors[:10]:
+                loc = f"{e.file}:{e.line}" if e.file and e.line else (e.file or (e.artifact.coordinates if e.artifact
+                                                                                  else e.module or "-"))
+                L.append(f"- `{_cell(loc, 200)}` {_cell(e.message, 300)}")
+            L.append("")
+            L.append("</details>")
+            L.append("")
+
+    # ---- unresolved: it is what the reader acts on
     L.append("## Unresolved errors")
     L.append("")
     if not r.unresolved:
         L.append("None. " + ("The final build passed." if r.success else "No structured errors were captured; "
                                                                           "check the last build log."))
     else:
-        L.append(f"{len(r.unresolved)} error(s) left after the last build, grouped by file:")
+        L.append(f"{len(r.unresolved)} error(s) left after the last build"
+                 + (" (blocked clusters excluded)" if r.blocked else "") + ", grouped by file:")
         L.append("")
         for key, errs in group_by_file(r.unresolved).items():
             L.append(f"### `{key}`")
@@ -127,7 +203,8 @@ def render_markdown(report: RunReport) -> str:
         L.append("## Flags")
         L.append("")
         for f in r.flags:
-            L.append(f"- `{f}`" + (f": {FLAG_HELP[f]}" if f in FLAG_HELP else ""))
+            h = flag_help(f)
+            L.append(f"- `{f}`" + (f": {h}" if h else ""))
         L.append("")
 
     # ---- what we changed

@@ -4,7 +4,25 @@
   "spring_boot_version": null,
   "spring_version": null,
   "packaging": "jar",
-  "libraries": ["junit4", "jaxb"],
-  "optional_artifacts_in_use": ["org.apache.commons:commons-lang3", "com.google.guava:guava"],
-  "main_classes": []
+  "libraries": [
+    "junit4",
+    "jaxb"
+  ],
+  "optional_artifacts_in_use": [
+    "org.apache.commons:commons-lang3",
+    "com.google.guava:guava"
+  ],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "optional_bumped": [
+      "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$",
+      "regex:^com\\.google\\.guava:guava \\S+→33\\.4\\.8-jre$"
+    ]
+  }
 }

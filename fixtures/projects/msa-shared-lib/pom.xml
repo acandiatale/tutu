@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Pure aggregator: NOT the parent of the modules (each service has its own spring-boot-starter-parent,
+         common is a Boot-free library with its own root pom used by both services). -->
+    <groupId>com.example.shop</groupId>
+    <artifactId>shop-services</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>shop-services</name>
+
+    <modules>
+        <module>common</module>
+        <module>order-service</module>
+        <module>user-service</module>
+    </modules>
+</project>

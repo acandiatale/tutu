@@ -22,6 +22,7 @@ artifacts:
     - { group_id: com.company.lib, artifact_id: lib-messaging, version: 3.0.0 }
     - { group_id: com.company.lib, artifact_id: lib-web,       version: 3.0.0 }
   remove_when_present: []               # e.g. ["com.company.legacy:legacy-bom"]
+  optional_version_policy: floor        # floor = never downgrade (default) | pin = exactly the listed version
 
 build:
   settings_file: null                   # /path/to/nexus-settings.xml

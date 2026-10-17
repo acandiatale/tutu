@@ -1,7 +1,12 @@
 """Orchestrator: intake → analyze → plan → phases (rewrite / handlers / build-fix loop / restructure) → verify → report.
 
 The orchestrator owns the loop. A phase is green only on BUILD SUCCESS, and the final `mvn clean package` runs
-whenever `loop.always_final_verify` is set — even after failures or budget exhaustion.
+whenever `loop.always_final_verify` is set — even after failures, blocked clusters or budget exhaustion.
+
+Blocked clusters (docs/ERROR-HANDLING.md) live in one run-wide `BlockedRegistry` shared by every phase: a cluster
+blocked in the spring phase is skipped by restructure and listed in the report's "Blocked" section; the run only
+stops early (``aborted:*`` flags, exit code 3) when nothing can build at all (no Maven, not a Maven project, the
+configured in-house parent is not resolvable).
 """
 from __future__ import annotations
 
@@ -12,11 +17,12 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import (BuildError, BuildResult, CaseType, ErrorKind, HarvestResult, LLMUsage,
-                               MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile, RunReport,
+from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, ErrorKind, HarvestResult,
+                               LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile, RunReport,
                                StepKind, utcnow)
 from sbmig.core.workspace import Workspace
 
+from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
 from .components import LazyFixer, MissingComponentError, NullKnowledgeBase, lazy_attr
 from .fixloop import BuildFixLoop
@@ -25,6 +31,16 @@ log = logging.getLogger("sbmig.loop")
 
 _MISSING_RECIPE_RE = re.compile(r"(?i)(recipe(?:s|\(s\))? (?:were )?not found|could not find recipe|no recipe(?:s)? (?:found|named)|"
                                 r"unknown recipe|recipe\s+\S+\s+(?:does not exist|not found))")
+_PARENT_UNRESOLVABLE_RE = re.compile(r"(?i)non-resolvable parent|parent pom|failed to read artifact descriptor")
+_DEFAULT_MODE = {StepKind.MSA_POM: "msa_pom", StepKind.RESTRUCTURE: "layout"}
+ALWAYS_PREEMPTIVE = ("strip-utf8-bom", "source-encoding")   # inserted at the front → source-encoding runs first
+NON_FATAL_RESTRUCTURE_MODES = frozenset({"optional_bump"})   # a failure is noted, the phase continues
+
+
+class _RunAborted(Exception):
+    """Internal: stop the run (no further phases, no verify) — the report is still written."""
+
+
 _PHASE_ORDER = [Phase.INTAKE, Phase.ANALYZE, Phase.PLAN, Phase.JDK21, Phase.SPRING, Phase.RESTRUCTURE,
                 Phase.VERIFY, Phase.REPORT]
 
@@ -34,7 +50,8 @@ class Orchestrator:
                  planner: Optional[Callable] = None, pre_handlers: Optional[Callable] = None,
                  restructurer: Any = None, rewrite_runner: Any = None, build_runner: Any = None,
                  triager: Any = None, handlers: Any = None, fixer: Any = None, kb: Any = None, llm: Any = None,
-                 report_writer: Optional[Callable] = None, clock: Callable[[], float] = time.monotonic):
+                 report_writer: Optional[Callable] = None, clock: Callable[[], float] = time.monotonic,
+                 locator: Any = None, effective_capture: Optional[Callable] = None):
         self.cfg = cfg
         self.ws = ws
         self.clock = clock
@@ -64,6 +81,12 @@ class Orchestrator:
         self._pre_ids: list[str] = []
         self._pending_notes: list[str] = []
         self._last_spring_rewrite = -1
+        self.blocked = BlockedRegistry()            # run-wide: shared by every BuildFixLoop of this run
+        # a custom build runner means we are not driving the real Maven → no classpath attribution / effective-pom
+        # capture by default (they would spawn mvn); pass `locator` / `effective_capture` explicitly to enable them
+        self._real_maven = build_runner is None
+        self._locator = locator
+        self._effective_capture = effective_capture
 
     # ------------------------------------------------------------------ lazy collaborators
     @property
@@ -160,6 +183,8 @@ class Orchestrator:
             report.flags.append("dry-run")
         try:
             self._run(report, stop_after, dry_run)
+        except _RunAborted:
+            pass
         except MissingComponentError as e:
             log.error("%s", e)
             self._abort(report, f"missing component: {e}")
@@ -192,7 +217,14 @@ class Orchestrator:
         # 1. intake ------------------------------------------------------------
         t = self.clock()
         self.ws.git_init()
+        setter = getattr(self.ws, "set_encoding_candidates", None)
+        if callable(setter):
+            setter(list(self.cfg.build.encoding_candidates))
         self._preflight(report)
+        if "mvn-not-found" in report.flags:
+            self._abort(report, f"'{self.cfg.build.mvn}' is not runnable (install Maven or set build.mvn)")
+            return
+        self._capture_effective(report)
         self._timed("intake", t)
         if self._stop(stop_after, Phase.INTAKE):
             return
@@ -235,7 +267,8 @@ class Orchestrator:
         # 4. phases ------------------------------------------------------------
         self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.handlers, self.fixer,
                                  self.kb, self._rewrite_runner_or_none(), profile, plan_notes=plan.notes,
-                                 budget=self.budget, dry_run=dry_run)
+                                 budget=self.budget, dry_run=dry_run, blocked=self.blocked,
+                                 locator=self._resolve_locator())
         steps = list(plan.steps)
         if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD for s in steps):
             steps.append(PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY,
@@ -263,7 +296,11 @@ class Orchestrator:
             report.phases.append(pr)
             self.ws.journal({"event": "phase_end", "phase": phase.value, "ok": pr.ok, "build_ok": pr.build_ok,
                              "iterations": pr.iterations, "attempts": len(pr.attempts),
-                             "remaining_errors": len(pr.remaining_errors)})
+                             "remaining_errors": len(pr.remaining_errors), "blocked": [b.id for b in pr.blocked]})
+            if self.loop is not None and self.loop.aborted:
+                self.ws.journal({"event": "run_aborted", "phase": phase.value, "reason": self.loop.aborted})
+                self._timed(phase.value, t)
+                raise _RunAborted(self.loop.aborted)
             if not pr.ok and phase != Phase.VERIFY:
                 self._phase_failed = True
             if phase != Phase.VERIFY and not pr.skipped:
@@ -279,6 +316,33 @@ class Orchestrator:
         except MissingComponentError as e:
             log.warning("%s", e)
             return None
+
+    def _resolve_locator(self) -> Any:
+        if self._locator is not None:
+            return self._locator or None
+        return default_locator() if self._real_maven else None
+
+    def _capture_effective(self, report: RunReport) -> None:
+        """Intake: capture the as-is effective dependencyManagement (before any change) for later version carry-over."""
+        fn = self._effective_capture
+        if fn is None:
+            if not self._real_maven:
+                self.ws.journal({"event": "effective_depmgmt", "skipped": "custom build runner"})
+                return
+            try:
+                fn = lazy_attr("sbmig.build.effective", "capture_effective_depmgmt", "G1 (build)")
+            except MissingComponentError as e:
+                self.ws.journal({"event": "effective_depmgmt", "skipped": str(e)})
+                return
+        try:
+            path = fn(self.ws, self.cfg)
+        except Exception as e:
+            log.warning("effective dependencyManagement capture failed: %s", e)
+            self.ws.journal({"event": "effective_depmgmt", "ok": False, "error": f"{type(e).__name__}: {e}"})
+            return
+        self.ws.journal({"event": "effective_depmgmt", "ok": path is not None, "path": str(path) if path else None})
+        if path is not None:
+            report.outputs["effective_depmgmt"] = str(path)
 
     # ------------------------------------------------------------------ preflight
     def _preflight(self, report: RunReport) -> None:
@@ -333,19 +397,29 @@ class Orchestrator:
                 pr.ok = ok
             elif step.kind in (StepKind.RESTRUCTURE, StepKind.MSA_POM):
                 ok = self._step_restructure(pr, step)
-                if not ok:
+                if not ok and self._step_mode(step) in NON_FATAL_RESTRUCTURE_MODES:
+                    pr.notes.append(f"{step.id}: failed — continuing with the rest of the {step.phase.value} phase")
+                elif not ok:
                     aborted = True
                     pr.ok = False
             elif step.kind == StepKind.BUILD:
                 ok = self._step_verify(pr, step)
             self.ws.journal({"event": "step_end", "step": step.id, "ok": bool(ok)})
+            if self.loop is not None and self.loop.aborted:
+                pr.ok = False
+                break
         if pr.phase == Phase.VERIFY:
             pr.ok = pr.build_ok = bool(self._verify_results) and all(r.ok for r in self._verify_results)
         elif not loop_ran and pr.ok:
             pr.build_ok = False
 
     def _maybe_pre_handlers(self, step: PlanStep, idx: int) -> None:
-        ids = getattr(self, "_pre_ids", [])
+        ids = list(getattr(self, "_pre_ids", []))
+        # legacy encodings / BOMs: on JDK 21 `unmappable character` is only a WARNING (the build passes and Korean
+        # literals silently become U+FFFD) → always run these idempotent whole-project handlers before the first build
+        for hid in ALWAYS_PREEMPTIVE:
+            if hid not in ids and self.handlers is not None and self.handlers.get(hid) is not None:
+                ids.insert(0, hid)
         if not ids:
             return
         jdk_ids, spring_ids = [], []
@@ -394,6 +468,13 @@ class Orchestrator:
                 if self.ws.is_dirty():
                     self.ws.discard_uncommitted()
                 continue
+            for f in list(getattr(h, "flags", None) or []):
+                self._flag(str(f))
+            for n in list(getattr(h, "notes", None) or []):
+                self._pending_notes.append(f"handler {hid}: {n}")
+                if self.report is not None and str(n).lower().startswith(("install", "follow")) \
+                        and n not in self.report.manual_followups:
+                    self.report.manual_followups.append(str(n))
             if changes:
                 done.append(hid)
                 files += [c.path for c in changes]
@@ -455,6 +536,7 @@ class Orchestrator:
                          "error": res.error, "log": res.log_path, "dry_run": self._dry_run})
         if not res.ok:
             err = res.error or "OpenRewrite run failed"
+            self._check_parent_in_rewrite(pr, step, err)
             if _MISSING_RECIPE_RE.search(err):
                 pr.notes.append(f"{step.id}: recipe id not found — {err} (programming/config error, phase aborted)")
                 return None
@@ -463,6 +545,26 @@ class Orchestrator:
             pr.remaining_errors.append(BuildError(kind=ErrorKind.REWRITE, message=err[:500], raw=err,
                                                   module=step.target))
         return True
+
+    def _check_parent_in_rewrite(self, pr: PhaseResult, step: PlanStep, err: str) -> None:
+        """OpenRewrite failed because the configured in-house parent does not resolve → abort like the build loop."""
+        parent = self.cfg.artifacts.parent
+        keys = [parent.key, *parent.aliases]
+        if self.loop is None or not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
+            return
+        key = next(k for k in keys if k in err)
+        m = re.search(re.escape(key) + r":(?:pom:)?([\w.\-]+)", err)
+        gav = GAV.parse(key + (f":{m.group(1)}" if m else (f":{parent.version}" if parent.version else "")))
+        e = BuildError(kind=ErrorKind.PARENT_RESOLUTION, message=err.splitlines()[0][:500], raw=err[:2000],
+                       artifact=gav, signature=f"parent_resolution|{gav.coordinates}", module=step.target)
+        br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
+        self.loop._parent_abort(pr, step.phase, br, 0)   # noqa: SLF001 - same package
+        self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
+
+    def _merge_blocked(self, pr: PhaseResult, items: list[BlockedItem]) -> None:
+        for it in items:
+            if all(b.id != it.id for b in pr.blocked):
+                pr.blocked.append(it)
 
     def _step_loop(self, pr: PhaseResult, step: PlanStep) -> bool:
         self._flush_notes(pr)
@@ -485,18 +587,19 @@ class Orchestrator:
             + res.remaining_errors
         pr.build_ok = res.build_ok
         pr.notes += [f"{step.id}: {n}" for n in res.notes]
+        self._merge_blocked(pr, res.blocked)
         return res.ok
 
     def _step_restructure(self, pr: PhaseResult, step: PlanStep) -> bool:
         self._flush_notes(pr)
         assert self.profile is not None and self.report is not None
-        mode = "msa_pom" if step.kind == StepKind.MSA_POM else step.params.get("mode", "layout")
+        mode = self._step_mode(step)
         if self._dry_run:
             pr.notes.append(f"{step.id}: dry-run → restructure ({mode}) not applied")
             return True
         pre = self.ws.head()
         try:
-            res = self.restructurer.apply(self.ws, self.profile, self.cfg, mode=mode)
+            res = self._call_restructurer(mode, dict(step.params))
         except MissingComponentError:
             raise
         except Exception as e:
@@ -522,6 +625,23 @@ class Orchestrator:
                             "the restructure phase (verify still runs)")
         return res.ok
 
+    @staticmethod
+    def _step_mode(step: PlanStep) -> str:
+        return str(step.params.get("mode") or _DEFAULT_MODE.get(step.kind, "layout"))
+
+    def _call_restructurer(self, mode: str, params: dict) -> Any:
+        assert self.profile is not None
+        r = self.restructurer
+        try:
+            import inspect
+            sig = inspect.signature(r.apply)
+            takes_params = "params" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
+        except (TypeError, ValueError):  # pragma: no cover - builtins / mocks
+            takes_params = True
+        if takes_params:
+            return r.apply(self.ws, self.profile, self.cfg, mode=mode, params=params)
+        return r.apply(self.ws, self.profile, self.cfg, mode=mode)
+
     def _step_verify(self, pr: PhaseResult, step: PlanStep) -> bool:
         self._flush_notes(pr)
         if self._dry_run:
@@ -532,8 +652,11 @@ class Orchestrator:
             return False
         skip_tests = bool(self.loop and self.loop.test_compile_skipped)
         label = "verify" + (f"-{step.params['service']}" if step.params.get("service") else "")
-        res = self.build_runner.run(step.build_goal or "clean package", module=step.target, label=label,
-                                    skip_test_compile=skip_tests)
+        from .fixloop import build_target_args
+        module, extra = build_target_args(self.profile, step.target)
+        kw: dict[str, Any] = {"extra_args": extra} if extra else {}
+        res = self.build_runner.run(step.build_goal or "clean package", module=module, label=label,
+                                    skip_test_compile=skip_tests, **kw)
         self._verify_results.append(res)
         assert self.report is not None
         self.report.final_build = res
@@ -605,6 +728,27 @@ class Orchestrator:
             self.report.flags.append(flag)
 
     # ------------------------------------------------------------------ finalize
+    def _finalize_blocked(self, report: RunReport, unresolved: list[BuildError]) -> None:
+        """RunReport.blocked = every item of the run (dedupe by id). After a green final build, items whose errors no
+        longer show up anywhere (e.g. fixed by the optional bump / restructure) are dropped — unless they belong to
+        test sources that only build with -Dmaven.test.skip=true."""
+        items: list[BlockedItem] = []
+        for it in [*self.blocked.items(), *(b for pr in report.phases for b in pr.blocked)]:
+            if all(x.id != it.id for x in items):
+                items.append(it)
+        if report.success:
+            still = {e.signature for e in unresolved}
+            kept: list[BlockedItem] = []
+            for it in items:
+                tests_only = bool(it.errors) and all(e.kind == ErrorKind.TEST_COMPILE for e in it.errors)
+                if (tests_only and "test-compile-skipped" in report.flags) or (set(it.signatures) & still):
+                    kept.append(it)
+                else:
+                    self.ws.journal({"event": "blocked_resolved", "id": it.id, "reason": it.reason.value,
+                                     "note": "not present in the green final build"})
+            items = kept
+        report.blocked = items
+
     def _finalize(self, report: RunReport) -> None:
         report.finished_at = utcnow()
         usage = LLMUsage()
@@ -636,7 +780,8 @@ class Orchestrator:
             for pr in report.phases:
                 if BuildFixLoop.test_compile_skipped_in(pr):
                     unresolved += [e for e in pr.remaining_errors if e not in unresolved]
-        report.unresolved = unresolved
+        self._finalize_blocked(report, unresolved)
+        report.unresolved = [e for e in unresolved if not self.blocked.is_blocked_error(e)]
         out = report.outputs
         out["run_dir"] = str(self.ws.run_dir)
         out["project_dir"] = str(self.ws.root)
@@ -670,5 +815,6 @@ class Orchestrator:
             log.exception("report writing failed")
             report.flags.append(f"report-failed: {e}")
         self.ws.journal({"event": "report", "success": report.success, "flags": report.flags,
-                         "unresolved": len(report.unresolved), "llm_calls": report.llm_usage.calls,
+                         "unresolved": len(report.unresolved), "blocked": len(report.blocked),
+                         "llm_calls": report.llm_usage.calls,
                          "outputs": out})

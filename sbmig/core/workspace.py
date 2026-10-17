@@ -10,6 +10,7 @@ Layout of one run:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -23,9 +24,103 @@ from typing import Any, Optional
 
 from pydantic import BaseModel
 
+log = logging.getLogger("sbmig.core.workspace")
+
+DEFAULT_ENCODING_CANDIDATES: tuple[str, ...] = ("utf-8", "cp949", "euc-kr", "shift_jis", "latin-1")
+_UTF8_BOM = b"\xef\xbb\xbf"
+_ZIP_UTF8_FLAG = 0x800
+
+# (resolved path) -> (mtime_ns, size, candidates, encoding)
+_ENCODING_CACHE: dict[str, tuple[int, int, tuple[str, ...], str]] = {}
+
 
 class GitError(RuntimeError):
     pass
+
+
+def _norm_encoding(name: str) -> str:
+    import codecs
+    try:
+        return codecs.lookup(name).name
+    except LookupError:
+        return name.lower()
+
+
+def _sniff_bytes(data: bytes, candidates: tuple[str, ...]) -> str:
+    if data.startswith(_UTF8_BOM):
+        return "utf-8-sig"
+    for enc in candidates:
+        try:
+            data.decode(enc)                 # strict
+        except (UnicodeDecodeError, LookupError):
+            continue
+        return enc
+    return "utf-8"                           # nothing decodes strictly → utf-8 (read with errors="replace")
+
+
+def detect_encoding(path: str | Path, candidates: Optional[list[str] | tuple[str, ...]] = None) -> str:
+    """Encoding of a text file: UTF-8 BOM → "utf-8-sig"; else the first candidate that decodes the whole file
+    strictly (default utf-8 → cp949 → euc-kr → shift_jis → latin-1). Cached per path + mtime + size.
+    Pure ASCII / empty / missing files → "utf-8"."""
+    cands = tuple(candidates) if candidates else DEFAULT_ENCODING_CANDIDATES
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return "utf-8"
+    key = str(p.resolve())
+    hit = _ENCODING_CACHE.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size and hit[2] == cands:
+        return hit[3]
+    try:
+        data = p.read_bytes()
+    except OSError:
+        return "utf-8"
+    enc = _sniff_bytes(data, cands)
+    _ENCODING_CACHE[key] = (st.st_mtime_ns, st.st_size, cands, enc)
+    return enc
+
+
+def _remember_encoding(p: Path, enc: str, cands: tuple[str, ...]) -> None:
+    try:
+        st = p.stat()
+    except OSError:
+        return
+    _ENCODING_CACHE[str(p.resolve())] = (st.st_mtime_ns, st.st_size, cands, enc)
+
+
+def _java_unicode_escape(text: str, enc: str) -> str:
+    """Replace characters the target encoding cannot represent by Java \\uXXXX escapes (valid anywhere in a
+    .java source, including comments and string literals)."""
+    out: list[str] = []
+    for ch in text:
+        try:
+            ch.encode(enc)
+            out.append(ch)
+        except UnicodeEncodeError:
+            b = ch.encode("utf-16-be")
+            out.extend(f"\\u{b[i]:02x}{b[i + 1]:02x}" for i in range(0, len(b), 2))
+    return "".join(out)
+
+
+def fix_zip_name(info: zipfile.ZipInfo) -> str:
+    """Entry name with legacy (non-UTF-8-flagged) names re-decoded: Python decodes them as cp437, Korean Windows
+    zip tools wrote cp949 (sometimes raw UTF-8 without the flag). Falls back to the name as decoded."""
+    name = info.filename
+    if info.flag_bits & _ZIP_UTF8_FLAG:
+        return name
+    try:
+        raw = name.encode("cp437")
+    except UnicodeEncodeError:
+        return name
+    if raw.isascii():
+        return name
+    for enc in ("utf-8", "cp949"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return name
 
 
 def new_run_id(prefix: str = "run") -> str:
@@ -34,11 +129,22 @@ def new_run_id(prefix: str = "run") -> str:
 
 def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
     dest = dest.resolve()
+    plan: list[tuple[zipfile.ZipInfo, Path]] = []
     for member in zf.infolist():
-        target = (dest / member.filename).resolve()
+        name = fix_zip_name(member)
+        if name != member.filename:
+            log.info("zip entry name re-decoded: %r -> %r", member.filename, name)
+        target = (dest / name).resolve()
         if not str(target).startswith(str(dest) + os.sep) and target != dest:
-            raise ValueError(f"zip slip blocked: {member.filename}")
-    zf.extractall(dest)
+            raise ValueError(f"zip slip blocked: {name}")
+        plan.append((member, target))
+    for member, target in plan:
+        if member.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zf.open(member) as src, open(target, "wb") as dst:
+            shutil.copyfileobj(src, dst)
 
 
 def _detect_project_root(extracted: Path) -> Path:
@@ -62,6 +168,8 @@ class Workspace:
         self._log_counter = 0
         self.git_branch = f"sbmig/{run_id}"
         self._git_ready = False
+        self.encoding_candidates: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES
+        self._read_encodings: dict[str, str] = {}      # resolved path → encoding it was last read/written with
 
     # ------------------------------------------------------------------ factory
     @classmethod
@@ -108,13 +216,54 @@ class Workspace:
     def exists(self, rel: str | Path) -> bool:
         return self.abs(rel).exists()
 
-    def read(self, rel: str | Path, encoding: str = "utf-8") -> str:
-        return self.abs(rel).read_text(encoding=encoding, errors="replace")
+    # -- encodings (catalog E1): every file is read and written back in its own detected encoding
+    def set_encoding_candidates(self, candidates: Optional[list[str] | tuple[str, ...]]) -> None:
+        """Candidate encodings tried in order (cfg.build.encoding_candidates). Empty/None → defaults."""
+        self.encoding_candidates = tuple(candidates) if candidates else DEFAULT_ENCODING_CANDIDATES
 
-    def write(self, rel: str | Path, text: str, encoding: str = "utf-8") -> None:
+    def encoding_of(self, rel: str | Path) -> str:
+        """Detected encoding of an existing file ("utf-8-sig" when it has a UTF-8 BOM); "utf-8" when missing."""
+        return detect_encoding(self.abs(rel), self.encoding_candidates)
+
+    def read(self, rel: str | Path, encoding: Optional[str] = None) -> str:
+        """Text of a file decoded with `encoding` (None → detected). Newlines are returned untouched (\\r\\n kept)."""
+        p = self.abs(rel)
+        enc = encoding or detect_encoding(p, self.encoding_candidates)
+        with open(p, "r", encoding=enc, errors="replace", newline="") as fh:
+            text = fh.read()
+        self._read_encodings[str(p.resolve())] = enc
+        return text
+
+    def write(self, rel: str | Path, text: str, encoding: Optional[str] = None) -> None:
+        """Write `text` (newlines untouched). encoding None → the encoding the file was read with / is detected as
+        (UTF-8 BOM kept); new files → utf-8. Characters the legacy encoding cannot hold become \\uXXXX escapes in
+        .java files; other files are then re-encoded as UTF-8 (logged)."""
         p = self.abs(rel)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding=encoding)
+        key = str(p.resolve())
+        enc = encoding
+        if enc is None:
+            if p.is_file():
+                enc = detect_encoding(p, self.encoding_candidates)
+                if enc == "utf-8" and self._read_encodings.get(key) not in (None, "utf-8"):
+                    enc = self._read_encodings[key]       # e.g. ascii-only now, but read as cp949 before
+            else:
+                enc = self._read_encodings.get(key, "utf-8")
+        try:
+            data = text.encode(enc)
+        except UnicodeEncodeError:
+            if p.suffix == ".java":
+                data = _java_unicode_escape(text, enc).encode(enc)
+            else:
+                log.warning("%s: text not representable in %s, writing UTF-8 instead", self.rel(p), enc)
+                enc = "utf-8"
+                data = text.encode(enc)
+        except LookupError:
+            enc = "utf-8"
+            data = text.encode(enc)
+        p.write_bytes(data)
+        self._read_encodings[key] = enc
+        _remember_encoding(p, enc, self.encoding_candidates)
 
     def delete(self, rel: str | Path) -> None:
         p = self.abs(rel)

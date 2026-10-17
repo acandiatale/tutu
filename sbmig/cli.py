@@ -50,6 +50,20 @@ def _view_workspace(input_path: Path, out: Optional[Path] = None, prefix: str = 
     return Workspace.from_input(input_path, base, run_id=run_id)
 
 
+EXIT_SUCCESS = 0          # final `mvn clean package` passed and nothing is blocked
+EXIT_INCOMPLETE = 2       # finished, but with blocked and/or unresolved errors (see report.md)
+EXIT_ABORTED = 3          # aborted: no Maven / not a Maven project / configured parent not resolvable / internal error
+
+
+def run_exit_code(report) -> int:
+    flags = list(getattr(report, "flags", []) or [])
+    if any(f == "aborted" or f.startswith("aborted:") or f == "mvn-not-found" for f in flags):
+        return EXIT_ABORTED
+    if report.success and not getattr(report, "blocked", None):
+        return EXIT_SUCCESS
+    return EXIT_INCOMPLETE
+
+
 def _fail(msg: str, code: int = 1) -> None:
     typer.secho(msg, fg=typer.colors.RED, err=True)
     raise typer.Exit(code)
@@ -72,7 +86,11 @@ def run(
     repo_root: Optional[Path] = typer.Option(None, "--repo-root", help="sbmig repo root (kb/, knowledge/)"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Migrate a project end to end. Exit code 0 = final `mvn clean package` passed, 2 = it did not."""
+    """Migrate a project end to end.
+
+    Exit code 0 = final `mvn clean package` passed and nothing is blocked; 2 = finished with blocked and/or
+    unresolved errors (see report.md "Blocked" / "Unresolved errors"); 3 = aborted (no Maven, not a Maven project,
+    configured parent POM not resolvable, internal error)."""
     if verbose:
         setup_logging(True)
     from sbmig.core.models import Phase
@@ -102,7 +120,7 @@ def run(
     orch = Orchestrator(cfg, ws, kb=NullKnowledgeBase() if no_kb else None)
     report = orch.run(stop_after=phase, dry_run=dry_run)
     console_summary(report)
-    raise typer.Exit(0 if report.success else 2)
+    raise typer.Exit(run_exit_code(report))
 
 
 # --------------------------------------------------------------------------- analyze / plan

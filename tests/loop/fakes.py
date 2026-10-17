@@ -35,6 +35,7 @@ class FakeBuildRunner:
 
     def run(self, goal, *, module=None, extra_args=(), label="", skip_test_compile=False) -> BuildResult:
         call = {"goal": goal, "module": module, "label": label, "skip_test_compile": skip_test_compile,
+                "extra_args": list(extra_args),
                 "head": self.ws.head() if (self.ws.root / ".git").exists() else None}
         self.calls.append(call)
         if self.fn is not None:
@@ -153,12 +154,17 @@ class FakeRewriteRunner:
 
 
 class FakeRestructurer:
-    def __init__(self, ok: bool = True):
+    def __init__(self, ok: bool = True, fail_modes: tuple[str, ...] = ()):
         self.ok = ok
+        self.fail_modes = fail_modes
         self.calls: list[str] = []
+        self.params: list[dict] = []
 
-    def apply(self, ws, profile, cfg, *, mode):
+    def apply(self, ws, profile, cfg, *, mode, params=None):
         self.calls.append(mode)
+        self.params.append(dict(params or {}))
+        if mode in self.fail_modes:
+            return RestructureResult(ok=False, error=f"{mode} failed", notes=[f"{mode} attempted"])
         if self.ok:
             ws.write("module/boot-jar/pom.xml", "<project/>\n")
         return RestructureResult(ok=self.ok, changed_files=["pom.xml"], generated_files=["module/boot-jar/pom.xml"],

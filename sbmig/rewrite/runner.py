@@ -127,9 +127,12 @@ class OpenRewriteRunner:
         return needed
 
     # ------------------------------------------------------------------ command
-    def env(self) -> dict[str, str]:
+    def env(self, jvm_args: Sequence[str] | None = None) -> dict[str, str]:
+        """mvn env with MAVEN_OPTS += `jvm_args` (default cfg.openrewrite.jvm_args; the OOM retry passes
+        cfg.openrewrite.oom_retry_jvm_args)."""
         env = mvn_env(self.cfg)
-        opts = " ".join(x for x in [env.get("MAVEN_OPTS", "").strip(), *self.cfg.openrewrite.jvm_args] if x)
+        args = list(self.cfg.openrewrite.jvm_args if jvm_args is None else jvm_args)
+        opts = " ".join(x for x in [env.get("MAVEN_OPTS", "").strip(), *args] if x)
         if opts:
             env["MAVEN_OPTS"] = opts
         return env
@@ -247,24 +250,60 @@ class OpenRewriteRunner:
             dry_run: bool = False, label: str = "", fork: bool | None = None) -> RewriteResult:
         res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
                              label=label, fork=fork)
+        jvm_args: list[str] | None = None
+        # catalog E8: the recipe run itself ran out of heap → one retry with the bigger oom_retry_jvm_args
+        if not res.ok and self._is_oom(res):
+            jvm_args = list(self.cfg.openrewrite.oom_retry_jvm_args)
+            res = self._oom_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
+                                  dry_run=dry_run, label=label, fork=fork, jvm_args=jvm_args)
         # rewrite:run forks the `compile` lifecycle first; on a project that does not compile the recipes never run.
         # Fall back to runNoFork (parses sources against the resolved dependency classpath instead).
         if not res.ok and res.forked and fork is not False and res.error and "compile" in res.error.lower():
             log.info("rewrite: forked run failed in compile → retrying with runNoFork")
             retry = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
-                                   label=(label or "run") + "-nofork", fork=False)
+                                   label=(label or "run") + "-nofork", fork=False, jvm_args=jvm_args)
             retry.error = retry.error if not retry.ok else None
+            if not retry.ok and jvm_args is not None and "oom-retry" not in (retry.error or ""):
+                retry.error = f"oom-retry: {retry.error}"
             return retry
         return res
 
+    # ------------------------------------------------------------------ OOM (catalog E8)
+    _OOM_RE = re.compile(r"OutOfMemoryError|GC overhead limit exceeded")
+
+    def _is_oom(self, res: RewriteResult) -> bool:
+        text = res.error or ""
+        if res.log_path:
+            try:
+                text += "\n" + Path(res.log_path).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+        return bool(self._OOM_RE.search(text))
+
+    def _oom_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
+                   module: str | None, dry_run: bool, label: str, fork: bool | None,
+                   jvm_args: list[str]) -> RewriteResult:
+        log.warning("rewrite: OutOfMemoryError → retrying once with MAVEN_OPTS %s", " ".join(jvm_args))
+        self.ws.journal({"event": "rewrite_oom_retry", "recipes": first.recipes, "module": module,
+                         "first_log": first.log_path, "jvm_args": jvm_args})
+        retry = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
+                               label=(label or ("dry" if dry_run else "run")) + "-oom", fork=fork, jvm_args=jvm_args)
+        if not retry.ok:
+            still = " (still out of memory)" if self._is_oom(retry) else ""
+            retry.error = f"oom-retry{still}: {retry.error or 'rewrite run failed'}"
+        self.ws.journal({"event": "rewrite_oom_retry_result", "ok": retry.ok, "log": retry.log_path,
+                         "error": retry.error})
+        return retry
+
     def _run_once(self, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path] = (), module: str | None = None,
-                  dry_run: bool = False, label: str = "", fork: bool | None = None) -> RewriteResult:
+                  dry_run: bool = False, label: str = "", fork: bool | None = None,
+                  jvm_args: Sequence[str] | None = None) -> RewriteResult:
         ids = [r.id for r in recipes]
         if not recipes:
             return RewriteResult(ok=True, recipes=[], dry_run=dry_run)
         config_path, text = self.compose(recipes, extra_recipe_files)      # may raise RecipeCompositionError
         log_path = self.ws.new_log_path(f"rewrite-{label or ('dry' if dry_run else 'run')}")
-        env = self.env()
+        env = self.env(jvm_args)
         cwd = self.ws.abs(module) if module else self.ws.root
         try:
             versions = resolve_recipe_artifact_versions(

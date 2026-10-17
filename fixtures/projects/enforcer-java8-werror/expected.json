@@ -1,0 +1,19 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": ["junit4"],
+  "optional_artifacts_in_use": ["org.apache.commons:commons-lang3"],
+  "main_classes": [],
+  "catalog": ["E4", "E5"],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": ["regex:enforcer-(relaxed|skipped)", "werror-removed"]
+  }
+}
