@@ -1,0 +1,6 @@
+# SYNTHETIC: plugin version resolution / prefix failures.
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[ERROR] Error resolving version for plugin 'com.acme.build:acme-codegen-maven-plugin' from the repositories [local (/home/ci/.m2/repository), nexus (https://nexus.acme.local/repository/public/)]: Plugin not found in any plugin repository -> [Help 1]

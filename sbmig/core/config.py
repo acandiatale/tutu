@@ -99,7 +99,7 @@ class RecipeSetConfig(BaseModel):
 
 class OpenRewriteConfig(BaseModel):
     plugin_version: str = "6.46.1"
-    recipe_bom_version: str = "3.38.0"
+    recipe_bom_version: str = "3.37.0"   # 3.38.0 references unpublished artifacts (2026-10)
     recipe_artifacts: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.recipe:rewrite-migrate-java",
         "org.openrewrite.recipe:rewrite-spring",
@@ -126,6 +126,9 @@ class BuildConfig(BaseModel):
     allow_skip_test_compile_fallback: bool = True       # -Dmaven.test.skip=true as last resort (flagged in report)
     timeout_minutes: int = 30
     env: dict[str, str] = Field(default_factory=dict)
+    # package prefixes treated as *library* code in error signatures (project-owned FQCNs are masked as '*').
+    # In-house library namespaces (parent/mandatory/optional group ids) are added automatically.
+    external_package_prefixes: list[str] = Field(default_factory=list)
 
 
 class PhaseLoopConfig(BaseModel):

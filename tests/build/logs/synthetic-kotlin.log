@@ -1,0 +1,8 @@
+# SYNTHETIC: kotlin-maven-plugin diagnostics (old and new formats).
+[INFO] --- kotlin-maven-plugin:1.9.24:compile (compile) @ kt-svc ---
+[ERROR] e: /work/proj/src/main/kotlin/com/acme/Svc.kt: (12, 5): Unresolved reference: WebSecurityConfigurerAdapter
+[ERROR] e: file:///work/proj/src/main/kotlin/com/acme/Repo.kt:7:20 Unresolved reference 'javax'.
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.jetbrains.kotlin:kotlin-maven-plugin:1.9.24:compile (compile) on project kt-svc: Compilation failure: Compilation failure: 
+[ERROR] /work/proj/src/main/kotlin/com/acme/Svc.kt:[12,5] Unresolved reference: WebSecurityConfigurerAdapter
+[ERROR] -> [Help 1]

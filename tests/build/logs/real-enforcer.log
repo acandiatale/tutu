@@ -1,0 +1,27 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] ---------------------< com.example:enforcer-fail >----------------------
+[INFO] Building enforcer-fail 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- enforcer:3.5.0:enforce (enforce) @ enforcer-fail ---
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  0.857 s
+[INFO] Finished at: 2026-10-18T00:00:00+09:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-enforcer-plugin:3.5.0:enforce (enforce) on project enforcer-fail: 
+[ERROR] Rule 0: org.apache.maven.enforcer.rules.version.RequireJavaVersion failed with message:
+[ERROR] Detected JDK version 21.0.1 (JAVA_HOME=/opt/jdk21) is not in the allowed range [99,).
+[ERROR] Rule 1: org.apache.maven.enforcer.rules.dependency.BannedDependencies failed with message:
+[ERROR] com.example:enforcer-fail:jar:1.0.0
+[ERROR]    junit:junit:jar:4.13.2 <--- banned via the exclude/include list
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoExecutionException

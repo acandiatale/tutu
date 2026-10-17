@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<web-app xmlns="http://xmlns.jcp.org/xml/ns/javaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://xmlns.jcp.org/xml/ns/javaee http://xmlns.jcp.org/xml/ns/javaee/web-app_3_1.xsd"
+         version="3.1">
+
+    <display-name>notice-board</display-name>
+
+    <listener>
+        <listener-class>com.example.board.web.AppContextListener</listener-class>
+    </listener>
+
+    <filter>
+        <filter-name>loggingFilter</filter-name>
+        <filter-class>com.example.board.web.LoggingFilter</filter-class>
+        <init-param>
+            <param-name>prefix</param-name>
+            <param-value>[notice-board]</param-value>
+        </init-param>
+    </filter>
+    <filter-mapping>
+        <filter-name>loggingFilter</filter-name>
+        <url-pattern>/*</url-pattern>
+    </filter-mapping>
+
+    <servlet>
+        <servlet-name>hello</servlet-name>
+        <servlet-class>com.example.board.web.HelloServlet</servlet-class>
+        <load-on-startup>1</load-on-startup>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>hello</servlet-name>
+        <url-pattern>/hello</url-pattern>
+    </servlet-mapping>
+
+    <welcome-file-list>
+        <welcome-file>index.jsp</welcome-file>
+    </welcome-file-list>
+</web-app>

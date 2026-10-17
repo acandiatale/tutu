@@ -1,0 +1,10 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "libraries": ["servlet", "junit4"],
+  "optional_artifacts_in_use": ["commons-io:commons-io"],
+  "main_classes": []
+}

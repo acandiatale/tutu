@@ -1,0 +1,15 @@
+[INFO] Scanning for projects...
+[ERROR] [ERROR] Some problems were encountered while processing the POMs:
+[FATAL] Non-parseable POM /work/proj/pom.xml: end tag name </dependencies> must match start tag name <dependency> from line 4 (position: END_TAG seen ...<groupId>x</groupId></dependencies>... @4:62)  @ line 4, column 62
+ @ 
+[ERROR] The build could not read 1 project -> [Help 1]
+[ERROR]   
+[ERROR]   The project  (/work/proj/pom.xml) has 1 error
+[ERROR]     Non-parseable POM /work/proj/pom.xml: end tag name </dependencies> must match start tag name <dependency> from line 4 (position: END_TAG seen ...<groupId>x</groupId></dependencies>... @4:62)  @ line 4, column 62 -> [Help 2]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/ProjectBuildingException
+[ERROR] [Help 2] http://cwiki.apache.org/confluence/display/MAVEN/ModelParseException

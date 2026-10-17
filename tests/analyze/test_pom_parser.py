@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from sbmig.analyze import PathView, module_order, parse_poms
+from sbmig.analyze.pom_parser import interpolate, owning_pom, parse_pom_text
+from tests.analyze.helpers import dep, plugin, pom, write
+
+
+def _multi(root: Path) -> None:
+    write(root, "pom.xml", pom(
+        "parent", packaging="pom", modules=("core", "app"),
+        props={"lombok.version": "1.18.20", "spring-boot.version": "2.7.18", "maven.compiler.release": "17",
+               "lib.base": "1.2", "lib.version": "${lib.base}.3"},
+        managed=(dep("org.springframework.boot", "spring-boot-dependencies", "${spring-boot.version}",
+                     scope="import", type_="pom"),
+                 dep("org.projectlombok", "lombok", "${lombok.version}"),
+                 dep("com.acme", "core", "${project.version}")),
+        plugin_mgmt=(plugin("maven-compiler-plugin", "3.11.0"),)))
+    write(root, "core/pom.xml", pom(
+        "core", group=None, version=None, parent=("com.acme", "parent", "1.0.0"),
+        deps=(dep("org.projectlombok", "lombok"), dep("com.acme.lib", "thing", "${lib.version}"),
+              dep("org.springframework", "spring-context", "5.3.31")),
+        plugins=(plugin("maven-compiler-plugin"),), namespace=False))
+    write(root, "app/pom.xml", pom(
+        "app", group=None, version=None, parent=("com.acme", "parent", "1.0.0"),
+        deps=(dep("com.acme", "core"), dep("org.springframework.boot", "spring-boot-starter-web")),
+        plugins=(plugin("spring-boot-maven-plugin", g="org.springframework.boot",
+                        config="<loaderImplementation>CLASSIC</loaderImplementation><excludes><exclude>x</exclude></excludes>"),)))
+    # poms in ignored places
+    write(root, "app/target/classes/META-INF/pom.xml", pom("ignored"))
+    write(root, "app/src/test/resources/fixture/pom.xml", pom("ignored2"))
+    write(root, "web/node_modules/x/pom.xml", pom("ignored3"))
+
+
+def test_multi_module_inheritance_interpolation_and_dep_mgmt(tmp_path: Path) -> None:
+    _multi(tmp_path)
+    poms, warnings = parse_poms(PathView(tmp_path))
+    assert warnings == []
+    by = {p.path: p for p in poms}
+    assert set(by) == {"pom.xml", "core/pom.xml", "app/pom.xml"}
+    root, core, app = by["pom.xml"], by["core/pom.xml"], by["app/pom.xml"]
+    assert root.is_root and root.is_aggregator and not root.parent_in_repo
+    assert core.parent_in_repo and not core.is_root and core.group_id == "com.acme" and core.version == "1.0.0"
+    deps = {d.key: d for d in core.dependencies}
+    assert deps["org.projectlombok:lombok"].version == "1.18.20"          # managed by parent via property
+    assert deps["com.acme.lib:thing"].version == "1.2.3"                  # nested ${} interpolation
+    assert {d.key: d.version for d in app.dependencies}["com.acme:core"] == "1.0.0"   # ${project.version}
+    assert root.dependency_management[0].scope == "import"
+    assert root.spring_boot_version == "2.7.18" and app.spring_boot_version == "2.7.18"
+    assert core.spring_version == "5.3.31"
+    assert core.java_version == "17"
+    compiler = next(p for p in core.plugins if p.artifact_id == "maven-compiler-plugin")
+    assert compiler.version == "3.11.0"                                   # from parent pluginManagement
+    assert not root.has_spring_boot_plugin and app.has_spring_boot_plugin
+    bp = next(p for p in app.plugins if p.artifact_id == "spring-boot-maven-plugin")
+    assert bp.configuration["loaderImplementation"] == "CLASSIC"
+    assert bp.configuration["excludes"] == ["x"]
+    assert module_order(poms) == ["pom.xml", "core/pom.xml", "app/pom.xml"]
+    assert root.properties["lib.version"] == "${lib.base}.3"             # own raw properties are kept
+
+
+def test_parent_matched_by_gav_when_relative_path_points_elsewhere(tmp_path: Path) -> None:
+    write(tmp_path, "build/parent/pom.xml", pom("corp-parent", packaging="pom", props={"java.version": "11"}))
+    write(tmp_path, "svc/pom.xml", pom("svc", parent=("com.acme", "corp-parent", "1.0.0")))
+    write(tmp_path, "other/pom.xml", pom("other", parent=("com.acme", "corp-parent", "9.9.9"),
+                                         relative_path="../build/parent"))
+    write(tmp_path, "ext/pom.xml", pom("ext", parent=("org.springframework.boot", "spring-boot-starter-parent",
+                                                      "3.3.5")))
+    by = {p.path: p for p in parse_poms(PathView(tmp_path))[0]}
+    assert by["svc/pom.xml"].parent_in_repo and by["svc/pom.xml"].java_version == "11"
+    assert not by["other/pom.xml"].parent_in_repo                        # version mismatch → not the same parent
+    assert by["ext/pom.xml"].is_root and by["ext/pom.xml"].spring_boot_version == "3.3.5"
+
+
+def test_relative_path_to_explicit_file_and_versions(tmp_path: Path) -> None:
+    write(tmp_path, "parent.xml", "")  # empty file: not a pom.xml, ignored
+    write(tmp_path, "pom.xml", pom("root", packaging="pom", modules=("a/pom.xml",),
+                                   props={"spring.version": "4.3.30.RELEASE"}))
+    write(tmp_path, "a/pom.xml", pom("a", parent=("com.acme", "root", "1.0.0"), relative_path="../pom.xml",
+                                     deps=(dep("org.springframework.boot", "spring-boot-starter", "2.1.0.RELEASE"),),
+                                     plugins=(plugin("maven-compiler-plugin", "3.1",
+                                                     config="<source>1.8</source><target>1.8</target>"),)))
+    poms, _ = parse_poms(PathView(tmp_path))
+    a = next(p for p in poms if p.path == "a/pom.xml")
+    assert a.parent_in_repo and a.spring_version == "4.3.30.RELEASE"
+    assert a.spring_boot_version == "2.1.0.RELEASE" and a.java_version == "1.8"
+    assert module_order(poms) == ["pom.xml", "a/pom.xml"]
+
+
+def test_unparsable_pom_is_skipped_with_warning(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("ok"))
+    write(tmp_path, "broken/pom.xml", "<project><artifactId>x</artifactId>")
+    write(tmp_path, "noart/pom.xml", "<project><groupId>x</groupId></project>")
+    write(tmp_path, "notproject/pom.xml", "<settings/>")
+    poms, warnings = parse_poms(PathView(tmp_path))
+    assert [p.path for p in poms] == ["pom.xml"]
+    assert len(warnings) == 3 and all("pom skipped" in w for w in warnings)
+
+
+def test_helpers() -> None:
+    assert interpolate("${a}-${b}", {"a": "${b}", "b": "x"}) == "x-x"
+    assert interpolate("${missing}", {}) == "${missing}"
+    assert interpolate(None, {}) is None
+    with pytest.raises(ValueError):
+        parse_pom_text("<project/>", "pom.xml")
+    raw = parse_pom_text(pom("x"), "pom.xml")
+    assert raw.artifact_id == "x"
+
+
+def test_owning_pom_and_module_order_with_unreferenced(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("root", packaging="pom", modules=("a",)))
+    write(tmp_path, "a/pom.xml", pom("a"))
+    write(tmp_path, "loose/pom.xml", pom("loose"))
+    poms, _ = parse_poms(PathView(tmp_path))
+    assert module_order(poms) == ["pom.xml", "a/pom.xml", "loose/pom.xml"]
+    assert owning_pom("a/src/main/java/X.java", poms).path == "a/pom.xml"
+    assert owning_pom("src/main/java/X.java", poms).path == "pom.xml"

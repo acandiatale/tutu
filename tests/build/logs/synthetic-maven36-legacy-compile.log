@@ -1,0 +1,48 @@
+# SYNTHETIC: hand-written in the Maven 3.6 / maven-compiler-plugin 3.8.1 format (long plugin names in the
+# mojo header, relative file paths, ANSI colours, javac warnings, required/found/reason continuations).
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] --------------------------< com.acme:legacy-app >---------------------------
+[INFO] Building legacy-app 0.0.1-SNAPSHOT
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- maven-resources-plugin:3.1.0:resources (default-resources) @ legacy-app ---
+[INFO] Copying 1 resource
+[INFO] 
+[INFO] --- maven-compiler-plugin:3.8.1:compile (default-compile) @ legacy-app ---
+[INFO] Changes detected - recompiling the module!
+[INFO] Compiling 3 source files to /work/proj/target/classes
+[WARNING] /work/proj/src/main/java/com/acme/Old.java:[10,20] [deprecation] getOne(ID) in JpaRepository has been deprecated
+[INFO] -------------------------------------------------------------
+[1;31mERROR[m] COMPILATION ERROR : 
+[INFO] -------------------------------------------------------------
+[ERROR] src/main/java/com/acme/web/UserController.java:[21,15] method findById in interface org.springframework.data.repository.CrudRepository<T,ID> cannot be applied to given types;
+  required: ID
+  found:    java.lang.String,int
+  reason: actual and formal argument lists differ in length
+[ERROR] src/main/java/com/acme/sec/WebSecurity.java:[30,5] method does not override or implement a method from a supertype
+[ERROR] src/main/java/com/acme/sec/WebSecurity.java:[12,8] com.acme.sec.WebSecurity is not abstract and does not override abstract method configure(org.springframework.security.config.annotation.web.builders.HttpSecurity) in org.springframework.security.config.annotation.web.WebSecurityConfigurer
+[ERROR] src/main/java/com/acme/Old.java:[40,9] unreported exception java.io.IOException; must be caught or declared to be thrown
+[ERROR] src/main/java/com/acme/Old.java:[44,20] cannot access javax.servlet.ServletException
+  class file for javax.servlet.ServletException not found
+[INFO] 5 errors 
+[INFO] -------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] [1;31mBUILD FAILURE[m
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  3.120 s
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.8.1:compile (default-compile) on project legacy-app: Compilation failure: Compilation failure: 
+[ERROR] src/main/java/com/acme/web/UserController.java:[21,15] method findById in interface org.springframework.data.repository.CrudRepository<T,ID> cannot be applied to given types;
+[ERROR]   required: ID
+[ERROR]   found:    java.lang.String,int
+[ERROR]   reason: actual and formal argument lists differ in length
+[ERROR] src/main/java/com/acme/sec/WebSecurity.java:[30,5] method does not override or implement a method from a supertype
+[ERROR] src/main/java/com/acme/sec/WebSecurity.java:[12,8] com.acme.sec.WebSecurity is not abstract and does not override abstract method configure(org.springframework.security.config.annotation.web.builders.HttpSecurity) in org.springframework.security.config.annotation.web.WebSecurityConfigurer
+[ERROR] src/main/java/com/acme/Old.java:[40,9] unreported exception java.io.IOException; must be caught or declared to be thrown
+[ERROR] src/main/java/com/acme/Old.java:[44,20] cannot access javax.servlet.ServletException
+[ERROR]   class file for javax.servlet.ServletException not found
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.

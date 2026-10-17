@@ -1,0 +1,44 @@
+# Known-good versions used by deterministic handlers (missing-dependency-version, relocations, jaxb-runtime-add).
+# Keys are "groupId:artifactId". Checked on Maven Central 2026-10.
+# org.springframework.boot:* is special-cased to cfg.target.spring_boot_version.
+versions:
+  org.projectlombok:lombok: 1.18.38
+  org.mapstruct:mapstruct: 1.6.3
+  org.mapstruct:mapstruct-processor: 1.6.3
+  com.querydsl:querydsl-jpa: 5.1.0
+  com.querydsl:querydsl-apt: 5.1.0
+  jakarta.servlet:jakarta.servlet-api: 6.1.0
+  jakarta.servlet.jsp:jakarta.servlet.jsp-api: 4.0.0
+  jakarta.persistence:jakarta.persistence-api: 3.2.0
+  jakarta.validation:jakarta.validation-api: 3.1.1
+  jakarta.annotation:jakarta.annotation-api: 3.0.0
+  jakarta.inject:jakarta.inject-api: 2.0.1
+  jakarta.transaction:jakarta.transaction-api: 2.0.1
+  jakarta.mail:jakarta.mail-api: 2.1.3
+  org.eclipse.angus:jakarta.mail: 2.0.3
+  jakarta.jms:jakarta.jms-api: 3.1.0
+  jakarta.websocket:jakarta.websocket-api: 2.2.0
+  jakarta.el:jakarta.el-api: 6.0.1
+  jakarta.xml.bind:jakarta.xml.bind-api: 4.0.2
+  org.glassfish.jaxb:jaxb-runtime: 4.0.5
+  javax.xml.bind:jaxb-api: 2.3.1
+  org.glassfish.jaxb:jaxb-runtime@javax: 2.3.9
+  com.mysql:mysql-connector-j: 9.3.0
+  org.hibernate.orm:hibernate-core: 7.1.0.Final
+  org.hibernate.orm:hibernate-processor: 7.1.0.Final
+  org.hibernate.validator:hibernate-validator: 9.0.1.Final
+  org.apache.commons:commons-lang3: 3.17.0
+  org.apache.commons:commons-collections4: 4.5.0
+  commons-io:commons-io: 2.19.0
+  com.google.guava:guava: 33.4.8-jre
+  com.fasterxml.jackson.core:jackson-databind: 2.19.2
+  org.slf4j:slf4j-api: 2.0.17
+  com.h2database:h2: 2.3.232
+  org.postgresql:postgresql: 42.7.7
+  org.junit.jupiter:junit-jupiter: 5.12.2
+  org.mockito:mockito-core: 5.18.0
+  org.assertj:assertj-core: 3.27.3
+plugins:
+  org.apache.maven.plugins:maven-compiler-plugin: 3.14.0
+  org.apache.maven.plugins:maven-surefire-plugin: 3.5.3
+  org.apache.maven.plugins:maven-failsafe-plugin: 3.5.3

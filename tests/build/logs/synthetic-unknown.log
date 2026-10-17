@@ -1,0 +1,5 @@
+# SYNTHETIC: a failure nothing specific understands.
+[INFO] Scanning for projects...
+[ERROR] Unknown lifecycle phase "comple". You must specify a valid lifecycle phase or a goal in the format <plugin-prefix>:<goal> or <plugin-group-id>:<plugin-artifact-id>[:<plugin-version>]:<goal>. Available lifecycle phases are: pre-clean, clean, post-clean, validate, initialize, generate-sources. -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.

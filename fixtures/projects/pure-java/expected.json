@@ -1,0 +1,10 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": ["junit4", "jaxb"],
+  "optional_artifacts_in_use": ["org.apache.commons:commons-lang3", "com.google.guava:guava"],
+  "main_classes": []
+}

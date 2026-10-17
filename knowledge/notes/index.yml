@@ -1,0 +1,240 @@
+# Migration notes index used by sbmig.fix.context.ContextPacker.
+#   keywords: Python regexes matched (case-sensitive) against error messages, symbols, locations, the cluster
+#             file's imports and pom artifactIds. Score = number of distinct keywords that match.
+#   cases / phases: restrict the note to these case types / phases (empty = any).
+#   always: include regardless of score (budget permitting, dropped last).
+# Keep in sync with each note's front-matter (tests/fix/test_notes.py checks it).
+notes:
+- file: fix-policy.md
+  title: Fix policy for the build-fix loop
+  keywords: []
+  cases: []
+  phases: []
+  always: true
+- file: jdk21.md
+  title: JDK 8/11/17 -> JDK 21 compile issues
+  keywords:
+  - sun\.misc
+  - com\.sun\.
+  - sun\.(reflect|security|net|nio)
+  - javax\.xml\.bind
+  - javax\.xml\.ws|javax\.jws|javax\.activation|org\.omg|javax\.rmi
+  - javax\.annotation\.(Generated|PostConstruct|PreDestroy|Resource)
+  - javax\.script|nashorn|ScriptEngine
+  - BASE64(En|De)coder
+  - SecurityManager|AccessController
+  - Thread\.(stop|suspend|resume)|finalize
+  - lombok|mapstruct|annotation process
+  - release version|invalid target release|source option|target option|class file (major )?version
+  - add-opens|InaccessibleObjectException|IllegalAccessError
+  - restricted identifier|'(var|record|yield|sealed|permits)'
+  - jacoco|maven-compiler-plugin
+  - is deprecated and marked for removal|has been deprecated
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - jdk21
+  always: false
+- file: jakarta.md
+  title: javax -> jakarta namespace (Jakarta EE 9+ / EE 11)
+  keywords:
+  - javax\.(servlet|persistence|validation|annotation|inject|transaction|ws\.rs|xml\.bind|mail|jms|websocket|el|faces|ejb|enterprise|batch|json|security\.enterprise)
+  - jakarta\.
+  - package javax\.\S+ does not exist
+  - hibernate|@Type|TypeDef|Criteria|Dialect|createCriteria|UserType
+  - querydsl|JPAQueryFactory|com\.querydsl
+  - EntityManager|@Entity|@Column|@Table|@Id
+  - ConstraintValidator|@NotNull|@NotBlank|@Valid
+  - HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|Filter
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - spring
+  - jdk21
+  always: false
+- file: boot2-to-3.md
+  title: Spring Boot 2.x -> 3.x changes (prerequisite for Boot 4)
+  keywords:
+  - WebSecurityConfigurerAdapter|antMatchers|mvcMatchers|authorizeRequests
+  - spring\.redis|spring\.data\.cassandra|server\.max-http-header-size
+  - HttpStatus\b|getRawStatusCode|getStatusCode|ResponseStatusException
+  - ConstructorBinding
+  - springfox|io\.swagger\.annotations|@Api(Operation|Model|Param|ModelProperty)?\b|Docket|EnableSwagger2
+  - spring\.factories|EnableAutoConfiguration|AutoConfiguration\.imports
+  - ErrorController|getErrorPath
+  - HttpTrace|httptrace|HttpExchange
+  - Sleuth|brave|spring-cloud-sleuth
+  - org\.apache\.http\.|HttpClientBuilder|httpclient
+  - flyway
+  - PathMatchConfigurer|setUseTrailingSlashMatch|setUseSuffixPatternMatch
+  - spring-boot-starter-webflux|WebClient
+  cases:
+  - spring_boot
+  - msa
+  phases:
+  - spring
+  always: false
+- file: boot3-to-4.md
+  title: Spring Boot 3.x -> 4.0 changes (verified from the official 4.0 migration guide)
+  keywords:
+  - tools\.jackson|com\.fasterxml\.jackson|ObjectMapper|JsonMapper|Jackson2ObjectMapperBuilder
+  - JsonComponent|JsonMixin|JsonObjectSerializer|JsonObjectDeserializer|JsonValueDeserializer|JsonSerializer|JsonDeserializer
+  - spring\.jackson
+  - spring-boot-starter-(web|web-services|aop|oauth2|tomcat|batch|classic|flyway|liquibase)
+  - MockBean|SpyBean|MockitoBean|MockitoSpyBean|MockitoTestExecutionListener
+  - TestRestTemplate|AutoConfigureMockMvc|AutoConfigureWebTestClient|MockMvc|WebTestClient|RestTestClient
+  - EntityScan|EnvironmentPostProcessor|BootstrapRegistry|HttpMessageConverters|PropertyMapping|PropertyMapper
+  - org\.springframework\.boot\.autoconfigure\.(orm|jdbc|data|web|jackson|flyway|liquibase|security|http)
+  - org\.springframework\.boot\.(test\.web|web\.servlet|web\.client|orm|jdbc)
+  - Undertow|undertow
+  - spring\.dao|spring\.data\.mongodb|spring\.session\.redis|management\.health\.mongo|spring\.kafka\.retry
+  - Elasticsearch|RestClientBuilder|Rest5Client|elasticsearch-java
+  - org\.springframework\.lang\.(Nullable|NonNull)|jspecify
+  - spring-retry|org\.springframework\.retry|@Retryable|@EnableRetry|RetryTemplate
+  - loaderImplementation|CLASSIC|executable|layertools|includeOptional
+  - hibernate-jpamodelgen|hibernate-processor
+  - spock|hazelcast|Pulsar
+  cases:
+  - spring_boot
+  - msa
+  phases:
+  - spring
+  - restructure
+  always: false
+- file: boot40-to-41.md
+  title: Spring Boot 4.0 -> 4.1 (verified from 4.1 release notes)
+  keywords:
+  - layertools|jarmode
+  - derby|Derby
+  - dynatrace|Dynatrace
+  - LiveReload|livereload|devtools
+  - skipTests|maven\.test\.skip|process-test-aot|AOT
+  - deferred|bootstrap-mode|AsyncTaskExecutor
+  - build-info
+  - batch-data-mongo
+  - spring-messaging
+  - Optional<
+  - jooq|jOOQ
+  - is deprecated|has been deprecated|deprecated and marked for removal
+  cases:
+  - spring_boot
+  - spring_legacy
+  - servlet_tomcat
+  - pure_java
+  - msa
+  phases:
+  - spring
+  - restructure
+  always: false
+- file: spring-framework-7.md
+  title: Spring Framework 5 -> 6 -> 7 API removals
+  keywords:
+  - WebMvcConfigurerAdapter|HandlerInterceptorAdapter|InstantiationAwareBeanPostProcessorAdapter
+  - Base64Utils|SocketUtils|ListenableFuture|AsyncRestTemplate|CommonsMultipartResolver|NestedServletException
+  - ResponseStatusException|getStatus\(|HttpStatusCode|ResponseEntityExceptionHandler|handleExceptionInternal|handleMethodArgumentNotValid
+  - JdbcTemplate|queryForObject|queryForList|NamedParameterJdbcTemplate
+  - RestTemplate|RestClient|HttpComponentsClientHttpRequestFactory|setConnectTimeout|setReadTimeout|SimpleClientHttpRequestFactory
+  - acceptsProfiles|Profiles
+  - HttpHeaders|MultiValueMap|containsKey|keySet|entrySet
+  - PathMatchConfigurer|AntPathMatcher|PathPatternParser|setUseSuffixPatternMatch|setUseTrailingSlashMatch|favorPathExtension
+  - org\.springframework\.lang\.(Nullable|NonNull|NonNullApi)|jspecify
+  - spring-retry|org\.springframework\.retry|RetryTemplate|@Retryable
+  - ImportResource|spring-beans.*\.xsd|schema/beans
+  - spring-jcl|commons-logging
+  - LocalVariableTableParameterNameDiscoverer|-parameters|ParameterNameDiscoverer
+  - org\.springframework\.(web|context|beans|core|jdbc|orm|transaction)\.
+  cases:
+  - spring_legacy
+  - spring_boot
+  - msa
+  - servlet_tomcat
+  phases:
+  - spring
+  always: false
+- file: spring-security-7.md
+  title: Spring Security 5 -> 6 -> 7
+  keywords:
+  - WebSecurityConfigurerAdapter|SecurityFilterChain|HttpSecurity|WebSecurityCustomizer
+  - authorizeRequests|authorizeHttpRequests|antMatchers|mvcMatchers|regexMatchers|requestMatchers
+  - \.and\(\)|csrf\(\)|cors\(\)|formLogin\(\)|httpBasic\(\)|sessionManagement\(\)|oauth2Login\(\)|oauth2ResourceServer\(\)|exceptionHandling\(\)|headers\(\)|logout\(\)
+  - EnableGlobalMethodSecurity|EnableMethodSecurity|@Secured|@PreAuthorize
+  - AuthenticationManagerBuilder|AuthenticationManager|AuthenticationConfiguration|DaoAuthenticationProvider
+  - PasswordEncoder|NoOpPasswordEncoder|withDefaultPasswordEncoder|BCryptPasswordEncoder
+  - AntPathRequestMatcher|MvcRequestMatcher|PathPatternRequestMatcher
+  - org\.springframework\.security
+  - EnableWebSecurity
+  - access\("|WebExpressionAuthorizationManager
+  cases:
+  - spring_boot
+  - spring_legacy
+  - msa
+  phases:
+  - spring
+  always: false
+- file: servlet-to-boot.md
+  title: Raw servlet / JSP (Tomcat WAR) apps inside Spring Boot 4
+  keywords:
+  - HttpServlet|@WebServlet|@WebFilter|@WebListener|ServletComponentScan|ServletRegistrationBean|FilterRegistrationBean|ServletListenerRegistrationBean
+  - javax\.servlet|jakarta\.servlet
+  - web\.xml|WEB-INF|webapp
+  - jsp|JSP|jasper|jstl|taglib|InternalResourceViewResolver
+  - SpringBootServletInitializer|WebApplicationInitializer|ServletContainerInitializer
+  - javax\.servlet-api|servlet-api|tomcat-embed|spring-boot-starter-tomcat
+  - <packaging>war</packaging>|maven-war-plugin|failOnMissingWebXml
+  cases:
+  - servlet_tomcat
+  - spring_legacy
+  phases:
+  - spring
+  - restructure
+  always: false
+- file: junit4-to-5.md
+  title: JUnit 4 -> JUnit 5/Jupiter (Boot 4 ships JUnit Jupiter 6)
+  keywords:
+  - org\.junit\.(Test|Before|After|BeforeClass|AfterClass|Ignore|Rule|ClassRule|Assert|runner|Assume|experimental)
+  - RunWith|SpringRunner|SpringJUnit4ClassRunner|MockitoJUnitRunner|Parameterized
+  - junit:junit|junit-vintage|vintage
+  - ExpectedException|TemporaryFolder|@Rule
+  - org\.junit\.jupiter
+  - assertThat|Matchers|hamcrest
+  - PowerMock|powermock
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - spring
+  - jdk21
+  always: false
+- file: maven-plugins.md
+  title: Maven plugins and compiler settings safe for JDK 21
+  keywords:
+  - maven-(compiler|surefire|failsafe|jar|war|resources|source|javadoc|enforcer|shade|assembly|dependency|antrun)-plugin
+  - Plugin .* could not be resolved|Failed to execute goal|PluginResolutionException|Unsupported class file major version
+  - release|<source>|<target>|maven\.compiler|invalid flag|--release|bootclasspath
+  - annotationProcessorPaths|maven\.compiler\.proc|-proc
+  - enforcer|RequireJavaVersion|requireJavaVersion|requireMavenVersion
+  - jacoco|spotbugs|checkstyle|pmd|errorprone|animal-sniffer
+  - spring-boot-maven-plugin|repackage|loaderImplementation|layout
+  - argLine|add-opens
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - jdk21
+  - spring
+  - restructure
+  always: false

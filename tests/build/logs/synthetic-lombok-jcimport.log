@@ -1,0 +1,7 @@
+# SYNTHETIC: lombok 1.18.28 on JDK 21 (JCImport.qualid NoSuchFieldError).
+[INFO] -----------------------< com.acme:svc >-----------------------
+[INFO] Building svc 1.0.0
+[INFO] --- compiler:3.11.0:compile (default-compile) @ svc ---
+[INFO] Compiling 40 source files with javac [debug release 21] to target/classes
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:compile (default-compile) on project svc: Fatal error compiling: java.lang.NoSuchFieldError: Class com.sun.tools.javac.tree.JCTree$JCImport does not have member field 'com.sun.tools.javac.tree.JCTree qualid' -> [Help 1]

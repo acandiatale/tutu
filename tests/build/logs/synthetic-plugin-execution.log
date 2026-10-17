@@ -1,0 +1,14 @@
+# SYNTHETIC: war plugin 2.2 on JDK 17+ and a resources filtering failure (two separate builds concatenated).
+[INFO] -----------------------< com.acme:webapp >-----------------------
+[INFO] Building webapp 1.0.0
+[INFO] --- maven-war-plugin:2.2:war (default-war) @ webapp ---
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-war-plugin:2.2:war (default-war) on project webapp: Execution default-war of goal org.apache.maven.plugins:maven-war-plugin:2.2:war failed: Unable to load the mojo 'war' in the plugin 'org.apache.maven.plugins:maven-war-plugin:2.2' due to an API incompatibility: org.codehaus.plexus.component.repository.exception.ComponentLookupException: null
+[ERROR] -----------------------------------------------------
+[ERROR] realm =    plugin>org.apache.maven.plugins:maven-war-plugin:2.2
+[ERROR] -> [Help 1]
+[INFO] -----------------------< com.acme:batch >-----------------------
+[INFO] Building batch 1.0.0
+[INFO] --- resources:3.3.1:resources (default-resources) @ batch ---
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-resources-plugin:3.3.1:resources (default-resources) on project batch: filtering /work/proj/src/main/resources/app.properties to /work/proj/target/classes/app.properties failed with MalformedInputException: Input length = 1 -> [Help 1]

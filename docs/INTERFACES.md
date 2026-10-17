@@ -52,3 +52,9 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
 
 ## Change log
 * 2026-10-18 PM: initial contracts.
+* 2026-10-18 WS-F: `FixAttempt.cluster_errors: list[BuildError] = []` (default empty). The orchestrator should fill it
+  with the cluster's errors when it creates an attempt; KB harvest needs them for L2 signatures and sanitized error
+  copies. Without it harvest falls back to L1-only cases with errors synthesized from `cluster_signatures`.
+* 2026-10-18 PM: `BuildConfig.external_package_prefixes` (default []) + `sbmig.build.register_external_prefixes` / `external_prefixes_from_config`; `MavenRunner.__init__` registers in-house group ids so they are not masked in signatures.
+* 2026-10-18 PM: default `openrewrite.recipe_bom_version` pinned to 3.37.0 (3.38.0 references unpublished artifacts).
+* 2026-10-18 PM: `@ServletComponentScan` FQCN verified as `org.springframework.boot.web.server.servlet.context.ServletComponentScan` (Boot 4.1.0).

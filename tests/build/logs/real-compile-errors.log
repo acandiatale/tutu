@@ -1,0 +1,66 @@
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] ---------------------< com.example:compile-errors >---------------------
+[INFO] Building compile-errors 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ compile-errors ---
+[INFO] skip non existing resourceDirectory /work/proj/src/main/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ compile-errors ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 2 source files with javac [debug release 21] to target/classes
+[INFO] -------------------------------------------------------------
+[ERROR] COMPILATION ERROR : 
+[INFO] -------------------------------------------------------------
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[3,72] package org.springframework.security.config.annotation.web.configuration does not exist
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[5,37] cannot find symbol
+  symbol: class WebSecurityConfigurerAdapter
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[6,13] cannot find symbol
+  symbol:   class Foo
+  location: class com.example.sec.SecurityConfig
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[3,26] package javax.servlet.http does not exist
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[4,26] package javax.servlet.http does not exist
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[6,35] cannot find symbol
+  symbol: class HttpServlet
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[7,23] cannot find symbol
+  symbol:   class HttpServletRequest
+  location: class com.example.web.HelloServlet
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[8,20] incompatible types: int cannot be converted to java.lang.String
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[9,9] cannot find symbol
+  symbol:   method bar()
+  location: class com.example.sec.SecurityConfig
+[INFO] 9 errors 
+[INFO] -------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  1.284 s
+[INFO] Finished at: 2026-10-18T00:00:00+09:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.13.0:compile (default-compile) on project compile-errors: Compilation failure: Compilation failure: 
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[3,72] package org.springframework.security.config.annotation.web.configuration does not exist
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[5,37] cannot find symbol
+[ERROR]   symbol: class WebSecurityConfigurerAdapter
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[6,13] cannot find symbol
+[ERROR]   symbol:   class Foo
+[ERROR]   location: class com.example.sec.SecurityConfig
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[3,26] package javax.servlet.http does not exist
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[4,26] package javax.servlet.http does not exist
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[6,35] cannot find symbol
+[ERROR]   symbol: class HttpServlet
+[ERROR] /work/proj/src/main/java/com/example/web/HelloServlet.java:[7,23] cannot find symbol
+[ERROR]   symbol:   class HttpServletRequest
+[ERROR]   location: class com.example.web.HelloServlet
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[8,20] incompatible types: int cannot be converted to java.lang.String
+[ERROR] /work/proj/src/main/java/com/example/sec/SecurityConfig.java:[9,9] cannot find symbol
+[ERROR]   symbol:   method bar()
+[ERROR]   location: class com.example.sec.SecurityConfig
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException

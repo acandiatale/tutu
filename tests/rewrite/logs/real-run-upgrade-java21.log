@@ -1,0 +1,74 @@
+# cwd: /work/proj
+# cmd: mvn -B -ntp -Dstyle.color=never org.openrewrite.maven:rewrite-maven-plugin:6.46.1:run -Drewrite.activeRecipes=com.company.migrate.Run -Drewrite.configLocation=/work/run/rewrite/rewrite-1.yml -Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-migrate-java:3.42.0 -Drewrite.exportDatatables=false
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -----------------------< com.example:java8-app >------------------------
+[INFO] Building java8-app 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] >>> rewrite:6.46.1:run (default-cli) > process-test-classes @ java8-app >>>
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ java8-app ---
+[INFO] skip non existing resourceDirectory /work/proj/src/main/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ java8-app ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 1 source file with javac [debug target 1.8] to target/classes
+[WARNING] bootstrap class path not set in conjunction with -source 8
+[WARNING] source value 8 is obsolete and will be removed in a future release
+[WARNING] target value 8 is obsolete and will be removed in a future release
+[WARNING] To suppress warnings about obsolete options, use -Xlint:-options.
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ java8-app ---
+[INFO] skip non existing resourceDirectory /work/proj/src/test/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ java8-app ---
+[INFO] No sources to compile
+[INFO] 
+[INFO] <<< rewrite:6.46.1:run (default-cli) < process-test-classes @ java8-app <<<
+[INFO] 
+[INFO] 
+[INFO] --- rewrite:6.46.1:run (default-cli) @ java8-app ---
+[INFO] Using active recipe(s) [com.company.migrate.Run]
+[INFO] Using active styles(s) []
+[INFO] Validating active recipes...
+[INFO] Project [java8-app] Resolving Poms...
+[INFO] Project [java8-app] Parsing source files
+[INFO] Running recipe(s)...
+[WARNING] Changes have been made to pom.xml by:
+[WARNING]     org.openrewrite.java.migrate.UpgradeToJava21
+[WARNING]         org.openrewrite.java.migrate.UpgradeToJava17
+[WARNING]             org.openrewrite.java.migrate.Java8toJava11
+[WARNING]                 org.openrewrite.java.migrate.UpgradeToJava8
+[WARNING]                     org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                         org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING]                 org.openrewrite.java.migrate.UpgradeBuildToJava11
+[WARNING]                     org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                         org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING]             org.openrewrite.java.migrate.UpgradeBuildToJava17
+[WARNING]                 org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                     org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING]         org.openrewrite.java.migrate.UpgradeBuildToJava21
+[WARNING]             org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                 org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING] Changes have been made to src/main/java/com/example/App.java by:
+[WARNING]     org.openrewrite.java.migrate.UpgradeToJava21
+[WARNING]         org.openrewrite.java.migrate.UpgradeToJava17
+[WARNING]             org.openrewrite.java.migrate.Java8toJava11
+[WARNING]                 org.openrewrite.java.migrate.UpgradeBuildToJava11
+[WARNING]                     org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]             org.openrewrite.java.migrate.UpgradeBuildToJava17
+[WARNING]                 org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]         org.openrewrite.java.migrate.UpgradeBuildToJava21
+[WARNING]             org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]         org.openrewrite.java.migrate.util.SequencedCollection
+[WARNING]             org.openrewrite.java.migrate.util.ListFirstAndLast
+[WARNING] Please review and commit the results.
+[WARNING] Estimate time saved: 25m
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  9.904 s
+[INFO] Finished at: 2026-10-18T00:00:00+09:00
+[INFO] ------------------------------------------------------------------------

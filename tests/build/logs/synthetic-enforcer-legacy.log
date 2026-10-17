@@ -1,0 +1,10 @@
+# SYNTHETIC: maven-enforcer-plugin 1.4.x / 3.0.0 format (rules as WARNING, unprefixed message lines).
+[INFO] --- maven-enforcer-plugin:3.0.0:enforce (enforce-versions) @ legacy-app ---
+[WARNING] Rule 0: org.apache.maven.plugins.enforcer.RequireJavaVersion failed with message:
+Detected JDK Version: 21.0.1 is not in the allowed range [1.8,9).
+[WARNING] Rule 1: org.apache.maven.plugins.enforcer.DependencyConvergence failed with message:
+Failed while enforcing releasability. See above detailed error message.
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-enforcer-plugin:3.0.0:enforce (enforce-versions) on project legacy-app: Some Enforcer rules have failed. Look above for specific messages explaining why the rule failed. -> [Help 1]

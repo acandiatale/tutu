@@ -1,0 +1,78 @@
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Build Order:
+[INFO] 
+[INFO] Multi Parent                                                       [pom]
+[INFO] core                                                               [jar]
+[INFO] api                                                                [jar]
+[INFO] app                                                                [jar]
+[INFO] 
+[INFO] ----------------------< com.example:multi-parent >----------------------
+[INFO] Building Multi Parent 1.0.0                                        [1/4]
+[INFO]   from pom.xml
+[INFO] --------------------------------[ pom ]---------------------------------
+[INFO] 
+[INFO] --------------------------< com.example:core >--------------------------
+[INFO] Building core 1.0.0                                                [2/4]
+[INFO]   from core/pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ core ---
+[INFO] skip non existing resourceDirectory /work/proj/core/src/main/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ core ---
+[INFO] Recompiling the module because of changed source code.
+[INFO] Compiling 1 source file with javac [debug release 21] to target/classes
+[INFO] 
+[INFO] --------------------------< com.example:api >---------------------------
+[INFO] Building api 1.0.0                                                 [3/4]
+[INFO]   from api/pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ api ---
+[INFO] skip non existing resourceDirectory /work/proj/api/src/main/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ api ---
+[INFO] Recompiling the module because of changed dependency.
+[INFO] Compiling 1 source file with javac [debug release 21] to target/classes
+[INFO] -------------------------------------------------------------
+[ERROR] COMPILATION ERROR : 
+[INFO] -------------------------------------------------------------
+[ERROR] /work/proj/api/src/main/java/com/example/api/Api.java:[4,24] cannot find symbol
+  symbol:   class Missing
+  location: package com.example.core
+[ERROR] /work/proj/api/src/main/java/com/example/api/Api.java:[7,36] cannot find symbol
+  symbol:   method nme()
+  location: class com.example.core.Core
+[INFO] 2 errors 
+[INFO] -------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Summary for Multi Parent 1.0.0:
+[INFO] 
+[INFO] Multi Parent ....................................... SUCCESS [  0.001 s]
+[INFO] core ............................................... SUCCESS [  0.475 s]
+[INFO] api ................................................ FAILURE [  0.056 s]
+[INFO] app ................................................ SKIPPED
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  0.596 s
+[INFO] Finished at: 2026-10-18T00:00:00+09:00
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.13.0:compile (default-compile) on project api: Compilation failure: Compilation failure: 
+[ERROR] /work/proj/api/src/main/java/com/example/api/Api.java:[4,24] cannot find symbol
+[ERROR]   symbol:   class Missing
+[ERROR]   location: package com.example.core
+[ERROR] /work/proj/api/src/main/java/com/example/api/Api.java:[7,36] cannot find symbol
+[ERROR]   symbol:   method nme()
+[ERROR]   location: class com.example.core.Core
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+[ERROR] 
+[ERROR] After correcting the problems, you can resume the build with the command
+[ERROR]   mvn <args> -rf :api

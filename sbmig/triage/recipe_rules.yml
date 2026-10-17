@@ -1,0 +1,69 @@
+# Reactive recipe rules: error pattern → builtin OpenRewrite recipe(s) to try before the LLM.
+# Matching: any of signature_regex / message_regex / symbol_regex (Python `re.search`, case-sensitive) on any error
+# of the cluster.  kinds: restrict to error kinds (default compile + test_compile).
+# phases: restrict to loop phases (jakarta recipes must not run while the project is still on the javax classpath).
+# once_per_run: the recipe is never re-run in the same migration once it ran (also when the plan already ran it).
+# Every recipe id below was checked against docs.openrewrite.org (2026-10).
+rules:
+  - id: javax-ee-to-jakarta
+    # https://docs.openrewrite.org/recipes/java/migrate/jakarta/javaxmigrationtojakarta
+    match:
+      message_regex: 'package javax\.(servlet|persistence|annotation|validation|inject|transaction|ws\.rs|jms|mail|websocket|el)(\.\S+)? does not exist'
+    recipes: [org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta]
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phases: [spring, restructure]
+    once_per_run: true
+
+  - id: javax-xml-bind
+    # https://docs.openrewrite.org/recipes/java/migrate/javax/addjaxbdependencieswithruntime
+    # https://docs.openrewrite.org/recipes/java/migrate/jakarta/javaxxmlbindmigrationtojakartaxmlbind
+    match:
+      message_regex: 'package javax\.xml\.bind(\.\S+)? does not exist'
+    recipes:
+      - org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime
+      - org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phases: [spring, restructure]
+    once_per_run: true
+
+  - id: junit4-to-junit5
+    # https://docs.openrewrite.org/recipes/java/testing/junit5/junit4to5migration
+    match:
+      message_regex: 'package org\.junit(\.\S+)? does not exist'
+      symbol_regex: '\bRunWith\b'
+    kinds: [test_compile, compile]
+    recipes: [org.openrewrite.java.testing.junit5.JUnit4to5Migration]
+    artifact: org.openrewrite.recipe:rewrite-testing-frameworks
+    once_per_run: true
+
+  - id: mockbean-spybean
+    # https://docs.openrewrite.org/recipes/java/spring/boot4/replacemockbeanandspybean
+    match:
+      message_regex: '\b(MockBean|SpyBean)\b'
+      symbol_regex: '\b(MockBean|SpyBean)\b'
+    kinds: [test_compile, compile]
+    recipes: [org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean]
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phases: [spring, restructure]
+    once_per_run: true
+
+  - id: spring-security-config
+    # https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_0
+    # (chains 5.7 WebSecurityConfigurerAdapter removal and 5.8 antMatchers → requestMatchers)
+    match:
+      message_regex: '\b(WebSecurityConfigurerAdapter|antMatchers|mvcMatchers|authorizeRequests)\b'
+      symbol_regex: '\b(WebSecurityConfigurerAdapter|antMatchers|mvcMatchers|authorizeRequests)\b'
+    recipes: [org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0]
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phases: [spring, restructure]
+    once_per_run: true
+
+  - id: boot4-modularized-autoconfigure
+    # https://docs.openrewrite.org/recipes/java/spring/boot4/upgradespringboot_4_0
+    # Boot 4 split spring-boot-autoconfigure into per-technology modules; the umbrella moves the packages.
+    match:
+      message_regex: 'package org\.springframework\.boot\.(autoconfigure|test\.autoconfigure)\.\S+ does not exist'
+    recipes: [org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0]
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phases: [spring, restructure]
+    once_per_run: true

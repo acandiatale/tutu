@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+import pytest
+
+from sbmig.core.models import GAV, ErrorKind, Phase, PluginInfo, PomInfo
+from sbmig.triage import HandlerRegistry, cluster_errors
+from sbmig.triage.handlers import all_poms, nearest_pom, poms_for_cluster, version_for, version_lt
+
+from .conftest import make_profile
+from .fakes import err
+
+G = GAV.parse
+
+
+def test_registry_ids_match_planner_contract():
+    reg = HandlerRegistry.default(None)
+    ids = set(reg.ids())
+    planner_ids = {"lombok-version-floor", "mapstruct-version-floor", "querydsl-jakarta-classifier",
+                   "maven-compiler-plugin-floor", "surefire-plugin-floor", "javax-servlet-api-to-jakarta",
+                   "jaxb-runtime-add", "remove-classic-loader-implementation", "mysql-connector-relocation"}
+    assert planner_ids <= ids
+    try:
+        from sbmig.plan.pre_handlers import HANDLER_IDS
+        assert set(HANDLER_IDS) <= ids
+    except ImportError:  # pragma: no cover
+        pass
+    assert {"dependency-relocation", "missing-dependency-version", "test-compile-skip"} <= ids
+    assert "lombok-version-floor" in reg and len(reg) == len(list(reg))
+    assert reg.get("nope") is None
+
+
+def test_version_lt():
+    assert version_lt("1.18.20", "1.18.38") is True
+    assert version_lt("1.18.38", "1.18.38") is False
+    assert version_lt("${x}", "1") is None
+    assert version_lt("3.8", "3.8.1") is True
+
+
+def test_lombok_floor_dependency_property_and_annotation_processor(kit):
+    kit.pom(deps=[G("org.projectlombok:lombok:${lombok.version}")], props={"lombok.version": "1.18.20"},
+            extra_build="""
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <configuration><annotationProcessorPaths><path>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>1.18.10</version>
+          </path></annotationProcessorPaths></configuration>
+        </plugin>""")
+    kit.pom("child/pom.xml", deps=[G("org.projectlombok:lombok:1.16.0")])
+    kit.pom("child/src/test/resources/pom.xml")              # test resource poms are ignored
+    h = kit.handler("lombok-version-floor")
+    changes = h.apply(kit.ws, None, make_profile(), None)
+    assert sorted(c.path for c in changes) == ["child/pom.xml", "pom.xml"]
+    assert kit.read().get_property("lombok.version") == "1.18.38"
+    assert kit.dep("org.projectlombok:lombok", "child/pom.xml").version == "1.18.38"
+    assert "<version>1.18.10</version>" not in kit.text()
+    # idempotent
+    assert h.apply(kit.ws, None, None, None) == []
+
+
+def test_lombok_matches(fake_kit):
+    h = fake_kit.handler("lombok-version-floor")
+    c = cluster_errors([err(ErrorKind.PLUGIN_EXECUTION, "Fatal error compiling: java.lang.IllegalAccessError: class "
+                            "lombok.javac.apt.LombokProcessor cannot access class com.sun.tools.javac.processing",
+                            module="demo")])[0]
+    assert h.matches(c, make_profile(libs=[("lombok", "1.18.20")]), None)
+    assert not h.matches(c, make_profile(libs=[("lombok", "1.18.38")]), None)
+    assert not h.matches(c, make_profile(libs=[]), None)
+    assert h.matches(c, None, None)
+    other = cluster_errors([err(file="A.java", message="cannot find symbol")])[0]
+    assert not h.matches(other, make_profile(libs=[("lombok", "1.0")]), None)
+
+
+def test_mapstruct_floor_managed_and_unversioned(kit):
+    kit.pom(deps=[G("org.mapstruct:mapstruct"), G("org.mapstruct:mapstruct-processor:1.4.2.Final")],
+            managed=[G("org.mapstruct:mapstruct:1.5.0.Final")])
+    ch = kit.handler("mapstruct-version-floor").apply(kit.ws)
+    assert ch and kit.dep("org.mapstruct:mapstruct-processor").version == "1.6.3"
+    assert kit.dep("org.mapstruct:mapstruct", managed=True).version == "1.6.3"
+
+
+def test_querydsl_classifier(kit):
+    kit.pom(deps=[G("com.querydsl:querydsl-jpa:4.4.0"), G("com.querydsl:querydsl-apt:4.4.0")])
+    h = kit.handler("querydsl-jakarta-classifier")
+    assert h.preemptive_phase == Phase.SPRING
+    assert h.apply(kit.ws)
+    d = kit.dep("com.querydsl:querydsl-jpa")
+    assert d.version == "5.1.0" and d.classifier == "jakarta"
+    assert h.apply(kit.ws) == []
+    c = cluster_errors([err(file="A.java", symbol="class QUser")])[0]
+    assert h.matches(c, make_profile(libs=[("querydsl", "4")]), None)
+    assert not h.matches(c, make_profile(libs=[]), None)
+
+
+def test_compiler_plugin_floor_and_release(kit, cfg):
+    kit.pom(props={"maven.compiler.source": "1.8", "maven.compiler.target": "1.8"},
+            plugins=[PluginInfo(artifact_id="maven-compiler-plugin", version="3.8.1",
+                                configuration={"source": "1.8", "target": "1.8"})])
+    h = kit.handler("maven-compiler-plugin-floor")
+    assert h.apply(kit.ws, None, None, cfg)
+    ed = kit.read()
+    assert ed.get_property("maven.compiler.source") is None
+    assert ed.get_property("maven.compiler.release") == "21"
+    assert next(p for p in ed.plugins() if p.artifact_id == "maven-compiler-plugin").version == "3.14.0"
+    text = kit.text()
+    assert "<release>21</release>" in text and "<target>1.8</target>" not in text
+
+
+def test_compiler_plugin_added_when_absent_and_java_version(kit, cfg):
+    kit.pom(props={"java.version": "1.8"})
+    h = kit.handler("maven-compiler-plugin-floor")
+    assert h.apply(kit.ws, None, None, cfg)
+    ed = kit.read()
+    assert ed.get_property("java.version") == "21"
+    assert any(p.artifact_id == "maven-compiler-plugin" and p.version == "3.14.0" for p in ed.plugins())
+    c = cluster_errors([err(ErrorKind.PLUGIN_EXECUTION, "Fatal error compiling: invalid target release: 21")])[0]
+    assert h.matches(c, make_profile(), cfg)
+
+
+def test_compiler_java_version_props_release(fake_kit, cfg):
+    fake_kit.pom(props={"java.version": "11", "maven.compiler.source": "${java.version}"},
+                 plugins=[PluginInfo(artifact_id="maven-compiler-plugin", version="3.14.0")])
+    fake_kit.handler("maven-compiler-plugin-floor").apply(fake_kit.ws, None, None, cfg)
+    assert fake_kit.read().get_property("maven.compiler.release") == "${java.version}"
+    fake_kit.pom(props={"maven.compiler.release": "17"},
+                 plugins=[PluginInfo(artifact_id="maven-compiler-plugin", version="3.14.0")])
+    fake_kit.handler("maven-compiler-plugin-floor").apply(fake_kit.ws, None, None, cfg)
+    assert fake_kit.read().get_property("maven.compiler.release") == "21"
+
+
+def test_surefire_floor(kit):
+    kit.pom(plugins=[PluginInfo(artifact_id="maven-surefire-plugin", version="2.22.2"),
+                     PluginInfo(artifact_id="maven-failsafe-plugin")])
+    h = kit.handler("surefire-plugin-floor")
+    assert [c.path for c in h.apply(kit.ws)] == ["pom.xml"]
+    plugs = {p.artifact_id: p.version for p in kit.read().plugins()}
+    assert plugs["maven-surefire-plugin"] == "3.5.3"
+    assert plugs["maven-failsafe-plugin"] is None                   # parent-managed: only pinned reactively
+    c = cluster_errors([err(ErrorKind.PLUGIN_EXECUTION, "maven-failsafe-plugin:2.22 failed", module="demo")])[0]
+    assert h.matches(c, make_profile(), None)
+    h.apply(kit.ws, c, make_profile(), None)
+    assert {p.artifact_id: p.version for p in kit.read().plugins()}["maven-failsafe-plugin"] == "3.5.3"
+
+
+def test_servlet_api_to_jakarta(kit, cfg):
+    kit.pom(deps=[G("javax.servlet:javax.servlet-api:3.1.0"), G("javax.servlet.jsp:jsp-api:2.1")])
+    h = kit.handler("javax-servlet-api-to-jakarta")
+    assert h.preemptive_phase == Phase.SPRING
+    prof = make_profile(poms=[PomInfo(path="pom.xml", artifact_id="demo",
+                                      dependencies=[G("javax.servlet:javax.servlet-api:3.1.0")])])
+    assert h.apply(kit.ws, None, prof, cfg)
+    d = kit.dep("jakarta.servlet:jakarta.servlet-api")
+    assert d.version == "6.1.0" and d.scope == "provided"
+    assert kit.dep("jakarta.servlet.jsp:jakarta.servlet.jsp-api").version == "4.0.0"
+    assert kit.dep("javax.servlet:javax.servlet-api") is None
+    c = cluster_errors([err(file="S.java", message="package jakarta.servlet.http does not exist")])[0]
+    assert h.matches(c, prof, cfg)
+    no = make_profile(poms=[PomInfo(path="pom.xml", artifact_id="demo")])
+    assert not h.matches(c, no, cfg)
+
+
+def test_mysql_relocation(kit, cfg):
+    kit.pom(deps=[G("mysql:mysql-connector-java:8.0.28")])
+    h = kit.handler("mysql-connector-relocation")
+    prof = make_profile(poms=[PomInfo(path="pom.xml", artifact_id="demo",
+                                      dependencies=[G("mysql:mysql-connector-java:8.0.28")])])
+    c = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "could not find", artifact="mysql:mysql-connector-java:8.0.28")])[0]
+    assert h.matches(c, prof, cfg)
+    assert h.apply(kit.ws, c, prof, cfg)
+    assert kit.dep("com.mysql:mysql-connector-j").version == "9.3.0"
+
+
+def test_mysql_relocation_managed_versions(fake_kit, cfg):
+    fake_kit.pom(deps=[G("mysql:mysql-connector-java")])
+    h = fake_kit.handler("mysql-connector-relocation")
+    h.apply(fake_kit.ws, None, make_profile(boot="3.2.0"), cfg)
+    assert fake_kit.dep("com.mysql:mysql-connector-j").version is None
+    fake_kit.pom(deps=[G("mysql:mysql-connector-java")])
+    h.apply(fake_kit.ws, None, make_profile(boot="2.1.0"), cfg)
+    assert fake_kit.dep("com.mysql:mysql-connector-j").version == "9.3.0"
+    c = cluster_errors([err(ErrorKind.COMPILE, "mysql-connector-java old", file="A.java")])[0]
+    assert h.matches(c, None, cfg)
+
+
+def test_dependency_relocation_table(kit, cfg):
+    kit.pom(deps=[G("javax.persistence:javax.persistence-api:2.2"), G("org.springframework.boot:spring-boot-starter-web"),
+                  G("org.hibernate:hibernate-core:5.6.15.Final")])
+    h = kit.handler("dependency-relocation")
+    prof = make_profile(poms=[PomInfo(path="pom.xml", artifact_id="demo", dependencies=[
+        G("javax.persistence:javax.persistence-api:2.2"), G("org.springframework.boot:spring-boot-starter-web")])])
+    pkg = cluster_errors([err(file="E.java", message="package jakarta.persistence does not exist")])[0]
+    assert h.matches(pkg, prof, cfg)
+    assert h.apply(kit.ws, pkg, prof, cfg)
+    assert kit.dep("jakarta.persistence:jakarta.persistence-api").version == "3.2.0"
+    assert kit.dep("org.springframework.boot:spring-boot-starter-web") is not None      # only the relevant one
+    # pre-emptive: whole table
+    h.apply(kit.ws, None, prof, cfg)
+    assert kit.dep("org.springframework.boot:spring-boot-starter-webmvc").version is None
+    assert kit.dep("org.hibernate.orm:hibernate-core").version == "7.1.0.Final"
+    dep = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "x", artifact="org.springframework.boot:spring-boot-starter-aop:4.1.0")])[0]
+    assert h.matches(dep, prof, cfg)
+    cfg.target.spring_boot_version = "3.5.0"
+    assert not h.matches(dep, prof, cfg)                                               # min_target_boot
+
+
+def test_jaxb_runtime_add_flavours(kit):
+    kit.pom()
+    (kit.root / "src/main/java").mkdir(parents=True)
+    (kit.root / "src/main/java/A.java").write_text("import javax.xml.bind.JAXBContext;\nclass A {}\n")
+    h = kit.handler("jaxb-runtime-add")
+    assert h.apply(kit.ws, None, make_profile(), None)
+    assert kit.dep("javax.xml.bind:jaxb-api").version == "2.3.1"
+    assert kit.dep("org.glassfish.jaxb:jaxb-runtime").scope == "runtime"
+    assert h.apply(kit.ws, None, make_profile(), None) == []
+    kit.pom()
+    (kit.root / "src/main/java/A.java").write_text("import jakarta.xml.bind.JAXBContext;\nclass A {}\n")
+    c = cluster_errors([err(file="src/main/java/A.java", message="package jakarta.xml.bind does not exist")])[0]
+    assert h.matches(c, make_profile(), None)
+    assert h.apply(kit.ws, c, make_profile(), None)
+    assert kit.dep("jakarta.xml.bind:jakarta.xml.bind-api").version == "4.0.2"
+    assert kit.dep("org.glassfish.jaxb:jaxb-runtime").version == "4.0.5"
+
+
+def test_jaxb_targets_without_profile(fake_kit):
+    fake_kit.pom(packaging="pom")
+    fake_kit.pom("m/pom.xml")
+    h = fake_kit.handler("jaxb-runtime-add")
+    changed = [c.path for c in h.apply(fake_kit.ws, None, None, None)]
+    assert changed == ["m/pom.xml"]
+
+
+def test_remove_classic_loader(kit):
+    kit.pom(extra_build="""
+        <plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+          <configuration>
+            <loaderImplementation>CLASSIC</loaderImplementation>
+          </configuration>
+        </plugin>""")
+    h = kit.handler("remove-classic-loader-implementation")
+    assert h.apply(kit.ws) and "loaderImplementation" not in kit.text()
+    c = cluster_errors([err(ErrorKind.PLUGIN_EXECUTION, "Cannot find 'loaderImplementation' in class", module="d")])[0]
+    assert h.matches(c, make_profile(), None)
+
+
+def test_missing_dependency_version(kit, cfg):
+    kit.pom(deps=[G("org.apache.commons:commons-lang3"), G("org.springframework.boot:spring-boot-starter")])
+    msg = "'dependencies.dependency.version' for org.apache.commons:commons-lang3:jar is missing. @ line 4"
+    c = cluster_errors([err(ErrorKind.POM_INVALID, msg, file="pom.xml"),
+                        err(ErrorKind.POM_INVALID, "'dependencies.dependency.version' for "
+                            "org.springframework.boot:spring-boot-starter:jar is missing.", file="pom.xml")])[0]
+    h = kit.handler("missing-dependency-version")
+    assert h.matches(c, make_profile(), cfg)
+    assert h.apply(kit.ws, c, make_profile(), cfg)
+    assert kit.dep("org.apache.commons:commons-lang3").version == "3.17.0"
+    assert kit.dep("org.springframework.boot:spring-boot-starter").version == cfg.target.spring_boot_version
+    unknown = cluster_errors([err(ErrorKind.POM_INVALID, "'dependencies.dependency.version' for a.b:zz:jar is missing.")])[0]
+    assert not h.matches(unknown, make_profile(), cfg)
+    assert h.apply(kit.ws, None) == []
+
+
+def test_test_compile_skip_never_matches(fake_kit):
+    h = fake_kit.handler("test-compile-skip")
+    c = cluster_errors([err(ErrorKind.TEST_COMPILE, "x", file="T.java")])[0]
+    assert not h.matches(c, make_profile(), None) and h.apply(fake_kit.ws) == []
+
+
+def test_pom_location_helpers(fake_kit):
+    fake_kit.pom()
+    fake_kit.pom("svc/pom.xml", artifact="svc")
+    ws = fake_kit.ws
+    assert all_poms(ws) == ["pom.xml", "svc/pom.xml"]
+    assert nearest_pom(ws, "svc/src/main/java/A.java") == "svc/pom.xml"
+    prof = make_profile(poms=[PomInfo(path="pom.xml", artifact_id="root"), PomInfo(path="svc/pom.xml", artifact_id="svc-app")])
+    c = cluster_errors([err(ErrorKind.ENFORCER, "x", module="svc-app")])[0]
+    assert poms_for_cluster(ws, c, prof) == ["svc/pom.xml"]
+    c = cluster_errors([err(ErrorKind.ENFORCER, "x", module="svc")])[0]
+    assert poms_for_cluster(ws, c, None) == ["svc/pom.xml"]
+    assert poms_for_cluster(ws, None, None) == ["pom.xml"]
+    assert version_for("org.springframework.boot:x", None) is None
+
+
+def test_registry_default_factory_is_real_editor():
+    reg = HandlerRegistry.default(None)
+    try:
+        f = reg.pom_editor_factory
+    except RuntimeError:  # pragma: no cover - workstream B missing
+        pytest.skip("PomEditor not available")
+    assert callable(f)
+    reg.pom_editor_factory = None

@@ -1,0 +1,25 @@
+# SYNTHETIC: Maven 3.6/3.8 single-line dependency resolution formats, in a reactor build (module 2 fails).
+[INFO] Reactor Build Order:
+[INFO] 
+[INFO] shop-core                                                          [jar]
+[INFO] shop-web                                                           [war]
+[INFO] 
+[INFO] -----------------------< com.acme:shop-core >-----------------------
+[INFO] Building shop-core 1.0.0                                           [1/2]
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] -----------------------< com.acme:shop-web >------------------------
+[INFO] Building shop-web 1.0.0                                            [2/2]
+[INFO] --------------------------------[ war ]---------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] Reactor Summary for shop 1.0.0:
+[INFO] 
+[INFO] shop-core .......................................... SUCCESS [  1.001 s]
+[INFO] shop-web ........................................... FAILURE [  0.300 s]
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal on project shop-web: Could not resolve dependencies for project com.acme:shop-web:war:1.0.0: The following artifacts could not be resolved: javax.servlet:jstl:jar:1.2.1 (absent), com.acme.legacy:auth-client:jar:2.3 (absent): Could not find artifact javax.servlet:jstl:jar:1.2.1 in nexus (https://nexus.acme.local/repository/public/) -> [Help 1]
+[ERROR] Failed to execute goal on project shop-web: Could not resolve dependencies for project com.acme:shop-web:war:1.0.0: Failed to collect dependencies at com.acme.legacy:auth-client:jar:2.3 -> com.acme.legacy:auth-model:jar:2.3: Failed to read artifact descriptor for com.acme.legacy:auth-model:jar:2.3: Could not transfer artifact com.acme.legacy:auth-model:pom:2.3 from/to nexus (https://nexus.acme.local/repository/public/): Connection refused -> [Help 1]
+[ERROR] 
+[ERROR] After correcting the problems, you can resume the build with the command
+[ERROR]   mvn <args> -rf :shop-web

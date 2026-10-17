@@ -1,0 +1,705 @@
+"""Deterministic pom handlers (version floors, relocations, jakarta swaps …).
+
+Every handler works reactively (`matches(cluster, …)` + `apply(ws, cluster, …)`) and pre-emptively
+(`apply(ws, None, profile, cfg)`, driven by `sbmig.plan.pre_handlers_for`). Pom edits go through a PomEditor
+obtained from `registry.pom_editor_factory`; a few edits the PomEditorLike protocol cannot express
+(annotationProcessorPaths versions, compiler <source>/<target>, loaderImplementation) are done as small,
+anchored text substitutions after the editor saved. `apply` returns one `FileChange(op="modify")` per changed pom
+(bookkeeping only — the orchestrator commits).
+"""
+from __future__ import annotations
+
+import logging
+import re
+from abc import abstractmethod
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, ClassVar, Literal, Optional
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field
+
+from sbmig.core.config import Config
+from sbmig.core.models import GAV, ErrorCluster, ErrorKind, FileChange, Phase, PluginInfo, ProjectProfile
+from sbmig.core.workspace import Workspace
+
+from .base import (Handler, _default_pom_editor_factory, all_poms, cluster_artifact_keys, cluster_text,
+                   parse_version, poms_for_cluster, profile_declares, root_pom, version_lt)
+
+log = logging.getLogger("sbmig.triage.handlers")
+
+_DATA_DIR = Path(__file__).parent
+DEFAULT_PLUGIN_GROUP = "org.apache.maven.plugins"
+
+LOMBOK_VERSION = "1.18.38"
+MAPSTRUCT_VERSION = "1.6.3"
+QUERYDSL_VERSION = "5.1.0"
+COMPILER_VERSION = "3.14.0"
+SUREFIRE_VERSION = "3.5.3"
+
+_COMPILE_KINDS = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE, ErrorKind.PLUGIN_EXECUTION,
+                            ErrorKind.UNKNOWN})
+_POM_KINDS = frozenset({ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.POM_INVALID})
+
+
+# ---------------------------------------------------------------------------
+# data tables
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=1)
+def _versions_doc() -> dict[str, Any]:
+    return yaml.safe_load((_DATA_DIR / "versions.yml").read_text(encoding="utf-8")) or {}
+
+
+def known_versions() -> dict[str, str]:
+    return {k: str(v) for k, v in (_versions_doc().get("versions") or {}).items()}
+
+
+def known_plugin_versions() -> dict[str, str]:
+    return {k: str(v) for k, v in (_versions_doc().get("plugins") or {}).items()}
+
+
+def version_for(key: str, cfg: Optional[Config] = None) -> Optional[str]:
+    """Known-good version for g:a (Spring Boot artifacts → target Boot version; company optional artifacts)."""
+    if key.startswith("org.springframework.boot:"):
+        return cfg.target.spring_boot_version if cfg else None
+    if cfg is not None:
+        spec = cfg.optional_keys().get(key)
+        if spec is not None and spec.version and spec.key == key:
+            return spec.version
+    return known_versions().get(key)
+
+
+class Relocation(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    from_: str = Field(alias="from")
+    to: str
+    version: Optional[str] = None
+    scope: Optional[str] = None
+    classifier: Optional[str] = None
+    packages: list[str] = Field(default_factory=list)
+    min_target_boot: Optional[int] = None
+    version_policy: Literal["if-explicit", "always"] = "if-explicit"
+    managed_since_boot: Optional[str] = None      # old dep without version in a Boot < this → set an explicit version
+
+    @property
+    def from_ga(self) -> tuple[str, str]:
+        g, a = self.from_.split(":")[:2]
+        return g, a
+
+    def new_gav(self, version: Optional[str]) -> GAV:
+        g, a = self.to.split(":")[:2]
+        return GAV(group_id=g, artifact_id=a, version=version, scope=self.scope, classifier=self.classifier)
+
+
+@lru_cache(maxsize=1)
+def relocation_table() -> tuple[Relocation, ...]:
+    doc = yaml.safe_load((_DATA_DIR / "relocations.yml").read_text(encoding="utf-8")) or {}
+    return tuple(Relocation.model_validate(r) for r in doc.get("relocations", []))
+
+
+def _boot_major(cfg: Optional[Config]) -> int:
+    v = parse_version(cfg.target.spring_boot_version if cfg else "4.1.0")
+    return v[0] if v else 4
+
+
+# ---------------------------------------------------------------------------
+# editor helpers (protocol methods + optional extras of the real PomEditor)
+# ---------------------------------------------------------------------------
+def _deps(ed: Any) -> list[GAV]:
+    out = list(ed.dependencies())
+    managed = getattr(ed, "managed_dependencies", None)
+    if callable(managed):
+        out += list(managed())
+    return out
+
+
+def _declared(ed: Any, key: str) -> Optional[GAV]:
+    for d in _deps(ed):
+        if d.key == key:
+            return d
+    return None
+
+
+def _resolve(ed: Any, value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    res = getattr(ed, "resolve", None)
+    if callable(res):
+        return res(value)
+    m = re.fullmatch(r"\$\{([^}]+)\}", value.strip())
+    if m:
+        return ed.get_property(m.group(1)) or value
+    return value
+
+
+def _plugins(ed: Any) -> list[PluginInfo]:
+    out: list[PluginInfo] = []
+    for name in ("plugins", "managed_plugins"):
+        fn = getattr(ed, name, None)
+        if callable(fn):
+            out += list(fn())
+    return out
+
+
+def _prop_ref(value: Optional[str]) -> Optional[str]:
+    m = re.fullmatch(r"\s*\$\{([^}]+)\}\s*", value or "")
+    return m.group(1) if m else None
+
+
+def _bump_dependency(ed: Any, group: str, artifact: str, floor: str) -> bool:
+    """Raise g:a to `floor` (direct + managed); through a local ${prop} when there is one."""
+    d = _declared(ed, f"{group}:{artifact}")
+    if d is None:
+        return False
+    prop = _prop_ref(d.version)
+    if prop and ed.get_property(prop) is not None:
+        cur = ed.get_property(prop)
+        if version_lt(cur, floor) is False:
+            return False
+        return bool(ed.set_property(prop, floor))
+    if d.version is not None and version_lt(_resolve(ed, d.version), floor) is False:
+        return False
+    return bool(ed.set_dependency_version(group, artifact, floor))
+
+
+_GA_VERSION_RE = r"(<groupId>\s*{g}\s*</groupId>\s*<artifactId>\s*{a}\s*</artifactId>\s*<version>\s*)([^<]+?)(\s*</version>)"
+
+
+def _text_bump(ws: Workspace, rel: str, group: str, artifact: str, floor: str) -> bool:
+    """Bump literal (or ${prop}) versions of g:a anywhere in the pom text — covers annotationProcessorPaths and
+    plugin dependencies which the editor protocol does not reach."""
+    text = ws.read(rel)
+    pat = re.compile(_GA_VERSION_RE.format(g=re.escape(group), a=re.escape(artifact)), re.S)
+    props: set[str] = set()
+
+    def repl(m: re.Match[str]) -> str:
+        v = m.group(2).strip()
+        p = _prop_ref(v)
+        if p:
+            props.add(p)
+            return m.group(0)
+        if version_lt(v, floor) is True:
+            return m.group(1) + floor + m.group(3)
+        return m.group(0)
+
+    new = pat.sub(repl, text)
+    for p in props:
+        pm = re.compile(rf"(<{re.escape(p)}>\s*)([^<]+?)(\s*</{re.escape(p)}>)")
+        new = pm.sub(lambda m: m.group(1) + floor + m.group(3) if version_lt(m.group(2), floor) is True
+                     else m.group(0), new)
+    if new != text:
+        ws.write(rel, new)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# base pom handler
+# ---------------------------------------------------------------------------
+class PomHandler(Handler):
+    def editor(self, ws: Workspace, rel: str) -> Any:
+        factory = self.registry.pom_editor_factory if self.registry is not None else _default_pom_editor_factory()
+        return factory(ws.abs(rel))
+
+    def apply(self, ws: Workspace, cluster: Optional[ErrorCluster] = None,
+              profile: Optional[ProjectProfile] = None, cfg: Optional[Config] = None) -> list[FileChange]:
+        changed = self.edit(ws, cluster, profile, cfg)
+        seen: list[str] = []
+        for p in changed:
+            if p not in seen:
+                seen.append(p)
+        if seen:
+            log.info("handler %s changed %s", self.id, ", ".join(seen))
+        return [FileChange(path=p, op="modify") for p in seen]
+
+    @abstractmethod
+    def edit(self, ws: Workspace, cluster: Optional[ErrorCluster], profile: Optional[ProjectProfile],
+             cfg: Optional[Config]) -> list[str]: ...
+
+
+# ---------------------------------------------------------------------------
+# version floors
+# ---------------------------------------------------------------------------
+class VersionFloorHandler(PomHandler):
+    artifacts: ClassVar[tuple[tuple[str, str], ...]] = ()
+    properties: ClassVar[tuple[str, ...]] = ()
+    floor: ClassVar[str] = ""
+    library: ClassVar[str] = ""
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        if profile is None or not profile.poms:
+            return True
+        if not profile_declares(profile, [f"{g}:{a}" for g, a in self.artifacts]) and \
+                not (self.library and profile.has_library(self.library)):
+            return False
+        for lib in profile.libraries:
+            if lib.name == self.library and version_lt(lib.version, self.floor) is False:
+                return False
+        return True
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            ed = self.editor(ws, rel)
+            ch = False
+            for g, a in self.artifacts:
+                ch |= _bump_dependency(ed, g, a, self.floor)
+            for p in self.properties:
+                cur = ed.get_property(p)
+                if cur is not None and version_lt(cur, self.floor) is True:
+                    ch |= bool(ed.set_property(p, self.floor))
+            if ch:
+                ed.save()
+                changed.append(rel)
+            for g, a in self.artifacts:
+                if _text_bump(ws, rel, g, a, self.floor):
+                    changed.append(rel)
+        return changed
+
+
+class LombokVersionFloor(VersionFloorHandler):
+    id = "lombok-version-floor"
+    description = f"raise lombok to ≥ {LOMBOK_VERSION} (older lombok cannot run on JDK 21 javac)"
+    kinds = _COMPILE_KINDS
+    triggers = (r"lombok", r"TypeTag\s*::\s*UNKNOWN", r"com\.sun\.tools\.javac\.code\.TypeTags")
+    artifacts = (("org.projectlombok", "lombok"),)
+    properties = ("lombok.version",)
+    floor = LOMBOK_VERSION
+    library = "lombok"
+
+
+class MapstructVersionFloor(VersionFloorHandler):
+    id = "mapstruct-version-floor"
+    description = f"raise mapstruct and mapstruct-processor to ≥ {MAPSTRUCT_VERSION}"
+    kinds = _COMPILE_KINDS
+    triggers = (r"(?i)mapstruct", r"No implementation (was )?(created|generated) for")
+    artifacts = (("org.mapstruct", "mapstruct"), ("org.mapstruct", "mapstruct-processor"))
+    properties = ("mapstruct.version", "org.mapstruct.version")
+    floor = MAPSTRUCT_VERSION
+    library = "mapstruct"
+
+
+class CompilerPluginFloor(PomHandler):
+    id = "maven-compiler-plugin-floor"
+    description = (f"maven-compiler-plugin ≥ {COMPILER_VERSION} and <release> instead of <source>/<target>")
+    kinds = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE, ErrorKind.PLUGIN_EXECUTION,
+                       ErrorKind.PLUGIN_RESOLUTION, ErrorKind.UNKNOWN})
+    triggers = (r"invalid (target|source) release", r"(Source|Target) option \d+ is no longer supported",
+                r"maven-compiler-plugin:(2\.|3\.([0-9]|1[0-2])\.)", r"Unsupported class file major version")
+    G, A = DEFAULT_PLUGIN_GROUP, "maven-compiler-plugin"
+    _BLOCK = re.compile(r"<plugin>(?:(?!</plugin>).)*?<artifactId>\s*maven-compiler-plugin\s*</artifactId>"
+                        r"(?:(?!</plugin>).)*?</plugin>", re.S)
+
+    def _java(self, cfg: Optional[Config]) -> str:
+        return cfg.target.java_version if cfg else "21"
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        jv = self._java(cfg)
+        declared = False
+        poms = all_poms(ws)
+        for rel in poms:
+            ed = self.editor(ws, rel)
+            ch = False
+            for pl in _plugins(ed):
+                if pl.key != f"{self.G}:{self.A}" and not (pl.artifact_id == self.A and not pl.group_id):
+                    continue
+                declared = True
+                v = _resolve(ed, pl.version)
+                if pl.version is None or version_lt(v, COMPILER_VERSION) is not False:
+                    ch |= bool(ed.set_plugin_version(self.G, self.A, COMPILER_VERSION))
+            jprop = ed.get_property("java.version")
+            if jprop is not None and "${" not in jprop and jprop != jv:
+                ch |= bool(ed.set_property("java.version", jv))
+            src, tgt = ed.get_property("maven.compiler.source"), ed.get_property("maven.compiler.target")
+            if src is not None or tgt is not None:
+                ch |= bool(ed.remove_property("maven.compiler.source"))
+                ch |= bool(ed.remove_property("maven.compiler.target"))
+                if jprop is not None:
+                    ch |= bool(ed.set_property("maven.compiler.release", "${java.version}"))
+                else:
+                    ch |= bool(ed.set_property("maven.compiler.release", jv))
+            else:
+                rel_prop = ed.get_property("maven.compiler.release")
+                if rel_prop is not None and "${" not in rel_prop and rel_prop != jv:
+                    ch |= bool(ed.set_property("maven.compiler.release", jv))
+            if ch:
+                ed.save()
+                changed.append(rel)
+            if self._text_release(ws, rel, jv):
+                changed.append(rel)
+        if not declared:
+            root = root_pom(ws, profile)
+            if root:
+                ed = self.editor(ws, root)
+                if ed.add_plugin(PluginInfo(group_id=self.G, artifact_id=self.A, version=COMPILER_VERSION,
+                                            configuration={"release": jv})):
+                    ed.save()
+                    changed.append(root)
+        return changed
+
+    def _text_release(self, ws: Workspace, rel: str, jv: str) -> bool:
+        text = ws.read(rel)
+
+        def fix(m: re.Match[str]) -> str:
+            block = m.group(0)
+            if "<release>" in block or "<source>" not in block:
+                return block
+            block = re.sub(r"<source>[^<]*</source>", f"<release>{jv}</release>", block, count=1)
+            block = re.sub(r"\n?[ \t]*<target>[^<]*</target>", "", block)
+            block = re.sub(r"\n?[ \t]*<test(Source|Target)>[^<]*</test(Source|Target)>", "", block)
+            return block
+
+        new = self._BLOCK.sub(fix, text)
+        if new != text:
+            ws.write(rel, new)
+            return True
+        return False
+
+
+class SurefirePluginFloor(PomHandler):
+    id = "surefire-plugin-floor"
+    description = f"maven-surefire-plugin / maven-failsafe-plugin ≥ {SUREFIRE_VERSION}"
+    kinds = frozenset({ErrorKind.PLUGIN_EXECUTION, ErrorKind.PLUGIN_RESOLUTION, ErrorKind.TEST_FAILURE,
+                       ErrorKind.UNKNOWN})
+    triggers = (r"maven-(surefire|failsafe)-plugin",)
+    ARTIFACTS = ("maven-surefire-plugin", "maven-failsafe-plugin")
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            ed = self.editor(ws, rel)
+            ch = False
+            for pl in _plugins(ed):
+                if pl.artifact_id not in self.ARTIFACTS:
+                    continue
+                v = _resolve(ed, pl.version)
+                if pl.version is None and cluster is None:
+                    continue           # managed by the parent; only pin reactively
+                if pl.version is None or version_lt(v, SUREFIRE_VERSION) is not False:
+                    ch |= bool(ed.set_plugin_version(pl.group_id or DEFAULT_PLUGIN_GROUP, pl.artifact_id,
+                                                     SUREFIRE_VERSION))
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
+# ---------------------------------------------------------------------------
+# relocations
+# ---------------------------------------------------------------------------
+def _missing_packages(cluster: Optional[ErrorCluster]) -> list[str]:
+    if cluster is None:
+        return []
+    out = []
+    for e in cluster.errors:
+        m = re.search(r"package (\S+) does not exist", e.message or "")
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+class RelocationHandler(PomHandler):
+    """Replace old g:a by new g:a in every pom declaring it (table-driven)."""
+    kinds = frozenset({ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.POM_INVALID, ErrorKind.COMPILE,
+                       ErrorKind.TEST_COMPILE})
+    extra_triggers: ClassVar[tuple[str, ...]] = ()
+
+    def table(self) -> list[Relocation]:
+        return list(relocation_table())
+
+    def active(self, cfg: Optional[Config]) -> list[Relocation]:
+        major = _boot_major(cfg)
+        return [r for r in self.table() if r.min_target_boot is None or major >= r.min_target_boot]
+
+    def relevant(self, cluster: Optional[ErrorCluster], profile: Optional[ProjectProfile],
+                 cfg: Optional[Config]) -> list[Relocation]:
+        rels = self.active(cfg)
+        if cluster is None:
+            return [r for r in rels if profile_declares(profile, [r.from_])]
+        keys = cluster_artifact_keys(cluster)
+        pkgs = _missing_packages(cluster)
+        text = cluster_text(cluster) if self.extra_triggers else ""
+        out: list[Relocation] = []
+        for r in rels:
+            if r.from_ in keys:
+                out.append(r)
+            elif pkgs and any(p == rp or p.startswith(rp + ".") for p in pkgs for rp in r.packages) \
+                    and profile_declares(profile, [r.from_]):
+                out.append(r)
+            elif text and any(re.search(t, text) for t in self.extra_triggers) \
+                    and profile_declares(profile, [r.from_]):
+                out.append(r)
+        return out
+
+    def matches(self, cluster, profile, cfg) -> bool:
+        return cluster.kind in self.kinds and bool(self.relevant(cluster, profile, cfg))
+
+    def _version(self, r: Relocation, old: GAV, profile: Optional[ProjectProfile],
+                 cfg: Optional[Config]) -> Optional[str]:
+        want = r.version or version_for(r.to, cfg)
+        if r.version_policy == "always":
+            return want
+        if old.version:
+            return want
+        if r.managed_since_boot and profile is not None:
+            boot = profile.spring_boot_version
+            if boot is None or version_lt(boot, r.managed_since_boot) is not False:
+                return want
+        return None
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        rels = self.relevant(cluster, profile, cfg) if cluster is not None else self.active(cfg)
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            ed = self.editor(ws, rel)
+            ch = False
+            for r in rels:
+                old = _declared(ed, r.from_)
+                if old is None:
+                    continue
+                g, a = r.from_ga
+                ch |= bool(ed.replace_dependency(g, a, r.new_gav(self._version(r, old, profile, cfg))))
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
+class DependencyRelocation(RelocationHandler):
+    id = "dependency-relocation"
+    description = "relocate moved artifacts (javax→jakarta APIs, hibernate → org.hibernate.orm, Boot 4 starters)"
+
+
+class JavaxServletApiToJakarta(RelocationHandler):
+    id = "javax-servlet-api-to-jakarta"
+    description = "javax.servlet(-api)/jsp-api → jakarta.servlet-api 6.1.0 / jakarta.servlet.jsp-api 4.0.0 (provided)"
+    preemptive_phase = Phase.SPRING
+    _TABLE = (
+        Relocation.model_validate({"from": "javax.servlet:javax.servlet-api", "to": "jakarta.servlet:jakarta.servlet-api",
+                                   "version": "6.1.0", "scope": "provided", "version_policy": "always",
+                                   "packages": ["jakarta.servlet"]}),
+        Relocation.model_validate({"from": "javax.servlet:servlet-api", "to": "jakarta.servlet:jakarta.servlet-api",
+                                   "version": "6.1.0", "scope": "provided", "version_policy": "always",
+                                   "packages": ["jakarta.servlet"]}),
+        Relocation.model_validate({"from": "javax.servlet.jsp:javax.servlet.jsp-api",
+                                   "to": "jakarta.servlet.jsp:jakarta.servlet.jsp-api", "version": "4.0.0",
+                                   "scope": "provided", "version_policy": "always",
+                                   "packages": ["jakarta.servlet.jsp"]}),
+        Relocation.model_validate({"from": "javax.servlet.jsp:jsp-api",
+                                   "to": "jakarta.servlet.jsp:jakarta.servlet.jsp-api", "version": "4.0.0",
+                                   "scope": "provided", "version_policy": "always",
+                                   "packages": ["jakarta.servlet.jsp"]}),
+        Relocation.model_validate({"from": "javax.servlet:jsp-api",
+                                   "to": "jakarta.servlet.jsp:jakarta.servlet.jsp-api", "version": "4.0.0",
+                                   "scope": "provided", "version_policy": "always",
+                                   "packages": ["jakarta.servlet.jsp"]}),
+    )
+
+    def table(self) -> list[Relocation]:
+        return list(self._TABLE)
+
+
+class MysqlConnectorRelocation(RelocationHandler):
+    id = "mysql-connector-relocation"
+    description = "mysql:mysql-connector-java → com.mysql:mysql-connector-j"
+    extra_triggers = (r"mysql-connector-java",)
+    _TABLE = (Relocation.model_validate({"from": "mysql:mysql-connector-java", "to": "com.mysql:mysql-connector-j",
+                                         "version": "9.3.0", "managed_since_boot": "2.7.8"}),)
+
+    def table(self) -> list[Relocation]:
+        return list(self._TABLE)
+
+
+# ---------------------------------------------------------------------------
+# querydsl / jaxb / boot plugin / missing versions
+# ---------------------------------------------------------------------------
+class QuerydslJakartaClassifier(PomHandler):
+    id = "querydsl-jakarta-classifier"
+    description = f"querydsl-jpa / querydsl-apt → {QUERYDSL_VERSION} with classifier 'jakarta'"
+    preemptive_phase = Phase.SPRING
+    kinds = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE, ErrorKind.PLUGIN_EXECUTION,
+                       ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.UNKNOWN})
+    triggers = (r"querydsl", r"javax/persistence", r"NoClassDefFoundError: javax", r"(?m)symbol:\s+class Q[A-Z]\w*",
+                r"\bclass Q[A-Z]\w*")
+    ARTIFACTS = (("com.querydsl", "querydsl-jpa"), ("com.querydsl", "querydsl-apt"))
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        if profile is None or not profile.poms:
+            return True
+        return profile.has_library("querydsl") or profile_declares(profile, [f"{g}:{a}" for g, a in self.ARTIFACTS])
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            ed = self.editor(ws, rel)
+            ch = False
+            for g, a in self.ARTIFACTS:
+                d = _declared(ed, f"{g}:{a}")
+                if d is None:
+                    continue
+                v = _resolve(ed, d.version)
+                if d.classifier == "jakarta" and v is not None and version_lt(v, "5.0.0") is False:
+                    continue
+                ch |= bool(ed.replace_dependency(g, a, GAV(group_id=g, artifact_id=a, version=QUERYDSL_VERSION,
+                                                           classifier="jakarta")))
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
+class JaxbRuntimeAdd(PomHandler):
+    id = "jaxb-runtime-add"
+    description = "add JAXB API + runtime (removed from the JDK); javax or jakarta flavour depending on the sources"
+    kinds = _COMPILE_KINDS
+    triggers = (r"javax\.xml\.bind", r"jakarta\.xml\.bind", r"javax/xml/bind", r"\bJAXB(Exception|Context)\b")
+
+    def _uses_javax(self, ws: Workspace) -> bool:
+        for f in ws.java_files():
+            try:
+                if "import javax.xml.bind" in ws.read(f):
+                    return True
+            except OSError:  # pragma: no cover
+                continue
+        return False
+
+    def _targets(self, ws: Workspace, cluster, profile) -> list[str]:
+        if cluster is not None:
+            return poms_for_cluster(ws, cluster, profile)
+        out: list[str] = []
+        if profile is not None and profile.poms:
+            out = [p.path for p in profile.poms if p.packaging != "pom" and ws.exists(p.path)]
+        if not out:
+            out = [p for p in all_poms(ws) if not re.search(r"<packaging>\s*pom\s*</packaging>", ws.read(p))]
+        if not out:
+            r = root_pom(ws, profile)
+            out = [r] if r else []
+        return out
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        kv = known_versions()
+        if self._uses_javax(ws):
+            api = GAV(group_id="javax.xml.bind", artifact_id="jaxb-api", version=kv.get("javax.xml.bind:jaxb-api"))
+            rt = GAV(group_id="org.glassfish.jaxb", artifact_id="jaxb-runtime",
+                     version=kv.get("org.glassfish.jaxb:jaxb-runtime@javax"), scope="runtime")
+            api_keys = ("javax.xml.bind:jaxb-api", "jakarta.xml.bind:jakarta.xml.bind-api")
+        else:
+            api = GAV(group_id="jakarta.xml.bind", artifact_id="jakarta.xml.bind-api",
+                      version=kv.get("jakarta.xml.bind:jakarta.xml.bind-api"))
+            rt = GAV(group_id="org.glassfish.jaxb", artifact_id="jaxb-runtime",
+                     version=kv.get("org.glassfish.jaxb:jaxb-runtime"), scope="runtime")
+            api_keys = ("jakarta.xml.bind:jakarta.xml.bind-api",)
+        changed: list[str] = []
+        for rel in self._targets(ws, cluster, profile):
+            ed = self.editor(ws, rel)
+            ch = False
+            if not any(ed.has_dependency(*k.split(":")) for k in api_keys):
+                ch |= bool(ed.add_dependency(api))
+            if not ed.has_dependency(rt.group_id, rt.artifact_id) and \
+                    not ed.has_dependency("com.sun.xml.bind", "jaxb-impl"):
+                ch |= bool(ed.add_dependency(rt))
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
+class RemoveClassicLoaderImplementation(PomHandler):
+    id = "remove-classic-loader-implementation"
+    description = "drop spring-boot-maven-plugin <loaderImplementation>CLASSIC</loaderImplementation> (gone in Boot 4)"
+    kinds = frozenset({ErrorKind.PLUGIN_EXECUTION, ErrorKind.POM_INVALID, ErrorKind.PLUGIN_RESOLUTION,
+                       ErrorKind.UNKNOWN})
+    triggers = (r"(?i)loaderImplementation", r"\bCLASSIC\b")
+    _RE = re.compile(r"\n?[ \t]*<loaderImplementation>\s*CLASSIC\s*</loaderImplementation>")
+    _PROP_RE = re.compile(r"\n?[ \t]*<spring-boot\.[\w.]*loaderImplementation>\s*CLASSIC\s*"
+                          r"</spring-boot\.[\w.]*loaderImplementation>")
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            text = ws.read(rel)
+            new = self._PROP_RE.sub("", self._RE.sub("", text))
+            if new != text:
+                ws.write(rel, new)
+                changed.append(rel)
+        return changed
+
+
+_MISSING_RE = re.compile(r"'(?:dependencyManagement\.)?dependencies\.dependency\.version' for "
+                         r"([^:\s']+):([^:\s']+)(?::[^\s']+)? (?:is missing|must be a valid version)")
+
+
+class MissingDependencyVersion(PomHandler):
+    id = "missing-dependency-version"
+    description = "set a known-good version for a dependency whose version is missing / unresolvable"
+    kinds = frozenset({ErrorKind.POM_INVALID, ErrorKind.UNKNOWN})
+
+    def missing(self, cluster: Optional[ErrorCluster], cfg: Optional[Config]) -> list[tuple[str, str, str]]:
+        out: list[tuple[str, str, str]] = []
+        if cluster is None:
+            return out
+        for e in cluster.errors:
+            for m in _MISSING_RE.finditer(f"{e.message}\n{e.raw}"):
+                g, a = m.group(1), m.group(2)
+                v = version_for(f"{g}:{a}", cfg)
+                if v and (g, a, v) not in out:
+                    out.append((g, a, v))
+        return out
+
+    def matches(self, cluster, profile, cfg) -> bool:
+        return cluster.kind in self.kinds and bool(self.missing(cluster, cfg))
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        items = self.missing(cluster, cfg)
+        if not items:
+            return []
+        targets = [p for p in poms_for_cluster(ws, cluster, profile)]
+        changed: list[str] = []
+        for rel in [*targets, *[p for p in all_poms(ws) if p not in targets]]:
+            ed = self.editor(ws, rel)
+            ch = False
+            for g, a, v in items:
+                d = _declared(ed, f"{g}:{a}")
+                if d is None:
+                    continue
+                if d.version and "${" not in d.version:
+                    continue
+                if d.version and _resolve(ed, d.version) != d.version:
+                    continue           # property resolves locally → not the culprit
+                ch |= bool(ed.set_dependency_version(g, a, v))
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
+class TestCompileSkip(Handler):
+    """Placeholder: `-Dmaven.test.skip=true` is a last-resort flag owned by the orchestrator (never auto-matched)."""
+    id = "test-compile-skip"
+    description = "last resort: build with -Dmaven.test.skip=true (implemented by the build-fix loop, flagged)"
+    __test__ = False
+
+    def matches(self, cluster, profile, cfg) -> bool:
+        return False
+
+    def apply(self, ws, cluster=None, profile=None, cfg=None) -> list[FileChange]:
+        return []
+
+
+def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
+    """Registration order = reactive precedence (first matching handler wins)."""
+    return [
+        MissingDependencyVersion(),
+        MysqlConnectorRelocation(),
+        JavaxServletApiToJakarta(),
+        DependencyRelocation(),
+        QuerydslJakartaClassifier(),
+        JaxbRuntimeAdd(),
+        LombokVersionFloor(),
+        MapstructVersionFloor(),
+        CompilerPluginFloor(),
+        SurefirePluginFloor(),
+        RemoveClassicLoaderImplementation(),
+        TestCompileSkip(),
+    ]

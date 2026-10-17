@@ -1,0 +1,4 @@
+# SYNTHETIC: CI log with timestamps and Windows paths.
+2026-10-18T01:00:00.123Z [INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ win-app ---
+2026-10-18T01:00:01.456Z [ERROR] C:\work\proj\src\test\java\com\acme\FooTest.java:[5,8] static import only from classes and interfaces
+2026-10-18T01:00:01.457Z [INFO] BUILD FAILURE

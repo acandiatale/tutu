@@ -30,9 +30,11 @@ layout:
   msa_parent_policy: per-service-root
 
 openrewrite:
-  # verified on Maven Central 2026-10: rewrite-maven-plugin 6.46.1, rewrite-recipe-bom 3.38.0
+  # verified on Maven Central 2026-10-18: rewrite-maven-plugin 6.46.1.
+  # recipe BOM 3.38.0 is published but pins rewrite-migrate-java 3.43.0 / rewrite-spring 6.38.0 which are NOT on
+  # Central yet (404) → every run would fail at artifact resolution. 3.37.0 is self-consistent and verified end-to-end.
   plugin_version: "6.46.1"
-  recipe_bom_version: "3.38.0"
+  recipe_bom_version: "3.37.0"
   recipe_artifacts:
     - org.openrewrite.recipe:rewrite-migrate-java
     - org.openrewrite.recipe:rewrite-spring
@@ -69,6 +71,7 @@ build:
   skip_tests: true
   allow_skip_test_compile_fallback: true
   timeout_minutes: 30
+  external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
 
 loop:
   phases:

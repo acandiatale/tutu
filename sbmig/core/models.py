@@ -381,6 +381,7 @@ class FixAttempt(BaseModel):
     errors_before: int = 0
     errors_after: Optional[int] = None
     cluster_signatures: list[str] = Field(default_factory=list)
+    cluster_errors: list[BuildError] = Field(default_factory=list)   # the cluster's errors (KB harvest: L2 sigs, sanitized errors)
     cluster_resolved: Optional[bool] = None        # the cluster's signatures disappeared after rebuild
     outcome: AttemptOutcome = "pending"
     analysis: str = ""
@@ -458,8 +459,10 @@ class KBRecipe(BaseModel):
 
 
 class KBMatch(BaseModel):
-    recipe_ids: list[str] = Field(default_factory=list)
+    recipe_ids: list[str] = Field(default_factory=list)              # ACTIVE recipes whose signatures match
     recipe_files: list[str] = Field(default_factory=list)
+    candidate_recipe_ids: list[str] = Field(default_factory=list)    # CANDIDATE recipes (tried after active, before LLM)
+    candidate_recipe_files: list[str] = Field(default_factory=list)
     cases: list[KBCase] = Field(default_factory=list)            # similar cases → prompt hints
     replayable: list[KBCase] = Field(default_factory=list)       # same signature AND search text still present
     handler_ids: list[str] = Field(default_factory=list)

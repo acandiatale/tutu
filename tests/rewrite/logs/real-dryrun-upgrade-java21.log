@@ -1,0 +1,71 @@
+# cwd: /work/proj
+# cmd: mvn -B -ntp -Dstyle.color=never org.openrewrite.maven:rewrite-maven-plugin:6.46.1:dryRun -Drewrite.activeRecipes=com.company.migrate.Run -Drewrite.configLocation=/work/run/rewrite/rewrite-2.yml -Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-migrate-java:3.42.0 -Drewrite.exportDatatables=false
+[INFO] Scanning for projects...
+[INFO] 
+[INFO] -----------------------< com.example:java8-app >------------------------
+[INFO] Building java8-app 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] >>> rewrite:6.46.1:dryRun (default-cli) > process-test-classes @ java8-app >>>
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ java8-app ---
+[INFO] skip non existing resourceDirectory /work/proj/src/main/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:compile (default-compile) @ java8-app ---
+[INFO] Nothing to compile - all classes are up to date.
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ java8-app ---
+[INFO] skip non existing resourceDirectory /work/proj/src/test/resources
+[INFO] 
+[INFO] --- compiler:3.13.0:testCompile (default-testCompile) @ java8-app ---
+[INFO] No sources to compile
+[INFO] 
+[INFO] <<< rewrite:6.46.1:dryRun (default-cli) < process-test-classes @ java8-app <<<
+[INFO] 
+[INFO] 
+[INFO] --- rewrite:6.46.1:dryRun (default-cli) @ java8-app ---
+[INFO] Using active recipe(s) [com.company.migrate.Run]
+[INFO] Using active styles(s) []
+[INFO] Validating active recipes...
+[INFO] Project [java8-app] Resolving Poms...
+[INFO] Project [java8-app] Parsing source files
+[INFO] Running recipe(s)...
+[WARNING] These recipes would make changes to pom.xml:
+[WARNING]     org.openrewrite.java.migrate.UpgradeToJava21
+[WARNING]         org.openrewrite.java.migrate.UpgradeToJava17
+[WARNING]             org.openrewrite.java.migrate.Java8toJava11
+[WARNING]                 org.openrewrite.java.migrate.UpgradeToJava8
+[WARNING]                     org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                         org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING]                 org.openrewrite.java.migrate.UpgradeBuildToJava11
+[WARNING]                     org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                         org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING]             org.openrewrite.java.migrate.UpgradeBuildToJava17
+[WARNING]                 org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                     org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING]         org.openrewrite.java.migrate.UpgradeBuildToJava21
+[WARNING]             org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]                 org.openrewrite.maven.UpdateMavenProjectPropertyJavaVersion
+[WARNING] These recipes would make changes to src/main/java/com/example/App.java:
+[WARNING]     org.openrewrite.java.migrate.UpgradeToJava21
+[WARNING]         org.openrewrite.java.migrate.UpgradeToJava17
+[WARNING]             org.openrewrite.java.migrate.Java8toJava11
+[WARNING]                 org.openrewrite.java.migrate.UpgradeBuildToJava11
+[WARNING]                     org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]             org.openrewrite.java.migrate.UpgradeBuildToJava17
+[WARNING]                 org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]         org.openrewrite.java.migrate.UpgradeBuildToJava21
+[WARNING]             org.openrewrite.java.migrate.UpgradeJavaVersion
+[WARNING]         org.openrewrite.java.migrate.util.SequencedCollection
+[WARNING]             org.openrewrite.java.migrate.util.ListFirstAndLast
+[WARNING] Patch file available:
+[WARNING]     /work/proj/target/rewrite/rewrite.patch
+[WARNING] Estimate time saved: 25m
+[WARNING] Run 'mvn rewrite:run' to apply the recipes.
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  8.394 s
+[INFO] Finished at: 2026-10-18T00:00:00+09:00
+[INFO] ------------------------------------------------------------------------

@@ -1,0 +1,265 @@
+"""OpenRewriteRunner — implements ``RewriteRunnerLike`` with ``rewrite-maven-plugin`` (run / dryRun)."""
+from __future__ import annotations
+
+import logging
+import re
+from collections.abc import Iterable, Sequence
+from pathlib import Path
+
+from sbmig.build.log_parser import parse_maven_log
+from sbmig.build.mvn import base_command, mvn_env, run_logged
+from sbmig.core.config import Config
+from sbmig.core.interfaces import KnowledgeBaseLike
+from sbmig.core.models import RecipeRef, RewriteResult
+from sbmig.core.workspace import GitError, Workspace
+
+from .compose import COMPOSITE_RECIPE_ID, compose_rewrite_yaml, recipe_documents, recipe_list_ids
+from .versions import RecipeArtifactError, resolve_recipe_artifact_versions
+
+log = logging.getLogger("sbmig.rewrite")
+
+PLUGIN_GA = "org.openrewrite.maven:rewrite-maven-plugin"
+MIGRATE_JAVA = "org.openrewrite.recipe:rewrite-migrate-java"
+SPRING = "org.openrewrite.recipe:rewrite-spring"
+
+# recipe id prefix → recipe artifact that ships it (longest prefix wins). Core recipes (org.openrewrite.java.*,
+# org.openrewrite.maven.*, org.openrewrite.text.* …) ship with the plugin itself → no artifact.
+RECIPE_PREFIX_ARTIFACTS: dict[str, str | None] = {
+    "org.openrewrite.java.migrate.": MIGRATE_JAVA,
+    "org.openrewrite.java.spring.": SPRING,
+    "org.openrewrite.java.springdoc.": SPRING,
+    "org.openrewrite.java.testing.": "org.openrewrite.recipe:rewrite-testing-frameworks",
+    "org.openrewrite.staticanalysis.": "org.openrewrite.recipe:rewrite-static-analysis",
+    "org.openrewrite.java.dependencies.": "org.openrewrite.recipe:rewrite-java-dependencies",
+    "org.openrewrite.java.logging.": "org.openrewrite.recipe:rewrite-logging-frameworks",
+    "org.openrewrite.java.jackson.": "org.openrewrite.recipe:rewrite-jackson",
+    "com.fasterxml.jackson.": "org.openrewrite.recipe:rewrite-jackson",
+    "org.openrewrite.hibernate.": "org.openrewrite.recipe:rewrite-hibernate",
+    "org.openrewrite.java.apache.": "org.openrewrite.recipe:rewrite-apache",
+    "org.openrewrite.apache.": "org.openrewrite.recipe:rewrite-apache",
+    "org.openrewrite.java.micronaut.": "org.openrewrite.recipe:rewrite-micronaut",
+    "org.openrewrite.quarkus.": "org.openrewrite.recipe:rewrite-quarkus",
+    "org.openrewrite.java.joda.": "org.openrewrite.recipe:rewrite-joda",
+    "org.openrewrite.okhttp.": "org.openrewrite.recipe:rewrite-okhttp",
+    "org.openrewrite.java.jspecify.": MIGRATE_JAVA,
+}
+
+_CHANGED_RE = re.compile(r"^\[WARNING\] (?:Changes have been made to|Generated new file|Deleted file) (?P<p>\S+?)"
+                         r"(?: by:|:)?\s*$")
+_MOVED_RE = re.compile(r"^\[WARNING\] File has been moved from (?P<a>\S+) to (?P<b>\S+) by:")
+_DRY_RE = re.compile(r"^\[WARNING\] These recipes would (?:make changes to|generate new file|delete file) "
+                     r"(?P<p>\S+?):?\s*$")
+_DRY_MOVED_RE = re.compile(r"^\[WARNING\] These recipes would move file from (?P<a>\S+) to (?P<b>\S+?):?\s*$")
+_NOT_FOUND_RE = re.compile(r"(Recipe\(s\) not found: .*|Could not find recipe.*|"
+                           r"Recipes not found:.*|Did you mean: .*)")
+_VALIDATION_RE = re.compile(r"Recipe validation error in (?P<recipe>\S+) for property (?P<prop>.+?)"
+                            r"(?: \(in file:[^)]*\))?: (?P<msg>.*)$")
+_DOES_NOT_EXIST_RE = re.compile(r"recipe '(?P<id>[^']+)' does not exist")
+
+
+def recipe_artifact_for(recipe_id: str) -> str | None:
+    best: str | None = None
+    best_len = -1
+    for prefix, art in RECIPE_PREFIX_ARTIFACTS.items():
+        if recipe_id.startswith(prefix) and len(prefix) > best_len:
+            best, best_len = art, len(prefix)
+    return best
+
+
+class OpenRewriteRunner:
+    """``OpenRewriteRunner(ws, cfg, kb).run([RecipeRef(...)])`` → ``RewriteResult``. Never raises for a failed run;
+    raises ``RecipeCompositionError`` only when project/kb recipe ids are not defined in any composed file."""
+
+    def __init__(self, ws: Workspace, cfg: Config, kb: KnowledgeBaseLike | None = None, *,
+                 timeout_s: float | None = None):
+        self.ws = ws
+        self.cfg = cfg
+        self.kb = kb
+        self.timeout_s = timeout_s if timeout_s is not None else float(cfg.openrewrite.timeout_minutes) * 60.0
+        self.work_dir = ws.run_dir / "rewrite"
+
+    # ------------------------------------------------------------------ composition
+    def _kb_files(self) -> list[Path]:
+        if self.kb is None or not self.cfg.kb.use_active_recipes:
+            return []
+        return [Path(p) for p in self.kb.active_recipe_files()]
+
+    def compose(self, recipes: Sequence[RecipeRef], extra_recipe_files: Iterable[Path] = ()) -> tuple[Path, str]:
+        text = compose_rewrite_yaml(recipes, base_dir=self.cfg.base_recipe_dir, kb_files=self._kb_files(),
+                                    extra_files=list(extra_recipe_files), target=self.cfg.target)
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+        n = len(list(self.work_dir.glob("rewrite-*.yml"))) + 1
+        path = self.work_dir / f"rewrite-{n}.yml"
+        while path.exists():
+            n += 1
+            path = self.work_dir / f"rewrite-{n}.yml"
+        path.write_text(text, encoding="utf-8")
+        return path, text
+
+    def required_artifacts(self, recipes: Sequence[RecipeRef], composed_text: str) -> list[str]:
+        """g:a recipe artifacts needed: explicit ``RecipeRef.artifact``, inferred from builtin ids, and for
+        project/kb recipes rewrite-migrate-java + rewrite-spring plus whatever their recipeLists reference."""
+        docs = recipe_documents(composed_text)
+        needed: list[str] = []
+
+        def add(a: str | None) -> None:
+            if a and a not in needed:
+                needed.append(a)
+
+        def walk(rid: str, seen: set[str]) -> None:
+            if rid in seen:
+                return
+            seen.add(rid)
+            if rid in docs:
+                for child in recipe_list_ids(docs[rid]):
+                    walk(child, seen)
+            else:
+                add(recipe_artifact_for(rid))
+
+        for r in recipes:
+            add(r.artifact)
+            if r.source in ("project", "kb") or r.id in docs:
+                add(MIGRATE_JAVA)
+                add(SPRING)
+                walk(r.id, set())
+            elif not r.artifact:
+                add(recipe_artifact_for(r.id))
+        return needed
+
+    # ------------------------------------------------------------------ command
+    def env(self) -> dict[str, str]:
+        env = mvn_env(self.cfg)
+        opts = " ".join(x for x in [env.get("MAVEN_OPTS", "").strip(), *self.cfg.openrewrite.jvm_args] if x)
+        if opts:
+            env["MAVEN_OPTS"] = opts
+        return env
+
+    def command(self, config_path: Path, coordinates: Sequence[str], *, dry_run: bool = False) -> list[str]:
+        goal = "dryRun" if dry_run else self.cfg.openrewrite.plugin_goal
+        cmd = base_command(self.cfg) + [
+            f"{PLUGIN_GA}:{self.cfg.openrewrite.plugin_version}:{goal}",
+            f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
+            f"-Drewrite.configLocation={Path(config_path).resolve()}",
+        ]
+        if coordinates:
+            cmd.append(f"-Drewrite.recipeArtifactCoordinates={','.join(coordinates)}")
+        cmd.append("-Drewrite.exportDatatables=false")
+        cmd.append("-Drewrite.failOnInvalidActiveRecipes=true")    # unknown/invalid recipe ⇒ BUILD FAILURE
+        return cmd
+
+    # ------------------------------------------------------------------ result parsing
+    @staticmethod
+    def parse_changed_files(text: str, *, dry_run: bool = False) -> list[str]:
+        out: list[str] = []
+        for line in text.splitlines():
+            line = line.rstrip()
+            if dry_run:
+                m = _DRY_RE.match(line)
+                if m:
+                    out.append(m.group("p"))
+                    continue
+                m = _DRY_MOVED_RE.match(line)
+            else:
+                m = _CHANGED_RE.match(line)
+                if m:
+                    out.append(m.group("p"))
+                    continue
+                m = _MOVED_RE.match(line)
+            if m:
+                out += [m.group("a"), m.group("b")]
+        return list(dict.fromkeys(p.replace("\\", "/") for p in out))
+
+    @staticmethod
+    def validation_problems(text: str) -> tuple[list[str], list[str]]:
+        """(unknown recipe ids, other validation messages) from the plugin's 'Recipe validation error' lines."""
+        unknown: list[str] = []
+        other: list[str] = []
+        for line in text.splitlines():
+            for m in _DOES_NOT_EXIST_RE.finditer(line):
+                if m.group("id") not in unknown:
+                    unknown.append(m.group("id"))
+            m = _VALIDATION_RE.search(line)
+            if m and not _DOES_NOT_EXIST_RE.search(line) and "uninitialized recipes" not in m.group("msg"):
+                msg = f"{m.group('recipe')} {m.group('prop')}: {m.group('msg').strip()}"
+                if msg not in other:
+                    other.append(msg)
+            m = _NOT_FOUND_RE.search(line)
+            if m:
+                msg = re.sub(r"\s*->\s*\[Help \d+\]\s*$", "", m.group(1)).strip()
+                if msg not in other:
+                    other.append(msg)
+        return unknown, other
+
+    def _error_text(self, text: str) -> str:
+        unknown, other = self.validation_problems(text)
+        parts = []
+        if unknown:
+            parts.append("unknown recipe(s): " + ", ".join(unknown))
+        if other:
+            parts.append("recipe validation: " + "; ".join(other[:8]))
+        if parts:
+            return " | ".join(parts)
+        errors = parse_maven_log(text, self.ws.root)
+        msgs = list(dict.fromkeys(f"{e.kind.value}: {e.message}" for e in errors))
+        return "; ".join(msgs[:10]) if msgs else "rewrite run failed (see log)"
+
+    def _head(self) -> str | None:
+        try:
+            return self.ws.head()
+        except (GitError, OSError):
+            return None
+
+    # ------------------------------------------------------------------ run
+    def run(self, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path] = (), module: str | None = None,
+            dry_run: bool = False, label: str = "") -> RewriteResult:
+        ids = [r.id for r in recipes]
+        if not recipes:
+            return RewriteResult(ok=True, recipes=[], dry_run=dry_run)
+        config_path, text = self.compose(recipes, extra_recipe_files)      # may raise RecipeCompositionError
+        log_path = self.ws.new_log_path(f"rewrite-{label or ('dry' if dry_run else 'run')}")
+        env = self.env()
+        cwd = self.ws.abs(module) if module else self.ws.root
+        try:
+            versions = resolve_recipe_artifact_versions(
+                self.cfg, env, artifacts=self.required_artifacts(recipes, text),
+                cache_path=self.work_dir / "artifact-versions.json", work_dir=self.work_dir)
+        except RecipeArtifactError as exc:
+            log_path.write_text(f"[ERROR] {exc}\n", encoding="utf-8")
+            res = RewriteResult(ok=False, recipes=ids, log_path=str(log_path), error=str(exc), dry_run=dry_run)
+            self._journal(res, module)
+            return res
+        coords = [f"{ga}:{v}" for ga, v in versions.items()]
+        cmd = self.command(config_path, coords, dry_run=dry_run)
+        head_before = None if dry_run else self._head()
+        log.info("rewrite %s (%s)", ", ".join(ids), "dryRun" if dry_run else self.cfg.openrewrite.plugin_goal)
+        pr = run_logged(cmd, cwd=cwd, env=env, log_path=log_path, timeout_s=self.timeout_s)
+        out = pr.text
+        ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in out
+        if ok and any(self.validation_problems(out)):         # plugin older than failOnInvalidActiveRecipes
+            ok = False
+        prefix = (module.rstrip("/") + "/") if module else ""
+        changed = [prefix + p for p in self.parse_changed_files(out, dry_run=dry_run)]
+        if head_before is not None:
+            try:
+                changed += self.ws.changed_files_since(head_before)
+            except GitError:
+                pass
+        changed = sorted({c for c in changed if c and not c.startswith("target/") and "/target/" not in c})
+        error = None
+        if not ok:
+            if pr.timed_out:
+                error = f"rewrite timed out after {self.timeout_s / 60:.1f} minutes"
+            elif pr.error:
+                error = pr.error
+            else:
+                error = self._error_text(out)
+        res = RewriteResult(ok=ok, recipes=ids, changed_files=changed, log_path=str(log_path),
+                            duration_s=round(pr.duration_s, 3), error=error, command=cmd, dry_run=dry_run)
+        self._journal(res, module, config=str(config_path), artifacts=coords)
+        log.info("rewrite %s: %d changed files (%.1fs)", "OK" if ok else "FAILED", len(changed), pr.duration_s)
+        return res
+
+    def _journal(self, res: RewriteResult, module: str | None, **extra) -> None:
+        self.ws.journal({"event": "rewrite", "recipes": res.recipes, "ok": res.ok, "dry_run": res.dry_run,
+                         "module": module, "changed_files_count": len(res.changed_files),
+                         "duration_s": res.duration_s, "log": res.log_path, "error": res.error, **extra})

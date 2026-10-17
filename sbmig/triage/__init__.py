@@ -1,1 +1,12 @@
-"""sbmig.triage — see docs/INTERFACES.md for the public entry points this package must expose."""
+"""sbmig.triage — error clustering, deterministic handlers, recipe rules and the decision engine."""
+from .cluster import BASE_PRIORITY, RESOLUTION_KINDS, cluster_errors, cluster_id, cluster_label
+from .decide import DecisionEngine, IterationItem, plan_iteration, recipe_refs_for, related_attempts
+from .handlers import Handler, HandlerRegistry
+from .rules import RecipeRule, RecipeRules
+from .triager import Triager
+
+__all__ = [
+    "Triager", "HandlerRegistry", "Handler", "RecipeRules", "RecipeRule", "DecisionEngine", "IterationItem",
+    "plan_iteration", "recipe_refs_for", "related_attempts", "cluster_errors", "cluster_id", "cluster_label",
+    "BASE_PRIORITY", "RESOLUTION_KINDS",
+]

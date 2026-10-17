@@ -1,0 +1,10 @@
+# SYNTHETIC: lombok < 1.18.22 on JDK 16+ (maven-compiler-plugin 3.8.1, Maven 3.6.3 output format).
+[INFO] --- maven-compiler-plugin:3.8.1:compile (default-compile) @ legacy-app ---
+[INFO] Changes detected - recompiling the module!
+[INFO] Compiling 12 source files to /work/proj/target/classes
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.8.1:compile (default-compile) on project legacy-app: Fatal error compiling: java.lang.ExceptionInInitializerError: com.sun.tools.javac.code.TypeTag :: UNKNOWN -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.

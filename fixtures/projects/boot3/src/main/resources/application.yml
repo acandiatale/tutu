@@ -1,0 +1,21 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: order-api
+  datasource:
+    url: jdbc:h2:mem:orders
+  jpa:
+    open-in-view: false
+
+orders:
+  payment:
+    base-url: http://payment.internal.example.com
+    connect-timeout: 2s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
