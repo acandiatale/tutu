@@ -1,0 +1,4 @@
+{
+  "note": "scripted recipe-candidate answer for the harvested case (run 1)",
+  "response": "type: specs.openrewrite.org/v1beta/recipe\nname: com.company.kb.JsonComponentToJacksonComponent\ndisplayName: Spring Boot 4 @JsonComponent -> @JacksonComponent\ndescription: Spring Boot 4 (Jackson 3) renamed org.springframework.boot.jackson.JsonComponent to org.springframework.boot.jackson.JacksonComponent.\nrecipeList:\n  - org.openrewrite.java.ChangeType:\n      oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonComponent\n      newFullyQualifiedTypeName: org.springframework.boot.jackson.JacksonComponent\n"
+}

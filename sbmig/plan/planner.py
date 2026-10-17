@@ -141,6 +141,19 @@ def kb_recipes(kb: Any, cfg: Config, notes: list[str]) -> list[RecipeRef]:
     if out:
         notes.append(f"kb: {len(out)} active KB recipe(s) appended to the spring phase: "
                      + ", ".join(r.id for r in out))
+    if getattr(cfg.kb, "try_candidates_in_plan", False):
+        # Candidates are whitelisted declarative recipes (ChangeType, dependency/property changes …): no-ops when the
+        # old symbol is absent, and only reliable while the as-is classpath is intact (type attribution). Running
+        # them here, next to the plan's recipes, is what lets a candidate earn its promotion on the next project.
+        try:
+            cands = [r for r in kb.list_recipes("candidate") if r.id not in ids]
+        except Exception as e:  # pragma: no cover - optional capability
+            log.warning("knowledge base candidates unavailable for planning: %s", e)
+            cands = []
+        if cands:
+            out += [RecipeRef(id=r.id, source="kb", file=str(r.path) if r.path else None) for r in cands]
+            notes.append(f"kb: {len(cands)} candidate KB recipe(s) tried in the spring phase (credited by the build): "
+                         + ", ".join(r.id for r in cands))
     return out
 
 

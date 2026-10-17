@@ -40,28 +40,27 @@ recipeList:
       newVersion: 6.1.x
 ---
 type: specs.openrewrite.org/v1beta/recipe
-name: com.company.migrate.Boot4Jackson2Bridge
-displayName: Keep Jackson 2 based @JsonComponent code compiling on Spring Boot 4 (jackson2 bridge module)
+name: com.company.migrate.Boot4JacksonTwins
+displayName: Rename Spring Boot Jackson support types to their Boot 4 / Jackson 3 twins
 description: >
-  Spring Boot 4 defaults to Jackson 3 and renamed the Jackson 2 support classes. Boot ships a deprecated
-  `spring-boot-jackson2` module that keeps the Jackson 2 API working. Moving the old types there is a pure
-  rename and keeps serializers written against com.fasterxml.* compiling; full Jackson 3 migration
-  (JacksonComponent / ObjectValueSerializer / tools.jackson.*) is left as a follow-up for the owners.
-  The `spring-boot-jackson2` dependency itself is added reactively by the `add-known-dependency` handler
-  when `package org.springframework.boot.jackson2 does not exist`. (class names verified in spring-boot-jackson2-4.1.0.jar)
+  UpgradeSpringBoot_4_0 already migrates serializer bodies from com.fasterxml.jackson.* to tools.jackson.*
+  (JsonSerializer → ValueSerializer, SerializerProvider → SerializationContext, JacksonException), but leaves
+  Boot's own annotations/base classes behind. These are pure renames (verified in spring-boot-jackson-4.1.0.jar):
+  JsonComponent → JacksonComponent, JsonMixin → JacksonMixin, JsonObjectSerializer → ObjectValueSerializer,
+  JsonObjectDeserializer → ObjectValueDeserializer. Jackson2ObjectMapperBuilderCustomizer is NOT renamed
+  (JsonMapperBuilderCustomizer has a different API) — the LLM fixer handles it with the boot3-to-4 note.
+  Code that explicitly wants to stay on Jackson 2 can import org.springframework.boot.jackson2.* instead;
+  the add-known-dependency handler then adds the deprecated spring-boot-jackson2 module.
 recipeList:
   - org.openrewrite.java.ChangeType:
       oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonComponent
-      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonComponent
+      newFullyQualifiedTypeName: org.springframework.boot.jackson.JacksonComponent
   - org.openrewrite.java.ChangeType:
       oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonMixin
-      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonMixin
+      newFullyQualifiedTypeName: org.springframework.boot.jackson.JacksonMixin
   - org.openrewrite.java.ChangeType:
       oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonObjectSerializer
-      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonObjectSerializer
+      newFullyQualifiedTypeName: org.springframework.boot.jackson.ObjectValueSerializer
   - org.openrewrite.java.ChangeType:
       oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonObjectDeserializer
-      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonObjectDeserializer
-  - org.openrewrite.java.ChangeType:
-      oldFullyQualifiedTypeName: org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer
-      newFullyQualifiedTypeName: org.springframework.boot.jackson2.autoconfigure.Jackson2ObjectMapperBuilderCustomizer
+      newFullyQualifiedTypeName: org.springframework.boot.jackson.ObjectValueDeserializer

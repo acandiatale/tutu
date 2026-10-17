@@ -487,8 +487,13 @@ class BuildFixLoop:
         error: Optional[str] = None
         try:
             from pathlib import Path
-            res = self.rewrite_runner.run(refs, extra_recipe_files=[Path(f) for f in files], module=target,
-                                          label=f"{phase.value}-{iteration}-kb")
+            kwargs = dict(extra_recipe_files=[Path(f) for f in files], module=target,
+                          label=f"{phase.value}-{iteration}-kb")
+            try:
+                # the project does not compile at this point → rewrite:runNoFork (rewrite:run forks `compile` first)
+                res = self.rewrite_runner.run(refs, fork=False, **kwargs)
+            except TypeError:  # a runner without the `fork` option
+                res = self.rewrite_runner.run(refs, **kwargs)
             pr.rewrite_results.append(res)
             if not res.ok:
                 error = res.error or "rewrite failed"

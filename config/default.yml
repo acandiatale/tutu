@@ -50,7 +50,7 @@ openrewrite:
       - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
       - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
       - com.company.migrate.SpringBoot41Version
-      - com.company.migrate.Boot4Jackson2Bridge     # Jackson 2 @JsonComponent & co → spring-boot-jackson2 (deprecated bridge)
+      - com.company.migrate.Boot4JacksonTwins       # @JsonComponent → @JacksonComponent & co (pure renames; bodies are migrated by the umbrella)
     spring_framework_7:
       - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
     spring_security_7:
@@ -109,6 +109,7 @@ kb:
   harvest: true
   generate_recipe_candidates: true
   auto_promote_after_projects: 2
+  try_candidates_in_plan: true     # candidates run with the plan's recipes (as-is classpath) and get credited by the build
   max_hints: 5
 
 plan:

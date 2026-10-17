@@ -134,8 +134,16 @@ class OpenRewriteRunner:
             env["MAVEN_OPTS"] = opts
         return env
 
-    def command(self, config_path: Path, coordinates: Sequence[str], *, dry_run: bool = False) -> list[str]:
-        goal = "dryRun" if dry_run else self.cfg.openrewrite.plugin_goal
+    def command(self, config_path: Path, coordinates: Sequence[str], *, dry_run: bool = False,
+                fork: bool | None = None) -> list[str]:
+        """`fork=False` → rewrite:runNoFork (no `compile` lifecycle fork: works on projects that do not compile);
+        `fork=True` → rewrite:run; None → config `plugin_goal`."""
+        if dry_run:
+            goal = "dryRun" if fork is not False else "dryRunNoFork"
+        elif fork is None:
+            goal = self.cfg.openrewrite.plugin_goal
+        else:
+            goal = "run" if fork else "runNoFork"
         cmd = base_command(self.cfg) + [
             f"{PLUGIN_GA}:{self.cfg.openrewrite.plugin_version}:{goal}",
             f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
@@ -168,6 +176,31 @@ class OpenRewriteRunner:
             if m:
                 out += [m.group("a"), m.group("b")]
         return list(dict.fromkeys(p.replace("\\", "/") for p in out))
+
+    @staticmethod
+    def parse_recipe_attribution(text: str) -> dict[str, list[str]]:
+        """recipe id → files it changed, from the plugin's indented 'Changes have been made to <f> by:' blocks
+        (every recipe id in the chain is credited, so a KB composite and the primitive it wraps both appear)."""
+        out: dict[str, list[str]] = {}
+        current: str | None = None
+        for raw in text.splitlines():
+            line = raw.rstrip()
+            m = _CHANGED_RE.match(line) or _DRY_RE.match(line)
+            if m and line.endswith("by:") or (m and ":" in line and _DRY_RE.match(line)):
+                current = m.group("p").replace("\\", "/")
+                continue
+            if current is None:
+                continue
+            body = line[len("[WARNING]"):] if line.startswith("[WARNING]") else line
+            if body.startswith("    ") and body.strip():
+                rid = body.strip().split(":")[0].split(" ")[0]
+                if rid and not rid.startswith("{"):
+                    out.setdefault(rid, [])
+                    if current not in out[rid]:
+                        out[rid].append(current)
+            else:
+                current = None
+        return out
 
     @staticmethod
     def validation_problems(text: str) -> tuple[list[str], list[str]]:
@@ -211,7 +244,21 @@ class OpenRewriteRunner:
 
     # ------------------------------------------------------------------ run
     def run(self, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path] = (), module: str | None = None,
-            dry_run: bool = False, label: str = "") -> RewriteResult:
+            dry_run: bool = False, label: str = "", fork: bool | None = None) -> RewriteResult:
+        res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
+                             label=label, fork=fork)
+        # rewrite:run forks the `compile` lifecycle first; on a project that does not compile the recipes never run.
+        # Fall back to runNoFork (parses sources against the resolved dependency classpath instead).
+        if not res.ok and res.forked and fork is not False and res.error and "compile" in res.error.lower():
+            log.info("rewrite: forked run failed in compile → retrying with runNoFork")
+            retry = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
+                                   label=(label or "run") + "-nofork", fork=False)
+            retry.error = retry.error if not retry.ok else None
+            return retry
+        return res
+
+    def _run_once(self, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path] = (), module: str | None = None,
+                  dry_run: bool = False, label: str = "", fork: bool | None = None) -> RewriteResult:
         ids = [r.id for r in recipes]
         if not recipes:
             return RewriteResult(ok=True, recipes=[], dry_run=dry_run)
@@ -229,9 +276,11 @@ class OpenRewriteRunner:
             self._journal(res, module)
             return res
         coords = [f"{ga}:{v}" for ga, v in versions.items()]
-        cmd = self.command(config_path, coords, dry_run=dry_run)
+        cmd = self.command(config_path, coords, dry_run=dry_run, fork=fork)
+        goal = cmd[[i for i, c in enumerate(cmd) if c.startswith(PLUGIN_GA)][0]].rsplit(":", 1)[-1]
+        forked = goal in ("run", "dryRun")
         head_before = None if dry_run else self._head()
-        log.info("rewrite %s (%s)", ", ".join(ids), "dryRun" if dry_run else self.cfg.openrewrite.plugin_goal)
+        log.info("rewrite %s (%s)", ", ".join(ids), goal)
         pr = run_logged(cmd, cwd=cwd, env=env, log_path=log_path, timeout_s=self.timeout_s)
         out = pr.text
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in out
@@ -254,7 +303,8 @@ class OpenRewriteRunner:
             else:
                 error = self._error_text(out)
         res = RewriteResult(ok=ok, recipes=ids, changed_files=changed, log_path=str(log_path),
-                            duration_s=round(pr.duration_s, 3), error=error, command=cmd, dry_run=dry_run)
+                            duration_s=round(pr.duration_s, 3), error=error, command=cmd, dry_run=dry_run,
+                            recipes_applied=self.parse_recipe_attribution(out), forked=forked)
         self._journal(res, module, config=str(config_path), artifacts=coords)
         log.info("rewrite %s: %d changed files (%.1fs)", "OK" if ok else "FAILED", len(changed), pr.duration_s)
         return res

@@ -267,6 +267,7 @@ class Orchestrator:
             if not pr.ok and phase != Phase.VERIFY:
                 self._phase_failed = True
             if phase != Phase.VERIFY and not pr.skipped:
+                self._credit_plan_recipes(pr)
                 self._harvest(report, pr)
             self._timed(phase.value, t)
         if stop_after is not None and stop_after != Phase.VERIFY:
@@ -549,6 +550,29 @@ class Orchestrator:
         return res.ok
 
     # ------------------------------------------------------------------ kb
+    def _credit_plan_recipes(self, pr: PhaseResult) -> None:
+        """KB recipes (active or candidate) that changed files inside this phase's OpenRewrite runs are credited
+        with the phase's build outcome; this is how a candidate earns (or loses) its promotion."""
+        kb = getattr(self, "kb", None)
+        if kb is None or not hasattr(kb, "list_recipes") or not hasattr(kb, "credit_recipe"):
+            return
+        try:
+            kb_ids = {r.id for r in kb.list_recipes()}
+        except Exception:  # pragma: no cover - optional capability
+            return
+        fp = getattr(getattr(self, "profile", None), "fingerprint", "") or ""
+        credited: list[str] = []
+        for res in pr.rewrite_results:
+            for rid, files in (getattr(res, "recipes_applied", None) or {}).items():
+                if rid in kb_ids and files and rid not in credited:
+                    try:
+                        kb.credit_recipe(rid, bool(pr.build_ok), fp)
+                        credited.append(rid)
+                    except Exception as e:  # pragma: no cover
+                        log.warning("kb.credit_recipe(%s) failed: %s", rid, e)
+        if credited:
+            self.ws.journal({"event": "kb_credit", "phase": pr.phase.value, "recipes": credited, "success": pr.build_ok})
+
     def _harvest(self, report: RunReport, pr: PhaseResult) -> None:
         if not self.cfg.kb.harvest or self._dry_run or self.profile is None:
             return

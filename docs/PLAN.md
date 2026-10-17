@@ -42,3 +42,25 @@ Contracts all WS code against: `sbmig/core/{models,config,interfaces,workspace}.
 * Projects that need JDK 8 to *build as-is* are never built as-is; we only build after `UpgradeToJava21`.
 * Non-Maven (Ant/Gradle) projects are detected and rejected with a clear message.
 * web.xml / JSP / XML bean wiring are compile-neutral; they are reported as manual follow-ups for runtime owners.
+
+## Status — 2026-10-18 (integration complete)
+
+| Check | Result |
+|---|---|
+| Offline unit tests | 418 passed (`python -m pytest -m "not integration"`) |
+| Integration tests (real mvn + OpenRewrite) | 11 passed |
+| Fixture e2e (`scripts/e2e.sh`, public artifacts, fake LLM) | **6/6 BUILD SUCCESS**, 0 LLM calls, 0 unresolved: pure-java, servlet-tomcat, spring5-xml, boot2, boot3, msa |
+| KB learning loop (`scripts/demo-kb/run.sh`) | run 1: 1 LLM fix → case + candidate recipe harvested; run 2: candidate runs inside the plan, **0 LLM calls, no build error**, recipe credited and auto-promoted to active |
+
+What the e2e exercised for real: pre-emptive handlers (lombok / compiler plugin floors), `UpgradeToJava21`,
+`UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1` + 4.1 version pin + Boot4JacksonTwins, jakarta migration for
+servlet/legacy projects, reactive `add-known-dependency` handler (hamcrest after JUnit 4→5), the
+`module/{comp-jar,boot-jar}` restructure with moved `@SpringBootApplication` / `@SpringBootTest` classes and
+generated `Application` classes (`@ServletComponentScan`, `@ImportResource`), the MSA pom-only mode across two
+services with different Boot generations, and the final `mvn clean package` gate.
+
+Known limits to validate in the company environment (see RUNBOOK §0 and ARCHITECTURE §7.5):
+* real parent / mandatory / optional coordinates and whether the parent manages Boot & Java versions;
+* Nexus must proxy `org.openrewrite.*` (plugin 6.46.1, recipe BOM 3.37.0 — 3.38.0 is not consistent on Central yet);
+* the LLM endpoint (OpenAI-compatible default) and its budget (`loop.max_llm_calls`);
+* `web.xml` / JSP / XML bean wiring stay runtime follow-ups by design.

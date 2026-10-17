@@ -1,0 +1,17 @@
+# KB learning-loop demo (see scripts/demo-kb/run.sh).
+# Reproduces the To-be flow with a scripted ("replayed") LLM so it runs offline:
+#   run 1: build error only the LLM can fix → fix applied → BUILD SUCCESS → case harvested → recipe candidate stored
+#   run 2: same error on a fresh copy → KB candidate recipe fixes it with ZERO LLM calls → credited → promoted to active
+# The project recipe that normally handles this rename (Boot4JacksonTwins) is disabled here on purpose.
+openrewrite:
+  recipes:
+    spring_boot_4:
+      - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
+      - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
+      - com.company.migrate.SpringBoot41Version
+llm:
+  provider: fake
+  base_url: "replay:scripts/demo-kb/replay"     # llm-001.json = the fix, llm-002.json = the recipe-candidate answer
+kb:
+  dir: out/demo-kb/kb
+  auto_promote_after_projects: 1

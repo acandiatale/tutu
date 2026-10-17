@@ -45,6 +45,8 @@ Outputs in `out/<run_id>/`:
 * Auto-promotion: a candidate that succeeded in `kb.auto_promote_after_projects` distinct projects with no failures is promoted automatically. Set to 0 to require manual review.
 * Move the KB between machines: `sbmig kb export kb-YYYYMMDD.zip` → `sbmig kb import kb-YYYYMMDD.zip`. `sbmig kb reindex` after manual edits.
 * Hand-written shortcuts go in `kb/patterns/*.yml` (signature regex → recipes / handler ids / hints).
+* Offline demonstration of the whole loop: `scripts/demo-kb/run.sh` (replayed LLM answers in `scripts/demo-kb/replay/`; run 1 harvests a case + candidate recipe, run 2 is fixed by that recipe without the LLM and promotes it).
+* Recording real sessions: set `llm.record_dir` (every request/response is saved as `llm-<n>.json`); a recorded directory can be replayed with `llm.provider: fake` + `llm.base_url: replay:<dir>` for regression tests.
 
 ## 4. Tuning knobs (config/default.yml)
 | Knob | Default | Effect |

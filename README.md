@@ -33,6 +33,7 @@ Local end-to-end without the company Nexus/LLM (public artifacts + fake LLM):
 export JAVA21_HOME=/path/to/jdk-21
 scripts/e2e.sh                       # all fixtures → out/e2e/summary.md
 scripts/e2e.sh --only boot2,msa      # subset
+scripts/demo-kb/run.sh               # KB learning loop: run 1 LLM fix → harvested → run 2 fixed by the KB recipe, 0 LLM calls
 ```
 
 ## Project cases handled

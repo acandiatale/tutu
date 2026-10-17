@@ -300,6 +300,8 @@ class RewriteResult(BaseModel):
     error: Optional[str] = None
     command: list[str] = Field(default_factory=list)
     dry_run: bool = False
+    recipes_applied: dict[str, list[str]] = Field(default_factory=dict)   # recipe id → files it changed (from 'by:' blocks)
+    forked: bool = True                                                     # rewrite:run (forks compile) vs runNoFork
 
 
 # ---------------------------------------------------------------------------

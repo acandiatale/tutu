@@ -139,6 +139,7 @@ class RewriteRunnerLike(Protocol):
         module: Optional[str] = None,          # run only in this module directory (MSA service) — None = project root
         dry_run: bool = False,
         label: str = "",
+        fork: Optional[bool] = None,          # None = config default; False = rewrite:runNoFork (broken projects)
     ) -> RewriteResult: ...
 
 

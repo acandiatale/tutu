@@ -43,7 +43,7 @@ def test_spring_boot_plan(tmp_path: Path, cfg) -> None:
         "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
         "com.company.migrate.SpringBoot41Version",
-        "com.company.migrate.Boot4Jackson2Bridge",
+        "com.company.migrate.Boot4JacksonTwins",
         "org.openrewrite.java.testing.junit5.JUnit4to5Migration"]
     assert spring.recipes[0].artifact == "org.openrewrite.recipe:rewrite-spring"
     proj = spring.recipes[2]

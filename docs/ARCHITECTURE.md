@@ -34,7 +34,7 @@ old types unattributed, so many `ChangeType`-style recipes would silently no-op.
 | pure_java | UpgradeToJava21 | jakarta (only if `javax.*` EE imports found); JUnit4→5 if junit4 | layout + `spring-boot-starter`, generated `Application` |
 | servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | layout + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → followup note |
 | spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 (+Security 7 if present) | layout + webmvc starter, `@ImportResource` for XML bean files |
-| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4Jackson2Bridge (Jackson 2 `@JsonComponent` & co → deprecated `spring-boot-jackson2` module) | layout; existing `@SpringBootApplication` class moves to boot-jar |
+| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4JacksonTwins (`@JsonComponent`→`@JacksonComponent`, `JsonObjectSerializer`→`ObjectValueSerializer` …; the umbrella already migrates bodies to Jackson 3) | layout; existing `@SpringBootApplication` class moves to boot-jar |
 | msa | per service | per service by its own sub-case | `msa_pom` only, directory structure untouched |
 
 Pre-emptive handlers from the profile (run before the first build of a phase): lombok ≥ 1.18.30 for JDK 21,
@@ -135,6 +135,13 @@ Harvest (end of each phase, only for attempts whose cluster was resolved and whi
 3. Next projects: `kb.match` surfaces active recipes (run before LLM), replayable patches (same L1 signature and
    the SEARCH text still present) and hints (summaries of similar cases).
 4. Candidate → active automatically after success in `auto_promote_after_projects` distinct projects, or manually.
+5. **Where candidates run.** OpenRewrite needs type attribution, which only exists while the as-is classpath is intact,
+   and `rewrite:run` forks `compile` first (so it cannot run on a broken project at all). Therefore candidates are
+   composed into the plan's `spring.rewrite` step next to the migration recipes (`kb.try_candidates_in_plan`), and the
+   runner records per-recipe attribution from the plugin's `… by:` blocks (`RewriteResult.recipes_applied`). After the
+   phase, every KB recipe that actually changed files is credited with the phase's build outcome
+   (`Orchestrator._credit_plan_recipes`). Reactive KB recipe batches inside the build-fix loop use `rewrite:runNoFork`,
+   and a forked plan-level run that fails in `compile` is retried with `runNoFork` automatically.
 
 ## 8. Restructure (non-MSA)
 
