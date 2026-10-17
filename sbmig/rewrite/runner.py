@@ -138,7 +138,7 @@ class OpenRewriteRunner:
         return env
 
     def command(self, config_path: Path, coordinates: Sequence[str], *, dry_run: bool = False,
-                fork: bool | None = None) -> list[str]:
+                fork: bool | None = None, extra_args: Iterable[str] = ()) -> list[str]:
         """`fork=False` → rewrite:runNoFork (no `compile` lifecycle fork: works on projects that do not compile);
         `fork=True` → rewrite:run; None → config `plugin_goal`."""
         if dry_run:
@@ -147,7 +147,7 @@ class OpenRewriteRunner:
             goal = self.cfg.openrewrite.plugin_goal
         else:
             goal = "run" if fork else "runNoFork"
-        cmd = base_command(self.cfg) + [
+        cmd = base_command(self.cfg) + list(extra_args) + [
             f"{PLUGIN_GA}:{self.cfg.openrewrite.plugin_version}:{goal}",
             f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
             f"-Drewrite.configLocation={Path(config_path).resolve()}",
@@ -247,7 +247,11 @@ class OpenRewriteRunner:
 
     # ------------------------------------------------------------------ run
     def run(self, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path] = (), module: str | None = None,
-            dry_run: bool = False, label: str = "", fork: bool | None = None) -> RewriteResult:
+            dry_run: bool = False, label: str = "", fork: bool | None = None,
+            extra_args: Iterable[str] = ()) -> RewriteResult:
+        """`extra_args` (e.g. `["-pl", "order-service", "-am"]`) run the plugin from the reactor root for one target so
+        in-repo siblings resolve from the reactor instead of the local repository (per-target runs cannot see them)."""
+        self._extra_args = list(extra_args)      # consumed by every _run_once of this call (incl. OOM / noFork retries)
         res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
                              label=label, fork=fork)
         jvm_args: list[str] | None = None
@@ -315,7 +319,7 @@ class OpenRewriteRunner:
             self._journal(res, module)
             return res
         coords = [f"{ga}:{v}" for ga, v in versions.items()]
-        cmd = self.command(config_path, coords, dry_run=dry_run, fork=fork)
+        cmd = self.command(config_path, coords, dry_run=dry_run, fork=fork, extra_args=getattr(self, "_extra_args", ()))
         goal = cmd[[i for i, c in enumerate(cmd) if c.startswith(PLUGIN_GA)][0]].rsplit(":", 1)[-1]
         forked = goal in ("run", "dryRun")
         head_before = None if dry_run else self._head()

@@ -177,6 +177,7 @@ class LLMConfig(BaseModel):
     api_key_env: str = "LLM_API_KEY"
     model: str = "${LLM_MODEL}"
     escalation_model: Optional[str] = None   # stronger model used after stall
+    recipe_model: Optional[str] = None       # cheaper model for recipe selection advice + KB recipe candidates (None → model)
     temperature: float = 0.0
     max_output_tokens: int = 8000
     max_context_chars: int = 60000           # budget for packed context per request

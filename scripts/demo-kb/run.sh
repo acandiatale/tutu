@@ -6,8 +6,13 @@ cd "$REPO"
 [[ -f .venv/bin/activate ]] && source .venv/bin/activate
 export JAVA21_HOME="${JAVA21_HOME:-/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-21.0.1/Contents/Home}"
 FIXTURE="${1:-fixtures/projects/boot3}"
+# Optional: a real LLM profile appended LAST (overrides the replayed fake), e.g.
+#   LLM_API_KEY=sk-ant-... scripts/demo-kb/run.sh fixtures/projects/boot3 config/llm-anthropic.yml
+LLM_CFG="${2:-}"
 rm -rf out/demo-kb && mkdir -p out/demo-kb
-CFG=(--config config/artifacts.local-e2e.yml --config scripts/demo-kb/config.yml --out out/demo-kb/runs)
+CFG=(--config config/artifacts.local-e2e.yml --config scripts/demo-kb/config.yml)
+if [[ -n "$LLM_CFG" ]]; then CFG+=(--config "$LLM_CFG"); fi
+CFG+=(--out out/demo-kb/runs)
 
 echo "### run 1 — the LLM (replayed) fixes @JsonComponent; the case is harvested into the KB"
 python -m sbmig.cli run "$FIXTURE" "${CFG[@]}" --run-id kb-run-1 > out/demo-kb/run1.log 2>&1 || true

@@ -26,7 +26,8 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 #  --dry-run                                analyze + plan + decisions only, no edits
 #  --java-home /usr/lib/jvm/java-21 --settings /etc/maven/nexus-settings.xml
 ```
-Exit code 0 = final `mvn clean package` passed. 2 = finished with unresolved errors (read `report.md`).
+Exit code 0 = final `mvn clean package` passed and nothing is blocked. 2 = finished with **blocked** and/or unresolved
+errors (read `report.md`). 3 = aborted (no Maven, not a Maven project, configured in-house parent not resolvable).
 
 Outputs in `out/<run_id>/`:
 * `project/` migrated working copy (git branch `sbmig/<run_id>`, one commit per step/attempt) and `result.zip`
@@ -34,6 +35,11 @@ Outputs in `out/<run_id>/`:
 * `changes.patch`, `journal.jsonl` (machine-readable event log), `logs/` (every build / rewrite / LLM call)
 
 ## 2. Reading a failed run
+0. **"Blocked — needs human / library action"** is the first section after the summary. These clusters were skipped on
+   purpose (see `docs/ERROR-HANDLING.md`): a dependency that still exposes `javax.*` in its API (owner class and the
+   artifact it came from are named, with the concrete action: bump/upgrade the library or add it to `artifacts.optional`),
+   an artifact missing from Nexus, an incompatible build plugin, LLM/budget exhaustion. The rest of the migration
+   (restructure, verify, report) still ran, so once the library is fixed a re-run usually completes.
 1. `report.md` → "Unresolved errors" lists clusters by file with the last javac/maven messages.
 2. `sbmig parse-log out/<run>/logs/0NN-build-*.log` re-parses any log with signatures (useful to craft a KB pattern).
 3. `git -C out/<run>/project log --oneline` shows the attempt chain; `reverted` attempts are gone from the tree but in the report.
@@ -59,6 +65,12 @@ Outputs in `out/<run_id>/`:
 | `layout.split_policy` | minimal | `web-layer` moves controllers/config into boot-jar |
 | `plan.intermediate_builds` | true | build after the JDK 21 phase before Spring recipes |
 | `kb.generate_recipe_candidates` | true | LLM proposes declarative recipes from fixes |
+| `artifacts.optional_version_policy` | floor | never downgrade an optional artifact that is already newer (`pin` = exact version) |
+| `plan.optional_bump_phase` | spring | bump in-house optional artifacts right after the spring rewrite (Jakarta builds of in-house libs before the first build) |
+| `build.source_encoding_policy` | set-property | legacy MS949/EUC-KR sources: set `project.build.sourceEncoding` (or `convert-utf8`); files are always read/written in their own encoding |
+| `build.enforcer_policy` / `build.werror_policy` | relax-rule / remove | enforcer `requireJavaVersion` etc. and `-Werror` on JDK 21 |
+| `loop.blocked_policy.<reason>` | 0–1 | LLM attempts allowed before a cluster of that reason is blocked and reported |
+| `loop.max_llm_attempts_per_cluster` | 2 | after that the cluster is blocked (`repeated_failure`) |
 
 ## 5. Safety notes
 * The agent only edits the copy under `out/<run>/project`; the input zip/dir is never modified.

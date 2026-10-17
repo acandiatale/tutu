@@ -1,0 +1,22 @@
+# Real-LLM validation profile (Anthropic API). The key is NEVER stored here: export LLM_API_KEY=... before running.
+#   source .venv/bin/activate && export LLM_API_KEY=sk-ant-...
+#   sbmig run fixtures/projects/boot3 --config config/artifacts.local-e2e.yml --config config/llm-anthropic.yml --out out/llm
+# Roles:
+#   llm.model        — source fixes (build-fix loop)             → Claude Sonnet 5
+#   llm.recipe_model — recipe selection advisor + KB recipe-candidate generation → Claude Haiku 4.5
+llm:
+  provider: anthropic
+  base_url: https://api.anthropic.com
+  api_key_env: LLM_API_KEY
+  model: claude-sonnet-5
+  recipe_model: claude-haiku-4-5
+  escalation_model: null
+  max_output_tokens: 8000
+  timeout_seconds: 180
+  record_dir: out/llm-records          # every request/response saved (no secrets) for audit + offline replay
+
+plan:
+  advisor: llm                         # Haiku reviews the rule-based plan and may ADD recipes from the known catalog
+
+kb:
+  generate_recipe_candidates: true     # Haiku turns harvested fixes into declarative recipe candidates

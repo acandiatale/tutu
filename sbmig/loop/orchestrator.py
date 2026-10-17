@@ -251,6 +251,7 @@ class Orchestrator:
         # 3. plan --------------------------------------------------------------
         t = self.clock()
         plan = self.planner(profile, self.cfg, self.kb)
+        plan = self._advise_plan(plan)
         self.plan = plan
         report.plan = plan
         self.ws.save_model("plan.json", plan)
@@ -522,8 +523,14 @@ class Orchestrator:
             return True
         runner = self.rewrite_runner
         pre = self.ws.head()
-        res = runner.run(list(step.recipes), extra_recipe_files=self._extra_recipe_files(step), module=step.target,
-                         dry_run=self._dry_run, label=step.id)
+        # in-repo reactor siblings (shared library roots) only resolve when the plugin runs from the aggregator root
+        from .fixloop import build_target_args
+        module, reactor_args = build_target_args(self.profile, step.target)
+        kwargs = dict(extra_recipe_files=self._extra_recipe_files(step), dry_run=self._dry_run, label=step.id)
+        try:
+            res = runner.run(list(step.recipes), module=module, extra_args=reactor_args, **kwargs)
+        except TypeError:                      # a runner without `extra_args` (fakes / older implementations)
+            res = runner.run(list(step.recipes), module=step.target, **kwargs)
         pr.rewrite_results.append(res)
         mark = getattr(self.triager, "mark_recipes_run", None)
         if callable(mark):
@@ -696,6 +703,24 @@ class Orchestrator:
         if credited:
             self.ws.journal({"event": "kb_credit", "phase": pr.phase.value, "recipes": credited, "success": pr.build_ok})
 
+    def _advise_plan(self, plan):
+        """cfg.plan.advisor == "llm": let the (cheap) recipe model review the rule-based plan (additive only)."""
+        if self.cfg.plan.advisor != "llm" or self._dry_run or self.profile is None:
+            return plan
+        try:
+            advise = lazy_attr("sbmig.plan", "advise_plan", "A (plan)")
+            llm = self.llm_client()
+            before = {r.id for st in plan.steps for r in st.recipes}
+            plan = advise(plan, self.profile, llm=llm, cfg=self.cfg)
+            after = {r.id for st in plan.steps for r in st.recipes}
+            self.ws.journal({"event": "plan_advice", "model": self.cfg.llm.recipe_model or self.cfg.llm.model,
+                             "added": sorted(after - before),
+                             "notes": [n for n in plan.notes if n.startswith("advisor")]})
+        except Exception as e:  # the advisor is optional
+            log.warning("plan advisor failed: %s", e)
+            self.ws.journal({"event": "plan_advice", "error": f"{type(e).__name__}: {e}"})
+        return plan
+
     def _harvest(self, report: RunReport, pr: PhaseResult) -> None:
         if not self.cfg.kb.harvest or self._dry_run or self.profile is None:
             return
@@ -756,6 +781,9 @@ class Orchestrator:
             for a in pr.attempts:
                 usage = usage.add(a.llm_usage)
         usage.calls = max(usage.calls, self.budget.llm_calls)
+        plan_usage = getattr(getattr(self, "plan", None), "llm_usage", None)
+        if plan_usage is not None and plan_usage.calls:
+            usage = usage.add(plan_usage)          # plan advisor (recipe model) calls
         report.llm_usage = usage
         if self.loop is not None:
             for f in self.loop.flags:

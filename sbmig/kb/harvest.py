@@ -201,7 +201,9 @@ def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClie
                                            "OpenRewrite recipes, or answer NONE."),
         ChatMessage(role="user", content=build_recipe_prompt(case)),
     ]
-    resp = llm.complete(messages, max_tokens=1500, temperature=0.0)
+    cfg = getattr(kb, "cfg", None)
+    recipe_model = getattr(getattr(cfg, "llm", None), "recipe_model", None) or None
+    resp = llm.complete(messages, model=recipe_model, max_tokens=1500, temperature=0.0)
     answer = strip_fences(resp.content or "")
     if is_none_answer(answer):
         notes.append(f"case {case.id}: LLM says no mechanical recipe")

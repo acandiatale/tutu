@@ -216,5 +216,5 @@ def test_warnings_become_notes_and_advisor(cfg) -> None:
     assert advise_plan(plan, profile) is plan
     assert advise_plan(plan, profile, llm=object(), cfg=cfg) is plan          # advisor: none
     cfg.plan.advisor = "llm"
-    with pytest.raises(NotImplementedError):
-        advise_plan(plan, profile, llm=object(), cfg=cfg)
+    out = advise_plan(plan, profile, llm=object(), cfg=cfg)
+    assert any(n.startswith('advisor') for n in out.notes)

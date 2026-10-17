@@ -340,14 +340,75 @@ def owner_fqcn(error: BuildError) -> Optional[str]:
     return req
 
 
+_API_PREFIXES = ("javax.", "jakarta.", "java.", "org.springframework.", "org.slf4j.", "lombok.")
+_NEW_RE = re.compile(r"\bnew\s+([A-Z][\w$]*)\s*(?:<[^>]*>)?\s*\(")
+_STATIC_CALL_RE = re.compile(r"\b([A-Z][\w$]*)\s*\.\s*[a-z_]\w*\s*\(")
+_INSTANCE_CALL_RE = re.compile(r"\b([a-z_]\w*)\s*\.\s*[a-z_]\w*\s*\(")
+_IMPORT_RE = re.compile(r"^\s*import\s+(?:static\s+)?([\w.]+)(?:\.\*)?\s*;", re.M)
+
+
+def callee_candidates(ws: Workspace, rel_file: str, line: Optional[int]) -> list[str]:
+    """Fully-qualified classes whose constructor/method is CALLED on the error line (resolved through the file's
+    imports). This is how we find the library behind a bare `incompatible types` / `cannot access` javac error,
+    which never names the callee: e.g. `new LegacyRequestHelper(request)` → com.company.legacy.web.LegacyRequestHelper."""
+    if not rel_file or not line:
+        return []
+    try:
+        text = ws.read(rel_file)
+    except Exception:
+        return []
+    lines = text.splitlines()
+    if line < 1 or line > len(lines):
+        return []
+    src = lines[line - 1]
+    simple: list[str] = []
+    simple += _NEW_RE.findall(src)
+    simple += _STATIC_CALL_RE.findall(src)
+    # instance calls: find the declared type of the variable in this file (`LegacyRequestHelper helper = …`)
+    for var in _INSTANCE_CALL_RE.findall(src):
+        if var in ("this", "super"):
+            continue
+        m = re.search(r"\b([A-Z][\w$]*)(?:<[^>]*>)?\s+" + re.escape(var) + r"\b", text)
+        if m:
+            simple.append(m.group(1))
+    if not simple:
+        return []
+    imports = _IMPORT_RE.findall(text)
+    explicit = {imp.rsplit(".", 1)[-1]: imp for imp in imports if not imp.endswith(".*")}
+    wildcards = [imp[:-2] for imp in re.findall(r"^\s*import\s+([\w.]+\.\*)\s*;", text, re.M)]
+    pkg_m = re.search(r"^\s*package\s+([\w.]+)\s*;", text, re.M)
+    own_pkg = pkg_m.group(1) if pkg_m else ""
+    out: list[str] = []
+    for name in dict.fromkeys(simple):
+        fq = explicit.get(name)
+        cands = [fq] if fq else [f"{w}.{name}" for w in wildcards] + ([f"{own_pkg}.{name}"] if own_pkg else [])
+        for c in cands:
+            if c and c not in out and not c.startswith(("java.", "javax.", "jakarta."))\
+                    and not c.startswith("org.springframework."):
+                out.append(c)
+    return out
+
+
 def locate_type_owner(ws: Workspace, cfg: Config, error: BuildError,
                       module: Optional[str] = None) -> Optional[ClassLocation]:
-    """`locate_class` for the owner class of a javac error (see `owner_fqcn`). Never raises."""
+    """`locate_class` for the library class *behind* a javac error. Order: the owner named in the message
+    (`in class X`, `location: class X` …) unless it is an API type (javax/jakarta/java/spring); then the classes
+    called on the error line (`callee_candidates`); finally the required type itself. Never raises."""
+    mod = module if module is not None else error.module
     try:
         owner = owner_fqcn(error)
-        if not owner:
-            return None
-        return locate_class(ws, cfg, owner, module if module is not None else error.module)
+        req, _found = type_mismatch(error)
+        if owner and owner != req and not owner.startswith(_API_PREFIXES):
+            loc = locate_class(ws, cfg, owner, mod)
+            if loc is not None:
+                return loc
+        for fq in callee_candidates(ws, error.file or "", error.line):
+            loc = locate_class(ws, cfg, fq, mod)
+            if loc is not None and not loc.in_project:
+                return loc
+        if owner:
+            return locate_class(ws, cfg, owner, mod)
+        return None
     except Exception as exc:
         log.warning("locate_type_owner: %s: %s", type(exc).__name__, exc)
         return None

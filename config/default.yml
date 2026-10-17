@@ -106,6 +106,7 @@ llm:
   api_key_env: LLM_API_KEY
   model: "${LLM_MODEL:-default}"
   escalation_model: null
+  recipe_model: null               # e.g. claude-haiku-4-5 for recipe selection / KB recipe candidates
   temperature: 0.0
   max_output_tokens: 8000
   max_context_chars: 60000

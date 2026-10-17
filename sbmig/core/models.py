@@ -279,6 +279,7 @@ class MigrationPlan(BaseModel):
     steps: list[PlanStep]
     notes: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
+    llm_usage: "LLMUsage" = Field(default_factory=lambda: LLMUsage())   # plan advisor (recipe model) usage
 
 
 # ---------------------------------------------------------------------------
@@ -537,3 +538,6 @@ class RunReport(BaseModel):
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
+
+
+MigrationPlan.model_rebuild()

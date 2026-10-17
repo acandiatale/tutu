@@ -465,14 +465,167 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None) -> Migratio
     return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=steps, notes=notes)
 
 
-def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
-                cfg: Optional[Config] = None) -> MigrationPlan:
-    """Optional LLM review of the rule-based plan.
+# Recipes the advisor may ADD (ids verified against docs.openrewrite.org / our recipe sets; never removes anything).
+ADVISOR_CATALOG: dict[str, str] = {
+    "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta": "javax.* EE packages → jakarta.* (servlet, persistence, validation, annotation, inject …)",
+    "org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime": "add JAXB API + runtime when javax.xml.bind is used (removed from the JDK)",
+    "org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind": "javax.xml.bind → jakarta.xml.bind",
+    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": "Spring Boot 2.x/3.x → 4.0 umbrella (Boot projects only)",
+    "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1": "Spring Boot 4.1 property renames",
+    "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean": "@MockBean/@SpyBean → @MockitoBean/@MockitoSpyBean",
+    "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0": "Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)",
+    "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0": "Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)",
+    "org.openrewrite.java.testing.junit5.JUnit4to5Migration": "JUnit 4 → JUnit 5",
+}
 
-    Returns the plan unchanged when no LLM is given or `cfg.plan.advisor == "none"`.
-    TODO(plan-advisor): send plan + profile summary to the LLM, accept only additive recipe suggestions from a
-    whitelist, record them in plan.notes.
-    """
+
+# What the planned composites already include (so the advisor is told, and duplicates are filtered deterministically).
+ADVISOR_COVERAGE: dict[str, list[str]] = {
+    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": [
+        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",          # via UpgradeSpringBoot_3_0 chain
+        "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
+        "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
+        "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean",
+        "org.openrewrite.java.spring.boot4.SpringBootProperties_4_0",
+    ],
+    "com.company.migrate.ServletToJakartaAndBoot": [
+        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+    ],
+    "org.openrewrite.java.migrate.UpgradeToJava21": [
+        "org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime",      # JAXB handling is part of the JDK 11+ chain
+    ],
+}
+
+
+def _covered_by(planned: set[str]) -> dict[str, str]:
+    """recipe id → the planned composite that already includes it."""
+    out: dict[str, str] = {}
+    for comp, inner in ADVISOR_COVERAGE.items():
+        if comp in planned:
+            for rid in inner:
+                out.setdefault(rid, comp)
+    return out
+
+
+def _artifact_for(recipe_id: str) -> Optional[str]:
+    if recipe_id.startswith("org.openrewrite.java.migrate."):
+        return "org.openrewrite.recipe:rewrite-migrate-java"
+    if recipe_id.startswith("org.openrewrite.java.spring."):
+        return "org.openrewrite.recipe:rewrite-spring"
+    if recipe_id.startswith("org.openrewrite.java.testing."):
+        return "org.openrewrite.recipe:rewrite-testing-frameworks"
+    return None
+
+
+def _advisor_prompt(plan: MigrationPlan, profile: ProjectProfile, catalog: dict[str, str]) -> str:
+    libs = ", ".join(f"{l.name}{'@' + l.version if l.version else ''}" for l in profile.libraries) or "-"
+    javax = ", ".join(f"{k}:{v}" for k, v in sorted(profile.source.javax_imports.items())) or "-"
+    steps = "\n".join(f"- {st.id} [{st.phase.value}]: " + (", ".join(r.id for r in st.recipes) or "(no recipes)")
+                      for st in plan.steps if st.recipes or st.kind.value == "openrewrite")
+    cat = "\n".join(f"- {rid}: {desc}" for rid, desc in catalog.items())
+    planned_ids = {r.id for st in plan.steps for r in st.recipes}
+    covered = _covered_by(planned_ids)
+    coverage = "\n".join(f"- {rid} is already included by {comp}" for rid, comp in sorted(covered.items())) or "- (none)"
+    return (
+        "PROJECT PROFILE\n"
+        f"- case: {profile.case_type.value} (confidence {profile.confidence:.2f}); reasons: {'; '.join(profile.reasons[:6])}\n"
+        f"- java: {profile.java_version}, spring-boot: {profile.spring_boot_version}, spring: {profile.spring_version}, packaging: {profile.packaging}\n"
+        f"- libraries: {libs}\n- javax imports: {javax}\n"
+        f"- jakarta imports: {', '.join(sorted(profile.source.jakarta_imports)) or '-'}\n"
+        f"- main classes: {len(profile.source.main_classes)}, servlets: {len(profile.source.servlet_classes)}, "
+        f"web.xml: {profile.source.has_web_xml}, xml bean configs: {len(profile.source.xml_bean_configs)}, "
+        f"java files: {profile.source.java_files}, test files: {profile.source.test_files}\n"
+        f"- warnings: {'; '.join(profile.warnings[:6]) or '-'}\n\n"
+        "RULE-BASED PLAN (OpenRewrite steps)\n" + steps + "\n\n"
+        "CATALOG OF RECIPES YOU MAY ADD\n" + cat + "\n\n"
+        "ALREADY COVERED BY PLANNED COMPOSITE RECIPES (do not suggest these)\n" + coverage + "\n\n"
+        "Task: suggest ONLY additional recipes from the catalog that the profile clearly warrants and the plan lacks "
+        "(e.g. junit4 present but no JUnit4to5Migration). Do not suggest recipes already planned, do not remove anything, "
+        "do not invent ids. If nothing is missing, return an empty list. Also list short concerns the migration team "
+        "should know (max 5).\n"
+        'Answer with JSON only: {"add": [{"recipe": "<catalog id>", "phase": "spring" | "jdk21", "reason": "<why>"}], '
+        '"concerns": ["<text>"]}'
+    )
+
+
+def _parse_advice(text: str) -> tuple[list[dict], list[str], Optional[str]]:
+    import json as _json
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = t.strip("`")
+        t = t.split("\n", 1)[1] if "\n" in t else t
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return [], [], "advisor answer is not JSON"
+    try:
+        data = _json.loads(t[i:j + 1])
+    except ValueError as e:
+        return [], [], f"advisor JSON invalid: {e}"
+    adds = [a for a in (data.get("add") or []) if isinstance(a, dict) and a.get("recipe")]
+    concerns = [str(c) for c in (data.get("concerns") or []) if c][:5]
+    return adds, concerns, None
+
+
+def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
+                cfg: Optional[Config] = None, *, catalog: Optional[dict[str, str]] = None) -> MigrationPlan:
+    """Optional LLM review of the rule-based plan (`cfg.plan.advisor == "llm"`, model `cfg.llm.recipe_model`).
+
+    The advisor is additive only: it may add catalog recipes to the OpenRewrite steps and record concerns in
+    `plan.notes`; unknown ids, already-planned ids and malformed answers are ignored (noted). Never raises."""
     if llm is None or (cfg is not None and cfg.plan.advisor == "none"):
         return plan
-    raise NotImplementedError("LLM plan advisor is not implemented yet (set plan.advisor: none)")
+    catalog = catalog or ADVISOR_CATALOG
+    model = (cfg.llm.recipe_model or None) if cfg is not None else None
+    try:
+        from sbmig.core.interfaces import ChatMessage
+        resp = llm.complete(
+            [ChatMessage(role="system", content="You are a senior Java/Spring migration planner. You review a "
+                                                 "rule-based OpenRewrite plan and only add clearly warranted recipes "
+                                                 "from a fixed catalog. Answer with JSON only."),
+             ChatMessage(role="user", content=_advisor_prompt(plan, profile, catalog))],
+            model=model, max_tokens=1200, temperature=0.0)
+    except Exception as e:  # advisor must never break planning
+        plan.notes.append(f"advisor: LLM call failed ({type(e).__name__}: {e}); plan unchanged")
+        return plan
+    used = getattr(resp, "model", model) or model or "?"
+    try:
+        from sbmig.core.models import LLMUsage
+        plan.llm_usage = plan.llm_usage.add(LLMUsage(model=used, calls=1, input_tokens=int(resp.input_tokens or 0),
+                                                     output_tokens=int(resp.output_tokens or 0)))
+    except Exception:  # pragma: no cover - bookkeeping only
+        pass
+    adds, concerns, err = _parse_advice(getattr(resp, "content", "") or "")
+    plan.notes.append(f"advisor[{used}]: {resp.input_tokens}+{resp.output_tokens} tokens, "
+                      f"{len(adds)} suggestion(s), {len(concerns)} concern(s)")
+    if err:
+        plan.notes.append(f"advisor: {err}; plan unchanged")
+        return plan
+    planned = {r.id for st in plan.steps for r in st.recipes}
+    for a in adds:
+        rid = str(a.get("recipe", "")).strip()
+        phase = str(a.get("phase", "spring")).strip().lower()
+        reason = str(a.get("reason", "")).strip()[:200]
+        if rid not in catalog:
+            plan.notes.append(f"advisor: ignored unknown recipe {rid}")
+            continue
+        if rid in planned:
+            plan.notes.append(f"advisor: {rid} already planned")
+            continue
+        covered = _covered_by(planned)
+        if rid in covered:
+            plan.notes.append(f"advisor: {rid} already covered by {covered[rid]}; not added")
+            continue
+        step_prefix = "jdk21.rewrite" if phase == "jdk21" else "spring.rewrite"
+        targets = [st for st in plan.steps if st.id == step_prefix or st.id.startswith(step_prefix + "@")]
+        if not targets:
+            plan.notes.append(f"advisor: no {step_prefix} step to attach {rid}; ignored")
+            continue
+        for st in targets:
+            st.recipes.append(RecipeRef(id=rid, source="builtin", artifact=_artifact_for(rid)))
+        planned.add(rid)
+        plan.notes.append(f"advisor: +{rid} → {step_prefix} ({reason or 'no reason given'})")
+    for c in concerns:
+        plan.notes.append(f"advisor concern: {c}")
+    return plan
