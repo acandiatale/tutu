@@ -64,3 +64,17 @@ Known limits to validate in the company environment (see RUNBOOK §0 and ARCHITE
 * Nexus must proxy `org.openrewrite.*` (plugin 6.46.1, recipe BOM 3.37.0 — 3.38.0 is not consistent on Central yet);
 * the LLM endpoint (OpenAI-compatible default) and its budget (`loop.max_llm_calls`);
 * `web.xml` / JSP / XML bean wiring stay runtime follow-ups by design.
+
+## Status — 2026-10-18, round 2 (edge / failure cases + real-LLM validation)
+
+| Check | Result |
+|---|---|
+| Offline unit tests | 624+ passed |
+| Asserted fixture e2e (`scripts/e2e.sh`, 12 fixtures incl. 6 failure scenarios, fake LLM) | **12/12 expectations met** (`boot2-javax-lib` → blocked `external_javax_api` attributed to `com.company.legacy:legacy-web-lib:1.0.0` / `LegacyRequestHelper`, exit 2, 0 LLM calls; `boot2-javax-lib-optional` → optional bump 1.0.0→2.0.0 fixes it; `euckr-legacy` → `source-encoding-set:cp949`; `enforcer-java8-werror` → `enforcer-relaxed`, `werror-removed`; `missing-artifact` → blocked `artifact_not_found` in 10 s; `msa-shared-lib` → shared library root migrated first, reactor-aware rewrite/build) |
+| Real Anthropic API, roles | fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5` (`config/llm-anthropic.yml`, key via `LLM_API_KEY` only) |
+| Real-LLM KB loop (`scripts/demo-kb/run.sh … config/llm-anthropic.yml`) | run 1: Sonnet patched `@JsonComponent`→`@JacksonComponent` (first answer had an ambiguous SEARCH; the applier's feedback round got a corrected patch), Haiku produced the `ChangeType` recipe candidate; run 2: candidate ran inside the plan, **0 fix calls**, promoted to active |
+| Real-LLM `boot2-javax-lib` | blocked with full attribution, **Sonnet never called** for the javax cluster (policy 0); 1 Haiku advisor call |
+| Real-LLM `msa-shared-lib` | BUILD SUCCESS, 1 Haiku advisor call |
+| Haiku plan advisor | additive-only, catalog + composite-coverage + profile gates; its concerns land in `plan.notes`/report. Observed: useful concerns, occasional unwarranted suggestions (now filtered deterministically) |
+
+Known follow-ups: `ADVISOR_CATALOG` is intentionally small (verified ids only); extend it per company recipe inventory.

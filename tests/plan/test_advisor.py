@@ -58,3 +58,22 @@ def test_advisor_is_safe_on_garbage_errors_and_disabled(cfg):
     cfg.plan.advisor = "none"
     assert advise_plan(plan, _profile(), llm=_LLM("{}"), cfg=cfg) is plan
     assert all(rid in ADVISOR_CATALOG for rid in ADVISOR_CATALOG)
+
+
+def test_advisor_gates_reject_unwarranted_suggestions(cfg):
+    """A small model may suggest JUnit4to5Migration without junit4 or Security 7 without spring-security: gated."""
+    cfg.plan.advisor = "llm"
+    cfg.openrewrite.recipes.junit5 = []
+    prof = _profile()
+    prof.libraries = []                      # no junit4, no spring-security
+    plan = build_plan(prof, cfg)
+    llm = _LLM('{"add": [{"recipe": "org.openrewrite.java.testing.junit5.JUnit4to5Migration", "phase": "spring", "reason": "just in case"},'
+               '{"recipe": "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0", "phase": "spring", "reason": "x"}], "concerns": []}')
+    out = advise_plan(plan, prof, llm=llm, cfg=cfg)
+    ids = [r.id for r in next(s for s in out.steps if s.id == "spring.rewrite").recipes]
+    assert "org.openrewrite.java.testing.junit5.JUnit4to5Migration" not in ids
+    assert ids.count("org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0") == 0
+    # junit: gated (no junit4); security 7: already covered by the planned Boot 4.0 umbrella (coverage check runs first)
+    assert sum(1 for n in out.notes if "not warranted" in n) == 1
+    assert any("UpgradeSpringSecurity_7_0 already covered by org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0" in n
+               for n in out.notes)

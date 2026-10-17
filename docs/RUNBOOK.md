@@ -19,6 +19,16 @@ export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
 
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
 
+## 0.5 LLM roles (two models)
+| Role | Config key | Suggested model | Used for |
+|---|---|---|---|
+| source fixes | `llm.model` | `claude-sonnet-5` (or the in-house model) | build-fix loop patches (SEARCH/REPLACE protocol) |
+| recipe work | `llm.recipe_model` | `claude-haiku-4-5` | plan advisor (`plan.advisor: llm`, additive, whitelist-only) and KB recipe-candidate generation |
+| escalation | `llm.escalation_model` | optional stronger model | after a stall |
+
+`config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
+Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
+
 ## 1. Running a migration
 ```bash
 sbmig run path/to/project.zip --config config/artifacts.yml --out out/

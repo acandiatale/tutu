@@ -497,6 +497,30 @@ ADVISOR_COVERAGE: dict[str, list[str]] = {
 }
 
 
+def _has_javax_ee(profile: ProjectProfile) -> bool:
+    ee = ("javax.servlet", "javax.persistence", "javax.validation", "javax.annotation", "javax.inject",
+          "javax.transaction", "javax.ws", "javax.jms", "javax.mail", "javax.websocket", "javax.el", "javax.xml.bind")
+    return any(k.startswith(ee) for k in profile.source.javax_imports)
+
+
+# Profile facts a suggestion must be backed by — a small model sometimes suggests recipes "just in case".
+ADVISOR_GATES: dict[str, Any] = {
+    "org.openrewrite.java.testing.junit5.JUnit4to5Migration": lambda p: p.has_library("junit4"),
+    "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta": _has_javax_ee,
+    "org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind":
+        lambda p: any(k.startswith("javax.xml.bind") for k in p.source.javax_imports),
+    "org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime":
+        lambda p: any(k.startswith(("javax.xml.bind", "jakarta.xml.bind")) for k in
+                      {**p.source.javax_imports, **p.source.jakarta_imports}),
+    "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0": lambda p: p.has_library("spring-security"),
+    "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0":
+        lambda p: p.case_type in (CaseType.SPRING_LEGACY, CaseType.SPRING_BOOT) or p.spring_version is not None,
+    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": lambda p: p.spring_boot_version is not None,
+    "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1": lambda p: p.spring_boot_version is not None,
+    "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean": lambda p: p.source.test_files > 0,
+}
+
+
 def _covered_by(planned: set[str]) -> dict[str, str]:
     """recipe id → the planned composite that already includes it."""
     out: dict[str, str] = {}
@@ -616,6 +640,14 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
         covered = _covered_by(planned)
         if rid in covered:
             plan.notes.append(f"advisor: {rid} already covered by {covered[rid]}; not added")
+            continue
+        gate = ADVISOR_GATES.get(rid)
+        try:
+            warranted = True if gate is None else bool(gate(profile))
+        except Exception:  # pragma: no cover - defensive
+            warranted = True
+        if not warranted:
+            plan.notes.append(f"advisor: {rid} not warranted by the profile; ignored ({reason or 'no reason'})")
             continue
         step_prefix = "jdk21.rewrite" if phase == "jdk21" else "spring.rewrite"
         targets = [st for st in plan.steps if st.id == step_prefix or st.id.startswith(step_prefix + "@")]

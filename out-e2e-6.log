@@ -1,0 +1,11 @@
+==> boot2-javax-lib
+    exit=2 final_build_ok=NO 45.7s  expect=PASS  ok
+==> msa-shared-lib
+    exit=0 final_build_ok=yes 95.6s  expect=PASS  ok
+
+fixture          case         exit  phases ok  final build ok  llm calls  unresolved  blocked  duration s  expect  note
+---------------  -----------  ----  ---------  --------------  ---------  ----------  -------  ----------  ------  ----
+boot2-javax-lib  spring_boot  2     1/4        NO              0          0           2        45.7        PASS        
+msa-shared-lib   msa          0     8/8        yes             0          0           0        95.6        PASS        
+
+summary: /Users/acandiatale/webWorkspace/migration-agent/out/e2e6/summary.md
