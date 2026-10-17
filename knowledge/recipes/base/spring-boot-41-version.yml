@@ -1,0 +1,40 @@
+# Project-owned declarative OpenRewrite recipes, always composed into the run's rewrite.yml.
+# UpgradeSpringBoot_4_0 stops at 4.0.x; this bumps every Boot coordinate to the configured 4.1 line.
+# NOTE: the version strings below are templated by sbmig.rewrite.runner from config.target.spring_boot_version.
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: com.company.migrate.SpringBoot41Version
+displayName: Pin Spring Boot coordinates to 4.1.x
+description: After the 4.0 umbrella recipe, move parent / BOM / plugin / direct spring-boot dependencies to 4.1.x.
+recipeList:
+  - org.openrewrite.maven.UpgradeParentVersion:
+      groupId: org.springframework.boot
+      artifactId: spring-boot-starter-parent
+      newVersion: "{{SPRING_BOOT_VERSION}}"
+  - org.openrewrite.java.dependencies.UpgradeDependencyVersion:
+      groupId: org.springframework.boot
+      artifactId: spring-boot-dependencies
+      newVersion: "{{SPRING_BOOT_VERSION}}"
+      overrideManagedVersion: true
+  - org.openrewrite.java.dependencies.UpgradeDependencyVersion:
+      groupId: org.springframework.boot
+      artifactId: "*"
+      newVersion: "{{SPRING_BOOT_VERSION}}"
+      overrideManagedVersion: false
+  - org.openrewrite.maven.UpgradePluginVersion:
+      groupId: org.springframework.boot
+      artifactId: spring-boot-maven-plugin
+      newVersion: "{{SPRING_BOOT_VERSION}}"
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: com.company.migrate.ServletToJakartaAndBoot
+displayName: Servlet/Tomcat project preparation
+description: javax → jakarta for raw servlet projects plus servlet-api dependency swap.
+recipeList:
+  - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+  - org.openrewrite.java.dependencies.ChangeDependency:
+      oldGroupId: javax.servlet
+      oldArtifactId: javax.servlet-api
+      newGroupId: jakarta.servlet
+      newArtifactId: jakarta.servlet-api
+      newVersion: 6.1.x

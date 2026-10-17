@@ -1,0 +1,117 @@
+# sbmig default configuration. Company-specific coordinates go in a separate file (see artifacts.example.yml)
+# and are passed with:  sbmig run <zip|dir> --config config/artifacts.yml
+# Any value can be overridden by env:  SBMIG_LLM__MODEL=... (double underscore = nesting)
+
+target:
+  java_version: "21"
+  spring_boot_version: "4.1.0"
+  spring_framework_version: "7.0.x"
+
+layout:
+  module_dir: module
+  boot_module: boot-jar
+  comp_module: comp-jar
+  boot_artifact_suffix: "-boot"
+  comp_artifact_suffix: "-comp"
+  # minimal  : every as-is source goes to comp-jar; boot-jar holds only the Application class (+ boot resources, @SpringBootTest tests)
+  # web-layer: @SpringBootApplication/@Controller/@RestController/@Configuration/@ControllerAdvice classes move to boot-jar
+  split_policy: minimal
+  # as-is multi-module (non-MSA):  wrap  = move existing modules under module/ unchanged and add boot-jar
+  #                                merge = merge all module sources into comp-jar (riskier)
+  multi_module_policy: wrap
+  application_class_name: Application
+  starter_by_case:
+    pure_java: spring-boot-starter
+    servlet_tomcat: spring-boot-starter-webmvc
+    spring_legacy: spring-boot-starter-webmvc
+    spring_boot: auto
+  add_servlet_component_scan: true
+  import_xml_bean_configs: true
+  msa_parent_policy: per-service-root
+
+openrewrite:
+  # verified on Maven Central 2026-10: rewrite-maven-plugin 6.46.1, rewrite-recipe-bom 3.38.0
+  plugin_version: "6.46.1"
+  recipe_bom_version: "3.38.0"
+  recipe_artifacts:
+    - org.openrewrite.recipe:rewrite-migrate-java
+    - org.openrewrite.recipe:rewrite-spring
+    - org.openrewrite.recipe:rewrite-testing-frameworks
+    - org.openrewrite.recipe:rewrite-static-analysis
+  recipes:
+    jdk21:
+      - org.openrewrite.java.migrate.UpgradeToJava21
+    jakarta:
+      - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+    spring_boot_4:
+      # no UpgradeSpringBoot_4_1 umbrella exists yet (2026-10): 4.0 umbrella + 4.1 properties + our version bump recipe
+      - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
+      - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
+      - com.company.migrate.SpringBoot41Version
+    spring_framework_7:
+      - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
+    spring_security_7:
+      - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
+    junit5:
+      - org.openrewrite.java.testing.junit5.JUnit4to5Migration
+  base_recipe_dir: knowledge/recipes/base
+  timeout_minutes: 40
+  jvm_args: ["-Xmx4g"]
+  plugin_goal: run
+
+build:
+  mvn: mvn
+  settings_file: null          # in-house Nexus settings.xml
+  local_repo: null
+  java_home: null              # JDK 21 home (strongly recommended to pin)
+  offline: false
+  extra_args: ["-B", "-ntp", "-Dstyle.color=never"]
+  skip_tests: true
+  allow_skip_test_compile_fallback: true
+  timeout_minutes: 30
+
+loop:
+  phases:
+    jdk21:       { goal: compile,      max_iterations: 3 }
+    spring:      { goal: test-compile, max_iterations: 6 }
+    restructure: { goal: package,      max_iterations: 6 }
+  max_llm_calls: 60
+  max_total_minutes: 180
+  stall_limit: 2
+  max_clusters_per_iteration: 8
+  revert_on_regression: true
+  regression_ratio: 1.5
+  always_final_verify: true
+
+llm:
+  provider: openai_compatible      # openai_compatible | anthropic | fake
+  base_url: "${LLM_BASE_URL:-http://localhost:8000/v1}"
+  api_key_env: LLM_API_KEY
+  model: "${LLM_MODEL:-default}"
+  escalation_model: null
+  temperature: 0.0
+  max_output_tokens: 8000
+  max_context_chars: 60000
+  timeout_seconds: 180
+  max_retries: 3
+  max_context_rounds: 2
+  prompt_version: v1
+
+kb:
+  dir: kb
+  use_active_recipes: true
+  use_patch_replay: true
+  use_hints: true
+  harvest: true
+  generate_recipe_candidates: true
+  auto_promote_after_projects: 2
+  max_hints: 5
+
+plan:
+  advisor: none
+  intermediate_builds: true
+
+report:
+  formats: [md, json]
+  zip_result: true
+  include_diff: true
