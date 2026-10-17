@@ -584,7 +584,17 @@ class Restructurer:
             c.followup("JSPs under src/main/webapp require tomcat-embed-jasper and may need relocation to "
                        "src/main/resources/META-INF/resources to be served from an executable jar")
         if moved_tests:
-            deps.append(GAV(group_id=BOOT_GROUP, artifact_id="spring-boot-starter-test", scope="test"))
+            # the moved @SpringBootTest classes need the SAME test classpath they had in the as-is module
+            # (starter-test, *-test modular starters, security-test, h2, testcontainers ...), not just starter-test
+            have = {d.key for d in deps}
+            test_deps = [d for d in asis_deps if d.scope == "test" and d.key not in have]
+            if not any(d.artifact_id == "spring-boot-starter-test" for d in test_deps) \
+                    and "org.springframework.boot:spring-boot-starter-test" not in have:
+                test_deps.insert(0, GAV(group_id=BOOT_GROUP, artifact_id="spring-boot-starter-test", scope="test"))
+            deps.extend(test_deps)
+            # runtime-scoped deps (embedded DB drivers etc.) are needed to boot the context in tests
+            deps.extend(d for d in asis_deps if d.scope == "runtime" and d.key not in have
+                        and d.key not in {t.key for t in test_deps})
         plugin_version = None if A.parent_manages_spring_boot else c.cfg.target.spring_boot_version
         main_class = moved_main[0] if len(moved_main) > 1 else None
         if main_class:
@@ -859,6 +869,20 @@ class Restructurer:
                     if ref.section == "dependencies" and ref.key in managed:
                         continue                       # bumped where it is managed
                     if ref.section == "dependencyManagement":
+                        continue
+                    # version managed by the (Boot/in-house) parent: prefer the conventional override property
+                    # (`<artifactId>.version`, as Boot's BOM uses) or the configured property_name when one exists
+                    # in the project, instead of pinning a literal that would shadow the property.
+                    conv = spec.property_name or f"{spec.artifact_id}.version"
+                    own = owner_of(conv, p)
+                    if own is not None:
+                        if (own[0], conv) in done_props:
+                            continue
+                        done_props.add((own[0], conv))
+                        cur = own[1].get_property(conv)
+                        if cur != spec.version:
+                            own[1].set_property(conv, spec.version)
+                            record(spec.key, cur, spec.version)
                         continue
                     ed.set_ref_version(ref.element, spec.version)
                     record(spec.key, None, spec.version)

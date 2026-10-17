@@ -687,6 +687,141 @@ class TestCompileSkip(Handler):
         return []
 
 
+# ---------------------------------------------------------------------------
+# add-known-dependency: compile error references a package whose artifact is known → add it to the module pom
+# ---------------------------------------------------------------------------
+class KnownPackage(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    package: str
+    artifact: str
+    managed: bool = True
+    version: Optional[str] = None
+    scope: Optional[str] = None
+    symbols: tuple[str, ...] = ()
+
+    @property
+    def key(self) -> str:
+        return self.artifact
+
+
+@lru_cache(maxsize=1)
+def known_package_table() -> tuple[KnownPackage, ...]:
+    doc = yaml.safe_load((_DATA_DIR / "known_packages.yml").read_text(encoding="utf-8")) or {}
+    rows = []
+    for row in doc.get("packages", []):
+        row = dict(row)
+        if "symbols" in row:
+            row["symbols"] = tuple(row["symbols"])
+        rows.append(KnownPackage(**row))
+    # longest package prefix first so `org.springframework.boot.test` beats `org.springframework.boot`
+    return tuple(sorted(rows, key=lambda r: -len(r.package)))
+
+
+_PKG_PATTERNS = (
+    re.compile(r"package (\S+) does not exist"),
+    re.compile(r"cannot access ([\w.$]+)"),                 # cannot access org.hamcrest.Matcher → org.hamcrest
+    re.compile(r"class file for ([\w.$]+) not found"),
+    re.compile(r"location:\s+package ([\w.]+)"),
+    re.compile(r"location:\s+(?:class|interface) ([\w.$]+)"),
+)
+
+
+def _missing_refs(cluster: Optional[ErrorCluster]) -> list[tuple[str, str]]:
+    """(package-ish reference, simple symbol) pairs mentioned by the cluster's errors."""
+    if cluster is None:
+        return []
+    out: list[tuple[str, str]] = []
+    for e in cluster.errors:
+        text = "\n".join(x for x in (e.message, e.raw, e.location) if x)
+        sym = ""
+        m = re.search(r"symbol:\s+(?:class|interface|variable|method|enum|record)\s+([\w$]+)", e.raw or "")
+        if m:
+            sym = m.group(1)
+        elif e.symbol:
+            parts = e.symbol.split()
+            sym = parts[-1].split("(")[0] if parts else ""
+        for pat in _PKG_PATTERNS:
+            for mm in pat.finditer(text):
+                out.append((mm.group(1).rstrip(".;,"), sym))
+    return out
+
+
+def _boot_managed_project(ws: Workspace, cfg: Optional[Config]) -> bool:
+    """True when some pom is governed by a Spring Boot parent / BOM or by the configured in-house parent."""
+    markers = ["<artifactId>spring-boot-starter-parent</artifactId>", "<artifactId>spring-boot-dependencies</artifactId>"]
+    if cfg is not None:
+        markers.append(f"<artifactId>{cfg.artifacts.parent.artifact_id}</artifactId>")
+    for rel in all_poms(ws):
+        try:
+            text = ws.read(rel)
+        except OSError:  # pragma: no cover
+            continue
+        if any(mk in text for mk in markers):
+            return True
+    return False
+
+
+class AddKnownDependency(PomHandler):
+    id = "add-known-dependency"
+    description = ("add a well-known artifact when a compile error references its package "
+                   "(hamcrest, jakarta.*, spring-boot-jackson2, modular *-test starters …)")
+    kinds = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE})
+    triggers = (r"package \S+ does not exist", r"cannot access [\w.$]+", r"class file for [\w.$]+ not found",
+                r"cannot find symbol")
+    preemptive_phase = Phase.SPRING
+
+    @staticmethod
+    def _lookup(ref: str, sym: str) -> Optional[KnownPackage]:
+        for row in known_package_table():
+            if ref == row.package or ref.startswith(row.package + "."):
+                if row.symbols and sym and sym not in row.symbols:
+                    continue
+                if row.symbols and not sym:
+                    continue
+                return row
+        return None
+
+    def _wanted(self, cluster: Optional[ErrorCluster]) -> list[KnownPackage]:
+        out: list[KnownPackage] = []
+        for ref, sym in _missing_refs(cluster):
+            row = self._lookup(ref, sym)
+            if row is not None and row not in out:
+                out.append(row)
+        return out
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        return bool(self._wanted(cluster))
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        wanted = self._wanted(cluster)
+        if not wanted or cluster is None:
+            return []
+        managed = _boot_managed_project(ws, cfg)
+        kv = known_versions()
+        test_scope = cluster.kind == ErrorKind.TEST_COMPILE
+        changed: list[str] = []
+        for rel in poms_for_cluster(ws, cluster, profile):
+            ed = self.editor(ws, rel)
+            ch = False
+            for row in wanted:
+                g, a = row.artifact.split(":", 1)
+                if ed.has_dependency(g, a):
+                    continue
+                version = None if (row.managed and managed) else \
+                    (row.version or kv.get(row.artifact) or version_for(row.artifact, cfg))
+                if version is None and not (row.managed and managed):
+                    log.info("add-known-dependency: no version known for %s in an unmanaged project — skipped",
+                             row.artifact)
+                    continue
+                scope = "test" if test_scope else row.scope
+                ch |= bool(ed.add_dependency(GAV(group_id=g, artifact_id=a, version=version, scope=scope)))
+                log.info("add-known-dependency: %s%s → %s", row.artifact, f":{version}" if version else "", rel)
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
 def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
     """Registration order = reactive precedence (first matching handler wins)."""
     return [
@@ -696,6 +831,7 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         DependencyRelocation(),
         QuerydslJakartaClassifier(),
         JaxbRuntimeAdd(),
+        AddKnownDependency(),
         LombokVersionFloor(),
         MapstructVersionFloor(),
         CompilerPluginFloor(),

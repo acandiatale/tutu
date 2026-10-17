@@ -1,0 +1,23 @@
+==> pure-java
+    exit=0 final_build_ok=yes 34.8s  ok
+==> servlet-tomcat
+    exit=0 final_build_ok=yes 33.7s  ok
+==> spring5-xml
+    exit=0 final_build_ok=yes 39.3s  ok
+==> boot2
+    exit=0 final_build_ok=yes 39.8s  ok
+==> boot3
+    exit=2 final_build_ok=NO 36.4s  not ok
+==> msa
+    exit=0 final_build_ok=yes 62.9s  ok
+
+fixture         case            exit  phases ok  final build ok  llm calls  unresolved  duration s  note                
+--------------  --------------  ----  ---------  --------------  ---------  ----------  ----------  --------------------
+pure-java       pure_java       0     4/4        yes             0          0           34.8                            
+servlet-tomcat  servlet_tomcat  0     4/4        yes             0          0           33.7                            
+spring5-xml     spring_legacy   0     4/4        yes             2          2           39.3        test-compile-skipped
+boot2           spring_boot     0     4/4        yes             0          0           39.8                            
+boot3           spring_boot     2     1/4        NO              2          2           36.4                            
+msa             msa             0     6/6        yes             0          0           62.9                            
+
+summary: /Users/acandiatale/webWorkspace/migration-agent/out/e2e/summary.md

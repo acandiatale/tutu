@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from sbmig.core.config import load_config
-from sbmig.core.models import BuildError, BuildResult, ErrorKind, GAV, ProjectProfile, CaseType
+from sbmig.core.models import BuildError, BuildResult, ErrorKind, GAV, ProjectProfile
 from sbmig.core.workspace import Workspace
 
 

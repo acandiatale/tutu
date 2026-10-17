@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 
 import pytest
 
-from sbmig.core.models import (CaseType, DecisionKind, ErrorKind, FileChange, MigrationPlan, Phase, PlanStep,
-                               RecipeRef, RunReport, StepKind)
+from sbmig.core.models import (CaseType, ErrorKind, FileChange, MigrationPlan, Phase, PlanStep,
+                               RunReport, StepKind)
 from sbmig.loop import MissingComponentError, NullKnowledgeBase, Orchestrator, lazy_attr
 from sbmig.triage import HandlerRegistry, Triager
 from sbmig.triage.handlers import Handler

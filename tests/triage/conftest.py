@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sbmig.core.models import GAV, CaseType, PluginInfo, PomInfo, ProjectProfile
+from sbmig.core.models import CaseType, PomInfo, ProjectProfile
 from sbmig.core.workspace import Workspace
 from sbmig.triage import HandlerRegistry
 

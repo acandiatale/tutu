@@ -34,12 +34,16 @@ old types unattributed, so many `ChangeType`-style recipes would silently no-op.
 | pure_java | UpgradeToJava21 | jakarta (only if `javax.*` EE imports found); JUnit4→5 if junit4 | layout + `spring-boot-starter`, generated `Application` |
 | servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | layout + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → followup note |
 | spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 (+Security 7 if present) | layout + webmvc starter, `@ImportResource` for XML bean files |
-| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version | layout; existing `@SpringBootApplication` class moves to boot-jar |
+| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4Jackson2Bridge (Jackson 2 `@JsonComponent` & co → deprecated `spring-boot-jackson2` module) | layout; existing `@SpringBootApplication` class moves to boot-jar |
 | msa | per service | per service by its own sub-case | `msa_pom` only, directory structure untouched |
 
 Pre-emptive handlers from the profile (run before the first build of a phase): lombok ≥ 1.18.30 for JDK 21,
 mapstruct ≥ 1.6, querydsl jakarta classifier, maven-compiler-plugin ≥ 3.13, surefire ≥ 3.2, etc.
 (`sbmig/triage/handlers/`).
+Reactive handlers (triggered by build errors): `dependency-relocation` (javax→jakarta artifacts, Boot 4 starter renames),
+`add-known-dependency` (error references a package whose artifact is known: hamcrest, modular `*-test` starters,
+`spring-boot-jackson2`, jakarta APIs, jsr305 …; version omitted when a Boot/in-house parent manages it),
+`missing-dependency-version`, `jaxb-runtime-add`, plus `recipe_rules.yml` mapping error patterns to builtin recipes.
 
 ## 3. Build-fix loop (the heart)
 

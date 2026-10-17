@@ -34,7 +34,6 @@ from .models import (
     KBCase,
     KBMatch,
     KBRecipe,
-    MigrationPlan,
     Phase,
     PhaseResult,
     PluginInfo,

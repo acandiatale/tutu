@@ -602,3 +602,44 @@ def test_optional_alias_and_property_name(tmp_path: Path, cfg: Config) -> None:
     assert not any("lib-web" in b for b in res.optional_bumped)           # absent optional never added
     assert all("lib-web" not in d.key for d in c.dependencies())
     assert any("renamed to com.company.lib:lib-auth" in n for n in res.notes)
+
+
+def test_boot_jar_inherits_asis_test_and_runtime_deps_when_tests_move(tmp_path: Path, cfg_rm: Config) -> None:
+    """Moved @SpringBootTest classes need the as-is test classpath (modular *-test starters, security-test, h2)."""
+    files = boot2_files()
+    files["pom.xml"] = files["pom.xml"].replace(
+        dep("org.springframework.boot", "spring-boot-starter-test", scope="test"),
+        dep("org.springframework.boot", "spring-boot-starter-test", scope="test")
+        + dep("org.springframework.boot", "spring-boot-starter-webmvc-test", scope="test")
+        + dep("org.springframework.boot", "spring-boot-starter-security-test", scope="test")
+        + dep("com.h2database", "h2", scope="runtime"))
+    ws = make_ws(tmp_path, files, "boot2-testdeps")
+    res = Restructurer().apply(ws, boot2_profile(ws), cfg_rm, mode="layout")
+    assert res.ok, res.error
+    b = xml(ws.root / "module/boot-jar/pom.xml")
+    keys = dep_keys(b)
+    assert "org.springframework.boot:spring-boot-starter-webmvc-test" in keys
+    assert "org.springframework.boot:spring-boot-starter-security-test" in keys
+    assert "com.h2database:h2" in keys
+    assert keys.count("org.springframework.boot:spring-boot-starter-test") == 1
+    bdeps = {f"{t(d, 'groupId')}:{t(d, 'artifactId')}": d for d in all_(b, "dependencies/dependency")}
+    assert t(bdeps["org.springframework.boot:spring-boot-starter-security-test"], "scope") == "test"
+    assert t(bdeps["com.h2database:h2"], "scope") == "runtime"
+    assert "org.springframework.boot:spring-boot-starter-web" not in keys       # compile deps come via comp-jar
+
+
+def test_optional_bump_prefers_conventional_override_property(tmp_path: Path, cfg_rm: Config) -> None:
+    """lombok has no version (managed by the parent) but the project defines <lombok.version> → bump the property."""
+    files = boot2_files()
+    files["pom.xml"] = files["pom.xml"].replace(
+        "        <guava.version>30.0-jre</guava.version>\n",
+        "        <guava.version>30.0-jre</guava.version>\n        <lombok.version>1.18.48</lombok.version>\n")
+    ws = make_ws(tmp_path, files, "boot2-lombokprop")
+    res = Restructurer().apply(ws, boot2_profile(ws), cfg_rm, mode="layout")
+    assert res.ok, res.error
+    r = xml(ws.root / "pom.xml")
+    assert t(r, "properties/lombok.version") == "1.18.38"
+    c = xml(ws.root / "module/comp-jar/pom.xml")
+    cdeps = {f"{t(d, 'groupId')}:{t(d, 'artifactId')}": d for d in all_(c, "dependencies/dependency")}
+    assert t(cdeps["org.projectlombok:lombok"], "version") is None
+    assert any(e.startswith("org.projectlombok:lombok 1.18.48→1.18.38") for e in res.optional_bumped)

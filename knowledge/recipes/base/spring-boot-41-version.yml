@@ -38,3 +38,30 @@ recipeList:
       newGroupId: jakarta.servlet
       newArtifactId: jakarta.servlet-api
       newVersion: 6.1.x
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: com.company.migrate.Boot4Jackson2Bridge
+displayName: Keep Jackson 2 based @JsonComponent code compiling on Spring Boot 4 (jackson2 bridge module)
+description: >
+  Spring Boot 4 defaults to Jackson 3 and renamed the Jackson 2 support classes. Boot ships a deprecated
+  `spring-boot-jackson2` module that keeps the Jackson 2 API working. Moving the old types there is a pure
+  rename and keeps serializers written against com.fasterxml.* compiling; full Jackson 3 migration
+  (JacksonComponent / ObjectValueSerializer / tools.jackson.*) is left as a follow-up for the owners.
+  The `spring-boot-jackson2` dependency itself is added reactively by the `add-known-dependency` handler
+  when `package org.springframework.boot.jackson2 does not exist`. (class names verified in spring-boot-jackson2-4.1.0.jar)
+recipeList:
+  - org.openrewrite.java.ChangeType:
+      oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonComponent
+      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonComponent
+  - org.openrewrite.java.ChangeType:
+      oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonMixin
+      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonMixin
+  - org.openrewrite.java.ChangeType:
+      oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonObjectSerializer
+      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonObjectSerializer
+  - org.openrewrite.java.ChangeType:
+      oldFullyQualifiedTypeName: org.springframework.boot.jackson.JsonObjectDeserializer
+      newFullyQualifiedTypeName: org.springframework.boot.jackson2.JsonObjectDeserializer
+  - org.openrewrite.java.ChangeType:
+      oldFullyQualifiedTypeName: org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer
+      newFullyQualifiedTypeName: org.springframework.boot.jackson2.autoconfigure.Jackson2ObjectMapperBuilderCustomizer

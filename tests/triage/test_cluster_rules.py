@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sbmig.core.models import CaseType, ErrorKind, Phase, PomInfo
+from sbmig.core.models import ErrorKind, Phase, PomInfo
 from sbmig.triage import RecipeRules, Triager, cluster_errors, cluster_id, plan_iteration
 from sbmig.triage.cluster import cluster_label, module_index
 

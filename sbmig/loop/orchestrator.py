@@ -13,7 +13,7 @@ from typing import Any, Callable, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.models import (BuildError, BuildResult, CaseType, ErrorKind, HarvestResult, LLMUsage,
-                               MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile, RecipeRef, RunReport,
+                               MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile, RunReport,
                                StepKind, utcnow)
 from sbmig.core.workspace import Workspace
 

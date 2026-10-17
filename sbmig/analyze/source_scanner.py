@@ -15,7 +15,7 @@ from typing import Optional
 
 from sbmig.core.models import SourceStats
 
-from .pom_parser import WorkspaceView, is_skipped_path
+from .pom_parser import WorkspaceView
 
 log = logging.getLogger("sbmig.analyze")
 

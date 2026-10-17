@@ -84,6 +84,7 @@ class RecipeSetConfig(BaseModel):
         "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
         "com.company.migrate.SpringBoot41Version",       # project recipe in knowledge/recipes/base
+        "com.company.migrate.Boot4Jackson2Bridge",      # project recipe: Jackson 2 support classes → jackson2 module
     ])
     spring_framework_7: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",

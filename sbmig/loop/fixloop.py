@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
-from sbmig.core.models import (BuildError, BuildResult, DecisionKind, ErrorCluster, ErrorKind, FixAttempt,
+from sbmig.core.models import (BuildResult, DecisionKind, ErrorCluster, ErrorKind, FixAttempt,
                                IterationRecord, KBMatch, Phase, PhaseResult, ProjectProfile, RecipeRef,
                                TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
@@ -365,7 +365,8 @@ class BuildFixLoop:
     def _new_attempt(self, phase: Phase, iteration: int, n: int, c: ErrorCluster, d: TriageDecision,
                      build: BuildResult) -> FixAttempt:
         return FixAttempt(id=f"{phase.value}-{iteration}-{n}", phase=phase, iteration=iteration, cluster_id=c.id,
-                          decision=d, errors_before=build.error_count, cluster_signatures=list(c.signatures))
+                          decision=d, errors_before=build.error_count, cluster_signatures=list(c.signatures),
+                          cluster_errors=list(c.errors))   # KB harvest needs the errors (L2 signatures, sanitized copies)
 
     def _record(self, pr: PhaseResult, att: FixAttempt) -> None:
         pr.attempts.append(att)

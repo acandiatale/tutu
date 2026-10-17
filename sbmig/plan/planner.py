@@ -10,7 +10,6 @@ from __future__ import annotations
 import logging
 import posixpath
 import re
-from pathlib import Path
 from typing import Any, Optional
 
 from sbmig.core.config import Config

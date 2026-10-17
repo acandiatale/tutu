@@ -1,0 +1,40 @@
+# add-known-dependency handler table: a compile/test-compile error that references one of these packages
+# (`package X does not exist`, `cannot access X.Y`, `cannot find symbol … location: package X`) while the module pom
+# does not declare the artifact → add the dependency to that module's pom.
+#   package  : package prefix (longest match wins)
+#   artifact : "groupId:artifactId"
+#   managed  : true → omit <version> when the project is governed by a Spring Boot parent / spring-boot-dependencies
+#              BOM / the configured in-house parent (they manage it); otherwise `version` (or versions.yml) is used
+#   scope    : forced scope; a TEST_COMPILE error always yields scope test
+#   symbols  : only when the missing symbol is one of these simple names (optional)
+# Boot 4.1.0 coordinates verified on Maven Central 2026-10.
+packages:
+  # --- Spring Boot 4 modular test / bridge modules -----------------------------------------------------------------
+  - { package: org.springframework.boot.jackson2,                  artifact: "org.springframework.boot:spring-boot-jackson2",                managed: true }
+  - { package: org.springframework.boot.webmvc.test.autoconfigure, artifact: "org.springframework.boot:spring-boot-starter-webmvc-test",     managed: true, scope: test }
+  - { package: org.springframework.boot.data.jpa.test.autoconfigure, artifact: "org.springframework.boot:spring-boot-starter-data-jpa-test", managed: true, scope: test }
+  - { package: org.springframework.boot.resttestclient,            artifact: "org.springframework.boot:spring-boot-resttestclient",          managed: true, scope: test }
+  - { package: org.springframework.boot.test,                      artifact: "org.springframework.boot:spring-boot-starter-test",            managed: true, scope: test }
+  - { package: org.springframework.security.test,                  artifact: "org.springframework.security:spring-security-test",           managed: true, scope: test }
+  - { package: org.springframework.test,                           artifact: "org.springframework:spring-test",                             managed: true, scope: test }
+  # --- test libraries (all managed by spring-boot-dependencies) -----------------------------------------------------
+  - { package: org.hamcrest,        artifact: "org.hamcrest:hamcrest",            managed: true, scope: test, version: "3.0" }
+  - { package: org.junit.jupiter,   artifact: "org.junit.jupiter:junit-jupiter",  managed: true, scope: test, version: "5.12.2" }
+  - { package: org.mockito,         artifact: "org.mockito:mockito-core",         managed: true, scope: test, version: "5.18.0" }
+  - { package: org.assertj.core,    artifact: "org.assertj:assertj-core",         managed: true, scope: test, version: "3.27.3" }
+  # --- jakarta APIs ------------------------------------------------------------------------------------------------
+  - { package: jakarta.annotation,  artifact: "jakarta.annotation:jakarta.annotation-api",   managed: true, version: "3.0.0" }
+  - { package: jakarta.validation,  artifact: "jakarta.validation:jakarta.validation-api",   managed: true, version: "3.1.1" }
+  - { package: jakarta.persistence, artifact: "jakarta.persistence:jakarta.persistence-api", managed: true, version: "3.2.0" }
+  - { package: jakarta.servlet,     artifact: "jakarta.servlet:jakarta.servlet-api",         managed: true, version: "6.1.0", scope: provided }
+  - { package: jakarta.inject,      artifact: "jakarta.inject:jakarta.inject-api",           managed: true, version: "2.0.1" }
+  - { package: jakarta.transaction, artifact: "jakarta.transaction:jakarta.transaction-api", managed: true, version: "2.0.1" }
+  # --- misc --------------------------------------------------------------------------------------------------------
+  - { package: javax.annotation,    artifact: "com.google.code.findbugs:jsr305", managed: false, version: "3.0.2",
+      symbols: [Nullable, Nonnull, CheckForNull, ParametersAreNonnullByDefault, WillClose, Untainted] }
+  - { package: org.slf4j,           artifact: "org.slf4j:slf4j-api",                          managed: true, version: "2.0.17" }
+  - { package: lombok,              artifact: "org.projectlombok:lombok",                     managed: true, version: "1.18.38", scope: provided }
+  - { package: com.fasterxml.jackson, artifact: "com.fasterxml.jackson.core:jackson-databind", managed: true, version: "2.19.2" }
+  - { package: tools.jackson,       artifact: "tools.jackson.core:jackson-databind",          managed: true }
+  - { package: org.apache.commons.lang3, artifact: "org.apache.commons:commons-lang3",        managed: true, version: "3.17.0" }
+  - { package: org.aspectj.lang,    artifact: "org.aspectj:aspectjweaver",                    managed: true }

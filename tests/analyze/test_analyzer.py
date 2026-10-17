@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from sbmig.analyze import analyze_path, analyze_project, classify
 from sbmig.analyze.classifier import classify_single
 from sbmig.core.config import ArtifactSpec
 from sbmig.core.models import CaseType, SourceStats
 from tests.analyze.helpers import (BOOT_PLUGIN, PSVM, dep, make_boot27, make_boot33, make_pure_java, make_servlet,
-                                   make_spring_legacy, plugin, pom, write, write_java)
+                                   make_spring_legacy, pom, write, write_java)
 
 
 def test_spring_boot(tmp_path: Path, cfg) -> None:

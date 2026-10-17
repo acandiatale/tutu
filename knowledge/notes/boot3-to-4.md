@@ -82,6 +82,12 @@ Every technology has a matching `spring-boot-starter-<tech>-test` test starter.
   (spring-boot-resttestclient), `org.springframework.boot.test.context.SpringBootTest` (unchanged),
   `@ServletComponentScan` → `org.springframework.boot.web.server.servlet.context.ServletComponentScan` (spring-boot-web-server).
 
+## Jackson 2 code on Boot 4 (what sbmig does)
+- Project recipe `com.company.migrate.Boot4Jackson2Bridge` renames `org.springframework.boot.jackson.{JsonComponent,JsonMixin,JsonObjectSerializer,JsonObjectDeserializer}` and `org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer` to their `org.springframework.boot.jackson2[.autoconfigure]` twins; the `add-known-dependency` handler then adds
+  `org.springframework.boot:spring-boot-jackson2` (version managed). Serializers keep using `com.fasterxml.jackson.*`.
+- Fixer rule: do NOT rewrite such classes to Jackson 3 (`JacksonComponent`, `ObjectValueSerializer`, `tools.jackson.*`) unless the
+  class already imports `tools.jackson`; prefer the jackson2 bridge and add `// MIGRATION-TODO: migrate to Jackson 3`.
+
 ## Removed
 Undertow (→ Tomcat/Jetty), Spring Session Hazelcast & MongoDB, Spock (restored in 4.1), Spring Retry dependency management
 (→ Framework 7 `org.springframework.core.retry.RetryTemplate`, annotations `org.springframework.resilience.annotation.Retryable`

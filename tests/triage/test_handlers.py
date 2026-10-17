@@ -291,3 +291,69 @@ def test_registry_default_factory_is_real_editor():
         pytest.skip("PomEditor not available")
     assert callable(f)
     reg.pom_editor_factory = None
+
+
+# ---------------------------------------------------------------------------------------------- add-known-dependency
+def test_add_known_dependency_hamcrest_test_scope_managed(kit):
+    """`cannot access org.hamcrest.Matcher` in a test → hamcrest test dep, version omitted under a Boot parent."""
+    kit.pom(deps=[G("org.springframework.boot:spring-boot-starter-test")])
+    txt = kit.text().replace("<modelVersion>4.0.0</modelVersion>",
+                             "<modelVersion>4.0.0</modelVersion><parent><groupId>org.springframework.boot</groupId>"
+                             "<artifactId>spring-boot-starter-parent</artifactId><version>4.1.0</version></parent>")
+    (kit.root / "pom.xml").write_text(txt, encoding="utf-8")
+    h = kit.handler("add-known-dependency")
+    c = cluster_errors([err(kind=ErrorKind.TEST_COMPILE, file="src/test/java/A.java",
+                            message="cannot access org.hamcrest.Matcher",
+                            raw="[ERROR] /x/src/test/java/A.java:[38,5] cannot access org.hamcrest.Matcher\n"
+                                "[ERROR]   class file for org.hamcrest.Matcher not found")])[0]
+    assert h.matches(c, make_profile(), None)
+    assert [ch.path for ch in h.apply(kit.ws, c, make_profile(), None)] == ["pom.xml"]
+    d = kit.dep("org.hamcrest:hamcrest")
+    assert d is not None and d.scope == "test" and d.version is None
+    assert h.apply(kit.ws, c, make_profile(), None) == []          # idempotent
+
+
+def test_add_known_dependency_jackson2_bridge_under_boot_bom(kit):
+    """`package org.springframework.boot.jackson2 does not exist` → spring-boot-jackson2 (compile scope, managed)."""
+    kit.pom(deps=[G("org.springframework.boot:spring-boot-starter-webmvc")],
+            managed=[GAV(group_id="org.springframework.boot", artifact_id="spring-boot-dependencies",
+                         version="4.1.0", type="pom", scope="import")])
+    h = kit.handler("add-known-dependency")
+    c = cluster_errors([err(file="src/main/java/Money.java",
+                            message="package org.springframework.boot.jackson2 does not exist")])[0]
+    assert h.matches(c, make_profile(), None)
+    assert h.apply(kit.ws, c, make_profile(), None)
+    d = kit.dep("org.springframework.boot:spring-boot-jackson2")
+    assert d is not None and d.scope is None and d.version is None
+
+
+def test_add_known_dependency_unmanaged_project_uses_table_version(kit, cfg):
+    """No Boot parent/BOM: managed rows fall back to the table / versions.yml / target boot version."""
+    kit.pom(deps=[G("org.apache.commons:commons-lang3:3.12.0")])
+    h = kit.handler("add-known-dependency")
+    c = cluster_errors([err(kind=ErrorKind.TEST_COMPILE, file="src/test/java/T.java",
+                            message="package org.hamcrest does not exist")])[0]
+    assert h.apply(kit.ws, c, make_profile(), cfg)
+    assert kit.dep("org.hamcrest:hamcrest").version == "3.0"
+    c2 = cluster_errors([err(file="src/main/java/Money.java",
+                             message="package org.springframework.boot.jackson2 does not exist")])[0]
+    assert h.apply(kit.ws, c2, make_profile(), cfg)
+    assert kit.dep("org.springframework.boot:spring-boot-jackson2").version == cfg.target.spring_boot_version
+
+
+def test_add_known_dependency_symbol_filter_and_no_match(kit):
+    kit.pom()
+    h = kit.handler("add-known-dependency")
+    # javax.annotation.PostConstruct is NOT a jsr305 symbol → no match (the jakarta recipe handles it)
+    c = cluster_errors([err(file="src/main/java/A.java", message="cannot find symbol", symbol="class PostConstruct",
+                            raw="[ERROR] A.java:[3,24] cannot find symbol\n[ERROR]   symbol:   class PostConstruct\n"
+                                "[ERROR]   location: package javax.annotation")])[0]
+    assert not h.matches(c, make_profile(), None)
+    c2 = cluster_errors([err(file="src/main/java/A.java", message="cannot find symbol", symbol="class Nullable",
+                             raw="[ERROR] A.java:[3,24] cannot find symbol\n[ERROR]   symbol:   class Nullable\n"
+                                 "[ERROR]   location: package javax.annotation")])[0]
+    assert h.matches(c2, make_profile(), None)
+    assert h.apply(kit.ws, c2, make_profile(), None)
+    assert kit.dep("com.google.code.findbugs:jsr305").version == "3.0.2"
+    c3 = cluster_errors([err(file="src/main/java/A.java", message="package com.acme.internal does not exist")])[0]
+    assert not h.matches(c3, make_profile(), None)
