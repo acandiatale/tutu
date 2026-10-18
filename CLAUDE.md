@@ -38,20 +38,28 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-18, round 4 complete (`main` @ fe80828)
+## Status — 2026-10-18, round 5 complete (branch `claude/ecstatic-rubin-c29q8f`, on top of `main` @ 29e5861)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
-  recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover.
-- 801 offline tests green; asserted fixture e2e **13/13** (`scripts/e2e.sh`); fleet demo 5/5 with 1 LLM call total.
+  recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
+  harvest into `KBCase.symbol_owner`), jar-checked recipe catalog (`sbmig recipes check --jars`), fixture `boot2-method-rename`.
+- 844 offline tests green; asserted fixture e2e **14/14** (`scripts/e2e.sh`); fleet demo 5/5 with 1 LLM call total.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
-- `method-rename` fix label is not compiled to `ChangeMethodName` yet; label heuristics are deliberately simple
-  (whitespace-only edits → `generic-rewrite`).
+- Label heuristics are deliberately simple (whitespace-only edits → `generic-rewrite`; `override-signature` and
+  `method-signature-adapt` never compile). A `method-rename` compiles only when the owner FQCN is resolvable from
+  the changed file's imports; a project class overriding a renamed library method stays `override-signature`.
 - `ADVISOR_CATALOG` is small by design (verified ids only); extend it with the company recipe inventory.
-- Catalog `rewrite-java-dependencies` `provided_by` link is an e2e-backed assumption, not a jar check.
+- Build-fix clusters are keyed by file, so one renamed library method used in N files costs N LLM calls in the
+  first project (then 0 via the compiled `ChangeMethodName` candidate); cross-file clustering by symbol would cut that.
 - hystrix / ribbon / zuul have no OpenRewrite recipe → `guide` only (Resilience4j / LoadBalancer / Gateway).
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
+- Resilience of the plan-level rewrite step: when the rewrite plugin's own resolver fails to download a POM (seen
+  once through the cloud proxy), `UpgradeSpringBoot_4_0` leaves literal `<version>4.0.x</version>` starters, the
+  build blocks on `artifact_not_found`, and every KB candidate in that plan is credited a failure it did not cause.
+  Candidates: detect `Failed to download` / `x.y.x` versions after the rewrite and retry once; do not credit KB
+  recipes when the phase failed on dependency resolution.
 
 ## How to work here
 - **Working mode the user asked for**: Claude plans and acts as PM in the main session. Write shared contracts
@@ -60,7 +68,8 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~75 s): `python -m pytest -q -m "not integration"` → 801 passed, 22 deselected.
+- Fast check (Python only, ~75 s): `python -m pytest -m "not integration"` → 844 passed, 24 deselected
+  (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
@@ -68,5 +77,6 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   Integration tests: `python -m pytest -q -m integration`.
 - Real-LLM runs: `--config config/llm-anthropic.yml` with `LLM_API_KEY` from the environment. In a cloud session,
   set it as an environment variable of the cloud environment, never in the repo.
-- Cloud sessions start from a fresh clone with no JDK / Maven installed: install Temurin 21 + Maven before e2e,
-  or run the offline suite only. Commit and push to a `claude/...` branch; the user merges to `main` locally.
+- Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
+  and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
+  compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a `claude/...` branch; the user merges to `main` locally.
