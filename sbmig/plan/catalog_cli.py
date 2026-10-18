@@ -12,6 +12,10 @@ recipes_cli = typer.Typer(help="Recipe catalog: list | show | check | sets (know
 
 ConfigOpt = typer.Option(None, "--config", "-c", help="extra config yml (repeatable; later wins)")
 CatalogOpt = typer.Option(None, "--catalog", help="catalog file (default: plan.catalog_file from the config)")
+WorkDirOpt = typer.Option(None, "--work-dir", help="with --jars: generated poms, cp.txt and Maven logs "
+                          "(default: out/recipes-check under the repo root)")
+ArtifactOpt = typer.Option(None, "--artifact", help="with --jars: g:a to resolve instead of "
+                           "openrewrite.recipe_artifacts (repeatable)")
 
 
 def _load(configs: Optional[List[Path]], catalog: Optional[Path] = None):
@@ -148,17 +152,69 @@ def show_cmd(
 def check_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     catalog: Optional[Path] = CatalogOpt,
+    jars: bool = typer.Option(False, "--jars", help="also verify every openrewrite id against the real recipe jars "
+                              "(Maven + network; resolves openrewrite.recipe_artifacts at the BOM version)"),
+    work_dir: Path | None = WorkDirOpt,
+    as_json: bool = typer.Option(False, "--json", help="with --jars: print the jar check report as JSON"),
+    artifact: list[str] | None = ArtifactOpt,
 ) -> None:
-    """Cross-check the catalog against config sets, reactive rules, base recipes and recipe artifacts."""
+    """Cross-check the catalog against config sets, reactive rules, base recipes and recipe artifacts.
+
+    With --jars, also resolve the configured recipe artifacts with Maven and check every openrewrite id
+    against the jars that declare it (artifact, provided_by; see docs/RECIPES.md)."""
     cfg = _load(config, catalog)
     cat = _catalog(cfg)
     problems = cat.check(cfg)
+    if jars and as_json and problems:
+        typer.echo(json.dumps({"offline_problems": problems}, indent=2, ensure_ascii=False))
+        raise typer.Exit(1)
     for p in problems:
         typer.echo(f"PROBLEM {p}")
     if problems:
         typer.echo(f"{len(problems)} problem(s) in {cat.path}", err=True)
         raise typer.Exit(1)
-    typer.echo(f"recipe catalog OK: {len(cat)} recipe(s), {len(cat.advisor_catalog())} advisor-eligible — {cat.path}")
+    if not (jars and as_json):
+        typer.echo(f"recipe catalog OK: {len(cat)} recipe(s), {len(cat.advisor_catalog())} advisor-eligible — "
+                   f"{cat.path}")
+    if jars:
+        _check_jars(cat, cfg, work_dir, artifact or None, as_json)
+
+
+def _check_jars(cat, cfg, work_dir: Path | None, artifacts: list[str] | None, as_json: bool) -> None:
+    from .jarcheck import check_jars
+
+    report = check_jars(cat, cfg, work_dir=work_dir, artifacts=artifacts)
+    if as_json:
+        typer.echo(json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False))
+    else:
+        def _pb(r) -> str:
+            if not r.provided_by:
+                return "-"
+            state = {True: "ok", False: "FAIL", None: "?"}[r.provided_by_ok]
+            return f"{state} via {r.provided_by.split(':', 1)[-1]}"
+
+        rows = [r.model_dump() | {"_row": r} for r in report.rows]
+        cols: list[tuple[str, Any]] = [
+            ("id", lambda d: d["id"]),
+            ("artifact", lambda d: (d["artifact"] or "(core)").replace("org.openrewrite.recipe:", "")),
+            ("version", lambda d: d["version"] or "-"),
+            ("found_in", lambda d: d["found_in"] or "NOT FOUND"),
+            ("provided_by", lambda d: _pb(d["_row"])),
+        ]
+        for line in _table(rows, cols):
+            typer.echo(line)
+        typer.echo("")
+        for p in report.problems:
+            typer.echo(f"PROBLEM {p}")
+    if report.problems:
+        typer.echo(f"{len(report.problems)} jar check problem(s) (rewrite-recipe-bom {report.bom_version}; "
+                   f"poms and logs under {report.work_dir})", err=True)
+        raise typer.Exit(1)
+    if not as_json:
+        found = sum(1 for r in report.rows if r.found_in)
+        typer.echo(f"recipe jars OK: {found} recipe(s) found in {len(report.declaring_jars)} jar(s) "
+                   f"(rewrite-recipe-bom {report.bom_version}; {report.jars_scanned} jar(s) scanned from "
+                   f"{len(report.classpaths)} artifact classpath(s)) — {report.work_dir}")
 
 
 @recipes_cli.command("sets")

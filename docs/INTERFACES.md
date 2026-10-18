@@ -130,3 +130,10 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     "options": {...}}]}` (scripts/e2e.py reads `<dir>/recipes/{candidates,active}/*.yml`; `options` must be a subset
     of the recipeList entry's options). Fixtures that exercise the KB set their own `kb.dir` in `sbmig.e2e.yml`
     because every candidate is appended to every plan (`kb.try_candidates_in_plan`).
+* 2026-10-18 round 5 (WS-B implementation notes): `check_jars(catalog, cfg, *, work_dir=None, artifacts=None,
+  resolver=None)` — `work_dir` defaults to `out/recipes-check`, `resolver` defaults to `jarcheck.DEFAULT_RESOLVER`
+  (tests monkeypatch it); `JarCheckReport` also carries `bom_version` and the properties `ok`, `jars_scanned`,
+  `declaring_jars`. CLI: `sbmig recipes check --jars [--work-dir DIR] [--artifact g:a ...] [--json]`; the offline
+  check runs first and aborts `--jars` on problems. Verified 2026-10 on BOM 3.37.0: all 21 `origin: openrewrite`
+  entries found in their declared jars; `rewrite-java-dependencies` 1.60.2 is on `rewrite-migrate-java` 3.42.0's
+  transitive classpath (the former `provided_by` assumption).

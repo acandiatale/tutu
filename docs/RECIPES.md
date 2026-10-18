@@ -28,6 +28,7 @@ The catalog's `sets` and `rules` fields mirror those sources, and `check` keeps 
   origin: openrewrite        # openrewrite | project
   artifact: org.openrewrite.recipe:rewrite-spring   # null: project recipe, or a core recipe bundled with the plugin
   provided_by: null          # optional: a configured artifact that brings `artifact` in transitively
+                             # (verified by `recipes check --jars`)
   file: null                 # project recipes: knowledge/recipes/base/<file>.yml
   phase: spring              # jdk21 | spring | restructure (default phase)
   description: Spring Boot 2.x/3.x → 4.0 umbrella (Boot projects only)
@@ -50,7 +51,8 @@ built-in catalog that matches the advisor constants. Planning never fails becaus
 
 ## Lifecycle of a recipe
 
-1. **Verified upstream.** Confirm the id on docs.openrewrite.org, or in a recipe jar at the configured BOM version.
+1. **Verified upstream.** Confirm the id on docs.openrewrite.org, or in a recipe jar at the configured BOM version
+   (`sbmig recipes check --jars` does the jar lookup for every catalog entry).
 2. **Catalog entry.** Add the id to `catalog.yml` with its artifact, description, `verified` date and, if needed,
    `covers` and `gate`.
 3. **Make it run.**
@@ -73,11 +75,13 @@ built-in catalog that matches the advisor constants. Planning never fails becaus
 ## Adding a new recipe
 
 1. Verify the id and the artifact it lives in. If that artifact is not in `openrewrite.recipe_artifacts`, add it
-   there, or set `provided_by` when a configured artifact brings it in transitively.
+   there, or set `provided_by` when a configured artifact brings it in transitively (verified by
+   `recipes check --jars`).
 2. Add the catalog entry.
 3. Reference it from a config set, a reactive rule, or a base yml, as needed.
 4. Run `sbmig recipes check`. It must print `recipe catalog OK`.
-5. Run `.venv/bin/python -m pytest tests/plan`. `tests/plan/test_catalog.py` runs the same check on the repo.
+5. Run `sbmig recipes check --jars` (needs Maven and network). It must print `recipe jars OK`.
+6. Run `.venv/bin/python -m pytest tests/plan`. `tests/plan/test_catalog.py` runs the same check on the repo.
 
 `check` reports:
 
@@ -87,6 +91,40 @@ built-in catalog that matches the advisor constants. Planning never fails becaus
 * unknown gate names and `covers` ids that are not in the catalog;
 * artifacts that are not in `openrewrite.recipe_artifacts`. Core `org.openrewrite:` recipes are exempt, and so are
   entries whose `provided_by` is configured.
+
+`check` is offline: it trusts the `artifact` and `provided_by` fields. **`check --jars`** verifies them against the
+real recipe jars (`sbmig/plan/jarcheck.py::check_jars`). It runs the offline check first and stops if that fails.
+Then it:
+
+1. Resolves each configured `openrewrite.recipe_artifacts` entry once, plus any `provided_by` that is not
+   configured. It reads the versions from `rewrite-recipe-bom:<recipe_bom_version>` (or the
+   `recipe_artifact_versions` overrides), writes `<work-dir>/<group>__<artifact>/pom.xml` (packaging `pom`, the BOM
+   imported, one dependency), and runs `maven-dependency-plugin:3.8.1:build-classpath` (runtime scope) on it. Output
+   goes to `cp.txt` and `build-classpath.log` in the same directory.
+2. Scans every jar on those classpaths once. Declarative recipes are the `name:` of each
+   `type: specs.openrewrite.org/v1beta/recipe` document in `META-INF/rewrite/*.yml`. Imperative recipes are
+   `<id with />.class`.
+3. Checks every `origin: openrewrite` entry. Project entries are already validated offline, so they are skipped.
+
+It reports a problem when:
+
+* a configured artifact does not resolve (the message names the artifact and the log file);
+* a recipe id is not declared in any resolved jar;
+* the id is declared, but not in the jar of its `artifact` (the message says which jar declares it);
+* `artifact` is null (a core recipe) but the id is declared outside `org.openrewrite:*` jars. Core ids are looked up
+  in the union of all classpaths;
+* `provided_by` is not in `openrewrite.recipe_artifacts`, or `artifact` is not on the transitive classpath of the
+  `provided_by` artifact.
+
+It needs Maven, JDK 21 and network access to Maven Central (or a warm local repository). It writes only under
+`--work-dir` (default `out/recipes-check/` under the repo root), never into the repo tree or `kb/`. The first run
+downloads the recipe jars. Later runs take about 15 s, which is mostly Maven start-up. `scripts/e2e.sh` runs
+`recipes check --jars --work-dir out/recipes-check` before the fixtures.
+
+Verified on 2026-10-18 with BOM 3.37.0: all 21 openrewrite entries are found where the catalog says, in
+rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, rewrite-testing-frameworks 3.44.0, and the core recipes in
+`org.openrewrite:rewrite-java` / `rewrite-maven` 8.89.0. `rewrite-java-dependencies` 1.60.2 (`UpgradeDependencyVersion`,
+`ChangeDependency`) is on rewrite-migrate-java's transitive runtime classpath, so their `provided_by` holds.
 
 ## Advisor whitelist and gates
 
@@ -151,6 +189,8 @@ Candidates are tried after active recipes and before the LLM.
 sbmig recipes list [--kb] [--json] [-c cfg.yml] [--catalog file]   # table: id, origin, phase, artifact/file, gate, advisor, sets, rules
 sbmig recipes show <id> [--json]       # entry + config sets / rules / composites that reference it + KB meta
 sbmig recipes check                    # cross-check every source; exit 1 on problems (CI / e2e)
+sbmig recipes check --jars [--work-dir DIR] [--json] [--artifact g:a ...]
+                                       # + every openrewrite id looked up in the real recipe jars (Maven + network)
 sbmig recipes sets [--json]            # config sets, and per case what jdk21/spring rewrite steps get
 sbmig kb list | show | promote | reject | stats …   # learned recipes (see `sbmig kb --help`)
 ```

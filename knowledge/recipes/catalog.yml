@@ -15,7 +15,8 @@
 #   artifact:    Maven groupId:artifactId of the recipe jar; null for project recipes and for core recipes that
 #                ship with rewrite-maven-plugin itself (org.openrewrite.java.ChangeType, org.openrewrite.maven.*)
 #   provided_by: optional — a configured recipe artifact that brings `artifact` in transitively
-#                (`check` accepts the entry when either is listed in openrewrite.recipe_artifacts)
+#                (`check` accepts the entry when either is listed in openrewrite.recipe_artifacts;
+#                `recipes check --jars` verifies that `artifact` is on provided_by's transitive classpath)
 #   file:        project recipes only — declarative yml relative to the repo root (knowledge/recipes/base/..)
 #   phase:       default phase when the recipe is added: jdk21 | spring | restructure
 #   description: one line (advisor entries: shown verbatim to the LLM advisor)
