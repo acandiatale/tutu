@@ -61,8 +61,25 @@ class LLMResponse(BaseModel):
     finish_reason: Optional[str] = None
 
 
+# Who is asking — lets an in-house gateway / agent platform route or budget by purpose.
+LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "recipe_candidate", "other"]
+
+
+class LLMRequest(BaseModel):
+    """Everything sbmig knows about one call, in one object (the adapter tier contract)."""
+    messages: list[ChatMessage]
+    model: Optional[str] = None                   # cfg.llm.model / recipe_model / escalation_model, or None = adapter default
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = None           # None = adapter default (Claude 5 models reject sampling params)
+    stop: Optional[list[str]] = None
+    role: LLMRole = "other"
+    metadata: dict = Field(default_factory=dict)  # run_id, project, phase, cluster_id, attempt … (never secrets)
+
+
 @runtime_checkable
 class LLMClientLike(Protocol):
+    """Low-level chat completion. Built-in clients: openai_compatible / anthropic / fake (sbmig.fix.client).
+    Implementations must accept and may ignore `role` / `metadata` (and any future keyword)."""
     def complete(
         self,
         messages: list[ChatMessage],
@@ -71,7 +88,17 @@ class LLMClientLike(Protocol):
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stop: Optional[list[str]] = None,
+        role: Optional[str] = None,
+        metadata: Optional[dict] = None,
     ) -> LLMResponse: ...
+
+
+@runtime_checkable
+class LLMAdapterLike(Protocol):
+    """Adapter tier for in-house LLM gateways / agent platforms: one request object in, one response out.
+    Plug in via `llm.provider: plugin` + `llm.plugin: "pkg.module:attr"` (or an entry point in group
+    `sbmig.llm_adapters`). sbmig wraps it in an LLMClientLike (`sbmig.llm.AdapterClient`) and still records calls."""
+    def complete(self, request: LLMRequest) -> LLMResponse: ...
 
 
 # ---------------------------------------------------------------------------

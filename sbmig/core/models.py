@@ -463,10 +463,65 @@ class PhaseResult(BaseModel):
 # ---------------------------------------------------------------------------
 # Knowledge base
 # ---------------------------------------------------------------------------
+# How a fix changed the code — deterministic labels derived from the FileChange set + the error (sbmig.kb.labels).
+# "symbol X → label Y (old → new)" is the unit of cross-project learning; mechanical labels compile to recipes.
+FixLabel = Literal[
+    "import-rename",          # only import lines changed: old FQCN → new FQCN            → ChangeType
+    "type-rename",            # a type reference renamed in code (+imports)               → ChangeType
+    "package-rename",         # whole package prefix moved                                → ChangePackage
+    "annotation-replace",     # @Old → @New (possibly different attributes)               → ChangeType when 1:1
+    "method-rename",          # same receiver/args, different method name                 → ChangeMethodName
+    "method-signature-adapt", # call site adapted to a changed signature / builder / lambda DSL
+    "override-signature",     # overriding method signature changed to match the new supertype
+    "dependency-add",         # pom: <dependency> added                                   → AddDependency
+    "dependency-replace",     # pom: g:a swapped                                          → ChangeDependency
+    "dependency-remove",      # pom: <dependency> removed                                 → RemoveDependency
+    "dependency-version",     # pom: version bumped                                       → UpgradeDependencyVersion
+    "plugin-version",         # pom: plugin version bumped                                → UpgradePluginVersion
+    "pom-property",           # pom: <properties> value changed/added/removed             → ChangePropertyValue
+    "spring-property-rename", # application.properties/yml key renamed                    → ChangeSpringPropertyKey
+    "config-value",           # a configuration value changed (not a key rename)
+    "remove-code",            # dead/obsolete code or annotation removed
+    "add-code",               # new method/field/class added
+    "generic-rewrite",        # anything else (logic change)
+]
+
+
+class ResolutionRecord(BaseModel):
+    """One line of kb/ledger.jsonl: in project P, error-case S was resolved (or blocked) by R. The cross-project
+    memory a fleet run leaves behind, queryable with `sbmig kb ledger`."""
+    id: str
+    at: datetime = Field(default_factory=utcnow)
+    project: str                                   # ws.root.name (no paths)
+    project_fingerprint: str = ""
+    run_id: str = ""
+    case_type: CaseType = CaseType.UNKNOWN
+    phase: Phase = Phase.SPRING
+    signature: str = ""                            # L1
+    signature_generic: str = ""                    # L2
+    error_kind: ErrorKind = ErrorKind.COMPILE
+    symbol: str = ""                               # javac symbol / artifact key / owner class — the "error-case symbol"
+    resolution: Literal["handler", "plan_recipe", "kb_recipe", "kb_patch", "llm_patch", "optional_bump",
+                        "blocked", "unresolved"] = "llm_patch"
+    resolver_id: str = ""                          # handler id / recipe id / kb case id / block reason
+    fix_labels: list[str] = Field(default_factory=list)      # FixLabel values
+    replacement: str = ""                          # "old → new" when the label implies one (FQCN, g:a, key …)
+    outcome: str = ""                              # improved | build_ok | blocked | unresolved
+    files: list[str] = Field(default_factory=list)           # basenames only
+    case_id: Optional[str] = None                  # KBCase created/reused
+    recipe_id: Optional[str] = None                # KB recipe used or generated
+    model: str = ""
+    notes: list[str] = Field(default_factory=list)
+
+
 class KBCase(BaseModel):
     id: str
     created_at: datetime = Field(default_factory=utcnow)
     project_fingerprint: str = ""
+    project: str = ""                              # ws.root.name — for the ledger / fleet learning report
+    symbol: str = ""                               # error-case symbol (see ResolutionRecord.symbol)
+    fix_labels: list[str] = Field(default_factory=list)      # FixLabel values (deterministic, sbmig.kb.labels)
+    replacement: str = ""                          # "old → new" when the labels imply one
     case_type: CaseType = CaseType.UNKNOWN
     phase: Phase = Phase.SPRING
     signatures: list[str] = Field(default_factory=list)          # L1
@@ -513,6 +568,52 @@ class HarvestResult(BaseModel):
     cases_created: list[str] = Field(default_factory=list)
     candidates_created: list[str] = Field(default_factory=list)
     recipes_credited: list[str] = Field(default_factory=list)
+    recipes_promoted: list[str] = Field(default_factory=list)      # auto-promoted during this harvest
+    ledger_entries: int = 0                                        # ResolutionRecords appended
+    notes: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Fleet (sbmig fleet: one agent, many projects, sequential)
+# ---------------------------------------------------------------------------
+FleetStatus = Literal["pending", "running", "success", "incomplete", "aborted", "skipped"]
+
+
+class FleetProjectResult(BaseModel):
+    name: str
+    input: str                                     # path as given in the manifest
+    status: FleetStatus = "pending"
+    run_id: Optional[str] = None
+    out_dir: Optional[str] = None
+    case_type: CaseType = CaseType.UNKNOWN
+    exit_code: Optional[int] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    duration_s: float = 0.0
+    llm_calls: int = 0
+    llm_input_tokens: int = 0
+    llm_output_tokens: int = 0
+    blocked: int = 0
+    blocked_reasons: list[str] = Field(default_factory=list)   # "external_javax_api:com.company:legacy-web"
+    unresolved: int = 0
+    flags: list[str] = Field(default_factory=list)
+    kb_cases_created: list[str] = Field(default_factory=list)
+    kb_candidates_created: list[str] = Field(default_factory=list)
+    kb_recipes_promoted: list[str] = Field(default_factory=list)
+    kb_recipes_used: list[str] = Field(default_factory=list)      # KB recipes/patches that fired (learning paid off)
+    error: Optional[str] = None
+    attempt: int = 1
+
+
+class FleetState(BaseModel):
+    """fleet/state.json — resumable; rewritten atomically after every project."""
+    fleet_id: str
+    manifest: str
+    started_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    finished_at: Optional[datetime] = None
+    projects: list[FleetProjectResult] = Field(default_factory=list)
+    llm_calls_total: int = 0
     notes: list[str] = Field(default_factory=list)
 
 

@@ -171,8 +171,16 @@ class LoopConfig(BaseModel):
         "pom_invalid", "parent_resolution", "plugin_resolution"])   # appearing after a pom edit ⇒ revert regardless of count
 
 
+BUILTIN_LLM_PROVIDERS = ("openai_compatible", "anthropic", "fake")
+
+
 class LLMConfig(BaseModel):
-    provider: Literal["openai_compatible", "anthropic", "fake"] = "openai_compatible"
+    """`provider` is one of BUILTIN_LLM_PROVIDERS, `plugin` (→ `plugin` = "pkg.module:factory"), or the name of an
+    adapter registered under the `sbmig.llm_adapters` entry-point group (in-house gateway / agent platform)."""
+    provider: str = "openai_compatible"
+    plugin: Optional[str] = None             # "pkg.module:attr" — attr is an LLMAdapterLike/LLMClientLike class or a
+                                             # factory `fn(options: dict, cfg: Config) -> adapter | client`
+    plugin_options: dict[str, Any] = Field(default_factory=dict)   # passed verbatim to the plugin factory
     base_url: str = "${LLM_BASE_URL}"
     api_key_env: str = "LLM_API_KEY"
     model: str = "${LLM_MODEL}"
@@ -189,8 +197,19 @@ class LLMConfig(BaseModel):
     record_dir: Optional[str] = None         # record requests/responses for replay tests
 
 
+class FixConfig(BaseModel):
+    """Second adapter tier: replace the whole fixer (our SEARCH/REPLACE protocol over a chat completion) with an
+    in-house coding agent. `plugin` = "pkg.module:attr" where attr is a FixerLike class or a factory
+    `fn(options: dict, cfg: Config, llm: LLMClientLike | None) -> FixerLike`."""
+    plugin: Optional[str] = None
+    plugin_options: dict[str, Any] = Field(default_factory=dict)
+
+
 class KBConfig(BaseModel):
     dir: str = "kb"                          # relative to repo root unless absolute
+    ledger: bool = True                      # append one ResolutionRecord per resolved/blocked cluster to kb/ledger.jsonl
+    symbol_index: bool = True                # maintain kb/symbols.json: error symbol → fix labels / replacements
+    deterministic_candidates: bool = True    # compile recipe candidates from labeled fixes without the LLM when possible
     use_active_recipes: bool = True
     use_patch_replay: bool = True
     use_hints: bool = True
@@ -204,9 +223,22 @@ class KBConfig(BaseModel):
 
 class PlanConfig(BaseModel):
     advisor: Literal["none", "llm"] = "none"   # optional LLM review of the rule-based plan
+    catalog_file: str = "knowledge/recipes/catalog.yml"   # single source of truth for known recipes (advisor
+                                             # whitelist, coverage, gates, descriptions); relative to repo root
     intermediate_builds: bool = True           # build after jdk21 phase before spring phase
     optional_bump_phase: Literal["spring", "restructure"] = "spring"   # bump in-house optional artifacts right after the
                                              # spring rewrite so jakarta builds of in-house libs are on the classpath before the first build
+
+
+class FleetConfig(BaseModel):
+    """`sbmig fleet`: one agent, N projects, strictly sequential, KB fed between projects."""
+    order: Literal["manifest", "simple-first"] = "manifest"   # simple-first: pure_java → servlet → spring_legacy → boot → msa
+    stop_on_abort: bool = False              # stop the whole fleet when one project aborts (exit 3)
+    retry_failed: bool = False               # re-run projects whose last status was incomplete/aborted
+    max_projects: int = 0                    # 0 = all
+    max_llm_calls_total: int = 0             # 0 = unlimited; fleet-wide LLM budget across projects
+    reindex_every: int = 10                  # kb reindex after every N projects (0 = never)
+    summary_formats: list[str] = Field(default_factory=lambda: ["md", "csv", "json"])
 
 
 class ReportConfig(BaseModel):
@@ -223,8 +255,10 @@ class Config(BaseModel):
     build: BuildConfig = Field(default_factory=BuildConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    fix: FixConfig = Field(default_factory=FixConfig)
     kb: KBConfig = Field(default_factory=KBConfig)
     plan: PlanConfig = Field(default_factory=PlanConfig)
+    fleet: FleetConfig = Field(default_factory=FleetConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
     repo_root: str = str(PACKAGE_ROOT)
 
@@ -240,6 +274,10 @@ class Config(BaseModel):
     @property
     def base_recipe_dir(self) -> Path:
         return self.resolve_path(self.openrewrite.base_recipe_dir)
+
+    @property
+    def recipe_catalog_file(self) -> Path:
+        return self.resolve_path(self.plan.catalog_file)
 
     def optional_keys(self) -> dict[str, ArtifactSpec]:
         out: dict[str, ArtifactSpec] = {}
