@@ -121,3 +121,15 @@ version) yet still compile — does the agent just build and leave guidance ("th
 | Offline tests | 801 passed (22 integration deselected) | green |
 | Reference fixture `boot2-cloud-legacy` (Boot 2.7.18 + Spring Cloud 2021.0.9 BOM, sleuth without version, hystrix 2.2.10 explicit, springfox 3.0.0, ehcache 2 managed by Boot 2.7 only) | `fixtures/projects/boot2-cloud-legacy/` | BUILD SUCCESS, exit 0, **0 LLM calls**, 59 s: springfox → `springdoc-openapi-starter-webmvc-ui:3.0.3`, sleuth → `micrometer-tracing-bridge-brave` (Boot-managed), Spring Cloud 2021.0.9 → 2025.1.3, hystrix still present (guide → Resilience4j), ehcache pinned 2.10.9.2 ⚠ |
 | Asserted fixture e2e on the merged tree (`scripts/e2e.sh`: `recipes check` + `advisories check` + 13 fixtures) | `out/e2e/summary.md` | **13/13 expectations met**, exit 0 (12 previous fixtures unchanged: no advisories, 0 carried-over; `boot2-cloud-legacy` as above); ledger has 4 `advisory` lines, `sbmig kb learning` shows the "Libraries needing owner action" table |
+
+## Status — 2026-10-18, round 5 (`method-rename` → `ChangeMethodName`, jar-checked recipe catalog)
+
+User decision: take the first two "Known follow-ups" of round 4 together — (1) compile the `method-rename` fix label
+into `org.openrewrite.java.ChangeMethodName` so a renamed library method is fixed by the LLM **once** per fleet and by
+a recipe afterwards, (2) turn the catalog's `provided_by` link from an e2e-backed assumption into a real jar check
+(`sbmig recipes check --jars`). Finding that shaped (1): javac 21 prints imported types by their *simple* name
+(`location: class LegacyRequestHelper`), so the owner FQCN the method pattern needs is resolved at harvest time from
+the changed files' imports (`KBCase.symbol_owner`); argument types never go into the pattern (`(..)`).
+
+| Deliverable | Where | Status |
+|---|---|---|

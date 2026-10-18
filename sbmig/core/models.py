@@ -522,6 +522,9 @@ class KBCase(BaseModel):
     project_fingerprint: str = ""
     project: str = ""                              # ws.root.name — for the ledger / fleet learning report
     symbol: str = ""                               # error-case symbol (see ResolutionRecord.symbol)
+    symbol_owner: str = ""                         # FQCN of the type that owns `symbol` (javac prints imported types by
+                                                   # their simple name; harvest resolves it from the changed files'
+                                                   # imports / classpath) — ChangeMethodName needs it (round 5)
     fix_labels: list[str] = Field(default_factory=list)      # FixLabel values (deterministic, sbmig.kb.labels)
     replacement: str = ""                          # "old → new" when the labels imply one
     case_type: CaseType = CaseType.UNKNOWN

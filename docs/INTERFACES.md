@@ -108,3 +108,25 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   Report: new first section "Handover" (versions replaced, libraries needing attention, "from here on, your team");
   `sbmig/report/handover.py: build_handover(profile, view, report, effective=None, cfg=None) -> HandoverSummary`.
   `CatalogEntry.advisories: list[str]` (informational; `recipes check` cross-checks advisories.yml recipe ids).
+* 2026-10-18 PM (round 5 contracts — `method-rename` → `ChangeMethodName`, jar-checked catalog):
+  * `KBCase.symbol_owner: str = ""` — FQCN of the type owning the error-case symbol. javac prints imported types by
+    their simple name (`location: variable client of type Client`, `location: class Client`), so `sanitize_case`
+    (harvest) resolves it: explicit import in a changed `.java` file → FQCN; wildcard import → `locate_class`
+    candidates; otherwise "". `compile_recipe(case)` compiles `labels == {"method-rename"}` (all `method_renames`
+    agreeing on old/new, owner a library FQCN via `details` or `case.symbol_owner`) to
+    `org.openrewrite.java.ChangeMethodName {methodPattern: "<owner FQCN> <old>(..)", newMethodName: <new>,
+    matchOverrides: true}`, recipe name `com.company.kb.<OwnerSimple><Old>To<New>` (PascalCase of the parts).
+    Argument types never go into the pattern (javac prints simple names). Method references (`x::old`) are
+    `method-rename` too.
+  * `sbmig/plan/jarcheck.py` (new): `check_jars(catalog, cfg, *, work_dir, artifacts=None) -> JarCheckReport`
+    resolves every configured `openrewrite.recipe_artifacts` entry (BOM version via `resolve_recipe_artifact_versions`)
+    to its transitive jar classpath with Maven (`dependency:build-classpath` on a generated pom under `work_dir`),
+    and reports per catalog entry: the jar that declares the recipe id (`META-INF/rewrite/*.yml` `name:` or the
+    `.class`), whether `artifact` is on that classpath, and for `provided_by` whether `artifact` is on the
+    `provided_by` artifact's own transitive classpath. `JarCheckReport.problems: list[str]` (same style as
+    `RecipeCatalog.check`), `.rows: list[JarCheckRow]`. CLI: `sbmig recipes check --jars [--work-dir DIR] [--json]`
+    (Maven + network; `scripts/e2e.sh` runs it). Without `--jars` the check is unchanged (offline).
+  * e2e `expected.json` gains `"kb": {"dir": "<relative to repo>", "candidates_min": n, "recipes": [{"recipe": "<id>",
+    "options": {...}}]}` (scripts/e2e.py reads `<dir>/recipes/{candidates,active}/*.yml`; `options` must be a subset
+    of the recipeList entry's options). Fixtures that exercise the KB set their own `kb.dir` in `sbmig.e2e.yml`
+    because every candidate is appended to every plan (`kb.try_candidates_in_plan`).
