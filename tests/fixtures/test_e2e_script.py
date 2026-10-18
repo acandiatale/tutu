@@ -406,3 +406,110 @@ def test_boot2_cloud_legacy_expectations_against_synthetic_report(e2e):
                        "confirm the version or replace"])
     rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover)
     assert _eval(e2e, exp, rep) == []
+
+
+# ------------------------------------------------------------------------------------------- kb (round 5)
+KB_CANDIDATE_YML = """type: specs.openrewrite.org/v1beta/recipe
+name: com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp
+displayName: com.company.legacy.web.LegacyRequestHelper.clientIp(..) -> remoteClientIp
+recipeList:
+- org.openrewrite.java.ChangeMethodName:
+    methodPattern: com.company.legacy.web.LegacyRequestHelper clientIp(..)
+    newMethodName: remoteClientIp
+    matchOverrides: true
+---
+type: specs.openrewrite.org/v1beta/recipe
+name: com.company.kb.Other
+recipeList:
+- org.openrewrite.java.OrderImports
+"""
+
+KB_EXPECT = {
+    "dir": "out/e2e/kb-x", "candidates_min": 1, "harvest_candidates_min": 1,
+    "recipes": [{"recipe": "org.openrewrite.java.ChangeMethodName",
+                 "name": "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp",
+                 "options": {"methodPattern": "com.company.legacy.web.LegacyRequestHelper clientIp(..)",
+                             "newMethodName": "remoteClientIp"}}],
+}
+KB_REPORT = {"success": True, "harvest": {"cases_created": ["c1"],
+                                          "candidates_created": ["com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp"]}}
+
+
+def _kb(tmp_path, sub="candidates", text=KB_CANDIDATE_YML, name="r.yml"):
+    d = tmp_path / "out" / "e2e" / "kb-x" / "recipes" / sub
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(text, encoding="utf-8")
+    (d / (name[:-4] + ".meta.json")).write_text("{}", encoding="utf-8")   # never parsed as a recipe
+    return d
+
+
+def test_kb_expectation_passes(e2e, tmp_path):
+    _kb(tmp_path)
+    assert e2e.evaluate_kb(KB_EXPECT, KB_REPORT, tmp_path) == []
+    # via evaluate(): the `kb` block is checked together with the rest
+    assert e2e.evaluate(e2e.FixtureResult(fixture="x", exit_code=0), {"success": True, "kb": KB_EXPECT},
+                        KB_REPORT, [], None, tmp_path) == []
+    # an active (promoted) recipe also satisfies `recipes`, but is not a candidate
+    (tmp_path / "out/e2e/kb-x/recipes/candidates/r.yml").unlink()
+    _kb(tmp_path, sub="active")
+    mm = e2e.evaluate_kb(KB_EXPECT, KB_REPORT, tmp_path)
+    assert mm == ["kb candidates=0 < min 1"]
+    assert e2e.evaluate_kb(dict(KB_EXPECT, candidates_min=0), KB_REPORT, tmp_path) == []
+
+
+def test_kb_expectation_option_and_name_mismatch(e2e, tmp_path):
+    _kb(tmp_path)
+    wrong = dict(KB_EXPECT, recipes=[{"recipe": "org.openrewrite.java.ChangeMethodName",
+                                      "options": {"newMethodName": "clientAddress"}}])
+    mm = e2e.evaluate_kb(wrong, KB_REPORT, tmp_path)
+    assert len(mm) == 1 and mm[0].startswith("kb recipe org.openrewrite.java.ChangeMethodName "
+                                             '{"newMethodName": "clientAddress"} missing')
+    assert "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp[candidates]" in mm[0]
+    other_name = dict(KB_EXPECT, recipes=[dict(KB_EXPECT["recipes"][0], name="com.company.kb.Other")])
+    assert "in com.company.kb.Other" in e2e.evaluate_kb(other_name, KB_REPORT, tmp_path)[0]
+    other_id = dict(KB_EXPECT, recipes=[{"recipe": "org.openrewrite.java.ChangeType", "options": {}}])
+    assert e2e.evaluate_kb(other_id, KB_REPORT, tmp_path)
+    bare = dict(KB_EXPECT, recipes=[{"recipe": "org.openrewrite.java.OrderImports"}])   # `- id` list entry
+    assert e2e.evaluate_kb(bare, KB_REPORT, tmp_path) == []
+
+
+def test_kb_expectation_missing_dir_and_harvest(e2e, tmp_path):
+    mm = e2e.evaluate_kb(KB_EXPECT, {}, tmp_path)
+    assert mm[0] == "kb dir 'out/e2e/kb-x' missing"
+    assert "kb candidates=0 < min 1" in mm and "harvest candidates_created=0 < min 1" in mm
+    assert any(m.startswith("kb recipe org.openrewrite.java.ChangeMethodName") and "(got: none)" in m for m in mm)
+    _kb(tmp_path, text="name: [unclosed\n", name="broken.yml")       # unparsable YAML is skipped, never a crash
+    mm = e2e.evaluate_kb(KB_EXPECT, {"harvest": None}, tmp_path)
+    assert "kb candidates=0 < min 1" in mm and "harvest candidates_created=0 < min 1" in mm
+
+
+def test_kb_dir_is_cleared_only_under_out(e2e, tmp_path, monkeypatch):
+    assert e2e.kb_dir_to_clear({"kb": {"dir": "out/e2e/kb-x"}}, tmp_path) == (tmp_path / "out/e2e/kb-x").resolve()
+    for bad in ("kb", "out", "out/../kb", "/tmp/kb", "", None):
+        assert e2e.kb_dir_to_clear({"kb": {"dir": bad}}, tmp_path) is None, bad
+    assert e2e.kb_dir_to_clear({"success": True}, tmp_path) is None and e2e.kb_dir_to_clear(None) is None
+    # run_fixture wipes the fixture's KB dir before the CLI runs (the fake CLI writes no KB → dir missing afterwards)
+    stale = _kb(tmp_path)
+    monkeypatch.setattr(e2e, "REPO", tmp_path)
+    monkeypatch.setattr(e2e, "preflight", lambda *a, **k: None)
+    expected = {"expect": {"success": True, "exit_code": 0, "kb": KB_EXPECT}}
+    args = _args(e2e, tmp_path)
+    cli = tmp_path / "report_cli.py"
+    cli.write_text(REPORT_CLI)
+    monkeypatch.setenv("FAKE_SPEC", json.dumps({"report": KB_REPORT}))
+    r = e2e.run_fixture("boot2-method-rename", args, cmd=[sys.executable, str(cli), "x", "--out", str(args.out)],
+                        expected=expected)
+    assert not stale.exists()
+    assert r.expect_ok is False and r.mismatches[0] == "kb dir 'out/e2e/kb-x' missing"
+
+
+def test_boot2_method_rename_expectations(e2e, capsys):
+    exp = json.loads((REPO / "fixtures/projects/boot2-method-rename/expected.json").read_text())["expect"]
+    assert exp["kb"]["dir"] == "out/e2e/kb-method-rename"
+    assert e2e.kb_dir_to_clear(exp) == (REPO / "out/e2e/kb-method-rename").resolve()
+    assert e2e.main(["--expect-only", "--only", "boot2-method-rename"]) == 0
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("boot2-method-rename [X2] +sbmig.e2e.yml: success=True; exit=0; llm<=2")
+    assert "optional_bumped=[com.company.legacy:legacy-web-lib 1.0.0→3.0.0]" in line
+    assert ("kb(dir=out/e2e/kb-method-rename, candidates_min=1, harvest_candidates_min=1, "
+            "org.openrewrite.java.ChangeMethodName@com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp)") in line

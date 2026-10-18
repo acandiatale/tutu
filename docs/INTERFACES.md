@@ -137,3 +137,9 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   check runs first and aborts `--jars` on problems. Verified 2026-10 on BOM 3.37.0: all 21 `origin: openrewrite`
   entries found in their declared jars; `rewrite-java-dependencies` 1.60.2 is on `rewrite-migrate-java` 3.42.0's
   transitive classpath (the former `provided_by` assumption).
+* 2026-10-18 round 5 (WS-C implementation notes): e2e `expected.json` `"kb"` block also accepts
+  `harvest_candidates_min` (compared with `len(report.harvest.candidates_created)`) and an optional `name` per
+  wanted recipe; `scripts/e2e.py` wipes the fixture's `kb.dir` before the run (only when it is under `out/`).
+  Fixture `boot2-method-rename` (legacy-web-lib 1.0.0 → 3.0.0, `clientIp` renamed `remoteClientIp`) needs
+  **2** LLM calls, not 1: clusters are keyed by file (`sbmig/triage/cluster.py`), so the two call sites are two
+  clusters in one round, each with its own replayed response.

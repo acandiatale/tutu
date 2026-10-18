@@ -31,10 +31,21 @@ captures the exit code + output, finds the run directory the CLI created under -
                             "spring_boot_after": "4.1.0",                      # *_before/*_after: exact
                             "from_here_contains": ["regex:(?i).*hystrix.*", "plain substring"],
                             "removed_contains": ["g:a"], "added_contains": ["g:a[:v]"]},
-               "followups_contains": ["regex:(?i).*resilience4j.*"]}             # over manual_followups
+               "followups_contains": ["regex:(?i).*resilience4j.*"],             # over manual_followups
+               "kb": {"dir": "out/e2e/kb-method-rename",           # the fixture's own kb.dir (sbmig.e2e.yml)
+                      "candidates_min": 1,                         # *.yml recipes in <dir>/recipes/candidates
+                      "harvest_candidates_min": 1,                 # len(report.harvest.candidates_created)
+                      "recipes": [{"recipe": "org.openrewrite.java.ChangeMethodName",
+                                   "options": {"newMethodName": "remoteClientIp"},          # subset of the entry
+                                   "name": "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp"}]}}
 
 `*_contains` entries: `regex:<re>` = full match (re.DOTALL) of some entry, otherwise a substring of some entry;
 `removed_contains`/`added_contains` match by "g:a" (plus a version prefix when given).
+`kb`: reads every recipe document of `<repo>/<dir>/recipes/{candidates,active}/*.yml` (multi-document YAML); each
+wanted recipe must match a document (`name` equal when given) with a `recipeList` entry `{<recipe>: {options}}` whose
+options are a superset of `options`. `kb.dir` must lie under `out/`: run_fixture deletes it before the run so a re-run
+is deterministic (a fixture that exercises the KB sets its own `kb.dir`, because every KB candidate is tried in every
+later plan).
 
 Missing report fields are treated as empty (the engine features are built in parallel) — a mismatch is reported,
 the script never crashes on report shape. A summary table (with an `expect` PASS/FAIL column and the first
@@ -48,6 +59,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -66,7 +78,7 @@ DEFAULT_JAVA_HOME = "/Users/acandiatale/Library/Java/JavaVirtualMachines/corrett
 DEFAULT_LOCAL_REPO = Path.home() / ".m2" / "repository"
 DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-                 "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy"]
+                 "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -396,6 +408,89 @@ def evaluate_handover(want: dict, report: dict) -> list[str]:
     return mm
 
 
+KB_RECIPE_SUBDIRS = ("candidates", "active")
+
+
+def kb_recipe_docs(kb_dir: Path) -> list[tuple[str, dict]]:
+    """(status dir, recipe document) for every YAML document in <kb_dir>/recipes/{candidates,active}/*.yml."""
+    import yaml
+
+    docs: list[tuple[str, dict]] = []
+    for sub in KB_RECIPE_SUBDIRS:
+        d = kb_dir / "recipes" / sub
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.yml")):
+            try:
+                loaded = list(yaml.safe_load_all(f.read_text(encoding="utf-8")))
+            except (OSError, ValueError, yaml.YAMLError):
+                continue
+            docs += [(sub, doc) for doc in loaded if isinstance(doc, dict)]
+    return docs
+
+
+def _recipe_entries(doc: dict) -> list[tuple[str, dict]]:
+    """recipeList as (recipe id, options): `- id` or `- {id: {options}}`."""
+    out: list[tuple[str, dict]] = []
+    for item in _list(doc.get("recipeList")):
+        if isinstance(item, str):
+            out.append((item, {}))
+        elif isinstance(item, dict):
+            for rid, opts in item.items():
+                out.append((str(rid), opts if isinstance(opts, dict) else {}))
+    return out
+
+
+def _kb_recipe_matches(want: dict, doc: dict) -> bool:
+    if want.get("name") and doc.get("name") != want["name"]:
+        return False
+    opts = want.get("options") if isinstance(want.get("options"), dict) else {}
+    return any(rid == want.get("recipe") and all(k in got and got[k] == v for k, v in opts.items())
+               for rid, got in _recipe_entries(doc))
+
+
+def evaluate_kb(want: dict, report: dict, repo: Path | None = None) -> list[str]:
+    """`kb` expectation: recipes the run left in its KB directory (+ the report's harvest block)."""
+    mm: list[str] = []
+    kb_dir = (repo or REPO) / str(want.get("dir") or "")
+    if not want.get("dir") or not kb_dir.is_dir():
+        mm.append(f"kb dir {want.get('dir')!r} missing")
+        docs: list[tuple[str, dict]] = []
+    else:
+        docs = kb_recipe_docs(kb_dir)
+    candidates = [doc for sub, doc in docs if sub == "candidates"]
+    if want.get("candidates_min") is not None and len(candidates) < want["candidates_min"]:
+        mm.append(f"kb candidates={len(candidates)} < min {want['candidates_min']}")
+    if want.get("harvest_candidates_min") is not None:
+        n = len(_list(_get(report, "harvest", "candidates_created")))
+        if n < want["harvest_candidates_min"]:
+            mm.append(f"harvest candidates_created={n} < min {want['harvest_candidates_min']}")
+    got = "; ".join(f"{doc.get('name')}[{sub}]: " + ", ".join(rid for rid, _ in _recipe_entries(doc))
+                    for sub, doc in docs) or "none"
+    for w in _list(want.get("recipes")):
+        if not isinstance(w, dict):
+            continue
+        if not any(_kb_recipe_matches(w, doc) for _, doc in docs):
+            what = w.get("recipe") or "?"
+            if w.get("name"):
+                what += f" in {w['name']}"
+            mm.append(f"kb recipe {what} {json.dumps(w.get('options') or {}, ensure_ascii=False)} missing "
+                      f"(got: {got[:200]})")
+    return mm
+
+
+def kb_dir_to_clear(expect: dict | None, repo: Path | None = None) -> Path | None:
+    """The fixture's KB directory (expect.kb.dir) when it is safely inside <repo>/out/, else None."""
+    if not isinstance(expect, dict) or not isinstance(expect.get("kb"), dict) or not expect["kb"].get("dir"):
+        return None
+    repo = repo or REPO
+    target = (repo / str(expect["kb"]["dir"])).resolve()
+    out_root = (repo / "out").resolve()
+    if target == out_root or out_root not in target.parents:
+        return None
+    return target
+
+
 def _blocked_matches(exp: dict, item: dict) -> bool:
     if exp.get("reason") and str(item.get("reason")) != exp["reason"]:
         return False
@@ -490,7 +585,7 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
 
 
 def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict],
-             project: Path | None) -> list[str]:
+             project: Path | None, repo: Path | None = None) -> list[str]:
     """All mismatches between the expectation block and what the run produced (empty = PASS)."""
     mm: list[str] = []
     if not report:
@@ -547,6 +642,8 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
     for pat in _list(expect.get("followups_contains")):
         if not _contains_match(pat, followups):
             mm.append(f"manual_followups lack {pat!r} (got: {_short(followups)})")
+    if isinstance(expect.get("kb"), dict):
+        mm += evaluate_kb(expect["kb"], report, repo)
     for check in _list(expect.get("post_checks")):
         problem = run_post_check(check, project)
         if problem:
@@ -588,6 +685,13 @@ def describe_expect(fixture: str, expected: dict) -> str:
         parts.append(f"handover({', '.join(hp)})")
     if exp.get("followups_contains"):
         parts.append(f"followups=[{', '.join(exp['followups_contains'])}]")
+    if isinstance(exp.get("kb"), dict):
+        kb = exp["kb"]
+        kp = [f"dir={kb.get('dir')}"] + [f"{k}={kb[k]}" for k in ("candidates_min", "harvest_candidates_min")
+                                         if kb.get(k) is not None]
+        kp += [f"{r.get('recipe')}" + (f"@{r['name']}" if r.get("name") else "")
+               for r in _list(kb.get("recipes")) if isinstance(r, dict)]
+        parts.append(f"kb({', '.join(kp)})")
     if exp.get("post_checks"):
         parts.append(f"post_checks={len(exp['post_checks'])}")
     cfg = fixture_config(fixture)
@@ -638,6 +742,9 @@ def run_fixture(fixture: str, args: argparse.Namespace, cmd: list[str] | None = 
         log_path.write_text(problem + "\n", encoding="utf-8")
         return res
 
+    kb_dir = kb_dir_to_clear(expect)
+    if kb_dir is not None and kb_dir.exists():
+        shutil.rmtree(kb_dir)                    # the fixture's own KB: start empty so a re-run is deterministic
     before = _run_dirs(out)
     started = time.time()
     t0 = time.monotonic()

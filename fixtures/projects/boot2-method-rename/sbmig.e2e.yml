@@ -1,0 +1,25 @@
+# Per-fixture config override, appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# (`--config config/artifacts.local-e2e.yml --config fixtures/projects/boot2-method-rename/sbmig.e2e.yml`).
+# Lists replace (deep_merge), so this is the complete optional list: still exactly 8 artifacts — the same list as
+# boot2-javax-lib-optional, but com.company.legacy:legacy-web-lib goes to 3.0.0 (jakarta build in which
+# LegacyRequestHelper.clientIp(..) was renamed to remoteClientIp(..)).
+artifacts:
+  optional:
+    - { group_id: org.apache.commons, artifact_id: commons-lang3,  version: 3.17.0 }
+    - { group_id: com.google.guava,   artifact_id: guava,          version: 33.4.8-jre }
+    - { group_id: org.projectlombok,  artifact_id: lombok,         version: 1.18.38 }
+    - { group_id: org.mapstruct,      artifact_id: mapstruct,      version: 1.6.3 }
+    - { group_id: com.fasterxml.jackson.core, artifact_id: jackson-databind, version: 2.19.2 }
+    - { group_id: org.apache.commons, artifact_id: commons-collections4, version: 4.5.0 }
+    - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
+    - { group_id: com.company.legacy, artifact_id: legacy-web-lib, version: 3.0.0 }
+# Replayed ("scripted") LLM so the run is offline and deterministic: replay/llm-001.json is the fix of the renamed
+# call sites (consumed in order; the last response repeats). The KB recipe candidate is compiled from the fix label
+# (method-rename → org.openrewrite.java.ChangeMethodName) without asking the LLM.
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/boot2-method-rename/replay"
+# Own KB: every KB candidate is appended to every later plan (kb.try_candidates_in_plan), so a shared KB would leak
+# this fixture's ChangeMethodName candidate into the other fixtures. scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-method-rename

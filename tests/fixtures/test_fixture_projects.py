@@ -34,7 +34,7 @@ JDK_HOMES = {
 
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy"]
+             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -55,6 +55,7 @@ BUILD_MATRIX = [
     ("missing-artifact", ".", "8", "ghost"),
     ("msa-shared-lib", ".", "18", ""),
     ("boot2-cloud-legacy", ".", "11", ""),
+    ("boot2-method-rename", ".", "11", "libs"),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -152,6 +153,21 @@ class HandoverExpect(BaseModel):
         return v
 
 
+class KBRecipeExpect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    recipe: str = Field(pattern=r"^[A-Za-z][\w.]*$")
+    options: dict[str, str | int | bool] = Field(default_factory=dict)
+    name: str | None = None
+
+
+class KBExpect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dir: str = Field(pattern=r"^out/[\w.\-/]+$")
+    candidates_min: int | None = Field(default=None, ge=0)
+    harvest_candidates_min: int | None = Field(default=None, ge=0)
+    recipes: list[KBRecipeExpect] = Field(default_factory=list)
+
+
 class Expect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: bool
@@ -171,6 +187,7 @@ class Expect(BaseModel):
     advisories_absent: list[str] = Field(default_factory=list)
     handover: HandoverExpect | None = None
     followups_contains: list[str] = Field(default_factory=list)
+    kb: KBExpect | None = None
 
     @field_validator("flags", "forbidden_flags", "optional_bumped", "followups_contains")
     @classmethod
@@ -317,16 +334,67 @@ def test_base_config_has_exactly_8_optionals():
     assert "com.company.legacy:legacy-web-lib" not in {s.key for s in cfg.artifacts.optional}
 
 
+OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-lib version in the optional list)
+    "boot2-javax-lib-optional": ({"artifacts"}, "2.0.0"),
+    "boot2-method-rename": ({"artifacts", "llm", "kb"}, "3.0.0"),
+}
+
+
 def test_fixture_config_override_keeps_8_optionals():
     overrides = sorted(p.parent.name for p in FIXTURES.glob("*/sbmig.e2e.yml"))
-    assert overrides == ["boot2-javax-lib-optional"]
-    raw = yaml.safe_load((FIXTURES / "boot2-javax-lib-optional" / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-    assert set(raw) == {"artifacts"} and set(raw["artifacts"]) == {"optional"}
-    cfg = _effective_cfg("boot2-javax-lib-optional")
-    keys = {s.key: s.version for s in cfg.artifacts.optional}
-    assert len(cfg.artifacts.optional) == 8
-    assert keys["com.company.legacy:legacy-web-lib"] == "2.0.0"
-    assert "org.slf4j:slf4j-api" not in keys
+    assert overrides == sorted(OVERRIDES)
+    for name, (top, legacy_version) in OVERRIDES.items():
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert set(raw) == top and set(raw["artifacts"]) == {"optional"}, name
+        cfg = _effective_cfg(name)
+        keys = {s.key: s.version for s in cfg.artifacts.optional}
+        assert len(cfg.artifacts.optional) == 8, name
+        assert keys["com.company.legacy:legacy-web-lib"] == legacy_version, name
+        assert "org.slf4j:slf4j-api" not in keys, name
+    a, b = (yaml.safe_load((FIXTURES / n / "sbmig.e2e.yml").read_text(encoding="utf-8"))["artifacts"]["optional"]
+            for n in OVERRIDES)
+    assert [dict(x, version=None) for x in a] == [dict(x, version=None) for x in b]   # same list, other version
+
+
+def test_method_rename_override_replays_llm_into_own_kb():
+    """boot2-method-rename: scripted LLM (replay dir in the fixture) and its own KB dir under out/ — the same dir
+    its `expect.kb` reads (scripts/e2e.py clears it before the run)."""
+    name = "boot2-method-rename"
+    cfg = _effective_cfg(name)
+    assert cfg.llm.provider == "fake"
+    assert cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
+    replay = cfg.resolve_path(cfg.llm.base_url[len("replay:"):])
+    assert replay.is_dir() and replay == FIXTURES / name / "replay"
+    kb = Expected.model_validate(_expected(name)).expect.kb
+    assert kb is not None and cfg.kb.dir == kb.dir and kb.dir.startswith("out/") and kb.dir != "out/e2e"
+    assert cfg.kb_dir.resolve() != (REPO / "kb").resolve()
+    assert any(r.recipe == "org.openrewrite.java.ChangeMethodName" for r in kb.recipes)
+
+
+def test_method_rename_replay_patches_match_the_call_sites():
+    """Each replayed response is a valid fix-protocol answer whose SEARCH text is a call-site line of the fixture
+    (the OpenRewrite spring phase only rewrites the javax imports, never these lines); together they rename every
+    `LegacyRequestHelper.clientIp(` call, one file per response (one LLM call per file cluster)."""
+    from sbmig.fix.client import load_replay_responses
+    from sbmig.fix.protocol import parse_fix_response
+
+    name = "boot2-method-rename"
+    responses = load_replay_responses(FIXTURES / name / "replay")
+    assert len(responses) == _expected(name)["expect"]["max_llm_calls"] == 2
+    touched = []
+    for text in responses:
+        parsed = parse_fix_response(text)
+        assert parsed.changes and not parsed.warnings and parsed.confidence is not None
+        assert len({ch.path for ch in parsed.changes}) == 1
+        for ch in parsed.changes:
+            src = (FIXTURES / name / ch.path).read_text(encoding="utf-8")
+            assert ch.op == "modify" and src.count(ch.search) == 1, ch.path
+            assert "LegacyRequestHelper.clientIp(" in ch.search and "javax" not in ch.search
+            assert ch.replace == ch.search.replace("LegacyRequestHelper.clientIp(", "LegacyRequestHelper.remoteClientIp(")
+            touched.append(ch.path)
+    callers = sorted(p.relative_to(FIXTURES / name).as_posix() for p in (FIXTURES / name).rglob("*.java")
+                     if "LegacyRequestHelper.clientIp(" in p.read_text(encoding="utf-8"))
+    assert sorted(touched) == callers and len(callers) == 2
 
 
 def test_optional_artifacts_cover_config():
@@ -344,11 +412,16 @@ def test_optional_artifacts_cover_config():
         assert ga in used, f"{ga} not exercised by any fixture"
 
 
-def test_javax_lib_variants_share_sources():
-    a, b = FIXTURES / "boot2-javax-lib", FIXTURES / "boot2-javax-lib-optional"
+@pytest.mark.parametrize("variant,extra", [
+    ("boot2-javax-lib-optional", {"sbmig.e2e.yml"}),
+    ("boot2-method-rename", {"sbmig.e2e.yml", "replay/llm-001.json", "replay/llm-002.json"}),
+])
+def test_javax_lib_variants_share_sources(variant: str, extra: set[str]):
+    a, b = FIXTURES / "boot2-javax-lib", FIXTURES / variant
     files_a = sorted(p.relative_to(a).as_posix() for p in a.rglob("*") if p.is_file())
     files_b = sorted(p.relative_to(b).as_posix() for p in b.rglob("*") if p.is_file())
-    assert set(files_b) - set(files_a) == {"sbmig.e2e.yml"}
+    assert set(files_b) - set(files_a) == extra
+    assert set(files_a) <= set(files_b)
     for rel in files_a:
         if rel.endswith((".java", ".xml", ".yml")) and rel != "sbmig.e2e.yml":
             assert (a / rel).read_bytes() == (b / rel).read_bytes(), rel
@@ -364,17 +437,28 @@ def test_required_libs_exist_in_fixtures_libs():
         g, a, v = (root.findtext(f"m:{t}", namespaces=NS) for t in ("groupId", "artifactId", "version"))
         assert pom.parent.name == f"v{v}"
         versions[f"{g}:{a}:{v}"] = pom
-    assert set(versions) == {"com.company.legacy:legacy-web-lib:1.0.0", "com.company.legacy:legacy-web-lib:2.0.0"}
+    assert set(versions) == {f"com.company.legacy:legacy-web-lib:{v}" for v in ("1.0.0", "2.0.0", "3.0.0")}
     for name in NAMES:
         for gav in _expected(name).get("requires_libs", []):
             assert gav in versions, f"{name}: {gav} has no source under fixtures/libs"
     v1 = (LIBS / "legacy-web-lib/v1.0.0/src/main/java/com/company/legacy/web/LegacyRequestHelper.java").read_text()
     v2 = (LIBS / "legacy-web-lib/v2.0.0/src/main/java/com/company/legacy/web/LegacyRequestHelper.java").read_text()
+    v3 = (LIBS / "legacy-web-lib/v3.0.0/src/main/java/com/company/legacy/web/LegacyRequestHelper.java").read_text()
     assert "import javax.servlet.http.HttpServletRequest;" in v1
     assert "import jakarta.servlet.http.HttpServletRequest;" in v2
-    for src in (v1, v2):
+    assert "import jakarta.servlet.http.HttpServletRequest;" in v3
+    for src in (v1, v2, v3):
         assert "public LegacyRequestHelper(HttpServletRequest request)" in src
+        assert "public String requestKey()" in src and "public boolean isAjax()" in src
+    for src in (v1, v2):
         assert "public static String clientIp(HttpServletRequest req)" in src
+    # 3.0.0: clientIp renamed to remoteClientIp (static + instance), no alias left behind
+    assert "public static String remoteClientIp(HttpServletRequest req)" in v3 and "public String remoteClientIp()" in v3
+    assert not re.search(r"\bString clientIp\(", v3)
+    masking = [(LIBS / f"legacy-web-lib/v{v}/src/main/java/com/company/legacy/web/MaskingUtils.java").read_bytes()
+               for v in ("2.0.0", "3.0.0")]
+    assert masking[0] == masking[1]
+    assert "legacy-web-lib/v3.0.0" in (LIBS / "install.sh").read_text()
     assert os.access(LIBS / "install.sh", os.X_OK) and os.access(LIBS / "ghost-lib/make-repo.sh", os.X_OK)
     assert "ghost-lib" not in (LIBS / "install.sh").read_text()   # must never be installed
 
@@ -465,15 +549,17 @@ def test_fixture_builds_as_is(name: str, subdir: str, jdk: str, needs: str, tmp_
 @pytest.mark.integration
 def test_install_libs_into_temp_repo_and_boot2_javax_lib_resolves(libs_repo: Path, tmp_path: Path):
     base = libs_repo / "com/company/legacy/legacy-web-lib"
-    for v in ("1.0.0", "2.0.0"):
+    for v in ("1.0.0", "2.0.0", "3.0.0"):
         assert (base / v / f"legacy-web-lib-{v}.jar").exists() and (base / v / f"legacy-web-lib-{v}.pom").exists()
     import zipfile
     with zipfile.ZipFile(base / "1.0.0/legacy-web-lib-1.0.0.jar") as z:
         major = int.from_bytes(z.read("com/company/legacy/web/LegacyRequestHelper.class")[6:8], "big")
     assert major == 52                                    # Java 8
-    with zipfile.ZipFile(base / "2.0.0/legacy-web-lib-2.0.0.jar") as z:
-        major = int.from_bytes(z.read("com/company/legacy/web/LegacyRequestHelper.class")[6:8], "big")
-    assert major == 61                                    # Java 17
+    for v in ("2.0.0", "3.0.0"):
+        with zipfile.ZipFile(base / f"{v}/legacy-web-lib-{v}.jar") as z:
+            cls = z.read("com/company/legacy/web/LegacyRequestHelper.class")
+        assert int.from_bytes(cls[6:8], "big") == 61      # Java 17
+        assert (b"remoteClientIp" in cls) == (v == "3.0.0")
     # idempotent: a second install into the same repo succeeds
     cp = subprocess.run(["bash", str(LIBS / "install.sh"), str(libs_repo)], check=False, capture_output=True, text=True,
                         timeout=900)

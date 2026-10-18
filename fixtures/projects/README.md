@@ -25,25 +25,29 @@ Catalog IDs refer to `docs/ERROR-HANDLING.md`.
 | `enforcer-java8-werror` | `pure_java` | E4, E5 | 8 | success, exit 0, 0 LLM, flags `enforcer-(relaxed\|skipped)` and `werror-removed` |
 | `missing-artifact` | `pure_java` | X3 | 8 with `-Dmaven.repo.local.tail=<ghost repo>` | **blocked** `artifact_not_found` `com.company.nonexistent:ghost-lib`, `success=false`, exit **2**, 0 LLM, ≤ 240 s |
 | `msa-shared-lib` | `msa` | S1 | 18 (whole reactor) | success, exit 0, 0 LLM; `common` + services on jakarta, `common/pom.xml` gets the parent but no mandatory deps |
+| `boot2-method-rename` | `spring_boot` | X2 | 11 (+ `install.sh`) | `sbmig.e2e.yml`: legacy-web-lib optional at **3.0.0** (`clientIp` renamed to `remoteClientIp`), replayed LLM (`replay/`), own `kb.dir: out/e2e/kb-method-rename` → bumped `1.0.0→3.0.0`, `cannot find symbol method clientIp(HttpServletRequest)` in 2 files → 2 replayed LLM fixes (one per file cluster), success, exit 0, ≤ 2 LLM calls, nothing blocked; harvest compiles the KB candidate `com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp` (`org.openrewrite.java.ChangeMethodName`, no LLM) — `expect.kb` |
 | `boot2-cloud-legacy` | `spring_boot` | advisories (`docs/ADVISORIES.md`) | 11 | **reference run for library advisories + Handover**: success, exit 0, 0 LLM, nothing blocked; advisories `springfox` (recipe → replaced by springdoc), `sleuth` (Boot 4 umbrella → replaced by Micrometer Tracing), `spring-cloud-bom` (train upgraded → replaced), `hystrix` (guide → still-present, Resilience4j in "From here on" + manual follow-ups); ≥ 1 carried-over pin; springfox/sleuth gone from every pom, `springdoc-openapi-starter-webmvc-ui` in `module/comp-jar/pom.xml` |
 
 Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used directly (→ "optional bump" path):
 
 | artifact | fixtures |
 |---|---|
-| `org.apache.commons:commons-lang3` | pure-java, boot2, boot2-javax-lib*, euckr-legacy, enforcer-java8-werror, missing-artifact |
+| `org.apache.commons:commons-lang3` | pure-java, boot2, boot2-javax-lib*, boot2-method-rename, euckr-legacy, enforcer-java8-werror, missing-artifact |
 | `com.google.guava:guava` | pure-java, boot3 |
-| `org.projectlombok:lombok` | boot2, boot2-javax-lib*, msa/order-service, msa-shared-lib/order-service |
+| `org.projectlombok:lombok` | boot2, boot2-javax-lib*, boot2-method-rename, msa/order-service, msa-shared-lib/order-service |
 | `com.fasterxml.jackson.core:jackson-databind` | spring5-xml |
 | `commons-io:commons-io` | servlet-tomcat |
 | `org.slf4j:slf4j-api` | spring5-xml |
 | `com.company.legacy:legacy-web-lib` 2.0.0 | boot2-javax-lib-optional only (its `sbmig.e2e.yml` swaps it in for slf4j-api, still 8 entries) |
+| `com.company.legacy:legacy-web-lib` 3.0.0 | boot2-method-rename only (same swap, version 3.0.0) |
 
 ## Simulated in-house libraries (`fixtures/libs/`)
 
 * `legacy-web-lib/v1.0.0` (Java 8, `javax.servlet` API) and `legacy-web-lib/v2.0.0` (Java 17, `jakarta.servlet`):
   `com.company.legacy:legacy-web-lib`, `LegacyRequestHelper(HttpServletRequest)` + `static clientIp(HttpServletRequest)`.
-  `fixtures/libs/install.sh [local-repo]` installs both (idempotent; `~/.m2` by default, `-Dmaven.repo.local=$1` otherwise).
+  `legacy-web-lib/v3.0.0` is the 2.0.0 jakarta build with `clientIp` **renamed** to `remoteClientIp` (no alias).
+  `fixtures/libs/install.sh [local-repo]` installs all three (idempotent; `~/.m2` by default, `-Dmaven.repo.local=$1`
+  otherwise).
 * `ghost-lib/` (`com.company.nonexistent:ghost-lib:1.2.3`) is **never installed**; `ghost-lib/make-repo.sh <dir>` lays it
   out in a throwaway repo only for the as-is build of `missing-artifact`. `scripts/e2e.py` refuses to run that fixture
   if the jar is in `~/.m2` (`requires_absent`).
@@ -51,7 +55,7 @@ Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used direct
 ## Running the e2e
 
 ```bash
-scripts/e2e.sh                                    # recipes + advisories check, installs fixtures/libs, runs all 13 fixtures
+scripts/e2e.sh                                    # recipes + advisories check, installs fixtures/libs, runs all 14 fixtures
 scripts/e2e.sh --only boot2-javax-lib,missing-artifact
 scripts/e2e.sh --skip-libs --only euckr-legacy    # do not (re)install fixtures/libs
 python scripts/e2e.py --expect-only               # print each fixture's expectations, run nothing
@@ -81,6 +85,7 @@ so an engine that does not yet produce e.g. `blocked` shows up as a FAIL with a 
 | `advisories` | each `{id, policy?, outcome?, recipe_source?, status?, library?, replacement?}` must match a `report.advisories[]` entry by `advisory_id`, every given field equal; `advisories_exact: true` forbids unlisted findings; `advisories_absent: [id]` must not be reported |
 | `handover` | on `report.handover`: `changes_min`, `carried_over_min`/`carried_over_max` (`len(carried_over)`), `parent_before`/`parent_after` (`g:a[:v]` prefix), `java_*`/`spring_boot_*` (exact), `from_here_contains` (entries of `from_here`), `removed_contains`/`added_contains` (`g:a[:v]`) |
 | `followups_contains` | each entry must match some `manual_followups` line |
+| `kb` | `{dir, candidates_min?, harvest_candidates_min?, recipes?}` — `dir` (relative to the repo, must be under `out/`; `scripts/e2e.py` deletes it before the run) is the fixture's own `kb.dir` from its `sbmig.e2e.yml`; `candidates_min` counts the recipe documents in `<dir>/recipes/candidates/*.yml`; `harvest_candidates_min` is on `len(report.harvest.candidates_created)`; each `recipes[]` `{recipe, options, name?}` must match a document in `recipes/{candidates,active}/*.yml` (`name` equal when given) with a `recipeList` entry `{<recipe>: {…}}` whose options are a superset of `options` |
 | `post_checks` | checks on the migrated `project/` (paths may use `**` globs): `file_decodes_as`/`file_contains` `{path, encoding, contains, not_contains}` (strict decode), `pom_parent {path, group_id, artifact_id, version}`, `pom_dependency_absent`/`pom_dependency_present {path, artifacts: ["g:a"]}`; `module/comp-jar/pom.xml` / `module/boot-jar/pom.xml` are the poms restructure creates for a single-jar Boot app (compile dependencies live in `comp-jar`) |
 
 `*_contains` entries: `regex:<re>` must fully match an entry (DOTALL), a plain string must be a substring of one.
@@ -96,6 +101,9 @@ Top-level helpers: `catalog` (IDs), `requires_libs` (`g:a:v` that must be in the
 2. Write `expected.json` with the analyze keys and an `expect` block; add the catalog ID to `catalog` and to the
    "Fixture" column of `docs/ERROR-HANDLING.md`. If the scenario needs a different artifact policy, add a
    `sbmig.e2e.yml` override (lists replace — keep exactly 8 optional artifacts).
+   A scenario that needs an LLM fix uses a replayed LLM (`llm.provider: fake`, `llm.base_url: "replay:<fixture>/replay"`,
+   `replay/llm-NNN.json` = `{"note", "response"}` in call order) and, when it exercises the KB, its own `kb.dir` under
+   `out/` plus an `expect.kb` block.
 3. Add the fixture to `NAMES`/`SCENARIOS` and `BUILD_MATRIX` in `tests/fixtures/test_fixture_projects.py`, to
    `DEFAULT_ORDER` in `scripts/e2e.py`, and to the matrix above.
 4. `python -m pytest tests/fixtures` (schema) and `python -m pytest tests/fixtures -m integration -k <name>` (as-is build).
