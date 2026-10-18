@@ -151,8 +151,9 @@ Harvest (end of each phase, only for attempts whose cluster was resolved and whi
 6. **Labels and the ledger (round 3).** Every harvested case is labeled deterministically from its diff
    (`sbmig.kb.labels`: `import-rename`, `type-rename`, `annotation-replace`, `method-rename`, `dependency-add`,
    `dependency-version`, `spring-property-rename`, … `generic-rewrite`) and keyed by the error-case **symbol** (javac
-   symbol, `g:a`, owner class). Mechanical labels compile straight into whitelisted recipe candidates (no LLM); the
-   others go to the recipe model. Each resolution (handler / plan recipe / KB recipe / KB patch / LLM patch / blocked)
+   symbol, `g:a`, owner class). Mechanical labels compile straight into whitelisted recipe candidates (no LLM; since
+   round 5 also `method-rename → ChangeMethodName`, owner FQCN from `KBCase.symbol_owner`); the others go to the
+   recipe model. Each resolution (handler / plan recipe / KB recipe / KB patch / LLM patch / blocked)
    is appended to `kb/ledger.jsonl`, and `kb/symbols.json` feeds "symbol X was fixed in N projects by Y: old → new"
    hints into the next prompt. `sbmig kb learning` turns the ledger into the to-do list for humans (symbols the LLM
    keeps fixing → write a recipe/handler; artifacts blocking many projects → library owners).

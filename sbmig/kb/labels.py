@@ -4,8 +4,11 @@ errors (no LLM).
 ``label_changes(changes, errors)`` → :class:`LabelResult` (labels most-specific first, an ``old → new``
 replacement when the labels imply one, the error-case symbol and machine-readable details).
 ``compile_recipe(case)`` turns a mechanical, 1:1 labeled case into a whitelisted declarative OpenRewrite
-recipe without asking the LLM (ChangeType / ChangePackage / AddDependency / ChangeDependency /
-UpgradeDependencyVersion / UpgradePluginVersion / ChangePropertyValue / ChangeSpringPropertyKey).
+recipe without asking the LLM (ChangeType / ChangePackage / ChangeMethodName / AddDependency /
+ChangeDependency / UpgradeDependencyVersion / UpgradePluginVersion / ChangePropertyValue /
+ChangeSpringPropertyKey). A ``method-rename`` compiles only with a library-owned owner FQCN, taken from the
+javac location or from ``KBCase.symbol_owner`` (javac prints imported types by their simple name; harvest
+resolves them through the changed files' imports); the pattern is always ``<owner> <old>(..)``.
 
 The heuristics are deliberately simple; anything they cannot explain is ``generic-rewrite``, which never
 compiles to a recipe.
@@ -493,7 +496,9 @@ def _classify_line_pair(
             idx = next((i for i, t in enumerate(toks) if t == x), -1)
             before = toks[idx - 1] if idx > 0 else ""
             after = toks[idx + 1] if 0 <= idx < len(toks) - 1 else ""
-            if before == "." and after == "(":
+            before2 = toks[idx - 2] if idx > 1 else ""
+            # `.old(` call, or `::old` method reference (the tokenizer splits `::` into two `:` tokens)
+            if (before == "." and after == "(") or (before == ":" and before2 == ":"):
                 owner = _method_owner(x, errors)
                 res.details.setdefault("method_renames", []).append({"owner": owner, "old": x, "new": y})
                 return "method-rename"
@@ -713,6 +718,42 @@ def _ga(key: str) -> Optional[tuple[str, str]]:
     return None
 
 
+_METHOD_NAME_RE = re.compile(r"^[a-z_][A-Za-z0-9_]*$")
+
+
+def _compile_method_rename(renames: list[dict], symbol_owner: str) -> tuple[dict, str, str] | None:
+    """ChangeMethodName for 1:1 renames: every call site agrees on (old, new) and on the owner; the owner FQCN
+    comes from the javac location when it is qualified, else from ``symbol_owner`` (same simple name)."""
+    if not renames:
+        return None
+    pairs = {(r.get("old", ""), r.get("new", "")) for r in renames}
+    if len(pairs) != 1:
+        return None
+    old, new = next(iter(pairs))
+    if old == new or not (_METHOD_NAME_RE.match(old) and _METHOD_NAME_RE.match(new)):
+        return None
+    owners = {r.get("owner") or "" for r in renames} - {""}
+    qualified = {o for o in owners if "." in o}
+    if len({_simple(o) for o in owners}) > 1 or len(qualified) > 1:
+        return None
+    if qualified:
+        owner = next(iter(qualified))
+        if not _fqcn_ok(owner):
+            return None
+    elif _fqcn_ok(symbol_owner) and (not owners or _simple(symbol_owner) == next(iter(owners))):
+        owner = symbol_owner
+    else:
+        return None
+    entry = {
+        "org.openrewrite.java.ChangeMethodName": {
+            "methodPattern": f"{owner} {old}(..)",
+            "newMethodName": new,
+            "matchOverrides": True,
+        }
+    }
+    return entry, _recipe_name(_simple(owner), old, "To", new), f"{owner}.{old}(..) -> {new}"
+
+
 def compile_recipe(case: KBCase) -> Optional[str]:
     """Build a declarative recipe YAML for a mechanical, confidently 1:1 labeled case — or None."""
     res = label_changes(case.changes, case.errors)
@@ -748,6 +789,11 @@ def compile_recipe(case: KBCase) -> Optional[str]:
         so, sn = _simple(old), _simple(new)
         name = _recipe_name(so, "To", sn) if so != sn else _recipe_name(_pkg(old), so, "To", _pkg(new))
         title = f"{old} -> {new}"
+    elif labels == {"method-rename"}:
+        compiled = _compile_method_rename(det.get("method_renames") or [], case.symbol_owner or "")
+        if compiled is None:
+            return None
+        entry, name, title = compiled
     elif labels == {"dependency-add"}:
         adds = det.get("dependency_add") or []
         if len(adds) != 1 or not _ga(adds[0]["key"]) or not adds[0].get("version"):

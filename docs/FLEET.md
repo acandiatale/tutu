@@ -79,10 +79,17 @@ project k+2…: active recipe is part of every plan; the error never reaches tri
   They are computed from the `FileChange` diff (pom fragments, `.properties`/`.yml` keys, Java import / token
   diffs) — no LLM, most specific first.
 * **Deterministic recipe candidates** (`kb.deterministic_candidates`, default on): `compile_recipe(case)` emits a
-  whitelisted declarative recipe (`ChangeType`, `ChangePackage`, `AddDependency`, `ChangeDependency`,
-  `UpgradeDependencyVersion`, `UpgradePluginVersion`, `ChangePropertyValue`, `ChangeSpringPropertyKey`) only for a
-  single, confident 1:1 change. Project-owned types (outside `EXTERNAL_PACKAGE_PREFIXES` + the in-house prefixes)
-  never become recipes. Anything else falls back to the LLM candidate prompt (which now also shows the labels).
+  whitelisted declarative recipe (`ChangeType`, `ChangePackage`, `ChangeMethodName`, `AddDependency`,
+  `ChangeDependency`, `UpgradeDependencyVersion`, `UpgradePluginVersion`, `ChangePropertyValue`,
+  `ChangeSpringPropertyKey`) only for a single, confident 1:1 change. Project-owned types (outside
+  `EXTERNAL_PACKAGE_PREFIXES` + the in-house prefixes) never become recipes. Anything else falls back to the LLM
+  candidate prompt (which now also shows the labels).
+* **`method-rename` → `ChangeMethodName`** (round 5): all call sites (`X.old(` and method references `x::old`) must
+  agree on `old → new`; the recipe is `methodPattern: "<owner FQCN> <old>(..)"`, `newMethodName`,
+  `matchOverrides: true`, named `com.company.kb.<OwnerSimple><Old>To<New>`. javac prints imported types by their
+  simple name (`location: class LegacyRequestHelper`) and argument types too, so harvest resolves the owner into
+  `KBCase.symbol_owner` from the changed files' imports (explicit import, then wildcard via `locate_class`, then
+  same package) and the pattern never carries argument types.
 * **Promotion** is unchanged: a candidate becomes active after success in `kb.auto_promote_after_projects`
   distinct projects without a failure; `HarvestResult.recipes_promoted` / `FleetProjectResult.kb_recipes_promoted`
   record when it happened. `sbmig kb promote / reject` stay available for manual curation.

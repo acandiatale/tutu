@@ -101,9 +101,103 @@ def _changed_files(changes: list[FileChange]) -> list[str]:
     return files
 
 
+# --------------------------------------------------------------------------- symbol owner
+_PACKAGE_DECL_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
+_IMPORT_DECL_RE = re.compile(r"^\s*import\s+(static\s+)?([\w.]+?)(\.\*)?\s*;", re.MULTILINE)
+_TYPE_SYMBOL_PREFIXES = ("class ", "interface ", "enum ", "record ", "package ", "@interface ")
+
+
+def _owner_hint(changes: list[FileChange], errors: list[BuildError]) -> str:
+    """The (often simple) owner name: first ``method_renames`` owner, else javac's owner of the first error whose
+    symbol is a member (for ``symbol: class X`` the location is the *referencing* class, not an owner)."""
+    lab = label_changes(changes, errors)
+    for r in lab.details.get("method_renames") or []:
+        if r.get("owner"):
+            return r["owner"]
+    from sbmig.build.classpath import owner_fqcn
+    for e in errors:
+        if (e.symbol or "").strip().startswith(_TYPE_SYMBOL_PREFIXES):
+            continue
+        try:
+            o = owner_fqcn(e)
+        except Exception:  # pragma: no cover - defensive
+            o = None
+        if o:
+            return o
+    return ""
+
+
+def _java_texts(changes: list[FileChange], ws: Workspace | None) -> list[str]:
+    """Current contents of the changed .java files (falling back to the change text itself)."""
+    texts: list[str] = []
+    for ch in changes:
+        for path in (ch.new_path, ch.path):
+            if not path or not path.endswith(".java"):
+                continue
+            if ws is not None:
+                try:
+                    texts.append(ws.read(path))
+                except Exception as exc:  # deleted / renamed file: the change text below still counts
+                    log.debug("resolve_symbol_owner: cannot read %s: %s", path, exc)
+            for t in (ch.replace, ch.content, ch.search):
+                if t:
+                    texts.append(t)
+    return texts
+
+
+def resolve_symbol_owner(changes: list[FileChange], errors: list[BuildError], ws: Workspace | None,
+                         cfg=None) -> str:
+    """FQCN of the type owning the error-case symbol, or "". javac prints imported types by their simple name
+    (``location: class Client``), so a simple owner is resolved through the changed files: explicit import
+    (also ``import static pkg.Simple.*`` / ``.member``) → wildcard import candidates via ``locate_class`` (only
+    when ``cfg`` is given; runs Maven) → same package. Never raises."""
+    try:
+        hint = _owner_hint(list(changes or []), list(errors or []))
+        if not hint:
+            return ""
+        if "." in hint and hint[0].islower():
+            return hint
+        head, _, rest = hint.partition(".")             # nested type `Outer.Inner`
+        suffix = f".{rest}" if rest else ""
+        texts = _java_texts(list(changes or []), ws)
+        wildcards: list[str] = []
+        for text in texts:
+            for m in _IMPORT_DECL_RE.finditer(text):
+                static, name, wild = bool(m.group(1)), m.group(2), bool(m.group(3))
+                if not static and wild:
+                    if name not in wildcards:
+                        wildcards.append(name)
+                    continue
+                if name.rsplit(".", 1)[-1] == head:
+                    return name + suffix
+                if static and not wild and "." in name:
+                    owner = name.rsplit(".", 1)[0]
+                    if owner.rsplit(".", 1)[-1] == head:
+                        return owner + suffix
+        if wildcards and cfg is not None and ws is not None:
+            from sbmig.build.classpath import locate_class
+            module = next((e.module for e in errors or [] if e.module), None)
+            for pkg in wildcards:
+                try:
+                    loc = locate_class(ws, cfg, f"{pkg}.{head}", module)
+                except Exception as exc:  # pragma: no cover - locate_class never raises
+                    log.warning("resolve_symbol_owner: %s: %s", type(exc).__name__, exc)
+                    loc = None
+                if loc is not None:
+                    return f"{pkg}.{head}{suffix}"
+        for text in texts:
+            m = _PACKAGE_DECL_RE.search(text)
+            if m:
+                return f"{m.group(1)}.{head}{suffix}"
+    except Exception as exc:  # pragma: no cover - best effort
+        log.warning("resolve_symbol_owner failed: %s: %s", type(exc).__name__, exc)
+    return ""
+
+
 def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None, ws: Optional[Workspace] = None,
-                  phase: Optional[Phase] = None) -> KBCase:
-    """Build a KBCase from a successful attempt: relative posix paths, secrets redacted, raw truncated."""
+                  phase: Phase | None = None, *, cfg=None) -> KBCase:
+    """Build a KBCase from a successful attempt: relative posix paths, secrets redacted, raw truncated.
+    ``symbol_owner`` is resolved from the changed files' imports (``cfg`` enables wildcard-import lookups)."""
     errors_src = attempt.cluster_errors or _errors_from_signatures(attempt.cluster_signatures)
     errors = [_sanitize_error(e, ws) for e in errors_src]
     l1: list[str] = []
@@ -137,6 +231,7 @@ def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None,
         project_fingerprint=profile.fingerprint if profile else "",
         project=project_name(profile, ws),
         symbol=lab.symbol,
+        symbol_owner=resolve_symbol_owner(changes, errors, ws, cfg),
         fix_labels=lab.labels,
         replacement=redact(lab.replacement) or "",
         case_type=profile.case_type if profile else KBCase.model_fields["case_type"].default,
@@ -291,7 +386,7 @@ def harvest_phase(kb: "FileKnowledgeBase", phase_result: PhaseResult, profile: P
             if not _is_harvestable(a):
                 continue
             try:
-                case = sanitize_case(a, profile, ws, phase_result.phase)
+                case = sanitize_case(a, profile, ws, phase_result.phase, cfg=kb.cfg)
                 cid, created = kb.record_case_ex(case)
                 case_of_attempt[a.id] = cid
                 stored = kb.get_case(cid)
