@@ -5,13 +5,16 @@ lombok, mapstruct, querydsl, spring-security, spring-data-jpa, spring-data-redis
 spring-cloud, hibernate, mybatis, jpa, springdoc, springfox, feign, jackson, junit4, junit5, mockito,
 testcontainers, log4j2, logback, javax-servlet, jakarta-servlet, jsp, jaxb, javax-annotation, validation,
 thymeleaf, flyway, liquibase, undertow, jetty, tomcat-embed, spring-webflux, spring-webmvc, spring-context,
-spring-retry, elasticsearch, mongodb.
+spring-retry, elasticsearch, mongodb,
+plus the library-advisory rules (knowledge/libraries/advisories.yml, docs/ADVISORIES.md): sleuth, hystrix, ribbon,
+zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4.
 
 Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
 groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
 maven-jaxb2-plugin, querydsl-maven-plugin), legacy-encoding (evidence = detected encodings).
 
-Evidence strings: `pom:<g>:<a>[:<v>]`, `import:<prefix>`, `file:<what>`.
+Evidence strings: `pom:<g>:<a>[:<v>]`, `pom-managed:<g>:<a>[:<v>]` (dependencyManagement entry, rules with
+`managed`), `pom-parent:<g>:<a>[:<v>]` (parent coordinates, rules with `parents`), `import:<prefix>`, `file:<what>`.
 """
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ from sbmig.core.models import GAV, LibraryUsage, PomInfo
 from .source_scanner import ScanResult
 
 _B = "org.springframework.boot"
+_SC = "org.springframework.cloud"
 
 
 @dataclass(frozen=True)
@@ -34,6 +38,8 @@ class LibraryRule:
     imports: tuple[str, ...] = ()     # import prefixes (matched on segment boundary)
     jsp: bool = False                 # *.jsp files count as evidence
     config: tuple[str, ...] = ()      # config file basename globs
+    managed: tuple[str, ...] = ()     # dependencyManagement "group:artifact-glob" patterns (BOM imports …)
+    parents: tuple[str, ...] = ()     # parent "group:artifact-glob" patterns
 
 
 LIBRARY_RULES: tuple[LibraryRule, ...] = (
@@ -109,6 +115,32 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("mongodb", ("org.mongodb:*", "org.springframework.data:spring-data-mongodb",
                             f"{_B}:spring-boot-starter-data-mongodb*"),
                 ("com.mongodb", "org.springframework.data.mongodb")),
+    # ---- library advisories (EOL / no longer managed by the Boot 4 BOM; knowledge/libraries/advisories.yml)
+    LibraryRule("sleuth", (f"{_SC}:spring-cloud-starter-sleuth", f"{_SC}:spring-cloud-sleuth-*"),
+                ("org.springframework.cloud.sleuth",)),
+    LibraryRule("hystrix", (f"{_SC}:spring-cloud-starter-netflix-hystrix*", f"{_SC}:spring-cloud-starter-hystrix*",
+                            f"{_SC}:spring-cloud-netflix-hystrix*", "com.netflix.hystrix:*"),
+                ("com.netflix.hystrix",)),
+    LibraryRule("ribbon", (f"{_SC}:spring-cloud-starter-netflix-ribbon", f"{_SC}:spring-cloud-starter-ribbon",
+                           "com.netflix.ribbon:*"),
+                ("com.netflix.loadbalancer", "com.netflix.client", "org.springframework.cloud.netflix.ribbon")),
+    LibraryRule("zuul", (f"{_SC}:spring-cloud-starter-netflix-zuul", f"{_SC}:spring-cloud-starter-zuul",
+                         "com.netflix.zuul:*"), ("com.netflix.zuul", "org.springframework.cloud.netflix.zuul")),
+    LibraryRule("netflix-feign", ("com.netflix.feign:*", f"{_SC}:spring-cloud-starter-feign"),
+                ("com.netflix.feign",)),
+    LibraryRule("spring-cloud-bom", managed=(f"{_SC}:spring-cloud-dependencies",),
+                parents=(f"{_SC}:spring-cloud-starter-parent",)),
+    LibraryRule("swagger-v1", ("io.swagger:swagger-annotations", "io.swagger:swagger-models",
+                               "io.swagger:swagger-core"), ("io.swagger.annotations", "io.swagger.models")),
+    LibraryRule("spring-security-oauth2-legacy", ("org.springframework.security.oauth:*",
+                                                  "org.springframework.security.oauth.boot:*"),
+                ("org.springframework.security.oauth2.config.annotation",
+                 "org.springframework.security.oauth2.provider", "org.springframework.security.oauth2.common")),
+    LibraryRule("log4j1", ("log4j:log4j",), ("org.apache.log4j",)),
+    LibraryRule("commons-lang2", ("commons-lang:commons-lang",), ("org.apache.commons.lang",)),
+    LibraryRule("httpclient4", ("org.apache.httpcomponents:httpclient", "org.apache.httpcomponents:httpmime",
+                                "org.apache.httpcomponents:fluent-hc"),
+                ("org.apache.http.client", "org.apache.http.impl.client", "org.apache.http.HttpResponse")),
 )
 
 LIBRARY_NAMES: tuple[str, ...] = tuple(r.name for r in LIBRARY_RULES)
@@ -156,6 +188,22 @@ def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
                         break
                 if version:
                     break
+        for pattern in rule.managed:
+            for d in managed:
+                if _dep_matches(pattern, d):
+                    ev = f"pom-managed:{d.coordinates}"
+                    if ev not in evidence:
+                        evidence.append(ev)
+                    if version is None:
+                        version = _concrete(d.version)
+        for pattern in rule.parents:
+            for p in poms:
+                if p.parent is not None and _dep_matches(pattern, p.parent):
+                    ev = f"pom-parent:{p.parent.coordinates}"
+                    if ev not in evidence:
+                        evidence.append(ev)
+                    if version is None:
+                        version = _concrete(p.parent.version)
         for prefix in rule.imports:
             if any(_import_matches(prefix, i) for i in import_list):
                 evidence.append(f"import:{prefix}")

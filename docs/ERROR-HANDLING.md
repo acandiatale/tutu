@@ -61,7 +61,47 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
 | S7 as-is project is already a multi-module WAR + JAR | wrap policy; WAR → jar follow-up | unit |
 
 ## 5. Report sections produced for the above
+* **Handover — what we replaced, what is yours** (first section of `report.md`, `report.json` `handover` +
+  `advisories`): `### Versions replaced` (parent / Java / Boot, version-change table, ⚠ carried-over pins, added /
+  removed), `### Libraries needing your attention` (one row per advisory, §6), `### From here on, your team`
+  (numbered to-do list: advisories not replaced, replaced-but-verify, carried-over pins, pointers to blocked /
+  unresolved, manual follow-ups). Written for every run, green or not.
 * **Blocked — needs human/library action**: one row per `BlockedItem` (reason, artifact/owner class, required vs found type, files, suggestion, attempts made).
 * **Unresolved errors**: everything else that still fails.
 * **Manual follow-ups** and **flags** (`test-compile-skipped`, `enforcer-skipped`, `werror-removed`, `source-encoding-set:cp949`, `stopped-after-…`).
 * Exit code: 0 success, 2 finished with blocked/unresolved, 3 aborted (bad input / parent not resolvable / no Maven).
+  Advisories and carried-over pins never change it.
+
+## 6. Library advisories (EOL / unmanaged libraries that still compile)
+
+These are not errors: the project builds, so without a check the run would simply look green. The catalog is
+`knowledge/libraries/advisories.yml` (`docs/ADVISORIES.md`); `sbmig analyze` lists the matches, the run verifies
+them on the final tree (`outcome` `replaced` / `still-present` / `unknown`) and the Handover tells the owners what is
+theirs. Policies: `guide` (build, then guidance) or `recipe` (also run verified OpenRewrite recipes in the spring
+phase). **There is no block policy** — no advisory ever fails a build or changes the exit code. Overrides:
+`advisories.policy_overrides {id: guide|recipe|off}`, company entries via `advisories.extra_files`.
+
+| Library id | Status | What sbmig does | What the owners do next | Replacement |
+|---|---|---|---|---|
+| `springfox` | eol | `recipe`: `SpringFoxToSpringDoc` + `UpgradeSpringDoc_3_0` prepended to the spring rewrite (`recipe_source=advisory`) | review generated `GroupedOpenApi` beans / recipe TODOs, check `/swagger-ui/index.html` and `/v3/api-docs`, `springdoc.*` properties | `org.springdoc:springdoc-openapi-starter-webmvc-ui` 3.x |
+| `sleuth` | eol | already covered by the Boot 4 umbrella chain (`MigrateCloudSleuthToMicrometerTracing`, `recipe_source=plan`) | drop an explicit micrometer-tracing 1.0.x pin if left, check sampling probability, exporter (zipkin/otlp), log pattern | `io.micrometer:micrometer-tracing-bridge-brave` (Boot BOM) |
+| `hystrix` | eol | `guide`: no OpenRewrite migration; the 2.2.x starter stays at its as-is version (⚠ carried over) | replace with Resilience4j: starter swap, `@HystrixCommand` → `@CircuitBreaker(name, fallbackMethod)`, `hystrix.*` → `resilience4j.*` properties | `spring-cloud-starter-circuitbreaker-resilience4j` |
+| `ribbon` | eol | `guide` | swap to Spring Cloud LoadBalancer, delete `IRule`/`IPing` beans and `<client>.ribbon.*` properties | `spring-cloud-starter-loadbalancer` |
+| `zuul` | eol | `guide` | move routes/filters to Spring Cloud Gateway (server-webmvc keeps the servlet stack) | `spring-cloud-starter-gateway-server-webmvc` |
+| `netflix-feign` | eol | `guide` | `com.netflix.feign` → `io.github.openfeign`, `org.springframework.cloud.openfeign.@FeignClient`, starter rename | `spring-cloud-starter-openfeign` |
+| `spring-cloud-bom` | superseded | train older than 2025.1: already covered by the Boot 4 umbrella chain (`UpgradeSpringCloud_2025_1`, `recipe_source=plan`) | verify the train against the Spring Cloud compatibility matrix for Boot 4.1; every `org.springframework.cloud:*` BOM-managed | `spring-cloud-dependencies` 2025.1.x |
+| `spring-security-oauth2-legacy` | eol | `guide` | `@EnableResourceServer`/`@EnableOAuth2Sso`/`@EnableAuthorizationServer`, `OAuth2RestTemplate` → Spring Security `oauth2ResourceServer()`/`oauth2Login()`, Spring Authorization Server; re-test tokens | `spring-boot-starter-oauth2-client` / `-resource-server` / `-authorization-server` |
+| `log4j1` | eol | `guide` | remove `log4j:log4j`, log via SLF4J, convert `log4j.properties` to `logback-spring.xml` (`log4j-1.2-api` only as a temporary bridge) | Logback (Boot default) or Log4j 2 |
+| `commons-lang2` | eol | `guide` | `org.apache.commons.lang.*` → `org.apache.commons.lang3.*` (`StringEscapeUtils` → commons-text), drop `commons-lang:commons-lang` | `org.apache.commons:commons-lang3` |
+| `httpclient4` | superseded | `guide` (Framework 7's `HttpComponentsClientHttpRequestFactory` needs HttpClient 5) | move `org.apache.http.*` to `org.apache.hc.client5`/`hc.core5` (or `RestClient`), drop the explicit 4.x version, re-test timeouts / pooling / TLS | `org.apache.httpcomponents.client5:httpclient5` |
+
+Reference run: fixture `boot2-cloud-legacy` (springfox replaced, sleuth replaced, Spring Cloud train replaced,
+hystrix still-present → Resilience4j in "From here on").
+
+**Carried over (generic rule, any library).** A dependency whose version the **old** parent / BOM managed and the
+**new** parent / Boot 4.1 BOM no longer manages would lose its version at the parent swap (E6). sbmig pins it
+explicitly at the **as-is effective version** so the build keeps working, and lists it in the Handover's
+"Versions replaced" table with ⚠ (`VersionChange.carried_over=true`, `handover.carried_over`) and again under
+"From here on, your team": the owners must confirm that version works on JDK 21 / Boot 4.1 or replace the library.
+`advisories.report_carried_over: false` hides the list (the pins stay).
+

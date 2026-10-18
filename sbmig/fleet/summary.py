@@ -24,6 +24,8 @@ COLUMNS = [
     "llm_calls",
     "blocked",
     "unresolved",
+    "advisories",
+    "carried_over",
     "kb_used",
     "kb_created",
     "kb_promoted",
@@ -47,6 +49,8 @@ def rows(state: FleetState) -> list[dict[str, Any]]:
                 "llm_calls": p.llm_calls,
                 "blocked": p.blocked,
                 "unresolved": p.unresolved,
+                "advisories": len(p.advisories),
+                "carried_over": p.carried_over,
                 "kb_used": len(p.kb_recipes_used),
                 "kb_created": len(p.kb_cases_created) + len(p.kb_candidates_created),
                 "kb_promoted": len(p.kb_recipes_promoted),
@@ -70,6 +74,8 @@ def totals(state: FleetState) -> dict[str, Any]:
         "duration_s": round(sum(p.duration_s for p in ps), 1),
         "blocked": sum(p.blocked for p in ps),
         "unresolved": sum(p.unresolved for p in ps),
+        "advisories": sum(len(p.advisories) for p in ps),
+        "carried_over": sum(p.carried_over for p in ps),
         "kb_used": sum(len(p.kb_recipes_used) for p in ps),
         "kb_cases_created": sum(len(p.kb_cases_created) for p in ps),
         "kb_candidates_created": sum(len(p.kb_candidates_created) for p in ps),
@@ -85,7 +91,7 @@ def _cell(v: Any) -> str:
 
 def render_table(state: FleetState) -> str:
     rs = rows(state)
-    cols = COLUMNS[:12]
+    cols = COLUMNS[:14]
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for r in rs:
         lines.append("| " + " | ".join(_cell(r[c]) for c in cols) + " |")
@@ -105,6 +111,7 @@ def render_summary_md(state: FleetState) -> str:
         f"* projects: {t['projects']} ({status or '-'})",
         f"* LLM calls: {t['llm_calls']}, blocked: {t['blocked']}, unresolved: {t['unresolved']}, duration: "
         f"{t['duration_s']:.0f}s",
+        f"* library advisories: {t['advisories']}, dependencies carried over: {t['carried_over']}",
         f"* KB: used {t['kb_used']}, cases created {t['kb_cases_created']}, candidates created "
         f"{t['kb_candidates_created']}, recipes promoted {t['kb_recipes_promoted']}",
     ]
@@ -121,10 +128,49 @@ def render_summary_md(state: FleetState) -> str:
         head += (
             ["## Blocked", ""] + [f"* **{p.name}**: {', '.join(p.blocked_reasons)}" for p in blocked] + [""]
         )
+    head += advisory_section(state)
     if state.notes:
         head += ["## Notes", ""] + [f"* {n}" for n in state.notes] + [""]
     head.append("See `learning.md` for what the KB learned across these projects.")
     return "\n".join(head) + "\n"
+
+
+def advisory_rows(state: FleetState) -> list[dict[str, Any]]:
+    """advisory id → projects / replaced / still-present (from FleetProjectResult.advisories "id:outcome")."""
+    agg: dict[str, dict[str, Any]] = {}
+    for p in state.projects:
+        for entry in p.advisories:
+            aid, _, outcome = entry.rpartition(":") if ":" in entry else (entry, "", "unknown")
+            d = agg.setdefault(aid, {"id": aid, "projects": [], "replaced": 0, "still_present": 0, "unknown": 0})
+            if p.name not in d["projects"]:
+                d["projects"].append(p.name)
+            key = {"replaced": "replaced", "still-present": "still_present"}.get(outcome, "unknown")
+            d[key] += 1
+    return sorted(agg.values(), key=lambda d: (-len(d["projects"]), d["id"]))
+
+
+def advisory_section(state: FleetState) -> list[str]:
+    rs = advisory_rows(state)
+    if not rs:
+        return []
+    out = [
+        "## Libraries flagged across the fleet",
+        "",
+        "Library advisories (EOL / no longer managed); never block a run — each project's report.md has a "
+        "Handover section telling the owners what to do next.",
+        "",
+        "| advisory | projects | replaced | still present | unknown | projects (first 8) |",
+        "|---|---|---|---|---|---|",
+    ]
+    for d in rs:
+        names = ", ".join(d["projects"][:8]) + (" …" if len(d["projects"]) > 8 else "")
+        out.append(f"| {_cell(d['id'])} | {len(d['projects'])} | {d['replaced']} | {d['still_present']} | "
+                   f"{d['unknown']} | {_cell(names)} |")
+    carried = [p for p in state.projects if p.carried_over]
+    if carried:
+        out += ["", "Projects with dependencies pinned at as-is versions (no longer managed): "
+                + ", ".join(f"{p.name} ({p.carried_over})" for p in carried)]
+    return out + [""]
 
 
 def render_csv(state: FleetState) -> str:

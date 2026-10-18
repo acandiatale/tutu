@@ -88,6 +88,7 @@ class CatalogEntry(BaseModel):
     rules: list[str] = Field(default_factory=list)
     verified: Optional[str] = None
     notes: Optional[str] = None
+    advisories: list[str] = Field(default_factory=list)   # advisory ids it resolves (informational, checked)
 
 
 _RECIPE_SET_NAMES = ("jdk21", "jakarta", "spring_boot_4", "spring_framework_7", "spring_security_7", "junit5")
@@ -285,6 +286,29 @@ class RecipeCatalog:
             elif e.artifact and not e.artifact.startswith(CORE_GROUP):
                 if e.artifact not in artifacts and (e.provided_by or "") not in artifacts:
                     problems.append(f"catalog {e.id}: artifact {e.artifact} is not in openrewrite.recipe_artifacts")
+        problems += self._check_advisories(cfg)
+        return problems
+
+    def _check_advisories(self, cfg: Config) -> list[str]:
+        """Cross-check with knowledge/libraries/advisories.yml (+ extra files): every advisory recipe is in the
+        catalog, every catalog `advisories: [x]` names an existing advisory that lists the recipe."""
+        try:
+            from sbmig.advisory.catalog import load_advisories
+            adv = load_advisories(cfg)
+        except Exception as e:  # pragma: no cover - advisory package broken
+            return [f"advisories: cannot load ({type(e).__name__}: {e})"]
+        problems: list[str] = []
+        for a in adv.entries:
+            for rid in a.recipes:
+                if rid not in self:
+                    problems.append(f"advisory {a.id}: recipe {rid} is not in the catalog")
+        for e in self.entries:
+            for aid in e.advisories:
+                entry = adv.get(aid)
+                if entry is None:
+                    problems.append(f"catalog {e.id}: lists advisory {aid!r} but no such advisory exists")
+                elif e.id not in entry.recipes:
+                    problems.append(f"catalog {e.id}: lists advisory {aid!r} but that advisory does not use it")
         return problems
 
     # ---- listing -------------------------------------------------------
@@ -341,7 +365,11 @@ _BUILTIN: list[dict[str, Any]] = [
                 "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
                 "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
                 "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean",
-                "org.openrewrite.java.spring.boot4.SpringBootProperties_4_0"]},
+                "org.openrewrite.java.spring.boot4.SpringBootProperties_4_0",
+                "org.openrewrite.java.springdoc.SpringFoxToSpringDoc",
+                "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0",
+                "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing",
+                "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1"]},
     {"id": "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1", "artifact": _SPRING, "advisor": True,
      "gate": "is_boot", "description": "Spring Boot 4.1 property renames"},
     {"id": "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean", "artifact": _SPRING, "advisor": True,
@@ -352,6 +380,12 @@ _BUILTIN: list[dict[str, Any]] = [
     {"id": "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0", "artifact": _SPRING,
      "advisor": True, "gate": "has_spring_security",
      "description": "Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)"},
+    {"id": "org.openrewrite.java.springdoc.SpringFoxToSpringDoc", "artifact": _SPRING, "advisories": ["springfox"]},
+    {"id": "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0", "artifact": _SPRING, "advisories": ["springfox"]},
+    {"id": "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing", "artifact": _SPRING,
+     "advisories": ["sleuth"]},
+    {"id": "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1", "artifact": _SPRING,
+     "advisories": ["spring-cloud-bom"]},
     {"id": "org.openrewrite.java.testing.junit5.JUnit4to5Migration", "artifact": _TESTING, "advisor": True,
      "gate": "has_junit4", "description": "JUnit 4 → JUnit 5"},
     {"id": "com.company.migrate.ServletToJakartaAndBoot", "origin": "project",

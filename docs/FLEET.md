@@ -162,9 +162,21 @@ org.springframework.boot.jackson.JsonComponent → org.springframework.boot.jack
 3. **Blocking most projects** — blocked artifacts / owner classes with the number of projects they block and
    the project names: hand this table to the library owners (e.g. "publish a jakarta build of
    `com.company:legacy-web`"); every project behind it unblocks at once.
-4. **KB recipes / patches that paid off** — which learned recipes fired in how many projects.
+4. **Libraries needing owner action (advisories)** — library advisories (springfox, hystrix, sleuth, old Spring
+   Cloud trains …; `resolution=advisory` ledger lines, `sbmig kb ledger --resolution advisory`) with the number of
+   projects, how many were replaced by a recipe and how many are still present. Advisories never block a run.
+5. **KB recipes / patches that paid off** — which learned recipes fired in how many projects.
 
 It also lists the KB counts and the cases / candidates / promotions created during the fleet.
+
+### Library advisories and carried-over versions
+
+`summary.md` / `summary.csv` have two more columns: `advisories` (library advisory findings of the project — the
+outcomes are in `state.json` as `"<advisory_id>:<outcome>"`) and `carried_over` (dependencies pinned at the
+version the as-is parent managed, because the new parent / Boot BOM no longer manages them). `summary.md` adds
+**Libraries flagged across the fleet** (advisory → projects, replaced, still present). Each project's `report.md`
+starts with a **Handover** section: the versions we replaced (⚠ = carried over) and the numbered "from here on,
+your team" list for the owners.
 
 ## Knobs
 

@@ -15,4 +15,6 @@ export JAVA21_HOME="${JAVA21_HOME:-/Users/acandiatale/Library/Java/JavaVirtualMa
 cd "$REPO"
 # the recipe catalog must agree with the config sets / reactive rules / base recipes before anything runs
 python -m sbmig.cli recipes check --config config/artifacts.local-e2e.yml
+# … and every knowledge/libraries advisory must name a known library / verified recipe
+python -m sbmig.cli advisories check --config config/artifacts.local-e2e.yml
 exec python scripts/e2e.py --install-libs "$@"

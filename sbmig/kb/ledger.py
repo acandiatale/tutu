@@ -7,8 +7,8 @@
   the fleet's ``learning.md``).
 * ``SymbolIndex(path)``: ``add(case)`` (incremental, on harvest), ``rebuild(cases)`` (``kb reindex``),
   ``hints(symbol)`` (first hints in ``KBMatch.hints``).
-* ``attempt_record`` / ``blocked_record`` / ``plan_recipe_records`` / ``unresolved_records``: build the
-  ResolutionRecords of a PhaseResult / a finished RunReport.
+* ``attempt_record`` / ``blocked_record`` / ``plan_recipe_records`` / ``unresolved_records`` /
+  ``advisory_record``: build the ResolutionRecords of a PhaseResult / a finished RunReport.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, Iterator, Optional
 
 from sbmig.core.models import (
+    AdvisoryFinding,
     BlockedItem,
     BuildError,
     CaseType,
@@ -263,6 +264,46 @@ class Ledger:
         fired_rows = [{**d, "projects": len(d["projects"])} for d in fired.values()]
         fired_rows.sort(key=lambda x: (-x["projects"], -x["count"], x["id"]))
 
+        adv: dict[str, dict] = {}
+        for r in recs:
+            if r.resolution != "advisory":
+                continue
+            aid = r.notes[1] if len(r.notes) > 1 and r.notes[1].startswith("advisory:") else ""
+            aid = aid[len("advisory:"):] if aid else (r.symbol or "?")
+            d = adv.setdefault(
+                aid,
+                {
+                    "id": aid,
+                    "library": r.symbol,
+                    "status": "",
+                    "policy": r.resolver_id.split(":", 1)[0],
+                    "count": 0,
+                    "projects": set(),
+                    "project_names": set(),
+                    "replaced": 0,
+                    "still_present": 0,
+                    "replacement": r.replacement,
+                },
+            )
+            d["count"] += 1
+            d["projects"].add(pkey(r))
+            d["project_names"].add(r.project)
+            if r.outcome == "replaced":
+                d["replaced"] += 1
+            elif r.outcome == "still-present":
+                d["still_present"] += 1
+            st = next((n[len("status:"):] for n in r.notes if n.startswith("status:")), "")
+            d["status"] = d["status"] or st
+        adv_rows = [
+            {
+                **{k: v for k, v in d.items() if k not in ("projects", "project_names")},
+                "projects": len(d["projects"]),
+                "project_names": sorted(d["project_names"]),
+            }
+            for d in adv.values()
+        ]
+        adv_rows.sort(key=lambda x: (-x["projects"], -x["count"], x["id"]))
+
         unresolved = Counter(r.symbol or r.signature_generic for r in recs if r.resolution == "unresolved")
         labels = Counter(lb for r in ok for lb in r.fix_labels[:1])
         return {
@@ -278,6 +319,7 @@ class Ledger:
             "blocked": blocked_rows[:top],
             "kb_fired": fired_rows[:top],
             "unresolved": [{"symbol": s, "count": n} for s, n in unresolved.most_common(top)],
+            "advisories": adv_rows[:top],
         }
 
 
@@ -357,6 +399,21 @@ def render_learning_md(
             f"| {_md_cell(r['symbol'])} | {_md_cell(r['reason'])} | {r['projects']} | {r['count']} | "
             f"{_md_cell(', '.join(r['project_names'][:8]))} | {_md_cell(r['suggestion'][:160])} |"
             for r in s["blocked"]
+        ]
+    else:
+        lines.append("_none_")
+    lines += ["", "## Libraries needing owner action (advisories)", ""]
+    if s.get("advisories"):
+        lines += [
+            "| advisory | library | status | policy | projects | replaced | still present | replacement | "
+            "projects (first 8) |",
+            "|---|---|---|---|---|---|---|---|---|",
+        ]
+        lines += [
+            f"| {_md_cell(r['id'])} | {_md_cell(r['library'])} | {_md_cell(r['status'])} | "
+            f"{_md_cell(r['policy'])} | {r['projects']} | {r['replaced']} | {r['still_present']} | "
+            f"{_md_cell(r['replacement'])} | {_md_cell(', '.join(r['project_names'][:8]))} |"
+            for r in s["advisories"]
         ]
     else:
         lines.append("_none_")
@@ -633,3 +690,27 @@ def unresolved_records(
             )
         )
     return out
+
+
+def advisory_record(
+    finding: AdvisoryFinding,
+    profile: Optional[ProjectProfile],
+    ws: Optional["Workspace"],
+) -> ResolutionRecord:
+    """One ledger line per library advisory finding of a run (resolution="advisory"). notes[0] = follow-up,
+    notes[1] = "advisory:<id>", notes[2] = "status:<status>" (read back by Ledger.summary)."""
+    f = finding
+    base = _base(profile, ws, Phase.ANALYZE)
+    return ResolutionRecord(
+        id=_record_id(base["run_id"], "advisory", f.advisory_id),
+        **base,
+        error_kind=ErrorKind.UNKNOWN,
+        symbol=f.library,
+        resolution="advisory",
+        resolver_id=f"{f.policy}:{','.join(f.recipes) or '-'}",
+        fix_labels=["dependency-replace"] if f.outcome == "replaced" else [],
+        replacement=f"{f.library} → {f.replacement or '?'}",
+        outcome=f.outcome,
+        recipe_id=f.recipes[0] if f.recipes else None,
+        notes=[(f.followup or "")[:300], f"advisory:{f.advisory_id}", f"status:{f.status}"],
+    )

@@ -1,0 +1,215 @@
+# Library advisories — EOL / no-longer-managed / runtime-incompatible libraries that still COMPILE after the
+# migration and would otherwise leave the run looking green. Read by sbmig/advisory (docs/ADVISORIES.md).
+#
+# Policies (there is NO "block" on purpose — 500 projects cannot all be perfect; the build goes as far as it can
+# and the owners get a compressed handover):
+#   guide  : build, then tell the owning team in the report's Handover section + manual follow-ups + ledger
+#   recipe : additionally run the listed OpenRewrite recipe(s) in spring.rewrite (ids must exist in
+#            knowledge/recipes/catalog.yml); falls back to guide when unavailable
+#
+# Schema (version 1): see LibraryAdvisory in sbmig/core/models.py — id, library (analyzer rule name) and/or
+# artifacts (g:a globs), status (eol|unmanaged|incompatible|superseded), title, summary, replacement,
+# replacement_version, policy, recipes, followup, docs, applies_to, applies_when_version_below,
+# resolved_min_version, notes.
+#
+# Company additions / overrides: advisories.extra_files (same schema, merged by id, later wins),
+# advisories.policy_overrides {id: guide|recipe|off}.
+version: 1
+advisories:
+  # ------------------------------------------------------------------ API docs
+  - id: springfox
+    library: springfox
+    artifacts: ["io.swagger:swagger-annotations"]
+    status: eol
+    title: Springfox (Swagger 2) is discontinued
+    summary: >-
+      Springfox has had no release since 3.0.0 (2020) and does not work with Spring Framework 6+/7 at runtime
+      (path matching, jakarta). springdoc-openapi is the maintained replacement.
+    replacement: org.springdoc:springdoc-openapi-starter-webmvc-ui
+    replacement_version: "3.x (Boot 4)"
+    policy: recipe
+    recipes:
+      - org.openrewrite.java.springdoc.SpringFoxToSpringDoc
+      - org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0
+    followup: >-
+      Review the generated GroupedOpenApi beans and the TODO comments the recipe left on complex Docket code,
+      then check /swagger-ui/index.html and /v3/api-docs (springdoc.* properties replace springfox.*).
+    docs:
+      - https://springdoc.org/#migrating-from-springfox
+      - https://docs.openrewrite.org/recipes/java/springdoc/springfoxtospringdoc
+    notes: knowledge/notes/spring-cloud.md
+
+  # ------------------------------------------------------------------ Spring Cloud Netflix / Sleuth
+  - id: sleuth
+    library: sleuth
+    status: eol
+    title: Spring Cloud Sleuth is discontinued (Micrometer Tracing replaces it)
+    summary: >-
+      Sleuth ended with Spring Cloud 2021.0.x; Boot 3+/4 trace through Micrometer Tracing (Brave or OpenTelemetry
+      bridge), which the Boot BOM manages.
+    replacement: io.micrometer:micrometer-tracing-bridge-brave
+    replacement_version: managed by the Boot 4 BOM
+    policy: recipe
+    recipes:
+      - org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing
+    followup: >-
+      Remove the explicit micrometer-tracing 1.0.x version if the recipe left one (the Boot BOM manages it), then
+      check management.tracing.sampling.probability, the exporter (zipkin/otlp) and the traceId/spanId log pattern.
+    docs:
+      - https://github.com/micrometer-metrics/tracing/wiki/Spring-Cloud-Sleuth-3.1-Migration-Guide
+      - https://docs.spring.io/spring-boot/reference/actuator/tracing.html
+    notes: knowledge/notes/spring-cloud.md
+
+  - id: hystrix
+    library: hystrix
+    status: eol
+    title: Netflix Hystrix is discontinued (not in any current Spring Cloud train)
+    summary: >-
+      Hystrix is in maintenance-only mode since 2018 and was removed from Spring Cloud 2020.0. It may still compile
+      against the pinned 2.2.x starter, but it is unsupported on Boot 3+/4 and has no OpenRewrite migration.
+    replacement: org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j
+    replacement_version: managed by the Spring Cloud BOM
+    policy: guide
+    followup: >-
+      Replace spring-cloud-starter-netflix-hystrix with spring-cloud-starter-circuitbreaker-resilience4j,
+      @HystrixCommand(fallbackMethod=…) with @CircuitBreaker(name=…, fallbackMethod=…) and move hystrix.* timeouts
+      to resilience4j.circuitbreaker / timelimiter properties.
+    docs:
+      - https://docs.spring.io/spring-cloud-circuitbreaker/reference/
+      - https://resilience4j.readme.io/docs/getting-started-3
+    notes: knowledge/notes/spring-cloud.md
+
+  - id: ribbon
+    library: ribbon
+    status: eol
+    title: Netflix Ribbon is discontinued (Spring Cloud LoadBalancer replaces it)
+    summary: Ribbon was removed from Spring Cloud 2020.0; client-side load balancing is Spring Cloud LoadBalancer.
+    replacement: org.springframework.cloud:spring-cloud-starter-loadbalancer
+    replacement_version: managed by the Spring Cloud BOM
+    policy: guide
+    followup: >-
+      Replace the Ribbon starter with spring-cloud-starter-loadbalancer, delete IRule/IPing beans and
+      <client>.ribbon.* properties, and configure spring.cloud.loadbalancer.* (or a ServiceInstanceListSupplier).
+    docs:
+      - https://docs.spring.io/spring-cloud-commons/reference/spring-cloud-commons/loadbalancer.html
+    notes: knowledge/notes/spring-cloud.md
+
+  - id: zuul
+    library: zuul
+    status: eol
+    title: Netflix Zuul 1 is discontinued (Spring Cloud Gateway replaces it)
+    summary: Zuul 1 was removed from Spring Cloud 2020.0 and does not run on jakarta servlets.
+    replacement: org.springframework.cloud:spring-cloud-starter-gateway-server-webmvc
+    replacement_version: managed by the Spring Cloud BOM
+    policy: guide
+    followup: >-
+      Rebuild the zuul.routes.* as Spring Cloud Gateway (server-webmvc) routes and port ZuulFilter subclasses to
+      gateway filter functions; test every route, header and timeout.
+    docs:
+      - https://docs.spring.io/spring-cloud-gateway/reference/spring-cloud-gateway-server-webmvc.html
+    notes: knowledge/notes/spring-cloud.md
+
+  - id: netflix-feign
+    library: netflix-feign
+    status: eol
+    title: Netflix Feign / spring-cloud-starter-feign are discontinued (OpenFeign replaces them)
+    summary: >-
+      com.netflix.feign stopped at 8.18 (2016) and spring-cloud-starter-feign was renamed to
+      spring-cloud-starter-openfeign. The Boot umbrella recipe renames the starter; com.netflix.feign code stays.
+    replacement: org.springframework.cloud:spring-cloud-starter-openfeign
+    replacement_version: managed by the Spring Cloud BOM
+    policy: guide
+    followup: >-
+      Move com.netflix.feign imports to io.github.openfeign (feign.*) and use
+      org.springframework.cloud.openfeign.@FeignClient/@EnableFeignClients; check the starter rename in the pom.
+    docs:
+      - https://docs.spring.io/spring-cloud-openfeign/reference/
+    notes: knowledge/notes/spring-cloud.md
+
+  - id: spring-cloud-bom
+    library: spring-cloud-bom
+    status: superseded
+    title: Spring Cloud release train older than the Boot 4 train
+    summary: >-
+      The spring-cloud-dependencies BOM (or spring-cloud-starter-parent) pins a train built for an older Boot line.
+      Spring Cloud 2025.1 is the Boot 4.0 train.
+    replacement: org.springframework.cloud:spring-cloud-dependencies
+    replacement_version: "2025.1.x"
+    policy: recipe
+    recipes:
+      - org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1
+    applies_when_version_below: "2025.1"
+    resolved_min_version: "2025.1"
+    followup: >-
+      Verify the Spring Cloud train matches the Boot line (2025.1.x is the Boot 4.0 train — check the Spring Cloud
+      compatibility matrix for Boot 4.1) and that every org.springframework.cloud:* dependency is BOM-managed.
+    docs:
+      - https://spring.io/projects/spring-cloud#overview
+      - https://github.com/spring-cloud/spring-cloud-release/wiki/Supported-Versions
+    notes: knowledge/notes/spring-cloud.md
+
+  # ------------------------------------------------------------------ security
+  - id: spring-security-oauth2-legacy
+    library: spring-security-oauth2-legacy
+    status: eol
+    title: Spring Security OAuth (spring-security-oauth2 / oauth2-autoconfigure) is discontinued
+    summary: >-
+      The legacy org.springframework.security.oauth project reached end of life in 2022 and does not work with
+      Spring Security 6/7. Client and resource-server support live in Spring Security itself; authorization servers
+      move to Spring Authorization Server.
+    replacement: org.springframework.boot:spring-boot-starter-oauth2-resource-server (or -oauth2-client)
+    replacement_version: managed by the Boot 4 BOM (authorization servers → spring-boot-starter-oauth2-authorization-server)
+    policy: guide
+    followup: >-
+      Replace @EnableResourceServer/@EnableOAuth2Sso/@EnableAuthorizationServer and OAuth2RestTemplate with
+      http.oauth2ResourceServer()/oauth2Login() and WebClient/RestClient OAuth2 support; re-test token validation.
+    docs:
+      - https://github.com/spring-projects/spring-security/wiki/OAuth-2.0-Migration-Guide
+      - https://docs.spring.io/spring-authorization-server/reference/
+    notes: knowledge/notes/spring-security-7.md
+
+  # ------------------------------------------------------------------ logging / commons / http
+  - id: log4j1
+    library: log4j1
+    status: eol
+    title: Log4j 1.x is end of life (since 2015, unpatched CVEs)
+    summary: log4j:log4j 1.2.x is EOL and has known vulnerabilities; Boot logs through Logback (or Log4j 2).
+    replacement: ch.qos.logback:logback-classic (Boot default; or log4j-core 2.x)
+    replacement_version: managed by the Boot 4 BOM
+    policy: guide
+    followup: >-
+      Remove log4j:log4j, log through SLF4J (org.slf4j.Logger), convert log4j.properties/xml to logback-spring.xml
+      (or add log4j-1.2-api only as a temporary bridge).
+    docs:
+      - https://logging.apache.org/log4j/2.x/migrate-from-log4j1.html
+    notes: knowledge/notes/boot2-to-3.md
+
+  - id: commons-lang2
+    library: commons-lang2
+    status: eol
+    title: Apache Commons Lang 2.x is end of life
+    summary: commons-lang:commons-lang 2.6 (2011) is unmaintained; Commons Lang 3 is the supported line.
+    replacement: org.apache.commons:commons-lang3
+    replacement_version: "3.x"
+    policy: guide
+    followup: >-
+      Replace org.apache.commons.lang.* imports with org.apache.commons.lang3.* (StringEscapeUtils moved to
+      commons-text) and drop commons-lang:commons-lang.
+    docs:
+      - https://commons.apache.org/proper/commons-lang/article3_0.html
+
+  - id: httpclient4
+    library: httpclient4
+    status: superseded
+    title: Apache HttpClient 4.x is superseded by HttpClient 5 (Boot 4 RestTemplate/RestClient use 5)
+    summary: >-
+      Spring Framework 6+/7 HttpComponentsClientHttpRequestFactory only supports HttpClient 5; 4.5.x keeps working
+      only for direct use and is no longer managed by the Boot BOM.
+    replacement: org.apache.httpcomponents.client5:httpclient5
+    replacement_version: managed by the Boot 4 BOM
+    policy: guide
+    followup: >-
+      Move org.apache.http.* client code to org.apache.hc.client5/hc.core5 (or RestClient), drop the explicit
+      httpclient 4.x version and re-test timeouts, connection pooling and TLS settings.
+    docs:
+      - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/

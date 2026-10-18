@@ -5,7 +5,7 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Iterable, Optional
 
-from sbmig.core.models import BlockedItem, BuildError, FixAttempt, PhaseResult, RunReport
+from sbmig.core.models import AdvisoryFinding, BlockedItem, BuildError, FixAttempt, PhaseResult, RunReport
 
 FLAG_HELP = {
     "test-compile-skipped": "main code builds, but test sources only compile with `-Dmaven.test.skip=true` "
@@ -22,6 +22,9 @@ FLAG_HELP = {
     "enforcer-relaxed": "a maven-enforcer rule that fails on JDK 21 was relaxed in the pom",
     "enforcer-skipped": "maven-enforcer is skipped (-Denforcer.skip=true) — review the rules",
     "werror-removed": "-Werror was removed from the compiler configuration (JDK 21 deprecations would be fatal)",
+    "managed-versions-carried-over": "some dependencies were pinned at the version the as-is parent managed, because "
+                                     "the new parent / Boot BOM no longer manages them (⚠ in Handover) — the owners "
+                                     "must confirm or replace them",
 }
 FLAG_PREFIX_HELP = {
     "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",
@@ -29,6 +32,7 @@ FLAG_PREFIX_HELP = {
     "aborted:": "the run stopped early (see Blocked / follow-ups)",
 }
 BLOCKED_TITLE = "Blocked — needs human / library action"
+HANDOVER_TITLE = "Handover — what we replaced, what is yours"
 
 
 def flag_help(flag: str) -> Optional[str]:
@@ -121,6 +125,91 @@ def group_by_file(errors: Iterable[BuildError]) -> "OrderedDict[str, list[BuildE
     return groups
 
 
+def _v(v: Optional[str]) -> str:
+    return f"`{v}`" if v else "-"
+
+
+def _what_we_did(f: AdvisoryFinding) -> str:
+    if f.recipes:
+        src = {"plan": "in the plan", "advisory": "added for this advisory"}.get(f.recipe_source, "")
+        return ", ".join(f"`{r.rsplit('.', 1)[-1]}`" for r in f.recipes) + (f" ({src})" if src else "")
+    return "built with the as-is version pinned"
+
+
+def handover_lines(r: RunReport) -> list[str]:
+    """The first section of report.md: versions replaced, libraries needing attention, 'from here on'."""
+    L = [f"## {HANDOVER_TITLE}", ""]
+    h = r.handover
+    findings = list(r.advisories or [])
+    has_versions = h is not None and bool(h.changes or h.added or h.removed or h.parent_before or h.parent_after)
+    if not findings and not has_versions and not (h and h.from_here):
+        L.append("No version changes and no library advisories recorded for this run."
+                 + (f" ({'; '.join(h.notes)})" if h and h.notes else ""))
+        L.append("")
+        return L
+    if h is not None:
+        L += ["### Versions replaced", ""]
+        if h.parent_before or h.parent_after:
+            L.append(f"- parent: {_v(h.parent_before)} → {_v(h.parent_after)}")
+        if h.java_before or h.java_after:
+            L.append(f"- java: {_v(h.java_before)} → {_v(h.java_after)}")
+        if h.spring_boot_before or h.spring_boot_after:
+            L.append(f"- spring boot: {_v(h.spring_boot_before)} → {_v(h.spring_boot_after)}")
+        L.append("")
+        if h.changes:
+            L += ["| what | before | after | why |", "|---|---|---|---|"]
+            for c in h.changes:
+                warn = "⚠ " if c.carried_over else ""
+                before = c.before or ("managed" if c.before_source == "managed" else "-")
+                if c.before_source == "managed" and c.before:
+                    before += " (managed)"
+                after = c.after or ("managed" if c.after_source == "managed" else "-")
+                L.append(f"| {warn}{c.kind} `{_cell(c.key, 120)}` | {_cell(before, 120)} | {_cell(after, 80)} | "
+                         f"{_cell(c.reason, 80)} |")
+            L.append("")
+            if h.carried_over:
+                one = len(h.carried_over) == 1
+                L.append(f"⚠ {len(h.carried_over)} dependenc{'y' if one else 'ies'} pinned at the as-is version: "
+                         f"the new parent / Boot BOM no longer manages {'it' if one else 'them'}.")
+                L.append("")
+        if h.added:
+            L.append("Added: " + ", ".join(f"`{x}`" for x in h.added))
+            L.append("")
+        if h.removed:
+            L.append("Removed: " + ", ".join(f"`{x}`" for x in h.removed))
+            L.append("")
+        if not h.changes and not h.added and not h.removed:
+            L.append("No dependency versions changed.")
+            L.append("")
+        for n in h.notes:
+            L.append(f"_note: {_cell(n, 300)}_")
+        if h.notes:
+            L.append("")
+    if findings:
+        L += ["### Libraries needing your attention", ""]
+        L += ["| library | as-is | status | policy | what we did | outcome | what you do next | docs |",
+              "|---|---|---|---|---|---|---|---|"]
+        for f in findings:
+            nxt = f.followup or f.summary
+            if f.replacement:
+                nxt = (nxt + " " if nxt else "") + f"→ `{f.replacement}`" + (
+                    f" {f.replacement_version}" if f.replacement_version else "")
+            docs = ", ".join(f"[{i}]({d})" for i, d in enumerate(f.docs[:3], 1)) or "-"
+            outcome = {"replaced": "✅ replaced", "still-present": "⚠ still present"}.get(f.outcome, f.outcome)
+            L.append(f"| **{_cell(f.library, 60)}** | {_cell(f.detected_version or '-', 40)} | {f.status} | "
+                     f"{f.policy} | {_cell(_what_we_did(f), 160)} | {outcome} | {_cell(nxt, 400)} | {docs} |")
+        L.append("")
+    L += ["### From here on, your team", ""]
+    items = h.from_here if h is not None else [f"{f.title}: {f.followup}".rstrip(": ") for f in findings
+                                               if f.outcome != "replaced"]
+    if items:
+        L += [f"{i}. {_cell(x, 500)}" for i, x in enumerate(items, 1)]
+    else:
+        L.append("Nothing beyond the usual review — the migrated project builds with the versions above.")
+    L.append("")
+    return L
+
+
 def render_markdown(report: RunReport) -> str:
     r = report
     L: list[str] = []
@@ -145,6 +234,9 @@ def render_markdown(report: RunReport) -> str:
     if r.blocked:
         L.append(f"| **Blocked** | {blocked_count_line(r.blocked)} (see below) |")
     L.append("")
+
+    # ---- handover first: what we replaced, what the owning team does from here on
+    L += handover_lines(r)
 
     # ---- blocked first: deliberately skipped, each row says what a human / the library owner must do
     if r.blocked:

@@ -1,0 +1,98 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18",
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": [
+    "spring-webmvc",
+    "spring-context",
+    "tomcat-embed",
+    "spring-cloud",
+    "spring-cloud-bom",
+    "sleuth",
+    "hystrix",
+    "springfox",
+    "swagger-v1",
+    "junit5"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.orders.OrderApiApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "advisories": [
+      {
+        "id": "springfox",
+        "policy": "recipe",
+        "outcome": "replaced",
+        "recipe_source": "plan"
+      },
+      {
+        "id": "sleuth",
+        "outcome": "replaced",
+        "recipe_source": "plan"
+      },
+      {
+        "id": "hystrix",
+        "policy": "guide",
+        "outcome": "still-present"
+      },
+      {
+        "id": "spring-cloud-bom",
+        "outcome": "replaced"
+      }
+    ],
+    "handover": {
+      "carried_over_min": 1,
+      "spring_boot_after": "4.1.0",
+      "from_here_contains": [
+        "regex:(?i).*hystrix.*resilience4j.*",
+        "regex:(?i).*net\\.sf\\.ehcache:ehcache pinned at 2\\.10\\.\\S+.*"
+      ],
+      "removed_contains": [
+        "io.springfox:springfox-boot-starter",
+        "org.springframework.cloud:spring-cloud-starter-sleuth"
+      ],
+      "added_contains": [
+        "org.springdoc:springdoc-openapi-starter-webmvc-ui"
+      ]
+    },
+    "followups_contains": [
+      "regex:(?i).*resilience4j.*"
+    ],
+    "post_checks": [
+      {
+        "pom_dependency_absent": {
+          "path": "**/pom.xml",
+          "artifacts": [
+            "io.springfox:springfox-boot-starter",
+            "org.springframework.cloud:spring-cloud-starter-sleuth"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "org.springdoc:springdoc-openapi-starter-webmvc-ui"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "net.sf.ehcache:ehcache"
+          ]
+        }
+      }
+    ]
+  }
+}

@@ -304,3 +304,48 @@ def test_keyboard_interrupt_marks_pending(fleet_cfg, projects_dir, tmp_path):
     st = _state(tmp_path / "out")
     assert [p.status for p in st.projects] == ["success", "pending", "pending"]
     assert st.projects[1].error == "interrupted"
+
+
+def test_advisories_and_carried_over_columns(fleet_cfg, projects_dir, tmp_path):
+    from sbmig.core.models import AdvisoryFinding, HandoverSummary, VersionChange
+
+    def with_advisories(project, cfg):
+        r = report(project.name)
+        r.advisories = [
+            AdvisoryFinding(advisory_id="springfox", library="springfox", status="eol", title="t", policy="recipe",
+                            outcome="replaced"),
+            AdvisoryFinding(advisory_id="hystrix", library="hystrix", status="eol", title="t", policy="guide",
+                            outcome="still-present"),
+        ]
+        co = VersionChange(key="a:b", before="1", after="1", before_source="managed", carried_over=True)
+        r.handover = HandoverSummary(changes=[co], carried_over=[co])
+        return r
+
+    def hystrix_only(project, cfg):
+        r = report(project.name)
+        r.advisories = [AdvisoryFinding(advisory_id="hystrix", library="hystrix", status="eol", title="t",
+                                        policy="guide", outcome="still-present")]
+        return r
+
+    out = tmp_path / "out"
+    fake = FakeRun(alpha=with_advisories, beta=hystrix_only)
+    state = FleetRunner(fleet_cfg, projects_dir, out, run_project=fake).run()
+    a, b, c = state.projects
+    assert a.advisories == ["springfox:replaced", "hystrix:still-present"] and a.carried_over == 1
+    assert b.advisories == ["hystrix:still-present"] and b.carried_over == 0
+    assert c.advisories == [] and c.carried_over == 0
+    fleet = out / "fleet"
+    head = (fleet / "summary.csv").read_text().splitlines()[0].split(",")
+    assert head.index("advisories") == head.index("unresolved") + 1 and "carried_over" in head
+    md = (fleet / "summary.md").read_text()
+    assert "| advisories | carried_over |" in md
+    assert "## Libraries flagged across the fleet" in md
+    assert "| hystrix | 2 | 0 | 2 | 0 | alpha, beta |" in md and "| springfox | 1 | 1 | 0 | 0 | alpha |" in md
+    assert "alpha (1)" in md
+    # state.json round-trips the new fields; older state files without them still load
+    st = _state(out)
+    assert st.projects[0].advisories == a.advisories
+    raw = json.loads((fleet / "state.json").read_text())
+    for p in raw["projects"]:
+        p.pop("advisories"), p.pop("carried_over")
+    assert FleetState.model_validate(raw).projects[0].carried_over == 0

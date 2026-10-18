@@ -102,3 +102,22 @@ Notes: a subagent deleted `out/llm-records` (gitignored recordings of the round-
 reports under `out/llm*/` are intact. Known limits: label heuristics are deliberately simple (whitespace-only edits →
 `generic-rewrite`), `method-rename` is not compiled to `ChangeMethodName` yet, the catalog's `rewrite-java-dependencies`
 `provided_by` link is an assumption backed by the e2e runs (the base recipes using it resolve fine), not by a jar check.
+
+## Status — 2026-10-18, round 4 (library advisories + handover)
+
+User asks: libraries such as springfox, hystrix or sleuth are EOL or no longer version-managed (or declared without a
+version) yet still compile — does the agent just build and leave guidance ("this has issues, use springdoc")? Decision:
+**no `block` policy at all** (500 projects cannot be perfect); build as far as possible, then hand the owning team a
+**compressed summary of the versions we replaced** and "from here on, your team fixes X → Y".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Advisory catalog (11 entries: springfox, sleuth, hystrix, ribbon, zuul, netflix-feign, spring-cloud-bom, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4), policies `guide` / `recipe` only, company extras + overrides | `knowledge/libraries/advisories.yml`, `sbmig/advisory/`, `advisories.*` config, `sbmig advisories list|show|check` (wired into `scripts/e2e.sh`), `docs/ADVISORIES.md` | done |
+| Analyzer rules for the flagged libraries (`sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`, `spring-cloud-bom` via managed BOM / parent, `swagger-v1`, `spring-security-oauth2-legacy`, `log4j1`, `commons-lang2`, `httpclient4`) | `sbmig/analyze/libraries.py` (`managed` / `parents` patterns) | done |
+| Planner integration: `recipe` findings add verified OpenRewrite recipes to `spring.rewrite` unless the Boot 4 umbrella already covers them (`SpringFoxToSpringDoc`, `UpgradeSpringDoc_3_0`, `MigrateCloudSleuthToMicrometerTracing`, `UpgradeSpringCloud_2025_1` verified in rewrite-spring 6.37.1) | `sbmig/plan/planner.py`, catalog `covers`, `knowledge/recipes/catalog.yml` (+4 entries) | done |
+| Verification on the final tree (`replaced` / `still-present` / `unknown`) + report **Handover** as the first section: versions replaced (parent, java, boot, dependency/BOM rows, ⚠ carried-over pins), libraries needing attention, "From here on, your team" | `sbmig/report/handover.py`, `sbmig/report/markdown.py`, `Orchestrator._finalize_advisories` | done |
+| Generic safety net for un-catalogued libraries whose version the old parent managed and the new one does not (`carry-over-managed-version` pins the as-is version → handover ⚠ row + follow-up) | handover `carried_over` (fixture: `net.sf.ehcache:ehcache` 2.10.9.2) | done |
+| Ledger + fleet aggregation (`resolution=advisory`, `learning.md` "Libraries needing owner action", `summary.csv` columns `advisories` / `carried_over`) | `sbmig/kb/ledger.py`, `sbmig/kb/store.py`, `sbmig/fleet/` | done |
+| Offline tests | 801 passed (22 integration deselected) | green |
+| Reference fixture `boot2-cloud-legacy` (Boot 2.7.18 + Spring Cloud 2021.0.9 BOM, sleuth without version, hystrix 2.2.10 explicit, springfox 3.0.0, ehcache 2 managed by Boot 2.7 only) | `fixtures/projects/boot2-cloud-legacy/` | BUILD SUCCESS, exit 0, **0 LLM calls**, 59 s: springfox → `springdoc-openapi-starter-webmvc-ui:3.0.3`, sleuth → `micrometer-tracing-bridge-brave` (Boot-managed), Spring Cloud 2021.0.9 → 2025.1.3, hystrix still present (guide → Resilience4j), ehcache pinned 2.10.9.2 ⚠ |
+| Asserted fixture e2e on the merged tree (`scripts/e2e.sh`: `recipes check` + `advisories check` + 13 fixtures) | `out/e2e/summary.md` | **13/13 expectations met**, exit 0 (12 previous fixtures unchanged: no advisories, 0 carried-over; `boot2-cloud-legacy` as above); ledger has 4 `advisory` lines, `sbmig kb learning` shows the "Libraries needing owner action" table |

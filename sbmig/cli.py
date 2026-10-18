@@ -157,6 +157,16 @@ def analyze(input: Path = typer.Argument(..., exists=True), config: Optional[Lis
         typer.echo(f"  service {s.name}: {s.case_type.value} ({s.root_pom})")
     for w in profile.warnings:
         typer.echo(f"  warning: {w}")
+    try:
+        from sbmig.advisory import evaluate_advisories
+        findings = evaluate_advisories(profile, cfg) if cfg.advisories.enabled else []
+    except Exception as e:  # advisories must never break `analyze`
+        log.warning("advisories unavailable: %s", e)
+        findings = []
+    for f in findings:
+        rec = f" (recipe: {', '.join(f.recipes)})" if f.recipes else ""
+        typer.echo(f"  advisory [{f.policy}] {f.advisory_id}@{f.detected_version or '?'} — {f.title}"
+                   f"{' → ' + f.replacement if f.replacement else ''}{rec}")
 
 
 @app.command()
@@ -295,6 +305,8 @@ _mount("sbmig.plan.catalog_cli", "recipes_cli", "recipes",
        "recipe catalog (knowledge/recipes/catalog.yml): list | show | check | sets")
 _mount("sbmig.fleet.cli", "fleet_cli", "fleet",
        "one agent, many projects, sequential with KB learning: run | status")
+_mount("sbmig.advisory.cli", "advisories_cli", "advisories",
+       "library advisories (knowledge/libraries/advisories.yml): list | show | check")
 
 
 def main() -> None:  # pragma: no cover

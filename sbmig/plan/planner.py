@@ -15,6 +15,11 @@ restructure.apply, restructure.loop, verify.build.
 * No java sources (pom-only, S3): no jdk21/spring steps; `restructure.pom_only` (StepKind.MSA_POM, mode msa_pom) or
   `restructure.msa_pom`, the restructure loop and verify.
 * `profile.build_tool != "maven"` (S4): zero steps and a note (the orchestrator aborts).
+* Library advisories (`build_plan(..., advisories=findings)`, sbmig.advisory): for policy "recipe" findings the
+  advisory recipes that are neither planned nor covered by a planned composite are PREPENDED to each
+  spring.rewrite step (before the Boot umbrella); plan notes `advisory: <id> → <recipes> (added)` /
+  `(covered by the plan)` / `advisory: <id> → guide (<reason>)`. MSA per-service steps only get the advisories
+  whose library the service uses. Follow-ups are not planner notes (the handover writes them).
 """
 from __future__ import annotations
 
@@ -196,9 +201,46 @@ def _optional_bump_step(svc: Optional[str], target: Optional[str]) -> PlanStep:
                "(plan.optional_bump_phase=spring); no moves, no parent change")
 
 
+def _short(recipe_id: str) -> str:
+    return recipe_id.rsplit(".", 1)[-1]
+
+
+def _advisory_refs(advisories: Optional[list[Any]], facts: _Facts, cfg: Config, recipes: list[RecipeRef],
+                   notes: list[str], label: str, per_service: bool) -> list[RecipeRef]:
+    """Advisory recipe refs for one spring.rewrite step (to prepend) + plan notes. Never raises."""
+    if not advisories:
+        return []
+    findings = [f for f in advisories if f.policy == "recipe"]
+    if per_service:
+        from sbmig.analyze.libraries import LIBRARY_NAMES
+
+        findings = [f for f in findings if f.library not in LIBRARY_NAMES or f.library in facts.libs]
+    if not findings:
+        return []
+    try:
+        from sbmig.advisory import advisory_recipe_refs
+
+        refs = list(advisory_recipe_refs(findings, cfg, [r.id for r in recipes]) or [])
+    except Exception as e:  # advisories must never break planning
+        log.warning("advisory recipes unavailable for planning: %s", e)
+        notes.append(f"advisory: recipe planning failed ({type(e).__name__}: {e}); advisories stay guide-only")
+        return []
+    added = {r.id for r in refs}
+    where = f" [{label}]" if label else ""
+    for f in findings:
+        mine = [r for r in f.recipes if r in added]
+        ids = ", ".join(_short(r) for r in f.recipes)
+        if mine:
+            notes.append(f"advisory: {f.advisory_id} → {', '.join(_short(r) for r in mine)} (added){where}")
+        else:
+            notes.append(f"advisory: {f.advisory_id} → {ids} (covered by the plan){where}")
+    return refs
+
+
 def _recipe_phase_steps(facts: _Facts, cfg: Config, kb_refs: list[RecipeRef], notes: list[str], *,
                         svc: Optional[str] = None, target: Optional[str] = None,
-                        recipes: Optional[list[RecipeRef]] = None, title_case: Optional[str] = None) -> list[PlanStep]:
+                        recipes: Optional[list[RecipeRef]] = None, title_case: Optional[str] = None,
+                        advisories: Optional[list[Any]] = None) -> list[PlanStep]:
     """jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, spring.loop (ids suffixed `@svc`).
 
     `recipes` overrides the per-case spring recipes (MSA single root rewrite: union of the services' recipes)."""
@@ -219,6 +261,8 @@ def _recipe_phase_steps(facts: _Facts, cfg: Config, kb_refs: list[RecipeRef], no
     if recipes is None:
         recipes = spring_recipes(facts, cfg, notes, label)
     recipes = list(recipes) + [r for r in kb_refs if not any(x.id == r.id for x in recipes)]
+    adv = _advisory_refs(advisories, facts, cfg, recipes, notes, label, per_service=svc is not None)
+    recipes = adv + [r for r in recipes if not any(x.id == r.id for x in adv)]
     if recipes:
         steps.append(PlanStep(
             id="spring.rewrite" + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.SPRING,
@@ -307,7 +351,8 @@ def _order_libraries(profile: ProjectProfile, libs: list[ServiceInfo]) -> list[S
     return out
 
 
-def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str]) -> list[PlanStep]:
+def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str],
+               advisories: Optional[list[Any]] = None) -> list[PlanStep]:
     from sbmig.analyze.classifier import is_library_root
 
     steps: list[PlanStep] = []
@@ -340,10 +385,11 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
                      "aggregates every service/library → one rewrite + loop at the repo root (union of the "
                      "sub-case recipes) instead of per service")
         steps += _recipe_phase_steps(_Facts(CaseType.MSA, set(), profile.source.javax_imports), cfg, kb_refs, notes,
-                                     recipes=union, title_case="msa (all services)")
+                                     recipes=union, title_case="msa (all services)", advisories=advisories)
     else:
         for t in targets:
-            steps += _recipe_phase_steps(facts_of[t.name], cfg, kb_refs, notes, svc=t.name, target=_service_dir(t))
+            steps += _recipe_phase_steps(facts_of[t.name], cfg, kb_refs, notes, svc=t.name, target=_service_dir(t),
+                                         advisories=advisories)
     params: dict[str, Any] = {"mode": "msa_pom", "services": [s.name for s in svcs],
                               "parent_policy": cfg.layout.msa_parent_policy}
     if libs:
@@ -373,7 +419,8 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
     return steps
 
 
-def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str]) -> list[PlanStep]:
+def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str],
+                  advisories: Optional[list[Any]] = None) -> list[PlanStep]:
     steps: list[PlanStep] = []
     case = profile.case_type
     if case == CaseType.MSA:
@@ -396,7 +443,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
             steps.append(s)
         steps.append(_verify())
         return steps
-    steps += _recipe_phase_steps(libs_facts, cfg, kb_refs, notes)
+    steps += _recipe_phase_steps(libs_facts, cfg, kb_refs, notes, advisories=advisories)
     starter = cfg.layout.starter_by_case.get(libs_facts.case.value, "auto")
     steps.append(PlanStep(
         id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
@@ -417,7 +464,9 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
     return steps
 
 
-def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None) -> MigrationPlan:
+def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
+               advisories: Optional[list[Any]] = None) -> MigrationPlan:
+    """Rule-based plan. `advisories` = `sbmig.advisory.evaluate_advisories` findings (mutated: recipe_source)."""
     notes: list[str] = []
     steps: list[PlanStep] = []
     case = profile.case_type
@@ -445,11 +494,21 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None) -> Migratio
     else:
         notes.append("optional artifacts: bumped during restructure (plan.optional_bump_phase=restructure)")
     kb_refs = kb_recipes(kb, cfg, notes)
+    advisories = list(advisories or [])
 
     if case == CaseType.MSA and profile.services:
-        steps += _msa_steps(profile, cfg, kb_refs, notes)
+        steps += _msa_steps(profile, cfg, kb_refs, notes, advisories)
     else:
-        steps += _single_steps(profile, cfg, kb_refs, notes)
+        steps += _single_steps(profile, cfg, kb_refs, notes, advisories)
+    for f in advisories:
+        if f.policy != "recipe":
+            notes.append(f"advisory: {f.advisory_id} → guide ({f.policy_reason or 'catalog'})")
+        elif f.recipe_source == "none":       # no spring.rewrite step took it (pom-only, module outside services)
+            spring = any(st.kind == StepKind.OPENREWRITE and st.phase == Phase.SPRING for st in steps)
+            f.policy, f.recipes = "guide", []
+            f.policy_reason = (f"no spring.rewrite step for {f.library} → guide" if spring
+                               else "no spring.rewrite step → guide")
+            notes.append(f"advisory: {f.advisory_id} → guide ({f.policy_reason})")
 
     pre = pre_handler_reasons(profile, cfg)
     if pre:

@@ -238,3 +238,23 @@ notes:
   - spring
   - restructure
   always: false
+- file: spring-cloud.md
+  title: Spring Cloud Netflix / Sleuth / springfox on Boot 4 (library advisories)
+  keywords:
+  - com\.netflix\.(hystrix|loadbalancer|client|zuul|feign|ribbon)
+  - HystrixCommand|EnableHystrix|EnableCircuitBreaker|HystrixProperty|hystrix
+  - org\.springframework\.cloud\.netflix|spring-cloud-starter-netflix|spring-cloud-netflix
+  - Ribbon|RibbonClient|IRule|IPing|ILoadBalancer|LoadBalanced
+  - Zuul|ZuulFilter|EnableZuulProxy|zuul
+  - spring-cloud-starter-feign|EnableFeignClients|FeignClient|openfeign
+  - org\.springframework\.cloud\.sleuth|Sleuth|spring-cloud-sleuth|micrometer-tracing|brave
+  - spring-cloud-dependencies|spring-cloud-starter-parent|spring-cloud\.version|Hoxton|Greenwich|Finchley
+  - springfox|springdoc|GroupedOpenApi|io\.swagger\.v3
+  cases:
+  - spring_boot
+  - spring_legacy
+  - msa
+  phases:
+  - spring
+  - restructure
+  always: false

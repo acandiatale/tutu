@@ -25,6 +25,7 @@ Catalog IDs refer to `docs/ERROR-HANDLING.md`.
 | `enforcer-java8-werror` | `pure_java` | E4, E5 | 8 | success, exit 0, 0 LLM, flags `enforcer-(relaxed\|skipped)` and `werror-removed` |
 | `missing-artifact` | `pure_java` | X3 | 8 with `-Dmaven.repo.local.tail=<ghost repo>` | **blocked** `artifact_not_found` `com.company.nonexistent:ghost-lib`, `success=false`, exit **2**, 0 LLM, ≤ 240 s |
 | `msa-shared-lib` | `msa` | S1 | 18 (whole reactor) | success, exit 0, 0 LLM; `common` + services on jakarta, `common/pom.xml` gets the parent but no mandatory deps |
+| `boot2-cloud-legacy` | `spring_boot` | advisories (`docs/ADVISORIES.md`) | 11 | **reference run for library advisories + Handover**: success, exit 0, 0 LLM, nothing blocked; advisories `springfox` (recipe → replaced by springdoc), `sleuth` (Boot 4 umbrella → replaced by Micrometer Tracing), `spring-cloud-bom` (train upgraded → replaced), `hystrix` (guide → still-present, Resilience4j in "From here on" + manual follow-ups); ≥ 1 carried-over pin; springfox/sleuth gone from every pom, `springdoc-openapi-starter-webmvc-ui` in `module/comp-jar/pom.xml` |
 
 Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used directly (→ "optional bump" path):
 
@@ -50,7 +51,7 @@ Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used direct
 ## Running the e2e
 
 ```bash
-scripts/e2e.sh                                    # installs fixtures/libs, runs all 12 fixtures, asserts expectations
+scripts/e2e.sh                                    # recipes + advisories check, installs fixtures/libs, runs all 13 fixtures
 scripts/e2e.sh --only boot2-javax-lib,missing-artifact
 scripts/e2e.sh --skip-libs --only euckr-legacy    # do not (re)install fixtures/libs
 python scripts/e2e.py --expect-only               # print each fixture's expectations, run nothing
@@ -77,7 +78,12 @@ so an engine that does not yet produce e.g. `blocked` shows up as a FAIL with a 
 | `unresolved_max` | `len(unresolved)` ≤ n |
 | `journal_events` | each dict must be a subset of some `journal.jsonl` event, e.g. `{"event": "restructure", "ok": true}` |
 | `phases` | `{"restructure": "ok"}` — last result of that phase (`ok`/`FAIL`/`skipped`) |
-| `post_checks` | checks on the migrated `project/` (paths may use `**` globs): `file_decodes_as`/`file_contains` `{path, encoding, contains, not_contains}` (strict decode), `pom_parent {path, group_id, artifact_id, version}`, `pom_dependency_absent`/`pom_dependency_present {path, artifacts: ["g:a"]}` |
+| `advisories` | each `{id, policy?, outcome?, recipe_source?, status?, library?, replacement?}` must match a `report.advisories[]` entry by `advisory_id`, every given field equal; `advisories_exact: true` forbids unlisted findings; `advisories_absent: [id]` must not be reported |
+| `handover` | on `report.handover`: `changes_min`, `carried_over_min`/`carried_over_max` (`len(carried_over)`), `parent_before`/`parent_after` (`g:a[:v]` prefix), `java_*`/`spring_boot_*` (exact), `from_here_contains` (entries of `from_here`), `removed_contains`/`added_contains` (`g:a[:v]`) |
+| `followups_contains` | each entry must match some `manual_followups` line |
+| `post_checks` | checks on the migrated `project/` (paths may use `**` globs): `file_decodes_as`/`file_contains` `{path, encoding, contains, not_contains}` (strict decode), `pom_parent {path, group_id, artifact_id, version}`, `pom_dependency_absent`/`pom_dependency_present {path, artifacts: ["g:a"]}`; `module/comp-jar/pom.xml` / `module/boot-jar/pom.xml` are the poms restructure creates for a single-jar Boot app (compile dependencies live in `comp-jar`) |
+
+`*_contains` entries: `regex:<re>` must fully match an entry (DOTALL), a plain string must be a substring of one.
 
 Top-level helpers: `catalog` (IDs), `requires_libs` (`g:a:v` that must be in the local repo — run `install.sh`),
 `requires_absent` (`g:a:v` that must not be there).

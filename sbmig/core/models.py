@@ -502,7 +502,9 @@ class ResolutionRecord(BaseModel):
     error_kind: ErrorKind = ErrorKind.COMPILE
     symbol: str = ""                               # javac symbol / artifact key / owner class — the "error-case symbol"
     resolution: Literal["handler", "plan_recipe", "kb_recipe", "kb_patch", "llm_patch", "optional_bump",
-                        "blocked", "unresolved"] = "llm_patch"
+                        "blocked", "unresolved", "advisory"] = "llm_patch"   # advisory: library advisory finding
+                                                   # (symbol = library, resolver_id = "<policy>:<recipes|->",
+                                                   #  replacement = "lib → replacement", outcome = AdvisoryOutcome)
     resolver_id: str = ""                          # handler id / recipe id / kb case id / block reason
     fix_labels: list[str] = Field(default_factory=list)      # FixLabel values
     replacement: str = ""                          # "old → new" when the label implies one (FQCN, g:a, key …)
@@ -601,6 +603,8 @@ class FleetProjectResult(BaseModel):
     kb_candidates_created: list[str] = Field(default_factory=list)
     kb_recipes_promoted: list[str] = Field(default_factory=list)
     kb_recipes_used: list[str] = Field(default_factory=list)      # KB recipes/patches that fired (learning paid off)
+    advisories: list[str] = Field(default_factory=list)           # "<advisory_id>:<outcome>" (library advisories)
+    carried_over: int = 0                                         # dependencies pinned at as-is versions (handover)
     error: Optional[str] = None
     attempt: int = 1
 
@@ -615,6 +619,109 @@ class FleetState(BaseModel):
     projects: list[FleetProjectResult] = Field(default_factory=list)
     llm_calls_total: int = 0
     notes: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Library advisories (knowledge/libraries/advisories.yml → sbmig.advisory) and the handover summary
+# ---------------------------------------------------------------------------
+# Policy: there is deliberately NO "block" policy — a library that is EOL / no longer managed never fails the run.
+#   guide  = build as far as we can, tell the owners what to do next (report "Handover" + manual follow-ups + ledger)
+#   recipe = additionally run verified OpenRewrite recipe(s) in the spring phase; falls back to guide when the
+#            recipe is unavailable (not in the catalog / artifact not configured / advisories.allow_recipes=false)
+AdvisoryPolicy = Literal["guide", "recipe"]
+AdvisoryStatus = Literal["eol", "unmanaged", "incompatible", "superseded"]
+#   eol          = project discontinued (springfox, hystrix, sleuth, ribbon, zuul …)
+#   unmanaged    = still alive but the target parent / Boot BOM no longer manages its version
+#   incompatible = known not to work on JDK 21 / Boot 4 at runtime even though it compiles
+#   superseded   = works, but a replacement is the company/upstream standard (old release train, httpclient 4 …)
+AdvisoryOutcome = Literal["replaced", "still-present", "unknown"]
+#   replaced      = after the run the library is no longer detected (or its version reached resolved_min_version)
+#   still-present = the library is still declared/used; the owners get the follow-up
+#   unknown       = verification impossible (dry-run, aborted before analyze, re-scan failed)
+
+
+class LibraryAdvisory(BaseModel):
+    """One entry of knowledge/libraries/advisories.yml (company additions: advisories.extra_files, merged by id)."""
+    id: str                                        # "springfox"
+    library: Optional[str] = None                  # LibraryUsage.name the entry keys on (sbmig.analyze.libraries rule)
+    artifacts: list[str] = Field(default_factory=list)   # extra "group:artifact-glob" pom patterns (direct or managed)
+    status: AdvisoryStatus = "eol"
+    title: str                                     # "Springfox (Swagger 2) is discontinued"
+    summary: str = ""                              # one paragraph for the report
+    replacement: Optional[str] = None              # "org.springdoc:springdoc-openapi-starter-webmvc-ui" or free text
+    replacement_version: Optional[str] = None      # "3.x (Boot 4)"
+    policy: AdvisoryPolicy = "guide"
+    recipes: list[str] = Field(default_factory=list)     # OpenRewrite recipe ids (must exist in the recipe catalog)
+    followup: str = ""                             # the "from here on, your team …" sentence (runtime work)
+    docs: list[str] = Field(default_factory=list)
+    applies_to: list[CaseType] = Field(default_factory=list)   # empty = every case type
+    applies_when_version_below: Optional[str] = None   # only when the detected version is below this (unparsable
+                                                   # versions such as release-train names count as "below")
+    resolved_min_version: Optional[str] = None     # outcome "replaced" when the library is still present but at
+                                                   # least this version (release-train bumps)
+    notes: Optional[str] = None                    # knowledge/notes/*.md pointer
+
+
+class AdvisoryFinding(BaseModel):
+    """A LibraryAdvisory that matched this project. Created after analyze, enriched by the planner (recipes) and
+    verified at finalize (outcome). Serialized in report.json (`advisories`) and the ledger."""
+    advisory_id: str
+    library: str                                   # library name (or advisory id when artifact-matched only)
+    status: AdvisoryStatus
+    title: str
+    summary: str = ""
+    policy: AdvisoryPolicy                         # effective policy after config overrides / recipe availability
+    policy_reason: str = ""                        # "catalog" | "config override" | "recipe unavailable → guide" …
+    detected_version: Optional[str] = None
+    evidence: list[str] = Field(default_factory=list)     # LibraryUsage evidence strings
+    artifacts: list[str] = Field(default_factory=list)    # "g:a" keys found in the as-is poms
+    recipes: list[str] = Field(default_factory=list)      # recipe ids that will run for it
+    recipe_source: Literal["plan", "advisory", "none"] = "none"   # plan = already inside the planned composites,
+                                                   # advisory = added to spring.rewrite because of this finding
+    outcome: AdvisoryOutcome = "unknown"
+    replacement: Optional[str] = None
+    replacement_version: Optional[str] = None
+    followup: str = ""
+    docs: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+    @property
+    def replaced(self) -> bool:
+        return self.outcome == "replaced"
+
+
+class VersionChange(BaseModel):
+    """One row of the handover's 'versions replaced' table: as-is vs final pom(s), whole project, keyed by g:a."""
+    kind: Literal["parent", "dependency", "bom", "plugin", "property"] = "dependency"
+    key: str                                       # "g:a" (parent / dependency / bom / plugin) or property name
+    before: Optional[str] = None                   # as-is version: declared, else the as-is effective (managed) one
+    after: Optional[str] = None                    # final version: declared, else None (managed by the new parent/BOM)
+    before_source: Literal["declared", "managed", "absent"] = "declared"
+    after_source: Literal["declared", "managed", "removed"] = "declared"
+    reason: str = ""                               # "parent swap" | "recipe" | "optional bump" | "mandatory" |
+                                                   # "carried over (no longer managed)" | "advisory:<id>" | ""
+    carried_over: bool = False                     # pinned at the as-is effective version because the new parent /
+                                                   # Boot BOM does not manage it — the owners must confirm or replace
+    pom: str = "pom.xml"                           # final pom that declares it (relative)
+
+
+class HandoverSummary(BaseModel):
+    """'Here is what we replaced, from here on it is yours' — compressed for the owning team. Built at finalize
+    from profile.poms (as-is), the as-is effective dependencyManagement and the final poms."""
+    parent_before: Optional[str] = None            # "g:a:v"
+    parent_after: Optional[str] = None
+    java_before: Optional[str] = None
+    java_after: Optional[str] = None
+    spring_boot_before: Optional[str] = None
+    spring_boot_after: Optional[str] = None
+    changes: list[VersionChange] = Field(default_factory=list)   # version changed (incl. parent/bom), sorted by key
+    added: list[str] = Field(default_factory=list)               # "g:a[:v]" new in the final poms (mandatory, replacements)
+    removed: list[str] = Field(default_factory=list)             # "g:a[:v]" gone from the final poms
+    carried_over: list[VersionChange] = Field(default_factory=list)   # subset of changes with carried_over=True
+    from_here: list[str] = Field(default_factory=list)           # ordered "your team" list: advisories not replaced,
+                                                                 # replaced-but-verify, carried-over pins, blocked /
+                                                                 # unresolved pointers, manual follow-ups (deduped)
+    notes: list[str] = Field(default_factory=list)               # e.g. "effective dependencyManagement unavailable"
 
 
 # ---------------------------------------------------------------------------
@@ -636,6 +743,8 @@ class RunReport(BaseModel):
     unresolved: list[BuildError] = Field(default_factory=list)
     blocked: list[BlockedItem] = Field(default_factory=list)       # deliberately skipped: needs library/infra/human action
     manual_followups: list[str] = Field(default_factory=list)    # things the as-is owner must do (runtime concerns)
+    advisories: list[AdvisoryFinding] = Field(default_factory=list)   # library advisories (EOL / unmanaged libs)
+    handover: Optional[HandoverSummary] = None                   # versions replaced + "from here on, your team"
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)

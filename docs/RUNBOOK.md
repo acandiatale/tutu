@@ -50,10 +50,11 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 ```
 Exit code 0 = final `mvn clean package` passed and nothing is blocked. 2 = finished with **blocked** and/or unresolved
 errors (read `report.md`). 3 = aborted (no Maven, not a Maven project, configured in-house parent not resolvable).
+Library advisories (EOL / unmanaged libraries, §3.7) never change the exit code — they go to the Handover (§2.5).
 
 Outputs in `out/<run_id>/`:
 * `project/` migrated working copy (git branch `sbmig/<run_id>`, one commit per step/attempt) and `result.zip`
-* `report.md` / `report.json` — what changed, per-phase iterations, every fix attempt with outcome + commit, **unresolved errors**, **manual follow-ups** for the as-is owner (web.xml, JSP, XML bean wiring, skipped tests…)
+* `report.md` / `report.json` — **Handover** first (versions replaced, libraries needing attention, "from here on, your team" — §2.5), then what changed, per-phase iterations, every fix attempt with outcome + commit, **unresolved errors**, **manual follow-ups** for the as-is owner (web.xml, JSP, XML bean wiring, skipped tests…)
 * `changes.patch`, `journal.jsonl` (machine-readable event log), `logs/` (every build / rewrite / LLM call)
 
 ## 2. Reading a failed run
@@ -66,6 +67,36 @@ Outputs in `out/<run_id>/`:
 2. `sbmig parse-log out/<run>/logs/0NN-build-*.log` re-parses any log with signatures (useful to craft a KB pattern).
 3. `git -C out/<run>/project log --oneline` shows the attempt chain; `reverted` attempts are gone from the tree but in the report.
 4. Typical causes: Nexus missing an artifact (DEPENDENCY_RESOLUTION cluster → fix proxy, rerun), in-house parent not managing a version (`'dependencies.dependency.version' is missing` → add to `optional` with a version), LLM budget exhausted (`loop.max_llm_calls`).
+
+## 2.5 Reading the Handover (versions replaced, libraries needing attention, from here on)
+The first section of every `report.md` is `## Handover — what we replaced, what is yours` (`report.json`:
+`handover` + `advisories`). It is written for the owning team, green run or not, and compresses the run into what
+they must know before they take the project back. Reference run: the fixture `boot2-cloud-legacy`
+(`scripts/e2e.sh --only boot2-cloud-legacy`) — springfox, sleuth, hystrix and an old Spring Cloud train in one jar.
+
+* **`### Versions replaced`** — parent / Java / Spring Boot as-is → final (e.g. `spring-boot-starter-parent:2.7.18`
+  → the in-house parent, `11 → 21`, `2.7.18 → 4.1.0`), then a table of every dependency / BOM / plugin / property
+  whose version changed (as-is version: declared, else the one the old parent managed; final: declared, else
+  "managed" by the new parent/BOM), with the reason (`parent swap`, `recipe`, `optional bump`, `mandatory`,
+  `advisory:<id>`). Rows marked **⚠ carried over** are dependencies the old parent/BOM managed and the new one does
+  not: sbmig pinned them **at the as-is version** so the build keeps working. That pin is a stop-gap — confirm the
+  version is still right for Boot 4.1 or replace the library. Below the table: dependencies added and removed.
+* **`### Libraries needing your attention`** — one row per library advisory (EOL or no longer version-managed
+  libraries that still compile, so the build alone would look green): library, as-is version, status
+  (`eol` / `unmanaged` / `incompatible` / `superseded`), policy (`guide` / `recipe`), what we did (recipe ids and
+  whether they came from the Boot 4 umbrella chain = `plan` or were added for the advisory = `advisory`), outcome
+  on the final tree (`replaced` = the old artifact is gone and the replacement present, `still-present`,
+  `unknown`), what you do next, docs links.
+* **`### From here on, your team`** — a numbered, deduplicated to-do list (capped by `advisories.max_from_here`):
+  advisories not replaced, replaced-but-verify items (e.g. "check `/swagger-ui/index.html`", tracing sampling),
+  carried-over pins, pointers to blocked / unresolved items further down, and the remaining manual follow-ups.
+
+**No-block policy.** Advisories never fail a run and never change the exit code: there is deliberately no `block`
+policy (500 projects cannot all be perfect; the migration goes as far as it can and hands over the rest). A run with
+hystrix still in the pom is exit 0 with hystrix listed under "From here on". How a team acts on it: work the
+numbered list top-down in the migrated branch, re-run `mvn clean package` (or `sbmig run` again — replaced
+libraries drop out of the list), and only then deploy to a test environment; runtime behaviour was never verified
+by sbmig.
 
 ## 3. Knowledge base workflow (no DB — files in `kb/`, keep them in git or sync as zip)
 * Every successful LLM fix becomes `kb/cases/YYYY-MM/<id>.json`. Mechanical ones also produce `kb/recipes/candidates/<name>.yml`.
@@ -95,6 +126,42 @@ the recipes learned from projects 1..N. `out/fleet/fleet/summary.{md,csv,json}` 
 each project. Knobs: `fleet.order` (`manifest` | `simple-first`), `fleet.max_llm_calls_total`, `fleet.stop_on_abort`,
 `fleet.reindex_every`.
 
+## 3.7 Library advisories
+`knowledge/libraries/advisories.yml` lists libraries that still compile after the migration but are EOL or no longer
+managed by the new parent / Boot BOM (springfox, sleuth, hystrix, ribbon, zuul, netflix feign, old Spring Cloud
+trains, legacy spring-security-oauth2, log4j 1, commons-lang 2, httpclient 4 — schema and catalog in
+`docs/ADVISORIES.md`, per-library actions in `docs/ERROR-HANDLING.md` §6). `sbmig analyze` prints the matching
+advisories; `sbmig run` adds them to the plan, verifies them on the final tree and writes the Handover (§2.5).
+```bash
+sbmig advisories list  --config config/artifacts.yml       # id, status, policy, replacement (effective, after overrides)
+sbmig advisories show springfox --config config/artifacts.yml   # full entry: recipes, follow-up, docs
+sbmig advisories check --config config/artifacts.yml       # schema + every recipe id is in knowledge/recipes/catalog.yml
+```
+Config (`advisories:` in `config/default.yml`):
+
+| Knob | Default | Effect |
+|---|---|---|
+| `advisories.enabled` | true | false → no findings, no Handover library table (versions table stays) |
+| `advisories.file` / `advisories.extra_files` | `knowledge/libraries/advisories.yml` / `[]` | company additions or overrides, same schema, merged by `id` (later file wins) — keep them in the company config repo, e.g. an in-house EOL logging library |
+| `advisories.allow_recipes` | true | false → every advisory is `guide` (no advisory recipes added to the spring rewrite) |
+| `advisories.policy_overrides` | `{}` | `{springfox: guide, hystrix: off}` — `guide` \| `recipe` \| `off` per id (`off` = not reported) |
+| `advisories.report_carried_over` | true | list the ⚠ carried-over pins in the Handover |
+| `advisories.ledger` | true | one `resolution=advisory` line per finding in `kb/ledger.jsonl` → fleet `learning.md` "Libraries needing owner action" |
+| `advisories.max_from_here` | 40 | cap of the "From here on, your team" list |
+
+Policies: `guide` (default) = build, then guidance in the Handover / manual follow-ups / ledger; `recipe` = also run
+the entry's verified OpenRewrite recipes in the spring phase (prepended to the spring rewrite; falls back to `guide`
+when a recipe is unavailable). Sleuth and the Spring Cloud train are already covered by the Boot 4 umbrella chain
+(`MigrateCloudSleuthToMicrometerTracing`, `UpgradeSpringCloud_2025_1`), so they show `recipe_source=plan`.
+
+**Before switching an entry to `recipe`** (in `extra_files` or `policy_overrides`): (1) add the recipe id to
+`knowledge/recipes/catalog.yml` (with its artifact coordinates) and run `sbmig advisories check` and
+`sbmig recipes check`; (2) run it on a representative project with `sbmig run … --stop-after spring` and read the
+diff (`changes.patch`) and the spring-phase build; (3) run the reference fixture
+`scripts/e2e.sh --only boot2-cloud-legacy` (and `--llm-provider fake`, 0 LLM calls expected) — the advisory must end
+`outcome=replaced` without new unresolved errors; (4) only then roll it out in fleet mode. A recipe that leaves the
+project uncompilable costs LLM budget on every project — keep it `guide` until it is proven.
+
 ## 4. Tuning knobs (config/default.yml)
 | Knob | Default | Effect |
 |---|---|---|
@@ -112,6 +179,7 @@ each project. Knobs: `fleet.order` (`manifest` | `simple-first`), `fleet.max_llm
 | `build.enforcer_policy` / `build.werror_policy` | relax-rule / remove | enforcer `requireJavaVersion` etc. and `-Werror` on JDK 21 |
 | `loop.blocked_policy.<reason>` | 0–1 | LLM attempts allowed before a cluster of that reason is blocked and reported |
 | `loop.max_llm_attempts_per_cluster` | 2 | after that the cluster is blocked (`repeated_failure`) |
+| `advisories.*` | see §3.7 | library advisories: policies, company files, carried-over listing; never affect the exit code |
 
 ## 5. Safety notes
 * The agent only edits the copy under `out/<run>/project`; the input zip/dir is never modified.

@@ -45,7 +45,7 @@ from sbmig.core.models import (
 from sbmig.core.workspace import Workspace
 
 from .labels import symbol_for_errors
-from .ledger import Ledger, SymbolIndex, blocked_record, unresolved_records
+from .ledger import Ledger, SymbolIndex, advisory_record, blocked_record, unresolved_records
 from .recipes import recipe_names_in_yaml
 
 log = logging.getLogger("sbmig.kb")
@@ -670,6 +670,12 @@ class FileKnowledgeBase:
                     self._ledger_blocked.add((run_id, b.id))
                     recs.append(blocked_record(b, profile, ws))
             recs += unresolved_records(report.unresolved, profile, ws)
+            adv_cfg = getattr(self.cfg, "advisories", None)
+            if adv_cfg is None or adv_cfg.ledger:
+                for f in report.advisories:
+                    if (run_id, f"advisory:{f.advisory_id}") not in self._ledger_blocked:
+                        self._ledger_blocked.add((run_id, f"advisory:{f.advisory_id}"))
+                        recs.append(advisory_record(f, profile, ws))
             res.ledger_entries = self.ledger().append(recs)
         except Exception as e:
             log.warning("kb.record_run failed: %s", e)

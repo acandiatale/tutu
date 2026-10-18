@@ -298,3 +298,97 @@ def test_harvest_errors_and_kb_disabled(cfg, ws):
     kb = FakeKB()
     make_orch(cfg, ws, kb=kb, build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
     assert kb.harvests == []
+
+
+# ---------------------------------------------------------------- library advisories: finalize side (round 4)
+def _finding(**kw):
+    from sbmig.core.models import AdvisoryFinding
+
+    base = dict(advisory_id="springfox", library="springfox", status="eol", title="Springfox is discontinued",
+                policy="recipe", recipes=["org.openrewrite.java.springdoc.SwaggerToSpringDoc"],
+                replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui", followup="check the UI path")
+    base.update(kw)
+    return AdvisoryFinding(**base)
+
+
+@pytest.fixture()
+def advisory_fakes(monkeypatch):
+    import sbmig.advisory as adv
+
+    calls = {"verify": 0, "followups": 0}
+
+    def evaluate(profile, cfg, catalog=None):
+        return [_finding(), _finding(advisory_id="hystrix", library="hystrix", policy="guide", recipes=[],
+                                     title="Hystrix is discontinued", followup="use resilience4j")]
+
+    def verify(findings, view, cfg):
+        calls["verify"] += 1
+        assert view.exists("pom.xml")
+        return [f.model_copy(update={"outcome": "replaced" if f.advisory_id == "springfox" else "still-present"})
+                for f in findings]
+
+    def followups(findings):
+        calls["followups"] += 1
+        return [f"{f.title}: {f.followup}" for f in findings if f.outcome != "replaced"]
+
+    monkeypatch.setattr(adv, "evaluate_advisories", evaluate)
+    monkeypatch.setattr(adv, "verify_advisories", verify)
+    monkeypatch.setattr(adv, "followups_for", followups)
+    return calls
+
+
+def test_finalize_verifies_advisories_and_builds_handover(cfg, ws, advisory_fakes):
+    report = make_orch(cfg, ws).run()
+    assert report.success
+    assert {f.advisory_id: f.outcome for f in report.advisories} == {"springfox": "replaced",
+                                                                      "hystrix": "still-present"}
+    assert report.manual_followups.count("Hystrix is discontinued: use resilience4j") == 1
+    assert report.handover is not None
+    fh = report.handover.from_here
+    assert fh[0].startswith("Hystrix is discontinued: use resilience4j")
+    assert any(x.startswith("verify springfox → org.springdoc") for x in fh)
+    assert not [x for x in fh if x == "Hystrix is discontinued: use resilience4j"][1:]   # no duplicate
+    ev = journal_events(ws)
+    ver = next(e for e in ev if e["event"] == "advisories_verified")
+    assert ver["findings"] == [{"id": "springfox", "policy": "recipe", "outcome": "replaced"},
+                               {"id": "hystrix", "policy": "guide", "outcome": "still-present"}]
+    ho = next(e for e in ev if e["event"] == "handover")
+    assert set(ho) >= {"changes", "carried_over", "from_here"} and ho["from_here"] == len(fh)
+    # verified before the ledger / report: the report on disk carries the outcomes and the handover section
+    rep = RunReport.model_validate_json((ws.run_dir / "report.json").read_text())
+    assert rep.advisories[0].outcome == "replaced" and rep.handover is not None
+    md = (ws.run_dir / "report.md").read_text()
+    assert md.index("## Handover") < md.index("## Unresolved errors") and "| **hystrix** |" in md
+    assert [e["event"] for e in ev].index("advisories_verified") < [e["event"] for e in ev].index("report")
+
+
+def test_finalize_advisories_dry_run_skips_verify(cfg, ws, advisory_fakes):
+    report = make_orch(cfg, ws).run(dry_run=True)
+    assert advisory_fakes["verify"] == 0
+    assert all(f.outcome == "unknown" for f in report.advisories)
+    assert report.handover is not None
+    assert not any(e["event"] == "advisories_verified" for e in journal_events(ws))
+
+
+def test_finalize_advisories_verify_failure(cfg, ws, advisory_fakes, monkeypatch):
+    import sbmig.advisory as adv
+
+    def boom(findings, view, cfg):
+        raise RuntimeError("scan failed")
+
+    monkeypatch.setattr(adv, "verify_advisories", boom)
+    report = make_orch(cfg, ws).run()
+    assert report.success and all(f.outcome == "unknown" for f in report.advisories)
+    errs = [e for e in journal_events(ws) if e["event"] == "advisories_verified" and "error" in e]
+    assert errs and "scan failed" in errs[0]["error"]
+    assert "Springfox is discontinued: check the UI path" in report.manual_followups
+    assert report.handover is not None
+
+
+def test_finalize_handover_without_findings(cfg, ws, monkeypatch):
+    import sbmig.advisory as adv
+
+    monkeypatch.setattr(adv, "evaluate_advisories", lambda profile, cfg, catalog=None: [])
+    report = make_orch(cfg, ws).run()
+    assert report.advisories == [] and report.handover is not None
+    assert any(e["event"] == "handover" for e in journal_events(ws))

@@ -155,7 +155,7 @@ def ledger_cmd(
     label: Optional[str] = typer.Option(None, "--label", help="regex on any fix label"),
     resolution: Optional[str] = typer.Option(
         None, "--resolution",
-        help="regex: handler|plan_recipe|kb_recipe|kb_patch|llm_patch|blocked|unresolved"),
+        help="regex: handler|plan_recipe|kb_recipe|kb_patch|llm_patch|optional_bump|blocked|unresolved|advisory"),
     signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
     limit: int = typer.Option(50, "--limit", "-n", help="show the last N matching records (0 = all)"),
     as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),

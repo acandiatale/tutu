@@ -10,7 +10,10 @@ EXPECTED = {"lombok", "mapstruct", "querydsl", "spring-security", "spring-data-j
             "feign", "jackson", "junit4", "junit5", "mockito", "testcontainers", "log4j2", "logback",
             "javax-servlet", "jakarta-servlet", "jsp", "jaxb", "javax-annotation", "validation", "thymeleaf",
             "flyway", "liquibase", "undertow", "jetty", "tomcat-embed", "spring-webflux", "spring-webmvc",
-            "spring-context", "spring-retry", "elasticsearch", "mongodb"}
+            "spring-context", "spring-retry", "elasticsearch", "mongodb",
+            # library advisories (knowledge/libraries/advisories.yml)
+            "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom", "swagger-v1",
+            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4"}
 
 
 def test_names_are_the_contract() -> None:
@@ -55,3 +58,54 @@ def test_import_only_and_junit_boundaries(tmp_path: Path) -> None:
     assert libs["junit5"].evidence == ["import:org.junit.jupiter"]
     # detect_libraries without a scan
     assert detect_libraries([]) == []
+
+
+# ---------------------------------------------------------------------------- advisory rules
+SC = "org.springframework.cloud"
+
+
+def test_advisory_rules_from_deps_and_imports(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("x", deps=(
+        dep(SC, "spring-cloud-starter-sleuth"), dep(SC, "spring-cloud-starter-netflix-hystrix", "2.2.10.RELEASE"),
+        dep(SC, "spring-cloud-starter-netflix-ribbon"), dep("com.netflix.zuul", "zuul-core", "1.3.1"),
+        dep(SC, "spring-cloud-starter-feign", "1.4.7.RELEASE"), dep("io.swagger", "swagger-annotations", "1.6.2"),
+        dep("org.springframework.security.oauth", "spring-security-oauth2", "2.5.2.RELEASE"),
+        dep("log4j", "log4j", "1.2.17"), dep("commons-lang", "commons-lang", "2.6"),
+        dep("org.apache.httpcomponents", "httpclient", "4.5.14"))))
+    write_java(tmp_path, "", "com.a", "A", imports=(
+        "com.netflix.hystrix.contrib.javanica.annotation.HystrixCommand", "org.apache.http.HttpResponse",
+        "org.springframework.security.oauth2.provider.token.TokenStore", "org.apache.log4j.Logger"))
+    libs = _libs(tmp_path)
+    assert libs["hystrix"].version == "2.2.10.RELEASE"
+    assert "import:com.netflix.hystrix" in libs["hystrix"].evidence
+    assert libs["sleuth"].version is None and "ribbon" in libs and libs["zuul"].version == "1.3.1"
+    assert libs["netflix-feign"].version == "1.4.7.RELEASE"
+    assert "feign" not in libs                  # the existing feign rule is unchanged (openfeign / com.netflix.feign)
+    assert libs["swagger-v1"].version == "1.6.2"
+    assert "import:org.springframework.security.oauth2.provider" in libs["spring-security-oauth2-legacy"].evidence
+    assert libs["log4j1"].version == "1.2.17" and libs["commons-lang2"].version == "2.6"
+    assert "import:org.apache.http.HttpResponse" in libs["httpclient4"].evidence
+    assert "spring-cloud" in libs
+
+
+def test_commons_lang2_import_does_not_match_lang3(tmp_path: Path) -> None:
+    write_java(tmp_path, "", "com.a", "A", imports=("org.apache.commons.lang3.StringUtils",))
+    assert "commons-lang2" not in _libs(tmp_path)
+    write_java(tmp_path, "", "com.a", "B", imports=("org.apache.commons.lang.StringUtils",))
+    assert _libs(tmp_path)["commons-lang2"].evidence == ["import:org.apache.commons.lang"]
+
+
+def test_spring_cloud_bom_from_managed_and_parent(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("x", props={"spring-cloud.version": "Hoxton.SR12"}, managed=(
+        dep(SC, "spring-cloud-dependencies", "${spring-cloud.version}", scope="import", type_="pom"),)))
+    lib = _libs(tmp_path)["spring-cloud-bom"]
+    assert lib.version == "Hoxton.SR12"
+    assert lib.evidence == ["pom-managed:org.springframework.cloud:spring-cloud-dependencies:Hoxton.SR12"]
+    other = tmp_path / "p"
+    write(other, "pom.xml", pom("y", parent=(SC, "spring-cloud-starter-parent", "2021.0.9")))
+    lib = _libs(other)["spring-cloud-bom"]
+    assert lib.version == "2021.0.9"
+    assert lib.evidence == ["pom-parent:org.springframework.cloud:spring-cloud-starter-parent:2021.0.9"]
+    plain = tmp_path / "plain"
+    write(plain, "pom.xml", pom("z", deps=(dep(SC, "spring-cloud-starter-openfeign"),)))
+    assert "spring-cloud-bom" not in _libs(plain)

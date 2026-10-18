@@ -27,6 +27,8 @@
 #   rules:       sbmig/triage/recipe_rules.yml rule ids that use it              (informational, checked)
 #   verified:    when the id was verified against docs.openrewrite.org / a recipe jar (YYYY-MM)
 #   notes:       optional pointer to a knowledge/notes/*.md migration note
+#   advisories:  knowledge/libraries/advisories.yml ids this recipe resolves (informational, checked both ways:
+#                every advisory recipe must be listed here, every id listed here must be an advisory)
 #
 # Order matters for the advisor: advisor entries are shown to the LLM in file order.
 version: 1
@@ -103,6 +105,12 @@ recipes:
       - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
       - org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean
       - org.openrewrite.java.spring.boot4.SpringBootProperties_4_0
+      # verified in rewrite-spring 6.37.1: 4_0 → 3_5 → … → 3_0 → 2_7 → 2_6 → SpringFoxToSpringDoc,
+      # 3_0 → UpgradeSpringCloud_2022 → MigrateCloudSleuthToMicrometerTracing; 4_0 lists the other two directly
+      - org.openrewrite.java.springdoc.SpringFoxToSpringDoc
+      - org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0
+      - org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing
+      - org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1
     gate: is_boot
     advisor: true
     sets: [spring_boot_4]
@@ -210,6 +218,69 @@ recipes:
     rules: [spring-security-config]
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
+
+  # ------------------------------------------------------------------ library advisories (knowledge/libraries/advisories.yml)
+  # Not advisor-eligible: they are added by sbmig.advisory (policy recipe) only when not already covered by
+  # the planned composites — for Boot projects UpgradeSpringBoot_4_0 includes all four.
+  - id: org.openrewrite.java.springdoc.SpringFoxToSpringDoc
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: springfox → springdoc-openapi (io.swagger.annotations → OAS v3, Docket → GroupedOpenApi, deps)
+    docs: https://docs.openrewrite.org/recipes/java/springdoc/springfoxtospringdoc
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-cloud.md
+    advisories: [springfox]
+
+  - id: org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: springdoc-openapi 1.x/2.x → 3.0.x (springdoc-openapi-ui → springdoc-openapi-starter-webmvc-ui)
+    docs: https://docs.openrewrite.org/recipes/java/springdoc/upgradespringdoc_3_0
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-cloud.md
+    advisories: [springfox]
+
+  - id: org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Cloud Sleuth → Micrometer Tracing (Brave bridge, Tracer types, tracing properties)
+    docs: https://docs.openrewrite.org/recipes/java/spring/cloud2022/migratecloudsleuthtomicrometertracing
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-cloud.md
+    advisories: [sleuth]
+
+  - id: org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Cloud release train → 2025.1.x (org.springframework.cloud:* → 5.0.x)
+    docs: https://docs.openrewrite.org/recipes/java/spring/cloud2025/upgradespringcloud_2025_1
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-cloud.md
+    advisories: [spring-cloud-bom]
 
   # ------------------------------------------------------------------ project recipes (knowledge/recipes/base)
   - id: com.company.migrate.SpringBoot41Version

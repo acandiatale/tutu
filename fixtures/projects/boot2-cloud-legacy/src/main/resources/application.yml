@@ -1,0 +1,11 @@
+spring:
+  application:
+    name: order-api
+  mvc:
+    pathmatch:
+      matching-strategy: ant_path_matcher   # springfox 3 needs the Ant matcher on Boot 2.6+
+  sleuth:
+    sampler:
+      probability: 1.0
+server:
+  port: 8082

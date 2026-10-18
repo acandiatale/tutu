@@ -7,21 +7,24 @@ without `mvn` saying `BUILD SUCCESS`. Runtime behaviour is explicitly out of sco
 ## 1. Pipeline
 
 ```
-intake ─► analyze ─► plan ─► JDK21 phase ─► SPRING phase ─► RESTRUCTURE phase ─► verify ─► report + KB harvest
-                              │               │                 │
-                              └ rewrite+loop  └ rewrite+loop    └ transform+loop
+intake ─► analyze ─► advisories ─► plan ─► JDK21 phase ─► SPRING phase ─► RESTRUCTURE phase ─► verify
+                                            │               │                 │                    │
+                                            └ rewrite+loop  └ rewrite+loop    └ transform+loop     ▼
+                                                                             finalize: verify advisories ─► handover ─► report + KB harvest
 ```
 
 | Phase | What runs | Exit gate |
 |---|---|---|
 | intake | unzip/copy into `out/<run>/project`, `git init`, as-is commit | – |
 | analyze | pom graph + source scan → `ProjectProfile` (case type, versions, libs, optional artifacts in use) | profile.json |
-| plan | rules (no LLM by default) → `MigrationPlan` (ordered `PlanStep`s) | plan.json |
+| advisories | `knowledge/libraries/advisories.yml` (+ `advisories.extra_files`, `policy_overrides`) matched against the profile's libraries / declared artifacts → `AdvisoryFinding`s (effective policy `guide` \| `recipe`); never an exit gate — there is no block policy | findings in profile/plan |
+| plan | rules (no LLM by default) → `MigrationPlan` (ordered `PlanStep`s); `recipe`-policy advisory recipes are **prepended to `spring.rewrite`** (`recipe_source=advisory`), recipes already inside the Boot 4 umbrella chain (sleuth, Spring Cloud train) are only attributed (`recipe_source=plan`) | plan.json |
 | jdk21 | OpenRewrite `UpgradeToJava21` → build-fix loop (`compile`) | BUILD SUCCESS or budget exhausted |
 | spring | case-dependent recipes (jakarta / Boot 4.0 umbrella + 4.1 props + version pin / Framework 7 / Security 7 / JUnit5) + KB active recipes → build-fix loop (`test-compile`) | BUILD SUCCESS |
 | restructure | non-MSA: parent swap + mandatory deps + optional bumps + `module/{comp-jar,boot-jar}` split + Application class. MSA: pom-only parent/mandatory/optional on each service root → build-fix loop (`package`) | BUILD SUCCESS |
 | verify | `mvn clean package` (always) | success flag of the run |
-| report | report.md/json, changes.patch, result.zip, journal; KB harvest of successful LLM fixes | – |
+| finalize | advisories verified on the **final tree** (`outcome`: `replaced` \| `still-present` \| `unknown`); `HandoverSummary` built from the as-is poms + as-is effective dependencyManagement vs the final poms (version changes, added/removed, ⚠ carried-over pins, "from here on" list) | – (advisories never change success or the exit code) |
+| report | report.md/json (Handover first), changes.patch, result.zip, journal; KB harvest of successful LLM fixes; ledger lines (incl. `resolution=advisory`) | – |
 
 Why recipes run **before** restructure: OpenRewrite needs type attribution against the *as-is* classpath
 (javax types, Boot 2/3 classes) to match. Swapping the parent first would resolve a Boot 4.1 classpath and leave
@@ -181,3 +184,16 @@ depending on them. `merge` is opt-in.
 ## 9. Outputs
 
 `out/<run_id>/{project/, logs/, journal.jsonl, profile.json, plan.json, report.json, report.md, changes.patch, result.zip}`
+
+* `report.json` — a serialized `RunReport` (`sbmig/core/models.py`), including `advisories: [AdvisoryFinding]`
+  (`advisory_id`, `library`, `status`, `title`, `policy`, `policy_reason`, `detected_version`, `recipes`,
+  `recipe_source` `plan|advisory|none`, `outcome`, `replacement`, `followup`, …) and `handover: HandoverSummary`
+  (`parent_before/after`, `java_before/after`, `spring_boot_before/after`, `changes: [VersionChange]`, `added`,
+  `removed`, `carried_over`, `from_here`, `notes`).
+* `report.md` — first section `## Handover — what we replaced, what is yours` with `### Versions replaced`
+  (⚠ = carried over), `### Libraries needing your attention`, `### From here on, your team`; then summary, blocked,
+  unresolved, phases, manual follow-ups (`docs/RUNBOOK.md` §2.5).
+* `kb/ledger.jsonl` — one line per resolved / blocked cluster and, with `advisories.ledger`, one
+  `resolution=advisory` line per finding (advisory id, outcome, policy).
+* Fleet (`out/fleet/fleet/`): `summary.csv` gains `advisories` (`id:outcome` list) and `carried_over` (count);
+  `learning.md` gains "Libraries needing owner action" (advisories by number of projects still affected).

@@ -87,15 +87,29 @@ def test_repo_catalog_is_consistent_with_every_source(cfg):
         assert name in cat and all(u in cat for u in info["uses"])
 
 
+# Round 4 (library advisories): the 4.0 umbrella's verified chain also includes these (rewrite-spring 6.37.1).
+ADVISORY_COVERS = [
+    "org.openrewrite.java.springdoc.SpringFoxToSpringDoc",
+    "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0",
+    "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing",
+    "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1",
+]
+NEW_ADVISOR_COVERAGE = {
+    **OLD_ADVISOR_COVERAGE,
+    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0":
+        OLD_ADVISOR_COVERAGE["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"] + ADVISORY_COVERS,
+}
+
+
 def test_derived_advisor_constants_match_the_old_literals():
     assert ADVISOR_CATALOG == OLD_ADVISOR_CATALOG
     assert list(ADVISOR_CATALOG) == list(OLD_ADVISOR_CATALOG)       # prompt order unchanged
-    assert ADVISOR_COVERAGE == OLD_ADVISOR_COVERAGE
+    assert ADVISOR_COVERAGE == NEW_ADVISOR_COVERAGE
     assert set(ADVISOR_GATES) == set(OLD_GATES)
     assert all(ADVISOR_GATES[rid] is GATES[g] for rid, g in OLD_GATES.items())
     # the built-in fallback (catalog file missing) is the same advisor view
     b = builtin_catalog()
-    assert b.advisor_catalog() == OLD_ADVISOR_CATALOG and b.coverage() == OLD_ADVISOR_COVERAGE
+    assert b.advisor_catalog() == OLD_ADVISOR_CATALOG and b.coverage() == NEW_ADVISOR_COVERAGE
     assert set(b.gates()) == set(OLD_GATES)
 
 
@@ -214,3 +228,28 @@ def test_advise_plan_uses_the_configured_catalog(tmp_path, cfg):
     cfg.plan.catalog_file = str(_temp_catalog(tmp_path, "none", no_advisor))
     out = advise_plan(build_plan(_profile(), cfg), _profile(), llm=_LLM(), cfg=cfg)
     assert any("ignored unknown recipe org.openrewrite.java.testing.junit5.JUnit4to5Migration" in n for n in out.notes)
+
+
+def test_check_cross_checks_advisories(tmp_path, cfg):
+    def mutate(d):
+        for r in d["recipes"]:
+            if r["id"] == "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0":
+                r["advisories"] = ["springfox", "no-such-advisory"]
+            if r["id"] == "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1":
+                r["advisories"] = ["hystrix"]
+    p = _temp_catalog(tmp_path, "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing", mutate)
+    text = "\n".join(RecipeCatalog.load(p).check(cfg))
+    assert "advisory sleuth: recipe org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing " \
+        "is not in the catalog" in text
+    assert "lists advisory 'no-such-advisory' but no such advisory exists" in text
+    assert "UpgradeSpringCloud_2025_1: lists advisory 'hystrix' but that advisory does not use it" in text
+    assert "lists advisory 'springfox'" not in text
+
+
+def test_advisory_recipes_are_not_advisor_eligible_and_covered_by_the_umbrella(cfg):
+    cat = default_catalog(cfg)
+    cov = cat.covered_by({"org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"})
+    for rid in ADVISORY_COVERS:
+        e = cat.get(rid)
+        assert e is not None and not e.advisor and e.advisories and rid not in ADVISOR_CATALOG
+        assert cov[rid] == "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"

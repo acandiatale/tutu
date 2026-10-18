@@ -247,6 +247,22 @@ class ReportConfig(BaseModel):
     include_diff: bool = True
 
 
+class AdvisoryConfig(BaseModel):
+    """Library advisories (knowledge/libraries/advisories.yml → sbmig.advisory): EOL / no-longer-managed libraries
+    such as springfox, hystrix, sleuth. Never blocks a run — the build goes as far as it can and the report's
+    Handover section says what the owning team must do next."""
+    enabled: bool = True
+    file: str = "knowledge/libraries/advisories.yml"      # relative to repo root unless absolute
+    extra_files: list[str] = Field(default_factory=list)  # company additions / overrides (same schema, merged by id,
+                                                          # later files win)
+    allow_recipes: bool = True                            # False → every advisory behaves as policy "guide"
+    policy_overrides: dict[str, Literal["guide", "recipe", "off"]] = Field(default_factory=dict)
+                                                          # advisory id → policy ("off" disables the entry)
+    report_carried_over: bool = True                      # list as-is-version pins (unmanaged after the parent swap)
+    ledger: bool = True                                   # write advisory findings to kb/ledger.jsonl (resolution=advisory)
+    max_from_here: int = 40                               # cap of the handover's "from here on" list
+
+
 class Config(BaseModel):
     target: TargetConfig = Field(default_factory=TargetConfig)
     artifacts: ArtifactsConfig
@@ -260,6 +276,7 @@ class Config(BaseModel):
     plan: PlanConfig = Field(default_factory=PlanConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
+    advisories: AdvisoryConfig = Field(default_factory=AdvisoryConfig)
     repo_root: str = str(PACKAGE_ROOT)
 
     # ---- helpers -----------------------------------------------------
@@ -278,6 +295,15 @@ class Config(BaseModel):
     @property
     def recipe_catalog_file(self) -> Path:
         return self.resolve_path(self.plan.catalog_file)
+
+    @property
+    def advisories_file(self) -> Path:
+        return self.resolve_path(self.advisories.file)
+
+    @property
+    def advisory_files(self) -> list[Path]:
+        """Base advisories file followed by the company extra files (later wins, merged by id)."""
+        return [self.advisories_file, *(self.resolve_path(p) for p in self.advisories.extra_files)]
 
     def optional_keys(self) -> dict[str, ArtifactSpec]:
         out: dict[str, ArtifactSpec] = {}

@@ -3,11 +3,13 @@
 `sbmig` takes an as-is Maven project (zip or directory), runs OpenRewrite for everything mechanical, then drives a
 **triage → fix → build** loop until `mvn` says `BUILD SUCCESS`, restructures the project into the company layout
 (in-house parent, 2 mandatory dependencies, 8 optional bumps, `module/{comp-jar,boot-jar}`), and writes a report the
-as-is owner can act on. Every LLM fix that worked is stored in a file-based knowledge base and, when mechanical,
+as-is owner can act on — starting with a **Handover** (versions replaced, ⚠ pins carried over, EOL / unmanaged
+libraries such as springfox, sleuth, hystrix that still compile, and a numbered "from here on, your team" list;
+`recipe`-policy advisories like springfox → springdoc are migrated by OpenRewrite, none ever fails the build). Every LLM fix that worked is stored in a file-based knowledge base and, when mechanical,
 promoted to an OpenRewrite recipe for the next project.
 
 ```
-intake ─► analyze ─► plan ─► JDK21 (rewrite + build-fix loop) ─► SPRING (rewrite + loop) ─► RESTRUCTURE (+ loop) ─► verify ─► report + KB harvest
+intake ─► analyze ─► advisories ─► plan ─► JDK21 (rewrite + build-fix loop) ─► SPRING (rewrite + loop) ─► RESTRUCTURE (+ loop) ─► verify ─► handover + report + KB harvest
 ```
 
 | Doc | Content |
@@ -19,7 +21,8 @@ intake ─► analyze ─► plan ─► JDK21 (rewrite + build-fix loop) ─►
 | `docs/ADAPTERS.md` | plugging in the in-house LLM gateway (`llm.plugin`) or an in-house coding agent (`fix.plugin`); Python embedding via `sbmig.api.migrate` |
 | `docs/RECIPES.md` | how recipe lists are managed: `knowledge/recipes/catalog.yml` (single source), config sets, base recipes, reactive rules, KB recipes |
 | `docs/FLEET.md` | one agent over hundreds of projects, sequentially: `sbmig fleet`, resume, the learning ledger (`kb/ledger.jsonl`), symbol → fix labels |
-| `docs/ERROR-HANDLING.md` | error-case catalog: what is fixed, what is blocked and reported, loop safety |
+| `docs/ADVISORIES.md` | library advisories: EOL / no-longer-managed libraries that still compile (`knowledge/libraries/advisories.yml`), `guide` / `recipe` policies, company overrides, `sbmig advisories` |
+| `docs/ERROR-HANDLING.md` | error-case catalog: what is fixed, what is blocked and reported, loop safety, library advisories + carried-over pins |
 
 ## Quick start
 ```bash
@@ -27,7 +30,8 @@ uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml        # in-house parent / mandatory ×2 / optional ×8
 export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
 
-sbmig analyze  path/to/project.zip --config config/artifacts.yml      # case type, versions, libs, optional artifacts in use
+sbmig analyze  path/to/project.zip --config config/artifacts.yml      # case type, versions, libs, optional artifacts in use, library advisories
+sbmig advisories list --config config/artifacts.yml                   # EOL / unmanaged libraries we flag (guide | recipe), `show <id>`, `check`
 sbmig plan     path/to/project.zip --config config/artifacts.yml      # ordered steps + recipes (no changes made)
 sbmig run      path/to/project.zip --config config/artifacts.yml --out out/   # full migration; exit 0 = final build passed
 sbmig kb list --status candidate && sbmig kb promote <id>             # review harvested recipes
@@ -72,7 +76,9 @@ sbmig/kb          file knowledge base: cases, index, recipe candidates/active, h
 sbmig/report      report.md / report.json / console summary
 knowledge/notes   migration notes fed to the LLM (JDK 21, jakarta, Boot 2→3→4→4.1, Framework 7, Security 7…)
 knowledge/recipes project-owned declarative OpenRewrite recipes
-fixtures/projects six as-is sample projects (one per case + MSA) with expected.json
+sbmig/advisory    library advisories: match → policy → verify on the final tree → handover
+knowledge/libraries advisories.yml (EOL / unmanaged library catalog)
+fixtures/projects as-is sample projects (one per case + MSA + failure / advisory scenarios) with expected.json
 ```
 
 ## Tests

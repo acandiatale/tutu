@@ -101,3 +101,62 @@ def test_group_by_file_and_console():
     console_summary(rep, console)
     text = console.export_text()
     assert "NOT BUILDING" in text and "unresolved" in text and "follow-up" in text and "/out/report.md" in text
+
+
+# ---------------------------------------------------------------- handover (round 4)
+def _handover_report() -> RunReport:
+    from sbmig.core.models import AdvisoryFinding, HandoverSummary, VersionChange
+
+    rep = sample_report()
+    rep.advisories = [AdvisoryFinding(advisory_id="sleuth", library="sleuth", status="eol", title="Sleuth is gone",
+                                      policy="guide", detected_version="3.1.9", outcome="still-present",
+                                      replacement="io.micrometer:micrometer-tracing-bridge-brave",
+                                      followup="move to Micrometer Tracing", docs=["https://x/doc"])]
+    co = VersionChange(key="org.apache.commons:commons-lang3", before="3.12.0", after="3.12.0",
+                       before_source="managed", reason="carried over (no longer managed)", carried_over=True)
+    rep.handover = HandoverSummary(parent_before="org.springframework.boot:spring-boot-starter-parent:2.7.18",
+                                   parent_after="com.company:company-parent:4.1.0", java_before="1.8",
+                                   java_after="21", changes=[co], carried_over=[co], added=["a:b:1 (mandatory)"],
+                                   removed=["c:d:2"], from_here=["Sleuth is gone: move to Micrometer Tracing",
+                                                                 "web.xml not migrated"])
+    return rep
+
+
+def test_handover_section_first_and_tables():
+    md = render_markdown(_handover_report())
+    i = md.index("## Handover — what we replaced, what is yours")
+    assert md.index("| Run id |") < i < md.index("## Unresolved errors")
+    assert md[:i].count("\n## ") == 0                               # first section after the header table
+    for s in ("### Versions replaced", "- parent: `org.springframework.boot:spring-boot-starter-parent:2.7.18` → "
+              "`com.company:company-parent:4.1.0`", "- java: `1.8` → `21`", "| what | before | after | why |",
+              "| ⚠ dependency `org.apache.commons:commons-lang3` | 3.12.0 (managed) | 3.12.0 |",
+              "Added: `a:b:1 (mandatory)`", "Removed: `c:d:2`", "### Libraries needing your attention",
+              "| library | as-is | status | policy | what we did | outcome | what you do next | docs |",
+              "| **sleuth** | 3.1.9 | eol | guide | built with the as-is version pinned | ⚠ still present | "
+              "move to Micrometer Tracing → `io.micrometer:micrometer-tracing-bridge-brave` | [1](https://x/doc) |",
+              "### From here on, your team", "1. Sleuth is gone: move to Micrometer Tracing",
+              "2. web.xml not migrated"):
+        assert s in md, s
+
+
+def test_handover_nothing_to_say():
+    from sbmig.core.models import HandoverSummary
+
+    md = render_markdown(sample_report())
+    assert "## Handover" in md and "No version changes and no library advisories recorded" in md
+    rep = sample_report()
+    rep.handover = HandoverSummary()
+    md = render_markdown(rep)
+    sec = md[md.index("## Handover"):md.index("## Unresolved errors")]
+    assert "No version changes and no library advisories recorded" in sec and "###" not in sec
+
+
+def test_handover_console_and_flag_help():
+    from sbmig.report.markdown import flag_help
+
+    console = Console(record=True, width=160)
+    console_summary(_handover_report(), console)
+    text = console.export_text()
+    assert "advisory sleuth [guide] → still-present" in text
+    assert "handover: 1 versions replaced, 1 carried over, 2 items for the owners" in text
+    assert "no longer manages" in flag_help("managed-versions-carried-over")

@@ -34,7 +34,7 @@ JDK_HOMES = {
 
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-             "missing-artifact", "msa-shared-lib"]
+             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -54,6 +54,7 @@ BUILD_MATRIX = [
     ("enforcer-java8-werror", ".", "8", ""),
     ("missing-artifact", ".", "8", "ghost"),
     ("msa-shared-lib", ".", "18", ""),
+    ("boot2-cloud-legacy", ".", "11", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -109,6 +110,48 @@ class PostCheck(BaseModel):
     pom_dependency_present: PomDepsCheck | None = None
 
 
+class AdvisoryExpect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[a-z0-9][a-z0-9.\-]*$")
+    library: str | None = None
+    status: str | None = None
+    policy: Literal["guide", "recipe", "off"] | None = None
+    recipe_source: Literal["plan", "advisory", "none"] | None = None
+    outcome: Literal["replaced", "still-present", "unknown"] | None = None
+    replacement: str | None = None
+
+
+class HandoverExpect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    changes_min: int | None = Field(default=None, ge=0)
+    carried_over_min: int | None = Field(default=None, ge=0)
+    carried_over_max: int | None = Field(default=None, ge=0)
+    parent_before: str | None = None
+    parent_after: str | None = None
+    java_before: str | None = None
+    java_after: str | None = None
+    spring_boot_before: str | None = None
+    spring_boot_after: str | None = None
+    from_here_contains: list[str] = Field(default_factory=list)
+    removed_contains: list[str] = Field(default_factory=list)
+    added_contains: list[str] = Field(default_factory=list)
+
+    @field_validator("from_here_contains")
+    @classmethod
+    def _patterns(cls, v: list[str]) -> list[str]:
+        for p in v:
+            if p.startswith("regex:"):
+                re.compile(p[len("regex:"):])
+        return v
+
+    @field_validator("removed_contains", "added_contains")
+    @classmethod
+    def _gavs(cls, v: list[str]) -> list[str]:
+        for ga in v:
+            assert re.fullmatch(r"[\w.\-]+:[\w.\-]+(:[\w.\-]+)?", ga), ga
+        return v
+
+
 class Expect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: bool
@@ -123,8 +166,13 @@ class Expect(BaseModel):
     journal_events: list[dict[str, str | int | bool | None]] = Field(default_factory=list)
     phases: dict[str, Literal["ok", "FAIL", "skipped"]] = Field(default_factory=dict)
     post_checks: list[PostCheck] = Field(default_factory=list)
+    advisories: list[AdvisoryExpect] = Field(default_factory=list)
+    advisories_exact: bool = False
+    advisories_absent: list[str] = Field(default_factory=list)
+    handover: HandoverExpect | None = None
+    followups_contains: list[str] = Field(default_factory=list)
 
-    @field_validator("flags", "forbidden_flags", "optional_bumped")
+    @field_validator("flags", "forbidden_flags", "optional_bumped", "followups_contains")
     @classmethod
     def _patterns(cls, v: list[str]) -> list[str]:
         for p in v:
@@ -226,9 +274,13 @@ def test_poms_parse_and_readme(name: str):
 
 @pytest.mark.parametrize("name", NAMES)
 def test_post_check_paths_exist_in_fixture(name: str):
-    """Every post_check names a file that exists in the as-is fixture (layout-independent `**` globs)."""
+    """Every post_check names a file that exists in the as-is fixture (layout-independent `**` globs) — except
+    `module/<comp-jar|boot-jar>/pom.xml`, which the restructure phase creates (single jar → comp-jar + boot-jar)."""
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
+            if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
+                assert (FIXTURES / name / "pom.xml").exists()
+                continue
             hits = list((FIXTURES / name).glob(spec["path"]))
             assert hits, f"{name}: {kind} path {spec['path']} matches nothing in the as-is fixture"
             if kind == "file_decodes_as" and spec.get("contains"):

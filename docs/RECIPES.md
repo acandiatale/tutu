@@ -39,6 +39,7 @@ The catalog's `sets` and `rules` fields mirror those sources, and `check` keeps 
   rules: [boot4-modularized-autoconfigure]   # recipe_rules.yml rules that use it (checked)
   verified: "2026-10"
   notes: knowledge/notes/boot3-to-4.md
+  advisories: []             # library advisory ids this recipe resolves (checked against advisories.yml)
 ```
 
 The catalog also lists building-block recipes that project composites use internally, such as `ChangeType`,
@@ -104,6 +105,26 @@ With `plan.advisor: llm`, `advise_plan` asks `llm.recipe_model` to review the ru
 
 `advise_plan(cfg=...)` reads `cfg.recipe_catalog_file`, which is `plan.catalog_file`. `ADVISOR_CATALOG`,
 `ADVISOR_COVERAGE` and `ADVISOR_GATES` in `sbmig.plan` are snapshots of the repo catalog, taken at import time.
+
+## Advisory recipes (library advisories)
+
+Library advisories (`knowledge/libraries/advisories.yml`, see [ADVISORIES.md](ADVISORIES.md)) can name recipes for
+policy `recipe`. Those ids must be catalog entries; the entry lists the advisory ids it resolves in
+`advisories: [...]` (informational). `sbmig recipes check` cross-checks both directions: every advisory recipe is
+in the catalog, and every `advisories: [x]` names an existing advisory that uses the recipe.
+
+| recipe | advisory | inside `UpgradeSpringBoot_4_0`? |
+|---|---|---|
+| `org.openrewrite.java.springdoc.SpringFoxToSpringDoc` | springfox | yes (4_0 → 3_5 … 3_0 → 2_7 → 2_6) |
+| `org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0` | springfox | yes (listed directly) |
+| `org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing` | sleuth | yes (3_0 → UpgradeSpringCloud_2022) |
+| `org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1` | spring-cloud-bom | yes (listed directly) |
+
+They are `advisor: false`, so the LLM advisor never suggests them. They are listed under the umbrella's `covers`
+(verified against rewrite-spring 6.37.1). Because of this, a Boot project gets them from the umbrella and the
+finding records `recipe_source: plan`. For non-Boot plans (spring_legacy, MSA library roots), the planner
+**prepends** them to `spring.rewrite` (`recipe_source: advisory`), so they run before the Framework/Boot recipes in
+the same rewrite pass. Hystrix, Ribbon and Zuul have no OpenRewrite recipe anywhere, so they stay `guide`.
 
 ## How KB recipes are credited and promoted
 

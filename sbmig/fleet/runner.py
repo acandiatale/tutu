@@ -246,6 +246,8 @@ class FleetRunner:
         ]
         r.unresolved = len(report.unresolved)
         r.flags = list(report.flags)
+        r.advisories = [f"{f.advisory_id}:{f.outcome}" for f in report.advisories]
+        r.carried_over = len(report.handover.carried_over) if report.handover is not None else 0
         h = report.harvest
         r.kb_cases_created = list(h.cases_created) if h else []
         r.kb_candidates_created = list(h.candidates_created) if h else []

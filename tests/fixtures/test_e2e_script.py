@@ -261,3 +261,148 @@ def test_expect_only_lists_all_fixtures(e2e, capsys):
         assert out.count(f"{name} [") == 1
     assert "blocked=[external_javax_api com.company.legacy:legacy-web-lib]" in out
     assert "boot2-javax-lib-optional [X1] +sbmig.e2e.yml" in out
+    assert e2e.discover_fixtures().index("boot2-cloud-legacy") == e2e.discover_fixtures().index("msa-shared-lib") + 1
+    line = next(ln for ln in out.splitlines() if ln.startswith("boot2-cloud-legacy ["))
+    assert "advisories=[springfox:policy=recipe:outcome=replaced:recipe_source=plan" in line
+    assert "hystrix:policy=guide:outcome=still-present" in line
+    assert "handover(carried_over_min=1, spring_boot_after=4.1.0, from_here_contains=2" in line
+    assert "followups=[regex:(?i).*resilience4j.*]" in line and "post_checks=3" in line
+
+
+# ------------------------------------------------------------------------------------------- advisories / handover
+ADVISORY_REPORT = {
+    "run_id": "run-x", "project_name": "order-api", "case_type": "spring_boot", "success": True,
+    "llm_usage": {"calls": 0}, "blocked": [], "unresolved": [],
+    "advisories": [
+        {"advisory_id": "springfox", "library": "springfox", "status": "eol", "policy": "recipe",
+         "recipe_source": "advisory", "outcome": "replaced"},
+        {"advisory_id": "sleuth", "library": "sleuth", "status": "eol", "policy": "guide",
+         "recipe_source": "plan", "outcome": "replaced"},
+        {"advisory_id": "hystrix", "library": "hystrix", "status": "eol", "policy": "guide",
+         "recipe_source": "none", "outcome": "still-present"},
+    ],
+    "handover": {
+        "parent_before": "org.springframework.boot:spring-boot-starter-parent:2.7.18",
+        "parent_after": "org.springframework.boot:spring-boot-starter-parent:4.1.0",
+        "spring_boot_before": "2.7.18", "spring_boot_after": "4.1.0",
+        "changes": [{"key": "org.springframework.cloud:spring-cloud-dependencies", "before": "2021.0.9",
+                     "after": "2025.1.0"},
+                    {"key": "org.springframework.cloud:spring-cloud-starter-netflix-hystrix",
+                     "before": "2.2.10.RELEASE", "after": "2.2.10.RELEASE", "carried_over": True}],
+        "carried_over": [{"key": "org.springframework.cloud:spring-cloud-starter-netflix-hystrix",
+                          "carried_over": True}],
+        "added": ["org.springdoc:springdoc-openapi-starter-webmvc-ui:3.0.0"],
+        "removed": ["io.springfox:springfox-boot-starter:3.0.0",
+                    "org.springframework.cloud:spring-cloud-starter-sleuth"],
+        "from_here": ["hystrix (EOL): replace @HystrixCommand with Resilience4j @CircuitBreaker",
+                      "verify springdoc UI path"],
+    },
+    "manual_followups": ["Netflix Hystrix → Resilience4j (spring-cloud-starter-circuitbreaker-resilience4j)"],
+}
+
+ADVISORY_EXPECT = {
+    "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced", "recipe_source": "advisory"},
+                   {"id": "sleuth", "outcome": "replaced", "recipe_source": "plan"},
+                   {"id": "hystrix", "policy": "guide", "outcome": "still-present"}],
+    "advisories_absent": ["log4j1"],
+    "handover": {"changes_min": 2, "carried_over_min": 1, "carried_over_max": 1,
+                 "parent_after": "org.springframework.boot:spring-boot-starter-parent",
+                 "spring_boot_after": "4.1.0",
+                 "from_here_contains": ["regex:(?i).*hystrix.*resilience4j.*", "springdoc UI"],
+                 "removed_contains": ["io.springfox:springfox-boot-starter",
+                                      "org.springframework.cloud:spring-cloud-starter-sleuth"],
+                 "added_contains": ["org.springdoc:springdoc-openapi-starter-webmvc-ui:3"]},
+    "followups_contains": ["regex:(?i).*resilience4j.*"],
+}
+
+
+def _eval(e2e, expect, report):
+    return e2e.evaluate(e2e.FixtureResult(fixture="x", exit_code=0), expect, report, [], None)
+
+
+def test_advisory_and_handover_expectations_pass(e2e):
+    assert _eval(e2e, ADVISORY_EXPECT, ADVISORY_REPORT) == []
+
+
+def test_advisory_mismatches(e2e):
+    exp = {"advisories": [{"id": "springfox", "policy": "guide", "outcome": "replaced"},
+                          {"id": "zuul"}],
+           "advisories_absent": ["hystrix"]}
+    mm = _eval(e2e, exp, ADVISORY_REPORT)
+    assert "advisory springfox: policy='recipe' expected 'guide'" in mm
+    assert any(m.startswith("advisory zuul missing (got: springfox:replaced, sleuth:replaced") for m in mm)
+    assert "advisory hystrix present but expected absent" in mm
+    assert not any("unexpected advisory" in m for m in mm)
+    exact = {"advisories": [{"id": "springfox"}], "advisories_exact": True}
+    assert _eval(e2e, exact, ADVISORY_REPORT) == ["unexpected advisory sleuth", "unexpected advisory hystrix"]
+
+
+def test_handover_mismatches(e2e):
+    exp = {"handover": {"changes_min": 3, "carried_over_min": 2, "carried_over_max": 0,
+                        "parent_after": "com.company:company-parent", "spring_boot_after": "4.1",
+                        "from_here_contains": ["regex:.*zuul.*", "ribbon"],
+                        "removed_contains": ["com.netflix.hystrix:hystrix-core"],
+                        "added_contains": ["org.springdoc:springdoc-openapi-starter-webmvc-ui:2"]},
+           "followups_contains": ["regex:.*sleuth.*"]}
+    text = "\n".join(_eval(e2e, exp, ADVISORY_REPORT))
+    for part in ("handover changes=2 < min 3", "handover carried_over=1 < min 2", "handover carried_over=1 > max 0",
+                 "handover parent_after='org.springframework.boot:spring-boot-starter-parent:4.1.0' expected "
+                 "'com.company:company-parent'", "handover spring_boot_after='4.1.0' expected '4.1'",
+                 "handover from_here lacks 'regex:.*zuul.*'", "handover from_here lacks 'ribbon'",
+                 "handover removed lacks com.netflix.hystrix:hystrix-core",
+                 "handover added lacks org.springdoc:springdoc-openapi-starter-webmvc-ui:2",
+                 "manual_followups lack 'regex:.*sleuth.*'"):
+        assert part in text, part
+
+
+def test_missing_advisory_fields_never_crash(e2e):
+    """An engine without advisories/handover yet: readable mismatches, no exception."""
+    for report in ({"success": True}, {"advisories": "garbage", "handover": "garbage", "manual_followups": None},
+                   {"advisories": [None, 3, {}], "handover": {"changes": None, "from_here": [1, None]}}):
+        mm = _eval(e2e, ADVISORY_EXPECT, report)
+        assert any("advisory springfox missing" in m for m in mm)
+        assert any("carried_over=0 < min 1" in m for m in mm)
+        assert any("manual_followups lack" in m for m in mm)
+    assert "no handover in report.json" in _eval(e2e, {"handover": {}}, {"success": True})
+
+
+def test_carried_over_falls_back_to_flagged_changes(e2e):
+    ho = dict(ADVISORY_REPORT["handover"], carried_over=[])
+    assert len(e2e.carried_over_items(ho)) == 1
+    assert e2e.carried_over_items(None) == []
+
+
+def test_advisory_summary_columns(e2e, tmp_path, monkeypatch):
+    r = _run_spec(e2e, tmp_path, monkeypatch, "boot2-cloud-legacy", {"report": ADVISORY_REPORT})
+    assert r.advisories == ["springfox:replaced", "sleuth:replaced", "hystrix:still-present"]
+    assert r.carried_over == 1
+    table = e2e.format_table([r])
+    assert "advisories" in table.splitlines()[0] and "carried" in table.splitlines()[0]
+    assert "springfox:replaced,sleuth:replaced,hystrix:still-present" in table
+    md = e2e.format_markdown([r], _args(e2e, tmp_path))
+    assert "| springfox:replaced,sleuth:replaced,hystrix:still-present | 1 |" in md
+    many = [f"advisory-{i}:still-present" for i in range(10)]
+    short = e2e._fmt_advisories(many)
+    assert len(short) <= 60 and short.endswith(")") and "…(+" in short
+    assert e2e._fmt_advisories([]) == "-"
+    r2 = e2e.FixtureResult(fixture="y")
+    e2e.apply_report(r2, {"success": True})
+    assert r2.advisories == [] and r2.carried_over is None
+
+
+def test_boot2_cloud_legacy_expectations_against_synthetic_report(e2e):
+    """The fixture's own expect block (minus post_checks) passes against a report shaped like the target run."""
+    exp = dict(e2e.load_expected("boot2-cloud-legacy")["expect"])
+    exp.pop("post_checks")
+    # Boot projects: every advisory recipe is already inside the Boot 4 umbrella chain → recipe_source "plan";
+    # the un-catalogued net.sf.ehcache dependency shows up as a carried-over pin in from_here
+    advisories = [dict(a, recipe_source="plan") if a["advisory_id"] == "springfox" else a
+                  for a in ADVISORY_REPORT["advisories"]]
+    advisories.append({"advisory_id": "spring-cloud-bom", "policy": "recipe", "recipe_source": "plan",
+                       "outcome": "replaced"})
+    handover = dict(ADVISORY_REPORT["handover"],
+                    from_here=ADVISORY_REPORT["handover"]["from_here"]
+                    + ["net.sf.ehcache:ehcache pinned at 2.10.9.2 — the new parent/Boot BOM no longer manages it: "
+                       "confirm the version or replace"])
+    rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover)
+    assert _eval(e2e, exp, rep) == []

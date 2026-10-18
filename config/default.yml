@@ -135,3 +135,13 @@ report:
   formats: [md, json]
   zip_result: true
   include_diff: true
+
+advisories:                        # library advisories (docs/ADVISORIES.md): EOL / no-longer-managed libraries
+  enabled: true
+  file: knowledge/libraries/advisories.yml
+  extra_files: []                  # company additions / overrides, same schema, merged by id (later wins)
+  allow_recipes: true              # false → every advisory is "guide" only (no advisory recipes in spring.rewrite)
+  policy_overrides: {}             # e.g. {springfox: guide, hystrix: off}
+  report_carried_over: true        # handover lists dependencies pinned at as-is versions (unmanaged after the swap)
+  ledger: true                     # findings go to kb/ledger.jsonl (resolution=advisory) → fleet learning report
+  max_from_here: 40

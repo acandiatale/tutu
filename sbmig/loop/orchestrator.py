@@ -254,6 +254,7 @@ class Orchestrator:
         self.ws.journal({"event": "analyze", "case_type": profile.case_type.value, "poms": len(profile.poms),
                          "build_tool": profile.build_tool, "java": profile.java_version,
                          "spring_boot": profile.spring_boot_version})
+        report.advisories = self._evaluate_advisories(profile)
         self._timed("analyze", t)
         if profile.build_tool != "maven":
             self._abort(report, f"build tool '{profile.build_tool}' is not supported (Maven only)")
@@ -265,7 +266,7 @@ class Orchestrator:
             return
         # 3. plan --------------------------------------------------------------
         t = self.clock()
-        plan = self.planner(profile, self.cfg, self.kb)
+        plan = self._plan_with_advisories(profile, report.advisories)
         plan = self._advise_plan(plan)
         self.plan = plan
         report.plan = plan
@@ -337,6 +338,43 @@ class Orchestrator:
         if self._locator is not None:
             return self._locator or None
         return default_locator() if self._real_maven else None
+
+    # ------------------------------------------------------------------ library advisories (analyze / plan side)
+    def _evaluate_advisories(self, profile) -> list:
+        """knowledge/libraries/advisories.yml findings for this project (springfox, hystrix, sleuth …). Never
+        raises; an unavailable advisory package just means no findings. The finalize side (verify → outcome,
+        handover, follow-ups, ledger) lives in `_finalize`."""
+        adv_cfg = getattr(self.cfg, "advisories", None)
+        if adv_cfg is None or not adv_cfg.enabled:
+            return []
+        try:
+            from sbmig.advisory import evaluate_advisories
+            findings = list(evaluate_advisories(profile, self.cfg) or [])
+        except Exception as e:
+            log.warning("library advisories unavailable: %s", e)
+            self.ws.journal({"event": "advisories", "error": f"{type(e).__name__}: {e}"})
+            return []
+        self.ws.journal({"event": "advisories",
+                         "findings": [{"id": f.advisory_id, "library": f.library, "status": f.status,
+                                       "policy": f.policy, "version": f.detected_version} for f in findings]})
+        return findings
+
+    def _plan_with_advisories(self, profile, findings: list):
+        """Planner call; findings are passed as `advisories=` when the planner accepts them (fakes in tests and
+        older planners do not)."""
+        if findings:
+            try:
+                plan = self.planner(profile, self.cfg, self.kb, advisories=findings)
+            except TypeError as e:
+                if "advisories" not in str(e):
+                    raise
+                log.info("planner does not take advisories (%s); planning without them", e)
+                plan = self.planner(profile, self.cfg, self.kb)
+            self.ws.journal({"event": "advisories_planned",
+                             "findings": [{"id": f.advisory_id, "policy": f.policy, "recipes": f.recipes,
+                                           "recipe_source": f.recipe_source} for f in findings]})
+            return plan
+        return self.planner(profile, self.cfg, self.kb)
 
     def _capture_effective(self, report: RunReport) -> None:
         """Intake: capture the as-is effective dependencyManagement (before any change) for later version carry-over."""
@@ -811,6 +849,49 @@ class Orchestrator:
             items = kept
         report.blocked = items
 
+    def _finalize_advisories(self, report: RunReport) -> None:
+        """Library advisories, finalize side: re-detect on the final tree (outcome), add their follow-ups and build
+        the Handover (versions replaced + "from here on, your team"). Never raises, never changes the exit code."""
+        findings = list(report.advisories or [])
+        if findings and not self._dry_run:
+            try:
+                from sbmig.advisory import verify_advisories
+                verified = verify_advisories(findings, self.ws, self.cfg)
+                if verified is not None:
+                    findings = list(verified)
+                    report.advisories = findings
+            except Exception as e:
+                log.warning("advisory verification failed: %s", e)
+                self.ws.journal({"event": "advisories_verified", "error": f"{type(e).__name__}: {e}"})
+            self.ws.journal({"event": "advisories_verified",
+                             "findings": [{"id": f.advisory_id, "policy": f.policy, "outcome": f.outcome}
+                                          for f in findings]})
+        if findings:
+            try:
+                from sbmig.advisory import followups_for
+                fus = list(followups_for(findings) or [])
+            except Exception as e:
+                log.warning("advisory follow-ups unavailable: %s", e)
+                fus = []
+            report.manual_followups += [f for f in dict.fromkeys(fus) if f not in report.manual_followups]
+        if self.profile is None:
+            return
+        effective: dict = {}
+        try:
+            from sbmig.build.effective import load_effective
+            effective = load_effective(self.ws) or {}
+        except Exception as e:
+            log.debug("as-is effective pom unavailable for the handover: %s", e)
+        try:
+            from sbmig.report.handover import build_handover
+            report.handover = build_handover(self.profile, self.ws, report, effective=effective, cfg=self.cfg)
+        except Exception as e:  # pragma: no cover - build_handover never raises
+            log.warning("handover failed: %s", e)
+            return
+        h = report.handover
+        self.ws.journal({"event": "handover", "changes": len(h.changes), "carried_over": len(h.carried_over),
+                         "from_here": len(h.from_here)})
+
     def _finalize(self, report: RunReport) -> None:
         report.finished_at = utcnow()
         usage = LLMUsage()
@@ -869,6 +950,7 @@ class Orchestrator:
             out["report_md"] = str(self.ws.run_dir / "report.md")
         if "json" in self.cfg.report.formats:
             out["report_json"] = str(self.ws.run_dir / "report.json")
+        self._finalize_advisories(report)
         self._record_run_ledger(report)
         writer = self._report_writer
         if writer is None:

@@ -21,7 +21,20 @@ captures the exit code + output, finds the run directory the CLI created under -
                "journal_events": [{"event": "restructure", "ok": true}],                # subset match on journal.jsonl
                "phases": {"restructure": "ok"},                                        # ok | FAIL | skipped
                "post_checks": [{"file_decodes_as": {"path", "encoding", "contains", "not_contains"}},
-                               {"file_contains": {...}}, {"pom_parent": {...}}, {"pom_dependency_absent": {...}}]}
+                               {"file_contains": {...}}, {"pom_parent": {...}}, {"pom_dependency_absent": {...}}],
+               "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced",   # report.advisories:
+                               "recipe_source": "advisory"}],                  # entry by advisory_id, fields equal
+               "advisories_exact": true,                                       # no unlisted findings allowed
+               "advisories_absent": ["log4j1"],                                # these ids must not be reported
+               "handover": {"changes_min": 1, "carried_over_min": 1, "carried_over_max": 3,
+                            "parent_after": "org.springframework.boot:spring-boot-starter-parent",  # prefix
+                            "spring_boot_after": "4.1.0",                      # *_before/*_after: exact
+                            "from_here_contains": ["regex:(?i).*hystrix.*", "plain substring"],
+                            "removed_contains": ["g:a"], "added_contains": ["g:a[:v]"]},
+               "followups_contains": ["regex:(?i).*resilience4j.*"]}             # over manual_followups
+
+`*_contains` entries: `regex:<re>` = full match (re.DOTALL) of some entry, otherwise a substring of some entry;
+`removed_contains`/`added_contains` match by "g:a" (plus a version prefix when given).
 
 Missing report fields are treated as empty (the engine features are built in parallel) — a mismatch is reported,
 the script never crashes on report shape. A summary table (with an `expect` PASS/FAIL column and the first
@@ -53,7 +66,7 @@ DEFAULT_JAVA_HOME = "/Users/acandiatale/Library/Java/JavaVirtualMachines/corrett
 DEFAULT_LOCAL_REPO = Path.home() / ".m2" / "repository"
 DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-                 "missing-artifact", "msa-shared-lib"]
+                 "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -78,6 +91,8 @@ class FixtureResult:
     error: str | None = None
     command: list[str] = field(default_factory=list)
     log_path: str | None = None
+    advisories: list[str] = field(default_factory=list)     # "advisory_id:outcome" per AdvisoryFinding
+    carried_over: int | None = None                         # len(handover.carried_over); None = no handover
     expect_ok: bool | None = None                           # None = fixture has no expect block
     mismatches: list[str] = field(default_factory=list)
 
@@ -255,6 +270,27 @@ def apply_report(res: FixtureResult, report: dict, journal: list[dict] | None = 
     res.blocked = [f"{b.get('reason')} {_ga(b.get('artifact')) or b.get('owner_class') or '-'}"
                    for b in blocked_items(report)]
     res.optional_bumped = optional_bumps(report, journal or [])
+    res.advisories = [f"{_advisory_id(a)}:{a.get('outcome') or 'unknown'}" for a in advisory_findings(report)]
+    ho = report.get("handover")
+    res.carried_over = len(carried_over_items(ho)) if isinstance(ho, dict) else None
+
+
+def advisory_findings(report: dict) -> list[dict]:
+    return [a for a in _list(report.get("advisories")) if isinstance(a, dict)]
+
+
+def _advisory_id(a: dict) -> str:
+    return str(a.get("advisory_id") or a.get("id") or "?")
+
+
+def carried_over_items(handover: Any) -> list:
+    """handover.carried_over, or the changes flagged carried_over when the list itself is missing."""
+    if not isinstance(handover, dict):
+        return []
+    items = _list(handover.get("carried_over"))
+    if items:
+        return items
+    return [c for c in _list(handover.get("changes")) if isinstance(c, dict) and c.get("carried_over")]
 
 
 # ---------------------------------------------------------------------------------------------- expectations
@@ -263,6 +299,101 @@ def _pattern_match(pattern: str, values: list[str]) -> bool:
         rx = re.compile(pattern[len("regex:"):])
         return any(rx.fullmatch(v) for v in values)
     return pattern in values
+
+
+def _contains_match(pattern: str, values: list[str]) -> bool:
+    """`regex:<re>` = full match (DOTALL) of some value, otherwise a substring of some value."""
+    if pattern.startswith("regex:"):
+        rx = re.compile(pattern[len("regex:"):], re.DOTALL)
+        return any(rx.fullmatch(v) for v in values)
+    return any(pattern in v for v in values)
+
+
+def _gav_listed(want: str, values: list[str]) -> bool:
+    """'g:a[:v]' in a list of 'g:a[:v]' strings: same g:a, and the version starts with the wanted one if given."""
+    parts = want.split(":")
+    for v in values:
+        if _ga(v) != _ga(want):
+            continue
+        if len(parts) < 3 or ":".join(v.split(":")[2:]).startswith(":".join(parts[2:])):
+            return True
+    return False
+
+
+def _strings(v: Any) -> list[str]:
+    return [x for x in _list(v) if isinstance(x, str)]
+
+
+def _short(values: list[str], limit: int = 3) -> str:
+    if not values:
+        return "none"
+    more = f" (+{len(values) - limit})" if len(values) > limit else ""
+    return "; ".join(x[:80] for x in values[:limit]) + more
+
+
+HANDOVER_SCALARS = ("parent_before", "parent_after", "java_before", "java_after", "spring_boot_before",
+                    "spring_boot_after")
+
+
+def evaluate_advisories(expect: dict, report: dict) -> list[str]:
+    mm: list[str] = []
+    findings = advisory_findings(report)
+    by_id = {_advisory_id(a): a for a in findings}
+    got = ", ".join(f"{_advisory_id(a)}:{a.get('outcome') or 'unknown'}" for a in findings) or "none"
+    want = [w for w in _list(expect.get("advisories")) if isinstance(w, dict)]
+    for w in want:
+        aid = str(w.get("id") or w.get("advisory_id") or "")
+        a = by_id.get(aid)
+        if a is None:
+            mm.append(f"advisory {aid} missing (got: {got})")
+            continue
+        for k, v in w.items():
+            if k in ("id", "advisory_id"):
+                continue
+            if a.get(k) != v:
+                mm.append(f"advisory {aid}: {k}={a.get(k)!r} expected {v!r}")
+    if expect.get("advisories_exact"):
+        listed = {str(w.get("id") or w.get("advisory_id") or "") for w in want}
+        for aid in by_id:
+            if aid not in listed:
+                mm.append(f"unexpected advisory {aid}")
+    for aid in _list(expect.get("advisories_absent")):
+        if aid in by_id:
+            mm.append(f"advisory {aid} present but expected absent")
+    return mm
+
+
+def evaluate_handover(want: dict, report: dict) -> list[str]:
+    mm: list[str] = []
+    ho = report.get("handover")
+    ho = ho if isinstance(ho, dict) else {}
+    if not ho:
+        mm.append("no handover in report.json")
+    changes = [c for c in _list(ho.get("changes")) if isinstance(c, dict)]
+    carried = carried_over_items(ho)
+    if want.get("changes_min") is not None and len(changes) < want["changes_min"]:
+        mm.append(f"handover changes={len(changes)} < min {want['changes_min']}")
+    if want.get("carried_over_min") is not None and len(carried) < want["carried_over_min"]:
+        mm.append(f"handover carried_over={len(carried)} < min {want['carried_over_min']}")
+    if want.get("carried_over_max") is not None and len(carried) > want["carried_over_max"]:
+        mm.append(f"handover carried_over={len(carried)} > max {want['carried_over_max']}")
+    for key in HANDOVER_SCALARS:
+        if want.get(key) is None:
+            continue
+        got = ho.get(key)
+        ok = isinstance(got, str) and (got.startswith(want[key]) if key.startswith("parent_") else got == want[key])
+        if not ok:
+            mm.append(f"handover {key}={got!r} expected {want[key]!r}")
+    from_here = _strings(ho.get("from_here"))
+    for pat in _list(want.get("from_here_contains")):
+        if not _contains_match(pat, from_here):
+            mm.append(f"handover from_here lacks {pat!r} (got: {_short(from_here)})")
+    for key in ("removed", "added"):
+        values = _strings(ho.get(key))
+        for ga in _list(want.get(f"{key}_contains")):
+            if not _gav_listed(ga, values):
+                mm.append(f"handover {key} lacks {ga} (got: {_short(values, 5)})")
+    return mm
 
 
 def _blocked_matches(exp: dict, item: dict) -> bool:
@@ -408,6 +539,14 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
         got = [s.split(":", 1)[1] for s in res.phases if s.split(":", 1)[0] == phase]
         if not got or got[-1] != status:
             mm.append(f"phase {phase}={got[-1] if got else 'absent'} expected {status}")
+    if any(k in expect for k in ("advisories", "advisories_exact", "advisories_absent")):
+        mm += evaluate_advisories(expect, report)
+    if isinstance(expect.get("handover"), dict):
+        mm += evaluate_handover(expect["handover"], report)
+    followups = _strings(report.get("manual_followups"))
+    for pat in _list(expect.get("followups_contains")):
+        if not _contains_match(pat, followups):
+            mm.append(f"manual_followups lack {pat!r} (got: {_short(followups)})")
     for check in _list(expect.get("post_checks")):
         problem = run_post_check(check, project)
         if problem:
@@ -434,6 +573,21 @@ def describe_expect(fixture: str, expected: dict) -> str:
         parts.append(f"unresolved<={exp['unresolved_max']}")
     if exp.get("journal_events"):
         parts.append(f"journal={json.dumps(exp['journal_events'], ensure_ascii=False)}")
+    if exp.get("advisories"):
+        parts.append("advisories" + ("(exact)" if exp.get("advisories_exact") else "") + "=[" + ", ".join(
+            ":".join([str(a.get("id") or a.get("advisory_id"))] + [f"{k}={v}" for k, v in a.items()
+                                                                     if k not in ("id", "advisory_id")])
+            for a in exp["advisories"] if isinstance(a, dict)) + "]")
+    if exp.get("advisories_absent"):
+        parts.append(f"advisories_absent=[{', '.join(exp['advisories_absent'])}]")
+    if isinstance(exp.get("handover"), dict):
+        ho = exp["handover"]
+        hp = [f"{k}={ho[k]}" for k in ("changes_min", "carried_over_min", "carried_over_max", *HANDOVER_SCALARS)
+              if ho.get(k) is not None]
+        hp += [f"{k}={len(ho[k])}" for k in ("from_here_contains", "removed_contains", "added_contains") if ho.get(k)]
+        parts.append(f"handover({', '.join(hp)})")
+    if exp.get("followups_contains"):
+        parts.append(f"followups=[{', '.join(exp['followups_contains'])}]")
     if exp.get("post_checks"):
         parts.append(f"post_checks={len(exp['post_checks'])}")
     cfg = fixture_config(fixture)
@@ -555,7 +709,21 @@ def _fmt(v: Any) -> str:
 
 
 HEADERS = ["fixture", "case", "exit", "phases ok", "final build ok", "llm calls", "unresolved", "blocked",
-           "duration s", "expect", "note"]
+           "advisories", "carried", "duration s", "expect", "note"]
+
+
+def _fmt_advisories(values: list[str], width: int = 60) -> str:
+    """'springfox:replaced,hystrix:still-present' truncated to `width` with a '…(+n)' tail."""
+    if not values:
+        return "-"
+    out = ""
+    for i, v in enumerate(values):
+        cand = (out + "," if out else "") + v
+        rest = len(values) - i - 1
+        if len(cand) + (len(f"…(+{rest})") if rest else 0) > width and out:
+            return out + f"…(+{len(values) - i})"
+        out = cand
+    return out
 
 
 def _note(r: FixtureResult) -> str:
@@ -567,7 +735,8 @@ def _note(r: FixtureResult) -> str:
 
 def summary_rows(results: list[FixtureResult]) -> list[list[str]]:
     return [[r.fixture, r.case_type, _fmt(r.exit_code), r.phases_ok, _fmt_bool(r.final_build_ok),
-             _fmt(r.llm_calls), _fmt(r.unresolved), str(len(r.blocked)), f"{r.duration_s:.1f}",
+             _fmt(r.llm_calls), _fmt(r.unresolved), str(len(r.blocked)), _fmt_advisories(r.advisories),
+             _fmt(r.carried_over), f"{r.duration_s:.1f}",
              "-" if r.expect_ok is None else ("PASS" if r.expect_ok else "FAIL"), _note(r)[:110]]
             for r in results]
 
@@ -600,6 +769,8 @@ def format_markdown(results: list[FixtureResult], args: argparse.Namespace) -> s
             md.append(f"  * optional bumped: {', '.join(r.optional_bumped)}")
         if r.flags:
             md.append(f"  * flags: {', '.join(r.flags)}")
+        if r.advisories:
+            md.append(f"  * advisories: {', '.join(r.advisories)}")
         for m in r.mismatches:
             md.append(f"  * MISMATCH: {m}")
     ok = sum(1 for r in results if r.final_build_ok)

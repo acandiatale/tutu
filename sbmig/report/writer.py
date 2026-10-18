@@ -28,6 +28,19 @@ def write_report(report: RunReport, ws: Any) -> dict[str, str]:
     return out
 
 
+def advisory_lines(report: RunReport) -> list[str]:
+    """One line per advisory finding + the handover counts (console / CLI)."""
+    out: list[str] = []
+    for f in report.advisories:
+        via = "recipe" if f.recipes else f.policy
+        out.append(f"advisory {f.advisory_id} [{via}] → {f.outcome}")
+    h = report.handover
+    if h is not None:
+        out.append(f"handover: {len(h.changes)} versions replaced, {len(h.carried_over)} carried over, "
+                   f"{len(h.from_here)} items for the owners")
+    return out
+
+
 def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     from rich.console import Console
     from rich.table import Table
@@ -37,6 +50,8 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     console.print(f"\n[bold]{report.project_name}[/] ({report.case_type.value}) — {ok}   run {report.run_id}")
     if report.blocked:
         console.print(f"[bold yellow]blocked:[/] {blocked_count_line(report.blocked)}")
+    for line in advisory_lines(report):
+        console.print(line, markup=False, highlight=False)
     t = Table(title="phases", show_lines=False)
     for col in ("phase", "builds", "build ok", "attempts", "outcomes", "left"):
         t.add_column(col)
