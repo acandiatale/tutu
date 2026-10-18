@@ -9,6 +9,8 @@ Layout under ``cfg.kb_dir`` (created on first use)::
     recipes/candidates/<name>.yml + <name>.meta.json
     recipes/rejected/<name>.yml + <name>.meta.json
     patterns/*.yml                      {id, match: {signature_regex}, recipes: [...], hints: [...], handler_ids: [...]}
+    ledger.jsonl                        append-only ResolutionRecords (resolved / blocked / unresolved)
+    symbols.json                        error-case symbol → fix labels / replacement / projects / cases
 
 All writes are atomic (temp file + ``os.replace``). Thread/process safety is not provided.
 """
@@ -37,10 +39,13 @@ from sbmig.core.models import (
     KBRecipe,
     PhaseResult,
     ProjectProfile,
+    RunReport,
     utcnow,
 )
 from sbmig.core.workspace import Workspace
 
+from .labels import symbol_for_errors
+from .ledger import Ledger, SymbolIndex, blocked_record, unresolved_records
 from .recipes import recipe_names_in_yaml
 
 log = logging.getLogger("sbmig.kb")
@@ -87,6 +92,8 @@ class FileKnowledgeBase:
         self.cfg = cfg
         self.root = Path(kb_dir) if kb_dir else cfg.kb_dir
         self._index: Optional[dict] = None
+        self._promoted: list[str] = []                  # auto-promotions not yet reported (drain_promoted)
+        self._ledger_blocked: set[tuple[str, str]] = set()   # (run_id, blocked id) already in the ledger
 
     # ------------------------------------------------------------------ layout
     @property
@@ -104,6 +111,20 @@ class FileKnowledgeBase:
     @property
     def index_path(self) -> Path:
         return self.root / "index.json"
+
+    @property
+    def ledger_path(self) -> Path:
+        return self.root / "ledger.jsonl"
+
+    @property
+    def symbols_path(self) -> Path:
+        return self.root / "symbols.json"
+
+    def ledger(self) -> Ledger:
+        return Ledger(self.ledger_path)
+
+    def symbol_index(self) -> SymbolIndex:
+        return SymbolIndex(self.symbols_path)
 
     def status_dir(self, status: str) -> Path:
         return self.recipes_dir / _STATUS_DIR[status]
@@ -178,17 +199,18 @@ class FileKnowledgeBase:
             self._idx_add(idx["recipes"], s, recipe.id)
 
     def reindex(self) -> int:
-        """Rebuild index.json from the case and recipe files. Returns the number of cases indexed."""
+        """Rebuild index.json (and symbols.json) from the case and recipe files. Returns the case count."""
         self._index = self._empty_index()
-        n = 0
-        for case in self.iter_cases():
+        cases = list(self.iter_cases())
+        for case in cases:
             self._index_case(case)
-            n += 1
         for r in self.list_recipes():
             self._index_recipe(r)
         self.root.mkdir(parents=True, exist_ok=True)
         self._save_index()
-        return n
+        if self.cfg.kb.symbol_index:
+            self.symbol_index().rebuild(cases)
+        return len(cases)
 
     # ------------------------------------------------------------------ cases
     def case_path(self, case_id: str) -> Path:
@@ -419,11 +441,14 @@ class FileKnowledgeBase:
         log.info("kb recipe %s rejected: %s", new.id, reason)
         return new
 
-    def credit_recipe(self, recipe_id: str, success: bool, project_fingerprint: str) -> None:
+    def credit_recipe(self, recipe_id: str, success: bool, project_fingerprint: str) -> Optional[KBRecipe]:
+        """Count a success/failure of a KB recipe; auto-promotes a candidate after success in
+        ``kb.auto_promote_after_projects`` distinct projects without failure. Returns the (possibly promoted)
+        recipe, None for unknown ids. Promotions are also queued for :meth:`drain_promoted`."""
         r = self.get_recipe(recipe_id)
         if r is None:
             log.debug("credit for unknown kb recipe %s ignored", recipe_id)
-            return
+            return None
         if success:
             r.success_count += 1
             if project_fingerprint and project_fingerprint not in r.projects:
@@ -433,7 +458,15 @@ class FileKnowledgeBase:
         self._write_recipe_meta(r, self._recipe_meta_extra(r))
         n = self.cfg.kb.auto_promote_after_projects
         if r.status == "candidate" and n > 0 and r.fail_count == 0 and r.success_count > 0 and len(r.projects) >= n:
-            self.promote(r.id)
+            r = self.promote(r.id)
+            if r.id not in self._promoted:
+                self._promoted.append(r.id)
+        return r
+
+    def drain_promoted(self) -> list[str]:
+        """Recipe ids auto-promoted since the last call (by the loop, the plan credit or the harvest)."""
+        out, self._promoted = self._promoted, []
+        return out
 
     def recipe_meta_extra(self, recipe_id: str) -> dict:
         r = self.get_recipe(recipe_id)
@@ -601,9 +634,16 @@ class FileKnowledgeBase:
                 if isinstance(h, str):
                     pattern_hints.append(f"[pattern {pat['id']}] {h}")
 
-        # ---- hints
+        # ---- hints (symbol hints first: "error-case symbol S was fixed like this in N projects")
         if kbc.use_hints and kbc.max_hints > 0:
-            hints = pattern_hints + [self.case_hint(c) for c in out.cases]
+            symbol_hints: list[str] = []
+            if kbc.symbol_index and self.symbols_path.exists():
+                try:
+                    sym = symbol_for_errors(cluster.errors)
+                    symbol_hints = self.symbol_index().hints(sym) if sym else []
+                except Exception as e:  # pragma: no cover - hints are best effort
+                    log.debug("symbol hints failed: %s", e)
+            hints = symbol_hints + pattern_hints + [self.case_hint(c) for c in out.cases]
             out.hints = hints[: kbc.max_hints]
         return out
 
@@ -612,6 +652,32 @@ class FileKnowledgeBase:
                 llm: Optional[LLMClientLike] = None) -> HarvestResult:
         from .harvest import harvest_phase
         return harvest_phase(self, phase_result, profile, ws, llm)
+
+    def record_run(self, report: RunReport, profile: Optional[ProjectProfile],
+                   ws: Workspace) -> HarvestResult:
+        """Run-level ledger lines (called once from Orchestrator._finalize): unresolved errors of the final
+        state, blocked items not already written by a phase harvest, and auto-promotions of the verify
+        phase. Never raises."""
+        res = HarvestResult()
+        try:
+            res.recipes_promoted = self.drain_promoted()
+            if not (self.cfg.kb.harvest and self.cfg.kb.ledger) or "dry-run" in report.flags:
+                return res
+            recs = []
+            run_id = ws.run_id
+            for b in report.blocked:
+                if (run_id, b.id) not in self._ledger_blocked:
+                    self._ledger_blocked.add((run_id, b.id))
+                    recs.append(blocked_record(b, profile, ws))
+            recs += unresolved_records(report.unresolved, profile, ws)
+            res.ledger_entries = self.ledger().append(recs)
+        except Exception as e:
+            log.warning("kb.record_run failed: %s", e)
+            res.notes.append(f"ledger (run) failed: {e}")
+        return res
+
+    def mark_blocked_recorded(self, run_id: str, blocked_id: str) -> None:
+        self._ledger_blocked.add((run_id, blocked_id))
 
     # ------------------------------------------------------------------ stats / transfer
     def stats(self) -> dict[str, Any]:
@@ -628,6 +694,8 @@ class FileKnowledgeBase:
             "patterns": len(self.load_patterns()),
             "signatures_l1": len(idx["l1"]),
             "signatures_l2": len(idx["l2"]),
+            "symbols": len(self.symbol_index()) if self.symbols_path.exists() else 0,
+            "ledger_entries": self.ledger().count(),
         }
 
     def export_zip(self, path: str | Path) -> Path:
@@ -643,7 +711,8 @@ class FileKnowledgeBase:
                     if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
                         continue
                     rel = p.relative_to(self.root)
-                    if rel.parts[0] not in ("cases", "recipes", "patterns") and rel.as_posix() != "index.json":
+                    if rel.parts[0] not in ("cases", "recipes", "patterns") and rel.as_posix() not in (
+                            "index.json", "ledger.jsonl", "symbols.json"):
                         continue
                     zf.write(p, rel.as_posix())
         os.replace(tmp, path)
@@ -653,7 +722,7 @@ class FileKnowledgeBase:
         """Import a kb zip. merge=True merges cases/recipes into the local KB (local status wins);
         merge=False replaces the local KB contents. Returns counters."""
         counters = {"cases_added": 0, "cases_merged": 0, "recipes_added": 0, "recipes_merged": 0,
-                    "patterns_added": 0}
+                    "patterns_added": 0, "ledger_added": 0}
         with tempfile.TemporaryDirectory(prefix="sbmig-kb-import-") as tmpd:
             tmp = Path(tmpd).resolve()
             with zipfile.ZipFile(path) as zf:
@@ -666,8 +735,9 @@ class FileKnowledgeBase:
             if not merge and self.root.exists():
                 for sub in ("cases", "recipes", "patterns"):
                     shutil.rmtree(self.root / sub, ignore_errors=True)
-                if self.index_path.exists():
-                    self.index_path.unlink()
+                for f in (self.index_path, self.ledger_path, self.symbols_path):
+                    if f.exists():
+                        f.unlink()
             self._index = None
             self.ensure_layout()
 
@@ -715,5 +785,9 @@ class FileKnowledgeBase:
                     if p.is_file() and not (self.patterns_dir / p.name).exists():
                         shutil.copy2(p, self.patterns_dir / p.name)
                         counters["patterns_added"] += 1
+            if other.ledger_path.exists():
+                known = self.ledger().ids()
+                counters["ledger_added"] = self.ledger().append(
+                    r for r in other.ledger().iter() if r.id not in known)
         self.reindex()
         return counters

@@ -80,7 +80,12 @@ def run(
                                              help="intake|analyze|plan|jdk21|spring|restructure"),
     dry_run: bool = typer.Option(False, "--dry-run", help="compute and journal decisions, apply nothing"),
     no_kb: bool = typer.Option(False, "--no-kb", help="do not use or feed the knowledge base"),
-    llm_provider: Optional[str] = typer.Option(None, "--llm-provider", help="openai_compatible|anthropic|fake"),
+    llm_provider: Optional[str] = typer.Option(None, "--llm-provider",
+                                               help="openai_compatible|anthropic|fake|plugin|<entry-point name>"),
+    llm_plugin: Optional[str] = typer.Option(None, "--llm-plugin",
+                                             help="in-house LLM adapter 'pkg.module:attr' (implies --llm-provider plugin)"),
+    fix_plugin: Optional[str] = typer.Option(None, "--fix-plugin",
+                                             help="in-house fixer/agent adapter 'pkg.module:attr' (replaces the LLM fixer)"),
     java_home: Optional[str] = typer.Option(None, "--java-home", help="JDK 21 home for Maven"),
     settings: Optional[str] = typer.Option(None, "--settings", help="Maven settings.xml"),
     repo_root: Optional[Path] = typer.Option(None, "--repo-root", help="sbmig repo root (kb/, knowledge/)"),
@@ -98,6 +103,10 @@ def run(
     overrides: dict = {}
     if llm_provider:
         overrides.setdefault("llm", {})["provider"] = llm_provider
+    if llm_plugin:
+        overrides.setdefault("llm", {}).update({"provider": "plugin", "plugin": llm_plugin})
+    if fix_plugin:
+        overrides.setdefault("fix", {})["plugin"] = fix_plugin
     if java_home:
         overrides.setdefault("build", {})["java_home"] = java_home
     if settings:
@@ -263,21 +272,29 @@ def version() -> None:
     typer.echo(f"sbmig {__version__}")
 
 
-# --------------------------------------------------------------------------- kb sub-app
-def _mount_kb() -> None:
+# --------------------------------------------------------------------------- sub-apps (kb, recipes, fleet)
+def _mount(module: str, attr: str, name: str, help_text: str) -> None:
+    """Mount a typer sub-app; if its package fails to import, keep `sbmig --help` working and explain on use."""
     try:
-        from sbmig.kb import kb_cli  # type: ignore[attr-defined]
-        app.add_typer(kb_cli, name="kb", help="knowledge base: list | promote | reject | reindex …")
-    except Exception as e:  # pragma: no cover - depends on workstream F
+        import importlib
+        sub = getattr(importlib.import_module(module), attr)
+        app.add_typer(sub, name=name, help=help_text)
+    except Exception as e:  # pragma: no cover - depends on the other workstreams
         err = f"{type(e).__name__}: {e}"
 
-        @app.command("kb", context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
-        def kb_unavailable() -> None:
-            """Knowledge base commands (unavailable: sbmig.kb failed to import)."""
-            _fail(f"sbmig.kb.kb_cli (workstream F) is not available: {err}")
+        @app.command(name, context_settings={"allow_extra_args": True, "ignore_unknown_options": True})
+        def _unavailable() -> None:
+            _fail(f"{module}.{attr} is not available: {err}")
+
+        _unavailable.__doc__ = f"{help_text} (unavailable: {module} failed to import)"
 
 
-_mount_kb()
+_mount("sbmig.kb", "kb_cli", "kb",
+       "knowledge base: list | show | promote | reject | reindex | ledger | symbols | learning | export | import")
+_mount("sbmig.plan.catalog_cli", "recipes_cli", "recipes",
+       "recipe catalog (knowledge/recipes/catalog.yml): list | show | check | sets")
+_mount("sbmig.fleet.cli", "fleet_cli", "fleet",
+       "one agent, many projects, sequential with KB learning: run | status")
 
 
 def main() -> None:  # pragma: no cover

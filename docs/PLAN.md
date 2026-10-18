@@ -78,3 +78,27 @@ Known limits to validate in the company environment (see RUNBOOK §0 and ARCHITE
 | Haiku plan advisor | additive-only, catalog + composite-coverage + profile gates; its concerns land in `plan.notes`/report. Observed: useful concerns, occasional unwarranted suggestions (now filtered deterministically) |
 
 Known follow-ups: `ADVISOR_CATALOG` is intentionally small (verified ids only); extend it per company recipe inventory.
+
+## Status — 2026-10-18, round 3 (adapter seams, recipe catalog, sequential fleet learning)
+
+User asks: (1) an **adapter pattern** at the LLM call site so the in-house API gateway / agent framework can be plugged
+in directly; (2) how the recipe lists are managed; (3) one agent migrating ~500 projects **sequentially**, recording
+"problem → fix → success" per project (labeled by error-case symbol) so the next project benefits and new recipes appear.
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Tier-1 LLM adapter (`complete(LLMRequest) -> LLMResponse`, role/metadata, entry points, recording kept) | `sbmig/llm/`, `llm.provider: plugin` + `llm.plugin`, `--llm-plugin`, `docs/ADAPTERS.md`, `examples/adapters/company_gateway_adapter.py` | done; CLI smoke: scratch adapter received `role=plan_advisor` + metadata + env key, answer landed in the plan |
+| Tier-2 fixer adapter (in-house coding agent replaces `LLMFixer`; `apply` optional) | `fix.plugin`, `--fix-plugin`, `examples/adapters/agent_fixer.py`, `sbmig.api.migrate(..., llm=, fixer=)` | done (unit + API tests) |
+| Recipe catalog = single managed list | `knowledge/recipes/catalog.yml`, `sbmig/plan/catalog.py`, `sbmig recipes list|show|check|sets` (check wired into `scripts/e2e.sh`), `docs/RECIPES.md` | done; `ADVISOR_*` derived from the catalog, snapshot test guards drift |
+| Fix labels + deterministic recipe compilation (no LLM for 1:1 renames / dependency / property changes) | `sbmig/kb/labels.py` | done |
+| Cross-project ledger + symbol index + hints | `kb/ledger.jsonl`, `kb/symbols.json`, `sbmig kb ledger|symbols|learning` | done |
+| Fleet mode (sequential, resumable, shared KB, fleet-wide LLM budget, summaries + learning report) | `sbmig/fleet/`, `sbmig fleet run|status|resume`, `scripts/fleet-demo.sh`, `docs/FLEET.md` | done |
+| Offline tests | 733 passed (21 integration deselected) | green |
+| Asserted fixture e2e on the merged tree (`scripts/e2e.sh`, now preceded by `sbmig recipes check`) | 12/12 expectations met; local e2e KB moved to `out/e2e/kb` so test runs never write into the repo's `kb/` | green |
+| CLI smoke of both adapter tiers | tier 1: scratch adapter received `role=plan_advisor`, metadata and the env key; tier 2: scratch agent fixer (no `apply`) fixed boot3's `@JsonComponent` → BUILD SUCCESS, KB compiled the `ChangeType` candidate from the labels | verified |
+| Fleet demo (pure-java, boot2, boot3, spring5-xml, boot3-again; replayed LLM) | 5/5 success, **1 LLM call total**: boot3's LLM fix labeled `annotation-replace, type-rename` → `ChangeType` candidate compiled from labels → boot3-again fixed by the plan recipe, 0 LLM calls, auto-promoted | verified |
+
+Notes: a subagent deleted `out/llm-records` (gitignored recordings of the round-2 real-LLM runs); run journals and
+reports under `out/llm*/` are intact. Known limits: label heuristics are deliberately simple (whitespace-only edits →
+`generic-rewrite`), `method-rename` is not compiled to `ChangeMethodName` yet, the catalog's `rewrite-java-dependencies`
+`provided_by` link is an assumption backed by the e2e runs (the base recipes using it resolve fine), not by a jar check.

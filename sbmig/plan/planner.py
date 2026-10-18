@@ -27,6 +27,7 @@ from sbmig.core.config import Config
 from sbmig.core.models import (CaseType, MigrationPlan, Phase, PlanStep, ProjectProfile, RecipeRef, ServiceInfo,
                                StepKind)
 
+from .catalog import GATES, default_catalog, prefix_artifact
 from .pre_handlers import pre_handler_reasons
 
 log = logging.getLogger("sbmig.plan")
@@ -47,16 +48,9 @@ EE_JAVAX = ("javax.servlet", "javax.persistence", "javax.xml.bind", "javax.valid
 # only when the analyzer confirmed EE usage (library "javax-annotation").
 
 
-def artifact_for(recipe_id: str) -> Optional[str]:
-    if recipe_id.startswith("org.openrewrite.java.spring"):
-        return ART_SPRING
-    if recipe_id.startswith("org.openrewrite.java.migrate"):
-        return ART_MIGRATE
-    if recipe_id.startswith("org.openrewrite.java.testing"):
-        return ART_TESTING
-    if recipe_id.startswith("org.openrewrite.staticanalysis"):
-        return ART_STATIC
-    return None
+def artifact_for(recipe_id: str, cfg: Optional[Config] = None) -> Optional[str]:
+    """Recipe jar for a builtin id: the recipe catalog first, then the id-prefix fallback."""
+    return default_catalog(cfg).artifact_for(recipe_id)
 
 
 def _project_recipe_file(recipe_id: str, cfg: Config) -> Optional[str]:
@@ -73,7 +67,7 @@ def _project_recipe_file(recipe_id: str, cfg: Config) -> Optional[str]:
 def recipe_ref(recipe_id: str, cfg: Config) -> RecipeRef:
     if recipe_id.startswith("com.company."):
         return RecipeRef(id=recipe_id, source="project", file=_project_recipe_file(recipe_id, cfg))
-    return RecipeRef(id=recipe_id, source="builtin", artifact=artifact_for(recipe_id))
+    return RecipeRef(id=recipe_id, source="builtin", artifact=artifact_for(recipe_id, cfg))
 
 
 def _refs(ids: list[str], cfg: Config, into: list[RecipeRef]) -> None:
@@ -465,91 +459,48 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None) -> Migratio
     return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=steps, notes=notes)
 
 
-# Recipes the advisor may ADD (ids verified against docs.openrewrite.org / our recipe sets; never removes anything).
-ADVISOR_CATALOG: dict[str, str] = {
-    "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta": "javax.* EE packages → jakarta.* (servlet, persistence, validation, annotation, inject …)",
-    "org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime": "add JAXB API + runtime when javax.xml.bind is used (removed from the JDK)",
-    "org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind": "javax.xml.bind → jakarta.xml.bind",
-    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": "Spring Boot 2.x/3.x → 4.0 umbrella (Boot projects only)",
-    "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1": "Spring Boot 4.1 property renames",
-    "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean": "@MockBean/@SpyBean → @MockitoBean/@MockitoSpyBean",
-    "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0": "Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)",
-    "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0": "Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)",
-    "org.openrewrite.java.testing.junit5.JUnit4to5Migration": "JUnit 4 → JUnit 5",
-}
+# The advisor whitelist / coverage / gates are derived from the recipe catalog (knowledge/recipes/catalog.yml,
+# see sbmig/plan/catalog.py and docs/RECIPES.md). Module-level snapshots of the repo catalog, taken at import time;
+# `advise_plan(cfg=...)` re-reads `cfg.recipe_catalog_file`.
+_DEFAULT_CATALOG = default_catalog()
 
+# Recipes the advisor may ADD (ids verified against docs.openrewrite.org / our recipe sets; never removes anything).
+ADVISOR_CATALOG: dict[str, str] = _DEFAULT_CATALOG.advisor_catalog()
 
 # What the planned composites already include (so the advisor is told, and duplicates are filtered deterministically).
-ADVISOR_COVERAGE: dict[str, list[str]] = {
-    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": [
-        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",          # via UpgradeSpringBoot_3_0 chain
-        "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
-        "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
-        "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean",
-        "org.openrewrite.java.spring.boot4.SpringBootProperties_4_0",
-    ],
-    "com.company.migrate.ServletToJakartaAndBoot": [
-        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
-    ],
-    "org.openrewrite.java.migrate.UpgradeToJava21": [
-        "org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime",      # JAXB handling is part of the JDK 11+ chain
-    ],
-}
-
-
-def _has_javax_ee(profile: ProjectProfile) -> bool:
-    ee = ("javax.servlet", "javax.persistence", "javax.validation", "javax.annotation", "javax.inject",
-          "javax.transaction", "javax.ws", "javax.jms", "javax.mail", "javax.websocket", "javax.el", "javax.xml.bind")
-    return any(k.startswith(ee) for k in profile.source.javax_imports)
-
+ADVISOR_COVERAGE: dict[str, list[str]] = _DEFAULT_CATALOG.coverage()
 
 # Profile facts a suggestion must be backed by — a small model sometimes suggests recipes "just in case".
-ADVISOR_GATES: dict[str, Any] = {
-    "org.openrewrite.java.testing.junit5.JUnit4to5Migration": lambda p: p.has_library("junit4"),
-    "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta": _has_javax_ee,
-    "org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind":
-        lambda p: any(k.startswith("javax.xml.bind") for k in p.source.javax_imports),
-    "org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime":
-        lambda p: any(k.startswith(("javax.xml.bind", "jakarta.xml.bind")) for k in
-                      {**p.source.javax_imports, **p.source.jakarta_imports}),
-    "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0": lambda p: p.has_library("spring-security"),
-    "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0":
-        lambda p: p.case_type in (CaseType.SPRING_LEGACY, CaseType.SPRING_BOOT) or p.spring_version is not None,
-    "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": lambda p: p.spring_boot_version is not None,
-    "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1": lambda p: p.spring_boot_version is not None,
-    "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean": lambda p: p.source.test_files > 0,
-}
+ADVISOR_GATES: dict[str, Any] = _DEFAULT_CATALOG.gates()
+
+_has_javax_ee = GATES["has_javax_ee"]          # backwards-compatible alias
 
 
-def _covered_by(planned: set[str]) -> dict[str, str]:
+def _covered_by(planned: set[str], coverage: Optional[dict[str, list[str]]] = None) -> dict[str, str]:
     """recipe id → the planned composite that already includes it."""
     out: dict[str, str] = {}
-    for comp, inner in ADVISOR_COVERAGE.items():
+    for comp, inner in (ADVISOR_COVERAGE if coverage is None else coverage).items():
         if comp in planned:
             for rid in inner:
                 out.setdefault(rid, comp)
     return out
 
 
-def _artifact_for(recipe_id: str) -> Optional[str]:
-    if recipe_id.startswith("org.openrewrite.java.migrate."):
-        return "org.openrewrite.recipe:rewrite-migrate-java"
-    if recipe_id.startswith("org.openrewrite.java.spring."):
-        return "org.openrewrite.recipe:rewrite-spring"
-    if recipe_id.startswith("org.openrewrite.java.testing."):
-        return "org.openrewrite.recipe:rewrite-testing-frameworks"
-    return None
+def _artifact_for(recipe_id: str, catalog_obj: Any = None) -> Optional[str]:
+    cat = catalog_obj if catalog_obj is not None else _DEFAULT_CATALOG
+    return cat.artifact_for(recipe_id) if recipe_id in cat else prefix_artifact(recipe_id)
 
 
-def _advisor_prompt(plan: MigrationPlan, profile: ProjectProfile, catalog: dict[str, str]) -> str:
+def _advisor_prompt(plan: MigrationPlan, profile: ProjectProfile, catalog: dict[str, str],
+                    coverage: Optional[dict[str, list[str]]] = None) -> str:
     libs = ", ".join(f"{l.name}{'@' + l.version if l.version else ''}" for l in profile.libraries) or "-"
     javax = ", ".join(f"{k}:{v}" for k, v in sorted(profile.source.javax_imports.items())) or "-"
     steps = "\n".join(f"- {st.id} [{st.phase.value}]: " + (", ".join(r.id for r in st.recipes) or "(no recipes)")
                       for st in plan.steps if st.recipes or st.kind.value == "openrewrite")
     cat = "\n".join(f"- {rid}: {desc}" for rid, desc in catalog.items())
     planned_ids = {r.id for st in plan.steps for r in st.recipes}
-    covered = _covered_by(planned_ids)
-    coverage = "\n".join(f"- {rid} is already included by {comp}" for rid, comp in sorted(covered.items())) or "- (none)"
+    covered = _covered_by(planned_ids, coverage)
+    cov_text = "\n".join(f"- {rid} is already included by {comp}" for rid, comp in sorted(covered.items())) or "- (none)"
     return (
         "PROJECT PROFILE\n"
         f"- case: {profile.case_type.value} (confidence {profile.confidence:.2f}); reasons: {'; '.join(profile.reasons[:6])}\n"
@@ -562,7 +513,7 @@ def _advisor_prompt(plan: MigrationPlan, profile: ProjectProfile, catalog: dict[
         f"- warnings: {'; '.join(profile.warnings[:6]) or '-'}\n\n"
         "RULE-BASED PLAN (OpenRewrite steps)\n" + steps + "\n\n"
         "CATALOG OF RECIPES YOU MAY ADD\n" + cat + "\n\n"
-        "ALREADY COVERED BY PLANNED COMPOSITE RECIPES (do not suggest these)\n" + coverage + "\n\n"
+        "ALREADY COVERED BY PLANNED COMPOSITE RECIPES (do not suggest these)\n" + cov_text + "\n\n"
         "Task: suggest ONLY additional recipes from the catalog that the profile clearly warrants and the plan lacks "
         "(e.g. junit4 present but no JUnit4to5Migration). Do not suggest recipes already planned, do not remove anything, "
         "do not invent ids. If nothing is missing, return an empty list. Also list short concerns the migration team "
@@ -600,7 +551,13 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
     `plan.notes`; unknown ids, already-planned ids and malformed answers are ignored (noted). Never raises."""
     if llm is None or (cfg is not None and cfg.plan.advisor == "none"):
         return plan
-    catalog = catalog or ADVISOR_CATALOG
+    cat_obj = default_catalog(cfg) if cfg is not None else _DEFAULT_CATALOG
+    if cfg is not None:
+        coverage, gates = cat_obj.coverage(), cat_obj.gates()
+        catalog = catalog or cat_obj.advisor_catalog() or ADVISOR_CATALOG
+    else:
+        coverage, gates = ADVISOR_COVERAGE, ADVISOR_GATES
+        catalog = catalog or ADVISOR_CATALOG
     model = (cfg.llm.recipe_model or None) if cfg is not None else None
     try:
         from sbmig.core.interfaces import ChatMessage
@@ -608,8 +565,8 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
             [ChatMessage(role="system", content="You are a senior Java/Spring migration planner. You review a "
                                                  "rule-based OpenRewrite plan and only add clearly warranted recipes "
                                                  "from a fixed catalog. Answer with JSON only."),
-             ChatMessage(role="user", content=_advisor_prompt(plan, profile, catalog))],
-            model=model, max_tokens=1200, temperature=0.0)
+             ChatMessage(role="user", content=_advisor_prompt(plan, profile, catalog, coverage))],
+            model=model, max_tokens=1200, temperature=0.0, role="plan_advisor", metadata={"profile": profile.name})
     except Exception as e:  # advisor must never break planning
         plan.notes.append(f"advisor: LLM call failed ({type(e).__name__}: {e}); plan unchanged")
         return plan
@@ -637,11 +594,11 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
         if rid in planned:
             plan.notes.append(f"advisor: {rid} already planned")
             continue
-        covered = _covered_by(planned)
+        covered = _covered_by(planned, coverage)
         if rid in covered:
             plan.notes.append(f"advisor: {rid} already covered by {covered[rid]}; not added")
             continue
-        gate = ADVISOR_GATES.get(rid)
+        gate = gates.get(rid)
         try:
             warranted = True if gate is None else bool(gate(profile))
         except Exception:  # pragma: no cover - defensive
@@ -655,7 +612,7 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
             plan.notes.append(f"advisor: no {step_prefix} step to attach {rid}; ignored")
             continue
         for st in targets:
-            st.recipes.append(RecipeRef(id=rid, source="builtin", artifact=_artifact_for(rid)))
+            st.recipes.append(RecipeRef(id=rid, source="builtin", artifact=_artifact_for(rid, cat_obj)))
         planned.add(rid)
         plan.notes.append(f"advisor: +{rid} → {step_prefix} ({reason or 'no reason given'})")
     for c in concerns:

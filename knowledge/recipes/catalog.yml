@@ -1,0 +1,327 @@
+# Recipe catalog — the single managed list of every recipe id sbmig knows about.
+#
+# Read by sbmig/plan/catalog.py (`RecipeCatalog`): the planner derives the LLM advisor whitelist
+# (ADVISOR_CATALOG), the composite coverage (ADVISOR_COVERAGE) and the profile gates (ADVISOR_GATES) from it,
+# and `sbmig recipes list|show|check|sets` reads it. See docs/RECIPES.md.
+#
+# The catalog does NOT decide what the rule-based planner runs — that is still config/default.yml
+# `openrewrite.recipes.*` (plan sets) and sbmig/triage/recipe_rules.yml (reactive rules). The catalog describes
+# every id those reference, and `sbmig recipes check` fails when they drift apart.
+# Learned KB recipes (kb/recipes/{candidates,active,rejected}) are NOT listed here; they are read live from kb/.
+#
+# Schema (version 1), one entry per recipe id:
+#   id:          fully-qualified recipe name (unique)
+#   origin:      openrewrite | project            (kb recipes are never listed here)
+#   artifact:    Maven groupId:artifactId of the recipe jar; null for project recipes and for core recipes that
+#                ship with rewrite-maven-plugin itself (org.openrewrite.java.ChangeType, org.openrewrite.maven.*)
+#   provided_by: optional — a configured recipe artifact that brings `artifact` in transitively
+#                (`check` accepts the entry when either is listed in openrewrite.recipe_artifacts)
+#   file:        project recipes only — declarative yml relative to the repo root (knowledge/recipes/base/..)
+#   phase:       default phase when the recipe is added: jdk21 | spring | restructure
+#   description: one line (advisor entries: shown verbatim to the LLM advisor)
+#   docs:        upstream documentation URL
+#   covers:      recipes this composite already includes (the advisor never adds them on top)
+#   gate:        named profile predicate (sbmig/plan/catalog.py GATES) or null = always allowed
+#   advisor:     may the LLM plan advisor add it? (false for internal / pinning / building-block recipes)
+#   sets:        config/default.yml openrewrite.recipes sets that reference it   (informational, checked)
+#   rules:       sbmig/triage/recipe_rules.yml rule ids that use it              (informational, checked)
+#   verified:    when the id was verified against docs.openrewrite.org / a recipe jar (YYYY-MM)
+#   notes:       optional pointer to a knowledge/notes/*.md migration note
+#
+# Order matters for the advisor: advisor entries are shown to the LLM in file order.
+version: 1
+recipes:
+  # ------------------------------------------------------------------ JDK 21
+  - id: org.openrewrite.java.migrate.UpgradeToJava21
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phase: jdk21
+    description: Java 8/11/17 → 21 (language level, removed JDK APIs, JAXB/JAX-WS dependencies, plugin versions)
+    docs: https://docs.openrewrite.org/recipes/java/migrate/upgradetojava21
+    covers:
+      - org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime   # JAXB handling is part of the JDK 11+ chain
+    gate: null
+    advisor: false
+    sets: [jdk21]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/jdk21.md
+
+  # ------------------------------------------------------------------ javax → jakarta
+  - id: org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phase: spring
+    description: javax.* EE packages → jakarta.* (servlet, persistence, validation, annotation, inject …)
+    docs: https://docs.openrewrite.org/recipes/java/migrate/jakarta/javaxmigrationtojakarta
+    covers: []
+    gate: has_javax_ee
+    advisor: true
+    sets: [jakarta]
+    rules: [javax-ee-to-jakarta]
+    verified: "2026-10"
+    notes: knowledge/notes/jakarta.md
+
+  - id: org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phase: jdk21
+    description: add JAXB API + runtime when javax.xml.bind is used (removed from the JDK)
+    docs: https://docs.openrewrite.org/recipes/java/migrate/javax/addjaxbdependencieswithruntime
+    covers: []
+    gate: has_xml_bind_any
+    advisor: true
+    sets: []
+    rules: [javax-xml-bind]
+    verified: "2026-10"
+    notes: knowledge/notes/jdk21.md
+
+  - id: org.openrewrite.java.migrate.jakarta.JavaxXmlBindMigrationToJakartaXmlBind
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phase: spring
+    description: javax.xml.bind → jakarta.xml.bind
+    docs: https://docs.openrewrite.org/recipes/java/migrate/jakarta/javaxxmlbindmigrationtojakartaxmlbind
+    covers: []
+    gate: has_javax_xml_bind
+    advisor: true
+    sets: []
+    rules: [javax-xml-bind]
+    verified: "2026-10"
+    notes: knowledge/notes/jakarta.md
+
+  # ------------------------------------------------------------------ Spring Boot 4.x
+  - id: org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Boot 2.x/3.x → 4.0 umbrella (Boot projects only)
+    docs: https://docs.openrewrite.org/recipes/java/spring/boot4/upgradespringboot_4_0
+    covers:
+      - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta          # via UpgradeSpringBoot_3_0 chain
+      - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
+      - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
+      - org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean
+      - org.openrewrite.java.spring.boot4.SpringBootProperties_4_0
+    gate: is_boot
+    advisor: true
+    sets: [spring_boot_4]
+    rules: [boot4-modularized-autoconfigure]
+    verified: "2026-10"
+    notes: knowledge/notes/boot3-to-4.md
+
+  - id: org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Boot 4.1 property renames
+    docs: https://docs.openrewrite.org/recipes/java/spring/boot4/springbootproperties_4_1
+    covers: []
+    gate: is_boot
+    advisor: true
+    sets: [spring_boot_4]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/boot40-to-41.md
+
+  - id: org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: "@MockBean/@SpyBean → @MockitoBean/@MockitoSpyBean"
+    docs: https://docs.openrewrite.org/recipes/java/spring/boot4/replacemockbeanandspybean
+    covers: []
+    gate: has_tests
+    advisor: true
+    sets: []
+    rules: [mockbean-spybean]
+    verified: "2026-10"
+    notes: knowledge/notes/boot3-to-4.md
+
+  # ------------------------------------------------------------------ Spring Framework / Security
+  - id: org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)
+    docs: https://docs.openrewrite.org/recipes/java/spring/framework/upgradespringframework_7_0
+    covers: []
+    gate: is_spring
+    advisor: true
+    sets: [spring_framework_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-framework-7.md
+
+  - id: org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security7/upgradespringsecurity_7_0
+    covers: []
+    gate: has_spring_security
+    advisor: true
+    sets: [spring_security_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  # ------------------------------------------------------------------ tests
+  - id: org.openrewrite.java.testing.junit5.JUnit4to5Migration
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-testing-frameworks
+    phase: spring
+    description: JUnit 4 → JUnit 5
+    docs: https://docs.openrewrite.org/recipes/java/testing/junit5/junit4to5migration
+    covers: []
+    gate: has_junit4
+    advisor: true
+    sets: [junit5]
+    rules: [junit4-to-junit5]
+    verified: "2026-10"
+    notes: knowledge/notes/junit4-to-5.md
+
+  # ------------------------------------------------------------------ non-advisor upstream recipes
+  - id: org.openrewrite.java.spring.boot4.SpringBootProperties_4_0
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Boot 4.0 property renames (part of the 4.0 umbrella)
+    docs: https://docs.openrewrite.org/recipes/java/spring/boot4/springbootproperties_4_0
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/boot3-to-4.md
+
+  - id: org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security 5.x → 6.0 (WebSecurityConfigurerAdapter removal, antMatchers → requestMatchers)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_0
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: [spring-security-config]
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  # ------------------------------------------------------------------ project recipes (knowledge/recipes/base)
+  - id: com.company.migrate.SpringBoot41Version
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/spring-boot-41-version.yml
+    phase: spring
+    description: pin parent / BOM / plugin / direct spring-boot dependencies to the configured 4.1.x line
+    docs: null
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_boot_4]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/boot40-to-41.md
+
+  - id: com.company.migrate.Boot4JacksonTwins
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/spring-boot-41-version.yml
+    phase: spring
+    description: Boot Jackson support types → Boot 4 / Jackson 3 twins (@JsonComponent → @JacksonComponent & co)
+    docs: null
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_boot_4]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/boot3-to-4.md
+
+  - id: com.company.migrate.ServletToJakartaAndBoot
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/spring-boot-41-version.yml
+    phase: spring
+    description: raw servlet/Tomcat projects — javax → jakarta plus servlet-api dependency swap
+    docs: null
+    covers:
+      - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+    gate: null
+    advisor: false
+    sets: []          # planned directly for case servlet_tomcat (sbmig/plan/planner.py SERVLET_RECIPE)
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/servlet-to-boot.md
+
+  # ------------------------------------------------------------------ building blocks used inside project recipes
+  - id: org.openrewrite.maven.UpgradeParentVersion
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — bump a Maven parent version
+    docs: https://docs.openrewrite.org/recipes/maven/upgradeparentversion
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.maven.UpgradePluginVersion
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — bump a Maven plugin version
+    docs: https://docs.openrewrite.org/recipes/maven/upgradepluginversion
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.ChangeType
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — rename a fully-qualified type (imports, references)
+    docs: https://docs.openrewrite.org/recipes/java/changetype
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.dependencies.UpgradeDependencyVersion
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-java-dependencies
+    provided_by: org.openrewrite.recipe:rewrite-migrate-java
+    phase: spring
+    description: building block — bump a dependency (or managed dependency) version
+    docs: https://docs.openrewrite.org/recipes/java/dependencies/upgradedependencyversion
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.dependencies.ChangeDependency
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-java-dependencies
+    provided_by: org.openrewrite.recipe:rewrite-migrate-java
+    phase: spring
+    description: building block — swap one dependency's coordinates for another
+    docs: https://docs.openrewrite.org/recipes/java/dependencies/changedependency
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"

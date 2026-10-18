@@ -1,5 +1,6 @@
-"""KB harvest: turn successful LLM fixes of a phase into KB cases, credit used recipes/patches, and (optionally)
-ask the LLM for a declarative OpenRewrite recipe candidate for mechanical fixes."""
+"""KB harvest: turn successful LLM fixes of a phase into labeled KB cases, credit used recipes/patches,
+compile a recipe candidate from the fix labels (no LLM) or — failing that — ask the LLM for one, and append
+the phase's ResolutionRecords to ``kb/ledger.jsonl`` / update ``kb/symbols.json``."""
 from __future__ import annotations
 
 import difflib
@@ -24,6 +25,8 @@ from sbmig.core.models import (
 )
 from sbmig.core.workspace import Workspace
 
+from .labels import compile_recipe, label_changes
+from .ledger import attempt_record, blocked_record, plan_recipe_records, project_name
 from .recipes import is_none_answer, strip_fences, validate_recipe_yaml
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -128,9 +131,14 @@ def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None,
     summary = redact(_strip_roots(summary, ws)) or summary
 
     kind = errors[0].kind if errors else ErrorKind.UNKNOWN
+    lab = label_changes(changes, errors)
     return KBCase(
         id="",
         project_fingerprint=profile.fingerprint if profile else "",
+        project=project_name(profile, ws),
+        symbol=lab.symbol,
+        fix_labels=lab.labels,
+        replacement=redact(lab.replacement) or "",
         case_type=profile.case_type if profile else KBCase.model_fields["case_type"].default,
         phase=phase or attempt.phase,
         signatures=l1,
@@ -190,8 +198,10 @@ def build_recipe_prompt(case: KBCase) -> str:
                      + (f" (symbol: {e.symbol})" if e.symbol else "")
                      for e in case.errors[:20]) or "- (none recorded)"
     sigs = "\n".join(f"- {s}" for s in [*case.signatures, *case.signatures_generic]) or "- (none)"
+    labels = (f"- symbol: {case.symbol or '-'}\n- labels: {', '.join(case.fix_labels) or '-'}\n"
+              f"- replacement: {case.replacement or '-'}")
     return (template.replace("{{ERRORS}}", errs).replace("{{SIGNATURES}}", sigs)
-            .replace("{{CHANGES}}", changes_as_diff(case.changes)))
+            .replace("{{LABELS}}", labels).replace("{{CHANGES}}", changes_as_diff(case.changes)))
 
 
 def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClientLike,
@@ -203,7 +213,8 @@ def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClie
     ]
     cfg = getattr(kb, "cfg", None)
     recipe_model = getattr(getattr(cfg, "llm", None), "recipe_model", None) or None
-    resp = llm.complete(messages, model=recipe_model, max_tokens=1500, temperature=0.0)
+    resp = llm.complete(messages, model=recipe_model, max_tokens=1500, temperature=0.0,
+                        role="recipe_candidate", metadata={"case_id": case.id})
     answer = strip_fences(resp.content or "")
     if is_none_answer(answer):
         notes.append(f"case {case.id}: LLM says no mechanical recipe")
@@ -212,6 +223,11 @@ def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClie
     if not ok or parsed is None:
         notes.append(f"case {case.id}: recipe candidate rejected: {'; '.join(errors)}")
         return None
+    return _store_candidate(kb, case, answer, parsed, notes)
+
+
+def _store_candidate(kb: "FileKnowledgeBase", case: KBCase, text: str, parsed: dict, notes: list[str],
+                     origin: str = "") -> KBRecipe:
     rid = parsed["name"]
     existing = kb.get_recipe(rid)
     if existing is not None:
@@ -225,6 +241,8 @@ def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClie
         kb._save_index()
         notes.append(f"case {case.id}: recipe {rid} already exists ({existing.status}); linked")
         return existing
+    if origin:
+        notes.append(f"case {case.id}: recipe candidate {rid} {origin}")
     recipe = KBRecipe(
         id=rid,
         status="candidate",
@@ -233,7 +251,19 @@ def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClie
         signatures=[*case.signatures, *(s for s in case.signatures_generic if s not in case.signatures)],
         source_case_ids=[case.id],
     )
-    return kb.add_recipe(answer, recipe)
+    return kb.add_recipe(text, recipe)
+
+
+def compile_candidate(kb: "FileKnowledgeBase", case: KBCase, notes: list[str]) -> Optional[KBRecipe]:
+    """Deterministic recipe candidate from the case's fix labels (no LLM), or None when not 1:1."""
+    text = compile_recipe(case)
+    if not text:
+        return None
+    ok, errors, parsed = validate_recipe_yaml(text)
+    if not ok or parsed is None:  # pragma: no cover - compile_recipe validates already
+        notes.append(f"case {case.id}: compiled recipe invalid: {'; '.join(errors)}")
+        return None
+    return _store_candidate(kb, case, text, parsed, notes, origin="compiled from labels, no LLM")
 
 
 # --------------------------------------------------------------------------- main entry
@@ -250,8 +280,11 @@ def harvest_phase(kb: "FileKnowledgeBase", phase_result: PhaseResult, profile: P
         if not kb.cfg.kb.harvest:
             res.notes.append("kb harvest disabled (kb.harvest=false)")
             return res
+        kbc = kb.cfg.kb
         fp = profile.fingerprint if profile else ""
         new_cases: list[KBCase] = []
+        indexed: list[KBCase] = []                       # new + deduped cases → symbols.json
+        case_of_attempt: dict[str, str] = {}
 
         # 1. cases from successful LLM fixes
         for a in phase_result.attempts:
@@ -260,13 +293,16 @@ def harvest_phase(kb: "FileKnowledgeBase", phase_result: PhaseResult, profile: P
             try:
                 case = sanitize_case(a, profile, ws, phase_result.phase)
                 cid, created = kb.record_case_ex(case)
+                case_of_attempt[a.id] = cid
+                stored = kb.get_case(cid)
                 if created:
                     res.cases_created.append(cid)
-                    stored = kb.get_case(cid)
                     if stored is not None:
                         new_cases.append(stored)
                 else:
                     res.notes.append(f"attempt {a.id}: duplicate of case {cid} (reuse bumped)")
+                    if stored is not None:
+                        indexed.append(stored)
             except Exception as e:
                 log.warning("kb harvest of attempt %s failed: %s", a.id, e)
                 res.notes.append(f"attempt {a.id}: harvest failed: {e}")
@@ -284,19 +320,26 @@ def harvest_phase(kb: "FileKnowledgeBase", phase_result: PhaseResult, profile: P
                             res.recipes_credited.append(rid)
                 elif a.decision.kind == DecisionKind.KB_PATCH and success:
                     for cid in a.decision.kb_case_ids:
-                        if kb.bump_case_reuse(cid, fp) is None:
+                        c = kb.bump_case_reuse(cid, fp)
+                        if c is None:
                             res.notes.append(f"attempt {a.id}: replayed case {cid} not found in kb")
+                        else:
+                            indexed.append(c)
             except Exception as e:
                 log.warning("kb credit for attempt %s failed: %s", a.id, e)
                 res.notes.append(f"attempt {a.id}: credit failed: {e}")
 
-        # 3. recipe candidates
-        if kb.cfg.kb.generate_recipe_candidates and llm is not None:
+        # 3. recipe candidates: compiled from the labels first (no LLM), the LLM only for the rest
+        if kbc.generate_recipe_candidates:
+            skipped_no_llm = False
             for case in new_cases:
-                if not looks_mechanical(case):
-                    continue
                 try:
-                    recipe = propose_recipe_candidate(kb, case, llm, res.notes)
+                    recipe = compile_candidate(kb, case, res.notes) if kbc.deterministic_candidates else None
+                    if recipe is None and looks_mechanical(case):
+                        if llm is None:
+                            skipped_no_llm = True
+                        else:
+                            recipe = propose_recipe_candidate(kb, case, llm, res.notes)
                     if recipe is not None:
                         case.recipe_candidate_id = recipe.id
                         kb.update_case(case)
@@ -306,9 +349,49 @@ def harvest_phase(kb: "FileKnowledgeBase", phase_result: PhaseResult, profile: P
                 except Exception as e:
                     log.warning("kb recipe candidate for case %s failed: %s", case.id, e)
                     res.notes.append(f"case {case.id}: recipe candidate generation failed: {e}")
-        elif kb.cfg.kb.generate_recipe_candidates and new_cases:
-            res.notes.append("recipe candidate generation skipped: no LLM client")
+            if skipped_no_llm:
+                res.notes.append("recipe candidate generation skipped: no LLM client")
+        indexed = new_cases + indexed
+
+        # 4. symbol index
+        if kbc.symbol_index and indexed:
+            try:
+                idx = kb.symbol_index()
+                for c in indexed:
+                    idx.add(c, project_key=fp)
+                idx.save()
+            except Exception as e:
+                log.warning("kb symbol index update failed: %s", e)
+                res.notes.append(f"symbol index update failed: {e}")
+
+        # 5. ledger: one ResolutionRecord per attempt / plan KB recipe / blocked item of the phase
+        if kbc.ledger:
+            try:
+                recs = []
+                cases = {c.id: c for c in indexed}
+                for a in phase_result.attempts:
+                    cid = case_of_attempt.get(a.id)
+                    rid = cases[cid].recipe_candidate_id if cid in cases else None
+                    r = attempt_record(a, profile, ws, phase_result.phase, case_id=cid, recipe_id=rid)
+                    if r is not None:
+                        recs.append(r)
+                recs += plan_recipe_records(phase_result, kb, profile, ws)
+                for b in phase_result.blocked:
+                    recs.append(blocked_record(b, profile, ws, phase_result.phase))
+                    mark = getattr(kb, "mark_blocked_recorded", None)
+                    if callable(mark):
+                        mark(ws.run_id, b.id)
+                res.ledger_entries = kb.ledger().append(recs)
+            except Exception as e:
+                log.warning("kb ledger append failed: %s", e)
+                res.notes.append(f"ledger append failed: {e}")
     except Exception as e:
         log.exception("kb harvest failed")
         res.notes.append(f"harvest failed: {e}")
+    try:
+        drain = getattr(kb, "drain_promoted", None)
+        if callable(drain):
+            res.recipes_promoted = list(drain())
+    except Exception:  # pragma: no cover
+        pass
     return res

@@ -29,6 +29,18 @@ Smoke test without touching anything: `sbmig analyze path/to/project.zip --confi
 `config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
+## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)
+Two seams, both configured without code changes in sbmig (details and templates: `docs/ADAPTERS.md`,
+`examples/adapters/`, `config/llm-plugin.example.yml`):
+
+| Tier | Config | You implement | sbmig keeps doing |
+|---|---|---|---|
+| 1. chat completion | `llm.provider: plugin`, `llm.plugin: "mypkg.adapter:make_adapter"` (or an entry point in group `sbmig.llm_adapters`) | `complete(LLMRequest) -> LLMResponse` (messages, model, role `fix` / `fix_escalation` / `plan_advisor` / `recipe_candidate`, metadata) | prompts, SEARCH/REPLACE protocol, context packing, feedback rounds, budgets, recording, KB harvest |
+| 2. whole fixer | `fix.plugin: "mypkg.agent:make_fixer"` | `propose(ws, cluster, ctx) -> FixProposal` (your agent decides the patch; `sbmig.fix.ContextPacker` gives you our packed context) | triage, blocked rules, build loop, revert/oscillation safety, KB harvest of what worked |
+
+Keys stay in environment variables (`llm.api_key_env`); the plugin receives them in `options["api_key"]` and sbmig
+never writes them anywhere. Programmatic use from your own agent code: `sbmig.api.migrate(path, configs=[...], llm=MyAdapter())`.
+
 ## 1. Running a migration
 ```bash
 sbmig run path/to/project.zip --config config/artifacts.yml --out out/
@@ -63,6 +75,25 @@ Outputs in `out/<run_id>/`:
 * Hand-written shortcuts go in `kb/patterns/*.yml` (signature regex → recipes / handler ids / hints).
 * Offline demonstration of the whole loop: `scripts/demo-kb/run.sh` (replayed LLM answers in `scripts/demo-kb/replay/`; run 1 harvests a case + candidate recipe, run 2 is fixed by that recipe without the LLM and promotes it).
 * Recording real sessions: set `llm.record_dir` (every request/response is saved as `llm-<n>.json`); a recorded directory can be replayed with `llm.provider: fake` + `llm.base_url: replay:<dir>` for regression tests.
+* **Cross-project memory** (`docs/FLEET.md`): every resolved or blocked cluster appends a line to `kb/ledger.jsonl`
+  (project × error-case symbol × resolution × fix labels × "old → new"); `kb/symbols.json` aggregates per symbol.
+  Labeled mechanical fixes (`type-rename`, `dependency-add`, `dependency-version`, `spring-property-rename`, …) are
+  compiled into recipe candidates **without the LLM**; the rest go through the recipe model. Inspect with
+  `sbmig kb ledger --symbol JsonComponent`, `sbmig kb symbols`, `sbmig kb learning` (what still needs the LLM → write a
+  recipe/handler; which artifacts block the most projects → library owners).
+* Recipe inventory: `sbmig recipes list --kb` (catalog + live KB recipes), `sbmig recipes check` (every id used by the
+  config sets / reactive rules / base yml must be in `knowledge/recipes/catalog.yml`) — see `docs/RECIPES.md`.
+
+## 3.5 Fleet mode — one agent, hundreds of projects, sequentially
+```bash
+sbmig fleet run projects.yml --config config/artifacts.yml --out out/fleet       # manifest: dir | .txt | .yml | .csv
+sbmig fleet status out/fleet                                                     # progress table from fleet/state.json
+sbmig fleet run projects.yml --config config/artifacts.yml --out out/fleet       # same command resumes; --retry-failed re-runs incomplete ones
+```
+Projects run strictly one after another; the KB is updated after every project, so project N+1 already plans with
+the recipes learned from projects 1..N. `out/fleet/fleet/summary.{md,csv,json}` and `learning.md` are rewritten after
+each project. Knobs: `fleet.order` (`manifest` | `simple-first`), `fleet.max_llm_calls_total`, `fleet.stop_on_abort`,
+`fleet.reindex_every`.
 
 ## 4. Tuning knobs (config/default.yml)
 | Knob | Default | Effect |

@@ -7,8 +7,8 @@ from sbmig.plan import ADVISOR_CATALOG, advise_plan, build_plan
 class _LLM:
     def __init__(self, answer, raise_exc=None):
         self.answer, self.raise_exc, self.calls = answer, raise_exc, []
-    def complete(self, messages, *, model=None, max_tokens=None, temperature=None, stop=None):
-        self.calls.append({"model": model, "messages": messages})
+    def complete(self, messages, *, model=None, max_tokens=None, temperature=None, stop=None, **kw):
+        self.calls.append({"model": model, "messages": messages, **kw})
         if self.raise_exc:
             raise self.raise_exc
         return LLMResponse(content=self.answer, model=model or "default", input_tokens=10, output_tokens=5)
@@ -38,6 +38,7 @@ def test_advisor_adds_catalog_recipe_uses_recipe_model_and_ignores_unknown(cfg):
     assert ids.count("org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0") == 1
     assert "com.evil.DeleteEverything" not in ids
     assert llm.calls[0]["model"] == "claude-haiku-4-5"
+    assert llm.calls[0]["role"] == "plan_advisor" and llm.calls[0]["metadata"] == {"profile": "p"}
     assert any("ignored unknown recipe com.evil.DeleteEverything" in n for n in out.notes)
     assert any("already planned" in n for n in out.notes)
     assert any(n == "advisor concern: WebSecurityConfigurerAdapter present" for n in out.notes)

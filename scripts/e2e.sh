@@ -13,4 +13,6 @@ if [[ -f "$REPO/.venv/bin/activate" ]]; then
 fi
 export JAVA21_HOME="${JAVA21_HOME:-/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-21.0.1/Contents/Home}"
 cd "$REPO"
+# the recipe catalog must agree with the config sets / reactive rules / base recipes before anything runs
+python -m sbmig.cli recipes check --config config/artifacts.local-e2e.yml
 exec python scripts/e2e.py --install-libs "$@"

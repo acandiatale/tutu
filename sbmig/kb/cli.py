@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -130,7 +131,7 @@ def reject_cmd(ctx: typer.Context, recipe_id: str = typer.Argument(..., metavar=
 
 @kb_cli.command("reindex")
 def reindex_cmd(ctx: typer.Context) -> None:
-    """Rebuild index.json from the case and recipe files."""
+    """Rebuild index.json and symbols.json from the case and recipe files."""
     n = _kb(ctx).reindex()
     typer.echo(f"indexed {n} cases")
 
@@ -144,6 +145,108 @@ def stats_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json"))
         return
     for k, v in st.items():
         typer.echo(f"{k:<18} {v}")
+
+
+@kb_cli.command("ledger")
+def ledger_cmd(
+    ctx: typer.Context,
+    project: Optional[str] = typer.Option(None, "--project", help="regex on the project name"),
+    symbol: Optional[str] = typer.Option(None, "--symbol", help="regex on the error-case symbol"),
+    label: Optional[str] = typer.Option(None, "--label", help="regex on any fix label"),
+    resolution: Optional[str] = typer.Option(
+        None, "--resolution",
+        help="regex: handler|plan_recipe|kb_recipe|kb_patch|llm_patch|blocked|unresolved"),
+    signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
+    limit: int = typer.Option(50, "--limit", "-n", help="show the last N matching records (0 = all)"),
+    as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),
+) -> None:
+    """Resolution ledger: in project P, error-case symbol S was resolved (or blocked) by R."""
+    kb = _kb(ctx)
+    try:
+        rows = list(kb.ledger().iter(project=project, symbol=symbol, label=label, resolution=resolution,
+                                     signature=signature))
+    except re.error as e:
+        raise typer.BadParameter(f"bad regex: {e}")
+    if limit > 0:
+        rows = rows[-limit:]
+    if as_json:
+        for r in rows:
+            typer.echo(r.model_dump_json())
+        return
+    if not rows:
+        typer.echo("no ledger records")
+        return
+    for r in rows:
+        what = r.replacement or r.resolver_id or "-"
+        typer.echo(f"{r.at.strftime('%Y-%m-%d %H:%M')}  {r.project:<20} {r.phase.value:<11} "
+                   f"{r.resolution:<11} {r.outcome:<10} {r.symbol or '-':<28} "
+                   f"[{','.join(r.fix_labels) or '-'}] {what}")
+
+
+@kb_cli.command("symbols")
+def symbols_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json"),
+                symbol: Optional[str] = typer.Option(None, "--symbol", help="regex filter")) -> None:
+    """Symbol index: error-case symbol → how it was fixed, in how many projects, by which case / recipe."""
+    data = _kb(ctx).symbol_index().load()
+    if symbol:
+        rx = re.compile(symbol)
+        data = {k: v for k, v in data.items() if rx.search(k)}
+    if as_json:
+        typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    if not data:
+        typer.echo("no symbols indexed")
+        return
+    for sym, ent in sorted(data.items(), key=lambda kv: -max((f.get("projects", 0) for f in kv[1]["fixes"]),
+                                                              default=0)):
+        for f in ent.get("fixes", []):
+            typer.echo(f"{sym:<32} {ent.get('error_kind', ''):<14} projects={f.get('projects', 0):<3} "
+                       f"cases={len(f.get('cases', [])):<3} [{','.join(f.get('labels') or []) or '-'}] "
+                       f"{f.get('replacement') or '-'}"
+                       + (f"  recipe={f['recipe_id']}" if f.get("recipe_id") else ""))
+
+
+@kb_cli.command("learning")
+def learning_cmd(ctx: typer.Context, md: bool = typer.Option(False, "--md", help="print markdown"),
+                 as_json: bool = typer.Option(False, "--json"),
+                 top: int = typer.Option(15, "--top")) -> None:
+    """What did we learn / what still needs the LLM / what blocks most projects (from the ledger)."""
+    from .ledger import render_learning_md
+
+    kb = _kb(ctx)
+    summary = kb.ledger().summary(top=top)
+    if as_json:
+        typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
+        return
+    if md:
+        typer.echo(render_learning_md(summary, kb.stats()), nl=False)
+        return
+    typer.echo(f"{summary['records']} ledger record(s), {summary['projects']} project(s), "
+               f"{summary['runs']} run(s)")
+    typer.echo("resolutions: " + (", ".join(f"{k}={v}" for k, v in summary["by_resolution"].items()) or "-"))
+    typer.echo("\nwrite a recipe/handler for these (LLM-fixed ≥2×, no KB recipe):")
+    for r in summary["llm_symbols_without_recipe"] or []:
+        typer.echo(f"  {r['symbol']:<32} fixed={r['count']:<3} projects={r['projects']:<3} {r['label']}: "
+                   f"{r['replacement'] or '-'}")
+    if not summary["llm_symbols_without_recipe"]:
+        typer.echo("  (none)")
+    typer.echo("\nstill resolved by the LLM:")
+    for r in summary["llm_symbols"] or []:
+        typer.echo(f"  {r['symbol']:<32} fixed={r['count']:<3} projects={r['projects']:<3} "
+                   f"recipe={'yes' if r['has_recipe'] else 'no'}  {r['label']}: {r['replacement'] or '-'}")
+    if not summary["llm_symbols"]:
+        typer.echo("  (none)")
+    typer.echo("\nblocking most projects:")
+    for r in summary["blocked"] or []:
+        typer.echo(f"  {r['symbol']:<40} {r['reason']:<26} projects={r['projects']:<3} "
+                   f"{', '.join(r['project_names'][:6])}")
+    if not summary["blocked"]:
+        typer.echo("  (none)")
+    typer.echo("\nKB recipes / patches that paid off:")
+    for r in summary["kb_fired"] or []:
+        typer.echo(f"  {r['id']:<48} {r['kind']:<11} projects={r['projects']:<3} count={r['count']}")
+    if not summary["kb_fired"]:
+        typer.echo("  (none)")
 
 
 @kb_cli.command("export")

@@ -36,10 +36,12 @@ class FakeLLM:
     def __init__(self, *answers: str):
         self.answers = list(answers) or ["NONE"]
         self.calls: list[list[ChatMessage]] = []
+        self.kwargs: list[dict] = []
 
     def complete(self, messages, *, model: Optional[str] = None, max_tokens: Optional[int] = None,
-                 temperature: Optional[float] = None, stop: Optional[list[str]] = None) -> LLMResponse:
+                 temperature: Optional[float] = None, stop: Optional[list[str]] = None, **kw) -> LLMResponse:
         self.calls.append(list(messages))
+        self.kwargs.append(kw)
         ans = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         return LLMResponse(content=ans, model="fake")
 

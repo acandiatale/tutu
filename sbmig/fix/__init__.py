@@ -1,8 +1,12 @@
 """sbmig.fix — LLM fix module (see docs/INTERFACES.md for the public entry points).
 
     make_llm_client(cfg) -> LLMClientLike             provider switch: openai_compatible | anthropic | fake
+                                                      | plugin / entry-point name (→ sbmig.llm, docs/ADAPTERS.md)
     LLMFixer(cfg, client, notes_dir=None)             FixerLike: propose(ws, cluster, ctx) / apply(ws, changes)
     PatchApplier(ws).apply(changes)                   -> (applied, errors), atomic per file
+    ContextPacker(cfg).pack(ws, cluster, ctx, ctx.profile_summary)
+                                                      -> PackedContext; fixer plugins can reuse it for the same
+                                                         errors/files/hints our LLM gets (.render() → markdown)
     parse_fix_response(text)                          -> ParsedResponse(changes, analysis, need_files, need_grep, …)
 """
 from .apply import BlockFailure, PatchApplier

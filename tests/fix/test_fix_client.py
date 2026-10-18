@@ -5,8 +5,17 @@ import httpx
 import pytest
 
 from sbmig.core.interfaces import ChatMessage, LLMClientLike, LLMResponse
-from sbmig.fix import (AnthropicClient, FakeLLMClient, LLMConfigError, LLMError, OpenAICompatibleClient,
-                       RecordingClient, load_replay_responses, make_llm_client, usage_from)
+from sbmig.fix import (
+    AnthropicClient,
+    FakeLLMClient,
+    LLMConfigError,
+    LLMError,
+    OpenAICompatibleClient,
+    RecordingClient,
+    load_replay_responses,
+    make_llm_client,
+    usage_from,
+)
 from sbmig.fix.client import NO_FIX_RESPONSE, _retry_after_seconds
 
 MSGS = [ChatMessage(role="system", content="sys"), ChatMessage(role="user", content="hello"),
@@ -232,3 +241,21 @@ def test_make_llm_client_fake_replay(cfg, tmp_path):
     cfg.llm.base_url = f"replay:{tmp_path / 'rec'}"
     c = make_llm_client(cfg)
     assert c.complete(MSGS).content == "recorded"
+
+
+def test_clients_accept_role_and_metadata(tmp_path, ws):
+    rec = Recorder([httpx.Response(200, json=OPENAI_OK)])
+    assert openai(rec).complete(MSGS, role="fix", metadata={"cluster_id": "c1"}, future_kw=1).content == "hi"
+    assert "role" not in json.loads(rec.requests[0].content)          # never sent to the HTTP provider
+
+    f = FakeLLMClient(["x"])
+    f.complete(MSGS, role="plan_advisor", metadata={"phase": "plan"})
+    assert f.calls[0]["role"] == "plan_advisor" and f.calls[0]["metadata"] == {"phase": "plan"}
+
+    rc = RecordingClient(FakeLLMClient(["r"]), tmp_path / "rec", ws=ws)
+    rc.complete(MSGS, role="recipe_candidate", metadata={"cluster_id": "c9"})
+    rc.complete(MSGS)
+    first, second = [json.loads(p.read_text()) for p in sorted((tmp_path / "rec").glob("llm-*.json"))]
+    assert first["role"] == "recipe_candidate" and first["metadata"] == {"cluster_id": "c9"}
+    assert second["role"] is None and second["metadata"] is None
+    assert '"role": "recipe_candidate"' in ws.journal_path.read_text()

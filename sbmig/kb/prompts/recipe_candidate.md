@@ -60,6 +60,10 @@ Rules:
 
 {{SIGNATURES}}
 
+## Deterministic labels of the fix (computed, may be incomplete)
+
+{{LABELS}}
+
 ## The applied fix
 
 {{CHANGES}}

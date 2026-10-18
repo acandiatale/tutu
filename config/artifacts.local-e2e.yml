@@ -26,3 +26,6 @@ build:
 
 llm:
   provider: fake
+
+kb:
+  dir: out/e2e/kb            # local e2e / demo runs must not write cases, ledger or symbols into the repo's kb/

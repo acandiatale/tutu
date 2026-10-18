@@ -1,0 +1,38 @@
+# In-house LLM gateway / coding agent via the adapter seam (docs/ADAPTERS.md, examples/adapters/).
+# Keys are NEVER stored here: `api_key_env` is the NAME of an environment variable.
+#   export COMPANY_LLM_KEY=...
+#   PYTHONPATH=. sbmig run path/to/project --config config/artifacts.example.yml --config config/llm-plugin.example.yml
+#
+# Tier 1: replace our HTTP clients with your gateway adapter. sbmig still builds prompts, parses and validates
+#          patches, records calls, and enforces budgets.
+llm:
+  provider: plugin                       # or the name of an entry point in group "sbmig.llm_adapters"
+  plugin: examples.adapters.company_gateway_adapter:make_adapter   # "pkg.module:attr" (class, factory or instance)
+  api_key_env: COMPANY_LLM_KEY           # when set, its value is passed to the factory as options["api_key"]
+  plugin_options:                        # passed verbatim to the factory (no secrets)
+    base_url: https://llm-gateway.internal.example/api
+    default_model: internal-coder-m
+    models:                              # role → model routing done by the adapter
+      fix: internal-coder-l
+      fix_escalation: internal-coder-xl
+      plan_advisor: internal-small
+      recipe_candidate: internal-small
+    timeout: 120
+    max_retries: 3
+    team: platform-migration
+  model: internal-coder-m                # sent as LLMRequest.model when the adapter has no role mapping
+  escalation_model: internal-coder-xl
+  recipe_model: internal-small
+  max_output_tokens: 8000
+  record_dir: out/llm-records            # plugin calls are recorded too (messages, response, role, metadata)
+
+# Tier 2 (optional): replace LLMFixer with your coding agent. Leave `plugin` unset to keep sbmig's own fixer.
+# The factory receives (options, cfg, llm), where llm is the tier-1 client above (or None).
+fix:
+  plugin: null                           # e.g. examples.adapters.agent_fixer:make_fixer
+  plugin_options:
+    agent: code-migrator
+    max_files: 6
+
+plan:
+  advisor: none                          # "llm" sends role=plan_advisor requests through the same adapter

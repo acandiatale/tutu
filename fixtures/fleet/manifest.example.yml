@@ -1,0 +1,25 @@
+# Example fleet manifest for `sbmig fleet run fixtures/fleet/manifest.example.yml --config <artifacts.yml> --out out/fleet`.
+# Paths are relative to this file. Projects run strictly one after the other, in this order (or
+# `--order simple-first`), all feeding / using the same KB (kb.dir of the fleet config).
+# Per project: optional extra config files (merged after the fleet config), inline overrides and tags.
+# Other accepted manifest forms: a directory (every *.zip and every subdirectory with a pom.xml),
+# a .txt (one path per line, '#' comments) or a .csv (name,input,tags).
+projects:
+  - name: pure-java
+    input: ../projects/pure-java
+    tags: [case1]
+  - name: boot2
+    input: ../projects/boot2
+    tags: [case2b]
+  - name: boot3
+    input: ../projects/boot3
+    overrides:                      # inline config overrides for this project only
+      loop: {max_llm_calls: 20}
+    tags: [case2b]
+  - name: spring5-xml
+    input: ../projects/spring5-xml
+    tags: [case2a]
+  - name: servlet-tomcat
+    input: ../projects/servlet-tomcat
+    configs: []                     # e.g. [../../config/site-overrides.yml]
+    tags: [case3]

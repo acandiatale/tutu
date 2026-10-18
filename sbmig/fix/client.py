@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional, Union
 
 import httpx
 
-from sbmig.core.config import Config
+from sbmig.core.config import BUILTIN_LLM_PROVIDERS, Config
 from sbmig.core.interfaces import ChatMessage, LLMClientLike, LLMResponse
 from sbmig.core.models import LLMUsage
 
@@ -133,6 +133,9 @@ class _HTTPClient:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stop: Optional[list[str]] = None,
+        role: Optional[str] = None,
+        metadata: Optional[dict] = None,
+        **_ignored: Any,
     ) -> LLMResponse:
         model = model or self.model
         max_tokens = max_tokens or self.default_max_tokens
@@ -140,8 +143,8 @@ class _HTTPClient:
         body = self._body(messages, model, max_tokens, temperature, stop)
         url, headers = self._url(), {**self._headers(), **self.extra_headers}
         if log.isEnabledFor(logging.DEBUG):
-            log.debug("llm request model=%s prompt_sha256=%s chars=%d", model, messages_hash(messages)[:16],
-                      sum(len(m.content) for m in messages))
+            log.debug("llm request role=%s model=%s prompt_sha256=%s chars=%d", role or "-", model,
+                      messages_hash(messages)[:16], sum(len(m.content) for m in messages))
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
@@ -309,10 +312,12 @@ class FakeLLMClient:
         self._recorder = _Recorder(record_dir) if record_dir else None
 
     def complete(self, messages: list[ChatMessage], *, model: Optional[str] = None, max_tokens: Optional[int] = None,
-                 temperature: Optional[float] = None, stop: Optional[list[str]] = None) -> LLMResponse:
+                 temperature: Optional[float] = None, stop: Optional[list[str]] = None,
+                 role: Optional[str] = None, metadata: Optional[dict] = None, **_ignored: Any) -> LLMResponse:
         used_model = model or self.model
         self.calls.append({"messages": list(messages), "model": used_model, "max_tokens": max_tokens,
-                           "temperature": temperature, "stop": stop})
+                           "temperature": temperature, "stop": stop, "role": role,
+                           "metadata": dict(metadata) if metadata else None})
         if self.responses is None:
             text: Union[str, Exception] = NO_FIX_RESPONSE
         elif callable(self.responses):
@@ -328,8 +333,16 @@ class FakeLLMClient:
         resp = LLMResponse(content=text, model=used_model, input_tokens=in_tok, output_tokens=len(text) // 4,
                            finish_reason="stop")
         if self._recorder:
-            self._recorder.write(messages, resp, 0.0)
+            self._recorder.write(messages, resp, 0.0, role=role, metadata=metadata)
         return resp
+
+
+def _jsonable(value: Any) -> Any:
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return json.loads(json.dumps(value, default=str))
 
 
 class _Recorder:
@@ -340,7 +353,7 @@ class _Recorder:
         self._n = len(list(self.dir.glob("llm-*.json")))
 
     def write(self, messages: list[ChatMessage], resp: Optional[LLMResponse], latency: float,
-              error: Optional[str] = None) -> Path:
+              error: Optional[str] = None, *, role: Optional[str] = None, metadata: Optional[dict] = None) -> Path:
         self._n += 1
         path = self.dir / f"llm-{self._n:04d}.json"
         while path.exists():
@@ -355,11 +368,13 @@ class _Recorder:
             "latency": round(latency, 3),
             "prompt_hash": messages_hash(messages),
             "error": error,
+            "role": role,
+            "metadata": _jsonable(metadata) if metadata else None,   # caller-supplied context only, never secrets
         }
         path.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
         if self.ws is not None:
             try:
-                self.ws.journal({"event": "llm_call", "record": str(path), "model": rec["model"],
+                self.ws.journal({"event": "llm_call", "record": str(path), "role": role, "model": rec["model"],
                                  "usage": rec["usage"], "latency": rec["latency"], "error": error})
             except Exception:  # pragma: no cover - journaling must never break a call
                 log.debug("journal failed", exc_info=True)
@@ -379,14 +394,20 @@ class RecordingClient:
         return self._rec.dir
 
     def complete(self, messages: list[ChatMessage], **kw: Any) -> LLMResponse:
+        role, metadata = kw.get("role"), kw.get("metadata")
         t0 = time.monotonic()
         try:
             resp = self.inner.complete(messages, **kw)
         except Exception as exc:
-            self._rec.write(messages, None, time.monotonic() - t0, error=str(exc)[:500])
+            self._rec.write(messages, None, time.monotonic() - t0, error=str(exc)[:500], role=role, metadata=metadata)
             raise
-        self._rec.write(messages, resp, time.monotonic() - t0)
+        self._rec.write(messages, resp, time.monotonic() - t0, role=role, metadata=metadata)
         return resp
+
+    def close(self) -> None:
+        fn = getattr(self.inner, "close", None)
+        if callable(fn):
+            fn()
 
 
 def load_replay_responses(record_dir: str | Path) -> list[str]:
@@ -407,10 +428,18 @@ def _unexpanded(v: Optional[str]) -> bool:
 
 
 def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.BaseTransport] = None) -> LLMClientLike:
-    """Build the configured client. `fake` needs no key; `base_url: replay:<dir>` with fake replays recordings."""
+    """Build the configured client. `fake` needs no key; `base_url: replay:<dir>` with fake replays recordings.
+
+    `provider: plugin` or a non-builtin provider name → `sbmig.llm.resolve_llm_plugin(cfg)` (the plugin handles
+    its own auth; the `api_key_env` value, when set, is handed to the factory as options["api_key"] in memory only).
+    Raises `sbmig.llm.PluginLoadError` (a ValueError) when the plugin cannot be loaded."""
     llm = cfg.llm
     client: LLMClientLike
-    if llm.provider == "fake":
+    if llm.provider == "plugin" or llm.provider not in BUILTIN_LLM_PROVIDERS:
+        from sbmig.llm import resolve_llm_plugin
+
+        client = resolve_llm_plugin(cfg)
+    elif llm.provider == "fake":
         responses: FakeScript = None
         if llm.base_url and llm.base_url.startswith("replay:"):
             responses = load_replay_responses(cfg.resolve_path(llm.base_url[len("replay:"):]))
@@ -435,7 +464,7 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
             if _unexpanded(llm.model):
                 raise LLMConfigError("llm.model is not set (LLM_MODEL)")
             client = OpenAICompatibleClient(llm.base_url, key, llm.model, **common)
-        else:  # pragma: no cover - pydantic Literal prevents this
+        else:  # pragma: no cover - non-builtin providers are routed to sbmig.llm above
             raise LLMConfigError(f"unknown llm.provider: {llm.provider}")
     if llm.record_dir:
         client = RecordingClient(client, cfg.resolve_path(llm.record_dir), ws=ws)

@@ -83,3 +83,13 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   * **Fleet** (`FleetConfig` as `cfg.fleet`, `FleetProjectResult`, `FleetState`): `sbmig fleet <manifest>` runs N
     projects strictly sequentially with one agent, resumable (`fleet/state.json`), KB fed between projects,
     `fleet/summary.{md,csv,json}` + `fleet/learning.md` after every project.
+* 2026-10-18 round 3 (implementation notes): `sbmig.llm` (`LLMAdapter` ABC, `AdapterClient`, `load_plugin`,
+  `resolve_llm_plugin`, `resolve_fixer_plugin`; entry-point groups `sbmig.llm_adapters` and `sbmig.fixers`); every
+  built-in client tolerates `role=`/`metadata=`; `RecordingClient` records them; `sbmig.api.migrate(...)` for
+  embedding; `sbmig.plan.catalog` (`RecipeCatalog`, `GATES`, `default_catalog`) — `ADVISOR_*` constants are derived
+  from `knowledge/recipes/catalog.yml`; `artifact_for(recipe_id, cfg=None)` consults the catalog first;
+  `FileKnowledgeBase.credit_recipe` now returns the `KBRecipe` and records auto-promotions; `sbmig.kb.labels`
+  (`label_changes`, `compile_recipe`), `sbmig.kb.ledger` (`Ledger`, `SymbolIndex`); `Orchestrator._record_run_ledger`
+  (called in `_finalize` before the report writer) adds `unresolved`/late-blocked ledger lines; `sbmig.fleet`
+  (`FleetRunner`, `load_manifest`, `fleet_cli`). CLI: `sbmig run --llm-plugin/--fix-plugin`, `sbmig recipes`,
+  `sbmig fleet`, `sbmig kb ledger|symbols|learning`.

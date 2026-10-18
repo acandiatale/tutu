@@ -74,6 +74,12 @@ def _unset(v: Optional[str]) -> bool:
 
 
 class LLMFixer:
+    """Default FixerLike: our SEARCH/REPLACE protocol over a chat completion.
+
+    A fix.plugin (in-house coding agent, docs/ADAPTERS.md) can reuse the same packed context we give our LLM:
+    `ContextPacker(cfg).pack(ws, cluster, ctx, ctx.profile_summary)` → PackedContext (sections with the errors,
+    source files, pom excerpt, KB hints, previous attempts; `.render()` gives one markdown string)."""
+
     def __init__(self, cfg: Config, client: LLMClientLike, notes_dir: Optional[str | Path] = None,
                  *, packer: Optional[ContextPacker] = None):
         self.cfg = cfg
@@ -93,10 +99,11 @@ class LLMFixer:
         rounds = 0
         messages: list[ChatMessage] = []
         last: Optional[LLMResponse] = None
+        role, meta = self.call_tags(ctx, cluster.id)
         try:
             packed = self.packer.pack(ws, cluster, ctx, ctx.profile_summary)
             messages = self.build_messages(packed)
-            last, parsed = self._call(messages, model, usage, transcript)
+            last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
 
             # 1) context rounds
             while parsed.wants_context and not parsed.changes and rounds < self.cfg.llm.max_context_rounds:
@@ -106,7 +113,7 @@ class LLMFixer:
                 served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining)
                 messages = messages + [ChatMessage(role="assistant", content=last.content),
                                        ChatMessage(role="user", content=served)]
-                last, parsed = self._call(messages, model, usage, transcript)
+                last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
             if parsed.wants_context and not parsed.changes:
                 requested.extend(p for p in parsed.need_files if p not in requested)
 
@@ -120,7 +127,7 @@ class LLMFixer:
                     messages = messages + [ChatMessage(role="assistant", content=last.content),
                                            ChatMessage(role="user", content=feedback)]
                     prev = parsed
-                    last, parsed = self._call(messages, model, usage, transcript)
+                    last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
                     if not parsed.changes:
                         notes.append("feedback round returned no patches; keeping first proposal")
                         parsed = ParsedResponse(changes=prev.changes, analysis=prev.analysis,
@@ -175,10 +182,22 @@ class LLMFixer:
             return llm.escalation_model
         return None if _unset(llm.model) else llm.model
 
+    @staticmethod
+    def call_tags(ctx: Optional[FixContext], cluster_id: Optional[str] = None) -> tuple[str, dict]:
+        """(role, metadata) sent with every LLM call of one propose() — lets a gateway route/budget by purpose."""
+        if ctx is None:
+            return "fix", ({"cluster_id": cluster_id} if cluster_id else {})
+        meta: dict = {"phase": ctx.phase.value, "iteration": ctx.iteration}
+        if cluster_id:
+            meta["cluster_id"] = cluster_id
+        return ("fix_escalation" if ctx.use_escalation_model else "fix"), meta
+
     def _call(self, messages: list[ChatMessage], model: Optional[str], usage: LLMUsage,
-              transcript: list[dict]) -> tuple[LLMResponse, ParsedResponse]:
+              transcript: list[dict], *, role: str = "fix",
+              metadata: Optional[dict] = None) -> tuple[LLMResponse, ParsedResponse]:
         resp = self.client.complete(messages, model=model, max_tokens=self.cfg.llm.max_output_tokens,
-                                    temperature=self.cfg.llm.temperature)
+                                    temperature=self.cfg.llm.temperature, role=role,
+                                    metadata=dict(metadata) if metadata else None)
         u = usage_from(resp)
         usage.model = usage.model or u.model
         usage.calls += 1

@@ -167,6 +167,21 @@ class Orchestrator:
     def fixer(self) -> Any:
         if self._fixer is None:
             def make() -> Any:
+                spec = getattr(getattr(self.cfg, "fix", None), "plugin", None)
+                if spec:                                   # tier 2: in-house coding agent (docs/ADAPTERS.md)
+                    try:
+                        llm = self.llm_client()
+                    except Exception as e:                 # the agent may not need our LLM at all
+                        log.info("fix.plugin %s: no sbmig LLM client (%s)", spec, e)
+                        llm = None
+                    resolve = lazy_attr("sbmig.llm", "resolve_fixer_plugin", "A (llm adapters)")
+                    try:
+                        fx = resolve(self.cfg, llm)
+                    except Exception as e:
+                        self.ws.journal({"event": "fixer", "plugin": spec, "error": f"{type(e).__name__}: {e}"})
+                        raise
+                    self.ws.journal({"event": "fixer", "plugin": spec})
+                    return fx
                 cls = lazy_attr("sbmig.fix", "LLMFixer", "D (fix)")
                 return cls(self.cfg, self.llm_client())
             self._fixer = LazyFixer(make)
@@ -743,10 +758,32 @@ class Orchestrator:
         h.cases_created += res.cases_created
         h.candidates_created += res.candidates_created
         h.recipes_credited += res.recipes_credited
+        h.recipes_promoted += [r for r in getattr(res, "recipes_promoted", []) if r not in h.recipes_promoted]
+        h.ledger_entries += getattr(res, "ledger_entries", 0) or 0
         h.notes += res.notes
         report.harvest = h
         self.ws.journal({"event": "harvest", "phase": pr.phase.value, "cases": res.cases_created,
-                         "candidates": res.candidates_created})
+                         "candidates": res.candidates_created,
+                         "promoted": getattr(res, "recipes_promoted", []),
+                         "ledger": getattr(res, "ledger_entries", 0)})
+
+    def _record_run_ledger(self, report: RunReport) -> None:
+        """Run-level KB ledger lines (unresolved / blocked-only-in-registry) + late auto-promotions."""
+        rec = getattr(self._kb, "record_run", None) if self._kb is not None else None
+        if not callable(rec) or self._dry_run or self.profile is None or not self.cfg.kb.harvest:
+            return
+        try:
+            res = rec(report, self.profile, self.ws)
+        except Exception as e:  # pragma: no cover - KB problems never break the report
+            log.warning("kb.record_run failed: %s", e)
+            return
+        if res is None or not (res.recipes_promoted or res.ledger_entries or res.notes):
+            return
+        h = report.harvest or HarvestResult()
+        h.recipes_promoted += [r for r in res.recipes_promoted if r not in h.recipes_promoted]
+        h.ledger_entries += res.ledger_entries
+        h.notes += res.notes
+        report.harvest = h
 
     def _flag(self, flag: str) -> None:
         if self.report is not None and flag not in self.report.flags:
@@ -832,6 +869,7 @@ class Orchestrator:
             out["report_md"] = str(self.ws.run_dir / "report.md")
         if "json" in self.cfg.report.formats:
             out["report_json"] = str(self.ws.run_dir / "report.json")
+        self._record_run_ledger(report)
         writer = self._report_writer
         if writer is None:
             from sbmig.report import write_report

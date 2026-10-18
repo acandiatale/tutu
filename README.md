@@ -16,6 +16,10 @@ intake ─► analyze ─► plan ─► JDK21 (rewrite + build-fix loop) ─►
 | `docs/RUNBOOK.md` | installing in the company environment, running, reading reports, KB workflow, tuning |
 | `docs/PLAN.md` | delivery plan, workstreams, acceptance criteria, risks |
 | `docs/INTERFACES.md` | contracts between packages + change log |
+| `docs/ADAPTERS.md` | plugging in the in-house LLM gateway (`llm.plugin`) or an in-house coding agent (`fix.plugin`); Python embedding via `sbmig.api.migrate` |
+| `docs/RECIPES.md` | how recipe lists are managed: `knowledge/recipes/catalog.yml` (single source), config sets, base recipes, reactive rules, KB recipes |
+| `docs/FLEET.md` | one agent over hundreds of projects, sequentially: `sbmig fleet`, resume, the learning ledger (`kb/ledger.jsonl`), symbol → fix labels |
+| `docs/ERROR-HANDLING.md` | error-case catalog: what is fixed, what is blocked and reported, loop safety |
 
 ## Quick start
 ```bash
@@ -27,6 +31,14 @@ sbmig analyze  path/to/project.zip --config config/artifacts.yml      # case typ
 sbmig plan     path/to/project.zip --config config/artifacts.yml      # ordered steps + recipes (no changes made)
 sbmig run      path/to/project.zip --config config/artifacts.yml --out out/   # full migration; exit 0 = final build passed
 sbmig kb list --status candidate && sbmig kb promote <id>             # review harvested recipes
+sbmig recipes list --kb && sbmig recipes check                        # every known recipe + where it is used
+sbmig fleet run projects.yml --config config/artifacts.yml --out out/fleet   # 500 projects, one after another, resumable
+sbmig kb learning                                                     # what was learned, what still needs the LLM, what blocks most projects
+```
+In-house LLM gateway / agent platform instead of our HTTP clients (see `docs/ADAPTERS.md`):
+```bash
+sbmig run project.zip --config config/artifacts.yml --llm-plugin mypkg.adapter:make_adapter     # tier 1: chat completion
+sbmig run project.zip --config config/artifacts.yml --fix-plugin  mypkg.agent:make_fixer        # tier 2: whole fixer = your agent
 ```
 Local end-to-end without the company Nexus/LLM (public artifacts + fake LLM):
 ```bash

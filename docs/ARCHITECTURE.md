@@ -125,6 +125,8 @@ kb/
   recipes/active/*.yml                promoted declarative OpenRewrite recipes (composed into every run)
   recipes/candidates/*.yml            harvested, awaiting review (`sbmig kb list|promote|reject`)
   patterns/*.yml                      deterministic non-OpenRewrite fixes (pom relocations, property renames)
+  ledger.jsonl                        one ResolutionRecord per resolved/blocked cluster across ALL projects (fleet memory)
+  symbols.json                        error-case symbol → fix labels / "old → new" / projects / recipe id
 ```
 Harvest (end of each phase, only for attempts whose cluster was resolved and which survived to BUILD SUCCESS):
 1. Create `KBCase` (sanitized paths, no secrets).
@@ -142,6 +144,27 @@ Harvest (end of each phase, only for attempts whose cluster was resolved and whi
    phase, every KB recipe that actually changed files is credited with the phase's build outcome
    (`Orchestrator._credit_plan_recipes`). Reactive KB recipe batches inside the build-fix loop use `rewrite:runNoFork`,
    and a forked plan-level run that fails in `compile` is retried with `runNoFork` automatically.
+
+6. **Labels and the ledger (round 3).** Every harvested case is labeled deterministically from its diff
+   (`sbmig.kb.labels`: `import-rename`, `type-rename`, `annotation-replace`, `method-rename`, `dependency-add`,
+   `dependency-version`, `spring-property-rename`, … `generic-rewrite`) and keyed by the error-case **symbol** (javac
+   symbol, `g:a`, owner class). Mechanical labels compile straight into whitelisted recipe candidates (no LLM); the
+   others go to the recipe model. Each resolution (handler / plan recipe / KB recipe / KB patch / LLM patch / blocked)
+   is appended to `kb/ledger.jsonl`, and `kb/symbols.json` feeds "symbol X was fixed in N projects by Y: old → new"
+   hints into the next prompt. `sbmig kb learning` turns the ledger into the to-do list for humans (symbols the LLM
+   keeps fixing → write a recipe/handler; artifacts blocking many projects → library owners).
+
+## 7.5 Fleet mode (one agent, sequential)
+`sbmig fleet run <manifest>` (`sbmig/fleet`): projects are migrated strictly one after another with a shared KB, so
+project N+1 plans with the recipes learned from 1..N. State (`fleet/state.json`) is rewritten after every project and
+makes the run resumable; `summary.{md,csv,json}` + `learning.md` are regenerated each time. The per-project pipeline
+is unchanged (`Orchestrator`); the fleet only sequences, budgets (`fleet.max_llm_calls_total`) and aggregates.
+
+## 7.6 Adapter seams (in-house gateway / agent platform)
+`LLMClientLike` (chat completion) and `FixerLike` (whole fixer) are the two replaceable units. `llm.provider: plugin`
++ `llm.plugin: "pkg.module:attr"` loads an `LLMAdapterLike` (`complete(LLMRequest) -> LLMResponse`, with the call's
+`role` and metadata) and wraps it so recording and budgets still apply; `fix.plugin` replaces `LLMFixer` with an
+in-house coding agent that receives the workspace, the error cluster and the packed context. See `docs/ADAPTERS.md`.
 
 ## 8. Restructure (non-MSA)
 
