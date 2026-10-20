@@ -1,4 +1,5 @@
-# In-house LLM gateway profile: a plain chat POST (not OpenAI-compatible). The token is NEVER stored here.
+# In-house LLM gateway profile: a plain chat POST (not OpenAI-compatible), driven through LangChain (company
+# convention: agents are built on LangGraph / LangChain). The token is NEVER stored here.
 #   export LLM_BASE_URL=https://<gateway>/<chat endpoint>   # the FULL URL that accepts the POST
 #   export LLM_API_KEY=<bearer token>
 #   sbmig llm-probe --config config/llm-company.yml          # first: prints the raw response + extracted reply
@@ -8,7 +9,11 @@
 # Response: the reply text is auto-detected (choices[0].message.content, content, response, data.content, ...);
 #           if `llm-probe` says it cannot be extracted, set `response_path` to the dot path seen in the raw JSON.
 llm:
-  provider: chat_post
+  # the LangChain BaseChatModel is sbmig.llm.langchain.ChatPostModel built from the fields below; set
+  # langchain_model: 'pkg.module:factory' to use the company's own LangChain model class instead
+  # (provider: chat_post sends the same request without LangChain)
+  provider: langchain
+  langchain_model: null                # e.g. mycompany.llm:make_chat_model  (fn(cfg) or fn() -> BaseChatModel)
   base_url: "${LLM_BASE_URL}"
   api_key_env: LLM_API_KEY
   model: gpt-6-luna

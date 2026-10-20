@@ -1,5 +1,5 @@
 """LLM clients: OpenAI-compatible (default), Anthropic Messages API, plain chat POST (in-house gateway),
-scripted fake, recorder.
+scripted fake, recorder. Provider `langchain` is built from `sbmig.llm.langchain` (a LangChain BaseChatModel).
 
 All clients implement `sbmig.core.interfaces.LLMClientLike`. Only httpx is used (no vendor SDKs).
 """
@@ -549,6 +549,8 @@ def _unexpanded(v: Optional[str]) -> bool:
 def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.BaseTransport] = None) -> LLMClientLike:
     """Build the configured client. `fake` needs no key; `base_url: replay:<dir>` with fake replays recordings.
 
+    `provider: langchain` → `sbmig.llm.langchain.LangChainClient` over `llm.langchain_model` (a BaseChatModel
+    factory) or `ChatPostModel` built from the chat_post fields (key from `api_key_env`, unless a factory is set).
     `provider: plugin` or a non-builtin provider name → `sbmig.llm.resolve_llm_plugin(cfg)` (the plugin handles
     its own auth; the `api_key_env` value, when set, is handed to the factory as options["api_key"] in memory only).
     Raises `sbmig.llm.PluginLoadError` (a ValueError) when the plugin cannot be loaded."""
@@ -563,6 +565,11 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
         if llm.base_url and llm.base_url.startswith("replay:"):
             responses = load_replay_responses(cfg.resolve_path(llm.base_url[len("replay:"):]))
         client = FakeLLMClient(responses)
+    elif llm.provider == "langchain":
+        from sbmig.llm.langchain import LangChainClient, resolve_langchain_model   # lazy: avoids an import cycle
+
+        client = LangChainClient(resolve_langchain_model(cfg, transport=transport),
+                                 default_model=llm.model if not _unexpanded(llm.model) else None)
     else:
         key = os.environ.get(llm.api_key_env or "")
         if not key:

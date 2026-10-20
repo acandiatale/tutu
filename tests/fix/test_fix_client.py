@@ -235,6 +235,37 @@ def test_make_llm_client_provider_switch(cfg, monkeypatch, tmp_path):
     assert isinstance(make_llm_client(cfg), RecordingClient)
 
 
+def test_make_llm_client_provider_langchain(cfg, monkeypatch, tmp_path):
+    from sbmig.fix.client import _HTTPClient
+    from sbmig.llm import ChatPostModel, LangChainClient
+
+    cfg.llm.provider = "langchain"
+    cfg.llm.base_url = "http://gw/chat"
+    cfg.llm.model = "gpt-company"
+    cfg.llm.api_key_env = "SBMIG_TEST_KEY"
+    monkeypatch.delenv("SBMIG_TEST_KEY", raising=False)
+    with pytest.raises(LLMConfigError, match="SBMIG_TEST_KEY"):
+        make_llm_client(cfg)
+    monkeypatch.setenv("SBMIG_TEST_KEY", "k")
+    rec = Recorder([httpx.Response(200, json={"content": "hi"})])
+    c = make_llm_client(cfg, transport=httpx.MockTransport(rec))
+    assert isinstance(c, LangChainClient) and isinstance(c.chat_model, ChatPostModel)
+    assert not isinstance(c, _HTTPClient) and c.model == "gpt-company"
+    assert c.complete(MSGS, role="fix").content == "hi"
+    assert str(rec.requests[0].url) == "http://gw/chat"
+
+    cfg.llm.base_url = "${LLM_BASE_URL}"
+    with pytest.raises(LLMConfigError, match="base_url"):
+        make_llm_client(cfg)
+
+    monkeypatch.delenv("SBMIG_TEST_KEY", raising=False)          # a langchain_model factory needs no key
+    cfg.llm.langchain_model = "tests.llm.plugins_fixture:make_lc_model"
+    cfg.llm.record_dir = str(tmp_path / "rec")
+    rc = make_llm_client(cfg)
+    assert isinstance(rc, RecordingClient) and isinstance(rc.inner, LangChainClient)
+    assert rc.complete(MSGS).content == "from-factory:gpt-company"
+
+
 def test_make_llm_client_fake_replay(cfg, tmp_path):
     rc = RecordingClient(FakeLLMClient(["recorded"]), tmp_path / "rec")
     rc.complete(MSGS)
@@ -329,5 +360,6 @@ def test_company_profile_loads(cfg_factory=None):
     from sbmig.core.config import load_config
     repo = Path(__file__).resolve().parents[2]
     c = load_config(repo / "config" / "artifacts.local-e2e.yml", repo / "config" / "llm-company.yml")
-    assert c.llm.provider == "chat_post" and c.llm.payload_extra == {"need_orgin": True}
+    assert c.llm.provider == "langchain" and c.llm.payload_extra == {"need_orgin": True}
+    assert c.llm.langchain_model is None                 # → sbmig.llm.langchain.ChatPostModel
     assert c.llm.model == "gpt-6-luna" and c.llm.recipe_model == "gpt-6-luna" and not c.llm.payload_generation_params

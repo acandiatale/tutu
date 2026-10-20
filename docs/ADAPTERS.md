@@ -4,7 +4,7 @@ sbmig has two adapter tiers. Pick the one that matches what you already have.
 
 | Tier | Replaces | You implement | Config |
 |---|---|---|---|
-| 1. LLM adapter | our httpx clients (`openai_compatible` / `anthropic` / `chat_post`) | `complete(request: LLMRequest) -> LLMResponse` | `llm.provider: plugin` + `llm.plugin` (or an entry point) |
+| 1. LLM adapter | our httpx clients (`openai_compatible` / `anthropic` / `chat_post` / `langchain`) | `complete(request: LLMRequest) -> LLMResponse` | `llm.provider: plugin` + `llm.plugin` (or an entry point) |
 | 2. Fixer adapter | `LLMFixer` (our SEARCH/REPLACE protocol over a chat completion) | `propose(ws, cluster, ctx) -> FixProposal` [+ `apply`] | `fix.plugin` |
 
 With tier 1, sbmig keeps building the prompts, parsing the patches, validating them and running the feedback
@@ -76,10 +76,13 @@ Optional base class: `sbmig.llm.LLMAdapter` (abstract `complete(request)`, `name
 
 `make_llm_client(cfg)` picks the client like this:
 
-1. `llm.provider` is `openai_compatible`, `anthropic`, `chat_post` or `fake`: a builtin client (`api_key_env` is
+1. `llm.provider` is `openai_compatible`, `anthropic`, `chat_post`, `langchain` or `fake`: a builtin client (`api_key_env` is
    required for the HTTP providers). `chat_post` is the plain gateway shape — `POST base_url` (the full URL) with
    `{"model", "messages", **llm.payload_extra}` and a Bearer token, reply text from `llm.response_path` or
    auto-detected (`config/llm-company.yml`; `sbmig llm-probe` shows the raw response first).
+   `langchain` (company convention, `config/llm-company.yml`): the model is a LangChain `BaseChatModel` —
+   `llm.langchain_model` when set, else `ChatPostModel` built from the `chat_post` fields — wrapped in
+   `LangChainClient`. See [LangChain models](#langchain-models).
 2. `llm.provider: plugin`: load `llm.plugin` (`"pkg.module:attr"`; `"pkg.module.attr"` also works).
 3. Any other provider name: the entry point with that name in group `sbmig.llm_adapters`. If there is none,
    `llm.plugin` is used when set. Otherwise loading fails with `PluginLoadError`, which names the provider and
@@ -136,6 +139,53 @@ Then `pip install` your package into the sbmig environment and set `llm.provider
 * Handle retries, rate limiting, auth and timeouts itself. sbmig's HTTP retry logic only covers the builtin
   clients.
 * Never log or persist the key. Read it from `options["api_key"]` or from your own environment variable.
+
+## LangChain models
+
+The company deploys only agents built on LangGraph / LangChain, so `config/llm-company.yml` uses
+`llm.provider: langchain`: every sbmig LLM call goes through a LangChain `BaseChatModel`
+(`sbmig/llm/langchain.py`). sbmig's own seams do not change: callers still use `LLMClientLike.complete(messages,
+role=, metadata=)` and get an `LLMResponse`, and `RecordingClient` still records every call.
+
+* **`ChatPostModel(BaseChatModel)`** (`_llm_type = "sbmig-chat-post"`) is the in-house gateway as a LangChain
+  model. `POST url` (the full URL, untouched) with `Authorization: Bearer <api_key>` and
+  `{"model", "messages", **payload_extra}` — e.g. `{"model": "gpt-6-luna", "need_orgin": true, "messages": [...]}`.
+  The reply text comes from `response_path` or is auto-detected (`sbmig.fix.extract_reply`), token counts land in
+  `AIMessage.usage_metadata`, model / finish reason in `response_metadata`. It reuses the `chat_post` client, so
+  retries, backoff and status handling are the same. `max_tokens` / `temperature` / `stop` are sent only with
+  `llm.payload_generation_params: true`. `api_key` is a `SecretStr` and never appears in `repr` or
+  `_identifying_params`. It is a normal LangChain model: `ChatPostModel(...).invoke("hi")` works, so it can be
+  used directly in LangGraph nodes too.
+* **`LangChainClient(model, default_model=None)`** adapts any `BaseChatModel` to `LLMClientLike`: sbmig messages
+  become `SystemMessage` / `HumanMessage` / `AIMessage`; `role` → `config["tags"] = [role]` (and
+  `run_name = "sbmig-<role>"`), `metadata` → `config["metadata"]`, so LangSmith-style tracing sees phase, iteration
+  and cluster id. A role-specific model (`recipe_model`, `escalation_model`), `max_tokens` and `temperature` are
+  passed as `invoke` kwargs; a model that rejects them with `TypeError` is called again without them. Content
+  blocks are joined to text; missing `usage_metadata` counts as 0 tokens. Exceptions other than `LLMError` are
+  raised as `LLMError` (status kept from `status` / `status_code`), so the build-fix loop marks the LLM
+  unavailable after repeated failures instead of crashing.
+* **Your own model class**: set `llm.langchain_model: "pkg.module:attr"`, where `attr` is a `BaseChatModel`
+  instance, a `BaseChatModel` class (built with no arguments), or a factory called with `(cfg)` or `()` that
+  returns one. sbmig then does not read `LLM_API_KEY`; the factory handles its own auth (e.g. read your token from
+  your own environment variable). Example:
+
+  ```python
+  # mycompany/sbmig_llm.py
+  def make_chat_model(cfg):
+      from mycompany.langchain import CompanyChatModel      # your BaseChatModel
+      return CompanyChatModel(model=cfg.llm.model, timeout=cfg.llm.timeout_seconds)
+  ```
+
+  ```yaml
+  llm:
+    provider: langchain
+    langchain_model: mycompany.sbmig_llm:make_chat_model
+    model: gpt-6-luna
+  ```
+
+`sbmig llm-probe --config config/llm-company.yml` sends one small request through the configured client and prints
+the extracted reply. Because the LangChain path does not expose the raw HTTP body, use
+`--llm-provider chat_post` once to see the raw JSON when `response_path` still has to be found.
 
 ## Roles
 

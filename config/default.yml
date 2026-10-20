@@ -101,7 +101,7 @@ loop:
     encoding: 0
 
 llm:
-  provider: openai_compatible      # openai_compatible | anthropic | fake
+  provider: openai_compatible      # openai_compatible | anthropic | chat_post | langchain | fake | plugin
   base_url: "${LLM_BASE_URL:-http://localhost:8000/v1}"
   api_key_env: LLM_API_KEY
   model: "${LLM_MODEL:-default}"
