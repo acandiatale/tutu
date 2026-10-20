@@ -1,6 +1,6 @@
 # In-house LLM gateway profile: a plain chat POST (not OpenAI-compatible), driven through LangChain (company
 # convention: agents are built on LangGraph / LangChain). The token is NEVER stored here.
-#   export LLM_BASE_URL=https://<gateway>/<chat endpoint>   # the FULL URL that accepts the POST
+#   export LLM_BASE_URL=http://<gateway>/<chat endpoint>    # the FULL URL (http or https) that accepts the POST
 #   export LLM_API_KEY=<bearer token>
 #   sbmig llm-probe --config config/llm-company.yml          # first: prints the raw response + extracted reply
 #   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml --out out/run

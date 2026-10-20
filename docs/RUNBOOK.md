@@ -16,12 +16,14 @@ uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml      # fill in parent / mandatory ×2 / optional ×8
 export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
 # in-house gateway that only accepts a plain chat POST ({model, need_orgin, messages}): use the profile
-#   export LLM_BASE_URL=https://<gateway>/<chat endpoint> LLM_API_KEY=...
+#   export LLM_BASE_URL=http://<gateway>/<chat endpoint> LLM_API_KEY=...   # http or https, used verbatim
 #   sbmig llm-probe --config config/llm-company.yml      # raw response + extracted reply
 #   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
 ```
 
-HTTP 503 / connection errors from the gateway while `requests.post` works by hand: set `llm.http_backend: requests`
+The gateway URL is used verbatim (no scheme change, no path appended): when the gateway only speaks plain HTTP,
+`LLM_BASE_URL=http://...` exactly as the working in-house agent calls it (`https://` there gets a 503 from the
+front proxy). HTTP 503 / connection errors from the gateway while `requests.post` works by hand: set `llm.http_backend: requests`
 (the company profile already does; it follows the Windows system proxy and `REQUESTS_CA_BUNDLE`) and, when the
 corporate proxy intercepts TLS, `llm.verify_ssl: <CA bundle path>`; `sbmig llm-probe` prints the backend, the
 transport error class and hints.
