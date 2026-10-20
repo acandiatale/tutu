@@ -4,6 +4,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import os
 import sys
 import tempfile
 import threading
@@ -199,6 +200,61 @@ def run(
     raise typer.Exit(run_exit_code(report))
 
 
+def _mask_headers(headers) -> dict:
+    out = {}
+    for k, v in dict(headers or {}).items():
+        v = str(v)
+        if k.lower() in ("authorization", "x-api-key", "api-key"):
+            v = v[:10] + "…" + f"({len(v)} chars)"
+        out[k] = v
+    return out
+
+
+def _echo_wire(resp, timeout) -> None:
+    """What actually went over the wire (token masked) and what came back, for comparing with a working client."""
+    req = getattr(resp, "request", None)
+    if req is not None:
+        body = getattr(req, "body", None) or getattr(req, "content", b"")
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        typer.echo(f"sent: {getattr(req, 'method', 'POST')} {getattr(req, 'url', '?')}")
+        typer.echo(f"sent headers: {json.dumps(_mask_headers(getattr(req, 'headers', {})), ensure_ascii=False)}")
+        typer.echo(f"sent body: {str(body)[:1500]}")
+    try:
+        import requests.utils as ru
+        url = str(getattr(req, "url", "")) if req is not None else ""
+        typer.echo(f"proxies in effect for this url: {ru.get_environ_proxies(url) if url else '?'}  "
+                   f"(NO_PROXY={os.environ.get('NO_PROXY') or os.environ.get('no_proxy') or '-'})")
+    except Exception:
+        pass
+    typer.echo(f"response headers: {json.dumps(dict(resp.headers), ensure_ascii=False)[:800]}")
+    typer.echo(f"timeout: {timeout}s")
+
+
+def _probe_bare(cfg, prompt: str) -> None:
+    """The company snippet, verbatim: requests.post(url, headers=..., json=payload, timeout=...)."""
+    import requests
+
+    llm = cfg.llm
+    url = llm.base_url
+    key = os.environ.get(llm.api_key_env or "", "")
+    payload = {"model": llm.model,
+               "messages": [{"role": "system", "content": "You are a helpful assistant."},
+                            {"role": "user", "content": prompt}], **(llm.payload_extra or {})}
+    headers = {"Authorization": f"Bearer {key}"}
+    typer.echo(f"bare requests.post → {url}  key_env={llm.api_key_env} key_set={bool(key)}")
+    typer.echo("payload: " + json.dumps(payload, ensure_ascii=False)[:1500])
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=float(llm.timeout_seconds))
+    except Exception as e:
+        typer.echo(f"TRANSPORT ERROR: {type(e).__name__}: {e}")
+        raise typer.Exit(1)
+    _echo_wire(resp, llm.timeout_seconds)
+    typer.echo(f"HTTP {resp.status_code}")
+    typer.echo(resp.text[:4000])
+    raise typer.Exit(0 if resp.status_code < 300 else 1)
+
+
 @app.command("serve")
 def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address (0.0.0.0 to share on the LAN)"),
               port: int = typer.Option(8765, "--port"),
@@ -224,10 +280,15 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
 @app.command("llm-probe")
 def llm_probe(config: Optional[List[Path]] = ConfigOpt,
               prompt: str = typer.Option("Reply with the single word: pong", "--prompt"),
-              llm_provider: Optional[str] = typer.Option(None, "--llm-provider")) -> None:
+              llm_provider: Optional[str] = typer.Option(None, "--llm-provider"),
+              bare: bool = typer.Option(False, "--bare", help="bypass sbmig's client: plain requests.post(url, "
+                                                              "headers={Authorization}, json=payload, timeout=) "
+                                                              "with the same payload — compare with the normal probe")
+              ) -> None:
     """Send one small request with the configured LLM provider and print what came back (raw JSON for HTTP
     providers, then the extracted reply). Run this first on a new gateway; if the reply cannot be extracted, set
-    `llm.response_path` to the dot path shown in the raw JSON."""
+    `llm.response_path` to the dot path shown in the raw JSON. `--bare` sends the identical payload with a bare
+    `requests.post` (no session, no extra headers) so a gateway problem can be told apart from a client problem."""
     import json
 
     from sbmig.core.interfaces import ChatMessage
@@ -237,6 +298,9 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     overrides: dict = {"llm": {"provider": llm_provider}} if llm_provider else {}
     cfg = _load(config, overrides)
     llm = cfg.llm
+    if bare:
+        _probe_bare(cfg, prompt)
+        return
     typer.echo(f"provider={llm.provider} model={llm.model} url={llm.base_url} key_env={llm.api_key_env}"
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
     client = make_llm_client(cfg)
@@ -257,6 +321,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
             typer.echo("hints: proxy (HTTPS_PROXY / NO_PROXY, Windows system proxy → llm.http_backend: requests), "
                        "TLS interception (llm.verify_ssl: <CA bundle path>), URL (the full endpoint)")
             raise typer.Exit(1)
+        _echo_wire(resp, inner.timeout)
         typer.echo(f"HTTP {resp.status_code}")
         try:
             data = resp.json()
