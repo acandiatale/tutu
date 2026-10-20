@@ -81,7 +81,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - Real-LLM runs: `--config config/llm-anthropic.yml` (Anthropic) or `--config config/llm-company.yml` (in-house
   gateway, provider `chat_post`: plain `POST $LLM_BASE_URL` with `{model, need_orgin, messages}` + Bearer
   `LLM_API_KEY`; `sbmig llm-probe` first, `llm.response_path` when the reply is not auto-detected). Keys only from
-  the environment; in a cloud session set them on the cloud environment, never in the repo.
+  the environment (or a git-ignored `.env` at the repo root / `SBMIG_ENV_FILE`, read by `load_config`; existing
+  variables win); `llm.api_key_env` is the variable NAME, never the value. In a cloud session set them on the cloud
+  environment, never in the repo.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.

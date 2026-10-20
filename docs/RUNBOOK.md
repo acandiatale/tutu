@@ -21,6 +21,10 @@ export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
 #   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
 ```
 
+Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point
+`SBMIG_ENV_FILE` at a file; `load_config` reads it before anything else and never overrides variables already set.
+`llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
+
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
 
 ## 0.5 LLM roles (two models)

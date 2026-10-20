@@ -9,3 +9,6 @@ out/
 config/artifacts.yml
 kb/cases/**/*.json
 !kb/cases/.gitkeep
+.env
+.env.*
+!.env.example

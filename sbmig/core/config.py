@@ -371,8 +371,51 @@ def _apply_env_overrides(data: dict) -> dict:
     return data
 
 
+_DOTENV_LOADED: set[str] = set()
+
+
+def load_dotenv_files(*extra: str | Path) -> list[Path]:
+    """Read `KEY=VALUE` lines from `$SBMIG_ENV_FILE`, `<repo root>/.env` and `<cwd>/.env` into `os.environ`
+    (existing variables win; `export KEY=...`, quotes and `#` comments are accepted). The files are git-ignored
+    and are never read into the config itself: keys still reach sbmig only through environment variables."""
+    found: list[Path] = []
+    candidates = [os.environ.get("SBMIG_ENV_FILE"), PACKAGE_ROOT / ".env", Path.cwd() / ".env", *extra]
+    for c in candidates:
+        if not c:
+            continue
+        f = Path(c).expanduser()
+        try:
+            key = str(f.resolve())
+            if not f.is_file():
+                continue
+            text = f.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        found.append(f)
+        if key in _DOTENV_LOADED:
+            continue
+        _DOTENV_LOADED.add(key)
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+                v = v[1:-1]
+            else:
+                v = v.split(" #", 1)[0].rstrip()
+            if k and k not in os.environ:
+                os.environ[k] = v
+    return found
+
+
 def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root: Optional[Path] = None) -> Config:
-    """Load default.yml, then each given yml (artifacts yml, site yml ...), then dict overrides, then env."""
+    """Load default.yml, then each given yml (artifacts yml, site yml ...), then dict overrides, then env
+    (`.env` files are read into the environment first, see `load_dotenv_files`)."""
+    load_dotenv_files()
     data: dict = {}
     files = [DEFAULT_CONFIG_PATH, *[Path(p) for p in paths]]
     for f in files:
