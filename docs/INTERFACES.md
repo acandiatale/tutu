@@ -150,3 +150,31 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
 * 2026-10-20 PM: `sbmig.web` (`RunManager(out_dir, repo_root, command=default_command)`, `make_server`, `serve`);
   HTTP routes in `sbmig/web/server.py` docstring; SSE events `status | journal | log | console | report | ping | end`.
   CLI `sbmig serve --host --port --out --repo-root`. Package data now includes `**/*.html`.
+* 2026-10-20 PM (company convention: LangGraph + LangChain, served by uvicorn) — contracts:
+  * **Graph engine** (`sbmig/graph/`, workstream G): `MigrationState` (TypedDict: `run_id`, `stop_after: str | None`,
+    `dry_run`, `phases: list[str]` (remaining phase names), `phase: str | None` (current), `aborted: str | None`,
+    `stopped: bool`, `summary: dict` (small, JSON-able: case_type, phase outcomes, llm_calls, blocked, unresolved)).
+    Nodes: `intake` → `analyze` → `plan` → `phase` (one node invocation per plan phase group, conditional edge loops
+    while `phases` remain and nothing aborted/stopped) → `finalize` → END. `build_graph(orch: Orchestrator)` returns
+    the compiled `StateGraph`; `run_graph(orch, stop_after=None, dry_run=False) -> RunReport` and
+    `stream_graph(orch, ...) -> Iterator[tuple[str, dict]]` (node name, state update) for the web app.
+    `Orchestrator.run()` dispatches on `cfg.loop.engine` (`graph` default, `inline` = today's `_run`); the step
+    bodies are shared methods (`step_intake/step_analyze/step_plan/step_phase/step_finish`) so both engines produce
+    identical reports, journals and exit codes. Build gate, abort semantics (`_RunAborted`), `stop_after`, harvest
+    and ledger calls stay exactly where they are today.
+  * **LangChain tier** (`sbmig/llm/langchain.py`, workstream L): `ChatPostModel(BaseChatModel)` — the in-house
+    gateway as a LangChain chat model (`_generate` does the same `POST url` with
+    `{"model", "messages", **payload_extra}` + Bearer token, reply via `response_path` / `extract_reply`; usage in
+    `usage_metadata`); `LangChainClient(model: BaseChatModel, default_model=None)` implements `LLMClientLike`
+    (`role` → `tags=[role]`, `metadata` → `config["metadata"]`, `stop` honoured, token counts from
+    `usage_metadata`). `make_llm_client` provider `langchain`: `llm.langchain_model` factory (`fn(cfg)` or `fn()`
+    → BaseChatModel, or an instance) else `ChatPostModel` from the `chat_post` fields. `RecordingClient` still wraps
+    it; `LLMRequest`/`LLMResponse`/`FixerLike` unchanged (invariant 4). `config/llm-company.yml` switches to
+    `provider: langchain`.
+  * **Web app** (`sbmig/web/app.py`, workstream W): FastAPI `create_app(out_dir, repo_root) -> FastAPI`, module-level
+    `app` for `uvicorn sbmig.web.app:app` (env `SBMIG_WEB_OUT`, `SBMIG_WEB_REPO_ROOT`); static page mounted from
+    `sbmig/web/static/` at `/static` and `/`. Routes as before (`/api/configs`, `/api/runs` GET/POST with the zip
+    body, `/api/runs/{id}`, `/api/runs/{id}/events` SSE, `/api/runs/{id}/stop`, `/api/runs/{id}/files/{name}`).
+    Runs execute **in-process** through `stream_graph` in a worker thread (one per run), SSE events: `status`,
+    `node` (graph node update), `journal`, `log`, `console`→dropped, `report`, `ping`, `end`. Per-run log file via
+    `attach_file_log(path, thread_id=...)` (a logging filter by thread). `sbmig serve` launches uvicorn.

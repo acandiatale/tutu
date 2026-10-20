@@ -160,6 +160,8 @@ class LoopConfig(BaseModel):
     revert_on_regression: bool = True
     regression_ratio: float = 1.5            # errors_after > errors_before * ratio → regression
     always_final_verify: bool = True         # `mvn clean package` at the end no matter what
+    engine: Literal["graph", "inline"] = "graph"   # graph: LangGraph StateGraph drives the phases (company
+                                             # convention, sbmig.graph); inline: the original in-process loop
     oscillation_window: int = 4              # error-set history compared for A↔B toggling (≥ stall detection window)
     max_llm_attempts_per_cluster: int = 2    # LLM tries per cluster signature set before it is BLOCKED(repeated_failure)
     # how many LLM attempts a cluster of this BlockReason may get before it is blocked (0 = block immediately)
@@ -171,7 +173,7 @@ class LoopConfig(BaseModel):
         "pom_invalid", "parent_resolution", "plugin_resolution"])   # appearing after a pom edit ⇒ revert regardless of count
 
 
-BUILTIN_LLM_PROVIDERS = ("openai_compatible", "anthropic", "chat_post", "fake")
+BUILTIN_LLM_PROVIDERS = ("openai_compatible", "anthropic", "chat_post", "langchain", "fake")
 
 
 class LLMConfig(BaseModel):
@@ -200,6 +202,10 @@ class LLMConfig(BaseModel):
     payload_extra: dict[str, Any] = Field(default_factory=dict)      # extra top-level payload fields, sent verbatim
     payload_generation_params: bool = False  # also send max_tokens / temperature / stop (off: gateways reject unknown keys)
     response_path: Optional[str] = None      # dot path to the reply text, e.g. "data.result.content"; None → auto-detect
+    # provider `langchain` (company convention): the model is a LangChain BaseChatModel. `langchain_model` names a
+    # factory "pkg.module:attr" -> BaseChatModel (called with (cfg) or ()); None → sbmig.llm.langchain.ChatPostModel
+    # built from base_url / api_key_env / model / payload_extra / response_path (same wire format as chat_post).
+    langchain_model: Optional[str] = None
 
 
 class FixConfig(BaseModel):
