@@ -170,6 +170,22 @@ def run(
     raise typer.Exit(run_exit_code(report))
 
 
+@app.command("serve")
+def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address (0.0.0.0 to share on the LAN)"),
+              port: int = typer.Option(8765, "--port"),
+              out: Path = typer.Option(Path("out/web"), "--out", "-o", help="where uploads and runs go"),
+              repo_root: Optional[Path] = typer.Option(None, "--repo-root", help="sbmig repo root (config/, kb/)")) -> None:
+    """One-page web UI: upload a project zip, start `sbmig run`, watch analysis / fixes / builds live (SSE),
+    download report.md / result.zip. Each run is a normal `sbmig run` subprocess with its own run directory."""
+    from sbmig.core.config import PACKAGE_ROOT
+    from sbmig.web import serve
+
+    root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
+    attach_file_log(Path(out) / "sbmig-web.log")
+    typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}")
+    serve(host, port, Path(out), root)
+
+
 @app.command("llm-probe")
 def llm_probe(config: Optional[List[Path]] = ConfigOpt,
               prompt: str = typer.Option("Reply with the single word: pong", "--prompt"),

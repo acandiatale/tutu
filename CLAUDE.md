@@ -59,7 +59,8 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   once through the cloud proxy), `UpgradeSpringBoot_4_0` leaves literal `<version>4.0.x</version>` starters, the
   build blocks on `artifact_not_found`, and every KB candidate in that plan is credited a failure it did not cause.
   Candidates: detect `Failed to download` / `x.y.x` versions after the rewrite and retry once; do not credit KB
-  recipes when the phase failed on dependency resolution.
+  recipes when the phase failed on dependency resolution. Cause seen 2026-10-20: the cloud proxy answered Maven
+  Central with HTTP 429 (rate limit) — every rewrite run then fails the same way (CLI and web alike); wait and retry.
 
 ## How to work here
 - **Working mode the user asked for**: Claude plans and acts as PM in the main session. Write shared contracts
@@ -82,6 +83,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
+- Web UI: `sbmig serve` (`sbmig/web/`, stdlib HTTP server + SSE, `static/index.html` vanilla JS). Runs are
+  `sbmig run` subprocesses under `out/web/<run id>/`; the page only streams `journal.jsonl` / `sbmig.log` / console.
+  sbmig is NOT a LangGraph project: the orchestration is the deterministic loop in `sbmig/loop/`.
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a `claude/...` branch; the user merges to `main` locally.

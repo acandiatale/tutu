@@ -29,7 +29,7 @@ sbmig = "sbmig.cli:app"
 include = ["sbmig*"]
 
 [tool.setuptools.package-data]
-sbmig = ["**/*.yml", "**/*.yaml", "**/*.md", "**/*.j2", "**/*.json"]
+sbmig = ["**/*.yml", "**/*.yaml", "**/*.md", "**/*.j2", "**/*.json", "**/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

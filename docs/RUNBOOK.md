@@ -35,6 +35,12 @@ Smoke test without touching anything: `sbmig analyze path/to/project.zip --confi
 `<run dir>/sbmig.log` (DEBUG: decisions, builds, LLM calls — never keys); `--log-file PATH` adds one for any
 command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When asking for help, share
 `sbmig.log`, `report.md` and the relevant `llm-NNNN.json`.
+
+`sbmig serve` (web UI): `sbmig serve --host 0.0.0.0 --port 8765 --out out/web` and open the page; upload a zip, pick
+the config files (e.g. `artifacts.yml` + `llm-company.yml`), start. The page streams `journal.jsonl` (phases,
+builds, decisions, LLM fixes), `sbmig.log` and the console over SSE, and links `report.md` / `report.json` /
+`result.zip` / `sbmig.log` when the run ends. The server needs the same environment as the CLI (`JAVA21_HOME`,
+`LLM_BASE_URL`, `LLM_API_KEY`); it binds to localhost unless `--host` says otherwise.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
 ## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)

@@ -147,3 +147,6 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   `LLMConfig.response_path: Optional[str] = None`; builtin provider `chat_post` (`sbmig.fix.ChatPostClient`,
   `sbmig.fix.extract_reply(data, response_path)`); CLI `sbmig llm-probe`, global `--log-file`, per-run
   `<run dir>/sbmig.log` (`sbmig.cli.attach_file_log`). Profile `config/llm-company.yml`.
+* 2026-10-20 PM: `sbmig.web` (`RunManager(out_dir, repo_root, command=default_command)`, `make_server`, `serve`);
+  HTTP routes in `sbmig/web/server.py` docstring; SSE events `status | journal | log | console | report | ping | end`.
+  CLI `sbmig serve --host --port --out --repo-root`. Package data now includes `**/*.html`.
