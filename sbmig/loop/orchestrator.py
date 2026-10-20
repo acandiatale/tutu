@@ -13,8 +13,9 @@ from __future__ import annotations
 import logging
 import re
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, ErrorKind, HarvestResult,
@@ -87,6 +88,8 @@ class Orchestrator:
         self._real_maven = build_runner is None
         self._locator = locator
         self._effective_capture = effective_capture
+        self._running = False
+        self.abort_reason: str | None = None   # first `_abort` reason of the current run
 
     # ------------------------------------------------------------------ lazy collaborators
     @property
@@ -188,8 +191,39 @@ class Orchestrator:
         return self._fixer
 
     # ------------------------------------------------------------------ run
-    def run(self, stop_after: Optional[Phase] = None, dry_run: bool = False) -> RunReport:
+    def run(self, stop_after: Phase | None = None, dry_run: bool = False) -> RunReport:
+        """One migration run. `loop.engine` picks the driver of the steps: ``graph`` (default, LangGraph
+        `StateGraph`, `sbmig.graph`) or ``inline`` (`_run`). Both call the same `step_*` methods inside the same
+        guard (`_run_guard`: abort / missing-component / internal-error handling + `_finalize`), so reports,
+        journals and exit codes are identical apart from the graph's additive ``graph_node`` journal events."""
+        with self._run_guard(dry_run) as report:
+            if self.engine == "graph":
+                from sbmig.graph import run_graph
+                run_graph(self, stop_after=stop_after, dry_run=dry_run)
+            else:
+                self._run(report, stop_after, dry_run)
+        return report
+
+    @property
+    def engine(self) -> str:
+        return getattr(getattr(self.cfg, "loop", None), "engine", "inline") or "inline"
+
+    @property
+    def running(self) -> bool:
+        """True while a `_run_guard` is open (a run is in progress and `self.report` is its report)."""
+        return self._running
+
+    @contextmanager
+    def _run_guard(self, dry_run: bool = False) -> Iterator[RunReport]:
+        """Start a run (fresh `RunReport` on `self.report`) and always finish it: `_RunAborted` ends the run
+        quietly, a `MissingComponentError` or any other exception is recorded as an abort (never lose the report
+        because of a bug), and `_finalize` (report, ledger, outputs) runs no matter what. Used by `run()` for both
+        engines and by `sbmig.graph.run_graph` / `stream_graph` when they are called directly."""
+        if self._running:
+            raise RuntimeError("Orchestrator run already in progress")
+        self._running = True
         self._dry_run = dry_run
+        self.abort_reason = None
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
@@ -197,7 +231,7 @@ class Orchestrator:
         if dry_run:
             report.flags.append("dry-run")
         try:
-            self._run(report, stop_after, dry_run)
+            yield report
         except _RunAborted:
             pass
         except MissingComponentError as e:
@@ -207,16 +241,18 @@ class Orchestrator:
             log.exception("run failed")
             self._abort(report, f"internal error: {type(e).__name__}: {e}")
         finally:
+            self._running = False
             report.timings_s["total"] = round(self.clock() - t0, 3)
             self._finalize(report)
-        return report
 
     def _abort(self, report: RunReport, why: str) -> None:
         report.flags.append("aborted")
         report.manual_followups.append(f"run aborted: {why}")
+        if self.abort_reason is None:
+            self.abort_reason = why
         self.ws.journal({"event": "abort", "reason": why})
 
-    def _stop(self, stop_after: Optional[Phase], phase: Phase) -> bool:
+    def _stop(self, stop_after: Phase | None, phase: Phase) -> bool:
         if stop_after is not None and stop_after == phase:
             assert self.report is not None
             self.report.flags.append(f"stopped-after-{phase.value}")
@@ -228,8 +264,22 @@ class Orchestrator:
         assert self.report is not None
         self.report.timings_s[key] = round(self.report.timings_s.get(key, 0.0) + self.clock() - t0, 3)
 
-    def _run(self, report: RunReport, stop_after: Optional[Phase], dry_run: bool) -> None:
-        # 1. intake ------------------------------------------------------------
+    def _run(self, report: RunReport, stop_after: Phase | None, dry_run: bool) -> None:
+        """The inline engine (`loop.engine: inline`): the step sequence without LangGraph."""
+        if not self.step_intake(report, stop_after):
+            return
+        if not self.step_analyze(report, stop_after):
+            return
+        groups = self.step_plan(report, stop_after, dry_run)
+        if groups is None:
+            return
+        for phase, items in groups:
+            self.step_phase(report, phase, items, stop_after)
+        self.step_finish(report, stop_after)
+
+    # ------------------------------------------------------------------ steps (shared by both engines)
+    def step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
+        """1. intake: git snapshot, preflight, effective dependencyManagement. False = stop or abort."""
         t = self.clock()
         self.ws.git_init()
         setter = getattr(self.ws, "set_encoding_candidates", None)
@@ -238,12 +288,13 @@ class Orchestrator:
         self._preflight(report)
         if "mvn-not-found" in report.flags:
             self._abort(report, f"'{self.cfg.build.mvn}' is not runnable (install Maven or set build.mvn)")
-            return
+            return False
         self._capture_effective(report)
         self._timed("intake", t)
-        if self._stop(stop_after, Phase.INTAKE):
-            return
-        # 2. analyze -----------------------------------------------------------
+        return not self._stop(stop_after, Phase.INTAKE)
+
+    def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
+        """2. analyze: profile + library advisories. False = stop or abort (not Maven, no pom.xml)."""
         t = self.clock()
         profile = self.analyzer(self.ws, self.cfg)
         self.profile = profile
@@ -258,13 +309,18 @@ class Orchestrator:
         self._timed("analyze", t)
         if profile.build_tool != "maven":
             self._abort(report, f"build tool '{profile.build_tool}' is not supported (Maven only)")
-            return
+            return False
         if not profile.poms:
             self._abort(report, "no pom.xml found in the project")
-            return
-        if self._stop(stop_after, Phase.ANALYZE):
-            return
-        # 3. plan --------------------------------------------------------------
+            return False
+        return not self._stop(stop_after, Phase.ANALYZE)
+
+    def step_plan(self, report: RunReport, stop_after: Phase | None,
+                  dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
+        """3. plan: the migration plan, the run's `BuildFixLoop` and the phase groups (consecutive plan steps of
+        the same phase; MSA plans repeat jdk21/spring per service). None = the run stops after `plan`."""
+        profile = self.profile
+        assert profile is not None
         t = self.clock()
         plan = self._plan_with_advisories(profile, report.advisories)
         plan = self._advise_plan(plan)
@@ -280,7 +336,7 @@ class Orchestrator:
                 report.manual_followups.append(n[len("followup:"):].strip())
         self._timed("plan", t)
         if self._stop(stop_after, Phase.PLAN):
-            return
+            return None
         # 4. phases ------------------------------------------------------------
         self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.handlers, self.fixer,
                                  self.kb, self._rewrite_runner_or_none(), profile, plan_notes=plan.notes,
@@ -299,31 +355,40 @@ class Orchestrator:
                 groups[-1][1].append((i, s))
             else:
                 groups.append((s.phase, [(i, s)]))
-        stop_idx = _PHASE_ORDER.index(stop_after) if stop_after is not None else None
-        for phase, items in groups:
-            if stop_idx is not None and _PHASE_ORDER.index(phase) > stop_idx:
-                # MSA plans repeat jdk21/spring per service: skip only the phases after `stop_after`
-                self.ws.journal({"event": "phase_skipped", "phase": phase.value, "reason": f"stop_after={stop_after.value}"})
-                continue
-            t = self.clock()
-            pr = PhaseResult(phase=phase, step_ids=[s.id for _, s in items], ok=True)
-            self.ws.journal({"event": "phase_start", "phase": phase.value, "steps": pr.step_ids})
-            self._run_phase(pr, items)
-            pr.finished_at = utcnow()
-            report.phases.append(pr)
-            self.ws.journal({"event": "phase_end", "phase": phase.value, "ok": pr.ok, "build_ok": pr.build_ok,
-                             "iterations": pr.iterations, "attempts": len(pr.attempts),
-                             "remaining_errors": len(pr.remaining_errors), "blocked": [b.id for b in pr.blocked]})
-            if self.loop is not None and self.loop.aborted:
-                self.ws.journal({"event": "run_aborted", "phase": phase.value, "reason": self.loop.aborted})
-                self._timed(phase.value, t)
-                raise _RunAborted(self.loop.aborted)
-            if not pr.ok and phase != Phase.VERIFY:
-                self._phase_failed = True
-            if phase != Phase.VERIFY and not pr.skipped:
-                self._credit_plan_recipes(pr)
-                self._harvest(report, pr)
+        return groups
+
+    def step_phase(self, report: RunReport, phase: Phase, items: list[tuple[int, PlanStep]],
+                   stop_after: Phase | None) -> PhaseResult | None:
+        """One phase group: run its steps, then credit plan recipes and harvest. Returns the `PhaseResult`
+        (also appended to `report.phases`), or None when the group lies after `stop_after` (``phase_skipped``).
+        Raises `_RunAborted` when the build-fix loop aborted the run."""
+        if stop_after is not None and _PHASE_ORDER.index(phase) > _PHASE_ORDER.index(stop_after):
+            # MSA plans repeat jdk21/spring per service: skip only the phases after `stop_after`
+            self.ws.journal({"event": "phase_skipped", "phase": phase.value, "reason": f"stop_after={stop_after.value}"})
+            return None
+        t = self.clock()
+        pr = PhaseResult(phase=phase, step_ids=[s.id for _, s in items], ok=True)
+        self.ws.journal({"event": "phase_start", "phase": phase.value, "steps": pr.step_ids})
+        self._run_phase(pr, items)
+        pr.finished_at = utcnow()
+        report.phases.append(pr)
+        self.ws.journal({"event": "phase_end", "phase": phase.value, "ok": pr.ok, "build_ok": pr.build_ok,
+                         "iterations": pr.iterations, "attempts": len(pr.attempts),
+                         "remaining_errors": len(pr.remaining_errors), "blocked": [b.id for b in pr.blocked]})
+        if self.loop is not None and self.loop.aborted:
+            self.ws.journal({"event": "run_aborted", "phase": phase.value, "reason": self.loop.aborted})
             self._timed(phase.value, t)
+            raise _RunAborted(self.loop.aborted)
+        if not pr.ok and phase != Phase.VERIFY:
+            self._phase_failed = True
+        if phase != Phase.VERIFY and not pr.skipped:
+            self._credit_plan_recipes(pr)
+            self._harvest(report, pr)
+        self._timed(phase.value, t)
+        return pr
+
+    def step_finish(self, report: RunReport, stop_after: Phase | None) -> None:
+        """After the last phase group: record `stop_after` when it named a phase that the groups ran."""
         if stop_after is not None and stop_after != Phase.VERIFY:
             self._stop(stop_after, stop_after)
 

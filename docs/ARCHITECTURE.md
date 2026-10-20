@@ -170,6 +170,48 @@ is unchanged (`Orchestrator`); the fleet only sequences, budgets (`fleet.max_llm
 `role` and metadata) and wraps it so recording and budgets still apply; `fix.plugin` replaces `LLMFixer` with an
 in-house coding agent that receives the workspace, the error cluster and the packed context. See `docs/ADAPTERS.md`.
 
+## 7.7 Graph engine (LangGraph)
+The company only deploys agents built on LangGraph / LangChain, so a LangGraph `StateGraph` **drives** the pipeline
+(`sbmig/graph/engine.py`, `loop.engine: graph`, the default). It does not re-implement it: every node calls one shared
+`Orchestrator.step_*` method, and `loop.engine: inline` runs the same steps from `Orchestrator._run` without LangGraph.
+
+```mermaid
+graph TD;
+    __start__([start]) --> intake;
+    intake -. next .-> analyze;
+    intake -. stopped / aborted .-> finalize;
+    analyze -. next .-> plan;
+    analyze -. stopped / aborted .-> finalize;
+    plan -. groups .-> phase;
+    plan -. stopped / no groups .-> finalize;
+    phase -. groups remain .-> phase;
+    phase -. done .-> finalize;
+    finalize --> __end__([end]);
+```
+
+| Node | Step | Notes |
+|---|---|---|
+| `intake` | `step_intake` | git snapshot, preflight (`mvn-not-found` → abort), as-is effective depMgmt |
+| `analyze` | `step_analyze` | profile + advisories; not Maven / no pom → abort |
+| `plan` | `step_plan` | plan, `BuildFixLoop`, phase groups (`None` = stopped after plan) |
+| `phase` | `step_phase` | one invocation per phase group (MSA: jdk21/spring repeat per service); `phase_skipped` after `stop_after`; credit + harvest; raises `_RunAborted` when the loop aborted |
+| `finalize` | `step_finish` | the trailing `stop_after` record (only when the plan ran, as inline) |
+
+- **State vs orchestrator.** `MigrationState` holds only small JSON-able values: `run_id`, `stop_after`, `dry_run`,
+  `phases` (remaining group names), `phase`, `aborted`, `stopped`, `summary` (case type, per-phase outcome, LLM
+  calls, blocked, unresolved). The `RunReport`, the phase groups with their `PlanStep`s and the `BuildFixLoop` stay on
+  the `Orchestrator` / a per-run holder closed over by the node functions.
+- **Errors and finalization.** Nodes never catch: `_RunAborted`, `MissingComponentError` and any other exception
+  leave the graph and are handled by the orchestrator's run guard (`_run_guard`), which also runs `_finalize`
+  (report, ledger, outputs) for both engines. `run()` opens the guard and dispatches on `loop.engine`;
+  `run_graph(orch)` / `stream_graph(orch)` open it themselves when called directly (the web app consumes
+  `stream_graph` → `(node, state_update)`; the report is `orch.report` afterwards, also when the stream is closed early).
+- **Journal.** Each node start adds `{"event": "graph_node", "node", "phase"}`; everything else is unchanged.
+- **Identical by test.** `tests/graph/test_engine.py` runs both engines on the same fake projects (boot, MSA,
+  failing build, `stop_after` intake/analyze/plan/jdk21, `mvn-not-found`, parent-not-found abort, internal error)
+  and asserts equal reports (minus timestamps / SHAs), flags, exit codes and journal event sequences.
+- `recursion_limit` is 1000 (one graph step per node invocation; MSA plans add phase groups per service).
+
 ## 8. Restructure (non-MSA)
 
 ```
