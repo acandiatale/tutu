@@ -224,3 +224,34 @@ def test_cap_one(tmp_path, cfg, cap):
     small = cfg.model_copy(update={"advisories": cfg.advisories.model_copy(update={"max_from_here": cap})})
     h = build_handover(as_is_profile(), final_tree(tmp_path), make_report(), effective=EFFECTIVE, cfg=small)
     assert len(h.from_here) == 1 and h.from_here[0].startswith("… and ")
+
+
+# ---------------------------------------------------------------- round 6: code the LLM rewrote for an advisory
+def test_from_here_lists_llm_rewritten_files(tmp_path, cfg):
+    fs = findings()
+    fs[1] = fs[1].model_copy(update={
+        "llm_fixed_files": [f"src/main/java/a/F{i}.java" for i in range(7)],
+        "llm_fix_notes": ["HystrixCommand subclass ported to a Resilience4j CircuitBreaker.", "second note.", "third."]})
+    report = make_report(advisories=fs)
+    fh = build_handover(as_is_profile(), final_tree(tmp_path), report, effective=EFFECTIVE, cfg=cfg).from_here
+    line = next(x for x in fh if x.startswith("code rewritten by the LLM for hystrix: "))
+    assert "src/main/java/a/F0.java, src/main/java/a/F1.java" in line and "F4.java (+2 more)" in line
+    assert "F5.java" not in line
+    assert "— HystrixCommand subclass ported to a Resilience4j CircuitBreaker.; second note. —" in line
+    assert line.endswith("— review these changes (changes.patch, attempts table)")
+    # right after the advisory lines (a)/(b), before carried-over pins and pointers — survives the cap
+    assert fh.index(line) == 2 and fh[3].startswith("org.apache.commons:commons-lang3 pinned at")
+    # no line for findings without LLM-rewritten files
+    assert not any(x.startswith("code rewritten by the LLM for springfox") for x in fh)
+    small = cfg.model_copy(update={"advisories": cfg.advisories.model_copy(update={"max_from_here": 4})})
+    capped = build_handover(as_is_profile(), final_tree(tmp_path), report, effective=EFFECTIVE, cfg=small).from_here
+    assert any(x.startswith("code rewritten by the LLM for hystrix") for x in capped)
+
+
+def test_attempts_table_shows_advisory_ids(tmp_path, cfg):
+    att = FixAttempt(id="s1", phase=Phase.SPRING, iteration=1, cluster_id="compile:1", model="m1",
+                     decision=TriageDecision(cluster_id="compile:1", kind=DecisionKind.LLM_FIX),
+                     advisory_ids=["hystrix"], applied=True, outcome="build_ok", analysis="ported")
+    report = make_report(phases=[PhaseResult(phase=Phase.SPRING, attempts=[att])])
+    md = render_markdown(report)
+    assert "`m1` + advisory hystrix" in md

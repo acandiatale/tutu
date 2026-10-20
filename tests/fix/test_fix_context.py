@@ -194,3 +194,37 @@ def test_default_notes_dir_is_repo_knowledge(cfg, ws, put):
     p = ContextPacker(cfg).pack(ws, cl, ctx(), "case=spring_boot")
     assert "Fix policy for the build-fix loop" in p.notes_included
     assert any("Security" in n for n in p.notes_included)
+
+
+# ---------------------------------------------------------------- round 6: library migration guidance (advisories)
+ADV_TITLE = "Library migration guidance (what to migrate TO)"
+
+
+def test_advisory_hints_section_after_sources_before_kb_hints(cfg, ws, put, tmp_path):
+    put("src/main/java/a/A.java", SMALL)
+    hint = ("hystrix (eol, policy recipe): replace with org.springframework.cloud:spring-cloud-starter-circuitbreaker-"
+            "resilience4j (managed by the Spring Cloud BOM). Port HystrixCommand subclasses.")
+    c = ctx(advisory_hints=[hint], kb_hints=["use jakarta.persistence"], other_errors_summary="c2: B.java (3)")
+    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), c, "case=spring_boot")
+    titles = [t for t, _ in p.sections]
+    i = titles.index(ADV_TITLE)
+    assert titles[i - 1].startswith("Source (exact text") and titles[i + 1].startswith("Knowledge-base hints")
+    body = dict(p.sections)[ADV_TITLE]
+    assert f"- {hint}" in body and "do not re-add the removed library" in body
+    assert ADV_TITLE in p.render()
+    # absent when there are no hints
+    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), ctx(), "case=spring_boot")
+    assert ADV_TITLE not in [t for t, _ in p.sections]
+
+
+def test_advisory_hints_truncated_after_kb_hints(cfg, ws, put, tmp_path):
+    assert ContextPacker.TRUNCATE_ORDER.index("kb_hints") < ContextPacker.TRUNCATE_ORDER.index("advisory_hints") \
+        < ContextPacker.TRUNCATE_ORDER.index("files")
+    put("src/main/java/a/A.java", SMALL)
+    c = ctx(advisory_hints=["a" * 1500], kb_hints=["k" * 1500])
+    packer = ContextPacker(cfg, notes_dir(tmp_path))
+    full = packer.pack(ws, make_cluster(), c, "case=x", budget=10**6)
+    p = packer.pack(ws, make_cluster(), c, "case=x", budget=full.chars - 4000 - 1200)
+    kinds = [t.split(" ")[0] for t in p.truncated]
+    assert "kb_hints" in kinds and "advisory_hints" not in kinds
+    assert "a" * 1500 in dict(p.sections)[ADV_TITLE]

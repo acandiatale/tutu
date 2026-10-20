@@ -38,14 +38,15 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-20, round 5 + company-convention round complete (`main`)
+## Status — 2026-10-20, rounds 5–6 + company-convention round complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
   harvest into `KBCase.symbol_owner`), jar-checked recipe catalog (`sbmig recipes check --jars`), fixture `boot2-method-rename`.
 - 2026-10-20: `llm-probe` + per-run log files; `coding/` agent; LangGraph engine, FastAPI web UI; then simplified
-  on the user's request: LLM = provider `company` (plain `requests.post`, settings from `.env`), LangChain tier removed. 893 offline tests green; asserted fixture e2e **14/14**
-  (`scripts/e2e.sh`, 2026-10-18 tree); fleet demo 5/5 with 1 LLM call total.
+  on the user's request: LLM = provider `company` (plain `requests.post`, settings from `.env`), LangChain tier removed. Round 6: Hystrix → Resilience4j by recipe (pom + annotations) and advisory-guided
+  LLM fixes for what recipes cannot convert (Handover names the rewritten files). 917 offline tests green; asserted fixture e2e **14/14** (2026-10-18 tree) + 2 round-6 fixtures passing individually
+  (`scripts/e2e.sh`, 15 fixtures); fleet demo 5/5 with 1 LLM call total.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -55,7 +56,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - `ADVISOR_CATALOG` is small by design (verified ids only); extend it with the company recipe inventory.
 - Build-fix clusters are keyed by file, so one renamed library method used in N files costs N LLM calls in the
   first project (then 0 via the compiled `ChangeMethodName` candidate); cross-file clustering by symbol would cut that.
-- hystrix / ribbon / zuul have no OpenRewrite recipe → `guide` only (Resilience4j / LoadBalancer / Gateway).
+- ribbon / zuul / netflix-feign stay `guide` (Spring Cloud LoadBalancer / Gateway / OpenFeign need structural
+  rewrites); hystrix is `recipe` since round 6, with the LLM (advisory-guided) handling programmatic subclasses.
+  Advisory hints only exist for advisories with a `## fix-loop: <library>` note section (today: hystrix).
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
 - Resilience of the plan-level rewrite step: when the rewrite plugin's own resolver fails to download a POM (seen
   once through the cloud proxy), `UpgradeSpringBoot_4_0` leaves literal `<version>4.0.x</version>` starters, the
@@ -71,7 +74,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~90 s): `python -m pytest -m "not integration"` → 893 passed, 24 deselected
+- Fast check (Python only, ~95 s): `python -m pytest -m "not integration"` → 917 passed, 25 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

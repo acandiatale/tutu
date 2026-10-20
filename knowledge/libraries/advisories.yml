@@ -81,7 +81,8 @@ advisories:
       resilience4j.timelimiter.*, give every fallback method a trailing Throwable parameter (Resilience4j does not find
       fallbacks without it) and re-test failure paths: thread-pool isolation, groupKey/threadPoolKey,
       commandProperties and ignoreExceptions were removed, and the @CircuitBreaker aspect needs
-      spring-boot-starter-aspectj at runtime. HystrixCommand subclasses and Hystrix dashboards/Turbine stay manual.
+      spring-boot-starter-aspectj at runtime. HystrixCommand subclasses are rewritten by the LLM in the build-fix
+      loop with Resilience4j guidance (the Handover lists those files — review them); dashboards/Turbine stay manual.
     docs:
       - https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
       - https://resilience4j.readme.io/docs/getting-started-3

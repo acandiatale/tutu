@@ -1,4 +1,5 @@
-"""Context packing for the LLM fixer: errors, file windows, pom excerpts, migration notes, history — within a budget."""
+"""Context packing for the LLM fixer: errors, file windows, pom excerpts, library migration guidance (advisories),
+migration notes, history — within a budget."""
 from __future__ import annotations
 
 import logging
@@ -255,7 +256,9 @@ class _Section:
 
 class ContextPacker:
     # truncation priority (first = dropped/shrunk first); "errors" and "header" are never truncated
-    TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "pom", "files")
+    TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "advisory_hints", "pom",
+                      "files")
+    ADVISORY_TITLE = "Library migration guidance (what to migrate TO)"
 
     def __init__(self, cfg: Config, notes_dir: Optional[str | Path] = None, max_notes: int = DEFAULT_MAX_NOTES):
         self.cfg = cfg
@@ -318,18 +321,25 @@ class ContextPacker:
             except OSError:
                 pass
 
+        # library advisories that match this cluster (round 6): the library was replaced on purpose — say what TO
+        if ctx.advisory_hints:
+            secs.append(_Section("advisory_hints", self.ADVISORY_TITLE,
+                                 "The libraries below were removed or replaced by the migration on purpose. Rewrite the "
+                                 "code that still uses them to the named replacement (keep public signatures so callers "
+                                 "still compile); do not re-add the removed library.\n"
+                                 + "\n".join(f"- {h}" for h in ctx.advisory_hints), 4))
         if ctx.kb_hints:
             secs.append(_Section("kb_hints", "Knowledge-base hints (similar resolved cases)",
-                                 "\n".join(f"- {h}" for h in ctx.kb_hints), 4))
+                                 "\n".join(f"- {h}" for h in ctx.kb_hints), 5))
         if ctx.previous_attempts:
             secs.append(_Section("previous_attempts",
                                  "Previous attempts on this cluster (they did NOT resolve it — do not repeat them)",
-                                 "\n".join(summarize_attempt(a) for a in ctx.previous_attempts), 5))
+                                 "\n".join(summarize_attempt(a) for a in ctx.previous_attempts), 6))
         if ctx.other_errors_summary:
             secs.append(_Section("other_errors", "Other error clusters in this build (for awareness; fix only this cluster)",
-                                 ctx.other_errors_summary.strip(), 6))
+                                 ctx.other_errors_summary.strip(), 7))
         if ctx.plan_notes:
-            secs.append(_Section("plan_notes", "Plan notes", "\n".join(f"- {n}" for n in ctx.plan_notes), 7))
+            secs.append(_Section("plan_notes", "Plan notes", "\n".join(f"- {n}" for n in ctx.plan_notes), 8))
 
         # notes: one section, built from selected notes in rank order
         match_text = "\n".join(

@@ -18,9 +18,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, ErrorKind, HarvestResult,
-                               LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile, RunReport,
-                               StepKind, utcnow)
+from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
+                               HarvestResult, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile,
+                               RunReport, StepKind, utcnow)
 from sbmig.core.workspace import Workspace
 
 from .blocked_registry import BlockedRegistry, default_locator
@@ -36,6 +36,14 @@ _PARENT_UNRESOLVABLE_RE = re.compile(r"(?i)non-resolvable parent|parent pom|fail
 _DEFAULT_MODE = {StepKind.MSA_POM: "msa_pom", StepKind.RESTRUCTURE: "layout"}
 ALWAYS_PREEMPTIVE = ("strip-utf8-bom", "source-encoding")   # inserted at the front → source-encoding runs first
 NON_FATAL_RESTRUCTURE_MODES = frozenset({"optional_bump"})   # a failure is noted, the phase continues
+
+
+def _first_sentence(text: str, limit: int = 160) -> str:
+    """First sentence of an LLM analysis, whitespace-collapsed, ≤ limit chars (Handover note)."""
+    t = " ".join((text or "").split())
+    m = re.match(r"(.+?[.!?])(\s|$)", t)
+    t = m.group(1) if m else t
+    return t if len(t) <= limit else t[: limit - 1].rstrip() + "…"
 
 
 class _RunAborted(Exception):
@@ -341,7 +349,7 @@ class Orchestrator:
         self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.handlers, self.fixer,
                                  self.kb, self._rewrite_runner_or_none(), profile, plan_notes=plan.notes,
                                  budget=self.budget, dry_run=dry_run, blocked=self.blocked,
-                                 locator=self._resolve_locator())
+                                 locator=self._resolve_locator(), advisories=list(report.advisories or []))
         steps = list(plan.steps)
         if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD for s in steps):
             steps.append(PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY,
@@ -932,6 +940,7 @@ class Orchestrator:
                              "findings": [{"id": f.advisory_id, "policy": f.policy, "outcome": f.outcome}
                                           for f in findings]})
         if findings:
+            self._attribute_llm_fixes(report, findings)
             try:
                 from sbmig.advisory import followups_for
                 fus = list(followups_for(findings) or [])
@@ -956,6 +965,30 @@ class Orchestrator:
         h = report.handover
         self.ws.journal({"event": "handover", "changes": len(h.changes), "carried_over": len(h.carried_over),
                          "from_here": len(h.from_here)})
+
+    @staticmethod
+    def _attribute_llm_fixes(report: RunReport, findings: list) -> None:
+        """AdvisoryFinding.llm_fixed_files / llm_fix_notes from the run's successful LLM fixes whose prompt carried the
+        advisory's hint (FixAttempt.advisory_ids; same predicate as the KB harvest: llm_fix, applied, improved /
+        build_ok, cluster not left unresolved). Runs before the Handover is built."""
+        good = [a for pr in report.phases for a in pr.attempts
+                if a.advisory_ids and a.decision.kind == DecisionKind.LLM_FIX and a.applied
+                and a.outcome in ("improved", "build_ok") and a.cluster_resolved is not False]
+        for f in findings:
+            files: list[str] = []
+            notes: list[str] = []
+            for a in good:
+                if f.advisory_id not in a.advisory_ids:
+                    continue
+                for ch in a.changes:
+                    for p in (ch.path, ch.new_path):
+                        p = (p or "").replace("\\", "/").removeprefix("./")
+                        if p and p not in files:
+                            files.append(p)
+                note = _first_sentence(a.analysis, 160)
+                if note and note not in notes:
+                    notes.append(note)
+            f.llm_fixed_files, f.llm_fix_notes = files, notes
 
     def _finalize(self, report: RunReport) -> None:
         report.finished_at = utcnow()

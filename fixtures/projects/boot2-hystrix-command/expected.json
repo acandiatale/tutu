@@ -1,0 +1,126 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18",
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": [
+    "spring-webmvc",
+    "tomcat-embed",
+    "spring-cloud",
+    "spring-cloud-bom",
+    "hystrix",
+    "junit5"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.stock.StockApiApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 2,
+    "blocked": [],
+    "unresolved_max": 0,
+    "journal_events": [
+      {
+        "event": "llm_fix",
+        "advisory_hints": 1
+      },
+      {
+        "event": "attempt",
+        "phase": "spring",
+        "attempt": "spring-1-1",
+        "decision": "llm_fix",
+        "applied": true,
+        "advisory_ids": [
+          "hystrix"
+        ]
+      },
+      {
+        "event": "attempt_scored",
+        "phase": "spring",
+        "attempt": "spring-1-1",
+        "outcome": "build_ok",
+        "cluster_resolved": true
+      },
+      {
+        "event": "attempt",
+        "phase": "spring",
+        "attempt": "spring-1-2",
+        "decision": "llm_fix",
+        "advisory_ids": []
+      }
+    ],
+    "advisories": [
+      {
+        "id": "hystrix",
+        "policy": "recipe",
+        "outcome": "replaced",
+        "recipe_source": "advisory"
+      },
+      {
+        "id": "spring-cloud-bom",
+        "outcome": "replaced"
+      }
+    ],
+    "advisories_exact": true,
+    "handover": {
+      "spring_boot_after": "4.1.0",
+      "from_here_contains": [
+        "regex:code rewritten by the LLM for hystrix: src/main/java/com/example/stock/service/InventoryCommand\\.java — .*Hystrix starter was replaced.* — review these changes \\(changes\\.patch, attempts table\\)",
+        "regex:(?i)verify hystrix → org\\.springframework\\.cloud:spring-cloud-starter-circuitbreaker-resilience4j \\(recipe com\\.company\\.migrate\\.HystrixToResilience4j\\).*"
+      ],
+      "removed_contains": [
+        "org.springframework.cloud:spring-cloud-starter-netflix-hystrix"
+      ],
+      "added_contains": [
+        "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-hystrix-command",
+      "harvest_candidates_min": 0
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/stock/service/InventoryCommand.java",
+          "contains": "import io.github.resilience4j.circuitbreaker.CircuitBreaker;",
+          "not_contains": "com.netflix.hystrix"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/stock/service/InventoryCommand.java",
+          "contains": "CircuitBreaker.ofDefaults(\"inventory\")",
+          "not_contains": "extends HystrixCommand"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/stock/service/StockService.java",
+          "contains": "new InventoryCommand(gateway, sku).execute()"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "**/pom.xml",
+          "artifacts": [
+            "org.springframework.cloud:spring-cloud-starter-netflix-hystrix",
+            "com.netflix.hystrix:hystrix-core"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
+          ]
+        }
+      }
+    ]
+  }
+}

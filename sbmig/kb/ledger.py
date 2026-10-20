@@ -593,6 +593,9 @@ def attempt_record(
         case_id=case_id,
         recipe_id=recipe_id,
         model=a.model if res == "llm_patch" else "",
+        # round 6: the library advisories whose hints were in the prompt ("advisory:<id>", the same token the
+        # resolution="advisory" lines carry in notes[1]) — free-form notes, so the ledger model stays unchanged
+        notes=[f"advisory:{x}" for x in a.advisory_ids],
     )
 
 

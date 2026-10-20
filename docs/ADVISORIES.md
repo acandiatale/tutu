@@ -88,6 +88,53 @@ The model is `LibraryAdvisory` in `sbmig/core/models.py`. A finding (`AdvisoryFi
    * Not replaced: `"<title>: <followup> (replacement: …)"`.
    * Replaced: `"<library> → <replacement> applied by <recipes>; <followup>"`.
 
+## Code the recipe cannot convert: advisory-guided LLM fixes
+
+A `recipe` advisory swaps the library, but some code has no deterministic rewrite (e.g. a programmatic
+`class X extends com.netflix.hystrix.HystrixCommand<T>`; `HystrixToResilience4j` only converts `@HystrixCommand`).
+After the swap that code stops compiling and lands in the build-fix loop. Round 6 makes the LLM migrate it to the
+replacement, and makes the report say which files it rewrote for which library.
+
+1. **Match (per cluster).** `sbmig.advisory.hints_for(cluster.errors, report.advisories, profile)` →
+   `(hints, advisory_ids)`. A finding matches when an error's message / symbol / location / raw text / artifact
+   mentions an import package of its library (`LibraryRule.imports` in `sbmig/analyze/libraries.py`, e.g.
+   `com.netflix.hystrix`, segment boundary), one of its as-is artifacts (`g:a`), or its replacement artifact
+   (`g:a`, or the artifactId alone when it contains a dash). Errors that only name a project class
+   (`cannot find symbol method execute()` in the caller) do not match. Pure, never raises.
+2. **Hint text.** One line per matched finding, ≤ 500 chars:
+   `<library> (<status>, policy <policy>): replace with <replacement> (<replacement_version>). <followup>` (the
+   title when there is no follow-up), plus an excerpt (≤ 600 chars) of the advisory's note (`notes:` →
+   `knowledge/notes/<file>.md`): a heading `## fix-loop: <library>` wins, otherwise the first heading that names
+   the library. Use the `fix-loop:` convention for loop guidance written for the LLM (how to port the leftover
+   code); the hint works from replacement + follow-up alone when there is none.
+3. **Prompt.** `BuildFixLoop(advisories=report.advisories)` fills `FixContext.advisory_hints`;
+   `ContextPacker` renders the section "Library migration guidance (what to migrate TO)" after the sources / pom
+   and before the KB hints (truncated after the KB hints, before pom and sources). The system prompt
+   (`sbmig/fix/prompts/system_v1.md`, rule 9) says: those libraries were removed on purpose — port the code to the
+   replacement (smallest port that compiles, public signatures kept, `// MIGRATION-TODO:` for behaviour) instead of
+   re-adding the removed library.
+4. **Record.** `FixAttempt.advisory_ids` (set before `propose`); the journal `attempt` event carries
+   `advisory_ids`, the fixer's `llm_fix` event `advisory_hints` (number of guidance lines that reached the prompt),
+   the sbmig.log DEBUG lines "advisory hints for <cluster>" / "advisory guidance in the prompt"; the ledger line of
+   the attempt (`resolution: llm_patch`) carries `notes: ["advisory:<id>", …]` (same token as the
+   `resolution: advisory` lines; the ledger model is unchanged); the attempts table shows `` `model` + advisory <id> ``.
+5. **Attribute (finalize, before the Handover).** `Orchestrator._attribute_llm_fixes`: successful LLM attempts
+   (`llm_fix`, applied, outcome `improved` / `build_ok`, cluster not left unresolved — the KB harvest predicate)
+   whose `advisory_ids` contain the finding → `AdvisoryFinding.llm_fixed_files` (changed paths, as recorded by the
+   attempt, i.e. before the restructure moved them) and `llm_fix_notes` (first sentence of each analysis,
+   ≤ 160 chars).
+6. **Handover.** "From here on, your team" gets, right after the advisory lines, one line per such finding:
+   `code rewritten by the LLM for <library>: <files> — <notes> — review these changes (changes.patch, attempts table)`.
+
+Fixture: `boot2-hystrix-command` (replayed LLM; 2 clusters → 2 calls, the first with the hystrix hint).
+
+Note for the knowledge owners: `knowledge/notes/spring-cloud.md` and the "manual" list above still tell the loop to
+re-add `com.netflix.hystrix:hystrix-core:1.5.18` for `HystrixCommand` subclasses ("Do not hand-write a
+Resilience4j port inside the loop"). That contradicts this section; the note is also sent to the LLM as a
+migration note. Replace it with a `## fix-loop: hystrix` section that describes the port (plain class,
+`CircuitBreaker.ofDefaults(name)` / `executeCallable` / `decorateSupplier`, fallback via try/catch, keep
+`execute()` / public signatures, `// MIGRATION-TODO:` for timeouts and thread-pool isolation).
+
 ## Company extras
 
 ```yaml

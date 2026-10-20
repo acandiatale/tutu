@@ -102,7 +102,10 @@ def _what(a: FixAttempt) -> str:
         return ", ".join(f"`{r.rsplit('.', 1)[-1]}`" for r in d.recipe_ids)
     if d.kb_case_ids:
         return "KB case " + ", ".join(d.kb_case_ids)
-    return f"`{a.model}`" if a.model else "-"
+    via = f"`{a.model}`" if a.model else "-"
+    if a.advisory_ids:                       # round 6: the prompt carried these advisories' migration guidance
+        via += " + advisory " + ", ".join(a.advisory_ids)
+    return via
 
 
 def _attempt_rows(phases: Iterable[PhaseResult]) -> list[str]:

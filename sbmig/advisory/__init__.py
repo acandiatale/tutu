@@ -17,6 +17,9 @@ Contract (PM, round 4) — the orchestrator, the planner, the report and the fle
                                                PathView over the migrated project) and set outcome
                                                (replaced | still-present | unknown); never raises
     followups_for(findings)                    -> list[str]   one actionable sentence per finding, not-replaced first
+    hints_for(errors, findings, profile=None)  -> (list[str], list[str])   round 6: guidance lines + advisory ids for
+                                               the findings whose library / artifacts the cluster's errors mention
+                                               (FixContext.advisory_hints, FixAttempt.advisory_ids); never raises
     advisories_cli                             typer sub-app mounted as `sbmig advisories` (list | show | check)
 
 Policies: guide | recipe only. There is deliberately no "block": an advisory never fails the run or changes the
@@ -70,9 +73,15 @@ except ImportError as _e:  # pragma: no cover - until agent A lands the modules
         return [f"{f.title}: {f.followup}".rstrip(": ") for f in findings if f.outcome != "replaced"]
 
 try:
+    from .hints import hints_for
+except ImportError:  # pragma: no cover
+    def hints_for(errors: Any, findings: Any, profile: Any = None, **_kw: Any) -> tuple[list[str], list[str]]:  # type: ignore[misc]
+        return [], []
+
+try:
     from .cli import advisories_cli
 except ImportError:  # pragma: no cover
     advisories_cli = None  # type: ignore[assignment]
 
 __all__ = ["AdvisoryCatalog", "load_advisories", "evaluate_advisories", "advisory_recipe_refs", "verify_advisories",
-           "followups_for", "advisories_cli"]
+           "followups_for", "hints_for", "advisories_cli"]

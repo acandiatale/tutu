@@ -210,3 +210,21 @@ def test_profile_summary():
                  "services=1", "libs=lombok:1.18.20,jpa", "web.xml", "jsp=3", "javax-imports=javax.servlet",
                  "target: JDK 21, Spring Boot 4.1"):
         assert part in s
+
+
+def test_advisory_guidance_reaches_the_prompt(cfg, setup):
+    """Round 6: FixContext.advisory_hints → the packed "Library migration guidance" section of the user message,
+    the system prompt says to follow it, and the llm_fix journal event counts the lines that were sent."""
+    system, _ = load_prompts("v1")
+    assert "Library migration guidance" in system and "instead of re-adding the" in system
+    client = FakeLLMClient([GOOD])
+    hint = "hystrix (eol, policy recipe): replace with org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j."
+    LLMFixer(cfg, client).propose(setup, make_cluster(file=A, lines=(3,)), ctx(advisory_hints=[hint]))
+    user = client.calls[0]["messages"][1].content
+    assert "## Library migration guidance (what to migrate TO)" in user and f"- {hint}" in user
+    assert user.index("Library migration guidance") < user.index("Answer now")
+    journal = [json.loads(l) for l in setup.journal_path.read_text().splitlines()]
+    assert [e for e in journal if e["event"] == "llm_fix"][-1]["advisory_hints"] == 1
+    LLMFixer(cfg, FakeLLMClient([GOOD])).propose(setup, make_cluster(file=A, lines=(3,)), ctx())
+    journal = [json.loads(l) for l in setup.journal_path.read_text().splitlines()]
+    assert [e for e in journal if e["event"] == "llm_fix"][-1]["advisory_hints"] == 0

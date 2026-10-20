@@ -26,6 +26,7 @@ REASON_MANDATORY = "mandatory"
 REASON_BOOT = "spring boot 4 upgrade"
 REASON_OTHER = "recipe/handler"
 CARRIED_LIST_MAX = 5
+LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM for <library>" line
 
 _PINNED_RE = re.compile(r"([\w.\-]+:[\w.\-]+) pinned to (\S+) \(")
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
@@ -251,6 +252,17 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any) -> list[str]:
         if f.followup:
             txt += f": {f.followup}"
         _dedupe_add(out, txt)
+    # (b2) code the LLM rewrote for a library advisory (round 6: the recipe left it behind) → review
+    for f in findings:
+        if not f.llm_fixed_files:
+            continue
+        files = ", ".join(f.llm_fixed_files[:LLM_FILES_MAX])
+        if len(f.llm_fixed_files) > LLM_FILES_MAX:
+            files += f" (+{len(f.llm_fixed_files) - LLM_FILES_MAX} more)"
+        txt = f"code rewritten by the LLM for {f.library}: {files}"
+        if f.llm_fix_notes:
+            txt += f" — {'; '.join(f.llm_fix_notes[:2])}"
+        _dedupe_add(out, txt + " — review these changes (changes.patch, attempts table)")
     # (c) carried-over pins
     if adv_cfg is None or getattr(adv_cfg, "report_carried_over", True):
         co = h.carried_over

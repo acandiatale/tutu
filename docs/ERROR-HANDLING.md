@@ -20,6 +20,7 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
 | X4 parent not resolvable | `Non-resolvable parent POM` | B, abort run early with a clear preflight message when it is the configured in-house parent | parent GAV, settings file used | unit + `sbmig run --config bad-parent.yml` |
 | X5 build plugin incompatible with JDK 21 | `PLUGIN_EXECUTION` from a plugin with no version floor in `versions.yml` (`Unsupported class file major version 65`, `NoSuchMethodError … javac`) | H floor if known; else L1 then B | plugin GAV + message | unit |
 | X6 unsupported sources | Kotlin/Groovy/Scala compile errors, generated-source plugins (protobuf, jaxb2, openapi) failing | warn in analyze; errors → B(unsupported_source) | module + plugin | unit |
+| X7 library removed by an advisory recipe | code the recipe cannot convert stops compiling after the swap (`package com.netflix.hystrix does not exist` in a `HystrixCommand` subclass) | L1 with the advisory's "Library migration guidance" in the prompt (`hints_for`, docs/ADVISORIES.md) → port to the replacement; attempt records `advisory_ids` | Handover: "code rewritten by the LLM for <library>: <files> — review these changes" | `boot2-hystrix-command` (replayed LLM, success) |
 
 ## 2. Environment / legacy quirks (H)
 

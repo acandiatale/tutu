@@ -34,7 +34,7 @@ JDK_HOMES = {
 
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename"]
+             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -56,6 +56,7 @@ BUILD_MATRIX = [
     ("msa-shared-lib", ".", "18", ""),
     ("boot2-cloud-legacy", ".", "11", ""),
     ("boot2-method-rename", ".", "11", "libs"),
+    ("boot2-hystrix-command", ".", "11", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -179,7 +180,7 @@ class Expect(BaseModel):
     forbidden_flags: list[str] = Field(default_factory=list)
     optional_bumped: list[str] = Field(default_factory=list)
     unresolved_max: int | None = Field(default=None, ge=0)
-    journal_events: list[dict[str, str | int | bool | None]] = Field(default_factory=list)
+    journal_events: list[dict[str, str | int | bool | None | list[str]]] = Field(default_factory=list)   # list = equal
     phases: dict[str, Literal["ok", "FAIL", "skipped"]] = Field(default_factory=dict)
     post_checks: list[PostCheck] = Field(default_factory=list)
     advisories: list[AdvisoryExpect] = Field(default_factory=list)
@@ -340,9 +341,16 @@ OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-l
 }
 
 
+LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
+
+
 def test_fixture_config_override_keeps_8_optionals():
     overrides = sorted(p.parent.name for p in FIXTURES.glob("*/sbmig.e2e.yml"))
-    assert overrides == sorted(OVERRIDES)
+    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES])
+    for name, top in LLM_ONLY_OVERRIDES.items():
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert set(raw) == top, name
+        assert len(_effective_cfg(name).artifacts.optional) == 8, name
     for name, (top, legacy_version) in OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == top and set(raw["artifacts"]) == {"optional"}, name
@@ -395,6 +403,45 @@ def test_method_rename_replay_patches_match_the_call_sites():
     callers = sorted(p.relative_to(FIXTURES / name).as_posix() for p in (FIXTURES / name).rglob("*.java")
                      if "LegacyRequestHelper.clientIp(" in p.read_text(encoding="utf-8"))
     assert sorted(touched) == callers and len(callers) == 2
+
+
+def test_hystrix_command_override_replays_llm_into_own_kb():
+    """boot2-hystrix-command (round 6): scripted LLM + own KB dir under out/ (cleared by scripts/e2e.py)."""
+    name = "boot2-hystrix-command"
+    cfg = _effective_cfg(name)
+    assert cfg.llm.provider == "fake" and cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
+    assert cfg.resolve_path(cfg.llm.base_url[len("replay:"):]) == FIXTURES / name / "replay"
+    kb = Expected.model_validate(_expected(name)).expect.kb
+    assert kb is not None and cfg.kb.dir == kb.dir == "out/e2e/kb-hystrix-command"
+    assert cfg.kb_dir.resolve() != (REPO / "kb").resolve()
+
+
+def test_hystrix_command_replay_ports_the_subclass():
+    """Response 1 ports the programmatic HystrixCommand subclass to Resilience4j (SEARCH blocks copied from the
+    as-is file, which the spring phase does not touch) and keeps `public Integer execute()` for the caller;
+    response 2 (the caller's cluster) changes nothing. One LLM call per file cluster → max_llm_calls == 2."""
+    from sbmig.fix.client import load_replay_responses
+    from sbmig.fix.protocol import parse_fix_response
+
+    name = "boot2-hystrix-command"
+    rel = "src/main/java/com/example/stock/service/InventoryCommand.java"
+    src = (FIXTURES / name / rel).read_text(encoding="utf-8")
+    assert "extends HystrixCommand<Integer>" in src and "import com.netflix.hystrix.HystrixCommand;" in src
+    caller = (FIXTURES / name / "src/main/java/com/example/stock/service/StockService.java").read_text(encoding="utf-8")
+    assert "new InventoryCommand(gateway, sku).execute()" in caller
+    responses = load_replay_responses(FIXTURES / name / "replay")
+    assert len(responses) == _expected(name)["expect"]["max_llm_calls"] == 2
+    first, second = (parse_fix_response(t) for t in responses)
+    assert first.changes and not first.warnings and {c.path for c in first.changes} == {rel}
+    out = src
+    for ch in first.changes:
+        assert ch.op == "modify" and out.count(ch.search) == 1, ch.search
+        out = out.replace(ch.search, ch.replace)
+    assert "com.netflix.hystrix" not in out and "extends HystrixCommand" not in out
+    assert "import io.github.resilience4j.circuitbreaker.CircuitBreaker;" in out
+    assert 'CircuitBreaker.ofDefaults("inventory")' in out and "public Integer execute()" in out
+    assert "MIGRATION-TODO" in out
+    assert second.changes == [] and not second.wants_context
 
 
 def test_optional_artifacts_cover_config():

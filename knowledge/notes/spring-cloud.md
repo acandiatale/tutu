@@ -36,17 +36,30 @@ Hystrix code the recipe does not cover).
   `@HystrixProperty` removed, `@EnableHystrix` / `@EnableCircuitBreaker` / `@EnableHystrixDashboard` deleted.
   `@CircuitBreaker` comes from `resilience4j-annotations` (the starter → spring-cloud-circuitbreaker-resilience4j →
   resilience4j-spring-boot3 → resilience4j-spring6).
-- Leftover compile errors after the recipe come from what it does not cover. Fix the build with the smallest
-  change and leave the migration to the team (the Handover already says so):
-  * programmatic `extends HystrixCommand<T>` / `HystrixObservableCommand`, `HystrixRequestContext`,
-    `HystrixRuntimeException`: re-add `com.netflix.hystrix:hystrix-core:1.5.18` explicitly (the advisory then
-    reports hystrix as still present). Do not hand-write a Resilience4j port inside the loop.
-  * `org.springframework.cloud.netflix.hystrix.*` (dashboard, `HystrixCommands` for WebFlux): delete the dead
-    configuration if nothing else uses it, otherwise keep `spring-cloud-starter-netflix-hystrix` 2.2.10.RELEASE
-    pinned.
-  * `cannot find symbol CircuitBreaker` means the new starter is missing from the module that uses the
-    annotation. Add `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j` without a version
-    (managed by the Spring Cloud BOM).
+- Leftover compile errors after the recipe come from what it does not cover; the build-fix loop rewrites them to
+  Resilience4j with the guidance below (it is sent to the LLM as "Library migration guidance"; the Handover lists
+  every file the LLM rewrote for this advisory).
+
+## fix-loop: hystrix
+Rewrite, do not re-add: the Hystrix starter and `hystrix-core` were removed on purpose; never put
+`com.netflix.hystrix:*` back into the pom. Keep every public signature so callers still compile.
+- `class X extends HystrixCommand<T>` (`run()` / `getFallback()`, called with `.execute()` / `.queue()`): turn it into
+  a plain class that keeps the public entry point (`public T execute()`), runs the former `run()` body through a
+  Resilience4j circuit breaker — `io.github.resilience4j.circuitbreaker.CircuitBreaker` (on the classpath via
+  `spring-cloud-starter-circuitbreaker-resilience4j`), `CircuitBreaker.ofDefaults("<commandKey or class name>")`
+  (or a registry bean when one exists) and `circuitBreaker.executeCallable(...)` / `decorateSupplier(...)` — and
+  returns the former `getFallback()` value from a `catch (Exception e)` around that call. Drop the
+  `super(HystrixCommandGroupKey.Factory.asKey(...))` constructor call. `.queue()` → wrap in `CompletableFuture`.
+- `HystrixObservableCommand`: same shape with `Observable.fromCallable` → a `Supplier`/`Callable` through the
+  circuit breaker; `HystrixRequestContext` and `HystrixRuntimeException` have no equivalent — remove them and let the
+  original exception propagate into the fallback catch.
+- `org.springframework.cloud.netflix.hystrix.*` (dashboard, `HystrixCommands` for WebFlux): delete the dead
+  configuration; dashboards/Turbine are replaced by Micrometer/Actuator metrics (team work, see Handover).
+- `cannot find symbol CircuitBreaker` means the new starter is missing from the module that uses the annotation:
+  add `org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j` without a version.
+- Mark every hand-ported class with a `// MIGRATION-TODO: review Resilience4j config (instance name, timeouts)`
+  comment so the owning team finds it; the Handover points at the file as well.
+
 - Runtime work for the team (not the loop): `resilience4j.circuitbreaker.instances.<name>` / `configs.default`,
   `hystrix.command.*.execution.isolation.thread.timeoutInMilliseconds` → `resilience4j.timelimiter.*`,
   a trailing `Throwable` parameter on every fallback method, `spring-boot-starter-aspectj` for the annotation

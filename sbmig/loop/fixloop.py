@@ -16,11 +16,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
-from sbmig.core.models import (GAV, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster, ErrorKind,
+from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster, ErrorKind,
                                FixAttempt, IterationRecord, KBMatch, Phase, PhaseResult, ProjectProfile, RecipeRef,
                                TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
@@ -116,7 +117,7 @@ class BuildFixLoop:
                  kb: Any, rewrite_runner: Any, profile: ProjectProfile, plan_notes: Optional[list[str]] = None,
                  budget: Optional[LoopBudget] = None, *, dry_run: bool = False,
                  history: Optional[list[FixAttempt]] = None, blocked: Optional[BlockedRegistry] = None,
-                 locator: Any = None):
+                 locator: Any = None, advisories: Optional[list[AdvisoryFinding]] = None):
         self.cfg = cfg
         self.ws = ws
         self.build_runner = build_runner
@@ -139,6 +140,8 @@ class BuildFixLoop:
         # run-wide blocked state (shared by every phase of the run through the orchestrator)
         self.blocked = blocked if blocked is not None else BlockedRegistry()
         self.locator = locator                   # owner class → artifact (sbmig.build.classpath); None = no attribution
+        # library advisory findings of the run (round 6): matched per cluster → FixContext.advisory_hints
+        self.advisories: list[AdvisoryFinding] = list(advisories or [])
         self.llm_unavailable: Optional[str] = None
         self.aborted: Optional[str] = None       # set when the run must stop (configured parent not resolvable)
         self._llm_streak: list[tuple[ErrorCluster, str]] = []
@@ -711,7 +714,8 @@ class BuildFixLoop:
                          "handler": att.decision.handler_id, "recipes": att.decision.recipe_ids,
                          "applied": att.applied, "commit": att.commit, "outcome": att.outcome,
                          "model": att.model, "files": [ch.path for ch in att.changes],
-                         "apply_errors": att.apply_errors, "analysis": att.analysis[:500]})
+                         "apply_errors": att.apply_errors, "analysis": att.analysis[:500],
+                         "advisory_ids": list(att.advisory_ids)})
 
     def _commit(self, message: str, pre: str) -> Optional[str]:
         if not self.ws.is_dirty():
@@ -770,10 +774,11 @@ class BuildFixLoop:
                    stall_level: int, others: dict[str, str]) -> None:
         hints = m.hints[: self.cfg.kb.max_hints] if self.cfg.kb.use_hints else []
         other = "\n".join(v for k, v in others.items() if k != c.id)[:4000]
+        adv_hints, att.advisory_ids = self._advisory_hints(c)
         ctx = FixContext(phase=phase, iteration=iteration, stall_level=stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
-                         previous_attempts=_related(c, self.history), other_errors_summary=other,
-                         use_escalation_model=stall_level >= self.cfg.loop.stall_limit)
+                         advisory_hints=adv_hints, previous_attempts=_related(c, self.history),
+                         other_errors_summary=other, use_escalation_model=stall_level >= self.cfg.loop.stall_limit)
         try:
             proposal = self.fixer.propose(self.ws, c, ctx)
         except Exception as e:
@@ -804,6 +809,22 @@ class BuildFixLoop:
         att.changes, att.apply_errors = list(applied), list(errs)
         if not applied:
             self._fail(att, "no patch block applied")
+
+    def _advisory_hints(self, c: ErrorCluster) -> tuple[list[str], list[str]]:
+        """(hints, advisory ids) of the run's library advisories that match this cluster (sbmig.advisory.hints_for)."""
+        if not self.advisories:
+            return [], []
+        try:
+            from sbmig.advisory.hints import hints_for
+            root = getattr(self.cfg, "repo_root", None)
+            root = Path(root) if isinstance(root, (str, Path)) else None
+            hints, ids = hints_for(c.errors, self.advisories, self.profile, notes_root=root)
+        except Exception as e:  # pragma: no cover - hints_for never raises; stay defensive about imports
+            log.warning("advisory hints unavailable: %s", e)
+            return [], []
+        if ids:
+            log.debug("advisory hints for %s (%s):\n%s", c.id, ", ".join(ids), "\n".join(f"- {h}" for h in hints))
+        return list(hints), list(ids)
 
     def _llm_transport_failure(self, att: FixAttempt, c: ErrorCluster, why: str) -> None:
         """Two transport/config failures in a row → the LLM is unavailable for the rest of the run (L5)."""

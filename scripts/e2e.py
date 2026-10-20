@@ -78,7 +78,8 @@ DEFAULT_JAVA_HOME = "/Users/acandiatale/Library/Java/JavaVirtualMachines/corrett
 DEFAULT_LOCAL_REPO = Path.home() / ".m2" / "repository"
 DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-                 "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename"]
+                 "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename",
+                 "boot2-hystrix-command"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 

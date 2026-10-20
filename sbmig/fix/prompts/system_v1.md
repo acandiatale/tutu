@@ -27,6 +27,10 @@ error cluster at a time; other clusters are handled separately.
 7. Do not guess code you have not seen. If you need another file or need to know where a symbol is defined/used,
    ask with `<need_files>` / `<need_grep>` instead of patching blindly.
 8. If previous attempts on this cluster are listed, they did not work. Do something different.
-9. Output ONLY the protocol below — no prose, no markdown outside the tags.
+9. If a "Library migration guidance" section is present, the libraries it names were removed by the migration on
+   purpose: port the code that still uses them to the named replacement (the smallest port that compiles, public
+   signatures kept so callers still compile, a `// MIGRATION-TODO:` for behaviour to verify) instead of re-adding the
+   removed library. This is the one case where rewriting more than the failing line is expected.
+10. Output ONLY the protocol below — no prose, no markdown outside the tags.
 
 {{ protocol }}

@@ -100,8 +100,13 @@ class LLMFixer:
         messages: list[ChatMessage] = []
         last: Optional[LLMResponse] = None
         role, meta = self.call_tags(ctx, cluster.id)
+        adv_in_prompt = 0
         try:
             packed = self.packer.pack(ws, cluster, ctx, ctx.profile_summary)
+            guidance = next((b for t, b in packed.sections if t == ContextPacker.ADVISORY_TITLE), "")
+            if guidance:                      # round 6: the library advisories' "what to migrate TO" in this prompt
+                adv_in_prompt = sum(1 for ln in guidance.splitlines() if ln.startswith("- "))
+                log.debug("advisory guidance in the prompt for %s:\n%s", cluster.id, guidance)
             messages = self.build_messages(packed)
             last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
 
@@ -166,7 +171,7 @@ class LLMFixer:
             log.exception("LLM fixer failed for cluster %s", cluster.id)
             proposal = self._error_proposal(f"llm-error: {type(exc).__name__}: {exc}", model, messages, usage, requested)
 
-        self._journal(ws, cluster, proposal, rounds)
+        self._journal(ws, cluster, proposal, rounds, adv_in_prompt)
         self._record(cluster, transcript, proposal)
         return proposal
 
@@ -354,14 +359,16 @@ class LLMFixer:
         return "\n\n".join(parts) + "\n"
 
     # ------------------------------------------------------------------ bookkeeping
-    def _journal(self, ws: Workspace, cluster: ErrorCluster, p: FixProposal, rounds: int) -> None:
+    def _journal(self, ws: Workspace, cluster: ErrorCluster, p: FixProposal, rounds: int,
+                 advisory_hints: int = 0) -> None:
         try:
             ws.journal({"event": "llm_fix", "cluster_id": cluster.id, "model": p.model, "rounds": rounds,
                         "calls": p.llm_usage.calls,
                         "tokens": {"input": p.llm_usage.input_tokens, "output": p.llm_usage.output_tokens},
                         "changes": [{"op": c.op, "path": c.path} for c in p.changes],
                         "confidence": p.confidence, "prompt_hash": p.prompt_hash,
-                        "error": p.analysis if p.analysis.startswith("llm-error") else None})
+                        "error": p.analysis if p.analysis.startswith("llm-error") else None,
+                        "advisory_hints": advisory_hints})   # library-guidance lines that reached the prompt
         except Exception:  # pragma: no cover
             log.debug("journal failed", exc_info=True)
 
