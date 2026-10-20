@@ -411,6 +411,7 @@ class FixAttempt(BaseModel):
     cluster_id: str
     decision: TriageDecision
     changes: list[FileChange] = Field(default_factory=list)
+    advisory_ids: list[str] = Field(default_factory=list)   # advisories whose hints were given to this attempt (round 6)
     applied: bool = False
     apply_errors: list[str] = Field(default_factory=list)
     commit: Optional[str] = None
@@ -687,6 +688,9 @@ class AdvisoryFinding(BaseModel):
     followup: str = ""
     docs: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    llm_fixed_files: list[str] = Field(default_factory=list)   # files the LLM rewrote for this library (round 6:
+                                                   # successful llm_fix attempts whose advisory_ids include this id)
+    llm_fix_notes: list[str] = Field(default_factory=list)     # one line per such attempt (its analysis), for the Handover
 
     @property
     def replaced(self) -> bool:

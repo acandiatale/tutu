@@ -220,6 +220,8 @@ class FixContext(BaseModel):
     profile_summary: str = ""                     # short text: case type, boot/java versions, libs
     plan_notes: list[str] = Field(default_factory=list)
     kb_hints: list[str] = Field(default_factory=list)
+    advisory_hints: list[str] = Field(default_factory=list)   # library advisories relevant to this cluster: what to
+                                                  # migrate TO (replacement, followup text) — round 6, sbmig.advisory.hints_for
     previous_attempts: list[FixAttempt] = Field(default_factory=list)
     other_errors_summary: str = ""                # one-line-per-cluster view of the rest of the build
     use_escalation_model: bool = False

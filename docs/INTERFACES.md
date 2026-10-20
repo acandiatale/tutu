@@ -186,3 +186,21 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   `config/llm-company.yml`). New default provider `company` = `sbmig.fix.company.CompanyClient` (requests.post,
   `payload_extra` default `{need_orgin: true}` in default.yml, `response_path` from `LLM_RESPONSE_PATH`, records when
   `LLM_RECORD_DIR` is set). `extract_reply` stays in `sbmig/fix/client.py`. LangGraph engine and web app unchanged.
+* 2026-10-20 PM (round 6 contracts — Hystrix → Resilience4j, advisory-guided LLM fixes):
+  * `FixContext.advisory_hints: list[str] = []` — for the cluster being fixed, the matching library advisories as
+    short guidance lines ("hystrix (eol): replace with org.springframework.cloud:spring-cloud-starter-circuitbreaker-
+    resilience4j; @HystrixCommand(fallbackMethod=…) → @CircuitBreaker(name=…, fallbackMethod=…); …" built from the
+    advisory's title / replacement / followup). `sbmig.advisory.hints_for(errors, findings, profile=None) ->
+    tuple[list[str], list[str]]` (hints, advisory ids): an advisory matches a cluster when an error mentions one of
+    its library's import packages (`LibraryRule` packages, e.g. `com.netflix.hystrix`) or artifacts, or a symbol /
+    owner class in those packages. `ContextPacker` renders them as a section "Library migration guidance" right after
+    the errors (never truncated before `kb_hints`). `BuildFixLoop(..., advisories=report.advisories)` fills the
+    context; `FixAttempt.advisory_ids` records which advisories were attached.
+  * `AdvisoryFinding.llm_fixed_files / llm_fix_notes` — filled in `Orchestrator._finalize_advisories` from the run's
+    successful `llm_fix` attempts (applied, outcome in SUCCESS_OUTCOMES, cluster resolved) whose `advisory_ids`
+    include the finding; the Handover "from here on, your team" gets one line per such advisory: "code rewritten by
+    the LLM for <library>: <files> — <notes>; review (changes.patch, attempts table)". The ledger line for the
+    attempt carries the advisory ids in `labels`-adjacent metadata (`resolution=llm_patch`, `advisories=[…]`).
+  * Recipe: `com.company.migrate.HystrixToResilience4j` (knowledge/recipes/base), advisory `hystrix` policy
+    `recipe`. Programmatic `HystrixCommand` subclasses / `HystrixObservableCommand` are left to the LLM with the
+    advisory hint (fixture `boot2-hystrix-command`, replayed LLM, `max_llm_calls` = number of files).
