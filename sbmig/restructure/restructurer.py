@@ -2,7 +2,8 @@
 
 mode="layout"   non-MSA: root becomes an aggregator (parent = in-house parent, packaging pom, mandatory deps) with
                 module/<comp-jar> (all as-is sources + deps) and module/<boot-jar> (Application, boot resources,
-                spring-boot-maven-plugin repackage). As-is multi-module projects are wrapped (or merged).
+                spring-boot-maven-plugin repackage). As-is multi-module projects are merged into comp-jar (default;
+                an as-is `boot-jar` module is kept as boot-jar, first-wins collisions) or wrapped (`wrap`).
 mode="msa_pom"  MSA: pom-only edits (parent / mandatory / optional / BOM / java props) per service root; no moves.
                 `params["library_roots"]` (pom paths or directories) and the library entries of `profile.services`
                 (see `sbmig.analyze.is_library_root`) get parent swap + optional bumps + remove_when_present but no
@@ -35,7 +36,7 @@ import jinja2
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import RestructureResult
-from sbmig.core.models import GAV, CaseType, PluginInfo, ProjectProfile
+from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectProfile
 from sbmig.core.workspace import GitError, Workspace
 
 from .pom_editor import PomEditError, PomEditor, property_ref
@@ -189,7 +190,7 @@ class Restructurer:
     def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *,
               mode: Literal["layout", "msa_pom", "optional_bump"] = "layout",
               params: dict[str, Any] | None = None) -> RestructureResult:
-        """params (optional, from the PlanStep): starter, split_policy, multi_module_policy (layout);
+        """params (optional, from the PlanStep): starter, split_policy, multi_module_policy, merge_collision (layout);
         library_roots (msa_pom); target (optional_bump: restrict to the poms below this directory)."""
         result = RestructureResult(ok=True)
         c = _Ctx(ws, profile, cfg, result, dict(params or {}), self.commit_enabled)
@@ -220,8 +221,14 @@ class Restructurer:
         comp_mod = f"{L.module_dir}/{L.comp_module}"
         boot_mod = f"{L.module_dir}/{L.boot_module}"
         mods = [m.strip().rstrip("/") for m in root.modules()]
-        if root.packaging() == "pom" and boot_mod in mods and (
-                comp_mod in mods or all(posixpath.normpath(m).startswith(L.module_dir + "/") for m in mods)):
+        policy = c.params.get("multi_module_policy", L.multi_module_policy)
+        norm_mods = [posixpath.normpath(m) for m in mods]
+        if policy == "merge":     # the company layout is exactly comp-jar + boot-jar
+            done = boot_mod in norm_mods and comp_mod in norm_mods
+        else:
+            done = boot_mod in norm_mods and (
+                comp_mod in norm_mods or all(m.startswith(L.module_dir + "/") for m in norm_mods))
+        if root.packaging() == "pom" and done:
             c.note("already restructured")
             parent = root.get_parent()
             if parent is None or parent.key != c.cfg.artifacts.parent.key:
@@ -245,7 +252,6 @@ class Restructurer:
             c.note(msg)
             raise RestructureError(msg)
         coords = self._root_coords(root, c.profile)
-        policy = c.params.get("multi_module_policy", L.multi_module_policy)
         if mods:
             if policy == "merge":
                 self._merge(c, root, mods, coords)
@@ -451,58 +457,205 @@ class Restructurer:
             c.save(ed)
 
     # ------------------------------------------------------------------ multi-module: merge
+    @staticmethod
+    def _module_dir(m: str) -> str:
+        mn = posixpath.normpath(m)
+        return (posixpath.dirname(mn) or ".") if mn.endswith(".xml") else mn
+
     def _merge(self, c: _Ctx, root: PomEditor, mods: list[str], coords: GAV) -> None:
+        """Fold every as-is module (and the root `src/`) into comp-jar; an as-is module named like
+        `layout.boot_module` is kept as boot-jar (moved to module/boot-jar, pom adjusted, sources untouched).
+
+        Collisions (same comp-jar path from two sources): `layout.merge_collision` first-wins (the first source in
+        `<modules>` order wins; identical copies dropped, differing ones saved under `<run dir>/merge-conflicts/`)
+        or fail (RestructureError). Every check and decision happens before the first move."""
         L = c.cfg.layout
-        comp = c.p(L.module_dir, L.comp_module)
-        boot = c.p(L.module_dir, L.boot_module)
+        md = L.module_dir
+        comp = c.p(md, L.comp_module)
+        boot = c.p(md, L.boot_module)
+        collision = c.params.get("merge_collision", L.merge_collision)
+
+        # 1. kept boot module (first module whose directory basename is the boot module name)
+        kept: str | None = None
+        for m in mods:
+            if posixpath.basename(self._module_dir(m)) != L.boot_module:
+                continue
+            if kept is None:
+                kept = m
+            else:
+                c.note(f"module {m} is also named {L.boot_module}; merged into {md}/{L.comp_module} "
+                       f"(only {kept} is kept as the boot module)")
+        merged = [m for m in mods if m != kept]
+
+        def load(label: str, mdir: str) -> PomEditor:
+            pom = c.p(mdir, "pom.xml")
+            if not c.ws.exists(pom):
+                raise RestructureError(f"merge: module pom {pom} not found")
+            ed = PomEditor(c.ws.abs(pom))
+            if ed.packaging() == "pom" or ed.modules():
+                raise RestructureError(f"merge policy does not support nested aggregator {label}")
+            return ed
+
+        kept_dir = self._module_dir(kept) if kept is not None else None
+        kept_ed = load(kept, kept_dir) if kept is not None and kept_dir is not None else None
         eds: list[PomEditor] = []
-        plan: list[tuple[str, str]] = []
-        seen: dict[str, str] = {}
-        sources_of = [(c.p(m), m) for m in mods]
+        sources_of: list[tuple[str, str]] = []          # (module dir, label)
         if c.ws.exists(c.p("src")):
-            sources_of.insert(0, (c.p("."), "<root>"))
+            sources_of.append((".", "<root>"))
+        for m in merged:
+            mdir = self._module_dir(m)
+            eds.append(load(m, mdir))
+            sources_of.append((mdir, mdir))
+
+        # 2. plan the moves and decide every collision (nothing is moved yet)
+        plan: list[tuple[str, str]] = []
+        seen: dict[str, tuple[str, str]] = {}           # comp dst → (label, as-is src)
+        conflicts: dict[str, MergeConflict] = {}
+        to_save: list[tuple[str, str]] = []             # (as-is src, run-dir-relative copy)
         for mdir, label in sources_of:
-            if label != "<root>":
-                pom = c.p(mdir, "pom.xml")
-                if not c.ws.exists(pom):
-                    raise RestructureError(f"merge: module pom {pom} not found")
-                ed = PomEditor(c.ws.abs(pom))
-                if ed.packaging() == "pom" or ed.modules():
-                    raise RestructureError(f"merge policy does not support nested aggregator {label}")
-                eds.append(ed)
             src_abs = c.ws.abs(c.p(mdir, "src"))
             if not src_abs.exists():
                 continue
             for f in sorted(x for x in src_abs.rglob("*") if x.is_file()):
                 rel = f.relative_to(src_abs).as_posix()
                 dst = f"{comp}/src/{rel}"
+                src = c.p(mdir, "src", rel)
                 if dst in seen:
-                    raise RestructureError(f"merge collision: src/{rel} exists in both {seen[dst]} and {label}")
-                seen[dst] = label
-                plan.append((c.p(mdir, "src", rel), dst))
+                    first_label, first_src = seen[dst]
+                    if collision == "fail":
+                        raise RestructureError(f"merge collision: src/{rel} exists in both {first_label} and {label}")
+                    mc = conflicts.setdefault(dst, MergeConflict(path=f"src/{rel}", kept_from=first_label,
+                                                                 identical=True))
+                    mc.dropped_from.append(label)
+                    if c.ws.abs(first_src).read_bytes() != f.read_bytes():
+                        mc.identical = False
+                        saved = f"merge-conflicts/{'root' if label == '<root>' else label}/src/{rel}"
+                        mc.saved_copies.append(saved)
+                        to_save.append((src, saved))
+                    continue
+                seen[dst] = (label, src)
+                if src != dst:
+                    plan.append((src, dst))
+        for src, saved in to_save:
+            target = c.ws.run_dir / saved
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(c.ws.abs(src), target)
+        if conflicts:
+            c.result.merge_conflicts.extend(conflicts.values())
+            same = [mc.path for mc in conflicts.values() if mc.identical]
+            diff = [mc.path for mc in conflicts.values() if not mc.identical]
+            if same:
+                c.note(f"{len(same)} identical duplicate file(s) dropped: {', '.join(same[:5])}"
+                       f"{' …' if len(same) > 5 else ''}")
+            if diff:
+                c.followup(f"merge conflicts: {len(diff)} file(s) existed in more than one module with different "
+                           "content; the copy from the first module in <modules> order was kept, the others are "
+                           f"saved under {c.ws.run_dir}/merge-conflicts/ — review: {', '.join(diff[:5])}"
+                           f"{' …' if len(diff) > 5 else ''}")
+
+        # 3. kept boot module → module/boot-jar
+        if kept is not None and kept_dir is not None and c.p(kept_dir) != boot:
+            c.move(c.p(kept_dir), boot)
+            self._fix_child_parents(c, {c.p(kept_dir): boot})
+            kept_ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
+
+        # 4. fold the other sources into comp-jar
         for src, dst in plan:
             c.move(src, dst)
-        for mdir, label in sources_of:
+        for mdir, _label in sources_of:
             c.moves.append((c.p(mdir, "src"), f"{comp}/src"))
-        module_aids = {ed.artifact_id() for ed in eds}
-        groups = {coords.group_id, "${project.groupId}"} | {ed.group_id() for ed in eds if ed.group_id()}
-        internal = {f"{g}:{a}" for g in groups for a in module_aids if a}
-        packaging = "war" if any(ed.packaging() == "war" for ed in eds) else root.packaging()
+        internal_eds = [*eds, *([kept_ed] if kept_ed is not None else [])]
+        groups = {coords.group_id, "${project.groupId}"} | {ed.group_id() for ed in internal_eds if ed.group_id()}
+        merged_internal = {f"{g}:{a}" for g in groups for a in {ed.artifact_id() for ed in eds} if a}
+        internal = merged_internal | {f"{g}:{kept_ed.artifact_id()}" for g in groups
+                                      if kept_ed is not None and kept_ed.artifact_id()}
+        packaging = "war" if any(ed.packaging() == "war" for ed in internal_eds) else root.packaging()
         asis_deps = root.dependencies() + [d for ed in eds for d in ed.dependencies()]
         self._write_comp_pom(c, [root, *eds], coords, comp, packaging, exclude=internal, copy_props_from=eds)
-        for m in mods:
-            c.ws.delete(c.p(m))
-            c.note(f"merged module {m} into {L.module_dir}/{L.comp_module} (module directory removed)")
+        for m in merged:
+            mdir = c.p(self._module_dir(m))
+            if mdir != comp:
+                c.ws.delete(mdir)
+            c.note(f"merged module {m} into {md}/{L.comp_module} (module directory removed)")
+        c.result.merged_modules = list(merged)
         c.commit("restructure: merge as-is modules into comp-jar")
-        moved_main, moved_tests = self._populate_boot(c, [comp], boot)
+
+        # 5. boot-jar: the kept as-is module, or a generated one
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
                   version="${project.version}")
-        final_name = root.text_of(root.find("build"), "finalName") if root.find("build") is not None else None
-        self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp])
-        self._rewrite_root(c, root, [f"{L.module_dir}/{L.comp_module}", f"{L.module_dir}/{L.boot_module}"],
+        if kept_ed is not None and kept is not None and kept_dir is not None:
+            self._keep_boot(c, kept_ed, kept, kept_dir, boot, comp, coords, lib, merged_internal)
+        else:
+            moved_main, moved_tests = self._populate_boot(c, [comp], boot)
+            final_name = root.text_of(root.find("build"), "finalName") if root.find("build") is not None else None
+            self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp])
+        self._rewrite_root(c, root, [f"{md}/{L.comp_module}", f"{md}/{L.boot_module}"],
                            keep_deps=False, keep_build_plugins=False)
         self._packaging_followups(c, packaging)
         c.commit("restructure: comp-jar / boot-jar layout (merged)")
+
+    def _keep_boot(self, c: _Ctx, ed: PomEditor, declared: str, asis_dir: str, boot: str, comp: str, coords: GAV,
+                   lib: GAV, merged_internal: set[str]) -> None:
+        """Adjust the kept as-is boot module's pom: dependencies on merged modules → one comp-jar dependency,
+        spring-boot-maven-plugin ensured, java level, system jars. Its src/ stays untouched."""
+        L = c.cfg.layout
+        A = c.cfg.artifacts
+        if ed.group_id() and ed.group_id() != coords.group_id:
+            lib = GAV(group_id=coords.group_id, artifact_id=lib.artifact_id, version=lib.version)
+        if ed.version() and ed.version() != coords.version:
+            lib = GAV(group_id=lib.group_id, artifact_id=lib.artifact_id, version=coords.version)
+        placed = ed.has_dependency(lib.group_id, lib.artifact_id)
+        test_jar = False
+        removed: list[str] = []
+        for el in ed.dependency_elements(False):
+            g = ed.gav_of(el)
+            if g.key not in merged_internal:
+                continue
+            removed.append(g.key)
+            if g.type == "test-jar" or g.classifier == "tests":
+                test_jar = True
+                ed.remove_node(el)
+            elif not placed and (g.scope or "compile") == "compile" and not g.classifier and not g.type:
+                ed.set_child_text(el, "groupId", lib.group_id)
+                ed.set_child_text(el, "artifactId", lib.artifact_id)
+                ed.set_child_text(el, "version", lib.version)
+                placed = True
+            else:
+                ed.remove_node(el)
+        if not placed:
+            ed._add_dep(lib, managed=False, if_absent=True, first=True)
+        if test_jar:
+            ed.add_dependency(GAV(group_id=lib.group_id, artifact_id=lib.artifact_id, version=lib.version,
+                                  type="test-jar", scope="test"))
+            self._add_test_jar_goal(c, comp)
+        if not ed.has_plugin(*BOOT_PLUGIN, where="build"):
+            plugin_version = None if A.parent_manages_spring_boot else c.cfg.target.spring_boot_version
+            ed.add_plugin(PluginInfo(group_id=BOOT_PLUGIN[0], artifact_id=BOOT_PLUGIN[1], version=plugin_version),
+                          executions=[{"goals": ["repackage"]}])
+            c.note(f"spring-boot-maven-plugin (repackage) added to {L.module_dir}/{L.boot_module}")
+        else:
+            self._fix_boot_plugin(c, ed)
+        if ed.packaging() == "war":
+            ed.set_packaging("jar")
+            for p in ed.find_plugins(*WAR_PLUGIN, where="build"):
+                ed.remove_node(p)
+        parent = ed.get_parent()
+        if parent is None or parent.artifact_id != coords.artifact_id:
+            c.note(f"kept boot module {declared} does not inherit the root pom "
+                   f"({parent.key if parent else 'no parent'}); parent left unchanged")
+        self._fix_java(c, ed, top=False)
+        ed.remove_if_empty(ed.find("properties"))
+        asis = posixpath.normpath(posixpath.join(c.base or ".", asis_dir))
+        self._relocate_module_system_deps(c, ed, "" if asis == "." else asis, boot)
+        c.save(ed)
+        kept_rel = f"{L.module_dir}/{L.boot_module}"
+        c.result.kept_boot_module = kept_rel
+        where = "" if posixpath.normpath(declared) == kept_rel else f" (moved from {declared})"
+        c.note(f"as-is boot module {declared} kept as {kept_rel}{where}: sources untouched, dependencies on merged "
+               f"modules ({', '.join(sorted(set(removed))) or 'none'}) replaced by {lib.artifact_id}")
+        if not any(self._locate_class(c, fqcn, [f"{boot}/src/main/java"]) for fqcn in c.profile.source.main_classes):
+            c.note(f"kept boot module {kept_rel} has no @SpringBootApplication class; none was generated")
+        self._web_followups(c)
 
     # ------------------------------------------------------------------ comp pom
     def _write_comp_pom(self, c: _Ctx, sources: list[PomEditor], coords: GAV, comp: str, asis_packaging: str,

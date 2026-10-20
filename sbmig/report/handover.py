@@ -6,7 +6,7 @@ poms of the migrated tree (`view` = Workspace / PathView) and compresses the res
 parent / java / spring boot before → after, one row per dependency whose version changed (⚠ carried-over pins:
 the new parent / Boot BOM no longer manages them), added / removed artifacts, and an ordered "from here on, your
 team" list (advisories not replaced, replaced-but-verify, carried-over pins, blocked / unresolved pointers,
-manual follow-ups). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
+manual follow-ups) and the multi-module merge conflicts (`report.merge_conflicts`). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
 """
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ REASON_BOOT = "spring boot 4 upgrade"
 REASON_OTHER = "recipe/handler"
 CARRIED_LIST_MAX = 5
 LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM for <library>" line
+IDENTICAL_LIST_MAX = 5           # paths named in the "N identical duplicate(s) dropped" line
 
 _PINNED_RE = re.compile(r"([\w.\-]+:[\w.\-]+) pinned to (\S+) \(")
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
@@ -300,6 +301,24 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any) -> list[str]:
     return out
 
 
+def merge_conflict_lines(report: RunReport) -> list[str]:
+    """`report.merge_conflicts` (layout `merge`) → one line per differing path, identical copies in one line."""
+    out: list[str] = []
+    identical: list[str] = []
+    for c in list(getattr(report, "merge_conflicts", None) or []):
+        if c.identical:
+            identical.append(c.path)
+            continue
+        out.append(f"{c.path}: kept the copy from {c.kept_from}, dropped {', '.join(c.dropped_from) or '-'} "
+                   f"(saved: {', '.join(c.saved_copies) or '-'})")
+    if identical:
+        names = ", ".join(identical[:IDENTICAL_LIST_MAX])
+        if len(identical) > IDENTICAL_LIST_MAX:
+            names += ", …"
+        out.append(f"{len(identical)} identical duplicate(s) dropped (same content in every module): {names}")
+    return out
+
+
 def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Optional[dict[str, Any]],
            cfg: Any) -> HandoverSummary:
     from sbmig.analyze.pom_parser import parse_poms
@@ -407,6 +426,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     changes.sort(key=lambda c: (order.get(c.kind, 9), c.key))
     h.changes = changes
     h.carried_over = [c for c in changes if c.carried_over]
+    h.merge_conflicts = merge_conflict_lines(report)
     h.from_here = _from_here(h, report, cfg)
     return h
 
@@ -422,6 +442,7 @@ def build_handover(profile: Optional[ProjectProfile], view: Any, report: RunRepo
         log.warning("handover failed: %s", e)
         h = HandoverSummary(notes=[f"handover unavailable: {type(e).__name__}: {e}"])
         try:
+            h.merge_conflicts = merge_conflict_lines(report)
             h.from_here = _from_here(h, report, cfg)
         except Exception:  # pragma: no cover
             pass

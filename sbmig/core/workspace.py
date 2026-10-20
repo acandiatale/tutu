@@ -147,10 +147,15 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
             shutil.copyfileobj(src, dst)
 
 
+_ROOT_BUILD_FILES = ("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts",
+                     "build.xml")
+
+
 def _detect_project_root(extracted: Path) -> Path:
-    """If the archive has a single top-level folder (and no pom at top), descend into it."""
+    """If the archive has a single top-level folder (and no build file at top), descend into it. Gradle / Ant
+    build files stop the descent too, so intake rejects them naming the real tool (catalog S4)."""
     entries = [p for p in extracted.iterdir() if not p.name.startswith("__MACOSX") and p.name != ".DS_Store"]
-    if (extracted / "pom.xml").exists() or (extracted / "build.gradle").exists():
+    if any((extracted / n).exists() for n in _ROOT_BUILD_FILES):
         return extracted
     if len(entries) == 1 and entries[0].is_dir():
         return _detect_project_root(entries[0])

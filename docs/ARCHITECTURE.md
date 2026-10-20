@@ -225,8 +225,18 @@ root/module/comp-jar      all as-is src/main, src/test (minus boot resources / @
 root/module/boot-jar      Application.java (generated or moved), boot resources, spring-boot-maven-plugin repackage,
                           deps: comp-jar + starter by case
 ```
-Multi-module as-is (non-MSA): `wrap` policy moves existing modules under `module/` unchanged and adds boot-jar
-depending on them. `merge` is opt-in.
+Multi-module as-is (non-MSA), `layout.multi_module_policy` (default **`merge`**, round 7b): every as-is module and
+the root `src/` are folded into `module/comp-jar` (one pom: root + module dependencies minus the module-to-module ones).
+An as-is module whose directory basename is `layout.boot_module` (`boot-jar`, `apps/boot-jar`, …) is the **kept boot
+module**: moved to `module/boot-jar` (parent `relativePath` recomputed), its dependencies on merged modules replaced by
+one `<root artifactId>-comp` dependency, spring-boot-maven-plugin ensured, its sources untouched and no Application
+generated (first match in `<modules>` order wins; without one, boot-jar is generated as for a single module).
+Collisions (same comp-jar path from two sources), `layout.merge_collision`: `first-wins` (default) keeps the copy of
+the first source in `<modules>` order (`<root>` first), drops identical copies with one note and saves differing ones
+as `<run dir>/merge-conflicts/<module>/src/…` (`RestructureResult.merge_conflicts`, Handover "Merge conflicts", one
+manual follow-up); `fail` aborts before anything moves. Nested aggregators abort the merge. "Already restructured"
+under `merge` = root packaging `pom` with both `module/comp-jar` and `module/boot-jar` among its modules. `wrap`
+(opt-in) moves the existing modules under `module/` unchanged and adds a boot-jar depending on the jar modules.
 
 ## 9. Outputs
 

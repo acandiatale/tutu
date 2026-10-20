@@ -16,9 +16,14 @@ layout:
   # minimal  : every as-is source goes to comp-jar; boot-jar holds only the Application class (+ boot resources, @SpringBootTest tests)
   # web-layer: @SpringBootApplication/@Controller/@RestController/@Configuration/@ControllerAdvice classes move to boot-jar
   split_policy: minimal
-  # as-is multi-module (non-MSA):  wrap  = move existing modules under module/ unchanged and add boot-jar
-  #                                merge = merge all module sources into comp-jar (riskier)
-  multi_module_policy: wrap
+  # as-is multi-module (non-MSA):  merge = fold every module's sources into comp-jar (the company layout: exactly
+  #                                        comp-jar + boot-jar); an as-is module named like boot_module is kept as
+  #                                        the boot module (its sources, resources, Application class)
+  #                                wrap  = keep the modules as they are under module/ and add boot-jar (N+1 modules)
+  multi_module_policy: merge
+  # merge: a path present in more than one module → first-wins (first module in <modules> order; the dropped copies
+  # are saved under <run dir>/merge-conflicts/ and listed in the Handover) | fail (restructure error, nothing moved)
+  merge_collision: first-wins
   application_class_name: Application
   starter_by_case:
     pure_java: spring-boot-starter

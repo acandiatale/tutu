@@ -22,7 +22,8 @@ captures the exit code + output, finds the run directory the CLI created under -
                "journal_events": [{"event": "restructure", "ok": true}],                # subset match on journal.jsonl
                "phases": {"restructure": "ok"},                                        # ok | FAIL | skipped
                "post_checks": [{"file_decodes_as": {"path", "encoding", "contains", "not_contains"}},
-                               {"file_contains": {...}}, {"pom_parent": {...}}, {"pom_dependency_absent": {...}}],
+                               {"file_contains": {...}}, {"pom_parent": {...}}, {"pom_dependency_absent": {...}},
+                               {"file_exists": {"path"}}, {"file_absent": {"path"}}],   # files or dirs, globs ok
                "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced",   # report.advisories:
                                "recipe_source": "advisory"}],                  # entry by advisory_id, fields equal
                "advisories_exact": true,                                       # no unlisted findings allowed
@@ -80,7 +81,7 @@ DEFAULT_LOCAL_REPO = Path.home() / ".m2" / "repository"
 DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
                  "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename",
-                 "boot2-hystrix-command"]
+                 "boot2-hystrix-command", "multi-module-merge"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -543,6 +544,15 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
     spec = spec if isinstance(spec, dict) else {}
     if project is None or not project.is_dir():
         return f"{kind}: no migrated project directory"
+    if kind in ("file_exists", "file_absent"):        # files or directories; `**` globs allowed
+        pattern = str(spec.get("path", ""))
+        hits = [p for p in project.glob(pattern) if ".git" not in p.relative_to(project).parts] \
+            if any(c in pattern for c in "*?[") else ([project / pattern] if (project / pattern).exists() else [])
+        if kind == "file_exists" and not hits:
+            return f"file_exists: {pattern} not found in {project.name}/"
+        if kind == "file_absent" and hits:
+            return f"file_absent: {hits[0].relative_to(project).as_posix()} exists in {project.name}/"
+        return None
     files = _resolve(project, str(spec.get("path", "")))
     if not files:
         return f"{kind}: {spec.get('path')} not found in {project.name}/"

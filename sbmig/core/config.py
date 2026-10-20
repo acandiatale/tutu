@@ -63,7 +63,10 @@ class LayoutConfig(BaseModel):
     boot_artifact_suffix: str = "-boot"
     comp_artifact_suffix: str = "-comp"
     split_policy: Literal["minimal", "web-layer"] = "minimal"
-    multi_module_policy: Literal["wrap", "merge"] = "wrap"
+    multi_module_policy: Literal["wrap", "merge"] = "merge"
+    # merge: a path present in more than one module → first module in <modules> order wins, the other copies are
+    # saved under <run dir>/merge-conflicts/ and listed in the Handover ("first-wins"); "fail" = restructure error
+    merge_collision: Literal["first-wins", "fail"] = "first-wins"
     application_class_name: str = "Application"
     boot_resources_glob: list[str] = Field(default_factory=lambda: [
         "application*.yml", "application*.yaml", "application*.properties",

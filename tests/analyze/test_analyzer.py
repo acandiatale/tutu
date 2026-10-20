@@ -154,7 +154,7 @@ def test_gradle_ant_kotlin_and_empty(tmp_path: Path, cfg) -> None:
     a = tmp_path / "a"
     write(a, "build.xml", "<project/>")
     p = analyze_path(a, cfg)
-    assert p.build_tool == "none" and any("Ant" in w for w in p.warnings)
+    assert p.build_tool == "ant" and any("Ant" in w for w in p.warnings)
     assert p.case_type == CaseType.UNKNOWN
     m = tmp_path / "m"
     write(m, "pom.xml", pom("m"))

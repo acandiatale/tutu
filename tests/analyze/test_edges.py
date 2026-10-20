@@ -152,7 +152,7 @@ def test_gradle_and_ant_warning_first(tmp_path: Path, cfg) -> None:
     write(a, "build.xml", "<project/>")
     write_java(a, "", "com.a", "A")
     p = analyze_path(a, cfg)
-    assert p.build_tool == "none" and p.warnings[0].startswith("Ant build.xml detected")
+    assert p.build_tool == "ant" and p.warnings[0].startswith("Ant build.xml detected")
     n = tmp_path / "n"
     write_java(n, "", "com.n", "N")
     p = analyze_path(n, cfg)

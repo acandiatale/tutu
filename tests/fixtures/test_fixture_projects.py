@@ -34,7 +34,8 @@ JDK_HOMES = {
 
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
-             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command"]
+             "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
+             "multi-module-merge"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -48,6 +49,7 @@ BUILD_MATRIX = [
     ("boot3", ".", "21", ""),
     ("msa", "order-service", "11", ""),
     ("msa", "user-service", "21", ""),
+    ("multi-module-merge", ".", "11", ""),
     ("boot2-javax-lib", ".", "11", "libs"),
     ("boot2-javax-lib-optional", ".", "11", "libs"),
     ("euckr-legacy", ".", "8", "ms949"),
@@ -103,10 +105,18 @@ class PomDepsCheck(BaseModel):
     artifacts: list[str]
 
 
+class PathCheck(BaseModel):
+    """`file_exists` / `file_absent`: a path (glob allowed) in the *migrated* tree."""
+    model_config = ConfigDict(extra="forbid")
+    path: str
+
+
 class PostCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
     file_decodes_as: FileCheck | None = None
     file_contains: FileCheck | None = None
+    file_exists: PathCheck | None = None
+    file_absent: PathCheck | None = None
     pom_parent: PomParentCheck | None = None
     pom_dependency_absent: PomDepsCheck | None = None
     pom_dependency_present: PomDepsCheck | None = None
@@ -296,6 +306,8 @@ def test_post_check_paths_exist_in_fixture(name: str):
     `module/<comp-jar|boot-jar>/pom.xml`, which the restructure phase creates (single jar → comp-jar + boot-jar)."""
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
+            if kind in ("file_exists", "file_absent"):      # describe the migrated tree, not the as-is one
+                continue
             if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
                 assert (FIXTURES / name / "pom.xml").exists()
                 continue

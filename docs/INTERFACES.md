@@ -214,3 +214,25 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   verify phase group / `finalize` node no longer aborts the run; the abort reason of an earlier stop says the final
   build did not run. `is_llm_transport_error` also matches unparseable 200s / bad `LLM_RESPONSE_PATH` and ignores
   `status=400|413|422`.
+* 2026-10-20 PM (round 7b contracts — multi-module `merge` v2, Maven-only intake):
+  * `MergeConflict(path, kept_from, dropped_from, identical, saved_copies)` (`sbmig/core/models.py`);
+    `RestructureResult.merged_modules / kept_boot_module / merge_conflicts`; `RunReport.merge_conflicts`
+    (copied from the layout step's result by `Orchestrator._step_restructure`); `HandoverSummary.merge_conflicts`
+    (rendered lines; the report prints them as a "Merge conflicts" block inside the Handover, before "From here on").
+  * `LayoutConfig.multi_module_policy` default is now **`merge`** (the company layout is exactly comp-jar + boot-jar);
+    `wrap` stays available. New `LayoutConfig.merge_collision: first-wins | fail` (default first-wins).
+  * `merge` semantics: an as-is module whose directory basename equals `layout.boot_module` (default `boot-jar`) is
+    the **kept boot module** — moved to `module/boot-jar` if elsewhere, parent relativePath recomputed, its
+    dependencies on the merged modules replaced by one dependency on `<root artifactId>-comp`, spring-boot-maven-plugin
+    ensured, sources/resources untouched, no Application class generated; every other module (and the root `src/`)
+    is folded into comp-jar. "Already restructured" under `merge` = root packaging pom with **both** boot-jar and
+    comp-jar among the modules (under `wrap` the old rule stays: boot-jar present and every module under `module/`).
+    Collisions: first module in root `<modules>` order wins (`<root>` first when the root has `src/`); identical
+    copies are dropped silently (one note); differing copies are saved as
+    `<run dir>/merge-conflicts/<module>/src/...` and reported (`MergeConflict`, Handover, manual follow-up).
+  * `ProjectProfile.build_tool` gains `"ant"`. `sbmig.analyze.detect_build_tool(ws) -> BuildToolDetection(tool,
+    reason)` (cheap globs: `pom.xml`, `build.gradle[.kts]` / `settings.gradle[.kts]`, `build.xml`) is used by the
+    analyzer (`warnings[0]`) and by `Orchestrator.step_intake`, which aborts **before** the effective-pom capture
+    when the tool is not Maven: flag `unsupported-build-tool:<tool>`, `aborted`, exit 3, reason in
+    `manual_followups[0]`. `Workspace._detect_project_root` also descends into a single top-level folder for
+    Gradle / Ant builds so the reason names the real tool.

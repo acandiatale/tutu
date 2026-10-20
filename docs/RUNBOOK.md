@@ -80,6 +80,8 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 ```
 Exit code 0 = final `mvn clean package` passed and nothing is blocked. 2 = finished with **blocked** and/or unresolved
 errors (read `report.md`). 3 = aborted (no Maven, not a Maven project, configured in-house parent not resolvable).
+Gradle and Ant projects (no `pom.xml` anywhere) are rejected at intake, before any Maven call, CLI and web alike:
+exit code 3, flag `unsupported-build-tool:<gradle|ant|none>` and the reason in `report.md` (manual follow-ups).
 Library advisories (EOL / unmanaged libraries, §3.7) never change the exit code — they go to the Handover (§2.5).
 
 Outputs in `out/<run_id>/`:

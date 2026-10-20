@@ -145,7 +145,7 @@ def handover_lines(r: RunReport) -> list[str]:
     h = r.handover
     findings = list(r.advisories or [])
     has_versions = h is not None and bool(h.changes or h.added or h.removed or h.parent_before or h.parent_after)
-    if not findings and not has_versions and not (h and h.from_here):
+    if not findings and not has_versions and not (h and (h.from_here or h.merge_conflicts)):
         L.append("No version changes and no library advisories recorded for this run."
                  + (f" ({'; '.join(h.notes)})" if h and h.notes else ""))
         L.append("")
@@ -201,6 +201,10 @@ def handover_lines(r: RunReport) -> list[str]:
             outcome = {"replaced": "✅ replaced", "still-present": "⚠ still present"}.get(f.outcome, f.outcome)
             L.append(f"| **{_cell(f.library, 60)}** | {_cell(f.detected_version or '-', 40)} | {f.status} | "
                      f"{f.policy} | {_cell(_what_we_did(f), 160)} | {outcome} | {_cell(nxt, 400)} | {docs} |")
+        L.append("")
+    if h is not None and h.merge_conflicts:
+        L += ["**Merge conflicts** (multi-module merge: first module in `<modules>` order wins)", ""]
+        L += [f"- {_cell(x, 500)}" for x in h.merge_conflicts]
         L.append("")
     L += ["### From here on, your team", ""]
     items = h.from_here if h is not None else [f"{f.title}: {f.followup}".rstrip(": ") for f in findings

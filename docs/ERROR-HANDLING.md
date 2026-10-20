@@ -57,7 +57,7 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
 | S1 MSA with shared library modules (`common`) | not a service (no boot plugin) but must be migrated too | planner treats every in-repo root pom as a migration target; parent swap on all root poms | plan unit + `msa` variant |
 | S2 already migrated (Java 21 / Boot 4.1 / restructured) | idempotent: recipes no-op, restructure returns "already restructured" | unit |
 | S3 pom-only aggregator / no sources | analyze → `warnings`, plan has no rewrite steps, restructure only poms | unit |
-| S4 Gradle / Ant | reject with a clear message (exit 2, report explains) | unit |
+| S4 Gradle / Ant / no build | rejected at intake (before the effective-pom capture, `sbmig.analyze.detect_build_tool`): flag `unsupported-build-tool:<tool>` (`gradle` / `ant` / `none`), `aborted`, exit 3, reason in `manual_followups[0]`; a pom.xml anywhere wins (Gradle / Ant files next to it are ignored, one warning); a zip with one top-level folder descends to the Gradle / Ant root so the reason names the real tool; analyze keeps the same check as a fallback (`build_tool != "maven"` → abort) | analyze + loop unit |
 | S5 non-standard module layout (`<module>../x</module>`, in-repo parent at odd path) | wrap policy keeps relative paths consistent; else abort restructure (ok=False) and still verify | unit |
 | S6 optional artifact only transitive | not bumped (only declared usage counts) — documented | — |
 | S7 as-is project is already a multi-module WAR + JAR | wrap policy; WAR → jar follow-up | unit |

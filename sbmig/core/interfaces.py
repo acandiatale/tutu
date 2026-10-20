@@ -34,6 +34,7 @@ from .models import (
     KBCase,
     KBMatch,
     KBRecipe,
+    MergeConflict,
     Phase,
     PhaseResult,
     PluginInfo,
@@ -146,6 +147,10 @@ class RestructureResult(BaseModel):
     manual_followups: list[str] = Field(default_factory=list)      # e.g. "web.xml not migrated; servlets registered via @ServletComponentScan"
     notes: list[str] = Field(default_factory=list)
     error: Optional[str] = None
+    # layout mode, multi-module `merge` policy (round 7b)
+    merged_modules: list[str] = Field(default_factory=list)        # as-is module dirs folded into comp-jar
+    kept_boot_module: Optional[str] = None                         # as-is boot module kept (final path, e.g. module/boot-jar)
+    merge_conflicts: list[MergeConflict] = Field(default_factory=list)
 
 
 @runtime_checkable

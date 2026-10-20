@@ -13,7 +13,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 ## Company constraints (stated by the user; not derivable from the code)
 - Four project cases: pure Java, Spring 4/5 + Boot 2/3, Tomcat servlet-only, MSA (several deployable services).
 - Non-MSA target: root pom inherits **1 in-house parent**, add **2 mandatory** dependencies, **8 optional** in-house
-  artifacts bumped only when already used; sources split into `module/boot-jar` + `module/comp-jar`.
+  artifacts bumped only when already used; sources split into `module/boot-jar` + `module/comp-jar` (an as-is
+  multi-module project is merged into exactly these two; an existing `boot-jar` module is kept).
+- Only Maven projects: Gradle / Ant builds are rejected at intake (exit 3) — the user's decision (2026-10-20).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
 - Real in-house coordinates are unknown here → placeholders in `config/artifacts.example.yml`; public stand-ins in
@@ -38,7 +40,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-20, rounds 5–6, company-convention round, round 7a (flow review) complete (`main`)
+## Status — 2026-10-20, rounds 5–6, company-convention round, rounds 7a–7b complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
@@ -46,11 +48,16 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - 2026-10-20: `llm-probe` + per-run log files; `coding/` agent; LangGraph engine, FastAPI web UI; then simplified
   on the user's request: LLM = provider `company` (plain `requests.post`, settings from `.env`), LangChain tier removed. Round 6: Hystrix → Resilience4j by recipe (pom + annotations) and advisory-guided
   LLM fixes for what recipes cannot convert (Handover names the rewritten files). 917 offline tests green; asserted fixture e2e **14/14** (2026-10-18 tree) + 2 round-6 fixtures passing individually
-  (`scripts/e2e.sh`, 15 fixtures); fleet demo 5/5 with 1 LLM call total.
+  (`scripts/e2e.sh`, 15 fixtures then; 16 since round 7b); fleet demo 5/5 with 1 LLM call total.
 - Round 7a (flow review, `docs/PLAN.md` last table): KB patch replay without an LLM, final build after an internal abort
   (invariant 1), LLM transport classification, unique attempt ids, no KB credit without a build, budgeted harvest
   calls, no `unresolved` ledger lines without a final build, web runs serialized (`queued`), stop after the final
   build finishes normally, `parse_stop_after` shared by CLI/web/api. 941 offline tests green.
+- Round 7b: multi-module `merge` is the default (`layout.multi_module_policy`): an as-is `boot-jar` module is kept,
+  every other module + root `src/` is folded into comp-jar, collisions first-wins (dropped copies under
+  `<run dir>/merge-conflicts/`, Handover "Merge conflicts"), `merge_collision: fail` restores the hard error;
+  Gradle / Ant / no-build projects are rejected at intake (`unsupported-build-tool:<tool>`, exit 3) before any
+  Maven call. Fixture `multi-module-merge` (16 fixtures), e2e PASS. 991 offline tests green.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -67,10 +74,11 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - LLM-unavailable (L5) is permanent for the run after two consecutive transport failures; a cool-down would suit
   short gateway hiccups better. Handover `llm_fixed_files` keep pre-restructure paths. `RunManager.runs` is
   never pruned (restart the server daily).
-- Multi-module as-is projects (`layout.multi_module_policy`): `merge` folds an existing `boot-jar` into comp-jar
-  and regenerates it, and a same-FQCN collision is a hard error; candidates: keep an existing `boot-jar`,
-  first-module-wins + Handover "merge conflicts" section, LLM only for same-FQCN-different-content classes, and
-  whether `merge` should become the default (user decision pending).
+- Multi-module `merge` (round 7b): a same-FQCN class with different content in two modules is resolved first-wins
+  (the dropped copy is saved, not compiled); if the kept copy lacks members the other module used, the build-fix
+  loop sees ordinary compile errors without knowing about the dropped copy — feeding the saved copy into the fix
+  prompt as a hint is the next step. A kept boot module whose @SpringBootApplication scans only its own package
+  will not see the merged beans (runtime, reported as a note).
 - Resilience of the plan-level rewrite step: when the rewrite plugin's own resolver fails to download a POM (seen
   once through the cloud proxy), `UpgradeSpringBoot_4_0` leaves literal `<version>4.0.x</version>` starters, the
   build blocks on `artifact_not_found`, and every KB candidate in that plan is credited a failure it did not cause.
@@ -85,7 +93,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~95 s): `python -m pytest -m "not integration"` → 941 passed, 25 deselected
+- Fast check (Python only, ~2 min): `python -m pytest -m "not integration"` → 991 passed, 26 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

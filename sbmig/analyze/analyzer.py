@@ -20,6 +20,7 @@ from typing import Optional
 from sbmig.core.config import ArtifactSpec, Config
 from sbmig.core.models import GAV, CaseType, PomInfo, ProjectProfile
 
+from .build_tool import detect_build_tool
 from .classifier import build_library_services, build_services, classify, library_roots, msa_deployables, service_roots
 from .edges import (encoding_findings, java_level_findings, language_findings, normalize_java_version,
                     system_dep_findings, system_dependencies)
@@ -103,21 +104,13 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     libraries = detect_libraries(poms, scan)
 
     # build tool (S4): the explanation must be warnings[0] — the orchestrator aborts on build_tool != "maven"
-    build_tool = "maven"
-    if not poms:
-        if ws.glob("build.gradle") or ws.glob("build.gradle.kts"):
-            build_tool = "gradle"
-            warnings.insert(0, "Gradle build detected and no pom.xml: only Maven projects are supported "
-                               "(convert the build to Maven first)")
-        elif ws.glob("build.xml"):
-            build_tool = "none"
-            warnings.insert(0, "Ant build.xml detected and no pom.xml: only Maven projects are supported "
-                               "(convert the build to Maven first)")
-        else:
-            build_tool = "none"
-            warnings.insert(0, "no pom.xml found (no supported build tool): only Maven projects are supported")
-    elif ws.glob("build.xml"):
-        warnings.append("Ant build.xml present next to Maven poms: it is ignored")
+    # (it already rejects non-Maven builds at intake with the same detection; this is the fallback)
+    det = detect_build_tool(ws)
+    build_tool = det.tool
+    if det.tool != "maven":
+        warnings.insert(0, det.reason)
+    elif "ignored" in det.reason:
+        warnings.append(det.reason)
     if source.java_files == 0:
         warnings.append("no java sources found")
         if poms:

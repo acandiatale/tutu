@@ -362,9 +362,28 @@ class Orchestrator:
         if "mvn-not-found" in report.flags:
             self._abort(report, f"'{self.cfg.build.mvn}' is not runnable (install Maven or set build.mvn)")
             return False
+        if not self._check_build_tool(report):
+            self._timed("intake", t)
+            return False
         self._capture_effective(report)
         self._timed("intake", t)
         return not self._stop(stop_after, Phase.INTAKE)
+
+    def _check_build_tool(self, report: RunReport) -> bool:
+        """Catalog S4 at intake: only Maven projects; Gradle / Ant / no build abort before any Maven call.
+        `step_analyze` keeps the same check (on `profile.build_tool`) as a fallback."""
+        try:
+            from sbmig.analyze import detect_build_tool
+        except ImportError:  # pragma: no cover - analyze component missing; step_analyze still checks
+            return True
+        det = detect_build_tool(self.ws)
+        if det.tool != "maven":
+            report.flags.append(f"unsupported-build-tool:{det.tool}")
+            self._abort(report, det.reason)
+            self.ws.journal({"event": "build_tool", "tool": det.tool, "ok": False, "reason": det.reason})
+            return False
+        self.ws.journal({"event": "build_tool", "tool": "maven", "ok": True})
+        return True
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
         """2. analyze: profile + library advisories. False = stop or abort (not Maven, no pom.xml)."""
@@ -812,15 +831,28 @@ class Orchestrator:
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
         self.report.manual_followups += [f for f in res.manual_followups if f not in self.report.manual_followups]
         pr.notes += res.notes
+        merged = list(getattr(res, "merged_modules", None) or [])
+        kept_boot = getattr(res, "kept_boot_module", None)
+        conflicts = list(getattr(res, "merge_conflicts", None) or [])
+        seen = {(c.path, c.kept_from) for c in self.report.merge_conflicts}
+        for c in conflicts:
+            if (c.path, c.kept_from) not in seen:
+                seen.add((c.path, c.kept_from))
+                self.report.merge_conflicts.append(c)
         summary = (f"{step.id} ({mode}): {len(res.changed_files)} file(s) changed, {res.moved_files} moved, "
                    f"{len(res.generated_files)} generated; mandatory added: {', '.join(res.mandatory_added) or '-'}; "
                    f"optional bumped: {', '.join(res.optional_bumped) or '-'}")
         pr.notes.append(summary)
+        if merged or kept_boot or conflicts:
+            differing = sum(1 for c in conflicts if not c.identical)
+            pr.notes.append(f"{step.id}: merged modules: {', '.join(merged) or '-'}; kept boot module: "
+                            f"{kept_boot or '-'}; merge conflicts: {len(conflicts)} ({differing} differing)")
         self.ws.journal({"event": "restructure", "step": step.id, "mode": mode, "ok": res.ok,
                          "commit": sha if sha != pre else None, "changed_files": len(res.changed_files),
                          "moved": res.moved_files, "generated": res.generated_files,
                          "mandatory_added": res.mandatory_added, "optional_bumped": res.optional_bumped,
-                         "error": res.error})
+                         "merged_modules": merged, "kept_boot_module": kept_boot,
+                         "merge_conflicts": len(conflicts), "error": res.error})
         if not res.ok:
             pr.notes.append(f"{step.id}: restructure failed: {res.error or 'unknown error'} → skipping the rest of "
                             "the restructure phase (verify still runs)")

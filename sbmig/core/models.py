@@ -221,7 +221,7 @@ class ProjectProfile(BaseModel):
     case_type: CaseType
     confidence: float = 1.0
     reasons: list[str] = Field(default_factory=list)
-    build_tool: Literal["maven", "gradle", "none"] = "maven"
+    build_tool: Literal["maven", "gradle", "ant", "none"] = "maven"   # != maven → the run aborts at intake
     poms: list[PomInfo] = Field(default_factory=list)
     root_pom: Optional[PomInfo] = None
     source: SourceStats = Field(default_factory=SourceStats)
@@ -697,6 +697,18 @@ class AdvisoryFinding(BaseModel):
         return self.outcome == "replaced"
 
 
+class MergeConflict(BaseModel):
+    """`layout.multi_module_policy: merge`: one path that existed in more than one as-is module (or the root `src/`).
+    The copy of the first module in the root `<modules>` order is kept in comp-jar; the others are dropped from the
+    tree but saved under the run directory and listed in the Handover ("Merge conflicts")."""
+    path: str                                      # comp-jar-relative, e.g. "src/main/resources/messages.properties"
+    kept_from: str                                 # module label that won ("<root>" for the root src/)
+    dropped_from: list[str] = Field(default_factory=list)   # module labels whose copy was dropped
+    identical: bool = False                        # every copy had the same bytes (nothing lost)
+    saved_copies: list[str] = Field(default_factory=list)   # run-dir-relative paths of the dropped copies
+                                                   # ("merge-conflicts/<module>/src/...", empty when identical)
+
+
 class VersionChange(BaseModel):
     """One row of the handover's 'versions replaced' table: as-is vs final pom(s), whole project, keyed by g:a."""
     kind: Literal["parent", "dependency", "bom", "plugin", "property"] = "dependency"
@@ -729,6 +741,9 @@ class HandoverSummary(BaseModel):
                                                                  # replaced-but-verify, carried-over pins, blocked /
                                                                  # unresolved pointers, manual follow-ups (deduped)
     notes: list[str] = Field(default_factory=list)               # e.g. "effective dependencyManagement unavailable"
+    merge_conflicts: list[str] = Field(default_factory=list)     # rendered lines, one per RunReport.merge_conflicts
+                                                                 # entry whose copies differed (identical ones are
+                                                                 # summarized in one line)
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +767,7 @@ class RunReport(BaseModel):
     manual_followups: list[str] = Field(default_factory=list)    # things the as-is owner must do (runtime concerns)
     advisories: list[AdvisoryFinding] = Field(default_factory=list)   # library advisories (EOL / unmanaged libs)
     handover: Optional[HandoverSummary] = None                   # versions replaced + "from here on, your team"
+    merge_conflicts: list[MergeConflict] = Field(default_factory=list)   # from the layout restructure (merge policy)
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)

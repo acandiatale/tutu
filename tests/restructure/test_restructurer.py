@@ -412,7 +412,7 @@ def multi_profile(ws):
 
 def test_layout_multi_module_wrap(tmp_path: Path, cfg: Config) -> None:
     ws = make_ws(tmp_path, multi_files(), "multi")
-    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout", params={"multi_module_policy": "wrap"})
     assert res.ok, res.error
     root = ws.root
     assert not (root / "core").exists() and (root / "module/core/pom.xml").exists()
@@ -468,9 +468,201 @@ def test_layout_multi_module_merge_collision(tmp_path: Path, cfg: Config) -> Non
     files = multi_files()
     files["core/src/main/java/com/acme/suite/web/Ctl.java"] = java("com.acme.suite.web", "Ctl")
     ws = make_ws(tmp_path, files, "collide")
-    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout", params={"multi_module_policy": "merge"})
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout", params={"merge_collision": "fail"})
     assert not res.ok and "collision" in (res.error or "")
+    assert "src/main/java/com/acme/suite/web/Ctl.java exists in both core and web" in res.error
     assert (ws.root / "core/src/main/java/com/acme/suite/web/Ctl.java").exists()      # nothing moved
+    assert (ws.root / "web/src/main/java/com/acme/suite/web/Ctl.java").exists()
+    assert not (ws.root / "module").exists() and res.moved_files == 0 and res.merge_conflicts == []
+
+
+def kept_boot_files(boot_dir: str = "boot-jar") -> dict[str, str]:
+    """core + web jar modules and an as-is boot-jar module (own Application, application.yml, test)."""
+    files = multi_files()
+    files["pom.xml"] = files["pom.xml"].replace(
+        "        <module>web</module>\n", f"        <module>web</module>\n        <module>{boot_dir}</module>\n")
+    files["web/pom.xml"] = files["web/pom.xml"].replace("<packaging>war</packaging>", "<packaging>jar</packaging>")
+    del files["web/src/main/java/com/acme/suite/SuiteApplication.java"]
+    del files["web/src/main/resources/application.properties"]
+    rel = "../" * (boot_dir.count("/") + 1) + "pom.xml"
+    files[f"{boot_dir}/pom.xml"] = (
+        HEAD + "    <parent>\n        <groupId>com.acme</groupId>\n        <artifactId>suite</artifactId>\n"
+        f"        <version>5.0</version>\n        <relativePath>{rel}</relativePath>\n    </parent>\n"
+        "    <artifactId>suite-app</artifactId>\n    <packaging>jar</packaging>\n"
+        "    <properties>\n        <maven.compiler.source>11</maven.compiler.source>\n"
+        "        <maven.compiler.target>11</maven.compiler.target>\n    </properties>\n"
+        "    <dependencies>\n" + dep("com.acme", "suite-core", "${project.version}")
+        + dep("${project.groupId}", "suite-web", "${project.version}")
+        + dep("org.springframework.boot", "spring-boot-starter-web")
+        + "    </dependencies>\n"
+        "    <build>\n        <plugins>\n            <plugin>\n"
+        "                <groupId>org.springframework.boot</groupId>\n"
+        "                <artifactId>spring-boot-maven-plugin</artifactId>\n"
+        "                <configuration>\n                    <layers><enabled>true</enabled></layers>\n"
+        "                </configuration>\n"
+        "            </plugin>\n        </plugins>\n    </build>\n</project>\n")
+    files[f"{boot_dir}/src/main/java/com/acme/suite/SuiteApplication.java"] = java(
+        "com.acme.suite", "SuiteApplication", "@SpringBootApplication")
+    files[f"{boot_dir}/src/main/resources/application.yml"] = "server:\n  port: 8081\n"
+    files[f"{boot_dir}/src/test/java/com/acme/suite/SuiteApplicationTests.java"] = java(
+        "com.acme.suite", "SuiteApplicationTests", "@SpringBootTest")
+    return files
+
+
+@pytest.mark.parametrize("boot_dir", ["boot-jar", "apps/boot-jar"])
+def test_layout_merge_keeps_asis_boot_module(tmp_path: Path, cfg: Config, boot_dir: str) -> None:
+    ws = make_ws(tmp_path, kept_boot_files(boot_dir), "kept-" + boot_dir.replace("/", "-"))
+    prof = multi_profile(ws)
+    prof.source.spring_boot_test_classes = ["com.acme.suite.SuiteApplicationTests"]
+    res = Restructurer().apply(ws, prof, cfg, mode="layout")                    # merge is the default policy
+    assert res.ok, res.error
+    root = ws.root
+    for gone in ("core", "web", boot_dir):
+        assert not (root / gone).exists()
+    boot = root / "module/boot-jar"
+    comp = root / "module/comp-jar"
+    assert res.kept_boot_module == "module/boot-jar" and res.merged_modules == ["core", "web"]
+    assert res.merge_conflicts == []
+    # boot-jar: as-is sources untouched, nothing generated, nothing moved in from comp-jar
+    assert (boot / "src/main/java/com/acme/suite/SuiteApplication.java").read_text() == java(
+        "com.acme.suite", "SuiteApplication", "@SpringBootApplication")
+    assert (boot / "src/main/resources/application.yml").read_text() == "server:\n  port: 8081\n"
+    assert (boot / "src/test/java/com/acme/suite/SuiteApplicationTests.java").exists()
+    assert not (boot / "src/main/java/com/acme/suite/Application.java").exists()
+    assert not any(f.endswith("Application.java") for f in res.generated_files)
+    b = xml(boot / "pom.xml")
+    assert t(b, "artifactId") == "suite-app" and t(b, "parent/relativePath") == "../../pom.xml"
+    assert dep_keys(b) == ["${project.groupId}:suite-comp", "org.springframework.boot:spring-boot-starter-web"]
+    assert t(b, "dependencies/dependency/version") == "${project.version}"
+    plugins = all_(b, "build/plugins/plugin")
+    assert [t(p, "artifactId") for p in plugins] == ["spring-boot-maven-plugin"]
+    assert t(plugins[0], "configuration/layers/enabled") == "true"                 # as-is plugin kept
+    assert t(b, "properties/maven.compiler.source") is None                        # java level fixed
+    # comp-jar: core + web sources, no dependency on the merged modules nor on boot-jar
+    assert (comp / "src/main/java/com/acme/suite/core/Repo.java").exists()
+    assert (comp / "src/main/java/com/acme/suite/web/Ctl.java").exists()
+    keys = [d.key for d in PomEditor(comp / "pom.xml").dependencies()]
+    assert keys == ["org.projectlombok:lombok", "com.google.guava:guava"]
+    r = PomEditor(root / "pom.xml")
+    assert r.modules() == ["module/comp-jar", "module/boot-jar"]
+    assert any("as-is boot module" in n and "kept as module/boot-jar" in n for n in res.notes)
+    assert not any("has no @SpringBootApplication" in n for n in res.notes)
+    # second run: already restructured
+    res2 = Restructurer().apply(ws, prof, cfg, mode="layout")
+    assert res2.ok and "already restructured" in res2.notes and res2.changed_files == []
+
+
+def test_layout_merge_kept_boot_module_without_application_and_plugin(tmp_path: Path, cfg: Config) -> None:
+    files = kept_boot_files()
+    del files["boot-jar/src/main/java/com/acme/suite/SuiteApplication.java"]
+    files["boot-jar/pom.xml"] = files["boot-jar/pom.xml"].replace(
+        files["boot-jar/pom.xml"][files["boot-jar/pom.xml"].index("    <build>"):], "</project>\n")
+    files["other/boot-jar/pom.xml"] = files["web/pom.xml"].replace("suite-web", "suite-boot2").replace(
+        "<version>5.0</version>\n    </parent>",
+        "<version>5.0</version>\n        <relativePath>../../pom.xml</relativePath>\n    </parent>")
+    files["other/boot-jar/src/main/java/com/acme/suite/x/X.java"] = java("com.acme.suite.x", "X")
+    files["pom.xml"] = files["pom.xml"].replace("        <module>boot-jar</module>\n",
+                                                "        <module>boot-jar</module>\n        <module>other/boot-jar</module>\n")
+    ws = make_ws(tmp_path, files, "kept-noapp")
+    p = multi_profile(ws)
+    p.source.main_classes = []
+    res = Restructurer().apply(ws, p, cfg, mode="layout")
+    assert res.ok, res.error
+    assert res.kept_boot_module == "module/boot-jar" and res.merged_modules == ["core", "web", "other/boot-jar"]
+    assert any("has no @SpringBootApplication class" in n for n in res.notes)
+    assert any("other/boot-jar is also named boot-jar" in n for n in res.notes)
+    assert (ws.root / "module/comp-jar/src/main/java/com/acme/suite/x/X.java").exists()
+    assert not (ws.root / "module/boot-jar/src/main/java").exists()                 # nothing generated
+    b = PomEditor(ws.root / "module/boot-jar/pom.xml")
+    plugin = b.find_plugins("org.springframework.boot", "spring-boot-maven-plugin", where="build")
+    assert plugin and "repackage" in "".join(plugin[0].itertext())
+    assert [d.key for d in b.dependencies()][0] == "${project.groupId}:suite-comp"
+
+
+def _conflict_files() -> dict[str, str]:
+    files = multi_files()
+    files["core/src/main/resources/messages.properties"] = "greeting=core\n"
+    files["web/src/main/resources/messages.properties"] = "greeting=web\n"
+    files["core/src/main/resources/META-INF/shared.txt"] = "same\n"
+    files["web/src/main/resources/META-INF/shared.txt"] = "same\n"
+    return files
+
+
+def test_layout_merge_collisions_first_wins(tmp_path: Path, cfg: Config) -> None:
+    ws = make_ws(tmp_path, _conflict_files(), "firstwins")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    assert res.ok, res.error
+    comp = ws.root / "module/comp-jar"
+    assert (comp / "src/main/resources/messages.properties").read_text() == "greeting=core\n"
+    assert (comp / "src/main/resources/META-INF/shared.txt").read_text() == "same\n"
+    saved = ws.run_dir / "merge-conflicts/web/src/main/resources/messages.properties"
+    assert saved.read_text() == "greeting=web\n"
+    assert not (ws.run_dir / "merge-conflicts/web/src/main/resources/META-INF").exists()
+    by_path = {mc.path: mc for mc in res.merge_conflicts}
+    assert set(by_path) == {"src/main/resources/messages.properties", "src/main/resources/META-INF/shared.txt"}
+    diff = by_path["src/main/resources/messages.properties"]
+    assert diff.kept_from == "core" and diff.dropped_from == ["web"] and not diff.identical
+    assert diff.saved_copies == ["merge-conflicts/web/src/main/resources/messages.properties"]
+    same = by_path["src/main/resources/META-INF/shared.txt"]
+    assert same.identical and same.saved_copies == [] and same.kept_from == "core" and same.dropped_from == ["web"]
+    assert "1 identical duplicate file(s) dropped: src/main/resources/META-INF/shared.txt" in res.notes
+    fu = [f for f in res.manual_followups if f.startswith("merge conflicts:")]
+    assert len(fu) == 1 and fu[0].startswith("merge conflicts: 1 file(s) existed in more than one module")
+    assert f"{ws.run_dir}/merge-conflicts/" in fu[0] and fu[0].endswith("src/main/resources/messages.properties")
+    assert not (ws.root / "core").exists() and not (ws.root / "web").exists()
+    assert res.kept_boot_module is None and res.merged_modules == ["core", "web"]
+
+
+def test_layout_merge_collision_with_root_src(tmp_path: Path, cfg: Config) -> None:
+    files = _conflict_files()
+    files["src/main/resources/messages.properties"] = "greeting=root\n"
+    ws = make_ws(tmp_path, files, "rootwins")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    assert res.ok, res.error
+    assert (ws.root / "module/comp-jar/src/main/resources/messages.properties").read_text() == "greeting=root\n"
+    mc = next(m for m in res.merge_conflicts if m.path == "src/main/resources/messages.properties")
+    assert mc.kept_from == "<root>" and mc.dropped_from == ["core", "web"]
+    assert (ws.run_dir / "merge-conflicts/core/src/main/resources/messages.properties").read_text() == "greeting=core\n"
+    assert (ws.run_dir / "merge-conflicts/web/src/main/resources/messages.properties").read_text() == "greeting=web\n"
+
+
+def test_layout_merge_not_already_restructured_without_comp_jar(tmp_path: Path, cfg: Config) -> None:
+    files = {}
+    for rel, text in kept_boot_files().items():
+        if rel == "pom.xml":
+            text = text.replace("<module>core</module>", "<module>module/core</module>").replace(
+                "<module>web</module>", "<module>module/web</module>").replace(
+                "<module>boot-jar</module>", "<module>module/boot-jar</module>")
+        elif not rel.startswith("src/"):
+            text = text.replace("<version>5.0</version>\n    </parent>",
+                                "<version>5.0</version>\n        <relativePath>../../pom.xml</relativePath>\n"
+                                "    </parent>").replace("<relativePath>../pom.xml</relativePath>",
+                                                         "<relativePath>../../pom.xml</relativePath>")
+            rel = "module/" + rel
+        files[rel] = text
+    ws = make_ws(tmp_path, files, "undermodule")
+    wrap_like = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    assert wrap_like.ok, wrap_like.error
+    assert "already restructured" not in wrap_like.notes
+    assert wrap_like.kept_boot_module == "module/boot-jar"
+    assert wrap_like.merged_modules == ["module/core", "module/web"]
+    root = ws.root
+    assert not (root / "module/core").exists() and not (root / "module/web").exists()
+    assert (root / "module/comp-jar/src/main/java/com/acme/suite/core/Repo.java").exists()
+    assert (root / "module/boot-jar/src/main/java/com/acme/suite/SuiteApplication.java").exists()
+    assert PomEditor(root / "pom.xml").modules() == ["module/comp-jar", "module/boot-jar"]
+    assert [d.key for d in PomEditor(root / "module/boot-jar/pom.xml").dependencies()][0] == \
+        "${project.groupId}:suite-comp"
+
+
+def test_layout_wrap_already_restructured_rule_unchanged(tmp_path: Path, cfg: Config) -> None:
+    root = (HEAD + "    <groupId>com.acme</groupId>\n    <artifactId>x</artifactId>\n    <version>1</version>\n"
+            "    <packaging>pom</packaging>\n    <modules>\n        <module>module/core</module>\n"
+            "        <module>module/boot-jar</module>\n    </modules>\n</project>\n")
+    ws = make_ws(tmp_path, {"pom.xml": root}, "wrapdone")
+    res = Restructurer().apply(ws, profile(ws, CaseType.PURE_JAVA, artifact_id="x", version="1"), cfg,
+                               mode="layout", params={"multi_module_policy": "wrap"})
+    assert res.ok and "already restructured" in res.notes
 
 
 def test_layout_missing_root_pom(tmp_path: Path, cfg: Config) -> None:

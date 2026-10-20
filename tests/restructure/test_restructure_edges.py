@@ -203,7 +203,8 @@ def test_wrap_relocates_module_system_jars(tmp_path: Path, cfg: Config) -> None:
     files["lib/shared.jar"] = "PK-shared"
     files["core/lib/own.jar"] = "PK-own"
     ws = make_ws(tmp_path, files, "wrapsys")
-    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout",
+                               params={"multi_module_policy": "wrap"})
     assert res.ok, res.error
     core = ws.root / "module/core"
     assert (core / "lib/shared.jar").read_text() == "PK-shared" and (core / "lib/own.jar").exists()
@@ -249,7 +250,8 @@ def test_wrap_recomputes_nested_modules_and_odd_parent_paths(tmp_path: Path, cfg
              "shared/pom.xml": leaf("shared", "corp-parent", "../build/corp"),
              "shared/src/main/java/com/acme/suite/Shared.java": java("com.acme.suite", "Shared")}
     ws = make_ws(tmp_path, files, "nested")
-    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout",
+                               params={"multi_module_policy": "wrap"})
     assert res.ok, res.error
     assert PomEditor(ws.root / "pom.xml").modules() == ["module/group", "module/boot-jar"]
     assert PomEditor(ws.root / "module/group/pom.xml").modules() == ["sub", "../../shared"]
@@ -265,7 +267,8 @@ def test_wrap_parent_outside_project_recomputed(tmp_path: Path, cfg: Config) -> 
         "<version>5.0</version>\n    </parent>",
         "<version>5.0</version>\n        <relativePath>../../corp/pom.xml</relativePath>\n    </parent>")
     ws = make_ws(tmp_path, files, "outparent")
-    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout",
+                               params={"multi_module_policy": "wrap"})
     assert res.ok, res.error
     assert PomEditor(ws.root / "module/core/pom.xml").parent_relative_path() == "../../../corp/pom.xml"
     assert any("lives outside the project" in n for n in res.notes)
