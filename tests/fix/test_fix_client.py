@@ -259,3 +259,75 @@ def test_clients_accept_role_and_metadata(tmp_path, ws):
     assert first["role"] == "recipe_candidate" and first["metadata"] == {"cluster_id": "c9"}
     assert second["role"] is None and second["metadata"] is None
     assert '"role": "recipe_candidate"' in ws.journal_path.read_text()
+
+
+# --------------------------------------------------------------------------- chat_post (in-house gateway)
+from sbmig.fix import ChatPostClient, extract_reply  # noqa: E402
+
+
+def chat_post(handler, **kw):
+    return ChatPostClient(kw.pop("base_url", "http://gw.local/api/chat"), "sk-secret", "gpt-6-luna",
+                          transport=httpx.MockTransport(handler), sleep=lambda s: None, **kw)
+
+
+def test_chat_post_request_shape_is_exactly_the_gateway_contract():
+    rec = Recorder([httpx.Response(200, json=OPENAI_OK)])
+    c = chat_post(rec, payload_extra={"need_orgin": True})
+    resp = c.complete(MSGS, max_tokens=100, temperature=0.2, stop=["x"])
+    req = rec.requests[0]
+    assert str(req.url) == "http://gw.local/api/chat"               # the full URL, no /chat/completions appended
+    assert req.headers["authorization"] == "Bearer sk-secret"
+    assert json.loads(req.content) == {"model": "gpt-6-luna", "need_orgin": True,
+                                       "messages": [m.model_dump() for m in MSGS]}   # no generation params
+    assert resp.content == "hi" and resp.input_tokens == 11 and resp.output_tokens == 7 and resp.model == "m-1"
+
+
+def test_chat_post_generation_params_and_response_path():
+    rec = Recorder([httpx.Response(200, json={"data": {"result": {"content": "deep"}},
+                                              "usage": {"input_tokens": 3, "output_tokens": 2}})])
+    c = chat_post(rec, generation_params=True, response_path="data.result.content")
+    resp = c.complete(MSGS, max_tokens=50, temperature=0.0)
+    body = json.loads(rec.requests[0].content)
+    assert body["max_tokens"] == 50 and body["temperature"] == 0.0
+    assert resp.content == "deep" and resp.input_tokens == 3 and resp.output_tokens == 2 and resp.model == "gpt-6-luna"
+
+
+def test_chat_post_auto_detects_common_shapes_and_fails_loudly():
+    assert extract_reply({"content": "a"}) == "a"
+    assert extract_reply({"response": "b"}) == "b"
+    assert extract_reply({"data": {"content": "c"}}) == "c"
+    assert extract_reply({"choices": [{"message": {"content": [{"type": "text", "text": "d"}]}}]}) == "d"
+    assert extract_reply("plain") == "plain"
+    with pytest.raises(LLMError, match="response_path"):
+        extract_reply({"weird": 1})
+    with pytest.raises(LLMError, match="not found"):
+        extract_reply({"weird": 1}, "data.x")
+    rec = Recorder([httpx.Response(200, json={"weird": 1})])
+    with pytest.raises(LLMError, match="llm-probe"):
+        chat_post(rec).complete(MSGS)
+
+
+def test_make_llm_client_chat_post(cfg, monkeypatch):
+    cfg.llm.provider = "chat_post"
+    cfg.llm.base_url = "http://gw/chat"
+    cfg.llm.model = "gpt-6-luna"
+    cfg.llm.api_key_env = "SBMIG_TEST_KEY"
+    cfg.llm.payload_extra = {"need_orgin": True}
+    cfg.llm.response_path = "data.content"
+    monkeypatch.setenv("SBMIG_TEST_KEY", "k")
+    c = make_llm_client(cfg)
+    assert isinstance(c, ChatPostClient) and c.payload_extra == {"need_orgin": True} \
+        and c.response_path == "data.content" and not c.generation_params
+    cfg.llm.base_url = "${LLM_BASE_URL}"
+    with pytest.raises(LLMConfigError, match="full endpoint URL"):
+        make_llm_client(cfg)
+
+
+def test_company_profile_loads(cfg_factory=None):
+    from pathlib import Path
+
+    from sbmig.core.config import load_config
+    repo = Path(__file__).resolve().parents[2]
+    c = load_config(repo / "config" / "artifacts.local-e2e.yml", repo / "config" / "llm-company.yml")
+    assert c.llm.provider == "chat_post" and c.llm.payload_extra == {"need_orgin": True}
+    assert c.llm.model == "gpt-6-luna" and c.llm.recipe_model == "gpt-6-luna" and not c.llm.payload_generation_params

@@ -143,3 +143,7 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   Fixture `boot2-method-rename` (legacy-web-lib 1.0.0 → 3.0.0, `clientIp` renamed `remoteClientIp`) needs
   **2** LLM calls, not 1: clusters are keyed by file (`sbmig/triage/cluster.py`), so the two call sites are two
   clusters in one round, each with its own replayed response.
+* 2026-10-20 PM: `LLMConfig.payload_extra: dict = {}`, `LLMConfig.payload_generation_params: bool = False`,
+  `LLMConfig.response_path: Optional[str] = None`; builtin provider `chat_post` (`sbmig.fix.ChatPostClient`,
+  `sbmig.fix.extract_reply(data, response_path)`); CLI `sbmig llm-probe`, global `--log-file`, per-run
+  `<run dir>/sbmig.log` (`sbmig.cli.attach_file_log`). Profile `config/llm-company.yml`.

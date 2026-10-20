@@ -1,4 +1,5 @@
-"""LLM clients: OpenAI-compatible (default, company endpoint), Anthropic Messages API, scripted fake, recorder.
+"""LLM clients: OpenAI-compatible (default), Anthropic Messages API, plain chat POST (in-house gateway),
+scripted fake, recorder.
 
 All clients implement `sbmig.core.interfaces.LLMClientLike`. Only httpx is used (no vendor SDKs).
 """
@@ -169,6 +170,8 @@ class _HTTPClient:
                     return out
                 last_status, last_body = resp.status_code, resp.text[:500]
                 if resp.status_code not in RETRY_STATUS:
+                    log.error("llm %s HTTP %d: %s", self.provider, resp.status_code,
+                              last_body[:300].replace("\n", " "))
                     raise LLMError(resp.status_code, last_body)
                 wait = _retry_after_seconds(resp)
                 log.warning("llm %s HTTP %d (attempt %d/%d)", self.provider, resp.status_code, attempt + 1,
@@ -176,6 +179,8 @@ class _HTTPClient:
             if attempt < self.max_retries:
                 delay = min(wait, 120.0) if wait is not None else self._backoff(attempt)
                 self._sleep(delay)
+        log.error("llm %s giving up after %d attempt(s): status=%s body=%s", self.provider, self.max_retries + 1,
+                  last_status, last_body[:300].replace("\n", " "))
         raise LLMError(last_status, last_body,
                        f"LLM request failed after {self.max_retries + 1} attempt(s) (status={last_status}): {last_body[:200]}")
 
@@ -228,6 +233,120 @@ class OpenAICompatibleClient(_HTTPClient):
             input_tokens=int(usage.get("prompt_tokens") or 0),
             output_tokens=int(usage.get("completion_tokens") or 0),
             finish_reason=ch.get("finish_reason"),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Plain chat POST (in-house gateways that are not OpenAI-compatible)
+# ---------------------------------------------------------------------------
+_REPLY_PATHS = (
+    "choices.0.message.content", "choices.0.text", "message.content", "data.choices.0.message.content",
+    "data.content", "data.answer", "data.text", "content", "answer", "response", "output", "output_text",
+    "result", "text", "reply", "completion",
+)
+
+
+def _dig(data: Any, path: str) -> Any:
+    cur = data
+    for part in path.split("."):
+        if isinstance(cur, list):
+            cur = cur[int(part)]
+        elif isinstance(cur, dict):
+            cur = cur[part]
+        else:
+            raise KeyError(part)
+    return cur
+
+
+def _reply_text(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):                       # content parts [{"type": "text", "text": ...}]
+        parts = [b.get("text") if isinstance(b, dict) else b for b in value]
+        parts = [x for x in parts if isinstance(x, str)]
+        return "\n".join(parts) if parts else None
+    if isinstance(value, dict) and isinstance(value.get("content"), str):
+        return value["content"]
+    return None
+
+
+def extract_reply(data: Any, response_path: Optional[str] = None) -> str:
+    """The assistant text inside whatever JSON a gateway returns (`response_path` wins; else known shapes)."""
+    if isinstance(data, str):
+        return data
+    if response_path:
+        try:
+            text = _reply_text(_dig(data, response_path))
+        except (KeyError, IndexError, ValueError, TypeError) as exc:
+            raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
+                           f"llm.response_path {response_path!r} not found in the response ({exc})") from exc
+        if text is None:
+            raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
+                           f"llm.response_path {response_path!r} does not point at text")
+        return text
+    for path in _REPLY_PATHS:
+        try:
+            text = _reply_text(_dig(data, path))
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        if text:
+            return text
+    raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
+                   "cannot find the reply text in the LLM response; set llm.response_path (see `sbmig llm-probe`)")
+
+
+class ChatPostClient(_HTTPClient):
+    """`POST base_url` with `{"model": ..., "messages": [...], **payload_extra}` and `Authorization: Bearer <key>`.
+
+    For in-house gateways whose request/response differ from OpenAI (e.g. `{"need_orgin": true}`): the payload is
+    exactly the configured shape (generation parameters only when `payload_generation_params`), the reply text is
+    taken from `response_path` or auto-detected from the usual shapes, token usage from `usage` when present."""
+    provider = "chat_post"
+
+    def __init__(self, base_url: str, api_key: Optional[str], model: str, *, payload_extra: Optional[dict] = None,
+                 generation_params: bool = False, response_path: Optional[str] = None, **kw: Any):
+        super().__init__(base_url, api_key, model, **kw)
+        self.payload_extra = dict(payload_extra or {})
+        self.generation_params = generation_params
+        self.response_path = response_path
+
+    def _url(self) -> str:
+        return self.base_url
+
+    def _headers(self) -> dict[str, str]:
+        h = {"Content-Type": "application/json"}
+        if self._api_key:
+            h["Authorization"] = f"Bearer {self._api_key}"
+        return h
+
+    def _body(self, messages, model, max_tokens, temperature, stop) -> dict[str, Any]:
+        body: dict[str, Any] = {"model": model,
+                                "messages": [{"role": m.role, "content": m.content} for m in messages]}
+        body.update(self.payload_extra)
+        if self.generation_params:
+            body["max_tokens"] = max_tokens
+            if temperature is not None:
+                body["temperature"] = temperature
+            if stop:
+                body["stop"] = stop
+        return body
+
+    def _parse(self, data: dict[str, Any], model: str) -> LLMResponse:
+        content = extract_reply(data, self.response_path)
+        usage = data.get("usage") if isinstance(data, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        finish = None
+        if isinstance(data, dict):
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                finish = choices[0].get("finish_reason")
+            finish = finish or data.get("finish_reason") or data.get("stop_reason")
+        return LLMResponse(
+            content=content,
+            model=(data.get("model") if isinstance(data, dict) else None) or model,
+            input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
+            output_tokens=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
+            finish_reason=finish,
         )
 
 
@@ -464,6 +583,14 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
             if _unexpanded(llm.model):
                 raise LLMConfigError("llm.model is not set (LLM_MODEL)")
             client = OpenAICompatibleClient(llm.base_url, key, llm.model, **common)
+        elif llm.provider == "chat_post":
+            if _unexpanded(llm.base_url):
+                raise LLMConfigError("llm.base_url is not set (LLM_BASE_URL: the full endpoint URL)")
+            if _unexpanded(llm.model):
+                raise LLMConfigError("llm.model is not set (LLM_MODEL)")
+            client = ChatPostClient(llm.base_url, key, llm.model, payload_extra=llm.payload_extra,
+                                    generation_params=llm.payload_generation_params,
+                                    response_path=llm.response_path, **common)
         else:  # pragma: no cover - non-builtin providers are routed to sbmig.llm above
             raise LLMConfigError(f"unknown llm.provider: {llm.provider}")
     if llm.record_dir:

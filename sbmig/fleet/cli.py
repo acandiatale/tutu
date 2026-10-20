@@ -61,6 +61,12 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
         return 1
     runner = FleetRunner(cfg, manifest, out, echo=typer.echo, dry_run=dry_run)
     if not dry_run:
+        try:
+            from sbmig.cli import attach_file_log
+            attach_file_log(Path(runner.fleet_dir) / "sbmig.log")      # one log for the whole fleet (+ per-run logs)
+        except Exception:  # pragma: no cover - logging must never stop a fleet
+            pass
+    if not dry_run:
         atomic_write(
             saved,
             json.dumps(

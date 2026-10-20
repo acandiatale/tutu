@@ -29,6 +29,10 @@ intake ─► analyze ─► advisories ─► plan ─► JDK21 (rewrite + buil
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml        # in-house parent / mandatory ×2 / optional ×8
 export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
+# in-house gateway that only accepts a plain chat POST ({model, need_orgin, messages}): use the profile
+#   export LLM_BASE_URL=https://<gateway>/<chat endpoint> LLM_API_KEY=...
+#   sbmig llm-probe --config config/llm-company.yml      # raw response + extracted reply
+#   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
 
 sbmig analyze  path/to/project.zip --config config/artifacts.yml      # case type, versions, libs, optional artifacts in use, library advisories
 sbmig advisories list --config config/artifacts.yml                   # EOL / unmanaged libraries we flag (guide | recipe), `show <id>`, `check`

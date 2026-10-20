@@ -17,20 +17,52 @@ log = logging.getLogger("sbmig.cli")
 ConfigOpt = typer.Option(None, "--config", "-c", help="extra config yml (repeatable; later wins)")
 
 
+LOG_FILE_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+
+
 def setup_logging(verbose: bool = False) -> None:
     from rich.logging import RichHandler
 
     level = logging.DEBUG if verbose else logging.INFO
     root = logging.getLogger("sbmig")
-    root.setLevel(level)
+    root.setLevel(logging.DEBUG)                       # handlers filter: console INFO (or DEBUG), file always DEBUG
     if not any(isinstance(h, RichHandler) for h in root.handlers):
         root.addHandler(RichHandler(rich_tracebacks=True, show_path=False, markup=False))
+    for h in root.handlers:
+        if isinstance(h, RichHandler):
+            h.setLevel(level)
     root.propagate = False
 
 
+def attach_file_log(path: Path) -> Path:
+    """Append DEBUG-level sbmig logs (LLM calls, builds, decisions; never keys) to `path`. One handler per file."""
+    path = Path(path).resolve()
+    root = logging.getLogger("sbmig")
+    for h in root.handlers:
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == path:
+            return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if root.level == logging.NOTSET or root.level > logging.DEBUG:   # the file gets everything; console keeps its level
+        for h in root.handlers:
+            if h.level == logging.NOTSET:
+                h.setLevel(logging.INFO if root.level in (logging.NOTSET, logging.INFO) else root.level)
+        root.setLevel(logging.DEBUG)
+    fh = logging.FileHandler(path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(LOG_FILE_FORMAT))
+    root.addHandler(fh)
+    log.info("sbmig %s — log file %s", " ".join(sys.argv[1:])[:300], path)
+    return path
+
+
 @app.callback()
-def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug logging")) -> None:
+def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug logging"),
+          log_file: Optional[Path] = typer.Option(None, "--log-file",
+                                                  help="also append DEBUG logs to this file (runs always log to "
+                                                       "<run dir>/sbmig.log)")) -> None:
     setup_logging(verbose)
+    if log_file:
+        attach_file_log(log_file)
 
 
 def _load(configs: Optional[List[Path]], overrides: Optional[dict] = None, repo_root: Optional[Path] = None):
@@ -126,10 +158,63 @@ def run(
     from sbmig.report import console_summary
 
     ws = Workspace.from_input(input, out, run_id=run_id)
+    log_path = attach_file_log(ws.run_dir / "sbmig.log")
     orch = Orchestrator(cfg, ws, kb=NullKnowledgeBase() if no_kb else None)
-    report = orch.run(stop_after=phase, dry_run=dry_run)
+    try:
+        report = orch.run(stop_after=phase, dry_run=dry_run)
+    except Exception:
+        log.exception("run aborted by an unexpected error (see %s)", log_path)
+        raise
     console_summary(report)
+    typer.echo(f"log: {log_path}   (share this file + report.md when asking for help)")
     raise typer.Exit(run_exit_code(report))
+
+
+@app.command("llm-probe")
+def llm_probe(config: Optional[List[Path]] = ConfigOpt,
+              prompt: str = typer.Option("Reply with the single word: pong", "--prompt"),
+              llm_provider: Optional[str] = typer.Option(None, "--llm-provider")) -> None:
+    """Send one small request with the configured LLM provider and print what came back (raw JSON for HTTP
+    providers, then the extracted reply). Run this first on a new gateway; if the reply cannot be extracted, set
+    `llm.response_path` to the dot path shown in the raw JSON."""
+    import json
+
+    from sbmig.core.interfaces import ChatMessage
+    from sbmig.fix import LLMError, make_llm_client
+    from sbmig.fix.client import _HTTPClient
+
+    overrides: dict = {"llm": {"provider": llm_provider}} if llm_provider else {}
+    cfg = _load(config, overrides)
+    llm = cfg.llm
+    typer.echo(f"provider={llm.provider} model={llm.model} url={llm.base_url} key_env={llm.api_key_env}"
+               f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
+    client = make_llm_client(cfg)
+    inner = getattr(client, "inner", client)
+    msgs = [ChatMessage(role="system", content="You are a helpful assistant."),
+            ChatMessage(role="user", content=prompt)]
+    if isinstance(inner, _HTTPClient):
+        body = inner._body(msgs, inner.model, 64, inner.default_temperature, None)
+        typer.echo("request payload: " + json.dumps(body, ensure_ascii=False)[:1500])
+        resp = inner._http.post(inner._url(), json=body, headers={**inner._headers(), **inner.extra_headers})
+        typer.echo(f"HTTP {resp.status_code}")
+        try:
+            data = resp.json()
+            typer.echo(json.dumps(data, ensure_ascii=False, indent=2)[:4000])
+        except ValueError:
+            typer.echo(resp.text[:4000])
+            raise typer.Exit(1)
+        if resp.status_code >= 300:
+            raise typer.Exit(1)
+        try:
+            typer.echo("extracted reply: " + repr(inner._parse(data, inner.model).content[:500]))
+        except LLMError as e:
+            typer.echo(f"PROBLEM: {e}")
+            from sbmig.fix.client import _REPLY_PATHS
+            typer.echo("auto-detect paths tried: " + ", ".join(_REPLY_PATHS))
+            raise typer.Exit(1)
+        return
+    out = client.complete(msgs, role="other")
+    typer.echo(f"reply ({type(client).__name__}): {out.content[:500]!r}")
 
 
 # --------------------------------------------------------------------------- analyze / plan

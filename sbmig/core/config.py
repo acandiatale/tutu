@@ -171,7 +171,7 @@ class LoopConfig(BaseModel):
         "pom_invalid", "parent_resolution", "plugin_resolution"])   # appearing after a pom edit ⇒ revert regardless of count
 
 
-BUILTIN_LLM_PROVIDERS = ("openai_compatible", "anthropic", "fake")
+BUILTIN_LLM_PROVIDERS = ("openai_compatible", "anthropic", "chat_post", "fake")
 
 
 class LLMConfig(BaseModel):
@@ -195,6 +195,11 @@ class LLMConfig(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
     prompt_version: str = "v1"
     record_dir: Optional[str] = None         # record requests/responses for replay tests
+    # provider `chat_post` (round 5): a plain `POST base_url` with {"model", "messages", **payload_extra} and a Bearer
+    # token — for in-house gateways that are not OpenAI-compatible (e.g. {"need_orgin": true}); see config/llm-company.yml
+    payload_extra: dict[str, Any] = Field(default_factory=dict)      # extra top-level payload fields, sent verbatim
+    payload_generation_params: bool = False  # also send max_tokens / temperature / stop (off: gateways reject unknown keys)
+    response_path: Optional[str] = None      # dot path to the reply text, e.g. "data.result.content"; None → auto-detect
 
 
 class FixConfig(BaseModel):

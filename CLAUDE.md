@@ -75,8 +75,13 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
   (`--only boot2,msa` for a subset); KB loop `scripts/demo-kb/run.sh`; fleet `scripts/fleet-demo.sh`.
   Integration tests: `python -m pytest -q -m integration`.
-- Real-LLM runs: `--config config/llm-anthropic.yml` with `LLM_API_KEY` from the environment. In a cloud session,
-  set it as an environment variable of the cloud environment, never in the repo.
+- Real-LLM runs: `--config config/llm-anthropic.yml` (Anthropic) or `--config config/llm-company.yml` (in-house
+  gateway, provider `chat_post`: plain `POST $LLM_BASE_URL` with `{model, need_orgin, messages}` + Bearer
+  `LLM_API_KEY`; `sbmig llm-probe` first, `llm.response_path` when the reply is not auto-detected). Keys only from
+  the environment; in a cloud session set them on the cloud environment, never in the repo.
+- Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
+  `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.
+- `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a `claude/...` branch; the user merges to `main` locally.

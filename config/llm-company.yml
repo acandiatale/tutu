@@ -1,0 +1,29 @@
+# In-house LLM gateway profile: a plain chat POST (not OpenAI-compatible). The token is NEVER stored here.
+#   export LLM_BASE_URL=https://<gateway>/<chat endpoint>   # the FULL URL that accepts the POST
+#   export LLM_API_KEY=<bearer token>
+#   sbmig llm-probe --config config/llm-company.yml          # first: prints the raw response + extracted reply
+#   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml --out out/run
+# Request: POST $LLM_BASE_URL, headers {Authorization: Bearer $LLM_API_KEY, Content-Type: application/json},
+#          json {"model": "gpt-6-luna", "need_orgin": true, "messages": [{"role": "system", ...}, {"role": "user", ...}]}
+# Response: the reply text is auto-detected (choices[0].message.content, content, response, data.content, ...);
+#           if `llm-probe` says it cannot be extracted, set `response_path` to the dot path seen in the raw JSON.
+llm:
+  provider: chat_post
+  base_url: "${LLM_BASE_URL}"
+  api_key_env: LLM_API_KEY
+  model: gpt-6-luna
+  recipe_model: gpt-6-luna             # one model for fixes, plan advice and recipe candidates
+  escalation_model: null
+  payload_extra:
+    need_orgin: true
+  payload_generation_params: false     # true → also send max_tokens / temperature / stop
+  response_path: null                  # e.g. data.result.content
+  timeout_seconds: 180
+  max_retries: 3
+  record_dir: out/llm-records          # every request/response as llm-NNNN.json (no secrets): attach when asking for help
+
+plan:
+  advisor: llm
+
+kb:
+  generate_recipe_candidates: true

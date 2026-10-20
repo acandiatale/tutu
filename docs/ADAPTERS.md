@@ -4,7 +4,7 @@ sbmig has two adapter tiers. Pick the one that matches what you already have.
 
 | Tier | Replaces | You implement | Config |
 |---|---|---|---|
-| 1. LLM adapter | our httpx clients (`openai_compatible` / `anthropic`) | `complete(request: LLMRequest) -> LLMResponse` | `llm.provider: plugin` + `llm.plugin` (or an entry point) |
+| 1. LLM adapter | our httpx clients (`openai_compatible` / `anthropic` / `chat_post`) | `complete(request: LLMRequest) -> LLMResponse` | `llm.provider: plugin` + `llm.plugin` (or an entry point) |
 | 2. Fixer adapter | `LLMFixer` (our SEARCH/REPLACE protocol over a chat completion) | `propose(ws, cluster, ctx) -> FixProposal` [+ `apply`] | `fix.plugin` |
 
 With tier 1, sbmig keeps building the prompts, parsing the patches, validating them and running the feedback
@@ -76,8 +76,10 @@ Optional base class: `sbmig.llm.LLMAdapter` (abstract `complete(request)`, `name
 
 `make_llm_client(cfg)` picks the client like this:
 
-1. `llm.provider` is `openai_compatible`, `anthropic` or `fake`: a builtin client (`api_key_env` is required
-   for the HTTP providers).
+1. `llm.provider` is `openai_compatible`, `anthropic`, `chat_post` or `fake`: a builtin client (`api_key_env` is
+   required for the HTTP providers). `chat_post` is the plain gateway shape — `POST base_url` (the full URL) with
+   `{"model", "messages", **llm.payload_extra}` and a Bearer token, reply text from `llm.response_path` or
+   auto-detected (`config/llm-company.yml`; `sbmig llm-probe` shows the raw response first).
 2. `llm.provider: plugin`: load `llm.plugin` (`"pkg.module:attr"`; `"pkg.module.attr"` also works).
 3. Any other provider name: the entry point with that name in group `sbmig.llm_adapters`. If there is none,
    `llm.plugin` is used when set. Otherwise loading fails with `PluginLoadError`, which names the provider and

@@ -141,3 +141,17 @@ the changed files' imports (`KBCase.symbol_owner`); argument types never go into
 | Offline tests | 844 passed (24 integration deselected) | green |
 | Asserted fixture e2e on the merged tree (`scripts/e2e.sh`: `recipes check --jars` + `advisories check` + 14 fixtures; cloud image, JDK 21 + Maven, `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME`) | `out/e2e/summary.md` | **14/14 expectations met**, exit 0; 13 previous fixtures unchanged (0 LLM calls); `boot2-method-rename`: BUILD SUCCESS, exit 0, **2 LLM calls** (one per file-keyed cluster), optional bump 1.0.0→3.0.0, candidate `com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp` compiled from the labels with no LLM |
 | Learning loop proof (manual, persistent KB `out/learn-mr/kb`, fresh copy per run) | `sbmig run fixtures/projects/boot2-method-rename` ×3 | run 1: 2 LLM calls → candidate; run 3: **0 LLM calls**, the candidate renamed both call sites in the spring rewrite (`plan_recipe build_ok`, credit ok=1). Run 2 failed for an unrelated reason: the rewrite plugin's own resolver could not download Boot POMs through the proxy (`Failed to download …:4.0.5 … Attempted URIs`), `UpgradeSpringBoot_4_0` then left literal `<version>4.0.x</version>` starters → 3 × `artifact_not_found` blocked, and the candidate was credited `fail=1` for a failure that was not its own (follow-up below) |
+
+## Status — 2026-10-20 (in-house gateway provider + log files)
+
+User: the company LLM API is a plain `POST(url, headers, json, timeout)` with `Authorization: Bearer` and
+`{"model": "gpt-6-luna", "need_orgin": true, "messages": [...]}`; sbmig must call it, and logs must land in files that
+are easy to share. Nothing in the adapter seams changed.
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Builtin provider `chat_post`: `POST llm.base_url` (full URL) with `{model, messages, **llm.payload_extra}`, generation params only when `llm.payload_generation_params`, reply text via `llm.response_path` or auto-detected (`choices[0].message.content`, `content`, `response`, `data.content`, …), usage from `usage` when present; HTTP errors logged with the body excerpt (never the key) | `sbmig/fix/client.py` (`ChatPostClient`, `extract_reply`), `sbmig/core/config.py`, `config/llm-company.yml` | done — smoke: local server with a non-OpenAI shape (`data.result.content`), `sbmig run boot3` → 1 LLM call through `chat_post`, BUILD SUCCESS, exit 0 |
+| `sbmig llm-probe --config …`: prints the request payload, raw response JSON, extracted reply (or the auto-detect paths tried) | `sbmig/cli.py` | done |
+| Log files: every `sbmig run` → `<run dir>/sbmig.log` (DEBUG, printed at the end as `log: …`), `sbmig fleet` → `fleet/sbmig.log`, any command `--log-file PATH`; `llm.record_dir` keeps `llm-NNNN.json` per call | `sbmig/cli.py` (`attach_file_log`), `sbmig/fleet/cli.py`, `docs/RUNBOOK.md` | done |
+| Offline tests | 852 passed (24 integration deselected) | green |
+| `coding/`: standalone coding agent over the same gateway contract (text protocol: READ/LIST/GREP, SEARCH/REPLACE edits, RUN, `<done>`), diffs + confirmation, backups, jsonl transcript, `--probe` | `coding/agent.py`, `coding/README.md`, 14 offline tests | done (not part of the `sbmig` package) |

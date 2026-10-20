@@ -15,6 +15,10 @@ cd migration-agent
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml      # fill in parent / mandatory ×2 / optional ×8
 export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
+# in-house gateway that only accepts a plain chat POST ({model, need_orgin, messages}): use the profile
+#   export LLM_BASE_URL=https://<gateway>/<chat endpoint> LLM_API_KEY=...
+#   sbmig llm-probe --config config/llm-company.yml      # raw response + extracted reply
+#   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
 ```
 
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
@@ -27,6 +31,10 @@ Smoke test without touching anything: `sbmig analyze path/to/project.zip --confi
 | escalation | `llm.escalation_model` | optional stronger model | after a stall |
 
 `config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
+`config/llm-company.yml` is the profile for the in-house gateway (`chat_post`). Every `sbmig run` writes
+`<run dir>/sbmig.log` (DEBUG: decisions, builds, LLM calls — never keys); `--log-file PATH` adds one for any
+command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When asking for help, share
+`sbmig.log`, `report.md` and the relevant `llm-NNNN.json`.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
 ## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)
