@@ -4,9 +4,14 @@
 * `spring-cloud-dependencies` **2021.0.9** imported in `dependencyManagement`
 * `spring-cloud-starter-sleuth` — **no version in the pom** (managed by the 2021.0.x train). Sleuth is discontinued;
   Boot 3+/4 use Micrometer Tracing (`io.micrometer:micrometer-tracing-bridge-brave`)
-* `spring-cloud-starter-netflix-hystrix` **2.2.10.RELEASE** — explicit version because no train after Hoxton manages
-  it. Hystrix is EOL; the replacement is Resilience4j (`spring-cloud-starter-circuitbreaker-resilience4j`,
-  `@CircuitBreaker`). `InventoryClient` uses `@HystrixCommand(fallbackMethod=…)`
+* `spring-cloud-starter-netflix-hystrix` **2.2.10.RELEASE**: the version is explicit because no train after Hoxton
+  manages it. Hystrix is EOL; the replacement is Resilience4j (`spring-cloud-starter-circuitbreaker-resilience4j`,
+  `@CircuitBreaker`). The Hystrix code exercises both paths of the project recipe:
+  * `InventoryClient.stockFor` uses a plain `@HystrixCommand(fallbackMethod=…)` (no `commandKey`, so the circuit
+    breaker is named `default`).
+  * `InventoryClient.reserve` has `commandKey`, `groupKey`, `threadPoolKey`, `commandProperties` with a nested
+    `@HystrixProperty` timeout, and `ignoreExceptions`.
+  * `OrderApiApplication` carries `@EnableCircuitBreaker`.
 * `springfox-boot-starter` **3.0.0** — springfox (Swagger 2) is EOL; `SwaggerConfig` declares a `Docket` bean +
   `@EnableSwagger2`, `OrderController` uses `io.swagger.annotations.@Api/@ApiOperation/@ApiParam`. The replacement is
   springdoc-openapi (`org.springdoc:springdoc-openapi-starter-webmvc-ui` 3.x on Boot 4)
@@ -19,9 +24,22 @@ What the migration is expected to do (see `expected.json`; this is the **referen
 the Handover section, `docs/ADVISORIES.md` / `docs/RUNBOOK.md` §2.5): finish with **BUILD SUCCESS** without an LLM,
 nothing blocked, and the report's **Handover** section must say what was replaced (Boot 2.7 → 4.1, Spring Cloud
 2021.0.9 → 2025.1.x, sleuth → micrometer-tracing via the Boot 4 umbrella chain, springfox → springdoc via the
-advisory's `recipe` policy) and what is still the owners' job (hystrix → Resilience4j — `guide` policy, so it stays
-in the pom pinned at 2.2.10.RELEASE and shows up as a ⚠ carried-over row; swagger UI path / OpenAPI bean review;
-tracing configuration). Advisories never fail the run: the exit code stays 0 although hystrix is still present.
+advisory's `recipe` policy, and hystrix → Resilience4j via the project recipe `com.company.migrate.HystrixToResilience4j`).
+It must also say what is still the owners' job: swagger UI path / OpenAPI bean review, tracing configuration,
+Resilience4j instance configuration (`default`, `inventoryReserve`), timeouts → `resilience4j.timelimiter`, fallback
+signatures and the lost thread-pool isolation.
+
+The hystrix advisory has `recipe` policy. The Boot umbrella does not cover the composite, so the planner prepends it
+to `spring.rewrite` (`recipe_source: advisory`). After the run, `module/comp-jar/pom.xml` declares
+`spring-cloud-starter-circuitbreaker-resilience4j` with no version (managed by the 2025.1 BOM).
+`InventoryClient` then reads:
+
+* `@CircuitBreaker(name = "default", fallbackMethod = "stockFallback")`;
+* `@CircuitBreaker(name = "inventoryReserve", fallbackMethod = "reserveFallback")`, with every Hystrix-only
+  attribute and the `HystrixProperty` import gone.
+
+`@EnableCircuitBreaker` is deleted. Advisories never fail the run. Hystrix used to stay in the pom as a `guide`
+finding, and the exit code stayed 0 even then.
 
 ## Build as-is
 

@@ -202,7 +202,7 @@ def _ga(artifact: Any) -> str:
             artifact.get("artifactId")
         return f"{g}:{a}" if g and a else ""
     if isinstance(artifact, str) and artifact.count(":") >= 1:
-        return ":".join(artifact.split(":")[:2])
+        return ":".join(artifact.split()[0].split(":")[:2])     # "g:a:v (advisory:x)" → the token before the space
     return ""
 
 
@@ -327,7 +327,7 @@ def _gav_listed(want: str, values: list[str]) -> bool:
     for v in values:
         if _ga(v) != _ga(want):
             continue
-        if len(parts) < 3 or ":".join(v.split(":")[2:]).startswith(":".join(parts[2:])):
+        if len(parts) < 3 or ":".join(v.split()[0].split(":")[2:]).startswith(":".join(parts[2:])):
             return True
     return False
 

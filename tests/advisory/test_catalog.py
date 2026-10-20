@@ -17,7 +17,8 @@ def test_repo_advisories_load_and_check_clean(cfg):
     assert set(cat.ids()) == REPO_IDS
     assert cat.check(cfg) == []
     policies = {e.id: e.policy for e in cat.entries}
-    assert {k for k, v in policies.items() if v == "recipe"} == {"springfox", "sleuth", "spring-cloud-bom"}
+    assert {k for k, v in policies.items() if v == "recipe"} == {"springfox", "sleuth", "hystrix",
+                                                                  "spring-cloud-bom"}
     assert all(e.followup and e.replacement and e.docs for e in cat.entries)
     assert cat.get("spring-cloud-bom").applies_when_version_below == "2025.1"
 

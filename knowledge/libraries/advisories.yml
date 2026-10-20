@@ -66,16 +66,24 @@ advisories:
     title: Netflix Hystrix is discontinued (not in any current Spring Cloud train)
     summary: >-
       Hystrix is in maintenance-only mode since 2018 and was removed from Spring Cloud 2020.0. It may still compile
-      against the pinned 2.2.x starter, but it is unsupported on Boot 3+/4 and has no OpenRewrite migration.
+      against the pinned 2.2.x starter, but it is unsupported on Boot 3+/4. The project recipe swaps the starter for
+      spring-cloud-starter-circuitbreaker-resilience4j and @HystrixCommand for Resilience4j @CircuitBreaker (name from
+      commandKey, else "default"; fallbackMethod kept; Hystrix-only attributes and @EnableHystrix/@EnableCircuitBreaker
+      dropped).
     replacement: org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j
     replacement_version: managed by the Spring Cloud BOM
-    policy: guide
+    policy: recipe
+    recipes:
+      - com.company.migrate.HystrixToResilience4j
     followup: >-
-      Replace spring-cloud-starter-netflix-hystrix with spring-cloud-starter-circuitbreaker-resilience4j,
-      @HystrixCommand(fallbackMethod=…) with @CircuitBreaker(name=…, fallbackMethod=…) and move hystrix.* timeouts
-      to resilience4j.circuitbreaker / timelimiter properties.
+      Configure the circuit breakers by name (instance "default" unless a commandKey existed:
+      resilience4j.circuitbreaker.instances.<name> or configs.default), move hystrix.command.* timeouts to
+      resilience4j.timelimiter.*, give every fallback method a trailing Throwable parameter (Resilience4j does not find
+      fallbacks without it) and re-test failure paths: thread-pool isolation, groupKey/threadPoolKey,
+      commandProperties and ignoreExceptions were removed, and the @CircuitBreaker aspect needs
+      spring-boot-starter-aspectj at runtime. HystrixCommand subclasses and Hystrix dashboards/Turbine stay manual.
     docs:
-      - https://docs.spring.io/spring-cloud-circuitbreaker/reference/
+      - https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
       - https://resilience4j.readme.io/docs/getting-started-3
     notes: knowledge/notes/spring-cloud.md
 

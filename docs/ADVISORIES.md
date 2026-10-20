@@ -135,8 +135,8 @@ sbmig recipes check                           # also cross-checks advisory recip
 * `spring-cloud-starter-sleuth` became `micrometer-tracing-bridge-brave` (no version, Boot-managed).
   `spring.sleuth.sampler.probability` became `management.tracing.sampling.probability`, and a traceId/spanId
   `logging.pattern.level` was added.
-* `spring-cloud.version` went from 2021.0.9 to 2025.1.3. Hystrix stayed in the pom and still compiles (→ guide
-  follow-up).
+* `spring-cloud.version` went from 2021.0.9 to 2025.1.3. Hystrix stayed in the pom and still compiled (→ guide
+  follow-up at the time; since 2026-10-20 the project recipe below replaces it).
 
 The recipes left these behind:
 
@@ -147,13 +147,70 @@ The recipes left these behind:
 All of them compile. The springfox follow-up asks the team to review them. Result: springfox ships with
 `policy: recipe`. For Boot projects all of its recipes come from the umbrella (`recipe_source: plan`).
 
+### hystrix validation (2026-10-20, rewrite-java / rewrite-maven / rewrite-xml 8.89.0)
+
+There is no upstream OpenRewrite recipe for Hystrix. The project composite `com.company.migrate.HystrixToResilience4j`
+(`knowledge/recipes/base/hystrix-to-resilience4j.yml`) is built only from core building blocks. The Boot umbrella
+does not cover it, so the planner prepends it to `spring.rewrite` for every plan (`recipe_source: advisory`). Its
+`recipeList`, in order:
+
+1. `ChangeAnnotationAttributeName` on `HystrixCommand`: `commandKey` → `name`.
+2. `RemoveAnnotation @…javanica.annotation.HystrixProperty`. This removes the nested properties and their import
+   (`RemoveAnnotationAttribute` does not touch imports).
+3. `RemoveAnnotationAttribute` on `HystrixCommand` for `groupKey`, `threadPoolKey`, `commandProperties`,
+   `threadPoolProperties`, `ignoreExceptions`, `observableExecutionMode`, `defaultFallback` and
+   `raiseHystrixExceptions`. `fallbackMethod` stays.
+4. `ChangeType` `HystrixCommand` → `io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker`.
+5. `AddOrUpdateAnnotationAttribute` on `CircuitBreaker`: `name` = `"default"`, `addOnly: true`. A name that came
+   from `commandKey` wins. This step must run after the type swap. On `HystrixCommand` the recipe skips, because
+   the type is known and has no `name` attribute. After `ChangeType` the type is shallow, so the value goes in
+   verbatim, which is why the quotes are part of `attributeValue`.
+6. `RemoveAnnotation` for `@EnableHystrix`, `@EnableCircuitBreaker` and `@EnableHystrixDashboard`.
+7. pom:
+   * `xml.ChangeTagValue` sets the old starter's `<version>` to 5.0.3 (the 2025.1 train's line), so the pom stays
+     resolvable.
+   * `maven.ChangeDependencyGroupIdAndArtifactId` (no `newVersion`) swaps `spring-cloud-starter-netflix-hystrix` /
+     `spring-cloud-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`.
+   * `maven.RemoveDependency` removes `hystrix-javanica`, `hystrix-core` and the dashboard starter.
+   * `RemoveRedundantDependencyVersions` (`onlyIfManagedVersionIs: ANY`) drops the version whenever a Spring Cloud
+     BOM manages the starter.
+
+`@CircuitBreaker` compiles without an extra dependency. The starter brings `resilience4j-annotations` through
+spring-cloud-circuitbreaker-resilience4j → resilience4j-spring-boot3 → resilience4j-spring6.
+
+**Why there is no `newVersion` in step 7.** A `newVersion` makes the swap download maven-metadata first. Through the
+cloud proxy, 5 of 10 standalone runs left the Hystrix starter silently in the pom. The `MavenMetadataFailures`
+data table showed HTTP 429 for the failing run in which it was exported. The steps above need no network beyond
+normal pom resolution. A pom without a Spring Cloud BOM keeps an explicit 5.0.3.
+
+Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey` / `commandProperties` /
+`ignoreExceptions` method) gives these results:
+
+* BUILD SUCCESS with 0 LLM calls; hystrix is `replaced`.
+* `module/comp-jar/pom.xml` declares the resilience4j starter with no version.
+* `@CircuitBreaker(name = "default", fallbackMethod = "stockFallback")` and
+  `@CircuitBreaker(name = "inventoryReserve", fallbackMethod = "reserveFallback")`.
+
+**What stays manual.** The team gets these through the follow-up text and `knowledge/notes/spring-cloud.md`:
+
+* Runtime configuration:
+  * Resilience4j instances (`resilience4j.circuitbreaker.instances.<name>` / `configs.default`);
+  * `hystrix.command.*` timeouts → `resilience4j.timelimiter.*`;
+  * a trailing `Throwable` parameter on every fallback (Resilience4j does not find fallbacks without it);
+  * `spring-boot-starter-aspectj` for the annotation aspect;
+  * lost thread-pool isolation (use a bulkhead if needed).
+* Programmatic `HystrixCommand` / `HystrixObservableCommand` subclasses and `HystrixRequestContext`. If they no
+  longer compile, the fix loop re-adds `hystrix-core:1.5.18`, and the advisory then reports hystrix as
+  `still-present`.
+* Hystrix dashboards and Turbine streams.
+
 ## Initial list
 
 | id | status | policy | replacement | how |
 |---|---|---|---|---|
 | springfox | eol | recipe | springdoc-openapi-starter-webmvc-ui 3.x | SpringFoxToSpringDoc + UpgradeSpringDoc_3_0 (inside the Boot umbrella) |
 | sleuth | eol | recipe | micrometer-tracing-bridge-brave (Boot-managed) | MigrateCloudSleuthToMicrometerTracing (inside the umbrella) |
-| hystrix | eol | guide | spring-cloud-starter-circuitbreaker-resilience4j | no recipe exists |
+| hystrix | eol | recipe | spring-cloud-starter-circuitbreaker-resilience4j (Spring Cloud BOM) | project composite `com.company.migrate.HystrixToResilience4j` (prepended; not in the umbrella) |
 | ribbon | eol | guide | spring-cloud-starter-loadbalancer | no recipe exists |
 | zuul | eol | guide | spring-cloud-starter-gateway-server-webmvc | no recipe exists |
 | netflix-feign | eol | guide | spring-cloud-starter-openfeign | the umbrella renames the starter; com.netflix.feign code is manual |

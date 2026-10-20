@@ -14,6 +14,7 @@ FOX = "org.openrewrite.java.springdoc.SpringFoxToSpringDoc"
 DOC3 = "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0"
 SLEUTH = "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing"
 BOOT4 = "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
+HYSTRIX = "com.company.migrate.HystrixToResilience4j"
 
 
 def _add_deps(pom_path: Path, *deps: str) -> None:
@@ -53,16 +54,17 @@ def test_non_boot_project_gets_advisory_recipes_prepended(tmp_path: Path, cfg) -
     profile = analyze_path(_legacy_with_springfox(tmp_path), cfg)
     findings = evaluate_advisories(profile, cfg)
     by = {f.advisory_id: f for f in findings}
-    assert by["springfox"].policy == "recipe" and by["hystrix"].policy == "guide"
+    assert by["springfox"].policy == "recipe" and by["hystrix"].policy == "recipe"
     plan = build_plan(profile, cfg, None, advisories=findings)
     recipes = _recipes(plan)
-    assert recipes[:2] == [FOX, DOC3]                                   # before the Framework 7 recipes
-    assert "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0" in recipes[2:]
+    assert recipes[:3] == [HYSTRIX, FOX, DOC3]                          # before the Framework 7 recipes
+    assert "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0" in recipes[3:]
     step = next(s for s in plan.steps if s.id == "spring.rewrite")
-    assert step.recipes[0].source == "builtin" and step.recipes[0].artifact == "org.openrewrite.recipe:rewrite-spring"
-    assert by["springfox"].recipe_source == "advisory" and by["hystrix"].recipe_source == "none"
+    assert step.recipes[0].source == "project" and step.recipes[0].file.endswith("hystrix-to-resilience4j.yml")
+    assert step.recipes[1].source == "builtin" and step.recipes[1].artifact == "org.openrewrite.recipe:rewrite-spring"
+    assert by["springfox"].recipe_source == "advisory" and by["hystrix"].recipe_source == "advisory"
     assert "advisory: springfox → SpringFoxToSpringDoc, UpgradeSpringDoc_3_0 (added)" in plan.notes
-    assert "advisory: hystrix → guide (catalog)" in plan.notes
+    assert "advisory: hystrix → HystrixToResilience4j (added)" in plan.notes
     assert any("added" in n for n in by["springfox"].notes)
 
 

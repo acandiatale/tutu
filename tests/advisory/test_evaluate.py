@@ -120,7 +120,7 @@ def test_repo_catalog_on_a_cloud_profile(cfg):
                       LibraryUsage(name="spring-cloud-bom", version="2021.0.9")))
     out = evaluate_advisories(p, cfg)
     assert [f.advisory_id for f in out] == ["hystrix", "springfox", "spring-cloud-bom"]
-    assert {f.advisory_id: f.policy for f in out} == {"hystrix": "guide", "springfox": "recipe",
+    assert {f.advisory_id: f.policy for f in out} == {"hystrix": "recipe", "springfox": "recipe",
                                                       "spring-cloud-bom": "recipe"}
 
 

@@ -61,7 +61,19 @@ built-in catalog that matches the advisor constants. Planning never fails becaus
    * Advisor only: set `advisor: true` and pick a `gate`.
 4. **Project composite** (optional). If upstream recipes need parameters or need to be chained, write a
    `com.company.migrate.*` recipe in `knowledge/recipes/base/*.yml`. Give it an `origin: project` catalog entry
-   with `file:`.
+   with `file:`. Every `recipeList` id it uses needs a catalog entry too (a building block: `advisor: false`,
+   `sets: []`; core recipes have `artifact: null`).
+   Prefer building blocks that need no network. A `newVersion` (exact or `x.y.x`) makes
+   `ChangeDependency` / `ChangeDependencyGroupIdAndArtifactId` download maven-metadata first. When that download
+   fails (HTTP 429 through the cloud proxy), the recipe silently leaves the dependency unchanged. Instead:
+   * swap the coordinates without `newVersion`;
+   * set any version text with `org.openrewrite.xml.ChangeTagValue` and an XPath predicate
+     (`/project/dependencies/dependency[artifactId='x']/version`);
+   * let `RemoveRedundantDependencyVersions` (`onlyIfManagedVersionIs: ANY`) drop the version when a BOM manages it.
+
+   A later step in the same composite only sees the refreshed pom model after an
+   `org.openrewrite.maven.ChangeDependencyGroupIdAndArtifactId` swap. The `org.openrewrite.java.dependencies.ChangeDependency`
+   wrapper does not refresh it (verified 2026-10-20, rewrite-maven 8.89.0).
 5. **Learned in the KB.** Recipes can also start in the KB. After a successful fix, harvesting may produce a
    **candidate** in `kb/recipes/candidates/`, either from the LLM (`kb.generate_recipe_candidates`) or straight
    from labelled fixes (`kb.deterministic_candidates`). Candidates are validated against a whitelist of declarative
@@ -125,6 +137,11 @@ Verified on 2026-10-18 with BOM 3.37.0: all 21 openrewrite entries are found whe
 rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, rewrite-testing-frameworks 3.44.0, and the core recipes in
 `org.openrewrite:rewrite-java` / `rewrite-maven` 8.89.0. `rewrite-java-dependencies` 1.60.2 (`UpgradeDependencyVersion`,
 `ChangeDependency`) is on rewrite-migrate-java's transitive runtime classpath, so their `provided_by` holds.
+Re-verified on 2026-10-20 with 29 openrewrite entries. The new entries are the core building blocks of
+`HystrixToResilience4j`: `ChangeAnnotationAttributeName`, `AddOrUpdateAnnotationAttribute`,
+`RemoveAnnotationAttribute` and `RemoveAnnotation` from rewrite-java; `ChangeTagValue` from rewrite-xml;
+`ChangeDependencyGroupIdAndArtifactId`, `RemoveDependency` and `RemoveRedundantDependencyVersions` from
+rewrite-maven. All are 8.89.0.
 
 ## Advisor whitelist and gates
 
@@ -157,12 +174,15 @@ in the catalog, and every `advisories: [x]` names an existing advisory that uses
 | `org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0` | springfox | yes (listed directly) |
 | `org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing` | sleuth | yes (3_0 → UpgradeSpringCloud_2022) |
 | `org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1` | spring-cloud-bom | yes (listed directly) |
+| `com.company.migrate.HystrixToResilience4j` (project, `base/hystrix-to-resilience4j.yml`) | hystrix | no |
 
 They are `advisor: false`, so the LLM advisor never suggests them. They are listed under the umbrella's `covers`
 (verified against rewrite-spring 6.37.1). Because of this, a Boot project gets them from the umbrella and the
 finding records `recipe_source: plan`. For non-Boot plans (spring_legacy, MSA library roots), the planner
 **prepends** them to `spring.rewrite` (`recipe_source: advisory`), so they run before the Framework/Boot recipes in
-the same rewrite pass. Hystrix, Ribbon and Zuul have no OpenRewrite recipe anywhere, so they stay `guide`.
+the same rewrite pass. Hystrix has no upstream recipe either; the project composite
+`com.company.migrate.HystrixToResilience4j` fills the gap. The umbrella does not cover it, so every plan prepends it
+(`recipe_source: advisory`), Boot projects included. Ribbon and Zuul have no recipe, so they stay `guide`.
 
 ## How KB recipes are credited and promoted
 

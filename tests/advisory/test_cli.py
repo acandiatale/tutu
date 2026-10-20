@@ -20,7 +20,8 @@ def test_list_show_check_on_the_repo_file():
     assert "springfox" in r.output and "hystrix" in r.output and "SpringFoxToSpringDoc" in r.output
     r = runner.invoke(advisories_cli, ["list", "--json"])
     rows = json.loads(r.output)
-    assert {x["id"]: x["effective_policy"] for x in rows}["hystrix"] == "guide"
+    policies = {x["id"]: x["effective_policy"] for x in rows}
+    assert policies["hystrix"] == "recipe" and policies["ribbon"] == "guide"
     r = runner.invoke(advisories_cli, ["show", "sleuth"])
     assert r.exit_code == 0 and "micrometer-tracing-bridge-brave" in r.output and "effective_policy: recipe" in r.output
     assert json.loads(runner.invoke(advisories_cli, ["show", "zuul", "--json"]).output)["status"] == "eol"

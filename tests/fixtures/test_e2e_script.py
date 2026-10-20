@@ -264,9 +264,10 @@ def test_expect_only_lists_all_fixtures(e2e, capsys):
     assert e2e.discover_fixtures().index("boot2-cloud-legacy") == e2e.discover_fixtures().index("msa-shared-lib") + 1
     line = next(ln for ln in out.splitlines() if ln.startswith("boot2-cloud-legacy ["))
     assert "advisories=[springfox:policy=recipe:outcome=replaced:recipe_source=plan" in line
-    assert "hystrix:policy=guide:outcome=still-present" in line
+    assert "hystrix:policy=recipe:outcome=replaced:recipe_source=advisory" in line
     assert "handover(carried_over_min=1, spring_boot_after=4.1.0, from_here_contains=2" in line
-    assert "followups=[regex:(?i).*resilience4j.*]" in line and "post_checks=3" in line
+    assert "followups=[regex:(?i).*hystrix → .*resilience4j applied by HystrixToResilience4j" in line
+    assert "post_checks=7" in line
 
 
 # ------------------------------------------------------------------------------------------- advisories / handover
@@ -394,18 +395,35 @@ def test_boot2_cloud_legacy_expectations_against_synthetic_report(e2e):
     """The fixture's own expect block (minus post_checks) passes against a report shaped like the target run."""
     exp = dict(e2e.load_expected("boot2-cloud-legacy")["expect"])
     exp.pop("post_checks")
-    # Boot projects: every advisory recipe is already inside the Boot 4 umbrella chain → recipe_source "plan";
-    # the un-catalogued net.sf.ehcache dependency shows up as a carried-over pin in from_here
-    advisories = [dict(a, recipe_source="plan") if a["advisory_id"] == "springfox" else a
-                  for a in ADVISORY_REPORT["advisories"]]
+    # Boot projects: the springfox/sleuth/cloud-train recipes are inside the Boot 4 umbrella chain → recipe_source
+    # "plan"; the hystrix project composite is not → prepended, recipe_source "advisory" (shapes as in the
+    # 2026-10-20 run); the un-catalogued net.sf.ehcache dependency shows up as a carried-over pin in from_here
+    hystrix = {"advisory_id": "hystrix", "library": "hystrix", "status": "eol", "policy": "recipe",
+               "recipe_source": "advisory", "outcome": "replaced"}
+    advisories = [dict(a, recipe_source="plan") if a["advisory_id"] == "springfox" else
+                  hystrix if a["advisory_id"] == "hystrix" else a for a in ADVISORY_REPORT["advisories"]]
     advisories.append({"advisory_id": "spring-cloud-bom", "policy": "recipe", "recipe_source": "plan",
                        "outcome": "replaced"})
+    starter = "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
+    verify = (f"verify hystrix → {starter} (recipe com.company.migrate.HystrixToResilience4j): Configure the circuit "
+              "breakers by name (instance \"default\" unless a commandKey existed: "
+              "resilience4j.circuitbreaker.instances.<name> or configs.default), move hystrix.command.* timeouts "
+              "to resilience4j.timelimiter.*")
     handover = dict(ADVISORY_REPORT["handover"],
-                    from_here=ADVISORY_REPORT["handover"]["from_here"]
-                    + ["net.sf.ehcache:ehcache pinned at 2.10.9.2 — the new parent/Boot BOM no longer manages it: "
-                       "confirm the version or replace"])
-    rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover)
+                    added=ADVISORY_REPORT["handover"]["added"] + [f"{starter} (advisory:hystrix)"],
+                    removed=ADVISORY_REPORT["handover"]["removed"]
+                    + ["org.springframework.cloud:spring-cloud-starter-netflix-hystrix:2.2.10.RELEASE "
+                       "(advisory:hystrix)"],
+                    from_here=[verify, "verify springdoc UI path",
+                               "net.sf.ehcache:ehcache pinned at 2.10.9.2 — the new parent/Boot BOM no longer "
+                               "manages it: confirm the version or replace"])
+    followups = [verify.replace("verify hystrix", "hystrix").replace(
+        " (recipe com.company.migrate.HystrixToResilience4j): Configure", " applied by HystrixToResilience4j; "
+        "Configure")]
+    rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover, manual_followups=followups)
     assert _eval(e2e, exp, rep) == []
+    # the old guide shape no longer satisfies the fixture
+    assert "advisory hystrix: policy='guide' expected 'recipe'" in _eval(e2e, exp, dict(ADVISORY_REPORT))
 
 
 # ------------------------------------------------------------------------------------------- kb (round 5)
@@ -513,3 +531,10 @@ def test_boot2_method_rename_expectations(e2e, capsys):
     assert "optional_bumped=[com.company.legacy:legacy-web-lib 1.0.0→3.0.0]" in line
     assert ("kb(dir=out/e2e/kb-method-rename, candidates_min=1, harvest_candidates_min=1, "
             "org.openrewrite.java.ChangeMethodName@com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp)") in line
+
+
+def test_ga_ignores_handover_suffixes(e2e):
+    assert e2e._ga("org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j (advisory:hystrix)") == \
+        "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
+    assert e2e._gav_listed("g:a:2.2", ["g:a:2.2.10.RELEASE (advisory:hystrix)"])
+    assert e2e._gav_listed("g:a", ["g:a (advisory:hystrix)"]) and not e2e._gav_listed("g:b", ["g:a (x)"])

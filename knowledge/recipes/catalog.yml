@@ -330,6 +330,22 @@ recipes:
     verified: "2026-10"
     notes: knowledge/notes/servlet-to-boot.md
 
+  - id: com.company.migrate.HystrixToResilience4j
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/hystrix-to-resilience4j.yml
+    phase: spring
+    description: Hystrix → Resilience4j (@HystrixCommand → @CircuitBreaker, starter swap, @Enable* annotations dropped)
+    docs: https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
+    covers: []
+    gate: null
+    advisor: false
+    sets: []          # added by the hystrix library advisory (policy recipe), prepended to spring.rewrite
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-cloud.md
+    advisories: [hystrix]
+
   # ------------------------------------------------------------------ building blocks used inside project recipes
   - id: org.openrewrite.maven.UpgradeParentVersion
     origin: openrewrite
@@ -391,6 +407,110 @@ recipes:
     phase: spring
     description: building block — swap one dependency's coordinates for another
     docs: https://docs.openrewrite.org/recipes/java/dependencies/changedependency
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.ChangeAnnotationAttributeName
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — rename an attribute of an annotation type
+    docs: https://docs.openrewrite.org/recipes/java/changeannotationattributename
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.AddOrUpdateAnnotationAttribute
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — add (or update) an annotation attribute value
+    docs: https://docs.openrewrite.org/recipes/java/addorupdateannotationattribute
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.RemoveAnnotationAttribute
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — remove one attribute from an annotation type
+    docs: https://docs.openrewrite.org/recipes/java/removeannotationattribute
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.RemoveAnnotation
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — remove annotations matching a pattern (incl. nested ones) and their imports
+    docs: https://docs.openrewrite.org/recipes/java/removeannotation
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.xml.ChangeTagValue
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-xml), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — set an XML tag value selected by XPath (no Maven resolution, no network)
+    docs: https://docs.openrewrite.org/recipes/xml/changetagvalue
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.maven.ChangeDependencyGroupIdAndArtifactId
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — swap a Maven dependency's coordinates (refreshes the pom model for later steps)
+    docs: https://docs.openrewrite.org/recipes/maven/changedependencygroupidandartifactid
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.maven.RemoveDependency
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — remove a Maven dependency
+    docs: https://docs.openrewrite.org/recipes/maven/removedependency
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.maven.RemoveRedundantDependencyVersions
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — drop explicit versions that a BOM / parent already manages
+    docs: https://docs.openrewrite.org/recipes/maven/removeredundantdependencyversions
     covers: []
     gate: null
     advisor: false

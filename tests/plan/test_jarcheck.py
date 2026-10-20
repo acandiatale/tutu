@@ -294,14 +294,14 @@ def test_cli_check_jars_ok_and_json(tmp_path, monkeypatch):
     res = r.invoke(recipes_cli, ["check", "--jars", *args])
     assert res.exit_code == 0, res.output
     assert "recipe catalog OK" in res.output
-    assert "recipe jars OK: 21 recipe(s) found in" in res.output and "rewrite-recipe-bom 3.37.0" in res.output
+    assert "recipe jars OK: 29 recipe(s) found in" in res.output and "rewrite-recipe-bom 3.37.0" in res.output
     assert "ok via rewrite-migrate-java" in res.output
     line = next(x for x in res.output.splitlines() if x.startswith("org.openrewrite.java.ChangeType "))
     assert "(core)" in line and "org.openrewrite:rewrite-java:9.9" in line
     res = r.invoke(recipes_cli, ["check", "--jars", "--json", *args])
     assert res.exit_code == 0, res.output
     data = json.loads(res.output)
-    assert data["problems"] == [] and len(data["rows"]) == 21
+    assert data["problems"] == [] and len(data["rows"]) == 29
     assert data["artifact_versions"]["org.openrewrite.recipe:rewrite-java-dependencies"] == "9.9"
 
 

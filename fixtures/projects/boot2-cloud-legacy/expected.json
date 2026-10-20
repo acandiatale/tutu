@@ -41,8 +41,9 @@
       },
       {
         "id": "hystrix",
-        "policy": "guide",
-        "outcome": "still-present"
+        "policy": "recipe",
+        "outcome": "replaced",
+        "recipe_source": "advisory"
       },
       {
         "id": "spring-cloud-bom",
@@ -53,19 +54,21 @@
       "carried_over_min": 1,
       "spring_boot_after": "4.1.0",
       "from_here_contains": [
-        "regex:(?i).*hystrix.*resilience4j.*",
+        "regex:(?i).*verify hystrix → org\\.springframework\\.cloud:spring-cloud-starter-circuitbreaker-resilience4j \\(recipe com\\.company\\.migrate\\.HystrixToResilience4j\\).*resilience4j\\.circuitbreaker\\.instances.*",
         "regex:(?i).*net\\.sf\\.ehcache:ehcache pinned at 2\\.10\\.\\S+.*"
       ],
       "removed_contains": [
         "io.springfox:springfox-boot-starter",
-        "org.springframework.cloud:spring-cloud-starter-sleuth"
+        "org.springframework.cloud:spring-cloud-starter-sleuth",
+        "org.springframework.cloud:spring-cloud-starter-netflix-hystrix"
       ],
       "added_contains": [
-        "org.springdoc:springdoc-openapi-starter-webmvc-ui"
+        "org.springdoc:springdoc-openapi-starter-webmvc-ui",
+        "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
       ]
     },
     "followups_contains": [
-      "regex:(?i).*resilience4j.*"
+      "regex:(?i).*hystrix → .*resilience4j applied by HystrixToResilience4j.*resilience4j\\.timelimiter.*"
     ],
     "post_checks": [
       {
@@ -73,7 +76,8 @@
           "path": "**/pom.xml",
           "artifacts": [
             "io.springfox:springfox-boot-starter",
-            "org.springframework.cloud:spring-cloud-starter-sleuth"
+            "org.springframework.cloud:spring-cloud-starter-sleuth",
+            "org.springframework.cloud:spring-cloud-starter-netflix-hystrix"
           ]
         }
       },
@@ -89,8 +93,36 @@
         "pom_dependency_present": {
           "path": "module/comp-jar/pom.xml",
           "artifacts": [
+            "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
             "net.sf.ehcache:ehcache"
           ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/orders/service/InventoryClient.java",
+          "contains": "@CircuitBreaker(name = \"default\", fallbackMethod = \"stockFallback\")",
+          "not_contains": "HystrixCommand"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/orders/service/InventoryClient.java",
+          "contains": "@CircuitBreaker(name = \"inventoryReserve\",",
+          "not_contains": "HystrixProperty"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/orders/OrderApiApplication.java",
+          "not_contains": "EnableCircuitBreaker"
         }
       }
     ]
