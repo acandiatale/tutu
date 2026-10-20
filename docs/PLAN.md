@@ -221,4 +221,5 @@ traced `graph/engine.py` → `loop/orchestrator.py` → `loop/fixloop.py` → `w
 | N4 / N5 `_finalize_blocked` could lose the report; a reused orchestrator kept the previous run's verify results | guarded; per-run state reset in `_run_guard` | `sbmig/loop/orchestrator.py` | `test_orchestrator_reuse_starts_from_a_clean_state` |
 | Looked at, no change | graph edges vs inline, `_RunAborted` paths, fix-loop termination, advisory chain order, company client, exit codes; N3 (recipe-batch retry re-handles ≤ limit clusters), N6 nits (`max_iterations=0` = config default; recursion limit 1000 ≈ 495 MSA services) | — | — |
 | Offline tests | 941 passed (25 integration deselected) | | green |
+| e2e smoke (real Maven, graph engine, cloud image) | `scripts/e2e.sh --only pure-java,boot3` → 2/2 BUILD SUCCESS, exit 0, 0 LLM calls | `out/e2e/summary.md` | green |
 | Not done (follow-ups) | LLM-unavailable is still permanent for the run after 2 consecutive transport failures (a cool-down would suit gateway hiccups better); Handover `llm_fixed_files` keep pre-restructure paths; `RunManager.runs` is never pruned (one process = one day of runs) | | user decides |
