@@ -6,8 +6,8 @@
 | Python | ≥ 3.10 (+ `uv` or `pip`) | agent runtime |
 | JDK | **21** (set `build.java_home`) | OpenRewrite plugin and all builds run on 21; as-is projects are never built on their old JDK |
 | Maven | 3.9.x, `settings.xml` pointing at Nexus | builds + OpenRewrite plugin |
-| Nexus proxies | Maven Central incl. `org.openrewrite.*` (plugin 6.46.1, recipe BOM 3.38.0 and its artifacts), `org.springframework.boot:*:4.1.0`, jakarta artifacts | recipes and target BOM |
-| LLM endpoint | OpenAI-compatible `/v1/chat/completions` (or Anthropic Messages) | residual fixes + recipe candidates |
+| Nexus proxies | Maven Central incl. `org.openrewrite.*` (plugin 6.46.1, recipe BOM **3.37.0** and its artifacts (3.38.0 is inconsistent on Central), rewrite-recipe-bom 3.37.0 → rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, rewrite-testing-frameworks 3.44.0, rewrite-static-analysis 2.41.0, rewrite-java-dependencies 1.60.2), `org.springframework.boot:*:4.1.0`, jakarta artifacts | recipes and target BOM |
+| LLM endpoint | the in-house gateway (`config/llm-company.yml`, LangChain `ChatPostModel`), or OpenAI-compatible / Anthropic | residual fixes + recipe candidates |
 | git | any | per-attempt snapshots / revert / diff |
 
 ```bash
