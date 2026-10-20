@@ -6,6 +6,7 @@
     python scripts/e2e.py --only boot2-javax-lib,missing-artifact
     python scripts/e2e.py --expect-only           # just print what every fixture is expected to produce
     python scripts/e2e.py --only boot2,boot3 --stop-after spring --llm-provider fake
+    python scripts/e2e.py --only boot2-hystrix-command --llm-config config/llm-anthropic.yml   # real model, not the replay
 
 For each fixture it runs
     python -m sbmig.cli run fixtures/projects/<name> --config config/artifacts.local-e2e.yml
@@ -136,6 +137,8 @@ def build_command(fixture: str, args: argparse.Namespace, python: str = sys.exec
     extra_cfg = fixture_config(fixture)
     if extra_cfg is not None:
         cmd += ["--config", str(extra_cfg)]
+    if getattr(args, "llm_config", None):            # real-LLM profile LAST: overrides a fixture's replayed fake LLM
+        cmd += ["--config", str(args.llm_config)]
     cmd += ["--out", str(args.out)]
     if args.stop_after:
         cmd += ["--stop-after", args.stop_after]
@@ -898,6 +901,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--llm-provider-flag", action="store_true",
                     help="also pass --llm-provider to the CLI (only if the CLI supports the flag)")
     ap.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    ap.add_argument("--llm-config", type=Path, default=None,
+                    help="extra config appended LAST, e.g. config/llm-anthropic.yml to run a replayed fixture against a "
+                         "real model (LLM_API_KEY from the environment); expectations on llm calls may then differ")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--timeout-minutes", type=int, default=90)
     ap.add_argument("--install-libs", action="store_true",
