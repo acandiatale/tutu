@@ -82,7 +82,8 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   gateway, provider `chat_post`: plain `POST $LLM_BASE_URL` with `{model, need_orgin, messages}` + Bearer
   `LLM_API_KEY`; `sbmig llm-probe` first, `llm.response_path` when the reply is not auto-detected). Keys only from
   the environment (or a git-ignored `.env` at the repo root / `SBMIG_ENV_FILE`, read by `load_config`; existing
-  variables win); `llm.api_key_env` is the variable NAME, never the value. In a cloud session set them on the cloud
+  variables win); `llm.api_key_env` is the variable NAME, never the value. `llm.http_backend: requests` (company profile default) sends `requests.post(url, headers=,
+  json=, timeout=)` exactly and follows the Windows system proxy; `llm.verify_ssl` takes a CA bundle path. In a cloud session set them on the cloud
   environment, never in the repo.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.

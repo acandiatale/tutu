@@ -249,7 +249,14 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     if isinstance(inner, _HTTPClient):
         body = inner._body(msgs, inner.model, 64, inner.default_temperature, None)
         typer.echo("request payload: " + json.dumps(body, ensure_ascii=False)[:1500])
-        resp = inner._http.post(inner._url(), json=body, headers={**inner._headers(), **inner.extra_headers})
+        typer.echo(f"http_backend={inner.http_backend} verify_ssl={inner.verify} timeout={inner.timeout}s")
+        try:
+            resp = inner._post(inner._url(), body, {**inner._headers(), **inner.extra_headers})
+        except Exception as e:  # transport-level failure: show the class and message, the fix is usually proxy/TLS
+            typer.echo(f"TRANSPORT ERROR: {type(e).__name__}: {e}")
+            typer.echo("hints: proxy (HTTPS_PROXY / NO_PROXY, Windows system proxy → llm.http_backend: requests), "
+                       "TLS interception (llm.verify_ssl: <CA bundle path>), URL (the full endpoint)")
+            raise typer.Exit(1)
         typer.echo(f"HTTP {resp.status_code}")
         try:
             data = resp.json()

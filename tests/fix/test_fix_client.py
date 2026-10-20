@@ -363,3 +363,73 @@ def test_company_profile_loads(cfg_factory=None):
     assert c.llm.provider == "langchain" and c.llm.payload_extra == {"need_orgin": True}
     assert c.llm.langchain_model is None                 # → sbmig.llm.langchain.ChatPostModel
     assert c.llm.model == "gpt-6-luna" and c.llm.recipe_model == "gpt-6-luna" and not c.llm.payload_generation_params
+    assert c.llm.http_backend == "requests" and c.llm.verify_ssl is True
+
+
+# --------------------------------------------------------------------------- requests backend
+class _FakeRequestsResponse:
+    def __init__(self, status: int, body: dict | str, headers: dict | None = None):
+        self.status_code, self._body, self.headers = status, body, headers or {}
+        self.text = body if isinstance(body, str) else json.dumps(body)
+
+    def json(self):
+        if isinstance(self._body, str):
+            raise ValueError("not json")
+        return self._body
+
+
+def test_requests_backend_posts_exactly_like_the_company_snippet(monkeypatch):
+    import requests
+
+    calls: list[dict] = []
+
+    def fake_post(self, url, **kw):
+        calls.append({"url": url, **kw})
+        return _FakeRequestsResponse(200, {"data": {"result": {"content": "pong"}}})
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    c = ChatPostClient("http://gw.local/chat", "sk-secret", "gpt-6-luna", payload_extra={"need_orgin": True},
+                       response_path="data.result.content", http_backend="requests", timeout=42.0,
+                       sleep=lambda s: None)
+    assert c.complete(MSGS).content == "pong"
+    assert calls == [{"url": "http://gw.local/chat",
+                      "headers": {"Content-Type": "application/json", "Authorization": "Bearer sk-secret"},
+                      "json": {"model": "gpt-6-luna", "messages": [m.model_dump() for m in MSGS], "need_orgin": True},
+                      "timeout": 42.0}]
+    assert c._session.verify is True
+    c.close()
+
+
+def test_requests_backend_retries_transport_errors_and_reports_503(monkeypatch):
+    import requests
+
+    seq = [requests.ConnectionError("proxy refused"), _FakeRequestsResponse(503, "Service Unavailable"),
+           _FakeRequestsResponse(503, "Service Unavailable"), _FakeRequestsResponse(503, "Service Unavailable")]
+
+    def fake_post(self, url, **kw):
+        r = seq.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    monkeypatch.setattr(requests.Session, "post", fake_post)
+    c = ChatPostClient("http://gw.local/chat", "k", "m", http_backend="requests", max_retries=3, sleep=lambda s: None)
+    with pytest.raises(LLMError) as ei:
+        c.complete(MSGS)
+    assert ei.value.status == 503 and "Service Unavailable" in str(ei.value)
+
+
+def test_backend_and_verify_flow_from_config(cfg, monkeypatch):
+    cfg.llm.provider = "chat_post"
+    cfg.llm.base_url = "http://gw/chat"
+    cfg.llm.model = "m"
+    cfg.llm.api_key_env = "SBMIG_TEST_KEY"
+    cfg.llm.http_backend = "requests"
+    cfg.llm.verify_ssl = "/etc/ssl/corp-ca.pem"
+    monkeypatch.setenv("SBMIG_TEST_KEY", "k")
+    c = make_llm_client(cfg)
+    assert isinstance(c, ChatPostClient) and c.http_backend == "requests" and c.verify == "/etc/ssl/corp-ca.pem"
+    assert c._session.verify == "/etc/ssl/corp-ca.pem"
+    cfg.llm.http_backend = "bogus"
+    with pytest.raises(LLMConfigError, match="http_backend"):
+        make_llm_client(cfg)

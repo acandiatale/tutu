@@ -23,6 +23,9 @@ llm:
     need_orgin: true
   payload_generation_params: false     # true → also send max_tokens / temperature / stop
   response_path: null                  # e.g. data.result.content
+  http_backend: requests               # requests.post(url, headers=, json=, timeout=) — follows the Windows system proxy
+                                       # and REQUESTS_CA_BUNDLE; httpx = the default client elsewhere
+  verify_ssl: true                     # false, or a CA bundle path when the corporate proxy intercepts TLS
   timeout_seconds: 180
   max_retries: 3
   record_dir: out/llm-records          # every request/response as llm-NNNN.json (no secrets): attach when asking for help

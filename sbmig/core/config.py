@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Union, Any, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -206,6 +206,12 @@ class LLMConfig(BaseModel):
     # factory "pkg.module:attr" -> BaseChatModel (called with (cfg) or ()); None → sbmig.llm.langchain.ChatPostModel
     # built from base_url / api_key_env / model / payload_extra / response_path (same wire format as chat_post).
     langchain_model: Optional[str] = None
+    # HTTP transport for the builtin HTTP providers (openai_compatible / anthropic / chat_post / langchain's
+    # ChatPostModel): `httpx` (default) or `requests` — requests.post(url, headers=, json=, timeout=) exactly, which
+    # also follows the Windows system proxy settings and REQUESTS_CA_BUNDLE (corporate networks). `verify_ssl` is True,
+    # False, or a CA bundle path.
+    http_backend: Literal["httpx", "requests"] = "httpx"
+    verify_ssl: Union[bool, str] = True
 
 
 class FixConfig(BaseModel):

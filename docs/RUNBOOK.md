@@ -21,6 +21,10 @@ export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
 #   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
 ```
 
+HTTP 503 / connection errors from the gateway while `requests.post` works by hand: set `llm.http_backend: requests`
+(the company profile already does; it follows the Windows system proxy and `REQUESTS_CA_BUNDLE`) and, when the
+corporate proxy intercepts TLS, `llm.verify_ssl: <CA bundle path>`; `sbmig llm-probe` prints the backend, the
+transport error class and hints.
 Windows: Maven is `mvn.cmd`; sbmig resolves `build.mvn` through PATH / `MAVEN_HOME` (`shutil.which`), so `mvn` works
 when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd` and `build.java_home`.
 Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point

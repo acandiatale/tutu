@@ -96,6 +96,8 @@ class _HTTPClient:
         sleep: Callable[[float], None] = time.sleep,
         backoff_base: float = 1.0,
         backoff_max: float = 30.0,
+        http_backend: str = "httpx",
+        verify: Union[bool, str] = True,
     ):
         self.base_url = (base_url or "").strip()
         self._api_key = api_key
@@ -108,13 +110,40 @@ class _HTTPClient:
         self._sleep = sleep
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
-        self._http = httpx.Client(timeout=timeout, transport=transport)
+        self.http_backend = http_backend
+        self.verify = verify
+        self._http: Optional[httpx.Client] = None
+        self._session: Any = None
+        self._transport_errors: tuple[type[BaseException], ...] = (httpx.TimeoutException, httpx.TransportError)
+        if http_backend == "requests":
+            try:
+                import requests  # type: ignore
+            except ImportError as exc:  # pragma: no cover - requests is a declared dependency
+                raise LLMConfigError("llm.http_backend=requests needs the `requests` package") from exc
+            self._session = requests.Session()
+            self._session.verify = verify
+            self._transport_errors = (requests.RequestException,)
+        elif http_backend == "httpx":
+            self._http = httpx.Client(timeout=timeout, transport=transport, verify=verify)
+        else:
+            raise LLMConfigError(f"unknown llm.http_backend {http_backend!r} (httpx | requests)")
 
     def __repr__(self) -> str:                        # never leak the key
         return f"{type(self).__name__}(base_url={self.base_url!r}, model={self.model!r})"
 
     def close(self) -> None:
-        self._http.close()
+        if self._http is not None:
+            self._http.close()
+        if self._session is not None:
+            self._session.close()
+
+    def _post(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> Any:
+        """One POST. httpx: `Client.post(url, json=, headers=)`; requests: `Session.post(url, headers=, json=,
+        timeout=)` — the exact call shape the company's own snippet uses. Both results expose `status_code`,
+        `text`, `headers` and `json()`."""
+        if self._session is not None:
+            return self._session.post(url, headers=headers, json=body, timeout=self.timeout)
+        return self._http.post(url, json=body, headers=headers)  # type: ignore[union-attr]
 
     # subclasses
     def _url(self) -> str: ...
@@ -152,8 +181,8 @@ class _HTTPClient:
         for attempt in range(self.max_retries + 1):
             wait: Optional[float] = None
             try:
-                resp = self._http.post(url, json=body, headers=headers)
-            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                resp = self._post(url, body, headers)
+            except self._transport_errors as exc:
                 last_status, last_body = None, f"{type(exc).__name__}: {exc}"
                 log.warning("llm %s transport error (attempt %d/%d): %s", self.provider, attempt + 1,
                             self.max_retries + 1, type(exc).__name__)
@@ -578,7 +607,8 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                 f"'{llm.api_key_env}' (set it, or use llm.provider=fake)")
         common = dict(timeout=float(llm.timeout_seconds), max_retries=llm.max_retries,
                       extra_headers=llm.extra_headers, default_max_tokens=llm.max_output_tokens,
-                      default_temperature=llm.temperature, transport=transport)
+                      default_temperature=llm.temperature, transport=transport,
+                      http_backend=llm.http_backend, verify=llm.verify_ssl)
         if llm.provider == "anthropic":
             base = llm.base_url if not _unexpanded(llm.base_url) and llm.base_url != _DEFAULT_OPENAI_BASE \
                 else "https://api.anthropic.com"

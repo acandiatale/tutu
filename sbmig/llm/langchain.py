@@ -108,6 +108,8 @@ class ChatPostModel(BaseChatModel):
     max_tokens: int = 8000                       # sent only with generation_params
     temperature: float | None = 0.0           # sent only with generation_params
     transport: httpx.BaseTransport | None = Field(default=None, repr=False, exclude=True)   # tests
+    http_backend: str = "httpx"                      # httpx | requests (requests.post(url, headers=, json=, timeout=))
+    verify_ssl: bool | str = True                    # False or a CA bundle path for corporate TLS interception
 
     _client: ChatPostClient | None = PrivateAttr(default=None)
 
@@ -131,7 +133,8 @@ class ChatPostModel(BaseChatModel):
                 self.url, self.api_key.get_secret_value(), self.model, payload_extra=self.payload_extra,
                 generation_params=self.generation_params, response_path=self.response_path,
                 timeout=float(self.timeout), max_retries=self.max_retries, extra_headers=self.extra_headers,
-                default_max_tokens=self.max_tokens, default_temperature=self.temperature, transport=self.transport)
+                default_max_tokens=self.max_tokens, default_temperature=self.temperature, transport=self.transport,
+                http_backend=self.http_backend, verify=self.verify_ssl)
         return self._client
 
     def close(self) -> None:
@@ -274,6 +277,7 @@ def resolve_langchain_model(cfg: Config, *, transport: httpx.BaseTransport | Non
                          generation_params=llm.payload_generation_params, response_path=llm.response_path,
                          timeout=float(llm.timeout_seconds), max_retries=llm.max_retries,
                          extra_headers=dict(llm.extra_headers or {}), max_tokens=llm.max_output_tokens,
+                         http_backend=llm.http_backend, verify_ssl=llm.verify_ssl,
                          temperature=llm.temperature, transport=transport)
 
 

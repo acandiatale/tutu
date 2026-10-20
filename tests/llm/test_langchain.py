@@ -256,3 +256,18 @@ def test_make_llm_client_langchain_chat_post_model(cfg, monkeypatch):
     cfg.llm.model = "${LLM_MODEL}"
     with pytest.raises(LLMConfigError, match="model"):
         resolve_langchain_model(cfg)
+
+
+def test_chat_post_model_passes_backend_and_verify_to_the_http_client(monkeypatch):
+    import requests
+
+    from sbmig.llm.langchain import ChatPostModel
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(requests.Session, "post", lambda self, url, **kw: type("R", (), {
+        "status_code": 200, "headers": {}, "text": "{}", "json": lambda s: {"content": "ok"}})())
+    m = ChatPostModel(url="http://gw/chat", api_key=SecretStr("k"), model="m", http_backend="requests",
+                      verify_ssl=False)
+    c = m._http_client()
+    assert c.http_backend == "requests" and c.verify is False and c._session.verify is False
+    assert m.invoke("hi").content == "ok"
