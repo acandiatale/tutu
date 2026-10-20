@@ -33,6 +33,7 @@ from .components import profile_summary
 log = logging.getLogger("sbmig.loop")
 
 TEST_COMPILING_GOALS = ("test-compile", "package", "verify", "install", "deploy", "test")
+TEST_RUNNING_GOALS = ("test", "package", "verify", "install", "deploy")
 RESOLUTION_PREFIXES = ("parent_resolution:", "pom_invalid:", "dependency_resolution:", "plugin_resolution:")
 # fixer analysis of a transport/config failure (vs. a protocol-garbage response, which is the model's fault)
 _LLM_TRANSPORT_RE = re.compile(r"(?i)request failed|status=|\bhttp\b|timed? ?out|timeout|connect|connection|refused|"
@@ -142,6 +143,7 @@ class BuildFixLoop:
         self.credited: list[str] = []
         self.escalated: dict[str, TriageDecision] = {}
         self.test_compile_skipped = False
+        self.tests_skipped = False               # round 8: only runtime test failures left → packaged with -DskipTests
         self._profile_summary: Optional[str] = None
         # run-wide blocked state (shared by every phase of the run through the orchestrator)
         self.blocked = blocked if blocked is not None else BlockedRegistry()
@@ -256,7 +258,9 @@ class BuildFixLoop:
         assert last is not None
         if not pr.build_ok and not self.dry_run and not self.aborted:
             self._maybe_skip_test_compile(pr, phase, goal, target, last)
-        if pr.build_ok and not self.test_compile_skipped_in(pr):
+        if not pr.build_ok and not self.dry_run and not self.aborted:
+            self._maybe_skip_tests(pr, phase, goal, target, last)
+        if pr.build_ok and not self.test_compile_skipped_in(pr) and not self.tests_skipped_in(pr):
             pr.remaining_errors = []
         elif not pr.remaining_errors:
             pr.remaining_errors = list(last.errors)
@@ -420,18 +424,29 @@ class BuildFixLoop:
     def test_compile_skipped_in(pr: PhaseResult) -> bool:
         return any("test-compile-skipped" in n for n in pr.notes)
 
+    @staticmethod
+    def tests_skipped_in(pr: PhaseResult) -> bool:
+        return any("tests-skipped:" in n for n in pr.notes)
+
     # ------------------------------------------------------------------ build
     def _build(self, goal: str, target: Optional[str], label: str, phase: Phase, iteration: int,
-               skip_test_compile: bool = False) -> BuildResult:
+               skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
         module, extra = build_target_args(self.profile, target)
+        kw: dict[str, Any] = {"module": module, "label": label, "skip_test_compile": skip_test_compile}
         if extra:
-            res = self.build_runner.run(goal, module=module, extra_args=extra, label=label,
-                                        skip_test_compile=skip_test_compile)
+            kw["extra_args"] = extra
+        if skip_tests:
+            try:
+                res = self.build_runner.run(goal, **kw, skip_tests=True)
+            except TypeError:  # an older runner without the `skip_tests` option: pass -DskipTests as an argument
+                kw["extra_args"] = [*extra, "-DskipTests"]
+                res = self.build_runner.run(goal, **kw)
         else:
-            res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_test_compile)
+            res = self.build_runner.run(goal, **kw)
         self.ws.journal({"event": "build", "phase": phase.value, "iteration": iteration, "goal": goal,
                          "target": target, "extra_args": extra, "ok": res.ok, "exit_code": res.exit_code, "errors": res.error_count,
-                         "duration_s": res.duration_s, "log": res.log_path, "skip_test_compile": skip_test_compile})
+                         "duration_s": res.duration_s, "log": res.log_path, "skip_test_compile": skip_test_compile,
+                         "skip_tests": skip_tests})
         return res
 
     # ------------------------------------------------------------------ scoring
@@ -952,6 +967,38 @@ class BuildFixLoop:
             where = f"{e.file}:{e.line}" if e.file else (e.module or "?")
             self._followup(f"test sources do not compile (build passes only with -Dmaven.test.skip=true): "
                            f"{where} {e.message}")
+
+    def _maybe_skip_tests(self, pr: PhaseResult, phase: Phase, goal: str, target: Optional[str],
+                          last: BuildResult) -> None:
+        """Round 8: main code compiles and packages, only runtime test failures (TEST_FAILURE) remain — usually an
+        externalized setting or infrastructure not reachable at build time. Rebuild with -DskipTests; on success the
+        phase passes with flag `tests-skipped` and every failing test as a follow-up (and unresolved at finalize)."""
+        if not getattr(self.cfg.build, "allow_skip_tests_fallback", False):
+            return
+        if not any(g in goal.split() for g in TEST_RUNNING_GOALS):
+            return
+        if not last.errors or any(e.kind != ErrorKind.TEST_FAILURE for e in last.errors):
+            return
+        self.ws.journal({"event": "tests_fallback", "phase": phase.value, "failing": len(last.errors)})
+        res = self._build(goal, target, f"{phase.value}-skip-tests-run", phase, pr.iterations + 1, skip_tests=True)
+        pr.iterations += 1
+        pr.iteration_records.append(IterationRecord(phase=phase, iteration=pr.iterations, build_ok=res.ok,
+                                                    error_count=res.error_count,
+                                                    signatures=res.signature_multiset(), build_log=res.log_path))
+        if not res.ok:
+            pr.notes.append("tests fallback (-DskipTests) also failed")
+            return
+        pr.build_ok = True
+        self.tests_skipped = True
+        self._flag("tests-skipped")
+        pr.remaining_errors = list(last.errors)
+        pr.notes.append(f"tests-skipped: main code builds and packages, {len(last.errors)} test(s) fail at runtime "
+                        "(-DskipTests)")
+        for e in last.errors:
+            who = e.symbol or e.module or "?"
+            self._followup(f"test fails at runtime (packaged with -DskipTests): {who} — {e.message} — likely an "
+                           "externalized setting (see Handover 'Properties to set') or infrastructure not reachable "
+                           "at build time")
 
     def _flag(self, flag: str) -> None:
         if flag not in self.flags:

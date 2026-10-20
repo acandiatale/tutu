@@ -209,8 +209,10 @@ def java_level_findings(poms: list[PomInfo]) -> list[str]:
     for p in poms:
         if legacy_java_level(p.java_version):
             out.append(f"{p.path}: Java source/target level {p.java_version} cannot be compiled by JDK 21 (minimum 8); "
-                       "UpgradeToJava21 sets release 21 — sources relying on pre-Java-8 semantics (e.g. `_` or `enum` "
-                       "as identifiers) may need manual fixes")
+                       "UpgradeToJava21 sets release 21 and adds the JAXB / JAX-WS / common-annotations jars; removed "
+                       "JDK APIs (sun.misc, sun.security, com.sun.image, javax.activation) are reported by the "
+                       "jdk-removed-apis advisory and ported by the build-fix loop (`_` / `enum` identifiers are "
+                       "compile errors fixed there too)")
     return out
 
 

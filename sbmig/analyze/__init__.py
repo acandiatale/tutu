@@ -6,6 +6,7 @@ from .classifier import (classify, classify_single, deployable_services, is_libr
 from .edges import (SystemDep, detect_encoding, normalize_java_version, resolve_system_path, system_dependencies)
 from .libraries import LIBRARY_NAMES, LIBRARY_RULES, detect_libraries
 from .pom_parser import module_order, parse_poms
+from .properties import ExternalizedRules, load_rules, scan_properties
 from .source_scanner import ScanResult, scan_source_stats, scan_sources
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "LIBRARY_NAMES", "LIBRARY_RULES", "module_order", "parse_poms", "scan_sources", "scan_source_stats",
     "ScanResult", "is_library_root", "library_services", "deployable_services", "library_roots", "SystemDep",
     "detect_encoding", "normalize_java_version", "resolve_system_path", "system_dependencies",
+    "scan_properties", "load_rules", "ExternalizedRules",
 ]

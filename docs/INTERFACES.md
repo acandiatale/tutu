@@ -236,3 +236,35 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     when the tool is not Maven: flag `unsupported-build-tool:<tool>`, `aborted`, exit 3, reason in
     `manual_followups[0]`. `Workspace._detect_project_root` also descends into a single top-level folder for
     Gradle / Ant builds so the reason names the real tool.
+* 2026-10-21 (round 8 contracts — externalized-config inventory, placeholders, tests-skipped fallback):
+  * Models: `PropertyRef(key, source, file, line, default, scope, raw)`, `PropertyFinding(key, status
+    defined|defaulted|external, refs, defined_in, boot_keys, supplied_by, note)`, `PropertyInventory(findings,
+    packaged_files, profiles, filtered_resources, placeholder_files, placeholders_written, notes; .external)`.
+    `ProjectProfile.properties: PropertyInventory` (analysis: `sbmig.analyze.properties.scan_properties(ws, poms, scan,
+    rules) -> PropertyInventory`, wired by `analyze_project`), `RunReport.properties: Optional[PropertyInventory]`
+    (profile inventory + the placeholders the restructure wrote; set by `Orchestrator._step_restructure`, else copied
+    from the profile at finalize), `HandoverSummary.properties_to_set / properties_guide` (rendered rows / guide lines),
+    `RestructureResult.placeholder_files / placeholders_written`.
+  * Config: `Config.externalized: ExternalizedConfig(enabled, sentinel="__SET_ME__", write_placeholders,
+    placeholder_file="application.properties", rules_file="knowledge/config/externalized.yml", include_test_refs,
+    max_refs_per_key)`; `BuildConfig.allow_skip_tests_fallback: bool = True`.
+  * Rules YAML `knowledge/config/externalized.yml`: `jndi[]` (glob → boot_keys, `{leaf}`/`{name}` templates),
+    `context_param` (default_boot_key template + known names: skip / boot_keys), `system_property.skip`,
+    `boot_defaults`, `guide[]`. Company additions go there (invariant 2).
+  * Restructure (layout + msa_pom): appends/replaces an idempotent block between the markers
+    `# --- sbmig externalized-config` … `# --- end sbmig externalized-config` in `<boot-jar|service>/src/main/resources/
+    <placeholder_file>` (created when absent): one `key=<sentinel>` line per `boot_key` of every `external` finding
+    (JNDI / context-param mapped keys included; `boot_defaults` and rule `skip` excluded; context-param with an as-is
+    value writes that value, not the sentinel). Journal event `placeholders` {step, files, keys: <count>}.
+  * Build / loop: `BuildRunnerLike.run(..., skip_tests: bool = False)` → `-DskipTests`;
+    `BuildFixLoop._maybe_skip_tests` (mirror of `_maybe_skip_test_compile`): when `build.allow_skip_tests_fallback`,
+    the goal runs tests and only `TEST_FAILURE` errors remain → rebuild with `skip_tests=True`; on success
+    `pr.build_ok=True`, flag `tests-skipped`, `loop.tests_skipped=True` (the final verify builds with `-DskipTests`
+    too), failing tests listed as follow-ups ("packaged with -DskipTests: <test> — <message>") and as unresolved.
+    Journal event `tests_fallback`.
+  * Report: Handover gets "### Properties to set before running" (table: key | before migration | referenced at
+    (≤ max_refs_per_key, "+N more") | written as | set via) + the guide lines ("How to supply them") + the placeholder
+    file line, placed before "From here on"; rows only for `external` findings, and no block at all when no external
+    finding needs a value (rule-skipped context-params / Boot defaults alone do not count); `report.json` carries
+    `properties`; `console_summary` prints "properties to set: N". e2e `expect.properties: {external_min, external: [keys], placeholder_file_contains: [strings],
+    absent: [keys]}` evaluated by `scripts/e2e.py evaluate_properties`.

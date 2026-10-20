@@ -106,6 +106,26 @@ def test_blank_java_home_and_skip_flags(ws, cfg, fake):
     assert fake.calls[0]["env"].get("JAVA_HOME") == os.environ.get("JAVA_HOME")
 
 
+def test_skip_tests_flag(ws, cfg, fake):
+    """Round 8 tests-skipped fallback: `skip_tests=True` → -DskipTests even with build.skip_tests off; never together
+    with -Dmaven.test.skip=true (skip_test_compile wins)."""
+    cfg.build.java_home = ""
+    cfg.build.skip_tests = False
+    r = MavenRunner(ws, cfg)
+    assert "-DskipTests" not in r.command("package")
+    cmd = r.command("package", skip_tests=True)
+    assert cmd[-1] == "-DskipTests" and cmd.count("-DskipTests") == 1 and "-Dmaven.test.skip=true" not in cmd
+    both = r.command("package", skip_tests=True, skip_test_compile=True)
+    assert both[-1] == "-Dmaven.test.skip=true" and "-DskipTests" not in both
+    cfg.build.skip_tests = True                          # already on: no duplicate flag
+    assert r.command("package", skip_tests=True).count("-DskipTests") == 1
+    cfg.build.skip_tests = False
+    res = r.run("clean package", label="verify", skip_tests=True)
+    assert fake.calls[-1]["cmd"][-1] == "-DskipTests" and res.command[-1] == "-DskipTests"
+    ev = journal(ws)[-1]
+    assert ev["skip_tests"] is True and ev["skip_test_compile"] is False
+
+
 def test_module_dir_and_module_pom(ws, cfg, fake):
     r = MavenRunner(ws, cfg)
     r.run("compile", module="svc")

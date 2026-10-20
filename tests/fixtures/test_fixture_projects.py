@@ -35,7 +35,7 @@ JDK_HOMES = {
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
-             "multi-module-merge"]
+             "multi-module-merge", "legacy-external-config", "java6-legacy"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -59,6 +59,8 @@ BUILD_MATRIX = [
     ("boot2-cloud-legacy", ".", "11", ""),
     ("boot2-method-rename", ".", "11", "libs"),
     ("boot2-hystrix-command", ".", "11", ""),
+    ("legacy-external-config", ".", "8", ""),
+    ("java6-legacy", ".", "8", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -179,6 +181,16 @@ class KBExpect(BaseModel):
     recipes: list[KBRecipeExpect] = Field(default_factory=list)
 
 
+class PropertiesExpect(BaseModel):
+    """Round 8 externalized-config inventory (`scripts/e2e.py evaluate_properties`)."""
+    model_config = ConfigDict(extra="forbid")
+    external_min: int | None = Field(default=None, ge=0)
+    external: list[str] = Field(default_factory=list)
+    absent: list[str] = Field(default_factory=list)
+    written: list[str] = Field(default_factory=list)
+    placeholder_file_contains: list[str] = Field(default_factory=list)
+
+
 class Expect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: bool
@@ -199,6 +211,7 @@ class Expect(BaseModel):
     handover: HandoverExpect | None = None
     followups_contains: list[str] = Field(default_factory=list)
     kb: KBExpect | None = None
+    properties: PropertiesExpect | None = None
 
     @field_validator("flags", "forbidden_flags", "optional_bumped", "followups_contains")
     @classmethod
@@ -303,13 +316,17 @@ def test_poms_parse_and_readme(name: str):
 @pytest.mark.parametrize("name", NAMES)
 def test_post_check_paths_exist_in_fixture(name: str):
     """Every post_check names a file that exists in the as-is fixture (layout-independent `**` globs) — except
-    `module/<comp-jar|boot-jar>/pom.xml`, which the restructure phase creates (single jar → comp-jar + boot-jar)."""
+    `module/<comp-jar|boot-jar>/pom.xml`, which the restructure phase creates (single jar → comp-jar + boot-jar), and
+    the boot-jar `application.properties` that receives the externalized-config placeholders (round 8)."""
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
             if kind in ("file_exists", "file_absent"):      # describe the migrated tree, not the as-is one
                 continue
             if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
                 assert (FIXTURES / name / "pom.xml").exists()
+                continue
+            if spec["path"] == "module/boot-jar/src/main/resources/application.properties" and \
+                    (_expected(name).get("expect") or {}).get("properties"):
                 continue
             hits = list((FIXTURES / name).glob(spec["path"]))
             assert hits, f"{name}: {kind} path {spec['path']} matches nothing in the as-is fixture"
@@ -353,7 +370,7 @@ OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-l
 }
 
 
-LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
+LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
 
 
 def test_fixture_config_override_keeps_8_optionals():
@@ -651,3 +668,15 @@ def test_euckr_fails_with_utf8_platform_encoding(tmp_path: Path):
     shutil.copytree(FIXTURES / "euckr-legacy", src)
     cp = _build(src, "8", extra_env={"JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8"})
     assert cp.returncode != 0 and "unmappable character" in cp.stdout + cp.stderr
+
+
+def test_legacy_external_config_inventory_matches_expected():
+    """Round 8: the analyzer's externalized-config verdicts for the fixture equal its expected.json `externalized`."""
+    from sbmig.analyze import analyze_project
+    from sbmig.analyze.analyzer import PathView
+
+    exp = _expected("legacy-external-config")["externalized"]
+    prof = analyze_project(PathView(FIXTURES / "legacy-external-config"), _effective_cfg("legacy-external-config"))
+    by = {f.key: f.status for f in prof.properties.findings}
+    assert sorted(k for k, s in by.items() if s == "external") == sorted(exp["external"])
+    assert sorted(k for k, s in by.items() if s == "defined") == sorted(exp["defined"])

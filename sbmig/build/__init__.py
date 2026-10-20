@@ -1,7 +1,8 @@
 """sbmig.build — Maven runner, log parser and error signatures (workstream C).
 
 Public API (docs/INTERFACES.md):
-    MavenRunner(ws, cfg).run(goal, *, module=None, extra_args=(), label="", skip_test_compile=False) -> BuildResult
+    MavenRunner(ws, cfg).run(goal, *, module=None, extra_args=(), label="", skip_test_compile=False,
+                             skip_tests=False) -> BuildResult   # skip_tests → -DskipTests (tests-skipped fallback)
     parse_maven_log(text, project_root) -> list[BuildError]          (signatures filled)
     signature_for(error) -> (L1, L2)
     normalize_message(msg) -> str

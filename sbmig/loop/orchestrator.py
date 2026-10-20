@@ -396,7 +396,9 @@ class Orchestrator:
         self.ws.save_model("profile.json", profile)
         self.ws.journal({"event": "analyze", "case_type": profile.case_type.value, "poms": len(profile.poms),
                          "build_tool": profile.build_tool, "java": profile.java_version,
-                         "spring_boot": profile.spring_boot_version})
+                         "spring_boot": profile.spring_boot_version,
+                         "properties_external": len(getattr(getattr(profile, "properties", None), "external", None)
+                                                    or [])})
         report.advisories = self._evaluate_advisories(profile)
         self._timed("analyze", t)
         if profile.build_tool != "maven":
@@ -839,9 +841,14 @@ class Orchestrator:
             if (c.path, c.kept_from) not in seen:
                 seen.add((c.path, c.kept_from))
                 self.report.merge_conflicts.append(c)
+        ph_files = list(getattr(res, "placeholder_files", None) or [])
+        ph_keys = list(dict.fromkeys(getattr(res, "placeholders_written", None) or []))
+        self._merge_placeholders(ph_files, ph_keys)
+        if ph_files or ph_keys:
+            self.ws.journal({"event": "placeholders", "step": step.id, "files": ph_files, "keys": len(ph_keys)})
         summary = (f"{step.id} ({mode}): {len(res.changed_files)} file(s) changed, {res.moved_files} moved, "
                    f"{len(res.generated_files)} generated; mandatory added: {', '.join(res.mandatory_added) or '-'}; "
-                   f"optional bumped: {', '.join(res.optional_bumped) or '-'}")
+                   f"optional bumped: {', '.join(res.optional_bumped) or '-'}; placeholders: {len(ph_keys)}")
         pr.notes.append(summary)
         if merged or kept_boot or conflicts:
             differing = sum(1 for c in conflicts if not c.identical)
@@ -857,6 +864,23 @@ class Orchestrator:
             pr.notes.append(f"{step.id}: restructure failed: {res.error or 'unknown error'} → skipping the rest of "
                             "the restructure phase (verify still runs)")
         return res.ok
+
+    def _merge_placeholders(self, files: list[str], keys: list[str]) -> None:
+        """RunReport.properties = profile inventory + the placeholders every restructure step wrote (dedupe, ordered)."""
+        assert self.report is not None
+        base = self.report.properties
+        if base is None:
+            base = getattr(self.profile, "properties", None)
+        if base is None:
+            from sbmig.core.models import PropertyInventory
+            base = PropertyInventory()
+        merged_files = list(base.placeholder_files) + [f for f in files if f not in base.placeholder_files]
+        merged_keys = list(base.placeholders_written)
+        for k in keys:
+            if k not in merged_keys:
+                merged_keys.append(k)
+        self.report.properties = base.model_copy(update={"placeholder_files": merged_files,
+                                                         "placeholders_written": merged_keys})
 
     @staticmethod
     def _step_mode(step: PlanStep) -> str:
@@ -884,12 +908,23 @@ class Orchestrator:
             pr.notes.append(f"{step.id}: skipped (an earlier phase failed and loop.always_final_verify=false)")
             return False
         skip_tests = bool(self.loop and self.loop.test_compile_skipped)
+        # round 8: only runtime test failures were left → the final verify packages with -DskipTests too
+        # (skip_test_compile wins when both apply: -Dmaven.test.skip=true already implies no test run)
+        skip_run = bool(self.loop and getattr(self.loop, "tests_skipped", False)) and not skip_tests
         label = "verify" + (f"-{step.params['service']}" if step.params.get("service") else "")
         from .fixloop import build_target_args
         module, extra = build_target_args(self.profile, step.target)
         kw: dict[str, Any] = {"extra_args": extra} if extra else {}
-        res = self.build_runner.run(step.build_goal or "clean package", module=module, label=label,
-                                    skip_test_compile=skip_tests, **kw)
+        goal = step.build_goal or "clean package"
+        if skip_run:
+            try:
+                res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=False,
+                                            skip_tests=True, **kw)
+            except TypeError:  # an older runner without the `skip_tests` option
+                kw["extra_args"] = [*extra, "-DskipTests"]
+                res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=False, **kw)
+        else:
+            res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
         self._verify_results.append(res)
         assert self.report is not None
         self.report.final_build = res
@@ -901,8 +936,11 @@ class Orchestrator:
                                                     build_log=res.log_path))
         if skip_tests:
             pr.notes.append(f"{step.id}: built with -Dmaven.test.skip=true (test-compile-skipped earlier)")
+        if skip_run:
+            pr.notes.append(f"{step.id}: built with -DskipTests (tests-skipped earlier: runtime test failures only)")
         self.ws.journal({"event": "verify", "step": step.id, "target": step.target, "ok": res.ok,
-                         "errors": res.error_count, "log": res.log_path, "skip_test_compile": skip_tests})
+                         "errors": res.error_count, "log": res.log_path, "skip_test_compile": skip_tests,
+                         "skip_tests": skip_run})
         return res.ok
 
     # ------------------------------------------------------------------ kb
@@ -1007,7 +1045,7 @@ class Orchestrator:
     def _finalize_blocked(self, report: RunReport, unresolved: list[BuildError]) -> None:
         """RunReport.blocked = every item of the run (dedupe by id). After a green final build, items whose errors no
         longer show up anywhere (e.g. fixed by the optional bump / restructure) are dropped — unless they belong to
-        test sources that only build with -Dmaven.test.skip=true."""
+        test sources that only build with -Dmaven.test.skip=true, or tests that only fail at runtime (tests-skipped)."""
         items: list[BlockedItem] = []
         for it in [*self.blocked.items(), *(b for pr in report.phases for b in pr.blocked)]:
             if all(x.id != it.id for x in items):
@@ -1017,7 +1055,9 @@ class Orchestrator:
             kept: list[BlockedItem] = []
             for it in items:
                 tests_only = bool(it.errors) and all(e.kind == ErrorKind.TEST_COMPILE for e in it.errors)
-                if (tests_only and "test-compile-skipped" in report.flags) or (set(it.signatures) & still):
+                runtime_only = bool(it.errors) and all(e.kind == ErrorKind.TEST_FAILURE for e in it.errors)
+                if (tests_only and "test-compile-skipped" in report.flags) or \
+                        (runtime_only and "tests-skipped" in report.flags) or (set(it.signatures) & still):
                     kept.append(it)
                 else:
                     self.ws.journal({"event": "blocked_resolved", "id": it.id, "reason": it.reason.value,
@@ -1127,6 +1167,12 @@ class Orchestrator:
             for pr in report.phases:
                 if BuildFixLoop.test_compile_skipped_in(pr):
                     unresolved += [e for e in pr.remaining_errors if e not in unresolved]
+        if "tests-skipped" in report.flags:
+            for pr in report.phases:
+                if BuildFixLoop.tests_skipped_in(pr):
+                    unresolved += [e for e in pr.remaining_errors if e not in unresolved]
+        if report.properties is None and self.profile is not None:
+            report.properties = getattr(self.profile, "properties", None)
         try:
             self._finalize_blocked(report, unresolved)
         except Exception as e:  # never lose the report

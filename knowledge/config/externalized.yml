@@ -1,0 +1,54 @@
+# Externalized configuration rules (round 8). Loaded by sbmig.analyze.properties; company additions go here, not
+# into Python (invariant 2). Globs are fnmatch; the first matching rule wins.
+version: 1
+
+# JNDI names looked up by the code / XML (java:comp/env/...). Embedded Tomcat has no JNDI: the lookup must become
+# Boot properties. `boot_keys` are written as placeholders; `{leaf}` = last path segment.
+jndi:
+  - match: "java:comp/env/jdbc/*"
+    boot_keys: [spring.datasource.url, spring.datasource.username, spring.datasource.password,
+                spring.datasource.driver-class-name]
+    note: "JNDI DataSource {name} → spring.datasource.* (one DataSource assumed; several → spring.datasource.<n>.* + @Bean)"
+  - match: "java:comp/env/jms/*"
+    boot_keys: []
+    note: "JNDI JMS {name} → broker starter properties (spring.activemq.* / spring.artemis.*), manual"
+  - match: "java:comp/env/mail/*"
+    boot_keys: [spring.mail.host, spring.mail.port, spring.mail.username, spring.mail.password]
+    note: "JNDI mail session {name} → spring.mail.*"
+  - match: "java:comp/env/*"
+    boot_keys: ["{leaf}"]
+    note: "JNDI <Environment> entry {name} → property {leaf} (set it via environment / -D)"
+
+# web.xml <context-param>: embedded Tomcat does not read web.xml. Unknown names become
+# server.servlet.context-parameters.<name> with the as-is value; known names are mapped or skipped.
+context_param:
+  default_boot_key: "server.servlet.context-parameters.{name}"
+  known:
+    contextConfigLocation: {skip: true, note: "Spring XML config is imported via @ImportResource (legacy-config/)"}
+    log4jConfigLocation: {skip: true, note: "log4j 1 configuration → logback / log4j2 (see advisories)"}
+    webAppRootKey: {skip: true, note: "WebAppRootListener is not used by embedded Tomcat"}
+    log4jRefreshInterval: {skip: true, note: "Log4jConfigListener (log4j 1) is gone"}
+    log4jExposeWebAppRoot: {skip: true, note: "Log4jConfigListener (log4j 1) is gone"}
+    logbackConfigLocation: {skip: true, note: "Boot configures logback itself (logging.config)"}
+    contextClass: {skip: true, note: "AnnotationConfigWebApplicationContext is created by Boot"}
+    contextInitializerClasses: {skip: true, note: "register the initializers via SpringApplication / spring.factories"}
+    locatorFactorySelector: {skip: true, note: "EJB-era parent context, not used by Boot"}
+    parentContextKey: {skip: true, note: "EJB-era parent context, not used by Boot"}
+    spring.profiles.active: {boot_keys: [spring.profiles.active], note: "set SPRING_PROFILES_ACTIVE instead of web.xml"}
+    spring.profiles.default: {boot_keys: [spring.profiles.default]}
+
+# System.getProperty(...) keys: container-provided ones are skipped (no placeholder), the rest are external.
+system_property:
+  skip: [catalina.home, catalina.base, user.dir, user.home, java.io.tmpdir, file.separator, line.separator,
+         os.name, java.version, file.encoding, user.name]
+
+# Keys never worth a placeholder (Boot has a working default). Still listed in the Handover as "Boot default".
+boot_defaults: [server.port, server.servlet.context-path, spring.application.name]
+
+# Shown in the Handover under the properties table (Korean, the owners' language).
+guide:
+  - "값 공급 순서(높은 것이 이김): 커맨드라인 -D / 환경변수 / 실행 디렉터리의 application.properties·config/ / --spring.config.additional-location / 패키지 안 application.properties(placeholder)."
+  - "환경변수 표기: 점은 밑줄, 대문자 — db.url → DB_URL, spring.datasource.url → SPRING_DATASOURCE_URL."
+  - "프로파일: 외장 Tomcat의 -Dspring.profiles.active 는 SPRING_PROFILES_ACTIVE 환경변수로."
+  - "JNDI DataSource 는 사라집니다: spring.datasource.url/username/password/driver-class-name 을 설정하세요."
+  - "placeholder 값 __SET_ME__ 가 남아 있으면 기동 시 그 값으로 동작합니다 — 배포 전 grep __SET_ME__ 로 확인하세요."

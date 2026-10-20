@@ -100,7 +100,7 @@ Outputs in `out/<run_id>/`:
 3. `git -C out/<run>/project log --oneline` shows the attempt chain; `reverted` attempts are gone from the tree but in the report.
 4. Typical causes: Nexus missing an artifact (DEPENDENCY_RESOLUTION cluster → fix proxy, rerun), in-house parent not managing a version (`'dependencies.dependency.version' is missing` → add to `optional` with a version), LLM budget exhausted (`loop.max_llm_calls`).
 
-## 2.5 Reading the Handover (versions replaced, libraries needing attention, from here on)
+## 2.5 Reading the Handover (versions replaced, libraries needing attention, properties to set, from here on)
 The first section of every `report.md` is `## Handover — what we replaced, what is yours` (`report.json`:
 `handover` + `advisories`). It is written for the owning team, green run or not, and compresses the run into what
 they must know before they take the project back. Reference run: the fixture `boot2-cloud-legacy`
@@ -119,6 +119,15 @@ they must know before they take the project back. Reference run: the fixture `bo
   whether they came from the Boot 4 umbrella chain = `plan` or were added for the advisory = `advisory`), outcome
   on the final tree (`replaced` = the old artifact is gone and the replacement present, `still-present`,
   `unknown`), what you do next, docs links.
+* **`### Properties to set before running`** (round 8) — settings the code reads that no packaged resource defines.
+  Before the migration the external Tomcat supplied them (JNDI `<Resource>` / `<Environment>` in `context.xml`,
+  web.xml `<context-param>`, `-D` flags in `setenv.sh`, `$CATALINA_BASE/conf/*.properties`); the executable boot-jar
+  reads none of that. One row per key: `key`, `before migration` (the as-is supply route: `jndi`, `context-param`,
+  `system-property`, `property-source:file`, `unknown`), `referenced at` (first `externalized.max_refs_per_key`
+  places, `+N more`), `written as` (the placeholder lines sbmig wrote, or the rule note when nothing was written,
+  e.g. `contextConfigLocation` → `@ImportResource`), `set via` (environment variable name in relaxed-binding form,
+  `-D<key>` for `System.getProperty` keys, the variable itself for `System.getenv`). Below: the supply guide from
+  `knowledge/config/externalized.yml` and the packaged placeholder file.
 * **`### From here on, your team`** — a numbered, deduplicated to-do list (capped by `advisories.max_from_here`):
   advisories not replaced, replaced-but-verify items (e.g. "check `/swagger-ui/index.html`", tracing sampling),
   carried-over pins, pointers to blocked / unresolved items further down, and the remaining manual follow-ups.
@@ -129,6 +138,27 @@ hystrix still in the pom is exit 0 with hystrix listed under "From here on". How
 numbered list top-down in the migrated branch, re-run `mvn clean package` (or `sbmig run` again — replaced
 libraries drop out of the list), and only then deploy to a test environment; runtime behaviour was never verified
 by sbmig.
+
+### Externalized settings — what the owners do before the first start
+1. **Find the placeholders**: `module/boot-jar/src/main/resources/application.properties` (each MSA service: its own
+   `src/main/resources/application.properties`) has a block between `# --- sbmig externalized-config` and
+   `# --- end sbmig externalized-config`, one `key=__SET_ME__` per key, each with a `# from …` comment naming where
+   the code reads it. JNDI DataSources became `spring.datasource.url|username|password|driver-class-name`; a web.xml
+   `<context-param>` became `server.servlet.context-parameters.<name>` **with its as-is value** (no sentinel).
+2. **Supply the values outside the jar** (higher wins): `-Dkey=value` on the java command line, environment variables
+   (`spring.datasource.url` → `SPRING_DATASOURCE_URL`, dots and dashes → underscores, upper case), an
+   `application.properties` / `config/application.properties` next to the jar or
+   `--spring.config.additional-location=…`. Keys read with `System.getProperty` only see `-D`. Do not commit real
+   URLs or passwords into the packaged file.
+3. **Check before deploying**: `grep -rn __SET_ME__ module/*/src/main/resources` on the source tree, or
+   `unzip -p module/boot-jar/target/*.jar BOOT-INF/classes/application.properties | grep __SET_ME__` on the
+   artifact — any hit left without an external override starts the app with the literal `__SET_ME__`.
+4. **`tests-skipped` flag**: main code compiles and packages, but some tests failed at runtime (often a test that
+   loads the Spring context and needs one of these keys); sbmig packaged the jar with `-DskipTests` and lists every
+   failing test under Manual follow-ups / Unresolved errors. Give those tests test values
+   (`@SpringBootTest(properties = …)` / `src/test/resources/application.properties`) and re-run
+   `mvn clean package` without `-DskipTests` before relying on CI. `build.allow_skip_tests_fallback: false` turns the
+   fallback off (the run then reports the failing tests instead of packaging).
 
 ## 3. Knowledge base workflow (no DB — files in `kb/`, keep them in git or sync as zip)
 * Every successful LLM fix becomes `kb/cases/YYYY-MM/<id>.json`. Mechanical ones also produce `kb/recipes/candidates/<name>.yml`.

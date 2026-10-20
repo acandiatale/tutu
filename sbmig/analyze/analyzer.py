@@ -26,6 +26,7 @@ from .edges import (encoding_findings, java_level_findings, language_findings, n
                     system_dep_findings, system_dependencies)
 from .libraries import detect_libraries
 from .pom_parser import WorkspaceView, module_order, parse_poms
+from .properties import load_rules, scan_properties
 from .source_scanner import scan_sources
 
 log = logging.getLogger("sbmig.analyze")
@@ -174,6 +175,10 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         fingerprint=ProjectProfile.make_fingerprint([p.path for p in poms],
                                                     root_pom.artifact_id if root_pom else root.name),
     )
+    if cfg.externalized.enabled:
+        # round 8: settings the code reads that only the external container supplied (JNDI, context-param, -D …)
+        rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))
+        profile.properties = scan_properties(ws, poms, scan, rules, cfg)
     log.info("analyzed %s: case=%s confidence=%.2f poms=%d java=%d", name, case.value, confidence,
              len(poms), source.java_files)
     return profile

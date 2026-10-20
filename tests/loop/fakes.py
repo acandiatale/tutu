@@ -33,8 +33,10 @@ class FakeBuildRunner:
         self.fn = fn
         self.calls: list[dict] = []
 
-    def run(self, goal, *, module=None, extra_args=(), label="", skip_test_compile=False) -> BuildResult:
+    def run(self, goal, *, module=None, extra_args=(), label="", skip_test_compile=False,
+            skip_tests=False) -> BuildResult:
         call = {"goal": goal, "module": module, "label": label, "skip_test_compile": skip_test_compile,
+                "skip_tests": skip_tests,
                 "extra_args": list(extra_args),
                 "head": self.ws.head() if (self.ws.root / ".git").exists() else None}
         self.calls.append(call)

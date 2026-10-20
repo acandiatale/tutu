@@ -40,7 +40,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-20, rounds 5–6, company-convention round, rounds 7a–7b complete (`main`)
+## Status — 2026-10-21, rounds 5–8b complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
@@ -58,6 +58,16 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   `<run dir>/merge-conflicts/`, Handover "Merge conflicts"), `merge_collision: fail` restores the hard error;
   Gradle / Ant / no-build projects are rejected at intake (`unsupported-build-tool:<tool>`, exit 3) before any
   Maven call. Fixture `multi-module-merge` (16 fixtures), e2e PASS. 991 offline tests green.
+- Round 8 (2026-10-21): externalized configuration — `sbmig.analyze.properties` inventories every key the code reads
+  (`@Value`, `Environment`, `System.getProperty`, XML `${…}`, web.xml context-param, JNDI, `@PropertySource`) against
+  the packaged resources (`defined | defaulted | external`); restructure writes `__SET_ME__` placeholders for the
+  external keys into boot-jar `application.properties` (rules: `knowledge/config/externalized.yml`, JNDI →
+  `spring.datasource.*`, context-param → `server.servlet.context-parameters.*`, `-D`-only keys listed but not
+  written); Handover "Properties to set before running" + supply guide; `-DskipTests` fallback when only runtime
+  test failures remain (flag `tests-skipped`; note `build.skip_tests: true` is the default). Round 8b: Java 1.6/1.7
+  as-is projects — recipe coverage verified in the pinned jars, advisory `jdk-removed-apis` (+ fix-loop note),
+  fixture `java6-legacy`. Fixtures `legacy-external-config`, `java6-legacy` (18 fixtures), e2e PASS. 1,072 offline
+  tests green.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -71,6 +81,12 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   rewrites); hystrix is `recipe` since round 6, with the LLM (advisory-guided) handling programmatic subclasses.
   Advisory hints only exist for advisories with a `## fix-loop: <library>` note section (today: hystrix).
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
+- `build.skip_tests: true` is the default: builds never run unit tests, so missing externalized values cannot
+  break the build and the `tests-skipped` fallback (round 8) only acts where a company config sets
+  `skip_tests: false`. Decide whether the fleet should run tests (slower, catches more before runtime).
+- After the Jakarta step JAXB stays pinned at `jakarta.xml.bind-api` 3.0.1 / `jaxb-runtime` 3.0.2 (round 8b,
+  also `pure-java`) instead of the Boot-managed versions; a `RemoveRedundantDependencyVersions` pass after the
+  spring rewrite would drop the pins.
 - LLM-unavailable (L5) is permanent for the run after two consecutive transport failures; a cool-down would suit
   short gateway hiccups better. Handover `llm_fixed_files` keep pre-restructure paths. `RunManager.runs` is
   never pruned (restart the server daily).
@@ -93,7 +109,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~2 min): `python -m pytest -m "not integration"` → 991 passed, 26 deselected
+- Fast check (Python only, ~2 min): `python -m pytest -m "not integration"` → 1,072 passed, 28 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

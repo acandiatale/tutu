@@ -1,0 +1,4 @@
+{
+  "note": "scripted LLM response 2/2 (KB harvest, role recipe_candidate for the Codec.java case): NONE — a sun.misc → java.util.Base64 port is not a declarative recipe (OpenRewrite UseJavaUtilBase64 needs the sun.misc types on the classpath, which JDK 21 does not have)",
+  "response": "NONE"
+}

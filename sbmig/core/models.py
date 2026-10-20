@@ -196,6 +196,53 @@ class SourceStats(BaseModel):
     lombok: bool = False
 
 
+# ---------------------------------------------------------------------------
+# Externalized configuration (round 8): settings the code reads that are defined in no packaged resource
+# ---------------------------------------------------------------------------
+PropertyRefSource = Literal["value-annotation", "configuration-properties", "environment", "system-property",
+                            "system-env", "xml-placeholder", "context-param", "jndi", "property-source", "profiles"]
+PropertyStatus = Literal["defined", "defaulted", "external"]
+
+
+class PropertyRef(BaseModel):
+    """One place where the as-is code / XML reads an externalized setting."""
+    key: str                                       # the key as written: "db.url", "java:comp/env/jdbc/x", "app.*" (prefix)
+    source: PropertyRefSource
+    file: str                                      # repo-relative path at analysis time
+    line: Optional[int] = None
+    default: Optional[str] = None                  # `${key:default}` / System.getProperty(k, default) → "default"
+    scope: Literal["main", "test"] = "main"
+    raw: str = ""                                  # matched text, sanitized, ≤ 200 chars
+
+
+class PropertyFinding(BaseModel):
+    """One key (or prefix) with its verdict. `boot_key` is what sbmig writes into application.properties when it
+    differs from `key` (JNDI DataSource → spring.datasource.*, context-param → server.servlet.context-parameters.*)."""
+    key: str
+    status: PropertyStatus                         # defined in a packaged resource | code default only | nowhere
+    refs: list[PropertyRef] = Field(default_factory=list)
+    defined_in: list[str] = Field(default_factory=list)     # packaged files (profile files included) defining it
+    boot_keys: list[str] = Field(default_factory=list)      # keys to write for this finding (default: [key])
+    supplied_by: Optional[str] = None              # as-is supply route when detectable: "jndi" | "context-param" |
+                                                   # "system-property" | "property-source:file" | None (unknown)
+    note: str = ""                                 # rule note from knowledge/config/externalized.yml
+
+
+class PropertyInventory(BaseModel):
+    """ProjectProfile.properties (analysis) and RunReport.properties (after restructure wrote the placeholders)."""
+    findings: list[PropertyFinding] = Field(default_factory=list)
+    packaged_files: list[str] = Field(default_factory=list)     # resource files scanned for definitions
+    profiles: list[str] = Field(default_factory=list)           # application-<p>.* names + spring.profiles.active refs
+    filtered_resources: list[str] = Field(default_factory=list) # Maven <filtering>true</filtering> resource dirs (pom props)
+    placeholder_files: list[str] = Field(default_factory=list)  # files that received the sbmig placeholder block
+    placeholders_written: list[str] = Field(default_factory=list)   # keys written with the sentinel
+    notes: list[str] = Field(default_factory=list)
+
+    @property
+    def external(self) -> list[PropertyFinding]:
+        return [f for f in self.findings if f.status == "external"]
+
+
 class LibraryUsage(BaseModel):
     name: str                       # normalized: lombok, mapstruct, querydsl, spring-security, springdoc, swagger2,
                                     # mybatis, jpa, hibernate, feign, kafka, redis, jackson, junit4, junit5, mockito, ...
@@ -236,6 +283,7 @@ class ProjectProfile(BaseModel):
     mandatory_already_present: list[GAV] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     fingerprint: str = ""
+    properties: PropertyInventory = Field(default_factory=PropertyInventory)   # externalized-config inventory (round 8)
 
     def has_library(self, name: str) -> bool:
         return any(lib.name == name for lib in self.libraries)
@@ -744,6 +792,8 @@ class HandoverSummary(BaseModel):
     merge_conflicts: list[str] = Field(default_factory=list)     # rendered lines, one per RunReport.merge_conflicts
                                                                  # entry whose copies differed (identical ones are
                                                                  # summarized in one line)
+    properties_to_set: list[str] = Field(default_factory=list)   # rendered rows: one per external key (round 8)
+    properties_guide: list[str] = Field(default_factory=list)    # how to supply values (knowledge/config/externalized.yml)
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +818,7 @@ class RunReport(BaseModel):
     advisories: list[AdvisoryFinding] = Field(default_factory=list)   # library advisories (EOL / unmanaged libs)
     handover: Optional[HandoverSummary] = None                   # versions replaced + "from here on, your team"
     merge_conflicts: list[MergeConflict] = Field(default_factory=list)   # from the layout restructure (merge policy)
+    properties: Optional[PropertyInventory] = None               # profile inventory + placeholders written (round 8)
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)

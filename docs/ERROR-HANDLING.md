@@ -47,6 +47,7 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
 | L5 LLM unavailable | HTTP errors after retries / missing key / unparseable 200 (not JSON, no reply text, bad `LLM_RESPONSE_PATH`) — twice in a row; a 400/413/422 (the request rejected for its content) is the prompt's fault and never counts | B(llm_unavailable) for LLM-only clusters; handlers/recipes still run; report says the LLM was unavailable | loop unit |
 | L6 budget exhausted | `max_llm_calls` / `max_total_minutes` | remaining LLM-only clusters → B(budget_exhausted); verify + report always run | loop unit |
 | L7 test-compile only | only TEST_COMPILE clusters remain | `-Dmaven.test.skip=true` fallback, flag `test-compile-skipped`, errors listed as follow-ups (exists) | e2e |
+| L7b runtime test failures only | only TEST_FAILURE clusters remain after the fix rounds | `-DskipTests` fallback, flag `tests-skipped`, failing tests as follow-ups + unresolved; the final verify also skips tests | loop unit |
 | L9 internal error after planning | an exception inside a phase (missing component, bug) | run flagged `aborted` (exit 3) **and the final `mvn clean package` is still attempted** (`_final_build_after_abort`; not for dry runs or deliberate aborts such as no Maven / unresolvable parent), so `report.md` lists the real unresolved errors | loop unit |
 | L8 pre-existing breakage | the as-is project does not compile on its own JDK | we never build as-is; errors appear after JDK21 — reported like any other; `--baseline` (optional) records the as-is build result for comparison | runbook |
 
@@ -61,6 +62,7 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
 | S5 non-standard module layout (`<module>../x</module>`, in-repo parent at odd path) | wrap policy keeps relative paths consistent; else abort restructure (ok=False) and still verify | unit |
 | S6 optional artifact only transitive | not bumped (only declared usage counts) — documented | — |
 | S7 as-is project is already a multi-module WAR + JAR | wrap policy; WAR → jar follow-up | unit |
+| S8 Java source level ≤ 1.7 (1.5 / 1.6 / 1.7) | JDK 21 cannot compile it (minimum 8); the as-is tree is never built | analyzer warning (`java_level_findings`); `UpgradeToJava21` sets release 21 (its `Java8toJava11` part adds the JAXB / JAX-WS / common-annotations jars, renames `_` identifiers, `UseJavaUtilBase64` where types resolve); restructure strips `source/target`; removed JDK APIs (`sun.misc`, `sun.security`, `com.sun.image`, `javax.activation`) → advisory `jdk-removed-apis` (guide) + `## fix-loop: jdk-removed-apis` hint for the LLM; `_` / `enum` identifiers left over are compile errors fixed by the LLM | `java6-legacy` (success, 1 replayed LLM fix) + analyze/advisory unit |
 
 ## 5. Report sections produced for the above
 * **Handover — what we replaced, what is yours** (first section of `report.md`, `report.json` `handover` +
@@ -70,7 +72,7 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
   unresolved, manual follow-ups). Written for every run, green or not.
 * **Blocked — needs human/library action**: one row per `BlockedItem` (reason, artifact/owner class, required vs found type, files, suggestion, attempts made).
 * **Unresolved errors**: everything else that still fails.
-* **Manual follow-ups** and **flags** (`test-compile-skipped`, `enforcer-skipped`, `werror-removed`, `source-encoding-set:cp949`, `stopped-after-…`).
+* **Manual follow-ups** and **flags** (`test-compile-skipped`, `tests-skipped`, `enforcer-skipped`, `werror-removed`, `source-encoding-set:cp949`, `stopped-after-…`).
 * Exit code: 0 success, 2 finished with blocked/unresolved, 3 aborted (bad input / parent not resolvable / no Maven).
   Advisories and carried-over pins never change it.
 
@@ -96,6 +98,7 @@ phase). **There is no block policy** — no advisory ever fails a build or chang
 | `log4j1` | eol | `guide` | remove `log4j:log4j`, log via SLF4J, convert `log4j.properties` to `logback-spring.xml` (`log4j-1.2-api` only as a temporary bridge) | Logback (Boot default) or Log4j 2 |
 | `commons-lang2` | eol | `guide` | `org.apache.commons.lang.*` → `org.apache.commons.lang3.*` (`StringEscapeUtils` → commons-text), drop `commons-lang:commons-lang` | `org.apache.commons:commons-lang3` |
 | `httpclient4` | superseded | `guide` (Framework 7's `HttpComponentsClientHttpRequestFactory` needs HttpClient 5) | move `org.apache.http.*` to `org.apache.hc.client5`/`hc.core5` (or `RestClient`), drop the explicit 4.x version, re-test timeouts / pooling / TLS | `org.apache.httpcomponents.client5:httpclient5` |
+| `jdk-removed-apis` | incompatible | `guide`: detected from imports (`sun.misc`, `sun.security`, `com.sun.image`, `javax.activation`); the matching jdk21 compile cluster gets the porting hint, so the LLM ports the code | review the ported calls (`java.util.Base64` line breaks, `Unsafe` → VarHandle later, `Thread.stop` → interrupts) | `java.util.Base64`, `javax.imageio`, `jakarta.*` API jars |
 
 Reference run: fixture `boot2-cloud-legacy` (springfox replaced, sleuth replaced, Spring Cloud train replaced,
 hystrix still-present → Resilience4j in "From here on").

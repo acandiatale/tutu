@@ -1,0 +1,131 @@
+{
+  "case_type": "pure_java",
+  "java_version": "1.6",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": [
+    "junit4",
+    "jaxb",
+    "jdk-removed-apis"
+  ],
+  "optional_artifacts_in_use": [
+    "org.apache.commons:commons-lang3"
+  ],
+  "main_classes": [],
+  "catalog": [
+    "S8"
+  ],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 2,
+    "blocked": [],
+    "unresolved_max": 0,
+    "optional_bumped": [
+      "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$"
+    ],
+    "journal_events": [
+      {
+        "event": "llm_fix",
+        "advisory_hints": 1
+      },
+      {
+        "event": "attempt",
+        "phase": "jdk21",
+        "attempt": "jdk21-1-1",
+        "decision": "llm_fix",
+        "applied": true,
+        "advisory_ids": [
+          "jdk-removed-apis"
+        ]
+      },
+      {
+        "event": "attempt_scored",
+        "phase": "jdk21",
+        "attempt": "jdk21-1-1",
+        "outcome": "build_ok",
+        "cluster_resolved": true
+      }
+    ],
+    "advisories": [
+      {
+        "id": "jdk-removed-apis",
+        "policy": "guide",
+        "outcome": "replaced"
+      }
+    ],
+    "advisories_exact": true,
+    "handover": {
+      "java_before": "1.6",
+      "java_after": "21",
+      "from_here_contains": [
+        "regex:code rewritten by the LLM for jdk-removed-apis: src/main/java/com/example/legacy/util/Codec\\.java — .* — review these changes \\(changes\\.patch, attempts table\\)"
+      ],
+      "added_contains": [
+        "jakarta.xml.bind:jakarta.xml.bind-api",
+        "org.glassfish.jaxb:jaxb-runtime"
+      ],
+      "removed_contains": [
+        "junit:junit"
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-java6-legacy",
+      "harvest_candidates_min": 0
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/legacy/util/Codec.java",
+          "contains": "java.util.Base64",
+          "not_contains": "import sun.misc"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/legacy/util/Codec.java",
+          "contains": "Base64.getMimeDecoder().decode(base64)",
+          "not_contains": "new BASE64Decoder()"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/legacy/util/Dates.java",
+          "contains": "import jakarta.xml.bind.DatatypeConverter;",
+          "not_contains": "javax.xml.bind"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "jakarta.xml.bind:jakarta.xml.bind-api",
+            "org.glassfish.jaxb:jaxb-runtime"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "**/pom.xml",
+          "artifacts": [
+            "javax.xml.bind:jaxb-api",
+            "junit:junit"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/pom.xml",
+          "not_contains": "<source>1.6</source>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/pom.xml",
+          "not_contains": "<target>1.6</target>"
+        }
+      }
+    ]
+  }
+}

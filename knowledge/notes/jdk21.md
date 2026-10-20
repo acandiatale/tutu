@@ -47,6 +47,20 @@ Old pre-jakarta `javax.xml.bind:jaxb-api` 2.3 still works on JDK 21 but conflict
   javassist, PowerMock) → upgrade the lib; last resort surefire `<argLine>--add-opens java.base/java.lang=ALL-UNNAMED</argLine>`
   (+ `// MIGRATION-TODO` for runtime JVM flags).
 
+## fix-loop: jdk-removed-apis
+Pre-Java-8 code on JDK 21 (`--release 21` hides `sun.*`): port the call, never re-add a flag or an old JDK.
+- `sun.misc.BASE64Encoder().encode(b)` → `java.util.Base64.getMimeEncoder().encodeToString(b)` only when callers
+  depend on the 76-char line breaks, otherwise `Base64.getEncoder().encodeToString(b)`;
+  `new BASE64Decoder().decodeBuffer(s)` → `Base64.getMimeDecoder().decode(s)` (tolerates line breaks; drop the
+  `IOException` from `throws`/catch only if nothing else throws it — keep public signatures).
+- `sun.misc.Unsafe` compiles (jdk.unsupported): leave it, add `// MIGRATION-TODO: Unsafe → VarHandle`.
+- `javax.xml.bind.*`: the jdk21 recipe adds `jakarta.xml.bind:jakarta.xml.bind-api` + `org.glassfish.jaxb:jaxb-runtime`;
+  if it is still missing, add those (Boot-managed, no version) — do not hand-write a date/base64 parser.
+  `DatatypeConverter.printBase64Binary/parseBase64Binary` → `java.util.Base64`.
+- `javax.annotation.PostConstruct/PreDestroy/Resource` → `jakarta.annotation-api`; `javax.activation` →
+  `jakarta.activation:jakarta.activation-api`; `com.sun.image.codec.jpeg` → `javax.imageio.ImageIO`.
+- `_` as identifier → rename (`ignored`, `unused`); `Thread.stop/suspend/resume` → interrupt + flag.
+
 ## Removed / changed APIs
 - Nashorn (`jdk.nashorn.*`, `ScriptEngineManager().getEngineByName("nashorn")` returns null) removed in 15 →
   `org.openjdk.nashorn:nashorn-core:15.4` (same engine name) or GraalJS.

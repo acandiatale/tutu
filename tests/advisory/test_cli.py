@@ -28,7 +28,7 @@ def test_list_show_check_on_the_repo_file():
     r = runner.invoke(advisories_cli, ["show", "nope"])
     assert r.exit_code == 1
     r = runner.invoke(advisories_cli, ["check"])
-    assert r.exit_code == 0 and "advisories OK: 11" in r.output
+    assert r.exit_code == 0 and "advisories OK: 12" in r.output
 
 
 def test_config_override_and_failing_check(tmp_path: Path):

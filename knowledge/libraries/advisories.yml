@@ -222,3 +222,30 @@ advisories:
       httpclient 4.x version and re-test timeouts, connection pooling and TLS settings.
     docs:
       - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/
+
+  # ------------------------------------------------------------------ JDK-internal / removed JDK APIs (pre-Java-8 code)
+  - id: jdk-removed-apis
+    library: jdk-removed-apis
+    status: incompatible
+    title: JDK-internal or removed JDK APIs (sun.misc, sun.security, com.sun.image, javax.activation)
+    summary: >-
+      The as-is code imports JDK-internal packages or Java EE modules that JDK 11 removed (JEP 320) or JDK 17
+      encapsulated (JEP 403). javac 21 with --release 21 does not see them. UpgradeToJava21 (Java8toJava11) adds the
+      JAXB / JAX-WS / common-annotations dependencies and rewrites what it can resolve (UseJavaUtilBase64,
+      RenameUnderscoreIdentifier, Thread.stop/destroy); code whose types no longer resolve on JDK 21 (typically
+      sun.misc.BASE64Encoder/Decoder) is ported by the LLM in the build-fix loop with this guidance.
+    replacement: java.util.Base64 / javax.imageio / java.security, jakarta.* API jars (JDK replacements)
+    replacement_version: JDK 21 (jakarta.xml.bind-api, jakarta.annotation-api, jakarta.activation-api are Boot-managed)
+    policy: guide
+    followup: >-
+      Review the ported JDK API calls: sun.misc.BASE64Encoder/Decoder → java.util.Base64 (MIME line breaks:
+      Base64.getMimeEncoder()); sun.misc.Unsafe still compiles (jdk.unsupported) — keep it, but plan VarHandle / FFM;
+      JAXB needs jakarta.xml.bind:jakarta.xml.bind-api plus runtime org.glassfish.jaxb:jaxb-runtime (Boot 4 manages
+      both); javax.annotation.* → jakarta.annotation:jakarta.annotation-api; javax.activation →
+      jakarta.activation-api; `_` is no longer an identifier (renamed); Thread.stop/suspend/resume throw
+      UnsupportedOperationException — use interrupt-based cancellation; com.sun.image.codec.jpeg → javax.imageio.ImageIO.
+    docs:
+      - https://openjdk.org/jeps/320
+      - https://openjdk.org/jeps/403
+      - https://docs.openrewrite.org/recipes/java/migrate/java8tojava11
+    notes: knowledge/notes/jdk21.md

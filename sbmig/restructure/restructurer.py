@@ -55,6 +55,21 @@ FALLBACK_PACKAGE = "com.company.app"
 BUILD_TO_COMP = ("sourceDirectory", "scriptSourceDirectory", "testSourceDirectory", "resources", "testResources",
                  "filters")
 
+PLACEHOLDER_BEGIN = "# --- sbmig externalized-config"
+PLACEHOLDER_END = "# --- end sbmig externalized-config"
+PLACEHOLDER_HEADER = (
+    PLACEHOLDER_BEGIN + ": keys the code reads that no packaged resource defined.",
+    "# --- Before the migration they came from the container (JNDI, web.xml context-param, -D, catalina.properties).",
+    "# --- Values are placeholders: supply each one via environment (db.url → DB_URL), an external "
+    "application.properties or -D.",
+)
+PLACEHOLDER_SOURCE_LABELS = {
+    "value-annotation": "@Value", "configuration-properties": "@ConfigurationProperties",
+    "environment": "Environment.getProperty", "system-property": "System.getProperty", "system-env": "System.getenv",
+    "xml-placeholder": "XML placeholder", "context-param": "web.xml context-param", "jndi": "JNDI",
+    "property-source": "@PropertySource", "profiles": "spring.profiles",
+}
+
 WEB_LAYER_RE = re.compile(
     r"^\s*@(?:org\.springframework\.\S+\.)?(?:Controller|RestController|ControllerAdvice|RestControllerAdvice|"
     r"Configuration)\b", re.MULTILINE)
@@ -235,6 +250,8 @@ class Restructurer:
                 c.note(f"already restructured but {root_rel} does not inherit {c.cfg.artifacts.parent.key}; "
                        "parent left unchanged")
             self._all_poms_pass(c, java_fix=False)
+            self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
+            self._placeholder_followup(c)
             c.commit("restructure: optional artifact versions / cleanup (already restructured)")
             return
         parent = root.get_parent()
@@ -259,6 +276,9 @@ class Restructurer:
                 self._wrap(c, root, mods, coords)
         else:
             self._single(c, root, coords)
+        # single / merge (generated or kept boot module) / wrap: the boot-jar holds the runtime configuration
+        self._write_placeholders(c, f"{c.p(L.module_dir, L.boot_module)}/src/main/resources")
+        self._placeholder_followup(c)
         self._all_poms_pass(c, java_fix=False)
         c.commit("restructure: optional artifact versions / cleanup")
 
@@ -822,6 +842,106 @@ class Restructurer:
                     out.append(f"{res_dir}/{sub + '/' if sub else ''}{f.name}")
         return out
 
+    # ------------------------------------------------------------------ externalized-config placeholders (round 8)
+    def _placeholder_entries(self, c: _Ctx, under: str | None = None,
+                             others: tuple[str, ...] = ()) -> list[tuple[str, str, str]]:
+        """(boot_key, value, comment) for every `external` finding, deduped by key (first finding wins), sorted.
+        `under`: keep only findings with a reference below that directory — plus findings referenced below none of
+        `others` (shared library code) — so each MSA service gets the keys its own code reads."""
+        X = c.cfg.externalized
+        inv = getattr(c.profile, "properties", None)
+        if inv is None:
+            return []
+        out: dict[str, tuple[str, str]] = {}
+        for f in inv.findings:
+            if f.status != "external" or not f.boot_keys:
+                continue
+            refs = list(f.refs)
+            if not X.include_test_refs and refs and all(r.scope == "test" for r in refs):
+                continue
+            if under is not None:
+                def below(r: Any, d: str) -> bool:
+                    return d in ("", ".") or r.file == d or r.file.startswith(d.rstrip("/") + "/")
+                if refs and not any(below(r, under) for r in refs) and \
+                        any(below(r, o) for r in refs for o in others):
+                    continue
+            ref = refs[0] if refs else None
+            value = X.sentinel
+            if ref is not None and ref.source == "context-param" and ref.default not in (None, ""):
+                value = str(ref.default)
+            comment = "# from " + (self._ref_origin(ref) if ref is not None else f.key)
+            if f.note:
+                comment += f" ({f.note})"
+            for k in f.boot_keys:
+                k = k.strip()
+                if k and k not in out:
+                    out[k] = (value, " ".join(comment.split()))
+        return [(k, v, cm) for k, (v, cm) in sorted(out.items())]
+
+    @staticmethod
+    def _ref_origin(ref: Any) -> str:
+        label = PLACEHOLDER_SOURCE_LABELS.get(ref.source, ref.source)
+        if ref.source == "jndi":
+            return f"{label} {ref.key}"
+        where = ref.file + (f":{ref.line}" if ref.line else "")
+        if ref.source == "context-param":
+            return f"{label} {ref.key} {where}"
+        return f"{label} {where}"
+
+    def _write_placeholders(self, c: _Ctx, resources_dir: str, *, under: str | None = None,
+                            others: tuple[str, ...] = ()) -> list[str]:
+        """Append (or replace) the sbmig externalized-config block in `<resources_dir>/<placeholder_file>`.
+        Returns the keys written ([] when disabled / nothing to write). Idempotent: a second run yields the same bytes;
+        everything outside the markers is kept byte-for-byte, the file's line endings are kept."""
+        X = c.cfg.externalized
+        if not X.enabled or not X.write_placeholders:
+            return []
+        entries = self._placeholder_entries(c, under, others)
+        if not entries:
+            return []
+        rel = posixpath.normpath(f"{resources_dir}/{X.placeholder_file}")
+        existed = c.ws.exists(rel)
+        text = c.ws.read(rel) if existed else ""
+        nl = "\r\n" if "\r\n" in text else "\n"
+        lines = list(PLACEHOLDER_HEADER)
+        if not existed and X.placeholder_file == "application.properties" and \
+                c.ws.exists(posixpath.join(resources_dir, "application.yml")):
+            lines.append("# --- application.yml exists; placeholders go to application.properties (Boot loads both)")
+        for k, v, cm in entries:
+            lines += [cm, f"{k}={v}"]
+        lines.append(PLACEHOLDER_END)
+        block = nl.join(lines) + nl
+        start = text.find(PLACEHOLDER_BEGIN)
+        end = text.find(PLACEHOLDER_END, start) if start >= 0 else -1
+        if start >= 0 and end >= 0:
+            tail = end + len(PLACEHOLDER_END)
+            if text.startswith("\r\n", tail):
+                tail += 2
+            elif text.startswith("\n", tail):
+                tail += 1
+            new = text[:start] + block + text[tail:]
+        else:
+            sep = "" if not text or text.endswith(("\n", "\r")) else nl
+            new = (text + sep + nl + block) if text.strip() else block
+        if new != text:
+            c.write(rel, new, generated=not existed)
+        keys = [k for k, _, _ in entries]
+        if rel not in c.result.placeholder_files:
+            c.result.placeholder_files.append(rel)
+        for k in keys:
+            if k not in c.result.placeholders_written:
+                c.result.placeholders_written.append(k)
+        c.note(f"{len(keys)} externalized-config placeholder(s) written to {rel}")
+        return keys
+
+    def _placeholder_followup(self, c: _Ctx) -> None:
+        files = c.result.placeholder_files
+        if not files:
+            return
+        n = len(c.result.placeholders_written)
+        c.followup(f"{n} externalized key(s) have placeholder values ({c.cfg.externalized.sentinel}) in "
+                   f"{', '.join(files)} — set them before running (see Handover 'Properties to set')")
+
     def _locate_class(self, c: _Ctx, fqcn: str, roots: list[str]) -> str | None:
         parts = fqcn.split(".")
         for root in roots:
@@ -1339,7 +1459,25 @@ class Restructurer:
             c.save(ed)
             c.note(f"msa_pom: patched {t}")
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
+        self._msa_placeholders(c, svc_entries)
         c.commit("restructure: msa pom-only parent/mandatory/optional")
+
+    def _msa_placeholders(self, c: _Ctx, svc_entries: list[Any]) -> None:
+        """Each service root's src/main/resources gets the keys its own code reads (plus keys read only by shared
+        code outside every service); directories are created only for services with src/main/java."""
+        dirs: list[str] = []
+        for s in svc_entries:
+            d = posixpath.dirname(posixpath.normpath(s.root_pom))
+            d = "" if d in ("", ".") else d
+            if d not in dirs:
+                dirs.append(d)
+        for d in dirs:
+            res = posixpath.join(d, "src/main/resources") if d else "src/main/resources"
+            if not c.ws.abs(res).is_dir() and not c.ws.abs(
+                    posixpath.join(d, "src/main/java") if d else "src/main/java").is_dir():
+                continue
+            self._write_placeholders(c, res, under=d, others=tuple(o for o in dirs if o != d))
+        self._placeholder_followup(c)
 
     def _climb(self, c: _Ctx, pom: str) -> str:
         """Follow in-repo <parent> links upwards; returns the top-most in-repo pom of the chain."""

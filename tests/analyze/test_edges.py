@@ -78,6 +78,7 @@ def test_legacy_java_level_warning_and_normalization(tmp_path: Path, cfg) -> Non
     p = analyze_path(tmp_path, cfg)
     assert p.java_version == "1.6"
     assert any("Java source/target level 6 cannot be compiled by JDK 21" in w for w in p.warnings)
+    assert any("jdk-removed-apis advisory" in w for w in p.warnings)
     assert normalize_java_version("1.7") == "1.7" and normalize_java_version("7") == "1.7"
     assert normalize_java_version("1.5.0") == "1.5"
     assert normalize_java_version("1.8") == "1.8" and normalize_java_version("17") == "17"

@@ -26,6 +26,8 @@ intake ─► analyze ─► advisories ─► plan ─► JDK21 phase ─► SP
 | finalize | advisories verified on the **final tree** (`outcome`: `replaced` \| `still-present` \| `unknown`); `HandoverSummary` built from the as-is poms + as-is effective dependencyManagement vs the final poms (version changes, added/removed, ⚠ carried-over pins, "from here on" list) | – (advisories never change success or the exit code) |
 | report | report.md/json (Handover first), changes.patch, result.zip, journal; KB harvest of successful LLM fixes; ledger lines (incl. `resolution=advisory`) | – |
 
+**Externalized configuration (round 8).** `sbmig.analyze.properties.scan_properties` makes a regex inventory of every setting the as-is code reads: `${…}` in `@Value` and other annotations, `@ConfigurationProperties` prefixes, `Environment.getProperty`, `System.getProperty` / `getenv`, `${…}` in Spring XML / web.xml / context.xml, web.xml `<context-param>`, JNDI names (Java literals and lookups, `jee:jndi-lookup`, `jndiName`, Tomcat `<Resource>/<Environment>`, `<resource-ref>/<env-entry>`), `@PropertySource` and placeholder-configurer locations, and `${…}` inside packaged property values. It compares them, using relaxed binding, against the packaged definitions: `application*.properties|yml` at the resources root, `config/` and `META-INF/`, files named by `classpath:` locations, YAML profile documents, plus test resources and inline test properties for test-only keys. Each key becomes a `PropertyFinding`: `defined`, `defaulted` (every ref has a code default) or `external`. Mapping rules from `knowledge/config/externalized.yml` turn container-only keys into the Boot keys restructure writes as `__SET_ME__` placeholders (JNDI DataSource → `spring.datasource.*`, context-param → `server.servlet.context-parameters.<name>`, Boot defaults and container system properties skipped). Maven-filtered resource dirs are recorded, and `${x}` that Maven resolves there are ignored. The result lands in `ProjectProfile.properties`. Broken, oversized or unreadable files become `PropertyInventory.notes`; the scan never raises, and `externalized.enabled: false` turns it off.
+
 Why recipes run **before** restructure: OpenRewrite needs type attribution against the *as-is* classpath
 (javax types, Boot 2/3 classes) to match. Swapping the parent first would resolve a Boot 4.1 classpath and leave
 old types unattributed, so many `ChangeType`-style recipes would silently no-op.
@@ -72,6 +74,10 @@ Hard rules:
 * Every attempt is a git commit → revertable, diffable, attributable in the report.
 * Budgets: `max_iterations` per phase, `max_llm_calls` per run, `max_total_minutes` per run.
 * Test-compile fallback (`-Dmaven.test.skip=true`) only as a last resort and always surfaced as a flag.
+* Tests-skipped fallback (round 8, `build.allow_skip_tests_fallback`): when only runtime `TEST_FAILURE` errors
+  remain after the fix rounds and the goal runs tests, the phase is rebuilt with `-DskipTests`; on success flag
+  `tests-skipped`, every failing test becomes a follow-up and an unresolved error, and the final verify also packages
+  with `-DskipTests` (`-Dmaven.test.skip=true` wins when the test-compile fallback fired too).
 
 ## 4. Triage
 
@@ -237,6 +243,21 @@ as `<run dir>/merge-conflicts/<module>/src/…` (`RestructureResult.merge_confli
 manual follow-up); `fail` aborts before anything moves. Nested aggregators abort the merge. "Already restructured"
 under `merge` = root packaging `pom` with both `module/comp-jar` and `module/boot-jar` among its modules. `wrap`
 (opt-in) moves the existing modules under `module/` unchanged and adds a boot-jar depending on the jar modules.
+
+**Externalized configuration placeholders** (round 8, `externalized.*`). Settings the as-is code reads but no packaged
+resource defines (`ProjectProfile.properties`, status `external`: they came from the container — JNDI, web.xml
+`context-param`, `-D`, `catalina.properties`) get one `key=__SET_ME__` line per `boot_key` (JNDI DataSource →
+`spring.datasource.*`, context-param → `server.servlet.context-parameters.*`; a context-param with an as-is value
+writes that value; `boot_keys=[]` writes nothing; test-only refs follow `include_test_refs`), each preceded by a
+`# from <source> <file:line>` comment, sorted and deduped. Layout mode writes `module/boot-jar/src/main/resources/
+<placeholder_file>` (single, merge with a generated or kept boot module, wrap, and already-restructured projects);
+`msa_pom` writes each service root's `src/main/resources/<placeholder_file>` (created only when the service has
+`src/main/java`) with the keys referenced inside that service plus keys only shared code outside every service reads;
+`optional_bump` writes nothing. The file is created when absent (also next to an `application.yml`: Boot loads both,
+a note in the block says so). The block sits between `# --- sbmig externalized-config` and `# --- end sbmig
+externalized-config`; a rerun replaces the block in place and keeps every other byte and the file's line endings, so
+it is idempotent. The step records `RestructureResult.placeholder_files / placeholders_written`, one note and one
+follow-up; the orchestrator merges them into `RunReport.properties` (journal event `placeholders`) for the Handover.
 
 ## 9. Outputs
 

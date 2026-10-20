@@ -7,7 +7,9 @@ testcontainers, log4j2, logback, javax-servlet, jakarta-servlet, jsp, jaxb, java
 thymeleaf, flyway, liquibase, undertow, jetty, tomcat-embed, spring-webflux, spring-webmvc, spring-context,
 spring-retry, elasticsearch, mongodb,
 plus the library-advisory rules (knowledge/libraries/advisories.yml, docs/ADVISORIES.md): sleuth, hystrix, ribbon,
-zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4.
+zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4,
+jdk-removed-apis (imports of JDK-internal / removed packages: sun.misc, sun.security, com.sun.image, javax.activation;
+JAXB `javax.xml.bind` stays on the `jaxb` rule).
 
 Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
 groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
@@ -141,6 +143,8 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("httpclient4", ("org.apache.httpcomponents:httpclient", "org.apache.httpcomponents:httpmime",
                                 "org.apache.httpcomponents:fluent-hc"),
                 ("org.apache.http.client", "org.apache.http.impl.client", "org.apache.http.HttpResponse")),
+    # JDK-internal / removed-from-the-JDK packages (pre-Java-8 code; advisory jdk-removed-apis). Import-only.
+    LibraryRule("jdk-removed-apis", (), ("sun.misc", "sun.security", "com.sun.image", "javax.activation")),
 )
 
 LIBRARY_NAMES: tuple[str, ...] = tuple(r.name for r in LIBRARY_RULES)

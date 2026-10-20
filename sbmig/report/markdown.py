@@ -3,13 +3,15 @@ from __future__ import annotations
 
 from collections import Counter, OrderedDict
 from datetime import datetime
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from sbmig.core.models import AdvisoryFinding, BlockedItem, BuildError, FixAttempt, PhaseResult, RunReport
 
 FLAG_HELP = {
     "test-compile-skipped": "main code builds, but test sources only compile with `-Dmaven.test.skip=true` "
                             "(see follow-ups) — fix the tests before relying on CI",
+    "tests-skipped": "main code compiles and packages, but some tests fail at runtime: the jar was built with "
+                     "`-DskipTests` (failing tests listed in follow-ups / unresolved)",
     "time-budget-exhausted": "the run hit `loop.max_total_minutes`; remaining loops were skipped, verify still ran",
     "llm-budget-exhausted": "the run used all `loop.max_llm_calls`; remaining clusters were escalated",
     "dry-run": "dry run: decisions were computed but nothing was applied",
@@ -33,6 +35,7 @@ FLAG_PREFIX_HELP = {
 }
 BLOCKED_TITLE = "Blocked — needs human / library action"
 HANDOVER_TITLE = "Handover — what we replaced, what is yours"
+PROPERTIES_TITLE = "Properties to set before running"
 
 
 def flag_help(flag: str) -> Optional[str]:
@@ -139,13 +142,38 @@ def _what_we_did(f: AdvisoryFinding) -> str:
     return "built with the as-is version pinned"
 
 
+def properties_lines(h: Any, r: RunReport) -> list[str]:
+    """Handover block "Properties to set before running" (round 8): table of external keys, guide, placeholder file."""
+    from .handover import PROPERTY_COLUMNS, split_property_row
+
+    L = [f"### {PROPERTIES_TITLE}", "",
+         "The code reads these settings but no packaged resource defines them (the external container supplied "
+         "them before). Set each one before the first start.", ""]
+    L.append("| " + " | ".join(PROPERTY_COLUMNS) + " |")
+    L.append("|" + "---|" * len(PROPERTY_COLUMNS))
+    for row in h.properties_to_set:
+        c = split_property_row(row)
+        L.append(f"| `{_cell(c[0], 120)}` | {_cell(c[1], 40)} | {_cell(c[2], 300)} | {_cell(c[3], 300)} | "
+                 f"{_cell(c[4], 120)} |")
+    L.append("")
+    if h.properties_guide:
+        L += ["How to supply them:", ""]
+        L += [f"- {_cell(g, 500)}" for g in h.properties_guide]
+        L.append("")
+    files = list(getattr(r.properties, "placeholder_files", None) or []) if r.properties is not None else []
+    if files:
+        L.append("Packaged placeholders: " + ", ".join(f"`{f}`" for f in files) + " (grep `__SET_ME__`)")
+        L.append("")
+    return L
+
+
 def handover_lines(r: RunReport) -> list[str]:
     """The first section of report.md: versions replaced, libraries needing attention, 'from here on'."""
     L = [f"## {HANDOVER_TITLE}", ""]
     h = r.handover
     findings = list(r.advisories or [])
     has_versions = h is not None and bool(h.changes or h.added or h.removed or h.parent_before or h.parent_after)
-    if not findings and not has_versions and not (h and (h.from_here or h.merge_conflicts)):
+    if not findings and not has_versions and not (h and (h.from_here or h.merge_conflicts or h.properties_to_set)):
         L.append("No version changes and no library advisories recorded for this run."
                  + (f" ({'; '.join(h.notes)})" if h and h.notes else ""))
         L.append("")
@@ -206,6 +234,8 @@ def handover_lines(r: RunReport) -> list[str]:
         L += ["**Merge conflicts** (multi-module merge: first module in `<modules>` order wins)", ""]
         L += [f"- {_cell(x, 500)}" for x in h.merge_conflicts]
         L.append("")
+    if h is not None and h.properties_to_set:
+        L += properties_lines(h, r)
     L += ["### From here on, your team", ""]
     items = h.from_here if h is not None else [f"{f.title}: {f.followup}".rstrip(": ") for f in findings
                                                if f.outcome != "replaced"]

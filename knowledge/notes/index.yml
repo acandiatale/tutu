@@ -258,3 +258,22 @@ notes:
   - spring
   - restructure
   always: false
+- file: externalized-config.md
+  title: Externalized configuration (keys the external Tomcat used to supply)
+  keywords:
+  - Could not resolve placeholder|PlaceholderResolutionException|unresolvable placeholder
+  - __SET_ME__
+  - NameNotFoundException|NoInitialContextException|javax\.naming|jakarta\.naming|InitialContext|JndiObjectFactoryBean|jndi-lookup
+  - PropertySource|PropertySourcesPlaceholderConfigurer|PropertyPlaceholderConfigurer|property-placeholder
+  - Failed to bind properties under|ConfigurationPropertiesBindException|Binding to target
+  - context-param|catalina\.(home|base)
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - spring
+  - restructure
+  always: false

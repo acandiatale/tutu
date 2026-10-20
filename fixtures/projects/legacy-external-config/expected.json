@@ -1,0 +1,80 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": "5.3.31",
+  "packaging": "war",
+  "libraries": [
+    "spring-webmvc",
+    "spring-jdbc",
+    "jackson",
+    "servlet",
+    "junit4"
+  ],
+  "optional_artifacts_in_use": [
+    "com.fasterxml.jackson.core:jackson-databind",
+    "org.slf4j:slf4j-api"
+  ],
+  "main_classes": [],
+  "catalog": [],
+  "externalized": {
+    "external": [
+      "catalog.home",
+      "catalog.region",
+      "contextConfigLocation",
+      "java:comp/env/jdbc/catalogDS",
+      "mail.host"
+    ],
+    "defined": [
+      "catalog.page-size",
+      "catalog.title"
+    ]
+  },
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "followups_contains": [
+      "regex:.*placeholder values.*"
+    ],
+    "properties": {
+      "external_min": 3,
+      "external": [
+        "mail.host",
+        "java:comp/env/jdbc/catalogDS",
+        "catalog.home",
+        "catalog.region"
+      ],
+      "absent": [
+        "catalog.title",
+        "catalog.page-size"
+      ],
+      "written": [
+        "mail.host",
+        "spring.datasource.url",
+        "server.servlet.context-parameters.catalog.region"
+      ],
+      "placeholder_file_contains": [
+        "mail.host=__SET_ME__",
+        "spring.datasource.url=__SET_ME__",
+        "server.servlet.context-parameters.catalog.region=kr"
+      ]
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "module/boot-jar/src/main/resources/application.properties",
+          "contains": "mail.host=__SET_ME__"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "module/boot-jar/src/main/resources/application.properties",
+          "contains": "# --- end sbmig externalized-config"
+        }
+      }
+    ]
+  }
+}

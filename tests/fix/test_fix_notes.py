@@ -8,7 +8,8 @@ from sbmig.fix.context import split_front_matter
 
 NOTES = Path(__file__).resolve().parents[2] / "knowledge" / "notes"
 REQUIRED = {"jdk21.md", "jakarta.md", "boot2-to-3.md", "boot3-to-4.md", "boot40-to-41.md", "spring-framework-7.md",
-            "spring-security-7.md", "servlet-to-boot.md", "junit4-to-5.md", "maven-plugins.md", "fix-policy.md"}
+            "spring-security-7.md", "servlet-to-boot.md", "junit4-to-5.md", "maven-plugins.md", "fix-policy.md",
+            "externalized-config.md"}
 CASES = {"pure_java", "spring_legacy", "spring_boot", "servlet_tomcat", "msa"}
 PHASES = {"jdk21", "spring", "restructure"}
 

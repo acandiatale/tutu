@@ -132,6 +132,8 @@ class BuildConfig(BaseModel):
     extra_args: list[str] = Field(default_factory=lambda: ["-B", "-ntp", "-Dstyle.color=never"])
     skip_tests: bool = True                             # -DskipTests (tests still compile)
     allow_skip_test_compile_fallback: bool = True       # -Dmaven.test.skip=true as last resort (flagged in report)
+    allow_skip_tests_fallback: bool = True              # -DskipTests when only runtime test failures remain
+                                                        # (flag `tests-skipped`, failing tests listed as follow-ups)
     timeout_minutes: int = 30
     env: dict[str, str] = Field(default_factory=dict)
     # legacy source encodings (JDK 18+ defaults to UTF-8 → "unmappable character" on MS949/EUC-KR sources)
@@ -272,6 +274,19 @@ class AdvisoryConfig(BaseModel):
     max_from_here: int = 40                               # cap of the handover's "from here on" list
 
 
+class ExternalizedConfig(BaseModel):
+    """Round 8: settings the code reads but no packaged resource defines (they came from the container before:
+    JNDI, context-param, -D, catalina.properties). sbmig lists them, writes sentinel placeholders so the packaged
+    configuration is complete, and the Handover tells the owners which values to set and how."""
+    enabled: bool = True
+    sentinel: str = "__SET_ME__"
+    write_placeholders: bool = True                   # append the block to the boot-jar application.properties
+    placeholder_file: str = "application.properties"  # relative to src/main/resources of boot-jar / each MSA service
+    rules_file: str = "knowledge/config/externalized.yml"   # JNDI / context-param / system-property → Boot key rules + guide
+    include_test_refs: bool = True                    # keys read only by tests still get placeholders (tests must load)
+    max_refs_per_key: int = 3                         # references shown per key in the Handover
+
+
 class Config(BaseModel):
     target: TargetConfig = Field(default_factory=TargetConfig)
     artifacts: ArtifactsConfig
@@ -286,6 +301,7 @@ class Config(BaseModel):
     fleet: FleetConfig = Field(default_factory=FleetConfig)
     report: ReportConfig = Field(default_factory=ReportConfig)
     advisories: AdvisoryConfig = Field(default_factory=AdvisoryConfig)
+    externalized: ExternalizedConfig = Field(default_factory=ExternalizedConfig)
     repo_root: str = str(PACKAGE_ROOT)
 
     # ---- helpers -----------------------------------------------------

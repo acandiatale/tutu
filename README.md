@@ -5,7 +5,10 @@
 (in-house parent, 2 mandatory dependencies, 8 optional bumps, `module/{comp-jar,boot-jar}`), and writes a report the
 as-is owner can act on — starting with a **Handover** (versions replaced, ⚠ pins carried over, EOL / unmanaged
 libraries such as springfox, sleuth, hystrix that still compile, and a numbered "from here on, your team" list;
-`recipe`-policy advisories like springfox → springdoc are migrated by OpenRewrite, none ever fails the build). Every LLM fix that worked is stored in a file-based knowledge base and, when mechanical,
+`recipe`-policy advisories like springfox → springdoc are migrated by OpenRewrite, none ever fails the build). Settings the external Tomcat used to supply
+(JNDI DataSource, web.xml `<context-param>`, `-D` flags, `$CATALINA_BASE/conf/*.properties`) are inventoried at
+analyze time and written as `__SET_ME__` placeholders into the boot-jar `application.properties`; the Handover's
+"Properties to set before running" table says which key, where it is read and how to supply it. Every LLM fix that worked is stored in a file-based knowledge base and, when mechanical,
 promoted to an OpenRewrite recipe for the next project.
 
 ```

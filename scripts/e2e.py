@@ -34,6 +34,12 @@ captures the exit code + output, finds the run directory the CLI created under -
                             "from_here_contains": ["regex:(?i).*hystrix.*", "plain substring"],
                             "removed_contains": ["g:a"], "added_contains": ["g:a[:v]"]},
                "followups_contains": ["regex:(?i).*resilience4j.*"],             # over manual_followups
+               "properties": {"external_min": 3,                   # report.properties (else profile.properties):
+                              "external": ["mail.host"],           # keys that must be `external` findings
+                              "absent": ["catalog.title"],         # keys that must NOT be `external`
+                              "written": ["mail.host"],            # ⊆ placeholders_written
+                              "placeholder_file_contains": ["mail.host=__SET_ME__"]},   # substrings of
+                                                                   # placeholder_files[0] in the migrated project
                "kb": {"dir": "out/e2e/kb-method-rename",           # the fixture's own kb.dir (sbmig.e2e.yml)
                       "candidates_min": 1,                         # *.yml recipes in <dir>/recipes/candidates
                       "harvest_candidates_min": 1,                 # len(report.harvest.candidates_created)
@@ -81,7 +87,7 @@ DEFAULT_LOCAL_REPO = Path.home() / ".m2" / "repository"
 DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
                  "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename",
-                 "boot2-hystrix-command", "multi-module-merge"]
+                 "boot2-hystrix-command", "multi-module-merge", "legacy-external-config", "java6-legacy"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -598,6 +604,49 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
     return f"unknown post_check kind {kind!r}"
 
 
+def report_properties(report: dict) -> dict:
+    """report.properties (profile inventory + placeholders written), else the profile's inventory, else {}."""
+    inv = report.get("properties")
+    if not isinstance(inv, dict) or not inv:
+        inv = _get(report, "profile", "properties", default={})
+    return inv if isinstance(inv, dict) else {}
+
+
+def evaluate_properties(want: dict, report: dict, project: Path | None) -> list[str]:
+    """`expect.properties` (round 8 externalized-config inventory + placeholders) → mismatches."""
+    mm: list[str] = []
+    inv = report_properties(report)
+    if not inv:
+        mm.append("no properties inventory in report.json")
+    findings = [f for f in _list(inv.get("findings")) if isinstance(f, dict)]
+    external = [str(f.get("key")) for f in findings if f.get("status") == "external"]
+    if want.get("external_min") is not None and len(external) < want["external_min"]:
+        mm.append(f"properties external={len(external)} < min {want['external_min']} (got: {_short(external, 8)})")
+    for key in _list(want.get("external")):
+        if key not in external:
+            mm.append(f"properties: {key!r} is not an external finding (external: {_short(external, 8)})")
+    for key in _list(want.get("absent")):
+        if key in external:
+            mm.append(f"properties: {key!r} must not be external")
+    written = _strings(inv.get("placeholders_written"))
+    for key in _list(want.get("written")):
+        if key not in written:
+            mm.append(f"properties: {key!r} not in placeholders_written (got: {_short(written, 8)})")
+    contains = _list(want.get("placeholder_file_contains"))
+    if contains:
+        files = _strings(inv.get("placeholder_files"))
+        if not files:
+            mm.append("properties: no placeholder file written")
+        elif project is None or not (project / files[0]).is_file():
+            mm.append(f"properties: placeholder file {files[0]} not found in the migrated project")
+        else:
+            text = (project / files[0]).read_text(encoding="utf-8", errors="replace")
+            for needle in contains:
+                if needle not in text:
+                    mm.append(f"properties: {files[0]} lacks {needle!r}")
+    return mm
+
+
 def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict],
              project: Path | None, repo: Path | None = None) -> list[str]:
     """All mismatches between the expectation block and what the run produced (empty = PASS)."""
@@ -658,6 +707,8 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
             mm.append(f"manual_followups lack {pat!r} (got: {_short(followups)})")
     if isinstance(expect.get("kb"), dict):
         mm += evaluate_kb(expect["kb"], report, repo)
+    if isinstance(expect.get("properties"), dict):
+        mm += evaluate_properties(expect["properties"], report, project)
     for check in _list(expect.get("post_checks")):
         problem = run_post_check(check, project)
         if problem:
@@ -706,6 +757,12 @@ def describe_expect(fixture: str, expected: dict) -> str:
         kp += [f"{r.get('recipe')}" + (f"@{r['name']}" if r.get("name") else "")
                for r in _list(kb.get("recipes")) if isinstance(r, dict)]
         parts.append(f"kb({', '.join(kp)})")
+    if isinstance(exp.get("properties"), dict):
+        pp = exp["properties"]
+        pr = [f"external_min={pp['external_min']}"] if pp.get("external_min") is not None else []
+        pr += [f"{k}={len(pp[k])}" for k in ("external", "absent", "written", "placeholder_file_contains")
+               if pp.get(k)]
+        parts.append(f"properties({', '.join(pr)})")
     if exp.get("post_checks"):
         parts.append(f"post_checks={len(exp['post_checks'])}")
     cfg = fixture_config(fixture)

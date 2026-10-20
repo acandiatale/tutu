@@ -151,6 +151,9 @@ class RestructureResult(BaseModel):
     merged_modules: list[str] = Field(default_factory=list)        # as-is module dirs folded into comp-jar
     kept_boot_module: Optional[str] = None                         # as-is boot module kept (final path, e.g. module/boot-jar)
     merge_conflicts: list[MergeConflict] = Field(default_factory=list)
+    # externalized-config placeholders (round 8): written into boot-jar (layout) / each service (msa_pom)
+    placeholder_files: list[str] = Field(default_factory=list)
+    placeholders_written: list[str] = Field(default_factory=list)
 
 
 @runtime_checkable
@@ -187,6 +190,7 @@ class BuildRunnerLike(Protocol):
         extra_args: Iterable[str] = (),
         label: str = "",
         skip_test_compile: bool = False,
+        skip_tests: bool = False,
     ) -> BuildResult: ...
 
 

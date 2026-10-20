@@ -29,12 +29,14 @@ Catalog IDs refer to `docs/ERROR-HANDLING.md`.
 | `boot2-cloud-legacy` | `spring_boot` | advisories (`docs/ADVISORIES.md`) | 11 | **reference run for library advisories + Handover**: success, exit 0, 0 LLM, nothing blocked; advisories `springfox` (recipe → replaced by springdoc), `sleuth` (Boot 4 umbrella → replaced by Micrometer Tracing), `spring-cloud-bom` (train upgraded → replaced), `hystrix` (guide → still-present, Resilience4j in "From here on" + manual follow-ups); ≥ 1 carried-over pin; springfox/sleuth gone from every pom, `springdoc-openapi-starter-webmvc-ui` in `module/comp-jar/pom.xml` |
 | `boot2-hystrix-command` | `spring_boot` | advisory-guided LLM fix (`docs/ADVISORIES.md`) | 11 | programmatic `InventoryCommand extends HystrixCommand<Integer>` the project recipe cannot convert → after the starter swap 2 compile clusters (`InventoryCommand.java` with the `hystrix` advisory hint in its prompt, `StockService.java` without); `sbmig.e2e.yml`: replayed LLM (`replay/`), own `kb.dir: out/e2e/kb-hystrix-command` → response 1 ports the class to `CircuitBreaker.ofDefaults("inventory")` keeping `execute()`, response 2 no change; success, exit 0, ≤ 2 LLM calls, nothing blocked, journal `attempt` with `advisory_ids: [hystrix]`, `hystrix` replaced, Handover "code rewritten by the LLM for hystrix: …InventoryCommand.java" |
 | `multi-module-merge` | `spring_boot` (multi-module, packaging `pom`) | layout `merge` (`docs/ARCHITECTURE.md` §8) | 11 (also builds on 21) | default `multi_module_policy: merge`: `core` + `web` folded into `module/comp-jar`, as-is `boot-jar` **kept** (moved to `module/boot-jar`, `shop-web` dependency → `shop-comp`, `ShopApplication` untouched, nothing generated); differing `messages.properties` → first wins (`hello from core`), `web` copy saved under `<run dir>/merge-conflicts/`, follow-up `merge conflicts: 1 file(s) …`; identical `META-INF/shared.txt` dropped; success, exit 0, 0 LLM, commons-lang3 3.9 → 3.17.0 |
+| `legacy-external-config` | `spring_legacy` | externalized config (`knowledge/notes/externalized-config.md`) | 8 | Spring 5 XML war from an external Tomcat: `@Value("${mail.host}")` only in `$CATALINA_BASE/conf/catalog-local.properties`, `<jee:jndi-lookup jndi-name="java:comp/env/jdbc/catalogDS">`, `System.getProperty("catalog.home")`, web.xml context-param `catalog.region=kr` → success, exit 0, 0 LLM; `expect.properties`: those 4 keys `external`, `catalog.title` / `catalog.page-size` not (packaged in `catalog.properties`); boot-jar `application.properties` holds `mail.host` / `spring.datasource.*` = `__SET_ME__` (`catalog.home` is `-D`-only: listed, not written) and `server.servlet.context-parameters.catalog.region=kr`; follow-up "… placeholder values …"; Handover "Properties to set before running" |
+| `java6-legacy` | `pure_java` | S8 | 8 | Java 1.6 source level (compiler 2.3.2, surefire 2.4.3): `sbmig.e2e.yml` replayed LLM (`replay/`), own `kb.dir: out/e2e/kb-java6-legacy` → `UpgradeToJava21` sets release 21, JAXB → `jakarta.xml.bind-api` + `jaxb-runtime` (Dates on `jakarta.xml.bind`), `sun.misc.BASE64Encoder/Decoder` in `Codec.java` → 1 replayed LLM fix to `java.util.Base64` with the `jdk-removed-apis` advisory hint (+ 1 harvest call answered `NONE`); success, exit 0, ≤ 2 LLM calls, nothing blocked, advisory `jdk-removed-apis` replaced, commons-lang3 3.1 → 3.17.0 |
 
 Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used directly (→ "optional bump" path):
 
 | artifact | fixtures |
 |---|---|
-| `org.apache.commons:commons-lang3` | pure-java, boot2, boot2-javax-lib*, boot2-method-rename, euckr-legacy, enforcer-java8-werror, missing-artifact, multi-module-merge/core |
+| `org.apache.commons:commons-lang3` | pure-java, boot2, boot2-javax-lib*, boot2-method-rename, euckr-legacy, enforcer-java8-werror, missing-artifact, multi-module-merge/core, java6-legacy |
 | `com.google.guava:guava` | pure-java, boot3 |
 | `org.projectlombok:lombok` | boot2, boot2-javax-lib*, boot2-method-rename, msa/order-service, msa-shared-lib/order-service |
 | `com.fasterxml.jackson.core:jackson-databind` | spring5-xml |
@@ -57,7 +59,7 @@ Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used direct
 ## Running the e2e
 
 ```bash
-scripts/e2e.sh                                    # recipes + advisories check, installs fixtures/libs, runs all 16 fixtures
+scripts/e2e.sh                                    # recipes + advisories check, installs fixtures/libs, runs all 18 fixtures
 scripts/e2e.sh --only boot2-javax-lib,missing-artifact
 scripts/e2e.sh --skip-libs --only euckr-legacy    # do not (re)install fixtures/libs
 python scripts/e2e.py --expect-only               # print each fixture's expectations, run nothing

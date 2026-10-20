@@ -266,7 +266,43 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | log4j1 | eol | guide | logback (Boot default) or log4j2 | manual |
 | commons-lang2 | eol | guide | org.apache.commons:commons-lang3 | manual |
 | httpclient4 | superseded | guide | org.apache.httpcomponents.client5:httpclient5 | manual |
+| jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; the LLM ports `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
 
 The analyzer rule names added for these entries are `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`,
 `spring-cloud-bom` (dependencyManagement / parent), `swagger-v1`, `spring-security-oauth2-legacy`, `log4j1`,
-`commons-lang2` and `httpclient4`.
+`commons-lang2`, `httpclient4` and `jdk-removed-apis` (import-only: `sun.misc`, `sun.security`, `com.sun.image`,
+`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule).
+
+### jdk-removed-apis: pre-Java-8 code (2026-10-21, rewrite-migrate-java 3.42.0 from BOM 3.37.0)
+
+As-is projects on source level 1.6 / 1.7 migrate like any other. sbmig never builds the as-is tree. `UpgradeToJava21`
+sets release 21, and restructure strips `source/target`. The recipe tree, read from the jar's
+`META-INF/rewrite/*.yml`, goes `UpgradeToJava21` → `UpgradeToJava17` → `Java8toJava11` (all `Singleton`
+preconditions). `Java8toJava11` already runs these recipes, so the jdk21 recipe set needs no extra ids:
+
+* `UpgradeToJava8` (→ `UpgradeToJava7`, `UpgradeJavaVersion 8`, `Thread.destroy()` removal);
+* `lang.RenameUnderscoreIdentifier` (`_` identifiers);
+* `UseJavaUtilBase64` (`sun.misc.BASE64Encoder/Decoder` → `java.util.Base64`, only when the sun types resolve);
+* `javax.AddJaxbDependenciesWithRuntime` (`AddJaxbAPIDependencies`: `javax.xml.bind:jaxb-api` →
+  `jakarta.xml.bind:jakarta.xml.bind-api` 2.3.x, added `onlyIfUsing javax.xml.bind`, + `AddJaxbRuntime glassfish`);
+* `javax.AddJaxwsDependencies`, `javax.MigrateJaxBWSPlugin`, `javax.AddInjectDependencies`;
+* `javax.AddCommonAnnotationsDependencies` (`javax.annotation-api` → `jakarta.annotation-api` 1.3.x, `provided`);
+* `javax.JavaxLangModelUtil`, `UpgradeBuildToJava11`, `ThreadStopDestroy`.
+
+`UpgradeToJava17` adds `SunNetSslPackageUnavailable`, `RemovedLegacySunJSSEProviderName` and
+`DeprecatedLogRecordThreadID`. `UpgradeToJava21` adds `UpgradeBuildToJava21` and `lang.ThreadStopUnsupported`.
+
+What the recipes cannot do: OpenRewrite parses with JDK 21, so `sun.misc.BASE64Encoder` does not resolve and
+`UseJavaUtilBase64` leaves the code alone. The jdk21 compile then fails with `cannot find symbol … location: package
+sun.misc`. The advisory `jdk-removed-apis` (guide) matches that cluster, because `sun.misc` is an import package of
+its rule. The fix prompt gets the follow-up plus the `## fix-loop: jdk-removed-apis` section of
+`knowledge/notes/jdk21.md`. The verify step reports `replaced` once no source imports those packages any more. The
+Handover then lists the LLM-rewritten files.
+
+Fixture `java6-legacy`, with a replayed LLM:
+
+* The pre-emptive `jaxb-runtime-add` adds `jaxb-api` 2.3.1 + `jaxb-runtime` 2.3.9.
+* `UpgradeToJava21` turns the API into `jakarta.xml.bind-api` 2.3.3. The spring-phase `JavaxMigrationToJakarta`
+  moves `Dates` to `jakarta.xml.bind` (3.0.1 / runtime 3.0.2).
+* One LLM fix ports `Codec` to `java.util.Base64`, plus one harvest recipe-candidate call (answer `NONE`).
+* Result: BUILD SUCCESS, exit 0.

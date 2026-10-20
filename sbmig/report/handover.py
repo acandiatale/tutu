@@ -6,7 +6,9 @@ poms of the migrated tree (`view` = Workspace / PathView) and compresses the res
 parent / java / spring boot before → after, one row per dependency whose version changed (⚠ carried-over pins:
 the new parent / Boot BOM no longer manages them), added / removed artifacts, and an ordered "from here on, your
 team" list (advisories not replaced, replaced-but-verify, carried-over pins, blocked / unresolved pointers,
-manual follow-ups) and the multi-module merge conflicts (`report.merge_conflicts`). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
+manual follow-ups) and the multi-module merge conflicts (`report.merge_conflicts`). Round 8: one
+`properties_to_set` row per `external` externalized-config finding (`report.properties`, see `property_rows`) plus the
+guide lines of `knowledge/config/externalized.yml`. Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
 """
 from __future__ import annotations
 
@@ -28,6 +30,10 @@ REASON_OTHER = "recipe/handler"
 CARRIED_LIST_MAX = 5
 LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM for <library>" line
 IDENTICAL_LIST_MAX = 5           # paths named in the "N identical duplicate(s) dropped" line
+PROPERTY_SEP = " | "             # cell separator of a properties_to_set row (cells never contain "|")
+PROPERTY_COLUMNS = ("key", "before migration", "referenced at", "written as", "set via")
+DEFAULT_SENTINEL = "__SET_ME__"
+DEFAULT_MAX_REFS = 3
 
 _PINNED_RE = re.compile(r"([\w.\-]+:[\w.\-]+) pinned to (\S+) \(")
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
@@ -232,6 +238,152 @@ def _dedupe_add(out: list[str], item: str) -> None:
     out.append(s)
 
 
+# ---------------------------------------------------------------------------- externalized config (round 8)
+def _inventory(report: RunReport) -> Any:
+    inv = getattr(report, "properties", None)
+    if inv is None and getattr(report, "profile", None) is not None:
+        inv = getattr(report.profile, "properties", None)
+    return inv
+
+
+def _pcell(text: object) -> str:
+    s = " ".join(str(text if text is not None else "").split()).replace("|", "/")
+    return s or "-"
+
+
+def env_name(key: str) -> str:
+    """Relaxed-binding environment variable name: `spring.datasource.url` → `SPRING_DATASOURCE_URL`."""
+    out = re.sub(r"[.\-\[\]]+", "_", key.strip()).upper()
+    return out.strip("_")
+
+
+def _refs_cell(refs: list[Any], max_refs: int) -> str:
+    seen: list[str] = []
+    for r in refs:
+        where = r.file + (f":{r.line}" if r.line else "")
+        if where not in seen:
+            seen.append(where)
+    if not seen:
+        return "-"
+    cell = ", ".join(seen[:max_refs])
+    if len(seen) > max_refs:
+        cell += f" (+{len(seen) - max_refs} more)"
+    return cell
+
+
+def _written_cell(f: Any, written: set[str], sentinel: str) -> str:
+    if not f.boot_keys:
+        return f.note or "-"
+    ref = f.refs[0] if f.refs else None
+    value = sentinel
+    if ref is not None and ref.source == "context-param" and ref.default not in (None, ""):
+        value = str(ref.default)
+    keys = [k for k in f.boot_keys if k in written]
+    if not keys:
+        return "-"
+    return ", ".join(f"{k}={value}" for k in keys)
+
+
+def _set_via_cell(f: Any) -> str:
+    sources = {r.source for r in f.refs}
+    if sources and sources <= {"system-env"}:
+        return f"environment variable {f.key}"
+    if sources and sources <= {"system-property"}:
+        return f"-D{f.key}"                        # System.getProperty sees neither env vars nor application.properties
+    parts: list[str] = []
+    if f.boot_keys:
+        parts.append(env_name(f.boot_keys[0]))
+    if "system-property" in sources:
+        parts.append(f"-D{f.key}")
+    if "system-env" in sources:
+        parts.append(f"environment variable {f.key}")
+    return " / ".join(parts) or "-"
+
+
+def needs_value(f: Any) -> bool:
+    """An external finding the owners must supply: it has Boot keys, or nothing maps it (system env, unmapped JNDI,
+    `@ConfigurationProperties` prefix, -D). Rule-skipped context-params and Boot defaults need nothing."""
+    if f.boot_keys:
+        return True
+    return f.supplied_by != "context-param" and not str(f.note or "").startswith("Boot default")
+
+
+def external_to_set(inv: Any) -> list[Any]:
+    """External findings that need a value (see `needs_value`)."""
+    if inv is None:
+        return []
+    return [f for f in (getattr(inv, "findings", None) or []) if f.status == "external" and needs_value(f)]
+
+
+def property_rows(inv: Any, cfg: Any = None) -> list[str]:
+    """One `PROPERTY_SEP`-joined row per `external` finding (columns: `PROPERTY_COLUMNS`); findings that need no
+    value (rule-skipped context-param, Boot default) are listed too, but only when at least one finding needs a
+    value — otherwise there is nothing to set and the list is empty. Never raises."""
+    if inv is None or not external_to_set(inv):
+        return []
+    x = getattr(cfg, "externalized", None) if cfg is not None else None
+    sentinel = str(getattr(x, "sentinel", None) or DEFAULT_SENTINEL)
+    try:
+        max_refs = max(1, int(getattr(x, "max_refs_per_key", DEFAULT_MAX_REFS) or DEFAULT_MAX_REFS))
+    except (TypeError, ValueError):
+        max_refs = DEFAULT_MAX_REFS
+    written = set(getattr(inv, "placeholders_written", None) or [])
+    rows: list[str] = []
+    for f in list(getattr(inv, "findings", None) or []):
+        try:
+            if f.status != "external":
+                continue
+            cells = [f.key, f.supplied_by or "unknown", _refs_cell(list(f.refs), max_refs),
+                     _written_cell(f, written, sentinel), _set_via_cell(f)]
+            rows.append(PROPERTY_SEP.join(_pcell(c) for c in cells))
+        except Exception as e:  # pragma: no cover - a malformed finding must not drop the others
+            log.debug("property row skipped: %s", e)
+    return rows
+
+
+def split_property_row(row: str) -> list[str]:
+    """Inverse of `property_rows` for one row (always `len(PROPERTY_COLUMNS)` cells)."""
+    cells = [c.strip() for c in str(row).split(PROPERTY_SEP)]
+    n = len(PROPERTY_COLUMNS)
+    if len(cells) > n:
+        cells = cells[: n - 1] + [" / ".join(cells[n - 1:])]
+    return cells + ["-"] * (n - len(cells))
+
+
+def property_guide(cfg: Any) -> list[str]:
+    """Guide lines from the externalized-config rules file; [] when cfg is None or the file does not load."""
+    if cfg is None:
+        return []
+    try:
+        from sbmig.analyze import load_rules
+        x = cfg.externalized
+        return [str(g) for g in (load_rules(cfg.resolve_path(x.rules_file)).guide or []) if str(g).strip()]
+    except Exception as e:
+        log.debug("externalized guide unavailable: %s", e)
+        return []
+
+
+def _properties_item(inv: Any, cfg: Any) -> Optional[str]:
+    ext = external_to_set(inv)
+    if not ext:
+        return None
+    x = getattr(cfg, "externalized", None) if cfg is not None else None
+    sentinel = str(getattr(x, "sentinel", None) or DEFAULT_SENTINEL)
+    files = list(getattr(inv, "placeholder_files", None) or [])
+    where = (f"placeholders ({sentinel}) in {', '.join(files)}" if files
+             else "no placeholders were written (see the table)")
+    return (f"{len(ext)} externalized setting(s) need values before the first start — {where}; "
+            "see 'Properties to set'")
+
+
+def _properties_followup_present(report: RunReport) -> bool:
+    for m in report.manual_followups or []:
+        low = m.lower()
+        if "externalized setting(s)" in low and ("placeholder" in low or "properties to set" in low):
+            return True
+    return False
+
+
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any) -> list[str]:
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
@@ -279,6 +431,13 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any) -> list[str]:
         _dedupe_add(out, f"{len(report.blocked)} cluster(s) blocked — see Blocked")
     if report.unresolved:
         _dedupe_add(out, f"{len(report.unresolved)} unresolved error(s) — see Unresolved errors")
+    # (d2) externalized settings — the restructurer's follow-up says the same; keep that one when it exists
+    try:
+        item = None if _properties_followup_present(report) else _properties_item(_inventory(report), cfg)
+        if item:
+            _dedupe_add(out, item)
+    except Exception as e:  # pragma: no cover
+        log.debug("properties item skipped: %s", e)
     if "test-compile-skipped" in report.flags:
         _dedupe_add(out, "test sources do not compile yet (main code builds with -Dmaven.test.skip=true) — "
                          "fix the tests before relying on CI")
@@ -427,8 +586,17 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     h.changes = changes
     h.carried_over = [c for c in changes if c.carried_over]
     h.merge_conflicts = merge_conflict_lines(report)
+    _fill_properties(h, report, cfg)
     h.from_here = _from_here(h, report, cfg)
     return h
+
+
+def _fill_properties(h: HandoverSummary, report: RunReport, cfg: Any) -> None:
+    try:
+        h.properties_to_set = property_rows(_inventory(report), cfg)
+        h.properties_guide = property_guide(cfg) if h.properties_to_set else []
+    except Exception as e:  # pragma: no cover
+        log.debug("properties rows skipped: %s", e)
 
 
 def build_handover(profile: Optional[ProjectProfile], view: Any, report: RunReport,
@@ -443,6 +611,7 @@ def build_handover(profile: Optional[ProjectProfile], view: Any, report: RunRepo
         h = HandoverSummary(notes=[f"handover unavailable: {type(e).__name__}: {e}"])
         try:
             h.merge_conflicts = merge_conflict_lines(report)
+            _fill_properties(h, report, cfg)
             h.from_here = _from_here(h, report, cfg)
         except Exception:  # pragma: no cover
             pass

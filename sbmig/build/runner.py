@@ -57,9 +57,12 @@ class MavenRunner:
         register_external_prefixes(external_prefixes_from_config(cfg))
 
     # ------------------------------------------------------------------ command
-    def command(self, goal: str, *, extra_args: Iterable[str] = (), skip_test_compile: bool = False) -> list[str]:
+    def command(self, goal: str, *, extra_args: Iterable[str] = (), skip_test_compile: bool = False,
+                skip_tests: bool = False) -> list[str]:
+        """`skip_tests` (round 8 tests-skipped fallback) → `-DskipTests` even when `build.skip_tests` is off;
+        `skip_test_compile` wins (`-Dmaven.test.skip=true` already implies no test run), never both flags."""
         cmd = base_command(self.cfg) + goal.split() + list(extra_args)
-        if self.cfg.build.skip_tests and not skip_test_compile:
+        if (self.cfg.build.skip_tests or skip_tests) and not skip_test_compile:
             cmd.append("-DskipTests")
         if skip_test_compile:
             cmd.append("-Dmaven.test.skip=true")
@@ -75,9 +78,10 @@ class MavenRunner:
 
     # ------------------------------------------------------------------ run
     def run(self, goal: str, *, module: str | None = None, extra_args: Iterable[str] = (), label: str = "",
-            skip_test_compile: bool = False) -> BuildResult:
+            skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
         cwd, file_args = self._cwd(module)
-        cmd = self.command(goal, extra_args=[*file_args, *extra_args], skip_test_compile=skip_test_compile)
+        cmd = self.command(goal, extra_args=[*file_args, *extra_args], skip_test_compile=skip_test_compile,
+                           skip_tests=skip_tests)
         log_path = self.ws.new_log_path(f"build-{label or goal}")
         log.info("mvn %s (cwd=%s)", " ".join(cmd[1:]), self.ws.rel(cwd) if cwd != self.ws.root else ".")
         pr = run_logged(cmd, cwd=cwd, env=mvn_env(self.cfg), log_path=log_path, timeout_s=self.timeout_s)
@@ -106,7 +110,8 @@ class MavenRunner:
         )
         self.ws.journal({"event": "build", "goal": goal, "module": module, "ok": ok, "exit_code": pr.exit_code,
                          "duration_s": result.duration_s, "error_count": len(errors), "log": str(log_path),
-                         "timed_out": pr.timed_out, "skip_test_compile": skip_test_compile, "label": label})
+                         "timed_out": pr.timed_out, "skip_test_compile": skip_test_compile, "skip_tests": skip_tests,
+                         "label": label})
         log.info("build %s: %s (%d errors, %.1fs)", goal, "OK" if ok else "FAILED", len(errors), pr.duration_s)
         return result
 

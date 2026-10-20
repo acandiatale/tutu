@@ -538,3 +538,54 @@ def test_ga_ignores_handover_suffixes(e2e):
         "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
     assert e2e._gav_listed("g:a:2.2", ["g:a:2.2.10.RELEASE (advisory:hystrix)"])
     assert e2e._gav_listed("g:a", ["g:a (advisory:hystrix)"]) and not e2e._gav_listed("g:b", ["g:a (x)"])
+
+
+# ---------------------------------------------------------------------------------------------- round 8: properties
+PROPS_PH = "module/boot-jar/src/main/resources/application.properties"
+
+
+def _props_report(external=("mail.host", "java:comp/env/jdbc/catalogDS", "catalog.home"), in_profile=False) -> dict:
+    inv = {"findings": [{"key": k, "status": "external"} for k in external]
+           + [{"key": "catalog.title", "status": "defined"}, {"key": "catalog.page-size", "status": "defined"}],
+           "placeholder_files": [PROPS_PH], "placeholders_written": ["mail.host", "spring.datasource.url"]}
+    return {"profile": {"properties": inv}} if in_profile else {"properties": inv}
+
+
+def _props_project(tmp_path):
+    f = tmp_path / "proj" / PROPS_PH
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("# --- sbmig externalized-config\nmail.host=__SET_ME__\nspring.datasource.url=__SET_ME__\n")
+    return tmp_path / "proj"
+
+
+PROPS_WANT = {"external_min": 3, "external": ["mail.host", "java:comp/env/jdbc/catalogDS", "catalog.home"],
+              "absent": ["catalog.title", "catalog.page-size"], "written": ["mail.host"],
+              "placeholder_file_contains": ["mail.host=__SET_ME__", "spring.datasource.url=__SET_ME__"]}
+
+
+def test_properties_expectation_passes(e2e, tmp_path):
+    assert e2e.evaluate_properties(PROPS_WANT, _props_report(), _props_project(tmp_path)) == []
+    assert e2e.evaluate_properties(PROPS_WANT, _props_report(in_profile=True), _props_project(tmp_path)) == []
+
+
+def test_properties_mismatches(e2e, tmp_path):
+    want = dict(PROPS_WANT, absent=["mail.host"], written=["catalog.home"],
+                placeholder_file_contains=["server.servlet.context-parameters.catalog.region=kr"])
+    mm = e2e.evaluate_properties(want, _props_report(external=("mail.host",)), _props_project(tmp_path))
+    text = "\n".join(mm)
+    assert "external=1 < min 3" in text
+    assert "'catalog.home' is not an external finding" in text
+    assert "'mail.host' must not be external" in text
+    assert "'catalog.home' not in placeholders_written" in text
+    assert "lacks 'server.servlet.context-parameters.catalog.region=kr'" in text
+    assert e2e.evaluate_properties(PROPS_WANT, {}, None)[0] == "no properties inventory in report.json"
+    assert any("not found in the migrated project" in m
+               for m in e2e.evaluate_properties(PROPS_WANT, _props_report(), tmp_path / "nowhere"))
+
+
+def test_properties_wired_into_evaluate(e2e, tmp_path):
+    res = e2e.FixtureResult(fixture="legacy-external-config", exit_code=0)
+    report = dict(_props_report(), success=True)
+    assert e2e.evaluate(res, {"properties": PROPS_WANT}, report, [], _props_project(tmp_path)) == []
+    assert e2e.evaluate(res, {"properties": dict(PROPS_WANT, external_min=9)}, report, [],
+                        _props_project(tmp_path))

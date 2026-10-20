@@ -41,6 +41,19 @@ def advisory_lines(report: RunReport) -> list[str]:
     return out
 
 
+def properties_console_line(report: RunReport) -> Optional[str]:
+    """`properties to set: N (placeholders in <file>)` when the Handover lists external keys (round 8)."""
+    from .handover import external_to_set
+
+    h = report.handover
+    if h is None or not h.properties_to_set:
+        return None
+    inv = report.properties if report.properties is not None else getattr(report.profile, "properties", None)
+    n = len(external_to_set(inv)) or len(h.properties_to_set)
+    files = list(report.properties.placeholder_files) if report.properties is not None else []
+    return f"properties to set: {n}" + (f" (placeholders in {', '.join(files)})" if files else "")
+
+
 def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     from rich.console import Console
     from rich.table import Table
@@ -79,6 +92,9 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
         for key, errs in list(group_by_file(report.unresolved).items())[:15]:
             ut.add_row(key, "\n".join(e.message[:120] for e in errs[:3]) + (" …" if len(errs) > 3 else ""))
         console.print(ut)
+    pl = properties_console_line(report)
+    if pl:
+        console.print(pl, markup=False, highlight=False)
     for f in report.manual_followups[:10]:
         console.print(f"[yellow]follow-up[/] {f}")
     if report.outputs.get("report_md"):

@@ -76,6 +76,7 @@ build:
   extra_args: ["-B", "-ntp", "-Dstyle.color=never"]
   skip_tests: true
   allow_skip_test_compile_fallback: true
+  allow_skip_tests_fallback: true  # only runtime test failures left → -DskipTests, flag tests-skipped, tests listed
   timeout_minutes: 30
   source_encoding_policy: set-property   # set-property | convert-utf8 (legacy MS949/EUC-KR sources)
   enforcer_policy: relax-rule            # relax-rule | skip | keep
@@ -157,3 +158,12 @@ advisories:                        # library advisories (docs/ADVISORIES.md): EO
   report_carried_over: true        # handover lists dependencies pinned at as-is versions (unmanaged after the swap)
   ledger: true                     # findings go to kb/ledger.jsonl (resolution=advisory) → fleet learning report
   max_from_here: 40
+
+externalized:                      # settings the code reads that no packaged resource defines (round 8)
+  enabled: true
+  sentinel: "__SET_ME__"           # grep-able placeholder value; Boot precedence lets env / -D / external files override it
+  write_placeholders: true         # block appended to module/boot-jar/src/main/resources/application.properties
+  placeholder_file: application.properties
+  rules_file: knowledge/config/externalized.yml
+  include_test_refs: true
+  max_refs_per_key: 3

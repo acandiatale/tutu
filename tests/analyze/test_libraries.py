@@ -13,7 +13,7 @@ EXPECTED = {"lombok", "mapstruct", "querydsl", "spring-security", "spring-data-j
             "spring-context", "spring-retry", "elasticsearch", "mongodb",
             # library advisories (knowledge/libraries/advisories.yml)
             "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom", "swagger-v1",
-            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4"}
+            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis"}
 
 
 def test_names_are_the_contract() -> None:
@@ -109,3 +109,21 @@ def test_spring_cloud_bom_from_managed_and_parent(tmp_path: Path) -> None:
     plain = tmp_path / "plain"
     write(plain, "pom.xml", pom("z", deps=(dep(SC, "spring-cloud-starter-openfeign"),)))
     assert "spring-cloud-bom" not in _libs(plain)
+
+
+def test_jdk_removed_apis_rule_is_import_only(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("x"))
+    write_java(tmp_path, "", "com.a", "A", imports=("sun.misc.BASE64Encoder", "javax.activation.DataHandler",
+                                                     "javax.xml.bind.DatatypeConverter"))
+    libs = _libs(tmp_path)
+    assert libs["jdk-removed-apis"].evidence == ["import:sun.misc", "import:javax.activation"]
+    assert libs["jdk-removed-apis"].version is None
+    assert "jaxb" in libs                       # JAXB stays on its own rule
+    write_java(tmp_path, "", "com.a", "B", imports=("sun.misc.Unsafe",))
+    assert "import:sun.misc" in _libs(tmp_path)["jdk-removed-apis"].evidence
+
+
+def test_jdk_removed_apis_segment_boundary(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("x"))
+    write_java(tmp_path, "", "com.a", "A", imports=("sun.miscellaneous.Foo", "com.sun.imagery.X"))
+    assert "jdk-removed-apis" not in _libs(tmp_path)
