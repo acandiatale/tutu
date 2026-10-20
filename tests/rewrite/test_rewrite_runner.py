@@ -105,7 +105,7 @@ def test_command_env_and_config_file(ws, rcfg, fake):
         del os.environ["MAVEN_OPTS"]
     call = fake.calls[0]
     cfg_path = ws.run_dir / "rewrite" / "rewrite-1.yml"
-    assert call["cmd"] == ["mvn", "-B", "-ntp", "-Dstyle.color=never", "-Dmaven.repo.local=/tmp/m2repo",
+    assert call["cmd"] == [mvn_mod.mvn_executable(rcfg), "-B", "-ntp", "-Dstyle.color=never", "-Dmaven.repo.local=/tmp/m2repo",
                            "org.openrewrite.maven:rewrite-maven-plugin:6.46.1:run",
                            f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
                            f"-Drewrite.configLocation={cfg_path.resolve()}",
