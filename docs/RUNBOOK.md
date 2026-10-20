@@ -52,9 +52,11 @@ graph strip stays dark). The page streams the graph node updates, `journal.jsonl
 fixes) and the run's `sbmig.log` over SSE (`status | node | error | journal | log | report | ping | end`), and links
 `report.md` / `report.json` / `result.zip` / `sbmig.log` when the run ends; the server-wide log is
 `<out>/sbmig-web.log`. "중단" (stop) takes effect after the current graph node: a running Maven build, OpenRewrite run
-or LLM call is not interrupted; the run is then finalized as aborted (exit code 3). The server needs the same
+or LLM call is not interrupted; the run is then finalized as aborted (exit code 3) without the final `mvn clean
+package` — a stop that arrives once the verify phase has run changes nothing. The server needs the same
 environment as the CLI (`JAVA21_HOME`, `LLM_BASE_URL`, `LLM_API_KEY`, or the `.env` next to it); it binds to localhost unless `--host` says
-otherwise. Concurrent runs share the file KB (`kb/`); for the 500-project sequence keep one run at a time.
+otherwise. Runs share the file KB (`kb/`), so the server executes **one migration at a time**: further uploads
+wait as `queued` and start in order.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
 ## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)
@@ -72,7 +74,7 @@ never writes them anywhere. Programmatic use from your own agent code: `sbmig.ap
 ## 1. Running a migration
 ```bash
 sbmig run path/to/project.zip --config config/artifacts.yml --out out/
-#  --stop-after jdk21|spring|restructure   stop early (always still writes a report)
+#  --stop-after intake|analyze|plan|jdk21|spring|restructure|verify   stop early (always still writes a report)
 #  --dry-run                                analyze + plan + decisions only, no edits
 #  --java-home /usr/lib/jvm/java-21 --settings /etc/maven/nexus-settings.xml
 ```

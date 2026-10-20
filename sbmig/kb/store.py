@@ -669,7 +669,8 @@ class FileKnowledgeBase:
                 if (run_id, b.id) not in self._ledger_blocked:
                     self._ledger_blocked.add((run_id, b.id))
                     recs.append(blocked_record(b, profile, ws))
-            recs += unresolved_records(report.unresolved, profile, ws)
+            if report.final_build is not None and "aborted" not in report.flags:
+                recs += unresolved_records(report.unresolved, profile, ws)   # only what the final build left behind
             adv_cfg = getattr(self.cfg, "advisories", None)
             if adv_cfg is None or adv_cfg.ledger:
                 for f in report.advisories:

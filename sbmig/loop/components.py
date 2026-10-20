@@ -78,7 +78,17 @@ class LazyFixer:
         return self._get().propose(ws, cluster, ctx)
 
     def apply(self, ws, changes):
-        return self._get().apply(ws, changes)
+        """Applying a patch needs no LLM: when the real fixer cannot be built (no LLM configured, plugin import
+        failed) the plain `PatchApplier` applies it, so KB patch replays work in runs without an LLM."""
+        if self._fixer is None:
+            try:
+                self._get()
+            except Exception as e:
+                log.info("fixer unavailable for a patch replay (%s: %s); applying with PatchApplier",
+                         type(e).__name__, e)
+                from sbmig.fix.apply import PatchApplier
+                return PatchApplier(ws).apply(list(changes))
+        return self._fixer.apply(ws, changes)
 
 
 def basic_profile_summary(profile) -> str:

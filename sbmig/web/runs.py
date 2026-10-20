@@ -18,8 +18,13 @@ What the SSE stream relays (`events()`):
 
 Stop: `stop()` sets a cancel flag the worker checks between graph updates. A node in progress (a Maven build, an
 OpenRewrite run, an LLM call) is not interrupted — LangGraph cannot cancel a running sync node — so the run stops
-after the current node and is then finalized as aborted ("stopped by user"; exit code 3). With the inline fallback
-engine there are no intermediate updates and the flag has no effect.
+after the current node and is then finalized as aborted ("stopped by user"; exit code 3) *without* the final
+`mvn clean package` (the report says so). A stop that arrives once the verify phase has run changes nothing: the run
+finishes normally. With the inline fallback engine there are no intermediate updates and the flag has no effect.
+
+One migration at a time: the knowledge base under `kb/` is file-based and shared by every run (CLAUDE.md: one agent
+migrates projects strictly sequentially), so worker threads queue on `RunManager._run_lock`; a run waiting for its
+turn reports state ``queued``.
 """
 from __future__ import annotations
 
@@ -64,6 +69,7 @@ class Run:
     history: list[tuple[str, Any]] = field(default_factory=list)    # node / error / finished events, append-only
     cond: threading.Condition = field(default_factory=threading.Condition)
     cancel: threading.Event = field(default_factory=threading.Event)
+    active: threading.Event = field(default_factory=threading.Event)     # left the queue, migration in progress
     done: threading.Event = field(default_factory=threading.Event)
     report: Any = None
     exit_code: int | None = None
@@ -80,6 +86,7 @@ class RunManager:
         self.repo_root = Path(repo_root).resolve()
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
+        self._run_lock = threading.Lock()      # serializes the migrations (shared file-based KB)
 
     # ---- paths
     def run_dir(self, run_id: str) -> Path:
@@ -95,19 +102,14 @@ class RunManager:
         """Validate, save the zip, build config + workspace + orchestrator, start the worker.
         ValueError = bad request."""
         from sbmig.core.config import load_config
-        from sbmig.core.models import Phase
         from sbmig.core.workspace import Workspace
-        from sbmig.loop import Orchestrator
+        from sbmig.loop import Orchestrator, parse_stop_after
 
         for c in configs:
             if not RUN_ID_RE.match(c) or not (self.repo_root / "config" / c).is_file():
                 raise ValueError(f"unknown config {c}")
-        if stop_after:
-            try:
-                Phase(stop_after.lower())
-            except ValueError:
-                raise ValueError(f"stop_after must be one of: {', '.join(p.value for p in Phase)}") from None
-            stop_after = stop_after.lower()
+        phase = parse_stop_after(stop_after)                  # ValueError names the accepted values
+        stop_after = phase.value if phase is not None else None
         overrides = {"llm": {"provider": llm_provider}} if llm_provider else None
         cfg = load_config(*[self.repo_root / "config" / c for c in configs], overrides=overrides,
                           repo_root=self.repo_root)        # pydantic ValidationError is a ValueError
@@ -132,19 +134,24 @@ class RunManager:
     def _worker(self, run: Run) -> None:
         from sbmig.cli import attach_file_log, run_exit_code
 
-        log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
+        log_path: Path | None = None
         try:
-            report = self._run_thread_body(run)
-            run.report = report
-            run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
+            with self._run_lock:                       # one migration at a time (see the module docstring)
+                run.active.set()
+                log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
+                report = self._run_thread_body(run)
+                run.report = report
+                run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
         except Exception as e:  # the orchestrator never raises; a crash here is a bug in the engine / this module
             log.exception("run %s failed", run.run_id)
             run.error = f"{type(e).__name__}: {e}"
             run.exit_code = EXIT_ABORTED
             self._push(run, "error", {"message": run.error})
         finally:
+            run.active.set()
             log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
-            _detach_file_log(log_path)
+            if log_path is not None:
+                _detach_file_log(log_path)
             self._push(run, "finished", {"exit_code": run.exit_code,
                                          "success": getattr(run.report, "success", None)})
             run.done.set()
@@ -163,18 +170,25 @@ class RunManager:
             log.info("graph engine unavailable (%s) — running the inline engine", e)
             return orch.run(stop_after=phase)
         updates = stream_graph(orch, stop_after=phase)
+        stopped = False
         try:
             for name, update in updates:
                 self._push(run, "node", {"node": name, "update": _jsonable(update)})
-                if run.cancel.is_set():
-                    log.warning("run %s: stop requested — stopping after node %s", run.run_id, name)
-                    _mark_stopped(orch)          # before close(): the engine finalizes the report when closed early
-                    break
+                if not run.cancel.is_set():
+                    continue
+                if name == "finalize" or (name == "phase" and update.get("phase") == Phase.VERIFY.value):
+                    # the final build already ran: the migration is complete, a stop now would only mislabel it
+                    log.warning("run %s: stop requested after the final build — finishing normally", run.run_id)
+                    continue
+                log.warning("run %s: stop requested — stopping after node %s (no final build)", run.run_id, name)
+                _mark_stopped(orch)          # before close(): the engine finalizes the report when closed early
+                stopped = True
+                break
         finally:
             close = getattr(updates, "close", None)
             if callable(close):
                 close()
-        if run.cancel.is_set():
+        if stopped:
             _finalize_stopped(orch)
         return orch.report
 
@@ -199,7 +213,7 @@ class RunManager:
         rd = self.run_dir(run_id)
         info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None}
         if run is not None:
-            info["state"] = "finished" if run.done.is_set() else "running"
+            info["state"] = "finished" if run.done.is_set() else ("running" if run.active.is_set() else "queued")
             info["exit_code"] = run.exit_code
             info["node"] = run.last_node
             if run.cancel.is_set():
@@ -302,7 +316,7 @@ def _mark_stopped(orch: Any) -> None:
     try:
         abort = getattr(orch, "_abort", None)
         if callable(abort):
-            abort(report, "stopped by user (web UI)")
+            abort(report, "stopped by user (web UI) — the final `mvn clean package` did not run")
         else:
             report.flags.append("aborted")
     except Exception:  # never let the stop path hide the report

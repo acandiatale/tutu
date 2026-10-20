@@ -52,6 +52,37 @@ class _RunAborted(Exception):
 
 _PHASE_ORDER = [Phase.INTAKE, Phase.ANALYZE, Phase.PLAN, Phase.JDK21, Phase.SPRING, Phase.RESTRUCTURE,
                 Phase.VERIFY, Phase.REPORT]
+STOP_AFTER_PHASES = tuple(p for p in _PHASE_ORDER if p != Phase.REPORT)
+
+
+def parse_stop_after(value: Any) -> Phase | None:
+    """`--stop-after` / `stop_after=` of the CLI, the web UI and `sbmig.api.migrate`: a phase name (case-insensitive)
+    before `report`; None / '' = run everything. ValueError names the accepted values."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    text = value.value if isinstance(value, Phase) else str(value).strip().lower()
+    try:
+        phase = Phase(text)
+    except ValueError:
+        phase = None
+    if phase is None or phase not in STOP_AFTER_PHASES:
+        raise ValueError(f"stop_after must be one of: {', '.join(p.value for p in STOP_AFTER_PHASES)}")
+    return phase
+
+
+class _BudgetedLLM:
+    """An LLM client whose calls are charged to the run's `LoopBudget` (recipe-candidate generation in the KB
+    harvest goes through the same budget as the fix loop)."""
+
+    def __init__(self, inner: Any, budget: LoopBudget):
+        self._inner, self._budget = inner, budget
+
+    def complete(self, *args: Any, **kwargs: Any) -> Any:
+        self._budget.charge_llm(1)
+        return self._inner.complete(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
 
 class Orchestrator:
@@ -232,6 +263,11 @@ class Orchestrator:
         self._running = True
         self._dry_run = dry_run
         self.abort_reason = None
+        # per-run state (an orchestrator is normally used once; a second run must not see the first one's results)
+        self._verify_results = []
+        self._phase_failed = False
+        self._pending_notes = []
+        self.loop = None
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
@@ -245,13 +281,42 @@ class Orchestrator:
         except MissingComponentError as e:
             log.error("%s", e)
             self._abort(report, f"missing component: {e}")
+            self._final_build_after_abort(report)
         except Exception as e:  # never lose the report because of a bug
             log.exception("run failed")
             self._abort(report, f"internal error: {type(e).__name__}: {e}")
+            self._final_build_after_abort(report)
         finally:
             self._running = False
             report.timings_s["total"] = round(self.clock() - t0, 3)
             self._finalize(report)
+
+    def _final_build_after_abort(self, report: RunReport) -> None:
+        """Invariant 1 (build gate): a run that died of an internal error / missing component after planning still
+        ends with the final `mvn clean package` attempt, so report.md lists the real unresolved errors of the tree
+        as it was left. Deliberate aborts (`_RunAborted`: no Maven, unresolvable parent) build nothing — the build
+        would fail for the very reason the run aborted."""
+        if self._dry_run or self._verify_results or self.plan is None or not self.cfg.loop.always_final_verify:
+            return
+        steps = [s for s in self.plan.steps if s.kind == StepKind.BUILD and s.phase == Phase.VERIFY]
+        if not steps:
+            return
+        pr = PhaseResult(phase=Phase.VERIFY, step_ids=[s.id for s in steps], ok=False)
+        pr.notes.append("final build after the run aborted (best effort: earlier phases are incomplete)")
+        self.ws.journal({"event": "phase_start", "phase": Phase.VERIFY.value, "steps": pr.step_ids,
+                         "after_abort": True})
+        try:
+            for s in steps:
+                self._step_verify(pr, s)
+        except Exception as e:   # the build runner itself failed: keep the abort report
+            log.warning("final build after the abort failed: %s", e)
+            pr.notes.append(f"final build failed: {type(e).__name__}: {e}")
+        pr.ok = pr.build_ok = bool(self._verify_results) and all(r.ok for r in self._verify_results)
+        pr.finished_at = utcnow()
+        report.phases.append(pr)
+        self.ws.journal({"event": "phase_end", "phase": Phase.VERIFY.value, "ok": pr.ok, "build_ok": pr.build_ok,
+                         "iterations": pr.iterations, "attempts": 0, "remaining_errors": len(pr.remaining_errors),
+                         "blocked": [], "after_abort": True})
 
     def _abort(self, report: RunReport, why: str) -> None:
         report.flags.append("aborted")
@@ -390,7 +455,10 @@ class Orchestrator:
         if not pr.ok and phase != Phase.VERIFY:
             self._phase_failed = True
         if phase != Phase.VERIFY and not pr.skipped:
-            self._credit_plan_recipes(pr)
+            if pr.iterations:
+                self._credit_plan_recipes(pr)
+            else:   # no build-fix loop in this phase (loop.phases.<p>.enabled=false): nothing proves success/failure
+                log.info("phase %s ran no build: KB recipes are not credited", phase.value)
             self._harvest(report, pr)
         self._timed(phase.value, t)
         return pr
@@ -851,9 +919,12 @@ class Orchestrator:
         if not self.cfg.kb.harvest or self._dry_run or self.profile is None:
             return
         llm = None
-        if self.cfg.kb.generate_recipe_candidates:
+        if self.cfg.kb.generate_recipe_candidates and not self.budget.llm_allowed():
+            log.info("recipe-candidate generation skipped: LLM budget exhausted (%d/%d calls)",
+                     self.budget.llm_calls, self.budget.max_llm_calls)
+        elif self.cfg.kb.generate_recipe_candidates:
             try:
-                llm = self.llm_client()
+                llm = _BudgetedLLM(self.llm_client(), self.budget)
             except Exception as e:
                 log.info("no LLM for recipe-candidate generation: %s", e)
         try:
@@ -1024,7 +1095,11 @@ class Orchestrator:
             for pr in report.phases:
                 if BuildFixLoop.test_compile_skipped_in(pr):
                     unresolved += [e for e in pr.remaining_errors if e not in unresolved]
-        self._finalize_blocked(report, unresolved)
+        try:
+            self._finalize_blocked(report, unresolved)
+        except Exception as e:  # never lose the report
+            log.exception("finalizing the blocked items failed")
+            report.flags.append(f"blocked-finalize-failed: {e}")
         report.unresolved = [e for e in unresolved if not self.blocked.is_blocked_error(e)]
         out = report.outputs
         out["run_dir"] = str(self.ws.run_dir)

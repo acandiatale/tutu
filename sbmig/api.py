@@ -55,16 +55,10 @@ def migrate(
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).
     Returns the RunReport; `exit_code(report)` maps it to the CLI exit code (0 / 2 / 3)."""
     from sbmig.core.config import load_config
-    from sbmig.core.models import Phase
     from sbmig.core.workspace import Workspace
-    from sbmig.loop import NullKnowledgeBase, Orchestrator
+    from sbmig.loop import NullKnowledgeBase, Orchestrator, parse_stop_after
 
-    phase = None
-    if stop_after:
-        try:
-            phase = Phase(str(stop_after).lower())
-        except ValueError as exc:
-            raise ValueError(f"stop_after must be one of: {', '.join(p.value for p in Phase)}") from exc
+    phase = parse_stop_after(stop_after)        # ValueError names the accepted values
     ov: dict = dict(overrides or {})
     if kb is False:
         ov = _merge(ov, {"kb": _NO_KB_OVERRIDES})

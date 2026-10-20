@@ -204,3 +204,13 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   * Recipe: `com.company.migrate.HystrixToResilience4j` (knowledge/recipes/base), advisory `hystrix` policy
     `recipe`. Programmatic `HystrixCommand` subclasses / `HystrixObservableCommand` are left to the LLM with the
     advisory hint (fixture `boot2-hystrix-command`, replayed LLM, `max_llm_calls` = number of files).
+* 2026-10-20 PM (round 7a flow-review fixes): `sbmig.loop.parse_stop_after(value) -> Phase | None` (+
+  `STOP_AFTER_PHASES`) is the one validator for `--stop-after` / web `stop_after=` / `api.migrate(stop_after=)`:
+  intake…verify, `report` rejected with `ValueError`. `LazyFixer.apply` applies with `PatchApplier` when the real
+  fixer cannot be built (KB patch replay never needs an LLM). `Orchestrator._final_build_after_abort(report)` runs
+  the plan's verify steps after an internal-error / missing-component abort (invariant 1). `FileKnowledgeBase.
+  record_run` writes `unresolved` ledger lines only when `report.final_build` is set and the run is not aborted.
+  Web: `RunManager` serializes migrations (`_run_lock`); `status().state` gains `queued`; a stop observed after the
+  verify phase group / `finalize` node no longer aborts the run; the abort reason of an earlier stop says the final
+  build did not run. `is_llm_transport_error` also matches unparseable 200s / bad `LLM_RESPONSE_PATH` and ignores
+  `status=400|413|422`.

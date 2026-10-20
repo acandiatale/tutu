@@ -43,6 +43,7 @@ log = logging.getLogger("sbmig.web")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_UPLOAD = 512 * 1024 * 1024
+THREAD_POOL_SIZE = 256             # anyio worker threads: each open SSE stream (browser tab) holds one for the run
 _END = object()
 
 
@@ -92,6 +93,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _ensure_console_logging()
+        limiter = anyio.to_thread.current_default_thread_limiter()   # every SSE stream holds one of these threads
+        limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
         log.info("sbmig web UI ready (runs under %s, configs from %s/config)", mgr.out_dir, mgr.repo_root)
         yield
 

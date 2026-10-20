@@ -286,9 +286,11 @@ def test_harvest_ledger_lines_for_all_resolutions(kb, ws, profile):
     b = by["blocked"]
     assert b.symbol == "com.company:legacy-web" and b.resolver_id == "external_javax_api"
     assert b.files == ["A.java"] and str(ws.root) not in b.model_dump_json()
-    # the same blocked item is not written again by the run-level hook
-    from sbmig.core.models import CaseType, RunReport, utcnow
+    # the same blocked item is not written again by the run-level hook; `unresolved` lines need a final build
+    from sbmig.core.models import BuildResult, CaseType, RunReport, utcnow
 
+    final = BuildResult(ok=False, goal="clean package", command=["mvn"], exit_code=1, duration_s=1.0, log_path="x",
+                        errors=[json_error()])
     report = RunReport(
         run_id="t-run",
         project_name="demo",
@@ -297,6 +299,8 @@ def test_harvest_ledger_lines_for_all_resolutions(kb, ws, profile):
         blocked=[blocked],
         unresolved=[json_error()],
     )
+    assert kb.record_run(report, profile, ws).ledger_entries == 0        # stopped / aborted: no final build
+    report.final_build = final
     run_res = kb.record_run(report, profile, ws)
     assert run_res.ledger_entries == 1
     assert [ln.resolution for ln in kb.ledger().iter(resolution="unresolved")] == ["unresolved"]

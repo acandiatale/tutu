@@ -197,3 +197,28 @@ the LLM with the advisory as guidance, and the Handover names every LLM-rewritte
 | e2e evaluator: `g:a (advisory:x)` handover suffixes parse; fixture count 15 | `scripts/e2e.py`, `tests/fixtures/` | done |
 | Offline tests | 917 passed (25 integration deselected) | green |
 | Environment note | — | the cloud proxy rate-limited Maven Central (HTTP 429) for most of the day: two reruns of `boot2-cloud-legacy` blocked on unrelated Boot starters (`Failed to download` ×197) while hystrix was `replaced` in each; the passing run was re-evaluated offline with the final expected.json; `boot2-hystrix-command` passed after pre-fetching the 14 POMs the rewrite resolver had failed on |
+
+## Status — 2026-10-20, round 7a (end-to-end flow review: "각 노드들이 알맞게 흐름을 잘 타고 있는지")
+
+User: read the finished code, check that every node takes the right path, fix what is wrong. A read-only reviewer
+traced `graph/engine.py` → `loop/orchestrator.py` → `loop/fixloop.py` → `web/runs.py` → `kb/` and reported 4 bugs,
+7 robustness gaps and 6 nits; the confirmed ones are fixed below (ids as in the review).
+
+| Finding | Fix | Where | Test |
+|---|---|---|---|
+| B1 KB patch replay built the LLM fixer first → `LLMConfigError` without a key, so a run without an LLM could not replay its own knowledge | `LazyFixer.apply` falls back to `PatchApplier` when the fixer cannot be built (applying a patch needs no LLM) | `sbmig/loop/components.py` | `test_kb_patch_replay_works_without_an_llm` (0 LLM calls, BUILD SUCCESS) |
+| B2 an internal error / missing component after planning skipped the final `mvn clean package` (invariant 1) | `_final_build_after_abort`: the guard's except branches run the plan's verify steps (not for dry runs, `_RunAborted`, or `always_final_verify=false`); report keeps `aborted` + the real unresolved list | `sbmig/loop/orchestrator.py` | `test_internal_error_still_attempts_the_final_build` |
+| B3 LLM transport classification: unparseable 200 / bad `LLM_RESPONSE_PATH` never counted (clusters ended as `repeated_failure` instead of `llm_unavailable`); 400/413 (prompt too long) counted and could switch the LLM off for the run | regex covers `invalid JSON` / `cannot find the reply text` / `response_path`; `status=400|413|422` is the request's fault and never counts | `sbmig/loop/fixloop.py` | `test_transport_classification` ×8 |
+| B4 duplicate attempt ids when a round is repeated inside one iteration (harvest mislinked cases) | `_Round.n` seeded from the attempts already recorded for the iteration | `sbmig/loop/fixloop.py` | `test_reround_keeps_attempt_ids_unique` |
+| R1 a phase without a build-fix loop credited KB recipes with a *failure* (`build_ok=False` means "no evidence", not "failed") | no credit when `pr.iterations == 0`; harvest still runs | `sbmig/loop/orchestrator.py` | `test_phase_without_a_loop_does_not_credit_kb_recipes` (+ positive twin) |
+| R2 web Stop clicked while the final build ran marked a finished run `aborted` (exit 3) | a stop seen after the verify phase group / finalize node finishes the run normally; an earlier stop says in the report that the final build did not run | `sbmig/web/runs.py` | `test_stop_after_the_final_build_finishes_normally`, `..._aborts_and_says_no_final_build` |
+| R3 two web runs at once shared `kb/` and the in-memory index (last writer wins) | `RunManager._run_lock` serializes migrations; a waiting run is `queued` (UI badge, stop allowed) | `sbmig/web/runs.py`, `static/index.html` | `test_runs_are_serialized_and_report_queued` |
+| R5 recipe-candidate LLM calls in the harvest bypassed `max_llm_calls` | `_BudgetedLLM` charges the run budget; generation skipped once the budget is exhausted | `sbmig/loop/orchestrator.py` | `test_harvest_recipe_candidate_calls_are_charged_to_the_budget`, `..._skips_candidates_when_the_budget_is_exhausted` |
+| R7 stopped / aborted runs wrote `unresolved` ledger lines (mid-migration errors are not resolutions) | `record_run` writes them only when a final build ran and the run was not aborted; blocked / advisory lines unchanged | `sbmig/kb/store.py` | `test_record_run_skips_unresolved_without_a_final_build`, `tests/kb/test_ledger.py` |
+| R6 every SSE stream holds an anyio worker thread (default pool 40) | pool raised to 256 at startup | `sbmig/web/app.py` | — |
+| R9 `attach_file_log` outside the worker's `try` → a run stuck "running" | inside the try; the run finishes with an `error` event | `sbmig/web/runs.py` | `test_crash_before_the_body_still_finishes_the_run` |
+| N1 `stop_after=report` accepted (flag `stopped-after-report`) | `sbmig.loop.parse_stop_after` shared by CLI / web / `api.migrate`: intake…verify only | `sbmig/loop/orchestrator.py`, `cli.py`, `web/runs.py`, `api.py` | `test_parse_stop_after`, `test_bad_stop_after_is_rejected` |
+| N4 / N5 `_finalize_blocked` could lose the report; a reused orchestrator kept the previous run's verify results | guarded; per-run state reset in `_run_guard` | `sbmig/loop/orchestrator.py` | `test_orchestrator_reuse_starts_from_a_clean_state` |
+| Looked at, no change | graph edges vs inline, `_RunAborted` paths, fix-loop termination, advisory chain order, company client, exit codes; N3 (recipe-batch retry re-handles ≤ limit clusters), N6 nits (`max_iterations=0` = config default; recursion limit 1000 ≈ 495 MSA services) | — | — |
+| Offline tests | 941 passed (25 integration deselected) | | green |
+| Not done (follow-ups) | LLM-unavailable is still permanent for the run after 2 consecutive transport failures (a cool-down would suit gateway hiccups better); Handover `llm_fixed_files` keep pre-restructure paths; `RunManager.runs` is never pruned (one process = one day of runs) | | user decides |

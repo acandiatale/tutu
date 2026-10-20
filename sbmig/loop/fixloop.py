@@ -37,7 +37,11 @@ RESOLUTION_PREFIXES = ("parent_resolution:", "pom_invalid:", "dependency_resolut
 # fixer analysis of a transport/config failure (vs. a protocol-garbage response, which is the model's fault)
 _LLM_TRANSPORT_RE = re.compile(r"(?i)request failed|status=|\bhttp\b|timed? ?out|timeout|connect|connection|refused|"
                                r"unreachable|ssl|certificate|api[_ ]?key|unauthori[sz]ed|forbidden|\b40[13]\b|\b5\d\d\b|"
-                               r"llmconfigerror|not set|config|unknown llm\.provider|missing component|cannot be imported")
+                               r"llmconfigerror|not set|config|unknown llm\.provider|missing component|cannot be imported|"
+                               r"invalid json|cannot find the reply text|response_path|not found in the response")
+# the gateway rejected *this request* for its content (too long, malformed): the prompt's fault, not the wire's —
+# such a failure must not count towards "LLM unavailable for the run"
+_LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b")
 _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
 
 
@@ -46,6 +50,8 @@ def is_llm_transport_error(analysis: str) -> bool:
     if not a.lower().startswith("llm-error:"):
         return False
     if "did not follow the protocol" in a:
+        return False
+    if _LLM_REQUEST_REJECTED_RE.search(a):
         return False
     return bool(_LLM_TRANSPORT_RE.search(a))
 
@@ -562,7 +568,8 @@ class BuildFixLoop:
                                        "errors": len(c.errors), "priority": c.priority} for c in clusters],
                          "masked": [c.id for c, skip, _ in planned if skip is not None]})
         st = _Round(phase=phase, iteration=iteration, build=build, target=target, stall_level=stall_level,
-                    others={c.id: _label(c) for c in clusters})
+                    others={c.id: _label(c) for c in clusters},
+                    n=sum(1 for a in pr.attempts if a.iteration == iteration))   # ids stay unique across re-rounds
         masked: list[tuple[ErrorCluster, TriageDecision, list[str]]] = []
         handled = 0
         llm_before = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.LLM_FIX)

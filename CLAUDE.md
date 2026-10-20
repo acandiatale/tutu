@@ -38,7 +38,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-20, rounds 5–6 + company-convention round complete (`main`)
+## Status — 2026-10-20, rounds 5–6, company-convention round, round 7a (flow review) complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
@@ -47,6 +47,10 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   on the user's request: LLM = provider `company` (plain `requests.post`, settings from `.env`), LangChain tier removed. Round 6: Hystrix → Resilience4j by recipe (pom + annotations) and advisory-guided
   LLM fixes for what recipes cannot convert (Handover names the rewritten files). 917 offline tests green; asserted fixture e2e **14/14** (2026-10-18 tree) + 2 round-6 fixtures passing individually
   (`scripts/e2e.sh`, 15 fixtures); fleet demo 5/5 with 1 LLM call total.
+- Round 7a (flow review, `docs/PLAN.md` last table): KB patch replay without an LLM, final build after an internal abort
+  (invariant 1), LLM transport classification, unique attempt ids, no KB credit without a build, budgeted harvest
+  calls, no `unresolved` ledger lines without a final build, web runs serialized (`queued`), stop after the final
+  build finishes normally, `parse_stop_after` shared by CLI/web/api. 941 offline tests green.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -60,6 +64,13 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   rewrites); hystrix is `recipe` since round 6, with the LLM (advisory-guided) handling programmatic subclasses.
   Advisory hints only exist for advisories with a `## fix-loop: <library>` note section (today: hystrix).
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
+- LLM-unavailable (L5) is permanent for the run after two consecutive transport failures; a cool-down would suit
+  short gateway hiccups better. Handover `llm_fixed_files` keep pre-restructure paths. `RunManager.runs` is
+  never pruned (restart the server daily).
+- Multi-module as-is projects (`layout.multi_module_policy`): `merge` folds an existing `boot-jar` into comp-jar
+  and regenerates it, and a same-FQCN collision is a hard error; candidates: keep an existing `boot-jar`,
+  first-module-wins + Handover "merge conflicts" section, LLM only for same-FQCN-different-content classes, and
+  whether `merge` should become the default (user decision pending).
 - Resilience of the plan-level rewrite step: when the rewrite plugin's own resolver fails to download a POM (seen
   once through the cloud proxy), `UpgradeSpringBoot_4_0` leaves literal `<version>4.0.x</version>` starters, the
   build blocks on `artifact_not_found`, and every KB candidate in that plan is credited a failure it did not cause.
@@ -74,7 +85,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~95 s): `python -m pytest -m "not integration"` → 917 passed, 25 deselected
+- Fast check (Python only, ~95 s): `python -m pytest -m "not integration"` → 941 passed, 25 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.
@@ -96,7 +107,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
   `sbmig serve`), runs migrations in-process through `stream_graph` (one worker thread per run, per-run
   `sbmig.log` by thread filter) and streams `node` / `journal` / `log` / `report` events over SSE to
-  `sbmig/web/static/index.html` (vanilla JS). Stop takes effect between graph nodes only.
+  `sbmig/web/static/index.html` (vanilla JS). Stop takes effect between graph nodes only (a stop before the verify
+  phase aborts without the final build and says so; after it the run finishes normally). One migration at a time:
+  further uploads are `queued` (shared file KB).
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a `claude/...` branch; the user merges to `main` locally.

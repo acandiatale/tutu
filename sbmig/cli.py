@@ -139,7 +139,7 @@ def run(
     out: Path = typer.Option(Path("out"), "--out", "-o", help="output directory"),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
     stop_after: Optional[str] = typer.Option(None, "--stop-after",
-                                             help="intake|analyze|plan|jdk21|spring|restructure"),
+                                             help="intake|analyze|plan|jdk21|spring|restructure|verify"),
     dry_run: bool = typer.Option(False, "--dry-run", help="compute and journal decisions, apply nothing"),
     no_kb: bool = typer.Option(False, "--no-kb", help="do not use or feed the knowledge base"),
     llm_provider: Optional[str] = typer.Option(None, "--llm-provider",
@@ -160,7 +160,7 @@ def run(
     configured parent POM not resolvable, internal error)."""
     if verbose:
         setup_logging(True)
-    from sbmig.core.models import Phase
+    from sbmig.loop import parse_stop_after
 
     overrides: dict = {}
     if llm_provider:
@@ -176,12 +176,10 @@ def run(
     if no_kb:
         overrides["kb"] = {"harvest": False, "use_active_recipes": False, "use_patch_replay": False,
                            "use_hints": False, "generate_recipe_candidates": False}
-    phase = None
-    if stop_after:
-        try:
-            phase = Phase(stop_after.lower())
-        except ValueError:
-            _fail(f"--stop-after must be one of: {', '.join(p.value for p in Phase)}")
+    try:
+        phase = parse_stop_after(stop_after)
+    except ValueError as e:
+        _fail(f"--{e}")
     cfg = _load(config, overrides, repo_root)
     from sbmig.core.workspace import Workspace
     from sbmig.loop import NullKnowledgeBase, Orchestrator

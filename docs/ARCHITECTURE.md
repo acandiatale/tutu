@@ -211,6 +211,10 @@ graph TD;
   failing build, `stop_after` intake/analyze/plan/jdk21, `mvn-not-found`, parent-not-found abort, internal error)
   and asserts equal reports (minus timestamps / SHAs), flags, exit codes and journal event sequences.
 - `recursion_limit` is 1000 (one graph step per node invocation; MSA plans add phase groups per service).
+- **Invariant 1 on the abort paths.** An exception inside a node (missing component, bug) is caught by the guard,
+  the run is flagged `aborted`, and `_final_build_after_abort` still runs the plan's verify steps (not for dry runs
+  or `_RunAborted`, i.e. no Maven / unresolvable parent). The web UI's stop finalizes without the final build and
+  says so; a stop observed after the verify phase group finishes the run normally.
 
 ## 8. Restructure (non-MSA)
 

@@ -44,9 +44,10 @@ Legend — Policy: `H` deterministic handler, `R` OpenRewrite recipe, `K` knowle
 | L2 oscillation | error sets toggling A↔B↔A within `oscillation_window` | treat as stall → B(oscillation) | loop unit |
 | L3 regression | errors × `regression_ratio` or **structural kinds** (`pom_invalid`, `parent_resolution`, `plugin_resolution`) appearing after a pom edit | revert that attempt (git) regardless of count | loop unit (LLM patch breaks pom XML) |
 | L4 LLM protocol garbage / empty | no patches parsed, repeatedly | `max_llm_attempts_per_cluster` then B(repeated_failure); run continues | loop unit (fake LLM returns prose) |
-| L5 LLM unavailable | HTTP errors after retries / missing key | B(llm_unavailable) for LLM-only clusters; handlers/recipes still run; report says the LLM was unavailable | loop unit |
+| L5 LLM unavailable | HTTP errors after retries / missing key / unparseable 200 (not JSON, no reply text, bad `LLM_RESPONSE_PATH`) — twice in a row; a 400/413/422 (the request rejected for its content) is the prompt's fault and never counts | B(llm_unavailable) for LLM-only clusters; handlers/recipes still run; report says the LLM was unavailable | loop unit |
 | L6 budget exhausted | `max_llm_calls` / `max_total_minutes` | remaining LLM-only clusters → B(budget_exhausted); verify + report always run | loop unit |
 | L7 test-compile only | only TEST_COMPILE clusters remain | `-Dmaven.test.skip=true` fallback, flag `test-compile-skipped`, errors listed as follow-ups (exists) | e2e |
+| L9 internal error after planning | an exception inside a phase (missing component, bug) | run flagged `aborted` (exit 3) **and the final `mvn clean package` is still attempted** (`_final_build_after_abort`; not for dry runs or deliberate aborts such as no Maven / unresolvable parent), so `report.md` lists the real unresolved errors | loop unit |
 | L8 pre-existing breakage | the as-is project does not compile on its own JDK | we never build as-is; errors appear after JDK21 — reported like any other; `--baseline` (optional) records the as-is build result for comparison | runbook |
 
 ## 4. Structure edge cases (analyze / restructure)

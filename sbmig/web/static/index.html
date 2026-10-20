@@ -149,6 +149,7 @@
   function badgeHtml(st) {
     let cls = '', text = st.state;
     if (st.state === 'running') { cls = 'running'; text = '실행 중'; }
+    else if (st.state === 'queued') { cls = 'running'; text = '대기열 (다른 실행이 끝나면 시작)'; }
     else if (st.state === 'finished') {
       if (st.success === true) { cls = 'ok'; text = 'BUILD SUCCESS'; }
       else if (st.success === false) { cls = (st.exit_code === 3) ? 'bad' : 'warn'; text = st.exit_code === 3 ? '중단됨' : `미완료 (blocked ${st.blocked||0}, unresolved ${st.unresolved||0})`; }
@@ -162,7 +163,7 @@
     const html = badgeHtml(st); const tmp = document.createElement('div'); tmp.innerHTML = html;
     b.className = tmp.firstChild.className; b.textContent = tmp.firstChild.textContent;
     $('summary').textContent = st.llm_calls != null ? `LLM 호출 ${st.llm_calls}회` : '';
-    $('stopbtn').disabled = st.state !== 'running' || !!st.stop_requested;
+    $('stopbtn').disabled = !(st.state === 'running' || st.state === 'queued') || !!st.stop_requested;
     if (st.state === 'finished') setCurrent(null);
     else if (st.state === 'running' && !graphNodes().some((n) => n.classList.contains('done'))) setCurrent(graphNodes()[0]);
     if (st.files) {
