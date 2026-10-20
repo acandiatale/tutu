@@ -15,7 +15,7 @@ cd migration-agent
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml      # fill in parent / mandatory ×2 / optional ×8
 cp .env.example .env                                     # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
-sbmig llm-probe --config config/artifacts.yml            # exact request, raw response, extracted reply
+sbmig llm-probe --prompt "안녕"                            # exact request, raw response, extracted reply (needs .env only)
 sbmig run <project> --config config/artifacts.yml
 ```
 
@@ -34,6 +34,8 @@ Windows / no shell profile: put the variables in `.env` at the repo root (copy `
 `llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
 
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
+Every command except `llm-probe` needs `--config config/artifacts.yml` (the company artifacts section has no
+default); without it the CLI stops with `config error … artifacts: Field required` and the hint, exit 2.
 
 ## 0.5 LLM roles (two models)
 | Role | Config key | Suggested model | Used for |

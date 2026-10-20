@@ -51,3 +51,28 @@ def test_global_log_file_option(tmp_path):
         assert "log file" in p.read_text(encoding="utf-8")
     finally:
         _detach(p)
+
+
+def test_llm_probe_needs_no_artifacts_config(tmp_path):
+    """Round 9: the probe runs on .env alone (the company artifacts section is stubbed when --config is absent)."""
+    r = CliRunner().invoke(app, ["llm-probe", "--llm-provider", "fake", "--prompt", "안녕"])
+    assert r.exit_code == 0, r.output
+    assert "provider=fake" in r.output and "reply (FakeLLMClient)" in r.output
+
+
+def test_missing_artifacts_config_is_a_clear_error(tmp_path):
+    """Any other command without --config: a short config error + the --config hint, exit 2 (no traceback)."""
+    r = CliRunner().invoke(app, ["analyze", str(REPO / "fixtures" / "projects" / "pure-java")])
+    assert r.exit_code == 2, r.output
+    out = r.output + (r.stderr if hasattr(r, "stderr") and r.stderr_bytes is not None else "")
+    assert "config error" in out and "artifacts" in out and "--config config/artifacts.yml" in out
+    assert "Traceback" not in out
+
+
+def test_llm_probe_missing_key_is_a_clear_error(monkeypatch, tmp_path):
+    for v in ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("SBMIG_ENV_FILE", str(tmp_path / "no.env"))     # never read the developer's .env
+    r = CliRunner().invoke(app, ["llm-probe", "--prompt", "안녕"])
+    assert r.exit_code == 1, r.output
+    assert "CONFIG ERROR" in r.output and "LLM_API_KEY" in r.output and "Traceback" not in r.output

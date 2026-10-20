@@ -96,9 +96,28 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug log
 
 
 def _load(configs: Optional[List[Path]], overrides: Optional[dict] = None, repo_root: Optional[Path] = None):
+    from pydantic import ValidationError
+
     from sbmig.core.config import load_config
 
-    return load_config(*(configs or []), overrides=overrides or None, repo_root=repo_root)
+    try:
+        return load_config(*(configs or []), overrides=overrides or None, repo_root=repo_root)
+    except ValidationError as e:
+        # the usual cause: no `--config config/artifacts.yml` (the company artifacts section has no default)
+        missing = [".".join(str(x) for x in err.get("loc", ())) for err in e.errors() if err.get("type") == "missing"]
+        typer.echo(f"config error: {e.error_count()} problem(s) in the merged configuration", err=True)
+        for err in e.errors()[:10]:
+            typer.echo(f"  {'.'.join(str(x) for x in err.get('loc', ()))}: {err.get('msg')}", err=True)
+        if any(m == "artifacts" or m.startswith("artifacts.") for m in missing):
+            typer.echo("hint: pass the company config: --config config/artifacts.yml "
+                       "(copy config/artifacts.example.yml and fill in parent / mandatory / optional; "
+                       "config/artifacts.local-e2e.yml works for a local try)", err=True)
+        raise typer.Exit(2)
+
+
+# `sbmig llm-probe` without --config: the probe needs .env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL) only, so the
+# required company artifacts section is stubbed — nothing in the probe reads it
+_PROBE_ARTIFACTS_STUB = {"artifacts": {"parent": {"group_id": "sbmig.probe", "artifact_id": "no-config", "version": "0"}}}
 
 
 def _view_workspace(input_path: Path, out: Optional[Path] = None, prefix: str = "view"):
@@ -290,9 +309,11 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     import json
 
     from sbmig.core.interfaces import ChatMessage
-    from sbmig.fix import CompanyClient, LLMError, make_llm_client
+    from sbmig.fix import CompanyClient, LLMConfigError, LLMError, make_llm_client
 
     overrides: dict = {"llm": {"provider": llm_provider}} if llm_provider else {}
+    if not config:
+        overrides.update(_PROBE_ARTIFACTS_STUB)
     cfg = _load(config, overrides)
     llm = cfg.llm
     if bare:
@@ -300,7 +321,13 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
         return
     typer.echo(f"provider={llm.provider} model={llm.model} url={llm.base_url} key_env={llm.api_key_env}"
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
-    client = make_llm_client(cfg)
+    try:
+        client = make_llm_client(cfg)
+    except LLMConfigError as e:          # missing key / URL / model: say which variable, no traceback
+        typer.echo(f"CONFIG ERROR: {e}")
+        typer.echo("hint: put LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env at the repo root (copy .env.example) "
+                   "or export them in the shell; `--llm-provider fake` runs the probe without a gateway")
+        raise typer.Exit(1)
     inner = getattr(client, "inner", client)
     msgs = [ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content=prompt)]
