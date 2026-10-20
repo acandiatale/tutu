@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import signal
+import shutil
 import subprocess
 import threading
 import time
@@ -41,9 +42,35 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
     return env
 
 
+def mvn_executable(cfg: Config) -> str:
+    """`build.mvn` resolved to something `subprocess` can start without a shell.
+
+    Windows installs Maven as `mvn.cmd`; `Popen(["mvn", ...])` does not look at PATHEXT and fails with
+    `WinError 2`. `shutil.which` does, so a bare name is resolved through PATH (plus `MAVEN_HOME`/`M2_HOME`/bin and
+    the usual `.cmd`/`.bat` names). A path with a directory part is used as given (expanded). Unresolvable names are
+    returned unchanged so the existing "mvn not found" messages still name what was configured."""
+    name = (cfg.build.mvn or "mvn").strip()
+    if any(sep in name for sep in ("/", "\\")):
+        return str(Path(name).expanduser())
+    env = mvn_env(cfg)
+    search = env.get("PATH", "")
+    for home_var in ("MAVEN_HOME", "M2_HOME"):
+        home = env.get(home_var)
+        if home:
+            search = os.pathsep.join([str(Path(home).expanduser() / "bin"), search])
+    candidates = [name]
+    if os.name == "nt" and not name.lower().endswith((".cmd", ".bat", ".exe")):
+        candidates = [name + ".cmd", name + ".bat", name]
+    for c in candidates:
+        hit = shutil.which(c, path=search)
+        if hit:
+            return hit
+    return name
+
+
 def base_command(cfg: Config) -> list[str]:
     b = cfg.build
-    cmd = [b.mvn, *b.extra_args]
+    cmd = [mvn_executable(cfg), *b.extra_args]
     if not _blank(b.settings_file):
         cmd += ["-s", str(Path(b.settings_file).expanduser())]
     if not _blank(b.local_repo):
@@ -157,7 +184,7 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
 
 def maven_available(cfg: Config) -> tuple[bool, str]:
     """Preflight: run ``mvn -v`` with the configured env. Returns (ok, 'Apache Maven x.y.z; Java version: …')."""
-    cmd = [cfg.build.mvn, "-v"]
+    cmd = [mvn_executable(cfg), "-v"]
     try:
         cp = subprocess.run(cmd, env=mvn_env(cfg), capture_output=True, text=True, timeout=120,
                             stdin=subprocess.DEVNULL)

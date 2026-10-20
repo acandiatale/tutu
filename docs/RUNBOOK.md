@@ -21,6 +21,8 @@ export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
 #   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
 ```
 
+Windows: Maven is `mvn.cmd`; sbmig resolves `build.mvn` through PATH / `MAVEN_HOME` (`shutil.which`), so `mvn` works
+when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd` and `build.java_home`.
 Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point
 `SBMIG_ENV_FILE` at a file; `load_config` reads it before anything else and never overrides variables already set.
 `llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
