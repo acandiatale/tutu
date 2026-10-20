@@ -28,20 +28,9 @@ intake ─► analyze ─► advisories ─► plan ─► JDK21 (rewrite + buil
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml        # in-house parent / mandatory ×2 / optional ×8
-export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
-# in-house gateway that only accepts a plain chat POST ({model, need_orgin, messages}): use the profile
-#   export LLM_BASE_URL=http://<gateway>/<chat endpoint> LLM_API_KEY=...   # http or https, used verbatim
-#   sbmig llm-probe --config config/llm-company.yml      # raw response + extracted reply
-#   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
-
-sbmig analyze  path/to/project.zip --config config/artifacts.yml      # case type, versions, libs, optional artifacts in use, library advisories
-sbmig advisories list --config config/artifacts.yml                   # EOL / unmanaged libraries we flag (guide | recipe), `show <id>`, `check`
-sbmig plan     path/to/project.zip --config config/artifacts.yml      # ordered steps + recipes (no changes made)
-sbmig run      path/to/project.zip --config config/artifacts.yml --out out/   # full migration; exit 0 = final build passed
-sbmig kb list --status candidate && sbmig kb promote <id>             # review harvested recipes
-sbmig recipes list --kb && sbmig recipes check                        # every known recipe + where it is used
-sbmig fleet run projects.yml --config config/artifacts.yml --out out/fleet   # 500 projects, one after another, resumable
-sbmig kb learning                                                     # what was learned, what still needs the LLM, what blocks most projects
+cp .env.example .env                 # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
+sbmig llm-probe --config config/artifacts.yml
+sbmig run <project> --config config/artifacts.yml
 ```
 
 Web UI (FastAPI app served by uvicorn): `sbmig serve --port 8765` → http://127.0.0.1:8765 (or

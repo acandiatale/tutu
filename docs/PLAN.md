@@ -171,3 +171,15 @@ the driver of the phases, make the LLM a LangChain `BaseChatModel`, and serve th
 | Web app: FastAPI `create_app` / `uvicorn sbmig.web.app:app`, `static/` mounted, runs **in-process** via `stream_graph` in a worker thread (per-run `sbmig.log` by thread filter, replayable event list, stop between nodes), SSE `status | node | error | journal | log | report | ping | end`; page gains a LangGraph node strip | `sbmig/web/app.py`, `sbmig/web/runs.py`, `sbmig/web/static/index.html`, `sbmig/cli.py` (`serve` → uvicorn, `attach_file_log(thread_id=)`) | done — 10 tests; real smoke: pure-java zip → 8 `node` + 65 `journal` + 19 `log` events → BUILD SUCCESS, exit 0, report.md / result.zip downloads; stop after `intake` → exit 3 |
 | Offline tests | 893 passed (24 integration deselected) | green |
 | Follow-ups | — | concurrent web runs share the file KB (`kb/`): keep one run at a time (RUNBOOK); stop cannot interrupt a running Maven/LLM call; `llm-probe` prints raw JSON on the LangChain path only for `ChatPostModel` |
+
+## Status — 2026-10-20, simplification (user: "LangChain 벗기고 requests로, 키는 .env")
+
+On the company network the gateway answered 503 to sbmig while the in-house agents and Postman worked with the same
+URL and key; the user asked to remove the LangChain/httpx layers and configure everything from `.env`.
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Provider `company` (default): `requests.post(url, headers={Authorization}, json={model, messages, **payload_extra}, timeout)`; retries on transport errors / 5xx / 429, clear errors for a missing `LLM_BASE_URL` / `LLM_API_KEY`; reply via `LLM_RESPONSE_PATH` or auto-detect | `sbmig/fix/company.py`, `config/default.yml`, `.env.example` | done — 5 tests (exact call shape, no generation params, response path, retries/401, env wiring) |
+| Removed: LangChain tier, `chat_post`, `http_backend` / `verify_ssl` knobs, `config/llm-company.yml`, the `llm:` block in `artifacts.example.yml` | — | done — the LangGraph engine and the FastAPI/uvicorn app are unchanged |
+| `sbmig llm-probe` prints the exact request (masked token), proxies in effect, response headers/body; `--bare` = plain `requests.post` for comparison | `sbmig/cli.py` | done |
+| Offline tests | see commit | green |

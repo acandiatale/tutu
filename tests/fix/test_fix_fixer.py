@@ -54,7 +54,7 @@ def test_direct_patch(cfg, setup):
     assert p.analysis == "servlet moved to jakarta" and p.confidence == 0.9
     assert [c.op for c in p.changes] == ["modify"]
     assert p.llm_usage.calls == 1 and p.llm_usage.input_tokens > 0
-    assert len(p.prompt_hash) == 64 and p.raw_response == GOOD and p.model == "fake"
+    assert len(p.prompt_hash) == 64 and p.raw_response == GOOD and p.model == cfg.llm.model   # default.yml: gpt-6-luna
     applied, errors = fixer.apply(setup, p.changes)
     assert errors == [] and "jakarta.servlet.Filter" in setup.read(A)
     journal = [json.loads(l) for l in setup.journal_path.read_text().splitlines()]

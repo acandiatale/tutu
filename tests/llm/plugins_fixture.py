@@ -3,9 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from sbmig.core.interfaces import LLMRequest, LLMResponse
@@ -96,46 +93,3 @@ def make_propose_only(options, cfg, llm=None, notes_dir=None):
 
 def returns_junk(options):
     return object()
-
-
-# --------------------------------------------------------------------------- LangChain tier (provider: langchain)
-class FakeChatModel(BaseChatModel):
-    """Records what LangChainClient hands to a LangChain chat model; answers `reply`."""
-    reply: Any = "lc-reply"
-    model_name: str = "fake-lc"
-    calls: list = Field(default_factory=list)
-    configs: list = Field(default_factory=list)
-    strict_kwargs: bool = False            # True → _generate raises TypeError on unknown kwargs
-
-    @property
-    def _llm_type(self) -> str:
-        return "fake-lc"
-
-    def invoke(self, input, config=None, *, stop=None, **kwargs):
-        self.configs.append(config)
-        return super().invoke(input, config, stop=stop, **kwargs)
-
-    def _generate(self, messages, stop: list | None = None, run_manager=None, **kwargs) -> ChatResult:
-        if self.strict_kwargs and kwargs:
-            raise TypeError(f"unexpected kwargs {sorted(kwargs)}")
-        self.calls.append({"messages": list(messages), "stop": stop, "kwargs": dict(kwargs)})
-        msg = AIMessage(content=self.reply,
-                        usage_metadata={"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
-                        response_metadata={"model_name": "fake-lc-1", "finish_reason": "stop"})
-        return ChatResult(generations=[ChatGeneration(message=msg)])
-
-
-LC_MODELS: list = []
-
-
-def make_lc_model(cfg):
-    m = FakeChatModel(calls=[], configs=[], reply=f"from-factory:{cfg.llm.model}")
-    LC_MODELS.append(m)
-    return m
-
-
-def make_lc_model_noarg():
-    return FakeChatModel(calls=[], configs=[], reply="noarg")
-
-
-LC_INSTANCE = FakeChatModel(calls=[], configs=[], reply="instance")

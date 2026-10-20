@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Union, Any, Literal, Optional
+from typing import Any, Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -173,7 +173,7 @@ class LoopConfig(BaseModel):
         "pom_invalid", "parent_resolution", "plugin_resolution"])   # appearing after a pom edit ⇒ revert regardless of count
 
 
-BUILTIN_LLM_PROVIDERS = ("openai_compatible", "anthropic", "chat_post", "langchain", "fake")
+BUILTIN_LLM_PROVIDERS = ("company", "openai_compatible", "anthropic", "fake")
 
 
 class LLMConfig(BaseModel):
@@ -197,21 +197,10 @@ class LLMConfig(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
     prompt_version: str = "v1"
     record_dir: Optional[str] = None         # record requests/responses for replay tests
-    # provider `chat_post` (round 5): a plain `POST base_url` with {"model", "messages", **payload_extra} and a Bearer
-    # token — for in-house gateways that are not OpenAI-compatible (e.g. {"need_orgin": true}); see config/llm-company.yml
+    # provider `company` (default): requests.post(LLM_BASE_URL, headers={Authorization: Bearer LLM_API_KEY},
+    # json={"model", "messages", **payload_extra}, timeout=timeout_seconds) — see sbmig/fix/company.py
     payload_extra: dict[str, Any] = Field(default_factory=dict)      # extra top-level payload fields, sent verbatim
-    payload_generation_params: bool = False  # also send max_tokens / temperature / stop (off: gateways reject unknown keys)
     response_path: Optional[str] = None      # dot path to the reply text, e.g. "data.result.content"; None → auto-detect
-    # provider `langchain` (company convention): the model is a LangChain BaseChatModel. `langchain_model` names a
-    # factory "pkg.module:attr" -> BaseChatModel (called with (cfg) or ()); None → sbmig.llm.langchain.ChatPostModel
-    # built from base_url / api_key_env / model / payload_extra / response_path (same wire format as chat_post).
-    langchain_model: Optional[str] = None
-    # HTTP transport for the builtin HTTP providers (openai_compatible / anthropic / chat_post / langchain's
-    # ChatPostModel): `httpx` (default) or `requests` — requests.post(url, headers=, json=, timeout=) exactly, which
-    # also follows the Windows system proxy settings and REQUESTS_CA_BUNDLE (corporate networks). `verify_ssl` is True,
-    # False, or a CA bundle path.
-    http_backend: Literal["httpx", "requests"] = "httpx"
-    verify_ssl: Union[bool, str] = True
 
 
 class FixConfig(BaseModel):

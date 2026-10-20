@@ -7,26 +7,21 @@
 | JDK | **21** (set `build.java_home`) | OpenRewrite plugin and all builds run on 21; as-is projects are never built on their old JDK |
 | Maven | 3.9.x, `settings.xml` pointing at Nexus | builds + OpenRewrite plugin |
 | Nexus proxies | Maven Central incl. `org.openrewrite.*` (plugin 6.46.1, recipe BOM **3.37.0** and its artifacts (3.38.0 is inconsistent on Central), rewrite-recipe-bom 3.37.0 → rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, rewrite-testing-frameworks 3.44.0, rewrite-static-analysis 2.41.0, rewrite-java-dependencies 1.60.2), `org.springframework.boot:*:4.1.0`, jakarta artifacts | recipes and target BOM |
-| LLM endpoint | the in-house gateway (`config/llm-company.yml`, LangChain `ChatPostModel`), or OpenAI-compatible / Anthropic | residual fixes + recipe candidates |
+| LLM endpoint | the in-house gateway: `.env` with `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` (provider `company`, plain `requests.post`) | residual fixes + recipe candidates |
 | git | any | per-attempt snapshots / revert / diff |
 
 ```bash
 cd migration-agent
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml      # fill in parent / mandatory ×2 / optional ×8
-export LLM_BASE_URL=https://llm.internal/v1 LLM_API_KEY=... LLM_MODEL=<model>
-# in-house gateway that only accepts a plain chat POST ({model, need_orgin, messages}): use the profile
-#   export LLM_BASE_URL=http://<gateway>/<chat endpoint> LLM_API_KEY=...   # http or https, used verbatim
-#   sbmig llm-probe --config config/llm-company.yml      # raw response + extracted reply
-#   sbmig run <project> --config config/artifacts.yml --config config/llm-company.yml
+cp .env.example .env                                     # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
+sbmig llm-probe --config config/artifacts.yml            # exact request, raw response, extracted reply
+sbmig run <project> --config config/artifacts.yml
 ```
 
-The gateway URL is used verbatim (no scheme change, no path appended): when the gateway only speaks plain HTTP,
-`LLM_BASE_URL=http://...` exactly as the working in-house agent calls it (`https://` there gets a 503 from the
-front proxy). HTTP 503 / connection errors from the gateway while `requests.post` works by hand: set `llm.http_backend: requests`
-(the company profile already does; it follows the Windows system proxy and `REQUESTS_CA_BUNDLE`) and, when the
-corporate proxy intercepts TLS, `llm.verify_ssl: <CA bundle path>`; `sbmig llm-probe` prints the backend, the
-transport error class and hints.
+The gateway URL is used verbatim (no scheme change, no path appended): `LLM_BASE_URL=http://...` exactly as the
+working in-house agents call it. If `requests.post` works by hand but sbmig gets an error, run `sbmig llm-probe`
+(and `--bare`): it prints the exact request, the proxies in effect and the response headers/body.
 Windows: Maven is `mvn.cmd`; sbmig resolves `build.mvn` through PATH / `MAVEN_HOME` (`shutil.which`), so `mvn` works
 when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd` and `build.java_home`.
 Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point
@@ -43,7 +38,7 @@ Smoke test without touching anything: `sbmig analyze path/to/project.zip --confi
 | escalation | `llm.escalation_model` | optional stronger model | after a stall |
 
 `config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
-`config/llm-company.yml` is the profile for the in-house gateway (`chat_post`). Every `sbmig run` writes
+LLM calls are recorded when `LLM_RECORD_DIR` is set (e.g. `out/llm-records`, in `.env.example`). Every `sbmig run` writes
 `<run dir>/sbmig.log` (DEBUG: decisions, builds, LLM calls — never keys); `--log-file PATH` adds one for any
 command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When asking for help, share
 `sbmig.log`, `report.md` and the relevant `llm-NNNN.json`.
@@ -58,7 +53,7 @@ fixes) and the run's `sbmig.log` over SSE (`status | node | error | journal | lo
 `report.md` / `report.json` / `result.zip` / `sbmig.log` when the run ends; the server-wide log is
 `<out>/sbmig-web.log`. "중단" (stop) takes effect after the current graph node: a running Maven build, OpenRewrite run
 or LLM call is not interrupted; the run is then finalized as aborted (exit code 3). The server needs the same
-environment as the CLI (`JAVA21_HOME`, `LLM_BASE_URL`, `LLM_API_KEY`); it binds to localhost unless `--host` says
+environment as the CLI (`JAVA21_HOME`, `LLM_BASE_URL`, `LLM_API_KEY`, or the `.env` next to it); it binds to localhost unless `--host` says
 otherwise. Concurrent runs share the file KB (`kb/`); for the 500-project sequence keep one run at a time.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 

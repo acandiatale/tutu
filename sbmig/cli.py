@@ -292,8 +292,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     import json
 
     from sbmig.core.interfaces import ChatMessage
-    from sbmig.fix import LLMError, make_llm_client
-    from sbmig.fix.client import _HTTPClient
+    from sbmig.fix import CompanyClient, LLMError, make_llm_client
 
     overrides: dict = {"llm": {"provider": llm_provider}} if llm_provider else {}
     cfg = _load(config, overrides)
@@ -305,21 +304,16 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
     client = make_llm_client(cfg)
     inner = getattr(client, "inner", client)
-    chat_model = getattr(inner, "chat_model", None)          # provider langchain over ChatPostModel → raw HTTP path
-    if chat_model is not None and hasattr(chat_model, "_http_client"):
-        inner = chat_model._http_client()
     msgs = [ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content=prompt)]
-    if isinstance(inner, _HTTPClient):
-        body = inner._body(msgs, inner.model, 64, inner.default_temperature, None)
-        typer.echo("request payload: " + json.dumps(body, ensure_ascii=False)[:1500])
-        typer.echo(f"http_backend={inner.http_backend} verify_ssl={inner.verify} timeout={inner.timeout}s")
+    if isinstance(inner, CompanyClient):
+        payload = inner.payload(msgs)
+        typer.echo("request payload: " + json.dumps(payload, ensure_ascii=False)[:1500])
         try:
-            resp = inner._post(inner._url(), body, {**inner._headers(), **inner.extra_headers})
-        except Exception as e:  # transport-level failure: show the class and message, the fix is usually proxy/TLS
+            resp = inner.post_once(payload)
+        except Exception as e:  # transport-level failure: the class and message say proxy / DNS / refused
             typer.echo(f"TRANSPORT ERROR: {type(e).__name__}: {e}")
-            typer.echo("hints: proxy (HTTPS_PROXY / NO_PROXY, Windows system proxy → llm.http_backend: requests), "
-                       "TLS interception (llm.verify_ssl: <CA bundle path>), URL (the full endpoint)")
+            typer.echo("hints: URL (the full endpoint, http://...), proxy (NO_PROXY=<gateway host> in .env)")
             raise typer.Exit(1)
         _echo_wire(resp, inner.timeout)
         typer.echo(f"HTTP {resp.status_code}")
@@ -336,7 +330,8 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
         except LLMError as e:
             typer.echo(f"PROBLEM: {e}")
             from sbmig.fix.client import _REPLY_PATHS
-            typer.echo("auto-detect paths tried: " + ", ".join(_REPLY_PATHS))
+            typer.echo("auto-detect paths tried: " + ", ".join(_REPLY_PATHS)
+                       + "  → set LLM_RESPONSE_PATH in .env to the dot path of the text in the JSON above")
             raise typer.Exit(1)
         return
     out = client.complete(msgs, role="other")

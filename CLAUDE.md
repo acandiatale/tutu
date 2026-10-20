@@ -43,8 +43,8 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
   harvest into `KBCase.symbol_owner`), jar-checked recipe catalog (`sbmig recipes check --jars`), fixture `boot2-method-rename`.
-- 2026-10-20: provider `chat_post` + `llm-probe` + per-run log files; `coding/` agent; LangGraph engine, LangChain
-  tier, FastAPI web UI (see "Company convention" below). 893 offline tests green; asserted fixture e2e **14/14**
+- 2026-10-20: `llm-probe` + per-run log files; `coding/` agent; LangGraph engine, FastAPI web UI; then simplified
+  on the user's request: LLM = provider `company` (plain `requests.post`, settings from `.env`), LangChain tier removed. 893 offline tests green; asserted fixture e2e **14/14**
   (`scripts/e2e.sh`, 2026-10-18 tree); fleet demo 5/5 with 1 LLM call total.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
@@ -78,22 +78,19 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
   (`--only boot2,msa` for a subset); KB loop `scripts/demo-kb/run.sh`; fleet `scripts/fleet-demo.sh`.
   Integration tests: `python -m pytest -q -m integration`.
-- Real-LLM runs: `--config config/llm-anthropic.yml` (Anthropic) or `--config config/llm-company.yml` (in-house
-  gateway, provider `chat_post`: plain `POST $LLM_BASE_URL` with `{model, need_orgin, messages}` + Bearer
-  `LLM_API_KEY`; `sbmig llm-probe` first, `llm.response_path` when the reply is not auto-detected). Keys only from
-  the environment (or a git-ignored `.env` at the repo root / `SBMIG_ENV_FILE`, read by `load_config`; existing
-  variables win); `llm.api_key_env` is the variable NAME, never the value. `llm.http_backend: requests` (company profile default) sends `requests.post(url, headers=,
-  json=, timeout=)` exactly and follows the Windows system proxy; `llm.verify_ssl` takes a CA bundle path. In a cloud session set them on the cloud
-  environment, never in the repo.
+- Real-LLM runs: provider `company` is the default (`config/default.yml`): `requests.post(LLM_BASE_URL,
+  headers={Authorization: Bearer LLM_API_KEY}, json={model, messages, need_orgin}, timeout)` in
+  `sbmig/fix/company.py`; URL / key / model / `LLM_RESPONSE_PATH` / `LLM_RECORD_DIR` come from `.env` (git-ignored,
+  read by `load_config`, shell variables win) — no yml profile, no LangChain, no httpx knobs (the user asked for
+  this after 503s on the gateway; keep it this simple). `sbmig llm-probe` (and `--bare`) prints the exact request,
+  proxies and response. `config/llm-anthropic.yml` remains for Anthropic validation runs. Keys never go into yml.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
-- **Company convention (2026-10-20): agents run on LangGraph + LangChain under uvicorn.** sbmig complies without
-  changing behaviour: `loop.engine: graph` (default) drives the phases from a LangGraph `StateGraph`
+- **Company convention (2026-10-20): agents run on LangGraph under uvicorn** (LangChain was dropped for the LLM
+  path, see above). sbmig complies without changing behaviour: `loop.engine: graph` (default) drives the phases from a LangGraph `StateGraph`
   (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize; `inline` is the old loop, reports are
-  identical by test); the LLM is a LangChain `BaseChatModel` (`sbmig/llm/langchain.py`: `ChatPostModel` for the
-  gateway, `LangChainClient` wraps any BaseChatModel; provider `langchain`, company model via
-  `llm.langchain_model: "pkg.module:factory"`); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
+  identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
   `sbmig serve`), runs migrations in-process through `stream_graph` (one worker thread per run, per-run
   `sbmig.log` by thread filter) and streams `node` / `journal` / `log` / `report` events over SSE to
   `sbmig/web/static/index.html` (vanilla JS). Stop takes effect between graph nodes only.

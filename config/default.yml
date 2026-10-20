@@ -101,12 +101,19 @@ loop:
     encoding: 0
 
 llm:
-  provider: openai_compatible      # openai_compatible | anthropic | chat_post | langchain | fake | plugin
-  base_url: "${LLM_BASE_URL:-http://localhost:8000/v1}"
+  # The company gateway, configured by .env / environment only (see .env.example):
+  #   LLM_BASE_URL  LLM_API_KEY  LLM_MODEL  [LLM_RESPONSE_PATH]
+  # Request = requests.post(url, headers={Authorization: Bearer <key>}, json={model, messages, need_orgin}, timeout)
+  provider: company                # company | openai_compatible | anthropic | fake | plugin
+  base_url: "${LLM_BASE_URL}"
   api_key_env: LLM_API_KEY
-  model: "${LLM_MODEL:-default}"
+  model: "${LLM_MODEL:-gpt-6-luna}"
+  payload_extra:
+    need_orgin: true
+  response_path: "${LLM_RESPONSE_PATH:-}"   # empty = auto-detect the reply text
+  record_dir: "${LLM_RECORD_DIR:-}"   # e.g. out/llm-records in .env: every request/response as llm-NNNN.json (no secrets)
   escalation_model: null
-  recipe_model: null               # e.g. claude-haiku-4-5 for recipe selection / KB recipe candidates
+  recipe_model: null               # same model for plan advice / KB recipe candidates unless set
   temperature: 0.0
   max_output_tokens: 8000
   max_context_chars: 60000

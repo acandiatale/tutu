@@ -181,3 +181,8 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
 * 2026-10-20 (WS-W notes): SSE also sends `error` (worker exception); per-run events are an append-only list (replayable
   by every SSE client); stop takes effect between graph nodes (sets the abort flag, closes the iterator → exit 3).
   `attach_file_log(path, thread_id=None)`; `sbmig serve` = `uvicorn.run(create_app(...))`.
+* 2026-10-20 PM (simplification, user request): LangChain tier removed (`sbmig/llm/langchain.py`, provider `langchain`,
+  `LLMConfig.langchain_model`, `http_backend`, `verify_ssl`, `payload_generation_params`, provider `chat_post`,
+  `config/llm-company.yml`). New default provider `company` = `sbmig.fix.company.CompanyClient` (requests.post,
+  `payload_extra` default `{need_orgin: true}` in default.yml, `response_path` from `LLM_RESPONSE_PATH`, records when
+  `LLM_RECORD_DIR` is set). `extract_reply` stays in `sbmig/fix/client.py`. LangGraph engine and web app unchanged.

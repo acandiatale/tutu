@@ -28,9 +28,4 @@ build:
   settings_file: null                   # /path/to/nexus-settings.xml
   java_home: null                       # /usr/lib/jvm/java-21
 
-llm:
-  provider: openai_compatible
-  base_url: "${LLM_BASE_URL}"
-  api_key_env: LLM_API_KEY
-  model: "${LLM_MODEL}"
-  escalation_model: null
+# llm: nothing to set here — the gateway comes from .env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL); see config/default.yml

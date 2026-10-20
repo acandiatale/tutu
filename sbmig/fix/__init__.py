@@ -10,12 +10,12 @@
     parse_fix_response(text)                          -> ParsedResponse(changes, analysis, need_files, need_grep, …)
 """
 from .apply import BlockFailure, PatchApplier
+from .company import CompanyClient
 from .client import (
     AnthropicClient,
     FakeLLMClient,
     LLMConfigError,
     LLMError,
-    ChatPostClient,
     OpenAICompatibleClient,
     extract_reply,
     RecordingClient,
@@ -30,7 +30,7 @@ from .protocol import ParsedResponse, parse_fix_response, render_protocol_instru
 
 __all__ = [
     "make_llm_client", "LLMFixer", "PatchApplier", "parse_fix_response", "FakeLLMClient", "ContextPacker",
-    "load_notes_index", "AnthropicClient", "ChatPostClient", "extract_reply", "OpenAICompatibleClient", "RecordingClient", "LLMError", "LLMConfigError",
+    "load_notes_index", "AnthropicClient", "CompanyClient", "extract_reply", "OpenAICompatibleClient", "RecordingClient", "LLMError", "LLMConfigError",
     "usage_from", "messages_hash", "load_replay_responses", "ParsedResponse", "render_protocol_instructions",
     "PackedContext", "NoteEntry", "BlockFailure", "profile_summary", "load_prompts",
 ]

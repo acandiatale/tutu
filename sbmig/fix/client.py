@@ -1,5 +1,5 @@
-"""LLM clients: OpenAI-compatible (default), Anthropic Messages API, plain chat POST (in-house gateway),
-scripted fake, recorder. Provider `langchain` is built from `sbmig.llm.langchain` (a LangChain BaseChatModel).
+"""LLM clients: the company gateway (`sbmig.fix.company`, requests.post — the default), OpenAI-compatible,
+Anthropic Messages API, scripted fake, recorder.
 
 All clients implement `sbmig.core.interfaces.LLMClientLike`. Only httpx is used (no vendor SDKs).
 """
@@ -96,8 +96,6 @@ class _HTTPClient:
         sleep: Callable[[float], None] = time.sleep,
         backoff_base: float = 1.0,
         backoff_max: float = 30.0,
-        http_backend: str = "httpx",
-        verify: Union[bool, str] = True,
     ):
         self.base_url = (base_url or "").strip()
         self._api_key = api_key
@@ -110,40 +108,13 @@ class _HTTPClient:
         self._sleep = sleep
         self.backoff_base = backoff_base
         self.backoff_max = backoff_max
-        self.http_backend = http_backend
-        self.verify = verify
-        self._http: Optional[httpx.Client] = None
-        self._session: Any = None
-        self._transport_errors: tuple[type[BaseException], ...] = (httpx.TimeoutException, httpx.TransportError)
-        if http_backend == "requests":
-            try:
-                import requests  # type: ignore
-            except ImportError as exc:  # pragma: no cover - requests is a declared dependency
-                raise LLMConfigError("llm.http_backend=requests needs the `requests` package") from exc
-            self._session = requests.Session()
-            self._session.verify = verify
-            self._transport_errors = (requests.RequestException,)
-        elif http_backend == "httpx":
-            self._http = httpx.Client(timeout=timeout, transport=transport, verify=verify)
-        else:
-            raise LLMConfigError(f"unknown llm.http_backend {http_backend!r} (httpx | requests)")
+        self._http = httpx.Client(timeout=timeout, transport=transport)
 
     def __repr__(self) -> str:                        # never leak the key
         return f"{type(self).__name__}(base_url={self.base_url!r}, model={self.model!r})"
 
     def close(self) -> None:
-        if self._http is not None:
-            self._http.close()
-        if self._session is not None:
-            self._session.close()
-
-    def _post(self, url: str, body: dict[str, Any], headers: dict[str, str]) -> Any:
-        """One POST. httpx: `Client.post(url, json=, headers=)`; requests: `Session.post(url, headers=, json=,
-        timeout=)` — the exact call shape the company's own snippet uses. Both results expose `status_code`,
-        `text`, `headers` and `json()`."""
-        if self._session is not None:
-            return self._session.post(url, headers=headers, json=body, timeout=self.timeout)
-        return self._http.post(url, json=body, headers=headers)  # type: ignore[union-attr]
+        self._http.close()
 
     # subclasses
     def _url(self) -> str: ...
@@ -181,8 +152,8 @@ class _HTTPClient:
         for attempt in range(self.max_retries + 1):
             wait: Optional[float] = None
             try:
-                resp = self._post(url, body, headers)
-            except self._transport_errors as exc:
+                resp = self._http.post(url, json=body, headers=headers)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_status, last_body = None, f"{type(exc).__name__}: {exc}"
                 log.warning("llm %s transport error (attempt %d/%d): %s", self.provider, attempt + 1,
                             self.max_retries + 1, type(exc).__name__)
@@ -266,7 +237,7 @@ class OpenAICompatibleClient(_HTTPClient):
 
 
 # ---------------------------------------------------------------------------
-# Plain chat POST (in-house gateways that are not OpenAI-compatible)
+# Reply extraction shared with sbmig.fix.company (gateways with arbitrary JSON shapes)
 # ---------------------------------------------------------------------------
 _REPLY_PATHS = (
     "choices.0.message.content", "choices.0.text", "message.content", "data.choices.0.message.content",
@@ -322,61 +293,6 @@ def extract_reply(data: Any, response_path: Optional[str] = None) -> str:
             return text
     raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
                    "cannot find the reply text in the LLM response; set llm.response_path (see `sbmig llm-probe`)")
-
-
-class ChatPostClient(_HTTPClient):
-    """`POST base_url` with `{"model": ..., "messages": [...], **payload_extra}` and `Authorization: Bearer <key>`.
-
-    For in-house gateways whose request/response differ from OpenAI (e.g. `{"need_orgin": true}`): the payload is
-    exactly the configured shape (generation parameters only when `payload_generation_params`), the reply text is
-    taken from `response_path` or auto-detected from the usual shapes, token usage from `usage` when present."""
-    provider = "chat_post"
-
-    def __init__(self, base_url: str, api_key: Optional[str], model: str, *, payload_extra: Optional[dict] = None,
-                 generation_params: bool = False, response_path: Optional[str] = None, **kw: Any):
-        super().__init__(base_url, api_key, model, **kw)
-        self.payload_extra = dict(payload_extra or {})
-        self.generation_params = generation_params
-        self.response_path = response_path
-
-    def _url(self) -> str:
-        return self.base_url
-
-    def _headers(self) -> dict[str, str]:
-        h = {"Content-Type": "application/json"}
-        if self._api_key:
-            h["Authorization"] = f"Bearer {self._api_key}"
-        return h
-
-    def _body(self, messages, model, max_tokens, temperature, stop) -> dict[str, Any]:
-        body: dict[str, Any] = {"model": model,
-                                "messages": [{"role": m.role, "content": m.content} for m in messages]}
-        body.update(self.payload_extra)
-        if self.generation_params:
-            body["max_tokens"] = max_tokens
-            if temperature is not None:
-                body["temperature"] = temperature
-            if stop:
-                body["stop"] = stop
-        return body
-
-    def _parse(self, data: dict[str, Any], model: str) -> LLMResponse:
-        content = extract_reply(data, self.response_path)
-        usage = data.get("usage") if isinstance(data, dict) else None
-        usage = usage if isinstance(usage, dict) else {}
-        finish = None
-        if isinstance(data, dict):
-            choices = data.get("choices")
-            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-                finish = choices[0].get("finish_reason")
-            finish = finish or data.get("finish_reason") or data.get("stop_reason")
-        return LLMResponse(
-            content=content,
-            model=(data.get("model") if isinstance(data, dict) else None) or model,
-            input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
-            output_tokens=int(usage.get("completion_tokens") or usage.get("output_tokens") or 0),
-            finish_reason=finish,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -578,8 +494,8 @@ def _unexpanded(v: Optional[str]) -> bool:
 def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.BaseTransport] = None) -> LLMClientLike:
     """Build the configured client. `fake` needs no key; `base_url: replay:<dir>` with fake replays recordings.
 
-    `provider: langchain` → `sbmig.llm.langchain.LangChainClient` over `llm.langchain_model` (a BaseChatModel
-    factory) or `ChatPostModel` built from the chat_post fields (key from `api_key_env`, unless a factory is set).
+    `provider: company` (default) → `sbmig.fix.company.CompanyClient`: requests.post to LLM_BASE_URL with the
+    bearer token from `api_key_env`; everything else comes from `.env` / config/default.yml.
     `provider: plugin` or a non-builtin provider name → `sbmig.llm.resolve_llm_plugin(cfg)` (the plugin handles
     its own auth; the `api_key_env` value, when set, is handed to the factory as options["api_key"] in memory only).
     Raises `sbmig.llm.PluginLoadError` (a ValueError) when the plugin cannot be loaded."""
@@ -594,11 +510,6 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
         if llm.base_url and llm.base_url.startswith("replay:"):
             responses = load_replay_responses(cfg.resolve_path(llm.base_url[len("replay:"):]))
         client = FakeLLMClient(responses)
-    elif llm.provider == "langchain":
-        from sbmig.llm.langchain import LangChainClient, resolve_langchain_model   # lazy: avoids an import cycle
-
-        client = LangChainClient(resolve_langchain_model(cfg, transport=transport),
-                                 default_model=llm.model if not _unexpanded(llm.model) else None)
     else:
         key = os.environ.get(llm.api_key_env or "")
         if not key:
@@ -607,8 +518,7 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                 f"'{llm.api_key_env}' (set it, or use llm.provider=fake)")
         common = dict(timeout=float(llm.timeout_seconds), max_retries=llm.max_retries,
                       extra_headers=llm.extra_headers, default_max_tokens=llm.max_output_tokens,
-                      default_temperature=llm.temperature, transport=transport,
-                      http_backend=llm.http_backend, verify=llm.verify_ssl)
+                      default_temperature=llm.temperature, transport=transport)
         if llm.provider == "anthropic":
             base = llm.base_url if not _unexpanded(llm.base_url) and llm.base_url != _DEFAULT_OPENAI_BASE \
                 else "https://api.anthropic.com"
@@ -620,14 +530,16 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
             if _unexpanded(llm.model):
                 raise LLMConfigError("llm.model is not set (LLM_MODEL)")
             client = OpenAICompatibleClient(llm.base_url, key, llm.model, **common)
-        elif llm.provider == "chat_post":
+        elif llm.provider == "company":
+            from .company import CompanyClient
+
             if _unexpanded(llm.base_url):
-                raise LLMConfigError("llm.base_url is not set (LLM_BASE_URL: the full endpoint URL)")
+                raise LLMConfigError("LLM_BASE_URL is not set (.env or environment: the full gateway URL)")
             if _unexpanded(llm.model):
-                raise LLMConfigError("llm.model is not set (LLM_MODEL)")
-            client = ChatPostClient(llm.base_url, key, llm.model, payload_extra=llm.payload_extra,
-                                    generation_params=llm.payload_generation_params,
-                                    response_path=llm.response_path, **common)
+                raise LLMConfigError("LLM_MODEL is not set (.env or environment)")
+            client = CompanyClient(llm.base_url, key, llm.model, payload_extra=llm.payload_extra,
+                                   response_path=llm.response_path or None, timeout=float(llm.timeout_seconds),
+                                   max_retries=llm.max_retries, extra_headers=llm.extra_headers)
         else:  # pragma: no cover - non-builtin providers are routed to sbmig.llm above
             raise LLMConfigError(f"unknown llm.provider: {llm.provider}")
     if llm.record_dir:
