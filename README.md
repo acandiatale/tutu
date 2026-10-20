@@ -44,9 +44,11 @@ sbmig fleet run projects.yml --config config/artifacts.yml --out out/fleet   # 5
 sbmig kb learning                                                     # what was learned, what still needs the LLM, what blocks most projects
 ```
 
-Web UI (one page, no extra dependencies): `sbmig serve --port 8765` → http://127.0.0.1:8765 — upload a project zip,
-tick the config files, watch analysis / rewrite / builds / LLM fixes live (SSE), download `report.md` and
-`result.zip`. Each run is a normal `sbmig run` subprocess under `out/web/<run id>/` with its own `sbmig.log`.
+Web UI (FastAPI app served by uvicorn): `sbmig serve --port 8765` → http://127.0.0.1:8765 (or
+`SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`) — upload a project zip, tick the config files, watch
+the LangGraph nodes (intake → analyze → plan → phase × N → finalize), the journal (rewrite / builds / LLM fixes) and
+the log live (SSE), download `report.md` and `result.zip`. Runs execute in-process (one worker thread each) under
+`out/web/<run id>/`, each with its own `sbmig.log`.
 In-house LLM gateway / agent platform instead of our HTTP clients (see `docs/ADAPTERS.md`):
 ```bash
 sbmig run project.zip --config config/artifacts.yml --llm-plugin mypkg.adapter:make_adapter     # tier 1: chat completion

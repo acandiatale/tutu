@@ -178,3 +178,6 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     Runs execute **in-process** through `stream_graph` in a worker thread (one per run), SSE events: `status`,
     `node` (graph node update), `journal`, `log`, `console`→dropped, `report`, `ping`, `end`. Per-run log file via
     `attach_file_log(path, thread_id=...)` (a logging filter by thread). `sbmig serve` launches uvicorn.
+* 2026-10-20 (WS-W notes): SSE also sends `error` (worker exception); per-run events are an append-only list (replayable
+  by every SSE client); stop takes effect between graph nodes (sets the abort flag, closes the iterator → exit 3).
+  `attach_file_log(path, thread_id=None)`; `sbmig serve` = `uvicorn.run(create_app(...))`.

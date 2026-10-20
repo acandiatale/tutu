@@ -25,7 +25,14 @@
   .runs li:hover, .runs li.active { background:#eef3ff; }
   .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; color:#fff; background:var(--muted); }
   .badge.running { background:var(--accent); } .badge.ok { background:var(--ok); } .badge.bad { background:var(--bad); } .badge.warn { background:var(--warn); }
-  .live { display:grid; grid-template-rows:auto auto 1fr auto; gap:12px; min-height:70vh; }
+  .live { display:grid; grid-template-rows:auto auto auto 1fr auto; gap:12px; min-height:70vh; }
+  .graph { display:flex; flex-wrap:wrap; align-items:center; gap:4px; font-size:12px; }
+  .graph .node { padding:3px 10px; border:1px solid var(--line); border-radius:12px; background:#fafbfc; color:var(--muted);
+                 font-family:ui-monospace, SFMono-Regular, Menlo, monospace; white-space:nowrap; }
+  .graph .node.done { background:#e8f5ec; border-color:#9fd3ae; color:var(--ok); }
+  .graph .node.current { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  .graph .node.failed { background:#fdecea; border-color:#f3a6a0; color:var(--bad); font-weight:600; }
+  .graph .arrow { color:var(--muted); } .graph .phases { display:contents; }
   .statusbar { display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
   .statusbar .id { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
   .timeline { max-height:34vh; overflow:auto; border:1px solid var(--line); border-radius:6px; }
@@ -34,7 +41,7 @@
   .timeline .ok { color:var(--ok); } .timeline .bad { color:var(--bad); } .timeline .llm { color:var(--accent); }
   .logbox { background:var(--code); color:var(--codetext); font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             padding:10px; border-radius:6px; overflow:auto; height:36vh; white-space:pre-wrap; word-break:break-all; }
-  .logbox .ERROR, .logbox .CRITICAL { color:#ff8a80; } .logbox .WARNING { color:#ffd180; } .logbox .DEBUG { color:#90a4ae; }
+  .logbox .ERROR, .logbox .CRITICAL, .logbox .runerror { color:#ff8a80; } .logbox .runerror { font-weight:700; } .logbox .WARNING { color:#ffd180; } .logbox .DEBUG { color:#90a4ae; }
   .toolbar { display:flex; gap:10px; align-items:center; font-size:12px; color:var(--muted); }
   .report { white-space:pre-wrap; font:13px/1.45 ui-monospace, Menlo, Consolas, monospace; max-height:50vh; overflow:auto;
             background:#fafbfc; border:1px solid var(--line); border-radius:6px; padding:10px; }
@@ -58,7 +65,7 @@
       <div class="cfgs" id="cfgs"><span class="hint">불러오는 중…</span></div>
       <label for="llm">LLM</label>
       <select id="llm">
-        <option value="">설정 파일대로 (예: llm-company.yml → chat_post)</option>
+        <option value="">설정 파일대로 (예: llm-company.yml → LangChain ChatPostModel)</option>
         <option value="fake">fake — LLM 없이 (레시피/핸들러만)</option>
       </select>
       <label for="stop">여기까지만 실행</label>
@@ -86,12 +93,16 @@
       <span id="summary" class="hint"></span>
     </div>
     <div>
+      <div class="toolbar"><strong>그래프 (LangGraph 노드)</strong><span id="graphhint"></span></div>
+      <div class="graph" id="graph"></div>
+    </div>
+    <div>
       <div class="toolbar"><strong>진행 (journal)</strong><span id="phase"></span></div>
       <div class="timeline" id="timeline"></div>
     </div>
     <div>
       <div class="toolbar">
-        <strong>로그 (sbmig.log + 콘솔)</strong>
+        <strong>로그 (sbmig.log)</strong>
         <label style="margin:0; font-weight:normal;"><input type="checkbox" id="showdebug"> DEBUG 표시</label>
         <label style="margin:0; font-weight:normal;"><input type="checkbox" id="autoscroll" checked> 자동 스크롤</label>
         <span id="logcount"></span>
@@ -151,7 +162,9 @@
     const html = badgeHtml(st); const tmp = document.createElement('div'); tmp.innerHTML = html;
     b.className = tmp.firstChild.className; b.textContent = tmp.firstChild.textContent;
     $('summary').textContent = st.llm_calls != null ? `LLM 호출 ${st.llm_calls}회` : '';
-    $('stopbtn').disabled = st.state !== 'running';
+    $('stopbtn').disabled = st.state !== 'running' || !!st.stop_requested;
+    if (st.state === 'finished') setCurrent(null);
+    else if (st.state === 'running' && !graphNodes().some((n) => n.classList.contains('done'))) setCurrent(graphNodes()[0]);
     if (st.files) {
       $('files').innerHTML = st.files.map((f) => `<a href="/api/runs/${encodeURIComponent(current)}/files/${f}" target="_blank">${f}</a>`).join('');
     }
@@ -184,13 +197,68 @@
     $('timeline').appendChild(div); $('timeline').scrollTop = $('timeline').scrollHeight;
   }
 
+  // ---- graph strip: intake → analyze → plan → phase × N → finalize, lit up by `node` events
+  const FIXED = ['intake', 'analyze', 'plan'];
+  function resetGraph() {
+    const g = $('graph'); g.innerHTML = '';
+    for (const n of FIXED) g.insertAdjacentHTML('beforeend', `<span class="node" data-node="${n}">${n}</span><span class="arrow">→</span>`);
+    g.insertAdjacentHTML('beforeend', '<span class="phases" id="phases"><span class="node" data-node="phase" data-pending="1">phase × N</span></span><span class="arrow">→</span><span class="node" data-node="finalize">finalize</span>');
+    $('graphhint').textContent = '';
+  }
+  function graphNodes() { return [...$('graph').querySelectorAll('.node')]; }
+  function setCurrent(el) {
+    for (const n of graphNodes()) n.classList.remove('current');
+    if (el) el.classList.add('current');
+  }
+  function phaseChip(label, phase, pending) {
+    const box = $('phases');
+    if (box.querySelector('.node')) box.insertAdjacentHTML('beforeend', '<span class="arrow">→</span>');
+    box.insertAdjacentHTML('beforeend', `<span class="node" data-node="phase"${pending ? ' data-pending="1"' : ''} data-phase="${esc(phase || '')}">${esc(label)}</span>`);
+    return box.lastElementChild;
+  }
+  function onNode(ev) {
+    const name = ev.node, u = (ev.update && typeof ev.update === 'object') ? ev.update : {};
+    const box = $('phases');
+    let el;
+    if (name === 'plan' && Array.isArray(u.phases)) {          // the plan fixes the phase groups: one chip each
+      box.innerHTML = '';
+      for (const ph of u.phases) phaseChip(`phase: ${ph}`, ph, true);
+      if (!u.phases.length) phaseChip('phase × 0', '', false).classList.add('done');
+    }
+    if (name === 'phase') {
+      const placeholder = box.querySelector('.node[data-pending]:not([data-phase])');   // "phase × N" (no plan info)
+      if (placeholder) placeholder.remove();
+      const pending = [...box.querySelectorAll('.node[data-pending]')];
+      el = (u.phase && pending.find((n) => n.dataset.phase === u.phase)) || pending[0]
+        || phaseChip(u.phase ? `phase: ${u.phase}` : 'phase', u.phase, false);
+      delete el.dataset.pending;
+      if (Array.isArray(u.phases)) {                            // more phases remaining than chips left → add them
+        const left = box.querySelectorAll('.node[data-pending]').length;
+        for (const ph of u.phases.slice(left)) phaseChip(`phase: ${ph}`, ph, true);
+      }
+    } else {
+      el = graphNodes().find((n) => n.dataset.node === name);
+      if (!el) {
+        $('graph').insertAdjacentHTML('beforeend', `<span class="arrow">·</span><span class="node" data-node="${esc(name)}">${esc(name)}</span>`);
+        el = $('graph').lastElementChild;
+      }
+    }
+    el.classList.add(u.aborted ? 'failed' : 'done');
+    if (u.aborted) $('graphhint').textContent = ` — 중단: ${u.aborted}`;
+    else if (u.stopped) $('graphhint').textContent = ' — stop_after 에서 멈춤';
+    // the next node of the strip is the one running now
+    const nodes = graphNodes(); let last = -1;
+    nodes.forEach((n, i) => { if (n.classList.contains('done') || n.classList.contains('failed')) last = i; });
+    setCurrent(name === 'finalize' || u.aborted ? null : nodes[last + 1]);
+  }
+
   function logLine(kind, line) {
     const m = /^\S+ \S+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\S+): (.*)$/.exec(line);
     const level = m ? m[1] : (kind === 'console' ? 'INFO' : 'INFO');
     const span = document.createElement('span');
-    span.className = level + (kind === 'console' ? ' console' : '');
+    span.className = (kind === 'error') ? 'runerror' : level + (kind === 'console' ? ' console' : '');
     span.textContent = (m ? `${line.slice(11, 19)} ${level.padEnd(7)} ${m[3]}` : line) + '\n';
-    if (level === 'DEBUG' && !$('showdebug').checked) span.style.display = 'none';
+    if (level === 'DEBUG' && kind !== 'error' && !$('showdebug').checked) span.style.display = 'none';
     $('log').appendChild(span); logLines++;
     $('logcount').textContent = `${logLines}줄`;
     if ($('autoscroll').checked) $('log').scrollTop = $('log').scrollHeight;
@@ -200,16 +268,22 @@
   function attach(runId) {
     if (es) { es.close(); es = null; }
     current = runId; logLines = 0;
-    $('runid').textContent = runId; $('timeline').innerHTML = ''; $('log').innerHTML = ''; $('report').textContent = '실행 중…'; $('files').innerHTML = ''; $('phase').textContent = '';
+    $('runid').textContent = runId; $('timeline').innerHTML = ''; $('log').innerHTML = ''; $('report').textContent = '실행 중…'; $('files').innerHTML = ''; $('phase').textContent = ''; resetGraph();
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     es.addEventListener('status', (e) => setStatus(JSON.parse(e.data)));
+    es.addEventListener('node', (e) => onNode(JSON.parse(e.data)));
     es.addEventListener('journal', (e) => journalRow(JSON.parse(e.data)));
     es.addEventListener('log', (e) => logLine('log', JSON.parse(e.data)));
     es.addEventListener('console', (e) => logLine('console', JSON.parse(e.data)));
     es.addEventListener('report', (e) => { $('report').textContent = JSON.parse(e.data); });
     es.addEventListener('end', () => { es.close(); es = null; loadRuns(); });
-    es.onerror = () => { logLine('console', '[연결 끊김 — 서버가 내려갔거나 네트워크 문제입니다. 목록에서 다시 선택하면 재연결됩니다]'); es.close(); es = null; };
+    // `error` is both the server's run-error event (has data) and EventSource's connection error (no data)
+    es.addEventListener('error', (e) => {
+      if (e.data) { logLine('error', '[실행 오류] ' + JSON.parse(e.data).message); return; }
+      logLine('console', '[연결 끊김 — 서버가 내려갔거나 네트워크 문제입니다. 목록에서 다시 선택하면 재연결됩니다]');
+      if (es) { es.close(); es = null; }
+    });
     loadRuns();
   }
 
@@ -226,9 +300,14 @@
       attach(d.run_id);
     } finally { $('start').disabled = false; }
   };
-  $('stopbtn').onclick = async () => { if (current) { await fetch(`/api/runs/${encodeURIComponent(current)}/stop`, { method: 'POST' }); } };
+  $('stopbtn').onclick = async () => {
+    if (!current) return;
+    await fetch(`/api/runs/${encodeURIComponent(current)}/stop`, { method: 'POST' });
+    $('stopbtn').disabled = true;
+    logLine('error', '[중단 요청 — 지금 실행 중인 노드(빌드/LLM 호출)가 끝나면 멈춥니다]');
+  };
 
-  loadConfigs(); loadRuns(); setInterval(loadRuns, 10000);
+  resetGraph(); loadConfigs(); loadRuns(); setInterval(loadRuns, 10000);
   if (location.hash.length > 1) attach(decodeURIComponent(location.hash.slice(1)));   // #<run id> = shareable link
 })();
 </script>

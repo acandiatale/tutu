@@ -38,12 +38,14 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-18, round 5 complete (branch `claude/ecstatic-rubin-c29q8f`, on top of `main` @ 29e5861)
+## Status — 2026-10-20, round 5 + company-convention round complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
   harvest into `KBCase.symbol_owner`), jar-checked recipe catalog (`sbmig recipes check --jars`), fixture `boot2-method-rename`.
-- 844 offline tests green; asserted fixture e2e **14/14** (`scripts/e2e.sh`); fleet demo 5/5 with 1 LLM call total.
+- 2026-10-20: provider `chat_post` + `llm-probe` + per-run log files; `coding/` agent; LangGraph engine, LangChain
+  tier, FastAPI web UI (see "Company convention" below). 893 offline tests green; asserted fixture e2e **14/14**
+  (`scripts/e2e.sh`, 2026-10-18 tree); fleet demo 5/5 with 1 LLM call total.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -69,7 +71,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~75 s): `python -m pytest -m "not integration"` → 844 passed, 24 deselected
+- Fast check (Python only, ~90 s): `python -m pytest -m "not integration"` → 893 passed, 24 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.
@@ -83,9 +85,15 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
-- Web UI: `sbmig serve` (`sbmig/web/`, stdlib HTTP server + SSE, `static/index.html` vanilla JS). Runs are
-  `sbmig run` subprocesses under `out/web/<run id>/`; the page only streams `journal.jsonl` / `sbmig.log` / console.
-  sbmig is NOT a LangGraph project: the orchestration is the deterministic loop in `sbmig/loop/`.
+- **Company convention (2026-10-20): agents run on LangGraph + LangChain under uvicorn.** sbmig complies without
+  changing behaviour: `loop.engine: graph` (default) drives the phases from a LangGraph `StateGraph`
+  (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize; `inline` is the old loop, reports are
+  identical by test); the LLM is a LangChain `BaseChatModel` (`sbmig/llm/langchain.py`: `ChatPostModel` for the
+  gateway, `LangChainClient` wraps any BaseChatModel; provider `langchain`, company model via
+  `llm.langchain_model: "pkg.module:factory"`); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
+  `sbmig serve`), runs migrations in-process through `stream_graph` (one worker thread per run, per-run
+  `sbmig.log` by thread filter) and streams `node` / `journal` / `log` / `report` events over SSE to
+  `sbmig/web/static/index.html` (vanilla JS). Stop takes effect between graph nodes only.
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a `claude/...` branch; the user merges to `main` locally.

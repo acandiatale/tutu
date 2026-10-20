@@ -1,10 +1,12 @@
 """`sbmig` command line. Every heavy import is lazy so `sbmig --help` works even if a package is broken."""
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import List, Optional
 
@@ -34,12 +36,31 @@ def setup_logging(verbose: bool = False) -> None:
     root.propagate = False
 
 
-def attach_file_log(path: Path) -> Path:
-    """Append DEBUG-level sbmig logs (LLM calls, builds, decisions; never keys) to `path`. One handler per file."""
+_LOG_THREAD: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("sbmig_log_thread", default=None)
+
+
+class _ThreadFilter(logging.Filter):
+    """Pass only records of one run: emitted by its thread, or by a thread that inherited its context (a graph engine
+    running a node in an executor thread copies the context, so `_LOG_THREAD` still names the run's thread)."""
+
+    def __init__(self, thread_id: int):
+        super().__init__()
+        self.thread_id = thread_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.thread == self.thread_id or _LOG_THREAD.get() == self.thread_id
+
+
+def attach_file_log(path: Path, thread_id: Optional[int] = None) -> Path:
+    """Append DEBUG-level sbmig logs (LLM calls, builds, decisions; never keys) to `path`. One handler per file.
+
+    With `thread_id` (in-process runs of the web app) the file only gets records of that thread (and of threads
+    running in its context), so concurrent runs keep separate `sbmig.log` files; one handler per (file, thread)."""
     path = Path(path).resolve()
     root = logging.getLogger("sbmig")
     for h in root.handlers:
-        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == path:
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == path \
+                and getattr(h, "sbmig_thread", None) == thread_id:
             return path
     path.parent.mkdir(parents=True, exist_ok=True)
     if root.level == logging.NOTSET or root.level > logging.DEBUG:   # the file gets everything; console keeps its level
@@ -50,8 +71,16 @@ def attach_file_log(path: Path) -> Path:
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(LOG_FILE_FORMAT))
+    fh.sbmig_thread = thread_id  # type: ignore[attr-defined]
+    if thread_id is not None:
+        fh.addFilter(_ThreadFilter(thread_id))
+        if thread_id == threading.get_ident():
+            _LOG_THREAD.set(thread_id)
     root.addHandler(fh)
-    log.info("sbmig %s — log file %s", " ".join(sys.argv[1:])[:300], path)
+    if thread_id is None:
+        log.info("sbmig %s — log file %s", " ".join(sys.argv[1:])[:300], path)
+    else:
+        log.info("sbmig run (thread %s) — log file %s", thread_id, path)
     return path
 
 
@@ -174,16 +203,22 @@ def run(
 def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address (0.0.0.0 to share on the LAN)"),
               port: int = typer.Option(8765, "--port"),
               out: Path = typer.Option(Path("out/web"), "--out", "-o", help="where uploads and runs go"),
-              repo_root: Optional[Path] = typer.Option(None, "--repo-root", help="sbmig repo root (config/, kb/)")) -> None:
-    """One-page web UI: upload a project zip, start `sbmig run`, watch analysis / fixes / builds live (SSE),
-    download report.md / result.zip. Each run is a normal `sbmig run` subprocess with its own run directory."""
+              repo_root: Optional[Path] = typer.Option(None, "--repo-root",
+                                                       help="sbmig repo root (config/, kb/)")) -> None:
+    """One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
+    one worker thread per run), watch graph nodes / journal / log live (SSE), download report.md / result.zip.
+    Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`."""
+    import uvicorn
+
     from sbmig.core.config import PACKAGE_ROOT
-    from sbmig.web import serve
+    from sbmig.web.app import create_app
 
     root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
     attach_file_log(Path(out) / "sbmig-web.log")
     typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}")
-    serve(host, port, Path(out), root)
+    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root} "
+               f"uvicorn sbmig.web.app:app --host {host} --port {port})")
+    uvicorn.run(create_app(Path(out), root), host=host, port=port, log_level="info")
 
 
 @app.command("llm-probe")
@@ -206,6 +241,9 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
     client = make_llm_client(cfg)
     inner = getattr(client, "inner", client)
+    chat_model = getattr(inner, "chat_model", None)          # provider langchain over ChatPostModel → raw HTTP path
+    if chat_model is not None and hasattr(chat_model, "_http_client"):
+        inner = chat_model._http_client()
     msgs = [ChatMessage(role="system", content="You are a helpful assistant."),
             ChatMessage(role="user", content=prompt)]
     if isinstance(inner, _HTTPClient):

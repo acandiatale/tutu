@@ -36,11 +36,18 @@ Smoke test without touching anything: `sbmig analyze path/to/project.zip --confi
 command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When asking for help, share
 `sbmig.log`, `report.md` and the relevant `llm-NNNN.json`.
 
-`sbmig serve` (web UI): `sbmig serve --host 0.0.0.0 --port 8765 --out out/web` and open the page; upload a zip, pick
-the config files (e.g. `artifacts.yml` + `llm-company.yml`), start. The page streams `journal.jsonl` (phases,
-builds, decisions, LLM fixes), `sbmig.log` and the console over SSE, and links `report.md` / `report.json` /
-`result.zip` / `sbmig.log` when the run ends. The server needs the same environment as the CLI (`JAVA21_HOME`,
-`LLM_BASE_URL`, `LLM_API_KEY`); it binds to localhost unless `--host` says otherwise.
+`sbmig serve` (web UI): `sbmig serve --host 0.0.0.0 --port 8765 --out out/web` (FastAPI on uvicorn; the same app
+is `SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=<sbmig repo> uvicorn sbmig.web.app:app --host 0.0.0.0 --port 8765` for
+the company's uvicorn hosting) and open the page; upload a zip, pick the config files (e.g. `artifacts.yml` +
+`llm-company.yml`), start. Each run executes **in the server process** through the LangGraph engine
+(`sbmig.graph.stream_graph`, one worker thread per run; without LangGraph it falls back to the inline engine and the
+graph strip stays dark). The page streams the graph node updates, `journal.jsonl` (phases, builds, decisions, LLM
+fixes) and the run's `sbmig.log` over SSE (`status | node | error | journal | log | report | ping | end`), and links
+`report.md` / `report.json` / `result.zip` / `sbmig.log` when the run ends; the server-wide log is
+`<out>/sbmig-web.log`. "중단" (stop) takes effect after the current graph node: a running Maven build, OpenRewrite run
+or LLM call is not interrupted; the run is then finalized as aborted (exit code 3). The server needs the same
+environment as the CLI (`JAVA21_HOME`, `LLM_BASE_URL`, `LLM_API_KEY`); it binds to localhost unless `--host` says
+otherwise. Concurrent runs share the file KB (`kb/`); for the 500-project sequence keep one run at a time.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
 ## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)

@@ -1,4 +1,5 @@
-"""sbmig serve: one-page web UI + SSE over `sbmig run` subprocesses (sbmig.web.server)."""
-from .server import RunManager, RunSpec, default_command, make_server, serve
+"""sbmig web UI: FastAPI app (`sbmig.web.app:app`, served by uvicorn) + in-process run manager (`sbmig.web.runs`)."""
+from .app import create_app
+from .runs import RunManager
 
-__all__ = ["RunManager", "RunSpec", "default_command", "make_server", "serve"]
+__all__ = ["RunManager", "create_app"]
