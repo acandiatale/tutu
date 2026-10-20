@@ -1,4 +1,4 @@
-"""Externalized-configuration inventory (round 8): which settings does the as-is code read, and does a packaged
+r"""Externalized-configuration inventory (round 8): which settings does the as-is code read, and does a packaged
 resource define them?
 
 Legacy apps ran on an external Tomcat whose values never lived in the source (catalina.properties, `-D`, JNDI
@@ -21,9 +21,34 @@ Reference sources (`PropertyRef.source`):
   context-param            web.xml <context-param> (default = the as-is value)
   jndi                     java:comp/env/… literals, InitialContext lookups, jee:jndi-lookup, jndiName, context.xml
                            <Resource>/<Environment>, web.xml <resource-ref>/<env-entry> (normalized to java:comp/env/)
-  property-source          `${…}` inside a @PropertySource / placeholder location **and** `${…}` inside the value of a
-                           packaged definition file (`spring.datasource.url=${DB_URL}` → DB_URL is read)
+  property-source          `${…}` inside a @PropertySource / placeholder-configurer location
+  config-placeholder       `${…}` inside the value of a packaged definition file (`spring.datasource.url=${DB_URL}` →
+                           DB_URL is read at runtime; `${DB_URL:x}` in a value counts as a default → `defaulted`)
   profiles                 the string "spring.profiles.active" in Java
+@ConditionalOnProperty / @ConditionalOnBooleanProperty(prefix=, name=|value=) are `value-annotation` reads of
+`prefix.name`; an unset key is a valid state (the condition decides), so they carry a pseudo default (`defaulted`
+unless defined), `boot_keys=[]` and a note — a written placeholder would flip the condition.
+
+Per-service inventory (MSA, round 9): `scan_properties(..., services=[deployables])`. A service directory is
+dirname(`ServiceInfo.root_pom`) ("" for a root service); every ref and definition file belongs to the deepest service
+directory that contains it. Refs inside a service are matched against that service's definitions only (main + test as
+in the project-wide mode) and get `PropertyFinding.service = <name>`; refs outside every service (shared code) are
+matched against every definition in the project (defined when any service defines it) and get `service=None`. A key
+read by two services yields one finding per service, so `findings` is unique on (`service`, `key`) and sorted by
+(key, service). `PropertyInventory.services` lists the services scanned; `services=None` / `[]` = the project-wide
+round-8 behaviour (`service` stays None everywhere).
+
+Notes: `bootstrap*.properties|yml` definitions count as defined, plus an inventory note when the poms lack
+spring-cloud-starter-bootstrap. A UTF-8 BOM is stripped before parsing. `src/main/resources/config/*` counts as packaged.
+Relaxed binding: lookup compares `norm_key` (my-key == myKey == MY_KEY); each spelling read stays its own finding.
+
+Not detected (by design):
+  - `\${x}` (Spring 6.2+ escape) is a literal; `$${x}` is recorded as `x` (Spring resolves the inner placeholder)
+  - SpEL `#{systemProperties['x']}` / `#{environment['x']}` (only `${…}` inside SpEL is read)
+  - non-literal keys: `System.getProperty(PREFIX + "x")`, `env.getProperty(KEY)` with a constant
+  - `@Value` in Kotlin / Groovy / Scala sources (only *.java is scanned; the language edge finding covers them)
+  - `@Value("${my.list}")` against a YAML list (only `my.list[0]` … are defined, as in Spring)
+  - definitions outside `src/{main,test}/resources` (root, config/, META-INF/ and named classpath: locations)
 """
 from __future__ import annotations
 
@@ -39,7 +64,7 @@ from typing import Any, Iterable, Optional
 
 import yaml
 
-from sbmig.core.models import PomInfo, PropertyFinding, PropertyInventory, PropertyRef
+from sbmig.core.models import PomInfo, PropertyFinding, PropertyInventory, PropertyRef, ServiceInfo
 
 from .source_scanner import _COMMENT_RE, ScanResult
 
@@ -185,6 +210,9 @@ def iter_placeholders(s: str, base: int = 0) -> Iterable[tuple[str, Optional[str
         i = s.find("${", i)
         if i < 0:
             return
+        if i > 0 and s[i - 1] == "\\":            # `\${x}`: Spring 6.2+ escape → a literal, not a placeholder
+            i += 2
+            continue
         depth, j = 1, i + 2
         while j < n and depth:
             if s.startswith("${", j):
@@ -236,6 +264,9 @@ class _Collector:
         self.profiles: set[str] = set()
         self.inline_defs: list[tuple[str, str]] = []   # @SpringBootTest(properties=…) / DynamicPropertyRegistry
         self.container_props: dict[str, set[str]] = defaultdict(set)
+        # (norm key, file) of `log.dir=${LOG_DIR}`-style self references: the hosting entry never defines the
+        # placeholder it reads (relaxed matching would otherwise call LOG_DIR "defined" by log.dir itself)
+        self.self_defs: set[tuple[str, str]] = set()
         self.sys_skip = set(rules.system_property_skip)
 
     def in_filtered(self, rel: str) -> bool:
@@ -248,7 +279,8 @@ class _Collector:
             return
         if source not in ("jndi", "context-param") and not _KEY_OK.match(key.rstrip("*")):
             return
-        if source in ("xml-placeholder", "property-source", "value-annotation", "environment", "system-property"):
+        if source in ("xml-placeholder", "property-source", "config-placeholder", "value-annotation", "environment",
+                      "system-property"):
             if key in self.sys_skip:
                 self.container_props[key].add(file)
                 return
@@ -275,7 +307,9 @@ class _Collector:
 # Java
 # ---------------------------------------------------------------------------
 _JAVA_HINTS = ("${", "getProperty", "containsProperty", "getenv", "java:", "ConfigurationProperties",
-               "PropertySource", "lookup", "spring.profiles", "Profile", "getDataSource")
+               "PropertySource", "lookup", "spring.profiles", "Profile", "getDataSource", "ConditionalOn")
+_CONDITIONAL = ("ConditionalOnProperty", "ConditionalOnBooleanProperty")
+COND_RAW = "@ConditionalOn"          # PropertyRef.raw prefix of a @ConditionalOnProperty read (see _classify)
 _STR = r'"((?:\\.|[^"\\\n])*)"'
 _STR_RE = re.compile(_STR)
 _ANNOT_START_RE = re.compile(r"@([\w.]+)\s*\(")
@@ -370,6 +404,9 @@ def scan_java(col: _Collector, rel: str, text: str) -> None:
                 if km and not lit.startswith(("classpath", "file:")):
                     col.inline_defs.append((km.group(1), rel))
             continue
+        if name in _CONDITIONAL:
+            _conditional(col, rel, ln, body, src[m.start():end])
+            continue
         if name in ("PropertySource", "PropertySources"):
             for s in _STR_RE.finditer(body):
                 _location(col, _unescape_java(s.group(1)), rel, lines.line(m.end() + s.start()), src[m.start():end],
@@ -422,6 +459,33 @@ def scan_java(col: _Collector, rel: str, text: str) -> None:
             for p in re.split(r"[\s,&|()!]+", s.group(1)):
                 if p:
                     col.profiles.add(p)
+
+
+def _strings(arg: str) -> list[str]:
+    return [_unescape_java(x.group(1)) for x in _STR_RE.finditer(arg)]
+
+
+def _conditional(col: _Collector, rel: str, line: int, body: str, raw: str) -> None:
+    """@ConditionalOnProperty(prefix=, name=|value=, havingValue=, matchIfMissing=): every `prefix.name` is a read.
+    An unset key is a valid state (the condition decides), so the ref carries a pseudo default → `defaulted` unless
+    defined; never a sentinel placeholder (a written value would flip the condition)."""
+    prefix, names, if_missing = "", [], False
+    for arg in _split_args(body):
+        attr, eq, val = arg.partition("=")
+        if eq and re.fullmatch(r"\s*\w+\s*", attr):
+            attr = attr.strip()
+        else:
+            attr, val = "value", arg
+        if attr == "prefix":
+            prefix = next(iter(_strings(val)), "").strip()
+        elif attr in ("name", "value"):
+            names += [n.strip() for n in _strings(val) if n.strip()]
+        elif attr == "matchIfMissing":
+            if_missing = val.strip() == "true"
+    default = "(unset: condition matches, matchIfMissing)" if if_missing else "(unset: condition does not match)"
+    for n in names:
+        key = f"{prefix.rstrip('.')}.{n}" if prefix else n
+        col.add(key, "value-annotation", rel, line, raw, default)
 
 
 def _line_text(src: str, lines: _Lines, off: int) -> str:
@@ -582,8 +646,10 @@ class _Definitions:
     main_segs: list[tuple[list[str], str]] = field(default_factory=list)
     test_segs: list[tuple[list[str], str]] = field(default_factory=list)
     packaged: list[str] = field(default_factory=list)
+    log: list[tuple[str, str, bool]] = field(default_factory=list)    # (key, file, test) in add order
 
     def add(self, key: str, file: str, test: bool) -> None:
+        self.log.append((key, file, test))
         d, segs = (self.test, self.test_segs) if test else (self.main, self.main_segs)
         files = d[norm_key(key)]
         if file not in files:
@@ -639,7 +705,8 @@ def _read(ws: Any, rel: str, col: _Collector) -> Optional[str]:
         if size > MAX_FILE_BYTES:
             col.notes.append(f"skipped {rel}: larger than 1 MB")
             return None
-        return ws.read(rel)
+        text = ws.read(rel)
+        return text.removeprefix("\ufeff")      # a UTF-8 BOM must not stick to the first key
     except Exception as e:  # noqa: BLE001
         col.notes.append(f"skipped {rel}: unreadable ({e.__class__.__name__})")
         return None
@@ -688,13 +755,16 @@ def _scan_definitions(ws: Any, col: _Collector, files: list[str], test: bool, de
                     col.profiles.update(_profile_names(value))
             if isinstance(value, str) and "${" in value:
                 for pk, pd, _ in iter_placeholders(value):
+                    if norm_key(pk) == norm_key(key):
+                        col.self_defs.add((norm_key(key), rel))
                     if ln is None:
                         tlines = tlines or _Lines(text)
                         idx = text.find("${" + pk)
                         line = tlines.line(idx) if idx >= 0 else None
                     else:
                         line = ln
-                    col.placeholder(pk, pd, "property-source", rel, line or 0, f"{key}={value}", filtered=filtered)
+                    col.placeholder(pk, pd, "config-placeholder", rel, line or 0, f"{key}={value}",
+                                    filtered=filtered)
 
 
 # ---------------------------------------------------------------------------
@@ -736,7 +806,8 @@ def _fmt(tpl: str, name: str, leaf: str) -> str:
 
 
 def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: ExternalizedRules,
-              file_routes: bool) -> PropertyFinding:
+              file_routes: bool, self_defs: frozenset[tuple[str, str]] | set[tuple[str, str]] = frozenset()
+              ) -> PropertyFinding:
     sources = {r.source for r in refs}
     test_only = all(r.scope == "test" for r in refs)
     boot_keys: list[str] = [key]
@@ -779,11 +850,15 @@ def _classify(key: str, refs: list[PropertyRef], defs: _Definitions, rules: Exte
     if supplied_by is None and "xml-placeholder" in sources and any(
             r.file.endswith(("web.xml", "context.xml")) for r in refs if r.source == "xml-placeholder"):
         supplied_by = "system-property"
+    if refs and all(r.raw.startswith(COND_RAW) for r in refs):
+        boot_keys = []
+        note = "read by @ConditionalOnProperty only: unset is a valid state (the condition decides), no placeholder"
     if supplied_by is None and file_routes and sources & {"value-annotation", "environment", "xml-placeholder",
-                                                          "property-source"}:
+                                                          "property-source", "config-placeholder"}:
         supplied_by = "property-source:file"
 
-    defined_in = defs.lookup(key, include_test=test_only)
+    nk = norm_key(key)
+    defined_in = [f for f in defs.lookup(key, include_test=test_only) if (nk, f) not in self_defs]
     if not defined_in and boot_keys and boot_keys != [key]:
         per = [defs.lookup(b, include_test=test_only) for b in boot_keys]
         if all(per):
@@ -806,17 +881,32 @@ def _is_context_xml(rel: str) -> bool:
 
 
 def scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: ExternalizedRules,
-                    cfg: Any = None) -> PropertyInventory:
-    """Inventory of externalized settings (see module docstring). Never raises: problems become `notes`."""
+                    cfg: Any = None, *, services: Optional[list[ServiceInfo]] = None) -> PropertyInventory:
+    """Inventory of externalized settings (see module docstring). `services` (MSA deployables, round 9) switches to a
+    per-service inventory; None / [] = project-wide. Never raises: problems become `notes`."""
     try:
-        return _scan_properties(ws, poms, scan, rules, cfg)
+        return _scan_properties(ws, poms, scan, rules, cfg, services or [])
     except Exception as e:  # noqa: BLE001 - the analysis must survive any odd project
         log.exception("externalized-config scan failed")
         return PropertyInventory(notes=list(rules.notes) + [f"externalized-config scan failed: {e!r}"])
 
 
+def _service_dirs(services: list[ServiceInfo]) -> list[tuple[str, str]]:
+    """(dir, name) per service, deepest first; dir = dirname(root_pom), "" for a root service."""
+    out = [(posixpath.dirname(s.root_pom.replace("\\", "/")).strip("/"), s.name) for s in services]
+    return sorted(out, key=lambda x: (-len(x[0]), x[0]))
+
+
+def _owner(rel: str, dirs: list[tuple[str, str]]) -> Optional[str]:
+    """The service whose directory holds `rel` (deepest wins); None = outside every service (shared code)."""
+    for d, name in dirs:
+        if d == "" or rel == d or rel.startswith(d + "/"):
+            return name
+    return None
+
+
 def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: ExternalizedRules,
-                     cfg: Any) -> PropertyInventory:
+                     cfg: Any, services: list[ServiceInfo]) -> PropertyInventory:
     maven_props: set[str] = set()
     for p in poms:
         maven_props.update(p.properties)
@@ -861,21 +951,34 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
     _scan_definitions(ws, col, test_files, True, defs)
     for key, rel in col.inline_defs:
         defs.add(key, rel, _is_test(rel))
+    _bootstrap_note(col, main_files, poms)
 
-    by_key: dict[str, list[PropertyRef]] = defaultdict(list)
+    dirs = _service_dirs(services)
+    svc_defs: dict[Optional[str], _Definitions] = {None: defs}     # shared code: every service's definitions
+    if dirs:
+        for _, name in dirs:
+            svc_defs[name] = _Definitions()
+        for key, rel, test in defs.log:
+            owner = _owner(rel, dirs)
+            if owner is not None:
+                svc_defs[owner].add(key, rel, test)
+
+    by_key: dict[tuple[Optional[str], str], list[PropertyRef]] = defaultdict(list)
     for r in col.refs:
-        by_key[r.key].append(r)
+        by_key[(_owner(r.file, dirs) if dirs else None, r.key)].append(r)
         if r.source == "context-param" and r.key in ("spring.profiles.active", "spring.profiles.default") \
                 and r.default:
             col.profiles.update(_profile_names(r.default))
     findings: list[PropertyFinding] = []
     truncated = 0
-    for key in sorted(by_key):
-        refs = sorted(by_key[key], key=lambda r: (r.file, r.line or 0, r.source))
+    for svc, key in sorted(by_key, key=lambda sk: (sk[1], sk[0] or "")):
+        refs = sorted(by_key[(svc, key)], key=lambda r: (r.file, r.line or 0, r.source))
         if len(refs) > MAX_REFS_PER_KEY:
             truncated += 1
             refs = refs[:MAX_REFS_PER_KEY]
-        findings.append(_classify(key, refs, defs, rules, bool(col.file_locations)))
+        f = _classify(key, refs, svc_defs[svc], rules, bool(col.file_locations), col.self_defs)
+        f.service = svc
+        findings.append(f)
     if truncated:
         col.notes.append(f"{truncated} key(s) had more than {MAX_REFS_PER_KEY} references; the list was truncated")
     if col.file_locations:
@@ -887,7 +990,16 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
                          "them): " + ", ".join(f"{k} ({len(v)} file(s))" for k, v in sorted(col.container_props.items())))
     return PropertyInventory(findings=findings, packaged_files=sorted(set(defs.packaged)),
                              profiles=sorted(col.profiles), filtered_resources=col.filtered,
-                             notes=_dedupe(col.notes))
+                             notes=_dedupe(col.notes), services=[s.name for s in services])
+
+
+def _bootstrap_note(col: _Collector, main_files: list[str], poms: list[PomInfo]) -> None:
+    boot = [f for f in main_files if re.match(r"bootstrap(-[\w.-]+)?\.(properties|ya?ml)$", posixpath.basename(f))]
+    if boot and not any(d.artifact_id == "spring-cloud-starter-bootstrap" for p in poms for d in p.dependencies):
+        col.notes.append("bootstrap.* files define keys (counted as defined: " + ", ".join(boot[:5])
+                         + "), but on Boot 4 bootstrap.* is read only by the Spring Cloud bootstrap context "
+                         "(spring-cloud-starter-bootstrap, off by default since Spring Cloud 2020.0) — move the keys "
+                         "to application.* or use spring.config.import")
 
 
 def _dedupe(xs: list[str]) -> list[str]:

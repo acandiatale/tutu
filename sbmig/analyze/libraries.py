@@ -9,7 +9,8 @@ spring-retry, elasticsearch, mongodb,
 plus the library-advisory rules (knowledge/libraries/advisories.yml, docs/ADVISORIES.md): sleuth, hystrix, ribbon,
 zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4,
 jdk-removed-apis (imports of JDK-internal / removed packages: sun.misc, sun.security, com.sun.image, javax.activation;
-JAXB `javax.xml.bind` stays on the `jaxb` rule).
+JAXB `javax.xml.bind` stays on the `jaxb` rule), ibatis2 (iBATIS 2: `com.ibatis` / `org.springframework.orm.ibatis`
+imports, `org.apache.ibatis:ibatis-*` artifacts; `mybatis` = MyBatis 3 only).
 
 Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
 groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
@@ -145,6 +146,13 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
                 ("org.apache.http.client", "org.apache.http.impl.client", "org.apache.http.HttpResponse")),
     # JDK-internal / removed-from-the-JDK packages (pre-Java-8 code; advisory jdk-removed-apis). Import-only.
     LibraryRule("jdk-removed-apis", (), ("sun.misc", "sun.security", "com.sun.image", "javax.activation")),
+    # iBATIS 2 (round 9; advisory ibatis2): Spring 4.0 removed org.springframework.orm.ibatis. Distinct from `mybatis`
+    # (MyBatis 3 = org.mybatis:* artifacts, org.apache.ibatis.* imports); iBATIS 2 = com.ibatis.* imports and the
+    # org.apache.ibatis:ibatis-* artifacts. Pom + imports only: Spring XML bean classes (SqlMapClientFactoryBean)
+    # are not scanned — the ScanResult keeps XML paths, not their content.
+    LibraryRule("ibatis2", ("org.apache.ibatis:ibatis-sqlmap", "org.apache.ibatis:ibatis-core",
+                            "org.apache.ibatis:ibatis*", "ibatis:ibatis*", "com.ibatis:*"),
+                ("com.ibatis", "org.springframework.orm.ibatis")),
 )
 
 LIBRARY_NAMES: tuple[str, ...] = tuple(r.name for r in LIBRARY_RULES)

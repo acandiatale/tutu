@@ -184,6 +184,28 @@ the same rewrite pass. Hystrix has no upstream recipe either; the project compos
 `com.company.migrate.HystrixToResilience4j` fills the gap. The umbrella does not cover it, so every plan prepends it
 (`recipe_source: advisory`), Boot projects included. Ribbon and Zuul have no recipe, so they stay `guide`.
 
+## Download failures during a recipe run (round 9)
+
+The plugin resolves recipe jars and, for `UpgradeSpringBoot_4_0` & co., Maven metadata at run time. Through a proxy
+that answers HTTP 429 / 5xx this fails in two ways, both handled with `openrewrite.download_retry` (default 1,
+0 = off) and `openrewrite.download_retry_wait_s` (default 30):
+
+* **The run fails** with transfer wording (`Failed to download`, `Could not transfer artifact`, `status code: 429`,
+  `Too Many Requests`, `502` / `503`, `Connection reset`, `Read timed out`, `UnknownHostException`, …, matched in the
+  error and the run log). `OpenRewriteRunner.run` waits and re-runs up to `download_retry` times (journal
+  `rewrite_download_retry` / `rewrite_download_retry_result`, log `rewrite-<step>-dlretry.log`); a run that still
+  fails has its error prefixed `download-retry: `. `Could not find artifact … in <repo>` (a genuinely missing
+  artifact) is not retried. The OOM retry wins when the log shows both; the `compile` → `runNoFork` fallback
+  still applies to the retried result.
+* **The run succeeds but leaves literal versions** (`<version>4.0.x</version>`, `2025.1.x`, `latest.release`,
+  `latest.integration`, `latest.patch`) in a changed `pom.xml` because the recipe could not read
+  `maven-metadata.xml`. The orchestrator (`_step_rewrite`) resets the tree to the commit before the step, waits,
+  and re-runs the step once (journal `rewrite_unresolved_versions {…, retry: true}`). Skipped when the tree had
+  uncommitted changes before the step (a reset would lose them) and in dry runs. If the versions are still there,
+  the result is kept, the run is flagged `rewrite-unresolved-versions`, the phase gets a note, the report a
+  follow-up ("re-run sbmig later or set the versions by hand"), and the build loop runs as usual. The plan
+  recipes of that phase are not credited the failure (next section).
+
 ## How KB recipes are credited and promoted
 
 `FileKnowledgeBase.credit_recipe(id, success, project_fingerprint)` is the only place credits change:
@@ -197,6 +219,11 @@ Credits come from three places:
 
 * **Plan runs.** With `kb.try_candidates_in_plan`, active and candidate recipes run in the spring OpenRewrite step.
   Any that changed files are credited with that phase's build result (orchestrator `_credit_plan_recipes`).
+  A phase that ran no build is never credited, and since round 9 a *failed* phase is not credited when it failed on
+  dependency resolution rather than on code (journal `kb_credit_skipped {phase, recipes, reason}`): the flag
+  `rewrite-unresolved-versions` was raised in it, every remaining error is `dependency_resolution` /
+  `parent_resolution` / `plugin_resolution` (or an OpenRewrite failure prefixed `download-retry:`), or — with no
+  code error left — every blocked item is `artifact_not_found` / `parent_not_found`. Success credit is unchanged.
 * **Fix loop.** KB recipes tried for an error cluster are credited by the attempt's outcome.
 * **Harvest.** `KB_RECIPE` decisions are credited when the phase is harvested.
 

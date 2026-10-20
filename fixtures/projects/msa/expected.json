@@ -41,6 +41,42 @@
     "max_llm_calls": 0,
     "blocked": [],
     "unresolved_max": 0,
-    "optional_bumped": []
+    "optional_bumped": [],
+    "properties": {
+      "external": [
+        "order.tax-rate"
+      ],
+      "absent": [
+        "user.greeting",
+        "shop.region"
+      ],
+      "external_in": {
+        "order-service": [
+          "order.tax-rate"
+        ]
+      },
+      "written": [
+        "order.tax-rate"
+      ]
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "order-service/src/main/resources/application.properties",
+          "contains": "order.tax-rate=__SET_ME__",
+          "not_contains": "shop.region"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "user-service/src/main/resources/application.properties"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "src/main/resources/application.properties"
+        }
+      }
+    ]
   }
 }

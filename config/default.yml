@@ -24,6 +24,10 @@ layout:
   # merge: a path present in more than one module → first-wins (first module in <modules> order; the dropped copies
   # are saved under <run dir>/merge-conflicts/ and listed in the Handover) | fail (restructure error, nothing moved)
   merge_collision: first-wins
+  # after the in-house parent is set: drop explicit dependency <version>s the new parent chain manages
+  # (gte = only when the managed version is the same or newer; any = always; off = keep). Mandatory / optional /
+  # parent artifacts and system-scope dependencies are never touched.
+  drop_managed_versions: gte
   application_class_name: Application
   starter_by_case:
     pure_java: spring-boot-starter
@@ -66,6 +70,8 @@ openrewrite:
   timeout_minutes: 40
   jvm_args: ["-Xmx4g"]
   plugin_goal: run
+  download_retry: 1              # recipe run failed / left `x.y.x` versions because a download failed → wait + retry once
+  download_retry_wait_s: 30
 
 build:
   mvn: mvn
@@ -125,6 +131,7 @@ llm:
   max_context_chars: 60000
   timeout_seconds: 180
   max_retries: 3
+  cooldown_seconds: 60             # 2nd transport failure in a row → pause once per run, then retry (0 = unavailable at once)
   max_context_rounds: 2
   prompt_version: v1
 

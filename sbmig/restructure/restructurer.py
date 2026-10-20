@@ -17,7 +17,8 @@ mode="optional_bump"
 Optional artifact bumps and `remove_when_present` are applied to every project pom in all modes.
 
 Edge cases (docs/ERROR-HANDLING.md): system-scoped jars are copied next to the module that declares them (E7);
-`<module>` entries outside the project root abort the layout with ok=False before anything moves (S5); nested
+`<module>` entries outside the project root abort a `wrap` layout with ok=False before anything moves and are skipped
+(note + follow-up) by `merge` (S5); nested
 `<modules>` / `<parent><relativePath>` are recomputed after a wrap; WAR modules are wrapped unchanged (S7); an
 already restructured project is left alone apart from the idempotent pom pass (S2).
 """
@@ -40,7 +41,7 @@ from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectP
 from sbmig.core.workspace import GitError, Workspace
 
 from .pom_editor import PomEditError, PomEditor, property_ref
-from sbmig.plan.versions import version_lt
+from sbmig.plan.versions import compare_versions, version_lt
 
 log = logging.getLogger("sbmig.restructure")
 
@@ -68,6 +69,7 @@ PLACEHOLDER_SOURCE_LABELS = {
     "environment": "Environment.getProperty", "system-property": "System.getProperty", "system-env": "System.getenv",
     "xml-placeholder": "XML placeholder", "context-param": "web.xml context-param", "jndi": "JNDI",
     "property-source": "@PropertySource", "profiles": "spring.profiles",
+    "config-placeholder": "config placeholder",       # round 9: `${K}` inside a packaged definition file's value
 }
 
 WEB_LAYER_RE = re.compile(
@@ -75,6 +77,10 @@ WEB_LAYER_RE = re.compile(
     r"Configuration)\b", re.MULTILINE)
 SERVLET_INIT_RE = re.compile(r"\bextends\s+(?:[\w.]+\.)?SpringBootServletInitializer\b")
 PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
+# merge: line-list registries whose copies are merged as the union of lines instead of first-wins (round 9)
+UNION_RE = re.compile(r"(?:^|/)META-INF/(?:services/[^/]+|spring\.factories|spring/[^/]+\.(?:imports|factories))$")
+RESOURCE_SECTIONS = {"resources": ("resource", "src/main/resources"),
+                     "testResources": ("testResource", "src/test/resources")}
 
 JAVA_KEYWORDS = {
     "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const", "continue",
@@ -250,6 +256,7 @@ class Restructurer:
                 c.note(f"already restructured but {root_rel} does not inherit {c.cfg.artifacts.parent.key}; "
                        "parent left unchanged")
             self._all_poms_pass(c, java_fix=False)
+            self._drop_managed_versions(c)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
             self._placeholder_followup(c)
             c.commit("restructure: optional artifact versions / cleanup (already restructured)")
@@ -258,11 +265,16 @@ class Restructurer:
         if parent is not None and parent.key == c.cfg.artifacts.parent.key:
             c.note(f"{root_rel} already inherits the in-house parent {parent.key}; splitting into the company layout")
         outside = []
+        inside: list[str] = []
         for m in mods:
             tgt = posixpath.normpath(posixpath.join(c.base or ".", m))
             if m.startswith("/") or tgt == ".." or tgt.startswith("../"):
                 outside.append(f"'{m}' → {tgt}")
-        if outside:
+                if policy == "merge":                  # merge: skip it (note + follow-up), fold the rest
+                    self._skip_outside(c, root_rel, m, tgt)
+                    continue
+            inside.append(m)
+        if outside and policy != "merge":
             msg = (f"module(s) declared in {root_rel} resolve outside the project root: {', '.join(outside)}; the "
                    "layout restructure cannot move them — nothing was changed (move the module into the project or "
                    "migrate it separately)")
@@ -271,7 +283,7 @@ class Restructurer:
         coords = self._root_coords(root, c.profile)
         if mods:
             if policy == "merge":
-                self._merge(c, root, mods, coords)
+                self._merge(c, root, inside, coords)
             else:
                 self._wrap(c, root, mods, coords)
         else:
@@ -280,6 +292,7 @@ class Restructurer:
         self._write_placeholders(c, f"{c.p(L.module_dir, L.boot_module)}/src/main/resources")
         self._placeholder_followup(c)
         self._all_poms_pass(c, java_fix=False)
+        self._drop_managed_versions(c)
         c.commit("restructure: optional artifact versions / cleanup")
 
     @staticmethod
@@ -486,76 +499,138 @@ class Restructurer:
         """Fold every as-is module (and the root `src/`) into comp-jar; an as-is module named like
         `layout.boot_module` is kept as boot-jar (moved to module/boot-jar, pom adjusted, sources untouched).
 
+        `<packaging>pom</packaging>` sub-modules (BOM / nested aggregator) move nothing: their `<modules>` children
+        are merged like any other module and their dependencyManagement / properties are folded into the root pom
+        (first wins per g:a / key). Modules resolving outside the project root are skipped (note + follow-up).
         Collisions (same comp-jar path from two sources): `layout.merge_collision` first-wins (the first source in
         `<modules>` order wins; identical copies dropped, differing ones saved under `<run dir>/merge-conflicts/`)
-        or fail (RestructureError). Every check and decision happens before the first move."""
+        or fail (RestructureError). Line-list registries (META-INF/services/*, spring.factories,
+        META-INF/spring/*.imports|*.factories) are never collisions: the kept file is the union of every copy's
+        lines (all originals saved). Every check and decision happens before the first move."""
         L = c.cfg.layout
         md = L.module_dir
         comp = c.p(md, L.comp_module)
         boot = c.p(md, L.boot_module)
         collision = c.params.get("merge_collision", L.merge_collision)
 
-        # 1. kept boot module (first module whose directory basename is the boot module name)
-        kept: str | None = None
-        for m in mods:
-            if posixpath.basename(self._module_dir(m)) != L.boot_module:
-                continue
-            if kept is None:
-                kept = m
-            else:
-                c.note(f"module {m} is also named {L.boot_module}; merged into {md}/{L.comp_module} "
-                       f"(only {kept} is kept as the boot module)")
-        merged = [m for m in mods if m != kept]
-
         def load(label: str, mdir: str) -> PomEditor:
             pom = c.p(mdir, "pom.xml")
             if not c.ws.exists(pom):
                 raise RestructureError(f"merge: module pom {pom} not found")
             ed = PomEditor(c.ws.abs(pom))
-            if ed.packaging() == "pom" or ed.modules():
-                raise RestructureError(f"merge policy does not support nested aggregator {label}")
+            if ed.packaging() != "pom" and ed.modules():
+                raise RestructureError(f"merge policy does not support {ed.packaging()} module {label} declaring "
+                                       "<modules>")
             return ed
 
-        kept_dir = self._module_dir(kept) if kept is not None else None
-        kept_ed = load(kept, kept_dir) if kept is not None and kept_dir is not None else None
-        eds: list[PomEditor] = []
-        sources_of: list[tuple[str, str]] = []          # (module dir, label)
-        if c.ws.exists(c.p("src")):
-            sources_of.append((".", "<root>"))
-        for m in merged:
-            mdir = self._module_dir(m)
-            eds.append(load(m, mdir))
-            sources_of.append((mdir, mdir))
+        # 0. flatten: pom-packaging modules (aggregator / BOM) contribute their children, depth-first in order
+        flat: list[tuple[str, str, PomEditor]] = []          # (label, module dir, editor)
+        pom_mods: list[tuple[str, str, PomEditor]] = []
+        order: list[tuple[str, str, PomEditor]] = []         # both kinds, declaration order (depth-first)
+
+        def visit(label: str, mdir: str, depth: int) -> None:
+            if any(mdir == d for _, d, _ in order):
+                return
+            ed = load(label, mdir)
+            entry = (label, mdir, ed)
+            order.append(entry)
+            if ed.packaging() != "pom":
+                flat.append(entry)
+                return
+            pom_mods.append(entry)
+            if depth > 10:
+                raise RestructureError(f"merge: module nesting too deep at {label}")
+            for sub in ed.modules():
+                sub = sub.strip().rstrip("/")
+                sdir = posixpath.normpath(posixpath.join(mdir, self._module_dir(sub)))
+                if sub.startswith("/") or self._outside(c, sdir):
+                    self._skip_outside(c, f"{label}/pom.xml", sub, c.p(sdir))
+                    continue
+                visit(sdir, sdir, depth + 1)
+
+        for m in mods:
+            visit(m, self._module_dir(m), 0)
+
+        # 1. kept boot module (first jar/war module whose directory basename is the boot module name)
+        kept: tuple[str, str, PomEditor] | None = None
+        for entry in flat:
+            if posixpath.basename(entry[1]) != L.boot_module:
+                continue
+            if kept is None:
+                kept = entry
+            else:
+                c.note(f"module {entry[0]} is also named {L.boot_module}; merged into {md}/{L.comp_module} "
+                       f"(only {kept[0]} is kept as the boot module)")
+        merged_jar = [e for e in flat if e is not kept]
+        kept_ed = kept[2] if kept is not None else None
+        eds = [ed for _, _, ed in merged_jar]
+        all_merged = [e for e in order if e is not kept]
+        module_dirs = {d.split("/")[0] for _, d, _ in [*flat, *pom_mods]}
+        sources_of: list[tuple[str, str, list[str]]] = []    # (module dir, label, top-level source dirs)
+        root_tops = [t for t in self._source_roots(c, root) if t == "src" or t not in module_dirs]
+        if any(c.ws.exists(c.p(t)) for t in root_tops):
+            sources_of.append((".", "<root>", root_tops))
+        inherited = self._source_roots(c, root)            # root <build> resource dirs apply to every module
+        for label, mdir, ed in merged_jar:
+            sources_of.append((mdir, label, list(dict.fromkeys([*self._source_roots(c, ed), *inherited]))))
 
         # 2. plan the moves and decide every collision (nothing is moved yet)
         plan: list[tuple[str, str]] = []
         seen: dict[str, tuple[str, str]] = {}           # comp dst → (label, as-is src)
         conflicts: dict[str, MergeConflict] = {}
+        unions: dict[str, list[tuple[str, str]]] = {}   # comp dst → [(label, as-is src)] of a line-list registry
         to_save: list[tuple[str, str]] = []             # (as-is src, run-dir-relative copy)
-        for mdir, label in sources_of:
-            src_abs = c.ws.abs(c.p(mdir, "src"))
-            if not src_abs.exists():
-                continue
-            for f in sorted(x for x in src_abs.rglob("*") if x.is_file()):
-                rel = f.relative_to(src_abs).as_posix()
-                dst = f"{comp}/src/{rel}"
-                src = c.p(mdir, "src", rel)
-                if dst in seen:
-                    first_label, first_src = seen[dst]
-                    if collision == "fail":
-                        raise RestructureError(f"merge collision: src/{rel} exists in both {first_label} and {label}")
-                    mc = conflicts.setdefault(dst, MergeConflict(path=f"src/{rel}", kept_from=first_label,
-                                                                 identical=True))
-                    mc.dropped_from.append(label)
-                    if c.ws.abs(first_src).read_bytes() != f.read_bytes():
-                        mc.identical = False
-                        saved = f"merge-conflicts/{'root' if label == '<root>' else label}/src/{rel}"
-                        mc.saved_copies.append(saved)
-                        to_save.append((src, saved))
+
+        def saved_path(label: str, rel: str) -> str:
+            return f"merge-conflicts/{'root' if label == '<root>' else label}/{rel}"
+
+        for mdir, label, tops in sources_of:
+            for top in tops:
+                src_abs = c.ws.abs(c.p(mdir, top))
+                if not src_abs.is_dir():
                     continue
-                seen[dst] = (label, src)
-                if src != dst:
-                    plan.append((src, dst))
+                for f in sorted(x for x in src_abs.rglob("*") if x.is_file()):
+                    rel = f"{top}/{f.relative_to(src_abs).as_posix()}"
+                    dst = f"{comp}/{rel}"
+                    src = c.p(mdir, rel)
+                    if dst in seen:
+                        first_label, first_src = seen[dst]
+                        if UNION_RE.search(rel):
+                            unions.setdefault(dst, [(first_label, first_src)]).append((label, src))
+                            continue
+                        if collision == "fail":
+                            raise RestructureError(f"merge collision: {rel} exists in both {first_label} and {label}")
+                        mc = conflicts.setdefault(dst, MergeConflict(path=rel, kept_from=first_label, identical=True))
+                        mc.dropped_from.append(label)
+                        if c.ws.abs(first_src).read_bytes() != f.read_bytes():
+                            mc.identical = False
+                            mc.saved_copies.append(saved_path(label, rel))
+                            to_save.append((src, saved_path(label, rel)))
+                        continue
+                    seen[dst] = (label, src)
+                    if src != dst:
+                        plan.append((src, dst))
+        union_texts: dict[str, str] = {}
+        for dst, copies in unions.items():
+            rel = dst[len(comp) + 1:]
+            texts = [c.ws.abs(s_).read_bytes() for _, s_ in copies]
+            mc = MergeConflict(path=rel, kept_from=copies[0][0], dropped_from=[lb for lb, _ in copies[1:]])
+            if all(t_ == texts[0] for t_ in texts):
+                mc.identical = True
+            else:
+                mc.union = True
+                for lb, s_ in copies:
+                    mc.saved_copies.append(saved_path(lb, rel))
+                    to_save.append((s_, saved_path(lb, rel)))
+                union_texts[dst] = self._union_registry(rel, [t_.decode("utf-8", "replace") for t_ in texts])
+            conflicts[dst] = mc
+        for _label, mdir, ed in pom_mods:            # sources Maven never compiled (pom packaging): saved, not merged
+            if c.ws.abs(c.p(mdir, "src")).is_dir():
+                for f in sorted(x for x in c.ws.abs(c.p(mdir, "src")).rglob("*") if x.is_file()):
+                    rel = f"src/{f.relative_to(c.ws.abs(c.p(mdir, 'src'))).as_posix()}"
+                    to_save.append((c.p(mdir, rel), saved_path(mdir, rel)))
+                c.followup(f"pom-packaging module {mdir} has a src/ directory Maven never compiled; not merged — "
+                           f"saved under {c.ws.run_dir}/merge-conflicts/{mdir}/src/")
         for src, saved in to_save:
             target = c.ws.run_dir / saved
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -563,10 +638,15 @@ class Restructurer:
         if conflicts:
             c.result.merge_conflicts.extend(conflicts.values())
             same = [mc.path for mc in conflicts.values() if mc.identical]
-            diff = [mc.path for mc in conflicts.values() if not mc.identical]
+            union = [mc.path for mc in conflicts.values() if mc.union]
+            diff = [mc.path for mc in conflicts.values() if not mc.identical and not mc.union]
             if same:
                 c.note(f"{len(same)} identical duplicate file(s) dropped: {', '.join(same[:5])}"
                        f"{' …' if len(same) > 5 else ''}")
+            if union:
+                c.note(f"{len(union)} registry file(s) (META-INF/services, spring.factories, *.imports) merged as the "
+                       f"union of every module's lines (originals saved under {c.ws.run_dir}/merge-conflicts/): "
+                       f"{', '.join(union[:5])}{' …' if len(union) > 5 else ''}")
             if diff:
                 c.followup(f"merge conflicts: {len(diff)} file(s) existed in more than one module with different "
                            "content; the copy from the first module in <modules> order was kept, the others are "
@@ -574,6 +654,7 @@ class Restructurer:
                            f"{' …' if len(diff) > 5 else ''}")
 
         # 3. kept boot module → module/boot-jar
+        kept_dir = kept[1] if kept is not None else None
         if kept is not None and kept_dir is not None and c.p(kept_dir) != boot:
             c.move(c.p(kept_dir), boot)
             self._fix_child_parents(c, {c.p(kept_dir): boot})
@@ -582,37 +663,164 @@ class Restructurer:
         # 4. fold the other sources into comp-jar
         for src, dst in plan:
             c.move(src, dst)
-        for mdir, _label in sources_of:
-            c.moves.append((c.p(mdir, "src"), f"{comp}/src"))
-        internal_eds = [*eds, *([kept_ed] if kept_ed is not None else [])]
+        for dst, text in union_texts.items():
+            c.write(dst, text, generated=False)
+        for mdir, _label, tops in sources_of:
+            for top in tops:
+                c.moves.append((c.p(mdir, top), f"{comp}/{top}"))
+        internal_eds = [*(ed for _, _, ed in all_merged), *([kept_ed] if kept_ed is not None else [])]
         groups = {coords.group_id, "${project.groupId}"} | {ed.group_id() for ed in internal_eds if ed.group_id()}
-        merged_internal = {f"{g}:{a}" for g in groups for a in {ed.artifact_id() for ed in eds} if a}
+        merged_internal = {f"{g}:{a}" for g in groups for a in {ed.artifact_id() for _, _, ed in all_merged} if a}
         internal = merged_internal | {f"{g}:{kept_ed.artifact_id()}" for g in groups
                                       if kept_ed is not None and kept_ed.artifact_id()}
-        packaging = "war" if any(ed.packaging() == "war" for ed in internal_eds) else root.packaging()
-        asis_deps = root.dependencies() + [d for ed in eds for d in ed.dependencies()]
-        self._write_comp_pom(c, [root, *eds], coords, comp, packaging, exclude=internal, copy_props_from=eds)
-        for m in merged:
-            mdir = c.p(self._module_dir(m))
-            if mdir != comp:
-                c.ws.delete(mdir)
-            c.note(f"merged module {m} into {md}/{L.comp_module} (module directory removed)")
-        c.result.merged_modules = list(merged)
+        packaging = "war" if any(ed.packaging() == "war" for ed in [*eds, *([kept_ed] if kept_ed else [])]) \
+            else root.packaging()
+        asis_deps = root.dependencies() + [d for _, _, ed in all_merged for d in ed.dependencies()]
+        self._write_comp_pom(c, [root, *(ed for _, _, ed in all_merged)], coords, comp, packaging, exclude=internal,
+                             copy_props_from=eds)
+        for label, mdir_, _ed in all_merged:
+            mdir = c.p(mdir_)
+            if mdir != comp and c.ws.exists(mdir):
+                if any(x == mdir or x.startswith(mdir + "/") for x in (comp, boot)):
+                    c.ws.delete(f"{mdir}/pom.xml")          # the as-is module dir is the company module dir
+                else:
+                    c.ws.delete(mdir)
+            c.note(f"merged module {label} into {md}/{L.comp_module} (module directory removed)")
+        c.result.merged_modules = [label for label, _, _ in all_merged]
         c.commit("restructure: merge as-is modules into comp-jar")
 
         # 5. boot-jar: the kept as-is module, or a generated one
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
                   version="${project.version}")
         if kept_ed is not None and kept is not None and kept_dir is not None:
-            self._keep_boot(c, kept_ed, kept, kept_dir, boot, comp, coords, lib, merged_internal)
+            parent = kept_ed.get_parent()
+            if parent is not None and any(parent.artifact_id == ed.artifact_id() for _, _, ed in pom_mods):
+                kept_ed.set_parent(GAV(group_id=coords.group_id, artifact_id=coords.artifact_id,
+                                       version=coords.version), posixpath.relpath(c.p("pom.xml"), boot))
+                c.note(f"kept boot module {kept[0]} inherited the merged pom module {parent.artifact_id}; parent "
+                       f"re-pointed to the root pom {coords.artifact_id}")
+            self._keep_boot(c, kept_ed, kept[0], kept_dir, boot, comp, coords, lib, merged_internal)
+            self._shadowed_boot_resources(c, comp, boot)
         else:
             moved_main, moved_tests = self._populate_boot(c, [comp], boot)
             final_name = root.text_of(root.find("build"), "finalName") if root.find("build") is not None else None
             self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp])
+        self._fold_management(c, root, all_merged, merged_internal)
         self._rewrite_root(c, root, [f"{md}/{L.comp_module}", f"{md}/{L.boot_module}"],
                            keep_deps=False, keep_build_plugins=False)
         self._packaging_followups(c, packaging)
         c.commit("restructure: comp-jar / boot-jar layout (merged)")
+
+    @staticmethod
+    def _outside(c: _Ctx, mdir: str) -> bool:
+        tgt = c.p(mdir)
+        return tgt == ".." or tgt.startswith("../")
+
+    def _skip_outside(self, c: _Ctx, declared_in: str, module: str, target: str) -> None:
+        c.note(f"module '{module}' declared in {declared_in} resolves outside the project root ({target}); "
+               "not merged (nothing outside the workspace is read or changed)")
+        c.followup(f"module {module} ({declared_in}) lives outside the project root and was not merged into "
+                   f"{c.cfg.layout.module_dir}/{c.cfg.layout.comp_module}: migrate it separately and install it into "
+                   "Nexus, or move it into the project — dependencies on it now resolve from the repository")
+
+    def _fold_management(self, c: _Ctx, root: PomEditor, merged: list[tuple[str, str, PomEditor]],
+                         internal: set[str]) -> None:
+        """Keep the merged modules' management: root `<dependencyManagement>` entries of merged modules (an internal
+        BOM import, versions of internal modules) are removed; every merged module's dependencyManagement entry
+        is folded into the root pom (first wins per g:a, the root's own entries first), with the `${props}` its
+        version references; pom-packaging modules' `<properties>` are folded too (first wins per key)."""
+        drop = set(c.cfg.artifacts.remove_when_present)
+        removed = []
+        for el in root.dependency_elements(True):
+            g = root.gav_of(el)
+            if g.key in internal:
+                root.remove_node(el)
+                removed.append(g.key)
+        if removed:
+            root.remove_if_empty(root.find("dependencyManagement/dependencies"))
+            root.remove_if_empty(root.find("dependencyManagement"))
+            c.note(f"root dependencyManagement entries for merged modules removed: {', '.join(removed)}")
+        for label, _mdir, ed in merged:
+            folded: list[str] = []
+            props: list[str] = []
+            for el in ed.dependency_elements(True):
+                g = ed.gav_of(el)
+                if g.key in internal or g.key in drop or root.has_managed_dependency(g.group_id, g.artifact_id):
+                    continue
+                root.copy_into(root.ensure_path("dependencyManagement/dependencies"), el)
+                folded.append(g.key)
+                for prop in re.findall(r"\$\{([^}]+)\}", "".join(el.itertext())):
+                    v = ed.get_property(prop)
+                    if v is not None and not root.has_property(prop):
+                        root.set_property(prop, v)
+                        props.append(prop)
+            if ed.packaging() == "pom":
+                for k, v in ed.properties().items():
+                    if not root.has_property(k):
+                        root.set_property(k, v)
+                        props.append(k)
+            if folded or props:
+                c.note(f"module {label}: {len(folded)} dependencyManagement entr{'y' if len(folded) == 1 else 'ies'}"
+                       f"{' (' + ', '.join(folded[:5]) + (' …' if len(folded) > 5 else '') + ')' if folded else ''}"
+                       f" and {len(set(props))} propert{'y' if len(set(props)) == 1 else 'ies'} folded into the root "
+                       "pom (first wins)")
+
+    def _shadowed_boot_resources(self, c: _Ctx, comp: str, boot: str) -> None:
+        """Kept boot module: comp-jar copies of boot resources with the same name as boot-jar's own are shadowed at
+        runtime (BOOT-INF/classes precede BOOT-INF/lib; Boot reads one file per location)."""
+        res = f"{comp}/src/main/resources"
+        shadowed = [f[len(res) + 1:] for f in self._boot_resource_files(c, res)
+                    if c.ws.exists(f"{boot}/src/main/resources/{f[len(res) + 1:]}")]
+        if shadowed:
+            c.followup(f"{', '.join(shadowed)} exist in both {boot} (kept) and {comp} (merged modules): the boot-jar "
+                       "copy wins at runtime and the comp-jar settings are not read — merge them into the boot-jar "
+                       "file")
+
+    @staticmethod
+    def _union_registry(rel: str, texts: list[str]) -> str:
+        """Union of line-list registries: `*.factories` (key=comma list, `\\` continuations) merged per key with
+        deduped values; other registries keep the first copy's lines in order, then new lines of the others."""
+        if rel.endswith(".factories"):
+            merged: dict[str, list[str]] = {}
+            for text in texts:
+                logical: list[str] = []
+                buf = ""
+                for raw in text.splitlines():
+                    line = raw.strip()
+                    if not buf and (not line or line.startswith(("#", "!"))):
+                        continue
+                    if (len(line) - len(line.rstrip("\\"))) % 2 == 1:      # odd trailing backslashes: continued
+                        buf += line[:-1]
+                        continue
+                    logical.append(buf + line)
+                    buf = ""
+                if buf:
+                    logical.append(buf)
+                for ln in logical:
+                    m = re.match(r"\s*([^=:\s]+)\s*[=:]\s*(.*)$", ln)
+                    if not m:
+                        continue
+                    vals = merged.setdefault(m.group(1), [])
+                    for v in (x.strip() for x in m.group(2).split(",")):
+                        if v and v not in vals:
+                            vals.append(v)
+            out = []
+            for k, vals in merged.items():
+                out.append(f"{k}=" + ",\\\n".join(vals))
+            return "\n".join(out) + "\n"
+        lines: list[str] = []
+        seen: set[str] = set()
+        for i, text in enumerate(texts):
+            for raw in text.splitlines():
+                key = raw.split("#", 1)[0].strip()
+                if i == 0:
+                    lines.append(raw.rstrip("\r"))
+                    if key:
+                        seen.add(key)
+                elif key and key not in seen:
+                    lines.append(key)
+                    seen.add(key)
+        return "\n".join(lines).rstrip("\n") + "\n"
 
     def _keep_boot(self, c: _Ctx, ed: PomEditor, declared: str, asis_dir: str, boot: str, comp: str, coords: GAV,
                    lib: GAV, merged_internal: set[str]) -> None:
@@ -710,6 +918,8 @@ class Restructurer:
             if build is None:
                 continue
             for name in BUILD_TO_COMP:
+                if name in RESOURCE_SECTIONS and len(sources) > 1:
+                    continue                           # merged modules: union below
                 el = src.child(build, name)
                 if el is not None and ed.find(f"build/{name}") is None:
                     ed.copy_into(ed.ensure_path("build"), el, ordered=True)
@@ -719,6 +929,8 @@ class Restructurer:
                     continue
                 seen_plugins.add(key)
                 ed.copy_into(ed.ensure_path("build/plugins"), p)
+        if len(sources) > 1:
+            self._union_resources(c, ed, sources)
         root_props = sources[0].properties() if sources else {}
         for src in copy_props_from or ():
             for k, v in src.properties().items():
@@ -726,6 +938,45 @@ class Restructurer:
                     ed.set_property(k, v)
         self._fix_java(c, ed, top=False)
         ed.save()
+
+    def _union_resources(self, c: _Ctx, ed: PomEditor, sources: list[PomEditor]) -> None:
+        """Merged modules (sources[0] = the root pom, its `<build>` inherited by every module): comp-jar's
+        `<resources>` / `<testResources>` = the union of every module's effective resource directories (deduped by
+        directory + targetPath, first wins). The Maven default directory is added when some jar module relied on it
+        (declared none and inherits none), so a custom `src/main/config` of one module does not hide the others'
+        `src/main/resources`. Directories are module-relative and the files moved with the same relative path."""
+        for sec, (item, default) in RESOURCE_SECTIONS.items():
+            def items_of(src: PomEditor, sec: str = sec, item: str = item) -> list[Any]:
+                b = src.find("build")
+                return src.children(src.child(b, sec), item) if b is not None else []
+            root_items = items_of(sources[0])
+            entries: list[Any] = []
+            seen: set[tuple[str, str]] = set()
+            relies_default = False
+            for i, src in enumerate(sources):
+                own = items_of(src)
+                if i > 0 and not own and src.packaging() != "pom":
+                    relies_default = relies_default or not root_items
+                for r in own:
+                    raw = src.text_of(r, "directory") or default
+                    d = re.sub(r"^\$\{(?:project\.)?basedir\}/?", "", raw).strip()
+                    key = (d.strip("/"), (src.text_of(r, "targetPath") or "").strip())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    entries.append(r)
+            if not entries:
+                continue
+            container = ed.ensure_path(f"build/{sec}")
+            if relies_default and (default, "") not in seen:
+                el = ed._build_value(container, item, {"directory": default})
+                container.remove(el)
+                ed._append(container, el)
+                ed.reindent(el)
+            for r in entries:
+                ed.copy_into(container, r)
+            dirs = [ed.text_of(x, "directory") or default for x in ed.children(container, item)]
+            c.note(f"comp-jar <{sec}>: union of the merged modules' resource directories ({', '.join(dirs)})")
 
     # ------------------------------------------------------------------ system-scoped jars (E7)
     def _relocate_system_dep(self, c: _Ctx, ed: PomEditor, el: Any, asis_dir: str, module_dir: str,
@@ -843,15 +1094,19 @@ class Restructurer:
         return out
 
     # ------------------------------------------------------------------ externalized-config placeholders (round 8)
-    def _placeholder_entries(self, c: _Ctx, under: str | None = None,
-                             others: tuple[str, ...] = ()) -> list[tuple[str, str, str]]:
+    def _placeholder_entries(self, c: _Ctx, under: str | None = None, others: tuple[str, ...] = (),
+                             service: tuple[str, ...] | None = None) -> list[tuple[str, str, str]]:
         """(boot_key, value, comment) for every `external` finding, deduped by key (first finding wins), sorted.
-        `under`: keep only findings with a reference below that directory — plus findings referenced below none of
+        MSA: `service` (the names a service root answers to: `ServiceInfo.name`, its directory, the directory's
+        basename) selects by `PropertyFinding.service` when the inventory is per service (round 9: findings of that
+        service + `service is None` shared ones). With a project-wide inventory (no finding carries a service)
+        `under` keeps only findings with a reference below that directory — plus findings referenced below none of
         `others` (shared library code) — so each MSA service gets the keys its own code reads."""
         X = c.cfg.externalized
         inv = getattr(c.profile, "properties", None)
         if inv is None:
             return []
+        per_service = service is not None and (bool(inv.services) or any(f.service for f in inv.findings))
         out: dict[str, tuple[str, str]] = {}
         for f in inv.findings:
             if f.status != "external" or not f.boot_keys:
@@ -859,7 +1114,10 @@ class Restructurer:
             refs = list(f.refs)
             if not X.include_test_refs and refs and all(r.scope == "test" for r in refs):
                 continue
-            if under is not None:
+            if per_service:
+                if f.service is not None and f.service not in (service or ()):
+                    continue
+            elif under is not None:
                 def below(r: Any, d: str) -> bool:
                     return d in ("", ".") or r.file == d or r.file.startswith(d.rstrip("/") + "/")
                 if refs and not any(below(r, under) for r in refs) and \
@@ -889,14 +1147,14 @@ class Restructurer:
         return f"{label} {where}"
 
     def _write_placeholders(self, c: _Ctx, resources_dir: str, *, under: str | None = None,
-                            others: tuple[str, ...] = ()) -> list[str]:
+                            others: tuple[str, ...] = (), service: tuple[str, ...] | None = None) -> list[str]:
         """Append (or replace) the sbmig externalized-config block in `<resources_dir>/<placeholder_file>`.
         Returns the keys written ([] when disabled / nothing to write). Idempotent: a second run yields the same bytes;
         everything outside the markers is kept byte-for-byte, the file's line endings are kept."""
         X = c.cfg.externalized
         if not X.enabled or not X.write_placeholders:
             return []
-        entries = self._placeholder_entries(c, under, others)
+        entries = self._placeholder_entries(c, under, others, service)
         if not entries:
             return []
         rel = posixpath.normpath(f"{resources_dir}/{X.placeholder_file}")
@@ -1384,6 +1642,108 @@ class Restructurer:
                     ed.set_ref_version(ref.element, spec.version)
                     record(spec.key, None, spec.version)
 
+    # ================================================================== managed-version cleanup (round 9)
+    def _drop_managed_versions(self, c: _Ctx) -> None:
+        """`layout.drop_managed_versions`: drop explicit `<dependencies>` versions the new parent chain manages.
+
+        `params["effective_pom"]` is a zero-arg callable returning the effective dependency management of the tree
+        *as it is now* (shape of `sbmig.build.effective.load_effective`) or None (Maven unavailable). The managed
+        version of the declaring module (`by_module`, matched by g:a then artifactId) is used when that module is in
+        the capture, else the merged `managed` map. gte: drop only when managed ≥ explicit (unknown comparison →
+        keep); any: always. Never touched: parent / mandatory / optional / remove_when_present artifacts, the
+        project's own modules, system scope, non-jar types or classifiers (managed per type:classifier),
+        dependencyManagement entries, plugins. Unresolvable `${…}` versions are kept; properties stay."""
+        mode = c.cfg.layout.drop_managed_versions
+        if mode == "off":
+            return
+        fn = c.params.get("effective_pom")
+        data: Any = None
+        if callable(fn):
+            try:
+                data = fn()
+            except Exception as e:  # noqa: BLE001 - a broken capture must never fail the restructure
+                log.warning("effective pom for the managed-version cleanup failed: %s: %s", type(e).__name__, e)
+                data = None
+        if not isinstance(data, dict) or not (data.get("managed") or data.get("by_module")):
+            c.note("managed-version cleanup skipped: no effective pom")
+            return
+        A = c.cfg.artifacts
+        protected = ({A.parent.key} | {s.key for s in A.mandatory} | set(c.cfg.optional_keys())
+                     | {k for k in A.remove_when_present if ":" in k})
+        merged_managed: dict[str, str] = data.get("managed") or {}
+        by_module: dict[str, Any] = data.get("by_module") or {}
+        eds: dict[str, PomEditor] = {}
+        for p in self._project_poms(c):
+            try:
+                eds[p] = PomEditor(c.ws.abs(p))
+            except PomEditError as e:
+                c.note(f"managed-version cleanup: skipped unparsable pom {p}: {e}")
+        own: set[str] = set()
+        for ed in eds.values():
+            a = ed.artifact_id()
+            if a:
+                own |= {f"{ed.effective_group_id()}:{a}", f"${{project.groupId}}:{a}"}
+        dropped: list[str] = []
+        kept_newer: list[str] = []
+        for p, ed in eds.items():
+            aid = ed.artifact_id() or ""
+            mod = by_module.get(f"{ed.effective_group_id()}:{aid}")
+            if mod is None:
+                mod = next((v for k, v in by_module.items() if aid and k.split(":")[-1] == aid), None)
+            managed = (mod.get("managed") or {}) if isinstance(mod, dict) else merged_managed
+            props: dict[str, str] = {}
+            for q in reversed(self._chain(c, p)):          # top-most ancestor first, the pom itself wins
+                q_ed = eds.get(q)
+                if q_ed is None:
+                    try:
+                        q_ed = PomEditor(c.ws.abs(q))
+                    except PomEditError:
+                        continue
+                props.update(q_ed.properties())
+            for el in ed.dependency_elements(False):
+                g = ed.gav_of(el)
+                if not g.version or g.key in protected or g.key in own or (g.scope or "") == "system":
+                    continue
+                if (g.type or "jar") != "jar" or g.classifier:
+                    continue
+                explicit = self._resolve_version(ed, g.version, props)
+                m = managed.get(g.key)
+                if explicit is None or not m:
+                    continue
+                if mode == "gte":
+                    cmp = compare_versions(m, explicit)
+                    if cmp is None:
+                        continue
+                    if cmp < 0:
+                        kept_newer.append(f"{g.key} {explicit} (managed {m}, {p})")
+                        continue
+                ed.remove_version(el)
+                dropped.append(f"{g.key}: {explicit} → managed {m} ({p})")
+        for ed in eds.values():
+            c.save(ed)
+        c.result.managed_versions_dropped.extend(d for d in dropped if d not in c.result.managed_versions_dropped)
+        if dropped:
+            c.note(f"{len(dropped)} explicit dependency version(s) dropped: managed by the new parent chain "
+                   f"(layout.drop_managed_versions={mode}): {', '.join(d.split(': ')[0] for d in dropped[:5])}"
+                   f"{' …' if len(dropped) > 5 else ''}")
+        if kept_newer:
+            c.note(f"explicit version(s) newer than the parent-managed one kept: {', '.join(kept_newer[:5])}"
+                   f"{' …' if len(kept_newer) > 5 else ''}")
+
+    @staticmethod
+    def _resolve_version(ed: PomEditor, version: str, props: dict[str, str]) -> str | None:
+        """Literal version, or `${prop}` resolved from the pom chain's properties (nested up to 5 levels); None when
+        something stays unresolved."""
+        builtins = {"project.version": ed.effective_version() or "", "project.groupId": ed.effective_group_id() or "",
+                    "project.artifactId": ed.artifact_id() or ""}
+        cur = version.strip()
+        for _ in range(5):
+            if "${" not in cur:
+                break
+            cur = re.sub(r"\$\{([^}]+)\}",
+                         lambda mm: props.get(mm.group(1), builtins.get(mm.group(1)) or mm.group(0)), cur)
+        return None if "${" in cur or not cur else cur
+
     # ================================================================== MSA (pom only)
     def _msa(self, c: _Ctx) -> None:
         L = c.cfg.layout
@@ -1459,24 +1819,32 @@ class Restructurer:
             c.save(ed)
             c.note(f"msa_pom: patched {t}")
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
+        self._drop_managed_versions(c)
         self._msa_placeholders(c, svc_entries)
         c.commit("restructure: msa pom-only parent/mandatory/optional")
 
     def _msa_placeholders(self, c: _Ctx, svc_entries: list[Any]) -> None:
         """Each service root's src/main/resources gets the keys its own code reads (plus keys read only by shared
-        code outside every service); directories are created only for services with src/main/java."""
+        code outside every service); directories are created only for services with src/main/java. A per-service
+        inventory (round 9, `PropertyFinding.service`) selects by service name, else by reference location."""
         dirs: list[str] = []
+        names: dict[str, list[str]] = {}
         for s in svc_entries:
             d = posixpath.dirname(posixpath.normpath(s.root_pom))
             d = "" if d in ("", ".") else d
             if d not in dirs:
                 dirs.append(d)
+            ids = names.setdefault(d, [])
+            for n in (s.name, d, posixpath.basename(d)):
+                if n and n not in ids:
+                    ids.append(n)
         for d in dirs:
             res = posixpath.join(d, "src/main/resources") if d else "src/main/resources"
             if not c.ws.abs(res).is_dir() and not c.ws.abs(
                     posixpath.join(d, "src/main/java") if d else "src/main/java").is_dir():
                 continue
-            self._write_placeholders(c, res, under=d, others=tuple(o for o in dirs if o != d))
+            self._write_placeholders(c, res, under=d, others=tuple(o for o in dirs if o != d),
+                                     service=tuple(names.get(d, ())))
         self._placeholder_followup(c)
 
     def _climb(self, c: _Ctx, pom: str) -> str:

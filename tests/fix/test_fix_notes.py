@@ -9,7 +9,7 @@ from sbmig.fix.context import split_front_matter
 NOTES = Path(__file__).resolve().parents[2] / "knowledge" / "notes"
 REQUIRED = {"jdk21.md", "jakarta.md", "boot2-to-3.md", "boot3-to-4.md", "boot40-to-41.md", "spring-framework-7.md",
             "spring-security-7.md", "servlet-to-boot.md", "junit4-to-5.md", "maven-plugins.md", "fix-policy.md",
-            "externalized-config.md"}
+            "externalized-config.md", "ibatis2.md"}
 CASES = {"pure_java", "spring_legacy", "spring_boot", "servlet_tomcat", "msa"}
 PHASES = {"jdk21", "spring", "restructure"}
 
@@ -52,3 +52,10 @@ def test_index_fallback_to_front_matter(tmp_path):
     assert [e.title for e in entries] == ["A", "b"]
     assert entries[0].score("foo bar") == 1 and entries[0].body() == "body A"
     assert load_notes_index(tmp_path / "missing") == []
+
+
+def test_ibatis2_note_hits_orm_ibatis_errors():
+    by = {e.file: e for e in load_notes_index(NOTES)}
+    assert by["ibatis2.md"].score("package org.springframework.orm.ibatis does not exist") > 0
+    assert by["ibatis2.md"].score("cannot find symbol class SqlMapClientDaoSupport") > 0
+    assert by["ibatis2.md"].score("package org.apache.ibatis.session does not exist") == 0   # MyBatis 3

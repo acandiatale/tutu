@@ -216,12 +216,12 @@ def test_wrap_relocates_module_system_jars(tmp_path: Path, cfg: Config) -> None:
 
 
 # ------------------------------------------------------------------------------------------------- S5
-def test_module_outside_project_root_aborts_without_changes(tmp_path: Path, cfg: Config) -> None:
+def test_wrap_module_outside_project_root_aborts_without_changes(tmp_path: Path, cfg: Config) -> None:
     files = multi_files()
     files["pom.xml"] = files["pom.xml"].replace("<module>web</module>", "<module>../sibling</module>")
     ws = make_ws(tmp_path, files, "outside")
     before = _tree(ws)
-    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg, mode="layout", params={"multi_module_policy": "wrap"})
     assert not res.ok
     assert "'../sibling' → ../sibling" in res.error and "outside the project root" in res.error
     assert "nothing was changed" in res.error and any("outside the project root" in n for n in res.notes)

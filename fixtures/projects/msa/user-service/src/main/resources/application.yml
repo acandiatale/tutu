@@ -5,3 +5,5 @@ spring:
     name: user-service
   datasource:
     url: jdbc:h2:mem:users
+user:
+  greeting: hello

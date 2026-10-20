@@ -67,6 +67,11 @@ class LayoutConfig(BaseModel):
     # merge: a path present in more than one module → first module in <modules> order wins, the other copies are
     # saved under <run dir>/merge-conflicts/ and listed in the Handover ("first-wins"); "fail" = restructure error
     merge_collision: Literal["first-wins", "fail"] = "first-wins"
+    # round 9: after the in-house parent is set, drop explicit <version>s the new parent chain manages
+    # (`mvn help:effective-pom` after the pom edits): gte = only when the managed version is ≥ the explicit one
+    # (a deliberately newer pin stays), any = always, off = keep every explicit version. Mandatory / optional /
+    # parent artifacts from `artifacts` and <scope>system</scope> dependencies are never touched.
+    drop_managed_versions: Literal["gte", "any", "off"] = "gte"
     application_class_name: str = "Application"
     boot_resources_glob: list[str] = Field(default_factory=lambda: [
         "application*.yml", "application*.yaml", "application*.properties",
@@ -119,6 +124,10 @@ class OpenRewriteConfig(BaseModel):
     timeout_minutes: int = 40
     jvm_args: list[str] = Field(default_factory=lambda: ["-Xmx4g"])
     oom_retry_jvm_args: list[str] = Field(default_factory=lambda: ["-Xmx8g"])   # one retry after OutOfMemoryError
+    # round 9: the recipe run failed (or left literal `x.y.x` versions) because a download failed (proxy 429/5xx,
+    # reset, timeout) → wait and retry the run; 0 = no retry
+    download_retry: int = 1
+    download_retry_wait_s: int = 30
     fail_on_dry_run_results: bool = False
     plugin_goal: str = "run"                            # run | dryRun
 
@@ -198,6 +207,9 @@ class LLMConfig(BaseModel):
     max_context_chars: int = 60000           # budget for packed context per request
     timeout_seconds: int = 180
     max_retries: int = 3
+    # round 9 (L5): the second consecutive transport/config failure pauses the loop once per run for this long and
+    # retries; only a second streak marks the LLM unavailable for the rest of the run. 0 = no cool-down (old behaviour)
+    cooldown_seconds: int = 60
     max_context_rounds: int = 2              # how many times the LLM may ask for more files per cluster
     extra_headers: dict[str, str] = Field(default_factory=dict)
     prompt_version: str = "v1"

@@ -154,6 +154,9 @@ class RestructureResult(BaseModel):
     # externalized-config placeholders (round 8): written into boot-jar (layout) / each service (msa_pom)
     placeholder_files: list[str] = Field(default_factory=list)
     placeholders_written: list[str] = Field(default_factory=list)
+    # round 9: explicit dependency versions dropped because the new parent chain manages the artifact
+    # (`layout.drop_managed_versions`); "g:a: <explicit> → managed <version> (<pom>)"
+    managed_versions_dropped: list[str] = Field(default_factory=list)
 
 
 @runtime_checkable
@@ -234,6 +237,10 @@ class FixContext(BaseModel):
     previous_attempts: list[FixAttempt] = Field(default_factory=list)
     other_errors_summary: str = ""                # one-line-per-cluster view of the rest of the build
     use_escalation_model: bool = False
+    # round 9: context that is not part of the build — merge-conflict hints (a same-path file existed in more than one
+    # as-is module; first-wins kept one copy) and the dropped copies as read-only reference text
+    reference_notes: list[str] = Field(default_factory=list)   # one line per hint ("<kept path> was merged first-wins …")
+    reference_files: dict[str, str] = Field(default_factory=dict)   # label/path → content (read-only, never patched)
 
 
 @runtime_checkable

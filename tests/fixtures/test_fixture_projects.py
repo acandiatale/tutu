@@ -35,7 +35,7 @@ JDK_HOMES = {
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
-             "multi-module-merge", "legacy-external-config", "java6-legacy"]
+             "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -61,6 +61,8 @@ BUILD_MATRIX = [
     ("boot2-hystrix-command", ".", "11", ""),
     ("legacy-external-config", ".", "8", ""),
     ("java6-legacy", ".", "8", ""),
+    ("multi-module-conflict", ".", "11", ""),
+    ("legacy-ibatis", ".", "8", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -122,6 +124,8 @@ class PostCheck(BaseModel):
     pom_parent: PomParentCheck | None = None
     pom_dependency_absent: PomDepsCheck | None = None
     pom_dependency_present: PomDepsCheck | None = None
+    pom_dependency_unversioned: PomDepsCheck | None = None    # declared without <version> (parent-managed)
+    pom_dependency_versioned: PomDepsCheck | None = None      # declared with a <version>
 
 
 class AdvisoryExpect(BaseModel):
@@ -187,6 +191,7 @@ class PropertiesExpect(BaseModel):
     external_min: int | None = Field(default=None, ge=0)
     external: list[str] = Field(default_factory=list)
     absent: list[str] = Field(default_factory=list)
+    external_in: dict[str, list[str]] = Field(default_factory=dict)   # MSA: service name → its external keys
     written: list[str] = Field(default_factory=list)
     placeholder_file_contains: list[str] = Field(default_factory=list)
 
@@ -317,7 +322,8 @@ def test_poms_parse_and_readme(name: str):
 def test_post_check_paths_exist_in_fixture(name: str):
     """Every post_check names a file that exists in the as-is fixture (layout-independent `**` globs) — except
     `module/<comp-jar|boot-jar>/pom.xml`, which the restructure phase creates (single jar → comp-jar + boot-jar), and
-    the boot-jar `application.properties` that receives the externalized-config placeholders (round 8)."""
+    the `application.properties` that receives the externalized-config placeholders (round 8: boot-jar; round 9: an
+    MSA service's own `<service>/src/main/resources/application.properties`)."""
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
             if kind in ("file_exists", "file_absent"):      # describe the migrated tree, not the as-is one
@@ -325,9 +331,9 @@ def test_post_check_paths_exist_in_fixture(name: str):
             if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
                 assert (FIXTURES / name / "pom.xml").exists()
                 continue
-            if spec["path"] == "module/boot-jar/src/main/resources/application.properties" and \
+            if re.fullmatch(r"(module/boot-jar|[\w.\-]+)/src/main/resources/application\.properties", spec["path"]) and \
                     (_expected(name).get("expect") or {}).get("properties"):
-                continue
+                continue                  # placeholder target: boot-jar, or an MSA service's own file (round 9)
             hits = list((FIXTURES / name).glob(spec["path"]))
             assert hits, f"{name}: {kind} path {spec['path']} matches nothing in the as-is fixture"
             if kind == "file_decodes_as" and spec.get("contains"):
@@ -370,7 +376,8 @@ OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-l
 }
 
 
-LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
+LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"},
+                      "multi-module-conflict": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
 
 
 def test_fixture_config_override_keeps_8_optionals():
@@ -471,6 +478,39 @@ def test_hystrix_command_replay_ports_the_subclass():
     assert 'CircuitBreaker.ofDefaults("inventory")' in out and "public Integer execute()" in out
     assert "MIGRATION-TODO" in out
     assert second.changes == [] and not second.wants_context
+
+
+def test_multi_module_conflict_replay_patches_the_kept_copy():
+    """multi-module-conflict (round 9): response 1 is one SEARCH/REPLACE on the kept comp-jar Shared.java — the `core`
+    copy, moved verbatim by the first-wins merge — that adds the farewell() only the dropped `web` copy had;
+    response 2 answers the KB harvest with NONE. Own KB dir, replay dir in the fixture."""
+    from sbmig.fix.client import load_replay_responses
+    from sbmig.fix.protocol import parse_fix_response
+
+    name = "multi-module-conflict"
+    cfg = _effective_cfg(name)
+    assert cfg.llm.provider == "fake" and cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
+    kb = Expected.model_validate(_expected(name)).expect.kb
+    assert kb is not None and cfg.kb.dir == kb.dir == "out/e2e/kb-multi-module-conflict"
+    rel = "src/main/java/com/example/shop/shared/Shared.java"
+    kept = (FIXTURES / name / "core" / rel).read_text(encoding="utf-8")
+    dropped = (FIXTURES / name / "web" / rel).read_text(encoding="utf-8")
+    assert "farewell(" not in kept and "public static String farewell(String name)" in dropped
+    ctrl = (FIXTURES / name / "web/src/main/java/com/example/shop/web/ShopController.java").read_text(encoding="utf-8")
+    assert "Shared.farewell(name)" in ctrl
+    core_svc = (FIXTURES / name / "core/src/main/resources/META-INF/services/com.example.shop.spi.Plugin").read_text()
+    web_svc = (FIXTURES / name / "web/src/main/resources/META-INF/services/com.example.shop.spi.Plugin").read_text()
+    assert core_svc.split() == ["com.example.shop.core.CorePlugin"] and web_svc.split() == ["com.example.shop.web.WebPlugin"]
+    responses = load_replay_responses(FIXTURES / name / "replay")
+    assert len(responses) == _expected(name)["expect"]["max_llm_calls"] == 2
+    first = parse_fix_response(responses[0])
+    assert first.changes and not first.warnings and {c.path for c in first.changes} == {f"module/comp-jar/{rel}"}
+    out = kept
+    for ch in first.changes:
+        assert ch.op == "modify" and out.count(ch.search) == 1, ch.search
+        out = out.replace(ch.search, ch.replace)
+    assert "public static String farewell(String name)" in out and "public static String greet(String name)" in out
+    assert responses[1].strip() == "NONE"
 
 
 def test_optional_artifacts_cover_config():

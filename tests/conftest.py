@@ -43,3 +43,12 @@ def fixture_project(tmp_path: Path):
         shutil.copytree(src, dst)
         return dst
     return _copy
+
+
+@pytest.fixture(autouse=True)
+def no_llm_cooldown_sleep(monkeypatch):
+    """Round 9: the LLM cool-down (`llm.cooldown_seconds`, default 60 s) never really sleeps in any test; the pauses
+    asked for are recorded in the returned list (loop tests assert on it)."""
+    slept: list[float] = []
+    monkeypatch.setattr("sbmig.loop.fixloop.sleep_seconds", slept.append)
+    return slept

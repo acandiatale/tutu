@@ -822,6 +822,12 @@ class PomEditor:
         self._set_child_text(el, "version", version)
 
     @_mutator
+    def remove_version(self, el: Any) -> None:
+        """Drop the `<version>` child of a dependency-like element (the version is then managed by the parent
+        chain / dependencyManagement). Properties the version referenced are left alone."""
+        self._set_child_text(el, "version", None)
+
+    @_mutator
     def rename_ref(self, el: Any, group_id: str, artifact_id: str) -> None:
         self._set_child_text(el, "groupId", group_id)
         self._set_child_text(el, "artifactId", artifact_id)

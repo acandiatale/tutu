@@ -407,3 +407,17 @@ def test_copy_into_other_namespace() -> None:
     assert dst.dependencies()[-1].key == "a:b"
     assert "ns0" not in dst.to_string()
     reparse(dst)
+
+
+def test_remove_version_keeps_formatting_and_properties(tmp_path: Path) -> None:
+    text = ("<project>\n  <properties>\n    <x.version>1</x.version>\n  </properties>\n  <dependencies>\n"
+            "    <dependency>\n      <groupId>g</groupId>\n      <artifactId>a</artifactId>\n"
+            "      <version>${x.version}</version>\n      <scope>test</scope>\n    </dependency>\n"
+            "  </dependencies>\n</project>\n")
+    ed = PomEditor.from_string(text, tmp_path / "pom.xml")
+    el = ed.dependency_elements(False)[0]
+    assert ed.remove_version(el) is True
+    assert ed.remove_version(el) is False                                    # idempotent
+    out = ed.to_string()
+    assert "<version>" not in out and "<x.version>1</x.version>" in out
+    assert "      <artifactId>a</artifactId>\n      <scope>test</scope>\n    </dependency>" in out

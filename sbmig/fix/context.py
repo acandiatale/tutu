@@ -1,5 +1,8 @@
 """Context packing for the LLM fixer: errors, file windows, pom excerpts, library migration guidance (advisories),
-migration notes, history — within a budget."""
+migration notes, history — within a budget.
+
+Round 9: module-merge notes (`FixContext.reference_notes`) and the dropped first-wins copies as read-only reference text
+(`FixContext.reference_files`): never part of the build, never a SEARCH/REPLACE target (the loop drops such patches)."""
 from __future__ import annotations
 
 import logging
@@ -249,16 +252,19 @@ class _Section:
     key: str
     title: str
     text: str
-    order: int
+    order: float
     truncatable: bool = True
     always: bool = False
 
 
 class ContextPacker:
     # truncation priority (first = dropped/shrunk first); "errors" and "header" are never truncated
-    TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "advisory_hints", "pom",
-                      "files")
+    TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
+                      "advisory_hints", "reference_notes", "pom", "files")
     ADVISORY_TITLE = "Library migration guidance (what to migrate TO)"
+    REFERENCE_NOTES_TITLE = "Module merge notes (first-wins; the dropped copy is below as reference)"
+    REFERENCE_FILES_TITLE = ("Reference files (read-only, NOT in the build — never write SEARCH/REPLACE blocks for "
+                             "these paths)")
 
     def __init__(self, cfg: Config, notes_dir: Optional[str | Path] = None, max_notes: int = DEFAULT_MAX_NOTES):
         self.cfg = cfg
@@ -312,6 +318,11 @@ class ContextPacker:
                 packed.files_included.append(f)
         if file_texts:
             secs.append(_Section("files", "Source (exact text; copy SEARCH blocks from here)", "\n\n".join(file_texts), 2))
+        # dropped module-merge copies (round 9): context only, right after the source they differ from
+        if ctx.reference_files:
+            secs.append(_Section("reference_files", self.REFERENCE_FILES_TITLE,
+                                 "\n\n".join(self._reference_block(label, text)
+                                             for label, text in ctx.reference_files.items()), 2.5))
 
         # pom
         if pom_path and self._wants_pom(cluster, files):
@@ -328,6 +339,9 @@ class ContextPacker:
                                  "code that still uses them to the named replacement (keep public signatures so callers "
                                  "still compile); do not re-add the removed library.\n"
                                  + "\n".join(f"- {h}" for h in ctx.advisory_hints), 4))
+        if ctx.reference_notes:
+            secs.append(_Section("reference_notes", self.REFERENCE_NOTES_TITLE,
+                                 "\n".join(f"- {n}" for n in ctx.reference_notes), 4.5))
         if ctx.kb_hints:
             secs.append(_Section("kb_hints", "Knowledge-base hints (similar resolved cases)",
                                  "\n".join(f"- {h}" for h in ctx.kb_hints), 5))
@@ -385,6 +399,12 @@ class ContextPacker:
             if f and f not in out:
                 out.append(f)
         return out
+
+    @staticmethod
+    def _reference_block(label: str, text: str) -> str:
+        body = text.replace("\r\n", "\n").rstrip("\n")
+        fence = fence_for(body)
+        return f"// reference copy (read-only, not in the build): {label}\n{fence}{lang_for(label)}\n{body}\n{fence}"
 
     @staticmethod
     def _wants_pom(cluster: ErrorCluster, files: list[str]) -> bool:

@@ -39,6 +39,12 @@
                     <source>1.6</source>
                     <target>1.6</target>
                     <encoding>UTF-8</encoding>
+                    <!-- JDK 6-era build: forked javac against the runtime's rt.jar (javac 21 rejects
+                         -bootclasspath together with release 21 → handler compiler-legacy-config) -->
+                    <fork>true</fork>
+                    <compilerArguments>
+                        <bootclasspath>${java.home}/lib/rt.jar</bootclasspath>
+                    </compilerArguments>
                 </configuration>
             </plugin>
             <plugin>

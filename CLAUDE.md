@@ -40,7 +40,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-21, rounds 5–8b complete (`main`)
+## Status — 2026-10-21, rounds 5–9 complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
@@ -68,6 +68,15 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   as-is projects — recipe coverage verified in the pinned jars, advisory `jdk-removed-apis` (+ fix-loop note),
   fixture `java6-legacy`. Fixtures `legacy-external-config`, `java6-legacy` (18 fixtures), e2e PASS. 1,072 offline
   tests green.
+- Round 9 (2026-10-21, follow-ups + edge cases): rewrite-run download retry + literal-version re-run + no KB credit
+  on resolution-only failures (X8); LLM cool-down before "unavailable" (L5) and content-filter answers classified as
+  request rejections; merge-conflict dropped copies shown to the fix LLM as read-only reference; Handover paths after
+  restructure; web run-list pruning; per-service MSA property inventory + placeholders, `config-placeholder` source,
+  scanner edge sweep; advisory `ibatis2`; restructure drops explicit versions the new parent manages (second
+  effective-pom capture, `layout.drop_managed_versions`), registry-union merges, pom-packaging / outside / WAR /
+  custom-resources module edges; fleet skips intake-rejected projects; handler `compiler-legacy-config`
+  (fork/executable/bootclasspath). Fixtures `multi-module-conflict`, `legacy-ibatis` (20 fixtures), e2e PASS.
+  1,200 offline tests green.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -84,23 +93,18 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - `build.skip_tests: true` is the default: builds never run unit tests, so missing externalized values cannot
   break the build and the `tests-skipped` fallback (round 8) only acts where a company config sets
   `skip_tests: false`. Decide whether the fleet should run tests (slower, catches more before runtime).
-- After the Jakarta step JAXB stays pinned at `jakarta.xml.bind-api` 3.0.1 / `jaxb-runtime` 3.0.2 (round 8b,
-  also `pure-java`) instead of the Boot-managed versions; a `RemoveRedundantDependencyVersions` pass after the
-  spring rewrite would drop the pins.
-- LLM-unavailable (L5) is permanent for the run after two consecutive transport failures; a cool-down would suit
-  short gateway hiccups better. Handover `llm_fixed_files` keep pre-restructure paths. `RunManager.runs` is
-  never pruned (restart the server daily).
-- Multi-module `merge` (round 7b): a same-FQCN class with different content in two modules is resolved first-wins
-  (the dropped copy is saved, not compiled); if the kept copy lacks members the other module used, the build-fix
-  loop sees ordinary compile errors without knowing about the dropped copy — feeding the saved copy into the fix
-  prompt as a hint is the next step. A kept boot module whose @SpringBootApplication scans only its own package
-  will not see the merged beans (runtime, reported as a note).
-- Resilience of the plan-level rewrite step: when the rewrite plugin's own resolver fails to download a POM (seen
-  once through the cloud proxy), `UpgradeSpringBoot_4_0` leaves literal `<version>4.0.x</version>` starters, the
-  build blocks on `artifact_not_found`, and every KB candidate in that plan is credited a failure it did not cause.
-  Candidates: detect `Failed to download` / `x.y.x` versions after the rewrite and retry once; do not credit KB
-  recipes when the phase failed on dependency resolution. Cause seen 2026-10-20: the cloud proxy answered Maven
-  Central with HTTP 429 (rate limit) — every rewrite run then fails the same way (CLI and web alike); wait and retry.
+- Multi-module `merge`: a same-FQCN class differing across modules is first-wins; since round 9 the dropped copy
+  reaches the fix LLM as read-only reference (`multi-module-conflict`). Still open: `pluginManagement` of a merged
+  pom-packaging module is not folded into the root; a union `spring.factories` is rewritten normalized (comments
+  dropped, originals saved); a kept boot module whose @SpringBootApplication scans only its own package will not
+  see the merged beans (runtime, reported as a note).
+- Rewrite-run download failures (HTTP 429 through the cloud proxy, 2026-10-20) are retried since round 9 (X8) and a
+  literal `4.0.x` left by the recipe triggers one revert + re-run; the orchestrator re-runs a step at most once
+  whatever `openrewrite.download_retry` says. L5: one cool-down per run (`llm.cooldown_seconds`), then unavailable;
+  a blocked item's attempt count still includes the two cooled-down attempts.
+- Properties: relaxed-binding spellings of one key (`my-key` / `myKey` / `MY_KEY`) stay separate findings (three
+  placeholders); `ibatis2` is detected from the pom + imports only (a `SqlMapClientFactoryBean` named only in
+  Spring XML is missed).
 
 ## How to work here
 - **Working mode the user asked for**: Claude plans and acts as PM in the main session. Write shared contracts
@@ -109,7 +113,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~2 min): `python -m pytest -m "not integration"` → 1,072 passed, 28 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,200 passed, 30 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

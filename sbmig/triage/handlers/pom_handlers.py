@@ -357,6 +357,83 @@ class CompilerPluginFloor(PomHandler):
         return False
 
 
+class CompilerLegacyConfig(PomHandler):
+    """Round 9 (Java 1.6/1.7 projects): maven-compiler-plugin configuration that javac 21 rejects or that points at a
+    JDK that no longer exists — `<fork>true</fork>` + `<executable>…/jdk1.6/bin/javac</executable>`,
+    `<compilerVersion>`, `<compilerArguments><bootclasspath>…/rt.jar</bootclasspath>` (javac 21: "option
+    --boot-class-path cannot be used together with --release"), `-Xbootclasspath/p:`, `-extdirs`, `-endorseddirs`,
+    `-source/-target` passed as compiler args. Text-based like CompilerPluginFloor._text_release so the surrounding
+    formatting stays; only the offending elements go."""
+    id = "compiler-legacy-config"
+    description = ("remove fork/executable/compilerVersion and bootclasspath/extdirs/endorseddirs/-source/-target "
+                   "compiler arguments that javac 21 rejects with --release")
+    kinds = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE, ErrorKind.PLUGIN_EXECUTION, ErrorKind.UNKNOWN})
+    triggers = (r"option --?boot-?class-?path", r"-Xbootclasspath", r"cannot be used together with --release",
+                r"not allowed with target \d+", r"Cannot run program .*javac", r"invalid flag: -(bootclasspath|extdirs|endorseddirs)",
+                r"option --?(source|target) cannot be used together with --release")
+    _BLOCK = CompilerPluginFloor._BLOCK
+    _FLAT = ("fork", "executable", "compilerVersion")
+    _ARG_RE = re.compile(r"^-(bootclasspath|Xbootclasspath(/[ap])?:?|extdirs|endorseddirs|source|target)(\b|$)")
+    _ARG_NAMES = ("bootclasspath", "extdirs", "endorseddirs", "source", "target")
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            text = ws.read(rel)
+            new = self._BLOCK.sub(self._fix_block, text)
+            if new != text:
+                ws.write(rel, new)
+                changed.append(rel)
+        return changed
+
+    def _fix_block(self, m: re.Match[str]) -> str:
+        block = m.group(0)
+        for tag in self._FLAT:
+            block = re.sub(rf"\n?[ \t]*<{tag}>[^<]*</{tag}>", "", block)
+        # <compilerArguments><bootclasspath>…</bootclasspath><Xbootclasspath/p>…</…>…</compilerArguments>
+        def args_block(mm: re.Match[str]) -> str:
+            inner = mm.group(0)
+            for name in self._ARG_NAMES:
+                inner = re.sub(rf"\n?[ \t]*<{name}>[^<]*</{name}>", "", inner)
+            inner = re.sub(r"\n?[ \t]*<Xbootclasspath[^>]*>[^<]*</Xbootclasspath[^>]*>", "", inner)
+            if not re.search(r"<compilerArguments>\s*<\w", inner):
+                return ""                                             # nothing left → drop the container
+            return inner
+        block = re.sub(r"\n?[ \t]*<compilerArguments>(?:(?!</compilerArguments>).)*</compilerArguments>", args_block,
+                       block, flags=re.S)
+        # <compilerArgument>-bootclasspath ${java.home}/lib/rt.jar</compilerArgument>
+        block = re.sub(r"\n?[ \t]*<compilerArgument>\s*-(bootclasspath|Xbootclasspath[^<]*|extdirs|endorseddirs|source|target)"
+                       r"\b[^<]*</compilerArgument>", "", block)
+        # <compilerArgs><arg>-bootclasspath</arg><arg>/path/rt.jar</arg> … </compilerArgs>
+        def compiler_args(mm: re.Match[str]) -> str:
+            inner = mm.group(0)
+            args = re.findall(r"\n?[ \t]*<arg>([^<]*)</arg>", inner)
+            keep: list[str] = []
+            skip_next = False
+            for a in args:
+                v = a.strip()
+                if skip_next:
+                    skip_next = False
+                    continue
+                if self._ARG_RE.match(v):
+                    # a flag written without its value takes the next <arg> as the value
+                    if v in ("-bootclasspath", "-extdirs", "-endorseddirs", "-source", "-target"):
+                        skip_next = True
+                    continue
+                keep.append(a)
+            if len(keep) == len(args):
+                return inner
+            if not keep:
+                return ""
+            head = re.match(r"(\n?[ \t]*<compilerArgs>)", inner).group(1)
+            indent = re.match(r"\n?([ \t]*)", inner).group(1)
+            body = "".join(f"\n{indent}  <arg>{a.strip()}</arg>" for a in keep)
+            return f"{head}{body}\n{indent}</compilerArgs>"
+        block = re.sub(r"\n?[ \t]*<compilerArgs>(?:(?!</compilerArgs>).)*</compilerArgs>", compiler_args, block,
+                       flags=re.S)
+        return block
+
+
 class SurefirePluginFloor(PomHandler):
     id = "surefire-plugin-floor"
     description = f"maven-surefire-plugin / maven-failsafe-plugin ≥ {SUREFIRE_VERSION}"
@@ -838,6 +915,7 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         LombokVersionFloor(),
         MapstructVersionFloor(),
         CompilerPluginFloor(),
+        CompilerLegacyConfig(),
         SurefirePluginFloor(),
         RemoveClassicLoaderImplementation(),
         TestCompileSkip(),

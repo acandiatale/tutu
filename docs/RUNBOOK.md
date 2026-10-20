@@ -22,6 +22,11 @@ sbmig run <project> --config config/artifacts.yml
 The gateway URL is used verbatim (no scheme change, no path appended): `LLM_BASE_URL=http://...` exactly as the
 working in-house agents call it. If `requests.post` works by hand but sbmig gets an error, run `sbmig llm-probe`
 (and `--bare`): it prints the exact request, the proxies in effect and the response headers/body.
+Response shape: an OpenAI / Azure chat-completions answer (`choices[0].message.content`, `usage.prompt_tokens`,
+`finish_reason`, Azure's `prompt_filter_results` / `content_filter_result`, a gateway `routing` field) is read without
+any setting — `LLM_RESPONSE_PATH` is only for gateways that wrap the text elsewhere (`data.result.content`). A
+content-filter answer (`finish_reason=content_filter`, null content) is reported as that request's rejection, not
+as an outage (round 9).
 Windows: Maven is `mvn.cmd`; sbmig resolves `build.mvn` through PATH / `MAVEN_HOME` (`shutil.which`), so `mvn` works
 when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd` and `build.java_home`.
 Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point

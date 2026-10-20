@@ -183,6 +183,31 @@ def test_stop_on_abort(fleet_cfg, projects_dir, tmp_path):
     assert any("stopped on abort" in n for n in state.notes) and state.finished_at is None
 
 
+def test_unsupported_build_tool_is_a_skip_not_an_abort(fleet_cfg, projects_dir, tmp_path):
+    """Round 9: a Gradle / Ant project rejected at intake (exit 3, flag unsupported-build-tool:<tool>) is `skipped`:
+    stop_on_abort does not stop the fleet, retry_failed does not re-run it, the reason is in the row."""
+    def gradle(project, cfg):
+        r = report(project.name, aborted=True)
+        r.flags.append("unsupported-build-tool:gradle")
+        r.manual_followups[0] = "run aborted: unsupported build tool gradle (build.gradle); only Maven projects"
+        return r
+
+    cfg = fleet_cfg.model_copy(update={"fleet": fleet_cfg.fleet.model_copy(
+        update={"stop_on_abort": True, "retry_failed": True})})
+    fake = FakeRun(alpha=gradle)
+    runner = FleetRunner(cfg, projects_dir, tmp_path / "out", run_project=fake)
+    state = runner.run()
+    assert [c[0] for c in fake.calls] == ["alpha", "beta", "gamma"]          # the fleet went on
+    a = state.projects[0]
+    assert a.status == "skipped" and a.exit_code == 3 and a.error.startswith("unsupported build tool: gradle")
+    assert [p.status for p in state.projects[1:]] == ["success", "success"]
+    assert runner.exit_code == 2 and not runner.stopped_on_abort and state.finished_at is not None
+    # resume with retry_failed: the skipped project is not re-run
+    fake2 = FakeRun(alpha=gradle)
+    state2 = FleetRunner(cfg, projects_dir, tmp_path / "out", run_project=fake2).run()
+    assert fake2.calls == [] and state2.projects[0].status == "skipped"
+
+
 def test_max_projects(fleet_cfg, projects_dir, tmp_path):
     cfg = fleet_cfg.model_copy(update={"fleet": fleet_cfg.fleet.model_copy(update={"max_projects": 2})})
     fake = FakeRun()

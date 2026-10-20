@@ -18,6 +18,7 @@ what the other in-house agents do by hand.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Callable, Optional
@@ -111,6 +112,13 @@ class CompanyClient:
                        f"LLM request failed after {self.max_retries + 1} attempt(s) (status={last_status}): {last_body[:200]}")
 
     def _parse(self, data: Any, model: str) -> LLMResponse:
+        filtered = content_filter_reason(data)
+        if filtered:
+            # Azure-style gateways answer HTTP 200 with finish_reason=content_filter and a null message.content when
+            # the prompt or the reply tripped the content filter: this request's problem, not an outage (the fix
+            # loop's request-rejected rule keeps it out of the "LLM unavailable" streak)
+            raise LLMError(200, json.dumps(data, ensure_ascii=False)[:500],
+                           f"content filtered by the gateway ({filtered}); this request only, not an outage")
         content = extract_reply(data, self.response_path)
         usage = data.get("usage") if isinstance(data, dict) else None
         usage = usage if isinstance(usage, dict) else {}
@@ -127,3 +135,30 @@ class CompanyClient:
 
     def close(self) -> None:
         return None
+
+
+def content_filter_reason(data: Any) -> Optional[str]:
+    """Why an OpenAI / Azure-style response carries no answer because of the content filter, else None:
+    `choices[0].finish_reason == "content_filter"`, a `content_filter_result` entry with `filtered: true` next to an
+    empty message, or a `prompt_filter_results[*].content_filter_results` entry with `filtered: true`."""
+    if not isinstance(data, dict):
+        return None
+    choices = data.get("choices")
+    first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    if str(first.get("finish_reason") or "").lower() == "content_filter":
+        return "finish_reason=content_filter"
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    empty = not (message.get("content") or first.get("text"))
+    for key, results in (("content_filter_result", first.get("content_filter_result")),
+                         ("prompt_filter_results", data.get("prompt_filter_results"))):
+        entries = results if isinstance(results, list) else [results]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            inner = entry.get("content_filter_results") if key == "prompt_filter_results" else entry
+            if not isinstance(inner, dict):
+                continue
+            hit = [cat for cat, v in inner.items() if isinstance(v, dict) and v.get("filtered") is True]
+            if hit and (empty or key == "prompt_filter_results"):
+                return f"{key}: {', '.join(sorted(hit))}"
+    return None

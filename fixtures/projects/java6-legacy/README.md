@@ -35,3 +35,5 @@ the 3 tests.
 Expected migration result: release 21, compiler plugin 3.16.0, surefire 3.5.3, commons-lang3 3.17.0, JAXB on
 jakarta, `Codec` on `java.util.Base64` (1 LLM fix + 1 harvest call), and the `jdk-removed-apis` advisory `replaced`,
 with the Handover line "code rewritten by the LLM for jdk-removed-apis: …Codec.java".
+
+The pom also carries a JDK 6-era compiler setup (`<fork>true</fork>` + `<compilerArguments><bootclasspath>${java.home}/lib/rt.jar</bootclasspath>`): javac 21 rejects `-bootclasspath` together with release 21, so the pre-emptive handler `compiler-legacy-config` strips it before the first build (round 9; post-checks assert no `<bootclasspath>` / `<fork>` remains in any pom).

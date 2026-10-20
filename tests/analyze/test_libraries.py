@@ -13,7 +13,7 @@ EXPECTED = {"lombok", "mapstruct", "querydsl", "spring-security", "spring-data-j
             "spring-context", "spring-retry", "elasticsearch", "mongodb",
             # library advisories (knowledge/libraries/advisories.yml)
             "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom", "swagger-v1",
-            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis"}
+            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2"}
 
 
 def test_names_are_the_contract() -> None:
@@ -127,3 +127,32 @@ def test_jdk_removed_apis_segment_boundary(tmp_path: Path) -> None:
     write(tmp_path, "pom.xml", pom("x"))
     write_java(tmp_path, "", "com.a", "A", imports=("sun.miscellaneous.Foo", "com.sun.imagery.X"))
     assert "jdk-removed-apis" not in _libs(tmp_path)
+
+
+def test_ibatis2_and_mybatis_stay_distinct(tmp_path: Path) -> None:
+    ib = tmp_path / "ib"
+    write(ib, "pom.xml", pom("legacy", deps=(dep("org.apache.ibatis", "ibatis-sqlmap", "2.3.4.726"),
+                                             dep("org.springframework", "spring-orm", "3.2.18.RELEASE"))))
+    write_java(ib, "", "com.acme.dao", "OrderDao", imports=("com.ibatis.sqlmap.client.SqlMapClient",
+                                                            "org.springframework.orm.ibatis.support.SqlMapClientDaoSupport"))
+    libs = _libs(ib)
+    assert "ibatis2" in libs and "mybatis" not in libs
+    assert libs["ibatis2"].version == "2.3.4.726"
+    assert libs["ibatis2"].evidence == ["pom:org.apache.ibatis:ibatis-sqlmap:2.3.4.726", "import:com.ibatis",
+                                        "import:org.springframework.orm.ibatis"]
+    mb = tmp_path / "mb"
+    write(mb, "pom.xml", pom("modern", deps=(dep("org.mybatis", "mybatis", "3.5.16"),
+                                             dep("org.mybatis", "mybatis-spring", "2.1.2"))))
+    write_java(mb, "", "com.acme.dao", "OrderMapper", imports=("org.apache.ibatis.annotations.Mapper",
+                                                               "org.apache.ibatis.session.SqlSession"))
+    libs = _libs(mb)
+    assert "mybatis" in libs and "ibatis2" not in libs
+
+
+def test_ibatis2_old_group_ids_and_import_only(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("x", deps=(dep("com.ibatis", "ibatis2-sqlmap", "2.1.7.597"),)))
+    assert _libs(tmp_path)["ibatis2"].evidence == ["pom:com.ibatis:ibatis2-sqlmap:2.1.7.597"]
+    other = tmp_path / "o"
+    write(other, "pom.xml", pom("y", deps=(dep("ibatis", "ibatis-sqlmap", "2.0"),)))
+    write_java(other, "", "com.acme", "D", imports=("com.ibatis.common.resources.Resources",))
+    assert set(_libs(other)["ibatis2"].evidence) == {"pom:ibatis:ibatis-sqlmap:2.0", "import:com.ibatis"}

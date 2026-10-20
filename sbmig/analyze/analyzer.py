@@ -178,7 +178,9 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     if cfg.externalized.enabled:
         # round 8: settings the code reads that only the external container supplied (JNDI, context-param, -D …)
         rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))
-        profile.properties = scan_properties(ws, poms, scan, rules, cfg)
+        # round 9: MSA → per-service inventory over the deployables (library roots are not services)
+        deployable = [s for s in services if s.kind == "service"] if case == CaseType.MSA else None
+        profile.properties = scan_properties(ws, poms, scan, rules, cfg, services=deployable or None)
     log.info("analyzed %s: case=%s confidence=%.2f poms=%d java=%d", name, case.value, confidence,
              len(poms), source.java_files)
     return profile

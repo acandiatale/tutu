@@ -1,0 +1,130 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18",
+  "spring_version": null,
+  "packaging": "pom",
+  "is_multi_module": true,
+  "modules": [
+    "core",
+    "web",
+    "boot-jar"
+  ],
+  "libraries": [
+    "tomcat-embed",
+    "spring-webmvc",
+    "spring-context"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.shop.ShopApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 2,
+    "blocked": [],
+    "unresolved_max": 0,
+    "phases": {
+      "restructure": "ok"
+    },
+    "followups_contains": [
+      "regex:merge conflicts: \\d+ file\\(s\\) existed in more than one module .*src/main/java/com/example/shop/shared/Shared\\.java.*"
+    ],
+    "journal_events": [
+      {
+        "event": "merge_conflict_hints",
+        "phase": "restructure"
+      },
+      {
+        "event": "restructure",
+        "ok": true
+      }
+    ],
+    "kb": {
+      "dir": "out/e2e/kb-multi-module-conflict",
+      "harvest_candidates_min": 0
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/shop/shared/Shared.java",
+          "contains": "public static String farewell(String name)"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/shop/shared/Shared.java",
+          "contains": "public static String greet(String name)"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/comp-jar/src/main/java/com/example/shop/shared/Shared.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/comp-jar/src/main/java/com/example/shop/web/ShopController.java"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/src/main/resources/META-INF/services/com.example.shop.spi.Plugin",
+          "contains": "com.example.shop.core.CorePlugin"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/src/main/resources/META-INF/services/com.example.shop.spi.Plugin",
+          "contains": "com.example.shop.web.WebPlugin"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/src/main/resources/messages.properties",
+          "contains": "shop.title=shop (core)",
+          "not_contains": "shop (web)"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "core"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "web"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "boot-jar"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/boot-jar/src/main/java/**/ShopApplication.java"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/boot-jar/pom.xml",
+          "artifacts": [
+            "${project.groupId}:shop-comp"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "module/boot-jar/pom.xml",
+          "artifacts": [
+            "com.example:shop-web",
+            "com.example:shop-core"
+          ]
+        }
+      }
+    ]
+  }
+}

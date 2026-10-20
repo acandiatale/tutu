@@ -201,3 +201,57 @@ def test_optional_bump_writes_nothing(tmp_path: Path, cfg: Config) -> None:
     res = Restructurer().apply(ws, prof, cfg, mode="optional_bump")
     assert res.ok and res.placeholder_files == []
     assert not any(p.name == "application.properties" for p in ws.root.rglob("*") if ".git" not in p.parts)
+
+
+# ------------------------------------------------------------------------------ round 9: per-service inventory (MSA)
+def _two_services(tmp_path: Path, name: str):
+    files = msa_files()
+    files["user-service/src/main/java/com/acme/user/UserApp.java"] = "package com.acme.user;\nclass UserApp {}\n"
+    ws = make_ws(tmp_path, files, name)
+    return ws, msa_profile(ws)
+
+
+def svc(key: str, service: str | None, status: str = "external", file: str = "x/src/main/java/X.java"):
+    return PropertyFinding(key=key, status=status, refs=[ref(key, file=file)], boot_keys=[key],  # type: ignore[arg-type]
+                           service=service)
+
+
+def _props(ws, s: str) -> str:
+    p = ws.root / s / "src/main/resources/application.properties"
+    return p.read_text() if p.exists() else ""
+
+
+def test_msa_per_service_inventory_selects_by_service(tmp_path: Path, cfg: Config) -> None:
+    ws, prof = _two_services(tmp_path, "msa-svc")
+    prof.properties = PropertyInventory(services=["order-service", "user-service"], findings=[
+        # refs deliberately point at the "wrong" directory: the per-service inventory decides, not the location
+        svc("order.only", "order-service", file="user-service/src/main/java/U.java"),
+        svc("shared.key", None, file="common/src/main/java/C.java"),
+        svc("split.key", "order-service"),                       # external in order-service …
+        svc("split.key", "user-service", status="defined"),      # … defined in user-service's resources
+    ])
+    res = Restructurer().apply(ws, prof, cfg, mode="msa_pom")
+    assert res.ok, res.error
+    order, user = _props(ws, "order-service"), _props(ws, "user-service")
+    assert "order.only=__SET_ME__" in order and "order.only" not in user
+    assert "shared.key=__SET_ME__" in order and "shared.key=__SET_ME__" in user
+    assert "split.key=__SET_ME__" in order and "split.key" not in user
+    assert sorted(res.placeholder_files) == ["order-service/src/main/resources/application.properties",
+                                             "user-service/src/main/resources/application.properties"]
+
+
+def test_msa_per_service_matches_service_directory(tmp_path: Path, cfg: Config) -> None:
+    ws, prof = _two_services(tmp_path, "msa-dir")
+    prof.services[1].name = "users"                              # name differs from the directory
+    prof.properties = PropertyInventory(findings=[svc("u.key", "user-service"), svc("n.key", "users")])
+    res = Restructurer().apply(ws, prof, cfg, mode="msa_pom")
+    assert res.ok, res.error
+    user = _props(ws, "user-service")
+    assert "u.key=__SET_ME__" in user and "n.key=__SET_ME__" in user and _props(ws, "order-service") == ""
+
+
+def test_layout_ignores_finding_service(tmp_path: Path, cfg: Config) -> None:
+    inv = PropertyInventory(services=["a"], findings=[svc("a.key", "a"), svc("b.key", "b")])
+    ws, _prof, _res = single(tmp_path, cfg, "lay-svc", inv=inv)
+    text = (ws.root / PH).read_text()
+    assert "a.key=__SET_ME__" in text and "b.key=__SET_ME__" in text

@@ -58,6 +58,15 @@ def _status_for(code: int) -> str:
     return {0: "success", 3: "aborted"}.get(code, "incomplete")
 
 
+UNSUPPORTED_FLAG = "unsupported-build-tool:"
+
+
+def unsupported_build_tool(report: RunReport) -> Optional[str]:
+    """`<tool>` when intake rejected the project as not-Maven (round 7b flag `unsupported-build-tool:<tool>`): in a
+    fleet that is a *skip* (no retry, never a reason to stop on abort), not a failed migration (round 9)."""
+    return next((f[len(UNSUPPORTED_FLAG):] for f in report.flags if f.startswith(UNSUPPORTED_FLAG)), None)
+
+
 class FleetRunner:
     """Run the projects of a manifest sequentially (see module docstring).
 
@@ -129,8 +138,8 @@ class FleetRunner:
             if not proj.ok:
                 if r.status in ("pending", "skipped"):
                     r.status, r.error = "skipped", proj.error
-            elif r.status == "skipped":
-                r.status, r.error = "pending", None
+            elif r.status == "skipped" and not (r.error or "").startswith("unsupported build tool"):
+                r.status, r.error = "pending", None      # the input is back; an intake rejection stays skipped
         state.manifest = str(self.manifest_path)
         state.finished_at = None
         return state
@@ -235,6 +244,10 @@ class FleetRunner:
     def fill_result(self, r: FleetProjectResult, report: RunReport, code: int) -> None:
         r.exit_code = code
         r.status = _status_for(code)  # type: ignore[assignment]
+        tool = unsupported_build_tool(report)
+        if tool is not None:
+            r.status = "skipped"
+            r.error = f"unsupported build tool: {tool} (only Maven projects are migrated)"
         r.case_type = report.case_type
         r.llm_calls = report.llm_usage.calls
         r.llm_input_tokens = report.llm_usage.input_tokens

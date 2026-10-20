@@ -23,6 +23,17 @@
     "optional_bumped": [
       "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$",
       "regex:^com\\.google\\.guava:guava \\S+→33\\.4\\.8-jre$"
+    ],
+    "post_checks": [
+      {
+        "pom_dependency_unversioned": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "jakarta.xml.bind:jakarta.xml.bind-api",
+            "org.glassfish.jaxb:jaxb-runtime"
+          ]
+        }
+      }
     ]
   }
 }

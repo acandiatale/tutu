@@ -84,6 +84,7 @@ def test_no_final_build_after_abort_when_disabled_or_dry_run(cfg, ws):
     ("llm-error: LLM request failed (status=400): {\"error\":\"maximum context length exceeded\"}", False),
     ("llm-error: LLM request failed (status=413): payload too large", False),
     ("llm-error: the model did not follow the protocol", False),
+    ("llm-error: content filtered by the gateway (finish_reason=content_filter); this request only", False),  # round 9
     ("fixed it", False),
 ])
 def test_transport_classification(analysis, transport):

@@ -8,12 +8,14 @@ the new parent / Boot BOM no longer manages them), added / removed artifacts, an
 team" list (advisories not replaced, replaced-but-verify, carried-over pins, blocked / unresolved pointers,
 manual follow-ups) and the multi-module merge conflicts (`report.merge_conflicts`). Round 8: one
 `properties_to_set` row per `external` externalized-config finding (`report.properties`, see `property_rows`) plus the
-guide lines of `knowledge/config/externalized.yml`. Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
+guide lines of `knowledge/config/externalized.yml`. Round 9: file paths recorded by fix attempts before the restructure
+moved the sources (`llm_fixed_files`) are mapped to where the file lives now (`resolve_current_path`). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
 """
 from __future__ import annotations
 
 import logging
 import re
+from pathlib import Path
 from typing import Any, Optional
 
 from sbmig.core.models import (AdvisoryFinding, GAV, HandoverSummary, PomInfo, ProjectProfile, RunReport,
@@ -384,7 +386,42 @@ def _properties_followup_present(report: RunReport) -> bool:
     return False
 
 
-def _from_here(h: HandoverSummary, report: RunReport, cfg: Any) -> list[str]:
+def _view_exists(view: Any, path: str) -> bool:
+    try:
+        if hasattr(view, "exists"):
+            return bool(view.exists(path))
+        root = getattr(view, "root", None)
+        return bool(root is not None and (Path(root) / path).exists())
+    except (OSError, ValueError):
+        return False
+
+
+def resolve_current_path(ws: Any, path: str, cfg: Any = None) -> str:
+    """Where a file recorded before the restructure step lives now. Unchanged when it still exists (or `ws` is None);
+    else the part from the `src/` component on is looked up under `<module_dir>/<comp_module>/` then
+    `<module_dir>/<boot_module>/` (`cfg.layout`, defaults `module/comp-jar`, `module/boot-jar`); the original path
+    when neither exists. Pure (reads only `ws.exists`)."""
+    if not path or ws is None:
+        return path
+    norm = path.replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    if _view_exists(ws, norm):
+        return path
+    parts = norm.split("/")
+    if "src" not in parts:
+        return path
+    suffix = "/".join(parts[parts.index("src"):])
+    lay = getattr(cfg, "layout", None) if cfg is not None else None
+    mdir = (getattr(lay, "module_dir", None) or "module").strip("/")
+    for mod in (getattr(lay, "comp_module", None) or "comp-jar", getattr(lay, "boot_module", None) or "boot-jar"):
+        cand = f"{mdir}/{mod.strip('/')}/{suffix}" if mdir else f"{mod.strip('/')}/{suffix}"
+        if cand != norm and _view_exists(ws, cand):
+            return cand
+    return path
+
+
+def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
@@ -409,9 +446,10 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any) -> list[str]:
     for f in findings:
         if not f.llm_fixed_files:
             continue
-        files = ", ".join(f.llm_fixed_files[:LLM_FILES_MAX])
-        if len(f.llm_fixed_files) > LLM_FILES_MAX:
-            files += f" (+{len(f.llm_fixed_files) - LLM_FILES_MAX} more)"
+        fixed = list(dict.fromkeys(resolve_current_path(view, p, cfg) for p in f.llm_fixed_files))
+        files = ", ".join(fixed[:LLM_FILES_MAX])
+        if len(fixed) > LLM_FILES_MAX:
+            files += f" (+{len(fixed) - LLM_FILES_MAX} more)"
         txt = f"code rewritten by the LLM for {f.library}: {files}"
         if f.llm_fix_notes:
             txt += f" — {'; '.join(f.llm_fix_notes[:2])}"
@@ -587,7 +625,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     h.carried_over = [c for c in changes if c.carried_over]
     h.merge_conflicts = merge_conflict_lines(report)
     _fill_properties(h, report, cfg)
-    h.from_here = _from_here(h, report, cfg)
+    h.from_here = _from_here(h, report, cfg, view)
     return h
 
 
@@ -612,7 +650,7 @@ def build_handover(profile: Optional[ProjectProfile], view: Any, report: RunRepo
         try:
             h.merge_conflicts = merge_conflict_lines(report)
             _fill_properties(h, report, cfg)
-            h.from_here = _from_here(h, report, cfg)
+            h.from_here = _from_here(h, report, cfg, view)
         except Exception:  # pragma: no cover
             pass
         return h

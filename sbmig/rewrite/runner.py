@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -77,6 +78,7 @@ class OpenRewriteRunner:
         self.kb = kb
         self.timeout_s = timeout_s if timeout_s is not None else float(cfg.openrewrite.timeout_minutes) * 60.0
         self.work_dir = ws.run_dir / "rewrite"
+        self._sleep = time.sleep                 # download retry wait; tests replace it with a recorder
 
     # ------------------------------------------------------------------ composition
     def _kb_files(self) -> list[Path]:
@@ -260,6 +262,10 @@ class OpenRewriteRunner:
             jvm_args = list(self.cfg.openrewrite.oom_retry_jvm_args)
             res = self._oom_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
                                   dry_run=dry_run, label=label, fork=fork, jvm_args=jvm_args)
+        # catalog X8: a transfer failure (proxy 429 / 5xx, reset, timeout) → wait and retry the same run
+        elif not res.ok and self.cfg.openrewrite.download_retry > 0 and self._download_failure(res):
+            res = self._download_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
+                                       dry_run=dry_run, label=label, fork=fork)
         # rewrite:run forks the `compile` lifecycle first; on a project that does not compile the recipes never run.
         # Fall back to runNoFork (parses sources against the resolved dependency classpath instead).
         if not res.ok and res.forked and fork is not False and res.error and "compile" in res.error.lower():
@@ -269,20 +275,69 @@ class OpenRewriteRunner:
             retry.error = retry.error if not retry.ok else None
             if not retry.ok and jvm_args is not None and "oom-retry" not in (retry.error or ""):
                 retry.error = f"oom-retry: {retry.error}"
+            elif not retry.ok and "download-retry" in (res.error or "") \
+                    and "download-retry" not in (retry.error or ""):
+                retry.error = f"download-retry: {retry.error}"
             return retry
         return res
 
     # ------------------------------------------------------------------ OOM (catalog E8)
     _OOM_RE = re.compile(r"OutOfMemoryError|GC overhead limit exceeded")
 
-    def _is_oom(self, res: RewriteResult) -> bool:
+    @staticmethod
+    def _failure_text(res: RewriteResult) -> str:
         text = res.error or ""
         if res.log_path:
             try:
                 text += "\n" + Path(res.log_path).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 pass
-        return bool(self._OOM_RE.search(text))
+        return text
+
+    def _is_oom(self, res: RewriteResult) -> bool:
+        return bool(self._OOM_RE.search(self._failure_text(res)))
+
+    # ------------------------------------------------------------------ download failures (catalog X8)
+    # transfer problems only: a genuinely missing artifact ("Could not find artifact" / "was not found in") is not
+    # retried — the orchestrator's parent check and the build loop's resolution triage handle that
+    _DOWNLOAD_RE = re.compile(
+        r"Failed to download|Could not transfer artifact|Transfer failed|status code: 429|Too Many Requests|"
+        r"Connection reset|Read timed out|Connection timed out|SocketTimeoutException|UnknownHostException|"
+        r"status code: 50[23]|Service Unavailable|Bad Gateway", re.IGNORECASE)
+
+    def _download_failure(self, res: RewriteResult) -> str | None:
+        """The matched transfer-failure wording (journalled as `reason`), or None."""
+        m = self._DOWNLOAD_RE.search(self._failure_text(res))
+        return m.group(0) if m else None
+
+    def _download_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
+                        module: str | None, dry_run: bool, label: str, fork: bool | None) -> RewriteResult:
+        """Wait `download_retry_wait_s` and re-run, up to `download_retry` times; stops early on success or when
+        the failure no longer looks like a transfer problem. A final failure is prefixed `download-retry: `."""
+        reason = self._download_failure(first) or ""
+        wait_s = max(0, int(self.cfg.openrewrite.download_retry_wait_s))
+        total = int(self.cfg.openrewrite.download_retry)
+        base = label or ("dry" if dry_run else "run")
+        res = first
+        for attempt in range(1, total + 1):
+            log.warning("rewrite: download failure (%s) → waiting %ss, retry %d/%d", reason, wait_s, attempt, total)
+            self.ws.journal({"event": "rewrite_download_retry", "recipes": first.recipes, "module": module,
+                             "attempt": attempt, "wait_s": wait_s, "first_log": first.log_path, "reason": reason})
+            if wait_s:
+                self._sleep(wait_s)
+            res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
+                                 label=f"{base}-dlretry" + (str(attempt) if attempt > 1 else ""), fork=fork)
+            if res.ok:
+                break
+            again = self._download_failure(res)
+            if not again:
+                break           # failing for another reason now — further waiting will not help
+            reason = again
+        if not res.ok:
+            res.error = f"download-retry: {res.error or 'rewrite run failed'}"
+        self.ws.journal({"event": "rewrite_download_retry_result", "ok": res.ok, "log": res.log_path,
+                         "error": res.error})
+        return res
 
     def _oom_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
                    module: str | None, dry_run: bool, label: str, fork: bool | None,

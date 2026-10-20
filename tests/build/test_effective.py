@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 
 from sbmig.build import effective as effmod
-from sbmig.build.effective import capture_effective_depmgmt, effective_version, load_effective, parse_effective_pom
+from sbmig.build.effective import (
+    AFTER_RESTRUCTURE_FILE,
+    capture_effective_depmgmt,
+    effective_pom_provider,
+    effective_version,
+    load_effective,
+    parse_effective_pom,
+)
 from sbmig.build.mvn import ProcessResult
 from sbmig.core.workspace import Workspace
 
@@ -126,6 +133,35 @@ def test_capture_failure_returns_none(ws: Workspace, cfg, monkeypatch):
     (ws.run_dir / "effective").mkdir(exist_ok=True)
     (ws.run_dir / "effective" / "depmgmt.json").write_text("{not json", encoding="utf-8")
     assert load_effective(ws)["managed"] == {}
+
+
+def test_capture_named_file_keeps_asis_capture(ws: Workspace, cfg, monkeypatch):
+    """Round 9: the post-restructure chain goes to its own file; depmgmt.json (as-is) is untouched."""
+    docs = iter([SINGLE, MULTI, MULTI])
+    outs: list[str] = []
+
+    def fake_run(cmd, *, cwd, env, log_path, timeout_s):
+        out = next(c.split("=", 1)[1] for c in cmd if c.startswith("-Doutput="))
+        outs.append(Path(out).name)
+        Path(out).write_text(next(docs), encoding="utf-8")
+        return ProcessResult(exit_code=0, text="", duration_s=0.1)
+    monkeypatch.setattr(effmod, "run_logged", fake_run)
+    assert capture_effective_depmgmt(ws, cfg) == ws.run_dir / "effective" / "depmgmt.json"
+    p = capture_effective_depmgmt(ws, cfg, name=AFTER_RESTRUCTURE_FILE)
+    assert p == ws.run_dir / "effective" / AFTER_RESTRUCTURE_FILE
+    assert outs == ["root.xml", "depmgmt-after-restructure-root.xml"]          # as-is xml not overwritten
+    assert load_effective(ws)["managed"]["org.projectlombok:lombok"] == "1.18.30"
+    after = load_effective(ws, AFTER_RESTRUCTURE_FILE)
+    assert after["managed"] == {"g:a": "1.0", "g:b": "3.0"} and "org.projectlombok:lombok" not in after["managed"]
+    # provider: drops the stale capture first, returns the fresh dict
+    (ws.run_dir / "effective" / AFTER_RESTRUCTURE_FILE).write_text(json.dumps({"managed": {"stale:x": "9"}}))
+    data = effective_pom_provider(ws, cfg)()
+    assert data is not None and "stale:x" not in data["managed"] and data["by_module"]["shop:user"]
+
+
+def test_provider_returns_none_without_maven(ws: Workspace, cfg, monkeypatch):
+    monkeypatch.setattr(effmod, "run_logged", lambda cmd, **k: ProcessResult(exit_code=1, text="", duration_s=0.1))
+    assert effective_pom_provider(ws, cfg)() is None
 
 
 @pytest.mark.integration

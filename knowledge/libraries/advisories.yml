@@ -249,3 +249,27 @@ advisories:
       - https://openjdk.org/jeps/403
       - https://docs.openrewrite.org/recipes/java/migrate/java8tojava11
     notes: knowledge/notes/jdk21.md
+
+  # ------------------------------------------------------------------ persistence (Korean legacy Spring 2/3 apps)
+  - id: ibatis2
+    library: ibatis2
+    status: incompatible
+    title: iBATIS 2 (SqlMapClient) — Spring 4+ removed org.springframework.orm.ibatis
+    summary: >-
+      Spring 3.2 was the last line with org.springframework.orm.ibatis. iBATIS 2 itself is retired since 2010; its
+      artifacts stay on Maven Central, so the jar still resolves, but every SqlMapClientDaoSupport /
+      SqlMapClientTemplate / SqlMapClientFactoryBean reference fails to compile after the Spring 7 upgrade. No
+      OpenRewrite recipe ports it; the build-fix loop ports the DAOs with this guidance.
+    replacement: org.mybatis:mybatis + org.mybatis:mybatis-spring
+    replacement_version: mybatis 3.5.x + mybatis-spring 3.0.x (mybatis-spring-boot-starter on Boot)
+    policy: guide
+    followup: >-
+      Review every ported DAO: SqlMapClient / SqlMapClientTemplate → SqlSessionTemplate or mapper interfaces;
+      sqlmap XML → MyBatis mapper XML (#name# → #{name}, $name$ → ${name}, queryForList / queryForObject / insert /
+      update / delete → selectList / selectOne / insert / update / delete, <sqlMapConfig> → <configuration>);
+      result maps and dynamic SQL tags (<isNotEmpty>, <iterate>, <dynamic> → <if>, <foreach>, <where>) differ —
+      a mechanical but manual port per DAO; re-test every statement against the database and drop the iBATIS jars.
+    docs:
+      - https://mybatis.org/mybatis-3/
+      - https://mybatis.org/spring/
+    notes: knowledge/notes/ibatis2.md

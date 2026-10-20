@@ -200,7 +200,9 @@ class SourceStats(BaseModel):
 # Externalized configuration (round 8): settings the code reads that are defined in no packaged resource
 # ---------------------------------------------------------------------------
 PropertyRefSource = Literal["value-annotation", "configuration-properties", "environment", "system-property",
-                            "system-env", "xml-placeholder", "context-param", "jndi", "property-source", "profiles"]
+                            "system-env", "xml-placeholder", "context-param", "jndi", "property-source", "profiles",
+                            "config-placeholder"]   # round 9: `${…}` inside the value of a packaged definition file
+                                                    # (`spring.datasource.url=${DB_URL}` → DB_URL is read at runtime)
 PropertyStatus = Literal["defined", "defaulted", "external"]
 
 
@@ -226,6 +228,9 @@ class PropertyFinding(BaseModel):
     supplied_by: Optional[str] = None              # as-is supply route when detectable: "jndi" | "context-param" |
                                                    # "system-property" | "property-source:file" | None (unknown)
     note: str = ""                                 # rule note from knowledge/config/externalized.yml
+    service: Optional[str] = None                  # MSA (round 9): the deployable whose code reads the key and whose
+                                                   # packaged resources were checked; None = shared code outside every
+                                                   # service (checked against every service's resources)
 
 
 class PropertyInventory(BaseModel):
@@ -237,6 +242,8 @@ class PropertyInventory(BaseModel):
     placeholder_files: list[str] = Field(default_factory=list)  # files that received the sbmig placeholder block
     placeholders_written: list[str] = Field(default_factory=list)   # keys written with the sentinel
     notes: list[str] = Field(default_factory=list)
+    services: list[str] = Field(default_factory=list)   # MSA (round 9): deployables scanned per service (findings carry
+                                                        # `service`); empty = project-wide inventory
 
     @property
     def external(self) -> list[PropertyFinding]:
@@ -755,6 +762,9 @@ class MergeConflict(BaseModel):
     identical: bool = False                        # every copy had the same bytes (nothing lost)
     saved_copies: list[str] = Field(default_factory=list)   # run-dir-relative paths of the dropped copies
                                                    # ("merge-conflicts/<module>/src/...", empty when identical)
+    union: bool = False                            # round 9: line-list registry (META-INF/services/*, spring.factories,
+                                                   # META-INF/spring/*.imports) → the kept file is the union of every
+                                                   # copy's lines (nothing dropped; saved_copies keep the originals)
 
 
 class VersionChange(BaseModel):

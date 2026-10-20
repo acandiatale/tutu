@@ -1,0 +1,85 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "1.6",
+  "spring_boot_version": null,
+  "spring_version": "3.2.18.RELEASE",
+  "packaging": "jar",
+  "libraries": [
+    "spring-context",
+    "ibatis2"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.catalog.Main"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": false,
+    "exit_code": 2,
+    "max_llm_calls": 2,
+    "blocked": [
+      {
+        "reason": "repeated_failure",
+        "phase": "spring"
+      }
+    ],
+    "unresolved_max": 4,
+    "phases": {
+      "jdk21": "ok",
+      "spring": "FAIL",
+      "restructure": "FAIL",
+      "verify": "FAIL"
+    },
+    "journal_events": [
+      {
+        "event": "llm_fix",
+        "advisory_hints": 1
+      },
+      {
+        "event": "attempt",
+        "phase": "spring",
+        "decision": "llm_fix",
+        "applied": false,
+        "advisory_ids": [
+          "ibatis2"
+        ]
+      },
+      {
+        "event": "restructure",
+        "step": "restructure.apply",
+        "ok": true
+      }
+    ],
+    "advisories": [
+      {
+        "id": "ibatis2",
+        "policy": "guide",
+        "outcome": "still-present"
+      }
+    ],
+    "followups_contains": [
+      "regex:(?i)^iBATIS 2 .*MyBatis.*"
+    ],
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/catalog/dao/CatalogDao.java",
+          "contains": "extends SqlMapClientDaoSupport"
+        }
+      },
+      {
+        "pom_dependency_versioned": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "org.apache.ibatis:ibatis-sqlmap"
+          ]
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/comp-jar/src/main/resources/sqlmap/catalog-sqlmap.xml"
+        }
+      }
+    ]
+  }
+}

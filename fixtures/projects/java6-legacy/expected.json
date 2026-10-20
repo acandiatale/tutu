@@ -60,7 +60,7 @@
       "java_before": "1.6",
       "java_after": "21",
       "from_here_contains": [
-        "regex:code rewritten by the LLM for jdk-removed-apis: src/main/java/com/example/legacy/util/Codec\\.java — .* — review these changes \\(changes\\.patch, attempts table\\)"
+        "regex:code rewritten by the LLM for jdk-removed-apis: module/comp-jar/src/main/java/com/example/legacy/util/Codec\\.java — .* — review these changes \\(changes\\.patch, attempts table\\)"
       ],
       "added_contains": [
         "jakarta.xml.bind:jakarta.xml.bind-api",
@@ -75,6 +75,8 @@
       "harvest_candidates_min": 0
     },
     "post_checks": [
+      {"file_contains": {"path": "**/pom.xml", "not_contains": "<bootclasspath>"}},
+      {"file_contains": {"path": "**/pom.xml", "not_contains": "<fork>"}},
       {
         "file_contains": {
           "path": "**/com/example/legacy/util/Codec.java",
@@ -124,6 +126,15 @@
         "file_contains": {
           "path": "**/pom.xml",
           "not_contains": "<target>1.6</target>"
+        }
+      },
+      {
+        "pom_dependency_unversioned": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "jakarta.xml.bind:jakarta.xml.bind-api",
+            "org.glassfish.jaxb:jaxb-runtime"
+          ]
         }
       }
     ]

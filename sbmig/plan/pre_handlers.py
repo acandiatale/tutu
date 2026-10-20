@@ -3,10 +3,11 @@
 Handler ids (contract with workstream E):
   lombok-version-floor, mapstruct-version-floor, querydsl-jakarta-classifier, maven-compiler-plugin-floor,
   surefire-plugin-floor, javax-servlet-api-to-jakarta, jaxb-runtime-add, remove-classic-loader-implementation,
-  mysql-connector-relocation
+  mysql-connector-relocation, compiler-legacy-config (round 9: fork/executable/bootclasspath compiler config)
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from sbmig.core.config import Config
@@ -22,8 +23,37 @@ SUREFIRE_FLOOR = "3.0.0"
 HANDLER_IDS = (
     "lombok-version-floor", "mapstruct-version-floor", "querydsl-jakarta-classifier", "maven-compiler-plugin-floor",
     "surefire-plugin-floor", "javax-servlet-api-to-jakarta", "jaxb-runtime-add",
-    "remove-classic-loader-implementation", "mysql-connector-relocation",
+    "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
 )
+
+_LEGACY_ARG = re.compile(r"-(bootclasspath|Xbootclasspath|extdirs|endorseddirs|source\b|target\b)")
+
+
+def compiler_legacy_config_reason(profile: ProjectProfile) -> Optional[str]:
+    """Why `compiler-legacy-config` must run (None = clean): javac 21 rejects -bootclasspath / -Xbootclasspath /
+    -extdirs / -endorseddirs / -source / -target together with --release, and `<fork>` + `<executable>` point at a
+    JDK that is not there any more. `PluginInfo.configuration` is flat (nested <compilerArguments> children keep only
+    their values), so the presence of the container is enough to select the handler — it only removes what matches."""
+    for p in profile.poms:
+        for pl in p.plugins:
+            if pl.artifact_id != "maven-compiler-plugin":
+                continue
+            c = pl.configuration or {}
+            found: list[str] = []
+            if str(c.get("fork", "")).strip().lower() == "true" or c.get("executable"):
+                found.append("fork/executable")
+            if c.get("compilerVersion"):
+                found.append("compilerVersion")
+            if "compilerArguments" in c:
+                found.append("compilerArguments")
+            for key in ("compilerArgument", "compilerArgs"):
+                v = c.get(key)
+                vals = v if isinstance(v, list) else ([v] if isinstance(v, str) else [])
+                if any(_LEGACY_ARG.search(str(x)) for x in vals):
+                    found.append(key)
+            if found:
+                return f"{p.path}: maven-compiler-plugin {', '.join(found)} — rejected by javac 21 with --release"
+    return None
 
 
 def _lib_version(profile: ProjectProfile, name: str) -> tuple[bool, Optional[str]]:
@@ -79,6 +109,9 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
         break
     if _has_dep(profile, "mysql:mysql-connector-java"):
         out.append(("mysql-connector-relocation", "mysql:mysql-connector-java relocated to com.mysql:mysql-connector-j"))
+    legacy = compiler_legacy_config_reason(profile)
+    if legacy:
+        out.append(("compiler-legacy-config", legacy))
     return out
 
 

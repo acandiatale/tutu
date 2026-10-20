@@ -738,14 +738,23 @@ class Orchestrator:
             return True
         runner = self.rewrite_runner
         pre = self.ws.head()
-        # in-repo reactor siblings (shared library roots) only resolve when the plugin runs from the aggregator root
-        from .fixloop import build_target_args
-        module, reactor_args = build_target_args(self.profile, step.target)
-        kwargs = dict(extra_recipe_files=self._extra_recipe_files(step), dry_run=self._dry_run, label=step.id)
-        try:
-            res = runner.run(list(step.recipes), module=module, extra_args=reactor_args, **kwargs)
-        except TypeError:                      # a runner without `extra_args` (fakes / older implementations)
-            res = runner.run(list(step.recipes), module=step.target, **kwargs)
+        clean_before = self._dry_run or not self.ws.is_dirty()
+        res = self._run_rewrite_once(runner, step)
+        # catalog X8: the recipe's own resolver could not download Maven metadata → literal `4.0.x` versions
+        unresolved = self._unresolved_versions(res)
+        if unresolved and self.cfg.openrewrite.download_retry > 0 and clean_before:
+            wait_s = max(0, int(self.cfg.openrewrite.download_retry_wait_s))
+            self.ws.revert_to(pre)                 # drop the half-resolved result; tree is clean again
+            self.ws.journal({"event": "rewrite_unresolved_versions", "step": step.id, "poms": unresolved,
+                             "retry": True, "wait_s": wait_s, "log": res.log_path})
+            log.warning("%s: literal versions left after the rewrite (%s) → retrying once in %ss", step.id,
+                        self._fmt_unresolved(unresolved), wait_s)
+            if wait_s:
+                getattr(self, "_sleep", time.sleep)(wait_s)
+            res = self._run_rewrite_once(runner, step)
+            unresolved = self._unresolved_versions(res)
+        if unresolved:
+            self._report_unresolved_versions(pr, step, res, unresolved)
         pr.rewrite_results.append(res)
         mark = getattr(self.triager, "mark_recipes_run", None)
         if callable(mark):
@@ -767,6 +776,59 @@ class Orchestrator:
             pr.remaining_errors.append(BuildError(kind=ErrorKind.REWRITE, message=err[:500], raw=err,
                                                   module=step.target))
         return True
+
+    # catalog X8: literal versions the rewrite leaves when its resolver could not read maven-metadata.xml
+    UNRESOLVED_VERSIONS_FLAG = "rewrite-unresolved-versions"
+    _POM_VALUE_RE = re.compile(r"<([\w.\-]+)>([^<>]*)</\1>")
+    _UNRESOLVED_VERSION_RE = re.compile(r"^(?:\d+(?:\.\d+)*\.x|latest\.(?:release|integration|patch))$")
+
+    @staticmethod
+    def _fmt_unresolved(unresolved: dict[str, list[str]]) -> str:
+        return "; ".join(f"{p}: {', '.join(vs)}" for p, vs in unresolved.items())
+
+    def _run_rewrite_once(self, runner: Any, step: PlanStep) -> Any:
+        # in-repo reactor siblings (shared library roots) only resolve when the plugin runs from the aggregator root
+        from .fixloop import build_target_args
+        module, reactor_args = build_target_args(self.profile, step.target)
+        kwargs = dict(extra_recipe_files=self._extra_recipe_files(step), dry_run=self._dry_run, label=step.id)
+        try:
+            return runner.run(list(step.recipes), module=module, extra_args=reactor_args, **kwargs)
+        except TypeError:                      # a runner without `extra_args` (fakes / older implementations)
+            return runner.run(list(step.recipes), module=step.target, **kwargs)
+
+    def _unresolved_versions(self, res: Any) -> dict[str, list[str]]:
+        """pom path → literal unresolved versions (`4.0.x`, `latest.release`, …) a successful, non-dry rewrite
+        left in the changed poms (every pom when the runner reports no changed files)."""
+        if self._dry_run or not getattr(res, "ok", False):
+            return {}
+        changed = list(getattr(res, "changed_files", None) or [])
+        poms = [p for p in changed if p == "pom.xml" or p.endswith("/pom.xml")] if changed else self.ws.pom_files()
+        out: dict[str, list[str]] = {}
+        for p in sorted(dict.fromkeys(poms)):
+            try:
+                text = self.ws.read(p)
+            except (OSError, UnicodeDecodeError):
+                continue
+            found = list(dict.fromkeys(m.group(2).strip() for m in self._POM_VALUE_RE.finditer(text)
+                                       if self._UNRESOLVED_VERSION_RE.match(m.group(2).strip())))
+            if found:
+                out[p] = found
+        return out
+
+    def _report_unresolved_versions(self, pr: PhaseResult, step: PlanStep, res: Any,
+                                    unresolved: dict[str, list[str]]) -> None:
+        """Keep the result (the build loop shows what breaks), but say why: flag, phase note, follow-up."""
+        self.ws.journal({"event": "rewrite_unresolved_versions", "step": step.id, "poms": unresolved,
+                         "retry": False, "log": getattr(res, "log_path", None)})
+        self._flag(self.UNRESOLVED_VERSIONS_FLAG)
+        what = self._fmt_unresolved(unresolved)
+        pr.notes.append(f"{step.id}: {self.UNRESOLVED_VERSIONS_FLAG} — the recipe run left literal versions "
+                        f"({what}); the build will fail on dependency resolution")
+        versions = ", ".join(f"`{v}`" for v in dict.fromkeys(v for vs in unresolved.values() for v in vs))
+        fu = (f"the recipe run could not download Maven metadata (proxy / rate limit): literal versions {versions} "
+              f"remain in {', '.join(unresolved)} — re-run sbmig later or set the versions by hand")
+        if self.report is not None and fu not in self.report.manual_followups:
+            self.report.manual_followups.append(fu)
 
     def _check_parent_in_rewrite(self, pr: PhaseResult, step: PlanStep, err: str) -> None:
         """OpenRewrite failed because the configured in-house parent does not resolve → abort like the build loop."""
@@ -841,6 +903,8 @@ class Orchestrator:
             if (c.path, c.kept_from) not in seen:
                 seen.add((c.path, c.kept_from))
                 self.report.merge_conflicts.append(c)
+        if self.loop is not None:          # round 9: the restructure-phase fix loop shows dropped copies to the LLM
+            self.loop.merge_conflicts = list(self.report.merge_conflicts)
         ph_files = list(getattr(res, "placeholder_files", None) or [])
         ph_keys = list(dict.fromkeys(getattr(res, "placeholders_written", None) or []))
         self._merge_placeholders(ph_files, ph_keys)
@@ -895,9 +959,42 @@ class Orchestrator:
             takes_params = "params" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
         except (TypeError, ValueError):  # pragma: no cover - builtins / mocks
             takes_params = True
+        if mode in ("layout", "msa_pom") and self.cfg.layout.drop_managed_versions != "off":
+            params.setdefault("effective_pom", self._effective_pom_after)   # round 9, zero-arg callable
         if takes_params:
             return r.apply(self.ws, self.profile, self.cfg, mode=mode, params=params)
         return r.apply(self.ws, self.profile, self.cfg, mode=mode)
+
+    EFFECTIVE_AFTER_FILE = "depmgmt-after-restructure.json"
+
+    def _effective_pom_after(self) -> Optional[dict]:
+        """Round 9 (`layout.drop_managed_versions`): the effective dependencyManagement of the tree *after* the
+        restructurer set the in-house parent, captured into a separate file so the as-is capture (`depmgmt.json`,
+        used by the carry-over handler) is never overwritten. None = not available (custom build runner without a
+        capture, a capture that cannot take a file name, Maven failure) → the restructurer skips the cleanup."""
+        fn = self._effective_capture
+        if fn is None:
+            if not self._real_maven:
+                self.ws.journal({"event": "effective_depmgmt_after", "skipped": "custom build runner"})
+                return None
+            try:
+                fn = lazy_attr("sbmig.build.effective", "capture_effective_depmgmt", "G1 (build)")
+            except MissingComponentError as e:
+                self.ws.journal({"event": "effective_depmgmt_after", "skipped": str(e)})
+                return None
+        try:
+            load = lazy_attr("sbmig.build.effective", "load_effective", "G1 (build)")
+            path = fn(self.ws, self.cfg, name=self.EFFECTIVE_AFTER_FILE)
+            data = load(self.ws, name=self.EFFECTIVE_AFTER_FILE) if path is not None else None
+        except TypeError as e:               # a capture / loader without `name` → never clobber depmgmt.json
+            self.ws.journal({"event": "effective_depmgmt_after", "skipped": f"capture without name=: {e}"})
+            return None
+        except Exception as e:
+            log.warning("effective dependencyManagement (after restructure) capture failed: %s", e)
+            self.ws.journal({"event": "effective_depmgmt_after", "ok": False, "error": f"{type(e).__name__}: {e}"})
+            return None
+        self.ws.journal({"event": "effective_depmgmt_after", "ok": bool(data), "path": str(path) if path else None})
+        return data or None
 
     def _step_verify(self, pr: PhaseResult, step: PlanStep) -> bool:
         self._flush_notes(pr)
@@ -955,17 +1052,52 @@ class Orchestrator:
         except Exception:  # pragma: no cover - optional capability
             return
         fp = getattr(getattr(self, "profile", None), "fingerprint", "") or ""
-        credited: list[str] = []
+        todo: list[str] = []
         for res in pr.rewrite_results:
             for rid, files in (getattr(res, "recipes_applied", None) or {}).items():
-                if rid in kb_ids and files and rid not in credited:
-                    try:
-                        kb.credit_recipe(rid, bool(pr.build_ok), fp)
-                        credited.append(rid)
-                    except Exception as e:  # pragma: no cover
-                        log.warning("kb.credit_recipe(%s) failed: %s", rid, e)
+                if rid in kb_ids and files and rid not in todo:
+                    todo.append(rid)
+        skip = None if pr.build_ok or not todo else Orchestrator._resolution_only_failure(pr)
+        if skip:
+            # the phase failed on dependency resolution (proxy / rate limit / missing artifact), not on the code
+            # the recipes wrote → a failure credit would punish a candidate for something it did not cause
+            log.info("phase %s failed on dependency resolution (%s): KB recipes not credited", pr.phase.value, skip)
+            self.ws.journal({"event": "kb_credit_skipped", "phase": pr.phase.value, "recipes": todo, "reason": skip})
+            return
+        credited: list[str] = []
+        for rid in todo:
+            try:
+                kb.credit_recipe(rid, bool(pr.build_ok), fp)
+                credited.append(rid)
+            except Exception as e:  # pragma: no cover
+                log.warning("kb.credit_recipe(%s) failed: %s", rid, e)
         if credited:
             self.ws.journal({"event": "kb_credit", "phase": pr.phase.value, "recipes": credited, "success": pr.build_ok})
+
+    _RESOLUTION_KINDS = frozenset({ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.PARENT_RESOLUTION,
+                                   ErrorKind.PLUGIN_RESOLUTION})
+    _RESOLUTION_BLOCKS = frozenset({"artifact_not_found", "parent_not_found"})
+
+    @staticmethod
+    def _resolution_only_failure(pr: PhaseResult) -> Optional[str]:
+        """Why a failed phase failed on dependency resolution rather than on code (None = a code failure):
+        `rewrite-unresolved-versions` was raised in it, or every remaining error is a resolution error (an
+        OpenRewrite run that failed after its download retry counts as one), or — with no code error left — every
+        blocked item is `artifact_not_found` / `parent_not_found`."""
+        flag = Orchestrator.UNRESOLVED_VERSIONS_FLAG
+        if any(flag in n for n in pr.notes):
+            return flag
+        code_errors = [e for e in pr.remaining_errors
+                       if e.kind not in Orchestrator._RESOLUTION_KINDS
+                       and not (e.kind == ErrorKind.REWRITE and (e.message or "").startswith("download-retry"))]
+        if code_errors:
+            return None
+        if pr.remaining_errors:
+            return "dependency-resolution"
+        reasons = {getattr(b.reason, "value", b.reason) for b in pr.blocked}
+        if reasons and reasons <= Orchestrator._RESOLUTION_BLOCKS:
+            return "dependency-resolution"
+        return None
 
     def _advise_plan(self, plan):
         """cfg.plan.advisor == "llm": let the (cheap) recipe model review the rule-based plan (additive only)."""

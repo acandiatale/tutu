@@ -267,6 +267,7 @@ class BazHandler(Handler):
 
 
 def test_llm_unavailable_blocks_llm_clusters_handlers_keep_running(cfg, ws, profile):
+    cfg.llm.cooldown_seconds = 0                                       # pre-round-9 behaviour: no cool-down
     down = FixProposal(changes=[], analysis="llm-error: LLM request failed after 4 attempt(s) (status=503): busy",
                        model="m", llm_usage=LLMUsage(calls=1))
     fixer = FakeFixer(fn=lambda w, c, ctx: down)
@@ -298,6 +299,7 @@ def test_llm_unavailable_blocks_llm_clusters_handlers_keep_running(cfg, ws, prof
 
 
 def test_llm_client_construction_failure_marks_llm_unavailable(cfg, ws, profile):
+    cfg.llm.cooldown_seconds = 0
     def factory():
         raise ValueError("llm.base_url is not set (LLM_BASE_URL)")
 

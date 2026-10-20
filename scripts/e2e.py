@@ -23,6 +23,9 @@ captures the exit code + output, finds the run directory the CLI created under -
                "phases": {"restructure": "ok"},                                        # ok | FAIL | skipped
                "post_checks": [{"file_decodes_as": {"path", "encoding", "contains", "not_contains"}},
                                {"file_contains": {...}}, {"pom_parent": {...}}, {"pom_dependency_absent": {...}},
+                               {"pom_dependency_present": {"path", "artifacts": ["g:a"]}},
+                               {"pom_dependency_unversioned": {...}},   # declared, no <version> (parent-managed)
+                               {"pom_dependency_versioned": {...}},     # declared with a <version>
                                {"file_exists": {"path"}}, {"file_absent": {"path"}}],   # files or dirs, globs ok
                "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced",   # report.advisories:
                                "recipe_source": "advisory"}],                  # entry by advisory_id, fields equal
@@ -37,6 +40,8 @@ captures the exit code + output, finds the run directory the CLI created under -
                "properties": {"external_min": 3,                   # report.properties (else profile.properties):
                               "external": ["mail.host"],           # keys that must be `external` findings
                               "absent": ["catalog.title"],         # keys that must NOT be `external`
+                              "external_in": {"order-service": ["order.tax-rate"]},   # MSA: external findings
+                                                                   # whose `service` is that deployable
                               "written": ["mail.host"],            # ⊆ placeholders_written
                               "placeholder_file_contains": ["mail.host=__SET_ME__"]},   # substrings of
                                                                    # placeholder_files[0] in the migrated project
@@ -87,7 +92,8 @@ DEFAULT_LOCAL_REPO = Path.home() / ".m2" / "repository"
 DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
                  "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename",
-                 "boot2-hystrix-command", "multi-module-merge", "legacy-external-config", "java6-legacy"]
+                 "boot2-hystrix-command", "multi-module-merge", "legacy-external-config", "java6-legacy",
+                 "multi-module-conflict", "legacy-ibatis"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -542,6 +548,17 @@ def _pom_dependencies(root) -> set[str]:
     return deps
 
 
+def _pom_dependency_versions(root) -> dict[str, list[str | None]]:
+    """"g:a" → the <version> text of every declaration of it (None = declared without a <version> element)."""
+    out: dict[str, list[str | None]] = {}
+    for dep in list(root.iter(NS + "dependency")) + list(root.iter("dependency")):
+        g, a = _pom_text(dep, "groupId"), _pom_text(dep, "artifactId")
+        if g and a:
+            has_version = dep.find(NS + "version") is not None or dep.find("version") is not None
+            out.setdefault(f"{g}:{a}", []).append((_pom_text(dep, "version") or "") if has_version else None)
+    return out
+
+
 def run_post_check(check: dict, project: Path | None) -> str | None:
     """None when the check passes, else a one-line mismatch."""
     if not isinstance(check, dict) or len(check) != 1:
@@ -577,7 +594,8 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
             if spec.get("not_contains") and spec["not_contains"] in text:
                 return f"{kind}: {rel} still contains {spec['not_contains']!r}"
         return None
-    if kind in ("pom_parent", "pom_dependency_absent", "pom_dependency_present"):
+    if kind in ("pom_parent", "pom_dependency_absent", "pom_dependency_present", "pom_dependency_unversioned",
+                "pom_dependency_versioned"):
         for f in files:
             rel = f.relative_to(project).as_posix()
             try:
@@ -593,6 +611,16 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
                 if parent is None or any(w is not None and w != g for w, g in zip(want, got)):
                     return f"pom_parent: {rel} parent is {':'.join(x or '?' for x in got) if parent is not None else 'none'}" \
                            f", expected {':'.join(x or '*' for x in want)}"
+            elif kind in ("pom_dependency_unversioned", "pom_dependency_versioned"):
+                versions = _pom_dependency_versions(root)     # every declaration counts (dependencyManagement too)
+                for ga in spec.get("artifacts") or []:
+                    if ga not in versions:
+                        return f"{kind}: {rel} lacks {ga}"
+                    pinned = [v for v in versions[ga] if v is not None]
+                    if kind == "pom_dependency_unversioned" and pinned:
+                        return f"pom_dependency_unversioned: {rel} declares {ga} with <version>{pinned[0]}</version>"
+                    if kind == "pom_dependency_versioned" and len(pinned) < len(versions[ga]):
+                        return f"pom_dependency_versioned: {rel} declares {ga} without a <version>"
             else:
                 deps = _pom_dependencies(root)
                 for ga in spec.get("artifacts") or []:
@@ -628,6 +656,12 @@ def evaluate_properties(want: dict, report: dict, project: Path | None) -> list[
     for key in _list(want.get("absent")):
         if key in external:
             mm.append(f"properties: {key!r} must not be external")
+    by_service = want.get("external_in") if isinstance(want.get("external_in"), dict) else {}
+    for svc, keys in by_service.items():         # MSA (round 9): finding.service = the deployable that reads the key
+        got = [str(f.get("key")) for f in findings if f.get("status") == "external" and f.get("service") == svc]
+        for key in _list(keys):
+            if key not in got:
+                mm.append(f"properties: {key!r} is not an external finding of service {svc!r} (got: {_short(got, 8)})")
     written = _strings(inv.get("placeholders_written"))
     for key in _list(want.get("written")):
         if key not in written:

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE sqlMap PUBLIC "-//ibatis.apache.org//DTD SQL Map 2.0//EN"
+        "http://ibatis.apache.org/dtd/sql-map-2.dtd">
+<sqlMap namespace="catalog">
+
+    <select id="findAll" resultClass="com.example.catalog.model.Item">
+        SELECT id, name FROM item ORDER BY id
+    </select>
+
+    <select id="findById" parameterClass="java.lang.Long" resultClass="com.example.catalog.model.Item">
+        SELECT id, name FROM item WHERE id = #value#
+    </select>
+</sqlMap>

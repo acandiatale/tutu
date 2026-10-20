@@ -184,7 +184,8 @@ def test_layout_boot2_single_module(tmp_path: Path, cfg_rm: Config) -> None:
 
     # --- second run is a no-op
     res2 = Restructurer().apply(ws, boot2_profile(ws), cfg_rm, mode="layout")
-    assert res2.ok and res2.notes == ["already restructured"] and res2.changed_files == []
+    assert res2.ok and res2.changed_files == []
+    assert res2.notes == ["already restructured", "managed-version cleanup skipped: no effective pom"]
 
 
 def test_layout_web_layer_split(tmp_path: Path, cfg: Config) -> None:

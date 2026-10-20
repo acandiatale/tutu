@@ -357,3 +357,82 @@ def test_add_known_dependency_symbol_filter_and_no_match(kit):
     assert kit.dep("com.google.code.findbugs:jsr305").version == "3.0.2"
     c3 = cluster_errors([err(file="src/main/java/A.java", message="package com.acme.internal does not exist")])[0]
     assert not h.matches(c3, make_profile(), None)
+
+
+_LEGACY_COMPILER_BLOCK = """
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>2.3.2</version>
+        <configuration>
+          <source>1.6</source>
+          <target>1.6</target>
+          <encoding>MS949</encoding>
+          <fork>true</fork>
+          <executable>/usr/java/jdk1.6.0_45/bin/javac</executable>
+          <compilerVersion>1.6</compilerVersion>
+          <compilerArguments>
+            <bootclasspath>${java.home}/lib/rt.jar</bootclasspath>
+            <verbose />
+          </compilerArguments>
+          <compilerArgument>-Xbootclasspath/p:lib/patch.jar</compilerArgument>
+          <compilerArgs>
+            <arg>-bootclasspath</arg>
+            <arg>/usr/java/jdk1.6.0_45/jre/lib/rt.jar</arg>
+            <arg>-Xlint:unchecked</arg>
+            <arg>-extdirs</arg>
+            <arg>lib/ext</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>"""
+
+
+def test_compiler_legacy_config_removes_fork_executable_and_bootclasspath(kit, cfg):
+    """Round 9: javac 21 rejects -bootclasspath / -Xbootclasspath / -extdirs with --release and the forked javac of a
+    JDK 6 that is not installed; only those elements go, the rest of the block (encoding, -Xlint) stays."""
+    kit.pom(extra_build=_LEGACY_COMPILER_BLOCK)
+    h = kit.handler("compiler-legacy-config")
+    assert h.apply(kit.ws, None, None, cfg)
+    text = kit.text()
+    for gone in ("<fork>", "<executable>", "<compilerVersion>", "<bootclasspath>", "<compilerArgument>",
+                 "-bootclasspath", "rt.jar", "-extdirs", "lib/ext"):
+        assert gone not in text, gone
+    assert "<encoding>MS949</encoding>" in text and "<arg>-Xlint:unchecked</arg>" in text
+    assert "<compilerArguments>" in text and "<verbose />" in text          # a non-legacy child keeps the container
+    assert text.count("<compilerArgs>") == 1 and text.count("<arg>") == 1
+    assert not h.apply(kit.ws, None, None, cfg)                             # idempotent
+
+
+def test_compiler_legacy_config_drops_empty_containers_and_matches(fake_kit, cfg):
+    fake_kit.pom(extra_build="""
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <compilerArguments>
+            <bootclasspath>${java.home}/lib/rt.jar</bootclasspath>
+          </compilerArguments>
+          <compilerArgs>
+            <arg>-Xbootclasspath/a:lib/x.jar</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>""")
+    h = fake_kit.handler("compiler-legacy-config")
+    assert h.apply(fake_kit.ws, None, None, cfg)
+    text = fake_kit.text()
+    assert "<compilerArguments>" not in text and "<compilerArgs>" not in text and "<configuration>" in text
+    for msg in ("error: option --boot-class-path cannot be used together with --release",
+                "error: option -Xbootclasspath/p: cannot be used together with --release",
+                "error: option --boot-class-path not allowed with target 21",
+                "Fatal error compiling: Cannot run program \"/usr/java/jdk1.6.0_45/bin/javac\""):
+        c = cluster_errors([err(ErrorKind.COMPILE, msg)])[0]
+        assert h.matches(c, make_profile(), cfg), msg
+    c = cluster_errors([err(ErrorKind.COMPILE, "cannot find symbol")])[0]
+    assert not h.matches(c, make_profile(), cfg)
+
+
+def test_compiler_legacy_config_leaves_clean_poms_alone(fake_kit, cfg):
+    fake_kit.pom(plugins=[PluginInfo(artifact_id="maven-compiler-plugin", version="3.14.0",
+                                     configuration={"release": "21", "encoding": "UTF-8"})])
+    before = fake_kit.text()
+    assert not fake_kit.handler("compiler-legacy-config").apply(fake_kit.ws, None, None, cfg)
+    assert fake_kit.text() == before

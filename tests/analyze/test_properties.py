@@ -222,7 +222,7 @@ def test_config_subdir_and_placeholder_in_value(tmp_path: Path, cfg) -> None:
           "spring.datasource.url=${DB_URL}\nlog.dir=${user.home}/logs\nx=${opt:1}\n")
     f = by(inv(tmp_path, cfg))
     assert f["spring.datasource.url"].status == "defined"
-    assert f["DB_URL"].status == "external" and f["DB_URL"].refs[0].source == "property-source"
+    assert f["DB_URL"].status == "external" and f["DB_URL"].refs[0].source == "config-placeholder"
     assert f["DB_URL"].refs[0].line == 1
     assert "user.home" not in f and f["opt"].status == "defaulted"
 

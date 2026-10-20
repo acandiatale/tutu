@@ -119,3 +119,35 @@ def test_missing_env_gives_clear_errors(monkeypatch, tmp_path):
     cfg = load_config(REPO / "config" / "artifacts.example.yml")
     with pytest.raises(LLMConfigError, match="LLM_API_KEY"):
         make_llm_client(cfg)
+
+
+def test_azure_style_response_shape_and_content_filter():
+    """The in-house GPT gateway answers in the OpenAI / Azure chat-completions shape (routing, created,
+    prompt_filter_results, usage, model, service_tier, id, choices[{content_filter_result, finish_reason, index,
+    message, logprobs}], system_fingerprint, object): auto-detected without a response_path. A content-filter hit
+    (finish_reason=content_filter, null content) is a request-level rejection, not a transport failure."""
+    ok = {"routing": {"deployment": "gpt-6-luna-eastus"}, "created": 1760000000, "id": "chatcmpl-1", "object": "chat.completion",
+          "model": "gpt-6-luna", "service_tier": "default", "system_fingerprint": "fp_1",
+          "prompt_filter_results": [{"prompt_index": 0, "content_filter_results": {
+              "hate": {"filtered": False, "severity": "safe"}, "jailbreak": {"filtered": False, "detected": False}}}],
+          "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+          "choices": [{"index": 0, "finish_reason": "stop", "logprobs": None,
+                       "content_filter_result": {"hate": {"filtered": False, "severity": "safe"}},
+                       "message": {"role": "assistant", "content": "<analysis>ok</analysis>"}}]}
+    r = client(FakePost(FakeResponse(200, ok))).complete(MSGS)
+    assert r.content == "<analysis>ok</analysis>" and r.input_tokens == 120 and r.output_tokens == 30
+    assert r.finish_reason == "stop" and r.model == "gpt-6-luna"
+    filtered = json.loads(json.dumps(ok))
+    filtered["choices"][0].update({"finish_reason": "content_filter", "message": {"role": "assistant", "content": None},
+                                   "content_filter_result": {"hate": {"filtered": True, "severity": "high"}}})
+    with pytest.raises(LLMError, match="content filtered by the gateway"):
+        client(FakePost(FakeResponse(200, filtered))).complete(MSGS)
+    from sbmig.loop.fixloop import is_llm_transport_error
+    assert is_llm_transport_error("llm-error: content filtered by the gateway (finish_reason=content_filter); "
+                                  "this request only, not an outage") is False
+    # a prompt filter that fired with an empty answer is reported the same way
+    prompt_hit = json.loads(json.dumps(ok))
+    prompt_hit["choices"][0]["message"]["content"] = ""
+    prompt_hit["prompt_filter_results"][0]["content_filter_results"]["jailbreak"] = {"filtered": True, "detected": True}
+    with pytest.raises(LLMError, match="prompt_filter_results: jailbreak"):
+        client(FakePost(FakeResponse(200, prompt_hit))).complete(MSGS)

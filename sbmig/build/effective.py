@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Optional
 
@@ -30,6 +31,7 @@ log = logging.getLogger("sbmig.build.effective")
 HELP_PLUGIN = "org.apache.maven.plugins:maven-help-plugin:3.5.1"
 EFFECTIVE_TIMEOUT_S = 10 * 60
 DEPMGMT_FILE = "depmgmt.json"
+AFTER_RESTRUCTURE_FILE = "depmgmt-after-restructure.json"   # round 9: chain of the restructured tree
 DEFAULT_PLUGIN_GROUP = "org.apache.maven.plugins"
 
 
@@ -134,29 +136,34 @@ def _effective_dir(ws: Workspace) -> Path:
     return ws.run_dir / "effective"
 
 
-def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] = None) -> Optional[Path]:
-    """Run `help:effective-pom` (whole reactor, or `-pl module`) on the as-is project and write depmgmt.json.
-    Returns its path; None on failure (logged + journaled). Merges into an existing depmgmt.json (first wins)."""
+def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] = None,
+                              name: str = DEPMGMT_FILE) -> Optional[Path]:
+    """Run `help:effective-pom` (whole reactor, or `-pl module`) on the current tree and write `<name>` (default
+    depmgmt.json = the as-is capture at intake; round 9: `AFTER_RESTRUCTURE_FILE` for the restructured chain).
+    Returns its path; None on failure (logged + journaled). Merges into an existing `<name>` (first wins)."""
     try:
         out_dir = _effective_dir(ws)
         out_dir.mkdir(parents=True, exist_ok=True)
-        name = "".join(c if c.isalnum() or c in "-_." else "_" for c in (module or "root").strip("/")) or "root"
-        xml_path = out_dir / f"{name}.xml"
+        stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in (module or "root").strip("/")) or "root"
+        if name != DEPMGMT_FILE:                    # keep the as-is effective pom xml / log next to the new one
+            stem = f"{Path(name).stem}-{stem}"
+        xml_path = out_dir / f"{stem}.xml"
         xml_path.unlink(missing_ok=True)
         cmd = base_command(cfg)
         if module:
             cmd += ["-pl", module]
         cmd += [f"{HELP_PLUGIN}:effective-pom", f"-Doutput={xml_path}", "-q"]
-        log_path = ws.new_log_path(f"effective-pom-{name}")
+        log_path = ws.new_log_path(f"effective-pom-{stem}")
         pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
         if pr.exit_code != 0 or not xml_path.is_file():
             why = pr.error or ("timed out" if pr.timed_out else _last_error(pr.text) or f"exit {pr.exit_code}")
             log.warning("effective-pom of the as-is project failed (%s): %s — managed versions of the old parent "
                         "cannot be carried over (see %s)", module or "root", why, log_path)
-            ws.journal({"event": "effective_pom", "ok": False, "module": module, "reason": why, "log": str(log_path)})
+            ws.journal({"event": "effective_pom", "ok": False, "module": module, "file": name, "reason": why,
+                        "log": str(log_path)})
             return None
         data = parse_effective_pom(xml_path.read_bytes())
-        target = out_dir / DEPMGMT_FILE
+        target = out_dir / name
         if target.is_file():
             try:
                 prev = json.loads(target.read_text(encoding="utf-8"))
@@ -164,7 +171,8 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
             except (OSError, ValueError):
                 pass
         target.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        ws.journal({"event": "effective_pom", "ok": True, "module": module, "managed": len(data["managed"]),
+        ws.journal({"event": "effective_pom", "ok": True, "module": module, "file": name,
+                    "managed": len(data["managed"]),
                     "direct": len(data["direct"]), "parent": data["parent"], "path": str(target)})
         log.info("effective pom: %d managed / %d direct versions captured (parent %s)", len(data["managed"]),
                  len(data["direct"]), data["parent"])
@@ -191,9 +199,10 @@ def _last_error(text: str) -> str:
     return lines[0][len("[ERROR]"):].strip()[:300] if lines else ""
 
 
-def load_effective(ws: Workspace) -> dict[str, Any]:
-    """The captured depmgmt dict, or an empty one (`{"managed": {}, "direct": {}, …, "parent": None}`)."""
-    p = _effective_dir(ws) / DEPMGMT_FILE
+def load_effective(ws: Workspace, name: str = DEPMGMT_FILE) -> dict[str, Any]:
+    """The captured depmgmt dict (`<run_dir>/effective/<name>`), or an empty one
+    (`{"managed": {}, "direct": {}, …, "parent": None}`)."""
+    p = _effective_dir(ws) / name
     if not p.is_file():
         return _empty()
     try:
@@ -204,6 +213,22 @@ def load_effective(ws: Workspace) -> dict[str, Any]:
     base = _empty()
     base.update({k: v for k, v in data.items() if v is not None})
     return base
+
+
+def effective_pom_provider(ws: Workspace, cfg: Config, module: Optional[str] = None,
+                           name: str = AFTER_RESTRUCTURE_FILE) -> Callable[[], Optional[dict[str, Any]]]:
+    """Round 9: the zero-arg `params["effective_pom"]` callable of the restructurer. Each call drops a previous
+    `<name>` (a stale capture must not win the first-wins merge), captures the effective pom of the tree as it is
+    *now* (after the restructure's pom edits) and returns the loaded dict — None when Maven fails / is unavailable."""
+    def _provide() -> Optional[dict[str, Any]]:
+        try:
+            (_effective_dir(ws) / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+        if capture_effective_depmgmt(ws, cfg, module, name=name) is None:
+            return None
+        return load_effective(ws, name)
+    return _provide
 
 
 def effective_version(ws: Workspace, key: str, module: Optional[str] = None,

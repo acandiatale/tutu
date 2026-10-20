@@ -9,20 +9,26 @@ budget is exceeded.
 Loop safety (docs/ERROR-HANDLING.md §3): blocked clusters (run-wide `BlockedRegistry`) are skipped in every later
 iteration and phase; oscillation (A↔B↔A) counts as a stall and, when it repeats, blocks the involved clusters;
 structural kinds (pom_invalid / parent / plugin resolution) appearing after a pom edit revert that attempt regardless
-of error counts; two LLM transport/config failures in a row mark the LLM unavailable for the run.
+of error counts; two LLM transport/config failures in a row pause the loop once per run (`llm.cooldown_seconds`,
+round 9) and only a second such streak marks the LLM unavailable for the run.
+
+Merge-conflict hints (round 9): `merge_conflicts` (set by the orchestrator after the restructure step) — a cluster whose
+file is a first-wins merged file, or whose errors name its class, gets a note plus the dropped copy as read-only
+reference text in the fix prompt (`FixContext.reference_notes` / `reference_files`).
 """
 from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
 from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster, ErrorKind,
-                               FixAttempt, IterationRecord, KBMatch, Phase, PhaseResult, ProjectProfile, RecipeRef,
+                               FixAttempt, IterationRecord, KBMatch, MergeConflict, Phase, PhaseResult, ProjectProfile, RecipeRef,
                                TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
@@ -42,8 +48,16 @@ _LLM_TRANSPORT_RE = re.compile(r"(?i)request failed|status=|\bhttp\b|timed? ?out
                                r"invalid json|cannot find the reply text|response_path|not found in the response")
 # the gateway rejected *this request* for its content (too long, malformed): the prompt's fault, not the wire's —
 # such a failure must not count towards "LLM unavailable for the run"
-_LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b")
+_LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b|content[ _-]?filter")   # incl. Azure-style content filter
 _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
+REFERENCE_MAX_CHARS = 12_000         # one dropped merge copy in the fix prompt (round 9)
+REFERENCE_MAX_FILES = 3              # dropped copies per cluster
+_TRUNCATED_MARK = "\n… (truncated)"
+
+
+def sleep_seconds(seconds: float) -> None:
+    """The LLM cool-down pause (module-level so a test conftest can replace it for every loop)."""
+    time.sleep(seconds)
 
 
 def is_llm_transport_error(analysis: str) -> bool:
@@ -153,6 +167,12 @@ class BuildFixLoop:
         self.llm_unavailable: Optional[str] = None
         self.aborted: Optional[str] = None       # set when the run must stop (configured parent not resolvable)
         self._llm_streak: list[tuple[ErrorCluster, str]] = []
+        self._streak_attempts: list[str] = []    # attempt ids of the current transport-failure streak
+        self.llm_cooldown_used = False           # round 9 (L5): one cool-down per run
+        self._cooled_attempts: set[str] = set()  # attempts of the streak that triggered the cool-down: not counted
+        self._sleep: Optional[Callable[[float], None]] = None   # injectable (tests); None = module `sleep_seconds`
+        # round 9: first-wins merge conflicts of the restructure step (set by the orchestrator) → fix-prompt hints
+        self.merge_conflicts: list[MergeConflict] = []
         self._phase_items: list[str] = []
         self._cur_phase: Phase = Phase.JDK21
         attach = getattr(triager, "attach_run", None)
@@ -561,7 +581,7 @@ class BuildFixLoop:
     def _decide(self, phase: Phase, iteration: int, stall_level: int, cluster: ErrorCluster,
                 match: KBMatch) -> TriageDecision:
         ctx = TriageContext(phase=phase, iteration=iteration, stall_level=stall_level,
-                            previous_attempts=_related(cluster, self.history), llm_calls_used=self.budget.llm_calls,
+                            previous_attempts=self._previous(cluster), llm_calls_used=self.budget.llm_calls,
                             llm_calls_budget=self.budget.max_llm_calls)
         try:
             return self.triager.decide(cluster, match, ctx, self.profile)
@@ -569,6 +589,11 @@ class BuildFixLoop:
             log.exception("triage.decide failed for %s", cluster.id)
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
                                   rationale=f"triage failed: {type(e).__name__}: {e}")
+
+    def _previous(self, cluster: ErrorCluster) -> list[FixAttempt]:
+        """Earlier attempts on `cluster`, without the transport failures that triggered the LLM cool-down (L5): the
+        cool-down round must not count against `loop.max_llm_attempts_per_cluster`."""
+        return [a for a in _related(cluster, self.history) if a.id not in self._cooled_attempts]
 
     def _fix_round(self, pr: PhaseResult, phase: Phase, iteration: int, build: BuildResult, target: Optional[str],
                    stall_level: int, clusters: Optional[list[ErrorCluster]] = None
@@ -797,10 +822,12 @@ class BuildFixLoop:
         hints = m.hints[: self.cfg.kb.max_hints] if self.cfg.kb.use_hints else []
         other = "\n".join(v for k, v in others.items() if k != c.id)[:4000]
         adv_hints, att.advisory_ids = self._advisory_hints(c)
+        ref_notes, ref_files = self._merge_conflict_hints(att, c)
         ctx = FixContext(phase=phase, iteration=iteration, stall_level=stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
-                         advisory_hints=adv_hints, previous_attempts=_related(c, self.history),
-                         other_errors_summary=other, use_escalation_model=stall_level >= self.cfg.loop.stall_limit)
+                         advisory_hints=adv_hints, previous_attempts=self._previous(c),
+                         other_errors_summary=other, use_escalation_model=stall_level >= self.cfg.loop.stall_limit,
+                         reference_notes=ref_notes, reference_files=ref_files)
         try:
             proposal = self.fixer.propose(self.ws, c, ctx)
         except Exception as e:
@@ -816,16 +843,23 @@ class BuildFixLoop:
             self._fail(att, proposal.analysis.strip()[:300])
             self._llm_transport_failure(att, c, proposal.analysis.strip()[len("llm-error:"):].strip()[:300])
             return
-        self._llm_streak = []
+        self._llm_streak, self._streak_attempts = [], []
         if ctx.use_escalation_model:
             att.notes.append(f"escalation model requested (stall level {stall_level})")
-        if not proposal.changes:
+        changes = list(proposal.changes)
+        if ctx.reference_files:   # reference copies are not in the build: a patch for one is dropped, never applied
+            ref = {_norm_path(k) for k in ctx.reference_files}
+            kept = [ch for ch in changes if _norm_path(ch.path) not in ref]
+            if len(kept) < len(changes):
+                att.notes.append(f"dropped {len(changes) - len(kept)} change(s) aimed at a read-only reference copy")
+            changes = kept
+        if not changes:
             why = "LLM proposed no changes"
             if proposal.requested_files:
                 why += f" (asked for: {', '.join(proposal.requested_files[:5])})"
             return self._fail(att, why)
         try:
-            applied, errs = self.fixer.apply(self.ws, list(proposal.changes))
+            applied, errs = self.fixer.apply(self.ws, changes)
         except Exception as e:
             return self._fail(att, f"applying LLM patch failed: {type(e).__name__}: {e}")
         att.changes, att.apply_errors = list(applied), list(errs)
@@ -849,10 +883,16 @@ class BuildFixLoop:
         return list(hints), list(ids)
 
     def _llm_transport_failure(self, att: FixAttempt, c: ErrorCluster, why: str) -> None:
-        """Two transport/config failures in a row → the LLM is unavailable for the rest of the run (L5)."""
+        """Two transport/config failures in a row (L5): the first such streak of the run pauses the loop for
+        `llm.cooldown_seconds` and retries (the streak's attempts do not count against the per-cluster LLM limit);
+        a second streak — or a streak with no cool-down configured / left in the time budget — marks the LLM
+        unavailable for the rest of the run."""
         self._llm_streak.append((c, why))
+        self._streak_attempts.append(att.id)
         att.notes.append(f"LLM transport/config failure: {why[:200]}")
         if self.llm_unavailable or len(self._llm_streak) < 2:
+            return
+        if self._llm_cooldown(att, why):
             return
         self.llm_unavailable = why[:300] or "LLM transport errors"
         self._flag("llm-unavailable")
@@ -862,11 +902,87 @@ class BuildFixLoop:
         self._followup(f"the LLM was unavailable during this run ({self.llm_unavailable}); clusters that needed it "
                        "are listed as blocked (llm_unavailable) — deterministic handlers and recipes still ran")
         self.ws.journal({"event": "llm_unavailable", "phase": att.phase.value, "iteration": att.iteration,
-                         "reason": self.llm_unavailable, "clusters": [x.id for x, _ in self._llm_streak]})
+                         "reason": self.llm_unavailable, "clusters": [x.id for x, _ in self._llm_streak],
+                         "cooldown_used": self.llm_cooldown_used})
         for x, _w in self._llm_streak:
             self._block_simple(att.phase, att.iteration, x, BlockReason.LLM_UNAVAILABLE,
                                f"LLM unavailable ({self.llm_unavailable})")
-        self._llm_streak = []
+        self._llm_streak, self._streak_attempts = [], []
+
+    def _llm_cooldown(self, att: FixAttempt, why: str) -> bool:
+        """Pause once per run instead of giving up on the LLM (round 9). False = no cool-down (used up, disabled,
+        or it would run past the run's time budget) → the caller marks the LLM unavailable."""
+        seconds = max(0, int(getattr(self.cfg.llm, "cooldown_seconds", 0) or 0))
+        if self.llm_cooldown_used or seconds <= 0:
+            return False
+        b = self.budget
+        if b.max_minutes > 0 and b.time_left() <= seconds:
+            att.notes.append(f"LLM cool-down skipped: less than {seconds}s left of the run time budget")
+            return False
+        clusters = [x.id for x, _ in self._llm_streak]
+        self.llm_cooldown_used = True
+        self._flag("llm-cooldown")
+        att.notes.append(f"LLM cool-down: 2 transport/config failures in a row → pausing {seconds}s, then retrying "
+                         "(once per run; the next streak marks the LLM unavailable)")
+        self.ws.journal({"event": "llm_cooldown", "phase": att.phase.value, "iteration": att.iteration,
+                         "seconds": seconds, "reason": why[:300], "clusters": clusters})
+        log.warning("LLM transport failed twice in a row (%s) — cooling down %ss before retrying", why[:200], seconds)
+        (self._sleep or sleep_seconds)(seconds)
+        self._cooled_attempts |= set(self._streak_attempts)
+        self._llm_streak, self._streak_attempts = [], []
+        return True
+
+    # ------------------------------------------------------------------ merge-conflict hints (round 9)
+    def _merge_conflict_hints(self, att: FixAttempt, c: ErrorCluster) -> tuple[list[str], dict[str, str]]:
+        """(reference_notes, reference_files) for the first-wins merge conflicts relevant to `c`: by file (the kept
+        file is the cluster's / an error's file) or by symbol (an error names the kept class's simple name)."""
+        if not self.merge_conflicts:
+            return [], {}
+        try:
+            return self._merge_conflict_hints_unsafe(att, c)
+        except Exception as e:  # pragma: no cover - hints never break a fix attempt
+            log.warning("merge-conflict hints unavailable for %s: %s", c.id, e)
+            return [], {}
+
+    def _merge_conflict_hints_unsafe(self, att: FixAttempt, c: ErrorCluster) -> tuple[list[str], dict[str, str]]:
+        lay = self.cfg.layout
+        base = _norm_path(f"{lay.module_dir}/{lay.comp_module}")
+        files = {_norm_path(f) for f in [c.file, *(e.file for e in c.errors)] if f}
+        text = "\n".join(f"{e.message}\n{e.symbol or ''}\n{e.location or ''}\n{e.raw}" for e in c.errors)
+        notes: list[str] = []
+        refs: dict[str, str] = {}
+        for mc in self.merge_conflicts:
+            if mc.identical or getattr(mc, "union", False) or not mc.saved_copies:
+                continue
+            kept = _norm_path(f"{base}/{mc.path}")
+            rel = _norm_path(mc.path)
+            by_file = kept in files
+            stem = PurePosixPath(rel).name
+            stem = stem[:-len(".java")] if stem.endswith(".java") else ""
+            by_symbol = bool(stem) and re.search(rf"(?<![\w$]){re.escape(stem)}(?![\w$])", text) is not None
+            if not (by_file or by_symbol):
+                continue
+            dropped = ", ".join(f"`{d}`" for d in mc.dropped_from) or "another module"
+            notes.append(f"{kept} was merged first-wins from module `{mc.kept_from}`; the copy from {dropped} was "
+                         "dropped (saved under the run directory). If this error is about a member that only the "
+                         "dropped copy had, port it from the reference copy below — do not re-create a second module.")
+            att.notes.append(f"merge-conflict hint: {kept}")
+            for saved in mc.saved_copies:
+                if len(refs) >= REFERENCE_MAX_FILES:
+                    break
+                label = _norm_path(saved)
+                try:
+                    content = (self.ws.run_dir / saved).read_text(encoding="utf-8", errors="replace")
+                except OSError as e:
+                    notes.append(f"(the saved copy {label} could not be read: {type(e).__name__})")
+                    continue
+                if len(content) > REFERENCE_MAX_CHARS:
+                    content = content[:REFERENCE_MAX_CHARS - len(_TRUNCATED_MARK)] + _TRUNCATED_MARK
+                refs[label] = content
+        if notes:
+            self.ws.journal({"event": "merge_conflict_hints", "phase": att.phase.value, "iteration": att.iteration,
+                             "cluster": c.id, "reference_files": list(refs)})
+        return notes, refs
 
     def _run_recipe_batch(self, pr: PhaseResult, st: "_Round") -> bool:
         phase, iteration, batch, build, target, pending = (st.phase, st.iteration, st.recipe_batch, st.build,
@@ -1007,6 +1123,13 @@ class BuildFixLoop:
     def _followup(self, text: str) -> None:
         if text not in self.followups:
             self.followups.append(text)
+
+
+def _norm_path(p: str) -> str:
+    p = (p or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
 
 
 def _modify(path: str):

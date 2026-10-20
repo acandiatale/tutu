@@ -77,3 +77,19 @@ def test_versions() -> None:
     assert compare_versions(None, "1") is None and version_lt("${x}", "1") is None
     assert parse_version("abc") is None
     assert compare_versions("1.0.0.Final", "1.0.0-rc1") == 1
+
+
+@pytest.mark.parametrize("configuration,expected", [
+    ({"fork": "true", "executable": "/usr/java/jdk1.6/bin/javac"}, ["compiler-legacy-config"]),
+    ({"compilerVersion": "1.6"}, ["compiler-legacy-config"]),
+    ({"compilerArguments": ["${java.home}/lib/rt.jar"]}, ["compiler-legacy-config"]),      # flat config keeps values only
+    ({"compilerArgument": "-bootclasspath ${java.home}/lib/rt.jar"}, ["compiler-legacy-config"]),
+    ({"compilerArgs": ["-Xlint:all", "-Xbootclasspath/p:lib/patch.jar"]}, ["compiler-legacy-config"]),
+    ({"compilerArgs": ["-Xlint:all", "-parameters"]}, []),
+    ({"fork": "false", "encoding": "MS949"}, []),
+    ({"release": "21"}, []),
+])
+def test_compiler_legacy_config_selection(configuration, expected, cfg) -> None:
+    """Round 9: fork/executable/compilerVersion/bootclasspath-style compiler config selects the handler."""
+    pom = _pom(plugins=[PluginInfo(artifact_id="maven-compiler-plugin", version="3.13.0", configuration=configuration)])
+    assert pre_handlers_for(_profile(poms=[pom]), cfg) == expected

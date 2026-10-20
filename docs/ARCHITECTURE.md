@@ -244,6 +244,41 @@ manual follow-up); `fail` aborts before anything moves. Nested aggregators abort
 under `merge` = root packaging `pom` with both `module/comp-jar` and `module/boot-jar` among its modules. `wrap`
 (opt-in) moves the existing modules under `module/` unchanged and adds a boot-jar depending on the jar modules.
 
+Merge edge cases (round 9). **Line-list registries** (`META-INF/services/*`, `META-INF/spring.factories`,
+`META-INF/spring/*.imports` / `*.factories`, in any resource dir, main or test) are never first-wins and never a
+`fail` collision: the kept file is the union of every copy's lines (first copy verbatim, then new lines of the others;
+`*.factories` merged per key with deduped comma values), `MergeConflict(union=True)`, every original saved under
+`merge-conflicts/<module>/…`, one note, no follow-up (identical copies stay an ordinary identical drop).
+`src/test/**` collisions follow the main rules. **`<packaging>pom</packaging>` sub-modules** (BOM, nested aggregator)
+move nothing: their `<modules>` children are merged like any other module (depth-first, declaration order), their
+`<properties>` and every merged module's `<dependencyManagement>` entries are folded into the root pom (first wins per
+key / g:a, with the `${props}` the versions reference); root management entries for merged modules (an internal BOM
+import) are removed; a `src/` in a pom module (never compiled by Maven) is saved under `merge-conflicts/`, not merged
+(follow-up). A kept boot module whose parent was a merged pom module is re-pointed to the root pom. **Modules outside
+the project root** (`<module>../sibling</module>`, root or nested) are skipped under `merge` (note + follow-up; nothing
+outside the workspace is read or written); `wrap` still aborts before anything moves. **WAR modules** folded into
+comp-jar behave like a single-module WAR: `src/main/webapp` lands in `module/comp-jar/src/main/webapp` (not packaged by
+the jar — web.xml / JSP follow-ups name the new location, "WAR packaging converted" follow-up). **Kept boot module
+resources** stay in boot-jar; the merged modules' same-named copies go to comp-jar (first-wins only applies within
+comp-jar) and a follow-up says the boot-jar copy shadows them at runtime. **Custom resource directories**
+(`<build><resources>` of the root or a module, e.g. `src/main/config`): the files move with the same relative path
+(also top-level dirs outside `src/`) and comp-jar's `<resources>` / `<testResources>` is the union of every module's
+directories (deduped by directory + targetPath), plus the Maven default directory when some module relied on it.
+
+**Managed-version cleanup** (round 9, `layout.drop_managed_versions`, `layout` and `msa_pom`). After the parent /
+mandatory / optional edits the restructurer calls `params["effective_pom"]` (zero-arg; the orchestrator passes
+`sbmig.build.effective.effective_pom_provider(ws, cfg)`, which captures `help:effective-pom` of the restructured tree
+into `<run dir>/effective/depmgmt-after-restructure.json` and returns the dict, None without Maven). For every
+explicit `<dependencies>` version in every project pom (literal or `${prop}` resolvable from the pom chain) whose
+artifact the declaring module's chain manages (`by_module`, else the merged `managed` map): `gte` drops the
+`<version>` when managed ≥ explicit (unknown comparison → keep; newer pins are noted), `any` always, `off` never.
+Never touched: parent / mandatory / optional / remove_when_present artifacts, the project's own modules, system scope,
+non-jar types / classifiers, dependencyManagement, plugins, properties. Recorded in
+`RestructureResult.managed_versions_dropped` + one note; without the callable / capture: note "managed-version
+cleanup skipped: no effective pom". MSA placeholders (round 9): with a per-service inventory
+(`PropertyFinding.service`) each service file gets that service's findings plus the shared (`service: null`) ones;
+a project-wide inventory keeps the location-based selection.
+
 **Externalized configuration placeholders** (round 8, `externalized.*`). Settings the as-is code reads but no packaged
 resource defines (`ProjectProfile.properties`, status `external`: they came from the container — JNDI, web.xml
 `context-param`, `-D`, `catalina.properties`) get one `key=__SET_ME__` line per `boot_key` (JNDI DataSource →

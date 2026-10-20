@@ -267,11 +267,34 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | commons-lang2 | eol | guide | org.apache.commons:commons-lang3 | manual |
 | httpclient4 | superseded | guide | org.apache.httpcomponents.client5:httpclient5 | manual |
 | jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; the LLM ports `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
+| ibatis2 | incompatible | guide | org.mybatis:mybatis + org.mybatis:mybatis-spring | no recipe exists; the LLM ports `SqlMapClientDaoSupport` DAOs with the `## fix-loop: ibatis2` hint (`knowledge/notes/ibatis2.md`) |
 
 The analyzer rule names added for these entries are `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`,
 `spring-cloud-bom` (dependencyManagement / parent), `swagger-v1`, `spring-security-oauth2-legacy`, `log4j1`,
-`commons-lang2`, `httpclient4` and `jdk-removed-apis` (import-only: `sun.misc`, `sun.security`, `com.sun.image`,
-`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule).
+`commons-lang2`, `httpclient4`, `jdk-removed-apis` (import-only: `sun.misc`, `sun.security`, `com.sun.image`,
+`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule) and `ibatis2` (round 9).
+
+### ibatis2: iBATIS 2 / SqlMapClient (round 9)
+
+iBATIS 2 is common in Korean legacy Spring 2/3 apps. Spring 3.2 was the last line with `org.springframework.orm.ibatis`;
+Spring 4.0 removed it. The iBATIS 2 jars stay on Maven Central, so dependency resolution still works, and the failure
+is a compile error after the Spring upgrade (`package org.springframework.orm.ibatis does not exist`, `cannot find
+symbol SqlMapClientDaoSupport`).
+
+* Rule `ibatis2`: artifacts `org.apache.ibatis:ibatis-sqlmap`, `org.apache.ibatis:ibatis-core`, `org.apache.ibatis:ibatis*`,
+  `ibatis:ibatis*`, `com.ibatis:*`; imports `com.ibatis`, `org.springframework.orm.ibatis`. It is distinct from `mybatis`
+  (MyBatis 3: `org.mybatis:*`, `org.apache.ibatis.*` imports): a MyBatis 3 project is `mybatis` only, an iBATIS 2
+  project is `ibatis2` only.
+* Pom and imports only. Spring XML bean classes (`SqlMapClientFactoryBean` in a `<bean class=…>`) are not scanned,
+  because the library rules see XML paths, not XML content. An XML-only iBATIS setup without the jar in the pom or
+  a Java import is not detected.
+* No OpenRewrite recipe exists. Policy `guide`: the advisory hint (follow-up + the `## fix-loop: ibatis2` section)
+  goes to the fix LLM when a cluster mentions `com.ibatis` / `org.springframework.orm.ibatis`. The LLM keeps the
+  public DAO signatures, ports to `SqlSessionTemplate` with one mapper XML per sqlmap namespace, and adds
+  `org.mybatis:mybatis` + `org.mybatis:mybatis-spring`. It never re-adds iBATIS. Verify reports `replaced` once
+  no source imports those packages any more.
+* The cluster must mention one of the packages. A javac block for a symbol-only error (`cannot find symbol class
+  SqlMapClientDaoSupport`) normally carries the import line in its raw text.
 
 ### jdk-removed-apis: pre-Java-8 code (2026-10-21, rewrite-migrate-java 3.42.0 from BOM 3.37.0)
 

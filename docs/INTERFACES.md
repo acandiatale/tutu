@@ -268,3 +268,116 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     finding needs a value (rule-skipped context-params / Boot defaults alone do not count); `report.json` carries
     `properties`; `console_summary` prints "properties to set: N". e2e `expect.properties: {external_min, external: [keys], placeholder_file_contains: [strings],
     absent: [keys]}` evaluated by `scripts/e2e.py evaluate_properties`.
+
+* 2026-10-21 (round 9 — follow-ups + edge cases; contracts written first, then WS-A rewrite, WS-B loop/fix/web,
+  WS-C analyze, WS-D restructure, WS-E fixtures):
+  * Config: `layout.drop_managed_versions: gte | any | off = gte`, `openrewrite.download_retry: int = 1`,
+    `openrewrite.download_retry_wait_s: int = 30`, `llm.cooldown_seconds: int = 60` (mirrored in `config/default.yml`).
+  * Models: `PropertyRefSource` += `config-placeholder` (a `${K}` inside the value of a packaged definition file;
+    `property-source` now means `@PropertySource` / placeholder-configurer locations only), `PropertyFinding.service:
+    Optional[str]` (MSA: the deployable whose code reads the key and whose resources were checked; None = shared code
+    or project-wide mode; in MSA mode `findings` is unique on (`service`, `key`)), `PropertyInventory.services:
+    list[str]` (empty = project-wide), `MergeConflict.union: bool` (line-list registry merged as the union of lines —
+    nothing dropped, originals in `saved_copies`).
+  * Interfaces: `FixContext.reference_notes: list[str]` and `FixContext.reference_files: dict[str, str]` (read-only
+    context that is NOT part of the build; a proposed change whose path is a reference key is dropped before apply),
+    `RestructureResult.managed_versions_dropped: list[str]` ("g:a: <explicit> → managed <version> (<pom>)").
+  * Recipe-run download resilience (catalog X8): `OpenRewriteRunner.run` — a failed run (not OOM) whose error / log
+    matches a transfer failure (`Failed to download`, `Could not transfer artifact`, `Transfer failed`, `status code:
+    429|502|503`, `Too Many Requests`, `Service Unavailable`, `Bad Gateway`, `Connection reset`, `Read timed out`,
+    `Connection timed out`, `SocketTimeoutException`, `UnknownHostException`; never `Could not find artifact`) waits
+    and re-runs up to `download_retry` times (log `rewrite-<label>-dlretry[N].log`); still failing →
+    `RewriteResult.error` prefixed `download-retry: `. Journal `rewrite_download_retry {recipes, module, attempt,
+    wait_s, first_log, reason}`, `rewrite_download_retry_result {ok, log, error}`. Order: OOM retry | download retry →
+    compile→runNoFork fallback. Injectable wait `OpenRewriteRunner._sleep`.
+    Orchestrator `_step_rewrite`: a successful non-dry run that leaves literal versions (`^\d+(\.\d+)*\.x$`,
+    `latest.release|integration|patch`) in a changed pom.xml → `ws.revert_to(<head before the step>)`, wait, re-run the
+    step once (only when `download_retry > 0` and the tree was clean before the step); journal
+    `rewrite_unresolved_versions {step, poms: {path: [versions]}, retry, log}`; still there → result kept, flag
+    `rewrite-unresolved-versions`, phase note, follow-up "the recipe run could not download Maven metadata (proxy /
+    rate limit): literal versions `4.0.x` remain in pom.xml — re-run sbmig later or set the versions by hand".
+    KB credit (`_credit_plan_recipes`): a failed phase is not credited when it failed on dependency resolution
+    (`rewrite-unresolved-versions` raised in the phase, or every remaining error is DEPENDENCY/PARENT/PLUGIN_RESOLUTION
+    or a `download-retry:` rewrite error, or no code error remains and every blocked item is `artifact_not_found` /
+    `parent_not_found`); journal `kb_credit_skipped {phase, recipes, reason}`.
+  * LLM cool-down (L5): the second consecutive transport/config failure pauses the loop once per run for
+    `llm.cooldown_seconds`, then retries (journal `llm_cooldown {phase, iteration, seconds, reason, clusters}`, flag
+    `llm-cooldown`, attempt note; the two cooled-down attempts are left out of the previous attempts given to the
+    triager / prompt so they do not count against `max_llm_attempts_per_cluster`); only a second streak marks the LLM
+    unavailable (`llm_unavailable` journal gains `cooldown_used`); the pause is skipped when less than
+    `cooldown_seconds` of `loop.max_total_minutes` is left; `0` = pre-round-9 behaviour. Module-level
+    `sbmig.loop.fixloop.sleep_seconds` (tests: the root conftest autouse fixture `no_llm_cooldown_sleep`).
+    Request-level rejections never count: `status=400|413|422` and a gateway content-filter answer — provider
+    `company` raises `LLMError("content filtered by the gateway (finish_reason=content_filter | content_filter_result:
+    … | prompt_filter_results: …)")` from `sbmig.fix.company.content_filter_reason(data)` (OpenAI / Azure shape:
+    `choices[0].finish_reason == content_filter`, a `filtered: true` category next to an empty message, or a
+    `prompt_filter_results` hit).
+  * Merge-conflict hints: `BuildFixLoop.merge_conflicts: list[MergeConflict]` (set by the orchestrator after every
+    restructure step from `report.merge_conflicts`). A cluster whose file is a first-wins kept file
+    (`<layout.module_dir>/<layout.comp_module>/<conflict.path>`) or whose errors name that class's simple name gets
+    `reference_notes` + `reference_files` (run-dir saved copy → content, ≤ 12,000 chars with `… (truncated)`, ≤ 3 per
+    cluster; `identical` / `union` conflicts and conflicts without `saved_copies` skipped). Attempt note
+    `merge-conflict hint: <path>`, journal `merge_conflict_hints {phase, iteration, cluster, reference_files}`.
+    `ContextPacker` sections: `reference_files` "Reference files (read-only, NOT in the build — never write
+    SEARCH/REPLACE blocks for these paths)" right after the source section (one fenced block per copy headed
+    `// reference copy (read-only, not in the build): <label>`), `reference_notes` "Module merge notes (first-wins; the
+    dropped copy is below as reference)" between the advisory guidance and the KB hints; `TRUNCATE_ORDER` = notes,
+    plan_notes, other_errors, previous_attempts, kb_hints, reference_files, advisory_hints, reference_notes, pom, files.
+  * Handover: `sbmig.report.handover.resolve_current_path(ws, path, cfg=None) -> str` (an existing path unchanged;
+    else the part from `src/` on under `<module_dir>/<comp_module>/`, then `<module_dir>/<boot_module>/`; else the
+    original) applied to `AdvisoryFinding.llm_fixed_files`.
+  * Web: `RunManager(out_dir, repo_root, *, max_finished_runs=200)` — when a worker finishes, the oldest finished
+    runs beyond the cap leave memory (running / queued never do); `status` / `list_runs` / `events` answer evicted
+    runs from the run directory (`report.json` + `web-status.json` {exit_code, error, stop_requested, last_node,
+    success}, written when the worker finishes).
+  * Analyze: `scan_properties(ws, poms, scan, rules, cfg=None, *, services: Optional[list[ServiceInfo]] = None)` —
+    None / `[]` keeps the project-wide inventory; a non-empty list (the analyzer passes
+    `[s for s in profile.services if s.kind == "service"]` when `case_type == MSA`) switches to per-service: a service
+    dir is dirname(`root_pom`) ("" for a root service), every ref / definition file belongs to the deepest service dir
+    containing it, refs inside a service are checked against that service's definitions only, refs outside every
+    service against every definition. The host entry never defines the placeholder it reads (`log.dir=${LOG_DIR}`
+    leaves `LOG_DIR` external — round-8 bug). `@ConditionalOnProperty` / `@ConditionalOnBooleanProperty` keys are
+    `value-annotation` refs with a pseudo default (`defaulted` unless defined, `boot_keys=[]`, note; never a
+    placeholder). UTF-8 BOM stripped, `\${x}` is a literal, `bootstrap.*` counts as defined with a note when
+    `spring-cloud-starter-bootstrap` is absent. Edge table: `sbmig/analyze/properties.py` docstring.
+  * Library rule + advisory `ibatis2` (artifacts `org.apache.ibatis:ibatis*`, `ibatis:ibatis*`, `com.ibatis:*`;
+    imports `com.ibatis`, `org.springframework.orm.ibatis`; pom + imports only, distinct from `mybatis`): status
+    incompatible, policy `guide`, replacement `org.mybatis:mybatis + org.mybatis:mybatis-spring`, note
+    `knowledge/notes/ibatis2.md` (`## fix-loop: ibatis2`, in `notes/index.yml`). 13 advisories.
+  * Handlers: `compiler-legacy-config` (`sbmig.triage.handlers.pom_handlers.CompilerLegacyConfig`, pre-emptive from
+    the profile via `sbmig.plan.pre_handlers.compiler_legacy_config_reason`, reactive on the javac 21 wording):
+    removes `<fork>`, `<executable>`, `<compilerVersion>`, `<compilerArguments>` children `bootclasspath` /
+    `Xbootclasspath*` / `extdirs` / `endorseddirs` / `source` / `target`, `<compilerArgument>` and `<compilerArgs><arg>`
+    entries with those flags (a flag's separate value `<arg>` goes too); text-based, formatting kept (E10).
+  * Fleet: a run with flag `unsupported-build-tool:<tool>` is a `skipped` project (`error` "unsupported build tool:
+    <tool> (only Maven projects are migrated)"), never re-run by `retry_failed`, never a `stop_on_abort` trigger,
+    stays skipped on resume (`sbmig.fleet.runner.unsupported_build_tool(report)`).
+  * e2e (`scripts/e2e.py`): post-check kinds `pom_dependency_unversioned` / `pom_dependency_versioned` {path,
+    artifacts}; `expect.properties.external_in: {service: [keys]}`. Fixtures `multi-module-conflict` (replayed LLM,
+    own KB dir), `legacy-ibatis`, `msa` per-service keys (20 fixtures).
+  * Restructure (WS-D): `layout.drop_managed_versions` — after the parent / mandatory / optional edits (`layout`,
+    `msa_pom`) explicit `<dependencies>` versions the restructured parent chain manages are dropped (`gte`: only when
+    managed ≥ explicit, unparsable → keep; `any`: always; `off`: never). Never touched: `artifacts` parent / mandatory /
+    optional (incl. aliases) / remove_when_present, the project's own modules, system scope, non-jar type or
+    classifier, dependencyManagement, plugins, properties. `RestructureResult.managed_versions_dropped` entries
+    `"g:a: <explicit> → managed <M> (<pom path>)"` + one note (deliberately newer pins kept by `gte` are noted).
+    `params["effective_pom"]`: zero-arg callable → effective depmgmt dict (shape of `load_effective`) or None; the
+    declaring module's `by_module` entry is used (g:a, then artifactId), never the merged map as a fallback (no
+    leaking between MSA services); absent / None / raising → note "managed-version cleanup skipped: no effective
+    pom". Orchestrator wiring: `Orchestrator._effective_pom_after()` (custom build runner without a capture → None;
+    captures into `EFFECTIVE_AFTER_FILE = "depmgmt-after-restructure.json"`, journal `effective_depmgmt_after`).
+    `sbmig.build.effective`: `capture_effective_depmgmt(ws, cfg, module=None, name=DEPMGMT_FILE)`,
+    `load_effective(ws, name=DEPMGMT_FILE)` (defaults keep the as-is `depmgmt.json`; a non-default name prefixes the
+    xml and log with the file stem), `AFTER_RESTRUCTURE_FILE`, `effective_pom_provider(ws, cfg, module=None,
+    name=AFTER_RESTRUCTURE_FILE)` (drops a stale file, captures, loads). `PomEditor.remove_version(el) -> bool`.
+  * Merge edge cases (S5 update, S9–S13): registry union (`MergeConflict.union=True`, `identical=False`,
+    `saved_copies` = every original incl. the kept copy, `dropped_from` = the non-first modules; not a collision under
+    `fail`), `src/test/**` follows the main rules, pom-packaging sub-modules (children merged depth-first, properties +
+    dependencyManagement folded into the root first-wins, internal BOM import removed, stray `src/` saved), outside
+    `../x` modules skipped under `merge` (note + follow-up; `wrap` still aborts), WAR module webapp →
+    `module/comp-jar/src/main/webapp` + follow-ups, kept boot module keeps its own boot resources (shadowing
+    follow-up), custom `<build><resources>` carried over (comp-jar `<resources>` = union + default dir).
+  * MSA placeholders: when `PropertyInventory.services` is non-empty or any finding carries `service`, each service
+    file gets the findings whose `service` is that service's name, its directory or the directory's basename, plus
+    `service is None`; otherwise the round-8 location-based selection; `layout` ignores `service`.
+    `PLACEHOLDER_SOURCE_LABELS["config-placeholder"] = "config placeholder"`.

@@ -33,3 +33,4 @@ def kb():
 @pytest.fixture()
 def rewrite(ws):
     return FakeRewriteRunner(ws)
+

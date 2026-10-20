@@ -31,7 +31,9 @@ Manifest forms:
 | `.csv` | header `name,input,tags` |
 
 Paths are relative to the manifest file. A missing input is marked `skipped` (it runs on a later resume once it
-exists); it never stops the fleet. Per-project `configs` / `overrides` are merged over the fleet config, except
+exists); it never stops the fleet. A Gradle / Ant / no-build project rejected at intake (flag
+`unsupported-build-tool:<tool>`, exit 3) is `skipped` too (round 9): the reason is in the row's `error`, it is never
+re-run by `--retry-failed`, and `--stop-on-abort` does not stop the fleet for it. Per-project `configs` / `overrides` are merged over the fleet config, except
 `kb.dir`: the KB is always fleet-wide.
 
 `sbmig fleet run` exit codes: `0` all projects succeeded, `2` some are incomplete / skipped / not run yet,
@@ -52,7 +54,8 @@ project without running anything.
 | `<kb.dir>/symbols.json` | error-case symbol → how it was fixed, in how many projects |
 
 Resume rules: `success` projects are never re-run; `incomplete` / `aborted` only with `--retry-failed`
-(`fleet.retry_failed`); a project left in `running` (the fleet process died) is re-run. Retries get a new run id
+(`fleet.retry_failed`); `skipped` for an unsupported build tool stays skipped; a project left in `running` (the
+fleet process died) is re-run. Retries get a new run id
 (`…-r2`) and `attempt` is incremented.
 
 ## The learning loop across projects

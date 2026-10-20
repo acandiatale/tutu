@@ -25,6 +25,10 @@ finishes normally. With the inline fallback engine there are no intermediate upd
 One migration at a time: the knowledge base under `kb/` is file-based and shared by every run (CLAUDE.md: one agent
 migrates projects strictly sequentially), so worker threads queue on `RunManager._run_lock`; a run waiting for its
 turn reports state ``queued``.
+
+Memory (round 9): `runs` keeps at most `max_finished_runs` finished runs; when a worker finishes, the oldest finished
+ones are dropped from memory (running / queued runs never are). An evicted run is still answered from its run
+directory: `report.json` and `web-status.json` (exit code / error / stop flag, written when the worker finishes).
 """
 from __future__ import annotations
 
@@ -53,6 +57,8 @@ POLL_S = 0.5
 KEEPALIVE_S = 15.0
 MAX_UPDATE_CHARS = 20_000          # a node update larger than this is summarized (keys only) in the `node` event
 EXIT_ABORTED = 3                   # = sbmig.cli.EXIT_ABORTED (worker crashed / stopped by the user)
+WEB_STATUS_FILE = "web-status.json"   # the worker's final status, read back for runs no longer in memory
+DEFAULT_MAX_FINISHED_RUNS = 200
 
 
 @dataclass
@@ -81,9 +87,11 @@ class Run:
 class RunManager:
     """Starts migrations in worker threads and answers status / event questions from memory + the run directory."""
 
-    def __init__(self, out_dir: Path, repo_root: Path = PACKAGE_ROOT):
+    def __init__(self, out_dir: Path, repo_root: Path = PACKAGE_ROOT, *,
+                 max_finished_runs: int = DEFAULT_MAX_FINISHED_RUNS):
         self.out_dir = Path(out_dir).resolve()
         self.repo_root = Path(repo_root).resolve()
+        self.max_finished_runs = max(0, int(max_finished_runs))
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
         self._run_lock = threading.Lock()      # serializes the migrations (shared file-based KB)
@@ -154,9 +162,21 @@ class RunManager:
                 _detach_file_log(log_path)
             self._push(run, "finished", {"exit_code": run.exit_code,
                                          "success": getattr(run.report, "success", None)})
+            _write_web_status(run)
             run.done.set()
             with run.cond:
                 run.cond.notify_all()
+            with self._lock:
+                self._prune_locked()
+
+    def _prune_locked(self) -> None:
+        """Drop the oldest finished runs beyond `max_finished_runs` from memory (caller holds `self._lock`). Running
+        and queued runs stay; evicted runs are answered from their run directory."""
+        finished = sorted((r for r in self.runs.values() if r.done.is_set()), key=lambda r: r.started)
+        excess = len(finished) - self.max_finished_runs
+        for r in finished[:max(0, excess)]:
+            self.runs.pop(r.run_id, None)
+            log.debug("run %s evicted from memory (max_finished_runs=%d)", r.run_id, self.max_finished_runs)
 
     def _run_thread_body(self, run: Run) -> Any:
         """Drive the migration; return the final `RunReport`. Tests replace this method."""
@@ -220,9 +240,18 @@ class RunManager:
                 info["stop_requested"] = True
             if run.error:
                 info["error"] = run.error
-        else:   # a run of an earlier server process (or not started here): only the directory is known
-            info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
-            info["exit_code"] = None
+        else:   # evicted, or a run of an earlier server process: only the directory is known
+            saved = _read_web_status(rd)
+            if saved is not None:
+                info["state"] = "finished"
+                info["exit_code"] = saved.get("exit_code")
+                if saved.get("stop_requested"):
+                    info["stop_requested"] = True
+                if saved.get("error"):
+                    info["error"] = saved["error"]
+            else:
+                info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
+                info["exit_code"] = None
         rep = rd / "report.json"
         if rep.is_file():
             try:
@@ -306,6 +335,24 @@ class RunManager:
                         run.cond.wait(POLL_S)
             else:
                 time.sleep(POLL_S)
+
+
+def _write_web_status(run: Run) -> None:
+    try:
+        data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error,
+                "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
+                "success": getattr(run.report, "success", None)}
+        (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")
+    except (OSError, TypeError, ValueError) as e:   # the status file is a convenience; never fail the run on it
+        log.debug("cannot write %s for %s: %s", WEB_STATUS_FILE, run.run_id, e)
+
+
+def _read_web_status(rd: Path) -> dict[str, Any] | None:
+    try:
+        data = json.loads((rd / WEB_STATUS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _mark_stopped(orch: Any) -> None:

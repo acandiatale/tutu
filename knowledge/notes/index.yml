@@ -277,3 +277,18 @@ notes:
   - spring
   - restructure
   always: false
+- file: ibatis2.md
+  title: iBATIS 2 (SqlMapClient) -> MyBatis 3 (Spring 4+ removed orm.ibatis)
+  keywords:
+  - org\.springframework\.orm\.ibatis
+  - com\.ibatis
+  - SqlMapClient(DaoSupport|Template|FactoryBean|Callback)?
+  - ibatis-sqlmap|ibatis-core|sqlMapConfig|sql-map-2|sql-map-config-2
+  cases:
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - spring
+  always: false
