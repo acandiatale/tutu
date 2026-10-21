@@ -70,14 +70,27 @@ def all_poms(ws: Workspace) -> list[str]:
 
 
 def nearest_pom(ws: Workspace, rel_file: str) -> Optional[str]:
-    d = posixpath.dirname(rel_file.replace("\\", "/"))
-    while True:
+    """Module pom of a root-relative file (walk up). An absolute path is made root-relative when it lies under the
+    workspace, else the walk starts at the root — `posixpath.dirname("/")` is `/`, so the old loop spun forever on
+    absolute paths (round 9c, Windows Maven output)."""
+    norm = (rel_file or "").replace("\\", "/")
+    if norm.startswith("/") or (len(norm) > 1 and norm[1] == ":"):
+        try:
+            norm = Path(norm).resolve().relative_to(Path(ws.root).resolve()).as_posix()
+        except (ValueError, OSError):
+            norm = ""
+    d = posixpath.dirname(norm)
+    for _ in range(128):
         cand = posixpath.join(d, "pom.xml") if d else "pom.xml"
         if ws.exists(cand):
             return cand
-        if not d:
+        if not d or d in ("/", "."):
             return None
-        d = posixpath.dirname(d)
+        nxt = posixpath.dirname(d)
+        if nxt == d:
+            return None
+        d = nxt
+    return None
 
 
 def pom_for_module(ws: Workspace, profile: Optional[ProjectProfile], module: str) -> Optional[str]:

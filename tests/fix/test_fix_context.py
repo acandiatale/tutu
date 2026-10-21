@@ -228,3 +228,26 @@ def test_advisory_hints_truncated_after_kb_hints(cfg, ws, put, tmp_path):
     kinds = [t.split(" ")[0] for t in p.truncated]
     assert "kb_hints" in kinds and "advisory_hints" not in kinds
     assert "a" * 1500 in dict(p.sections)[ADV_TITLE]
+
+
+
+def test_nearest_pom_never_spins_on_absolute_or_windows_paths(tmp_path):
+    """Round 9c: an absolute error path (Windows Maven output that could not be made root-relative) made nearest_pom
+    loop forever on `/`; now it is relativized when under the workspace and dropped otherwise, and backslashes work."""
+    import time
+
+    from sbmig.core.workspace import Workspace
+    from sbmig.fix.context import nearest_pom
+    root = tmp_path / "project"
+    (root / "core" / "src" / "main" / "java" / "a").mkdir(parents=True)
+    (root / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (root / "core" / "pom.xml").write_text("<project/>", encoding="utf-8")
+    ws = Workspace(root, tmp_path / "run", "t")
+    t0 = time.monotonic()
+    assert nearest_pom(ws, "core/src/main/java/a/A.java") == "core/pom.xml"
+    assert nearest_pom(ws, "core\\src\\main\\java\\a\\A.java") == "core/pom.xml"          # backslashes
+    assert nearest_pom(ws, str(root / "core" / "src" / "main" / "java" / "a" / "A.java")) == "core/pom.xml"  # absolute under the root
+    assert nearest_pom(ws, "/somewhere/else/A.java") == "pom.xml"                        # absolute elsewhere → root pom
+    assert nearest_pom(ws, "/") == "pom.xml" and nearest_pom(ws, None) == "pom.xml"
+    assert nearest_pom(ws, "C:/other/A.java") in ("pom.xml", None)
+    assert time.monotonic() - t0 < 2.0

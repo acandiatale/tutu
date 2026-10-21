@@ -572,3 +572,18 @@ def test_jstl_to_jakarta_relocation(kit, cfg):
     assert impl is not None and impl.version is None              # was unversioned → stays BOM-managed
     assert api is not None and api.version == "3.0.0"             # was explicit 1.2 → the Jakarta line
     assert not h.apply(kit.ws, None, None, cfg)
+
+
+
+def test_nearest_pom_absolute_and_backslash_paths_terminate(fake_kit):
+    """Round 9c: the handler-side nearest_pom spun forever on an absolute path (dirname('/') == '/')."""
+    import time
+    fake_kit.pom()
+    ws = fake_kit.ws
+    t0 = time.monotonic()
+    assert nearest_pom(ws, "src/main/java/a/A.java") == "pom.xml"
+    assert nearest_pom(ws, "src\\main\\java\\a\\A.java") == "pom.xml"
+    assert nearest_pom(ws, str(ws.root / "src" / "main" / "java" / "A.java")) == "pom.xml"
+    assert nearest_pom(ws, "/elsewhere/A.java") == "pom.xml"           # not under the root → the root pom
+    assert nearest_pom(ws, "C:/elsewhere/A.java") in ("pom.xml", None)
+    assert time.monotonic() - t0 < 2.0

@@ -192,17 +192,32 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def nearest_pom(ws: Workspace, rel: Optional[str]) -> Optional[str]:
-    if rel and PurePosixPath(rel).name == "pom.xml" and ws.exists(rel):
-        return rel
-    cur = PurePosixPath(rel).parent if rel else PurePosixPath(".")
-    while True:
+    """The module pom of a file: walk up from the file's directory to the project root. Root-relative posix paths
+    only; a path with backslashes is normalized, an absolute one is made root-relative when it lies under the
+    workspace and dropped otherwise (round 9c: `PurePosixPath("/").parent` is `/`, so an absolute path made the old
+    `while True` loop spin forever — seen as a run "stuck in fixer.propose" on Windows)."""
+    if not rel:
+        return "pom.xml" if ws.exists("pom.xml") else None
+    norm = str(rel).replace("\\", "/")
+    p = PurePosixPath(norm)
+    if p.is_absolute() or (len(norm) > 1 and norm[1] == ":"):          # posix-absolute or a Windows drive path
+        try:
+            norm = Path(norm).resolve().relative_to(Path(ws.root).resolve()).as_posix()
+        except (ValueError, OSError):
+            return "pom.xml" if ws.exists("pom.xml") else None
+        p = PurePosixPath(norm)
+    if p.name == "pom.xml" and ws.exists(norm):
+        return norm
+    cur = p.parent
+    for _ in range(128):                                               # never spin: depth-bounded walk to the root
         cand = (cur / "pom.xml").as_posix()
         cand = cand[2:] if cand.startswith("./") else cand
         if ws.exists(cand):
             return cand
-        if str(cur) in ("", "."):
+        if str(cur) in ("", ".", "/") or cur.parent == cur:
             return None
         cur = cur.parent
+    return None
 
 
 _POM_SECTIONS = ("parent", "properties", "dependencyManagement", "dependencies", "build")
