@@ -105,6 +105,12 @@ def test_default_config_is_the_company_provider_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LLM_MODEL", "other-model")
     cfg = load_config(REPO / "config" / "artifacts.example.yml")
     assert cfg.llm.response_path == "data.result.content" and cfg.llm.model == "other-model"
+    # role models (round 9): unset → falsy (same as LLM_MODEL everywhere they are read); set → used as given
+    assert not cfg.llm.recipe_model and not cfg.llm.escalation_model
+    monkeypatch.setenv("LLM_RECIPE_MODEL", "cheap-model")
+    monkeypatch.setenv("LLM_ESCALATION_MODEL", "big-model")
+    cfg = load_config(REPO / "config" / "artifacts.example.yml")
+    assert cfg.llm.recipe_model == "cheap-model" and cfg.llm.escalation_model == "big-model"
 
 
 def test_missing_env_gives_clear_errors(monkeypatch, tmp_path):

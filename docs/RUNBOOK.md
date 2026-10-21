@@ -39,11 +39,11 @@ Every command except `llm-probe` needs `--config config/artifacts.yml` (the comp
 default); without it the CLI stops with `config error … artifacts: Field required` and the hint, exit 2.
 
 ## 0.5 LLM roles (two models)
-| Role | Config key | Suggested model | Used for |
+| Role | Config key (`.env` variable) | Suggested model | Used for |
 |---|---|---|---|
-| source fixes | `llm.model` | `claude-sonnet-5` (or the in-house model) | build-fix loop patches (SEARCH/REPLACE protocol) |
-| recipe work | `llm.recipe_model` | `claude-haiku-4-5` | plan advisor (`plan.advisor: llm`, additive, whitelist-only) and KB recipe-candidate generation |
-| escalation | `llm.escalation_model` | optional stronger model | after a stall |
+| source fixes | `llm.model` (`LLM_MODEL`) | the strongest coding model you have (`claude-sonnet-5` on Anthropic) | build-fix loop patches (SEARCH/REPLACE protocol) — this is where quality matters most |
+| recipe work | `llm.recipe_model` (`LLM_RECIPE_MODEL`, empty = `LLM_MODEL`) | a cheaper / faster model (`claude-haiku-4-5` on Anthropic) | plan advisor (`plan.advisor: llm`, additive, whitelist-only) and KB recipe-candidate generation (round 9: from `.env`) |
+| escalation | `llm.escalation_model` (`LLM_ESCALATION_MODEL`, empty = `LLM_MODEL`) | optional stronger model | a cluster that stalled `loop.stall_limit` rounds (round 9: from `.env`) |
 
 `config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
 LLM calls are recorded when `LLM_RECORD_DIR` is set (e.g. `out/llm-records`, in `.env.example`). Every `sbmig run` writes

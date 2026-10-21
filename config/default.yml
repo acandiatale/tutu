@@ -124,8 +124,11 @@ llm:
     need_origin: true
   response_path: "${LLM_RESPONSE_PATH:-}"   # empty = auto-detect the reply text
   record_dir: "${LLM_RECORD_DIR:-}"   # e.g. out/llm-records in .env: every request/response as llm-NNNN.json (no secrets)
-  escalation_model: null
-  recipe_model: null               # same model for plan advice / KB recipe candidates unless set
+  # role models (round 9): LLM_MODEL = the fix model (code patches, build-fix loop); LLM_ESCALATION_MODEL = used
+  # for a cluster after `loop.stall_limit` failed rounds (empty = same as LLM_MODEL); LLM_RECIPE_MODEL = the cheaper
+  # model for plan advice + KB recipe candidates (empty = same as LLM_MODEL)
+  escalation_model: "${LLM_ESCALATION_MODEL:-}"
+  recipe_model: "${LLM_RECIPE_MODEL:-}"
   temperature: 0.0
   max_output_tokens: 8000
   max_context_chars: 60000
