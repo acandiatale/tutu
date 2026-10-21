@@ -58,6 +58,26 @@ def test_optional_bump_mode_only_bumps(tmp_path: Path, cfg_rm: Config) -> None:
     assert PomEditor(ws.root / "pom.xml").get_property("guava.version") == "33.4.8-jre"
 
 
+def test_already_restructured_project_moves_to_the_configured_parent_version(tmp_path: Path, cfg_rm: Config) -> None:
+    """A project migrated earlier on in-house parent 1.0.0 and re-run with artifacts.parent 2.0.0: the idempotent
+    pass raises the parent version (same key) and says so; a different key is still left alone (S2)."""
+    ws = make_ws(tmp_path, multi_files(), "parent-bump")
+    res = Restructurer().apply(ws, multi_profile(ws), cfg_rm, mode="layout")
+    assert res.ok, res.error
+    old_parent = PomEditor(ws.root / "pom.xml").get_parent()
+    assert old_parent is not None and old_parent.key == cfg_rm.artifacts.parent.key
+    newer = cfg_rm.model_copy(deep=True)
+    newer.artifacts.parent.version = "9.9.9"
+    res2 = Restructurer().apply(ws, multi_profile(ws), newer, mode="layout")
+    assert res2.ok and "already restructured" in res2.notes
+    assert PomEditor(ws.root / "pom.xml").get_parent().version == "9.9.9"
+    assert any(f"{old_parent.key} {old_parent.version} → 9.9.9" in n for n in res2.notes)
+    assert "pom.xml" in res2.changed_files
+    res3 = Restructurer().apply(ws, multi_profile(ws), newer, mode="layout")        # idempotent at 9.9.9
+    assert res3.ok and PomEditor(ws.root / "pom.xml").get_parent().version == "9.9.9"
+    assert not any("→ 9.9.9" in n for n in res3.notes)
+
+
 def test_layout_twice_is_idempotent(tmp_path: Path, cfg_rm: Config) -> None:
     ws = make_ws(tmp_path, multi_files(), "twice")
     res = Restructurer().apply(ws, multi_profile(ws), cfg_rm, mode="layout")

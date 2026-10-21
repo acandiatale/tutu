@@ -255,6 +255,12 @@ class Restructurer:
             if parent is None or parent.key != c.cfg.artifacts.parent.key:
                 c.note(f"already restructured but {root_rel} does not inherit {c.cfg.artifacts.parent.key}; "
                        "parent left unchanged")
+            else:
+                want = c.cfg.artifacts.parent.version
+                if want and parent.version != want:   # migrated on an older in-house parent → the configured one
+                    root.set_parent(c.cfg.artifacts.parent.gav(), root.parent_relative_path())
+                    c.save(root)
+                    c.note(f"in-house parent {parent.key} {parent.version or '?'} → {want} (artifacts.parent)")
             self._all_poms_pass(c, java_fix=False)
             self._drop_managed_versions(c)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
