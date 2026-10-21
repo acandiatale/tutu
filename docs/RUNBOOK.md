@@ -34,6 +34,20 @@ Windows / no shell profile: put the variables in `.env` at the repo root (copy `
 `SBMIG_ENV_FILE` at a file; `load_config` reads it before anything else and never overrides variables already set.
 `llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
 
+## "Is it stuck?" — three places to look (round 9c)
+
+1. `tail -f <run dir>/sbmig.log`. While something slow runs the log keeps talking: `llm call … → POST` then
+   `llm call still in flight: Ns elapsed` every 30 s (an LLM answer), `mvn still running: Ns elapsed … log: <file>`
+   every 60 s (a build / recipe run). A call is abandoned after `llm.timeout_seconds + 30` s and retried; a build is
+   killed after `build.timeout_minutes`.
+2. The fix loop's watchdog: when no milestone was passed for 60 s it logs
+   `[spring] fix loop quiet for 120s since '<milestone>' …` — the milestone names the code that is running
+   (`deciding <cluster>`, `advisory hints`, `merge-conflict hints`, `fixer.propose … (prompt packing + LLM call)`,
+   `LLM answered: applying`, `git commit`, `mvn package (build 3)`). `fix prompt for <cluster>: packing …` /
+   `… packed: N chars → calling the LLM` bracket the prompt construction.
+3. Nothing at all for minutes: `kill -USR1 <pid of sbmig / uvicorn>` writes every thread's stack to
+   `out/threads-<timestamp>.txt` (and says so in the log). Send that file with the last 30 lines of `sbmig.log`.
+
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
 `token recognition error at: '<'` lines in a rewrite log come from OpenRewrite's XML parser, which also reads
 .jsp/.jspx/.html/.htm (scriptlets, `<` in attribute strings): warnings only, the file is skipped. Since round 9c those

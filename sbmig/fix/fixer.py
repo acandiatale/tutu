@@ -102,7 +102,12 @@ class LLMFixer:
         role, meta = self.call_tags(ctx, cluster.id)
         adv_in_prompt = 0
         try:
+            log.info("fix prompt for %s: packing (%d advisory hint(s), %d KB hint(s), %d reference file(s))",
+                     cluster.id, len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files))
             packed = self.packer.pack(ws, cluster, ctx, ctx.profile_summary)
+            log.info("fix prompt for %s packed: %d chars, sections [%s]%s → calling the LLM", cluster.id, packed.chars,
+                     ", ".join(t[:28] for t, _ in packed.sections),
+                     f", truncated {', '.join(packed.truncated)}" if packed.truncated else "")
             guidance = next((b for t, b in packed.sections if t == ContextPacker.ADVISORY_TITLE), "")
             if guidance:                      # round 6: the library advisories' "what to migrate TO" in this prompt
                 adv_in_prompt = sum(1 for ln in guidance.splitlines() if ln.startswith("- "))

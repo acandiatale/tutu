@@ -490,3 +490,10 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     (BOM-managed; explicit old version → 3.0.1 / 3.0.0); library rule + advisory `jdk-generified-apis`
     (`javax.swing.tree` imports, guide) with `## fix-loop: jdk-generified-apis` in `knowledge/notes/jdk21.md`
     (14 advisories).
+  * Operators (round 9c): `BuildFixLoop` milestones (`_mark`: `loop start`, `mvn <goal> (build N)`, `KB match`,
+    `deciding`, `handler <id>`, `advisory hints`, `merge-conflict hints`, `fixer.propose … (prompt packing + LLM
+    call)`, `LLM answered: applying`, `git commit`, `idle`; DEBUG lines `[phase] → <milestone>`) and a watchdog
+    thread (`WATCHDOG_S` 30 s, `WATCHDOG_QUIET_S` 60 s) that warns `fix loop quiet for Ns since '<milestone>'`;
+    `LLMFixer.propose` logs `fix prompt for <cluster>: packing …` and `… packed: N chars, sections […] → calling the
+    LLM`; `sbmig.cli.dump_threads(out_dir)` / `install_thread_dump_signal()` (`SIGUSR1`, installed by
+    `setup_logging` in the main thread) write `out/threads-<ts>.txt`.

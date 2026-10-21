@@ -18,8 +18,10 @@ reference text in the fix prompt (`FixContext.reference_notes` / `reference_file
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -51,6 +53,8 @@ _LLM_TRANSPORT_RE = re.compile(r"(?i)request failed|status=|\bhttp\b|timed? ?out
 _LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b|content[ _-]?filter")   # incl. Azure-style content filter
 _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
 REFERENCE_MAX_CHARS = 12_000         # one dropped merge copy in the fix prompt (round 9)
+WATCHDOG_S = 30.0                    # the fix loop's watchdog wakes up this often …
+WATCHDOG_QUIET_S = 60.0              # … and warns when no milestone was reached for this long (operators: stuck?)
 REFERENCE_MAX_FILES = 3              # dropped copies per cluster
 _TRUNCATED_MARK = "\n… (truncated)"
 
@@ -212,6 +216,8 @@ class BuildFixLoop:
         self.llm_unavailable: Optional[str] = None
         self.aborted: Optional[str] = None       # set when the run must stop (configured parent not resolvable)
         self._llm_streak: list[tuple[ErrorCluster, str]] = []
+        self._milestone = "idle"                 # last point the loop passed (watchdog, round 9c)
+        self._milestone_at = time.monotonic()
         self._streak_attempts: list[str] = []    # attempt ids of the current transport-failure streak
         self.llm_cooldown_used = False           # round 9 (L5): one cool-down per run
         self._cooled_attempts: set[str] = set()  # attempts of the streak that triggered the cool-down: not counted
@@ -228,10 +234,44 @@ class BuildFixLoop:
                 log.warning("triager.attach_run failed: %s", e)
 
     # ------------------------------------------------------------------ public
+    def _mark(self, what: str) -> None:
+        """Milestone for the watchdog: what the loop is doing right now (also a DEBUG line in sbmig.log)."""
+        self._milestone, self._milestone_at = what, time.monotonic()
+        log.debug("[%s] → %s", self._cur_phase.value, what)
+
+    def _start_watchdog(self, phase: Phase) -> threading.Event:
+        """A daemon thread that says, every WATCHDOG_S once the loop was quiet for WATCHDOG_QUIET_S, where the loop is
+        (last milestone) — a slow LLM / build keeps logging through its own heartbeat, so a quiet watchdog line
+        points at the code between those (hints, prompt packing, patch apply, git)."""
+        stop = threading.Event()
+        started = time.monotonic()
+
+        def beat() -> None:
+            while not stop.wait(WATCHDOG_S):
+                quiet = time.monotonic() - self._milestone_at
+                if quiet >= WATCHDOG_QUIET_S:
+                    log.warning("[%s] fix loop quiet for %.0fs since '%s' (loop running %.0fs) — still working or "
+                                "stuck? `kill -USR1 <sbmig pid>` dumps every thread's stack", phase.value, quiet,
+                                self._milestone, time.monotonic() - started)
+
+        threading.Thread(target=contextvars.copy_context().run, args=(beat,), name="fixloop-watchdog",
+                         daemon=True).start()
+        return stop
+
     def run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None) -> PhaseResult:
+        self._cur_phase = phase
+        stop = self._start_watchdog(phase)
+        try:
+            return self._run(phase, goal, max_iterations, target)
+        finally:
+            stop.set()
+            self._mark("idle")
+
+    def _run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None) -> PhaseResult:
         pr = PhaseResult(phase=phase)
         self._phase_items = []
         self._cur_phase = phase
+        self._mark(f"loop start ({goal})")
         self.ws.journal({"event": "loop_start", "phase": phase.value, "goal": goal, "max_iterations": max_iterations,
                          "target": target, "dry_run": self.dry_run, "blocked_known": len(self.blocked)})
         prev_build: Optional[BuildResult] = None
@@ -245,6 +285,7 @@ class BuildFixLoop:
         last: Optional[BuildResult] = None
         while True:
             build_no += 1
+            self._mark(f"mvn {goal} (build {build_no})")
             build = self._build(goal, target, f"{phase.value}-{build_no}", phase, build_no)
             last = build
             pr.iterations = build_no
@@ -723,8 +764,10 @@ class BuildFixLoop:
         """Decide → apply → commit; a deterministic option that changes nothing falls through to the next one.
         Returns "blocked" (nothing left to do for this cluster), "escalated", "skipped", "recipe" or "attempted"."""
         from sbmig.triage.blocked import BlockedCandidate
+        self._mark(f"KB match for {c.id}")
         m = self._kb_match(c)
         for _ in range(6):
+            self._mark(f"deciding {c.id}")
             d = self._decide(st.phase, st.iteration, st.stall_level, c, m)
             if prefix:
                 d.rationale = prefix + d.rationale
@@ -770,6 +813,7 @@ class BuildFixLoop:
             att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
             pre = self.ws.head()
             if d.kind == DecisionKind.HANDLER:
+                self._mark(f"handler {d.handler_id} on {c.id}")
                 self._apply_handler(att, c)
                 msg = f"fix(handler:{d.handler_id}): {c.id}"
                 if att.outcome == "apply_failed" and d.handler_id in st.handlers_applied:
@@ -792,6 +836,7 @@ class BuildFixLoop:
                          f", {len(att.apply_errors)} apply error(s)" if att.apply_errors else "",
                          f" — {_first_sentence(att.analysis)}" if att.analysis else "")
             if att.outcome != "apply_failed":
+                self._mark(f"git commit for {c.id}")
                 sha = self._commit(msg, pre)
                 if sha is None:
                     att.outcome = "apply_failed"
@@ -881,8 +926,11 @@ class BuildFixLoop:
                    stall_level: int, others: dict[str, str]) -> None:
         hints = m.hints[: self.cfg.kb.max_hints] if self.cfg.kb.use_hints else []
         other = "\n".join(v for k, v in others.items() if k != c.id)[:4000]
+        self._mark(f"advisory hints for {c.id}")
         adv_hints, att.advisory_ids = self._advisory_hints(c)
+        self._mark(f"merge-conflict hints for {c.id}")
         ref_notes, ref_files = self._merge_conflict_hints(att, c)
+        self._mark(f"fixer.propose for {c.id} (prompt packing + LLM call)")
         ctx = FixContext(phase=phase, iteration=iteration, stall_level=stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
                          advisory_hints=adv_hints, previous_attempts=self._previous(c),
@@ -897,6 +945,7 @@ class BuildFixLoop:
             self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
             return
         self.budget.charge_llm(max(1, proposal.llm_usage.calls))
+        self._mark(f"LLM answered for {c.id}: applying")
         att.model, att.prompt_hash, att.llm_usage = proposal.model, proposal.prompt_hash, proposal.llm_usage
         att.analysis = proposal.analysis
         if is_llm_transport_error(proposal.analysis):
