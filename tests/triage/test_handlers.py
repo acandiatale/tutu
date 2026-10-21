@@ -472,7 +472,10 @@ def test_lombok_hard_error_pins_unversioned_processor_path(kit, cfg):
     from sbmig.triage.handlers.pom_handlers import LOMBOK_VERSION
     text = kit.text()
     assert _re.search(r"<artifactId>lombok</artifactId>\s*<version>" + _re.escape(LOMBOK_VERSION), text)   # path pinned
-    assert not h.apply(kit.ws, c, prof, cfg)                      # idempotent
+    # the error persisting after the pin means the parent's list is merged in → the next round cuts the inheritance
+    assert h.apply(kit.ws, c, prof, cfg)
+    assert 'combine.self="override"' in kit.text()
+    assert not h.apply(kit.ws, c, prof, cfg)                      # idempotent from here on
 
 
 def test_lombok_inherited_from_parent_gets_an_explicit_pin(kit, cfg):
@@ -490,3 +493,63 @@ def test_lombok_inherited_from_parent_gets_an_explicit_pin(kit, cfg):
     assert kit.dep("org.projectlombok:lombok").version == LOMBOK_VERSION
     kit.pom()
     assert not h.apply(kit.ws, None, make_profile(), cfg)        # no lombok anywhere → nothing added
+
+
+
+_EFFECTIVE_POM = """<?xml version="1.0"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.11.0</version>
+        <configuration>
+          <release>17</release>
+          <annotationProcessorPaths>
+            <path><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><version>1.18.12</version></path>
+            <path><groupId>org.mapstruct</groupId><artifactId>mapstruct-processor</artifactId><version>1.5.5.Final</version></path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+"""
+
+
+def test_lombok_inherited_processor_paths_are_overridden(kit, cfg):
+    """Round 9 (first company run): the project declares lombok 1.18.40, the parent's compiler configuration carries
+    an annotationProcessorPaths with lombok 1.18.12 → Maven merges it in and the old processor wins. The handler
+    writes the effective list, versions floored, with combine.self="override" into the project's compiler plugin."""
+    import re as _re
+    (kit.ws.run_dir / "effective").mkdir(parents=True, exist_ok=True)
+    (kit.ws.run_dir / "effective" / "root.xml").write_text(_EFFECTIVE_POM, encoding="utf-8")
+    kit.pom(deps=[G("org.projectlombok:lombok:1.18.40")], extra_build="""
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <release>21</release>
+        </configuration>
+      </plugin>""")
+    h = kit.handler("lombok-version-floor")
+    c = cluster_errors([err(ErrorKind.COMPILE, _LOMBOK_ERR)])[0]
+    prof = make_profile(libs=[("lombok", "1.18.40"), ("mapstruct", "1.5.5.Final")])
+    assert h.apply(kit.ws, c, prof, cfg)
+    text = kit.text()
+    assert '<annotationProcessorPaths combine.self="override">' in text and "<release>21</release>" in text
+    paths = _re.findall(r"<artifactId>([^<]+)</artifactId>\s*<version>([^<]+)</version>\s*</path>", text)
+    assert paths == [("lombok", "1.18.40"), ("mapstruct-processor", "1.6.3"), ("lombok-mapstruct-binding", "0.2.0")]
+    assert text.count("<annotationProcessorPaths") == 1
+    assert not h.apply(kit.ws, c, prof, cfg)                      # idempotent
+    # no effective pom and no compiler plugin in the project: lombok (+ mapstruct) override added to the root pom
+    # (the plugin block is added through the editor; the fake editor does not write the file → real mode only)
+    if kit.mode != "real":
+        return
+    kit.pom(deps=[G("org.projectlombok:lombok:1.18.40")])
+    for x in (kit.ws.run_dir / "effective").glob("*.xml"):
+        x.unlink()
+    assert h.apply(kit.ws, c, make_profile(libs=[("lombok", "1.18.40"), ("mapstruct", "1.6.3")]), cfg)
+    text = kit.text()
+    assert 'combine.self="override"' in text and "<artifactId>mapstruct-processor</artifactId>" in text
+    assert _re.search(r"<artifactId>lombok</artifactId>\s*<version>1\.18\.40</version>", text)

@@ -309,7 +309,118 @@ class LombokVersionFloor(VersionFloorHandler):
                 ed.add_dependency(GAV(group_id=g, artifact_id=a, version=self.floor, scope="provided"))
                 ed.save()
                 changed.append(root)
-        return changed
+        if changed or not self._hard(cluster):
+            return changed
+        # 3. the project declares a fine lombok but the *parent* pom's maven-compiler-plugin carries an
+        #    <annotationProcessorPaths> with an old one — Maven merges the inherited list into the child's
+        #    configuration and the processor path wins over the dependency (seen in the first company run:
+        #    "store POM declares Lombok 1.18.40 … inherited compiler configuration merges in an older processor
+        #    path"). Cut the inheritance: write the effective list, versions floored, with combine.self="override".
+        return self._override_processor_paths(ws, profile)
+
+    # ------------------------------------------------------------------ inherited annotationProcessorPaths
+    _APP_RE = re.compile(r"\n?[ \t]*<annotationProcessorPaths\b[^>]*>(?:(?!</annotationProcessorPaths>).)*"
+                         r"</annotationProcessorPaths>", re.S)
+    _CONF_RE = re.compile(r"(<configuration>)((?:(?!</configuration>).)*)(</configuration>)", re.S)
+
+    def _effective_processor_paths(self, ws: Workspace) -> list[tuple[str, str, Optional[str]]]:
+        """(groupId, artifactId, version) of every annotationProcessorPaths/path in the as-is effective pom(s)
+        captured at intake (<run dir>/effective/*.xml, the merged parent + child view); [] when unavailable."""
+        out: list[tuple[str, str, Optional[str]]] = []
+        d = ws.run_dir / "effective"
+        if not d.is_dir():
+            return out
+        try:
+            from lxml import etree
+        except ImportError:  # pragma: no cover
+            return out
+        for xml in sorted(d.glob("*.xml")):
+            if xml.name.startswith("depmgmt-after-restructure"):
+                continue
+            try:
+                root = etree.fromstring(xml.read_bytes(), parser=etree.XMLParser(recover=True, huge_tree=True))
+            except (etree.XMLSyntaxError, OSError, ValueError):
+                continue
+            if root is None:
+                continue
+            for path in root.iter():
+                if not isinstance(path.tag, str) or path.tag.split("}")[-1] != "path":
+                    continue
+                parent = path.getparent()
+                if parent is None or parent.tag.split("}")[-1] != "annotationProcessorPaths":
+                    continue
+                vals = {}
+                for child in path:
+                    if isinstance(child.tag, str):
+                        vals[child.tag.split("}")[-1]] = (child.text or "").strip()
+                g, a = vals.get("groupId", ""), vals.get("artifactId", "")
+                if a and (g, a) not in [(x, y) for x, y, _ in out]:
+                    out.append((g or DEFAULT_PLUGIN_GROUP, a, vals.get("version") or None))
+        return out
+
+    def _override_processor_paths(self, ws: Workspace, profile: Optional[ProjectProfile]) -> list[str]:
+        g, a = self.artifacts[0]
+        paths = self._effective_processor_paths(ws)
+        has_mapstruct = profile is not None and profile.has_library("mapstruct")
+        if not paths:                                   # no effective pom: the processors the project itself uses
+            paths = [(g, a, None)]
+            if has_mapstruct:
+                paths.append(("org.mapstruct", "mapstruct-processor", None))
+        if not any(x == (g, a) for x, _ in [((p[0], p[1]), p) for p in paths]):
+            paths.insert(0, (g, a, None))
+        if has_mapstruct and any(p[1] == "mapstruct-processor" for p in paths) \
+                and not any(p[1] == "lombok-mapstruct-binding" for p in paths):
+            paths.append(("org.projectlombok", "lombok-mapstruct-binding", "0.2.0"))
+        declared = next((lib.version for lib in (profile.libraries if profile else []) if lib.name == "lombok"), None)
+        floors = {"lombok": self.floor, "mapstruct-processor": MAPSTRUCT_VERSION}
+        rows: list[tuple[str, str, str]] = []
+        for pg, pa, pv in paths:
+            v = pv
+            if pa == "lombok" and declared and "${" not in declared and version_lt(declared, v or "0") is False:
+                v = declared                            # the project's own (newer) lombok wins
+            floor = floors.get(pa)
+            if floor and (v is None or "${" in (v or "") or version_lt(v, floor) is not False):
+                v = floor
+            rows.append((pg, pa, v or self.floor))
+        # the pom to edit: the first project pom that configures maven-compiler-plugin, else the root pom
+        target = None
+        for rel in all_poms(ws):
+            if CompilerPluginFloor._BLOCK.search(ws.read(rel)):
+                target = rel
+                break
+        if target is None:
+            target = root_pom(ws, profile)
+            if target is None:
+                return []
+            ed = self.editor(ws, target)
+            ed.add_plugin(PluginInfo(group_id=DEFAULT_PLUGIN_GROUP, artifact_id="maven-compiler-plugin",
+                                     configuration={"release": "21"}))
+            ed.save()
+        text = ws.read(target)
+        m = CompilerPluginFloor._BLOCK.search(text)
+        if m is None:
+            return []
+        block = m.group(0)
+        indent = _indent_of(block.rsplit("</plugin>", 1)[0].rstrip()) or "        "
+        inner = indent + "  "
+        lines = [f'{inner}<annotationProcessorPaths combine.self="override">']
+        for pg, pa, pv in rows:
+            lines += [f"{inner}  <path>", f"{inner}    <groupId>{pg}</groupId>", f"{inner}    <artifactId>{pa}</artifactId>",
+                      f"{inner}    <version>{pv}</version>", f"{inner}  </path>"]
+        lines.append(f"{inner}</annotationProcessorPaths>")
+        new_app = "\n" + "\n".join(lines)
+        if self._APP_RE.search(block):
+            new_block = self._APP_RE.sub(lambda _m: new_app, block, count=1)
+        elif self._CONF_RE.search(block):
+            new_block = self._CONF_RE.sub(lambda cm: cm.group(1) + cm.group(2).rstrip() + new_app + "\n" + indent
+                                          + cm.group(3), block, count=1)
+        else:
+            new_block = block.replace("</plugin>", f"{indent}<configuration>{new_app}\n{indent}</configuration>\n"
+                                                   f"{indent}</plugin>", 1)
+        if new_block == block:
+            return []
+        ws.write(target, text[:m.start()] + new_block + text[m.end():])
+        return [target]
 
 
 def _indent_of(block: str) -> str:
