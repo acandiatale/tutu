@@ -74,7 +74,7 @@ def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path):
     cfg.build.env = {"FOO": "bar"}
     res = MavenRunner(ws, cfg).run("clean package", extra_args=["-pl", "core"], label="verify")
     call = fake.calls[0]
-    assert call["cmd"] == ["mvn", "-B", "-ntp", "-Dstyle.color=never", "-s", "/etc/m2/settings.xml",
+    assert call["cmd"] == [mvn_mod.mvn_executable(cfg), "-B", "-ntp", "-Dstyle.color=never", "-s", "/etc/m2/settings.xml",
                            f"-Dmaven.repo.local={tmp_path / 'repo'}", "-o", "clean", "package", "-pl", "core",
                            "-DskipTests"]
     assert res.command == call["cmd"]
@@ -101,7 +101,7 @@ def test_blank_java_home_and_skip_flags(ws, cfg, fake):
     cmd = r.command("package", skip_test_compile=True)
     assert cmd[-1] == "-Dmaven.test.skip=true" and "-DskipTests" not in cmd
     cfg.build.skip_tests = False
-    assert r.command("compile") == ["mvn", "-B", "-ntp", "-Dstyle.color=never", "compile"]
+    assert r.command("compile") == [mvn_mod.mvn_executable(r.cfg), "-B", "-ntp", "-Dstyle.color=never", "compile"]
     r.run("compile")
     assert fake.calls[0]["env"].get("JAVA_HOME") == os.environ.get("JAVA_HOME")
 
