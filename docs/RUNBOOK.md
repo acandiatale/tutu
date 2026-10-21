@@ -33,6 +33,10 @@ when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bi
 Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point
 `SBMIG_ENV_FILE` at a file; `load_config` reads it before anything else and never overrides variables already set.
 `llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
+Windows / console code page (cp949): sbmig decodes git and Maven output as UTF-8 itself and writes
+`changes.patch` as the raw `git diff` bytes (an MS949 source stays MS949 in the patch). A `UnicodeDecodeError: 'cp949'
+codec can't decode byte …` traceback from a subprocess reader thread, followed by `could not write changes.patch: data
+must be str, not NoneType`, is the pre-2026-10-21 checkout — pull.
 
 ## "Is it stuck?" — three places to look (round 9c)
 

@@ -105,8 +105,8 @@ def ensure_bom(cfg: Config, mvn_env: Mapping[str, str], *, work_dir: Path | None
     cwd.mkdir(parents=True, exist_ok=True)                 # never inside the project: a broken pom.xml would fail it
     log.info("fetching %s:%s:%s", BOM_GROUP, BOM_ARTIFACT, version)
     try:
-        cp = subprocess.run(cmd, cwd=str(cwd), env=dict(mvn_env), capture_output=True, text=True, timeout=timeout_s,
-                            stdin=subprocess.DEVNULL)
+        cp = subprocess.run(cmd, cwd=str(cwd), env=dict(mvn_env), capture_output=True, timeout=timeout_s,
+                            stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")   # never the console code page
         output = cp.stdout + cp.stderr
     except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired) as exc:
         output = str(exc)

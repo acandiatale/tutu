@@ -587,3 +587,158 @@ def test_nearest_pom_absolute_and_backslash_paths_terminate(fake_kit):
     assert nearest_pom(ws, "/elsewhere/A.java") == "pom.xml"           # not under the root → the root pom
     assert nearest_pom(ws, "C:/elsewhere/A.java") in ("pom.xml", None)
     assert time.monotonic() - t0 < 2.0
+
+
+# ---------------------------------------------------------------------------
+# resources-binary-filtering (E12): binary files under a filtered resource
+# ---------------------------------------------------------------------------
+_FONT_MSG = ("filtering /w/src/main/resources/static/fonts/fontawesome-webfont.eot to "
+             "/w/target/classes/static/fonts/fontawesome-webfont.eot failed with MalformedInputException: Input length = 1")
+_NS = {"m": "http://maven.apache.org/POM/4.0.0"}
+_WAR_WEBRESOURCES = """
+      <plugin>
+        <artifactId>maven-war-plugin</artifactId>
+        <configuration>
+          <webResources>
+            <resource>
+              <directory>src/main/webapp</directory>
+              <filtering>true</filtering>
+            </resource>
+          </webResources>
+        </configuration>
+      </plugin>"""
+
+
+def _filtering_pom(plugin_block: str = "", artifact: str = "demo", filtering: bool = True) -> str:
+    res = """
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+      </resource>
+    </resources>""" if filtering else ""
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>{artifact}</artifactId>
+  <version>1.0.0</version>
+  <build>{res}
+    <plugins>
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+      </plugin>{plugin_block}
+    </plugins>
+  </build>
+</project>
+"""
+
+
+def _nfe(text: str, artifact: str = "maven-resources-plugin") -> list[str]:
+    """nonFilteredFileExtension entries of the plugin-level configuration, through a real XML parse."""
+    import xml.etree.ElementTree as ET
+    out: list[str] = []
+    for pl in ET.fromstring(text).iterfind(".//m:plugin", _NS):
+        if pl.findtext("m:artifactId", namespaces=_NS) != artifact:
+            continue
+        out += [(e.text or "").strip() for e in
+                pl.iterfind("m:configuration/m:nonFilteredFileExtensions/m:nonFilteredFileExtension", _NS)]
+    return out
+
+
+def _font_cluster(module: str = "demo", goal: str = "resources:resources", msg: str = _FONT_MSG, raw: str = ""):
+    c = cluster_errors([err(ErrorKind.PLUGIN_EXECUTION, msg, module=module, raw=raw)])[0]
+    c.errors[0].goal = goal
+    return c
+
+
+def test_resources_binary_filtering_extends_existing_configuration(fake_kit, cfg):
+    (fake_kit.root / "pom.xml").write_text(_filtering_pom("""
+      <plugin>
+        <artifactId>maven-resources-plugin</artifactId>
+        <configuration>
+          <encoding>UTF-8</encoding>
+          <nonFilteredFileExtensions>
+            <nonFilteredFileExtension>pdf</nonFilteredFileExtension>
+          </nonFilteredFileExtensions>
+        </configuration>
+        <executions>
+          <execution>
+            <id>copy</id>
+            <configuration><outputDirectory>x</outputDirectory></configuration>
+          </execution>
+        </executions>
+      </plugin>"""), encoding="utf-8")
+    h = fake_kit.handler("resources-binary-filtering")
+    c = _font_cluster()
+    assert h.matches(c, make_profile(), cfg)
+    assert [x.path for x in h.apply(fake_kit.ws, c, make_profile(), cfg)] == ["pom.xml"]
+    text = fake_kit.text()
+    exts = _nfe(text)
+    assert exts.count("pdf") == 1 and {"eot", "ttf", "woff", "woff2", "jks"} <= set(exts)
+    assert text.count("<nonFilteredFileExtensions>") == 1
+    assert "<encoding>UTF-8</encoding>" in text and "<filtering>true</filtering>" in text   # filtering stays on
+    assert "<outputDirectory>x</outputDirectory>" in text                                    # execution config kept
+    assert h.apply(fake_kit.ws, c, make_profile(), cfg) == []                                 # idempotent
+
+
+def test_resources_binary_filtering_creates_the_plugin_and_learns_the_extension(fake_kit, cfg):
+    (fake_kit.root / "pom.xml").write_text(
+        _filtering_pom("\n      <!-- <plugin><artifactId>maven-resources-plugin</artifactId></plugin> -->"),
+        encoding="utf-8")
+    h = fake_kit.handler("resources-binary-filtering")
+    msg = _FONT_MSG.replace("fontawesome-webfont.eot", "glyphs.abc")
+    assert [x.path for x in h.apply(fake_kit.ws, _font_cluster(msg=msg), make_profile(), cfg)] == ["pom.xml"]
+    text = fake_kit.text()
+    exts = _nfe(text)
+    assert "abc" in exts and "woff2" in exts and "png" not in exts         # the plugin's own image list is not repeated
+    assert "<!-- <plugin><artifactId>maven-resources-plugin</artifactId></plugin> -->" in text   # comment untouched
+    assert text.index("<artifactId>maven-compiler-plugin</artifactId>") < text.index("<artifactId>maven-resources-plugin")
+    assert "<groupId>org.apache.maven.plugins</groupId>" in text
+
+
+def test_resources_binary_filtering_one_line_configuration_and_no_build(fake_kit, cfg):
+    fake_kit.pom(plugins=[PluginInfo(artifact_id="maven-resources-plugin", version="3.3.1",
+                                     configuration={"encoding": "UTF-8"})])   # the helper writes a one-line <configuration>
+    h = fake_kit.handler("resources-binary-filtering")
+    assert h.apply(fake_kit.ws, _font_cluster(), make_profile(), cfg)
+    text = fake_kit.text()
+    assert "<encoding>UTF-8</encoding>" in text and "eot" in _nfe(text)
+    fake_kit.pom("lib/pom.xml", artifact="lib")                              # no <build> at all
+    assert [x.path for x in h.apply(fake_kit.ws, _font_cluster(module="lib"), None, cfg)] == ["lib/pom.xml"]
+    assert "ttf" in _nfe(fake_kit.text("lib/pom.xml"))
+
+
+def test_resources_binary_filtering_root_declares_filtering_and_war_plugin(fake_kit, cfg):
+    (fake_kit.root / "pom.xml").write_text(_filtering_pom(artifact="parent"), encoding="utf-8")
+    for name, block in (("svc", ""), ("web", _WAR_WEBRESOURCES)):
+        (fake_kit.root / name).mkdir()
+        (fake_kit.root / name / "pom.xml").write_text(_filtering_pom(block, artifact=name, filtering=False),
+                                                      encoding="utf-8")
+    h = fake_kit.handler("resources-binary-filtering")
+    # resources plugin failing in svc, filtering inherited from the root → the root gets the list, svc untouched
+    assert [x.path for x in h.apply(fake_kit.ws, _font_cluster(module="svc"), None, cfg)] == ["pom.xml"]
+    assert "eot" in _nfe(fake_kit.text()) and _nfe(fake_kit.text("svc/pom.xml")) == []
+    # the war plugin filtering <webResources> of `web` → its own list on the war plugin in the module pom
+    war = _font_cluster(module="web", goal="war:war",
+                        msg=_FONT_MSG.replace("src/main/resources/static", "src/main/webapp"),
+                        raw="Failed to execute goal org.apache.maven.plugins:maven-war-plugin:3.4.0:war (default-war) "
+                            "on project web: " + _FONT_MSG)
+    assert [x.path for x in h.apply(fake_kit.ws, war, None, cfg)] == ["web/pom.xml"]
+    assert "woff" in _nfe(fake_kit.text("web/pom.xml"), "maven-war-plugin")
+    assert _nfe(fake_kit.text("web/pom.xml")) == []
+    assert "<filtering>true</filtering>" in fake_kit.text("web/pom.xml")
+
+
+def test_resources_binary_filtering_preemptive_and_non_matches(fake_kit, cfg):
+    (fake_kit.root / "pom.xml").write_text(_filtering_pom(filtering=False), encoding="utf-8")
+    h = fake_kit.handler("resources-binary-filtering")
+    assert h.apply(fake_kit.ws, None, make_profile(), cfg) == []            # nothing filtered → nothing to do
+    (fake_kit.root / "pom.xml").write_text(_filtering_pom(_WAR_WEBRESOURCES), encoding="utf-8")
+    assert [x.path for x in h.apply(fake_kit.ws, None, make_profile(), cfg)] == ["pom.xml"]
+    text = fake_kit.text()
+    assert "eot" in _nfe(text) and "eot" in _nfe(text, "maven-war-plugin")
+    assert h.apply(fake_kit.ws, None, make_profile(), cfg) == []
+    assert not h.matches(_font_cluster(msg="Cannot find 'loaderImplementation' in class"), make_profile(), cfg)
+    assert not h.matches(cluster_errors([err(ErrorKind.COMPILE, _FONT_MSG)])[0], make_profile(), cfg)
+    assert h.matches(_font_cluster(msg="Input length = 1"), make_profile(), cfg)

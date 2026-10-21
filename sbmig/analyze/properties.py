@@ -799,6 +799,124 @@ def filtered_resource_dirs(ws: Any, poms: list[PomInfo], col: Optional[_Collecto
 
 
 # ---------------------------------------------------------------------------
+# binary files under a filtered resource (handler `resources-binary-filtering`, catalog E12)
+# ---------------------------------------------------------------------------
+# maven-resources-plugin / maven-war-plugin copy jpg, jpeg, gif, bmp, png unfiltered by default; every other binary
+# under a `<filtering>true</filtering>` resource is read as text — resources-plugin ≥ 3.2 (what the Boot 2.4+ / Boot 4
+# parents manage) fails the copy with `MalformedInputException: Input length = 1`, 2.x silently corrupted it (broken
+# webfonts). The handler adds these as `<nonFilteredFileExtension>` entries (the plugin's own image list is kept).
+BINARY_RESOURCE_EXTENSIONS: tuple[str, ...] = (
+    "eot", "ttf", "otf", "woff", "woff2",                                   # webfonts (Bootstrap / FontAwesome)
+    "ico", "webp", "tif", "tiff", "psd",                                    # images outside the plugin default
+    "pdf", "hwp", "hwpx", "xls", "xlsx", "doc", "docx", "ppt", "pptx",      # documents / report templates
+    "zip", "jar", "gz", "tgz", "7z", "rar", "tar",                          # archives
+    "jks", "p12", "pfx", "keystore", "cer", "crt", "der",                   # keystores / certificates
+    "mp3", "mp4", "wav", "ogg", "swf",                                      # media
+    "class", "ser", "dat", "bin", "db", "sqlite", "mdb",                    # binary data
+)
+MAX_BINARY_RESOURCES = 200
+_RESOURCE_SETS_RE = re.compile(r"<(resources|testResources|webResources)>(.*?)</\1>", re.S)
+_ANY_RESOURCE_RE = re.compile(r"<(resource|testResource)>(.*?)</\1>", re.S)
+_PATTERN_RE = re.compile(r"<(include|exclude)>\s*([^<]+?)\s*</\1>")
+
+
+def _ant_re(pattern: str) -> "re.Pattern[str]":
+    """Ant / plexus path pattern → regex over a resource-relative posix path: `*.properties` = top level only,
+    `**/*.properties` = any depth, a trailing `/` means `/**`."""
+    pat = pattern.strip().replace("\\", "/").lstrip("/")
+    if pat.endswith("/"):
+        pat += "**"
+    out: list[str] = []
+    i = 0
+    while i < len(pat):
+        if pat.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pat.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pat[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pat[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pat[i]))
+            i += 1
+    return re.compile("^" + "".join(out) + "$")
+
+
+def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, list, list]]:
+    """(root-relative dir, include regexes, exclude regexes) per `<filtering>true</filtering>` resource: `<build>`
+    `<resources>` / `<testResources>`, the war plugin's `<webResources>` and `copy-resources` executions (plugins
+    blocks are *not* skipped here, unlike `filtered_resource_dirs`); profile resources count too (one needless
+    extension list beats a failing build when the profile is active)."""
+    specs: list[tuple[str, list, list]] = []
+    for p in poms:
+        try:
+            text = _strip_xml_comments(ws.read(p.path))
+        except Exception:  # noqa: BLE001
+            continue
+        base = posixpath.dirname(p.path.replace("\\", "/"))
+        for m in _RESOURCE_SETS_RE.finditer(text):
+            kind = m.group(1)
+            for r in _ANY_RESOURCE_RE.finditer(m.group(2)):
+                body = r.group(2)
+                if not re.search(r"<filtering>\s*true\s*</filtering>", body):
+                    continue
+                d = re.search(r"<directory>\s*([^<]+?)\s*</directory>", body)
+                if d:
+                    directory = d.group(1)
+                elif kind == "webResources":
+                    continue
+                else:
+                    directory = "src/test/resources" if kind == "testResources" else "src/main/resources"
+                directory = re.sub(r"^\$\{(?:project\.)?basedir\}/?", "", directory.replace("\\", "/")).strip("/")
+                if "${" in directory:
+                    continue
+                rel = posixpath.normpath(posixpath.join(base, directory)) if base else posixpath.normpath(directory)
+                incl = [_ant_re(x) for k, x in _PATTERN_RE.findall(body) if k == "include"]
+                excl = [_ant_re(x) for k, x in _PATTERN_RE.findall(body) if k == "exclude"]
+                specs.append((rel.strip("/"), incl, excl))
+    return specs
+
+
+def filtered_binary_resources(ws: Any, poms: list[PomInfo],
+                              extensions: Iterable[str] = BINARY_RESOURCE_EXTENSIONS) -> list[str]:
+    """Root-relative binary files a filtered resource would run through the filter (includes / excludes honoured),
+    sorted and capped at MAX_BINARY_RESOURCES. Never raises."""
+    try:
+        specs = _filtered_resource_specs(ws, poms)
+        if not specs:
+            return []
+        exts = {e.lower().lstrip(".") for e in extensions}
+        out: set[str] = set()
+        for rel in ws.glob("*"):
+            rel = rel.replace("\\", "/")
+            name = posixpath.basename(rel)
+            if "." not in name or name.rsplit(".", 1)[1].lower() not in exts or _skipped(rel):
+                continue
+            for d, incl, excl in specs:
+                if d in ("", "."):
+                    sub = rel
+                elif rel.startswith(d + "/"):
+                    sub = rel[len(d) + 1:]
+                else:
+                    continue
+                if incl and not any(x.match(sub) for x in incl):
+                    continue
+                if any(x.match(sub) for x in excl):
+                    continue
+                out.add(rel)
+                break
+        return sorted(out)[:MAX_BINARY_RESOURCES]
+    except Exception:  # noqa: BLE001 - never fail the analysis over this
+        log.exception("filtered binary resource scan failed")
+        return []
+
+
+# ---------------------------------------------------------------------------
 # classification
 # ---------------------------------------------------------------------------
 def _fmt(tpl: str, name: str, leaf: str) -> str:
@@ -990,6 +1108,7 @@ def _scan_properties(ws: Any, poms: list[PomInfo], scan: ScanResult, rules: Exte
                          "them): " + ", ".join(f"{k} ({len(v)} file(s))" for k, v in sorted(col.container_props.items())))
     return PropertyInventory(findings=findings, packaged_files=sorted(set(defs.packaged)),
                              profiles=sorted(col.profiles), filtered_resources=col.filtered,
+                             filtered_binary_files=filtered_binary_resources(ws, poms),
                              notes=_dedupe(col.notes), services=[s.name for s in services])
 
 

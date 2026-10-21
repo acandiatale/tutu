@@ -102,7 +102,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   wrapped; a failed restructure step is no longer reported as success. Pre-9c layout pinned for the 21 older
   fixtures; fixtures `company-boot-single`, `company-spring5-web`, `company-servlet-jsp` (24). 1,295 offline tests green.
 - Same-day follow-ups from the first company runs (Windows, 2026-10-21): gateway flag `need_origin`; JSP/HTML excluded
-  from the rewrite parse; `jstl-to-jakarta`; `jdk-generified-apis`; operator diagnostics (LLM / mvn heartbeats,
+  from the rewrite parse; `jstl-to-jakarta`; `jdk-generified-apis`; `resources-binary-filtering` (webfonts & co under a
+  filtered resource → `nonFilteredFileExtensions`, pre-emptive from the analysis — E12); git / Maven subprocess output
+  decoded as UTF-8 (the cp949 console code page killed `changes.patch` on Windows); operator diagnostics (LLM / mvn heartbeats,
   fix-loop watchdog + milestones, `/api/threads`, auto thread dump, non-interactive git with timeout, `taskkill /T`);
   bounded `<need_grep>`; `plan.parent_phase: spring` (company: parents right after `spring.rewrite`, set in
   `artifacts.example.yml`); the hang "stuck in fixer.propose" was `nearest_pom` spinning on an absolute Windows
@@ -146,7 +148,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,295 passed, 34 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,325 passed, 34 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

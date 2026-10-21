@@ -239,7 +239,7 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
 * 2026-10-21 (round 8 contracts — externalized-config inventory, placeholders, tests-skipped fallback):
   * Models: `PropertyRef(key, source, file, line, default, scope, raw)`, `PropertyFinding(key, status
     defined|defaulted|external, refs, defined_in, boot_keys, supplied_by, note)`, `PropertyInventory(findings,
-    packaged_files, profiles, filtered_resources, placeholder_files, placeholders_written, notes; .external)`.
+    packaged_files, profiles, filtered_resources, filtered_binary_files (binary files a `<filtering>true</filtering>` resource would filter — `sbmig.analyze.properties.filtered_binary_resources`, Ant includes / excludes honoured, capped at 200; drives the pre-emptive `resources-binary-filtering`), placeholder_files, placeholders_written, notes; .external)`.
     `ProjectProfile.properties: PropertyInventory` (analysis: `sbmig.analyze.properties.scan_properties(ws, poms, scan,
     rules) -> PropertyInventory`, wired by `analyze_project`), `RunReport.properties: Optional[PropertyInventory]`
     (profile inventory + the placeholders the restructure wrote; set by `Orchestrator._step_restructure`, else copied
@@ -349,6 +349,13 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     removes `<fork>`, `<executable>`, `<compilerVersion>`, `<compilerArguments>` children `bootclasspath` /
     `Xbootclasspath*` / `extdirs` / `endorseddirs` / `source` / `target`, `<compilerArgument>` and `<compilerArgs><arg>`
     entries with those flags (a flag's separate value `<arg>` goes too); text-based, formatting kept (E10).
+  * Handler `resources-binary-filtering` (`sbmig.triage.handlers.pom_handlers.ResourcesBinaryFiltering`; pre-emptive when
+    `PropertyInventory.filtered_binary_files` is non-empty, reactive on `MalformedInputException` / `Input length = N` /
+    `filtering … failed with`; kinds plugin_execution, unknown): `<nonFilteredFileExtensions>` on the failing plugin
+    (`maven-resources-plugin`, or `maven-war-plugin` when the cluster names it / `war:war`) in the pom that declares the
+    filtering (the failing module, else the root — one list for every module), entries = `BINARY_RESOURCE_EXTENSIONS` +
+    the failing file's extension, existing entries kept, a `<build><plugins>` declaration created when absent (a
+    `<build><plugins>` block wins over `<pluginManagement>`, profiles untouched); text-based, comments ignored (E12).
   * Fleet: a run with flag `unsupported-build-tool:<tool>` is a `skipped` project (`error` "unsupported build tool:
     <tool> (only Maven projects are migrated)"), never re-run by `retry_failed`, never a `stop_on_abort` trigger,
     stays skipped on resume (`sbmig.fleet.runner.unsupported_build_tool(report)`).

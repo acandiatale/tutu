@@ -27,6 +27,20 @@ from pydantic import BaseModel
 log = logging.getLogger("sbmig.core.workspace")
 
 GIT_TIMEOUT_S = 600.0      # one workspace git command (add / commit / status / reset)
+
+
+def _as_text(x) -> str:
+    """subprocess output → str: bytes are UTF-8 with replacement characters (never the console code page),
+    None (a reader thread that died) is empty."""
+    if x is None:
+        return ""
+    return x.decode("utf-8", errors="replace") if isinstance(x, (bytes, bytearray)) else str(x)
+
+
+def _as_bytes(x) -> bytes:
+    if x is None:
+        return b""
+    return x.encode("utf-8") if isinstance(x, str) else bytes(x)
 DEFAULT_ENCODING_CANDIDATES: tuple[str, ...] = ("utf-8", "cp949", "euc-kr", "shift_jis", "latin-1")
 _UTF8_BOM = b"\xef\xbb\xbf"
 _ZIP_UTF8_FLAG = 0x800
@@ -314,7 +328,15 @@ class Workspace:
         """Workspace git: never interactive. The user's global git config may ask for a GPG passphrase
         (`commit.gpgsign`), run hooks or call a credential manager — in a service process on Windows that waits
         forever, which is what a run "stuck after llm_fix" looked like (round 9c). So: stdin closed, prompts off,
-        signing / hooks disabled per call, and a hard timeout (`GIT_TIMEOUT_S`)."""
+        signing / hooks disabled per call, and a hard timeout (`GIT_TIMEOUT_S`).
+        Output is decoded as UTF-8 with replacement characters, never with the console code page: git emits UTF-8
+        (and raw file bytes in diffs), and a `text=True` cp949 decode on Windows died inside subprocess's reader
+        thread, which left `stdout=None` ("could not write changes.patch: data must be str, not NoneType",
+        2026-10-21 company run). `_git_bytes` keeps the raw bytes (patch files)."""
+        cp = self._git_bytes(*args, check=check)
+        return subprocess.CompletedProcess(cp.args, cp.returncode, _as_text(cp.stdout), _as_text(cp.stderr))
+
+    def _git_bytes(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", "GCM_INTERACTIVE": "never",
                "GIT_EDITOR": "true", "GIT_AUTHOR_NAME": "sbmig", "GIT_AUTHOR_EMAIL": "sbmig@local",
                "GIT_COMMITTER_NAME": "sbmig", "GIT_COMMITTER_EMAIL": "sbmig@local"}
@@ -322,14 +344,15 @@ class Workspace:
         cmd = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", f"core.hooksPath={no_hooks}",
                *args]
         try:
-            cp = subprocess.run(cmd, cwd=self.root, capture_output=True, text=True, env=env,
+            cp = subprocess.run(cmd, cwd=self.root, capture_output=True, env=env,
                                 stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_S)
         except subprocess.TimeoutExpired as e:
             raise GitError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_S:.0f}s in {self.root} — something "
                            "outside sbmig is blocking git (antivirus / indexer lock, a global hook, a credential or "
                            "GPG prompt); sbmig already disables prompts, hooks and signing per call") from e
         if check and cp.returncode != 0:
-            raise GitError(f"git {' '.join(args)} failed: {cp.stderr.strip() or cp.stdout.strip()}")
+            err = _as_text(cp.stderr).strip() or _as_text(cp.stdout).strip()
+            raise GitError(f"git {' '.join(args)} failed: {err}")
         return cp
 
     def git_init(self) -> str:
@@ -384,6 +407,11 @@ class Workspace:
             args.append(to_sha)
         return self._git(*args).stdout
 
+    def diff_bytes(self, from_sha: str, to_sha: Optional[str] = None) -> bytes:
+        """`git diff` as emitted: file content bytes untouched (an MS949 source stays MS949 in the patch)."""
+        args = ["diff", "--no-color", from_sha] + ([to_sha] if to_sha else [])
+        return _as_bytes(self._git_bytes(*args).stdout)
+
     def changed_files_since(self, sha: str) -> list[str]:
         out = self._git("diff", "--name-only", sha).stdout
         untracked = self._git("ls-files", "--others", "--exclude-standard").stdout
@@ -396,7 +424,7 @@ class Workspace:
     # ------------------------------------------------------------------ outputs
     def write_patch(self, name: str = "changes.patch") -> Path:
         p = self.run_dir / name
-        p.write_text(self.diff(self.first_commit()), encoding="utf-8")
+        p.write_bytes(self.diff_bytes(self.first_commit()))
         return p
 
     def zip_result(self, name: str = "result.zip") -> Path:

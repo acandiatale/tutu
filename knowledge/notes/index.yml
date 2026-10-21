@@ -230,6 +230,7 @@ notes:
   - jacoco|spotbugs|checkstyle|pmd|errorprone|animal-sniffer
   - spring-boot-maven-plugin|repackage|loaderImplementation|layout
   - argLine|add-opens
+  - MalformedInputException|Input length = 1|nonFilteredFileExtensions|<filtering>
   cases:
   - pure_java
   - spring_legacy

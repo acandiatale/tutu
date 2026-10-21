@@ -102,3 +102,16 @@ def test_jstl_to_jakarta_selected_from_the_pom(cfg) -> None:
     assert pre_handlers_for(_profile(poms=[p]), cfg) == ["jstl-to-jakarta"]
     assert pre_handlers_for(_profile(poms=[_pom(deps=[GAV.parse("taglibs:standard:1.1.2")], plugins=[GOOD_COMPILER])]),
                             cfg) == ["jstl-to-jakarta"]
+
+
+def test_resources_binary_filtering_selection(cfg) -> None:
+    from sbmig.core.models import PropertyInventory
+    from sbmig.plan.pre_handlers import pre_handler_reasons
+    prof = _profile(poms=[_pom(plugins=[GOOD_COMPILER])])
+    assert "resources-binary-filtering" not in pre_handlers_for(prof, cfg)
+    prof.properties = PropertyInventory(filtered_binary_files=["src/main/resources/static/fonts/fa.woff2",
+                                                               "src/main/resources/cert/app.jks"])
+    reasons = dict(pre_handler_reasons(prof, cfg))
+    assert "resources-binary-filtering" in reasons
+    assert "woff2" in reasons["resources-binary-filtering"] and "jks" in reasons["resources-binary-filtering"]
+    assert pre_handlers_for(prof, cfg)[-1] == "resources-binary-filtering"

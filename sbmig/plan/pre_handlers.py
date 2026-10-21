@@ -3,10 +3,13 @@
 Handler ids (contract with workstream E):
   lombok-version-floor, mapstruct-version-floor, querydsl-jakarta-classifier, maven-compiler-plugin-floor,
   surefire-plugin-floor, javax-servlet-api-to-jakarta, jaxb-runtime-add, remove-classic-loader-implementation,
-  mysql-connector-relocation, compiler-legacy-config (round 9: fork/executable/bootclasspath compiler config)
+  mysql-connector-relocation, compiler-legacy-config (round 9: fork/executable/bootclasspath compiler config),
+  jstl-to-jakarta (9c), resources-binary-filtering (binary files under a filtered resource dir → the resources
+  plugin's nonFilteredFileExtensions)
 """
 from __future__ import annotations
 
+import posixpath
 import re
 from typing import Optional
 
@@ -24,7 +27,7 @@ HANDLER_IDS = (
     "lombok-version-floor", "mapstruct-version-floor", "querydsl-jakarta-classifier", "maven-compiler-plugin-floor",
     "surefire-plugin-floor", "javax-servlet-api-to-jakarta", "jaxb-runtime-add",
     "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
-    "jstl-to-jakarta",
+    "jstl-to-jakarta", "resources-binary-filtering",
 )
 
 JSTL_JAVAX_KEYS = ("javax.servlet:jstl", "jstl:jstl", "taglibs:standard", "org.apache.taglibs:taglibs-standard-impl",
@@ -119,6 +122,14 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
     legacy = compiler_legacy_config_reason(profile)
     if legacy:
         out.append(("compiler-legacy-config", legacy))
+    binaries = list(getattr(profile.properties, "filtered_binary_files", None) or [])
+    if binaries:
+        exts = sorted({posixpath.basename(b).rsplit(".", 1)[-1].lower() for b in binaries if "." in posixpath.basename(b)})
+        shown = ", ".join(exts[:6]) + (", …" if len(exts) > 6 else "")
+        out.append(("resources-binary-filtering",
+                    (f"{len(binaries)} binary file(s) under a filtered resource dir ({shown}; e.g. {binaries[0]}): "
+                     "maven-resources-plugin ≥ 3.2 fails on them with MalformedInputException — "
+                     "nonFilteredFileExtensions keeps filtering on")))
     return out
 
 

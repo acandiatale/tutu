@@ -244,6 +244,10 @@ class PropertyInventory(BaseModel):
     packaged_files: list[str] = Field(default_factory=list)     # resource files scanned for definitions
     profiles: list[str] = Field(default_factory=list)           # application-<p>.* names + spring.profiles.active refs
     filtered_resources: list[str] = Field(default_factory=list) # Maven <filtering>true</filtering> resource dirs (pom props)
+    filtered_binary_files: list[str] = Field(default_factory=list)  # binary files (webfonts, keystores, archives, …:
+                                                   # analyze.properties.BINARY_RESOURCE_EXTENSIONS) a filtered resource
+                                                   # would run through the filter (includes / excludes honoured; capped)
+                                                   # → pre-emptive handler `resources-binary-filtering`
     placeholder_files: list[str] = Field(default_factory=list)  # files that received the sbmig placeholder block
     placeholders_written: list[str] = Field(default_factory=list)   # keys written with the sentinel
     notes: list[str] = Field(default_factory=list)

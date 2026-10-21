@@ -9,6 +9,7 @@ keywords:
   - "jacoco|spotbugs|checkstyle|pmd|errorprone|animal-sniffer"
   - "spring-boot-maven-plugin|repackage|loaderImplementation|layout"
   - "argLine|add-opens"
+  - "MalformedInputException|Input length = 1|nonFilteredFileExtensions|<filtering>"
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [jdk21, spring, restructure]
 ---
@@ -50,6 +51,15 @@ phases: [jdk21, spring, restructure]
 - Remove `<loaderImplementation>CLASSIC</loaderImplementation>` and `<executable>true</executable>` (removed features).
 - `<layout>ZIP</layout>`/`PropertiesLauncher` still exist; `<includeOptional>true</includeOptional>` if optional deps are needed at runtime.
 - Only the boot module (boot-jar) runs `repackage`; library modules (comp-jar) must not.
+
+## Resource filtering and binary files
+- `<filtering>true</filtering>` over a directory holding webfonts (eot/ttf/woff/woff2), keystores, archives or Office
+  templates: maven-resources-plugin ≥ 3.2 (Boot 2.4+ / Boot 4 parents) fails with
+  `filtering … failed with MalformedInputException: Input length = 1`; 2.x silently corrupted those files instead.
+  Fix: `<nonFilteredFileExtensions><nonFilteredFileExtension>eot</nonFilteredFileExtension>…` on the plugin
+  (`maven-war-plugin` has the same parameter for filtered `<webResources>`); jpg/jpeg/gif/bmp/png are already exempt.
+  Never turn filtering off (`@project.version@` in application.properties stops resolving) and never delete the files;
+  if the directory mixes config and assets, a second unfiltered `<resource>` with `<excludes>` is the cleaner split.
 
 ## Resolution errors
 - "Plugin X:Y could not be resolved" with an old version → bump to the table version (Nexus may not proxy ancient versions).

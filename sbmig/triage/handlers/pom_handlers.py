@@ -895,6 +895,173 @@ class RemoveClassicLoaderImplementation(PomHandler):
         return changed
 
 
+# ---------------------------------------------------------------------------
+# binary files under a filtered resource (catalog E12)
+# ---------------------------------------------------------------------------
+def _indent_unit(text: str) -> str:
+    m = re.search(r"^([ \t]+)<(?:modelVersion|parent|groupId|artifactId|version|packaging|name|properties|"
+                  r"dependencies|dependencyManagement|build|modules)\b", text, flags=re.M)
+    return m.group(1) if m else "  "
+
+
+def _mask_comments(text: str) -> str:
+    """Same length as `text` with XML comments blanked: spans found on the mask index into the original."""
+    return re.sub(r"<!--.*?-->", lambda m: " " * len(m.group(0)), text, flags=re.S)
+
+
+def _inside(masked: str, pos: int, tag: str) -> bool:
+    return masked.count(f"<{tag}>", 0, pos) > masked.count(f"</{tag}>", 0, pos)
+
+
+def _insert_before_close(text: str, close_idx: int, lines: list[str], unit: str) -> str:
+    """Insert `lines` (indented relative to each other with `unit`) as children in front of the closing tag that
+    starts at `close_idx`; a closing tag sharing its line with content is moved onto its own line."""
+    line_start = text.rfind("\n", 0, close_idx) + 1
+    lead = text[line_start:close_idx]
+    if not lead.strip():
+        body = "".join(f"{lead}{unit}{ln}\n" for ln in lines)
+        return text[:line_start] + body + text[line_start:]
+    indent = re.match(r"[ \t]*", text[line_start:]).group(0)
+    body = "".join(f"\n{indent}{unit}{ln}" for ln in lines)
+    return text[:close_idx] + body + "\n" + indent + text[close_idx:]
+
+
+class ResourcesBinaryFiltering(PomHandler):
+    """Binary files under a `<filtering>true</filtering>` resource (webfonts, keystores, archives, Office templates):
+    maven-resources-plugin ≥ 3.2 — what the Boot 2.4+ / Boot 4 parents manage — reads them as text and fails the copy
+    with `filtering <f> to <t> failed with MalformedInputException: Input length = 1` (2.x silently corrupted the
+    copy instead). Fix = `<nonFilteredFileExtensions>` on the plugin that failed (resources; war for `<webResources>`):
+    filtering itself stays on so `@project.version@` in application.properties keeps working — never
+    `<filtering>false</filtering>`, never deleting the files. Text-based (formatting kept); pre-emptive from the
+    analysis (`PropertyInventory.filtered_binary_files`), reactive on the plugin wording. Edited pom: the failing
+    module's when it declares the filtering (or the filtering comes from an outside parent), else the root pom that
+    declares it (one list for every module)."""
+    id = "resources-binary-filtering"
+    description = ("binary files under a filtered resource dir: add nonFilteredFileExtensions (webfonts, keystores, "
+                   "archives, documents) to maven-resources-plugin / maven-war-plugin, filtering stays on")
+    kinds = frozenset({ErrorKind.PLUGIN_EXECUTION, ErrorKind.UNKNOWN})
+    triggers = (r"MalformedInputException", r"UnmappableCharacterException", r"Input length = \d+",
+                r"filtering \S.* to \S.* failed with")
+    RESOURCES, WAR = "maven-resources-plugin", "maven-war-plugin"
+    IMAGE_DEFAULTS = frozenset({"jpg", "jpeg", "gif", "bmp", "png"})       # the plugins' built-in list
+    _FILE_RE = re.compile(r"filtering\s+(?P<path>\S(?:.*?\S)?)\s+to\s+\S")
+    _ENTRY_RE = re.compile(r"<nonFilteredFileExtension>\s*([^<\s]+)\s*</nonFilteredFileExtension>")
+    _FILTERING_RE = re.compile(r"<filtering>\s*true\s*</filtering>")
+    _PLUGIN_BLOCK = r"<plugin>(?:(?!</plugin>).)*?<artifactId>\s*{a}\s*</artifactId>(?:(?!</plugin>).)*?</plugin>"
+
+    # -- what to add ----------------------------------------------------
+    def wanted_extensions(self, cluster: Optional[ErrorCluster]) -> list[str]:
+        """The table + the extension of every file the error names (an unusual one is still binary)."""
+        from sbmig.analyze.properties import BINARY_RESOURCE_EXTENSIONS
+
+        exts = [e.lower() for e in BINARY_RESOURCE_EXTENSIONS]
+        for m in self._FILE_RE.finditer(cluster_text(cluster)):
+            base = m.group("path").replace("\\", "/").rsplit("/", 1)[-1]
+            ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
+            if re.fullmatch(r"[a-z0-9]{1,8}", ext) and ext not in exts and ext not in self.IMAGE_DEFAULTS:
+                exts.append(ext)
+        return exts
+
+    def plugin_for(self, cluster: Optional[ErrorCluster]) -> str:
+        text = cluster_text(cluster)
+        return self.WAR if re.search(r"maven-war-plugin|\bwar:(?:war|exploded|inplace)\b", text) else self.RESOURCES
+
+    def _declares_filtering(self, text: str) -> bool:
+        return bool(self._FILTERING_RE.search(_mask_comments(text)))
+
+    def plugins_for_pom(self, text: str) -> list[str]:
+        """Pre-emptive: the resources plugin, plus the war plugin when the pom filters `<webResources>`."""
+        out = [self.RESOURCES]
+        m = re.search(r"<webResources>.*?</webResources>", _mask_comments(text), flags=re.S)
+        if m and self._FILTERING_RE.search(m.group(0)):
+            out.append(self.WAR)
+        return out
+
+    def targets(self, ws: Workspace, cluster: Optional[ErrorCluster], profile: Optional[ProjectProfile]) -> list[str]:
+        poms = all_poms(ws)
+        if cluster is None:
+            return [p for p in poms if self._declares_filtering(ws.read(p))]
+        root = root_pom(ws, profile)
+        out: list[str] = []
+        for p in poms_for_cluster(ws, cluster, profile):
+            pick = p
+            if root and p != root and not self._declares_filtering(ws.read(p)) \
+                    and self._declares_filtering(ws.read(root)):
+                pick = root                      # filtering inherited from the root → one list for every module
+            if pick not in out:
+                out.append(pick)
+        return out
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        exts = self.wanted_extensions(cluster)
+        changed: list[str] = []
+        for rel in self.targets(ws, cluster, profile):
+            text = ws.read(rel)
+            new = text
+            for artifact in ([self.plugin_for(cluster)] if cluster is not None else self.plugins_for_pom(text)):
+                new = self.add_extensions(new, artifact, exts)
+            if new != text:
+                ws.write(rel, new)
+                changed.append(rel)
+        return changed
+
+    # -- text surgery ---------------------------------------------------
+    def add_extensions(self, text: str, artifact: str, exts: list[str]) -> str:
+        """`text` with `exts` in the plugin's `<nonFilteredFileExtensions>` (declaration created when absent)."""
+        unit = _indent_unit(text)
+        masked = _mask_comments(text)
+        blocks = list(re.finditer(self._PLUGIN_BLOCK.format(a=re.escape(artifact)), masked, flags=re.S))
+        if blocks:
+            # a <build><plugins> declaration wins over <pluginManagement> (its configuration merges over the managed one)
+            m = next((b for b in blocks if not _inside(masked, b.start(), "pluginManagement")), blocks[0])
+            return text[:m.start()] + self._extend_block(text[m.start():m.end()], exts, unit) + text[m.end():]
+        plugin_lines = ["<plugin>", f"{unit}<groupId>{DEFAULT_PLUGIN_GROUP}</groupId>",
+                        f"{unit}<artifactId>{artifact}</artifactId>", f"{unit}<configuration>",
+                        f"{unit * 2}<nonFilteredFileExtensions>",
+                        *[f"{unit * 3}<nonFilteredFileExtension>{e}</nonFilteredFileExtension>" for e in exts],
+                        f"{unit * 2}</nonFilteredFileExtensions>", f"{unit}</configuration>", "</plugin>"]
+        build = next((b for b in re.finditer(r"<build>", masked) if not _inside(masked, b.start(), "profiles")), None)
+        if build is None:
+            close = masked.rfind("</project>")
+            if close < 0:
+                return text
+            return _insert_before_close(text, close, ["<build>", f"{unit}<plugins>",
+                                                      *[f"{unit * 2}{ln}" for ln in plugin_lines],
+                                                      f"{unit}</plugins>", "</build>"], unit)
+        b_end = masked.find("</build>", build.end())
+        if b_end < 0:
+            return text
+        plugins_close = next((c.start() for c in re.compile(r"</plugins>").finditer(masked, build.end(), b_end)
+                              if not _inside(masked, c.start(), "pluginManagement")), None)
+        if plugins_close is not None:
+            return _insert_before_close(text, plugins_close, plugin_lines, unit)
+        return _insert_before_close(text, b_end, ["<plugins>", *[f"{unit}{ln}" for ln in plugin_lines], "</plugins>"],
+                                    unit)
+
+    def _extend_block(self, block: str, exts: list[str], unit: str) -> str:
+        masked = _mask_comments(block)
+        # plugin-level configuration only: an execution's <configuration> is masked away
+        level = re.sub(r"<executions>.*?</executions>", lambda m: " " * len(m.group(0)), masked, flags=re.S)
+        m = re.search(r"<nonFilteredFileExtensions>(.*?)</nonFilteredFileExtensions>", level, flags=re.S)
+        if m:
+            existing = {e.lower().lstrip(".") for e in self._ENTRY_RE.findall(level[m.start(1):m.end(1)])}
+            missing = [e for e in exts if e not in existing]
+            if not missing:
+                return block
+            return _insert_before_close(block, m.end(1),
+                                        [f"<nonFilteredFileExtension>{e}</nonFilteredFileExtension>" for e in missing],
+                                        unit)
+        lines = ["<nonFilteredFileExtensions>",
+                 *[f"{unit}<nonFilteredFileExtension>{e}</nonFilteredFileExtension>" for e in exts],
+                 "</nonFilteredFileExtensions>"]
+        c = re.search(r"</configuration>", level)
+        if c:
+            return _insert_before_close(block, c.start(), lines, unit)
+        close = level.rfind("</plugin>")
+        return _insert_before_close(block, close, ["<configuration>", *[f"{unit}{ln}" for ln in lines],
+                                                   "</configuration>"], unit)
+
+
 _MISSING_RE = re.compile(r"'(?:dependencyManagement\.)?dependencies\.dependency\.version' for "
                          r"([^:\s']+):([^:\s']+)(?::[^\s']+)? (?:is missing|must be a valid version)")
 
@@ -1111,5 +1278,6 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         CompilerLegacyConfig(),
         SurefirePluginFloor(),
         RemoveClassicLoaderImplementation(),
+        ResourcesBinaryFiltering(),
         TestCompileSkip(),
     ]

@@ -118,7 +118,8 @@ def _kill_tree_windows(pid: int) -> None:
     """Windows has no process groups to signal: `mvn.cmd` is a cmd.exe whose child `java.exe` would survive a plain
     terminate() and keep `target/` / source files locked (round 9c) — `taskkill /T /F` kills the whole tree."""
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, timeout=30)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30,
+                       encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):  # pragma: no cover - best effort
         pass
 
@@ -212,8 +213,8 @@ def maven_available(cfg: Config) -> tuple[bool, str]:
     """Preflight: run ``mvn -v`` with the configured env. Returns (ok, 'Apache Maven x.y.z; Java version: …')."""
     cmd = [mvn_executable(cfg), "-v"]
     try:
-        cp = subprocess.run(cmd, env=mvn_env(cfg), capture_output=True, text=True, timeout=120,
-                            stdin=subprocess.DEVNULL)
+        cp = subprocess.run(cmd, env=mvn_env(cfg), capture_output=True, timeout=120,
+                            stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")
     except (FileNotFoundError, PermissionError) as exc:
         return False, f"mvn not found ({cfg.build.mvn}): {exc}"
     except subprocess.TimeoutExpired:

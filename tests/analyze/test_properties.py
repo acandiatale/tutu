@@ -386,3 +386,37 @@ def test_analyze_project_wiring(tmp_path: Path, cfg) -> None:
     assert [f.key for f in p.properties.external] == ["db.url"]
     cfg.externalized.enabled = False
     assert analyze_path(tmp_path, cfg).properties.findings == []
+
+
+def test_filtered_binary_resources(tmp_path: Path, cfg) -> None:
+    write(tmp_path, "pom.xml", pom("app").replace(
+        "</project>", "<build><resources><resource><directory>src/main/resources</directory>"
+                      "<filtering>true</filtering><excludes><exclude>skip/**</exclude></excludes></resource>"
+                      "<resource><directory>src/main/raw</directory><filtering>false</filtering></resource>"
+                      "</resources></build></project>"))
+    for rel in ("src/main/resources/static/fonts/fa.woff2", "src/main/resources/cert/app.jks",
+                "src/main/resources/skip/x.ttf", "src/main/resources/logo.png", "src/main/raw/other.eot"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x00\x01binary")
+    write(tmp_path, "src/main/resources/application.properties", "a=1\n")
+    i = inv(tmp_path, cfg)
+    assert i.filtered_resources == ["src/main/resources"]
+    assert i.filtered_binary_files == ["src/main/resources/cert/app.jks", "src/main/resources/static/fonts/fa.woff2"]
+
+
+def test_filtered_binary_resources_includes_and_copy_resources(tmp_path: Path, cfg) -> None:
+    write(tmp_path, "pom.xml", pom("app").replace(
+        "</project>",
+        "<build><resources><resource><directory>src/main/resources</directory><filtering>true</filtering>"
+        "<includes><include>**/*.properties</include><include>*.ttf</include></includes></resource></resources>"
+        "<plugins><plugin><artifactId>maven-resources-plugin</artifactId><executions><execution><id>c</id>"
+        "<goals><goal>copy-resources</goal></goals><configuration><resources><resource>"
+        "<directory>${basedir}/dist</directory><filtering>true</filtering></resource></resources>"
+        "</configuration></execution></executions></plugin></plugins></build></project>"))
+    for rel in ("src/main/resources/static/fonts/fa.woff2", "src/main/resources/top.ttf",
+                "src/main/resources/deep/d.ttf", "dist/bundle.zip"):
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x00")
+    assert inv(tmp_path, cfg).filtered_binary_files == ["dist/bundle.zip", "src/main/resources/top.ttf"]  # `*.ttf` = top level
