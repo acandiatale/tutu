@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -28,6 +29,9 @@ MAX_SERVED_LINES = 300
 SERVED_HEAD_LINES = 200
 SERVED_TAIL_LINES = 80
 MAX_GREP_LINES = 40
+MAX_GREP_FILES = 3000             # a <need_grep> scans at most this many project files …
+MAX_GREP_FILE_BYTES = 512_000     # … skipping files bigger than this (generated sources, bundles)
+GREP_BUDGET_S = 45.0              # … and stops after this long (Windows + on-access antivirus made it crawl)
 FEEDBACK_PAD = 4
 
 
@@ -120,6 +124,9 @@ class LLMFixer:
                 rounds += 1
                 requested.extend(p for p in parsed.need_files if p not in requested)
                 remaining = self.cfg.llm.max_context_rounds - rounds
+                log.info("fix prompt for %s: the LLM asked for more context (round %d/%d): %d file(s) %s, %d grep(s) %s",
+                         cluster.id, rounds, self.cfg.llm.max_context_rounds, len(parsed.need_files),
+                         parsed.need_files[:4], len(parsed.need_grep), parsed.need_grep[:3])
                 served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining)
                 messages = messages + [ChatMessage(role="assistant", content=last.content),
                                        ChatMessage(role="user", content=served)]
@@ -133,6 +140,8 @@ class LLMFixer:
                 failures = PatchApplier(ws).check(parsed.changes)
                 if failures:
                     rounds += 1
+                    log.info("fix prompt for %s: %d patch block(s) did not apply → one feedback round", cluster.id,
+                             len(failures))
                     feedback = self.feedback_message(ws, failures)
                     messages = messages + [ChatMessage(role="assistant", content=last.content),
                                            ChatMessage(role="user", content=feedback)]
@@ -299,31 +308,58 @@ class LLMFixer:
         return "\n\n".join(parts) + "\n"
 
     def grep(self, ws: Workspace, patterns: list[str]) -> str:
-        files = ws.java_files() + ws.pom_files() + self._resource_files(ws)
-        out: list[str] = []
-        total = 0
+        """`<need_grep>` from the LLM: one pass over the project's java / pom / resource files (each read once, big
+        files skipped, bounded by MAX_GREP_FILES and GREP_BUDGET_S) for up to 5 patterns."""
+        t0 = time.monotonic()
+        files = (ws.java_files() + ws.pom_files() + self._resource_files(ws))
+        skipped_count = max(0, len(files) - MAX_GREP_FILES)
+        files = files[:MAX_GREP_FILES]
+        rxs: list[tuple[str, re.Pattern[str]]] = []
         for pat in patterns[:5]:
             try:
-                rx = re.compile(pat)
+                rxs.append((pat, re.compile(pat)))
             except re.error:
-                rx = re.compile(re.escape(pat))
-            hits: list[str] = []
-            count = 0
-            for f in files:
-                try:
-                    text = ws.read(f)
-                except OSError:
+                rxs.append((pat, re.compile(re.escape(pat))))
+        log.info("grep for the LLM: %d pattern(s) over %d file(s)%s", len(rxs), len(files),
+                 f" ({skipped_count} more not scanned)" if skipped_count else "")
+        hits: dict[str, list[str]] = {pat: [] for pat, _ in rxs}
+        counts: dict[str, int] = {pat: 0 for pat, _ in rxs}
+        total = 0
+        scanned = 0
+        budget_hit = False
+        for f in files:
+            if time.monotonic() - t0 > GREP_BUDGET_S:
+                budget_hit = True
+                break
+            try:
+                if ws.abs(f).stat().st_size > MAX_GREP_FILE_BYTES:
                     continue
+                text = ws.read(f)
+            except OSError:
+                continue
+            scanned += 1
+            lines: Optional[list[str]] = None
+            for pat, rx in rxs:
                 if not rx.search(text):
                     continue
-                for i, line in enumerate(text.splitlines(), 1):
+                if lines is None:
+                    lines = text.splitlines()
+                for i, line in enumerate(lines, 1):
                     if rx.search(line):
-                        count += 1
+                        counts[pat] += 1
                         if total < MAX_GREP_LINES:
-                            hits.append(f"{f}:{i}: {line.strip()[:200]}")
+                            hits[pat].append(f"{f}:{i}: {line.strip()[:200]}")
                             total += 1
-            head = f"grep /{pat}/ → {count} matching line(s)" + (f" (showing {len(hits)})" if count > len(hits) else "")
-            out.append(head + ("\n" + "\n".join(hits) if hits else ""))
+        out: list[str] = []
+        for pat, _ in rxs:
+            head = f"grep /{pat}/ → {counts[pat]} matching line(s)" + \
+                (f" (showing {len(hits[pat])})" if counts[pat] > len(hits[pat]) else "")
+            out.append(head + ("\n" + "\n".join(hits[pat]) if hits[pat] else ""))
+        if budget_hit or skipped_count:
+            out.append(f"(grep stopped after {scanned} of {len(files) + skipped_count} file(s)"
+                       f"{' — time budget' if budget_hit else ''}; ask for specific files instead)")
+        log.info("grep for the LLM done: %d file(s) scanned in %.1fs, %d line(s) returned%s", scanned,
+                 time.monotonic() - t0, total, " (budget hit)" if budget_hit else "")
         return "\n\n".join(out)
 
     # ------------------------------------------------------------------ validation feedback

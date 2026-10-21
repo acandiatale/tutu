@@ -228,3 +228,21 @@ def test_advisory_guidance_reaches_the_prompt(cfg, setup):
     LLMFixer(cfg, FakeLLMClient([GOOD])).propose(setup, make_cluster(file=A, lines=(3,)), ctx())
     journal = [json.loads(l) for l in setup.journal_path.read_text().splitlines()]
     assert [e for e in journal if e["event"] == "llm_fix"][-1]["advisory_hints"] == 0
+
+
+
+def test_grep_reads_each_file_once_and_respects_the_budget(setup, cfg, monkeypatch):
+    """Round 9c: a <need_grep> over a big tree on Windows crawled for minutes — one pass per file, big files skipped,
+    a time budget with an honest note."""
+    import sbmig.fix.fixer as fx
+    fixer = LLMFixer(cfg, FakeLLMClient())
+    out = fixer.grep(setup, ["class", "nothing-matches-this"])
+    assert "grep /class/ →" in out and "grep /nothing-matches-this/ → 0 matching line(s)" in out
+    assert "grep stopped" not in out
+    monkeypatch.setattr(fx, "GREP_BUDGET_S", -1.0)                 # budget already spent → first file stops it
+    out = fixer.grep(setup, ["class"])
+    assert "grep stopped after 0 of" in out and "time budget" in out
+    monkeypatch.setattr(fx, "GREP_BUDGET_S", 45.0)
+    monkeypatch.setattr(fx, "MAX_GREP_FILE_BYTES", 1)              # every file is "too big" → skipped, no crash
+    out = fixer.grep(setup, ["class"])
+    assert "grep /class/ → 0 matching line(s)" in out
