@@ -268,11 +268,12 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | httpclient4 | superseded | guide | org.apache.httpcomponents.client5:httpclient5 | manual |
 | jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; the LLM ports `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
 | ibatis2 | incompatible | guide | org.mybatis:mybatis + org.mybatis:mybatis-spring | no recipe exists; the LLM ports `SqlMapClientDaoSupport` DAOs with the `## fix-loop: ibatis2` hint (`knowledge/notes/ibatis2.md`) |
+| jdk-generified-apis | incompatible | guide | JDK API: `Enumeration<TreeNode>` + cast / `asIterator()` | no recipe (not a dependency); the LLM ports `javax.swing.tree` code with the `## fix-loop: jdk-generified-apis` hint (`knowledge/notes/jdk21.md`) |
 
 The analyzer rule names added for these entries are `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`,
 `spring-cloud-bom` (dependencyManagement / parent), `swagger-v1`, `spring-security-oauth2-legacy`, `log4j1`,
 `commons-lang2`, `httpclient4`, `jdk-removed-apis` (import-only: `sun.misc`, `sun.security`, `com.sun.image`,
-`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule) and `ibatis2` (round 9).
+`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule), `ibatis2` (round 9) and `jdk-generified-apis` (`javax.swing.tree`, round 9c).
 
 ### ibatis2: iBATIS 2 / SqlMapClient (round 9)
 
