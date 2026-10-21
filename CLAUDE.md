@@ -101,6 +101,12 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   Spring Boot as-is / MSA kept in place (`boot_pom`: poms only, `*-boot` naming + pom check), single-module Boot
   wrapped; a failed restructure step is no longer reported as success. Pre-9c layout pinned for the 21 older
   fixtures; fixtures `company-boot-single`, `company-spring5-web`, `company-servlet-jsp` (24). 1,295 offline tests green.
+- Same-day follow-ups from the first company runs (Windows, 2026-10-21): gateway flag `need_origin`; JSP/HTML excluded
+  from the rewrite parse; `jstl-to-jakarta`; `jdk-generified-apis`; operator diagnostics (LLM / mvn heartbeats,
+  fix-loop watchdog + milestones, `/api/threads`, auto thread dump, non-interactive git with timeout, `taskkill /T`);
+  bounded `<need_grep>`; `plan.parent_phase: spring` (company: parents right after `spring.rewrite`, set in
+  `artifacts.example.yml`); the hang "stuck in fixer.propose" was `nearest_pom` spinning on an absolute Windows
+  path (fixed `8c41670`) — the user still has to confirm a fresh run passes `spring it2`.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
