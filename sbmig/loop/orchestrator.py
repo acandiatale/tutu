@@ -418,6 +418,14 @@ class Orchestrator:
         t = self.clock()
         plan = self._plan_with_advisories(profile, report.advisories)
         plan = self._advise_plan(plan)
+        try:    # X9: repositories declared inside the poms — a note, a follow-up when no settings mirror covers them
+            from sbmig.build.mvn import repository_notes
+            for n in repository_notes(profile.poms, self.cfg):
+                if n not in plan.notes:
+                    plan.notes.append(n)
+                (log.warning if n.startswith("followup:") else log.info)("%s", n)
+        except Exception as e:  # noqa: BLE001 - never fail planning over a note
+            log.debug("repository notes skipped: %s", e)
         self.plan = plan
         report.plan = plan
         self.ws.save_model("plan.json", plan)

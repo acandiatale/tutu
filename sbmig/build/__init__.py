@@ -9,11 +9,13 @@ Public API (docs/INTERFACES.md):
     maven_available(cfg) -> (ok, version string)                     (preflight)
 """
 from .log_parser import parse_maven_log, parse_reactor_summary, strip_ansi
-from .mvn import base_command, local_repo_path, maven_available, mvn_env, run_logged
+from .mvn import (base_command, local_repo_path, maven_available, mvn_env, repository_notes, run_logged,
+                  settings_catch_all_mirror)
 from .runner import MavenRunner, build_summary
 from .signatures import register_external_prefixes, external_prefixes_from_config, classify_javac, normalize_message, signature_for
 
 __all__ = [
+    "repository_notes", "settings_catch_all_mirror",
     "MavenRunner",
     "base_command",
     "build_summary",

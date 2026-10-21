@@ -4,7 +4,7 @@ from .pom_handlers import (CompilerPluginFloor, DependencyRelocation, JavaxServl
                            LombokVersionFloor, MapstructVersionFloor, MissingDependencyVersion,
                            MysqlConnectorRelocation, PomHandler, QuerydslJakartaClassifier, Relocation,
                            RelocationHandler, RemoveClassicLoaderImplementation, ResourcesBinaryFiltering,
-                           SurefirePluginFloor,
+                           StripPomRepositories, SurefirePluginFloor,
                            TestCompileSkip, default_handlers, known_versions, relocation_table, version_for)
 
 __all__ = [
@@ -12,6 +12,6 @@ __all__ = [
     "all_poms", "nearest_pom", "poms_for_cluster", "version_lt", "known_versions", "relocation_table",
     "version_for", "CompilerPluginFloor", "DependencyRelocation", "JavaxServletApiToJakarta", "JaxbRuntimeAdd",
     "LombokVersionFloor", "MapstructVersionFloor", "MissingDependencyVersion", "MysqlConnectorRelocation",
-    "QuerydslJakartaClassifier", "RemoveClassicLoaderImplementation", "ResourcesBinaryFiltering", "SurefirePluginFloor",
+    "QuerydslJakartaClassifier", "RemoveClassicLoaderImplementation", "ResourcesBinaryFiltering", "StripPomRepositories", "SurefirePluginFloor",
     "TestCompileSkip",
 ]

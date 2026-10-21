@@ -118,3 +118,33 @@ def test_owning_pom_and_module_order_with_unreferenced(tmp_path: Path) -> None:
     assert module_order(poms) == ["pom.xml", "a/pom.xml", "loose/pom.xml"]
     assert owning_pom("a/src/main/java/X.java", poms).path == "a/pom.xml"
     assert owning_pom("src/main/java/X.java", poms).path == "pom.xml"
+
+
+def test_repository_urls_declared_in_poms(tmp_path: Path) -> None:
+    from sbmig.analyze.pom_parser import repository_urls
+    text = pom("app", props={"nexus.url": "https://nexus.example.com"}).replace("</project>", """
+  <repositories>
+    <repository><id>old</id><url>http://old-nexus.corp/repo</url></repository>
+    <!-- <repository><id>gone</id><url>http://commented-out/</url></repository> -->
+    <repository><id>central-again</id><url> https://repo.maven.apache.org/maven2 </url></repository>
+  </repositories>
+  <distributionManagement>
+    <repository><id>deploy</id><url>http://deploy-target/</url></repository>
+  </distributionManagement>
+  <profiles>
+    <profile>
+      <id>ci</id>
+      <pluginRepositories>
+        <pluginRepository><id>p</id><url>${nexus.url}/repository/plugins</url></pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+</project>""")
+    write(tmp_path, "pom.xml", text)
+    assert repository_urls(text) == ["http://old-nexus.corp/repo", "https://repo.maven.apache.org/maven2",
+                                     "${nexus.url}/repository/plugins"]
+    poms, _ = parse_poms(PathView(tmp_path))
+    assert poms[0].repositories == ["http://old-nexus.corp/repo", "https://repo.maven.apache.org/maven2",
+                                    "https://nexus.example.com/repository/plugins"]      # interpolated
+    write(tmp_path, "pom.xml", pom("plain"))
+    assert parse_poms(PathView(tmp_path))[0][0].repositories == []

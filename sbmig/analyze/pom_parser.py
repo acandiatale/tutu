@@ -154,6 +154,7 @@ class _RawPom:
     plugins: list[_RawPlugin]
     parent_raw: Optional["_RawPom"] = None
     effective_props: dict[str, str] = field(default_factory=dict)
+    repositories: list[str] = field(default_factory=list)   # <repository>/<pluginRepository> urls as written
 
     @property
     def eff_group(self) -> Optional[str]:
@@ -187,6 +188,25 @@ def _parse_plugins(container: Optional[ET.Element], managed: bool) -> list[_RawP
         out.append(_RawPlugin(group_id=_text(p, "groupId") or "org.apache.maven.plugins", artifact_id=a,
                               version=_text(p, "version"), configuration=_flat_config(_child(p, "configuration")),
                               managed=managed))
+    return out
+
+
+_REPO_URL_RE = re.compile(r"<(repository|pluginRepository)>(?:(?!</\1>).)*?<url>\s*([^<]+?)\s*</url>(?:(?!</\1>).)*?</\1>",
+                          re.S)
+_XML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def repository_urls(text: str) -> list[str]:
+    """URLs of every `<repository>` / `<pluginRepository>` in the pom text (profiles included, comments ignored,
+    `<distributionManagement>` excluded), in order, de-duplicated. These are the repositories Maven contacts in
+    addition to the settings — the ones an air-gapped host cannot reach (RUNBOOK §0.1)."""
+    body = _XML_COMMENT_RE.sub("", text)
+    body = re.sub(r"<distributionManagement>.*?</distributionManagement>", "", body, flags=re.S)
+    out: list[str] = []
+    for m in _REPO_URL_RE.finditer(body):
+        url = m.group(2).strip()
+        if url and url not in out:
+            out.append(url)
     return out
 
 
@@ -382,6 +402,7 @@ def build_pom_infos(raws: list[_RawPom]) -> list[PomInfo]:
             properties=dict(r.properties),
             dependencies=deps,
             dependency_management=dm,
+            repositories=[interpolate(u, props) or u for u in r.repositories],
             plugins=plugins,
             has_spring_boot_plugin=any(p.group_id == BOOT_GROUP and p.artifact_id == "spring-boot-maven-plugin"
                                        for p, raw_pl in zip(plugins, r.plugins) if not raw_pl.managed),
@@ -452,7 +473,10 @@ def parse_poms(ws: WorkspaceView) -> tuple[list[PomInfo], list[str]]:
     raws: list[_RawPom] = []
     for rel in find_pom_files(ws):
         try:
-            raws.append(parse_pom_text(ws.read(rel), rel))
+            text = ws.read(rel)
+            raw = parse_pom_text(text, rel)
+            raw.repositories = repository_urls(text)
+            raws.append(raw)
         except (ValueError, OSError) as e:
             msg = f"pom skipped (parse failure): {e}"
             log.warning(msg)

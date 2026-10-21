@@ -103,6 +103,7 @@ build:
   source_encoding_policy: set-property   # set-property | convert-utf8 (legacy MS949/EUC-KR sources)
   enforcer_policy: relax-rule            # relax-rule | skip | keep
   werror_policy: remove
+  pom_repositories: keep        # keep | remove — <repositories> declared in the poms (RUNBOOK §0.1; remove needs the mirror)
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
 
 loop:

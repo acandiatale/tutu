@@ -1062,6 +1062,42 @@ class ResourcesBinaryFiltering(PomHandler):
                                                    "</configuration>"], unit)
 
 
+class StripPomRepositories(PomHandler):
+    """`build.pom_repositories: remove` (opt-in): delete `<repositories>` / `<pluginRepositories>` from every pom
+    (profiles included, comments kept). Legacy poms carry old Nexus / Central / Spring-milestone URLs that an
+    air-gapped host cannot reach; with a catch-all mirror in `build.settings_file` they are redundant, without one
+    they cost a resolution failure or a connect timeout per artifact. Pre-emptive (before the first build) when the
+    profile shows declared URLs; reactive on transfer failures. `keep` (default) → never matches (RUNBOOK §0.1)."""
+    id = "strip-pom-repositories"
+    description = "remove <repositories>/<pluginRepositories> declared in the project poms (build.pom_repositories=remove)"
+    kinds = frozenset({ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.PLUGIN_RESOLUTION, ErrorKind.PARENT_RESOLUTION,
+                       ErrorKind.UNKNOWN})
+    triggers = (r"Could not transfer artifact", r"Blocked mirror for repositories", r"Connection refused",
+                r"UnknownHostException", r"Connect(?:ion)? timed out", r"No route to host", r"Transfer failed")
+    _BLOCK_RE = re.compile(r"\n?[ \t]*<(repositories|pluginRepositories)>.*?</\1>[ \t]*", re.S)
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        return cfg is not None and getattr(cfg.build, "pom_repositories", "keep") == "remove"
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        if not self.applicable(cluster, profile, cfg):
+            return []
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            text = ws.read(rel)
+            masked = _mask_comments(text)
+            spans = [(m.start(), m.end()) for m in self._BLOCK_RE.finditer(masked)]
+            if not spans:
+                continue
+            new = text
+            for a, b in reversed(spans):
+                new = new[:a] + new[b:]
+            if new != text:
+                ws.write(rel, new)
+                changed.append(rel)
+        return changed
+
+
 _MISSING_RE = re.compile(r"'(?:dependencyManagement\.)?dependencies\.dependency\.version' for "
                          r"([^:\s']+):([^:\s']+)(?::[^\s']+)? (?:is missing|must be a valid version)")
 
@@ -1279,5 +1315,6 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         SurefirePluginFloor(),
         RemoveClassicLoaderImplementation(),
         ResourcesBinaryFiltering(),
+        StripPomRepositories(),
         TestCompileSkip(),
     ]

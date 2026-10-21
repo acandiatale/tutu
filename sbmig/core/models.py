@@ -164,6 +164,8 @@ class PomInfo(BaseModel):
     properties: dict[str, str] = Field(default_factory=dict)
     dependencies: list[GAV] = Field(default_factory=list)          # versions resolved from properties/depMgmt in repo when possible
     dependency_management: list[GAV] = Field(default_factory=list)
+    repositories: list[str] = Field(default_factory=list)   # <repositories> / <pluginRepositories> URLs declared in
+                                                           # this pom (profiles included), properties interpolated
     plugins: list[PluginInfo] = Field(default_factory=list)
     java_version: Optional[str] = None         # from maven.compiler.*/java.version/compiler plugin
     spring_boot_version: Optional[str] = None

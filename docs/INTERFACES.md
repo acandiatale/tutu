@@ -356,6 +356,13 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     filtering (the failing module, else the root — one list for every module), entries = `BINARY_RESOURCE_EXTENSIONS` +
     the failing file's extension, existing entries kept, a `<build><plugins>` declaration created when absent (a
     `<build><plugins>` block wins over `<pluginManagement>`, profiles untouched); text-based, comments ignored (E12).
+  * Pom repositories (X9): `PomInfo.repositories` (URLs of `<repository>` / `<pluginRepository>` incl. profiles, comments
+    and `<distributionManagement>` excluded, properties interpolated; `sbmig.analyze.pom_parser.repository_urls`),
+    `BuildConfig.pom_repositories: keep | remove` (default keep), `sbmig.build.mvn.settings_catch_all_mirror(cfg)`
+    (None / False / True: `build.settings_file` has a `<mirrorOf>*</mirrorOf>` / `external:*` mirror) and
+    `repository_notes(poms, cfg)` (plan notes; `followup:` prefix when Maven would contact the URLs directly), handler
+    `strip-pom-repositories` (`StripPomRepositories`, applicable only under `remove`; pre-emptive from the profile).
+    Template: `config/settings.nexus.example.xml`.
   * Fleet: a run with flag `unsupported-build-tool:<tool>` is a `skipped` project (`error` "unsupported build tool:
     <tool> (only Maven projects are migrated)"), never re-run by `retry_failed`, never a `stop_on_abort` trigger,
     stays skipped on resume (`sbmig.fleet.runner.unsupported_build_tool(report)`).

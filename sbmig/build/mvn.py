@@ -15,9 +15,10 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Optional
 
 from sbmig.core.config import Config
 
@@ -80,6 +81,55 @@ def base_command(cfg: Config) -> list[str]:
     if b.offline:
         cmd.append("-o")
     return cmd
+
+
+_CATCH_ALL_MIRROR_RE = re.compile(r"<mirrorOf>\s*(\*|external:\*|external:http:\*)\s*</mirrorOf>")
+
+
+def settings_catch_all_mirror(cfg: Config) -> Optional[bool]:
+    """Does `build.settings_file` route every repository through a mirror (`<mirrorOf>*</mirrorOf>` or
+    `external:*`)? None = no settings file configured / not readable. Such a mirror is what makes the
+    `<repositories>` declared inside the project poms (old Nexus URLs, Central, Spring milestones) resolve on an
+    air-gapped host; without it Maven contacts them directly (RUNBOOK §0.1)."""
+    if _blank(cfg.build.settings_file):
+        return None
+    p = Path(cfg.build.settings_file).expanduser()
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
+    return bool(_CATCH_ALL_MIRROR_RE.search(text))
+
+
+def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
+    """Operator notes about repositories the project poms declare (`PomInfo.repositories`): empty when the poms
+    declare none or `build.pom_repositories: remove` strips them; otherwise one note saying whether the settings
+    file mirrors them. The note starts with `followup:` when Maven would contact the declared URLs directly."""
+    urls: list[str] = []
+    for p in poms:
+        for u in getattr(p, "repositories", []) or []:
+            if u not in urls:
+                urls.append(u)
+    if not urls:
+        return []
+    shown = ", ".join(urls[:5]) + (f" (+{len(urls) - 5} more)" if len(urls) > 5 else "")
+    policy = getattr(cfg.build, "pom_repositories", "keep")
+    if policy == "remove":
+        hint = ("" if settings_catch_all_mirror(cfg) else
+                " — make sure build.settings_file mirrors everything (mirrorOf external:*), the removed URLs were the "
+                "only route otherwise")
+        return [(f"poms declare {len(urls)} repository URL(s) ({shown}); build.pom_repositories=remove strips them "
+                 f"before the first build{hint}")]
+    mirror = settings_catch_all_mirror(cfg)
+    if mirror:
+        return [(f"poms declare {len(urls)} repository URL(s) ({shown}); routed through the settings mirror "
+                 f"({cfg.build.settings_file})")]
+    where = ("no build.settings_file configured" if mirror is None else
+             f"{cfg.build.settings_file} has no catch-all <mirrorOf>*</mirrorOf> / external:* mirror")
+    return [(f"followup: poms declare {len(urls)} repository URL(s) ({shown}) and {where}: Maven contacts them directly "
+             "(unreachable → resolution failures / long timeouts). Copy config/settings.nexus.example.xml, set the Nexus "
+             "group URL and point build.settings_file at it; or set build.pom_repositories: remove")]
 
 
 def local_repo_path(cfg: Config) -> Path:

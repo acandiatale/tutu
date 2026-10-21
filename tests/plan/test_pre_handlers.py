@@ -115,3 +115,16 @@ def test_resources_binary_filtering_selection(cfg) -> None:
     assert "resources-binary-filtering" in reasons
     assert "woff2" in reasons["resources-binary-filtering"] and "jks" in reasons["resources-binary-filtering"]
     assert pre_handlers_for(prof, cfg)[-1] == "resources-binary-filtering"
+
+
+def test_strip_pom_repositories_selection_is_gated_by_config(cfg) -> None:
+    from sbmig.plan.pre_handlers import pre_handler_reasons
+    prof = _profile(poms=[_pom(plugins=[GOOD_COMPILER])])
+    prof.poms[0].repositories = ["http://old-nexus.corp/repo"]
+    assert "strip-pom-repositories" not in pre_handlers_for(prof, cfg)                 # keep (default)
+    on = cfg.model_copy(deep=True)
+    on.build.pom_repositories = "remove"
+    reasons = dict(pre_handler_reasons(prof, on))
+    assert "old-nexus.corp" in reasons["strip-pom-repositories"]
+    prof.poms[0].repositories = []
+    assert "strip-pom-repositories" not in pre_handlers_for(prof, on)                  # nothing declared

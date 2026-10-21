@@ -27,7 +27,7 @@ HANDLER_IDS = (
     "lombok-version-floor", "mapstruct-version-floor", "querydsl-jakarta-classifier", "maven-compiler-plugin-floor",
     "surefire-plugin-floor", "javax-servlet-api-to-jakarta", "jaxb-runtime-add",
     "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
-    "jstl-to-jakarta", "resources-binary-filtering",
+    "jstl-to-jakarta", "resources-binary-filtering", "strip-pom-repositories",
 )
 
 JSTL_JAVAX_KEYS = ("javax.servlet:jstl", "jstl:jstl", "taglibs:standard", "org.apache.taglibs:taglibs-standard-impl",
@@ -130,6 +130,15 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
                     (f"{len(binaries)} binary file(s) under a filtered resource dir ({shown}; e.g. {binaries[0]}): "
                      "maven-resources-plugin ≥ 3.2 fails on them with MalformedInputException — "
                      "nonFilteredFileExtensions keeps filtering on")))
+    if getattr(cfg.build, "pom_repositories", "keep") == "remove":
+        urls: list[str] = []
+        for p in profile.poms:
+            urls += [u for u in getattr(p, "repositories", []) or [] if u not in urls]
+        if urls:
+            shown = ", ".join(urls[:4]) + (", …" if len(urls) > 4 else "")
+            out.append(("strip-pom-repositories",
+                        (f"build.pom_repositories=remove: {len(urls)} repository URL(s) declared in the poms ({shown}) "
+                         "are removed before the first build")))
     return out
 
 

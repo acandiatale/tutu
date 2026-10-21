@@ -742,3 +742,54 @@ def test_resources_binary_filtering_preemptive_and_non_matches(fake_kit, cfg):
     assert not h.matches(_font_cluster(msg="Cannot find 'loaderImplementation' in class"), make_profile(), cfg)
     assert not h.matches(cluster_errors([err(ErrorKind.COMPILE, _FONT_MSG)])[0], make_profile(), cfg)
     assert h.matches(_font_cluster(msg="Input length = 1"), make_profile(), cfg)
+
+
+# ---------------------------------------------------------------------------
+# strip-pom-repositories (opt-in, build.pom_repositories=remove)
+# ---------------------------------------------------------------------------
+_REPO_POM = """<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <artifactId>demo</artifactId>
+  <!-- repositories: <repositories> kept in this comment -->
+  <repositories>
+    <repository>
+      <id>old-nexus</id>
+      <url>http://old-nexus.corp/repo</url>
+    </repository>
+  </repositories>
+  <dependencies>
+  </dependencies>
+  <profiles>
+    <profile>
+      <id>ci</id>
+      <pluginRepositories>
+        <pluginRepository><id>p</id><url>http://old-nexus.corp/plugins</url></pluginRepository>
+      </pluginRepositories>
+      <properties><a>b</a></properties>
+    </profile>
+  </profiles>
+</project>
+"""
+
+
+def test_strip_pom_repositories_is_opt_in(fake_kit, cfg):
+    (fake_kit.root / "pom.xml").write_text(_REPO_POM, encoding="utf-8")
+    h = fake_kit.handler("strip-pom-repositories")
+    c = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION,
+                            "Could not transfer artifact com.acme:x:pom:1.0 from/to old-nexus (http://old-nexus.corp/repo): "
+                            "Connect timed out", artifact="com.acme:x:1.0")])[0]
+    assert cfg.build.pom_repositories == "keep"
+    assert not h.matches(c, make_profile(), cfg) and h.apply(fake_kit.ws, c, make_profile(), cfg) == []
+    assert "<repositories>" in fake_kit.text()
+    on = cfg.model_copy(deep=True)
+    on.build.pom_repositories = "remove"
+    assert h.matches(c, make_profile(), on)
+    assert [x.path for x in h.apply(fake_kit.ws, None, make_profile(), on)] == ["pom.xml"]     # pre-emptive form
+    text = fake_kit.text()
+    import xml.etree.ElementTree as ET
+    ET.fromstring(text)
+    assert "<repositories>\n    <repository>" not in text and "<pluginRepositories>" not in text
+    assert "<!-- repositories: <repositories> kept in this comment -->" in text
+    assert "<properties><a>b</a></properties>" in text and "<dependencies>" in text
+    assert h.apply(fake_kit.ws, c, make_profile(), on) == []

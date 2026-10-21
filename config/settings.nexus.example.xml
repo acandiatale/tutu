@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  sbmig example Maven settings for an air-gapped migration host (RUNBOOK §0.1).
+  Copy to e.g. config/settings.nexus.xml (git-ignored pattern: *.local.xml / your choice), set the Nexus group URL,
+  then in artifacts.yml:   build: { settings_file: config/settings.nexus.xml }
+  sbmig passes "-s <this file>" to EVERY Maven call: builds, the OpenRewrite plugin, the effective-pom capture, the
+  recipe BOM fetch. Nothing is read from the user's ~/.m2/settings.xml then.
+
+  Why a mirror and not <repositories>: the project poms themselves declare <repositories> / <pluginRepositories>
+  (an old Nexus host, Maven Central, Spring milestones …). Maven contacts those URLs directly — on a host that cannot
+  reach them every artifact costs a failure or a connect timeout. A mirror with <mirrorOf>external:*</mirrorOf>
+  rewrites every such repository (and Central) to the group below, so the declarations stay harmless. "external:*"
+  leaves file:// and localhost repositories alone (projects with a local WEB-INF/lib style repo keep working) and
+  also overrides Maven 3.8+'s default blocker for pom-declared http:// repositories ("Blocked mirror for
+  repositories"). Prefer this over `build.pom_repositories: remove` unless you also want the declarations gone
+  from the migrated poms.
+-->
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+
+  <!-- optional: a dedicated local repository for the migration host (sbmig: build.local_repo does the same) -->
+  <!-- <localRepository>D:/sbmig/m2</localRepository> -->
+
+  <mirrors>
+    <mirror>
+      <id>company-nexus</id>
+      <name>Company Nexus group (proxies Central, Spring, in-house releases)</name>
+      <url>https://nexus.example.com/repository/maven-public/</url>   <!-- CHANGE ME: the reachable group URL -->
+      <mirrorOf>external:*</mirrorOf>
+    </mirror>
+  </mirrors>
+
+  <!-- only when the group needs credentials — never commit them; Maven reads ${env.…} from the environment
+  <servers>
+    <server>
+      <id>company-nexus</id>
+      <username>${env.NEXUS_USER}</username>
+      <password>${env.NEXUS_PASSWORD}</password>
+    </server>
+  </servers>
+  -->
+
+  <!-- the group must proxy what RUNBOOK §0 lists: org.openrewrite.* (plugin 6.46.1, recipe BOM 3.37.0),
+       org.springframework.boot:*:4.1.0, jakarta.*; nothing else is needed on this host. -->
+</settings>

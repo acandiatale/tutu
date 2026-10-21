@@ -41,3 +41,39 @@ def test_explicit_path_and_unresolvable_name_pass_through(tmp_path, monkeypatch)
     assert mvnmod.mvn_executable(_cfg(mvn="mvn-not-installed")) == "mvn-not-installed"
     ok, msg = mvnmod.maven_available(_cfg(mvn="mvn-not-installed"))
     assert not ok and "mvn-not-installed" in msg
+
+
+def test_settings_catch_all_mirror_and_repository_notes(tmp_path, cfg):
+    from sbmig.build.mvn import repository_notes, settings_catch_all_mirror
+    from sbmig.core.models import PomInfo
+    poms = [PomInfo(path="pom.xml", artifact_id="a", repositories=["http://old-nexus.corp/repo"]),
+            PomInfo(path="svc/pom.xml", artifact_id="svc", repositories=["http://old-nexus.corp/repo", "https://repo.spring.io/milestone"])]
+    none = cfg.model_copy(deep=True)
+    none.build.settings_file = None
+    assert settings_catch_all_mirror(none) is None
+    notes = repository_notes(poms, none)
+    assert len(notes) == 1 and notes[0].startswith("followup:") and "2 repository URL(s)" in notes[0] \
+        and "old-nexus.corp" in notes[0] and "no build.settings_file" in notes[0]
+    assert repository_notes([PomInfo(path="pom.xml", artifact_id="a")], none) == []
+    plain = tmp_path / "plain.xml"
+    plain.write_text("<settings><mirrors><mirror><id>x</id><mirrorOf>central</mirrorOf><url>u</url></mirror></mirrors>"
+                     "<!-- <mirrorOf>*</mirrorOf> --></settings>", encoding="utf-8")
+    partial = cfg.model_copy(deep=True)
+    partial.build.settings_file = str(plain)
+    assert settings_catch_all_mirror(partial) is False
+    assert repository_notes(poms, partial)[0].startswith("followup:") and "no catch-all" in repository_notes(poms, partial)[0]
+    mirror = tmp_path / "nexus.xml"
+    mirror.write_text("<settings><mirrors><mirror><id>n</id><mirrorOf>external:*</mirrorOf><url>u</url></mirror></mirrors></settings>",
+                      encoding="utf-8")
+    good = cfg.model_copy(deep=True)
+    good.build.settings_file = str(mirror)
+    assert settings_catch_all_mirror(good) is True
+    (n,) = repository_notes(poms, good)
+    assert not n.startswith("followup:") and "routed through the settings mirror" in n
+    strip = good.model_copy(deep=True)
+    strip.build.pom_repositories = "remove"
+    (n,) = repository_notes(poms, strip)
+    assert "strips them" in n and "make sure" not in n
+    strip_no_mirror = none.model_copy(deep=True)
+    strip_no_mirror.build.pom_repositories = "remove"
+    assert "make sure build.settings_file mirrors" in repository_notes(poms, strip_no_mirror)[0]

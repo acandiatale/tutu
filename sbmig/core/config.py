@@ -213,6 +213,10 @@ class BuildConfig(BaseModel):
     encoding_candidates: list[str] = Field(default_factory=lambda: ["utf-8", "cp949", "euc-kr", "shift_jis", "latin-1"])
     enforcer_policy: Literal["relax-rule", "skip", "keep"] = "relax-rule"    # requireJavaVersion/convergence failures
     werror_policy: Literal["remove", "keep"] = "remove"                       # -Werror makes JDK 21 deprecations fatal
+    # <repositories> / <pluginRepositories> declared in the project poms (old Nexus URLs, Central, Spring milestones):
+    # keep = leave them (route them through a `settings_file` mirror, mirrorOf external:*); remove = the pre-emptive
+    # handler `strip-pom-repositories` deletes the blocks before the first build (needs the settings mirror)
+    pom_repositories: Literal["keep", "remove"] = "keep"
     # package prefixes treated as *library* code in error signatures (project-owned FQCNs are masked as '*').
     # In-house library namespaces (parent/mandatory/optional group ids) are added automatically.
     external_package_prefixes: list[str] = Field(default_factory=list)

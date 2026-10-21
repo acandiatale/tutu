@@ -5,10 +5,29 @@
 |---|---|---|
 | Python | ≥ 3.10 (+ `uv` or `pip`) | agent runtime |
 | JDK | **21** (set `build.java_home`) | OpenRewrite plugin and all builds run on 21; as-is projects are never built on their old JDK |
-| Maven | 3.9.x, `settings.xml` pointing at Nexus | builds + OpenRewrite plugin |
+| Maven | 3.9.x; `build.settings_file` = a settings.xml with a **catch-all mirror** to the Nexus group (`config/settings.nexus.example.xml`, §0.1) | builds + OpenRewrite plugin; the mirror also covers the repositories declared inside the project poms |
 | Nexus proxies | Maven Central incl. `org.openrewrite.*` (plugin 6.46.1, recipe BOM **3.37.0** and its artifacts (3.38.0 is inconsistent on Central), rewrite-recipe-bom 3.37.0 → rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, rewrite-testing-frameworks 3.44.0, rewrite-static-analysis 2.41.0, rewrite-java-dependencies 1.60.2), `org.springframework.boot:*:4.1.0`, jakarta artifacts | recipes and target BOM |
 | LLM endpoint | the in-house gateway: `.env` with `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` (provider `company`, plain `requests.post`) | residual fixes + recipe candidates |
 | git | any | per-attempt snapshots / revert / diff |
+
+### 0.1 Repositories declared inside the project poms (air-gapped host)
+Legacy poms declare `<repositories>` / `<pluginRepositories>` of their own (an old Nexus host, Maven Central, Spring
+milestones). Maven contacts those URLs in addition to the settings, so on the migration host every artifact costs a
+resolution failure or a connect timeout. Two levers, both config (invariant 2):
+
+* **Mirror everything** (recommended): copy `config/settings.nexus.example.xml`, set the group URL, point
+  `build.settings_file` at it. Its `<mirrorOf>external:*</mirrorOf>` rewrites every remote repository — the ones in
+  the poms included — to the group; `file://` / localhost repositories stay untouched and Maven 3.8+'s default
+  `http://` blocker ("Blocked mirror for repositories") is overridden for them. sbmig passes `-s` to every Maven
+  call (builds, OpenRewrite, effective pom, BOM fetch). The analysis notes which URLs the poms declare; when no
+  catch-all mirror is configured the note becomes a follow-up in the report.
+* **Strip them**: `build.pom_repositories: remove` — the pre-emptive handler `strip-pom-repositories` deletes the
+  blocks from every pom before the first build (profiles included, comments kept), so the migrated poms no longer
+  carry dead URLs. It needs the mirror above: without it the removed URLs may have been the only route.
+
+If a build then says an artifact "was cached from a remote repository ID that is unavailable in current build
+context", the local repository remembers the old repository id (`_remote.repositories`): add `-llr` to
+`build.extra_args` for that project or use a fresh `build.local_repo`.
 
 ```bash
 cd migration-agent
