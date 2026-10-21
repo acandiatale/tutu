@@ -40,6 +40,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,24 @@ class Run:
     error: str | None = None
     last_node: str | None = None
     started: float = field(default_factory=time.time)
+
+
+_LOG_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[,.](\d{3})\b")
+
+
+def _event_time(kind: str, data: Any) -> float | None:
+    """Epoch seconds of a journal event (`ts`, ISO 8601 UTC) or a `sbmig.log` line (`%(asctime)s`, local time);
+    None when the line carries no timestamp (continuation lines, tracebacks)."""
+    try:
+        if kind == "journal" and isinstance(data, dict) and data.get("ts"):
+            return datetime.fromisoformat(str(data["ts"])).timestamp()
+        if kind == "log" and isinstance(data, str):
+            m = _LOG_TS_RE.match(data)
+            if m:
+                return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() + int(m.group(2)) / 1000.0
+    except (ValueError, OverflowError, OSError):
+        return None
+    return None
 
 
 class RunManager:
@@ -301,15 +320,24 @@ class RunManager:
                 for kind, data in new:
                     if kind in ("node", "error"):
                         yield kind, data
+            # journal events and log lines are two files written by the same thread; drained one file after the
+            # other they can show up out of time order in the UI ("build FAILED 09:35:05" after "mvn … 09:35:06"
+            # of the *next* build) → merge each tick's batch by timestamp (round 9)
+            batch: list[tuple[float, int, str, Any]] = []
             for kind, path in (("journal", rd / "journal.jsonl"), ("log", rd / "sbmig.log")):
+                last_key = 0.0
                 for line in _new_lines(path, offsets):
+                    item: tuple[str, Any] = ("log", line)
                     if kind == "journal":
                         try:
-                            yield "journal", json.loads(line)
-                            continue
+                            item = ("journal", json.loads(line))
                         except ValueError:
                             pass
-                    yield "log", line
+                    key = _event_time(item[0], item[1])
+                    last_key = key if key is not None else last_key     # unparsable → keep its file position
+                    batch.append((last_key, len(batch), item[0], item[1]))
+            for _key, _n, kind, data in sorted(batch, key=lambda t: (t[0], t[1])):
+                yield kind, data
 
         while True:
             finished = run.done.is_set() if run is not None else self.status(run_id)["state"] != "running"

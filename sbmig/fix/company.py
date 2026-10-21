@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any, Callable, Optional
 
@@ -40,7 +41,7 @@ class CompanyClient:
     def __init__(self, url: str, api_key: str, model: str, *, payload_extra: Optional[dict] = None,
                  response_path: Optional[str] = None, timeout: float = 180.0, max_retries: int = 3,
                  extra_headers: Optional[dict[str, str]] = None, post: Optional[PostFn] = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, heartbeat_s: float = 30.0):
         self.url = (url or "").strip()
         self._api_key = api_key or ""
         self.model = model
@@ -51,6 +52,7 @@ class CompanyClient:
         self.extra_headers = dict(extra_headers or {})
         self._post = post or requests.post
         self._sleep = sleep
+        self.heartbeat_s = float(heartbeat_s)       # "still in flight" log line every N s while a call blocks (0 = off)
 
     def __repr__(self) -> str:                        # never leak the key
         return f"CompanyClient(url={self.url!r}, model={self.model!r})"
@@ -68,6 +70,25 @@ class CompanyClient:
         """One ``requests.post`` with the exact call shape; returns the ``requests.Response``."""
         return self._post(self.url, headers=self.headers(), json=payload, timeout=self.timeout)
 
+    def _post_with_heartbeat(self, payload: dict[str, Any], label: str) -> Any:
+        """post_once + an INFO line every `heartbeat_s` while the gateway has not answered (operators can tell a
+        slow answer from a hung run; the lines reach <run dir>/sbmig.log and the web UI log panel)."""
+        done = threading.Event()
+        t0 = time.monotonic()
+
+        def beat() -> None:
+            while not done.wait(self.heartbeat_s):
+                log.info("llm call still in flight: %.0fs elapsed (timeout %.0fs) — %s", time.monotonic() - t0,
+                         self.timeout, label)
+
+        th = threading.Thread(target=beat, name="llm-heartbeat", daemon=True)
+        if self.heartbeat_s > 0:
+            th.start()
+        try:
+            return self.post_once(payload)
+        finally:
+            done.set()
+
     # ---- LLMClientLike
     def complete(self, messages: list[ChatMessage], *, model: Optional[str] = None, max_tokens: Optional[int] = None,
                  temperature: Optional[float] = None, stop: Optional[list[str]] = None, role: Optional[str] = None,
@@ -79,10 +100,14 @@ class CompanyClient:
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
+        label = f"role={role or '-'} model={payload['model']}"
+        chars = sum(len(m.content) for m in messages)
         for attempt in range(self.max_retries + 1):
             wait: Optional[float] = None
+            log.info("llm call provider=company %s attempt %d/%d → POST %s (prompt %d chars, timeout %.0fs)", label,
+                     attempt + 1, self.max_retries + 1, self.url, chars, self.timeout)
             try:
-                resp = self.post_once(payload)
+                resp = self._post_with_heartbeat(payload, label)
             except requests.RequestException as exc:
                 last_status, last_body = None, f"{type(exc).__name__}: {exc}"
                 log.warning("llm company transport error (attempt %d/%d): %s", attempt + 1, self.max_retries + 1,
@@ -105,7 +130,10 @@ class CompanyClient:
                 log.warning("llm company HTTP %d (attempt %d/%d)", resp.status_code, attempt + 1,
                             self.max_retries + 1)
             if attempt < self.max_retries:
-                self._sleep(min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt))
+                delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt)
+                log.info("llm call retrying in %.0fs (attempt %d/%d failed: status=%s)", delay, attempt + 1,
+                         self.max_retries + 1, last_status)
+                self._sleep(delay)
         log.error("llm company giving up after %d attempt(s): status=%s body=%s", self.max_retries + 1, last_status,
                   last_body[:300].replace("\n", " "))
         raise LLMError(last_status, last_body,

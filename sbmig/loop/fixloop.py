@@ -60,6 +60,28 @@ def sleep_seconds(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def _describe_decision(d: TriageDecision, c: ErrorCluster, history: list[FixAttempt], cfg: Config) -> str:
+    """One human line per decision for the progress log ("asking the LLM (attempt 2/2 for this cluster)", …)."""
+    k = d.kind
+    if k == DecisionKind.HANDLER:
+        return f"deterministic handler {d.handler_id or '?'}"
+    if k == DecisionKind.KB_PATCH:
+        return f"replaying KB patch {', '.join(d.kb_case_ids) or '?'} (no LLM)"
+    if k == DecisionKind.KB_RECIPE:
+        return f"KB recipe(s) {', '.join(d.recipe_ids) or '?'} (OpenRewrite, no LLM)"
+    if k == DecisionKind.LLM_FIX:
+        n = sum(1 for a in history if a.cluster_id == c.id and a.decision.kind == DecisionKind.LLM_FIX) + 1
+        return (f"asking the LLM (attempt {n}/{cfg.loop.max_llm_attempts_per_cluster} for this cluster; a call can "
+                f"take up to {cfg.llm.timeout_seconds}s × {cfg.llm.max_retries + 1} tries — quiet until it answers)")
+    if k == DecisionKind.BLOCKED:
+        return d.rationale or "blocked"
+    if k == DecisionKind.ESCALATE:
+        return "giving up on this cluster (" + (d.rationale or "escalated") + ")"
+    if k == DecisionKind.SKIP:
+        return "skipped this round (" + (d.rationale or "masked by another cluster") + ")"
+    return d.rationale or k.value
+
+
 def is_llm_transport_error(analysis: str) -> bool:
     a = (analysis or "").strip()
     if not a.lower().startswith("llm-error:"):
@@ -232,6 +254,9 @@ class BuildFixLoop:
                                 "treated as a stall")
             window = (window + [multiset])[-max(2, self.cfg.loop.oscillation_window):]
             clusters = self.triager.cluster(build.errors, self.profile)
+            log.info("[%s] build %d: %d error(s) in %d cluster(s) → fix round %d/%d%s", phase.value, build_no,
+                     build.error_count, len(clusters), fix_rounds + 1, max_iterations,
+                     " (stall level %d)" % stall_level if stall_level else "")
             if oscillating and oscillations >= 2:
                 self._block_oscillation(pr, phase, build_no, clusters)
             if self._only_blocked(pr, clusters, build_no):
@@ -692,6 +717,8 @@ class BuildFixLoop:
                                    rationale=prefix + "escalated: only recipes left and they changed nothing")
             st.decisions.append(d)
             self._journal_decision(st, d)
+            log.info("[%s it%d] cluster %s (%s, %d error(s)%s): %s", st.phase.value, st.iteration, c.id, c.kind.value,
+                     len(c.errors), f", {c.file}" if c.file else "", _describe_decision(d, c, self.history, self.cfg))
             if d.kind == DecisionKind.ESCALATE:
                 self.escalated[c.id] = d
                 st.hopeless.add(c.id)
@@ -731,6 +758,9 @@ class BuildFixLoop:
             else:
                 self._apply_llm(att, c, m, st.phase, st.iteration, st.stall_level, st.others)
                 msg = f"fix(llm): {c.id} {att.model or 'llm'}"
+                log.info("[%s it%d] cluster %s: LLM answered — %d change(s)%s%s", st.phase.value, st.iteration, c.id,
+                         len(att.changes), f", {len(att.apply_errors)} apply error(s)" if att.apply_errors else "",
+                         f" — {att.analysis.strip()[:160]}" if att.analysis.startswith("llm-error") else "")
             if att.outcome != "apply_failed":
                 sha = self._commit(msg, pre)
                 if sha is None:

@@ -157,3 +157,26 @@ def test_azure_style_response_shape_and_content_filter():
     prompt_hit["prompt_filter_results"][0]["content_filter_results"]["jailbreak"] = {"filtered": True, "detected": True}
     with pytest.raises(LLMError, match="prompt_filter_results: jailbreak"):
         client(FakePost(FakeResponse(200, prompt_hit))).complete(MSGS)
+
+
+def test_progress_lines_call_start_heartbeat_and_retry_delay(caplog):
+    """Round 9 (operators): every call logs its start, a heartbeat while the gateway is silent, and the retry delay."""
+    import logging as _logging
+    import time as _time
+
+    class SlowPost(FakePost):
+        def __call__(self, url, **kw):
+            _time.sleep(0.08)
+            return super().__call__(url, **kw)
+
+    post = SlowPost(FakeResponse(503, "busy"), FakeResponse(200, {"choices": [{"message": {"content": "pong"}}]}))
+    c = client(post, heartbeat_s=0.02)
+    with caplog.at_level(_logging.INFO, logger="sbmig.fix.client"):
+        assert c.complete(MSGS, role="fix").content == "pong"
+    text = caplog.text
+    assert "llm call provider=company role=fix model=gpt-6-luna attempt 1/4 → POST http://gw.local/chat" in text
+    assert "llm call still in flight:" in text and "timeout 180s" in text
+    assert "llm call retrying in 1s (attempt 1/4 failed: status=503)" in text
+    assert "attempt 2/4 → POST" in text and "latency=" in text
+    quiet = client(FakePost(FakeResponse(200, {"choices": [{"message": {"content": "x"}}]})), heartbeat_s=0)
+    assert quiet.complete(MSGS).content == "x"                     # heartbeat off → no thread, still works

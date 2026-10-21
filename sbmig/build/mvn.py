@@ -25,6 +25,8 @@ from .log_parser import strip_ansi
 
 log = logging.getLogger("sbmig.build")
 
+HEARTBEAT_S = 60.0      # "still running" INFO line every N s while mvn / rewrite runs (operators: slow ≠ hung)
+
 
 def _blank(v: str | None) -> bool:
     return v is None or str(v).strip() == ""
@@ -165,12 +167,22 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
         reader = threading.Thread(target=pump, name="mvn-log-pump", daemon=True)
         reader.start()
         timed_out = False
-        try:
-            proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            log.warning("timeout after %.0fs, killing process group of %s", timeout_s or 0, cmd[0])
-            _kill_group(proc)
+        while True:
+            elapsed = time.monotonic() - t0
+            remaining = None if timeout_s is None else max(0.0, timeout_s - elapsed)
+            slot = HEARTBEAT_S if remaining is None else min(HEARTBEAT_S, remaining)
+            try:
+                proc.wait(timeout=slot if slot > 0 else 0.01)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = time.monotonic() - t0
+                if timeout_s is not None and elapsed >= timeout_s:
+                    timed_out = True
+                    log.warning("timeout after %.0fs, killing process group of %s", timeout_s or 0, cmd[0])
+                    _kill_group(proc)
+                    break
+                log.info("%s still running: %.0fs elapsed%s — %d output line(s) so far, log: %s", Path(cmd[0]).name,
+                         elapsed, f" (timeout {timeout_s:.0f}s)" if timeout_s else "", len(chunks), log_path)
         reader.join(timeout=10)
         if timed_out:
             fh.write(f"\n[ERROR] sbmig: killed after timeout of {timeout_s:.0f}s\n")

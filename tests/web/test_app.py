@@ -23,17 +23,25 @@ from sbmig.web import RunManager, create_app
 from sbmig.web.runs import RUN_ID_RE, _jsonable, _new_lines
 
 
+from datetime import datetime, timezone
+
+
+def _now_iso() -> str:
+    """Journal timestamps like Workspace.journal (the web stream sorts each tick by them, round 9)."""
+    return datetime.now(timezone.utc).isoformat()
+
+
 def fake_body(self: RunManager, run) -> SimpleNamespace:
     """Stands in for the graph engine: two node updates, a journal, a log line via logging, the reports."""
     rd = run.run_dir
     logging.getLogger("sbmig.fake").debug("llm request role=fix")          # → this run's sbmig.log (thread filter)
     with open(rd / "journal.jsonl", "a", encoding="utf-8") as jf:
-        jf.write(json.dumps({"ts": "2026-10-20T10:00:00+00:00", "run_id": run.run_id, "event": "phase_start",
+        jf.write(json.dumps({"ts": _now_iso(), "run_id": run.run_id, "event": "phase_start",
                              "phase": "jdk21"}) + "\n")
     self._push(run, "node", {"node": "intake", "update": {"run_id": run.run_id}})
     self._push(run, "node", {"node": "phase", "update": {"phase": "jdk21", "phases": ["spring"]}})
     with open(rd / "journal.jsonl", "a", encoding="utf-8") as jf:
-        jf.write(json.dumps({"ts": "2026-10-20T10:00:01+00:00", "run_id": run.run_id, "event": "build",
+        jf.write(json.dumps({"ts": _now_iso(), "run_id": run.run_id, "event": "build",
                              "ok": True}) + "\n")
     (rd / "report.md").write_text("# report\n\nBUILD SUCCESS\n", encoding="utf-8")
     (rd / "report.json").write_text(json.dumps({"success": True, "blocked": [], "unresolved": [],
