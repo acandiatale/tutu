@@ -260,7 +260,9 @@ class Restructurer:
                 if want and parent.version != want:   # migrated on an older in-house parent → the configured one
                     root.set_parent(c.cfg.artifacts.parent.gav(), root.parent_relative_path())
                     c.save(root)
+                    self._record_parent(c, root_rel, parent, c.cfg.artifacts.parent.gav())
                     c.note(f"in-house parent {parent.key} {parent.version or '?'} → {want} (artifacts.parent)")
+            self._align_role_parents(c, report_modules=True)
             self._all_poms_pass(c, java_fix=False)
             self._drop_managed_versions(c)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
@@ -297,6 +299,13 @@ class Restructurer:
         # single / merge (generated or kept boot module) / wrap: the boot-jar holds the runtime configuration
         self._write_placeholders(c, f"{c.p(L.module_dir, L.boot_module)}/src/main/resources")
         self._placeholder_followup(c)
+        self._align_role_parents(c)
+        if self._role(c) and c.result.parents_set:
+            c.note(f"role parents: {len(c.result.parents_set)} parent(s) set — root {c.cfg.artifacts.parent.key}, "
+                   f"{L.module_dir}/{L.boot_module} {c.cfg.artifacts.boot_parent.key}, "        # type: ignore[union-attr]
+                   f"{L.module_dir}/{L.comp_module} {c.cfg.artifacts.comp_parent.key} "          # type: ignore[union-attr]
+                   "(the modules do not inherit the root pom; mandatory dependencies / BOM / java level / root "
+                   "management are in each module pom)")
         self._all_poms_pass(c, java_fix=False)
         self._drop_managed_versions(c)
         c.commit("restructure: optional artifact versions / cleanup")
@@ -326,9 +335,9 @@ class Restructurer:
         moved_main, moved_tests = self._populate_boot(c, [comp], boot)
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
                   version="${project.version}")
-        self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp])
+        self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp], root=root)
         self._rewrite_root(c, root, [f"{L.module_dir}/{L.comp_module}", f"{L.module_dir}/{L.boot_module}"],
-                           keep_deps=False, keep_build_plugins=False)
+                           keep_deps=False, keep_build_plugins=False, aggregator=self._role(c))
         self._packaging_followups(c, asis_packaging)
         c.commit("restructure: comp-jar / boot-jar layout")
 
@@ -431,7 +440,7 @@ class Restructurer:
         moved_main, moved_tests = self._populate_boot(c, [c.p(d) for d in main_dirs], boot)
         final_name = root.text_of(root.find("build"), "finalName") if root.find("build") is not None else None
         self._write_boot(c, coords, boot, lib_deps, asis_deps, moved_main, moved_tests, final_name,
-                         [c.p(d) for d in main_dirs])
+                         [c.p(d) for d in main_dirs], root=root)
         new_modules = [mapping[m] for m in mods] + [f"{md}/{L.boot_module}"]
         self._rewrite_root(c, root, new_modules, keep_deps=True, keep_build_plugins=True)
         c.note("multi-module wrap: as-is root dependencies/build plugins kept (inherited by the wrapped modules)")
@@ -700,20 +709,30 @@ class Restructurer:
                   version="${project.version}")
         if kept_ed is not None and kept is not None and kept_dir is not None:
             parent = kept_ed.get_parent()
-            if parent is not None and any(parent.artifact_id == ed.artifact_id() for _, _, ed in pom_mods):
+            if not self._role(c) and parent is not None and any(parent.artifact_id == ed.artifact_id()
+                                                                 for _, _, ed in pom_mods):
                 kept_ed.set_parent(GAV(group_id=coords.group_id, artifact_id=coords.artifact_id,
                                        version=coords.version), posixpath.relpath(c.p("pom.xml"), boot))
                 c.note(f"kept boot module {kept[0]} inherited the merged pom module {parent.artifact_id}; parent "
                        f"re-pointed to the root pom {coords.artifact_id}")
-            self._keep_boot(c, kept_ed, kept[0], kept_dir, boot, comp, coords, lib, merged_internal)
+            inherits_root = parent is not None and (
+                parent.artifact_id == coords.artifact_id
+                or any(parent.artifact_id == ed.artifact_id() for _, _, ed in pom_mods))
+            self._keep_boot(c, kept_ed, kept[0], kept_dir, boot, comp, coords, lib, merged_internal,
+                            root=root if inherits_root else None)
             self._shadowed_boot_resources(c, comp, boot)
         else:
             moved_main, moved_tests = self._populate_boot(c, [comp], boot)
             final_name = root.text_of(root.find("build"), "finalName") if root.find("build") is not None else None
-            self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp])
-        self._fold_management(c, root, all_merged, merged_internal)
+            self._write_boot(c, coords, boot, [lib], asis_deps, moved_main, moved_tests, final_name, [comp],
+                             root=root, exclude=merged_internal)
+        role = self._role(c)
+        comp_ed = PomEditor(c.ws.abs(f"{comp}/pom.xml")) if role else None
+        self._fold_management(c, root, all_merged, merged_internal, target=comp_ed)
+        if comp_ed is not None:
+            c.save(comp_ed)
         self._rewrite_root(c, root, [f"{md}/{L.comp_module}", f"{md}/{L.boot_module}"],
-                           keep_deps=False, keep_build_plugins=False)
+                           keep_deps=False, keep_build_plugins=False, aggregator=role)
         self._packaging_followups(c, packaging)
         c.commit("restructure: comp-jar / boot-jar layout (merged)")
 
@@ -730,46 +749,51 @@ class Restructurer:
                    "Nexus, or move it into the project — dependencies on it now resolve from the repository")
 
     def _fold_management(self, c: _Ctx, root: PomEditor, merged: list[tuple[str, str, PomEditor]],
-                         internal: set[str]) -> None:
+                         internal: set[str], target: PomEditor | None = None) -> None:
         """Keep the merged modules' management: root `<dependencyManagement>` entries of merged modules (an internal
         BOM import, versions of internal modules) are removed; every merged module's dependencyManagement entry
         is folded into the root pom (first wins per g:a, the root's own entries first), with the `${props}` its
-        version references; pom-packaging modules' `<properties>` are folded too (first wins per key)."""
+        version references; pom-packaging modules' `<properties>` are folded too (first wins per key).
+        `target` (role parents, round 9b): fold into that pom (the comp pom) instead of the root — the modules do
+        not inherit the root pom then."""
         drop = set(c.cfg.artifacts.remove_when_present)
+        tgt = target if target is not None else root
+        where = "the root pom" if target is None else c.ws.rel(target.path)
         removed = []
-        for el in root.dependency_elements(True):
-            g = root.gav_of(el)
+        for el in tgt.dependency_elements(True):
+            g = tgt.gav_of(el)
             if g.key in internal:
-                root.remove_node(el)
+                tgt.remove_node(el)
                 removed.append(g.key)
         if removed:
-            root.remove_if_empty(root.find("dependencyManagement/dependencies"))
-            root.remove_if_empty(root.find("dependencyManagement"))
-            c.note(f"root dependencyManagement entries for merged modules removed: {', '.join(removed)}")
+            tgt.remove_if_empty(tgt.find("dependencyManagement/dependencies"))
+            tgt.remove_if_empty(tgt.find("dependencyManagement"))
+            c.note(f"{'root ' if target is None else where + ' '}dependencyManagement entries for merged modules "
+                   f"removed: {', '.join(removed)}")
         for label, _mdir, ed in merged:
             folded: list[str] = []
             props: list[str] = []
             for el in ed.dependency_elements(True):
                 g = ed.gav_of(el)
-                if g.key in internal or g.key in drop or root.has_managed_dependency(g.group_id, g.artifact_id):
+                if g.key in internal or g.key in drop or tgt.has_managed_dependency(g.group_id, g.artifact_id):
                     continue
-                root.copy_into(root.ensure_path("dependencyManagement/dependencies"), el)
+                tgt.copy_into(tgt.ensure_path("dependencyManagement/dependencies"), el)
                 folded.append(g.key)
                 for prop in re.findall(r"\$\{([^}]+)\}", "".join(el.itertext())):
                     v = ed.get_property(prop)
-                    if v is not None and not root.has_property(prop):
-                        root.set_property(prop, v)
+                    if v is not None and not tgt.has_property(prop):
+                        tgt.set_property(prop, v)
                         props.append(prop)
             if ed.packaging() == "pom":
                 for k, v in ed.properties().items():
-                    if not root.has_property(k):
-                        root.set_property(k, v)
+                    if not tgt.has_property(k):
+                        tgt.set_property(k, v)
                         props.append(k)
             if folded or props:
                 c.note(f"module {label}: {len(folded)} dependencyManagement entr{'y' if len(folded) == 1 else 'ies'}"
                        f"{' (' + ', '.join(folded[:5]) + (' …' if len(folded) > 5 else '') + ')' if folded else ''}"
-                       f" and {len(set(props))} propert{'y' if len(set(props)) == 1 else 'ies'} folded into the root "
-                       "pom (first wins)")
+                       f" and {len(set(props))} propert{'y' if len(set(props)) == 1 else 'ies'} folded into {where} "
+                       "(first wins)")
 
     def _shadowed_boot_resources(self, c: _Ctx, comp: str, boot: str) -> None:
         """Kept boot module: comp-jar copies of boot resources with the same name as boot-jar's own are shadowed at
@@ -829,11 +853,28 @@ class Restructurer:
         return "\n".join(lines).rstrip("\n") + "\n"
 
     def _keep_boot(self, c: _Ctx, ed: PomEditor, declared: str, asis_dir: str, boot: str, comp: str, coords: GAV,
-                   lib: GAV, merged_internal: set[str]) -> None:
+                   lib: GAV, merged_internal: set[str], root: PomEditor | None = None) -> None:
         """Adjust the kept as-is boot module's pom: dependencies on merged modules → one comp-jar dependency,
-        spring-boot-maven-plugin ensured, java level, system jars. Its src/ stays untouched."""
+        spring-boot-maven-plugin ensured, java level, system jars. Its src/ stays untouched.
+
+        Role parents (round 9b): the parent is replaced by `artifacts.boot_parent` whatever it was (an older
+        boot-jar / comp-jar role parent, the root, a starter parent), `<relativePath/>`, explicit groupId / version
+        (own or the root's); `root` (given when the as-is module inherited the root pom) supplies the properties /
+        management it inherited before; mandatory dependencies, BOM and java level go into this pom."""
         L = c.cfg.layout
         A = c.cfg.artifacts
+        role = self._role(c)
+        if role:
+            old_parent = ed.get_parent()
+            if not ed.group_id():
+                ed.set_coordinate("groupId", coords.group_id)
+            if not ed.version():
+                ed.set_coordinate("version", coords.version)
+            new_parent = A.boot_parent.gav()                                           # type: ignore[union-attr]
+            if old_parent is None or old_parent.key != new_parent.key or old_parent.version != new_parent.version \
+                    or ed.parent_relative_path() != "":
+                ed.set_parent(new_parent, None)
+            self._record_parent(c, c.ws.rel(ed.path), old_parent, new_parent)
         if ed.group_id() and ed.group_id() != coords.group_id:
             lib = GAV(group_id=coords.group_id, artifact_id=lib.artifact_id, version=lib.version)
         if ed.version() and ed.version() != coords.version:
@@ -874,10 +915,12 @@ class Restructurer:
             for p in ed.find_plugins(*WAR_PLUGIN, where="build"):
                 ed.remove_node(p)
         parent = ed.get_parent()
-        if parent is None or parent.artifact_id != coords.artifact_id:
+        if role:
+            self._role_module(c, ed, root, exclude=merged_internal)
+        elif parent is None or parent.artifact_id != coords.artifact_id:
             c.note(f"kept boot module {declared} does not inherit the root pom "
                    f"({parent.key if parent else 'no parent'}); parent left unchanged")
-        self._fix_java(c, ed, top=False)
+        self._fix_java(c, ed, top=role)
         ed.remove_if_empty(ed.find("properties"))
         asis = posixpath.normpath(posixpath.join(c.base or ".", asis_dir))
         self._relocate_module_system_deps(c, ed, "" if asis == "." else asis, boot)
@@ -897,10 +940,18 @@ class Restructurer:
         L = c.cfg.layout
         A = c.cfg.artifacts
         path = f"{comp}/pom.xml"
-        root_pom = c.p("pom.xml")
-        rel_parent = posixpath.relpath(root_pom, comp)
-        c.write(path, render("comp-pom.xml.j2", parent=coords, relative_path=rel_parent,
-                             artifact_id=coords.artifact_id + L.comp_artifact_suffix, name=None))
+        role = self._role(c)
+        if role:            # round 9b: external in-house comp parent, own coordinates (nothing inherited from root)
+            parent = A.comp_parent.gav()                                               # type: ignore[union-attr]
+            c.write(path, render("comp-pom.xml.j2", parent=parent, relative_path="", group_id=coords.group_id,
+                                 version=coords.version, artifact_id=coords.artifact_id + L.comp_artifact_suffix,
+                                 name=None))
+            self._record_parent(c, path, None, parent)
+        else:
+            root_pom = c.p("pom.xml")
+            rel_parent = posixpath.relpath(root_pom, comp)
+            c.write(path, render("comp-pom.xml.j2", parent=coords, relative_path=rel_parent, group_id=None,
+                                 version=None, artifact_id=coords.artifact_id + L.comp_artifact_suffix, name=None))
         ed = PomEditor(c.ws.abs(path))
         drop = set(A.remove_when_present) | {s.key for s in A.mandatory} | set(exclude or ())
         seen_deps: set[str] = set()
@@ -938,11 +989,13 @@ class Restructurer:
         if len(sources) > 1:
             self._union_resources(c, ed, sources)
         root_props = sources[0].properties() if sources else {}
+        if role and sources:
+            self._role_module(c, ed, sources[0], exclude=set(exclude or ()), all_props=True)
         for src in copy_props_from or ():
             for k, v in src.properties().items():
                 if k not in root_props and not ed.has_property(k):
                     ed.set_property(k, v)
-        self._fix_java(c, ed, top=False)
+        self._fix_java(c, ed, top=role)
         ed.save()
 
     def _union_resources(self, c: _Ctx, ed: PomEditor, sources: list[PomEditor]) -> None:
@@ -1227,7 +1280,11 @@ class Restructurer:
 
     def _write_boot(self, c: _Ctx, coords: GAV, boot: str, lib_deps: list[GAV], asis_deps: list[GAV],
                     moved_main: list[str], moved_tests: list[str], final_name: str | None,
-                    comp_dirs: list[str]) -> None:
+                    comp_dirs: list[str], *, root: PomEditor | None = None,
+                    exclude: set[str] | None = None) -> None:
+        """Generated boot-jar pom. Role parents (round 9b): parent = `artifacts.boot_parent` (`<relativePath/>`),
+        explicit groupId / version, `root`'s properties / management copied in, mandatory dependencies, BOM and
+        java level in this pom."""
         L = c.cfg.layout
         A = c.cfg.artifacts
         case = c.profile.case_type
@@ -1274,11 +1331,21 @@ class Restructurer:
         main_class = moved_main[0] if len(moved_main) > 1 else None
         if main_class:
             c.note(f"several @SpringBootApplication classes; repackage mainClass set to {main_class}")
-        rel_parent = posixpath.relpath(c.p("pom.xml"), boot)
+        role = self._role(c)
+        if role:
+            parent, rel_parent, gid, ver = A.boot_parent.gav(), "", coords.group_id, coords.version  # type: ignore
+        else:
+            parent, rel_parent, gid, ver = coords, posixpath.relpath(c.p("pom.xml"), boot), None, None
         c.write(f"{boot}/pom.xml", render(
-            "boot-pom.xml.j2", parent=coords, relative_path=rel_parent,
+            "boot-pom.xml.j2", parent=parent, relative_path=rel_parent, group_id=gid, version=ver,
             artifact_id=coords.artifact_id + L.boot_artifact_suffix, name=None, dependencies=deps,
             plugin_version=plugin_version, main_class=main_class, final_name=final_name))
+        if role:
+            self._record_parent(c, f"{boot}/pom.xml", None, parent)
+            ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
+            self._role_module(c, ed, root, exclude=set(exclude or ()))
+            self._fix_java(c, ed, top=True)
+            c.save(ed)
         if not moved_main:
             self._generate_application(c, boot, comp_dirs)
         self._web_followups(c)
@@ -1379,22 +1446,33 @@ class Restructurer:
 
     # ------------------------------------------------------------------ root pom
     def _rewrite_root(self, c: _Ctx, root: PomEditor, modules: list[str], *, keep_deps: bool,
-                      keep_build_plugins: bool) -> None:
+                      keep_build_plugins: bool, aggregator: bool = False) -> None:
+        """`aggregator` (role parents, round 9b): the modules do not inherit the root pom — no mandatory
+        dependencies, BOM or java level here, and the root's properties / dependencyManagement / pluginManagement
+        (already copied into the module poms) are removed, except properties the root itself still references."""
         A = c.cfg.artifacts
         g, v = root.effective_group_id(), root.effective_version()
         if not root.group_id() and g:
             root.set_coordinate("groupId", g)
         if not root.version() and v:
             root.set_coordinate("version", v)
+        old_parent = root.get_parent()
         root.set_parent(A.parent.gav(), None)
+        self._record_parent(c, c.ws.rel(root.path), old_parent, A.parent.gav())
         root.set_packaging("pom")
         root.set_modules(modules)
         if not keep_deps:
             root.remove_all_dependencies()
-        self._add_mandatory(c, root)
-        self._remove_unwanted(c, root)
-        self._fix_java(c, root, top=True)
-        self._boot_bom(c, root)
+        if aggregator:
+            self._remove_unwanted(c, root)
+            root.remove_element("dependencyManagement")
+            root.remove_element("build/pluginManagement")
+            self._fix_java(c, root, top=False)
+        else:
+            self._add_mandatory(c, root)
+            self._remove_unwanted(c, root)
+            self._fix_java(c, root, top=True)
+            self._boot_bom(c, root)
         if not keep_build_plugins:
             for name in BUILD_TO_COMP + ("finalName",):
                 root.remove_element(f"build/{name}")
@@ -1406,7 +1484,141 @@ class Restructurer:
         root.remove_plugin(*BOOT_PLUGIN)
         root.remove_if_empty(root.find("build/plugins"))
         root.remove_if_empty(root.find("build"))
+        if aggregator:
+            self._prune_root_properties(root)
         c.save(root)
+
+    @staticmethod
+    def _prune_root_properties(root: PomEditor) -> None:
+        """Aggregator root: drop the properties nothing left in the root pom references (they were copied into the
+        module poms, which no longer inherit the root)."""
+        props = root.properties()
+        if not props:
+            return
+        text = "".join("".join(el.itertext()) for el in root.children(root.root)
+                       if PomEditor.local_name(el) != "properties")
+        used: set[str] = set()
+        todo = re.findall(r"\$\{([^}]+)\}", text)
+        while todo:
+            k = todo.pop()
+            if k in used or k not in props:
+                continue
+            used.add(k)
+            todo.extend(re.findall(r"\$\{([^}]+)\}", props[k] or ""))
+        for k in props:
+            if k not in used:
+                root.remove_property(k)
+        root.remove_if_empty(root.find("properties"))
+
+    # ------------------------------------------------------------------ role parents (round 9b)
+    @staticmethod
+    def _role(c: _Ctx) -> bool:
+        return bool(c.cfg.artifacts.role_parents)
+
+    @staticmethod
+    def _gav_str(g: GAV | None) -> str:
+        return "-" if g is None else f"{g.group_id}:{g.artifact_id}:{g.version or '?'}"
+
+    def _record_parent(self, c: _Ctx, pom: str, old: GAV | None, new: GAV) -> None:
+        """`RestructureResult.parents_set`: one entry per parent set or replaced (unchanged parents are skipped)."""
+        if old is not None and old.key == new.key and (old.version or None) == (new.version or None):
+            return
+        entry = f"{pom}: {self._gav_str(old)} → {self._gav_str(new)}"
+        if entry not in c.result.parents_set:
+            c.result.parents_set.append(entry)
+
+    def _role_module(self, c: _Ctx, ed: PomEditor, root: PomEditor | None, *, exclude: set[str],
+                     all_props: bool = False) -> None:
+        """A module pom on an external role parent gets what it used to inherit from the root pom: the root's
+        dependencyManagement (minus `exclude`, the merged modules), pluginManagement, repositories and properties
+        (`all_props`: every root property — the comp pom, which holds the root's dependencies; else the ones this
+        pom references plus `project.*` / `maven.*` build settings), `root` None = the module never inherited the
+        root; then the mandatory dependencies, remove_when_present and the Spring Boot BOM. The caller fixes the java
+        level (`_fix_java(top=True)`)."""
+        if root is not None:
+            for el in root.dependency_elements(True):
+                g = root.gav_of(el)
+                if g.key in exclude or ed.has_managed_dependency(g.group_id, g.artifact_id):
+                    continue
+                ed.copy_into(ed.ensure_path("dependencyManagement/dependencies"), el)
+            pm = root.find("build/pluginManagement")
+            if pm is not None and ed.find("build/pluginManagement") is None:
+                ed.copy_into(ed.ensure_path("build"), pm, ordered=True)
+            for name in ("repositories", "pluginRepositories"):
+                el = root.find(name)
+                if el is not None and ed.find(name) is None:
+                    ed.copy_into(ed.root, el, ordered=True)
+            props = root.properties()
+            if all_props:
+                wanted = list(props)
+            else:
+                text = "".join("".join(el.itertext()) for el in ed.children(ed.root))
+                wanted = [k for k in props if k.startswith(("project.", "maven."))]
+                todo = re.findall(r"\$\{([^}]+)\}", text)
+                while todo:
+                    k = todo.pop()
+                    if k in props and k not in wanted:
+                        wanted.append(k)
+                        todo.extend(re.findall(r"\$\{([^}]+)\}", props[k] or ""))
+            for k in props:
+                if k in wanted and not ed.has_property(k):
+                    ed.set_property(k, props[k])
+        self._add_mandatory(c, ed)
+        self._remove_unwanted(c, ed)
+        self._boot_bom(c, ed)
+
+    def _role_for(self, c: _Ctx, pom: str, parent: GAV) -> Any:
+        """The configured role parent an as-is `<parent>` with the same groupId:artifactId maps to (None if none).
+        When boot_parent and comp_parent share the key, the module location decides."""
+        A = c.cfg.artifacts
+        L = c.cfg.layout
+        hits = [r for r in (A.boot_parent, A.comp_parent) if r is not None and r.key == parent.key]
+        if not hits:
+            return None
+        if len(hits) == 1:
+            return hits[0]
+        boot_dir = c.p(L.module_dir, L.boot_module)
+        return A.boot_parent if posixpath.dirname(pom) == boot_dir else A.comp_parent
+
+    def _align_role_parents(self, c: _Ctx, *, report_modules: bool = False, skip: set[str] | None = None) -> None:
+        """R2: every project pom (root excluded) whose `<parent>` has the groupId:artifactId of `boot_parent` /
+        `comp_parent` (any version, e.g. an earlier migration's 1.0.0) moves to the configured GAV with
+        `<relativePath/>`. `report_modules`: a module/boot-jar or module/comp-jar pom on a different parent is noted
+        and left (already-restructured pass)."""
+        A = c.cfg.artifacts
+        if A.boot_parent is None and A.comp_parent is None:
+            return
+        L = c.cfg.layout
+        root_rel = c.p("pom.xml")
+        role_dirs = {c.p(L.module_dir, L.boot_module): A.boot_parent, c.p(L.module_dir, L.comp_module): A.comp_parent}
+        for pom in self._project_poms(c):
+            if pom == root_rel or pom in (skip or ()):
+                continue
+            try:
+                ed = PomEditor(c.ws.abs(pom))
+            except PomEditError:
+                continue
+            parent = ed.get_parent()
+            if parent is None:
+                continue
+            spec = self._role_for(c, pom, parent)
+            if spec is None:
+                want = role_dirs.get(posixpath.dirname(pom))
+                if report_modules and want is not None and parent.key != A.parent.key:
+                    c.note(f"{pom} inherits {parent.key} (not the role parent {want.key}); parent left unchanged")
+                continue
+            new = spec.gav()
+            if parent.version == new.version and ed.parent_relative_path() == "":
+                continue
+            if not ed.group_id() and parent.group_id:
+                ed.set_coordinate("groupId", ed.effective_group_id())
+            if not ed.version() and parent.version:
+                ed.set_coordinate("version", parent.version)
+            ed.set_parent(new, None)
+            c.save(ed)
+            if parent.version != new.version:
+                self._record_parent(c, pom, parent, new)
+                c.note(f"{pom}: role parent {parent.key} {parent.version or '?'} → {new.version}")
 
     def _add_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
         for spec in c.cfg.artifacts.mandatory:
@@ -1674,7 +1886,8 @@ class Restructurer:
             c.note("managed-version cleanup skipped: no effective pom")
             return
         A = c.cfg.artifacts
-        protected = ({A.parent.key} | {s.key for s in A.mandatory} | set(c.cfg.optional_keys())
+        protected = ({A.parent.key} | {r.key for r in (A.boot_parent, A.comp_parent) if r is not None}
+                     | {s.key for s in A.mandatory} | set(c.cfg.optional_keys())
                      | {k for k in A.remove_when_present if ":" in k})
         merged_managed: dict[str, str] = data.get("managed") or {}
         by_module: dict[str, Any] = data.get("by_module") or {}
@@ -1797,6 +2010,12 @@ class Restructurer:
                 lib_resolved.append(top)
         if not resolved and not lib_resolved:
             raise RestructureError("msa_pom: no service poms found")
+        # round 9b role parents: services → boot_parent, shared libraries → comp_parent, the top aggregator
+        # (policy top-aggregator) → artifacts.parent
+        role = self._role(c)
+        top_agg = L.msa_parent_policy == "top-aggregator"
+        svc_parent = A.boot_parent.gav() if role and not top_agg else A.parent.gav()   # type: ignore[union-attr]
+        lib_parent = A.comp_parent.gav() if role else A.parent.gav()                    # type: ignore[union-attr]
         for t in lib_resolved:
             ed = PomEditor(c.ws.abs(t))
             old_parent = ed.get_parent()
@@ -1805,7 +2024,8 @@ class Restructurer:
                     ed.set_coordinate("groupId", old_parent.group_id)
                 if not ed.version() and old_parent.version:
                     ed.set_coordinate("version", old_parent.version)
-            ed.set_parent(A.parent.gav(), None)
+            ed.set_parent(lib_parent, None)
+            self._record_parent(c, t, old_parent, lib_parent)
             self._fix_java(c, ed, top=True)
             self._boot_bom(c, ed)
             c.save(ed)
@@ -1818,12 +2038,17 @@ class Restructurer:
                     ed.set_coordinate("groupId", old_parent.group_id)
                 if not ed.version() and old_parent.version:
                     ed.set_coordinate("version", old_parent.version)
-            ed.set_parent(A.parent.gav(), None)
+            ed.set_parent(svc_parent, None)
+            self._record_parent(c, t, old_parent, svc_parent)
             self._add_mandatory(c, ed)
             self._fix_java(c, ed, top=True)
             self._boot_bom(c, ed)
             c.save(ed)
             c.note(f"msa_pom: patched {t}")
+        self._align_role_parents(c, skip=set(resolved) | set(lib_resolved))
+        if role:
+            c.note(f"msa_pom role parents: service roots → {svc_parent.key}, library roots → {lib_parent.key}"
+                   + (f", top aggregator → {A.parent.key}" if top_agg else ""))
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
         self._drop_managed_versions(c)
         self._msa_placeholders(c, svc_entries)

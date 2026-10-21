@@ -93,7 +93,7 @@ DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
                  "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename",
                  "boot2-hystrix-command", "multi-module-merge", "legacy-external-config", "java6-legacy",
-                 "multi-module-conflict", "legacy-ibatis"]
+                 "multi-module-conflict", "legacy-ibatis", "legacy-role-parents"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 

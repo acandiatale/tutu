@@ -1,12 +1,27 @@
 # Company-specific artifact policy. Copy to config/artifacts.yml and fill in real coordinates.
-#   parent     : 1 in-house parent every migrated root pom must inherit from   (mandatory)
-#   mandatory  : 2 dependencies every migrated root pom must declare           (mandatory)
-#   optional   : 8 in-house artifacts — bump the version ONLY if the as-is project already uses them
+#   parent      : the in-house parent of the migrated ROOT pom (company: base-parent)          (mandatory)
+#   boot_parent : the in-house parent of module/boot-jar/pom.xml (company: boot-jar)           (optional, see below)
+#   comp_parent : the in-house parent of module/comp-jar/pom.xml (company: comp-jar)           (optional)
+#   mandatory   : 2 dependencies every migrated project must declare                           (mandatory)
+#   optional    : 8 in-house artifacts — bump the version ONLY if the as-is project already uses them
+# With boot_parent + comp_parent set (the company layout, all in-house artifacts on one line, e.g. 4.0.0) the root
+# pom is an aggregator inheriting base-parent, the two module poms inherit their role parents directly (explicit
+# groupId / version, the 2 mandatory dependencies in each module pom); an as-is module already inheriting an older
+# boot-jar / comp-jar parent (an earlier migration on 1.0.0) is moved to the configured version. Leave both unset
+# and the modules inherit the root pom instead.
 artifacts:
   parent:
     group_id: com.company.platform
-    artifact_id: company-boot-parent
-    version: 4.1.0-1
+    artifact_id: base-parent
+    version: 4.0.0
+  boot_parent:
+    group_id: com.company.platform
+    artifact_id: boot-jar
+    version: 4.0.0
+  comp_parent:
+    group_id: com.company.platform
+    artifact_id: comp-jar
+    version: 4.0.0
   parent_manages_spring_boot: true      # parent imports/extends spring-boot 4.1.0 → we never pin boot versions ourselves
   parent_manages_java_version: true
   mandatory:

@@ -988,7 +988,7 @@ def _boot_managed_project(ws: Workspace, cfg: Optional[Config]) -> bool:
     """True when some pom is governed by a Spring Boot parent / BOM or by the configured in-house parent."""
     markers = ["<artifactId>spring-boot-starter-parent</artifactId>", "<artifactId>spring-boot-dependencies</artifactId>"]
     if cfg is not None:
-        markers.append(f"<artifactId>{cfg.artifacts.parent.artifact_id}</artifactId>")
+        markers += [f"<artifactId>{s.artifact_id}</artifactId>" for s in cfg.artifacts.parent_specs()]
     for rel in all_poms(ws):
         try:
             text = ws.read(rel)

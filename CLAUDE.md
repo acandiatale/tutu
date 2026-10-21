@@ -12,9 +12,15 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 
 ## Company constraints (stated by the user; not derivable from the code)
 - Four project cases: pure Java, Spring 4/5 + Boot 2/3, Tomcat servlet-only, MSA (several deployable services).
-- Non-MSA target: root pom inherits **1 in-house parent**, add **2 mandatory** dependencies, **8 optional** in-house
-  artifacts bumped only when already used; sources split into `module/boot-jar` + `module/comp-jar` (an as-is
-  multi-module project is merged into exactly these two; an existing `boot-jar` module is kept).
+- Non-MSA target (stated 2026-10-21): root pom inherits the in-house **`base-parent`** (`artifacts.parent`) and is an
+  aggregator of exactly `module/boot-jar` + `module/comp-jar`; `module/boot-jar/pom.xml` inherits the in-house **`boot-jar`**
+  role parent (`artifacts.boot_parent`), `module/comp-jar/pom.xml` the **`comp-jar`** role parent (`artifacts.comp_parent`),
+  all in-house artifacts on one version line (4.0.0); the **2 mandatory** dependencies go into both module poms, the
+  **8 optional** in-house artifacts are bumped only when already used; an as-is multi-module project is merged into
+  the two modules (an existing `boot-jar` module is kept). Projects migrated by the EARLIER in-house tool look like
+  root{boot-jar, service modules} with every module inheriting a role parent on the old 1.0.0 line directly: those
+  parents are moved to the configured version. Without `boot_parent`/`comp_parent` the modules inherit the root
+  (the pre-9b model).
 - Only Maven projects: Gradle / Ant builds are rejected at intake (exit 3) — the user's decision (2026-10-20).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
@@ -40,7 +46,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-21, rounds 5–9 complete (`main`)
+## Status — 2026-10-21, rounds 5–9b complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
@@ -77,6 +83,14 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   custom-resources module edges; fleet skips intake-rejected projects; handler `compiler-legacy-config`
   (fork/executable/bootclasspath). Fixtures `multi-module-conflict`, `legacy-ibatis` (20 fixtures), e2e PASS.
   1,200 offline tests green.
+- Round 9b (2026-10-21, first company run feedback): role parents (`artifacts.boot_parent` / `comp_parent`) in the
+  restructure incl. moving old role parents of an earlier migration; `sbmig llm-probe` on `.env` alone with
+  `--model` / `--payload-extra` / `--no-system`; gateway flag `need_origin`; content-filter answers = request
+  rejections; role models from `.env` (`LLM_RECIPE_MODEL`, `LLM_ESCALATION_MODEL`); operator progress logging (LLM
+  call start / heartbeat / retry delay, per-cluster decisions with the error text, mvn heartbeat, web stream ordered
+  by time) and a wall-clock hard deadline per LLM call; lombok handler covers inherited old lombok (unversioned
+  processor path, parent-inherited dependency, inherited `annotationProcessorPaths` → `combine.self="override"`);
+  an already restructured project moves to the configured parent versions. Fixture `legacy-role-parents` (21).
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -102,7 +116,10 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   literal `4.0.x` left by the recipe triggers one revert + re-run; the orchestrator re-runs a step at most once
   whatever `openrewrite.download_retry` says. L5: one cool-down per run (`llm.cooldown_seconds`), then unavailable;
   a blocked item's attempt count still includes the two cooled-down attempts.
-- Properties: relaxed-binding spellings of one key (`my-key` / `myKey` / `MY_KEY`) stay separate findings (three
+- Role parents (9b): a kept boot module on an external parent gets no root properties (relies on `boot_parent` for
+  e.g. `project.build.sourceEncoding`); under `wrap` the wrapped modules stay on the root (only the generated
+  boot-jar takes `boot_parent`); merged pom modules' management goes to the comp pom only; when both role parents
+  share one key the module location decides. Properties: relaxed-binding spellings of one key (`my-key` / `myKey` / `MY_KEY`) stay separate findings (three
   placeholders); `ibatis2` is detected from the pom + imports only (a `SqlMapClientFactoryBean` named only in
   Spring XML is missed).
 
@@ -113,7 +130,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,200 passed, 30 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,233 passed, 31 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

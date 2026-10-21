@@ -157,6 +157,8 @@ class RestructureResult(BaseModel):
     # round 9: explicit dependency versions dropped because the new parent chain manages the artifact
     # (`layout.drop_managed_versions`); "g:a: <explicit> → managed <version> (<pom>)"
     managed_versions_dropped: list[str] = Field(default_factory=list)
+    # round 9b: every parent the restructure set or replaced — "<pom>: <old g:a:v or '-'> → <new g:a:v>"
+    parents_set: list[str] = Field(default_factory=list)
 
 
 @runtime_checkable

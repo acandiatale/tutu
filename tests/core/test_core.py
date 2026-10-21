@@ -60,3 +60,19 @@ def test_profile_fingerprint_stable():
     a = ProjectProfile.make_fingerprint(["pom.xml", "a/pom.xml"], "root")
     b = ProjectProfile.make_fingerprint(["a/pom.xml", "pom.xml"], "root")
     assert a == b and len(a) == 16
+
+
+def test_role_parent_keys_and_specs():
+    """Round 9b: boot_parent / comp_parent join the root parent wherever "a configured in-house parent" matters
+    (parent-resolution abort, rewrite parent check, preflight, Boot-managed detection)."""
+    from pathlib import Path as _P
+
+    from sbmig.core.config import load_config
+    repo = _P(__file__).resolve().parents[2]
+    cfg = load_config(repo / "config" / "artifacts.example.yml")
+    assert cfg.artifacts.role_parents
+    assert [s.artifact_id for s in cfg.artifacts.parent_specs()] == ["base-parent", "boot-jar", "comp-jar"]
+    assert cfg.artifacts.parent_keys() == ["com.company.platform:base-parent", "com.company.platform:boot-jar",
+                                           "com.company.platform:comp-jar"]
+    plain = load_config(repo / "config" / "artifacts.local-e2e.yml")
+    assert not plain.artifacts.role_parents and plain.artifacts.parent_keys() == [plain.artifacts.parent.key]

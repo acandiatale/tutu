@@ -45,7 +45,14 @@ class ArtifactSpec(BaseModel):
 
 
 class ArtifactsConfig(BaseModel):
-    parent: ArtifactSpec
+    parent: ArtifactSpec                      # the root pom's parent (company: `base-parent`)
+    # round 9b — the company layout has role parents: `module/boot-jar/pom.xml` inherits the in-house `boot-jar`
+    # parent and `module/comp-jar/pom.xml` the in-house `comp-jar` parent (all in-house artifacts share one line,
+    # e.g. 4.0.0); the root pom (base-parent) is then an aggregator the modules do NOT inherit from. None = the
+    # modules inherit the root pom (pre-9b behaviour). An as-is module whose parent has the same groupId:artifactId
+    # as a role parent (an older migration on 1.0.0) is always moved to the configured version.
+    boot_parent: Optional[ArtifactSpec] = None
+    comp_parent: Optional[ArtifactSpec] = None
     parent_manages_spring_boot: bool = True   # if False we import spring-boot-dependencies BOM ourselves
     parent_manages_java_version: bool = True  # if False we set maven.compiler.release
     mandatory: list[ArtifactSpec] = Field(default_factory=list)   # exactly 2 in production config
@@ -54,6 +61,24 @@ class ArtifactsConfig(BaseModel):
     # floor: only raise an optional artifact to its configured version (never downgrade a newer as-is/recipe version)
     # pin  : always set exactly the configured version
     optional_version_policy: Literal["floor", "pin"] = "floor"
+
+    @property
+    def role_parents(self) -> bool:
+        """True when the modules inherit their own in-house parents (boot_parent / comp_parent both set)."""
+        return self.boot_parent is not None and self.comp_parent is not None
+
+    def parent_specs(self) -> list["ArtifactSpec"]:
+        """Every configured in-house parent: root parent, then boot_parent / comp_parent when set."""
+        return [s for s in (self.parent, self.boot_parent, self.comp_parent) if s is not None]
+
+    def parent_keys(self) -> list[str]:
+        """`g:a` keys (incl. aliases) that mean "a configured in-house parent" — an unresolvable one aborts the run."""
+        out: list[str] = []
+        for s in self.parent_specs():
+            for k in (s.key, *s.aliases):
+                if k not in out:
+                    out.append(k)
+        return out
 
 
 class LayoutConfig(BaseModel):

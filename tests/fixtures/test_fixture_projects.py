@@ -35,7 +35,8 @@ JDK_HOMES = {
 HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
-             "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis"]
+             "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
+             "legacy-role-parents"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -50,6 +51,7 @@ BUILD_MATRIX = [
     ("msa", "order-service", "11", ""),
     ("msa", "user-service", "21", ""),
     ("multi-module-merge", ".", "11", ""),
+    ("legacy-role-parents", ".", "11", ""),
     ("boot2-javax-lib", ".", "11", "libs"),
     ("boot2-javax-lib-optional", ".", "11", "libs"),
     ("euckr-legacy", ".", "8", "ms949"),
@@ -378,11 +380,19 @@ OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-l
 
 LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"},
                       "multi-module-conflict": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
+# round 9b: fixtures whose override only adds the company role parents (artifacts.boot_parent / comp_parent)
+PARENT_OVERRIDES = {"legacy-role-parents": {"boot_parent", "comp_parent"}}
 
 
 def test_fixture_config_override_keeps_8_optionals():
     overrides = sorted(p.parent.name for p in FIXTURES.glob("*/sbmig.e2e.yml"))
-    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES])
+    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES, *PARENT_OVERRIDES])
+    for name, keys in PARENT_OVERRIDES.items():
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert set(raw) == {"artifacts"} and set(raw["artifacts"]) == keys, name
+        cfg = _effective_cfg(name)
+        assert cfg.artifacts.role_parents and len(cfg.artifacts.optional) == 8, name
+        assert cfg.artifacts.boot_parent.key == cfg.artifacts.parent.key          # local stand-in: the same parent
     for name, top in LLM_ONLY_OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == top, name

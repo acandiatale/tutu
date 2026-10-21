@@ -1,0 +1,7 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml): the company role parents, stood in by
+# spring-boot-starter-parent 4.1.0 — module/boot-jar inherits boot_parent, module/comp-jar inherits comp_parent,
+# the root keeps artifacts.parent (the same stand-in). The as-is module parents have the SAME key at 2.7.18 (an
+# earlier migration on the old 1.0.0 line), so the restructure must move them to the configured version.
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }

@@ -381,3 +381,38 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     file gets the findings whose `service` is that service's name, its directory or the directory's basename, plus
     `service is None`; otherwise the round-8 location-based selection; `layout` ignores `service`.
     `PLACEHOLDER_SOURCE_LABELS["config-placeholder"] = "config placeholder"`.
+
+* 2026-10-21 (round 9b — company role parents, from the first company run):
+  * Config: `ArtifactsConfig.boot_parent` / `comp_parent: Optional[ArtifactSpec]` (default None), property
+    `role_parents` (both set), `parent_specs()` (root parent + role parents), `parent_keys()` (`g:a` + aliases of
+    every configured parent). `parent` stays the ROOT pom's parent (company: `base-parent`). `config/artifacts.example.yml`
+    shows the company shape (`base-parent` / `boot-jar` / `comp-jar`, all 4.0.0). Every "configured in-house parent"
+    rule now covers the role parents: `BuildFixLoop._parent_abort` (an unresolvable role parent aborts the run,
+    `parent_not_found`), `Orchestrator._check_parent_in_rewrite`, preflight checks `artifacts.boot_parent` /
+    `artifacts.comp_parent`, `_boot_managed_project` markers.
+  * `RestructureResult.parents_set: list[str]` — one entry per parent set or replaced
+    (`"<pom>: <old g:a:v or '-'> → <new g:a:v>"`), recorded in every mode (without role parents: the root entry);
+    with role parents one note `role parents: N parent(s) set`.
+  * Layout with role parents: root = aggregator on `artifacts.parent` (`<modules>` = comp + boot; no dependencies,
+    dependencyManagement, pluginManagement, mandatory deps, BOM or release property; only the properties it still
+    references); `module/boot-jar` on `boot_parent`, `module/comp-jar` on `comp_parent`, both `<relativePath/>` +
+    explicit groupId/version (the project's); both module poms get the 2 mandatory dependencies, the Boot BOM
+    (`parent_manages_spring_boot: false`), `maven.compiler.release` (`parent_manages_java_version: false`),
+    `remove_when_present`, the root's dependencyManagement (minus merged-module entries), pluginManagement and
+    repositories; the comp pom also gets every root property + the management / properties folded from merged
+    modules; the boot pom the root properties it references + `project.*` / `maven.*`; a kept boot module takes
+    `boot_parent` whatever its old parent was (explicit coordinates: its own, else the root's) and the root content
+    only when it inherited the root before. Templates `boot-pom.xml.j2` / `comp-pom.xml.j2`: optional `group_id` /
+    `version`, empty `relative_path` → `<relativePath/>` (byte-identical output without role parents).
+  * `wrap` with role parents: wrapped modules stay on the root (which keeps the mandatory deps); the generated
+    boot-jar takes `boot_parent`. `msa_pom`: service roots → `boot_parent`, library roots → `comp_parent`, the top
+    aggregator (`msa_parent_policy: top-aggregator`) → `artifacts.parent`.
+  * Old role parents: any project pom (root excluded) whose `<parent>` has the groupId:artifactId of `boot_parent` /
+    `comp_parent` at any version moves to the configured GAV with `<relativePath/>` — in layout (kept boot, wrapped
+    modules), `msa_pom`, and the already-restructured pass (which also moves the root to the configured
+    `artifacts.parent` version); a different parent key is noted and left; when both role parents share one key the
+    module location decides. Idempotent: a second run changes nothing; a configured version change moves all three.
+    `layout.drop_managed_versions` never touches the role-parent artifacts.
+  * Fixture `legacy-role-parents` (21 fixtures): root{boot-jar, catalog-service, order-service} on the stand-in
+    `spring-boot-starter-parent` 2.7.18 (old 1.0.0 line), `sbmig.e2e.yml` sets `boot_parent` / `comp_parent` =
+    `spring-boot-starter-parent` 4.1.0; `tests/fixtures` `PARENT_OVERRIDES` registry for such overrides.

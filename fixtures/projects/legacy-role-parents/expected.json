@@ -1,0 +1,48 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18",
+  "spring_version": null,
+  "packaging": "pom",
+  "is_multi_module": true,
+  "modules": ["boot-jar", "catalog-service", "order-service"],
+  "libraries": [
+    "lombok",
+    "spring-context"
+  ],
+  "optional_artifacts_in_use": [
+    "org.projectlombok:lombok"
+  ],
+  "main_classes": [
+    "com.example.shop.ShopApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "optional_bumped": [],
+    "journal_events": [
+      {"event": "restructure", "ok": true}
+    ],
+    "post_checks": [
+      {"pom_parent": {"path": "pom.xml", "group_id": "org.springframework.boot", "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
+      {"pom_parent": {"path": "module/boot-jar/pom.xml", "group_id": "org.springframework.boot", "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
+      {"pom_parent": {"path": "module/comp-jar/pom.xml", "group_id": "org.springframework.boot", "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
+      {"file_contains": {"path": "module/boot-jar/pom.xml", "contains": "<relativePath/>"}},
+      {"file_contains": {"path": "module/comp-jar/pom.xml", "contains": "<relativePath/>"}},
+      {"file_contains": {"path": "module/comp-jar/pom.xml", "contains": "<groupId>com.example</groupId>"}},
+      {"file_exists": {"path": "module/boot-jar/src/main/java/**/ShopApplication.java"}},
+      {"file_exists": {"path": "module/comp-jar/src/main/java/**/CatalogService.java"}},
+      {"file_exists": {"path": "module/comp-jar/src/main/java/**/OrderService.java"}},
+      {"file_absent": {"path": "catalog-service"}},
+      {"file_absent": {"path": "order-service"}},
+      {"file_absent": {"path": "boot-jar"}},
+      {"pom_dependency_present": {"path": "module/boot-jar/pom.xml", "artifacts": ["${project.groupId}:shop-comp", "org.springframework.boot:spring-boot-starter-validation", "org.springframework.boot:spring-boot-starter-actuator"]}},
+      {"pom_dependency_present": {"path": "module/comp-jar/pom.xml", "artifacts": ["org.springframework.boot:spring-boot-starter-validation", "org.springframework.boot:spring-boot-starter-actuator"]}},
+      {"pom_dependency_absent": {"path": "module/boot-jar/pom.xml", "artifacts": ["com.example:catalog-service", "com.example:order-service"]}}
+    ]
+  }
+}

@@ -265,6 +265,35 @@ comp-jar) and a follow-up says the boot-jar copy shadows them at runtime. **Cust
 (also top-level dirs outside `src/`) and comp-jar's `<resources>` / `<testResources>` is the union of every module's
 directories (deduped by directory + targetPath), plus the Maven default directory when some module relied on it.
 
+**Role parents** (round 9b, `artifacts.boot_parent` + `artifacts.comp_parent`, both set = `role_parents`; the
+company layout: root on `base-parent`, boot module on the in-house `boot-jar` parent, comp module on `comp-jar`, all
+on one version line, e.g. 4.0.0). The root pom (`artifacts.parent`, packaging `pom`, `<modules>` = the two modules)
+is then a pure **aggregator the modules do not inherit**: `module/boot-jar/pom.xml` inherits `boot_parent` and
+`module/comp-jar/pom.xml` `comp_parent`, both with `<relativePath/>` (external, resolved from the repository) and an
+explicit `<groupId>` / `<version>` (the project's), so the boot → comp dependency
+`${project.groupId}:<root>-comp:${project.version}` resolves. What used to flow through inheritance moves into the
+module poms: the 2 `mandatory` dependencies go into **both** module poms (none in the root), the Spring Boot BOM
+(`parent_manages_spring_boot: false`) and `maven.compiler.release` (`parent_manages_java_version: false`) into both,
+`remove_when_present` applies to them; the root's own `<dependencyManagement>` (minus merged-module entries),
+`<pluginManagement>` and `<repositories>` / `<pluginRepositories>` are copied into both, the root's `<properties>`
+into the comp pom (all) and into the boot pom (the ones it references plus `project.*` / `maven.*`); the
+dependencyManagement / properties folded from merged modules go into the comp pom. The root then loses its
+dependencies, dependencyManagement, pluginManagement and every property it no longer references itself. A kept as-is
+boot module gets `boot_parent` whatever its parent was (an older `boot-jar` / `comp-jar` role parent, the root, a
+starter parent), explicit coordinates (its own, else the root's), and the root content above only when it inherited
+the root before. `wrap` keeps the wrapped modules on the root (which keeps the mandatory dependencies); only the
+generated boot-jar gets `boot_parent`. **Old role parents**: any project pom (root excluded) whose `<parent>` has the
+groupId:artifactId of `boot_parent` / `comp_parent` (any version, e.g. the 1.0.0 of an earlier migration) moves to
+the configured GAV with `<relativePath/>` (missing groupId / version made explicit from the old effective ones; when
+both role parents share one key the module location decides) — in `layout` (kept boot module, wrapped modules), in
+`msa_pom` and in the already-restructured pass, which also moves the root to the configured `artifacts.parent`
+version; a module pom on another parent is noted and left. A second run changes nothing; changing the configured
+versions moves all three parents. **MSA** with role parents: service roots → `boot_parent` (mandatory dependencies
+as before), library roots (`kind: library` / `library_roots`) → `comp_parent`, the top aggregator (policy
+`top-aggregator`) → `artifacts.parent`. Every parent set or replaced is listed in `RestructureResult.parents_set`
+(`"<pom>: <old g:a:v or '-'> → <new g:a:v>"`, also without role parents) plus one note. Without role parents
+everything is as before (modules inherit the root).
+
 **Managed-version cleanup** (round 9, `layout.drop_managed_versions`, `layout` and `msa_pom`). After the parent /
 mandatory / optional edits the restructurer calls `params["effective_pom"]` (zero-arg; the orchestrator passes
 `sbmig.build.effective.effective_pom_provider(ws, cfg)`, which captures `help:effective-pom` of the restructured tree

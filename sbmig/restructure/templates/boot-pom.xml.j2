@@ -9,11 +9,13 @@
         <groupId>{{ parent.group_id }}</groupId>
         <artifactId>{{ parent.artifact_id }}</artifactId>
         <version>{{ parent.version }}</version>
-        <relativePath>{{ relative_path }}</relativePath>
+        {% if relative_path %}<relativePath>{{ relative_path }}</relativePath>{% else %}<relativePath/>{% endif %}
     </parent>
 
-    <artifactId>{{ artifact_id }}</artifactId>
-    <packaging>jar</packaging>
+{% if group_id %}    <groupId>{{ group_id }}</groupId>
+{% endif %}    <artifactId>{{ artifact_id }}</artifactId>
+{% if version %}    <version>{{ version }}</version>
+{% endif %}    <packaging>jar</packaging>
 {%- if name %}
     <name>{{ name }}</name>
 {%- endif %}

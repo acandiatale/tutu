@@ -470,8 +470,7 @@ class BuildFixLoop:
 
     def _parent_abort(self, pr: PhaseResult, phase: Phase, build: BuildResult, iteration: int) -> bool:
         """The configured in-house parent is not resolvable → nothing can build: abort the run with a clear item."""
-        parent = self.cfg.artifacts.parent
-        keys = {parent.key, *parent.aliases}
+        keys = set(self.cfg.artifacts.parent_keys())           # root parent + boot_parent / comp_parent (round 9b)
         errs = [e for e in build.errors if e.kind == ErrorKind.PARENT_RESOLUTION
                 and e.artifact is not None and e.artifact.key in keys]
         if not errs:
@@ -486,7 +485,7 @@ class BuildFixLoop:
                                                           "is not resolvable; run aborted")
         self.aborted = (f"the configured in-house parent {coords} is not resolvable (settings: "
                         f"{self.cfg.build.settings_file or 'default'}) — fix the repository/settings or "
-                        "artifacts.parent and rerun")
+                        "artifacts.parent / boot_parent / comp_parent and rerun")
         self._flag("aborted:parent-not-found")
         self._followup(f"run aborted: {self.aborted}")
         pr.notes.append(f"build {iteration}: {self.aborted}")

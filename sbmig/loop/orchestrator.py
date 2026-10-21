@@ -584,6 +584,10 @@ class Orchestrator:
                                            "with --config")
         else:
             checks["artifacts.parent"] = f"{parent.key}:{parent.version or '-'}"
+        for name in ("boot_parent", "comp_parent"):               # round 9b: the module role parents
+            spec = getattr(self.cfg.artifacts, name, None)
+            if spec is not None:
+                checks[f"artifacts.{name}"] = f"{spec.key}:{spec.version or '-'}"
         checks["java_home"] = self.cfg.build.java_home or "(inherited)"
         self.ws.journal({"event": "preflight", **checks})
 
@@ -832,13 +836,14 @@ class Orchestrator:
 
     def _check_parent_in_rewrite(self, pr: PhaseResult, step: PlanStep, err: str) -> None:
         """OpenRewrite failed because the configured in-house parent does not resolve → abort like the build loop."""
-        parent = self.cfg.artifacts.parent
-        keys = [parent.key, *parent.aliases]
+        keys = self.cfg.artifacts.parent_keys()                # root parent + boot_parent / comp_parent (round 9b)
         if self.loop is None or not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
             return
         key = next(k for k in keys if k in err)
+        spec = next((s for s in self.cfg.artifacts.parent_specs() if key in (s.key, *s.aliases)),
+                    self.cfg.artifacts.parent)
         m = re.search(re.escape(key) + r":(?:pom:)?([\w.\-]+)", err)
-        gav = GAV.parse(key + (f":{m.group(1)}" if m else (f":{parent.version}" if parent.version else "")))
+        gav = GAV.parse(key + (f":{m.group(1)}" if m else (f":{spec.version}" if spec.version else "")))
         e = BuildError(kind=ErrorKind.PARENT_RESOLUTION, message=err.splitlines()[0][:500], raw=err[:2000],
                        artifact=gav, signature=f"parent_resolution|{gav.coordinates}", module=step.target)
         br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
