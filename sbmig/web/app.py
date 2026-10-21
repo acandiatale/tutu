@@ -31,7 +31,7 @@ from typing import Any
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -115,6 +115,13 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT) -> FastAPI:
     @app.get("/api/runs")
     def runs() -> dict:
         return {"runs": mgr.list_runs()}
+
+    @app.get("/api/threads", response_class=PlainTextResponse)
+    def threads() -> str:
+        """Every thread's stack (round 9c, operators on Windows: no SIGUSR1) — also written to <out>/threads-<ts>.txt."""
+        from sbmig.core.diag import dump_threads, thread_dump_text
+        p = dump_threads(mgr.out_dir)
+        return (f"# written to {p}\n" if p else "") + thread_dump_text()
 
     @app.post("/api/runs", status_code=202)
     async def start(request: Request, name: str = "project.zip", configs: str = "",

@@ -55,6 +55,7 @@ _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
 REFERENCE_MAX_CHARS = 12_000         # one dropped merge copy in the fix prompt (round 9)
 WATCHDOG_S = 30.0                    # the fix loop's watchdog wakes up this often …
 WATCHDOG_QUIET_S = 60.0              # … and warns when no milestone was reached for this long (operators: stuck?)
+WATCHDOG_DUMP_S = 300.0              # … and writes a thread dump into the run dir by itself after this long (Windows has no SIGUSR1)
 REFERENCE_MAX_FILES = 3              # dropped copies per cluster
 _TRUNCATED_MARK = "\n… (truncated)"
 
@@ -245,14 +246,22 @@ class BuildFixLoop:
         points at the code between those (hints, prompt packing, patch apply, git)."""
         stop = threading.Event()
         started = time.monotonic()
+        dumped_for: set[float] = set()
 
         def beat() -> None:
             while not stop.wait(WATCHDOG_S):
                 quiet = time.monotonic() - self._milestone_at
                 if quiet >= WATCHDOG_QUIET_S:
                     log.warning("[%s] fix loop quiet for %.0fs since '%s' (loop running %.0fs) — still working or "
-                                "stuck? `kill -USR1 <sbmig pid>` dumps every thread's stack", phase.value, quiet,
-                                self._milestone, time.monotonic() - started)
+                                "stuck? a thread dump follows after %.0fs (also: GET /api/threads, kill -USR1 <pid>)",
+                                phase.value, quiet, self._milestone, time.monotonic() - started, WATCHDOG_DUMP_S)
+                if quiet >= WATCHDOG_DUMP_S and self._milestone_at not in dumped_for:
+                    dumped_for.add(self._milestone_at)
+                    try:
+                        from sbmig.core.diag import dump_threads
+                        dump_threads(self.ws.run_dir)
+                    except Exception as e:  # pragma: no cover - diagnostics never break the loop
+                        log.warning("thread dump failed: %s", e)
 
         threading.Thread(target=contextvars.copy_context().run, args=(beat,), name="fixloop-watchdog",
                          daemon=True).start()

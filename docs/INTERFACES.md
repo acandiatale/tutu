@@ -497,3 +497,9 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     `LLMFixer.propose` logs `fix prompt for <cluster>: packing …` and `… packed: N chars, sections […] → calling the
     LLM`; `sbmig.cli.dump_threads(out_dir)` / `install_thread_dump_signal()` (`SIGUSR1`, installed by
     `setup_logging` in the main thread) write `out/threads-<ts>.txt`.
+  * Windows / stuck-run follow-ups (round 9c): `sbmig.core.diag` (`thread_dump_text`, `dump_threads(out_dir)`,
+    `install_thread_dump_signal`; `sbmig.cli` re-exports), `GET /api/threads` (text + `<out>/threads-<ts>.txt`),
+    fix-loop watchdog auto-dump after `WATCHDOG_DUMP_S` (300 s) into the run dir; `Workspace._git` runs with
+    `stdin=DEVNULL`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`, `GCM_INTERACTIVE=never`, `GIT_EDITOR=true`,
+    `-c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=<run dir>/no-hooks` and `timeout=GIT_TIMEOUT_S`
+    (600 s → `GitError` naming the likely blocker).

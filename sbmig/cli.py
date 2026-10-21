@@ -23,41 +23,7 @@ ConfigOpt = typer.Option(None, "--config", "-c", help="extra config yml (repeata
 LOG_FILE_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
-def dump_threads(out_dir: Optional[Path] = None) -> Optional[Path]:
-    """Write every thread's stack to `<out_dir>/threads-<ts>.txt` (default `out/`) and log where — the answer to
-    "is it stuck?" when no heartbeat / watchdog line appears (round 9c). Returns the file, None when it cannot write."""
-    import time
-    import traceback
-
-    names = {t.ident: t.name for t in threading.enumerate()}
-    parts = [f"# sbmig thread dump {time.strftime('%Y-%m-%d %H:%M:%S')} pid={os.getpid()}"]
-    for tid, frame in sys._current_frames().items():  # noqa: SLF001 - the documented way to get other threads' frames
-        parts.append(f"\n--- thread {names.get(tid, '?')} ({tid}) ---")
-        parts.append("".join(traceback.format_stack(frame)))
-    text = "\n".join(parts)
-    try:
-        d = Path(out_dir) if out_dir else Path("out")
-        d.mkdir(parents=True, exist_ok=True)
-        p = d / f"threads-{time.strftime('%Y%m%d-%H%M%S')}.txt"
-        p.write_text(text, encoding="utf-8")
-    except OSError:
-        sys.stderr.write(text + "\n")
-        return None
-    logging.getLogger("sbmig").warning("thread dump written to %s (%d threads)", p, len(names))
-    return p
-
-
-def install_thread_dump_signal(out_dir: Optional[Path] = None) -> bool:
-    """`kill -USR1 <pid>` → dump_threads. Main thread only, POSIX only; never raises."""
-    import signal
-
-    if not hasattr(signal, "SIGUSR1") or threading.current_thread() is not threading.main_thread():
-        return False
-    try:
-        signal.signal(signal.SIGUSR1, lambda *_a: dump_threads(out_dir))
-        return True
-    except (ValueError, OSError):  # pragma: no cover - not in the main thread / unsupported
-        return False
+from sbmig.core.diag import dump_threads, install_thread_dump_signal  # noqa: E402,F401 - re-exported
 
 
 def setup_logging(verbose: bool = False) -> None:

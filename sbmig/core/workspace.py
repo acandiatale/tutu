@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 log = logging.getLogger("sbmig.core.workspace")
 
+GIT_TIMEOUT_S = 600.0      # one workspace git command (add / commit / status / reset)
 DEFAULT_ENCODING_CANDIDATES: tuple[str, ...] = ("utf-8", "cp949", "euc-kr", "shift_jis", "latin-1")
 _UTF8_BOM = b"\xef\xbb\xbf"
 _ZIP_UTF8_FLAG = 0x800
@@ -310,9 +311,23 @@ class Workspace:
 
     # ------------------------------------------------------------------ git snapshots
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_AUTHOR_NAME": "sbmig", "GIT_AUTHOR_EMAIL": "sbmig@local",
+        """Workspace git: never interactive. The user's global git config may ask for a GPG passphrase
+        (`commit.gpgsign`), run hooks or call a credential manager — in a service process on Windows that waits
+        forever, which is what a run "stuck after llm_fix" looked like (round 9c). So: stdin closed, prompts off,
+        signing / hooks disabled per call, and a hard timeout (`GIT_TIMEOUT_S`)."""
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "echo", "GCM_INTERACTIVE": "never",
+               "GIT_EDITOR": "true", "GIT_AUTHOR_NAME": "sbmig", "GIT_AUTHOR_EMAIL": "sbmig@local",
                "GIT_COMMITTER_NAME": "sbmig", "GIT_COMMITTER_EMAIL": "sbmig@local"}
-        cp = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True, env=env)
+        no_hooks = str(self.run_dir / "no-hooks")                       # a dir that does not exist = no hooks
+        cmd = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", f"core.hooksPath={no_hooks}",
+               *args]
+        try:
+            cp = subprocess.run(cmd, cwd=self.root, capture_output=True, text=True, env=env,
+                                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired as e:
+            raise GitError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_S:.0f}s in {self.root} — something "
+                           "outside sbmig is blocking git (antivirus / indexer lock, a global hook, a credential or "
+                           "GPG prompt); sbmig already disables prompts, hooks and signing per call") from e
         if check and cp.returncode != 0:
             raise GitError(f"git {' '.join(args)} failed: {cp.stderr.strip() or cp.stdout.strip()}")
         return cp

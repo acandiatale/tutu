@@ -45,8 +45,13 @@ Windows / no shell profile: put the variables in `.env` at the repo root (copy `
    (`deciding <cluster>`, `advisory hints`, `merge-conflict hints`, `fixer.propose … (prompt packing + LLM call)`,
    `LLM answered: applying`, `git commit`, `mvn package (build 3)`). `fix prompt for <cluster>: packing …` /
    `… packed: N chars → calling the LLM` bracket the prompt construction.
-3. Nothing at all for minutes: `kill -USR1 <pid of sbmig / uvicorn>` writes every thread's stack to
-   `out/threads-<timestamp>.txt` (and says so in the log). Send that file with the last 30 lines of `sbmig.log`.
+3. Nothing at all for minutes: get a thread dump — on Windows (no `kill -USR1`) open
+   `http://127.0.0.1:8765/api/threads` (also written to `<out>/threads-<timestamp>.txt`); on POSIX
+   `kill -USR1 <pid of sbmig / uvicorn>` writes `out/threads-<timestamp>.txt`. The fix loop also writes one by itself
+   into the run directory after 5 minutes of silence. Send that file with the last 30 lines of `sbmig.log`.
+4. A run that stops right after the journal's `llm_fix` event (answer received, no `attempt` event) was blocked in
+   the patch apply / `git commit` step. Workspace git is non-interactive since round 9c (prompts, hooks, GPG signing
+   disabled per call, 10-minute timeout) — if it still hangs there, an antivirus / indexer is holding the files.
 
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
 `token recognition error at: '<'` lines in a rewrite log come from OpenRewrite's XML parser, which also reads

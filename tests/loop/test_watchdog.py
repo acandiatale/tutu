@@ -44,3 +44,26 @@ def test_dump_threads_writes_every_stack(tmp_path):
     assert p is not None and p.is_file()
     text = p.read_text(encoding="utf-8")
     assert "# sbmig thread dump" in text and "MainThread" in text and "dump_threads" in text
+
+
+
+def test_watchdog_writes_a_thread_dump_by_itself(cfg, ws, monkeypatch, caplog):
+    """Windows has no SIGUSR1: after WATCHDOG_DUMP_S of silence the loop dumps the threads into the run dir."""
+    monkeypatch.setattr(fl, "WATCHDOG_S", 0.02)
+    monkeypatch.setattr(fl, "WATCHDOG_QUIET_S", 0.03)
+    monkeypatch.setattr(fl, "WATCHDOG_DUMP_S", 0.06)
+
+    def slow(w, c, ctx):
+        time.sleep(0.3)
+        return write_fix(c.file, "class X { ok }\n")
+
+    plan = MigrationPlan(profile_fingerprint="fp", case_type=CaseType.SPRING_BOOT, steps=[
+        PlanStep(id="jdk21.loop", kind=StepKind.BUILD_FIX_LOOP, phase=Phase.JDK21, title="l", build_goal="compile",
+                 max_iterations=2),
+        PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="v", build_goal="clean package")])
+    with caplog.at_level(logging.WARNING, logger="sbmig"):
+        make_orch(cfg, ws, plan=plan, fixer=FakeFixer(fn=slow), pre=[]).run()
+    dumps = sorted(ws.run_dir.glob("threads-*.txt"))
+    assert dumps, "no automatic thread dump"
+    assert "fixloop-watchdog" in dumps[0].read_text(encoding="utf-8")
+    assert any("thread dump written to" in r.getMessage() for r in caplog.records)
