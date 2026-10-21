@@ -76,3 +76,17 @@ def test_llm_probe_missing_key_is_a_clear_error(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["llm-probe", "--prompt", "안녕"])
     assert r.exit_code == 1, r.output
     assert "CONFIG ERROR" in r.output and "LLM_API_KEY" in r.output and "Traceback" not in r.output
+
+
+def test_llm_probe_model_payload_extra_and_no_system(tmp_path):
+    """Round 9: probe knobs for comparing with Postman — --model, --payload-extra (replaces, so '{}' drops
+    need_orgin), --no-system; and --config with a real artifacts section still works (stub is harmless)."""
+    from sbmig.cli import _probe_messages
+    assert _probe_messages("hi", True) == [{"role": "user", "content": "hi"}]
+    assert [m["role"] for m in _probe_messages("hi")] == ["system", "user"]
+    r = CliRunner().invoke(app, ["llm-probe", "--config", str(E2E), "--llm-provider", "fake", "--model", "m-x",
+                                 "--payload-extra", "{}", "--no-system", "--prompt", "안녕"])
+    assert r.exit_code == 0, r.output
+    assert "provider=fake model=m-x" in r.output and "payload_extra={}" in r.output
+    r = CliRunner().invoke(app, ["llm-probe", "--llm-provider", "fake", "--payload-extra", "[1]"])
+    assert r.exit_code == 2

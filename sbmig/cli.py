@@ -248,16 +248,19 @@ def _echo_wire(resp, timeout) -> None:
     typer.echo(f"timeout: {timeout}s")
 
 
-def _probe_bare(cfg, prompt: str) -> None:
+def _probe_messages(prompt: str, no_system: bool = False) -> list[dict]:
+    msgs = [] if no_system else [{"role": "system", "content": "You are a helpful assistant."}]
+    return msgs + [{"role": "user", "content": prompt}]
+
+
+def _probe_bare(cfg, prompt: str, no_system: bool = False) -> None:
     """The company snippet, verbatim: requests.post(url, headers=..., json=payload, timeout=...)."""
     import requests
 
     llm = cfg.llm
     url = llm.base_url
     key = os.environ.get(llm.api_key_env or "", "")
-    payload = {"model": llm.model,
-               "messages": [{"role": "system", "content": "You are a helpful assistant."},
-                            {"role": "user", "content": prompt}], **(llm.payload_extra or {})}
+    payload = {"model": llm.model, "messages": _probe_messages(prompt, no_system), **(llm.payload_extra or {})}
     headers = {"Authorization": f"Bearer {key}"}
     typer.echo(f"bare requests.post → {url}  key_env={llm.api_key_env} key_set={bool(key)}")
     typer.echo("payload: " + json.dumps(payload, ensure_ascii=False)[:1500])
@@ -298,6 +301,11 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
 def llm_probe(config: Optional[List[Path]] = ConfigOpt,
               prompt: str = typer.Option("Reply with the single word: pong", "--prompt"),
               llm_provider: Optional[str] = typer.Option(None, "--llm-provider"),
+              model: Optional[str] = typer.Option(None, "--model", help="override llm.model / LLM_MODEL for this probe"),
+              payload_extra: Optional[str] = typer.Option(
+                  None, "--payload-extra", help="JSON object that REPLACES llm.payload_extra for this probe, e.g. "
+                                                "'{}' to send only model + messages, '{\"need_orgin\": false}'"),
+              no_system: bool = typer.Option(False, "--no-system", help="send only the user message (no system message)"),
               bare: bool = typer.Option(False, "--bare", help="bypass sbmig's client: plain requests.post(url, "
                                                               "headers={Authorization}, json=payload, timeout=) "
                                                               "with the same payload — compare with the normal probe")
@@ -311,13 +319,26 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     from sbmig.core.interfaces import ChatMessage
     from sbmig.fix import CompanyClient, LLMConfigError, LLMError, make_llm_client
 
-    overrides: dict = {"llm": {"provider": llm_provider}} if llm_provider else {}
-    if not config:
-        overrides.update(_PROBE_ARTIFACTS_STUB)
+    overrides: dict = {"llm": {}}
+    if llm_provider:
+        overrides["llm"]["provider"] = llm_provider
+    if model:
+        overrides["llm"]["model"] = model
+    overrides.update(_PROBE_ARTIFACTS_STUB)        # the probe reads nothing from `artifacts`
     cfg = _load(config, overrides)
+    if payload_extra is not None:
+        try:
+            extra = json.loads(payload_extra)
+        except ValueError as e:
+            typer.echo(f"--payload-extra must be a JSON object: {e}", err=True)
+            raise typer.Exit(2)
+        if not isinstance(extra, dict):
+            typer.echo("--payload-extra must be a JSON object", err=True)
+            raise typer.Exit(2)
+        cfg.llm.payload_extra = extra               # replaces (a merge could not drop a key such as need_orgin)
     llm = cfg.llm
     if bare:
-        _probe_bare(cfg, prompt)
+        _probe_bare(cfg, prompt, no_system=no_system)
         return
     typer.echo(f"provider={llm.provider} model={llm.model} url={llm.base_url} key_env={llm.api_key_env}"
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
@@ -329,8 +350,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
                    "or export them in the shell; `--llm-provider fake` runs the probe without a gateway")
         raise typer.Exit(1)
     inner = getattr(client, "inner", client)
-    msgs = [ChatMessage(role="system", content="You are a helpful assistant."),
-            ChatMessage(role="user", content=prompt)]
+    msgs = [ChatMessage(role=m["role"], content=m["content"]) for m in _probe_messages(prompt, no_system)]
     if isinstance(inner, CompanyClient):
         payload = inner.payload(msgs)
         typer.echo("request payload: " + json.dumps(payload, ensure_ascii=False)[:1500])

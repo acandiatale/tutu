@@ -16,6 +16,7 @@ uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
 cp config/artifacts.example.yml config/artifacts.yml      # fill in parent / mandatory ×2 / optional ×8
 cp .env.example .env                                     # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
 sbmig llm-probe --prompt "안녕"                            # exact request, raw response, extracted reply (needs .env only)
+sbmig llm-probe --prompt "안녕" --payload-extra '{}' --no-system --model <postman model>   # compare with Postman
 sbmig run <project> --config config/artifacts.yml
 ```
 
