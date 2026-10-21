@@ -266,6 +266,56 @@ class LombokVersionFloor(VersionFloorHandler):
     properties = ("lombok.version",)
     floor = LOMBOK_VERSION
     library = "lombok"
+    # javac-internals wording = an old lombok IS on the processor path, whatever the poms declare (round 9: seen in
+    # the first company run — the declared version was fine, the old jar came from the parent chain; the base
+    # handler found nothing to bump and the LLM was asked first)
+    _HARD_RE = re.compile(r"(?i)IllegalAccessError.*lombok|lombok\.javac\.apt|cannot access class com\.sun\.tools"
+                          r"\.javac|TypeTag\s*::\s*UNKNOWN|com\.sun\.tools\.javac\.code\.TypeTags")
+    _PATH_RE = re.compile(r"(<path>(?:(?!</path>).)*?<artifactId>\s*lombok\s*</artifactId>)((?:(?!</path>).)*?)(</path>)",
+                          re.S)
+
+    def _hard(self, cluster: Optional[ErrorCluster]) -> bool:
+        return cluster is not None and bool(self._HARD_RE.search(cluster_text(cluster)))
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        return self._hard(cluster) or super().applicable(cluster, profile, cfg)
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed = super().edit(ws, cluster, profile, cfg)
+        inherited = profile is not None and profile.has_library(self.library) \
+            and not profile_declares(profile, ["org.projectlombok:lombok"])
+        if not (self._hard(cluster) or (cluster is None and inherited)):
+            return changed
+        g, a = self.artifacts[0]
+        # 1. an annotationProcessorPaths entry for lombok without a version (plugin-managed by the parent) → pin it
+        for rel in all_poms(ws):
+            text = ws.read(rel)
+            new = self._PATH_RE.sub(
+                lambda m: m.group(0) if "<version>" in m.group(2)
+                else f"{m.group(1)}\n{_indent_of(m.group(1))}<version>{self.floor}</version>{m.group(2)}{m.group(3)}",
+                text)
+            if new != text:
+                ws.write(rel, new)
+                changed.append(rel)
+        if changed:
+            return list(dict.fromkeys(changed))
+        # 2. lombok is not declared in any project pom (inherited from the parent's <dependencies>) → an explicit
+        #    provided dependency in the root pom overrides the inherited version (Boot 4's BOM manages it later and
+        #    RemoveRedundantDependencyVersions / drop_managed_versions take the pin away again)
+        root = root_pom(ws, profile)
+        if root:
+            ed = self.editor(ws, root)
+            if not any(d.key == f"{g}:{a}" for d in _deps(ed)):
+                ed.add_dependency(GAV(group_id=g, artifact_id=a, version=self.floor, scope="provided"))
+                ed.save()
+                changed.append(root)
+        return changed
+
+
+def _indent_of(block: str) -> str:
+    """Indentation of the last line of `block` (to place a new element under it)."""
+    last = block.rsplit("\n", 1)[-1]
+    return last[: len(last) - len(last.lstrip())]
 
 
 class MapstructVersionFloor(VersionFloorHandler):

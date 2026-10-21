@@ -66,9 +66,13 @@ def test_lombok_matches(fake_kit):
                             "lombok.javac.apt.LombokProcessor cannot access class com.sun.tools.javac.processing",
                             module="demo")])[0]
     assert h.matches(c, make_profile(libs=[("lombok", "1.18.20")]), None)
-    assert not h.matches(c, make_profile(libs=[("lombok", "1.18.38")]), None)
-    assert not h.matches(c, make_profile(libs=[]), None)
+    # round 9: the javac-internals wording proves an old lombok is on the processor path whatever the poms declare
+    assert h.matches(c, make_profile(libs=[("lombok", "1.18.38")]), None)
+    assert h.matches(c, make_profile(libs=[]), None)
     assert h.matches(c, None, None)
+    soft = cluster_errors([err(ErrorKind.COMPILE, "cannot find symbol: method builder() — lombok", module="demo")])[0]
+    assert h.matches(soft, make_profile(libs=[("lombok", "1.18.20")]), None)
+    assert not h.matches(soft, make_profile(libs=[("lombok", "1.18.38")]), None)     # version gate for soft hits
     other = cluster_errors([err(file="A.java", message="cannot find symbol")])[0]
     assert not h.matches(other, make_profile(libs=[("lombok", "1.0")]), None)
 
@@ -436,3 +440,53 @@ def test_compiler_legacy_config_leaves_clean_poms_alone(fake_kit, cfg):
     before = fake_kit.text()
     assert not fake_kit.handler("compiler-legacy-config").apply(fake_kit.ws, None, None, cfg)
     assert fake_kit.text() == before
+
+
+
+_LOMBOK_ERR = ("java.lang.IllegalAccessError: class lombok.javac.apt.LombokProcessor (in unnamed module @0x1) cannot "
+               "access class com.sun.tools.javac.processing.JavacProcessingEnvironment (in module jdk.compiler)")
+
+
+def test_lombok_hard_error_pins_unversioned_processor_path(kit, cfg):
+    """Round 9: the declared lombok is fine (1.18.30) but the processor path carries no version (plugin-managed by
+    the old parent) → the javac-internals error selects the handler regardless of the profile and the path gets
+    the floor version."""
+    kit.pom(deps=[G("org.projectlombok:lombok:1.18.30")], extra_build="""
+      <plugin>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <annotationProcessorPaths>
+            <path>
+              <groupId>org.projectlombok</groupId>
+              <artifactId>lombok</artifactId>
+            </path>
+          </annotationProcessorPaths>
+        </configuration>
+      </plugin>""")
+    h = kit.handler("lombok-version-floor")
+    c = cluster_errors([err(ErrorKind.COMPILE, _LOMBOK_ERR)])[0]
+    prof = make_profile(libs=[("lombok", "1.18.30")])
+    assert h.matches(c, prof, cfg)
+    assert h.apply(kit.ws, c, prof, cfg)
+    import re as _re
+    from sbmig.triage.handlers.pom_handlers import LOMBOK_VERSION
+    text = kit.text()
+    assert _re.search(r"<artifactId>lombok</artifactId>\s*<version>" + _re.escape(LOMBOK_VERSION), text)   # path pinned
+    assert not h.apply(kit.ws, c, prof, cfg)                      # idempotent
+
+
+def test_lombok_inherited_from_parent_gets_an_explicit_pin(kit, cfg):
+    """No project pom declares lombok (the parent's <dependencies> brings an old one): reactive on the javac error
+    and pre-emptive when the imports show lombok → explicit provided 1.18.30 in the root pom."""
+    kit.pom()
+    h = kit.handler("lombok-version-floor")
+    c = cluster_errors([err(ErrorKind.COMPILE, _LOMBOK_ERR)])[0]
+    assert h.apply(kit.ws, c, make_profile(), cfg)
+    from sbmig.triage.handlers.pom_handlers import LOMBOK_VERSION
+    d = kit.dep("org.projectlombok:lombok")
+    assert d is not None and d.version == LOMBOK_VERSION and d.scope == "provided"
+    kit.pom()                                                     # fresh pom: pre-emptive path (no cluster)
+    assert h.apply(kit.ws, None, make_profile(libs=[("lombok", None)]), cfg)
+    assert kit.dep("org.projectlombok:lombok").version == LOMBOK_VERSION
+    kit.pom()
+    assert not h.apply(kit.ws, None, make_profile(), cfg)        # no lombok anywhere → nothing added
