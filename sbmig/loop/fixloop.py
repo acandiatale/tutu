@@ -254,9 +254,14 @@ class BuildFixLoop:
                                 "treated as a stall")
             window = (window + [multiset])[-max(2, self.cfg.loop.oscillation_window):]
             clusters = self.triager.cluster(build.errors, self.profile)
-            log.info("[%s] build %d: %d error(s) in %d cluster(s) → fix round %d/%d%s", phase.value, build_no,
-                     build.error_count, len(clusters), fix_rounds + 1, max_iterations,
-                     " (stall level %d)" % stall_level if stall_level else "")
+            if fix_rounds >= max_iterations:
+                log.info("[%s] build %d: %d error(s) in %d cluster(s) — max fix rounds (%d) used up; the phase ends "
+                         "here and the next phase / the final build carry the rest (reported as unresolved)",
+                         phase.value, build_no, build.error_count, len(clusters), max_iterations)
+            else:
+                log.info("[%s] build %d: %d error(s) in %d cluster(s) → fix round %d/%d%s", phase.value, build_no,
+                         build.error_count, len(clusters), fix_rounds + 1, max_iterations,
+                         " (stall level %d)" % stall_level if stall_level else "")
             if oscillating and oscillations >= 2:
                 self._block_oscillation(pr, phase, build_no, clusters)
             if self._only_blocked(pr, clusters, build_no):
