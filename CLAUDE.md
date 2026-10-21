@@ -4,6 +4,10 @@ In-house **JDK 21 + Spring Boot 4.1.0 migration agent** for company Maven projec
 Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" table per round, newest at the bottom)
 → `docs/INTERFACES.md` (contracts) → the doc for the area you touch (`ARCHITECTURE`, `FLEET`, `ADAPTERS`,
 `RECIPES`, `ADVISORIES`, `ERROR-HANDLING`, `RUNBOOK`).
+The Korean handbook for the company (`docs/handbook/`, README → 01…09 + `sbmig-overview.pptx` + `sbmig-reference.xlsx`)
+explains the same system for operators; `tests/docs/test_handbook.py` keeps its paths / config keys / CLI names /
+links in sync with the code, and `scripts/handbook/` regenerates the xlsx / pptx. Update the handbook when behaviour
+the operators see changes (CLI, config keys, handlers, report sections, log lines).
 
 ## Why this exists
 - The user takes this code into their company to test it there. Company source code is **not** reachable from here.
@@ -48,7 +52,8 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 3. The knowledge base is **file-based** (no database allowed).
 4. Plugin seams stay stable: `LLMRequest` / `LLMResponse`, `FixerLike`, `sbmig.api.migrate(...)`.
 5. `knowledge/recipes/catalog.yml` is the single source of recipe ids; `sbmig recipes check` and a snapshot test
-   guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
+   guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central), which resolves rewrite-spring
+   6.37.0 (recipe ids were verified against the 6.37.1 docs / jars).
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
 ## Status — 2026-10-21, rounds 5–9c complete (`main`)
@@ -104,7 +109,9 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 - Same-day follow-ups from the first company runs (Windows, 2026-10-21): gateway flag `need_origin`; JSP/HTML excluded
   from the rewrite parse; `jstl-to-jakarta`; `jdk-generified-apis`; `resources-binary-filtering` (webfonts & co under a
   filtered resource → `nonFilteredFileExtensions`, pre-emptive from the analysis — E12); git / Maven subprocess output
-  decoded as UTF-8 (the cp949 console code page killed `changes.patch` on Windows); pom-declared repositories the host
+  decoded as UTF-8 (the cp949 console code page killed `changes.patch` on Windows); Korean handbook + PPT + xlsx in
+  `docs/handbook/` (2026-10-21 evening; review found the Maven preflight tuple bug and relative Maven paths, fixed);
+  pom-declared repositories the host
   cannot reach → `build.settings_file` catch-all mirror (`config/settings.nexus.example.xml`, RUNBOOK §0.1), plan note /
   follow-up without one, opt-in `build.pom_repositories: remove` (`strip-pom-repositories`); operator diagnostics (LLM / mvn heartbeats,
   fix-loop watchdog + milestones, `/api/threads`, auto thread dump, non-interactive git with timeout, `taskkill /T`);
@@ -122,7 +129,8 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   first project (then 0 via the compiled `ChangeMethodName` candidate); cross-file clustering by symbol would cut that.
 - ribbon / zuul / netflix-feign stay `guide` (Spring Cloud LoadBalancer / Gateway / OpenFeign need structural
   rewrites); hystrix is `recipe` since round 6, with the LLM (advisory-guided) handling programmatic subclasses.
-  Advisory hints only exist for advisories with a `## fix-loop: <library>` note section (today: hystrix).
+  Advisory hints only exist for advisories with a `## fix-loop: <library>` note section (today: `spring-cloud.md` for
+  hystrix, `ibatis2.md`, `jdk21.md` for jdk-removed-apis / jdk-generified-apis, `externalized-config.md`).
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
 - `build.skip_tests: true` is the default: builds never run unit tests, so missing externalized values cannot
   break the build and the `tests-skipped` fallback (round 8) only acts where a company config sets
@@ -150,7 +158,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,328 passed, 34 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,369 passed, 34 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

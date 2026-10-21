@@ -575,14 +575,20 @@ class Orchestrator:
             try:
                 avail = lazy_attr("sbmig.build", "maven_available", "C (build)")
                 try:
-                    ok = avail(self.cfg)
+                    res = avail(self.cfg)
                 except TypeError:
-                    ok = avail()
-                checks["mvn"] = bool(ok)
+                    res = avail()
+                # maven_available returns (ok, detail); test fakes return a bare bool — a tuple is always truthy,
+                # so `bool(res)` alone never flagged a missing Maven (found while writing the handbook, 2026-10-21)
+                ok, detail = (bool(res[0]), str(res[1] or "")) if isinstance(res, tuple) else (bool(res), "")
+                checks["mvn"] = ok
+                if detail:
+                    checks["mvn_detail"] = detail
                 if not ok:
                     report.flags.append("mvn-not-found")
-                    report.manual_followups.append(f"'{self.cfg.build.mvn}' is not runnable: install Maven or set "
-                                                   "build.mvn; every build below will fail")
+                    report.manual_followups.append(f"'{self.cfg.build.mvn}' is not runnable"
+                                                   + (f" ({detail})" if detail else "")
+                                                   + ": install Maven or set build.mvn; every build below will fail")
             except MissingComponentError as e:
                 checks["mvn"] = f"unknown ({e})"
         parent = self.cfg.artifacts.parent

@@ -37,7 +37,7 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
     env = dict(os.environ)
     env.update({k: str(v) for k, v in (cfg.build.env or {}).items()})
     if not _blank(cfg.build.java_home):
-        jh = str(Path(cfg.build.java_home).expanduser())
+        jh = str(Path(cfg.build.java_home).expanduser().resolve())
         env["JAVA_HOME"] = jh
         env["PATH"] = os.pathsep.join([str(Path(jh) / "bin"), env.get("PATH", "")])
     if extra:
@@ -74,10 +74,12 @@ def mvn_executable(cfg: Config) -> str:
 def base_command(cfg: Config) -> list[str]:
     b = cfg.build
     cmd = [mvn_executable(cfg), *b.extra_args]
+    # absolute: Maven runs with cwd = the project (module) directory, so a relative `config/settings.nexus.xml`
+    # would be looked up there and silently fall back to ~/.m2/settings.xml (handbook review, 2026-10-21)
     if not _blank(b.settings_file):
-        cmd += ["-s", str(Path(b.settings_file).expanduser())]
+        cmd += ["-s", str(Path(b.settings_file).expanduser().resolve())]
     if not _blank(b.local_repo):
-        cmd.append(f"-Dmaven.repo.local={Path(b.local_repo).expanduser()}")
+        cmd.append(f"-Dmaven.repo.local={Path(b.local_repo).expanduser().resolve()}")
     if b.offline:
         cmd.append("-o")
     return cmd

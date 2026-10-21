@@ -241,3 +241,23 @@ def test_default_engine_is_graph(cfg, tmp_path):
     assert cfg.loop.engine == "graph"
     orch, ws, _ = run_engine(cfg, tmp_path, "graph")
     assert orch.engine == "graph" and any(e["event"] == "graph_node" for e in journal_events(ws))
+
+
+def test_mvn_not_found_with_the_real_tuple_return(cfg, tmp_path, monkeypatch):
+    """`maven_available` returns (ok, detail). A tuple is always truthy, so `bool(res)` never flagged a missing
+    Maven with the real function (the fakes above return a bare bool) — found while writing the handbook."""
+    import sbmig.build as b
+    monkeypatch.setattr(b, "maven_available", lambda *a, **k: (False, "mvn not found (mvn-x): boom"))
+    c = cfg.model_copy(deep=True)
+    c.loop.engine = "inline"
+    ws = new_ws(tmp_path, "tuple")
+    orch = make_orch(c, ws)
+    orch._build_runner = None
+    r = orch.run()
+    assert "mvn-not-found" in r.flags and run_exit_code(r) == 3
+    assert any("boom" in f for f in r.manual_followups)
+    monkeypatch.setattr(b, "maven_available", lambda *a, **k: (True, "Apache Maven 3.9.10"))
+    ws2 = new_ws(tmp_path, "tuple-ok")
+    orch2 = make_orch(c, ws2)
+    orch2._build_runner = None
+    assert "mvn-not-found" not in orch2.run().flags

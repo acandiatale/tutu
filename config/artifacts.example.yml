@@ -1,14 +1,16 @@
 # Company-specific artifact policy. Copy to config/artifacts.yml and fill in real coordinates.
-#   parent      : the in-house parent of the migrated ROOT pom (company: base-parent)          (mandatory)
-#   boot_parent : the in-house parent of module/boot-jar/pom.xml (company: boot-jar)           (optional, see below)
-#   comp_parent : the in-house parent of module/comp-jar/pom.xml (company: comp-jar)           (optional)
-#   mandatory   : 2 dependencies every migrated project must declare                           (mandatory)
+#   parent      : the in-house parent of the migrated ROOT pom (company: xxx-parent, an aggregator)      (mandatory)
+#   boot_parent : the in-house parent of the Boot module — `{name}-boot`, or every `*-boot` module of a Boot
+#                 as-is / MSA project (company: xxx-boot-jar)                                             (optional)
+#   comp_parent : the in-house parent of every other module — `{name}-back`, `{name}-front`, libraries,
+#                 services (company: xxx-comp-jar)                                                        (optional)
+#   mandatory   : 2 dependencies declared in every migrated ROOT pom (mandatory_target: root)             (mandatory)
 #   optional    : 8 in-house artifacts — bump the version ONLY if the as-is project already uses them
-# With boot_parent + comp_parent set (the company layout, all in-house artifacts on one line, e.g. 4.0.0) the root
-# pom is an aggregator inheriting base-parent, the two module poms inherit their role parents directly (explicit
-# groupId / version, the 2 mandatory dependencies in each module pom); an as-is module already inheriting an older
-# boot-jar / comp-jar parent (an earlier migration on 1.0.0) is moved to the configured version. Leave both unset
-# and the modules inherit the root pom instead.
+# All in-house artifacts sit on one version line (e.g. 4.0.0). With boot_parent + comp_parent set (the company
+# layout, round 9c) the root pom inherits `parent` and aggregates `{name}-boot` / `{name}-back` [/ `{name}-front`]
+# (explicit groupId / version, `<relativePath/>`); Spring Boot as-is projects keep their directories and only get
+# the poms changed; an as-is module already inheriting an older boot-jar / comp-jar parent (an earlier migration
+# on 1.0.0) is moved to the configured version. Leave both unset and the modules inherit the root pom instead.
 artifacts:
   parent:
     group_id: com.company.platform

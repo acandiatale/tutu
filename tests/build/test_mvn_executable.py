@@ -77,3 +77,20 @@ def test_settings_catch_all_mirror_and_repository_notes(tmp_path, cfg):
     strip_no_mirror = none.model_copy(deep=True)
     strip_no_mirror.build.pom_repositories = "remove"
     assert "make sure build.settings_file mirrors" in repository_notes(poms, strip_no_mirror)[0]
+
+
+def test_relative_settings_local_repo_and_java_home_become_absolute(tmp_path, cfg, monkeypatch):
+    """Maven runs inside the project directory, so a settings file given relative to the sbmig working directory
+    (the RUNBOOK example `config/settings.nexus.xml`) must reach Maven as an absolute path."""
+    from sbmig.build.mvn import base_command, mvn_env
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "settings.nexus.xml").write_text("<settings/>", encoding="utf-8")
+    c = cfg.model_copy(deep=True)
+    c.build.settings_file = "config/settings.nexus.xml"
+    c.build.local_repo = "m2"
+    c.build.java_home = "jdk21"
+    cmd = base_command(c)
+    assert cmd[cmd.index("-s") + 1] == str((tmp_path / "config" / "settings.nexus.xml").resolve())
+    assert f"-Dmaven.repo.local={(tmp_path / 'm2').resolve()}" in cmd
+    assert mvn_env(c)["JAVA_HOME"] == str((tmp_path / "jdk21").resolve())
