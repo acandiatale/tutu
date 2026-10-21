@@ -39,7 +39,7 @@ class FakePost:
 
 
 def client(post, **kw):
-    kw.setdefault("payload_extra", {"need_orgin": True})
+    kw.setdefault("payload_extra", {"need_origin": True})
     return CompanyClient("http://gw.local/chat", "sk-secret", "gpt-6-luna", post=post, sleep=lambda s: None, **kw)
 
 
@@ -52,7 +52,7 @@ def test_call_shape_is_exactly_the_company_snippet():
     assert post.calls == [{"url": "http://gw.local/chat",
                            "headers": {"Authorization": "Bearer sk-secret"},
                            "json": {"model": "gpt-6-luna", "messages": [m.model_dump() for m in MSGS],
-                                    "need_orgin": True},          # no max_tokens / temperature / stop
+                                    "need_origin": True},          # no max_tokens / temperature / stop
                            "timeout": 42.0}]
     assert resp.content == "hi" and resp.model == "m-1" and resp.input_tokens == 11 and resp.output_tokens == 7
     assert resp.finish_reason == "stop"
@@ -94,10 +94,10 @@ def test_default_config_is_the_company_provider_from_env(monkeypatch, tmp_path):
     monkeypatch.delenv("LLM_RECORD_DIR", raising=False)
     cfg = load_config(REPO / "config" / "artifacts.example.yml")
     assert cfg.llm.provider == "company" and cfg.llm.model == "gpt-6-luna"
-    assert cfg.llm.payload_extra == {"need_orgin": True} and not cfg.llm.response_path and not cfg.llm.record_dir
+    assert cfg.llm.payload_extra == {"need_origin": True} and not cfg.llm.response_path and not cfg.llm.record_dir
     c = make_llm_client(cfg)
     assert isinstance(c, CompanyClient)
-    assert c.url == "http://gw.local:8080/api/chat" and c.payload_extra == {"need_orgin": True}
+    assert c.url == "http://gw.local:8080/api/chat" and c.payload_extra == {"need_origin": True}
     monkeypatch.setenv("LLM_RECORD_DIR", str(tmp_path / "rec"))
     c = make_llm_client(load_config(REPO / "config" / "artifacts.example.yml"))
     assert isinstance(c, RecordingClient) and isinstance(c.inner, CompanyClient)   # records opt-in via .env

@@ -115,13 +115,13 @@ loop:
 llm:
   # The company gateway, configured by .env / environment only (see .env.example):
   #   LLM_BASE_URL  LLM_API_KEY  LLM_MODEL  [LLM_RESPONSE_PATH]
-  # Request = requests.post(url, headers={Authorization: Bearer <key>}, json={model, messages, need_orgin}, timeout)
+  # Request = requests.post(url, headers={Authorization: Bearer <key>}, json={model, messages, need_origin}, timeout)
   provider: company                # company | openai_compatible | anthropic | fake | plugin
   base_url: "${LLM_BASE_URL}"
   api_key_env: LLM_API_KEY
   model: "${LLM_MODEL:-gpt-6-luna}"
   payload_extra:
-    need_orgin: true
+    need_origin: true
   response_path: "${LLM_RESPONSE_PATH:-}"   # empty = auto-detect the reply text
   record_dir: "${LLM_RECORD_DIR:-}"   # e.g. out/llm-records in .env: every request/response as llm-NNNN.json (no secrets)
   escalation_model: null

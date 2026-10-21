@@ -4,7 +4,7 @@
 The only thing it needs from the model API is `POST(url, headers, json, timeout)` with
 
     headers = {"Authorization": "Bearer <token>", "Content-Type": "application/json"}
-    json    = {"model": "gpt-6-luna", "need_orgin": True,
+    json    = {"model": "gpt-6-luna", "need_origin": True,
                "messages": [{"role": "system", "content": ...}, {"role": "user", "content": ...}, ...]}
 
 Everything else (reading files, applying SEARCH/REPLACE edits, running tests) happens locally in this script,
@@ -22,7 +22,7 @@ Configuration: environment variables (or coding/.env, KEY=VALUE lines, never com
     CODING_TIMEOUT        seconds, default 180
     CODING_RESPONSE_PATH  dot path to the reply text when auto-detection fails, e.g. choices.0.message.content
     CODING_EXTRA_JSON     extra top-level payload fields as JSON, e.g. {"temperature": 0}
-    CODING_NEED_ORIGIN    "true"/"false" — the `need_orgin` payload flag (default true)
+    CODING_NEED_ORIGIN    "true"/"false" — the `need_origin` payload flag (default true)
     CODING_MAX_ROUNDS     model round-trips per task, default 25
 Python 3.10+, standard library only (`requests` is used when installed).
 """
@@ -186,7 +186,7 @@ class ChatClient:
         self.calls = 0
 
     def payload(self, messages: list[dict]) -> dict:
-        p: dict[str, Any] = {"model": self.cfg.model, "need_orgin": self.cfg.need_origin, "messages": messages}
+        p: dict[str, Any] = {"model": self.cfg.model, "need_origin": self.cfg.need_origin, "messages": messages}
         p.update(self.cfg.extra_payload)
         return p
 

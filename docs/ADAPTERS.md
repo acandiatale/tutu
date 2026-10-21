@@ -79,7 +79,7 @@ Optional base class: `sbmig.llm.LLMAdapter` (abstract `complete(request)`, `name
 1. `llm.provider` is `company` (default), `openai_compatible`, `anthropic` or `fake`: a builtin client
    (`api_key_env` names the environment variable holding the key). `company` is the in-house gateway done the
    plain way — `requests.post(LLM_BASE_URL, headers={Authorization: Bearer LLM_API_KEY}, json={model, messages,
-   need_orgin}, timeout=…)` (`sbmig/fix/company.py`); URL / key / model / optional `LLM_RESPONSE_PATH` come from
+   need_origin}, timeout=…)` (`sbmig/fix/company.py`); URL / key / model / optional `LLM_RESPONSE_PATH` come from
    `.env`, nothing else to configure. `sbmig llm-probe` shows the exact request and the raw response.
 2. `llm.provider: plugin`: load `llm.plugin` (`"pkg.module:attr"`; `"pkg.module.attr"` also works).
 3. Any other provider name: the entry point with that name in group `sbmig.llm_adapters`. If there is none,

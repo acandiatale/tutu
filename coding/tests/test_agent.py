@@ -30,7 +30,7 @@ class FakePost:
         if self.shape == "openai":
             body = {"choices": [{"message": {"role": "assistant", "content": text}}]}
         elif self.shape == "custom":
-            body = {"data": {"result": {"content": text}}, "need_orgin": True}
+            body = {"data": {"result": {"content": text}}, "need_origin": True}
         else:
             body = {"content": text}
         return self.status, body
@@ -88,7 +88,7 @@ def test_payload_and_headers_match_the_gateway_contract(tmp_path):
     url, headers, payload = post.requests[0]
     assert url == "https://gw.example/chat"
     assert headers["Authorization"] == "Bearer tok" and headers["Content-Type"] == "application/json"
-    assert payload == {"model": "gpt-6-luna", "need_orgin": True, "messages": msgs, "temperature": 0}
+    assert payload == {"model": "gpt-6-luna", "need_origin": True, "messages": msgs, "temperature": 0}
 
 
 def test_custom_shape_needs_response_path(tmp_path):

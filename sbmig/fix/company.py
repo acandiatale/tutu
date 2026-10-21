@@ -8,7 +8,7 @@ Everything comes from the environment / ``.env`` (read by ``load_config``):
     LLM_RESPONSE_PATH   optional dot path to the reply text when auto-detection fails (e.g. data.result.content)
 
 Request:  POST $LLM_BASE_URL, headers {"Authorization": "Bearer $LLM_API_KEY"} (+ llm.extra_headers),
-          json {"model": ..., "messages": [{"role", "content"}, ...], **llm.payload_extra}   (default extra: need_orgin)
+          json {"model": ..., "messages": [{"role", "content"}, ...], **llm.payload_extra}   (default extra: need_origin)
 Response: the reply text is auto-detected (choices[0].message.content, content, response, data.content, ...) or
           taken from the configured path; token usage from a ``usage`` object when present.
 

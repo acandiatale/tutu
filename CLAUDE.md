@@ -121,7 +121,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   (`--only boot2,msa` for a subset); KB loop `scripts/demo-kb/run.sh`; fleet `scripts/fleet-demo.sh`.
   Integration tests: `python -m pytest -q -m integration`.
 - Real-LLM runs: provider `company` is the default (`config/default.yml`): `requests.post(LLM_BASE_URL,
-  headers={Authorization: Bearer LLM_API_KEY}, json={model, messages, need_orgin}, timeout)` in
+  headers={Authorization: Bearer LLM_API_KEY}, json={model, messages, need_origin}, timeout)` in
   `sbmig/fix/company.py`; URL / key / model / `LLM_RESPONSE_PATH` / `LLM_RECORD_DIR` come from `.env` (git-ignored,
   read by `load_config`, shell variables win) — no yml profile, no LangChain, no httpx knobs (the user asked for
   this after 503s on the gateway; keep it this simple). `sbmig llm-probe` (and `--bare`) prints the exact request,

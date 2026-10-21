@@ -304,7 +304,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
               model: Optional[str] = typer.Option(None, "--model", help="override llm.model / LLM_MODEL for this probe"),
               payload_extra: Optional[str] = typer.Option(
                   None, "--payload-extra", help="JSON object that REPLACES llm.payload_extra for this probe, e.g. "
-                                                "'{}' to send only model + messages, '{\"need_orgin\": false}'"),
+                                                "'{}' to send only model + messages, '{\"need_origin\": false}'"),
               no_system: bool = typer.Option(False, "--no-system", help="send only the user message (no system message)"),
               bare: bool = typer.Option(False, "--bare", help="bypass sbmig's client: plain requests.post(url, "
                                                               "headers={Authorization}, json=payload, timeout=) "
@@ -335,7 +335,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
         if not isinstance(extra, dict):
             typer.echo("--payload-extra must be a JSON object", err=True)
             raise typer.Exit(2)
-        cfg.llm.payload_extra = extra               # replaces (a merge could not drop a key such as need_orgin)
+        cfg.llm.payload_extra = extra               # replaces (a merge could not drop a key such as need_origin)
     llm = cfg.llm
     if bare:
         _probe_bare(cfg, prompt, no_system=no_system)

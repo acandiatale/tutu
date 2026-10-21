@@ -5,7 +5,7 @@ installed). It turns an API that only offers
 
 ```python
 post(url, headers={"Authorization": "Bearer <token>"}, json=payload, timeout=...)
-payload = {"model": "gpt-6-luna", "need_orgin": True,
+payload = {"model": "gpt-6-luna", "need_origin": True,
            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]}
 ```
 
@@ -33,7 +33,7 @@ JSON (for example `data.result.content`).
 | `CODING_API_URL` | chat endpoint URL | (required) |
 | `CODING_API_KEY` | bearer token (`LLM_API_KEY` is used as a fallback) | (required) |
 | `CODING_MODEL` | `model` field | `gpt-6-luna` |
-| `CODING_NEED_ORIGIN` | the `need_orgin` payload flag | `true` |
+| `CODING_NEED_ORIGIN` | the `need_origin` payload flag | `true` |
 | `CODING_TIMEOUT` | request timeout, seconds | `180` |
 | `CODING_RESPONSE_PATH` | dot path to the reply text when auto-detection fails | (auto) |
 | `CODING_EXTRA_JSON` | extra top-level payload fields, JSON (`{"temperature": 0}`) | `{}` |
