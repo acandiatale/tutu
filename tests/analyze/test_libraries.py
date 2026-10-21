@@ -13,7 +13,8 @@ EXPECTED = {"lombok", "mapstruct", "querydsl", "spring-security", "spring-data-j
             "spring-context", "spring-retry", "elasticsearch", "mongodb",
             # library advisories (knowledge/libraries/advisories.yml)
             "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom", "swagger-v1",
-            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2"}
+            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2",
+            "jdk-generified-apis"}
 
 
 def test_names_are_the_contract() -> None:

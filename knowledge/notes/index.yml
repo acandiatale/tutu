@@ -18,6 +18,9 @@ notes:
   - com\.sun\.
   - sun\.(reflect|security|net|nio)
   - javax\.xml\.bind
+  - javax\.swing\.tree
+  - DefaultMutableTreeNode
+  - inference variable T has incompatible
   - javax\.xml\.ws|javax\.jws|javax\.activation|org\.omg|javax\.rmi
   - javax\.annotation\.(Generated|PostConstruct|PreDestroy|Resource)
   - javax\.script|nashorn|ScriptEngine

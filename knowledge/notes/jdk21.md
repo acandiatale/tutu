@@ -5,6 +5,9 @@ keywords:
   - "com\\.sun\\."
   - "sun\\.(reflect|security|net|nio)"
   - "javax\\.xml\\.bind"
+  - "javax\\.swing\\.tree"
+  - "DefaultMutableTreeNode"
+  - "inference variable T has incompatible"
   - "javax\\.xml\\.ws|javax\\.jws|javax\\.activation|org\\.omg|javax\\.rmi"
   - "javax\\.annotation\\.(Generated|PostConstruct|PreDestroy|Resource)"
   - "javax\\.script|nashorn|ScriptEngine"
@@ -60,6 +63,17 @@ Pre-Java-8 code on JDK 21 (`--release 21` hides `sun.*`): port the call, never r
 - `javax.annotation.PostConstruct/PreDestroy/Resource` → `jakarta.annotation-api`; `javax.activation` →
   `jakarta.activation:jakarta.activation-api`; `com.sun.image.codec.jpeg` → `javax.imageio.ImageIO`.
 - `_` as identifier → rename (`ignored`, `unused`); `Thread.stop/suspend/resume` → interrupt + flag.
+
+## fix-loop: jdk-generified-apis
+JDK 9 generified `javax.swing.tree`: `DefaultMutableTreeNode.children()`, `preorderEnumeration()`,
+`depthFirstEnumeration()`, `breadthFirstEnumeration()`, `pathFromAncestorEnumeration()` and `TreeNode.children()`
+return `Enumeration<TreeNode>`. javac 21 reports "incompatible types: inference variable T has incompatible equality
+constraints" or "Enumeration<TreeNode> cannot be converted to Enumeration<DefaultMutableTreeNode>".
+- `Enumeration<DefaultMutableTreeNode> e = node.children()` → `Enumeration<TreeNode> e = node.children()` and cast
+  where the element is used: `DefaultMutableTreeNode child = (DefaultMutableTreeNode) e.nextElement();` — or
+  `for (TreeNode t : Collections.list(node.children())) { DefaultMutableTreeNode child = (DefaultMutableTreeNode) t; … }`.
+- Raw `Enumeration e = node.children()` + `(DefaultMutableTreeNode) e.nextElement()` already compiles: leave it.
+- Keep method signatures; do not add `@SuppressWarnings` to hide the error and never change the JDK level.
 
 ## Removed / changed APIs
 - Nashorn (`jdk.nashorn.*`, `ScriptEngineManager().getEngineByName("nashorn")` returns null) removed in 15 →

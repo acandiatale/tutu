@@ -553,3 +553,22 @@ def test_lombok_inherited_processor_paths_are_overridden(kit, cfg):
     text = kit.text()
     assert 'combine.self="override"' in text and "<artifactId>mapstruct-processor</artifactId>" in text
     assert _re.search(r"<artifactId>lombok</artifactId>\s*<version>1\.18\.40</version>", text)
+
+
+
+def test_jstl_to_jakarta_relocation(kit, cfg):
+    """Round 9c: javax JSTL (version managed by the old parent chain, so it goes missing after the parent swap) →
+    the Jakarta JSTL the Boot 4 BOM manages; an explicit old version becomes the Jakarta version."""
+    kit.pom(deps=[G("javax.servlet:jstl"), G("javax.servlet.jsp.jstl:jstl-api:1.2")])
+    h = kit.handler("jstl-to-jakarta")
+    c = cluster_errors([err(ErrorKind.POM_INVALID, "'dependencies.dependency.version' for javax.servlet:jstl:jar is missing",
+                            artifact="javax.servlet:jstl")])[0]
+    assert h.matches(c, make_profile(poms=[PomInfo(path="pom.xml", artifact_id="demo", is_root=True,
+                                                   dependencies=[G("javax.servlet:jstl")])]), cfg)
+    assert h.apply(kit.ws, None, None, cfg)                       # pre-emptive (spring phase)
+    assert kit.dep("javax.servlet:jstl") is None and kit.dep("javax.servlet.jsp.jstl:jstl-api") is None
+    impl = kit.dep("org.glassfish.web:jakarta.servlet.jsp.jstl")
+    api = kit.dep("jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api")
+    assert impl is not None and impl.version is None              # was unversioned → stays BOM-managed
+    assert api is not None and api.version == "3.0.0"             # was explicit 1.2 → the Jakarta line
+    assert not h.apply(kit.ws, None, None, cfg)

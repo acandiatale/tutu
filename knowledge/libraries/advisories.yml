@@ -273,3 +273,26 @@ advisories:
       - https://mybatis.org/mybatis-3/
       - https://mybatis.org/spring/
     notes: knowledge/notes/ibatis2.md
+
+  # ------------------------------------------------------------------ JDK 9 generified APIs (pre-Java-9 Swing tree code)
+  - id: jdk-generified-apis
+    library: jdk-generified-apis
+    status: incompatible
+    title: JDK 9 generified javax.swing.tree (children() returns Enumeration<TreeNode>)
+    summary: >-
+      JDK 9 generified javax.swing.tree: DefaultMutableTreeNode.children() / preorderEnumeration() /
+      depthFirstEnumeration() / breadthFirstEnumeration() / pathFromAncestorEnumeration() return
+      Enumeration<TreeNode> (TreeNode.children() too). Pre-Java-9 code that assigned them to a raw Enumeration or to
+      Enumeration<DefaultMutableTreeNode> fails on javac 21 with "incompatible types: inference variable T has
+      incompatible equality constraints" or "incompatible types: Enumeration<TreeNode> cannot be converted". The
+      fix is a source change the build-fix loop makes with this guidance; no dependency is involved.
+    replacement: Enumeration<TreeNode> / Enumeration<? extends TreeNode> with a cast per element (JDK API)
+    replacement_version: JDK 9+
+    policy: guide
+    followup: >-
+      Review the ported tree code: Enumeration<DefaultMutableTreeNode> e = node.children() →
+      Enumeration<TreeNode> e = node.children() and cast each element ((DefaultMutableTreeNode) e.nextElement()),
+      or iterate node.children().asIterator(); Collections.list(node.children()) is a List<TreeNode> now.
+    docs:
+      - https://docs.oracle.com/en/java/javase/21/docs/api/java.desktop/javax/swing/tree/DefaultMutableTreeNode.html
+    notes: knowledge/notes/jdk21.md

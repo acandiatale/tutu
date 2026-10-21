@@ -24,7 +24,12 @@ HANDLER_IDS = (
     "lombok-version-floor", "mapstruct-version-floor", "querydsl-jakarta-classifier", "maven-compiler-plugin-floor",
     "surefire-plugin-floor", "javax-servlet-api-to-jakarta", "jaxb-runtime-add",
     "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
+    "jstl-to-jakarta",
 )
+
+JSTL_JAVAX_KEYS = ("javax.servlet:jstl", "jstl:jstl", "taglibs:standard", "org.apache.taglibs:taglibs-standard-impl",
+                   "org.apache.taglibs:taglibs-standard-spec", "org.glassfish.web:javax.servlet.jsp.jstl",
+                   "javax.servlet.jsp.jstl:jstl-api", "javax.servlet.jsp.jstl:javax.servlet.jsp.jstl-api")
 
 _LEGACY_ARG = re.compile(r"-(bootclasspath|Xbootclasspath|extdirs|endorseddirs|source\b|target\b)")
 
@@ -97,6 +102,8 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
         out.append(("javax-servlet-api-to-jakarta", "javax servlet-api dependency must become jakarta.servlet-api"))
     if profile.source.javax_imports.get("javax.xml.bind"):
         out.append(("jaxb-runtime-add", "javax.xml.bind imports: JAXB was removed from the JDK"))
+    if _has_dep(profile, *JSTL_JAVAX_KEYS):
+        out.append(("jstl-to-jakarta", "javax JSTL dependency must become jakarta.servlet.jsp.jstl (Boot-managed)"))
     for p in profile.poms:
         for pl in p.plugins:
             if pl.artifact_id == "spring-boot-maven-plugin" and \

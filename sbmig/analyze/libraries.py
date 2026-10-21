@@ -146,6 +146,10 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
                 ("org.apache.http.client", "org.apache.http.impl.client", "org.apache.http.HttpResponse")),
     # JDK-internal / removed-from-the-JDK packages (pre-Java-8 code; advisory jdk-removed-apis). Import-only.
     LibraryRule("jdk-removed-apis", (), ("sun.misc", "sun.security", "com.sun.image", "javax.activation")),
+    # JDK 9 generified javax.swing.tree (DefaultMutableTreeNode.children() → Enumeration<TreeNode>): pre-Java-9 code
+    # stops compiling on javac 21 with "inference variable T has incompatible equality constraints" (advisory
+    # jdk-generified-apis, round 9c). Import-only.
+    LibraryRule("jdk-generified-apis", (), ("javax.swing.tree",)),
     # iBATIS 2 (round 9; advisory ibatis2): Spring 4.0 removed org.springframework.orm.ibatis. Distinct from `mybatis`
     # (MyBatis 3 = org.mybatis:* artifacts, org.apache.ibatis.* imports); iBATIS 2 = com.ibatis.* imports and the
     # org.apache.ibatis:ibatis-* artifacts. Pom + imports only: Spring XML bean classes (SqlMapClientFactoryBean)

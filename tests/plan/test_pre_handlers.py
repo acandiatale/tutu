@@ -31,7 +31,7 @@ def test_boot27_handlers(tmp_path: Path, cfg) -> None:
 
 def test_servlet_handlers(tmp_path: Path, cfg) -> None:
     ids = pre_handlers_for(analyze_path(make_servlet(tmp_path), cfg), cfg)
-    assert ids == ["maven-compiler-plugin-floor", "javax-servlet-api-to-jakarta"]
+    assert ids == ["maven-compiler-plugin-floor", "javax-servlet-api-to-jakarta", "jstl-to-jakarta"]   # 9c: javax jstl
 
 
 def test_boot33_no_compiler_declared(tmp_path: Path, cfg) -> None:
@@ -93,3 +93,12 @@ def test_compiler_legacy_config_selection(configuration, expected, cfg) -> None:
     """Round 9: fork/executable/compilerVersion/bootclasspath-style compiler config selects the handler."""
     pom = _pom(plugins=[PluginInfo(artifact_id="maven-compiler-plugin", version="3.13.0", configuration=configuration)])
     assert pre_handlers_for(_profile(poms=[pom]), cfg) == expected
+
+
+
+def test_jstl_to_jakarta_selected_from_the_pom(cfg) -> None:
+    """Round 9c: a javax JSTL declaration selects the pre-emptive relocation (spring phase)."""
+    p = _pom(deps=[GAV.parse("javax.servlet:jstl:1.2")], plugins=[GOOD_COMPILER])
+    assert pre_handlers_for(_profile(poms=[p]), cfg) == ["jstl-to-jakarta"]
+    assert pre_handlers_for(_profile(poms=[_pom(deps=[GAV.parse("taglibs:standard:1.1.2")], plugins=[GOOD_COMPILER])]),
+                            cfg) == ["jstl-to-jakarta"]

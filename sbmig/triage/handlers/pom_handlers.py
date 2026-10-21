@@ -738,6 +738,37 @@ class JavaxServletApiToJakarta(RelocationHandler):
         return list(self._TABLE)
 
 
+class JstlToJakarta(RelocationHandler):
+    """Round 9c (first company run): `javax.servlet:jstl` lost its version when the old parent chain went
+    (`'dependencies.dependency.version' for javax.servlet:jstl:jar is missing`) — and the javax JSTL cannot serve
+    Jakarta JSPs anyway. Every javax-era JSTL coordinate moves to the Jakarta JSTL that the Boot 4 BOM manages:
+    the Glassfish implementation (its API comes transitively) or the API artifact for api-only declarations."""
+    id = "jstl-to-jakarta"
+    description = "javax JSTL (javax.servlet:jstl, taglibs standard, jstl-api) → jakarta.servlet.jsp.jstl (Boot-managed)"
+    preemptive_phase = Phase.SPRING
+    extra_triggers = (r"javax\.servlet:jstl", r"javax\.servlet\.jsp\.jstl", r"taglibs:standard",
+                      r"org\.glassfish\.web:javax\.servlet\.jsp\.jstl", r"jakarta/servlet/jsp/jstl", r"javax/servlet/jsp/jstl")
+    _IMPL = "org.glassfish.web:jakarta.servlet.jsp.jstl"
+    _API = "jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api"
+    _TABLE = tuple(Relocation.model_validate(r) for r in (
+        {"from": "javax.servlet:jstl", "to": _IMPL, "version": "3.0.1", "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "jstl:jstl", "to": _IMPL, "version": "3.0.1", "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "taglibs:standard", "to": _IMPL, "version": "3.0.1", "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "org.apache.taglibs:taglibs-standard-impl", "to": _IMPL, "version": "3.0.1",
+         "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "org.apache.taglibs:taglibs-standard-spec", "to": _API, "version": "3.0.0",
+         "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "org.glassfish.web:javax.servlet.jsp.jstl", "to": _IMPL, "version": "3.0.1",
+         "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "javax.servlet.jsp.jstl:jstl-api", "to": _API, "version": "3.0.0", "packages": ["jakarta.servlet.jsp.jstl"]},
+        {"from": "javax.servlet.jsp.jstl:javax.servlet.jsp.jstl-api", "to": _API, "version": "3.0.0",
+         "packages": ["jakarta.servlet.jsp.jstl"]},
+    ))
+
+    def table(self) -> list[Relocation]:
+        return list(self._TABLE)
+
+
 class MysqlConnectorRelocation(RelocationHandler):
     id = "mysql-connector-relocation"
     description = "mysql:mysql-connector-java → com.mysql:mysql-connector-j"
@@ -1069,6 +1100,7 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         MissingDependencyVersion(),
         MysqlConnectorRelocation(),
         JavaxServletApiToJakarta(),
+        JstlToJakarta(),
         DependencyRelocation(),
         QuerydslJakartaClassifier(),
         JaxbRuntimeAdd(),

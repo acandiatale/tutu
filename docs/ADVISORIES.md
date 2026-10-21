@@ -329,3 +329,11 @@ Fixture `java6-legacy`, with a replayed LLM:
   moves `Dates` to `jakarta.xml.bind` (3.0.1 / runtime 3.0.2).
 * One LLM fix ports `Codec` to `java.util.Base64`, plus one harvest recipe-candidate call (answer `NONE`).
 * Result: BUILD SUCCESS, exit 0.
+
+### jdk-generified-apis (round 9c)
+Pre-Java-9 Swing tree code: JDK 9 generified `javax.swing.tree` (`DefaultMutableTreeNode.children()` and the
+enumeration methods return `Enumeration<TreeNode>`), so `Enumeration<DefaultMutableTreeNode> e = node.children()`
+fails on javac 21 with "incompatible types: inference variable T has incompatible equality constraints". Import-only
+rule (`javax.swing.tree`), policy `guide`: the fix loop gets the `## fix-loop: jdk-generified-apis` section of
+`knowledge/notes/jdk21.md` (declare `Enumeration<TreeNode>` and cast per element, or `asIterator()`); verify reports
+`replaced` only when the imports are gone, so it usually stays `still-present` — the Handover lists the ported files.

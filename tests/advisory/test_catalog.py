@@ -8,7 +8,8 @@ from sbmig.advisory.catalog import recipe_unavailable
 from tests.advisory.helpers import write_advisories
 
 REPO_IDS = {"springfox", "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom",
-            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2"}
+            "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2",
+            "jdk-generified-apis"}
 FOX = "org.openrewrite.java.springdoc.SpringFoxToSpringDoc"
 
 

@@ -482,3 +482,11 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     any_order}`; `tests/fixtures` `COMPANY_OVERRIDES` registry (layout + role-parent overrides). Fixtures
     `legacy-role-parents` (Boot as-is in place), `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`
     (24 fixtures).
+  * Follow-ups from the first company run (same day): `openrewrite.exclusions` (default `**/*.jsp, **/*.jspx,
+    **/*.html, **/*.htm` → `-Drewrite.exclusions`; OpenRewrite's XML parser reads those and logs ANTLR noise);
+    handler `jstl-to-jakarta` (`JstlToJakarta(RelocationHandler)`, pre-emptive in the spring phase via
+    `pre_handlers.JSTL_JAVAX_KEYS`, reactive on the missing-version / jstl wording): javax JSTL coordinates →
+    `org.glassfish.web:jakarta.servlet.jsp.jstl` / `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api`
+    (BOM-managed; explicit old version → 3.0.1 / 3.0.0); library rule + advisory `jdk-generified-apis`
+    (`javax.swing.tree` imports, guide) with `## fix-loop: jdk-generified-apis` in `knowledge/notes/jdk21.md`
+    (14 advisories).
