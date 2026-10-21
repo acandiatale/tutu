@@ -633,3 +633,39 @@ def test_view_resolver_forms(tmp_path: Path, ccfg: Config, config_file: str, tex
     assert (ws.root / "shop-front/src/main/resources/META-INF/resources/WEB-INF/jsp/top.jsp").is_file()
     props = (ws.root / "shop-boot/src/main/resources/application.properties").read_text()
     assert f"spring.mvc.view.prefix={prefix}\nspring.mvc.view.suffix=.jsp\n" in props
+
+
+# ---------------------------------------------------------------------------------------- (h) mandatory type / scope
+def _dep_el(x, aid: str, managed: bool = False):
+    path = "dependencyManagement/dependencies/dependency" if managed else "dependencies/dependency"
+    return next(d for d in all_(x, path) if t(d, "artifactId") == aid)
+
+
+def test_mandatory_type_pom_and_import_scope(tmp_path: Path, ccfg: Config) -> None:
+    """User (2026-10-21): some in-house mandatory artifacts are pom-only. `type: pom` is written into the declaration
+    and aligned on an as-is declaration that lacks it (else Maven looks for a jar that does not exist);
+    `scope: import` + `type: pom` is a BOM → <dependencyManagement>, never <dependencies>."""
+    ccfg.artifacts.mandatory = [
+        ArtifactSpec(group_id=PLATFORM, artifact_id="company-deps", version=None, type="pom"),
+        ArtifactSpec(group_id=PLATFORM, artifact_id="company-bom", version="4.0.0", type="pom", scope="import"),
+    ]
+    files = _msa_company_files()
+    files["billing-service/pom.xml"] = files["billing-service/pom.xml"].replace(
+        "    <dependencies>\n", "    <dependencies>\n" + dep(PLATFORM, "company-deps", "1.0"), 1)   # as-is: jar, pinned
+    ws = make_ws(tmp_path, files, "msa-mandatory-type")
+    res = Restructurer().apply(ws, _msa_company_profile(ws), ccfg, mode="msa_pom")
+    assert res.ok, res.error
+    top = _pom(ws)
+    deps = _dep_el(top, "company-deps")
+    assert t(deps, "type") == "pom" and t(deps, "version") is None and t(deps, "scope") is None
+    bom = _dep_el(top, "company-bom", managed=True)
+    assert (t(bom, "type"), t(bom, "scope"), t(bom, "version")) == ("pom", "import", "4.0.0")
+    assert all(t(d, "artifactId") != "company-bom" for d in all_(top, "dependencies/dependency"))   # never a plain dep
+    bill = _pom(ws, "billing-service/pom.xml")
+    aligned = _dep_el(bill, "company-deps")
+    assert t(aligned, "type") == "pom" and t(aligned, "version") is None                  # as-is jar 1.0 → pom, managed
+    assert any("company-deps" in n and "type=pom" in n for n in res.notes)
+    assert "com.company.platform:company-bom" in res.mandatory_added
+    before = _tree(ws)
+    res2 = Restructurer().apply(ws, _msa_company_profile(ws), ccfg, mode="msa_pom")
+    assert res2.ok and _tree(ws) == before

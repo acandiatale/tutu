@@ -29,6 +29,11 @@ artifacts:
   mandatory:
     - { group_id: com.company.platform, artifact_id: company-core,    version: null }   # null = managed by parent
     - { group_id: com.company.platform, artifact_id: company-logging, version: null }
+    # Every entry takes the same ArtifactSpec fields. A pom-packaged in-house artifact (no jar) needs `type: pom`
+    # (written as <type>pom</type>, also added to an as-is declaration that lacks it); a BOM-style one takes
+    # `type: pom, scope: import` and goes into <dependencyManagement> instead of <dependencies>. Examples:
+    #   - { group_id: com.company.platform, artifact_id: company-deps, version: null, type: pom }
+    #   - { group_id: com.company.platform, artifact_id: company-bom,  version: 4.0.0, type: pom, scope: import }
   optional:
     - { group_id: com.company.lib, artifact_id: lib-auth,      version: 3.0.0, aliases: ["com.company.legacy:auth"] }
     - { group_id: com.company.lib, artifact_id: lib-batch,     version: 3.0.0 }

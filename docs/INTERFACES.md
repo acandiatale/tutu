@@ -356,6 +356,10 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     filtering (the failing module, else the root — one list for every module), entries = `BINARY_RESOURCE_EXTENSIONS` +
     the failing file's extension, existing entries kept, a `<build><plugins>` declaration created when absent (a
     `<build><plugins>` block wins over `<pluginManagement>`, profiles untouched); text-based, comments ignored (E12).
+  * Mandatory artifact `type` / `scope` (user request, 2026-10-21): `ArtifactSpec.type` (e.g. `pom` for pom-packaged
+    in-house artifacts) is written into the `<dependency>` and aligned on an as-is declaration that lacks it, like the
+    version; `scope: import` (+ `type: pom`) puts the mandatory artifact into `<dependencyManagement>` (BOM style)
+    instead of `<dependencies>` (`Restructurer._add_mandatory` / `_align_mandatory`, notes `type=… aligned`).
   * Pom repositories (X9): `PomInfo.repositories` (URLs of `<repository>` / `<pluginRepository>` incl. profiles, comments
     and `<distributionManagement>` excluded, properties interpolated; `sbmig.analyze.pom_parser.repository_urls`),
     `BuildConfig.pom_repositories: keep | remove` (default keep), `sbmig.build.mvn.settings_catch_all_mirror(cfg)`

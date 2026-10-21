@@ -2046,27 +2046,49 @@ class Restructurer:
                 self._record_parent(c, pom, parent, new)
                 c.note(f"{pom}: role parent {parent.key} {parent.version or '?'} → {new.version}")
 
+    @staticmethod
+    def _mandatory_managed(spec) -> bool:
+        """`scope: import` (+ `type: pom`) = a BOM-style mandatory artifact: it belongs in <dependencyManagement>,
+        never in <dependencies> (Maven rejects import scope there)."""
+        return (getattr(spec, "scope", None) or "").strip().lower() == "import"
+
+    def _mandatory_align_existing(self, c: _Ctx, ed: PomEditor, spec, managed: bool, where: str) -> None:
+        """An existing declaration of a mandatory artifact takes the configured version (None → managed by the
+        parent) and, when the spec says so, the configured `<type>` / `<scope>` — a pom-packaged in-house artifact
+        declared without `<type>pom</type>` would otherwise be resolved as a jar that does not exist."""
+        for e in ed.dependency_elements(managed):
+            g = ed.gav_of(e)
+            if g.key != spec.key:
+                continue
+            aligned: list[str] = []
+            if g.version != spec.version:
+                ed.set_ref_version(e, spec.version)
+                aligned.append("version")
+            if spec.type and (g.type or "jar") != spec.type:
+                ed.set_child_text(e, "type", spec.type)
+                aligned.append(f"type={spec.type}")
+            if spec.scope and (g.scope or "compile") != spec.scope:
+                ed.set_child_text(e, "scope", spec.scope)
+                aligned.append(f"scope={spec.scope}")
+            if aligned:
+                c.note(f"mandatory {spec.key} {where} {c.ws.rel(ed.path)}; {', '.join(aligned)} aligned")
+
     def _add_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
         for spec in c.cfg.artifacts.mandatory:
-            existing = [d for d in ed.dependencies() if d.key == spec.key]
-            if ed.add_dependency(spec.gav(), if_absent=True):
+            managed = self._mandatory_managed(spec)
+            added = (ed.add_managed_dependency(spec.gav(), if_absent=True) if managed
+                     else ed.add_dependency(spec.gav(), if_absent=True))
+            if added:
                 if spec.key not in c.result.mandatory_added:
                     c.result.mandatory_added.append(spec.key)
-            elif existing and existing[0].version != spec.version:
-                for e in ed.dependency_elements(False):
-                    if ed.gav_of(e).key == spec.key:
-                        ed.set_ref_version(e, spec.version)      # None → managed by the parent
-                c.note(f"mandatory {spec.key} already present in {c.ws.rel(ed.path)}; version aligned")
+            else:
+                self._mandatory_align_existing(c, ed, spec, managed, "already present in")
 
     def _align_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
         """A pom that keeps its own declaration of a mandatory artifact (declared in the root, `mandatory_target:
-        root`) gets the configured version (None → managed by the parent)."""
+        root`) gets the configured version (None → managed by the parent) and type / scope."""
         for spec in c.cfg.artifacts.mandatory:
-            for e in ed.dependency_elements(False):
-                g = ed.gav_of(e)
-                if g.key == spec.key and g.version != spec.version:
-                    ed.set_ref_version(e, spec.version)
-                    c.note(f"mandatory {spec.key} declared in {c.ws.rel(ed.path)}; version aligned")
+            self._mandatory_align_existing(c, ed, spec, self._mandatory_managed(spec), "declared in")
 
     def _remove_unwanted(self, c: _Ctx, ed: PomEditor) -> None:
         for key in c.cfg.artifacts.remove_when_present:

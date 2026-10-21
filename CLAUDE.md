@@ -111,7 +111,8 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   filtered resource → `nonFilteredFileExtensions`, pre-emptive from the analysis — E12); git / Maven subprocess output
   decoded as UTF-8 (the cp949 console code page killed `changes.patch` on Windows); Korean handbook + PPT + xlsx in
   `docs/handbook/` (2026-10-21 evening; review found the Maven preflight tuple bug and relative Maven paths, fixed);
-  pom-declared repositories the host
+  mandatory artifacts take `type: pom` / `scope: import` (pom-only in-house artifacts; BOM style goes to
+  dependencyManagement; an as-is declaration without `<type>` is aligned); pom-declared repositories the host
   cannot reach → `build.settings_file` catch-all mirror (`config/settings.nexus.example.xml`, RUNBOOK §0.1), plan note /
   follow-up without one, opt-in `build.pom_repositories: remove` (`strip-pom-repositories`); operator diagnostics (LLM / mvn heartbeats,
   fix-loop watchdog + milestones, `/api/threads`, auto thread dump, non-interactive git with timeout, `taskkill /T`);
@@ -158,7 +159,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,369 passed, 34 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,370 passed, 34 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

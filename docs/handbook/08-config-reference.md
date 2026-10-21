@@ -83,8 +83,8 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `group_id` | str | (필수) | groupId |
 | `artifact_id` | str | (필수) | artifactId |
 | `version` | str 또는 null | null | null = 부모가 관리하는 버전을 따름(버전 태그를 쓰지 않음) |
-| `scope` | str 또는 null | null | 의존성 scope(필요할 때만) |
-| `type` | str 또는 null | null | 의존성 type(필요할 때만) |
+| `scope` | str 또는 null | null | 의존성 scope. `mandatory`에서 `import`(+ `type: pom`)이면 BOM 방식으로 `<dependencyManagement>`에 선언합니다(`<dependencies>`에는 import scope를 쓸 수 없음). |
+| `type` | str 또는 null | null | 의존성 type. jar 없이 pom으로만 배포되는 사내 아티팩트는 `pom`으로 지정 → `<type>pom</type>`로 선언되고, as-is가 type 없이 선언해 둔 경우에도 재구성이 `<type>`을 맞춥니다(없으면 존재하지 않는 jar를 찾다 실패). |
 | `aliases` | list[str] | `[]` | 옛 `g:a` 키 — as-is 프로젝트가 이 이름으로 쓰고 있어도 같은 아티팩트로 취급(optional 판정, 부모 판정 모두) |
 | `property_name` | str 또는 null | null | 버전을 관례적으로 `<properties>`의 이 이름에 두는 경우(예: `lib-db.version`) 그 속성을 갱신 |
 
