@@ -18,6 +18,7 @@ what the other in-house agents do by hand.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import threading
@@ -90,7 +91,9 @@ class CompanyClient:
                 log.info("llm call still in flight: %.0fs elapsed (timeout %.0fs) — %s", time.monotonic() - t0,
                          self.timeout, label)
 
-        th = threading.Thread(target=beat, name="llm-heartbeat", daemon=True)
+        # both helper threads run in a copy of the caller's context: the web app's per-run log filter attributes
+        # records by the contextvar the run thread set, so without this the heartbeat lines never reach sbmig.log
+        th = threading.Thread(target=contextvars.copy_context().run, args=(beat,), name="llm-heartbeat", daemon=True)
         if self.heartbeat_s > 0:
             th.start()
         result: dict[str, Any] = {}
@@ -101,7 +104,7 @@ class CompanyClient:
             except BaseException as exc:  # noqa: BLE001 - handed back to the caller's except clause
                 result["exc"] = exc
 
-        worker = threading.Thread(target=call, name="llm-call", daemon=True)
+        worker = threading.Thread(target=contextvars.copy_context().run, args=(call,), name="llm-call", daemon=True)
         worker.start()
         try:
             worker.join(self.hard_deadline_s if self.hard_deadline_s > 0 else None)

@@ -207,3 +207,34 @@ def test_hard_deadline_abandons_a_hung_call(caplog):
     # a call that answers in time is untouched by the deadline
     ok = client(FakePost(FakeResponse(200, {"choices": [{"message": {"content": "pong"}}]})), hard_deadline_s=5)
     assert ok.complete(MSGS).content == "pong"
+
+
+def test_heartbeat_reaches_the_per_run_log_file(tmp_path):
+    """Round 9: the web app filters sbmig.log by run thread (contextvar); the heartbeat thread must inherit it."""
+    import logging as _logging
+    import threading as _threading
+    import time as _time
+
+    from sbmig.cli import attach_file_log
+
+    class SlowPost(FakePost):
+        def __call__(self, url, **kw):
+            _time.sleep(0.08)
+            return super().__call__(url, **kw)
+
+    path = tmp_path / "sbmig.log"
+    attach_file_log(path, thread_id=_threading.get_ident())
+    try:
+        c = client(SlowPost(FakeResponse(200, {"choices": [{"message": {"content": "pong"}}]})), heartbeat_s=0.02)
+        assert c.complete(MSGS, role="fix").content == "pong"
+        for h in list(_logging.getLogger("sbmig").handlers):
+            h.flush()
+        text = path.read_text(encoding="utf-8")
+    finally:
+        root = _logging.getLogger("sbmig")
+        for h in list(root.handlers):
+            if isinstance(h, _logging.FileHandler) and Path(h.baseFilename) == path.resolve():
+                root.removeHandler(h)
+                h.close()
+    assert "llm call provider=company role=fix" in text          # the call-start line (run thread)
+    assert "llm call still in flight" in text                      # the heartbeat (helper thread, inherited context)
