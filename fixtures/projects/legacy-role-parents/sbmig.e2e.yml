@@ -1,7 +1,17 @@
-# Per-fixture config override (appended after config/artifacts.local-e2e.yml): the company role parents, stood in by
-# spring-boot-starter-parent 4.1.0 — module/boot-jar inherits boot_parent, module/comp-jar inherits comp_parent,
-# the root keeps artifacts.parent (the same stand-in). The as-is module parents have the SAME key at 2.7.18 (an
-# earlier migration on the old 1.0.0 line), so the restructure must move them to the configured version.
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — round 9c company rule:
+# * layout: the company layout (the new defaults in config/default.yml; the local e2e config pins the pre-9c layout
+#   for the older fixtures, so this fixture sets them back). A Spring Boot as-is project keeps its directories
+#   (`boot_as_is: in-place`): only the poms change.
+# * artifacts: the company role parents, stood in by spring-boot-starter-parent 4.1.0 — root → artifacts.parent
+#   (base-parent), the boot app module → boot_parent, every other module → comp_parent. The as-is module parents have
+#   the SAME key at 2.7.18 (an earlier migration on the old 1.0.0 line), so the restructure must move them to the
+#   configured version.
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
 artifacts:
   boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
   comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }

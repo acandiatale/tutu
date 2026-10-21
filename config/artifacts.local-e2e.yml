@@ -21,6 +21,16 @@ artifacts:
     - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
     - { group_id: org.slf4j,          artifact_id: slf4j-api,      version: 2.0.17 }
 
+# The fixtures written before round 9c expect the pre-9c layout (module/boot-jar + module/comp-jar, Boot projects
+# split like the other cases, no front module); fixtures of the company layout override these in their sbmig.e2e.yml
+layout:
+  module_dir: module
+  boot_module: boot-jar
+  comp_module: comp-jar
+  front_module: null
+  boot_as_is: layout
+  comp_artifact_suffix: "-comp"
+
 build:
   java_home: "${JAVA21_HOME:-}"
 

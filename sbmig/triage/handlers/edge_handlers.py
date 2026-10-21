@@ -692,9 +692,20 @@ def _jar_candidates(root: Path, dep: dict[str, Any], cfg: Optional[Config]) -> l
     out: list[Path] = []
     if rel_old and not os.path.isabs(rel_old) and "${" not in rel_old and not re.match(r"^[A-Za-z]:/", rel_old):
         out.append(root / rel_old)
-        mod = cfg.layout.module_dir if cfg else "module"
-        comp = cfg.layout.comp_module if cfg else "comp-jar"
-        out.append(root / mod / comp / rel_old)
+        # the comp module of the configured layout: company `<root>/{name}-back` (name unknown here → every dir
+        # matching the template) or the legacy `module/comp-jar`
+        import fnmatch
+        lay = cfg.layout if cfg else None
+        tpl = (lay.comp_module if lay else "comp-jar") or "comp-jar"
+        mdir = (lay.module_dir if lay else "module").strip("/")
+        base = root / mdir if mdir else root
+        pattern = tpl.replace("{name}", "*")
+        if base.is_dir():
+            for d in sorted(base.iterdir()):
+                if d.is_dir() and fnmatch.fnmatch(d.name, pattern):
+                    out.append(d / rel_old)
+        if "{name}" not in tpl:
+            out.append(base / tpl / rel_old)
     if name and "${" not in name:
         hits = [p for p in root.rglob(name) if p.is_file() and ".git" not in p.relative_to(root).parts
                 and "target" not in p.relative_to(root).parts]

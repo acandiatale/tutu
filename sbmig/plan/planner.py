@@ -3,6 +3,12 @@
 Step ids (non-MSA):  jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, spring.loop,
 restructure.apply, restructure.loop, verify.build.
 
+* Round 9c routing: `case_type == spring_boot` with `layout.boot_as_is == "in-place"` (default) plans
+  `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules": profile.boot_modules})
+  instead of `restructure.apply` — directories kept, poms only; `boot_as_is == "layout"` and every non-Boot case
+  keep `restructure.apply` (mode layout: `{name}-boot` / `{name}-back` / `{name}-front`). MSA `restructure.msa_pom`
+  params also carry `boot_modules`.
+
 * `spring.optional_bump` (StepKind.RESTRUCTURE, phase SPRING, params {"mode": "optional_bump"}, optional=True) is
   emitted when `cfg.plan.optional_bump_phase == "spring"` and optional / remove_when_present artifacts are configured;
   with `"restructure"` the bumps happen inside the restructure step only (previous behaviour).
@@ -391,7 +397,8 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
             steps += _recipe_phase_steps(facts_of[t.name], cfg, kb_refs, notes, svc=t.name, target=_service_dir(t),
                                          advisories=advisories)
     params: dict[str, Any] = {"mode": "msa_pom", "services": [s.name for s in svcs],
-                              "parent_policy": cfg.layout.msa_parent_policy}
+                              "parent_policy": cfg.layout.msa_parent_policy,
+                              "boot_modules": list(profile.boot_modules)}
     if libs:
         params["library_roots"] = [s.root_pom for s in libs]
     steps.append(PlanStep(
@@ -444,14 +451,48 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
         steps.append(_verify())
         return steps
     steps += _recipe_phase_steps(libs_facts, cfg, kb_refs, notes, advisories=advisories)
-    starter = cfg.layout.starter_by_case.get(libs_facts.case.value, "auto")
-    steps.append(PlanStep(
-        id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
-        title="restructure into module/{comp-jar,boot-jar} with the in-house parent",
-        params={"mode": "layout", "starter": starter},
-        reason=f"non-msa: company layout; boot-jar starter '{starter}' for {libs_facts.case.value}"))
-    notes.append(f"restructure: layout split, starter '{starter}'"
-                 + (f", multi-module policy '{cfg.layout.multi_module_policy}'" if profile.is_multi_module else ""))
+    if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place":
+        # round 9c company rule: a Boot as-is project keeps its directories; only the poms change
+        steps.append(PlanStep(
+            id="restructure.boot_pom", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
+            title="Boot as-is: parents / mandatory / optional in place (directories kept)",
+            params={"mode": "boot_pom", "boot_modules": list(profile.boot_modules)},
+            reason="spring_boot as-is: company rule — directories kept, root → in-house parent, boot modules → "
+                   "boot parent, other modules → comp parent"))
+        pat = cfg.layout.boot_module_pattern
+        if profile.boot_modules:
+            where = f"boot module(s) {', '.join(profile.boot_modules)} (named {pat}); every other module → comp parent"
+        elif profile.is_multi_module:
+            where = f"no module named {pat} with a boot pom → no boot parent assigned by name (see warnings)"
+        else:
+            name = cfg.layout.project_name or profile.name
+            where = f"single-module Boot app → wrapped into {cfg.layout.module_path('boot', name)}"
+        notes.append("restructure: rule boot-as-is (layout.boot_as_is=in-place) → pom-only edits in place "
+                     f"(boot_pom), directories kept; {where}")
+    else:
+        starter = cfg.layout.starter_by_case.get(libs_facts.case.value, "auto")
+        name = cfg.layout.project_name or profile.name
+        boot_m = cfg.layout.module_path("boot", name)
+        comp_m = cfg.layout.module_path("comp", name)
+        front_m = cfg.layout.module_path("front", name)
+        src = profile.source
+        has_web = bool(src.jsp_paths or src.web_static_count or src.jsp_count)
+        mods = [comp_m, boot_m] + ([front_m] if front_m and has_web else [])
+        steps.append(PlanStep(
+            id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
+            title=f"restructure into {', '.join(m for m in mods if m)} with the in-house parent",
+            params={"mode": "layout", "starter": starter},
+            reason=f"non-msa: company layout; boot module starter '{starter}' for {libs_facts.case.value}"))
+        rule = ("rule boot-as-is=layout (Boot split like the other cases)" if case == CaseType.SPRING_BOOT
+                else f"rule non-boot ({libs_facts.case.value})")
+        notes.append(f"restructure: {rule} → layout split into {', '.join(m for m in mods if m)}, starter '{starter}'"
+                     + (f", multi-module policy '{cfg.layout.multi_module_policy}'" if profile.is_multi_module else ""))
+        if front_m and has_web:
+            notes.append(f"restructure: web resources ({len(src.jsp_paths) or src.jsp_count} JSP(s), "
+                         f"{src.web_static_count} static file(s) in {', '.join(src.web_static_dirs) or '-'}) → "
+                         f"{front_m}"
+                         + (f"; JSPs → {boot_m} packaged as {cfg.layout.jsp_boot_packaging}"
+                            if (src.jsp_paths or src.jsp_count) else ""))
     if libs_facts.case == CaseType.SERVLET_TOMCAT and profile.source.has_web_xml:
         notes.append("followup: web.xml wiring is not migrated automatically (runtime owners)")
     if libs_facts.case == CaseType.SPRING_LEGACY and profile.source.xml_bean_configs:

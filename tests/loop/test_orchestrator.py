@@ -207,7 +207,11 @@ def test_restructure_failure_still_verifies(cfg, ws):
     rs = next(p for p in report.phases if p.phase == Phase.RESTRUCTURE)
     assert not rs.ok and any("restructure failed" in n for n in rs.notes)
     assert any("restructure.loop skipped" in n for n in rs.notes)
-    assert build.calls[-1]["label"] == "verify" and report.success
+    # round 9c: the final build passed on the as-is tree, but the layout was not produced → not a success (exit 2)
+    assert build.calls[-1]["label"] == "verify" and not report.success and "restructure-failed" in report.flags
+    assert any("restructure step restructure.apply (layout) failed" in f for f in report.manual_followups)
+    from sbmig.cli import run_exit_code
+    assert run_exit_code(report) == 2
 
 
 class CrashRestructurer:

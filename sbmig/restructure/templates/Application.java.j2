@@ -5,6 +5,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 {%- if servlet_component_scan %}
 import {{ servlet_component_scan_fqcn }};
 {%- endif %}
+{%- if servlet_initializer %}
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.boot.web.servlet.support.SpringBootServletInitializer;
+{%- endif %}
 {%- if import_resources %}
 import org.springframework.context.annotation.ImportResource;
 {%- endif %}
@@ -18,6 +22,9 @@ import org.springframework.context.annotation.ImportResource;
 {%- if import_resources %}
  * Legacy XML bean definitions are imported with {@code @ImportResource} (copied to legacy-config/).
 {%- endif %}
+{%- if servlet_initializer %}
+ * Packaged as a WAR for an external Tomcat: {@link SpringBootServletInitializer} boots the application there.
+{%- endif %}
  */
 @SpringBootApplication
 {%- if servlet_component_scan %}
@@ -30,7 +37,14 @@ import org.springframework.context.annotation.ImportResource;
 {%- endfor %}
 })
 {%- endif %}
-public class {{ class_name }} {
+public class {{ class_name }}{% if servlet_initializer %} extends SpringBootServletInitializer{% endif %} {
+{%- if servlet_initializer %}
+
+    @Override
+    protected SpringApplicationBuilder configure(SpringApplicationBuilder builder) {
+        return builder.sources({{ class_name }}.class);
+    }
+{%- endif %}
 
     public static void main(String[] args) {
         SpringApplication.run({{ class_name }}.class, args);

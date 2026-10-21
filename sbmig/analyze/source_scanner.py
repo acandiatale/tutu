@@ -29,6 +29,18 @@ CONFIG_FILE_PATTERNS = (
     "logback*.xml", "log4j2*.xml",
 )
 BEANS_NS = "springframework.org/schema/beans"
+# round 9c (front module): files that make a directory a static-web directory. Static assets (markup, styles,
+# scripts + source maps, images, fonts), JSON / txt assets (manifest.json, robots.txt) and server-side template
+# files living in `templates/` (Thymeleaf html, FreeMarker, Velocity, Mustache, Handlebars). JSPs are not listed
+# here — they are reported separately (`SourceStats.jsp_paths`).
+WEB_STATIC_EXTENSIONS = frozenset({
+    "html", "htm", "css", "js", "map", "json", "txt",
+    "png", "jpg", "jpeg", "gif", "svg", "ico", "webp",
+    "woff", "woff2", "ttf", "eot", "otf",
+    "ftl", "vm", "mustache", "hbs",
+})
+# web roots: `<module>/src/main/webapp` (minus WEB-INF) and `<module>/src/main/resources/{static,public,templates}`
+_WEB_ROOT_RE = re.compile(r"^(?:(.*?)/)?src/main/(webapp|resources/(?:static|public|templates))/(.+)$")
 MAX_XML_BYTES = 2_000_000
 
 # strings/chars are matched first so "//" inside a literal is not treated as a comment
@@ -138,6 +150,8 @@ class ScanResult:
     jsp_paths: list[str] = field(default_factory=list)
     xml_bean_configs: list[str] = field(default_factory=list)
     config_files: list[str] = field(default_factory=list)
+    # round 9c: static web files as (web root dir, file path), both root-relative (see WEB_STATIC_EXTENSIONS)
+    web_static_files: list[tuple[str, str]] = field(default_factory=list)
 
     def subset(self, prefix: str) -> "ScanResult":
         """Files below directory `prefix` (relative, '' = everything)."""
@@ -145,7 +159,8 @@ class ScanResult:
         return ScanResult(files=[j for j in self.files if _under(j.path, prefix)],
                           kotlin_files=f(self.kotlin_files), web_xml_paths=f(self.web_xml_paths),
                           jsp_paths=f(self.jsp_paths), xml_bean_configs=f(self.xml_bean_configs),
-                          config_files=f(self.config_files))
+                          config_files=f(self.config_files),
+                          web_static_files=[w for w in self.web_static_files if _under(w[1], prefix)])
 
     def import_counts(self) -> Counter:
         c: Counter = Counter()
@@ -187,6 +202,9 @@ class ScanResult:
             has_web_xml=bool(self.web_xml_paths),
             web_xml_paths=list(self.web_xml_paths),
             jsp_count=len(self.jsp_paths),
+            jsp_paths=sorted(self.jsp_paths),
+            web_static_dirs=sorted({d for d, _ in self.web_static_files}),
+            web_static_count=len(self.web_static_files),
             xml_bean_configs=list(self.xml_bean_configs),
             config_files=list(self.config_files),
             spring_boot_test_classes=sorted(j.fqcn for j in tests if j.annotations.get("SpringBootTest")),
@@ -199,6 +217,32 @@ def _glob_plain(ws: WorkspaceView, pattern: str) -> list[str]:
             if not any(x in p.replace("\\", "/").split("/") for x in ("target", "node_modules", ".git"))]
 
 
+def web_static_root(rel: str) -> Optional[str]:
+    """The web root dir (`[<module>/]src/main/webapp` or `.../src/main/resources/{static,public,templates}`) holding
+    `rel` when `rel` is a static web file (extension in WEB_STATIC_EXTENSIONS, not under `webapp/WEB-INF`)."""
+    m = _WEB_ROOT_RE.match(rel)
+    if not m:
+        return None
+    prefix, kind, rest = m.group(1), m.group(2), m.group(3)
+    if kind == "webapp" and (rest == "WEB-INF" or rest.startswith("WEB-INF/")):
+        return None
+    ext = posixpath.splitext(rest)[1].lstrip(".").lower()
+    if ext not in WEB_STATIC_EXTENSIONS:
+        return None
+    return f"{prefix}/src/main/{kind}" if prefix else f"src/main/{kind}"
+
+
+def _scan_web_static(ws: WorkspaceView) -> list[tuple[str, str]]:
+    """Static web files as (web root, path) — one walk over the workspace (target / node_modules / .git skipped)."""
+    out: list[tuple[str, str]] = []
+    for rel in _glob_plain(ws, "*"):
+        if "src/main/" in rel:
+            d = web_static_root(rel)
+            if d is not None:
+                out.append((d, rel))
+    return out
+
+
 def scan_sources(ws: WorkspaceView) -> ScanResult:
     res = ScanResult()
     for rel in _glob_plain(ws, "*.java"):
@@ -208,7 +252,8 @@ def scan_sources(ws: WorkspaceView) -> ScanResult:
             log.warning("cannot read %s: %s", rel, e)
     res.kotlin_files = _glob_plain(ws, "*.kt")
     res.web_xml_paths = [p for p in _glob_plain(ws, "web.xml") if p.endswith("WEB-INF/web.xml")]
-    res.jsp_paths = _glob_plain(ws, "*.jsp")
+    res.jsp_paths = sorted(_glob_plain(ws, "*.jsp"))
+    res.web_static_files = _scan_web_static(ws)
     for rel in _glob_plain(ws, "*.xml"):
         base = posixpath.basename(rel)
         if base == "pom.xml":

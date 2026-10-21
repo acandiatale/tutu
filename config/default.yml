@@ -8,11 +8,25 @@ target:
   spring_framework_version: "7.0.x"
 
 layout:
-  module_dir: module
-  boot_module: boot-jar
-  comp_module: comp-jar
+  # Company layout (2026-10-21): modules directly under the root — {name}-boot (Boot configuration only, parent
+  # artifacts.boot_parent), {name}-back (every source incl. controllers, parent comp_parent) and, only when the as-is
+  # project has web resources, {name}-front (static files / JSPs, parent comp_parent). {name} = the root artifactId.
+  # Pre-9c layout for comparison: module_dir: module, boot_module: boot-jar, comp_module: comp-jar, front_module: null
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"          # null = no front module (web resources stay in the boot module)
+  project_name: null                     # overrides {name}
+  front_static_dir: src/main/resources/static                          # HTML / css / js / images → jar
+  front_jsp_dir: src/main/resources/META-INF/resources/WEB-INF/jsp     # JSPs per Servlet 3 (jar resources)
+  # Spring Boot as-is projects (incl. MSA): in-place = keep the directories, change the poms only (root →
+  # artifacts.parent, modules matching boot_module_pattern whose pom is a boot app → boot_parent, the rest →
+  # comp_parent; a single-module Boot app is wrapped into {name}-boot) | layout = split like the other cases
+  boot_as_is: in-place
+  boot_module_pattern: "*-boot"
+  jsp_boot_packaging: war                # JSPs present → the boot module is a WAR for external Tomcat (front jar holds the JSPs)
   boot_artifact_suffix: "-boot"
-  comp_artifact_suffix: "-comp"
+  comp_artifact_suffix: "-back"          # artifactIds: <root>-boot / <root>-back / <root>-front
   # minimal  : every as-is source goes to comp-jar; boot-jar holds only the Application class (+ boot resources, @SpringBootTest tests)
   # web-layer: @SpringBootApplication/@Controller/@RestController/@Configuration/@ControllerAdvice classes move to boot-jar
   split_policy: minimal
@@ -24,6 +38,7 @@ layout:
   # merge: a path present in more than one module → first-wins (first module in <modules> order; the dropped copies
   # are saved under <run dir>/merge-conflicts/ and listed in the Handover) | fail (restructure error, nothing moved)
   merge_collision: first-wins
+  # (artifacts.mandatory_target: root — the mandatory dependencies are declared in every root pom; see artifacts.example.yml)
   # after the in-house parent is set: drop explicit dependency <version>s the new parent chain manages
   # (gte = only when the managed version is the same or newer; any = always; off = keep). Mandatory / optional /
   # parent artifacts and system-scope dependencies are never touched.

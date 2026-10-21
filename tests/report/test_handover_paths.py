@@ -66,3 +66,20 @@ def test_handover_names_the_current_paths(tmp_path, cfg):
     assert line.startswith("code rewritten by the LLM for hystrix: module/comp-jar/src/main/java/a/Cmd.java, "
                            "module/comp-jar/src/main/java/a/Other.java —")
     assert "core/src" not in line
+
+
+def test_company_layout_paths_resolve_by_project_name(tmp_path):
+    """Round 9c: the company layout puts the modules directly under the root as {name}-back / -boot / -front."""
+    from sbmig.core.config import LayoutConfig
+    from sbmig.report.handover import project_name, resolve_current_path
+    v = tree(tmp_path, "shop-back/src/main/java/a/Svc.java", "shop-boot/src/main/java/a/Application.java",
+             "shop-front/src/main/resources/static/index.html")
+    cfg = type("C", (), {"layout": LayoutConfig()})()                   # defaults = company layout
+    assert resolve_current_path(v, "src/main/java/a/Svc.java", cfg, "shop") == "shop-back/src/main/java/a/Svc.java"
+    assert resolve_current_path(v, "src/main/java/a/Application.java", cfg, "shop") == \
+        "shop-boot/src/main/java/a/Application.java"
+    # webapp → static is a path *change* (the restructurer's move), not a module prefix: left as recorded
+    assert resolve_current_path(v, "src/main/webapp/index.html", cfg, "shop") == "src/main/webapp/index.html"
+    assert resolve_current_path(v, "src/main/java/a/Svc.java", cfg) == "src/main/java/a/Svc.java"   # no name → unchanged
+    prof = type("P", (), {"root_pom": type("R", (), {"artifact_id": "shop"})(), "name": "x"})()
+    assert project_name(prof) == "shop" and project_name(None) == ""

@@ -37,6 +37,8 @@ artifacts:
     - { group_id: com.company.lib, artifact_id: lib-messaging, version: 3.0.0 }
     - { group_id: com.company.lib, artifact_id: lib-web,       version: 3.0.0 }
   remove_when_present: []               # e.g. ["com.company.legacy:legacy-bom"]
+  mandatory_target: root                # the 2 mandatory dependencies go into every root pom (project root; MSA: each
+                                        # service root + the top aggregator) — the company rule; `modules` = role module poms
   optional_version_policy: floor        # floor = never downgrade (default) | pin = exactly the listed version
 
 build:

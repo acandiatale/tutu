@@ -1006,7 +1006,9 @@ class BuildFixLoop:
 
     def _merge_conflict_hints_unsafe(self, att: FixAttempt, c: ErrorCluster) -> tuple[list[str], dict[str, str]]:
         lay = self.cfg.layout
-        base = _norm_path(f"{lay.module_dir}/{lay.comp_module}")
+        rp = getattr(self.profile, "root_pom", None)
+        pname = (getattr(rp, "artifact_id", None) or getattr(self.profile, "name", "") or "")
+        base = _norm_path(lay.module_path("comp", pname) or f"{lay.module_dir}/{lay.comp_module}")
         files = {_norm_path(f) for f in [c.file, *(e.file for e in c.errors)] if f}
         text = "\n".join(f"{e.message}\n{e.symbol or ''}\n{e.location or ''}\n{e.raw}" for e in c.errors)
         notes: list[str] = []

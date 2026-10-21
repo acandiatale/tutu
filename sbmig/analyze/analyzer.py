@@ -21,7 +21,8 @@ from sbmig.core.config import ArtifactSpec, Config
 from sbmig.core.models import GAV, CaseType, PomInfo, ProjectProfile
 
 from .build_tool import detect_build_tool
-from .classifier import build_library_services, build_services, classify, library_roots, msa_deployables, service_roots
+from .classifier import (boot_module_findings, build_library_services, build_services, classify, library_roots,
+                         msa_deployables, service_roots)
 from .edges import (encoding_findings, java_level_findings, language_findings, normalize_java_version,
                     system_dep_findings, system_dependencies)
 from .libraries import detect_libraries
@@ -145,6 +146,13 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         root_pom = roots[0] if len(roots) == 1 else None
     name = root_pom.artifact_id if root_pom else root.name
 
+    # round 9c: boot modules by the company naming rule (layout.boot_module_pattern), confirmed by their pom
+    boot_modules, bm_warn, bm_reasons = boot_module_findings(
+        poms, root_pom, scan, cfg.layout.boot_module_pattern,
+        [s for s in services if s.kind == "service"] if case == CaseType.MSA else ())
+    warnings += bm_warn
+    reasons += bm_reasons
+
     java_version = normalize_java_version(
         (root_pom.java_version if root_pom else None) or _pick([p.java_version for p in poms]))
     boot_version = (root_pom.spring_boot_version if root_pom else None) or next(
@@ -172,6 +180,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         optional_artifacts_in_use=_artifact_hits(poms, cfg.optional_keys()),
         mandatory_already_present=_artifact_hits(poms, _mandatory_keys(cfg)),
         warnings=warnings,
+        boot_modules=boot_modules,
         fingerprint=ProjectProfile.make_fingerprint([p.path for p in poms],
                                                     root_pom.artifact_id if root_pom else root.name),
     )

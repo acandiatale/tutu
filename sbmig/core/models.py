@@ -190,6 +190,11 @@ class SourceStats(BaseModel):
     has_web_xml: bool = False
     web_xml_paths: list[str] = Field(default_factory=list)
     jsp_count: int = 0
+    # round 9c (front module): as-is web resources — JSP files and directories holding static web files
+    # (`src/main/webapp` minus WEB-INF, `src/main/resources/{static,public,templates}`); root-relative, sorted
+    jsp_paths: list[str] = Field(default_factory=list)
+    web_static_dirs: list[str] = Field(default_factory=list)
+    web_static_count: int = 0
     xml_bean_configs: list[str] = Field(default_factory=list)    # files containing <beans xmlns="http://www.springframework.org/schema/beans"
     config_files: list[str] = Field(default_factory=list)        # application*.yml/properties, bootstrap*, logback*
     spring_boot_test_classes: list[str] = Field(default_factory=list)
@@ -270,6 +275,9 @@ class ServiceInfo(BaseModel):
 
 
 class ProjectProfile(BaseModel):
+    # NOTE round 9c: `boot_modules` (below) lists the module dirs that are boot apps by the company naming rule
+    # (`layout.boot_module_pattern`, e.g. `*-boot`) confirmed by their pom (spring-boot-maven-plugin or a
+    # @SpringBootApplication class); Boot as-is / MSA pom-only edits give those `boot_parent`, the rest `comp_parent`.
     root: str                                   # absolute path of project root at analysis time
     name: str
     case_type: CaseType
@@ -291,6 +299,7 @@ class ProjectProfile(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     fingerprint: str = ""
     properties: PropertyInventory = Field(default_factory=PropertyInventory)   # externalized-config inventory (round 8)
+    boot_modules: list[str] = Field(default_factory=list)      # round 9c, see the class note
 
     def has_library(self, name: str) -> bool:
         return any(lib.name == name for lib in self.libraries)

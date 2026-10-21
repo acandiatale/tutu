@@ -396,11 +396,12 @@ def _view_exists(view: Any, path: str) -> bool:
         return False
 
 
-def resolve_current_path(ws: Any, path: str, cfg: Any = None) -> str:
+def resolve_current_path(ws: Any, path: str, cfg: Any = None, name: Optional[str] = None) -> str:
     """Where a file recorded before the restructure step lives now. Unchanged when it still exists (or `ws` is None);
-    else the part from the `src/` component on is looked up under `<module_dir>/<comp_module>/` then
-    `<module_dir>/<boot_module>/` (`cfg.layout`, defaults `module/comp-jar`, `module/boot-jar`); the original path
-    when neither exists. Pure (reads only `ws.exists`)."""
+    else the part from the `src/` component on is looked up under the comp, boot and front module directories of
+    the configured layout (`cfg.layout.module_path(which, name)` — company `{name}-back` / `-boot` / `-front`, or
+    the legacy `module/comp-jar` / `module/boot-jar`; without a config the legacy names); the original path when
+    none exists. Pure (reads only `ws.exists`)."""
     if not path or ws is None:
         return path
     norm = path.replace("\\", "/")
@@ -413,12 +414,27 @@ def resolve_current_path(ws: Any, path: str, cfg: Any = None) -> str:
         return path
     suffix = "/".join(parts[parts.index("src"):])
     lay = getattr(cfg, "layout", None) if cfg is not None else None
-    mdir = (getattr(lay, "module_dir", None) or "module").strip("/")
-    for mod in (getattr(lay, "comp_module", None) or "comp-jar", getattr(lay, "boot_module", None) or "boot-jar"):
-        cand = f"{mdir}/{mod.strip('/')}/{suffix}" if mdir else f"{mod.strip('/')}/{suffix}"
+    bases: list[str] = []
+    if lay is not None and callable(getattr(lay, "module_path", None)):
+        for which in ("comp", "boot", "front"):
+            mp = lay.module_path(which, name or "")
+            if mp and "{name}" not in mp:
+                bases.append(mp.strip("/"))
+    if not bases:
+        mdir = (getattr(lay, "module_dir", None) or "module").strip("/")
+        for mod in (getattr(lay, "comp_module", None) or "comp-jar", getattr(lay, "boot_module", None) or "boot-jar"):
+            bases.append(f"{mdir}/{mod.strip('/')}" if mdir else mod.strip("/"))
+    for base in bases:
+        cand = f"{base}/{suffix}"
         if cand != norm and _view_exists(ws, cand):
             return cand
     return path
+
+
+def project_name(profile: Any) -> str:
+    """`{name}` of the company layout: the root pom's artifactId (else the profile name)."""
+    rp = getattr(profile, "root_pom", None)
+    return (getattr(rp, "artifact_id", None) or getattr(profile, "name", None) or "") if profile is not None else ""
 
 
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:
@@ -446,7 +462,8 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     for f in findings:
         if not f.llm_fixed_files:
             continue
-        fixed = list(dict.fromkeys(resolve_current_path(view, p, cfg) for p in f.llm_fixed_files))
+        fixed = list(dict.fromkeys(resolve_current_path(view, p, cfg, project_name(getattr(report, "profile", None)))
+                                   for p in f.llm_fixed_files))
         files = ", ".join(fixed[:LLM_FILES_MAX])
         if len(fixed) > LLM_FILES_MAX:
             files += f" (+{len(fixed) - LLM_FILES_MAX} more)"

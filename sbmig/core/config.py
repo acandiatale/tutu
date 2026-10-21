@@ -58,6 +58,9 @@ class ArtifactsConfig(BaseModel):
     mandatory: list[ArtifactSpec] = Field(default_factory=list)   # exactly 2 in production config
     optional: list[ArtifactSpec] = Field(default_factory=list)    # 8 in production config
     remove_when_present: list[str] = Field(default_factory=list)  # "g:a" keys to drop (e.g. old in-house parents' BOMs)
+    # round 9c: where the mandatory dependencies are declared — `root`: every root pom (the project root; in MSA each
+    # service root and the top aggregator), the company rule; `modules`: every role module pom (pre-9c with role parents)
+    mandatory_target: Literal["root", "modules"] = "root"
     # floor: only raise an optional artifact to its configured version (never downgrade a newer as-is/recipe version)
     # pin  : always set exactly the configured version
     optional_version_policy: Literal["floor", "pin"] = "floor"
@@ -82,11 +85,29 @@ class ArtifactsConfig(BaseModel):
 
 
 class LayoutConfig(BaseModel):
-    module_dir: str = "module"
-    boot_module: str = "boot-jar"
-    comp_module: str = "comp-jar"
+    """Round 9c — the company layout (stated 2026-10-21): modules directly under the root named `{name}-boot`
+    (Boot configuration only, parent `boot_parent`), `{name}-back` (every source incl. controllers, parent
+    `comp_parent`) and — only when the as-is project has web resources — `{name}-front` (static files under
+    `front_static_dir`, JSPs under `front_jsp_dir` per Servlet 3, parent `comp_parent`); `{name}` = the root pom's
+    artifactId (`project_name` overrides). Spring Boot as-is projects (incl. MSA) keep their directories
+    (`boot_as_is: in-place`): only the poms change — root → `artifacts.parent`, modules named like
+    `boot_module_pattern` whose pom confirms a boot app → `boot_parent`, every other module → `comp_parent`; a
+    single-module Boot app is wrapped into `{name}-boot` under an aggregator root. The pre-9c layout
+    (`module/boot-jar` + `module/comp-jar`, Boot projects merged like the others) is `module_dir: module`,
+    `boot_module: boot-jar`, `comp_module: comp-jar`, `front_module: null`, `boot_as_is: layout`
+    (config/artifacts.local-e2e.yml keeps it for the older fixtures)."""
+    module_dir: str = ""                                # "" = modules directly under the root
+    boot_module: str = "{name}-boot"
+    comp_module: str = "{name}-back"
+    front_module: Optional[str] = "{name}-front"       # None = no front module (web resources stay in the boot module)
+    project_name: Optional[str] = None                  # `{name}`; default = the root pom's artifactId
+    front_static_dir: str = "src/main/resources/static"                          # HTML / css / js / images
+    front_jsp_dir: str = "src/main/resources/META-INF/resources/WEB-INF/jsp"     # JSPs (Servlet 3 jar resources)
+    boot_as_is: Literal["in-place", "layout"] = "in-place"   # Spring Boot as-is: keep directories (poms only) | split
+    boot_module_pattern: str = "*-boot"                 # module dirs that are boot apps in Boot as-is / MSA (pom confirms)
+    jsp_boot_packaging: Literal["war", "jar"] = "war"   # JSPs present → the boot module is a WAR for external Tomcat
     boot_artifact_suffix: str = "-boot"
-    comp_artifact_suffix: str = "-comp"
+    comp_artifact_suffix: str = "-back"                 # artifactId = <root artifactId> + suffix (front: "-front")
     split_policy: Literal["minimal", "web-layer"] = "minimal"
     multi_module_policy: Literal["wrap", "merge"] = "merge"
     # merge: a path present in more than one module → first module in <modules> order wins, the other copies are
@@ -111,6 +132,19 @@ class LayoutConfig(BaseModel):
     add_servlet_component_scan: bool = True
     import_xml_bean_configs: bool = True   # @ImportResource for detected <beans> xml files
     msa_parent_policy: Literal["per-service-root", "top-aggregator"] = "per-service-root"
+
+    def module_name(self, which: Literal["boot", "comp", "front"], name: str) -> Optional[str]:
+        """The module directory name for a role (`{name}` expanded); None when the role has no module (front off)."""
+        tpl = {"boot": self.boot_module, "comp": self.comp_module, "front": self.front_module}[which]
+        return tpl.replace("{name}", name) if tpl else None
+
+    def module_path(self, which: Literal["boot", "comp", "front"], name: str) -> Optional[str]:
+        """Root-relative posix path of a role module (`module_dir` + name), e.g. `shop-boot` or `module/boot-jar`."""
+        n = self.module_name(which, name)
+        if n is None:
+            return None
+        d = self.module_dir.strip("/")
+        return f"{d}/{n}" if d else n
 
 
 class RecipeSetConfig(BaseModel):

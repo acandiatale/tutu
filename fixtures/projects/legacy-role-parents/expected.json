@@ -5,7 +5,11 @@
   "spring_version": null,
   "packaging": "pom",
   "is_multi_module": true,
-  "modules": ["boot-jar", "catalog-service", "order-service"],
+  "modules": [
+    "boot-jar",
+    "catalog-service",
+    "order-service"
+  ],
   "libraries": [
     "lombok",
     "spring-context"
@@ -25,24 +29,157 @@
     "unresolved_max": 0,
     "optional_bumped": [],
     "journal_events": [
-      {"event": "restructure", "ok": true}
+      {
+        "event": "restructure",
+        "mode": "boot_pom",
+        "ok": true
+      }
     ],
+    "phases": {
+      "restructure": "ok"
+    },
     "post_checks": [
-      {"pom_parent": {"path": "pom.xml", "group_id": "org.springframework.boot", "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
-      {"pom_parent": {"path": "module/boot-jar/pom.xml", "group_id": "org.springframework.boot", "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
-      {"pom_parent": {"path": "module/comp-jar/pom.xml", "group_id": "org.springframework.boot", "artifact_id": "spring-boot-starter-parent", "version": "4.1.0"}},
-      {"file_contains": {"path": "module/boot-jar/pom.xml", "contains": "<relativePath/>"}},
-      {"file_contains": {"path": "module/comp-jar/pom.xml", "contains": "<relativePath/>"}},
-      {"file_contains": {"path": "module/comp-jar/pom.xml", "contains": "<groupId>com.example</groupId>"}},
-      {"file_exists": {"path": "module/boot-jar/src/main/java/**/ShopApplication.java"}},
-      {"file_exists": {"path": "module/comp-jar/src/main/java/**/CatalogService.java"}},
-      {"file_exists": {"path": "module/comp-jar/src/main/java/**/OrderService.java"}},
-      {"file_absent": {"path": "catalog-service"}},
-      {"file_absent": {"path": "order-service"}},
-      {"file_absent": {"path": "boot-jar"}},
-      {"pom_dependency_present": {"path": "module/boot-jar/pom.xml", "artifacts": ["${project.groupId}:shop-comp", "org.springframework.boot:spring-boot-starter-validation", "org.springframework.boot:spring-boot-starter-actuator"]}},
-      {"pom_dependency_present": {"path": "module/comp-jar/pom.xml", "artifacts": ["org.springframework.boot:spring-boot-starter-validation", "org.springframework.boot:spring-boot-starter-actuator"]}},
-      {"pom_dependency_absent": {"path": "module/boot-jar/pom.xml", "artifacts": ["com.example:catalog-service", "com.example:order-service"]}}
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "pom"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "boot-jar",
+            "catalog-service",
+            "order-service"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "boot-jar/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "catalog-service/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "order-service/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "boot-jar/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "catalog-service/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "order-service/pom.xml",
+          "contains": "<groupId>com.example</groupId>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "boot-jar/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "catalog-service/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "order-service/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "boot-jar/pom.xml",
+          "artifacts": [
+            "com.example:catalog-service",
+            "com.example:order-service"
+          ]
+        }
+      },
+      {
+        "file_exists": {
+          "path": "boot-jar/src/main/java/com/example/shop/ShopApplication.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "catalog-service/src/main/java/com/example/shop/catalog/CatalogService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "order-service/src/main/java/com/example/shop/order/OrderService.java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "module"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-boot"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-back"
+        }
+      }
     ]
   }
 }

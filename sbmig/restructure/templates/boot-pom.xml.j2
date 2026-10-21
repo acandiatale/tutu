@@ -15,7 +15,7 @@
 {% if group_id %}    <groupId>{{ group_id }}</groupId>
 {% endif %}    <artifactId>{{ artifact_id }}</artifactId>
 {% if version %}    <version>{{ version }}</version>
-{% endif %}    <packaging>jar</packaging>
+{% endif %}    <packaging>{{ packaging }}</packaging>
 {%- if name %}
     <name>{{ name }}</name>
 {%- endif %}

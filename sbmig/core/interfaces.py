@@ -159,12 +159,19 @@ class RestructureResult(BaseModel):
     managed_versions_dropped: list[str] = Field(default_factory=list)
     # round 9b: every parent the restructure set or replaced — "<pom>: <old g:a:v or '-'> → <new g:a:v>"
     parents_set: list[str] = Field(default_factory=list)
+    # round 9c: the company layout — module paths actually used (None = not created), the boot module's packaging
+    # (`jar`, or `war` when JSPs made it a WAR for external Tomcat) and the files moved into the front module
+    boot_module: Optional[str] = None
+    comp_module: Optional[str] = None
+    front_module: Optional[str] = None
+    boot_packaging: Optional[str] = None
+    front_files: int = 0
 
 
 @runtime_checkable
 class RestructurerLike(Protocol):
     def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *,
-              mode: Literal["layout", "msa_pom", "optional_bump"],
+              mode: Literal["layout", "msa_pom", "optional_bump", "boot_pom"],   # boot_pom: round 9c Boot as-is in place
               params: Optional[dict] = None) -> RestructureResult: ...
 
 

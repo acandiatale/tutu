@@ -1,0 +1,229 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "11",
+  "spring_boot_version": null,
+  "spring_version": "5.3.31",
+  "packaging": "war",
+  "is_multi_module": false,
+  "libraries": [
+    "javax-servlet",
+    "spring-webmvc",
+    "spring-context"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "web_resources": {
+    "jsp": [],
+    "static_dirs": [
+      "src/main/webapp"
+    ],
+    "static_count": 3
+  },
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "journal_events": [
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "post_checks": [
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "pom"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "shop-back",
+            "shop-boot",
+            "shop-front"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shop-boot/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shop-boot/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-boot/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shop-back/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shop-back/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-back/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shop-front/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "shop-front/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-front/pom.xml",
+          "contains": "<relativePath/>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "shop-front/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/java/**/*Application.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-back/src/main/java/com/example/shop/web/HomeController.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-back/src/main/java/com/example/shop/service/GreetingService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/resources/legacy-config/applicationContext.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/resources/legacy-config/dispatcher-servlet.xml"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-front/src/main/resources/static/index.html",
+          "contains": "css/site.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-front/src/main/resources/static/css/site.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-front/src/main/resources/static/js/app.js"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-boot/src/main/java/**/HomeController.java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-boot/src/main/resources/static"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-front/src/main/java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "src"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "module"
+        }
+      }
+    ]
+  }
+}

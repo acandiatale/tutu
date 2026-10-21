@@ -217,6 +217,29 @@ def test_pom_post_checks(e2e, tmp_path):
     assert "malformed" in e2e.run_post_check({"a": {}, "b": {}}, proj)
 
 
+def test_pom_packaging_and_module_list_post_checks(e2e, tmp_path):
+    """Round 9c: `pom_packaging` (absent <packaging> = jar) and `pom_module_list` (exact list, `any_order` optional)."""
+    proj = tmp_path / "p"
+    (proj / "shop-boot").mkdir(parents=True)
+    (proj / "pom.xml").write_text(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0"><packaging>pom</packaging><modules>'
+        '<module>shop-back</module><module>shop-boot</module></modules>'
+        '<profiles><profile><modules><module>extra</module></modules></profile></profiles></project>')
+    (proj / "shop-boot" / "pom.xml").write_text('<project xmlns="http://maven.apache.org/POM/4.0.0"/>')
+    run = e2e.run_post_check
+    assert run({"pom_packaging": {"path": "pom.xml", "packaging": "pom"}}, proj) is None
+    assert run({"pom_packaging": {"path": "shop-boot/pom.xml", "packaging": "jar"}}, proj) is None
+    assert "packaging is jar, expected war" in run({"pom_packaging": {"path": "shop-boot/pom.xml", "packaging": "war"}}, proj)
+    ok = {"pom_module_list": {"path": "pom.xml", "modules": ["shop-back", "shop-boot"]}}
+    assert run(ok, proj) is None                                    # profile modules are not counted
+    swapped = {"pom_module_list": {"path": "pom.xml", "modules": ["shop-boot", "shop-back"]}}
+    assert "modules are ['shop-back', 'shop-boot']" in run(swapped, proj)
+    swapped["pom_module_list"]["any_order"] = True
+    assert run(swapped, proj) is None
+    assert "expected ['shop-back']" in run({"pom_module_list": {"path": "pom.xml", "modules": ["shop-back"]}}, proj)
+    assert "modules are []" in run({"pom_module_list": {"path": "shop-boot/pom.xml", "modules": ["x"]}}, proj)
+
+
 def test_optional_bumps_collected_from_everywhere(e2e):
     report = {"optional_bumped": ["a:b 1->2"], "phases": [
         {"notes": ["x; optional bumped: c:d 1.0→2.0, e:f managed→3; more"]}, {"notes": ["optional bumped: -"]}]}

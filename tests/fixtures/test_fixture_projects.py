@@ -36,7 +36,7 @@ HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
-             "legacy-role-parents"]
+             "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -65,6 +65,9 @@ BUILD_MATRIX = [
     ("java6-legacy", ".", "8", ""),
     ("multi-module-conflict", ".", "11", ""),
     ("legacy-ibatis", ".", "8", ""),
+    ("company-boot-single", ".", "11", ""),
+    ("company-spring5-web", ".", "11", ""),
+    ("company-servlet-jsp", ".", "8", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -111,6 +114,21 @@ class PomDepsCheck(BaseModel):
     artifacts: list[str]
 
 
+class PomPackagingCheck(BaseModel):
+    """`pom_packaging`: the pom's `<packaging>` (absent = jar)."""
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    packaging: Literal["jar", "war", "pom"]
+
+
+class PomModulesCheck(BaseModel):
+    """`pom_module_list`: the exact top-level `<modules>` list (in order unless `any_order`)."""
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    modules: list[str]
+    any_order: bool = False
+
+
 class PathCheck(BaseModel):
     """`file_exists` / `file_absent`: a path (glob allowed) in the *migrated* tree."""
     model_config = ConfigDict(extra="forbid")
@@ -128,6 +146,8 @@ class PostCheck(BaseModel):
     pom_dependency_present: PomDepsCheck | None = None
     pom_dependency_unversioned: PomDepsCheck | None = None    # declared without <version> (parent-managed)
     pom_dependency_versioned: PomDepsCheck | None = None      # declared with a <version>
+    pom_packaging: PomPackagingCheck | None = None
+    pom_module_list: PomModulesCheck | None = None
 
 
 class AdvisoryExpect(BaseModel):
@@ -325,10 +345,19 @@ def test_post_check_paths_exist_in_fixture(name: str):
     """Every post_check names a file that exists in the as-is fixture (layout-independent `**` globs) — except
     `module/<comp-jar|boot-jar>/pom.xml`, which the restructure phase creates (single jar → comp-jar + boot-jar), and
     the `application.properties` that receives the externalized-config placeholders (round 8: boot-jar; round 9: an
-    MSA service's own `<service>/src/main/resources/application.properties`)."""
+    MSA service's own `<service>/src/main/resources/application.properties`). Company-layout fixtures (round 9c,
+    COMPANY_OVERRIDES): a path inside a role module the restructure creates (`<name>-boot|back|front/…`) must name an
+    as-is file by its basename — except the module poms and the generated `*Application.java`."""
+    roles = re.compile(r"(?:shop)-(?:boot|back|front)/(.+)") if name in COMPANY_OVERRIDES else None
     for check in Expected.model_validate(_expected(name)).expect.post_checks:
         for kind, spec in check.model_dump(exclude_none=True).items():
             if kind in ("file_exists", "file_absent"):      # describe the migrated tree, not the as-is one
+                continue
+            m = roles.fullmatch(spec["path"]) if roles and not (FIXTURES / name / spec["path"]).exists() else None
+            if m:
+                base = m.group(1).rsplit("/", 1)[-1]
+                if base != "pom.xml" and base != "*Application.java":
+                    assert list((FIXTURES / name).rglob(base)), f"{name}: {kind} {spec['path']}: no as-is {base}"
                 continue
             if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
                 assert (FIXTURES / name / "pom.xml").exists()
@@ -380,19 +409,34 @@ OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-l
 
 LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"},
                       "multi-module-conflict": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
-# round 9b: fixtures whose override only adds the company role parents (artifacts.boot_parent / comp_parent)
-PARENT_OVERRIDES = {"legacy-role-parents": {"boot_parent", "comp_parent"}}
+# round 9c: company-layout fixtures — the override sets the company layout keys back (config/artifacts.local-e2e.yml
+# pins the pre-9c layout for the older fixtures) and adds the role parents (artifacts.boot_parent / comp_parent)
+COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module", "front_module", "boot_as_is"},
+                            "artifacts": {"boot_parent", "comp_parent"}}
+                     for name in ("legacy-role-parents", "company-boot-single", "company-spring5-web",
+                                  "company-servlet-jsp")}
 
 
 def test_fixture_config_override_keeps_8_optionals():
+    from sbmig.core.config import LayoutConfig
+
     overrides = sorted(p.parent.name for p in FIXTURES.glob("*/sbmig.e2e.yml"))
-    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES, *PARENT_OVERRIDES])
-    for name, keys in PARENT_OVERRIDES.items():
+    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES, *COMPANY_OVERRIDES])
+    company = LayoutConfig()                                       # the company layout = the code defaults
+    for name, keys in COMPANY_OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-        assert set(raw) == {"artifacts"} and set(raw["artifacts"]) == keys, name
+        assert {k: set(v) for k, v in raw.items()} == keys, name
         cfg = _effective_cfg(name)
+        for key in keys["layout"]:
+            assert getattr(cfg.layout, key) == getattr(company, key), (name, key)
+        assert cfg.layout.module_path("boot", "shop") == "shop-boot", name
+        assert cfg.artifacts.mandatory_target == "root", name
         assert cfg.artifacts.role_parents and len(cfg.artifacts.optional) == 8, name
         assert cfg.artifacts.boot_parent.key == cfg.artifacts.parent.key          # local stand-in: the same parent
+        assert cfg.artifacts.comp_parent.key == cfg.artifacts.parent.key
+        assert etree.parse(str(FIXTURES / name / "pom.xml")).getroot().findtext("m:artifactId", namespaces=NS) == "shop"
+    base = load_config(REPO / "config" / "artifacts.local-e2e.yml", repo_root=REPO).layout
+    assert (base.module_dir, base.boot_module, base.front_module, base.boot_as_is) == ("module", "boot-jar", None, "layout")
     for name, top in LLM_ONLY_OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == top, name

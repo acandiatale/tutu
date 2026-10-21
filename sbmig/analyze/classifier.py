@@ -1,6 +1,7 @@
 """Case classification (pure_java / servlet_tomcat / spring_legacy / spring_boot / msa) + MSA service discovery."""
 from __future__ import annotations
 
+import fnmatch
 import posixpath
 from typing import TYPE_CHECKING, Iterable, Optional
 
@@ -295,3 +296,88 @@ def classify(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUs
             conf = 0.9 if "spring-boot-maven-plugin" in reasons[0] else 0.75
             return CaseType.MSA, conf, reasons + [f"msa: services rooted at {', '.join(r.path for r in roots)}"]
     return classify_single(poms, source, libraries, scan)
+
+
+# ---------------------------------------------------------------------------
+# Boot modules by the company naming rule (round 9c)
+# ---------------------------------------------------------------------------
+def _pom_module_path(p: PomInfo, m: str) -> str:
+    target = posixpath.normpath(posixpath.join(pom_dir(p.path) or ".", m))
+    if not target.endswith(".xml"):
+        target = posixpath.join(target, "pom.xml")
+    return posixpath.normpath(target)
+
+
+def _module_dirs(start: PomInfo, by_path: dict[str, PomInfo]) -> list[str]:
+    """Dirs of every pom reachable from `start` through <modules> (recursively), `start` itself excluded."""
+    out: list[str] = []
+    seen = {start.path}
+    stack = [start]
+    while stack:
+        p = stack.pop(0)
+        for m in p.modules:
+            child = by_path.get(_pom_module_path(p, m))
+            if child is None or child.path in seen:
+                continue
+            seen.add(child.path)
+            out.append(pom_dir(child.path))
+            stack.append(child)
+    return out
+
+
+def boot_module_findings(poms: list[PomInfo], root_pom: Optional[PomInfo], scan: Optional[ScanResult],
+                         pattern: str, services: Iterable[ServiceInfo] = ()) -> tuple[list[str], list[str], list[str]]:
+    """`(boot_modules, warnings, reasons)` for `ProjectProfile.boot_modules`.
+
+    Candidates are the module dirs reachable from the root pom's `<modules>` (recursively); for MSA also every
+    service root dir and its modules. A candidate is a boot module when its basename matches `pattern` (fnmatch,
+    e.g. `*-boot`) AND its pom is a boot app (spring-boot-maven-plugin, or a @SpringBootApplication class under its
+    `src/main/java`). Boot apps with another name and pattern-named modules without a boot pom are warnings only.
+    The project root itself is never a candidate (a single-module Boot app is wrapped by the restructure)."""
+    by_path = {p.path: p for p in poms}
+    by_dir = {pom_dir(p.path): p for p in poms}
+    cands: list[str] = []
+
+    def add(d: str) -> None:
+        if d and d not in cands and not d.startswith(".."):
+            cands.append(d)
+
+    starts: list[PomInfo] = [root_pom] if root_pom is not None else [p for p in poms if p.is_root]
+    for s in starts:
+        for d in _module_dirs(s, by_path):
+            add(d)
+    for svc in services:
+        sp = by_path.get(svc.root_pom)
+        if sp is None:
+            continue
+        add(pom_dir(sp.path))
+        for d in _module_dirs(sp, by_path):
+            add(d)
+    app_dirs: set[str] = set()
+    if scan is not None:
+        for j in scan.files:
+            if j.is_test or not j.is_boot_app:
+                continue
+            for d in cands:
+                if j.path.startswith(d + "/src/main/java/"):
+                    app_dirs.add(d)
+    boot: list[str] = []
+    warnings: list[str] = []
+    reasons: list[str] = []
+    for d in sorted(cands):
+        p = by_dir.get(d)
+        if p is None:
+            continue
+        is_app = p.has_spring_boot_plugin or d in app_dirs
+        named = fnmatch.fnmatch(posixpath.basename(d), pattern)
+        if named and is_app:
+            boot.append(d)
+        elif is_app:
+            msg = f"boot module {d} is not named {pattern} (company naming rule)"
+            warnings.append(msg)
+            reasons.append(msg)
+        elif named:
+            warnings.append(f"{d} is named like a boot module but its pom is not a Boot app")
+    if boot:
+        reasons.append(f"boot modules ({pattern}): " + ", ".join(boot))
+    return boot, warnings, reasons

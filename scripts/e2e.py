@@ -26,6 +26,8 @@ captures the exit code + output, finds the run directory the CLI created under -
                                {"pom_dependency_present": {"path", "artifacts": ["g:a"]}},
                                {"pom_dependency_unversioned": {...}},   # declared, no <version> (parent-managed)
                                {"pom_dependency_versioned": {...}},     # declared with a <version>
+                               {"pom_packaging": {"path", "packaging": "war"}},   # <packaging> (absent = jar)
+                               {"pom_module_list": {"path", "modules": [...], "any_order": false}},  # exact <modules>
                                {"file_exists": {"path"}}, {"file_absent": {"path"}}],   # files or dirs, globs ok
                "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced",   # report.advisories:
                                "recipe_source": "advisory"}],                  # entry by advisory_id, fields equal
@@ -93,7 +95,8 @@ DEFAULT_ORDER = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3",
                  "boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
                  "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename",
                  "boot2-hystrix-command", "multi-module-merge", "legacy-external-config", "java6-legacy",
-                 "multi-module-conflict", "legacy-ibatis", "legacy-role-parents"]
+                 "multi-module-conflict", "legacy-ibatis", "legacy-role-parents", "company-boot-single",
+                 "company-spring5-web", "company-servlet-jsp"]
 ARROW = "→"
 NS = "{http://maven.apache.org/POM/4.0.0}"
 
@@ -548,6 +551,16 @@ def _pom_dependencies(root) -> set[str]:
     return deps
 
 
+def _pom_modules(root) -> list[str]:
+    """The top-level `<modules>` entries in declaration order (profile modules are not counted)."""
+    mods = root.find(NS + "modules")
+    if mods is None:
+        mods = root.find("modules")
+    if mods is None:
+        return []
+    return [m.text.strip() for m in list(mods) if isinstance(m.tag, str) and m.tag.endswith("module") and m.text]
+
+
 def _pom_dependency_versions(root) -> dict[str, list[str | None]]:
     """"g:a" → the <version> text of every declaration of it (None = declared without a <version> element)."""
     out: dict[str, list[str | None]] = {}
@@ -595,7 +608,7 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
                 return f"{kind}: {rel} still contains {spec['not_contains']!r}"
         return None
     if kind in ("pom_parent", "pom_dependency_absent", "pom_dependency_present", "pom_dependency_unversioned",
-                "pom_dependency_versioned"):
+                "pom_dependency_versioned", "pom_packaging", "pom_module_list"):
         for f in files:
             rel = f.relative_to(project).as_posix()
             try:
@@ -611,6 +624,17 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
                 if parent is None or any(w is not None and w != g for w, g in zip(want, got)):
                     return f"pom_parent: {rel} parent is {':'.join(x or '?' for x in got) if parent is not None else 'none'}" \
                            f", expected {':'.join(x or '*' for x in want)}"
+            elif kind == "pom_packaging":
+                got = _pom_text(root, "packaging") or "jar"            # Maven default
+                if got != spec.get("packaging"):
+                    return f"pom_packaging: {rel} packaging is {got}, expected {spec.get('packaging')}"
+            elif kind == "pom_module_list":
+                got = _pom_modules(root)
+                want = [str(m) for m in spec.get("modules") or []]
+                same = sorted(got) == sorted(want) if spec.get("any_order") else got == want
+                if not same:
+                    return f"pom_module_list: {rel} modules are {got}, expected {want}" \
+                           f"{' (any order)' if spec.get('any_order') else ''}"
             elif kind in ("pom_dependency_unversioned", "pom_dependency_versioned"):
                 versions = _pom_dependency_versions(root)     # every declaration counts (dependencyManagement too)
                 for ga in spec.get("artifacts") or []:

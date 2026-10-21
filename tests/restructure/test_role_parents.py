@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from sbmig.core.config import ArtifactSpec, Config
-from sbmig.restructure import PomEditor, Restructurer
+from sbmig.restructure import Restructurer
 
 from .helpers import HEAD, CaseType, ServiceInfo, all_, dep, dep_keys, java, make_ws, profile, t, xml
 from .test_restructurer import boot2_files, boot2_profile, msa_files, msa_profile, multi_files, multi_profile
@@ -33,6 +33,7 @@ def _set_versions(cfg: Config, version: str) -> None:
 @pytest.fixture()
 def rcfg(cfg: Config) -> Config:
     _set_versions(cfg, "4.0.0")
+    cfg.artifacts.mandatory_target = "modules"      # round 9b placement (round 9c default `root`: test_company_layout)
     assert cfg.artifacts.role_parents
     return cfg
 
@@ -215,6 +216,7 @@ def test_stand_in_parents_sharing_one_key(tmp_path: Path, cfg: Config) -> None:
                            version="4.1.0")
     cfg.artifacts.boot_parent = starter
     cfg.artifacts.comp_parent = starter
+    cfg.artifacts.mandatory_target = "modules"
     ws = make_ws(tmp_path, _legacy_files("org.springframework.boot", "spring-boot-starter-parent",
                                          "spring-boot-starter-parent", "2.7.18"), "stand-in")
     files = ws.root / "pom.xml"
@@ -316,8 +318,10 @@ def test_msa_role_parents(tmp_path: Path, rcfg: Config) -> None:
     lib = xml(ws.root / "shared-lib/pom.xml")
     assert _parent(lib) == f"{PLATFORM}:comp-jar:4.0.0"
     assert not any(k in MANDATORY for k in dep_keys(lib))
-    assert PomEditor(ws.root / "pom.xml").get_parent() is None                  # aggregator untouched (policy)
+    top = xml(ws.root / "pom.xml")                                              # round 9c: aggregator → base-parent
+    assert _parent(top) == f"{PLATFORM}:base-parent:4.0.0" and dep_keys(top) == []   # (mandatory_target: modules)
     assert sorted(res.parents_set) == sorted([
+        f"pom.xml: - → {PLATFORM}:base-parent:4.0.0",
         f"shared-lib/pom.xml: {PLATFORM}:comp-jar:1.0.0 → {PLATFORM}:comp-jar:4.0.0",
         f"order-service/pom.xml: {STARTER}:3.2.0 → {PLATFORM}:boot-jar:4.0.0",
         f"user-service/pom.xml: {STARTER}:3.2.0 → {PLATFORM}:boot-jar:4.0.0"])

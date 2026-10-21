@@ -416,3 +416,69 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   * Fixture `legacy-role-parents` (21 fixtures): root{boot-jar, catalog-service, order-service} on the stand-in
     `spring-boot-starter-parent` 2.7.18 (old 1.0.0 line), `sbmig.e2e.yml` sets `boot_parent` / `comp_parent` =
     `spring-boot-starter-parent` 4.1.0; `tests/fixtures` `PARENT_OVERRIDES` registry for such overrides.
+
+* 2026-10-21 (round 9c — the company layout as stated by the user: root = base-parent aggregator, `{name}-boot` /
+  `{name}-back` / `{name}-front`, Boot as-is in place):
+  * Config `LayoutConfig` (docstring = the rule): `module_dir: "" ` (modules directly under the root), `boot_module
+    "{name}-boot"`, `comp_module "{name}-back"`, `front_module "{name}-front"` (None = no front module),
+    `project_name` (`{name}` override; default the root artifactId), `front_static_dir`
+    (`src/main/resources/static`), `front_jsp_dir` (`src/main/resources/META-INF/resources/WEB-INF/jsp`),
+    `boot_as_is: in-place | layout`, `boot_module_pattern "*-boot"`, `jsp_boot_packaging: war | jar`,
+    `comp_artifact_suffix "-back"`; helpers `module_name(which, name)` / `module_path(which, name)`.
+    `ArtifactsConfig.mandatory_target: root | modules` (default `root`). The pre-9c layout is pinned by
+    `config/artifacts.local-e2e.yml` (`module/boot-jar` + `module/comp-jar`, `front_module: null`, `boot_as_is:
+    layout`, `comp_artifact_suffix: -comp`) so the 21 older fixtures are unchanged (byte-identical trees, snapshot
+    `tests/restructure/snapshots/pre9c_trees.json`).
+  * Models: `SourceStats.jsp_paths` (every `*.jsp`, sorted), `web_static_dirs` (`[<module>/]src/main/webapp` minus
+    `WEB-INF`, `[<module>/]src/main/resources/{static,public,templates}`, listed when holding a file with an
+    extension in `sbmig.analyze.source_scanner.WEB_STATIC_EXTENSIONS`), `web_static_count`;
+    `ProjectProfile.boot_modules` (module dirs reachable from the root `<modules>` — MSA: service roots too — whose
+    basename matches `layout.boot_module_pattern` AND whose pom has spring-boot-maven-plugin or a non-test
+    `@SpringBootApplication`; the project root is never listed; function
+    `sbmig.analyze.classifier.boot_module_findings`). Profile warnings: "boot module <dir> is not named <pattern>
+    (company naming rule)", "<dir> is named like a boot module but its pom is not a Boot app"; reason "boot modules
+    (<pattern>): <dirs>". `RestructureResult.boot_module / comp_module / front_module / boot_packaging /
+    front_files`; `RestructurerLike.apply(mode="boot_pom")`.
+  * Planner: `case_type == spring_boot` (non-MSA, with sources) + `layout.boot_as_is == "in-place"` →
+    `restructure.boot_pom` (`StepKind.MSA_POM`, params `{"mode": "boot_pom", "boot_modules": [...]}`, title "Boot
+    as-is: parents / mandatory / optional in place (directories kept)") then `restructure.loop` + `verify.build`;
+    `layout` and every non-Boot case keep `restructure.apply` (title lists the modules from `module_path`, front only
+    when `jsp_paths` / `web_static_count`). `restructure.msa_pom` params gain `boot_modules`. Plan notes name the rule.
+  * Restructure (layout mode): every module path is `module_path(which, name)`, `name = layout.project_name or the
+    root artifactId`; root `<modules>` order back, (front), boot; artifactIds `<root>` + `boot_artifact_suffix` /
+    `comp_artifact_suffix` / `-front`; "already restructured" = root packaging pom with the boot and back dirs among
+    its modules. Front rules (`front_module` set and web files exist): `src/main/webapp/**` minus `WEB-INF` /
+    `META-INF` → `<front>/<front_static_dir>/…`; `src/main/resources/{static,public,templates}/**` →
+    `<front>/src/main/resources/<dir>/…`; `WEB-INF` JSPs → `<front>/<front_jsp_dir>/<path under WEB-INF/jsp, else under
+    WEB-INF>`; JSPs outside `WEB-INF` → `META-INF/resources/<path>`; `WEB-INF/tags/**` + `*.tld` →
+    `META-INF/resources/WEB-INF/…`; other `WEB-INF` files → `<boot>/src/main/resources/asis-webinf/`; `WEB-INF/lib|
+    classes` and webapp `META-INF` stay in back (follow-up); front pom packaging jar, parent `comp_parent` (role) or
+    the root. WAR rules (JSPs moved and `jsp_boot_packaging: war`): boot packaging `war`, `spring-boot-starter-tomcat`
+    + `tomcat-embed-jasper` provided, `spring-boot-web-server` compile when `@ServletComponentScan` is used, JSTL
+    taglib → `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api` + `org.glassfish.web:jakarta.servlet.jsp.jstl`
+    (BOM-managed), the generated Application extends `SpringBootServletInitializer` (template `servlet_initializer`),
+    `spring.mvc.view.prefix/suffix` written from an as-is `InternalResourceViewResolver` / `<mvc:jsp>` /
+    `registry.jsp` (prefix mapped to the new location) else a follow-up; follow-up "boot module packaged as WAR for
+    external Tomcat; JSPs are served from the front jar (META-INF/resources)". Templates: `boot-pom.xml.j2`
+    `{{ packaging }}`, new `front-pom.xml.j2`, `Application.java.j2` `servlet_initializer`.
+  * `apply(mode="boot_pom")` (Boot as-is): directories kept; root → `artifacts.parent` (aggregator); modules in
+    `profile.boot_modules` (fallback: boot plugin or `@SpringBootApplication` under the dir) → `boot_parent`, every
+    other module → `comp_parent`, explicit groupId/version + `<relativePath/>` plus the dependencies / plugins /
+    management they inherited (without role parents the modules keep inheriting the root); a single-module app is
+    wrapped into `{name}-boot` under an aggregator root; placeholders into each boot module; idempotent ("boot_pom:
+    already in place"). `drop_managed_versions` runs here too (orchestrator passes `effective_pom`).
+  * `mandatory_target`: `root` → the mandatory dependencies go into the root pom (also an aggregator; MSA with role
+    parents: each service root + the top aggregator); `modules` → every role module pom incl. front (round 9b).
+    MSA parents with role parents: service root → `boot_parent`, library root → `comp_parent`, top aggregator →
+    `artifacts.parent` (also under `per-service-root`).
+  * Run outcome: a failed / crashed `layout` / `boot_pom` / `msa_pom` step → flag `restructure-failed`, follow-up
+    "restructure step <id> (<mode>) failed: … — the tree keeps the as-is layout / parents; the final build ran on it,
+    so BUILD SUCCESS here does not mean the migration is complete", journal `restructure_failed`, `report.success =
+    False` (exit 2); a failed `optional_bump` is a follow-up only.
+  * Report / loop paths: `sbmig.report.handover.resolve_current_path(ws, path, cfg, name)` and the merge-conflict
+    hints resolve module paths through `module_path` (`sbmig.report.handover.project_name(profile)`); the
+    system-scoped-jar handler tries every dir matching the comp template.
+  * e2e: post-check kinds `pom_packaging {path, packaging}` (missing = jar), `pom_module_list {path, modules,
+    any_order}`; `tests/fixtures` `COMPANY_OVERRIDES` registry (layout + role-parent overrides). Fixtures
+    `legacy-role-parents` (Boot as-is in place), `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`
+    (24 fixtures).

@@ -12,15 +12,20 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
 
 ## Company constraints (stated by the user; not derivable from the code)
 - Four project cases: pure Java, Spring 4/5 + Boot 2/3, Tomcat servlet-only, MSA (several deployable services).
-- Non-MSA target (stated 2026-10-21): root pom inherits the in-house **`base-parent`** (`artifacts.parent`) and is an
-  aggregator of exactly `module/boot-jar` + `module/comp-jar`; `module/boot-jar/pom.xml` inherits the in-house **`boot-jar`**
-  role parent (`artifacts.boot_parent`), `module/comp-jar/pom.xml` the **`comp-jar`** role parent (`artifacts.comp_parent`),
-  all in-house artifacts on one version line (4.0.0); the **2 mandatory** dependencies go into both module poms, the
-  **8 optional** in-house artifacts are bumped only when already used; an as-is multi-module project is merged into
-  the two modules (an existing `boot-jar` module is kept). Projects migrated by the EARLIER in-house tool look like
-  root{boot-jar, service modules} with every module inheriting a role parent on the old 1.0.0 line directly: those
-  parents are moved to the configured version. Without `boot_parent`/`comp_parent` the modules inherit the root
-  (the pre-9b model).
+- Company layout (stated 2026-10-21, round 9c): the root pom inherits the in-house **`base-parent`** (`artifacts.parent`)
+  and is an aggregator; the **2 mandatory** dependencies are declared in every root pom (`artifacts.mandatory_target:
+  root`); the **8 optional** in-house artifacts are bumped only when already used; all in-house artifacts are on one
+  version line (4.0.0). Non-Boot projects (Spring Framework, servlet, pure Java) are split into modules directly
+  under the root: `{name}-boot` (Boot configuration only; parent **`boot-jar`** = `artifacts.boot_parent`),
+  `{name}-back` (every source incl. controllers; parent **`comp-jar`** = `artifacts.comp_parent`) and, only when
+  web resources exist, `{name}-front` (static files under `src/main/resources/static`, JSPs under
+  `src/main/resources/META-INF/resources/WEB-INF/jsp` per Servlet 3; parent `comp-jar`); JSPs make the boot
+  module a WAR for external Tomcat, otherwise it is an executable jar. `{name}` = the root artifactId. Spring Boot
+  as-is projects (incl. MSA, incl. projects migrated by the earlier in-house tool) keep their directories: poms
+  only — root → base-parent, `*-boot` modules whose pom is a Boot app → boot-jar, every other module → comp-jar;
+  a single-module Boot app is wrapped into `{name}-boot`. The pre-9c layout (`module/boot-jar` + `module/comp-jar`,
+  Boot projects split) stays available through `layout.*` and is pinned by `config/artifacts.local-e2e.yml` for
+  the older fixtures.
 - Only Maven projects: Gradle / Ant builds are rejected at intake (exit 3) — the user's decision (2026-10-20).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
@@ -46,7 +51,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
    guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central). rewrite-spring 6.37.1.
 6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
 
-## Status — 2026-10-21, rounds 5–9b complete (`main`)
+## Status — 2026-10-21, rounds 5–9c complete (`main`)
 - Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
   (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
   recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
@@ -91,6 +96,11 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   by time) and a wall-clock hard deadline per LLM call; lombok handler covers inherited old lombok (unversioned
   processor path, parent-inherited dependency, inherited `annotationProcessorPaths` → `combine.self="override"`);
   an already restructured project moves to the configured parent versions. Fixture `legacy-role-parents` (21).
+- Round 9c (2026-10-21): the company layout proper — root = base-parent aggregator (mandatory deps there),
+  `{name}-boot` / `{name}-back` / `{name}-front` directly under the root, JSP → boot WAR + front jar (Servlet 3),
+  Spring Boot as-is / MSA kept in place (`boot_pom`: poms only, `*-boot` naming + pom check), single-module Boot
+  wrapped; a failed restructure step is no longer reported as success. Pre-9c layout pinned for the 21 older
+  fixtures; fixtures `company-boot-single`, `company-spring5-web`, `company-servlet-jsp` (24). 1,295 offline tests green.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -130,7 +140,7 @@ Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" tab
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,233 passed, 31 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,295 passed, 34 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

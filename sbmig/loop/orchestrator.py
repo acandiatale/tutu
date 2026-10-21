@@ -896,6 +896,7 @@ class Orchestrator:
             pr.notes.append(f"{step.id}: restructure crashed: {type(e).__name__}: {e}")
             if self.ws.is_dirty():
                 self.ws.discard_uncommitted()
+            self._restructure_failed(step, mode, f"{type(e).__name__}: {e}")
             return False
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
         self.report.manual_followups += [f for f in res.manual_followups if f not in self.report.manual_followups]
@@ -932,7 +933,23 @@ class Orchestrator:
         if not res.ok:
             pr.notes.append(f"{step.id}: restructure failed: {res.error or 'unknown error'} → skipping the rest of "
                             "the restructure phase (verify still runs)")
+            self._restructure_failed(step, mode, res.error or "unknown error")
         return res.ok
+
+    def _restructure_failed(self, step: PlanStep, mode: str, why: str) -> None:
+        """Round 9c: a failed / crashed restructure step must not look like a successful migration — the final build
+        may pass on the as-is tree, but the company layout / parents were not produced. Flag `restructure-failed`
+        (→ `success=False`, exit 2) and say so in the Handover."""
+        assert self.report is not None
+        self.ws.journal({"event": "restructure_failed", "step": step.id, "mode": mode, "error": why[:500]})
+        if mode == "optional_bump":          # optional in-house bumps are best effort: a follow-up, not a failure
+            self.report.manual_followups.append(f"optional artifact bump step {step.id} failed: {why[:300]} — bump "
+                                                "the in-house optional artifacts by hand")
+            return
+        self._flag("restructure-failed")
+        self.report.manual_followups.append(
+            f"restructure step {step.id} ({mode}) failed: {why[:300]} — the tree keeps the as-is layout / parents; "
+            "the final build ran on it, so BUILD SUCCESS here does not mean the migration is complete")
 
     def _merge_placeholders(self, files: list[str], keys: list[str]) -> None:
         """RunReport.properties = profile inventory + the placeholders every restructure step wrote (dedupe, ordered)."""
@@ -964,8 +981,8 @@ class Orchestrator:
             takes_params = "params" in sig.parameters or any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values())
         except (TypeError, ValueError):  # pragma: no cover - builtins / mocks
             takes_params = True
-        if mode in ("layout", "msa_pom") and self.cfg.layout.drop_managed_versions != "off":
-            params.setdefault("effective_pom", self._effective_pom_after)   # round 9, zero-arg callable
+        if mode in ("layout", "msa_pom", "boot_pom") and self.cfg.layout.drop_managed_versions != "off":
+            params.setdefault("effective_pom", self._effective_pom_after)   # round 9 / 9c, zero-arg callable
         if takes_params:
             return r.apply(self.ws, self.profile, self.cfg, mode=mode, params=params)
         return r.apply(self.ws, self.profile, self.cfg, mode=mode)
@@ -1292,7 +1309,8 @@ class Orchestrator:
                 report.harvest = h
         if self.budget.llm_calls >= self.budget.max_llm_calls and self.budget.max_llm_calls > 0:
             self._flag("llm-budget-exhausted")
-        report.success = bool(self._verify_results) and all(r.ok for r in self._verify_results)
+        report.success = bool(self._verify_results) and all(r.ok for r in self._verify_results) \
+            and "restructure-failed" not in report.flags
         # unresolved: what the as-is owner must look at
         unresolved: list[BuildError] = []
         for r in self._verify_results:

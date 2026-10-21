@@ -1,0 +1,274 @@
+{
+ "boot2-roles": {
+  "followups": [
+   "@SpringBootTest tests moved to module/boot-jar (1); test helpers they reference from comp-jar's src/test are wired through a comp test-jar dependency when detected, test resources outside the boot resource globs stay in comp-jar"
+  ],
+  "generated": [
+   "module/comp-jar/pom.xml",
+   "module/boot-jar/pom.xml"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "role parents: 3 parent(s) set \u2014 root com.company.platform:base-parent, module/boot-jar com.company.platform:boot-jar, module/comp-jar com.company.platform:comp-jar (the modules do not inherit the root pom; mandatory dependencies / BOM / java level / root management are in each module pom)",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "module/comp-jar/pom.xml: - \u2192 com.company.platform:comp-jar:4.0.0",
+   "module/boot-jar/pom.xml: - \u2192 com.company.platform:boot-jar:4.0.0",
+   "pom.xml: org.springframework.boot:spring-boot-starter-parent:2.7.18 \u2192 com.company.platform:base-parent:4.0.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "README.md": "eb881200a7e05a4ff166187b70e4894b70ff820dd5de3f188ac581396e3ad69e",
+   "lombok.config": "225fdf7668d2f2ba8223de6e80dc346fcd95a6d4e79fd61e4fab631383796429",
+   "module/boot-jar/pom.xml": "322e06a697a87e420143f84432ee3d3f59a19d55fb348594192b92e660d26a2f",
+   "module/boot-jar/src/main/java/com/acme/shop/ShopApplication.java": "deecce5f1658c1562ec5919baca16987dac8c1c9077ae0fc786a9d8ff96a36f8",
+   "module/boot-jar/src/main/resources/application.yml": "a7c65ac4504f4b15c695cc9cad633374cf845136cbfab17af03eac1a48e37bbe",
+   "module/boot-jar/src/main/resources/config/application-prod.properties": "98752ee28d5484bdc2814fb70adb6a0b2fb31f6a9b8ee7ae81fd2fc9cf300b3b",
+   "module/boot-jar/src/main/resources/logback-spring.xml": "568269850dbb3f5f52e0e38e3c0b29be06c70c58fe425b39746f5ccefdd668a4",
+   "module/boot-jar/src/test/java/com/acme/shop/ShopApplicationTests.java": "c3f15816abb5e366039d38c72be6bfd07a7274fce7564c3c2b1ee6a71ba91751",
+   "module/boot-jar/src/test/resources/application-test.yml": "52c9693cf3f219d51ba6af4362ee092c55fb5e6f96d6f9da13c8ede7eff8e71b",
+   "module/comp-jar/pom.xml": "34107b1db3b2c7523eb1dcb0e54074a0e5339b691a7cf599d75c1c4a6eafea0a",
+   "module/comp-jar/src/main/java/com/acme/shop/config/WebConfig.java": "b6aeedaee60f689553ddc68050ca63272c965939484789ef1e5a26e8989208fc",
+   "module/comp-jar/src/main/java/com/acme/shop/service/Greeter.java": "540c8a0bdf5e076750bfc64e6264ef98fa1ded62e5b82c300676d6c0085a97d8",
+   "module/comp-jar/src/main/java/com/acme/shop/web/HelloController.java": "d158ffa6363e21b5438671572b228d7e33988e8a85450840bc526084979d512b",
+   "module/comp-jar/src/main/resources/static/app.css": "2708d73bf31c36cdfa1aa466551ed101017280fa546caba4473cfef6e92a93b5",
+   "module/comp-jar/src/test/java/com/acme/shop/service/GreeterTest.java": "704c1d6caec75a8e1fea9734aace02b8b6ef466c73937236d2470dc4e468b4ef",
+   "pom.xml": "f5d389aea7d4323a07e7f8c9b28269fa5a907af3df45b34bfa056a529c85030b"
+  }
+ },
+ "boot2-single": {
+  "followups": [
+   "@SpringBootTest tests moved to module/boot-jar (1); test helpers they reference from comp-jar's src/test are wired through a comp test-jar dependency when detected, test resources outside the boot resource globs stay in comp-jar"
+  ],
+  "generated": [
+   "module/comp-jar/pom.xml",
+   "module/boot-jar/pom.xml"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "pom.xml already inherits the in-house parent org.springframework.boot:spring-boot-starter-parent; splitting into the company layout",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "pom.xml: org.springframework.boot:spring-boot-starter-parent:2.7.18 \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "README.md": "eb881200a7e05a4ff166187b70e4894b70ff820dd5de3f188ac581396e3ad69e",
+   "lombok.config": "225fdf7668d2f2ba8223de6e80dc346fcd95a6d4e79fd61e4fab631383796429",
+   "module/boot-jar/pom.xml": "72d082f112fabdcb2fb254659ac0b199d1dc3d3d22393bdf6f214a3436b3c996",
+   "module/boot-jar/src/main/java/com/acme/shop/ShopApplication.java": "deecce5f1658c1562ec5919baca16987dac8c1c9077ae0fc786a9d8ff96a36f8",
+   "module/boot-jar/src/main/resources/application.yml": "a7c65ac4504f4b15c695cc9cad633374cf845136cbfab17af03eac1a48e37bbe",
+   "module/boot-jar/src/main/resources/config/application-prod.properties": "98752ee28d5484bdc2814fb70adb6a0b2fb31f6a9b8ee7ae81fd2fc9cf300b3b",
+   "module/boot-jar/src/main/resources/logback-spring.xml": "568269850dbb3f5f52e0e38e3c0b29be06c70c58fe425b39746f5ccefdd668a4",
+   "module/boot-jar/src/test/java/com/acme/shop/ShopApplicationTests.java": "c3f15816abb5e366039d38c72be6bfd07a7274fce7564c3c2b1ee6a71ba91751",
+   "module/boot-jar/src/test/resources/application-test.yml": "52c9693cf3f219d51ba6af4362ee092c55fb5e6f96d6f9da13c8ede7eff8e71b",
+   "module/comp-jar/pom.xml": "255d6a3f8bf459bfff30614941fefb75c3cbf7dbb064d094351579a6d81a3d38",
+   "module/comp-jar/src/main/java/com/acme/shop/config/WebConfig.java": "b6aeedaee60f689553ddc68050ca63272c965939484789ef1e5a26e8989208fc",
+   "module/comp-jar/src/main/java/com/acme/shop/service/Greeter.java": "540c8a0bdf5e076750bfc64e6264ef98fa1ded62e5b82c300676d6c0085a97d8",
+   "module/comp-jar/src/main/java/com/acme/shop/web/HelloController.java": "d158ffa6363e21b5438671572b228d7e33988e8a85450840bc526084979d512b",
+   "module/comp-jar/src/main/resources/static/app.css": "2708d73bf31c36cdfa1aa466551ed101017280fa546caba4473cfef6e92a93b5",
+   "module/comp-jar/src/test/java/com/acme/shop/service/GreeterTest.java": "704c1d6caec75a8e1fea9734aace02b8b6ef466c73937236d2470dc4e468b4ef",
+   "pom.xml": "633a67dd83998b0789a9bd8b233eacf416df1384662432babdebad80cc0e5787"
+  }
+ },
+ "kept-boot": {
+  "followups": [],
+  "generated": [
+   "module/comp-jar/pom.xml"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "merged module core into module/comp-jar (module directory removed)",
+   "merged module web into module/comp-jar (module directory removed)",
+   "as-is boot module boot-jar kept as module/boot-jar (moved from boot-jar): sources untouched, dependencies on merged modules (${project.groupId}:suite-web, com.acme:suite-core) replaced by suite-comp",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "module/boot-jar/pom.xml": "c170e15defb48fbaf5f99b2728157db7dad15fc28d63e7029658b0391a9d0c9c",
+   "module/boot-jar/src/main/java/com/acme/suite/SuiteApplication.java": "d59a6e1fe851b7c8a925c4f31ba164c0f7b1f293d983f6371446e73355e00ece",
+   "module/boot-jar/src/main/resources/application.yml": "52663247565d9773b49c367c9d5f68c6761fa55d9ab9ed964f95d5517c06ae42",
+   "module/boot-jar/src/test/java/com/acme/suite/SuiteApplicationTests.java": "4780d0a428395135a1e13d41400a8a22d123a618ce2f34c90f0eca5de32f2cbe",
+   "module/comp-jar/pom.xml": "7e5b0c5b0001c7c532f0bb90bb9091c298f2092eda83c4bdacd027d6f088a246",
+   "module/comp-jar/src/main/java/com/acme/suite/core/Repo.java": "433b8c4556294bbd721d4d7187024021d90cbcfe23d1cbd4ad8917e43ccbd8c7",
+   "module/comp-jar/src/main/java/com/acme/suite/web/Ctl.java": "c610efb2b4cf570001452ceee1722f001cab1f36fbec9e5a733696d6724a2351",
+   "pom.xml": "1a4cf5b1f825edd58a81b5a3102e5eb6d48d5183f32abf6cb861710be48d0162"
+  }
+ },
+ "legacy-roles": {
+  "followups": [],
+  "generated": [
+   "module/comp-jar/pom.xml"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "pom.xml already inherits the in-house parent com.company.platform:base-parent; splitting into the company layout",
+   "merged module catalog-service into module/comp-jar (module directory removed)",
+   "merged module order-service into module/comp-jar (module directory removed)",
+   "as-is boot module boot-jar kept as module/boot-jar (moved from boot-jar): sources untouched, dependencies on merged modules (com.acme:catalog-service, com.acme:order-service) replaced by shop-comp",
+   "module order-service: 1 dependencyManagement entry (org.mybatis:mybatis) and 0 properties folded into module/comp-jar/pom.xml (first wins)",
+   "role parents: 3 parent(s) set \u2014 root com.company.platform:base-parent, module/boot-jar com.company.platform:boot-jar, module/comp-jar com.company.platform:comp-jar (the modules do not inherit the root pom; mandatory dependencies / BOM / java level / root management are in each module pom)",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "module/comp-jar/pom.xml: - \u2192 com.company.platform:comp-jar:4.0.0",
+   "module/boot-jar/pom.xml: com.company.platform:boot-jar:1.0.0 \u2192 com.company.platform:boot-jar:4.0.0",
+   "pom.xml: com.company.platform:base-parent:1.0.0 \u2192 com.company.platform:base-parent:4.0.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "module/boot-jar/pom.xml": "f0ecc6140215ce890dab0f69e14c9d4bc18056ee571f9fbbe1478ef695f40e69",
+   "module/boot-jar/src/main/java/com/acme/shop/ShopApplication.java": "3c3d55366acdb24c0244e1d8a9a4fe236516df80cb2ef32cc09dc2bac5cd14a9",
+   "module/boot-jar/src/main/resources/application.yml": "a7c65ac4504f4b15c695cc9cad633374cf845136cbfab17af03eac1a48e37bbe",
+   "module/comp-jar/pom.xml": "4b06d1152e1ec353f2231c16f15a1cc22724b06615074236830bde8e70436f99",
+   "module/comp-jar/src/main/java/com/acme/shop/catalog/Catalog.java": "0939c967db6fdf2191198ed28d931f8c8d6b72d500b6b07bed91213efa77e80b",
+   "module/comp-jar/src/main/java/com/acme/shop/order/Order.java": "1a4ca918439f86314e45f6c018f3061024a45add15f161ddddbe0006b31745c8",
+   "pom.xml": "5ca1f9e83042efdde18619027258cb70a2f2f55465716a53dabea78801abf846"
+  }
+ },
+ "msa": {
+  "followups": [],
+  "generated": [],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "msa_pom: patched order-service/pom.xml",
+   "msa_pom: patched user-service/pom.xml",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "order-service/pom.xml: org.springframework.boot:spring-boot-starter-parent:3.2.0 \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0",
+   "user-service/pom.xml: org.springframework.boot:spring-boot-starter-parent:3.2.0 \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "order-service/pom.xml": "f455568da8a31fdebd7894c2d4432d2ca202313a6147d4cb197554acb6d4b0ff",
+   "order-service/src/main/java/com/acme/order/OrderApp.java": "a91b2acd54850d2857115b2eb89459d3904ee0381d0793a7aa48e6cf955d4178",
+   "pom.xml": "85c3c8f573fb481377f58bfe7dec57f3211266ba66f23d13f5237b02784e758b",
+   "user-service/pom.xml": "87547d28817a7895c80582136edde5ac71f8c666c080c7d8fdd9d1e6494dd693"
+  }
+ },
+ "multi-merge": {
+  "followups": [
+   "WAR packaging converted to executable jar (module/boot-jar)"
+  ],
+  "generated": [
+   "module/comp-jar/pom.xml",
+   "module/boot-jar/pom.xml"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "merged module core into module/comp-jar (module directory removed)",
+   "merged module web into module/comp-jar (module directory removed)",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "module/boot-jar/pom.xml": "0540a051059fdfccd9dcbc2b7c5c0c339f48f0ea936d57529adc96858ac84216",
+   "module/boot-jar/src/main/java/com/acme/suite/SuiteApplication.java": "d59a6e1fe851b7c8a925c4f31ba164c0f7b1f293d983f6371446e73355e00ece",
+   "module/boot-jar/src/main/resources/application.properties": "77e7ce77c707a8147bb65a710ac1af3fca02c8dd2be36762ec9611d90fb5c041",
+   "module/comp-jar/pom.xml": "7e5b0c5b0001c7c532f0bb90bb9091c298f2092eda83c4bdacd027d6f088a246",
+   "module/comp-jar/src/main/java/com/acme/suite/core/Repo.java": "433b8c4556294bbd721d4d7187024021d90cbcfe23d1cbd4ad8917e43ccbd8c7",
+   "module/comp-jar/src/main/java/com/acme/suite/web/Ctl.java": "c610efb2b4cf570001452ceee1722f001cab1f36fbec9e5a733696d6724a2351",
+   "pom.xml": "1a4cf5b1f825edd58a81b5a3102e5eb6d48d5183f32abf6cb861710be48d0162"
+  }
+ },
+ "multi-wrap": {
+  "followups": [
+   "WAR module module/web kept as-is (still packaged as a WAR, not a dependency of module/boot-jar); embedded deployment needs conversion (move its web layer to a jar module or convert it to the boot-jar)"
+  ],
+  "generated": [
+   "module/boot-jar/pom.xml",
+   "module/boot-jar/src/main/java/com/acme/suite/Application.java"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "@SpringBootApplication com.acme.suite.SuiteApplication stays in WAR module module/web",
+   "no @SpringBootApplication class found in jar modules; boot-jar depends on all jar modules",
+   "@SpringBootApplication class com.acme.suite.SuiteApplication not found in module/core/src/main/java",
+   "multi-module wrap: as-is root dependencies/build plugins kept (inherited by the wrapped modules)",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "module/boot-jar/pom.xml": "69bb9c3457f7c6674f6fb175e7fc798cf42ebf8ac4232ea05665c3d63aa0e6d5",
+   "module/boot-jar/src/main/java/com/acme/suite/Application.java": "30e39cdbed97ffaa4bfb314372d2b4182d0c190b0a310d46c5b08080a25b0c70",
+   "module/core/pom.xml": "d9b6be7c3e70c2dd2e4bcdfc5a9e225c70d9d9122a36c4ae8c0fba7070b1705c",
+   "module/core/src/main/java/com/acme/suite/core/Repo.java": "433b8c4556294bbd721d4d7187024021d90cbcfe23d1cbd4ad8917e43ccbd8c7",
+   "module/web/pom.xml": "ab1fffe7481c3691036ad87748f2279ae56280a101f0fc47b30488925c646b7c",
+   "module/web/src/main/java/com/acme/suite/SuiteApplication.java": "d59a6e1fe851b7c8a925c4f31ba164c0f7b1f293d983f6371446e73355e00ece",
+   "module/web/src/main/java/com/acme/suite/web/Ctl.java": "c610efb2b4cf570001452ceee1722f001cab1f36fbec9e5a733696d6724a2351",
+   "module/web/src/main/resources/application.properties": "77e7ce77c707a8147bb65a710ac1af3fca02c8dd2be36762ec9611d90fb5c041",
+   "pom.xml": "d34f2c878f16e76e686488e31f8d139a487b0a85ebc51d9e9015cbaa7adba748"
+  }
+ },
+ "servlet-web": {
+  "followups": [
+   "JSPs under src/main/webapp require tomcat-embed-jasper and may need relocation to src/main/resources/META-INF/resources to be served from an executable jar",
+   "web.xml at module/comp-jar/src/main/webapp/WEB-INF/web.xml is not read by embedded Tomcat; servlets/filters are registered via @ServletComponentScan \u2014 verify mappings",
+   "WAR packaging converted to executable jar (module/boot-jar)"
+  ],
+  "generated": [
+   "module/comp-jar/pom.xml",
+   "module/boot-jar/pom.xml",
+   "module/boot-jar/src/main/java/com/acme/web/Application.java"
+  ],
+  "mandatory_added": [
+   "org.springframework.boot:spring-boot-starter-validation",
+   "org.springframework.boot:spring-boot-starter-actuator"
+  ],
+  "notes": [
+   "provided spring-boot-starter-tomcat dropped (WAR \u2192 executable jar)",
+   "tomcat-embed-jasper added to boot-jar for JSP support",
+   "managed-version cleanup skipped: no effective pom"
+  ],
+  "parents_set": [
+   "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
+  ],
+  "tree": {
+   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   "module/boot-jar/pom.xml": "eddc00bff0e7924f6dcbbaef8461de70990af04ca11016412f6e804db122078e",
+   "module/boot-jar/src/main/java/com/acme/web/Application.java": "7cc79e7311f49479c06bd2eb479c29f16afadfe557061a40facb0f2565e77fb6",
+   "module/boot-jar/src/main/resources/log4j2.xml": "2db30d6a988063ed529c0a891e8f4b9e782dcdad3977aafe61fb801cb84d932e",
+   "module/comp-jar/java/com/acme/web/HelloServlet.java": "d3f53c0ed558ac6f4d31f09d4412c4100ee9b03d1e7f86fa46dd4167d4851a03",
+   "module/comp-jar/pom.xml": "28521589bc6a3be048f6d94138a3906fb25e54ce2f3895c72070936619220439",
+   "module/comp-jar/src/main/resources/static/app.js": "5a8b1ac6905b250e9d1952774a96414ff921a7f02161e591fe3ccff0fdd5b516",
+   "module/comp-jar/src/main/webapp/WEB-INF/jsp/home.jsp": "11cc9e5eeca666816808b59cca83bbd2b57416cf41aea44ac0c058747280e129",
+   "module/comp-jar/src/main/webapp/WEB-INF/web.xml": "01724ebffb008ff2373369e2770f620b5565389fed94dc4bf8b4c3eb4c018694",
+   "module/comp-jar/src/main/webapp/css/site.css": "2708d73bf31c36cdfa1aa466551ed101017280fa546caba4473cfef6e92a93b5",
+   "module/comp-jar/src/main/webapp/index.jsp": "1249db6aa735d011e95805686491f2a06d39bfd5b6fe2018d68e52aa17fbf956",
+   "pom.xml": "60688337e176a34b7d7562c29e0da33d769003ae8f95547429692648498f26c9"
+  }
+ }
+}

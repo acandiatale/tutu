@@ -36,11 +36,20 @@ old types unattributed, so many `ChangeType`-style recipes would silently no-op.
 
 | Case | jdk21 | spring phase | restructure |
 |---|---|---|---|
-| pure_java | UpgradeToJava21 | jakarta (only if `javax.*` EE imports found); JUnit4→5 if junit4 | layout + `spring-boot-starter`, generated `Application` |
-| servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | layout + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → followup note |
-| spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 (+Security 7 if present) | layout + webmvc starter, `@ImportResource` for XML bean files |
-| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4JacksonTwins (`@JsonComponent`→`@JacksonComponent`, `JsonObjectSerializer`→`ObjectValueSerializer` …; the umbrella already migrates bodies to Jackson 3) | layout; existing `@SpringBootApplication` class moves to boot-jar |
-| msa | per service | per service by its own sub-case | `msa_pom` only, directory structure untouched |
+| pure_java | UpgradeToJava21 | jakarta (only if `javax.*` EE imports found); JUnit4→5 if junit4 | split into `{name}-boot` / `{name}-back` (+ `{name}-front`) + `spring-boot-starter`, generated `Application` |
+| servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | split (`-boot` / `-back` / `-front`) + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → followup note |
+| spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 (+Security 7 if present) | split (`-boot` / `-back` / `-front`) + webmvc starter, `@ImportResource` for XML bean files |
+| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4JacksonTwins (`@JsonComponent`→`@JacksonComponent`, `JsonObjectSerializer`→`ObjectValueSerializer` …; the umbrella already migrates bodies to Jackson 3) | `boot_pom` in place (default `layout.boot_as_is: in-place`): directories kept, poms only; `layout` → split like the others |
+| msa | per service | per service by its own sub-case | `msa_pom` only, directory structure untouched (`boot_modules` passed) |
+
+Restructure routing (round 9c, the company rule): **Boot as-is** (`spring_boot`, and MSA) keeps its directories —
+`restructure.boot_pom` (mode `boot_pom`): root → `artifacts.parent`, modules in `profile.boot_modules` (basename matches
+`layout.boot_module_pattern`, default `*-boot`, AND the pom is a boot app: spring-boot-maven-plugin or a
+`@SpringBootApplication` under its `src/main/java`) → `boot_parent`, every other module → `comp_parent`; a single-module
+Boot app is wrapped into `{name}-boot`. **Non-Boot** (pure_java / servlet_tomcat / spring_legacy) → `restructure.apply`
+(mode `layout`): `{name}-boot` / `{name}-back` / `{name}-front` — front only when `source.web_static_count` or
+`source.jsp_paths` is non-empty; JSPs make the boot module a WAR (`layout.jsp_boot_packaging`). Analyzer warnings: a boot
+app not named like the pattern; a pattern-named module whose pom is not a boot app.
 
 Pre-emptive handlers from the profile (run before the first build of a phase): lombok ≥ 1.18.30 for JDK 21,
 mapstruct ≥ 1.6, querydsl jakarta classifier, maven-compiler-plugin ≥ 3.13, surefire ≥ 3.2, etc.
@@ -222,15 +231,95 @@ graph TD;
   or `_RunAborted`, i.e. no Maven / unresolvable parent). The web UI's stop finalizes without the final build and
   says so; a stop observed after the verify phase group finishes the run normally.
 
-## 8. Restructure (non-MSA)
+## 8. Restructure (company layout)
+
+The company rule (stated 2026-10-21, round 9c). `{name}` = `layout.project_name` or the root pom's artifactId; every
+module path is `layout.module_path(which, name)` (`module_dir` + `boot_module` / `comp_module` / `front_module`), so
+the modules sit directly under the root by default.
 
 ```
-root/pom.xml              packaging=pom, parent=<in-house>, modules=[module/comp-jar, module/boot-jar],
-                          dependencies=[mandatory×2], properties/depMgmt carried over, optional versions bumped
-root/module/comp-jar      all as-is src/main, src/test (minus boot resources / @SpringBootTest tests), as-is deps
-root/module/boot-jar      Application.java (generated or moved), boot resources, spring-boot-maven-plugin repackage,
-                          deps: comp-jar + starter by case
+root/pom.xml          packaging=pom, parent=artifacts.parent (base-parent), modules=[{name}-back, ({name}-front,) {name}-boot],
+                      dependencies=[mandatory×2] (artifacts.mandatory_target: root), aggregator only (role parents)
+root/{name}-boot      ONLY the Boot configuration: the generated / moved @SpringBootApplication class (+ a
+                      SpringBootServletInitializer subclass), application*.properties|yml, logging config, banner,
+                      @SpringBootTest tests, legacy-config/ (imported XML), asis-webinf/ (non-JSP WEB-INF files);
+                      parent boot_parent; spring-boot-maven-plugin repackage; deps: -back (+ -front) + starter by case
+root/{name}-back      every as-is source incl. controllers, services, repositories and their resources (the minimal
+                      split; multi-module projects are merged into it); parent comp_parent; as-is dependencies
+root/{name}-front     only when the as-is project has web resources; parent comp_parent; packaging jar:
+                      src/main/webapp/** (minus WEB-INF, META-INF) → <front_static_dir>/** (default src/main/resources/static),
+                      src/main/resources/{static,public,templates}/** → same path, JSPs → <front_jsp_dir>/**
+                      (default src/main/resources/META-INF/resources/WEB-INF/jsp, Servlet 3 jar resources)
 ```
+Artifact ids: `<root artifactId>` + `layout.boot_artifact_suffix` / `comp_artifact_suffix` / `-front`; the boot
+module depends on `${project.groupId}:<root>-<suffix>:${project.version}` of back and front.
+`RestructureResult.boot_module / comp_module / front_module` (the module dirs that exist), `boot_packaging`
+(`jar` | `war`) and `front_files` (files moved into the front module) report what was produced.
+
+**Front module** (`layout.front_module`, None = off). After the as-is sources are in `{name}-back` (single module or
+merge), the web files move on: static files keep their relative path; a JSP (`*.jsp|jspf|jspx`) under
+`WEB-INF/jsp/` keeps its path below the jsp dir, any other JSP under `WEB-INF/` keeps its path below `WEB-INF/`
+(`WEB-INF/views/a.jsp` → `jsp/views/a.jsp`; a JSP directly under `WEB-INF/` lands in the jsp dir root, follow-up
+"update include / forward paths"); a JSP outside WEB-INF goes to the jar's `META-INF/resources/` root (same URL);
+`WEB-INF/tags/**` and `*.tld` → `META-INF/resources/WEB-INF/…`. `web.xml` and the other non-JSP `WEB-INF/*` files
+go to `{name}-boot/src/main/resources/asis-webinf/` (never read by Boot, not the WAR's `WEB-INF`; servlets / filters
+via `@ServletComponentScan`, web.xml follow-up as before; XML bean configs are still imported from `legacy-config/`);
+`WEB-INF/lib`, `WEB-INF/classes` and webapp `META-INF` stay in `{name}-back/src/main/webapp` (follow-up). A target
+path taken twice keeps the first file (follow-up). No static file and no JSP → no front module, `<modules>` = back + boot.
+Wrap (`multi_module_policy: wrap`) and kept as-is boot modules' own resources are not split.
+
+**JSP → WAR** (JSPs moved and `layout.jsp_boot_packaging: war`, the default): `{name}-boot` is packaged `war` for an
+external Tomcat — `spring-boot-starter-tomcat` and `org.apache.tomcat.embed:tomcat-embed-jasper` `provided`
+(+ `spring-boot-web-server` compile scope when the Application carries `@ServletComponentScan`: Boot 4.1 brings it
+only through the Tomcat starter, so `provided` would drop it from `WEB-INF/lib` — verified with a WAR build), the
+generated Application `extends SpringBootServletInitializer` (`configure(SpringApplicationBuilder)`; a moved / kept
+main class that does not gets a follow-up), spring-boot-maven-plugin repackage kept, no maven-war-plugin settings
+(war-plugin ≥ 3.0 defaults `failOnMissingWebXml=false`; Boot 4.1 pins 3.5.1). A JSP declaring a JSTL taglib
+(`java.sun.com/jsp/jstl/*`, `xmlns.jcp.org/jsp/jstl/*`, `jakarta.tags.*`) adds
+`jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api` + `org.glassfish.web:jakarta.servlet.jsp.jstl` without
+versions (managed by `spring-boot-dependencies` 4.1.0: 3.0.2 / 3.0.1). `spring.mvc.view.prefix` / `suffix` are written
+to the boot `application.properties` only when the as-is XML / Java names an `InternalResourceViewResolver` prefix /
+suffix (bean properties, `p:` attributes, `<mvc:jsp>`, `setPrefix/setSuffix`, the two-arg constructor,
+`registry.jsp(…)`), the prefix mapped to the moved location (`/WEB-INF/views/` → `/WEB-INF/jsp/views/`, with a
+follow-up to update the as-is resolver bean, which takes precedence); else a follow-up asks the owners to set them.
+Follow-up: "boot module packaged as WAR for external Tomcat; JSPs are served from the front jar (META-INF/resources)".
+`jsp_boot_packaging: jar` keeps an executable jar (jasper compile scope + follow-up: Boot does not serve JSPs from an
+executable jar). Without JSPs the boot module is an executable jar (an as-is WAR is converted as before).
+
+**Spring Boot as-is in place** (mode `boot_pom`, planned for `spring_boot` with `layout.boot_as_is: in-place`):
+directories are kept. Root with `<modules>`: root → `artifacts.parent` (packaging pom, explicit coordinates); module
+poms whose dir is in `profile.boot_modules` (fallback when empty: spring-boot-maven-plugin in `<build><plugins>` or a
+`@SpringBootApplication` class under the module) → `boot_parent`, every other module → `comp_parent`, both with
+`<relativePath/>` and explicit groupId / version. A module that stops inheriting in-repo poms gets their
+`<dependencies>`, `<build><plugins>` (spring-boot-maven-plugin only for boot modules, `<inherited>false</inherited>`
+skipped), dependencyManagement, pluginManagement, repositories and referenced properties; a module inheriting an
+in-repo intermediate pom keeps it (the intermediate is re-pointed). The root then keeps only the mandatory
+dependencies (`mandatory_target: root`), loses dependencyManagement / pluginManagement / build plugins and every
+property it no longer references; an as-is module declaration of a mandatory artifact gets the configured version.
+Sibling dependencies are untouched; optional bumps, `remove_when_present`, java level, boot plugin version and
+`drop_managed_versions` run on every pom; placeholders go to each boot module's `src/main/resources` (by reference
+location when there are several). Root without modules but with sources: `src/**` (+ custom source roots, `lib/`) move
+to `{name}-boot/`, whose pom is the as-is root pom (dependencies, build, profiles; artifactId `<root>-boot`, explicit
+coordinates, packaging kept); the root becomes the aggregator (`<modules>` = [`{name}-boot`]) and the pass above runs.
+Without role parents the modules keep inheriting the root (root → `artifacts.parent` + mandatory + BOM + java level);
+a module on an external parent is treated as its own root. A second run changes nothing (note "already in place").
+`RestructureResult.boot_module` = the first boot module, `comp_module` = the single other module (else None).
+
+**`artifacts.mandatory_target`** (round 9c): `root` (default, the company rule) = the 2 mandatory dependencies are
+declared in every root pom — the project root even when it is an aggregator the modules do not inherit; in MSA with
+role parents each service root and the top aggregator; `modules` = round 9b (every role module pom, incl. front; the
+root none). Without role parents both mean "the root pom the modules inherit" (unchanged).
+
+**MSA** (`msa_pom`, service detection unchanged): with role parents a service root → `boot_parent`, a library root →
+`comp_parent`, the top aggregator → `artifacts.parent` (also under `msa_parent_policy: per-service-root`); a service /
+library root that inherited the aggregator stops there (its role parent, explicit coordinates, what it inherited).
+
+*Pre-9c layout* (`config/artifacts.local-e2e.yml` pins it for the older fixtures): `module_dir: module`,
+`boot_module: boot-jar`, `comp_module: comp-jar`, `front_module: null`, `boot_as_is: layout` — `module/comp-jar` +
+`module/boot-jar`, Boot projects split like the others, web resources stay in comp-jar, JSPs only add
+`tomcat-embed-jasper` + a follow-up; byte-identical to round 9b (snapshot test `test_pre9c_layout_is_unchanged`). The
+paragraphs below were written for it: read `module/comp-jar` / `module/boot-jar` as the configured back / boot module.
+
 Multi-module as-is (non-MSA), `layout.multi_module_policy` (default **`merge`**, round 7b): every as-is module and
 the root `src/` are folded into `module/comp-jar` (one pom: root + module dependencies minus the module-to-module ones).
 An as-is module whose directory basename is `layout.boot_module` (`boot-jar`, `apps/boot-jar`, …) is the **kept boot
@@ -272,7 +361,8 @@ is then a pure **aggregator the modules do not inherit**: `module/boot-jar/pom.x
 `module/comp-jar/pom.xml` `comp_parent`, both with `<relativePath/>` (external, resolved from the repository) and an
 explicit `<groupId>` / `<version>` (the project's), so the boot → comp dependency
 `${project.groupId}:<root>-comp:${project.version}` resolves. What used to flow through inheritance moves into the
-module poms: the 2 `mandatory` dependencies go into **both** module poms (none in the root), the Spring Boot BOM
+module poms: the 2 `mandatory` dependencies go into **both** module poms (none in the root; round 9c: only with
+`mandatory_target: modules`, the default `root` declares them in the root pom), the Spring Boot BOM
 (`parent_manages_spring_boot: false`) and `maven.compiler.release` (`parent_manages_java_version: false`) into both,
 `remove_when_present` applies to them; the root's own `<dependencyManagement>` (minus merged-module entries),
 `<pluginManagement>` and `<repositories>` / `<pluginRepositories>` are copied into both, the root's `<properties>`
