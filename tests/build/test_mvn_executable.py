@@ -91,6 +91,6 @@ def test_relative_settings_local_repo_and_java_home_become_absolute(tmp_path, cf
     c.build.local_repo = "m2"
     c.build.java_home = "jdk21"
     cmd = base_command(c)
-    assert cmd[cmd.index("-s") + 1] == str((tmp_path / "config" / "settings.nexus.xml").resolve())
-    assert f"-Dmaven.repo.local={(tmp_path / 'm2').resolve()}" in cmd
-    assert mvn_env(c)["JAVA_HOME"] == str((tmp_path / "jdk21").resolve())
+    assert cmd[cmd.index("-s") + 1] == str((tmp_path / "config" / "settings.nexus.xml").absolute())
+    assert f"-Dmaven.repo.local={(tmp_path / 'm2').absolute()}" in cmd
+    assert mvn_env(c)["JAVA_HOME"] == str((tmp_path / "jdk21").absolute())

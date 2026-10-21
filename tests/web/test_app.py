@@ -299,3 +299,34 @@ def test_jsonable_and_new_lines(tmp_path):
     assert _new_lines(p, offsets) == ["b"]
     assert _new_lines(p, offsets) == []
     assert _new_lines(tmp_path / "missing", offsets) == []
+
+
+def test_shutdown_ends_open_streams_and_stops_running_runs(tmp_path, repo, monkeypatch):
+    """Server shutdown (lifespan): the open event stream of a running run ends with `end` (reason server shutdown)
+    instead of holding the uvicorn connection open, the run is asked to stop, live Maven children are killed."""
+    import sbmig.web.runs as runs_mod
+    started = threading.Event()
+
+    def slow_body(self, run):
+        started.set()
+        run.cancel.wait(10)                       # a migration in progress: it ends when asked to stop
+        return None
+
+    monkeypatch.setattr(RunManager, "_run_thread_body", slow_body)
+    killed: list[str] = []
+    monkeypatch.setattr("sbmig.build.mvn.kill_live_processes", lambda reason="x": killed.append(reason) or 2)
+    with TestClient(create_app(tmp_path / "out", repo)) as client:
+        rid = _start(client)
+        assert started.wait(5)
+        mgr = _manager(client)
+        events = mgr.events(rid)
+        first = next(events)
+        assert first[0] == "status" and first[1]["state"] == "running"
+        info = mgr.shutdown()
+        assert info["stopped"] == [rid] and info["killed"] == 2 and killed == ["server shutdown"]
+        rest = list(events)                                           # ends promptly, no blocking poll loop
+        assert rest[-1] == ("end", {"run_id": rid, "reason": "server shutdown"})
+        run = mgr.runs[rid]
+        assert run.cancel.is_set() and run.done.wait(5)
+        assert mgr.closing.is_set()
+    assert mgr.closing.is_set()                                       # the lifespan exit called shutdown() too

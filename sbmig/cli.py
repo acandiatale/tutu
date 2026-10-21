@@ -284,7 +284,10 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
               port: int = typer.Option(8765, "--port"),
               out: Path = typer.Option(Path("out/web"), "--out", "-o", help="where uploads and runs go"),
               repo_root: Optional[Path] = typer.Option(None, "--repo-root",
-                                                       help="sbmig repo root (config/, kb/)")) -> None:
+                                                       help="sbmig repo root (config/, kb/)"),
+              graceful_timeout: int = typer.Option(5, "--graceful-timeout",
+                                                   help="seconds uvicorn waits for open connections (SSE streams) "
+                                                        "on shutdown before closing them")) -> None:
     """One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
     one worker thread per run), watch graph nodes / journal / log live (SSE), download report.md / result.zip.
     Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`."""
@@ -297,8 +300,11 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
     attach_file_log(Path(out) / "sbmig-web.log")
     typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}")
     typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root} "
-               f"uvicorn sbmig.web.app:app --host {host} --port {port})")
-    uvicorn.run(create_app(Path(out), root), host=host, port=port, log_level="info")
+               f"uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown {graceful_timeout})")
+    # shutdown: open SSE streams end (RunManager.shutdown via the lifespan), running Maven processes are killed, and
+    # uvicorn stops waiting for connections after `graceful_timeout` — without it Ctrl+C hung on the browser tabs
+    uvicorn.run(create_app(Path(out), root), host=host, port=port, log_level="info",
+                timeout_graceful_shutdown=graceful_timeout)
 
 
 @app.command("llm-probe")

@@ -114,6 +114,7 @@ class RunManager:
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
         self._run_lock = threading.Lock()      # serializes the migrations (shared file-based KB)
+        self.closing = threading.Event()       # server shutdown: open SSE streams end, running runs are asked to stop
 
     # ---- paths
     def run_dir(self, run_id: str) -> Path:
@@ -247,6 +248,26 @@ class RunManager:
         log.info("run %s: stop requested", run_id)
         return True
 
+    def shutdown(self, reason: str = "server shutdown") -> dict[str, Any]:
+        """Server shutdown (the web app's lifespan): end every open event stream, ask every running / queued run to
+        stop after its current graph node, and kill the Maven / OpenRewrite processes still running — otherwise
+        uvicorn waits on the SSE connections and a `java.exe` outlives the server on Windows (2026-10-21)."""
+        from sbmig.build.mvn import kill_live_processes
+
+        self.closing.set()
+        stopped: list[str] = []
+        for run in list(self.runs.values()):
+            if run.done.is_set():
+                continue
+            run.cancel.set()
+            stopped.append(run.run_id)
+            with run.cond:
+                run.cond.notify_all()
+        killed = kill_live_processes(reason)
+        log.info("%s: %d run(s) asked to stop (%s), %d live Maven process(es) killed", reason, len(stopped),
+                 ", ".join(stopped) or "-", killed)
+        return {"stopped": stopped, "killed": killed}
+
     def status(self, run_id: str) -> dict[str, Any]:
         run = self.runs.get(run_id)
         rd = self.run_dir(run_id)
@@ -351,6 +372,10 @@ class RunManager:
                     yield "report", rep.read_text(encoding="utf-8", errors="replace")
                 yield "status", self.status(run_id)
                 yield "end", {"run_id": run_id}
+                return
+            if self.closing.is_set():     # server shutdown: release the connection, the browser reconnects later
+                yield "status", self.status(run_id)
+                yield "end", {"run_id": run_id, "reason": "server shutdown"}
                 return
             if emitted:
                 last_beat = time.monotonic()

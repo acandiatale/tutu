@@ -376,3 +376,13 @@ tar -tf shop-boot\target\shop-boot-1.0.0.jar | Select-String "BOOT-INF/" | Selec
 | 5 | (가능할 때만) `sbmig.log` 마지막 30줄, 해당 `llm-NNNN.json` | 5절 |
 
 API 키는 어떤 로그에도 남지 않지만(`llm-probe` 출력도 마스킹) 옮겨 적을 때 `.env` 내용은 포함하지 마십시오.
+
+## 11. 서버 종료가 멈출 때 (2026-10-21 추가)
+
+`sbmig serve`를 Ctrl+C로 끄면 uvicorn은 열린 연결이 닫히길 기다립니다. 브라우저 탭이 실행 중인 run의 이벤트 스트림(SSE)을 붙들고 있으면
+예전에는 `Waiting for connections to close`에서 영원히 멈췄고, Windows에서는 `mvn.cmd`가 띄운 `java.exe`가 서버가 죽은 뒤에도 살아
+남아 `target/`을 잠근 채 CPU를 썼습니다. 지금은 종료 시 (1) 열린 스트림을 `end`(reason `server shutdown`)로 끝내고, (2) 실행 중인 run에
+정지를 요청하고, (3) 아직 도는 Maven/OpenRewrite 프로세스 트리를 `taskkill /T /F`로 죽입니다. uvicorn이 연결을 기다리는 시간은
+`sbmig serve --graceful-timeout 5`(기본 5초)로 제한됩니다. `uvicorn sbmig.web.app:app …`으로 직접 띄울 때는
+`--timeout-graceful-shutdown 5`를 꼭 붙이십시오. 종료로 끊긴 run은 리포트에 `aborted`로 남고 최종 빌드는 없습니다.
+그래도 남는 프로세스가 있으면 PowerShell에서 `tasklist | findstr java`로 확인하고 `taskkill /PID <pid> /T /F`로 정리합니다.

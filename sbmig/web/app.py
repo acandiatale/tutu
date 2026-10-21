@@ -97,6 +97,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT) -> FastAPI:
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
         log.info("sbmig web UI ready (runs under %s, configs from %s/config)", mgr.out_dir, mgr.repo_root)
         yield
+        info = mgr.shutdown()
+        log.info("sbmig web UI shut down: %s", info)
 
     app = FastAPI(title="sbmig", summary="JDK 21 + Spring Boot 4.1 migration agent — web UI", lifespan=lifespan)
     app.state.manager = mgr

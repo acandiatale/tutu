@@ -849,3 +849,6 @@ flowchart LR
 - `result.zip`에 git 이력이 있을 거라 기대: 없습니다. 이력은 실행 디렉터리의 `project/.git`에만 있습니다.
 - BUILD SUCCESS = 끝이라고 생각: Handover의 "From here on"과 `__SET_ME__`가 남아 있으면 앱은 아직 시작할 수 없습니다. 그리고 `restructure-failed` 플래그가 있으면 최종 빌드가 초록이어도 회사 레이아웃 / parent가 적용되지 않은 것입니다(exit 2).
 - 입력 원본이 바뀌었다고 오해: sbmig는 `out/<run id>/project` 사본만 고칩니다. 원본 zip / 디렉터리는 그대로입니다.
+
+> **서버 종료**(2026-10-21 추가): `sbmig serve`는 Ctrl+C 시 열린 이벤트 스트림을 끝내고 실행 중인 Maven 프로세스를 죽인 뒤 최대
+> `--graceful-timeout`(기본 5초) 안에 내려갑니다. 직접 `uvicorn …`으로 띄우면 `--timeout-graceful-shutdown 5`를 붙이십시오. 상세: [09-operations.md](09-operations.md) 11장.

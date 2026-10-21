@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import re
@@ -37,7 +38,7 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
     env = dict(os.environ)
     env.update({k: str(v) for k, v in (cfg.build.env or {}).items()})
     if not _blank(cfg.build.java_home):
-        jh = str(Path(cfg.build.java_home).expanduser().resolve())
+        jh = str(Path(cfg.build.java_home).expanduser().absolute())
         env["JAVA_HOME"] = jh
         env["PATH"] = os.pathsep.join([str(Path(jh) / "bin"), env.get("PATH", "")])
     if extra:
@@ -74,12 +75,12 @@ def mvn_executable(cfg: Config) -> str:
 def base_command(cfg: Config) -> list[str]:
     b = cfg.build
     cmd = [mvn_executable(cfg), *b.extra_args]
-    # absolute: Maven runs with cwd = the project (module) directory, so a relative `config/settings.nexus.xml`
-    # would be looked up there and silently fall back to ~/.m2/settings.xml (handbook review, 2026-10-21)
+    # absolute (symlinks untouched — `/tmp` must stay `/tmp`): Maven runs with cwd = the project (module) directory,
+    # so a relative `config/settings.nexus.xml` would be looked up there and silently fall back to ~/.m2/settings.xml
     if not _blank(b.settings_file):
-        cmd += ["-s", str(Path(b.settings_file).expanduser().resolve())]
+        cmd += ["-s", str(Path(b.settings_file).expanduser().absolute())]
     if not _blank(b.local_repo):
-        cmd.append(f"-Dmaven.repo.local={Path(b.local_repo).expanduser().resolve()}")
+        cmd.append(f"-Dmaven.repo.local={Path(b.local_repo).expanduser().absolute()}")
     if b.offline:
         cmd.append("-o")
     return cmd
@@ -204,6 +205,47 @@ def _kill_group(proc: subprocess.Popen) -> None:
         pass
 
 
+# ---------------------------------------------------------------------------
+# live Maven / OpenRewrite processes (web shutdown, Ctrl+C, interpreter exit)
+# ---------------------------------------------------------------------------
+# Every long-running child goes through `run_logged`; the registry lets a server shutdown or an interpreter exit
+# kill what is still running. Without it a `java.exe` started by `mvn.cmd` survived the uvicorn shutdown on
+# Windows (holding `target/` and source files, burning CPU) and the shutdown itself hung on the open SSE
+# streams (company run, 2026-10-21).
+_LIVE: "set[subprocess.Popen]" = set()
+_LIVE_LOCK = threading.Lock()
+
+
+def _register(proc: subprocess.Popen) -> None:
+    with _LIVE_LOCK:
+        _LIVE.add(proc)
+
+
+def _unregister(proc: subprocess.Popen) -> None:
+    with _LIVE_LOCK:
+        _LIVE.discard(proc)
+
+
+def live_processes() -> list[subprocess.Popen]:
+    """Children started by `run_logged` that have not exited yet."""
+    with _LIVE_LOCK:
+        return [p for p in _LIVE if p.poll() is None]
+
+
+def kill_live_processes(reason: str = "shutdown") -> int:
+    """Kill every live child (whole process tree: `taskkill /T /F` on Windows, the process group elsewhere).
+    Returns how many were killed. Registered with `atexit`, called by the web app's lifespan shutdown."""
+    procs = live_processes()
+    for proc in procs:
+        name = Path(str(proc.args[0])).name if isinstance(proc.args, (list, tuple)) and proc.args else "?"
+        log.warning("%s: killing %s (pid %s) and its process tree", reason, name, proc.pid)
+        _kill_group(proc)
+    return len(procs)
+
+
+atexit.register(lambda: kill_live_processes("interpreter exit"))
+
+
 def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_path: Path,
                timeout_s: float | None) -> ProcessResult:
     """Run ``cmd``; stream output (ANSI stripped) to ``log_path`` line by line. Never raises for process failures."""
@@ -234,22 +276,30 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
         reader = threading.Thread(target=pump, name="mvn-log-pump", daemon=True)
         reader.start()
         timed_out = False
-        while True:
-            elapsed = time.monotonic() - t0
-            remaining = None if timeout_s is None else max(0.0, timeout_s - elapsed)
-            slot = HEARTBEAT_S if remaining is None else min(HEARTBEAT_S, remaining)
-            try:
-                proc.wait(timeout=slot if slot > 0 else 0.01)
-                break
-            except subprocess.TimeoutExpired:
+        _register(proc)
+        try:
+            while True:
                 elapsed = time.monotonic() - t0
-                if timeout_s is not None and elapsed >= timeout_s:
-                    timed_out = True
-                    log.warning("timeout after %.0fs, killing process group of %s", timeout_s or 0, cmd[0])
-                    _kill_group(proc)
+                remaining = None if timeout_s is None else max(0.0, timeout_s - elapsed)
+                slot = HEARTBEAT_S if remaining is None else min(HEARTBEAT_S, remaining)
+                try:
+                    proc.wait(timeout=slot if slot > 0 else 0.01)
                     break
-                log.info("%s still running: %.0fs elapsed%s — %d output line(s) so far, log: %s", Path(cmd[0]).name,
-                         elapsed, f" (timeout {timeout_s:.0f}s)" if timeout_s else "", len(chunks), log_path)
+                except subprocess.TimeoutExpired:
+                    elapsed = time.monotonic() - t0
+                    if timeout_s is not None and elapsed >= timeout_s:
+                        timed_out = True
+                        log.warning("timeout after %.0fs, killing process group of %s", timeout_s or 0, cmd[0])
+                        _kill_group(proc)
+                        break
+                    log.info("%s still running: %.0fs elapsed%s — %d output line(s) so far, log: %s",
+                             Path(cmd[0]).name, elapsed, f" (timeout {timeout_s:.0f}s)" if timeout_s else "",
+                             len(chunks), log_path)
+        except BaseException:             # Ctrl+C / SystemExit in the waiting thread: never leave the JVM behind
+            _kill_group(proc)
+            raise
+        finally:
+            _unregister(proc)
         reader.join(timeout=10)
         if timed_out:
             fh.write(f"\n[ERROR] sbmig: killed after timeout of {timeout_s:.0f}s\n")
