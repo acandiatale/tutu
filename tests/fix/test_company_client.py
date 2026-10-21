@@ -180,3 +180,30 @@ def test_progress_lines_call_start_heartbeat_and_retry_delay(caplog):
     assert "attempt 2/4 → POST" in text and "latency=" in text
     quiet = client(FakePost(FakeResponse(200, {"choices": [{"message": {"content": "x"}}]})), heartbeat_s=0)
     assert quiet.complete(MSGS).content == "x"                     # heartbeat off → no thread, still works
+
+
+def test_hard_deadline_abandons_a_hung_call(caplog):
+    """Round 9: a gateway that never answers (keep-alive, no bytes) must not hang the run — past the wall-clock
+    deadline the call is abandoned and counted as a transport failure like any other."""
+    import logging as _logging
+    import threading as _threading
+    import time as _time
+
+    release = _threading.Event()
+
+    class HungPost(FakePost):
+        def __call__(self, url, **kw):
+            release.wait(5)                 # the "connection" stays open until the test lets go
+            return super().__call__(url, **kw)
+
+    post = HungPost(FakeResponse(200, {"choices": [{"message": {"content": "late"}}]}))
+    c = client(post, hard_deadline_s=0.1, heartbeat_s=0, max_retries=1)
+    t0 = _time.monotonic()
+    with caplog.at_level(_logging.INFO, logger="sbmig.fix.client"), pytest.raises(LLMError, match="hard deadline"):
+        c.complete(MSGS)
+    assert _time.monotonic() - t0 < 2.0                       # two attempts × 0.1 s + backoff, not 5 s
+    assert "transport error (attempt 1/2): LLMHardDeadline" in caplog.text
+    release.set()
+    # a call that answers in time is untouched by the deadline
+    ok = client(FakePost(FakeResponse(200, {"choices": [{"message": {"content": "pong"}}]})), hard_deadline_s=5)
+    assert ok.complete(MSGS).content == "pong"

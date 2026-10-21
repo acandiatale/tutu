@@ -35,13 +35,18 @@ log = logging.getLogger("sbmig.fix.client")
 PostFn = Callable[..., Any]   # requests.post-compatible: post(url, headers=, json=, timeout=) -> Response
 
 
+class LLMHardDeadline(requests.RequestException):
+    """One call outlived `hard_deadline_s` (the gateway never closed the connection); a transport failure."""
+
+
 class CompanyClient:
     provider = "company"
 
     def __init__(self, url: str, api_key: str, model: str, *, payload_extra: Optional[dict] = None,
                  response_path: Optional[str] = None, timeout: float = 180.0, max_retries: int = 3,
                  extra_headers: Optional[dict[str, str]] = None, post: Optional[PostFn] = None,
-                 sleep: Callable[[float], None] = time.sleep, heartbeat_s: float = 30.0):
+                 sleep: Callable[[float], None] = time.sleep, heartbeat_s: float = 30.0,
+                 hard_deadline_s: Optional[float] = None):
         self.url = (url or "").strip()
         self._api_key = api_key or ""
         self.model = model
@@ -53,6 +58,10 @@ class CompanyClient:
         self._post = post or requests.post
         self._sleep = sleep
         self.heartbeat_s = float(heartbeat_s)       # "still in flight" log line every N s while a call blocks (0 = off)
+        # wall-clock cap on one call: `requests` timeout only counts silence between bytes, so a gateway that keeps the
+        # connection open (keep-alive / trickled chunks) can hang a run for hours; past the deadline the call is
+        # abandoned (its thread is left to die) and reported as a transport failure (retry → cool-down → unavailable)
+        self.hard_deadline_s = float(hard_deadline_s) if hard_deadline_s is not None else self.timeout + 30.0
 
     def __repr__(self) -> str:                        # never leak the key
         return f"CompanyClient(url={self.url!r}, model={self.model!r})"
@@ -84,8 +93,24 @@ class CompanyClient:
         th = threading.Thread(target=beat, name="llm-heartbeat", daemon=True)
         if self.heartbeat_s > 0:
             th.start()
+        result: dict[str, Any] = {}
+
+        def call() -> None:
+            try:
+                result["resp"] = self.post_once(payload)
+            except BaseException as exc:  # noqa: BLE001 - handed back to the caller's except clause
+                result["exc"] = exc
+
+        worker = threading.Thread(target=call, name="llm-call", daemon=True)
+        worker.start()
         try:
-            return self.post_once(payload)
+            worker.join(self.hard_deadline_s if self.hard_deadline_s > 0 else None)
+            if worker.is_alive():
+                raise LLMHardDeadline(f"LLM call exceeded the hard deadline of {self.hard_deadline_s:.0f}s "
+                                      f"(timeout {self.timeout:.0f}s only counts silence between bytes) — {label}")
+            if "exc" in result:
+                raise result["exc"]
+            return result["resp"]
         finally:
             done.set()
 
@@ -108,7 +133,7 @@ class CompanyClient:
                      attempt + 1, self.max_retries + 1, self.url, chars, self.timeout)
             try:
                 resp = self._post_with_heartbeat(payload, label)
-            except requests.RequestException as exc:
+            except (requests.RequestException, LLMHardDeadline) as exc:
                 last_status, last_body = None, f"{type(exc).__name__}: {exc}"
                 log.warning("llm company transport error (attempt %d/%d): %s", attempt + 1, self.max_retries + 1,
                             type(exc).__name__)
