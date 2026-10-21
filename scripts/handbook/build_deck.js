@@ -234,11 +234,11 @@ pres.addSection({ title: "운영" });
 // ================================================================ 6. 현황과 다음 단계
 pres.addSection({ title: "현황과 다음 단계" });
 { const s = content("검증 현황", "현황과 다음 단계", "오프라인 테스트는 Python만으로 약 3분, e2e는 JDK 21 + Maven + Maven Central 접근이 필요합니다.");
-  stat(s, 0.5, 1.15, 2.2, "1,328", "오프라인 테스트 (통과)");
+  stat(s, 0.5, 1.15, 2.2, "1,369", "오프라인 테스트 (통과)");
   stat(s, 2.7, 1.15, 2.2, "24", "e2e 픽스처 프로젝트");
   stat(s, 4.9, 1.15, 2.2, "8 / 8", "회사 레이아웃 e2e PASS (0 LLM)");
   stat(s, 7.1, 1.15, 2.2, "23 / 33 / 14", "핸들러 · 레시피 · 어드바이저리", 26);
-  s.addChart(pres.charts.BAR, [{ name: "오프라인 테스트 수", labels: ["R6", "R7a", "R7b", "R8", "R9", "R9b", "R9c", "현재"], values: [917, 941, 991, 1072, 1200, 1233, 1295, 1328] }],
+  s.addChart(pres.charts.BAR, [{ name: "오프라인 테스트 수", labels: ["R6", "R7a", "R7b", "R8", "R9", "R9b", "R9c", "현재"], values: [917, 941, 991, 1072, 1200, 1233, 1295, 1369] }],
     { x: 0.5, y: 2.65, w: 5.6, h: 2.45, barDir: "col", chartColors: [K.dk2], showTitle: true, title: "라운드별 오프라인 테스트 수", titleFontSize: 11, titleColor: K.dk2, titleFontFace: "+mn-lt",
       showValue: true, dataLabelPosition: "outEnd", dataLabelFontSize: 8.5, dataLabelColor: K.dk1, dataLabelFontFace: "+mn-lt", showLegend: false,
       catAxisLabelColor: K.dk1, catAxisLabelFontSize: 9, catAxisLabelFontFace: "+mn-lt", valAxisLabelColor: "8A8F8A", valAxisLabelFontSize: 8, valAxisLabelFontFace: "+mn-lt",
