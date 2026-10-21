@@ -49,6 +49,10 @@ Windows / no shell profile: put the variables in `.env` at the repo root (copy `
    `http://127.0.0.1:8765/api/threads` (also written to `<out>/threads-<timestamp>.txt`); on POSIX
    `kill -USR1 <pid of sbmig / uvicorn>` writes `out/threads-<timestamp>.txt`. The fix loop also writes one by itself
    into the run directory after 5 minutes of silence. Send that file with the last 30 lines of `sbmig.log`.
+   Order of phases: jdk21 → spring → restructure (parents / layout) → verify. With `plan.parent_phase: spring`
+   (set in `config/artifacts.example.yml` for company runs) the parents / layout are applied right after
+   `spring.rewrite`, before the spring build-fix loop: the loop then fixes against the company parent chain and a
+   missing parent aborts early instead of after the spring loop.
 4. A run that stops right after the journal's `llm_fix` event (answer received, no `attempt` event) was blocked in
    the patch apply / `git commit` step. Workspace git is non-interactive since round 9c (prompts, hooks, GPG signing
    disabled per call, 10-minute timeout) — if it still hangs there, an antivirus / indexer is holding the files.

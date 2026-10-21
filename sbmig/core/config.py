@@ -314,6 +314,12 @@ class PlanConfig(BaseModel):
     intermediate_builds: bool = True           # build after jdk21 phase before spring phase
     optional_bump_phase: Literal["spring", "restructure"] = "spring"   # bump in-house optional artifacts right after the
                                              # spring rewrite so jakarta builds of in-house libs are on the classpath before the first build
+    # round 9c: when the in-house parents / layout are applied. `restructure` (default) = after the spring build-fix
+    # loop, on a tree that already compiles against the as-is parent chain; `spring` = right after spring.rewrite (and
+    # the optional bump), BEFORE the spring build-fix loop — the loop then fixes against the company parent chain
+    # (base-parent / boot-jar / comp-jar) instead of the as-is one, and an unresolvable parent fails fast; the
+    # restructure phase keeps only the final verify. Company runs set `spring` (the user's call, 2026-10-21).
+    parent_phase: Literal["restructure", "spring"] = "restructure"
 
 
 class FleetConfig(BaseModel):

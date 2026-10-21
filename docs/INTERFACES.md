@@ -503,3 +503,10 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     `stdin=DEVNULL`, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`, `GCM_INTERACTIVE=never`, `GIT_EDITOR=true`,
     `-c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=<run dir>/no-hooks` and `timeout=GIT_TIMEOUT_S`
     (600 s → `GitError` naming the likely blocker).
+  * `plan.parent_phase: restructure | spring` (default `restructure`; `config/artifacts.example.yml` sets `spring`):
+    `spring` moves `restructure.apply` / `restructure.boot_pom` / `restructure.msa_pom` into the SPRING phase right
+    before the first spring build-fix loop (after `spring.rewrite` and `spring.optional_bump`), drops
+    `restructure.loop` (the spring loop gates; `verify.build` stays), and notes it (`planner._apply_parent_phase`);
+    `stop_after=spring` then includes the parents / layout. Windows: `_kill_group` uses `taskkill /PID <pid> /T /F`
+    (a terminated `mvn.cmd` left its `java.exe` running); `fixer.grep` is bounded (`MAX_GREP_FILES` 3000,
+    `MAX_GREP_FILE_BYTES` 512 KB, `GREP_BUDGET_S` 45 s, one read per file) and logs the context / feedback rounds.

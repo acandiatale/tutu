@@ -169,6 +169,7 @@ plan:
   advisor: none
   intermediate_builds: true
   optional_bump_phase: spring      # in-house optional artifacts are bumped before the first spring-phase build
+  parent_phase: restructure        # spring = parents / layout right after spring.rewrite, before the spring fix loop
 
 report:
   formats: [md, json]

@@ -41,6 +41,12 @@ artifacts:
                                         # service root + the top aggregator) — the company rule; `modules` = role module poms
   optional_version_policy: floor        # floor = never downgrade (default) | pin = exactly the listed version
 
+plan:
+  # company runs: apply base-parent / boot-jar / comp-jar right after spring.rewrite, BEFORE the spring build-fix
+  # loop, so the loop fixes against the company parent chain (an unresolvable parent then fails fast); the
+  # restructure phase keeps only the final verify. `restructure` = after the spring loop (the default).
+  parent_phase: spring
+
 build:
   settings_file: null                   # /path/to/nexus-settings.xml
   java_home: null                       # /usr/lib/jvm/java-21

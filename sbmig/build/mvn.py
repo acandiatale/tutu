@@ -111,11 +111,25 @@ def _popen(*args, **kwargs) -> subprocess.Popen:
     return subprocess.Popen(*args, **kwargs)
 
 
+IS_WINDOWS = os.name == "nt"
+
+
+def _kill_tree_windows(pid: int) -> None:
+    """Windows has no process groups to signal: `mvn.cmd` is a cmd.exe whose child `java.exe` would survive a plain
+    terminate() and keep `target/` / source files locked (round 9c) — `taskkill /T /F` kills the whole tree."""
+    try:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):  # pragma: no cover - best effort
+        pass
+
+
 def _kill_group(proc: subprocess.Popen) -> None:
     try:
-        if hasattr(os, "killpg"):
+        if IS_WINDOWS:
+            _kill_tree_windows(proc.pid)
+        elif hasattr(os, "killpg"):
             os.killpg(proc.pid, signal.SIGTERM)
-        else:                             # pragma: no cover - windows
+        else:                             # pragma: no cover
             proc.terminate()
     except (ProcessLookupError, PermissionError, OSError):
         pass

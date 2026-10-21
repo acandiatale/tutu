@@ -26,3 +26,25 @@ def test_run_logged_heartbeat_and_timeout(tmp_path: Path, monkeypatch, caplog):
                              log_path=tmp_path / "logs" / "slow.log", timeout_s=0.3)
     assert res.timed_out and res.exit_code != 0
     assert any("timeout after" in r.getMessage() for r in caplog.records)
+
+
+
+def test_windows_timeout_kills_the_whole_tree(monkeypatch):
+    """Round 9c: on Windows a timed-out mvn.cmd must take its java.exe child with it (taskkill /T /F), or the orphan
+    keeps the project files locked for the next steps."""
+    calls: list[list[str]] = []
+
+    class P:
+        pid = 4242
+        returncode = None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(mvn, "IS_WINDOWS", True)
+    monkeypatch.setattr(mvn.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or None)
+    mvn._kill_group(P())
+    assert calls and calls[0][:4] == ["taskkill", "/PID", "4242", "/T"] and "/F" in calls[0]

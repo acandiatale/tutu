@@ -505,6 +505,36 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
     return steps
 
 
+def _apply_parent_phase(steps: list[PlanStep], cfg: Config, notes: list[str]) -> list[PlanStep]:
+    """`plan.parent_phase: spring` (round 9c): the restructure step(s) (`restructure.apply` / `boot_pom` / `msa_pom`)
+    move into the spring phase right before the first spring build-fix loop, so that loop fixes against the company
+    parent chain; the restructure-phase loop goes (the final verify stays). Default `restructure` = unchanged."""
+    if cfg.plan.parent_phase != "spring":
+        return steps
+    restr = [s for s in steps if s.kind in (StepKind.RESTRUCTURE, StepKind.MSA_POM) and s.phase == Phase.RESTRUCTURE
+             and str(s.params.get("mode") or "") != "optional_bump"]
+    if not restr:
+        return steps
+    drop = set(id(s) for s in restr) | {id(s) for s in steps
+                                        if s.kind == StepKind.BUILD_FIX_LOOP and s.phase == Phase.RESTRUCTURE}
+    out = [s for s in steps if id(s) not in drop]
+    idx = next((i for i, s in enumerate(out) if s.kind == StepKind.BUILD_FIX_LOOP and s.phase == Phase.SPRING), None)
+    if idx is None:
+        spring_idx = [i for i, s in enumerate(out) if s.phase == Phase.SPRING]
+        if not spring_idx:
+            notes.append("plan.parent_phase=spring ignored: no spring-phase step (pom-only project)")
+            return steps
+        idx = spring_idx[-1] + 1
+    moved = [s.model_copy(update={"phase": Phase.SPRING,
+                                  "reason": (s.reason + "; plan.parent_phase=spring: applied before the spring "
+                                             "build-fix loop so it fixes against the company parent chain")})
+             for s in restr]
+    out[idx:idx] = moved
+    notes.append("restructure: parents / layout applied in the spring phase right after spring.rewrite, before the "
+                 "spring build-fix loop (plan.parent_phase=spring); the restructure phase keeps only the final verify")
+    return out
+
+
 def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
                advisories: Optional[list[Any]] = None) -> MigrationPlan:
     """Rule-based plan. `advisories` = `sbmig.advisory.evaluate_advisories` findings (mutated: recipe_source)."""
@@ -541,6 +571,7 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
         steps += _msa_steps(profile, cfg, kb_refs, notes, advisories)
     else:
         steps += _single_steps(profile, cfg, kb_refs, notes, advisories)
+    steps = _apply_parent_phase(steps, cfg, notes)
     for f in advisories:
         if f.policy != "recipe":
             notes.append(f"advisory: {f.advisory_id} → guide ({f.policy_reason or 'catalog'})")
