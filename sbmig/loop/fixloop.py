@@ -60,6 +60,29 @@ def sleep_seconds(seconds: float) -> None:
     time.sleep(seconds)
 
 
+def _first_error_line(c: ErrorCluster, limit: int = 220) -> str:
+    """`file:line: message` of the cluster's first error for the progress log (operators read sbmig.log only)."""
+    if not c.errors:
+        return "-"
+    e = c.errors[0]
+    loc = (e.file or "-") + (f":{e.line}" if e.line else "")
+    text = f"{loc}: {(e.message or e.raw or '').strip()}"
+    if e.symbol and e.symbol not in text:
+        text += f" (symbol {e.symbol})"
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+def _first_sentence(text: str, limit: int = 160) -> str:
+    """The LLM's one-line verdict (its <analysis> first sentence, or the llm-error text)."""
+    t = " ".join(text.strip().split())
+    for sep in (". ", "。", "\n"):
+        if sep in t:
+            t = t.split(sep, 1)[0] + ("." if sep == ". " else "")
+            break
+    return t if len(t) <= limit else t[:limit - 1] + "…"
+
+
 def _describe_decision(d: TriageDecision, c: ErrorCluster, history: list[FixAttempt], cfg: Config) -> str:
     """One human line per decision for the progress log ("asking the LLM (attempt 2/2 for this cluster)", …)."""
     k = d.kind
@@ -722,8 +745,9 @@ class BuildFixLoop:
                                    rationale=prefix + "escalated: only recipes left and they changed nothing")
             st.decisions.append(d)
             self._journal_decision(st, d)
-            log.info("[%s it%d] cluster %s (%s, %d error(s)%s): %s", st.phase.value, st.iteration, c.id, c.kind.value,
-                     len(c.errors), f", {c.file}" if c.file else "", _describe_decision(d, c, self.history, self.cfg))
+            log.info("[%s it%d] cluster %s (%s, %d error(s)%s): %s\n    first error: %s", st.phase.value,
+                     st.iteration, c.id, c.kind.value, len(c.errors), f", {c.file}" if c.file else "",
+                     _describe_decision(d, c, self.history, self.cfg), _first_error_line(c))
             if d.kind == DecisionKind.ESCALATE:
                 self.escalated[c.id] = d
                 st.hopeless.add(c.id)
@@ -763,9 +787,11 @@ class BuildFixLoop:
             else:
                 self._apply_llm(att, c, m, st.phase, st.iteration, st.stall_level, st.others)
                 msg = f"fix(llm): {c.id} {att.model or 'llm'}"
-                log.info("[%s it%d] cluster %s: LLM answered — %d change(s)%s%s", st.phase.value, st.iteration, c.id,
-                         len(att.changes), f", {len(att.apply_errors)} apply error(s)" if att.apply_errors else "",
-                         f" — {att.analysis.strip()[:160]}" if att.analysis.startswith("llm-error") else "")
+                files = ", ".join(dict.fromkeys(ch.new_path or ch.path for ch in att.changes))[:200]
+                log.info("[%s it%d] cluster %s: LLM answered — %d change(s)%s%s%s", st.phase.value, st.iteration,
+                         c.id, len(att.changes), f" in {files}" if files else "",
+                         f", {len(att.apply_errors)} apply error(s)" if att.apply_errors else "",
+                         f" — {_first_sentence(att.analysis)}" if att.analysis else "")
             if att.outcome != "apply_failed":
                 sha = self._commit(msg, pre)
                 if sha is None:
