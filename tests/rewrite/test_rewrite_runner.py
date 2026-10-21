@@ -110,7 +110,8 @@ def test_command_env_and_config_file(ws, rcfg, fake):
                            f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
                            f"-Drewrite.configLocation={cfg_path.resolve()}",
                            f"-Drewrite.recipeArtifactCoordinates={MJ}:3.42.0",
-                           "-Drewrite.exportDatatables=false", "-Drewrite.failOnInvalidActiveRecipes=true"]
+                           "-Drewrite.exportDatatables=false", "-Drewrite.failOnInvalidActiveRecipes=true",
+        "-Drewrite.exclusions=**/*.jsp,**/*.jspx,**/*.html,**/*.htm"]
     assert call["cwd"] == str(ws.root)
     assert call["env"]["MAVEN_OPTS"] == "-Dfoo=1 -Xmx4g -XX:+UseG1GC"
     assert call["env"]["JAVA_HOME"] == "/opt/jdk21"
@@ -317,3 +318,15 @@ def test_real_unknown_recipe_fails(java8_ws, cfg):
     assert not res.ok
     assert res.error == "unknown recipe(s): org.openrewrite.java.migrate.NoSuchRecipe"
     assert res.changed_files == []
+
+
+def test_command_passes_rewrite_exclusions(ws, rcfg, fake):
+    """Round 9c: the plugin must not parse JSP / HTML (OpenRewrite's XML parser accepts them and only logs ANTLR
+    `token recognition error` noise); the globs come from openrewrite.exclusions and an empty list drops the flag."""
+    from sbmig.rewrite.runner import OpenRewriteRunner
+    r = OpenRewriteRunner(ws, rcfg)
+    cmd = r.command(ws.run_dir / "rewrite.yml", [])
+    flag = next(a for a in cmd if a.startswith("-Drewrite.exclusions="))
+    assert flag == "-Drewrite.exclusions=**/*.jsp,**/*.jspx,**/*.html,**/*.htm"
+    rcfg.openrewrite.exclusions = []
+    assert not any(a.startswith("-Drewrite.exclusions=") for a in r.command(ws.run_dir / "rewrite.yml", []))

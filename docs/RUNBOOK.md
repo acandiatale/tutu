@@ -35,6 +35,9 @@ Windows / no shell profile: put the variables in `.env` at the repo root (copy `
 `llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
 
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
+`token recognition error at: '<'` lines in a rewrite log come from OpenRewrite's XML parser, which also reads
+.jsp/.jspx/.html/.htm (scriptlets, `<` in attribute strings): warnings only, the file is skipped. Since round 9c those
+globs are excluded from the parse (`openrewrite.exclusions`); clear the list only if a company recipe must edit JSPs.
 Every command except `llm-probe` needs `--config config/artifacts.yml` (the company artifacts section has no
 default); without it the CLI stops with `config error … artifacts: Field required` and the hint, exit 2.
 

@@ -87,6 +87,7 @@ openrewrite:
   plugin_goal: run
   download_retry: 1              # recipe run failed / left `x.y.x` versions because a download failed → wait + retry once
   download_retry_wait_s: 30
+  exclusions: ["**/*.jsp", "**/*.jspx", "**/*.html", "**/*.htm"]   # not parsed by the plugin (XML-parser noise on JSP/HTML)
 
 build:
   mvn: mvn

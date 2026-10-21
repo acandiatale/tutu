@@ -158,6 +158,9 @@ class OpenRewriteRunner:
             cmd.append(f"-Drewrite.recipeArtifactCoordinates={','.join(coordinates)}")
         cmd.append("-Drewrite.exportDatatables=false")
         cmd.append("-Drewrite.failOnInvalidActiveRecipes=true")    # unknown/invalid recipe ⇒ BUILD FAILURE
+        excl = [x for x in (getattr(self.cfg.openrewrite, "exclusions", None) or []) if x]
+        if excl:                                                    # JSP / HTML: XML-parser noise, no recipe touches them
+            cmd.append(f"-Drewrite.exclusions={','.join(excl)}")
         return cmd
 
     # ------------------------------------------------------------------ result parsing

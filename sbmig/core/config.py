@@ -187,6 +187,10 @@ class OpenRewriteConfig(BaseModel):
     # reset, timeout) → wait and retry the run; 0 = no retry
     download_retry: int = 1
     download_retry_wait_s: int = 30
+    # round 9c: source globs the plugin must not parse (`-Drewrite.exclusions`). OpenRewrite's XML parser also accepts
+    # .jsp/.jspx/.html/.htm; JSP scriptlets and `<` inside attribute strings only produce ANTLR "token recognition
+    # error" noise (the file is skipped) and no recipe of ours touches them
+    exclusions: list[str] = Field(default_factory=lambda: ["**/*.jsp", "**/*.jspx", "**/*.html", "**/*.htm"])
     fail_on_dry_run_results: bool = False
     plugin_goal: str = "run"                            # run | dryRun
 
