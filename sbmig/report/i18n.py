@@ -26,6 +26,24 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "## Fix attempts": "## 수정 시도",
     "## Escalated clusters": "## 에스컬레이션된 클러스터",
     "## Knowledge base": "## 지식 베이스",
+    "## LLM usage and cost": "## LLM 사용량과 비용",
+    "| LLM cost | {cost} (see \"LLM usage and cost\") |": "| LLM 비용 | {cost} (\"LLM 사용량과 비용\" 참조) |",
+    "(+ unpriced: {models})": "(+ 단가 없음: {models})",
+    "(token counts missing for some calls)": "(일부 호출의 토큰 수 누락)",
+    "| Model | Calls | Input tokens | Output tokens | Price in / out (per 1M) | Cost |":
+        "| 모델 | 호출 | 입력 토큰 | 출력 토큰 | 단가 입력 / 출력 (1M당) | 비용 |",
+    "no price configured": "단가 미설정",
+    "| (no per-model usage recorded) | {calls} | {inp:,} | {out:,} | - | - |":
+        "| (모델별 사용량 기록 없음) | {calls} | {inp:,} | {out:,} | - | - |",
+    "| **Total** | | | | | **{total}** |": "| **합계** | | | | | **{total}** |",
+    "Prices: {note}.": "단가: {note}.",
+    "No price for {models} in `llm.pricing` — not included in the total.":
+        "{models}의 단가가 `llm.pricing`에 없음 — 합계에서 제외.",
+    "Some calls came back without token counts (the gateway did not report `usage`); their cost is not included.":
+        "일부 호출은 토큰 수 없이 돌아옴(게이트웨이가 `usage`를 주지 않음); 그 비용은 포함되지 않음.",
+    "Cost = input tokens × input price + output tokens × output price, per 1M tokens, in {currency}; cached-input "
+    "discounts are not visible to sbmig.":
+        "비용 = 입력 토큰 × 입력 단가 + 출력 토큰 × 출력 단가(1M 토큰당, {currency}); 캐시 입력 할인은 sbmig가 알 수 없음.",
     "## Notes": "## 메모",
     "## Outputs": "## 산출물",
     "### Versions replaced": "### 교체된 버전",

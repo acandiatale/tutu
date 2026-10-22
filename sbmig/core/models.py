@@ -463,6 +463,29 @@ class LLMUsage(BaseModel):
         )
 
 
+class ModelCost(BaseModel):
+    """LLM usage of one model in a run, priced with `llm.pricing` (currency per 1M tokens) when a price is known."""
+    model: str
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    price_key: str = ""                            # the llm.pricing entry that matched ("" = unpriced)
+    input_per_mtok: Optional[float] = None
+    output_per_mtok: Optional[float] = None
+    cost: Optional[float] = None                   # None = no price configured for this model
+
+
+class LLMCost(BaseModel):
+    """Priced LLM usage of a run (`RunReport.llm_cost`): per model + total. Models without a price are listed in
+    `unpriced_models` and left out of `total`; `usage_missing` = calls were made but no token counts came back."""
+    currency: str = "USD"
+    total: float = 0.0
+    by_model: list[ModelCost] = Field(default_factory=list)
+    unpriced_models: list[str] = Field(default_factory=list)
+    usage_missing: bool = False
+    note: str = ""                                 # llm.pricing_note: where the prices come from / as of when
+
+
 class FixProposal(BaseModel):
     changes: list[FileChange]
     analysis: str = ""
@@ -669,6 +692,7 @@ class FleetProjectResult(BaseModel):
     llm_calls: int = 0
     llm_input_tokens: int = 0
     llm_output_tokens: int = 0
+    llm_cost: Optional[float] = None               # RunReport.llm_cost.total (llm.pricing currency), None = unpriced
     blocked: int = 0
     blocked_reasons: list[str] = Field(default_factory=list)   # "external_javax_api:com.company:legacy-web"
     unresolved: int = 0
@@ -692,6 +716,7 @@ class FleetState(BaseModel):
     finished_at: Optional[datetime] = None
     projects: list[FleetProjectResult] = Field(default_factory=list)
     llm_calls_total: int = 0
+    llm_cost_total: float = 0.0
     notes: list[str] = Field(default_factory=list)
 
 
@@ -836,6 +861,8 @@ class RunReport(BaseModel):
     phases: list[PhaseResult] = Field(default_factory=list)
     final_build: Optional[BuildResult] = None
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
+    llm_usage_by_model: list[LLMUsage] = Field(default_factory=list)   # fix / escalation / recipe models apart
+    llm_cost: Optional[LLMCost] = None                                  # priced with llm.pricing (2026-10-22)
     harvest: Optional[HarvestResult] = None
     unresolved: list[BuildError] = Field(default_factory=list)
     blocked: list[BlockedItem] = Field(default_factory=list)       # deliberately skipped: needs library/infra/human action

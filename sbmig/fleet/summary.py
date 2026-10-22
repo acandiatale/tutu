@@ -22,6 +22,7 @@ COLUMNS = [
     "exit",
     "duration_s",
     "llm_calls",
+    "llm_cost",
     "blocked",
     "unresolved",
     "advisories",
@@ -47,6 +48,7 @@ def rows(state: FleetState) -> list[dict[str, Any]]:
                 "exit": "" if p.exit_code is None else p.exit_code,
                 "duration_s": round(p.duration_s, 1),
                 "llm_calls": p.llm_calls,
+                "llm_cost": "" if p.llm_cost is None else round(p.llm_cost, 4),
                 "blocked": p.blocked,
                 "unresolved": p.unresolved,
                 "advisories": len(p.advisories),
@@ -71,6 +73,7 @@ def totals(state: FleetState) -> dict[str, Any]:
         "projects": len(ps),
         "by_status": by,
         "llm_calls": sum(p.llm_calls for p in ps),
+        "llm_cost": round(sum(p.llm_cost or 0.0 for p in ps), 4),
         "duration_s": round(sum(p.duration_s for p in ps), 1),
         "blocked": sum(p.blocked for p in ps),
         "unresolved": sum(p.unresolved for p in ps),
@@ -91,7 +94,7 @@ def _cell(v: Any) -> str:
 
 def render_table(state: FleetState) -> str:
     rs = rows(state)
-    cols = COLUMNS[:14]
+    cols = COLUMNS[:15]
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for r in rs:
         lines.append("| " + " | ".join(_cell(r[c]) for c in cols) + " |")
@@ -109,8 +112,8 @@ def render_summary_md(state: FleetState) -> str:
         f"{state.updated_at.isoformat(timespec='seconds')}"
         + (f", finished: {state.finished_at.isoformat(timespec='seconds')}" if state.finished_at else ""),
         f"* projects: {t['projects']} ({status or '-'})",
-        f"* LLM calls: {t['llm_calls']}, blocked: {t['blocked']}, unresolved: {t['unresolved']}, duration: "
-        f"{t['duration_s']:.0f}s",
+        f"* LLM calls: {t['llm_calls']} (cost {t['llm_cost']:.4f}, see llm.pricing), blocked: {t['blocked']}, "
+        f"unresolved: {t['unresolved']}, duration: {t['duration_s']:.0f}s",
         f"* library advisories: {t['advisories']}, dependencies carried over: {t['carried_over']}",
         f"* KB: used {t['kb_used']}, cases created {t['kb_cases_created']}, candidates created "
         f"{t['kb_candidates_created']}, recipes promoted {t['kb_recipes_promoted']}",

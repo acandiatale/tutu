@@ -217,6 +217,9 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `llm.extra_headers` | dict[str,str] | `{}` | 요청에 붙일 추가 헤더(비밀값 금지). | 게이트웨이가 팀 헤더 등을 요구할 때. | — |
 | `llm.prompt_version` | str | `"v1"` | 프롬프트 버전 표식(기록/해시용). | 바꾸지 않습니다. | — |
 | `llm.record_dir` | str 또는 null | `"${LLM_RECORD_DIR:-}"` | 모든 요청/응답을 `llm-NNNN.json`으로 저장(비밀값 없음). | 지원 요청·재생 테스트용으로 켬. | [09](09-operations.md) |
+| `llm.pricing.<model>.input_per_mtok` / `.output_per_mtok` / `.cached_input_per_mtok` | float | `gpt-5.6-terra: 2.00 / 12.00 / 0.20`, `gpt-6-luna: 0.10 / 0.50 / 0.01` | 모델별 단가(1M 토큰당). 키는 게이트웨이가 보는 모델 id(정확히 일치 → 접두어/부분 일치). 보고서 "LLM 사용량과 비용"과 플릿 `summary.md`의 `llm_cost` 열이 이 표로 계산됩니다. 단가 없는 모델은 "단가 없음"으로 표시되고 합계에서 빠집니다. | 게이트웨이 청구 단가가 다르면 여기에 적음. 기본값은 OpenAI 공시 단가(2026-10-22). | [02](02-workflows.md) |
+| `llm.pricing_currency` | str | `USD` | 단가 통화 표기. | 원화 청구면 `KRW`와 단가를 함께 바꿈. | — |
+| `llm.pricing_note` | str | OpenAI 공시 단가 출처 문구 | 비용 표 아래에 그대로 인쇄되는 출처·기준일. | 단가를 바꾸면 같이 바꿈. | — |
 | `llm.payload_extra` | dict | `{need_origin: true}` | 페이로드 최상위에 그대로 넣는 필드. **철자는 `need_origin`**(예전 `need_orgin` 오타가 503 원인). | 게이트웨이 요구 필드가 바뀔 때. `sbmig llm-probe --payload-extra`로 먼저 확인. | [09](09-operations.md) |
 | `llm.response_path` | str 또는 null | `"${LLM_RESPONSE_PATH:-}"` | 응답 텍스트의 점 경로(예: `data.result.content`). 비면 자동 감지. | 자동 감지가 실패할 때만. | [09](09-operations.md) |
 

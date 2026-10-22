@@ -261,6 +261,51 @@ def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+def _cost_summary(c: Any, lang: str = "en") -> str:
+    from .cost import fmt_money
+    txt = fmt_money(c.total, c.currency)
+    if c.unpriced_models:
+        txt += " " + tr(lang, "(+ unpriced: {models})", models=", ".join(c.unpriced_models))
+    if c.usage_missing:
+        txt += " " + tr(lang, "(token counts missing for some calls)")
+    return txt
+
+
+def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """`## LLM usage and cost`: one row per model (fix / escalation / recipe), list prices from `llm.pricing`."""
+    from .cost import fmt_money
+    c = r.llm_cost
+    if c is None or not (c.by_model or r.llm_usage.calls):
+        return []
+    L = [tr(lang, "## LLM usage and cost"), ""]
+    L.append(tr(lang, "| Model | Calls | Input tokens | Output tokens | Price in / out (per 1M) | Cost |"))
+    L.append("|---|---|---|---|---|---|")
+    for m in c.by_model:
+        price = (f"{fmt_money(m.input_per_mtok, c.currency)} / {fmt_money(m.output_per_mtok, c.currency)}"
+                 if m.cost is not None else tr(lang, "no price configured"))
+        L.append(f"| `{m.model}` | {m.calls} | {m.input_tokens:,} | {m.output_tokens:,} | {price} | "
+                 f"{fmt_money(m.cost, c.currency) if m.cost is not None else '-'} |")
+    if not c.by_model:
+        L.append(tr(lang, "| (no per-model usage recorded) | {calls} | {inp:,} | {out:,} | - | - |",
+                    calls=r.llm_usage.calls, inp=r.llm_usage.input_tokens, out=r.llm_usage.output_tokens))
+    L.append(tr(lang, "| **Total** | | | | | **{total}** |", total=fmt_money(c.total, c.currency)))
+    L.append("")
+    notes = []
+    if c.note:
+        notes.append(tr(lang, "Prices: {note}.", note=c.note))
+    if c.unpriced_models:
+        notes.append(tr(lang, "No price for {models} in `llm.pricing` — not included in the total.",
+                        models=", ".join(f"`{m}`" for m in c.unpriced_models)))
+    if c.usage_missing:
+        notes.append(tr(lang, "Some calls came back without token counts (the gateway did not report `usage`); "
+                              "their cost is not included."))
+    notes.append(tr(lang, "Cost = input tokens × input price + output tokens × output price, per 1M tokens, in "
+                          "{currency}; cached-input discounts are not visible to sbmig.", currency=c.currency))
+    L += [f"_{n}_" for n in notes]
+    L.append("")
+    return L
+
+
 def render_markdown(report: RunReport, language: str = "en") -> str:
     """report.md for `language` (`report.language`: "en" | "ko"; anything else renders English)."""
     lang = normalize(language)
@@ -284,6 +329,10 @@ def render_markdown(report: RunReport, language: str = "en") -> str:
     u = r.llm_usage
     L.append(tr(lang, "| LLM | {calls} call(s), {inp} in / {out} out tokens{model} |", calls=u.calls,
                 inp=u.input_tokens, out=u.output_tokens, model=f" ({u.model})" if u.model else ""))
+    c = r.llm_cost
+    if c is not None and (c.by_model or u.calls):
+        L.append(tr(lang, "| LLM cost | {cost} (see \"LLM usage and cost\") |",
+                    cost=_cost_summary(c, lang)))
     if r.flags:
         L.append(tr(lang, "| Flags | {flags} |", flags=", ".join(f"`{f}`" for f in r.flags)))
     if r.blocked:
@@ -413,6 +462,9 @@ def render_markdown(report: RunReport, language: str = "en") -> str:
             seen.add(d.cluster_id)
             L.append(f"- {ph}/{it} `{d.cluster_id}`: {_cell(d.rationale, 300)}")
         L.append("")
+
+    # ---- LLM usage and cost (2026-10-22: the company wants the API cost per project)
+    L += cost_lines(r, lang)
 
     # ---- KB
     L.append(tr(lang, "## Knowledge base"))

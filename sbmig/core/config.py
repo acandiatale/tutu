@@ -267,6 +267,13 @@ class LoopConfig(BaseModel):
 BUILTIN_LLM_PROVIDERS = ("company", "openai_compatible", "anthropic", "fake")
 
 
+class ModelPrice(BaseModel):
+    """`llm.pricing.<model>`: list price per 1M tokens (currency = llm.pricing_currency)."""
+    input_per_mtok: float
+    output_per_mtok: float
+    cached_input_per_mtok: Optional[float] = None   # informational: sbmig cannot see cache hits in the gateway reply
+
+
 class LLMConfig(BaseModel):
     """`provider` is one of BUILTIN_LLM_PROVIDERS, `plugin` (→ `plugin` = "pkg.module:factory"), or the name of an
     adapter registered under the `sbmig.llm_adapters` entry-point group (in-house gateway / agent platform)."""
@@ -295,6 +302,12 @@ class LLMConfig(BaseModel):
     # json={"model", "messages", **payload_extra}, timeout=timeout_seconds) — see sbmig/fix/company.py
     payload_extra: dict[str, Any] = Field(default_factory=dict)      # extra top-level payload fields, sent verbatim
     response_path: Optional[str] = None      # dot path to the reply text, e.g. "data.result.content"; None → auto-detect
+    # 2026-10-22: per-project API cost in the report. Keys are model ids as the gateway names them (exact match first,
+    # then the longest key that is a prefix of / contained in the model id, case-insensitive); unmatched models are
+    # listed as unpriced. Company specifics live in config/default.yml / the company config, never in code.
+    pricing: dict[str, ModelPrice] = Field(default_factory=dict)
+    pricing_currency: str = "USD"
+    pricing_note: str = ""                   # printed under the cost table (source + date of the prices)
 
 
 class FixConfig(BaseModel):

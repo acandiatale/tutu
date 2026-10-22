@@ -105,6 +105,7 @@ sbmig run proj.zip -c config/artifacts.yml -c site-overrides.yml -c config/llm-a
 - 종료 코드: PowerShell `$LASTEXITCODE`, bash `echo $?`.
 - 보고서 맨 위 표의 Result와 Flags, 바로 아래 Handover.
 - 보고서(`report.md`) 언어는 `report.language`로 정합니다(`en` 기본, `ko`면 제목·표 머리글·안내 문장이 한국어). 한국어 보고서에서는 Result가 `결과`, Handover가 `인수인계` 절로 보입니다. 플래그 이름·레시피 id·경로·오류 메시지는 영어 그대로이고, `report.json`은 언어와 상관없이 같습니다.
+- 보고서의 "LLM 사용량과 비용" 절(2026-10-22)은 모델별(수정 모델·escalation 모델·레시피 모델) 호출 수와 입출력 토큰에 `llm.pricing`의 1M 토큰당 단가를 곱해 프로젝트 한 건의 API 비용을 계산합니다(요약 표의 `LLM 비용` 줄, `report.json`의 `llm_cost`, 콘솔 요약의 `LLM cost:` 줄). 기본 단가는 OpenAI 공시가(gpt-5.6-terra 입력 $2 / 출력 $12, gpt-6-luna 입력 $0.10 / 출력 $0.50)이며, 게이트웨이가 토큰 수(`usage`)를 돌려주지 않으면 비용이 0으로 나오고 그 사실이 표 아래에 적힙니다. 단가가 없는 모델은 합계에서 빠지고 이름만 표시됩니다.
 
 ### 1.7 Windows
 
@@ -449,7 +450,7 @@ projects:
 3. 프로젝트마다 재개 판단을 합니다. `success`는 다시 돌리지 않습니다. `incomplete` / `aborted`는 `--retry-failed`일 때만 다시 돌립니다. 지난번에 `running`으로 남은 것(플릿 프로세스가 죽음)은 다시 돌립니다. 입력이 없는 것은 `skipped`입니다(나중에 생기면 재개 때 실행).
 4. 실행 디렉터리는 `<out>/<fleet id>-<NNN>-<name>/`이고, 재시도는 `-r2`, `-r3` 접미사가 붙습니다. 프로젝트마다 LLM 예산은 `min(loop.max_llm_calls, 플릿 남은 예산)`입니다(`fleet.max_llm_calls_total`, 0 = 무제한).
 5. 종료 코드로 상태를 정합니다: 0 → `success`, 3 → `aborted`, 그 외 → `incomplete`. Gradle / Ant / 빌드 없음으로 intake에서 거부된 프로젝트는 `skipped`(사유는 행의 `error`)이고, `--retry-failed`로도 다시 돌지 않으며 `--stop-on-abort`도 이것으로는 플릿을 멈추지 않습니다.
-6. 프로젝트가 끝날 때마다 `state.json`을 원자적으로 다시 쓰고, `summary.md` / `summary.csv` / `summary.json`과 `learning.md`를 다시 만듭니다. `fleet.reindex_every`(기본 10)마다 KB 인덱스를 다시 만듭니다.
+6. 프로젝트가 끝날 때마다 `state.json`을 원자적으로 다시 쓰고, `summary.md` / `summary.csv` / `summary.json`과 `learning.md`를 다시 만듭니다. 표의 `llm_cost` 열과 머리글의 `cost`가 프로젝트별·플릿 전체 API 비용입니다(`llm.pricing` 단가). `fleet.reindex_every`(기본 10)마다 KB 인덱스를 다시 만듭니다.
 7. Ctrl+C로 끊으면 진행 중이던 프로젝트는 `pending`(`interrupted`)으로 돌아가므로 재개하면 다시 돕니다.
 
 ### 5.5 산출물

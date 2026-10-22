@@ -422,3 +422,33 @@ def test_skip_test_compile_policy_flags_and_follow_up(cfg, ws):
     assert any("neither compiled nor run" in f for f in report.manual_followups)
     assert any("build.skip_test_compile" in n for n in report.phases[-1].notes)
     assert "test-compile-skipped" not in report.flags
+
+
+def test_llm_cost_by_model_in_the_report(cfg, ws):
+    """Fix attempts (their model), the harvest recipe calls (through _BudgetedLLM) and the plan advisor are priced
+    per model with llm.pricing; the report carries llm_usage_by_model and llm_cost."""
+    from sbmig.core.config import ModelPrice
+    from sbmig.core.interfaces import LLMResponse
+    from sbmig.loop.orchestrator import _BudgetedLLM
+    from sbmig.loop.budget import LoopBudget
+    cfg = cfg.model_copy(deep=True)
+    cfg.llm.pricing = {"gpt-5.6-terra": ModelPrice(input_per_mtok=2.0, output_per_mtok=12.0),
+                       "gpt-6-luna": ModelPrice(input_per_mtok=0.1, output_per_mtok=0.5)}
+    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "class X { ok }\n", model="gpt-5.6-terra"))
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), fixer=fixer)
+    # a recipe-model call as the harvest would make it (FakeKB.harvest itself never calls the LLM)
+    class Inner:
+        def complete(self, *a, **k):
+            return LLMResponse(content="NONE", model="gpt-6-luna", input_tokens=1_000, output_tokens=10)
+    _BudgetedLLM(Inner(), LoopBudget(max_llm_calls=60), sink=orch._harvest_usage).complete("x")
+    report = orch.run()
+    by = {u.model: u for u in report.llm_usage_by_model}
+    assert by["gpt-5.6-terra"].calls == 2 and by["gpt-5.6-terra"].input_tokens == 200
+    assert by["gpt-6-luna"].calls == 1 and by["gpt-6-luna"].input_tokens == 1_000
+    c = report.llm_cost
+    assert c is not None and c.unpriced_models == [] and c.currency == "USD"
+    terra = next(m for m in c.by_model if m.model == "gpt-5.6-terra")
+    assert terra.cost == round(200 / 1e6 * 2.0 + 40 / 1e6 * 12.0, 6)
+    assert c.total == round(terra.cost + (1_000 / 1e6 * 0.1 + 10 / 1e6 * 0.5), 6)
+    md = (ws.run_dir / "report.md").read_text(encoding="utf-8")
+    assert "## LLM usage and cost" in md and "| `gpt-6-luna` | 1 | 1,000 | 10 |" in md

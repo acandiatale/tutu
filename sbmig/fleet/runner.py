@@ -150,6 +150,7 @@ class FleetRunner:
         assert self.state is not None
         self.state.updated_at = utcnow()
         self.state.llm_calls_total = sum(p.llm_calls for p in self.state.projects)
+        self.state.llm_cost_total = round(sum(p.llm_cost or 0.0 for p in self.state.projects), 6)
         atomic_write(self.state_path, self.state.model_dump_json(indent=2) + "\n")
 
     # ------------------------------------------------------------------ ordering
@@ -252,6 +253,7 @@ class FleetRunner:
         r.llm_calls = report.llm_usage.calls
         r.llm_input_tokens = report.llm_usage.input_tokens
         r.llm_output_tokens = report.llm_usage.output_tokens
+        r.llm_cost = report.llm_cost.total if getattr(report, "llm_cost", None) is not None else None
         r.blocked = len(report.blocked)
         r.blocked_reasons = [
             f"{b.reason.value}:{b.artifact.key if b.artifact else (b.owner_class or '-')}"

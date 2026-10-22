@@ -74,12 +74,18 @@ class _BudgetedLLM:
     """An LLM client whose calls are charged to the run's `LoopBudget` (recipe-candidate generation in the KB
     harvest goes through the same budget as the fix loop)."""
 
-    def __init__(self, inner: Any, budget: LoopBudget):
-        self._inner, self._budget = inner, budget
+    def __init__(self, inner: Any, budget: LoopBudget, sink: Optional[dict[str, LLMUsage]] = None):
+        self._inner, self._budget, self._sink = inner, budget, sink
 
     def complete(self, *args: Any, **kwargs: Any) -> Any:
         self._budget.charge_llm(1)
-        return self._inner.complete(*args, **kwargs)
+        res = self._inner.complete(*args, **kwargs)
+        if self._sink is not None:          # per-model usage for the cost table (recipe model calls)
+            model = str(getattr(res, "model", "") or kwargs.get("model") or "")
+            u = LLMUsage(model=model, calls=1, input_tokens=int(getattr(res, "input_tokens", 0) or 0),
+                         output_tokens=int(getattr(res, "output_tokens", 0) or 0))
+            self._sink[model] = self._sink.get(model, LLMUsage(model=model)).add(u)
+        return res
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -116,6 +122,7 @@ class Orchestrator:
         self._jdk_pre_done = False
         self._spring_pre_done = False
         self._verify_results: list[BuildResult] = []
+        self._harvest_usage: dict[str, LLMUsage] = {}      # recipe-model calls of the KB harvest, by model
         self._phase_failed = False
         self._dry_run = False
         self._pre_ids: list[str] = []
@@ -1236,7 +1243,7 @@ class Orchestrator:
                      self.budget.llm_calls, self.budget.max_llm_calls)
         elif self.cfg.kb.generate_recipe_candidates:
             try:
-                llm = _BudgetedLLM(self.llm_client(), self.budget)
+                llm = _BudgetedLLM(self.llm_client(), self.budget, sink=self._harvest_usage)
             except Exception as e:
                 log.info("no LLM for recipe-candidate generation: %s", e)
         try:
@@ -1375,6 +1382,24 @@ class Orchestrator:
                     notes.append(note)
             f.llm_fixed_files, f.llm_fix_notes = files, notes
 
+    def _usage_by_model(self, report: RunReport, plan_usage: Optional[LLMUsage]) -> list[LLMUsage]:
+        """Fix / escalation attempts (their own model), the plan advisor and the harvest recipe calls, per model."""
+        by: dict[str, LLMUsage] = {}
+
+        def acc(u: Optional[LLMUsage], fallback: str) -> None:
+            if u is None or not (u.calls or u.input_tokens or u.output_tokens):
+                return
+            key = (u.model or fallback or "?").strip()
+            by[key] = by.get(key, LLMUsage(model=key)).add(u.model_copy(update={"model": key}))
+        for pr in report.phases:
+            for a in pr.attempts:
+                acc(a.llm_usage, a.model or self.cfg.llm.model)
+        if plan_usage is not None:
+            acc(plan_usage, self.cfg.llm.recipe_model or self.cfg.llm.model)
+        for k, u in self._harvest_usage.items():
+            acc(u, k or self.cfg.llm.recipe_model or self.cfg.llm.model)
+        return list(by.values())
+
     def _finalize(self, report: RunReport) -> None:
         report.finished_at = utcnow()
         usage = LLMUsage()
@@ -1386,6 +1411,12 @@ class Orchestrator:
         if plan_usage is not None and plan_usage.calls:
             usage = usage.add(plan_usage)          # plan advisor (recipe model) calls
         report.llm_usage = usage
+        report.llm_usage_by_model = self._usage_by_model(report, plan_usage)
+        try:
+            from sbmig.report.cost import compute_llm_cost
+            report.llm_cost = compute_llm_cost(report.llm_usage_by_model, self.cfg)
+        except Exception as e:  # pragma: no cover - pricing must never fail a run
+            log.warning("llm cost not computed: %s", e)
         if self.loop is not None:
             for f in self.loop.flags:
                 if f not in report.flags:

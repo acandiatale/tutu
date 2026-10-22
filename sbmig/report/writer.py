@@ -85,6 +85,11 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     u = report.llm_usage
     console.print(f"LLM: {u.calls} call(s), {u.input_tokens}/{u.output_tokens} tokens"
                   + (f"   flags: {', '.join(report.flags)}" if report.flags else ""))
+    if report.llm_cost is not None and (report.llm_cost.by_model or u.calls):
+        from .cost import fmt_money
+        c = report.llm_cost
+        extra = f" (+ unpriced: {', '.join(c.unpriced_models)})" if c.unpriced_models else ""
+        console.print(f"LLM cost: {fmt_money(c.total, c.currency)}{extra}")
     if report.blocked:
         bt = Table(title=f"{BLOCKED_TITLE} ({len(report.blocked)})")
         for col in ("reason", "artifact / owner", "files", "suggestion"):

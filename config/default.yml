@@ -158,6 +158,16 @@ llm:
   cooldown_seconds: 60             # 2nd transport failure in a row → pause once per run, then retry (0 = unavailable at once)
   max_context_rounds: 2
   prompt_version: v1
+  # Per-project API cost (report "LLM usage and cost", fleet summary column llm_cost): list prices per 1M tokens.
+  # OpenAI developer docs, 2026-10-22 (developers.openai.com/api/docs/models/gpt-5.6-terra, …/gpt-6-luna):
+  #   GPT-5.6 Terra  $2.00 in / $12.00 out (cached in $0.20)  — the fix model
+  #   GPT-6 Luna     $0.10 in /  $0.50 out (cached in $0.01)  — the recipe model
+  # Keys match the model id the gateway sees (exact, else prefix / substring); add the company gateway's own rates here.
+  pricing:
+    gpt-5.6-terra: { input_per_mtok: 2.00, output_per_mtok: 12.00, cached_input_per_mtok: 0.20 }
+    gpt-6-luna:    { input_per_mtok: 0.10, output_per_mtok: 0.50,  cached_input_per_mtok: 0.01 }
+  pricing_currency: USD
+  pricing_note: "OpenAI list prices as of 2026-10-22 (developers.openai.com model pages); the company gateway may bill differently"
 
 kb:
   dir: kb

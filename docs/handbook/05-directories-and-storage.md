@@ -596,7 +596,7 @@ KB 는 `out/` 에 있지 않다는 점(회사 운영 기준)을 다시 강조합
 ├── fleet/
 │   ├── state.json           FleetState — 프로젝트마다 원자적으로 다시 씀(죽어도 재개 가능)
 │   ├── fleet-config.json    마지막 run 의 configs + overrides (resume 이 사용)
-│   ├── summary.md / summary.csv / summary.json    프로젝트별 상태·LLM 호출·차단·advisory 표 (fleet.summary_formats)
+│   ├── summary.md / summary.csv / summary.json    프로젝트별 상태·LLM 호출·비용(llm_cost)·차단·advisory 표 (fleet.summary_formats)
 │   ├── learning.md          이 플릿 실행들의 원장 요약 + KB 통계
 │   └── sbmig.log            플릿 전체 로그(각 실행의 sbmig.log 는 별도)
 ├── <fleet id>-001-<name>/   일반 실행 디렉터리와 동일 구조

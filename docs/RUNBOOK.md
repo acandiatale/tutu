@@ -293,6 +293,7 @@ project uncompilable costs LLM budget on every project — keep it `guide` until
 | `loop.max_llm_calls`, `loop.max_total_minutes` | 60 / 180 | hard budgets per run |
 | `loop.stall_limit` | 2 | identical error set N times → escalation model + widen context |
 | `llm.escalation_model` | null | stronger model after a stall |
+| `llm.pricing.<model>` / `llm.pricing_currency` / `llm.pricing_note` | OpenAI list prices (2026-10-22) for `gpt-5.6-terra`, `gpt-6-luna` | per-project API cost in the report ("LLM usage and cost", `report.json` `llm_cost`) and the fleet `summary.md` (`llm_cost` column); unpriced models are listed, never guessed |
 | `build.skip_test_compile` | false (company: true) | `-Dmaven.test.skip=true` on every build — test sources neither compiled nor run (flag `tests-not-compiled`, Handover follow-up); the company's decision (2026-10-22) |
 | `build.allow_skip_test_compile_fallback` | true | last resort `-Dmaven.test.skip=true`, flagged in the report |
 | `layout.split_policy` | minimal | `web-layer` moves controllers/config into boot-jar |
