@@ -251,3 +251,58 @@ def test_nearest_pom_never_spins_on_absolute_or_windows_paths(tmp_path):
     assert nearest_pom(ws, "/") == "pom.xml" and nearest_pom(ws, None) == "pom.xml"
     assert nearest_pom(ws, "C:/other/A.java") in ("pom.xml", None)
     assert time.monotonic() - t0 < 2.0
+
+
+def test_related_type_files_from_location(cfg, ws, put, tmp_path):
+    """2026-10-22: the repository interface named in `location:` is shown so the LLM can patch it (Spring Data 3 CRUD)."""
+    put("src/main/java/com/x/service/MemberService.java",
+        "package com.x.service;\n\nimport com.x.repo.MemberRepository;\n\npublic class MemberService {\n"
+        "    MemberRepository repository;\n    void f() { repository.findAll(); }\n}\n")
+    put("src/main/java/com/x/repo/MemberRepository.java",
+        "package com.x.repo;\n\nimport com.x.repo.BaseRepository;\n\n"
+        "public interface MemberRepository extends BaseRepository<Member, Long> {\n}\n")
+    put("src/main/java/com/x/repo/BaseRepository.java",
+        "package com.x.repo;\n\npublic interface BaseRepository<T, ID> {\n}\n")
+    err = BuildError(kind=ErrorKind.COMPILE, message="no suitable method found for findAll(no arguments)",
+                     file="src/main/java/com/x/service/MemberService.java", line=7, signature="s1",
+                     location="variable repository of type com.x.repo.MemberRepository",
+                     raw="no suitable method found for findAll(no arguments)\n    method org.springframework.data."
+                         "repository.PagingAndSortingRepository.findAll(Sort) is not applicable\n"
+                         "    method com.x.repo.BaseRepository.findAll(int) is not applicable")
+    cl = ErrorCluster(id="c1", kind=ErrorKind.COMPILE, file=err.file, errors=[err], signatures=["s1"])
+    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, cl, ctx(), "case=spring_boot")
+    secs = dict(p.sections)
+    rel = secs[ContextPacker.RELATED_FILES_TITLE]
+    assert "src/main/java/com/x/repo/MemberRepository.java" in rel and "interface MemberRepository" in rel
+    assert "src/main/java/com/x/repo/BaseRepository.java" in rel          # the candidate owner, a project type
+    assert "PagingAndSortingRepository" not in p.files_included            # library types are never files
+    assert "src/main/java/com/x/repo/MemberRepository.java" in p.files_included
+    # the cluster file itself is never repeated as a related file
+    assert rel.count("MemberService.java") == 0
+    order = [t for t, _ in p.sections]
+    assert order.index("Source (exact text; copy SEARCH blocks from here)") < order.index(ContextPacker.RELATED_FILES_TITLE)
+
+
+def test_related_type_files_simple_name_via_import_and_cap(cfg, ws, put, tmp_path):
+    put("src/main/java/com/x/A.java", "package com.x;\n\nimport com.x.r.R1;\n\npublic class A { R1 r; }\n")
+    for n in ("R1", "R2", "R3", "R4"):
+        put(f"src/main/java/com/x/r/{n}.java", f"package com.x.r;\n\npublic interface {n} {{}}\n")
+    put("src/main/java/com/x/Same.java", "package com.x;\n\npublic class Same {}\n")
+    errs = [BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file="src/main/java/com/x/A.java", line=5,
+                       signature="s1", symbol="method save(Foo)", location="variable r of type R1"),
+            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=6, signature="s2",
+                       location="class Same"),
+            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=7, signature="s3",
+                       location="variable q of type com.x.r.R2"),
+            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=8, signature="s4",
+                       location="variable q of type com.x.r.R3"),
+            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=9, signature="s5",
+                       location="variable q of type com.x.r.R4")]
+    cl = ErrorCluster(id="c1", kind=ErrorKind.COMPILE, file="src/main/java/com/x/A.java", errors=errs,
+                      signatures=[e.signature for e in errs])
+    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, cl, ctx(), "")
+    rel = dict(p.sections)[ContextPacker.RELATED_FILES_TITLE]
+    assert "r/R1.java" in rel and "Same.java" in rel and "r/R2.java" in rel       # import, same package, FQCN
+    assert "r/R3.java" not in rel and "r/R4.java" not in rel                     # capped at MAX_RELATED_FILES
+    plain = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), ctx(), "")
+    assert ContextPacker.RELATED_FILES_TITLE not in dict(plain.sections)

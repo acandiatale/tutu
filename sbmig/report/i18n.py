@@ -172,6 +172,35 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "(Spring Data 3 removed its CRUD methods)":
         "PagingAndSortingRepository만 상속하던 리포지토리 인터페이스에 ListCrudRepository<T, ID>를 다시 추가했다"
         "(Spring Data 3에서 CRUD 메서드가 빠짐)",
+    "javax EE API jars are still on the resolved classpath after the migration (section \"javax API jars still on "
+    "the classpath\"): the direct dependencies that drag them in are compiled against javax and need Jakarta builds":
+        "마이그레이션 후에도 javax EE API jar가 해석된 클래스패스에 남아 있다(\"클래스패스에 남은 javax API jar\" 절): "
+        "이를 끌어오는 직접 의존성이 javax 기준으로 컴파일되어 있어 Jakarta 빌드가 필요하다",
+    "a third-party library with a known jakarta.* release was raised to it "
+    "(knowledge/libraries/jakarta_libraries.yml, handler jakarta-library-floor)":
+        "jakarta.* 릴리스가 알려진 서드파티 라이브러리를 그 버전으로 올렸다"
+        "(knowledge/libraries/jakarta_libraries.yml, jakarta-library-floor 핸들러)",
+    # ---- javax API jars still on the classpath (X1b, 2026-10-22)
+    "javax API jars still on the classpath": "클래스패스에 남은 javax API jar",
+    "| javax API jars | {n} |": "| javax API jar | {n}개 |",
+    " ← declared in the pom": " ← pom에 직접 선언",
+    "{n} javax EE API jar(s) are still on the resolved classpath after the migration (`mvn dependency:tree`). The "
+    "library in \"via\" is compiled against javax: code that passes jakarta.* types to it does not compile, and it "
+    "fails at runtime.":
+        "마이그레이션 후에도 javax EE API jar {n}개가 해석된 클래스패스에 남아 있다(`mvn dependency:tree`). "
+        "\"via\"의 라이브러리는 javax 기준으로 컴파일되어 있어, jakarta.* 타입을 넘기는 코드는 컴파일되지 않고 "
+        "런타임에도 실패한다.",
+    "| artifact | module | scope | via (direct dependency) | declared in pom | what to do |":
+        "| 아티팩트 | 모듈 | 스코프 | via (직접 의존성) | pom에 선언 | 할 일 |",
+    "(root)": "(루트)",
+    "no": "아니오",
+    "raise to {version} (jakarta.* since {since})": "{version}(으)로 올림 ({since}부터 jakarta.*)",
+    "coordinates changed: relocate to `{key}:{version}` (jakarta.* since {since})":
+        "좌표가 바뀜: `{key}:{version}`(으)로 이전 ({since}부터 jakarta.*)",
+    ", requires Java {java}": ", Java {java} 이상 필요",
+    "in-house → Jakarta build": "사내 아티팩트 → Jakarta 빌드 필요",
+    "upgrade / replace": "업그레이드 / 교체",
+    "remove the declaration (handler dependency-relocation)": "선언 제거 (dependency-relocation 핸들러)",
     "every build ran with `-Dmaven.test.skip=true` (build.skip_test_compile): test sources were neither compiled nor "
     "run — the owning team compiles and fixes them":
         "모든 빌드가 `-Dmaven.test.skip=true`로 실행됨(build.skip_test_compile): 테스트 소스는 컴파일도 실행도 하지 "
@@ -252,6 +281,12 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     (r"^as-is effective dependencyManagement unavailable — versions the as-is parent managed are shown as '-'$",
      r"as-is effective dependencyManagement를 얻지 못했다 — as-is parent가 관리하던 버전은 '-'로 표시"),
     (r"^handover unavailable: (?P<x>.+)$", r"인수인계 정보를 만들지 못함: \g<x>"),
+    (r"^(?P<n>\d+) javax API jar\(s\) still on the classpath — see that section$",
+     r"클래스패스에 남은 javax API jar \g<n>개 — '클래스패스에 남은 javax API jar' 절 참조"),
+    ((r"^(?P<n>\d+) javax API jar\(s\) still on the classpath after the migration \(see the report section\) — "
+      r"the libraries that drag them in need Jakarta builds: (?P<libs>.+)$"),
+     (r"마이그레이션 후에도 javax API jar \g<n>개가 클래스패스에 남아 있다('클래스패스에 남은 javax API jar' 절 참조) — "
+      r"이를 끌어오는 라이브러리에 Jakarta 빌드가 필요하다: \g<libs>")),
 )]}
 
 

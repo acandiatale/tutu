@@ -499,7 +499,7 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   * e2e: post-check kinds `pom_packaging {path, packaging}` (missing = jar), `pom_module_list {path, modules,
     any_order}`; `tests/fixtures` `COMPANY_OVERRIDES` registry (layout + role-parent overrides). Fixtures
     `legacy-role-parents` (Boot as-is in place), `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`
-    (24 fixtures; 25 with `boot2-rewrite-excluded`, 2026-10-22).
+    (24 fixtures; 26 with `boot2-rewrite-excluded` and `boot2-qlrm-javax`, 2026-10-22).
   * Follow-ups from the first company run (same day): `openrewrite.exclusions` (default `**/*.jsp, **/*.jspx,
     **/*.html, **/*.htm` → `-Drewrite.exclusions`; OpenRewrite's XML parser reads those and logs ANTLR noise);
     handler `jstl-to-jakarta` (`JstlToJakarta(RelocationHandler)`, pre-emptive in the spring phase via
@@ -541,3 +541,26 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   `spring-data-crud-restored`). Pre-handler selection (`sbmig/plan/pre_handlers.py`): javax Jakarta EE imports in
   the as-is scan → sweep; a `spring-data*` / `jpa` library → CRUD handler; both run once after the spring recipes
   (`Orchestrator._maybe_pre_handlers`, group SPRING) and reactively on their compile-error wording.
+* 2026-10-22, second (fourth company project: `jakarta.persistence.Query cannot be converted to javax.persistence.Query`
+  was attributed to `javax.persistence:javax.persistence-api:2.2` — the type's jar, not `org.qlrm:qlrm:2.1.1` that
+  still uses it): `sbmig/build/deptree.py` — `dependency_tree(ws, cfg, module=None, includes=()) -> list[TreeNode]`
+  (`maven-dependency-plugin:3.8.1:tree -DoutputFile=<file> -DappendOutput=true [-Dincludes=…] -q`, `-pl <dir> -am`
+  for a module, package fallback for unresolved reactor siblings, cache `<run dir>/deptree/<name>[-<hash>].txt` +
+  `.meta.json` keyed by the pom stamp, 10 min timeout, never raises; journal `deptree` {`module`, `ok`, `includes`,
+  `log`}), `parse_tree(text)` (reactor multi-root, classifier, scope, notes, CRLF), `paths_to(roots, predicate)`,
+  `TreeNode(gav, scope, depth, children, note, root, text)`, `JAVAX_API_PATTERNS`, `is_javax_api(gav)`,
+  `javax_api_inventory(ws, cfg, profile=None) -> list[JavaxApiJar]` (root run + modules that did not show up; test
+  scope only when nothing else matches; reactor siblings skipped for `via`; de-duplicated by (artifact, via)).
+  Models: `JavaxApiJar(artifact, module, scope, path, via, declared)`, `BlockedItem.via: list[str]` /
+  `via_direct: Optional[GAV]`, `RunReport.javax_api_jars`. Config `report.javax_api_inventory: true`. Knowledge
+  `knowledge/libraries/jakarta_libraries.yml` + `sbmig/core/jakarta_libraries.py` (`jakarta_libraries()`,
+  `jakarta_library_for(key)` — current or `old_keys` coordinates). `sbmig/loop/blocked_registry.py`: `fill_via(items,
+  inventory, cfg)`, `match_javax_jar`, `is_javax_api_artifact`, `is_in_house`, `compose_suggestion(…, javax_jar=None)`
+  with the X1 ladder (1)–(5) of `docs/ERROR-HANDLING.md`; notes `via: a → b → c`. `Orchestrator(…,
+  javax_inventory=None)` — callable `(ws, cfg, profile)`; None = the real inventory with the real Maven only, False =
+  off; `_finalize_javax_inventory` runs before `_finalize_blocked` when a spring phase ran (not on dry runs): flag
+  `javax-api-on-classpath`, follow-up "N javax API jar(s) still on the classpath after the migration …", journal
+  `javax_api_inventory` {`jars`, `via`}. Report: section "javax API jars still on the classpath"
+  (`markdown.javax_api_lines`, `render_markdown(…, cfg=None)`), Blocked cell "`api jar` ← `via`", summary row, Handover
+  pointer. Flag `jakarta-library-bumped` and handler ids `jakarta-library-floor` / pre-emptive `dependency-relocation`
+  (declared javax API artifacts, after the spring recipes) belong to the parallel triage / plan workstream.

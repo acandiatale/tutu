@@ -125,6 +125,8 @@ intake → analyze → plan → jdk21(레시피 + 루프) → spring(레시피 +
 | `rewrite-parse-problems` | OpenRewrite가 일부 소스를 파싱하지 못해 레시피가 그 파일을 건너뜀(phase 노트에 파일 목록). 남은 것은 소스 핸들러와 수정 루프가 처리 → 9.16 |
 | `jakarta-leftovers-renamed` | 레시피가 남긴 `javax.*`를 `jakarta-namespace-sweep`이 바꿈(E13). follow-up의 문자열 / 리소스 파일 확인 |
 | `spring-data-crud-restored` | 페이징 리포지토리에 `ListCrudRepository<T, ID>`를 추가함(E14) |
+| `javax-api-on-classpath` | 마이그레이션 후에도 javax API jar가 클래스패스에 남음(X1b). 보고서 절 "javax API jars still on the classpath"의 via 라이브러리에 Jakarta 빌드가 필요 |
+| `jakarta-library-bumped` | jakarta 릴리스가 알려진 서드파티 라이브러리(`knowledge/libraries/jakarta_libraries.yml`)를 `jakarta-library-floor`가 올림 |
 | `llm-cooldown` / `llm-unavailable` | 게이트웨이 장애 → 9.1 |
 | `llm-budget-exhausted` / `time-budget-exhausted` | 예산 소진(`loop.max_llm_calls` / `loop.max_total_minutes`) |
 | `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `unsupported-build-tool:<도구>` | 중단 사유(종료 코드 3) |
@@ -206,7 +208,8 @@ Select-String -Path "$run\sbmig.log" -Pattern "max fix rounds|fix round"
 ### 6.1 외부/인프라 차단(X)
 | ID | 증상 | 의미 | sbmig가 하는 일 | 운영자가 할 일 |
 |---|---|---|---|---|
-| X1 의존성의 javax API | jakarta 전환 후 `incompatible types: jakarta.servlet.http.HttpServletRequest cannot be converted to javax.servlet.http.HttpServletRequest`, `… cannot be applied … required: javax.* found: jakarta.*` | 의존 라이브러리가 아직 javax 타입을 API로 노출 | 소유 클래스 → jar → GAV를 classpath로 추적. 그 아티팩트가 `artifacts.optional`이면 버전 bump가 해결책, 아니면 LLM 0회로 즉시 blocked | 라이브러리의 Jakarta 빌드로 올리거나 `artifacts.optional`에 그 버전으로 추가 후 재실행 |
+| X1 의존성의 javax API | jakarta 전환 후 `incompatible types: jakarta.servlet.http.HttpServletRequest cannot be converted to javax.servlet.http.HttpServletRequest`, `… cannot be applied … required: javax.* found: jakarta.*` | 의존 라이브러리가 아직 javax 타입을 API로 노출 | 소유 클래스 → jar → GAV를 classpath로 추적하고, 그 jar가 javax API jar 자체이면 `dependency:tree` 경로로 끌어오는 라이브러리(`via`)를 찾음. 그 아티팩트가 `artifacts.optional`이면 버전 bump가 해결책, 아니면 LLM 0회로 즉시 blocked | Blocked 행의 "`API jar` ← `라이브러리`"를 봅니다. 표(`knowledge/libraries/jakarta_libraries.yml`)에 있는 라이브러리는 핸들러 `jakarta-library-floor`가 올림. 사내 아티팩트는 Jakarta 빌드 요청 + `artifacts.optional` 추가, 그 밖은 Jakarta 릴리스로 올리거나 교체 |
+| X1b 마이그레이션 후 클래스패스에 남은 javax API jar | 빌드 성공 여부와 관계없음: 보고서 절 "javax API jars still on the classpath", 플래그 `javax-api-on-classpath` | javax 기준으로 컴파일된 라이브러리가 javax API jar를 끌어옴(jakarta 타입을 넘기면 컴파일 실패, 아니면 런타임 실패) | 최종 빌드 뒤 `mvn dependency:tree -Dincludes=<javax API 패턴>`(`report.javax_api_inventory`, journal `deptree` / `javax_api_inventory`) | 절의 "via" 라이브러리를 Jakarta 빌드로 올리거나 교체, pom에 직접 선언된 API jar는 제거 |
 | X2 의존성 API 변경(javax 아님) | `cannot find symbol … location: class <라이브러리 클래스>`, `method … cannot be applied` | 라이브러리 메서드 이름/시그니처가 바뀜 | LLM 1회(이름 바뀐 메서드는 적응 가능, 성공하면 `ChangeMethodName` 후보) 후 blocked | 소유 아티팩트·심볼 확인, 라이브러리 담당에 문의 |
 | X3 아티팩트 없음 | `Could not find artifact g:a:v in <repo>`, `The following artifacts could not be resolved` | Nexus에 없거나 좌표가 틀림 | 알려진 relocation 핸들러 먼저, 모르면 LLM 0회로 blocked(LLM은 버전을 지어내지 않음) | Nexus에 프록시하거나 좌표 수정 |
 | X4 부모 해석 불가 | `Non-resolvable parent POM` | 사내 부모(`xxx-parent` 등)를 받을 수 없음 | 설정된 사내 부모면 일찍 중단(`aborted:parent-not-found`, 종료 코드 3) | settings.xml / Nexus / 좌표·버전 확인 |

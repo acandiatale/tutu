@@ -37,7 +37,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
-             "boot2-rewrite-excluded"]
+             "boot2-rewrite-excluded", "boot2-qlrm-javax"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -70,6 +70,7 @@ BUILD_MATRIX = [
     ("company-spring5-web", ".", "11", ""),
     ("company-servlet-jsp", ".", "8", ""),
     ("boot2-rewrite-excluded", ".", "11", ""),
+    ("boot2-qlrm-javax", ".", "11", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),

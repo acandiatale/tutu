@@ -136,7 +136,13 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   (E13, table `sbmig/triage/handlers/jakarta_packages.yml`) and `spring-data-crud-repository` (E14,
   `ListCrudRepository<T, ID>` for paging-only repositories), pre-emptive after the spring recipes + reactive;
   `RewriteResult.parse_problems` → flag `rewrite-parse-problems` (E8b); note `jakarta.md` (Spring Data 3 / Hibernate 6
-  query API); fixture `boot2-rewrite-excluded` (25 fixtures).
+  query API); fixture `boot2-rewrite-excluded`. Second look (user's lines): the javax consumer was QLRM
+  `ch.simas.qlrm:qlrm:1.7.1` — X1 had blamed the API jar → `sbmig/build/deptree.py` (`dependency:tree`) fills
+  `BlockedItem.via` and the suggestion names the library; report section "javax API jars still on the classpath"
+  (`report.javax_api_inventory`, flag `javax-api-on-classpath`); `knowledge/libraries/jakarta_libraries.yml` + handler
+  `jakarta-library-floor` (QLRM → `org.qlrm:qlrm:4.2.1`, flag `jakarta-library-bumped`); `dependency-relocation`
+  pre-emptive for declared javax APIs; E14b (library base repository → `ListCrudRepository`); the fix LLM sees the
+  project types the errors name ("Related project types" section). Fixture `boot2-qlrm-javax` (26 fixtures).
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -178,7 +184,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,460 passed, 35 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,526 passed, 36 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

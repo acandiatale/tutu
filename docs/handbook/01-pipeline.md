@@ -291,11 +291,12 @@ sequenceDiagram
 1. LLM 사용량 합산(시도별 사용량 + 예산 카운터 + 플랜 조언 호출), 루프 플래그와 후속 조치 병합, `loop.max_llm_calls`에 닿았으면 플래그 `llm-budget-exhausted`.
 2. `success` 계산(§4.7).
 3. unresolved 계산: 실패한 verify 빌드의 오류. verify가 없었으면(중단, stop-after) 마지막 단계의 남은 오류. 대체 빌드(`test-compile-skipped` / `tests-skipped`)가 감춘 오류도 포함합니다.
-4. blocked 정리(`_finalize_blocked`): 최종 빌드가 초록이면 더 이상 나타나지 않는 blocked 항목을 지우고 journal `blocked_resolved`를 남깁니다.
-5. 출력 경로 기록, `changes.patch`(`report.include_diff`), `result.zip`(`report.zip_result`, dry-run 제외).
-6. 어드바이저리 검증(최종 트리에서 다시 찾아 `replaced` / `still-present` / `unknown`, journal `advisories_verified`) → Handover 작성(journal `handover`: `changes`, `carried_over`, `from_here`).
-7. 실행 단위 ledger 기록(`record_run`: unresolved / registry에만 있는 blocked 줄, 늦은 자동 승격).
-8. `<run dir>/report.json` / `<run dir>/report.md` 작성 → journal `report`(`success`, `flags`, `unresolved`, `blocked`, `llm_calls`, `outputs`).
+4. javax API 인벤토리(`_finalize_javax_inventory`, `report.javax_api_inventory`, spring 단계가 돌았고 dry-run이 아닐 때): 모듈마다 `mvn dependency:tree -Dincludes=<javax API 패턴>`(journal `deptree`)으로 클래스패스에 남은 javax API jar를 찾아 `report.json`의 `javax_api_jars`에 넣고, X1 / X2 blocked 항목에 `via`를 채워 제안을 다시 씁니다. 하나라도 있으면 플래그 `javax-api-on-classpath` + 후속 조치, journal `javax_api_inventory`(`jars`, `via`).
+5. blocked 정리(`_finalize_blocked`): 최종 빌드가 초록이면 더 이상 나타나지 않는 blocked 항목을 지우고 journal `blocked_resolved`를 남깁니다.
+6. 출력 경로 기록, `changes.patch`(`report.include_diff`), `result.zip`(`report.zip_result`, dry-run 제외).
+7. 어드바이저리 검증(최종 트리에서 다시 찾아 `replaced` / `still-present` / `unknown`, journal `advisories_verified`) → Handover 작성(journal `handover`: `changes`, `carried_over`, `from_here`).
+8. 실행 단위 ledger 기록(`record_run`: unresolved / registry에만 있는 blocked 줄, 늦은 자동 승격).
+9. `<run dir>/report.json` / `<run dir>/report.md` 작성 → journal `report`(`success`, `flags`, `unresolved`, `blocked`, `llm_calls`, `outputs`).
 
 `result.zip`과 `changes.patch`는 보고서보다 **먼저** 만들어지므로 보고서 파일은 zip에 들어가지 않습니다. zip에는 마이그레이션된 프로젝트만 들어 있습니다.
 

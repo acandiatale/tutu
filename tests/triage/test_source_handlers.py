@@ -70,19 +70,24 @@ def test_rename_table_semantics(src, expected):
     assert bool(r.replacements) == (expected is not None)
 
 
-def test_literals_untouched_comments_renamed():
+def test_literals_and_comments_untouched():
+    """Comments are prose (a Javadoc naming javax.persistence.Query is not a leftover — the QLRM e2e fixture raised the
+    flag for exactly that); literals are kept and reported; only code tokens are renamed."""
     src = ('// uses javax.persistence.Entity\n'
+           '/** takes javax.persistence.Query */\n'
            'String k = "javax.persistence.jdbc.url";\n'
            "char c = 'x';\n"
            'String tb = """\n  javax.servlet.http.HttpServlet\n  """;\n'
            'javax.persistence.EntityManager em;\n')
     r = rename_javax(src)
-    assert "// uses jakarta.persistence.Entity" in r.text
+    assert "// uses javax.persistence.Entity" in r.text
+    assert "/** takes javax.persistence.Query */" in r.text
     assert '"javax.persistence.jdbc.url"' in r.text
     assert "  javax.servlet.http.HttpServlet\n" in r.text
     assert "jakarta.persistence.EntityManager em;" in r.text
     assert r.literal_hits == ["javax.persistence.jdbc.url", "javax.servlet.http.HttpServlet"]
-    assert r.replacements["javax.persistence"] == 2
+    assert r.replacements["javax.persistence"] == 1
+    assert rename_javax('/** only javax.persistence.Query in a comment */\nclass A {}\n').replacements == {}
 
 
 def test_table_loaded_and_keys():
@@ -369,3 +374,78 @@ def test_pre_handler_reasons(cfg):
                           source=SourceStats(javax_imports={"javax.sql": 1, "javax.swing": 2}))
     ids = [i for i, _ in pre_handler_reasons(pure, cfg)]
     assert "jakarta-namespace-sweep" not in ids and "spring-data-crud-repository" not in ids
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# E14b: CRUD lost through a library base interface (reactive only)
+# ---------------------------------------------------------------------------------------------------------------------
+LIB_REPO_PATH = "src/main/java/com/example/MemberRepository.java"
+LIB_REPO = ("package com.example;\n\nimport com.company.jpa.BaseRepository;\n\n"
+            "public interface MemberRepository extends BaseRepository<Member, Long> {\n}\n")
+FIND_ALL_RAW = ("no suitable method found for findAll(no arguments)\n"
+                "    method PagingAndSortingRepository.findAll(Sort) is not applicable\n"
+                "  location: variable repository of type com.example.MemberRepository")
+
+
+def _find_all_cluster(kit):
+    svc = _java(kit.root, "src/main/java/com/example/MemberService.java", "package com.example;\nclass MemberService {}\n")
+    return _cluster(_err("no suitable method found for findAll(no arguments)", file=svc, raw=FIND_ALL_RAW,
+                         location="variable repository of type com.example.MemberRepository"))
+
+
+def test_crud_library_base_gets_list_crud_repository(fake_kit):
+    _java(fake_kit.root, LIB_REPO_PATH, LIB_REPO)
+    cl = _find_all_cluster(fake_kit)
+    h = _crud(fake_kit)
+    assert h.matches(cl, make_profile(libs=[("spring-data-jpa", None)]), None)
+    assert [c.path for c in h.apply(fake_kit.ws, cl, None, None)] == [LIB_REPO_PATH]
+    text = (fake_kit.root / LIB_REPO_PATH).read_text()
+    assert "extends BaseRepository<Member, Long>, ListCrudRepository<Member, Long> {" in text
+    assert ("import com.company.jpa.BaseRepository;\n"
+            "import org.springframework.data.repository.ListCrudRepository;\n") in text
+    assert h.flags == ["spring-data-crud-restored"]
+    assert h.notes == ["added ListCrudRepository<T, ID> to 1 repository interface(s) whose base interface comes from "
+                       "a library built on Spring Data 2 (PagingAndSortingRepository lost its CRUD methods in Spring "
+                       "Data 3): MemberRepository"]
+    assert h.apply(fake_kit.ws, cl, None, None) == []                       # idempotent (now CRUD-bearing)
+
+
+def test_crud_library_base_with_one_type_argument_is_a_follow_up(fake_kit):
+    _java(fake_kit.root, LIB_REPO_PATH, LIB_REPO.replace("BaseRepository<Member, Long>", "BaseRepository<Member>"))
+    h = _crud(fake_kit)
+    assert h.apply(fake_kit.ws, _find_all_cluster(fake_kit), None, None) == []
+    assert "ListCrud" not in (fake_kit.root / LIB_REPO_PATH).read_text()
+    assert h.flags == []
+    assert h.notes == ["follow-up: MemberRepository lost its CRUD methods through a library base interface "
+                       "(BaseRepository<Member>) whose type arguments could not be mapped — add ListCrudRepository<T, "
+                       "ID> by hand or upgrade the library"]
+
+
+def test_crud_project_base_with_crud_is_left_alone(fake_kit):
+    _java(fake_kit.root, LIB_REPO_PATH, LIB_REPO.replace("import com.company.jpa.BaseRepository;\n", ""))
+    base = _java(fake_kit.root, "src/main/java/com/example/BaseRepository.java",
+                 "package com.example;\n\nimport org.springframework.data.jpa.repository.JpaRepository;\n\n"
+                 "public interface BaseRepository<T, ID> extends JpaRepository<T, ID> {\n}\n")
+    h = _crud(fake_kit)
+    assert h.apply(fake_kit.ws, _find_all_cluster(fake_kit), None, None) == []
+    assert "ListCrud" not in (fake_kit.root / LIB_REPO_PATH).read_text()
+    assert "ListCrud" not in (fake_kit.root / base).read_text()
+    assert h.notes == []
+
+
+def test_crud_spring_data_non_crud_supers_are_not_library_bases(fake_kit):
+    _java(fake_kit.root, LIB_REPO_PATH,
+          "package com.example;\n\nimport org.springframework.data.repository.Repository;\n\n"
+          "public interface MemberRepository extends Repository<Member, Long> {\n}\n")
+    h = _crud(fake_kit)
+    assert h.apply(fake_kit.ws, _find_all_cluster(fake_kit), None, None) == []
+    assert h.notes == []
+
+
+def test_crud_library_base_never_pre_emptive(fake_kit):
+    _java(fake_kit.root, LIB_REPO_PATH, LIB_REPO.replace("package com.example;\n",
+                                                         "package com.example;\nimport jakarta.persistence.Id;\n"))
+    h = _crud(fake_kit)
+    assert h.apply(fake_kit.ws, None, make_profile(libs=[("spring-data-jpa", None)]), None) == []
+    assert "ListCrud" not in (fake_kit.root / LIB_REPO_PATH).read_text()
+    assert h.notes == []

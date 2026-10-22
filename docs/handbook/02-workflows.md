@@ -105,6 +105,7 @@ sbmig run proj.zip -c config/artifacts.yml -c site-overrides.yml -c config/llm-a
 - 종료 코드: PowerShell `$LASTEXITCODE`, bash `echo $?`.
 - 보고서 맨 위 표의 Result와 Flags, 바로 아래 Handover.
 - 보고서(`report.md`) 언어는 `report.language`로 정합니다(`en` 기본, `ko`면 제목·표 머리글·안내 문장이 한국어). 한국어 보고서에서는 Result가 `결과`, Handover가 `인수인계` 절로 보입니다. 플래그 이름·레시피 id·경로·오류 메시지는 영어 그대로이고, `report.json`은 언어와 상관없이 같습니다.
+- `report.javax_api_inventory`(기본 `true`): 최종 빌드 뒤 `mvn dependency:tree`로 클래스패스에 남은 javax API jar와 그것을 끌어오는 직접 의존성을 찾아 보고서 절 "javax API jars still on the classpath"(한국어: "클래스패스에 남은 javax API jar")와 Blocked 행의 "`API jar` ← `라이브러리`"에 보여 줍니다. 모듈마다 Maven을 한 번씩 더 부르므로, 시간이 아주 빠듯한 함대 실행에서만 `false`로 끕니다.
 - 보고서의 "LLM 사용량과 비용" 절(2026-10-22)은 모델별(수정 모델·escalation 모델·레시피 모델) 호출 수와 입출력 토큰에 `llm.pricing`의 1M 토큰당 단가를 곱해 프로젝트 한 건의 API 비용을 계산합니다(요약 표의 `LLM 비용` 줄, `report.json`의 `llm_cost`, 콘솔 요약의 `LLM cost:` 줄). 기본 단가는 OpenAI 공시가(gpt-5.6-terra 입력 $2 / 출력 $12, gpt-6-luna 입력 $0.10 / 출력 $0.50)이며, 게이트웨이가 토큰 수(`usage`)를 돌려주지 않으면 비용이 0으로 나오고 그 사실이 표 아래에 적힙니다. 단가가 없는 모델은 합계에서 빠지고 이름만 표시됩니다.
 
 ### 1.7 Windows

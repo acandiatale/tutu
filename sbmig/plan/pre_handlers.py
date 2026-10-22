@@ -33,7 +33,7 @@ HANDLER_IDS = (
     "surefire-plugin-floor", "javax-servlet-api-to-jakarta", "jaxb-runtime-add",
     "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
     "jstl-to-jakarta", "resources-binary-filtering", "strip-pom-repositories", "jakarta-namespace-sweep",
-    "spring-data-crud-repository",
+    "spring-data-crud-repository", "dependency-relocation", "jakarta-library-floor",
 )
 
 # the handler's own table (read directly: importing sbmig.triage here would pull the whole triage package)
@@ -54,6 +54,61 @@ def javax_ee_imports(profile: ProjectProfile) -> list[str]:
     froms = _jakarta_froms()
     return sorted(k for k, n in (profile.source.javax_imports or {}).items()
                   if n and any(k == f or k.startswith(f + ".") for f in froms))
+
+# the dependency-relocation table (read directly for the same reason)
+_RELOCATION_TABLE = Path(__file__).resolve().parent.parent / "triage" / "handlers" / "relocations.yml"
+SERVLET_JAVAX_KEYS = ("javax.servlet:javax.servlet-api", "javax.servlet:servlet-api", "javax.servlet.jsp:javax.servlet.jsp-api",
+                      "javax.servlet.jsp:jsp-api", "javax.servlet:jsp-api")
+
+
+@lru_cache(maxsize=1)
+def javax_api_relocation_keys() -> tuple[str, ...]:
+    """`from` keys of the relocations.yml rows with `packages` (the javax → jakarta API rows) — the only rows
+    dependency-relocation applies pre-emptively. Servlet / JSTL rows belong to their own handlers."""
+    try:
+        doc = yaml.safe_load(_RELOCATION_TABLE.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return ()
+    skip = set(SERVLET_JAVAX_KEYS) | set(JSTL_JAVAX_KEYS)
+    return tuple(str(r["from"]) for r in doc.get("relocations") or []
+                 if r.get("packages") and str(r.get("from")) not in skip)
+
+
+def _dep_version(pom, version: Optional[str]) -> Optional[str]:
+    m = re.fullmatch(r"\s*\$\{([^}]+)\}\s*", version or "")
+    if m and m.group(1) in (pom.properties or {}):
+        return pom.properties[m.group(1)]
+    return version
+
+
+def jakarta_library_reason(profile: ProjectProfile) -> Optional[str]:
+    """Why `jakarta-library-floor` must run (None = nothing below its first jakarta release). Mirrors
+    `sbmig.triage.handlers.jakarta_libraries_below` (not imported: the triage package is heavy)."""
+    from sbmig.core.jakarta_libraries import jakarta_libraries
+
+    hits: list[tuple[str, str, str]] = []
+    for lib in jakarta_libraries():
+        olds = [(d.key, _dep_version(p, d.version)) for p in profile.poms
+                for d in [*p.dependencies, *p.dependency_management] if d.key in lib.old_keys]
+        if olds:                                # earlier coordinates: below the jakarta release whatever the version
+            k, v = next(((k, v) for k, v in olds if v), olds[0])
+            hits.append((k, f"{v or 'unversioned'} → {lib.key}", lib.jakarta_since))
+            continue
+        vers = [_dep_version(p, d.version) for p in profile.poms for d in [*p.dependencies, *p.dependency_management]
+                if d.key == lib.key]
+        if not vers:
+            continue
+        low = [v for v in vers if version_lt(v, lib.jakarta_since) is True]
+        if low:
+            hits.append((lib.key, low[0] or "?", lib.jakarta_since))
+        elif not any(version_lt(v, lib.jakarta_since) is False for v in vers):
+            hits.append((lib.key, next((v for v in vers if v), "version unknown"), lib.jakarta_since))
+    if not hits:
+        return None
+    keys = ", ".join(k for k, _, _ in hits)
+    k, v, since = hits[0]
+    return f"{keys} declared below their first jakarta release ({k} {v} < {since})"
+
 
 JSTL_JAVAX_KEYS = ("javax.servlet:jstl", "jstl:jstl", "taglibs:standard", "org.apache.taglibs:taglibs-standard-impl",
                    "org.apache.taglibs:taglibs-standard-spec", "org.glassfish.web:javax.servlet.jsp.jstl",
@@ -132,6 +187,13 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
         out.append(("jaxb-runtime-add", "javax.xml.bind imports: JAXB was removed from the JDK"))
     if _has_dep(profile, *JSTL_JAVAX_KEYS):
         out.append(("jstl-to-jakarta", "javax JSTL dependency must become jakarta.servlet.jsp.jstl (Boot-managed)"))
+    api = [k for k in javax_api_relocation_keys() if _has_dep(profile, k)]
+    if api:
+        out.append(("dependency-relocation", f"javax API artifact(s) declared: {', '.join(api)} → jakarta coordinates "
+                                             "after the spring recipes"))
+    lib_reason = jakarta_library_reason(profile)
+    if lib_reason:
+        out.append(("jakarta-library-floor", lib_reason))
     ee = javax_ee_imports(profile)
     if ee:
         out.append(("jakarta-namespace-sweep", f"javax EE imports in the as-is sources ({', '.join(ee)}): rename what "

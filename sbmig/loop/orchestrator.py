@@ -97,7 +97,8 @@ class Orchestrator:
                  restructurer: Any = None, rewrite_runner: Any = None, build_runner: Any = None,
                  triager: Any = None, handlers: Any = None, fixer: Any = None, kb: Any = None, llm: Any = None,
                  report_writer: Optional[Callable] = None, clock: Callable[[], float] = time.monotonic,
-                 locator: Any = None, effective_capture: Optional[Callable] = None):
+                 locator: Any = None, effective_capture: Optional[Callable] = None,
+                 javax_inventory: Any = None):
         self.cfg = cfg
         self.ws = ws
         self.clock = clock
@@ -134,6 +135,9 @@ class Orchestrator:
         self._real_maven = build_runner is None
         self._locator = locator
         self._effective_capture = effective_capture
+        # report.javax_api_inventory: `fn(ws, cfg, profile) -> list[JavaxApiJar]` (sbmig.build.deptree, spawns mvn);
+        # None = the real one with the real Maven only, False = off — tests pass a fake
+        self._javax_inventory = javax_inventory
         self._running = False
         self.abort_reason: str | None = None   # first `_abort` reason of the current run
 
@@ -1331,6 +1335,53 @@ class Orchestrator:
             items = kept
         report.blocked = items
 
+    def _resolve_javax_inventory(self) -> Optional[Callable]:
+        if self._javax_inventory is False:
+            return None
+        if self._javax_inventory is not None:
+            return self._javax_inventory
+        if not self._real_maven:
+            return None
+        from sbmig.build.deptree import javax_api_inventory
+        return javax_api_inventory
+
+    def _finalize_javax_inventory(self, report: RunReport) -> None:
+        """X1b (2026-10-22): after the final build, the javax EE API jars still on the resolved classpath and the
+        direct dependency that drags each in (`mvn dependency:tree`) → report section, flag, follow-up, and the
+        blocked X1 / X2 items get `via` + a suggestion naming that library. Best effort: never fails the run."""
+        if not getattr(self.cfg.report, "javax_api_inventory", True) or self._dry_run:
+            return
+        if not any(pr.phase == Phase.SPRING for pr in report.phases):
+            return                                   # no jakarta migration ran → nothing to look for
+        fn = self._resolve_javax_inventory()
+        if fn is None:
+            return
+        try:
+            jars = list(fn(self.ws, self.cfg, self.profile) or [])
+        except Exception as e:
+            log.warning("javax API inventory failed: %s: %s", type(e).__name__, e)
+            return
+        report.javax_api_jars = jars
+        try:
+            from .blocked_registry import fill_via
+            fill_via(self.blocked.items(), jars, self.cfg)
+        except Exception as e:  # pragma: no cover - never lose the report
+            log.warning("blocked via attribution failed: %s: %s", type(e).__name__, e)
+        vias = list(dict.fromkeys(j.via.coordinates for j in jars if j.via is not None))
+        self.ws.journal({"event": "javax_api_inventory", "jars": [j.artifact.coordinates for j in jars],
+                         "via": vias})
+        if not jars:
+            return
+        if "javax-api-on-classpath" not in report.flags:
+            report.flags.append("javax-api-on-classpath")
+        named = ", ".join(f"`{v}`" for v in vias[:3]) + (f" (+{len(vias) - 3} more)" if len(vias) > 3 else "")
+        if not named:
+            named = "declared directly in the poms (remove them)"
+        fu = (f"{len(jars)} javax API jar(s) still on the classpath after the migration (see the report section) — "
+              f"the libraries that drag them in need Jakarta builds: {named}")
+        if fu not in report.manual_followups:
+            report.manual_followups.append(fu)
+
     def _finalize_advisories(self, report: RunReport) -> None:
         """Library advisories, finalize side: re-detect on the final tree (outcome), add their follow-ups and build
         the Handover (versions replaced + "from here on, your team"). Never raises, never changes the exit code."""
@@ -1470,6 +1521,7 @@ class Orchestrator:
                     unresolved += [e for e in pr.remaining_errors if e not in unresolved]
         if report.properties is None and self.profile is not None:
             report.properties = getattr(self.profile, "properties", None)
+        self._finalize_javax_inventory(report)
         try:
             self._finalize_blocked(report, unresolved)
         except Exception as e:  # never lose the report

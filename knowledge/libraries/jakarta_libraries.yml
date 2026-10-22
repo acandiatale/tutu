@@ -1,0 +1,26 @@
+# Third-party libraries that were compiled against javax.* up to some release and moved to jakarta.* in a later
+# one. Read by sbmig.core.jakarta_libraries (handler `jakarta-library-floor`, blocked-item suggestions, the
+# "javax API jars still on the classpath" report section). Company additions: edit this file (it is knowledge, not
+# code). Verified on Maven Central / the project README on the date given.
+#
+#   key           : groupId:artifactId (the current coordinates)
+#   old_keys      : earlier coordinates of the same library (relocated to `key` + `version` by the handler)
+#   jakarta_since : first release built against jakarta.* (the handler never leaves a version below it)
+#   version       : the release the handler sets (>= jakarta_since; the latest verified one)
+#   requires_java : minimum JDK of that release (information for the Handover)
+#   note          : one line for the report
+#   docs          : links
+version: 1
+libraries:
+  - key: org.qlrm:qlrm
+    old_keys: ["ch.simas.qlrm:qlrm"]        # 1.0 … 1.7.1 (2013–2017) under the old groupId; the company project uses 1.7.1
+    jakarta_since: "4.0.1"
+    version: "4.2.1"
+    requires_java: 17
+    note: >-
+      QLRM (JpaResultMapper / JdbcResultMapper) takes javax.persistence.Query up to 3.0.4; 4.0.1 (2023-02) moved to
+      jakarta.persistence for Spring Boot 3 / Hibernate 6; 4.2.1 (2026-10-07) is the latest on Maven Central.
+    docs:
+      - https://github.com/simasch/qlrm
+      - https://repo1.maven.org/maven2/org/qlrm/qlrm/
+      - https://repo1.maven.org/maven2/ch/simas/qlrm/qlrm/

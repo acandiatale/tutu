@@ -165,9 +165,16 @@ def _bump_dependency(ed: Any, group: str, artifact: str, floor: str) -> bool:
 _GA_VERSION_RE = r"(<groupId>\s*{g}\s*</groupId>\s*<artifactId>\s*{a}\s*</artifactId>\s*<version>\s*)([^<]+?)(\s*</version>)"
 
 
-def _text_bump(ws: Workspace, rel: str, group: str, artifact: str, floor: str) -> bool:
+def _text_bump(ws: Workspace, rel: str, group: str, artifact: str, floor: str,
+               keep_from: Optional[str] = None) -> bool:
     """Bump literal (or ${prop}) versions of g:a anywhere in the pom text — covers annotationProcessorPaths and
-    plugin dependencies which the editor protocol does not reach."""
+    plugin dependencies which the editor protocol does not reach. `keep_from`: versions at or above it stay as they
+    are even when they are below `floor` (jakarta-library-floor: never touch a declaration already on jakarta)."""
+    def low(v: str) -> bool:
+        if keep_from is not None and version_lt(v, keep_from) is False:
+            return False
+        return version_lt(v, floor) is True
+
     text = ws.read(rel)
     pat = re.compile(_GA_VERSION_RE.format(g=re.escape(group), a=re.escape(artifact)), re.S)
     props: set[str] = set()
@@ -178,15 +185,14 @@ def _text_bump(ws: Workspace, rel: str, group: str, artifact: str, floor: str) -
         if p:
             props.add(p)
             return m.group(0)
-        if version_lt(v, floor) is True:
+        if low(v):
             return m.group(1) + floor + m.group(3)
         return m.group(0)
 
     new = pat.sub(repl, text)
     for p in props:
         pm = re.compile(rf"(<{re.escape(p)}>\s*)([^<]+?)(\s*</{re.escape(p)}>)")
-        new = pm.sub(lambda m: m.group(1) + floor + m.group(3) if version_lt(m.group(2), floor) is True
-                     else m.group(0), new)
+        new = pm.sub(lambda m: m.group(1) + floor + m.group(3) if low(m.group(2)) else m.group(0), new)
     if new != text:
         ws.write(rel, new)
         return True
@@ -705,8 +711,202 @@ class RelocationHandler(PomHandler):
 
 
 class DependencyRelocation(RelocationHandler):
+    """Reactive: every row of relocations.yml the error names. Pre-emptive (after the spring recipes, `cluster is
+    None`): only the javax → jakarta API rows (rows with `packages`) — an old javax API jar left on the classpath next
+    to the migrated sources yields `jakarta.X cannot be converted to javax.X` against libraries; the Boot starter
+    renames and the hibernate rows stay reactive (the recipes handle them, and a pre-emptive rename could fight
+    them)."""
     id = "dependency-relocation"
     description = "relocate moved artifacts (javax→jakarta APIs, hibernate → org.hibernate.orm, Boot 4 starters)"
+    preemptive_phase = Phase.SPRING
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        if cluster is not None:
+            return super().edit(ws, cluster, profile, cfg)
+        rels = [r for r in self.active(cfg) if r.packages]
+        changed: list[str] = []
+        for rel in all_poms(ws):
+            ed = self.editor(ws, rel)
+            ch = False
+            for r in rels:
+                old = _declared(ed, r.from_)
+                if old is None:
+                    continue
+                g, a = r.from_ga
+                ch |= bool(ed.replace_dependency(g, a, r.new_gav(self._version(r, old, profile, cfg))))
+            if ch:
+                ed.save()
+                changed.append(rel)
+        return changed
+
+
+# ---------------------------------------------------------------------------
+# X1b third-party libraries with a later jakarta release (knowledge/libraries/jakarta_libraries.yml)
+# ---------------------------------------------------------------------------
+def _jakarta_library_triggers() -> tuple[str, ...]:
+    from sbmig.core.jakarta_libraries import jakarta_libraries
+
+    base = (r"cannot be converted to (?:javax|jakarta)\.", r"required:\s*(?:javax|jakarta)\.",
+            r"no suitable (?:method|constructor) found for \w+\([^)]*\bjakarta\.",
+            r"class file for javax\.\S+ not found", r"package javax\.\S+ does not exist")
+    words = tuple(dict.fromkeys(rf"\b{re.escape(k.split(':', 1)[1])}\b" for lib in jakarta_libraries()
+                                for k in lib.all_keys))
+    return base + words
+
+
+def _pom_version(pom: Any, version: Optional[str]) -> Optional[str]:
+    """A profile PomInfo dependency version with a local `${prop}` resolved (unresolvable → as written)."""
+    p = _prop_ref(version)
+    if p and p in (pom.properties or {}):
+        return pom.properties[p]
+    return version
+
+
+def jakarta_libraries_below(profile: Optional[ProjectProfile]) -> list[tuple[Any, str]]:
+    """[(JakartaLibrary, shown version)] for every table library the profile declares below its first jakarta release
+    (any parsed version < jakarta_since) or only with versions that cannot be parsed (unversioned / `${prop}` from a
+    parent). A library declared at least once at a parsed version ≥ jakarta_since and never below is fine. A
+    declaration under one of its `old_keys` (earlier coordinates) always counts, whatever its version
+    (shown as "<old key> <version>")."""
+    from sbmig.core.jakarta_libraries import jakarta_libraries
+
+    out: list[tuple[Any, str]] = []
+    if profile is None:
+        return out
+    for lib in jakarta_libraries():
+        olds = [(d.key, _pom_version(p, d.version)) for p in profile.poms
+                for d in [*p.dependencies, *p.dependency_management] if d.key in lib.old_keys]
+        if olds:
+            k, v = next(((k, v) for k, v in olds if v), olds[0])
+            out.append((lib, f"{k} {v or 'unversioned'}"))
+            continue
+        vers = [_pom_version(p, d.version) for p in profile.poms for d in [*p.dependencies, *p.dependency_management]
+                if d.key == lib.key]
+        if not vers:
+            continue
+        low = [v for v in vers if version_lt(v, lib.jakarta_since) is True]
+        if low:
+            out.append((lib, low[0] or "?"))
+        elif not any(version_lt(v, lib.jakarta_since) is False for v in vers):
+            out.append((lib, next((v for v in vers if v), "version unknown")))
+    return out
+
+
+class JakartaLibraryFloor(PomHandler):
+    """X1b (fourth company project, 2026-10-22): after the javax → jakarta migration the build failed with
+    `jakarta.persistence.Query cannot be converted to javax.persistence.Query`; the owner was QLRM's
+    `JpaResultMapper`, compiled against javax.persistence up to 3.0.4. Libraries of the knowledge table moved to
+    jakarta.* in a known release: raise them to the table's `version` (direct + managed, through a local `${prop}`,
+    annotation-processor / plugin declarations by text). A declaration already at or above `jakarta_since` is never
+    touched. Flags / notes as every EdgeHandler (the orchestrator reads `getattr(handler, "flags" / "notes")`)."""
+    id = "jakarta-library-floor"
+    description = ("third-party libraries that moved to jakarta.* in a later release "
+                   "(knowledge/libraries/jakarta_libraries.yml): raise them to that release after the javax→jakarta "
+                   "migration")
+    preemptive_phase = Phase.SPRING
+    kinds = frozenset({ErrorKind.COMPILE, ErrorKind.TEST_COMPILE})
+    triggers = _jakarta_library_triggers()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.flags: list[str] = []
+        self.notes: list[str] = []
+
+    def flag(self, f: str) -> None:
+        if f not in self.flags:
+            self.flags.append(f)
+
+    def note(self, n: str) -> None:
+        if n not in self.notes:
+            self.notes.append(n)
+
+    def apply(self, ws: Workspace, cluster: Optional[ErrorCluster] = None,
+              profile: Optional[ProjectProfile] = None, cfg: Optional[Config] = None) -> list[FileChange]:
+        self.flags, self.notes = [], []
+        changes = super().apply(ws, cluster, profile, cfg)
+        if not changes:
+            self.flags, self.notes = [], []
+        return changes
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        if profile is None or not profile.poms:
+            return True
+        return bool(jakarta_libraries_below(profile))
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        from sbmig.core.jakarta_libraries import jakarta_libraries
+
+        libs = jakarta_libraries()
+        if not libs:
+            return []
+        poms = all_poms(ws)
+        eds = {rel: self.editor(ws, rel) for rel in poms}
+        # keys some project pom manages with an explicit version (an unversioned use elsewhere follows that pom)
+        managed_here = {d.key for ed in eds.values()
+                        for d in (getattr(ed, "managed_dependencies", lambda: [])() or []) if d.version}
+        managed_here |= {lib.key for lib in libs if any(k in managed_here for k in lib.old_keys)}   # relocated below
+        changed: list[str] = []
+        done: dict[str, tuple[str, list[str]]] = {}          # key → (old version, poms)
+        moved: dict[tuple[str, str], tuple[str, list[str]]] = {}   # (old key, key) → (old version, poms)
+        for rel in poms:
+            ed = eds[rel]
+            ch = False
+            # earlier coordinates (ch.simas.qlrm:qlrm → org.qlrm:qlrm): relocate whatever the version, with a literal
+            # version (a ${prop} use is dropped); an unversioned use stays unversioned when a project pom manages it
+            for lib in libs:
+                g, a = lib.group_id, lib.artifact_id
+                for old_key in lib.old_keys:
+                    decls = [d for d in _deps(ed) if d.key == old_key]
+                    if not decls:
+                        continue
+                    og, oa = old_key.split(":", 1)
+                    unversioned = all(d.version is None for d in decls)
+                    keep_managed = unversioned and lib.key in managed_here
+                    version = None if keep_managed else lib.version
+                    if ed.replace_dependency(og, oa, GAV(group_id=g, artifact_id=a, version=version)):
+                        ch = True
+                        old = next((_resolve(ed, d.version) for d in decls if d.version), None) or "unversioned"
+                        moved.setdefault((old_key, lib.key), (old, []))[1].append(rel)
+            for lib in libs:
+                g, a = lib.group_id, lib.artifact_id
+                decls = [d for d in _deps(ed) if d.key == lib.key]
+                if not decls:
+                    continue
+                vers = [_resolve(ed, d.version) for d in decls]
+                if any(version_lt(v, lib.jakarta_since) is False for v in vers):
+                    continue                                  # already on the jakarta line here: never touch it
+                if all(d.version is None for d in decls) and lib.key in managed_here:
+                    continue                                  # the managing project pom gets the bump
+                if _bump_dependency(ed, g, a, lib.version):
+                    ch = True
+                    old = next((v for v in vers if v), None) or "unversioned"
+                    done.setdefault(lib.key, (old, []))[1].append(rel)
+            if ch:
+                ed.save()
+                changed.append(rel)
+            for lib in libs:
+                before = ws.read(rel)
+                if _text_bump(ws, rel, lib.group_id, lib.artifact_id, lib.version, keep_from=lib.jakarta_since):
+                    changed.append(rel)
+                    if lib.key not in done or rel not in done[lib.key][1]:
+                        m = re.search(_GA_VERSION_RE.format(g=re.escape(lib.group_id), a=re.escape(lib.artifact_id)),
+                                      before, re.S)
+                        old = m.group(2).strip() if m else "?"
+                        done.setdefault(lib.key, (old, []))[1].append(rel)
+        by_key = {lib.key: lib for lib in libs}
+        for (old_key, key), (old, rels) in moved.items():
+            lib = by_key[key]
+            java = f", requires Java {lib.requires_java}" if lib.requires_java else ""
+            self.note(f"{old_key} {old} → {key} {lib.version} (coordinates changed; jakarta.persistence since "
+                      f"{lib.jakarta_since}{java}) in {', '.join(dict.fromkeys(rels))}")
+        for key, (old, rels) in done.items():
+            lib = by_key[key]
+            java = f"; requires Java {lib.requires_java}" if lib.requires_java else ""
+            self.note(f"{key} {old} → {lib.version} ({lib.note}{java}) in {', '.join(dict.fromkeys(rels))}")
+        if done or moved:
+            self.flag("jakarta-library-bumped")
+            log.info("jakarta-library-floor: %s", ", ".join(sorted({*done, *(k for _, k in moved)})))
+        return changed
 
 
 class JavaxServletApiToJakarta(RelocationHandler):
@@ -1307,6 +1507,7 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         JavaxServletApiToJakarta(),
         JstlToJakarta(),
         DependencyRelocation(),
+        JakartaLibraryFloor(),          # X1b: third-party libraries with a later jakarta release
         QuerydslJakartaClassifier(),
         JaxbRuntimeAdd(),
         AddKnownDependency(),

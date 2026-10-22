@@ -199,8 +199,16 @@ def test_dependency_relocation_table(kit, cfg):
     assert h.apply(kit.ws, pkg, prof, cfg)
     assert kit.dep("jakarta.persistence:jakarta.persistence-api").version == "3.2.0"
     assert kit.dep("org.springframework.boot:spring-boot-starter-web") is not None      # only the relevant one
-    # pre-emptive: whole table
-    h.apply(kit.ws, None, prof, cfg)
+    # pre-emptive: only the javax → jakarta API rows (rows with `packages`), never the starter / hibernate renames
+    assert h.apply(kit.ws, None, prof, cfg) == []
+    assert kit.dep("org.springframework.boot:spring-boot-starter-web") is not None
+    assert kit.dep("org.hibernate:hibernate-core") is not None
+    # reactive: the rows the error names
+    named = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "x", artifact="org.hibernate:hibernate-core:5.6.15.Final"),
+                            err(ErrorKind.DEPENDENCY_RESOLUTION, "x",
+                                artifact="org.springframework.boot:spring-boot-starter-web:4.1.0")])
+    for c in named:
+        h.apply(kit.ws, c, prof, cfg)
     assert kit.dep("org.springframework.boot:spring-boot-starter-webmvc").version is None
     assert kit.dep("org.hibernate.orm:hibernate-core").version == "7.1.0.Final"
     dep = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "x", artifact="org.springframework.boot:spring-boot-starter-aop:4.1.0")])[0]

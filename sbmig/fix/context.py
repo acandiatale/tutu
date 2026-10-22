@@ -277,7 +277,10 @@ class _Section:
 class ContextPacker:
     # truncation priority (first = dropped/shrunk first); "errors" and "header" are never truncated
     TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
-                      "advisory_hints", "reference_notes", "pom", "files")
+                      "advisory_hints", "reference_notes", "pom", "related_files", "files")
+    RELATED_FILES_TITLE = ("Related project types named in the errors (exact text — patch these when the fix belongs "
+                           "there, e.g. a repository interface that lost its CRUD methods)")
+    MAX_RELATED_FILES = 3
     ADVISORY_TITLE = "Library migration guidance (what to migrate TO)"
     REFERENCE_NOTES_TITLE = "Module merge notes (first-wins; the dropped copy is below as reference)"
     REFERENCE_FILES_TITLE = ("Reference files (read-only, NOT in the build — never write SEARCH/REPLACE blocks for "
@@ -335,6 +338,15 @@ class ContextPacker:
                 packed.files_included.append(f)
         if file_texts:
             secs.append(_Section("files", "Source (exact text; copy SEARCH blocks from here)", "\n\n".join(file_texts), 2))
+        # 2026-10-22 (fourth company project): the fix often lives in another project file — the repository
+        # interface named in `location: variable repo of type com.x.MemberRepository` (Spring Data 3 CRUD), the owner
+        # of a `no suitable method` candidate — and an LLM that cannot see it patches blindly (apply_failed) or asks
+        # for it in a second round. Show the project types the errors name right away.
+        related = self._related_type_files(ws, cluster, files)
+        if related:
+            blocks = [self._file_block(ws, f, [])[0] for f in related]
+            secs.append(_Section("related_files", self.RELATED_FILES_TITLE, "\n\n".join(blocks), 2.2))
+            packed.files_included += [f for f in related if f not in packed.files_included]
         # dropped module-merge copies (round 9): context only, right after the source they differ from
         if ctx.reference_files:
             secs.append(_Section("reference_files", self.REFERENCE_FILES_TITLE,
@@ -416,6 +428,79 @@ class ContextPacker:
             if f and f not in out:
                 out.append(f)
         return out
+
+    _LOC_TYPE_RES = (re.compile(r"location:\s*variable\s+[\w$]+\s+of\s+type\s+([\w$.]+)"),
+                     re.compile(r"location:\s*(?:class|interface|enum|record)\s+([\w$.]+)"),
+                     re.compile(r"(?:method|constructor)\s+([\w$.]+)\.[\w$]+\([^)]*\)\s+is not applicable"))
+    _IMPORT_LINE_RE = re.compile(r"^[ \t]*import\s+(?!static\b)([\w.]+)\s*;", re.M)
+    _PACKAGE_LINE_RE = re.compile(r"^[ \t]*package\s+([\w.]+)\s*;", re.M)
+
+    def _related_type_files(self, ws: Workspace, cluster: ErrorCluster, cluster_files: list[str]) -> list[str]:
+        """Project source files of the types the errors name (`location: variable x of type T`, `location: class T`,
+        `method T.m(…) is not applicable`), resolved by FQCN or through the error file's imports / package; never the
+        cluster files themselves, never library types, at most MAX_RELATED_FILES."""
+        try:
+            java_files = ws.java_files()
+        except Exception:
+            return []
+        if not java_files:
+            return []
+        out: list[str] = []
+        skip = {f.replace("\\", "/") for f in cluster_files}
+        for e in cluster.errors:
+            texts = [t for t in (e.location and f"location: {e.location}", e.raw, e.message) if t]
+            names: list[str] = []
+            for t in texts:
+                for rx in self._LOC_TYPE_RES:
+                    names += [re.sub(r"<.*", "", m.group(1)).strip(".") for m in rx.finditer(t)]
+            if not names:
+                continue
+            imports: dict[str, str] = {}
+            own_pkg = ""
+            if e.file and ws.exists(e.file):
+                try:
+                    src = ws.read(e.file)
+                    imports = {imp.rsplit(".", 1)[-1]: imp for imp in self._IMPORT_LINE_RE.findall(src)}
+                    pm = self._PACKAGE_LINE_RE.search(src)
+                    own_pkg = pm.group(1) if pm else ""
+                except OSError:
+                    pass
+            for n in dict.fromkeys(names):
+                for fq in self._candidate_fqcns(n, imports, own_pkg):
+                    f = self._project_source(java_files, fq)
+                    if f and f not in out and f.replace("\\", "/") not in skip:
+                        out.append(f)
+                        break
+                if len(out) >= self.MAX_RELATED_FILES:
+                    return out
+        return out
+
+    @staticmethod
+    def _candidate_fqcns(name: str, imports: dict[str, str], own_pkg: str) -> list[str]:
+        if "." in name and name.split(".")[0][:1].islower():          # already fully qualified
+            return [name]
+        simple = name.split(".")[0]
+        cands = []
+        if simple in imports:
+            cands.append(imports[simple])
+        if own_pkg:
+            cands.append(f"{own_pkg}.{simple}")
+        return cands
+
+    @staticmethod
+    def _project_source(java_files: list[str], fqcn: str) -> Optional[str]:
+        if fqcn.startswith(("java.", "javax.", "jakarta.", "org.springframework.", "org.hibernate.", "lombok.")):
+            return None
+        parts = fqcn.split(".")
+        for i in range(len(parts), 1, -1):                 # Outer.Inner → Outer.java
+            rel = "/".join(parts[:i]) + ".java"
+            if parts[i - 1][:1].islower():
+                break
+            for f in java_files:
+                g = f.replace("\\", "/")
+                if g == rel or g.endswith("/" + rel):
+                    return f
+        return None
 
     @staticmethod
     def _reference_block(label: str, text: str) -> str:

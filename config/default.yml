@@ -191,6 +191,8 @@ report:
   zip_result: true
   include_diff: true
   language: en                     # report.md language: en | ko (report.json, console and logs stay English)
+  javax_api_inventory: true        # after the final build: mvn dependency:tree per module → javax API jars still on the
+                                   # classpath + the direct dependency that drags each in (section "javax API jars")
 
 advisories:                        # library advisories (docs/ADVISORIES.md): EOL / no-longer-managed libraries
   enabled: true

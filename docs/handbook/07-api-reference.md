@@ -601,7 +601,8 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `llm_usage` | LLMUsage | `model`, `calls`, `input_tokens`, `output_tokens`(plan advisor 포함) |
 | `harvest` | HarvestResult | `cases_created`, `candidates_created`, `recipes_credited`, `recipes_promoted`, `ledger_entries`, `notes` |
 | `unresolved` | list[BuildError] | 남은 오류: `kind`, `message`, `file`, `line`, `column`, `symbol`, `location`, `module`, `artifact`, `goal`, `raw`, `signature`(L1), `signature_generic`(L2) |
-| `blocked` | list[BlockedItem] | 의도적으로 멈춘 클러스터: `id`, `reason`, `phase`, `cluster_id`, `signatures`, `files`, `errors`, `artifact`, `owner_class`, `required_type`, `found_type`, `suggestion`, `attempts`, `first_seen_iteration`, `notes` |
+| `blocked` | list[BlockedItem] | 의도적으로 멈춘 클러스터: `id`, `reason`, `phase`, `cluster_id`, `signatures`, `files`, `errors`, `artifact`, `owner_class`, `required_type`, `found_type`, `suggestion`, `attempts`, `first_seen_iteration`, `notes`, `via`, `via_direct` |
+| `javax_api_jars` | list[JavaxApiJar] | 마이그레이션 후 클래스패스에 남은 javax API jar(X1b): `artifact`, `module`, `scope`, `path`, `via`, `declared` |
 | `manual_followups` | list[str] | as-is 담당자가 할 일 |
 | `advisories` | list[AdvisoryFinding] | `advisory_id`, `library`, `status`, `title`, `summary`, `policy`, `policy_reason`, `detected_version`, `evidence`, `artifacts`, `recipes`, `recipe_source`(`plan`/`advisory`/`none`), `outcome`(`replaced`/`still-present`/`unknown`), `replacement`, `replacement_version`, `followup`, `docs`, `notes`, `llm_fixed_files`, `llm_fix_notes` |
 | `handover` | HandoverSummary | `parent_before/after`, `java_before/after`, `spring_boot_before/after`, `changes`(VersionChange: `kind`, `key`, `before`, `after`, `before_source`, `after_source`, `reason`, `carried_over`, `pom`), `added`, `removed`, `carried_over`, `from_here`, `notes`, `merge_conflicts`, `properties_to_set`, `properties_guide` |
@@ -641,6 +642,8 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `systempath-relocated` | 핸들러 `systempath-relocate` | system scope jar 경로 재작성 | 없음 |
 | `jakarta-leftovers-renamed` | 핸들러 `jakarta-namespace-sweep` | 소스에 남은 `javax.*` Jakarta EE 참조를 `jakarta.*`로(E13) | 없음(follow-up) |
 | `spring-data-crud-restored` | 핸들러 `spring-data-crud-repository` | 페이징 리포지토리에 `ListCrudRepository<T, ID>` 추가(E14) | 없음 |
+| `jakarta-library-bumped` | 핸들러 `jakarta-library-floor` | jakarta 릴리스가 알려진 서드파티 라이브러리를 그 버전으로(`knowledge/libraries/jakarta_libraries.yml`) | 없음 |
+| `javax-api-on-classpath` | orchestrator(`report.javax_api_inventory`) | 마이그레이션 후 javax API jar가 클래스패스에 남음(X1b, 보고서 절 + follow-up) | 없음(follow-up) |
 | `blocked-finalize-failed: <오류>` | orchestrator | blocked 항목 마무리 중 내부 오류 | — |
 | `report-failed: <오류>` | orchestrator | 보고서 작성 실패 | — |
 
@@ -657,6 +660,8 @@ report.md의 "Flags" 절은 이 중 상당수의 설명을 함께 보여 줍니�
 | `advisories` / `advisories_planned` / `advisories_verified` | 발견·계획·최종 검증 결과(또는 `error`) | 라이브러리 권고 |
 | `effective_pom` / `effective_depmgmt` / `effective_depmgmt_after` | `ok`, `path`, `skipped` | effective-pom 캡처(as-is / restructure 후) |
 | `classpath` | `module`, `ok`, `entries` | 의존성 classpath 캡처(X1 원인 추적) |
+| `deptree` | `module`, `ok`, `includes`, `log`(, `roots`) | `mvn dependency:tree` 1회(`sbmig/build/deptree.py`, X1 `via` / X1b) |
+| `javax_api_inventory` | `jars`, `via` | 최종 빌드 뒤 클래스패스에 남은 javax API jar와 그것을 끌어오는 직접 의존성 |
 | `plan` | `steps`, `pre_handlers` | 계획 |
 | `plan_advice` | `model` 또는 `error` | LLM plan advisor |
 | `preflight` | 점검 항목 | Maven·부모 사전 점검 |

@@ -365,6 +365,9 @@ class ReportConfig(BaseModel):
     zip_result: bool = True
     include_diff: bool = True
     language: Literal["en", "ko"] = "en"   # report.md language (report.json, console and logs stay English)
+    # after the final build: `mvn dependency:tree` per module → javax EE API jars still on the classpath and the
+    # direct dependency that drags each in (the library still compiled against javax); also fills BlockedItem.via
+    javax_api_inventory: bool = True
 
 
 class AdvisoryConfig(BaseModel):

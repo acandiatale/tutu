@@ -129,3 +129,58 @@ def test_strip_pom_repositories_selection_is_gated_by_config(cfg) -> None:
     assert "old-nexus.corp" in reasons["strip-pom-repositories"]
     prof.poms[0].repositories = []
     assert "strip-pom-repositories" not in pre_handlers_for(prof, on)                  # nothing declared
+
+
+@pytest.mark.parametrize("deps,expected", [
+    (["org.qlrm:qlrm:2.1.1"], ["jakarta-library-floor"]),
+    (["org.qlrm:qlrm:4.0.1"], []),
+    (["org.qlrm:qlrm:4.2.1"], []),
+    (["org.qlrm:qlrm"], ["jakarta-library-floor"]),                                  # version unknown
+    (["com.google.guava:guava:33.4.8-jre"], []),
+])
+def test_jakarta_library_floor_selection(deps, expected, cfg) -> None:
+    """X1b: a table library (knowledge/libraries/jakarta_libraries.yml) declared below its first jakarta release."""
+    from sbmig.plan.pre_handlers import pre_handler_reasons
+    prof = _profile(poms=[_pom(deps=[GAV.parse(d) for d in deps], plugins=[GOOD_COMPILER])])
+    assert pre_handlers_for(prof, cfg) == expected
+    if expected:
+        reason = dict(pre_handler_reasons(prof, cfg))["jakarta-library-floor"]
+        assert reason.startswith("org.qlrm:qlrm declared below their first jakarta release (org.qlrm:qlrm ")
+        assert reason.endswith(" < 4.0.1)")
+
+
+def test_jakarta_library_floor_property_resolved(cfg) -> None:
+    pom = PomInfo(path="pom.xml", artifact_id="x", properties={"qlrm.version": "2.1.1"},
+                  dependencies=[GAV.parse("org.qlrm:qlrm:${qlrm.version}")], plugins=[GOOD_COMPILER])
+    from sbmig.plan.pre_handlers import pre_handler_reasons
+    assert dict(pre_handler_reasons(_profile(poms=[pom]), cfg))["jakarta-library-floor"].endswith(
+        "(org.qlrm:qlrm 2.1.1 < 4.0.1)")
+    pom.properties["qlrm.version"] = "4.2.1"
+    assert pre_handlers_for(_profile(poms=[pom]), cfg) == []
+
+
+def test_dependency_relocation_selected_for_javax_api_artifacts(cfg) -> None:
+    from sbmig.plan.pre_handlers import javax_api_relocation_keys, pre_handler_reasons
+    keys = javax_api_relocation_keys()
+    assert "javax.persistence:javax.persistence-api" in keys and "com.sun.mail:javax.mail" in keys
+    assert not any(k.startswith(("org.springframework.boot:", "org.hibernate:", "javax.servlet:")) for k in keys)
+    p = _pom(deps=[GAV.parse("javax.persistence:javax.persistence-api:2.2"),
+                   GAV.parse("javax.validation:validation-api:2.0.1.Final")], plugins=[GOOD_COMPILER])
+    reasons = dict(pre_handler_reasons(_profile(poms=[p]), cfg))
+    assert reasons["dependency-relocation"] == (
+        "javax API artifact(s) declared: javax.persistence:javax.persistence-api, javax.validation:validation-api "
+        "→ jakarta coordinates after the spring recipes")
+    # servlet / jstl are covered by their own handlers; Boot starters / hibernate rows never select it
+    for d in ("javax.servlet:javax.servlet-api:4.0.1", "javax.servlet:jstl:1.2",
+              "org.springframework.boot:spring-boot-starter-web:2.7.18", "org.hibernate:hibernate-core:5.6.15.Final"):
+        assert "dependency-relocation" not in pre_handlers_for(_profile(poms=[_pom(deps=[GAV.parse(d)],
+                                                                                   plugins=[GOOD_COMPILER])]), cfg)
+
+
+def test_jakarta_library_floor_selected_for_old_coordinates(cfg) -> None:
+    from sbmig.plan.pre_handlers import pre_handler_reasons
+    prof = _profile(poms=[_pom(deps=[GAV.parse("ch.simas.qlrm:qlrm:1.7.1")], plugins=[GOOD_COMPILER])])
+    assert pre_handlers_for(prof, cfg) == ["jakarta-library-floor"]
+    assert dict(pre_handler_reasons(prof, cfg))["jakarta-library-floor"] == (
+        "ch.simas.qlrm:qlrm declared below their first jakarta release "
+        "(ch.simas.qlrm:qlrm 1.7.1 → org.qlrm:qlrm < 4.0.1)")

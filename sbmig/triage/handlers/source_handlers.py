@@ -6,6 +6,8 @@
 * ``spring-data-crud-repository`` (E14) — Spring Data 3 removed ``CrudRepository`` from
   ``PagingAndSortingRepository``'s hierarchy: repository interfaces that extend only the paging interface get
   ``ListCrudRepository<T, ID>`` (what ``MigratePagingAndSortingRepository`` does when it can attribute types).
+  E14b (reactive only): a repository named by the error whose CRUD came from a *library* base interface (not a
+  project file, compiled against Spring Data 2) gets ``ListCrudRepository`` with that base's two type arguments.
 
 Both run pre-emptively after the spring recipes (``preemptive_phase = SPRING``, ``cluster is None`` → whole project)
 and reactively on the matching javac errors. Both are idempotent and edit sources through ``Workspace.read`` /
@@ -105,10 +107,13 @@ def _rename_token(token: str, by_from: dict[str, JakartaRule]) -> Optional[tuple
 
 
 def rename_javax(text: str, table: Optional[tuple[JakartaRule, ...]] = None) -> RenameResult:
-    """Rename table javax.* references outside string / char / text-block literals (comments included)."""
+    """Rename table javax.* references in code: string / char / text-block literals are left alone (counted in
+    `literal_hits`) and so are comments (prose — a Javadoc that mentions `javax.persistence.Query` is not a leftover;
+    OpenRewrite's ChangePackage does not touch them either, and renaming them would raise the flag for nothing)."""
     table = table if table is not None else jakarta_packages()
     by_from = {r.from_: r for r in table}
-    literals = [(m.start(), m.end()) for m in _LIT_RE.finditer(text) if m.group(2) is not None]
+    # spans to skip: (start, end, is_literal) — comments are skipped silently, literals are reported
+    literals = [(m.start(), m.end(), m.group(2) is not None) for m in _LIT_RE.finditer(text)]
     res = RenameResult(text)
     out: list[str] = []
     last = 0
@@ -120,7 +125,8 @@ def rename_javax(text: str, table: Optional[tuple[JakartaRule, ...]] = None) -> 
         while li < len(literals) and literals[li][1] <= m.start():
             li += 1
         if li < len(literals) and literals[li][0] <= m.start() < literals[li][1]:
-            res.literal_hits.append(m.group(0))
+            if literals[li][2]:
+                res.literal_hits.append(m.group(0))
             continue
         out.append(text[last:m.start()])
         out.append(hit[0])
@@ -343,6 +349,31 @@ def _strip_generics(t: str) -> str:
     return t.split("<", 1)[0].strip().rstrip(".,;")
 
 
+def _split_args(args: str) -> list[str]:
+    """Top-level type arguments of `A, Map<K, V>, B` → ['A', 'Map<K, V>', 'B']."""
+    out: list[str] = []
+    depth, start = 0, 0
+    for i, c in enumerate(args):
+        if c == "<":
+            depth += 1
+        elif c == ">":
+            depth -= 1
+        elif c == "," and depth == 0:
+            out.append(args[start:i].strip())
+            start = i + 1
+    out.append(args[start:].strip())
+    return [a for a in out if a]
+
+
+# supertypes that are never "a library base repository" (E14b): Spring Data's own non-CRUD interfaces and JDK types
+_SPRING_DATA_NON_CRUD = frozenset({"Repository", "QueryByExampleExecutor", "JpaSpecificationExecutor",
+                                   "QuerydslPredicateExecutor", "ReactiveQuerydslPredicateExecutor",
+                                   "RevisionRepository", "ReactiveSortingRepository", "ListQuerydslPredicateExecutor",
+                                   "ListQueryByExampleExecutor", "CrudMethodMetadata"})
+_JDK_SIMPLE = frozenset({"Serializable", "Cloneable", "AutoCloseable", "Closeable", "Comparable", "Iterable"})
+_PLATFORM_PREFIXES = ("java.", "javax.", "jakarta.", "org.springframework.")
+
+
 class _RepoIndex:
     """Project Java sources by '<pkg path>/<Name>' (the part after '/java/'), parsed lazily."""
 
@@ -411,6 +442,23 @@ class _RepoIndex:
         return {f for fs in self.by_simple.values() for f in fs}
 
 
+def _platform_type(idx: "_RepoIndex", f: str, s: _SuperRef) -> bool:
+    """A Spring / JDK / Jakarta supertype (by its written FQN or its import), or a well-known simple name."""
+    if s.simple in _SPRING_DATA_NON_CRUD or ("." not in s.name and s.simple in _JDK_SIMPLE):
+        return True
+    fqn = s.name if "." in s.name else None
+    if fqn is None:
+        try:
+            masked = _mask(idx.text(f))
+        except OSError:
+            return False
+        for m in _IMPORT_RE.finditer(masked):
+            if not m.group(2) and m.group(1).rsplit(".", 1)[-1] == s.simple:
+                fqn = m.group(1)
+                break
+    return bool(fqn and fqn.startswith(_PLATFORM_PREFIXES))
+
+
 class SpringDataCrudRepository(EdgeHandler):
     id = "spring-data-crud-repository"
     description = ("Spring Data 3+: PagingAndSortingRepository no longer extends CrudRepository — add "
@@ -454,7 +502,7 @@ class SpringDataCrudRepository(EdgeHandler):
                        for s in decl.supers if not s.is_paging)
 
     def _collect_tree(self, idx: _RepoIndex, f: str, name: str, depth: int, out: dict[str, set[str]],
-                      seen: set) -> None:
+                      seen: set, lib_out: Optional[list[tuple[str, _Iface, list[_SuperRef]]]] = None) -> None:
         if depth > _MAX_DEPTH or (f, name) in seen:
             return
         seen.add((f, name))
@@ -463,12 +511,28 @@ class SpringDataCrudRepository(EdgeHandler):
             return
         if self._needs_fix(idx, f, decl):
             out.setdefault(f, set()).add(name)
+        elif lib_out is not None:
+            libs = self._library_bases(idx, f, decl)
+            if libs:
+                lib_out.append((f, decl, libs))
         for s in decl.supers:
             if s.is_paging or s.is_crud:
                 continue
             sf = idx.resolve(f, s.name)
             if sf:
-                self._collect_tree(idx, sf, s.simple, depth + 1, out, seen)
+                self._collect_tree(idx, sf, s.simple, depth + 1, out, seen, lib_out)
+
+    # -- E14b: CRUD lost through a library base interface -----------------------------------------------------------
+    def _library_bases(self, idx: _RepoIndex, f: str, decl: _Iface) -> list[_SuperRef]:
+        """Supertypes of `decl` that are not project files and not Spring / JDK types, when `decl` has no paging
+        reference of its own, no CRUD-bearing supertype and no project ancestor that provides CRUD ([] otherwise).
+        Reactive only: such a library base (compiled against Spring Data 2, where PagingAndSortingRepository still
+        extended CrudRepository) may as well provide CRUD itself — only the compile error proves it does not."""
+        if decl.paging is not None or any(s.is_crud for s in decl.supers):
+            return []
+        if any(self._super_provides(idx, f, s, 0, {(f, decl.name)}) for s in decl.supers):
+            return []
+        return [s for s in decl.supers if idx.resolve(f, s.name) is None and not _platform_type(idx, f, s)]
 
     def _targets(self, ws: Workspace, idx: _RepoIndex, cluster: ErrorCluster) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
@@ -509,23 +573,47 @@ class SpringDataCrudRepository(EdgeHandler):
                 for name, decl in decls.items():
                     if self._needs_fix(idx, f, decl):
                         fixes.setdefault(f, set()).add(name)
-        else:
+        lib_fixes: dict[str, dict[str, _SuperRef]] = {}     # E14b: file → interface → library base to anchor on
+        if cluster is not None:
             seen: set = set()
+            libs: list[tuple[str, _Iface, list[_SuperRef]]] = []
             for f, name in self._targets(ws, idx, cluster):
-                self._collect_tree(idx, f, name, 0, fixes, seen)
+                self._collect_tree(idx, f, name, 0, fixes, seen, libs)
+            for f, decl, bases in libs:
+                if decl.name in fixes.get(f, set()):
+                    continue
+                two = next((b for b in bases if b.args is not None and len(_split_args(b.args)) == 2), None)
+                if two is None:
+                    b = bases[0]
+                    shown = b.name + (f"<{b.args}>" if b.args is not None else "")
+                    self.note(f"follow-up: {decl.name} lost its CRUD methods through a library base interface "
+                              f"({shown}) whose type arguments could not be mapped — add ListCrudRepository<T, ID> "
+                              "by hand or upgrade the library")
+                    continue
+                lib_fixes.setdefault(f, {})[decl.name] = two
         changed: list[str] = []
         names: list[str] = []
-        for f in sorted(fixes):
-            new = self._fix_file(idx.text(f), [idx.ifaces(f)[n] for n in sorted(fixes[f])])
+        lib_names: list[str] = []
+        for f in sorted(set(fixes) | set(lib_fixes)):
+            anchors = lib_fixes.get(f, {})
+            decls = [idx.ifaces(f)[n] for n in sorted(fixes.get(f, set()) | set(anchors))]
+            new = self._fix_file(idx.text(f), decls, anchors)
             if new != idx.text(f):
                 ws.write(f, new)
                 changed.append(f)
-                names += sorted(fixes[f])
+                names += sorted(fixes.get(f, set()))
+                lib_names += sorted(anchors)
         if changed:
             self.flag("spring-data-crud-restored")
+        if names:
             self.note(f"added ListCrudRepository<T, ID> to {len(names)} repository interface(s) that extended only "
                       f"PagingAndSortingRepository (Spring Data 3 removed its CRUD methods): {', '.join(names)}")
-            log.info("spring-data-crud-repository: %s", ", ".join(names))
+        if lib_names:
+            self.note(f"added ListCrudRepository<T, ID> to {len(lib_names)} repository interface(s) whose base "
+                      "interface comes from a library built on Spring Data 2 (PagingAndSortingRepository lost its CRUD "
+                      f"methods in Spring Data 3): {', '.join(lib_names)}")
+        if changed:
+            log.info("spring-data-crud-repository: %s", ", ".join(names + lib_names))
         return changed
 
     @staticmethod
@@ -542,11 +630,13 @@ class SpringDataCrudRepository(EdgeHandler):
         return not javax_ee
 
     @staticmethod
-    def _fix_file(text: str, decls: list[_Iface]) -> str:
+    def _fix_file(text: str, decls: list[_Iface], anchors: Optional[dict[str, _SuperRef]] = None) -> str:
+        """Insert `, ListCrudRepository<args>` after the paging super (E14) or after the library base `anchors`
+        names for the interface (E14b, its type arguments), plus the import."""
         edits: list[tuple[int, str]] = []
         need_import = False
         for d in decls:
-            p = d.paging
+            p = (anchors or {}).get(d.name) or d.paging
             if p is None:
                 continue
             fqn = "." in p.name

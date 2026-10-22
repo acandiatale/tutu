@@ -110,11 +110,29 @@ class BlockedItem(BaseModel):
     attempts: int = 0                                           # fix attempts made before blocking
     first_seen_iteration: int = 0
     notes: list[str] = Field(default_factory=list)
+    # 2026-10-22 (fourth company project): when the attributed artifact is only the javax API jar
+    # (`javax.persistence:javax.persistence-api:2.2` — the *type's* jar, not the library that still uses it), the
+    # dependency tree says who drags it in: `via` = root → … → API jar coordinates, `via_direct` = the direct
+    # dependency of the module on that path (the library to upgrade, e.g. `org.qlrm:qlrm:2.1.1`)
+    via: list[str] = Field(default_factory=list)
+    via_direct: Optional[GAV] = None
 
 
 # ---------------------------------------------------------------------------
 # Maven / project description
 # ---------------------------------------------------------------------------
+class JavaxApiJar(BaseModel):
+    """A javax EE API jar (or a javax-era `jakarta.*-api` 2.x) still on a module's resolved classpath after the
+    migration, with the dependency path that brings it (`mvn dependency:tree`). Rendered as the report section
+    "javax API jars still on the classpath" (report.javax_api_inventory, 2026-10-22)."""
+    artifact: GAV                                               # the API jar, e.g. javax.persistence:javax.persistence-api:2.2
+    module: Optional[str] = None                                # module dir ("" / None = root)
+    scope: Optional[str] = None                                 # compile | provided | runtime | test
+    path: list[str] = Field(default_factory=list)               # root → … → API jar (coordinates as printed by the tree)
+    via: Optional[GAV] = None                                   # direct dependency of the module on that path
+    declared: bool = False                                      # the API jar itself is declared in the module pom
+
+
 class GAV(BaseModel):
     group_id: str
     artifact_id: str
@@ -875,6 +893,7 @@ class RunReport(BaseModel):
     merge_conflicts: list[MergeConflict] = Field(default_factory=list)   # from the layout restructure (merge policy)
     properties: Optional[PropertyInventory] = None               # profile inventory + placeholders written (round 8)
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
+    javax_api_jars: list[JavaxApiJar] = Field(default_factory=list)   # report.javax_api_inventory (2026-10-22)
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
 

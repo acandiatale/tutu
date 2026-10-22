@@ -136,7 +136,8 @@ def _tr_literals(path: Path) -> set[str]:
 def _used_keys() -> set[str]:
     used = _tr_literals(Path(markdown_mod.__file__))
     used |= set(markdown_mod.FLAG_HELP.values()) | set(markdown_mod.FLAG_PREFIX_HELP.values())
-    used |= {markdown_mod.BLOCKED_TITLE, markdown_mod.HANDOVER_TITLE, markdown_mod.PROPERTIES_TITLE}
+    used |= {markdown_mod.BLOCKED_TITLE, markdown_mod.HANDOVER_TITLE, markdown_mod.PROPERTIES_TITLE,
+             markdown_mod.JAVAX_JARS_TITLE}
     used |= {v for k, v in vars(handover_mod).items() if k.startswith("REASON_")}       # VersionChange.reason
     used |= set(handover_mod.PROPERTY_COLUMNS)
     return used
@@ -187,6 +188,20 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     h2 = build_handover(as_is_profile(), final_tree(tmp_path / "np"), rep2, effective=None, cfg=cfg)
     lines += h2.from_here + h2.notes
     lines += build_handover(None, None, make_report()).notes
+    # X1b: javax API jars — the pointer (no orchestrator follow-up) and the follow-up itself (pointer suppressed)
+    from sbmig.core.models import JavaxApiJar
+    jars = [JavaxApiJar(artifact=GAV.parse("javax.persistence:javax.persistence-api:2.2"),
+                        via=GAV.parse("org.qlrm:qlrm:2.1.1"))]
+    lines += build_handover(as_is_profile(), final_tree(tmp_path / "jx"),
+                            make_report(javax_api_jars=jars, manual_followups=[]), effective=EFFECTIVE,
+                            cfg=cfg).from_here
+    fu = ("1 javax API jar(s) still on the classpath after the migration (see the report section) — the libraries "
+          "that drag them in need Jakarta builds: `org.qlrm:qlrm:2.1.1`")
+    h3 = build_handover(as_is_profile(), final_tree(tmp_path / "jx2"),
+                        make_report(javax_api_jars=jars, manual_followups=[fu]), effective=EFFECTIVE,
+                        cfg=cfg).from_here
+    assert not any("see that section" in x for x in h3)
+    lines += h3
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

@@ -31,6 +31,8 @@ REASON_BOOT = "spring boot 4 upgrade"
 REASON_OTHER = "recipe/handler"
 CARRIED_LIST_MAX = 5
 LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM for <library>" line
+# the orchestrator's X1b follow-up (report.javax_api_inventory, 2026-10-22)
+_JAVAX_FOLLOWUP_RE = re.compile(r"^\d+ javax API jar\(s\) still on the classpath after the migration")
 IDENTICAL_LIST_MAX = 5           # paths named in the "N identical duplicate(s) dropped" line
 PROPERTY_SEP = " | "             # cell separator of a properties_to_set row (cells never contain "|")
 PROPERTY_COLUMNS = ("key", "before migration", "referenced at", "written as", "set via")
@@ -486,6 +488,10 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
         _dedupe_add(out, f"{len(report.blocked)} cluster(s) blocked — see Blocked")
     if report.unresolved:
         _dedupe_add(out, f"{len(report.unresolved)} unresolved error(s) — see Unresolved errors")
+    jars = list(getattr(report, "javax_api_jars", None) or [])
+    if jars and not any(_JAVAX_FOLLOWUP_RE.match(m) for m in report.manual_followups):
+        # the orchestrator's follow-up (listed under (e)) already names the libraries; the pointer stands in for it
+        _dedupe_add(out, f"{len(jars)} javax API jar(s) still on the classpath — see that section")
     # (d2) externalized settings — the restructurer's follow-up says the same; keep that one when it exists
     try:
         item = None if _properties_followup_present(report) else _properties_item(_inventory(report), cfg)

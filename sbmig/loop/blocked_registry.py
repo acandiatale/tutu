@@ -5,7 +5,9 @@ phase is skipped in restructure/verify too. Keys are L1 signatures, plus the fil
 so the restructure move into ``module/comp-jar`` keeps the key) for compile errors.
 
 ``BlockedItem.suggestion`` is composed by :func:`compose_suggestion` from the reason, the attributed artifact
-(``sbmig.build.classpath`` — optional, lazily imported) and ``cfg.artifacts.optional``.
+(``sbmig.build.classpath`` — optional, lazily imported) and ``cfg.artifacts.optional``. After the final build,
+:func:`fill_via` adds the library that drags a javax API jar in (``BlockedItem.via`` / ``via_direct``, from the
+``sbmig.build.deptree`` inventory) and recomposes the suggestion (ladder (1)–(5), docs/ERROR-HANDLING.md X1).
 """
 from __future__ import annotations
 
@@ -186,6 +188,237 @@ def attribute(locator: Any, ws, cfg, owner_class: Optional[str], errors: list[Bu
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# via: the library that drags a javax API jar in (sbmig.build.deptree inventory, 2026-10-22)
+# ---------------------------------------------------------------------------------------------------------------------
+# javax package → the API artifact that ships it (when the attribution found no jar, the required type still says
+# which API the library expects); the other groups of the same API family count as the same jar
+JAVAX_PACKAGE_ARTIFACTS: dict[str, str] = {
+    "javax.persistence": "javax.persistence:javax.persistence-api",
+    "javax.servlet": "javax.servlet:javax.servlet-api",
+    "javax.validation": "javax.validation:validation-api",
+    "javax.annotation": "javax.annotation:javax.annotation-api",
+    "javax.transaction": "javax.transaction:javax.transaction-api",
+    "javax.inject": "javax.inject:javax.inject",
+    "javax.xml.bind": "javax.xml.bind:jaxb-api",
+    "javax.mail": "javax.mail:javax.mail-api",
+    "javax.jms": "javax.jms:javax.jms-api",
+    "javax.websocket": "javax.websocket:javax.websocket-api",
+    "javax.el": "javax.el:javax.el-api",
+}
+_API_FAMILY_GROUPS: dict[str, tuple[str, ...]] = {
+    "javax.persistence": ("javax.persistence", "org.hibernate.javax.persistence", "jakarta.persistence"),
+    "javax.servlet": ("javax.servlet", "jakarta.servlet"),
+    "javax.validation": ("javax.validation", "jakarta.validation"),
+    "javax.annotation": ("javax.annotation", "jakarta.annotation"),
+    "javax.transaction": ("javax.transaction", "jakarta.transaction"),
+    "javax.inject": ("javax.inject", "jakarta.inject"),
+    "javax.xml.bind": ("javax.xml.bind", "jakarta.xml.bind"),
+    "javax.mail": ("javax.mail", "com.sun.mail", "jakarta.mail"),
+    "javax.jms": ("javax.jms", "jakarta.jms"),
+    "javax.websocket": ("javax.websocket", "jakarta.websocket"),
+    "javax.el": ("javax.el", "jakarta.el"),
+}
+_VIA_REASONS = (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE)
+
+
+def is_javax_api_artifact(gav: Optional[GAV]) -> bool:
+    """A javax EE API jar: group `javax.*` / `org.hibernate.javax.persistence` / `com.sun.mail`, or a Jakarta EE 8
+    re-publication (`jakarta.*:*-api` 1.x / 2.x — servlet 4.x, el 3.x — still the javax namespace)."""
+    if gav is None:
+        return False
+    g = gav.group_id
+    if g.startswith("javax.") or g == "javax" or g.startswith("org.hibernate.javax.persistence") \
+            or g.startswith("com.sun.mail"):
+        return True
+    if g.startswith("jakarta.") and gav.artifact_id.endswith("-api") and gav.version:
+        major = gav.version.split(".", 1)[0]
+        if major in ("1", "2") or (major == "4" and "servlet" in gav.artifact_id) \
+                or (major == "3" and gav.artifact_id == "jakarta.el-api"):
+            return True
+    return False
+
+
+def _javax_package(item: BlockedItem) -> Optional[str]:
+    for t in (item.required_type, item.owner_class, item.found_type):
+        if not t or not t.startswith("javax."):
+            continue
+        best = max((p for p in JAVAX_PACKAGE_ARTIFACTS if t == p or t.startswith(p + ".")), key=len, default=None)
+        if best:
+            return best
+    return None
+
+
+def _item_module(item: BlockedItem) -> Optional[str]:
+    return next((e.module for e in item.errors if e.module), None)
+
+
+def _jar_module_names(jar: Any) -> set[str]:
+    names = {getattr(jar, "module", None) or ""}
+    mod = getattr(jar, "module", None)
+    if mod:
+        names.add(mod.rstrip("/").rsplit("/", 1)[-1])
+    path = list(getattr(jar, "path", None) or [])
+    if path:
+        parts = path[0].split(":")
+        if len(parts) > 1:
+            names.add(parts[1])
+    return {n for n in names if n}
+
+
+def _jar_rank(jar: Any) -> int:
+    via = getattr(jar, "via", None)
+    if via is not None:
+        try:
+            from sbmig.core.jakarta_libraries import jakarta_library_for
+            if jakarta_library_for(via.key) is not None:
+                return 0
+        except Exception:  # pragma: no cover - knowledge table unreadable
+            pass
+        return 1
+    return 2 if getattr(jar, "declared", False) else 3
+
+
+def match_javax_jar(item: BlockedItem, inventory: Iterable[Any]) -> Any:
+    """The inventory entry (`JavaxApiJar`) for a blocked X1 / X2 item, or None. The item's artifact first (same
+    key), else the API artifact of the javax package the error names; the item's module preferred."""
+    jars = list(inventory or [])
+    if not jars:
+        return None
+    a = item.artifact
+    keys: set[str] = set()
+    groups: tuple[str, ...] = ()
+    if a is not None:
+        keys.add(a.key)
+    pkg = _javax_package(item)
+    if pkg:
+        keys.add(JAVAX_PACKAGE_ARTIFACTS[pkg])
+        groups = _API_FAMILY_GROUPS.get(pkg, ())
+    if not keys:
+        return None
+    cands = [j for j in jars if j.artifact.key in keys]
+    if not cands and groups:
+        cands = [j for j in jars if j.artifact.group_id in groups]
+    if not cands:
+        return None
+    mod = _item_module(item)
+    if mod:
+        m = mod.strip("/")
+        local = [j for j in cands if m in _jar_module_names(j) or m.rsplit("/", 1)[-1] in _jar_module_names(j)]
+        cands = local or cands
+    return sorted(cands, key=_jar_rank)[0]
+
+
+def fill_via(items: Iterable[BlockedItem], inventory: Iterable[Any], cfg=None) -> int:
+    """Set `via` / `via_direct` on X1 / X2 items whose artifact is None or a javax API jar (the library that drags
+    the jar in, from the `dependency:tree` inventory) and recompose their suggestion. Returns the items changed."""
+    inv = list(inventory or [])
+    changed = 0
+    for item in items:
+        if item.reason not in _VIA_REASONS:
+            continue
+        if item.artifact is not None and not is_javax_api_artifact(item.artifact):
+            continue
+        jar = match_javax_jar(item, inv)
+        if jar is not None:
+            item.via = list(jar.path)
+            item.via_direct = jar.via
+            if item.artifact is None:
+                item.artifact = jar.artifact.model_copy(update={"scope": None})
+            if item.via_direct is not None:
+                note = "via: " + " → ".join(item.via)
+                if note not in item.notes:
+                    item.notes.append(note)
+        new = compose_suggestion(item, cfg, javax_jar=jar)
+        if jar is not None or new != item.suggestion:
+            changed += 1
+        item.suggestion = new
+    return changed
+
+
+def _in_house_groups(cfg) -> list[str]:
+    arts = getattr(cfg, "artifacts", None) if cfg is not None else None
+    if arts is None:
+        return []
+    out: list[str] = []
+    try:
+        for s in [*arts.parent_specs(), *arts.mandatory, *arts.optional]:
+            if s.group_id and s.group_id not in out:
+                out.append(s.group_id)
+    except Exception:  # pragma: no cover
+        pass
+    return out
+
+
+def is_in_house(gav: Optional[GAV], cfg) -> bool:
+    """Group equal to / under the configured parent's group, or any mandatory / optional / role-parent group."""
+    if gav is None:
+        return False
+    g = gav.group_id
+    return any(g == x or g.startswith(x + ".") for x in _in_house_groups(cfg))
+
+
+def _module_label(item: BlockedItem, jar: Any) -> str:
+    mod = getattr(jar, "module", None) if jar is not None else None
+    if mod:
+        return f"module `{mod}`"
+    path = list(getattr(jar, "path", None) or item.via or [])
+    if path:
+        parts = path[0].split(":")
+        if len(parts) > 1:
+            return f"`{parts[1]}`"
+    m = _item_module(item)
+    return f"module `{m}`" if m else "the root module"
+
+
+def _api_jar_text(item: BlockedItem, jar: Any) -> str:
+    gav = getattr(jar, "artifact", None) if jar is not None else None
+    gav = gav or item.artifact
+    return gav.coordinates if gav is not None else "the javax API jar"
+
+
+def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
+    """Suggestion ladder (1)–(4) for an item whose javax API jar was traced in the dependency tree; "" otherwise."""
+    via = item.via_direct
+    declared = bool(getattr(jar, "declared", False)) if jar is not None else (
+        via is None and len(item.via) == 2)
+    if via is None and not declared:
+        return ""
+    api = _api_jar_text(item, jar)
+    where = _module_label(item, jar)
+    if via is not None:
+        lib = None
+        try:
+            from sbmig.core.jakarta_libraries import jakarta_library_for
+            lib = jakarta_library_for(via.key)
+        except Exception as e:  # pragma: no cover - knowledge table unreadable
+            log.debug("jakarta_libraries unavailable: %s", e)
+        if lib is not None and via.key != lib.key:                                           # (1) relocated
+            java = f", requires Java {lib.requires_java}" if lib.requires_java else ""
+            return (f"`{via.coordinates}` is `{lib.key}` under its earlier coordinates → `{lib.key}:{lib.version}` "
+                    f"(jakarta.* since {lib.jakarta_since}{java}); handler jakarta-library-floor relocates it when "
+                    f"the pom declares it (it drags in `{api}`, direct dependency of {where})")
+        if lib is not None:                                                                   # (1)
+            java = f" (requires Java {lib.requires_java})" if lib.requires_java else ""
+            note = (lib.note or "").split(";", 1)[0].strip()
+            return (f"`{api}` comes through `{via.coordinates}` (direct dependency of {where}): `{lib.key}` moved to "
+                    f"jakarta.* in {lib.jakarta_since} — raise it to {lib.version}{java}; handler "
+                    f"jakarta-library-floor does this when the pom declares it" + (f" ({note})" if note else ""))
+        if is_in_house(via, cfg):                                                             # (2)
+            line = getattr(getattr(getattr(cfg, "artifacts", None), "parent", None), "version", None)
+            on = f"on the {line} line" if line else "on the configured in-house version line"
+            return (f"`{via.coordinates}` is an in-house artifact still compiled against javax (it drags in "
+                    f"`{api}`): it needs a Jakarta build {on}; add it to `artifacts.optional` with that version so "
+                    f"the optional bump moves it")
+        return (f"`{api}` comes through `{via.coordinates}` (direct dependency of {where}), which is still compiled "  # (3)
+                f"against javax: upgrade it to a Jakarta release (check its changelog) or replace it; left unchanged "
+                f"on purpose")
+    pom = f"`{jar.module}/pom.xml`" if jar is not None and getattr(jar, "module", None) else (
+        "the root `pom.xml`" if jar is not None else f"the pom of {where}")
+    return (f"`{api}` is declared in {pom} — remove it (its jakarta.* successor comes with the Spring Boot "           # (4)
+            f"starters) — handler dependency-relocation does this after the spring recipes")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # suggestion text
 # ---------------------------------------------------------------------------------------------------------------------
 def _optional_spec(cfg, artifact: Optional[GAV]):
@@ -198,12 +431,15 @@ def _optional_spec(cfg, artifact: Optional[GAV]):
 
 
 def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[str] = None,
-                       repositories: Optional[list[str]] = None, extra: str = "") -> str:
+                       repositories: Optional[list[str]] = None, extra: str = "", javax_jar: Any = None) -> str:
     r = item.reason
     a = item.artifact
     if r in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
         what = (f"still takes `{item.required_type}`" if r == BlockReason.EXTERNAL_JAVAX_API and item.required_type
                 else "exposes an API this code no longer matches")
+        via_text = _via_suggestion(item, cfg, javax_jar)
+        if via_text:
+            return via_text
         spec = _optional_spec(cfg, a)
         if a is not None and spec is not None:
             v = spec.version or "the configured version"
@@ -212,6 +448,12 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
                     f"javax: ask the library owner for a Jakarta build")
         if a is not None:
             owner = f" (class `{item.owner_class}`)" if item.owner_class else ""
+            if is_javax_api_artifact(a):
+                # X1 attributed the *type's* jar (the error line names no library callee): say how to find the
+                # library behind it instead of "upgrade the javax API jar to a Jakarta build" (2026-10-22)
+                return (f"`{a.coordinates}`{owner} {what}; the javac error only names the javax type; run "
+                        f"`mvn dependency:tree -Dincludes={a.key}` in the module to find the library that still "
+                        f"uses it, then upgrade that library to a Jakarta release or replace it")
             if r == BlockReason.EXTERNAL_JAVAX_API:
                 return (f"`{a.coordinates}`{owner} {what}; upgrade `{a.key}` to a Jakarta build (add it to "
                         f"artifacts.optional with that version) or wrap the call with a shim; left unchanged on purpose")

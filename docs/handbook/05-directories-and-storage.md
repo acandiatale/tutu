@@ -7,7 +7,7 @@ sbmig 저장소와 실행 결과물이 어느 디렉터리에, 어떤 형식으�
 - 저장소 최상위 디렉터리 각각의 역할과 "지워도 되는가 / 백업해야 하는가"를 판단할 수 있습니다.
 - `kb/` 의 케이스·레시피·원장(ledger)·심볼 인덱스 파일 형식과, 빌드 수정 루프가 이를 어떻게 다시 꺼내 쓰는지 설명할 수 있습니다.
 - 한 번의 실행 디렉터리(`out/<run id>/`)에 생기는 모든 파일이 어느 모듈에서 언제 쓰이는지 알고, 문제 보고 시 어떤 파일을 봐야 하는지 압니다.
-- `fixtures/` 의 25개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
+- `fixtures/` 의 26개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
 - 테스트 디렉터리 구조와 `integration` 마커, 보조 스크립트(`scripts/`), 독립 코딩 에이전트(`coding/`)의 위치를 압니다.
 
 ## 관련 코드
@@ -31,7 +31,7 @@ migration-agent/
 ├── knowledge/                큐레이션된 지식: 레시피 카탈로그, 선언형 레시피, 마이그레이션 노트, 라이브러리 권고, 외부화 규칙
 ├── kb/                       실행 중 자라는 학습 KB (케이스, 레시피 후보/활성, 패턴, 원장, 심볼 인덱스)
 ├── sbmig/                    에이전트 본체(Python 패키지)
-├── fixtures/                 테스트용 as-is Maven 프로젝트 25개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
+├── fixtures/                 테스트용 as-is Maven 프로젝트 26개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
 ├── tests/                    pytest 테스트(패키지별 하위 디렉터리)
 ├── scripts/                  e2e, KB 학습 데모, 플릿 데모 스크립트
 ├── coding/                   sbmig 와 독립된 소형 코딩 에이전트(같은 게이트웨이 계약)
@@ -100,6 +100,7 @@ knowledge/
 │   ├── index.yml                   노트 선택 규칙(keywords / cases / phases / always)
 │   └── *.md                        마이그레이션 노트 15개 (fix-policy, jdk21, jakarta, boot2-to-3, hibernate-7 …)
 ├── libraries/advisories.yml        EOL / 미관리 라이브러리 권고 15개
+├── libraries/jakarta_libraries.yml jakarta 릴리스가 알려진 서드파티 라이브러리(핸들러 jakarta-library-floor, X1 제안, javax API 절; 첫 항목 QLRM)
 └── config/externalized.yml         외부화 설정 인벤토리 규칙(JNDI / context-param / -D 매핑, 안내문)
 ```
 
@@ -507,6 +508,7 @@ out/<run id>/
 ├── rewrite/                  rewrite-1.yml … rewrite-N.yml (합성된 레시피 파일), artifact-versions.json
 ├── effective/                depmgmt.json, root.xml (as-is effective pom), 재구성 후 캡처 파일
 ├── classpath/                (필요할 때) <module>.txt + <module>.meta.json
+├── deptree/                  (최종 빌드 뒤) <module>[-<hash>].txt + .meta.json — mvn dependency:tree
 ├── merge-conflicts/          (멀티모듈 merge 충돌이 있을 때) 버려진 사본
 ├── journal.jsonl             이벤트 스트림
 ├── sbmig.log                 DEBUG 로그
@@ -530,6 +532,7 @@ out/<run id>/
 | `effective/<stem>.xml` | `help:effective-pom` 출력(as-is 는 `root.xml` 등) | 같은 캡처 | 사람이 직접 비교할 때 |
 | `effective/depmgmt-after-restructure.json` | 사내 부모를 붙인 **재구성 후** 트리의 관리 버전(as-is 캡처를 덮어쓰지 않도록 별도 파일) | `Orchestrator._effective_pom_after` | `layout.drop_managed_versions` 가 새 부모가 관리하는 명시 버전을 지울 때 |
 | `classpath/<module>.txt` + `.meta.json` | `dependency:build-classpath` 결과와 pom 스탬프(같으면 재사용) | `sbmig/build/classpath.py` | 오류의 원인 라이브러리 귀속, 심볼 소유자 해석 |
+| `deptree/<module>[-<hash>].txt` + `.meta.json` | `dependency:tree -Dincludes=<javax API 패턴>` 결과(여러 reactor 모듈의 트리가 이어 붙음)와 pom 스탬프 | `sbmig/build/deptree.py` (`report.javax_api_inventory`) | 클래스패스에 남은 javax API jar와 그것을 끌어오는 라이브러리(X1 `via`, X1b) |
 | `merge-conflicts/<module>/…` | 멀티모듈 `merge` 에서 first-wins 로 버려진 다른 내용의 사본, 레지스트리 합집합의 원본들, pom 패키징 모듈의 컴파일되지 않던 `src/` | 재구성기(`_merge`) | 담당자 검토(Handover "Merge conflicts"), 재구성 단계 수정 루프가 LLM 에 읽기 전용 참고로 제공 |
 | `journal.jsonl` | 한 줄 = `{"ts", "run_id", "event", …}` | `Workspace.journal` (모든 모듈) | 실행 재구성, e2e 검증(`journal_events`), 웹 UI 스트림 |
 | `sbmig.log` | DEBUG 레벨 로그(실행 스레드만) | CLI `run` 이 `attach_file_log`, 웹은 스레드 필터 | 문제 보고 시 공유하는 기본 파일 |
@@ -578,7 +581,7 @@ out/<run id>/
 
 | 대상 | 판단 |
 |---|---|
-| `project/`, `logs/`, `rewrite/`, `effective/`, `classpath/` | 프로젝트 인계가 끝나면 지워도 됩니다(용량이 가장 큼). |
+| `project/`, `logs/`, `rewrite/`, `effective/`, `classpath/`, `deptree/` | 프로젝트 인계가 끝나면 지워도 됩니다(용량이 가장 큼). |
 | `report.md`, `report.json`, `result.zip`, `changes.patch` | 인계 산출물. 담당자 확인이 끝날 때까지 보관합니다. |
 | `journal.jsonl`, `sbmig.log`, `threads-*.txt` | 문제 재현·보고용. 해당 프로젝트가 종결될 때까지 보관합니다. |
 | `merge-conflicts/` | 담당자가 충돌 검토를 마칠 때까지 보관합니다. |
@@ -626,7 +629,7 @@ fixtures/
 └── fleet/manifest.example.yml    플릿 매니페스트 견본
 ```
 
-### 6.2 25개 픽스처
+### 6.2 26개 픽스처
 
 | 픽스처 | 케이스 | 무엇을 검증하나 |
 |---|---|---|
@@ -655,6 +658,7 @@ fixtures/
 | `company-spring5-web` | `spring_legacy`(war, 정적 파일) | 회사 레이아웃: `shop-boot` / `shop-back` / `shop-front` |
 | `company-servlet-jsp` | `servlet_tomcat`(war, JSP+JSTL) | 회사 레이아웃: JSP → boot WAR + front jar(Servlet 3) |
 | `boot2-rewrite-excluded` | `spring_boot` | `openrewrite.exclusions` 아래의 vendored 헬퍼(FQN `javax.persistence`)와 paging 전용 리포지토리 → 레시피가 못 본 파일을 `jakarta-namespace-sweep` / `spring-data-crud-repository` 가 고침(E13, E14), 0 LLM |
+| `boot2-qlrm-javax` | `spring_boot` | QLRM 1.7.1(옛 좌표 `ch.simas.qlrm`)의 `JpaResultMapper`가 `javax.persistence.Query`를 받음 → `jakarta-library-floor` 가 `org.qlrm:qlrm:4.2.1` 로 재배치(X1b), 0 LLM |
 
 정확한 기대 결과는 `fixtures/projects/README.md` 의 매트릭스가 원본입니다. 레이아웃별 전후 트리는 [06. 재구성과 회사 레이아웃](06-restructure-and-layouts.md) 에서 다룹니다.
 

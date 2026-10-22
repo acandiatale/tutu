@@ -39,6 +39,11 @@ FLAG_HELP = {
                                  "are listed as follow-ups)",
     "spring-data-crud-restored": "repository interfaces that extended only PagingAndSortingRepository got "
                                  "ListCrudRepository<T, ID> back (Spring Data 3 removed its CRUD methods)",
+    "javax-api-on-classpath": "javax EE API jars are still on the resolved classpath after the migration (section "
+                              "\"javax API jars still on the classpath\"): the direct dependencies that drag them in "
+                              "are compiled against javax and need Jakarta builds",
+    "jakarta-library-bumped": "a third-party library with a known jakarta.* release was raised to it "
+                              "(knowledge/libraries/jakarta_libraries.yml, handler jakarta-library-floor)",
 }
 FLAG_PREFIX_HELP = {
     "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",
@@ -48,6 +53,7 @@ FLAG_PREFIX_HELP = {
 BLOCKED_TITLE = "Blocked — needs human / library action"
 HANDOVER_TITLE = "Handover — what we replaced, what is yours"
 PROPERTIES_TITLE = "Properties to set before running"
+JAVAX_JARS_TITLE = "javax API jars still on the classpath"
 
 
 def flag_help(flag: str, lang: str = "en") -> Optional[str]:
@@ -65,6 +71,10 @@ def blocked_count_line(items: list[BlockedItem], lang: str = "en") -> str:
 def _blocked_who(b: BlockedItem, lang: str = "en") -> str:
     if b.artifact is not None:
         who = f"`{b.artifact.coordinates}`"
+        if b.via_direct is not None:            # the library that drags the javax API jar in (dependency:tree)
+            who += f" ← `{b.via_direct.coordinates}`"
+        elif len(b.via) == 2:
+            who += tr(lang, " ← declared in the pom")
         return who + (tr(lang, " (class `{owner}`)", owner=b.owner_class) if b.owner_class else "")
     if b.owner_class:
         return tr(lang, "class `{owner}`", owner=b.owner_class)
@@ -86,6 +96,69 @@ def blocked_rows(items: list[BlockedItem], lang: str = "en") -> list[str]:
                     f"{_cell(_blocked_types(b), 200)} | {_cell(files or '-', 400)} | {b.attempts} | "
                     f"{_cell(b.suggestion, 500)} |")
     return rows
+
+
+def _in_house_groups(r: RunReport, cfg: Any = None) -> list[str]:
+    """Company groups for "in-house → Jakarta build": the configured parent / mandatory / optional groups when the
+    config is at hand, else the group(s) of the final parent(s) in the Handover (never Spring's own groups)."""
+    out: list[str] = []
+    arts = getattr(cfg, "artifacts", None) if cfg is not None else None
+    if arts is not None:
+        try:
+            out += [s.group_id for s in [*arts.parent_specs(), *arts.mandatory, *arts.optional]]
+        except Exception:  # pragma: no cover
+            pass
+    h = r.handover
+    if h is not None and h.parent_after:
+        out += [c.strip().split(":", 1)[0] for c in h.parent_after.split(",") if ":" in c]
+    return [g for g in dict.fromkeys(out) if g and not g.startswith("org.springframework")]
+
+
+def _javax_what_to_do(j: Any, groups: list[str], lang: str = "en") -> str:
+    via = j.via
+    if via is not None:
+        try:
+            from sbmig.core.jakarta_libraries import jakarta_library_for
+            lib = jakarta_library_for(via.key)
+        except Exception:  # pragma: no cover - knowledge table unreadable
+            lib = None
+        if lib is not None:
+            if via.key != lib.key:                       # earlier coordinates (ch.simas.qlrm → org.qlrm)
+                txt = tr(lang, "coordinates changed: relocate to `{key}:{version}` (jakarta.* since {since})",
+                         key=lib.key, version=lib.version, since=lib.jakarta_since)
+            else:
+                txt = tr(lang, "raise to {version} (jakarta.* since {since})", version=lib.version,
+                         since=lib.jakarta_since)
+            if lib.requires_java:
+                txt += tr(lang, ", requires Java {java}", java=lib.requires_java)
+            return txt + (f" — {lib.note}" if lib.note else "")
+        if any(via.group_id == g or via.group_id.startswith(g + ".") for g in groups):
+            return tr(lang, "in-house → Jakarta build")
+        return tr(lang, "upgrade / replace")
+    if j.declared:
+        return tr(lang, "remove the declaration (handler dependency-relocation)")
+    return tr(lang, "upgrade / replace")
+
+
+def javax_api_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
+    """`## javax API jars still on the classpath` (report.javax_api_inventory, 2026-10-22); [] when none."""
+    jars = list(r.javax_api_jars or [])
+    if not jars:
+        return []
+    groups = _in_house_groups(r, cfg)
+    L = [f"## {tr(lang, JAVAX_JARS_TITLE)}", "",
+         tr(lang, "{n} javax EE API jar(s) are still on the resolved classpath after the migration "
+                  "(`mvn dependency:tree`). The library in \"via\" is compiled against javax: code that passes "
+                  "jakarta.* types to it does not compile, and it fails at runtime.", n=len(jars)), "",
+         tr(lang, "| artifact | module | scope | via (direct dependency) | declared in pom | what to do |"),
+         "|---|---|---|---|---|---|"]
+    for j in jars:
+        via = f"`{j.via.coordinates}`" if j.via is not None else "-"
+        L.append(f"| `{_cell(j.artifact.coordinates, 120)}` | {_cell(j.module or tr(lang, '(root)'), 60)} | "
+                 f"{j.scope or '-'} | {_cell(via, 120)} | {tr(lang, 'yes') if j.declared else tr(lang, 'no')} | "
+                 f"{_cell(_javax_what_to_do(j, groups, lang), 400)} |")
+    L.append("")
+    return L
 
 
 def _cell(text: object, limit: int = 160) -> str:
@@ -314,8 +387,9 @@ def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
-def render_markdown(report: RunReport, language: str = "en") -> str:
-    """report.md for `language` (`report.language`: "en" | "ko"; anything else renders English)."""
+def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) -> str:
+    """report.md for `language` (`report.language`: "en" | "ko"; anything else renders English). `cfg` (optional)
+    only sharpens the javax API section's in-house detection."""
     lang = normalize(language)
     r = report
     L: list[str] = []
@@ -345,6 +419,8 @@ def render_markdown(report: RunReport, language: str = "en") -> str:
         L.append(tr(lang, "| Flags | {flags} |", flags=", ".join(f"`{f}`" for f in r.flags)))
     if r.blocked:
         L.append(tr(lang, "| **Blocked** | {line} (see below) |", line=blocked_count_line(r.blocked, lang)))
+    if r.javax_api_jars:
+        L.append(tr(lang, "| javax API jars | {n} |", n=len(r.javax_api_jars)))
     L.append("")
 
     # ---- handover first: what we replaced, what the owning team does from here on
@@ -373,6 +449,9 @@ def render_markdown(report: RunReport, language: str = "en") -> str:
             L.append("")
             L.append("</details>")
             L.append("")
+
+    # ---- javax API jars still on the classpath (X1b): the libraries the Blocked rows point at
+    L += javax_api_lines(r, lang, cfg)
 
     # ---- unresolved: it is what the reader acts on
     L.append(tr(lang, "## Unresolved errors"))
