@@ -124,7 +124,9 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   spring` leaves no package-goal loop) → `loop.phases.verify` last-chance loop + repeated final build,
   `loop.verify_extra_llm_attempts` releases `repeated_failure` clusters (L12; released inside the loop, so a cluster the
   reactor order hid in the first verify build is covered too); advisory + note `hibernate-commons-annotations` (HCANN gone
-  in Hibernate 7); JUnit 4 leftovers (`org.junit.experimental…`) → `add-known-dependency` re-adds `junit:junit` (test).
+  in Hibernate 7); JUnit 4 leftovers (`org.junit.experimental…`) → `add-known-dependency` re-adds `junit:junit` (test);
+  `report.language: ko` renders `report.md` in Korean (`sbmig/report/i18n.py`; identifiers, paths, Maven messages and loop
+  notes stay English; `report.json` unchanged) — the company example sets it.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -165,7 +167,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,381 passed, 34 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,395 passed, 34 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

@@ -104,6 +104,7 @@ sbmig run proj.zip -c config/artifacts.yml -c site-overrides.yml -c config/llm-a
 - 콘솔 마지막: `<프로젝트> (<case>) — <결과>   run <run id>`, phase 표, `LLM: N call(s) …   flags: …`, blocked / unresolved 표, 그리고 `log: <run dir>/sbmig.log   (share this file + report.md when asking for help)`.
 - 종료 코드: PowerShell `$LASTEXITCODE`, bash `echo $?`.
 - 보고서 맨 위 표의 Result와 Flags, 바로 아래 Handover.
+- 보고서(`report.md`) 언어는 `report.language`로 정합니다(`en` 기본, `ko`면 제목·표 머리글·안내 문장이 한국어). 한국어 보고서에서는 Result가 `결과`, Handover가 `인수인계` 절로 보입니다. 플래그 이름·레시피 id·경로·오류 메시지는 영어 그대로이고, `report.json`은 언어와 상관없이 같습니다.
 
 ### 1.7 Windows
 

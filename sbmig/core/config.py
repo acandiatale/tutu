@@ -347,6 +347,7 @@ class ReportConfig(BaseModel):
     formats: list[str] = Field(default_factory=lambda: ["md", "json"])
     zip_result: bool = True
     include_diff: bool = True
+    language: Literal["en", "ko"] = "en"   # report.md language (report.json, console and logs stay English)
 
 
 class AdvisoryConfig(BaseModel):

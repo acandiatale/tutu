@@ -7,13 +7,21 @@ from typing import Any, Optional
 
 from sbmig.core.models import RunReport
 
+from .i18n import normalize
 from .markdown import BLOCKED_TITLE, blocked_count_line, group_by_file, render_markdown
 
 log = logging.getLogger("sbmig.report")
 
 
-def write_report(report: RunReport, ws: Any) -> dict[str, str]:
-    """Write report.json and report.md into the run dir; returns {"report_json": path, "report_md": path}."""
+def report_language(cfg: Any = None) -> str:
+    """`cfg.report.language` ("en" | "ko"); "en" without a config or for an unknown value."""
+    return normalize(getattr(getattr(cfg, "report", None), "language", None) if cfg is not None else None)
+
+
+def write_report(report: RunReport, ws: Any, cfg: Any = None, *, language: Optional[str] = None) -> dict[str, str]:
+    """Write report.json and report.md into the run dir; returns {"report_json": path, "report_md": path}.
+    report.md is rendered in `language`, else `cfg.report.language` (see `report_language`); report.json is the
+    same whatever the language."""
     run_dir = ws.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {}
@@ -23,7 +31,8 @@ def write_report(report: RunReport, ws: Any) -> dict[str, str]:
     out["report_md"] = str(mp)
     report.outputs.update({k: v for k, v in out.items() if k not in report.outputs})
     jp.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    mp.write_text(render_markdown(report), encoding="utf-8")
+    mp.write_text(render_markdown(report, language=normalize(language) if language else report_language(cfg)),
+                  encoding="utf-8")
     log.info("report written: %s", mp)
     return out
 

@@ -178,6 +178,7 @@ report:
   formats: [md, json]
   zip_result: true
   include_diff: true
+  language: en                     # report.md language: en | ko (report.json, console and logs stay English)
 
 advisories:                        # library advisories (docs/ADVISORIES.md): EOL / no-longer-managed libraries
   enabled: true

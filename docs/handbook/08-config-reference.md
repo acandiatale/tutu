@@ -267,6 +267,7 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `report.formats` | list[str] | `md`, `json` | 마크다운/JSON 보고서 작성 여부. | 바꾸지 않습니다(웹 UI와 플릿이 JSON을 읽음). | [09](09-operations.md) |
 | `report.zip_result` | bool | `true` | 결과 프로젝트를 `result.zip`으로(`.git`, `target` 제외, dry-run 제외). | 디스크 절약 시 false. | [05](05-directories-and-storage.md) |
 | `report.include_diff` | bool | `true` | `changes.patch`(첫 커밋 대비 git diff 원본 바이트) 작성. | 바꾸지 않습니다. | [05](05-directories-and-storage.md) |
+| `report.language` | str | `en` | `report.md`의 언어(`en` \| `ko`). 제목·표 머리글·안내 문장만 바뀌고 플래그 이름, 레시피/핸들러 id, 경로, Maven/javac 메시지, 루프가 남긴 영어 노트는 그대로입니다. `report.json`·콘솔·로그는 항상 영어. | 회사 운영자용으로 `ko`(`config/artifacts.example.yml`에 설정됨). | [02](02-workflows.md) |
 
 ### 2.13 `advisories` — 라이브러리 권고(EOL/비관리 라이브러리)
 | 키 | 타입 | 기본값 | 의미 | 언제 바꾸나 | 관련 문서 |

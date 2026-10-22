@@ -96,6 +96,17 @@ def test_spring_boot_end_to_end(cfg, ws):
     assert "org.openrewrite.java.migrate.UpgradeToJava21" in orch.triager.engine.recipes_run_any
 
 
+def test_report_md_follows_report_language(cfg, ws):
+    """`report.language: ko` (2026-10-22): the default writer gets the Config, so report.md comes out in Korean;
+    report.json stays the same."""
+    cfg = cfg.model_copy(deep=True)
+    cfg.report.language = "ko"
+    report = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build)).run()
+    md = (ws.run_dir / "report.md").read_text(encoding="utf-8")
+    assert report.success and "빌드 성공" in md and "## 단계별 결과" in md and "## Phases" not in md
+    assert (ws.run_dir / "report.json").exists()
+
+
 def test_msa_targets_passed_through(cfg, ws):
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
     rw = FakeRewriteRunner(ws)

@@ -1445,7 +1445,7 @@ class Orchestrator:
         writer = self._report_writer
         if writer is None:
             from sbmig.report import write_report
-            writer = write_report
+            writer = lambda r, w: write_report(r, w, cfg=self.cfg)      # noqa: E731 - report.language from the config
         try:
             paths = writer(report, self.ws) or {}
             out.update({k: v for k, v in paths.items()})
