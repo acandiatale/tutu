@@ -320,8 +320,11 @@ class _Parser:
 
     # ------------------------------------------------------------- javac
     def _kind_for(self, file: str, goal: str | None) -> ErrorKind:
+        # Windows javac paths come with backslashes (D:\work\x\src\test\java\…): normalise before the path test, or
+        # a test-source error is filed as COMPILE and the test-compile fallback (L7) / `scope test` never apply
+        path = "/" + (file or "").replace("\\", "/")
         if (goal or "").endswith("testCompile") or (goal or "").endswith("test-compile") \
-                or "/src/test/" in "/" + file or "/src/it/" in "/" + file:
+                or "/src/test/" in path or "/src/it/" in path:
             return ErrorKind.TEST_COMPILE
         return ErrorKind.COMPILE
 

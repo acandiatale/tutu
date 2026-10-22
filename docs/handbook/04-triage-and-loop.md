@@ -267,7 +267,7 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 | `dependency-relocation` | 표(`sbmig/triage/handlers/relocations.yml`)의 옛 아티팩트가 에러에 나오거나, 그 패키지가 누락되고 pom에 선언돼 있을 때 | javax→jakarta API, `hibernate` → `org.hibernate.orm`, Boot 4 starter 이름 변경 등 재배치 | X3 앞 단계 |
 | `querydsl-jakarta-classifier` | 선제(SPRING): querydsl 사용. 반응형: `querydsl`, `javax/persistence`, `class Q…` | `querydsl-jpa` / `querydsl-apt` → 5.1.0 + classifier `jakarta` | – |
 | `jaxb-runtime-add` | 선제: `javax.xml.bind` import. 반응형: `javax.xml.bind`, `JAXBContext` … | JAXB API + 런타임 추가(소스에 따라 javax 또는 jakarta) | S8 |
-| `add-known-dependency` | `package X does not exist` / `cannot access` / `class file for … not found` / `cannot find symbol`이고 그 패키지의 아티팩트를 알 때(`known_packages.yml`) | hamcrest, jakarta.*, `spring-boot-jackson2`, 모듈화된 `*-test` starter, jsr305 등을 모듈 pom에 추가. 부모가 관리하면 버전 생략 | – |
+| `add-known-dependency` | `package X does not exist` / `cannot access` / `class file for … not found` / `cannot find symbol`이고 그 패키지의 아티팩트를 알 때(`known_packages.yml`) | hamcrest, jakarta.*, `spring-boot-jackson2`, 모듈화된 `*-test` starter, jsr305, JUnit 4 잔재(`org.junit.experimental` / `rules` / `runner` … → `junit:junit` test, Boot 4.1 BOM 관리; 2026-10-22) 등을 모듈 pom에 추가. 부모가 관리하면 버전 생략 | – |
 | `lombok-version-floor` | 선제: lombok 버전 < 1.18.30(또는 모름). 반응형: `lombok`, `TypeTag :: UNKNOWN`, `com.sun.tools.javac.code.TypeTags`, `IllegalAccessError … lombok` | lombok을 1.18.38 이상으로. processor path 버전 고정, 상속받은 `annotationProcessorPaths`는 `combine.self="override"`로 끊음(§10.1) | X5 계열 |
 | `mapstruct-version-floor` | 선제: mapstruct < 1.6.0. 반응형: `mapstruct`, `No implementation was created for` | mapstruct / mapstruct-processor를 1.6.3 이상으로 | – |
 | `maven-compiler-plugin-floor` | 선제: 컴파일러 플러그인이 미선언이거나 < 3.13.0. 반응형: `invalid target release`, `Source option N is no longer supported`, `Unsupported class file major version` | maven-compiler-plugin 3.14.0 이상, `<source>/<target>` 대신 `<release>` | X5 |
@@ -410,7 +410,7 @@ LLM의 "고쳤다"는 말은 판정 기준이 아닙니다. 다음 빌드 결과
 `max_iterations`는 **수정 라운드** 수입니다. 빌드는 "라운드 수 + 1"번까지 일어납니다. 마지막 라운드에서 고친 것도 반드시 한 번 더 빌드해서 채점하기 때문입니다.
 
 **최종 검증 루프(2026-10-22).** 회사 설정(`plan.parent_phase: spring`)은 restructure 루프를 빼기 때문에 최종 `mvn clean package`가 실행 중 첫 `package` 빌드입니다. 거기서 처음 나타나는 오류(패키징에서만 나는 오류, 또는 spring 루프가 라운드를 다 쓴 클러스터)는 예전에는 손도 못 대고 FAILED로 끝났습니다. 이제 최종 빌드가 실패하면 `loop.phases.verify`(goal `package`, 3라운드)로 build-fix 루프를 한 번 더 돌리고 `clean package`를 다시 실행합니다(불변식 1은 그대로: 실행은 항상 `clean package`로 끝납니다). 이 루프에서는
-- 앞 단계에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터를 풀어 주고(journal `blocked_released`, 노트 `released blocked blk-… for the final fix loop`), 클러스터당 LLM 시도 상한을 `loop.verify_extra_llm_attempts`(2)만큼 올립니다(`decide.py`가 phase가 `verify`일 때 두 상한에 더함). `0`이면 풀지 않습니다.
+- 앞 단계에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터가 이 루프의 빌드에 나타나면 그때 풀어 주고(journal `blocked_released`, 노트 `build N: released blocked blk-… for the final fix loop`), 클러스터당 LLM 시도 상한을 `loop.verify_extra_llm_attempts`(2)만큼 올립니다(`decide.py`가 phase가 `verify`일 때 두 상한에 더함). 첫 빌드에서 다른 모듈의 오류에 가려 있다가 뒤 라운드에서 드러난 클러스터도 같은 규칙으로 풀립니다. 이 루프 안에서 다시 blocked된 항목은 다시 풀지 않습니다. `0`이면 풀지 않습니다.
 - `LLM_ESCALATION_MODEL`이 있으면 정체 여부와 상관없이 그 모델로 묻습니다(시도 노트 `escalation model requested (final verify loop)`).
 - 정책 blocked(`external_javax_api`, `artifact_not_found` …)와 예산 blocked는 풀지 않습니다. 그런 클러스터만 남았으면 루프 없이 끝납니다(노트 `failed with blocked cluster(s) only (…) → no final fix loop`).
 - `restructure`용으로 쓴 마이그레이션 노트는 verify 루프에서도 선택됩니다. 루프가 무언가 고쳤으면 verify 단계도 harvest됩니다.

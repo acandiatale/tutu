@@ -20,6 +20,13 @@ packages:
   # --- test libraries (all managed by spring-boot-dependencies) -----------------------------------------------------
   - { package: org.hamcrest,        artifact: "org.hamcrest:hamcrest",            managed: true, scope: test, version: "3.0" }
   - { package: org.junit.jupiter,   artifact: "org.junit.jupiter:junit-jupiter",  managed: true, scope: test, version: "5.12.2" }
+  - { package: org.junit.platform.suite.api, artifact: "org.junit.platform:junit-platform-suite",    managed: true, scope: test, version: "1.12.2" }
+  - { package: org.junit.platform.launcher,  artifact: "org.junit.platform:junit-platform-launcher", managed: true, scope: test, version: "1.12.2" }
+  # JUnit 4 leftovers (2026-10-22, company run: `package org.junit.experimental.categories does not exist` after
+  # JUnit4to5Migration dropped junit:junit but could not convert every @Category / rule / runner): junit:junit is still
+  # managed by Boot 4.1 (4.13.2); the tests only RUN with junit-vintage-engine (follow-up in knowledge/notes/junit4-to-5.md).
+  # Longest prefix wins, so org.junit.jupiter / org.junit.platform.* above stay on JUnit 5.
+  - { package: org.junit,           artifact: "junit:junit",                      managed: true, scope: test, version: "4.13.2" }
   - { package: org.mockito,         artifact: "org.mockito:mockito-core",         managed: true, scope: test, version: "5.18.0" }
   - { package: org.assertj.core,    artifact: "org.assertj:assertj-core",         managed: true, scope: test, version: "3.27.3" }
   # --- jakarta APIs ------------------------------------------------------------------------------------------------

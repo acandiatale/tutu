@@ -357,3 +357,12 @@ def test_reactor_summary_failure_without_reactor():
     built, failed = parse_reactor_summary(load("real-compile-errors.log"))
     assert (built, failed) == ([], "compile-errors")
     assert parse_reactor_summary(load("real-bad-parent.log")) == ([], None)
+
+
+def test_kind_for_windows_backslash_test_path():
+    """A javac path that could not be relativised keeps its backslashes on Windows; it is still a test source."""
+    from sbmig.build.log_parser import _Parser
+    p = _Parser.__new__(_Parser)
+    assert p._kind_for(r"D:\work\xxx\xxx-back\src\test\java\com\acme\FooTest.java", None) == ErrorKind.TEST_COMPILE
+    assert p._kind_for(r"D:\work\xxx\src\main\java\com\acme\Foo.java", None) == ErrorKind.COMPILE
+    assert p._kind_for("src/main/java/com/acme/Foo.java", "compiler:testCompile") == ErrorKind.TEST_COMPILE

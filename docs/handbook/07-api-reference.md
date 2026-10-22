@@ -679,7 +679,7 @@ report.md의 "Flags" 절은 이 중 상당수의 설명을 함께 보여 줍니�
 | `revert` | `to` 또는 `commit`, `mode` | 회귀 시도 되돌리기 |
 | `stall` / `oscillation` / `reround` | `phase`, `iteration` | 정체·진동 감지, 재라운드 |
 | `blocked` / `blocked_resolved` / `only_blocked` | `id`, `reason` | 차단 등록 / 나중 단계에서 해소 / blocked만 남음 |
-| `verify_loop_start` / `verify_loop_end` / `blocked_released` | `step`, `goal`, `errors`, `released` / `build_ok`, `attempts`, `iterations` / `id`, `reason`, `extra_llm_attempts` | 최종 `clean package` 실패 → 마지막 수정 루프 시작 / 끝 / 그 루프를 위해 풀린 blocked 항목 |
+| `verify_loop_start` / `verify_loop_end` / `blocked_released` | `step`, `goal`, `errors`, `releasable` / `build_ok`, `attempts`, `iterations`, `released` / `id`, `reason`, `blocked_in`, `iteration`, `extra_llm_attempts` | 최종 `clean package` 실패 → 마지막 수정 루프 시작 / 끝 / 그 루프의 빌드 N에서 풀린 blocked 항목(앞 단계 `blocked_in`에서 막힌 것) |
 | `llm_cooldown` / `llm_unavailable` | `phase`, `iteration` | L5 |
 | `budget_exhausted` | `phase`, `kind` | 시간 예산 소진 |
 | `test_compile_fallback` / `tests_fallback` | `test_errors` / `failing` | L7 / L7b |

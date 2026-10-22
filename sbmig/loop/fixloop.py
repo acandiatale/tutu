@@ -211,6 +211,7 @@ class BuildFixLoop:
         self._profile_summary: Optional[str] = None
         # run-wide blocked state (shared by every phase of the run through the orchestrator)
         self.blocked = blocked if blocked is not None else BlockedRegistry()
+        self.released_ids: list[str] = []        # final verify loop: items released for their extra attempts
         self.locator = locator                   # owner class → artifact (sbmig.build.classpath); None = no attribution
         # library advisory findings of the run (round 6): matched per cluster → FixContext.advisory_hints
         self.advisories: list[AdvisoryFinding] = list(advisories or [])
@@ -337,6 +338,8 @@ class BuildFixLoop:
                          " (stall level %d)" % stall_level if stall_level else "")
             if oscillating and oscillations >= 2:
                 self._block_oscillation(pr, phase, build_no, clusters)
+            if phase == Phase.VERIFY:
+                self._release_for_final_loop(pr, clusters, build_no)
             if self._only_blocked(pr, clusters, build_no):
                 break
             if fix_rounds >= max_iterations:
@@ -400,6 +403,32 @@ class BuildFixLoop:
     def _touch_item(self, item_id: str) -> None:
         if item_id not in self._phase_items:
             self._phase_items.append(item_id)
+
+    def _release_for_final_loop(self, pr: PhaseResult, clusters: list[ErrorCluster], build_no: int) -> list[str]:
+        """Final verify loop (2026-10-22): a cluster blocked in an EARLIER phase for repeated_failure / oscillation that
+        shows up in this build — including one the reactor order hid until the previous cluster was fixed — is
+        released once and gets `loop.verify_extra_llm_attempts` more LLM attempts (`Triager.decide`). Policy / budget
+        blocks and items blocked inside this loop (phase verify) stay blocked."""
+        extra = max(0, int(getattr(self.cfg.loop, "verify_extra_llm_attempts", 0)))
+        if extra <= 0:
+            return []
+        released: list[str] = []
+        for c in clusters:
+            it = self.blocked.covering(c)
+            if it is None or it.id in released or it.phase == Phase.VERIFY \
+                    or it.reason not in (BlockReason.REPEATED_FAILURE, BlockReason.OSCILLATION):
+                continue
+            self.blocked.remove(it.id)
+            released.append(it.id)
+            self.released_ids.append(it.id)
+            pr.notes.append(f"build {build_no}: released blocked {it.id} ({it.reason.value}, {it.attempts} LLM "
+                            f"attempt(s) in {it.phase.value}) for the final fix loop (+{extra} LLM attempt(s))")
+            log.info("[verify] build %d: blocked %s (%s, %d attempt(s) in %s) released for the final fix loop (+%d)",
+                     build_no, it.id, it.reason.value, it.attempts, it.phase.value, extra)
+            self.ws.journal({"event": "blocked_released", "id": it.id, "reason": it.reason.value,
+                             "blocked_in": it.phase.value, "phase": pr.phase.value, "iteration": build_no,
+                             "extra_llm_attempts": extra})
+        return released
 
     def _only_blocked(self, pr: PhaseResult, clusters: list[ErrorCluster], build_no: int) -> bool:
         if not clusters:

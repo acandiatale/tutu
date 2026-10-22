@@ -1042,17 +1042,22 @@ class Orchestrator:
         if not self.cfg.loop.always_final_verify and self._phase_failed:
             pr.notes.append(f"{step.id}: skipped (an earlier phase failed and loop.always_final_verify=false)")
             return False
-        skip_tests = bool(self.loop and self.loop.test_compile_skipped)
-        # round 8: only runtime test failures were left → the final verify packages with -DskipTests too
-        # (skip_test_compile wins when both apply: -Dmaven.test.skip=true already implies no test run)
-        skip_run = bool(self.loop and getattr(self.loop, "tests_skipped", False)) and not skip_tests
         label = "verify" + (f"-{step.params['service']}" if step.params.get("service") else "")
         from .fixloop import build_target_args
         module, extra = build_target_args(self.profile, step.target)
         kw: dict[str, Any] = {"extra_args": extra} if extra else {}
         goal = step.build_goal or "clean package"
 
+        def _skip_flags() -> tuple[bool, bool]:
+            # read at build time: the final fix loop may have triggered the test-compile / tests fallback (L7 / L7b)
+            skip_tests = bool(self.loop and self.loop.test_compile_skipped)
+            # round 8: only runtime test failures were left → the final verify packages with -DskipTests too
+            # (skip_test_compile wins when both apply: -Dmaven.test.skip=true already implies no test run)
+            skip_run = bool(self.loop and getattr(self.loop, "tests_skipped", False)) and not skip_tests
+            return skip_tests, skip_run
+
         def _final_build() -> BuildResult:
+            skip_tests, skip_run = _skip_flags()
             if skip_run:
                 try:
                     return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False,
@@ -1071,6 +1076,7 @@ class Orchestrator:
                 log.info("verify: repeating `mvn %s` after the final fix loop", goal)
                 res = _final_build()
         self._verify_results.append(res)
+        skip_tests, skip_run = _skip_flags()
         assert self.report is not None
         self.report.final_build = res
         pr.iterations += 1
@@ -1112,25 +1118,15 @@ class Orchestrator:
             pr.notes.append(f"{step.id}: failed with blocked cluster(s) only ({', '.join(reasons)}) → no final fix "
                             f"loop; see 'Blocked' in the report")
             return False
-        released: list[BlockedItem] = []
-        for it in covering:
-            if it is not None and it.reason in releasable and all(r.id != it.id for r in released):
-                released.append(it)
-        phases = list(self.report.phases) if self.report is not None else []
-        for it in released:
-            self.blocked.remove(it.id)
-            for ph in [*phases, pr]:
-                ph.blocked = [b for b in ph.blocked if b.id != it.id]
-            pr.notes.append(f"{step.id}: released blocked {it.id} ({it.reason.value}, {it.attempts} attempt(s)) for "
-                            f"the final fix loop (+{extra} LLM attempt(s))")
-            self.ws.journal({"event": "blocked_released", "id": it.id, "reason": it.reason.value, "step": step.id,
-                             "extra_llm_attempts": extra})
+        releasable_ids = list(dict.fromkeys(it.id for it in covering if it is not None and it.reason in releasable))
         self.ws.journal({"event": "verify_loop_start", "step": step.id, "goal": pc.goal, "target": step.target,
                          "max_iterations": pc.max_iterations, "errors": first.error_count,
-                         "clusters": [c.id for c in clusters], "released": [it.id for it in released]})
+                         "clusters": [c.id for c in clusters], "releasable": releasable_ids,
+                         "extra_llm_attempts": extra})
         log.info("verify: final build failed with %d error(s) → last build-fix loop (mvn %s, up to %d round(s)%s)",
                  first.error_count, pc.goal, pc.max_iterations,
-                 f", {len(released)} blocked cluster(s) released" if released else "")
+                 f", {len(releasable_ids)} blocked cluster(s) eligible for release" if releasable_ids else "")
+        self.loop.released_ids = []
         if self.loop.rewrite_runner is None:
             self.loop.rewrite_runner = self._rewrite_runner_or_none()
         res = self.loop.run(Phase.VERIFY, pc.goal, pc.max_iterations, target=step.target)
@@ -1139,9 +1135,14 @@ class Orchestrator:
         pr.iteration_records += res.iteration_records
         pr.rewrite_results += res.rewrite_results
         pr.notes += [f"{step.id} loop: {n}" for n in res.notes]
+        released = list(self.loop.released_ids)
+        if released:        # a released item is no longer blocked: drop its row from the earlier phases as well
+            phases = list(self.report.phases) if self.report is not None else []
+            for ph in [*phases, pr]:
+                ph.blocked = [b for b in ph.blocked if b.id not in released]
         self._merge_blocked(pr, res.blocked)
         self.ws.journal({"event": "verify_loop_end", "step": step.id, "build_ok": res.build_ok,
-                         "attempts": len(res.attempts), "iterations": res.iterations,
+                         "attempts": len(res.attempts), "iterations": res.iterations, "released": released,
                          "blocked": [b.id for b in res.blocked]})
         return True
 

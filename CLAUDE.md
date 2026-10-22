@@ -122,8 +122,9 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   path (fixed `8c41670`) — the user still has to confirm a fresh run passes `spring it2`. 2026-10-22: the final
   `clean package` of a company run failed on `org.hibernate.annotations.common` with no fix attempt (`parent_phase:
   spring` leaves no package-goal loop) → `loop.phases.verify` last-chance loop + repeated final build,
-  `loop.verify_extra_llm_attempts` releases `repeated_failure` clusters (L12); advisory + note
-  `hibernate-commons-annotations` (HCANN gone in Hibernate 7).
+  `loop.verify_extra_llm_attempts` releases `repeated_failure` clusters (L12; released inside the loop, so a cluster the
+  reactor order hid in the first verify build is covered too); advisory + note `hibernate-commons-annotations` (HCANN gone
+  in Hibernate 7); JUnit 4 leftovers (`org.junit.experimental…`) → `add-known-dependency` re-adds `junit:junit` (test).
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)

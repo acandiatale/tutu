@@ -26,7 +26,7 @@ temporary alternative: add `org.junit.vintage:junit-vintage-engine` (test) + `ju
 | `@Before` / `@After` | `@BeforeEach` / `@AfterEach` |
 | `@BeforeClass` / `@AfterClass` (static) | `@BeforeAll` / `@AfterAll` (static, or `@TestInstance(PER_CLASS)`) |
 | `@Ignore("why")` | `@Disabled("why")` (only to mirror an existing @Ignore — never add new ones) |
-| `@Category(X.class)` | `@Tag("x")` |
+| `@Category(X.class)` | `@Tag("x")` (a leftover `package org.junit.experimental.categories does not exist` after the recipe: sbmig re-adds `junit:junit` test-scope first — prefer converting the test to `@Tag`, and if JUnit 4 must stay, `org.junit.vintage:junit-vintage-engine` (Boot-managed, test) is needed to run it) |
 | `org.junit.Assert.assertEquals(msg, expected, actual)` | `Assertions.assertEquals(expected, actual, msg)` — message moves LAST |
 | `Assert.assertThat(x, matcher)` | `org.hamcrest.MatcherAssert.assertThat` or AssertJ `assertThat(x)` |
 | `org.junit.Assume.assumeTrue` | `org.junit.jupiter.api.Assumptions.assumeTrue` |

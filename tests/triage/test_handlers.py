@@ -793,3 +793,32 @@ def test_strip_pom_repositories_is_opt_in(fake_kit, cfg):
     assert "<!-- repositories: <repositories> kept in this comment -->" in text
     assert "<properties><a>b</a></properties>" in text and "<dependencies>" in text
     assert h.apply(fake_kit.ws, c, make_profile(), on) == []
+
+
+def test_add_known_dependency_junit4_leftovers_and_platform_rows(kit):
+    """2026-10-22 company run: `package org.junit.experimental.categories does not exist` (JUnit4to5Migration dropped
+    junit:junit, a @Category test survived) → junit:junit test-scope, version omitted under a Boot parent; JUnit 5
+    packages keep their own rows (longest prefix wins)."""
+    kit.pom(deps=[G("org.springframework.boot:spring-boot-starter-test")])
+    txt = kit.text().replace("<modelVersion>4.0.0</modelVersion>",
+                             "<modelVersion>4.0.0</modelVersion><parent><groupId>org.springframework.boot</groupId>"
+                             "<artifactId>spring-boot-starter-parent</artifactId><version>4.1.0</version></parent>")
+    (kit.root / "pom.xml").write_text(txt, encoding="utf-8")
+    h = kit.handler("add-known-dependency")
+    c = cluster_errors([err(kind=ErrorKind.TEST_COMPILE, file="src/test/java/com/acme/SlowTests.java",
+                            message="package org.junit.experimental.categories does not exist",
+                            raw="[ERROR] /x/src/test/java/com/acme/SlowTests.java:[3,41] package "
+                                "org.junit.experimental.categories does not exist")])[0]
+    assert h.matches(c, make_profile(), None)
+    assert [ch.path for ch in h.apply(kit.ws, c, make_profile(), None)] == ["pom.xml"]
+    d = kit.dep("junit:junit")
+    assert d is not None and d.scope == "test" and d.version is None
+    assert kit.dep("org.junit.jupiter:junit-jupiter") is None
+    c2 = cluster_errors([err(kind=ErrorKind.TEST_COMPILE, file="src/test/java/com/acme/AllTests.java",
+                             message="package org.junit.platform.suite.api does not exist")])[0]
+    assert h.apply(kit.ws, c2, make_profile(), None)
+    assert kit.dep("org.junit.platform:junit-platform-suite").scope == "test"
+    c3 = cluster_errors([err(kind=ErrorKind.TEST_COMPILE, file="src/test/java/com/acme/T.java",
+                             message="package org.junit.jupiter.params does not exist")])[0]
+    assert h.apply(kit.ws, c3, make_profile(), None)
+    assert kit.dep("org.junit.jupiter:junit-jupiter") is not None          # not junit:junit again

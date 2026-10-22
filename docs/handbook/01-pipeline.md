@@ -591,7 +591,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `kb_credit` / `kb_credit_skipped` / `harvest` | 오케스트레이터 | KB 점수 / 해석 실패로 점수 생략 / harvest 결과 |
 | `abort` / `run_aborted` / `stop_after` / `warning` | 오케스트레이터 / 루프 | 중단 / 루프 중단으로 실행 종료 / stop-after 도달 / KB 없음 등 |
 | `blocked_resolved` / `handover` / `report` | 오케스트레이터 finalize | 초록 빌드에서 사라진 blocked / Handover 요약 / 마지막 줄 |
-| `verify_loop_start` / `verify_loop_end` / `blocked_released` | 오케스트레이터 verify | 최종 빌드 실패 → 마지막 수정 루프의 시작(`errors`, `released`)·끝(`build_ok`, `attempts`) / 그 루프를 위해 풀어 준 blocked 항목(`id`, `reason`, `extra_llm_attempts`) |
+| `verify_loop_start` / `verify_loop_end` / `blocked_released` | 오케스트레이터 verify / 수정 루프 | 최종 빌드 실패 → 마지막 수정 루프의 시작(`errors`, `releasable`)·끝(`build_ok`, `attempts`, `released`) / 그 루프의 빌드 N에서 풀어 준 blocked 항목(`id`, `reason`, `blocked_in`, `extra_llm_attempts`) |
 
 journal을 빠르게 훑는 명령입니다(POSIX).
 
