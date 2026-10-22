@@ -943,7 +943,8 @@ class BuildFixLoop:
         ctx = FixContext(phase=phase, iteration=iteration, stall_level=stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
                          advisory_hints=adv_hints, previous_attempts=self._previous(c),
-                         other_errors_summary=other, use_escalation_model=stall_level >= self.cfg.loop.stall_limit,
+                         other_errors_summary=other,
+                         use_escalation_model=stall_level >= self.cfg.loop.stall_limit or phase == Phase.VERIFY,
                          reference_notes=ref_notes, reference_files=ref_files)
         try:
             proposal = self.fixer.propose(self.ws, c, ctx)
@@ -963,7 +964,8 @@ class BuildFixLoop:
             return
         self._llm_streak, self._streak_attempts = [], []
         if ctx.use_escalation_model:
-            att.notes.append(f"escalation model requested (stall level {stall_level})")
+            att.notes.append("escalation model requested (final verify loop)" if phase == Phase.VERIFY
+                             else f"escalation model requested (stall level {stall_level})")
         changes = list(proposal.changes)
         if ctx.reference_files:   # reference copies are not in the build: a patch for one is dropped, never applied
             ref = {_norm_path(k) for k in ctx.reference_files}

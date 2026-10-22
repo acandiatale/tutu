@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
+from sbmig.core.models import (BlockReason, GAV, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
                                HarvestResult, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile,
                                RunReport, StepKind, utcnow)
 from sbmig.core.workspace import Workspace
@@ -488,6 +488,8 @@ class Orchestrator:
                 self._credit_plan_recipes(pr)
             else:   # no build-fix loop in this phase (loop.phases.<p>.enabled=false): nothing proves success/failure
                 log.info("phase %s ran no build: KB recipes are not credited", phase.value)
+            self._harvest(report, pr)
+        elif phase == Phase.VERIFY and pr.attempts:   # the final verify loop fixed something → the KB learns it too
             self._harvest(report, pr)
         self._timed(phase.value, t)
         return pr
@@ -1049,15 +1051,25 @@ class Orchestrator:
         module, extra = build_target_args(self.profile, step.target)
         kw: dict[str, Any] = {"extra_args": extra} if extra else {}
         goal = step.build_goal or "clean package"
-        if skip_run:
-            try:
-                res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=False,
-                                            skip_tests=True, **kw)
-            except TypeError:  # an older runner without the `skip_tests` option
-                kw["extra_args"] = [*extra, "-DskipTests"]
-                res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=False, **kw)
-        else:
-            res = self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
+
+        def _final_build() -> BuildResult:
+            if skip_run:
+                try:
+                    return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False,
+                                                 skip_tests=True, **kw)
+                except TypeError:  # an older runner without the `skip_tests` option
+                    kw["extra_args"] = [*extra, "-DskipTests"]
+                    return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False, **kw)
+            return self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
+
+        res = _final_build()
+        if not res.ok and self._verify_fix_loop(pr, step, res):
+            if self.loop is not None and self.loop.aborted:
+                pr.notes.append(f"{step.id}: final fix loop aborted the run ({self.loop.aborted}); the failed build stands")
+            else:
+                pr.notes.append(f"{step.id}: final build repeated after the fix loop")
+                log.info("verify: repeating `mvn %s` after the final fix loop", goal)
+                res = _final_build()
         self._verify_results.append(res)
         assert self.report is not None
         self.report.final_build = res
@@ -1075,6 +1087,63 @@ class Orchestrator:
                          "errors": res.error_count, "log": res.log_path, "skip_test_compile": skip_tests,
                          "skip_tests": skip_run})
         return res.ok
+
+    def _verify_fix_loop(self, pr: PhaseResult, step: PlanStep, first: BuildResult) -> bool:
+        """The final `mvn clean package` failed → one last build-fix loop on `loop.phases.verify` (goal `package`),
+        after which the caller repeats the final build (invariant 1: the run still ends on a `clean package`).
+        Company runs (`plan.parent_phase: spring`) have no package-goal loop before verify, so without this a
+        packaging-only error (or a compile error the spring loop ran out of rounds on) had no fix attempt at all.
+        Clusters blocked earlier for `repeated_failure` / `oscillation` are released and get
+        `loop.verify_extra_llm_attempts` more LLM attempts (`decide.py`, escalation model when configured); policy
+        blocks (javax API, missing artifact, …) and budget blocks stay. Returns True when the loop ran."""
+        pc = self.cfg.loop.phases.get(Phase.VERIFY.value)
+        if pc is None or not pc.enabled or pc.max_iterations <= 0 or self.loop is None or self._dry_run:
+            return False
+        if self.budget.time_exceeded():
+            pr.notes.append(f"{step.id}: failed; no final fix loop (run time budget exhausted)")
+            return False
+        from sbmig.triage.cluster import cluster_errors
+        clusters = cluster_errors(list(first.errors), self.profile)
+        extra = max(0, int(getattr(self.cfg.loop, "verify_extra_llm_attempts", 0)))
+        releasable = {BlockReason.REPEATED_FAILURE, BlockReason.OSCILLATION} if extra > 0 else set()
+        covering = [self.blocked.covering(c) for c in clusters]
+        if clusters and all(it is not None and it.reason not in releasable for it in covering):
+            reasons = sorted({it.reason.value for it in covering if it is not None})
+            pr.notes.append(f"{step.id}: failed with blocked cluster(s) only ({', '.join(reasons)}) → no final fix "
+                            f"loop; see 'Blocked' in the report")
+            return False
+        released: list[BlockedItem] = []
+        for it in covering:
+            if it is not None and it.reason in releasable and all(r.id != it.id for r in released):
+                released.append(it)
+        phases = list(self.report.phases) if self.report is not None else []
+        for it in released:
+            self.blocked.remove(it.id)
+            for ph in [*phases, pr]:
+                ph.blocked = [b for b in ph.blocked if b.id != it.id]
+            pr.notes.append(f"{step.id}: released blocked {it.id} ({it.reason.value}, {it.attempts} attempt(s)) for "
+                            f"the final fix loop (+{extra} LLM attempt(s))")
+            self.ws.journal({"event": "blocked_released", "id": it.id, "reason": it.reason.value, "step": step.id,
+                             "extra_llm_attempts": extra})
+        self.ws.journal({"event": "verify_loop_start", "step": step.id, "goal": pc.goal, "target": step.target,
+                         "max_iterations": pc.max_iterations, "errors": first.error_count,
+                         "clusters": [c.id for c in clusters], "released": [it.id for it in released]})
+        log.info("verify: final build failed with %d error(s) → last build-fix loop (mvn %s, up to %d round(s)%s)",
+                 first.error_count, pc.goal, pc.max_iterations,
+                 f", {len(released)} blocked cluster(s) released" if released else "")
+        if self.loop.rewrite_runner is None:
+            self.loop.rewrite_runner = self._rewrite_runner_or_none()
+        res = self.loop.run(Phase.VERIFY, pc.goal, pc.max_iterations, target=step.target)
+        pr.iterations += res.iterations
+        pr.attempts += res.attempts
+        pr.iteration_records += res.iteration_records
+        pr.rewrite_results += res.rewrite_results
+        pr.notes += [f"{step.id} loop: {n}" for n in res.notes]
+        self._merge_blocked(pr, res.blocked)
+        self.ws.journal({"event": "verify_loop_end", "step": step.id, "build_ok": res.build_ok,
+                         "attempts": len(res.attempts), "iterations": res.iterations,
+                         "blocked": [b.id for b in res.blocked]})
+        return True
 
     # ------------------------------------------------------------------ kb
     def _credit_plan_recipes(self, pr: PhaseResult) -> None:

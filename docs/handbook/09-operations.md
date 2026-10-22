@@ -77,7 +77,7 @@ notepad .env                        # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL
 웹 서버 실행: `sbmig serve --port 8765`(LAN 공유 시 `--host 0.0.0.0`) → 브라우저 `http://127.0.0.1:8765`. REST 사용법은 [07. API 레퍼런스](07-api-reference.md).
 
 ### 2.3 단계 순서(무엇을 기다리는지 알기 위해)
-intake → analyze → plan → jdk21(레시피 + 루프) → spring(레시피 + 루프) → restructure(부모/레이아웃 + 루프) → verify(최종 `mvn clean package`) → 보고서·KB 수확. 회사 설정의 `plan.parent_phase: spring`이면 부모/레이아웃이 `spring.rewrite` 직후, spring 루프 **전**에 적용됩니다. 그래서 사내 부모를 못 받으면 spring 루프 전에 일찍 중단됩니다(정상 동작). 전체 흐름은 [01. 파이프라인](01-pipeline.md).
+intake → analyze → plan → jdk21(레시피 + 루프) → spring(레시피 + 루프) → restructure(부모/레이아웃 + 루프) → verify(최종 `mvn clean package`; 실패하면 마지막 수정 루프 후 재빌드) → 보고서·KB 수확. 회사 설정의 `plan.parent_phase: spring`이면 부모/레이아웃이 `spring.rewrite` 직후, spring 루프 **전**에 적용됩니다. 그래서 사내 부모를 못 받으면 spring 루프 전에 일찍 중단됩니다(정상 동작). 전체 흐름은 [01. 파이프라인](01-pipeline.md).
 
 ## 3. 보고서 읽는 법(`<run dir>/report.md`)
 
@@ -243,6 +243,7 @@ Select-String -Path "$run\sbmig.log" -Pattern "max fix rounds|fix round"
 | L8 기존부터 깨진 프로젝트 | as-is가 자기 JDK에서도 컴파일 안 됨 | 원래 문제 | as-is는 빌드하지 않음 — JDK 21 이후 오류로 똑같이 보고 | as-is 담당에 알림 |
 | L9 계획 후 내부 오류 | 단계 안 예외(컴포넌트 없음, 버그) | sbmig 문제 | `aborted`(종료 코드 3)이지만 **최종 `mvn clean package`는 시도**(dry-run, Maven 없음, 부모 해석 불가 같은 의도적 중단은 제외) — 보고서에 실제 미해결 오류 | `sbmig.log`의 traceback을 개발자에게 |
 | L10 restructure 단계 실패/충돌 | 최종 빌드는 as-is 트리로 통과할 수 있어 성공처럼 보임 | 레이아웃 변환 실패 | 플래그 `restructure-failed`, 단계·모드·오류를 담은 follow-up, 저널 `restructure_failed`, `success=False` → 종료 코드 2(`optional_bump` 실패는 follow-up만) | follow-up의 오류 확인, 개발자에게 |
+| L12 최종 verify 실패(수정 시도 없음) | `build-verify.log`에만 오류가 있고 앞 루프는 통과 | 회사 설정은 restructure 루프가 없어 최종 빌드가 첫 `package` 빌드 | `loop.phases.verify` 마지막 수정 루프(3라운드) 후 `clean package` 재실행; `repeated_failure` 클러스터는 풀려서 `loop.verify_extra_llm_attempts`(2)회 더 시도(저널 `blocked_released`, `verify_loop_start` / `verify_loop_end`) | 그래도 실패하면 보고서 Unresolved / Blocked 확인; 라운드·시도 수 증가는 `loop.phases.verify.max_iterations`, `loop.verify_extra_llm_attempts` |
 
 ### 6.4 구조 엣지 케이스(S)
 | ID | 경우 | 의미 | sbmig가 하는 일 | 운영자가 할 일 |

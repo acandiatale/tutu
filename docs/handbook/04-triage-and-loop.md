@@ -403,11 +403,18 @@ LLM의 "고쳤다"는 말은 판정 기준이 아닙니다. 다음 빌드 결과
 | `jdk21` | `compile` | 3 | 메인 소스가 JDK 21에서 컴파일되는지 |
 | `spring` | `test-compile` | 6 | jakarta / Boot 4 / Framework 7 변환 뒤 테스트 소스까지 컴파일되는지 |
 | `restructure` | `package` | 6 | 회사 레이아웃으로 패키징되는지 |
-| (verify) | `clean package` | 수정 없음 | 최종 빌드 1회 |
+| `verify` | `clean package` → 실패 시 `package` 루프 | 3 (실패했을 때만) | 최종 빌드; 실패하면 마지막 수정 루프를 돌고 `clean package`를 다시 실행 |
 
 `build.skip_tests: true`(기본값)이므로 빌드에는 항상 `-DskipTests`가 붙습니다. 테스트는 컴파일은 하지만 실행하지는 않습니다.
 
 `max_iterations`는 **수정 라운드** 수입니다. 빌드는 "라운드 수 + 1"번까지 일어납니다. 마지막 라운드에서 고친 것도 반드시 한 번 더 빌드해서 채점하기 때문입니다.
+
+**최종 검증 루프(2026-10-22).** 회사 설정(`plan.parent_phase: spring`)은 restructure 루프를 빼기 때문에 최종 `mvn clean package`가 실행 중 첫 `package` 빌드입니다. 거기서 처음 나타나는 오류(패키징에서만 나는 오류, 또는 spring 루프가 라운드를 다 쓴 클러스터)는 예전에는 손도 못 대고 FAILED로 끝났습니다. 이제 최종 빌드가 실패하면 `loop.phases.verify`(goal `package`, 3라운드)로 build-fix 루프를 한 번 더 돌리고 `clean package`를 다시 실행합니다(불변식 1은 그대로: 실행은 항상 `clean package`로 끝납니다). 이 루프에서는
+- 앞 단계에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터를 풀어 주고(journal `blocked_released`, 노트 `released blocked blk-… for the final fix loop`), 클러스터당 LLM 시도 상한을 `loop.verify_extra_llm_attempts`(2)만큼 올립니다(`decide.py`가 phase가 `verify`일 때 두 상한에 더함). `0`이면 풀지 않습니다.
+- `LLM_ESCALATION_MODEL`이 있으면 정체 여부와 상관없이 그 모델로 묻습니다(시도 노트 `escalation model requested (final verify loop)`).
+- 정책 blocked(`external_javax_api`, `artifact_not_found` …)와 예산 blocked는 풀지 않습니다. 그런 클러스터만 남았으면 루프 없이 끝납니다(노트 `failed with blocked cluster(s) only (…) → no final fix loop`).
+- `restructure`용으로 쓴 마이그레이션 노트는 verify 루프에서도 선택됩니다. 루프가 무언가 고쳤으면 verify 단계도 harvest됩니다.
+- 끄기: `loop.phases.verify.max_iterations: 0` 또는 `enabled: false`. 시간 예산이 끝났으면 돌지 않습니다.
 
 ### 7.2 루프가 끝나는 조건 (모두 빌드 직후에만 판단)
 
@@ -437,7 +444,7 @@ LLM의 "고쳤다"는 말은 판정 기준이 아닙니다. 다음 빌드 결과
 정체 수준별로 하는 일:
 - **1**: 로그 `→ fix round n/N (stall level 1)`이 남고, 프롬프트 `Situation`에 `stall level 1`이 들어갑니다. 결정 rationale에도 `; stall level 1`이 붙습니다.
 - **`loop.stall_limit`(2) 이상**: 상향 모델(`fix_escalation`)을 요청합니다. 시도 노트에 `escalation model requested (stall level N)`이 남습니다.
-- 같은 클러스터의 실패한 LLM 시도가 `stall_limit + 1`(3)회가 되면 `repeated_failure`로 blocked됩니다(§4.5).
+- 같은 클러스터의 실패한 LLM 시도가 `stall_limit + 1`(3)회가 되면 `repeated_failure`로 blocked됩니다(§4.5). 최종 검증 루프(§7.1)에서는 이 상한에 `loop.verify_extra_llm_attempts`(2)가 더해집니다.
 
 ### 7.4 예산 (`sbmig/loop/budget.py`의 `LoopBudget`)
 

@@ -233,8 +233,14 @@ class LoopConfig(BaseModel):
         "jdk21": PhaseLoopConfig(goal="compile", max_iterations=3),
         "spring": PhaseLoopConfig(goal="test-compile", max_iterations=6),
         "restructure": PhaseLoopConfig(goal="package", max_iterations=6),
+        # the final `mvn clean package` failed → one last build-fix loop on this goal, then the final build again
+        # (2026-10-22: company runs with plan.parent_phase=spring have no package-goal loop before verify)
+        "verify": PhaseLoopConfig(goal="package", max_iterations=3),
     })
     max_llm_calls: int = 60
+    # final verify loop only: clusters blocked earlier for repeated_failure / oscillation are released and may get this
+    # many MORE LLM attempts (escalation model when configured); 0 = never release, policy blocks are never released
+    verify_extra_llm_attempts: int = 2
     max_total_minutes: int = 180
     stall_limit: int = 2                     # identical error multiset N times → escalate strategy
     max_clusters_per_iteration: int = 8

@@ -278,8 +278,9 @@ sequenceDiagram
 1. dry-run이면 건너뜁니다(노트 `dry-run → final build skipped`).
 2. `loop.always_final_verify: false`이고 앞 단계가 실패했으면 건너뜁니다. 기본값 `true`에서는 일어나지 않습니다.
 3. 앞 루프에서 test-compile 대체(`-Dmaven.test.skip=true`, 플래그 `test-compile-skipped`)가 발동했으면 verify도 같은 옵션으로, 런타임 테스트 실패만 남아 `tests-skipped`가 발동했으면 `-DskipTests`로 빌드합니다.
-4. `mvn clean package`를 한 번 돌립니다. 수정은 하지 않습니다. 결과는 `RunReport.final_build`가 되고 journal `verify`(`ok`, `errors`, `log`, `skip_test_compile`, `skip_tests`)가 남습니다.
-5. verify 단계에서는 KB 점수 부여나 harvest를 하지 않습니다.
+4. `mvn clean package`를 돌립니다. 성공하면 끝입니다. 결과는 `RunReport.final_build`가 되고 journal `verify`(`ok`, `errors`, `log`, `skip_test_compile`, `skip_tests`)가 남습니다.
+5. **실패하면 마지막 수정 루프**(2026-10-22)가 한 번 돕니다. `loop.phases.verify`(goal `package`, 기본 3라운드)로 build-fix 루프를 돌린 뒤 `mvn clean package`를 다시 실행합니다(노트 `final build repeated after the fix loop`, journal `verify_loop_start` / `verify_loop_end`). 회사 설정(`plan.parent_phase: spring`)에서는 restructure 루프가 없어서 이 최종 빌드가 실행 중 첫 `package` 빌드이기 때문에 필요합니다. 앞 단계에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터는 여기서 풀려(journal `blocked_released`) `loop.verify_extra_llm_attempts`(2)회 더 LLM 시도를 받고, escalation 모델이 있으면 그 모델로 묻습니다. 정책 blocked(javax API, 아티팩트 없음 …)와 예산 blocked만 남았으면 루프를 돌지 않습니다. `loop.phases.verify.max_iterations: 0`이면 끕니다.
+6. verify 단계는 KB 레시피 점수는 주지 않지만, 마지막 루프가 무언가 고쳤으면 그 시도는 다른 단계처럼 harvest됩니다.
 
 **실행 성공의 정의** (`_finalize`): `RunReport.success = (verify 빌드가 하나 이상 있었고 모두 성공) and "restructure-failed" 플래그 없음`. blocked 항목이 있어도 `success`는 참일 수 있지만, 종료 코드는 0이 아니라 2입니다(§9.1).
 
@@ -318,9 +319,9 @@ sequenceDiagram
 | `restructure.msa_pom` | `msa_pom` | restructure 또는 spring | 서비스 루트 pom만 | MSA |
 | `restructure.pom_only` | `msa_pom`(`pom_only`) | restructure | 소스 없는 pom 프로젝트 | Java 파일 0개 |
 | `restructure.loop` | `build_fix_loop` | restructure | `mvn package` 수정 루프(6라운드) | restructure 루프 enabled, `parent_phase: restructure` |
-| `verify.build` | `build` | verify | `mvn clean package` | 항상 |
+| `verify.build` | `build` | verify | `mvn clean package`; 실패 시 `mvn package` 수정 루프(3라운드) 후 `clean package` 재실행 | 항상 |
 
-괄호 안 라운드 수는 `config/default.yml`의 `loop.phases` 기본값입니다(jdk21 3 / spring 6 / restructure 6). `loop.phases.<phase>.enabled: false`로 그 루프 스텝을 빼면 노트 `… build-fix loop omitted`가 남습니다. 이때 그 단계는 빌드를 하지 않으므로 KB 레시피 점수도 주지 않습니다.
+괄호 안 라운드 수는 `config/default.yml`의 `loop.phases` 기본값입니다(jdk21 3 / spring 6 / restructure 6 / verify 3 — verify 루프는 최종 빌드가 실패했을 때만 돕니다). `loop.phases.<phase>.enabled: false`로 그 루프 스텝을 빼면 노트 `… build-fix loop omitted`가 남습니다. 이때 그 단계는 빌드를 하지 않으므로 KB 레시피 점수도 주지 않습니다.
 
 ### 5.2 케이스 → spring 레시피
 
@@ -590,6 +591,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `kb_credit` / `kb_credit_skipped` / `harvest` | 오케스트레이터 | KB 점수 / 해석 실패로 점수 생략 / harvest 결과 |
 | `abort` / `run_aborted` / `stop_after` / `warning` | 오케스트레이터 / 루프 | 중단 / 루프 중단으로 실행 종료 / stop-after 도달 / KB 없음 등 |
 | `blocked_resolved` / `handover` / `report` | 오케스트레이터 finalize | 초록 빌드에서 사라진 blocked / Handover 요약 / 마지막 줄 |
+| `verify_loop_start` / `verify_loop_end` / `blocked_released` | 오케스트레이터 verify | 최종 빌드 실패 → 마지막 수정 루프의 시작(`errors`, `released`)·끝(`build_ok`, `attempts`) / 그 루프를 위해 풀어 준 blocked 항목(`id`, `reason`, `extra_llm_attempts`) |
 
 journal을 빠르게 훑는 명령입니다(POSIX).
 

@@ -203,6 +203,9 @@ class DecisionEngine:
                 evidence=[f"LLM unavailable ({self.llm_unavailable}); no deterministic fix for {label}"]))
         max_garbage = max(1, int(self.cfg.loop.max_llm_attempts_per_cluster))
         limit = max(max_garbage, self.cfg.loop.stall_limit + 1)
+        if ctx.phase == Phase.VERIFY:        # final verify loop: released repeated_failure clusters get more tries
+            extra = max(0, int(getattr(self.cfg.loop, "verify_extra_llm_attempts", 0)))
+            max_garbage, limit = max_garbage + extra, limit + extra
         if len(garbage) >= max_garbage or len(llm_failed) >= limit:
             why = (f"{len(garbage)} LLM attempt(s) on {label} produced no usable patch (limit {max_garbage})"
                    if len(garbage) >= max_garbage else

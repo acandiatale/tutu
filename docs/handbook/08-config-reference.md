@@ -180,6 +180,7 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `loop.phases.jdk21.goal` / `.max_iterations` / `.enabled` | str / int / bool | `compile` / `3` / `true` | jdk21 단계의 빌드 goal, 수정 라운드 수, 사용 여부. | 거의 바꾸지 않습니다. | [04](04-triage-and-loop.md) |
 | `loop.phases.spring.goal` / `.max_iterations` / `.enabled` | str / int / bool | `test-compile` / `6` / `true` | spring 단계. | LLM 예산이 넉넉하고 오류가 많은 프로젝트에서 라운드 증가. | [04](04-triage-and-loop.md) |
 | `loop.phases.restructure.goal` / `.max_iterations` / `.enabled` | str / int / bool | `package` / `6` / `true` | restructure 단계. | 위와 같음. | [04](04-triage-and-loop.md) |
+| `loop.phases.verify.goal` / `.max_iterations` / `.enabled` | str / int / bool | `package` / `3` / `true` | 최종 `clean package`가 **실패했을 때만** 도는 마지막 수정 루프. 끝나면 `clean package`를 다시 실행. 회사 예제는 4라운드. | `0` / `false`로 끄거나, 최종 빌드에서만 나는 오류가 많으면 라운드 증가. | [04](04-triage-and-loop.md) |
 | `loop.max_llm_calls` | int | `60` | 실행당 LLM 호출 상한(하네스트의 레시피 후보 생성 포함). 소진 시 플래그 `llm-budget-exhausted`, 남은 LLM 전용 클러스터는 blocked(L6). | 예산 정책. | [04](04-triage-and-loop.md) |
 | `loop.max_total_minutes` | int | `180` | 실행당 시간 상한(플래그 `time-budget-exhausted`, verify와 보고서는 항상 실행). | 대형 프로젝트. | [04](04-triage-and-loop.md) |
 | `loop.stall_limit` | int | `2` | 같은 오류 집합이 N번 반복되면 escalation 모델 + 컨텍스트 확대(L1). | 거의 바꾸지 않습니다. | [04](04-triage-and-loop.md) |
@@ -190,6 +191,7 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `loop.engine` | `graph` / `inline` | `graph` | `graph` = LangGraph `StateGraph`로 단계 구동(회사 관례, 웹 UI의 node 이벤트), `inline` = 원래 루프. 보고서는 동일. | LangGraph 문제를 의심할 때 `inline`으로 비교. | [03](03-architecture.md) |
 | `loop.oscillation_window` | int | `4` | A↔B 진동 감지에 쓰는 오류 집합 이력 길이(L2). | 바꾸지 않습니다. | [04](04-triage-and-loop.md) |
 | `loop.max_llm_attempts_per_cluster` | int | `2` | 클러스터당 LLM 시도 후 blocked(`repeated_failure`). | 예산 정책. | [04](04-triage-and-loop.md) |
+| `loop.verify_extra_llm_attempts` | int | `2` | 최종 검증 루프에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터를 풀고 더 주는 LLM 시도 수(escalation 모델). `0`이면 풀지 않음. 정책·예산 blocked는 대상 아님. | 마지막에 더 끈질기게 시도하고 싶을 때 증가. | [04](04-triage-and-loop.md) |
 | `loop.blocked_policy` | dict[str,int] | `external_javax_api: 0`, `external_api_incompatible: 1`, `artifact_not_found: 0`, `parent_not_found: 0`, `plugin_incompatible: 1`, `unsupported_source: 0`, `encoding: 0` | 차단 사유별로 blocked 전 허용 LLM 시도 수(0 = LLM에 묻지 않음). | 거의 바꾸지 않습니다(LLM이 버전을 지어내지 않게 하는 안전장치). | [04](04-triage-and-loop.md) |
 | `loop.structural_regression_kinds` | list[str] | `pom_invalid`, `parent_resolution`, `plugin_resolution` | pom 수정 후 나타나면 개수와 무관하게 되돌리는 오류 종류. | 바꾸지 않습니다. | [04](04-triage-and-loop.md) |
 

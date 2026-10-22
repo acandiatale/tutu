@@ -111,7 +111,9 @@ loop:
     jdk21:       { goal: compile,      max_iterations: 3 }
     spring:      { goal: test-compile, max_iterations: 6 }
     restructure: { goal: package,      max_iterations: 6 }
+    verify:      { goal: package,      max_iterations: 3 }   # last-chance loop when the final clean package fails
   max_llm_calls: 60
+  verify_extra_llm_attempts: 2   # final verify loop: clusters blocked as repeated_failure / oscillation get N more LLM tries
   max_total_minutes: 180
   stall_limit: 2
   max_clusters_per_iteration: 8

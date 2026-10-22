@@ -63,6 +63,8 @@ phases: [spring, jdk21]
 - `org.hibernate.type.StringType.INSTANCE` etc. removed → `StandardBasicTypes.STRING`.
 - Legacy `org.hibernate.Criteria` / `session.createCriteria(..)` / `Restrictions` removed → JPA `CriteriaBuilder`.
 - Hibernate 7: `Session.save/saveOrUpdate/update/delete` removed → `persist` / `merge` / `remove`; `session.load` → `getReference`.
+- Hibernate 7 dropped `hibernate-commons-annotations`: `org.hibernate.annotations.common.*` (`LoggerFactory`, `XClass`)
+  no longer resolves → see `hibernate-7.md` (jboss-logging `Logger.getLogger`, plain reflection).
 - `hibernate.dialect` is auto-detected; remove `MySQL5Dialect`/`MySQL57Dialect`/`MySQL8Dialect`/`PostgreSQL95Dialect`/
   `Oracle12cDialect` (removed classes) → delete the property or use `MySQLDialect`/`PostgreSQLDialect`/`OracleDialect`.
 - `@GenericGenerator(strategy="uuid2")` → `@UuidGenerator`; `@org.hibernate.annotations.Where` → `@SQLRestriction`.

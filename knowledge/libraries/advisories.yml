@@ -296,3 +296,27 @@ advisories:
     docs:
       - https://docs.oracle.com/en/java/javase/21/docs/api/java.desktop/javax/swing/tree/DefaultMutableTreeNode.html
     notes: knowledge/notes/jdk21.md
+
+  # ------------------------------------------------------------------ Hibernate Commons Annotations (gone in ORM 7)
+  - id: hibernate-commons-annotations
+    library: hibernate-commons-annotations
+    status: incompatible
+    title: hibernate-commons-annotations (org.hibernate.annotations.common.*) is gone from Hibernate ORM 7 / Boot 4
+    summary: >-
+      Hibernate ORM 3.x–6.x pulled org.hibernate.common:hibernate-commons-annotations (HCANN) in transitively, so
+      project code could import org.hibernate.annotations.common.* (typically LoggerFactory / Log from ...util.impl,
+      or the XClass / ReflectionManager reflection API) without declaring the jar. Hibernate ORM 7.0 — every
+      Spring Boot 4.x line — dropped it (hibernate-models replaced it internally): "package
+      org.hibernate.annotations.common.util.impl does not exist" at compile time, typically only in the final
+      package build of a company run. No OpenRewrite recipe; the build-fix loop ports the usages with this guidance.
+    replacement: org.jboss.logging.Logger.getLogger(Foo.class) for LoggerFactory / Log (or SLF4J); java.lang.reflect for XClass / ReflectionManager
+    replacement_version: jboss-logging via hibernate-core 7.x (Boot-managed); HCANN 7.0.3.Final only as an explicit EOL fallback
+    policy: guide
+    followup: >-
+      Review the ported logger / reflection code (jboss-logging Logger keeps the BasicLogger calls, SLF4J needs
+      format changes for infof / debugv); if a module still declares org.hibernate.common:hibernate-commons-annotations
+      7.0.3.Final explicitly (EOL, not managed by Boot 4), plan its removal.
+    docs:
+      - https://docs.jboss.org/hibernate/orm/7.0/migration-guide/migration-guide.html
+      - https://repo1.maven.org/maven2/org/hibernate/common/hibernate-commons-annotations/
+    notes: knowledge/notes/hibernate-7.md

@@ -98,8 +98,8 @@ knowledge/
 │       └── hystrix-to-resilience4j.yml       com.company.migrate.HystrixToResilience4j (hystrix 권고의 recipe)
 ├── notes/
 │   ├── index.yml                   노트 선택 규칙(keywords / cases / phases / always)
-│   └── *.md                        마이그레이션 노트 14개 (fix-policy, jdk21, jakarta, boot2-to-3 …)
-├── libraries/advisories.yml        EOL / 미관리 라이브러리 권고 14개
+│   └── *.md                        마이그레이션 노트 15개 (fix-policy, jdk21, jakarta, boot2-to-3, hibernate-7 …)
+├── libraries/advisories.yml        EOL / 미관리 라이브러리 권고 15개
 └── config/externalized.yml         외부화 설정 인벤토리 규칙(JNDI / context-param / -D 매핑, 안내문)
 ```
 
@@ -193,6 +193,7 @@ index 와 각 노트의 front-matter 는 일치해야 하며 `tests/fix/test_fix
 | `knowledge/notes/spring-cloud.md` | `## fix-loop: hystrix` |
 | `knowledge/notes/jdk21.md` | `## fix-loop: jdk-removed-apis`, `## fix-loop: jdk-generified-apis` |
 | `knowledge/notes/ibatis2.md` | `## fix-loop: ibatis2` |
+| `knowledge/notes/hibernate-7.md` | `## fix-loop: hibernate-commons-annotations` (Hibernate 7에서 사라진 `org.hibernate.annotations.common.*`) |
 | `knowledge/notes/externalized-config.md` | `## fix-loop: externalized-config` |
 
 확인 포인트: 회사에서 특정 라이브러리 전환 요령을 LLM 에 꾸준히 알려 주고 싶다면, 노트에 `## fix-loop: <library>` 섹션을 만들고 권고 항목의 `notes` 로 연결하는 것이 가장 효과적입니다.
@@ -203,7 +204,7 @@ index 와 각 노트의 front-matter 는 일치해야 하며 `tests/fix/test_fix
 
 | 필드 | 의미 |
 |---|---|
-| `id` | 권고 id(예: `springfox`, `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`, `spring-cloud-bom`, `spring-security-oauth2-legacy`, `log4j1`, `commons-lang2`, `httpclient4`, `jdk-removed-apis`, `ibatis2`, `jdk-generified-apis`) |
+| `id` | 권고 id(예: `springfox`, `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`, `spring-cloud-bom`, `spring-security-oauth2-legacy`, `log4j1`, `commons-lang2`, `httpclient4`, `jdk-removed-apis`, `ibatis2`, `jdk-generified-apis`, `hibernate-commons-annotations`) |
 | `library` / `artifacts` / `imports` | 분석기 라이브러리 규칙 이름, `g:a` glob, import 패키지 — 탐지 근거 |
 | `status` | `eol` / `unmanaged` / `incompatible` / `superseded` |
 | `title`, `summary` | 보고서용 설명 |
@@ -565,7 +566,7 @@ out/<run id>/
 | 그래프·단계 진행 | `graph_node`, `phase_start`, `phase_end`, `phase_skipped`, `step_start`, `step_end`, `stop_after` |
 | OpenRewrite | `rewrite`, `rewrite_oom_retry`, `rewrite_oom_retry_result`, `rewrite_download_retry`, `rewrite_download_retry_result`, `rewrite_unresolved_versions`, `recipe_batch` |
 | 빌드 | `build`, `classpath`, `verify`, `tests_fallback`, `test_compile_fallback` |
-| 수정 루프 | `loop_start`, `loop_end`, `triage`, `decision`, `attempt`, `attempt_scored`, `revert`, `reround`, `stall`, `oscillation`, `only_blocked`, `blocked`, `blocked_resolved`, `handler_failed`, `merge_conflict_hints`, `budget_exhausted` |
+| 수정 루프 | `loop_start`, `loop_end`, `triage`, `decision`, `attempt`, `attempt_scored`, `revert`, `reround`, `stall`, `oscillation`, `only_blocked`, `blocked`, `blocked_resolved`, `blocked_released`, `verify_loop_start`, `verify_loop_end`, `handler_failed`, `merge_conflict_hints`, `budget_exhausted` |
 | LLM | `fixer`, `llm_fix`, `llm_call`, `llm_cooldown`, `llm_unavailable` |
 | KB | `harvest`, `kb_credit`, `kb_credit_skipped` |
 | 재구성 | `restructure`, `restructure_failed`, `placeholders`, `effective_depmgmt_after` |

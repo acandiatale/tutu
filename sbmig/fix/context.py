@@ -62,7 +62,9 @@ class NoteEntry:
         if self.cases and case and case not in self.cases:
             return False
         if self.phases and phase and phase not in self.phases:
-            return False
+            # the final verify loop fixes the restructured tree: notes written for `restructure` apply there too
+            if not (phase == "verify" and "restructure" in self.phases):
+                return False
         return True
 
     def body(self) -> str:

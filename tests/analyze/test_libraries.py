@@ -14,7 +14,7 @@ EXPECTED = {"lombok", "mapstruct", "querydsl", "spring-security", "spring-data-j
             # library advisories (knowledge/libraries/advisories.yml)
             "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom", "swagger-v1",
             "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2",
-            "jdk-generified-apis"}
+            "jdk-generified-apis", "hibernate-commons-annotations"}
 
 
 def test_names_are_the_contract() -> None:
@@ -128,6 +128,24 @@ def test_jdk_removed_apis_segment_boundary(tmp_path: Path) -> None:
     write(tmp_path, "pom.xml", pom("x"))
     write_java(tmp_path, "", "com.a", "A", imports=("sun.miscellaneous.Foo", "com.sun.imagery.X"))
     assert "jdk-removed-apis" not in _libs(tmp_path)
+
+
+def test_hibernate_commons_annotations_rule(tmp_path: Path) -> None:
+    """HCANN (gone in Hibernate 7): detected from `org.hibernate.annotations.common` imports or the artifact; the
+    generic `hibernate` rule fires alongside, a plain `org.hibernate.annotations` import does not trip it."""
+    write(tmp_path, "pom.xml", pom("x"))
+    write_java(tmp_path, "", "com.a", "A", imports=("org.hibernate.annotations.common.util.impl.LoggerFactory",))
+    libs = _libs(tmp_path)
+    assert libs["hibernate-commons-annotations"].evidence == ["import:org.hibernate.annotations.common"]
+    assert "hibernate" in libs
+    other = tmp_path / "other"
+    write(other, "pom.xml", pom("y"))
+    write_java(other, "", "com.b", "B", imports=("org.hibernate.annotations.Type",))
+    assert "hibernate-commons-annotations" not in _libs(other) and "hibernate" in _libs(other)
+    declared = tmp_path / "declared"
+    write(declared, "pom.xml", pom("z", deps=(dep("org.hibernate.common", "hibernate-commons-annotations", "6.0.6.Final"),)))
+    assert _libs(declared)["hibernate-commons-annotations"].evidence == \
+        ["pom:org.hibernate.common:hibernate-commons-annotations:6.0.6.Final"]
 
 
 def test_ibatis2_and_mybatis_stay_distinct(tmp_path: Path) -> None:

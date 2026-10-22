@@ -269,11 +269,13 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; the LLM ports `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
 | ibatis2 | incompatible | guide | org.mybatis:mybatis + org.mybatis:mybatis-spring | no recipe exists; the LLM ports `SqlMapClientDaoSupport` DAOs with the `## fix-loop: ibatis2` hint (`knowledge/notes/ibatis2.md`) |
 | jdk-generified-apis | incompatible | guide | JDK API: `Enumeration<TreeNode>` + cast / `asIterator()` | no recipe (not a dependency); the LLM ports `javax.swing.tree` code with the `## fix-loop: jdk-generified-apis` hint (`knowledge/notes/jdk21.md`) |
+| hibernate-commons-annotations | incompatible | guide | `org.jboss.logging.Logger` (LoggerFactory / Log), `java.lang.reflect` (XClass / ReflectionManager) | no recipe; HCANN came transitively with hibernate-core ≤ 6.x and Hibernate ORM 7 (Boot 4) dropped it — the LLM ports the imports with the `## fix-loop: hibernate-commons-annotations` hint (`knowledge/notes/hibernate-7.md`) |
 
 The analyzer rule names added for these entries are `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`,
 `spring-cloud-bom` (dependencyManagement / parent), `swagger-v1`, `spring-security-oauth2-legacy`, `log4j1`,
 `commons-lang2`, `httpclient4`, `jdk-removed-apis` (import-only: `sun.misc`, `sun.security`, `com.sun.image`,
-`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule), `ibatis2` (round 9) and `jdk-generified-apis` (`javax.swing.tree`, round 9c).
+`javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule), `ibatis2` (round 9), `jdk-generified-apis` (`javax.swing.tree`, round 9c)
+and `hibernate-commons-annotations` (`org.hibernate.annotations.common` imports or the HCANN artifact, 2026-10-22).
 
 ### ibatis2: iBATIS 2 / SqlMapClient (round 9)
 
@@ -296,6 +298,27 @@ symbol SqlMapClientDaoSupport`).
   no source imports those packages any more.
 * The cluster must mention one of the packages. A javac block for a symbol-only error (`cannot find symbol class
   SqlMapClientDaoSupport`) normally carries the import line in its raw text.
+
+### hibernate-commons-annotations: HCANN gone in Hibernate ORM 7 (2026-10-22, company run)
+
+`org.hibernate.common:hibernate-commons-annotations` was a transitive dependency of `hibernate-core` 3.x–6.x (6.6.x still
+declares 7.0.1.Final at runtime scope), so project code imported `org.hibernate.annotations.common.*` — usually
+`util.impl.LoggerFactory` / `Log` through an IDE auto-import, sometimes the `reflection.XClass` API — without a pom
+entry. Hibernate ORM 7.0 (every Boot 4.x line) replaced it with `hibernate-models` and `hibernate-core` 7.x does not
+reference it any more (verified on the 7.4.0.Final pom). The last HCANN release is 7.0.3.Final.
+
+* Rule `hibernate-commons-annotations`: artifacts `org.hibernate.common:hibernate-commons-annotations`,
+  `org.hibernate:hibernate-commons-annotations`; import prefix `org.hibernate.annotations.common`. The generic
+  `hibernate` rule fires on the same import (`org.hibernate.annotations`); this one names the lost jar.
+* Symptom in the company run: `package org.hibernate.annotations.common.util.impl does not exist` ×2 — only in the
+  final `clean package` (see ERROR-HANDLING L12 for why that build gets a fix loop now).
+* Policy `guide`: the fix LLM gets the advisory hint plus `## fix-loop: hibernate-commons-annotations`
+  (`knowledge/notes/hibernate-7.md`): `LoggerFactory.make(Foo.class)` → `org.jboss.logging.Logger.getLogger(Foo.class)`
+  (same `BasicLogger` calls, jboss-logging stays on the classpath through hibernate-core 7), SLF4J only for plain
+  `info/debug/warn/error(String …)` usage, `AssertionFailure` → `org.hibernate.AssertionFailure`, the reflection API →
+  `java.lang.reflect` with a `MIGRATION-TODO` when unsure; an explicit `hibernate-commons-annotations:7.0.3.Final`
+  only for code that cannot change (EOL, listed in the Handover). Verify reports `replaced` once no source imports
+  `org.hibernate.annotations.common` and the artifact is not declared.
 
 ### jdk-removed-apis: pre-Java-8 code (2026-10-21, rewrite-migrate-java 3.42.0 from BOM 3.37.0)
 

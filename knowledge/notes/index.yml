@@ -296,3 +296,19 @@ notes:
   phases:
   - spring
   always: false
+- file: hibernate-7.md
+  title: Hibernate ORM 7 (Boot 4) dropped hibernate-commons-annotations (org.hibernate.annotations.common.*)
+  keywords:
+  - org\.hibernate\.annotations\.common
+  - hibernate-commons-annotations
+  - XClass|XProperty|XMethod|ReflectionManager|JavaReflectionManager|JavaXMember
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - spring
+  - restructure
+  always: false

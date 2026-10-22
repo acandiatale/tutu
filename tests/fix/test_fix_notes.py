@@ -9,7 +9,7 @@ from sbmig.fix.context import split_front_matter
 NOTES = Path(__file__).resolve().parents[2] / "knowledge" / "notes"
 REQUIRED = {"jdk21.md", "jakarta.md", "boot2-to-3.md", "boot3-to-4.md", "boot40-to-41.md", "spring-framework-7.md",
             "spring-security-7.md", "servlet-to-boot.md", "junit4-to-5.md", "maven-plugins.md", "fix-policy.md",
-            "externalized-config.md", "ibatis2.md"}
+            "externalized-config.md", "ibatis2.md", "hibernate-7.md"}
 CASES = {"pure_java", "spring_legacy", "spring_boot", "servlet_tomcat", "msa"}
 PHASES = {"jdk21", "spring", "restructure"}
 
@@ -43,6 +43,18 @@ def test_keywords_hit_expected_notes():
     assert by["boot3-to-4.md"].score("cannot find symbol class MockBean") > 0
     assert by["jdk21.md"].score("package sun.misc does not exist") > 0
     assert by["junit4-to-5.md"].score("import org.junit.Test;") > 0
+    assert by["hibernate-7.md"].score("package org.hibernate.annotations.common.util.impl does not exist") > 0
+
+
+def test_restructure_notes_also_apply_in_the_final_verify_loop():
+    """The final verify loop (2026-10-22) fixes the restructured tree: a note written for `restructure` applies to
+    phase `verify` as well; spring-only notes stay spring-only."""
+    by = {e.file: e for e in load_notes_index(NOTES)}
+    n = by["hibernate-7.md"]
+    assert n.applies("spring_boot", "restructure") and n.applies("spring_boot", "verify")
+    assert not n.applies("spring_boot", "jdk21")
+    assert not by["ibatis2.md"].applies("spring_boot", "verify")
+    assert by["fix-policy.md"].applies("pure_java", "verify")           # no phase restriction
 
 
 def test_index_fallback_to_front_matter(tmp_path):

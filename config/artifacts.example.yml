@@ -54,6 +54,16 @@ plan:
   # restructure phase keeps only the final verify. `restructure` = after the spring loop (the default).
   parent_phase: spring
 
+loop:
+  # Company runs: with plan.parent_phase=spring the final `mvn clean package` is the first package-goal build of the
+  # run, so a failure there (a packaging-only error, or a cluster the spring loop ran out of rounds on) gets one last
+  # build-fix loop and the final build is repeated. Clusters blocked earlier as repeated_failure / oscillation are
+  # released with verify_extra_llm_attempts more LLM attempts (LLM_ESCALATION_MODEL when set); policy blocks
+  # (javax API in a library, missing artifact, …) and budget blocks stay blocked. Defaults: 3 rounds / +2 attempts.
+  phases:
+    verify: { goal: package, max_iterations: 4 }
+  verify_extra_llm_attempts: 2
+
 build:
   settings_file: null                   # config/settings.nexus.xml — copy config/settings.nexus.example.xml, set the group URL;
                                         # its mirrorOf external:* also covers the <repositories> declared inside the poms

@@ -289,7 +289,7 @@ project uncompilable costs LLM budget on every project — keep it `guide` until
 ## 4. Tuning knobs (config/default.yml)
 | Knob | Default | Effect |
 |---|---|---|
-| `loop.phases.<phase>.max_iterations` | 3 / 6 / 6 | build→fix rounds per phase |
+| `loop.phases.<phase>.max_iterations` | 3 / 6 / 6 / 3 | build→fix rounds per phase (jdk21 / spring / restructure / **verify** — the verify loop only runs when the final `clean package` failed, then the final build is repeated; `verify: {max_iterations: 0}` turns it off) |
 | `loop.max_llm_calls`, `loop.max_total_minutes` | 60 / 180 | hard budgets per run |
 | `loop.stall_limit` | 2 | identical error set N times → escalation model + widen context |
 | `llm.escalation_model` | null | stronger model after a stall |
@@ -303,6 +303,7 @@ project uncompilable costs LLM budget on every project — keep it `guide` until
 | `build.enforcer_policy` / `build.werror_policy` | relax-rule / remove | enforcer `requireJavaVersion` etc. and `-Werror` on JDK 21 |
 | `loop.blocked_policy.<reason>` | 0–1 | LLM attempts allowed before a cluster of that reason is blocked and reported |
 | `loop.max_llm_attempts_per_cluster` | 2 | after that the cluster is blocked (`repeated_failure`) |
+| `loop.verify_extra_llm_attempts` | 2 | final verify loop only: clusters blocked as `repeated_failure` / `oscillation` are released and get this many more LLM attempts (escalation model); 0 = never release |
 | `advisories.*` | see §3.7 | library advisories: policies, company files, carried-over listing; never affect the exit code |
 
 ## 5. Safety notes

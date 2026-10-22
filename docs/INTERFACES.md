@@ -507,7 +507,7 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     `org.glassfish.web:jakarta.servlet.jsp.jstl` / `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api`
     (BOM-managed; explicit old version → 3.0.1 / 3.0.0); library rule + advisory `jdk-generified-apis`
     (`javax.swing.tree` imports, guide) with `## fix-loop: jdk-generified-apis` in `knowledge/notes/jdk21.md`
-    (14 advisories).
+    (15 advisories).
   * Operators (round 9c): `BuildFixLoop` milestones (`_mark`: `loop start`, `mvn <goal> (build N)`, `KB match`,
     `deciding`, `handler <id>`, `advisory hints`, `merge-conflict hints`, `fixer.propose … (prompt packing + LLM
     call)`, `LLM answered: applying`, `git commit`, `idle`; DEBUG lines `[phase] → <milestone>`) and a watchdog
@@ -528,3 +528,4 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     `stop_after=spring` then includes the parents / layout. Windows: `_kill_group` uses `taskkill /PID <pid> /T /F`
     (a terminated `mvn.cmd` left its `java.exe` running); `fixer.grep` is bounded (`MAX_GREP_FILES` 3000,
     `MAX_GREP_FILE_BYTES` 512 KB, `GREP_BUDGET_S` 45 s, one read per file) and logs the context / feedback rounds.
+* 2026-10-22 (company run, final verify failed on `org.hibernate.annotations.common`): `LoopConfig.phases["verify"]` (`PhaseLoopConfig(goal="package", max_iterations=3)`) + `LoopConfig.verify_extra_llm_attempts` (2): `Orchestrator._verify_fix_loop` runs one last `BuildFixLoop.run(Phase.VERIFY, …)` after a failed final build and repeats the final build (journal `verify_loop_start` / `verify_loop_end` / `blocked_released`); `Triager.decide` adds `verify_extra_llm_attempts` to both per-cluster limits when `TriageContext.phase == VERIFY`; `BuildFixLoop` requests the escalation model in that phase; `NoteEntry.applies` treats `verify` as `restructure`; the verify phase is harvested when it has attempts. Library rule + advisory `hibernate-commons-annotations`, note `knowledge/notes/hibernate-7.md`.

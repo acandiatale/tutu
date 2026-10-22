@@ -10,7 +10,8 @@ plus the library-advisory rules (knowledge/libraries/advisories.yml, docs/ADVISO
 zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy, log4j1, commons-lang2, httpclient4,
 jdk-removed-apis (imports of JDK-internal / removed packages: sun.misc, sun.security, com.sun.image, javax.activation;
 JAXB `javax.xml.bind` stays on the `jaxb` rule), ibatis2 (iBATIS 2: `com.ibatis` / `org.springframework.orm.ibatis`
-imports, `org.apache.ibatis:ibatis-*` artifacts; `mybatis` = MyBatis 3 only).
+imports, `org.apache.ibatis:ibatis-*` artifacts; `mybatis` = MyBatis 3 only), hibernate-commons-annotations
+(`org.hibernate.annotations.common.*` imports / the HCANN artifact — gone from Hibernate ORM 7).
 
 Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
 groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
@@ -157,6 +158,13 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("ibatis2", ("org.apache.ibatis:ibatis-sqlmap", "org.apache.ibatis:ibatis-core",
                             "org.apache.ibatis:ibatis*", "ibatis:ibatis*", "com.ibatis:*"),
                 ("com.ibatis", "org.springframework.orm.ibatis")),
+    # Hibernate Commons Annotations (2026-10-22, company run; advisory hibernate-commons-annotations): hibernate-core
+    # 3.x–6.x pulled it in transitively, so `org.hibernate.annotations.common.*` imports (LoggerFactory / Log, XClass …)
+    # compiled without a pom entry; Hibernate ORM 7 (Boot 4) dropped it → "package … does not exist". The generic
+    # `hibernate` rule still fires on the same import (org.hibernate.annotations); this one names the lost jar.
+    LibraryRule("hibernate-commons-annotations", ("org.hibernate.common:hibernate-commons-annotations",
+                                                  "org.hibernate:hibernate-commons-annotations"),
+                ("org.hibernate.annotations.common",)),
 )
 
 LIBRARY_NAMES: tuple[str, ...] = tuple(r.name for r in LIBRARY_RULES)
