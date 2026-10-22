@@ -101,7 +101,7 @@ def test_plugin_dependency_bumped_by_text_but_jakarta_one_kept(fake_kit):
 
 
 OLD = "ch.simas.qlrm:qlrm"
-OLD_NOTE = ("ch.simas.qlrm:qlrm 1.7.1 → org.qlrm:qlrm 4.2.1 (coordinates changed; jakarta.persistence since 4.0.1, "
+OLD_NOTE = ("ch.simas.qlrm:qlrm 1.7.1 → org.qlrm:qlrm 4.2.1 (coordinates changed; jakarta release since 4.0.1, "
             "requires Java 17) in pom.xml")
 
 
@@ -195,3 +195,16 @@ def test_relocation_preemptive_moves_javax_api_only(kit, cfg):
 def test_relocation_preemptive_leaves_servlet_and_mysql_alone(fake_kit, cfg):
     fake_kit.pom(deps=[G("javax.servlet:javax.servlet-api:4.0.1"), G("mysql:mysql-connector-java:8.0.33")])
     assert fake_kit.handler("dependency-relocation").apply(fake_kit.ws, None, None, cfg) == []
+
+
+def test_unversioned_parent_managed_declaration_is_not_pinned(kit):
+    """An unversioned qlrm (version from the company parent / a BOM) is never pinned over the parent."""
+    kit.pom(deps=[G("org.qlrm:qlrm")])
+    h = kit.handler("jakarta-library-floor")
+    assert h.apply(kit.ws, None, None, None) == []
+    assert kit.dep("org.qlrm:qlrm").version is None
+    # …but an unversioned old coordinate is still relocated (the old coordinates cannot be right)
+    kit.pom("old/pom.xml", deps=[G("ch.simas.qlrm:qlrm")])
+    changes = h.apply(kit.ws, None, None, None)
+    assert [c.path for c in changes] == ["old/pom.xml"]
+    assert kit.dep("org.qlrm:qlrm", "old/pom.xml").version == "4.2.1"

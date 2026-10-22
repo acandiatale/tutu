@@ -14,7 +14,11 @@ EXPECTED = {"lombok", "mapstruct", "querydsl", "spring-security", "spring-data-j
             # library advisories (knowledge/libraries/advisories.yml)
             "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom", "swagger-v1",
             "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2",
-            "jdk-generified-apis", "hibernate-commons-annotations"}
+            "jdk-generified-apis", "hibernate-commons-annotations",
+            # 2026-10-22 era libraries
+            "hibernate-template", "commons-fileupload", "jackson1", "tiles", "velocity", "axis1", "commons-httpclient3",
+            "commons-collections3", "ehcache2", "json-lib", "jjwt", "poi", "struts2", "egovframe", "dbcp1",
+            "querydsl-hibernate-native"}
 
 
 def test_names_are_the_contract() -> None:
@@ -175,3 +179,43 @@ def test_ibatis2_old_group_ids_and_import_only(tmp_path: Path) -> None:
     write(other, "pom.xml", pom("y", deps=(dep("ibatis", "ibatis-sqlmap", "2.0"),)))
     write_java(other, "", "com.acme", "D", imports=("com.ibatis.common.resources.Resources",))
     assert set(_libs(other)["ibatis2"].evidence) == {"pom:ibatis:ibatis-sqlmap:2.0", "import:com.ibatis"}
+
+
+def test_era_library_rules_segment_boundaries(tmp_path: Path) -> None:
+    """2026-10-22 rules: collections ≠ collections4, dbcp ≠ dbcp2, axis ≠ axis2, fileupload ≠ fileupload2."""
+    write(tmp_path, "pom.xml", pom("app"))
+    write_java(tmp_path, "", "com.acme", "New", imports=(
+        "org.apache.commons.collections4.CollectionUtils", "org.apache.commons.dbcp2.BasicDataSource",
+        "org.apache.axis2.client.ServiceClient", "org.apache.commons.fileupload2.core.FileItem"))
+    libs = _libs(tmp_path)
+    assert not {"commons-collections3", "dbcp1", "axis1", "commons-fileupload"} & set(libs)
+    write_java(tmp_path, "", "com.acme", "Old", imports=(
+        "org.apache.commons.collections.CollectionUtils", "org.apache.commons.dbcp.BasicDataSource",
+        "org.apache.axis.client.Call", "javax.xml.rpc.ServiceException", "org.apache.commons.fileupload.FileItem",
+        "org.springframework.web.multipart.commons.CommonsMultipartResolver"))
+    libs = _libs(tmp_path)
+    assert libs["commons-collections3"].evidence == ["import:org.apache.commons.collections"]
+    assert libs["dbcp1"].evidence == ["import:org.apache.commons.dbcp"]
+    assert libs["axis1"].evidence == ["import:org.apache.axis", "import:javax.xml.rpc"]
+    assert libs["commons-fileupload"].evidence == ["import:org.apache.commons.fileupload",
+                                                   "import:org.springframework.web.multipart.commons"]
+
+
+def test_era_library_rules_from_deps_and_import_only_rules(tmp_path: Path) -> None:
+    write(tmp_path, "pom.xml", pom("app", deps=(dep("io.jsonwebtoken", "jjwt", "0.9.1"),
+                                               dep("org.apache.poi", "poi-ooxml", "3.17"),
+                                               dep("net.sf.ehcache", "ehcache", "2.10.6"),
+                                               dep("org.springframework", "spring-orm", "4.3.30.RELEASE"))))
+    libs = _libs(tmp_path)
+    assert libs["jjwt"].version == "0.9.1" and libs["poi"].version == "3.17" and libs["ehcache2"].version == "2.10.6"
+    assert "hibernate-template" not in libs                              # spring-orm alone is not evidence
+    write_java(tmp_path, "", "com.acme.dao", "UserDao", imports=(
+        "org.springframework.orm.hibernate4.support.HibernateDaoSupport", "com.querydsl.jpa.hibernate.HibernateQuery",
+        "org.codehaus.jackson.map.ObjectMapper", "egovframework.rte.fdl.cmmn.EgovAbstractServiceImpl",
+        "com.opensymphony.xwork2.ActionSupport", "net.sf.json.JSONObject", "org.apache.velocity.app.VelocityEngine",
+        "org.apache.tiles.Attribute", "org.apache.commons.httpclient.HttpClient"))
+    libs = _libs(tmp_path)
+    assert libs["hibernate-template"].evidence == ["import:org.springframework.orm.hibernate4"]
+    assert libs["querydsl-hibernate-native"].evidence == ["import:com.querydsl.jpa.hibernate"]
+    for name in ("jackson1", "egovframe", "struts2", "json-lib", "velocity", "tiles", "commons-httpclient3"):
+        assert name in libs, name

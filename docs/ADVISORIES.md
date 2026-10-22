@@ -270,12 +270,64 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | ibatis2 | incompatible | guide | org.mybatis:mybatis + org.mybatis:mybatis-spring | no recipe exists; the LLM ports `SqlMapClientDaoSupport` DAOs with the `## fix-loop: ibatis2` hint (`knowledge/notes/ibatis2.md`) |
 | jdk-generified-apis | incompatible | guide | JDK API: `Enumeration<TreeNode>` + cast / `asIterator()` | no recipe (not a dependency); the LLM ports `javax.swing.tree` code with the `## fix-loop: jdk-generified-apis` hint (`knowledge/notes/jdk21.md`) |
 | hibernate-commons-annotations | incompatible | guide | `org.jboss.logging.Logger` (LoggerFactory / Log), `java.lang.reflect` (XClass / ReflectionManager) | no recipe; HCANN came transitively with hibernate-core ≤ 6.x and Hibernate ORM 7 (Boot 4) dropped it — the LLM ports the imports with the `## fix-loop: hibernate-commons-annotations` hint (`knowledge/notes/hibernate-7.md`) |
+| tiles | eol | guide | Thymeleaf + thymeleaf-layout-dialect (Boot-managed), SiteMesh 3 … (thymeleaf-layout-dialect 4.0.1 (Boot 4.1 managed) / org.sitemesh:sitemesh 3.3.0) | no recipe; `## fix-loop: tiles` (rule `tiles`) |
+| velocity | incompatible | guide | Thymeleaf or FreeMarker for web views; … (velocity-engine-core 2.4.1 / velocity-tools-generic 3.1) | no recipe; `## fix-loop: velocity` (rule `velocity`) |
+| thymeleaf-legacy | superseded | guide | org.thymeleaf:thymeleaf-spring6 / thymeleaf-extras-springsecurity6 / … (3.1.5.RELEASE / layout dialect 4.0.1 (Boot 4.1 managed)) | manual (artifacts) |
+| commons-fileupload | incompatible | guide | StandardServletMultipartResolver / Boot multipart … (commons-fileupload2-jakarta-servlet6 2.0.0-M5 (milestone)) | no working recipe (the pinned `FileuploadToFileUpload2` misspells its package renames); `## fix-loop: commons-fileupload` (rule `commons-fileupload`) |
+| jersey1 | eol | guide | Jersey 4 (org.glassfish.jersey.*, Boot-managed, spring-boot-starter-jersey) … (4.0.2 (Boot 4.1 managed)) | manual (artifacts) |
+| spring-hateoas-legacy | superseded | guide | org.springframework.hateoas:spring-hateoas (Boot-managed) / … (3.1.1 (Boot 4.1 managed)) | manual (artifacts; only below 1.0) |
+| spring-portlet | eol | guide | Spring MVC controllers (servlet) — the portal integration must be redesigned | manual (artifacts) |
+| spring-mobile | eol | guide | User-Agent parsing in an own HandlerInterceptor (e.g. ua-parser) or a … | manual (artifacts) |
+| jasperreports6 | incompatible | guide | net.sf.jasperreports:jasperreports 7.1.0 + the extension artifacts for the … | manual (artifacts; only below 7.0.0) |
+| struts2 | incompatible | guide | org.apache.struts:struts2-core 7.4.0 (+ same-version plugins); long term … | manual (rule `struts2`; only below 7.0.0) |
+| struts1 | eol | guide | Spring MVC (preferred) or io.github.weblegacy:struts-* 1.5.0-RC2 (RC, … (io.github.weblegacy:struts-core 1.5.0-RC2) | manual (artifacts) |
+| commons-chain | unmanaged | guide | keep commons-chain 1.2 for the core; web layer → … (1.3.0) | manual (artifacts) |
+| egovframe | incompatible | guide | org.egovframe.rte:egovframe-rte-* 5.0.2 (Jakarta) | manual (rule `egovframe`) |
+| webjars-locator-core | superseded | guide | org.webjars:webjars-locator-lite (Boot-managed) (1.1.3 (Boot 4.1 managed)) | manual (artifacts) |
+| shiro-legacy | eol | guide | org.apache.shiro:shiro-* 3.0.1 (no classifier) | the pinned `UpdateApacheShiroDependencies` leaves 2.0.x + classifier `jakarta`; 3.0.1 has no classifier jars (not in `jakarta_libraries.yml`) (artifacts; only below 3.0.0) |
+| hibernate-template | incompatible | guide | org.springframework.orm.jpa.hibernate.LocalSessionFactoryBean / … (spring-orm 7.0.x (Boot-managed)) | no recipe; `## fix-loop: hibernate-template` (rule `hibernate-template`) |
+| hibernate-entitymanager | superseded | guide | remove it — org.hibernate.orm:hibernate-core (Boot-managed, via … (7.4.1.Final (Boot 4.1 managed)) | manual (artifacts) |
+| hibernate-ehcache | eol | guide | org.hibernate.orm:hibernate-jcache + org.ehcache:ehcache (classifier jakarta) (7.4.1.Final + 3.12.0 (both Boot 4.1 managed)) | manual (artifacts) |
+| hypersistence-utils | superseded | guide | io.hypersistence:hypersistence-utils-hibernate-73 (3.16.0) | manual (artifacts) |
+| hibernate-search-legacy | incompatible | guide | org.hibernate.search:hibernate-search-mapper-orm + … (8.4.0.Final) | manual (artifacts; only below 8.4.0) |
+| querydsl-hibernate-native | incompatible | guide | io.github.openfeign.querydsl:querydsl-jpa / querydsl-apt (no classifier) (7.7) | manual (rule `querydsl-hibernate-native`) |
+| ehcache2 | eol | guide | org.ehcache:ehcache (classifier jakarta) through JCache … (3.12.0 + cache-api 1.1.1 (both Boot 4.1 managed)) | no recipe; `## fix-loop: ehcache2` (rule `ehcache2`) |
+| hazelcast-legacy | incompatible | guide | com.hazelcast:hazelcast (Boot-managed) (5.5.0) | manual (artifacts; only below 4.0) |
+| commons-dbcp1 | eol | guide | org.apache.commons:commons-dbcp2 (Boot-managed) — or HikariCP (Boot default) (2.14.0 (Boot 4.1 managed)) | no recipe; `## fix-loop: dbcp1` (rule `dbcp1`) |
+| druid | incompatible | guide | com.alibaba:druid-spring-boot-4-starter (Boot) / com.alibaba:druid 1.2.28 + … | manual (artifacts) |
+| jasypt-spring-boot | unmanaged | guide | com.github.ulisesbocchio:jasypt-spring-boot-starter (latest) (4.0.4) | manual (artifacts) |
+| atomikos | unmanaged | guide | com.atomikos:transactions-spring-boot4-starter (6.0.1) | manual (artifacts; only below 6.0.0) |
+| bitronix | eol | guide | com.atomikos:transactions-spring-boot4-starter (or Narayana) (6.0.1) | manual (artifacts) |
+| commons-collections3 | eol | recipe | org.apache.commons:commons-collections4 (4.5.0 (not managed by Boot)) | `UpgradeApacheCommonsCollections_3_4` (rewrite-apache 2.30.0, provided by rewrite-spring; prepended to spring.rewrite) + `## fix-loop: commons-collections3` (rule `commons-collections3`) |
+| dozer | superseded | guide | com.github.dozermapper:dozer-core (short term) or MapStruct (7.0.0) | manual (artifacts) |
+| orika | eol | guide | MapStruct (org.mapstruct:mapstruct) or ModelMapper (mapstruct 1.6.3) | manual (artifacts) |
+| elasticsearch-rest-high-level | eol | guide | co.elastic.clients:elasticsearch-java (Boot-managed) (9.4.2 (Boot 4.1 managed)) | manual (artifacts) |
+| solr-legacy | eol | guide | org.apache.solr:solr-solrj (a SolrClient bean defined by the project) (9.11.0 (Solr 9 servers) / 10.0.0) | manual (artifacts) |
+| jackson1 | eol | guide | tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or … (Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)) | `CodehausToFasterXML` (inside the umbrella) maps 11 types; the rest via `## fix-loop: jackson1` (rule `jackson1`) |
+| json-lib | eol | guide | Jackson (tools.jackson.core:jackson-databind, Boot 4 default) or … (Boot 4.1 managed) | no recipe; `## fix-loop: json-lib` (rule `json-lib`) |
+| xstream | incompatible | guide | com.thoughtworks.xstream:xstream (bump) or Jackson XML … (1.4.21) | manual (artifacts) |
+| jdom1 | eol | guide | org.jdom:jdom2 (2.0.6.1 (Boot 4.1 managed)) | manual (artifacts; only below 2.0) |
+| axis1 | eol | guide | JAX-WS client generated from the WSDL (com.sun.xml.ws:jaxws-rt + … (jaxws-rt 4.0.5 / cxf-rt-frontend-jaxws 4.2.4 / spring-ws 5.0.2 (Boot-managed)) | no recipe; `## fix-loop: axis1` (rule `axis1`) |
+| commons-email1 | incompatible | guide | org.apache.commons:commons-email2-jakarta (or Spring JavaMailSender, … (2.0.0-M1 (milestone)) | `UpdateApacheCommonsEmailDependencies` already runs inside the umbrella (JakartaEE10); milestone version unverified (artifacts) |
+| commons-configuration1 | eol | guide | org.apache.commons:commons-configuration2 (2.15.1) | manual (artifacts) |
+| cglib | eol | guide | net.bytebuddy:byte-buddy (Boot-managed) or MapStruct / BeanUtils.copyProperties (Boot 4.1 managed) | manual (artifacts) |
+| commons-httpclient3 | eol | guide | org.apache.httpcomponents.client5:httpclient5 (or Spring RestClient) (Boot 4.1 managed (5.6.1)) | no recipe; `## fix-loop: commons-httpclient3` (rule `commons-httpclient3`) |
+| jjwt-legacy | incompatible | guide | io.jsonwebtoken:jjwt-api + jjwt-impl (runtime) + jjwt-jackson (runtime) (0.13.0) | no recipe; `## fix-loop: jjwt` (rule `jjwt`; only below 0.10.0) |
+| poi-legacy | superseded | guide | org.apache.poi:poi / poi-ooxml (5.5.1) | no recipe; `## fix-loop: poi` (rule `poi`; only below 5.0.0) |
+| jxls1 | incompatible | guide | org.jxls:jxls-poi (2.x for minimal change, 3.x current) (2.14.0 / 3.2.0) | manual (artifacts) |
+| jexcelapi | eol | guide | org.apache.poi:poi (HSSF / XSSF) (5.5.1) | manual (artifacts) |
+| slf4j-1-pin | incompatible | guide | org.slf4j:slf4j-api (Boot-managed) + spring-boot-starter-logging (2.0.18 (Boot 4.1 managed)) | keys on the bindings / bridges (explicit slf4j-api pins are dropped by `layout.drop_managed_versions`); `## fix-loop: slf4j-1-pin` (artifacts) |
+| mockito-legacy | superseded | guide | org.mockito:mockito-core (+ mockito-junit-jupiter) (5.23.0 (Boot 4.1 managed)) | manual (artifacts) |
+| powermock | eol | guide | org.mockito:mockito-core (MockedStatic / MockedConstruction) (5.23.0 (Boot 4.1 managed)) | manual (artifacts) |
 
 The analyzer rule names added for these entries are `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`,
 `spring-cloud-bom` (dependencyManagement / parent), `swagger-v1`, `spring-security-oauth2-legacy`, `log4j1`,
 `commons-lang2`, `httpclient4`, `jdk-removed-apis` (import-only: `sun.misc`, `sun.security`, `com.sun.image`,
 `javax.activation`; JAXB `javax.xml.bind` stays on the `jaxb` rule), `ibatis2` (round 9), `jdk-generified-apis` (`javax.swing.tree`, round 9c)
 and `hibernate-commons-annotations` (`org.hibernate.annotations.common` imports or the HCANN artifact, 2026-10-22).
+The 2026-10-22 era-library rules are `hibernate-template`, `commons-fileupload`, `jackson1`, `tiles`, `velocity`,
+`axis1`, `commons-httpclient3`, `commons-collections3`, `ehcache2`, `json-lib`, `jjwt`, `poi`, `struts2`, `egovframe`,
+`dbcp1` and `querydsl-hibernate-native` (see "2026-10-22 era libraries" below).
 
 ### ibatis2: iBATIS 2 / SqlMapClient (round 9)
 
@@ -361,3 +413,42 @@ fails on javac 21 with "incompatible types: inference variable T has incompatibl
 rule (`javax.swing.tree`), policy `guide`: the fix loop gets the `## fix-loop: jdk-generified-apis` section of
 `knowledge/notes/jdk21.md` (declare `Enumeration<TreeNode>` and cast per element, or `asIterator()`); verify reports
 `replaced` only when the imports are gone, so it usually stays `still-present` — the Handover lists the ported files.
+
+### 2026-10-22 era libraries (2013–2020 Korean enterprise projects)
+
+Web-verified research (Maven Central listings, jar bytecode, the `spring-boot-dependencies` 4.1.0 BOM, the pinned recipe
+jars) over ~180 libraries of the web / data / utility groups. Each library lands in exactly one place:
+
+| group | lands in | examples |
+|---|---|---|
+| same coordinates, a later release is jakarta | `knowledge/libraries/jakarta_libraries.yml` (handler `jakarta-library-floor`, 44 entries) | SiteMesh 2/3, DisplayTag (old `displaytag:displaytag`), Jersey 2 → 4.0.2, CXF → 4.2.4, Spring Web Flow → 4.0.1, Tomcat API jars → 11.0.22, jOOQ → 3.21.5, MyBatis-Spring / Boot starter → 4.1.0, Quartz → 2.5.2, EclipseLink → 5.0.2, Ehcache 3 → 3.12.0 **classifier `jakarta`**, P6Spy starter → 2.0.1, Guice → 7.0.0, Axis2 → 2.0.1 |
+| new coordinates, same packages | `sbmig/triage/handlers/relocations.yml` (reactive rows, no `packages`) | spring-session → spring-session-core, hibernate-envers / -jpamodelgen → org.hibernate.orm, HikariCP-java6/7, c3p0, old Oracle / MSSQL / CUBRID / DB2 driver coordinates, dom4j, iText 2.1.7 → OpenPDF 2.4.0, Bouncy Castle jdk15on → jdk18on, hamcrest-all |
+| a package an old library pulled in transitively / a recipe introduces | `sbmig/triage/handlers/known_packages.yml` | fileupload2, thymeleaf-spring6, hateoas, spring-session, jakarta.ws.rs, JSP / JSTL APIs, dom4j, javassist, guava, commons-email2, collections4, dbcp2 / pool2, javax.cache, hypersistence-utils |
+| source / configuration work by the owning team | advisories (49, all `guide` except `commons-collections3`) + `knowledge/notes/era-libraries.md` | table above |
+
+* `jakarta_libraries.yml` gained `classifier`: the handler sets it on the bumped or relocated declaration (direct and
+  managed — Maven matches dependencyManagement on the classifier too), and a declaration without it counts as below
+  the floor whatever its version (Ehcache 3.10+ without `<classifier>jakarta</classifier>` is still the javax JAXB
+  flavour). `sbmig/plan/pre_handlers.py` mirrors the selection without the classifier rule, so a classifier-only gap
+  is fixed reactively (`class file for javax.xml.bind… not found`), not pre-emptively.
+* Shiro is deliberately an advisory (`shiro-legacy`), not a jakarta-table entry: the pinned
+  `UpdateApacheShiroDependencies` sets 2.0.x with classifier `jakarta`, and 3.0.1 publishes no classifier jars.
+* QueryDSL stays on the Boot-managed `com.querydsl` 5.1.0:jakarta; only `com.querydsl.jpa.hibernate.*` users
+  (`querydsl-hibernate-native`) need the OpenFeign fork 7.7. Tibero is not relocated (opt-in, company relocation file).
+* Fix-loop sections (`## fix-loop: <library>` in `knowledge/notes/era-libraries.md`) are keyed on the finding's library
+  — the analyzer rule name, or the advisory id for artifact-only advisories: `hibernate-template`, `commons-fileupload`,
+  `jackson1`, `tiles`, `velocity`, `ehcache2`, `commons-collections3`, `json-lib`, `jjwt` (advisory `jjwt-legacy`),
+  `poi` (`poi-legacy`), `commons-httpclient3`, `axis1`, `dbcp1` (`commons-dbcp1`), `slf4j-1-pin`, plus `itext` (no
+  advisory; the note is picked by its keywords).
+* Noise control: advisories keyed on artifacts that Boot manages and projects often declare unversioned
+  (`slf4j-api`, `mockito-core`, spring-orm) do not list them — an unversioned match counts as "below" every version
+  gate. `slf4j-1-pin` keys on `slf4j-log4j12` / `jcl-over-slf4j`, `mockito-legacy` on `mockito-all`,
+  `hibernate-template` on the `org.springframework.orm.hibernate3|4|5` imports.
+* `commons-collections3` is `policy: recipe`: `UpgradeApacheCommonsCollections_3_4` lives in rewrite-apache 2.30.0,
+  a runtime dependency of rewrite-spring 6.37.0 (`provided_by` in the catalog; `sbmig recipes check --jars` →
+  "ok via rewrite-spring", 2026-10-22). The other verified recipes the research found (`UpgradeApachePoi_5`,
+  `Mockito1to5Migration`, `ReplacePowerMockito`, `UpgradeApacheCommonsLang_2_3`) are not in the catalog yet — the
+  advisories stay `guide`.
+* Skipped (research confidence `low`): vendor UI / editor servlet adapters (Nexacro, DEXT5, X-Internet, MiPlatform),
+  log4jdbc as an advisory.
+

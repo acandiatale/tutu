@@ -143,6 +143,11 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   `jakarta-library-floor` (QLRM → `org.qlrm:qlrm:4.2.1`, flag `jakarta-library-bumped`); `dependency-relocation`
   pre-emptive for declared javax APIs; E14b (library base repository → `ListCrudRepository`); the fix LLM sees the
   project types the errors name ("Related project types" section). Fixture `boot2-qlrm-javax` (26 fixtures).
+  Era-library coverage (user's idea, same day): 179 libraries of the 2013–2020 Korean Spring era researched against Maven
+  Central / the Boot 4.1 BOM and folded into the tables — `jakarta_libraries.yml` 44 entries (+ `classifier` for Ehcache 3),
+  `relocations.yml` 44 rows, `known_packages.yml` 56, advisories 64 (`knowledge/notes/era-libraries.md` fix-loop sections,
+  16 new analyzer rules; the pinned `FileuploadToFileUpload2` recipe is broken — advisory `commons-fileupload`). Company
+  additions go into those yml files; the floor handler never pins a parent-managed (unversioned) declaration.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -184,7 +189,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,526 passed, 36 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,573 passed, 36 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

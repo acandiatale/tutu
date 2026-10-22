@@ -20,12 +20,46 @@ relocations:
   - { from: "javax.jms:javax.jms-api",                 to: "jakarta.jms:jakarta.jms-api", version: 3.1.0, packages: [jakarta.jms] }
   - { from: "javax.websocket:javax.websocket-api",     to: "jakarta.websocket:jakarta.websocket-api", version: 2.2.0, scope: provided, packages: [jakarta.websocket] }
   - { from: "javax.el:javax.el-api",                   to: "jakarta.el:jakarta.el-api", version: 6.0.1, packages: [jakarta.el] }
-  - { from: "org.hibernate:hibernate-core",            to: "org.hibernate.orm:hibernate-core", version: 7.1.0.Final }
-  - { from: "org.hibernate:hibernate-jpamodelgen",     to: "org.hibernate.orm:hibernate-processor", version: 7.1.0.Final }
-  - { from: "org.hibernate:hibernate-validator",       to: "org.hibernate.validator:hibernate-validator", version: 9.0.1.Final }
+  # Hibernate: the Boot 4.1.0 managed versions (hibernate 7.4.1.Final, hibernate-validator 9.1.0.Final), so an explicit
+  # old version never lands below the BOM.
+  - { from: "org.hibernate:hibernate-core",            to: "org.hibernate.orm:hibernate-core", version: 7.4.1.Final }
+  - { from: "org.hibernate:hibernate-jpamodelgen",     to: "org.hibernate.orm:hibernate-processor", version: 7.4.1.Final }
+  - { from: "org.hibernate.orm:hibernate-jpamodelgen", to: "org.hibernate.orm:hibernate-processor", version: 7.4.1.Final }
+  - { from: "org.hibernate:hibernate-envers",          to: "org.hibernate.orm:hibernate-envers", version: 7.4.1.Final }
+  - { from: "org.hibernate:hibernate-validator",       to: "org.hibernate.validator:hibernate-validator", version: 9.1.0.Final }
   - { from: "org.springframework.boot:spring-boot-starter-web",          to: "org.springframework.boot:spring-boot-starter-webmvc",          min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-aop",          to: "org.springframework.boot:spring-boot-starter-aspectj",         min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-web-services", to: "org.springframework.boot:spring-boot-starter-webservices",    min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-oauth2-client",               to: "org.springframework.boot:spring-boot-starter-security-oauth2-client",               min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-oauth2-resource-server",      to: "org.springframework.boot:spring-boot-starter-security-oauth2-resource-server",      min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-oauth2-authorization-server", to: "org.springframework.boot:spring-boot-starter-security-oauth2-authorization-server", min_target_boot: 4 }
+  # --- 2026-10-22 era libraries (out/research/era-libraries-{web,data,util}.yml; Maven Central listings + the Boot
+  # 4.1.0 BOM). Reactive only (no `packages`): the row fires when an error names `from` (typically a resolution error
+  # for coordinates that are not on Central, or a version that went missing with the old parent). Not here on purpose:
+  # QueryDSL → io.github.openfeign.querydsl (only com.querydsl.jpa.hibernate.* users need it → advisory
+  # querydsl-hibernate-native), Tibero (com.tmax.tibero:* → com.tmaxtibero:tbjdbc17 is opt-in: driver/server
+  # compatibility is the owners' call — add the row in a company relocation file).
+  # Spring Session 1.x monolith → spring-session-core (Boot 4.1 manages spring-session-bom 4.1.0; the version is only
+  # written when the old declaration carried one, so a 1.3.x literal never survives the rename).
+  - { from: "org.springframework.session:spring-session", to: "org.springframework.session:spring-session-core", version: 4.1.0 }
+  # connection pools / JDBC drivers
+  - { from: "com.zaxxer:HikariCP-java7",               to: "com.zaxxer:HikariCP", version: 7.0.2 }
+  - { from: "com.zaxxer:HikariCP-java6",               to: "com.zaxxer:HikariCP", version: 7.0.2 }
+  - { from: "c3p0:c3p0",                               to: "com.mchange:c3p0", version: 0.14.2 }
+  - { from: "com.oracle:ojdbc6",                       to: "com.oracle.database.jdbc:ojdbc11", version: 23.26.2.0.0 }   # not on Central
+  - { from: "com.oracle:ojdbc7",                       to: "com.oracle.database.jdbc:ojdbc11", version: 23.26.2.0.0 }
+  - { from: "com.oracle.jdbc:ojdbc8",                  to: "com.oracle.database.jdbc:ojdbc11", version: 23.26.2.0.0 }   # not on Central
+  - { from: "com.oracle.ojdbc:ojdbc8",                 to: "com.oracle.database.jdbc:ojdbc11", version: 23.26.2.0.0 }   # 19.3.0.0 only
+  - { from: "com.oracle.database.jdbc:ojdbc6",         to: "com.oracle.database.jdbc:ojdbc11", version: 23.26.2.0.0 }   # 11.2.0.4 only
+  - { from: "com.microsoft.sqlserver:sqljdbc4",        to: "com.microsoft.sqlserver:mssql-jdbc", version: 13.4.0.jre11 }
+  - { from: "com.microsoft.sqlserver:sqljdbc42",       to: "com.microsoft.sqlserver:mssql-jdbc", version: 13.4.0.jre11 }
+  - { from: "cubrid:cubrid-jdbc",                      to: "org.cubrid:cubrid-jdbc", version: 11.3.2.0053 }   # maven.cubrid.org only → Central
+  - { from: "com.ibm.db2.jcc:db2jcc",                  to: "com.ibm.db2:jcc", version: 12.1.4.0 }
+  - { from: "com.ibm.db2.jcc:db2jcc4",                 to: "com.ibm.db2:jcc", version: 12.1.4.0 }
+  # XML / PDF / crypto / test (same packages, new coordinates)
+  - { from: "dom4j:dom4j",                             to: "org.dom4j:dom4j", version: 2.2.0 }
+  - { from: "com.lowagie:itext",                       to: "com.github.librepdf:openpdf", version: 2.4.0 }   # 2.x keeps com.lowagie.text (3.x renamed it)
+  - { from: "org.bouncycastle:bcprov-jdk15on",         to: "org.bouncycastle:bcprov-jdk18on", version: "1.86" }
+  - { from: "org.bouncycastle:bcpkix-jdk15on",         to: "org.bouncycastle:bcpkix-jdk18on", version: "1.86" }
+  - { from: "org.bouncycastle:bcprov-jdk16",           to: "org.bouncycastle:bcprov-jdk18on", version: "1.86" }
+  - { from: "org.hamcrest:hamcrest-all",               to: "org.hamcrest:hamcrest", version: "3.0", scope: test }

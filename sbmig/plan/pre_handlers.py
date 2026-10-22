@@ -94,15 +94,21 @@ def jakarta_library_reason(profile: ProjectProfile) -> Optional[str]:
             k, v = next(((k, v) for k, v in olds if v), olds[0])
             hits.append((k, f"{v or 'unversioned'} → {lib.key}", lib.jakarta_since))
             continue
-        vers = [_dep_version(p, d.version) for p in profile.poms for d in [*p.dependencies, *p.dependency_management]
-                if d.key == lib.key]
-        if not vers:
+        decls = [(_dep_version(p, d.version), d.classifier) for p in profile.poms
+                 for d in [*p.dependencies, *p.dependency_management] if d.key == lib.key]
+        if not decls:
             continue
+        vers = [v for v, _ in decls]
         low = [v for v in vers if version_lt(v, lib.jakarta_since) is True]
+        classifier = getattr(lib, "classifier", None)
         if low:
             hits.append((lib.key, low[0] or "?", lib.jakarta_since))
         elif not any(version_lt(v, lib.jakarta_since) is False for v in vers):
             hits.append((lib.key, next((v for v in vers if v), "version unknown"), lib.jakarta_since))
+        elif classifier and any(c != classifier for _, c in decls):
+            # Ehcache 3: the jakarta build is the `jakarta` classifier jar — same version, other flavour
+            v = next((v for v, c in decls if c != classifier and v), None) or "unversioned"
+            hits.append((lib.key, f"{v} without classifier {classifier}", lib.jakarta_since))
     if not hits:
         return None
     keys = ", ".join(k for k, _, _ in hits)

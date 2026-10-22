@@ -173,7 +173,7 @@ def test_mysql_relocation(kit, cfg):
     c = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "could not find", artifact="mysql:mysql-connector-java:8.0.28")])[0]
     assert h.matches(c, prof, cfg)
     assert h.apply(kit.ws, c, prof, cfg)
-    assert kit.dep("com.mysql:mysql-connector-j").version == "9.3.0"
+    assert kit.dep("com.mysql:mysql-connector-j").version == "9.7.0"
 
 
 def test_mysql_relocation_managed_versions(fake_kit, cfg):
@@ -183,7 +183,7 @@ def test_mysql_relocation_managed_versions(fake_kit, cfg):
     assert fake_kit.dep("com.mysql:mysql-connector-j").version is None
     fake_kit.pom(deps=[G("mysql:mysql-connector-java")])
     h.apply(fake_kit.ws, None, make_profile(boot="2.1.0"), cfg)
-    assert fake_kit.dep("com.mysql:mysql-connector-j").version == "9.3.0"
+    assert fake_kit.dep("com.mysql:mysql-connector-j").version == "9.7.0"
     c = cluster_errors([err(ErrorKind.COMPILE, "mysql-connector-java old", file="A.java")])[0]
     assert h.matches(c, None, cfg)
 
@@ -210,7 +210,7 @@ def test_dependency_relocation_table(kit, cfg):
     for c in named:
         h.apply(kit.ws, c, prof, cfg)
     assert kit.dep("org.springframework.boot:spring-boot-starter-webmvc").version is None
-    assert kit.dep("org.hibernate.orm:hibernate-core").version == "7.1.0.Final"
+    assert kit.dep("org.hibernate.orm:hibernate-core").version == "7.4.1.Final"
     dep = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "x", artifact="org.springframework.boot:spring-boot-starter-aop:4.1.0")])[0]
     assert h.matches(dep, prof, cfg)
     cfg.target.spring_boot_version = "3.5.0"
@@ -231,8 +231,8 @@ def test_jaxb_runtime_add_flavours(kit):
     c = cluster_errors([err(file="src/main/java/A.java", message="package jakarta.xml.bind does not exist")])[0]
     assert h.matches(c, make_profile(), None)
     assert h.apply(kit.ws, c, make_profile(), None)
-    assert kit.dep("jakarta.xml.bind:jakarta.xml.bind-api").version == "4.0.2"
-    assert kit.dep("org.glassfish.jaxb:jaxb-runtime").version == "4.0.5"
+    assert kit.dep("jakarta.xml.bind:jakarta.xml.bind-api").version == "4.0.5"
+    assert kit.dep("org.glassfish.jaxb:jaxb-runtime").version == "4.0.9"
 
 
 def test_jaxb_targets_without_profile(fake_kit):

@@ -767,7 +767,9 @@ def jakarta_libraries_below(profile: Optional[ProjectProfile]) -> list[tuple[Any
     (any parsed version < jakarta_since) or only with versions that cannot be parsed (unversioned / `${prop}` from a
     parent). A library declared at least once at a parsed version ≥ jakarta_since and never below is fine. A
     declaration under one of its `old_keys` (earlier coordinates) always counts, whatever its version
-    (shown as "<old key> <version>")."""
+    (shown as "<old key> <version>"). For an entry with a `classifier` (Ehcache 3: the jakarta build is the `jakarta`
+    classifier jar) a declaration without that classifier counts as below whatever its version (shown as
+    "<version> without classifier <c>")."""
     from sbmig.core.jakarta_libraries import jakarta_libraries
 
     out: list[tuple[Any, str]] = []
@@ -780,15 +782,19 @@ def jakarta_libraries_below(profile: Optional[ProjectProfile]) -> list[tuple[Any
             k, v = next(((k, v) for k, v in olds if v), olds[0])
             out.append((lib, f"{k} {v or 'unversioned'}"))
             continue
-        vers = [_pom_version(p, d.version) for p in profile.poms for d in [*p.dependencies, *p.dependency_management]
-                if d.key == lib.key]
-        if not vers:
+        decls = [(_pom_version(p, d.version), d.classifier) for p in profile.poms
+                 for d in [*p.dependencies, *p.dependency_management] if d.key == lib.key]
+        if not decls:
             continue
+        vers = [v for v, _ in decls]
         low = [v for v in vers if version_lt(v, lib.jakarta_since) is True]
         if low:
             out.append((lib, low[0] or "?"))
         elif not any(version_lt(v, lib.jakarta_since) is False for v in vers):
             out.append((lib, next((v for v in vers if v), "version unknown")))
+        elif lib.classifier and any(c != lib.classifier for _, c in decls):
+            v = next((v for v, c in decls if c != lib.classifier and v), None) or "unversioned"
+            out.append((lib, f"{v} without classifier {lib.classifier}"))
     return out
 
 
@@ -848,6 +854,8 @@ class JakartaLibraryFloor(PomHandler):
         changed: list[str] = []
         done: dict[str, tuple[str, list[str]]] = {}          # key → (old version, poms)
         moved: dict[tuple[str, str], tuple[str, list[str]]] = {}   # (old key, key) → (old version, poms)
+        classified: set[str] = set()                         # keys that got the entry's classifier
+        raised: set[str] = set()                             # keys whose version was raised
         for rel in poms:
             ed = eds[rel]
             ch = False
@@ -863,7 +871,8 @@ class JakartaLibraryFloor(PomHandler):
                     unversioned = all(d.version is None for d in decls)
                     keep_managed = unversioned and lib.key in managed_here
                     version = None if keep_managed else lib.version
-                    if ed.replace_dependency(og, oa, GAV(group_id=g, artifact_id=a, version=version)):
+                    if ed.replace_dependency(og, oa, GAV(group_id=g, artifact_id=a, version=version,
+                                                         classifier=lib.classifier)):
                         ch = True
                         old = next((_resolve(ed, d.version) for d in decls if d.version), None) or "unversioned"
                         moved.setdefault((old_key, lib.key), (old, []))[1].append(rel)
@@ -873,13 +882,29 @@ class JakartaLibraryFloor(PomHandler):
                 if not decls:
                     continue
                 vers = [_resolve(ed, d.version) for d in decls]
-                if any(version_lt(v, lib.jakarta_since) is False for v in vers):
+                # a classifier entry (Ehcache 3 `jakarta`): a declaration without the classifier is the javax flavour
+                # whatever its version — set the classifier (direct + managed, Maven matches management on it too)
+                no_classifier = bool(lib.classifier) and any(d.classifier != lib.classifier for d in decls)
+                on_line = any(version_lt(v, lib.jakarta_since) is False for v in vers)
+                if on_line and not no_classifier:
                     continue                                  # already on the jakarta line here: never touch it
-                if all(d.version is None for d in decls) and lib.key in managed_here:
-                    continue                                  # the managing project pom gets the bump
-                if _bump_dependency(ed, g, a, lib.version):
+                old = next((v for v in vers if v), None) or "unversioned"
+                bumped = False
+                unversioned = all(d.version is None for d in decls)
+                if not on_line and unversioned and lib.key not in managed_here:
+                    # managed by the parent chain (company base-parent / Boot BOM): never pin over the parent — if the
+                    # build still fails on javax types the parent manages a release below jakarta_since (X1 says so)
+                    log.info("jakarta-library-floor: %s unversioned in %s (parent-managed) — not pinned", lib.key, rel)
+                elif not on_line and not (unversioned and lib.key in managed_here):
+                    bumped = _bump_dependency(ed, g, a, lib.version)   # else the managing project pom gets the bump
+                    if bumped:
+                        raised.add(lib.key)
+                if no_classifier and ed.replace_dependency(g, a, GAV(group_id=g, artifact_id=a,
+                                                                     classifier=lib.classifier)):
+                    classified.add(lib.key)
+                    bumped = True
+                if bumped:
                     ch = True
-                    old = next((v for v in vers if v), None) or "unversioned"
                     done.setdefault(lib.key, (old, []))[1].append(rel)
             if ch:
                 ed.save()
@@ -888,6 +913,7 @@ class JakartaLibraryFloor(PomHandler):
                 before = ws.read(rel)
                 if _text_bump(ws, rel, lib.group_id, lib.artifact_id, lib.version, keep_from=lib.jakarta_since):
                     changed.append(rel)
+                    raised.add(lib.key)
                     if lib.key not in done or rel not in done[lib.key][1]:
                         m = re.search(_GA_VERSION_RE.format(g=re.escape(lib.group_id), a=re.escape(lib.artifact_id)),
                                       before, re.S)
@@ -897,12 +923,15 @@ class JakartaLibraryFloor(PomHandler):
         for (old_key, key), (old, rels) in moved.items():
             lib = by_key[key]
             java = f", requires Java {lib.requires_java}" if lib.requires_java else ""
-            self.note(f"{old_key} {old} → {key} {lib.version} (coordinates changed; jakarta.persistence since "
+            cls = f" (classifier {lib.classifier})" if lib.classifier else ""
+            self.note(f"{old_key} {old} → {key} {lib.version}{cls} (coordinates changed; jakarta release since "
                       f"{lib.jakarta_since}{java}) in {', '.join(dict.fromkeys(rels))}")
         for key, (old, rels) in done.items():
             lib = by_key[key]
             java = f"; requires Java {lib.requires_java}" if lib.requires_java else ""
-            self.note(f"{key} {old} → {lib.version} ({lib.note}{java}) in {', '.join(dict.fromkeys(rels))}")
+            new = lib.version if key in raised else old
+            cls = f" (classifier {lib.classifier})" if key in classified else ""
+            self.note(f"{key} {old} → {new}{cls} ({lib.note}{java}) in {', '.join(dict.fromkeys(rels))}")
         if done or moved:
             self.flag("jakarta-library-bumped")
             log.info("jakarta-library-floor: %s", ", ".join(sorted({*done, *(k for _, k in moved)})))
@@ -974,7 +1003,7 @@ class MysqlConnectorRelocation(RelocationHandler):
     description = "mysql:mysql-connector-java → com.mysql:mysql-connector-j"
     extra_triggers = (r"mysql-connector-java",)
     _TABLE = (Relocation.model_validate({"from": "mysql:mysql-connector-java", "to": "com.mysql:mysql-connector-j",
-                                         "version": "9.3.0", "managed_since_boot": "2.7.8"}),)
+                                         "version": "9.7.0", "managed_since_boot": "2.7.8"}),)   # Boot 4.1 managed
 
     def table(self) -> list[Relocation]:
         return list(self._TABLE)

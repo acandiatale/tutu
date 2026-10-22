@@ -628,7 +628,7 @@ sbmig recipes sets --config config/artifacts.yml                           # 설
 
 ### 8.1 목적
 
-빌드는 되지만 EOL이거나 새 parent / Boot BOM이 더 이상 버전을 관리하지 않는 라이브러리(springfox, sleuth, hystrix, ribbon, zuul, netflix feign, 옛 Spring Cloud train, spring-security-oauth2, log4j 1, commons-lang 2, httpclient 4, ibatis2 …)를 찾아 **소유 팀에 넘길 내용**으로 만듭니다. 빌드만 보면 초록이라 놓치기 쉬운 것들입니다. 회사 정책상 **`block` 정책은 없습니다**(500개가 모두 완벽할 수는 없으니 빌드할 수 있는 만큼 가고 나머지는 Handover로 넘김). 어드바이저리는 실행 실패나 종료 코드에 절대 영향을 주지 않습니다.
+빌드는 되지만 EOL이거나 새 parent / Boot BOM이 더 이상 버전을 관리하지 않는 라이브러리(springfox, sleuth, hystrix, ribbon, zuul, netflix feign, 옛 Spring Cloud train, spring-security-oauth2, log4j 1, commons-lang 2, httpclient 4, ibatis2, 그리고 2026-10-22 추가된 그 시절 라이브러리 49개 — Tiles, Velocity, HibernateTemplate, Ehcache 2, Jackson 1, POI 3/4, JJWT 0.9, eGovFrame, Struts … §8.7)를 찾아 **소유 팀에 넘길 내용**으로 만듭니다. 빌드만 보면 초록이라 놓치기 쉬운 것들입니다. 회사 정책상 **`block` 정책은 없습니다**(500개가 모두 완벽할 수는 없으니 빌드할 수 있는 만큼 가고 나머지는 Handover로 넘김). 어드바이저리는 실행 실패나 종료 코드에 절대 영향을 주지 않습니다.
 
 ### 8.2 정책
 
@@ -657,7 +657,7 @@ sbmig analyze <프로젝트> --config config/artifacts.yml       # 그 프로젝
 |---|---|---|
 | analyze | 프로필의 라이브러리 / 선언 아티팩트와 매칭 → `AdvisoryFinding` | `advisories` |
 | plan | `recipe` 정책 레시피를 `spring.rewrite` 앞에 추가 | `advisories_planned` |
-| 빌드 수정 루프 | 관련 클러스터의 LLM 프롬프트에 어드바이저리 힌트(`knowledge/notes/` 안에 `## fix-loop: <id>` 절이 있는 항목만. 지금은 hystrix, ibatis2, jdk-removed-apis, jdk-generified-apis, externalized-config) | `attempt`의 `advisory_ids`, `llm_fix`의 `advisory_hints` |
+| 빌드 수정 루프 | 관련 클러스터의 LLM 프롬프트에 어드바이저리 힌트(`knowledge/notes/` 안에 `## fix-loop: <id>` 절이 있는 항목만. 지금은 hystrix, ibatis2, jdk-removed-apis, jdk-generified-apis, hibernate-commons-annotations, externalized-config, 그리고 `knowledge/notes/era-libraries.md`의 hibernate-template, commons-fileupload, jackson1, tiles, velocity, ehcache2, commons-collections3, json-lib, jjwt, poi, commons-httpclient3, axis1, dbcp1, slf4j-1-pin) | `attempt`의 `advisory_ids`, `llm_fix`의 `advisory_hints` |
 | finalize | 최종 트리에서 다시 검사 → `outcome`: `replaced` / `still-present` / `unknown` | `advisories_verified` |
 | report | Handover 작성 | `handover` |
 
@@ -678,6 +678,25 @@ sbmig analyze <프로젝트> --config config/artifacts.yml       # 그 프로젝
 - hystrix가 pom에 남아 있어도 exit 0일 수 있습니다. 정상입니다. "From here on"에 남아 있는지 보십시오.
 - 어떤 항목을 `recipe`로 바꾸기 전에는 `docs/RUNBOOK.md` §3.7 "Before switching an entry to recipe"의 네 단계(카탈로그 등록 + check, 대표 프로젝트에서 `--stop-after spring`으로 diff 확인, 참조 픽스처 `boot2-cloud-legacy`로 `outcome=replaced` 확인, 그다음 플릿 적용)를 거치십시오. 프로젝트를 컴파일 불가로 만드는 레시피는 **모든** 프로젝트에서 LLM 예산을 태웁니다.
 - 회사 전용 EOL 라이브러리는 `advisories.extra_files`로 회사 설정 저장소에 두십시오(코드나 `knowledge/`를 직접 고치지 않음, 불변식 2).
+
+### 8.7 그 시절 라이브러리 커버리지 (2026-10-22)
+
+2013–2020년 한국 기업 Maven 프로젝트에서 흔한 라이브러리 약 180개를 웹으로 검증해(Maven Central 목록, jar 바이트코드, `spring-boot-dependencies` 4.1.0 BOM, 고정된 레시피 jar) 세 묶음(웹 / 데이터 / 유틸리티)으로 조사했고, 라이브러리마다 **한 곳**에만 넣었습니다.
+
+| 성격 | 들어간 곳 | 예 |
+|---|---|---|
+| 좌표는 그대로, 나중 릴리스가 jakarta | jakarta 표 `knowledge/libraries/jakarta_libraries.yml`(핸들러 `jakarta-library-floor`, 44개) | SiteMesh 2/3, DisplayTag(옛 `displaytag:displaytag`), Jersey 2 → 4.0.2, CXF → 4.2.4, Spring Web Flow → 4.0.1, Tomcat API jar → 11.0.22, jOOQ → 3.21.5, MyBatis-Spring / Boot starter → 4.1.0, Quartz → 2.5.2, EclipseLink → 5.0.2, Ehcache 3 → 3.12.0 + classifier `jakarta`, P6Spy starter → 2.0.1, Guice → 7.0.0, Axis2 → 2.0.1 |
+| 좌표만 바뀌고 패키지는 그대로 | 재배치 `sbmig/triage/handlers/relocations.yml`(반응형 행) | spring-session → spring-session-core, hibernate-envers / -jpamodelgen → `org.hibernate.orm`, HikariCP-java6/7, c3p0, 옛 Oracle / MSSQL / CUBRID / DB2 드라이버 좌표, dom4j, iText 2.1.7 → OpenPDF 2.4.0, Bouncy Castle jdk15on → jdk18on, hamcrest-all |
+| 옛 라이브러리가 끌어오던 / 레시피가 새로 쓰는 패키지 | known packages `sbmig/triage/handlers/known_packages.yml`(핸들러 `add-known-dependency`) | fileupload2, thymeleaf-spring6, hateoas, spring-session, `jakarta.ws.rs`, JSP / JSTL API, dom4j, javassist, guava, commons-email2, collections4, dbcp2 / pool2, `javax.cache` |
+| 소스·설정을 소유 팀이 고쳐야 함 | 어드바이저리 `knowledge/libraries/advisories.yml`(49개, `commons-collections3`만 `recipe`, 나머지 `guide`) + 노트 `knowledge/notes/era-libraries.md` | Tiles, Velocity, Thymeleaf 2 / spring4, commons-fileupload, Jersey 1, Struts 1/2, eGovFrame, Shiro 1/2, HibernateTemplate, hibernate-types, Ehcache 2, DBCP 1, Druid, jasypt, Jackson 1, json-lib, Axis 1, JJWT 0.9, POI 3/4, SLF4J 1.7 바인딩 … |
+
+확인 포인트:
+
+- 버전 갱신: fallback 버전(`versions.yml`, `known_packages.yml`)과 hibernate 재배치 행이 Boot 4.1.0 BOM 값으로 바뀌었습니다(hibernate 7.4.1.Final, hibernate-validator 9.1.0.Final, mysql 9.7.0, h2 2.4.240, postgresql 42.7.11, junit-jupiter 6.0.3, mockito 5.23.0 등).
+- Shiro는 jakarta 표가 아니라 어드바이저리 `shiro-legacy`입니다. 고정된 레시피가 2.0.x + classifier `jakarta`를 넣는데 3.0.1에는 classifier jar가 없습니다.
+- QueryDSL은 Boot 관리 `com.querydsl` 5.1.0:jakarta 그대로입니다. `com.querydsl.jpa.hibernate.*`를 쓰는 프로젝트만 어드바이저리 `querydsl-hibernate-native`(OpenFeign 포크 7.7)가 뜹니다. Tibero는 재배치하지 않습니다(서버 호환은 소유 팀 판단, 필요하면 회사 재배치 파일에).
+- 조사 신뢰도 `low`(벤더 UI / 에디터 서블릿 어댑터, log4jdbc 어드바이저리)는 넣지 않았습니다.
+- 자세한 표: `docs/ADVISORIES.md`의 "2026-10-22 era libraries".
 
 ---
 

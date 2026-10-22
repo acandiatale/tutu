@@ -9,7 +9,17 @@ from tests.advisory.helpers import write_advisories
 
 REPO_IDS = {"springfox", "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom",
             "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2",
-            "jdk-generified-apis", "hibernate-commons-annotations"}
+            "jdk-generified-apis", "hibernate-commons-annotations",
+            # 2026-10-22 era libraries
+            "tiles", "velocity", "thymeleaf-legacy", "commons-fileupload", "jersey1", "spring-hateoas-legacy",
+            "spring-portlet", "spring-mobile", "jasperreports6", "struts2", "struts1", "commons-chain", "egovframe",
+            "webjars-locator-core", "shiro-legacy", "hibernate-template", "hibernate-entitymanager",
+            "hibernate-ehcache", "hypersistence-utils", "hibernate-search-legacy", "querydsl-hibernate-native",
+            "ehcache2", "hazelcast-legacy", "commons-dbcp1", "druid", "jasypt-spring-boot", "atomikos", "bitronix",
+            "commons-collections3", "dozer", "orika", "elasticsearch-rest-high-level", "solr-legacy", "jackson1",
+            "json-lib", "xstream", "jdom1", "axis1", "commons-email1", "commons-configuration1", "cglib",
+            "commons-httpclient3", "jjwt-legacy", "poi-legacy", "jxls1", "jexcelapi", "slf4j-1-pin",
+            "mockito-legacy", "powermock"}
 FOX = "org.openrewrite.java.springdoc.SpringFoxToSpringDoc"
 
 
@@ -19,7 +29,7 @@ def test_repo_advisories_load_and_check_clean(cfg):
     assert cat.check(cfg) == []
     policies = {e.id: e.policy for e in cat.entries}
     assert {k for k, v in policies.items() if v == "recipe"} == {"springfox", "sleuth", "hystrix",
-                                                                  "spring-cloud-bom"}
+                                                                  "spring-cloud-bom", "commons-collections3"}
     assert all(e.followup and e.replacement and e.docs for e in cat.entries)
     assert cat.get("spring-cloud-bom").applies_when_version_below == "2025.1"
 

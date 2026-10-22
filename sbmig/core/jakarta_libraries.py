@@ -21,6 +21,8 @@ class JakartaLibrary(BaseModel):
     old_keys: list[str] = Field(default_factory=list)   # earlier coordinates (e.g. ch.simas.qlrm:qlrm) → relocated to key
     jakarta_since: str                        # first jakarta.* release
     version: str                              # release the handler sets (>= jakarta_since)
+    classifier: Optional[str] = None          # jakarta flavour published as a classifier jar (Ehcache 3: `jakarta`);
+                                              # the handler sets it on the bumped / relocated declaration
     requires_java: Optional[int] = None
     note: str = ""
     docs: list[str] = Field(default_factory=list)

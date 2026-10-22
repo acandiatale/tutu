@@ -314,3 +314,31 @@ notes:
   - spring
   - restructure
   always: false
+- file: era-libraries.md
+  title: 2013-2020 era libraries (Spring 3/4 DAOs, view layers, Jackson 1, Ehcache 2, POI 3, JJWT 0.9, ...) on Spring 7 / Boot 4
+  keywords:
+  - org\.springframework\.orm\.hibernate[345]|HibernateTemplate|HibernateDaoSupport|HibernateCallback
+  - org\.apache\.commons\.fileupload|CommonsMultipartResolver|ServletFileUpload
+  - org\.codehaus\.jackson
+  - org\.apache\.tiles|TilesConfigurer|TilesViewResolver|view\.tiles[23]
+  - org\.apache\.velocity|VelocityEngineUtils|VelocityConfigurer
+  - net\.sf\.ehcache|org\.springframework\.cache\.ehcache|EhCacheCacheManager|EhCacheManagerFactoryBean
+  - org\.apache\.commons\.collections(?!4)
+  - net\.sf\.json
+  - io\.jsonwebtoken|parseClaimsJws|parserBuilder
+  - org\.apache\.poi|CELL_TYPE_|setBoldweight|HSSFColor
+  - org\.apache\.commons\.httpclient
+  - org\.apache\.axis(?!2)|javax\.xml\.rpc
+  - org\.apache\.commons\.dbcp(?!2)
+  - com\.lowagie|openpdf
+  - StaticLoggerBinder|jcl-over-slf4j|slf4j-log4j12
+  cases:
+  - pure_java
+  - spring_legacy
+  - spring_boot
+  - servlet_tomcat
+  - msa
+  phases:
+  - spring
+  - restructure
+  always: false

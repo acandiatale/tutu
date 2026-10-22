@@ -198,7 +198,7 @@ def test_carry_over_defers_without_effective_data(kit, ecfg):
     assert kit.registry.matching(c, prof, ecfg)[0].id == "missing-dependency-version"
     # apply directly still falls back to versions.yml
     assert h.apply(kit.ws, c, prof, ecfg)
-    assert kit.dep("org.apache.commons:commons-lang3").version == "3.17.0"
+    assert kit.dep("org.apache.commons:commons-lang3").version == "3.20.0"
     unk = cluster_errors([err(ErrorKind.POM_INVALID, MISSING.format("com.unknown:thing"),
                               artifact="com.unknown:thing")])[0]
     assert h.apply(kit.ws, unk, prof, ecfg) == []

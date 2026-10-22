@@ -11,7 +11,13 @@ zuul, netflix-feign, spring-cloud-bom, swagger-v1, spring-security-oauth2-legacy
 jdk-removed-apis (imports of JDK-internal / removed packages: sun.misc, sun.security, com.sun.image, javax.activation;
 JAXB `javax.xml.bind` stays on the `jaxb` rule), ibatis2 (iBATIS 2: `com.ibatis` / `org.springframework.orm.ibatis`
 imports, `org.apache.ibatis:ibatis-*` artifacts; `mybatis` = MyBatis 3 only), hibernate-commons-annotations
-(`org.hibernate.annotations.common.*` imports / the HCANN artifact — gone from Hibernate ORM 7).
+(`org.hibernate.annotations.common.*` imports / the HCANN artifact — gone from Hibernate ORM 7),
+and the 2026-10-22 era-library rules (advisories of the same name unless noted): hibernate-template (Spring's
+`org.springframework.orm.hibernate3|4|5` imports; import-only — spring-orm itself is too broad), commons-fileupload,
+jackson1, tiles, velocity, axis1 (`org.apache.axis` / `javax.xml.rpc`; not `org.apache.axis2`), commons-httpclient3,
+commons-collections3 (not `collections4`), ehcache2, json-lib, jjwt (advisory jjwt-legacy, < 0.10), poi (advisory
+poi-legacy, < 5.0), struts2 (< 7.0), egovframe, dbcp1 (advisory commons-dbcp1; not `dbcp2`), querydsl-hibernate-native
+(`com.querydsl.jpa.hibernate.*` imports only).
 
 Edge-case names added by the analyzer (not table-driven, see `sbmig.analyze.edges`): system-scope-jars, kotlin,
 groovy, scala, codegen:<plugin artifactId> (protobuf-maven-plugin, jaxb2-maven-plugin, openapi-generator-maven-plugin,
@@ -165,6 +171,38 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("hibernate-commons-annotations", ("org.hibernate.common:hibernate-commons-annotations",
                                                   "org.hibernate:hibernate-commons-annotations"),
                 ("org.hibernate.annotations.common",)),
+    # ---- 2026-10-22 era libraries (out/research/era-libraries-*.yml → advisories.yml, knowledge/notes/era-libraries.md).
+    # Import prefixes match on a segment boundary, so `org.apache.commons.collections` never matches `collections4`,
+    # `org.apache.commons.dbcp` never `dbcp2`, `org.apache.axis` never `org.apache.axis2`, `org.apache.commons.fileupload`
+    # never `fileupload2`. Spring 7 removed HibernateTemplate / HibernateDaoSupport / orm.hibernate5 (import-only rule:
+    # org.springframework:spring-orm is in every JPA project).
+    LibraryRule("hibernate-template", (), ("org.springframework.orm.hibernate3", "org.springframework.orm.hibernate4",
+                                           "org.springframework.orm.hibernate5")),
+    LibraryRule("commons-fileupload", ("commons-fileupload:commons-fileupload",),
+                ("org.apache.commons.fileupload", "org.springframework.web.multipart.commons")),
+    LibraryRule("jackson1", ("org.codehaus.jackson:*",), ("org.codehaus.jackson",)),
+    LibraryRule("tiles", ("org.apache.tiles:*",), ("org.apache.tiles", "org.springframework.web.servlet.view.tiles2",
+                                                   "org.springframework.web.servlet.view.tiles3")),
+    LibraryRule("velocity", ("org.apache.velocity:velocity", "org.apache.velocity:velocity-tools",
+                             "org.apache.velocity.tools:velocity-tools-view*"),
+                ("org.apache.velocity", "org.springframework.web.servlet.view.velocity",
+                 "org.springframework.ui.velocity")),
+    LibraryRule("axis1", ("org.apache.axis:axis", "org.apache.axis:axis-jaxrpc", "org.apache.axis:axis-saaj",
+                          "axis:axis", "axis:axis-jaxrpc"), ("org.apache.axis", "javax.xml.rpc")),
+    LibraryRule("commons-httpclient3", ("commons-httpclient:commons-httpclient",), ("org.apache.commons.httpclient",)),
+    LibraryRule("commons-collections3", ("commons-collections:commons-collections",),
+                ("org.apache.commons.collections",)),
+    LibraryRule("ehcache2", ("net.sf.ehcache:*",), ("net.sf.ehcache", "org.springframework.cache.ehcache")),
+    LibraryRule("json-lib", ("net.sf.json-lib:json-lib",), ("net.sf.json",)),
+    LibraryRule("jjwt", ("io.jsonwebtoken:*",), ("io.jsonwebtoken",)),
+    LibraryRule("poi", ("org.apache.poi:*",), ("org.apache.poi",)),
+    LibraryRule("struts2", ("org.apache.struts:struts2-*", "org.apache.struts.xwork:*"),
+                ("org.apache.struts2", "com.opensymphony.xwork2")),
+    LibraryRule("egovframe", ("egovframework.rte:*", "org.egovframe.rte:*"), ("egovframework.rte", "org.egovframe.rte")),
+    LibraryRule("dbcp1", ("commons-dbcp:commons-dbcp",), ("org.apache.commons.dbcp",)),
+    # QueryDSL's Hibernate-native API does not link against Hibernate 6/7 (advisory querydsl-hibernate-native); plain
+    # JPAQueryFactory users stay on the Boot-managed com.querydsl line, so this rule is import-only.
+    LibraryRule("querydsl-hibernate-native", (), ("com.querydsl.jpa.hibernate",)),
 )
 
 LIBRARY_NAMES: tuple[str, ...] = tuple(r.name for r in LIBRARY_RULES)

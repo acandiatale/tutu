@@ -7,7 +7,8 @@
 #              BOM / the configured in-house parent (they manage it); otherwise `version` (or versions.yml) is used
 #   scope    : forced scope; a TEST_COMPILE error always yields scope test
 #   symbols  : only when the missing symbol is one of these simple names (optional)
-# Boot 4.1.0 coordinates verified on Maven Central 2026-10.
+# Boot 4.1.0 coordinates verified on Maven Central 2026-10; fallback versions = the spring-boot-dependencies 4.1.0 values
+# (refreshed 2026-10-22).
 packages:
   # --- Spring Boot 4 modular test / bridge modules -----------------------------------------------------------------
   - { package: org.springframework.boot.jackson2,                  artifact: "org.springframework.boot:spring-boot-jackson2",                managed: true }
@@ -19,7 +20,7 @@ packages:
   - { package: org.springframework.test,                           artifact: "org.springframework:spring-test",                             managed: true, scope: test }
   # --- test libraries (all managed by spring-boot-dependencies) -----------------------------------------------------
   - { package: org.hamcrest,        artifact: "org.hamcrest:hamcrest",            managed: true, scope: test, version: "3.0" }
-  - { package: org.junit.jupiter,   artifact: "org.junit.jupiter:junit-jupiter",  managed: true, scope: test, version: "5.12.2" }
+  - { package: org.junit.jupiter,   artifact: "org.junit.jupiter:junit-jupiter",  managed: true, scope: test, version: "6.0.3" }
   - { package: org.junit.platform.suite.api, artifact: "org.junit.platform:junit-platform-suite",    managed: true, scope: test, version: "1.12.2" }
   - { package: org.junit.platform.launcher,  artifact: "org.junit.platform:junit-platform-launcher", managed: true, scope: test, version: "1.12.2" }
   # JUnit 4 leftovers (2026-10-22, company run: `package org.junit.experimental.categories does not exist` after
@@ -27,8 +28,8 @@ packages:
   # managed by Boot 4.1 (4.13.2); the tests only RUN with junit-vintage-engine (follow-up in knowledge/notes/junit4-to-5.md).
   # Longest prefix wins, so org.junit.jupiter / org.junit.platform.* above stay on JUnit 5.
   - { package: org.junit,           artifact: "junit:junit",                      managed: true, scope: test, version: "4.13.2" }
-  - { package: org.mockito,         artifact: "org.mockito:mockito-core",         managed: true, scope: test, version: "5.18.0" }
-  - { package: org.assertj.core,    artifact: "org.assertj:assertj-core",         managed: true, scope: test, version: "3.27.3" }
+  - { package: org.mockito,         artifact: "org.mockito:mockito-core",         managed: true, scope: test, version: "5.23.0" }
+  - { package: org.assertj.core,    artifact: "org.assertj:assertj-core",         managed: true, scope: test, version: "3.27.7" }
   # --- jakarta APIs ------------------------------------------------------------------------------------------------
   - { package: jakarta.annotation,  artifact: "jakarta.annotation:jakarta.annotation-api",   managed: true, version: "3.0.0" }
   - { package: jakarta.validation,  artifact: "jakarta.validation:jakarta.validation-api",   managed: true, version: "3.1.1" }
@@ -39,9 +40,47 @@ packages:
   # --- misc --------------------------------------------------------------------------------------------------------
   - { package: javax.annotation,    artifact: "com.google.code.findbugs:jsr305", managed: false, version: "3.0.2",
       symbols: [Nullable, Nonnull, CheckForNull, ParametersAreNonnullByDefault, WillClose, Untainted] }
-  - { package: org.slf4j,           artifact: "org.slf4j:slf4j-api",                          managed: true, version: "2.0.17" }
+  - { package: org.slf4j,           artifact: "org.slf4j:slf4j-api",                          managed: true, version: "2.0.18" }
   - { package: lombok,              artifact: "org.projectlombok:lombok",                     managed: true, version: "1.18.38", scope: provided }
-  - { package: com.fasterxml.jackson, artifact: "com.fasterxml.jackson.core:jackson-databind", managed: true, version: "2.19.2" }
+  - { package: com.fasterxml.jackson, artifact: "com.fasterxml.jackson.core:jackson-databind", managed: true, version: "2.21.4" }
   - { package: tools.jackson,       artifact: "tools.jackson.core:jackson-databind",          managed: true }
-  - { package: org.apache.commons.lang3, artifact: "org.apache.commons:commons-lang3",        managed: true, version: "3.17.0" }
+  - { package: org.apache.commons.lang3, artifact: "org.apache.commons:commons-lang3",        managed: true, version: "3.20.0" }
   - { package: org.aspectj.lang,    artifact: "org.aspectj:aspectjweaver",                    managed: true }
+  # --- 2026-10-22 era libraries (out/research/era-libraries-{web,data,util}.yml). managed: true only where
+  # spring-boot-dependencies 4.1.0 manages the artifact; else the verified Maven Central version. Packages that appear
+  # after a recipe / fix-loop rewrite, or that an old library pulled in transitively and Boot 4 no longer does.
+  # Not here: org.ehcache (the jakarta build needs <classifier>jakarta</classifier>, which this table cannot express —
+  # handler jakarta-library-floor sets it on a declared org.ehcache:ehcache).
+  # web / view (Boot-managed)
+  - { package: org.thymeleaf.spring6,              artifact: "org.thymeleaf:thymeleaf-spring6",                         managed: true, version: "3.1.5.RELEASE" }
+  - { package: org.thymeleaf.extras.springsecurity6, artifact: "org.thymeleaf.extras:thymeleaf-extras-springsecurity6", managed: true, version: "3.1.5.RELEASE" }
+  - { package: nz.net.ultraq.thymeleaf.layoutdialect, artifact: "nz.net.ultraq.thymeleaf:thymeleaf-layout-dialect",     managed: true, version: "4.0.1" }
+  - { package: freemarker.template,                artifact: "org.freemarker:freemarker",                               managed: true, version: "2.3.34" }
+  - { package: org.springframework.hateoas,        artifact: "org.springframework.hateoas:spring-hateoas",              managed: true, version: "3.1.1" }
+  - { package: org.springframework.session,        artifact: "org.springframework.session:spring-session-core",         managed: true, version: "4.1.0" }
+  - { package: jakarta.ws.rs,                      artifact: "jakarta.ws.rs:jakarta.ws.rs-api",                         managed: true, version: "4.0.0" }
+  - { package: jakarta.servlet.jsp.jstl,           artifact: "jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api",   managed: true, version: "3.0.2" }
+  - { package: jakarta.servlet.jsp,                artifact: "jakarta.servlet.jsp:jakarta.servlet.jsp-api",             managed: false, version: "4.0.0", scope: provided }
+  - { package: org.webjars,                        artifact: "org.webjars:webjars-locator-lite",                        managed: true, version: "1.1.3", symbols: [WebJarVersionLocator] }
+  # web / view (not managed)
+  - { package: org.apache.commons.fileupload2.core, artifact: "org.apache.commons:commons-fileupload2-core",            managed: false, version: "2.0.0-M5" }
+  - { package: org.apache.commons.fileupload2.jakarta.servlet6, artifact: "org.apache.commons:commons-fileupload2-jakarta-servlet6", managed: false, version: "2.0.0-M5" }
+  - { package: org.apache.commons.io,              artifact: "commons-io:commons-io",                                   managed: false, version: "2.22.0" }
+  - { package: org.displaytag,                     artifact: "com.github.hazendaz:displaytag",                          managed: false, version: "3.8.0" }
+  - { package: org.sitemesh,                       artifact: "org.sitemesh:sitemesh",                                   managed: false, version: "3.3.0" }
+  - { package: org.springframework.webflow,        artifact: "org.springframework.webflow:spring-webflow",              managed: false, version: "4.0.1" }
+  # data / cache / search
+  - { package: org.apache.commons.dbcp2,           artifact: "org.apache.commons:commons-dbcp2",                        managed: true, version: "2.14.0" }
+  - { package: org.apache.commons.pool2,           artifact: "org.apache.commons:commons-pool2",                        managed: true, version: "2.13.1" }
+  - { package: javax.cache,                        artifact: "javax.cache:cache-api",                                   managed: true, version: "1.1.1" }
+  - { package: co.elastic.clients.elasticsearch,   artifact: "co.elastic.clients:elasticsearch-java",                   managed: true, version: "9.4.2" }
+  - { package: org.apache.commons.collections4,    artifact: "org.apache.commons:commons-collections4",                 managed: false, version: "4.5.0" }   # after UpgradeApacheCommonsCollections_3_4
+  - { package: io.hypersistence.utils.hibernate,   artifact: "io.hypersistence:hypersistence-utils-hibernate-73",       managed: false, version: "3.16.0" }
+  - { package: org.hibernate.search.mapper.orm,    artifact: "org.hibernate.search:hibernate-search-mapper-orm",        managed: false, version: "8.4.0.Final" }
+  - { package: org.mybatis.spring,                 artifact: "org.mybatis:mybatis-spring",                              managed: false, version: "4.1.0" }
+  # utilities lost as transitives (dom4j / javassist from Hibernate ≤ 5.4, guava from springfox) / renamed by a recipe
+  - { package: org.dom4j,                          artifact: "org.dom4j:dom4j",                                         managed: false, version: "2.2.0" }
+  - { package: javassist,                          artifact: "org.javassist:javassist",                                 managed: false, version: "3.33.0-GA" }
+  - { package: com.google.common,                  artifact: "com.google.guava:guava",                                  managed: false, version: "33.7.2-jre" }
+  - { package: org.apache.commons.mail2.jakarta,   artifact: "org.apache.commons:commons-email2-jakarta",               managed: false, version: "2.0.0-M1" }
+  - { package: org.apache.commons.mail2.core,      artifact: "org.apache.commons:commons-email2-core",                  managed: false, version: "2.0.0-M1" }

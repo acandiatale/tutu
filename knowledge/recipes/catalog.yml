@@ -283,6 +283,23 @@ recipes:
     notes: knowledge/notes/spring-cloud.md
     advisories: [spring-cloud-bom]
 
+  # 2026-10-22 era libraries: rewrite-apache 2.30.0 is a runtime dependency of rewrite-spring 6.37.0 (recipe BOM 3.37.0)
+  - id: org.openrewrite.apache.commons.collections.UpgradeApacheCommonsCollections_3_4
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-apache
+    provided_by: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: commons-collections 3 → commons-collections4 (dependency, package rename, IdentityMap / FastArrayList / EMPTY_* replacements)
+    docs: https://docs.openrewrite.org/recipes/apache/commons/collections/upgradeapachecommonscollections_3_4
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/era-libraries.md
+    advisories: [commons-collections3]
+
   # ------------------------------------------------------------------ project recipes (knowledge/recipes/base)
   - id: com.company.migrate.SpringBoot41Version
     origin: project

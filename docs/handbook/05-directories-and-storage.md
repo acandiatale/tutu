@@ -92,15 +92,15 @@ sbmig run <project> --config config/artifacts.local-e2e.yml \
 ```text
 knowledge/
 ├── recipes/
-│   ├── catalog.yml                 레시피 id 의 단일 원천(33개 항목)
+│   ├── catalog.yml                 레시피 id 의 단일 원천(34개 항목)
 │   └── base/
 │       ├── spring-boot-41-version.yml        com.company.migrate.SpringBoot41Version 등 (템플릿 치환)
 │       └── hystrix-to-resilience4j.yml       com.company.migrate.HystrixToResilience4j (hystrix 권고의 recipe)
 ├── notes/
 │   ├── index.yml                   노트 선택 규칙(keywords / cases / phases / always)
-│   └── *.md                        마이그레이션 노트 15개 (fix-policy, jdk21, jakarta, boot2-to-3, hibernate-7 …)
-├── libraries/advisories.yml        EOL / 미관리 라이브러리 권고 15개
-├── libraries/jakarta_libraries.yml jakarta 릴리스가 알려진 서드파티 라이브러리(핸들러 jakarta-library-floor, X1 제안, javax API 절; 첫 항목 QLRM)
+│   └── *.md                        마이그레이션 노트 16개 (fix-policy, jdk21, jakarta, boot2-to-3, hibernate-7, era-libraries …)
+├── libraries/advisories.yml        EOL / 미관리 라이브러리 권고 64개
+├── libraries/jakarta_libraries.yml jakarta 릴리스가 알려진 서드파티 라이브러리 44개(핸들러 jakarta-library-floor, X1 제안, javax API 절; QLRM, Jersey, CXF, Quartz, Ehcache 3(classifier) …)
 └── config/externalized.yml         외부화 설정 인벤토리 규칙(JNDI / context-param / -D 매핑, 안내문)
 ```
 
@@ -196,6 +196,7 @@ index 와 각 노트의 front-matter 는 일치해야 하며 `tests/fix/test_fix
 | `knowledge/notes/ibatis2.md` | `## fix-loop: ibatis2` |
 | `knowledge/notes/hibernate-7.md` | `## fix-loop: hibernate-commons-annotations` (Hibernate 7에서 사라진 `org.hibernate.annotations.common.*`) |
 | `knowledge/notes/externalized-config.md` | `## fix-loop: externalized-config` |
+| `knowledge/notes/era-libraries.md` | 2026-10-22 그 시절 라이브러리: `## fix-loop: hibernate-template`, `commons-fileupload`, `jackson1`, `tiles`, `velocity`, `ehcache2`, `commons-collections3`, `json-lib`, `jjwt`, `poi`, `commons-httpclient3`, `axis1`, `dbcp1`, `itext`, `slf4j-1-pin` (제목은 권고 id가 아니라 finding의 library 이름 — 분석기 규칙 이름, 규칙 없는 권고는 id) |
 
 확인 포인트: 회사에서 특정 라이브러리 전환 요령을 LLM 에 꾸준히 알려 주고 싶다면, 노트에 `## fix-loop: <library>` 섹션을 만들고 권고 항목의 `notes` 로 연결하는 것이 가장 효과적입니다.
 
@@ -205,7 +206,7 @@ index 와 각 노트의 front-matter 는 일치해야 하며 `tests/fix/test_fix
 
 | 필드 | 의미 |
 |---|---|
-| `id` | 권고 id(예: `springfox`, `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`, `spring-cloud-bom`, `spring-security-oauth2-legacy`, `log4j1`, `commons-lang2`, `httpclient4`, `jdk-removed-apis`, `ibatis2`, `jdk-generified-apis`, `hibernate-commons-annotations`) |
+| `id` | 권고 id(예: `springfox`, `sleuth`, `hystrix`, `ribbon`, `zuul`, `netflix-feign`, `spring-cloud-bom`, `spring-security-oauth2-legacy`, `log4j1`, `commons-lang2`, `httpclient4`, `jdk-removed-apis`, `ibatis2`, `jdk-generified-apis`, `hibernate-commons-annotations`, 2026-10-22 그 시절 라이브러리 49개 — `tiles`, `hibernate-template`, `ehcache2`, `jackson1`, `poi-legacy` … 전체 목록은 `docs/ADVISORIES.md`) |
 | `library` / `artifacts` / `imports` | 분석기 라이브러리 규칙 이름, `g:a` glob, import 패키지 — 탐지 근거 |
 | `status` | `eol` / `unmanaged` / `incompatible` / `superseded` |
 | `title`, `summary` | 보고서용 설명 |
@@ -215,6 +216,8 @@ index 와 각 노트의 front-matter 는 일치해야 하며 `tests/fix/test_fix
 | `applies_to`, `applies_when_version_below`, `resolved_min_version` | 적용 조건 |
 
 회사 추가분은 같은 스키마의 별도 파일을 `advisories.extra_files` 로 지정해 id 단위로 병합하고(뒤가 이김), 정책만 바꿀 때는 `advisories.policy_overrides` 를 씁니다. 발견 결과는 `advisories.ledger` 가 켜져 있으면 원장에 `resolution: advisory` 줄로 남습니다. 자세한 내용은 `docs/ADVISORIES.md` 를 봅니다.
+
+`knowledge/libraries/jakarta_libraries.yml` 은 같은 좌표에서 나중 릴리스가 jakarta 로 옮겨 간 서드파티 라이브러리 표입니다(`sbmig/core/jakarta_libraries.py` 가 로드, 핸들러 `jakarta-library-floor`). 필드: `key`(현재 `g:a`, 항목당 하나), `old_keys`(옛 좌표 → `key` 로 이전), `jakarta_since`(첫 jakarta 릴리스, 그 이상은 건드리지 않음), `version`(핸들러가 설정하는 버전), `classifier`(선택, 2026-10-22 — jakarta 빌드가 classifier jar 인 경우. Ehcache 3 의 `jakarta`: 올린 선언에 붙이고, 없는 선언은 버전이 충분해도 "이전"으로 봄), `requires_java`, `note`(보고서 한 줄), `docs`. 회사 추가분도 이 파일에 넣습니다(코드가 아니라 지식).
 
 ### 3.5 config/externalized.yml — 외부화 설정 규칙
 

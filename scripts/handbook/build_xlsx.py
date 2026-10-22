@@ -118,7 +118,23 @@ ws, hr, n = sheet("어드바이저리", "라이브러리 어드바이저리 (kno
     "출처: knowledge/libraries/advisories.yml. 정책은 guide(안내만) | recipe(레시피로 전환)뿐이며 block은 없습니다(회사 결정). 리포트 Handover에 모입니다. 상세: docs/ADVISORIES.md, docs/handbook/02-workflows.md 8장",
     [("id", "id"), ("라이브러리 규칙", "library"), ("아티팩트", "artifacts"), ("상태", "status"), ("정책", "policy"), ("제목", "title"), ("대체", "replacement"), ("대체 버전", "replacement_version"), ("레시피", "recipes"), ("적용 케이스", "applies_to"), ("요약", "summary")],
     data["advisories"], [16, 14, 34, 12, 8, 44, 40, 14, 44, 16, 90])
-specs.append(("어드바이저리", "어드바이저리 14건", hr, n))
+specs.append(("어드바이저리", f"어드바이저리 {len(data['advisories'])}건", hr, n))
+
+# ---- Jakarta라이브러리 (2026-10-22, X1b)
+ws, hr, n = sheet("Jakarta라이브러리", "나중 버전에서 jakarta.*로 옮긴 서드파티 라이브러리 (knowledge/libraries/jakarta_libraries.yml)",
+    "출처: knowledge/libraries/jakarta_libraries.yml. 핸들러 jakarta-library-floor가 spring 레시피 직후(선제) 또는 javax↔jakarta 변환 에러(반응형)에 "
+    "이 표의 version으로 올리고, 옛 좌표(old_keys)는 key로 재배치합니다. Blocked 행의 제안 문구와 'javax API jars' 절도 이 표를 봅니다. 회사 추가분은 이 yml에 적습니다.",
+    [("좌표(g:a)", "key"), ("옛 좌표", "old_keys"), ("jakarta 첫 버전", "jakarta_since"), ("설정 버전", "version"), ("Java", "requires_java"), ("비고", "note"), ("근거", "docs")],
+    data["jakarta_libraries"], [30, 26, 14, 12, 6, 80, 70])
+specs.append(("Jakarta라이브러리", f"jakarta 전환 버전이 알려진 라이브러리 {len(data['jakarta_libraries'])}건", hr, n))
+
+# ---- 재배치 (dependency-relocation 표)
+ws, hr, n = sheet("재배치", "좌표 재배치 표 (sbmig/triage/handlers/relocations.yml)",
+    "출처: sbmig/triage/handlers/relocations.yml. 핸들러 dependency-relocation(packages가 있는 javax API 행은 spring 레시피 직후 선제, 나머지는 반응형)과 "
+    "javax-servlet-api-to-jakarta / jstl-to-jakarta / mysql-connector-relocation이 씁니다. version은 옛 선언에 명시 버전이 있을 때만 적용됩니다.",
+    [("옛 좌표", "from"), ("새 좌표", "to"), ("버전", "version"), ("스코프", "scope"), ("트리거 패키지", "packages"), ("Boot 최소", "min_target_boot")],
+    data["relocations"], [52, 60, 12, 10, 30, 10])
+specs.append(("재배치", f"재배치 {len(data['relocations'])}행", hr, n))
 
 # ---- 지식노트
 ws, hr, n = sheet("지식노트", "LLM 프롬프트용 지식 노트 (knowledge/notes/index.yml)",
@@ -190,7 +206,8 @@ for i, h in enumerate(["시트", "내용", "행 수(수식)", "짝이 되는 문
     c = idx.cell(row=4, column=i, value=h); c.font = HEAD_FONT; c.fill = HEAD_FILL; c.border = BORDER
 docmap = {"설정키": "08-config-reference.md", "핸들러": "04-triage-and-loop.md", "에러카탈로그": "09-operations.md", "CLI": "07-api-reference.md",
           "REST_API": "07-api-reference.md", "픽스처": "05-directories-and-storage.md", "저널이벤트": "01-pipeline.md", "리포트플래그": "09-operations.md",
-          "레시피카탈로그": "02-workflows.md", "어드바이저리": "02-workflows.md", "지식노트": "04-triage-and-loop.md", "열거형": "README.md", "디렉터리": "05-directories-and-storage.md"}
+          "레시피카탈로그": "02-workflows.md", "어드바이저리": "02-workflows.md", "Jakarta라이브러리": "04-triage-and-loop.md", "재배치": "04-triage-and-loop.md",
+          "지식노트": "04-triage-and-loop.md", "열거형": "README.md", "디렉터리": "05-directories-and-storage.md"}
 for r, (name, desc, hr, n) in enumerate(specs, 5):
     idx.cell(row=r, column=1, value=name).font = BODY_FONT
     idx.cell(row=r, column=2, value=desc).font = BODY_FONT

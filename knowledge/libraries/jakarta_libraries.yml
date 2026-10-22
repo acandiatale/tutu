@@ -6,7 +6,10 @@
 #   key           : groupId:artifactId (the current coordinates)
 #   old_keys      : earlier coordinates of the same library (relocated to `key` + `version` by the handler)
 #   jakarta_since : first release built against jakarta.* (the handler never leaves a version below it)
-#   version       : the release the handler sets (>= jakarta_since; the latest verified one)
+#   version       : the release the handler sets (>= jakarta_since; the latest verified one, or the value
+#                   spring-boot-dependencies 4.1.0 manages for the libraries it manages)
+#   classifier    : optional — the jakarta build is a classifier jar of the same coordinates (Ehcache 3: `jakarta`);
+#                   a declaration without it counts as below the floor and gets it set
 #   requires_java : minimum JDK of that release (information for the Handover)
 #   note          : one line for the report
 #   docs          : links
@@ -24,3 +27,221 @@ libraries:
       - https://github.com/simasch/qlrm
       - https://repo1.maven.org/maven2/org/qlrm/qlrm/
       - https://repo1.maven.org/maven2/ch/simas/qlrm/qlrm/
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # 2026-10-22 era libraries (web-verified research, Maven Central listings / jar bytecode / Boot 4.1.0 BOM). One
+  # entry per groupId:artifactId; a library family shares its note / docs through YAML anchors. Versions marked
+  # "Boot 4.1 managed" equal the spring-boot-dependencies 4.1.0 value (an unversioned use stays BOM-managed upstream;
+  # the handler only writes the version where it raises one).
+  # ---------------------------------------------------------------------------------------------------------------
+  # ---- view layers / web
+  - key: opensymphony:sitemesh
+    jakarta_since: "2.6.0"
+    version: "2.6.0"                         # 2.7.0-M1 (2024) is a milestone
+    requires_java: 17
+    note: >-
+      SiteMesh 2 got maintenance releases under the old coordinates: 2.5.0 and older are javax.servlet, 2.6.0
+      (2024-07) is built against jakarta.servlet 6.0; packages com.opensymphony.* and the web.xml filter class are
+      unchanged (long term the project recommends SiteMesh 3).
+    docs:
+      - https://repo1.maven.org/maven2/opensymphony/sitemesh/
+      - https://repo1.maven.org/maven2/opensymphony/sitemesh/2.6.0/sitemesh-2.6.0.pom
+  - key: org.sitemesh:sitemesh
+    jakarta_since: "3.2.0"
+    version: "3.3.0"
+    requires_java: 17
+    note: >-
+      SiteMesh 3.0.x / 3.1.x are javax.servlet; 3.2.0 (2024-01) is the first jakarta build, 3.3.0 (2026-10) the latest.
+    docs:
+      - https://repo1.maven.org/maven2/org/sitemesh/sitemesh/
+      - https://repo1.maven.org/maven2/org/sitemesh/spring-boot-starter-sitemesh/3.3.0/spring-boot-starter-sitemesh-3.3.0.pom
+  - key: com.github.hazendaz:displaytag
+    old_keys: ["displaytag:displaytag"]      # 1.2 (2008, javax) is the last release under the old coordinates
+    jakarta_since: "3.0.0"
+    version: "3.8.0"
+    requires_java: 11
+    note: >-
+      DisplayTag: the maintained fork com.github.hazendaz:displaytag keeps the org.displaytag.* packages and the TLD
+      uri http://displaytag.sf.net; 2.x is javax, 3.0.0 (2024-02) jakarta, 3.8.0 (2026-06) the latest. The fork no
+      longer ships META-INF/displaytag-el.tld (JSPs on the EL TLD switch to the plain uri).
+    docs:
+      - https://github.com/hazendaz/displaytag
+      - https://repo1.maven.org/maven2/com/github/hazendaz/displaytag/
+      - https://repo1.maven.org/maven2/displaytag/displaytag/
+  - &jersey
+    key: org.glassfish.jersey.core:jersey-server
+    jakarta_since: "3.0.0"
+    version: "4.0.2"                         # Boot 4.1 managed (jersey-bom)
+    requires_java: 17
+    note: >-
+      Jersey keeps its coordinates: 2.x is javax.ws.rs, 3.x jakarta (EE 9/10), 4.x Jakarta EE 11 (Boot 4.1 manages
+      4.0.2 through jersey-bom — keep every org.glassfish.jersey.* artifact on one version). jersey-spring4/5 (2.x
+      only) → org.glassfish.jersey.ext:jersey-spring6; Jersey JSON on Boot 4 needs spring-boot-jackson2.
+    docs:
+      - https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide
+      - https://repo1.maven.org/maven2/org/glassfish/jersey/core/jersey-server/
+      - https://repo1.maven.org/maven2/org/glassfish/jersey/jersey-bom/4.0.2/jersey-bom-4.0.2.pom
+  - {<<: *jersey, key: org.glassfish.jersey.core:jersey-client}
+  - {<<: *jersey, key: org.glassfish.jersey.containers:jersey-container-servlet}
+  - {<<: *jersey, key: org.glassfish.jersey.containers:jersey-container-servlet-core}
+  - {<<: *jersey, key: org.glassfish.jersey.inject:jersey-hk2}
+  - &cxf
+    key: org.apache.cxf:cxf-rt-frontend-jaxws
+    jakarta_since: "4.0.0"
+    version: "4.2.4"
+    requires_java: 17
+    note: >-
+      Apache CXF keeps its coordinates (keep every org.apache.cxf:* incl. cxf-codegen-plugin on one version): 3.6.x is
+      javax, 4.0+ jakarta; 4.1.x builds on Spring 6.2 / Boot 3.4, 4.2.x on Spring 7 / Boot 4.1. WSDL-generated sources
+      must be regenerated with cxf-codegen-plugin 4.2.4 (they import jakarta.*).
+    docs:
+      - https://repo1.maven.org/maven2/org/apache/cxf/cxf-rt-frontend-jaxws/
+      - https://repo1.maven.org/maven2/org/apache/cxf/cxf-parent/4.2.4/cxf-parent-4.2.4.pom
+      - https://cxf.apache.org/download.html
+  - {<<: *cxf, key: org.apache.cxf:cxf-rt-frontend-jaxrs}
+  - {<<: *cxf, key: org.apache.cxf:cxf-rt-transports-http}
+  - {<<: *cxf, key: org.apache.cxf:cxf-spring-boot-starter-jaxws}
+  - {<<: *cxf, key: org.apache.cxf:cxf-spring-boot-starter-jaxrs}
+  - {<<: *cxf, key: org.apache.cxf:cxf-codegen-plugin}
+  - &webflow
+    key: org.springframework.webflow:spring-webflow
+    jakarta_since: "3.0.0"
+    version: "4.0.1"                         # not managed by Boot; declares spring-webmvc 7.0.8
+    requires_java: 17
+    note: >-
+      Spring Web Flow is not EOL: 2.5.x is javax, 3.0.x jakarta on Spring 6, 4.0.x (4.0.1, 2026-06) on Spring 7; not
+      managed by Boot — keep spring-webflow and spring-binding on the same explicit version.
+    docs:
+      - https://repo1.maven.org/maven2/org/springframework/webflow/spring-webflow/
+      - https://github.com/spring-projects/spring-webflow
+  - {<<: *webflow, key: org.springframework.webflow:spring-binding}
+  - &tomcat
+    key: org.apache.tomcat:tomcat-servlet-api
+    jakarta_since: "10.0.0"
+    version: "11.0.22"                       # = tomcat.version of Boot 4.1.0
+    requires_java: 17
+    note: >-
+      Tomcat 7 / 8.5 / 9 API jars are javax, 10.0+ jakarta, Tomcat 11 = Servlet 6.1 (the Spring 7 baseline). Boot 4.1
+      manages tomcat-jsp-api / tomcat-annotations-api at 11.0.22 but not tomcat-servlet-api / tomcat-catalina; prefer
+      jakarta.servlet:jakarta.servlet-api 6.1.0 (provided) and align with the external Tomcat 11 of a WAR deployment.
+    docs:
+      - https://repo1.maven.org/maven2/org/apache/tomcat/tomcat-servlet-api/
+      - https://tomcat.apache.org/whichversion.html
+  - {<<: *tomcat, key: org.apache.tomcat:tomcat-jsp-api}
+  - {<<: *tomcat, key: org.apache.tomcat:tomcat-el-api}
+  - {<<: *tomcat, key: org.apache.tomcat:tomcat-catalina}
+  - {<<: *tomcat, key: org.apache.tomcat:tomcat-coyote}
+  - {<<: *tomcat, key: org.apache.tomcat:tomcat-websocket-api}
+  - {<<: *tomcat, key: org.apache.tomcat:tomcat-annotations-api}
+
+  # ---- data / persistence / scheduling
+  - &jooq
+    key: org.jooq:jooq
+    jakarta_since: "3.16.0"                  # jar check: 3.15.12 references javax/persistence, 3.16.0 jakarta/persistence
+    version: "3.21.5"                        # Boot 4.1 managed (jooq-bom); 3.20+ needs Java 21
+    requires_java: 21
+    note: >-
+      jOOQ ≤ 3.15 reads javax.persistence annotations (DefaultRecordMapper), 3.16+ jakarta; Boot 4.1 manages 3.21.5
+      (Java 21 baseline since 3.20) — drop an old jooq.version pin and regenerate code with the same codegen version.
+    docs:
+      - https://repo1.maven.org/maven2/org/jooq/jooq/
+      - https://repo1.maven.org/maven2/org/jooq/jooq/3.16.0/
+  - {<<: *jooq, key: org.jooq:jooq-meta}
+  - {<<: *jooq, key: org.jooq:jooq-codegen}
+  - {<<: *jooq, key: org.jooq:jooq-codegen-maven}
+  - key: org.mybatis:mybatis-spring
+    jakarta_since: "3.0.0"                   # a Spring floor rather than javax → jakarta: 1.x / 2.x fail against Spring 6/7
+    version: "4.1.0"
+    requires_java: 17
+    note: >-
+      mybatis-spring 1.x / 2.x are built for Spring 3–5 (Spring 6 removed APIs they use, e.g. NestedIOException);
+      3.0.x targets Spring 6, 4.0 / 4.1 Spring 7 (4.1.0 declares Spring 7.0.8 and mybatis 3.5.19). Not managed by Boot.
+    docs:
+      - https://repo1.maven.org/maven2/org/mybatis/mybatis-spring/
+      - https://repo1.maven.org/maven2/org/mybatis/mybatis-spring/4.1.0/mybatis-spring-4.1.0.pom
+  - &mybatis_boot
+    key: org.mybatis.spring.boot:mybatis-spring-boot-starter
+    jakarta_since: "3.0.0"                   # Boot-line floor: 2.x = Boot 2, 3.0.x = Boot 3, 4.0.x = Boot 4.0
+    version: "4.1.0"                         # built on spring-boot 4.1.0 (exact match for the target)
+    requires_java: 17
+    note: >-
+      MyBatis Spring Boot starter lines: 2.x = Boot 2 (javax), 3.0.x = Boot 3, 4.0.x = Boot 4.0, 4.1.0 = Boot 4.1;
+      not managed by the Boot BOM, so the version is explicit.
+    docs:
+      - https://repo1.maven.org/maven2/org/mybatis/spring/boot/mybatis-spring-boot-starter/
+      - https://repo1.maven.org/maven2/org/mybatis/spring/boot/mybatis-spring-boot/4.1.0/mybatis-spring-boot-4.1.0.pom
+  - {<<: *mybatis_boot, key: org.mybatis.spring.boot:mybatis-spring-boot-autoconfigure}
+  - {<<: *mybatis_boot, key: org.mybatis.spring.boot:mybatis-spring-boot-starter-test}
+  - &quartz
+    key: org.quartz-scheduler:quartz
+    jakarta_since: "2.5.0"                   # 2.3.2 / 2.4.0 reference javax.transaction + javax.servlet, 2.5.2 jakarta
+    version: "2.5.2"                         # Boot 4.1 managed
+    requires_java: 11
+    note: >-
+      Quartz ≤ 2.4 uses javax.transaction / javax.servlet (JobStoreCMT, servlet initializer), 2.5+ jakarta; Boot 4.1
+      manages 2.5.2 — remove an explicit 2.2 / 2.3 / 2.4 pin (and the obsolete HikariCP-java7 / c3p0 exclusions).
+    docs:
+      - https://repo1.maven.org/maven2/org/quartz-scheduler/quartz/
+  - {<<: *quartz, key: org.quartz-scheduler:quartz-jobs}
+  - &eclipselink
+    key: org.eclipse.persistence:eclipselink
+    jakarta_since: "3.0.0"                   # 2.7.15 javax/persistence, 3.0.0 jakarta/persistence
+    version: "5.0.2"                         # Jakarta Persistence 3.2 (EE 11); not managed by Boot
+    requires_java: 17
+    note: >-
+      EclipseLink 2.x is javax.persistence; 3.0.x = Jakarta Persistence 3.0, 4.0.x = 3.1, 5.0.x = 3.2 (Boot 4 / EE 11).
+      The pinned recipe UpdateEclipseLinkDependencies only reaches 4.x; Boot auto-configures Hibernate only
+      (EclipseLink needs its own JpaVendorAdapter).
+    docs:
+      - https://repo1.maven.org/maven2/org/eclipse/persistence/eclipselink/
+      - https://repo1.maven.org/maven2/org/eclipse/persistence/org.eclipse.persistence.jpa/
+  - {<<: *eclipselink, key: org.eclipse.persistence:org.eclipse.persistence.jpa}
+  - key: org.ehcache:ehcache
+    jakarta_since: "3.10.0"                  # first release with ehcache-<v>-jakarta.jar (none for 3.9.x)
+    version: "3.12.0"                        # Boot 4.1 manages both the plain and the jakarta-classifier artifact
+    classifier: jakarta
+    requires_java: 17
+    note: >-
+      Ehcache 3's only javax dependency is JAXB (XML configuration): the plain jar references javax.xml.bind, the
+      `jakarta` classifier jar (3.10.0+) jakarta.xml.bind — the fix is the classifier, not only the version.
+    docs:
+      - https://repo1.maven.org/maven2/org/ehcache/ehcache/
+      - https://repo1.maven.org/maven2/org/ehcache/ehcache/3.12.0/
+  - key: com.github.gavlyukovskiy:p6spy-spring-boot-starter
+    jakarta_since: "1.9.0"                   # 1.8.x = Boot 2, 1.9.0–1.12.1 = Boot 3, 2.0.x = Boot 4
+    version: "2.0.1"
+    requires_java: 17
+    note: >-
+      p6spy:p6spy itself is fine (no javax EE); the gavlyukovskiy starter follows the Boot line (≤1.8 Boot 2,
+      1.9–1.12 Boot 3, 2.0.x Boot 4 — 2.0.1 on Boot 4.1 not tested). Not managed by Boot.
+    docs:
+      - https://repo1.maven.org/maven2/com/github/gavlyukovskiy/p6spy-spring-boot-starter/
+      - https://github.com/gavlyukovskiy/spring-boot-data-source-decorator/releases
+
+  # ---- utilities / SOAP
+  - key: com.google.inject:guice
+    jakarta_since: "6.0.0"                   # 6.0 supports javax.inject and (mostly) jakarta.inject; 7.0 jakarta only
+    version: "7.0.0"
+    requires_java: 8
+    note: >-
+      Guice 5 only understands javax.inject — after the javax → jakarta rename it silently ignores @Inject; 6.0 reads
+      both, 7.0 drops javax.inject / javax.servlet / javax.persistence (guice-servlet / guice-persist move with it).
+      UpgradeToJava17 bumps guice to 5.x, below this floor.
+    docs:
+      - https://github.com/google/guice/wiki/Guice600
+      - https://repo1.maven.org/maven2/com/google/inject/guice/7.0.0/guice-7.0.0.pom
+  - &axis2
+    key: org.apache.axis2:axis2-kernel
+    jakarta_since: "2.0.0"
+    version: "2.0.1"
+    requires_java: 17
+    note: >-
+      Axis2 1.8.x depends on javax.servlet / javax.transaction / jsr311, 2.0.x on jakarta.servlet / jakarta.transaction
+      / jakarta.ws.rs; the Axis2 module family moves together and ADB stubs must be regenerated with the 2.0 codegen.
+    docs:
+      - https://repo1.maven.org/maven2/org/apache/axis2/axis2-kernel/
+      - https://repo1.maven.org/maven2/org/apache/axis2/axis2-kernel/2.0.1/axis2-kernel-2.0.1.pom
+  - {<<: *axis2, key: org.apache.axis2:axis2-adb}
+  - {<<: *axis2, key: org.apache.axis2:axis2-transport-http}
+  - {<<: *axis2, key: org.apache.axis2:axis2-jaxws}
+  - {<<: *axis2, key: org.apache.axis2:axis2}

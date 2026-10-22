@@ -191,6 +191,16 @@ out["advisories"] = [{"id": a.get("id"), "library": a.get("library") or "", "art
                       "replacement_version": str(a.get("replacement_version") or ""), "recipes": ", ".join(a.get("recipes") or []),
                       "applies_to": ", ".join(a.get("applies_to") or []), "summary": " ".join(str(a.get("summary") or "").split())}
                      for a in adv.get("advisories", [])]
+# 10b. libraries with a known jakarta release (handler jakarta-library-floor) / 10c. coordinate relocations
+jl = yaml.safe_load((REPO / "knowledge/libraries/jakarta_libraries.yml").read_text(encoding="utf-8"))
+out["jakarta_libraries"] = [{"key": l.get("key"), "old_keys": ", ".join(l.get("old_keys") or []),
+                             "jakarta_since": str(l.get("jakarta_since") or ""), "version": str(l.get("version") or ""),
+                             "requires_java": str(l.get("requires_java") or ""), "note": " ".join(str(l.get("note") or "").split()),
+                             "docs": " | ".join(l.get("docs") or [])} for l in jl.get("libraries", [])]
+rl = yaml.safe_load((REPO / "sbmig/triage/handlers/relocations.yml").read_text(encoding="utf-8"))
+out["relocations"] = [{"from": r.get("from"), "to": r.get("to"), "version": str(r.get("version") or ""), "scope": r.get("scope") or "",
+                       "packages": ", ".join(r.get("packages") or []), "min_target_boot": str(r.get("min_target_boot") or "")}
+                      for r in rl.get("relocations", [])]
 notes = yaml.safe_load((REPO / "knowledge/notes/index.yml").read_text(encoding="utf-8"))
 out["notes"] = [{"file": n.get("file"), "title": n.get("title"), "keywords": " | ".join(n.get("keywords") or []), "cases": ", ".join(n.get("cases") or []),
                  "phases": ", ".join(n.get("phases") or []), "always": "예" if n.get("always") else ""} for n in notes.get("notes", [])]

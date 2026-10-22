@@ -564,3 +564,20 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   (`markdown.javax_api_lines`, `render_markdown(…, cfg=None)`), Blocked cell "`api jar` ← `via`", summary row, Handover
   pointer. Flag `jakarta-library-bumped` and handler ids `jakarta-library-floor` / pre-emptive `dependency-relocation`
   (declared javax API artifacts, after the spring recipes) belong to the parallel triage / plan workstream.
+* 2026-10-22 era libraries (knowledge tables, no new code seams): `JakartaLibrary.classifier: Optional[str] = None`
+  (`sbmig/core/jakarta_libraries.py`, yml field `classifier`) — `jakarta-library-floor` sets it on the bumped /
+  relocated declaration (`replace_dependency(g, a, GAV(classifier=…))`, direct + managed) and
+  `jakarta_libraries_below` counts a declaration without it as below whatever its version (shown as
+  "`<v>` without classifier `<c>`"); the relocation note now says "jakarta release since" (was "jakarta.persistence
+  since"). `knowledge/libraries/jakarta_libraries.yml` 1 → 44 entries (one per `g:a`; families via YAML anchors),
+  `relocations.yml` 22 → 44 rows (new rows reactive, no `packages`; hibernate rows on the Boot 4.1 versions
+  7.4.1.Final / 9.1.0.Final), `known_packages.yml` 27 → 56 rows, `versions.yml` refreshed to the Boot 4.1.0 values
+  (+8 keys), `MysqlConnectorRelocation` → 9.7.0. Analyzer rules (`LIBRARY_RULES`, contract names) +16:
+  `hibernate-template`, `commons-fileupload`, `jackson1`, `tiles`, `velocity`, `axis1`, `commons-httpclient3`,
+  `commons-collections3`, `ehcache2`, `json-lib`, `jjwt`, `poi`, `struts2`, `egovframe`, `dbcp1`,
+  `querydsl-hibernate-native`. Advisories 15 → 64 (49 new, all `guide` except `commons-collections3` = `recipe`
+  with `org.openrewrite.apache.commons.collections.UpgradeApacheCommonsCollections_3_4`, catalog `artifact:
+  rewrite-apache`, `provided_by: rewrite-spring`; recipe catalog 33 → 34 ids). Note `knowledge/notes/era-libraries.md`
+  (`## fix-loop: <library>` keyed on the finding's library = rule name, or the advisory id for artifact-only entries).
+  Mirror gap: `sbmig/plan/pre_handlers.py::jakarta_library_reason` does not know `classifier` yet (pre-emptive
+  selection misses a classifier-only gap; the reactive path covers it). See docs/ADVISORIES.md "2026-10-22 era libraries".

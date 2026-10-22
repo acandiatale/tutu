@@ -184,3 +184,14 @@ def test_jakarta_library_floor_selected_for_old_coordinates(cfg) -> None:
     assert dict(pre_handler_reasons(prof, cfg))["jakarta-library-floor"] == (
         "ch.simas.qlrm:qlrm declared below their first jakarta release "
         "(ch.simas.qlrm:qlrm 1.7.1 → org.qlrm:qlrm < 4.0.1)")
+
+
+def test_jakarta_library_floor_selected_for_missing_classifier(cfg) -> None:
+    """Ehcache 3 at a jakarta-line version but without the `jakarta` classifier is still the javax build."""
+    from sbmig.plan.pre_handlers import jakarta_library_reason
+    plain = _profile(poms=[_pom(deps=[GAV.parse("org.ehcache:ehcache:3.12.0")])])
+    r = jakarta_library_reason(plain)
+    assert r and "org.ehcache:ehcache" in r and "without classifier jakarta" in r
+    ok = _profile(poms=[_pom(deps=[GAV(group_id="org.ehcache", artifact_id="ehcache", version="3.12.0",
+                                       classifier="jakarta")])])
+    assert jakarta_library_reason(ok) is None

@@ -270,12 +270,15 @@ def _repo_world(tmp_path: Path, monkeypatch, *, broken: str | None = None) -> li
         if e.origin == "openrewrite":
             by_artifact.setdefault(e.artifact or "org.openrewrite:rewrite-java", []).append(e.id)
     jars = {ga: _jar(repo, f"{ga}:9.9", classes=tuple(ids)) for ga, ids in by_artifact.items()}
-    provided = {e.artifact for e in cat.entries if e.provided_by}
+    provided: dict[str, set[str]] = {}                    # provided_by → artifacts it brings in transitively
+    for e in cat.entries:
+        if e.provided_by:
+            provided.setdefault(e.provided_by, set()).add(e.artifact)
 
     def resolver(ga: str, version: str) -> list[Path]:
         if ga == broken:
             return []
-        extra = [jars[x] for x in provided] if ga == "org.openrewrite.recipe:rewrite-migrate-java" else []
+        extra = [jars[x] for x in sorted(provided.get(ga, ()))]
         return [*([jars[ga]] if ga in jars else []), jars["org.openrewrite:rewrite-java"], *extra]
 
     monkeypatch.setattr(jarcheck, "DEFAULT_RESOLVER", resolver)
@@ -294,14 +297,14 @@ def test_cli_check_jars_ok_and_json(tmp_path, monkeypatch):
     res = r.invoke(recipes_cli, ["check", "--jars", *args])
     assert res.exit_code == 0, res.output
     assert "recipe catalog OK" in res.output
-    assert "recipe jars OK: 29 recipe(s) found in" in res.output and "rewrite-recipe-bom 3.37.0" in res.output
-    assert "ok via rewrite-migrate-java" in res.output
+    assert "recipe jars OK: 30 recipe(s) found in" in res.output and "rewrite-recipe-bom 3.37.0" in res.output
+    assert "ok via rewrite-migrate-java" in res.output and "ok via rewrite-spring" in res.output
     line = next(x for x in res.output.splitlines() if x.startswith("org.openrewrite.java.ChangeType "))
     assert "(core)" in line and "org.openrewrite:rewrite-java:9.9" in line
     res = r.invoke(recipes_cli, ["check", "--jars", "--json", *args])
     assert res.exit_code == 0, res.output
     data = json.loads(res.output)
-    assert data["problems"] == [] and len(data["rows"]) == 29
+    assert data["problems"] == [] and len(data["rows"]) == 30
     assert data["artifact_versions"]["org.openrewrite.recipe:rewrite-java-dependencies"] == "9.9"
 
 
