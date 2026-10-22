@@ -142,6 +142,10 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "How to supply them:": "설정 방법:",
     "Packaged placeholders: {files} (grep `__SET_ME__`)": "패키지된 플레이스홀더: {files} (`__SET_ME__`로 검색)",
     # ---- flag help (FLAG_HELP / FLAG_PREFIX_HELP values of markdown.py)
+    "every build ran with `-Dmaven.test.skip=true` (build.skip_test_compile): test sources were neither compiled nor "
+    "run — the owning team compiles and fixes them":
+        "모든 빌드가 `-Dmaven.test.skip=true`로 실행됨(build.skip_test_compile): 테스트 소스는 컴파일도 실행도 하지 "
+        "않았다 — 소유 팀이 컴파일하고 고칠 것",
     "main code builds, but test sources only compile with `-Dmaven.test.skip=true` (see follow-ups) — fix the "
     "tests before relying on CI":
         "메인 코드는 빌드되지만 테스트 소스는 `-Dmaven.test.skip=true`로만 컴파일된다(후속 조치 참조) — CI에 "

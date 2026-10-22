@@ -407,3 +407,18 @@ def test_finalize_handover_without_findings(cfg, ws, monkeypatch):
     report = make_orch(cfg, ws).run()
     assert report.advisories == [] and report.handover is not None
     assert any(e["event"] == "handover" for e in journal_events(ws))
+
+
+def test_skip_test_compile_policy_flags_and_follow_up(cfg, ws):
+    """build.skip_test_compile: every build asks for -Dmaven.test.skip=true (loop builds and the final verify), the
+    report carries `tests-not-compiled` and the owning-team follow-up."""
+    cfg = cfg.model_copy(deep=True)
+    cfg.build.skip_test_compile = True
+    build = FakeBuildRunner(ws, fn=files_build)
+    report = make_orch(cfg, ws, build=build).run()
+    assert report.success and "tests-not-compiled" in report.flags
+    assert all(c["skip_test_compile"] is True for c in build.calls)
+    assert build.calls[-1]["label"] == "verify" and build.calls[-1]["skip_tests"] is False
+    assert any("neither compiled nor run" in f for f in report.manual_followups)
+    assert any("build.skip_test_compile" in n for n in report.phases[-1].notes)
+    assert "test-compile-skipped" not in report.flags

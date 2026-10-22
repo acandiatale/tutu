@@ -293,6 +293,7 @@ project uncompilable costs LLM budget on every project — keep it `guide` until
 | `loop.max_llm_calls`, `loop.max_total_minutes` | 60 / 180 | hard budgets per run |
 | `loop.stall_limit` | 2 | identical error set N times → escalation model + widen context |
 | `llm.escalation_model` | null | stronger model after a stall |
+| `build.skip_test_compile` | false (company: true) | `-Dmaven.test.skip=true` on every build — test sources neither compiled nor run (flag `tests-not-compiled`, Handover follow-up); the company's decision (2026-10-22) |
 | `build.allow_skip_test_compile_fallback` | true | last resort `-Dmaven.test.skip=true`, flagged in the report |
 | `layout.split_policy` | minimal | `web-layer` moves controllers/config into boot-jar |
 | `plan.intermediate_builds` | true | build after the JDK 21 phase before Spring recipes |

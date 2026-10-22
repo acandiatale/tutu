@@ -62,6 +62,7 @@ class MavenRunner:
         """`skip_tests` (round 8 tests-skipped fallback) → `-DskipTests` even when `build.skip_tests` is off;
         `skip_test_compile` wins (`-Dmaven.test.skip=true` already implies no test run), never both flags."""
         cmd = base_command(self.cfg) + goal.split() + list(extra_args)
+        skip_test_compile = skip_test_compile or bool(getattr(self.cfg.build, "skip_test_compile", False))
         if (self.cfg.build.skip_tests or skip_tests) and not skip_test_compile:
             cmd.append("-DskipTests")
         if skip_test_compile:

@@ -97,6 +97,8 @@ build:
   offline: false
   extra_args: ["-B", "-ntp", "-Dstyle.color=never"]
   skip_tests: true
+  skip_test_compile: false         # true = -Dmaven.test.skip=true on every build: tests neither compiled nor run
+                                   # (flag tests-not-compiled + follow-up); the company sets true (2026-10-22)
   allow_skip_test_compile_fallback: true
   allow_skip_tests_fallback: true  # only runtime test failures left → -DskipTests, flag tests-skipped, tests listed
   timeout_minutes: 30

@@ -68,6 +68,10 @@ report:
   language: ko                          # report.md in Korean for the operators (report.json stays English)
 
 build:
+  # The company does not fix tests (2026-10-22): every build runs with -Dmaven.test.skip=true, so test sources are
+  # neither compiled nor run and can never block the migration. The report flags `tests-not-compiled` and the
+  # Handover tells the owning team to compile and fix the tests. (`skip_tests: true` alone still COMPILES tests.)
+  skip_test_compile: true
   settings_file: null                   # config/settings.nexus.xml — copy config/settings.nexus.example.xml, set the group URL;
                                         # its mirrorOf external:* also covers the <repositories> declared inside the poms
   pom_repositories: keep                # remove = strip <repositories>/<pluginRepositories> from the poms (needs the mirror)

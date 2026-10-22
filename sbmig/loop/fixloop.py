@@ -583,6 +583,7 @@ class BuildFixLoop:
     def _build(self, goal: str, target: Optional[str], label: str, phase: Phase, iteration: int,
                skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
         module, extra = build_target_args(self.profile, target)
+        skip_test_compile = skip_test_compile or bool(getattr(self.cfg.build, "skip_test_compile", False))
         kw: dict[str, Any] = {"module": module, "label": label, "skip_test_compile": skip_test_compile}
         if extra:
             kw["extra_args"] = extra

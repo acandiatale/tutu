@@ -203,6 +203,10 @@ class BuildConfig(BaseModel):
     offline: bool = False
     extra_args: list[str] = Field(default_factory=lambda: ["-B", "-ntp", "-Dstyle.color=never"])
     skip_tests: bool = True                             # -DskipTests (tests still compile)
+    # -Dmaven.test.skip=true on EVERY build: test sources are neither compiled nor run, so a test-source error can
+    # never block the migration (the company's decision, 2026-10-22: the fleet does not fix tests). The report flags
+    # `tests-not-compiled` and lists the follow-up; the L7 / L7b fallbacks become moot.
+    skip_test_compile: bool = False
     allow_skip_test_compile_fallback: bool = True       # -Dmaven.test.skip=true as last resort (flagged in report)
     allow_skip_tests_fallback: bool = True              # -DskipTests when only runtime test failures remain
                                                         # (flag `tests-skipped`, failing tests listed as follow-ups)

@@ -33,6 +33,8 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
 - Only Maven projects: Gradle / Ant builds are rejected at intake (exit 3) — the user's decision (2026-10-20).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
+  Tests are out of scope entirely (user, 2026-10-22: "테스트는 다 스킵"): company runs set `build.skip_test_compile: true`
+  (`-Dmaven.test.skip=true` on every build, flag `tests-not-compiled`, Handover follow-up for the owning team).
 - Real in-house coordinates are unknown here → placeholders in `config/artifacts.example.yml`; public stand-ins in
   `config/artifacts.local-e2e.yml` for local e2e. Never invent "real" company coordinates.
 - The company has its own LLM API gateway and its own agent-building framework. They plug in through the adapter
@@ -143,7 +145,8 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
 - `build.skip_tests: true` is the default: builds never run unit tests, so missing externalized values cannot
   break the build and the `tests-skipped` fallback (round 8) only acts where a company config sets
-  `skip_tests: false`. Decide whether the fleet should run tests (slower, catches more before runtime).
+  `skip_tests: false`. Decided 2026-10-22: the fleet skips tests entirely (`build.skip_test_compile: true` in the
+  company config); the L7 / L7b fallbacks stay for configs that compile tests.
 - Multi-module `merge`: a same-FQCN class differing across modules is first-wins; since round 9 the dropped copy
   reaches the fix LLM as read-only reference (`multi-module-conflict`). Still open: `pluginManagement` of a merged
   pom-packaging module is not folded into the root; a union `spring.factories` is rewritten normalized (comments
@@ -167,7 +170,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,395 passed, 34 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,396 passed, 34 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

@@ -14,6 +14,8 @@ FLAG_HELP = {
                             "(see follow-ups) — fix the tests before relying on CI",
     "tests-skipped": "main code compiles and packages, but some tests fail at runtime: the jar was built with "
                      "`-DskipTests` (failing tests listed in follow-ups / unresolved)",
+    "tests-not-compiled": "every build ran with `-Dmaven.test.skip=true` (build.skip_test_compile): test sources were "
+                          "neither compiled nor run — the owning team compiles and fixes them",
     "time-budget-exhausted": "the run hit `loop.max_total_minutes`; remaining loops were skipped, verify still ran",
     "llm-budget-exhausted": "the run used all `loop.max_llm_calls`; remaining clusters were escalated",
     "dry-run": "dry run: decisions were computed but nothing was applied",

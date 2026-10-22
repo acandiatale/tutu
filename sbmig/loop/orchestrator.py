@@ -1050,7 +1050,8 @@ class Orchestrator:
 
         def _skip_flags() -> tuple[bool, bool]:
             # read at build time: the final fix loop may have triggered the test-compile / tests fallback (L7 / L7b)
-            skip_tests = bool(self.loop and self.loop.test_compile_skipped)
+            skip_tests = bool(getattr(self.cfg.build, "skip_test_compile", False)) \
+                or bool(self.loop and self.loop.test_compile_skipped)
             # round 8: only runtime test failures were left → the final verify packages with -DskipTests too
             # (skip_test_compile wins when both apply: -Dmaven.test.skip=true already implies no test run)
             skip_run = bool(self.loop and getattr(self.loop, "tests_skipped", False)) and not skip_tests
@@ -1085,7 +1086,10 @@ class Orchestrator:
         pr.iteration_records.append(IterationRecord(phase=Phase.VERIFY, iteration=pr.iterations, build_ok=res.ok,
                                                     error_count=res.error_count, signatures=res.signature_multiset(),
                                                     build_log=res.log_path))
-        if skip_tests:
+        if skip_tests and getattr(self.cfg.build, "skip_test_compile", False):
+            pr.notes.append(f"{step.id}: built with -Dmaven.test.skip=true (build.skip_test_compile: tests are never "
+                            "compiled in this configuration)")
+        elif skip_tests:
             pr.notes.append(f"{step.id}: built with -Dmaven.test.skip=true (test-compile-skipped earlier)")
         if skip_run:
             pr.notes.append(f"{step.id}: built with -DskipTests (tests-skipped earlier: runtime test failures only)")
@@ -1393,6 +1397,12 @@ class Orchestrator:
                 report.harvest = h
         if self.budget.llm_calls >= self.budget.max_llm_calls and self.budget.max_llm_calls > 0:
             self._flag("llm-budget-exhausted")
+        if getattr(self.cfg.build, "skip_test_compile", False) and not self._dry_run:
+            self._flag("tests-not-compiled")
+            fu = ("test sources were neither compiled nor run (build.skip_test_compile: true): the owning team "
+                  "compiles and fixes the tests (`mvn test-compile`) before relying on CI")
+            if fu not in report.manual_followups:
+                report.manual_followups.append(fu)
         report.success = bool(self._verify_results) and all(r.ok for r in self._verify_results) \
             and "restructure-failed" not in report.flags
         # unresolved: what the as-is owner must look at

@@ -664,7 +664,7 @@ Select-String -Path out\<run id>\journal.jsonl -Pattern '"event": "phase_end"'
   ```
 
 - **보고서의 후속 조치가 실제로 할 일을 알려 줍니다.** "existing main class(es) com.example.inventory.InventoryCli kept in comp-jar; they are not invoked by the generated Spring Boot Application" — 원래 CLI 진입점은 생성된 Boot `Application`이 부르지 않으므로 소유 팀이 판단해야 합니다.
-- **`-DskipTests`**: `build.skip_tests: true`(기본값)라 verify 로그의 명령에 `-DskipTests`가 붙어 있습니다. 테스트는 컴파일되지만 실행되지 않습니다.
+- **`-DskipTests`**: `build.skip_tests: true`(기본값)라 verify 로그의 명령에 `-DskipTests`가 붙어 있습니다. 테스트는 컴파일되지만 실행되지 않습니다. 회사 설정(`build.skip_test_compile: true`)에서는 대신 모든 빌드 명령에 `-Dmaven.test.skip=true`가 붙어 테스트 소스를 컴파일조차 하지 않습니다(플래그 `tests-not-compiled`).
 
 ### 11.3 비교: 최근 실행 `run-20261021-124945-831312`
 

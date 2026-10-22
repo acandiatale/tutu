@@ -162,7 +162,8 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `build.java_home` | str 또는 null | null | JDK 21 경로. 설정하면 Maven 환경의 `JAVA_HOME`과 `PATH` 앞부분을 바꿉니다. | 회사: 반드시 고정 권장. | [09](09-operations.md) |
 | `build.offline` | bool | `false` | `-o`(오프라인). | 로컬 저장소에 모든 것이 이미 있을 때만. | — |
 | `build.extra_args` | list[str] | `["-B", "-ntp", "-Dstyle.color=never"]` | 모든 Maven 호출에 붙는 인자. | `-llr`가 필요한 프로젝트(원격 저장소 id 캐시 문제) 등. 리스트 전체를 다시 적습니다. | [09](09-operations.md) |
-| `build.skip_tests` | bool | `true` | `-DskipTests`(테스트는 컴파일하지만 실행하지 않음). | 플릿에서 테스트까지 돌릴지 결정되면(현재 미결정) false. | [09](09-operations.md) |
+| `build.skip_tests` | bool | `true` | `-DskipTests`(테스트는 컴파일하지만 실행하지 않음). | 테스트까지 돌리려면 false. | [09](09-operations.md) |
+| `build.skip_test_compile` | bool | `false` (회사 예제 `true`) | 모든 빌드에 `-Dmaven.test.skip=true`: 테스트 소스를 컴파일도 실행도 하지 않으므로 테스트 소스 오류가 마이그레이션을 막지 못함. 플래그 `tests-not-compiled`, Handover follow-up "소유 팀이 테스트를 컴파일·수정". | 회사 결정(2026-10-22): 테스트는 전부 건너뛴다 → `true`. | [09](09-operations.md) |
 | `build.allow_skip_test_compile_fallback` | bool | `true` | 테스트 컴파일 오류만 남으면 `-Dmaven.test.skip=true`로 패키징(플래그 `test-compile-skipped`, L7). | 테스트 컴파일 실패를 실패로 보고 싶을 때 false. | [04](04-triage-and-loop.md) |
 | `build.allow_skip_tests_fallback` | bool | `true` | 런타임 테스트 실패만 남으면 `-DskipTests`로 패키징(플래그 `tests-skipped`, L7b). `skip_tests: false`일 때만 의미가 있습니다. | 테스트 실패를 실패로 보고 싶을 때 false. | [04](04-triage-and-loop.md) |
 | `build.timeout_minutes` | int | `30` | Maven 1회 제한 시간. 초과 시 프로세스 트리를 종료(Windows는 `taskkill /T /F`). | 대형 빌드. | [09](09-operations.md) |
@@ -389,6 +390,6 @@ notepad config\artifacts.yml
 | 7 | `openrewrite.exclusions` | 생성 소스·대용량 리소스를 파싱에서 제외해 rewrite 시간 단축(리스트 전체를 다시 적음). |
 | 8 | `build.extra_args` | `-llr` 등 프로젝트별 Maven 옵션(리스트 전체를 다시 적음). |
 | 9 | `advisories.policy_overrides` | 특정 권고 레시피를 끄거나(guide/off) 검증 후 켬(recipe). |
-| 10 | `build.skip_tests` | 테스트까지 돌릴지 정책 결정 시. 현재 기본은 true(테스트 실행 안 함). |
+| 10 | `build.skip_tests` / `build.skip_test_compile` | 테스트 정책. 회사 결정(2026-10-22)은 테스트 전부 건너뛰기: `skip_test_compile: true`(컴파일도 안 함). 기본값은 실행만 안 함. |
 
 프로젝트 한 개에만 적용하려면 별도 yml(예: config/site-overrides.yml 같은 이름으로 직접 생성)을 두 번째 `--config`로 주거나, 플릿 manifest의 `overrides`에 씁니다(`kb.dir`은 플릿 전체 공통이라 프로젝트별로 바꿀 수 없습니다).

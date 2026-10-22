@@ -284,3 +284,17 @@ def test_real_mvn_package_success_and_test_skip(tmp_path, real_cfg):
     assert res.ok and res.errors == [] and res.modules_built == ["it-ok"]
     assert "-Dmaven.test.skip=true" in res.command
     assert (ws.root / "target" / "it-ok-1.0.0.jar").exists()
+
+
+def test_skip_test_compile_policy(ws, cfg, fake):
+    """build.skip_test_compile (2026-10-22, the company skips tests entirely): -Dmaven.test.skip=true on every
+    build, never together with -DskipTests, whatever the per-call flags say."""
+    cfg.build.skip_test_compile = True
+    r = MavenRunner(ws, cfg)
+    for goal in ("compile", "test-compile", "package", "clean package"):
+        cmd = r.command(goal)
+        assert cmd[-1] == "-Dmaven.test.skip=true" and "-DskipTests" not in cmd
+    cmd = r.command("package", skip_tests=True)
+    assert cmd[-1] == "-Dmaven.test.skip=true" and "-DskipTests" not in cmd
+    cfg.build.skip_test_compile = False
+    assert r.command("compile")[-1] == "-DskipTests"

@@ -837,7 +837,7 @@ flowchart LR
 1. **Handover부터**: `### Versions replaced`(특히 ⚠ carried over 고정이 Boot 4.1에 맞는지), `### Libraries needing your attention`, `### Properties to set before running`, `### From here on, your team`.
 2. 결과가 `❌ NOT BUILDING`이거나 blocked가 있으면 `## Blocked — needs human / library action`과 `## Unresolved errors`를 봅니다. blocked는 일부러 건너뛴 것(외부 라이브러리의 javax API, Nexus에 없는 아티팩트, 호환 안 되는 플러그인, LLM / 예산 소진)이고, 무엇을 해야 하는지(라이브러리 업그레이드, `artifacts.optional`에 추가 등)가 적혀 있습니다. 라이브러리를 고친 뒤 다시 돌리면 대개 끝까지 갑니다.
 3. "From here on" 목록을 위에서부터 마이그레이션 브랜치에서 처리하고, `mvn clean package`를 다시 돌립니다(또는 `sbmig run`을 다시 돌리면 교체된 라이브러리는 목록에서 빠집니다).
-4. `build.skip_tests: true`가 기본이라 sbmig는 테스트를 **실행하지 않았습니다**. 소유 팀은 테스트를 포함해 빌드하십시오.
+4. `build.skip_tests: true`가 기본이라 sbmig는 테스트를 **실행하지 않았습니다**. 회사 설정(`build.skip_test_compile: true`)에서는 테스트 소스를 **컴파일도 하지 않습니다**(플래그 `tests-not-compiled`). 소유 팀은 테스트를 포함해 빌드하십시오.
 5. 그다음에 테스트 환경에 배포합니다. **런타임 동작은 sbmig의 범위가 아닙니다**(범위 = 패키징 + 빌드 통과). 런타임 오류는 as-is 소유 팀의 몫입니다.
 
 ### 12.3 운영자가 남길 것
