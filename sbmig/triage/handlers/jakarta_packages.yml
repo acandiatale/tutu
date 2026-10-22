@@ -1,0 +1,54 @@
+# javax.* → jakarta.* package table for the `jakarta-namespace-sweep` handler (catalog E13).
+#
+# Source: the ChangePackage rules of org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+# (rewrite-migrate-java 3.42.0, verified 2026-10-22 from the jar). The handler only renames what the recipe would
+# have renamed; it exists for the files the recipe skipped (unparsed / not type-attributed / openrewrite.exclusions)
+# and for fully-qualified javax.* names the ChangePackage run left behind.
+#
+# Semantics (sbmig/triage/handlers/source_handlers.py::rename_javax):
+#   recursive: true  → `<from>.` followed by anything (classes, sub-packages, `*`)
+#   recursive: false → only `<from>.<Identifier starting with an uppercase letter>` (+ nested names) or `<from>.*`
+#                      (direct classes of the package, like ChangePackage(recursive=false))
+#   the longest matching `from` wins: javax.annotation.security.RolesAllowed takes the recursive
+#   javax.annotation.security rule, javax.annotation.processing.Generated matches nothing.
+#   String / char / text-block literals are never edited (counted as follow-ups); comments may be renamed.
+#
+# Never renamed (JDK or non-EE packages — the matcher is table-driven, so they are untouched automatically):
+#   javax.annotation.processing, javax.annotation.concurrent, javax.transaction.xa, javax.sql, javax.naming,
+#   javax.crypto, javax.net, javax.swing, javax.xml.parsers / transform / xpath / stream / namespace / crypto,
+#   javax.script, javax.tools, javax.lang.model, javax.management, javax.security.auth (except .message), javax.cache
+packages:
+  - {from: javax.activation, to: jakarta.activation, recursive: true}
+  - {from: javax.annotation.security, to: jakarta.annotation.security, recursive: true}
+  - {from: javax.annotation.sql, to: jakarta.annotation.sql, recursive: true}
+  - {from: javax.batch, to: jakarta.batch, recursive: true}
+  - {from: javax.decorator, to: jakarta.decorator, recursive: true}
+  - {from: javax.ejb, to: jakarta.ejb, recursive: true}
+  - {from: javax.el, to: jakarta.el, recursive: true}
+  - {from: javax.enterprise, to: jakarta.enterprise, recursive: true}
+  - {from: javax.faces, to: jakarta.faces, recursive: true}
+  - {from: javax.inject, to: jakarta.inject, recursive: true}
+  - {from: javax.interceptor, to: jakarta.interceptor, recursive: true}
+  - {from: javax.jms, to: jakarta.jms, recursive: true}
+  - {from: javax.json, to: jakarta.json, recursive: true}
+  - {from: javax.jws, to: jakarta.jws, recursive: true}
+  - {from: javax.mail, to: jakarta.mail, recursive: true}
+  - {from: javax.persistence, to: jakarta.persistence, recursive: true}
+  - {from: javax.resource, to: jakarta.resource, recursive: true}
+  - {from: javax.security.auth.message, to: jakarta.security.auth.message, recursive: true}
+  - {from: javax.security.enterprise, to: jakarta.security.enterprise, recursive: true}
+  - {from: javax.security.jacc, to: jakarta.security.jacc, recursive: true}
+  - {from: javax.servlet, to: jakarta.servlet, recursive: true}          # covers javax.servlet.jsp
+  - {from: javax.validation, to: jakarta.validation, recursive: true}
+  - {from: javax.websocket, to: jakarta.websocket, recursive: true}
+  - {from: javax.ws, to: jakarta.ws, recursive: true}                    # javax.ws.rs
+  - {from: javax.xml.bind, to: jakarta.xml.bind, recursive: true}
+  - {from: javax.xml.soap, to: jakarta.xml.soap, recursive: true}
+  - {from: javax.xml.ws, to: jakarta.xml.ws, recursive: true}
+  # direct classes only (PostConstruct, PreDestroy, Resource, Resources, Priority, Generated, ManagedBean — and,
+  # exactly like the recipe, the JSR-305 classes Nonnull / Nullable that live in the same package)
+  - {from: javax.annotation, to: jakarta.annotation, recursive: false}
+  # direct classes only (Transactional, UserTransaction, …); javax.transaction.xa is JDK and stays
+  - {from: javax.transaction, to: jakarta.transaction, recursive: false}
+  # special: not Jakarta EE — javax.security.cert was deprecated for removal, java.security.cert replaces it
+  - {from: javax.security.cert, to: java.security.cert, recursive: true}

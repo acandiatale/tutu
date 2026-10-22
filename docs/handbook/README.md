@@ -72,7 +72,7 @@
 | 에러 종류(ErrorKind) | 파서가 분류하는 빌드 에러 유형: `compile`, `test_compile`, `dependency_resolution`, `plugin_resolution`, `parent_resolution`, `plugin_execution`, `enforcer`, `pom_invalid`, `rewrite`, `test_failure`, `unknown`. |
 | 시그니처 / 클러스터 | 시그니처는 에러를 "같은 문제"로 묶기 위한 정규화 문자열(L1 구체, L2 일반). 클러스터는 한 번의 결정 단위로 묶인 에러 묶음(파일 기준). |
 | 결정 사다리 | 클러스터마다 HANDLER > KB_RECIPE > KB_PATCH > blocked 판정 > LLM_FIX 순서로 해법을 고릅니다. LLM은 마지막입니다. |
-| 핸들러(handler) | 결정적(LLM 없는) 수정기. 예: `lombok-version-floor`, `jstl-to-jakarta`, `resources-binary-filtering`. 선제(pre-emptive)로 첫 빌드 전에 돌기도, 에러 문구를 보고 반응(reactive)하기도 합니다. |
+| 핸들러(handler) | 결정적(LLM 없는) 수정기. 예: `lombok-version-floor`, `jstl-to-jakarta`, `resources-binary-filtering`, `jakarta-namespace-sweep`. 선제(pre-emptive)로 첫 빌드 전에 돌기도, 에러 문구를 보고 반응(reactive)하기도 합니다. |
 | blocked | 프로젝트 안에서 풀 수 없는 문제(외부 라이브러리가 javax API를 쓰는 경우, Nexus에 없는 아티팩트 등). LLM을 쓰지 않고 바로 리포트로 보냅니다. |
 | stall level | 같은 클러스터가 반복해서 안 풀릴 때 올라가는 단계. 단계가 오르면 더 넓은 문맥·상위 모델로 재시도하고, 한계에 닿으면 escalate합니다. |
 | KB(knowledge base) / ledger | 파일 기반 지식 베이스(`kb/`). `ledger.jsonl`에 모든 시도(에러 시그니처 → 수정 라벨 → 결과)가 기록되고, 성공한 패치는 다음 프로젝트에서 LLM 없이 재생(KB_PATCH)되거나 레시피 후보로 승격됩니다. DB는 쓰지 않습니다(불변식 3). |

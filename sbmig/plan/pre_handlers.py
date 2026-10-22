@@ -5,13 +5,18 @@ Handler ids (contract with workstream E):
   surefire-plugin-floor, javax-servlet-api-to-jakarta, jaxb-runtime-add, remove-classic-loader-implementation,
   mysql-connector-relocation, compiler-legacy-config (round 9: fork/executable/bootclasspath compiler config),
   jstl-to-jakarta (9c), resources-binary-filtering (binary files under a filtered resource dir → the resources
-  plugin's nonFilteredFileExtensions)
+  plugin's nonFilteredFileExtensions), strip-pom-repositories, jakarta-namespace-sweep (E13: javax.* EE references the
+  recipes left behind → jakarta.*), spring-data-crud-repository (E14: ListCrudRepository for paging-only repositories)
 """
 from __future__ import annotations
 
 import posixpath
 import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
+
+import yaml
 
 from sbmig.core.config import Config
 from sbmig.core.models import ProjectProfile
@@ -27,8 +32,28 @@ HANDLER_IDS = (
     "lombok-version-floor", "mapstruct-version-floor", "querydsl-jakarta-classifier", "maven-compiler-plugin-floor",
     "surefire-plugin-floor", "javax-servlet-api-to-jakarta", "jaxb-runtime-add",
     "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
-    "jstl-to-jakarta", "resources-binary-filtering", "strip-pom-repositories",
+    "jstl-to-jakarta", "resources-binary-filtering", "strip-pom-repositories", "jakarta-namespace-sweep",
+    "spring-data-crud-repository",
 )
+
+# the handler's own table (read directly: importing sbmig.triage here would pull the whole triage package)
+_JAKARTA_TABLE = Path(__file__).resolve().parent.parent / "triage" / "handlers" / "jakarta_packages.yml"
+
+
+@lru_cache(maxsize=1)
+def _jakarta_froms() -> tuple[str, ...]:
+    try:
+        doc = yaml.safe_load(_JAKARTA_TABLE.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return ()
+    return tuple(str(p["from"]) for p in doc.get("packages") or [])
+
+
+def javax_ee_imports(profile: ProjectProfile) -> list[str]:
+    """`profile.source.javax_imports` keys equal to / under a package of the jakarta table (sorted)."""
+    froms = _jakarta_froms()
+    return sorted(k for k, n in (profile.source.javax_imports or {}).items()
+                  if n and any(k == f or k.startswith(f + ".") for f in froms))
 
 JSTL_JAVAX_KEYS = ("javax.servlet:jstl", "jstl:jstl", "taglibs:standard", "org.apache.taglibs:taglibs-standard-impl",
                    "org.apache.taglibs:taglibs-standard-spec", "org.glassfish.web:javax.servlet.jsp.jstl",
@@ -107,6 +132,13 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
         out.append(("jaxb-runtime-add", "javax.xml.bind imports: JAXB was removed from the JDK"))
     if _has_dep(profile, *JSTL_JAVAX_KEYS):
         out.append(("jstl-to-jakarta", "javax JSTL dependency must become jakarta.servlet.jsp.jstl (Boot-managed)"))
+    ee = javax_ee_imports(profile)
+    if ee:
+        out.append(("jakarta-namespace-sweep", f"javax EE imports in the as-is sources ({', '.join(ee)}): rename what "
+                                               "the recipes leave behind after the spring rewrite"))
+    if any(lib.name.startswith("spring-data") or lib.name == "jpa" for lib in profile.libraries):
+        out.append(("spring-data-crud-repository",
+                    "Spring Data repositories present: PagingAndSortingRepository lost its CRUD methods in Spring Data 3"))
     for p in profile.poms:
         for pl in p.plugins:
             if pl.artifact_id == "spring-boot-maven-plugin" and \

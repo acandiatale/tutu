@@ -160,6 +160,18 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "How to supply them:": "설정 방법:",
     "Packaged placeholders: {files} (grep `__SET_ME__`)": "패키지된 플레이스홀더: {files} (`__SET_ME__`로 검색)",
     # ---- flag help (FLAG_HELP / FLAG_PREFIX_HELP values of markdown.py)
+    "OpenRewrite could not parse some source files (see the phase notes / rewrite log): recipes that need type "
+    "information skipped them; the source handlers and the fix loop covered what the build found":
+        "OpenRewrite가 일부 소스 파일을 파싱하지 못함(phase 노트 / rewrite 로그 참고): 타입 정보가 필요한 레시피는 그 "
+        "파일을 건너뛰었고, 빌드가 찾아낸 것은 소스 핸들러와 수정 루프가 처리했다",
+    "javax.* Jakarta EE references the recipes had left in the sources were renamed to jakarta.* by the "
+    "jakarta-namespace-sweep handler (string literals / resource files are listed as follow-ups)":
+        "레시피가 소스에 남긴 javax.* Jakarta EE 참조를 jakarta-namespace-sweep 핸들러가 jakarta.*로 바꿨다"
+        "(문자열 리터럴 / 리소스 파일은 후속 작업에 나열)",
+    "repository interfaces that extended only PagingAndSortingRepository got ListCrudRepository<T, ID> back "
+    "(Spring Data 3 removed its CRUD methods)":
+        "PagingAndSortingRepository만 상속하던 리포지토리 인터페이스에 ListCrudRepository<T, ID>를 다시 추가했다"
+        "(Spring Data 3에서 CRUD 메서드가 빠짐)",
     "every build ran with `-Dmaven.test.skip=true` (build.skip_test_compile): test sources were neither compiled nor "
     "run — the owning team compiles and fixes them":
         "모든 빌드가 `-Dmaven.test.skip=true`로 실행됨(build.skip_test_compile): 테스트 소스는 컴파일도 실행도 하지 "

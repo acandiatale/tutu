@@ -452,3 +452,25 @@ def test_llm_cost_by_model_in_the_report(cfg, ws):
     assert c.total == round(terra.cost + (1_000 / 1e6 * 0.1 + 10 / 1e6 * 0.5), 6)
     md = (ws.run_dir / "report.md").read_text(encoding="utf-8")
     assert "## LLM usage and cost" in md and "| `gpt-6-luna` | 1 | 1,000 | 10 |" in md
+
+
+def test_rewrite_parse_problems_flag_note_and_journal(cfg, ws):
+    """2026-10-22: files the rewrite plugin could not parse are flagged (recipes that need types skipped them)."""
+    class ParseProblemRunner(FakeRewriteRunner):
+        def run(self, recipes, **kw):
+            res = super().run(recipes, **kw)
+            if kw.get("label") == "spring.rewrite":
+                res.parse_problems = ["src/main/java/com/x/vendor/Legacy.java", "src/main/java/com/x/Old.java"]
+            return res
+
+    orch = make_orch(cfg, ws, rewrite=ParseProblemRunner(ws))
+    report = orch.run()
+    assert report.success
+    assert "rewrite-parse-problems" in report.flags
+    spring = next(p for p in report.phases if p.phase == Phase.SPRING)
+    note = next(n for n in spring.notes if "could not parse 2 source file(s)" in n)
+    assert "vendor/Legacy.java" in note and "jakarta-namespace-sweep" in note
+    ev = [e for e in journal_events(ws) if e["event"] == "rewrite_parse_problems"]
+    assert len(ev) == 1 and ev[0]["step"] == "spring.rewrite" and len(ev[0]["files"]) == 2
+    jdk = next(p for p in report.phases if p.phase == Phase.JDK21)
+    assert not any("could not parse" in n for n in jdk.notes)

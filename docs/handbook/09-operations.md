@@ -122,6 +122,9 @@ intake → analyze → plan → jdk21(레시피 + 루프) → spring(레시피 +
 | `werror-removed` | `-Werror` 제거 |
 | `managed-versions-carried-over` | Handover의 ⚠ 행 확인 |
 | `rewrite-unresolved-versions` | 레시피가 Maven 메타데이터를 못 받아 `4.0.x` 같은 문자 그대로 버전을 남김 → 나중에 재실행하거나 직접 버전 지정 |
+| `rewrite-parse-problems` | OpenRewrite가 일부 소스를 파싱하지 못해 레시피가 그 파일을 건너뜀(phase 노트에 파일 목록). 남은 것은 소스 핸들러와 수정 루프가 처리 → 9.16 |
+| `jakarta-leftovers-renamed` | 레시피가 남긴 `javax.*`를 `jakarta-namespace-sweep`이 바꿈(E13). follow-up의 문자열 / 리소스 파일 확인 |
+| `spring-data-crud-restored` | 페이징 리포지토리에 `ListCrudRepository<T, ID>`를 추가함(E14) |
 | `llm-cooldown` / `llm-unavailable` | 게이트웨이 장애 → 9.1 |
 | `llm-budget-exhausted` / `time-budget-exhausted` | 예산 소진(`loop.max_llm_calls` / `loop.max_total_minutes`) |
 | `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `unsupported-build-tool:<도구>` | 중단 사유(종료 코드 3) |
@@ -228,6 +231,8 @@ Select-String -Path "$run\sbmig.log" -Pattern "max fix rounds|fix round"
 | E10 레거시 컴파일러 설정(Java 1.6/1.7 pom) | `option --boot-class-path cannot be used together with --release`, `not allowed with target 21`, `-Xbootclasspath/p:`, `Cannot run program …/jdk1.6/bin/javac` | 사라진 JDK를 가리키는 fork/executable, bootclasspath 등 | 핸들러 `compiler-legacy-config`(선제 + 반응): 해당 요소·인자 제거, `encoding` 등은 유지 | 없음 |
 | E11 부모 교체 후 javax JSTL | `'dependencies.dependency.version' for javax.servlet:jstl:jar is missing` | 옛 부모 체인이 관리하던 javax JSTL(어차피 Jakarta JSP와 불일치) | 핸들러 `jstl-to-jakarta`: Jakarta JSTL(`org.glassfish.web:jakarta.servlet.jsp.jstl` 등)로 교체, 버전은 Boot BOM에 맡김 | 없음 |
 | E12 필터링 리소스 아래 바이너리 | `maven-resources-plugin:3.3.x:resources … filtering …/static/fonts/fontawesome-webfont.eot … MalformedInputException: Input length = 1`(war 플러그인 `<webResources>`도) | resources-plugin ≥ 3.2(Boot 4 부모)가 필터링 대상 파일을 텍스트로 읽음 | 핸들러 `resources-binary-filtering`(선제 + 반응): 실패한 플러그인에 `<nonFilteredFileExtensions>`(웹폰트, keystore, 압축, 문서, 미디어 + 실패 확장자) 추가, 필터링 유지, 삭제 없음 | 없음 |
+| E13 rewrite 뒤 남은 javax | `incompatible types: jakarta.persistence.Query cannot be converted to javax.persistence.Query`, `package javax.persistence does not exist`, `class file for javax.X not found`(프로젝트 소스) | rewrite 플러그인이 파싱하지 못한 파일(플래그 `rewrite-parse-problems`), `openrewrite.exclusions` 아래 디렉터리, 완전한 이름(FQN)으로 쓴 `javax.*`, 타입 정보 부족 | 핸들러 `jakarta-namespace-sweep`(선제 + 반응): 프로젝트 소스의 `javax.*` Jakarta EE 참조를 `jakarta.*`로(플래그 `jakarta-leftovers-renamed`). 의존성 jar가 javax를 쓰면 X1 | follow-up의 문자열 리터럴 / 리소스 파일(`javax.persistence.*` 속성 키, persistence.xml / web.xml 스키마) 확인 |
+| E14 Spring Data 페이징 리포지토리 | `no suitable method found for findAll(no arguments)`, `cannot find symbol … method save(…)` | Spring Data 3에서 `PagingAndSortingRepository`가 `CrudRepository`를 상속하지 않음. 레시피 `MigratePagingAndSortingRepository`는 타입 정보가 있을 때만 고침 | 핸들러 `spring-data-crud-repository`(선제 + 반응): `ListCrudRepository<T, ID>` 추가(플래그 `spring-data-crud-restored`) | 없음 |
 
 ### 6.3 루프 안전장치(L)
 | ID | 증상 | 의미 | sbmig가 하는 일 | 운영자가 할 일 |
@@ -364,6 +369,12 @@ tar -tf shop-boot\target\shop-boot-1.0.0.jar | Select-String "BOOT-INF/" | Selec
 
 ### 9.15 `config error … artifacts: Field required`
 `--config config\artifacts.yml`을 빠뜨렸습니다(종료 코드 2). 웹에서는 artifacts 파일을 체크하지 않은 경우입니다.
+
+### 9.16 `There were problems parsing …` / 플래그 `rewrite-parse-problems`
+OpenRewrite가 그 파일들을 파싱하지 못해 **어떤 레시피도 그 파일을 고치지 않았습니다**(phase 노트에 파일 목록, 요약 줄만 있으면 `(unknown files — see the rewrite log)`). 남은 javax 참조는 E13 핸들러, 페이징 리포지토리는 E14 핸들러, 나머지는 수정 루프가 빌드 오류를 보고 처리합니다. 빌드가 통과했으면 할 일은 없습니다. 같은 파일이 계속 나오면 rewrite 로그에서 원인(문법 오류, 생성 소스)을 확인하십시오.
+
+### 9.17 `jakarta.persistence.Query cannot be converted to javax.persistence.Query` / `no suitable method found for findAll(no arguments)`
+E13 / E14. 핸들러 `jakarta-namespace-sweep` / `spring-data-crud-repository`가 LLM 없이 고칩니다(플래그 `jakarta-leftovers-renamed` / `spring-data-crud-restored`). 이 오류로 LLM 호출이 들면 예전 체크아웃입니다. javax 쪽이 의존성 jar의 클래스이면 X1(blocked)입니다.
 
 ## 10. 지원 요청 시 보낼 것
 회사 PC는 폐쇄망이고 로그를 손으로 옮겨 적어야 하므로 **최소한만** 보냅니다.

@@ -7,7 +7,7 @@ sbmig 저장소와 실행 결과물이 어느 디렉터리에, 어떤 형식으�
 - 저장소 최상위 디렉터리 각각의 역할과 "지워도 되는가 / 백업해야 하는가"를 판단할 수 있습니다.
 - `kb/` 의 케이스·레시피·원장(ledger)·심볼 인덱스 파일 형식과, 빌드 수정 루프가 이를 어떻게 다시 꺼내 쓰는지 설명할 수 있습니다.
 - 한 번의 실행 디렉터리(`out/<run id>/`)에 생기는 모든 파일이 어느 모듈에서 언제 쓰이는지 알고, 문제 보고 시 어떤 파일을 봐야 하는지 압니다.
-- `fixtures/` 의 24개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
+- `fixtures/` 의 25개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
 - 테스트 디렉터리 구조와 `integration` 마커, 보조 스크립트(`scripts/`), 독립 코딩 에이전트(`coding/`)의 위치를 압니다.
 
 ## 관련 코드
@@ -31,7 +31,7 @@ migration-agent/
 ├── knowledge/                큐레이션된 지식: 레시피 카탈로그, 선언형 레시피, 마이그레이션 노트, 라이브러리 권고, 외부화 규칙
 ├── kb/                       실행 중 자라는 학습 KB (케이스, 레시피 후보/활성, 패턴, 원장, 심볼 인덱스)
 ├── sbmig/                    에이전트 본체(Python 패키지)
-├── fixtures/                 테스트용 as-is Maven 프로젝트 24개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
+├── fixtures/                 테스트용 as-is Maven 프로젝트 25개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
 ├── tests/                    pytest 테스트(패키지별 하위 디렉터리)
 ├── scripts/                  e2e, KB 학습 데모, 플릿 데모 스크립트
 ├── coding/                   sbmig 와 독립된 소형 코딩 에이전트(같은 게이트웨이 계약)
@@ -626,7 +626,7 @@ fixtures/
 └── fleet/manifest.example.yml    플릿 매니페스트 견본
 ```
 
-### 6.2 24개 픽스처
+### 6.2 25개 픽스처
 
 | 픽스처 | 케이스 | 무엇을 검증하나 |
 |---|---|---|
@@ -654,6 +654,7 @@ fixtures/
 | `company-boot-single` | `spring_boot`(단일 jar) | 회사 레이아웃: 단일 Boot 앱을 `shop-boot` 로 감쌈(wrap) |
 | `company-spring5-web` | `spring_legacy`(war, 정적 파일) | 회사 레이아웃: `shop-boot` / `shop-back` / `shop-front` |
 | `company-servlet-jsp` | `servlet_tomcat`(war, JSP+JSTL) | 회사 레이아웃: JSP → boot WAR + front jar(Servlet 3) |
+| `boot2-rewrite-excluded` | `spring_boot` | `openrewrite.exclusions` 아래의 vendored 헬퍼(FQN `javax.persistence`)와 paging 전용 리포지토리 → 레시피가 못 본 파일을 `jakarta-namespace-sweep` / `spring-data-crud-repository` 가 고침(E13, E14), 0 LLM |
 
 정확한 기대 결과는 `fixtures/projects/README.md` 의 매트릭스가 원본입니다. 레이아웃별 전후 트리는 [06. 재구성과 회사 레이아웃](06-restructure-and-layouts.md) 에서 다룹니다.
 
@@ -698,12 +699,13 @@ fixtures/
 
 ### 6.4 픽스처별 오버레이(sbmig.e2e.yml)와 레지스트리
 
-`config/artifacts.local-e2e.yml` 다음에 `--config` 로 덧붙는 파일입니다. 9개 픽스처에 있으며, `tests/fixtures/test_fixture_projects.py` 의 세 레지스트리가 각 오버레이의 최상위 키를 정확히 고정합니다.
+`config/artifacts.local-e2e.yml` 다음에 `--config` 로 덧붙는 파일입니다. 10개 픽스처에 있으며, `tests/fixtures/test_fixture_projects.py` 의 네 레지스트리가 각 오버레이의 최상위 키를 정확히 고정합니다.
 
 | 레지스트리 | 픽스처 | 오버레이 키 |
 |---|---|---|
 | `OVERRIDES` | `boot2-javax-lib-optional`(legacy-web-lib 2.0.0), `boot2-method-rename`(3.0.0) | `artifacts`(+ `llm`, `kb`) — 선택 목록 8개를 통째로 다시 적음 |
 | `LLM_ONLY_OVERRIDES` | `boot2-hystrix-command`, `java6-legacy`, `multi-module-conflict` | `llm`(재생 LLM), `kb`(전용 KB) |
+| `REWRITE_ONLY_OVERRIDES` | `boot2-rewrite-excluded` | `openrewrite.exclusions`(기본 JSP/HTML 4개 + `**/vendor/**`, `**/repository/**` — 목록은 통째로 대체됨) |
 | `COMPANY_OVERRIDES` | `legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp` | `layout`(`module_dir`, `boot_module`, `comp_module`, `front_module`, `boot_as_is` 를 회사 기본값으로 되돌림) + `artifacts`(`boot_parent`, `comp_parent`) |
 
 로컬 설정이 pre-9c 레이아웃을 고정하고 있으므로, 회사 레이아웃 픽스처는 오버레이로 레이아웃 키를 회사 기본값(= `LayoutConfig` 코드 기본값)으로 되돌리고 역할 부모를 `spring-boot-starter-parent` 4.1.0 대역으로 지정합니다. 테스트는 선택 아티팩트가 항상 정확히 8개인지, 회사 픽스처의 루트 artifactId 가 `shop` 인지도 확인합니다. (요청서의 `PARENT_OVERRIDES` 라는 레지스트리는 현재 코드에 없습니다.)

@@ -266,6 +266,8 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 | `jstl-to-jakarta` | 선제(SPRING): javax JSTL 의존성. 반응형: 누락 버전 / jstl 문구 | → `org.glassfish.web:jakarta.servlet.jsp.jstl` 등. 버전은 Boot BOM에 맡김 | E11 |
 | `dependency-relocation` | 표(`sbmig/triage/handlers/relocations.yml`)의 옛 아티팩트가 에러에 나오거나, 그 패키지가 누락되고 pom에 선언돼 있을 때 | javax→jakarta API, `hibernate` → `org.hibernate.orm`, Boot 4 starter 이름 변경 등 재배치 | X3 앞 단계 |
 | `querydsl-jakarta-classifier` | 선제(SPRING): querydsl 사용. 반응형: `querydsl`, `javax/persistence`, `class Q…` | `querydsl-jpa` / `querydsl-apt` → 5.1.0 + classifier `jakarta` | – |
+| `jakarta-namespace-sweep` | 선제(SPRING): as-is 스캔에 javax Jakarta EE import가 있을 때(spring 레시피 뒤, 첫 spring 빌드 전). 반응형: `package javax.X does not exist`, `location: package javax.X`, `javax↔jakarta … cannot be converted to …`, `required: … found: …`, `class file for javax.X not found` | 레시피가 남긴 프로젝트 Java 소스의 `javax.*` Jakarta EE 참조(문자열 리터럴 밖, FQN 포함)를 `jakarta.*`로 바꿈. 표는 `sbmig/triage/handlers/jakarta_packages.yml`(OpenRewrite `JavaxMigrationToJakarta`의 ChangePackage 규칙 사본, `javax.annotation` / `javax.transaction`은 하위 패키지 제외, JDK 패키지는 건드리지 않음). 플래그 `jakarta-leftovers-renamed`, 문자열 리터럴 / 리소스 파일은 후속 조치 | E13 |
+| `spring-data-crud-repository` | 선제(SPRING): `spring-data*` / `jpa` 라이브러리 사용. 반응형: `no suitable method found for findAll(no arguments)`, `symbol: method save|findById|deleteById|…(` | `PagingAndSortingRepository` / `ListPagingAndSortingRepository`만 상속하는 리포지토리 인터페이스에 `ListCrudRepository<T, ID>`(같은 타입 인자) + import 추가(Spring Data 3에서 CRUD 메서드가 빠짐). 플래그 `spring-data-crud-restored` | E14 |
 | `jaxb-runtime-add` | 선제: `javax.xml.bind` import. 반응형: `javax.xml.bind`, `JAXBContext` … | JAXB API + 런타임 추가(소스에 따라 javax 또는 jakarta) | S8 |
 | `add-known-dependency` | `package X does not exist` / `cannot access` / `class file for … not found` / `cannot find symbol`이고 그 패키지의 아티팩트를 알 때(`known_packages.yml`) | hamcrest, jakarta.*, `spring-boot-jackson2`, 모듈화된 `*-test` starter, jsr305, JUnit 4 잔재(`org.junit.experimental` / `rules` / `runner` … → `junit:junit` test, Boot 4.1 BOM 관리; 2026-10-22) 등을 모듈 pom에 추가. 부모가 관리하면 버전 생략 | – |
 | `lombok-version-floor` | 선제: lombok 버전 < 1.18.30(또는 모름). 반응형: `lombok`, `TypeTag :: UNKNOWN`, `com.sun.tools.javac.code.TypeTags`, `IllegalAccessError … lombok` | lombok을 1.18.38 이상으로. processor path 버전 고정, 상속받은 `annotationProcessorPaths`는 `combine.self="override"`로 끊음(§10.1) | X5 계열 |
@@ -289,7 +291,7 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 | 선택 | `pre_handlers_for(profile, cfg)` → `pre_handler_reasons`가 (id, 이유) 목록을 만듭니다. journal `plan` 이벤트의 `pre_handlers` | – |
 | 항상 추가 | `ALWAYS_PREEMPTIVE = ("strip-utf8-bom", "source-encoding")` (오케스트레이터) | 맨 앞 |
 | JDK21 그룹 | `preemptive_phase`가 `Phase.JDK21`인 핸들러 | 실행의 첫 rewrite/빌드 전(보통 `jdk21.rewrite` 전) |
-| SPRING 그룹 | `preemptive_phase`가 `Phase.SPRING`인 핸들러(`javax-servlet-api-to-jakarta`, `jstl-to-jakarta`, `querydsl-jakarta-classifier`, `add-known-dependency`) | spring 레시피(jakarta 변환)가 끝난 뒤 spring 빌드-수정 루프 직전. spring 루프가 없으면 restructure 전 |
+| SPRING 그룹 | `preemptive_phase`가 `Phase.SPRING`인 핸들러(`javax-servlet-api-to-jakarta`, `jstl-to-jakarta`, `querydsl-jakarta-classifier`, `jakarta-namespace-sweep`, `spring-data-crud-repository`, `add-known-dependency`) | spring 레시피(jakarta 변환)가 끝난 뒤 spring 빌드-수정 루프 직전. spring 루프가 없으면 restructure 전 |
 
 jakarta에 의존하는 핸들러를 기다리게 하는 이유는, javax 소스가 아직 남아 있는 상태에서 servlet-api를 jakarta로 바꾸면 jakarta 레시피가 타입을 인식하지 못하고 jdk21 빌드도 깨지기 때문입니다.
 

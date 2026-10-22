@@ -37,14 +37,15 @@ Catalog IDs refer to `docs/ERROR-HANDLING.md`.
 | `company-boot-single` | `spring_boot` (single jar) | company layout: wrap (round 9c) | 11 | `sbmig.e2e.yml` = company layout keys + role parents; single-module Boot 2.7.18 app (`com.example:shop`) wrapped into `shop-boot` under an aggregator root (packaging `pom`, parent 4.1.0, `<modules>` = `[shop-boot]`, the 2 mandatory starters in the root only); `shop-boot/pom.xml` parent `boot_parent` with `<relativePath/>`, explicit groupId/version, all sources + `application.properties` under `shop-boot/src/main/…`; no `shop-back`/`shop-front`; success, exit 0, 0 LLM |
 | `company-spring5-web` | `spring_legacy` (war, static resources, no JSP) | company layout: boot/back/front (round 9c) | 11 | Spring 5.3 XML webapp (`web.xml` + `DispatcherServlet`, `@Controller` + `@Service`, `index.html`, `css/site.css`, `js/app.js`) → root aggregator `[shop-back, shop-boot, shop-front]` (any order), mandatory in the root only; `shop-boot` jar (generated Application only), `shop-back` (controller, service, XML configs), `shop-front` (`src/main/resources/static/…`, no Java); parents base/boot/comp/comp (stand-in 4.1.0); success, exit 0, 0 LLM |
 | `company-servlet-jsp` | `servlet_tomcat` (war, JSP + JSTL) | company layout: JSP → WAR boot module (round 9c) | 8 | `HttpServlet` forwarding to `WEB-INF/jsp/hello.jsp` (`<c:out>`, JSTL `javax.servlet:jstl` 1.2), `css/site.css` → `shop-boot` packaging **war** (`spring-boot-starter-tomcat` provided, Application `extends SpringBootServletInitializer`, `shop-boot/target/*.war`), `shop-back` (servlet on `jakarta.servlet`), `shop-front` (`src/main/resources/META-INF/resources/WEB-INF/jsp/hello.jsp`, `static/css/site.css`); mandatory in the root only; success, exit 0, 0 LLM |
+| `boot2-rewrite-excluded` | `spring_boot` | E13, E14 (2026-10-22) | 11 | copy of `boot2` whose `sbmig.e2e.yml` adds `**/vendor/**` and `**/repository/**` to `openrewrite.exclusions` (defaults repeated): `MemberRepository extends PagingAndSortingRepository<Member, Long>` (service calls `save` / `findAll()` / `deleteById`) and `vendor/LegacyQueryHelper` with fully-qualified `javax.persistence.EntityManager` / `Query` are never seen by the recipes → pre-emptive SPRING handlers `spring-data-crud-repository` (adds `ListCrudRepository<Member, Long>`) and `jakarta-namespace-sweep` (javax → jakarta); success, exit 0, **0 LLM**, flags `jakarta-leftovers-renamed` + `spring-data-crud-restored`, commons-lang3 → 3.17.0, `post_checks` on both files |
 
 Optional artifacts from `config/artifacts.local-e2e.yml` (exactly 8) used directly (→ "optional bump" path):
 
 | artifact | fixtures |
 |---|---|
-| `org.apache.commons:commons-lang3` | pure-java, boot2, boot2-javax-lib*, boot2-method-rename, euckr-legacy, enforcer-java8-werror, missing-artifact, multi-module-merge/core, java6-legacy |
+| `org.apache.commons:commons-lang3` | pure-java, boot2, boot2-javax-lib*, boot2-method-rename, boot2-rewrite-excluded, euckr-legacy, enforcer-java8-werror, missing-artifact, multi-module-merge/core, java6-legacy |
 | `com.google.guava:guava` | pure-java, boot3 |
-| `org.projectlombok:lombok` | boot2, boot2-javax-lib*, boot2-method-rename, msa/order-service, msa-shared-lib/order-service |
+| `org.projectlombok:lombok` | boot2, boot2-javax-lib*, boot2-method-rename, boot2-rewrite-excluded, msa/order-service, msa-shared-lib/order-service |
 | `com.fasterxml.jackson.core:jackson-databind` | spring5-xml |
 | `commons-io:commons-io` | servlet-tomcat |
 | `org.slf4j:slf4j-api` | spring5-xml |

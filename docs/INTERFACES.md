@@ -499,7 +499,7 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   * e2e: post-check kinds `pom_packaging {path, packaging}` (missing = jar), `pom_module_list {path, modules,
     any_order}`; `tests/fixtures` `COMPANY_OVERRIDES` registry (layout + role-parent overrides). Fixtures
     `legacy-role-parents` (Boot as-is in place), `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`
-    (24 fixtures).
+    (24 fixtures; 25 with `boot2-rewrite-excluded`, 2026-10-22).
   * Follow-ups from the first company run (same day): `openrewrite.exclusions` (default `**/*.jsp, **/*.jspx,
     **/*.html, **/*.htm` → `-Drewrite.exclusions`; OpenRewrite's XML parser reads those and logs ANTLR noise);
     handler `jstl-to-jakarta` (`JstlToJakarta(RelocationHandler)`, pre-emptive in the spring phase via
@@ -529,3 +529,15 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     (a terminated `mvn.cmd` left its `java.exe` running); `fixer.grep` is bounded (`MAX_GREP_FILES` 3000,
     `MAX_GREP_FILE_BYTES` 512 KB, `GREP_BUDGET_S` 45 s, one read per file) and logs the context / feedback rounds.
 * 2026-10-22 (company run, final verify failed on `org.hibernate.annotations.common`): `LoopConfig.phases["verify"]` (`PhaseLoopConfig(goal="package", max_iterations=3)`) + `LoopConfig.verify_extra_llm_attempts` (2): `Orchestrator._verify_fix_loop` runs one last `BuildFixLoop.run(Phase.VERIFY, …)` after a failed final build and repeats the final build (journal `verify_loop_start` / `verify_loop_end` / `blocked_released`); `Triager.decide` adds `verify_extra_llm_attempts` to both per-cluster limits when `TriageContext.phase == VERIFY`; `BuildFixLoop` requests the escalation model in that phase; `NoteEntry.applies` treats `verify` as `restructure`; the verify phase is harvested when it has attempts. Library rule + advisory `hibernate-commons-annotations`, note `knowledge/notes/hibernate-7.md`.
+* 2026-10-22 (company run, jakarta leftovers + Spring Data paging repositories after the rewrite):
+  `RewriteResult.parse_problems: list[str]` — files rewrite-maven-plugin reported as `There were problems parsing
+  <path>` (`OpenRewriteRunner.parse_problems(text, root=…)`: `\` → `/`, root-relative where possible, module prefix
+  like `changed_files`, de-duplicated, log order; `["(unknown files — see the rewrite log)"]` when only the summary
+  line `… parsing some source files` appears); the `rewrite` journal event carries a `parse_problems` count, the
+  orchestrator adds journal event `rewrite_parse_problems` (`step`, `files`), a phase note and flag
+  `rewrite-parse-problems`. Two deterministic source handlers (`sbmig/triage/handlers/source_handlers.py`):
+  `jakarta-namespace-sweep` (E13; flag `jakarta-leftovers-renamed`; table `sbmig/triage/handlers/jakarta_packages.yml`,
+  mirror of OpenRewrite's `JavaxMigrationToJakarta` ChangePackage rules) and `spring-data-crud-repository` (E14; flag
+  `spring-data-crud-restored`). Pre-handler selection (`sbmig/plan/pre_handlers.py`): javax Jakarta EE imports in
+  the as-is scan → sweep; a `spring-data*` / `jpa` library → CRUD handler; both run once after the spring recipes
+  (`Orchestrator._maybe_pre_handlers`, group SPRING) and reactively on their compile-error wording.

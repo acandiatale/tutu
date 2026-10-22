@@ -410,6 +410,9 @@ class RewriteResult(BaseModel):
     dry_run: bool = False
     recipes_applied: dict[str, list[str]] = Field(default_factory=dict)   # recipe id → files it changed (from 'by:' blocks)
     forked: bool = True                                                     # rewrite:run (forks compile) vs runNoFork
+    # files the rewrite plugin could not parse (`There were problems parsing …` lines; 2026-10-22): recipes that
+    # need types (Spring Data, Hibernate, method renames) silently skip them — the source handlers cover the rest
+    parse_problems: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

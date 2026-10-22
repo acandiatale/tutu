@@ -53,6 +53,8 @@ notes:
   - EntityManager|@Entity|@Column|@Table|@Id
   - ConstraintValidator|@NotNull|@NotBlank|@Valid
   - HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|Filter
+  - PagingAndSortingRepository|ListCrudRepository|no suitable method found for findAll
+  - org\.hibernate\.(Query|SQLQuery|Criteria)|createSQLQuery|createCriteria|Restrictions|uniqueResult|setResultTransformer
   cases:
   - pure_java
   - spring_legacy

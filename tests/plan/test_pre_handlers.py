@@ -24,14 +24,15 @@ GOOD_COMPILER = PluginInfo(artifact_id="maven-compiler-plugin", version="3.13.0"
 
 def test_boot27_handlers(tmp_path: Path, cfg) -> None:
     ids = pre_handlers_for(analyze_path(make_boot27(tmp_path), cfg), cfg)
-    assert ids == ["lombok-version-floor", "maven-compiler-plugin-floor", "remove-classic-loader-implementation",
-                   "mysql-connector-relocation"]
+    assert ids == ["lombok-version-floor", "maven-compiler-plugin-floor", "jakarta-namespace-sweep",
+                   "spring-data-crud-repository", "remove-classic-loader-implementation", "mysql-connector-relocation"]
     assert set(ids) <= set(HANDLER_IDS)
 
 
 def test_servlet_handlers(tmp_path: Path, cfg) -> None:
     ids = pre_handlers_for(analyze_path(make_servlet(tmp_path), cfg), cfg)
-    assert ids == ["maven-compiler-plugin-floor", "javax-servlet-api-to-jakarta", "jstl-to-jakarta"]   # 9c: javax jstl
+    assert ids == ["maven-compiler-plugin-floor", "javax-servlet-api-to-jakarta", "jstl-to-jakarta",   # 9c: javax jstl
+                   "jakarta-namespace-sweep"]                                                     # E13: javax.servlet
 
 
 def test_boot33_no_compiler_declared(tmp_path: Path, cfg) -> None:
@@ -60,7 +61,7 @@ def test_plugin_and_dependency_conditions(cfg) -> None:
                                  configuration={"loaderImplementation": "classic"})])
     ids = pre_handlers_for(_profile(poms=[p], javax={"javax.xml.bind": 2}), cfg)
     assert ids == ["maven-compiler-plugin-floor", "surefire-plugin-floor", "javax-servlet-api-to-jakarta",
-                   "jaxb-runtime-add", "remove-classic-loader-implementation"]
+                   "jaxb-runtime-add", "jakarta-namespace-sweep", "remove-classic-loader-implementation"]
     assert pre_handlers_for(_profile(poms=[_pom(plugins=[GOOD_COMPILER])]), cfg) == []
     assert pre_handlers_for(_profile(), cfg) == []                   # no poms → nothing to floor
 

@@ -55,7 +55,19 @@ _NOT_FOUND_RE = re.compile(r"(Recipe\(s\) not found: .*|Could not find recipe.*|
                            r"Recipes not found:.*|Did you mean: .*)")
 _VALIDATION_RE = re.compile(r"Recipe validation error in (?P<recipe>\S+) for property (?P<prop>.+?)"
                             r"(?: \(in file:[^)]*\))?: (?P<msg>.*)$")
+# rewrite-maven-plugin 6.46.1: "There were problems parsing <path>" per file (sometimes with text after the path)
+# and/or the summary "There were problems parsing some source files[, run with --errors …]".
+_PARSE_PROBLEM_RE = re.compile(r"There were problems parsing (?P<rest>.*)$")
+PARSE_PROBLEMS_UNKNOWN = "(unknown files — see the rewrite log)"
 _DOES_NOT_EXIST_RE = re.compile(r"recipe '(?P<id>[^']+)' does not exist")
+
+
+def _is_windows_abs(p: str) -> bool:
+    return bool(re.match(r"^[A-Za-z]:/", p))
+
+
+def _is_abs(p: str) -> bool:
+    return p.startswith("/") or _is_windows_abs(p)
 
 
 def recipe_artifact_for(recipe_id: str) -> str | None:
@@ -184,6 +196,35 @@ class OpenRewriteRunner:
             if m:
                 out += [m.group("a"), m.group("b")]
         return list(dict.fromkeys(p.replace("\\", "/") for p in out))
+
+    @staticmethod
+    def parse_problems(text: str, *, root: Path | str | None = None) -> list[str]:
+        """Files the plugin reported as unparseable ("There were problems parsing <path>"), `\\` -> `/`,
+        de-duplicated, log order kept. Absolute paths under `root` become relative to it; other paths stay as logged.
+        Only the summary line ("... parsing some source files") -> ``[PARSE_PROBLEMS_UNKNOWN]``; nothing -> ``[]``."""
+        base = (str(root).replace("\\", "/").rstrip("/") + "/") if root else None
+        files: list[str] = []
+        summary = False
+        for line in text.splitlines():
+            m = _PARSE_PROBLEM_RE.search(line.rstrip())
+            if not m:
+                continue
+            rest = m.group("rest").strip()
+            if not rest or rest.startswith("some source files"):
+                summary = True
+                continue
+            p = rest.split()[0].rstrip(",;:").strip("'\"`").replace("\\", "/")
+            if not p:
+                continue
+            if base:
+                win = _is_windows_abs(p)
+                if (p.lower().startswith(base.lower()) if win else p.startswith(base)):
+                    p = p[len(base):]
+            files.append(p)
+        files = list(dict.fromkeys(files))
+        if not files and summary:
+            return [PARSE_PROBLEMS_UNKNOWN]
+        return files
 
     @staticmethod
     def parse_recipe_attribution(text: str) -> dict[str, list[str]]:
@@ -395,6 +436,16 @@ class OpenRewriteRunner:
             except GitError:
                 pass
         changed = sorted({c for c in changed if c and not c.startswith("target/") and "/target/" not in c})
+        parse_problems = []
+        for p in self.parse_problems(out, root=cwd):
+            if _is_abs(p):          # outside the module dir: relative to the project root if it is under it
+                p = self.parse_problems(f"There were problems parsing {p}", root=self.ws.root)[0]
+            elif p != PARSE_PROBLEMS_UNKNOWN:
+                p = prefix + p
+            parse_problems.append(p)
+        parse_problems = list(dict.fromkeys(parse_problems))
+        if parse_problems:
+            log.warning("rewrite could not parse %d file(s): %s", len(parse_problems), ", ".join(parse_problems[:5]))
         error = None
         if not ok:
             if pr.timed_out:
@@ -405,7 +456,8 @@ class OpenRewriteRunner:
                 error = self._error_text(out)
         res = RewriteResult(ok=ok, recipes=ids, changed_files=changed, log_path=str(log_path),
                             duration_s=round(pr.duration_s, 3), error=error, command=cmd, dry_run=dry_run,
-                            recipes_applied=self.parse_recipe_attribution(out), forked=forked)
+                            recipes_applied=self.parse_recipe_attribution(out), forked=forked,
+                            parse_problems=parse_problems)
         self._journal(res, module, config=str(config_path), artifacts=coords)
         log.info("rewrite %s: %d changed files (%.1fs)", "OK" if ok else "FAILED", len(changed), pr.duration_s)
         return res
@@ -413,4 +465,5 @@ class OpenRewriteRunner:
     def _journal(self, res: RewriteResult, module: str | None, **extra) -> None:
         self.ws.journal({"event": "rewrite", "recipes": res.recipes, "ok": res.ok, "dry_run": res.dry_run,
                          "module": module, "changed_files_count": len(res.changed_files),
+                         "parse_problems": len(res.parse_problems),
                          "duration_s": res.duration_s, "log": res.log_path, "error": res.error, **extra})

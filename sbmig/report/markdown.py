@@ -31,6 +31,14 @@ FLAG_HELP = {
     "managed-versions-carried-over": "some dependencies were pinned at the version the as-is parent managed, because "
                                      "the new parent / Boot BOM no longer manages them (⚠ in Handover) — the owners "
                                      "must confirm or replace them",
+    "rewrite-parse-problems": "OpenRewrite could not parse some source files (see the phase notes / rewrite log): "
+                              "recipes that need type information skipped them; the source handlers and the fix loop "
+                              "covered what the build found",
+    "jakarta-leftovers-renamed": "javax.* Jakarta EE references the recipes had left in the sources were renamed to "
+                                 "jakarta.* by the jakarta-namespace-sweep handler (string literals / resource files "
+                                 "are listed as follow-ups)",
+    "spring-data-crud-restored": "repository interfaces that extended only PagingAndSortingRepository got "
+                                 "ListCrudRepository<T, ID> back (Spring Data 3 removed its CRUD methods)",
 }
 FLAG_PREFIX_HELP = {
     "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",

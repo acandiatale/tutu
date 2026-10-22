@@ -792,6 +792,8 @@ class Orchestrator:
         self.ws.journal({"event": "rewrite", "step": step.id, "ok": res.ok, "recipes": res.recipes,
                          "changed_files": len(res.changed_files), "commit": sha if sha != pre else None,
                          "error": res.error, "log": res.log_path, "dry_run": self._dry_run})
+        if getattr(res, "parse_problems", None):
+            self._report_parse_problems(pr, step, res)
         if not res.ok:
             err = res.error or "OpenRewrite run failed"
             self._check_parent_in_rewrite(pr, step, err)
@@ -856,6 +858,21 @@ class Orchestrator:
               f"remain in {', '.join(unresolved)} — re-run sbmig later or set the versions by hand")
         if self.report is not None and fu not in self.report.manual_followups:
             self.report.manual_followups.append(fu)
+
+    # 2026-10-22 (company run): files the rewrite plugin could not parse never see the type-attributed recipes
+    # (Spring Data, Hibernate, method renames) — the source handlers / fix loop cover them; say so in the report
+    PARSE_PROBLEMS_FLAG = "rewrite-parse-problems"
+
+    def _report_parse_problems(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
+        files = [str(f) for f in (getattr(res, "parse_problems", None) or [])]
+        self.ws.journal({"event": "rewrite_parse_problems", "step": step.id, "files": files,
+                         "log": getattr(res, "log_path", None)})
+        self._flag(self.PARSE_PROBLEMS_FLAG)
+        shown = ", ".join(files[:5]) + (f", … (+{len(files) - 5})" if len(files) > 5 else "")
+        pr.notes.append(f"{step.id}: OpenRewrite could not parse {len(files)} source file(s) ({shown}) — recipes "
+                        "that need type information skipped them; the jakarta-namespace-sweep / "
+                        "spring-data-crud-repository handlers and the fix loop cover what the build finds")
+        log.warning("%s: rewrite parse problems in %d file(s): %s", step.id, len(files), shown)
 
     def _check_parent_in_rewrite(self, pr: PhaseResult, step: PlanStep, err: str) -> None:
         """OpenRewrite failed because the configured in-house parent does not resolve → abort like the build loop."""

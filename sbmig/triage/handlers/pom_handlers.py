@@ -1297,9 +1297,11 @@ class AddKnownDependency(PomHandler):
 def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
     """Registration order = reactive precedence (first matching handler wins)."""
     from .edge_handlers import edge_handlers
+    from .source_handlers import source_handlers
 
     return [
         *edge_handlers(cfg),
+        *source_handlers(cfg),          # E13 jakarta-namespace-sweep, E14 spring-data-crud-repository
         MissingDependencyVersion(),
         MysqlConnectorRelocation(),
         JavaxServletApiToJakarta(),

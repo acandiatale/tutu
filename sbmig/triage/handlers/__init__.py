@@ -6,6 +6,8 @@ from .pom_handlers import (CompilerPluginFloor, DependencyRelocation, JavaxServl
                            RelocationHandler, RemoveClassicLoaderImplementation, ResourcesBinaryFiltering,
                            StripPomRepositories, SurefirePluginFloor,
                            TestCompileSkip, default_handlers, known_versions, relocation_table, version_for)
+from .source_handlers import (JakartaNamespaceSweep, RenameResult, SpringDataCrudRepository, jakarta_packages,
+                              rename_javax)
 
 __all__ = [
     "Handler", "HandlerRegistry", "PomHandler", "RelocationHandler", "Relocation", "default_handlers",
@@ -13,5 +15,6 @@ __all__ = [
     "version_for", "CompilerPluginFloor", "DependencyRelocation", "JavaxServletApiToJakarta", "JaxbRuntimeAdd",
     "LombokVersionFloor", "MapstructVersionFloor", "MissingDependencyVersion", "MysqlConnectorRelocation",
     "QuerydslJakartaClassifier", "RemoveClassicLoaderImplementation", "ResourcesBinaryFiltering", "StripPomRepositories", "SurefirePluginFloor",
-    "TestCompileSkip",
+    "TestCompileSkip", "JakartaNamespaceSweep", "SpringDataCrudRepository", "RenameResult", "jakarta_packages",
+    "rename_javax",
 ]

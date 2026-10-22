@@ -624,6 +624,7 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `stopped-after-<phase>` | orchestrator | `--stop-after`로 의도적 정지 | 2(최종 빌드 없음) |
 | `restructure-failed` | orchestrator | restructure 단계 실패/충돌(as-is 트리로 빌드가 통과해도 성공으로 보지 않음) | 2 |
 | `rewrite-unresolved-versions` | orchestrator | 레시피가 `4.0.x`/`latest.release` 같은 문자 그대로 버전을 남김(메타데이터 다운로드 실패, X8) | 빌드 결과에 따름 |
+| `rewrite-parse-problems` | orchestrator | rewrite 플러그인이 `There were problems parsing …`을 출력(`RewriteResult.parse_problems`, E8b) — 그 파일은 레시피가 건너뜀 | 빌드 결과에 따름 |
 | `time-budget-exhausted` | loop / orchestrator | `loop.max_total_minutes` 도달 | 빌드 결과에 따름 |
 | `llm-budget-exhausted` | orchestrator | `loop.max_llm_calls` 모두 사용 | 빌드 결과에 따름 |
 | `llm-unavailable` | fix loop | LLM이 (쿨다운 후에도) 연속 실패 → LLM 전용 클러스터는 blocked(`llm_unavailable`) | 빌드 결과에 따름 |
@@ -638,6 +639,8 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `enforcer-skipped` | 핸들러 `enforcer-relax` | `-Denforcer.skip=true` | 없음 |
 | `werror-removed` | 핸들러 `remove-werror` | 컴파일러 `-Werror` 제거 | 없음 |
 | `systempath-relocated` | 핸들러 `systempath-relocate` | system scope jar 경로 재작성 | 없음 |
+| `jakarta-leftovers-renamed` | 핸들러 `jakarta-namespace-sweep` | 소스에 남은 `javax.*` Jakarta EE 참조를 `jakarta.*`로(E13) | 없음(follow-up) |
+| `spring-data-crud-restored` | 핸들러 `spring-data-crud-repository` | 페이징 리포지토리에 `ListCrudRepository<T, ID>` 추가(E14) | 없음 |
 | `blocked-finalize-failed: <오류>` | orchestrator | blocked 항목 마무리 중 내부 오류 | — |
 | `report-failed: <오류>` | orchestrator | 보고서 작성 실패 | — |
 
@@ -666,6 +669,7 @@ report.md의 "Flags" 절은 이 중 상당수의 설명을 함께 보여 줍니�
 | `rewrite_download_retry` / `rewrite_download_retry_result` | `recipes`, `ok`, `log` | X8 다운로드 재시도 |
 | `rewrite_oom_retry` / `rewrite_oom_retry_result` | `recipes`, `ok`, `log` | E8 OOM 재시도 |
 | `rewrite_unresolved_versions` | `step`, `poms` | 문자 그대로 버전 잔존 |
+| `rewrite_parse_problems` | `step`, `files` | rewrite 플러그인이 파싱하지 못한 파일(E8b). `rewrite` 이벤트에는 개수 `parse_problems` |
 | `loop_start` / `loop_end` | `phase`, `goal`, `max_iterations` / `ok`, `iterations` | build-fix 루프 경계 |
 | `build` | `phase`, `iteration`, `goal`, `ok`, `exit_code` | Maven 빌드 |
 | `triage` | `phase`, `iteration`, 클러스터 | 클러스터링 |

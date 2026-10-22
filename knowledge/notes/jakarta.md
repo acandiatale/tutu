@@ -9,6 +9,8 @@ keywords:
   - "EntityManager|@Entity|@Column|@Table|@Id"
   - "ConstraintValidator|@NotNull|@NotBlank|@Valid"
   - "HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|Filter"
+  - "PagingAndSortingRepository|ListCrudRepository|no suitable method found for findAll"
+  - "org\\.hibernate\\.(Query|SQLQuery|Criteria)|createSQLQuery|createCriteria|Restrictions|uniqueResult|setResultTransformer"
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [spring, jdk21]
 ---
@@ -58,15 +60,42 @@ phases: [spring, jdk21]
 ## Hibernate 6.x / 7.x (Boot 3 = 6.x, Boot 4.1 = Hibernate 7.4)
 - `@Type(type = "org.hibernate.type.TextType")` → remove or `@JdbcTypeCode(SqlTypes.LONGVARCHAR)`;
   `@Type(type="json")` (hibernate-types) → `@JdbcTypeCode(SqlTypes.JSON)`; custom → `@Type(MyUserType.class)`.
-- `@TypeDef`/`@TypeDefs` removed → register via `@Type(MyUserType.class)` / `@JavaType` / `@JdbcType`.
 - `UserType` is generic `UserType<T>` with new method signatures (`nullSafeGet(ResultSet, int, SharedSessionContractImplementor, Object)`).
-- `org.hibernate.type.StringType.INSTANCE` etc. removed → `StandardBasicTypes.STRING`.
-- Legacy `org.hibernate.Criteria` / `session.createCriteria(..)` / `Restrictions` removed → JPA `CriteriaBuilder`.
 - Hibernate 7: `Session.save/saveOrUpdate/update/delete` removed → `persist` / `merge` / `remove`; `session.load` → `getReference`.
 - Hibernate 7 dropped `hibernate-commons-annotations`: `org.hibernate.annotations.common.*` (`LoggerFactory`, `XClass`)
   no longer resolves → see `hibernate-7.md` (jboss-logging `Logger.getLogger`, plain reflection).
 - `hibernate.dialect` is auto-detected; remove `MySQL5Dialect`/`MySQL57Dialect`/`MySQL8Dialect`/`PostgreSQL95Dialect`/
   `Oracle12cDialect` (removed classes) → delete the property or use `MySQLDialect`/`PostgreSQLDialect`/`OracleDialect`.
 - `@GenericGenerator(strategy="uuid2")` → `@UuidGenerator`; `@org.hibernate.annotations.Where` → `@SQLRestriction`.
-- `query.setResultTransformer(Transformers.aliasToBean(X.class))` deprecated → `TupleTransformer` / DTO constructor query.
-- Positional JPQL parameters `?` without index are rejected → `?1` or named parameters.
+- `@TypeDef` / `@TypeDefs` and the query-API removals: see "Hibernate 6+ removed query API" below.
+
+## Hibernate 6+ removed query API (Hibernate 6.0 migration guide)
+- Legacy Criteria API removed: `org.hibernate.Criteria`, `Session.createCriteria(..)`, `Restrictions`, `Projections`,
+  `org.hibernate.criterion.*` → JPA `CriteriaBuilder` / `CriteriaQuery` (`session.getCriteriaBuilder()`). There is no
+  mechanical mapping: port the query, keep the public method signatures, add `// MIGRATION-TODO` when the semantics
+  are unclear (e.g. `Restrictions.sqlRestriction`, `DetachedCriteria` subqueries).
+- `org.hibernate.Query` / `org.hibernate.SQLQuery` (deprecated since 5.2) are gone → `org.hibernate.query.Query<R>` /
+  `org.hibernate.query.NativeQuery<R>`; `session.createQuery(hql)` → `session.createQuery(hql, Result.class)`;
+  `session.createSQLQuery(sql)` → `session.createNativeQuery(sql, Result.class)` (or `createNativeQuery(sql)` for
+  `Object[]` rows).
+- Typed setters `setString` / `setInteger` / `setLong` / `setDate` / `setTimestamp` / `setBoolean` … removed →
+  `setParameter(name, value)` (`setParameter(name, value, StandardBasicTypes.X)` when the type must be explicit).
+- `Query#iterate()` removed → `stream()` / `getResultStream()` (close the stream) or `list()`.
+- Still present (compile fine): `list()`, `uniqueResult()`, `setParameterList(..)`, `setFirstResult` / `setMaxResults`.
+- `query.setResultTransformer(Transformers.aliasToBean(X.class))` deprecated → `setTupleTransformer` / DTO
+  constructor query (`select new com.x.Dto(..)`).
+- Ordinal parameters are 1-based `?1`, `?2`; a bare `?` in HQL/JPQL is rejected → `?1` or named parameters.
+- `@TypeDef` / `@TypeDefs` removed → register via `@Type(MyUserType.class)` / `@JavaType` / `@JdbcType`.
+- `BasicType` singletons removed (`org.hibernate.type.StringType.INSTANCE`, `LongType.INSTANCE` …) →
+  `StandardBasicTypes.STRING` / `StandardBasicTypes.LONG`, on mappings `@JdbcTypeCode(SqlTypes.X)`.
+
+## Spring Data 3+ repositories (Boot 3 / 4)
+- Spring Data 3.0: `PagingAndSortingRepository` no longer extends `CrudRepository`. Symptoms on a repository that
+  extends only the paging interface: `no suitable method found for findAll(no arguments)`, `cannot find symbol:
+  method save(…)` / `findById(…)` / `deleteById(…)` / `count()`.
+  Fix: add `ListCrudRepository<T, ID>` (or `CrudRepository<T, ID>`) next to the paging interface with the same type
+  arguments, or switch to `JpaRepository<T, ID>`. The handler `spring-data-crud-repository` already does this
+  deterministically (pre-emptive in SPRING and on these errors) — an LLM fix only sees what it missed.
+- `getOne(id)` / `getById(id)` deprecated → `getReferenceById(id)`; `deleteInBatch(..)` → `deleteAllInBatch(..)`
+  (both still present in Spring Data JPA 4.1, so the build compiles — change them only when you touch the file).
+- `PageRequest.of(..)`, `Sort.by(..)`, `Pageable`, derived query methods: unchanged.

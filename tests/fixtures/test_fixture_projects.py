@@ -36,7 +36,8 @@ HAPPY = ["pure-java", "servlet-tomcat", "spring5-xml", "boot2", "boot3", "msa"]
 SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enforcer-java8-werror",
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
-             "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp"]
+             "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
+             "boot2-rewrite-excluded"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -68,6 +69,7 @@ BUILD_MATRIX = [
     ("company-boot-single", ".", "11", ""),
     ("company-spring5-web", ".", "11", ""),
     ("company-servlet-jsp", ".", "8", ""),
+    ("boot2-rewrite-excluded", ".", "11", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -409,6 +411,8 @@ OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-l
 
 LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"},
                       "multi-module-conflict": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
+# 2026-10-22: openrewrite.exclusions only — directories the recipes must not see (E13 / E14 source handlers)
+REWRITE_ONLY_OVERRIDES = {"boot2-rewrite-excluded": {"**/vendor/**", "**/repository/**"}}
 # round 9c: company-layout fixtures — the override sets the company layout keys back (config/artifacts.local-e2e.yml
 # pins the pre-9c layout for the older fixtures) and adds the role parents (artifacts.boot_parent / comp_parent)
 COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module", "front_module", "boot_as_is"},
@@ -421,7 +425,8 @@ def test_fixture_config_override_keeps_8_optionals():
     from sbmig.core.config import LayoutConfig
 
     overrides = sorted(p.parent.name for p in FIXTURES.glob("*/sbmig.e2e.yml"))
-    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES, *COMPANY_OVERRIDES])
+    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES, *COMPANY_OVERRIDES,
+                                     *REWRITE_ONLY_OVERRIDES])
     company = LayoutConfig()                                       # the company layout = the code defaults
     for name, keys in COMPANY_OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
@@ -441,6 +446,16 @@ def test_fixture_config_override_keeps_8_optionals():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == top, name
         assert len(_effective_cfg(name).artifacts.optional) == 8, name
+    from sbmig.core.config import OpenRewriteConfig
+
+    for name, extra in REWRITE_ONLY_OVERRIDES.items():
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert raw == {"openrewrite": {"exclusions": raw["openrewrite"]["exclusions"]}}, name
+        cfg = _effective_cfg(name)
+        assert len(cfg.artifacts.optional) == 8, name
+        excl = cfg.openrewrite.exclusions
+        assert set(OpenRewriteConfig().exclusions) <= set(excl), name   # lists replace: the defaults are repeated
+        assert extra <= set(excl), name
     for name, (top, legacy_version) in OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == top and set(raw["artifacts"]) == {"optional"}, name

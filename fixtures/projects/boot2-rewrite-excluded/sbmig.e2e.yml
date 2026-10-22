@@ -1,0 +1,13 @@
+# Per-fixture config override, appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# (`--config config/artifacts.local-e2e.yml --config fixtures/projects/boot2-rewrite-excluded/sbmig.e2e.yml`).
+# Lists replace (deep_merge), so this is the complete exclusion list: the defaults (JSP / HTML, config/default.yml)
+# plus the two directories the recipes must not see — they reproduce "files the rewrite plugin did not parse"
+# (E13 jakarta leftovers, E14 paging repositories), which only the source handlers repair.
+openrewrite:
+  exclusions:
+    - "**/*.jsp"
+    - "**/*.jspx"
+    - "**/*.html"
+    - "**/*.htm"
+    - "**/vendor/**"
+    - "**/repository/**"

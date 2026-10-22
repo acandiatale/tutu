@@ -551,6 +551,8 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `unsupported-build-tool:<tool>` | 중단(exit 3) |
 | `restructure-failed` | 재구성 스텝 실패(exit 2) |
 | `rewrite-unresolved-versions` | 레시피가 `4.0.x` 같은 리터럴 버전을 남김(프록시 / rate limit) |
+| `rewrite-parse-problems` | rewrite 플러그인이 일부 소스를 파싱하지 못함(레시피가 건너뜀) |
+| `jakarta-leftovers-renamed` / `spring-data-crud-restored` | 소스 핸들러가 레시피의 빈틈을 메움(E13 / E14) |
 | `time-budget-exhausted` / `llm-budget-exhausted` | 예산 소진 |
 | `test-compile-skipped` / `tests-skipped` | 테스트 대체 빌드 발동 |
 | `llm-cooldown` | LLM 연속 장애로 한 번 쉼 |
@@ -577,6 +579,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `handlers_preemptive` / `handler_failed` | 오케스트레이터 | pre-emptive 핸들러 실행 결과 |
 | `rewrite` | 러너 + 오케스트레이터(두 줄) | `recipes`, `ok`, `changed_files(_count)`, `commit`, `log` |
 | `rewrite_download_retry(_result)` / `rewrite_oom_retry(_result)` / `rewrite_unresolved_versions` | 러너 / 오케스트레이터 | OpenRewrite 재시도 |
+| `rewrite_parse_problems` | 오케스트레이터 | `step`, `files`: 파싱하지 못한 파일 |
 | `loop_start` / `loop_end` | 루프 | `goal`, `max_iterations`, `target` / `ok`, `iterations`, `llm_calls_used`, `aborted` |
 | `build` | 빌드 러너 + 루프(두 줄) | `goal`, `ok`, `exit_code`, `errors`(또는 `error_count`), `duration_s`, `log` |
 | `triage` / `decision` / `attempt` / `attempt_scored` / `revert` | 루프 | 클러스터 목록 / 결정 / 시도(`decision`, `applied`, `commit`, `outcome`) / 점수 / 되돌림 |
