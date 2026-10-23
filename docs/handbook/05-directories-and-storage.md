@@ -669,6 +669,7 @@ fixtures/
 | `company-servlet-jsp` | `servlet_tomcat`(war, JSP+JSTL) | 회사 레이아웃: JSP → boot WAR + front jar(Servlet 3) |
 | `boot2-rewrite-excluded` | `spring_boot` | `openrewrite.exclusions` 아래의 vendored 헬퍼(FQN `javax.persistence`)와 paging 전용 리포지토리 → 레시피가 못 본 파일을 `jakarta-namespace-sweep` / `spring-data-crud-repository` 가 고침(E13, E14), 0 LLM |
 | `boot2-qlrm-javax` | `spring_boot` | QLRM 1.7.1(옛 좌표 `ch.simas.qlrm`)의 `JpaResultMapper`가 `javax.persistence.Query`를 받음 → `jakarta-library-floor` 가 `org.qlrm:qlrm:4.2.1` 로 재배치(X1b), 0 LLM |
+| `servlet-webxml-legacy` | `servlet_tomcat`(war, web.xml 2.3 DTD만) | W1: web.xml에만 선언된 서블릿 / 필터 / 리스너 / 오류 페이지 → `legacy-boot`의 생성 클래스 `WebXmlRegistrations`, `server.servlet.session.timeout=30m`, 0 LLM |
 
 정확한 기대 결과는 `fixtures/projects/README.md` 의 매트릭스가 원본입니다. 레이아웃별 전후 트리는 [06. 재구성과 회사 레이아웃](06-restructure-and-layouts.md) 에서 다룹니다.
 
@@ -720,7 +721,7 @@ fixtures/
 | `OVERRIDES` | `boot2-javax-lib-optional`(legacy-web-lib 2.0.0), `boot2-method-rename`(3.0.0) | `artifacts`(+ `llm`, `kb`) — 선택 목록 8개를 통째로 다시 적음 |
 | `LLM_ONLY_OVERRIDES` | `boot2-hystrix-command`, `java6-legacy`, `multi-module-conflict` | `llm`(재생 LLM), `kb`(전용 KB) |
 | `REWRITE_ONLY_OVERRIDES` | `boot2-rewrite-excluded` | `openrewrite.exclusions`(기본 JSP/HTML 4개 + `**/vendor/**`, `**/repository/**` — 목록은 통째로 대체됨) |
-| `COMPANY_OVERRIDES` | `legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp` | `layout`(`module_dir`, `boot_module`, `comp_module`, `front_module`, `boot_as_is` 를 회사 기본값으로 되돌림) + `artifacts`(`boot_parent`, `comp_parent`) |
+| `COMPANY_OVERRIDES` | `legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy` | `layout`(`module_dir`, `boot_module`, `comp_module`, `front_module`, `boot_as_is` 를 회사 기본값으로 되돌림) + `artifacts`(`boot_parent`, `comp_parent`) |
 
 로컬 설정이 pre-9c 레이아웃을 고정하고 있으므로, 회사 레이아웃 픽스처는 오버레이로 레이아웃 키를 회사 기본값(= `LayoutConfig` 코드 기본값)으로 되돌리고 역할 부모를 `spring-boot-starter-parent` 4.1.0 대역으로 지정합니다. 테스트는 선택 아티팩트가 항상 정확히 8개인지, 회사 픽스처의 루트 artifactId 가 `shop` 인지도 확인합니다. (요청서의 `PARENT_OVERRIDES` 라는 레지스트리는 현재 코드에 없습니다.)
 

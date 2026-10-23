@@ -37,7 +37,7 @@ old types unattributed, so many `ChangeType`-style recipes would silently no-op.
 | Case | jdk21 | spring phase | restructure |
 |---|---|---|---|
 | pure_java | UpgradeToJava21 | jakarta (only if `javax.*` EE imports found); JUnit4→5 if junit4 | split into `{name}-boot` / `{name}-back` (+ `{name}-front`) + `spring-boot-starter`, generated `Application` |
-| servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | split (`-boot` / `-back` / `-front`) + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → followup note |
+| servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | split (`-boot` / `-back` / `-front`) + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → generated `WebXmlRegistrations` (W1, `layout.web_xml_registrations`) |
 | spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 (+Security 7 if present) | split (`-boot` / `-back` / `-front`) + webmvc starter, `@ImportResource` for XML bean files |
 | spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4JacksonTwins (`@JsonComponent`→`@JacksonComponent`, `JsonObjectSerializer`→`ObjectValueSerializer` …; the umbrella already migrates bodies to Jackson 3) | `boot_pom` in place (default `layout.boot_as_is: in-place`): directories kept, poms only; `layout` → split like the others |
 | msa | per service | per service by its own sub-case | `msa_pom` only, directory structure untouched (`boot_modules` passed) |
@@ -262,8 +262,8 @@ merge), the web files move on: static files keep their relative path; a JSP (`*.
 (`WEB-INF/views/a.jsp` → `jsp/views/a.jsp`; a JSP directly under `WEB-INF/` lands in the jsp dir root, follow-up
 "update include / forward paths"); a JSP outside WEB-INF goes to the jar's `META-INF/resources/` root (same URL);
 `WEB-INF/tags/**` and `*.tld` → `META-INF/resources/WEB-INF/…`. `web.xml` and the other non-JSP `WEB-INF/*` files
-go to `{name}-boot/src/main/resources/asis-webinf/` (never read by Boot, not the WAR's `WEB-INF`; servlets / filters
-via `@ServletComponentScan`, web.xml follow-up as before; XML bean configs are still imported from `legacy-config/`);
+go to `{name}-boot/src/main/resources/asis-webinf/` (never read by Boot, not the WAR's `WEB-INF`; its servlets /
+filters / listeners → generated `WebXmlRegistrations`, see below, annotated ones via `@ServletComponentScan`; XML bean configs are still imported from `legacy-config/`);
 `WEB-INF/lib`, `WEB-INF/classes` and webapp `META-INF` stay in `{name}-back/src/main/webapp` (follow-up). A target
 path taken twice keeps the first file (follow-up). No static file and no JSP → no front module, `<modules>` = back + boot.
 Wrap (`multi_module_policy: wrap`) and kept as-is boot modules' own resources are not split.
@@ -283,6 +283,36 @@ suffix (bean properties, `p:` attributes, `<mvc:jsp>`, `setPrefix/setSuffix`, th
 `registry.jsp(…)`), the prefix mapped to the moved location (`/WEB-INF/views/` → `/WEB-INF/jsp/views/`, with a
 follow-up to update the as-is resolver bean, which takes precedence); else a follow-up asks the owners to set them.
 Follow-up: "boot module packaged as WAR for external Tomcat; JSPs are served from the front jar (META-INF/resources)".
+
+**web.xml → `WebXmlRegistrations`** (2026-10-23, `layout.web_xml_registrations: generate`, the default; catalog W1).
+Neither embedded Tomcat nor the Boot WAR reads web.xml, and pre-Servlet-3 projects (2.2 / 2.3 / 2.4) have no
+`@WebServlet`, so `@ServletComponentScan` alone loses every mapping. After the Application is generated (layout
+mode, `_write_boot`), the restructure re-reads the first web.xml from its new location
+(`sbmig.analyze.webxml.parse_web_xml`: namespace-agnostic, DTD never fetched, lenient re-parse with warnings, never
+raises; `SourceStats.web_xml_spec / web_xml_servlets / web_xml_filters / web_xml_listeners` come from the same
+parser) and `sbmig.restructure.webxml_registrations.plan_registrations` renders
+`templates/WebXmlRegistrations.java.j2` into `{name}-boot/src/main/java/<pkg>/WebXmlRegistrations.java` (`<pkg>` =
+the Application's package; `SbmigWebXmlRegistrations` when the name is taken): one
+`ServletRegistrationBean<jakarta.servlet.http.HttpServlet | jakarta.servlet.Servlet>` per servlet class (patterns,
+`setName`, `setLoadOnStartup`, init params, async, `MultipartConfigElement`; no mapping → `alwaysMapUrl=false`),
+one `FilterRegistrationBean<jakarta.servlet.Filter>` per mapped filter (url patterns / servlet names,
+`setDispatcherTypes(jakarta.servlet.DispatcherType…)`, `setOrder(n)` = position of its first `<filter-mapping>`;
+an unmapped filter is not registered), one `ServletListenerRegistrationBean<java.util.EventListener>` per listener,
+one `ErrorPageRegistrar` (`ErrorPage(HttpStatus.valueOf(code) | <Exception>.class | default, location)`, javax
+servlet exceptions renamed, unknown status codes → follow-up). FQCNs throughout (`new com.x.FrontServlet()`), ASCII
+only (`\uXXXX` in literals). Skip table `knowledge/config/web_xml_rules.yml` (DispatcherServlet, ContextLoaderListener,
+CharacterEncodingFilter, DelegatingFilterProxy, Jasper / Default servlet, …): one follow-up each with the Boot
+property hint (a DispatcherServlet mapped to something other than `/` → `spring.mvc.servlet.path` follow-up).
+Classes the project annotates `@WebServlet` / `@WebFilter` / `@WebListener` stay with `@ServletComponentScan` (no
+double registration). A class the project does not contain (library servlet such as Struts' `ActionServlet`) is still
+generated with a note. `<session-timeout>` → `server.servlet.session.timeout=<N>m` in the boot
+`application.properties` (embedded only — a WAR gets a follow-up); jsp-file servlets, welcome files, MIME mappings,
+security constraints / login-config → follow-ups; `<context-param>` stays with the properties inventory. Output:
+`RestructureResult.flags` += `web-xml-registered` (the orchestrator adds restructure flags to the report), journal
+`web_xml_registrations` (`path`, `spec`, `servlets`, `filters`, `listeners`, `error_pages`, `skipped`,
+`jsp_file_servlets`, `class`), Handover follow-up "web.xml (<spec>) → WebXmlRegistrations: N servlet(s), M filter(s),
+K listener(s), E error page(s); skipped: …". Nothing to register (only skipped / annotated entries) → no class, the
+skip follow-ups only; `followup` = the pre-2026-10-23 behaviour (web.xml follow-up only).
 `jsp_boot_packaging: jar` keeps an executable jar (jasper compile scope + follow-up: Boot does not serve JSPs from an
 executable jar). Without JSPs the boot module is an executable jar (an as-is WAR is converted as before).
 

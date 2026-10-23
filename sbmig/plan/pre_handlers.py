@@ -201,9 +201,15 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
     if lib_reason:
         out.append(("jakarta-library-floor", lib_reason))
     ee = javax_ee_imports(profile)
+    jsp_javax = int(getattr(profile.source, "jsp_javax_files", 0) or 0)
     if ee:
         out.append(("jakarta-namespace-sweep", f"javax EE imports in the as-is sources ({', '.join(ee)}): rename what "
-                                               "the recipes leave behind after the spring rewrite"))
+                                               "the recipes leave behind after the spring rewrite"
+                                               + (f"; {jsp_javax} JSP / tag file(s) name javax types" if jsp_javax else "")))
+    elif jsp_javax:
+        # 2026-10-23: JSP-only (or Java without EE imports) projects — the recipes never touch JSPs, the sweep does
+        out.append(("jakarta-namespace-sweep", f"{jsp_javax} JSP / tag file(s) name javax EE types (page imports, "
+                                               "scriptlets, useBean): rename them after the spring rewrite"))
     if any(lib.name.startswith("spring-data") or lib.name == "jpa" for lib in profile.libraries):
         out.append(("spring-data-crud-repository",
                     "Spring Data repositories present: PagingAndSortingRepository lost its CRUD methods in Spring Data 3"))

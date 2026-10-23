@@ -37,11 +37,17 @@ FLAG_HELP = {
     "jakarta-leftovers-renamed": "javax.* Jakarta EE references the recipes had left in the sources were renamed to "
                                  "jakarta.* by the jakarta-namespace-sweep handler (string literals / resource files "
                                  "are listed as follow-ups)",
+    "jsp-javax-renamed": "javax.* Jakarta EE references inside JSP / tag files (page imports, scriptlets, useBean) "
+                         "were renamed to jakarta.* by the jakarta-namespace-sweep handler — JSPs are compiled by "
+                         "Tomcat at runtime, so the build cannot prove them: smoke-test the pages",
     "spring-data-crud-restored": "repository interfaces that extended only PagingAndSortingRepository got "
                                  "ListCrudRepository<T, ID> back (Spring Data 3 removed its CRUD methods)",
     "javax-api-on-classpath": "javax EE API jars are still on the resolved classpath after the migration (section "
                               "\"javax API jars still on the classpath\"): the direct dependencies that drag them in "
                               "are compiled against javax and need Jakarta builds",
+    "web-xml-registered": "web.xml servlets / filters / listeners / error pages were turned into a generated "
+                          "WebXmlRegistrations @Configuration in the boot module (web.xml itself is not read by "
+                          "Spring Boot) — verify the mappings in the Handover",
     "jakarta-library-bumped": "a third-party library with a known jakarta.* release was raised to it "
                               "(knowledge/libraries/jakarta_libraries.yml, handler jakarta-library-floor)",
 }

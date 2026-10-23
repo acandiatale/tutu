@@ -195,3 +195,17 @@ def test_jakarta_library_floor_selected_for_missing_classifier(cfg) -> None:
     ok = _profile(poms=[_pom(deps=[GAV(group_id="org.ehcache", artifact_id="ehcache", version="3.12.0",
                                        classifier="jakarta")])])
     assert jakarta_library_reason(ok) is None
+
+
+def test_jakarta_sweep_selected_for_jsp_only_projects(cfg) -> None:
+    """2026-10-23: JSPs with javax page imports / scriptlets are swept even when no Java file imports javax EE."""
+    from sbmig.plan.pre_handlers import pre_handler_reasons
+    prof = _profile(poms=[_pom()])
+    prof.source.jsp_javax_files = 3
+    reasons = dict(pre_handler_reasons(prof, cfg))
+    assert "jakarta-namespace-sweep" in reasons and "3 JSP / tag file(s)" in reasons["jakarta-namespace-sweep"]
+    both = _profile(poms=[_pom()], javax={"javax.servlet": 2})
+    both.source.jsp_javax_files = 1
+    r = dict(pre_handler_reasons(both, cfg))["jakarta-namespace-sweep"]
+    assert "javax.servlet" in r and "1 JSP / tag file(s)" in r
+    assert "jakarta-namespace-sweep" not in dict(pre_handler_reasons(_profile(poms=[_pom()]), cfg))

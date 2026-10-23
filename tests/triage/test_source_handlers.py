@@ -8,7 +8,12 @@ import pytest
 from sbmig.core.models import BuildError, CaseType, ErrorKind, LibraryUsage, ProjectProfile, SourceStats
 from sbmig.plan.pre_handlers import pre_handler_reasons
 from sbmig.triage import HandlerRegistry, cluster_errors
-from sbmig.triage.handlers.source_handlers import jakarta_packages, javax_key_in_table, rename_javax
+from sbmig.triage.handlers.source_handlers import (
+    jakarta_packages,
+    javax_key_in_table,
+    rename_javax,
+    rename_javax_jsp,
+)
 
 from .conftest import make_profile
 
@@ -193,6 +198,91 @@ def test_crlf_and_cp949_preserved(fake_kit):
     assert crlf.read_bytes() == b"package com.acme;\r\nimport jakarta.servlet.Filter;\r\nclass A {}\r\n"
     assert legacy.read_bytes() == ("package com.acme;\n// 한글 주석\nimport jakarta.validation.Valid;\n"
                                    "class B { String s = \"가나다\"; }\n").encode("cp949")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# JSP / tag files
+# ---------------------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("src,expected", [
+    ('<%@ page contentType="text/html" import="javax.servlet.http.Cookie, java.util.*,javax.servlet.jsp.*" %>',
+     '<%@ page contentType="text/html" import="jakarta.servlet.http.Cookie, java.util.*,jakarta.servlet.jsp.*" %>'),
+    ("<%@ tag import='javax.servlet.http.HttpSession' %>", "<%@ tag import='jakarta.servlet.http.HttpSession' %>"),
+    ("<% javax.servlet.http.HttpSession s = request.getSession(); %>",
+     "<% jakarta.servlet.http.HttpSession s = request.getSession(); %>"),
+    ("<%! private javax.servlet.jsp.JspWriter w; %>", "<%! private jakarta.servlet.jsp.JspWriter w; %>"),
+    ("<%= ((javax.servlet.http.HttpServletRequest) request).getMethod() %>",
+     "<%= ((jakarta.servlet.http.HttpServletRequest) request).getMethod() %>"),
+    ('<jsp:useBean id="m" class="javax.mail.Session" type="javax.mail.Session" scope="page"/>',
+     '<jsp:useBean id="m" class="jakarta.mail.Session" type="jakarta.mail.Session" scope="page"/>'),
+    ('<jsp:directive.page import="javax.persistence.EntityManager"/>',
+     '<jsp:directive.page import="jakarta.persistence.EntityManager"/>'),
+    ("<jsp:scriptlet>javax.validation.Validator v = null;</jsp:scriptlet>",
+     "<jsp:scriptlet>jakarta.validation.Validator v = null;</jsp:scriptlet>"),
+])
+def test_rename_javax_jsp(src, expected):
+    r = rename_javax_jsp(src)
+    assert r.text == expected and r.replacements and r.literal_hits == []
+
+
+@pytest.mark.parametrize("src", [
+    '<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>',
+    "<p>see javax.servlet.http.Cookie in the docs</p>",
+    "<c:out value=\"${javax.servlet.forward.request_uri}\"/>",
+    "<%-- <% javax.servlet.http.HttpSession s; %> --%>",
+    '<% javax.sql.DataSource ds = null; String k = "javax.servlet.error.exception"; %>',
+    '<%@ page import="javax.sql.DataSource, javax.naming.InitialContext" %>',
+    '<%@ include file="javax.servlet.jspf" %>',
+])
+def test_rename_javax_jsp_leaves_non_code_alone(src):
+    r = rename_javax_jsp(src)
+    assert r.text == src and not r.replacements
+
+
+JSP_PAGE = ('<%@ page contentType="text/html; charset=EUC-KR" import="javax.servlet.http.Cookie" %>\n'
+            '<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>\n<p>javax.servlet</p>\n')
+
+
+def test_preemptive_renames_jsp_and_notes(fake_kit):
+    _java(fake_kit.root, "src/main/java/com/acme/Svc.java", JAKARTA_SVC)
+    page = fake_kit.root / "src/main/webapp/WEB-INF/jsp/a.jsp"
+    page.parent.mkdir(parents=True)
+    page.write_bytes(("<%-- 한글 --%>\r\n" + JSP_PAGE.replace("\n", "\r\n")).encode("cp949"))
+    tag = _java(fake_kit.root, "src/main/webapp/WEB-INF/tags/t.tag",
+                "<%@ tag import=\"javax.servlet.jsp.PageContext\" %>\n")
+    _java(fake_kit.root, "src/main/webapp/plain.jsp", "<p>hello</p>\n")
+    _java(fake_kit.root, "target/x/b.jsp", JSP_PAGE)
+    h = fake_kit.handler("jakarta-namespace-sweep")
+    changes = h.apply(fake_kit.ws, None, _javax_profile({"javax.servlet": 1}), None)
+    assert sorted(c.path for c in changes) == ["src/main/webapp/WEB-INF/jsp/a.jsp", tag]
+    assert page.read_bytes() == ("<%-- 한글 --%>\r\n" + JSP_PAGE.replace("\n", "\r\n")
+                                 .replace("javax.servlet.http.Cookie", "jakarta.servlet.http.Cookie")).encode("cp949")
+    assert "jakarta.servlet.jsp.PageContext" in (fake_kit.root / tag).read_text()
+    assert "javax.servlet.http.Cookie" in (fake_kit.root / "target/x/b.jsp").read_text()
+    assert h.flags == ["jsp-javax-renamed"]
+    assert h.notes[0].startswith("renamed javax.* → jakarta.* in 2 JSP / tag file(s) (page imports, scriptlets, "
+                                 "useBean) — JSPs are compiled by Tomcat at runtime, not by the build: smoke-test")
+    assert "src/main/webapp/WEB-INF/jsp/a.jsp" in h.notes[0]
+    assert h.apply(fake_kit.ws, None, _javax_profile({"javax.servlet": 1}), None) == []       # idempotent
+
+
+def test_jsp_only_project_is_swept(fake_kit):
+    f = _java(fake_kit.root, "src/main/webapp/index.jsp", JSP_PAGE)
+    h = fake_kit.handler("jakarta-namespace-sweep")
+    prof = _javax_profile({})
+    assert not h.applicable(None, prof, None)
+    prof.source.jsp_javax_files = 1
+    assert h.applicable(None, prof, None)
+    assert [c.path for c in h.apply(fake_kit.ws, None, prof, None)] == [f]
+    assert "jakarta.servlet.http.Cookie" in (fake_kit.root / f).read_text()
+    assert h.flags == ["jsp-javax-renamed"]
+
+
+def test_jsp_left_alone_while_java_is_unmigrated(fake_kit):
+    _java(fake_kit.root, "src/main/java/com/acme/Member.java", LEFTOVER)       # javax EE, no jakarta import
+    f = _java(fake_kit.root, "src/main/webapp/index.jsp", JSP_PAGE)
+    h = fake_kit.handler("jakarta-namespace-sweep")
+    assert h.apply(fake_kit.ws, None, _javax_profile({"javax.persistence": 1}), None) == []
+    assert "javax.servlet.http.Cookie" in (fake_kit.root / f).read_text()
 
 
 # ---------------------------------------------------------------------------------------------------------------------

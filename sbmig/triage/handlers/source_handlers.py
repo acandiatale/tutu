@@ -2,7 +2,10 @@
 
 * ``jakarta-namespace-sweep`` (E13) — renames the ``javax.*`` Jakarta EE references the OpenRewrite run left behind
   (files the plugin could not parse / type-attribute, ``openrewrite.exclusions``, fully-qualified names) with the
-  ChangePackage table of ``JavaxMigrationToJakarta`` (``jakarta_packages.yml``).
+  ChangePackage table of ``JavaxMigrationToJakarta`` (``jakarta_packages.yml``). JSP / tag files (``*.jsp``,
+  ``*.jspf``, ``*.jspx``, ``*.tag``, ``*.tagx``) are swept too, only inside page / tag ``import`` attributes,
+  scriptlets / expressions / declarations and ``<jsp:useBean class|type>`` (``rename_javax_jsp``): Tomcat compiles
+  them at runtime, the build never sees them.
 * ``spring-data-crud-repository`` (E14) — Spring Data 3 removed ``CrudRepository`` from
   ``PagingAndSortingRepository``'s hierarchy: repository interfaces that extend only the paging interface get
   ``ListCrudRepository<T, ID>`` (what ``MigratePagingAndSortingRepository`` does when it can attribute types).
@@ -26,6 +29,7 @@ from typing import NamedTuple, Optional
 
 import yaml
 
+from sbmig.analyze.jsp import JSP_GLOBS, jsp_code_spans
 from sbmig.core.models import ErrorCluster, ErrorKind, Phase, ProjectProfile
 from sbmig.core.workspace import Workspace
 
@@ -138,6 +142,29 @@ def rename_javax(text: str, table: Optional[tuple[JakartaRule, ...]] = None) -> 
     return res
 
 
+def rename_javax_jsp(text: str, table: Optional[tuple[JakartaRule, ...]] = None) -> RenameResult:
+    """`rename_javax` applied only to the Java regions of a JSP / tag file (`sbmig.analyze.jsp.jsp_code_spans`):
+    page / tag `import` lists, scriptlet / expression / declaration bodies (Java literals and comments masked as in
+    `rename_javax`), `<jsp:useBean class|type>`. HTML, EL, taglib URIs and JSP comments are never touched;
+    `literal_hits` is left empty (a javax name inside a scriptlet string is not reported for JSPs)."""
+    table = table if table is not None else jakarta_packages()
+    res = RenameResult(text)
+    out: list[str] = []
+    last = 0
+    for start, end, _kind in jsp_code_spans(text):
+        sub = rename_javax(text[start:end], table)
+        if not sub.replacements:
+            continue
+        out.append(text[last:start])
+        out.append(sub.text)
+        last = end
+        res.replacements.update(sub.replacements)
+    if res.replacements:
+        out.append(text[last:])
+        res.text = "".join(out)
+    return res
+
+
 # ---------------------------------------------------------------------------------------------------------------------
 # E13 handler
 # ---------------------------------------------------------------------------------------------------------------------
@@ -167,6 +194,8 @@ class JakartaNamespaceSweep(EdgeHandler):
             return True
         if any(javax_key_in_table(k) for k, n in (profile.source.javax_imports or {}).items() if n):
             return True
+        if profile.source.jsp_javax_files:
+            return True
         # a javax/jakarta conversion mismatch whose owner is a project class (blocked.py X1 "project owner" case)
         if cluster is not None and _CONVERT_PAIR_RE.search(cluster_text(cluster)):
             from sbmig.triage.blocked import extract_owner, is_project_class
@@ -174,6 +203,13 @@ class JakartaNamespaceSweep(EdgeHandler):
         return False
 
     def edit(self, ws: Workspace, cluster, profile, cfg) -> list[str]:
+        """Java sources first, then JSP / tag files.
+
+        Pre-emptive guard (`cluster is None`): the sweep only runs once the migration is visibly under way — some
+        Java file imports `jakarta.*`. A project with no Java file at all (JSP-only webapp) has nothing that could
+        show it, so it is swept anyway (the handler is scheduled only after the spring recipes of a Boot 3+/4
+        target); a project whose Java files hold no table javax reference (nothing left for the recipes) likewise
+        lets its JSPs through. Java files still naming javax EE types with no jakarta import anywhere → untouched."""
         table = jakarta_packages()
         files = [f for f in ws.java_files() if not _under_target(f)]
         texts: dict[str, str] = {}
@@ -182,18 +218,21 @@ class JakartaNamespaceSweep(EdgeHandler):
                 texts[f] = ws.read(f)
             except OSError as e:
                 log.debug("jakarta-namespace-sweep: cannot read %s: %s", f, e)
-        if cluster is None and not any(_JAKARTA_IMPORT_RE.search(t) for t in texts.values()):
+        results = {f: rename_javax(t, table) for f, t in texts.items()}
+        if cluster is None and not any(_JAKARTA_IMPORT_RE.search(t) for t in texts.values()) \
+                and any(r.replacements for r in results.values()):
             return []          # nothing migrated yet (e.g. before the jakarta recipes): leave javax alone
         changed: list[str] = []
         packages: Counter = Counter()
         literal_hits: list[tuple[str, str]] = []
         for f, text in texts.items():
-            res = rename_javax(text, table)
+            res = results[f]
             literal_hits += [(f, lit) for lit in res.literal_hits]
             if res.replacements and res.text != text:
                 ws.write(f, res.text)
                 changed.append(f)
                 packages.update(res.replacements)
+        jsp_changed = self._sweep_jsp(ws, table)
         if changed:
             self.flag("jakarta-leftovers-renamed")
             self.note(f"renamed javax.* → jakarta.* in {len(changed)} file(s) the recipes had not converted "
@@ -203,7 +242,28 @@ class JakartaNamespaceSweep(EdgeHandler):
             path, lit = literal_hits[0]
             self.note(f"follow-up: {len(literal_hits)} string literal(s) still name javax.* (reflection / "
                       f"configuration keys), e.g. {path}: {lit[:60]}; renamed nothing inside literals — review by hand")
+        if jsp_changed:
+            self.flag("jsp-javax-renamed")
+            self.note(f"renamed javax.* → jakarta.* in {len(jsp_changed)} JSP / tag file(s) (page imports, scriptlets, "
+                      "useBean) — JSPs are compiled by Tomcat at runtime, not by the build: smoke-test the pages "
+                      f"(e.g. {', '.join(jsp_changed[:3])})")
+            log.info("jakarta-namespace-sweep: %d JSP / tag file(s)", len(jsp_changed))
         self._resource_note(ws)
+        return changed + jsp_changed
+
+    def _sweep_jsp(self, ws: Workspace, table: tuple[JakartaRule, ...]) -> list[str]:
+        rels = sorted({r for pattern in JSP_GLOBS for r in ws.glob(pattern) if not _under_target(r)})
+        changed: list[str] = []
+        for rel in rels:
+            try:
+                text = ws.read(rel)
+            except OSError as e:
+                log.debug("jakarta-namespace-sweep: cannot read %s: %s", rel, e)
+                continue
+            res = rename_javax_jsp(text, table)
+            if res.replacements and res.text != text:
+                ws.write(rel, res.text)
+                changed.append(rel)
         return changed
 
     def _resource_note(self, ws: Workspace) -> None:

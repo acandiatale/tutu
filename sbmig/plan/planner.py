@@ -494,7 +494,15 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
                          + (f"; JSPs → {boot_m} packaged as {cfg.layout.jsp_boot_packaging}"
                             if (src.jsp_paths or src.jsp_count) else ""))
     if libs_facts.case == CaseType.SERVLET_TOMCAT and profile.source.has_web_xml:
-        notes.append("followup: web.xml wiring is not migrated automatically (runtime owners)")
+        src_ = profile.source
+        if cfg.layout.web_xml_registrations == "generate" and \
+                (src_.web_xml_servlets or src_.web_xml_filters or src_.web_xml_listeners):
+            # 2026-10-23: the restructure generates WebXmlRegistrations (sbmig.restructure.webxml_registrations)
+            notes.append(f"restructure: web.xml ({src_.web_xml_spec or 'spec unknown'}: {src_.web_xml_servlets} "
+                         f"servlet(s), {src_.web_xml_filters} filter(s), {src_.web_xml_listeners} listener(s)) → "
+                         "generated WebXmlRegistrations in the boot module")
+        else:
+            notes.append("followup: web.xml wiring is not migrated automatically (runtime owners)")
     if libs_facts.case == CaseType.SPRING_LEGACY and profile.source.xml_bean_configs:
         notes.append(f"restructure: {len(profile.source.xml_bean_configs)} XML bean config(s) → @ImportResource")
     s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: the restructured project must package",

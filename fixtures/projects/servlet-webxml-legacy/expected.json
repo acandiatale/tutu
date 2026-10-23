@@ -1,0 +1,177 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "is_multi_module": false,
+  "libraries": [
+    "javax-servlet",
+    "jsp"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [
+    "W1"
+  ],
+  "web_resources": {
+    "jsp": [
+      "src/main/webapp/WEB-INF/jsp/error.jsp",
+      "src/main/webapp/WEB-INF/jsp/help.jsp",
+      "src/main/webapp/WEB-INF/jsp/list.jsp",
+      "src/main/webapp/index.jsp"
+    ],
+    "static_dirs": [
+      "src/main/webapp"
+    ],
+    "static_count": 1
+  },
+  "web_xml": {
+    "spec": "2.3",
+    "servlets": 3,
+    "filters": 2,
+    "listeners": 1
+  },
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "web-xml-registered",
+      "jsp-javax-renamed"
+    ],
+    "journal_events": [
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      },
+      {
+        "event": "web_xml_registrations",
+        "spec": "2.3",
+        "servlets": 2,
+        "filters": 2,
+        "listeners": 1,
+        "error_pages": 2
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "followups_contains": [
+      "regex:(?i)jsp-file servlet help .*help\\.jsp.*",
+      "regex:(?i).*welcome-file-list \\(index\\.jsp\\).*",
+      "regex:(?i).*mime-mapping \\(hwp .*application/x-hwp\\).*",
+      "regex:(?i)web\\.xml \\(2\\.3\\) .*WebXmlRegistrations: 2 servlet\\(s\\), 2 filter\\(s\\), 1 listener\\(s\\), 2 error page\\(s\\).*"
+    ],
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "legacy-back",
+            "legacy-boot",
+            "legacy-front"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "legacy-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new ServletRegistrationBean<>(new com.example.legacy.web.FrontServlet(), \"/front/*\", \"*.do\")"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "setLoadOnStartup(1)"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new ServletRegistrationBean<>(new com.example.legacy.web.ReportServlet(), false)"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new FilterRegistrationBean<>(new com.example.legacy.web.AuditFilter())"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "bean.setDispatcherTypes(jakarta.servlet.DispatcherType.REQUEST, jakarta.servlet.DispatcherType.FORWARD);"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "bean.addInitParameter(\"encoding\", \"UTF-8\");"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new ServletListenerRegistrationBean<>(new com.example.legacy.web.AppStartupListener())"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "ErrorPageRegistrar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new ErrorPage(java.lang.Exception.class, \"/WEB-INF/jsp/error.jsp\")"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-boot/src/main/resources/application.properties",
+          "contains": "server.servlet.session.timeout=30m"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-back/src/main/java/com/example/legacy/web/FrontServlet.java",
+          "contains": "jakarta.servlet.http.HttpServlet"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "legacy-front/src/main/resources/META-INF/resources/WEB-INF/jsp/list.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "legacy-front/src/main/resources/static/css/app.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "legacy-boot/target/*.war"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "legacy-front/src/main/resources/META-INF/resources/WEB-INF/jsp/list.jsp",
+          "contains": "jakarta.servlet.http.Cookie",
+          "not_contains": "javax.servlet"
+        }
+      }
+    ]
+  }
+}

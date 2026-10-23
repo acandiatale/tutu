@@ -130,6 +130,9 @@ class LayoutConfig(BaseModel):
         "spring_boot": "auto",          # keep whatever starters the as-is project already has
     })
     add_servlet_component_scan: bool = True
+    # 2026-10-23: web.xml servlets / filters / listeners / error pages / session timeout → a generated
+    # `WebXmlRegistrations` @Configuration in the boot module (`generate`), or follow-ups only (`followup`)
+    web_xml_registrations: Literal["generate", "followup"] = "generate"
     import_xml_bean_configs: bool = True   # @ImportResource for detected <beans> xml files
     msa_parent_policy: Literal["per-service-root", "top-aggregator"] = "per-service-root"
 

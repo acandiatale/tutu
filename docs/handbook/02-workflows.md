@@ -814,7 +814,7 @@ JDK 21, Maven, Maven Central 접속이 필요합니다. Python만 바꿨다면 �
 | `post_checks` | 파일 존재 / 부재, 내용 포함, pom parent, 의존성 유무 / 버전 유무, packaging, `<modules>` 목록, 인코딩 |
 | `advisories`, `advisories_exact`, `advisories_absent`, `handover`, `followups_contains` | 어드바이저리 / Handover 단언 |
 
-`expected.json`의 최상위에는 프로필 기대값(`case_type`, `java_version`, `libraries` …)도 있습니다. 로컬 e2e의 KB는 `out/e2e/kb`입니다(저장소 `kb/`를 건드리지 않음). `config/artifacts.local-e2e.yml`은 옛 픽스처를 위해 pre-9c 레이아웃을 고정하고, 9c 픽스처(`company-boot-single`, `company-spring5-web`, `company-servlet-jsp`)는 자기 `sbmig.e2e.yml`로 회사 레이아웃을 되돌립니다. 픽스처 목록과 설명은 `fixtures/projects/README.md`에 있습니다.
+`expected.json`의 최상위에는 프로필 기대값(`case_type`, `java_version`, `libraries` …)도 있습니다. 로컬 e2e의 KB는 `out/e2e/kb`입니다(저장소 `kb/`를 건드리지 않음). `config/artifacts.local-e2e.yml`은 옛 픽스처를 위해 pre-9c 레이아웃을 고정하고, 9c 픽스처(`company-boot-single`, `company-spring5-web`, `company-servlet-jsp`)와 `servlet-webxml-legacy`(2026-10-23, web.xml → `WebXmlRegistrations`)는 자기 `sbmig.e2e.yml`로 회사 레이아웃을 되돌립니다. 픽스처 목록과 설명은 `fixtures/projects/README.md`에 있습니다.
 
 ### 10.4 산출물과 확인 포인트
 
@@ -872,7 +872,8 @@ flowchart LR
 2. 결과가 `❌ NOT BUILDING`이거나 blocked가 있으면 `## Blocked — needs human / library action`과 `## Unresolved errors`를 봅니다. blocked는 일부러 건너뛴 것(외부 라이브러리의 javax API, Nexus에 없는 아티팩트, 호환 안 되는 플러그인, LLM / 예산 소진)이고, 무엇을 해야 하는지(라이브러리 업그레이드, `artifacts.optional`에 추가 등)가 적혀 있습니다. 라이브러리를 고친 뒤 다시 돌리면 대개 끝까지 갑니다.
 3. "From here on" 목록을 위에서부터 마이그레이션 브랜치에서 처리하고, `mvn clean package`를 다시 돌립니다(또는 `sbmig run`을 다시 돌리면 교체된 라이브러리는 목록에서 빠집니다).
 4. `build.skip_tests: true`가 기본이라 sbmig는 테스트를 **실행하지 않았습니다**. 회사 설정(`build.skip_test_compile: true`)에서는 테스트 소스를 **컴파일도 하지 않습니다**(플래그 `tests-not-compiled`). 소유 팀은 테스트를 포함해 빌드하십시오.
-5. 그다음에 테스트 환경에 배포합니다. **런타임 동작은 sbmig의 범위가 아닙니다**(범위 = 패키징 + 빌드 통과). 런타임 오류는 as-is 소유 팀의 몫입니다.
+5. 서블릿 / JSP 프로젝트(web.xml)라면 인수인계의 "web.xml (<spec>) → WebXmlRegistrations: …" 줄을 확인합니다. restructure가 web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 boot 모듈의 `WebXmlRegistrations.java`로 옮겼고(`layout.web_xml_registrations: generate`, Spring Boot는 web.xml을 읽지 않음), skip 표(`knowledge/config/web_xml_rules.yml`)에 있는 DispatcherServlet 등은 Boot가 대신합니다. jsp-file 서블릿, welcome-file, mime-mapping, security-constraint, 외부 Tomcat의 session-timeout은 후속조치에 남으니 소유 팀이 처리합니다([06 §6.6](06-restructure-and-layouts.md)).
+6. 그다음에 테스트 환경에 배포합니다. **런타임 동작은 sbmig의 범위가 아닙니다**(범위 = 패키징 + 빌드 통과). 런타임 오류는 as-is 소유 팀의 몫입니다.
 
 ### 12.3 운영자가 남길 것
 

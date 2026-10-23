@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE web-app PUBLIC "-//Sun Microsystems, Inc.//DTD Web Application 2.3//EN"
+        "http://java.sun.com/dtd/web-app_2_3.dtd">
+<web-app>
+    <display-name>legacy</display-name>
+
+    <context-param>
+        <param-name>legacy.region</param-name>
+        <param-value>kr</param-value>
+    </context-param>
+
+    <filter>
+        <filter-name>encoding</filter-name>
+        <filter-class>com.example.legacy.web.EncodingFilter</filter-class>
+        <init-param>
+            <param-name>encoding</param-name>
+            <param-value>UTF-8</param-value>
+        </init-param>
+    </filter>
+    <filter>
+        <filter-name>audit</filter-name>
+        <filter-class>com.example.legacy.web.AuditFilter</filter-class>
+    </filter>
+    <filter-mapping>
+        <filter-name>encoding</filter-name>
+        <url-pattern>/*</url-pattern>
+    </filter-mapping>
+    <!-- <dispatcher> is a Servlet 2.4 element; old containers accepted it in 2.3 descriptors too -->
+    <filter-mapping>
+        <filter-name>audit</filter-name>
+        <url-pattern>/admin/*</url-pattern>
+        <dispatcher>REQUEST</dispatcher>
+        <dispatcher>FORWARD</dispatcher>
+    </filter-mapping>
+
+    <listener>
+        <listener-class>com.example.legacy.web.AppStartupListener</listener-class>
+    </listener>
+
+    <servlet>
+        <servlet-name>front</servlet-name>
+        <servlet-class>com.example.legacy.web.FrontServlet</servlet-class>
+        <init-param>
+            <param-name>defaultView</param-name>
+            <param-value>/WEB-INF/jsp/list.jsp</param-value>
+        </init-param>
+        <load-on-startup>1</load-on-startup>
+    </servlet>
+    <servlet>
+        <servlet-name>report</servlet-name>
+        <servlet-class>com.example.legacy.web.ReportServlet</servlet-class>
+    </servlet>
+    <servlet>
+        <servlet-name>help</servlet-name>
+        <jsp-file>/WEB-INF/jsp/help.jsp</jsp-file>
+    </servlet>
+
+    <servlet-mapping>
+        <servlet-name>front</servlet-name>
+        <url-pattern>/front/*</url-pattern>
+    </servlet-mapping>
+    <servlet-mapping>
+        <servlet-name>front</servlet-name>
+        <url-pattern>*.do</url-pattern>
+    </servlet-mapping>
+    <servlet-mapping>
+        <servlet-name>help</servlet-name>
+        <url-pattern>/help</url-pattern>
+    </servlet-mapping>
+
+    <session-config>
+        <session-timeout>30</session-timeout>
+    </session-config>
+
+    <mime-mapping>
+        <extension>hwp</extension>
+        <mime-type>application/x-hwp</mime-type>
+    </mime-mapping>
+
+    <welcome-file-list>
+        <welcome-file>index.jsp</welcome-file>
+    </welcome-file-list>
+
+    <error-page>
+        <error-code>404</error-code>
+        <location>/WEB-INF/jsp/error.jsp</location>
+    </error-page>
+    <error-page>
+        <exception-type>java.lang.Exception</exception-type>
+        <location>/WEB-INF/jsp/error.jsp</location>
+    </error-page>
+</web-app>

@@ -656,6 +656,7 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `jakarta-leftovers-renamed` | 핸들러 `jakarta-namespace-sweep` | 소스에 남은 `javax.*` Jakarta EE 참조를 `jakarta.*`로(E13) | 없음(follow-up) |
 | `spring-data-crud-restored` | 핸들러 `spring-data-crud-repository` | 페이징 리포지토리에 `ListCrudRepository<T, ID>` 추가(E14) | 없음 |
 | `jakarta-library-bumped` | 핸들러 `jakarta-library-floor` | jakarta 릴리스가 알려진 서드파티 라이브러리를 그 버전으로(`knowledge/libraries/jakarta_libraries.yml`) | 없음 |
+| `web-xml-registered` | 재구성기(`RestructureResult.flags` → orchestrator) | web.xml 선언을 boot 모듈의 `WebXmlRegistrations` @Configuration으로 생성(W1) | 없음 |
 | `javax-api-on-classpath` | orchestrator(`report.javax_api_inventory`) | 마이그레이션 후 javax API jar가 클래스패스에 남음(X1b, 보고서 절 + follow-up) | 없음(follow-up) |
 | `blocked-finalize-failed: <오류>` | orchestrator | blocked 항목 마무리 중 내부 오류 | — |
 | `report-failed: <오류>` | orchestrator | 보고서 작성 실패 | — |
@@ -709,6 +710,7 @@ report.md의 "Flags" 절은 이 중 상당수의 설명을 함께 보여 줍니�
 | `stop_after` | `phase` | 의도적 정지 |
 | `restructure` / `restructure_failed` | `step`, `mode`, `ok` / `error` | 레이아웃·pom 변환 |
 | `placeholders` | `step`, `files`, `keys` | `__SET_ME__` 자리표시자 작성 |
+| `web_xml_registrations` | `path`, `spec`, `servlets`, `filters`, `listeners`, `error_pages`, `skipped`, `jsp_file_servlets`, `class` | web.xml → 생성 클래스 `WebXmlRegistrations`(W1) |
 | `verify` | `step`, `target`, `ok` | 최종 빌드 |
 | `kb_credit` / `kb_credit_skipped` | `phase`, `recipes`, `success` / `reason` | KB 레시피 평가(해석 실패만 있으면 건너뜀) |
 | `harvest` | `phase`, `cases`, … | KB 수확 |

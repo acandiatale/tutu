@@ -158,6 +158,11 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   run (10 webapp roots, 1,081 / 408 / 264 JSPs on Servlet 2.2, cp949 sources, only `*.jar.old` in WEB-INF/lib, 140
   duplicate classes) led to the company decision to reject pom-less trees; rounds 2 / 3 (pom synthesis, JSP sweep)
   were dropped and the inventory remains a read-only triage aid.
+- 2026-10-23 (pom-based plain servlet / JSP projects → Boot): web.xml is parsed (`sbmig/analyze/webxml.py`) and the
+  restructure generates `WebXmlRegistrations` (servlets / filters / listeners / error pages / session timeout) in the
+  boot module (`layout.web_xml_registrations`, skip table `knowledge/config/web_xml_rules.yml`, flag `web-xml-registered`);
+  the jakarta sweep also renames javax references inside JSP / tag files (flag `jsp-javax-renamed`); fixture
+  `servlet-webxml-legacy` (27 fixtures).
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -199,7 +204,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,573 passed, 36 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,632 passed, 37 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

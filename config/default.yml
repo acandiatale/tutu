@@ -50,6 +50,8 @@ layout:
     spring_legacy: spring-boot-starter-webmvc
     spring_boot: auto
   add_servlet_component_scan: true
+  web_xml_registrations: generate  # web.xml servlets / filters / listeners / error pages / session timeout → generated
+                                   # WebXmlRegistrations @Configuration in the boot module (followup = notes only)
   import_xml_bean_configs: true
   msa_parent_policy: per-service-root
 

@@ -196,6 +196,64 @@ class WebappInventory(BaseModel):
     outputs: dict[str, str] = Field(default_factory=dict)  # inventory_md, inventory_json
 
 
+# ---------------------------------------------------------------------------
+# web.xml (2026-10-23): parsed by sbmig.analyze.webxml (DTD 2.2 / 2.3 and XSD 2.4 … 6.0, namespace-agnostic); the
+# restructure renders WebXmlRegistrations (ServletRegistrationBean / FilterRegistrationBean /
+# ServletListenerRegistrationBean / ErrorPageRegistrar) from it because neither embedded Tomcat nor the company's
+# Boot WAR (web.xml is not packaged) reads the descriptor. Pre-Servlet-3 projects have no @WebServlet annotations,
+# so @ServletComponentScan alone would lose every mapping.
+# ---------------------------------------------------------------------------
+class WebXmlServlet(BaseModel):
+    name: str
+    servlet_class: Optional[str] = None            # FQCN; None for a jsp-file servlet
+    jsp_file: Optional[str] = None
+    url_patterns: list[str] = Field(default_factory=list)
+    init_params: dict[str, str] = Field(default_factory=dict)
+    load_on_startup: Optional[int] = None
+    async_supported: bool = False
+    multipart_location: Optional[str] = None       # <multipart-config> present → location / sizes
+    multipart_max_file_size: Optional[int] = None
+    multipart_max_request_size: Optional[int] = None
+    multipart_file_size_threshold: Optional[int] = None
+
+
+class WebXmlFilter(BaseModel):
+    name: str
+    filter_class: str
+    url_patterns: list[str] = Field(default_factory=list)
+    servlet_names: list[str] = Field(default_factory=list)
+    dispatchers: list[str] = Field(default_factory=list)   # REQUEST | FORWARD | INCLUDE | ERROR | ASYNC
+    init_params: dict[str, str] = Field(default_factory=dict)
+    async_supported: bool = False
+    order: int = 0                                 # position of its first <filter-mapping> (web.xml chain order)
+
+
+class WebXmlErrorPage(BaseModel):
+    location: str
+    error_code: Optional[int] = None
+    exception_type: Optional[str] = None           # FQCN; both None = default error page
+
+
+class WebXmlModel(BaseModel):
+    path: str                                      # root-relative web.xml
+    spec: Optional[str] = None                     # "2.3" / "3.1" …
+    display_name: Optional[str] = None
+    servlets: list[WebXmlServlet] = Field(default_factory=list)
+    filters: list[WebXmlFilter] = Field(default_factory=list)
+    listeners: list[str] = Field(default_factory=list)          # FQCNs in declaration order
+    session_timeout_minutes: Optional[int] = None
+    welcome_files: list[str] = Field(default_factory=list)
+    error_pages: list[WebXmlErrorPage] = Field(default_factory=list)
+    mime_mappings: dict[str, str] = Field(default_factory=dict)  # extension → type
+    context_params: dict[str, str] = Field(default_factory=dict) # informational (properties handles them)
+    security_constraints: int = 0
+    login_config: Optional[str] = None             # auth-method
+    resource_refs: list[str] = Field(default_factory=list)
+    taglibs: int = 0
+    distributable: bool = False
+    warnings: list[str] = Field(default_factory=list)   # unparsable bits
+
+
 class JavaxApiJar(BaseModel):
     """A javax EE API jar (or a javax-era `jakarta.*-api` 2.x) still on a module's resolved classpath after the
     migration, with the dependency path that brings it (`mvn dependency:tree`). Rendered as the report section
@@ -294,6 +352,13 @@ class SourceStats(BaseModel):
     config_files: list[str] = Field(default_factory=list)        # application*.yml/properties, bootstrap*, logback*
     spring_boot_test_classes: list[str] = Field(default_factory=list)
     lombok: bool = False
+    # 2026-10-23 (plain servlet / JSP projects with a pom): what the first web.xml declares, parsed once by
+    # sbmig.analyze.webxml; the restructure turns it into WebXmlRegistrations (layout.web_xml_registrations)
+    web_xml_spec: Optional[str] = None                           # "2.3" (DTD) … "6.0"; None = no web.xml / unknown
+    web_xml_servlets: int = 0
+    web_xml_filters: int = 0
+    web_xml_listeners: int = 0
+    jsp_javax_files: int = 0                                     # JSP / tag files whose page imports or scriptlets name javax EE types
 
 
 # ---------------------------------------------------------------------------

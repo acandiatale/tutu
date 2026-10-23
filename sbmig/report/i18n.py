@@ -168,6 +168,17 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "jakarta-namespace-sweep handler (string literals / resource files are listed as follow-ups)":
         "레시피가 소스에 남긴 javax.* Jakarta EE 참조를 jakarta-namespace-sweep 핸들러가 jakarta.*로 바꿨다"
         "(문자열 리터럴 / 리소스 파일은 후속 작업에 나열)",
+    "javax.* Jakarta EE references inside JSP / tag files (page imports, scriptlets, useBean) were renamed to "
+    "jakarta.* by the jakarta-namespace-sweep handler — JSPs are compiled by Tomcat at runtime, so the build cannot "
+    "prove them: smoke-test the pages":
+        "JSP / 태그 파일 안의 javax.* Jakarta EE 참조(page import, 스크립틀릿, useBean)를 jakarta-namespace-sweep "
+        "핸들러가 jakarta.*로 바꿨다 — JSP는 Tomcat이 실행 시점에 컴파일하므로 빌드로는 확인할 수 없다: 화면을 직접 "
+        "열어 확인할 것",
+    "web.xml servlets / filters / listeners / error pages were turned into a generated WebXmlRegistrations "
+    "@Configuration in the boot module (web.xml itself is not read by Spring Boot) — verify the mappings in the "
+    "Handover":
+        "web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 boot 모듈에 생성한 WebXmlRegistrations @Configuration으로 "
+        "옮겼다(Spring Boot는 web.xml 자체를 읽지 않음) — 인수인계에서 매핑을 확인할 것",
     "repository interfaces that extended only PagingAndSortingRepository got ListCrudRepository<T, ID> back "
     "(Spring Data 3 removed its CRUD methods)":
         "PagingAndSortingRepository만 상속하던 리포지토리 인터페이스에 ListCrudRepository<T, ID>를 다시 추가했다"

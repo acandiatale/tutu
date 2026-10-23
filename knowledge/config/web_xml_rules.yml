@@ -1,0 +1,21 @@
+# web.xml → WebXmlRegistrations rules (sbmig.restructure, 2026-10-23). Servlet / filter / listener classes that Boot
+# already registers (or that must not be registered twice) are skipped with a note; the rest become
+# ServletRegistrationBean / FilterRegistrationBean / ServletListenerRegistrationBean beans in the generated class.
+# Company additions: add rows (class = FQCN as written in web.xml, reason = one line for the report, property = the
+# Boot property that replaces it, when one exists).
+version: 1
+skip:
+  - { class: org.springframework.web.servlet.DispatcherServlet,           reason: "Spring Boot registers its own DispatcherServlet on /", property: "spring.mvc.servlet.path (when the web.xml mapping was not /)" }
+  - { class: org.springframework.web.context.ContextLoaderListener,        reason: "Spring Boot creates the application context" }
+  - { class: org.springframework.web.context.request.RequestContextListener, reason: "Spring Boot registers it when needed" }
+  - { class: org.springframework.web.util.IntrospectorCleanupListener,     reason: "not needed on Spring 6+" }
+  - { class: org.springframework.web.util.Log4jConfigListener,             reason: "Log4j 1 is gone (advisory log4j1); Boot configures logging" }
+  - { class: org.springframework.web.filter.CharacterEncodingFilter,       reason: "Boot's HttpEncoding auto-configuration", property: "server.servlet.encoding.charset / force" }
+  - { class: org.springframework.web.filter.DelegatingFilterProxy,         reason: "springSecurityFilterChain is registered by Spring Security auto-configuration" }
+  - { class: org.springframework.web.filter.HiddenHttpMethodFilter,        reason: "Boot registers it", property: "spring.mvc.hiddenmethod.filter.enabled=true" }
+  - { class: org.springframework.web.filter.FormContentFilter,             reason: "Boot registers it", property: "spring.mvc.formcontent.filter.enabled" }
+  - { class: org.springframework.orm.jpa.support.OpenEntityManagerInViewFilter, reason: "Boot's OpenEntityManagerInViewInterceptor", property: "spring.jpa.open-in-view" }
+  - { class: org.springframework.orm.hibernate5.support.OpenSessionInViewFilter, reason: "HibernateTemplate era (advisory hibernate-template): use spring.jpa.open-in-view" }
+  - { class: org.apache.jasper.servlet.JspServlet,                         reason: "embedded Tomcat / the WAR container registers the JSP servlet" }
+  - { class: org.apache.catalina.servlets.DefaultServlet,                  reason: "static resources are served by Spring Boot" }
+  - { class: com.sun.faces.config.ConfigureListener,                       reason: "JSF (advisory): the Faces implementation registers itself" }

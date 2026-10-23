@@ -35,6 +35,11 @@ phases: [spring, jdk21]
 | `javax.faces` | `jakarta.faces` | `jakarta.faces:jakarta.faces-api:4.1` |
 | `javax.ejb`, `javax.enterprise` (CDI), `javax.json`, `javax.batch`, `javax.security.enterprise` | `jakarta.*` same suffix | matching `jakarta.*-api` |
 
+JSP / tag files are not compiled by the build (Tomcat compiles them at runtime) and OpenRewrite skips them: the
+`jakarta-namespace-sweep` handler renames the same packages inside `<%@ page|tag import="…" %>`, scriptlets
+(`<% %>`, `<%= %>`, `<%! %>`) and `<jsp:useBean class|type>` (flag `jsp-javax-renamed`). Never rename taglib URIs
+(`http://java.sun.com/jsp/jstl/core` is a URI, not a package — JSTL 3 accepts it) or EL / HTML text.
+
 ## Stays `javax.*` (part of the JDK — never rename)
 `javax.sql`, `javax.crypto`, `javax.naming`, `javax.net`, `javax.net.ssl`, `javax.swing`, `javax.imageio`,
 `javax.security.auth`, `javax.security.cert`, `javax.management`, `javax.xml.parsers`, `javax.xml.transform`,

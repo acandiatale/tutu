@@ -453,10 +453,25 @@ as-is XML / Java 에 `InternalResourceViewResolver` 의 prefix·suffix(빈 prope
 
 ### 6.5 사람이 해야 할 일
 
-- **web.xml 은 내장 Tomcat 이 읽지 않습니다.** 서블릿·필터는 `@ServletComponentScan`(`layout.add_servlet_component_scan`)으로 `@WebServlet`/`@WebFilter`/`@WebListener` 를 등록하지만, web.xml 에만 선언된 매핑·필터 순서·error-page·security-constraint 등은 직접 빈으로 옮겨야 합니다. WAR 로 패키징해도 `asis-webinf/web.xml` 은 WAR 의 `WEB-INF/web.xml` 이 아닙니다(후속조치에 명시).
+- **web.xml 은 내장 Tomcat 이 읽지 않습니다.** `@WebServlet`/`@WebFilter`/`@WebListener` 는 `@ServletComponentScan`(`layout.add_servlet_component_scan`)이 등록하고, web.xml 에만 선언된 서블릿·필터(순서 포함)·리스너·error-page 는 2026-10-23 부터 boot 모듈에 생성되는 `WebXmlRegistrations` 가 등록합니다(`layout.web_xml_registrations: generate`, 6.6 참고). jsp-file 서블릿·welcome-file·mime-mapping·security-constraint 는 후속조치로 남습니다. WAR 로 패키징해도 `asis-webinf/web.xml` 은 WAR 의 `WEB-INF/web.xml` 이 아닙니다(후속조치에 명시).
 - `asis-webinf/` 와 `legacy-config/` 의 XML 은 참고·import 용입니다. 상대 `<import>` 경로와 Boot 자동 설정과의 빈 중복을 확인합니다.
 - `WEB-INF/lib` jar 는 Maven 의존성으로 선언해야 합니다.
-- 서블릿 케이스의 web.xml 배선은 자동 이관되지 않는다는 플랜 노트가 있습니다.
+- 서블릿 케이스의 플랜 노트가 web.xml 선언 수와 `WebXmlRegistrations` 생성 여부를 알려 줍니다(`followup` 정책이면 "자동 이관되지 않음").
+
+### 6.6 web.xml → WebXmlRegistrations (2026-10-23)
+
+Servlet 3 이전(web.xml 2.2 / 2.3 / 2.4) 프로젝트는 어노테이션이 없어 `@ServletComponentScan` 만으로는 모든 매핑이 사라집니다. restructure 는 Application 을 만든 뒤 첫 web.xml 을 `sbmig/analyze/webxml.py` 로 다시 읽어(네임스페이스 무관, DTD 미조회, 깨진 파일은 경고) `sbmig/restructure/webxml_registrations.py` 가 `WebXmlRegistrations.java.j2` 템플릿으로 `{name}-boot/src/main/java/<패키지>/WebXmlRegistrations.java` 를 씁니다.
+
+| web.xml | 생성 결과 |
+|---|---|
+| `<servlet>` + `<servlet-mapping>` | `ServletRegistrationBean` (URL 패턴, `setName`, `setLoadOnStartup`, init-param, async, multipart). 매핑 없는 서블릿은 `alwaysMapUrl=false` |
+| `<filter>` + `<filter-mapping>` | `FilterRegistrationBean` (URL 패턴 / servlet-name, dispatcher, `setOrder(n)` = web.xml 매핑 순서). 매핑 없는 필터는 등록하지 않음 |
+| `<listener>` | `ServletListenerRegistrationBean` |
+| `<error-page>` | `ErrorPageRegistrar` 빈 하나 (상태 코드 / 예외 타입 / 기본) |
+| `<session-timeout>` | boot `application.properties` 의 `server.servlet.session.timeout=<N>m` (외부 Tomcat WAR 에는 적용되지 않아 후속조치) |
+| jsp-file 서블릿, `<welcome-file-list>`, `<mime-mapping>`, `<security-constraint>` / `<login-config>` | 후속조치 |
+
+`knowledge/config/web_xml_rules.yml` 의 skip 표(DispatcherServlet, ContextLoaderListener, CharacterEncodingFilter 등)에 있는 클래스는 Boot 가 대신하므로 생성하지 않고 대체 프로퍼티와 함께 후속조치로 알립니다. 프로젝트가 `@WebServlet` 등으로 어노테이션한 클래스는 `@ServletComponentScan` 에 맡겨 중복 등록하지 않습니다. 결과: 플래그 `web-xml-registered`, 저널 `web_xml_registrations`, 인수인계 줄 "web.xml (<spec>) → WebXmlRegistrations: N servlet(s), …". 픽스처 `servlet-webxml-legacy`.
 
 ## 7. 외부화 설정 placeholder
 
@@ -570,6 +585,7 @@ spring.datasource.url=__SET_ME__
 | `layout.boot_resources_glob` | `application*.yml` 등 8개 | boot 로 옮길 리소스 |
 | `layout.starter_by_case` | 순수 Java `spring-boot-starter`, 서블릿·Spring legacy `spring-boot-starter-webmvc`, Boot `auto` | boot 모듈 스타터 |
 | `layout.add_servlet_component_scan` | `true` | `@ServletComponentScan` 추가 |
+| `layout.web_xml_registrations` | `generate` | web.xml → `WebXmlRegistrations` 생성 (`followup` = 후속조치만) |
 | `layout.import_xml_bean_configs` | `true` | XML 빈 설정 `@ImportResource` |
 | `layout.msa_parent_policy` | `per-service-root` | MSA 부모 위치 |
 

@@ -13,9 +13,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
 
-from sbmig.core.models import SourceStats
+from sbmig.core.models import SourceStats, WebXmlModel
 
+from .jsp import JSP_GLOBS, jsp_javax_refs
 from .pom_parser import WorkspaceView
+from .webxml import parse_web_xml
 
 log = logging.getLogger("sbmig.analyze")
 
@@ -148,19 +150,26 @@ class ScanResult:
     kotlin_files: list[str] = field(default_factory=list)
     web_xml_paths: list[str] = field(default_factory=list)
     jsp_paths: list[str] = field(default_factory=list)
+    # JSP / tag files (*.jsp, *.jspf, *.jspx, *.tag, *.tagx) naming a javax EE type of the jakarta table in a page /
+    # tag import, a scriptlet or a useBean (sbmig.analyze.jsp) — what jakarta-namespace-sweep renames
+    jsp_javax_paths: list[str] = field(default_factory=list)
     xml_bean_configs: list[str] = field(default_factory=list)
     config_files: list[str] = field(default_factory=list)
     # round 9c: static web files as (web root dir, file path), both root-relative (see WEB_STATIC_EXTENSIONS)
     web_static_files: list[tuple[str, str]] = field(default_factory=list)
+    # 2026-10-23: parsed web.xml descriptors by path (`sbmig.analyze.webxml`); the first one fills SourceStats.web_xml_*
+    web_xml_models: dict[str, WebXmlModel] = field(default_factory=dict)
 
     def subset(self, prefix: str) -> "ScanResult":
         """Files below directory `prefix` (relative, '' = everything)."""
         f = lambda xs: [x for x in xs if _under(x, prefix)]  # noqa: E731
         return ScanResult(files=[j for j in self.files if _under(j.path, prefix)],
                           kotlin_files=f(self.kotlin_files), web_xml_paths=f(self.web_xml_paths),
-                          jsp_paths=f(self.jsp_paths), xml_bean_configs=f(self.xml_bean_configs),
+                          jsp_paths=f(self.jsp_paths), jsp_javax_paths=f(self.jsp_javax_paths),
+                          xml_bean_configs=f(self.xml_bean_configs),
                           config_files=f(self.config_files),
-                          web_static_files=[w for w in self.web_static_files if _under(w[1], prefix)])
+                          web_static_files=[w for w in self.web_static_files if _under(w[1], prefix)],
+                          web_xml_models={k: v for k, v in self.web_xml_models.items() if _under(k, prefix)})
 
     def import_counts(self) -> Counter:
         c: Counter = Counter()
@@ -185,6 +194,7 @@ class ScanResult:
                 if k:
                     jakarta[k] += 1
             annots.update(j.annotations)
+        wx = next((self.web_xml_models[p] for p in self.web_xml_paths if p in self.web_xml_models), None)
         return SourceStats(
             java_files=len(self.files),
             test_files=len(tests),
@@ -203,12 +213,17 @@ class ScanResult:
             web_xml_paths=list(self.web_xml_paths),
             jsp_count=len(self.jsp_paths),
             jsp_paths=sorted(self.jsp_paths),
+            jsp_javax_files=len(self.jsp_javax_paths),
             web_static_dirs=sorted({d for d, _ in self.web_static_files}),
             web_static_count=len(self.web_static_files),
             xml_bean_configs=list(self.xml_bean_configs),
             config_files=list(self.config_files),
             spring_boot_test_classes=sorted(j.fqcn for j in tests if j.annotations.get("SpringBootTest")),
             lombok=any(j.lombok for j in self.files),
+            web_xml_spec=wx.spec if wx else None,
+            web_xml_servlets=len(wx.servlets) if wx else 0,
+            web_xml_filters=len(wx.filters) if wx else 0,
+            web_xml_listeners=len(wx.listeners) if wx else 0,
         )
 
 
@@ -243,6 +258,19 @@ def _scan_web_static(ws: WorkspaceView) -> list[tuple[str, str]]:
     return out
 
 
+def _scan_jsp_javax(ws: WorkspaceView) -> list[str]:
+    """JSP / tag files whose imports / scriptlets / useBeans name a javax EE type of the jakarta table."""
+    out: set[str] = set()
+    for pattern in JSP_GLOBS:
+        for rel in _glob_plain(ws, pattern):
+            try:
+                if jsp_javax_refs(ws.read(rel)):
+                    out.add(rel)
+            except OSError:  # pragma: no cover - unreadable file
+                continue
+    return sorted(out)
+
+
 def scan_sources(ws: WorkspaceView) -> ScanResult:
     res = ScanResult()
     for rel in _glob_plain(ws, "*.java"):
@@ -252,7 +280,16 @@ def scan_sources(ws: WorkspaceView) -> ScanResult:
             log.warning("cannot read %s: %s", rel, e)
     res.kotlin_files = _glob_plain(ws, "*.kt")
     res.web_xml_paths = [p for p in _glob_plain(ws, "web.xml") if p.endswith("WEB-INF/web.xml")]
+    for rel in res.web_xml_paths:
+        try:
+            text = ws.read(rel)
+        except OSError as e:  # pragma: no cover - unreadable file
+            log.warning("cannot read %s: %s", rel, e)
+            continue
+        if len(text) <= MAX_XML_BYTES:
+            res.web_xml_models[rel] = parse_web_xml(text, rel)
     res.jsp_paths = sorted(_glob_plain(ws, "*.jsp"))
+    res.jsp_javax_paths = _scan_jsp_javax(ws)
     res.web_static_files = _scan_web_static(ws)
     for rel in _glob_plain(ws, "*.xml"):
         base = posixpath.basename(rel)

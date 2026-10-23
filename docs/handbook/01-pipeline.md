@@ -551,6 +551,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `stopped-after-<phase>` | `--stop-after`로 멈춤 |
 | `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `unsupported-build-tool:<tool>` | 중단(exit 3) |
 | `restructure-failed` | 재구성 스텝 실패(exit 2) |
+| `web-xml-registered` | web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 boot 모듈의 생성 클래스 `WebXmlRegistrations`로 옮김(W1, `layout.web_xml_registrations`) — 인수인계에서 매핑 확인 |
 | `rewrite-unresolved-versions` | 레시피가 `4.0.x` 같은 리터럴 버전을 남김(프록시 / rate limit) |
 | `rewrite-parse-problems` | rewrite 플러그인이 일부 소스를 파싱하지 못함(레시피가 건너뜀) |
 | `jakarta-leftovers-renamed` / `spring-data-crud-restored` | 소스 핸들러가 레시피의 빈틈을 메움(E13 / E14) |
@@ -591,6 +592,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `classpath` | `sbmig/build/classpath.py` | blocked 원인 추적용 클래스패스 |
 | `fixer` | 오케스트레이터 | `fix.plugin` 로드 결과 |
 | `restructure` / `restructure_failed` / `placeholders` | 오케스트레이터 | 재구성 결과 / 실패 / `__SET_ME__` 기록 |
+| `web_xml_registrations` | 재구성기(`sbmig/restructure/restructurer.py`) | web.xml → `WebXmlRegistrations` 생성(`path`, `spec`, `servlets`, `filters`, `listeners`, `error_pages`, `skipped`, `jsp_file_servlets`, `class`) |
 | `verify` | 오케스트레이터 | 최종 빌드 결과 |
 | `kb_credit` / `kb_credit_skipped` / `harvest` | 오케스트레이터 | KB 점수 / 해석 실패로 점수 생략 / harvest 결과 |
 | `abort` / `run_aborted` / `stop_after` / `warning` | 오케스트레이터 / 루프 | 중단 / 루프 중단으로 실행 종료 / stop-after 도달 / KB 없음 등 |

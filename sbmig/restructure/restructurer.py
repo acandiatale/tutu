@@ -50,6 +50,9 @@ from sbmig.core.workspace import GitError, Workspace
 from sbmig.plan.versions import compare_versions, version_lt
 
 from .pom_editor import PomEditError, PomEditor, property_ref
+from .webxml_registrations import CLASS_NAME as WEB_XML_CLASS
+from .webxml_registrations import RULES_FILE as WEB_XML_RULES
+from .webxml_registrations import ClassInfo, load_skip_rules, plan_registrations
 
 log = logging.getLogger("sbmig.restructure")
 
@@ -166,6 +169,8 @@ class _Ctx:
     boot_war: bool = False              # JSPs in the front module → the boot module is a WAR for external Tomcat
     jstl: bool = False                  # a JSP declares a JSTL taglib
     jsp_moved: int = 0
+    web_xml_class: str | None = None    # FQCN of the generated WebXmlRegistrations (2026-10-23)
+    web_xml_summary: str | None = None
 
     def p(self, *parts: str) -> str:
         j = posixpath.normpath(posixpath.join(self.base, *parts)) if (self.base or parts) else "."
@@ -1443,6 +1448,7 @@ class Restructurer:
             self._initializer_followup(c, boot, moved_main)
         if c.jsp_moved:
             self._jsp_view_props(c, boot)
+        self._web_xml_registrations(c, boot, comp_dirs, moved_main)
         self._web_followups(c)
 
     def _test_helper_refs(self, c: _Ctx, comp_dir: str, boot: str) -> list[str]:
@@ -1525,8 +1531,16 @@ class Restructurer:
     def _web_followups(self, c: _Ctx) -> None:
         src = c.profile.source
         scan = c.cfg.layout.add_servlet_component_scan
-        for p in src.web_xml_paths or ([] if not src.has_web_xml else ["src/main/webapp/WEB-INF/web.xml"]):
+        for i, p in enumerate(src.web_xml_paths or ([] if not src.has_web_xml else ["src/main/webapp/WEB-INF/web.xml"])):
             loc = c.new_location(p)
+            if c.web_xml_class and i == 0:
+                where = ("is kept for reference only (not packaged as the WAR's WEB-INF/web.xml)" if c.boot_war
+                         else "is not read by embedded Tomcat")
+                c.followup(f"web.xml at {loc} {where}; its servlets / filters / listeners / error pages are "
+                           f"registered by the generated {c.web_xml_class} — verify the mappings")
+                if c.web_xml_summary:
+                    c.followup(c.web_xml_summary)
+                continue
             if c.boot_war:
                 c.followup(f"web.xml at {loc} is kept for reference only (not packaged as the WAR's WEB-INF/web.xml); "
                            + ("servlets/filters are registered via @ServletComponentScan — verify mappings" if scan
@@ -1536,6 +1550,127 @@ class Restructurer:
                            "@ServletComponentScan — verify mappings")
             else:
                 c.followup(f"web.xml at {loc} is not read by embedded Tomcat — register servlets/filters as beans")
+
+    # ------------------------------------------------------------------ web.xml → WebXmlRegistrations (2026-10-23)
+    def _web_xml_registrations(self, c: _Ctx, boot: str, comp_dirs: list[str], moved_main: list[str]) -> None:
+        """`layout.web_xml_registrations: generate`: the first web.xml's servlets / filters / listeners / error pages
+        → `<pkg>.WebXmlRegistrations` in the boot module (`sbmig.restructure.webxml_registrations`), its
+        session-timeout → `server.servlet.session.timeout` in the boot `application.properties`; what has no bean
+        becomes a follow-up. Nothing is generated when every declaration is skipped / annotated."""
+        from sbmig.analyze.webxml import parse_web_xml
+
+        L = c.cfg.layout
+        src = c.profile.source
+        if L.web_xml_registrations != "generate" or not src.web_xml_paths:
+            return
+        asis = src.web_xml_paths[0]
+        loc = c.new_location(asis)
+        if not c.ws.exists(loc):
+            c.note(f"web.xml {asis} not found at {loc}; no WebXmlRegistrations generated")
+            return
+        model = parse_web_xml(c.ws.read(loc), asis)
+        if not (model.servlets or model.filters or model.listeners or model.error_pages
+                or model.session_timeout_minutes is not None):
+            return
+        rules = load_skip_rules(c.cfg.resolve_path(WEB_XML_RULES))
+        search = [d for d in [*comp_dirs, boot] if d]
+        cache: dict[str, ClassInfo | None] = {}
+
+        def lookup(fqcn: str) -> ClassInfo | None:
+            if fqcn not in cache:
+                cache[fqcn] = self._class_info(c, fqcn, search)
+            return cache[fqcn]
+
+        web_path = (lambda p: self._jsp_web_path(c, p)) if c.jsp_moved else (lambda p: p)
+        plan = plan_registrations(model, rules=rules, lookup=lookup, component_scan=self._servlet_scan(c),
+                                  web_path=web_path, war=c.boot_war)
+        for n in plan.notes:
+            c.note(f"web.xml: {n}")
+        for f in plan.followups:
+            c.followup(f)
+        if plan.session_timeout is not None:
+            self._session_timeout_prop(c, boot, plan.session_timeout, asis)
+        if not plan.has_beans:
+            if plan.skipped or plan.annotated:
+                c.note(f"web.xml {asis}: every servlet / filter / listener is provided by Spring Boot or "
+                       "@ServletComponentScan; no WebXmlRegistrations generated")
+            return
+        pkg = sanitize_package(moved_main[0].rsplit(".", 1)[0]) if moved_main and "." in moved_main[0] else None
+        pkg = pkg or sanitize_package(src.base_package) or FALLBACK_PACKAGE
+        pkg_path = pkg.replace(".", "/")
+        cls = WEB_XML_CLASS
+        if any(c.ws.exists(f"{d}/src/main/java/{pkg_path}/{cls}.java") for d in search):
+            cls = "Sbmig" + cls
+        from datetime import date
+
+        from .webxml_registrations import doc_text
+        text = render("WebXmlRegistrations.java.j2", package=pkg, class_name=cls, date=date.today().isoformat(),
+                      web_xml_path=doc_text(asis), spec=doc_text(model.spec or ""),
+                      servlets=plan.servlets, filters=plan.filters, listeners=plan.listeners,
+                      error_pages=plan.error_pages,
+                      skipped=[{k: doc_text(v) for k, v in s.items()} for s in plan.skipped],
+                      notes=[doc_text(n) for n in plan.notes])
+        rel = f"{boot}/src/main/java/{pkg_path}/{cls}.java"
+        c.write(rel, text)
+        fqcn = f"{pkg}.{cls}"
+        c.web_xml_class = fqcn
+        if "web-xml-registered" not in c.result.flags:
+            c.result.flags.append("web-xml-registered")
+        skipped = [f"{s['cls'].rsplit('.', 1)[-1]} ({s['reason']})" for s in plan.skipped]
+        c.web_xml_summary = (
+            f"web.xml ({model.spec or 'spec unknown'}) → {cls}: {len(plan.servlets)} servlet(s), "
+            f"{len(plan.filters)} filter(s), {len(plan.listeners)} listener(s), {len(plan.error_pages)} error page(s)"
+            + (f"; skipped: {', '.join(skipped)}" if skipped else "")
+            + (f"; jsp-file servlets: {', '.join(plan.jsp_file_servlets)}" if plan.jsp_file_servlets else ""))
+        c.note(f"web.xml {asis} → {rel} ({len(plan.servlets)} servlet(s), {len(plan.filters)} filter(s), "
+               f"{len(plan.listeners)} listener(s), {len(plan.error_pages)} error page(s))")
+        try:
+            c.ws.journal({"event": "web_xml_registrations", "path": asis, "spec": model.spec,
+                          "servlets": len(plan.servlets), "filters": len(plan.filters),
+                          "listeners": len(plan.listeners), "error_pages": len(plan.error_pages),
+                          "skipped": [s["cls"] for s in plan.skipped],
+                          "jsp_file_servlets": list(plan.jsp_file_servlets), "class": fqcn})
+        except (OSError, AttributeError) as e:  # pragma: no cover - journal unavailable (tests without a run dir)
+            log.debug("journal web_xml_registrations skipped: %s", e)
+
+    def _class_info(self, c: _Ctx, fqcn: str, dirs: list[str]) -> ClassInfo | None:
+        """The project source of `fqcn` below `dirs` (any source root; `target/` skipped), annotated / HttpServlet."""
+        outer = fqcn.split("$", 1)[0]
+        pkg, _, simple = outer.rpartition(".")
+        for d in dirs:
+            base = c.ws.abs(d)
+            if not base.is_dir():
+                continue
+            for f in base.rglob(f"{simple}.java"):
+                if "target" in f.relative_to(base).parts:
+                    continue
+                text = f.read_text(encoding="utf-8", errors="replace")
+                m = PACKAGE_RE.search(text)
+                if (m.group(1) if m else "") != pkg:
+                    continue
+                return ClassInfo(path=c.ws.rel(f),
+                                 annotated=bool(re.search(r"@(?:[\w.]+\.)?Web(?:Servlet|Filter|Listener)\b", text)),
+                                 http_servlet="$" not in fqcn and bool(
+                                     re.search(r"\bextends\s+(?:[\w.]+\.)?HttpServlet\b", text)))
+        return None
+
+    def _session_timeout_prop(self, c: _Ctx, boot: str, minutes: int, asis: str) -> None:
+        res = f"{boot}/src/main/resources"
+        key = "server.servlet.session.timeout"
+        for f in self._boot_resource_files(c, res):
+            if key in c.ws.read(f):
+                c.note(f"{key} already configured in {f}; web.xml session-timeout {minutes} left unchanged")
+                return
+        self._append_props(c, f"{res}/application.properties",
+                           [f"# sbmig: web.xml session-config ({asis})", f"{key}={minutes}m"])
+        c.note(f"{key}={minutes}m written to {res}/application.properties (web.xml session-timeout)")
+
+    def _append_props(self, c: _Ctx, rel: str, lines: list[str]) -> None:
+        existed = c.ws.exists(rel)
+        text = c.ws.read(rel) if existed else ""
+        nl = "\r\n" if "\r\n" in text else "\n"
+        sep = "" if not text or text.endswith(("\n", "\r")) else nl
+        c.write(rel, text + sep + (nl if text.strip() else "") + nl.join(lines) + nl, generated=not existed)
 
     def _packaging_followups(self, c: _Ctx, asis_packaging: str) -> None:
         if c.boot_war:
@@ -1825,11 +1960,7 @@ class Restructurer:
         if suf is not None:
             lines.append(f"spring.mvc.view.suffix={suf}")
         rel = f"{res}/application.properties"
-        existed = c.ws.exists(rel)
-        text = c.ws.read(rel) if existed else ""
-        nl = "\r\n" if "\r\n" in text else "\n"
-        sep = "" if not text or text.endswith(("\n", "\r")) else nl
-        c.write(rel, text + sep + (nl if text.strip() else "") + nl.join(lines) + nl, generated=not existed)
+        self._append_props(c, rel, lines)
         c.note(f"spring.mvc.view.prefix / suffix written to {rel} (from {where})")
 
     # ------------------------------------------------------------------ root pom

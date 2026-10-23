@@ -944,6 +944,8 @@ class Orchestrator:
             return False
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
         self.report.manual_followups += [f for f in res.manual_followups if f not in self.report.manual_followups]
+        for flag in list(getattr(res, "flags", None) or []):      # 2026-10-23: e.g. web-xml-registered
+            self._flag(flag)
         pr.notes += res.notes
         merged = list(getattr(res, "merged_modules", None) or [])
         kept_boot = getattr(res, "kept_boot_module", None)

@@ -166,6 +166,9 @@ class RestructureResult(BaseModel):
     front_module: Optional[str] = None
     boot_packaging: Optional[str] = None
     front_files: int = 0
+    # 2026-10-23: report flags the restructure raises (e.g. `web-xml-registered`); the orchestrator adds them to
+    # RunReport.flags
+    flags: list[str] = Field(default_factory=list)
 
 
 @runtime_checkable

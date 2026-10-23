@@ -593,3 +593,18 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   `sbmig inventory <dir|zip> [--out out/inventory] [--config …] [--json]` (exit 0, 3 for a missing path; config
   optional — artifacts stubbed like `llm-probe`), `sbmig.cli.inventory_console_lines(inv)`. Fixture
   `fixtures/webapps/legacy-exploded` (not an e2e fixture). Round 2 (`synthesize-pom`) consumes `inventory.json`.
+* 2026-10-23 web.xml → Boot registrations (catalog W1): models `WebXmlServlet`, `WebXmlFilter`, `WebXmlErrorPage`,
+  `WebXmlModel`, `SourceStats.web_xml_spec / web_xml_servlets / web_xml_filters / web_xml_listeners`
+  (`sbmig/core/models.py`), `LayoutConfig.web_xml_registrations: generate | followup` (default `generate`). Parser
+  `sbmig/analyze/webxml.py::parse_web_xml(text, path) -> WebXmlModel` (namespace-agnostic, DTD 2.2 / 2.3 spec from
+  the system id, never raises; exported from `sbmig.analyze`); `ScanResult.web_xml_models` (path → model, kept by
+  `subset`). Generator `sbmig/restructure/webxml_registrations.py`: `load_skip_rules(path)` (skip table
+  `knowledge/config/web_xml_rules.yml`), `plan_registrations(model, *, rules, lookup, component_scan, web_path, war)
+  -> RegistrationPlan` (pure; `lookup(fqcn) -> ClassInfo | None`), template `templates/WebXmlRegistrations.java.j2`;
+  `Restructurer._write_boot` calls `_web_xml_registrations` after the Application (layout mode). New
+  `RestructureResult.flags: list[str]` (the orchestrator adds them to `RunReport.flags`; first flag
+  `web-xml-registered`); journal `web_xml_registrations` (`path`, `spec`, `servlets`, `filters`, `listeners`,
+  `error_pages`, `skipped`, `jsp_file_servlets`, `class`), written by the restructurer. Boot 4.1 FQCNs (javap on
+  spring-boot-4.1.0.jar): `org.springframework.boot.web.servlet.{ServletRegistrationBean, FilterRegistrationBean,
+  ServletListenerRegistrationBean}`, `org.springframework.boot.web.error.{ErrorPage, ErrorPageRegistrar}`;
+  `setDispatcherTypes` takes `jakarta.servlet.DispatcherType`. Fixture `servlet-webxml-legacy`.

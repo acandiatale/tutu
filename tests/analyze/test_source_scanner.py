@@ -82,3 +82,21 @@ def test_subset(tmp_path: Path) -> None:
     scan = scan_sources(PathView(tmp_path))
     assert [f.fqcn for f in scan.subset("a").files] == ["com.a.A"]
     assert len(scan.subset("").files) == 2
+
+
+def test_jsp_javax_files(tmp_path: Path) -> None:
+    write(tmp_path, "src/main/webapp/a.jsp", '<%@ page import="javax.servlet.http.Cookie, java.util.List" %>')
+    write(tmp_path, "src/main/webapp/b.jsp", "<% javax.servlet.http.HttpSession s = null; %>")
+    write(tmp_path, "src/main/webapp/WEB-INF/tags/t.tag", '<jsp:useBean id="x" class="javax.mail.Session"/>')
+    write(tmp_path, "src/main/webapp/inc.jspf", "<%= ((javax.servlet.http.HttpServletRequest) request).getMethod() %>")
+    write(tmp_path, "src/main/webapp/c.jsp", '<%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>'
+                                            "<p>javax.servlet</p><% javax.sql.DataSource d; %>")
+    write(tmp_path, "src/main/webapp/d.jsp", '<%-- <% javax.servlet.http.HttpSession s; %> --%><% String k = '
+                                            '"javax.servlet.error"; %>')
+    write(tmp_path, "target/x/e.jsp", '<%@ page import="javax.servlet.http.Cookie" %>')
+    res = scan_sources(PathView(tmp_path))
+    assert res.jsp_javax_paths == ["src/main/webapp/WEB-INF/tags/t.tag", "src/main/webapp/a.jsp",
+                                   "src/main/webapp/b.jsp", "src/main/webapp/inc.jspf"]
+    s = res.stats()
+    assert s.jsp_javax_files == 4 and s.jsp_count == 4
+    assert res.subset("src/main/webapp/WEB-INF").stats().jsp_javax_files == 1

@@ -124,9 +124,11 @@ intake → analyze → plan → jdk21(레시피 + 루프) → spring(레시피 +
 | `rewrite-unresolved-versions` | 레시피가 Maven 메타데이터를 못 받아 `4.0.x` 같은 문자 그대로 버전을 남김 → 나중에 재실행하거나 직접 버전 지정 |
 | `rewrite-parse-problems` | OpenRewrite가 일부 소스를 파싱하지 못해 레시피가 그 파일을 건너뜀(phase 노트에 파일 목록). 남은 것은 소스 핸들러와 수정 루프가 처리 → 9.16 |
 | `jakarta-leftovers-renamed` | 레시피가 남긴 `javax.*`를 `jakarta-namespace-sweep`이 바꿈(E13). follow-up의 문자열 / 리소스 파일 확인 |
+| `jsp-javax-renamed` | JSP / 태그 파일의 page import / 스크립틀릿 / useBean에 있던 `javax.*`를 `jakarta-namespace-sweep`이 바꿈(E13). JSP는 Tomcat이 실행 시점에 컴파일하므로 빌드로 확인되지 않음 — 노트에 나온 화면을 열어 확인 |
 | `spring-data-crud-restored` | 페이징 리포지토리에 `ListCrudRepository<T, ID>`를 추가함(E14) |
 | `javax-api-on-classpath` | 마이그레이션 후에도 javax API jar가 클래스패스에 남음(X1b). 보고서 절 "javax API jars still on the classpath"의 via 라이브러리에 Jakarta 빌드가 필요 |
 | `jakarta-library-bumped` | jakarta 릴리스가 알려진 서드파티 라이브러리(`knowledge/libraries/jakarta_libraries.yml`)를 `jakarta-library-floor`가 올림 |
+| `web-xml-registered` | web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 boot 모듈의 `WebXmlRegistrations`로 생성함(W1). 인수인계의 "web.xml (<spec>) → WebXmlRegistrations: …" 줄과 jsp-file / welcome-file / mime-mapping 후속조치 확인. 생성 파일이 컴파일되지 않으면 그 클래스(또는 라이브러리)가 아직 `javax.servlet`인 것 |
 | `llm-cooldown` / `llm-unavailable` | 게이트웨이 장애 → 9.1 |
 | `llm-budget-exhausted` / `time-budget-exhausted` | 예산 소진(`loop.max_llm_calls` / `loop.max_total_minutes`) |
 | `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `unsupported-build-tool:<도구>` | 중단 사유(종료 코드 3) |
