@@ -1,0 +1,32 @@
+sequenceDiagram
+  autonumber
+  participant L as BuildFixLoop
+  participant F as LLMFixer
+  participant P as ContextPacker
+  participant G as CompanyClient (gateway)
+  participant A as PatchApplier
+  participant M as Maven
+  participant K as KB harvest
+  L->>F: propose(FixContext) — LLM_FIX 결정
+  F->>P: pack(cluster, ws, cfg)
+  P-->>F: 섹션 묶음 (llm.max_context_chars 60,000 안)
+  F->>G: POST messages (role fix 또는 fix_escalation)
+  Note over G: requests.post · Bearer LLM_API_KEY<br/>payload_extra need_origin<br/>30s heartbeat · hard deadline timeout+30s<br/>재시도 408/429/5xx · max_retries 3
+  G-->>F: 응답 텍스트 (content filter 면 요청 거절)
+  alt need_files 또는 need_grep (최대 2 라운드)
+    F->>F: 파일 최대 6개 · grep 패턴 5개 / 45s
+    F->>G: 추가 컨텍스트와 함께 재요청
+    G-->>F: analysis · confidence · patches
+  end
+  F->>A: check (SEARCH 가 정확히 한 곳)
+  alt SEARCH 불일치
+    F->>G: 피드백 1회 (현재 정확한 텍스트)
+    G-->>F: 수정된 patches
+  end
+  F-->>L: FixProposal (patches, llm_usage)
+  L->>A: apply (원자적 · 인코딩 보존 · 30% 축소 방어)
+  L->>L: git commit "fix(llm): cluster model"
+  L->>M: 다음 라운드 빌드
+  M-->>L: 결과 → _score (improved / build_ok / no_change / regressed)
+  L->>K: phase 종료 후 harvest (improved · build_ok 인 시도만)
+  K->>G: 레시피 후보 생성 (recipe 모델, _BudgetedLLM)

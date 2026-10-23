@@ -1,0 +1,44 @@
+flowchart TB
+  subgraph entry["진입점"]
+    CLI["CLI (typer)<br/>sbmig run · plan · fleet · kb"]
+    WEB["웹 UI<br/>FastAPI + SSE on uvicorn"]
+    API["Python API<br/>sbmig.api.migrate"]
+  end
+  ORCH["Orchestrator<br/>sbmig/loop/orchestrator.py<br/>step_intake … step_finish"]
+  GRAPH["LangGraph StateGraph<br/>sbmig/graph/engine.py<br/>loop.engine: graph"]
+  CLI --> ORCH
+  WEB --> ORCH
+  API --> ORCH
+  ORCH <--> GRAPH
+  subgraph steps["단계 컴포넌트"]
+    AN["analyze<br/>poms · sources · libraries<br/>properties · web.xml · JSP"]
+    ADV["advisory<br/>evaluate · hints · verify"]
+    PL["plan<br/>steps · recipe sets<br/>pre-handlers · advisor LLM"]
+    RW["rewrite<br/>rewrite-maven-plugin 6.46.1<br/>recipe BOM 3.37.0"]
+    LOOP["BuildFixLoop<br/>sbmig/loop/fixloop.py"]
+    RS["restructure<br/>company layout · PomEditor<br/>templates · WebXmlRegistrations"]
+    RP["report<br/>markdown en/ko · json<br/>handover · cost"]
+  end
+  subgraph loopparts["루프 내부"]
+    BU["build<br/>Maven runner · log parser<br/>signatures · classpath · deptree"]
+    TR["triage<br/>cluster · handlers · recipe rules<br/>blocked · decide"]
+    FX["fix<br/>context packer · protocol<br/>PatchApplier"]
+    GW["company gateway<br/>sbmig/fix/company.py"]
+  end
+  ORCH --> AN
+  ORCH --> ADV
+  ORCH --> PL
+  ORCH --> RW
+  ORCH --> LOOP
+  ORCH --> RS
+  ORCH --> RP
+  LOOP --> BU
+  LOOP --> TR
+  LOOP --> FX
+  FX --> GW
+  KB[("kb/<br/>file knowledge base")]
+  KN[("knowledge/<br/>yml tables + notes")]
+  TR --> KB
+  FX --> KN
+  PL --> KN
+  ORCH -->|harvest| KB

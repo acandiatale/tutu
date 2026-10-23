@@ -1,0 +1,23 @@
+flowchart LR
+  subgraph p["계획과 레시피"]
+    direction LR
+    CAT["recipes/catalog.yml<br/>34 recipe ids"] --> PLAN["planner<br/>sbmig recipes check"]
+    RR["triage/recipe_rules.yml<br/>6 rules"] --> KBR["KB_RECIPE 결정"]
+    ADV["libraries/advisories.yml<br/>64 (guide 59 · recipe 5)"] --> AN["analyze · plan · hints<br/>verify · Handover"]
+  end
+  subgraph h["결정적 핸들러"]
+    direction LR
+    JL["jakarta_libraries.yml 44"] --> H1["jakarta-library-floor<br/>X1 제안"]
+    REL["relocations.yml 44"] --> H2["dependency-relocation"]
+    VER["versions.yml 51 + 3"] --> H3["missing-dependency-version<br/>carry-over-managed-version"]
+    KP["known_packages.yml 56"] --> H4["add-known-dependency"]
+    JP["jakarta_packages.yml 30"] --> H5["jakarta-namespace-sweep"]
+  end
+  subgraph o["재구성 · LLM · 인벤토리"]
+    direction LR
+    WX["web_xml_rules.yml 14"] --> RS["WebXmlRegistrations"]
+    EXT["externalized.yml"] --> PH["__SET_ME__ placeholders"]
+    NT["notes 16 + index.yml"] --> CTX["ContextPacker (≤4)"]
+    JN["jar_names.yml 91"] --> INV["sbmig inventory"]
+  end
+  p ~~~ h ~~~ o

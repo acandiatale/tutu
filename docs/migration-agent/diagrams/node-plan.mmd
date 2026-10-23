@@ -1,0 +1,18 @@
+flowchart LR
+  A["ProjectProfile + Config + KB + advisories"] --> B["build_plan (규칙, LLM 없음)"]
+  B --> C["케이스 → spring 레시피 세트<br/>openrewrite.recipes.*"]
+  B --> D["advisory recipe 레시피<br/>spring.rewrite 맨 앞"]
+  B --> E["KB active + candidate 레시피<br/>kb.try_candidates_in_plan"]
+  B --> F["재구성 모드 선택<br/>layout · boot_pom · msa_pom · pom_only"]
+  B --> G["plan.parent_phase · optional_bump_phase<br/>intermediate_builds"]
+  C --> H["MigrationPlan<br/>plan.json"]
+  D --> H
+  E --> H
+  F --> H
+  G --> H
+  H --> I{"plan.advisor: llm?"}
+  I -->|예| J["recipe 모델이 화이트리스트 레시피 추가만"]
+  I -->|아니오| K["pre_handlers_for<br/>선제 핸들러 id + 이유"]
+  J --> K
+  K --> L["BuildFixLoop 생성<br/>BlockedRegistry · LoopBudget"]
+  L --> M["phase group 묶기<br/>jdk21 · spring · (restructure) · verify<br/>MSA: 서비스마다 반복"]

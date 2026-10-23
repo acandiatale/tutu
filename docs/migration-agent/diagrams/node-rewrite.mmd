@@ -1,0 +1,18 @@
+flowchart LR
+  A["rewrite 스텝<br/>jdk21.rewrite · spring.rewrite"] --> B{"loop.max_total_minutes 초과?"}
+  B -->|예| X["건너뜀<br/>flag time-budget-exhausted"]
+  B -->|아니오| C["처음 만나는 스텝이면<br/>선제 핸들러 JDK21 그룹"]
+  C --> D["레시피 YAML 합성<br/>com.company.migrate.Run<br/>rewrite/rewrite-N.yml"]
+  D --> E["mvn rewrite-maven-plugin:run<br/>JSP/HTML 파싱 제외"]
+  E --> F{"결과"}
+  F -->|OOM| G["oom_retry_jvm_args 로 1회 재시도"]
+  F -->|다운로드 실패| H["download_retry 대기 후 재시도"]
+  F -->|"fork compile 실패"| I["runNoFork 로 재시도"]
+  F -->|"리터럴 4.0.x 남음"| J["되돌리고 1회 재실행<br/>남으면 flag rewrite-unresolved-versions"]
+  F -->|성공| K["커밋 'rewrite: &lt;step id&gt;'<br/>journal rewrite"]
+  G --> K
+  H --> K
+  I --> K
+  J --> K
+  F -->|"recipe not found"| L["phase 나머지 스텝 건너뜀"]
+  F -->|"사내 parent 해석 불가"| M["실행 중단 exit 3"]

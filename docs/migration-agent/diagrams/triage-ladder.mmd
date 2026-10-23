@@ -1,0 +1,25 @@
+stateDiagram-v2
+  direction TB
+  state "cluster (파일 또는 g:a 단위)" as C
+  state "0. BlockedRegistry 에 이미 있음?" as R0
+  state "1. HANDLER<br/>매칭 순서 = 등록 순서, 첫 매치" as H
+  state "2. KB_RECIPE<br/>active ∪ recipe_rules → candidates" as KR
+  state "3. KB_PATCH<br/>같은 L1, SEARCH 텍스트가 그대로" as KP
+  state "4. blocked 판정 X1–X6<br/>loop.blocked_policy 허용 횟수" as BC
+  state "5. LLM_FIX<br/>클러스터당 라운드 1회" as L
+  state "BLOCKED" as B
+  [*] --> C
+  C --> R0
+  R0 --> B : 예 (LLM 없이 건너뜀)
+  R0 --> H : 아니오
+  H --> KR : 매치 없음 / 이미 시도 / 바꾼 것 없음
+  KR --> KP : 후보 없음 / no-op
+  KP --> BC : 재생 불가
+  BC --> B : 시도 수 ≥ 허용
+  BC --> L : 프로젝트 안에서 고칠 수 있음
+  L --> B : llm_unavailable / repeated_failure / budget_exhausted
+  H --> [*] : 적용 → 재빌드
+  KR --> [*] : 배치 실행 → 재빌드
+  KP --> [*] : 적용 → 재빌드
+  L --> [*] : 패치 적용 → 재빌드
+  B --> [*] : BlockedItem 등록, 보고서

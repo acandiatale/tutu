@@ -1,0 +1,17 @@
+flowchart LR
+  A["project/"] --> B["pom_parser<br/>pom 그래프 · 모듈 · parent"]
+  A --> C["source_scanner<br/>import · 어노테이션 · 인코딩"]
+  A --> D["webxml · jsp<br/>web.xml 모델 · JSP javax 사용"]
+  A --> E["properties<br/>외부화 설정 인벤토리"]
+  B --> F["libraries<br/>사용 라이브러리 · 버전"]
+  B --> G["classifier<br/>case_type · confidence · reasons"]
+  C --> G
+  D --> G
+  F --> H["ProjectProfile<br/>profile.json"]
+  G --> H
+  E --> H
+  H --> I["advisory.evaluate<br/>knowledge/libraries/advisories.yml"]
+  I --> J["RunReport.advisories<br/>journal advisories"]
+  H --> K{"build_tool == maven<br/>그리고 pom 있음?"}
+  K -->|아니오| X["중단 exit 3"]
+  K -->|예| L["plan 으로"]

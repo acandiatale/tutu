@@ -1,0 +1,10 @@
+flowchart TB
+  subgraph a["① 결과 계산"]
+    direction LR
+    A["_run_guard finally<br/>→ _finalize"] --> B["모델별 LLM 사용량<br/>× llm.pricing → llm_cost"] --> B2["flag llm-budget-exhausted<br/>tests-not-compiled"] --> C["success = verify 모두 성공<br/>AND restructure-failed 없음"] --> D["unresolved =<br/>실패한 verify 의 오류"]
+  end
+  subgraph b["② 정리와 산출물"]
+    direction LR
+    E["javax API 인벤토리<br/>dependency:tree -Dincludes<br/>blocked 에 via 채움"] --> F["_finalize_blocked<br/>사라진 항목 제거"] --> G["changes.patch<br/>result.zip"] --> H["advisories 검증<br/>→ Handover"] --> J["record_run<br/>→ ledger.jsonl"] --> L["report.md (en/ko)<br/>report.json<br/>journal report"]
+  end
+  a --> b

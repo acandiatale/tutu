@@ -1,0 +1,14 @@
+flowchart TB
+  subgraph a["① 맨 앞: 요약과 Handover"]
+    direction LR
+    T["요약 표<br/>Result · Case · LLM · Flags<br/>Blocked 수 · javax jars 수"] --> H1["Handover<br/>### Versions replaced<br/>⚠ carried over"] --> H2["### Libraries needing<br/>your attention"] --> H3["Merge conflicts"] --> H4["### Properties to set<br/>before running"] --> H5["### From here on,<br/>your team"]
+  end
+  subgraph b["② 행동할 것"]
+    direction LR
+    BL["## Blocked — needs human /<br/>library action"] --> JX["## javax API jars<br/>still on the classpath"] --> UN["## Unresolved errors"] --> MF["## Manual follow-ups<br/>## Flags"]
+  end
+  subgraph c["③ 기록"]
+    direction LR
+    WC["## What we changed<br/>## Phases"] --> FA["## Fix attempts<br/>## Escalated clusters"] --> CO["## LLM usage and cost"] --> REST["## Knowledge base<br/>## Notes · ## Outputs"]
+  end
+  a --> b --> c

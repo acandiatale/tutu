@@ -1,0 +1,24 @@
+sequenceDiagram
+  autonumber
+  participant O as 운영자
+  participant F as sbmig fleet run
+  participant S as fleet/state.json
+  participant R as Orchestrator (프로젝트 하나)
+  participant K as kb/ (공유)
+  O->>F: manifest (dir · txt · yml · csv) + --config
+  F->>S: 이전 상태 읽기 (resume 규칙)
+  loop 프로젝트마다 순차 (병렬 없음)
+    F->>R: run(project, configs + overrides)
+    alt Gradle / Ant / pom 없음
+      R-->>F: exit 3, unsupported-build-tool
+      F->>S: skipped (재시도 안 함)
+    else Maven 프로젝트
+      R->>K: KB 매치 · active / candidate 레시피 사용
+      R->>K: harvest · ledger · symbols
+      R-->>F: report.json (exit, llm_calls, llm_cost, blocked)
+      F->>S: FleetProjectResult 원자적 갱신
+    end
+    F->>F: summary.md / .csv / .json 다시 쓰기
+  end
+  F->>F: learning.md (배운 것 · 여러 프로젝트를 막는 아티팩트)
+  F-->>O: exit 0 / 2 / 3

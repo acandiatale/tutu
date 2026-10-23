@@ -1,0 +1,26 @@
+stateDiagram-v2
+  direction LR
+  [*] --> intake
+  intake --> analyze : next
+  intake --> finalize : stopped / aborted
+  analyze --> plan : next
+  analyze --> finalize : stopped / aborted
+  plan --> phase : groups 남음
+  plan --> finalize : stopped / aborted / groups 없음
+  phase --> phase : groups 남음
+  phase --> finalize : groups 소진 / stopped
+  finalize --> [*]
+  note right of intake
+    step_intake
+    journal graph_node
+  end note
+  note right of phase
+    step_phase(ph, items)
+    jdk21 · spring · restructure · verify
+    MSA 는 서비스마다 반복
+    _RunAborted 는 그래프 밖 run guard 로
+  end note
+  note right of finalize
+    planned 일 때만 step_finish
+    그 뒤 run guard 가 _finalize
+  end note

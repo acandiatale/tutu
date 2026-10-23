@@ -1,0 +1,13 @@
+flowchart TB
+  subgraph a["① 적용"]
+    direction LR
+    A["restructure 스텝<br/>apply · boot_pom<br/>msa_pom · pom_only"] --> B{"dry-run?"}
+    B -->|예| N["노트만"]
+    B -->|아니오| C["Restructurer.apply<br/>(mode, params)"] --> D["effective pom 재캡처 콜백<br/>(drop_managed_versions ≠ off)"]
+  end
+  subgraph b["② 결과"]
+    direction LR
+    E{"ok?"} -->|예| F["커밋 restructure: …<br/>journal restructure<br/>placeholders · web_xml_registrations"] --> G["후속 조치 · merge 충돌<br/>__SET_ME__ → 보고서"]
+    E -->|"실패 / 예외"| H["변경 폐기<br/>journal restructure_failed"] --> I["flag restructure-failed<br/>phase 나머지 건너뜀"] --> J["verify 는 실행<br/>success=false · exit 2"]
+  end
+  a --> b

@@ -1,0 +1,20 @@
+flowchart TD
+  A["ProjectProfile"] --> C{"MSA 서비스 발견?"}
+  C -->|예| M["restructure.msa_pom<br/>mode msa_pom — 서비스 루트 pom 만"]
+  C -->|아니오| D{"Java 소스 0개, pom 있음?"}
+  D -->|예| P["restructure.pom_only<br/>mode msa_pom + pom_only"]
+  D -->|아니오| E{"case == spring_boot AND<br/>layout.boot_as_is == in-place?"}
+  E -->|예| BP["restructure.boot_pom<br/>mode boot_pom — 디렉터리 유지"]
+  E -->|아니오| L["restructure.apply<br/>mode layout — boot / back / front"]
+  BP --> W{"단일 모듈?"}
+  W -->|예| WR["{name}-boot 로 감싸기"]
+  W -->|아니오| IP["*-boot + Boot 앱 pom → boot_parent<br/>나머지 모듈 → comp_parent"]
+  L --> MM{"as-is 멀티 모듈?"}
+  MM -->|"예, multi_module_policy: merge"| MG["모든 모듈 → {name}-back<br/>first-wins, merge-conflicts/"]
+  MM -->|아니오| SG["_single: src → {name}-back"]
+  M --> Q["plan.parent_phase 위치에서 실행"]
+  P --> Q
+  WR --> Q
+  IP --> Q
+  MG --> Q
+  SG --> Q

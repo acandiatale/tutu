@@ -1,0 +1,17 @@
+flowchart TB
+  subgraph a["정체와 진동 (빌드마다)"]
+    direction LR
+    A["시그니처 multiset"] --> S{"직전과 동일?"}
+    S -->|예| L1["L1 stall<br/>stall_level += 1"]
+    S -->|아니오| O{"최근 4 빌드 중<br/>하나와 동일?"}
+    O -->|예| L2["L2 oscillation<br/>stall_level += 1<br/>2회째 → blocked"]
+    O -->|아니오| R["stall_level = 0"]
+    L1 --> E{"stall_level ≥ 2?"}
+    L2 --> E
+    E -->|예| ESC["escalation 모델<br/>실패 3회 → repeated_failure<br/>(verify 루프 +2)"]
+  end
+  subgraph b["예산과 장애"]
+    direction LR
+    L3["L3 regression<br/>git revert"] ~~~ L4["L4 패치 없음 · 적용 실패<br/>2회 → repeated_failure"] ~~~ L5["L5 전송 실패 2회<br/>cool-down 60s → llm_unavailable"] ~~~ L6["L6 max_llm_calls 60<br/>max_total_minutes 180"] ~~~ L7["L7 / L7b 테스트 대체 빌드"]
+  end
+  a ~~~ b

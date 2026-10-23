@@ -1,0 +1,10 @@
+flowchart TD
+  P["pre_handlers_for(profile, cfg)<br/>journal plan.pre_handlers"] --> A["ALWAYS_PREEMPTIVE<br/>source-encoding · strip-utf8-bom"]
+  P --> J["JDK21 그룹 (프로필 근거)<br/>lombok · mapstruct · compiler floor<br/>compiler-legacy-config · surefire<br/>jaxb-runtime-add · mysql-connector<br/>classic loader · resources-binary-filtering<br/>strip-pom-repositories"]
+  P --> S["SPRING 그룹 (jakarta 의존)<br/>dependency-relocation · jakarta-library-floor<br/>javax-servlet-api-to-jakarta · jstl-to-jakarta<br/>querydsl-jakarta-classifier · add-known-dependency<br/>jakarta-namespace-sweep · spring-data-crud-repository"]
+  A --> T1["실행의 첫 rewrite / 빌드 전"]
+  J --> T1
+  S --> T2["spring 레시피 뒤, 첫 spring 루프 직전<br/>(spring 루프가 없으면 restructure 전)"]
+  T1 --> C["바뀐 파일 있으면 커밋 'handlers: &lt;ids&gt;'<br/>journal handlers_preemptive"]
+  T2 --> C
+  C --> N["FixAttempt 아님 → ledger 기록 없음<br/>phase 노트만"]

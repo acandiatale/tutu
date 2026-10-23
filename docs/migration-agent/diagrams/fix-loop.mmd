@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph a["① 빌드와 채점"]
+    direction LR
+    B["mvn &lt;goal&gt;<br/>logs/NNN-build-&lt;phase&gt;-N.log"] --> OK{"BUILD<br/>SUCCESS?"}
+    OK -->|예| DONE(["phase ok"])
+    OK -->|아니오| SC["직전 시도 채점<br/>build_ok · improved<br/>no_change · regressed"]
+    SC --> RV{"regressed?"}
+    RV -->|"예 (L3)"| REV["git revert<br/>→ 바로 재빌드"]
+  end
+  subgraph b["② 분류"]
+    direction LR
+    P["parse_maven_log<br/>BuildError · L1/L2 시그니처"] --> ST["stall (L1)<br/>oscillation (L2)"] --> C["클러스터링<br/>compile: 파일<br/>resolution: g:a"] --> END{"라운드 소진 · blocked 만<br/>시간 예산 · 적용할 것 없음?"}
+    END -->|예| FB["대체 빌드 L7 / L7b<br/>→ phase 종료"]
+  end
+  subgraph c["③ 결정과 적용"]
+    direction LR
+    MASK["마스킹<br/>resolution → 같은 모듈<br/>compile SKIP"] --> D["decide<br/>라운드당 ≤ 8 클러스터"] --> AP["적용: handler · KB recipe batch<br/>KB patch · LLM fix"] --> CM["시도마다 git 커밋 1개<br/>journal attempt<br/>→ ① 재빌드"]
+  end
+  a -->|"아니오"| b
+  b -->|아니오| c

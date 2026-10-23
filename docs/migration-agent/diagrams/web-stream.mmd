@@ -1,0 +1,24 @@
+sequenceDiagram
+  autonumber
+  participant B as 브라우저 (static/index.html)
+  participant A as FastAPI app (sbmig/web/app.py)
+  participant M as RunManager (sbmig/web/runs.py)
+  participant W as worker thread
+  participant G as stream_graph (LangGraph)
+  B->>A: POST /api/runs?name=…&configs=…  (zip body)
+  A->>M: submit
+  M-->>A: run_id, state queued 또는 running
+  A-->>B: 202 {run_id, status}
+  B->>A: GET /api/runs/{id}/events (SSE)
+  M->>W: 앞 실행이 끝나면 시작 (한 번에 하나)
+  W->>G: stream_graph(orch)
+  loop 그래프 노드마다
+    G-->>W: (node, state update)
+    W-->>A: event node · journal · log
+    A-->>B: SSE node / journal / log / ping
+  end
+  B->>A: POST /api/runs/{id}/stop (선택)
+  A->>M: cancel 설정 → 현재 노드 뒤에서 멈춤
+  W-->>A: event report · end
+  A-->>B: SSE report, end
+  B->>A: GET /api/runs/{id}/files/report.md · result.zip

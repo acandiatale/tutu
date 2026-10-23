@@ -1,7 +1,9 @@
 # sbmig — working notes for Claude (read this first)
 
 In-house **JDK 21 + Spring Boot 4.1.0 migration agent** for company Maven projects. Python 3.10+, CLI `sbmig`.
-Read in this order: `README.md` → `docs/PLAN.md` (one "Status — round N" table per round, newest at the bottom)
+Read in this order: `README.md` → `docs/migration-agent/README.md` (the current design in one place: Mermaid per flow /
+node, Korean; `migration-agent.pptx` beside it, rebuilt by `scripts/handbook/build_migration_agent_deck.js`) → `docs/PLAN.md`
+(one "Status — round N" table per round, newest at the bottom)
 → `docs/INTERFACES.md` (contracts) → the doc for the area you touch (`ARCHITECTURE`, `FLEET`, `ADAPTERS`,
 `RECIPES`, `ADVISORIES`, `ERROR-HANDLING`, `RUNBOOK`).
 The Korean handbook for the company (`docs/handbook/`, README → 01…09 + `sbmig-overview.pptx` + `sbmig-reference.xlsx`)

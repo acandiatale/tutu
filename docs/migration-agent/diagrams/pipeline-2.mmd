@@ -1,0 +1,12 @@
+flowchart LR
+  PREV(["① 에서"]) --> PS{"plan.<br/>parent_phase"}
+  PS -->|spring| RSA["restructure.apply<br/>boot_pom · msa_pom"]
+  RSA --> PRE["선제 핸들러<br/>SPRING 그룹"]
+  PS -->|restructure| PRE
+  PRE --> SL["spring.loop<br/>goal test-compile"]
+  SL -->|"parent_phase:<br/>restructure"| RSB["restructure.*<br/>+ restructure.loop"]
+  SL -->|"parent_phase:<br/>spring"| VB["verify.build<br/>mvn clean package"]
+  RSB --> VB
+  VB -->|실패| VL["verify 수정 루프<br/>→ clean package 재실행"]
+  VB -->|성공| FIN["finalize<br/>blocked · javax inventory<br/>cost · report · zip"]
+  VL --> FIN

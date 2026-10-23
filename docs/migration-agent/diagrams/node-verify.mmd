@@ -1,0 +1,14 @@
+flowchart TB
+  subgraph a["① 최종 빌드"]
+    direction LR
+    A["verify.build"] --> B{"dry-run?"}
+    B -->|예| S["건너뜀 (노트)"]
+    B -->|아니오| C["테스트 플래그 반영<br/>-Dmaven.test.skip=true<br/>또는 -DskipTests"] --> D["mvn clean package"]
+    D -->|BUILD SUCCESS| OK["final_build<br/>journal verify"]
+  end
+  subgraph b["② 실패하면 마지막 수정 루프"]
+    direction LR
+    E{"풀 수 있는<br/>클러스터?"} -->|없음| F["루프 없이 종료<br/>unresolved 보고"]
+    E -->|있음| G["verify 루프<br/>goal package · 3 라운드"] --> H["repeated_failure · oscillation 해제<br/>+ verify_extra_llm_attempts 2<br/>escalation 모델"] --> J["mvn clean package 재실행<br/>journal verify_loop_end"]
+  end
+  a -->|"빌드 실패"| b

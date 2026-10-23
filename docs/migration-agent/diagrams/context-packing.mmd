@@ -1,0 +1,19 @@
+flowchart TB
+  subgraph keep["줄이지 않음"]
+    direction LR
+    S0["0 Situation<br/>phase · iteration · stall · 프로젝트 요약"] --> S1["1 Errors to fix (N)"]
+  end
+  subgraph body1["코드 섹션"]
+    direction LR
+    S2["2 Source (exact text)<br/>≤400줄 전체, 아니면 ±60줄"] --> S22["2.2 Related project types"] --> S25["2.5 Reference files<br/>(read-only)"] --> S3["3 POM (nearest pom)"]
+  end
+  subgraph body2["안내 섹션"]
+    direction LR
+    S4["4 Library migration guidance"] --> S45["4.5 Module merge notes"] --> S5["5 KB hints (≤5)"] --> S6["6 Previous attempts"]
+  end
+  subgraph body3["참고 섹션"]
+    direction LR
+    S7["7 Other error clusters"] --> S8["8 Plan notes"] --> S10["10+ Migration note ×≤4<br/>(fix-policy 항상)"]
+  end
+  keep --> body1 --> body2 --> body3
+  body3 --> T["예산(llm.max_context_chars) 초과 시 먼저 줄이는 순서<br/>notes → plan_notes → other_errors → previous_attempts → kb_hints<br/>→ reference_files → advisory_hints → reference_notes → pom → related_files → files"]

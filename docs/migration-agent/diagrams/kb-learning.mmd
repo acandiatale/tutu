@@ -1,0 +1,22 @@
+flowchart TB
+  subgraph a["① harvest (phase 종료)"]
+    direction LR
+    A["LLM fix → 다음 빌드<br/>improved / build_ok"] --> B["harvest_phase"] --> C["KB case<br/>kb/cases/YYYY-MM<br/>(경로 · 비밀값 정제)"]
+    B --> D["FixLabel (결정적)<br/>import-rename · method-rename …"]
+    B --> I["symbols.json<br/>ledger.jsonl"]
+  end
+  subgraph b["② 레시피 후보"]
+    direction LR
+    E{"기계적 · 1:1?"} -->|예| F["후보 컴파일 (LLM 없음)<br/>ChangeType · ChangeMethodName<br/>AddDependency …"]
+    E -->|아니오| G["recipe 모델 후보<br/>_BudgetedLLM · 화이트리스트 검증"]
+    F --> H["recipes/candidates/"]
+    G --> H
+  end
+  subgraph c["③ 다음 프로젝트에서 검증과 승격"]
+    direction LR
+    J["plan 의 spring.rewrite 에서 실행<br/>kb.try_candidates_in_plan"] --> K{"phase 빌드 성공?<br/>(해석 실패만이면 점수 없음)"}
+    K -->|예| M{"서로 다른 프로젝트 2곳 성공<br/>실패 0?"}
+    M -->|예| N["recipes/active/<br/>모든 계획에 포함 → LLM 0회"]
+    K -->|아니오| R["실패 기록<br/>sbmig kb reject / promote"]
+  end
+  a --> b --> c

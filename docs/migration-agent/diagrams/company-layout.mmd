@@ -1,0 +1,11 @@
+flowchart TD
+  ROOT["루트 pom.xml<br/>packaging pom · parent = base-parent (artifacts.parent)<br/>mandatory 2개 선언 (mandatory_target: root)"]
+  ROOT --> BACK["{name}-back<br/>parent comp-jar (artifacts.comp_parent)<br/>모든 as-is 소스 (컨트롤러 포함) · as-is 의존성"]
+  ROOT --> FRONT["{name}-front (웹 리소스가 있을 때만)<br/>parent comp-jar<br/>static → src/main/resources/static<br/>JSP → META-INF/resources/WEB-INF/jsp"]
+  ROOT --> BOOT["{name}-boot<br/>parent boot-jar (artifacts.boot_parent)<br/>JSP 있으면 WAR (외장 Tomcat), 아니면 실행 jar"]
+  BOOT --> APP["생성 Application<br/>@SpringBootApplication<br/>@ServletComponentScan (서블릿 케이스 · @WebServlet)<br/>@ImportResource legacy-config/*.xml"]
+  BOOT --> WX["WebXmlRegistrations (web.xml 에서 생성)<br/>Servlet / Filter / Listener RegistrationBean<br/>ErrorPageRegistrar"]
+  BOOT --> PROPS["application.properties<br/>__SET_ME__ placeholders<br/>spring.mvc.view.prefix / suffix<br/>server.servlet.session.timeout"]
+  BOOT --> RES["boot 리소스<br/>application*, logback*, banner.txt<br/>asis-webinf/ (Boot 가 읽지 않음)"]
+  BOOT -.->|의존| BACK
+  BOOT -.->|의존| FRONT

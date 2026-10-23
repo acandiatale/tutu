@@ -1,0 +1,16 @@
+flowchart TD
+  C["클러스터의 오류들"] --> K{"오류 모양"}
+  K -->|"javax ↔ jakarta 불일치<br/>required/found · override · class file not found"| X1["X1 external_javax_api<br/>허용 LLM 0"]
+  K -->|"라이브러리 소유 심볼이 사라짐<br/>(java. / spring / lombok 제외)"| X2["X2 external_api_incompatible<br/>허용 LLM 1"]
+  K -->|"Could not find artifact<br/>could not be resolved"| X3["X3 artifact_not_found<br/>허용 LLM 0"]
+  K -->|parent_resolution| X4["X4 parent_not_found<br/>사내 parent 면 실행 중단"]
+  K -->|"plugin_execution + major version<br/>NoSuchMethodError · IllegalAccessError"| X5["X5 plugin_incompatible<br/>허용 LLM 1"]
+  K -->|"protobuf · jaxb2 · openapi-generator<br/>.kt · .groovy · .scala"| X6["X6 unsupported_source<br/>허용 LLM 0"]
+  K -->|"cannot find symbol · package javax.x does not exist<br/>소유 클래스가 프로젝트 클래스"| FIX["blocked 아님<br/>프로젝트 안에서 고칠 수 있음"]
+  X1 --> REG["BlockedRegistry (실행 전체, 키 = L1 + src/ 경로)"]
+  X2 --> REG
+  X3 --> REG
+  X5 --> REG
+  X6 --> REG
+  REG --> ATT["_register_blocked<br/>owner class → jar → GAV<br/>dependency:build-classpath"]
+  ATT --> RPT["보고서 Blocked 표 · ledger"]

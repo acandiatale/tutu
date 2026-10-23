@@ -1,0 +1,9 @@
+flowchart LR
+  A["spring.rewrite 완료"] --> B["spring.optional_bump<br/>mode optional_bump"]
+  B --> C["모든 pom 패스<br/>이미 쓰는 사내 optional 아티팩트만 버전 상향"]
+  B --> D["artifacts.remove_when_present 제거"]
+  C --> E{"성공?"}
+  D --> E
+  E -->|예| F["커밋 + journal restructure<br/>mode optional_bump"]
+  E -->|아니오| G["노트 + 후속 조치만<br/>NON_FATAL — phase 계속"]
+  F --> H["첫 spring 빌드 전에<br/>사내 jakarta 빌드가 클래스패스에"]

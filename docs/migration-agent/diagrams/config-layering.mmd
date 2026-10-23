@@ -1,0 +1,7 @@
+flowchart LR
+  E0[".env 파일<br/>LLM_BASE_URL · LLM_API_KEY · LLM_MODEL …<br/>(셸 변수가 우선)"] --> E1["config/default.yml"]
+  E1 --> E2["--config a.yml b.yml …<br/>(회사 artifacts.yml 등, 순서대로 deep merge)"]
+  E2 --> E3["CLI / API overrides<br/>(--llm-plugin, --stop-after 등)"]
+  E3 --> E4["SBMIG_* 환경 변수<br/>SBMIG_LLM__MODEL (__ = 중첩)"]
+  E4 --> E5["${VAR:-default} 확장"]
+  E5 --> CFG["Config (pydantic)"]

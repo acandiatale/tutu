@@ -1,0 +1,18 @@
+flowchart TB
+  subgraph a["① 원인 추적"]
+    direction LR
+    A["X1 / X2 blocked<br/>owner class → jar → GAV<br/>(dependency:build-classpath)"] --> B{"jar 가 javax<br/>API jar 자체?"}
+    B -->|아니오| S0["그 GAV 를 Jakarta<br/>릴리스로 올리라는 제안"]
+    B -->|예| C["finalize: dependency:tree<br/>-Dincludes=javax API 패턴"] --> D["fill_via<br/>via · via_direct"]
+  end
+  subgraph b["② 제안 사다리"]
+    direction LR
+    E{"via_direct ∈<br/>jakarta_libraries.yml?"} -->|예| E1["표 버전으로 상향<br/>(jakarta-library-floor)"]
+    E -->|아니오| F{"사내 그룹?"}
+    F -->|예| F1["artifacts.optional 에 추가<br/>(Jakarta 빌드)"]
+    F -->|아니오| G{"API jar 를 pom 이<br/>직접 선언?"}
+    G -->|예| G1["선언 제거<br/>dependency-relocation"]
+    G -->|아니오| H1["라이브러리 상향 · 교체<br/>경로 없으면 dependency:tree 안내"]
+  end
+  a --> b
+  b --> R["report.json javax_api_jars · flag javax-api-on-classpath · ledger via"]

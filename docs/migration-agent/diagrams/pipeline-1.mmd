@@ -1,0 +1,10 @@
+flowchart LR
+  IN(["입력<br/>dir / zip"]) --> INTAKE["intake<br/>작업 사본 · git<br/>preflight · build_tool"]
+  INTAKE -->|"Gradle / Ant / pom 없음<br/>mvn 없음"| REJ["중단 exit 3<br/>→ finalize"]
+  INTAKE --> ANALYZE["analyze<br/>ProjectProfile<br/>advisories"]
+  ANALYZE --> PLAN["plan<br/>MigrationPlan<br/>phase groups"]
+  PLAN --> JR["jdk21.rewrite<br/>UpgradeToJava21"]
+  JR --> JL["jdk21.loop<br/>goal compile"]
+  JL --> SR["spring.rewrite<br/>케이스 레시피<br/>+ KB + advisory"]
+  SR --> OB["spring.optional_bump"]
+  OB --> NEXT(["② 로"])
