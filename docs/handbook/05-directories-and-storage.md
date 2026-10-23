@@ -100,6 +100,7 @@ knowledge/
 │   ├── index.yml                   노트 선택 규칙(keywords / cases / phases / always)
 │   └── *.md                        마이그레이션 노트 16개 (fix-policy, jdk21, jakarta, boot2-to-3, hibernate-7, era-libraries …)
 ├── libraries/advisories.yml        EOL / 미관리 라이브러리 권고 64개
+├── libraries/jar_names.yml    jar 파일 이름 stem → 원래 Maven 좌표(`sbmig inventory`, pom 없는 WEB-INF/lib; 버전은 파일 이름에서)
 ├── libraries/jakarta_libraries.yml jakarta 릴리스가 알려진 서드파티 라이브러리 44개(핸들러 jakarta-library-floor, X1 제안, javax API 절; QLRM, Jersey, CXF, Quartz, Ehcache 3(classifier) …)
 └── config/externalized.yml         외부화 설정 인벤토리 규칙(JNDI / context-param / -D 매핑, 안내문)
 ```
@@ -218,6 +219,8 @@ index 와 각 노트의 front-matter 는 일치해야 하며 `tests/fix/test_fix
 회사 추가분은 같은 스키마의 별도 파일을 `advisories.extra_files` 로 지정해 id 단위로 병합하고(뒤가 이김), 정책만 바꿀 때는 `advisories.policy_overrides` 를 씁니다. 발견 결과는 `advisories.ledger` 가 켜져 있으면 원장에 `resolution: advisory` 줄로 남습니다. 자세한 내용은 `docs/ADVISORIES.md` 를 봅니다.
 
 `knowledge/libraries/jakarta_libraries.yml` 은 같은 좌표에서 나중 릴리스가 jakarta 로 옮겨 간 서드파티 라이브러리 표입니다(`sbmig/core/jakarta_libraries.py` 가 로드, 핸들러 `jakarta-library-floor`). 필드: `key`(현재 `g:a`, 항목당 하나), `old_keys`(옛 좌표 → `key` 로 이전), `jakarta_since`(첫 jakarta 릴리스, 그 이상은 건드리지 않음), `version`(핸들러가 설정하는 버전), `classifier`(선택, 2026-10-22 — jakarta 빌드가 classifier jar 인 경우. Ehcache 3 의 `jakarta`: 올린 선언에 붙이고, 없는 선언은 버전이 충분해도 "이전"으로 봄), `requires_java`, `note`(보고서 한 줄), `docs`. 회사 추가분도 이 파일에 넣습니다(코드가 아니라 지식).
+
+`knowledge/libraries/jar_names.yml`(2026-10-23)은 pom 이 없는 웹앱의 `WEB-INF/lib` jar 를 원래 Maven 좌표로 잇는 표입니다(`sbmig/analyze/webapp_inventory.py` 의 `jar_names()` 가 로드, `sbmig inventory` 가 사용). 필드: `stem`(파일 이름에서 `-<버전>.jar` 를 뺀 부분, 대소문자 무시 — 예: `commons-lang-2.6.jar` → `commons-lang`), `artifact`(`groupId:artifactId`, jar 가 처음 배포된 원래 좌표), `note`(선택). 버전은 표가 아니라 파일 이름에서 읽습니다. 표에 없는 jar 는 inventory.md 에 "좌표 미확인"으로 먼저 나오며, 사내 jar 는 확인한 뒤 이 파일에 행을 추가합니다.
 
 ### 3.5 config/externalized.yml — 외부화 설정 규칙
 
@@ -629,8 +632,12 @@ fixtures/
 │   ├── install.sh                사내 라이브러리 대역을 로컬 저장소에 설치(멱등)
 │   ├── legacy-web-lib/v1.0.0 v2.0.0 v3.0.0   com.company.legacy:legacy-web-lib (javax / jakarta / 메서드 이름 변경판)
 │   └── ghost-lib/                절대 설치하지 않는 아티팩트(missing-artifact 용), make-repo.sh
+├── webapps/<name>/               pom 이 없는 Tomcat 웹앱 트리(`sbmig inventory` 입력, 빌드하지 않음)
+│   └── README.md                 시나리오와 기대 인벤토리
 └── fleet/manifest.example.yml    플릿 매니페스트 견본
 ```
+
+`fixtures/webapps/legacy-exploded` 는 웹앱 루트 2개(`portal`: web.xml 2.3 DTD, cp949 소스, JNDI `jdbc/PortalDS`, 소스 없는 Java 1.6 클래스, `*.jar.old` 백업 / `admin`: web.xml 2.5 + `DispatcherServlet`)와 두 소스 루트에 중복된 `com.acme.common.Util` 을 담은 인벤토리 전용 픽스처입니다. `tests/analyze/test_webapp_inventory.py` 가 기대값을 고정합니다(e2e 대상이 아님).
 
 ### 6.2 26개 픽스처
 

@@ -241,6 +241,61 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "the run was stopped on purpose after this phase (--stop-after)":
         "이 단계 뒤에서 의도적으로 실행을 멈췄다(--stop-after)",
     "the run stopped early (see Blocked / follow-ups)": "실행이 일찍 멈췄다('차단됨' / 후속 조치 참조)",
+    # ---- inventory.md (`sbmig inventory`, sbmig/report/inventory.py)
+    "# Webapp inventory — {name}": "# 웹앱 인벤토리 — {name}",
+    "Read-only scan of a directory without a pom (scanned {at}). Nothing was changed.":
+        "pom이 없는 디렉터리를 읽기 전용으로 스캔했다({at}). 아무것도 변경하지 않았다.",
+    "| Item | Value |": "| 항목 | 값 |",
+    "| Root | `{root}` |": "| 루트 | `{root}` |",
+    "| Webapp roots | {n} |": "| 웹앱 루트 | {n} |",
+    "| JSP files | {n} |": "| JSP 파일 | {n} |",
+    "| Source roots / .java files | {roots} / {files} |": "| 소스 루트 / .java 파일 | {roots} / {files} |",
+    "| Jars known / unknown / ignored | {known} / {unknown} / {ignored} |":
+        "| jar 좌표 확인 / 미확인 / 무시 | {known} / {unknown} / {ignored} |",
+    "| Class files (Java level) | {n} ({java}) |": "| 클래스 파일 (Java 레벨) | {n} ({java}) |",
+    "| Duplicate classes | {n} |": "| 중복 클래스 | {n} |",
+    "| Build files found | {files} |": "| 발견된 빌드 파일 | {files} |",
+    "| Warnings | {n} |": "| 경고 | {n} |",
+    "## Warnings": "## 경고",
+    "## Webapp roots": "## 웹앱 루트",
+    "No directory with a `WEB-INF` was found.": "`WEB-INF`가 있는 디렉터리를 찾지 못했다.",
+    "| web.xml | {path} (Servlet {spec}) |": "| web.xml | {path} (Servlet {spec}) |",
+    "| Servlets / filters / listeners / taglibs | {s} / {f} / {l} / {t} |":
+        "| 서블릿 / 필터 / 리스너 / taglib | {s} / {f} / {l} / {t} |",
+    "| Frameworks | {fw} |": "| 프레임워크 | {fw} |",
+    "| JNDI resources | {names} |": "| JNDI 리소스 | {names} |",
+    "| JSP files | {n} {sample} |": "| JSP 파일 | {n} {sample} |",
+    "| Static files | {n} |": "| 정적 파일 | {n} |",
+    "| Spring XML | {files} |": "| Spring XML | {files} |",
+    "| WEB-INF/lib jars (ignored files) | {n} ({ignored}) |": "| WEB-INF/lib jar (무시한 파일) | {n} ({ignored}) |",
+    "| WEB-INF/classes | {n} class file(s), Java {java} |": "| WEB-INF/classes | 클래스 파일 {n}개, Java {java} |",
+    "| Classes without source | {n} {sample} |": "| 소스가 없는 클래스 | {n} {sample} |",
+    "## Jars": "## jar 목록",
+    "No jars under `WEB-INF/lib`.": "`WEB-INF/lib`에 jar가 없다.",
+    "| Jar | Version | Coordinates guess | sha1 | Note |": "| jar | 버전 | 추정 좌표 | sha1 | 메모 |",
+    "backup: Tomcat does not load it (left out of the pom)": "백업 파일: Tomcat이 로드하지 않음(pom에서 제외)",
+    "unknown coordinates": "좌표 미확인",
+    "Other files under `WEB-INF/lib` (ignored): {files}": "`WEB-INF/lib`의 기타 파일(무시): {files}",
+    "## Source roots": "## 소스 루트",
+    "No `.java` files were found.": "`.java` 파일을 찾지 못했다.",
+    "| Source root | Files | Packages | Encoding | javax imports | Frameworks | JDK internals | Webapp |":
+        "| 소스 루트 | 파일 | 패키지 | 인코딩 | javax import | 프레임워크 | JDK 내부 API | 웹앱 |",
+    "{n} class(es) exist in more than one source root: {sample}": "소스 루트 여러 곳에 있는 클래스 {n}개: {sample}",
+    "## Maven module proposal": "## Maven 모듈 제안",
+    "Nothing to propose (no webapp root and no sources).": "제안할 것이 없다(웹앱 루트도 소스도 없음).",
+    "A guess for the pom synthesis — change it if the split is wrong.":
+        "pom 생성을 위한 추정이다 — 분할이 틀렸다면 수정할 것.",
+    "| Module | Packaging | Webapp dir | Source dirs | Java | Jars known / unknown |":
+        "| 모듈 | 패키징 | 웹앱 디렉터리 | 소스 디렉터리 | Java | jar 확인 / 미확인 |",
+    "## What to do next": "## 다음 할 일",
+    "1. Check the coordinates of the unknown jars and add the company ones to "
+    "`knowledge/libraries/jar_names.yml` (stem → groupId:artifactId), then re-run `sbmig inventory`.":
+        "1. 좌표 미확인 jar의 좌표를 확인하고 사내 jar는 `knowledge/libraries/jar_names.yml`에 추가한 뒤"
+        "(stem → groupId:artifactId) `sbmig inventory`를 다시 실행한다.",
+    "2. Confirm the module split above (one module per webapp root; shared sources need a common jar).":
+        "2. 위 모듈 분할을 확인한다(웹앱 루트마다 모듈 하나; 공유 소스는 common jar가 필요).",
+    "3. Round 2: `sbmig synthesize-pom` will write the poms from `inventory.json` (not available yet).":
+        "3. 2차: `sbmig synthesize-pom`이 `inventory.json`으로 pom을 작성한다(아직 없음).",
 }}
 
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual

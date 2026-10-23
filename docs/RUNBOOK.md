@@ -286,6 +286,29 @@ diff (`changes.patch`) and the spring-phase build; (3) run the reference fixture
 `outcome=replaced` without new unresolved errors; (4) only then roll it out in fleet mode. A recipe that leaves the
 project uncompilable costs LLM budget on every project — keep it `guide` until it is proven.
 
+## 3.8 Webapps without a pom — `sbmig inventory` (2026-10-23, round 1: inventory only)
+Classic exploded Tomcat WARs with no build file (JSPs, sources in `WEB-INF/src` or elsewhere, `WEB-INF/lib` jars and
+`*.jar.old` backups, `WEB-INF/classes`, sometimes two webapp directories under one root) cannot go through `sbmig run`
+(intake rejects them). Inventory them first:
+```bash
+sbmig inventory path/to/webapps-root --out out/inventory/<name>            # directory: read in place
+sbmig inventory path/to/webapps.zip  --out out/inventory/<name> --config config/artifacts.yml   # zip; report.language
+```
+* Read only, no Maven, exit 0 (3 only when the path does not exist). `--config` is optional (only `report.language`
+  is read); `--json` prints the full `WebappInventory` instead of the console summary.
+* Console summary (≤ 12 lines, retypeable): root, webapp roots with JSP count / servlet spec / frameworks, source
+  roots with file count and encoding, Java level from the class files, jars known / unknown / ignored (first 3
+  unknown names), classes without source, duplicate classes, module proposals, build files, warnings, output paths.
+* `inventory.md` (en | ko) + `inventory.json`: per webapp root (web.xml spec, servlets / filters / listeners /
+  taglibs, frameworks, JNDI names from `META-INF/context.xml` + `resource-ref`, JSP / static counts, Spring XML,
+  class-file Java levels, classes without source), the jar table (unknown coordinates first, sha1 for a Nexus
+  lookup), source roots (encoding, javax / framework imports, `sun.*`), duplicate classes, one Maven module proposal
+  per webapp root with notes, and the next steps.
+* What the operator does: check the "unknown coordinates" jars and add the company ones to
+  `knowledge/libraries/jar_names.yml` (`stem` → `groupId:artifactId`; the version comes from the file name), re-run,
+  confirm the module split. A pom found anywhere in the tree is a warning: that module goes through `sbmig run`.
+  Round 2 (pom synthesis from `inventory.json`) is not built yet.
+
 ## 4. Tuning knobs (config/default.yml)
 | Knob | Default | Effect |
 |---|---|---|

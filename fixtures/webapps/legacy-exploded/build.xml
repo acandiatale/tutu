@@ -1,0 +1,5 @@
+<?xml version="1.0"?>
+<project name="legacy" default="war">
+  <!-- stray Ant script left from 2009: nobody runs it, the WARs were copied by hand -->
+  <target name="war"><javac srcdir="portal/WEB-INF/src" destdir="portal/WEB-INF/classes" source="1.6" target="1.6"/></target>
+</project>

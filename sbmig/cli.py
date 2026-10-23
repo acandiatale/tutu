@@ -463,6 +463,81 @@ def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[P
         typer.echo(f"  - {n}")
 
 
+# --------------------------------------------------------------------------- inventory (pom-less webapps)
+def inventory_console_lines(inv) -> list[str]:
+    """≤ 12 lines an operator can retype from the screen (no paths longer than needed)."""
+    jars = [j for wr in inv.webapp_roots for j in wr.lib_jars]
+    active = [j for j in jars if not j.ignored]
+    unknown = sorted(j.name for j in active if not j.artifact_guess)
+    ignored = sum(len(wr.ignored_files) for wr in inv.webapp_roots)
+    levels = sorted({wr.java_version_from_classes for wr in inv.webapp_roots if wr.java_version_from_classes})
+    no_src = sum(wr.classes_without_source for wr in inv.webapp_roots)
+    webapps = ", ".join(f"{wr.dir or '.'} ({wr.jsp_count} jsp, servlet {wr.servlet_spec or '?'}, "
+                        f"{'/'.join(wr.frameworks) or '-'})" for wr in inv.webapp_roots) or "none"
+    sources = ", ".join(f"{s.dir or '.'} ({s.java_files} java, {s.encoding})" for s in inv.source_roots) or "none"
+    lines = [f"inventory: {inv.root}",
+             f"  webapp roots {len(inv.webapp_roots)}: {webapps}",
+             f"  source roots {len(inv.source_roots)}: {sources}",
+             f"  java from classes: {', '.join(levels) or '-'}",
+             f"  jars: {len(active) - len(unknown)} known / {len(unknown)} unknown / {ignored} ignored"
+             + (f" (unknown: {', '.join(unknown[:3])}{', …' if len(unknown) > 3 else ''})" if unknown else ""),
+             f"  classes without source: {no_src}   duplicate classes: {inv.duplicate_classes}",
+             "  proposals: " + (", ".join(f"{p.name} ({p.packaging}, java {p.java_version})"
+                                          for p in inv.proposals) or "none")]
+    if inv.build_files:
+        lines.append("  build files: " + ", ".join(inv.build_files[:5]) + (" …" if len(inv.build_files) > 5 else ""))
+    if inv.warnings:
+        lines.append(f"  warnings: {len(inv.warnings)} (first: {inv.warnings[0][:100]})")
+    for key in ("inventory_md", "inventory_json"):
+        if key in inv.outputs:
+            lines.append(f"  {key.split('_')[1]}: {inv.outputs[key]}")
+    return lines[:12]
+
+
+@app.command()
+def inventory(input: Path = typer.Argument(..., help="webapp directory without a pom, or a zip of it"),
+              out: Path = typer.Option(Path("out/inventory"), "--out", "-o", help="where inventory.md / .json go"),
+              config: Optional[List[Path]] = ConfigOpt,
+              as_json: bool = typer.Option(False, "--json", help="print inventory.json to stdout instead")) -> None:
+    """Read-only inventory of a Tomcat webapp tree WITHOUT a pom (JSPs, sources, WEB-INF/lib jars,
+    WEB-INF/classes): webapp roots, source roots, jar coordinates guessed from the file names
+    (knowledge/libraries/jar_names.yml), Java level of the class files, one Maven module proposal per webapp.
+    Writes inventory.md (report.language) + inventory.json. Changes nothing; exit 0 (3 when the path is missing)."""
+    import shutil
+    import zipfile
+
+    from sbmig.analyze.webapp_inventory import scan_webapp_tree
+    from sbmig.core.workspace import _detect_project_root, _safe_extract
+    from sbmig.report.inventory import write_inventory
+
+    if not input.exists():
+        _fail(f"no such file or directory: {input}", EXIT_ABORTED)
+    cfg = _load(config) if config else _load(None, overrides=dict(_PROBE_ARTIFACTS_STUB))
+    tmp: Optional[Path] = None
+    try:
+        if input.is_dir():
+            root = input
+        elif zipfile.is_zipfile(input):
+            tmp = Path(tempfile.mkdtemp(prefix="sbmig-inventory-"))
+            with zipfile.ZipFile(input) as zf:
+                _safe_extract(zf, tmp)
+            root = _detect_project_root(tmp)
+        else:
+            _fail(f"input must be a directory or a zip: {input}", EXIT_ABORTED)
+        inv = scan_webapp_tree(root, name=input.stem if root == tmp else None)
+        if tmp is not None:                    # report the zip, not the temp dir that is deleted below
+            inv.root = str(input.resolve()) + ("" if root == tmp else f"!/{root.relative_to(tmp).as_posix()}")
+        write_inventory(inv, out, cfg)
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+    if as_json:
+        typer.echo(inv.model_dump_json(indent=2))
+        return
+    for line in inventory_console_lines(inv):
+        typer.echo(line)
+
+
 # --------------------------------------------------------------------------- build / logs / rewrite
 def _print_errors(errors) -> None:
     from rich.console import Console

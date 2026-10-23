@@ -581,3 +581,15 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   (`## fix-loop: <library>` keyed on the finding's library = rule name, or the advisory id for artifact-only entries).
   Mirror gap: `sbmig/plan/pre_handlers.py::jakarta_library_reason` does not know `classifier` yet (pre-emptive
   selection misses a classifier-only gap; the reactive path covers it). See docs/ADVISORIES.md "2026-10-22 era libraries".
+* 2026-10-23 `sbmig inventory` (pom-less Tomcat webapps, round 1 = read only): models `JarInfo`, `WebappRoot`,
+  `SourceRoot`, `ModuleProposal`, `WebappInventory` (`sbmig/core/models.py`). Analyzer
+  `sbmig/analyze/webapp_inventory.py::scan_webapp_tree(root, *, max_sample=8, name=None) -> WebappInventory` (pure
+  file-system facts, never raises on a single bad file; `name` replaces the root basename in the proposals, used for
+  a flat zip), `jar_names(path=None)` (lru_cached `knowledge/libraries/jar_names.yml` → {stem.lower(): (g:a, note)}),
+  `guess_jar(name) -> (artifact, version, stem)` (longest known stem first, else the regex split), `jar_note(jar)`,
+  `java_level(major)`; exported from `sbmig.analyze`. Writer `sbmig/report/inventory.py::write_inventory(inv, out_dir,
+  cfg=None, *, language=None) -> {"inventory_md", "inventory_json"}` (also sets `inv.outputs`; `language` wins over
+  `cfg.report.language`), `render_inventory(inv, language)`; its `tr` literals are part of the i18n drift test. CLI
+  `sbmig inventory <dir|zip> [--out out/inventory] [--config …] [--json]` (exit 0, 3 for a missing path; config
+  optional — artifacts stubbed like `llm-probe`), `sbmig.cli.inventory_console_lines(inv)`. Fixture
+  `fixtures/webapps/legacy-exploded` (not an e2e fixture). Round 2 (`synthesize-pom`) consumes `inventory.json`.

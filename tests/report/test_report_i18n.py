@@ -10,6 +10,7 @@ from sbmig.core.models import BlockedItem, BlockReason, BuildError, ErrorKind, P
 from sbmig.core.workspace import Workspace
 from sbmig.report import build_handover, render_markdown, write_report
 from sbmig.report import handover as handover_mod
+from sbmig.report import inventory as inventory_mod
 from sbmig.report import markdown as markdown_mod
 from sbmig.report.i18n import PATTERNS, STRINGS, normalize, tr, tr_line
 
@@ -140,6 +141,7 @@ def _used_keys() -> set[str]:
              markdown_mod.JAVAX_JARS_TITLE}
     used |= {v for k, v in vars(handover_mod).items() if k.startswith("REASON_")}       # VersionChange.reason
     used |= set(handover_mod.PROPERTY_COLUMNS)
+    used |= _tr_literals(Path(inventory_mod.__file__))                    # inventory.md (`sbmig inventory`)
     return used
 
 

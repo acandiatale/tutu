@@ -1,0 +1,108 @@
+# jar file name → Maven coordinates, for directories that have no pom (`sbmig inventory`: WEB-INF/lib jars).
+# Matching: the file name minus the version suffix (`commons-lang-2.6.jar` → stem `commons-lang`) is looked up here;
+# the version comes from the file name, never from this table. Unknown stems stay "unknown coordinates" in the
+# inventory (→ Nexus install / system scope in the pom synthesis). Coordinates are the ORIGINAL ones the jar was
+# published under (the relocation table / advisories move them later). Company jars: add rows here.
+#   stem      : file name without "-<version>.jar" (case-insensitive)
+#   artifact  : groupId:artifactId
+#   note      : optional
+version: 1
+jars:
+  # servlet / jsp
+  - { stem: servlet-api,          artifact: "javax.servlet:servlet-api" }
+  - { stem: javax.servlet-api,    artifact: "javax.servlet:javax.servlet-api" }
+  - { stem: jsp-api,              artifact: "javax.servlet.jsp:jsp-api" }
+  - { stem: jstl,                 artifact: "javax.servlet:jstl" }
+  - { stem: standard,             artifact: "taglibs:standard" }
+  - { stem: el-api,               artifact: "javax.el:el-api" }
+  # apache commons
+  - { stem: commons-lang,         artifact: "commons-lang:commons-lang" }
+  - { stem: commons-lang3,        artifact: "org.apache.commons:commons-lang3" }
+  - { stem: commons-io,           artifact: "commons-io:commons-io" }
+  - { stem: commons-codec,        artifact: "commons-codec:commons-codec" }
+  - { stem: commons-collections,  artifact: "commons-collections:commons-collections" }
+  - { stem: commons-collections4, artifact: "org.apache.commons:commons-collections4" }
+  - { stem: commons-beanutils,    artifact: "commons-beanutils:commons-beanutils" }
+  - { stem: commons-fileupload,   artifact: "commons-fileupload:commons-fileupload" }
+  - { stem: commons-logging,      artifact: "commons-logging:commons-logging" }
+  - { stem: commons-dbcp,         artifact: "commons-dbcp:commons-dbcp" }
+  - { stem: commons-dbcp2,        artifact: "org.apache.commons:commons-dbcp2" }
+  - { stem: commons-pool,         artifact: "commons-pool:commons-pool" }
+  - { stem: commons-pool2,        artifact: "org.apache.commons:commons-pool2" }
+  - { stem: commons-httpclient,   artifact: "commons-httpclient:commons-httpclient" }
+  - { stem: commons-net,          artifact: "commons-net:commons-net" }
+  - { stem: commons-digester,     artifact: "commons-digester:commons-digester" }
+  - { stem: commons-validator,    artifact: "commons-validator:commons-validator" }
+  - { stem: commons-email,        artifact: "org.apache.commons:commons-email" }
+  - { stem: commons-text,         artifact: "org.apache.commons:commons-text" }
+  # logging
+  - { stem: log4j,                artifact: "log4j:log4j" }
+  - { stem: log4j-core,           artifact: "org.apache.logging.log4j:log4j-core" }
+  - { stem: log4j-api,            artifact: "org.apache.logging.log4j:log4j-api" }
+  - { stem: slf4j-api,            artifact: "org.slf4j:slf4j-api" }
+  - { stem: slf4j-log4j12,        artifact: "org.slf4j:slf4j-log4j12" }
+  - { stem: jcl-over-slf4j,       artifact: "org.slf4j:jcl-over-slf4j" }
+  - { stem: logback-classic,      artifact: "ch.qos.logback:logback-classic" }
+  - { stem: logback-core,         artifact: "ch.qos.logback:logback-core" }
+  # jdbc
+  - { stem: mysql-connector-java, artifact: "mysql:mysql-connector-java" }
+  - { stem: ojdbc6,               artifact: "com.oracle.database.jdbc:ojdbc6" }
+  - { stem: ojdbc7,               artifact: "com.oracle.database.jdbc:ojdbc7", note: "ojdbc7 is not on Central under the new group; the relocation table moves it to ojdbc11" }
+  - { stem: ojdbc8,               artifact: "com.oracle.database.jdbc:ojdbc8" }
+  - { stem: postgresql,           artifact: "org.postgresql:postgresql" }
+  - { stem: mariadb-java-client,  artifact: "org.mariadb.jdbc:mariadb-java-client" }
+  - { stem: cubrid-jdbc,          artifact: "cubrid:cubrid-jdbc" }
+  - { stem: h2,                   artifact: "com.h2database:h2" }
+  # spring / frameworks
+  - { stem: spring-core,          artifact: "org.springframework:spring-core" }
+  - { stem: spring-beans,         artifact: "org.springframework:spring-beans" }
+  - { stem: spring-context,       artifact: "org.springframework:spring-context" }
+  - { stem: spring-context-support, artifact: "org.springframework:spring-context-support" }
+  - { stem: spring-web,           artifact: "org.springframework:spring-web" }
+  - { stem: spring-webmvc,        artifact: "org.springframework:spring-webmvc" }
+  - { stem: spring-jdbc,          artifact: "org.springframework:spring-jdbc" }
+  - { stem: spring-tx,            artifact: "org.springframework:spring-tx" }
+  - { stem: spring-aop,           artifact: "org.springframework:spring-aop" }
+  - { stem: spring-orm,           artifact: "org.springframework:spring-orm" }
+  - { stem: spring-expression,    artifact: "org.springframework:spring-expression" }
+  - { stem: aspectjweaver,        artifact: "org.aspectj:aspectjweaver" }
+  - { stem: aspectjrt,            artifact: "org.aspectj:aspectjrt" }
+  - { stem: struts,               artifact: "struts:struts" }
+  - { stem: struts2-core,         artifact: "org.apache.struts:struts2-core" }
+  - { stem: ibatis-sqlmap,        artifact: "org.apache.ibatis:ibatis-sqlmap" }
+  - { stem: mybatis,              artifact: "org.mybatis:mybatis" }
+  - { stem: mybatis-spring,       artifact: "org.mybatis:mybatis-spring" }
+  - { stem: hibernate-core,       artifact: "org.hibernate:hibernate-core" }
+  - { stem: tiles-core,           artifact: "org.apache.tiles:tiles-core" }
+  - { stem: tiles-jsp,            artifact: "org.apache.tiles:tiles-jsp" }
+  - { stem: sitemesh,             artifact: "opensymphony:sitemesh" }
+  - { stem: displaytag,           artifact: "displaytag:displaytag" }
+  - { stem: quartz,               artifact: "org.quartz-scheduler:quartz" }
+  - { stem: ehcache,              artifact: "net.sf.ehcache:ehcache" }
+  # json / xml / docs
+  - { stem: json-simple,          artifact: "com.googlecode.json-simple:json-simple" }
+  - { stem: gson,                 artifact: "com.google.code.gson:gson" }
+  - { stem: jackson-core-asl,     artifact: "org.codehaus.jackson:jackson-core-asl" }
+  - { stem: jackson-mapper-asl,   artifact: "org.codehaus.jackson:jackson-mapper-asl" }
+  - { stem: jackson-databind,     artifact: "com.fasterxml.jackson.core:jackson-databind" }
+  - { stem: jackson-core,         artifact: "com.fasterxml.jackson.core:jackson-core" }
+  - { stem: jackson-annotations,  artifact: "com.fasterxml.jackson.core:jackson-annotations" }
+  - { stem: dom4j,                artifact: "dom4j:dom4j" }
+  - { stem: jdom,                 artifact: "jdom:jdom" }
+  - { stem: xstream,              artifact: "com.thoughtworks.xstream:xstream" }
+  - { stem: poi,                  artifact: "org.apache.poi:poi" }
+  - { stem: poi-ooxml,            artifact: "org.apache.poi:poi-ooxml" }
+  - { stem: itext,                artifact: "com.lowagie:itext" }
+  - { stem: jxl,                  artifact: "net.sourceforge.jexcelapi:jxl" }
+  - { stem: jsoup,                artifact: "org.jsoup:jsoup" }
+  # mail / misc
+  - { stem: mail,                 artifact: "javax.mail:mail" }
+  - { stem: activation,           artifact: "javax.activation:activation" }
+  - { stem: cos,                  artifact: "servlets.com:cos", note: "O'Reilly servlet multipart (com.oreilly.servlet)" }
+  - { stem: joda-time,            artifact: "joda-time:joda-time" }
+  - { stem: guava,                artifact: "com.google.guava:guava" }
+  - { stem: httpclient,           artifact: "org.apache.httpcomponents:httpclient" }
+  - { stem: httpcore,             artifact: "org.apache.httpcomponents:httpcore" }
+  - { stem: cglib,                artifact: "cglib:cglib" }
+  - { stem: javassist,            artifact: "org.javassist:javassist" }
+  - { stem: jta,                  artifact: "javax.transaction:jta" }

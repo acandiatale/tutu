@@ -261,6 +261,19 @@ sbmig kb export kb-20261021.zip
 | `sbmig advisories show ADVISORY_ID` | `--config`, `--json` | 권고 하나와 실효 정책 | 0 / 1 |
 | `sbmig advisories check` | `--config` | 권고 파일을 분석기 규칙과 레시피 카탈로그에 대조 | 0(`advisories OK: …`) / 1 |
 
+### 1.16 `sbmig inventory` — pom 없는 웹앱 인벤토리(읽기 전용)
+```text
+sbmig inventory INPUT [--out DIR] [--config FILE]... [--json]
+```
+| 인자/옵션 | 기본값 | 의미 |
+|---|---|---|
+| `INPUT` | 필수 | pom 이 없는 Tomcat 웹앱 디렉터리(그 자리에서 읽기만) 또는 그 zip(임시 디렉터리에 해제 후 삭제). |
+| `--out`, `-o` | `out/inventory` | `inventory.md` / `inventory.json` 을 쓸 디렉터리. |
+| `--config`, `-c` | 없음 | 선택. `report.language`(`en` / `ko`)만 읽습니다. 없으면 artifacts 없이 동작합니다. |
+| `--json` | 꺼짐 | 콘솔 요약 대신 `WebappInventory` 전체 JSON 을 출력. |
+
+출력(12줄 이내): `inventory: <루트>`, 웹앱 루트별 JSP 수·Servlet 스펙·프레임워크, 소스 루트별 `.java` 수·인코딩, 클래스 파일의 Java 레벨, jar 좌표 확인 / 미확인 / 무시 수와 미확인 jar 앞 3개, 소스 없는 클래스 수, 중복 클래스 수, 모듈 제안, 빌드 파일, 경고 수, 산출물 경로. 아무것도 바꾸지 않으며 종료 코드는 항상 0(경로가 없으면 3). jar 좌표 표는 `knowledge/libraries/jar_names.yml`. 분석기는 `sbmig.analyze.scan_webapp_tree(root)`, 작성기는 `sbmig.report.inventory.write_inventory(inv, out_dir, cfg)` 입니다.
+
 ## 2. REST API(웹 서버)
 
 ### 2.1 개요

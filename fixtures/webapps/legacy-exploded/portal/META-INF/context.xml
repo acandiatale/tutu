@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Context>
+  <Resource name="jdbc/PortalDS" auth="Container" type="javax.sql.DataSource"
+            driverClassName="oracle.jdbc.driver.OracleDriver" url="jdbc:oracle:thin:@db:1521:ORCL"
+            username="portal" password="__SET_ME__" maxActive="20"/>
+</Context>

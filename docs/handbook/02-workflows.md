@@ -34,6 +34,7 @@ sbmig는 명령 하나(`sbmig run`)로 끝까지 가는 도구이지만, 운영�
 | `sbmig llm-probe` | LLM 게이트웨이 한 번 호출 | 아니요(`.env`만) | 아니요 | 아니요 |
 | `sbmig analyze <입력>` | 프로필 출력 | 예 | 아니요 | 아니요 |
 | `sbmig plan <입력>` | 프로필 + 계획 출력 | 예 | 아니요 | 아니요 |
+| `sbmig inventory <입력>` | pom 없는 웹앱 인벤토리(inventory.md / .json) | 아니요 | 아니요 | 아니요 |
 | `sbmig build <디렉터리>` | Maven 실행 + 오류 파싱 | 예 | 예 | **그 디렉터리에서 직접 빌드**(`target/` 생성) |
 | `sbmig rewrite <디렉터리> -r <id>` | OpenRewrite 실행 | 예 | 예 | **`--dry-run`이 아니면 그 디렉터리를 직접 수정** |
 | `sbmig parse-log <로그>` | Maven 로그 → 구조화 오류 + 서명 | 아니요 | 아니요 | 아니요 |
@@ -397,7 +398,19 @@ sbmig parse-log <로그> --json
 
 Maven 로그를 sbmig의 파서로 다시 읽어 구조화 오류와 서명(L1 / L2)을 보여 줍니다. `--root`는 경로를 상대 경로로 바꿀 기준입니다. KB 패턴(`kb/patterns/`)을 쓰거나 "이 오류가 왜 이 클러스터로 묶였나"를 확인할 때 씁니다. 서명 체계는 [04. 분류와 루프](04-triage-and-loop.md)에 있습니다.
 
-### 4.6 자주 하는 실수
+### 4.6 `sbmig inventory` — pom 없는 Tomcat 웹앱 조사 (2026-10-23)
+
+```bash
+sbmig inventory path/to/webapps-root --out out/inventory/<이름>                       # 콘솔 요약 + inventory.md / .json
+sbmig inventory path/to/webapps.zip --out out/inventory/<이름> --config config/artifacts.yml   # report.language: ko 이면 한국어 md
+```
+
+- 대상: pom 이 없는 "프레임워크 없는" 옛 웹앱 — JSP, 어딘가의 Java 소스(`WEB-INF/src` 등), `WEB-INF/lib` 의 jar(+ `*.jar.old` 백업), `WEB-INF/classes`. 한 루트 아래 웹앱 디렉터리가 둘 이상이어도 됩니다. pom 이 있는 모듈은 경고로 알려 주며 그 모듈은 `sbmig run` 대상입니다.
+- 무엇을 보나: `WEB-INF` 를 가진 디렉터리마다 web.xml 스펙(2.3 DTD … 6.0)·서블릿/필터/리스너/taglib 수·프레임워크(spring-mvc, struts1/2, jsf, egov, plain-servlet)·JNDI 이름(`META-INF/context.xml`, `resource-ref`)·JSP / 정적 파일 수·Spring XML, jar 마다 크기·sha1·파일 이름에서 읽은 버전·추정 좌표(`knowledge/libraries/jar_names.yml`), 클래스 파일의 major 버전(→ Java 레벨)과 소스 없는 클래스, 소스 루트(`package` 선언과 경로가 맞는 위치)별 인코딩·javax import·프레임워크 import·`sun.*` 사용, 여러 소스 루트에 같은 FQCN 이 있는 중복 클래스.
+- 결과: 웹앱 루트마다 Maven 모듈 제안 하나(`war`, Java 레벨은 그 웹앱의 클래스 파일, 없으면 1.8)와 노트(좌표 없는 jar → `lib/` + system scope 또는 Nexus 설치, 2.3 DTD, 소스 없는 클래스, MS949 소스, JSP 의 javax import, 공유 소스 → common jar). 웹앱 없이 소스만 있으면 `jar` 제안 하나.
+- 운영자 할 일: (1) "좌표 미확인" jar 를 확인해 사내 jar 는 `knowledge/libraries/jar_names.yml` 에 추가하고 다시 실행, (2) 모듈 분할 확인, (3) pom 생성은 2차 작업(아직 없음)입니다. 이번 차수는 조사만 하며 원본을 바꾸지 않습니다.
+
+### 4.7 자주 하는 실수
 
 - `sbmig rewrite` / `sbmig build`를 원본 디렉터리에 실행: 두 명령은 사본을 만들지 않습니다. `out/<run id>/project`나 별도 복사본에 쓰십시오.
 - `sbmig plan` 결과와 실제 `<run dir>/plan.json`이 다르다고 혼동: 실제 실행은 어드바이저리 레시피와 `plan.advisor: llm` 조언, pom 저장소 노트(X9)를 더합니다.

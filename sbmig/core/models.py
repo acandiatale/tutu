@@ -121,6 +121,81 @@ class BlockedItem(BaseModel):
 # ---------------------------------------------------------------------------
 # Maven / project description
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Exploded webapp inventory (`sbmig inventory`, 2026-10-23): a Tomcat directory without a pom — JSPs, Java sources,
+# WEB-INF/lib jars, WEB-INF/classes — read only, written as inventory.md / inventory.json; the pom synthesis of the
+# next round consumes it. Everything is a file-system fact or an explicitly labelled guess.
+# ---------------------------------------------------------------------------
+class JarInfo(BaseModel):
+    path: str                                   # root-relative
+    name: str                                   # file name
+    size: int = 0
+    sha1: str = ""                              # for a later Nexus / Central lookup
+    version_guess: Optional[str] = None         # parsed from the file name (`commons-lang-2.6.jar` → 2.6)
+    artifact_guess: Optional[str] = None        # "g:a" from knowledge/libraries/jar_names.yml (None = unknown)
+    ignored: bool = False                       # *.jar.old / *.bak / *.jar_ … — backups Tomcat does not load
+
+
+class WebappRoot(BaseModel):
+    dir: str                                    # root-relative directory holding WEB-INF ("" = the project root)
+    web_xml: Optional[str] = None               # root-relative path when present
+    servlet_spec: Optional[str] = None          # "2.3" (DTD) / "2.4" … "4.0" from the web.xml root element
+    servlets: int = 0
+    filters: int = 0
+    listeners: int = 0
+    taglibs: int = 0
+    frameworks: list[str] = Field(default_factory=list)   # spring-mvc | struts1 | struts2 | egov | jsf | plain-servlet
+    jndi_resources: list[str] = Field(default_factory=list)   # names from META-INF/context.xml + web.xml resource-ref
+    jsp_count: int = 0
+    jsp_sample: list[str] = Field(default_factory=list)
+    static_count: int = 0                       # html / js / css / images outside WEB-INF
+    spring_xml: list[str] = Field(default_factory=list)   # WEB-INF/**/*.xml with <beans
+    lib_jars: list[JarInfo] = Field(default_factory=list)
+    ignored_files: list[str] = Field(default_factory=list)   # backups / non-jar files under WEB-INF/lib
+    classes_count: int = 0                      # .class files under WEB-INF/classes
+    class_major_min: Optional[int] = None       # class-file major versions (50 = Java 6, 52 = Java 8 …)
+    class_major_max: Optional[int] = None
+    java_version_from_classes: Optional[str] = None   # "1.6" / "1.8" / "11" … from class_major_max
+    classes_without_source: int = 0             # FQCNs under WEB-INF/classes with no .java anywhere
+    classes_without_source_sample: list[str] = Field(default_factory=list)
+
+
+class SourceRoot(BaseModel):
+    dir: str                                    # root-relative directory where `package a.b;` matches the path
+    java_files: int = 0
+    packages: list[str] = Field(default_factory=list)      # top-level packages (a.b)
+    encoding: str = "utf-8"                     # majority detected encoding (cp949 / euc_kr / utf-8)
+    javax_imports: dict[str, int] = Field(default_factory=dict)      # "javax.servlet" → files
+    framework_imports: dict[str, int] = Field(default_factory=dict)  # spring / struts1 / struts2 / ibatis2 / mybatis / hibernate / egov → files
+    jdk_internal_imports: int = 0               # sun.* / com.sun.* files
+    inside_webapp: Optional[str] = None         # the WebappRoot.dir it sits under (e.g. "app1/WEB-INF/src"), else None
+
+
+class ModuleProposal(BaseModel):
+    """One Maven module the pom synthesis would create (a guess the operator can change)."""
+    name: str                                   # artifactId guess (webapp dir name, "app" for the root)
+    webapp_dir: str
+    source_dirs: list[str] = Field(default_factory=list)
+    packaging: str = "war"
+    java_version: str = "1.8"                   # from the class files, else the sources, else 1.8
+    dependencies_known: int = 0                 # jars with an artifact guess
+    dependencies_unknown: int = 0               # jars without one (→ lib/ + system scope / Nexus install)
+    notes: list[str] = Field(default_factory=list)
+
+
+class WebappInventory(BaseModel):
+    root: str
+    scanned_at: datetime = Field(default_factory=utcnow)
+    build_files: list[str] = Field(default_factory=list)   # pom.xml / build.xml / .classpath / .project found anywhere
+    webapp_roots: list[WebappRoot] = Field(default_factory=list)
+    source_roots: list[SourceRoot] = Field(default_factory=list)
+    duplicate_classes: int = 0                  # same FQCN in more than one source root
+    duplicate_classes_sample: list[str] = Field(default_factory=list)
+    proposals: list[ModuleProposal] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    outputs: dict[str, str] = Field(default_factory=dict)  # inventory_md, inventory_json
+
+
 class JavaxApiJar(BaseModel):
     """A javax EE API jar (or a javax-era `jakarta.*-api` 2.x) still on a module's resolved classpath after the
     migration, with the dependency path that brings it (`mvn dependency:tree`). Rendered as the report section

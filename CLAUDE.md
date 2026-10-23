@@ -148,6 +148,12 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   `relocations.yml` 44 rows, `known_packages.yml` 56, advisories 64 (`knowledge/notes/era-libraries.md` fix-loop sections,
   16 new analyzer rules; the pinned `FileuploadToFileUpload2` recipe is broken — advisory `commons-fileupload`). Company
   additions go into those yml files; the floor handler never pins a parent-managed (unversioned) declaration.
+- 2026-10-23: pom-less exploded Tomcat webapps (JSP + Java + WEB-INF/lib, "quite many" in the company) — round 1
+  `sbmig inventory <dir|zip>` (read-only: webapp roots, web.xml spec / frameworks, jars → coordinates via
+  `knowledge/libraries/jar_names.yml`, class-file Java level, source roots + encoding, classes without source,
+  duplicates, module proposals → `inventory.md` / `.json`); fixture `fixtures/webapps/legacy-exploded`. Rounds 2 / 3
+  (pom synthesis → normal pipeline, JSP javax→jakarta sweep) are open. The "Maven only" intake rule still rejects
+  Gradle / Ant builds; a tree with no build tool will get a synthesized pom instead.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)

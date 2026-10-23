@@ -12,3 +12,5 @@ kb/cases/**/*.json
 .env
 .env.*
 !.env.example
+/out-*.log
+.coverage
