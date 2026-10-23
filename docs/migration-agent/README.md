@@ -1437,6 +1437,28 @@ restructure 루프의 LLM은 그 사본을 읽기 전용 참조로 받습니다.
 `merge_collision: fail`이면 충돌을 재구성 오류로 처리합니다.
 `wrap`은 모듈을 그대로 두고 boot 모듈만 추가합니다.
 
+루트에 pom이 없고 형제 pom들(예: `APP/BATCH`, `APP/WEB`, `APP/EAR`)이 서로 의존하면, intake가 루트 집합 pom을 먼저 만들어 같은 merge로 보냅니다(`layout.generate_aggregator`, 2026-10-23).
+EAR 모듈은 합치지 않고 없앱니다. 배포 디스크립터는 `asis-ear/`에 보관하고, `maven-ear-plugin`은 빼며, context root는 후속 조치가 됩니다.
+EAR pom만 입력되면 intake에서 거절합니다(`ear-without-modules`).
+`<type>war</type>` 의존성(war overlay)은 jar 모듈에 넣지 않고 boot WAR로 옮깁니다.
+모듈 밖이지만 프로젝트 안을 가리키는 `../` 경로는 back으로 옮겨 씁니다.
+pom이 참조하지 않는 웹 폴더(`STATIC/` 등)는 그대로 두고 후속 조치로 알립니다.
+
+```mermaid
+flowchart LR
+  A["업로드 루트<br/>APP/BATCH · APP/WEB · APP/EAR<br/>DB/ · STATIC/ (pom.xml 없음)"] --> B{"루트 pom?"}
+  B -->|"없음 + 서로 의존"| C["intake: 집합 pom 생성<br/>aggregator-generated"]
+  B -->|"EAR pom만"| R["intake 거절<br/>ear-without-modules"]
+  C --> D["한 reactor로 jdk21 · spring"]
+  D --> E["merge: BATCH · WEB → {name}-back<br/>JSP → {name}-front<br/>boot WAR"]
+  E --> F["EAR 제거 · asis-ear/<br/>context root 후속 조치"]
+  E --> G["STATIC/ · DB/ 그대로<br/>web-content-left"]
+```
+
+![sibling-poms](diagrams/sibling-poms.png)
+
+*PNG: `diagrams/sibling-poms.png` · 원본: `diagrams/sibling-poms.mmd`*
+
 ### 9.5 관리 버전 정리와 역할 parent
 
 parent를 붙인 뒤 effective pom을 다시 캡처합니다(`effective/depmgmt-after-restructure.json`).
@@ -1779,17 +1801,17 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 | 플릿 데모 | `scripts/fleet-demo.sh`: 여러 픽스처를 새 KB로 순차 실행 |
 | 문서 동기화 | `tests/docs/test_handbook.py`가 핸드북의 경로, 설정 키, CLI 이름을 코드와 대조 |
 
-픽스처는 29개입니다(`fixtures/projects/*/expected.json`).
+픽스처는 31개입니다(`fixtures/projects/*/expected.json`).
 
 | 케이스 | 픽스처 |
 |---|---|
 | `spring_boot` (14) | `boot2`, `boot2-cloud-legacy`, `boot2-fix-failures`, `boot2-hystrix-command`, `boot2-javax-lib`, `boot2-javax-lib-optional`, `boot2-method-rename`, `boot2-qlrm-javax`, `boot2-rewrite-excluded`, `boot3`, `company-boot-single`, `legacy-role-parents`, `multi-module-conflict`, `multi-module-merge` |
 | `pure_java` (5) | `enforcer-java8-werror`, `euckr-legacy`, `java6-legacy`, `missing-artifact`, `pure-java` |
 | `spring_legacy` (4) | `company-spring5-web`, `legacy-external-config`, `legacy-ibatis`, `spring5-xml` |
-| `servlet_tomcat` (4) | `company-servlet-jsp`, `servlet-nonstandard-dirs`, `servlet-tomcat`, `servlet-webxml-legacy` |
+| `servlet_tomcat` (6) | `company-servlet-jsp`, `ear-sibling-poms`, `servlet-nonstandard-dirs`, `servlet-tomcat`, `servlet-war-overlay`, `servlet-webxml-legacy` |
 | `msa` (2) | `msa`, `msa-shared-lib` |
 
-회사 레이아웃 픽스처(`legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy`, `servlet-nonstandard-dirs`)는 각자의 `sbmig.e2e.yml`로 회사 레이아웃을 씁니다.
+회사 레이아웃 픽스처(`legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy`, `servlet-nonstandard-dirs`, `ear-sibling-poms`, `servlet-war-overlay`)는 각자의 `sbmig.e2e.yml`로 회사 레이아웃을 씁니다.
 나머지 픽스처는 `config/artifacts.local-e2e.yml`의 `module/boot-jar` + `module/comp-jar` 레이아웃으로 고정되어 있습니다.
 로컬 e2e는 사내 좌표 대신 공개 대체물(`spring-boot-starter-parent` 4.1.0 등)을 씁니다.
 실제 사내 좌표는 `config/artifacts.example.yml`의 자리표시자를 회사에서 채워 씁니다.

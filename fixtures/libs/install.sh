@@ -8,6 +8,7 @@
 #   legacy-web-lib 1.0.0 → JDK 8  (JAVA8_HOME)   javax.servlet
 #   legacy-web-lib 2.0.0 → JDK 21 (JAVA21_HOME)  jakarta.servlet, release 17
 #   legacy-web-lib 3.0.0 → JDK 21 (JAVA21_HOME)  jakarta.servlet, release 17, clientIp(..) renamed to remoteClientIp(..)
+#   legacy-base-web 1.0.0 → JDK 21 (JAVA21_HOME)  a WAR (JSP fragment + css, no classes) that servlet-war-overlay overlays
 set -euo pipefail
 LIBS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JVM_DIR=/Users/acandiatale/Library/Java/JavaVirtualMachines
@@ -40,4 +41,5 @@ install_lib() {   # <source dir> <java home>
 install_lib "$LIBS/legacy-web-lib/v1.0.0" "$JAVA8_HOME"
 install_lib "$LIBS/legacy-web-lib/v2.0.0" "$JAVA21_HOME"
 install_lib "$LIBS/legacy-web-lib/v3.0.0" "$JAVA21_HOME"
+install_lib "$LIBS/legacy-base-web/v1.0.0" "$JAVA21_HOME"
 echo "fixtures/libs installed${1:+ into $1}"

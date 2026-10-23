@@ -1,0 +1,13 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — the company layout:
+# the local e2e config pins the pre-9c layout for the older fixtures, so this fixture sets the company layout back
+# (the defaults of config/default.yml) and adds the role parents. Local stand-ins: every in-house parent is
+# spring-boot-starter-parent 4.1.0 (base-parent = artifacts.parent in the local e2e config).
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }

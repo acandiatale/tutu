@@ -1,0 +1,191 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "pom",
+  "is_multi_module": true,
+  "libraries": [
+    "javax-servlet",
+    "jsp"
+  ],
+  "optional_artifacts_in_use": [
+    "org.apache.commons:commons-lang3",
+    "commons-io:commons-io"
+  ],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "aggregator-generated",
+      "ear-module-dropped",
+      "web-content-left",
+      "web-xml-registered"
+    ],
+    "journal_events": [
+      {
+        "event": "aggregator_generated",
+        "name": "portal",
+        "artifact_id": "portal-aggregator"
+      },
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "followups_contains": [
+      "regex:(?is).*context.root.*/portal.*",
+      "regex:(?s).*STATIC/.*",
+      "regex:(?s).*NoticeCleaner.*"
+    ],
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "portal-back",
+            "portal-front",
+            "portal-boot"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "<artifactId>portal</artifactId>"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "portal-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "portal-back/pom.xml",
+          "artifacts": [
+            "com.example.portal:portalWEB",
+            "com.example.portal:portalBATCH",
+            "com.example.portal:portal"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "portal-boot/pom.xml",
+          "artifacts": [
+            "com.example.portal:portalWEB",
+            "com.example.portal:portalBATCH"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "portal-back/pom.xml",
+          "not_contains": "maven-ear-plugin"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "portal-boot/pom.xml",
+          "not_contains": "maven-ear-plugin"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "portal-back/pom.xml",
+          "artifacts": [
+            "commons-io:commons-io"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "portal-back/src/main/java/com/example/portal/web/NoticeServlet.java",
+          "contains": "jakarta.servlet.http.HttpServlet"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "portal-back/src/main/java/com/example/portal/batch/NoticeCleaner.java"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "portal-front/src/main/resources/META-INF/resources/WEB-INF/jsp/notice/list.jsp",
+          "contains": "<c:out value=\"${cleaned}\"/>"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "portal-front/src/main/resources/static/css/portal.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "portal-boot/src/main/resources/asis-ear/**/jeus-application-dd.xml"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "portal-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "/notice/list.do"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "portal-boot/target/*.war"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "STATIC/index.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "STATIC/resources/download/guide.html"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "DB/schema.sql"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "APP/WEB/pom.xml"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "APP/EAR/pom.xml"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "APP/BATCH/src"
+        }
+      }
+    ]
+  }
+}

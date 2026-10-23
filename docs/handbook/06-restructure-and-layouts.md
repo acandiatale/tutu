@@ -400,6 +400,22 @@ as-is 캡처를 덮어쓰지 않도록 두 번째는 별도 파일이며, 사용
 - 유지 boot 모듈의 리소스는 boot 에 남고, merge 된 모듈의 같은 이름 리소스는 back 으로 가므로 후속조치 "the boot-jar copy wins at runtime and the comp-jar settings are not read"
 - custom 리소스 디렉터리(`src/main/config` 등)는 같은 상대 경로로 이동하고 back 의 `<resources>` 는 모든 모듈 디렉터리의 합집합
 
+### 5.3b 루트 pom 없는 형제 모듈, EAR, war overlay, 모듈 밖 경로 (2026-10-23)
+
+회사 프로젝트 중에는 업로드 루트에 `APP/`, `DB/`, `STATIC/`만 있고 **pom.xml이 없는** 것이 있습니다. `APP/BATCH`(jar), `APP/WEB`(war, 대부분의 pom 설정), `APP/EAR`(ear: WEB을 `<type>war</type>`로, BATCH를 jar로 묶음)가 각자 pom을 갖고, 하나씩 install해서 빌드했습니다.
+
+| 경우 | 동작 |
+|---|---|
+| 형제 pom만 있고 서로 의존 | intake가 루트 집합 pom을 만듭니다([01. 파이프라인](01-pipeline.md) intake 7번, 플래그 `aggregator-generated`). 그다음은 일반 멀티모듈 merge입니다. `{name}`은 집합 pom의 속성 `sbmig.project-name`(EAR의 artifactId)이고, EAR이 병합된 뒤 루트 artifactId를 그 이름으로 되돌리고 속성은 지웁니다. |
+| EAR 모듈(packaging `ear`) | 소스를 back에 합치지 않습니다. 모듈의 파일(보통 `src/main/application/META-INF/*.xml` 애플리케이션 서버 배포 디스크립터)은 `{name}-boot/src/main/resources/asis-ear/<모듈 이름>/…`에 보관합니다(Boot는 읽지 않음). 프로젝트 모듈에 대한 의존성은 지우고, 그 밖의 의존성(EAR의 `lib/`에 들어가던 공용 라이브러리)은 back으로 옮깁니다. `maven-ear-plugin`은 어떤 생성 pom에도 들어가지 않습니다. `<webModule><contextRoot>`(없으면 `application.xml`, 그것도 없으면 플러그인 기본값 `/<artifactId>`)는 후속 조치 "deploy {name}-boot as portal.war … or set server.servlet.context-path=/portal"이 됩니다. 플래그 `ear-module-dropped`, journal `ear_module_dropped`. 프로젝트 밖 WAR를 묶던 EAR이면 그 WAR는 가져오지 않고 후속 조치로 남깁니다. |
+| 모듈 사이 의존성 판별 | groupId × artifactId에 더해, 모듈의 부모 groupId(자기 groupId가 없을 때 상속값)와 groupId가 비었거나 `${…}`인 의존성도 "같은 프로젝트 모듈"로 봅니다. 프로젝트 모듈에 대한 의존성은 어떤 생성 pom에도 남지 않습니다. |
+| `<type>war</type>` 의존성(war overlay) | jar 모듈(back / front)에는 절대 넣지 않습니다. `layout.jsp_boot_packaging: war`(기본)이면 overlay가 웹 콘텐츠를 싣고 오므로 boot 모듈을 WAR로 만들고, 의존성(`type=war`, 버전은 리터럴로)과 as-is `<overlays>` 블록을 boot의 maven-war-plugin에 넣습니다. 플래그 `war-overlay-moved`. 후속 조치 "WAR overlay … must be resolvable from the configured repositories: install it into the company Nexus"는 항상 남습니다. boot가 실행 jar이면 옮기지 않고 후속 조치만 남깁니다. |
+| 모듈 밖이지만 프로젝트 안인 경로 | merge되는 모듈의 `warSourceDirectory`, `<webResources>`, `sourceDirectory`, `<resources>` / `<testResources>`가 `../`로 모듈 밖을 가리키지만 프로젝트 안이면(예: `APP/WEB`의 `${basedir}/../../STATIC`) 그 폴더를 한 번만 `{name}-back/<프로젝트 기준 경로>`로 옮겨 그 모듈의 웹 루트 / 클래스패스 폴더로 씁니다(그다음은 6.7절 분할 규칙). 프로젝트를 벗어나는 경로는 지금처럼 건너뛰고 노트를 남깁니다. |
+| pom이 참조하지 않는 웹 콘텐츠 | 재구성 뒤에도 옮겨지지 않았고 어느 모듈에도 속하지 않은 JSP(예: `STATIC/index.jsp`)가 있으면 최상위 폴더마다 후속 조치 "web content not referenced by any pom left in place: STATIC/ (1 JSP, N other files) — serve it as before (web server) or move it into {name}-front"를 남기고 플래그 `web-content-left`를 올립니다. 파일은 옮기지 않습니다. `DB/` 같은 비웹 폴더는 그대로 둡니다. |
+| 합쳐진 jar 모듈의 독립 실행 클래스 | `@SpringBootApplication`이 아닌 클래스에 `main(String…)`이 있으면(예: 배치) 모듈마다 후속 조치 "module APP/BATCH had main class … (a standalone batch?): merged into {name}-back — run it from the boot WAR's classpath or keep it as its own module". |
+
+WEB 모듈의 `<finalName>`은 boot WAR로 옮기지 않습니다(루트의 finalName만 씁니다). context root 후속 조치가 배포 이름(`portal.war`)을 알려 줍니다. 픽스처 `ear-sibling-poms`, `servlet-war-overlay`.
+
 ### 5.4 알려진 한계(CLAUDE.md "Known follow-ups")
 
 - 모듈마다 내용이 다른 같은 FQCN 클래스는 first-wins 입니다. 버려진 사본은 LLM 참고로만 쓰입니다.
@@ -475,7 +491,7 @@ Servlet 3 이전(web.xml 2.2 / 2.3 / 2.4) 프로젝트는 어노테이션이 없
 
 ### 6.7 비표준 디렉터리: `APP` / `STATIC` / `DB` (2026-10-23)
 
-일부 회사 프로젝트는 pom 은 있지만 표준 디렉터리를 쓰지 않습니다: Java 소스는 `APP/src`(`<sourceDirectory>`), 웹 루트는 `STATIC/`(maven-war-plugin `<warSourceDirectory>`, `${basedir}/` 접두사 허용), SQL 은 `DB/`(pom 이 참조하지 않음). 분석기(`sbmig/analyze/source_scanner.py`: `pom_web_dirs`, `pom_build_dirs`, `webapp_dirs`)가 war 플러그인 설정(`<build><plugins>`, 그다음 `pluginManagement`; profile 은 무시)을 읽어 `SourceStats.webapp_dirs` 에 웹 루트를 적습니다. `${…}` 변수, 절대 경로, `..` 경로는 건너뜁니다. 멀티모듈이면 pom 마다 모듈 디렉터리를 앞에 붙입니다.
+일부 회사 프로젝트는 pom 은 있지만 표준 디렉터리를 쓰지 않습니다: Java 소스는 `APP/src`(`<sourceDirectory>`), 웹 루트는 `STATIC/`(maven-war-plugin `<warSourceDirectory>`, `${basedir}/` 접두사 허용), SQL 은 `DB/`(pom 이 참조하지 않음). 분석기(`sbmig/analyze/source_scanner.py`: `pom_web_dirs`, `pom_build_dirs`, `webapp_dirs`)가 war 플러그인 설정(`<build><plugins>`, 그다음 `pluginManagement`; profile 은 무시)을 읽어 `SourceStats.webapp_dirs` 에 웹 루트를 적습니다. `${…}` 변수와 절대 경로는 건너뜁니다. `..` 경로는 단일 모듈에서는 건너뛰고, 멀티모듈 merge에서는 프로젝트 안을 가리키면 그 폴더를 back으로 옮겨 씁니다(5.3b절). 멀티모듈이면 pom 마다 모듈 디렉터리를 앞에 붙입니다.
 
 restructure 는 이렇게 처리합니다.
 

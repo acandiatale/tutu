@@ -7,7 +7,7 @@ sbmig 저장소와 실행 결과물이 어느 디렉터리에, 어떤 형식으�
 - 저장소 최상위 디렉터리 각각의 역할과 "지워도 되는가 / 백업해야 하는가"를 판단할 수 있습니다.
 - `kb/` 의 케이스·레시피·원장(ledger)·심볼 인덱스 파일 형식과, 빌드 수정 루프가 이를 어떻게 다시 꺼내 쓰는지 설명할 수 있습니다.
 - 한 번의 실행 디렉터리(`out/<run id>/`)에 생기는 모든 파일이 어느 모듈에서 언제 쓰이는지 알고, 문제 보고 시 어떤 파일을 봐야 하는지 압니다.
-- `fixtures/` 의 29개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
+- `fixtures/` 의 31개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
 - 테스트 디렉터리 구조와 `integration` 마커, 보조 스크립트(`scripts/`), 독립 코딩 에이전트(`coding/`)의 위치를 압니다.
 
 ## 관련 코드
@@ -31,7 +31,7 @@ migration-agent/
 ├── knowledge/                큐레이션된 지식: 레시피 카탈로그, 선언형 레시피, 마이그레이션 노트, 라이브러리 권고, 외부화 규칙
 ├── kb/                       실행 중 자라는 학습 KB (케이스, 레시피 후보/활성, 패턴, 원장, 심볼 인덱스)
 ├── sbmig/                    에이전트 본체(Python 패키지)
-├── fixtures/                 테스트용 as-is Maven 프로젝트 29개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
+├── fixtures/                 테스트용 as-is Maven 프로젝트 31개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
 ├── tests/                    pytest 테스트(패키지별 하위 디렉터리)
 ├── scripts/                  e2e, KB 학습 데모, 플릿 데모 스크립트
 ├── coding/                   sbmig 와 독립된 소형 코딩 에이전트(같은 게이트웨이 계약)
@@ -675,7 +675,7 @@ fixtures/
 
 `fixtures/webapps/legacy-exploded` 는 웹앱 루트 2개(`portal`: web.xml 2.3 DTD, cp949 소스, JNDI `jdbc/PortalDS`, 소스 없는 Java 1.6 클래스, `*.jar.old` 백업 / `admin`: web.xml 2.5 + `DispatcherServlet`)와 두 소스 루트에 중복된 `com.acme.common.Util` 을 담은 인벤토리 전용 픽스처입니다. `tests/analyze/test_webapp_inventory.py` 가 기대값을 고정합니다(e2e 대상이 아님).
 
-### 6.2 29개 픽스처
+### 6.2 31개 픽스처
 
 | 픽스처 | 케이스 | 무엇을 검증하나 |
 |---|---|---|
@@ -708,6 +708,8 @@ fixtures/
 | `servlet-webxml-legacy` | `servlet_tomcat`(war, web.xml 2.3 DTD만) | W1: web.xml에만 선언된 서블릿 / 필터 / 리스너 / 오류 페이지 → `legacy-boot`의 생성 클래스 `WebXmlRegistrations`, `server.servlet.session.timeout=30m`, 0 LLM |
 | `servlet-nonstandard-dirs` | `servlet_tomcat`(war, 비표준 디렉터리) | `APP/src` 소스, 웹 루트 `STATIC/`(`warSourceDirectory`), 필터링되는 `STATIC/resources`(Excel·템플릿·동영상), `DB/` → JSP·정적 파일은 `ndirs-front`, `STATIC/resources` 는 `ndirs-back` 클래스패스(E12 로 xlsx·mp4 바이트 유지), boot WAR 에 `warSourceDirectory` 없음, 0 LLM |
 | `boot2-fix-failures` | `spring_boot` | 일부러 틀리는 재생 LLM(SEARCH 불일치 → `apply_failed`, 호출을 남긴 수정 → `no_change`, 그다음 진짜 수정) → `ClientIpFilter` 에러는 `resolved`(llm, `text_replace` `clientIp → remoteClientIp`, `replace_rule_candidate`, 이력 `apply_failed → improved`), `MemberController` 에러는 `blocked`(`repeated_failure`)와 실패 이유, 실행 디렉터리와 KB 의 `errors.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`(`expect.error_cases`), 실패 종료(exit 2) |
+| `ear-sibling-poms` | `servlet_tomcat`(루트 pom 없음, EAR) | `APP/BATCH` / `APP/WEB` / `APP/EAR` 형제 pom, `DB/`, `STATIC/` → intake가 집합 pom 생성(`aggregator-generated`), merge로 `portal-back` / `portal-front` / `portal-boot` WAR, EAR 제거(`ear-module-dropped`, `asis-ear/`, context root 후속 조치), 모듈 의존성·`maven-ear-plugin` 없음, `STATIC/` 그대로(`web-content-left`), 0 LLM |
+| `servlet-war-overlay` | `servlet_tomcat`(war overlay) | 사내 공통 화면 WAR(`legacy-base-web`)를 `<type>war</type>` + `<overlays>`로 받는 서블릿 → back / front에는 없고 boot WAR에 overlay로(`war-overlay-moved`), 빌드된 WAR에 overlay의 JSP·css 포함, 0 LLM |
 
 정확한 기대 결과는 `fixtures/projects/README.md` 의 매트릭스가 원본입니다. 레이아웃별 전후 트리는 [06. 재구성과 회사 레이아웃](06-restructure-and-layouts.md) 에서 다룹니다.
 

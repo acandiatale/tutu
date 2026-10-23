@@ -113,6 +113,10 @@ class LayoutConfig(BaseModel):
     comp_artifact_suffix: str = "-back"                 # artifactId = <root artifactId> + suffix (front: "-front")
     split_policy: Literal["minimal", "web-layer"] = "minimal"
     multi_module_policy: Literal["wrap", "merge"] = "merge"
+    # 2026-10-23: no pom.xml at the project root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB,
+    # APP/EAR built one by one and packaged by the EAR) → intake writes a root aggregator pom listing them, so they
+    # build in one reactor and the merge policy applies (sbmig.analyze.aggregator)
+    generate_aggregator: bool = True
     # merge: a path present in more than one module → first module in <modules> order wins, the other copies are
     # saved under <run dir>/merge-conflicts/ and listed in the Handover ("first-wins"); "fail" = restructure error
     merge_collision: Literal["first-wins", "fail"] = "first-wins"

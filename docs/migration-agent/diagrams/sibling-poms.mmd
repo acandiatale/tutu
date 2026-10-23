@@ -1,0 +1,8 @@
+flowchart LR
+  A["업로드 루트<br/>APP/BATCH · APP/WEB · APP/EAR<br/>DB/ · STATIC/ (pom.xml 없음)"] --> B{"루트 pom?"}
+  B -->|"없음 + 서로 의존"| C["intake: 집합 pom 생성<br/>aggregator-generated"]
+  B -->|"EAR pom만"| R["intake 거절<br/>ear-without-modules"]
+  C --> D["한 reactor로 jdk21 · spring"]
+  D --> E["merge: BATCH · WEB → {name}-back<br/>JSP → {name}-front<br/>boot WAR"]
+  E --> F["EAR 제거 · asis-ear/<br/>context root 후속 조치"]
+  E --> G["STATIC/ · DB/ 그대로<br/>web-content-left"]

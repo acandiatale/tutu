@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Application-server deployment descriptor (JEUS); meaningless for Spring Boot on Tomcat. -->
+<application xmlns="http://www.tmaxsoft.com/xml/ns/jeus">
+    <deployment-target><target>portal-server</target></deployment-target>
+</application>

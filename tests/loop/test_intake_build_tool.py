@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from sbmig.cli import run_exit_code
-from sbmig.core.models import MergeConflict
+from sbmig.core.models import MergeConflict, Phase
 from sbmig.core.workspace import Workspace
 
 from .fakes import FakeBuildRunner, FakeRestructurer, journal_events, make_project
@@ -158,3 +158,41 @@ def test_restructure_result_without_merge_fields(cfg, ws):
     assert report.merge_conflicts == []
     ev = [e for e in journal_events(ws) if e.get("event") == "restructure"]
     assert ev and all(e["merge_conflicts"] == 0 and e["merged_modules"] == [] for e in ev)
+
+
+# ---------------------------------------------------------------- 2026-10-23: sibling poms / EAR-only input
+EAR_FIXTURE = Path(__file__).resolve().parents[2] / "fixtures" / "projects" / "ear-sibling-poms"
+
+
+def test_sibling_poms_get_a_generated_aggregator_at_intake(cfg, tmp_path):
+    ws = _ws_from(EAR_FIXTURE, tmp_path)
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build))
+    report = orch.run(stop_after=Phase.INTAKE)
+    assert "aggregator-generated" in report.flags and "aborted" not in report.flags
+    text = (ws.root / "pom.xml").read_text(encoding="utf-8")
+    assert "<module>APP/BATCH</module>" in text and "<artifactId>portal-aggregator</artifactId>" in text
+    assert any(f.startswith("no aggregator pom: sbmig generated pom.xml") for f in report.manual_followups)
+    ev = [e for e in journal_events(ws) if e["event"] == "aggregator_generated"]
+    assert ev and ev[0]["modules"] == ["APP/BATCH", "APP/WEB", "APP/EAR"] and ev[0]["name"] == "portal"
+    assert "generated root aggregator pom" in ws._git("log", "-1", "--format=%s").stdout   # noqa: SLF001
+
+
+def test_aggregator_generation_can_be_switched_off(cfg, tmp_path):
+    cfg = cfg.model_copy(deep=True)
+    cfg.layout.generate_aggregator = False
+    ws = _ws_from(EAR_FIXTURE, tmp_path)
+    report = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build)).run(stop_after=Phase.INTAKE)
+    assert "aggregator-generated" not in report.flags and not (ws.root / "pom.xml").exists()
+
+
+@pytest.mark.parametrize("engine", ["inline", "graph"])
+def test_ear_alone_is_rejected_at_intake(cfg, tmp_path, engine):
+    cfg = cfg.model_copy(deep=True)
+    cfg.loop.engine = engine
+    ws = _ws_from(EAR_FIXTURE / "APP" / "EAR", tmp_path)
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), analyzer=_boom_analyzer)
+    orch._capture_effective = lambda report: (_ for _ in ()).throw(AssertionError("must not be reached"))
+    report = orch.run()
+    assert "ear-without-modules" in report.flags and "aborted" in report.flags
+    assert run_exit_code(report) == 3
+    assert "packages modules which are not in this directory" in report.manual_followups[0]

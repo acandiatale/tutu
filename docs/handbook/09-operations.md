@@ -385,6 +385,12 @@ E13 / E14. 핸들러 `jakarta-namespace-sweep` / `spring-data-crud-repository`�
 ### 9.18 `llm company HTTP 400: … "#…" is an unsupported model` — 잘 되다가 중간에 한 번
 `.env`의 역할 모델 줄을 값 없이 주석만 남겨 두면(`LLM_RECIPE_MODEL=   # 비우면 LLM_MODEL`, `LLM_ESCALATION_MODEL= #model`) 2026-10-23 이전 파서는 **주석 텍스트를 값으로** 읽었습니다. 그 모델은 실행 중간에 처음 쓰이므로(레시피 모델: 첫 KB 수확 / 플랜 조언, 상향 모델: 정체 `loop.stall_limit` 이후 또는 verify 루프) 그때 게이트웨이가 400을 돌려주고, 400은 요청의 잘못이라 L5에 세지 않아 루프는 계속됩니다. 지금은 주석만 있는 값은 빈 값이고, 설정을 읽을 때 모든 모델 이름에서 `# …` 꼬리와 공백을 떼어 냅니다(`llm.recipe_model=' # …' is not a plain model name: using None` 경고). 확인: `sbmig.log`에서 400 바로 앞의 `llm request role=… model=…` 줄, 또는 `.env`의 `LLM_*_MODEL` 줄이 `KEY=이름   # 주석` 꼴인지.
 
+### 9.19 `could not collect dependencies for project …-back … failed to read artifact descriptor …WEB:war … From/to central`
+APP/BATCH, APP/WEB, APP/EAR처럼 **루트 pom 없이 형제 pom만 있고 EAR이 WAR를 묶는** 프로젝트에서 2026-10-23 이전에 나던 오류입니다. `APP/EAR`을 프로젝트로 넣으면 EAR pom이 프로젝트 전체로 취급되어, EAR의 `<type>war</type>` 의존성(WEB 모듈)이 back(jar) 모듈로 복사되고 Maven이 그 war를 central에서 찾습니다. 화면은 WEB 모듈에 있으므로 front도 생기지 않습니다. 지금은 이렇게 동작합니다.
+- `APP/EAR`만 넣으면 intake에서 `ear-without-modules`로 중단하고 "모든 모듈이 들어 있는 상위 디렉터리로 다시 실행"을 안내합니다.
+- 루트(APP·DB·STATIC이 보이는 폴더)를 넣으면 intake가 루트 집합 pom을 만들고(`aggregator-generated`) 세 모듈을 한 번에 빌드한 뒤 back / front / boot로 병합합니다. EAR 모듈은 없애고(`ear-module-dropped`, `contextRoot`는 후속 조치), pom이 참조하지 않는 `STATIC/` 같은 폴더는 그대로 둡니다(`web-content-left`).
+- 다른 이유로 jar 모듈에 `<type>war</type>` 의존성(war overlay)이 있으면 boot WAR로 옮깁니다(`war-overlay-moved`). overlay war는 사내 Nexus(`build.settings_file`)에서 받을 수 있어야 합니다.
+
 ## 10. 지원 요청 시 보낼 것
 회사 PC는 폐쇄망이고 로그를 손으로 옮겨 적어야 하므로 **최소한만** 보냅니다.
 

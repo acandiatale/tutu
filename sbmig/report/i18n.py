@@ -181,6 +181,16 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "How to supply them:": "설정 방법:",
     "Packaged placeholders: {files} (grep `__SET_ME__`)": "패키지된 플레이스홀더: {files} (`__SET_ME__`로 검색)",
     # ---- flag help (FLAG_HELP / FLAG_PREFIX_HELP values of markdown.py)
+    "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)":
+        "프로젝트 루트에 pom.xml이 없고 서로 의존하는 pom들(예: APP/BATCH, APP/WEB, APP/EAR)만 있어 sbmig가 루트 집합 pom을 생성했다 — 한 reactor로 함께 빌드하고 회사 레이아웃으로 병합한다(layout.generate_aggregator)",
+    "the input was an EAR pom whose modules are not in the directory (e.g. APP/EAR alone): run sbmig on the directory that contains every module":
+        "입력이 EAR pom이고 그 EAR이 묶는 모듈이 디렉터리에 없다(예: APP/EAR만 넣음) — 모든 모듈이 들어 있는 상위 디렉터리로 다시 실행할 것",
+    "an EAR module (application-server packaging) was dropped: its modules were merged and the boot module is deployed instead; descriptors are kept under asis-ear/ and the context root is a follow-up":
+        "EAR 모듈(애플리케이션 서버 패키징)을 없앴다: 모듈은 병합되고 boot 모듈이 대신 배포된다. 배포 디스크립터는 asis-ear/에 보관하고 context root는 후속 조치로 남겼다",
+    "a WAR dependency (maven-war-plugin overlay) was moved from the jar modules to the boot WAR — the overlay WAR must be resolvable from your repositories":
+        "WAR 의존성(maven-war-plugin overlay)을 jar 모듈에서 boot WAR로 옮겼다 — overlay WAR는 설정된 저장소(사내 Nexus)에서 받을 수 있어야 한다",
+    "web content that no pom references (e.g. a STATIC/ folder with JSPs / downloads) was left in place — serve it as before or move it into the front module":
+        "어떤 pom도 참조하지 않는 웹 콘텐츠(예: JSP·다운로드 파일이 있는 STATIC/)는 그대로 두었다 — 예전처럼 웹 서버에서 내보내거나 front 모듈로 옮길 것",
     "OpenRewrite could not parse some source files (see the phase notes / rewrite log): recipes that need type "
     "information skipped them; the source handlers and the fix loop covered what the build found":
         "OpenRewrite가 일부 소스 파일을 파싱하지 못함(phase 노트 / rewrite 로그 참고): 타입 정보가 필요한 레시피는 그 "

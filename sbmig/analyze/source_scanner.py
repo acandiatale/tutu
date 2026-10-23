@@ -301,16 +301,20 @@ class WebDir:
     target: str = ""            # <webResources><resource><targetPath> (web-path prefix), "" = the web root itself
 
 
-def clean_pom_dir(raw: Optional[str]) -> Optional[str]:
+def clean_pom_dir(raw: Optional[str], allow_parent: bool = False) -> Optional[str]:
     """A pom directory value as a relative posix path (`${basedir}/` / `${project.basedir}/` stripped); None for
-    empty, other `${…}`, absolute and `..` paths."""
+    empty, other `${…}`, absolute and `..` paths. `allow_parent` (restructure, 2026-10-23): a path that climbs out of
+    the pom's directory (`${basedir}/../../STATIC`) is returned normalized (`../../STATIC`) instead of None — the
+    caller decides whether it still lies inside the project; a bare `..` stays None."""
     if not raw:
         return None
     p = _BASEDIR_RE.sub("", raw.strip().replace("\\", "/")).strip()
     if not p or "${" in p or p.startswith("/") or re.match(r"^[A-Za-z]:", p):
         return None
     p = posixpath.normpath(p)
-    if p in (".", "") or p == ".." or p.startswith("../"):
+    if p in (".", "") or p == "..":
+        return None
+    if p.startswith("../") and not allow_parent:
         return None
     return p
 
@@ -342,9 +346,10 @@ def _ktext(el: Any, name: str) -> Optional[str]:
     return k.text.strip() if k is not None and k.text else None
 
 
-def pom_web_dirs(text: str) -> list[WebDir]:
+def pom_web_dirs(text: str, allow_parent: bool = False) -> list[WebDir]:
     """`maven-war-plugin` `<warSourceDirectory>` and `<webResources><resource><directory>` of one pom (`<build>`
-    plugins, then pluginManagement; profiles ignored), relative to the pom's directory, deduped."""
+    plugins, then pluginManagement; profiles ignored), relative to the pom's directory, deduped. `allow_parent`:
+    `../` paths are kept (see `clean_pom_dir`)."""
     root = _xml_root(text)
     build = _kid(root, "build") if root is not None else None
     out: list[WebDir] = []
@@ -353,33 +358,34 @@ def pom_web_dirs(text: str) -> list[WebDir]:
             if _ktext(p, "artifactId") != "maven-war-plugin":
                 continue
             conf = _kid(p, "configuration")
-            d = clean_pom_dir(_ktext(conf, "warSourceDirectory"))
+            d = clean_pom_dir(_ktext(conf, "warSourceDirectory"), allow_parent)
             if d and all(w.dir != d for w in out):
                 out.append(WebDir(d, "root"))
             for r in _kids(_kid(conf, "webResources"), "resource"):
-                d = clean_pom_dir(_ktext(r, "directory"))
+                d = clean_pom_dir(_ktext(r, "directory"), allow_parent)
                 if d and all(w.dir != d for w in out):
                     tgt = (_ktext(r, "targetPath") or "").replace("\\", "/").strip("/")
                     out.append(WebDir(d, "resources", "" if "${" in tgt or tgt.startswith("..") else tgt))
     return out
 
 
-def pom_build_dirs(text: str) -> list[str]:
+def pom_build_dirs(text: str, allow_parent: bool = False) -> list[str]:
     """Directories `<build>` compiles / packages as classpath content: sourceDirectory, scriptSourceDirectory and
     every `<resources>` directory (Maven default `src/main/resources` when no `<resources>` is declared), relative to
-    the pom's directory. Test directories are not listed."""
+    the pom's directory. Test directories are not listed. `allow_parent`: `../` paths are kept (see `clean_pom_dir`)."""
     root = _xml_root(text)
     build = _kid(root, "build") if root is not None else None
     out: list[str] = []
     for name in ("sourceDirectory", "scriptSourceDirectory"):
-        d = clean_pom_dir(_ktext(build, name))
+        d = clean_pom_dir(_ktext(build, name), allow_parent)
         if d:
             out.append(d)
     res = _kid(build, "resources")
     if res is None:
         out.append("src/main/resources")
     for r in _kids(res, "resource"):
-        d = clean_pom_dir(_ktext(r, "directory")) if _kid(r, "directory") is not None else "src/main/resources"
+        d = clean_pom_dir(_ktext(r, "directory"), allow_parent) if _kid(r, "directory") is not None \
+            else "src/main/resources"
         if d and d not in out:
             out.append(d)
     return out

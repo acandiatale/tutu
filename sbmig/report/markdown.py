@@ -51,6 +51,11 @@ FLAG_HELP = {
                           "Spring Boot) — verify the mappings in the Handover",
     "jakarta-library-bumped": "a third-party library with a known jakarta.* release was raised to it "
                               "(knowledge/libraries/jakarta_libraries.yml, handler jakarta-library-floor)",
+    "aggregator-generated": "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)",
+    "ear-without-modules": "the input was an EAR pom whose modules are not in the directory (e.g. APP/EAR alone): run sbmig on the directory that contains every module",
+    "ear-module-dropped": "an EAR module (application-server packaging) was dropped: its modules were merged and the boot module is deployed instead; descriptors are kept under asis-ear/ and the context root is a follow-up",
+    "war-overlay-moved": "a WAR dependency (maven-war-plugin overlay) was moved from the jar modules to the boot WAR — the overlay WAR must be resolvable from your repositories",
+    "web-content-left": "web content that no pom references (e.g. a STATIC/ folder with JSPs / downloads) was left in place — serve it as before or move it into the front module",
 }
 FLAG_PREFIX_HELP = {
     "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",

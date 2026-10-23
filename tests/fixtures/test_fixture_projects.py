@@ -38,7 +38,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
              "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
-             "boot2-fix-failures"]
+             "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -63,6 +63,8 @@ BUILD_MATRIX = [
     ("boot2-cloud-legacy", ".", "11", ""),
     ("boot2-method-rename", ".", "11", "libs"),
     ("boot2-fix-failures", ".", "11", "libs"),
+    ("ear-sibling-poms", "APP/BATCH", "11", ""),           # no root pom: each module builds on its own
+    ("servlet-war-overlay", ".", "11", "libs"),
     ("boot2-hystrix-command", ".", "11", ""),
     ("legacy-external-config", ".", "8", ""),
     ("java6-legacy", ".", "8", ""),
@@ -418,6 +420,9 @@ def test_post_check_paths_exist_in_fixture(name: str):
                 if base not in ("pom.xml", "*Application.java", "WebXmlRegistrations.java", "application.properties"):
                     assert list((FIXTURES / name).rglob(base)), f"{name}: {kind} {spec['path']}: no as-is {base}"
                 continue
+            if spec["path"] == "pom.xml" and "aggregator-generated" in Expected.model_validate(
+                    _expected(name)).expect.flags:
+                continue                  # 2026-10-23: the root pom is generated at intake (sibling poms, no root)
             if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
                 assert (FIXTURES / name / "pom.xml").exists()
                 continue
@@ -476,9 +481,11 @@ REWRITE_ONLY_OVERRIDES = {"boot2-rewrite-excluded": {"**/vendor/**", "**/reposit
 COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module", "front_module", "boot_as_is"},
                             "artifacts": {"boot_parent", "comp_parent"}}
                      for name in ("legacy-role-parents", "company-boot-single", "company-spring5-web",
-                                  "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs")}
+                                  "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
+                                  "ear-sibling-poms", "servlet-war-overlay")}
 
-COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs"}   # root artifactId (= `{name}`) when it is not `shop`
+COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
+                 "servlet-war-overlay": "board"}   # root artifactId (= `{name}`) when it is not `shop`
 
 
 def test_fixture_config_override_keeps_8_optionals():
@@ -499,7 +506,10 @@ def test_fixture_config_override_keeps_8_optionals():
         assert cfg.artifacts.role_parents and len(cfg.artifacts.optional) == 8, name
         assert cfg.artifacts.boot_parent.key == cfg.artifacts.parent.key          # local stand-in: the same parent
         assert cfg.artifacts.comp_parent.key == cfg.artifacts.parent.key
-        assert etree.parse(str(FIXTURES / name / "pom.xml")).getroot().findtext("m:artifactId", namespaces=NS) == \
+        named = FIXTURES / name / "pom.xml"
+        if not named.exists():                     # ear-sibling-poms: no root pom, `{name}` comes from the EAR
+            named = FIXTURES / name / "APP" / "EAR" / "pom.xml"
+        assert etree.parse(str(named)).getroot().findtext("m:artifactId", namespaces=NS) == \
             COMPANY_NAMES.get(name, "shop")
     base = load_config(REPO / "config" / "artifacts.local-e2e.yml", repo_root=REPO).layout
     assert (base.module_dir, base.boot_module, base.front_module, base.boot_as_is) == ("module", "boot-jar", None, "layout")
@@ -687,6 +697,12 @@ def test_required_libs_exist_in_fixtures_libs():
         assert pom.parent.name == f"v{v}"
         versions[f"{g}:{a}:{v}"] = pom
     assert set(versions) == {f"com.company.legacy:legacy-web-lib:{v}" for v in ("1.0.0", "2.0.0", "3.0.0")}
+    for pom in LIBS.glob("legacy-base-web/v*/pom.xml"):        # 2026-10-23: the WAR that servlet-war-overlay overlays
+        root = etree.parse(str(pom)).getroot()
+        g, a, v = (root.findtext(f"m:{t}", namespaces=NS) for t in ("groupId", "artifactId", "version"))
+        assert pom.parent.name == f"v{v}" and root.findtext("m:packaging", namespaces=NS) == "war"
+        versions[f"{g}:{a}:{v}"] = pom
+    assert "install_lib \"$LIBS/legacy-base-web/v1.0.0\"" in (LIBS / "install.sh").read_text(encoding="utf-8")
     for name in NAMES:
         for gav in _expected(name).get("requires_libs", []):
             assert gav in versions, f"{name}: {gav} has no source under fixtures/libs"

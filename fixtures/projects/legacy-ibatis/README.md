@@ -27,6 +27,8 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 Spring 3.2.18 → 7.0.x drops `org.springframework.orm.ibatis` → `CatalogDao.java` no longer compiles (4 errors, one
 cluster) in the spring phase. The fake LLM answers "no fix" twice (`loop.max_llm_attempts_per_cluster: 2`; the
 `ibatis2` advisory hint is in both prompts) → the cluster is blocked `repeated_failure`; restructure and the final
-`mvn clean package` still run (invariant 1) and fail on the same errors → `success: false`, exit **2**, 2 LLM calls,
+`mvn clean package` still run (invariant 1) and fail on the same errors; the final verify loop releases the cluster
+for two more LLM tries (`loop.verify_extra_llm_attempts`, 2026-10-22), which answer "no fix" again → blocked
+`repeated_failure` in phase verify → `success: false`, exit **2**, 4 LLM calls,
 advisory `ibatis2` (`guide`, `still-present`, `ibatis-sqlmap` kept with its version), the advisory's MyBatis
 follow-up in the Handover.

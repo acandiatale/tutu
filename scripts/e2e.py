@@ -148,7 +148,9 @@ class FixtureResult:
 
 # ---------------------------------------------------------------------------------------------- fixtures
 def discover_fixtures() -> list[str]:
-    found = sorted(p.name for p in FIXTURES_DIR.iterdir() if p.is_dir() and (p / "pom.xml").exists()) \
+    # a fixture = a directory with expected.json (ear-sibling-poms has no root pom.xml: intake generates it)
+    found = sorted(p.name for p in FIXTURES_DIR.iterdir()
+                   if p.is_dir() and ((p / "pom.xml").exists() or (p / "expected.json").exists())) \
         if FIXTURES_DIR.exists() else []
     ordered = [n for n in DEFAULT_ORDER if n in found]
     return ordered + [n for n in found if n not in ordered]
@@ -196,8 +198,12 @@ def build_env(args: argparse.Namespace) -> dict[str, str]:
 
 
 def _gav_path(local_repo: Path, gav: str) -> Path:
+    """The installed artifact: `<a>-<v>.jar`, or the `.war` when only a WAR is there (legacy-base-web, 2026-10-23)."""
     g, a, v = gav.split(":")[:3]
-    return local_repo / Path(*g.split(".")) / a / v / f"{a}-{v}.jar"
+    base = local_repo / Path(*g.split(".")) / a / v
+    jar = base / f"{a}-{v}.jar"
+    war = base / f"{a}-{v}.war"
+    return war if war.exists() and not jar.exists() else jar
 
 
 def preflight(fixture: str, expected: dict, local_repo: Path = DEFAULT_LOCAL_REPO) -> str | None:

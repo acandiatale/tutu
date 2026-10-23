@@ -378,6 +378,9 @@ class Orchestrator:
         if not self._check_build_tool(report):
             self._timed("intake", t)
             return False
+        if not self._intake_layout(report):
+            self._timed("intake", t)
+            return False
         self._capture_effective(report)
         self._timed("intake", t)
         return not self._stop(stop_after, Phase.INTAKE)
@@ -396,6 +399,45 @@ class Orchestrator:
             self.ws.journal({"event": "build_tool", "tool": det.tool, "ok": False, "reason": det.reason})
             return False
         self.ws.journal({"event": "build_tool", "tool": "maven", "ok": True})
+        return True
+
+    def _intake_layout(self, report: RunReport) -> bool:
+        """2026-10-23 (company case: APP/BATCH, APP/WEB, APP/EAR with no root pom): sibling poms that depend on each
+        other get a generated root aggregator pom (`layout.generate_aggregator`), so they build in one reactor and the
+        restructure merges them; a root pom that is an EAR packaging modules missing from the tree (a run on APP/EAR
+        alone) is rejected — an EAR holds no code, and its WAR dependency must never reach the back module."""
+        try:
+            from sbmig.analyze.aggregator import ear_without_modules, plan_aggregator, write_aggregator
+        except ImportError:  # pragma: no cover
+            return True
+        why = ear_without_modules(self.ws)
+        if why:
+            report.flags.append("ear-without-modules")
+            self._abort(report, why)
+            self.ws.journal({"event": "ear_without_modules", "reason": why})
+            return False
+        if not getattr(self.cfg.layout, "generate_aggregator", True):
+            return True
+        plan = plan_aggregator(self.ws)
+        if plan is None:
+            return True
+        try:
+            path = write_aggregator(self.ws, plan)
+            self.ws.commit(f"intake: generated root aggregator pom ({', '.join(plan.modules)})")
+        except Exception as e:  # never lose the run over this: the analysis then sees no root pom as before
+            log.warning("could not write the aggregator pom: %s", e)
+            report.manual_followups.append(f"sibling poms without a root pom: the aggregator pom could not be written ({type(e).__name__}: {e}) — add a root pom.xml listing {', '.join(plan.modules)}")
+            return True
+        if "aggregator-generated" not in report.flags:
+            report.flags.append("aggregator-generated")
+        msg = (f"no aggregator pom: sbmig generated {path} ({plan.artifact_id}, modules {', '.join(plan.modules)}) — "
+               f"{plan.reason}; the as-is build of each module stays as it was")
+        if plan.excluded:
+            msg += f"; not linked to them and left out: {', '.join(plan.excluded)}"
+        report.manual_followups.append(msg)
+        log.info("intake: %s", msg)
+        self.ws.journal({"event": "aggregator_generated", "path": path, "artifact_id": plan.artifact_id,
+                         "name": plan.name, "modules": plan.modules, "excluded": plan.excluded})
         return True
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:

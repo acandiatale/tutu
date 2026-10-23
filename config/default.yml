@@ -35,6 +35,9 @@ layout:
   #                                        the boot module (its sources, resources, Application class)
   #                                wrap  = keep the modules as they are under module/ and add boot-jar (N+1 modules)
   multi_module_policy: merge
+  # no pom.xml at the root, but sibling poms that depend on each other (APP/BATCH, APP/WEB, APP/EAR …): intake writes a
+  # root aggregator pom listing them (dependency order) so they build together and are merged like any multi-module
+  generate_aggregator: true
   # merge: a path present in more than one module → first-wins (first module in <modules> order; the dropped copies
   # are saved under <run dir>/merge-conflicts/ and listed in the Handover) | fail (restructure error, nothing moved)
   merge_collision: first-wins

@@ -1,0 +1,115 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "is_multi_module": false,
+  "libraries": [
+    "javax-servlet"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "requires_libs": [
+    "com.company.legacy:legacy-base-web:1.0.0"
+  ],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "war-overlay-moved",
+      "web-xml-registered"
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "followups_contains": [
+      "regex:(?is).*legacy-base-web.*(nexus|repositor).*"
+    ],
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "board-back",
+            "board-front",
+            "board-boot"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "board-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "board-back/pom.xml",
+          "artifacts": [
+            "com.company.legacy:legacy-base-web"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "board-front/pom.xml",
+          "artifacts": [
+            "com.company.legacy:legacy-base-web"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "board-boot/pom.xml",
+          "artifacts": [
+            "com.company.legacy:legacy-base-web"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "board-boot/pom.xml",
+          "contains": "<type>war</type>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "board-boot/pom.xml",
+          "contains": "<overlays>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "board-back/src/main/java/com/example/board/web/BoardServlet.java",
+          "contains": "jakarta.servlet.http.HttpServlet"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "board-front/src/main/resources/META-INF/resources/WEB-INF/jsp/board/list.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "board-boot/target/*.war"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "board-boot/target/*/WEB-INF/jsp/common/header.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "board-boot/target/*/css/base.css"
+        }
+      }
+    ]
+  }
+}

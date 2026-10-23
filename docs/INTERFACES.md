@@ -777,3 +777,29 @@ Implementation notes (2026-10-23, as built — they refine the contract above):
   `error_cases.csv`, `error_cases.jsonl`, `fix_attempts.jsonl` (`.zip` / `.csv` / `.jsonl` always as attachments).
 * e2e: `expect.error_cases` (`min`, `status`, `status_min`, `records[]`, `run_files`, `kb_errors_min`,
   `kb_attempts_min`; `scripts/e2e.py::evaluate_error_cases`). Fixture `boot2-fix-failures`.
+
+* 2026-10-23 **Sibling poms without a root pom, EAR modules, WAR overlays** (company case: upload root `APP/`, `DB/`,
+  `STATIC/`, no pom.xml; `APP/BATCH` jar, `APP/WEB` war, `APP/EAR` ear packaging WEB as `<type>war</type>`; a run on
+  `APP/EAR` alone copied that WAR dependency into the back module). `sbmig/analyze/aggregator.py`:
+  `plan_aggregator(ws) -> AggregatorPlan | None` (no root pom.xml, ≥ 2 top poms linked by dependencies — artifactId
+  equal, groupId equal / empty / `${…}`, through aggregator subtrees — exactly one linked group; dependency-order
+  `modules`, group / version / `name` from the EAR, else the WAR, else the most common / common prefix;
+  `artifact_id` = name, or `<name>-aggregator` on a collision; unlinked top poms in `excluded`),
+  `aggregator_pom_text(plan)`, `write_aggregator(ws, plan) -> "pom.xml"` (property `sbmig.project-name` =
+  `PROJECT_NAME_PROPERTY`), `ear_without_modules(ws) -> str | None` (root pom packaging ear without `<modules>` whose
+  war / ejb / ear or same-group dependencies are not in the tree). `LayoutConfig.generate_aggregator: bool = True`.
+  Orchestrator `_intake_layout(report)` after the build-tool check, before the effective-pom capture: EAR alone →
+  flag `ear-without-modules` + abort (exit 3), journal `ear_without_modules`; plan → write + commit, flag
+  `aggregator-generated`, follow-up, journal `aggregator_generated` (`path`, `artifact_id`, `name`, `modules`,
+  `excluded`). `sbmig/analyze/source_scanner.py`: `clean_pom_dir` / `pom_web_dirs` / `pom_build_dirs` take
+  `allow_parent: bool = False` (True: `../` paths returned normalized). Restructurer: `{name}` = `layout.project_name`
+  → root property `sbmig.project-name` → root artifactId (the root is renamed to it and the property removed after
+  the merge); EAR modules not merged (files → `<boot>/src/main/resources/asis-ear/<dir>/…`, internal dependencies
+  dropped, the rest → back, `maven-ear-plugin` never in a generated pom, context-root follow-up, flag
+  `ear-module-dropped`, journal `ear_module_dropped`); internal dependencies also by parent groupIds and by
+  artifactId with an empty / `${…}` groupId; `<type>war</type>` dependencies never in a jar module — to the boot WAR
+  with the as-is `<overlays>` block (flag `war-overlay-moved`, repository follow-up) or a follow-up when boot is a jar;
+  `../` module directories inside the project moved to `<back>/<project path>`; JSPs left outside every module →
+  follow-up per top directory + flag `web-content-left`; standalone `main` classes of merged jar modules →
+  follow-up. Report FLAG_HELP (+ ko) for the five flags. Fixtures `ear-sibling-poms`, `servlet-war-overlay`
+  (+ `fixtures/libs/legacy-base-web/v1.0.0`, installed by `fixtures/libs/install.sh`).

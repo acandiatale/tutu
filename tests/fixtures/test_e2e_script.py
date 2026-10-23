@@ -676,3 +676,15 @@ def test_error_cases_expectation_mismatches(e2e, tmp_path):
     assert e2e.evaluate_error_cases({"records": [{"replace_pairs": [{"old": "x", "new": "y"}]}]}, EC_REPORT, None,
                                     None)
     assert e2e.evaluate_error_cases({}, {}, None, None) == []        # missing report fields never crash
+
+
+def test_fixture_without_root_pom_is_discovered_and_war_libs_satisfy_preconditions(e2e, tmp_path):
+    """2026-10-23: ear-sibling-poms has no root pom.xml (intake generates it) — it is still an e2e fixture; a required
+    library that is a WAR (legacy-base-web) counts as installed when its .war is in the local repository."""
+    assert "ear-sibling-poms" in e2e.discover_fixtures()
+    base = tmp_path / "com" / "company" / "legacy" / "legacy-base-web" / "1.0.0"
+    base.mkdir(parents=True)
+    want = {"requires_libs": ["com.company.legacy:legacy-base-web:1.0.0"]}
+    assert "not in" in (e2e.preflight("x", want, tmp_path) or "")
+    (base / "legacy-base-web-1.0.0.war").write_bytes(b"PK")
+    assert e2e.preflight("x", want, tmp_path) is None

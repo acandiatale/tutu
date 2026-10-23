@@ -43,7 +43,14 @@ from typing import Any, Literal
 
 import jinja2
 
-from sbmig.analyze.source_scanner import DEFAULT_WEBAPP, WEB_STATIC_EXTENSIONS, pom_build_dirs, pom_web_dirs
+from sbmig.analyze.source_scanner import (
+    DEFAULT_WEBAPP,
+    WEB_STATIC_EXTENSIONS,
+    clean_pom_dir,
+    pom_build_dirs,
+    pom_web_dirs,
+    strip_comments,
+)
 from sbmig.core.config import Config
 from sbmig.core.interfaces import RestructureResult
 from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectProfile
@@ -62,6 +69,7 @@ BOOT_PLUGIN = (BOOT_GROUP, "spring-boot-maven-plugin")
 WAR_PLUGIN = ("org.apache.maven.plugins", "maven-war-plugin")
 COMPILER_PLUGIN = ("org.apache.maven.plugins", "maven-compiler-plugin")
 JAR_PLUGIN = ("org.apache.maven.plugins", "maven-jar-plugin")
+EAR_PLUGIN = ("org.apache.maven.plugins", "maven-ear-plugin")   # never copied into a generated pom (2026-10-23)
 JAVA_PROPS = ("maven.compiler.source", "maven.compiler.target", "maven.compiler.release", "java.version")
 SERVLET_COMPONENT_SCAN_FQCN = "org.springframework.boot.web.server.servlet.context.ServletComponentScan"  # verified in spring-boot-web-server-4.1.0.jar
 FALLBACK_PACKAGE = "com.company.app"
@@ -97,6 +105,19 @@ RESOURCE_SECTIONS = {"resources": ("resource", "src/main/resources"),
 # round 9c: front module / JSP WAR
 FRONT_ARTIFACT_SUFFIX = "-front"
 WEBINF_STASH = "asis-webinf"            # non-JSP WEB-INF files (web.xml, XML configs) under the boot module resources
+# 2026-10-23 (sibling poms + EAR): the files of a dropped EAR module (application-server descriptors) under the boot
+# module resources, `asis-ear/<module dir basename>/<module-relative path>` (not read by Spring Boot)
+EAR_STASH = "asis-ear"
+# root pom property of the intake aggregator (sbmig.analyze.aggregator): the project name when the aggregator could
+# not take it as its artifactId (a member had that g:a, e.g. the EAR) — `{name}` and, after the merge, the root
+# artifactId
+NAME_PROP = "sbmig.project-name"
+MAIN_METHOD_RE = re.compile(r"\b(?:public\s+static|static\s+public)\s+(?:final\s+)?void\s+main\s*\(\s*"
+                            r"(?:final\s+)?String\b")
+BOOT_APP_RE = re.compile(r"@(?:org\.springframework\.boot\.autoconfigure\.)?SpringBootApplication\b")
+APPLICATION_XML_WEB_RE = re.compile(
+    r"<(?:\w+:)?web-uri>\s*([^<]+?)\s*</(?:\w+:)?web-uri>\s*<(?:\w+:)?context-root>\s*([^<]*?)\s*"
+    r"</(?:\w+:)?context-root>")
 JSP_EXTS = (".jsp", ".jspf", ".jspx")
 WEB_RESOURCE_DIRS = ("static", "public", "templates")   # src/main/resources/<dir>/** → the front module, same path
 JSTL_URI_RE = re.compile(r"""<%@\s*taglib\b[^%]*\buri\s*=\s*["'](?:https?://java\.sun\.com/jsp/jstl/|"""
@@ -172,6 +193,15 @@ class _Ctx:
     jsp_moved: int = 0
     web_xml_class: str | None = None    # FQCN of the generated WebXmlRegistrations (2026-10-23)
     web_xml_summary: str | None = None
+    # 2026-10-23 (sibling poms + EAR, the intake aggregator)
+    root_aid_old: str | None = None     # root artifactId before the `sbmig.project-name` rename
+    rename_root: str | None = None      # the root artifactId after the merge (`sbmig.project-name`)
+    # base-relative directory a merged module referenced outside itself (`${basedir}/../../STATIC`) → comp-relative
+    relocated: dict[str, str] = field(default_factory=dict)
+    war_overlays: list[tuple[str, GAV]] = field(default_factory=list)   # (as-is pom, external <type>war</type> dep)
+    overlay_conf: Any = None            # the as-is maven-war-plugin <configuration><overlays> element
+    overlay_carry: bool = False         # the overlays go into the boot WAR
+    module_mains: set[str] = field(default_factory=set)    # main classes reported per merged jar module
 
     def p(self, *parts: str) -> str:
         j = posixpath.normpath(posixpath.join(self.base, *parts)) if (self.base or parts) else "."
@@ -333,6 +363,8 @@ class Restructurer:
             c.note(msg)
             raise RestructureError(msg)
         coords = self._root_coords(root, c.profile)
+        if policy == "merge" or not mods:
+            coords = self._project_name_coords(c, root, coords)
         if mods:
             if policy == "merge":
                 self._merge(c, root, inside, coords)
@@ -340,6 +372,7 @@ class Restructurer:
                 self._wrap(c, root, mods, coords)
         else:
             self._single(c, root, coords)
+        self._repoint_renamed_root(c)
         # single / merge (generated or kept boot module) / wrap: the boot-jar holds the runtime configuration
         self._write_placeholders(c, f"{c.p(c.boot_rel)}/src/main/resources")
         self._placeholder_followup(c)
@@ -357,9 +390,100 @@ class Restructurer:
         self._record_modules(c)
         self._dedupe_webinf_stash(c)
         self._large_media_note(c)
+        self._web_content_left(c)
         self._all_poms_pass(c, java_fix=False)
         self._drop_managed_versions(c)
         c.commit("restructure: optional artifact versions / cleanup")
+
+    # ------------------------------------------------------------------ project name (2026-10-23)
+    def _project_name_coords(self, c: _Ctx, root: PomEditor, coords: GAV) -> GAV:
+        """The intake aggregator's `sbmig.project-name` (it took `<name>-aggregator` because a member, typically the
+        EAR, had the g:a `<group>:<name>`) becomes the root artifactId once the members are merged / dropped (no reactor
+        collision left), and the generated module artifactIds follow it (`<name>-back`, …). Not applied when a kept
+        boot module has that artifactId."""
+        name = (root.get_property(NAME_PROP) or "").strip()
+        if not name or name == coords.artifact_id:
+            return coords
+        boot_name = c.cfg.layout.module_name("boot", c.name)
+        root_rel = c.p("pom.xml")
+        for pom in self._project_poms(c):
+            if pom == root_rel or posixpath.basename(posixpath.dirname(pom)) != boot_name:
+                continue
+            try:
+                ed = PomEditor(c.ws.abs(pom))
+            except PomEditError:
+                continue
+            if ed.artifact_id() == name and (ed.effective_group_id() or coords.group_id) == coords.group_id:
+                c.note(f"{NAME_PROP}={name} not applied to the root pom: the kept boot module {pom} has that "
+                       "artifactId")
+                return coords
+        c.root_aid_old, c.rename_root = coords.artifact_id, name
+        return GAV(group_id=coords.group_id, artifact_id=name, version=coords.version)
+
+    def _repoint_renamed_root(self, c: _Ctx) -> None:
+        """After the root rename (`_rewrite_root`): every project pom whose `<parent>` still names the old root
+        artifactId (a kept as-is module) points at the new one; relativePath / version untouched."""
+        if not c.rename_root or not c.root_aid_old:
+            return
+        root_rel = c.p("pom.xml")
+        try:
+            group = PomEditor(c.ws.abs(root_rel)).effective_group_id()
+        except PomEditError:
+            return
+        fixed: list[str] = []
+        for pom in self._project_poms(c):
+            if pom == root_rel:
+                continue
+            try:
+                ed = PomEditor(c.ws.abs(pom))
+            except PomEditError:
+                continue
+            parent = ed.get_parent()
+            if parent is None or parent.artifact_id != c.root_aid_old or (parent.group_id or group) != group:
+                continue
+            ed.set_child_text(ed.child(ed.root, "parent"), "artifactId", c.rename_root)
+            c.save(ed)
+            fixed.append(pom)
+        if fixed:
+            c.note(f"<parent> of {', '.join(fixed)} re-pointed to the renamed root pom ({c.root_aid_old} → "
+                   f"{c.rename_root})")
+
+    # ------------------------------------------------------------------ web content no pom references (2026-10-23)
+    def _web_content_left(self, c: _Ctx) -> None:
+        """JSPs of the analysis that did not move and lie in no generated module (e.g. `STATIC/index.jsp` next to the
+        module directories, referenced by no pom) stay where they are: one follow-up per top directory, flag
+        `web-content-left`. Nothing is moved."""
+        src = c.profile.source
+        mods = [c.p(m) for m in (c.comp_rel, c.boot_rel, c.front_rel) if m]
+        left: dict[str, list[str]] = {}
+        for p in src.jsp_paths:
+            if c.new_location(p) != p or not c.ws.exists(p):
+                continue
+            if any(p == m or p.startswith(m + "/") for m in mods):
+                continue
+            rel = p[len(c.base) + 1:] if c.base and p.startswith(c.base + "/") else p
+            if rel.startswith("../"):
+                continue
+            left.setdefault(rel.split("/")[0] if "/" in rel else ".", []).append(p)
+        if not left:
+            return
+        dest = c.front_rel or c.comp_rel
+        for top, jsps in sorted(left.items()):
+            if top == ".":
+                where, others = "the project root", None
+            else:
+                where = f"{c.p(top)}/"
+                base = c.ws.abs(c.p(top))
+                names = set(jsps)
+                others = sum(1 for f in base.rglob("*") if f.is_file() and ".git" not in f.parts
+                             and "target" not in f.relative_to(base).parts and c.ws.rel(f) not in names)
+            n = len(jsps)
+            counts = f"{n} JSP{'s' if n != 1 else ''}" + (
+                f", {others} other file{'s' if others != 1 else ''}" if others is not None else "")
+            c.followup(f"web content not referenced by any pom left in place: {where} ({counts}) — serve it as "
+                       f"before (web server) or move it into {dest}")
+        if "web-content-left" not in c.result.flags:
+            c.result.flags.append("web-content-left")
 
     def _dedupe_webinf_stash(self, c: _Ctx) -> None:
         """An XML bean config that reached the boot module twice — `legacy-config/` (copied + `@ImportResource`) and
@@ -402,8 +526,12 @@ class Restructurer:
         for d in self._source_roots(c, root):
             if c.ws.exists(c.p(d)):
                 c.move(c.p(d), f"{comp}/{d}")
+        for raw in self._climbing_dirs(root):
+            c.note(f"directory {raw} of the root pom resolves outside the project root; not moved (nothing outside "
+                   "the project is read or changed)")
         c.commit("restructure: move as-is sources to comp-jar")
         self._populate_front(c, comp, boot, coords, [root])
+        self._plan_overlays(c, [root], set())
         self._write_comp_pom(c, [root], coords, comp, asis_packaging)
         moved_main, moved_tests = self._populate_boot(c, [comp], boot)
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
@@ -598,7 +726,15 @@ class Restructurer:
         `<modules>` order wins; identical copies dropped, differing ones saved under `<run dir>/merge-conflicts/`)
         or fail (RestructureError). Line-list registries (META-INF/services/*, spring.factories,
         META-INF/spring/*.imports|*.factories) are never collisions: the kept file is the union of every copy's
-        lines (all originals saved). Every check and decision happens before the first move."""
+        lines (all originals saved). Every check and decision happens before the first move.
+
+        2026-10-23 (sibling poms + EAR, the intake aggregator): an `ear` module merges no sources — its files (the
+        application-server descriptors) go to `<boot>/src/main/resources/asis-ear/<dir>/`, its dependencies on
+        modules of this project are dropped, the others (its lib/ classpath) go to the comp module, `<webModule>`
+        context roots become follow-ups (flag `ear-module-dropped`). A dependency on a module of this project is
+        internal whatever its groupId spelling (module / parent groupIds, `${…}` or empty). Directories a module
+        references outside itself but inside the project (`${basedir}/../../STATIC`) are folded in once and used from
+        there (`_plan_outside_dirs`). Standalone `main` classes of merged jar modules get a follow-up per module."""
         L = c.cfg.layout
         comp = c.p(c.comp_rel)
         boot = c.p(c.boot_rel)
@@ -657,14 +793,20 @@ class Restructurer:
         kept_ed = kept[2] if kept is not None else None
         eds = [ed for _, _, ed in merged_jar]
         all_merged = [e for e in order if e is not kept]
+        ears = [e for e in merged_jar if e[2].packaging() == "ear"]          # no sources merged (2026-10-23)
+        merged_src = [e for e in merged_jar if e[2].packaging() != "ear"]
         module_dirs = {d.split("/")[0] for _, d, _ in [*flat, *pom_mods]}
         sources_of: list[tuple[str, str, list[str]]] = []    # (module dir, label, top-level source dirs)
         root_tops = [t for t in self._source_roots(c, root) if t == "src" or t not in module_dirs]
         if any(c.ws.exists(c.p(t)) for t in root_tops):
             sources_of.append((".", "<root>", root_tops))
         inherited = self._source_roots(c, root)            # root <build> resource dirs apply to every module
-        for label, mdir, ed in merged_jar:
+        for label, mdir, ed in merged_src:
             sources_of.append((mdir, label, list(dict.fromkeys([*self._source_roots(c, ed), *inherited]))))
+        self._plan_outside_dirs(c, root, merged_src, sources_of, [*flat, *pom_mods])
+        mains = [(label, found) for label, mdir, ed in merged_src if ed.packaging() == "jar"
+                 for found in [self._module_mains(c, mdir, ed)] if found]
+        c.module_mains.update(f for _, found in mains for f in found)
 
         # 2. plan the moves and decide every collision (nothing is moved yet)
         plan: list[tuple[str, str]] = []
@@ -760,26 +902,36 @@ class Restructurer:
         for mdir, _label, tops in sources_of:
             for top in tops:
                 c.moves.append((c.p(mdir, top), f"{comp}/{top}"))
-        internal_eds = [*(ed for _, _, ed in all_merged), *([kept_ed] if kept_ed is not None else [])]
-        groups = {coords.group_id, "${project.groupId}"} | {ed.group_id() for ed in internal_eds if ed.group_id()}
-        merged_internal = {f"{g}:{a}" for g in groups for a in {ed.artifact_id() for _, _, ed in all_merged} if a}
-        internal = merged_internal | {f"{g}:{kept_ed.artifact_id()}" for g in groups
-                                      if kept_ed is not None and kept_ed.artifact_id()}
+        for tgt, rel in c.relocated.items():              # folded-in directories outside every module: now empty
+            if tgt == rel and c.ws.abs(c.p(tgt)).is_dir():
+                self._prune_empty_dirs(c, c.p(tgt))
+                if not c.ws.abs(c.p(tgt)).exists():
+                    self._prune_empty_parents(c, c.p(tgt))
+        merged_internal, internal = self._internal_keys(c, root, coords, [ed for _, _, ed in all_merged], kept_ed)
+        ear_roots: list[tuple[str, str, str, bool]] = []    # (EAR label, web module, context root, explicit)
+        for label, mdir, ed in ears:
+            ear_roots += self._drop_ear(c, label, mdir, ed, boot, internal,
+                                        [d for _, d, _ in order if d != mdir])
         packaging = "war" if any(ed.packaging() == "war" for ed in [*eds, *([kept_ed] if kept_ed else [])]) \
             else root.packaging()
         self._populate_front(c, comp, boot, coords, [root, *(ed for _, _, ed in all_merged)])
-        asis_deps = root.dependencies() + [d for _, _, ed in all_merged for d in ed.dependencies()]
+        self._plan_overlays(c, [root, *(ed for _, _, ed in all_merged if ed.packaging() != "ear"),
+                                *([kept_ed] if kept_ed is not None else [])], internal)
+        asis_deps = [d for d in root.dependencies() + [d for _, _, ed in all_merged for d in ed.dependencies()]
+                     if d.key not in internal]
         self._write_comp_pom(c, [root, *(ed for _, _, ed in all_merged)], coords, comp, packaging, exclude=internal,
                              copy_props_from=eds)
-        for label, mdir_, _ed in all_merged:
+        for label, mdir_, ed in all_merged:
             mdir = c.p(mdir_)
             if mdir != comp and c.ws.exists(mdir):
                 if any(x == mdir or x.startswith(mdir + "/") for x in (comp, boot)):
                     c.ws.delete(f"{mdir}/pom.xml")          # the as-is module dir is the company module dir
                 else:
                     c.ws.delete(mdir)
-            c.note(f"merged module {label} into {c.comp_rel} (module directory removed)")
-        c.result.merged_modules = [label for label, _, _ in all_merged]
+                    self._prune_empty_parents(c, mdir)
+            if ed.packaging() != "ear":
+                c.note(f"merged module {label} into {c.comp_rel} (module directory removed)")
+        c.result.merged_modules = [label for label, _, ed in all_merged if ed.packaging() != "ear"]
         c.commit("restructure: merge as-is modules into comp-jar")
 
         # 5. boot-jar: the kept as-is module, or a generated one
@@ -794,7 +946,7 @@ class Restructurer:
                 c.note(f"kept boot module {kept[0]} inherited the merged pom module {parent.artifact_id}; parent "
                        f"re-pointed to the root pom {coords.artifact_id}")
             inherits_root = parent is not None and (
-                parent.artifact_id == coords.artifact_id
+                parent.artifact_id in (coords.artifact_id, c.root_aid_old)
                 or any(parent.artifact_id == ed.artifact_id() for _, _, ed in pom_mods))
             self._keep_boot(c, kept_ed, kept[0], kept_dir, boot, comp, coords, lib, merged_internal,
                             root=root if inherits_root else None)
@@ -812,7 +964,347 @@ class Restructurer:
         self._rewrite_root(c, root, self._layout_modules(c), keep_deps=False, keep_build_plugins=False,
                            aggregator=role)
         self._packaging_followups(c, packaging)
+        self._ear_followups(c, ear_roots)
+        kind = "WAR" if c.boot_war else "jar"
+        for label, found in mains:
+            c.followup(f"module {label} had main class{'es' if len(found) > 1 else ''} {', '.join(found)} (a standalone "
+                       f"batch?): merged into {c.comp_rel} — run it from the boot {kind}'s classpath or keep it as its "
+                       "own module")
         c.commit("restructure: comp-jar / boot-jar layout (merged)")
+
+    @staticmethod
+    def _internal_keys(c: _Ctx, root: PomEditor, coords: GAV, merged: list[PomEditor],
+                       kept: PomEditor | None) -> tuple[set[str], set[str]]:
+        """(merged_internal, internal): the g:a keys that name a merged module (merged_internal) or the kept boot
+        module too (internal). groupIds: the root's, `${project.groupId}`, every module's own and its parent's (a
+        module without `<groupId>` inherits it). On top, every dependency of the root / module poms (managed or not)
+        whose artifactId is a module artifactId and whose groupId is empty or a `${…}` expression (2026-10-23: the
+        company EAR named its WAR module with a property groupId)."""
+        eds = [*merged, *([kept] if kept is not None else [])]
+        groups = {coords.group_id, "${project.groupId}"} | {ed.group_id() for ed in eds if ed.group_id()}
+        for ed in eds:
+            parent = ed.get_parent()
+            if parent is not None and parent.group_id:
+                groups.add(parent.group_id)
+        merged_aids = {a for a in (ed.artifact_id() for ed in merged) if a}
+        kept_aid = kept.artifact_id() if kept is not None else None
+        merged_internal = {f"{g}:{a}" for g in groups for a in merged_aids}
+        internal = merged_internal | ({f"{g}:{kept_aid}" for g in groups} if kept_aid else set())
+        for ed in [root, *eds]:
+            for managed in (False, True):
+                for el in ed.dependency_elements(managed):
+                    g = ed.gav_of(el)
+                    if g.group_id and "${" not in g.group_id:
+                        continue
+                    if g.artifact_id in merged_aids:
+                        merged_internal.add(g.key)
+                        internal.add(g.key)
+                    elif kept_aid and g.artifact_id == kept_aid:
+                        internal.add(g.key)
+        return merged_internal, internal
+
+    # ------------------------------------------------------------------ EAR modules (2026-10-23)
+    def _drop_ear(self, c: _Ctx, label: str, mdir: str, ed: PomEditor, boot: str, internal: set[str],
+                  other_dirs: list[str]) -> list[tuple[str, str, str, bool]]:
+        """An `ear` module is not merged: Spring Boot builds no EAR. Its files other than pom.xml / target/ (the
+        application-server descriptors under src/main/application) → `<boot>/src/main/resources/asis-ear/<dir>/…`;
+        its dependencies on modules of this project are dropped (internal), the others go to the comp module with the
+        merged dependencies (`_write_comp_pom`; the EAR's lib/ was the shared runtime classpath), external WAR
+        dependencies (web modules from elsewhere) are not carried. Returns the web modules' context roots
+        (label, web module, context root, explicit) for `_ear_followups`."""
+        roots = self._ear_context_roots(c, label, mdir, ed)
+        name = posixpath.basename(mdir) or label.replace("/", "_")
+        stash = f"{boot}/src/main/resources/{EAR_STASH}/{name}"
+        if c.ws.exists(stash):
+            stash = f"{boot}/src/main/resources/{EAR_STASH}/{mdir.replace('/', '_')}"
+        base = c.ws.abs(c.p(mdir))
+        nested = [d for d in other_dirs if d.startswith(mdir + "/") or mdir in (".", "")]
+        moved: list[str] = []
+        if base.is_dir():
+            for f in sorted(x for x in base.rglob("*") if x.is_file()):
+                rel = f.relative_to(base).as_posix()
+                if rel == "pom.xml" or rel.split("/")[0] == "target":
+                    continue
+                if any(c.p(mdir, rel).startswith(c.p(d) + "/") for d in nested):
+                    continue
+                c.move(c.p(mdir, rel), f"{stash}/{rel}")
+                moved.append(rel)
+        deps = ed.dependencies()
+        dropped = [g.key for g in deps if g.key in internal]
+        drop = set(c.cfg.artifacts.remove_when_present) | {s.key for s in c.cfg.artifacts.mandatory}
+        web_ext = [g for g in deps if g.key not in internal and (g.type or "") == "war"]
+        libs = [g.key for g in deps if g.key not in internal and (g.type or "") != "war" and g.key not in drop]
+        gav = f"{ed.effective_group_id() or '?'}:{ed.artifact_id() or '?'}"
+        c.note(f"EAR module {label} ({gav}) dropped: Spring Boot builds no EAR — "
+               + (f"{len(moved)} file(s) (application-server descriptors) kept for reference under {stash}/ (not read "
+                  "by Spring Boot); " if moved else "no files besides its pom; ")
+               + f"dependencies on modules of this project dropped ({', '.join(dropped) or 'none'}); "
+               + (f"{len(libs)} library dependenc{'y' if len(libs) == 1 else 'ies'} (the EAR's shared lib/ classpath) "
+                  f"moved to {c.comp_rel} ({', '.join(libs[:5])}{' …' if len(libs) > 5 else ''})" if libs
+                  else "no library dependencies")
+               + ("; maven-ear-plugin not carried" if ed.find_plugins(*EAR_PLUGIN, where="all") else "")
+               + "; module directory removed")
+        for g in web_ext:
+            c.followup(f"EAR module {label} also packaged the web module {g.coordinates}, which is not part of this "
+                       "project: not carried — deploy it separately (it is no dependency of any generated module)")
+        try:
+            c.ws.journal({"event": "ear_module_dropped", "module": label, "artifact": gav, "stash": stash,
+                          "files": len(moved), "internal_dropped": dropped, "libraries": libs,
+                          "context_roots": [{"web_module": w, "context_root": r} for _, w, r, _ in roots]})
+        except (OSError, AttributeError) as e:  # pragma: no cover - journal unavailable
+            log.debug("journal ear_module_dropped skipped: %s", e)
+        if "ear-module-dropped" not in c.result.flags:
+            c.result.flags.append("ear-module-dropped")
+        return roots
+
+    def _ear_context_roots(self, c: _Ctx, label: str, mdir: str,
+                           ed: PomEditor) -> list[tuple[str, str, str, bool]]:
+        """(EAR label, web module, context root, explicit) of an EAR: maven-ear-plugin `<webModule><contextRoot>`
+        (build plugins, then pluginManagement), then `<web><web-uri>/<context-root>` of
+        src/main/application/META-INF/application.xml; a WAR dependency with neither gets the maven-ear-plugin
+        default `/<artifactId>` (explicit=False)."""
+        out: list[tuple[str, str, str, bool]] = []
+        seen: set[str] = set()
+        for p in ed.find_plugins(*EAR_PLUGIN, where="all"):
+            for wm in ed.children(ed.child(ed.child(p, "configuration"), "modules"), "webModule"):
+                aid = ed.text_of(wm, "artifactId") or "?"
+                root_ = ed.text_of(wm, "contextRoot")
+                if root_ is not None and aid not in seen:
+                    seen.add(aid)
+                    out.append((label, aid, root_ or "/", True))
+        app = c.ws.abs(c.p(mdir, "src/main/application/META-INF/application.xml"))
+        if app.is_file():
+            for uri, root_ in APPLICATION_XML_WEB_RE.findall(app.read_text(encoding="utf-8", errors="replace")):
+                aid = posixpath.splitext(posixpath.basename(uri.strip()))[0]
+                matches = [g.artifact_id for g in ed.dependencies() if (g.type or "") == "war"
+                           and aid.startswith(g.artifact_id)]
+                aid = matches[0] if matches else aid
+                if aid not in seen:
+                    seen.add(aid)
+                    out.append((label, aid, root_ or "/", True))
+        for g in ed.dependencies():
+            if (g.type or "") == "war" and g.artifact_id not in seen:
+                seen.add(g.artifact_id)
+                out.append((label, g.artifact_id, f"/{g.artifact_id}", False))
+        return out
+
+    def _ear_followups(self, c: _Ctx, roots: list[tuple[str, str, str, bool]]) -> None:
+        for label, web, root_, explicit in roots:
+            cr = "/" + root_.strip().strip("/") if root_.strip().strip("/") else "/"
+            how = "" if explicit else " (the maven-ear-plugin default)"
+            if c.boot_war:
+                war = cr.strip("/").replace("/", "#") or "ROOT"
+                c.followup(f"EAR {label} deployed {web} at context root {cr}{how}: deploy {c.boot_rel} as {war}.war "
+                           f"on the external Tomcat, or set server.servlet.context-path={cr} (embedded Tomcat)")
+            else:
+                c.followup(f"EAR {label} deployed {web} at context root {cr}{how}: set "
+                           f"server.servlet.context-path={cr} for {c.boot_rel} (embedded Tomcat) so the URLs stay the "
+                           "same")
+
+    def _strip_ear_plugin(self, c: _Ctx, ed: PomEditor) -> None:
+        """maven-ear-plugin never reaches a generated pom (there is no EAR module any more)."""
+        if ed.find_plugins(*EAR_PLUGIN, where="all") and ed.remove_plugin(*EAR_PLUGIN):
+            c.note(f"maven-ear-plugin dropped from {c.ws.rel(ed.path)} (the EAR module was not carried)")
+
+    # ------------------------------------------------------------------ WAR overlays (2026-10-23)
+    def _plan_overlays(self, c: _Ctx, sources: list[PomEditor], exclude: set[str]) -> None:
+        """External `<type>war</type>` dependencies left after the internal exclusion are maven-war-plugin overlays:
+        never a dependency of a jar module (`_write_comp_pom` skips them). They carry web content, so with a boot
+        WAR — or `layout.jsp_boot_packaging: war` — they make the boot module a WAR (like JSPs) and go there with the
+        as-is `<overlays>` configuration (`_apply_overlays`, flag `war-overlay-moved`); otherwise follow-up. Always a
+        follow-up that the overlay WAR must be resolvable from the configured repositories."""
+        drop = set(c.cfg.artifacts.remove_when_present) | set(exclude)
+        seen: set[str] = set()
+        managed = {s_.gav_of(el).key: s_.resolve(s_.gav_of(el).version) for s_ in reversed(sources)
+                   for el in s_.dependency_elements(True) if s_.gav_of(el).version}
+        for src in sources:
+            for el in src.dependency_elements(False):
+                g = src.gav_of(el)
+                if (g.type or "") != "war" or g.key in drop or g.key in seen:
+                    continue
+                seen.add(g.key)
+                v = src.resolve(g.version) if g.version else managed.get(g.key)
+                if v and "${" not in v:
+                    g = GAV(group_id=g.group_id, artifact_id=g.artifact_id, version=v, type=g.type,
+                            classifier=g.classifier, scope=g.scope)
+                c.war_overlays.append((c.ws.rel(src.path), g))
+            if c.overlay_conf is None:
+                for p in src.find_plugins(*WAR_PLUGIN, where="all"):
+                    ov = src.child(src.child(p, "configuration"), "overlays")
+                    if ov is not None:
+                        c.overlay_conf = ov
+                        break
+        if not c.war_overlays:
+            return
+        c.overlay_carry = c.boot_war or c.cfg.layout.jsp_boot_packaging == "war"
+        c.boot_war = c.boot_war or c.overlay_carry
+        for pom, g in c.war_overlays:
+            if c.overlay_carry:
+                c.note(f"WAR overlay {g.coordinates} ({pom}) moved to {c.boot_rel} (a WAR for external Tomcat: the "
+                       "overlay carries web content)"
+                       + ("; maven-war-plugin <overlays> copied" if c.overlay_conf is not None else ""))
+            else:
+                c.followup(f"WAR overlay {g.coordinates} ({pom}) not carried: {c.boot_rel} is an executable jar "
+                           f"(layout.jsp_boot_packaging: jar) — copy the overlay's web content into "
+                           f"{c.front_rel or c.comp_rel} or set layout.jsp_boot_packaging: war")
+            c.followup(f"WAR overlay {g.coordinates} must be resolvable from the configured repositories: install it "
+                       "into the company Nexus (build.settings_file mirror) — it is not on Maven Central")
+        if c.overlay_carry and "war-overlay-moved" not in c.result.flags:
+            c.result.flags.append("war-overlay-moved")
+
+    def _apply_overlays(self, c: _Ctx, ed: PomEditor) -> None:
+        """The boot WAR's pom: the overlay dependencies (type war, scope as declared) and the as-is
+        maven-war-plugin `<overlays>` block in its maven-war-plugin (no version: the parent / Maven default manages
+        it; `_strip_war_web_config` keeps `<overlays>`)."""
+        if not c.overlay_carry:
+            return
+        for _pom, g in c.war_overlays:
+            if not ed.has_dependency(g.group_id, g.artifact_id):
+                ed.add_dependency(GAV(group_id=g.group_id, artifact_id=g.artifact_id, version=g.version, type="war",
+                                      classifier=g.classifier, scope=g.scope))
+        if c.overlay_conf is None:
+            return
+        plugins = ed.find_plugins(*WAR_PLUGIN, where="build")
+        if not plugins:
+            ed.add_plugin(PluginInfo(group_id=WAR_PLUGIN[0], artifact_id=WAR_PLUGIN[1]))
+            plugins = ed.find_plugins(*WAR_PLUGIN, where="build")
+        p = plugins[0]
+        conf = ed.child(p, "configuration")
+        if conf is None:
+            conf = ed._build_value(p, "configuration", None)
+            p.remove(conf)
+            ed._append(p, conf)
+        if ed.child(conf, "overlays") is None:
+            ed.copy_into(conf, c.overlay_conf)
+            ed.reindent(p)
+
+    # ------------------------------------------------------------------ directories outside a module (2026-10-23)
+    @staticmethod
+    def _climbing_dirs(ed: PomEditor) -> list[str]:
+        """Directories of one pom that climb out of its directory (`../…`, normalized): maven-war-plugin
+        warSourceDirectory / webResources, source / script / test source directories, resources / testResources."""
+        text = ed.to_string()
+        out = [w.dir for w in pom_web_dirs(text, allow_parent=True)] + pom_build_dirs(text, allow_parent=True)
+        build = ed.find("build")
+        if build is not None:
+            d = clean_pom_dir(ed.text_of(build, "testSourceDirectory"), allow_parent=True)
+            if d:
+                out.append(d)
+            for r in ed.children(ed.child(build, "testResources"), "testResource"):
+                d = clean_pom_dir(ed.text_of(r, "directory"), allow_parent=True)
+                if d:
+                    out.append(d)
+        return [d for d in dict.fromkeys(out) if d.startswith("../")]
+
+    @staticmethod
+    def _ed_dir(c: _Ctx, ed: PomEditor) -> str:
+        """The as-is pom's directory relative to the project root (c.base)."""
+        d = posixpath.dirname(c.ws.rel(ed.path)) or "."
+        if c.base:
+            d = posixpath.relpath(d, c.base)
+        return d
+
+    def _comp_dir(self, c: _Ctx, ed: PomEditor, d: str | None) -> str | None:
+        """A module-relative pom directory → comp-module-relative: unchanged for paths inside the module (the files
+        moved with the same relative path), mapped through `c.relocated` for `../` paths, None when not relocated."""
+        if not d or not d.startswith("../"):
+            return d
+        tgt = posixpath.normpath(posixpath.join(self._ed_dir(c, ed), d))
+        for t in sorted(c.relocated, key=len, reverse=True):
+            if tgt == t or tgt.startswith(t + "/"):
+                return posixpath.normpath(c.relocated[t] + tgt[len(t):])
+        return None
+
+    def _plan_outside_dirs(self, c: _Ctx, root: PomEditor, merged_src: list[tuple[str, str, PomEditor]],
+                           sources_of: list[tuple[str, str, list[str]]],
+                           modules: list[tuple[str, str, PomEditor]]) -> None:
+        """A merged module's directory that resolves outside the module but inside the project (`APP/WEB` →
+        `${basedir}/../../STATIC` = `STATIC`) is folded into the comp module once, at its project-relative path
+        (`<comp>/STATIC/…`), and used from there (`c.relocated`: web root for `_populate_front`, rewritten
+        `<resources>` / source directories in the comp pom). Inside another merged module it is mapped to that
+        module's relative path (moving with that module). A path leaving the project root, the root itself, or a
+        directory holding / inside a kept / EAR / pom module is skipped (note)."""
+        comp = c.comp_rel
+        owners = {d: label for label, d, _ in merged_src}
+        others = [d for _, d, _ in modules if d not in owners]
+        all_dirs = [d for _, d, _ in modules]
+        root_entry = next((e for e in sources_of if e[1] == "<root>"), None)
+        found: list[tuple[str, str, str]] = []
+        for label, mdir, ed in [("<root>", ".", root), *merged_src]:
+            for raw in self._climbing_dirs(ed):
+                tgt = posixpath.normpath(posixpath.join(mdir, raw))
+                where = "the root pom" if label == "<root>" else f"module {label}"
+                if tgt in (".", ""):
+                    c.note(f"directory {raw} of {where} is the project root itself; not moved")
+                    continue
+                if self._outside(c, tgt):
+                    c.note(f"directory {raw} of {where} resolves outside the project root ({c.p(tgt)}); not moved "
+                           "(nothing outside the project is read or changed)")
+                    continue
+                found.append((label, raw, tgt))
+        for label, raw, tgt in sorted(found, key=lambda x: (len(x[2]), x[2])):
+            if any(tgt == t or tgt.startswith(t + "/") for t in c.relocated):
+                continue
+            if any(d.startswith(tgt + "/") for d in all_dirs) or any(tgt == d or tgt.startswith(d + "/")
+                                                                    for d in others):
+                c.note(f"directory {raw} of module {label} ({c.p(tgt)}) holds or belongs to another module that is "
+                       "not merged; not moved")
+                continue
+            owner = next((d for d in sorted(owners, key=len, reverse=True)
+                          if d not in (".", "") and (tgt == d or tgt.startswith(d + "/"))), None)
+            if owner is not None:
+                rel = posixpath.relpath(tgt, owner)
+                if rel == ".":
+                    continue
+                entry = next(e for e in sources_of if e[0] == owner)
+                if rel.split("/")[0] not in entry[2]:
+                    entry[2].append(rel.split("/")[0])
+                c.relocated[tgt] = rel
+                c.note(f"directory {raw} of module {label} lies in module {owners[owner]} ({c.p(tgt)}): used as "
+                       f"{comp}/{rel}")
+                continue
+            if root_entry is not None and tgt.split("/")[0] in root_entry[2]:
+                c.relocated[tgt] = tgt
+                c.note(f"directory {raw} of module {label} ({c.p(tgt)}) moves with the root sources: used as "
+                       f"{comp}/{tgt}")
+                continue
+            sources_of.append((".", label, [tgt]))
+            c.relocated[tgt] = tgt
+            c.note(f"directory {raw} of module {label} lies outside the module but inside the project ({c.p(tgt)}): "
+                   f"moved to {comp}/{tgt} and used from there")
+
+    def _module_mains(self, c: _Ctx, mdir: str, ed: PomEditor) -> list[str]:
+        """FQCNs with `public static void main(String…)` in a non-Boot class below the module's main source dirs."""
+        roots = ["src/main/java"]
+        build = ed.find("build")
+        sd = clean_pom_dir(ed.text_of(build, "sourceDirectory")) if build is not None else None
+        if sd:
+            roots.insert(0, sd)
+        out: list[str] = []
+        for r in dict.fromkeys(roots):
+            base = c.ws.abs(c.p(mdir, r))
+            if not base.is_dir():
+                continue
+            for f in sorted(base.rglob("*.java")):
+                text = strip_comments(f.read_text(encoding="utf-8", errors="replace"))
+                if not MAIN_METHOD_RE.search(text) or BOOT_APP_RE.search(text):
+                    continue
+                m = PACKAGE_RE.search(text)
+                fq = f"{m.group(1)}.{f.stem}" if m else f.stem
+                if fq not in out:
+                    out.append(fq)
+        return out
+
+    def _prune_empty_parents(self, c: _Ctx, rel: str) -> None:
+        """After a module directory was removed: drop its now-empty parent directories inside the project."""
+        cur = posixpath.dirname(rel)
+        stop = c.base or ""
+        while cur and cur not in (".", stop) and (not stop or cur.startswith(stop + "/")):
+            d = c.ws.abs(cur)
+            if not d.is_dir() or any(d.iterdir()):
+                break
+            d.rmdir()
+            cur = posixpath.dirname(cur)
 
     @staticmethod
     def _outside(c: _Ctx, mdir: str) -> bool:
@@ -864,7 +1356,7 @@ class Restructurer:
                         props.append(prop)
             if ed.packaging() == "pom":
                 for k, v in ed.properties().items():
-                    if not tgt.has_property(k):
+                    if not tgt.has_property(k) and k != NAME_PROP:
                         tgt.set_property(k, v)
                         props.append(k)
             if folded or props:
@@ -994,6 +1486,7 @@ class Restructurer:
             ed.set_packaging("war")
             for g in self._war_deps(c, {d.key for d in ed.dependencies()}):
                 ed.add_dependency(g)
+            self._apply_overlays(c, ed)
         elif ed.packaging() == "war":
             ed.set_packaging("jar")
             for p in ed.find_plugins(*WAR_PLUGIN, where="build"):
@@ -1001,10 +1494,11 @@ class Restructurer:
         parent = ed.get_parent()
         if role:
             self._role_module(c, ed, root, exclude=merged_internal)
-        elif parent is None or parent.artifact_id != coords.artifact_id:
+        elif parent is None or parent.artifact_id not in (coords.artifact_id, c.root_aid_old):
             c.note(f"kept boot module {declared} does not inherit the root pom "
                    f"({parent.key if parent else 'no parent'}); parent left unchanged")
         self._fix_java(c, ed, top=role)
+        self._strip_ear_plugin(c, ed)
         ed.remove_if_empty(ed.find("properties"))
         asis = posixpath.normpath(posixpath.join(c.base or ".", asis_dir))
         self._relocate_module_system_deps(c, ed, "" if asis == "." else asis, boot)
@@ -1054,6 +1548,8 @@ class Restructurer:
                 ident = f"{g.key}:{g.type or 'jar'}:{g.classifier or ''}"
                 if g.key in drop or ident in seen_deps:
                     continue
+                if (g.type or "") == "war":            # a WAR overlay / web module is never a jar module dependency
+                    continue
                 if asis_packaging == "war" and g.key == f"{BOOT_GROUP}:spring-boot-starter-tomcat" \
                         and g.scope == "provided":
                     c.note(f"provided spring-boot-starter-tomcat dropped from {comp} (declared provided in the boot "
@@ -1063,17 +1559,18 @@ class Restructurer:
                 new_el = ed.copy_into(ed.ensure_path("dependencies"), d)
                 self._relocate_system_dep(c, ed, new_el, asis_dir, comp, src.properties())
             build = src.find("build")
-            if build is None:
+            if build is None or src.packaging() == "ear":      # an EAR's build (maven-ear-plugin …) is not carried
                 continue
             for name in BUILD_TO_COMP:
                 if name in RESOURCE_SECTIONS and len(sources) > 1:
                     continue                           # merged modules: union below
                 el = src.child(build, name)
                 if el is not None and ed.find(f"build/{name}") is None:
-                    ed.copy_into(ed.ensure_path("build"), el, ordered=True)
+                    self._remap_dirs(c, ed, ed.copy_into(ed.ensure_path("build"), el, ordered=True), src)
             for p in src.plugin_elements("build"):
                 key = src.plugin_key(p)
-                if key in (":".join(BOOT_PLUGIN), ":".join(WAR_PLUGIN)) or key in seen_plugins or key in drop:
+                if key in (":".join(BOOT_PLUGIN), ":".join(WAR_PLUGIN), ":".join(EAR_PLUGIN)) or key in seen_plugins \
+                        or key in drop:
                     continue
                 seen_plugins.add(key)
                 ed.copy_into(ed.ensure_path("build/plugins"), p)
@@ -1084,11 +1581,36 @@ class Restructurer:
             self._role_module(c, ed, sources[0], exclude=set(exclude or ()), all_props=True)
         for src in copy_props_from or ():
             for k, v in src.properties().items():
-                if k not in root_props and not ed.has_property(k):
+                if k not in root_props and not ed.has_property(k) and k != NAME_PROP:
                     ed.set_property(k, v)
         self._fix_java(c, ed, top=role)
         self._strip_war_web_config(c, ed)
+        self._strip_ear_plugin(c, ed)
         ed.save()
+
+    def _remap_dirs(self, c: _Ctx, ed: PomEditor, el: Any, src: PomEditor) -> None:
+        """A `<build>` directory element copied from `src` into the comp pom (source directories, `<resources>` /
+        `<testResources>` or one `<resource>`): `../` directories that were folded into the comp module
+        (`c.relocated`) point at the moved location."""
+        name = PomEditor.local_name(el)
+        if name in RESOURCE_SECTIONS:
+            holders = [ed.child(r, "directory") for r in ed.children(el, RESOURCE_SECTIONS[name][0])]
+        elif name in ("resource", "testResource"):
+            holders = [ed.child(el, "directory")]
+        else:
+            holders = [el]
+        for h in holders:
+            if h is None or not (h.text or "").strip():
+                continue
+            d = clean_pom_dir(h.text, allow_parent=True)
+            if not d or not d.startswith("../"):
+                continue
+            new = self._comp_dir(c, src, d)
+            if new:
+                old = h.text.strip()
+                h.text = new
+                c.note(f"{c.ws.rel(ed.path)}: <{PomEditor.local_name(h)}> {old} → {new} (the directory moved into "
+                       f"{c.comp_rel})")
 
     def _union_resources(self, c: _Ctx, ed: PomEditor, sources: list[PomEditor]) -> None:
         """Merged modules (sources[0] = the root pom, its `<build>` inherited by every module): comp-jar's
@@ -1101,21 +1623,24 @@ class Restructurer:
                 b = src.find("build")
                 return src.children(src.child(b, sec), item) if b is not None else []
             root_items = items_of(sources[0])
-            entries: list[Any] = []
+            entries: list[tuple[PomEditor, Any]] = []
             seen: set[tuple[str, str]] = set()
             relies_default = False
             for i, src in enumerate(sources):
                 own = items_of(src)
-                if i > 0 and not own and src.packaging() != "pom":
+                if i > 0 and not own and src.packaging() not in ("pom", "ear"):
                     relies_default = relies_default or not root_items
                 for r in own:
                     raw = src.text_of(r, "directory") or default
                     d = re.sub(r"^\$\{(?:project\.)?basedir\}/?", "", raw).strip()
+                    cd = clean_pom_dir(raw, allow_parent=True)
+                    if cd and cd.startswith("../"):
+                        d = self._comp_dir(c, src, cd) or d
                     key = (d.strip("/"), (src.text_of(r, "targetPath") or "").strip())
                     if key in seen:
                         continue
                     seen.add(key)
-                    entries.append(r)
+                    entries.append((src, r))
             if not entries:
                 continue
             container = ed.ensure_path(f"build/{sec}")
@@ -1124,8 +1649,8 @@ class Restructurer:
                 container.remove(el)
                 ed._append(container, el)
                 ed.reindent(el)
-            for r in entries:
-                ed.copy_into(container, r)
+            for src, r in entries:
+                self._remap_dirs(c, ed, ed.copy_into(container, r), src)
             dirs = [ed.text_of(x, "directory") or default for x in ed.children(container, item)]
             c.note(f"comp-jar <{sec}>: union of the merged modules' resource directories ({', '.join(dirs)})")
 
@@ -1442,6 +1967,10 @@ class Restructurer:
             artifact_id=coords.artifact_id + L.boot_artifact_suffix, name=None, dependencies=deps,
             plugin_version=plugin_version, main_class=main_class, final_name=final_name,
             packaging="war" if c.boot_war else "jar"))
+        if c.overlay_carry:                 # before _role_module: the overlay versions' properties come along
+            ov_ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
+            self._apply_overlays(c, ov_ed)
+            c.save(ov_ed)
         if role:
             self._record_parent(c, f"{boot}/pom.xml", None, parent)
             ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
@@ -1450,6 +1979,7 @@ class Restructurer:
             c.save(ed)
         boot_ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
         self._strip_war_web_config(c, boot_ed)
+        self._strip_ear_plugin(c, boot_ed)
         c.save(boot_ed)
         if not moved_main:
             self._generate_application(c, boot, comp_dirs)
@@ -1533,8 +2063,9 @@ class Restructurer:
                       case_type=c.profile.case_type.value if isinstance(c.profile.case_type, CaseType)
                       else str(c.profile.case_type))
         c.write(f"{boot}/src/main/java/{pkg_path}/{cls}.java", text)
-        if src.psvm_classes:
-            c.followup("existing main class(es) " + ", ".join(src.psvm_classes) + " kept in comp-jar; they are "
+        rest = [x for x in src.psvm_classes if x not in c.module_mains]     # per-module follow-up (`_merge`)
+        if rest:
+            c.followup("existing main class(es) " + ", ".join(rest) + " kept in comp-jar; they are "
                        "not invoked by the generated Spring Boot Application")
 
     def _web_followups(self, c: _Ctx) -> None:
@@ -1682,7 +2213,10 @@ class Restructurer:
         c.write(rel, text + sep + (nl if text.strip() else "") + nl.join(lines) + nl, generated=not existed)
 
     def _packaging_followups(self, c: _Ctx, asis_packaging: str) -> None:
-        if c.boot_war:
+        if c.boot_war and not c.jsp_moved and c.overlay_carry:
+            c.followup(f"boot module {c.boot_rel} packaged as WAR for external Tomcat: the WAR overlay(s) "
+                       f"{', '.join(g.coordinates for _, g in c.war_overlays)} carry web content")
+        elif c.boot_war:
             c.followup("boot module packaged as WAR for external Tomcat; JSPs are served from the front jar "
                        f"(META-INF/resources) — {c.boot_rel}, {c.front_rel}")
         elif asis_packaging == "war":
@@ -1691,11 +2225,13 @@ class Restructurer:
     # ------------------------------------------------------------------ module names (round 9c)
     @staticmethod
     def _resolve_names(c: _Ctx, root: PomEditor | None) -> None:
-        """`{name}` = `layout.project_name` or the root pom's artifactId; module paths via `layout.module_path`."""
+        """`{name}` = `layout.project_name`, else the root pom property `sbmig.project-name` (the intake aggregator's
+        project name, 2026-10-23), else the root pom's artifactId; module paths via `layout.module_path`."""
         L = c.cfg.layout
         aid = (root.artifact_id() if root is not None else None) or \
             (c.profile.root_pom.artifact_id if c.profile.root_pom else None) or c.profile.name
-        c.name = L.project_name or aid or "app"
+        prop = ((root.get_property(NAME_PROP) or "").strip() if root is not None else "") or None
+        c.name = L.project_name or prop or aid or "app"
         c.boot_rel = L.module_path("boot", c.name) or "boot"
         c.comp_rel = L.module_path("comp", c.name) or "back"
         c.front_rel = L.module_path("front", c.name)
@@ -1735,21 +2271,25 @@ class Restructurer:
             r.front_files = sum(1 for f in front.rglob("*") if f.is_file() and f.name != "pom.xml")
 
     # ------------------------------------------------------------------ front module (round 9c)
-    @staticmethod
-    def _web_layout(eds: list[PomEditor]) -> tuple[list[tuple[str, str]], list[str]]:
+    def _web_layout(self, c: _Ctx, eds: list[PomEditor]) -> tuple[list[tuple[str, str]], list[str]]:
         """(web roots as (module-relative dir, web-path prefix), classpath dirs) of the as-is poms: the default
         `src/main/webapp`, then every maven-war-plugin `warSourceDirectory` (prefix "") and `<webResources>` directory
         (prefix = its `targetPath`); the classpath dirs are `sourceDirectory` / `scriptSourceDirectory` / `<resources>`
         directories (`source_scanner.pom_build_dirs`). The sources were folded into the comp module at the same
-        relative paths, so module-relative = comp-relative."""
+        relative paths, so module-relative = comp-relative; a `../` directory folded in by `_plan_outside_dirs`
+        (2026-10-23) is mapped to its comp-relative location (`_comp_dir`), other `../` directories are skipped."""
         roots: list[tuple[str, str]] = [(DEFAULT_WEBAPP, "")]
         keep: list[str] = []
         for ed in eds:
             text = ed.to_string()
-            for w in pom_web_dirs(text):
-                if all(w.dir != d for d, _ in roots):
-                    roots.append((w.dir, w.target))
-            keep.extend(d for d in pom_build_dirs(text) if d not in keep)
+            for w in pom_web_dirs(text, allow_parent=True):
+                d = self._comp_dir(c, ed, w.dir)
+                if d and all(d != x for x, _ in roots):
+                    roots.append((d, w.target))
+            for d in pom_build_dirs(text, allow_parent=True):
+                d = self._comp_dir(c, ed, d)
+                if d and d not in keep:
+                    keep.append(d)
         return roots, keep
 
     def _populate_front(self, c: _Ctx, comp: str, boot: str, coords: GAV,
@@ -1787,7 +2327,7 @@ class Restructurer:
         left: list[str] = []
         kept_web: list[str] = []                        # static-extension files kept as classpath resources (rule 3)
         kept_res = 0
-        roots, keep = self._web_layout(list(eds or ()))
+        roots, keep = self._web_layout(c, list(eds or ()))
         web_dirs = [f"{comp}/{d}" for d, _ in roots]
         for wdir, target in roots:
             webapp = f"{comp}/{wdir}"
@@ -1857,7 +2397,7 @@ class Restructurer:
         c.front_made = True
         c.jsp_moved = sum(1 for s_, d, k, _ in plan if k == "jsp" and s_.lower().endswith(JSP_EXTS) and d in taken)
         c.result.front_files = moved["static"] + moved["jsp"]
-        c.boot_war = c.jsp_moved > 0 and L.jsp_boot_packaging == "war"
+        c.boot_war = c.boot_war or (c.jsp_moved > 0 and L.jsp_boot_packaging == "war")   # a WAR overlay may set it
         self._write_front_pom(c, coords, front)
         custom = [d for d, _ in roots
                   if d != DEFAULT_WEBAPP and any(s_.startswith(f"{comp}/{d}/") for s_, _, _, _ in plan)]
@@ -1938,6 +2478,7 @@ class Restructurer:
             self._role_module(c, ed, None, exclude=set())
             self._fix_java(c, ed, top=True)
             self._strip_war_web_config(c, ed)
+            self._strip_ear_plugin(c, ed)
             c.save(ed)
         else:
             c.write(path, render("front-pom.xml.j2", parent=coords,
@@ -2066,6 +2607,14 @@ class Restructurer:
             root.set_coordinate("groupId", g)
         if not root.version() and v:
             root.set_coordinate("version", v)
+        if not keep_build_plugins:          # 2026-10-23: the intake aggregator's project name (merge / single only)
+            if c.rename_root and root.artifact_id() != c.rename_root:
+                root.set_coordinate("artifactId", c.rename_root)
+                c.note(f"root pom artifactId {c.root_aid_old} → {c.rename_root} ({NAME_PROP}: the member that had "
+                       "this artifactId was merged / dropped, the reactor has no collision any more)")
+            if root.has_property(NAME_PROP):
+                root.remove_property(NAME_PROP)
+                root.remove_if_empty(root.find("properties"))
         old_parent = root.get_parent()
         root.set_parent(A.parent.gav(), None)
         self._record_parent(c, c.ws.rel(root.path), old_parent, A.parent.gav())
@@ -2094,6 +2643,8 @@ class Restructurer:
             for p in root.find_plugins(*WAR_PLUGIN, where="build"):
                 root.remove_node(p)
         root.remove_plugin(*BOOT_PLUGIN)
+        if not keep_build_plugins:
+            self._strip_ear_plugin(c, root)
         if c.front_made:
             self._strip_war_web_config(c, root)
         root.remove_if_empty(root.find("build/plugins"))
@@ -2188,7 +2739,7 @@ class Restructurer:
                     wanted.append(k)
                     todo.extend(re.findall(r"\$\{([^}]+)\}", props[k] or ""))
         for k in props:
-            if k in wanted and not ed.has_property(k):
+            if k in wanted and not ed.has_property(k) and k != NAME_PROP:
                 ed.set_property(k, props[k])
 
     @staticmethod

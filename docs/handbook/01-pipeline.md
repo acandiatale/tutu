@@ -175,12 +175,15 @@ sequenceDiagram
 4. preflight(`_preflight`): Maven 실행 가능 여부(`mvn -v`), `artifacts.parent` 설정 여부(그룹 id에 `CHANGE`가 들어 있으면 미설정으로 봅니다), `artifacts.boot_parent` / `artifacts.comp_parent`, `build.java_home`을 점검하고 journal `preflight`에 기록합니다. parent가 미설정이면 후속 조치 "artifacts.parent is not configured: pass the company artifacts yml with --config"가 들어갑니다.
 5. Maven을 실행할 수 없으면(플래그 `mvn-not-found`) 중단합니다.
 6. 빌드 도구 판별(`_check_build_tool` → `sbmig.analyze.detect_build_tool`): Gradle / Ant / 빌드 파일 없음이면 플래그 `unsupported-build-tool:<gradle|ant|none>`을 남기고 중단(exit 3)합니다. Maven을 한 번도 부르기 전입니다. journal `build_tool`(`tool`, `ok`, `reason`).
-7. as-is effective dependencyManagement를 캡처합니다(`_capture_effective`, journal `effective_depmgmt`). 실패해도 경고만 남기고 계속합니다.
-8. `--stop-after intake`이면 여기서 멈춥니다(플래그 `stopped-after-intake`, journal `stop_after`).
+7. 루트 pom 점검(`_intake_layout`, `sbmig/analyze/aggregator.py`, 2026-10-23):
+   - **EAR만 들어온 경우**: 루트 `pom.xml`이 `<packaging>ear</packaging>`이고 그 EAR이 묶는 war / ejb / 같은 groupId 모듈이 트리에 없으면(예: `APP/EAR`만 넣음) 플래그 `ear-without-modules`를 남기고 중단(exit 3)합니다. EAR에는 코드가 없고, 그대로 진행하면 EAR의 war 의존성이 back 모듈로 들어가 빌드가 깨지기 때문입니다. 후속 조치 첫 줄이 "모든 모듈이 들어 있는 상위 디렉터리로 다시 실행"을 안내합니다.
+   - **루트 pom이 없고 형제 pom들이 서로 의존하는 경우**(예: `APP/BATCH`, `APP/WEB`, `APP/EAR`가 각자 pom만 있고 하나씩 install해 빌드하던 구조): `layout.generate_aggregator`(기본 true)이면 루트 집합 `pom.xml`을 만들어 커밋합니다(`<packaging>pom</packaging>`, 의존 순서의 `<modules>`, groupId / version / 이름은 EAR에서, 없으면 WAR에서, 속성 `sbmig.project-name`). artifactId는 이름과 같은 모듈이 이미 있으면 `<이름>-aggregator`이고, 재구성이 EAR을 병합한 뒤 이름으로 되돌립니다. 서로 연결되지 않은 pom은 빼고(후속 조치에 표시), 연결 묶음이 둘 이상이면(독립 애플리케이션) 만들지 않습니다. 플래그 `aggregator-generated`, journal `aggregator_generated`(`path`, `artifact_id`, `name`, `modules`, `excluded`).
+8. as-is effective dependencyManagement를 캡처합니다(`_capture_effective`, journal `effective_depmgmt`). 실패해도 경고만 남기고 계속합니다.
+9. `--stop-after intake`이면 여기서 멈춥니다(플래그 `stopped-after-intake`, journal `stop_after`).
 
 > **주의 (코드 기준: `sbmig/loop/orchestrator.py` `_preflight`)** — preflight는 `maven_available(cfg)`의 반환값을 `bool(ok)`로 판정합니다. 그런데 현재 `sbmig/build/mvn.py`의 `maven_available`은 `(ok, 메시지)` 튜플을 돌려주므로, 실제 Maven 러너로 실행할 때 이 검사가 `mvn-not-found`를 올리지 못할 수 있습니다(튜플은 항상 참). 이때 Maven이 없으면 이후 빌드가 하나씩 실패하는 모습으로 나타납니다. 통합 담당자가 확인할 항목입니다.
 
-**journal 이벤트**: `intake`, `preflight`, `build_tool`, `effective_depmgmt`(그리고 graph 엔진이면 그 앞에 `graph_node`).
+**journal 이벤트**: `intake`, `preflight`, `build_tool`, `ear_without_modules` / `aggregator_generated`, `effective_depmgmt`(그리고 graph 엔진이면 그 앞에 `graph_node`).
 
 > **확인 포인트** — `journal.jsonl`의 `preflight` 줄에서 `artifacts.parent` 값이 회사 좌표(예: `com.company.platform:base-parent:4.0.0`, 실제 값은 `config/artifacts.example.yml`을 복사해 채운 파일 기준)인지 확인합니다. 여기에 `not configured`가 보이면 `--config`를 빠뜨린 것입니다. `java_home`이 `(inherited)`면 `build.java_home`이 비어 있어서 셸의 JDK를 그대로 쓰고 있다는 뜻입니다.
 
@@ -523,6 +526,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 |---|---|---|---|---|
 | Maven 실행 불가 | intake | `mvn-not-found`, `aborted` | 없음 | `abort` |
 | Gradle / Ant / 빌드 파일 없음 | intake | `unsupported-build-tool:<tool>`, `aborted` | 없음(Maven 호출 0회) | `build_tool`(`ok: false`), `abort` |
+| EAR pom만 들어옴(모듈이 트리에 없음) | intake | `ear-without-modules`, `aborted` | 없음(Maven 호출 0회) | `ear_without_modules`, `abort` |
 | Maven 아님 / pom 없음(analyze 안전망) | analyze | `aborted` | 없음 | `abort` |
 | 설정한 사내 parent 해석 불가 | 빌드 수정 루프 또는 rewrite 실패 | `aborted:parent-not-found` | 없음(`_RunAborted`) | `blocked`(`parent_not_found`), `abort`, `run_aborted` |
 | 컴포넌트 누락(`MissingComponentError`) | 어느 단계든 | `aborted` | **있음**(plan이 끝났다면) | `abort`, `phase_start`(`after_abort: true`) |
