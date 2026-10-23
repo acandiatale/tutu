@@ -31,6 +31,9 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   Boot projects split) stays available through `layout.*` and is pinned by `config/artifacts.local-e2e.yml` for
   the older fixtures.
 - Only Maven projects: Gradle / Ant builds are rejected at intake (exit 3) — the user's decision (2026-10-20).
+  Company decision 2026-10-23: trees **without any pom.xml** (exploded Tomcat JSP + Java directories, "quite many")
+  are rejected outright as well — no pom synthesis, no JSP sweep. `sbmig inventory <dir>` (read-only, 2026-10-23)
+  stays as the tool that describes such a tree for the rejection note to the owners; it changes nothing.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
   Tests are out of scope entirely (user, 2026-10-22: "테스트는 다 스킵"): company runs set `build.skip_test_compile: true`
@@ -151,9 +154,10 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
 - 2026-10-23: pom-less exploded Tomcat webapps (JSP + Java + WEB-INF/lib, "quite many" in the company) — round 1
   `sbmig inventory <dir|zip>` (read-only: webapp roots, web.xml spec / frameworks, jars → coordinates via
   `knowledge/libraries/jar_names.yml`, class-file Java level, source roots + encoding, classes without source,
-  duplicates, module proposals → `inventory.md` / `.json`); fixture `fixtures/webapps/legacy-exploded`. Rounds 2 / 3
-  (pom synthesis → normal pipeline, JSP javax→jakarta sweep) are open. The "Maven only" intake rule still rejects
-  Gradle / Ant builds; a tree with no build tool will get a synthesized pom instead.
+  duplicates, module proposals → `inventory.md` / `.json`); fixture `fixtures/webapps/legacy-exploded`. The first real
+  run (10 webapp roots, 1,081 / 408 / 264 JSPs on Servlet 2.2, cp949 sources, only `*.jar.old` in WEB-INF/lib, 140
+  duplicate classes) led to the company decision to reject pom-less trees; rounds 2 / 3 (pom synthesis, JSP sweep)
+  were dropped and the inventory remains a read-only triage aid.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)

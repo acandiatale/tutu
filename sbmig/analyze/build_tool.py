@@ -20,7 +20,8 @@ GRADLE_REASON = ("Gradle build detected (build.gradle / settings.gradle) and no 
                  "supported (convert the build to Maven first)")
 ANT_REASON = ("Ant build.xml detected and no pom.xml: only Maven projects are supported "
               "(convert the build to Maven first)")
-NONE_REASON = "no pom.xml found (no supported build tool): only Maven projects are supported"
+NONE_REASON = ("no pom.xml found (no supported build tool): only Maven projects are supported — company decision "
+               "2026-10-23: pom-less trees are rejected; `sbmig inventory <dir>` describes the tree for the rejection note")
 
 
 @dataclass(frozen=True)
