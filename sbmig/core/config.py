@@ -5,13 +5,16 @@ Company-specific coordinates live in a separate artifacts yml so the code base s
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+
+log = logging.getLogger("sbmig.config")
 
 from .models import GAV
 
@@ -289,6 +292,21 @@ class LLMConfig(BaseModel):
     model: str = "${LLM_MODEL}"
     escalation_model: Optional[str] = None   # stronger model used after stall
     recipe_model: Optional[str] = None       # cheaper model for recipe selection advice + KB recipe candidates (None → model)
+
+    @field_validator("model", "escalation_model", "recipe_model", mode="before")
+    @classmethod
+    def _clean_model_name(cls, v: Any, info: ValidationInfo) -> Any:
+        """A model name is one token: an inline `# comment` tail and surrounding whitespace are dropped, and a
+        value that is only a comment (`LLM_RECIPE_MODEL= # cheaper model`, `set X=# ...` on Windows) is unset.
+        Without this the gateway answers `HTTP 400 … "# cheaper model" is an unsupported model` mid-run."""
+        if not isinstance(v, str):
+            return v
+        cleaned = v.split("#", 1)[0].strip() if not v.lstrip().startswith("${") else v.strip()
+        if cleaned != v.strip():
+            log.warning("llm.%s=%r is not a plain model name: using %r", info.field_name, v, cleaned or None)
+        if not cleaned:
+            return None if info.field_name != "model" else ""
+        return cleaned
     temperature: float = 0.0
     max_output_tokens: int = 8000
     max_context_chars: int = 60000           # budget for packed context per request
@@ -534,6 +552,9 @@ def load_dotenv_files(*extra: str | Path) -> list[Path]:
             k, v = k.strip(), v.strip()
             if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
                 v = v[1:-1]
+            elif v.startswith("#"):
+                v = ""           # `KEY=   # comment` is an empty value (2026-10-23: a company .env sent the comment
+                                 # text of LLM_RECIPE_MODEL / LLM_ESCALATION_MODEL as the model name → HTTP 400)
             else:
                 v = v.split(" #", 1)[0].rstrip()
             if k and k not in os.environ:

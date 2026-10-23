@@ -354,7 +354,7 @@ LLM_BASE_URL=http://llm-gateway.example.internal/v1/chat     # 전체 엔드포�
 LLM_API_KEY=put-the-bearer-token-here
 LLM_MODEL=gpt-6-luna                          # fix 모델
 # LLM_ESCALATION_MODEL=                        # 비우면 LLM_MODEL
-# LLM_RECIPE_MODEL=                            # 비우면 LLM_MODEL
+# LLM_RECIPE_MODEL=                            # 비우면 LLM_MODEL  (모델 이름은 한 토큰: `KEY=이름   # 주석`. 주석만 있으면 빈 값)
 # LLM_RESPONSE_PATH=data.result.content       # llm-probe가 응답을 못 찾을 때만
 LLM_RECORD_DIR=out/llm-records
 JAVA21_HOME=C:/Program Files/Java/jdk-21
