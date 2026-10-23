@@ -1330,6 +1330,8 @@ carried over는 일반 규칙입니다.
 
 ## 9. 재구성 — 회사 레이아웃
 
+> 웹 루트는 `src/main/webapp`만이 아닙니다. `maven-war-plugin`의 `warSourceDirectory` / `webResources`로 선언한 디렉터리(예: `STATIC`)도 웹 루트로 인식해 JSP·정적 파일은 `{name}-front`로, `<resource>`가 가리키는 하위 디렉터리(예: `STATIC/resources`의 엑셀·템플릿)는 `{name}-back`의 클래스패스 리소스로 나눕니다. 5 MB 이상 미디어 파일은 노트로 남깁니다.
+
 ### 9.1 모드 선택
 
 ```mermaid

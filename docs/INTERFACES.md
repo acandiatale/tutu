@@ -608,3 +608,17 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   spring-boot-4.1.0.jar): `org.springframework.boot.web.servlet.{ServletRegistrationBean, FilterRegistrationBean,
   ServletListenerRegistrationBean}`, `org.springframework.boot.web.error.{ErrorPage, ErrorPageRegistrar}`;
   `setDispatcherTypes` takes `jakarta.servlet.DispatcherType`. Fixture `servlet-webxml-legacy`.
+* 2026-10-23 non-standard directories (`APP/src`, web root `STATIC/`, `DB/`): `SourceStats.webapp_dirs: list[str]`
+  (root-relative web dirs: the default `src/main/webapp` when it exists + every maven-war-plugin `warSourceDirectory`
+  and `<webResources>` directory; kinds not recorded), `SourceStats.large_media_files: list[str]` (≥ 5 MB media /
+  archive files under a web dir or classpath resource dir, capped at 20) and `large_media_bytes: int` (total).
+  `sbmig/analyze/source_scanner.py`: `scan_sources(ws, poms=None)` (the analyzer passes the poms; None = old
+  behaviour), `web_static_root(rel, web_dirs=(), resource_dirs=())`, `WebDir(dir, kind: root | resources, target)`,
+  `pom_web_dirs(text)`, `pom_build_dirs(text)`, `clean_pom_dir(raw)`, `webapp_dirs(ws, poms) -> (web dirs, classpath
+  dirs)`, constants `LARGE_MEDIA_EXTENSIONS`, `LARGE_MEDIA_BYTES`, `MAX_LARGE_MEDIA`; `ScanResult.webapp_dirs /
+  large_media`. Restructure: `_source_roots` includes the war web dirs; `_populate_front(c, comp, boot, coords,
+  eds=None)` splits every web root (WEB-INF / META-INF rules → JSPs → files under a `<resource>` / source dir inside
+  the root stay in comp → the rest to `front_static_dir`; `targetPath` prefixes webResources); `warSourceDirectory`
+  / `webResources` are stripped from the rewritten root and the generated boot / comp / front poms (note); large
+  media note. e2e post-check `file_same_as {path, source}` (byte-equal to the as-is fixture file;
+  `run_post_check(check, project, fixture_dir=None)`). Fixture `servlet-nonstandard-dirs`.

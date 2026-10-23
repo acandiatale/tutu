@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+          xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+    <Worksheet ss:Name="Report">
+        <Table>
+            <Row><Cell><Data ss:Type="String">Month</Data></Cell><Cell><Data ss:Type="String">Total</Data></Cell></Row>
+            ${rows}
+        </Table>
+    </Worksheet>
+</Workbook>

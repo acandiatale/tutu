@@ -412,7 +412,7 @@ as-is 캡처를 덮어쓰지 않도록 두 번째는 별도 파일이며, 사용
 
 ### 6.1 탐지
 
-분석기는 `SourceStats` 에 웹 리소스를 기록합니다: `jsp_paths`(JSP 파일, 루트 상대 경로), `web_static_dirs`(정적 파일이 있는 디렉터리: `src/main/webapp` 중 WEB-INF 제외, `src/main/resources/{static,public,templates}`), `web_static_count`, `jsp_count`, `has_web_xml`, `web_xml_paths`. `expected.json` 의 `web_resources` 가 이 값을 검증합니다. 플래너는 JSP 나 정적 파일이 있을 때만 front 모듈을 계획에 넣고 노트에 개수를 적습니다.
+분석기는 `SourceStats` 에 웹 리소스를 기록합니다: `jsp_paths`(JSP 파일, 루트 상대 경로), `web_static_dirs`(정적 파일이 있는 디렉터리: `src/main/webapp` 중 WEB-INF 제외, `src/main/resources/{static,public,templates}`), `web_static_count`, `jsp_count`, `has_web_xml`, `web_xml_paths`. 2026-10-23 부터 pom 의 maven-war-plugin `<warSourceDirectory>`(예: `STATIC`)와 `<webResources>` 디렉터리도 웹 루트로 보고(`webapp_dirs`, 6.7 참고) JSP·정적 파일 집계에 포함합니다. `expected.json` 의 `web_resources` 가 이 값을 검증합니다. 플래너는 JSP 나 정적 파일이 있을 때만 front 모듈을 계획에 넣고 노트에 개수를 적습니다.
 
 ### 6.2 이동 규칙(`_populate_front`)
 
@@ -472,6 +472,24 @@ Servlet 3 이전(web.xml 2.2 / 2.3 / 2.4) 프로젝트는 어노테이션이 없
 | jsp-file 서블릿, `<welcome-file-list>`, `<mime-mapping>`, `<security-constraint>` / `<login-config>` | 후속조치 |
 
 `knowledge/config/web_xml_rules.yml` 의 skip 표(DispatcherServlet, ContextLoaderListener, CharacterEncodingFilter 등)에 있는 클래스는 Boot 가 대신하므로 생성하지 않고 대체 프로퍼티와 함께 후속조치로 알립니다. 프로젝트가 `@WebServlet` 등으로 어노테이션한 클래스는 `@ServletComponentScan` 에 맡겨 중복 등록하지 않습니다. 결과: 플래그 `web-xml-registered`, 저널 `web_xml_registrations`, 인수인계 줄 "web.xml (<spec>) → WebXmlRegistrations: N servlet(s), …". 픽스처 `servlet-webxml-legacy`.
+
+### 6.7 비표준 디렉터리: `APP` / `STATIC` / `DB` (2026-10-23)
+
+일부 회사 프로젝트는 pom 은 있지만 표준 디렉터리를 쓰지 않습니다: Java 소스는 `APP/src`(`<sourceDirectory>`), 웹 루트는 `STATIC/`(maven-war-plugin `<warSourceDirectory>`, `${basedir}/` 접두사 허용), SQL 은 `DB/`(pom 이 참조하지 않음). 분석기(`sbmig/analyze/source_scanner.py`: `pom_web_dirs`, `pom_build_dirs`, `webapp_dirs`)가 war 플러그인 설정(`<build><plugins>`, 그다음 `pluginManagement`; profile 은 무시)을 읽어 `SourceStats.webapp_dirs` 에 웹 루트를 적습니다. `${…}` 변수, 절대 경로, `..` 경로는 건너뜁니다. 멀티모듈이면 pom 마다 모듈 디렉터리를 앞에 붙입니다.
+
+restructure 는 이렇게 처리합니다.
+
+1. 소스 이동: `sourceDirectory` / `<resource>` 디렉터리와 함께 war 웹 루트의 최상위 디렉터리(`STATIC`)도 back 으로 같은 상대 경로로 옮깁니다(`APP/src` → `{name}-back/APP/src`, pom 의 `<sourceDirectory>APP/src</sourceDirectory>` 그대로 복사). pom 이 참조하지 않는 `DB/` 는 루트에 그대로 남습니다.
+2. 웹 루트 분할(`_populate_front`): 웹 루트 안의 파일마다 처음 맞는 규칙을 적용합니다.
+   - (1) 웹 경로가 `WEB-INF/**`, `META-INF/**` → 6.2 표와 같음(JSP·태그 → front, web.xml 등 → boot 의 `asis-webinf/`, `WEB-INF/lib`·`classes` → back 에 남김 + 후속조치)
+   - (2) JSP → front(`META-INF/resources/…`)
+   - (3) 그 pom 의 `<resource>` / `sourceDirectory` 가 덮는 하위 디렉터리(예: `<resource><directory>STATIC/resources</directory>`) 안의 파일은 확장자와 관계없이 **클래스패스 리소스**로 back 에 남습니다. Excel 파일, Excel 템플릿 XML, 동영상, 이미지 모두 back 의 `STATIC/resources/…` 에 있고, 복사된 `<resources>` 항목이 계속 그 경로를 가리킵니다. 그중 정적 웹 확장자(css, js, png …) 파일은 as-is WAR 가 웹 콘텐츠로도 서빙했으므로 후속조치 "copy them into … static if pages link them" 이 남습니다.
+   - (4) 나머지 → front 의 `<layout.front_static_dir>/<웹 경로>`(`src/main/webapp` 과 같은 규칙)
+   - `<webResources>` 디렉터리도 웹 루트로 다루며, `targetPath` 가 웹 경로 앞에 붙습니다(`extra-web/theme.css` + `targetPath=assets` → `static/assets/theme.css`).
+3. boot WAR 에는 webapp 디렉터리가 없습니다(JSP 는 front jar 에서 옵니다). 그래서 생성되거나 다시 쓴 pom(루트의 pluginManagement, boot, back, front)에서 maven-war-plugin 의 `warSourceDirectory` / `webResources` 를 지우고 노트 "maven-war-plugin … dropped from …" 을 남깁니다.
+4. 큰 미디어: 웹 루트나 리소스 디렉터리 아래에서 5 MB 이상인 미디어·압축 파일(mp4 mov avi mkv wmv mp3 wav zip tgz 7z rar iso psd, 최대 20개 표시)은 노트 "N large media file(s) (M MB) are packaged into the front / comp jar: consider moving them to a file server" 로 알립니다(`SourceStats.large_media_files` / `large_media_bytes`).
+
+필터링되는 `STATIC/resources` 안의 xlsx·mp4 는 E12 `resources-binary-filtering` 이 `nonFilteredFileExtensions` 를 붙여 바이트 그대로 `target/classes` 에 들어가게 합니다. 픽스처 `servlet-nonstandard-dirs`(post-check `file_same_as` 로 바이트 비교).
 
 ## 7. 외부화 설정 placeholder
 

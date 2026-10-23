@@ -43,6 +43,7 @@ from typing import Any, Literal
 
 import jinja2
 
+from sbmig.analyze.source_scanner import DEFAULT_WEBAPP, WEB_STATIC_EXTENSIONS, pom_build_dirs, pom_web_dirs
 from sbmig.core.config import Config
 from sbmig.core.interfaces import RestructureResult
 from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectProfile
@@ -355,6 +356,7 @@ class Restructurer:
                    f"(the modules do not inherit the root pom; {where})")
         self._record_modules(c)
         self._dedupe_webinf_stash(c)
+        self._large_media_note(c)
         self._all_poms_pass(c, java_fix=False)
         self._drop_managed_versions(c)
         c.commit("restructure: optional artifact versions / cleanup")
@@ -401,7 +403,7 @@ class Restructurer:
             if c.ws.exists(c.p(d)):
                 c.move(c.p(d), f"{comp}/{d}")
         c.commit("restructure: move as-is sources to comp-jar")
-        self._populate_front(c, comp, boot, coords)
+        self._populate_front(c, comp, boot, coords, [root])
         self._write_comp_pom(c, [root], coords, comp, asis_packaging)
         moved_main, moved_tests = self._populate_boot(c, [comp], boot)
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
@@ -427,6 +429,9 @@ class Restructurer:
                     t = ed.text_of(r, "directory")
                     if t:
                         paths.append(t)
+            # 2026-10-23: maven-war-plugin warSourceDirectory / webResources (e.g. `STATIC/`) move with the sources;
+            # _populate_front then splits them between the front and the comp module
+            paths.extend(w.dir for w in pom_web_dirs(ed.to_string()))
         for pth in paths:
             pth = re.sub(r"^\$\{(?:project\.)?basedir\}/?", "", pth).strip().strip("/")
             if not pth or "${" in pth or pth.startswith(("..", "/")) or ":" in pth:
@@ -762,7 +767,7 @@ class Restructurer:
                                       if kept_ed is not None and kept_ed.artifact_id()}
         packaging = "war" if any(ed.packaging() == "war" for ed in [*eds, *([kept_ed] if kept_ed else [])]) \
             else root.packaging()
-        self._populate_front(c, comp, boot, coords)
+        self._populate_front(c, comp, boot, coords, [root, *(ed for _, _, ed in all_merged)])
         asis_deps = root.dependencies() + [d for _, _, ed in all_merged for d in ed.dependencies()]
         self._write_comp_pom(c, [root, *(ed for _, _, ed in all_merged)], coords, comp, packaging, exclude=internal,
                              copy_props_from=eds)
@@ -1082,6 +1087,7 @@ class Restructurer:
                 if k not in root_props and not ed.has_property(k):
                     ed.set_property(k, v)
         self._fix_java(c, ed, top=role)
+        self._strip_war_web_config(c, ed)
         ed.save()
 
     def _union_resources(self, c: _Ctx, ed: PomEditor, sources: list[PomEditor]) -> None:
@@ -1442,6 +1448,9 @@ class Restructurer:
             self._role_module(c, ed, root, exclude=set(exclude or ()))
             self._fix_java(c, ed, top=True)
             c.save(ed)
+        boot_ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
+        self._strip_war_web_config(c, boot_ed)
+        c.save(boot_ed)
         if not moved_main:
             self._generate_application(c, boot, comp_dirs)
         elif c.boot_war:
@@ -1726,7 +1735,25 @@ class Restructurer:
             r.front_files = sum(1 for f in front.rglob("*") if f.is_file() and f.name != "pom.xml")
 
     # ------------------------------------------------------------------ front module (round 9c)
-    def _populate_front(self, c: _Ctx, comp: str, boot: str, coords: GAV) -> None:
+    @staticmethod
+    def _web_layout(eds: list[PomEditor]) -> tuple[list[tuple[str, str]], list[str]]:
+        """(web roots as (module-relative dir, web-path prefix), classpath dirs) of the as-is poms: the default
+        `src/main/webapp`, then every maven-war-plugin `warSourceDirectory` (prefix "") and `<webResources>` directory
+        (prefix = its `targetPath`); the classpath dirs are `sourceDirectory` / `scriptSourceDirectory` / `<resources>`
+        directories (`source_scanner.pom_build_dirs`). The sources were folded into the comp module at the same
+        relative paths, so module-relative = comp-relative."""
+        roots: list[tuple[str, str]] = [(DEFAULT_WEBAPP, "")]
+        keep: list[str] = []
+        for ed in eds:
+            text = ed.to_string()
+            for w in pom_web_dirs(text):
+                if all(w.dir != d for d, _ in roots):
+                    roots.append((w.dir, w.target))
+            keep.extend(d for d in pom_build_dirs(text) if d not in keep)
+        return roots, keep
+
+    def _populate_front(self, c: _Ctx, comp: str, boot: str, coords: GAV,
+                        eds: list[PomEditor] | None = None) -> None:
         """Move the web resources out of the comp module into `{name}-front` (only when there are any):
         `src/main/webapp/**` minus WEB-INF / META-INF → `<front>/<front_static_dir>/…` (same relative path);
         `src/main/resources/{static,public,templates}/**` → `<front>/src/main/resources/<dir>/…` (same path);
@@ -1736,7 +1763,16 @@ class Restructurer:
         `WEB-INF/tags/**` and `*.tld` under WEB-INF → `META-INF/resources/WEB-INF/…` (same web path). Other WEB-INF
         files (web.xml, XML configs, …) → `<boot>/src/main/resources/asis-webinf/…` (not read by Boot); WEB-INF/lib
         and WEB-INF/classes and webapp META-INF stay in the comp module (follow-up). Sets `c.front_made`,
-        `c.jsp_moved`, `c.jstl`, `c.boot_war` and writes the front pom."""
+        `c.jsp_moved`, `c.jstl`, `c.boot_war` and writes the front pom.
+
+        Non-standard web roots (2026-10-23, `eds` = the as-is poms): every maven-war-plugin `warSourceDirectory`
+        (e.g. `STATIC/`) and `<webResources>` directory (its `targetPath` prefixes the web path) is a web root like
+        `src/main/webapp`. Inside a web root, per file, first match wins: (1) `WEB-INF/**` and `META-INF/**` (web
+        path) → the WEB-INF / META-INF rules above; (2) JSPs → front; (3) a file below a `<resource>` /
+        `sourceDirectory` of the pom that lies inside the web root (e.g. `<resource><directory>STATIC/resources`) is
+        classpath content and stays in the comp module, whatever its extension (Excel files, template XML, media,
+        images) — the copied `<resources>` entry keeps pointing at it; static-web-extension files kept this way get a
+        follow-up (the WAR also served them as web content); (4) everything else → `<front_static_dir>/<web path>`."""
         L = c.cfg.layout
         if not c.front_rel:
             return
@@ -1747,31 +1783,45 @@ class Restructurer:
         i = jsp_dir.find("META-INF/resources")
         meta_dst = f"{front}/{jsp_dir[:i + len('META-INF/resources')]}" if i >= 0 else static_dst
         stash = f"{boot}/src/main/resources/{WEBINF_STASH}"
-        plan: list[tuple[str, str, str]] = []           # (src, dst, kind: static | jsp | webinf)
+        plan: list[tuple[str, str, str, str]] = []      # (src, dst, kind: static | jsp | webinf, web path)
         left: list[str] = []
-        webapp = f"{comp}/src/main/webapp"
-        wabs = c.ws.abs(webapp)
-        if wabs.is_dir():
+        kept_web: list[str] = []                        # static-extension files kept as classpath resources (rule 3)
+        kept_res = 0
+        roots, keep = self._web_layout(list(eds or ()))
+        web_dirs = [f"{comp}/{d}" for d, _ in roots]
+        for wdir, target in roots:
+            webapp = f"{comp}/{wdir}"
+            wabs = c.ws.abs(webapp)
+            if not wabs.is_dir():
+                continue
+            inner = [k for k in keep if k.startswith(wdir + "/")]
             for f in sorted(x for x in wabs.rglob("*") if x.is_file()):
                 rel = f.relative_to(wabs).as_posix()
-                top, _, sub = rel.partition("/")
+                if any(x == "target" for x in rel.split("/")[:-1]):
+                    continue
+                web = posixpath.normpath(f"{target}/{rel}") if target else rel
+                top, _, sub = web.partition("/")
                 src = f"{webapp}/{rel}"
                 if top == "WEB-INF" and sub:
                     if sub.lower().endswith(JSP_EXTS):
                         under = sub.removeprefix("jsp/")
-                        plan.append((src, f"{jsp_dst}/{under}", "jsp"))
+                        plan.append((src, f"{jsp_dst}/{under}", "jsp", web))
                     elif sub.startswith("tags/") or sub.lower().endswith(".tld"):
-                        plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp"))
+                        plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp", web))
                     elif sub.startswith(("lib/", "classes/")):
                         left.append(src)
                     else:
-                        plan.append((src, f"{stash}/{sub}", "webinf"))
+                        plan.append((src, f"{stash}/{sub}", "webinf", web))
                 elif top == "META-INF" and sub:
                     left.append(src)
-                elif rel.lower().endswith(JSP_EXTS):
-                    plan.append((src, f"{meta_dst}/{rel}", "jsp"))
+                elif web.lower().endswith(JSP_EXTS):
+                    plan.append((src, f"{meta_dst}/{web}", "jsp", web))
+                elif any(f"{wdir}/{rel}".startswith(k + "/") for k in inner):
+                    kept_res += 1
+                    if posixpath.splitext(rel)[1].lstrip(".").lower() in WEB_STATIC_EXTENSIONS:
+                        kept_web.append(src)
                 else:
-                    plan.append((src, f"{static_dst}/{rel}", "static"))
+                    plan.append((src, f"{static_dst}/{web}", "static", web))
         for d in WEB_RESOURCE_DIRS:
             rabs = c.ws.abs(f"{comp}/src/main/resources/{d}")
             if not rabs.is_dir():
@@ -1779,14 +1829,14 @@ class Restructurer:
             for f in sorted(x for x in rabs.rglob("*") if x.is_file()):
                 rel = f.relative_to(rabs).as_posix()
                 plan.append((f"{comp}/src/main/resources/{d}/{rel}", f"{front}/src/main/resources/{d}/{rel}",
-                             "static"))
-        if not any(k in ("static", "jsp") for _, _, k in plan):
+                             "static", rel))
+        if not any(k in ("static", "jsp") for _, _, k, _ in plan):
             return                                     # no web resources: no front module
         taken: set[str] = set()
         moved = {"static": 0, "jsp": 0, "webinf": 0}
         clash: list[str] = []
         jsp_relocated: list[str] = []
-        for src, dst, kind in plan:
+        for src, dst, kind, web in plan:
             if dst in taken or c.ws.exists(dst):
                 clash.append(src)
                 continue
@@ -1794,7 +1844,7 @@ class Restructurer:
             if kind == "jsp" and dst.startswith(jsp_dst + "/"):
                 text = c.ws.abs(src).read_text(encoding="utf-8", errors="replace")
                 c.jstl = c.jstl or bool(JSTL_URI_RE.search(text))
-                web_old = "/" + src[len(webapp) + 1:]
+                web_old = "/" + web
                 if not web_old.startswith("/WEB-INF/jsp/"):
                     jsp_relocated.append(web_old)
             elif kind == "jsp" and src.lower().endswith(JSP_EXTS):
@@ -1802,27 +1852,67 @@ class Restructurer:
                                                                                     errors="replace")))
             c.move(src, dst)
             moved[kind] += 1
-        for d in (webapp, *(f"{comp}/src/main/resources/{x}" for x in WEB_RESOURCE_DIRS)):
+        for d in (*web_dirs, *(f"{comp}/src/main/resources/{x}" for x in WEB_RESOURCE_DIRS)):
             self._prune_empty_dirs(c, d)
         c.front_made = True
-        c.jsp_moved =sum(1 for s, d, k in plan if k == "jsp" and s.lower().endswith(JSP_EXTS) and d in taken)
+        c.jsp_moved = sum(1 for s_, d, k, _ in plan if k == "jsp" and s_.lower().endswith(JSP_EXTS) and d in taken)
         c.result.front_files = moved["static"] + moved["jsp"]
         c.boot_war = c.jsp_moved > 0 and L.jsp_boot_packaging == "war"
         self._write_front_pom(c, coords, front)
+        custom = [d for d, _ in roots
+                  if d != DEFAULT_WEBAPP and any(s_.startswith(f"{comp}/{d}/") for s_, _, _, _ in plan)]
         c.note(f"front module {front}: {moved['static']} static web file(s) → {L.front_static_dir}, "
                f"{moved['jsp']} JSP file(s) → {L.front_jsp_dir} (META-INF/resources of the front jar)"
                + (f"; {moved['webinf']} other WEB-INF file(s) (web.xml, XML configs) → {stash}" if moved["webinf"]
-                  else ""))
+                  else "")
+               + (f"; web root(s) from maven-war-plugin: {', '.join(custom)}" if custom else ""))
+        if kept_res:
+            c.note(f"{kept_res} file(s) under a <resource> / source directory inside a web root stay in {comp} as "
+                   "classpath resources (the copied <resources> entries still point at them)")
+        if kept_web:
+            c.followup(f"{len(kept_web)} static web file(s) under a <resource> directory inside the web root stay "
+                       f"classpath resources in {comp} ({', '.join(kept_web[:3])}"
+                       f"{' …' if len(kept_web) > 3 else ''}); "
+                       f"the as-is WAR also served them as web content — copy them into {static_dst} if pages link "
+                       "them")
         if jsp_relocated:
             c.followup(f"{len(jsp_relocated)} JSP(s) outside /WEB-INF/jsp/ now live under /WEB-INF/jsp/ in "
                        f"{front} ({', '.join(jsp_relocated[:3])}{' …' if len(jsp_relocated) > 3 else ''}): update "
                        "jsp:include / forward paths and view-resolver prefixes that name the old location")
         if left:
-            c.followup(f"{len(left)} file(s) under WEB-INF/lib, WEB-INF/classes or META-INF stay in {webapp} (not "
+            where = ", ".join(sorted({d for d in web_dirs if any(x.startswith(d + "/") for x in left)}))
+            c.followup(f"{len(left)} file(s) under WEB-INF/lib, WEB-INF/classes or META-INF stay in {where} (not "
                        "packaged): declare the jars as Maven dependencies / move the classes into src/main/java")
         if clash:
             c.followup(f"{len(clash)} web file(s) not moved to {front}: the target path was already taken "
                        f"({', '.join(clash[:3])}{' …' if len(clash) > 3 else ''}) — merge them by hand")
+
+    def _strip_war_web_config(self, c: _Ctx, ed: PomEditor) -> None:
+        """A generated / rewritten pom must not carry the as-is maven-war-plugin `warSourceDirectory` /
+        `webResources` (2026-10-23): the web root moved to the front module, the boot WAR has no webapp directory
+        (its JSPs come from the front jar). Reaches the boot pom through the root pluginManagement (inherited, or
+        copied for role parents)."""
+        removed: list[str] = []
+        for p in ed.find_plugins(*WAR_PLUGIN, where="all"):
+            conf = ed.child(p, "configuration")
+            for name in ("warSourceDirectory", "webResources"):
+                el = ed.child(conf, name)
+                if el is not None:
+                    ed.remove_node(el)
+                    removed.append(name)
+            ed.remove_if_empty(conf)
+        if removed:
+            c.note(f"maven-war-plugin {' / '.join(dict.fromkeys(removed))} dropped from {c.ws.rel(ed.path)} (the web "
+                   "root moved to the front module; the boot WAR has no webapp directory)")
+
+    def _large_media_note(self, c: _Ctx) -> None:
+        src = c.profile.source
+        if not src.large_media_files:
+            return
+        mb = src.large_media_bytes / (1024 * 1024)
+        c.note(f"{len(src.large_media_files)} large media file(s) ({mb:.0f} MB) are packaged into the front / comp "
+               f"jar: consider moving them to a file server ({', '.join(src.large_media_files[:3])}"
+               f"{' …' if len(src.large_media_files) > 3 else ''})")
 
     @staticmethod
     def _prune_empty_dirs(c: _Ctx, rel: str) -> None:
@@ -1847,6 +1937,7 @@ class Restructurer:
             ed = PomEditor(c.ws.abs(path))
             self._role_module(c, ed, None, exclude=set())
             self._fix_java(c, ed, top=True)
+            self._strip_war_web_config(c, ed)
             c.save(ed)
         else:
             c.write(path, render("front-pom.xml.j2", parent=coords,
@@ -2003,6 +2094,8 @@ class Restructurer:
             for p in root.find_plugins(*WAR_PLUGIN, where="build"):
                 root.remove_node(p)
         root.remove_plugin(*BOOT_PLUGIN)
+        if c.front_made:
+            self._strip_war_web_config(c, root)
         root.remove_if_empty(root.find("build/plugins"))
         root.remove_if_empty(root.find("build"))
         if aggregator:

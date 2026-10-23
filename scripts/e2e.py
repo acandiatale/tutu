@@ -28,7 +28,9 @@ captures the exit code + output, finds the run directory the CLI created under -
                                {"pom_dependency_versioned": {...}},     # declared with a <version>
                                {"pom_packaging": {"path", "packaging": "war"}},   # <packaging> (absent = jar)
                                {"pom_module_list": {"path", "modules": [...], "any_order": false}},  # exact <modules>
-                               {"file_exists": {"path"}}, {"file_absent": {"path"}}],   # files or dirs, globs ok
+                               {"file_exists": {"path"}}, {"file_absent": {"path"}},    # files or dirs, globs ok
+                               {"file_same_as": {"path", "source"}}],   # every match byte-equal to the fixture's
+                                                                        # as-is `source` (binaries kept intact)
                "advisories": [{"id": "springfox", "policy": "recipe", "outcome": "replaced",   # report.advisories:
                                "recipe_source": "advisory"}],                  # entry by advisory_id, fields equal
                "advisories_exact": true,                                       # no unlisted findings allowed
@@ -572,8 +574,8 @@ def _pom_dependency_versions(root) -> dict[str, list[str | None]]:
     return out
 
 
-def run_post_check(check: dict, project: Path | None) -> str | None:
-    """None when the check passes, else a one-line mismatch."""
+def run_post_check(check: dict, project: Path | None, fixture_dir: Path | None = None) -> str | None:
+    """None when the check passes, else a one-line mismatch. `fixture_dir`: the as-is fixture (`file_same_as`)."""
     if not isinstance(check, dict) or len(check) != 1:
         return f"post_check malformed: {check!r}"
     kind, spec = next(iter(check.items()))
@@ -592,6 +594,17 @@ def run_post_check(check: dict, project: Path | None) -> str | None:
     files = _resolve(project, str(spec.get("path", "")))
     if not files:
         return f"{kind}: {spec.get('path')} not found in {project.name}/"
+    if kind == "file_same_as":                       # 2026-10-23: binaries must survive the migration unchanged
+        source = (fixture_dir / str(spec.get("source", ""))) if fixture_dir is not None else None
+        if source is None or not source.is_file():
+            return f"file_same_as: as-is source {spec.get('source')!r} not found"
+        want = source.read_bytes()
+        for f in files:
+            got = f.read_bytes()
+            if got != want:
+                return (f"file_same_as: {f.relative_to(project).as_posix()} ({len(got)} bytes) differs from "
+                        f"{spec.get('source')} ({len(want)} bytes)")
+        return None
     if kind in ("file_decodes_as", "file_contains"):
         enc = spec.get("encoding") or "utf-8"
         for f in files:
@@ -768,7 +781,7 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
     if isinstance(expect.get("properties"), dict):
         mm += evaluate_properties(expect["properties"], report, project)
     for check in _list(expect.get("post_checks")):
-        problem = run_post_check(check, project)
+        problem = run_post_check(check, project, FIXTURES_DIR / res.fixture)
         if problem:
             mm.append(problem)
     return mm

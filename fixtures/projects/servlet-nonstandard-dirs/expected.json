@@ -1,0 +1,215 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "is_multi_module": false,
+  "libraries": [
+    "javax-servlet",
+    "jsp"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [
+    "E12",
+    "W1"
+  ],
+  "web_resources": {
+    "webapp_dirs": [
+      "STATIC"
+    ],
+    "jsp": [
+      "STATIC/WEB-INF/jsp/report.jsp",
+      "STATIC/index.jsp"
+    ],
+    "static_dirs": [
+      "STATIC"
+    ],
+    "static_count": 2
+  },
+  "web_xml": {
+    "spec": "2.5",
+    "servlets": 1,
+    "filters": 1,
+    "listeners": 0
+  },
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "web-xml-registered",
+      "jsp-javax-renamed"
+    ],
+    "journal_events": [
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "ndirs-back",
+            "ndirs-boot",
+            "ndirs-front"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "ndirs-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-boot/pom.xml",
+          "contains": "<packaging>war</packaging>",
+          "not_contains": "warSourceDirectory"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-back/pom.xml",
+          "contains": "<directory>STATIC/resources</directory>",
+          "not_contains": "warSourceDirectory"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-back/pom.xml",
+          "contains": "<sourceDirectory>APP/src</sourceDirectory>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-back/APP/src/com/example/ndirs/web/ReportServlet.java",
+          "contains": "jakarta.servlet.http.HttpServlet"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new com.example.ndirs.web.ReportServlet()"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new FilterRegistrationBean<>(new com.example.ndirs.web.UploadFilter())"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-front/src/main/resources/META-INF/resources/WEB-INF/jsp/report.jsp"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-front/src/main/resources/META-INF/resources/WEB-INF/jsp/report.jsp",
+          "contains": "jakarta.servlet.http.HttpSession",
+          "not_contains": "javax.servlet"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-front/src/main/resources/META-INF/resources/index.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-front/src/main/resources/static/css/app.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-front/src/main/resources/static/img/logo.png"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-back/STATIC/resources/sample.xlsx"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-back/STATIC/resources/templates/report-template.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-back/STATIC/resources/media/intro.mp4"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "ndirs-back/target/classes/sample.xlsx",
+          "source": "STATIC/resources/sample.xlsx"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "ndirs-back/target/classes/media/intro.mp4",
+          "source": "STATIC/resources/media/intro.mp4"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-back/target/classes/templates/report-template.xml",
+          "contains": "${rows}"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-boot/src/main/resources/asis-webinf/web.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ndirs-boot/target/*.war"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "DB/schema.sql"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "STATIC"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "APP"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "ndirs-back/STATIC/WEB-INF"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "ndirs-back/STATIC/css"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "ndirs-back/STATIC/index.jsp"
+        }
+      }
+    ]
+  }
+}

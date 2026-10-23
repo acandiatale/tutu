@@ -670,6 +670,7 @@ fixtures/
 | `boot2-rewrite-excluded` | `spring_boot` | `openrewrite.exclusions` 아래의 vendored 헬퍼(FQN `javax.persistence`)와 paging 전용 리포지토리 → 레시피가 못 본 파일을 `jakarta-namespace-sweep` / `spring-data-crud-repository` 가 고침(E13, E14), 0 LLM |
 | `boot2-qlrm-javax` | `spring_boot` | QLRM 1.7.1(옛 좌표 `ch.simas.qlrm`)의 `JpaResultMapper`가 `javax.persistence.Query`를 받음 → `jakarta-library-floor` 가 `org.qlrm:qlrm:4.2.1` 로 재배치(X1b), 0 LLM |
 | `servlet-webxml-legacy` | `servlet_tomcat`(war, web.xml 2.3 DTD만) | W1: web.xml에만 선언된 서블릿 / 필터 / 리스너 / 오류 페이지 → `legacy-boot`의 생성 클래스 `WebXmlRegistrations`, `server.servlet.session.timeout=30m`, 0 LLM |
+| `servlet-nonstandard-dirs` | `servlet_tomcat`(war, 비표준 디렉터리) | `APP/src` 소스, 웹 루트 `STATIC/`(`warSourceDirectory`), 필터링되는 `STATIC/resources`(Excel·템플릿·동영상), `DB/` → JSP·정적 파일은 `ndirs-front`, `STATIC/resources` 는 `ndirs-back` 클래스패스(E12 로 xlsx·mp4 바이트 유지), boot WAR 에 `warSourceDirectory` 없음, 0 LLM |
 
 정확한 기대 결과는 `fixtures/projects/README.md` 의 매트릭스가 원본입니다. 레이아웃별 전후 트리는 [06. 재구성과 회사 레이아웃](06-restructure-and-layouts.md) 에서 다룹니다.
 
@@ -708,7 +709,7 @@ fixtures/
 | `followups_contains` | 후속조치 문장 |
 | `kb` | 픽스처 전용 KB 검사(`dir` 은 `out/` 아래여야 하며 실행 전에 삭제됨, `candidates_min`, `recipes[]`) |
 | `properties` | 외부화 인벤토리(`external`, `absent`, `external_in`(MSA 서비스별), `written`, `placeholder_file_contains`) |
-| `post_checks` | 마이그레이션된 `project/` 검사: `file_exists`, `file_absent`, `file_contains`, `file_decodes_as`, `pom_parent`, `pom_dependency_present`, `pom_dependency_absent`, `pom_dependency_unversioned`, `pom_dependency_versioned`, `pom_packaging`, `pom_module_list` (경로에 `**` glob 가능) |
+| `post_checks` | 마이그레이션된 `project/` 검사: `file_exists`, `file_absent`, `file_contains`, `file_decodes_as`, `pom_parent`, `pom_dependency_present`, `pom_dependency_absent`, `pom_dependency_unversioned`, `pom_dependency_versioned`, `pom_packaging`, `pom_module_list`, `file_same_as`(`{path, source}`: 결과 파일이 as-is 픽스처 파일과 바이트까지 같은지 — 바이너리 확인용, 2026-10-23) (경로에 `**` glob 가능) |
 
 최상위 보조 키: `catalog`(오류 카탈로그 id), `requires_libs`(로컬 저장소에 있어야 할 `g:a:v`), `requires_absent`(없어야 할 `g:a:v`, `missing-artifact` 의 ghost-lib).
 
@@ -721,7 +722,7 @@ fixtures/
 | `OVERRIDES` | `boot2-javax-lib-optional`(legacy-web-lib 2.0.0), `boot2-method-rename`(3.0.0) | `artifacts`(+ `llm`, `kb`) — 선택 목록 8개를 통째로 다시 적음 |
 | `LLM_ONLY_OVERRIDES` | `boot2-hystrix-command`, `java6-legacy`, `multi-module-conflict` | `llm`(재생 LLM), `kb`(전용 KB) |
 | `REWRITE_ONLY_OVERRIDES` | `boot2-rewrite-excluded` | `openrewrite.exclusions`(기본 JSP/HTML 4개 + `**/vendor/**`, `**/repository/**` — 목록은 통째로 대체됨) |
-| `COMPANY_OVERRIDES` | `legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy` | `layout`(`module_dir`, `boot_module`, `comp_module`, `front_module`, `boot_as_is` 를 회사 기본값으로 되돌림) + `artifacts`(`boot_parent`, `comp_parent`) |
+| `COMPANY_OVERRIDES` | `legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy`, `servlet-nonstandard-dirs` | `layout`(`module_dir`, `boot_module`, `comp_module`, `front_module`, `boot_as_is` 를 회사 기본값으로 되돌림) + `artifacts`(`boot_parent`, `comp_parent`) |
 
 로컬 설정이 pre-9c 레이아웃을 고정하고 있으므로, 회사 레이아웃 픽스처는 오버레이로 레이아웃 키를 회사 기본값(= `LayoutConfig` 코드 기본값)으로 되돌리고 역할 부모를 `spring-boot-starter-parent` 4.1.0 대역으로 지정합니다. 테스트는 선택 아티팩트가 항상 정확히 8개인지, 회사 픽스처의 루트 artifactId 가 `shop` 인지도 확인합니다. (요청서의 `PARENT_OVERRIDES` 라는 레지스트리는 현재 코드에 없습니다.)
 

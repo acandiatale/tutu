@@ -359,6 +359,15 @@ class SourceStats(BaseModel):
     web_xml_filters: int = 0
     web_xml_listeners: int = 0
     jsp_javax_files: int = 0                                     # JSP / tag files whose page imports or scriptlets name javax EE types
+    # 2026-10-23 (non-standard directories): root-relative web dirs of the poms — the default `src/main/webapp` when it
+    # exists plus every maven-war-plugin `<warSourceDirectory>` (web root, e.g. `STATIC`) and `<webResources>` directory
+    # (extra web content); kinds are not recorded here, the restructure re-reads the pom (`source_scanner.pom_web_dirs`).
+    # jsp_paths / web_static_dirs / web_static_count include these roots.
+    webapp_dirs: list[str] = Field(default_factory=list)
+    # files ≥ 5 MB (source_scanner.LARGE_MEDIA_BYTES) with a media / archive extension below a web dir or a classpath
+    # resource dir (root-relative, sorted, capped at 20) and the total bytes of all of them (restructure note)
+    large_media_files: list[str] = Field(default_factory=list)
+    large_media_bytes: int = 0
 
 
 # ---------------------------------------------------------------------------

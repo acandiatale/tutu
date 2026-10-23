@@ -101,7 +101,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     by_path = {p.path: p for p in poms}
     poms = [by_path[p] for p in order]
 
-    scan = scan_sources(ws)
+    scan = scan_sources(ws, poms)
     source = scan.stats()
     libraries = detect_libraries(poms, scan)
 

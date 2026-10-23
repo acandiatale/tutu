@@ -612,3 +612,19 @@ def test_properties_wired_into_evaluate(e2e, tmp_path):
     assert e2e.evaluate(res, {"properties": PROPS_WANT}, report, [], _props_project(tmp_path)) == []
     assert e2e.evaluate(res, {"properties": dict(PROPS_WANT, external_min=9)}, report, [],
                         _props_project(tmp_path))
+
+
+def test_file_same_as_post_check(e2e, tmp_path):
+    """2026-10-23: `file_same_as` compares every match byte for byte with the as-is fixture file."""
+    proj, fixture = tmp_path / "p", tmp_path / "f"
+    (proj / "back/target/classes").mkdir(parents=True)
+    (fixture / "STATIC/resources").mkdir(parents=True)
+    (fixture / "STATIC/resources/sample.xlsx").write_bytes(b"PK\x03\x04\xff\x00")
+    (proj / "back/target/classes/sample.xlsx").write_bytes(b"PK\x03\x04\xff\x00")
+    check = {"file_same_as": {"path": "back/target/classes/*.xlsx", "source": "STATIC/resources/sample.xlsx"}}
+    assert e2e.run_post_check(check, proj, fixture) is None
+    (proj / "back/target/classes/sample.xlsx").write_bytes(b"PK\x03\x04\xef\xbf\xbd\x00")   # filtered = corrupted
+    assert "differs from STATIC/resources/sample.xlsx (6 bytes)" in e2e.run_post_check(check, proj, fixture)
+    assert "as-is source" in e2e.run_post_check(check, proj, None)
+    missing = {"file_same_as": {"path": "back/nope.xlsx", "source": "STATIC/resources/sample.xlsx"}}
+    assert "not found" in e2e.run_post_check(missing, proj, fixture)

@@ -37,7 +37,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
-             "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy"]
+             "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -72,6 +72,7 @@ BUILD_MATRIX = [
     ("boot2-rewrite-excluded", ".", "11", ""),
     ("boot2-qlrm-javax", ".", "11", ""),
     ("servlet-webxml-legacy", ".", "8", ""),
+    ("servlet-nonstandard-dirs", ".", "8", ""),
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -139,6 +140,14 @@ class PathCheck(BaseModel):
     path: str
 
 
+class FileSameCheck(BaseModel):
+    """`file_same_as` (2026-10-23): every file matching `path` in the migrated tree is byte-equal to the as-is
+    fixture file `source` (binaries survive the restructure and resource filtering)."""
+    model_config = ConfigDict(extra="forbid")
+    path: str
+    source: str
+
+
 class PostCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
     file_decodes_as: FileCheck | None = None
@@ -152,6 +161,7 @@ class PostCheck(BaseModel):
     pom_dependency_versioned: PomDepsCheck | None = None      # declared with a <version>
     pom_packaging: PomPackagingCheck | None = None
     pom_module_list: PomModulesCheck | None = None
+    file_same_as: FileSameCheck | None = None
 
 
 class AdvisoryExpect(BaseModel):
@@ -358,6 +368,8 @@ def test_post_check_paths_exist_in_fixture(name: str):
         for kind, spec in check.model_dump(exclude_none=True).items():
             if kind in ("file_exists", "file_absent"):      # describe the migrated tree, not the as-is one
                 continue
+            if kind == "file_same_as":
+                assert (FIXTURES / name / spec["source"]).is_file(), f"{name}: file_same_as source {spec['source']}"
             m = roles.fullmatch(spec["path"]) if roles and not (FIXTURES / name / spec["path"]).exists() else None
             if m:
                 base = m.group(1).rsplit("/", 1)[-1]
@@ -423,9 +435,9 @@ REWRITE_ONLY_OVERRIDES = {"boot2-rewrite-excluded": {"**/vendor/**", "**/reposit
 COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module", "front_module", "boot_as_is"},
                             "artifacts": {"boot_parent", "comp_parent"}}
                      for name in ("legacy-role-parents", "company-boot-single", "company-spring5-web",
-                                  "company-servlet-jsp", "servlet-webxml-legacy")}
+                                  "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs")}
 
-COMPANY_NAMES = {"servlet-webxml-legacy": "legacy"}   # root artifactId (= `{name}`) when it is not `shop`
+COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs"}   # root artifactId (= `{name}`) when it is not `shop`
 
 
 def test_fixture_config_override_keeps_8_optionals():
