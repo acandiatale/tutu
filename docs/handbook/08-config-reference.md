@@ -358,9 +358,10 @@ LLM_MODEL=gpt-6-luna                          # fix 모델
 # LLM_RESPONSE_PATH=data.result.content       # llm-probe가 응답을 못 찾을 때만
 LLM_RECORD_DIR=out/llm-records
 JAVA21_HOME=C:/Program Files/Java/jdk-21
-# SBMIG_WEB_OUT=out/web
+# SBMIG_WEB_OUT=out/web                     # 순수 uvicorn일 때만(`sbmig serve`는 --out)
+# SBMIG_MAX_UPLOAD_MB=0                     # 웹 업로드 한도(MB), 0 = 없음(기본 512); 서버가 뜰 때 읽음
 ```
-저장소 루트에 `.env`로 복사합니다(git-ignored). `JAVA21_HOME`은 회사 설정에서 자동으로 쓰이지 않습니다(위 1.3) — 회사에서는 `build.java_home`을 직접 지정합니다.
+저장소 루트에 `.env`로 복사합니다(git-ignored). LLM 변수는 실행마다, `SBMIG_WEB_*`와 `SBMIG_MAX_UPLOAD_MB`는 서버가 뜰 때 읽으므로 바꾸면 서버를 다시 띄웁니다. `JAVA21_HOME`은 회사 설정에서 자동으로 쓰이지 않습니다(위 1.3) — 회사에서는 `build.java_home`을 직접 지정합니다.
 
 ## 4. 회사에서 처음 설정할 때 체크리스트
 1. `config/artifacts.example.yml`을 **config/artifacts.yml**로 복사합니다.

@@ -159,7 +159,7 @@ SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=/path/to/migration-agent uvicorn sbmig
 | `--port` | `8765` | |
 | `--out` / `SBMIG_WEB_OUT` | `out/web` | 업로드(`<out>/_uploads/`)와 실행 디렉터리(`<out>/web-…/`) |
 | `--repo-root` / `SBMIG_WEB_REPO_ROOT` | sbmig 패키지 루트 | 화면에 나오는 설정 파일 목록(`<repo root>/config/*.yml`)과 KB 위치 |
-| `--max-upload-mb` / `SBMIG_MAX_UPLOAD_MB` | `512` | 받아 주는 zip의 최대 크기(MB). `0`은 한도 없음. 한 프로젝트만 유난히 클 때(2026-10-23, 980 MB) 서버를 이 옵션으로 다시 띄웁니다 |
+| `--max-upload-mb` / `SBMIG_MAX_UPLOAD_MB` | `512` | 받아 주는 zip의 최대 크기(MB). `0`은 한도 없음. 한 프로젝트만 유난히 클 때(2026-10-23, 980 MB) 서버를 이 옵션으로 다시 띄우거나 `.env`에 적습니다(서버가 뜰 때 읽음) |
 
 서버 전체 로그는 `<out>/sbmig-web.log`(`sbmig serve`일 때), 실행별 로그는 `<out>/<run id>/sbmig.log`입니다. 서버도 CLI와 같은 환경(JDK 21, `.env`의 LLM 변수)이 필요합니다.
 

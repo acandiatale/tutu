@@ -382,6 +382,18 @@ def test_upload_over_the_limit_is_413_before_and_while_reading(tmp_path, repo, m
     assert r.status_code == 400 and "not a zip" in r.json()["error"]
 
 
+def test_upload_limit_from_dotenv_at_server_start(tmp_path, repo, monkeypatch):
+    """The user keeps server settings in .env: it is read when the app is created, and the shell still wins."""
+    env_file = tmp_path / "server.env"
+    env_file.write_text("SBMIG_MAX_UPLOAD_MB=7   # one oversized project\n", encoding="utf-8")
+    monkeypatch.delenv("SBMIG_MAX_UPLOAD_MB", raising=False)
+    monkeypatch.setenv("SBMIG_ENV_FILE", str(env_file))
+    assert TestClient(create_app(tmp_path / "out", repo)).get("/api/configs").json()["max_upload_mb"] == 7
+    monkeypatch.setenv("SBMIG_MAX_UPLOAD_MB", "3")
+    assert TestClient(create_app(tmp_path / "out", repo)).get("/api/configs").json()["max_upload_mb"] == 3
+    assert TestClient(create_app(tmp_path / "out", repo, max_upload_mb=0)).get("/api/configs").json()["max_upload_mb"] == 0
+
+
 def test_upload_limit_zero_means_no_limit(tmp_path, repo, monkeypatch):
     monkeypatch.setattr(RunManager, "_run_thread_body", fake_body)
     monkeypatch.setenv("SBMIG_MAX_UPLOAD_MB", "0")                             # the operator's way under plain uvicorn

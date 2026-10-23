@@ -31,11 +31,11 @@ from typing import Any
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-from sbmig.core.config import PACKAGE_ROOT
+from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
 from .runs import RUN_ID_RE, SERVED_FILES, RunManager
 
@@ -118,6 +118,7 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
 
 
 def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None) -> FastAPI:
+    load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
     mgr = RunManager(Path(out_dir), Path(repo_root))
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
 
@@ -235,5 +236,6 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     return app
 
 
+load_dotenv_files()            # plain `uvicorn sbmig.web.app:app`: SBMIG_WEB_OUT / SBMIG_WEB_REPO_ROOT from .env as well
 app = create_app(Path(os.environ.get("SBMIG_WEB_OUT", "out/web")),
                  Path(os.environ.get("SBMIG_WEB_REPO_ROOT", str(PACKAGE_ROOT))))

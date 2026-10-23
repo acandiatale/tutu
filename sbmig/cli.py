@@ -297,9 +297,10 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
     Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`."""
     import uvicorn
 
-    from sbmig.core.config import PACKAGE_ROOT
+    from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
     from sbmig.web.app import MAX_UPLOAD_ENV, create_app, describe_max_upload, resolve_max_upload
 
+    load_dotenv_files()                       # .env is read once here for the server itself, then per run
     root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
     attach_file_log(Path(out) / "sbmig-web.log")
     typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}   "

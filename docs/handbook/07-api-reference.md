@@ -128,7 +128,7 @@ $env:SBMIG_WEB_OUT = "out/web"; $env:SBMIG_WEB_REPO_ROOT = "D:\migration-agent"
 .venv\Scripts\uvicorn.exe sbmig.web.app:app --host 127.0.0.1 --port 8765
 ```
 
-`sbmig serve`는 `--config`를 받지 않습니다. 설정은 실행마다 웹 화면(또는 REST의 `configs`)에서 `config/` 안의 파일 이름으로 고릅니다. `build.java_home`, `build.settings_file` 같은 값은 그 yml 파일 안에 있어야 합니다(웹에는 `--java-home` 같은 덮어쓰기가 없음). 서버도 CLI와 같은 환경(`.env`, `JAVA21_HOME` 등)을 읽습니다. 종료 코드: Ctrl+C로 끝낼 때까지 실행.
+`sbmig serve`는 `--config`를 받지 않습니다. 설정은 실행마다 웹 화면(또는 REST의 `configs`)에서 `config/` 안의 파일 이름으로 고릅니다. `build.java_home`, `build.settings_file` 같은 값은 그 yml 파일 안에 있어야 합니다(웹에는 `--java-home` 같은 덮어쓰기가 없음). 서버도 CLI와 같은 환경(`.env`, `JAVA21_HOME` 등)을 읽습니다 — `.env`는 서버가 뜰 때 한 번(`SBMIG_MAX_UPLOAD_MB`, 순수 uvicorn의 `SBMIG_WEB_*`) 그리고 실행마다(LLM 변수) 읽습니다. 종료 코드: Ctrl+C로 끝낼 때까지 실행.
 
 ### 1.5 `sbmig llm-probe` — LLM 연결 점검
 목적: 설정된 제공자로 작은 요청 하나를 보내고, 실제로 보낸 요청(키는 마스킹), 프록시, 응답 헤더/본문, 추출된 답을 출력합니다. 새 게이트웨이에서 가장 먼저 실행합니다. `--config` 없이 `.env`만으로 동작합니다(artifacts를 임시값으로 채움).
@@ -591,7 +591,7 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `SBMIG_<섹션>__<키>` | `_apply_env_overrides` | 임의 설정 키 덮어쓰기(값은 YAML 해석). 예: `SBMIG_LOOP__MAX_LLM_CALLS=30` | CLI 플래그보다 우선 |
 | `SBMIG_WEB_OUT` | `sbmig/web/app.py` | 순수 uvicorn 실행 시 실행 디렉터리(기본 `out/web`) | `sbmig serve`는 `--out` 사용 |
 | `SBMIG_WEB_REPO_ROOT` | `sbmig/web/app.py` | 순수 uvicorn 실행 시 저장소 루트 | |
-| `SBMIG_MAX_UPLOAD_MB` | `sbmig/web/app.py` | 웹 업로드 한도(MB, 기본 512, `0` = 없음) | `sbmig serve --max-upload-mb`가 우선 |
+| `SBMIG_MAX_UPLOAD_MB` | `sbmig/web/app.py` | 웹 업로드 한도(MB, 기본 512, `0` = 없음). `.env`에 두어도 되며 서버가 뜰 때 읽음 | `sbmig serve --max-upload-mb`가 우선 |
 | `JAVA21_HOME` | `config/artifacts.local-e2e.yml`의 `build.java_home`, e2e 스크립트 | 로컬 e2e용 JDK 21 | 회사 설정에서는 `build.java_home`을 직접 지정 |
 | `JAVA_HOME`, `PATH` | Maven 하위 프로세스 | `build.java_home`이 있으면 sbmig가 Maven 환경에서 덮어씀 | |
 | `MAVEN_HOME`, `M2_HOME` | `mvn_executable` | `build.mvn`이 이름일 때 `<값>/bin`도 탐색 | |

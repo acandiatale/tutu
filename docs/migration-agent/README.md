@@ -1687,7 +1687,7 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 
 ### 12.5 웹 UI
 
-`sbmig serve --port 8765` 또는 `uvicorn sbmig.web.app:app`으로 띄웁니다. 업로드 한도는 기본 512 MB이고 `--max-upload-mb N`(또는 `SBMIG_MAX_UPLOAD_MB`, `0` = 없음)으로 바꿉니다. 본문은 `<out>/_uploads/.incoming-*.part`로 스트리밍하면서 검사하므로 1 GB짜리 zip도 메모리에 올리지 않습니다.
+`sbmig serve --port 8765` 또는 `uvicorn sbmig.web.app:app`으로 띄웁니다. 업로드 한도는 기본 512 MB이고 `--max-upload-mb N`(또는 `SBMIG_MAX_UPLOAD_MB` — 셸이나 `.env`, 서버가 뜰 때 읽음; `0` = 없음)으로 바꿉니다. 본문은 `<out>/_uploads/.incoming-*.part`로 스트리밍하면서 검사하므로 1 GB짜리 zip도 메모리에 올리지 않습니다.
 
 | 경로 | 동작 |
 |---|---|
