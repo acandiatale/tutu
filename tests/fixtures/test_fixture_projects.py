@@ -37,7 +37,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "missing-artifact", "msa-shared-lib", "boot2-cloud-legacy", "boot2-method-rename", "boot2-hystrix-command",
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
-             "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs"]
+             "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
+             "boot2-fix-failures"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -61,6 +62,7 @@ BUILD_MATRIX = [
     ("msa-shared-lib", ".", "18", ""),
     ("boot2-cloud-legacy", ".", "11", ""),
     ("boot2-method-rename", ".", "11", "libs"),
+    ("boot2-fix-failures", ".", "11", "libs"),
     ("boot2-hystrix-command", ".", "11", ""),
     ("legacy-external-config", ".", "8", ""),
     ("java6-legacy", ".", "8", ""),
@@ -232,6 +234,43 @@ class PropertiesExpect(BaseModel):
     placeholder_file_contains: list[str] = Field(default_factory=list)
 
 
+class ErrorCaseRecordExpect(BaseModel):
+    """One wanted `ErrorCaseRecord` (scripts/e2e.py `evaluate_error_cases`): listed fields must all match one record."""
+    model_config = ConfigDict(extra="forbid")
+    file: str | None = None
+    status: str | None = None
+    fix_method: str | None = None
+    targeted: bool | None = None
+    change_kind: str | None = None
+    replace_rule_candidate: bool | None = None
+    replace_pairs: list[dict[str, str]] = Field(default_factory=list)
+    attempts_min: int | None = Field(default=None, ge=0)
+    attempt_outcomes: list[str] = Field(default_factory=list)
+    failure_reason: str | None = None
+    block_reason: str | None = None
+
+    @field_validator("file", "status", "fix_method", "change_kind", "failure_reason", "block_reason")
+    @classmethod
+    def _pattern(cls, v: str | None) -> str | None:
+        if v and v.startswith("regex:"):
+            re.compile(v[len("regex:"):])
+        return v
+
+
+class ErrorCasesExpect(BaseModel):
+    """2026-10-23: one record per build error of the run, failures included (`report.error_cases`)."""
+    model_config = ConfigDict(extra="forbid")
+    min: int | None = Field(default=None, ge=0)
+    status: dict[Literal["resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible"], int] = \
+        Field(default_factory=dict)
+    status_min: dict[Literal["resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible"], int] = \
+        Field(default_factory=dict)
+    records: list[ErrorCaseRecordExpect] = Field(default_factory=list)
+    run_files: list[Literal["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"]] = Field(default_factory=list)
+    kb_errors_min: int | None = Field(default=None, ge=0)
+    kb_attempts_min: int | None = Field(default=None, ge=0)
+
+
 class Expect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: bool
@@ -253,6 +292,7 @@ class Expect(BaseModel):
     followups_contains: list[str] = Field(default_factory=list)
     kb: KBExpect | None = None
     properties: PropertiesExpect | None = None
+    error_cases: ErrorCasesExpect | None = None
 
     @field_validator("flags", "forbidden_flags", "optional_bumped", "followups_contains")
     @classmethod
@@ -423,6 +463,7 @@ def test_base_config_has_exactly_8_optionals():
 OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-lib version in the optional list)
     "boot2-javax-lib-optional": ({"artifacts"}, "2.0.0"),
     "boot2-method-rename": ({"artifacts", "llm", "kb"}, "3.0.0"),
+    "boot2-fix-failures": ({"artifacts", "llm", "kb"}, "3.0.0"),
 }
 
 
@@ -484,9 +525,10 @@ def test_fixture_config_override_keeps_8_optionals():
         assert len(cfg.artifacts.optional) == 8, name
         assert keys["com.company.legacy:legacy-web-lib"] == legacy_version, name
         assert "org.slf4j:slf4j-api" not in keys, name
-    a, b = (yaml.safe_load((FIXTURES / n / "sbmig.e2e.yml").read_text(encoding="utf-8"))["artifacts"]["optional"]
-            for n in OVERRIDES)
-    assert [dict(x, version=None) for x in a] == [dict(x, version=None) for x in b]   # same list, other version
+    first, *rest = (yaml.safe_load((FIXTURES / n / "sbmig.e2e.yml").read_text(encoding="utf-8"))["artifacts"]["optional"]
+                    for n in OVERRIDES)
+    for other in rest:                                                               # same list, other version
+        assert [dict(x, version=None) for x in first] == [dict(x, version=None) for x in other]
 
 
 def test_method_rename_override_replays_llm_into_own_kb():
@@ -544,7 +586,8 @@ def test_hystrix_command_override_replays_llm_into_own_kb():
 def test_hystrix_command_replay_ports_the_subclass():
     """Response 1 ports the programmatic HystrixCommand subclass to Resilience4j (SEARCH blocks copied from the
     as-is file, which the spring phase does not touch) and keeps `public Integer execute()` for the caller;
-    response 2 (the caller's cluster) changes nothing. One LLM call per file cluster → max_llm_calls == 2."""
+    response 2 (the caller's cluster) changes nothing. One LLM call per file cluster (2) + the harvest's
+    recipe-candidate call (the repeated replay answer is rejected) → max_llm_calls == 3."""
     from sbmig.fix.client import load_replay_responses
     from sbmig.fix.protocol import parse_fix_response
 
@@ -555,7 +598,7 @@ def test_hystrix_command_replay_ports_the_subclass():
     caller = (FIXTURES / name / "src/main/java/com/example/stock/service/StockService.java").read_text(encoding="utf-8")
     assert "new InventoryCommand(gateway, sku).execute()" in caller
     responses = load_replay_responses(FIXTURES / name / "replay")
-    assert len(responses) == _expected(name)["expect"]["max_llm_calls"] == 2
+    assert len(responses) == 2 and _expected(name)["expect"]["max_llm_calls"] == 3   # 2 fix calls + the harvest's recipe-candidate call
     first, second = (parse_fix_response(t) for t in responses)
     assert first.changes and not first.warnings and {c.path for c in first.changes} == {rel}
     out = src
@@ -620,6 +663,7 @@ def test_optional_artifacts_cover_config():
 @pytest.mark.parametrize("variant,extra", [
     ("boot2-javax-lib-optional", {"sbmig.e2e.yml"}),
     ("boot2-method-rename", {"sbmig.e2e.yml", "replay/llm-001.json", "replay/llm-002.json"}),
+    ("boot2-fix-failures", {"sbmig.e2e.yml", *(f"replay/llm-00{i}.json" for i in range(1, 6))}),
 ])
 def test_javax_lib_variants_share_sources(variant: str, extra: set[str]):
     a, b = FIXTURES / "boot2-javax-lib", FIXTURES / variant
@@ -809,3 +853,30 @@ def test_legacy_external_config_inventory_matches_expected():
     by = {f.key: f.status for f in prof.properties.findings}
     assert sorted(k for k, s in by.items() if s == "external") == sorted(exp["external"])
     assert sorted(k for k, s in by.items() if s == "defined") == sorted(exp["defined"])
+
+
+def test_fix_failures_replay_is_deliberately_imperfect():
+    """boot2-fix-failures (2026-10-23): llm-001 / llm-002 (an attempt and its feedback round) have SEARCH blocks that
+    are not in ClientIpFilter.java (apply_failed), llm-003 / llm-005 edit MemberController.java but keep the removed
+    `clientIp(` call (no_change), llm-004 is the real rename — so the run records a failed attempt before a fix, and a
+    cluster that stays broken."""
+    from sbmig.fix.client import load_replay_responses
+    from sbmig.fix.protocol import parse_fix_response
+
+    name = "boot2-fix-failures"
+    cfg = _effective_cfg(name)
+    assert cfg.llm.provider == "fake" and cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
+    exp = Expected.model_validate(_expected(name)).expect
+    assert exp.kb is not None and cfg.kb.dir == exp.kb.dir == "out/e2e/kb-fix-failures"
+    assert exp.error_cases is not None and exp.error_cases.kb_errors_min
+    responses = [parse_fix_response(t) for t in load_replay_responses(FIXTURES / name / "replay")]
+    assert len(responses) == 5 and all(r.changes and not r.warnings for r in responses)
+    src = {ch.path: (FIXTURES / name / ch.path).read_text(encoding="utf-8") for r in responses for ch in r.changes}
+    bad1, bad2, keep1, real, keep2 = (r.changes[0] for r in responses)
+    for ch in (bad1, bad2):                                                         # apply_failed after feedback
+        assert ch.path.endswith("ClientIpFilter.java") and src[ch.path].count(ch.search) == 0
+    assert real.path == bad1.path and src[real.path].count(real.search) == 1
+    assert real.replace == real.search.replace(".clientIp(", ".remoteClientIp(")                     # text replace
+    for ch in (keep1, keep2):
+        assert ch.path.endswith("MemberController.java") and src[ch.path].count(ch.search) == 1
+        assert "LegacyRequestHelper.clientIp(http)" in ch.replace                                  # still broken

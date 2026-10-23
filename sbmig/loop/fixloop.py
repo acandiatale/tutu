@@ -34,7 +34,7 @@ from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, Bu
                                TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
-from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, error_key
+from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, error_key, sanitize_errors
 from .budget import LoopBudget
 from .components import profile_summary
 
@@ -226,6 +226,9 @@ class BuildFixLoop:
         self._sleep: Optional[Callable[[float], None]] = None   # injectable (tests); None = module `sleep_seconds`
         # round 9: first-wins merge conflicts of the restructure step (set by the orchestrator) → fix-prompt hints
         self.merge_conflicts: list[MergeConflict] = []
+        # error cases (2026-10-23): `sbmig.loop.error_tracker.ErrorTracker`, set by the orchestrator (None = off);
+        # every hook goes through `_track`, so a tracker problem never changes what the loop does
+        self.error_tracker: Any = None
         self._phase_items: list[str] = []
         self._cur_phase: Phase = Phase.JDK21
         attach = getattr(triager, "attach_run", None)
@@ -300,7 +303,13 @@ class BuildFixLoop:
             last = build
             pr.iterations = build_no
             reverted = self._score(pr, pending, build, prev_build)
+            scored = [p.attempt for p in pending]
             pending = []
+            # a reverted round's build shows a tree that no longer exists; a failed build without parsed errors (or a
+            # timeout) says nothing about which errors are gone → void: only the scored attempts are annotated
+            self._track("observe", phase, f"{phase.value}-{build_no}", build, scored,
+                        void=bool(reverted) or (not build.ok and not build.errors) or bool(build.timed_out),
+                        target=target)
             rec = IterationRecord(phase=phase, iteration=build_no, build_ok=build.ok, error_count=build.error_count,
                                   signatures=build.signature_multiset(), build_log=build.log_path)
             pr.iteration_records.append(rec)
@@ -328,6 +337,7 @@ class BuildFixLoop:
                                 "treated as a stall")
             window = (window + [multiset])[-max(2, self.cfg.loop.oscillation_window):]
             clusters = self.triager.cluster(build.errors, self.profile)
+            self._track("observe_clusters", clusters)
             if fix_rounds >= max_iterations:
                 log.info("[%s] build %d: %d error(s) in %d cluster(s) — max fix rounds (%d) used up; the phase ends "
                          "here and the next phase / the final build carry the rest (reported as unresolved)",
@@ -608,6 +618,10 @@ class BuildFixLoop:
         if not pending:
             return False
         cur = {e.signature for e in build.errors}
+        # clusters are per file and L1 signatures carry no file: the same renamed method in two files is one
+        # signature, so "signature still present" alone scored a fixed file as no_change while the other file still
+        # failed (2026-10-23 e2e) — errors with a file are checked as (file, signature) pairs
+        cur_pairs = {(_norm_path(e.file), e.signature) for e in build.errors if e.file}
         prev_sigs = {e.signature for e in prev.errors} if prev is not None else set()
         total = build.error_count
         ratio = self.cfg.loop.regression_ratio
@@ -621,7 +635,7 @@ class BuildFixLoop:
             if build.ok:
                 a.outcome, a.cluster_resolved = "build_ok", True
                 continue
-            a.cluster_resolved = not (set(a.cluster_signatures) & cur)
+            a.cluster_resolved = not _cluster_still_failing(a, cur, cur_pairs)
         any_resolved = any(p.attempt.cluster_resolved for p in pending)
         for p in pending:
             a = p.attempt
@@ -632,12 +646,14 @@ class BuildFixLoop:
                 a.outcome = "regressed"
                 a.notes.append(f"regressed: structural error kind(s) {', '.join(new_struct)} appeared after this "
                                "attempt edited a pom.xml → reverted regardless of error counts")
+                a.introduced_errors = sanitize_errors([e for e in build.errors if e.kind.value in new_struct], 10)
                 structural.add(a.id)
                 continue
             new_in_touched = [e for e in build.errors if e.file and e.file in touched and e.signature not in prev_sigs]
             ratio_regress = (not any_resolved) and total > max(a.errors_before, 1) * ratio
             if not a.cluster_resolved and (new_in_touched or ratio_regress):
                 a.outcome = "regressed"
+                a.introduced_errors = sanitize_errors(new_in_touched, 10)   # error cases: why it regressed
                 why = (f"{len(new_in_touched)} new error(s) in touched files" if new_in_touched
                        else f"errors {a.errors_before} → {total} (> ×{ratio})")
                 a.notes.append(f"regressed: {why}")
@@ -797,6 +813,17 @@ class BuildFixLoop:
     def _journal_decision(self, st: "_Round", d: TriageDecision) -> None:
         self.ws.journal({"event": "decision", "phase": st.phase.value, "iteration": st.iteration,
                          **d.model_dump(mode="json")})
+        self._track("note_decision", d)
+
+    def _track(self, method: str, *args: Any, **kwargs: Any) -> None:
+        """Error-case tracker hook (2026-10-23): no tracker → nothing; a failing tracker is logged, never raised."""
+        t = self.error_tracker
+        if t is None:
+            return
+        try:
+            getattr(t, method)(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 - the tracker never breaks the loop
+            log.warning("error tracker %s failed: %s: %s", method, type(e).__name__, e)
 
     def _handle_cluster(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, prefix: str = "",
                         allow_recipes: bool = True) -> str:
@@ -893,9 +920,14 @@ class BuildFixLoop:
 
     def _new_attempt(self, phase: Phase, iteration: int, n: int, c: ErrorCluster, d: TriageDecision,
                      build: BuildResult) -> FixAttempt:
-        return FixAttempt(id=f"{phase.value}-{iteration}-{n}", phase=phase, iteration=iteration, cluster_id=c.id,
-                          decision=d, errors_before=build.error_count, cluster_signatures=list(c.signatures),
-                          cluster_errors=list(c.errors))   # KB harvest needs the errors (L2 signatures, sanitized copies)
+        att = FixAttempt(id=f"{phase.value}-{iteration}-{n}", phase=phase, iteration=iteration, cluster_id=c.id,
+                         decision=d, errors_before=build.error_count, cluster_signatures=list(c.signatures),
+                         cluster_errors=list(c.errors))   # KB harvest needs the errors (L2 signatures, sanitized copies)
+        try:   # error cases: `git diff base_commit..commit` = the exact code the attempt applied
+            att.base_commit = self.ws.head()
+        except Exception as e:  # noqa: BLE001 - a workspace without git: no diff, nothing else changes
+            log.debug("base commit for %s unavailable: %s", att.id, e)
+        return att
 
     def _record(self, pr: PhaseResult, att: FixAttempt) -> None:
         pr.attempts.append(att)
@@ -907,6 +939,7 @@ class BuildFixLoop:
                          "model": att.model, "files": [ch.path for ch in att.changes],
                          "apply_errors": att.apply_errors, "analysis": att.analysis[:500],
                          "advisory_ids": list(att.advisory_ids)})
+        self._track("note_attempt", att)
 
     def _commit(self, message: str, pre: str) -> Optional[str]:
         if not self.ws.is_dirty():
@@ -950,8 +983,11 @@ class BuildFixLoop:
         try:
             applied, errs = self.fixer.apply(self.ws, list(case.changes))
         except Exception as e:
+            att.proposed_changes = list(case.changes)
             return self._fail(att, f"patch replay failed: {type(e).__name__}: {e}")
         att.changes, att.apply_errors = list(applied), list(errs)
+        if errs or len(applied) < len(case.changes):    # error cases: keep what was proposed, not only what applied
+            att.proposed_changes = list(case.changes)
         att.analysis = f"replayed KB case {case.id}: {case.summary}"
         if not applied:
             self._fail(att, "no KB patch block applied")
@@ -1004,6 +1040,8 @@ class BuildFixLoop:
                 att.notes.append(f"dropped {len(changes) - len(kept)} change(s) aimed at a read-only reference copy")
             changes = kept
         if not changes:
+            if proposal.changes:      # only patches for read-only reference copies: keep them for the error case
+                att.proposed_changes = list(proposal.changes)
             why = "LLM proposed no changes"
             if proposal.requested_files:
                 why += f" (asked for: {', '.join(proposal.requested_files[:5])})"
@@ -1011,8 +1049,11 @@ class BuildFixLoop:
         try:
             applied, errs = self.fixer.apply(self.ws, changes)
         except Exception as e:
+            att.proposed_changes = list(proposal.changes)
             return self._fail(att, f"applying LLM patch failed: {type(e).__name__}: {e}")
         att.changes, att.apply_errors = list(applied), list(errs)
+        if errs or len(applied) < len(proposal.changes):  # error cases: the failed proposal is not lost
+            att.proposed_changes = list(proposal.changes)
         if not applied:
             self._fail(att, "no patch block applied")
 
@@ -1187,6 +1228,7 @@ class BuildFixLoop:
         for c, d, _m in batch:
             st.n += 1
             att = self._new_attempt(phase, iteration, st.n, c, d, build)
+            att.base_commit = pre      # the batch is committed before its attempts exist: diff from the pre-run HEAD
             att.analysis = f"OpenRewrite: {', '.join(d.recipe_ids)}"
             if error:
                 att.apply_errors.append(error)
@@ -1275,6 +1317,15 @@ class BuildFixLoop:
     def _followup(self, text: str) -> None:
         if text not in self.followups:
             self.followups.append(text)
+
+
+def _cluster_still_failing(a: FixAttempt, cur: set[str], cur_pairs: set[tuple[str, str]]) -> bool:
+    """Is any error of the attempt's cluster in the new build? File errors by (file, signature), the others (artifact /
+    module errors) by signature; attempts without recorded errors fall back to the cluster signatures."""
+    if not a.cluster_errors:
+        return bool(set(a.cluster_signatures) & cur)
+    return any(((_norm_path(e.file), e.signature) in cur_pairs) if e.file else (e.signature in cur)
+               for e in a.cluster_errors)
 
 
 def _norm_path(p: str) -> str:

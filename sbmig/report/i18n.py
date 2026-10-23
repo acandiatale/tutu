@@ -91,6 +91,27 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     " — location: {location}": " — 위치: {location}",
     "Last build log: `{path}`": "마지막 빌드 로그: `{path}`",
     "None.": "없음.",
+    # ---- build errors, one record each (error cases, 2026-10-23)
+    "## Build errors and how each was handled": "## 빌드 오류별 처리 내역",
+    "{n} build error(s) seen in this run, one record each.": "이번 실행에서 확인한 빌드 오류 {n}건 (오류마다 기록 1건).",
+    "- by status: {counts}": "- 상태별: {counts}",
+    "- fixed by (resolved errors): {counts}": "- 해결 수단별 (해결된 오류): {counts}",
+    "- {n} LLM fix(es) were plain text replaces — candidates for a deterministic rule "
+    "(`sbmig kb errors replace-candidates`)":
+        "- LLM 수정 {n}건은 단순 텍스트 치환이었다 — 결정적 규칙으로 바꿀 후보 (`sbmig kb errors replace-candidates`)",
+    "| status | where | message | how resolved / why not | attempts |":
+        "| 상태 | 위치 | 메시지 | 해결 방법 / 미해결 사유 | 시도 |",
+    "replace {pairs}": "치환 {pairs}",
+    "the last build stopped before this error's stage — status unknown":
+        "마지막 빌드가 이 오류의 단계 전에 멈춤 — 상태를 알 수 없음",
+    "no fix attempt recorded": "기록된 수정 시도 없음",
+    "… {n} more — see `error_cases.csv`": "… 외 {n}건 — `error_cases.csv` 참조",
+    "Every error with its full history: `error_cases.csv` (opens in Excel) and `error_cases.jsonl` in the run "
+    "directory; every fix attempt with its diff: `fix_attempts.jsonl`. Across projects: `sbmig kb errors` "
+    "(`list`, `summary`, `replace-candidates`).":
+        "오류별 전체 이력은 실행 디렉터리의 `error_cases.csv`(Excel로 열림)와 `error_cases.jsonl`에, 수정 시도별 "
+        "diff는 `fix_attempts.jsonl`에 있다. 여러 프로젝트를 함께 보려면 `sbmig kb errors`(`list`, `summary`, "
+        "`replace-candidates`)를 쓴다.",
     # ---- what we changed / phases / attempts
     "Plan steps executed:": "실행한 계획 단계:",
     "OpenRewrite runs:": "OpenRewrite 실행:",

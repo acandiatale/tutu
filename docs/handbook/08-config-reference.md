@@ -245,6 +245,10 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `kb.auto_promote_after_projects` | int | `2` | 서로 다른 N개 프로젝트에서 실패 없이 성공하면 후보 → active. 0 = 자동 승격 안 함. | 수동 검토만 허용할 때 0. | [05](05-directories-and-storage.md) |
 | `kb.try_candidates_in_plan` | bool | `true` | 후보 레시피를 plan의 OpenRewrite 단계에서 함께 실행하고 단계 빌드 결과로 평가. | 후보가 빌드를 자주 깨뜨릴 때 false. | [05](05-directories-and-storage.md) |
 | `kb.max_hints` | int | `5` | 프롬프트에 넣는 KB 힌트 수. | 거의 바꾸지 않습니다. | — |
+| `kb.error_cases` | bool | `true` | 빌드 에러마다 한 줄(`<kb.dir>/errors.jsonl`), 수정 시도마다 한 줄(`fix_attempts.jsonl`, 실패 포함, 적용한 diff 포함)을 남기고 실행 디렉터리에 `error_cases.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`를 씁니다(2026-10-23). | 끄지 않습니다. 끄면 실패 사례가 로그에만 남습니다. | [05](05-directories-and-storage.md) |
+| `kb.error_hints` | bool | `true` | 같은 에러(L2 / 심볼)의 과거 성공 수정과 과거 실패 시도를 `<kb.dir>/error_hints.json`에서 찾아 수정 프롬프트 힌트로 넣습니다. `kb.use_hints`가 꺼지면 함께 꺼지고 `kb.max_hints`가 전체 상한입니다. | 끄지 않습니다. | [04](04-triage-and-loop.md) |
+| `kb.error_diff_chars` | int | `12000` | 시도 기록 하나에 넣는 diff 최대 글자 수(넘으면 `diff_truncated: true`; 전체는 `changes.patch`). | KB 크기가 문제일 때만 줄입니다. | — |
+| `kb.error_excerpt_chars` | int | `1500` | 에러 기록에 넣는, 그 에러 파일의 diff 발췌 최대 글자 수. | 거의 바꾸지 않습니다. | — |
 
 ### 2.10 `plan` — 계획
 | 키 | 타입 | 기본값 | 의미 | 언제 바꾸나 | 관련 문서 |

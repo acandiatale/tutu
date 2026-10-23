@@ -1,0 +1,28 @@
+# Per-fixture config override (boot2-fix-failures), appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# (`--config config/artifacts.local-e2e.yml --config fixtures/projects/boot2-fix-failures/sbmig.e2e.yml`).
+# Lists replace (deep_merge), so this is the complete optional list: still exactly 8 artifacts — the same list as
+# boot2-javax-lib-optional, but com.company.legacy:legacy-web-lib goes to 3.0.0 (jakarta build in which
+# LegacyRequestHelper.clientIp(..) was renamed to remoteClientIp(..)).
+artifacts:
+  optional:
+    - { group_id: org.apache.commons, artifact_id: commons-lang3,  version: 3.17.0 }
+    - { group_id: com.google.guava,   artifact_id: guava,          version: 33.4.8-jre }
+    - { group_id: org.projectlombok,  artifact_id: lombok,         version: 1.18.38 }
+    - { group_id: org.mapstruct,      artifact_id: mapstruct,      version: 1.6.3 }
+    - { group_id: com.fasterxml.jackson.core, artifact_id: jackson-databind, version: 2.19.2 }
+    - { group_id: org.apache.commons, artifact_id: commons-collections4, version: 4.5.0 }
+    - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
+    - { group_id: com.company.legacy, artifact_id: legacy-web-lib, version: 3.0.0 }
+# Replayed ("scripted") LLM, consumed in call order (the last response repeats) — deliberately imperfect, so the run
+# leaves failed attempts behind for the error-case records (2026-10-23). The fixer re-asks once when a SEARCH block
+# does not match, so one attempt can take two responses: llm-001 + llm-002 = ClientIpFilter.java, SEARCH not in the
+# file twice (apply_failed); llm-003 = MemberController.java edit that keeps the old call (no_change); llm-004 = the
+# real ClientIpFilter fix; llm-005 = another MemberController edit that keeps the call (no_change; repeated by the
+# verify loop, where the file has moved → apply_failed).
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/boot2-fix-failures/replay"
+# Own KB (errors.jsonl / fix_attempts.jsonl are asserted, and a shared KB would leak the ChangeMethodName candidate
+# into the other fixtures). scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-fix-failures

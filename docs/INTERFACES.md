@@ -622,3 +622,158 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
   / `webResources` are stripped from the rewritten root and the generated boot / comp / front poms (note); large
   media note. e2e post-check `file_same_as {path, source}` (byte-equal to the as-is fixture file;
   `run_post_check(check, project, fixture_dir=None)`). Fixture `servlet-nonstandard-dirs`.
+* 2026-10-23 **Error cases** (business requirement: "KB holds too little — every build error needs its own record:
+  what it was, what was done, how it was resolved or why not; failed fixes included; the code an LLM applied; text
+  replace vs LLM"). Models in `sbmig/core/models.py`: `FixMethod`, `ChangeKind`, `ErrorCaseStatus`, `ReplacePair`,
+  `ChangeClass`, `FixAttemptRecord`, `ErrorAttemptRef`, `ErrorCaseRecord`; `FixAttempt.base_commit /
+  proposed_changes / introduced_errors`; `RunReport.error_cases / error_case_counts`. Config `kb.error_cases`,
+  `kb.error_hints`, `kb.error_diff_chars`, `kb.error_excerpt_chars`. Contract below (section "Error cases").
+
+## Error cases (2026-10-23)
+
+Three parts, three owners: **tracker** (`sbmig/loop/error_tracker.py` + hooks in `fixloop.py` / `orchestrator.py`),
+**KB** (`sbmig/kb/changes.py`, `sbmig/kb/error_cases.py`, `store.py`, `cli.py`, `ledger.py` learning section),
+**report** (`sbmig/report/`). Files:
+
+| file | written by | content |
+|---|---|---|
+| `<kb.dir>/errors.jsonl` | KB `append_error_cases` | `ErrorCaseRecord` per build error per run (append-only) |
+| `<kb.dir>/fix_attempts.jsonl` | KB `append_error_cases` | `FixAttemptRecord` per attempt per run (append-only, full diff) |
+| `<kb.dir>/error_hints.json` | KB (incremental; `sbmig kb reindex` rebuilds) | `{version: 1, updated_at, by_generic: {L2: entry}, by_symbol: {symbol: entry}}` |
+| `<run dir>/error_cases.jsonl`, `fix_attempts.jsonl` | orchestrator | the run's prepared records (also with `kb.harvest: false`; not in dry-run) |
+| `<run dir>/error_cases.csv` | orchestrator via KB `write_error_cases_csv` | Excel copy (UTF-8 with BOM) |
+
+### Tracker — `sbmig.loop.error_tracker.ErrorTracker(ws, cfg)`
+One per run, created by the orchestrator (not in dry-run), handed to the loop as `BuildFixLoop.error_tracker`
+(attribute, default None — the loop never requires it). Never raises (every public method catches and logs).
+
+```python
+note_step(step_id: str, phase: Phase) -> None
+    # a plan step outside the fix loop ran (openrewrite / handler / restructure / msa_pom / optional bump): errors that
+    # disappear before the next observed build with no scored attempt are attributed to these steps (plan_step)
+observe(phase: Phase, label: str, build: BuildResult, scored: list[FixAttempt], *, void: bool = False) -> None
+    # every build: the loop after `_score` (scored = the attempts of the previous round, in order), the orchestrator
+    # after each final `clean package` (label "verify-final", "verify-final-2", scored = []).
+    # void=True (the round was reverted, or a failed build parsed no errors / timed out): only the scored attempts
+    # are annotated; nothing opens or closes.
+observe_clusters(clusters: list[ErrorCluster]) -> None     # the triage clusters of the last observed build
+note_attempt(att: FixAttempt) -> None                     # every recorded attempt (BuildFixLoop._record), any outcome
+note_decision(d: TriageDecision) -> None                  # every decision (SKIP / ESCALATE / BLOCKED rationales)
+finalize(blocked: list[BlockedItem], *, run_id: str) -> tuple[list[ErrorCaseRecord], list[FixAttemptRecord]]
+    # raw records: ids, error fields (unsanitized), lifecycle, status, attribution, description, failure_reason,
+    # problem_errors, attempts history, block_reason / suggestion; FixAttemptRecord with description, failure,
+    # introduced / remaining errors, raw `diff` (git `base_commit..commit` limited to the attempt's files; the
+    # proposal as search/replace diff when nothing applied). Project fields, ChangeClass, labels, sanitizing and
+    # the denormalized change fields are left to `prepare_error_cases`.
+```
+
+Rules the tracker implements:
+* **Identity** of an error = `(kind, norm_file, signature or message[:120])`, `norm_file` = the path from the first
+  `src/` segment on (survives the restructure moving files into `{name}-back/`), else the path; several occurrences
+  of one identity are matched by message, then nearest line. One record per occurrence. Record id =
+  `sha1(run_id|identity|occurrence index)[:16]`.
+* **Visibility** of an absent error in a later build B: B ok → visible; the error's module in `B.modules_built` →
+  visible; module == `B.failed_module` or module unknown → visible when B has an error of the same or a later stage
+  (stage: pom_invalid / parent_resolution 0, dependency / plugin_resolution 1, enforcer / rewrite 2, compile /
+  unknown 3, test_compile 4, test_failure 6; plugin_execution = no stage → not visible unless the module built);
+  otherwise masked. Absent + visible → closed (resolved / resolved_indirectly); absent + masked → stays open but
+  marked "not seen since <label>"; a closed error that shows up again reopens (history kept in `notes`).
+* **Attribution** when closed at build B: scored attempts of B (not `reverted`) whose cluster contained the identity
+  → `resolved`, `targeted=True`, first such attempt; else a scored attempt that touched its file → `resolved`,
+  `targeted=False`; else scored attempts exist → `resolved_indirectly`, `resolved_by` = the first, all ids in
+  `notes`; else steps noted since the last build → `resolved_indirectly`, `fix_method="plan_step"`,
+  `resolved_by="step:<id>"`; else `resolved_indirectly`, `fix_method="none"`, note "gone between <label> and
+  <label>".
+* **End state** (finalize): open and present in the last observation → `blocked` when a BlockedItem covers it
+  (its signature in `item.signatures` or the item's errors; `block_reason`, `suggestion`), else `unresolved`;
+  open and masked → `not_visible` (only when the last build failed).
+* **failure_reason**: last targeting attempt → "`<method>` attempt `<id>` `<outcome>`: `<failure>`"; no attempt →
+  the last decision rationale for a cluster that contained it ("no fix attempt: …"), else "no fix attempt before the
+  loop ended". `problem_errors`: the last failed attempt's introduced errors (regressed), else the error itself
+  (no_change), else its apply errors. Blocked: "blocked (`<reason>`): `<suggestion or evidence>`".
+* **FixAttemptRecord.failure** by outcome: apply_failed → apply errors; regressed / reverted → the "regressed: …"
+  note + introduced errors; no_change → "the targeted error(s) were still there after the rebuild"; pending →
+  "not scored (the run ended before the rebuild)"; improved / build_ok → "". `description`: handler →
+  "handler `<id>`: `<description>`" (+ notes); recipe → "OpenRewrite `<ids>`"; kb_patch → `att.analysis`; llm →
+  "LLM `<model>`: `<analysis>`" (analysis ≤ 1500 chars). `fix_method` from the decision: HANDLER → handler,
+  KB_RECIPE → recipe, KB_PATCH → kb_patch, LLM_FIX → llm.
+
+Loop hooks (`fixloop.py`): `_new_attempt` sets `base_commit = ws.head()`; `_apply_llm` / `_apply_kb_patch` keep the
+proposal in `proposed_changes` when not everything applied; `_score` stores `introduced_errors` (the `new_in_touched`
+errors, ≤ 10) on regressed attempts; `_run` calls `observe` after `_score` (void when `reverted` or the failed build
+has no parsed errors) and `observe_clusters` after clustering; `_record` → `note_attempt`; `_journal_decision` →
+`note_decision`. Orchestrator: create the tracker before the phases, `note_step` in each non-loop step,
+`observe` after each final build, and in `_finalize` (after `_finalize_blocked`, before the report is written):
+`errors, attempts = tracker.finalize(report.blocked, run_id=ws.run_id)` → `prepare_error_cases(...)` → run-dir
+files + CSV → `kb.append_error_cases(...)` when `kb.harvest and kb.error_cases` and a profile exists →
+`report.error_cases` (copies with `diff_excerpt=""`), `report.error_case_counts` (status → n, `llm_text_replace`),
+`report.outputs["error_cases"]` / `["fix_attempts"]` / `["error_cases_csv"]`, journal `error_cases` (`count`,
+`by_status`, `attempts`). A crash here never fails the run (flag `error-cases-failed: <msg>`).
+
+### KB — `sbmig/kb/changes.py`, `sbmig/kb/error_cases.py`
+```python
+from sbmig.kb.changes import classify_diff        # (diff_text: str) -> ChangeClass   pure, never raises
+from sbmig.kb.error_cases import prepare_error_cases
+    # (errors, attempts, profile, ws, cfg) -> tuple[list[ErrorCaseRecord], list[FixAttemptRecord]]
+    # fills project / fingerprint / case_type; sanitizes (relative posix paths, ws roots stripped, secrets redacted,
+    # raw ≤ 2000, diff ≤ kb.error_diff_chars with diff_truncated); classify_diff → attempt.change; labels
+    # (label_changes on the attempt's FileChanges when they carry search/replace, else from the diff's pairs);
+    # error_symbol (symbol_for_errors); denormalizes the resolving attempt into each resolved error (change_kind,
+    # replace_pairs, fix_labels, diff_excerpt = hunks of the error's own file ≤ kb.error_excerpt_chars,
+    # replace_rule_candidate = fix_method == "llm" and change_kind == "text_replace"); attempt_count / llm_attempts.
+from sbmig.kb.error_cases import write_error_cases_jsonl, write_error_cases_csv   # (records, path) -> Path
+from sbmig.kb.error_cases import ErrorCaseStore    # ErrorCaseStore(kb_dir): append(errors, attempts) -> int,
+    # iter_errors(**regex filters: status, method, change_kind, project, symbol, signature, run_id),
+    # iter_attempts(...), get_error(id), attempts_of(error), summary(run_ids=None) -> dict,
+    # replace_candidates(min_projects=1) -> list[dict], hints_index() / rebuild_hints() / hints_for(sig2, symbol)
+FileKnowledgeBase.append_error_cases(errors, attempts) -> int     # store + hints index update; never raises
+FileKnowledgeBase.match(cluster)    # KBMatch.hints also gets error-case hints (kb.error_hints): per L2 / symbol of
+                                    # the cluster at most 2 lines — the most frequent past fix ("past runs: fixed by
+                                    # <method> <resolver> in N project(s): <description>; replace `a` → `b`") and the
+                                    # most frequent past failure ("past failure ×k: <method> <outcome> — <failure>;
+                                    # do not repeat it"); kb.max_hints still caps the list
+```
+CLI (`sbmig kb errors …`): `list` (filters `--status --method --change-kind --project --symbol --signature --run
+--limit --json`), `show <id>` (record + its attempts with diffs), `summary [--run]`, `replace-candidates
+[--min-projects]` (LLM text-replace fixes grouped by L2 + replace pair: count, projects, example — rule / command
+candidates), `export --csv PATH [--attempts-csv PATH]` (same filters). `sbmig kb reindex` also rebuilds
+`error_hints.json`; `sbmig kb stats` adds `error_cases` / `fix_attempts` counts. The fleet `learning.md`
+(`render_learning_md`) gains an "Error cases" section (status × method, top failure reasons, top text-replace
+candidates) when the KB has error cases for the fleet's runs.
+
+### Report — `sbmig/report/`
+`report.md` section "Build errors and how each was handled" (after "Unresolved errors"): one line of counts by
+status and by fix method, then a table (≤ 40 rows, unresolved / blocked first): status, `file:line`, message, how
+(method + resolver) or why not (failure_reason), attempts; a note pointing to `error_cases.csv` / `.jsonl`. Korean
+strings in `sbmig/report/i18n.py` (drift test). `report.json` carries `error_cases` / `error_case_counts` as-is.
+
+Implementation notes (2026-10-23, as built — they refine the contract above):
+* `ErrorTracker.observe(phase, label, build, scored, *, void=False, target=None)`: `target` = the MSA service /
+  module the build covered; errors outside it are untouched (an ok build of one service never closes another
+  service's errors). Labels get `@<target>`, repeated labels `#n`. Repeated attempt ids (MSA loops number per
+  service) get record ids `<run_id>:<attempt id>#2`.
+* Visibility, additionally: an ok build proves an error gone only when its goal reached the error's stage
+  (compile errors need `compile`, test-compile errors `test-compile`); `-Dmaven.test.skip=true` / `-DskipTests` builds
+  prove nothing about test-compile / test-failure errors (such errors end `unresolved` with a note); a build without
+  `failed_module` uses the stage rule; the runner's stand-in errors ("mvn exited with code …", "build timed out") are
+  no evidence. Attribution covers the whole masked period (any attempt / step between the last sighting and the
+  closing build). A masked error covered by a BlockedItem stays `not_visible` but keeps `block_reason` /
+  `suggestion`; `problem_errors` of a `not_visible` error = the errors that hid it. Internal tracker failures go to
+  `tracker.problems` (→ flags). `note_step` is called only when the step committed something. A recipe batch
+  attempt's `base_commit` is the HEAD before the rewrite run.
+* Orchestrator: no tracker in dry-run or with `kb.error_cases: false`; `_finalize_error_cases` runs after the
+  advisories and before `_record_run_ledger`. If `sbmig.kb.error_cases` cannot be imported, raw records go to the
+  run directory only (no CSV, no KB). Journal `error_cases` also carries `kb_appended`, `llm_text_replace`.
+* KB: `ErrorCaseStore.append` returns errors + attempts written (`append_counts` gives both); `replace_rule_candidate`
+  only for `status == "resolved"`; an error's `replace_pairs` = the pairs in its own file, else all of the attempt's;
+  classification runs on the path-stripped, not yet redacted diff (pairs inside a redacted secret become `***`);
+  sanitizing also maps the home directory to `~`; `error_*_chars <= 0` = no cap. Hint lines start with
+  `[error <key>]`; `error_hints.json` entries carry `variants` (≤ 25 per key, first-seen order) so an incremental
+  update equals a rebuild. `Ledger.summary()` includes `error_cases` (read from `errors.jsonl` next to the ledger),
+  so the fleet `learning.md` gets the section; `render_learning_md(..., error_cases=None)`. `sbmig kb export` /
+  `import` carry the three files (merge = append unknown ids, then rebuild the hints; counters `error_cases_added`,
+  `fix_attempts_added`); `write_fix_attempts_csv` exists next to `write_error_cases_csv`.
+* Report: `sbmig/report/markdown.py::error_case_lines(r, lang)`, `ERROR_CASE_MAX_ROWS = 40`; web `SERVED_FILES` +
+  `error_cases.csv`, `error_cases.jsonl`, `fix_attempts.jsonl` (`.zip` / `.csv` / `.jsonl` always as attachments).
+* e2e: `expect.error_cases` (`min`, `status`, `status_min`, `records[]`, `run_files`, `kb_errors_min`,
+  `kb_attempts_min`; `scripts/e2e.py::evaluate_error_cases`). Fixture `boot2-fix-failures`.

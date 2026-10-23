@@ -9,6 +9,8 @@
   ``hints(symbol)`` (first hints in ``KBMatch.hints``).
 * ``attempt_record`` / ``blocked_record`` / ``plan_recipe_records`` / ``unresolved_records`` /
   ``advisory_record``: build the ResolutionRecords of a PhaseResult / a finished RunReport.
+* ``summary()`` also carries ``error_cases`` (``sbmig.kb.error_cases.ErrorCaseStore.summary`` of the
+  ``errors.jsonl`` beside the ledger) and the markdown gets an "Error cases" section from it (2026-10-23).
 """
 
 from __future__ import annotations
@@ -306,7 +308,7 @@ class Ledger:
 
         unresolved = Counter(r.symbol or r.signature_generic for r in recs if r.resolution == "unresolved")
         labels = Counter(lb for r in ok for lb in r.fix_labels[:1])
-        return {
+        out = {
             "records": len(recs),
             "projects": len({pkey(r) for r in recs}),
             "runs": len({r.run_id for r in recs if r.run_id}),
@@ -321,10 +323,90 @@ class Ledger:
             "unresolved": [{"symbol": s, "count": n} for s, n in unresolved.most_common(top)],
             "advisories": adv_rows[:top],
         }
+        # error cases (2026-10-23) live next to the ledger (kb/errors.jsonl): the learning report — the fleet's
+        # learning.md included — gets their section without its callers having to know about a second file
+        ec = self.error_cases_summary(run_ids=wanted, top=top)
+        if ec:
+            out["error_cases"] = ec
+        return out
+
+    def error_cases_summary(self, *, run_ids: Optional[Iterable[str]] = None, top: int = 15) -> dict[str, Any]:
+        """``ErrorCaseStore.summary`` of the ``errors.jsonl`` beside this ledger, {} when there are none."""
+        errors_path = self.path.parent / "errors.jsonl"
+        if not errors_path.exists():
+            return {}
+        try:
+            from .error_cases import ErrorCaseStore
+
+            ec = ErrorCaseStore(self.path.parent).summary(run_ids=run_ids, top=top)
+            return ec if ec.get("errors") else {}
+        except Exception as e:  # pragma: no cover - the learning report must not fail on it
+            log.warning("error-case summary failed: %s: %s", type(e).__name__, e)
+            return {}
 
 
 def _md_cell(v: Any) -> str:
     return str(v if v not in (None, "") else "-").replace("|", "\\|").replace("\n", " ")
+
+
+_EC_METHODS = ("handler", "recipe", "kb_patch", "llm", "plan_step", "none")
+_EC_STATUSES = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
+
+
+def _error_cases_md(ec: dict[str, Any]) -> list[str]:
+    """The "Error cases" section (ErrorCaseStore.summary): status × method, top failure reasons, text-replace
+    candidates."""
+    lines = ["## Error cases", ""]
+    lines.append(
+        f"{ec.get('errors', 0)} build error(s) recorded one by one from {ec.get('projects', 0)} project(s) / "
+        f"{ec.get('runs', 0)} run(s), {ec.get('attempts', 0)} fix attempt(s); "
+        f"{ec.get('llm_text_replace', 0)} LLM fix(es) were pure text replaces."
+    )
+    if ec.get("by_status"):
+        lines.append("Status: " + ", ".join(f"{k} {v}" for k, v in ec["by_status"].items()) + ".")
+    if ec.get("by_method"):
+        lines.append("Resolved by: " + ", ".join(f"{k} {v}" for k, v in ec["by_method"].items()) + ".")
+    matrix = ec.get("status_method") or {}
+    if matrix:
+        methods = [m for m in _EC_METHODS if any(m in row for row in matrix.values())]
+        methods += sorted({m for row in matrix.values() for m in row} - set(methods))
+        statuses = [st for st in _EC_STATUSES if st in matrix] + sorted(set(matrix) - set(_EC_STATUSES))
+        lines += [
+            "",
+            "Status × method (resolved: the method that fixed it; otherwise the method of the last attempt, "
+            "none = never attempted):",
+            "",
+            "| status | " + " | ".join(methods) + " |",
+            "|---|" + "---|" * len(methods),
+        ]
+        lines += [
+            f"| {st} | " + " | ".join(str(matrix[st].get(m, 0)) for m in methods) + " |" for st in statuses
+        ]
+    lines += ["", "### Top failure reasons", ""]
+    if ec.get("top_failure_reasons"):
+        lines += ["| L2 signature | errors | projects | why not resolved |", "|---|---|---|---|"]
+        lines += [
+            f"| {_md_cell(r['signature_generic'])} | {r['count']} | {r['projects']} | {_md_cell(r['reason'])} |"
+            for r in ec["top_failure_reasons"]
+        ]
+    else:
+        lines.append("_none_")
+    lines += [
+        "",
+        "### LLM fixes that were only text replaces — candidates for a deterministic rule",
+        "",
+    ]
+    if ec.get("replace_candidates"):
+        lines += ["| L2 signature | replace | errors | projects | example |", "|---|---|---|---|---|"]
+        for r in ec["replace_candidates"]:
+            repl = f"`{r['old']}` → `{r['new']}`"
+            lines.append(
+                f"| {_md_cell(r['signature_generic'])} | {_md_cell(repl)} | {r['count']} | {r['projects']} | "
+                f"{_md_cell(r['example_file'])} |"
+            )
+    else:
+        lines.append("_none_")
+    return lines + [""]
 
 
 def render_learning_md(
@@ -332,9 +414,13 @@ def render_learning_md(
     stats: Optional[dict[str, Any]] = None,
     title: str = "KB learning report",
     extra: Optional[dict[str, Any]] = None,
+    error_cases: Optional[dict[str, Any]] = None,
 ) -> str:
-    """Markdown 'what did we learn / what still needs the LLM / what blocks most projects'."""
+    """Markdown 'what did we learn / what still needs the LLM / what blocks most projects'. ``error_cases``
+    (``ErrorCaseStore.summary``; default: ``summary["error_cases"]`` from :meth:`Ledger.summary`) adds the
+    "Error cases" section when it has records."""
     s = summary
+    ec = error_cases if error_cases is not None else s.get("error_cases")
     lines = [f"# {title}", ""]
     lines.append(f"{s['records']} ledger record(s) from {s['projects']} project(s) / {s['runs']} run(s).")
     if s["by_resolution"]:
@@ -427,6 +513,8 @@ def render_learning_md(
         ]
     else:
         lines.append("_none_")
+    if ec and ec.get("errors"):
+        lines += [""] + _error_cases_md(ec)[:-1]
     if s["unresolved"]:
         lines += ["", "## Unresolved at the end of a run", "", "| symbol / signature | count |", "|---|---|"]
         lines += [f"| {_md_cell(r['symbol'])} | {r['count']} |" for r in s["unresolved"]]

@@ -353,6 +353,12 @@ class KBConfig(BaseModel):
     try_candidates_in_plan: bool = True      # run candidate recipes inside the plan's OpenRewrite step (as-is classpath →
                                              # type attribution works); credited success/fail by the phase's build
     max_hints: int = 5
+    # error cases (2026-10-23): one record per build error + one per fix attempt (failures included), with the code
+    # applied → kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json and <run dir>/error_cases.*
+    error_cases: bool = True
+    error_hints: bool = True                 # past outcomes of the same error (fixes AND failures) → fix-prompt hints
+    error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff (the rest is in <run dir>/changes.patch)
+    error_excerpt_chars: int = 1500          # cap of ErrorCaseRecord.diff_excerpt (the error's own file)
 
 
 class PlanConfig(BaseModel):

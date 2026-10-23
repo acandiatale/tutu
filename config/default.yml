@@ -181,6 +181,12 @@ kb:
   auto_promote_after_projects: 2
   try_candidates_in_plan: true     # candidates run with the plan's recipes (as-is classpath) and get credited by the build
   max_hints: 5
+  # every build error on its own record (what / what was tried / how resolved or why not) + every fix attempt with the
+  # code it applied, failures included: kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json, <run dir>/error_cases.*
+  error_cases: true
+  error_hints: true                # past fixes AND failures of the same error → hints in the fix prompt
+  error_diff_chars: 12000
+  error_excerpt_chars: 1500
 
 plan:
   advisor: none

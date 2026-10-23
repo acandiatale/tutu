@@ -119,6 +119,7 @@ class Orchestrator:
         self.profile: Optional[ProjectProfile] = None
         self.plan: Optional[MigrationPlan] = None
         self.loop: Optional[BuildFixLoop] = None
+        self.error_tracker: Any = None              # sbmig.loop.error_tracker.ErrorTracker of the run (2026-10-23)
         self._handlers_done: set[str] = set()
         self._jdk_pre_done = False
         self._spring_pre_done = False
@@ -279,6 +280,7 @@ class Orchestrator:
         self._phase_failed = False
         self._pending_notes = []
         self.loop = None
+        self.error_tracker = None
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
@@ -455,6 +457,7 @@ class Orchestrator:
                                  self.kb, self._rewrite_runner_or_none(), profile, plan_notes=plan.notes,
                                  budget=self.budget, dry_run=dry_run, blocked=self.blocked,
                                  locator=self._resolve_locator(), advisories=list(report.advisories or []))
+        self._start_error_tracker(dry_run)
         steps = list(plan.steps)
         if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD for s in steps):
             steps.append(PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY,
@@ -679,19 +682,20 @@ class Orchestrator:
             # JDK21-safe handlers: before the first rewrite/build of the run (normally jdk21.rewrite)
             self._jdk_pre_done = True
             if jdk_ids:
-                self._run_handlers(jdk_ids, "pre-emptive (before the first build)")
+                self._run_handlers(jdk_ids, "pre-emptive (before the first build)", phase=step.phase)
         if not self._spring_pre_done and step.phase == Phase.SPRING and step.kind == StepKind.BUILD_FIX_LOOP \
                 and idx > self._last_spring_rewrite:
             # jakarta-dependent handlers wait until the spring recipes migrated the code
             self._spring_pre_done = True
             if spring_ids:
-                self._run_handlers(spring_ids, "pre-emptive (after the jakarta/spring recipes)")
+                self._run_handlers(spring_ids, "pre-emptive (after the jakarta/spring recipes)", phase=step.phase)
         if not self._spring_pre_done and step.phase == Phase.RESTRUCTURE:
             self._spring_pre_done = True
             if spring_ids:
-                self._run_handlers(spring_ids, "pre-emptive (before restructure)")
+                self._run_handlers(spring_ids, "pre-emptive (before restructure)", phase=step.phase)
 
-    def _run_handlers(self, ids: list[str], why: str, pr: Optional[PhaseResult] = None) -> list[str]:
+    def _run_handlers(self, ids: list[str], why: str, pr: Optional[PhaseResult] = None, *,
+                      step_id: Optional[str] = None, phase: Optional[Phase] = None) -> list[str]:
         todo = [h for h in ids if h not in self._handlers_done]
         if not todo:
             return []
@@ -728,6 +732,8 @@ class Orchestrator:
         sha = None
         if done and not self._dry_run and self.ws.is_dirty():
             sha = self.ws.commit(f"handlers: {', '.join(done)}")
+            # error cases: errors gone before the next build with no fix attempt are credited to this step
+            self._note_step(step_id or f"handlers:{','.join(done)}", phase or (pr.phase if pr else Phase.JDK21))
         self.ws.journal({"event": "handlers_preemptive", "why": why, "requested": todo, "changed": done,
                          "files": sorted(set(files)), "commit": sha, "dry_run": self._dry_run})
         if self.report is not None and done:
@@ -746,7 +752,7 @@ class Orchestrator:
 
     def _step_handlers(self, pr: PhaseResult, step: PlanStep) -> None:
         ids = step.params.get("handlers") or step.params.get("handler_ids") or [step.id.split(".")[-1]]
-        self._run_handlers(list(ids), f"plan step {step.id}", pr)
+        self._run_handlers(list(ids), f"plan step {step.id}", pr, step_id=step.id, phase=step.phase)
 
     def _extra_recipe_files(self, step: PlanStep) -> list[Path]:
         files: list[Path] = [Path(r.file) for r in step.recipes if r.file]
@@ -793,6 +799,8 @@ class Orchestrator:
         sha = None
         if not self._dry_run and self.ws.is_dirty():
             sha = self.ws.commit(f"rewrite: {step.id}")
+        if sha and sha != pre:
+            self._note_step(step.id, step.phase)
         self.ws.journal({"event": "rewrite", "step": step.id, "ok": res.ok, "recipes": res.recipes,
                          "changed_files": len(res.changed_files), "commit": sha if sha != pre else None,
                          "error": res.error, "log": res.log_path, "dry_run": self._dry_run})
@@ -943,6 +951,8 @@ class Orchestrator:
             self._restructure_failed(step, mode, f"{type(e).__name__}: {e}")
             return False
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
+        if sha != pre:
+            self._note_step(step.id, step.phase)
         self.report.manual_followups += [f for f in res.manual_followups if f not in self.report.manual_followups]
         for flag in list(getattr(res, "flags", None) or []):      # 2026-10-23: e.g. web-xml-registered
             self._flag(flag)
@@ -1099,6 +1109,7 @@ class Orchestrator:
             return self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
 
         res = _final_build()
+        self._observe_final("verify-final", res, step.target)
         if not res.ok and self._verify_fix_loop(pr, step, res):
             if self.loop is not None and self.loop.aborted:
                 pr.notes.append(f"{step.id}: final fix loop aborted the run ({self.loop.aborted}); the failed build stands")
@@ -1106,6 +1117,7 @@ class Orchestrator:
                 pr.notes.append(f"{step.id}: final build repeated after the fix loop")
                 log.info("verify: repeating `mvn %s` after the final fix loop", goal)
                 res = _final_build()
+                self._observe_final("verify-final-2", res, step.target)
         self._verify_results.append(res)
         skip_tests, skip_run = _skip_flags()
         assert self.report is not None
@@ -1290,6 +1302,106 @@ class Orchestrator:
                          "candidates": res.candidates_created,
                          "promoted": getattr(res, "recipes_promoted", []),
                          "ledger": getattr(res, "ledger_entries", 0)})
+
+    # ------------------------------------------------------------------ error cases (2026-10-23)
+    def _start_error_tracker(self, dry_run: bool) -> None:
+        """One `ErrorTracker` per run, handed to the loop (docs/INTERFACES.md "Error cases"); none in dry-run or
+        with `kb.error_cases: false`."""
+        self.error_tracker = None
+        if dry_run or self.loop is None or not getattr(self.cfg.kb, "error_cases", False):
+            return
+        try:
+            from .error_tracker import ErrorTracker
+            self.error_tracker = ErrorTracker(self.ws, self.cfg)
+        except Exception as e:  # noqa: BLE001 - error cases are a by-product, never a reason to fail a run
+            log.warning("error tracker unavailable: %s: %s", type(e).__name__, e)
+            return
+        self.loop.error_tracker = self.error_tracker
+
+    def _note_step(self, step_id: str, phase: Phase) -> None:
+        t = self.error_tracker
+        if t is None:
+            return
+        try:
+            t.note_step(step_id, phase)
+        except Exception as e:  # noqa: BLE001
+            log.warning("error tracker note_step(%s) failed: %s", step_id, e)
+
+    def _observe_final(self, label: str, res: BuildResult, target: Optional[str]) -> None:
+        t = self.error_tracker
+        if t is None:
+            return
+        try:
+            t.observe(Phase.VERIFY, label, res, [], void=bool(res.timed_out) or (not res.ok and not res.errors),
+                      target=target)
+        except Exception as e:  # noqa: BLE001
+            log.warning("error tracker observe(%s) failed: %s", label, e)
+
+    def _finalize_error_cases(self, report: RunReport) -> None:
+        """Every build error of the run on its own record + every fix attempt (failures included, with the code it
+        applied): `<run dir>/error_cases.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`, the KB's append-only
+        `errors.jsonl` / `fix_attempts.jsonl` (when `kb.harvest` and `kb.error_cases`), `report.error_cases`.
+        Never fails the run: a problem becomes the flag `error-cases-failed: <msg>`."""
+        t = self.error_tracker
+        if t is None or self._dry_run:
+            return
+
+        def flag(text: str) -> None:
+            if text not in report.flags:
+                report.flags.append(text)
+
+        try:
+            errors, attempts = t.finalize(list(report.blocked), run_id=self.ws.run_id)
+            prepare = write_jsonl = write_csv = None
+            try:
+                from sbmig.kb.error_cases import prepare_error_cases as prepare
+                from sbmig.kb.error_cases import write_error_cases_csv as write_csv
+                from sbmig.kb.error_cases import write_error_cases_jsonl as write_jsonl
+            except ModuleNotFoundError as e:   # the KB part is not installed: raw records, no CSV, no KB
+                if not (e.name or "").startswith("sbmig"):
+                    raise
+                log.warning("error cases: %s not available — writing the raw records only", e.name)
+            if prepare is not None:
+                errors, attempts = prepare(errors, attempts, self.profile, self.ws, self.cfg)
+            out = report.outputs
+            run_dir = self.ws.run_dir
+            p_err, p_att = run_dir / "error_cases.jsonl", run_dir / "fix_attempts.jsonl"
+            if write_jsonl is not None:
+                out["error_cases"] = str(write_jsonl(errors, p_err))
+                out["fix_attempts"] = str(write_jsonl(attempts, p_att))
+            else:
+                for path, recs in ((p_err, errors), (p_att, attempts)):
+                    path.write_text("".join(r.model_dump_json() + "\n" for r in recs), encoding="utf-8")
+                out["error_cases"], out["fix_attempts"] = str(p_err), str(p_att)
+            if write_csv is not None:
+                out["error_cases_csv"] = str(write_csv(errors, run_dir / "error_cases.csv"))
+            report.error_cases = [r.model_copy(update={"diff_excerpt": ""}) for r in errors]
+            by_status: dict[str, int] = {}
+            for r in errors:
+                by_status[r.status] = by_status.get(r.status, 0) + 1
+            report.error_case_counts = {**by_status,
+                                        "llm_text_replace": sum(1 for r in errors if r.replace_rule_candidate)}
+            for p in list(getattr(t, "problems", None) or [])[:3]:
+                flag(f"error-cases-failed: {p}")
+            kb_n = None
+            if prepare is not None and self.cfg.kb.harvest and self.cfg.kb.error_cases and self.profile is not None \
+                    and self._kb is not None:          # unsanitized raw records never go into the shared KB
+                append = getattr(self._kb, "append_error_cases", None)
+                if callable(append):
+                    try:
+                        kb_n = append(errors, attempts)
+                    except Exception as e:  # noqa: BLE001 - the KB store says it never raises; stay defensive
+                        log.warning("kb.append_error_cases failed: %s", e)
+                        flag(f"error-cases-failed: kb: {type(e).__name__}: {e}")
+            self.ws.journal({"event": "error_cases", "count": len(errors), "by_status": by_status,
+                             "attempts": len(attempts), "kb_appended": kb_n,
+                             "llm_text_replace": report.error_case_counts["llm_text_replace"]})
+            log.info("error cases: %d error(s) (%s), %d fix attempt(s)%s", len(errors),
+                     ", ".join(f"{k} {v}" for k, v in by_status.items()) or "-", len(attempts),
+                     f", {kb_n} appended to the KB" if kb_n is not None else "")
+        except Exception as e:  # noqa: BLE001 - never fail the run over the error-case records
+            log.exception("error cases failed")
+            flag(f"error-cases-failed: {type(e).__name__}: {e}")
 
     def _record_run_ledger(self, report: RunReport) -> None:
         """Run-level KB ledger lines (unresolved / blocked-only-in-registry) + late auto-promotions."""
@@ -1553,6 +1665,7 @@ class Orchestrator:
         if "json" in self.cfg.report.formats:
             out["report_json"] = str(self.ws.run_dir / "report.json")
         self._finalize_advisories(report)
+        self._finalize_error_cases(report)
         self._record_run_ledger(report)
         writer = self._report_writer
         if writer is None:

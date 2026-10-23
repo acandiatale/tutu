@@ -532,6 +532,31 @@ diff에서 결정적으로 붙는 라벨(`FixLabel`)입니다. 기계적인 라�
 
 ledger를 읽는 명령은 `sbmig kb ledger`와 `sbmig kb learning`입니다. 사람이 할 일 목록(LLM이 계속 고치는 심볼 → 레시피·핸들러로 만들 후보, 여러 프로젝트를 막는 아티팩트 → 라이브러리 담당자)을 보여 줍니다.
 
+### 8.3b 에러 하나하나의 기록 (`sbmig/loop/error_tracker.py`, 2026-10-23)
+
+ledger는 클러스터(파일) 단위라 "에러 N개 → 어떻게 됐나"를 답하지 못했고, 실패한 시도는 로그에만 남았습니다. 현업 요구에 따라 실행마다 `ErrorTracker` 하나가 **모든 빌드의 에러를 하나씩** 따라갑니다.
+
+| 루프의 순간 | 추적기가 하는 일 |
+|---|---|
+| 빌드 직후(채점 뒤) | `observe`: 에러마다 정체성(종류, `src/` 부터의 경로, 시그니처)으로 이전 빌드와 맞춥니다. 같은 시그니처가 한 파일에 3번이면 3개로 따로 셉니다. 사라진 에러는 **그 단계까지 빌드됐을 때만** 닫고, 앞 단계에서 멈춰 안 보이면 열어 둡니다. 되돌린 라운드의 빌드는 판정에 쓰지 않습니다(`void`). |
+| 클러스터링 뒤 | `observe_clusters`: 어느 에러가 어느 클러스터에 들어 있는지 기억합니다. |
+| 결정마다 | `note_decision`: 시도가 없었던 에러의 이유(가려짐, 상향, blocked)를 남깁니다. |
+| 시도마다(실패 포함) | `note_attempt`: 시도 이력. 시도 전 HEAD(`FixAttempt.base_commit`)로 적용한 코드의 diff를 나중에 뽑고, 적용되지 않은 LLM 제안은 `proposed_changes` 에 따로 남깁니다. 회귀한 시도에는 새로 생긴 에러(`introduced_errors`)가 붙습니다. |
+| plan 단계마다 | `note_step`: rewrite / restructure / 선제 핸들러 / bump 사이에 사라진 에러를 그 단계 몫으로 돌립니다(`plan_step`). |
+| 최종 `clean package` 뒤 | `observe(…, "verify-final")` |
+| `_finalize` | `finalize` → `prepare_error_cases`(정제, diff 분류) → 실행 디렉터리 `error_cases.*` → KB `errors.jsonl` / `fix_attempts.jsonl` / `error_hints.json` → `report.error_cases` |
+
+해결로 닫을 때 원인은 이 순서로 정합니다: 이 에러를 겨냥한 시도(`targeted: true`) → 그 파일을 고친 시도 → 같은 라운드의 다른 시도(`resolved_indirectly`) → plan 단계 → 알 수 없음. 끝까지 남은 에러의 `failure_reason` 은 마지막으로 겨냥한 시도의 방법·결과·이유("`llm` attempt `spring-2-2` `no_change`: the targeted error(s) were still there after the rebuild"), 시도가 없었다면 마지막 결정의 이유입니다. 시도 결과별 실패 이유는 이렇습니다.
+
+| `outcome` | `failure` |
+|---|---|
+| `apply_failed` | 적용 오류(예: SEARCH 블록이 파일에 없음, 아무 파일도 바뀌지 않음, LLM이 변경을 제안하지 않음) |
+| `regressed` / `reverted` | 회귀 메모 + 고친 파일에 새로 생긴 에러 |
+| `no_change` | 겨냥한 에러가 다음 빌드에도 그대로 있음(남은 에러 목록) |
+| `pending` | 다음 빌드 전에 실행이 끝나 채점되지 않음 |
+
+이 기록은 다음 프로젝트의 프롬프트로 돌아갑니다(`kb.error_hints`). 같은 L2 / 심볼의 가장 많이 성공한 수정과 **가장 많이 실패한 시도**가 KB 힌트로 들어가므로, LLM은 "과거에 이 방법은 `no_change` 였다"는 것을 보고 다른 길을 찾습니다. 파일 구조와 상태 정의는 [05. 디렉터리와 저장](05-directories-and-storage.md) 4.10b 절, 조회 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb errors` 입니다.
+
 ### 8.4 "빌드 없이는 KB 점수를 주지 않는다"
 
 KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 반영하지 않습니다.
@@ -731,5 +756,6 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | `merge_conflict_hints` | 참조 사본 제공 | `cluster`, `reference_files` |
 | `test_compile_fallback` / `tests_fallback` | 대체 빌드 | `test_errors` / `failing` |
 | `budget_exhausted` / `abort` | 시간 예산 / 부모 해석 불가 | `kind` / `reason` |
+| `error_cases` | 실행 끝(`_finalize`) | `count`, `by_status`, `attempts` |
 
 전체 파이프라인의 journal 이벤트(intake, plan, rewrite, restructure, verify, harvest, report …)와 실행 디렉터리의 다른 파일은 [05-directories-and-storage.md](05-directories-and-storage.md)를, 설정 키 전체는 [08-config-reference.md](08-config-reference.md)를, 운영 절차는 [09-operations.md](09-operations.md)를 보십시오.

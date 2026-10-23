@@ -1,6 +1,7 @@
 """report.md rendering — written for the as-is owners who pick up whatever the agent could not fix."""
 from __future__ import annotations
 
+import re
 from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any, Iterable, Optional
@@ -348,6 +349,111 @@ def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+# ---- build errors, one record each (2026-10-23; records from the error tracker, see INTERFACES "Error cases")
+ERROR_CASE_MAX_ROWS = 40
+_STATUS_COUNT_ORDER = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
+_STATUS_ROW_ORDER = {s: i for i, s in enumerate(("unresolved", "blocked", "not_visible", "resolved",
+                                                 "resolved_indirectly"))}
+_METHOD_ORDER = ("handler", "recipe", "kb_patch", "llm", "plan_step", "none")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s")
+
+
+def _first_sentence(text: str) -> str:
+    s = " ".join(str(text or "").split())
+    m = _SENTENCE_END.search(s)
+    return s[: m.start()] if m else s
+
+
+def _short(text: object, limit: int) -> str:
+    """Whitespace-collapsed and capped like `_cell`, without the pipe escaping (the caller `_cell`s the whole cell)."""
+    s = " ".join(str(text if text is not None else "").split())
+    return s[: limit - 1] + "…" if len(s) > limit else s
+
+
+def _error_case_where(e: Any) -> str:
+    if e.file:
+        return f"`{_cell(f'{e.file}:{e.line}' if e.line else e.file, 140)}`"
+    if e.artifact:
+        return f"`{_cell(e.artifact, 140)}`"
+    if e.module:
+        return f"`{_cell(e.module, 140)}`"
+    return "-"
+
+
+def _replace_pairs_text(e: Any, lang: str = "en") -> str:
+    pairs = list(e.replace_pairs or [])
+    if not pairs:
+        return ""
+    shown = ", ".join(f"`{_short(p.old, 60)}` → `{_short(p.new, 60)}`" for p in pairs[:2])
+    if len(pairs) > 2:
+        shown += f" (+{len(pairs) - 2})"
+    return tr(lang, "replace {pairs}", pairs=shown)
+
+
+def _error_case_how(e: Any, lang: str = "en") -> str:
+    """Resolved: method + resolver + the description's first sentence (+ replace pairs); otherwise why not."""
+    if e.status in ("resolved", "resolved_indirectly"):
+        resolver = e.resolver_id or (e.resolved_by[5:] if (e.resolved_by or "").startswith("step:") else "")
+        sentence = _first_sentence(e.description) or (_first_sentence(e.notes[0]) if e.notes else "")
+        if sentence and resolver and resolver in sentence:      # the description already names who did it
+            how = sentence
+        else:
+            who = e.fix_method + (f" `{resolver}`" if resolver else "")
+            how = f"{who}: {sentence}" if sentence else who
+        rp = _replace_pairs_text(e, lang)
+        return _cell(f"{how} · {rp}" if rp else how, 400)
+    why = " ".join(str(e.failure_reason or "").split())
+    if e.status == "blocked":
+        if not why:
+            why = " ".join(str(e.suggestion or "").split())
+        if e.block_reason and e.block_reason not in why:
+            why = f"`{e.block_reason}`" + (f": {why}" if why else "")
+    if not why:
+        why = (tr(lang, "the last build stopped before this error's stage — status unknown")
+               if e.status == "not_visible" else tr(lang, "no fix attempt recorded"))
+    return _cell(why, 400)
+
+
+def _count_text(counter: Counter, order: Iterable[str]) -> str:
+    keys = [k for k in order if counter.get(k)] + sorted(k for k in counter if k not in order and counter[k])
+    return ", ".join(f"{k} {counter[k]}" for k in keys)
+
+
+def error_case_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """`## Build errors and how each was handled`: counts by status / fix method, ≤ 40 rows (unresolved first),
+    pointers to the run-dir files; [] when the run recorded no error cases."""
+    cases = list(r.error_cases or [])
+    if not cases:
+        return []
+    counts = r.error_case_counts or {}
+    by_status = Counter({s: n for s, n in counts.items() if s in _STATUS_ROW_ORDER and n})
+    if not by_status:
+        by_status = Counter(e.status for e in cases)
+    by_method = Counter(e.fix_method for e in cases if e.status in ("resolved", "resolved_indirectly"))
+    L = [tr(lang, "## Build errors and how each was handled"), "",
+         tr(lang, "{n} build error(s) seen in this run, one record each.", n=sum(by_status.values())), "",
+         tr(lang, "- by status: {counts}", counts=_count_text(by_status, _STATUS_COUNT_ORDER))]
+    if by_method:
+        L.append(tr(lang, "- fixed by (resolved errors): {counts}", counts=_count_text(by_method, _METHOD_ORDER)))
+    text_replace = int(counts.get("llm_text_replace") or 0)
+    if text_replace > 0:
+        L.append(tr(lang, "- {n} LLM fix(es) were plain text replaces — candidates for a deterministic rule "
+                          "(`sbmig kb errors replace-candidates`)", n=text_replace))
+    L += ["", tr(lang, "| status | where | message | how resolved / why not | attempts |"), "|---|---|---|---|---|"]
+    rows = sorted(cases, key=lambda e: _STATUS_ROW_ORDER.get(e.status, len(_STATUS_ROW_ORDER)))
+    for e in rows[:ERROR_CASE_MAX_ROWS]:
+        attempts = f"{e.attempt_count}" + (f" (llm {e.llm_attempts})" if e.llm_attempts else "")
+        L.append(f"| {e.status} | {_error_case_where(e)} | {_cell(e.message, 200)} | {_error_case_how(e, lang)} | "
+                 f"{attempts} |")
+    if len(rows) > ERROR_CASE_MAX_ROWS:
+        L += ["", tr(lang, "… {n} more — see `error_cases.csv`", n=len(rows) - ERROR_CASE_MAX_ROWS)]
+    L += ["", "_" + tr(lang, "Every error with its full history: `error_cases.csv` (opens in Excel) and "
+                             "`error_cases.jsonl` in the run directory; every fix attempt with its diff: "
+                             "`fix_attempts.jsonl`. Across projects: `sbmig kb errors` (`list`, `summary`, "
+                             "`replace-candidates`).") + "_", ""]
+    return L
+
+
 def _cost_summary(c: Any, lang: str = "en") -> str:
     from .cost import fmt_money
     txt = fmt_money(c.total, c.currency)
@@ -483,6 +589,9 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     if r.final_build is not None:
         L.append(tr(lang, "Last build log: `{path}`", path=r.final_build.log_path))
         L.append("")
+
+    # ---- every build error of the run, one record each: how it was handled (resolved / why not)
+    L += error_case_lines(r, lang)
 
     L.append(tr(lang, "## Manual follow-ups"))
     L.append("")

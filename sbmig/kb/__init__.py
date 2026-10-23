@@ -8,8 +8,13 @@ Public API:
     label_changes(changes, errors) -> LabelResult      deterministic fix labels (sbmig.kb.labels)
     compile_recipe(case) -> yaml | None                 recipe candidate from mechanical labels, no LLM
     Ledger(path) / SymbolIndex(path)                    kb/ledger.jsonl and kb/symbols.json (sbmig.kb.ledger)
+    classify_diff(diff) -> ChangeClass                  text replace vs code edit of a diff (sbmig.kb.changes)
+    prepare_error_cases(errors, attempts, profile, ws, cfg) -> (errors, attempts)   error-case records → KB records
+    ErrorCaseStore(kb_dir)                              kb/errors.jsonl, fix_attempts.jsonl, error_hints.json
 """
+from .changes import classify_diff
 from .cli import kb_cli
+from .error_cases import ErrorCaseStore, prepare_error_cases
 from .harvest import sanitize_case
 from .labels import LabelResult, compile_recipe, label_changes
 from .ledger import Ledger, SymbolIndex, render_learning_md
@@ -17,4 +22,5 @@ from .recipes import WHITELIST, validate_recipe_yaml
 from .store import FileKnowledgeBase
 
 __all__ = ["FileKnowledgeBase", "kb_cli", "validate_recipe_yaml", "sanitize_case", "WHITELIST", "LabelResult",
-           "label_changes", "compile_recipe", "Ledger", "SymbolIndex", "render_learning_md"]
+           "label_changes", "compile_recipe", "Ledger", "SymbolIndex", "render_learning_md", "classify_diff",
+           "prepare_error_cases", "ErrorCaseStore"]

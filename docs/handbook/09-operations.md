@@ -93,6 +93,7 @@ intake → analyze → plan → jdk21(레시피 + 루프) → spring(레시피 +
 | 2.5 | `### From here on, your team` | 번호 매긴 할 일 목록(교체 안 된 권고, 교체됐지만 확인할 것, carried-over 고정, blocked/unresolved 안내, 수동 후속 작업) |
 | 3 | `## Blocked — needs human / library action` | 일부러 멈춘 클러스터: 사유, 아티팩트/소유 클래스, 필요 타입 vs 실제 타입, 파일, 제안, 시도 횟수. 나머지 마이그레이션은 계속 진행된 상태입니다. |
 | 4 | `## Unresolved errors` | 예산 안에서 못 고친 오류(파일별, 마지막 javac/Maven 메시지) |
+| 4.1 | `## Build errors and how each was handled` | 이번 실행에서 본 빌드 에러 전부를 하나씩: 상태별 / 해결 수단별 수, LLM이 단순 치환으로 고친 수, 표(최대 40행, 미해결부터): 상태, 위치, 메시지, 어떻게 해결했나 또는 왜 못 했나, 시도 수. 전체는 `error_cases.csv` / `error_cases.jsonl`, 시도별 diff는 `fix_attempts.jsonl`(2026-10-23) |
 | 5 | `## Manual follow-ups` | as-is 담당자가 할 일(web.xml, JSP, XML 빈, 건너뛴 테스트, 저장소 미러 안내 등) |
 | 6 | `## Flags` | 플래그와 설명 |
 | 7 | `## What we changed` | 변경 요약 |

@@ -230,7 +230,7 @@ SSE 이벤트 종류는 다음과 같습니다.
 | `GET /api/runs/{id}` | 상태 |
 | `GET /api/runs/{id}/events` | SSE |
 | `POST /api/runs/{id}/stop` | 현재 노드가 끝나면 중단 |
-| `GET /api/runs/{id}/files/{name}` | 실행 디렉터리의 report.md, report.json, result.zip, sbmig.log, journal.jsonl, changes.patch, plan.json, profile.json만 허용(`SERVED_FILES`). `?download`를 붙이면 첨부 파일로 받음(zip은 항상 첨부) |
+| `GET /api/runs/{id}/files/{name}` | 실행 디렉터리의 report.md, report.json, result.zip, sbmig.log, journal.jsonl, changes.patch, plan.json, profile.json, error_cases.csv, error_cases.jsonl, fix_attempts.jsonl만 허용(`SERVED_FILES`). `?download`를 붙이면 첨부 파일로 받음(zip, csv, jsonl은 항상 첨부) |
 | `GET /api/threads` | 서버 프로세스의 모든 스레드 스택(텍스트). 동시에 `<out>/threads-<timestamp>.txt`로 저장 |
 
 ### 2.6 중단 버튼의 의미

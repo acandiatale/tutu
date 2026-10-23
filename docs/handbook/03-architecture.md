@@ -373,7 +373,7 @@ flowchart TD
 | `GET /api/runs/{id}` | 상태(`queued` / `running` / `finished`, `exit_code`, `node`, `success`, `blocked`, `unresolved`, `llm_calls`) |
 | `GET /api/runs/{id}/events` | SSE: `status`, `node`, `error`, `journal`, `log`, `report`, `ping`, `end` |
 | `POST /api/runs/{id}/stop` | 다음 노드 경계에서 중단 |
-| `GET /api/runs/{id}/files/{name}` | `report.md`, `report.json`, `result.zip`, `sbmig.log`, `journal.jsonl`, `changes.patch`, `plan.json`, `profile.json`만 허용(`SERVED_FILES`) |
+| `GET /api/runs/{id}/files/{name}` | `report.md`, `report.json`, `result.zip`, `sbmig.log`, `journal.jsonl`, `changes.patch`, `plan.json`, `profile.json`, `error_cases.csv`, `error_cases.jsonl`, `fix_attempts.jsonl`만 허용(`SERVED_FILES`) |
 | `GET /api/threads` | 모든 쓰레드의 스택(텍스트). 동시에 `<out>/threads-<ts>.txt`로도 기록합니다. SIGUSR1이 없는 Windows용입니다. |
 
 ### 6.2 `RunManager` (`sbmig/web/runs.py`)

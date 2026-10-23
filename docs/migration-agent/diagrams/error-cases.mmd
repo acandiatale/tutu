@@ -1,0 +1,25 @@
+flowchart TB
+  subgraph t["① 빌드마다 추적 (ErrorTracker, 실행당 1개)"]
+    direction LR
+    B["mvn 빌드 N<br/>에러 N개"] --> O["observe<br/>에러마다 정체성<br/>(종류 · src/ 이후 경로 · 시그니처)"]
+    O --> V{"다음 빌드에서<br/>사라졌나?"}
+    V -->|"사라짐 + 그 단계까지 빌드됨"| C["닫힘<br/>resolved / resolved_indirectly"]
+    V -->|"앞 단계에서 멈춰 안 보임"| M["가려짐<br/>(열린 채로 유지)"]
+    V -->|"그대로"| P["열림<br/>시도 이력 누적"]
+  end
+  subgraph a["② 원인 연결 (attribution)"]
+    direction LR
+    A1["이 에러를 겨냥한 시도<br/>(targeted)"] --> A2["그 파일을 고친 시도"] --> A3["같은 라운드의 다른 시도<br/>(pom 수정 등)"] --> A4["plan 단계<br/>(rewrite · restructure)"]
+  end
+  subgraph f["③ 실행 끝 (finalize)"]
+    direction LR
+    E1["열림 + BlockedItem → blocked<br/>(사유 · 제안)"] ~~~ E2["열림 → unresolved<br/>(마지막 시도의 실패 이유)"] ~~~ E3["가려짐 → not_visible"]
+  end
+  subgraph k["④ 저장과 재사용"]
+    direction LR
+    R["prepare_error_cases<br/>정제 · diff 분류<br/>(text_replace / code_edit)"] --> S["kb/errors.jsonl<br/>kb/fix_attempts.jsonl<br/>run dir: error_cases.csv"]
+    S --> H["kb/error_hints.json<br/>성공한 수정 + 실패한 시도"]
+    H --> L["다음 프로젝트 LLM 프롬프트 힌트<br/>'이 방법은 실패했음'"]
+    S --> Q["sbmig kb errors<br/>summary · replace-candidates · export"]
+  end
+  t --> a --> f --> k

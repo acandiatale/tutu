@@ -88,7 +88,7 @@ sbmig run INPUT [--config FILE]... [--out DIR] [--run-id ID] [--stop-after PHASE
 
 라이브러리 권고(advisory)와 carried-over 고정은 종료 코드를 바꾸지 않습니다. 실행 끝에 콘솔 요약과 `log: <경로>   (share this file + report.md when asking for help)` 줄을 출력합니다.
 
-남기는 파일(`<out>/<run id>/`): `project/`(git 브랜치 `sbmig/<run id>`, 단계·시도마다 커밋), `sbmig.log`, `journal.jsonl`, `logs/NNN-<label>.log`(빌드·rewrite 로그), `profile.json`, plan.json, report.md, report.json, `changes.patch`, `result.zip`, `effective/`(effective-pom 캡처: `depmgmt.json`, `depmgmt-after-restructure.json`), `rewrite/`, `classpath/`, 필요 시 `merge-conflicts/`, `threads-<ts>.txt`. 각 파일의 용도는 [05. 디렉터리와 저장소](05-directories-and-storage.md).
+남기는 파일(`<out>/<run id>/`): `project/`(git 브랜치 `sbmig/<run id>`, 단계·시도마다 커밋), `sbmig.log`, `journal.jsonl`, `logs/NNN-<label>.log`(빌드·rewrite 로그), `profile.json`, plan.json, report.md, report.json, `changes.patch`, `result.zip`, `error_cases.jsonl`, `fix_attempts.jsonl`, `error_cases.csv`, `effective/`(effective-pom 캡처: `depmgmt.json`, `depmgmt-after-restructure.json`), `rewrite/`, `classpath/`, 필요 시 `merge-conflicts/`, `threads-<ts>.txt`. 각 파일의 용도는 [05. 디렉터리와 저장소](05-directories-and-storage.md).
 
 ```bash
 # Linux / macOS
@@ -221,20 +221,29 @@ sbmig rewrite PROJECT_DIR --recipe ID [--recipe ID]... [--dry-run] [--config FIL
 | `sbmig kb show ID` | 케이스 id 또는 레시피 id | 케이스/레시피 상세(YAML 포함) | 0 / 1(없음) |
 | `sbmig kb promote ID` | 레시피 id | 후보(또는 rejected)를 active로 | 0 / 1 |
 | `sbmig kb reject ID` | `--reason`/`-r` | 레시피를 rejected로 | 0 / 1 |
-| `sbmig kb reindex` | — | `index.json`, `symbols.json`을 케이스/레시피 파일에서 재생성 | 0 |
-| `sbmig kb stats` | `--json` | 케이스 수, 상태별 레시피 수, 패턴 수, 색인 시그니처 수 | 0 |
+| `sbmig kb reindex` | — | `index.json`, `symbols.json`을 케이스/레시피 파일에서, `error_hints.json`을 `errors.jsonl` / `fix_attempts.jsonl`에서 재생성 | 0 |
+| `sbmig kb stats` | `--json` | 케이스 수, 상태별 레시피 수, 패턴 수, 색인 시그니처 수, `error_cases` / `fix_attempts` 줄 수 | 0 |
 | `sbmig kb ledger` | `--project`, `--symbol`, `--label`, `--resolution`, `--signature`(모두 정규식), `--limit`/`-n`(기본 50, 0 = 전부), `--json`(한 줄에 한 레코드) | ledger 조회. `--resolution` 값: `handler`, `plan_recipe`, `kb_recipe`, `kb_patch`, `llm_patch`, `optional_bump`, `blocked`, `unresolved`, `advisory` | 0 |
 | `sbmig kb symbols` | `--json`, `--symbol`(정규식) | 심볼 색인 | 0 |
 | `sbmig kb learning` | `--md`, `--json`, `--top`(기본 15) | 배운 것 / 아직 LLM이 필요한 것 / 가장 많이 막는 것 | 0 |
-| `sbmig kb export OUT.zip` | — | KB를 zip으로 | 0 |
-| `sbmig kb import IN.zip` | `--replace` | zip 가져오기(기본 병합) | 0 |
+| `sbmig kb export OUT.zip` | — | KB를 zip으로(`errors.jsonl`, `fix_attempts.jsonl`, `error_hints.json` 포함) | 0 |
+| `sbmig kb import IN.zip` | `--replace` | zip 가져오기(기본 병합). 에러·시도 기록은 없는 `id`만 추가하고 힌트 색인을 다시 만듭니다(출력 `error_cases_added`, `fix_attempts_added`). 새 파일이 없는 옛 zip도 됩니다 | 0 |
 | `sbmig kb match SIGNATURE` | `--project`/`-p` 디렉터리 | 디버그: 이 시그니처(L1/L2)에 KB가 무엇을 돌려줄지 | 0 |
 | `sbmig kb validate RECIPE.yml` | — | 선언형 레시피가 KB 화이트리스트를 지키는지 | 0 / 1 |
+| `sbmig kb errors list` | `--status`, `--method`, `--change-kind`, `--project`, `--symbol`, `--signature`(모두 정규식), `--run`(실행 id 일치), `--limit`/`-n`(기본 50, 0 = 전부, 마지막 N개), `--json`(한 줄에 한 레코드) | 에러 기록 목록: 상태, 방법, 변경 형태, 프로젝트, `파일:줄`, 메시지, 어떻게 해결 / 왜 못 했나 | 0 |
+| `sbmig kb errors show ID` | 에러 id(유일한 앞부분도 됨) 또는 시도 id, `--json` | 에러 기록 하나와 그 시도들(각 diff 포함) | 0 / 1(없음) |
+| `sbmig kb errors summary` | `--run`(반복), `--top`(기본 15), `--json` | 상태 / 방법 / 변경 형태별 수, 상태 × 방법 표, 자주 나온 실패 이유, 남은 L2 | 0 |
+| `sbmig kb errors replace-candidates` | `--min-projects`(기본 1), `--limit`/`-n`(기본 50), `--json` | LLM이 고쳤지만 단순 텍스트 치환이었던 수정을 L2 + 치환 쌍으로 묶어 프로젝트 수 순으로 — 규칙(명령) 후보 | 0 |
+| `sbmig kb errors export` | `--csv PATH`, `--attempts-csv PATH`, `list`와 같은 필터 | 엑셀용 CSV(UTF-8 BOM). 시도 CSV에는 고른 에러의 시도만 | 0 |
 
 ```bash
 sbmig kb list --status candidate
 sbmig kb ledger --resolution blocked --json
 sbmig kb export kb-20261021.zip
+sbmig kb errors summary                                   # 상태 × 방법, 자주 실패한 이유
+sbmig kb errors list --status "unresolved|blocked" --method llm
+sbmig kb errors replace-candidates --min-projects 2        # 규칙으로 바꿀 LLM 치환
+sbmig kb errors export --csv errors.csv --attempts-csv attempts.csv
 ```
 
 ### 1.13 `sbmig recipes` — 레시피 카탈로그(`knowledge/recipes/catalog.yml`)
@@ -368,12 +377,14 @@ sbmig inventory INPUT [--out DIR] [--config FILE]... [--json]
 | report.json | `application/json` |
 | `result.zip` | `application/zip`(항상 첨부로 다운로드) |
 | `sbmig.log` | `text/plain; charset=utf-8` |
-| `journal.jsonl` | `application/x-ndjson` |
+| `journal.jsonl` | `application/x-ndjson`(첨부) |
+| `error_cases.csv` | `text/csv; charset=utf-8`(첨부, UTF-8 BOM — 엑셀로 바로 열림) |
+| `error_cases.jsonl` / `fix_attempts.jsonl` | `application/x-ndjson; charset=utf-8`(첨부) |
 | `changes.patch` | `text/plain; charset=utf-8` |
 | plan.json | `application/json` |
 | `profile.json` | `application/json` |
 
-`?download`를 붙이면 첨부(attachment)로, 없으면 브라우저 안에서(inline) 엽니다. 파일이 아직 없으면 404 `<name> not found`.
+`?download`를 붙이면 첨부(attachment)로, 없으면 브라우저 안에서(inline) 엽니다. `.zip`, `.csv`, `.jsonl`은 항상 첨부입니다. 파일이 아직 없으면 404 `<name> not found`.
 
 ### 2.9 `GET /api/threads`
 서버 프로세스의 모든 스레드 스택을 텍스트로 돌려주고 같은 내용을 `<out>/threads-<YYYYMMDD-HHMMSS>.txt`로 저장합니다(첫 줄 `# written to <경로>`). Windows에는 SIGUSR1이 없으므로 "멈춘 것 같을 때" 이것을 씁니다. 실행 스레드는 `--- thread sbmig-run-<run id> (…) ---` 블록입니다. 진단 절차는 [09. 운영과 진단](09-operations.md).

@@ -224,7 +224,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         path = mgr.run_dir(_check_id(run_id)) / name
         if not path.is_file():
             return JSONResponse({"error": f"{name} not found"}, status_code=404)
-        attach = download is not None or name.endswith(".zip")
+        attach = download is not None or name.endswith((".zip", ".csv", ".jsonl"))
         return FileResponse(path, media_type=SERVED_FILES[name], headers={"Cache-Control": "no-store"},
                             filename=name if attach else None,
                             content_disposition_type="attachment" if attach else "inline")

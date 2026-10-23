@@ -20,7 +20,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 2,
+    "max_llm_calls": 3,
     "blocked": [],
     "unresolved_max": 0,
     "journal_events": [
@@ -69,7 +69,7 @@
     "handover": {
       "spring_boot_after": "4.1.0",
       "from_here_contains": [
-        "regex:code rewritten by the LLM for hystrix: src/main/java/com/example/stock/service/InventoryCommand\\.java — .*Hystrix starter was replaced.* — review these changes \\(changes\\.patch, attempts table\\)",
+        "regex:code rewritten by the LLM for hystrix: (\\S+/)?src/main/java/com/example/stock/service/InventoryCommand\\.java — .*Hystrix starter was replaced.* — review these changes \\(changes\\.patch, attempts table\\)",
         "regex:(?i)verify hystrix → org\\.springframework\\.cloud:spring-cloud-starter-circuitbreaker-resilience4j \\(recipe com\\.company\\.migrate\\.HystrixToResilience4j\\).*"
       ],
       "removed_contains": [

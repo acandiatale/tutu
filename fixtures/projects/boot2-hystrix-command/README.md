@@ -29,7 +29,8 @@ What the migration is expected to do (`expected.json`, docs/ADVISORIES.md "Code 
    `io.github.resilience4j.circuitbreaker.CircuitBreaker.ofDefaults("inventory").executeCallable(...)` and returns
    `getFallback()` on failure, keeping `public Integer execute()` so the caller compiles unchanged (plus a
    `// MIGRATION-TODO:`); `replay/llm-002.json` answers the caller's cluster with no change (it compiles once
-   response 1 is applied in the same round). 2 LLM calls, BUILD SUCCESS, nothing blocked.
+   response 1 is applied in the same round). 2 fix calls + 1 recipe-candidate call in the harvest (the repeated
+   replay answer is rejected as a recipe), BUILD SUCCESS, nothing blocked.
 4. Finalize: `hystrix` outcome `replaced`; `llm_fixed_files = [src/main/java/com/example/stock/service/InventoryCommand.java]`
    and the Handover "from here on" lists "code rewritten by the LLM for hystrix: … — review these changes
    (changes.patch, attempts table)". (Paths are as recorded by the attempt, i.e. before the restructure moved the

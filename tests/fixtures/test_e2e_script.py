@@ -628,3 +628,51 @@ def test_file_same_as_post_check(e2e, tmp_path):
     assert "as-is source" in e2e.run_post_check(check, proj, None)
     missing = {"file_same_as": {"path": "back/nope.xlsx", "source": "STATIC/resources/sample.xlsx"}}
     assert "not found" in e2e.run_post_check(missing, proj, fixture)
+
+
+# ---------------------------------------------------------------- error_cases expectation (2026-10-23)
+EC_REPORT = {"error_cases": [
+    {"file": "src/main/java/a/ClientIpFilter.java", "status": "resolved", "fix_method": "llm",
+     "change_kind": "text_replace", "replace_rule_candidate": True,
+     "replace_pairs": [{"old": "clientIp", "new": "remoteClientIp", "count": 1}],
+     "attempts": [{"outcome": "apply_failed"}, {"outcome": "improved"}], "failure_reason": ""},
+    {"file": "src/main/java/a/MemberController.java", "status": "blocked", "fix_method": "none",
+     "attempts": [{"outcome": "no_change"}, {"outcome": "no_change"}],
+     "failure_reason": "llm attempt spring-2-2 no_change: the targeted error(s) were still there after the rebuild"},
+]}
+
+
+def test_error_cases_expectation_passes(e2e, tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for n in ("error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"):
+        (run_dir / n).write_text("{}\n", encoding="utf-8")
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "errors.jsonl").write_text("{}\n{}\n", encoding="utf-8")
+    (kb / "fix_attempts.jsonl").write_text("{}\n{}\n{}\n", encoding="utf-8")
+    want = {"min": 2, "status": {"resolved": 1}, "status_min": {"blocked": 1},
+            "records": [{"file": "regex:.*/ClientIpFilter\\.java", "status": "resolved", "fix_method": "llm",
+                         "change_kind": "text_replace", "replace_rule_candidate": True,
+                         "replace_pairs": [{"old": "clientIp", "new": "remoteClientIp"}],
+                         "attempts_min": 2, "attempt_outcomes": ["apply_failed", "improved"]},
+                        {"status": "blocked", "attempt_outcomes": ["no_change", "no_change"],
+                         "failure_reason": "regex:(?i).*still there.*"}],
+            "run_files": ["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"],
+            "kb_errors_min": 2, "kb_attempts_min": 3}
+    assert e2e.evaluate_error_cases(want, EC_REPORT, run_dir, kb) == []
+
+
+def test_error_cases_expectation_mismatches(e2e, tmp_path):
+    mm = e2e.evaluate_error_cases(
+        {"min": 3, "status": {"resolved": 2}, "records": [{"status": "resolved", "attempt_outcomes": ["improved",
+                                                                                                    "apply_failed"]}],
+         "run_files": ["error_cases.csv"], "kb_errors_min": 1}, EC_REPORT, None, None)
+    assert any("error_cases=2 < min 3" in m for m in mm)
+    assert any("status resolved=1 expected 2" in m for m in mm)
+    assert any("no error case matching" in m for m in mm)          # the order of outcomes matters
+    assert any("run file error_cases.csv missing" in m for m in mm)
+    assert any("errors.jsonl lines=0" in m for m in mm)
+    assert e2e.evaluate_error_cases({"records": [{"replace_pairs": [{"old": "x", "new": "y"}]}]}, EC_REPORT, None,
+                                    None)
+    assert e2e.evaluate_error_cases({}, {}, None, None) == []        # missing report fields never crash

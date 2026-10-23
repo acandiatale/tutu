@@ -5,7 +5,7 @@ flowchart TB
   end
   subgraph b["② 행동할 것"]
     direction LR
-    BL["## Blocked — needs human /<br/>library action"] --> JX["## javax API jars<br/>still on the classpath"] --> UN["## Unresolved errors"] --> MF["## Manual follow-ups<br/>## Flags"]
+    BL["## Blocked — needs human /<br/>library action"] --> JX["## javax API jars<br/>still on the classpath"] --> UN["## Unresolved errors"] --> EC["## Build errors and<br/>how each was handled"] --> MF["## Manual follow-ups<br/>## Flags"]
   end
   subgraph c["③ 기록"]
     direction LR

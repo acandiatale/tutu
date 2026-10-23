@@ -5,11 +5,11 @@ flowchart TB
   end
   subgraph run2["out/&lt;run id&gt;/ — 진단과 산출물"]
     direction LR
-    CP["classpath/<br/>deptree/"] ~~~ MC["merge-conflicts/"] ~~~ TD["threads-*.txt"] ~~~ OUT["changes.patch · result.zip<br/>report.md · report.json"]
+    CP["classpath/<br/>deptree/"] ~~~ MC["merge-conflicts/"] ~~~ TD["threads-*.txt"] ~~~ OUT["changes.patch · result.zip<br/>report.md · report.json"] ~~~ EC["error_cases.jsonl · .csv<br/>fix_attempts.jsonl"]
   end
   subgraph kbs["kb/ — 플릿 공유 KB (파일)"]
     direction LR
-    CASES["cases/YYYY-MM/*.json<br/>index.json"] ~~~ REC["recipes/<br/>candidates · active · rejected"] ~~~ LED["ledger.jsonl<br/>symbols.json"] ~~~ PAT["patterns/*.yml"]
+    CASES["cases/YYYY-MM/*.json<br/>index.json"] ~~~ REC["recipes/<br/>candidates · active · rejected"] ~~~ LED["ledger.jsonl<br/>symbols.json"] ~~~ ERR["errors.jsonl<br/>fix_attempts.jsonl<br/>error_hints.json"] ~~~ PAT["patterns/*.yml"]
   end
   subgraph rec["llm.record_dir"]
     R["llm-NNNN.json<br/>요청 / 응답 (키 없음)"]

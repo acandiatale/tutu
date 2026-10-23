@@ -43,7 +43,8 @@ def run_engine(cfg, tmp_path, engine: str, *, name: str | None = None, stop_afte
     return orch, ws, report
 
 
-TIME_KEYS = {"started_at", "finished_at", "created_at", "timestamp", "duration_s", "commit"}   # + git SHAs (time-stamped)
+TIME_KEYS = {"started_at", "finished_at", "created_at", "timestamp", "duration_s", "commit",   # + git SHAs (time-stamped)
+             "base_commit", "at"}   # error cases (2026-10-23): HEAD before an attempt, record timestamps
 
 
 def _scrub(x):

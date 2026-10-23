@@ -1,0 +1,85 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18",
+  "spring_version": null,
+  "packaging": "jar",
+  "libraries": [
+    "spring-security",
+    "jpa",
+    "lombok",
+    "validation",
+    "junit5",
+    "mockito"
+  ],
+  "optional_artifacts_in_use": [
+    "org.apache.commons:commons-lang3",
+    "org.projectlombok:lombok",
+    "com.company.legacy:legacy-web-lib"
+  ],
+  "main_classes": [
+    "com.example.members.MemberApiApplication"
+  ],
+  "catalog": [
+    "X2"
+  ],
+  "requires_libs": [
+    "com.company.legacy:legacy-web-lib:1.0.0",
+    "com.company.legacy:legacy-web-lib:3.0.0"
+  ],
+  "expect": {
+    "success": false,
+    "exit_code": 2,
+    "max_llm_calls": 10,
+    "optional_bumped": [
+      "com.company.legacy:legacy-web-lib 1.0.0→3.0.0"
+    ],
+    "kb": {
+      "dir": "out/e2e/kb-fix-failures"
+    },
+    "error_cases": {
+      "min": 2,
+      "status_min": {
+        "resolved": 1
+      },
+      "records": [
+        {
+          "file": "regex:.*/web/ClientIpFilter\\.java",
+          "status": "resolved",
+          "fix_method": "llm",
+          "targeted": true,
+          "change_kind": "text_replace",
+          "replace_rule_candidate": true,
+          "replace_pairs": [
+            {
+              "old": "clientIp",
+              "new": "remoteClientIp"
+            }
+          ],
+          "attempts_min": 2,
+          "attempt_outcomes": [
+            "apply_failed",
+            "improved"
+          ]
+        },
+        {
+          "file": "regex:.*/web/MemberController\\.java",
+          "status": "regex:blocked|unresolved",
+          "attempt_outcomes": [
+            "no_change",
+            "apply_failed"
+          ],
+          "failure_reason": "regex:(?is).*(no_change|apply_failed|repeated_failure).*"
+        }
+      ],
+      "run_files": [
+        "error_cases.jsonl",
+        "fix_attempts.jsonl",
+        "error_cases.csv"
+      ],
+      "kb_errors_min": 2,
+      "kb_attempts_min": 4
+    },
+    "unresolved_max": 1
+  }
+}

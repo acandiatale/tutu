@@ -54,7 +54,11 @@ RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 SERVED_FILES = {"report.md": "text/markdown; charset=utf-8", "report.json": "application/json",
                 "result.zip": "application/zip", "sbmig.log": "text/plain; charset=utf-8",
                 "journal.jsonl": "application/x-ndjson", "changes.patch": "text/plain; charset=utf-8",
-                "plan.json": "application/json", "profile.json": "application/json"}
+                "plan.json": "application/json", "profile.json": "application/json",
+                # every build error of the run + every fix attempt (2026-10-23, see INTERFACES "Error cases")
+                "error_cases.csv": "text/csv; charset=utf-8",
+                "error_cases.jsonl": "application/x-ndjson; charset=utf-8",
+                "fix_attempts.jsonl": "application/x-ndjson; charset=utf-8"}
 POLL_S = 0.5
 KEEPALIVE_S = 15.0
 MAX_UPDATE_CHARS = 20_000          # a node update larger than this is summarized (keys only) in the `node` event

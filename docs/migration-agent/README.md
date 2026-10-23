@@ -1288,7 +1288,7 @@ flowchart TB
   end
   subgraph b["② 행동할 것"]
     direction LR
-    BL["## Blocked — needs human /<br/>library action"] --> JX["## javax API jars<br/>still on the classpath"] --> UN["## Unresolved errors"] --> MF["## Manual follow-ups<br/>## Flags"]
+    BL["## Blocked — needs human /<br/>library action"] --> JX["## javax API jars<br/>still on the classpath"] --> UN["## Unresolved errors"] --> EC["## Build errors and<br/>how each was handled"] --> MF["## Manual follow-ups<br/>## Flags"]
   end
   subgraph c["③ 기록"]
     direction LR
@@ -1312,6 +1312,7 @@ flowchart TB
 | Blocked — needs human / library action | blocked 항목마다 사유, 아티팩트 / 소유 클래스, required vs found, 파일, 제안, 시도 횟수 |
 | javax API jars still on the classpath | 남은 javax API jar와 끌어오는 직접 의존성 |
 | Unresolved errors | blocked를 뺀 나머지 오류(파일별) |
+| Build errors and how each was handled | 이번 실행의 빌드 에러 전부를 하나씩(상태, 위치, 메시지, 해결 방법 또는 실패 이유, 시도 수, 최대 40행). 전체는 `error_cases.csv` / `.jsonl`, 시도별 diff는 `fix_attempts.jsonl`(§10.3) |
 | Manual follow-ups, Flags | 후속 조치(web.xml, JSP, XML 빈, 건너뛴 테스트, 저장소 미러 등), 플래그 |
 | What we changed, Phases, Fix attempts, Escalated clusters | 변경 요약, phase별 결과, 시도별 결정과 커밋 |
 | LLM usage and cost | 모델별 호출, 토큰, 비용(`llm.pricing`, 통화 `llm.pricing_currency`) |
@@ -1545,6 +1546,61 @@ LLM의 자기 평가는 쓰지 않고 다음 빌드에서 확인된 시도만 ha
 `sbmig kb learning`은 ledger를 읽어 세 가지를 보여 줍니다.
 레시피나 핸들러로 만들어야 할 심볼(LLM이 2번 이상 고쳤는데 레시피가 없음), 아직 LLM이 고치는 목록, 여러 프로젝트를 막는 아티팩트입니다.
 
+### 10.3 에러 케이스 기록 (2026-10-23)
+
+현업 요구: 빌드 에러 N개는 **N개의 기록**으로 남아야 하고, 각각 무엇이었는지, 무엇을 했는지, 어떻게 해결했는지(적용한 코드 포함), 해결하지 못했다면 왜인지와 어떤 에러가 문제였는지가 있어야 합니다.
+실패한 시도도 성공과 똑같이 남깁니다.
+결정적 텍스트 치환으로 고쳤는지 LLM이 고쳤는지도 구분해, 나중에 치환만으로 되는 경우를 명령(규칙)으로 바꿀 수 있게 합니다.
+
+```mermaid
+flowchart TB
+  subgraph t["① 빌드마다 추적 (ErrorTracker, 실행당 1개)"]
+    direction LR
+    B["mvn 빌드 N<br/>에러 N개"] --> O["observe<br/>에러마다 정체성<br/>(종류 · src/ 이후 경로 · 시그니처)"]
+    O --> V{"다음 빌드에서<br/>사라졌나?"}
+    V -->|"사라짐 + 그 단계까지 빌드됨"| C["닫힘<br/>resolved / resolved_indirectly"]
+    V -->|"앞 단계에서 멈춰 안 보임"| M["가려짐<br/>(열린 채로 유지)"]
+    V -->|"그대로"| P["열림<br/>시도 이력 누적"]
+  end
+  subgraph a["② 원인 연결 (attribution)"]
+    direction LR
+    A1["이 에러를 겨냥한 시도<br/>(targeted)"] --> A2["그 파일을 고친 시도"] --> A3["같은 라운드의 다른 시도<br/>(pom 수정 등)"] --> A4["plan 단계<br/>(rewrite · restructure)"]
+  end
+  subgraph f["③ 실행 끝 (finalize)"]
+    direction LR
+    E1["열림 + BlockedItem → blocked<br/>(사유 · 제안)"] ~~~ E2["열림 → unresolved<br/>(마지막 시도의 실패 이유)"] ~~~ E3["가려짐 → not_visible"]
+  end
+  subgraph k["④ 저장과 재사용"]
+    direction LR
+    R["prepare_error_cases<br/>정제 · diff 분류<br/>(text_replace / code_edit)"] --> S["kb/errors.jsonl<br/>kb/fix_attempts.jsonl<br/>run dir: error_cases.csv"]
+    S --> H["kb/error_hints.json<br/>성공한 수정 + 실패한 시도"]
+    H --> L["다음 프로젝트 LLM 프롬프트 힌트<br/>'이 방법은 실패했음'"]
+    S --> Q["sbmig kb errors<br/>summary · replace-candidates · export"]
+  end
+  t --> a --> f --> k
+```
+
+![error-cases](diagrams/error-cases.png)
+
+*PNG: `diagrams/error-cases.png` · 원본: `diagrams/error-cases.mmd`*
+
+| 산출물 | 위치 | 내용 |
+|---|---|---|
+| 에러 기록 | `kb/errors.jsonl` | `ErrorCaseRecord` 한 줄 = 빌드 에러 하나. 에러(종류, 메시지, 파일:줄, 심볼, L1 / L2), 처음 / 마지막으로 본 빌드, `status`, 해결한 방법(`fix_method`: handler · recipe · kb_patch · llm · plan_step), 설명, 변경 형태(`change_kind`), 치환 쌍, 그 파일의 diff 발췌, 실패 이유와 문제 에러, 시도 이력 |
+| 시도 기록 | `kb/fix_attempts.jsonl` | `FixAttemptRecord` 한 줄 = 수정 시도 하나(실패 포함). 적용한 코드의 diff(git `base_commit..commit`, 적용되지 않은 LLM 제안은 그 제안), 결과, 실패 이유, 새로 생긴 에러, 남은 에러 |
+| 힌트 색인 | `kb/error_hints.json` | L2 / 심볼별로 가장 많이 성공한 수정과 가장 많이 실패한 시도. 다음 프로젝트의 수정 프롬프트에 "과거 실패: … 반복하지 마십시오"까지 들어갑니다(`kb.error_hints`) |
+| 실행별 사본 | `<run dir>/error_cases.jsonl`, `fix_attempts.jsonl`, `error_cases.csv` | 그 실행의 기록. CSV는 엑셀용(UTF-8 BOM). 웹 UI에서도 내려받습니다 |
+
+**상태(`status`)**: `resolved`(겨냥한 시도나 그 파일을 고친 시도 뒤에 사라짐), `resolved_indirectly`(다른 수정이나 plan 단계로 사라짐), `blocked`(BlockedItem이 덮음, 사유와 제안 포함), `unresolved`(끝까지 남음), `not_visible`(마지막 빌드가 그 단계 전에 멈춰 판단 불가).
+사라졌다고 바로 해결로 보지 않습니다. 그 에러의 모듈이 그 단계까지 빌드됐을 때만 닫고, 다시 나타나면 다시 엽니다.
+
+**변경 형태(`change_kind`)**: `text_replace`는 바뀐 줄마다 옛 줄의 토큰만 바꾼 경우입니다(예: `clientIp` → `remoteClientIp`, `javax` → `jakarta`, 버전 문자열).
+`code_edit`는 줄이 늘거나 줄거나 구조가 바뀐 경우, `mixed`는 둘 다입니다.
+LLM이 고쳤는데 `text_replace`이면 `replace_rule_candidate: true`가 되고, `sbmig kb errors replace-candidates`가 이것을 L2 + 치환 쌍으로 모아 프로젝트 수 순으로 보여 줍니다.
+
+조회: `sbmig kb errors list | show | summary | replace-candidates | export --csv`.
+플릿의 `learning.md`에도 상태 × 방법 표, 자주 나온 실패 이유, 치환 후보가 들어갑니다.
+
 ---
 
 ## 11. 플릿
@@ -1697,7 +1753,7 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 | `POST /api/runs?name=…&configs=…[&stop_after=…][&llm_provider=…]` | zip 업로드 → 202, `queued` 또는 `running` |
 | `GET /api/runs/{id}/events` | SSE 스트림(`status`, `node`, `error`, `journal`, `log`, `report`, `ping`, `end`) |
 | `POST /api/runs/{id}/stop` | 현재 그래프 노드 뒤에서 멈춤 |
-| `GET /api/runs/{id}/files/{name}` | `report.md`, `report.json`, `result.zip`, `sbmig.log`, `journal.jsonl`, `changes.patch`, `plan.json`, `profile.json` |
+| `GET /api/runs/{id}/files/{name}` | `report.md`, `report.json`, `result.zip`, `sbmig.log`, `journal.jsonl`, `changes.patch`, `plan.json`, `profile.json`, `error_cases.csv`, `error_cases.jsonl`, `fix_attempts.jsonl` |
 | `GET /api/threads` | 스레드 덤프(응답 + 파일) |
 
 ### 12.6 Windows
@@ -1723,17 +1779,17 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 | 플릿 데모 | `scripts/fleet-demo.sh`: 여러 픽스처를 새 KB로 순차 실행 |
 | 문서 동기화 | `tests/docs/test_handbook.py`가 핸드북의 경로, 설정 키, CLI 이름을 코드와 대조 |
 
-픽스처는 27개입니다(`fixtures/projects/*/expected.json`).
+픽스처는 29개입니다(`fixtures/projects/*/expected.json`).
 
 | 케이스 | 픽스처 |
 |---|---|
-| `spring_boot` (13) | `boot2`, `boot2-cloud-legacy`, `boot2-hystrix-command`, `boot2-javax-lib`, `boot2-javax-lib-optional`, `boot2-method-rename`, `boot2-qlrm-javax`, `boot2-rewrite-excluded`, `boot3`, `company-boot-single`, `legacy-role-parents`, `multi-module-conflict`, `multi-module-merge` |
+| `spring_boot` (14) | `boot2`, `boot2-cloud-legacy`, `boot2-fix-failures`, `boot2-hystrix-command`, `boot2-javax-lib`, `boot2-javax-lib-optional`, `boot2-method-rename`, `boot2-qlrm-javax`, `boot2-rewrite-excluded`, `boot3`, `company-boot-single`, `legacy-role-parents`, `multi-module-conflict`, `multi-module-merge` |
 | `pure_java` (5) | `enforcer-java8-werror`, `euckr-legacy`, `java6-legacy`, `missing-artifact`, `pure-java` |
 | `spring_legacy` (4) | `company-spring5-web`, `legacy-external-config`, `legacy-ibatis`, `spring5-xml` |
-| `servlet_tomcat` (3) | `company-servlet-jsp`, `servlet-tomcat`, `servlet-webxml-legacy` |
+| `servlet_tomcat` (4) | `company-servlet-jsp`, `servlet-nonstandard-dirs`, `servlet-tomcat`, `servlet-webxml-legacy` |
 | `msa` (2) | `msa`, `msa-shared-lib` |
 
-회사 레이아웃 픽스처(`legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy`)는 각자의 `sbmig.e2e.yml`로 회사 레이아웃을 씁니다.
+회사 레이아웃 픽스처(`legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy`, `servlet-nonstandard-dirs`)는 각자의 `sbmig.e2e.yml`로 회사 레이아웃을 씁니다.
 나머지 픽스처는 `config/artifacts.local-e2e.yml`의 `module/boot-jar` + `module/comp-jar` 레이아웃으로 고정되어 있습니다.
 로컬 e2e는 사내 좌표 대신 공개 대체물(`spring-boot-starter-parent` 4.1.0 등)을 씁니다.
 실제 사내 좌표는 `config/artifacts.example.yml`의 자리표시자를 회사에서 채워 씁니다.

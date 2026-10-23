@@ -690,6 +690,13 @@ class FixAttempt(BaseModel):
     analysis: str = ""
     notes: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
+    # error cases (2026-10-23): what the KB needs to record failures as well as fixes
+    base_commit: Optional[str] = None              # HEAD before the attempt: `git diff base_commit..commit` = the
+                                                   # exact code it applied (handlers / recipes return paths only)
+    proposed_changes: list[FileChange] = Field(default_factory=list)  # the LLM / KB proposal when it did not
+                                                   # (fully) apply — `changes` holds only what applied
+    introduced_errors: list[BuildError] = Field(default_factory=list)  # errors new in the touched files after the
+                                                   # rebuild (set by the loop's scoring; why "regressed")
 
 
 class IterationRecord(BaseModel):
@@ -839,6 +846,143 @@ class HarvestResult(BaseModel):
     recipes_credited: list[str] = Field(default_factory=list)
     recipes_promoted: list[str] = Field(default_factory=list)      # auto-promoted during this harvest
     ledger_entries: int = 0                                        # ResolutionRecords appended
+    notes: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Error cases (2026-10-23, business requirement): every build error of a run is recorded on its own — what it was,
+# what was tried, how it was resolved (with the code applied) or why it was not — and every fix attempt, failed
+# ones included. kb/errors.jsonl + kb/fix_attempts.jsonl (append-only), kb/error_hints.json (hints index),
+# <run dir>/error_cases.jsonl | fix_attempts.jsonl | error_cases.csv. See docs/INTERFACES.md "Error cases".
+# ---------------------------------------------------------------------------
+# who / what made the change: a deterministic handler, an OpenRewrite recipe (plan recipe ids or KB recipes), a
+# replayed KB patch, the LLM, a plan step outside the fix loop (rewrite / restructure / pre-emptive handlers / bump)
+FixMethod = Literal["handler", "recipe", "kb_patch", "llm", "plan_step", "none"]
+# what the change looks like textually (sbmig.kb.changes.classify_diff), independent of who made it:
+#   text_replace = every changed line is the old line with token substitutions (import swaps included) — a rule /
+#   command could do it; code_edit = lines added / removed / restructured; file_* = whole-file operations;
+#   mixed = text replaces + code edits in one change; none = nothing applied
+ChangeKind = Literal["text_replace", "code_edit", "file_create", "file_delete", "file_rename", "mixed", "none"]
+# resolved = gone in a later build that reached its stage, after an attempt that targeted it / touched its file;
+# resolved_indirectly = gone, but no attempt targeted it (a pom fix, another file's fix, a plan step);
+# blocked = still there, covered by a BlockedItem; unresolved = still there at the end of the run;
+# not_visible = absent from the last build only because that build stopped before its stage (status unknown)
+ErrorCaseStatus = Literal["resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible"]
+
+
+class ReplacePair(BaseModel):
+    """One token-level substitution of a text-replace change: `old` became `new` `count` times (in `files`)."""
+    old: str
+    new: str
+    count: int = 1
+    files: list[str] = Field(default_factory=list)            # relative posix paths
+
+
+class ChangeClass(BaseModel):
+    """How a change looks textually — `sbmig.kb.changes.classify_diff(diff_text)`."""
+    change_kind: ChangeKind = "none"
+    replace_pairs: list[ReplacePair] = Field(default_factory=list)
+    file_types: list[str] = Field(default_factory=list)       # java | pom | xml | properties | yaml | jsp | other
+    files: list[str] = Field(default_factory=list)            # relative posix paths the diff touches
+    lines_added: int = 0
+    lines_removed: int = 0
+
+
+class FixAttemptRecord(BaseModel):
+    """One line of kb/fix_attempts.jsonl: one fix attempt of a run — success or failure — with the code it applied."""
+    id: str                                        # "<run_id>:<attempt id>"
+    at: datetime = Field(default_factory=utcnow)
+    project: str = ""
+    project_fingerprint: str = ""
+    run_id: str = ""
+    case_type: CaseType = CaseType.UNKNOWN
+    phase: Phase = Phase.SPRING
+    iteration: int = 0
+    attempt_id: str = ""                           # FixAttempt.id
+    cluster_id: str = ""
+    error_ids: list[str] = Field(default_factory=list)       # ErrorCaseRecord ids this attempt targeted
+    fix_method: FixMethod = "none"
+    resolver_id: str = ""                          # handler id | recipe ids (comma) | KB case ids | model
+    model: str = ""
+    outcome: AttemptOutcome = "pending"
+    applied: bool = False
+    description: str = ""                          # what was done: handler description / LLM analysis / recipes / case
+    failure: str = ""                              # why it failed ("" on improved / build_ok)
+    introduced_errors: list[str] = Field(default_factory=list)   # "file:line message" — appeared in touched files
+    remaining_errors: list[str] = Field(default_factory=list)    # targeted errors still present after the rebuild
+    diff: str = ""                                 # unified diff applied (git), or of the proposal when none applied
+    diff_truncated: bool = False
+    change: ChangeClass = Field(default_factory=ChangeClass)
+    fix_labels: list[str] = Field(default_factory=list)          # FixLabel values (sbmig.kb.labels)
+    replacement: str = ""
+    llm_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    advisory_ids: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ErrorAttemptRef(BaseModel):
+    """One attempt in an error's history (`ErrorCaseRecord.attempts`) — the short form of a FixAttemptRecord."""
+    attempt_id: str                                # FixAttemptRecord.id
+    phase: Phase = Phase.SPRING
+    iteration: int = 0
+    fix_method: FixMethod = "none"
+    resolver_id: str = ""
+    outcome: AttemptOutcome = "pending"
+    failure: str = ""
+    change_kind: ChangeKind = "none"
+
+
+class ErrorCaseRecord(BaseModel):
+    """One line of kb/errors.jsonl: ONE build error of a run (N errors in a build → N records): what it was, what
+    was tried, how it was resolved — or why not, and which errors were the problem."""
+    id: str                                        # sha1(run_id | identity | occurrence)[:16]
+    at: datetime = Field(default_factory=utcnow)
+    project: str = ""
+    project_fingerprint: str = ""
+    run_id: str = ""
+    case_type: CaseType = CaseType.UNKNOWN
+    # the error (sanitized: relative paths, secrets redacted, raw ≤ 2000 chars)
+    error_kind: ErrorKind = ErrorKind.UNKNOWN
+    message: str = ""
+    file: Optional[str] = None
+    line: Optional[int] = None
+    symbol: Optional[str] = None                   # javac "symbol:"
+    location: Optional[str] = None
+    module: Optional[str] = None
+    artifact: str = ""                             # g:a[:v] of resolution errors
+    signature: str = ""                            # L1
+    signature_generic: str = ""                    # L2
+    error_symbol: str = ""                         # cross-project key (sbmig.kb.labels.symbol_for_errors)
+    raw: str = ""
+    # lifecycle in the run (build labels "<phase>-<n>", "verify-final", "verify-final-2")
+    first_seen: str = ""
+    first_phase: Phase = Phase.SPRING
+    last_seen: str = ""
+    builds_present: int = 1
+    # outcome
+    status: ErrorCaseStatus = "unresolved"
+    resolved_at: str = ""                          # build label in which it was gone
+    resolved_phase: Optional[Phase] = None
+    fix_method: FixMethod = "none"                 # of the resolving attempt / step
+    resolver_id: str = ""
+    resolved_by: Optional[str] = None              # FixAttemptRecord id, or "step:<step id>" for plan_step
+    targeted: bool = False                         # the resolving attempt's cluster contained this error
+    description: str = ""                          # how it was resolved, or what was tried (status-dependent)
+    change_kind: ChangeKind = "none"               # of the resolving change (denormalized from the attempt)
+    replace_pairs: list[ReplacePair] = Field(default_factory=list)
+    fix_labels: list[str] = Field(default_factory=list)
+    diff_excerpt: str = ""                         # the resolving diff restricted to this error's file (capped)
+    replace_rule_candidate: bool = False           # resolved by the LLM with a pure text replace → a rule could do it
+    # failure side
+    failure_reason: str = ""                       # why not resolved ("" when resolved)
+    problem_errors: list[str] = Field(default_factory=list)  # "file:line message" that made the last attempt fail
+    block_reason: str = ""                         # BlockReason value
+    suggestion: str = ""
+    attempts: list[ErrorAttemptRef] = Field(default_factory=list)   # every attempt that targeted it, in order
+    attempt_count: int = 0
+    llm_attempts: int = 0
     notes: list[str] = Field(default_factory=list)
 
 
@@ -1043,6 +1187,10 @@ class RunReport(BaseModel):
     properties: Optional[PropertyInventory] = None               # profile inventory + placeholders written (round 8)
     flags: list[str] = Field(default_factory=list)               # e.g. "test-compile-skipped"
     javax_api_jars: list[JavaxApiJar] = Field(default_factory=list)   # report.javax_api_inventory (2026-10-22)
+    # every build error of the run, one record each (2026-10-23; full detail incl. diffs in <run dir>/error_cases.jsonl
+    # and fix_attempts.jsonl — the report copy has `diff_excerpt` emptied to keep report.json small)
+    error_cases: list[ErrorCaseRecord] = Field(default_factory=list)
+    error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count, plus "llm_text_replace"
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
 

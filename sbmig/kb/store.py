@@ -11,6 +11,9 @@ Layout under ``cfg.kb_dir`` (created on first use)::
     patterns/*.yml                      {id, match: {signature_regex}, recipes: [...], hints: [...], handler_ids: [...]}
     ledger.jsonl                        append-only ResolutionRecords (resolved / blocked / unresolved)
     symbols.json                        error-case symbol → fix labels / replacement / projects / cases
+    errors.jsonl                        append-only ErrorCaseRecords: every build error of every run (2026-10-23)
+    fix_attempts.jsonl                  append-only FixAttemptRecords: every fix attempt, failures included, + diff
+    error_hints.json                    L2 / symbol → past fixes and failures (derived; `kb reindex` rebuilds it)
 
 All writes are atomic (temp file + ``os.replace``). Thread/process safety is not provided.
 """
@@ -44,7 +47,8 @@ from sbmig.core.models import (
 )
 from sbmig.core.workspace import Workspace
 
-from .labels import symbol_for_errors
+from .error_cases import ErrorCaseStore
+from .labels import symbol_for_error, symbol_for_errors
 from .ledger import Ledger, SymbolIndex, advisory_record, blocked_record, unresolved_records
 from .recipes import recipe_names_in_yaml
 
@@ -55,6 +59,7 @@ STATUSES = ("active", "candidate", "rejected")
 _STATUS_DIR = {"active": "active", "candidate": "candidates", "rejected": "rejected"}
 _UPDATED_TAG = "updated:"
 MAX_MATCH_CASES = 10
+ERROR_CASE_FILES = ("errors.jsonl", "fix_attempts.jsonl", "error_hints.json")
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -94,6 +99,7 @@ class FileKnowledgeBase:
         self._index: Optional[dict] = None
         self._promoted: list[str] = []                  # auto-promotions not yet reported (drain_promoted)
         self._ledger_blocked: set[tuple[str, str]] = set()   # (run_id, blocked id) already in the ledger
+        self._error_store: Optional[ErrorCaseStore] = None   # cached: keeps the hints index loaded across a fleet
 
     # ------------------------------------------------------------------ layout
     @property
@@ -125,6 +131,22 @@ class FileKnowledgeBase:
 
     def symbol_index(self) -> SymbolIndex:
         return SymbolIndex(self.symbols_path)
+
+    def error_case_store(self) -> ErrorCaseStore:
+        """errors.jsonl / fix_attempts.jsonl / error_hints.json (one instance per KB: the hints index is loaded
+        once and reloaded only when the file changes)."""
+        if self._error_store is None or self._error_store.root != self.root:
+            self._error_store = ErrorCaseStore(self.root)
+        return self._error_store
+
+    def append_error_cases(self, errors, attempts) -> int:
+        """Append a run's prepared error / attempt records (ids already stored are skipped) and update the hints
+        index. Returns the number of new records (errors + attempts). Never raises."""
+        try:
+            return self.error_case_store().append(list(errors or []), list(attempts or []))
+        except Exception as e:
+            log.warning("kb.append_error_cases failed: %s: %s", type(e).__name__, e)
+            return 0
 
     def status_dir(self, status: str) -> Path:
         return self.recipes_dir / _STATUS_DIR[status]
@@ -210,6 +232,12 @@ class FileKnowledgeBase:
         self._save_index()
         if self.cfg.kb.symbol_index:
             self.symbol_index().rebuild(cases)
+        store = self.error_case_store()
+        if store.errors_path.exists():
+            try:
+                store.rebuild_hints()
+            except Exception as e:  # the case index above is what reindex must not lose
+                log.warning("error hints rebuild failed: %s: %s", type(e).__name__, e)
         return len(cases)
 
     # ------------------------------------------------------------------ cases
@@ -644,8 +672,30 @@ class FileKnowledgeBase:
                 except Exception as e:  # pragma: no cover - hints are best effort
                     log.debug("symbol hints failed: %s", e)
             hints = symbol_hints + pattern_hints + [self.case_hint(c) for c in out.cases]
+            # error cases (2026-10-23): past fixes AND past failures of the same L2 / error symbol, after the
+            # existing hints; max_hints still caps the whole list
+            if kbc.error_hints:
+                for line in self._error_hints(cluster, l2):
+                    if line not in hints:
+                        hints.append(line)
             out.hints = hints[: kbc.max_hints]
         return out
+
+    def _error_hints(self, cluster: ErrorCluster, l2: list[str]) -> list[str]:
+        store = self.error_case_store()
+        if not store.hints_path.exists():
+            return []
+        lines: list[str] = []
+        try:
+            symbols: list[str] = []
+            for e in cluster.errors:
+                sym = symbol_for_error(e)
+                if sym and sym not in symbols:
+                    symbols.append(sym)
+            lines = store.hints_for_keys(l2, symbols)
+        except Exception as e:  # pragma: no cover - hints are best effort
+            log.debug("error-case hints failed: %s", e)
+        return lines
 
     # ------------------------------------------------------------------ harvest
     def harvest(self, phase_result: PhaseResult, profile: ProjectProfile, ws: Workspace,
@@ -703,6 +753,8 @@ class FileKnowledgeBase:
             "signatures_l2": len(idx["l2"]),
             "symbols": len(self.symbol_index()) if self.symbols_path.exists() else 0,
             "ledger_entries": self.ledger().count(),
+            "error_cases": self.error_case_store().count_errors(),
+            "fix_attempts": self.error_case_store().count_attempts(),
         }
 
     def export_zip(self, path: str | Path) -> Path:
@@ -719,7 +771,7 @@ class FileKnowledgeBase:
                         continue
                     rel = p.relative_to(self.root)
                     if rel.parts[0] not in ("cases", "recipes", "patterns") and rel.as_posix() not in (
-                            "index.json", "ledger.jsonl", "symbols.json"):
+                            "index.json", "ledger.jsonl", "symbols.json", *ERROR_CASE_FILES):
                         continue
                     zf.write(p, rel.as_posix())
         os.replace(tmp, path)
@@ -729,7 +781,7 @@ class FileKnowledgeBase:
         """Import a kb zip. merge=True merges cases/recipes into the local KB (local status wins);
         merge=False replaces the local KB contents. Returns counters."""
         counters = {"cases_added": 0, "cases_merged": 0, "recipes_added": 0, "recipes_merged": 0,
-                    "patterns_added": 0, "ledger_added": 0}
+                    "patterns_added": 0, "ledger_added": 0, "error_cases_added": 0, "fix_attempts_added": 0}
         with tempfile.TemporaryDirectory(prefix="sbmig-kb-import-") as tmpd:
             tmp = Path(tmpd).resolve()
             with zipfile.ZipFile(path) as zf:
@@ -742,9 +794,11 @@ class FileKnowledgeBase:
             if not merge and self.root.exists():
                 for sub in ("cases", "recipes", "patterns"):
                     shutil.rmtree(self.root / sub, ignore_errors=True)
-                for f in (self.index_path, self.ledger_path, self.symbols_path):
+                for f in (self.index_path, self.ledger_path, self.symbols_path,
+                          *(self.root / n for n in ERROR_CASE_FILES)):
                     if f.exists():
                         f.unlink()
+                self._error_store = None
             self._index = None
             self.ensure_layout()
 
@@ -796,5 +850,10 @@ class FileKnowledgeBase:
                 known = self.ledger().ids()
                 counters["ledger_added"] = self.ledger().append(
                     r for r in other.ledger().iter() if r.id not in known)
+            # error cases: lines whose id is not stored yet (old zips have none); reindex rebuilds the hints
+            src = other.error_case_store()
+            if src.errors_path.exists() or src.attempts_path.exists():
+                ne, na = self.error_case_store().append_counts(src.iter_errors(), src.iter_attempts())
+                counters["error_cases_added"], counters["fix_attempts_added"] = ne, na
         self.reindex()
         return counters

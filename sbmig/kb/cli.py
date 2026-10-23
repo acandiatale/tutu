@@ -131,9 +131,15 @@ def reject_cmd(ctx: typer.Context, recipe_id: str = typer.Argument(..., metavar=
 
 @kb_cli.command("reindex")
 def reindex_cmd(ctx: typer.Context) -> None:
-    """Rebuild index.json and symbols.json from the case and recipe files."""
-    n = _kb(ctx).reindex()
+    """Rebuild index.json and symbols.json from the case and recipe files (and error_hints.json from errors.jsonl)."""
+    kb = _kb(ctx)
+    n = kb.reindex()
     typer.echo(f"indexed {n} cases")
+    store = kb.error_case_store()
+    if store.hints_path.exists():
+        idx = store.hints_index()
+        typer.echo(f"error hints: {len(idx.get('by_generic', {}))} L2 signature(s), "
+                   f"{len(idx.get('by_symbol', {}))} symbol(s)")
 
 
 @kb_cli.command("stats")
@@ -247,11 +253,15 @@ def learning_cmd(ctx: typer.Context, md: bool = typer.Option(False, "--md", help
         typer.echo(f"  {r['id']:<48} {r['kind']:<11} projects={r['projects']:<3} count={r['count']}")
     if not summary["kb_fired"]:
         typer.echo("  (none)")
+    ec = summary.get("error_cases")
+    if ec:
+        typer.echo(f"\nerror cases: {ec['errors']} ({', '.join(f'{k}={v}' for k, v in ec['by_status'].items())}); "
+                   f"LLM text replaces: {ec['llm_text_replace']} — `sbmig kb errors summary` for details")
 
 
 @kb_cli.command("export")
 def export_cmd(ctx: typer.Context, out: Path = typer.Argument(..., metavar="OUT.zip")) -> None:
-    """Export the KB as a zip (to move it between machines)."""
+    """Export the KB as a zip (to move it between machines; error cases included)."""
     p = _kb(ctx).export_zip(out)
     typer.echo(f"exported {p}")
 
@@ -303,3 +313,215 @@ def validate_cmd(recipe: Path = typer.Argument(..., metavar="RECIPE.yml", exists
     for e in errors:
         typer.echo(f"ERROR: {e}")
     raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------- sbmig kb errors
+errors_cli = typer.Typer(
+    help="Error cases: every build error of every run — what was tried, how it was resolved (the code applied) "
+         "or why not.", no_args_is_help=True)
+kb_cli.add_typer(errors_cli, name="errors")
+
+_STATUS_HELP = "regex: resolved|resolved_indirectly|blocked|unresolved|not_visible"
+_METHOD_HELP = "regex on the fix method: handler|recipe|kb_patch|llm|plan_step|none"
+_CHANGE_HELP = "regex: text_replace|code_edit|file_create|file_delete|file_rename|mixed|none"
+
+
+def _trim(text: Optional[str], n: int) -> str:
+    t = " ".join((text or "").split())
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def _select_errors(kb: FileKnowledgeBase, status, method, change_kind, project, symbol, signature, run) -> list:
+    try:
+        return list(kb.error_case_store().iter_errors(status=status, method=method, change_kind=change_kind,
+                                                      project=project, symbol=symbol, signature=signature,
+                                                      run_id=run))
+    except re.error as e:
+        raise typer.BadParameter(f"bad regex: {e}")
+
+
+def _how_or_why(e) -> str:
+    if e.status in ("resolved", "resolved_indirectly"):
+        who = " ".join(x for x in (e.fix_method, e.resolver_id) if x and x != "none") or "gone"
+        pairs = ", ".join(f"{p.old}→{p.new}" for p in e.replace_pairs[:2])
+        return f"{who}" + (f" [{pairs}]" if pairs else "") + (f": {e.description}" if e.description else "")
+    if e.status == "blocked":
+        return f"blocked ({e.block_reason or '?'}): {e.suggestion or e.failure_reason}"
+    return e.failure_reason or "-"
+
+
+@errors_cli.command("list")
+def errors_list_cmd(
+    ctx: typer.Context,
+    status: Optional[str] = typer.Option(None, "--status", help=_STATUS_HELP),
+    method: Optional[str] = typer.Option(None, "--method", help=_METHOD_HELP),
+    change_kind: Optional[str] = typer.Option(None, "--change-kind", help=_CHANGE_HELP),
+    project: Optional[str] = typer.Option(None, "--project", help="regex on the project name / fingerprint"),
+    symbol: Optional[str] = typer.Option(None, "--symbol", help="regex on the error symbol"),
+    signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
+    run: Optional[str] = typer.Option(None, "--run", help="exact run id"),
+    limit: int = typer.Option(50, "--limit", "-n", help="show the last N matching records (0 = all)"),
+    as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),
+) -> None:
+    """Error records: status, method, change kind, project, file:line, message, how resolved / why not."""
+    rows = _select_errors(_kb(ctx), status, method, change_kind, project, symbol, signature, run)
+    if limit > 0:
+        rows = rows[-limit:]
+    if as_json:
+        for e in rows:
+            typer.echo(e.model_dump_json())
+        return
+    if not rows:
+        typer.echo("no error cases")
+        return
+    for e in rows:
+        where = f"{e.file or '-'}:{e.line}" if e.line else (e.file or "-")
+        typer.echo(f"{e.id}  {e.status:<19} {e.fix_method:<9} {e.change_kind:<12} {_trim(e.project, 20):<20} "
+                   f"{_trim(where, 60)}  {_trim(e.message, 80)}  — {_trim(_how_or_why(e), 120)}")
+
+
+@errors_cli.command("show")
+def errors_show_cmd(ctx: typer.Context, item_id: str = typer.Argument(..., metavar="ID"),
+                    as_json: bool = typer.Option(False, "--json")) -> None:
+    """One error record (id or unique id prefix) with its attempts and their diffs; or one attempt by its id."""
+    store = _kb(ctx).error_case_store()
+    err = store.get_error(item_id)
+    if err is None:
+        hits = [e for e in store.iter_errors() if e.id.startswith(item_id)]
+        if len(hits) == 1:
+            err = hits[0]
+        elif len(hits) > 1:
+            typer.echo(f"ambiguous id prefix {item_id}: {', '.join(e.id for e in hits[:10])}", err=True)
+            raise typer.Exit(1)
+    if err is None:
+        att = store.get_attempt(item_id)
+        if att is None:
+            typer.echo(f"not found: {item_id}", err=True)
+            raise typer.Exit(1)
+        if as_json:
+            typer.echo(att.model_dump_json(indent=2))
+            return
+        typer.echo(att.model_dump_json(indent=2, exclude={"diff"}))
+        typer.echo("--- diff")
+        typer.echo(att.diff or "(no diff)")
+        return
+    attempts = store.attempts_of(err)
+    if as_json:
+        typer.echo(json.dumps({"error": err.model_dump(mode="json"),
+                               "attempts": [a.model_dump(mode="json") for a in attempts]}, indent=2,
+                              ensure_ascii=False))
+        return
+    typer.echo(err.model_dump_json(indent=2))
+    for a in attempts:
+        typer.echo(f"\n=== attempt {a.id}  {a.fix_method} {a.resolver_id}  {a.outcome}  "
+                   f"change={a.change.change_kind}")
+        typer.echo(a.model_dump_json(indent=2, exclude={"diff"}))
+        typer.echo("--- diff" + (" (truncated)" if a.diff_truncated else ""))
+        typer.echo(a.diff or "(no diff)")
+    if not attempts:
+        typer.echo("\n(no fix attempts recorded for this error)")
+
+
+@errors_cli.command("summary")
+def errors_summary_cmd(
+    ctx: typer.Context,
+    run: list[str] = typer.Option([], "--run", help="restrict to these run ids (repeatable)"),
+    top: int = typer.Option(15, "--top"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Counts by status / method / change kind, status × method, top failure reasons and unresolved L2s."""
+    s = _kb(ctx).error_case_store().summary(run_ids=list(run) or None, top=top)
+    if as_json:
+        typer.echo(json.dumps(s, indent=2, ensure_ascii=False))
+        return
+    typer.echo(f"{s['errors']} error case(s), {s['attempts']} attempt(s), {s['projects']} project(s), "
+               f"{s['runs']} run(s); LLM text replaces: {s['llm_text_replace']}")
+    typer.echo("status:      " + (", ".join(f"{k}={v}" for k, v in s["by_status"].items()) or "-"))
+    typer.echo("resolved by: " + (", ".join(f"{k}={v}" for k, v in s["by_method"].items()) or "-"))
+    typer.echo("change kind: " + (", ".join(f"{k}={v}" for k, v in s["by_change_kind"].items()) or "-"))
+    typer.echo("\nstatus x method (unresolved / blocked: method of the last attempt):")
+    for st, row in s["status_method"].items():
+        typer.echo(f"  {st:<20} " + ", ".join(f"{m}={n}" for m, n in sorted(row.items(), key=lambda kv: -kv[1])))
+    typer.echo("\nattempt outcomes per method:")
+    for m, row in s["attempt_outcomes"].items():
+        typer.echo(f"  {m:<10} " + ", ".join(f"{o}={n}" for o, n in row.items()))
+    if not s["attempt_outcomes"]:
+        typer.echo("  (none)")
+    typer.echo("\ntop failure reasons:")
+    for r in s["top_failure_reasons"]:
+        typer.echo(f"  {_trim(r['signature_generic'], 60):<60} errors={r['count']:<3} projects={r['projects']:<3} "
+                   f"{_trim(r['reason'], 120)}")
+    if not s["top_failure_reasons"]:
+        typer.echo("  (none)")
+    typer.echo("\ntop unresolved / blocked:")
+    for r in s["top_unresolved"]:
+        typer.echo(f"  {_trim(r['signature_generic'], 60):<60} errors={r['count']:<3} projects={r['projects']:<3} "
+                   f"blocked={r['blocked']}")
+    if not s["top_unresolved"]:
+        typer.echo("  (none)")
+
+
+@errors_cli.command("replace-candidates")
+def errors_replace_candidates_cmd(
+    ctx: typer.Context,
+    min_projects: int = typer.Option(1, "--min-projects", help="only pairs seen in at least N projects"),
+    limit: int = typer.Option(50, "--limit", "-n", help="0 = all"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """LLM fixes that were only text replaces, grouped by L2 + replace pair — deterministic rule / command
+    candidates."""
+    rows = _kb(ctx).error_case_store().replace_candidates(min_projects=min_projects)
+    if limit > 0:
+        rows = rows[:limit]
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
+        return
+    if not rows:
+        typer.echo("no text-replace candidates")
+        return
+    for r in rows:
+        typer.echo(f"projects={r['projects']:<3} count={r['count']:<3} {_trim(r['signature_generic'], 60):<60} "
+                   f"`{r['old']}` → `{r['new']}`  e.g. {r['example_file'] or '-'} ({r['example_attempt'] or '-'})")
+
+
+@errors_cli.command("export")
+def errors_export_cmd(
+    ctx: typer.Context,
+    csv_path: Optional[Path] = typer.Option(None, "--csv", help="error records → CSV (UTF-8 with BOM, Excel)"),
+    attempts_csv: Optional[Path] = typer.Option(None, "--attempts-csv", help="their fix attempts → CSV"),
+    status: Optional[str] = typer.Option(None, "--status", help=_STATUS_HELP),
+    method: Optional[str] = typer.Option(None, "--method", help=_METHOD_HELP),
+    change_kind: Optional[str] = typer.Option(None, "--change-kind", help=_CHANGE_HELP),
+    project: Optional[str] = typer.Option(None, "--project", help="regex on the project name / fingerprint"),
+    symbol: Optional[str] = typer.Option(None, "--symbol", help="regex on the error symbol"),
+    signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
+    run: Optional[str] = typer.Option(None, "--run", help="exact run id"),
+) -> None:
+    """Export error records (and their attempts) as Excel-readable CSV."""
+    from .error_cases import write_error_cases_csv, write_fix_attempts_csv
+
+    if csv_path is None and attempts_csv is None:
+        raise typer.BadParameter("give --csv PATH and/or --attempts-csv PATH")
+    kb = _kb(ctx)
+    rows = _select_errors(kb, status, method, change_kind, project, symbol, signature, run)
+    if csv_path is not None:
+        write_error_cases_csv(rows, csv_path)
+        typer.echo(f"wrote {len(rows)} error case(s) to {csv_path}")
+    if attempts_csv is not None:
+        store = kb.error_case_store()
+        filtered = any(x is not None for x in (status, method, change_kind, project, symbol, signature, run))
+        if filtered:
+            ids: list[str] = []
+            for e in rows:
+                for r in e.attempts:
+                    if r.attempt_id not in ids:
+                        ids.append(r.attempt_id)
+                if e.resolved_by and e.resolved_by not in ids and not e.resolved_by.startswith("step:"):
+                    ids.append(e.resolved_by)
+            wanted = set(ids)
+            selected = {e.id for e in rows}
+            attempts = [a for a in store.iter_attempts() if a.id in wanted or selected.intersection(a.error_ids)]
+        else:
+            attempts = list(store.iter_attempts())
+        write_fix_attempts_csv(attempts, attempts_csv)
+        typer.echo(f"wrote {len(attempts)} fix attempt(s) to {attempts_csv}")

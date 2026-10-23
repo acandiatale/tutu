@@ -54,10 +54,27 @@ captures the exit code + output, finds the run directory the CLI created under -
                       "harvest_candidates_min": 1,                 # len(report.harvest.candidates_created)
                       "recipes": [{"recipe": "org.openrewrite.java.ChangeMethodName",
                                    "options": {"newMethodName": "remoteClientIp"},          # subset of the entry
-                                   "name": "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp"}]}}
+                                   "name": "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp"}]},
+               "error_cases": {"min": 2,                          # len(report.error_cases): one record per error
+                               "status": {"resolved": 2},          # exact count for each listed status
+                               "status_min": {"blocked": 1},       # at least that many
+                               "records": [{"file": "regex:.*/ClientIpFilter\\.java", "status": "resolved",
+                                            "fix_method": "llm", "change_kind": "text_replace",
+                                            "replace_rule_candidate": true,
+                                            "replace_pairs": [{"old": "clientIp", "new": "remoteClientIp"}],
+                                            "attempts_min": 2,       # len(attempts) (failed ones included)
+                                            "attempt_outcomes": ["apply_failed", "improved"],   # in this order,
+                                                                     # as a subsequence of the history
+                                            "failure_reason": "regex:(?i).*no change.*"}],      # every listed
+                                                                     # field must match one and the same record
+                               "run_files": ["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"],
+                               "kb_errors_min": 2,                 # lines in <expect.kb.dir>/errors.jsonl
+                               "kb_attempts_min": 3}}              # lines in <expect.kb.dir>/fix_attempts.jsonl
 
 `*_contains` entries: `regex:<re>` = full match (re.DOTALL) of some entry, otherwise a substring of some entry;
 `removed_contains`/`added_contains` match by "g:a" (plus a version prefix when given).
+`error_cases`: string fields of a wanted record match like `*_contains` entries (`regex:` = full match, else
+equality); `replace_pairs` entries must each be in the record's pairs (old / new equal).
 `kb`: reads every recipe document of `<repo>/<dir>/recipes/{candidates,active}/*.yml` (multi-document YAML); each
 wanted recipe must match a document (`name` equal when given) with a `recipeList` entry `{<recipe>: {options}}` whose
 options are a superset of `options`. `kb.dir` must lie under `out/`: run_fixture deletes it before the run so a re-run
@@ -501,6 +518,72 @@ def evaluate_kb(want: dict, report: dict, repo: Path | None = None) -> list[str]
     return mm
 
 
+def _field_matches(want: Any, got: Any) -> bool:
+    if isinstance(want, str) and want.startswith("regex:"):
+        return isinstance(got, str) and re.fullmatch(want[len("regex:"):], got, re.DOTALL) is not None
+    return got == want
+
+
+def _error_record_matches(want: dict, rec: dict) -> bool:
+    for k, v in want.items():
+        if k == "attempts_min":
+            if len(_list(rec.get("attempts"))) < int(v):
+                return False
+        elif k == "attempt_outcomes":
+            outcomes = iter(str(a.get("outcome")) for a in _list(rec.get("attempts")) if isinstance(a, dict))
+            if not all(any(o == w for o in outcomes) for w in _list(v)):     # ordered subsequence
+                return False
+        elif k == "replace_pairs":
+            pairs = [(p.get("old"), p.get("new")) for p in _list(rec.get("replace_pairs")) if isinstance(p, dict)]
+            if not all((w.get("old"), w.get("new")) in pairs for w in _list(v) if isinstance(w, dict)):
+                return False
+        elif not _field_matches(v, rec.get(k)):
+            return False
+    return True
+
+
+def _jsonl_lines(path: Path) -> int:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return sum(1 for ln in fh if ln.strip())
+    except OSError:
+        return 0
+
+
+def evaluate_error_cases(want: dict, report: dict, run_dir: Path | None, kb_dir: Path | None) -> list[str]:
+    """`error_cases` expectation (2026-10-23): one record per build error, failures included."""
+    mm: list[str] = []
+    recs = [r for r in _list(report.get("error_cases")) if isinstance(r, dict)]
+    by_status: dict[str, int] = {}
+    for r in recs:
+        by_status[str(r.get("status"))] = by_status.get(str(r.get("status")), 0) + 1
+    got = ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())) or "none"
+    if want.get("min") is not None and len(recs) < want["min"]:
+        mm.append(f"error_cases={len(recs)} < min {want['min']}")
+    for st, n in (want.get("status") or {}).items():
+        if by_status.get(st, 0) != n:
+            mm.append(f"error_cases status {st}={by_status.get(st, 0)} expected {n} (got: {got})")
+    for st, n in (want.get("status_min") or {}).items():
+        if by_status.get(st, 0) < n:
+            mm.append(f"error_cases status {st}={by_status.get(st, 0)} < min {n} (got: {got})")
+    for w in _list(want.get("records")):
+        if isinstance(w, dict) and not any(_error_record_matches(w, r) for r in recs):
+            seen = "; ".join(f"{r.get('file')}:{r.get('status')}:{r.get('fix_method')}:"
+                             + ",".join(str(a.get('outcome')) for a in _list(r.get('attempts')) if isinstance(a, dict))
+                             for r in recs[:4]) or "none"
+            mm.append(f"no error case matching {json.dumps(w, ensure_ascii=False)[:160]} (got: {seen[:200]})")
+    for name in _list(want.get("run_files")):
+        if run_dir is None or not (run_dir / str(name)).is_file():
+            mm.append(f"run file {name} missing")
+    for key, fname in (("kb_errors_min", "errors.jsonl"), ("kb_attempts_min", "fix_attempts.jsonl")):
+        if want.get(key) is None:
+            continue
+        n = _jsonl_lines(kb_dir / fname) if kb_dir is not None else 0
+        if n < want[key]:
+            mm.append(f"kb {fname} lines={n} < min {want[key]}")
+    return mm
+
+
 def kb_dir_to_clear(expect: dict | None, repo: Path | None = None) -> Path | None:
     """The fixture's KB directory (expect.kb.dir) when it is safely inside <repo>/out/, else None."""
     if not isinstance(expect, dict) or not isinstance(expect.get("kb"), dict) or not expect["kb"].get("dir"):
@@ -778,6 +861,12 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
             mm.append(f"manual_followups lack {pat!r} (got: {_short(followups)})")
     if isinstance(expect.get("kb"), dict):
         mm += evaluate_kb(expect["kb"], report, repo)
+    if isinstance(expect.get("error_cases"), dict):
+        kb_dir = None
+        if isinstance(expect.get("kb"), dict) and expect["kb"].get("dir"):
+            kb_dir = (repo or REPO) / str(expect["kb"]["dir"])
+        mm += evaluate_error_cases(expect["error_cases"], report, Path(res.run_dir) if res.run_dir else None,
+                                   kb_dir)
     if isinstance(expect.get("properties"), dict):
         mm += evaluate_properties(expect["properties"], report, project)
     for check in _list(expect.get("post_checks")):
@@ -828,6 +917,14 @@ def describe_expect(fixture: str, expected: dict) -> str:
         kp += [f"{r.get('recipe')}" + (f"@{r['name']}" if r.get("name") else "")
                for r in _list(kb.get("recipes")) if isinstance(r, dict)]
         parts.append(f"kb({', '.join(kp)})")
+    if isinstance(exp.get("error_cases"), dict):
+        ec = exp["error_cases"]
+        ep = [f"min={ec['min']}"] if ec.get("min") is not None else []
+        ep += [f"{k}={v}" for k, v in (ec.get("status") or {}).items()]
+        ep += [f"{k}>={v}" for k, v in (ec.get("status_min") or {}).items()]
+        if ec.get("records"):
+            ep.append(f"records={len(ec['records'])}")
+        parts.append(f"error_cases({', '.join(ep)})")
     if isinstance(exp.get("properties"), dict):
         pp = exp["properties"]
         pr = [f"external_min={pp['external_min']}"] if pp.get("external_min") is not None else []

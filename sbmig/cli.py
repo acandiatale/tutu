@@ -643,7 +643,8 @@ def _mount(module: str, attr: str, name: str, help_text: str) -> None:
 
 
 _mount("sbmig.kb", "kb_cli", "kb",
-       "knowledge base: list | show | promote | reject | reindex | ledger | symbols | learning | export | import")
+       "knowledge base: list | show | promote | reject | reindex | ledger | symbols | learning | errors | export | "
+       "import")
 _mount("sbmig.plan.catalog_cli", "recipes_cli", "recipes",
        "recipe catalog (knowledge/recipes/catalog.yml): list | show | check | sets")
 _mount("sbmig.fleet.cli", "fleet_cli", "fleet",

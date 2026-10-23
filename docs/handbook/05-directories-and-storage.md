@@ -7,7 +7,7 @@ sbmig 저장소와 실행 결과물이 어느 디렉터리에, 어떤 형식으�
 - 저장소 최상위 디렉터리 각각의 역할과 "지워도 되는가 / 백업해야 하는가"를 판단할 수 있습니다.
 - `kb/` 의 케이스·레시피·원장(ledger)·심볼 인덱스 파일 형식과, 빌드 수정 루프가 이를 어떻게 다시 꺼내 쓰는지 설명할 수 있습니다.
 - 한 번의 실행 디렉터리(`out/<run id>/`)에 생기는 모든 파일이 어느 모듈에서 언제 쓰이는지 알고, 문제 보고 시 어떤 파일을 봐야 하는지 압니다.
-- `fixtures/` 의 26개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
+- `fixtures/` 의 29개 픽스처와 `expected.json` 의 검증 키, e2e 스크립트의 동작을 이해하고 새 픽스처를 추가할 수 있습니다.
 - 테스트 디렉터리 구조와 `integration` 마커, 보조 스크립트(`scripts/`), 독립 코딩 에이전트(`coding/`)의 위치를 압니다.
 
 ## 관련 코드
@@ -31,7 +31,7 @@ migration-agent/
 ├── knowledge/                큐레이션된 지식: 레시피 카탈로그, 선언형 레시피, 마이그레이션 노트, 라이브러리 권고, 외부화 규칙
 ├── kb/                       실행 중 자라는 학습 KB (케이스, 레시피 후보/활성, 패턴, 원장, 심볼 인덱스)
 ├── sbmig/                    에이전트 본체(Python 패키지)
-├── fixtures/                 테스트용 as-is Maven 프로젝트 26개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
+├── fixtures/                 테스트용 as-is Maven 프로젝트 29개 + 사내 라이브러리 대역 + 플릿 매니페스트 견본
 ├── tests/                    pytest 테스트(패키지별 하위 디렉터리)
 ├── scripts/                  e2e, KB 학습 데모, 플릿 데모 스크립트
 ├── coding/                   sbmig 와 독립된 소형 코딩 에이전트(같은 게이트웨이 계약)
@@ -276,7 +276,10 @@ KB 루트는 `kb.dir`(기본 `kb`, 저장소 루트 기준) 입니다. 파일 �
 │   └── rejected/<id>.yml + <id>.meta.json      거부된 레시피(인덱스에서 제외)
 ├── patterns/*.yml                      사람이 쓰는 결정적 패턴 {id, match: {signature_regex}, recipes, hints, handler_ids}
 ├── ledger.jsonl                        추가 전용 ResolutionRecord (resolved / blocked / unresolved / advisory)
-└── symbols.json                        오류 심볼 → 수정 라벨 / 치환 / 프로젝트 수 / 케이스 / 레시피
+├── symbols.json                        오류 심볼 → 수정 라벨 / 치환 / 프로젝트 수 / 케이스 / 레시피
+├── errors.jsonl                        추가 전용 ErrorCaseRecord — 빌드 에러 1개 = 1줄(실패 포함, 2026-10-23)
+├── fix_attempts.jsonl                  추가 전용 FixAttemptRecord — 수정 시도 1개 = 1줄(적용한 diff, 실패 이유)
+└── error_hints.json                    L2 / 심볼 → 가장 많이 성공한 수정과 가장 많이 실패한 시도(힌트 색인)
 ```
 
 저장소에는 빈 `kb/cases`, `kb/patterns`, `kb/recipes/active`, `kb/recipes/candidates` 디렉터리만 `.gitkeep` 으로 들어 있습니다.
@@ -468,6 +471,8 @@ flowchart LR
 
 재생된 패치가 다시 빌드를 통과하면 수확 단계에서 그 케이스의 `reuse_count` 가 오르고, 원장에 `kb_patch` 줄이 남습니다. 실패한 KB 레시피·패치는 같은 클러스터에서 다시 시도하지 않고 다음 결정(결국 LLM)으로 넘어갑니다.
 
+`kb.error_hints` 가 켜져 있으면(기본) `hints` 뒤에 **에러 케이스 힌트**가 붙습니다. 클러스터의 L2 시그니처와 심볼마다 `error_hints.json` 에서 가장 많이 성공한 수정("past runs: fixed by llm … in N project(s): …; replace `a` → `b`")과 가장 많이 실패한 시도("past failure ×k: llm no_change — …; do not repeat it")를 최대 2줄 넣습니다. 전체 개수는 여전히 `kb.max_hints` 가 상한입니다.
+
 ### 4.10 수정 라벨(결정적 라벨 휴리스틱)
 
 `sbmig/kb/labels.py` 의 `label_changes` 는 LLM 없이 변경 집합(FileChange)과 오류만으로 "어떻게 고쳤는가"를 라벨링합니다. 라벨은 가장 구체적인 것부터 이 순서로 나옵니다.
@@ -475,6 +480,32 @@ flowchart LR
 `package-rename`, `annotation-replace`, `type-rename`, `import-rename`, `method-rename`, `override-signature`, `method-signature-adapt`, `dependency-replace`, `dependency-version`, `dependency-add`, `dependency-remove`, `plugin-version`, `pom-property`, `spring-property-rename`, `config-value`, `remove-code`, `add-code`, `generic-rewrite`
 
 이 중 기계적 라벨(`package-rename` … `spring-property-rename` 중 `override-signature` / `method-signature-adapt` 제외)만 레시피로 컴파일됩니다. `generic-rewrite`(설명할 수 없는 변경, 공백만 바뀐 변경 포함)는 레시피가 되지 않습니다. `method-rename` 은 라이브러리 소유 클래스의 FQCN 을 알 수 있을 때만(`symbol_owner`) `ChangeMethodName` 으로 컴파일됩니다.
+
+### 4.10b 에러 케이스 — errors.jsonl · fix_attempts.jsonl (2026-10-23)
+
+현업 요구로 추가된 기록입니다. 지금까지 KB에는 **성공한 LLM 수정**만 케이스로 남았고, 원장은 클러스터당 한 줄에 첫 시그니처만 담았으며, 실패한 시도의 이유와 적용한 코드는 로그에만 있었습니다. 이제 실행이 끝날 때(`_finalize`) 그 실행의 **빌드 에러마다 한 줄**, **수정 시도마다 한 줄**을 남깁니다.
+
+| 파일 | 한 줄 = | 주요 필드 |
+|---|---|---|
+| `errors.jsonl` (`ErrorCaseRecord`) | 실행 중 나온 빌드 에러 하나(같은 에러가 여러 빌드에 나와도 한 줄, 같은 파일에 3번 나오면 3줄) | 에러(`error_kind`, `message`, `file`, `line`, `symbol`, `signature`, `signature_generic`, `error_symbol`), 처음 / 마지막 빌드(`first_seen`, `last_seen`), `status`, 해결 방법(`fix_method`, `resolver_id`, `resolved_by`, `targeted`), `description`(어떻게 해결했나 / 무엇을 시도했나), `change_kind`, `replace_pairs`, `diff_excerpt`(그 파일의 diff), `replace_rule_candidate`, `failure_reason`, `problem_errors`, `block_reason`, `suggestion`, `attempts`(시도 이력, 실패 포함) |
+| `fix_attempts.jsonl` (`FixAttemptRecord`) | 수정 시도 하나(핸들러 / 레시피 / KB 패치 재생 / LLM, 실패 포함) | `fix_method`, `resolver_id`, `model`, `outcome`, `description`, `failure`, `introduced_errors`(그 시도 뒤 고친 파일에 새로 생긴 에러), `remaining_errors`, `diff`(git으로 뽑은 적용 코드, 적용되지 않은 LLM 제안은 그 제안), `change`(`ChangeClass`), `fix_labels`, 토큰 수 |
+| `error_hints.json` | L2 시그니처 / 심볼 하나 | 본 횟수, 프로젝트, 방법별 해결 수, unresolved / blocked 수, 상위 성공 수정 3개(`fixes`), 상위 실패 3개(`failures`), 그 근거인 `variants`(키당 최대 25개, 처음 본 순서 — 실행마다 늘려 가는 갱신과 `sbmig kb reindex` 의 재구성이 같은 결과를 내게 합니다). 힌트 줄은 `[error <키>]` 로 시작합니다 |
+
+**상태(`status`)**
+
+| 값 | 뜻 |
+|---|---|
+| `resolved` | 이 에러를 겨냥한 시도(그 클러스터에 들어 있던 시도, `targeted: true`)나 그 파일을 고친 시도 뒤의 빌드에서 사라짐 |
+| `resolved_indirectly` | 사라졌지만 겨냥한 시도가 없음: 같은 라운드의 다른 시도(pom 수정 등), plan 단계(`fix_method: plan_step`, rewrite / restructure / 선제 핸들러 / 선택 아티팩트 bump) |
+| `blocked` | 끝까지 남았고 BlockedItem이 덮음(`block_reason`, `suggestion`) |
+| `unresolved` | 끝까지 남음. `failure_reason` 은 마지막 시도의 결과와 이유, 시도가 없었으면 마지막 결정(가려짐 / 상향 / 라운드 소진) |
+| `not_visible` | 마지막 빌드가 그 단계 전에 멈춰 보이지 않음(판단 불가). 최종 빌드가 실패했을 때만 |
+
+에러가 사라졌다고 바로 해결로 보지 않습니다. 그 에러의 모듈이 그 단계까지 빌드됐을 때(성공 모듈 목록에 있거나, 같은 모듈에서 같거나 뒤 단계의 에러가 나왔을 때)만 닫습니다. pom 오류 때문에 컴파일이 멈춰 사라진 것처럼 보이는 에러는 열린 채로 두고, 다시 나타나면 이력에 남긴 채 다시 엽니다. 재구성으로 파일이 `{name}-back/` 아래로 옮겨져도 경로를 `src/` 부터 비교하므로 같은 에러로 봅니다. 되돌린(reverted) 라운드의 빌드는 판정에 쓰지 않습니다.
+
+**변경 형태(`change_kind`)** 는 diff 만 보고 정합니다(`sbmig/kb/changes.py` 의 `classify_diff`). `text_replace` 는 바뀐 줄마다 옛 줄의 토큰만 바꾼 경우(`clientIp` → `remoteClientIp`, `javax` → `jakarta`, `1.0.0` → `3.0.0`)이고 바뀐 토큰 쌍이 `replace_pairs` 에 들어갑니다. 줄이 늘거나 줄거나 토큰이 끼어들면 `code_edit`, 둘이 섞이면 `mixed`, 파일 단위 작업은 `file_create` / `file_delete` / `file_rename` 입니다. **LLM이 고쳤는데 `text_replace`** 이면 `replace_rule_candidate: true` 입니다. 이런 경우는 규칙(명령) 하나로 대신할 수 있으므로 `sbmig kb errors replace-candidates` 가 L2 + 치환 쌍으로 모아 프로젝트 수 순으로 보여 줍니다.
+
+실행 디렉터리에도 같은 내용이 `error_cases.jsonl`, `fix_attempts.jsonl`, `error_cases.csv`(엑셀용 UTF-8 BOM)로 남습니다(5.2 절). 조회 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb errors` 입니다.
 
 ### 4.11 kb/ 운영: 지우기·백업·공유
 
@@ -487,6 +518,8 @@ flowchart LR
 | `index.json` | 지워도 자동 재구성 | `sbmig kb reindex` |
 | `symbols.json` | 지워도 `sbmig kb reindex` 로 케이스에서 재구성 | `kb.symbol_index` |
 | `ledger.jsonl` | **절대 지우지 마세요.** 재구성할 원천이 없습니다. | 플릿 학습 보고서의 유일한 근거 |
+| `errors.jsonl`, `fix_attempts.jsonl` | **지우지 마세요.** 재구성할 원천이 없습니다. | 실패 사례와 적용 코드의 유일한 기록. 나중에 RDBMS / 벡터 DB 로 옮길 원본 |
+| `error_hints.json` | 지워도 `sbmig kb reindex` 로 위 두 파일에서 재구성 | `kb.error_hints` |
 
 공유와 이관은 zip 으로 합니다.
 
@@ -546,6 +579,8 @@ out/<run id>/
 | `report.json` / `report.md` | `RunReport` 직렬화 / 사람이 읽는 보고서(첫 섹션 Handover) | `sbmig/report/writer.py` | 담당자 인계, e2e 검증, 플릿 요약 |
 | `changes.patch` | as-is 첫 커밋 대비 `git diff` 를 **바이트 그대로**(MS949 소스는 MS949 그대로) | `Workspace.write_patch` (`report.include_diff`) | 리뷰, 다른 체크아웃에 적용 |
 | `result.zip` | 마이그레이션된 `project/` 에서 `.git` 과 `target` 을 뺀 zip | `Workspace.zip_result` (`report.zip_result`, dry-run 제외) | 담당자에게 전달하는 산출물 |
+| `error_cases.jsonl` / `fix_attempts.jsonl` | 이 실행의 `ErrorCaseRecord`(빌드 에러 하나 = 한 줄) / `FixAttemptRecord`(시도 하나 = 한 줄, diff 포함). KB 에 쓰는 것과 같은 정제본(4.10b 절) | 오케스트레이터 `_finalize` (`kb.error_cases`, dry-run 제외. `kb.harvest: false` 여도 씀) | 담당자 검토, 웹 UI 다운로드, `report.json` 의 `error_cases` 는 diff 발췌를 뺀 사본 |
+| `error_cases.csv` | 같은 에러 기록의 엑셀용 사본(UTF-8 BOM, 에러 하나 = 한 행) | 같은 단계 | 현업 공유 |
 | `threads-<YYYYMMDD-HHMMSS>.txt` | 모든 스레드 스택 | 수정 루프 워치독이 300초(`WATCHDOG_DUMP_S`, `sbmig/loop/fixloop.py`) 동안 진행 신호가 없으면 실행 디렉터리에 자동 기록(`sbmig/core/diag.py`) | 멈춤 진단 |
 
 이 밖의 위치에 생기는 진단 파일도 있습니다.
@@ -640,7 +675,7 @@ fixtures/
 
 `fixtures/webapps/legacy-exploded` 는 웹앱 루트 2개(`portal`: web.xml 2.3 DTD, cp949 소스, JNDI `jdbc/PortalDS`, 소스 없는 Java 1.6 클래스, `*.jar.old` 백업 / `admin`: web.xml 2.5 + `DispatcherServlet`)와 두 소스 루트에 중복된 `com.acme.common.Util` 을 담은 인벤토리 전용 픽스처입니다. `tests/analyze/test_webapp_inventory.py` 가 기대값을 고정합니다(e2e 대상이 아님).
 
-### 6.2 26개 픽스처
+### 6.2 29개 픽스처
 
 | 픽스처 | 케이스 | 무엇을 검증하나 |
 |---|---|---|
@@ -672,6 +707,7 @@ fixtures/
 | `boot2-qlrm-javax` | `spring_boot` | QLRM 1.7.1(옛 좌표 `ch.simas.qlrm`)의 `JpaResultMapper`가 `javax.persistence.Query`를 받음 → `jakarta-library-floor` 가 `org.qlrm:qlrm:4.2.1` 로 재배치(X1b), 0 LLM |
 | `servlet-webxml-legacy` | `servlet_tomcat`(war, web.xml 2.3 DTD만) | W1: web.xml에만 선언된 서블릿 / 필터 / 리스너 / 오류 페이지 → `legacy-boot`의 생성 클래스 `WebXmlRegistrations`, `server.servlet.session.timeout=30m`, 0 LLM |
 | `servlet-nonstandard-dirs` | `servlet_tomcat`(war, 비표준 디렉터리) | `APP/src` 소스, 웹 루트 `STATIC/`(`warSourceDirectory`), 필터링되는 `STATIC/resources`(Excel·템플릿·동영상), `DB/` → JSP·정적 파일은 `ndirs-front`, `STATIC/resources` 는 `ndirs-back` 클래스패스(E12 로 xlsx·mp4 바이트 유지), boot WAR 에 `warSourceDirectory` 없음, 0 LLM |
+| `boot2-fix-failures` | `spring_boot` | 일부러 틀리는 재생 LLM(SEARCH 불일치 → `apply_failed`, 호출을 남긴 수정 → `no_change`, 그다음 진짜 수정) → `ClientIpFilter` 에러는 `resolved`(llm, `text_replace` `clientIp → remoteClientIp`, `replace_rule_candidate`, 이력 `apply_failed → improved`), `MemberController` 에러는 `blocked`(`repeated_failure`)와 실패 이유, 실행 디렉터리와 KB 의 `errors.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`(`expect.error_cases`), 실패 종료(exit 2) |
 
 정확한 기대 결과는 `fixtures/projects/README.md` 의 매트릭스가 원본입니다. 레이아웃별 전후 트리는 [06. 재구성과 회사 레이아웃](06-restructure-and-layouts.md) 에서 다룹니다.
 
@@ -720,7 +756,7 @@ fixtures/
 
 | 레지스트리 | 픽스처 | 오버레이 키 |
 |---|---|---|
-| `OVERRIDES` | `boot2-javax-lib-optional`(legacy-web-lib 2.0.0), `boot2-method-rename`(3.0.0) | `artifacts`(+ `llm`, `kb`) — 선택 목록 8개를 통째로 다시 적음 |
+| `OVERRIDES` | `boot2-javax-lib-optional`(legacy-web-lib 2.0.0), `boot2-method-rename`(3.0.0), `boot2-fix-failures`(3.0.0) | `artifacts`(+ `llm`, `kb`) — 선택 목록 8개를 통째로 다시 적음 |
 | `LLM_ONLY_OVERRIDES` | `boot2-hystrix-command`, `java6-legacy`, `multi-module-conflict` | `llm`(재생 LLM), `kb`(전용 KB) |
 | `REWRITE_ONLY_OVERRIDES` | `boot2-rewrite-excluded` | `openrewrite.exclusions`(기본 JSP/HTML 4개 + `**/vendor/**`, `**/repository/**` — 목록은 통째로 대체됨) |
 | `COMPANY_OVERRIDES` | `legacy-role-parents`, `company-boot-single`, `company-spring5-web`, `company-servlet-jsp`, `servlet-webxml-legacy`, `servlet-nonstandard-dirs` | `layout`(`module_dir`, `boot_module`, `comp_module`, `front_module`, `boot_as_is` 를 회사 기본값으로 되돌림) + `artifacts`(`boot_parent`, `comp_parent`) |
