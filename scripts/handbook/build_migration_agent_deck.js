@@ -180,12 +180,9 @@ diagram("데이터 저장소", "아키텍처", "data-stores", [
 // ================================================================ 3. 파이프라인
 addSec("파이프라인");
 
-{ const s = content("파이프라인 전체", "파이프라인", "plan.parent_phase: spring(회사 설정)이면 재구성 스텝이 spring.loop 앞으로 오고 restructure 루프가 빠집니다. 그래서 verify에 마지막 수정 루프가 있습니다.");
-  fitImage(s, "pipeline-1", 0.5, 1.1, 9, 1.35);
-  fitImage(s, "pipeline-2", 0.5, 2.55, 9, 1.2);
-  bullets(s, ["Gradle / Ant / pom 없음 / mvn 없음은 intake에서 exit 3으로 끝나고 보고서만 씁니다",
-    "parent_phase: spring → 스텝 jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, restructure.*, spring.loop, verify.build",
-    "MSA는 서비스마다 jdk21 / spring 체인을 만들고 스텝 id에 @<service>를 붙입니다"], 0.5, 3.9, 9, 1.25, 11); }
+// 9: the whole pipeline — step / node names only, the four build-fix loops drawn as ↺ cycles, no prose (user, 2026-10-23)
+{ const s = content("파이프라인 전체", "파이프라인", "스텝 이름만: intake → analyze → plan → jdk21.rewrite → jdk21.loop → spring.rewrite → spring.optional_bump → (parent_phase) → pre-emptive handlers → spring.loop → restructure.apply → restructure.loop → verify.build → verify.loop → verify.build 재실행 → finalize. 각 loop는 build → triage → fix·commit → build 반복.");
+  fitImage(s, "pipeline-overview", 0.3, 1.0, 9.4, 4.25); }
 
 diagram("노드: intake", "파이프라인", "node-intake", [
   "작업 사본을 만들고 git 브랜치 sbmig/<run id>에 as-is 스냅샷을 커밋합니다",

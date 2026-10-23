@@ -1,0 +1,29 @@
+flowchart TB
+  subgraph R1["① intake → JDK 21"]
+    direction LR
+    IN(["dir / zip"]) --> intake --> analyze --> plan --> jr["jdk21.rewrite"]
+    jr --> jb["jdk21.loop: build"] --> jt["triage"] --> jf["fix · commit"]
+    jf -. "↺" .-> jb
+    intake -- "exit 3" --> rej["finalize"]
+  end
+  subgraph R2["② Spring / Jakarta"]
+    direction LR
+    sr["spring.rewrite"] --> ob["spring.optional_bump"] --> pp{"parent_phase"}
+    pp -- "spring" --> rsA["restructure.apply<br/>boot_pom · msa_pom"] --> pre["pre-emptive handlers"]
+    pp -- "restructure" --> pre
+    pre --> sb["spring.loop: build"] --> st["triage"] --> sf["fix · commit"]
+    sf -. "↺" .-> sb
+  end
+  subgraph R3["③ 재구성 → verify → finalize"]
+    direction LR
+    rsB["restructure.apply<br/>boot_pom · msa_pom"] --> rb["restructure.loop: build"] --> rt["triage"] --> rf["fix · commit"]
+    rf -. "↺" .-> rb
+    rf --> vb["verify.build<br/>mvn clean package"]
+    vb -- "실패" --> vlb["verify.loop: build"] --> vlt["triage · release blocked"] --> vlf["fix · commit"]
+    vlf -. "↺" .-> vlb
+    vlf --> vb2["verify.build 재실행"] --> fin["finalize"] --> OUT(["report · zip"])
+    vb -- "성공" --> fin
+  end
+  R1 --> R2
+  R2 -- "parent_phase: restructure → restructure.apply" --> R3
+  R2 -- "parent_phase: spring → verify.build" --> R3

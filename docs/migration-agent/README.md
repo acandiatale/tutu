@@ -211,6 +211,47 @@ flowchart TB
 
 ## 3. 파이프라인 플로우
 
+### 3.0 한눈에 보는 전체 흐름
+
+스텝 / 노드 이름만 적은 전체 워크플로우입니다. 빌드-수정 루프 4개(jdk21.loop, spring.loop, restructure.loop, verify.loop)는 `build → triage → fix · commit → build`의 반복(↺)으로 표시했습니다. `parent_phase: spring`(회사 설정)이면 `restructure.apply`가 `spring.loop` 앞에 오고 `restructure.loop`는 빠집니다.
+
+```mermaid
+flowchart TB
+  subgraph R1["① intake → JDK 21"]
+    direction LR
+    IN(["dir / zip"]) --> intake --> analyze --> plan --> jr["jdk21.rewrite"]
+    jr --> jb["jdk21.loop: build"] --> jt["triage"] --> jf["fix · commit"]
+    jf -. "↺" .-> jb
+    intake -- "exit 3" --> rej["finalize"]
+  end
+  subgraph R2["② Spring / Jakarta"]
+    direction LR
+    sr["spring.rewrite"] --> ob["spring.optional_bump"] --> pp{"parent_phase"}
+    pp -- "spring" --> rsA["restructure.apply<br/>boot_pom · msa_pom"] --> pre["pre-emptive handlers"]
+    pp -- "restructure" --> pre
+    pre --> sb["spring.loop: build"] --> st["triage"] --> sf["fix · commit"]
+    sf -. "↺" .-> sb
+  end
+  subgraph R3["③ 재구성 → verify → finalize"]
+    direction LR
+    rsB["restructure.apply<br/>boot_pom · msa_pom"] --> rb["restructure.loop: build"] --> rt["triage"] --> rf["fix · commit"]
+    rf -. "↺" .-> rb
+    rf --> vb["verify.build<br/>mvn clean package"]
+    vb -- "실패" --> vlb["verify.loop: build"] --> vlt["triage · release blocked"] --> vlf["fix · commit"]
+    vlf -. "↺" .-> vlb
+    vlf --> vb2["verify.build 재실행"] --> fin["finalize"] --> OUT(["report · zip"])
+    vb -- "성공" --> fin
+  end
+  R1 --> R2
+  R2 -- "parent_phase: restructure → restructure.apply" --> R3
+  R2 -- "parent_phase: spring → verify.build" --> R3
+```
+
+![pipeline-overview](diagrams/pipeline-overview.png)
+
+*PNG: `diagrams/pipeline-overview.png` · 원본: `diagrams/pipeline-overview.mmd`*
+
+
 ### 3.1 전체 흐름
 
 한 번의 실행은 phase 순서 intake → analyze → plan → jdk21 → spring → restructure → verify → report를 따릅니다.
