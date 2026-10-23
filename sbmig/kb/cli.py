@@ -1,4 +1,5 @@
-"""`sbmig kb …` — typer sub-app for inspecting and curating the file-based knowledge base."""
+"""`sbmig kb …` — typer sub-app for inspecting and curating the file-based knowledge base (incl. `sbmig kb errors …`
+for the error-case events and `sbmig kb cases …` for the case catalog built from them)."""
 from __future__ import annotations
 
 import json
@@ -11,9 +12,20 @@ import typer
 from pydantic import ValidationError
 
 from sbmig.core.config import Config, load_config
-from sbmig.core.models import BuildError, CaseType, ErrorCluster, ErrorKind, ProjectProfile
+from sbmig.core.models import (
+    BlockReason,
+    BuildError,
+    CaseAction,
+    CaseType,
+    CatalogCase,
+    ErrorCluster,
+    ErrorKind,
+    ProjectProfile,
+    ReplacePair,
+)
 from sbmig.core.workspace import Workspace
 
+from .catalog import CaseCatalog, action_text, case_id_for, pairs_text
 from .recipes import validate_recipe_yaml
 from .store import FileKnowledgeBase
 
@@ -109,24 +121,44 @@ def show_cmd(ctx: typer.Context, item_id: str = typer.Argument(..., metavar="ID"
 @kb_cli.command("promote")
 def promote_cmd(ctx: typer.Context, recipe_id: str = typer.Argument(..., metavar="ID")) -> None:
     """Move a candidate (or rejected) recipe to active."""
+    kb = _kb(ctx)
     try:
-        r = _kb(ctx).promote(recipe_id)
+        r = kb.promote(recipe_id)
     except KeyError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
     typer.echo(f"promoted {r.id} -> {r.path}")
+    _refresh_cases_for(kb, r.signatures)
 
 
 @kb_cli.command("reject")
 def reject_cmd(ctx: typer.Context, recipe_id: str = typer.Argument(..., metavar="ID"),
                reason: str = typer.Option("", "--reason", "-r")) -> None:
     """Move a recipe to rejected."""
+    kb = _kb(ctx)
     try:
-        r = _kb(ctx).reject(recipe_id, reason)
+        r = kb.reject(recipe_id, reason)
     except KeyError as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)
     typer.echo(f"rejected {r.id}")
+    _refresh_cases_for(kb, r.signatures)
+
+
+def _refresh_cases_for(kb: FileKnowledgeBase, signatures: list[str]) -> None:
+    """A recipe changed status by hand: the catalog cases it covers get their action recomputed."""
+    if not kb.cfg.kb.catalog or not signatures:
+        return
+    cat = kb.catalog()
+    if not cat.index_path.exists():
+        return
+    try:
+        changed = cat.refresh_signatures(signatures)
+        if changed:
+            cat.write_views()
+            typer.echo(f"case catalog: {len(changed)} case(s) updated ({', '.join(changed[:10])})")
+    except Exception as e:  # the recipe change itself is done
+        typer.echo(f"case catalog not refreshed ({e}); run `sbmig kb reindex`", err=True)
 
 
 @kb_cli.command("reindex")
@@ -140,6 +172,11 @@ def reindex_cmd(ctx: typer.Context) -> None:
         idx = store.hints_index()
         typer.echo(f"error hints: {len(idx.get('by_generic', {}))} L2 signature(s), "
                    f"{len(idx.get('by_symbol', {}))} symbol(s)")
+    cat = kb.catalog()
+    if kb.cfg.kb.catalog and cat.index_path.exists():
+        counts = cat.status_counts()
+        typer.echo(f"case catalog: {sum(counts.values())} case(s) ("
+                   + ", ".join(f"{k} {v}" for k, v in counts.items() if v) + f") — views in {cat.views_dir}")
 
 
 @kb_cli.command("stats")
@@ -257,6 +294,12 @@ def learning_cmd(ctx: typer.Context, md: bool = typer.Option(False, "--md", help
     if ec:
         typer.echo(f"\nerror cases: {ec['errors']} ({', '.join(f'{k}={v}' for k, v in ec['by_status'].items())}); "
                    f"LLM text replaces: {ec['llm_text_replace']} — `sbmig kb errors summary` for details")
+    top_cases = summary.get("top_cases") or []
+    if top_cases:
+        typer.echo("\ntop error cases (`sbmig kb cases show <id>`):")
+        for r in top_cases:
+            typer.echo(f"  {r['id']}  {r['status']:<10} projects={r['projects']:<3} seen={r['seen']:<4} "
+                       f"{_trim(r['name'], 60)}  — {_trim(r['action'], 60)}")
 
 
 @kb_cli.command("export")
@@ -299,6 +342,8 @@ def match_cmd(ctx: typer.Context, signature: str = typer.Argument(...),
         "handler_ids": m.handler_ids,
         "cases": [c.id for c in m.cases],
         "replayable": [c.id for c in m.replayable],
+        "case_hits": [{"case_id": h.case_id, "name": h.name, "status": h.status, "action": action_text(h.action)}
+                      for h in m.case_hits],
         "hints": m.hints,
     }, indent=2, ensure_ascii=False))
 
@@ -380,11 +425,120 @@ def errors_list_cmd(
                    f"{_trim(where, 60)}  {_trim(e.message, 80)}  — {_trim(_how_or_why(e), 120)}")
 
 
+def _when(at) -> str:
+    return at.strftime("%Y-%m-%d %H:%M") if at else "-"
+
+
+def _attempt_line(n: int, a, resolving: bool) -> list[str]:
+    who = " ".join(x for x in (a.fix_method, a.resolver_id) if x and x != "none")
+    head = f"  {n}. {a.id}  {who or '-'}  {a.outcome}  [{a.change.change_kind}]" + ("  ← resolved it" if resolving
+                                                                                  else "")
+    out = [head]
+    if a.description:
+        out.append(f"     what:    {_trim(a.description, 300)}")
+    if a.failure:
+        out.append(f"     failure: {_trim(a.failure, 300)}")
+    for x in a.introduced_errors[:5]:
+        out.append(f"     new error: {_trim(x, 200)}")
+    return out
+
+
+def _error_view(e, attempts: list, case: Optional[CatalogCase], all_diffs: bool) -> list[str]:
+    lines = [f"error {e.id} — {e.status}"]
+    lines.append(f"  project:   {e.project or e.project_fingerprint or '-'} (run {e.run_id or '-'}, {_when(e.at)})")
+    cid = e.case_id or case_id_for(e.signature_generic)
+    if case is not None:
+        lines.append(f"  case:      {case.id}  {case.effective_name()}  [{case.effective_status()}, "
+                     f"{action_text(case.effective_action())}]  → sbmig kb cases show {case.id}")
+    elif cid:
+        lines.append(f"  case:      {cid} (not in the catalog yet — `sbmig kb reindex`)")
+    where = f"{e.file}:{e.line}" if e.file and e.line else (e.file or "-")
+    lines.append(f"  error:     {e.error_kind.value}  {where}" + (f"  (module {e.module})" if e.module else ""))
+    lines.append(f"  message:   {_trim(e.message, 300)}")
+    if e.symbol or e.location:
+        lines.append(f"  symbol:    {e.symbol or '-'}" + (f"   location: {e.location}" if e.location else ""))
+    if e.artifact:
+        lines.append(f"  artifact:  {e.artifact}")
+    lines.append(f"  L1:        {e.signature or '-'}")
+    lines.append(f"  L2:        {e.signature_generic or '-'}")
+    lines.append(f"  seen:      first {e.first_seen or '-'}, last {e.last_seen or '-'}, in {e.builds_present} "
+                 f"build(s)")
+    if e.status in ("resolved", "resolved_indirectly"):
+        who = " ".join(x for x in (e.fix_method, e.resolver_id) if x and x != "none") or "gone"
+        by = f" (attempt {e.resolved_by}" + (", targeted)" if e.targeted else ")") if e.resolved_by else ""
+        lines.append(f"  resolved:  at {e.resolved_at or '-'} by {who}{by}")
+        if e.description:
+            lines.append(f"  how:       {_trim(e.description, 400)}")
+        change = e.change_kind + (f"; replace {pairs_text(e.replace_pairs[:5])}" if e.replace_pairs else "")
+        if e.fix_labels:
+            change += f"; labels {', '.join(e.fix_labels)}"
+        lines.append(f"  change:    {change}" + ("  (LLM text replace → rule candidate)" if e.replace_rule_candidate
+                                                 else ""))
+    else:
+        lines.append(f"  why not:   {_trim(e.failure_reason, 400) or '-'}")
+        if e.block_reason or e.suggestion:
+            lines.append(f"  blocked:   {e.block_reason or '-'}: {_trim(e.suggestion, 300) or '-'}")
+        for x in e.problem_errors[:10]:
+            lines.append(f"  problem:   {_trim(x, 200)}")
+    for x in e.notes[:10]:
+        lines.append(f"  note:      {_trim(x, 300)}")
+    lines.append("")
+    if attempts:
+        lines.append(f"attempts ({len(attempts)}, in order):")
+        for n, a in enumerate(attempts, 1):
+            lines += _attempt_line(n, a, a.id == e.resolved_by)
+            if all_diffs and a.id != e.resolved_by:
+                lines += ["     --- diff" + (" (truncated)" if a.diff_truncated else ""), a.diff or "(no diff)"]
+    else:
+        lines.append("(no fix attempts recorded for this error)")
+    res = next((a for a in attempts if a.id == e.resolved_by), None)
+    if res is not None:
+        lines += ["", f"--- resolving diff ({res.id})" + (" (truncated)" if res.diff_truncated else ""),
+                  res.diff or "(no diff)"]
+    elif e.diff_excerpt:
+        lines += ["", "--- resolving diff (excerpt of this file)", e.diff_excerpt]
+    return lines
+
+
+def _attempt_view(a) -> list[str]:
+    who = " ".join(x for x in (a.fix_method, a.resolver_id) if x and x != "none")
+    lines = [f"attempt {a.id} — {who or '-'} {a.outcome}",
+             f"  project:   {a.project or a.project_fingerprint or '-'} (run {a.run_id or '-'}, {_when(a.at)}), "
+             f"phase {a.phase.value}, iteration {a.iteration}, cluster {a.cluster_id or '-'}"]
+    if a.model:
+        lines.append(f"  model:     {a.model}" + (f" ({a.llm_calls} call(s), {a.input_tokens}/{a.output_tokens} "
+                                                   f"tokens)" if a.llm_calls else ""))
+    ch = a.change
+    lines.append(f"  applied:   {'yes' if a.applied else 'no'}; change {ch.change_kind} (+{ch.lines_added} "
+                 f"-{ch.lines_removed})" + (f"; replace {pairs_text(ch.replace_pairs[:5])}" if ch.replace_pairs
+                                            else ""))
+    if ch.files:
+        lines.append(f"  files:     {', '.join(ch.files[:10])}")
+    if a.description:
+        lines.append(f"  what:      {_trim(a.description, 600)}")
+    if a.failure:
+        lines.append(f"  failure:   {_trim(a.failure, 600)}")
+    for x in a.introduced_errors[:10]:
+        lines.append(f"  new error: {_trim(x, 200)}")
+    for x in a.remaining_errors[:10]:
+        lines.append(f"  remaining: {_trim(x, 200)}")
+    if a.error_ids:
+        lines.append(f"  errors:    {', '.join(a.error_ids[:20])}")
+    if a.fix_labels:
+        lines.append(f"  labels:    {', '.join(a.fix_labels)}" + (f" ({a.replacement})" if a.replacement else ""))
+    lines += ["--- diff" + (" (truncated)" if a.diff_truncated else ""), a.diff or "(no diff)"]
+    return lines
+
+
 @errors_cli.command("show")
 def errors_show_cmd(ctx: typer.Context, item_id: str = typer.Argument(..., metavar="ID"),
-                    as_json: bool = typer.Option(False, "--json")) -> None:
-    """One error record (id or unique id prefix) with its attempts and their diffs; or one attempt by its id."""
-    store = _kb(ctx).error_case_store()
+                    as_json: bool = typer.Option(False, "--json", help="the raw records"),
+                    all_diffs: bool = typer.Option(False, "--all-diffs", help="also the diffs of the failed attempts")
+                    ) -> None:
+    """One error record (id or unique id prefix): what it was, its case, every attempt (failure reasons) and the
+    resolving diff; or one attempt by its id. `--json` prints the raw records."""
+    kb = _kb(ctx)
+    store = kb.error_case_store()
     err = store.get_error(item_id)
     if err is None:
         hits = [e for e in store.iter_errors() if e.id.startswith(item_id)]
@@ -401,9 +555,7 @@ def errors_show_cmd(ctx: typer.Context, item_id: str = typer.Argument(..., metav
         if as_json:
             typer.echo(att.model_dump_json(indent=2))
             return
-        typer.echo(att.model_dump_json(indent=2, exclude={"diff"}))
-        typer.echo("--- diff")
-        typer.echo(att.diff or "(no diff)")
+        typer.echo("\n".join(_attempt_view(att)))
         return
     attempts = store.attempts_of(err)
     if as_json:
@@ -411,15 +563,11 @@ def errors_show_cmd(ctx: typer.Context, item_id: str = typer.Argument(..., metav
                                "attempts": [a.model_dump(mode="json") for a in attempts]}, indent=2,
                               ensure_ascii=False))
         return
-    typer.echo(err.model_dump_json(indent=2))
-    for a in attempts:
-        typer.echo(f"\n=== attempt {a.id}  {a.fix_method} {a.resolver_id}  {a.outcome}  "
-                   f"change={a.change.change_kind}")
-        typer.echo(a.model_dump_json(indent=2, exclude={"diff"}))
-        typer.echo("--- diff" + (" (truncated)" if a.diff_truncated else ""))
-        typer.echo(a.diff or "(no diff)")
-    if not attempts:
-        typer.echo("\n(no fix attempts recorded for this error)")
+    case = None
+    cid = err.case_id or case_id_for(err.signature_generic)
+    if cid and kb.cfg.kb.catalog:
+        case = kb.catalog().get(cid)
+    typer.echo("\n".join(_error_view(err, attempts, case, all_diffs)))
 
 
 @errors_cli.command("summary")
@@ -525,3 +673,293 @@ def errors_export_cmd(
             attempts = list(store.iter_attempts())
         write_fix_attempts_csv(attempts, attempts_csv)
         typer.echo(f"wrote {len(attempts)} fix attempt(s) to {attempts_csv}")
+
+
+# --------------------------------------------------------------------------- sbmig kb cases
+cases_cli = typer.Typer(
+    help="Case catalog: one reusable case per error signature (L2) — what the error is, how it was fixed, what "
+         "failed before, and what a hit does. Edit the `human:` block of kb/catalog/…/<symbol>--<id>.yml or use "
+         "reject / pin / unpin / hint / note.", no_args_is_help=True)
+kb_cli.add_typer(cases_cli, name="cases")
+
+_ACTION_HELP = ("recipe:<id>[,<id>…] | replace:<old>=<new>[,<old>=<new>…] | handler:<id> | hint | "
+                "block[:<reason>] (reason = a BlockReason value, or free text kept as the suggestion)")
+
+
+def _catalog(ctx: typer.Context) -> CaseCatalog:
+    return _kb(ctx).catalog()
+
+
+def _the_case(cat: CaseCatalog, key: str) -> CatalogCase:
+    ids = cat.resolve(key)
+    if not ids:
+        typer.echo(f"no case for {key} (id, id prefix, L2 / L1 signature or symbol)", err=True)
+        raise typer.Exit(1)
+    if len(ids) > 1:
+        rows = [cat.get(i) for i in ids[:10]]
+        typer.echo(f"ambiguous key {key}: " + "; ".join(f"{c.id} {c.effective_name()}" for c in rows if c),
+                   err=True)
+        raise typer.Exit(1)
+    case = cat.get(ids[0])
+    if case is None:
+        typer.echo(f"case {ids[0]} is unreadable; run `sbmig kb reindex`", err=True)
+        raise typer.Exit(1)
+    return case
+
+
+def _status_text(c: CatalogCase) -> str:
+    return c.effective_status() + ("*" if c.human.status else "")
+
+
+def _action_text(c: CatalogCase) -> str:
+    return action_text(c.effective_action()) + ("*" if c.human.action else "")
+
+
+def _done(cat: CaseCatalog, c: CatalogCase, what: str) -> None:
+    typer.echo(f"{what} {c.id}  {c.effective_name()}: status {_status_text(c)}, action {_action_text(c)}  "
+               f"({cat.path_of(c.id) or '-'})")
+
+
+def parse_action(spec: str, replace_scope: str = "error-lines") -> CaseAction:
+    """`--action` of `sbmig kb cases pin` → CaseAction (ValueError on a malformed spec)."""
+    kind, _, arg = (spec or "").partition(":")
+    kind, arg = kind.strip().lower(), arg.strip()
+    if kind == "recipe":
+        ids = [x.strip() for x in arg.split(",") if x.strip()]
+        if not ids:
+            raise ValueError("recipe:<id> needs a recipe id")
+        return CaseAction(kind="recipe", recipe_ids=ids)
+    if kind == "replace":
+        pairs = []
+        for part in arg.split(","):
+            old, sep, new = part.partition("=")
+            if not sep or not old.strip() or old.strip() == new.strip():
+                raise ValueError(f"replace pair {part!r} is not <old>=<new>")
+            pairs.append(ReplacePair(old=old.strip(), new=new.strip()))
+        return CaseAction(kind="replace", replace_pairs=pairs, replace_scope=replace_scope)
+    if kind == "handler":
+        if not arg:
+            raise ValueError("handler:<id> needs a handler id")
+        return CaseAction(kind="handler", handler_id=arg)
+    if kind == "hint":
+        return CaseAction(kind="hint")
+    if kind == "block":
+        if arg in {r.value for r in BlockReason}:
+            return CaseAction(kind="block", block_reason=arg)
+        return CaseAction(kind="block", suggestion=arg)
+    raise ValueError(f"unknown action {spec!r}; expected {_ACTION_HELP}")
+
+
+@cases_cli.command("list")
+def cases_list_cmd(
+    ctx: typer.Context,
+    status: Optional[str] = typer.Option(None, "--status", help="regex on the effective status: "
+                                                                 "observed|candidate|active|rejected"),
+    action: Optional[str] = typer.Option(None, "--action", help="regex on the effective action kind: "
+                                                                 "hint|recipe|replace|handler|patch|block"),
+    kind: Optional[str] = typer.Option(None, "--kind", help="regex on the error kind / class (compile, "
+                                                             "cannot_find_symbol …)"),
+    search: Optional[str] = typer.Option(None, "--search", help="regex on id, name, signature, symbol, owners"),
+    limit: int = typer.Option(0, "--limit", "-n", help="first N (0 = all)"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cases, most projects first: id, status, action, seen, projects, name (`*` = set by a person)."""
+    try:
+        rx = {k: re.compile(v) for k, v in (("status", status), ("action", action), ("kind", kind),
+                                              ("search", search)) if v}
+    except re.error as e:
+        raise typer.BadParameter(f"bad regex: {e}")
+    rows = []
+    for c in _catalog(ctx).cases():
+        if "status" in rx and not rx["status"].search(c.effective_status()):
+            continue
+        if "action" in rx and not rx["action"].search(c.effective_action().kind):
+            continue
+        if "kind" in rx and not (rx["kind"].search(c.error_kind.value) or rx["kind"].search(c.error_class)):
+            continue
+        if "search" in rx:
+            hay = [c.id, c.name, c.effective_name(), c.signature_generic, c.symbol,
+                   *(v.owner for v in c.variants), *(v.signature for v in c.variants)]
+            if not any(rx["search"].search(h) for h in hay if h):
+                continue
+        rows.append(c)
+    if limit > 0:
+        rows = rows[:limit]
+    if as_json:
+        typer.echo(json.dumps([c.model_dump(mode="json") for c in rows], indent=2, ensure_ascii=False))
+        return
+    if not rows:
+        typer.echo("no cases")
+        return
+    for c in rows:
+        typer.echo(f"{c.id}  {_status_text(c):<10} seen={c.evidence.seen:<4} projects={c.evidence.projects:<3} "
+                   f"{_trim(c.effective_name(), 60):<60}  {_trim(_action_text(c), 70)}")
+
+
+def _event_line(ev) -> str:
+    steps = " → ".join(ev.attempts)
+    if not steps:
+        steps = (f"{ev.fix_method} {ev.resolved_by or ''}".strip() if ev.fix_method != "none" else "no attempt")
+    where = ev.file.rsplit("/", 1)[-1] if ev.file else "-"
+    return (f"  {ev.at.strftime('%Y-%m-%d') if ev.at else '----------'} {_trim(ev.project or '-', 24):<24} "
+            f"{steps} ({ev.status})  · {where} · error {ev.error_id}")
+
+
+def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True) -> list[str]:
+    """The readable `sbmig kb cases show` text."""
+    ev = c.evidence
+    lines = [f"case {c.id} — {c.effective_name()}"]
+    lines.append(f"  file:      {cat.path_of(c.id) or '-'}")
+    lines.append(f"  key (L2):  {c.signature_generic}")
+    lines.append(f"  kind:      {c.error_kind.value}" + (f" / {c.error_class}" if c.error_class else "")
+                 + (f", symbol {c.symbol}" if c.symbol else ""))
+    lines.append(f"  status:    {_status_text(c)}")
+    a = c.effective_action()
+    lines.append(f"  action:    {_action_text(c)}" + (f" (scope {a.replace_scope})" if a.kind == "replace" else ""))
+    if c.human.status or c.human.action or c.human.name:
+        lines.append(f"  generated: {c.name}: status {c.status}, action {action_text(c.action)}  "
+                     "(`*` = the human block overrides it)")
+    span = ""
+    if ev.first_at:
+        span = f", {ev.first_at.strftime('%Y-%m-%d')} … {ev.last_at.strftime('%Y-%m-%d') if ev.last_at else '?'}"
+    lines.append(f"  evidence:  seen {ev.seen}× in {ev.projects} project(s) / {ev.runs} run(s){span}")
+    lines.append("             by status: " + (", ".join(f"{k} {v}" for k, v in ev.by_status.items()) or "-")
+                 + "; resolved by: " + (", ".join(f"{k} {v}" for k, v in ev.resolved_by.items()) or "-"))
+    promote = cat.promote_after if cat.promote_after > 0 else "never (auto promotion off)"
+    lines.append(f"             own replace (handler case-replace): {ev.action_successes} success(es) in "
+                 f"{len(ev.action_projects)} project(s), {ev.action_failures} failure(s); active after {promote} "
+                 "project(s) without a failure")
+    if c.variants:
+        lines += ["", "variants (owner / L1):"]
+        for v in c.variants[:10]:
+            lines.append(f"  {v.owner or '(no owner)'}  {v.signature or '-'}   seen {v.seen}, {v.projects} project(s)")
+        if len(c.variants) > 10:
+            lines.append(f"  … {len(c.variants) - 10} more")
+    lines += ["", f"timeline (oldest first, last {len(ev.timeline)}):"]
+    lines += [_event_line(x) for x in ev.timeline] or ["  (none)"]
+    lines += ["", "fixes:"]
+    for f in ev.fixes:
+        who = " ".join(x for x in (f.method, f.resolver_id) if x)
+        txt = f"  {who} — {f.count}× in {f.projects} project(s) [{f.change_kind}]"
+        if f.description:
+            txt += f": {_trim(f.description, 200)}"
+        if f.replace_pairs:
+            txt += f"; replace {pairs_text(f.replace_pairs[:5])}"
+        txt += f"  (latest {f.attempt_id or '-'}, {f.project or '-'}, {f.at.strftime('%Y-%m-%d') if f.at else '-'})"
+        lines.append(txt)
+    if not ev.fixes:
+        lines.append("  (none yet)")
+    lines += ["", "failures:"]
+    for x in ev.failures:
+        lines.append(f"  {x.method} {x.outcome} — {x.count}× in {x.projects} project(s)"
+                     + (f": {_trim(x.failure, 200)}" if x.failure else "") + f"  ({x.attempt_id or '-'}, "
+                     f"{x.project or '-'})")
+    if not ev.failures:
+        lines.append("  (none)")
+    lines += ["", "hints (to the fix LLM, people's first):"]
+    hints = [f"  [person] {h}" for h in c.human.hints] + [f"  {h}" for h in c.hints]
+    lines += hints or ["  (none)"]
+    if c.human.notes:
+        lines += ["", "notes:"] + [f"  {ln}" for ln in c.human.notes.splitlines()]
+    if diff and store is not None:
+        latest = max(ev.fixes, key=lambda f: f.at.timestamp() if f.at else 0.0, default=None)
+        att = None
+        if latest is not None and latest.attempt_id and not latest.attempt_id.startswith("step:"):
+            att = next(store.iter_attempts(ids={latest.attempt_id}), None)
+        if att is not None:
+            who = " ".join(x for x in (att.fix_method, att.resolver_id) if x)
+            lines += ["", f"--- latest successful fix: {att.id} ({att.project or '-'}, {who}, "
+                          f"{att.change.change_kind})" + (" (truncated)" if att.diff_truncated else ""),
+                      att.diff or "(no diff)"]
+        elif latest is not None:
+            lines += ["", f"(the latest fix {latest.attempt_id or '-'} has no recorded diff)"]
+    return lines
+
+
+@cases_cli.command("show")
+def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="KEY",
+                                                                  help="id, id prefix, L2 / L1 signature or symbol"),
+                   as_json: bool = typer.Option(False, "--json", help="the raw case"),
+                   diff: bool = typer.Option(True, "--diff/--no-diff", help="the latest successful fix's diff")
+                   ) -> None:
+    """One case, readable: name, key and variants, status / action, evidence, the timeline (failed attempts before
+    the fix), fixes, failures, hints and the latest successful fix's diff."""
+    kb = _kb(ctx)
+    cat = kb.catalog()
+    c = _the_case(cat, key)
+    if as_json:
+        typer.echo(c.model_dump_json(indent=2))
+        return
+    typer.echo("\n".join(case_report(cat, c, kb.error_case_store(), diff)))
+
+
+def _set(ctx: typer.Context, key: str, what: str, **fields) -> None:
+    cat = _catalog(ctx)
+    c = _the_case(cat, key)
+    try:
+        c = cat.set_human(c.id, **fields)
+    except (KeyError, ValueError) as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(1)
+    _done(cat, c, what)
+
+
+def _append_note(c: CatalogCase, text: str) -> str:
+    return (c.human.notes.rstrip("\n") + "\n" if c.human.notes else "") + text
+
+
+@cases_cli.command("reject")
+def cases_reject_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="ID"),
+                     reason: str = typer.Option("", "--reason", "-r")) -> None:
+    """Switch a case off: it never matches again (no action, no hints) until `unpin`."""
+    c = _the_case(_catalog(ctx), key)
+    fields = {"status": "rejected"}
+    if reason:
+        fields["notes"] = _append_note(c, f"rejected: {reason}")
+    _set(ctx, c.id, "rejected", **fields)
+
+
+@cases_cli.command("pin")
+def cases_pin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="ID"),
+                  action: str = typer.Option(..., "--action", "-a", help=_ACTION_HELP)) -> None:
+    """Pin the action a hit applies (a person's decision: status active)."""
+    kb = _kb(ctx)
+    try:
+        act = parse_action(action, kb.cfg.kb.case_replace_scope)
+    except ValueError as e:
+        raise typer.BadParameter(str(e))
+    for rid in act.recipe_ids:
+        if kb.get_recipe(rid) is None:
+            typer.echo(f"note: {rid} is not a KB recipe (kb/recipes/); the KB recipe step runs KB recipes only",
+                       err=True)
+    _set(ctx, key, "pinned", action=act, status="active")
+
+
+@cases_cli.command("unpin")
+def cases_unpin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="ID")) -> None:
+    """Back to the generated status / action (clears a pinned action and a status set by a person, `reject`
+    included)."""
+    _set(ctx, key, "unpinned", action=None, status=None)
+
+
+@cases_cli.command("hint")
+def cases_hint_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="ID"),
+                   text: str = typer.Argument(..., metavar="TEXT")) -> None:
+    """Add a hint for the fix LLM (people's hints go before the generated ones)."""
+    c = _the_case(_catalog(ctx), key)
+    text = " ".join(text.split())
+    if not text:
+        raise typer.BadParameter("empty hint")
+    hints = list(c.human.hints) + ([text] if text not in c.human.hints else [])
+    _set(ctx, c.id, "hint added to", hints=hints)
+
+
+@cases_cli.command("note")
+def cases_note_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="ID"),
+                   text: str = typer.Argument(..., metavar="TEXT")) -> None:
+    """Add a note (for people; not sent to the LLM)."""
+    c = _the_case(_catalog(ctx), key)
+    if not text.strip():
+        raise typer.BadParameter("empty note")
+    _set(ctx, c.id, "note added to", notes=_append_note(c, text.strip()))
+

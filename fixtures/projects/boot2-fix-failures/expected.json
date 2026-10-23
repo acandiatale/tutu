@@ -78,7 +78,8 @@
         "error_cases.csv"
       ],
       "kb_errors_min": 2,
-      "kb_attempts_min": 4
+      "kb_attempts_min": 4,
+      "kb_cases_min": 1
     },
     "unresolved_max": 1
   }

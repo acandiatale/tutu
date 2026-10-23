@@ -803,3 +803,89 @@ Implementation notes (2026-10-23, as built — they refine the contract above):
   follow-up per top directory + flag `web-content-left`; standalone `main` classes of merged jar modules →
   follow-up. Report FLAG_HELP (+ ko) for the five flags. Fixtures `ear-sibling-poms`, `servlet-war-overlay`
   (+ `fixtures/libs/legacy-base-web/v1.0.0`, installed by `fixtures/libs/install.sh`).
+
+## Case catalog (2026-10-23)
+
+User decisions: the case key is the L2 signature (variants by owner class / L1), promotion is automatic, the learned
+text replace applies to the reported error lines (+ imports) only. Models in `sbmig/core/models.py`: `CaseStatus`,
+`CaseActionKind`, `CaseVariant`, `CaseFix`, `CaseFailure`, `CaseEvent`, `CaseAction`, `CaseEvidence`, `CaseHuman`,
+`CatalogCase` (`effective_status / effective_action / effective_name`: the `human` block wins), `CaseHit`;
+`ErrorCaseRecord.case_id`. Config `kb.catalog`, `kb.case_replace`, `kb.case_replace_scope`; promotion uses
+`kb.auto_promote_after_projects`.
+
+Files (`<kb.dir>/`): `catalog/<error_kind>/<error_class|other>/<slug(symbol)|unknown>--<id>.yml` (one case, YAML,
+`human:` block edited by people), `catalog/index.json` (`{version: 1, updated_at, cases: {id: path}, by_l2: {sig: id},
+by_l1: {sig: id}, by_symbol: {symbol: [id]}}`, rebuildable), `views/cases.md` + `views/cases.csv` (generated, one
+row per case sorted by projects then seen: id, name, status, action, seen, projects, resolved by, latest fix, top
+failure). The events (`errors.jsonl`, `fix_attempts.jsonl`) stay the source of truth.
+
+Case id = `sha1(signature_generic)[:10]`; `ErrorCaseRecord.case_id` is set in `prepare_error_cases` (empty when
+there is no L2). Auto rules (recomputed on every update; `human` untouched):
+* **name**: `<Owner simple name>.<symbol> — <class with spaces>` when the top variant has an owner, else
+  `<symbol> — <class>`; **variants**: by owner (`location` / symbol owner), each with its L1, seen, projects.
+* **evidence**: counts over the case's error records; `fixes` grouped by (method, resolver, replace pairs) with the
+  latest attempt as example; `failures` grouped by (method, outcome, failure prefix); `timeline` = last 20 records
+  (`attempts` = "method:outcome" in order, so a failure followed by a fix is visible); `action_*` = records resolved /
+  not resolved by the handler `case-replace` (`fix_method == "handler"` and `resolver_id == "case-replace"`).
+* **action / status** (first that applies): (1) a KB recipe (active or candidate) whose signatures contain the L2 or a
+  variant's L1 → `recipe` (status active if any such recipe is active, else candidate); (2) resolved records with
+  `replace_rule_candidate` (LLM text replaces) → `replace` with the most common pair set, status candidate; active once
+  `action_projects` ≥ `kb.auto_promote_after_projects` and `action_failures == 0`; a candidate replace with ≥ 2 action
+  failures and no success falls back to observed / hint; (3) replayable LLM patch cases (`KBCase` with this L2) →
+  `patch`, candidate (replayed by the existing KB_PATCH step); (4) otherwise `hint`, observed. `block` and `handler`
+  only come from `human.action`.
+* **hints** (≤ 3): the best fix ("past runs: fixed by …; replace `a` → `b`") and the top failure ("past failure ×k:
+  … — do not repeat it"), same wording as the error hints; `human.hints` go first.
+
+APIs:
+```python
+from sbmig.kb.catalog import CaseCatalog, case_id_for      # case_id_for(signature_generic) -> str
+CaseCatalog(kb_dir, cfg=None)
+    .update_from(errors: list[ErrorCaseRecord], attempts: list[FixAttemptRecord]) -> list[str]   # changed ids
+    .rebuild() -> int                    # from errors.jsonl + fix_attempts.jsonl + recipes + cases (human kept)
+    .get(key) -> CatalogCase | None      # id, unique id prefix, L2 signature or symbol
+    .cases() -> list[CatalogCase]
+    .match(errors: list[BuildError]) -> list[CaseHit]       # by L1 → L2 → error symbol; effective status / action;
+                                                            # rejected cases never hit; cached by index mtime
+    .write_views() -> list[Path]
+    .set_human(case_id, **fields) -> CatalogCase            # name / status / action / hints / notes
+FileKnowledgeBase.append_error_cases(...)   # also updates the catalog + views (kb.catalog)
+FileKnowledgeBase.match(cluster)            # KBMatch.hints: case hints (human first) instead of the raw error-hint
+                                            # lines when kb.catalog is on; KBMatch.case_hits: list[CaseHit] (new field)
+FileKnowledgeBase.reindex / export / import # include catalog/ and views/
+```
+CLI `sbmig kb cases list [--status --action --kind --search] [--json]`, `show <key>` (readable: name, match,
+effective status / action, evidence, timeline with failed attempts before the fix, the latest successful fix's diff
+from `fix_attempts.jsonl`), `reject <id> [--reason]`, `pin <id> --action recipe:<id>|replace:<old>=<new>[,…]|
+handler:<id>|hint|block[:<reason>]`, `unpin <id>`, `hint <id> "<text>"`, `note <id> "<text>"`. `sbmig kb errors show`
+prints a readable view by default (`--json` for the raw record) and names the case.
+
+Triage: handler **`case-replace`** (`sbmig/triage/handlers/case_replace.py`, registered last in `default_handlers`, so
+the specific built-in handlers win; the HANDLER step precedes KB recipes and the LLM). `matches(cluster, profile, cfg)`:
+`cfg.kb.catalog and cfg.kb.case_replace` and `CaseCatalog(cfg.kb_dir, cfg).match(cluster.errors)` returns a hit with
+effective action `replace` and status candidate / active for an error with file + line. `apply`: per file, the
+reported lines (and `import` lines) — or the whole file with `case_replace_scope: file` — get each pair replaced
+(identifier-bounded `(?<![\w$])old(?![\w$])` when `old` is an identifier; otherwise literal but bounded at each end that is a word character, so `1.0.0` never hits `11.0.0` and `javax.servlet` never hits `javax.servletx`; all pairs of a case in one pass, longest first) only where `old` occurs; the scope comes from `kb.case_replace_scope` only (a case action's own `replace_scope` is not consulted);
+returns `FileChange(path, op="modify")` per changed file; `notes` name the case id and the pairs. The build scores
+it like any handler; the error records then carry `fix_method: handler`, `resolver_id: case-replace`, which the
+catalog counts as action successes / failures (auto promotion).
+
+Implementation notes (case catalog, as built 2026-10-23):
+* `CaseCatalog(kb_dir, cfg=None, *, kb=None)` (`kb` = the store, for recipes / patch cases); extras `resolve`,
+  `refresh(l2s)`, `refresh_signatures(sigs)`, `hint_lines(case)`, `status_counts()`, `path_of(id)`; `get` also takes an
+  L1. `update_from` recomputes the touched cases from all their records in `errors.jsonl` (its `attempts` argument is
+  not needed: the error records carry their attempt history); no index yet → full rebuild. `rebuild` keeps `human:`
+  blocks and drops cases with neither events nor human edits. Incremental == rebuild (tested, `updated_at` aside).
+* Case YAML: `id`, `signature_generic`, the `human:` block first (its raw text and comments survive updates while it
+  parses to the same values; `set_human` / CLI edits re-render it), then the generated part. Variants keyed by
+  (owner, L1), ≤ 50. The error class is the 2nd L2 segment when it is a lowercase token, else `other`. The owner
+  prefix in the name only when the symbol has no `.` / space. A failed replace (≥ 2 action failures, no success)
+  falls through the priority list (patch if any, else hint). Only `resolved` records count as fixes.
+* Hints: with `kb.catalog` and an index, `KBMatch.hints` get `[case <id>] …` lines (human hints always, generated ones
+  under `kb.error_hints`) instead of the raw `[error …]` lines.
+* Store: `FileKnowledgeBase.catalog()`; `stats()` adds `catalog_cases`, `catalog_observed|candidate|active|rejected`;
+  export / import carry `catalog/` and `views/` (counter `case_humans_added`); `Ledger.summary()["top_cases"]`; recipe
+  promote / reject refreshes the cases they cover. CLI `sbmig kb cases …` as in the contract (+ `show --no-diff`,
+  `list -n`); `sbmig kb errors show` readable by default (`--json`, `--all-diffs`).
+* Handler `case-replace`: only errors whose L2 is the case key or whose L1 is a variant's get the replace (never a
+  symbol-only hit); `clear_catalog_cache()` for tests. e2e `expect.error_cases.kb_cases_min`.

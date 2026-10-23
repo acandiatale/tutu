@@ -10,7 +10,8 @@
 * ``attempt_record`` / ``blocked_record`` / ``plan_recipe_records`` / ``unresolved_records`` /
   ``advisory_record``: build the ResolutionRecords of a PhaseResult / a finished RunReport.
 * ``summary()`` also carries ``error_cases`` (``sbmig.kb.error_cases.ErrorCaseStore.summary`` of the
-  ``errors.jsonl`` beside the ledger) and the markdown gets an "Error cases" section from it (2026-10-23).
+  ``errors.jsonl`` beside the ledger) and the markdown gets an "Error cases" section from it (2026-10-23), plus
+  ``top_cases`` (the case catalog beside the ledger, most projects first) for a short "Top error cases" table.
 """
 
 from __future__ import annotations
@@ -328,7 +329,25 @@ class Ledger:
         ec = self.error_cases_summary(run_ids=wanted, top=top)
         if ec:
             out["error_cases"] = ec
+            cases = self.top_cases(top=min(top, 10))
+            if cases:
+                out["top_cases"] = cases
         return out
+
+    def top_cases(self, top: int = 10) -> list[dict[str, Any]]:
+        """The most widespread cases of the case catalog beside this ledger (``kb/catalog/``), [] without one."""
+        try:
+            from .catalog import CaseCatalog, action_text
+
+            cat = CaseCatalog(self.path.parent)
+            if not cat.index_path.exists():
+                return []
+            return [{"id": c.id, "name": c.effective_name(), "status": c.effective_status(),
+                     "action": action_text(c.effective_action()), "projects": c.evidence.projects,
+                     "seen": c.evidence.seen} for c in cat.cases()[:top]]
+        except Exception as e:  # pragma: no cover - the learning report must not fail on it
+            log.warning("case catalog summary failed: %s: %s", type(e).__name__, e)
+            return []
 
     def error_cases_summary(self, *, run_ids: Optional[Iterable[str]] = None, top: int = 15) -> dict[str, Any]:
         """``ErrorCaseStore.summary`` of the ``errors.jsonl`` beside this ledger, {} when there are none."""
@@ -515,6 +534,11 @@ def render_learning_md(
         lines.append("_none_")
     if ec and ec.get("errors"):
         lines += [""] + _error_cases_md(ec)[:-1]
+        if s.get("top_cases"):
+            lines += ["", "### Top error cases (case catalog, whole KB — `sbmig kb cases show <id>`)", "",
+                      "| case | name | status | action | projects | seen |", "|---|---|---|---|---|---|"]
+            lines += [f"| `{r['id']}` | {_md_cell(r['name'])} | {r['status']} | {_md_cell(r['action'])} | "
+                      f"{r['projects']} | {r['seen']} |" for r in s["top_cases"]]
     if s["unresolved"]:
         lines += ["", "## Unresolved at the end of a run", "", "| symbol / signature | count |", "|---|---|"]
         lines += [f"| {_md_cell(r['symbol'])} | {r['count']} |" for r in s["unresolved"]]

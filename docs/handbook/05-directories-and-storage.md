@@ -279,7 +279,10 @@ KB 루트는 `kb.dir`(기본 `kb`, 저장소 루트 기준) 입니다. 파일 �
 ├── symbols.json                        오류 심볼 → 수정 라벨 / 치환 / 프로젝트 수 / 케이스 / 레시피
 ├── errors.jsonl                        추가 전용 ErrorCaseRecord — 빌드 에러 1개 = 1줄(실패 포함, 2026-10-23)
 ├── fix_attempts.jsonl                  추가 전용 FixAttemptRecord — 수정 시도 1개 = 1줄(적용한 diff, 실패 이유)
-└── error_hints.json                    L2 / 심볼 → 가장 많이 성공한 수정과 가장 많이 실패한 시도(힌트 색인)
+├── error_hints.json                    L2 / 심볼 → 가장 많이 성공한 수정과 가장 많이 실패한 시도(힌트 색인)
+├── catalog/<에러 종류>/<분류>/<심볼>--<id>.yml   케이스 카탈로그: 에러 종류(L2) 하나 = 케이스 하나(사람이 읽고 human: 칸을 고침)
+├── catalog/index.json                  L1 / L2 / 심볼 → 케이스 id (다시 만들 수 있음)
+└── views/cases.md, views/cases.csv     사람용 케이스 목록(생성물, 엑셀용 CSV)
 ```
 
 저장소에는 빈 `kb/cases`, `kb/patterns`, `kb/recipes/active`, `kb/recipes/candidates` 디렉터리만 `.gitkeep` 으로 들어 있습니다.
@@ -507,6 +510,17 @@ flowchart LR
 
 실행 디렉터리에도 같은 내용이 `error_cases.jsonl`, `fix_attempts.jsonl`, `error_cases.csv`(엑셀용 UTF-8 BOM)로 남습니다(5.2 절). 조회 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb errors` 입니다.
 
+### 4.10c 케이스 카탈로그 — catalog/ · views/ (2026-10-23)
+
+`errors.jsonl` / `fix_attempts.jsonl`은 실행마다 쌓이는 **사실**입니다. 사람이 "이 에러가 무엇이고, 어떻게 고쳤고, 무엇이 실패했나"를 한곳에서 보고, 맞는 에러가 오면 그 처리가 자동으로 적용되게 하려고 사실을 **케이스**로 묶습니다.
+
+- **케이스 키**: L2 시그니처(예: `compile|cannot_find_symbol|clientIp`). 같은 L2라도 소유 클래스가 다르면 변형(`variants`, 소유 클래스와 L1)으로 나눕니다. 케이스 id는 L2의 해시 앞 10자이고, 에러 기록마다 `case_id`로 붙습니다(CSV에도 열이 있음).
+- **파일**: `catalog/<에러 종류>/<분류>/<심볼>--<id>.yml`. 맨 위 `human:` 칸(이름, 상태, 고정 동작, 힌트, 메모)만 사람이 고치고, 그 아래는 실행마다 다시 계산됩니다. `human:` 칸은 자동 갱신과 `sbmig kb reindex`가 덮어쓰지 않고(주석도 유지), 항상 자동값보다 우선합니다. 명령(`sbmig kb cases pin` 등)으로 고치면 그 칸을 다시 쓰므로 주석은 사라집니다.
+- **자동 계산 부분**: 이름, 변형, 근거(`evidence`: 본 횟수, 프로젝트 수, 상태별 수, 방법별 해결 수, 성공 방법 상위 5개, 실패 방법 상위 5개, 최근 20건 타임라인), 동작과 상태, 힌트 3줄. 타임라인의 한 줄은 실행 하나이고 `llm:no_change → llm:improved (resolved)`처럼 실패한 시도와 수정이 순서대로 보입니다.
+- **동작과 상태**: 레시피가 있으면 `recipe`, LLM이 단순 치환으로 고친 적이 있으면 `replace`, 재생할 패치가 있으면 `patch`, 그 밖은 `hint`입니다. `replace`는 핸들러 `case-replace`가 서로 다른 프로젝트 `kb.auto_promote_after_projects`(2)곳에서 실패 없이 해결하면 `active`로 오릅니다([04](04-triage-and-loop.md) 8.3c 절).
+- **사람용 목록**: `views/cases.md`(표, 머리말에 읽는 법과 고치는 법)와 `views/cases.csv`(UTF-8 BOM). 프로젝트 수 순입니다.
+- **언제 갱신되나**: 실행이 끝날 때 에러 기록을 KB에 쓰면서 그 실행에 나온 케이스만 다시 계산하고, `sbmig kb reindex`는 전부 다시 만듭니다. 둘의 결과는 같습니다. `sbmig kb promote` / `reject`로 레시피를 바꾸면 관련 케이스가 바로 갱신됩니다.
+
 ### 4.11 kb/ 운영: 지우기·백업·공유
 
 | 항목 | 지워도 되나 | 비고 |
@@ -520,6 +534,7 @@ flowchart LR
 | `ledger.jsonl` | **절대 지우지 마세요.** 재구성할 원천이 없습니다. | 플릿 학습 보고서의 유일한 근거 |
 | `errors.jsonl`, `fix_attempts.jsonl` | **지우지 마세요.** 재구성할 원천이 없습니다. | 실패 사례와 적용 코드의 유일한 기록. 나중에 RDBMS / 벡터 DB 로 옮길 원본 |
 | `error_hints.json` | 지워도 `sbmig kb reindex` 로 위 두 파일에서 재구성 | `kb.error_hints` |
+| `catalog/`, `views/` | 자동 부분은 `sbmig kb reindex` 로 재구성되지만 **사람이 고친 `human:` 칸은 사라집니다** | 고친 케이스가 있으면 보관 |
 
 공유와 이관은 zip 으로 합니다.
 

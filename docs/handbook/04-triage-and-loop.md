@@ -281,6 +281,7 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 | `resources-binary-filtering` | 선제: 분석 결과 `PropertyInventory.filtered_binary_files`가 있을 때. 반응형: `MalformedInputException`, `UnmappableCharacterException`, `Input length = N`, `filtering … to … failed with` | 실패한 플러그인(resources / war)에 `<nonFilteredFileExtensions>` 추가. filtering은 켠 채로 둠(§10.2) | E12 |
 | `strip-pom-repositories` | `build.pom_repositories: remove`일 때만. 선제: pom에 저장소 URL이 있음. 반응형: `Could not transfer artifact`, `Blocked mirror for repositories`, `UnknownHostException` … | pom의 `<repositories>` / `<pluginRepositories>` 삭제(프로필 포함). settings 미러 필요 | X9 |
 | `test-compile-skip` | 자동으로 매칭되지 않음(자리 표시용) | 실제 `-Dmaven.test.skip=true` 대체 빌드는 루프가 직접 수행(§7.5) | L7 |
+| `case-replace` | 반응형만. 케이스 카탈로그(`<kb.dir>/catalog/`)에서 이 에러의 케이스가 `replace` 동작이고 상태가 `candidate` / `active`일 때(`kb.catalog`, `kb.case_replace`). 마지막에 등록되어 위의 전용 핸들러가 먼저 이깁니다 | LLM이 예전에 단순 치환으로 고친 토큰 쌍(예: `clientIp` → `remoteClientIp`)을 javac가 알려 준 줄과 import 줄에만 적용(`kb.case_replace_scope: file`이면 파일 전체). 식별자 경계를 지켜 `getClientIp`는 건드리지 않습니다 | 2026-10-23 |
 
 주의: 선제 선택 기준(`sbmig/plan/pre_handlers.py`의 `LOMBOK_FLOOR = "1.18.30"`, `MAPSTRUCT_FLOOR = "1.6.0"`, `COMPILER_FLOOR = "3.13.0"`, `SUREFIRE_FLOOR = "3.0.0"`)과 핸들러가 실제로 올리는 버전(`LOMBOK_VERSION = "1.18.38"`, `MAPSTRUCT_VERSION = "1.6.3"`, `COMPILER_VERSION = "3.14.0"`, `SUREFIRE_VERSION = "3.5.3"`)은 다릅니다. "이 버전보다 낮으면 손댄다"는 기준과 "손대면 이 버전까지 올린다"는 목표가 따로 있는 것입니다.
 
@@ -556,6 +557,20 @@ ledger는 클러스터(파일) 단위라 "에러 N개 → 어떻게 됐나"를 �
 | `pending` | 다음 빌드 전에 실행이 끝나 채점되지 않음 |
 
 이 기록은 다음 프로젝트의 프롬프트로 돌아갑니다(`kb.error_hints`). 같은 L2 / 심볼의 가장 많이 성공한 수정과 **가장 많이 실패한 시도**가 KB 힌트로 들어가므로, LLM은 "과거에 이 방법은 `no_change` 였다"는 것을 보고 다른 길을 찾습니다. 파일 구조와 상태 정의는 [05. 디렉터리와 저장](05-directories-and-storage.md) 4.10b 절, 조회 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb errors` 입니다.
+
+### 8.3c 케이스 카탈로그: 에러 종류 하나 = 케이스 하나 (`sbmig/kb/catalog.py`, 2026-10-23)
+
+8.3b의 에러 기록은 실행마다 쌓이는 **사실**입니다. 같은 에러 종류(L2 시그니처, 예: `compile|cannot_find_symbol|clientIp`)를 프로젝트를 넘어 한곳에서 보고, 맞는 에러가 오면 그 처리를 자동으로 쓰려고 기록을 **케이스**로 묶습니다. 케이스 키는 L2이고, 같은 L2라도 소유 클래스가 다르면 변형(variant)으로 나눕니다.
+
+| 케이스 동작(`action.kind`) | 언제 자동으로 정해지나 | 에러가 맞으면 |
+|---|---|---|
+| `recipe` | KB 레시피(후보 / 활성)의 시그니처에 이 L2나 변형의 L1이 있을 때 | 지금처럼 KB 레시피 단계가 OpenRewrite로 실행 |
+| `replace` | 해결된 기록 중 LLM이 단순 치환으로 고친 것(`replace_rule_candidate`)이 있을 때. 가장 많이 나온 치환 쌍 | 핸들러 `case-replace`가 LLM 없이 같은 치환을 적용 |
+| `patch` | 다시 적용할 수 있는 LLM 패치 케이스가 있을 때 | 지금처럼 KB 패치 재생 |
+| `hint` | 그 밖 | 프롬프트에 "과거 성공 방법"과 "과거 실패, 반복 금지"를 넣고 LLM이 수정 |
+| `handler`, `block` | 사람이 고정(`pin`)했을 때만 | 그 핸들러 / 바로 blocked + 제안 |
+
+**상태**는 `observed` → `candidate` → `active`이고 `rejected`는 사람이 정합니다. `replace` 케이스는 `case-replace`가 서로 다른 프로젝트 `kb.auto_promote_after_projects`(기본 2)곳에서 실패 없이 해결하면 자동으로 `active`가 됩니다. 후보 상태에서 두 번 실패하고 한 번도 성공하지 못하면 `hint`로 내려갑니다. 사람이 고친 `human:` 블록(이름, 상태, 고정 동작, 힌트, 메모)은 자동 갱신이 덮어쓰지 않고 항상 우선합니다. 파일 위치와 보는 법은 [05. 디렉터리와 저장](05-directories-and-storage.md) 4.10c 절, 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb cases` 입니다.
 
 ### 8.4 "빌드 없이는 KB 점수를 주지 않는다"
 

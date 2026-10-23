@@ -243,13 +243,16 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `kb.use_hints` | bool | `true` | KB 힌트를 프롬프트에 포함. | 위와 같음. | — |
 | `kb.harvest` | bool | `true` | 실행 결과를 KB에 수확. | 시험 실행에서 KB를 오염시키지 않으려면 false(또는 `--no-kb`). | [05](05-directories-and-storage.md) |
 | `kb.generate_recipe_candidates` | bool | `true` | 수확 시 LLM(recipe 모델)으로 레시피 후보 생성. | LLM 예산 절약 시 false. | [05](05-directories-and-storage.md) |
-| `kb.auto_promote_after_projects` | int | `2` | 서로 다른 N개 프로젝트에서 실패 없이 성공하면 후보 → active. 0 = 자동 승격 안 함. | 수동 검토만 허용할 때 0. | [05](05-directories-and-storage.md) |
+| `kb.auto_promote_after_projects` | int | `2` | 서로 다른 N개 프로젝트에서 실패 없이 성공하면 후보 → active. 레시피와 케이스 카탈로그의 `replace` 동작에 같은 값을 씁니다. 0 = 자동 승격 안 함. | 수동 검토만 허용할 때 0. | [05](05-directories-and-storage.md) |
 | `kb.try_candidates_in_plan` | bool | `true` | 후보 레시피를 plan의 OpenRewrite 단계에서 함께 실행하고 단계 빌드 결과로 평가. | 후보가 빌드를 자주 깨뜨릴 때 false. | [05](05-directories-and-storage.md) |
 | `kb.max_hints` | int | `5` | 프롬프트에 넣는 KB 힌트 수. | 거의 바꾸지 않습니다. | — |
 | `kb.error_cases` | bool | `true` | 빌드 에러마다 한 줄(`<kb.dir>/errors.jsonl`), 수정 시도마다 한 줄(`fix_attempts.jsonl`, 실패 포함, 적용한 diff 포함)을 남기고 실행 디렉터리에 `error_cases.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`를 씁니다(2026-10-23). | 끄지 않습니다. 끄면 실패 사례가 로그에만 남습니다. | [05](05-directories-and-storage.md) |
 | `kb.error_hints` | bool | `true` | 같은 에러(L2 / 심볼)의 과거 성공 수정과 과거 실패 시도를 `<kb.dir>/error_hints.json`에서 찾아 수정 프롬프트 힌트로 넣습니다. `kb.use_hints`가 꺼지면 함께 꺼지고 `kb.max_hints`가 전체 상한입니다. | 끄지 않습니다. | [04](04-triage-and-loop.md) |
 | `kb.error_diff_chars` | int | `12000` | 시도 기록 하나에 넣는 diff 최대 글자 수(넘으면 `diff_truncated: true`; 전체는 `changes.patch`). | KB 크기가 문제일 때만 줄입니다. | — |
 | `kb.error_excerpt_chars` | int | `1500` | 에러 기록에 넣는, 그 에러 파일의 diff 발췌 최대 글자 수. | 거의 바꾸지 않습니다. | — |
+| `kb.catalog` | bool | `true` | 에러 기록을 L2 시그니처마다 케이스 하나로 묶어 `<kb.dir>/catalog/`와 사람용 목록 `<kb.dir>/views/cases.md|csv`를 유지하고, 케이스 힌트와 동작을 수정 루프에 줍니다(2026-10-23). | 끄지 않습니다. | [04](04-triage-and-loop.md) |
+| `kb.case_replace` | bool | `true` | 케이스 동작이 `replace`(LLM이 예전에 단순 치환으로 고친 것)이고 상태가 candidate / active면 핸들러 `case-replace`가 LLM 없이 같은 치환을 적용합니다. | 치환 규칙을 쓰지 않으려면 false. | [04](04-triage-and-loop.md) |
+| `kb.case_replace_scope` | `error-lines` / `file` | `error-lines` | 학습한 치환을 적용하는 범위: javac가 알려 준 줄 + import 줄만, 또는 파일 전체. | `file`은 같은 단어가 다른 뜻으로 쓰인 곳까지 바꿀 수 있어 권하지 않습니다. | [04](04-triage-and-loop.md) |
 
 ### 2.10 `plan` — 계획
 | 키 | 타입 | 기본값 | 의미 | 언제 바꾸나 | 관련 문서 |

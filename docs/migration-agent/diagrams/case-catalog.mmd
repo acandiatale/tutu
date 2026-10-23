@@ -1,0 +1,22 @@
+flowchart TB
+  subgraph ev["① 사실 (실행마다 덧붙임)"]
+    direction LR
+    E1["kb/errors.jsonl<br/>에러 1개 = 1줄"] ~~~ E2["kb/fix_attempts.jsonl<br/>시도 1개 = 1줄 (diff)"]
+  end
+  subgraph cat["② 케이스 카탈로그 (L2 시그니처 = 케이스 키)"]
+    direction LR
+    C["catalog/&lt;종류&gt;/&lt;분류&gt;/&lt;심볼&gt;--&lt;id&gt;.yml<br/>human: 사람이 고침 (덮어쓰지 않음)<br/>자동: 변형 · 근거 · 타임라인 · 동작 · 힌트"] --> V["views/cases.md · cases.csv"]
+  end
+  subgraph hit["③ 다음 프로젝트에서 같은 에러"]
+    direction LR
+    H{"케이스 동작"} -->|"replace (candidate/active)"| R["핸들러 case-replace<br/>에러 줄 + import만 치환<br/>LLM 없음"]
+    H -->|recipe| RC["KB 레시피 (OpenRewrite)"]
+    H -->|patch| P["KB 패치 재생"]
+    H -->|hint| L["LLM 프롬프트에<br/>성공 방법 + 실패 방법"]
+  end
+  subgraph pro["④ 자동 승격"]
+    direction LR
+    S["서로 다른 프로젝트 2곳 성공<br/>실패 0"] --> A["active"]
+    F["후보가 2번 실패"] --> D["hint 로 내려감"]
+  end
+  ev --> cat --> hit --> pro

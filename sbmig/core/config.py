@@ -363,6 +363,13 @@ class KBConfig(BaseModel):
     error_hints: bool = True                 # past outcomes of the same error (fixes AND failures) → fix-prompt hints
     error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff (the rest is in <run dir>/changes.patch)
     error_excerpt_chars: int = 1500          # cap of ErrorCaseRecord.diff_excerpt (the error's own file)
+    # case catalog (2026-10-23): one case per error signature (L2) in kb/catalog/, human views in kb/views/; a hit applies
+    # the case's action (replace via handler case-replace; recipe / patch through the existing KB steps; hints always).
+    # Promotion candidate → active uses kb.auto_promote_after_projects (successes in N distinct projects, no failure)
+    catalog: bool = True
+    case_replace: bool = True                # apply learned text replaces (handler case-replace) for candidate / active cases
+    case_replace_scope: Literal["error-lines", "file"] = "error-lines"   # error-lines = only the lines javac reported
+                                             # + import lines of that file; file = the whole file (riskier)
 
 
 class PlanConfig(BaseModel):

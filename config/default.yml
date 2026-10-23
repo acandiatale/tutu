@@ -190,6 +190,11 @@ kb:
   error_hints: true                # past fixes AND failures of the same error → hints in the fix prompt
   error_diff_chars: 12000
   error_excerpt_chars: 1500
+  # case catalog: one reusable case per error signature (kb/catalog/<kind>/<class>/<symbol>--<id>.yml, views kb/views/cases.md|csv);
+  # a hit applies the case's action; candidate → active after kb.auto_promote_after_projects successes, no failure
+  catalog: true
+  case_replace: true               # learned text replaces (handler case-replace)
+  case_replace_scope: error-lines  # error-lines (the reported lines + imports) | file
 
 plan:
   advisor: none

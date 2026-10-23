@@ -271,6 +271,7 @@ class ErrorCasesExpect(BaseModel):
     run_files: list[Literal["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"]] = Field(default_factory=list)
     kb_errors_min: int | None = Field(default=None, ge=0)
     kb_attempts_min: int | None = Field(default=None, ge=0)
+    kb_cases_min: int | None = Field(default=None, ge=0)        # case catalog files (2026-10-23)
 
 
 class Expect(BaseModel):

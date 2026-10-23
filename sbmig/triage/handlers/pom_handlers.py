@@ -1525,6 +1525,7 @@ class AddKnownDependency(PomHandler):
 
 def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
     """Registration order = reactive precedence (first matching handler wins)."""
+    from .case_replace import CaseReplace
     from .edge_handlers import edge_handlers
     from .source_handlers import source_handlers
 
@@ -1549,4 +1550,5 @@ def default_handlers(cfg: Optional[Config] = None) -> list[Handler]:
         ResourcesBinaryFiltering(),
         StripPomRepositories(),
         TestCompileSkip(),
+        CaseReplace(),                  # learned text replace of a catalog case; last = lowest precedence
     ]

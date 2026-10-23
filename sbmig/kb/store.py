@@ -14,6 +14,10 @@ Layout under ``cfg.kb_dir`` (created on first use)::
     errors.jsonl                        append-only ErrorCaseRecords: every build error of every run (2026-10-23)
     fix_attempts.jsonl                  append-only FixAttemptRecords: every fix attempt, failures included, + diff
     error_hints.json                    L2 / symbol → past fixes and failures (derived; `kb reindex` rebuilds it)
+    catalog/<kind>/<class>/<symbol>--<id>.yml   one reusable case per L2 signature (sbmig.kb.catalog; `human:`
+                                        block edited by people, the rest derived from errors.jsonl)
+    catalog/index.json                  case id → file, L2 / L1 / symbol → case id (derived)
+    views/cases.md, views/cases.csv     generated case tables for people (derived)
 
 All writes are atomic (temp file + ``os.replace``). Thread/process safety is not provided.
 """
@@ -47,6 +51,7 @@ from sbmig.core.models import (
 )
 from sbmig.core.workspace import Workspace
 
+from .catalog import CATALOG_DIR, VIEWS_DIR, CaseCatalog
 from .error_cases import ErrorCaseStore
 from .labels import symbol_for_error, symbol_for_errors
 from .ledger import Ledger, SymbolIndex, advisory_record, blocked_record, unresolved_records
@@ -100,6 +105,7 @@ class FileKnowledgeBase:
         self._promoted: list[str] = []                  # auto-promotions not yet reported (drain_promoted)
         self._ledger_blocked: set[tuple[str, str]] = set()   # (run_id, blocked id) already in the ledger
         self._error_store: Optional[ErrorCaseStore] = None   # cached: keeps the hints index loaded across a fleet
+        self._catalog: Optional[CaseCatalog] = None
 
     # ------------------------------------------------------------------ layout
     @property
@@ -139,14 +145,32 @@ class FileKnowledgeBase:
             self._error_store = ErrorCaseStore(self.root)
         return self._error_store
 
+    def catalog(self) -> CaseCatalog:
+        """The case catalog (kb/catalog/, kb/views/) on this KB's recipes and patch cases."""
+        if self._catalog is None or self._catalog.root != self.root:
+            self._catalog = CaseCatalog(self.root, self.cfg, kb=self)
+        return self._catalog
+
     def append_error_cases(self, errors, attempts) -> int:
-        """Append a run's prepared error / attempt records (ids already stored are skipped) and update the hints
-        index. Returns the number of new records (errors + attempts). Never raises."""
+        """Append a run's prepared error / attempt records (ids already stored are skipped), update the hints
+        index and (``kb.catalog``) the case catalog + views. Returns the number of new records (errors + attempts).
+        Never raises."""
+        errors, attempts = list(errors or []), list(attempts or [])
         try:
-            return self.error_case_store().append(list(errors or []), list(attempts or []))
+            n = self.error_case_store().append(errors, attempts)
         except Exception as e:
             log.warning("kb.append_error_cases failed: %s: %s", type(e).__name__, e)
             return 0
+        if self.cfg.kb.catalog and errors:
+            try:
+                cat = self.catalog()
+                changed = cat.update_from(errors, attempts)
+                cat.write_views()
+                if changed:
+                    log.info("case catalog: %d case(s) updated", len(changed))
+            except Exception as e:  # the events are stored; `sbmig kb reindex` rebuilds the catalog
+                log.warning("case catalog update failed: %s: %s", type(e).__name__, e)
+        return n
 
     def status_dir(self, status: str) -> Path:
         return self.recipes_dir / _STATUS_DIR[status]
@@ -238,6 +262,13 @@ class FileKnowledgeBase:
                 store.rebuild_hints()
             except Exception as e:  # the case index above is what reindex must not lose
                 log.warning("error hints rebuild failed: %s: %s", type(e).__name__, e)
+        cat = self.catalog()
+        if self.cfg.kb.catalog and (store.errors_path.exists() or cat.catalog_dir.exists()):
+            try:
+                cat.rebuild()
+                cat.write_views()
+            except Exception as e:
+                log.warning("case catalog rebuild failed: %s: %s", type(e).__name__, e)
         return len(cases)
 
     # ------------------------------------------------------------------ cases
@@ -601,6 +632,9 @@ class FileKnowledgeBase:
         if not self.root.exists():
             return out
         l1, l2 = self._cluster_signatures(cluster)
+        catalog_on = bool(kbc.catalog) and self.catalog().index_path.exists()
+        if catalog_on:
+            out.case_hits = self.catalog().match(cluster.errors)     # never raises
         sigs = set(l1) | set(l2)
         idx = self._load_index()
 
@@ -673,13 +707,34 @@ class FileKnowledgeBase:
                     log.debug("symbol hints failed: %s", e)
             hints = symbol_hints + pattern_hints + [self.case_hint(c) for c in out.cases]
             # error cases (2026-10-23): past fixes AND past failures of the same L2 / error symbol, after the
-            # existing hints; max_hints still caps the whole list
-            if kbc.error_hints:
-                for line in self._error_hints(cluster, l2):
-                    if line not in hints:
-                        hints.append(line)
+            # existing hints; with the case catalog they come from the case hits (people's hints first), else from
+            # the raw error-hints index; max_hints still caps the whole list
+            if catalog_on:
+                extra = self._case_hit_hints(out.case_hits, auto=kbc.error_hints)
+            else:
+                extra = self._error_hints(cluster, l2) if kbc.error_hints else []
+            for line in extra:
+                if line not in hints:
+                    hints.append(line)
             out.hints = hints[: kbc.max_hints]
         return out
+
+    def _case_hit_hints(self, hits: list, *, auto: bool = True) -> list[str]:
+        """Hint lines of the case hits: every hit's ``human.hints`` first, then the generated ones."""
+        cat = self.catalog()
+        human: list[str] = []
+        generated: list[str] = []
+        try:
+            for h in hits:
+                case = cat.get(h.case_id)
+                if case is None:
+                    continue
+                human += cat.hint_lines(case, human=True, auto=False)
+                if auto:
+                    generated += cat.hint_lines(case, human=False, auto=True)
+        except Exception as e:  # pragma: no cover - hints are best effort
+            log.debug("case hints failed: %s", e)
+        return human + generated
 
     def _error_hints(self, cluster: ErrorCluster, l2: list[str]) -> list[str]:
         store = self.error_case_store()
@@ -755,10 +810,24 @@ class FileKnowledgeBase:
             "ledger_entries": self.ledger().count(),
             "error_cases": self.error_case_store().count_errors(),
             "fix_attempts": self.error_case_store().count_attempts(),
+            **self._catalog_stats(),
         }
 
+    def _catalog_stats(self) -> dict[str, int]:
+        """catalog_cases + counts by effective status (catalog_observed / _candidate / _active / _rejected)."""
+        out = {"catalog_cases": 0, **{f"catalog_{s}": 0 for s in ("observed", "candidate", "active", "rejected")}}
+        try:
+            counts = self.catalog().status_counts()
+        except Exception as e:  # pragma: no cover - stats are informative
+            log.debug("catalog stats failed: %s", e)
+            return out
+        out["catalog_cases"] = sum(counts.values())
+        out.update({f"catalog_{k}": v for k, v in counts.items()})
+        return out
+
     def export_zip(self, path: str | Path) -> Path:
-        """Zip cases/, recipes/, patterns/ and index.json (paths relative to the kb root)."""
+        """Zip cases/, recipes/, patterns/, catalog/, views/, index.json and the event files (paths relative to
+        the kb root)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.root.exists():
@@ -770,7 +839,8 @@ class FileKnowledgeBase:
                     if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
                         continue
                     rel = p.relative_to(self.root)
-                    if rel.parts[0] not in ("cases", "recipes", "patterns") and rel.as_posix() not in (
+                    if rel.parts[0] not in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR) and \
+                            rel.as_posix() not in (
                             "index.json", "ledger.jsonl", "symbols.json", *ERROR_CASE_FILES):
                         continue
                     zf.write(p, rel.as_posix())
@@ -779,9 +849,13 @@ class FileKnowledgeBase:
 
     def import_zip(self, path: str | Path, merge: bool = True) -> dict[str, int]:
         """Import a kb zip. merge=True merges cases/recipes into the local KB (local status wins);
-        merge=False replaces the local KB contents. Returns counters."""
+        merge=False replaces the local KB contents. The case catalog is rebuilt from the merged events: local
+        ``human`` blocks are kept, an imported one is taken only for a case the local KB does not have. Returns
+        counters."""
         counters = {"cases_added": 0, "cases_merged": 0, "recipes_added": 0, "recipes_merged": 0,
-                    "patterns_added": 0, "ledger_added": 0, "error_cases_added": 0, "fix_attempts_added": 0}
+                    "patterns_added": 0, "ledger_added": 0, "error_cases_added": 0, "fix_attempts_added": 0,
+                    "case_humans_added": 0}
+        local_case_ids = set(self.catalog().ids_on_disk()) if merge else set()
         with tempfile.TemporaryDirectory(prefix="sbmig-kb-import-") as tmpd:
             tmp = Path(tmpd).resolve()
             with zipfile.ZipFile(path) as zf:
@@ -792,7 +866,7 @@ class FileKnowledgeBase:
                 zf.extractall(tmp)
             other = FileKnowledgeBase(self.cfg, kb_dir=tmp)
             if not merge and self.root.exists():
-                for sub in ("cases", "recipes", "patterns"):
+                for sub in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR):
                     shutil.rmtree(self.root / sub, ignore_errors=True)
                 for f in (self.index_path, self.ledger_path, self.symbols_path,
                           *(self.root / n for n in ERROR_CASE_FILES)):
@@ -855,5 +929,26 @@ class FileKnowledgeBase:
             if src.errors_path.exists() or src.attempts_path.exists():
                 ne, na = self.error_case_store().append_counts(src.iter_errors(), src.iter_attempts())
                 counters["error_cases_added"], counters["fix_attempts_added"] = ne, na
+            counters["case_humans_added"] = self._import_case_humans(other, local_case_ids)
         self.reindex()
         return counters
+
+    def _import_case_humans(self, other: "FileKnowledgeBase", local_ids: set[str]) -> int:
+        """Copy the imported case files that carry a ``human`` block for cases the local KB does not have (the
+        file is copied as it is, comments included); the reindex that follows recomputes their generated part."""
+        n = 0
+        try:
+            theirs = CaseCatalog(other.root, self.cfg)
+            for cid, path in theirs.ids_on_disk().items():
+                if cid in local_ids:
+                    continue
+                human = theirs.human_of_file(path)
+                if human == type(human)():
+                    continue
+                dst = self.catalog().catalog_dir / path.relative_to(theirs.catalog_dir)
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, dst)
+                n += 1
+        except Exception as e:  # pragma: no cover - the events are imported; human blocks are a bonus
+            log.warning("case catalog import failed: %s: %s", type(e).__name__, e)
+        return n

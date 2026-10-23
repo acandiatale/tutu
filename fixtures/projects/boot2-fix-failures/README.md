@@ -36,3 +36,5 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
   history `no_change` → `apply_failed` … with a `failure_reason`; the final build fails → `success: false`, exit 2
 * `<run dir>/error_cases.jsonl`, `fix_attempts.jsonl` (every attempt with its diff) and `error_cases.csv` exist;
   `out/e2e/kb-fix-failures/errors.jsonl` / `fix_attempts.jsonl` hold the same records (`expect.error_cases`)
+* the case catalog holds the `clientIp` case (`out/e2e/kb-fix-failures/catalog/compile/cannot_find_symbol/…yml`,
+  `views/cases.md`) with the failed attempts and the fix in its timeline (`expect.error_cases.kb_cases_min`)

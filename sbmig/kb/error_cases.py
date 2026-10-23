@@ -10,7 +10,8 @@ was tried, how it was resolved — with the code applied — or why not) and eve
   (the CSVs are UTF-8 with BOM so Excel opens Korean text).
 * :class:`ErrorCaseStore` (``kb/errors.jsonl``, ``kb/fix_attempts.jsonl``, ``kb/error_hints.json``): append-only
   store, regex queries, summaries, text-replace rule candidates and the hints index the fix prompt reads (past
-  fixes AND past failures of the same L2 signature / error symbol).
+  fixes AND past failures of the same L2 signature / error symbol). The case catalog (:mod:`sbmig.kb.catalog`)
+  folds these events into one reusable case per L2 (``ErrorCaseRecord.case_id``).
 
 File-based on purpose (invariant 3): the jsonl files are the source of truth, ``error_hints.json`` is derived and
 ``sbmig kb reindex`` rebuilds it.
@@ -62,7 +63,7 @@ HINT_TOP = 3
 
 ERROR_CSV_COLUMNS = [
     "id", "project", "run_id", "status", "error_kind", "file", "line", "message", "symbol", "signature_generic",
-    "first_seen", "resolved_at", "fix_method", "resolver_id", "change_kind", "replace_pairs",
+    "case_id", "first_seen", "resolved_at", "fix_method", "resolver_id", "change_kind", "replace_pairs",
     "replace_rule_candidate", "description", "failure_reason", "problem_errors", "block_reason", "suggestion",
     "attempt_count", "llm_attempts", "attempts",
 ]
@@ -194,10 +195,17 @@ def _prepare_attempt(a: FixAttemptRecord, base: dict[str, Any], roots: list[tupl
     return a.model_copy(update=upd), full
 
 
+def _case_id(signature_generic: str) -> str:
+    from .catalog import case_id_for          # the catalog imports this module
+
+    return case_id_for(signature_generic)
+
+
 def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], roots: list[tuple[str, str]], ws: Any,
                    attempts: dict[str, FixAttemptRecord], full_diffs: dict[str, str],
                    excerpt_cap: int) -> ErrorCaseRecord:
     upd = _base_update(e, base)
+    upd["case_id"] = e.case_id or _case_id(e.signature_generic)     # the case catalog key (one case per L2)
     raw = _clean(e.raw, roots)
     if len(raw) > RAW_LIMIT:
         raw = raw[:RAW_LIMIT] + TRUNCATED
@@ -297,7 +305,7 @@ def prepare_error_cases(errors: Iterable[ErrorCaseRecord], attempts: Iterable[Fi
                 out_errors.append(_prepare_error(e, base, roots, ws, by_id, full_diffs, excerpt_cap))
             except Exception as ex:
                 log.warning("error cases: preparing error %s failed: %s: %s", e.id, type(ex).__name__, ex)
-                out_errors.append(e)
+                out_errors.append(e if e.case_id else e.model_copy(update={"case_id": _case_id(e.signature_generic)}))
         return out_errors, out_attempts
     except Exception as ex:  # pragma: no cover - defensive
         log.warning("error cases: prepare failed: %s: %s", type(ex).__name__, ex)
@@ -362,7 +370,8 @@ def error_csv_row(e: ErrorCaseRecord) -> list[str]:
     values = {
         "id": e.id, "project": e.project, "run_id": e.run_id, "status": e.status, "error_kind": e.error_kind,
         "file": e.file, "line": e.line, "message": e.message, "symbol": e.error_symbol or e.symbol,
-        "signature_generic": e.signature_generic, "first_seen": e.first_seen, "resolved_at": e.resolved_at,
+        "signature_generic": e.signature_generic, "case_id": e.case_id or _case_id(e.signature_generic),
+        "first_seen": e.first_seen, "resolved_at": e.resolved_at,
         "fix_method": e.fix_method, "resolver_id": e.resolver_id, "change_kind": e.change_kind,
         "replace_pairs": pairs_text(e.replace_pairs), "replace_rule_candidate": e.replace_rule_candidate,
         "description": e.description, "failure_reason": e.failure_reason,

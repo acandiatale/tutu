@@ -1623,6 +1623,48 @@ LLM이 고쳤는데 `text_replace`이면 `replace_rule_candidate: true`가 되�
 조회: `sbmig kb errors list | show | summary | replace-candidates | export --csv`.
 플릿의 `learning.md`에도 상태 × 방법 표, 자주 나온 실패 이유, 치환 후보가 들어갑니다.
 
+### 10.4 케이스 카탈로그 (2026-10-23)
+
+에러 기록은 실행마다 쌓이는 사실입니다.
+재활용 단위는 **케이스**이고, 케이스 키는 L2 시그니처입니다. 같은 L2라도 소유 클래스가 다르면 변형으로 나눕니다.
+케이스 파일 하나가 그 에러의 모든 것을 담습니다. 변형, 근거, 프로젝트별 타임라인(실패한 시도 → 수정), 지금 적용되는 동작, 힌트가 들어 있습니다.
+사람은 맨 위 `human:` 칸만 고치고, 나머지는 실행마다 다시 계산됩니다.
+맞는 에러가 오면 동작에 따라 레시피·치환·패치를 LLM 없이 먼저 적용합니다. 동작이 `hint`뿐이면 과거의 성공 방법과 실패 방법을 프롬프트에 넣습니다.
+학습한 치환은 javac가 알려 준 줄과 import 줄에만 적용합니다(`kb.case_replace_scope`).
+서로 다른 프로젝트 2곳에서 실패 없이 성공하면 자동으로 `active`가 됩니다.
+
+```mermaid
+flowchart TB
+  subgraph ev["① 사실 (실행마다 덧붙임)"]
+    direction LR
+    E1["kb/errors.jsonl<br/>에러 1개 = 1줄"] ~~~ E2["kb/fix_attempts.jsonl<br/>시도 1개 = 1줄 (diff)"]
+  end
+  subgraph cat["② 케이스 카탈로그 (L2 시그니처 = 케이스 키)"]
+    direction LR
+    C["catalog/&lt;종류&gt;/&lt;분류&gt;/&lt;심볼&gt;--&lt;id&gt;.yml<br/>human: 사람이 고침 (덮어쓰지 않음)<br/>자동: 변형 · 근거 · 타임라인 · 동작 · 힌트"] --> V["views/cases.md · cases.csv"]
+  end
+  subgraph hit["③ 다음 프로젝트에서 같은 에러"]
+    direction LR
+    H{"케이스 동작"} -->|"replace (candidate/active)"| R["핸들러 case-replace<br/>에러 줄 + import만 치환<br/>LLM 없음"]
+    H -->|recipe| RC["KB 레시피 (OpenRewrite)"]
+    H -->|patch| P["KB 패치 재생"]
+    H -->|hint| L["LLM 프롬프트에<br/>성공 방법 + 실패 방법"]
+  end
+  subgraph pro["④ 자동 승격"]
+    direction LR
+    S["서로 다른 프로젝트 2곳 성공<br/>실패 0"] --> A["active"]
+    F["후보가 2번 실패"] --> D["hint 로 내려감"]
+  end
+  ev --> cat --> hit --> pro
+```
+
+![case-catalog](diagrams/case-catalog.png)
+
+*PNG: `diagrams/case-catalog.png` · 원본: `diagrams/case-catalog.mmd`*
+
+조회와 조정: `sbmig kb cases list | show | reject | pin | unpin | hint | note`, 사람용 목록 `kb/views/cases.md`, `kb/views/cases.csv`.
+
+
 ---
 
 ## 11. 플릿

@@ -838,6 +838,7 @@ class KBMatch(BaseModel):
     replayable: list[KBCase] = Field(default_factory=list)       # same signature AND search text still present
     handler_ids: list[str] = Field(default_factory=list)
     hints: list[str] = Field(default_factory=list)               # short natural-language hints for the LLM prompt
+    case_hits: list[Any] = Field(default_factory=list)           # CaseHit (case catalog, 2026-10-23)
 
 
 class HarvestResult(BaseModel):
@@ -984,6 +985,134 @@ class ErrorCaseRecord(BaseModel):
     attempt_count: int = 0
     llm_attempts: int = 0
     notes: list[str] = Field(default_factory=list)
+    case_id: str = ""                              # CatalogCase id = sha1(signature_generic)[:10] (2026-10-23)
+
+
+# ---------------------------------------------------------------------------
+# Case catalog (2026-10-23): ONE reusable case per error signature (L2 = the case key), variants by the owner class /
+# L1 — kb/catalog/<kind>/<class>/<symbol>--<id>.yml. Built from the error-case events (kb/errors.jsonl,
+# fix_attempts.jsonl), the KB recipes and patch cases; the `human` block is never overwritten by the KB, every other
+# field is recomputed. A hit at triage applies the case's action (see docs/INTERFACES.md "Case catalog").
+# ---------------------------------------------------------------------------
+CaseStatus = Literal["observed", "candidate", "active", "rejected"]
+CaseActionKind = Literal["hint", "recipe", "replace", "handler", "patch", "block"]
+
+
+class CaseVariant(BaseModel):
+    owner: str = ""                                # FQCN owning the symbol (javac location / symbol owner); "" unknown
+    signature: str = ""                            # L1
+    seen: int = 0
+    projects: int = 0
+
+
+class CaseFix(BaseModel):
+    """One way this case was fixed (grouped by method + resolver + replace pairs), the latest attempt as example."""
+    method: FixMethod = "none"
+    resolver_id: str = ""
+    change_kind: ChangeKind = "none"
+    replace_pairs: list[ReplacePair] = Field(default_factory=list)
+    description: str = ""
+    attempt_id: str = ""                           # FixAttemptRecord id of the latest such fix (diff there)
+    error_id: str = ""
+    project: str = ""
+    at: Optional[datetime] = None
+    count: int = 0
+    projects: int = 0
+
+
+class CaseFailure(BaseModel):
+    method: FixMethod = "none"
+    outcome: AttemptOutcome = "no_change"
+    failure: str = ""
+    attempt_id: str = ""
+    project: str = ""
+    count: int = 0
+    projects: int = 0
+
+
+class CaseEvent(BaseModel):
+    """Timeline entry: this case seen in one run (one ErrorCaseRecord)."""
+    at: Optional[datetime] = None
+    project: str = ""
+    run_id: str = ""
+    error_id: str = ""
+    file: str = ""
+    status: ErrorCaseStatus = "unresolved"
+    fix_method: FixMethod = "none"
+    attempts: list[str] = Field(default_factory=list)   # "method:outcome" in order (failures before the fix)
+    resolved_by: Optional[str] = None
+
+
+class CaseAction(BaseModel):
+    kind: CaseActionKind = "hint"
+    recipe_ids: list[str] = Field(default_factory=list)       # recipe: KB recipe ids (OpenRewrite)
+    handler_id: str = ""                                      # handler: a built-in handler id
+    replace_pairs: list[ReplacePair] = Field(default_factory=list)   # replace: token pairs (old → new)
+    replace_scope: Literal["error-lines", "file"] = "error-lines"
+    patch_case_ids: list[str] = Field(default_factory=list)   # patch: KBCase ids (replayable LLM patches)
+    block_reason: str = ""                                    # block: BlockReason value + suggestion
+    suggestion: str = ""
+
+
+class CaseEvidence(BaseModel):
+    seen: int = 0                                  # error records
+    projects: int = 0
+    runs: int = 0
+    first_at: Optional[datetime] = None
+    last_at: Optional[datetime] = None
+    by_status: dict[str, int] = Field(default_factory=dict)
+    resolved_by: dict[str, int] = Field(default_factory=dict)  # fix_method → resolved records
+    fixes: list[CaseFix] = Field(default_factory=list)         # top 5 by projects, count
+    failures: list[CaseFailure] = Field(default_factory=list)  # top 5
+    timeline: list[CaseEvent] = Field(default_factory=list)    # last 20, oldest first
+    action_successes: int = 0                      # the case's own replace action (handler case-replace) resolved it
+    action_failures: int = 0
+    action_projects: list[str] = Field(default_factory=list)   # distinct projects of those successes (promotion)
+
+
+class CaseHuman(BaseModel):
+    """Edited by people (YAML or `sbmig kb cases …`); never overwritten by harvest / reindex; wins over the auto part."""
+    name: Optional[str] = None
+    status: Optional[CaseStatus] = None            # e.g. rejected, or active by decision
+    action: Optional[CaseAction] = None            # a pinned action
+    hints: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class CatalogCase(BaseModel):
+    id: str                                        # sha1(signature_generic)[:10]
+    name: str = ""                                 # auto, e.g. "LegacyRequestHelper.clientIp — cannot find symbol"
+    error_kind: ErrorKind = ErrorKind.UNKNOWN
+    error_class: str = ""                          # 2nd L2 segment (cannot_find_symbol, package_does_not_exist, …)
+    symbol: str = ""                               # 3rd L2 segment / error symbol
+    signature_generic: str = ""
+    variants: list[CaseVariant] = Field(default_factory=list)
+    status: CaseStatus = "observed"                # auto
+    action: CaseAction = Field(default_factory=CaseAction)   # auto
+    evidence: CaseEvidence = Field(default_factory=CaseEvidence)
+    hints: list[str] = Field(default_factory=list)            # auto (best fix, top failure)
+    human: CaseHuman = Field(default_factory=CaseHuman)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+    def effective_status(self) -> CaseStatus:
+        return self.human.status or self.status
+
+    def effective_action(self) -> CaseAction:
+        return self.human.action or self.action
+
+    def effective_name(self) -> str:
+        return self.human.name or self.name
+
+
+class CaseHit(BaseModel):
+    """A catalog match for some errors of a cluster (effective status / action already applied)."""
+    case_id: str
+    name: str = ""
+    status: CaseStatus = "observed"
+    action: CaseAction = Field(default_factory=CaseAction)
+    errors: list[BuildError] = Field(default_factory=list)
+    variant_owner: str = ""
+    hints: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from sbmig.core.models import ErrorAttemptRef
 from sbmig.kb import FileKnowledgeBase, kb_cli, prepare_error_cases
+from sbmig.kb.catalog import case_id_for
 
 from .helpers import CODE_EDIT_DIFF, EC_FILE, EC_L2, ec_attempt, ec_error
 
@@ -62,13 +63,30 @@ def test_errors_show(kb, ws, profile):
     _seed(kb, ws, profile)
     r = _run(kb.root, "errors", "show", "e1")
     assert r.exit_code == 0
-    assert '"id": "e1"' in r.output and "=== attempt r1:a0" in r.output and "=== attempt r1:a1" in r.output
-    assert "+        return req.remoteClientIp();" in r.output and "Locale.ROOT" in r.output   # both diffs
+    out = r.output
+    # readable by default: header fields, the case, the attempt history with failure reasons, the resolving diff
+    assert out.startswith("error e1 — resolved") and "project:   alpha (run r1," in out
+    assert f"error:     compile  {EC_FILE}:5" in out and "L2:        " + EC_L2 in out
+    assert "resolved:  at " in out and "by llm fake-model (attempt r1:a1, targeted)" in out
+    assert "how:       renamed the call" in out and "replace `clientIp` → `remoteClientIp`" in out
+    assert "case:      " in out and "Request.clientIp — cannot find symbol" in out and "sbmig kb cases show" in out
+    assert "1. r1:a0  llm fake-model  no_change  [code_edit]" in out
+    assert "failure: the targeted error(s) were still there after the rebuild" in out
+    assert "2. r1:a1  llm fake-model  improved  [text_replace]  ← resolved it" in out
+    assert "--- resolving diff (r1:a1)" in out and "+        return req.remoteClientIp();" in out
+    assert "Locale.ROOT" not in out and '"id"' not in out                       # the failed diff only on demand
+    assert "Locale.ROOT" in _run(kb.root, "errors", "show", "e1", "--all-diffs").output
     data = json.loads(_run(kb.root, "errors", "show", "e1", "--json").output)
     assert data["error"]["id"] == "e1" and [a["id"] for a in data["attempts"]] == ["r1:a0", "r1:a1"]
-    assert _run(kb.root, "errors", "show", "e9").exit_code == 0
+    assert data["error"]["case_id"] == case_id_for(EC_L2)
+    r = _run(kb.root, "errors", "show", "e9")
+    assert r.exit_code == 0 and r.output.startswith("error e9 — unresolved")
+    assert "why not:   `llm` attempt a0 regressed: new errors in IpFilter.java" in r.output
+    assert "1. r2:a0  llm fake-model  regressed" in r.output and "resolving diff" not in r.output
     r = _run(kb.root, "errors", "show", "r2:a0")                                  # an attempt id works too
-    assert r.exit_code == 0 and '"outcome": "regressed"' in r.output and "--- diff" in r.output
+    assert r.exit_code == 0 and r.output.startswith("attempt r2:a0 — llm fake-model regressed")
+    assert "failure:   regressed: 2 new errors" in r.output and "--- diff" in r.output
+    assert json.loads(_run(kb.root, "errors", "show", "r2:a0", "--json").output)["outcome"] == "regressed"
     assert _run(kb.root, "errors", "show", "e").exit_code == 1                     # ambiguous prefix
     assert _run(kb.root, "errors", "show", "nope").exit_code == 1
 

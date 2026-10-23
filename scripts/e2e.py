@@ -69,7 +69,8 @@ captures the exit code + output, finds the run directory the CLI created under -
                                                                      # field must match one and the same record
                                "run_files": ["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"],
                                "kb_errors_min": 2,                 # lines in <expect.kb.dir>/errors.jsonl
-                               "kb_attempts_min": 3}}              # lines in <expect.kb.dir>/fix_attempts.jsonl
+                               "kb_attempts_min": 3,               # lines in <expect.kb.dir>/fix_attempts.jsonl
+                               "kb_cases_min": 1}}                 # <expect.kb.dir>/catalog/**.yml (+ views/cases.md)
 
 `*_contains` entries: `regex:<re>` = full match (re.DOTALL) of some entry, otherwise a substring of some entry;
 `removed_contains`/`added_contains` match by "g:a" (plus a version prefix when given).
@@ -587,6 +588,12 @@ def evaluate_error_cases(want: dict, report: dict, run_dir: Path | None, kb_dir:
         n = _jsonl_lines(kb_dir / fname) if kb_dir is not None else 0
         if n < want[key]:
             mm.append(f"kb {fname} lines={n} < min {want[key]}")
+    if want.get("kb_cases_min") is not None:          # case catalog (2026-10-23): kb/catalog/**.yml + views/cases.md
+        cases = list((kb_dir / "catalog").rglob("*.yml")) if kb_dir is not None and (kb_dir / "catalog").is_dir() else []
+        if len(cases) < want["kb_cases_min"]:
+            mm.append(f"kb catalog cases={len(cases)} < min {want['kb_cases_min']}")
+        if kb_dir is None or not (kb_dir / "views" / "cases.md").is_file():
+            mm.append("kb views/cases.md missing")
     return mm
 
 

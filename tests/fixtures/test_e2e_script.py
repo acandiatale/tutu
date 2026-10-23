@@ -688,3 +688,14 @@ def test_fixture_without_root_pom_is_discovered_and_war_libs_satisfy_preconditio
     assert "not in" in (e2e.preflight("x", want, tmp_path) or "")
     (base / "legacy-base-web-1.0.0.war").write_bytes(b"PK")
     assert e2e.preflight("x", want, tmp_path) is None
+
+
+def test_error_cases_expectation_checks_the_case_catalog(e2e, tmp_path):
+    kb = tmp_path / "kb"
+    assert any("catalog cases=0" in m for m in e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb))
+    (kb / "catalog" / "compile" / "cannot_find_symbol").mkdir(parents=True)
+    (kb / "catalog" / "compile" / "cannot_find_symbol" / "clientIp--8bb4fd4a4a.yml").write_text("id: x\n")
+    assert e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb) == ["kb views/cases.md missing"]
+    (kb / "views").mkdir()
+    (kb / "views" / "cases.md").write_text("# cases\n")
+    assert e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb) == []
