@@ -37,7 +37,7 @@
 - **딕셔너리는 키 단위로 합쳐지고, 리스트·스칼라는 통째로 교체됩니다.** 예를 들어 회사 파일에 `openrewrite.exclusions`를 한 항목만 쓰면 기본 4개 패턴이 모두 사라지고 그 한 항목만 남습니다. `artifacts.optional`도 리스트이므로 파일에 쓴 8개가 전부입니다.
 - `artifacts` 섹션(최소한 `artifacts.parent`)에는 기본값이 없습니다. `--config` 없이 `sbmig run` / `sbmig analyze` / `sbmig plan` / `sbmig build` / `sbmig rewrite`를 실행하면 `config error … artifacts: Field required`와 힌트를 출력하고 종료 코드 2로 끝납니다. 예외: `sbmig llm-probe`는 artifacts를 임시값으로 채워 `.env`만으로 동작하고, `sbmig kb` / `sbmig recipes` / `sbmig advisories`도 artifacts가 없으면 자리표시자(`unset`)로 채워 동작합니다.
 - 상대 경로 해석: `kb.dir`, `openrewrite.base_recipe_dir`, `plan.catalog_file`, `advisories.file`, `advisories.extra_files`, `externalized.rules_file`, `llm.record_dir`은 `repo_root`(기본: sbmig 저장소 루트) 기준으로 해석됩니다(`Config.resolve_path`). 반면 `build.settings_file`, `build.java_home`, `build.local_repo`, `build.mvn`은 `~`만 펼친 뒤 그대로 Maven에 넘어가며 Maven은 마이그레이션 대상 프로젝트 디렉터리에서 실행됩니다(코드 기준: `sbmig/build/mvn.py`). **이 네 개는 절대 경로로 쓰는 것을 권장합니다.**
-- `SBMIG_`로 시작하는 다른 변수(`SBMIG_ENV_FILE`, `SBMIG_WEB_OUT`, `SBMIG_WEB_REPO_ROOT`)도 4단계에서 설정 키로 해석되지만(`env_file`, `web.out` 등) `Config`에 없는 키라 무시됩니다. 영향은 없습니다.
+- `SBMIG_`로 시작하는 다른 변수(`SBMIG_ENV_FILE`, `SBMIG_WEB_OUT`, `SBMIG_WEB_REPO_ROOT`, `SBMIG_MAX_UPLOAD_MB`)도 4단계에서 설정 키로 해석되지만(`env_file`, `web.out` 등) `Config`에 없는 키라 무시됩니다. 영향은 없습니다.
 
 ### 1.3 환경 변수로만 들어오는 값
 | 값 | 들어오는 길 | 비고 |

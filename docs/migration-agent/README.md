@@ -1668,7 +1668,7 @@ flowchart LR
 | `sbmig advisories list / show / check` | advisory 파일 확인 |
 | `sbmig kb stats / list / show / match / promote / reject / ledger / symbols / learning / export / import / reindex / validate` | KB 관리 |
 | `sbmig fleet run / status / resume` | 플릿 |
-| `sbmig serve [--graceful-timeout]` | 웹 UI |
+| `sbmig serve [--graceful-timeout] [--max-upload-mb]` | 웹 UI |
 | `sbmig parse-log`, `sbmig build`, `sbmig rewrite` | 디버깅 도구 |
 
 ### 12.4 로그와 journal
@@ -1687,12 +1687,12 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 
 ### 12.5 웹 UI
 
-`sbmig serve --port 8765` 또는 `uvicorn sbmig.web.app:app`으로 띄웁니다.
+`sbmig serve --port 8765` 또는 `uvicorn sbmig.web.app:app`으로 띄웁니다. 업로드 한도는 기본 512 MB이고 `--max-upload-mb N`(또는 `SBMIG_MAX_UPLOAD_MB`, `0` = 없음)으로 바꿉니다. 본문은 `<out>/_uploads/.incoming-*.part`로 스트리밍하면서 검사하므로 1 GB짜리 zip도 메모리에 올리지 않습니다.
 
 | 경로 | 동작 |
 |---|---|
 | `GET /` | 페이지(`static/index.html`) |
-| `GET /api/configs` | 선택할 수 있는 `config/*.yml` |
+| `GET /api/configs` | 선택할 수 있는 `config/*.yml`, 업로드 한도 `max_upload_mb` |
 | `GET /api/runs`, `GET /api/runs/{id}` | 실행 목록과 상태 |
 | `POST /api/runs?name=…&configs=…[&stop_after=…][&llm_provider=…]` | zip 업로드 → 202, `queued` 또는 `running` |
 | `GET /api/runs/{id}/events` | SSE 스트림(`status`, `node`, `error`, `journal`, `log`, `report`, `ping`, `end`) |

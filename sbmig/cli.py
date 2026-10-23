@@ -287,23 +287,29 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
                                                        help="sbmig repo root (config/, kb/)"),
               graceful_timeout: int = typer.Option(5, "--graceful-timeout",
                                                    help="seconds uvicorn waits for open connections (SSE streams) "
-                                                        "on shutdown before closing them")) -> None:
+                                                        "on shutdown before closing them"),
+              max_upload_mb: Optional[int] = typer.Option(None, "--max-upload-mb", min=0,
+                                                          help="largest project zip the UI accepts, in MB "
+                                                               "(default: $SBMIG_MAX_UPLOAD_MB or 512; 0 = no "
+                                                               "limit, e.g. for one oversized project)")) -> None:
     """One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
     one worker thread per run), watch graph nodes / journal / log live (SSE), download report.md / result.zip.
     Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`."""
     import uvicorn
 
     from sbmig.core.config import PACKAGE_ROOT
-    from sbmig.web.app import create_app
+    from sbmig.web.app import MAX_UPLOAD_ENV, create_app, describe_max_upload, resolve_max_upload
 
     root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
     attach_file_log(Path(out) / "sbmig-web.log")
-    typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}")
-    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root} "
+    typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}   "
+               f"upload limit: {describe_max_upload(resolve_max_upload(max_upload_mb))}")
+    env_limit = f" {MAX_UPLOAD_ENV}={max_upload_mb}" if max_upload_mb is not None else ""
+    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit} "
                f"uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown {graceful_timeout})")
     # shutdown: open SSE streams end (RunManager.shutdown via the lifespan), running Maven processes are killed, and
     # uvicorn stops waiting for connections after `graceful_timeout` — without it Ctrl+C hung on the browser tabs
-    uvicorn.run(create_app(Path(out), root), host=host, port=port, log_level="info",
+    uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb), host=host, port=port, log_level="info",
                 timeout_graceful_shutdown=graceful_timeout)
 
 

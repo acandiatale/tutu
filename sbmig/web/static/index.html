@@ -123,15 +123,18 @@
   const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString('ko-KR', {hour12:false}); } catch (e) { return ''; } };
   const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
+  let maxUploadMb = 0;   // 0 = 한도 없음 (서버의 --max-upload-mb / SBMIG_MAX_UPLOAD_MB)
+
   async function loadConfigs() {
     const r = await fetch('/api/configs'); const d = await r.json();
+    maxUploadMb = Number(d.max_upload_mb) || 0;
     const box = $('cfgs'); box.innerHTML = '';
     for (const c of d.configs) {
       const id = 'cfg-' + c.replace(/\W/g, '_');
       const checked = (c === 'artifacts.local-e2e.yml') ? 'checked' : '';
       box.insertAdjacentHTML('beforeend', `<label><input type="checkbox" value="${esc(c)}" id="${id}" ${checked}>${esc(c)}</label>`);
     }
-    $('envhint').textContent = `설정: ${d.repo_root}/config   실행 결과: ${d.out_dir}`;
+    $('envhint').textContent = `설정: ${d.repo_root}/config   실행 결과: ${d.out_dir}   업로드 한도: ${maxUploadMb ? maxUploadMb + ' MB' : '없음'}`;
   }
 
   async function loadRuns() {
@@ -291,6 +294,10 @@
   $('start').onclick = async () => {
     const f = $('zip').files[0];
     if (!f) { alert('zip 파일을 선택하세요'); return; }
+    if (maxUploadMb && f.size > maxUploadMb * 1024 * 1024) {
+      alert(`zip이 업로드 한도(${maxUploadMb} MB)를 넘습니다 (${(f.size / 1048576).toFixed(0)} MB). 서버를 sbmig serve --max-upload-mb N (0 = 한도 없음)으로 다시 띄우세요`);
+      return;
+    }
     const configs = [...document.querySelectorAll('#cfgs input:checked')].map((i) => i.value).join(',');
     const q = new URLSearchParams({ name: f.name, configs, stop_after: $('stop').value, llm_provider: $('llm').value });
     $('start').disabled = true;

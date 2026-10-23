@@ -555,6 +555,7 @@ out/<run id>/
 | LLM 요청·응답 기록 `llm-NNNN.json` | `llm.record_dir`(예: `.env` 의 `LLM_RECORD_DIR=out/llm-records`) | 비밀값 없음. 지원 요청 시 공유 |
 | `threads-<ts>.txt` (POSIX `kill -USR1`) | CLI 기본 `out/` | 웹은 `GET /api/threads` 가 `out/web/` 에 기록 |
 | `out/web/_uploads/<run id>-<파일명>.zip` | 웹 업로드 원본 | 웹 실행 디렉터리는 `out/web/<run id>/`, 최종 상태는 `web-status.json` |
+| `out/web/_uploads/.incoming-<hex>.part` | 받는 중인 업로드 | 다 받으면 위 이름으로 옮기고, 거절되면 지웁니다. 서버가 죽어 남은 것은 지워도 됩니다 |
 
 ### 5.3 journal.jsonl 이벤트
 

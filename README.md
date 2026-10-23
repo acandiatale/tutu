@@ -40,7 +40,8 @@ Web UI (FastAPI app served by uvicorn): `sbmig serve --port 8765` → http://127
 `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`) — upload a project zip, tick the config files, watch
 the LangGraph nodes (intake → analyze → plan → phase × N → finalize), the journal (rewrite / builds / LLM fixes) and
 the log live (SSE), download `report.md` and `result.zip`. Runs execute in-process (one worker thread each) under
-`out/web/<run id>/`, each with its own `sbmig.log`.
+`out/web/<run id>/`, each with its own `sbmig.log`. Uploads are capped at 512 MB; `sbmig serve --max-upload-mb N`
+(or `SBMIG_MAX_UPLOAD_MB`, `0` = no limit) lifts the cap for an oversized project.
 In-house LLM gateway / agent platform instead of our HTTP clients (see `docs/ADAPTERS.md`):
 ```bash
 sbmig run project.zip --config config/artifacts.yml --llm-plugin mypkg.adapter:make_adapter     # tier 1: chat completion

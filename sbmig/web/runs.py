@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -125,10 +126,28 @@ class RunManager:
         return sorted(p.name for p in d.glob("*.yml") if p.name != "default.yml") if d.is_dir() else []
 
     # ---- lifecycle
+    def incoming_path(self) -> Path:
+        """A fresh `<out>/_uploads/.incoming-<hex>.part` for a body that is still arriving (same directory as the
+        final `<run id>-<name>` so `start_file` can rename it without a copy)."""
+        uploads = self.out_dir / "_uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+        return uploads / f".incoming-{uuid.uuid4().hex}.part"
+
     def start(self, zip_bytes: bytes, name: str, configs: list[str], stop_after: str | None = None,
               llm_provider: str | None = None) -> str:
-        """Validate, save the zip, build config + workspace + orchestrator, start the worker.
-        ValueError = bad request."""
+        """`start_file` for a body already in memory (tests, embedding callers). ValueError = bad request."""
+        tmp = self.incoming_path()
+        tmp.write_bytes(zip_bytes)
+        try:
+            return self.start_file(tmp, name, configs, stop_after, llm_provider)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def start_file(self, incoming: Path, name: str, configs: list[str], stop_after: str | None = None,
+                   llm_provider: str | None = None) -> str:
+        """Validate, move the uploaded zip (`incoming`, written by the caller) under its run id, build config +
+        workspace + orchestrator, start the worker. ValueError = bad request — `incoming` is then left to the caller
+        (the web route deletes it); after the move it belongs to the run."""
         from sbmig.core.config import load_config
         from sbmig.core.workspace import Workspace
         from sbmig.loop import Orchestrator, parse_stop_after
@@ -147,8 +166,13 @@ class RunManager:
         uploads = self.out_dir / "_uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         zip_path = uploads / f"{run_id}-{safe}"
-        zip_path.write_bytes(zip_bytes)
-        ws = Workspace.from_input(zip_path, self.out_dir, run_id=run_id)
+        Path(incoming).replace(zip_path)
+        try:
+            ws = Workspace.from_input(zip_path, self.out_dir, run_id=run_id)
+        except Exception:                      # BadZipFile / OSError: no run was started, leave no ghost run dir
+            shutil.rmtree(self.out_dir / run_id, ignore_errors=True)
+            zip_path.unlink(missing_ok=True)
+            raise
         run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider)
         run.orch = Orchestrator(cfg, ws)                      # KB on (the web app has no --no-kb)
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-run-{run_id}", daemon=True)

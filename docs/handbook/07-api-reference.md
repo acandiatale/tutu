@@ -106,7 +106,7 @@ echo $LASTEXITCODE
 목적: FastAPI 앱을 uvicorn으로 띄웁니다. 업로드한 zip을 서버 프로세스 안에서(실행당 워커 스레드 1개, LangGraph 엔진) 마이그레이션하고 SSE로 진행을 보여 줍니다.
 
 ```text
-sbmig serve [--host ADDR] [--port N] [--out DIR] [--repo-root DIR]
+sbmig serve [--host ADDR] [--port N] [--out DIR] [--repo-root DIR] [--graceful-timeout N] [--max-upload-mb N]
 ```
 
 | 옵션 | 타입 | 기본값 | 의미 |
@@ -115,6 +115,8 @@ sbmig serve [--host ADDR] [--port N] [--out DIR] [--repo-root DIR]
 | `--port` | 정수 | `8765` | 포트. |
 | `--out`, `-o` | 경로 | `out/web` | 업로드(`<out>/_uploads/`)와 실행 디렉터리(`<out>/<run id>/`) 위치. |
 | `--repo-root` | 경로 | sbmig 저장소 | 체크박스로 보여 줄 `config/*.yml`과 `kb/`의 기준. |
+| `--graceful-timeout` | 정수 | `5` | 종료 시 열린 SSE 연결을 기다리는 초([09. 운영](09-operations.md) 11장). |
+| `--max-upload-mb` | 정수 | `$SBMIG_MAX_UPLOAD_MB` 또는 `512` | 받아 주는 zip의 최대 크기(MB). `0` = 한도 없음. 큰 프로젝트 하나만 올릴 때 `--max-upload-mb 0`으로 다시 띄웁니다(코드 수정 불필요). |
 
 서버 전체 로그는 `<out>/sbmig-web.log`, 실행별 로그는 `<out>/<run id>/sbmig.log`. 시작 시 같은 앱을 순수 uvicorn으로 띄우는 명령을 함께 출력합니다:
 
@@ -286,7 +288,7 @@ sbmig inventory INPUT [--out DIR] [--config FILE]... [--json]
 |---|---|---|---|
 | GET | `/`, `/index.html` | 단일 페이지 UI(`sbmig/web/static/index.html`, 캐시 금지) | 200 HTML |
 | GET | `/static/*` | 정적 파일 | 200 |
-| GET | `/api/configs` | 체크 가능한 설정 파일 | 200 `{"configs": [...], "repo_root": "...", "out_dir": "..."}` |
+| GET | `/api/configs` | 체크 가능한 설정 파일 | 200 `{"configs": [...], "repo_root": "...", "out_dir": "...", "max_upload_mb": 512}` |
 | GET | `/api/runs` | 알려진 실행 목록(최신 순) | 200 `{"runs": [status, ...]}` |
 | GET | `/api/threads` | 모든 스레드의 스택(진단) | 200 text/plain |
 | POST | `/api/runs` | zip 업로드 + 실행 시작 | 202 `{"run_id": "...", "status": {...}}` |
@@ -296,7 +298,7 @@ sbmig inventory INPUT [--out DIR] [--config FILE]... [--json]
 | GET | `/api/runs/{run_id}/files/{name}` | 결과 파일 | 200 파일, 없으면 404 |
 
 ### 2.3 `GET /api/configs`
-`<repo_root>/config/*.yml` 중 `default.yml`을 뺀 **파일 이름** 목록(정렬). 회사 설정을 웹에서 쓰려면 artifacts 파일을 `config/` 안에 두어야 합니다.
+`<repo_root>/config/*.yml` 중 `default.yml`을 뺀 **파일 이름** 목록(정렬). 회사 설정을 웹에서 쓰려면 artifacts 파일을 `config/` 안에 두어야 합니다. `max_upload_mb`는 서버의 업로드 한도(MB, `0` = 없음)이고 화면은 이 값으로 올리기 전에 파일 크기를 확인합니다.
 
 ### 2.4 `POST /api/runs` — 업로드와 시작
 **multipart가 아닙니다.** 요청 본문 = zip 파일의 원시 바이트, 나머지는 쿼리 파라미터입니다(웹 페이지도 `Content-Type: application/zip`으로 보냄).
@@ -313,7 +315,7 @@ sbmig inventory INPUT [--out DIR] [--config FILE]... [--json]
 | 상황 | 응답 |
 |---|---|
 | 본문 없음 | 400 `zip body required` |
-| 512 MB 초과(Content-Length 또는 실제 크기) | 413 `zip too large (max 512 MB)` |
+| 업로드 한도 초과(Content-Length, 또는 받는 중의 실제 크기; 기본 512 MB, `--max-upload-mb` / `SBMIG_MAX_UPLOAD_MB`, `0` = 없음) | 413 `zip too large (max 512 MB)` |
 | 본문이 `PK`로 시작하지 않음 | 400 `body is not a zip file` |
 | 모르는 설정 파일, 잘못된 `stop_after`, 설정 검증 실패(artifacts 누락 등), 깨진 zip | 400 `{"error": "<원인>"}` |
 | 정상 | 202 `{"run_id": "web-…", "status": {"state": "queued" 또는 "running", …}}` |
@@ -589,6 +591,7 @@ tier 1을 쓰면 모델은 아래 태그 형식으로 답해야 합니다(파서
 | `SBMIG_<섹션>__<키>` | `_apply_env_overrides` | 임의 설정 키 덮어쓰기(값은 YAML 해석). 예: `SBMIG_LOOP__MAX_LLM_CALLS=30` | CLI 플래그보다 우선 |
 | `SBMIG_WEB_OUT` | `sbmig/web/app.py` | 순수 uvicorn 실행 시 실행 디렉터리(기본 `out/web`) | `sbmig serve`는 `--out` 사용 |
 | `SBMIG_WEB_REPO_ROOT` | `sbmig/web/app.py` | 순수 uvicorn 실행 시 저장소 루트 | |
+| `SBMIG_MAX_UPLOAD_MB` | `sbmig/web/app.py` | 웹 업로드 한도(MB, 기본 512, `0` = 없음) | `sbmig serve --max-upload-mb`가 우선 |
 | `JAVA21_HOME` | `config/artifacts.local-e2e.yml`의 `build.java_home`, e2e 스크립트 | 로컬 e2e용 JDK 21 | 회사 설정에서는 `build.java_home`을 직접 지정 |
 | `JAVA_HOME`, `PATH` | Maven 하위 프로세스 | `build.java_home`이 있으면 sbmig가 Maven 환경에서 덮어씀 | |
 | `MAVEN_HOME`, `M2_HOME` | `mvn_executable` | `build.mvn`이 이름일 때 `<값>/bin`도 탐색 | |

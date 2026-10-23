@@ -361,13 +361,13 @@ flowchart TD
 
 - **앱**: `sbmig/web/app.py`의 `create_app(out_dir, repo_root)`. 모듈 수준 `app`은 환경 변수 `SBMIG_WEB_OUT`(기본 `out/web`)과 `SBMIG_WEB_REPO_ROOT`로 만들어집니다. 띄우는 방법은 `uvicorn sbmig.web.app:app` 또는 `sbmig serve --port 8765`(기본 바인드 `127.0.0.1`)입니다.
 - **정적 UI**: `sbmig/web/static/index.html`(순수 JS). `Cache-Control: no-store`로 제공됩니다.
-- **업로드 한도**: `MAX_UPLOAD = 512 MB`. 본문이 `PK`로 시작하지 않으면 400을 돌려줍니다.
+- **업로드 한도**: 기본 512 MB(`DEFAULT_MAX_UPLOAD_MB`). `create_app(..., max_upload_mb=)` — 즉 `sbmig serve --max-upload-mb N` 또는 환경 변수 `SBMIG_MAX_UPLOAD_MB`(`resolve_max_upload`, 옵션이 변수보다 우선) — 로 바꾸고 `0`이면 한도가 없습니다. 본문은 `<out>/_uploads/.incoming-*.part`로 스트리밍하면서 한도와 `PK` 서명을 검사하고(400 / 413), 거절된 업로드는 지웁니다. 화면은 `/api/configs`의 `max_upload_mb`로 올리기 전에 크기를 미리 봅니다.
 - **anyio 쓰레드 풀**: 시작할 때 `THREAD_POOL_SIZE = 256`으로 늘립니다. 열린 SSE 스트림(브라우저 탭) 하나가 워커 쓰레드 하나를 차지하기 때문입니다.
 
 | 라우트 | 용도 |
 |---|---|
 | `GET /` | 페이지 |
-| `GET /api/configs` | 체크할 수 있는 `config/*.yml` 이름(`default.yml` 제외) |
+| `GET /api/configs` | 체크할 수 있는 `config/*.yml` 이름(`default.yml` 제외), `repo_root`, `out_dir`, `max_upload_mb` |
 | `GET /api/runs` | 실행 목록(최신순, 상태 포함) |
 | `POST /api/runs?name=…&configs=a.yml,b.yml[&stop_after=…][&llm_provider=…]` | zip 업로드 → 202 `{"run_id", "status"}` |
 | `GET /api/runs/{id}` | 상태(`queued` / `running` / `finished`, `exit_code`, `node`, `success`, `blocked`, `unresolved`, `llm_calls`) |

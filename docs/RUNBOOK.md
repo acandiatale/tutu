@@ -108,7 +108,8 @@ command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When a
 `sbmig serve` (web UI): `sbmig serve --host 0.0.0.0 --port 8765 --out out/web` (FastAPI on uvicorn; the same app
 is `SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=<sbmig repo> uvicorn sbmig.web.app:app --host 0.0.0.0 --port 8765` for
 the company's uvicorn hosting) and open the page; upload a zip, pick the config files (e.g. `artifacts.yml` +
-`llm-company.yml`), start. Each run executes **in the server process** through the LangGraph engine
+`llm-company.yml`), start. The upload cap is 512 MB: `--max-upload-mb N` (or `SBMIG_MAX_UPLOAD_MB`; `0` = no
+limit) raises it for one oversized project — the body is streamed to `<out>/_uploads/`, not held in memory. Each run executes **in the server process** through the LangGraph engine
 (`sbmig.graph.stream_graph`, one worker thread per run; without LangGraph it falls back to the inline engine and the
 graph strip stays dark). The page streams the graph node updates, `journal.jsonl` (phases, builds, decisions, LLM
 fixes) and the run's `sbmig.log` over SSE (`status | node | error | journal | log | report | ping | end`), and links

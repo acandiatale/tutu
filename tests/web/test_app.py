@@ -330,3 +330,92 @@ def test_shutdown_ends_open_streams_and_stops_running_runs(tmp_path, repo, monke
         assert run.cancel.is_set() and run.done.wait(5)
         assert mgr.closing.is_set()
     assert mgr.closing.is_set()                                       # the lifespan exit called shutdown() too
+
+
+# ---------------------------------------------------------------- upload limit (2026-10-23: a 980 MB company project)
+
+def _part_files(tmp_path: Path) -> list[Path]:
+    d = tmp_path / "out" / "_uploads"
+    return sorted(d.glob(".incoming-*.part")) if d.is_dir() else []
+
+
+def test_resolve_max_upload_argument_env_default(monkeypatch):
+    from sbmig.web.app import MAX_UPLOAD, resolve_max_upload
+
+    monkeypatch.delenv("SBMIG_MAX_UPLOAD_MB", raising=False)
+    assert resolve_max_upload() == MAX_UPLOAD == 512 * 1024 * 1024
+    assert resolve_max_upload(1) == 1024 * 1024
+    assert resolve_max_upload(0) == 0                                   # 0 = no limit
+    monkeypatch.setenv("SBMIG_MAX_UPLOAD_MB", "2048")
+    assert resolve_max_upload() == 2048 * 1024 * 1024
+    assert resolve_max_upload(3) == 3 * 1024 * 1024                     # the CLI option wins over the variable
+    monkeypatch.setenv("SBMIG_MAX_UPLOAD_MB", "0")
+    assert resolve_max_upload() == 0
+    monkeypatch.setenv("SBMIG_MAX_UPLOAD_MB", "lots")
+    assert resolve_max_upload() == MAX_UPLOAD                           # unreadable → default, logged
+    assert resolve_max_upload(-5) == MAX_UPLOAD                         # negative → default, logged
+
+
+def test_upload_over_the_limit_is_413_before_and_while_reading(tmp_path, repo, monkeypatch):
+    monkeypatch.setattr(RunManager, "_run_thread_body", fake_body)
+    client = TestClient(create_app(tmp_path / "out", repo, max_upload_mb=1))
+    assert client.get("/api/configs").json()["max_upload_mb"] == 1
+    big = b"PK" + b"\0" * (1024 * 1024 + 10)
+    r = client.post("/api/runs?configs=artifacts.local-e2e.yml", content=big,
+                    headers={"Content-Type": "application/zip"})               # Content-Length known → early 413
+    assert r.status_code == 413 and r.json()["error"] == "zip too large (max 1 MB)"
+
+    def chunks():                                                              # chunked: enforced while streaming
+        yield b"PK"
+        yield b"\0" * 600_000
+        yield b"\0" * 600_000
+
+    r = client.post("/api/runs?configs=artifacts.local-e2e.yml", content=chunks(),
+                    headers={"Content-Type": "application/zip"})
+    assert r.status_code == 413
+    assert _part_files(tmp_path) == []                                         # nothing left behind
+    assert client.get("/api/runs").json()["runs"] == []
+    # the same bytes under the default limit are not "too large" (they are not a zip either: that check comes first)
+    client2 = TestClient(create_app(tmp_path / "out2", repo))
+    r = client2.post("/api/runs?configs=artifacts.local-e2e.yml", content=b"\0" * 10,
+                     headers={"Content-Type": "application/zip"})
+    assert r.status_code == 400 and "not a zip" in r.json()["error"]
+
+
+def test_upload_limit_zero_means_no_limit(tmp_path, repo, monkeypatch):
+    monkeypatch.setattr(RunManager, "_run_thread_body", fake_body)
+    monkeypatch.setenv("SBMIG_MAX_UPLOAD_MB", "0")                             # the operator's way under plain uvicorn
+    client = TestClient(create_app(tmp_path / "out", repo))
+    assert client.get("/api/configs").json()["max_upload_mb"] == 0
+    rid = _start(client)
+    assert _manager(client).runs[rid].zip_path.is_file()
+
+
+def test_upload_is_streamed_to_disk_byte_exact(client, tmp_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("proj/pom.xml", "<project/>")
+        zf.writestr("proj/media/big.bin", bytes(range(256)) * 8192)           # 2 MB → several transport chunks
+    data = buf.getvalue()
+    pieces = [data[:1], data[1:3], data[3:70_000], data[70_000:]]            # the zip signature spans two chunks
+    r = client.post("/api/runs?name=big.zip&configs=artifacts.local-e2e.yml", content=iter(pieces),
+                    headers={"Content-Type": "application/zip"})
+    assert r.status_code == 202, r.text
+    run = _manager(client).runs[r.json()["run_id"]]
+    assert run.zip_path.name.endswith("-big.zip") and run.zip_path.read_bytes() == data
+    assert (run.run_dir / "project" / "media" / "big.bin").stat().st_size == 2 * 1024 * 1024
+    assert _part_files(tmp_path) == []
+
+
+def test_rejected_upload_leaves_no_partial_file(client, tmp_path):
+    for query, content, status, msg in [
+        ("configs=nope.yml", _zip_bytes(), 400, "unknown config"),             # validated after the upload
+        ("configs=artifacts.local-e2e.yml", b"not a zip at all", 400, "not a zip"),
+        ("configs=artifacts.local-e2e.yml", b"P", 400, "not a zip"),           # one byte: no signature
+        ("configs=artifacts.local-e2e.yml", b"", 400, "zip body required"),
+        ("configs=artifacts.local-e2e.yml", b"PK\x03\x04garbage", 400, "zip"),  # BadZipFile from the workspace
+    ]:
+        r = client.post(f"/api/runs?{query}", content=content, headers={"Content-Type": "application/zip"})
+        assert r.status_code == status and msg in r.json()["error"], (query, r.text)
+        assert _part_files(tmp_path) == [], query
+    assert client.get("/api/runs").json()["runs"] == []

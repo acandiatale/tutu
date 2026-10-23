@@ -159,6 +159,7 @@ SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=/path/to/migration-agent uvicorn sbmig
 | `--port` | `8765` | |
 | `--out` / `SBMIG_WEB_OUT` | `out/web` | 업로드(`<out>/_uploads/`)와 실행 디렉터리(`<out>/web-…/`) |
 | `--repo-root` / `SBMIG_WEB_REPO_ROOT` | sbmig 패키지 루트 | 화면에 나오는 설정 파일 목록(`<repo root>/config/*.yml`)과 KB 위치 |
+| `--max-upload-mb` / `SBMIG_MAX_UPLOAD_MB` | `512` | 받아 주는 zip의 최대 크기(MB). `0`은 한도 없음. 한 프로젝트만 유난히 클 때(2026-10-23, 980 MB) 서버를 이 옵션으로 다시 띄웁니다 |
 
 서버 전체 로그는 `<out>/sbmig-web.log`(`sbmig serve`일 때), 실행별 로그는 `<out>/<run id>/sbmig.log`입니다. 서버도 CLI와 같은 환경(JDK 21, `.env`의 LLM 변수)이 필요합니다.
 
@@ -199,8 +200,8 @@ sequenceDiagram
     M-->>B: event: report → status → end
 ```
 
-1. **요청 검증**(동기): 본문이 비었거나 zip이 아니거나(`PK` 서명) 512 MB를 넘으면 400 / 413. 설정 이름은 `<repo root>/config/` 안의 파일만 허용합니다. `stop_after`는 CLI와 같은 `parse_stop_after`로 검사합니다. 설정이 잘못되면(예: artifacts 누락) 이 단계에서 400으로 돌아옵니다.
-2. **저장과 준비**: zip을 `<out>/_uploads/<run id>-<파일명>`에 저장하고, `Workspace.from_input`으로 `<out>/web-YYYYMMDD-HHMMSS-<hex>/project`에 풉니다. 웹 실행은 항상 KB를 씁니다(`--no-kb`에 해당하는 옵션이 없습니다).
+1. **요청 검증**: 본문이 비었거나 zip이 아니거나(`PK` 서명) 업로드 한도(기본 512 MB, `--max-upload-mb` / `SBMIG_MAX_UPLOAD_MB`, `0` = 없음)를 넘으면 400 / 413. 본문은 메모리에 모으지 않고 `<out>/_uploads/.incoming-*.part`로 받으면서 한도와 서명을 검사합니다(거절되면 그 파일은 지웁니다). 설정 이름은 `<repo root>/config/` 안의 파일만 허용합니다. `stop_after`는 CLI와 같은 `parse_stop_after`로 검사합니다. 설정이 잘못되면(예: artifacts 누락) 이 단계에서 400으로 돌아옵니다.
+2. **저장과 준비**: 받아 둔 파일을 `<out>/_uploads/<run id>-<파일명>`으로 옮기고, `Workspace.from_input`으로 `<out>/web-YYYYMMDD-HHMMSS-<hex>/project`에 풉니다. 웹 실행은 항상 KB를 씁니다(`--no-kb`에 해당하는 옵션이 없습니다).
 3. **직렬 실행**: KB가 파일 기반이고 모든 실행이 공유하므로 `RunManager._run_lock`으로 **한 번에 한 마이그레이션만** 돌립니다. 기다리는 실행은 `queued`입니다.
 4. **스트리밍**: 작업 스레드가 `sbmig.graph.stream_graph`로 노드 업데이트를 받아 기록합니다. SSE 생성기는 그 기록과 `journal.jsonl`, `sbmig.log`의 새 줄을 0.5초마다 읽어 **시각 순으로 섞어** 보냅니다(journal과 로그가 순서가 뒤바뀌어 보이던 문제, round 9).
 5. LangGraph를 가져올 수 없으면 `Orchestrator.run()`(inline)으로 대신 돌립니다. 보고서와 종료 코드는 같지만 `node` 이벤트가 없고 그래프 줄이 어둡게 남습니다.
@@ -223,7 +224,7 @@ SSE 이벤트 종류는 다음과 같습니다.
 | 메서드와 경로 | 용도 |
 |---|---|
 | `GET /` | 화면 |
-| `GET /api/configs` | 고를 수 있는 설정 파일(`default.yml` 제외), `repo_root`, `out_dir` |
+| `GET /api/configs` | 고를 수 있는 설정 파일(`default.yml` 제외), `repo_root`, `out_dir`, `max_upload_mb`(0 = 한도 없음) |
 | `GET /api/runs` | 실행 목록(최신순) |
 | `POST /api/runs?name=&configs=a.yml,b.yml&stop_after=&llm_provider=` | 실행 시작(본문 = zip 바이트) → 202 `{"run_id", "status"}` |
 | `GET /api/runs/{id}` | 상태 |
