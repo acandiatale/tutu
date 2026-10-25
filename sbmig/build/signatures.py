@@ -3,7 +3,12 @@
 * **L1** (specific): stable across machines and runs of the *same* problem, e.g.
   ``compile|cannot_find_symbol|class WebSecurityConfigurerAdapter|package org.springframework.security.config...``
 * **L2** (generic): groups the same *kind* of problem across projects, e.g.
-  ``compile|cannot_find_symbol|WebSecurityConfigurerAdapter``
+  ``compile|cannot_find_symbol|WebSecurityConfigurerAdapter``. L2 is the case-catalog key (one case per L2, a hit
+  applies the case's action), so it must not merge different problems (round 10): package errors keep the whole
+  package (``…|javax.xml.bind`` ≠ ``…|javax.xml.ws``), ``method_does_not_override`` / ``static_import_only`` carry the
+  method / class the log parser read from the source line, ``illegal_start`` the javac phrase, ``plugin_execution``
+  the plugin goal plus the normalized cause (``plugin_execution|war:war|error assembling war: webxml attribute is
+  required``).
 
 Rules: no absolute paths, no line numbers, no module names, no project-owned locations. Everything here is a pure
 function of the ``BuildError`` so the same error always yields the same signature.
@@ -16,6 +21,7 @@ from sbmig.core.models import BuildError, ErrorKind
 
 MAX_MESSAGE_CHARS = 160
 GENERIC_WORDS = 6
+CAUSE_WORDS = 10           # plugin_execution L2: words of the normalized cause after the plugin goal
 
 # Locations / types in these namespaces are library-owned and therefore meaningful across projects. Anything else
 # (the project's own packages) is replaced by "*" in L1 so the same library problem matches in another project.
@@ -183,12 +189,6 @@ def _norm_location(location: str | None) -> str:
     return normalize_message(loc, lower=False, max_chars=80)
 
 
-def _generic_package(pkg: str) -> str:
-    parts = pkg.split(".")
-    n = 3 if parts and parts[0] in {"org", "com", "io", "net", "de", "fr", "uk", "co", "kr", "jp", "cn", "edu"} else 2
-    return ".".join(parts[:n])
-
-
 def _first_words(text: str, n: int = GENERIC_WORDS) -> str:
     return " ".join(text.split()[:n])
 
@@ -224,8 +224,12 @@ def _javac_key(cls: str, msg: str, err: BuildError) -> str:
     if cls == "incompatible_types":
         return grab(r"(\S+) cannot be converted to (\S+)",
                     lambda m: f"{_simple(m.group(1))}->{_simple(m.group(2))}")
-    if cls in ("method_does_not_override", "static_import_only", "illegal_start"):
-        return ""
+    if cls in ("method_does_not_override", "static_import_only"):
+        # javac names neither the method nor the imported class; the log parser reads them from the source line
+        # into `symbol` ("method getErrorPath", "class org.junit.Assert") — without it the kind has no key
+        return _symbol_name(err.symbol)
+    if cls == "illegal_start":
+        return _first_words(normalize_message(msg, module=err.module), 8)    # "illegal start of type", "';' expected"
     return _first_words(normalize_message(msg, module=err.module))
 
 
@@ -235,6 +239,45 @@ _FQCN_RE = re.compile(r"\b[a-z_][\w]*(?:\.[a-z_][\w]*)*\.[A-Z][\w$]*(?:\.[A-Z][\
 def _mask_project_types(text: str) -> str:
     """Replace fully qualified names outside EXTERNAL_PACKAGE_PREFIXES by '*' (project-owned types)."""
     return _FQCN_RE.sub(lambda m: m.group(0) if _is_external(m.group(0)) else "*", text)
+
+
+# "Failed to execute goal g:a:v:goal (id) on project x: <cause>" — the parser already cuts this prefix off, a message
+# built elsewhere (or a hand-made BuildError) may still carry it
+_FAILED_GOAL_PREFIX_RE = re.compile(
+    r"^\s*Failed to execute goal (?:(?P<coords>[\w.\-]+:[\w.\-]+:[\w.\-]+:[\w.\-]+)(?: \([^)]*\))? )?"
+    r"on project [\w.\-]+\s*:?\s*", re.IGNORECASE)
+_EXECUTION_PREFIX_RE = re.compile(
+    r"^\s*Execution [\w.\-]+ of goal (?P<coords>[\w.\-]+:[\w.\-]+:[\w.\-]+:[\w.\-]+) failed\s*:?\s*", re.IGNORECASE)
+_PARENS_RE = re.compile(r"\s*(?:\([^()]*\)|\[[^\[\]]*\])")
+
+
+def _plugin_goal(coords: str) -> str:
+    """g:maven-war-plugin:3.4.0:war → war:war (the short form the parser stores in BuildError.goal)."""
+    parts = coords.split(":")
+    if len(parts) < 4:
+        return ""
+    a = parts[1]
+    m = re.match(r"^maven-(.+)-plugin$", a) or re.match(r"^(.+?)-maven-plugin$", a)
+    return f"{m.group(1) if m else a}:{parts[3]}"
+
+
+def _plugin_execution_key(err: BuildError) -> str:
+    """``<goal>|<cause>`` for a plugin execution failure: the plugin goal (``war:war``) and the first CAUSE_WORDS
+    words of the cause, wrapper prefixes and parentheticals removed, paths / versions / numbers / project types
+    masked. ``webxml attribute is required`` and ``could not copy webapp sources`` no longer share a case."""
+    msg = err.message or ""
+    goal = err.goal or ""
+    while True:
+        m = _FAILED_GOAL_PREFIX_RE.match(msg) or _EXECUTION_PREFIX_RE.match(msg)
+        if not m:
+            break
+        if not goal and m.group("coords"):
+            goal = _plugin_goal(m.group("coords"))
+        msg = msg[m.end():]
+    msg = _PARENS_RE.sub("", _HELP_RE.sub("", msg))
+    cause = _mask_project_types(normalize_message(msg, module=err.module, lower=False, max_chars=400)).lower()
+    cause = _first_words(cause, CAUSE_WORDS).rstrip(" :;,.=-")
+    return _join(goal, cause)
 
 
 def _join(*parts: str) -> str:
@@ -259,9 +302,11 @@ def _compile_signature(err: BuildError) -> tuple[str, str]:
 
     cls = classify_javac(msg)
     if cls == "package_does_not_exist":
+        # the whole package: javax.xml.bind and javax.xml.ws (or two in-house packages under kr.co.acme) are different
+        # problems with different fixes — the old 3-segment L2 made them one catalog case
         m = re.search(r"package (\S+) does not exist", msg)
         pkg = m.group(1) if m else normalize_message(msg)
-        return _join(prefix, cls, pkg), _join(prefix, cls, _generic_package(pkg))
+        return _join(prefix, cls, pkg), _join(prefix, cls, pkg)
     if cls == "cannot_find_symbol":
         sym = _norm_symbol(err.symbol)
         if not sym:                                             # kotlin "Unresolved reference: Foo" / 'Foo'
@@ -270,7 +315,7 @@ def _compile_signature(err: BuildError) -> tuple[str, str]:
         name = _symbol_name(sym) or sym
         return _join(prefix, cls, sym, _norm_location(err.location)), _join(prefix, cls, name)
     norm = _mask_project_types(normalize_message(msg, module=err.module, lower=False))
-    l1 = _join(prefix, cls, norm, _norm_symbol(err.symbol), _norm_location(err.location))
+    l1 = _join(prefix, cls, norm, _mask_project_types(_norm_symbol(err.symbol)), _norm_location(err.location))
     key = _javac_key(cls, msg, err)
     return l1, _join(prefix, cls, key)
 
@@ -290,6 +335,8 @@ def signature_for(err: BuildError) -> tuple[str, str]:
     if kind == ErrorKind.POM_INVALID and err.artifact is not None and "version" in norm and "missing" in norm:
         a = err.artifact
         return f"{prefix}|missing_version|{a.group_id}:{a.artifact_id}", f"{prefix}|missing_version"
+    if kind == ErrorKind.PLUGIN_EXECUTION:
+        return _join(prefix, norm), _join(prefix, _plugin_execution_key(err) or _first_words(norm))
     return _join(prefix, norm), _join(prefix, _first_words(norm))
 
 

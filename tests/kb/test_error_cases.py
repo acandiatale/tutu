@@ -73,7 +73,7 @@ def test_prepare_sanitizes_paths_and_secrets(kb_cfg, ws, profile):
     assert root not in e.description and root not in e.problem_errors[0] and root not in e.raw
     assert "hunter2" not in e.raw and "password=***" in e.raw
     assert len(e.raw) <= 2000 + len("…[truncated]") and e.raw.endswith("…[truncated]")
-    assert root not in a.description and a.notes == ["log at logs/mvn-1.log"]
+    assert root not in a.description and a.notes[0] == "log at logs/mvn-1.log"
     assert "s3cr3tvalue" not in a.diff and "token=***" in a.diff
     # the classification ran on the unredacted diff (the method rename is still seen) but no secret leaks
     assert a.change.change_kind == "text_replace"
@@ -81,6 +81,10 @@ def test_prepare_sanitizes_paths_and_secrets(kb_cfg, ws, profile):
     assert ("clientIp", "remoteClientIp") in pairs
     assert not any("s3cr3t" in p.old or "n3w" in p.new for p in a.change.replace_pairs)
     assert "s3cr3tvalue" not in e.diff_excerpt
+    # round 10: the masking is visible, and a resolution whose pair touched a secret is never a rule candidate
+    assert any(n.startswith("redacted: 2 secret value(s)") for n in a.notes)
+    assert any("replace pair(s) dropped" in n for n in a.notes)
+    assert e.replace_rule_candidate is False and any(n.startswith("redacted:") for n in e.notes)
 
 
 def test_prepare_fills_project_fields_symbol_and_counts(kb_cfg, ws, profile):
@@ -204,7 +208,7 @@ def test_jsonl_and_csv_files(kb_cfg, ws, profile, tmp_path):
     assert row["message"] == msg and row["replace_pairs"] == "clientIp→remoteClientIp"
     assert row["replace_rule_candidate"] == "true" and row["attempts"] == "a1:llm:improved"
     assert row["symbol"] == "clientIp" and row["status"] == "resolved"
-    assert dict(zip(rows[0], rows[2]))["message"] == "'-source 8"           # no Excel formula
+    assert dict(zip(rows[0], rows[2]))["message"] == "-source 8"     # round 10: a plain sign is data, not a formula
     a = write_fix_attempts_csv(attempts, tmp_path / "run" / "fix_attempts.csv")
     arows = list(csv.reader(a.open(encoding="utf-8-sig", newline="")))
     assert len(arows) == 2 and "remoteClientIp" in dict(zip(arows[0], arows[1]))["diff"]
@@ -418,3 +422,114 @@ def test_zip_round_trip_includes_error_cases(kb_cfg, ws, profile, tmp_path):
                 zout.writestr(n, zin.read(n))
     counters = partial.import_zip(old)
     assert counters["error_cases_added"] == 0 and partial.error_case_store().count_errors() == 2
+
+
+# --------------------------------------------------------------------------- round 10 (2026-10-26)
+def test_error_csv_column_order_snapshot():
+    """The business team codes rules against these columns: the order is a contract (append, never reorder)."""
+    assert ERROR_CSV_COLUMNS == [
+        "id", "project", "run_id", "status", "error_kind", "file", "line", "message", "symbol", "signature_generic",
+        "case_id", "first_seen", "resolved_at", "fix_method", "resolver_id", "change_kind", "replace_pairs",
+        "replace_rule_candidate", "description", "failure_reason", "problem_errors", "block_reason", "suggestion",
+        "attempt_count", "llm_attempts", "attempts", "resolution_attempts",
+        "signature", "location", "module", "case_type", "asis_java", "asis_spring_boot", "asis_spring", "packaging",
+        "targeted", "resolved_by", "fix_labels", "at", "introduced_by", "notes", "schema_version", "raw",
+        "diff_excerpt",
+    ]
+
+
+def test_csv_formula_guard_keeps_plain_signed_values():
+    from sbmig.kb.error_cases import _cell, formula_guarded
+
+    for s in ("=1+1", "@SUM(A1)", "+SUM(A1)", "-cmd|' /C calc'!A0", "-HYPERLINK(\"x\")", "\tx", "\rx", "-2+3=5"):
+        assert formula_guarded(s) and _cell(s) == "'" + s
+    for s in ("-source 8", "-Xmx512m", "-1", "+1", "+82 10", "- removed line", "", "plain"):
+        assert not formula_guarded(s) and _cell(s) == s
+
+
+def test_prepare_fills_versions_and_project_context(kb_cfg, ws, profile, tmp_path):
+    import sbmig
+
+    p = profile.model_copy(update={"java_version": "1.8", "spring_boot_version": "2.7.18",
+                                   "spring_version": "5.3.31", "packaging": "war"})
+    errors, attempts = _prepared(kb_cfg, ws, p, [ec_error(introduced_by="step:spring.rewrite")], [ec_attempt()])
+    e, a = errors[0], attempts[0]
+    assert (e.asis_java, e.asis_spring_boot, e.asis_spring, e.packaging) == ("1.8", "2.7.18", "5.3.31", "war")
+    assert e.schema_version == a.schema_version == 2 and e.agent_version == a.agent_version == sbmig.__version__
+    assert e.introduced_by == "step:spring.rewrite"
+    path = write_error_cases_csv(errors, tmp_path / "e.csv")
+    rows = list(csv.reader(path.open(encoding="utf-8-sig", newline="")))
+    row = dict(zip(rows[0], rows[1]))
+    assert (row["asis_java"], row["packaging"], row["schema_version"], row["resolved_by"]) == ("1.8", "war", "2", "a1")
+    assert row["signature"] == e.signature and row["targeted"] == "true" and row["introduced_by"] == "step:spring.rewrite"
+    assert row["fix_labels"] and row["at"] and row["module"] == "" and row["case_type"] == "spring_boot"
+
+
+def test_full_diff_keeps_a_later_files_code_edit(kb_cfg, ws, profile):
+    """review-kb/repro3: the tracker used to cap the diff at 12,000 chars BEFORE the classification — B.java's code
+    edit was cut off (a `text_replace` rule candidate) and B.java's own excerpt was empty."""
+    hunk_a = "".join(f"-    String s{i} = helper.clientIp();\n+    String s{i} = helper.remoteClientIp();\n"
+                     for i in range(150))
+    diff = ("diff --git a/src/main/java/a/A.java b/src/main/java/a/A.java\n--- a/src/main/java/a/A.java\n"
+            f"+++ b/src/main/java/a/A.java\n@@ -1,150 +1,150 @@\n{hunk_a}"
+            "diff --git a/src/main/java/a/B.java b/src/main/java/a/B.java\n--- a/src/main/java/a/B.java\n"
+            "+++ b/src/main/java/a/B.java\n@@ -10,2 +10,4 @@\n"
+            "-    return helper.clientIp();\n+    String ip = helper.remoteClientIp();\n"
+            "+    if (ip == null) ip = \"0.0.0.0\";\n+    return ip;\n")
+    assert len(diff) > 12000
+    err = ec_error(file="src/main/java/a/B.java", line=10)
+    errors, attempts = _prepared(kb_cfg, ws, profile, [err], [ec_attempt(diff=diff)])
+    e, a = errors[0], attempts[0]
+    assert a.change.change_kind == "mixed" and a.diff_truncated               # capped for storage, after
+    assert e.change_kind == "mixed" and e.replace_rule_candidate is False
+    assert "B.java" in e.diff_excerpt and "if (ip == null)" in e.diff_excerpt and "A.java" not in e.diff_excerpt
+
+
+def test_an_attempt_that_fixed_this_error_is_not_its_failure(kb_cfg, ws, profile, tmp_path):
+    """review-kb/repro4: one attempt aimed at two errors is `no_change` for the cluster (the other one stayed) —
+    for the error it fixed it is the fix, never "past failure … do not repeat it"."""
+    refs = [ErrorAttemptRef(attempt_id="r1:a1", fix_method="llm", outcome="no_change"),
+            ErrorAttemptRef(attempt_id="r1:a2", fix_method="llm", outcome="partial"),
+            ErrorAttemptRef(attempt_id="r1:a3", fix_method="llm", outcome="inconclusive")]
+    err = ec_error(attempts=refs, resolved_by="r1:a1", resolution_attempts=["r1:a1"])
+    errors, attempts = _prepared(kb_cfg, ws, profile, [err], [ec_attempt("a1", outcome="no_change")])
+    store = ErrorCaseStore(tmp_path / "kb")
+    store.append(errors, attempts)
+    lines = store.hints_for(EC_L2)
+    assert lines and "fixed by llm" in lines[0] and not any("past failure" in x for x in lines)
+
+
+def test_hints_rank_fixes_by_projects_not_records(kb_cfg, ws, profile, tmp_path):
+    big = "diff --git a/{f} b/{f}\n--- a/{f}\n+++ b/{f}\n@@ -1,1 +1,1 @@\n-x.clientIp();\n+x.getRemoteAddr();\n"
+    store = ErrorCaseStore(tmp_path / "kb")
+    for i in range(10):                                      # one project, 10 errors
+        store.append(*_run(kb_cfg, ws, profile, f"big{i}", name="big", fp="fp-big",
+                           diff=big.format(f=EC_FILE), eid=f"e{i}"))
+    for n in ("b", "c", "d"):                                # three projects, one error each
+        store.append(*_run(kb_cfg, ws, profile, f"r-{n}", name=n, fp=f"fp-{n}"))
+    line = store.hints_for(EC_L2)[0]
+    assert "in 3 project(s)" in line and "`clientIp` → `remoteClientIp`" in line
+
+
+def test_replace_candidates_never_list_masked_pairs(kb_cfg, ws, profile, tmp_path):
+    from sbmig.core.models import ReplacePair
+
+    store = ErrorCaseStore(tmp_path / "kb")
+    store.append(*_run(kb_cfg, ws, profile, "r1", name="alpha", fp="fp-a"))
+    legacy = ec_error("old", run_id="r0", replace_rule_candidate=True, change_kind="text_replace",
+                      replace_pairs=[ReplacePair(old="***", new="***"), ReplacePair(old="token=***", new="x")])
+    store.append([legacy], [])
+    rows = store.replace_candidates()
+    assert [(r["old"], r["new"]) for r in rows] == [("clientIp", "remoteClientIp")]
+    assert all("***" not in r["old"] + r["new"] for r in store.summary()["replace_candidates"])
+
+
+def test_summary_streams_and_counts_like_before(kb_cfg, ws, profile, tmp_path):
+    store = ErrorCaseStore(tmp_path / "kb")
+    store.append(*_run(kb_cfg, ws, profile, "r1", name="alpha", fp="fp-a", failed="no_change"))
+    store.append(*_run(kb_cfg, ws, profile, "r2", name="beta", fp="fp-b", status="unresolved", failed="regressed"))
+    s = store.summary()
+    assert (s["errors"], s["projects"], s["runs"]) == (2, 2, 2)
+    assert s["by_status"] == {"resolved": 1, "unresolved": 1} and s["attempts"] == 3
+    assert s["attempt_outcomes"]["llm"] == {"no_change": 1, "improved": 1, "regressed": 1}
+    assert s["top_unresolved"][0]["projects"] == 1 and s["llm_text_replace"] == 1

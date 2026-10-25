@@ -78,10 +78,16 @@ class BlockedCandidate:
     errors: list[BuildError] = field(default_factory=list)     # the cluster errors this classification covers
     repositories: list[str] = field(default_factory=list)       # X3/X4: repository URLs named in the error
     plugin: Optional[str] = None                                # X5/X6: plugin g:a:v
+    # round 10: a case pinned to `block` by a person (`sbmig kb cases pin --action block[:reason]`): its id and the
+    # suggestion text the BlockedItem carries instead of the composed one
+    case_id: str = ""
+    suggestion: str = ""
 
     def detail(self) -> str:
         """One-line 'why' used in decision rationales (`blocked: <reason> — <detail>`)."""
         r = self.reason
+        if self.case_id:
+            return self.evidence[0] if self.evidence else f"pinned by case {self.case_id}"
         if r == BlockReason.EXTERNAL_JAVAX_API:
             who = self.owner_class or "a dependency API"
             txt = f"{who} requires {self.required_type or 'javax.* types'}"

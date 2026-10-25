@@ -24,7 +24,8 @@
 #   covers:      recipes this composite already includes (the advisor never adds them on top)
 #   gate:        named profile predicate (sbmig/plan/catalog.py GATES) or null = always allowed
 #   advisor:     may the LLM plan advisor add it? (false for internal / pinning / building-block recipes)
-#   sets:        config/default.yml openrewrite.recipes sets that reference it   (informational, checked)
+#   sets:        config/default.yml openrewrite.recipes sets that reference it, or `library.<library>` for the
+#                library-conditional rules of knowledge/recipes/library_recipes.yml (round 10)   (informational, checked)
 #   rules:       sbmig/triage/recipe_rules.yml rule ids that use it              (informational, checked)
 #   verified:    when the id was verified against docs.openrewrite.org / a recipe jar (YYYY-MM)
 #   notes:       optional pointer to a knowledge/notes/*.md migration note
@@ -112,6 +113,22 @@ recipes:
       - org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0
       - org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing
       - org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1
+      # round 10 (verified in rewrite-spring 6.37.0 / rewrite-hibernate 2.25.0 / rewrite-apache 2.30.0 /
+      # rewrite-jackson 1.28.4): 3_0 … 3_5 run the Security 6.0 … 6.5 steps, 3_0 MigrateThymeleafDependencies,
+      # 4_0 SpringBatch5To6Migration + MigrateToHibernate71, Framework 6.0 (via 3_0) JakartaEE10 →
+      # RemovalsServletJakarta10 + UpgradeApacheHttpClient_5, Framework 7.0 UpgradeJackson_2_3 → CodehausToFasterXML
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_2
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_3
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5
+      - org.openrewrite.java.spring.batch.SpringBatch5To6Migration
+      - org.openrewrite.hibernate.MigrateToHibernate71
+      - org.openrewrite.java.spring.boot3.MigrateThymeleafDependencies
+      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
+      - org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5
+      - org.openrewrite.java.jackson.CodehausToFasterXML
     gate: is_boot
     advisor: true
     sets: [spring_boot_4]
@@ -154,7 +171,13 @@ recipes:
     phase: spring
     description: Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)
     docs: https://docs.openrewrite.org/recipes/java/spring/framework/upgradespringframework_7_0
-    covers: []
+    covers:
+      # round 10, verified in rewrite-spring 6.37.0: 7_0 → 6_2 → 6_1 → 6_0 → JakartaEE10 (→ JavaxMigrationToJakarta,
+      # RemovalsServletJakarta10) and UpgradeApacheHttpClient_5; 7_0 → UpgradeJackson_2_3 → CodehausToFasterXML
+      - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
+      - org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5
+      - org.openrewrite.java.jackson.CodehausToFasterXML
     gate: is_spring
     advisor: true
     sets: [spring_framework_7]
@@ -166,7 +189,7 @@ recipes:
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-spring
     phase: spring
-    description: Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)
+    description: Spring Security 6.x → 7.0 (version bump, SecurityConfigurer init/configure lose `throws Exception`, AuthorizationManager.check → authorize); planned after the 6.0 … 6.5 steps
     docs: https://docs.openrewrite.org/recipes/java/spring/security7/upgradespringsecurity_7_0
     covers: []
     gate: has_spring_security
@@ -210,15 +233,145 @@ recipes:
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-spring
     phase: spring
-    description: Spring Security 5.x → 6.0 (WebSecurityConfigurerAdapter removal, antMatchers → requestMatchers)
+    description: Spring Security 5.x → 6.0 (chains 5_8 → 5_7 — WebSecurityConfigurerAdapter → SecurityFilterChain bean, lambda DSL, authorizeRequests / antMatchers → authorizeHttpRequests / requestMatchers, @EnableGlobalMethodSecurity → @EnableMethodSecurity)
     docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_0
     covers: []
     gate: null
     advisor: false
-    sets: []
-    rules: [spring-security-config]
+    sets: [spring_security_7]
+    rules: []        # round 10: the reactive rule spring-security-config is gone — on the Security 7 classpath its
+                     # type-attributed visitors find nothing; the plan runs the whole chain on the as-is classpath
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
+
+  - id: org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security 6.0 → 6.1 (oauth2Login / oauth2Client / oauth2ResourceServer lambda DSL, version bump)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_1
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_security_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  - id: org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_2
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security 6.1 → 6.2 (apply(...) → with(..., Customizer), version bump)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_2
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_security_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  - id: org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_3
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security 6.2 → 6.3 (version bump)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_3
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_security_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  - id: org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security 6.3 → 6.4 (version bump)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_4
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_security_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  - id: org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Security 6.4 → 6.5 (version bump; PathPatternRequestMatcher exists from here on)
+    docs: https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_5
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_security_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-security-7.md
+
+  # ------------------------------------------------------------------ round 10: servlet removals + library-conditional recipes
+  - id: org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-migrate-java
+    phase: spring
+    description: Servlet 6 removals after javax → jakarta (encodeUrl → encodeURL, HttpSession.getValue/putValue → get/setAttribute, setStatus(int, String), UnavailableException constructors, isRequestedSessionIdFromUrl)
+    docs: https://docs.openrewrite.org/recipes/java/migrate/jakarta/removalsservletjakarta10
+    covers: []
+    gate: null
+    advisor: false
+    sets: [jakarta]   # servlet_tomcat gets it through com.company.migrate.ServletToJakartaAndBoot
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/servlet-to-boot.md
+
+  # knowledge/recipes/library_recipes.yml — appended to non-Boot plans when the library is detected (set library.<name>)
+  - id: org.openrewrite.java.spring.batch.SpringBatch5To6Migration
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Spring Batch 4 → 5 → 6 (chains SpringBatch4To5Migration; JobBuilderFactory → JobBuilder, ItemWriter.write(Chunk), org.springframework.batch.item → …infrastructure.item)
+    docs: https://docs.openrewrite.org/recipes/java/spring/batch/springbatch5to6migration
+    covers: []
+    gate: null
+    advisor: false
+    sets: [library.spring-batch]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-framework-7.md
+
+  - id: org.openrewrite.hibernate.MigrateToHibernate71
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-hibernate
+    provided_by: org.openrewrite.recipe:rewrite-spring   # rewrite-hibernate 2.25.0 is a runtime dependency of rewrite-spring 6.37.0
+    phase: spring
+    description: Hibernate 5 → 6.0 … 7.1 (chains MigrateToHibernate70 … 60; org.hibernate → org.hibernate.orm, Session.save/delete/get/load renames)
+    docs: https://docs.openrewrite.org/recipes/hibernate/migratetohibernate71
+    covers: []
+    gate: null
+    advisor: false
+    sets: [library.hibernate]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/hibernate-7.md
+
+  - id: org.openrewrite.java.spring.boot3.MigrateThymeleafDependencies
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: thymeleaf-spring5 / thymeleaf-extras-springsecurity5 → spring6 / springsecurity6 (package org.thymeleaf.spring5 → spring6); spring4 artifacts are not covered
+    docs: https://docs.openrewrite.org/recipes/java/spring/boot3/migratethymeleafdependencies
+    covers: []
+    gate: null
+    advisor: false
+    sets: [library.thymeleaf]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/era-libraries.md
 
   # ------------------------------------------------------------------ library advisories (knowledge/libraries/advisories.yml)
   # Not advisor-eligible: they are added by sbmig.advisory (policy recipe) only when not already covered by
@@ -300,6 +453,40 @@ recipes:
     notes: knowledge/notes/era-libraries.md
     advisories: [commons-collections3]
 
+  # round 10: the Framework 6.0 / 7.0 chains already run these (catalog covers of UpgradeSpringFramework_7_0 and the
+  # Boot umbrella), so the Spring-case advisories httpclient4 / jackson1 are policy recipe (Handover accurate)
+  - id: org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-apache
+    provided_by: org.openrewrite.recipe:rewrite-spring
+    phase: spring
+    description: Apache HttpClient 4.x → 5.x (dependencies, class mapping org.apache.http → org.apache.hc.client5 / hc.core5, deprecated methods, TimeUnit timeouts)
+    docs: https://docs.openrewrite.org/recipes/apache/httpclient5/upgradeapachehttpclient_5
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-framework-7.md
+    advisories: [httpclient4]
+
+  - id: org.openrewrite.java.jackson.CodehausToFasterXML
+    origin: openrewrite
+    artifact: org.openrewrite.recipe:rewrite-jackson
+    provided_by: org.openrewrite.recipe:rewrite-spring   # rewrite-jackson 1.28.4 is a runtime dependency of rewrite-spring 6.37.0
+    phase: spring
+    description: Jackson 1 (org.codehaus.jackson) → Jackson 2 (com.fasterxml.jackson) for the mapped types / packages and dependencies
+    docs: https://docs.openrewrite.org/recipes/java/jackson/codehaustofasterxml
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/era-libraries.md
+    advisories: [jackson1]
+
   # ------------------------------------------------------------------ project recipes (knowledge/recipes/base)
   - id: com.company.migrate.SpringBoot41Version
     origin: project
@@ -336,16 +523,62 @@ recipes:
     artifact: null
     file: knowledge/recipes/base/spring-boot-41-version.yml
     phase: spring
-    description: raw servlet/Tomcat projects — javax → jakarta plus servlet-api dependency swap
+    description: raw servlet/Tomcat projects — javax → jakarta, Servlet 6 removals, servlet-api dependency swap
     docs: null
     covers:
       - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
     gate: null
     advisor: false
     sets: []          # planned directly for case servlet_tomcat (sbmig/plan/planner.py SERVLET_RECIPE)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/servlet-to-boot.md
+
+  - id: com.company.migrate.Boot4TypeRelocations
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/spring-7-leftovers.yml
+    phase: spring
+    description: Boot 4 type moves the 4.0 umbrella misses (web.servlet.error → webmvc.error, web.server.ErrorPage* → web.error, web.servlet.server → web.server.servlet, MultipartConfigFactory / Ordered*Filter → boot.servlet, ServerProperties, HttpMessageConverters, ServletComponentScan)
+    docs: null
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_boot_4]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/boot3-to-4.md
+
+  - id: com.company.migrate.Spring7RemovedApis
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/spring-7-leftovers.yml
+    phase: spring
+    description: Spring 7 removals the Framework chain leaves — PathMatchConfigurer suffix / trailing-slash options and ContentNegotiationConfigurer path-extension options deleted, HttpHeaders containsKey / keySet / entrySet → containsHeader / headerNames / headerSet
+    docs: null
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_boot_4, spring_framework_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-framework-7.md
+
+  - id: com.company.migrate.Jackson3SpringConverters
+    origin: project
+    artifact: null
+    file: knowledge/recipes/base/spring-7-leftovers.yml
+    phase: spring
+    description: Spring's Jackson 2 converters / views → Jackson 3 twins (MappingJackson2HttpMessageConverter → JacksonJsonHttpMessageConverter, MappingJackson2JsonView → JacksonJsonView, XML variants)
+    docs: null
+    covers: []
+    gate: null
+    advisor: false
+    sets: [spring_boot_4, spring_framework_7]
+    rules: []
+    verified: "2026-10"
+    notes: knowledge/notes/spring-framework-7.md
 
   - id: com.company.migrate.HystrixToResilience4j
     origin: project
@@ -528,6 +761,32 @@ recipes:
     phase: spring
     description: building block — drop explicit versions that a BOM / parent already manages
     docs: https://docs.openrewrite.org/recipes/maven/removeredundantdependencyversions
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.ChangeMethodName
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — rename a method (invocations matching a method pattern, optionally overrides)
+    docs: https://docs.openrewrite.org/recipes/java/changemethodname
+    covers: []
+    gate: null
+    advisor: false
+    sets: []
+    rules: []
+    verified: "2026-10"
+
+  - id: org.openrewrite.java.RemoveMethodInvocations
+    origin: openrewrite
+    artifact: null                 # core recipe (rewrite-java), bundled with rewrite-maven-plugin
+    phase: spring
+    description: building block — delete invocations of a method (statements and links of a fluent chain)
+    docs: https://docs.openrewrite.org/recipes/java/removemethodinvocations
     covers: []
     gate: null
     advisor: false

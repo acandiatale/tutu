@@ -325,7 +325,11 @@ def test_attempt_diff_from_git_limited_to_its_files(cfg, ws):
     assert not attempts[0].diff_truncated and errors[0].status == "resolved"
 
 
-def test_attempt_diff_is_capped(cfg, ws):
+def test_attempt_diff_is_passed_in_full_and_capped_after_classification(cfg, ws):
+    """Round 10: the tracker no longer caps (a cap before the classification cut later files' code edits off);
+    prepare_error_cases classifies the full diff, then applies kb.error_diff_chars (0 / negative = no cap)."""
+    from sbmig.kb.error_cases import prepare_error_cases
+
     cfg = cfg.model_copy(deep=True)
     cfg.kb.error_diff_chars = 60
     t = ErrorTracker(ws, cfg)
@@ -335,8 +339,15 @@ def test_attempt_diff_is_capped(cfg, ws):
     ws.write(FOO, "class Foo {\n" + "  int x;\n" * 50 + "}\n")
     a = attempt("spring-1-1", [e], base_commit=base, commit=ws.commit("big"))
     t.note_attempt(a)
-    _, attempts = t.finalize([], run_id="r1")
-    assert attempts[0].diff_truncated and len(attempts[0].diff) <= 60
+    errors, attempts = t.finalize([], run_id="r1")
+    assert not attempts[0].diff_truncated and len(attempts[0].diff) > 300 and "int x;" in attempts[0].diff
+    _, prepared = prepare_error_cases(errors, attempts, None, ws, cfg)
+    assert prepared[0].diff_truncated and len(prepared[0].diff) <= 60 + 20
+    assert prepared[0].change.lines_added >= 50                    # classified on the whole diff
+    for cap in (0, -1):
+        cfg.kb.error_diff_chars = cap
+        _, full = prepare_error_cases(errors, attempts, None, ws, cfg)
+        assert not full[0].diff_truncated and full[0].diff and "int x;" in full[0].diff
 
 
 def test_repeated_attempt_ids_get_distinct_records(cfg, ws):
@@ -468,3 +479,109 @@ def test_resolution_chain_of_one_and_reset_on_reopen(cfg, ws):
     foo = errors[0]
     assert foo.resolved_by == "r1:verify-1-1" and foo.resolution_attempts == ["r1:verify-1-1"]
     assert not any(n.startswith("resolved by ") for n in foo.notes)
+
+
+# --------------------------------------------------------------------------- round 10 (2026-10-26)
+def test_introduced_by_the_attempt_that_changed_its_file(cfg, ws):
+    t = ErrorTracker(ws, cfg)
+    t.observe(Phase.SPRING, "spring-1", bad(err(FOO)), [])
+    a = attempt("spring-1-1", [err(FOO)], changes=[FileChange(path=BAR, op="modify")], outcome="no_change")
+    t.note_attempt(a)
+    t.observe(Phase.SPRING, "spring-2", bad(err(FOO), err(BAR, msg="';' expected", sig="semi")), [a])
+    errors, _ = t.finalize([], run_id="r1")
+    st = {e.file: e for e in errors}
+    assert st[BAR].introduced_by == "r1:spring-1-1" and st[FOO].introduced_by == ""
+
+
+def test_introduced_by_the_plan_steps_since_the_previous_build(cfg, ws):
+    t = ErrorTracker(ws, cfg)
+    t.note_step("jdk21.rewrite", Phase.JDK21)
+    t.observe(Phase.JDK21, "jdk21-1", bad(err(FOO)), [])
+    t.note_step("spring.rewrite", Phase.SPRING)
+    t.observe(Phase.SPRING, "spring-1", bad(err(FOO), failed=None), [], void=True)    # a void build keeps them
+    t.note_step("restructure.apply", Phase.RESTRUCTURE)
+    t.observe(Phase.RESTRUCTURE, "restructure-1", bad(err(FOO), err(BAR, msg="x", sig="x")), [])
+    errors, _ = t.finalize([], run_id="r1")
+    st = {e.file: e for e in errors}
+    assert st[FOO].introduced_by == "step:jdk21.rewrite"
+    assert st[BAR].introduced_by == "step:spring.rewrite,step:restructure.apply"
+
+
+def test_targeted_builds_never_merge_two_services_errors(cfg, ws):
+    """Round 10 (C8): svc-b's `src/main/java/X.java` matched svc-a's OPEN record of the same relative path — two
+    services' errors became one record."""
+    t = ErrorTracker(ws, cfg)
+    a_err = err("svc-a/src/main/java/X.java", module="svc-a")
+    b_err = err("svc-b/src/main/java/X.java", module="svc-b")
+    t.observe(Phase.SPRING, "spring-1", bad(a_err, failed="svc-a"), [], target="svc-a")
+    t.observe(Phase.SPRING, "spring-1", bad(b_err, failed="svc-b"), [], target="svc-b/pom.xml")
+    t.observe(Phase.SPRING, "spring-2", ok(), [], target="svc-a")
+    errors, _ = t.finalize([], run_id="r1")
+    st = {e.module: e for e in errors}
+    assert len(errors) == 2 and st["svc-a"].status == "resolved_indirectly" and st["svc-b"].status == "unresolved"
+    assert st["svc-b"].first_seen == "spring-1@svc-b/pom.xml" and st["svc-b"].builds_present == 1
+
+
+def test_a_whole_project_build_prefers_the_exact_file(cfg, ws):
+    t = ErrorTracker(ws, cfg)
+    a_err = err("svc-a/src/main/java/X.java", module="svc-a", line=3)
+    b_err = err("svc-b/src/main/java/X.java", module="svc-b", line=30)
+    t.observe(Phase.SPRING, "spring-1", bad(a_err, b_err, failed=None), [])
+    # the next build: line numbers moved so that "nearest line" alone would swap them
+    t.observe(Phase.SPRING, "spring-2", bad(a_err.model_copy(update={"line": 29}),
+                                            b_err.model_copy(update={"line": 4}), failed=None), [])
+    errors, _ = t.finalize([], run_id="r1")
+    st = {e.module: e for e in errors}
+    assert st["svc-a"].file.startswith("svc-a/") and st["svc-a"].line == 29 and st["svc-b"].line == 4
+    # a cluster error that is not the last build's exact copy still maps to its own file's record only
+    t2 = ErrorTracker(ws, cfg)
+    t2.observe(Phase.SPRING, "spring-1", bad(a_err, b_err, failed=None), [])
+    keys = t2._keys_for(b_err.model_copy(update={"line": 99}))
+    assert [t2._recs[k].error.file for k in keys] == ["svc-b/src/main/java/X.java"]
+
+
+def test_a_targeted_build_still_follows_the_restructure_move(cfg, ws):
+    t = ErrorTracker(ws, cfg)
+    t.observe(Phase.SPRING, "spring-1", bad(err("src/main/java/a/B.java")), [])
+    t.note_step("restructure.apply", Phase.RESTRUCTURE)
+    t.observe(Phase.RESTRUCTURE, "restructure-1", bad(err("shop-back/src/main/java/a/B.java", module="shop-back"),
+                                                      failed="shop-back"), [], target="shop-back")
+    errors, _ = t.finalize([], run_id="r1")
+    assert len(errors) == 1 and errors[0].builds_present == 2 and errors[0].file.startswith("shop-back/")
+
+
+def test_case_replace_attempt_takes_its_resolver_from_the_handler_notes(cfg, ws):
+    t = ErrorTracker(ws, cfg)
+    e = err(FOO)
+    t.observe(Phase.SPRING, "spring-1", bad(e), [])
+    a = attempt("spring-1-1", [e], kind=DecisionKind.HANDLER)
+    a.decision.handler_id = "case-replace"
+    a.notes = ["case abc1234567 (x): replaced clientIp→remoteClientIp on 1 line(s) of Foo.java",
+               "resolver: case-replace:abc1234567:0a1b2c3d"]
+    t.note_attempt(a)
+    t.observe(Phase.SPRING, "spring-2", ok(), [a])
+    errors, attempts = t.finalize([], run_id="r1")
+    assert attempts[0].resolver_id == "case-replace:abc1234567:0a1b2c3d"
+    assert "resolver:" not in attempts[0].description and "replaced clientIp" in attempts[0].description
+    assert errors[0].resolver_id == "case-replace:abc1234567:0a1b2c3d" and errors[0].fix_method == "handler"
+    other = attempt("spring-1-2", [e], kind=DecisionKind.HANDLER)       # another handler: notes are not trusted
+    other.notes = ["resolver: case-replace:abc1234567:0a1b2c3d"]
+    from sbmig.loop.error_tracker import _resolver
+
+    assert _resolver(other) == "h1"
+
+
+def test_partial_and_inconclusive_attempts_explain_themselves(cfg, ws):
+    """Round 10 outcomes: an unresolved error's last attempt was `partial` / `inconclusive` → the loop's own note is
+    the failure text and the error itself is the problem (not an empty list)."""
+    for outcome, note in (("partial", "partial: 1 of 2 targeted error(s) gone, 1 remain"),
+                          ("inconclusive", "inconclusive: the build timed out")):
+        t = ErrorTracker(ws, cfg)
+        t.observe(Phase.SPRING, "spring-1", bad(err(FOO)), [])
+        a = attempt("spring-1-1", [err(FOO)], outcome=outcome, notes=[note])
+        t.note_attempt(a)
+        t.observe(Phase.SPRING, "spring-2", bad(err(FOO)), [a])
+        errors, attempts = t.finalize([], run_id="r1")
+        assert attempts[0].failure == note
+        assert errors[0].status == "unresolved" and errors[0].problem_errors
+        assert note in errors[0].failure_reason

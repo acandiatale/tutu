@@ -6,7 +6,10 @@ Handler ids (contract with workstream E):
   mysql-connector-relocation, compiler-legacy-config (round 9: fork/executable/bootclasspath compiler config),
   jstl-to-jakarta (9c), resources-binary-filtering (binary files under a filtered resource dir → the resources
   plugin's nonFilteredFileExtensions), strip-pom-repositories, jakarta-namespace-sweep (E13: javax.* EE references the
-  recipes left behind → jakarta.*), spring-data-crud-repository (E14: ListCrudRepository for paging-only repositories)
+  recipes left behind → jakarta.*), spring-data-crud-repository (E14: ListCrudRepository for paging-only repositories),
+  round 10: jdk-base64-shim (sun.misc / xerces Base64 → generated sbmig.compat shims, before the first JDK 21 build),
+  remove-tools-jar (com.sun:tools / jdk.tools:jdk.tools), boot4-type-relocation-sweep (Boot 4 type moves the umbrella
+  misses, after the spring recipes of a Boot project)
 """
 from __future__ import annotations
 
@@ -34,7 +37,9 @@ HANDLER_IDS = (
     "remove-classic-loader-implementation", "mysql-connector-relocation", "compiler-legacy-config",
     "jstl-to-jakarta", "resources-binary-filtering", "strip-pom-repositories", "jakarta-namespace-sweep",
     "spring-data-crud-repository", "dependency-relocation", "jakarta-library-floor",
+    "jdk-base64-shim", "remove-tools-jar", "boot4-type-relocation-sweep",
 )
+TOOLS_JAR_KEYS = ("com.sun:tools", "jdk.tools:jdk.tools")
 
 # the handler's own table (read directly: importing sbmig.triage here would pull the whole triage package)
 _JAKARTA_TABLE = Path(__file__).resolve().parent.parent / "triage" / "handlers" / "jakarta_packages.yml"
@@ -210,6 +215,23 @@ def pre_handler_reasons(profile: ProjectProfile, cfg: Config) -> list[tuple[str,
         # 2026-10-23: JSP-only (or Java without EE imports) projects — the recipes never touch JSPs, the sweep does
         out.append(("jakarta-namespace-sweep", f"{jsp_javax} JSP / tag file(s) name javax EE types (page imports, "
                                                "scriptlets, useBean): rename them after the spring rewrite"))
+    # round 10 ----------------------------------------------------------------------------------------------------
+    jdk = next((lib for lib in profile.libraries if lib.name == "jdk-removed-apis"), None)
+    if jdk is not None:
+        b64 = sorted({ev.split(":", 1)[1] for ev in jdk.evidence if ev.startswith("import:sun.misc.BASE64")})
+        out.append(("jdk-base64-shim", "JDK-internal imports (" + (", ".join(b64) if b64 else "sun.misc / com.sun …")
+                    + "): sun.misc.BASE64Encoder/Decoder and the xerces Base64 get generated sbmig.compat shims "
+                      "before the first JDK 21 build"))
+    tools = sorted({d.key for p in profile.poms for d in [*p.dependencies, *p.dependency_management]
+                    if d.key in TOOLS_JAR_KEYS})
+    if tools:
+        out.append(("remove-tools-jar", f"{', '.join(tools)} declared: there is no lib/tools.jar since JDK 9"))
+    boot = profile.spring_boot_version or next((s.spring_boot_version for s in profile.services
+                                                 if s.spring_boot_version), None)
+    if boot or profile.boot_modules:
+        out.append(("boot4-type-relocation-sweep",
+                    f"Spring Boot {boot or '(modules)'} as-is: Boot 4 type moves the 4.0 umbrella "
+                    "misses (error / servlet / converter types) are swept after the spring recipes"))
     if any(lib.name.startswith("spring-data") or lib.name == "jpa" for lib in profile.libraries):
         out.append(("spring-data-crud-repository",
                     "Spring Data repositories present: PagingAndSortingRepository lost its CRUD methods in Spring Data 3"))

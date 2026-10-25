@@ -125,8 +125,18 @@
 
   let maxUploadMb = 0;   // 0 = 한도 없음 (서버의 --max-upload-mb / SBMIG_MAX_UPLOAD_MB)
 
+  // 접근 토큰 (round 10): 서버가 SBMIG_WEB_TOKEN으로 떠 있으면 /?token=<토큰>으로 한 번 열 때 HttpOnly 쿠키가
+  // 설정되고, 이후 fetch / EventSource는 같은 출처라 쿠키가 자동으로 붙는다. 401/403이면 안내만 보여 준다.
+  function authProblem(r, d) {
+    if (r.status !== 401 && r.status !== 403) return false;
+    $('envhint').textContent = (r.status === 401 ? '접근 토큰이 필요합니다: 주소 뒤에 ?token=<토큰>을 붙여 한 번 여세요 (서버의 SBMIG_WEB_TOKEN). '
+                                                 : '이 서버는 로컬(127.0.0.1)에서만 열립니다. ') + ((d && d.error) || '');
+    return true;
+  }
+
   async function loadConfigs() {
     const r = await fetch('/api/configs'); const d = await r.json();
+    if (authProblem(r, d)) return;
     maxUploadMb = Number(d.max_upload_mb) || 0;
     const box = $('cfgs'); box.innerHTML = '';
     for (const c of d.configs) {
@@ -139,6 +149,7 @@
 
   async function loadRuns() {
     const r = await fetch('/api/runs'); const d = await r.json();
+    if (authProblem(r, d)) return;
     const ul = $('runs'); ul.innerHTML = '';
     for (const run of d.runs) {
       const li = document.createElement('li');
@@ -304,6 +315,7 @@
     try {
       const r = await fetch('/api/runs?' + q.toString(), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: f });
       const d = await r.json();
+      if (authProblem(r, d)) { alert('시작 실패: ' + (d.error || r.status)); return; }
       if (!r.ok) { alert('시작 실패: ' + (d.error || r.status)); return; }
       attach(d.run_id);
     } finally { $('start').disabled = false; }

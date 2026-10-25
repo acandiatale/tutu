@@ -21,7 +21,24 @@ from sbmig.core.models import LibraryUsage, PomInfo
 from .pom_parser import WorkspaceView, _child, _children, _text, interpolate, is_skipped_path, pom_dir
 
 CODEGEN_PLUGINS = ("protobuf-maven-plugin", "jaxb2-maven-plugin", "openapi-generator-maven-plugin",
-                   "maven-jaxb2-plugin", "querydsl-maven-plugin")
+                   "maven-jaxb2-plugin", "querydsl-maven-plugin",
+                   # round 10: WSDL → Java generators (SOAP clients of 2013–2020 Korean enterprise code)
+                   "cxf-codegen-plugin", "jaxws-maven-plugin")
+# plugin-specific advice, keyed by "groupId:artifactId" (or artifactId); versions verified on Maven Central 2026-10-26
+CODEGEN_HINTS = {
+    "org.apache.cxf:cxf-codegen-plugin": (
+        "CXF 3.x generates javax.xml.ws / javax.jws code; 4.x generates jakarta.* — keep cxf-codegen-plugin on the same "
+        "4.x line as the org.apache.cxf runtime (handler jakarta-library-floor raises both to 4.2.4, "
+        "knowledge/libraries/jakarta_libraries.yml)"),
+    "org.codehaus.mojo:jaxws-maven-plugin": (
+        "org.codehaus.mojo:jaxws-maven-plugin (last 2.6) runs JAX-WS 2.x wsimport and generates javax.xml.ws code that "
+        "no longer compiles after the jakarta migration — move to com.sun.xml.ws:jaxws-maven-plugin 4.0.5 (jakarta "
+        "wsimport; wsdlDirectory / wsdlFiles / packageName / sourceDestDir keep their names) plus the "
+        "com.sun.xml.ws:jaxws-rt runtime, or regenerate with cxf-codegen-plugin 4.x"),
+    "com.sun.xml.ws:jaxws-maven-plugin": (
+        "com.sun.xml.ws:jaxws-maven-plugin below 3.0 generates javax.xml.ws code; 4.0.x (latest 4.0.5) generates "
+        "jakarta.xml.ws code"),
+}
 LANGUAGES = (("kotlin", "*.kt", "Kotlin"), ("groovy", "*.groovy", "Groovy"), ("scala", "*.scala", "Scala"))
 LANGUAGE_PLUGINS = {"kotlin": ("kotlin-maven-plugin",), "groovy": ("gmavenplus-plugin", "gmaven-plugin"),
                     "scala": ("scala-maven-plugin", "maven-scala-plugin")}
@@ -176,10 +193,13 @@ def language_findings(ws: WorkspaceView, poms: list[PomInfo]) -> tuple[list[str]
         if not hits:
             continue
         ver = next((pl.version for p in poms for pl in p.plugins if pl.artifact_id == aid and pl.version), None)
+        groups = sorted({pl.group_id or "" for p in poms for pl in p.plugins if pl.artifact_id == aid})
+        hint = next((CODEGEN_HINTS[f"{g}:{aid}"] for g in groups if f"{g}:{aid}" in CODEGEN_HINTS), None)
         warnings.append(f"source generator plugin {aid}{':' + ver if ver else ''} in {', '.join(hits)}: generated "
                         "sources are not rewritten (the generator itself must emit jakarta/Java 21 compatible code; "
-                        "check the plugin version and its jakarta options)")
-        libs.append(LibraryUsage(name=f"codegen:{aid}", version=ver, evidence=[f"pom:{h}" for h in hits]))
+                        "check the plugin version and its jakarta options)" + (f" — {hint}" if hint else ""))
+        libs.append(LibraryUsage(name=f"codegen:{aid}", version=ver, evidence=[f"pom:{h}" for h in hits]
+                                 + [f"plugin:{g}:{aid}" for g in groups if g]))
     return warnings, libs
 
 
@@ -269,6 +289,6 @@ def encoding_findings(ws: WorkspaceView, poms: list[PomInfo],
     return [w], LibraryUsage(name="legacy-encoding", evidence=encs)
 
 
-__all__ = ["CODEGEN_PLUGINS", "SystemDep", "declared_source_encoding", "detect_encoding", "encoding_findings",
+__all__ = ["CODEGEN_HINTS", "CODEGEN_PLUGINS", "SystemDep", "declared_source_encoding", "detect_encoding", "encoding_findings",
            "java_level_findings", "language_findings", "legacy_java_level", "normalize_java_version",
            "resolve_system_path", "system_dep_findings", "system_dependencies"]

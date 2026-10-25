@@ -225,3 +225,19 @@ def _cluster():
     from .test_catalog_store import _cluster as make
 
     return make()
+
+
+def test_case_edits_are_audited_and_shown(kb, monkeypatch):
+    import sbmig.kb.catalog as catalog_mod
+
+    monkeypatch.setattr(catalog_mod, "_who", lambda: "operator7")
+    _seed(kb)
+    assert _run(kb.root, "cases", "reject", CID, "--reason", "wrong owner").exit_code == 0
+    assert _run(kb.root, "cases", "unpin", CID).exit_code == 0
+    lines = [json.loads(x) for x in (kb.root / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    human = [x for x in lines if x["event"] == "human"]
+    assert [(x["who"], x["command"], x["after"].get("status")) for x in human] == [
+        ("operator7", "sbmig kb cases reject", "rejected"), ("operator7", "sbmig kb cases unpin", None)]
+    assert human[0]["before"] == {} and human[1]["before"]["status"] == "rejected"
+    out = _run(kb.root, "cases", "show", CID, "--no-diff").output
+    assert "history (kb/audit.jsonl" in out and "operator7" in out and "sbmig kb cases reject" in out

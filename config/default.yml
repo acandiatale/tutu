@@ -74,15 +74,30 @@ openrewrite:
       - org.openrewrite.java.migrate.UpgradeToJava21
     jakarta:
       - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10   # round 10: Servlet 6 removals (encodeUrl → encodeURL, getValue → getAttribute …)
     spring_boot_4:
       # no UpgradeSpringBoot_4_1 umbrella exists yet (2026-10): 4.0 umbrella + 4.1 properties + our version bump recipe
       - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
       - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
       - com.company.migrate.SpringBoot41Version
       - com.company.migrate.Boot4JacksonTwins       # @JsonComponent → @JacksonComponent & co (pure renames; bodies are migrated by the umbrella)
+      - com.company.migrate.Boot4TypeRelocations    # round 10: error / servlet / converter types the 4.0 umbrella does not move
+      - com.company.migrate.Spring7RemovedApis      # round 10: removed PathMatchConfigurer / ContentNegotiationConfigurer options, HttpHeaders Map view
+      - com.company.migrate.Jackson3SpringConverters  # round 10: MappingJackson2HttpMessageConverter / JsonView → Jackson 3 twins
     spring_framework_7:
       - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
+      - com.company.migrate.Spring7RemovedApis
+      - com.company.migrate.Jackson3SpringConverters
     spring_security_7:
+      # round 10: the whole chain — UpgradeSpringSecurity_7_0 alone only bumps versions and drops `throws Exception`;
+      # 6_0 chains 5_8 → 5_7 (WebSecurityConfigurerAdapter → SecurityFilterChain, lambda DSL, antMatchers →
+      # requestMatchers); every step is a Singleton, so the Boot umbrella running them too costs nothing
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_2
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_3
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4
+      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5
       - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
     junit5:
       - org.openrewrite.java.testing.junit5.JUnit4to5Migration
@@ -112,6 +127,8 @@ build:
   werror_policy: remove
   pom_repositories: keep        # keep | remove — <repositories> declared in the poms (RUNBOOK §0.1; remove needs the mirror)
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
+  require_java_major: 21        # preflight: `mvn -v` must report this Java major, else abort (jdk-not-21); 0 = no check
+  retry_negative_cache: true    # "…was cached in the local repository…" → the same build once more with -U
 
 loop:
   phases:
@@ -188,13 +205,23 @@ kb:
   # code it applied, failures included: kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json, <run dir>/error_cases.*
   error_cases: true
   error_hints: true                # past fixes AND failures of the same error → hints in the fix prompt
-  error_diff_chars: 12000
+  error_diff_chars: 12000          # cap of a stored attempt diff, applied after classification (0 = no cap)
   error_excerpt_chars: 1500
   # case catalog: one reusable case per error signature (kb/catalog/<kind>/<class>/<symbol>--<id>.yml, views kb/views/cases.md|csv);
   # a hit applies the case's action; candidate → active after kb.auto_promote_after_projects successes, no failure
   catalog: true
   case_replace: true               # learned text replaces (handler case-replace)
   case_replace_scope: error-lines  # error-lines (the reported lines + imports) | file
+  redact_file: knowledge/kb/redact.yml   # secret masking rules added to the built-ins (company patterns go here)
+  lock_timeout_seconds: 300        # cross-process kb/.lock wait (web + fleet + kb commands share one KB)
+
+fleet:                             # `sbmig fleet`: ~500 projects one after another
+  preflight: true                  # Java / Maven / settings / LLM / disk checked once before the first project
+  infra_failure_limit: 3           # N projects in a row ended for an infrastructure reason → wait and re-check
+  infra_retry_minutes: 15          # 0 = stop the fleet at once (state kept; `sbmig fleet` again resumes)
+  infra_max_waits: 4
+  cleanup: build-output            # none | build-output (target/ of the run copy) | workspace (also the project copy)
+  min_free_gb: 5                   # free space needed on the output drive before each project (0 = no check)
 
 plan:
   advisor: none

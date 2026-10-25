@@ -24,7 +24,7 @@ from typing import Any, ClassVar, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.models import ErrorCluster, ErrorKind, FileChange, ProjectProfile
-from sbmig.core.workspace import Workspace, detect_encoding
+from sbmig.core.workspace import Workspace, detect_encoding, is_build_output_path
 
 from .base import Handler, all_poms, cluster_text, poms_for_cluster, root_pom, version_lt
 from .pom_handlers import _MISSING_RE, PomHandler, _declared, _resolve, known_versions, version_for
@@ -677,7 +677,7 @@ def _project_poms(root: Path) -> list[str]:
     out: list[str] = []
     for p in root.rglob("pom.xml"):
         parts = p.relative_to(root).parts
-        if ".git" in parts or "target" in parts or "src" in parts:
+        if ".git" in parts or "src" in parts or is_build_output_path(p.relative_to(root), root):
             continue
         out.append(p.relative_to(root).as_posix())
     return sorted(out)
@@ -708,7 +708,7 @@ def _jar_candidates(root: Path, dep: dict[str, Any], cfg: Optional[Config]) -> l
             out.append(base / tpl / rel_old)
     if name and "${" not in name:
         hits = [p for p in root.rglob(name) if p.is_file() and ".git" not in p.relative_to(root).parts
-                and "target" not in p.relative_to(root).parts]
+                and not is_build_output_path(p.relative_to(root), root)]
         if len(hits) == 1:
             out.append(hits[0])
     return out
@@ -776,7 +776,74 @@ class SystemPathRelocate(EdgeHandler):
         return changed
 
 
+# ---------------------------------------------------------------------------
+# round 10: tools.jar (JDK ≤ 8) declared as a dependency
+# ---------------------------------------------------------------------------
+TOOLS_JAR_KEYS = ("com.sun:tools", "jdk.tools:jdk.tools")
+_DEP_BLOCK_RE = re.compile(r"[ \t]*<dependency>(?:(?!</dependency>).)*?</dependency>[ \t]*(?:\r?\n)?", re.S)
+
+
+def tools_jar_blocks(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, key) of every `<dependency>` element declaring com.sun:tools / jdk.tools:jdk.tools (dependencies,
+    dependencyManagement, profiles, plugin dependencies) — never an `<exclusion>`, comments skipped."""
+    masked = re.sub(r"<!--.*?-->", lambda m: " " * len(m.group(0)), text, flags=re.S)
+    out: list[tuple[int, int, str]] = []
+    for m in _DEP_BLOCK_RE.finditer(masked):
+        block = re.sub(r"<exclusions>.*?</exclusions>", "", m.group(0), flags=re.S)
+        g = re.search(r"<groupId>\s*([^<\s]+)\s*</groupId>", block)
+        a = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", block)
+        key = f"{g.group(1)}:{a.group(1)}" if g and a else ""
+        if key in TOOLS_JAR_KEYS:
+            out.append((m.start(), m.end(), key))
+    return out
+
+
+class RemoveToolsJar(EdgeHandler):
+    """`com.sun:tools` / `jdk.tools:jdk.tools` (system scope, `${java.home}/../lib/tools.jar`) — tools.jar is gone
+    since JDK 9 (its classes are the jdk.compiler / jdk.attach / jdk.javadoc modules of the running JDK), so on JDK 21
+    the pom is invalid ("'dependencies.dependency.systemPath' for com.sun:tools:jar refers to a non-existing file").
+    The dependency element is deleted wherever it is declared; code that uses non-exported javac internals
+    (com.sun.tools.javac.*) still needs --add-exports (reported by the build)."""
+    id = "remove-tools-jar"
+    description = "remove com.sun:tools / jdk.tools:jdk.tools dependencies (no lib/tools.jar since JDK 9)"
+    kinds = frozenset({ErrorKind.POM_INVALID, ErrorKind.DEPENDENCY_RESOLUTION, ErrorKind.COMPILE, ErrorKind.UNKNOWN})
+    triggers = (r"com\.sun:tools", r"jdk\.tools:jdk\.tools", r"lib[/\\]tools\.jar")
+
+    def applicable(self, cluster, profile, cfg) -> bool:
+        if profile is None or not profile.poms:
+            return True
+        return profile_declares_tools_jar(profile) or (cluster is not None and bool(
+            re.search(r"com\.sun:tools|jdk\.tools:jdk\.tools|tools\.jar", cluster_text(cluster))))
+
+    def edit(self, ws, cluster, profile, cfg) -> list[str]:
+        changed: list[str] = []
+        removed: list[str] = []
+        for rel in all_poms(ws):
+            text = ws.read(rel)
+            blocks = tools_jar_blocks(text)
+            if not blocks:
+                continue
+            new = text
+            for s, e, key in reversed(blocks):
+                new = new[:s] + new[e:]
+                removed.append(f"{key} in {rel}")
+            if new != text:
+                ws.write(rel, new)
+                changed.append(rel)
+        if changed:
+            self.flag("tools-jar-removed")
+            self.note(f"removed the tools.jar dependency ({', '.join(removed[:4])}{' …' if len(removed) > 4 else ''}): "
+                      "JDK 9+ ships those classes as modules (jdk.compiler, jdk.attach, jdk.javadoc)")
+        return changed
+
+
+def profile_declares_tools_jar(profile: Optional[ProjectProfile]) -> bool:
+    if profile is None:
+        return False
+    return any(d.key in TOOLS_JAR_KEYS for p in profile.poms for d in [*p.dependencies, *p.dependency_management])
+
+
 def edge_handlers(cfg: Optional[Config] = None) -> list[Handler]:
     """In precedence order (all before the generic pom handlers)."""
     return [SourceEncoding(), StripUtf8Bom(), CarryOverManagedVersion(), EnforcerRelax(), RemoveWerror(),
-            SystemPathRelocate()]
+            RemoveToolsJar(), SystemPathRelocate()]

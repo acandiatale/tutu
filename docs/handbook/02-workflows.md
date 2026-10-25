@@ -39,6 +39,7 @@ sbmig는 명령 하나(`sbmig run`)로 끝까지 가는 도구이지만, 운영�
 | `sbmig rewrite <디렉터리> -r <id>` | OpenRewrite 실행 | 예 | 예 | **`--dry-run`이 아니면 그 디렉터리를 직접 수정** |
 | `sbmig parse-log <로그>` | Maven 로그 → 구조화 오류 + 서명 | 아니요 | 아니요 | 아니요 |
 | `sbmig fleet run / resume / status` | 여러 프로젝트 순차 실행 | 예 | 예 | 사본만 |
+| `sbmig clean` | 끝난 실행의 작업 사본 / 업로드 / LLM 기록 정리(round 10) | 아니요 | 아니요 | `out/` 아래만 지움 |
 | `sbmig kb …` | 지식 베이스 조회 / 승격 / 거절 / 내보내기 | 예(그룹 옵션) | 아니요 | KB 파일 |
 | `sbmig recipes list / show / check / sets` | 레시피 카탈로그 | 예 | `check --jars`만 | 아니요 |
 | `sbmig advisories list / show / check` | 라이브러리 어드바이저리 | 예 | 아니요 | 아니요 |
@@ -102,7 +103,8 @@ sbmig run proj.zip -c config/artifacts.yml -c site-overrides.yml -c config/llm-a
 
 ### 1.6 확인 포인트
 
-- 콘솔 마지막: `<프로젝트> (<case>) — <결과>   run <run id>`, phase 표, `LLM: N call(s) …   flags: …`, blocked / unresolved 표, 그리고 `log: <run dir>/sbmig.log   (share this file + report.md when asking for help)`.
+- 콘솔 마지막: `<프로젝트> (<case>) - <결과>   run <run id>`, phase 표(`ok` / `FAIL`), `LLM: N call(s) …   flags: …`, blocked / unresolved 표, `log: <run dir>/sbmig.log   (share this file + report.md when asking for help)`, 그리고 **맨 마지막 줄** `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes|->`(round 10, `sbmig.log`에도 같은 줄). 문제를 알릴 때는 이 한 줄을 옮겨 적습니다(주의 코드 뜻은 [09](09-operations.md) 3.4).
+- 실행 첫머리의 사전 점검이 `mvn -v`의 Java가 21이 아니면(`build.require_java_major`) 빌드 없이 중단합니다: `run aborted: Maven runs on Java 17.0.9 (…), not Java 21: set build.java_home (or JAVA_HOME) to a JDK 21 home and rerun`, 종료 코드 3(round 10).
 - 종료 코드: PowerShell `$LASTEXITCODE`, bash `echo $?`.
 - 보고서 맨 위 표의 Result와 Flags, 바로 아래 Handover.
 - 보고서(`report.md`) 언어는 `report.language`로 정합니다(`en` 기본, `ko`면 제목·표 머리글·안내 문장이 한국어). 한국어 보고서에서는 Result가 `결과`, Handover가 `인수인계` 절로 보입니다. 플래그 이름·레시피 id·경로·오류 메시지는 영어 그대로이고, `report.json`은 언어와 상관없이 같습니다.
@@ -114,15 +116,19 @@ sbmig run proj.zip -c config/artifacts.yml -c site-overrides.yml -c config/llm-a
 - Maven은 `mvn.cmd`입니다. sbmig는 `build.mvn`(기본 `mvn`)을 `shutil.which`로 PATH, `MAVEN_HOME`, `M2_HOME`에서 찾습니다. PowerShell에서 `where.exe mvn`이 찾으면 그대로 됩니다. 못 찾으면 `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd`처럼 전체 경로를 설정하십시오.
 - 빌드가 `build.timeout_minutes`를 넘으면 sbmig가 `taskkill /T /F`로 `mvn.cmd` 아래 `java.exe`까지 프로세스 트리 전체를 종료합니다. 그냥 terminate하면 `java.exe`가 살아남아 `target/`과 소스 파일을 잠그기 때문입니다.
 - 셸 프로필이 없으면 변수는 저장소 루트의 `.env`에 넣습니다(`.env.example` 복사, git 제외). `JAVA21_HOME` 같은 경로는 `C:/Program Files/Java/jdk-21`처럼 슬래시로 써도 됩니다.
-- 콘솔 코드 페이지가 cp949여도 sbmig는 git / Maven 출력을 UTF-8로 직접 디코딩합니다. `UnicodeDecodeError: 'cp949' codec …` 뒤에 `could not write changes.patch`가 나오면 2026-10-21 이전 체크아웃이니 최신으로 받으십시오(`docs/RUNBOOK.md` §0).
+- 콘솔 코드 페이지가 cp949여도 sbmig는 git / Maven 출력을 UTF-8로 직접 디코딩합니다. `UnicodeDecodeError: 'cp949' codec …` 뒤에 `could not write changes.patch`가 나오면 2026-10-21 이전 체크아웃이니 최신으로 받으십시오(`docs/RUNBOOK.md` §0). round 10부터 콘솔 출력을 파일로 돌려도(`> run.txt`) cp949로 못 쓰는 문자는 `?`로 바뀔 뿐 `UnicodeEncodeError`로 죽지 않습니다.
+- `Activate.ps1`이 "running scripts is disabled"로 막히면 그 창에서만 `Set-ExecutionPolicy -Scope Process Bypass`를 먼저 실행합니다. PowerShell 5.1에서 로그를 볼 때는 `-Encoding UTF8`을 붙여야 `—`와 한글이 깨지지 않습니다.
+- 멈춘 것 같으면 그 콘솔에서 Ctrl+Break(실행은 계속, `out\threads-<시각>.txt`에 스레드 덤프)나 실행 디렉터리에 `dump-threads` 파일을 만듭니다(§11).
 
 ```powershell
 # PowerShell 예
 cd C:\work\migration-agent
+Set-ExecutionPolicy -Scope Process Bypass
 .\.venv\Scripts\Activate.ps1
 sbmig run C:\work\inbox\order-api.zip --config config\artifacts.yml --out out
 $LASTEXITCODE
-Get-Content out\<run id>\sbmig.log -Wait -Tail 30      # tail -f에 해당
+Get-Content out\<run id>\sbmig.log -Encoding UTF8 -Wait -Tail 30      # tail -f에 해당
+Select-String -Path out\<run id>\sbmig.log -Pattern "SBMIG-RESULT" -Encoding UTF8 | Select-Object -Last 1
 ```
 
 ### 1.8 자주 하는 실수
@@ -132,7 +138,7 @@ Get-Content out\<run id>\sbmig.log -Wait -Tail 30      # tail -f에 해당
 | `--config` 누락 | `config error … artifacts: Field required`, 종료 코드 2 | 회사 artifacts 설정을 `--config`로 넘기십시오. |
 | `--config` 경로 오타 | **오류 없이 무시됩니다.** `load_config`는 존재하지 않는 파일을 건너뜁니다. 그 파일이 유일한 artifacts 출처였다면 위의 오류가 나고, 아니면 설정이 조용히 빠진 채 실행됩니다. | journal `preflight`의 `artifacts.parent` 값과 보고서 Notes를 확인하십시오. |
 | 설정 순서를 거꾸로 | 회사 값이 기본값에 덮임 | 나중에 준 `--config`가 이깁니다. 덮어쓰기 파일을 마지막에 두십시오. |
-| JDK 8/11로 실행 | OpenRewrite / 빌드가 이상하게 실패 | `build.java_home`(또는 `--java-home`)을 JDK 21로 지정하십시오. as-is 프로젝트도 옛 JDK로 빌드하지 않습니다. |
+| JDK 8/11/17로 실행 | round 10부터 첫 빌드 전에 `run aborted: Maven runs on Java … not Java 21`(플래그 `jdk-not-21`, 종료 코드 3) | `build.java_home`(또는 `--java-home`)을 JDK 21로 지정하십시오. as-is 프로젝트도 옛 JDK로 빌드하지 않습니다. |
 | 같은 `--run-id` 재사용 | `FileExistsError` | run id를 비우면 자동 생성됩니다. |
 | `--log-file`을 `run` 뒤에 둠 | 알 수 없는 옵션 오류 | 최상위 옵션입니다: `sbmig --log-file x.log run …` |
 | Ctrl+C로 중단 | 보고서가 중단 표시 없이 남거나 아예 안 남을 수 있음 | 짧게 보고 싶으면 `--stop-after`를 쓰십시오. |
@@ -148,14 +154,17 @@ zip을 올리고 실행 과정을 브라우저로 실시간으로 봅니다. 그
 ### 2.2 띄우기
 
 ```bash
-sbmig serve --host 0.0.0.0 --port 8765 --out out/web
+sbmig serve --port 8765 --out out/web                                         # 이 PC에서만(토큰 불필요)
+SBMIG_WEB_TOKEN=<긴 임의 값> sbmig serve --host 0.0.0.0 --port 8765 --out out/web   # LAN 공유: 토큰 필수
 # 회사 uvicorn 호스팅(같은 앱):
-SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=/path/to/migration-agent uvicorn sbmig.web.app:app --host 0.0.0.0 --port 8765
+SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=/path/to/migration-agent SBMIG_WEB_TOKEN=<긴 임의 값> \
+  uvicorn sbmig.web.app:app --host 0.0.0.0 --port 8765 --timeout-graceful-shutdown 5
 ```
 
 | 옵션 / 변수 | 기본값 | 의미 |
 |---|---|---|
-| `--host` | `127.0.0.1` | 기본은 이 PC에서만 접속. LAN에 공유하려면 `0.0.0.0` |
+| `--host` | `127.0.0.1` | 기본은 이 PC에서만 접속. LAN에 공유하려면 `0.0.0.0` — round 10부터 **토큰 필수**(없으면 서버가 뜨지 않음, 종료 코드 2) |
+| `--token` / `SBMIG_WEB_TOKEN` | 없음 | 접근 토큰(round 10, `.env`에 두어도 됨). 있으면 모든 요청에 필요: 다른 PC의 브라우저는 처음 한 번 `http://<호스트>:8765/?token=<값>`으로 열고(7일 쿠키), API는 `Authorization: Bearer <값>`. 없으면 이 PC(루프백)만 받고 다른 PC는 403 — 순수 `uvicorn --host 0.0.0.0`이어도 같음 |
 | `--port` | `8765` | |
 | `--out` / `SBMIG_WEB_OUT` | `out/web` | 업로드(`<out>/_uploads/`)와 실행 디렉터리(`<out>/web-…/`) |
 | `--repo-root` / `SBMIG_WEB_REPO_ROOT` | sbmig 패키지 루트 | 화면에 나오는 설정 파일 목록(`<repo root>/config/*.yml`)과 KB 위치 |
@@ -260,7 +269,9 @@ SSE 이벤트 종류는 다음과 같습니다.
 | 회사 설정 파일을 서버의 `config/` 밖에 둠 | 목록에 안 보임 | 웹은 `<repo root>/config/*.yml`만 보여 줍니다. |
 | 중단을 눌렀는데 바로 안 멈춤 | 수 분 동안 계속 진행 | 노드 사이에서만 멈춥니다(§2.6). |
 | 여러 개를 동시에 올림 | 두 번째부터 `대기열` | 정상입니다. 한 번에 하나만 돕니다. |
-| 서버를 `127.0.0.1`로 띄우고 다른 PC에서 접속 | 연결 안 됨 | `--host 0.0.0.0` |
+| 서버를 `127.0.0.1`로 띄우고 다른 PC에서 접속 | 연결 안 됨 | `SBMIG_WEB_TOKEN`(또는 `--token`)을 주고 `--host 0.0.0.0`, 다른 PC는 `/?token=<값>`으로 처음 접속 |
+| 토큰 없이 `--host 0.0.0.0` | `refusing to serve on 0.0.0.0 without a token …`, 종료 코드 2 (순수 uvicorn이면 다른 PC에 403) | 위와 같음 |
+| `sbmig serve` 창에서 Ctrl+Break | 서버가 꺼짐 | 스레드 덤프는 실행 디렉터리의 `dump-threads` 파일이나 `/api/threads`로 |
 | "여기까지만 실행"에 intake / verify가 없다고 당황 | | 화면은 analyze ~ restructure만 제공합니다. 끝까지 = verify 포함입니다. |
 
 ---
@@ -341,6 +352,7 @@ extracted reply: '…'
 | `HTTP 401` / `403` | 토큰 문제 |
 | `HTTP 200` + `PROBLEM: cannot find the reply text` | 응답 모양이 특이함 → `LLM_RESPONSE_PATH` |
 | `--bare`는 되는데 일반 점검은 안 됨 | sbmig 클라이언트 쪽 차이(헤더, payload). 두 출력의 `sent body`를 비교하십시오. |
+| 마지막 줄 `LLM-PROBE ok …` / `LLM-PROBE FAIL <kind> provider=… model=… status=… <문제>` (round 10) | 옮겨 적을 한 줄 요약(종료 코드 0 / 1). `<kind>`: `config` / `transport`(`cause=<클래스>: <메시지>`) / `http` / `reply` / `rejected`(콘텐츠 필터, `finish_reason=length` = 프롬프트가 너무 큼) |
 | Postman은 되는데 둘 다 안 됨 | `--payload-extra '{}' --no-system --model <Postman 모델>`로 Postman과 같은 요청을 만들어 차이를 좁히십시오. |
 
 ### 3.5 자주 하는 실수
@@ -434,7 +446,7 @@ sbmig fleet resume out/fleet --retry-failed                                     
 sbmig fleet run projects.yml --config config/artifacts.yml --out out/fleet --dry-run   # 순서와 재개 판단만 출력
 ```
 
-`fleet run` 옵션: `--order manifest|simple-first`, `--max-projects N`, `--retry-failed/--no-retry-failed`, `--stop-on-abort/--no-stop-on-abort`, `--max-llm-calls-total N`, `--llm-provider`, `--dry-run`, `--config`(반복), `--out`. `fleet resume`은 `--config`(생략하면 지난번 것), `--max-projects`, `--retry-failed`, `--stop-on-abort`를 받습니다. `fleet status`는 `--json`을 받습니다.
+`fleet run` 옵션: `--order manifest|simple-first`, `--max-projects N`, `--retry-failed/--no-retry-failed`, `--stop-on-abort/--no-stop-on-abort`, `--max-llm-calls-total N`, `--llm-provider`, `--dry-run`, `--config`(반복), `--out`. `fleet resume`은 `--config`(생략하면 지난번 것), `--max-projects`, `--retry-failed`, `--stop-on-abort`를 받습니다. `fleet status`는 `--json`과 round 10의 `--attention`(사람이 볼 프로젝트만 주의 코드별로)을 받습니다. 끝난 실행의 작업 사본은 `sbmig clean --fleet out/fleet --older-than 7`로 정리합니다([09](09-operations.md) 7절).
 
 ### 5.3 manifest
 
@@ -460,13 +472,14 @@ projects:
 
 ### 5.4 내부에서 벌어지는 일
 
-1. `<out>/fleet/state.json`이 있으면 이어서, 없으면 새 플릿 id(`fleet-YYYYMMDD-HHMMSS`)로 시작합니다. manifest, 설정 경로, 덮어쓰기는 `<out>/fleet/fleet-config.json`에 저장합니다(`resume`이 사용).
+1. `<out>/fleet/state.json`이 있으면 이어서, 없으면 새 플릿 id(`fleet-YYYYMMDD-HHMMSS`)로 시작합니다. manifest, 설정 경로, 덮어쓰기는 `<out>/fleet/fleet-config.json`에 저장합니다(`resume`이 사용). 프로젝트는 이름이 아니라 정규화한 **입력 경로**로 찾습니다(round 10). 이어서 사전 점검(round 10, `fleet.preflight`): 첫 프로젝트 전에 디스크 / Maven / Java / settings / 저장소 / LLM을 한 줄씩(`preflight: <점검> ok|FAIL|skip …`) 확인합니다. 설정 오류면 바로 멈추고, 일시적 장애면 기다렸다 다시 점검합니다.
 2. `fleet.order: simple-first`면 각 프로젝트를 가볍게 분석해 pure_java → servlet → spring_legacy → boot → msa 순으로 정렬합니다(결과는 state에 캐시).
 3. 프로젝트마다 재개 판단을 합니다. `success`는 다시 돌리지 않습니다. `incomplete` / `aborted`는 `--retry-failed`일 때만 다시 돌립니다. 지난번에 `running`으로 남은 것(플릿 프로세스가 죽음)은 다시 돌립니다. 입력이 없는 것은 `skipped`입니다(나중에 생기면 재개 때 실행).
 4. 실행 디렉터리는 `<out>/<fleet id>-<NNN>-<name>/`이고, 재시도는 `-r2`, `-r3` 접미사가 붙습니다. 프로젝트마다 LLM 예산은 `min(loop.max_llm_calls, 플릿 남은 예산)`입니다(`fleet.max_llm_calls_total`, 0 = 무제한).
 5. 종료 코드로 상태를 정합니다: 0 → `success`, 3 → `aborted`, 그 외 → `incomplete`. Gradle / Ant / 빌드 없음으로 intake에서 거부된 프로젝트는 `skipped`(사유는 행의 `error`)이고, `--retry-failed`로도 다시 돌지 않으며 `--stop-on-abort`도 이것으로는 플릿을 멈추지 않습니다.
 6. 프로젝트가 끝날 때마다 `state.json`을 원자적으로 다시 쓰고, `summary.md` / `summary.csv` / `summary.json`과 `learning.md`를 다시 만듭니다. 표의 `llm_cost` 열과 머리글의 `cost`가 프로젝트별·플릿 전체 API 비용입니다(`llm.pricing` 단가). `fleet.reindex_every`(기본 10)마다 KB 인덱스를 다시 만듭니다.
 7. Ctrl+C로 끊으면 진행 중이던 프로젝트는 `pending`(`interrupted`)으로 돌아가므로 재개하면 다시 돕니다.
+8. 인프라 차단기(round 10): 프로젝트가 인프라 이유(`infra:<kind>`)로 끝나면 `pending`(`error: infra:<kind>`)으로 되돌리고, 연속 `fleet.infra_failure_limit`(3)개면 `fleet.infra_retry_minutes`(15)분 기다린 뒤 다시 점검해 이어 가거나 `fleet stopped: infrastructure <kind> unavailable since <project> - fix it and run sbmig fleet again`으로 멈춥니다(종료 코드 3). 프로젝트마다 시작 전 디스크 여유(`fleet.min_free_gb`)를 보고, 끝나면 `fleet.cleanup`으로 `target/`(또는 작업 사본)을 지웁니다. 프로젝트마다 `SBMIG-RESULT …` 한 줄이 나옵니다.
 
 ### 5.5 산출물
 
@@ -476,12 +489,12 @@ projects:
 | `<out>/fleet/summary.md` / `.csv` / `.json` | 진행 표 + 합계 + "Libraries flagged across the fleet" |
 | `<out>/fleet/learning.md` | 이번 플릿에서 KB가 배운 것(§6.6) |
 | `<out>/fleet/fleet-config.json` | 재개용 manifest / 설정 |
-| `<out>/fleet/sbmig.log` | 플릿 전체 로그(모든 프로젝트) |
-| `<out>/<fleet id>-<NNN>-<name>/` | 프로젝트별 실행 디렉터리(보고서, journal, logs …) |
+| `<out>/fleet/sbmig.log` | 플릿 전체 INFO 로그(진행 줄, `preflight:`, 차단기 줄, 프로젝트마다 `SBMIG-RESULT`) |
+| `<out>/<fleet id>-<NNN>-<name>/` | 프로젝트별 실행 디렉터리(보고서, journal, logs, round 10부터 그 프로젝트의 DEBUG `sbmig.log`) |
 
-현재 코드에서 플릿의 프로젝트별 실행은 `Orchestrator`를 직접 부르므로 프로젝트 디렉터리에 `sbmig.log`가 따로 생기지 않습니다. 로그는 `<out>/fleet/sbmig.log` 하나에 모입니다(코드 기준: `sbmig/fleet/runner.py` `_default_run_project`, `sbmig/fleet/cli.py`). 프로젝트별 Maven 로그는 각 디렉터리의 `logs/`에 있습니다.
+round 10부터 플릿은 프로젝트마다 그 실행 디렉터리의 `sbmig.log`(DEBUG)를 붙였다 떼므로 단일 실행과 같은 자리에서 한 프로젝트의 로그를 봅니다(코드 기준: `sbmig/fleet/runner.py` `_attach_run_log`). `<out>/fleet/sbmig.log`는 INFO 요약입니다. 프로젝트별 Maven 로그는 각 디렉터리의 `logs/`에 있습니다. `summary.csv`는 UTF-8 BOM이고 `attention` / `input` 열이, `summary.md`에는 "Needs attention" 절이 있습니다.
 
-`fleet run` 종료 코드: 0 = 모든 프로젝트 성공, 2 = 일부 미완료 / skipped / 아직 안 돔, 3 = `--stop-on-abort`로 중단된 프로젝트에서 멈춤.
+`fleet run` 종료 코드: 0 = 모든 프로젝트 성공, 2 = 일부 미완료 / skipped / 아직 안 돔, 3 = `--stop-on-abort`로 중단된 프로젝트에서 멈춤 또는 인프라 차단기가 멈춤(같은 명령으로 재개).
 
 ### 5.6 확인 포인트
 
@@ -494,7 +507,8 @@ projects:
 
 | 실수 | 결과 | 바로잡기 |
 |---|---|---|
-| 같은 KB로 플릿 두 개를 동시에 돌림 | 파일 KB 경합, 학습 순서 깨짐 | 운영 모델은 순차입니다. 동시에 하나만 돌리십시오. |
+| 같은 KB로 플릿 두 개를 동시에 돌림 | 학습 순서 깨짐(round 10부터 `<kb.dir>/.lock` 덕분에 파일은 깨지지 않음) | 운영 모델은 순차입니다. 동시에 하나만 돌리십시오. |
+| `fleet stopped: infrastructure …`를 보고 `--out`을 바꿔 새로 시작 | 처음부터 다시 | 원인을 고친 뒤 **같은** 명령을 다시 실행하면 `pending` 프로젝트부터 이어서 돕니다. |
 | 미완료 프로젝트가 재개 때 안 돈다고 오해 | 그대로 `incomplete` | 기본값은 다시 돌리지 않습니다. `--retry-failed`를 쓰십시오. |
 | `--out`을 바꿔서 재개 | 처음부터 다시 | 재개는 같은 `--out`의 `fleet/state.json`을 읽습니다. |
 | 프로젝트별 `overrides`로 `kb.dir`을 바꿈 | 무시됨 | KB는 플릿 공용입니다. |
@@ -840,7 +854,7 @@ JDK 21, Maven, Maven Central 접속이 필요합니다. Python만 바꿨다면 �
    - LLM: `llm call provider=company … → POST …` 뒤 30초마다 `llm call still in flight: Ns elapsed (timeout 180s) — …`. `timeout + 30`초가 지나면 포기하고 재시도합니다.
    - Maven / OpenRewrite: 60초마다 `mvn still running: Ns elapsed (timeout Ns) — N output line(s) so far, log: <파일>`(앞의 이름은 실행 파일 이름이라 Windows에서는 `mvn.cmd still running …`). `build.timeout_minutes`(기본 30)를 넘으면 종료합니다.
 2. **루프 watchdog**: 60초 동안 이정표(milestone)가 없으면 30초마다 `[spring] fix loop quiet for 120s since '<milestone>' (loop running …) — still working or stuck? a thread dump follows after 300s (also: GET /api/threads, kill -USR1 <pid>)`가 찍힙니다. milestone이 지금 도는 코드를 알려 줍니다(`deciding <cluster>`, `fixer.propose …`, `LLM answered: applying`, `git commit`, `mvn package (build 3)` …).
-3. **아무 말도 없으면 스레드 덤프**: 웹 서버가 있으면 `http://127.0.0.1:8765/api/threads`(PowerShell `Invoke-WebRequest http://127.0.0.1:8765/api/threads | Select-Object -ExpandProperty Content`), POSIX면 `kill -USR1 <pid>` → `out/threads-<timestamp>.txt`. 루프는 5분 동안 조용하면 실행 디렉터리에 `threads-<timestamp>.txt`를 스스로 씁니다. 지원 요청 때는 watchdog 줄 하나와 스레드 덤프의 해당 스레드 블록을 보내십시오.
+3. **아무 말도 없으면 스레드 덤프**: 어디서든(CLI·플릿·웹) 실행 디렉터리에 `dump-threads` 파일을 만들면(PowerShell `New-Item <run dir>\dump-threads -ItemType File`) 2초 안에 그 자리에 `threads-<timestamp>.txt`가 생깁니다(round 10). `sbmig run` / `sbmig fleet` 콘솔이면 Ctrl+Break도 됩니다(실행은 계속, `out\threads-<timestamp>.txt`). 웹 서버가 있으면 `http://127.0.0.1:8765/api/threads`(PowerShell `Invoke-WebRequest http://127.0.0.1:8765/api/threads | Select-Object -ExpandProperty Content`, 토큰이 있으면 `-Headers @{Authorization = "Bearer <토큰>"}`) — `sbmig serve` 창의 Ctrl+Break는 서버를 끄므로 쓰지 마십시오. POSIX면 `kill -USR1 <pid>` → `out/threads-<timestamp>.txt`. 루프는 5분 동안 조용하면 실행 디렉터리에 `threads-<timestamp>.txt`를 스스로 씁니다. 지원 요청 때는 watchdog 줄 하나와 스레드 덤프의 해당 스레드 블록 맨 아래 15줄 정도를 옮겨 적으십시오.
 4. journal 마지막이 `llm_fix`(응답 받음)이고 `attempt`가 없으면 패치 적용 / `git commit`에서 막힌 것입니다. git은 비대화식(프롬프트, hook, GPG 서명 끔, 10분 타임아웃)이므로, 그래도 멈추면 백신 / 인덱서가 파일을 잡고 있는 경우가 많습니다.
 
 ---

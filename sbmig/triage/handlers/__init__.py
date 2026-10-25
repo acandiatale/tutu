@@ -9,6 +9,9 @@ from .pom_handlers import (CompilerPluginFloor, DependencyRelocation, JakartaLib
                            relocation_table, version_for)
 from .source_handlers import (JakartaNamespaceSweep, RenameResult, SpringDataCrudRepository, jakarta_packages,
                               rename_javax)
+from .jdk_compat import JdkBase64Shim
+from .spring7_sources import (Boot4TypeRelocationSweep, SpringDataSpecificationUnrestricted,
+                              SpringSecurityPathPatternMatcher)
 
 __all__ = [
     "Handler", "HandlerRegistry", "PomHandler", "RelocationHandler", "Relocation", "default_handlers",
@@ -18,4 +21,5 @@ __all__ = [
     "QuerydslJakartaClassifier", "RemoveClassicLoaderImplementation", "ResourcesBinaryFiltering", "StripPomRepositories", "SurefirePluginFloor",
     "TestCompileSkip", "JakartaNamespaceSweep", "SpringDataCrudRepository", "RenameResult", "jakarta_packages",
     "rename_javax", "JakartaLibraryFloor", "jakarta_libraries_below",
+    "JdkBase64Shim", "Boot4TypeRelocationSweep", "SpringSecurityPathPatternMatcher", "SpringDataSpecificationUnrestricted",
 ]

@@ -12,9 +12,11 @@ import logging
 import os
 import random
 import re
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Iterator, Optional, Union
 
 import httpx
 
@@ -44,6 +46,31 @@ class LLMError(RuntimeError):
 
 class LLMConfigError(ValueError):
     pass
+
+
+# --------------------------------------------------------------------------- LLM calls in flight (round 10)
+# The fix loop's watchdog stays silent while an LLM HTTP call is in progress (the clients log their own heartbeat /
+# retry lines); `LLMFixer._call`, the HTTP clients and `RecordingClient` mark their calls. Process-wide on purpose:
+# one migration runs at a time (web runs are queued, the fleet is sequential).
+_IN_FLIGHT = 0
+_IN_FLIGHT_LOCK = threading.Lock()
+
+
+@contextmanager
+def llm_call_in_flight() -> Iterator[None]:
+    global _IN_FLIGHT
+    with _IN_FLIGHT_LOCK:
+        _IN_FLIGHT += 1
+    try:
+        yield
+    finally:
+        with _IN_FLIGHT_LOCK:
+            _IN_FLIGHT -= 1
+
+
+def llm_calls_in_flight() -> int:
+    """How many LLM calls are in progress right now (nested wrappers count once each)."""
+    return _IN_FLIGHT
 
 
 def usage_from(resp: LLMResponse) -> LLMUsage:
@@ -146,18 +173,24 @@ class _HTTPClient:
         if log.isEnabledFor(logging.DEBUG):
             log.debug("llm request role=%s model=%s prompt_sha256=%s chars=%d", role or "-", model,
                       messages_hash(messages)[:16], sum(len(m.content) for m in messages))
+        with llm_call_in_flight():
+            return self._complete(model, body, url, headers)
+
+    def _complete(self, model: str, body: dict[str, Any], url: str, headers: dict[str, str]) -> LLMResponse:
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
+        cause: Optional[str] = None             # the exception class of the last transport failure (round 10)
         for attempt in range(self.max_retries + 1):
             wait: Optional[float] = None
             try:
                 resp = self._http.post(url, json=body, headers=headers)
             except (httpx.TimeoutException, httpx.TransportError) as exc:
-                last_status, last_body = None, f"{type(exc).__name__}: {exc}"
+                last_status, last_body, cause = None, f"{type(exc).__name__}: {exc}", type(exc).__name__
                 log.warning("llm %s transport error (attempt %d/%d): %s", self.provider, attempt + 1,
                             self.max_retries + 1, type(exc).__name__)
             else:
+                cause = None
                 if resp.status_code < 300:
                     try:
                         data = resp.json()
@@ -181,8 +214,9 @@ class _HTTPClient:
                 self._sleep(delay)
         log.error("llm %s giving up after %d attempt(s): status=%s body=%s", self.provider, self.max_retries + 1,
                   last_status, last_body[:300].replace("\n", " "))
+        how = f"status={last_status}" + (f", cause={cause}" if cause else "")
         raise LLMError(last_status, last_body,
-                       f"LLM request failed after {self.max_retries + 1} attempt(s) (status={last_status}): {last_body[:200]}")
+                       f"LLM request failed after {self.max_retries + 1} attempt(s) ({how}): {last_body[:200]}")
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +495,8 @@ class RecordingClient:
         role, metadata = kw.get("role"), kw.get("metadata")
         t0 = time.monotonic()
         try:
-            resp = self.inner.complete(messages, **kw)
+            with llm_call_in_flight():
+                resp = self.inner.complete(messages, **kw)
         except Exception as exc:
             self._rec.write(messages, None, time.monotonic() - t0, error=str(exc)[:500], role=role, metadata=metadata)
             raise

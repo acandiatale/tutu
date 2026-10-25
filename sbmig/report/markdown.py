@@ -56,11 +56,17 @@ FLAG_HELP = {
     "ear-module-dropped": "an EAR module (application-server packaging) was dropped: its modules were merged and the boot module is deployed instead; descriptors are kept under asis-ear/ and the context root is a follow-up",
     "war-overlay-moved": "a WAR dependency (maven-war-plugin overlay) was moved from the jar modules to the boot WAR — the overlay WAR must be resolvable from your repositories",
     "web-content-left": "web content that no pom references (e.g. a STATIC/ folder with JSPs / downloads) was left in place — serve it as before or move it into the front module",
+    "jdk-not-21": "`mvn -v` reported another Java version than `build.require_java_major`: set build.java_home / "
+                  "JAVA_HOME to a JDK 21 and run again",
+    "llm-config-error": "the LLM is not configured (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env, or the "
+                        "gateway rejected the key / model): LLM fixes were skipped — check with `sbmig llm-probe`",
 }
 FLAG_PREFIX_HELP = {
     "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
     "aborted:": "the run stopped early (see Blocked / follow-ups)",
+    "infra:": "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not "
+              "because of the project: fix the environment and run it again (a fleet re-queues the project)",
 }
 BLOCKED_TITLE = "Blocked — needs human / library action"
 HANDOVER_TITLE = "Handover — what we replaced, what is yours"

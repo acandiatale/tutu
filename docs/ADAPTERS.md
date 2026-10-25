@@ -32,7 +32,7 @@ class LLMRequest(BaseModel):
     temperature: Optional[float] = None  # None = your default
     stop: Optional[list[str]] = None
     role: LLMRole = "other"              # see the role table below
-    metadata: dict = {}                  # phase, iteration, cluster_id, ... (never secrets)
+    metadata: dict = {}                  # run_id, project, phase, iteration, cluster_id, ... (never secrets)
 
 class LLMResponse(BaseModel):
     content: str
@@ -127,9 +127,14 @@ Then `pip install` your package into the sbmig environment and set `llm.provider
   `.content` are accepted. Anything else raises `LLMError`. An empty `model` is filled in with the requested
   model.
 * **Error mapping**: any exception your adapter raises becomes `sbmig.fix.client.LLMError` (with `status` kept
-  when the exception has one). After two such failures in a row, the build-fix loop marks the LLM as
-  unavailable (`llm_unavailable`). From then on, the clusters that needed it are reported as blocked, and
-  handlers and recipes keep running.
+  when the exception has one) whose text reads `LLM adapter <name> failed (status=<status>, cause=<ExceptionClass>):
+  …`. The build-fix loop classifies failures by these explicit tokens only (round 10): `status=None|401|403|404|408|
+  429|5xx`, `cause=…` or a known transport exception class name count as transport / configuration failures; two in a
+  row pause the loop once for `llm.cooldown_seconds`, the next streak marks the LLM unavailable (`llm_unavailable`) —
+  from then on the clusters that needed it are reported as blocked, and handlers and recipes keep running.
+  `status=400|413|422`, a content filter and `finish_reason=length` are rejections of that one request and never
+  count; the same HTTP 400 body for two different prompts is a configuration error (flag `llm-config-error`, no more
+  LLM calls in the run).
 
 ### What the plugin must do (tier 1)
 
@@ -149,8 +154,9 @@ Then `pip install` your package into the sbmig environment and set `llm.provider
 | `other` | anything else | as passed |
 
 Unknown roles become `other`, with the original value kept in `metadata["role_detail"]`. Fixer calls carry
-`metadata = {"phase", "iteration", "cluster_id"}`. Your adapter can route on `request.role` to override the
-model, as `company_gateway_adapter.py` does with its `models` table.
+`metadata = {"run_id", "project", "phase", "iteration", "cluster_id"}` (`run_id` / `project` since round 10;
+`project` is the workspace directory name). Your adapter can route on `request.role` to override the model, as
+`company_gateway_adapter.py` does with its `models` table.
 
 ## Tier 2: fixer plugin
 
@@ -169,9 +175,12 @@ follows:
 * The context we give our LLM is available to you: `ContextPacker(cfg).pack(ws, cluster, ctx,
   ctx.profile_summary)` returns a `PackedContext` (`.sections`, `.files_included`, `.render()`, which gives
   markdown).
-* Return `FixProposal(changes=[], analysis="llm-error: ...")` (or raise) when your agent is unreachable. Those
-  count as transport failures and lead to `llm_unavailable` after repeats. An empty `changes` with a normal
-  analysis means "no safe fix".
+* Return `FixProposal(changes=[], analysis="llm-error: ...")` (or raise) when your agent is unreachable. Since round
+  10 such a text counts as a transport failure (cool-down, then `llm_unavailable` after repeats) only when it carries
+  an explicit marker: `status=None` / `status=<401|403|404|408|429|5xx>`, `cause=<ExceptionClass>: …`, or the
+  exception class name itself (`ConnectionError`, `ReadTimeout`, …); a raised exception is classified by its class
+  name and message the same way. Anything else is an ordinary failed attempt of that cluster. An empty `changes`
+  with a normal analysis means "no safe fix".
 * Don't edit files in `propose`. Return changes, so that sbmig can apply, commit, rebuild and roll back.
 
 ## Embedding: `sbmig.api`
@@ -200,6 +209,7 @@ print(report.success, exit_code(report))         # 0 ok / 2 incomplete / 3 abort
 | `requires N positional argument(s)` | Your factory takes more than `(options, cfg)` (tier 1) or `(options, cfg, llm)` (tier 2). Give the extra parameters defaults. |
 | `failed to initialise: ...` | Your factory raised. Usually a missing option such as `base_url`, or a missing key env var. |
 | `LLM adapter X returned int, expected LLMResponse` | Return an `LLMResponse`, a dict with `content`, or a `str`. |
-| Run reports `llm-unavailable` | Two adapter failures in a row. Check the `llm_call` / `llm_fix` journal events and the `error` field in `llm-NNNN.json`. |
+| Run reports `llm-unavailable` | Two transport / configuration failures in a row after the one cool-down. Check the `llm_call` / `llm_fix` journal events, the `status=` / `cause=` part of the error and the `error` field in `llm-NNNN.json`. |
+| Run reports `llm-config-error` | The gateway answered the same HTTP 400 body to two different prompts (model name, a payload field). The follow-up quotes the body; fix the setting in `.env` / `llm.*` and rerun. |
 | Gateway gets `role: other` | The call site predates role tagging. Route on `metadata` instead, or default to your general model. |
 | Fixer plugin is never called | Every cluster was resolved by handlers, recipes or KB patch replay first. That is expected. Look for `fixer` / `llm_fix` events in `journal.jsonl`. |

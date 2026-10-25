@@ -69,9 +69,11 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
 
     console = console or Console()
     ok = "[bold green]BUILD SUCCESS[/]" if report.success else "[bold red]NOT BUILDING[/]"
-    console.print(f"\n[bold]{report.project_name}[/] ({report.case_type.value}) — {ok}   run {report.run_id}")
+    # console-only lines stay ASCII where it is easy: a cp949 console (Windows, redirected / Task Scheduler) cannot
+    # encode an em dash or the check marks (round 10; the CLI also sets errors="replace" on stdout / stderr)
+    console.print(f"\n[bold]{report.project_name}[/] ({report.case_type.value}) - {ok}   run {report.run_id}")
     if report.blocked:
-        console.print(f"[bold yellow]blocked:[/] {blocked_count_line(report.blocked)}")
+        console.print(f"[bold yellow]blocked:[/] {blocked_count_line(report.blocked).replace(' — ', ' - ')}")
     for line in advisory_lines(report):
         console.print(line, markup=False, highlight=False)
     t = Table(title="phases", show_lines=False)
@@ -79,7 +81,7 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
         t.add_column(col)
     for pr in report.phases:
         outs = Counter(a.outcome for a in pr.attempts)
-        t.add_row(pr.phase.value, str(pr.iterations), "✅" if pr.build_ok else "❌", str(len(pr.attempts)),
+        t.add_row(pr.phase.value, str(pr.iterations), "ok" if pr.build_ok else "FAIL", str(len(pr.attempts)),
                   ", ".join(f"{k} {v}" for k, v in outs.items()) or "-", str(len(pr.remaining_errors)))
     console.print(t)
     u = report.llm_usage

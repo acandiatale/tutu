@@ -181,6 +181,18 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "How to supply them:": "설정 방법:",
     "Packaged placeholders: {files} (grep `__SET_ME__`)": "패키지된 플레이스홀더: {files} (`__SET_ME__`로 검색)",
     # ---- flag help (FLAG_HELP / FLAG_PREFIX_HELP values of markdown.py)
+    "`mvn -v` reported another Java version than `build.require_java_major`: set build.java_home / JAVA_HOME to a "
+    "JDK 21 and run again":
+        "`mvn -v`가 `build.require_java_major`와 다른 Java 버전을 보고했다 — build.java_home / JAVA_HOME을 JDK 21로 "
+        "맞추고 다시 실행할 것",
+    "the LLM is not configured (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env, or the gateway rejected the key / "
+    "model): LLM fixes were skipped — check with `sbmig llm-probe`":
+        "LLM 설정이 안 되어 있다(.env의 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL, 또는 게이트웨이가 키 / 모델을 거부함) "
+        "— LLM 수정은 건너뛰었다: `sbmig llm-probe`로 확인할 것",
+    "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not because of "
+    "the project: fix the environment and run it again (a fleet re-queues the project)":
+        "프로젝트가 아니라 인프라(LLM 게이트웨이, Maven, JDK, 저장소 / Nexus, 디스크) 문제로 실행이 끝났다 — 환경을 "
+        "고치고 다시 실행할 것(플릿은 이 프로젝트를 다시 대기열에 넣는다)",
     "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)":
         "프로젝트 루트에 pom.xml이 없고 서로 의존하는 pom들(예: APP/BATCH, APP/WEB, APP/EAR)만 있어 sbmig가 루트 집합 pom을 생성했다 — 한 reactor로 함께 빌드하고 회사 레이아웃으로 병합한다(layout.generate_aggregator)",
     "the input was an EAR pom whose modules are not in the directory (e.g. APP/EAR alone): run sbmig on the directory that contains every module":

@@ -17,23 +17,36 @@ Routes:
 
 Runs execute in worker threads of this process (see `sbmig.web.runs`); the SSE generator blocks on the run's events
 in a threadpool thread, never on the event loop.
+
+Access (round 10): the page hands out company source code (`result.zip`) and runs Maven on uploaded poms, so
+* with a token (`create_app(token=…)`, `$SBMIG_WEB_TOKEN`, `sbmig serve --token`) every request needs it:
+  `Authorization: Bearer <token>`, or the HttpOnly cookie a `?token=<token>` request sets once (the page is then
+  reloaded without the token in the address bar; SameSite=Strict, so other sites cannot use it);
+* without a token only loopback clients (127.0.0.1 / ::1) are served — a LAN client gets 403 with the hint, even
+  when plain `uvicorn … --host 0.0.0.0` was started without one (`sbmig serve` refuses to start like that).
 """
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
 import logging
 import os
+import secrets
 import zipfile
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.responses import HTMLResponse, RedirectResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
 
@@ -47,6 +60,105 @@ MAX_UPLOAD = DEFAULT_MAX_UPLOAD_MB * 1024 * 1024      # default upload limit in 
 MAX_UPLOAD_ENV = "SBMIG_MAX_UPLOAD_MB"
 THREAD_POOL_SIZE = 256             # anyio worker threads: each open SSE stream (browser tab) holds one for the run
 _END = object()
+TOKEN_ENV = "SBMIG_WEB_TOKEN"
+TOKEN_COOKIE = "sbmig_token"
+COOKIE_MAX_AGE_S = 7 * 24 * 3600   # the browser keeps access for a week (the token itself never leaves the server)
+_LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
+
+
+def is_loopback_host(host: str | None) -> bool:
+    """127.0.0.0/8, ::1, `localhost` — an address only this machine can reach. `0.0.0.0` / `::` / a LAN address
+    are not."""
+    h = (host or "").strip().strip("[]").lower()
+    if h in _LOOPBACK_NAMES:
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def _remote_client(scope: Scope) -> bool:
+    """A client with a non-loopback IP address (a unix socket / the test client have no IP: local)."""
+    client = scope.get("client")
+    host = client[0] if client else None
+    try:
+        return not ipaddress.ip_address(str(host)).is_loopback
+    except ValueError:
+        return False
+
+
+def _cookie_value(token: str) -> str:
+    return hashlib.sha256(("sbmig-web:" + token).encode("utf-8")).hexdigest()
+
+
+class TokenGuard:
+    """ASGI middleware (pure ASGI: SSE streams pass through untouched). See the module docstring."""
+
+    def __init__(self, app: ASGIApp, token: str | None = None):
+        self.app = app
+        self.token = token or None
+        self.cookie = _cookie_value(token) if token else ""
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        req = Request(scope)
+        if self.token is None:
+            if _remote_client(scope):
+                await self._deny(scope, receive, send, req, 403,
+                                 f"this sbmig web UI serves this machine only: start it with {TOKEN_ENV} set "
+                                 f"(sbmig serve --token) to share it on the network")
+                return
+            await self.app(scope, receive, send)
+            return
+        auth = req.headers.get("authorization", "")
+        bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if (bearer and secrets.compare_digest(bearer, self.token)) or \
+                secrets.compare_digest(req.cookies.get(TOKEN_COOKIE, ""), self.cookie):
+            await self.app(scope, receive, send)
+            return
+        given = req.query_params.get("token", "")
+        if given and secrets.compare_digest(given, self.token):
+            query = urlencode([(k, v) for k, v in req.query_params.multi_items() if k != "token"])
+            if req.method == "GET" and req.url.path in ("/", "/index.html"):
+                resp = RedirectResponse(req.url.path + (f"?{query}" if query else ""), status_code=303)
+            else:          # an API call with ?token= works once and leaves the cookie for the next ones
+                resp = None
+            set_cookie = {"key": TOKEN_COOKIE, "value": self.cookie, "httponly": True, "samesite": "strict",
+                          "path": "/", "max_age": COOKIE_MAX_AGE_S}
+            if resp is not None:
+                resp.set_cookie(**set_cookie)
+                await resp(scope, receive, send)
+                return
+
+            async def send_with_cookie(message):
+                if message["type"] == "http.response.start":
+                    tmp = PlainTextResponse("")
+                    tmp.set_cookie(**set_cookie)
+                    cookie_header = [(k, v) for k, v in tmp.raw_headers if k == b"set-cookie"]
+                    message = {**message, "headers": list(message.get("headers", [])) + cookie_header}
+                await send(message)
+
+            await self.app(scope, receive, send_with_cookie)
+            return
+        await self._deny(scope, receive, send, req, 401,
+                         f"access token required: open this page as /?token=<token> once ({TOKEN_ENV} on the "
+                         f"server), API clients send 'Authorization: Bearer <token>'")
+
+    @staticmethod
+    async def _deny(scope: Scope, receive: Receive, send: Send, req: Request, status: int, message: str) -> None:
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        if req.method == "GET" and req.url.path in ("/", "/index.html"):
+            resp = HTMLResponse(f"<!doctype html><meta charset='utf-8'><title>sbmig</title>"
+                                f"<body style='font-family:sans-serif;padding:2em'><h3>sbmig web UI</h3>"
+                                f"<p>{message}</p></body>", status_code=status)
+        else:
+            resp = JSONResponse({"error": message}, status_code=status)
+        await resp(scope, receive, send)
 
 
 def resolve_max_upload(max_upload_mb: int | None = None) -> int:
@@ -79,6 +191,9 @@ def describe_max_upload(max_upload: int) -> str:
 
 def _ensure_console_logging() -> None:
     """Under plain `uvicorn sbmig.web.app:app` nobody configured the sbmig logger: show INFO on the console."""
+    from sbmig.cli import harden_console_streams
+
+    harden_console_streams()                 # a cp949 console must not turn every em dash into "--- Logging error ---"
     root = logging.getLogger("sbmig")
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
         h = logging.StreamHandler()
@@ -117,18 +232,22 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
                 pass
 
 
-def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None) -> FastAPI:
+def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None,
+               token: str | None = None) -> FastAPI:
+    """`token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served."""
     load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
     mgr = RunManager(Path(out_dir), Path(repo_root))
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
+    token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _ensure_console_logging()
         limiter = anyio.to_thread.current_default_thread_limiter()   # every SSE stream holds one of these threads
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
-        log.info("sbmig web UI ready (runs under %s, configs from %s/config, upload limit %s)", mgr.out_dir,
-                 mgr.repo_root, describe_max_upload(max_upload))
+        log.info("sbmig web UI ready (runs under %s, configs from %s/config, upload limit %s, %s)", mgr.out_dir,
+                 mgr.repo_root, describe_max_upload(max_upload),
+                 f"access token required ({TOKEN_ENV})" if token else "no token: loopback clients only")
         yield
         info = mgr.shutdown()
         log.info("sbmig web UI shut down: %s", info)
@@ -136,6 +255,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     app = FastAPI(title="sbmig", summary="JDK 21 + Spring Boot 4.1 migration agent — web UI", lifespan=lifespan)
     app.state.manager = mgr
     app.state.max_upload_bytes = max_upload
+    app.state.token_required = bool(token)
+    app.add_middleware(TokenGuard, token=token)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)

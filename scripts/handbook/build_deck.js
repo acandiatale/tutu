@@ -113,19 +113,19 @@ pres.addSection({ title: "동작 원리" });
 
 { const s = content("빌드-수정 루프: 고치고, 다시 빌드하고, 판정한다", "동작 원리", "상세: 04-triage-and-loop.md. 루프의 모든 시도는 ledger.jsonl에 남습니다.");
   flow(s, [{ t: "빌드", sub: "mvn <goal>, 하트비트 60초" }, { t: "로그 파싱", sub: "ErrorKind 11종, javac 연속행" }, { t: "시그니처·클러스터", sub: "L1/L2, 파일 단위 묶음" }, { t: "결정", sub: "핸들러 > KB > blocked > LLM" }, { t: "적용", sub: "git 커밋 (시도별)" }, { t: "재빌드 = 판정", sub: "해결/부분/실패" }], 0.5, 1.25, 9, 1.0, { size: 11.5, subSize: 9 });
-  card(s, 0.5, 2.5, 2.9, 2.55, "반복 한도와 예산", ["단계별 max_iterations (3 / 6 / 6)", "클러스터별 fix round, LLM 호출 예산(budget)", "쿨다운 1회 후 'LLM unavailable'", "예산 소진 → escalate, 리포트로"], { bodySize: 11 });
+  card(s, 0.5, 2.5, 2.9, 2.55, "반복 한도와 예산", ["단계별 max_iterations (3 / 6 / 6)", "클러스터별 LLM 시도 상한: 같은 클러스터의 채점된 실패만 셈", "쿨다운 1회 후 'LLM unavailable', 같은 HTTP 400 ×2 → llm-config-error", "'안 보임'은 해결 아님: partial / inconclusive"], { bodySize: 10.5 });
   card(s, 3.55, 2.5, 2.9, 2.55, "stall level (같은 에러가 반복될 때)", ["레벨이 오를수록 더 넓은 문맥·피드백 라운드·상위 모델(LLM_ESCALATION_MODEL)", "그래도 안 되면 escalate — 무한 루프 없음", "blocked 레지스트리: 한 번 blocked면 다른 단계에서도 재시도 안 함"], { bodySize: 11 });
   card(s, 6.6, 2.5, 2.9, 2.55, "운영자가 보는 것", ["[spring it2] cluster compile:… — asking the LLM", "first error: <원문 한 줄>", "LLM answered — N change(s) in <files> — <verdict>", "fix loop quiet for Ns since '<milestone>' (워치독)"], { bodySize: 10.5 }); }
 
 { const s = content("트리아지 결정 사다리: LLM은 마지막이다", "동작 원리", "sbmig/triage/decide.py의 순서 그대로입니다. 결정 사유(rationale)는 journal의 decision 이벤트에 남습니다.");
-  const steps = [["1", "HANDLER", "결정적 핸들러 23종. 에러 문구(트리거) + 프로필 조건. 0 LLM.", K.dk2], ["2", "KB_RECIPE", "지식 베이스가 승격한 OpenRewrite 레시피를 실행", "3F7A41"],
+  const steps = [["1", "HANDLER", "결정적 핸들러 32종. 에러 문구(트리거) + 프로필 조건. 0 LLM. (사람이 pin한 케이스 동작이 그보다 먼저)", K.dk2], ["2", "KB_RECIPE", "지식 베이스가 승격한 OpenRewrite 레시피를 실행", "3F7A41"],
     ["3", "KB_PATCH", "이전 프로젝트에서 성공한 패치를 재생 (LLM 없이)", "5A9460"], ["4", "blocked 판정", "프로젝트 안에서 못 푸는 문제(외부 jar의 javax API, Nexus에 없는 아티팩트) → 즉시 리포트, 0 LLM", K.accent3],
     ["5", "LLM_FIX", "잔여 에러만. 프롬프트 = 에러 클러스터 + 파일 발췌 + 가까운 pom + 지식 노트 + 어드바이저리 힌트. 재빌드로만 판정", K.accent4]];
   steps.forEach(([n, h, b, fill], i) => { const y = 1.2 + i * 0.78; box(s, 0.5, y, 0.6, 0.66, { fill }); para(s, n, 0.5, y, 0.6, 0.66, { size: 20, bold: true, color: C.background1, align: "center", valign: "middle" });
     box(s, 1.2, y, 8.3, 0.66, { fill: K.lt2 }); para(s, h, 1.35, y + 0.08, 1.7, 0.5, { size: 13, bold: true, color: C.text2, valign: "middle" }); para(s, b, 3.0, y + 0.06, 6.4, 0.56, { size: 11, valign: "middle" }); }); }
 
-{ const s = content("결정적 핸들러: 반복되는 문제는 코드가 푼다", "동작 원리", "전체 23종과 트리거는 엑셀 '핸들러' 시트, 설명은 04 문서 5장. 선제(pre-emptive) 핸들러는 첫 빌드 전에 프로필만 보고 미리 돌아 빌드 1회를 아낍니다.");
-  stat(s, 0.5, 1.15, 1.6, "23", "결정적 핸들러");
+{ const s = content("결정적 핸들러: 반복되는 문제는 코드가 푼다", "동작 원리", "전체 32종과 트리거는 엑셀 '핸들러' 시트, 설명은 04 문서 5장. 선제(pre-emptive) 핸들러는 첫 빌드 전에 프로필만 보고 미리 돌아 빌드 1회를 아낍니다. round 10: jdk-base64-shim, remove-tools-jar, boot4-type-relocation-sweep, security-path-pattern-matcher, spring-data-specification-unrestricted.");
+  stat(s, 0.5, 1.15, 1.6, "32", "결정적 핸들러");
   stat(s, 2.1, 1.15, 1.6, "0", "LLM 호출 (핸들러 경로)");
   para(s, "핸들러는 두 방식으로 움직입니다. 선제: 분석 프로필에서 조건이 보이면 첫 빌드 전에 적용. 반응형: 빌드 에러 문구가 트리거 정규식에 맞으면 적용. 두 경우 모두 다음 빌드가 판정합니다.", 3.9, 1.2, 5.6, 1.2, { size: 12 });
   table(s, [["핸들러", "언제", "무엇을"],
@@ -197,7 +197,7 @@ pres.addSection({ title: "아키텍처" });
   card(s, 0.5, 2.6, 4.4, 2.45, "웹 UI (sbmig serve / uvicorn sbmig.web.app:app)", ["업로드 → queued → running → finished, 실행당 워커 스레드 1개", "SSE 이벤트: node · journal · log · report (시각순 병합)", "실행별 sbmig.log(스레드 필터), result.zip·report 다운로드", "/api/threads: 모든 스레드 스택 (Windows 진단용), 종료 목록 정리(max_finished_runs)"], { bodySize: 11 });
   card(s, 5.1, 2.6, 4.4, 2.45, "작업공간과 격리", ["out/<run id>/project/ 에 임시 git 저장소: 브랜치 sbmig/<run id>, 스텝·시도마다 커밋, 실패 시 되돌림", "git은 비대화식(프롬프트·훅·서명 끔, 10분 타임아웃), 출력은 UTF-8로 직접 디코딩", "result.zip에는 .git 없음, changes.patch는 원본 바이트", "인코딩 감지: MS949/EUC-KR 소스를 깨뜨리지 않음"], { bodySize: 11 }); }
 
-{ const s = content("설정 계층과 비밀 관리", "아키텍처", "상세: 08-config-reference.md. 엑셀 '설정키' 시트에 186개 키 전체가 있습니다.");
+{ const s = content("설정 계층과 비밀 관리", "아키텍처", "상세: 08-config-reference.md. 엑셀 '설정키' 시트에 212개 키 전체가 있습니다.");
   flow(s, [{ t: ".env → 환경 변수", sub: "LLM_BASE_URL · LLM_API_KEY · LLM_MODEL (이미 있는 쉘 변수가 이김)" }, { t: "config/default.yml", sub: "모든 키의 기본값 (코드와 배포)" }, { t: "--config artifacts.yml", sub: "회사 값: 좌표·레이아웃·parent_phase (여러 파일, 순서대로)" }, { t: "CLI 플래그", sub: "--java-home, --settings, --stop-after …" }, { t: "SBMIG_* 환경 변수", sub: "마지막에 덮어씀(최우선), ${VAR} 확장" }], 0.5, 1.2, 9, 1.15, { size: 11, subSize: 9 });
   card(s, 0.5, 2.6, 4.4, 2.45, "회사에서 처음 채우는 값", ["artifacts.parent / boot_parent / comp_parent = xxx-parent / xxx-boot-jar / xxx-comp-jar 4.0.0", "artifacts.mandatory ×2, artifacts.optional ×8", "plan.parent_phase: spring", "build.java_home (JDK 21), build.settings_file (Nexus catch-all 미러)", ".env: LLM_BASE_URL, LLM_API_KEY, LLM_MODEL (+ LLM_RECIPE_MODEL, LLM_ESCALATION_MODEL)"], { bodySize: 11 });
   card(s, 5.1, 2.6, 4.4, 2.45, "비밀과 Nexus", ["API 키는 환경 변수에서만 읽고 yml·로그·리포트 어디에도 쓰지 않음", "pom에 적힌 옛 저장소 URL은 settings.xml의 mirrorOf external:* 로 전부 Nexus group으로 — 템플릿 config/settings.nexus.example.xml", "미러가 없으면 분석이 follow-up으로 경고, 선택: build.pom_repositories: remove", "Nexus group이 프록시할 것: Central(org.openrewrite.*), Boot 4.1.0, jakarta, 사내 4.0.0"], { bodySize: 11, fill: "EAF0F6" }); }
@@ -212,8 +212,18 @@ pres.addSection({ title: "운영" });
     ["LLM 호출", "still in flight 30초마다, 호출 시작/재시도 로그", "timeout + 30초 벽시계 데드라인 → 그 호출 실패, 쿨다운 후 재시도"],
     ["Maven 빌드", "mvn … still running 60초마다", "build.timeout_minutes(30) → Windows taskkill /T /F"],
     ["수정 루프 전체", "마일스톤 진행 로그", "fix loop quiet for Ns since '<milestone>' (60초), 5분이면 threads-*.txt 자동 덤프"]], 0.5, 1.2, 9, [2.7, 3.0, 3.3], { size: 10.5 });
-  card(s, 0.5, 3.45, 4.4, 1.6, "개발자에게 보낼 세 줄", ["워치독 줄: fix loop quiet for Ns since '…'", "클러스터의 first error: 줄", "/api/threads 또는 threads-*.txt의 --- thread sbmig-run- 블록"], { bodySize: 11.5 });
-  card(s, 5.1, 3.45, 4.4, 1.6, "PowerShell 한 줄", ["Get-Content out\\web\\<id>\\sbmig.log -Wait -Tail 20", "Select-String -Path <log> -Pattern 'first error|quiet for'", "curl.exe http://127.0.0.1:8765/api/threads"], { bodySize: 11 }); }
+  card(s, 0.5, 3.45, 4.4, 1.6, "옮겨 적을 줄", ["SBMIG-RESULT … 한 줄(결과·주의 코드)", "워치독 줄 + 클러스터의 first error: 줄", "덤프의 --- thread sbmig-run- 블록 맨 아래 15줄"], { bodySize: 11.5 });
+  card(s, 5.1, 3.45, 4.4, 1.6, "PowerShell (round 10)", ["Get-Content <run dir>\\sbmig.log -Encoding UTF8 -Tail 20", "New-Item <run dir>\\dump-threads -ItemType File  (덤프)", "CLI 콘솔은 Ctrl+Break, sbmig serve는 /api/threads"], { bodySize: 10.5 }); }
+
+{ const s = content("플릿 안전장치와 한 줄 결과 (round 10)", "운영", "500개를 순차로 돌리는 동안 인프라 장애가 프로젝트 실패로 쌓이지 않게 합니다. 상세: 09-operations.md 3.4절(한 줄 결과), 6.6절(인프라 문제), 7절(플릿).");
+  table(s, [["장치", "운영자가 보는 줄", "동작"],
+    ["사전 점검", "preflight: java FAIL 17 but build.require_java_major is 21 …", "첫 프로젝트 전 disk · maven · java · settings · repository · llm 점검, 설정 오류면 바로 멈춤"],
+    ["인프라 차단기", "fleet: infrastructure llm unavailable since <project> - waiting 15 min …", "infra:<kind>로 끝난 프로젝트는 pending. 연속 3개면 15분 대기 후 재점검, 4번 넘으면 fleet stopped(exit 3) → 같은 명령으로 재개"],
+    ["디스크", "preflight: disk FAIL … GB free … (min 5)", "프로젝트마다 여유 공간 확인, 끝나면 target/ 삭제(fleet.cleanup), 쌓인 사본은 sbmig clean"],
+    ["한 줄 결과", "SBMIG-RESULT run=… exit=2 build=FAIL unresolved=3 blocked=1 llm=7 attn=…", "ASCII 한 줄 — 문제를 알릴 때 이 줄을 옮겨 적음. fleet status --attention이 주의 코드별로 묶음"],
+    ["JDK 점검", "run aborted: Maven runs on Java 17.0.9 (…), not Java 21", "첫 빌드 전에 중단(jdk-not-21) → build.java_home 수정"],
+    ["웹 토큰", "refusing to serve on 0.0.0.0 without a token", "LAN 공유는 SBMIG_WEB_TOKEN 필수, 없으면 이 PC만"]], 0.5, 1.2, 9, [1.3, 4.0, 3.7], { size: 9.5 });
+  para(s, "KB 형식이 바뀌어(L2 시그니처 세분화, 패키지 단위 치환 쌍, schema_version 2) 회사 KB는 한 번 지우고 다시 쌓습니다. KB 쓰기는 kb/.lock으로 직렬화되고 비밀값은 저장 전에 가립니다.", 0.5, 4.55, 9, 0.6, { size: 10.5, italic: true }); }
 
 { const s = content("리포트 읽는 법: Handover부터", "운영", "report.md와 report.json은 같은 내용입니다. exit code: 0 성공·blocked 없음, 2 blocked/미해결 있음, 3 중단.");
   const secs = [["Result", "최종 clean package 결과, 케이스, as-is 버전, LLM 호출·토큰"], ["Handover (인수인계)", "미해결 에러 · blocked(외부 원인) · 어드바이저리 · 실행 전 채울 속성(__SET_ME__) · merge 충돌 · LLM이 고친 파일"],
@@ -234,15 +244,15 @@ pres.addSection({ title: "운영" });
 // ================================================================ 6. 현황과 다음 단계
 pres.addSection({ title: "현황과 다음 단계" });
 { const s = content("검증 현황", "현황과 다음 단계", "오프라인 테스트는 Python만으로 약 3분, e2e는 JDK 21 + Maven + Maven Central 접근이 필요합니다.");
-  stat(s, 0.5, 1.15, 2.2, "1,369", "오프라인 테스트 (통과)");
-  stat(s, 2.7, 1.15, 2.2, "24", "e2e 픽스처 프로젝트");
+  stat(s, 0.5, 1.15, 2.2, "2,192", "오프라인 테스트 (통과)");
+  stat(s, 2.7, 1.15, 2.2, "32", "e2e 픽스처 프로젝트");
   stat(s, 4.9, 1.15, 2.2, "8 / 8", "회사 레이아웃 e2e PASS (0 LLM)");
-  stat(s, 7.1, 1.15, 2.2, "23 / 33 / 14", "핸들러 · 레시피 · 어드바이저리", 26);
-  s.addChart(pres.charts.BAR, [{ name: "오프라인 테스트 수", labels: ["R6", "R7a", "R7b", "R8", "R9", "R9b", "R9c", "현재"], values: [917, 941, 991, 1072, 1200, 1233, 1295, 1369] }],
+  stat(s, 7.1, 1.15, 2.2, "32 / 50 / 67", "핸들러 · 레시피 · 어드바이저리", 26);
+  s.addChart(pres.charts.BAR, [{ name: "오프라인 테스트 수", labels: ["R6", "R7a", "R7b", "R8", "R9", "R9b", "R9c", "R10 전", "R10"], values: [917, 941, 991, 1072, 1200, 1233, 1295, 1877, 2192] }],
     { x: 0.5, y: 2.65, w: 5.6, h: 2.45, barDir: "col", chartColors: [K.dk2], showTitle: true, title: "라운드별 오프라인 테스트 수", titleFontSize: 11, titleColor: K.dk2, titleFontFace: "+mn-lt",
       showValue: true, dataLabelPosition: "outEnd", dataLabelFontSize: 8.5, dataLabelColor: K.dk1, dataLabelFontFace: "+mn-lt", showLegend: false,
       catAxisLabelColor: K.dk1, catAxisLabelFontSize: 9, catAxisLabelFontFace: "+mn-lt", valAxisLabelColor: "8A8F8A", valAxisLabelFontSize: 8, valAxisLabelFontFace: "+mn-lt",
-      valGridLine: { color: "E3E7E1", size: 0.5 }, catGridLine: { style: "none" }, valAxisMinVal: 0, valAxisMaxVal: 1500 });
+      valGridLine: { color: "E3E7E1", size: 0.5 }, catGridLine: { style: "none" }, valAxisMinVal: 0, valAxisMaxVal: 2500 });
   card(s, 6.3, 2.65, 3.2, 2.45, "e2e가 확인하는 것", ["실제 Maven으로 끝까지 실행, exit code·blocked·LLM 호출 수 상한", "결과 pom의 부모·패키징·모듈 목록, 외부화 설정 플레이스홀더", "journal 이벤트(restructure mode 등)와 단계 결과", "핸드북 자체도 테스트: 적은 경로·설정 키·명령이 실제로 존재하는지"], { bodySize: 10.5 }); }
 
 { const s = content("열린 결정과 다음 단계", "현황과 다음 단계", "결정은 회사 몫이며, 각 항목은 CLAUDE.md 'Known follow-ups'에 적혀 있습니다.");
@@ -259,7 +269,7 @@ pres.addSection({ title: "현황과 다음 단계" });
     ["05-directories-and-storage.md", "config/ knowledge/ kb/ fixtures/ out/<run id>/ tests/ scripts/ 의 저장 형식과 활용", "운영자·개발자"],
     ["06-restructure-and-layouts.md", "회사 레이아웃 규칙, 모드별 before/after, 템플릿, 부모·버전, merge, JSP/WAR", "담당자·개발자"],
     ["07-api-reference.md · 08-config-reference.md", "CLI·REST·Python API·플러그인 계약·스키마 / 설정 키 전체", "개발자 / 운영자"],
-    ["09-operations.md", "사전 준비, Nexus 미러, Windows, 리포트 읽기, 멈춤 진단, 에러 카탈로그(한국어), 플릿, KB 위생, FAQ", "운영자"],
+    ["09-operations.md", "사전 준비, Nexus 미러, Windows, 리포트 읽기, SBMIG-RESULT, 멈춤 진단, 에러 카탈로그(한국어), 플릿 안전장치, KB 위생, FAQ", "운영자"],
     ["sbmig-reference.xlsx", "설정키 · 핸들러 · 에러카탈로그 · CLI · REST_API · 픽스처 · 저널이벤트 · 리포트플래그 · 레시피카탈로그 · 어드바이저리 · 지식노트 · 열거형 · 디렉터리", "모두"]], 0.5, 1.2, 9, [2.6, 5.2, 1.2], { size: 9.5 }); }
 
 (async () => { await pres.writeFile({ fileName: OUT }); if (applyTheme) await applyTheme(OUT, THEME); console.log("written", OUT); })().catch(e => { console.error(e); process.exit(1); });

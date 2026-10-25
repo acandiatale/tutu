@@ -92,7 +92,8 @@ def test_recipe_rules_match():
     mb = cluster_errors([err(ErrorKind.TEST_COMPILE, "cannot find symbol", file="T.java", symbol="class MockBean")])[0]
     assert rules.match(mb, Phase.SPRING)[0].id == "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean"
     sec = cluster_errors([err(message="cannot find symbol", file="S.java", symbol="class WebSecurityConfigurerAdapter")])[0]
-    assert "security6" in rules.match(sec, Phase.SPRING)[0].id
+    # round 10: no reactive security rule — the plan runs the Spring Security 6.0 … 7.0 chain on the as-is classpath
+    assert not [r for r in rules.match(sec, Phase.SPRING) if "security6" in r.id]
     sig = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "x", artifact="a:b:1")])[0]
     assert rules.match(sig) == []                                   # kinds filter
     assert rules.ref_for("nope") is None

@@ -9,7 +9,8 @@ every recipe id the other sources use must have an entry there, and `sbmig recip
 | # | Source | Authoritative for | Read by |
 |---|--------|-------------------|---------|
 | 1 | `knowledge/recipes/catalog.yml` | **What a recipe id is**: origin, artifact or file, default phase, description, docs link, what a composite `covers`, the profile `gate`, whether the LLM advisor may add it (`advisor`), and when it was verified | `sbmig/plan/catalog.py` (`RecipeCatalog`), the planner's `ADVISOR_CATALOG` / `ADVISOR_COVERAGE` / `ADVISOR_GATES`, `sbmig recipes …` |
-| 2 | `config/default.yml` → `openrewrite.recipes.{jdk21, jakarta, spring_boot_4, spring_framework_7, spring_security_7, junit5, extra}` | **What the rule-based plan runs** for each case, and in what order (company configs may override these) | `sbmig/plan/planner.py::spring_recipes` |
+| 2 | `config/default.yml` → `openrewrite.recipes.{jdk21, jakarta, spring_boot_4, spring_framework_7, spring_security_7, junit5, extra}` | **What the rule-based plan runs** for each case, and in what order (company configs may override these; `RecipeSetConfig` defaults mirror the yml) | `sbmig/plan/planner.py::spring_recipes` |
+| 2b | `knowledge/recipes/library_recipes.yml` (round 10) | **Library-conditional plan recipes** for plans without the Boot umbrella: detected library → recipes appended to the case's `spring.rewrite`; checked as sets `library.<library>` | `sbmig/plan/library_recipes.py`, `planner._library_refs` |
 | 3 | `knowledge/recipes/base/*.yml` | **The body of project-owned composites** (`com.company.migrate.*`), always composed into the run's `rewrite.yml` | `sbmig/rewrite/compose.py`, `planner.recipe_ref` |
 | 4 | `sbmig/triage/recipe_rules.yml` | **Reactive recipes**: error pattern → builtin recipe, tried by the fix loop before the LLM | `sbmig/triage/rules.py` |
 | 5 | `kb/recipes/{candidates,active,rejected}/*.yml` + `.meta.json`, `kb/patterns/*.yml` | **Learned recipes** (status, credits, signatures), plus hand-written signature → recipes/handlers/hints patterns | `sbmig/kb/store.py::FileKnowledgeBase` |
@@ -36,7 +37,7 @@ The catalog's `sets` and `rules` fields mirror those sources, and `check` keeps 
   covers: [org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta, ...]
   gate: is_boot              # named predicate in sbmig/plan/catalog.py GATES, or null
   advisor: true
-  sets: [spring_boot_4]      # openrewrite.recipes sets that reference it (checked)
+  sets: [spring_boot_4]      # openrewrite.recipes sets (or library.<library> rules) that reference it (checked)
   rules: [boot4-modularized-autoconfigure]   # recipe_rules.yml rules that use it (checked)
   verified: "2026-10"
   notes: knowledge/notes/boot3-to-4.md
@@ -175,6 +176,9 @@ in the catalog, and every `advisories: [x]` names an existing advisory that uses
 | `org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing` | sleuth | yes (3_0 → UpgradeSpringCloud_2022) |
 | `org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1` | spring-cloud-bom | yes (listed directly) |
 | `com.company.migrate.HystrixToResilience4j` (project, `base/hystrix-to-resilience4j.yml`) | hystrix | no |
+| `org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5` (rewrite-apache, `provided_by` rewrite-spring; round 10) | httpclient4 | yes, and inside `UpgradeSpringFramework_7_0` (7_0 → 6_2 → 6_1 → 6_0) |
+| `org.openrewrite.java.jackson.CodehausToFasterXML` (rewrite-jackson 1.28.4, `provided_by` rewrite-spring; round 10) | jackson1 | yes, and inside `UpgradeSpringFramework_7_0` (→ `UpgradeJackson_2_3`) |
+| `org.openrewrite.apache.commons.collections.UpgradeApacheCommonsCollections_3_4` (rewrite-apache, `provided_by` rewrite-spring) | commons-collections3 | no |
 
 They are `advisor: false`, so the LLM advisor never suggests them. They are listed under the umbrella's `covers`
 (verified against rewrite-spring 6.37.1). Because of this, a Boot project gets them from the umbrella and the
@@ -183,6 +187,59 @@ finding records `recipe_source: plan`. For non-Boot plans (spring_legacy, MSA li
 the same rewrite pass. Hystrix has no upstream recipe either; the project composite
 `com.company.migrate.HystrixToResilience4j` fills the gap. The umbrella does not cover it, so every plan prepends it
 (`recipe_source: advisory`), Boot projects included. Ribbon and Zuul have no recipe, so they stay `guide`.
+Round 10: `httpclient4` and `jackson1` became `recipe` for the Spring cases only (`applies_to: [spring_legacy,
+spring_boot, msa]`): the Framework 7 recipe and the Boot umbrella already run their recipes, so the finding records
+`recipe_source: plan` and the Handover reports what was migrated. Pure Java / servlet projects get the guide-only
+twins `httpclient4-direct` / `jackson1-direct` (no Spring chain migrates them there; see ADVISORIES.md).
+
+## Recipe sets added in round 10 (2026-10-26)
+
+All ids verified in the pinned jars (BOM 3.37.0, `sbmig recipes check --jars` OK, 2026-10-26); the catalog now has
+50 entries (43 `origin: openrewrite`, 7 project recipes).
+
+**Spring Security chain.** `openrewrite.recipes.spring_security_7` (planned for `spring_legacy` — MSA library roots
+included — when `spring-security` is detected; the Boot umbrella runs the same steps through 3_0 … 3_5 and 4_0) is
+the whole chain, in order:
+
+| # | recipe | what it adds |
+|---|---|---|
+| 1 | `org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0` | chains 5_8 → 5_7: `WebSecurityConfigurerAdapter` → `SecurityFilterChain` bean, lambda DSL, `authorizeRequests` / `antMatchers` → `authorizeHttpRequests` / `requestMatchers`, `@EnableGlobalMethodSecurity` → `@EnableMethodSecurity` |
+| 2–6 | `…security6.UpgradeSpringSecurity_6_1` … `_6_5` | the 6.x deprecation removals, one step each |
+| 7 | `org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0` | version bump, `SecurityConfigurer` `init` / `configure` lose `throws Exception`, `AuthorizationManager.check` → `authorize` |
+
+`UpgradeSpringSecurity_7_0` alone (before round 10) only bumped versions and dropped `throws Exception`. Every step is
+a `Singleton`, so running them next to the umbrella costs nothing. The reactive rule `spring-security-config` is gone
+from `sbmig/triage/recipe_rules.yml`: its type-attributed visitors found nothing on a Security 7 classpath — the plan
+runs the chain on the as-is classpath instead. What the recipes cannot see is left to handlers:
+`security-path-pattern-matcher` (`AntPathRequestMatcher` / `MvcRequestMatcher` → `PathPatternRequestMatcher`, E17) and
+`add-known-dependency` (the `spring-security-access` split: `AccessDecisionManager`, `ConfigAttribute`,
+`FilterSecurityInterceptor`, `WebExpressionVoter`, vote / intercept / method packages; managed by
+spring-security-bom 7.1.0, the project's `${spring-security.version}` reused).
+
+**Library recipes** (`knowledge/recipes/library_recipes.yml`, loader `sbmig/plan/library_recipes.py`). Boot projects get
+these through `UpgradeSpringBoot_4_0`; plans without the umbrella got none of them, so e.g. Spring Batch 4 code met
+the Batch 6 jars the Boot 4.1 BOM brings. A rule appends its recipes to the case's `spring.rewrite` when the analyzer
+detected the library, with a plan note (`caveats`: a plan note when the as-is poms declare an artifact the recipes do
+not migrate). Catalog entries list the rule as set `library.<library>`; `sbmig recipes check` / `sets` treat it like a
+config set. A broken table means no library recipes (logged), never a failed plan.
+
+| library | cases | recipes |
+|---|---|---|
+| `spring-batch` | spring_legacy | `org.openrewrite.java.spring.batch.SpringBatch5To6Migration` (chains `SpringBatch4To5Migration`) |
+| `hibernate` | spring_legacy, servlet_tomcat, pure_java (pure Java: with the jakarta migration) | `org.openrewrite.hibernate.MigrateToHibernate71` (rewrite-hibernate 2.25.0, `provided_by` rewrite-spring) |
+| `thymeleaf` | spring_legacy | `org.openrewrite.java.spring.boot3.MigrateThymeleafDependencies` (spring5 → spring6; caveat notes for `thymeleaf-spring4` / `thymeleaf-extras-springsecurity4`) |
+
+**Spring 7 / Boot 4 leftovers** (`knowledge/recipes/base/spring-7-leftovers.yml`, project recipes):
+
+| recipe | sets | content |
+|---|---|---|
+| `com.company.migrate.Boot4TypeRelocations` | `spring_boot_4` | 25 `ChangeType`s the 4.0 umbrella does not make: `ErrorController`, `ErrorAttributes`, `ErrorPage(Registrar)`, `ServletWebServerFactory`, `MultipartConfigFactory`, `OrderedCharacterEncodingFilter`, `ServerProperties`, `HttpMessageConverters`, `ServletComponentScan`, … (handler `boot4-type-relocation-sweep` covers the files OpenRewrite skipped from the same table, `boot4_types.yml` — keep both in sync) |
+| `com.company.migrate.Spring7RemovedApis` | `spring_boot_4`, `spring_framework_7` | removes `setUseSuffixPatternMatch` / `setUseTrailingSlashMatch` / `setUseRegisteredSuffixPatternMatch`, `favorPathExtension` / `ignoreUnknownPathExtensions`; `HttpHeaders` `containsKey` → `containsHeader`, `keySet` → `headerNames`, `entrySet` → `headerSet` |
+| `com.company.migrate.Jackson3SpringConverters` | `spring_boot_4`, `spring_framework_7` | `MappingJackson2HttpMessageConverter` → `JacksonJsonHttpMessageConverter`, `MappingJackson2JsonView` → `JacksonJsonView`, and the XML twins |
+
+**Servlet 6 removals.** `org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10` (`encodeUrl` → `encodeURL`,
+`getValue` → `getAttribute`, …) joined the `jakarta` set and `com.company.migrate.ServletToJakartaAndBoot`; the
+Framework 7 recipe and the Boot umbrella already include it.
 
 ## Download failures during a recipe run (round 9)
 
@@ -224,7 +281,8 @@ Credits come from three places:
   `rewrite-unresolved-versions` was raised in it, every remaining error is `dependency_resolution` /
   `parent_resolution` / `plugin_resolution` (or an OpenRewrite failure prefixed `download-retry:`), or — with no
   code error left — every blocked item is `artifact_not_found` / `parent_not_found`. Success credit is unchanged.
-* **Fix loop.** KB recipes tried for an error cluster are credited by the attempt's outcome.
+* **Fix loop.** KB recipes tried for an error cluster are credited by the attempt's outcome (round 10: `partial` and
+  `inconclusive` prove neither and credit nothing; journal `kb_credit_skipped` with `reason`).
 * **Harvest.** `KB_RECIPE` decisions are credited when the phase is harvested.
 
 Active recipes are appended to every plan's spring step, and the fix loop tries them when their signatures match.

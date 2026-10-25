@@ -44,12 +44,17 @@ def test_spring_boot_plan(tmp_path: Path, cfg) -> None:
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
         "com.company.migrate.SpringBoot41Version",
         "com.company.migrate.Boot4JacksonTwins",
+        "com.company.migrate.Boot4TypeRelocations",           # round 10 project recipes (spring-7-leftovers.yml)
+        "com.company.migrate.Spring7RemovedApis",
+        "com.company.migrate.Jackson3SpringConverters",
         "org.openrewrite.java.testing.junit5.JUnit4to5Migration"]
     assert spring.recipes[0].artifact == "org.openrewrite.recipe:rewrite-spring"
     proj = spring.recipes[2]
     assert proj.source == "project" and proj.artifact is None
     assert proj.file and proj.file.endswith("spring-boot-41-version.yml")
-    assert spring.recipes[4].artifact == "org.openrewrite.recipe:rewrite-testing-frameworks"
+    assert all(r.source == "project" and r.file and r.file.endswith("spring-7-leftovers.yml")
+               for r in spring.recipes[4:7])
+    assert spring.recipes[7].artifact == "org.openrewrite.recipe:rewrite-testing-frameworks"
     assert _step(plan, "spring.loop").build_goal == "test-compile"
     r = _step(plan, "restructure.apply")
     assert r.kind == StepKind.RESTRUCTURE and r.params == {"mode": "layout", "starter": "auto"}
@@ -68,17 +73,23 @@ def test_boot_without_junit4(tmp_path: Path, cfg) -> None:
 def test_spring_legacy_plan(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_spring_legacy(tmp_path), cfg), cfg)
     assert _ids(plan) == ORDER
+    # round 10: the whole Security chain (6.0 runs 5.8 → 5.7 first) instead of the 7.0 version bump alone
     assert _recipes(plan) == ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+                              "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
                               "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
+                              "com.company.migrate.Spring7RemovedApis",
+                              "com.company.migrate.Jackson3SpringConverters",
+                              *(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" for v in range(6)),
                               "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
                               "org.openrewrite.java.testing.junit5.JUnit4to5Migration"]
     assert _step(plan, "restructure.apply").params["starter"] == "spring-boot-starter-webmvc"
     assert any("@ImportResource" in n for n in plan.notes)
+    assert any("Spring Security chain UpgradeSpringSecurity_6_0 … UpgradeSpringSecurity_7_0" in n for n in plan.notes)
 
 
 def test_spring_legacy_without_security(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_spring_legacy(tmp_path, security=False), cfg), cfg)
-    assert "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0" not in _recipes(plan)
+    assert not any("security" in r.lower() for r in _recipes(plan))
 
 
 def test_servlet_plan(tmp_path: Path, cfg) -> None:
@@ -102,6 +113,7 @@ def test_pure_java_without_ee_omits_spring_rewrite(tmp_path: Path, cfg) -> None:
 def test_pure_java_with_ee_and_junit4(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_pure_java(tmp_path, javax_ee=True, junit4=True), cfg), cfg)
     assert _recipes(plan) == ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+                              "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
                               "org.openrewrite.java.testing.junit5.JUnit4to5Migration"]
     assert any("javax.xml.bind" in n for n in plan.notes)
 

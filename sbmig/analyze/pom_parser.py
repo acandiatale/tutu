@@ -16,10 +16,11 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional, Protocol
 
 from sbmig.core.models import GAV, PluginInfo, PomInfo
+from sbmig.core.workspace import is_build_output_path
 
 log = logging.getLogger("sbmig.analyze")
 
-SKIP_DIR_PARTS = {"target", "node_modules", ".git", ".idea", ".svn"}
+SKIP_DIR_PARTS = {"node_modules", ".git", ".idea", ".svn"}     # + Maven build output (`target/` beside a pom)
 BOOT_GROUP = "org.springframework.boot"
 BOOT_PARENTS = {"spring-boot-starter-parent", "spring-boot-parent"}
 SPRING_CORE_ARTIFACTS = ("spring-core", "spring-context", "spring-webmvc", "spring-web", "spring-beans")
@@ -41,7 +42,7 @@ class WorkspaceView(Protocol):
 # ---------------------------------------------------------------------------
 def is_skipped_path(rel: str) -> bool:
     parts = rel.replace("\\", "/").split("/")
-    if any(p in SKIP_DIR_PARTS for p in parts):
+    if any(p in SKIP_DIR_PARTS for p in parts) or is_build_output_path(rel):
         return True
     return "src/test/resources" in rel.replace("\\", "/")
 

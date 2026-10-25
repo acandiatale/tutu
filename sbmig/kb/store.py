@@ -18,8 +18,15 @@ Layout under ``cfg.kb_dir`` (created on first use)::
                                         block edited by people, the rest derived from errors.jsonl)
     catalog/index.json                  case id → file, L2 / L1 / symbol → case id (derived)
     views/cases.md, views/cases.csv     generated case tables for people (derived)
+    audit.jsonl                         human case edits + automatic case status / action transitions (round 10)
+    quarantine.jsonl                    notes about errors.jsonl lines that could not be read (round 10)
+    *.jsonl.corrupt                     torn last lines moved aside before the next append (round 10)
+    .lock                               the cross-process write lock (sbmig.kb.lock)
 
-All writes are atomic (temp file + ``os.replace``). Thread/process safety is not provided.
+All writes are atomic (temp file + ``os.replace``) or torn-line safe appends (``sbmig.kb.jsonl``), and run under the
+cross-process lock ``.lock`` (round 10: the web server, a fleet and ``sbmig kb …`` share one KB; re-entrant, waits
+up to ``kb.lock_timeout_seconds``, never fails a run). In-memory indexes are reloaded when their file changed
+since they were read.
 """
 from __future__ import annotations
 
@@ -52,14 +59,19 @@ from sbmig.core.models import (
 from sbmig.core.workspace import Workspace
 
 from .catalog import CATALOG_DIR, VIEWS_DIR, CaseCatalog
+from .catalog import clear_caches as clear_catalog_caches
 from .error_cases import ErrorCaseStore
+from .harvest import NO_REPLAY_TAG
+from .jsonl import append_lines
 from .labels import symbol_for_error, symbol_for_errors
 from .ledger import Ledger, SymbolIndex, advisory_record, blocked_record, unresolved_records
+from .lock import LOCK_NAME, kb_lock
 from .recipes import LEGACY_NAME_PREFIX, recipe_names_in_yaml
 
 log = logging.getLogger("sbmig.kb")
 
 INDEX_VERSION = 1
+AUDIT_FILES = ("audit.jsonl", "quarantine.jsonl")
 STATUSES = ("active", "candidate", "rejected")
 _STATUS_DIR = {"active": "active", "candidate": "candidates", "rejected": "rejected"}
 _UPDATED_TAG = "updated:"
@@ -95,6 +107,14 @@ def _basename(p: str) -> str:
     return PurePosixPath(p.replace("\\", "/")).name
 
 
+def _stamp(path: Path) -> Optional[tuple[int, int, int]]:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
 class FileKnowledgeBase:
     """Implements :class:`sbmig.core.interfaces.KnowledgeBaseLike` on plain files under ``cfg.kb_dir``."""
 
@@ -102,6 +122,7 @@ class FileKnowledgeBase:
         self.cfg = cfg
         self.root = Path(kb_dir) if kb_dir else cfg.kb_dir
         self._index: Optional[dict] = None
+        self._index_stamp: Optional[tuple[int, int, int]] = None   # index.json as it was when _index was read
         self._promoted: list[str] = []                  # auto-promotions not yet reported (drain_promoted)
         self._ledger_blocked: set[tuple[str, str]] = set()   # (run_id, blocked id) already in the ledger
         self._error_store: Optional[ErrorCaseStore] = None   # cached: keeps the hints index loaded across a fleet
@@ -132,17 +153,25 @@ class FileKnowledgeBase:
     def symbols_path(self) -> Path:
         return self.root / "symbols.json"
 
+    @property
+    def lock_timeout(self) -> float:
+        return float(getattr(self.cfg.kb, "lock_timeout_seconds", 300) or 0)
+
+    def lock(self):
+        """The cross-process KB lock (``<kb>/.lock``, re-entrant) — hold it around every read-modify-write."""
+        return kb_lock(self.root, self.lock_timeout)
+
     def ledger(self) -> Ledger:
-        return Ledger(self.ledger_path)
+        return Ledger(self.ledger_path, self.lock_timeout)
 
     def symbol_index(self) -> SymbolIndex:
-        return SymbolIndex(self.symbols_path)
+        return SymbolIndex(self.symbols_path, self.lock_timeout)
 
     def error_case_store(self) -> ErrorCaseStore:
         """errors.jsonl / fix_attempts.jsonl / error_hints.json (one instance per KB: the hints index is loaded
         once and reloaded only when the file changes)."""
         if self._error_store is None or self._error_store.root != self.root:
-            self._error_store = ErrorCaseStore(self.root)
+            self._error_store = ErrorCaseStore(self.root, self.lock_timeout)
         return self._error_store
 
     def catalog(self) -> CaseCatalog:
@@ -156,20 +185,23 @@ class FileKnowledgeBase:
         index and (``kb.catalog``) the case catalog + views. Returns the number of new records (errors + attempts).
         Never raises."""
         errors, attempts = list(errors or []), list(attempts or [])
-        try:
-            n = self.error_case_store().append(errors, attempts)
-        except Exception as e:
-            log.warning("kb.append_error_cases failed: %s: %s", type(e).__name__, e)
+        if not errors and not attempts:
             return 0
-        if self.cfg.kb.catalog and errors:
+        with self.lock():
             try:
-                cat = self.catalog()
-                changed = cat.update_from(errors, attempts)
-                cat.write_views()
-                if changed:
-                    log.info("case catalog: %d case(s) updated", len(changed))
-            except Exception as e:  # the events are stored; `sbmig kb reindex` rebuilds the catalog
-                log.warning("case catalog update failed: %s: %s", type(e).__name__, e)
+                n = self.error_case_store().append(errors, attempts)
+            except Exception as e:
+                log.warning("kb.append_error_cases failed: %s: %s", type(e).__name__, e)
+                return 0
+            if self.cfg.kb.catalog and errors:
+                try:
+                    cat = self.catalog()
+                    changed = cat.update_from(errors, attempts)
+                    cat.write_views()
+                    if changed:
+                        log.info("case catalog: %d case(s) updated", len(changed))
+                except Exception as e:  # the events are stored; `sbmig kb reindex` rebuilds the catalog
+                    log.warning("case catalog update failed: %s: %s", type(e).__name__, e)
         return n
 
     def status_dir(self, status: str) -> Path:
@@ -185,15 +217,18 @@ class FileKnowledgeBase:
         return {"version": INDEX_VERSION, "l1": {}, "l2": {}, "recipes": {}, "updated_at": utcnow().isoformat()}
 
     def _load_index(self) -> dict:
-        if self._index is not None:
+        """index.json, cached — and read again when the file changed since (another process wrote it: a fleet
+        must not save its stale copy over a web-server edit)."""
+        stamp = _stamp(self.index_path)
+        if self._index is not None and stamp == self._index_stamp:
             return self._index
-        if self.index_path.exists():
+        if stamp is not None:
             try:
                 data = json.loads(self.index_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("version") == INDEX_VERSION:
                     for k in ("l1", "l2", "recipes"):
                         data.setdefault(k, {})
-                    self._index = data
+                    self._index, self._index_stamp = data, stamp
                     return data
                 log.warning("kb index %s has unknown version; rebuilding", self.index_path)
             except (OSError, ValueError) as e:
@@ -201,19 +236,23 @@ class FileKnowledgeBase:
             self.reindex()
             assert self._index is not None
             return self._index
+        if self._index is not None and self._index_stamp is None:
+            return self._index                       # built in memory, not saved yet
         if self.root.exists() and (any(self.cases_dir.glob("*/*.json")) if self.cases_dir.exists() else False):
             self.reindex()
             assert self._index is not None
             return self._index
-        self._index = self._empty_index()
+        self._index, self._index_stamp = self._empty_index(), None
         return self._index
 
     def _save_index(self) -> None:
-        idx = self._load_index()
-        idx["updated_at"] = utcnow().isoformat()
-        for k in ("l1", "l2", "recipes"):
-            idx[k] = {s: v for s, v in sorted(idx[k].items()) if v}
-        atomic_write(self.index_path, json.dumps(idx, indent=1, sort_keys=False, ensure_ascii=False) + "\n")
+        with self.lock():
+            idx = self._load_index()
+            idx["updated_at"] = utcnow().isoformat()
+            for k in ("l1", "l2", "recipes"):
+                idx[k] = {s: v for s, v in sorted(idx[k].items()) if v}
+            atomic_write(self.index_path, json.dumps(idx, indent=1, sort_keys=False, ensure_ascii=False) + "\n")
+            self._index_stamp = _stamp(self.index_path)
 
     @staticmethod
     def _idx_add(table: dict, sig: str, value: str) -> None:
@@ -246,30 +285,32 @@ class FileKnowledgeBase:
 
     def reindex(self) -> int:
         """Rebuild index.json (and symbols.json) from the case and recipe files. Returns the case count."""
-        self._index = self._empty_index()
-        cases = list(self.iter_cases())
-        for case in cases:
-            self._index_case(case)
-        for r in self.list_recipes():
-            self._index_recipe(r)
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._save_index()
-        if self.cfg.kb.symbol_index:
-            self.symbol_index().rebuild(cases)
-        store = self.error_case_store()
-        if store.errors_path.exists():
-            try:
-                store.rebuild_hints()
-            except Exception as e:  # the case index above is what reindex must not lose
-                log.warning("error hints rebuild failed: %s: %s", type(e).__name__, e)
-        cat = self.catalog()
-        if self.cfg.kb.catalog and (store.errors_path.exists() or cat.catalog_dir.exists()):
-            try:
-                cat.rebuild()
-                cat.write_views()
-            except Exception as e:
-                log.warning("case catalog rebuild failed: %s: %s", type(e).__name__, e)
-        return len(cases)
+        with self.lock():
+            # the empty in-memory index stands for the file until it is saved below (no reload in between)
+            self._index, self._index_stamp = self._empty_index(), _stamp(self.index_path)
+            cases = list(self.iter_cases())
+            for case in cases:
+                self._index_case(case)
+            for r in self.list_recipes():
+                self._index_recipe(r)
+            self.root.mkdir(parents=True, exist_ok=True)
+            self._save_index()
+            if self.cfg.kb.symbol_index:
+                self.symbol_index().rebuild(cases)
+            store = self.error_case_store()
+            if store.errors_path.exists():
+                try:
+                    store.rebuild_hints()
+                except Exception as e:  # the case index above is what reindex must not lose
+                    log.warning("error hints rebuild failed: %s: %s", type(e).__name__, e)
+            cat = self.catalog()
+            if self.cfg.kb.catalog and (store.errors_path.exists() or cat.catalog_dir.exists()):
+                try:
+                    cat.rebuild()
+                    cat.write_views()
+                except Exception as e:
+                    log.warning("case catalog rebuild failed: %s: %s", type(e).__name__, e)
+            return len(cases)
 
     # ------------------------------------------------------------------ cases
     def case_path(self, case_id: str) -> Path:
@@ -324,44 +365,47 @@ class FileKnowledgeBase:
 
     def record_case_ex(self, case: KBCase) -> tuple[str, bool]:
         """Record (or dedupe) a case. Returns (case_id, created)."""
-        self.ensure_layout()
-        content_hash = case_content_hash(case)
-        existing = self._find_case_by_hash(content_hash)
-        if existing is not None:
-            existing.reuse_count += 1
-            fp = case.project_fingerprint
-            if fp and fp not in existing.reuse_projects and fp != existing.project_fingerprint:
-                existing.reuse_projects.append(fp)
-            self._touch_updated(existing)
-            self._write_case(existing)
-            self._index_case(existing)
+        with self.lock():
+            self.ensure_layout()
+            content_hash = case_content_hash(case)
+            existing = self._find_case_by_hash(content_hash)
+            if existing is not None:
+                existing.reuse_count += 1
+                fp = case.project_fingerprint
+                if fp and fp not in existing.reuse_projects and fp != existing.project_fingerprint:
+                    existing.reuse_projects.append(fp)
+                self._touch_updated(existing)
+                self._write_case(existing)
+                self._index_case(existing)
+                self._save_index()
+                return existing.id, False
+            case = case.model_copy(deep=True)
+            case.id = f"{case.created_at.strftime('%Y%m%d')}-{content_hash}"
+            self._write_case(case)
+            self._index_case(case)
             self._save_index()
-            return existing.id, False
-        case = case.model_copy(deep=True)
-        case.id = f"{case.created_at.strftime('%Y%m%d')}-{content_hash}"
-        self._write_case(case)
-        self._index_case(case)
-        self._save_index()
-        return case.id, True
+            return case.id, True
 
     def record_case(self, case: KBCase) -> str:
         return self.record_case_ex(case)[0]
 
     def bump_case_reuse(self, case_id: str, project_fingerprint: str = "") -> Optional[KBCase]:
-        case = self.get_case(case_id)
-        if case is None:
-            return None
-        case.reuse_count += 1
-        if project_fingerprint and project_fingerprint not in case.reuse_projects:
-            case.reuse_projects.append(project_fingerprint)
-        self._touch_updated(case)
-        self._write_case(case)
-        return case
+        with self.lock():
+            case = self.get_case(case_id)
+            if case is None:
+                return None
+            case.reuse_count += 1
+            if project_fingerprint and project_fingerprint not in case.reuse_projects:
+                case.reuse_projects.append(project_fingerprint)
+            self._touch_updated(case)
+            self._write_case(case)
+            return case
 
     def update_case(self, case: KBCase) -> None:
-        self._write_case(case)
-        self._index_case(case)
-        self._save_index()
+        with self.lock():
+            self._write_case(case)
+            self._index_case(case)
+            self._save_index()
 
     # ------------------------------------------------------------------ recipes
     def _meta_path(self, yml: Path) -> Path:
@@ -459,49 +503,56 @@ class FileKnowledgeBase:
 
     def add_recipe(self, yaml_text: str, recipe: KBRecipe) -> KBRecipe:
         """Store a recipe yml + meta in the directory of ``recipe.status``. Returns the stored recipe."""
-        self.ensure_layout()
-        yml = self.status_dir(recipe.status) / f"{recipe.id}.yml"
-        recipe = recipe.model_copy(update={"path": str(yml)})
-        atomic_write(yml, yaml_text.rstrip("\n") + "\n")
-        self._write_recipe_meta(recipe)
-        self._index_recipe(recipe)
-        self._save_index()
-        return recipe
+        with self.lock():
+            self.ensure_layout()
+            yml = self.status_dir(recipe.status) / f"{recipe.id}.yml"
+            recipe = recipe.model_copy(update={"path": str(yml)})
+            atomic_write(yml, yaml_text.rstrip("\n") + "\n")
+            self._write_recipe_meta(recipe)
+            self._index_recipe(recipe)
+            self._save_index()
+            return recipe
 
     def _move_recipe(self, recipe: KBRecipe, status: str, extra: Optional[dict] = None,
                      **updates: Any) -> KBRecipe:
-        src_yml = Path(recipe.path)
-        src_meta = self._meta_path(src_yml)
-        merged_extra = {**self._recipe_meta_extra(recipe), **(extra or {})}
-        dst_dir = self.status_dir(status)
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        dst_yml = dst_dir / src_yml.name
-        if src_yml != dst_yml:
-            os.replace(src_yml, dst_yml)
-            if src_meta.exists():
-                src_meta.unlink()
-        new = recipe.model_copy(update={"status": status, "path": str(dst_yml), **updates})
-        self._write_recipe_meta(new, merged_extra)
-        self._index_recipe(new)
-        self._save_index()
-        return new
+        """Crash-safe order (round 10): the new meta is written beside the destination first, then the yml moves,
+        then the old meta goes. A crash in between leaves either the old state (the yml still in its directory; an
+        orphan meta is ignored — recipes are found by their yml) or the new one."""
+        with self.lock():
+            src_yml = Path(recipe.path)
+            src_meta = self._meta_path(src_yml)
+            merged_extra = {**self._recipe_meta_extra(recipe), **(extra or {})}
+            dst_dir = self.status_dir(status)
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst_yml = dst_dir / src_yml.name
+            new = recipe.model_copy(update={"status": status, "path": str(dst_yml), **updates})
+            self._write_recipe_meta(new, merged_extra)
+            if src_yml != dst_yml:
+                os.replace(src_yml, dst_yml)
+                if src_meta.exists() and src_meta != self._meta_path(dst_yml):
+                    src_meta.unlink()
+            self._index_recipe(new)
+            self._save_index()
+            return new
 
     def promote(self, recipe_id: str) -> KBRecipe:
-        r = self.get_recipe(recipe_id)
-        if r is None:
-            raise KeyError(f"unknown recipe {recipe_id}")
-        if r.status == "active":
-            return r
-        new = self._move_recipe(r, "active", promoted_at=utcnow())
+        with self.lock():
+            r = self.get_recipe(recipe_id)
+            if r is None:
+                raise KeyError(f"unknown recipe {recipe_id}")
+            if r.status == "active":
+                return r
+            new = self._move_recipe(r, "active", promoted_at=utcnow())
         log.info("kb recipe %s promoted to active", new.id)
         return new
 
     def reject(self, recipe_id: str, reason: str = "") -> KBRecipe:
-        r = self.get_recipe(recipe_id)
-        if r is None:
-            raise KeyError(f"unknown recipe {recipe_id}")
-        extra = {"rejected_at": utcnow().isoformat(), "rejected_reason": reason}
-        new = self._move_recipe(r, "rejected", extra=extra)
+        with self.lock():
+            r = self.get_recipe(recipe_id)
+            if r is None:
+                raise KeyError(f"unknown recipe {recipe_id}")
+            extra = {"rejected_at": utcnow().isoformat(), "rejected_reason": reason}
+            new = self._move_recipe(r, "rejected", extra=extra)
         log.info("kb recipe %s rejected: %s", new.id, reason)
         return new
 
@@ -509,23 +560,25 @@ class FileKnowledgeBase:
         """Count a success/failure of a KB recipe; auto-promotes a candidate after success in
         ``kb.auto_promote_after_projects`` distinct projects without failure. Returns the (possibly promoted)
         recipe, None for unknown ids. Promotions are also queued for :meth:`drain_promoted`."""
-        r = self.get_recipe(recipe_id)
-        if r is None:
-            log.debug("credit for unknown kb recipe %s ignored", recipe_id)
-            return None
-        if success:
-            r.success_count += 1
-            if project_fingerprint and project_fingerprint not in r.projects:
-                r.projects.append(project_fingerprint)
-        else:
-            r.fail_count += 1
-        self._write_recipe_meta(r, self._recipe_meta_extra(r))
-        n = self.cfg.kb.auto_promote_after_projects
-        if r.status == "candidate" and n > 0 and r.fail_count == 0 and r.success_count > 0 and len(r.projects) >= n:
-            r = self.promote(r.id)
-            if r.id not in self._promoted:
-                self._promoted.append(r.id)
-        return r
+        with self.lock():
+            r = self.get_recipe(recipe_id)
+            if r is None:
+                log.debug("credit for unknown kb recipe %s ignored", recipe_id)
+                return None
+            if success:
+                r.success_count += 1
+                if project_fingerprint and project_fingerprint not in r.projects:
+                    r.projects.append(project_fingerprint)
+            else:
+                r.fail_count += 1
+            self._write_recipe_meta(r, self._recipe_meta_extra(r))
+            n = self.cfg.kb.auto_promote_after_projects
+            if r.status == "candidate" and n > 0 and r.fail_count == 0 and r.success_count > 0 \
+                    and len(r.projects) >= n:
+                r = self.promote(r.id)
+                if r.id not in self._promoted:
+                    self._promoted.append(r.id)
+            return r
 
     def drain_promoted(self) -> list[str]:
         """Recipe ids auto-promoted since the last call (by the loop, the plan credit or the harvest)."""
@@ -584,8 +637,9 @@ class FileKnowledgeBase:
         return hits[0].replace("\\", "/") if len(hits) == 1 else None
 
     def replay_view(self, case: KBCase, ws: Workspace) -> Optional[KBCase]:
-        """Return a copy of ``case`` with paths resolved against ``ws`` if its patch can be replayed, else None."""
-        if case.fix_kind != "llm_patch" or not case.changes:
+        """Return a copy of ``case`` with paths resolved against ``ws`` if its patch can be replayed, else None.
+        A case whose text had a secret masked (tag ``no-replay:redacted``) is never replayed (hint only)."""
+        if case.fix_kind != "llm_patch" or not case.changes or NO_REPLAY_TAG in case.tags:
             return None
         new_changes = []
         for ch in case.changes:
@@ -637,9 +691,17 @@ class FileKnowledgeBase:
         if not self.root.exists():
             return out
         l1, l2 = self._cluster_signatures(cluster)
+        all_sigs = [*l1, *l2]
         catalog_on = bool(kbc.catalog) and self.catalog().index_path.exists()
+        rejected: set[str] = set()
         if catalog_on:
             out.case_hits = self.catalog().match(cluster.errors)     # never raises
+            # a case rejected by a person also switches off the KB patch replay, KB recipes and symbol hints of its
+            # signatures (round 10) — not only its own action and hints
+            rejected = self.catalog().rejected_signatures(all_sigs)
+            if rejected:
+                l1 = [s for s in l1 if s not in rejected]
+                l2 = [s for s in l2 if s not in rejected]
         sigs = set(l1) | set(l2)
         idx = self._load_index()
 
@@ -686,9 +748,9 @@ class FileKnowledgeBase:
 
         # ---- patterns
         pattern_hints: list[str] = []
-        for pat in self.load_patterns():
+        for pat in self.load_patterns():                             # hand-written patterns: never switched off
             rx = pat["_re"]
-            if not any(rx.search(s) for s in [*l1, *l2]):
+            if not any(rx.search(s) for s in all_sigs):
                 continue
             if kbc.use_active_recipes:
                 for rid in pat.get("recipes") or []:
@@ -706,7 +768,9 @@ class FileKnowledgeBase:
             symbol_hints: list[str] = []
             if kbc.symbol_index and self.symbols_path.exists():
                 try:
-                    sym = symbol_for_errors(cluster.errors)
+                    errs = [e for e in cluster.errors
+                            if not (e.signature_generic in rejected or (e.signature and e.signature in rejected))]
+                    sym = symbol_for_errors(errs) if errs else ""
                     symbol_hints = self.symbol_index().hints(sym) if sym else []
                 except Exception as e:  # pragma: no cover - hints are best effort
                     log.debug("symbol hints failed: %s", e)
@@ -798,13 +862,17 @@ class FileKnowledgeBase:
 
     # ------------------------------------------------------------------ stats / transfer
     def stats(self) -> dict[str, Any]:
+        """Counts, streamed (no list of every case / record in memory — a fleet KB holds tens of thousands)."""
         idx = self._load_index() if self.root.exists() else self._empty_index()
-        cases = list(self.iter_cases())
+        n_cases = n_reused = 0
+        for c in self.iter_cases():
+            n_cases += 1
+            n_reused += c.reuse_count > 0
         recipes = self.list_recipes() if self.root.exists() else []
         return {
             "kb_dir": str(self.root),
-            "cases": len(cases),
-            "cases_reused": sum(1 for c in cases if c.reuse_count > 0),
+            "cases": n_cases,
+            "cases_reused": n_reused,
             "recipes_active": sum(1 for r in recipes if r.status == "active"),
             "recipes_candidate": sum(1 for r in recipes if r.status == "candidate"),
             "recipes_rejected": sum(1 for r in recipes if r.status == "rejected"),
@@ -835,28 +903,80 @@ class FileKnowledgeBase:
         the kb root)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if self.root.exists():
-            self.reindex()
         tmp = path.with_name(path.name + ".tmp")
-        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-            if self.root.exists():
-                for p in sorted(self.root.rglob("*")):
-                    if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
-                        continue
-                    rel = p.relative_to(self.root)
-                    if rel.parts[0] not in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR) and \
-                            rel.as_posix() not in (
-                            "index.json", "ledger.jsonl", "symbols.json", *ERROR_CASE_FILES):
-                        continue
-                    zf.write(p, rel.as_posix())
+        existed = self.root.exists()                     # (taking the lock creates the directory)
+        with self.lock():                                # a consistent snapshot: no writer in between
+            if existed:
+                self.reindex()
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+                if existed:
+                    for p in sorted(self.root.rglob("*")):
+                        if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
+                            continue
+                        rel = p.relative_to(self.root)
+                        if rel.parts[0] not in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR) and \
+                                rel.as_posix() not in (
+                                "index.json", "ledger.jsonl", "symbols.json", *ERROR_CASE_FILES, *AUDIT_FILES):
+                            continue
+                        zf.write(p, rel.as_posix())
         os.replace(tmp, path)
         return path
 
     def import_zip(self, path: str | Path, merge: bool = True) -> dict[str, int]:
         """Import a kb zip. merge=True merges cases/recipes into the local KB (local status wins);
-        merge=False replaces the local KB contents. The case catalog is rebuilt from the merged events: local
-        ``human`` blocks are kept, an imported one is taken only for a case the local KB does not have. Returns
-        counters."""
+        merge=False replaces the local KB: the new KB is built in a sibling temp dir and swapped in by rename,
+        the old one kept as ``<kb>.bak-<timestamp>`` (round 10 — a crash half-way never leaves a half-deleted KB).
+        The case catalog is rebuilt from the merged events: local ``human`` blocks are kept, an imported one is
+        taken only for a case the local KB does not have. Returns counters."""
+        if not merge:
+            return self._import_replace(path)
+        with self.lock():
+            return self._import_merge(path, merge=True)
+
+    def _import_replace(self, path: str | Path) -> dict[str, int]:
+        stamp = utcnow().strftime("%Y%m%d-%H%M%S")
+        parent = self.root.parent
+        parent.mkdir(parents=True, exist_ok=True)
+        build_dir = Path(tempfile.mkdtemp(prefix=f".{self.root.name}.import-{stamp}-", dir=str(parent)))
+        with self.lock():
+            try:
+                fresh = FileKnowledgeBase(self.cfg, kb_dir=build_dir)
+                counters = fresh._import_merge(path, merge=False)
+                old = self.root
+                for keep in (old.rglob(".gitkeep") if old.exists() else []):   # the repo's tracked layout files
+                    dst = build_dir / keep.relative_to(old)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    if not dst.exists():
+                        shutil.copyfile(keep, dst)
+                backup = None
+                if old.exists():
+                    backup = parent / f"{old.name}.bak-{stamp}"
+                    n = 1
+                    while backup.exists():
+                        n += 1
+                        backup = parent / f"{old.name}.bak-{stamp}-{n}"
+                    os.replace(old, backup)
+                try:
+                    os.replace(build_dir, old)
+                except OSError:
+                    if backup is not None:                # put the previous KB back where it was
+                        os.replace(backup, old)
+                    raise
+                if backup is not None:
+                    try:                                  # our lock moved with the old KB
+                        (backup / LOCK_NAME).unlink()
+                    except OSError:
+                        pass
+                    counters["backup"] = str(backup)      # type: ignore[assignment]
+                    log.info("kb import --replace: the previous KB is kept in %s", backup)
+            except BaseException:
+                shutil.rmtree(build_dir, ignore_errors=True)
+                raise
+            self._index, self._index_stamp, self._error_store, self._catalog = None, None, None, None
+            clear_catalog_caches()
+        return counters
+
+    def _import_merge(self, path: str | Path, merge: bool) -> dict[str, int]:
         counters = {"cases_added": 0, "cases_merged": 0, "recipes_added": 0, "recipes_merged": 0,
                     "patterns_added": 0, "ledger_added": 0, "error_cases_added": 0, "fix_attempts_added": 0,
                     "case_humans_added": 0}
@@ -870,15 +990,7 @@ class FileKnowledgeBase:
                         raise ValueError(f"zip slip blocked: {m.filename}")
                 zf.extractall(tmp)
             other = FileKnowledgeBase(self.cfg, kb_dir=tmp)
-            if not merge and self.root.exists():
-                for sub in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR):
-                    shutil.rmtree(self.root / sub, ignore_errors=True)
-                for f in (self.index_path, self.ledger_path, self.symbols_path,
-                          *(self.root / n for n in ERROR_CASE_FILES)):
-                    if f.exists():
-                        f.unlink()
-                self._error_store = None
-            self._index = None
+            self._index, self._index_stamp = None, None
             self.ensure_layout()
 
             for case in other.iter_cases():
@@ -934,6 +1046,14 @@ class FileKnowledgeBase:
             if src.errors_path.exists() or src.attempts_path.exists():
                 ne, na = self.error_case_store().append_counts(src.iter_errors(), src.iter_attempts())
                 counters["error_cases_added"], counters["fix_attempts_added"] = ne, na
+            for name in AUDIT_FILES:                     # audit / quarantine notes: whole lines not stored yet
+                src_p, dst_p = other.root / name, self.root / name
+                if src_p.exists():
+                    have = set(dst_p.read_text(encoding="utf-8", errors="replace").splitlines()) \
+                        if dst_p.exists() else set()
+                    lines = [ln for ln in src_p.read_text(encoding="utf-8", errors="replace").splitlines()
+                             if ln.strip() and ln not in have]
+                    append_lines(dst_p, lines)
             counters["case_humans_added"] = self._import_case_humans(other, local_case_ids)
         self.reindex()
         return counters

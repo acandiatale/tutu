@@ -15,10 +15,14 @@ sbmig fleet run fleet.yml --config config/artifacts.yml --out out/fleet
 
 # 3. progress at any time (also while it runs, from another shell)
 sbmig fleet status out/fleet
+sbmig fleet status out/fleet --attention     # only the projects that need a human, grouped by attention code
 
-# 4. after a crash / Ctrl-C / reboot: continue where it stopped (same manifest + configs)
+# 4. after a crash / Ctrl-C / reboot / an infrastructure stop: continue where it stopped (same manifest + configs)
 sbmig fleet resume out/fleet                 # = sbmig fleet run fleet.yml --config … --out out/fleet
 sbmig fleet resume out/fleet --retry-failed  # also re-run incomplete / aborted projects
+
+# 5. disk space (round 10): what finished runs left behind
+sbmig clean --fleet out/fleet --older-than 7 --keep-failed --dry-run
 ```
 
 Manifest forms:
@@ -30,33 +34,89 @@ Manifest forms:
 | `.yml` | `projects: [{name, input, configs: [...], overrides: {...}, tags: [...]}]` |
 | `.csv` | header `name,input,tags` |
 
-Paths are relative to the manifest file. A missing input is marked `skipped` (it runs on a later resume once it
-exists); it never stops the fleet. A Gradle / Ant / no-build project rejected at intake (flag
+Paths are relative to the manifest file. Manifest files are read whatever the editor saved (round 10): UTF-8 with or
+without BOM (Excel "CSV UTF-8"), UTF-16 (PowerShell 5.1 `>`), else cp949. Project names become run ids and directory
+names, so they are ASCII: a name with non-ASCII characters (`주문관리-v2`) becomes its ASCII slug plus a 6-character
+hash of the input path (`v2-1a2b3c`), and a name that collides with an earlier one gets the hash too; plain ASCII
+names are unchanged. A missing input is marked `skipped` (it runs on a later resume once it exists); it never stops
+the fleet. A Gradle / Ant / no-build project rejected at intake (flag
 `unsupported-build-tool:<tool>`, exit 3) is `skipped` too (round 9): the reason is in the row's `error`, it is never
 re-run by `--retry-failed`, and `--stop-on-abort` does not stop the fleet for it. Per-project `configs` / `overrides` are merged over the fleet config, except
 `kb.dir`: the KB is always fleet-wide.
 
 `sbmig fleet run` exit codes: `0` all projects succeeded, `2` some are incomplete / skipped / not run yet,
-`3` stopped on an aborted project (`--stop-on-abort`). `--dry-run` prints the order and the resume decision per
-project without running anything.
+`3` stopped on an aborted project (`--stop-on-abort`) or by the infrastructure guard (state saved; a plain re-run
+resumes). `--dry-run` prints the order and the resume decision per project without running anything.
 
 ## What is persisted where
 
 | path | content |
 |---|---|
-| `<out>/fleet/state.json` | `FleetState`: one `FleetProjectResult` per project (status, exit code, run id, LLM calls, blocked reasons, KB cases/candidates/promotions/used). Rewritten atomically after every project. |
-| `<out>/fleet/summary.md` / `.csv` / `.json` | the progress table (+ totals, "still running: X"), rewritten after every project |
+| `<out>/fleet/state.json` | `FleetState`: one `FleetProjectResult` per project (status, exit code, run id, LLM calls, blocked reasons, KB cases/candidates/promotions/used). Rewritten atomically after every project. Projects are identified by their normalized input path (`manifest.input_key`: absolute, case-folded on Windows), not by the name — a renamed or added folder never inherits another project's success; older state files match unchanged. |
+| `<out>/fleet/summary.md` / `.csv` / `.json` | the progress table (+ totals, "still running: X"), rewritten after every project. Round 10: `summary.csv` is UTF-8 with BOM and has the columns `attention` (`;`-separated codes, below) and `input`; `summary.md` starts with "Needs attention" (projects grouped by their first code); each file is written on its own, so a `summary.csv` Excel keeps open is skipped with a log line and the others are still written |
+| `<out>/fleet/sbmig.log` | the fleet's INFO log (preflight, one `SBMIG-RESULT` line per project, infrastructure waits) |
 | `<out>/fleet/learning.md` | what the KB learned during this fleet (see below) |
 | `<out>/fleet/fleet-config.json` | manifest + config paths + overrides of the last `run` (used by `resume`) |
-| `<out>/<fleet-id>-<NNN>-<name>/` | the normal run directory of each project (`report.md`, `report.json`, `result.zip`, journal, logs) |
+| `<out>/<fleet-id>-<NNN>-<name>/` | the normal run directory of each project (`report.md`, `report.json`, `result.zip`, journal, logs, and since round 10 its own DEBUG `sbmig.log`); `fleet.cleanup` thins it after the report (below) |
 | `<kb.dir>/cases/…`, `recipes/…`, `index.json` | the KB (as for single runs) |
 | `<kb.dir>/ledger.jsonl` | append-only resolution ledger, one line per resolved / blocked / unresolved cluster |
 | `<kb.dir>/symbols.json` | error-case symbol → how it was fixed, in how many projects |
+| `<kb.dir>/.lock` | round 10: cross-process KB lock — the fleet, the web server and `sbmig kb …` may share one KB; every write waits for it (`kb.lock_timeout_seconds`, stale locks are broken) |
 
 Resume rules: `success` projects are never re-run; `incomplete` / `aborted` only with `--retry-failed`
 (`fleet.retry_failed`); `skipped` for an unsupported build tool stays skipped; a project left in `running` (the
-fleet process died) is re-run. Retries get a new run id
-(`…-r2`) and `attempt` is incremented.
+fleet process died) is re-run; a project deferred by the infrastructure guard (`pending`, `error: infra:<kind>`) is
+re-run first. Retries get a new run id (`…-r2`) and `attempt` is incremented.
+
+## Infrastructure guard (round 10)
+
+500 projects in a row must not all fail because the gateway, Nexus, the JDK or the disk is gone for an hour.
+
+* **Preflight** (`fleet.preflight`, `sbmig/fleet/preflight.py`): before the first project — and again before resuming
+  after a pause — one ASCII line per check, `preflight: <check> ok|FAIL|skip <detail>`: `disk` (free space on the
+  output drive vs `fleet.min_free_gb`), `maven` (`mvn -v`), `java` (the major Maven runs on vs
+  `build.require_java_major`), `settings` (`build.settings_file` exists, its catch-all mirror), `repository` (one GET
+  to that mirror the way Maven goes: a settings `<proxy>` is used, environment proxies are not; any answer below 500
+  counts as up, an unverifiable TLS handshake too), `llm` (one `probe_llm` call, the same as `sbmig llm-probe`;
+  skipped for the fake provider or `loop.max_llm_calls: 0`). A failure names its kind (`disk | maven | jdk |
+  repository | llm`) and whether it can recover by itself (an outage, a full disk) or is a configuration error (no
+  Maven, Java 17, settings file missing, LLM key / model rejected).
+* **Breaker**: a project whose run ends with an `infra:<kind>` flag (docs/ERROR-HANDLING.md X12; also the older
+  `llm-unavailable` / `llm-config-error` / `mvn-not-found` / `jdk-not-21` on a run that is not green) or crashes with
+  an infrastructure exception (full disk, requests / LLM error, mvn missing) is not counted as failed: it goes back
+  to `pending` with `error: infra:<kind>`. After `fleet.infra_failure_limit` (3) such projects in a row the fleet
+  prints `fleet: infrastructure <kind> unavailable since <project> - waiting N min, then re-checking (i/max)`, waits
+  `fleet.infra_retry_minutes` (15), re-runs the preflight and resumes with the deferred projects (each is re-run at
+  most twice per fleet process). After `fleet.infra_max_waits` (4) waits without a healthy project in between, at
+  once with `infra_retry_minutes: 0`, or at once when the re-check finds a configuration error, it stops with one line
+  `fleet stopped: infrastructure <kind> unavailable since <project> - fix it and run sbmig fleet again` (exit 3,
+  state saved).
+* **Disk**: before each project the free space is checked (`fleet.min_free_gb`, 5; below → kind `disk`, handled like
+  an infrastructure failure). After each project's report and `result.zip`, `fleet.cleanup` runs
+  (`sbmig/fleet/cleanup.py`): `build-output` (default) deletes the `target/` directories next to a `pom.xml` in the run
+  copy (a Java package named `target` is never touched); `workspace` also deletes `<run dir>/project` (git history
+  included) when `result.zip` exists, keeping `result.zip`, `report.*`, `changes.patch`, `journal.jsonl`, `sbmig.log`
+  and `logs/`; `none` keeps everything.
+* **`sbmig clean [--out DIR] [--fleet DIR] [--older-than DAYS] [--keep-failed] [--dry-run] [--records DIR]`**: frees the
+  project copies of finished runs, the web UI's uploads of finished runs, stale `.part` uploads and the LLM records
+  (`llm-*.json`); running / queued runs are never touched; prints count and size per kind, then `would free …` /
+  `freed …`.
+
+## Attention codes and the one-line result (round 10)
+
+Every project prints (and the fleet log records) one ASCII line operators can retype from a cp949 console:
+
+```
+SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes|->
+```
+
+`sbmig run` ends with the same line (`attn=crash` when it raised), and so does a web run's `sbmig.log`. The codes
+(`sbmig/report/result_line.py`), most important first: `infra:<kind>`, `skipped:<tool|input>`, `crash`,
+`aborted[:<reason>]`, `blocked:<reason>` (one per distinct reason), `unresolved:<n>`, `restructure-failed`,
+`llm-budget-exhausted`, `time-budget-exhausted`, `javax-api-on-classpath`, `tests-skipped`, `test-compile-skipped`,
+`tests-not-compiled`, `incomplete` (exit 2 with none of the above). A green run (exit 0) never gets `infra:`. They
+fill `summary.csv`'s `attention` column, the "Needs attention" section of `summary.md`, and `sbmig fleet status
+--attention` (only those projects, grouped by their first code, ≤ 50 per code).
 
 ## The learning loop across projects
 
@@ -199,13 +259,20 @@ your team" list for the owners.
 | `fleet.max_llm_calls_total` | `0` | fleet-wide LLM budget; each project gets `min(loop.max_llm_calls, remaining)` |
 | `fleet.reindex_every` | `10` | `kb reindex` (index.json + symbols.json) after every N projects |
 | `fleet.summary_formats` | `[md, csv, json]` | summary files (learning.md is always written) |
+| `fleet.preflight` | `true` | infrastructure checks before the first project and on every re-check |
+| `fleet.infra_failure_limit` | `3` | projects in a row that ended for an infrastructure reason before the fleet waits |
+| `fleet.infra_retry_minutes` | `15` | wait before re-checking (`0` = stop at once, state kept) |
+| `fleet.infra_max_waits` | `4` | re-checks without a healthy project before the fleet stops |
+| `fleet.cleanup` | `build-output` | after each project: `none` \| `build-output` (`target/` of the run copy) \| `workspace` (also the project copy, when `result.zip` exists) |
+| `fleet.min_free_gb` | `5` | free space on the output drive before each project (`0` = no check) |
 | `kb.ledger` | `true` | write `ledger.jsonl` |
 | `kb.symbol_index` | `true` | maintain `symbols.json` and the symbol hints |
 | `kb.deterministic_candidates` | `true` | compile recipe candidates from labels without the LLM |
 | `kb.auto_promote_after_projects` | `2` | candidate → active after success in N distinct projects |
 
 CLI flags of `fleet run`: `--order`, `--max-projects`, `--retry-failed`, `--stop-on-abort`,
-`--max-llm-calls-total`, `--llm-provider`, `--dry-run`, `--config` (repeatable), `--out`.
+`--max-llm-calls-total`, `--llm-provider`, `--dry-run`, `--config` (repeatable), `--out`. `fleet status` takes
+`--attention`.
 
 Offline demo: `scripts/fleet-demo.sh` (pure-java, boot2, boot3, spring5-xml, boot3-again with a fresh KB and the
 replayed LLM of `scripts/demo-kb`): boot3 is fixed by the LLM once, the candidate is compiled from the labels,

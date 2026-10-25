@@ -9,8 +9,11 @@ tree on JDK 21.
   `config/artifacts.local-e2e.yml`, so it takes the optional-bump path (→ 3.17.0).
 * `Codec` uses `sun.misc.BASE64Encoder` / `BASE64Decoder`. These are JDK internals and `javac --release 21` does not
   see them. OpenRewrite's `UseJavaUtilBase64` (inside `UpgradeToJava21`) cannot resolve the types on JDK 21 and
-  leaves the class alone. The `jdk-removed-apis` advisory adds the porting hint to the prompt, and the replayed LLM
-  answer (`replay/llm-001.json`) ports the class to `java.util.Base64`.
+  leaves the class alone. Since round 10 (2026-10-26) the handler `jdk-base64-shim` generates
+  `sbmig.compat.BASE64Encoder` / `BASE64Decoder` (same output as the JDK 8 classes, `decodeBuffer` still
+  `throws IOException`) and repoints the imports, so the call sites compile unchanged without an LLM call (flag
+  `jdk-base64-shimmed`). Before round 10 the `jdk-removed-apis` advisory hint + the replayed LLM answer
+  (`replay/llm-001.json`, kept for runs with the handler switched off) ported the class to `java.util.Base64`.
 * `Dates` uses `javax.xml.bind.DatatypeConverter.printDateTime/parseDateTime`. JAXB was removed from the JDK in 11.
   The pre-emptive handler `jaxb-runtime-add` adds `jaxb-api` + `jaxb-runtime` 2.3. `UpgradeToJava21`
   (`AddJaxbAPIDependencies`) turns the API into `jakarta.xml.bind:jakarta.xml.bind-api` 2.3.3. The spring-phase
@@ -19,8 +22,9 @@ tree on JDK 21.
   It compiles unchanged on 21.
 * `LedgerUtilsTest` is a single JUnit 4 test (→ JUnit 5 by `JUnit4to5Migration`).
 
-`sbmig.e2e.yml` replays the LLM (`llm.provider: fake`, `replay/`) and uses its own KB (`out/e2e/kb-java6-legacy`).
-`llm-002.json` answers the KB harvest's recipe-candidate call with `NONE`.
+`sbmig.e2e.yml` replays the LLM (`llm.provider: fake`, `replay/`) and uses its own KB (`out/e2e/kb-java6-legacy`);
+the expected run makes no LLM call any more (`max_llm_calls: 0`). `llm-002.json` answered the KB harvest's
+recipe-candidate call with `NONE`.
 
 ## Build as-is
 
@@ -33,7 +37,7 @@ JDK 8 accepts `-source 1.6` with an "obsolete" warning. `mvn -q clean package` (
 the 3 tests.
 
 Expected migration result: release 21, compiler plugin 3.16.0, surefire 3.5.3, commons-lang3 3.17.0, JAXB on
-jakarta, `Codec` on `java.util.Base64` (1 LLM fix + 1 harvest call), and the `jdk-removed-apis` advisory `replaced`,
-with the Handover line "code rewritten by the LLM for jdk-removed-apis: …Codec.java".
+jakarta, `Codec` on the generated `sbmig.compat.BASE64Decoder` / `BASE64Encoder` (0 LLM calls, flag
+`jdk-base64-shimmed`), and the `jdk-removed-apis` advisory `replaced`.
 
 The pom also carries a JDK 6-era compiler setup (`<fork>true</fork>` + `<compilerArguments><bootclasspath>${java.home}/lib/rt.jar</bootclasspath>`): javac 21 rejects `-bootclasspath` together with release 21, so the pre-emptive handler `compiler-legacy-config` strips it before the first build (round 9; post-checks assert no `<bootclasspath>` / `<fork>` remains in any pom).

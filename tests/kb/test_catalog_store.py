@@ -160,3 +160,32 @@ def test_export_import_round_trip_with_human_blocks(kb, kb_cfg, tmp_path):
     local.import_zip(out, merge=False)
     c = local.catalog().get(CID)
     assert c.human.notes == "from the zip" and c.evidence.seen == 1
+
+
+def test_a_rejected_case_also_stops_patch_replay_recipes_and_symbol_hints(kb, ws, profile):
+    """Round 10 (C5): `sbmig kb cases reject` used to stop only the case's own action / hints."""
+    from sbmig.core.models import FileChange, KBRecipe
+
+    from .helpers import make_case, recipe_yaml
+
+    target = "src/main/java/com/example/web/IpFilter.java"
+    ws.write(target, "class IpFilter { String ip(Request req) { return req.clientIp(); } }\n")
+    change = FileChange(path=target, op="modify", search="return req.clientIp();",
+                        replace="return req.remoteClientIp();")
+    case = make_case(signatures=[L1_REQ], signatures_generic=[EC_L2], changes=[change], symbol="clientIp",
+                     fix_labels=["method-rename"], replacement="clientIp → remoteClientIp")
+    kb.record_case(case)
+    kb.add_recipe(recipe_yaml("RenameClientIp"), KBRecipe(id="RenameClientIp", status="active", path="",
+                                                            signatures=[EC_L2]))
+    idx = kb.symbol_index()
+    idx.add(kb.get_case(next(iter(kb._load_index()["l2"][EC_L2]))))
+    idx.save()
+    kb.append_error_cases([rec("e1")], [])
+    m = kb.match(_cluster(), ws, profile)
+    assert m.replayable and m.recipe_ids == ["RenameClientIp"] and any(h.startswith("[symbol clientIp]")
+                                                                      for h in m.hints)
+    kb.catalog().set_human(CID, status="rejected")
+    m = kb.match(_cluster(), ws, profile)
+    assert m.case_hits == [] and m.replayable == [] and m.cases == [] and m.recipe_ids == []
+    assert not any(h.startswith(("[symbol", "[case")) for h in m.hints)
+    assert kb.catalog().rejected_signatures([EC_L2, L1_REQ, "other"]) == {EC_L2, L1_REQ}

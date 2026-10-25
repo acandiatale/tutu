@@ -29,9 +29,13 @@ recipeList:
 type: specs.openrewrite.org/v1beta/recipe
 name: com.company.migrate.ServletToJakartaAndBoot
 displayName: Servlet/Tomcat project preparation
-description: javax → jakarta for raw servlet projects plus servlet-api dependency swap.
+description: javax → jakarta for raw servlet projects, the Servlet 6 API removals, plus servlet-api dependency swap.
 recipeList:
   - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
+  # round 10: encodeUrl → encodeURL, HttpSession.getValue / putValue → getAttribute / setAttribute,
+  # setStatus(int, String), UnavailableException constructors (rewrite-migrate-java 3.42.0; Spring projects get it
+  # through UpgradeFramework_6_0 → JakartaEE10)
+  - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
   - org.openrewrite.java.dependencies.ChangeDependency:
       oldGroupId: javax.servlet
       oldArtifactId: javax.servlet-api

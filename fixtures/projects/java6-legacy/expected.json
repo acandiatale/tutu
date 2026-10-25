@@ -19,34 +19,11 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 2,
+    "max_llm_calls": 0,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
       "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$"
-    ],
-    "journal_events": [
-      {
-        "event": "llm_fix",
-        "advisory_hints": 1
-      },
-      {
-        "event": "attempt",
-        "phase": "jdk21",
-        "attempt": "jdk21-1-1",
-        "decision": "llm_fix",
-        "applied": true,
-        "advisory_ids": [
-          "jdk-removed-apis"
-        ]
-      },
-      {
-        "event": "attempt_scored",
-        "phase": "jdk21",
-        "attempt": "jdk21-1-1",
-        "outcome": "build_ok",
-        "cluster_resolved": true
-      }
     ],
     "advisories": [
       {
@@ -59,9 +36,6 @@
     "handover": {
       "java_before": "1.6",
       "java_after": "21",
-      "from_here_contains": [
-        "regex:code rewritten by the LLM for jdk-removed-apis: module/comp-jar/src/main/java/com/example/legacy/util/Codec\\.java — .* — review these changes \\(changes\\.patch, attempts table\\)"
-      ],
       "added_contains": [
         "jakarta.xml.bind:jakarta.xml.bind-api",
         "org.glassfish.jaxb:jaxb-runtime"
@@ -75,20 +49,35 @@
       "harvest_candidates_min": 0
     },
     "post_checks": [
-      {"file_contains": {"path": "**/pom.xml", "not_contains": "<bootclasspath>"}},
-      {"file_contains": {"path": "**/pom.xml", "not_contains": "<fork>"}},
+      {
+        "file_contains": {
+          "path": "**/pom.xml",
+          "not_contains": "<bootclasspath>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/pom.xml",
+          "not_contains": "<fork>"
+        }
+      },
       {
         "file_contains": {
           "path": "**/com/example/legacy/util/Codec.java",
-          "contains": "java.util.Base64",
+          "contains": "import sbmig.compat.BASE64Decoder;",
           "not_contains": "import sun.misc"
         }
       },
       {
         "file_contains": {
           "path": "**/com/example/legacy/util/Codec.java",
-          "contains": "Base64.getMimeDecoder().decode(base64)",
-          "not_contains": "new BASE64Decoder()"
+          "contains": "new BASE64Decoder().decodeBuffer(base64)",
+          "not_contains": "sun.misc.BASE64"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "**/sbmig/compat/BASE64Encoder.java"
         }
       },
       {
@@ -137,6 +126,9 @@
           ]
         }
       }
+    ],
+    "flags": [
+      "jdk-base64-shimmed"
     ]
   }
 }

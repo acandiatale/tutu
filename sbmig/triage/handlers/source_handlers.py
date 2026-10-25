@@ -31,7 +31,7 @@ import yaml
 
 from sbmig.analyze.jsp import JSP_GLOBS, jsp_code_spans
 from sbmig.core.models import ErrorCluster, ErrorKind, Phase, ProjectProfile
-from sbmig.core.workspace import Workspace
+from sbmig.core.workspace import Workspace, is_build_output_path
 
 from .base import cluster_text
 from .edge_handlers import EdgeHandler
@@ -50,7 +50,8 @@ _RESOURCE_SUFFIXES = (".xml", ".properties", ".yml", ".yaml")
 
 
 def _under_target(rel: str) -> bool:
-    return "target" in rel.replace("\\", "/").split("/")
+    """Maven build output (`target/` beside a pom); a package `com/x/target/` is source (round 10)."""
+    return is_build_output_path(rel)
 
 
 def _mask(text: str) -> str:
@@ -728,5 +729,11 @@ class SpringDataCrudRepository(EdgeHandler):
 
 
 def source_handlers(cfg=None) -> list:
-    """In precedence order (registered right after the edge handlers)."""
-    return [JakartaNamespaceSweep(), SpringDataCrudRepository()]
+    """In precedence order (registered right after the edge handlers). Round 10 adds jdk-base64-shim
+    (sbmig/triage/handlers/jdk_compat.py) and boot4-type-relocation-sweep, security-path-pattern-matcher,
+    spring-data-specification-unrestricted (sbmig/triage/handlers/spring7_sources.py)."""
+    from .jdk_compat import jdk_compat_handlers
+    from .spring7_sources import spring7_source_handlers
+
+    return [JakartaNamespaceSweep(), SpringDataCrudRepository(), *jdk_compat_handlers(cfg),
+            *spring7_source_handlers(cfg)]

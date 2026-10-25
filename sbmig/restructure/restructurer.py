@@ -54,7 +54,7 @@ from sbmig.analyze.source_scanner import (
 from sbmig.core.config import Config
 from sbmig.core.interfaces import RestructureResult
 from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectProfile
-from sbmig.core.workspace import GitError, Workspace
+from sbmig.core.workspace import GitError, Workspace, is_build_output_path
 from sbmig.plan.versions import compare_versions, version_lt
 
 from .pom_editor import PomEditError, PomEditor, property_ref
@@ -476,7 +476,7 @@ class Restructurer:
                 base = c.ws.abs(c.p(top))
                 names = set(jsps)
                 others = sum(1 for f in base.rglob("*") if f.is_file() and ".git" not in f.parts
-                             and "target" not in f.relative_to(base).parts and c.ws.rel(f) not in names)
+                             and not is_build_output_path(c.ws.rel(f), c.ws.root) and c.ws.rel(f) not in names)
             n = len(jsps)
             counts = f"{n} JSP{'s' if n != 1 else ''}" + (
                 f", {others} other file{'s' if others != 1 else ''}" if others is not None else "")
@@ -2182,7 +2182,7 @@ class Restructurer:
             if not base.is_dir():
                 continue
             for f in base.rglob(f"{simple}.java"):
-                if "target" in f.relative_to(base).parts:
+                if is_build_output_path(c.ws.rel(f), c.ws.root):
                     continue
                 text = f.read_text(encoding="utf-8", errors="replace")
                 m = PACKAGE_RE.search(text)
@@ -2337,7 +2337,7 @@ class Restructurer:
             inner = [k for k in keep if k.startswith(wdir + "/")]
             for f in sorted(x for x in wabs.rglob("*") if x.is_file()):
                 rel = f.relative_to(wabs).as_posix()
-                if any(x == "target" for x in rel.split("/")[:-1]):
+                if is_build_output_path(c.ws.rel(f), c.ws.root):
                     continue
                 web = posixpath.normpath(f"{target}/{rel}") if target else rel
                 top, _, sub = web.partition("/")
@@ -2522,7 +2522,8 @@ class Restructurer:
         """(prefix, suffix, file) of an as-is InternalResourceViewResolver / `<mvc:jsp>` / `registry.jsp(…)`."""
         base = c.ws.abs(c.p("."))
         for f in sorted(base.rglob("*")):
-            if not f.is_file() or f.suffix not in (".xml", ".java") or ".git" in f.parts or "target" in f.parts:
+            if (not f.is_file() or f.suffix not in (".xml", ".java") or ".git" in f.parts
+                    or is_build_output_path(c.ws.rel(f), c.ws.root)):
                 continue
             text = f.read_text(encoding="utf-8", errors="replace")
             if VIEW_RESOLVER not in text and "mvc:jsp" not in text and ".jsp(" not in text:

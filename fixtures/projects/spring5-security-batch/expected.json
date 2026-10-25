@@ -1,0 +1,115 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": "5.3.31",
+  "packaging": "jar",
+  "libraries": [
+    "spring-webmvc",
+    "spring-context",
+    "spring-security",
+    "spring-batch",
+    "javax-servlet",
+    "jdk-removed-apis"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": ["E15", "E17"],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "jdk-base64-shimmed",
+      "security-path-matchers-rewritten"
+    ],
+    "advisories": [
+      {
+        "id": "jdk-removed-apis",
+        "policy": "guide",
+        "outcome": "replaced"
+      }
+    ],
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/config/WebSecurityConfig.java",
+          "contains": "SecurityFilterChain filterChain(HttpSecurity http)",
+          "not_contains": "extends WebSecurityConfigurerAdapter"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/config/WebSecurityConfig.java",
+          "contains": "requestMatchers(\"/admin/**\")",
+          "not_contains": ".antMatchers("
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/batch/BatchConfig.java",
+          "contains": "new JobBuilder(\"cleanupJob\", jobRepository)",
+          "not_contains": "JobBuilderFactory jobBuilderFactory"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/batch/CleanupTasklet.java",
+          "contains": "import org.springframework.batch.infrastructure.item.support.ListItemReader;",
+          "not_contains": "import org.springframework.batch.item."
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/security/DbUrlSecurityMetadataSource.java",
+          "contains": "PathPatternRequestMatcher.pathPattern(HttpMethod.valueOf(method), url)",
+          "not_contains": "import org.springframework.security.web.util.matcher.AntPathRequestMatcher;"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/web/MvcConfig.java",
+          "contains": "headers.containsHeader(\"X-Requested-With\") && headers.headerNames().size() > 1",
+          "not_contains": "setUseSuffixPatternMatch"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/web/MvcConfig.java",
+          "contains": "configurer.favorParameter(true);",
+          "not_contains": "favorPathExtension"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/ops/util/TokenCodec.java",
+          "contains": "import sbmig.compat.BASE64Encoder;",
+          "not_contains": "import sun.misc"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "**/sbmig/compat/BASE64Decoder.java"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "org.springframework.security:spring-security-access"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "**/pom.xml",
+          "artifacts": [
+            "javax.servlet:javax.servlet-api"
+          ]
+        }
+      }
+    ]
+  }
+}

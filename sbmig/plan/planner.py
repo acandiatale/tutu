@@ -98,12 +98,40 @@ def ee_javax_packages(profile_source_javax: dict[str, int], has_javax_annotation
 # per-case spring recipes
 # ---------------------------------------------------------------------------
 class _Facts:
-    """The few profile facts the recipe rules need; for MSA computed per service."""
+    """The few profile facts the recipe rules need; for MSA computed per service. `artifacts` = declared
+    dependency keys (direct + managed) of the poms concerned — library-rule caveats (round 10)."""
 
-    def __init__(self, case: CaseType, libs: set[str], javax: dict[str, int]):
+    def __init__(self, case: CaseType, libs: set[str], javax: dict[str, int], artifacts: Optional[set[str]] = None):
         self.case = case
         self.libs = libs
         self.javax = javax
+        self.artifacts = set(artifacts or ())
+
+
+def _declared_keys(poms: list[Any]) -> set[str]:
+    return {d.key for p in poms for d in [*p.dependencies, *p.dependency_management]}
+
+
+def _library_refs(facts: _Facts, cfg: Config, out: list[RecipeRef], notes: list[str], where: str) -> None:
+    """Round 10: library-conditional recipes (knowledge/recipes/library_recipes.yml) for plans without the Boot
+    umbrella — Spring Batch 4 → 6, Hibernate 5 → 7.1, Thymeleaf spring5 → spring6 — appended after the case's own
+    recipes, in table order. Never raises (an unreadable table only costs the recipes)."""
+    try:
+        from .library_recipes import rules_for
+
+        rules = rules_for(facts.case, facts.libs)
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("library recipes unavailable for planning: %s", e)
+        return
+    for rule in rules:
+        added = [i for i in rule.recipes if not any(r.id == i for r in out)]
+        _refs(rule.recipes, cfg, out)
+        if added:
+            notes.append(f"spring{where}: {rule.library} detected → {', '.join(_short(i) for i in added)}"
+                         + (f" ({rule.note})" if rule.note else ""))
+        for c in rule.caveats:
+            if c.artifact in facts.artifacts:
+                notes.append(f"spring{where}: {rule.library}: {c.note}")
 
 
 def spring_recipes(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> list[RecipeRef]:
@@ -116,19 +144,25 @@ def spring_recipes(facts: _Facts, cfg: Config, notes: list[str], label: str = ""
         if ee:
             _refs(rs.jakarta, cfg, out)
             notes.append(f"spring{where}: pure_java with Java EE javax imports ({', '.join(ee)}) → jakarta recipes")
+            _library_refs(facts, cfg, out, notes, where)        # e.g. Hibernate 5 next to jakarta.persistence
         else:
             notes.append(f"spring{where}: pure_java without Java EE javax imports → no jakarta migration")
     elif case == CaseType.SERVLET_TOMCAT:
         out.append(RecipeRef(id=SERVLET_RECIPE, source="project", file=_project_recipe_file(SERVLET_RECIPE, cfg)))
-        notes.append(f"spring{where}: servlet_tomcat → {SERVLET_RECIPE} (javax→jakarta + servlet-api swap)")
+        notes.append(f"spring{where}: servlet_tomcat → {SERVLET_RECIPE} (javax→jakarta, Servlet 6 removals, "
+                     "servlet-api swap)")
+        _library_refs(facts, cfg, out, notes, where)
     elif case == CaseType.SPRING_LEGACY:
         _refs(rs.jakarta, cfg, out)
         _refs(rs.spring_framework_7, cfg, out)
         msg = f"spring{where}: spring_legacy → jakarta + Spring Framework 7"
-        if "spring-security" in facts.libs:
+        if "spring-security" in facts.libs and rs.spring_security_7:
             _refs(rs.spring_security_7, cfg, out)
-            msg += " + Spring Security 7 (spring-security detected)"
+            first, last = _short(rs.spring_security_7[0]), _short(rs.spring_security_7[-1])
+            chain = f"{first} … {last}" if len(rs.spring_security_7) > 1 else first
+            msg += f" + Spring Security chain {chain} (spring-security detected)"
         notes.append(msg)
+        _library_refs(facts, cfg, out, notes, where)
     elif case == CaseType.SPRING_BOOT:
         _refs(rs.spring_boot_4, cfg, out)
         notes.append(f"spring{where}: spring_boot → Boot 4.0 umbrella + 4.1 properties + 4.1 version pin")
@@ -373,7 +407,8 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
         case = t.case_type
         if t in libs and case in (CaseType.SPRING_BOOT, CaseType.MSA):
             case = CaseType.SPRING_LEGACY
-        facts_of[t.name] = _Facts(case, _service_libs(profile, t), profile.source.javax_imports)
+        facts_of[t.name] = _Facts(case, _service_libs(profile, t), profile.source.javax_imports,
+                                  _declared_keys([p for p in profile.poms if p.path in set(t.poms)]))
         if t in svcs:
             notes.append(f"msa service {t.name} ({_service_dir(t)}): sub-case {t.case_type.value}, "
                          f"boot {t.spring_boot_version or '-'}, java {t.java_version or '-'}")
@@ -433,7 +468,8 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
     if case == CaseType.MSA:
         notes.append("msa without discovered services → planned as a single project")
     libs = {lib.name for lib in profile.libraries}
-    libs_facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports)
+    libs_facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports,
+                        _declared_keys(profile.poms))
     if profile.source.java_files == 0 and profile.poms:
         # S3: pom-only aggregator / BOM / parent → pom edits only (parent, mandatory, optional, cleanup) + verify
         notes.append("no java sources → no OpenRewrite / build-fix steps for jdk21 and spring; restructure is "

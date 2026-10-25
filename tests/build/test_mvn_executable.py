@@ -94,3 +94,22 @@ def test_relative_settings_local_repo_and_java_home_become_absolute(tmp_path, cf
     assert cmd[cmd.index("-s") + 1] == str((tmp_path / "config" / "settings.nexus.xml").absolute())
     assert f"-Dmaven.repo.local={(tmp_path / 'm2').absolute()}" in cmd
     assert mvn_env(c)["JAVA_HOME"] == str((tmp_path / "jdk21").absolute())
+
+
+def test_maven_available_keeps_the_java_runtime_home(monkeypatch):
+    """Round 10: the jdk-not-21 abort names the JDK Maven ran on, so the preflight detail keeps `runtime: …`."""
+    import subprocess
+
+    from sbmig.build import mvn as mvnmod
+    from sbmig.core.config import Config
+
+    out = ("Apache Maven 3.9.9 (8e8579a9e76f7d015ee5ec7bfcdc97d260186937)\n"
+           "Maven home: C:\\tools\\maven\n"
+           "Java version: 17.0.9, vendor: Eclipse Adoptium, runtime: C:\\Program Files\\Java\\jdk-17\n"
+           "Default locale: ko_KR, platform encoding: MS949\n")
+    monkeypatch.setattr(mvnmod, "mvn_executable", lambda cfg: "mvn")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, out, ""))
+    cfg = Config.model_validate({"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}}})
+    ok, detail = mvnmod.maven_available(cfg)
+    assert ok and detail == ("Apache Maven 3.9.9 (8e8579a9e76f7d015ee5ec7bfcdc97d260186937); "
+                             "Java version: 17.0.9, runtime: C:\\Program Files\\Java\\jdk-17")

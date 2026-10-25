@@ -39,7 +39,9 @@ from sbmig.core.models import (
     ResolutionRecord,
 )
 
+from .jsonl import append_lines, parse_record
 from .labels import label_changes, symbol_for_blocked, symbol_for_errors
+from .lock import kb_lock
 
 if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.workspace import Workspace
@@ -83,23 +85,28 @@ def _record_id(*parts: str) -> str:
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
+def _redact(text: Optional[str]) -> str:
+    from .redact import redact
+
+    return redact(text or "") or ""
+
+
 # --------------------------------------------------------------------------- ledger
 class Ledger:
-    """Append-only jsonl of ResolutionRecords. One json object per line; unreadable lines are skipped."""
+    """Append-only jsonl of ResolutionRecords. One json object per line; unreadable lines are skipped. Appends run
+    under the KB lock and are torn-line safe (``sbmig.kb.jsonl``: a half-written last line goes to
+    ``ledger.jsonl.corrupt`` before the next batch; one fsync per batch)."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, lock_timeout: Optional[float] = None):
         self.path = Path(path)
+        self.lock_timeout = lock_timeout
 
     def append(self, records: Iterable[ResolutionRecord]) -> int:
         recs = list(records)
         if not recs:
             return 0
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as fh:
-            for r in recs:
-                fh.write(r.model_dump_json() + "\n")
-            fh.flush()
-        return len(recs)
+        with kb_lock(self.path.parent, self.lock_timeout):
+            return append_lines(self.path, [r.model_dump_json() for r in recs])
 
     def __iter__(self) -> Iterator[ResolutionRecord]:
         return self.iter()
@@ -128,15 +135,14 @@ class Ledger:
         }
         if not self.path.exists():
             return
-        with open(self.path, "r", encoding="utf-8") as fh:
+        with open(self.path, "r", encoding="utf-8", errors="replace") as fh:
             for n, line in enumerate(fh, 1):
                 line = line.strip()
                 if not line:
                     continue
-                try:
-                    r = ResolutionRecord.model_validate_json(line)
-                except ValueError as e:
-                    log.warning("skipping unreadable ledger line %s:%d: %s", self.path, n, e)
+                r = parse_record(line, ResolutionRecord)        # a torn line with a whole one glued on: that one
+                if r is None:
+                    log.warning("skipping unreadable ledger line %s:%d", self.path, n)
                     continue
                 if run_id is not None and r.run_id != run_id:
                     continue
@@ -155,10 +161,11 @@ class Ledger:
                 yield r
 
     def count(self) -> int:
+        """Complete lines (a torn last line is not a record)."""
         if not self.path.exists():
             return 0
-        with open(self.path, "r", encoding="utf-8") as fh:
-            return sum(1 for ln in fh if ln.strip())
+        with open(self.path, "r", encoding="utf-8", errors="replace") as fh:
+            return sum(1 for ln in fh if ln.strip() and ln.endswith("\n"))
 
     def ids(self) -> set[str]:
         return {r.id for r in self.iter()}
@@ -552,8 +559,9 @@ class SymbolIndex:
     """``symbols.json``: {symbol: {error_kind, generic_signatures, fixes: [{labels, replacement, projects,
     project_keys, cases, recipe_id}]}}. Fixes are keyed by (labels, replacement)."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, lock_timeout: Optional[float] = None):
         self.path = Path(path)
+        self.lock_timeout = lock_timeout
         self._data: Optional[dict[str, dict]] = None
 
     def load(self) -> dict[str, dict]:
@@ -569,10 +577,13 @@ class SymbolIndex:
         return self._data
 
     def save(self) -> None:
+        """Write the index (atomic, under the KB lock). Load → add → save of one update belong in ONE locked
+        section of the caller (another process may have written the file since it was loaded)."""
         from .store import atomic_write
 
-        data = dict(sorted(self.load().items()))
-        atomic_write(self.path, json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+        with kb_lock(self.path.parent, self.lock_timeout):
+            data = dict(sorted(self.load().items()))
+            atomic_write(self.path, json.dumps(data, indent=1, ensure_ascii=False) + "\n")
 
     def get(self, symbol: str) -> Optional[dict]:
         return self.load().get(symbol) if symbol else None
@@ -699,7 +710,7 @@ def attempt_record(
         resolution=res,
         resolver_id=resolver,
         fix_labels=lab.labels if lab else [],
-        replacement=lab.replacement if lab else "",
+        replacement=_redact(lab.replacement) if lab else "",
         outcome=a.outcome,
         files=_files([c.path for c in a.changes]),
         case_id=case_id,

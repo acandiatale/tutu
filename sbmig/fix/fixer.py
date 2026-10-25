@@ -17,7 +17,7 @@ from sbmig.core.models import ErrorCluster, FileChange, FixProposal, LLMUsage, P
 from sbmig.core.workspace import Workspace
 
 from .apply import BlockFailure, PatchApplier, best_window
-from .client import LLMError, RecordingClient, messages_hash, usage_from
+from .client import LLMError, RecordingClient, llm_call_in_flight, messages_hash, usage_from
 from .context import ContextPacker, PackedContext, fence_for, lang_for
 from .protocol import ParsedResponse, normalize_path, parse_fix_response, render_protocol_instructions
 
@@ -103,7 +103,7 @@ class LLMFixer:
         rounds = 0
         messages: list[ChatMessage] = []
         last: Optional[LLMResponse] = None
-        role, meta = self.call_tags(ctx, cluster.id)
+        role, meta = self.call_tags(ctx, cluster.id, ws)
         adv_in_prompt = 0
         try:
             log.info("fix prompt for %s: packing (%d advisory hint(s), %d KB hint(s), %d reference file(s))",
@@ -202,11 +202,24 @@ class LLMFixer:
         return None if _unset(llm.model) else llm.model
 
     @staticmethod
-    def call_tags(ctx: Optional[FixContext], cluster_id: Optional[str] = None) -> tuple[str, dict]:
-        """(role, metadata) sent with every LLM call of one propose() — lets a gateway route/budget by purpose."""
+    def call_tags(ctx: Optional[FixContext], cluster_id: Optional[str] = None,
+                  ws: Optional[Workspace] = None) -> tuple[str, dict]:
+        """(role, metadata) sent with every LLM call of one propose() — lets a gateway route/budget by purpose.
+        Round 10: `run_id` and `project` (the workspace's run id / project directory name) as the LLMRequest contract
+        says (`sbmig.core.interfaces.LLMRequest.metadata`); never secrets."""
+        meta: dict = {}
+        if ws is not None:
+            run_id = getattr(ws, "run_id", None)
+            root = getattr(ws, "root", None)
+            if run_id:
+                meta["run_id"] = str(run_id)
+            if root is not None and getattr(root, "name", ""):
+                meta["project"] = root.name
         if ctx is None:
-            return "fix", ({"cluster_id": cluster_id} if cluster_id else {})
-        meta: dict = {"phase": ctx.phase.value, "iteration": ctx.iteration}
+            if cluster_id:
+                meta["cluster_id"] = cluster_id
+            return "fix", meta
+        meta.update({"phase": ctx.phase.value, "iteration": ctx.iteration})
         if cluster_id:
             meta["cluster_id"] = cluster_id
         return ("fix_escalation" if ctx.use_escalation_model else "fix"), meta
@@ -214,9 +227,10 @@ class LLMFixer:
     def _call(self, messages: list[ChatMessage], model: Optional[str], usage: LLMUsage,
               transcript: list[dict], *, role: str = "fix",
               metadata: Optional[dict] = None) -> tuple[LLMResponse, ParsedResponse]:
-        resp = self.client.complete(messages, model=model, max_tokens=self.cfg.llm.max_output_tokens,
-                                    temperature=self.cfg.llm.temperature, role=role,
-                                    metadata=dict(metadata) if metadata else None)
+        with llm_call_in_flight():          # the loop's watchdog stays silent while the call heartbeats (round 10)
+            resp = self.client.complete(messages, model=model, max_tokens=self.cfg.llm.max_output_tokens,
+                                        temperature=self.cfg.llm.temperature, role=role,
+                                        metadata=dict(metadata) if metadata else None)
         u = usage_from(resp)
         usage.model = usage.model or u.model
         usage.calls += 1
@@ -240,12 +254,14 @@ class LLMFixer:
     def resolve_path(self, ws: Workspace, want: str) -> tuple[Optional[str], list[str]]:
         """Map a requested path (maybe partial, or a FQCN) to a workspace file. Returns (path, candidates)."""
         if ws.exists(want) and ws.abs(want).is_file():
-            return want, []
+            return want.replace("\\", "/"), []
+        want = want.replace("\\", "/")
         cands: list[str] = []
         suffixes = [want]
         if re.fullmatch(r"[\w$]+(\.[\w$]+)+", want) and not re.search(r"\.(java|xml|properties|ya?ml|kt|jsp)$", want):
             suffixes.append(want.replace(".", "/") + ".java")
-        files = ws.java_files() + ws.pom_files() + self._resource_files(ws)
+        # posix forms: on Windows the workspace globs may come back with backslashes (round 10)
+        files = [f.replace("\\", "/") for f in ws.java_files() + ws.pom_files()] + self._resource_files(ws)
         for s in suffixes:
             cands = [f for f in files if f == s or f.endswith("/" + s)]
             if cands:
@@ -262,6 +278,7 @@ class LLMFixer:
         out: list[str] = []
         for ext in ("properties", "yml", "yaml", "xml", "factories", "imports"):
             for f in ws.glob(f"*.{ext}"):
+                f = f.replace("\\", "/")
                 if f.startswith("src/") or "/src/" in f:
                     if PurePosixPath(f).name != "pom.xml":
                         out.append(f)
@@ -311,7 +328,7 @@ class LLMFixer:
         """`<need_grep>` from the LLM: one pass over the project's java / pom / resource files (each read once, big
         files skipped, bounded by MAX_GREP_FILES and GREP_BUDGET_S) for up to 5 patterns."""
         t0 = time.monotonic()
-        files = (ws.java_files() + ws.pom_files() + self._resource_files(ws))
+        files = [f.replace("\\", "/") for f in ws.java_files() + ws.pom_files()] + self._resource_files(ws)
         skipped_count = max(0, len(files) - MAX_GREP_FILES)
         files = files[:MAX_GREP_FILES]
         rxs: list[tuple[str, re.Pattern[str]]] = []

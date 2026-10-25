@@ -204,7 +204,8 @@ def test_structural_regression_after_pom_edit_is_reverted(cfg, ws, profile):
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(proposals))
     pr = loop.run(Phase.SPRING, "compile", 4)
     first = pr.attempts[0]
-    assert first.cluster_resolved and first.outcome == "reverted"      # resolved its cluster, still reverted
+    # its compile error is gone, but the build stopped at the pom (round 10: unknown, not resolved) — reverted
+    assert first.cluster_resolved is None and first.outcome == "reverted"
     assert any("structural error kind(s) pom_invalid" in n for n in first.notes)
     assert pr.ok and ws.read("pom.xml") == good_pom
 

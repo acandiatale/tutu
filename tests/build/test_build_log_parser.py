@@ -53,11 +53,12 @@ def test_real_compile_error_signatures():
     errs = parse("real-compile-errors.log")
     sigs = [(e.signature, e.signature_generic) for e in errs]
     assert sigs[0] == ("compile|package_does_not_exist|org.springframework.security.config.annotation.web.configuration",
-                       "compile|package_does_not_exist|org.springframework.security")
+                       "compile|package_does_not_exist|org.springframework.security.config.annotation.web.configuration")
     assert sigs[1] == ("compile|cannot_find_symbol|class WebSecurityConfigurerAdapter",
                        "compile|cannot_find_symbol|WebSecurityConfigurerAdapter")
     assert sigs[2] == ("compile|cannot_find_symbol|class Foo|class *", "compile|cannot_find_symbol|Foo")
-    assert sigs[3] == ("compile|package_does_not_exist|javax.servlet.http", "compile|package_does_not_exist|javax.servlet")
+    assert sigs[3] == ("compile|package_does_not_exist|javax.servlet.http",
+                       "compile|package_does_not_exist|javax.servlet.http")
     assert sigs[3] == sigs[4]
     assert sigs[7] == ("compile|incompatible_types|incompatible types: int cannot be converted to java.lang.String",
                        "compile|incompatible_types|int->String")
@@ -93,7 +94,7 @@ def test_real_test_compile_only():
     ]
     assert {e.goal for e in errs} == {"compiler:testCompile"}
     assert errs[0].signature == "test_compile|package_does_not_exist|org.junit.jupiter.api"
-    assert errs[0].signature_generic == "test_compile|package_does_not_exist|org.junit.jupiter"
+    assert errs[0].signature_generic == "test_compile|package_does_not_exist|org.junit.jupiter.api"
     assert errs[2].signature_generic == "test_compile|cannot_find_symbol|subtract"
 
 

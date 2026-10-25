@@ -71,7 +71,7 @@ def test_console_summary_counts_blocked():
     console = Console(record=True, width=200)
     console_summary(r, console)
     text = console.export_text()
-    assert "blocked: 3 item(s) — external_javax_api 1, artifact_not_found 1, repeated_failure 1" in text
+    assert "blocked: 3 item(s) - external_javax_api 1, artifact_not_found 1, repeated_failure 1" in text
     assert BLOCKED_TITLE in text and "com.company:legacy-web:1.4" in text
 
 

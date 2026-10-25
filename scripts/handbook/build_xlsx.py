@@ -59,7 +59,7 @@ ws, hr, n = sheet("핸들러", "결정적 핸들러 카탈로그 (LLM 없이 고
     "'트리거'는 빌드 에러 문구에서 찾는 정규식입니다. 상세: docs/handbook/04-triage-and-loop.md 5장, docs/ERROR-HANDLING.md",
     [("순서", "n"), ("핸들러 id", "id"), ("하는 일", "description"), ("대상 에러 종류", "kinds"), ("선제 적용", "preemptive"), ("선제 단계", "phase"), ("트리거(정규식)", "triggers"), ("클래스", "class")],
     [dict(h, n=i) for i, h in enumerate(data["handlers"], 1)], [6, 34, 60, 34, 12, 10, 70, 50])
-specs.append(("핸들러", "결정적 핸들러 23종: 트리거·선제 조건·하는 일", hr, n))
+specs.append(("핸들러", f"결정적 핸들러 {n}종: 트리거·선제 조건·하는 일", hr, n))
 
 # ---- 에러카탈로그
 cols = ["section"] + [k for k in ("ID", "Symptom", "Symptom (detection)", "Policy", "Report says", "Fixture", "Advisory", "Library", "Status", "Replacement", "Notes") if any(k in r for r in data["errors"])]
@@ -69,7 +69,7 @@ ws, hr, n = sheet("에러카탈로그", "에러·엣지 케이스 카탈로그 (
     "출처: docs/ERROR-HANDLING.md의 표를 섹션별로 그대로 옮긴 것(영문). ID 접두: X = 외부/인프라 blocked, E = 환경·레거시 quirk(핸들러), L = 루프 안전장치, S = 구조 엣지, §6 = 라이브러리 어드바이저리. "
     "한국어 증상→의미→조치 설명: docs/handbook/09-operations.md 6장",
     [(c if c != "section" else "섹션", c) for c in cols], data["errors"], [34] + [14 if c == "ID" else 60 for c in cols[1:]])
-specs.append(("에러카탈로그", "X/E/L/S 카탈로그 원문 63행", hr, n))
+specs.append(("에러카탈로그", f"X/E/L/S 카탈로그 원문 {n}행", hr, n))
 
 # ---- CLI
 ws, hr, n = sheet("CLI", "CLI 명령과 옵션 (typer 앱에서 추출)",
@@ -83,7 +83,7 @@ ws, hr, n = sheet("REST_API", "웹 UI REST API (FastAPI 라우트에서 추출)"
     "출처: sbmig.web.app.create_app()의 라우트. 서버 기동: `sbmig serve` 또는 `uvicorn sbmig.web.app:app`. 이벤트 스트림(SSE)의 이벤트 종류와 페이로드: docs/handbook/07-api-reference.md 2장",
     [("메서드", "method"), ("경로", "path"), ("핸들러 이름", "name"), ("설명", "summary"), ("상태 코드", "status")],
     data["rest"], [10, 36, 26, 80, 10])
-specs.append(("REST_API", "웹 REST 라우트 14개", hr, n))
+specs.append(("REST_API", f"웹 REST 라우트 {n}개", hr, n))
 
 # ---- 픽스처
 ws, hr, n = sheet("픽스처", "e2e 픽스처 프로젝트 (fixtures/projects/*/expected.json)",
@@ -91,7 +91,7 @@ ws, hr, n = sheet("픽스처", "e2e 픽스처 프로젝트 (fixtures/projects/*/
     [("이름", "name"), ("시나리오", "title"), ("케이스", "case"), ("Java", "java"), ("Boot", "boot"), ("Spring", "spring"), ("패키징", "packaging"), ("멀티모듈", "multi"),
      ("감지 라이브러리", "libraries"), ("기대 성공", "success"), ("기대 exit", "exit"), ("최대 LLM 호출", "max_llm"), ("기대 blocked", "blocked"), ("카탈로그(기대 어드바이저리 등)", "catalog")],
     data["fixtures"], [26, 70, 14, 8, 8, 8, 8, 8, 34, 8, 8, 8, 30, 40])
-specs.append(("픽스처", "24개 픽스처와 기대 결과", hr, n))
+specs.append(("픽스처", f"{n}개 픽스처와 기대 결과", hr, n))
 
 # ---- 저널이벤트
 ws, hr, n = sheet("저널이벤트", "journal.jsonl 이벤트 종류 (코드에서 추출)",
@@ -101,7 +101,8 @@ specs.append(("저널이벤트", "journal.jsonl 이벤트 이름과 기록 모�
 
 # ---- 리포트플래그
 ws, hr, n = sheet("리포트플래그", "report.json flags 값 (코드에서 추출)",
-    "출처: `_flag(\"…\")` / `flags.append(\"…\")` / `.flag(\"…\")` 리터럴(f-string 접두는 `{…}` 자리에 실제 값이 들어감). 플래그는 exit code를 바꾸지 않는 '주의 표시'입니다. 뜻: docs/handbook/09-operations.md 3장",
+    "출처: `_flag(\"…\")` / `flags.append(\"…\")` / `.flag(\"…\")` 리터럴(f-string 접두는 `{…}` 자리에 실제 값이 들어감). 대부분은 exit code를 바꾸지 않는 '주의 표시'이고, 중단 플래그(aborted, mvn-not-found, jdk-not-21 …)는 exit 3입니다. "
+    "round 10의 infra:<kind> 플래그는 finalize가 붙입니다(sbmig/loop/orchestrator.py _infra_flags). 뜻: docs/handbook/09-operations.md 3장, 주의 코드(SBMIG-RESULT attn=): 3.4절",
     [("플래그", "flag"), ("설정하는 모듈", "files")], data["flags"], [44, 90])
 specs.append(("리포트플래그", "report.flags 값 목록", hr, n))
 
@@ -111,7 +112,7 @@ ws, hr, n = sheet("레시피카탈로그", "OpenRewrite 레시피 카탈로그 (
     "'advisor 허용'은 LLM 플랜 어드바이저가 추가할 수 있는지. 상세: docs/RECIPES.md",
     [("레시피 id", "id"), ("출처", "origin"), ("아티팩트", "artifact"), ("기본 단계", "phase"), ("advisor 허용", "advisor"), ("게이트", "gate"), ("세트", "sets"), ("규칙", "rules"), ("검증 시점", "verified"), ("설명", "description")],
     data["recipes"], [58, 10, 44, 10, 8, 18, 22, 22, 10, 80])
-specs.append(("레시피카탈로그", "레시피 33개", hr, n))
+specs.append(("레시피카탈로그", f"레시피 {n}개", hr, n))
 
 # ---- 어드바이저리
 ws, hr, n = sheet("어드바이저리", "라이브러리 어드바이저리 (knowledge/libraries/advisories.yml)",
@@ -141,7 +142,7 @@ ws, hr, n = sheet("지식노트", "LLM 프롬프트용 지식 노트 (knowledge/
     "출처: knowledge/notes/index.yml (각 노트 front-matter와 동기화, 테스트로 검사). 에러 문구·케이스·단계가 키워드와 맞는 노트가 수정 LLM의 프롬프트에 들어갑니다(sbmig/fix/context.py). 'always'는 항상 포함.",
     [("파일", "file"), ("제목", "title"), ("키워드(정규식)", "keywords"), ("케이스", "cases"), ("단계", "phases"), ("항상 포함", "always")],
     data["notes"], [26, 50, 90, 30, 20, 8])
-specs.append(("지식노트", "노트 14편과 선택 키워드", hr, n))
+specs.append(("지식노트", f"노트 {n}편과 선택 키워드", hr, n))
 
 # ---- 열거형
 ws, hr, n = sheet("열거형", "분류 체계 (sbmig/core/models.py 열거형)",
@@ -157,33 +158,42 @@ dirs = [
  ("config/artifacts.local-e2e.yml", "공개 대체 아티팩트 + 9c 이전 레이아웃 고정(옛 픽스처용)", "개발자", "scripts/e2e.sh, 테스트", "회사에서는 쓰지 않음", ""),
  ("config/settings.nexus.example.xml", "Nexus catch-all 미러 settings.xml 템플릿", "운영자가 복사", "build.settings_file로 모든 Maven 호출", "URL만 바꾸면 됨", "RUNBOOK §0.1"),
  ("knowledge/recipes/catalog.yml", "레시피 id 단일 출처", "개발자(라운드마다)", "플래너 어드바이저, sbmig recipes check", "버전관리", "불변식 5"),
- ("knowledge/recipes/base/*.yml", "선언적 OpenRewrite 레시피(사내 전용: 버전 핀, Hystrix→Resilience4j 등)", "개발자", "rewrite 실행 시 compose", "버전관리", ""),
+ ("knowledge/recipes/base/*.yml", "선언적 OpenRewrite 레시피(사내 전용: 버전 핀, Hystrix→Resilience4j, round 10 spring-7-leftovers: Boot4TypeRelocations / Spring7RemovedApis / Jackson3SpringConverters)", "개발자", "rewrite 실행 시 compose", "버전관리", ""),
+ ("knowledge/recipes/library_recipes.yml", "Boot가 아닌 계획에 라이브러리별로 붙는 레시피(Spring Batch, Hibernate, Thymeleaf)", "개발자 / 회사 추가", "sbmig/plan/library_recipes.py", "버전관리, sbmig recipes check", "round 10"),
+ ("knowledge/kb/redact.yml", "KB에 저장하는 내용의 비밀값 마스킹 회사 규칙(key_words, key_patterns, patterns, allow_keys)", "회사(이름과 패턴만)", "sbmig/kb/redact.py (kb.redact_file)", "실제 비밀값은 절대 넣지 않음", "round 10"),
  ("knowledge/notes/*.md + index.yml", "LLM 프롬프트용 마이그레이션 노트(키워드 선택)", "개발자", "sbmig/fix/context.py", "버전관리, index.yml과 front-matter 동기화 테스트", ""),
  ("knowledge/libraries/advisories.yml", "EOL/비관리 라이브러리 안내(guide|recipe)", "개발자", "sbmig/advisory", "회사 추가: advisories.extra_files", ""),
  ("knowledge/config/externalized.yml", "외부화 설정 인벤토리 규칙(JNDI → spring.datasource.* 등)", "개발자", "sbmig/analyze/properties.py", "버전관리", ""),
- ("kb/ledger.jsonl", "모든 시도 기록(append-only): 시그니처 → 수정 라벨 → 결과", "실행(fix loop, harvest)", "플릿 요약, 사람 검토, 레시피 승격", "학습 자산 — 백업·공유. 실행 간 공유 디렉터리로 운영(kb.dir)", "불변식 3(파일 기반)"),
+ ("kb/ledger.jsonl", "모든 시도 기록(append-only): 시그니처 → 수정 라벨 → 결과", "실행(fix loop, harvest)", "플릿 요약, 사람 검토, 레시피 승격", "학습 자산 — 백업·공유(git 제외, sbmig kb export). 실행 간 공유 디렉터리로 운영(kb.dir). round 10 형식 변경으로 회사 KB는 한 번 지우고 다시 쌓음", "불변식 3(파일 기반)"),
+ ("kb/errors.jsonl · fix_attempts.jsonl", "빌드 에러 하나 / 수정 시도 하나 = 한 줄(실패 포함, 적용 diff), schema_version 2, asis_* / packaging / introduced_by", "실행(finalize)", "sbmig kb errors, 힌트 색인, 케이스 카탈로그", "재구성할 원천이 없으므로 백업", "round 10: 잘린 끝 줄은 *.corrupt로"),
+ ("kb/error_hints.json", "L2 / 심볼 → 과거 성공 수정과 실패 시도(프롬프트 힌트)", "실행", "수정 프롬프트", "sbmig kb reindex로 재구성", ""),
+ ("kb/catalog/ · views/", "케이스 카탈로그(L2 하나 = 케이스 하나, human: 칸) + 사람용 cases.md / cases.csv", "실행 + 사람(human: 칸)", "트리아지(케이스 동작, pin), sbmig kb cases", "human: 칸을 고쳤으면 보관", ""),
+ ("kb/audit.jsonl", "사람의 sbmig kb cases 편집(OS 사용자, 명령, 전 → 후) + 자동 상태/동작 전환", "sbmig kb cases, 카탈로그", "sbmig kb cases show (history)", "이력용", "round 10"),
+ ("kb/quarantine.jsonl · *.jsonl.corrupt · .lock", "읽을 수 없던 줄 기록 · 잘린 끝 줄 사본 · 프로세스 간 잠금(쓰는 동안만)", "KB 저장소", "사람(원인 확인)", "확인 뒤 지워도 됨, 낡은 잠금은 kb.lock_timeout_seconds 뒤 자동 해제", "round 10"),
+ ("<kb.dir>.bak-<시각>/", "sbmig kb import --replace가 남긴 예전 KB", "sbmig kb import", "사람", "교체가 잘 됐으면 지워도 됨", "round 10"),
  ("kb/symbols.json", "에러 심볼 → 수정 라벨/대체/프로젝트/케이스 인덱스", "실행(harvest)", "트리아지 KB 매칭", "ledger와 함께 백업", ""),
  ("kb/cases/YYYY-MM/<case-id>.json", "KBCase: 성공한 수정 사례(시그니처, 패치, 라벨)", "실행(harvest)", "KB_PATCH 재생(LLM 없이), 레시피 후보 생성", "백업·공유", ""),
  ("kb/index.json", "L1/L2 시그니처 → 사례 인덱스(재생성 가능)", "실행", "KB 매칭", "지워져도 cases에서 재생성", ""),
  ("kb/recipes/candidates/ · active/ · rejected/", "학습된 레시피(yml + meta.json): 후보 → 검토 후 active → 이후 실행에 자동 포함", "실행(후보), 사람(승격/거절)", "kb.use_active_recipes일 때 rewrite에 포함", "active는 코드 리뷰처럼 검토 후 승격", ""),
  ("kb/patterns/*.yml", "손으로 쓴 패턴(시그니처 정규식 → 레시피/힌트/핸들러)", "개발자", "트리아지", "버전관리 가능", ""),
- ("fixtures/projects/<name>/", "소형 as-is 프로젝트 + README + expected.json(기대 결과)", "개발자", "scripts/e2e.sh, tests/fixtures", "새 시나리오마다 1개 추가", "24개"),
+ ("fixtures/projects/<name>/", "소형 as-is 프로젝트 + README + expected.json(기대 결과)", "개발자", "scripts/e2e.sh, tests/fixtures", "새 시나리오마다 1개 추가", f"{len(data['fixtures'])}개"),
  ("fixtures/libs/", "사내 라이브러리 대역(ghost-lib, legacy-web-lib) + install.sh", "개발자", "e2e 전에 로컬 저장소에 설치", "", ""),
  ("fixtures/fleet/manifest.example.yml", "플릿 매니페스트 예시", "운영자가 복사", "sbmig fleet", "", ""),
  ("out/<run id>/profile.json", "분석 결과(ProjectProfile)", "analyze", "plan, 리포트, 사람", "실행 산출물(보관 선택)", ""),
  ("out/<run id>/plan.json", "마이그레이션 계획(스텝 목록·레시피·노트)", "plan", "실행 엔진, 사람", "", ""),
- ("out/<run id>/journal.jsonl", "이벤트 스트림(기계 판독)", "모든 단계", "웹 UI, 진단, 테스트", "문제 보고 시 첨부", ""),
- ("out/<run id>/sbmig.log", "DEBUG 로그(LLM 호출·빌드·결정; 키는 절대 없음)", "모든 단계", "진단", "문제 보고 시 첨부", ""),
- ("out/<run id>/logs/NNN-<label>.log", "빌드/리라이트 호출별 Maven 원본 로그(순번-라벨)", "build, rewrite", "로그 파서, 사람", "", "예: 006-build-verify.log"),
+ ("out/<run id>/journal.jsonl", "이벤트 스트림(기계 판독)", "모든 단계", "웹 UI, 진단, 테스트", "개발자 진단용", ""),
+ ("out/<run id>/sbmig.log", "DEBUG 로그(LLM 호출·빌드·결정; 키는 절대 없음). 끝에 SBMIG-RESULT 한 줄, 중단이면 run aborted: 줄", "모든 단계(플릿은 프로젝트마다)", "진단", "문제 보고 시 Select-String으로 필요한 줄만 옮겨 적음", "round 10: 플릿도 프로젝트별"),
+ ("out/<run id>/logs/NNN-<label>.log", "빌드/리라이트 호출별 Maven 원본 로그(순번-라벨)", "build, rewrite", "로그 파서, 사람", "", "예: 006-build-verify.log, 네거티브 캐시 재빌드는 -U.log"),
  ("out/<run id>/rewrite/", "합성된 rewrite.yml 등 OpenRewrite 입력", "rewrite", "Maven rewrite 플러그인", "", ""),
- ("out/<run id>/project/", "git 작업 사본(브랜치 sbmig/<run id>, 스텝·시도마다 커밋)", "Workspace", "모든 단계", "회사에서 git이 금지면 복사 기반 스냅샷이 후속 과제", ""),
+ ("out/<run id>/project/", "git 작업 사본(브랜치 sbmig/<run id>, 스텝·시도마다 커밋). 루트 .gitignore에 target 규칙·생성물 줄 추가, 숨은 jar는 강제 추가", "Workspace", "모든 단계", "끝난 실행은 sbmig clean / fleet.cleanup으로 정리", "round 10: target 패키지는 유지"),
  ("out/<run id>/changes.patch", "첫 커밋 대비 전체 diff(원본 바이트)", "finalize", "담당자 리뷰", "", ""),
- ("out/<run id>/result.zip", "마이그레이션된 프로젝트(.git 제외)", "finalize", "담당자에게 전달", "", ""),
+ ("out/<run id>/result.zip", "마이그레이션된 프로젝트(.git, 빌드 출력 target 제외)", "finalize(보고서 뒤, 마지막)", "담당자에게 전달", "", ""),
  ("out/<run id>/report.md · report.json", "리포트(Handover 먼저)", "finalize", "담당자·운영자", "제출/보관", ""),
  ("out/<run id>/merge-conflicts/", "멀티모듈 merge에서 버려진 사본", "restructure", "수정 LLM 참고, 담당자", "", "라운드 7b/9"),
- ("out/<run id>/threads-*.txt", "워치독 자동 스레드 덤프(5분 무응답)", "fix loop watchdog", "개발자 진단", "", ""),
- ("out/web/<run id>/", "웹 UI 실행의 run 디렉터리(위와 동일 구조)", "웹 서버", "웹 UI", "web.max_finished_runs로 정리", ""),
- ("tests/", "오프라인 테스트(1,328개) + integration 마커 테스트", "개발자", "pytest", "", "docs/handbook 검증: tests/docs/test_handbook.py"),
+ ("out/<run id>/threads-*.txt", "스레드 덤프: 워치독 자동(5분 무응답), dump-threads 파일 요청", "fix loop watchdog, 파일 트리거", "개발자 진단", "블록 맨 아래 15줄만 옮겨 적음", "Ctrl+Break / kill -USR1은 out/threads-*.txt"),
+ ("out/web/<run id>/", "웹 UI 실행의 run 디렉터리(위와 동일 구조)", "웹 서버", "웹 UI", "메모리 목록은 max_finished_runs로 정리, 디스크는 sbmig clean --out out/web", ""),
+ ("<fleet out>/fleet/", "state.json(입력 경로 기준), summary.md/csv/json(attention 열, Needs attention), learning.md, fleet-config.json, sbmig.log(INFO)", "sbmig fleet", "운영자, sbmig fleet status --attention", "플릿이 끝날 때까지 보관(재개 근거)", "round 10: preflight·차단기 줄"),
+ ("tests/", "오프라인 테스트(2,192개) + integration 마커 테스트", "개발자", "pytest", "", "docs/handbook 검증: tests/docs/test_handbook.py"),
  ("scripts/", "e2e.sh/e2e.py, fleet-demo.sh, demo-kb/run.sh", "개발자", "회귀 확인", "", ""),
  ("coding/", "같은 게이트웨이 계약 위의 독립 코딩 에이전트(sbmig 아님)", "개발자", "", "", "coding/README.md"),
  ("examples/adapters/", "LLM/수정기 플러그인 예시", "개발자", "llm.plugin / fix.plugin", "", "docs/ADAPTERS.md"),

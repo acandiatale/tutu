@@ -37,7 +37,7 @@
 - **딕셔너리는 키 단위로 합쳐지고, 리스트·스칼라는 통째로 교체됩니다.** 예를 들어 회사 파일에 `openrewrite.exclusions`를 한 항목만 쓰면 기본 4개 패턴이 모두 사라지고 그 한 항목만 남습니다. `artifacts.optional`도 리스트이므로 파일에 쓴 8개가 전부입니다.
 - `artifacts` 섹션(최소한 `artifacts.parent`)에는 기본값이 없습니다. `--config` 없이 `sbmig run` / `sbmig analyze` / `sbmig plan` / `sbmig build` / `sbmig rewrite`를 실행하면 `config error … artifacts: Field required`와 힌트를 출력하고 종료 코드 2로 끝납니다. 예외: `sbmig llm-probe`는 artifacts를 임시값으로 채워 `.env`만으로 동작하고, `sbmig kb` / `sbmig recipes` / `sbmig advisories`도 artifacts가 없으면 자리표시자(`unset`)로 채워 동작합니다.
 - 상대 경로 해석: `kb.dir`, `openrewrite.base_recipe_dir`, `plan.catalog_file`, `advisories.file`, `advisories.extra_files`, `externalized.rules_file`, `llm.record_dir`은 `repo_root`(기본: sbmig 저장소 루트) 기준으로 해석됩니다(`Config.resolve_path`). 반면 `build.settings_file`, `build.java_home`, `build.local_repo`, `build.mvn`은 `~`만 펼친 뒤 그대로 Maven에 넘어가며 Maven은 마이그레이션 대상 프로젝트 디렉터리에서 실행됩니다(코드 기준: `sbmig/build/mvn.py`). **이 네 개는 절대 경로로 쓰는 것을 권장합니다.**
-- `SBMIG_`로 시작하는 다른 변수(`SBMIG_ENV_FILE`, `SBMIG_WEB_OUT`, `SBMIG_WEB_REPO_ROOT`, `SBMIG_MAX_UPLOAD_MB`)도 4단계에서 설정 키로 해석되지만(`env_file`, `web.out` 등) `Config`에 없는 키라 무시됩니다. 영향은 없습니다.
+- `SBMIG_`로 시작하는 다른 변수(`SBMIG_ENV_FILE`, `SBMIG_WEB_OUT`, `SBMIG_WEB_REPO_ROOT`, `SBMIG_MAX_UPLOAD_MB`, `SBMIG_WEB_TOKEN`)도 4단계에서 설정 키로 해석되지만(`env_file`, `web.out` 등) `Config`에 없는 키라 무시됩니다. 영향은 없습니다.
 
 ### 1.3 환경 변수로만 들어오는 값
 | 값 | 들어오는 길 | 비고 |
@@ -47,9 +47,10 @@
 | 모델 | `LLM_MODEL`(기본 `gpt-6-luna`), `LLM_RECIPE_MODEL`, `LLM_ESCALATION_MODEL` | 비우면 `LLM_MODEL`과 같은 모델을 씁니다. |
 | 응답 경로 | `LLM_RESPONSE_PATH` | 자동 감지가 실패할 때만. |
 | LLM 기록 디렉터리 | `LLM_RECORD_DIR` | 비우면 기록하지 않습니다. |
+| 웹 접근 토큰 | `SBMIG_WEB_TOKEN`(또는 `sbmig serve --token`) | round 10. 루프백이 아닌 `--host`로 웹 UI를 띄울 때 필수. YAML 키가 아닙니다. |
 | JDK(로컬 e2e) | `JAVA21_HOME` → `config/artifacts.local-e2e.yml`의 `build.java_home` | 회사 설정 템플릿은 `JAVA21_HOME`을 읽지 않습니다. 회사에서는 `build.java_home`에 직접 경로를 쓰거나 `--java-home`을 줍니다. |
 
-환경 변수 전체 목록과 의미는 [07. API 레퍼런스](07-api-reference.md)의 환경 변수 절을 보십시오.
+환경 변수 전체 목록과 의미는 [07. API 레퍼런스](07-api-reference.md)의 환경 변수 절을 보십시오. round 10부터 `.env`는 UTF-8(BOM 유무 무관) / UTF-16 / cp949로 저장돼도 읽히고, 실행 중에 고치면 다음 실행(웹의 다음 run, 플릿의 다음 프로젝트)이 다시 읽습니다(셸 변수는 여전히 우선).
 
 ### 1.4 한눈에 보는 예
 ```text
@@ -169,13 +170,15 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `build.allow_skip_test_compile_fallback` | bool | `true` | 테스트 컴파일 오류만 남으면 `-Dmaven.test.skip=true`로 패키징(플래그 `test-compile-skipped`, L7). | 테스트 컴파일 실패를 실패로 보고 싶을 때 false. | [04](04-triage-and-loop.md) |
 | `build.allow_skip_tests_fallback` | bool | `true` | 런타임 테스트 실패만 남으면 `-DskipTests`로 패키징(플래그 `tests-skipped`, L7b). `skip_tests: false`일 때만 의미가 있습니다. | 테스트 실패를 실패로 보고 싶을 때 false. | [04](04-triage-and-loop.md) |
 | `build.timeout_minutes` | int | `30` | Maven 1회 제한 시간. 초과 시 프로세스 트리를 종료(Windows는 `taskkill /T /F`). | 대형 빌드. | [09](09-operations.md) |
-| `build.env` | dict[str,str] | `{}` | Maven 프로세스에 추가할 환경 변수(예: `MAVEN_OPTS`). | 메모리 옵션, 프록시 변수. | — |
+| `build.env` | dict[str,str] | `{}` | Maven 프로세스에 추가할 환경 변수(예: `MAVEN_OPTS`). round 10: 모든 Maven 호출의 `MAVEN_OPTS`에 `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`이 붙습니다(Windows 한글 경로) — 여기나 셸 `MAVEN_OPTS`에 같은 속성이 있으면 그 값이 이김. | 메모리 옵션, 프록시 변수. | — |
 | `build.source_encoding_policy` | `set-property` / `convert-utf8` | `set-property` | MS949/EUC-KR 레거시 소스: `project.build.sourceEncoding` 설정 또는 UTF-8로 변환(E1). 파일은 항상 원래 인코딩으로 읽고 씁니다. | 소스를 UTF-8로 통일하기로 한 경우 `convert-utf8`. | [09](09-operations.md) |
 | `build.encoding_candidates` | list[str] | `utf-8`, `cp949`, `euc-kr`, `shift_jis`, `latin-1` | 인코딩 감지 시도 순서. | 다른 레거시 인코딩이 있을 때. | — |
 | `build.enforcer_policy` | `relax-rule` / `skip` / `keep` | `relax-rule` | `requireJavaVersion` 등 enforcer 실패 처리(E4). | 규칙을 건드리면 안 될 때 `keep`. | [09](09-operations.md) |
 | `build.werror_policy` | `remove` / `keep` | `remove` | `-Werror` 제거(E5, 플래그 `werror-removed`). | 경고 0 정책을 유지할 때 `keep`. | [09](09-operations.md) |
 | `build.pom_repositories` | `keep` / `remove` | `keep` | pom 안의 `<repositories>`/`<pluginRepositories>`: `keep` = 그대로(settings 미러로 우회), `remove` = 첫 빌드 전에 핸들러 `strip-pom-repositories`가 삭제(미러 필수, X9). | 결과 pom에서 죽은 URL을 없애고 싶을 때 `remove`. | [09](09-operations.md) |
 | `build.external_package_prefixes` | list[str] | `[]` | 오류 시그니처에서 "라이브러리 코드"로 취급할 패키지 접두어(사내 groupId는 자동 추가). | 사내 라이브러리 패키지가 groupId와 다를 때. | [04](04-triage-and-loop.md) |
+| `build.require_java_major` | int | `21` | round 10 사전 점검: `mvn -v`가 보고한 Java 주 버전이 이 값이 아니면 첫 빌드 전에 중단(종료 코드 3, 플래그 `jdk-not-21` + `infra:jdk`, `run aborted: Maven runs on Java X (…), not Java 21: set build.java_home (or JAVA_HOME) …`). 플릿 사전 점검의 `java`도 이 값. `0` = 확인 안 함. | 바꾸지 않습니다(JDK 21이 전제). | [09](09-operations.md) |
+| `build.retry_negative_cache` | bool | `true` | round 10: 빌드가 Maven 네거티브 캐시("… was cached in the local repository, resolution will not be reattempted …", Maven 3.6–3.9 문구)로 실패하면 같은 빌드를 `-U`로 한 번 더(실행 안에서 아티팩트당 한 번, 오프라인이거나 이미 `-U`면 안 함). 로그 `maven: negative cache hit for <g:a:v> → retrying once with -U`, `NNN-build-<label>-U.log`. | `-U`가 사내 Nexus에 부담이 될 때 false. | [09](09-operations.md) |
 
 ### 2.6 `loop` — build-fix 루프와 예산
 | 키 | 타입 | 기본값 | 의미 | 언제 바꾸나 | 관련 문서 |
@@ -196,7 +199,7 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `loop.max_llm_attempts_per_cluster` | int | `2` | 클러스터당 LLM 시도 후 blocked(`repeated_failure`). | 예산 정책. | [04](04-triage-and-loop.md) |
 | `loop.verify_extra_llm_attempts` | int | `2` | 최종 검증 루프에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터를 풀고 더 주는 LLM 시도 수(escalation 모델). `0`이면 풀지 않음. 정책·예산 blocked는 대상 아님. | 마지막에 더 끈질기게 시도하고 싶을 때 증가. | [04](04-triage-and-loop.md) |
 | `loop.blocked_policy` | dict[str,int] | `external_javax_api: 0`, `external_api_incompatible: 1`, `artifact_not_found: 0`, `parent_not_found: 0`, `plugin_incompatible: 1`, `unsupported_source: 0`, `encoding: 0` | 차단 사유별로 blocked 전 허용 LLM 시도 수(0 = LLM에 묻지 않음). | 거의 바꾸지 않습니다(LLM이 버전을 지어내지 않게 하는 안전장치). | [04](04-triage-and-loop.md) |
-| `loop.structural_regression_kinds` | list[str] | `pom_invalid`, `parent_resolution`, `plugin_resolution` | pom 수정 후 나타나면 개수와 무관하게 되돌리는 오류 종류. | 바꾸지 않습니다. | [04](04-triage-and-loop.md) |
+| `loop.structural_regression_kinds` | list[str] | `pom_invalid`, `parent_resolution`, `plugin_resolution`, `dependency_resolution` | pom 수정 후 나타나면 개수와 무관하게 되돌리는 오류 종류. round 10에 `dependency_resolution` 추가: LLM이 지어낸 의존성이 해석 단계에서 빌드를 멈춰 컴파일 오류를 가리던 문제. | 바꾸지 않습니다. | [04](04-triage-and-loop.md) |
 
 ### 2.7 `llm` — LLM 제공자
 | 키 | 타입 | 기본값 | 의미 | 언제 바꾸나 | 관련 문서 |
@@ -248,8 +251,10 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `kb.max_hints` | int | `5` | 프롬프트에 넣는 KB 힌트 수. | 거의 바꾸지 않습니다. | — |
 | `kb.error_cases` | bool | `true` | 빌드 에러마다 한 줄(`<kb.dir>/errors.jsonl`), 수정 시도마다 한 줄(`fix_attempts.jsonl`, 실패 포함, 적용한 diff 포함)을 남기고 실행 디렉터리에 `error_cases.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`를 씁니다(2026-10-23). | 끄지 않습니다. 끄면 실패 사례가 로그에만 남습니다. | [05](05-directories-and-storage.md) |
 | `kb.error_hints` | bool | `true` | 같은 에러(L2 / 심볼)의 과거 성공 수정과 과거 실패 시도를 `<kb.dir>/error_hints.json`에서 찾아 수정 프롬프트 힌트로 넣습니다. `kb.use_hints`가 꺼지면 함께 꺼지고 `kb.max_hints`가 전체 상한입니다. | 끄지 않습니다. | [04](04-triage-and-loop.md) |
-| `kb.error_diff_chars` | int | `12000` | 시도 기록 하나에 넣는 diff 최대 글자 수(넘으면 `diff_truncated: true`; 전체는 `changes.patch`). | KB 크기가 문제일 때만 줄입니다. | — |
-| `kb.error_excerpt_chars` | int | `1500` | 에러 기록에 넣는, 그 에러 파일의 diff 발췌 최대 글자 수. | 거의 바꾸지 않습니다. | — |
+| `kb.error_diff_chars` | int | `12000` | 시도 기록 하나에 넣는 diff 최대 글자 수(넘으면 `diff_truncated: true`; 전체는 `changes.patch`). round 10: 변경 형태를 **분류한 뒤** 자르고, `0` 이하 = 자르지 않음. | KB 크기가 문제일 때만 줄입니다. | [05](05-directories-and-storage.md) |
+| `kb.error_excerpt_chars` | int | `1500` | 에러 기록에 넣는, 그 에러 파일의 diff 발췌 최대 글자 수(round 10: 에러 줄이 든, 없으면 가장 가까운 hunk, 시도마다). | 거의 바꾸지 않습니다. | — |
+| `kb.redact_file` | str | `knowledge/kb/redact.yml` | round 10: KB에 저장하는 모든 것의 비밀값 마스킹에 더할 회사 규칙(`key_words`, `key_patterns`, `patterns`, `allow_keys`). 내장 규칙은 항상 적용. 이름과 패턴만, 실제 비밀값은 쓰지 않습니다. | 사내 토큰 형식 / 비밀 키 이름이 있을 때 그 파일에 추가. | [05](05-directories-and-storage.md) |
+| `kb.lock_timeout_seconds` | int | `300` | round 10: 프로세스 간 KB 잠금 `<kb.dir>/.lock`. 이보다 오래됐거나 pid가 없으면 낡은 잠금으로 보고 풀고, 쓰는 쪽은 이 시간까지 기다린 뒤 경고하고 진행(실행을 실패시키지 않음). | 공유 디렉터리가 매우 느릴 때만. | [05](05-directories-and-storage.md) |
 | `kb.catalog` | bool | `true` | 에러 기록을 L2 시그니처마다 케이스 하나로 묶어 `<kb.dir>/catalog/`와 사람용 목록 `<kb.dir>/views/cases.md|csv`를 유지하고, 케이스 힌트와 동작을 수정 루프에 줍니다(2026-10-23). | 끄지 않습니다. | [04](04-triage-and-loop.md) |
 | `kb.case_replace` | bool | `true` | 케이스 동작이 `replace`(LLM이 예전에 단순 치환으로 고친 것)이고 상태가 candidate / active면 핸들러 `case-replace`가 LLM 없이 같은 치환을 적용합니다. | 치환 규칙을 쓰지 않으려면 false. | [04](04-triage-and-loop.md) |
 | `kb.case_replace_scope` | `error-lines` / `file` | `error-lines` | 학습한 치환을 적용하는 범위: javac가 알려 준 줄 + import 줄만, 또는 파일 전체. | `file`은 같은 단어가 다른 뜻으로 쓰인 곳까지 바꿀 수 있어 권하지 않습니다. | [04](04-triage-and-loop.md) |
@@ -272,7 +277,13 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `fleet.max_projects` | int | `0` | 이번 호출에서 실행할 최대 프로젝트 수(0 = 전부). | 하루 처리량 제한. | [09](09-operations.md) |
 | `fleet.max_llm_calls_total` | int | `0` | 플릿 전체 LLM 예산(0 = 무제한). 각 프로젝트는 `min(loop.max_llm_calls, 남은 값)`. | 게이트웨이 사용량 제한. | [09](09-operations.md) |
 | `fleet.reindex_every` | int | `10` | N개 프로젝트마다 `kb reindex`(0 = 안 함). | 거의 바꾸지 않습니다. | [05](05-directories-and-storage.md) |
-| `fleet.summary_formats` | list[str] | `md`, `csv`, `json` | 요약 파일 형식(learning.md는 항상). | 필요 없는 형식 제외. | [09](09-operations.md) |
+| `fleet.summary_formats` | list[str] | `md`, `csv`, `json` | 요약 파일 형식(learning.md는 항상). round 10: csv는 UTF-8 BOM + `attention` / `input` 열, md에 "Needs attention" 절. | 필요 없는 형식 제외. | [09](09-operations.md) |
+| `fleet.preflight` | bool | `true` | round 10: 첫 프로젝트 전(그리고 인프라 대기 뒤 다시) 디스크 / Maven / Java / settings / 저장소(미러 URL에 GET 한 번) / LLM(`llm-probe`와 같은 호출 한 번) 점검, 한 줄씩 `preflight: <점검> ok|FAIL|skip …`. | 끄지 않습니다. | [09](09-operations.md) |
+| `fleet.infra_failure_limit` | int | `3` | round 10: 인프라 이유(`infra:<kind>` 또는 인프라 예외)로 끝난 프로젝트가 연속 N개면 기다렸다 다시 점검. 그런 프로젝트는 실패가 아니라 `pending`(`error: infra:<kind>`). | 거의 바꾸지 않습니다. | [09](09-operations.md) |
+| `fleet.infra_retry_minutes` | int | `15` | round 10: 기다리는 분. `0` = 기다리지 않고 바로 `fleet stopped: …`(상태 저장, 종료 코드 3). | 밤새 돌릴 때 늘림 / 사람이 지켜볼 때 0. | [09](09-operations.md) |
+| `fleet.infra_max_waits` | int | `4` | round 10: 건강한 프로젝트 없이 기다릴 수 있는 최대 횟수. 넘거나 다시 점검한 결과가 설정 오류(Maven 없음, JDK가 21 아님, settings 없음, LLM 키 / 모델 거부)면 멈춤. | 거의 바꾸지 않습니다. | [09](09-operations.md) |
+| `fleet.cleanup` | `none` / `build-output` / `workspace` | `build-output` | round 10: 프로젝트가 끝난 뒤(보고서·`result.zip` 다음) 정리. `build-output` = 작업 사본에서 `pom.xml` 옆 `target/`만, `workspace` = `result.zip`이 있으면 `project/` 작업 사본까지(`result.zip`, 보고서, `changes.patch`, `journal.jsonl`, `sbmig.log`, `logs/`는 남김). | 디스크가 빠듯하면 `workspace`. | [09](09-operations.md) |
+| `fleet.min_free_gb` | float | `5` | round 10: 프로젝트마다 시작 전에 출력 드라이브의 여유 공간(GB)을 확인, 모자라면 `disk` 인프라 문제(차단기). `0` = 확인 안 함. | 큰 프로젝트가 많으면 늘림. | [09](09-operations.md) |
 
 ### 2.12 `report` — 보고서 출력
 | 키 | 타입 | 기본값 | 의미 | 언제 바꾸나 | 관련 문서 |
@@ -369,7 +380,7 @@ JAVA21_HOME=C:/Program Files/Java/jdk-21
 # SBMIG_WEB_OUT=out/web                     # 순수 uvicorn일 때만(`sbmig serve`는 --out)
 # SBMIG_MAX_UPLOAD_MB=0                     # 웹 업로드 한도(MB), 0 = 없음(기본 512); 서버가 뜰 때 읽음
 ```
-저장소 루트에 `.env`로 복사합니다(git-ignored). LLM 변수는 실행마다, `SBMIG_WEB_*`와 `SBMIG_MAX_UPLOAD_MB`는 서버가 뜰 때 읽으므로 바꾸면 서버를 다시 띄웁니다. `JAVA21_HOME`은 회사 설정에서 자동으로 쓰이지 않습니다(위 1.3) — 회사에서는 `build.java_home`을 직접 지정합니다.
+저장소 루트에 `.env`로 복사합니다(git-ignored). LLM 변수는 실행마다(round 10: 바뀐 파일을 실제로 다시 읽음), `SBMIG_WEB_*`와 `SBMIG_MAX_UPLOAD_MB`는 서버가 뜰 때 읽으므로 바꾸면 서버를 다시 띄웁니다. 웹 UI를 다른 PC에 공유하려면 예제에 없는 한 줄 `SBMIG_WEB_TOKEN=<길고 임의인 값>`을 직접 추가합니다(서버가 뜰 때 읽음, [09](09-operations.md) 2.2). `JAVA21_HOME`은 회사 설정에서 자동으로 쓰이지 않습니다(위 1.3) — 회사에서는 `build.java_home`을 직접 지정합니다.
 
 ## 4. 회사에서 처음 설정할 때 체크리스트
 1. `config/artifacts.example.yml`을 **config/artifacts.yml**로 복사합니다.
@@ -381,7 +392,7 @@ JAVA21_HOME=C:/Program Files/Java/jdk-21
 7. `config/settings.nexus.example.xml`을 복사해 Nexus 그룹 URL을 넣고, 그 절대 경로를 `build.settings_file`에 넣습니다.
 8. Windows에서 `where mvn`이 Maven을 못 찾으면 `build.mvn`에 `mvn.cmd` 절대 경로를 넣습니다.
 9. `.env.example`을 저장소 루트 `.env`로 복사해 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`(필요하면 `LLM_RECIPE_MODEL`, `LLM_ESCALATION_MODEL`, `LLM_RECORD_DIR`)을 채웁니다.
-10. 확인: `sbmig llm-probe`(설정 없이 `.env`만), `sbmig recipes check --config config/artifacts.yml`, `sbmig advisories check --config config/artifacts.yml`, 그리고 대표 프로젝트로 `sbmig analyze <프로젝트> --config config/artifacts.yml`.
+10. 확인: `sbmig llm-probe`(설정 없이 `.env`만, 마지막 줄 `LLM-PROBE ok …`), `sbmig recipes check --config config/artifacts.yml`, `sbmig advisories check --config config/artifacts.yml`, 그리고 대표 프로젝트로 `sbmig analyze <프로젝트> --config config/artifacts.yml`.
 
 ```powershell
 Copy-Item config\artifacts.example.yml config\artifacts.yml

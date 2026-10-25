@@ -47,16 +47,12 @@ rules:
     phases: [spring, restructure]
     once_per_run: true
 
-  - id: spring-security-config
-    # https://docs.openrewrite.org/recipes/java/spring/security6/upgradespringsecurity_6_0
-    # (chains 5.7 WebSecurityConfigurerAdapter removal and 5.8 antMatchers → requestMatchers)
-    match:
-      message_regex: '\b(WebSecurityConfigurerAdapter|antMatchers|mvcMatchers|authorizeRequests)\b'
-      symbol_regex: '\b(WebSecurityConfigurerAdapter|antMatchers|mvcMatchers|authorizeRequests)\b'
-    recipes: [org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0]
-    artifact: org.openrewrite.recipe:rewrite-spring
-    phases: [spring, restructure]
-    once_per_run: true
+  # round 10: the reactive rule `spring-security-config` (WebSecurityConfigurerAdapter / antMatchers / authorizeRequests
+  # → UpgradeSpringSecurity_6_0) is gone. Those errors only appear once the classpath is already Spring Security 7,
+  # where the recipe's type-attributed visitors find no WebSecurityConfigurerAdapter type and change nothing (a
+  # wasted rewrite run of several minutes). The plan now runs the whole 6.0 … 7.0 chain on the as-is classpath
+  # (openrewrite.recipes.spring_security_7; the Boot umbrella runs it for Boot projects); what is left goes to the LLM
+  # with knowledge/notes/spring-security-7.md.
 
   - id: boot4-modularized-autoconfigure
     # https://docs.openrewrite.org/recipes/java/spring/boot4/upgradespringboot_4_0

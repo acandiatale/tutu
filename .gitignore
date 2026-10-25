@@ -9,6 +9,24 @@ out/
 config/artifacts.yml
 kb/cases/**/*.json
 !kb/cases/.gitkeep
+# KB data written by runs / fleets / `sbmig kb …` (the repo tracks only the layout .gitkeep files under kb/)
+kb/errors.jsonl
+kb/fix_attempts.jsonl
+kb/error_hints.json
+kb/ledger.jsonl
+kb/symbols.json
+kb/index.json
+kb/audit.jsonl
+kb/quarantine.jsonl
+kb/*.corrupt
+kb/.lock
+kb/.lock.*
+kb/catalog/
+kb/views/
+kb/**/*.tmp
+# `sbmig kb import --replace` keeps the previous KB beside it; its build dir is a hidden sibling
+/kb.bak-*/
+/.kb.import-*/
 .env
 .env.*
 !.env.example

@@ -1,8 +1,12 @@
 """Run-wide registry of blocked clusters (docs/ERROR-HANDLING.md: "never loop on what we cannot fix, never hide it").
 
 The orchestrator owns one registry per run and hands it to every BuildFixLoop, so a cluster blocked in the spring
-phase is skipped in restructure/verify too. Keys are L1 signatures, plus the file (normalized to its ``src/…`` suffix
-so the restructure move into ``module/comp-jar`` keeps the key) for compile errors.
+phase is skipped in restructure/verify too. Keys are (L1 signature, file) — the file as the full project-relative
+posix path for compile errors ('' for module / artifact errors). Round 10: the full path keeps MSA services apart
+(svc-a's `SwaggerConfig.java` block never covers svc-b's file with the same relative path — services keep their
+directories); the restructure move (`src/…` → `{name}-back/src/…`, `module/comp-jar/src/…`, merged modules) is
+followed through :meth:`BlockedRegistry.note_moves`, which the orchestrator calls with the step's git renames, so a
+file blocked before the move stays blocked after it (:meth:`canonical_file` maps an old path to its new one).
 
 ``BlockedItem.suggestion`` is composed by :func:`compose_suggestion` from the reason, the attributed artifact
 (``sbmig.build.classpath`` — optional, lazily imported) and ``cfg.artifacts.optional``. After the final build,
@@ -24,10 +28,12 @@ log = logging.getLogger("sbmig.loop")
 FILE_KINDS = (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE)
 MAX_ERRORS = 10
 MAX_RAW = 2000
+MAX_MOVE_HOPS = 8                    # a file moved by several restructure steps (wrap, then split) — chain cap
 
 
 def normalize_file(path: Optional[str]) -> Optional[str]:
-    """'module/comp-jar/src/main/java/a/B.java' → 'src/main/java/a/B.java' (stable across the restructure move)."""
+    """'module/comp-jar/src/main/java/a/B.java' → 'src/main/java/a/B.java' (the `src/…` suffix). No longer the
+    registry key (round 10: full paths + `note_moves`); kept for callers that want the suffix."""
     if not path:
         return path
     p = path.replace("\\", "/")
@@ -35,10 +41,20 @@ def normalize_file(path: Optional[str]) -> Optional[str]:
     return m.group(1) if m else p
 
 
+def posix_path(path: Optional[str]) -> str:
+    """Project-relative posix form of a path ('' for none): backslashes → '/', no leading './'."""
+    p = (path or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
 def error_key(e: BuildError) -> str:
+    """String form of an error's registry key (signature, plus `@<file>` for compile errors) — full path, no move
+    mapping; `BlockedRegistry.key` is the move-aware tuple the registry itself uses."""
     sig = e.signature or f"{e.kind.value}|{e.message}"
     if e.kind in FILE_KINDS and e.file:
-        return f"{sig}@{normalize_file(e.file)}"
+        return f"{sig}@{posix_path(e.file)}"
     return sig
 
 
@@ -50,10 +66,49 @@ def sanitize_errors(errors: Iterable[BuildError], limit: int = MAX_ERRORS) -> li
     return out
 
 
+Key = tuple[str, str]                # (L1 signature, file or '')
+
+
 class BlockedRegistry:
     def __init__(self) -> None:
         self._items: dict[str, BlockedItem] = {}
-        self._by_key: dict[str, str] = {}
+        self._by_key: dict[Key, str] = {}
+        self._moves: dict[str, str] = {}             # old project path → new one (restructure renames, round 10)
+
+    # -- keys / moves --------------------------------------------------------
+    def canonical_file(self, path: Optional[str]) -> str:
+        """The current path of a file the run may have moved: posix form, then the restructure renames (chained)."""
+        p = posix_path(path)
+        for _ in range(MAX_MOVE_HOPS):
+            nxt = self._moves.get(p)
+            if not nxt or nxt == p:
+                break
+            p = nxt
+        return p
+
+    def key(self, e: BuildError) -> Key:
+        sig = e.signature or f"{e.kind.value}|{e.message}"
+        if e.kind in FILE_KINDS and e.file:
+            return sig, self.canonical_file(e.file)
+        return sig, ""
+
+    def note_moves(self, moves: dict[str, str]) -> int:
+        """Files moved by a restructure step (`old → new`, project-relative): blocked keys follow them. Returns how
+        many keys were re-keyed. MSA / boot_pom runs keep their directories → nothing to note."""
+        clean = {posix_path(a): posix_path(b) for a, b in (moves or {}).items() if a and b and a != b}
+        if not clean:
+            return 0
+        self._moves.update(clean)
+        moved = 0
+        for (sig, f), iid in list(self._by_key.items()):
+            if not f:
+                continue
+            nf = self.canonical_file(f)
+            if nf != f:
+                del self._by_key[(sig, f)]
+                self._by_key.setdefault((sig, nf), iid)
+                moved += 1
+        return moved
 
     # -- queries -------------------------------------------------------------
     def __len__(self) -> int:
@@ -69,11 +124,11 @@ class BlockedRegistry:
         return self._items.get(item_id)
 
     def item_for_error(self, e: BuildError) -> Optional[BlockedItem]:
-        iid = self._by_key.get(error_key(e))
+        iid = self._by_key.get(self.key(e))
         return self._items.get(iid) if iid else None
 
     def is_blocked_error(self, e: BuildError) -> bool:
-        return error_key(e) in self._by_key
+        return self.key(e) in self._by_key
 
     def partition(self, cluster: ErrorCluster) -> tuple[list[BuildError], list[BuildError]]:
         """(errors already blocked, errors still to work on)."""
@@ -100,14 +155,15 @@ class BlockedRegistry:
         """Register (part of) a cluster as blocked. Returns (item, created). Errors already known to an item of the
         same reason are merged into it (one row per library problem, stable id across phases)."""
         errs = list(errors if errors is not None else cluster.errors) or list(cluster.errors)
-        keys = [error_key(e) for e in errs]
+        keys = [self.key(e) for e in errs]
         existing = next((self._items[self._by_key[k]] for k in keys if k in self._by_key
                          and self._items[self._by_key[k]].reason == reason), None)
         if existing is not None:
             self._merge(existing, errs, keys)
             existing.attempts = max(existing.attempts, attempts)
             return existing, False
-        digest = hashlib.sha1(("|".join([reason.value, *sorted(set(keys))])).encode("utf-8")).hexdigest()[:10]
+        flat = sorted({f"{s}@{f}" if f else s for s, f in keys})
+        digest = hashlib.sha1(("|".join([reason.value, *flat])).encode("utf-8")).hexdigest()[:10]
         files: list[str] = []
         for e in errs:
             f = e.file or (e.artifact.coordinates if e.artifact else None)
@@ -125,7 +181,7 @@ class BlockedRegistry:
             self._by_key.setdefault(k, item.id)
         return item, True
 
-    def _merge(self, item: BlockedItem, errs: list[BuildError], keys: list[str]) -> None:
+    def _merge(self, item: BlockedItem, errs: list[BuildError], keys: list[Key]) -> None:
         for e, k in zip(errs, keys):
             if k not in self._by_key:
                 self._by_key[k] = item.id

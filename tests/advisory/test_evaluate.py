@@ -177,3 +177,29 @@ def test_followups_not_replaced_first_without_duplicates():
         "UpgradeSpringDoc_3_0; Check the UI.",
     ]
     assert followups_for([]) == []
+
+
+# ---------------------------------------------------------------------------------------------- round 10 (D16)
+def test_httpclient4_and_jackson1_are_recipe_for_spring_and_guide_for_plain_java(cfg):
+    from sbmig.advisory import advisory_recipe_refs, evaluate_advisories
+
+    libs = (LibraryUsage(name="httpclient4", evidence=["pom:org.apache.httpcomponents:httpclient:4.5.13"]),
+            LibraryUsage(name="jackson1", evidence=["pom:org.codehaus.jackson:jackson-mapper-asl:1.9.13"]))
+    spring = {f.advisory_id: f for f in evaluate_advisories(profile(libs=libs, case=CaseType.SPRING_LEGACY), cfg)}
+    assert spring["httpclient4"].policy == "recipe" and "httpclient4-direct" not in spring
+    assert spring["jackson1"].recipes == ["org.openrewrite.java.jackson.CodehausToFasterXML"]
+    # the Framework 7 recipe already runs both → "plan", nothing prepended
+    refs = advisory_recipe_refs(list(spring.values()), cfg, ["org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0"])
+    assert not {r.id for r in refs} & {"org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5",
+                                       "org.openrewrite.java.jackson.CodehausToFasterXML"}
+    assert spring["httpclient4"].recipe_source == "plan" and spring["jackson1"].recipe_source == "plan"
+    plain = {f.advisory_id: f for f in evaluate_advisories(profile(libs=libs, case=CaseType.PURE_JAVA), cfg)}
+    assert set(plain) >= {"httpclient4-direct", "jackson1-direct"} and "httpclient4" not in plain
+    assert plain["httpclient4-direct"].policy == "guide" and plain["jackson1-direct"].recipes == []
+
+
+def test_undertow_advisory(cfg):
+    from sbmig.advisory import evaluate_advisories
+
+    f = {x.advisory_id: x for x in evaluate_advisories(profile(libs=(LibraryUsage(name="undertow"),)), cfg)}
+    assert f["undertow"].policy == "guide" and "spring-boot-starter-tomcat" in (f["undertow"].replacement or "")

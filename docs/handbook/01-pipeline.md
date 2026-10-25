@@ -40,9 +40,9 @@
 
 1. 계획에 `verify.build`(StepKind `build`, 목표 `clean package`)가 항상 들어갑니다. 플래너가 넣고, 혹시 빠졌으면 `loop.always_final_verify`가 켜져 있을 때 오케스트레이터가 직접 추가합니다(`step_plan`).
 2. 앞 단계가 실패하거나, blocked 클러스터가 남거나, LLM 예산이 떨어져도 verify 단계는 실행됩니다. 실패한 단계는 `_phase_failed`만 표시하고 다음 단계로 넘어갑니다.
-3. 실행 도중 예외(코드 버그, 컴포넌트 누락)로 죽어도 실행 가드(`_run_guard`)가 잡아서 `_final_build_after_abort`로 계획의 verify 스텝을 돌립니다. 그래서 보고서의 "Unresolved errors"에는 남겨진 트리의 실제 오류가 들어갑니다(§9).
+3. 실행 도중 예외(코드 버그, 컴포넌트 누락)로 죽어도 실행 가드(`_run_guard`)가 잡아서 `_final_build_after_abort`로 계획의 verify 스텝을 돌립니다. 그래서 보고서의 "Unresolved errors"에는 남겨진 트리의 실제 오류가 들어갑니다(§9). round 10부터는 결과가 없는 **모든** 계획된 최종 빌드 스텝을 돌리고(MSA에서 svc-a의 verify가 통과한 뒤 svc-b 스텝 전에 죽어도 svc-b를 빌드), 끊긴 단계는 보고서에 `phase interrupted: …`(journal `phase_end`의 `interrupted`)로 남으며, 중단됐거나 결과 없는 최종 빌드 스텝이 있으면 `success`가 거짓입니다(중단된 MSA 실행이 BUILD SUCCESS로 보이던 문제).
 
-예외는 **의도된 중단**입니다. Maven이 없거나, Maven 프로젝트가 아니거나, 설정한 사내 parent를 해석할 수 없으면 빌드해 봐야 같은 이유로 실패하므로 최종 빌드를 하지 않습니다(§9.2).
+예외는 **의도된 중단**입니다. Maven이 없거나, Maven이 Java 21이 아니거나(round 10, `jdk-not-21`), Maven 프로젝트가 아니거나, 설정한 사내 parent를 해석할 수 없으면 빌드해 봐야 같은 이유로 실패하므로 최종 빌드를 하지 않습니다(§9.2). 중단할 때는 `sbmig.log`에 ERROR 한 줄 `run aborted: <사유>`가 남습니다.
 
 ---
 
@@ -143,7 +143,7 @@ sequenceDiagram
 | `effective/depmgmt-after-restructure.json` | restructure | `_effective_pom_after` | 사내 parent를 붙인 뒤의 effective dependencyManagement(관리되는 버전 정리용) |
 | `merge-conflicts/` | restructure(멀티 모듈 병합) | Restructurer | 병합 중 버려진 사본(first-wins) |
 | `changes.patch` | finalize | `Workspace.write_patch` | as-is 스냅샷 커밋부터 현재 트리까지의 `git diff` 원본 바이트 |
-| `result.zip` | finalize(dry-run 제외) | `Workspace.zip_result` | `project/` 아래 파일 전부. `.git`과 `target`은 제외 |
+| `result.zip` | finalize(dry-run 제외) | `Workspace.zip_result` | `project/` 아래 파일 전부. `.git`과 빌드 출력 `target`(옆에 `pom.xml`이 있는 것)은 제외, `target`이라는 Java 패키지는 포함(round 10) |
 | `<run dir>/report.json` / `<run dir>/report.md` | finalize 마지막 | `write_report` | `RunReport` 직렬화 / 사람용 보고서(Handover가 맨 앞) |
 | `threads-<timestamp>.txt` | 루프가 5분 이상 조용할 때 | `sbmig/core/diag.py` | 스레드 덤프 |
 
@@ -170,10 +170,10 @@ sequenceDiagram
 **수행 순서** (`Workspace.from_input` → `Orchestrator.step_intake`)
 
 1. 디렉터리는 `shutil.copytree`로 복사하고, zip은 안전 압축 해제(`_safe_extract`) 뒤 프로젝트 루트를 찾아(`_detect_project_root`) 복사합니다. 이미 `out/<run id>/project`가 있으면 `FileExistsError`가 납니다(같은 `--run-id` 재사용 금지). 여기서 journal `intake` 이벤트(`source`, `project_dir`)가 찍힙니다.
-2. `git_init`이 `project/`를 git 저장소로 만들고 `sbmig/<run id>` 브랜치로 체크아웃합니다. `.gitignore`에 `target/`, `.sbmig/`, `*.class`를 더한 뒤 첫 커밋 `sbmig: as-is snapshot`을 만듭니다. 이 커밋이 `changes.patch`의 기준점입니다.
+2. `git_init`이 `project/`를 git 저장소로 만들고 `sbmig/<run id>` 브랜치로 체크아웃합니다. `.gitignore`에 `target/`, `.sbmig/`, `*.class`(round 10부터 `target` 패키지 예외 줄과 생성 소스 줄도, [05](05-directories-and-storage.md) 5.2)를 더하고 `.git/info/attributes`로 줄 끝 변환을 끈 뒤 첫 커밋 `sbmig: as-is snapshot`을 만듭니다. 이 커밋이 `changes.patch`의 기준점입니다.
 3. 인코딩 후보(`build.encoding_candidates`, 기본 `utf-8`, `cp949`, `euc-kr`, `shift_jis`, `latin-1`)를 작업 공간에 등록합니다. 파일은 항상 자기 인코딩으로 읽고 씁니다.
 4. preflight(`_preflight`): Maven 실행 가능 여부(`mvn -v`), `artifacts.parent` 설정 여부(그룹 id에 `CHANGE`가 들어 있으면 미설정으로 봅니다), `artifacts.boot_parent` / `artifacts.comp_parent`, `build.java_home`을 점검하고 journal `preflight`에 기록합니다. parent가 미설정이면 후속 조치 "artifacts.parent is not configured: pass the company artifacts yml with --config"가 들어갑니다.
-5. Maven을 실행할 수 없으면(플래그 `mvn-not-found`) 중단합니다.
+5. Maven을 실행할 수 없으면(플래그 `mvn-not-found`) 중단합니다. 원인이 `JAVA_HOME`이면 후속 조치가 "install Maven"이 아니라 `build.java_home` / `JAVA_HOME`을 가리킵니다. round 10: `mvn -v`가 보고한 Java 주 버전이 `build.require_java_major`(21, `0` = 확인 안 함)가 아니면 첫 빌드 전에 중단합니다(플래그 `jdk-not-21`, 종료 코드 3, `preflight: Maven runs on Java 17.0.9 (…), not Java 21: set build.java_home (or JAVA_HOME) to a JDK 21 home and rerun` → `run aborted: …`). journal `preflight`에 `java_major`가 남습니다.
 6. 빌드 도구 판별(`_check_build_tool` → `sbmig.analyze.detect_build_tool`): Gradle / Ant / 빌드 파일 없음이면 플래그 `unsupported-build-tool:<gradle|ant|none>`을 남기고 중단(exit 3)합니다. Maven을 한 번도 부르기 전입니다. journal `build_tool`(`tool`, `ok`, `reason`).
 7. 루트 pom 점검(`_intake_layout`, `sbmig/analyze/aggregator.py`, 2026-10-23):
    - **EAR만 들어온 경우**: 루트 `pom.xml`이 `<packaging>ear</packaging>`이고 그 EAR이 묶는 war / ejb / 같은 groupId 모듈이 트리에 없으면(예: `APP/EAR`만 넣음) 플래그 `ear-without-modules`를 남기고 중단(exit 3)합니다. EAR에는 코드가 없고, 그대로 진행하면 EAR의 war 의존성이 back 모듈로 들어가 빌드가 깨지기 때문입니다. 후속 조치 첫 줄이 "모든 모듈이 들어 있는 상위 디렉터리로 다시 실행"을 안내합니다.
@@ -181,7 +181,7 @@ sequenceDiagram
 8. as-is effective dependencyManagement를 캡처합니다(`_capture_effective`, journal `effective_depmgmt`). 실패해도 경고만 남기고 계속합니다.
 9. `--stop-after intake`이면 여기서 멈춥니다(플래그 `stopped-after-intake`, journal `stop_after`).
 
-> **주의 (코드 기준: `sbmig/loop/orchestrator.py` `_preflight`)** — preflight는 `maven_available(cfg)`의 반환값을 `bool(ok)`로 판정합니다. 그런데 현재 `sbmig/build/mvn.py`의 `maven_available`은 `(ok, 메시지)` 튜플을 돌려주므로, 실제 Maven 러너로 실행할 때 이 검사가 `mvn-not-found`를 올리지 못할 수 있습니다(튜플은 항상 참). 이때 Maven이 없으면 이후 빌드가 하나씩 실패하는 모습으로 나타납니다. 통합 담당자가 확인할 항목입니다.
+> **참고 (코드 기준: `sbmig/loop/orchestrator.py` `_preflight`)** — `maven_available(cfg)`는 `(ok, 메시지)` 튜플을 돌려주고 preflight는 튜플의 첫 값으로 판정합니다(핸드북을 쓰며 찾은 "튜플은 항상 참" 문제는 2026-10-21에 고쳤습니다). 메시지(`mvn -v` 출력)에서 Java 버전과 runtime 경로를 읽어 위 5번의 Java 주 버전 점검에 씁니다.
 
 **journal 이벤트**: `intake`, `preflight`, `build_tool`, `ear_without_modules` / `aggregator_generated`, `effective_depmgmt`(그리고 graph 엔진이면 그 앞에 `graph_node`).
 
@@ -285,7 +285,7 @@ sequenceDiagram
 5. **실패하면 마지막 수정 루프**(2026-10-22)가 한 번 돕니다. `loop.phases.verify`(goal `package`, 기본 3라운드)로 build-fix 루프를 돌린 뒤 `mvn clean package`를 다시 실행합니다(노트 `final build repeated after the fix loop`, journal `verify_loop_start` / `verify_loop_end`). 회사 설정(`plan.parent_phase: spring`)에서는 restructure 루프가 없어서 이 최종 빌드가 실행 중 첫 `package` 빌드이기 때문에 필요합니다. 앞 단계에서 `repeated_failure` / `oscillation`으로 blocked된 클러스터는 여기서 풀려(journal `blocked_released`) `loop.verify_extra_llm_attempts`(2)회 더 LLM 시도를 받고, escalation 모델이 있으면 그 모델로 묻습니다. 정책 blocked(javax API, 아티팩트 없음 …)와 예산 blocked만 남았으면 루프를 돌지 않습니다. `loop.phases.verify.max_iterations: 0`이면 끕니다.
 6. verify 단계는 KB 레시피 점수는 주지 않지만, 마지막 루프가 무언가 고쳤으면 그 시도는 다른 단계처럼 harvest됩니다.
 
-**실행 성공의 정의** (`_finalize`): `RunReport.success = (verify 빌드가 하나 이상 있었고 모두 성공) and "restructure-failed" 플래그 없음`. blocked 항목이 있어도 `success`는 참일 수 있지만, 종료 코드는 0이 아니라 2입니다(§9.1).
+**실행 성공의 정의** (`_finalize`): `RunReport.success = (verify 빌드가 하나 이상 있었고 모두 성공) and "restructure-failed" 플래그 없음 and 중단되지 않음 and 결과 없는 계획된 최종 빌드 스텝 없음`(뒤의 둘은 round 10). blocked 항목이 있어도 `success`는 참일 수 있지만, 종료 코드는 0이 아니라 2입니다(§9.1).
 
 ### 4.8 finalize / report
 
@@ -296,12 +296,15 @@ sequenceDiagram
 3. unresolved 계산: 실패한 verify 빌드의 오류. verify가 없었으면(중단, stop-after) 마지막 단계의 남은 오류. 대체 빌드(`test-compile-skipped` / `tests-skipped`)가 감춘 오류도 포함합니다.
 4. javax API 인벤토리(`_finalize_javax_inventory`, `report.javax_api_inventory`, spring 단계가 돌았고 dry-run이 아닐 때): 모듈마다 `mvn dependency:tree -Dincludes=<javax API 패턴>`(journal `deptree`)으로 클래스패스에 남은 javax API jar를 찾아 `report.json`의 `javax_api_jars`에 넣고, X1 / X2 blocked 항목에 `via`를 채워 제안을 다시 씁니다. 하나라도 있으면 플래그 `javax-api-on-classpath` + 후속 조치, journal `javax_api_inventory`(`jars`, `via`).
 5. blocked 정리(`_finalize_blocked`): 최종 빌드가 초록이면 더 이상 나타나지 않는 blocked 항목을 지우고 journal `blocked_resolved`를 남깁니다.
-6. 출력 경로 기록, `changes.patch`(`report.include_diff`), `result.zip`(`report.zip_result`, dry-run 제외).
-7. 어드바이저리 검증(최종 트리에서 다시 찾아 `replaced` / `still-present` / `unknown`, journal `advisories_verified`) → Handover 작성(journal `handover`: `changes`, `carried_over`, `from_here`).
-8. 실행 단위 ledger 기록(`record_run`: unresolved / registry에만 있는 blocked 줄, 늦은 자동 승격).
-9. `<run dir>/report.json` / `<run dir>/report.md` 작성 → journal `report`(`success`, `flags`, `unresolved`, `blocked`, `llm_calls`, `outputs`).
+6. 인프라 플래그(round 10, `_infra_flags`): 실패한 실행이 인프라 이유로 끝났으면 `infra:llm` / `infra:maven` / `infra:jdk` / `infra:repository` / `infra:disk`(플릿 차단기와 `SBMIG-RESULT`의 `attn`이 씀).
+7. 출력 경로를 **미리** 기록(`changes.patch`, `result.zip`, 보고서 경로).
+8. 어드바이저리 검증(최종 트리에서 다시 찾아 `replaced` / `still-present` / `unknown`, journal `advisories_verified`) → Handover 작성(journal `handover`: `changes`, `carried_over`, `from_here`).
+9. 에러 기록(`errors.jsonl` / `fix_attempts.jsonl`, 실행 디렉터리의 `error_cases.*`)과 실행 단위 ledger 기록(`record_run`: unresolved / registry에만 있는 blocked 줄, 늦은 자동 승격).
+10. `<run dir>/report.json` / `<run dir>/report.md` 작성.
+11. 그다음 오래 걸리는 `changes.patch`(`report.include_diff`)와 `result.zip`(`report.zip_result`, dry-run 제외). 둘 중 하나가 실패하면 그 경로를 빼고 보고서를 한 번 더 씁니다.
+12. journal `report`(`success`, `flags`, `unresolved`, `blocked`, `llm_calls`, `outputs`). CLI는 그 뒤 콘솔 마지막 줄로 `SBMIG-RESULT …`를 찍습니다.
 
-`result.zip`과 `changes.patch`는 보고서보다 **먼저** 만들어지므로 보고서 파일은 zip에 들어가지 않습니다. zip에는 마이그레이션된 프로젝트만 들어 있습니다.
+round 10부터 KB 기록과 보고서가 **먼저**, `changes.patch` / `result.zip`이 **마지막**입니다(1 GB 트리를 zip하다 죽어도 보고서와 KB는 남음). zip은 `project/`만 담으므로 보고서 파일은 zip에 들어가지 않습니다.
 
 > **확인 포인트** — journal의 마지막 줄은 항상 `report` 이벤트입니다. 이 줄이 없으면 프로세스가 강제 종료된 것입니다(전원, kill, 작업 관리자). `<run dir>/report.md` 맨 위 표의 **Result**가 `✅ BUILD SUCCESS` 또는 `❌ NOT BUILDING`이고, 바로 아래가 `## Handover — what we replaced, what is yours`입니다.
 
@@ -516,7 +519,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 |---|---|---|
 | 0 | `EXIT_SUCCESS` | `RunReport.success` 참 **그리고** blocked 항목 없음 |
 | 2 | `EXIT_INCOMPLETE` | 중단은 아니지만 위 조건을 못 채움: 최종 빌드 실패, blocked 존재, `restructure-failed`, stop-after / dry-run(verify 없음) |
-| 3 | `EXIT_ABORTED` | 플래그 `aborted` 또는 `aborted:*` 또는 `mvn-not-found` |
+| 3 | `EXIT_ABORTED` | 플래그 `aborted` 또는 `aborted:*` 또는 `mvn-not-found`(round 10: `jdk-not-21`도 `aborted`와 함께) |
 
 라이브러리 어드바이저리(springfox, hystrix …)는 종료 코드를 절대 바꾸지 않습니다. block 정책이 없기 때문입니다(회사 결정: 500개 프로젝트가 모두 완벽할 수 없으니 빌드할 수 있는 만큼 가고 나머지는 Handover로 넘깁니다). 설정 오류(`--config` 누락 → `config error … artifacts: Field required`)는 실행 전에 종료 코드 2로 끝납니다.
 
@@ -524,7 +527,8 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 
 | 원인 | 어디서 | 플래그 | 최종 빌드 | journal |
 |---|---|---|---|---|
-| Maven 실행 불가 | intake | `mvn-not-found`, `aborted` | 없음 | `abort` |
+| Maven 실행 불가 | intake | `mvn-not-found`, `aborted`(round 10: 실패한 실행이면 `infra:maven` / `infra:jdk`) | 없음 | `abort` |
+| Maven이 Java 21이 아님(round 10) | intake(preflight) | `jdk-not-21`, `aborted`, `infra:jdk` | 없음(Maven 빌드 0회) | `preflight`(`java_major`), `abort` |
 | Gradle / Ant / 빌드 파일 없음 | intake | `unsupported-build-tool:<tool>`, `aborted` | 없음(Maven 호출 0회) | `build_tool`(`ok: false`), `abort` |
 | EAR pom만 들어옴(모듈이 트리에 없음) | intake | `ear-without-modules`, `aborted` | 없음(Maven 호출 0회) | `ear_without_modules`, `abort` |
 | Maven 아님 / pom 없음(analyze 안전망) | analyze | `aborted` | 없음 | `abort` |
@@ -533,7 +537,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | 내부 오류(버그, 예외) | 어느 단계든 | `aborted` | **있음**(plan이 끝났다면) | `abort`, `phase_start`(`after_abort: true`) |
 | 웹 중단 버튼 | graph 노드 사이 | `aborted` | 없음 | `abort` |
 
-내부 오류 뒤의 최종 빌드(`_final_build_after_abort`)는 dry-run이 아니고, 아직 verify가 돌지 않았고, 계획이 있고, `loop.always_final_verify`가 켜져 있을 때 계획의 verify 스텝을 그대로 돌립니다. 결과 phase에는 노트 "final build after the run aborted (best effort: earlier phases are incomplete)"가 붙습니다. 빌드 러너 자체가 실패해도 중단 보고서는 유지합니다.
+내부 오류 뒤의 최종 빌드(`_final_build_after_abort`)는 dry-run이 아니고, 계획이 있고, `loop.always_final_verify`가 켜져 있을 때 결과가 없는 계획의 verify 스텝을 **모두** 돌립니다(round 10: 일부 서비스의 verify가 이미 돌았어도 나머지를 빌드). 결과 phase에는 노트 "final build after the run aborted (best effort: earlier phases are incomplete)"가 붙습니다. 빌드 러너 자체가 실패해도 중단 보고서는 유지합니다.
 
 ### 9.3 "중단"이 아니라 "계속"인 것들
 
@@ -542,7 +546,8 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | 한 phase의 루프가 라운드 한도로 실패 | 다음 phase로 진행, 오류는 최종 빌드까지 이월 |
 | 클러스터가 blocked(외부 라이브러리의 javax API, Nexus에 없는 아티팩트 등) | 실행 전체에서 기억해 다시 시도하지 않음, 나머지는 계속, 보고서 "Blocked" 절 |
 | LLM 예산 / 시간 예산 소진 | 남은 클러스터를 `budget_exhausted`로 blocked 처리, verify와 보고서는 진행 |
-| LLM 게이트웨이 장애 | 한 번 cool-down(`llm.cooldown_seconds`, journal `llm_cooldown`) 후 재시도, 두 번째 연속 장애면 이번 실행에서 LLM 사용 불가(`llm_unavailable`) |
+| LLM 게이트웨이 장애 | 한 번 cool-down(`llm.cooldown_seconds`, journal `llm_cooldown`) 후 재시도, 두 번째 연속 장애면 이번 실행에서 LLM 사용 불가(`llm_unavailable`). round 10: 같은 HTTP 400이 서로 다른 프롬프트 2개에 오면 설정 오류로 보고 LLM 호출을 멈춤(`llm-config-error`) |
+| Maven 네거티브 캐시("was cached in the local repository") | round 10: 같은 빌드를 `-U`로 한 번 더(`build.retry_negative_cache`, journal `build_negative_cache_retry`) |
 | OpenRewrite 실패(레시피 id 문제 제외) | 노트 + 오류로 기록 후 계속 |
 | restructure 실패 | 그 phase의 나머지 건너뜀, verify 진행, `restructure-failed` → exit 2 |
 | test-compile만 남음 / 런타임 테스트 실패만 남음 | `-Dmaven.test.skip=true` / `-DskipTests` 대체 빌드, 플래그 `test-compile-skipped` / `tests-skipped` |
@@ -553,7 +558,9 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 |---|---|
 | `dry-run` | dry-run 실행 |
 | `stopped-after-<phase>` | `--stop-after`로 멈춤 |
-| `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `unsupported-build-tool:<tool>` | 중단(exit 3) |
+| `aborted`, `aborted:parent-not-found`, `mvn-not-found`, `jdk-not-21`, `unsupported-build-tool:<tool>` | 중단(exit 3) |
+| `infra:<kind>` | round 10: 실패한 실행이 인프라 이유(`llm` / `maven` / `jdk` / `repository` / `disk`)로 끝남 — 플릿이 그 프로젝트를 `pending`으로 되돌림 |
+| `llm-config-error` | round 10: 같은 HTTP 400 → LLM 설정 오류, 이 실행의 LLM 호출 중단 |
 | `restructure-failed` | 재구성 스텝 실패(exit 2) |
 | `web-xml-registered` | web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 boot 모듈의 생성 클래스 `WebXmlRegistrations`로 옮김(W1, `layout.web_xml_registrations`) — 인수인계에서 매핑 확인 |
 | `rewrite-unresolved-versions` | 레시피가 `4.0.x` 같은 리터럴 버전을 남김(프록시 / rate limit) |
@@ -573,7 +580,7 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 |---|---|---|
 | `intake` | `Workspace.from_input` | 작업 사본 생성. `source`, `project_dir` |
 | `graph_node` | `sbmig/graph/engine.py` | graph 노드 시작. `node`, `phase` |
-| `preflight` | 오케스트레이터 | `mvn`, `artifacts.parent`, `java_home` |
+| `preflight` | 오케스트레이터 | `mvn`, `mvn_detail`, `java_major`(round 10), `artifacts.parent`, `java_home` |
 | `build_tool` | 오케스트레이터 | `tool`, `ok`, `reason` |
 | `effective_depmgmt` / `effective_depmgmt_after` | 오케스트레이터 | as-is / 재구성 후 effective depMgmt 캡처. `ok`, `path`, `skipped` |
 | `effective_pom` | `sbmig/build/effective.py` | `help:effective-pom` 결과. `ok`, `module`, `file` |
@@ -588,17 +595,19 @@ dry-run 실행에는 플래그 `dry-run`이 붙고, verify가 없으므로 종�
 | `rewrite_parse_problems` | 오케스트레이터 | `step`, `files`: 파싱하지 못한 파일 |
 | `loop_start` / `loop_end` | 루프 | `goal`, `max_iterations`, `target` / `ok`, `iterations`, `llm_calls_used`, `aborted` |
 | `build` | 빌드 러너 + 루프(두 줄) | `goal`, `ok`, `exit_code`, `errors`(또는 `error_count`), `duration_s`, `log` |
+| `build_negative_cache_retry` | 빌드 러너 | round 10: 네거티브 캐시 → `-U` 재빌드. `goal`, `module`, `artifacts`, `first_log` |
 | `triage` / `decision` / `attempt` / `attempt_scored` / `revert` | 루프 | 클러스터 목록 / 결정 / 시도(`decision`, `applied`, `commit`, `outcome`) / 점수 / 되돌림 |
 | `stall` / `oscillation` / `reround` / `only_blocked` / `blocked` / `budget_exhausted` | 루프 | 루프 안전장치 |
 | `recipe_batch` | 루프 | KB 레시피 묶음 실행 |
-| `llm_call` / `llm_fix` / `llm_cooldown` / `llm_unavailable` / `merge_conflict_hints` | LLM 클라이언트 / fixer / 루프 | LLM 호출 기록 / 수정 제안 / 장애 처리 / 병합 참고본 |
+| `llm_call` / `llm_fix` / `llm_cooldown` / `llm_unavailable` / `llm_config_error` / `merge_conflict_hints` | LLM 클라이언트 / fixer / 루프 | LLM 호출 기록 / 수정 제안 / 장애 처리 / (round 10) 같은 HTTP 400 → 설정 오류 / 병합 참고본 |
 | `test_compile_fallback` / `tests_fallback` | 루프 | 테스트 대체 빌드 |
 | `classpath` | `sbmig/build/classpath.py` | blocked 원인 추적용 클래스패스 |
 | `fixer` | 오케스트레이터 | `fix.plugin` 로드 결과 |
 | `restructure` / `restructure_failed` / `placeholders` | 오케스트레이터 | 재구성 결과 / 실패 / `__SET_ME__` 기록 |
+| `restructure_moves` | 오케스트레이터 | round 10: 재구성 스텝의 파일 이동을 blocked 레지스트리에 반영. `step`, `moved`, `blocked_rekeyed` |
 | `web_xml_registrations` | 재구성기(`sbmig/restructure/restructurer.py`) | web.xml → `WebXmlRegistrations` 생성(`path`, `spec`, `servlets`, `filters`, `listeners`, `error_pages`, `skipped`, `jsp_file_servlets`, `class`) |
 | `verify` | 오케스트레이터 | 최종 빌드 결과 |
-| `kb_credit` / `kb_credit_skipped` / `harvest` | 오케스트레이터 | KB 점수 / 해석 실패로 점수 생략 / harvest 결과 |
+| `kb_credit` / `kb_credit_skipped` / `harvest` | 오케스트레이터 / 루프 | KB 점수 / 해석 실패(또는 round 10: 시도가 `partial` / `inconclusive`)로 점수 생략 / harvest 결과 |
 | `abort` / `run_aborted` / `stop_after` / `warning` | 오케스트레이터 / 루프 | 중단 / 루프 중단으로 실행 종료 / stop-after 도달 / KB 없음 등 |
 | `blocked_resolved` / `handover` / `report` | 오케스트레이터 finalize | 초록 빌드에서 사라진 blocked / Handover 요약 / 마지막 줄 |
 | `verify_loop_start` / `verify_loop_end` / `blocked_released` | 오케스트레이터 verify / 수정 루프 | 최종 빌드 실패 → 마지막 수정 루프의 시작(`errors`, `releasable`)·끝(`build_ok`, `attempts`, `released`) / 그 루프의 빌드 N에서 풀어 준 blocked 항목(`id`, `reason`, `blocked_in`, `extra_llm_attempts`) |
@@ -710,7 +719,8 @@ Select-String -Path out\<run id>\journal.jsonl -Pattern '"event": "phase_end"'
 | 빌드가 왜 실패했나? | journal `build`의 `log` 경로 → 그 로그. `sbmig parse-log <로그>`로 서명 확인 |
 | LLM이 몇 번 불렸나? | `<run dir>/report.md` 맨 위 표의 LLM 줄, journal `loop_end`의 `llm_calls_used` |
 | 실행이 성공인가? | journal 마지막 `report` 줄의 `success`와 `flags`, CLI 종료 코드 |
-| 중단됐다면 최종 빌드는 돌았나? | `phase_start`에 `after_abort: true`인 verify가 있는지, 보고서 후속 조치의 "run aborted: …" |
-| 멈춘 것 같다 | [09. 운영](09-operations.md)의 "멈춘 건가?" 절(watchdog 줄, `/api/threads`, `threads-*.txt`) |
+| 중단됐다면 최종 빌드는 돌았나? | `phase_start`에 `after_abort: true`인 verify가 있는지, 보고서 후속 조치와 `sbmig.log`의 "run aborted: …" |
+| 한 줄로 결과를 알리려면? | 콘솔 마지막 줄 / `sbmig.log`의 `SBMIG-RESULT …`(round 10, [09](09-operations.md) 3.4) |
+| 멈춘 것 같다 | [09. 운영](09-operations.md)의 "멈춘 건가?" 절(watchdog 줄, `dump-threads` 파일, Ctrl+Break, `/api/threads`, `threads-*.txt`) |
 
 다음 문서: 기능별 사용법은 [02. 기능별 워크플로우](02-workflows.md), 루프 내부는 [04. 분류와 루프](04-triage-and-loop.md), 용어는 [00. 개요·용어집](README.md)에 있습니다.

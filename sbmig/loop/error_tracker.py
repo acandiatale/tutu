@@ -14,10 +14,18 @@ optional and guarded: a tracker problem never breaks a run):
                      sanitizes them and fills the project / change-classification / label fields
 
 Identity of an error = (kind, file from its first `src/` segment on, signature or message[:120]) — it survives the
-restructure moving files into `{name}-back/`; several occurrences of one identity in a build are matched by message,
-then nearest line. An error absent from a later build is only "gone" when that build could have shown it (it got far
-enough: same or later stage, the error's module built, a goal that reaches it, tests not skipped) — otherwise it is
-masked (a pom error hides every compile error) and stays open; a closed error that shows up again reopens.
+restructure moving files into `{name}-back/`; several occurrences of one identity in a build are matched by exact
+file first, then message, then nearest line. A targeted build (MSA per-service loops, `observe(target=…)`) only
+matches records of its own scope (round 10: svc-b's `src/main/java/X.java` never merges into svc-a's open record; a
+record of the root `src/` still follows the restructure move). An error absent from a later build is only "gone" when
+that build could have shown it (it got far enough: same or later stage, the error's module built, a goal that reaches
+it, tests not skipped) — otherwise it is masked (a pom error hides every compile error) and stays open; a closed
+error that shows up again reopens.
+
+Round 10: a new error records `introduced_by` (the attempts scored in the build where it first appeared that changed
+its file, else the plan steps noted since the previous build); attempt diffs are passed in FULL (`prepare` classifies
+them and only then applies `kb.error_diff_chars`); a handler `case-replace` attempt takes its resolver id from the
+handler's `resolver: case-replace:<case>:<pair-set hash>` notes.
 """
 from __future__ import annotations
 
@@ -74,6 +82,8 @@ MAX_MASKED_BY = 5
 ANALYSIS_CHARS = 1500                  # LLM analysis in FixAttemptRecord.description
 TEXT_CHARS = 600                       # failure texts, rationales
 TRUNCATED_MARK = "\n… (truncated)"
+MAX_DIFF_CHARS = 4_000_000             # a pathological diff only (a regenerated file); kb.error_diff_chars caps later
+RESOLVER_NOTE = "resolver: "           # a handler note naming the attempt's resolver (sbmig.kb.catalog.RESOLVER_NOTE)
 
 _METHOD: dict[DecisionKind, str] = {DecisionKind.HANDLER: "handler", DecisionKind.KB_RECIPE: "recipe",
                                     DecisionKind.KB_PATCH: "kb_patch", DecisionKind.LLM_FIX: "llm"}
@@ -152,6 +162,12 @@ def _method(att: FixAttempt) -> str:
 def _resolver(att: FixAttempt) -> str:
     d = att.decision
     if d.kind == DecisionKind.HANDLER:
+        # handler case-replace names the case + pair set it applied ("resolver: case-replace:<id>:<hash>"), so the
+        # catalog ties the outcome to exactly those pairs (round 10)
+        tokens = [n[len(RESOLVER_NOTE):].strip() for n in att.notes or [] if str(n).startswith(RESOLVER_NOTE)]
+        tokens = [t for t in dict.fromkeys(tokens) if t and (t == d.handler_id or t.startswith(f"{d.handler_id}:"))]
+        if tokens:
+            return ",".join(tokens)
         return d.handler_id or ""
     if d.kind == DecisionKind.KB_RECIPE:
         return ",".join(d.recipe_ids)
@@ -169,6 +185,14 @@ def _touched(att: FixAttempt) -> set[str]:
             if p:
                 out.add(norm_file(p))
     return out
+
+
+def _target_dir(target: Optional[str]) -> str:
+    """The module directory of a build target ('service-a/pom.xml' → 'service-a'); '' = the whole project."""
+    t = _posix(target).strip("/")
+    if t.endswith(".xml"):
+        t = t.rsplit("/", 1)[0] if "/" in t else ""
+    return t
 
 
 # --------------------------------------------------------------------------------------------------------- state rows
@@ -198,6 +222,7 @@ class _Rec:
     resolved_att: Optional[str] = None     # attempt key of the resolver (FixAttemptRecord id at finalize)
     chain: list[str] = field(default_factory=list)              # attempt keys of the resolution (run order)
     open_from: int = 0                     # len(_att_order) when it (re)appeared: earlier attempts predate it
+    introduced_by: list[str] = field(default_factory=list)      # attempt keys / "step:<id>" before its first build
     targeted: bool = False
     description: str = ""
     attempt_keys: list[str] = field(default_factory=list)
@@ -330,12 +355,14 @@ class ErrorTracker:
         return lab if n == 1 else f"{lab}#{n}"
 
     def _keys_for(self, e: BuildError) -> list[int]:
-        """Record keys of a cluster error: the record matched to it in the last build, else every open record of its
-        identity (a cluster copied / reduced its errors)."""
+        """Record keys of a cluster error: the record matched to it in the last build, else the open records of its
+        identity — those of exactly its file first (another service's same relative path is not it)."""
         k = self._last_match.get(_match_key(e))
         if k is not None:
             return [k]
-        return [r.key for r in self._by_identity.get(identity_of(e), []) if r.status == "open"]
+        opened = [r for r in self._by_identity.get(identity_of(e), []) if r.status == "open"]
+        exact = [r for r in opened if e.file and _posix(r.error.file) == _posix(e.file)]
+        return [r.key for r in (exact or opened)]
 
     def _ensure_att(self, att: FixAttempt) -> _Att:
         x = self._atts.get(id(att))
@@ -377,7 +404,7 @@ class ErrorTracker:
             return
         idx = len(self._obs) - 1
         self._steps = []
-        present = self._match(build, idx, lab, phase, atts)
+        present = self._match(build, idx, lab, phase, atts, target)
         rank = _goal_rank(build.goal)
         for r in self._recs:
             if r.status != "open" or r.key in present:
@@ -392,7 +419,8 @@ class ErrorTracker:
                     r.state, r.masked_since = "masked", lab
                 r.masked_by = [fmt_error(e) for e in build.errors[:MAX_MASKED_BY]]
 
-    def _match(self, build: BuildResult, idx: int, lab: str, phase: Phase, atts: list[_Att]) -> set[int]:
+    def _match(self, build: BuildResult, idx: int, lab: str, phase: Phase, atts: list[_Att],
+               target: Optional[str] = None) -> set[int]:
         groups: dict[tuple, list[BuildError]] = {}
         for e in build.errors:
             groups.setdefault(identity_of(e), []).append(e)
@@ -401,9 +429,10 @@ class ErrorTracker:
         present: set[int] = set()
         for ident, errs in groups.items():
             recs = self._by_identity.setdefault(ident, [])
-            pairs = self._assign(errs, [r for r in recs if r.status == "open"])
+            cands = [r for r in recs if self._matchable(r, build, target)]
+            pairs = self._assign(errs, [r for r in cands if r.status == "open"])
             left = [i for i in range(len(errs)) if i not in pairs]
-            pairs.update(self._assign([errs[i] for i in left], [r for r in recs if r.status != "open"],
+            pairs.update(self._assign([errs[i] for i in left], [r for r in cands if r.status != "open"],
                                       index=left))
             for i, e in enumerate(errs):
                 r = pairs.get(i)
@@ -413,9 +442,13 @@ class ErrorTracker:
                              open_from=len(self._att_order))
                     self._recs.append(r)
                     recs.append(r)
-                    by = [x.key for x in atts if norm_file(e.file) and norm_file(e.file) in _touched(x.att)]
+                    by = [x.key for x in atts if norm_file(e.file) and norm_file(e.file) in _touched(x.att)
+                          and x.att.applied and x.att.outcome not in ("reverted", "apply_failed")]
                     if by:
                         r.note(f"appeared at {lab} after attempt(s) {', '.join(by)} changed its file")
+                        r.introduced_by = list(by)
+                    else:
+                        r.introduced_by = [f"step:{s}" for s in self._obs[idx].steps]
                 else:
                     if r.status != "open":
                         r.note(f"reopened at {lab}: was {r.status} at {r.resolved_at}"
@@ -432,9 +465,19 @@ class ErrorTracker:
         self._last_match = new_match
         return present
 
+    def _matchable(self, r: _Rec, build: BuildResult, target: Optional[str]) -> bool:
+        """May an error of this build be record `r`? Without a target always; with one, only a record of its scope —
+        or a record of the root module's `src/` (it may have moved into the target with the restructure)."""
+        if not _target_dir(target):
+            return True
+        if self._in_scope(r, build, target):
+            return True
+        return _posix(r.error.file).startswith("src/")
+
     @staticmethod
     def _assign(errs: list[BuildError], recs: list[_Rec], index: Optional[list[int]] = None) -> dict[int, _Rec]:
-        """Occurrences of one identity: greedy one-to-one by (same message, same file, nearest line, occurrence)."""
+        """Occurrences of one identity: greedy one-to-one by (same file, same message, nearest line, occurrence) —
+        the exact file first: the same relative path in two services is two errors."""
         if not errs or not recs:
             return {}
         idx = index if index is not None else list(range(len(errs)))
@@ -442,8 +485,8 @@ class ErrorTracker:
         for i, e in enumerate(errs):
             for j, r in enumerate(recs):
                 line = abs(e.line - r.error.line) if e.line is not None and r.error.line is not None else 10 ** 6
-                cost = (0 if e.message == r.error.message else 1, 0 if e.file == r.error.file else 1, line,
-                        r.occurrence)
+                cost = (0 if _posix(e.file) == _posix(r.error.file) else 1, 0 if e.message == r.error.message else 1,
+                        line, r.occurrence)
                 pairs.append((cost, i, j))
         pairs.sort()
         out: dict[int, _Rec] = {}
@@ -464,13 +507,9 @@ class ErrorTracker:
 
     @staticmethod
     def _in_scope(r: _Rec, build: BuildResult, target: Optional[str]) -> bool:
-        if not target:
+        t = _target_dir(target)                        # "service-a/pom.xml" → its directory
+        if not t:
             return True
-        t = _posix(target).strip("/")
-        if t.endswith(".xml"):                         # "service-a/pom.xml" → its directory
-            t = t.rsplit("/", 1)[0] if "/" in t else ""
-            if not t:
-                return True
         f = _posix(r.error.file)
         if f and (f == t or f.startswith(t + "/")):
             return True
@@ -611,7 +650,8 @@ class ErrorTracker:
         d = att.decision
         if d.kind == DecisionKind.HANDLER:
             text = f"handler {d.handler_id or '?'}: {att.analysis}".rstrip(": ")
-            extra = [n for n in att.notes if not n.lower().startswith(_SCORING_NOTE_PREFIXES)]
+            extra = [n for n in att.notes if not n.lower().startswith(_SCORING_NOTE_PREFIXES)
+                     and not n.startswith(RESOLVER_NOTE)]
             if extra:
                 text += " — " + "; ".join(extra[:5])
             return _short(text, ANALYSIS_CHARS)
@@ -646,6 +686,10 @@ class ErrorTracker:
             return "not scored (the run ended before the rebuild)"
         if o == "blocked":
             return "blocked"
+        if o in ("partial", "inconclusive"):           # round 10: progress / no verdict — the loop's own note says why
+            why = next((n for n in att.notes if n.startswith(o + ":")), "")
+            return _short(why or ("some targeted error(s) remain after the rebuild" if o == "partial"
+                                  else "the rebuild could not show the targeted error(s)"))
         return ""
 
     def _diff(self, att: FixAttempt) -> tuple[str, bool]:
@@ -666,9 +710,10 @@ class ErrorTracker:
                                for ch in changes):
                 from sbmig.kb.harvest import changes_as_diff
                 text = changes_as_diff(list(changes))
-        limit = int(getattr(getattr(self.cfg, "kb", None), "error_diff_chars", 12000) or 12000)
-        if len(text) > limit:
-            return text[:max(0, limit - len(TRUNCATED_MARK))] + TRUNCATED_MARK, True
+        # the FULL diff (round 10): prepare_error_cases classifies it, then applies kb.error_diff_chars — a cap here
+        # cut later files' code edits off (misread as text replaces) and emptied errors' own excerpts
+        if len(text) > MAX_DIFF_CHARS:
+            return text[:MAX_DIFF_CHARS - len(TRUNCATED_MARK)] + TRUNCATED_MARK, True
         return text, False
 
     def _error_record(self, r: _Rec, run_id: str, rec_id: str, aid: dict[str, str],
@@ -682,6 +727,7 @@ class ErrorTracker:
         notes = list(r.notes)
         if r.omitted_attempts:
             notes.append(f"{r.omitted_attempts} earlier attempt(s) omitted from the history")
+        introduced = ",".join(aid.get(k, k) if not k.startswith("step:") else k for k in r.introduced_by)
         rec = ErrorCaseRecord(
             id=rec_id, run_id=run_id, error_kind=e.kind, message=e.message, file=e.file, line=e.line,
             symbol=e.symbol, location=e.location, module=e.module,
@@ -689,7 +735,7 @@ class ErrorTracker:
             signature_generic=e.signature_generic, raw=e.raw or "", first_seen=r.first_seen,
             first_phase=r.first_phase, last_seen=r.last_seen, builds_present=r.builds_present, attempts=refs,
             attempt_count=len(refs) + r.omitted_attempts,
-            llm_attempts=sum(1 for a in refs if a.fix_method == "llm"), notes=notes)
+            llm_attempts=sum(1 for a in refs if a.fix_method == "llm"), notes=notes, introduced_by=introduced)
         if r.status != "open":
             rec.status = r.status                                      # type: ignore[assignment]
             rec.resolved_at, rec.resolved_phase = r.resolved_at, r.resolved_phase
@@ -751,7 +797,7 @@ class ErrorTracker:
                 continue
             if a.outcome in ("regressed", "reverted") and a.introduced_errors:
                 return list(a.introduced_errors[:MAX_LIST])
-            if a.outcome in ("no_change", "regressed", "reverted"):
+            if a.outcome in ("no_change", "regressed", "reverted", "partial", "inconclusive"):
                 return [self_err]
             if a.outcome == "apply_failed":
                 return [_short(x, 300) for x in (a.failure.split("; ") if a.failure else [])][:MAX_LIST] or [self_err]

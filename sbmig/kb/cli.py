@@ -376,11 +376,12 @@ def _trim(text: Optional[str], n: int) -> str:
     return t if len(t) <= n else t[: n - 1] + "…"
 
 
-def _select_errors(kb: FileKnowledgeBase, status, method, change_kind, project, symbol, signature, run) -> list:
+def _select_errors(kb: FileKnowledgeBase, status, method, change_kind, project, symbol, signature, run,
+                   case=None, resolver=None) -> list:
     try:
         return list(kb.error_case_store().iter_errors(status=status, method=method, change_kind=change_kind,
                                                       project=project, symbol=symbol, signature=signature,
-                                                      run_id=run))
+                                                      run_id=run, case=case, resolver=resolver))
     except re.error as e:
         raise typer.BadParameter(f"bad regex: {e}")
 
@@ -405,11 +406,14 @@ def errors_list_cmd(
     symbol: Optional[str] = typer.Option(None, "--symbol", help="regex on the error symbol"),
     signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
     run: Optional[str] = typer.Option(None, "--run", help="exact run id"),
+    case: Optional[str] = typer.Option(None, "--case", help="case id (or id prefix) of the case catalog"),
+    resolver: Optional[str] = typer.Option(None, "--resolver", help="regex on the resolver id (handler / recipes / "
+                                                                    "model / case-replace:<case>:<pairs>)"),
     limit: int = typer.Option(50, "--limit", "-n", help="show the last N matching records (0 = all)"),
     as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),
 ) -> None:
     """Error records: status, method, change kind, project, file:line, message, how resolved / why not."""
-    rows = _select_errors(_kb(ctx), status, method, change_kind, project, symbol, signature, run)
+    rows = _select_errors(_kb(ctx), status, method, change_kind, project, symbol, signature, run, case, resolver)
     if limit > 0:
         rows = rows[-limit:]
     if as_json:
@@ -655,28 +659,31 @@ def errors_export_cmd(
     symbol: Optional[str] = typer.Option(None, "--symbol", help="regex on the error symbol"),
     signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
     run: Optional[str] = typer.Option(None, "--run", help="exact run id"),
+    case: Optional[str] = typer.Option(None, "--case", help="case id (or id prefix) of the case catalog"),
+    resolver: Optional[str] = typer.Option(None, "--resolver", help="regex on the resolver id"),
 ) -> None:
-    """Export error records (and their attempts) as Excel-readable CSV."""
+    """Export error records (and their attempts — with a filter: every attempt in their history and resolution)
+    as Excel-readable CSV. A cell is prefixed with `'` only when a spreadsheet would run it as a formula (it starts
+    with = or @, or with + / - and contains ( ) | ! = @); drop that one `'` when reading the CSV in a program."""
     from .error_cases import write_error_cases_csv, write_fix_attempts_csv
 
     if csv_path is None and attempts_csv is None:
         raise typer.BadParameter("give --csv PATH and/or --attempts-csv PATH")
     kb = _kb(ctx)
-    rows = _select_errors(kb, status, method, change_kind, project, symbol, signature, run)
+    rows = _select_errors(kb, status, method, change_kind, project, symbol, signature, run, case, resolver)
     if csv_path is not None:
         write_error_cases_csv(rows, csv_path)
         typer.echo(f"wrote {len(rows)} error case(s) to {csv_path}")
     if attempts_csv is not None:
         store = kb.error_case_store()
-        filtered = any(x is not None for x in (status, method, change_kind, project, symbol, signature, run))
+        filtered = any(x is not None for x in (status, method, change_kind, project, symbol, signature, run, case,
+                                               resolver))
         if filtered:
             ids: list[str] = []
             for e in rows:
-                for r in e.attempts:
-                    if r.attempt_id not in ids:
-                        ids.append(r.attempt_id)
-                if e.resolved_by and e.resolved_by not in ids and not e.resolved_by.startswith("step:"):
-                    ids.append(e.resolved_by)
+                for i in [*(r.attempt_id for r in e.attempts), *e.resolution_attempts, e.resolved_by or ""]:
+                    if i and i not in ids and not i.startswith("step:"):
+                        ids.append(i)
             wanted = set(ids)
             selected = {e.id for e in rows}
             attempts = [a for a in store.iter_attempts() if a.id in wanted or selected.intersection(a.error_ids)]
@@ -839,7 +846,7 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
     promote = cat.promote_after if cat.promote_after > 0 else "never (auto promotion off)"
     lines.append(f"             own replace (handler case-replace): {ev.action_successes} success(es) in "
                  f"{len(ev.action_projects)} project(s), {ev.action_failures} failure(s); active after {promote} "
-                 "project(s) without a failure")
+                 "project(s) without a failure; falls back at ≥ 2 failures and more failures than successes")
     if c.variants:
         lines += ["", "variants (owner / L1):"]
         for v in c.variants[:10]:
@@ -872,6 +879,20 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
     lines += hints or ["  (none)"]
     if c.human.notes:
         lines += ["", "notes:"] + [f"  {ln}" for ln in c.human.notes.splitlines()]
+    try:
+        history = list(cat.iter_audit(c.id))[-10:]
+    except Exception:  # noqa: BLE001 - the audit is informative here
+        history = []
+    if history:
+        lines += ["", f"history (kb/{cat.audit_path.name}, last {len(history)}):"]
+        for h in history:
+            b, a = h.get("before") or {}, h.get("after") or {}
+            if h.get("event") == "human":
+                what = f"{h.get('command') or 'edit'}: {', '.join(h.get('fields') or [])}"
+            else:
+                what = (f"{b.get('status') or '-'} → {a.get('status')}" if b.get("status") != a.get("status") else
+                        f"action {b.get('action') or '-'} → {a.get('action')}") + f" ({h.get('reason', '')})"
+            lines.append(f"  {str(h.get('at', ''))[:16]}  {h.get('who', '?'):<12} {_trim(what, 160)}")
     if diff and store is not None:
         latest = max(ev.fixes, key=lambda f: f.at.timestamp() if f.at else 0.0, default=None)
         att = None
@@ -914,11 +935,16 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="K
     typer.echo("\n".join(case_report(cat, c, kb.error_case_store(), diff)))
 
 
+_COMMAND_OF = {"rejected": "reject", "pinned": "pin", "unpinned": "unpin", "hint added to": "hint",
+               "note added to": "note"}
+
+
 def _set(ctx: typer.Context, key: str, what: str, **fields) -> None:
+    """A human edit of a case (recorded in kb/audit.jsonl: who = the OS user, when, before → after)."""
     cat = _catalog(ctx)
     c = _the_case(cat, key)
     try:
-        c = cat.set_human(c.id, **fields)
+        c = cat.set_human(c.id, audit_note=f"sbmig kb cases {_COMMAND_OF.get(what, what)}", **fields)
     except (KeyError, ValueError) as e:
         typer.echo(str(e), err=True)
         raise typer.Exit(1)

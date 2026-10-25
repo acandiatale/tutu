@@ -56,7 +56,7 @@ def test_architecture_examples():
         "compile|cannot_find_symbol|WebSecurityConfigurerAdapter")
     p = _e(message="package javax.servlet.http does not exist")
     assert signature_for(p) == ("compile|package_does_not_exist|javax.servlet.http",
-                                "compile|package_does_not_exist|javax.servlet")
+                                "compile|package_does_not_exist|javax.servlet.http")
 
 
 def test_location_masking_and_variable_types():
@@ -90,9 +90,9 @@ def test_resolution_signatures(kind):
 
 
 def test_message_kinds_generic_is_first_six_words():
-    e = BuildError(kind=ErrorKind.PLUGIN_EXECUTION, message="one two three four five six seven eight", module="svc")
-    assert signature_for(e) == ("plugin_execution|one two three four five six seven eight",
-                                "plugin_execution|one two three four five six")
+    e = BuildError(kind=ErrorKind.ENFORCER, message="one two three four five six seven eight", module="svc")
+    assert signature_for(e) == ("enforcer|one two three four five six seven eight",
+                                "enforcer|one two three four five six")
 
 
 def test_other_javac_classes_l2_keys():
@@ -104,7 +104,7 @@ def test_other_javac_classes_l2_keys():
         "getOne(ID) in JpaRepository has been deprecated and marked for removal":
             "compile|deprecated_removed|JpaRepository.getOne",
         "class file for javax.annotation.Nullable not found": "compile|class_not_found_in_package|Nullable",
-        "illegal start of expression": "compile|illegal_start",
+        "illegal start of expression": "compile|illegal_start|illegal start of expression",
         "weird thing happened here today ok yes": "compile|other|weird thing happened here today ok",
     }
     for msg, l2 in cases.items():

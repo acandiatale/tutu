@@ -196,6 +196,14 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   the whole resolution: `ErrorCaseRecord.resolution_attempts` = every attempt still in the tree that led to it (the
   loop reverts regressions only, so an earlier `no_change` import edit is part of the fix), combined `change_kind`,
   one `diff_excerpt` section per attempt (user: "시도 전부를 남기는 것만"; replace safety grading deliberately not done).
+- 2026-10-26, round 10 (a 5-role review — architecture, fix-loop bugs, operations, KB data, coverage — every finding
+  fixed; the company wipes `kb/` because the record format and L2 signatures changed): scoring outcomes `partial` /
+  `inconclusive` (no KB credit for "not visible"), same-cluster limits, pinned case actions obeyed, JDK 21 preflight,
+  `infra:*` flags + fleet preflight / infrastructure breaker / disk cleanup / `sbmig clean`, `SBMIG-RESULT` line,
+  Windows paths / git options / `target` packages kept / Maven negative cache `-U` / UTF-8 Maven output, value-only
+  secret masking, KB lock + torn-line repair + audit log + schema version, package-part learned replaces, finer L2,
+  Security 6→7 chain, Batch / Hibernate recipes for non-Boot, `spring-security-access`, Boot 4 type moves, Base64 shim,
+  web token for non-loopback hosts. 32 fixtures (`spring5-security-batch`). Details: `docs/PLAN.md` round 10.
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -237,7 +245,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,877 passed, 41 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 2,192 passed, 42 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

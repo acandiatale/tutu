@@ -278,6 +278,8 @@ def test_missing_component_reports_workstream(cfg, ws, monkeypatch):
         lazy_attr("sbmig.does_not_exist", "X", "Z")
     with pytest.raises(MissingComponentError, match="does not expose"):
         lazy_attr("sbmig.core", "Nope", "Z")
+    import sbmig.build as b       # the real preflight runs here: never depend on the host's `mvn -v` (JDK 21 check)
+    monkeypatch.setattr(b, "maven_available", lambda *a, **k: (True, "Apache Maven 3.9.10; Java version: 21.0.1"))
     orch = Orchestrator(cfg, ws, analyzer=lambda w, c: (_ for _ in ()).throw(
         MissingComponentError("sbmig.analyze (workstream A) missing")), kb=NullKnowledgeBase(),
         report_writer=lambda r, w: {"x": "y"})

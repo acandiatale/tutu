@@ -19,7 +19,9 @@ REPO_IDS = {"springfox", "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign",
             "commons-collections3", "dozer", "orika", "elasticsearch-rest-high-level", "solr-legacy", "jackson1",
             "json-lib", "xstream", "jdom1", "axis1", "commons-email1", "commons-configuration1", "cglib",
             "commons-httpclient3", "jjwt-legacy", "poi-legacy", "jxls1", "jexcelapi", "slf4j-1-pin",
-            "mockito-legacy", "powermock"}
+            "mockito-legacy", "powermock",
+            # round 10: non-Spring twins of httpclient4 / jackson1 (those two are policy recipe for Spring cases now)
+            "httpclient4-direct", "jackson1-direct", "undertow"}
 FOX = "org.openrewrite.java.springdoc.SpringFoxToSpringDoc"
 
 
@@ -29,7 +31,8 @@ def test_repo_advisories_load_and_check_clean(cfg):
     assert cat.check(cfg) == []
     policies = {e.id: e.policy for e in cat.entries}
     assert {k for k, v in policies.items() if v == "recipe"} == {"springfox", "sleuth", "hystrix",
-                                                                  "spring-cloud-bom", "commons-collections3"}
+                                                                  "spring-cloud-bom", "commons-collections3",
+                                                                  "httpclient4", "jackson1"}
     assert all(e.followup and e.replacement and e.docs for e in cat.entries)
     assert cat.get("spring-cloud-bom").applies_when_version_below == "2025.1"
 

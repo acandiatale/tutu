@@ -30,7 +30,7 @@
   "expect": {
     "success": false,
     "exit_code": 2,
-    "max_llm_calls": 10,
+    "max_llm_calls": 11,
     "optional_bumped": [
       "com.company.legacy:legacy-web-lib 1.0.0→3.0.0"
     ],

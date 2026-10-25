@@ -15,17 +15,26 @@ applies them deterministically — no LLM — when a later build reports an erro
 Registered last in ``default_handlers`` so every specific built-in handler wins. Reactive only (``apply(ws, None)`` →
 ``[]``). Files are read / written through ``Workspace.read`` / ``Workspace.write`` (detected encoding, ``\\r\\n`` kept).
 The build scores the attempt like any handler fix; the catalog counts the outcome for promotion (not this module).
+
+Round 10: for every case it applied the handler adds the note ``resolver: case-replace:<case_id>:<pairset hash>``
+(``sbmig.kb.catalog.case_replace_note``; the hash is ``pairset_hash`` of the pairs applied) — the error tracker turns
+these notes into the attempt's ``resolver_id`` so the catalog counts a case's outcomes per replace set — and exposes the
+same value (comma-joined) as ``resolver_id`` after ``apply``. A learned javax → jakarta
+package pair (``javax.xml.bind`` → ``jakarta.xml.bind``) only rewrites names the javax → jakarta table
+(``jakarta_packages.yml``) renames: a ``javax.sql`` / ``javax.xml.parsers`` / ``javax.naming`` reference is never touched,
+whatever pair was learned (``javax.xml`` → ``jakarta.xml`` included).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import posixpath
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, ProjectProfile
-from sbmig.core.workspace import Workspace
+from sbmig.core.workspace import Workspace, is_build_output_path
 
 from .edge_handlers import EdgeHandler
 
@@ -122,6 +131,60 @@ def replace_hits(cluster: ErrorCluster | None, cfg) -> list:
     return out
 
 
+def pairset_hash(pairs: Iterable[Any]) -> str:
+    """8 hex chars of a replace pair set: `sbmig.kb.catalog.pairset_hash` (agent C, round 10) when importable, else
+    the same formula here — sha1 of the sorted unique `old<TAB>new` lines joined by `\n` (invalid pairs left out)."""
+    try:
+        from sbmig.kb.catalog import pairset_hash as _kb_hash
+    except ImportError:
+        _kb_hash = None
+    if callable(_kb_hash):
+        try:
+            return str(_kb_hash(pairs))
+        except Exception:  # noqa: BLE001 - a stand-in catalog module must not break the handler
+            pass
+    lines: set[str] = set()
+    for p in pairs or []:
+        old, new = (p.old, p.new) if hasattr(p, "old") else (p[0], p[1])
+        new = new or ""
+        if old and old != new and "\n" not in old and "\r" not in old:
+            lines.add(f"{old}\t{new}")
+    return hashlib.sha1("\n".join(sorted(lines)).encode("utf-8")).hexdigest()[:8]
+
+
+def _resolver_note_prefix() -> str:
+    """`sbmig.kb.catalog.RESOLVER_NOTE` ("resolver: ") — the note prefix the error tracker reads (agent C, round 10)."""
+    try:
+        from sbmig.kb.catalog import RESOLVER_NOTE
+    except ImportError:
+        return "resolver: "
+    return str(RESOLVER_NOTE)
+
+
+_QUALIFIED_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$*][\w$]*)*")
+
+
+def _jakarta_guard(old: str, new: str):
+    """For a javax.* → jakarta.* package pair: a predicate on the full dotted name a match belongs to — True when the
+    javax → jakarta table renames that name (JDK packages such as javax.sql / javax.xml.parsers stay). None for any
+    other pair (no guard)."""
+    if not (old.startswith("javax.") and new.startswith("jakarta.")):
+        return None
+    from .source_handlers import _rename_token, jakarta_packages
+
+    by_from = {r.from_: r for r in jakarta_packages()}
+    return lambda full: _rename_token(full, by_from) is not None
+
+
+def _full_name(line: str, start: int, end: int) -> str:
+    """The dotted name around line[start:end] (`import javax.sql.DataSource;` → `javax.sql.DataSource`)."""
+    a = start
+    while a > 0 and (line[a - 1].isalnum() or line[a - 1] in "_$."):
+        a -= 1
+    m = _QUALIFIED_RE.match(line, a)
+    return m.group(0) if m and m.end() >= end else line[start:end]
+
+
 def _pattern(old: str) -> str:
     if _IDENT_RE.fullmatch(old):
         return rf"(?<![\w$]){re.escape(old)}(?![\w$])"
@@ -145,7 +208,7 @@ def _rel(ws: Workspace, file: str) -> str | None:
         except (ValueError, OSError):
             return None
     norm = posixpath.normpath(norm) if norm else ""
-    if not norm or norm.startswith("../") or norm == ".." or "target" in norm.split("/"):
+    if not norm or norm.startswith("../") or norm == ".." or is_build_output_path(norm, ws.root):
         return None
     return norm if ws.abs(norm).is_file() else None
 
@@ -154,10 +217,22 @@ def _split_lines(text: str) -> list[str]:
     return _LINE_RE.findall(text)
 
 
+CASE_REPLACE_ID = "case-replace"
+
+
 class CaseReplace(EdgeHandler):
-    id = "case-replace"
+    id = CASE_REPLACE_ID
     description = "apply the text replace learned for this error case (case catalog)"
     kinds = _KINDS
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.resolver_id = self.id
+
+    def apply(self, ws: Workspace, cluster: ErrorCluster | None = None, profile: ProjectProfile | None = None,
+              cfg=None):
+        self.resolver_id = self.id
+        return super().apply(ws, cluster, profile, cfg)
 
     def triggered(self, cluster: ErrorCluster) -> bool:
         return cluster.kind in self.kinds              # the decision comes from the catalog, not from regexes
@@ -178,6 +253,7 @@ class CaseReplace(EdgeHandler):
         whole_file = getattr(getattr(cfg, "kb", None), "case_replace_scope", "error-lines") == "file"
         texts: dict[str, str] = {}
         originals: dict[str, str] = {}
+        resolvers: list[str] = []
         for hit in hits:
             by_file: dict[str, set[int]] = {}
             for e in _located(hit.errors):
@@ -186,11 +262,16 @@ class CaseReplace(EdgeHandler):
                     by_file.setdefault(rel, set()).add(int(e.line))
             if not by_file:
                 continue
-            rx, repl = _compile(_pairs(hit))
+            pairs = _pairs(hit)
+            rx, repl = _compile(pairs)
+            guards = {f"p{i}": _jakarta_guard(old, new) for i, (old, new) in enumerate(pairs)}
             used: list[str] = []
             lines_changed: dict[str, int] = {}
 
-            def sub(m: re.Match, repl=repl, used=used) -> str:
+            def sub(m: re.Match, repl=repl, used=used, guards=guards) -> str:
+                guard = guards.get(m.lastgroup)
+                if guard is not None and not guard(_full_name(m.string, m.start(), m.end())):
+                    return m.group(0)                  # e.g. javax.sql.DataSource under a javax.* → jakarta.* pair
                 new = repl[m.lastgroup]
                 pair = f"{m.group(0)}→{new}"
                 if pair not in used:
@@ -223,11 +304,17 @@ class CaseReplace(EdgeHandler):
                 scope = " [scope: file]" if whole_file else ""
                 self.note(f"case {hit.case_id}{name}: replaced {', '.join(used)} on {total} line(s) of {files}{scope}")
                 log.info("case-replace: case %s replaced %s in %s", hit.case_id, used, sorted(lines_changed))
+                rid = f"{CASE_REPLACE_ID}:{hit.case_id}:{pairset_hash(pairs)}"
+                if rid not in resolvers:
+                    resolvers.append(rid)
+                    self.note(f"{_resolver_note_prefix()}{rid}")
         changed: list[str] = []
         for rel, text in texts.items():
             if text != originals.get(rel):
                 ws.write(rel, text)
                 changed.append(rel)
+        if changed and resolvers:
+            self.resolver_id = ",".join(resolvers)
         return changed
 
 

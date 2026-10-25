@@ -24,7 +24,9 @@ def test_txt_manifest_relative_paths_comments_and_missing(tmp_path):
     m = tmp_path / "list.txt"
     m.write_text("# fleet\nsrc/one   # first\n\nsrc/missing\n" + str(tmp_path / "src" / "one") + "\n")
     ps = load_manifest(m)
-    assert [p.name for p in ps] == ["one", "missing", "one-2"]
+    from sbmig.fleet.manifest import path_hash
+    # the same input twice: the second one gets the hash of its path (names stay unique and stable)
+    assert [p.name for p in ps] == ["one", "missing", f"one-{path_hash(ps[0].input)}"]
     assert ps[0].ok and ps[2].ok and ps[0].input == ps[2].input
     assert not ps[1].ok and "input not found" in ps[1].error
 

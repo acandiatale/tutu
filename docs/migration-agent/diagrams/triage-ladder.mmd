@@ -2,6 +2,7 @@ stateDiagram-v2
   direction TB
   state "cluster (파일 또는 g:a 단위)" as C
   state "0. BlockedRegistry 에 이미 있음?" as R0
+  state "0b. 고정된 케이스 동작<br/>CaseHit.pinned: block · handler · recipe" as PIN
   state "1. HANDLER<br/>매칭 순서 = 등록 순서, 첫 매치" as H
   state "2. KB_RECIPE<br/>active ∪ recipe_rules → candidates" as KR
   state "3. KB_PATCH<br/>같은 L1, SEARCH 텍스트가 그대로" as KP
@@ -11,7 +12,10 @@ stateDiagram-v2
   [*] --> C
   C --> R0
   R0 --> B : 예 (LLM 없이 건너뜀)
-  R0 --> H : 아니오
+  R0 --> PIN : 아니오
+  PIN --> B : block (LLM 없음)
+  PIN --> [*] : handler / recipe 적용 → 재빌드
+  PIN --> H : 고정 없음 / 이미 시도
   H --> KR : 매치 없음 / 이미 시도 / 바꾼 것 없음
   KR --> KP : 후보 없음 / no-op
   KP --> BC : 재생 불가

@@ -158,18 +158,33 @@ class LayoutConfig(BaseModel):
 
 
 class RecipeSetConfig(BaseModel):
+    # mirrors `openrewrite.recipes` of config/default.yml (a Config() built without the yml plans the same recipes)
     jdk21: list[str] = Field(default_factory=lambda: ["org.openrewrite.java.migrate.UpgradeToJava21"])
-    jakarta: list[str] = Field(default_factory=lambda: ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"])
+    jakarta: list[str] = Field(default_factory=lambda: [
+        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+        "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",     # round 10: Servlet 6 removals
+    ])
     spring_boot_4: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
         "com.company.migrate.SpringBoot41Version",       # project recipe in knowledge/recipes/base
         "com.company.migrate.Boot4JacksonTwins",        # project recipe: Boot Jackson types → Jackson 3 twins
+        "com.company.migrate.Boot4TypeRelocations",     # round 10: types the 4.0 umbrella does not move
+        "com.company.migrate.Spring7RemovedApis",
+        "com.company.migrate.Jackson3SpringConverters",
     ])
     spring_framework_7: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
+        "com.company.migrate.Spring7RemovedApis",
+        "com.company.migrate.Jackson3SpringConverters",
     ])
-    spring_security_7: list[str] = Field(default_factory=lambda: [
+    spring_security_7: list[str] = Field(default_factory=lambda: [   # round 10: the whole 6.x → 7 chain
+        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0",
+        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1",
+        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_2",
+        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_3",
+        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4",
+        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5",
         "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
     ])
     junit5: list[str] = Field(default_factory=lambda: [
@@ -234,6 +249,11 @@ class BuildConfig(BaseModel):
     # package prefixes treated as *library* code in error signatures (project-owned FQCNs are masked as '*').
     # In-house library namespaces (parent/mandatory/optional group ids) are added automatically.
     external_package_prefixes: list[str] = Field(default_factory=list)
+    # round 10: the preflight aborts (flag `jdk-not-21`) when `mvn -v` reports another Java major (0 = no check)
+    require_java_major: int = 21
+    # "… was cached in the local repository, resolution will not be reattempted …" (a Nexus 404 remembered for a day)
+    # → the same build once more with -U before the error is triaged
+    retry_negative_cache: bool = True
 
 
 class PhaseLoopConfig(BaseModel):
@@ -271,7 +291,9 @@ class LoopConfig(BaseModel):
         "plugin_incompatible": 1, "unsupported_source": 0, "encoding": 0,
     })
     structural_regression_kinds: list[str] = Field(default_factory=lambda: [
-        "pom_invalid", "parent_resolution", "plugin_resolution"])   # appearing after a pom edit ⇒ revert regardless of count
+        "pom_invalid", "parent_resolution", "plugin_resolution", "dependency_resolution"])
+                                             # appearing after a pom edit ⇒ revert regardless of count (round 10: a
+                                             # made-up dependency an LLM added masked every compile error)
 
 
 BUILTIN_LLM_PROVIDERS = ("company", "openai_compatible", "anthropic", "fake")
@@ -361,7 +383,7 @@ class KBConfig(BaseModel):
     # applied → kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json and <run dir>/error_cases.*
     error_cases: bool = True
     error_hints: bool = True                 # past outcomes of the same error (fixes AND failures) → fix-prompt hints
-    error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff (the rest is in <run dir>/changes.patch)
+    error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff, applied AFTER classification (0 = no cap)
     error_excerpt_chars: int = 1500          # cap of ErrorCaseRecord.diff_excerpt (the error's own file)
     # case catalog (2026-10-23): one case per error signature (L2) in kb/catalog/, human views in kb/views/; a hit applies
     # the case's action (replace via handler case-replace; recipe / patch through the existing KB steps; hints always).
@@ -370,6 +392,9 @@ class KBConfig(BaseModel):
     case_replace: bool = True                # apply learned text replaces (handler case-replace) for candidate / active cases
     case_replace_scope: Literal["error-lines", "file"] = "error-lines"   # error-lines = only the lines javac reported
                                              # + import lines of that file; file = the whole file (riskier)
+    # round 10: secret masking rules (built-ins + this yml: company additions, invariant 2), relative to the repo root
+    redact_file: str = "knowledge/kb/redact.yml"
+    lock_timeout_seconds: int = 300          # cross-process kb/.lock wait before a write gives up (logged, never fatal)
 
 
 class PlanConfig(BaseModel):
@@ -395,6 +420,15 @@ class FleetConfig(BaseModel):
     max_projects: int = 0                    # 0 = all
     max_llm_calls_total: int = 0             # 0 = unlimited; fleet-wide LLM budget across projects
     reindex_every: int = 10                  # kb reindex after every N projects (0 = never)
+    # round 10: infrastructure guard for the 500-project run
+    preflight: bool = True                   # check Java / Maven / settings / LLM / disk once before the first project
+    infra_failure_limit: int = 3             # this many projects in a row ended for an infrastructure reason → wait
+    infra_retry_minutes: int = 15            # wait between infrastructure re-checks (0 = stop the fleet right away)
+    infra_max_waits: int = 4                 # re-checks before the fleet stops (state saved; `fleet resume` goes on)
+    cleanup: Literal["none", "build-output", "workspace"] = "build-output"   # after a project: build-output = delete
+                                             # target/ dirs of its run copy; workspace = also the project copy (result.zip,
+                                             # report and patch stay)
+    min_free_gb: float = 5.0                 # free space needed on the output drive before a project starts (0 = no check)
     summary_formats: list[str] = Field(default_factory=lambda: ["md", "csv", "json"])
 
 
@@ -535,7 +569,19 @@ def _apply_env_overrides(data: dict) -> dict:
     return data
 
 
-_DOTENV_LOADED: set[str] = set()
+_DOTENV_LOADED: dict[str, float] = {}     # resolved path → mtime it was read at
+_DOTENV_SET: dict[str, str] = {}          # keys this loader put into os.environ (a later edit of the file may update them)
+
+
+def _read_env_text(f: Path) -> str:
+    """`.env` text whatever the editor saved: UTF-8 (BOM or not), UTF-16 (PowerShell 5.1 `>`), else cp949."""
+    data = f.read_bytes()
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return data.decode("utf-16")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("cp949", errors="replace")
 
 
 def load_dotenv_files(*extra: str | Path) -> list[Path]:
@@ -552,13 +598,15 @@ def load_dotenv_files(*extra: str | Path) -> list[Path]:
             key = str(f.resolve())
             if not f.is_file():
                 continue
-            text = f.read_text(encoding="utf-8")
-        except OSError:
+            mtime = f.stat().st_mtime
+            if _DOTENV_LOADED.get(key) == mtime:          # read before and unchanged since
+                found.append(f)
+                continue
+            text = _read_env_text(f)
+        except (OSError, UnicodeError):
             continue
         found.append(f)
-        if key in _DOTENV_LOADED:
-            continue
-        _DOTENV_LOADED.add(key)
+        _DOTENV_LOADED[key] = mtime                       # an edited file is read again (web server, fleet)
         for raw in text.splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -574,8 +622,10 @@ def load_dotenv_files(*extra: str | Path) -> list[Path]:
                                  # text of LLM_RECIPE_MODEL / LLM_ESCALATION_MODEL as the model name → HTTP 400)
             else:
                 v = v.split(" #", 1)[0].rstrip()
-            if k and k not in os.environ:
+            # shell variables win; a value this loader set earlier follows the edited file
+            if k and (k not in os.environ or (k in _DOTENV_SET and os.environ[k] == _DOTENV_SET[k])):
                 os.environ[k] = v
+                _DOTENV_SET[k] = v
     return found
 
 

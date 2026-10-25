@@ -1,0 +1,23 @@
+# SYNTHETIC: Windows Maven 3.9 / JDK 21 (round 10). In-process javac (plexus toUri().getPath()) prints /C:/…, kotlinc and some plugins print file:///C:/… (percent-encoded), a lower-case drive c:\… comes from a cwd typed in lower case.
+[INFO] -------------------------< com.acme:win-app >--------------------------
+[INFO] Building win-app 1.0.0
+[INFO] --- compiler:3.13.0:compile (default-compile) @ win-app ---
+[INFO] -------------------------------------------------------------
+[ERROR] COMPILATION ERROR :
+[INFO] -------------------------------------------------------------
+[ERROR] /C:/work/proj/src/main/java/com/acme/web/UserController.java:[5,8] package javax.servlet.http does not exist
+[ERROR] file:///C:/work/proj/src/main/java/com/acme/%ED%95%9C%EA%B8%80/Report.java:[12,20] cannot find symbol
+  symbol:   class XmlRootElement
+  location: class com.acme.한글.Report
+[ERROR] c:\work\proj\src\test\java\com\acme\FooTest.java:[7,3] static import only from classes and interfaces
+[ERROR] /C:/Work/Proj/src/main/java/com/acme/Upper.java:[3,1] cannot find symbol
+  symbol:   class Foo
+  location: class com.acme.Upper
+[ERROR] /D:/elsewhere/gen/Gen.java:[1,1] cannot find symbol
+  symbol:   class Bar
+  location: class gen.Gen
+[INFO] 5 errors
+[INFO] -------------------------------------------------------------
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.13.0:compile (default-compile) on project win-app: Compilation failure: Compilation failure:
+[ERROR] /C:/work/proj/src/main/java/com/acme/web/UserController.java:[5,8] package javax.servlet.http does not exist

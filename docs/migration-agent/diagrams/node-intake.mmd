@@ -1,13 +1,15 @@
 flowchart TB
   subgraph a["① 작업 사본"]
     direction LR
-    A["입력 경로<br/>dir / zip"] --> B["Workspace.from_input<br/>복사 또는 안전 압축 해제<br/>(.git · target · .idea 제외)"] --> C["git_init<br/>브랜치 sbmig/&lt;run id&gt;<br/>커밋 as-is snapshot"] --> D["인코딩 후보 등록<br/>build.encoding_candidates"]
+    A["입력 경로<br/>dir / zip"] --> B["Workspace.from_input<br/>복사 또는 안전 압축 해제<br/>(.git · .idea · pom 옆 target 제외)"] --> C["git_init<br/>브랜치 sbmig/&lt;run id&gt;<br/>커밋 as-is snapshot"] --> D["인코딩 후보 등록<br/>build.encoding_candidates"]
   end
   subgraph b["② 사전 점검"]
     direction LR
     E["_preflight<br/>mvn -v · artifacts.parent<br/>role parents · java_home"] --> F{"Maven 실행<br/>가능?"}
     F -->|아니오| X1["mvn-not-found<br/>exit 3"]
-    F -->|예| G["_check_build_tool"]
+    F -->|예| JV{"mvn -v 의 Java<br/>= require_java_major?"}
+    JV -->|"아니오 (round 10)"| X3["jdk-not-21<br/>exit 3"]
+    JV -->|예| G["_check_build_tool"]
     G -->|"gradle / ant / none"| X2["unsupported-build-tool<br/>exit 3"]
     G -->|maven| H["_capture_effective<br/>as-is depMgmt"]
     H --> I{"--stop-after<br/>intake?"}

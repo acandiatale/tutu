@@ -25,6 +25,7 @@ GOOD_COMPILER = PluginInfo(artifact_id="maven-compiler-plugin", version="3.13.0"
 def test_boot27_handlers(tmp_path: Path, cfg) -> None:
     ids = pre_handlers_for(analyze_path(make_boot27(tmp_path), cfg), cfg)
     assert ids == ["lombok-version-floor", "maven-compiler-plugin-floor", "jakarta-namespace-sweep",
+                   "boot4-type-relocation-sweep",                                   # round 10: Boot as-is project
                    "spring-data-crud-repository", "remove-classic-loader-implementation", "mysql-connector-relocation"]
     assert set(ids) <= set(HANDLER_IDS)
 
@@ -36,7 +37,8 @@ def test_servlet_handlers(tmp_path: Path, cfg) -> None:
 
 
 def test_boot33_no_compiler_declared(tmp_path: Path, cfg) -> None:
-    assert pre_handlers_for(analyze_path(make_boot33(tmp_path), cfg), cfg) == ["maven-compiler-plugin-floor"]
+    assert pre_handlers_for(analyze_path(make_boot33(tmp_path), cfg), cfg) == ["maven-compiler-plugin-floor",
+                                                                                 "boot4-type-relocation-sweep"]
 
 
 @pytest.mark.parametrize("libs,expected", [
@@ -209,3 +211,22 @@ def test_jakarta_sweep_selected_for_jsp_only_projects(cfg) -> None:
     r = dict(pre_handler_reasons(both, cfg))["jakarta-namespace-sweep"]
     assert "javax.servlet" in r and "1 JSP / tag file(s)" in r
     assert "jakarta-namespace-sweep" not in dict(pre_handler_reasons(_profile(poms=[_pom()]), cfg))
+
+
+# ---------------------------------------------------------------------------------------------- round 10
+def test_round10_preemptive_handlers(cfg) -> None:
+    from sbmig.core.models import ServiceInfo
+    from sbmig.plan import pre_handler_reasons
+
+    jdk = _profile(libs=[LibraryUsage(name="jdk-removed-apis", evidence=["import:sun.misc"])],
+                   poms=[_pom(deps=[GAV(group_id="jdk.tools", artifact_id="jdk.tools", version="1.8", scope="system")],
+                              plugins=[GOOD_COMPILER])])
+    reasons = dict(pre_handler_reasons(jdk, cfg))
+    assert "sun.misc.BASE64Encoder/Decoder" in reasons["jdk-base64-shim"]
+    assert "jdk.tools:jdk.tools declared" in reasons["remove-tools-jar"]
+    assert "boot4-type-relocation-sweep" not in reasons                      # not a Boot project
+    msa = _profile(poms=[_pom(plugins=[GOOD_COMPILER])])
+    msa.services = [ServiceInfo(name="order", root_pom="order/pom.xml", case_type=CaseType.SPRING_BOOT,
+                                spring_boot_version="2.7.18")]
+    assert "boot4-type-relocation-sweep" in pre_handlers_for(msa, cfg)
+    assert {"jdk-base64-shim", "remove-tools-jar", "boot4-type-relocation-sweep"} <= set(HANDLER_IDS)

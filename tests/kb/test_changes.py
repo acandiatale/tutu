@@ -50,8 +50,11 @@ def test_import_swap_javax_to_jakarta_aggregates_pairs():
     d += _git("src/main/java/B.java", "-import javax.persistence.Entity;", "+import jakarta.persistence.Entity;")
     c = classify_diff(d)
     assert c.change_kind == "text_replace"
-    assert _pairs(c) == [("javax", "jakarta", 3)]
-    assert c.replace_pairs[0].files == ["src/main/java/A.java", "src/main/java/B.java"]
+    # round 10: the full package parts, never the bare `javax` → `jakarta` (it rewrote javax.sql / javax.xml.parsers)
+    assert _pairs(c) == [("javax.servlet", "jakarta.servlet", 1), ("javax.servlet.http", "jakarta.servlet.http", 1),
+                         ("javax.persistence", "jakarta.persistence", 1)]
+    assert c.replace_pairs[0].files == ["src/main/java/A.java"]
+    assert c.replace_pairs[2].files == ["src/main/java/B.java"]
 
 
 def test_pom_version_bump_keeps_the_whole_version():
@@ -196,3 +199,93 @@ def test_combine_changes_reads_several_attempts_as_one():
     assert combine_changes([rename, rename]).change_kind == "text_replace"
     assert combine_changes([rename, classify_diff("")]).change_kind == "text_replace"      # `none` is ignored
     assert combine_changes([]).change_kind == "none"
+
+
+# --------------------------------------------------------------------------- round 10: qualified names (C6)
+@pytest.mark.parametrize("old,new,want", [
+    ("import javax.xml.bind.JAXBContext;", "import jakarta.xml.bind.JAXBContext;",
+     [("javax.xml.bind", "jakarta.xml.bind")]),
+    ("import javax.xml.bind.*;", "import jakarta.xml.bind.*;", [("javax.xml.bind", "jakarta.xml.bind")]),
+    ("package com.acme.old;", "package com.acme.neu;", [("com.acme.old", "com.acme.neu")]),
+    ("@javax.annotation.PostConstruct", "@jakarta.annotation.PostConstruct",
+     [("javax.annotation", "jakarta.annotation")]),
+    ("import org.springframework.boot.context.embedded.ServletRegistrationBean;",
+     "import org.springframework.boot.web.servlet.ServletRegistrationBean;",
+     [("org.springframework.boot.context.embedded", "org.springframework.boot.web.servlet")]),
+    # a package of another length is still ONE replaced name, not a code edit
+    ("import org.springframework.boot.autoconfigure.web.ErrorAttributes;",
+     "import org.springframework.boot.web.servlet.error.ErrorAttributes;",
+     [("org.springframework.boot.autoconfigure.web", "org.springframework.boot.web.servlet.error")]),
+    # the class changes too: the full names
+    ("import org.a.Old;", "import org.b.New;", [("org.a.Old", "org.b.New")]),
+    ("import static org.junit.Assert.assertEquals;", "import static org.junit.jupiter.api.Assertions.assertEquals;",
+     [("org.junit.Assert.assertEquals", "org.junit.jupiter.api.Assertions.assertEquals")]),
+    # member / identifier renames stay single tokens
+    ("return req.clientIp();", "return req.remoteClientIp();", [("clientIp", "remoteClientIp")]),
+    ("return com.acme.Helper.clientIp(r);", "return com.acme.Helper.remoteClientIp(r);",
+     [("clientIp", "remoteClientIp")]),
+    ("return Helper.clientIp(r);", "return Helper.ip(r);", [("clientIp", "ip")]),
+    ("this.helper.clientIp();", "this.helper.remoteClientIp();", [("clientIp", "remoteClientIp")]),
+])
+def test_qualified_names_become_package_pairs(old, new, want):
+    c = classify_diff(_git("src/main/java/A.java", f"-{old}", f"+{new}"))
+    assert c.change_kind == "text_replace" and [(p.old, p.new) for p in c.replace_pairs] == want
+
+
+def test_a_package_with_two_targets_falls_back_to_the_full_names():
+    d = _git("src/main/java/A.java", "-import org.apache.commons.lang.StringUtils;",
+             "-import org.apache.commons.lang.StringEscapeUtils;", "+import org.apache.commons.lang3.StringUtils;",
+             "+import org.apache.commons.text.StringEscapeUtils;")
+    assert [(p.old, p.new) for p in classify_diff(d).replace_pairs] == [
+        ("org.apache.commons.lang.StringUtils", "org.apache.commons.lang3.StringUtils"),
+        ("org.apache.commons.lang.StringEscapeUtils", "org.apache.commons.text.StringEscapeUtils")]
+
+
+def test_learned_package_pair_no_longer_rewrites_other_javax_imports():
+    """review-kb/repro1+2: `javax.xml.bind.JAXBContext` → jakarta was learned as `javax` → `jakarta`, which the
+    case-replace handler then applied to `javax.xml.parsers` / `javax.sql` imports too."""
+    import re as _re
+
+    from sbmig.triage.handlers.case_replace import _compile
+
+    c = classify_diff(_git("src/main/java/A.java", "-import javax.xml.bind.JAXBContext;",
+                           "+import jakarta.xml.bind.JAXBContext;"))
+    rx, repl = _compile([(p.old, p.new) for p in c.replace_pairs])
+    src = ("import javax.xml.bind.Marshaller;\nimport javax.xml.parsers.DocumentBuilder;\nimport javax.sql.DataSource;\n")
+    out = rx.sub(lambda m: repl[m.lastgroup], src)
+    assert out == ("import jakarta.xml.bind.Marshaller;\nimport javax.xml.parsers.DocumentBuilder;\n"
+                   "import javax.sql.DataSource;\n")
+    assert _re.search(r"jakarta\.sql", out) is None
+
+
+# --------------------------------------------------------------------------- round 10: excerpts (C7)
+def _two_hunks(far: int = 200) -> str:
+    return (f"diff --git a/{EC_FILE} b/{EC_FILE}\nindex 1..2 100644\n--- a/{EC_FILE}\n+++ b/{EC_FILE}\n"
+            "@@ -3,3 +3,3 @@ class A {\n     int a;\n-    int old1;\n+    int new1;\n     int b;\n"
+            f"@@ -{far},3 +{far},3 @@ class A {{\n     int c;\n-    return req.clientIp();\n+    return req.ip();\n"
+            "     int d;\n")
+
+
+def test_excerpt_is_the_hunk_at_the_error_line():
+    from sbmig.kb.changes import excerpt_for
+
+    d = _two_hunks()
+    near = excerpt_for(d, EC_FILE, 201, 1500)
+    assert "req.ip()" in near and "new1" in near                      # both fit, in file order
+    assert near.index("new1") < near.index("req.ip()")
+    small = excerpt_for(d, EC_FILE, 201, 200)                         # room for one hunk: the one at the line
+    assert "req.ip()" in small and "new1" not in small and small.endswith("…[truncated]")
+    assert len(small) <= 200 + len("\n…[truncated]")
+    first = excerpt_for(d, EC_FILE, 4, 200)
+    assert "new1" in first and "req.ip()" not in first
+    assert excerpt_for(d, "src/Other.java", 3, 1500) == "" and excerpt_for(d, None, 3) == ""
+
+
+def test_excerpt_cuts_a_huge_hunk_around_the_error_line():
+    from sbmig.kb.changes import excerpt_for
+
+    body = "".join(f"-    int v{i} = old();\n+    int v{i} = neu();\n" for i in range(300))
+    d = (f"diff --git a/{EC_FILE} b/{EC_FILE}\n--- a/{EC_FILE}\n+++ b/{EC_FILE}\n@@ -1,300 +1,300 @@\n{body}")
+    ex = excerpt_for(d, EC_FILE, 250, 600)
+    assert len(ex) <= 600 + 40 and "v249 = old();" in ex and "v10 = old()" not in ex
+    assert ex.rstrip().endswith("…[truncated]")

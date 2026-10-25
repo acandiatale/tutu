@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -25,7 +26,35 @@ log = logging.getLogger("sbmig.build")
 MAX_SUMMARY_ERRORS = 60
 SUMMARY_TAIL = 25
 
-__all__ = ["MavenRunner", "build_summary", "maven_available"]
+__all__ = ["MavenRunner", "build_summary", "maven_available", "negative_cache_hits"]
+
+# Maven remembers a failed download in the local repository (`*.lastUpdated` / `_remote.repositories`) and does not
+# ask the repository again until the update interval (default: daily) has passed. After a Nexus admin uploaded the
+# missing artifact, every re-run still failed the same way for a day (round 10). Maven 3.6–3.8 and 3.9 wordings:
+#   Failure to find g:a:jar:1.0 in https://… was cached in the local repository, resolution will not be reattempted …
+#   g:a:jar:1.0 was not found in https://… during a previous attempt. This failure was cached in the local repository …
+_NEGATIVE_CACHE_RE = re.compile(r"was cached in the local repository|resolution (?:will not be|is not) reattempted "
+                                r"until the update interval")
+_COORDS = r"[\w.\-]+:[\w.\-]+(?::[\w.\-]+){1,3}"
+_NEGATIVE_GAV_RE = re.compile(r"Failure to (?:find|transfer) (?P<a>" + _COORDS + r") (?:in|from)\b|"
+                              r"(?P<b>" + _COORDS + r") (?:was not found in|failed to transfer from) \S+ during a "
+                              r"previous attempt")
+
+
+def negative_cache_hits(text: str) -> list[str]:
+    """Coordinates (g:a[:type]:v as Maven printed them) whose resolution failed only because the failure was cached
+    in the local repository. Empty when the log has no such line."""
+    out: list[str] = []
+    cached = False
+    for line in (text or "").splitlines():
+        if not _NEGATIVE_CACHE_RE.search(line):
+            continue
+        cached = True
+        for m in _NEGATIVE_GAV_RE.finditer(line):
+            gav = m.group("a") or m.group("b")
+            if gav and gav not in out:
+                out.append(gav)
+    return out or (["?"] if cached else [])
 
 
 def build_summary(text: str, project_root: Path | str | None = None) -> str:
@@ -80,6 +109,36 @@ class MavenRunner:
     # ------------------------------------------------------------------ run
     def run(self, goal: str, *, module: str | None = None, extra_args: Iterable[str] = (), label: str = "",
             skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
+        """One build. With `build.retry_negative_cache` (default on) a build that failed on a *cached* resolution
+        failure is run once more with `-U` and the second result is returned."""
+        extra_args = list(extra_args)
+        result, text = self._run_once(goal, module=module, extra_args=extra_args, label=label,
+                                      skip_test_compile=skip_test_compile, skip_tests=skip_tests)
+        if result.ok or not self._may_force_update(result.command):
+            return result
+        # once per artifact and run: an artifact that is really missing would otherwise double every later build
+        retried: set[str] = self.ws.__dict__.setdefault("_negative_cache_retried", set())
+        hits = [h for h in negative_cache_hits(text) if h not in retried]
+        if not hits:
+            return result
+        retried.update(hits)
+        log.info("maven: negative cache hit for %s → retrying once with -U", ", ".join(hits[:3])
+                 + (f" (+{len(hits) - 3} more)" if len(hits) > 3 else ""))
+        self.ws.journal({"event": "build_negative_cache_retry", "goal": goal, "module": module, "artifacts": hits,
+                         "first_log": result.log_path})
+        retry, _text = self._run_once(goal, module=module, extra_args=[*extra_args, "-U"],
+                                      label=f"{label or goal}-U", skip_test_compile=skip_test_compile,
+                                      skip_tests=skip_tests)
+        return retry
+
+    def _may_force_update(self, cmd: list[str]) -> bool:
+        """-U only makes sense online and once: not offline (`-o`), not when the command already forces updates."""
+        if not getattr(self.cfg.build, "retry_negative_cache", True):
+            return False
+        return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd)
+
+    def _run_once(self, goal: str, *, module: str | None, extra_args: list[str], label: str,
+                  skip_test_compile: bool, skip_tests: bool) -> tuple[BuildResult, str]:
         cwd, file_args = self._cwd(module)
         cmd = self.command(goal, extra_args=[*file_args, *extra_args], skip_test_compile=skip_test_compile,
                            skip_tests=skip_tests)
@@ -114,5 +173,5 @@ class MavenRunner:
                          "timed_out": pr.timed_out, "skip_test_compile": skip_test_compile, "skip_tests": skip_tests,
                          "label": label})
         log.info("build %s: %s (%d errors, %.1fs)", goal, "OK" if ok else "FAILED", len(errors), pr.duration_s)
-        return result
+        return result, text
 

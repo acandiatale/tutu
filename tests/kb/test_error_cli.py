@@ -149,3 +149,30 @@ def test_stats_reindex_learning_mention_error_cases(kb, ws, profile):
     assert "error hints: 1 L2 signature(s), 1 symbol(s)" in r.output
     assert "error cases: 2 (resolved=1, unresolved=1)" in _run(kb.root, "learning").output
     assert "## Error cases" in _run(kb.root, "learning", "--md").output
+
+
+def test_errors_export_filters_by_case_and_resolver_with_the_resolution_chain(kb, ws, profile, tmp_path):
+    """Round 10 (C9): a filtered `--attempts-csv` includes every attempt of the selected errors' resolution (an
+    earlier `no_change` that stayed in the tree), and `--case` / `--resolver` select errors."""
+    refs = [ErrorAttemptRef(attempt_id="r5:a1", fix_method="llm", outcome="improved")]
+    errs, atts = prepare_error_cases(
+        [ec_error("e5", run_id="r5", resolved_by="r5:a1", attempts=refs, resolution_attempts=["r5:a0", "r5:a1"])],
+        [ec_attempt("a0", run_id="r5", outcome="no_change", diff=CODE_EDIT_DIFF, error_ids=()),
+         ec_attempt("a1", run_id="r5", error_ids=("e5",))],
+        profile, ws, kb.cfg)
+    kb.append_error_cases(errs, atts)
+    _seed(kb, ws, profile)
+    out, att = tmp_path / "e.csv", tmp_path / "a.csv"
+    r = _run(kb.root, "errors", "export", "--case", case_id_for(EC_L2)[:6], "--resolver", "^fake",
+             "--status", "^resolved$", "--csv", str(out), "--attempts-csv", str(att))
+    assert r.exit_code == 0 and "wrote 2 error case(s)" in r.output
+    arows = {x["id"] for x in csv.DictReader(att.open(encoding="utf-8-sig", newline=""))}
+    assert {"r5:a0", "r5:a1", "r1:a1"} <= arows              # r5:a0 is only in e5's resolution chain
+    assert "wrote 0 error case(s)" in _run(kb.root, "errors", "export", "--case", "ffffff", "--csv",
+                                           str(out)).output
+    assert "wrote 0 error case(s)" in _run(kb.root, "errors", "export", "--resolver", "case-replace", "--csv",
+                                           str(out)).output
+    lines = _run(kb.root, "errors", "list", "--case", case_id_for(EC_L2)).output.strip().splitlines()
+    assert len(lines) == 3
+    rows = list(csv.DictReader(out.open(encoding="utf-8-sig", newline="")))
+    assert rows == [] and "schema_version" in out.read_text(encoding="utf-8-sig").splitlines()[0]

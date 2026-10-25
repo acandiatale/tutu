@@ -4,7 +4,7 @@
 | Item | Requirement | Why |
 |---|---|---|
 | Python | ≥ 3.10 (+ `uv` or `pip`) | agent runtime |
-| JDK | **21** (set `build.java_home`) | OpenRewrite plugin and all builds run on 21; as-is projects are never built on their old JDK |
+| JDK | **21** (set `build.java_home`) | OpenRewrite plugin and all builds run on 21; as-is projects are never built on their old JDK. Round 10: the preflight compares the Java major of `mvn -v` with `build.require_java_major` (21) and aborts before the first build when it differs (exit 3, flag `jdk-not-21`, `run aborted: Maven runs on Java 17.0.9 (…), not Java 21: set build.java_home (or JAVA_HOME) to a JDK 21 home and rerun`) |
 | Maven | 3.9.x; `build.settings_file` = a settings.xml with a **catch-all mirror** to the Nexus group (`config/settings.nexus.example.xml`, §0.1) | builds + OpenRewrite plugin; the mirror also covers the repositories declared inside the project poms |
 | Nexus proxies | Maven Central incl. `org.openrewrite.*` (plugin 6.46.1, recipe BOM **3.37.0** and its artifacts (3.38.0 is inconsistent on Central), rewrite-recipe-bom 3.37.0 → rewrite-migrate-java 3.42.0, rewrite-spring 6.37.0, rewrite-testing-frameworks 3.44.0, rewrite-static-analysis 2.41.0, rewrite-java-dependencies 1.60.2), `org.springframework.boot:*:4.1.0`, jakarta artifacts | recipes and target BOM |
 | LLM endpoint | the in-house gateway: `.env` with `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` (provider `company`, plain `requests.post`) | residual fixes + recipe candidates |
@@ -38,6 +38,17 @@ sbmig llm-probe --prompt "안녕"                            # exact request, ra
 sbmig llm-probe --prompt "안녕" --payload-extra '{}' --no-system --model <postman model>   # compare with Postman
 sbmig run <project> --config config/artifacts.yml
 ```
+```powershell
+# Windows PowerShell
+cd D:\migration-agent
+uv venv
+Set-ExecutionPolicy -Scope Process Bypass        # only if "Activate.ps1 cannot be loaded because running scripts is disabled"
+.venv\Scripts\Activate.ps1
+uv pip install -e ".[dev]"
+sbmig llm-probe --prompt "안녕"                   # last line: LLM-PROBE ok … / LLM-PROBE FAIL <kind> …
+sbmig run D:\asis\order-api.zip --config config\artifacts.yml --out out
+Get-Content out\<run id>\sbmig.log -Encoding UTF8 -Tail 30   # Windows PowerShell 5.1 needs -Encoding UTF8 (else "—" and Korean are garbled)
+```
 
 The gateway URL is used verbatim (no scheme change, no path appended): `LLM_BASE_URL=http://...` exactly as the
 working in-house agents call it. If `requests.post` works by hand but sbmig gets an error, run `sbmig llm-probe`
@@ -51,6 +62,9 @@ Windows: Maven is `mvn.cmd`; sbmig resolves `build.mvn` through PATH / `MAVEN_HO
 when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd` and `build.java_home`.
 Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point
 `SBMIG_ENV_FILE` at a file; `load_config` reads it before anything else and never overrides variables already set.
+Round 10: `.env` may be saved as UTF-8 (with or without BOM), UTF-16 (Notepad "Unicode", PowerShell `>`) or cp949, and
+an edited `.env` is read again by the next run (the web server's next run, the fleet's next project); shell variables
+still win, values this loader set earlier follow the file.
 `llm.api_key_env` names the variable (`LLM_API_KEY`), the token itself never goes into a yml.
 Stopping the web server: `sbmig serve` passes `--timeout-graceful-shutdown 5` to uvicorn (option `--graceful-timeout`),
 the lifespan shutdown ends every open event stream, asks running runs to stop after their current graph node and
@@ -60,9 +74,14 @@ kills the Maven / OpenRewrite processes still running (`taskkill /T /F` on Windo
 Windows / console code page (cp949): sbmig decodes git and Maven output as UTF-8 itself and writes
 `changes.patch` as the raw `git diff` bytes (an MS949 source stays MS949 in the patch). A `UnicodeDecodeError: 'cp949'
 codec can't decode byte …` traceback from a subprocess reader thread, followed by `could not write changes.patch: data
-must be str, not NoneType`, is the pre-2026-10-21 checkout — pull.
+must be str, not NoneType`, is the pre-2026-10-21 checkout — pull. Round 10: stdout / stderr / the log handlers write
+with `errors="replace"`, so a redirected `sbmig run > run.txt` (or one under the Task Scheduler) on a cp949 console no
+longer dies with `UnicodeEncodeError` after the report; the console summary prints `ok` / `FAIL` instead of check
+marks; every Maven call gets `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` in `MAVEN_OPTS` (Korean paths stay
+readable; a value already set in `build.env` / `MAVEN_OPTS` wins). Windows javac paths (`/C:/…`, `file:///C:/…`,
+percent-encoded Korean folders, lower-case drives) are relativized like any other.
 
-## "Is it stuck?" — three places to look (round 9c)
+## "Is it stuck?" — where to look (round 9c, round 10)
 
 1. `tail -f <run dir>/sbmig.log`. While something slow runs the log keeps talking: `llm call … → POST` then
    `llm call still in flight: Ns elapsed` every 30 s (an LLM answer), `mvn still running: Ns elapsed … log: <file>`
@@ -73,10 +92,21 @@ must be str, not NoneType`, is the pre-2026-10-21 checkout — pull.
    (`deciding <cluster>`, `advisory hints`, `merge-conflict hints`, `fixer.propose … (prompt packing + LLM call)`,
    `LLM answered: applying`, `git commit`, `mvn package (build 3)`). `fix prompt for <cluster>: packing …` /
    `… packed: N chars → calling the LLM` bracket the prompt construction.
-3. Nothing at all for minutes: get a thread dump — on Windows (no `kill -USR1`) open
-   `http://127.0.0.1:8765/api/threads` (also written to `<out>/threads-<timestamp>.txt`); on POSIX
-   `kill -USR1 <pid of sbmig / uvicorn>` writes `out/threads-<timestamp>.txt`. The fix loop also writes one by itself
-   into the run directory after 5 minutes of silence. Send that file with the last 30 lines of `sbmig.log`.
+   Round 10: the watchdog is silent while a loop build, a rewrite, an LLM HTTP call or a live Maven child runs (those
+   have their own heartbeats) — a watchdog line therefore always points at the code in between.
+3. Nothing at all for minutes: get a thread dump.
+   * Anywhere (CLI, fleet, web; Windows included): create a file named `dump-threads` in the run directory (or the
+     directory sbmig was started from) — `New-Item <run dir>\dump-threads -ItemType File`. Within 2 s the dump is
+     written next to it as `threads-<timestamp>.txt` and the trigger file is removed (log `thread dump requested by
+     <path>`).
+   * `sbmig run` / `sbmig fleet` console on Windows: Ctrl+Break (`SIGBREAK`) writes `out\threads-<timestamp>.txt` and
+     the run goes on (when the main thread waits for Maven the dump comes with the next heartbeat, ≤ 60 s). Maven / git
+     children run with `CREATE_NO_WINDOW`, so Ctrl+Break never reaches `mvn.cmd`. **Not under `sbmig serve`**: uvicorn
+     owns Ctrl+Break there and stops the server — use the file trigger or `http://127.0.0.1:8765/api/threads` (also
+     written to `<out>/threads-<timestamp>.txt`; with a web token add `-H "Authorization: Bearer <token>"`).
+   * POSIX: `kill -USR1 <pid of sbmig / uvicorn>` writes `out/threads-<timestamp>.txt`.
+   The fix loop also writes one by itself into the run directory after 5 minutes of silence. Ask the operator for the
+   bottom ~15 lines of the `--- thread sbmig-run-…` (CLI: `MainThread`) block, not for the file.
    Order of phases: jdk21 → spring → restructure (parents / layout) → verify. With `plan.parent_phase: spring`
    (set in `config/artifacts.example.yml` for company runs) the parents / layout are applied right after
    `spring.rewrite`, before the spring build-fix loop: the loop then fixes against the company parent chain and a
@@ -84,12 +114,30 @@ must be str, not NoneType`, is the pre-2026-10-21 checkout — pull.
 4. A run that stops right after the journal's `llm_fix` event (answer received, no `attempt` event) was blocked in
    the patch apply / `git commit` step. Workspace git is non-interactive since round 9c (prompts, hooks, GPG signing
    disabled per call, 10-minute timeout) — if it still hangs there, an antivirus / indexer is holding the files.
+   Round 10 adds `-c core.longpaths=true -c core.autocrlf=false -c core.quotepath=false -c safe.directory=*` to every
+   call and `.git/info/attributes` (`* -text -eol -filter -ident -working-tree-encoding`), so a project's
+   `.gitattributes eol=crlf` no longer rewrites line ends on a revert.
+5. LLM lines worth retyping (round 10): a transport failure carries `cause=<Class>: <innermost message ≤ 120 ASCII
+   chars>` on the warning / retry / give-up lines and in the error (`status=None cause=ConnectTimeout: …`;
+   `[WinError N]` / `[Errno N]` kept); an empty answer with `finish_reason=length` is a request rejection (the prompt
+   is too big for the gateway's max_tokens — raise it or lower `llm.max_context_chars`), not retried and not counted
+   as an outage. The same HTTP 400 body for two different prompts stops the LLM for the run: `LLM configuration error:
+   the gateway answered HTTP 400 '…' to 2 different prompts — no more LLM calls in this run` (flag `llm-config-error`;
+   check the model names in `.env` / `llm.payload_extra`).
+
+```powershell
+$run = "out\run-20261026-101500-ab12cd"
+Select-String -Path "$run\sbmig.log" -Pattern "SBMIG-RESULT|run aborted:" -Encoding UTF8 | Select-Object -Last 2
+Select-String -Path "$run\sbmig.log" -Pattern "fix loop quiet|first error:" -Encoding UTF8 | Select-Object -Last 2
+Select-String -Path "$run\sbmig.log" -Pattern "cause=|finish_reason=length|LLM configuration error" -Encoding UTF8 | Select-Object -Last 2
+New-Item "$run\dump-threads" -ItemType File; Start-Sleep 3; Get-ChildItem $run -Filter "threads-*.txt"
+```
 
 Smoke test without touching anything: `sbmig analyze path/to/project.zip --config config/artifacts.yml`.
 `token recognition error at: '<'` lines in a rewrite log come from OpenRewrite's XML parser, which also reads
 .jsp/.jspx/.html/.htm (scriptlets, `<` in attribute strings): warnings only, the file is skipped. Since round 9c those
 globs are excluded from the parse (`openrewrite.exclusions`); clear the list only if a company recipe must edit JSPs.
-Every command except `llm-probe` needs `--config config/artifacts.yml` (the company artifacts section has no
+Every command except `llm-probe`, `clean` and the `kb` / `recipes` / `advisories` groups needs `--config config/artifacts.yml` (the company artifacts section has no
 default); without it the CLI stops with `config error … artifacts: Field required` and the hint, exit 2.
 
 ## 0.5 LLM roles (two models)
@@ -102,13 +150,21 @@ default); without it the CLI stops with `config error … artifacts: Field requi
 `config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
 LLM calls are recorded when `LLM_RECORD_DIR` is set (e.g. `out/llm-records`, in `.env.example`). Every `sbmig run` writes
 `<run dir>/sbmig.log` (DEBUG: decisions, builds, LLM calls — never keys); `--log-file PATH` adds one for any
-command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When asking for help, share
-`sbmig.log`, `report.md` and the relevant `llm-NNNN.json`.
+command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When the company operator asks for help
+(Windows PC without copy-paste), ask for specific retyped lines, not files: the `SBMIG-RESULT …` line, a
+`preflight: … FAIL …` line, the `run aborted: …` / `cause=…` line, the watchdog + `first error:` lines — each found
+with one `Select-String -Encoding UTF8` command (handbook 09 §10).
 
-`sbmig serve` (web UI): `sbmig serve --host 0.0.0.0 --port 8765 --out out/web` (FastAPI on uvicorn; the same app
-is `SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=<sbmig repo> uvicorn sbmig.web.app:app --host 0.0.0.0 --port 8765` for
-the company's uvicorn hosting) and open the page; upload a zip, pick the config files (e.g. `artifacts.yml` +
-`llm-company.yml`), start. The upload cap is 512 MB: `--max-upload-mb N` (or `SBMIG_MAX_UPLOAD_MB`; `0` = no
+`sbmig serve` (web UI): `sbmig serve --port 8765 --out out/web` (FastAPI on uvicorn, bound to 127.0.0.1) and open
+`http://127.0.0.1:8765`; upload a zip, pick the config files (e.g. `artifacts.yml`), start. **Sharing on the LAN needs
+a token (round 10)**: set `SBMIG_WEB_TOKEN=<long random value>` in `.env` or the shell (or pass `--token`) and start
+`sbmig serve --host 0.0.0.0 --port 8765 --out out/web`; other PCs open `http://<host>:8765/?token=<value>` once (an
+HttpOnly SameSite=Strict cookie holding a hash of the token is set for 7 days and the page reloads without the token
+in the address bar); API clients send `Authorization: Bearer <value>`. Without a token `sbmig serve` refuses a
+non-loopback `--host` (exit 2), and the app itself serves only loopback clients — the same app under the company's
+plain uvicorn hosting (`SBMIG_WEB_OUT=out/web SBMIG_WEB_REPO_ROOT=<sbmig repo> SBMIG_WEB_TOKEN=<value> uvicorn
+sbmig.web.app:app --host 0.0.0.0 --port 8765 --timeout-graceful-shutdown 5`) answers 403 to LAN clients when
+`SBMIG_WEB_TOKEN` is missing. The upload cap is 512 MB: `--max-upload-mb N` (or `SBMIG_MAX_UPLOAD_MB`; `0` = no
 limit) raises it for one oversized project — the body is streamed to `<out>/_uploads/`, not held in memory. Each run executes **in the server process** through the LangGraph engine
 (`sbmig.graph.stream_graph`, one worker thread per run; without LangGraph it falls back to the inline engine and the
 graph strip stays dark). The page streams the graph node updates, `journal.jsonl` (phases, builds, decisions, LLM
@@ -118,8 +174,9 @@ fixes) and the run's `sbmig.log` over SSE (`status | node | error | journal | lo
 or LLM call is not interrupted; the run is then finalized as aborted (exit code 3) without the final `mvn clean
 package` — a stop that arrives once the verify phase has run changes nothing. The server needs the same
 environment as the CLI (`JAVA21_HOME`, `LLM_BASE_URL`, `LLM_API_KEY`, or the `.env` next to it); it binds to localhost unless `--host` says
-otherwise. Runs share the file KB (`kb/`), so the server executes **one migration at a time**: further uploads
-wait as `queued` and start in order.
+otherwise (and needs a token then, see above). Runs share the file KB (`kb/`), so the server executes **one migration
+at a time** (learning order; since round 10 the KB writes themselves are serialized by `kb/.lock`, so the web server,
+a fleet and `sbmig kb …` can share one KB without corrupting it): further uploads wait as `queued` and start in order.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
 ## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)
@@ -142,7 +199,18 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 #  --java-home /usr/lib/jvm/java-21 --settings /etc/maven/nexus-settings.xml
 ```
 Exit code 0 = final `mvn clean package` passed and nothing is blocked. 2 = finished with **blocked** and/or unresolved
-errors (read `report.md`). 3 = aborted (no Maven, not a Maven project, configured in-house parent not resolvable).
+errors (read `report.md`). 3 = aborted (no Maven, Maven not on Java 21 (`jdk-not-21`), not a Maven project, configured
+in-house parent not resolvable). An aborted run, or one with a planned final-build step that never produced a result
+(MSA: per service), is never `success` (round 10). The last console line (also in `sbmig.log`, ASCII, retypeable) is
+
+```text
+SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes|->
+```
+
+`attn` lists why a human has to look, most important first: `infra:<llm|maven|jdk|repository|disk>`, `crash` (the
+run raised: `exit=1`), `aborted[:<reason>]`, `blocked:<reason>`, `unresolved:<n>`, `restructure-failed`,
+`llm-budget-exhausted`, `time-budget-exhausted`, `javax-api-on-classpath`, `tests-skipped`, `test-compile-skipped`,
+`tests-not-compiled`, `incomplete` (fleet also `skipped:<tool|input>`); `-` = nothing to look at.
 Gradle and Ant projects (no `pom.xml` anywhere) are rejected at intake, before any Maven call, CLI and web alike:
 exit code 3, flag `unsupported-build-tool:<gradle|ant|none>` and the reason in `report.md` (manual follow-ups).
 Library advisories (EOL / unmanaged libraries, §3.7) never change the exit code — they go to the Handover (§2.5).
@@ -223,7 +291,26 @@ by sbmig.
    `mvn clean package` without `-DskipTests` before relying on CI. `build.allow_skip_tests_fallback: false` turns the
    fallback off (the run then reports the failing tests instead of packaging).
 
-## 3. Knowledge base workflow (no DB — files in `kb/`, keep them in git or sync as zip)
+## 3. Knowledge base workflow (no DB — files in `kb/`, back up / sync as zip)
+* **Round 10 (2026-10-26): the KB format changed — wipe the company KB and let it rebuild** (the user's decision; not
+  in production yet, so no converter). L2 signatures (= case keys) are finer, learned replace pairs are package parts,
+  records carry `schema_version` 2 / `agent_version`. Optionally `sbmig kb export` first; keep `kb/patterns/` (hand
+  written) and the `.gitkeep` files, delete the rest (handbook 09 §8 has the PowerShell lines).
+* The repo `.gitignore` ignores the KB data files (`errors.jsonl`, `fix_attempts.jsonl`, `error_hints.json`,
+  `ledger.jsonl`, `symbols.json`, `index.json`, `audit.jsonl`, `quarantine.jsonl`, `*.corrupt`, `.lock`, `catalog/`,
+  `views/`, `kb.bak-*`); back them up with `sbmig kb export`, not git.
+* Every KB write runs under the cross-process lock `kb/.lock` (stale after `kb.lock_timeout_seconds`, 300, or when its
+  pid is gone; a writer that waited that long logs and goes on). Append-only files move a torn last line to
+  `<file>.corrupt` before appending; unreadable `errors.jsonl` lines are noted in `kb/quarantine.jsonl`. Human case
+  edits and automatic case transitions go to `kb/audit.jsonl` (`sbmig kb cases show` → "history").
+* Secrets are masked (values only) before anything is stored: built-in rules + company patterns in
+  `knowledge/kb/redact.yml` (`kb.redact_file`: `key_words`, `key_patterns`, `patterns`, `allow_keys` — names and
+  patterns only, never a real secret).
+* Pinned case actions are obeyed since round 10: `sbmig kb cases pin <id> --action block[:<reason>]|handler:<id>|recipe:<id>`
+  (order block → handler → recipe, before the deterministic handlers); `sbmig kb cases reject <id>` also stops that
+  L2's patch replay, KB recipes and symbol hints. `sbmig kb errors list|export --case <id prefix> --resolver <regex>`
+  narrows the error records to one case / one resolver. `sbmig kb import --replace` builds the new KB in a hidden
+  sibling directory, swaps by rename and keeps the old one as `kb.bak-<timestamp>`.
 * Every successful LLM fix becomes `kb/cases/YYYY-MM/<id>.json`. Mechanical ones also produce `kb/recipes/candidates/<name>.yml`.
 * Review candidates: `sbmig kb list --status candidate`, `sbmig kb show <id>`, then `sbmig kb promote <id>` (or `reject`). Promoted recipes are composed into **every** run's OpenRewrite execution and tried before the LLM when their signature matches.
 * Auto-promotion: a candidate that succeeded in `kb.auto_promote_after_projects` distinct projects with no failures is promoted automatically. Set to 0 to require manual review.
@@ -250,6 +337,43 @@ Projects run strictly one after another; the KB is updated after every project, 
 the recipes learned from projects 1..N. `out/fleet/fleet/summary.{md,csv,json}` and `learning.md` are rewritten after
 each project. Knobs: `fleet.order` (`manifest` | `simple-first`), `fleet.max_llm_calls_total`, `fleet.stop_on_abort`,
 `fleet.reindex_every`.
+
+Round 10 — what the operator sees and does in a 500-project fleet:
+* **Preflight** (`fleet.preflight: true`): before the first project (and after every infrastructure wait) one line
+  per check, `preflight: <disk|maven|java|settings|repository|llm> ok|FAIL|skip <detail>` — disk
+  (`fleet.min_free_gb`), Maven + Java major (`mvn -v`, `build.require_java_major`), `build.settings_file` (exists,
+  parses, catch-all mirror), repository (one GET to the settings mirror the way Maven goes: the settings `<proxy>`,
+  not `HTTP_PROXY`; any answer < 500 = up, an unverifiable TLS certificate still = up), LLM (one `sbmig llm-probe`
+  call; skipped for the fake provider or `loop.max_llm_calls: 0`). Retype the `FAIL` line.
+* **Infrastructure breaker**: a project that ends with an `infra:<kind>` flag (or crashes with a full disk, an LLM
+  transport error, a vanished mvn) goes back to `pending` with `error: infra:<kind>` instead of failing. After
+  `fleet.infra_failure_limit` (3) such projects in a row the fleet prints `fleet: infrastructure <kind> unavailable
+  since <project> - waiting N min, then re-checking (i/max)`, sleeps `fleet.infra_retry_minutes` (15), re-runs the
+  preflight and resumes with the deferred projects first (at most twice each per process). After `fleet.infra_max_waits`
+  (4) waits, at once with `infra_retry_minutes: 0`, or when the check finds a configuration error (no Maven, wrong
+  JDK, settings missing, LLM key / model rejected) it stops: `fleet stopped: infrastructure <kind> unavailable since
+  <project> - fix it and run sbmig fleet again` (state saved, exit 3). Fix the cause and run the **same** command
+  again — the pending projects run first.
+* **Disk**: free space is checked before each project (`fleet.min_free_gb`, 5 GB; below → kind `disk`). After each
+  project (report and `result.zip` written) `fleet.cleanup` deletes `target/` next to a pom in the run copy
+  (`build-output`, default) or also the `project/` copy when `result.zip` exists (`workspace`). Older leftovers:
+  `sbmig clean --fleet out/fleet --older-than 7 --keep-failed --dry-run` (then without `--dry-run`) frees finished
+  runs' project copies, finished web uploads, stale `.part` uploads and `llm-NNNN.json` records; it prints the count and
+  size per kind and `would free …` / `freed …`. Running / queued runs are never touched.
+* **Results**: one `SBMIG-RESULT …` line per project (console and `fleet/sbmig.log`); `summary.csv` (UTF-8 with BOM)
+  has the `attention` codes and the `input` path; `summary.md` has a "Needs attention" section;
+  `sbmig fleet status out/fleet --attention` lists only the projects that need a human, grouped by their first code.
+* **Logs**: every project logs DEBUG into its own `<run dir>/sbmig.log` (attached for that project only);
+  `fleet/sbmig.log` is INFO.
+* **Manifests / state**: manifests are read as UTF-8 (BOM or not), UTF-16 (PowerShell `>`) or cp949; non-ASCII or
+  colliding names get an ASCII slug + 6-char hash of the input path for the run directory; the state is keyed by the
+  normalized input path (case-insensitive on Windows), so a renamed folder never inherits another project's result.
+
+```powershell
+Select-String -Path out\fleet\fleet\sbmig.log -Pattern "preflight: .* FAIL|fleet stopped:|fleet: infrastructure" -Encoding UTF8 | Select-Object -Last 3
+sbmig fleet status out\fleet --attention
+sbmig clean --fleet out\fleet --older-than 7 --keep-failed --dry-run
+```
 
 ## 3.7 Library advisories
 `knowledge/libraries/advisories.yml` lists libraries that still compile after the migration but are EOL or no longer
@@ -330,6 +454,11 @@ sbmig inventory path/to/webapps.zip  --out out/inventory/<name> --config config/
 | `loop.blocked_policy.<reason>` | 0–1 | LLM attempts allowed before a cluster of that reason is blocked and reported |
 | `loop.max_llm_attempts_per_cluster` | 2 | after that the cluster is blocked (`repeated_failure`) |
 | `loop.verify_extra_llm_attempts` | 2 | final verify loop only: clusters blocked as `repeated_failure` / `oscillation` are released and get this many more LLM attempts (escalation model); 0 = never release |
+| `build.require_java_major` | 21 | round 10 preflight: abort before any build when `mvn -v` reports another Java major (`jdk-not-21`, exit 3); 0 = no check |
+| `build.retry_negative_cache` | true | round 10: a build that failed on Maven's negative cache ("… was cached in the local repository …") runs once more with `-U` (once per artifact per run; log `maven: negative cache hit for <g:a:v> → retrying once with -U`, `NNN-build-<label>-U.log`) |
+| `loop.structural_regression_kinds` | pom_invalid, parent_resolution, plugin_resolution, dependency_resolution | appearing after a pom edit ⇒ revert regardless of counts (round 10 added `dependency_resolution`: a made-up dependency masked every compile error) |
+| `kb.redact_file` / `kb.lock_timeout_seconds` | `knowledge/kb/redact.yml` / 300 | round 10: company secret-masking patterns; cross-process KB lock |
+| `fleet.preflight`, `fleet.infra_failure_limit`, `fleet.infra_retry_minutes`, `fleet.infra_max_waits`, `fleet.cleanup`, `fleet.min_free_gb` | true, 3, 15, 4, build-output, 5 | round 10 fleet guard (§3.5) |
 | `advisories.*` | see §3.7 | library advisories: policies, company files, carried-over listing; never affect the exit code |
 
 ## 5. Safety notes

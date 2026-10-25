@@ -238,3 +238,136 @@ def test_heartbeat_reaches_the_per_run_log_file(tmp_path):
                 h.close()
     assert "llm call provider=company role=fix" in text          # the call-start line (run thread)
     assert "llm call still in flight" in text                      # the heartbeat (helper thread, inherited context)
+
+
+# ---------------------------------------------------------------- round 10: causes, finish_reason=length, probe
+def _winerror_10061() -> requests.ConnectionError:
+    """The shape requests raises on a Korean Windows PC when nothing listens on the gateway port (urllib3 1.x text)."""
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+
+    inner = NewConnectionError("<urllib3.connection.HTTPConnection object at 0x000001F2A3B4C5D0>",
+                               "Failed to establish a new connection: [WinError 10061] 대상 컴퓨터에서 연결을 "
+                               "거부했으므로 연결하지 못했습니다")
+    mre = MaxRetryError(None, "/v1/chat", inner)
+    return requests.ConnectionError(mre)
+
+
+def test_transport_cause_names_the_real_reason():
+    from sbmig.fix.company import transport_cause
+
+    c = transport_cause(_winerror_10061())
+    assert c == "ConnectionError: Failed to establish a new connection: [WinError 10061] ?"
+    assert "object at 0x" not in c and "HTTPConnectionPool" not in c
+    # a real refused connection (nothing listens on port 1)
+    try:
+        requests.post("http://127.0.0.1:1/chat", json={}, timeout=3)
+    except requests.RequestException as e:
+        real = transport_cause(e)
+    assert real.startswith("ConnectionError: ") and ("[Errno" in real or "[WinError" in real), real
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+    from urllib3.exceptions import ProxyError as U3ProxyError
+    from urllib3.exceptions import SSLError as U3SSLError
+    proxy = requests.exceptions.ProxyError(MaxRetryError(None, "http://gw/chat", U3ProxyError(
+        "Unable to connect to proxy", NewConnectionError(None, "Failed to establish a new connection: [Errno 111] "
+                                                               "Connection refused"))))
+    assert transport_cause(proxy) == "ProxyError: Failed to establish a new connection: [Errno 111] Connection refused"
+    import ssl
+    cert = requests.exceptions.SSLError(MaxRetryError(None, "/chat", U3SSLError(ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate "
+           "(_ssl.c:1006)"))))
+    assert transport_cause(cert).startswith("SSLError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    timeout = requests.exceptions.ReadTimeout("HTTPConnectionPool(host='gw', port=80): Read timed out. (read "
+                                              "timeout=180.0)")
+    assert transport_cause(timeout) == "ReadTimeout: Read timed out. (read timeout=180.0)"
+
+
+def test_transport_failures_log_and_raise_the_cause(caplog):
+    """WinError 10061 used to be lost: the retry line said only the class, the give-up line was cut at 300 chars."""
+    import logging as _logging
+
+    post = FakePost(_winerror_10061())
+    with caplog.at_level(_logging.INFO, logger="sbmig.fix.client"), pytest.raises(LLMError) as ei:
+        client(post, max_retries=1).complete(MSGS)
+    text = str(ei.value)
+    assert "status=None" in text and "cause=ConnectionError: " in text and "[WinError 10061]" in text
+    assert ei.value.status is None and len(post.calls) == 2
+    log_text = caplog.text
+    assert "transport error (attempt 1/2): ConnectionError cause=ConnectionError: " in log_text
+    assert "llm call retrying in 1s (attempt 1/2 failed: status=None cause=ConnectionError: " in log_text
+    give_up = next(r.getMessage() for r in caplog.records if "giving up" in r.getMessage())
+    assert "[WinError 10061]" in give_up and give_up.isascii()
+    from sbmig.loop.fixloop import is_llm_transport_error
+    assert is_llm_transport_error(f"llm-error: {ei.value}") is True          # still an outage for the fix loop
+
+
+def test_empty_answer_with_finish_reason_length_is_a_request_rejection(caplog):
+    """A reasoning model that used the gateway's max_tokens answers HTTP 200, finish_reason=length, empty content:
+    that is the request's size, not the response shape (no 'set llm.response_path') and not an outage."""
+    body = {"choices": [{"index": 0, "finish_reason": "length", "message": {"role": "assistant", "content": ""}}],
+            "usage": {"prompt_tokens": 90000, "completion_tokens": 4096}}
+    post = FakePost(FakeResponse(200, body))
+    with pytest.raises(LLMError) as ei:
+        client(post).complete(MSGS)
+    text = str(ei.value)
+    assert "finish_reason=length" in text and "max_tokens" in text and "response_path" not in text
+    assert "output tokens 4096" in text and len(post.calls) == 1                  # not retried
+    from sbmig.loop.fixloop import is_llm_transport_error
+    assert is_llm_transport_error(f"llm-error: {ei.value}") is False
+    none_body = {"choices": [{"finish_reason": "length", "message": {"role": "assistant", "content": None}}]}
+    with pytest.raises(LLMError, match="finish_reason=length"):
+        client(FakePost(FakeResponse(200, none_body))).complete(MSGS)
+    # a cut answer that has text is returned (the protocol parser decides), with a warning in the log
+    cut = {"choices": [{"finish_reason": "length", "message": {"content": "<analysis>partial"}}]}
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING, logger="sbmig.fix.client"):
+        assert client(FakePost(FakeResponse(200, cut))).complete(MSGS).content == "<analysis>partial"
+    assert "finish_reason=length" in caplog.text
+
+
+def _company_cfg(monkeypatch, tmp_path, **llm):
+    monkeypatch.setenv("SBMIG_ENV_FILE", str(tmp_path / "none.env"))
+    monkeypatch.setenv("LLM_BASE_URL", "http://gw.local/chat")
+    monkeypatch.setenv("LLM_API_KEY", "sk-secret")
+    monkeypatch.setenv("LLM_MODEL", "gpt-6-luna")
+    monkeypatch.delenv("LLM_RECORD_DIR", raising=False)
+    monkeypatch.delenv("LLM_RESPONSE_PATH", raising=False)
+    return load_config(REPO / "config" / "artifacts.example.yml", overrides={"llm": llm} if llm else None)
+
+
+def test_probe_llm_one_call_and_short_lines(monkeypatch, tmp_path):
+    """The probe shared by `sbmig llm-probe` and the fleet preflight: ONE post (no retries), a retypeable line."""
+    from sbmig.fix.company import probe_llm
+
+    cfg = _company_cfg(monkeypatch, tmp_path)
+    post = FakePost(FakeResponse(200, {"choices": [{"message": {"content": "pong"}, "finish_reason": "stop"}]}))
+    monkeypatch.setattr(requests, "post", post)
+    seen = []
+    res = probe_llm(cfg, on_request=seen.append)
+    assert res.ok and res.reply == "pong" and res.status == 200 and len(post.calls) == 1
+    assert seen and seen[0]["model"] == "gpt-6-luna" and post.calls[0]["json"] == seen[0]
+    assert res.line().startswith("LLM-PROBE ok provider=company model=gpt-6-luna status=200 latency=")
+    assert "reply='pong'" in res.line() and res.line().isascii()
+
+    monkeypatch.setattr(requests, "post", FakePost(_winerror_10061(), FakeResponse(200, {})))
+    res = probe_llm(cfg)
+    assert not res.ok and res.kind == "transport" and res.transient and "[WinError 10061]" in res.problem
+    assert res.line().startswith("LLM-PROBE FAIL transport provider=company") and res.line().isascii()
+
+    monkeypatch.setattr(requests, "post", FakePost(FakeResponse(503, "busy")))
+    res = probe_llm(cfg)
+    assert res.kind == "http" and res.status == 503 and res.transient
+    monkeypatch.setattr(requests, "post", FakePost(FakeResponse(400, "unsupported model")))
+    res = probe_llm(cfg)
+    assert res.kind == "http" and not res.transient                             # a config error: do not wait for it
+    monkeypatch.setattr(requests, "post", FakePost(FakeResponse(200, {
+        "choices": [{"finish_reason": "length", "message": {"content": ""}}]})))
+    res = probe_llm(cfg)
+    assert res.kind == "rejected" and "finish_reason=length" in res.problem and "max_tokens" in " ".join(res.hints)
+    monkeypatch.setattr(requests, "post", FakePost(FakeResponse(200, {"weird": 1})))
+    res = probe_llm(cfg)
+    assert res.kind == "reply" and "LLM_RESPONSE_PATH" in " ".join(res.hints)
+    monkeypatch.delenv("LLM_API_KEY")
+    res = probe_llm(load_config(REPO / "config" / "artifacts.example.yml"))
+    assert res.kind == "config" and "LLM_API_KEY" in res.problem and not res.transient
+    fake = probe_llm(load_config(REPO / "config" / "artifacts.example.yml", overrides={"llm": {"provider": "fake"}}))
+    assert fake.ok and fake.client_name == "FakeLLMClient"

@@ -207,13 +207,40 @@ advisories:
     docs:
       - https://commons.apache.org/proper/commons-lang/article3_0.html
 
+  # round 10: Spring cases run UpgradeApacheHttpClient_5 anyway (UpgradeSpringFramework_6_0, reached by the Framework 7
+  # recipe and the Boot umbrella; rewrite-apache 2.30.0) → policy recipe, the Handover reports what was migrated.
+  # Plain Java / servlet projects keep the 4.5.x client (it still compiles, carried-over version) → httpclient4-direct.
   - id: httpclient4
     library: httpclient4
+    applies_to: [spring_legacy, spring_boot, msa]
     status: superseded
     title: Apache HttpClient 4.x is superseded by HttpClient 5 (Boot 4 RestTemplate/RestClient use 5)
     summary: >-
       Spring Framework 6+/7 HttpComponentsClientHttpRequestFactory only supports HttpClient 5; 4.5.x keeps working
-      only for direct use and is no longer managed by the Boot BOM.
+      only for direct use and is no longer managed by the Boot BOM. The Spring Framework 6.0 recipe chain runs
+      UpgradeApacheHttpClient_5 (dependencies, org.apache.http → org.apache.hc.client5 / hc.core5 class mapping,
+      deprecated methods, TimeUnit timeouts); what it cannot map is ported in the build-fix loop.
+    replacement: org.apache.httpcomponents.client5:httpclient5
+    replacement_version: managed by the Boot 4 BOM
+    policy: recipe
+    recipes:
+      - org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5
+    followup: >-
+      Re-test the migrated HTTP client code: timeouts (TimeUnit / Timeout), connection pooling
+      (PoolingHttpClientConnectionManagerBuilder), TLS / SSLContext setup and retry handling; drop any explicit
+      httpclient 4.x version left in the poms.
+    docs:
+      - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/
+      - https://docs.openrewrite.org/recipes/apache/httpclient5/upgradeapachehttpclient_5
+
+  - id: httpclient4-direct
+    library: httpclient4
+    applies_to: [pure_java, servlet_tomcat, unknown]
+    status: superseded
+    title: Apache HttpClient 4.x is superseded by HttpClient 5 (no Spring recipe chain migrates it here)
+    summary: >-
+      4.5.x keeps working for direct use but is no longer managed by the Boot BOM (the as-is version is carried
+      over). Non-Spring projects get no automatic HttpClient 5 migration.
     replacement: org.apache.httpcomponents.client5:httpclient5
     replacement_version: managed by the Boot 4 BOM
     policy: guide
@@ -222,6 +249,28 @@ advisories:
       httpclient 4.x version and re-test timeouts, connection pooling and TLS settings.
     docs:
       - https://hc.apache.org/httpcomponents-client-5.4.x/migration-guide/
+
+  # ------------------------------------------------------------------ servlet containers (round 10)
+  - id: undertow
+    library: undertow
+    status: incompatible
+    title: Undertow is not supported by Spring Boot 4 (spring-boot-starter-undertow is gone)
+    summary: >-
+      spring-boot-starter-undertow ends at 4.0.0-M1 on Maven Central and the spring-boot-dependencies 4.1.0 BOM manages
+      neither the starter nor io.undertow. The handler dependency-relocation swaps the starter for
+      spring-boot-starter-tomcat (Boot's default container) when the build names it; code against io.undertow.* or
+      Boot's Undertow customizers (UndertowServletWebServerFactory, UndertowBuilderCustomizer …) no longer compiles.
+    replacement: org.springframework.boot:spring-boot-starter-tomcat (or spring-boot-starter-jetty)
+    replacement_version: managed by the Boot 4 BOM
+    policy: guide
+    followup: >-
+      Remove the Undertow customizer beans, move server.undertow.* properties to server.tomcat.* (threads, max
+      connections, access log) and re-test HTTP/2, WebSocket and buffer settings under Tomcat; exclusions of
+      spring-boot-starter-tomcat on the web starter can go.
+    docs:
+      - https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide
+      - https://repo1.maven.org/maven2/org/springframework/boot/spring-boot-starter-undertow/
+    notes: knowledge/notes/boot3-to-4.md
 
   # ------------------------------------------------------------------ JDK-internal / removed JDK APIs (pre-Java-8 code)
   - id: jdk-removed-apis
@@ -232,13 +281,16 @@ advisories:
       The as-is code imports JDK-internal packages or Java EE modules that JDK 11 removed (JEP 320) or JDK 17
       encapsulated (JEP 403). javac 21 with --release 21 does not see them. UpgradeToJava21 (Java8toJava11) adds the
       JAXB / JAX-WS / common-annotations dependencies and rewrites what it can resolve (UseJavaUtilBase64,
-      RenameUnderscoreIdentifier, Thread.stop/destroy); code whose types no longer resolve on JDK 21 (typically
-      sun.misc.BASE64Encoder/Decoder) is ported by the LLM in the build-fix loop with this guidance.
+      RenameUnderscoreIdentifier, Thread.stop/destroy); code whose types no longer resolve on JDK 21 is ported by the
+      LLM in the build-fix loop with this guidance — except sun.misc.BASE64Encoder / BASE64Decoder and
+      com.sun.org.apache.xerces.internal.impl.dv.util.Base64, which the handler jdk-base64-shim (round 10) points at
+      generated drop-in classes (sbmig.compat.*, same output as the JDK 8 originals, call sites unchanged).
     replacement: java.util.Base64 / javax.imageio / java.security, jakarta.* API jars (JDK replacements)
     replacement_version: JDK 21 (jakarta.xml.bind-api, jakarta.annotation-api, jakarta.activation-api are Boot-managed)
     policy: guide
     followup: >-
-      Review the ported JDK API calls: sun.misc.BASE64Encoder/Decoder → java.util.Base64 (MIME line breaks:
+      Review the ported JDK API calls: sun.misc.BASE64Encoder/Decoder (now the generated sbmig.compat shims, which
+      keep the 76-character line breaks) → java.util.Base64 when convenient (MIME line breaks:
       Base64.getMimeEncoder()); sun.misc.Unsafe still compiles (jdk.unsupported) — keep it, but plan VarHandle / FFM;
       JAXB needs jakarta.xml.bind:jakarta.xml.bind-api plus runtime org.glassfish.jaxb:jaxb-runtime (Boot 4 manages
       both); javax.annotation.* → jakarta.annotation:jakarta.annotation-api; javax.activation →
@@ -975,12 +1027,15 @@ advisories:
       - https://solr.apache.org/guide/solr/latest/deployment-guide/solrj.html
 
   # ------------------------------------------------------------------ JSON / XML / SOAP / HTTP / security
+  # round 10: Spring cases run CodehausToFasterXML anyway (UpgradeSpringFramework_7_0 → UpgradeJackson_2_3, also in the
+  # Boot umbrella; rewrite-jackson 1.28.4) → policy recipe; plain Java / servlet projects → jackson1-direct (guide)
   - id: jackson1
     library: jackson1
+    applies_to: [spring_legacy, spring_boot, msa]
     status: eol
     title: Jackson 1.x (org.codehaus.jackson) is end of life
     summary: >-
-      Last release 1.9.13 (2013). UpgradeSpringBoot_4_0 already runs CodehausToFasterXML, but it maps only 11 types
+      Last release 1.9.13 (2013). The Framework 7 / Boot 4 chains run CodehausToFasterXML, but it maps only 11 types
       (ObjectMapper, JsonSerializer, map.annotate.JsonSerialize(+Inclusion), AnnotationIntrospector(+Pair),
       Jaxb / Jackson / NopAnnotationIntrospector, Serialization / DeserializationConfig$Feature) and 3 packages
       (annotate, map.ext, map.ser). org.codehaus.jackson.JsonNode / JsonParser / JsonGenerator / JsonFactory,
@@ -988,10 +1043,31 @@ advisories:
       "package org.codehaus.jackson… does not exist" in the fix loop.
     replacement: tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or com.fasterxml.jackson.core:jackson-databind
     replacement_version: Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)
-    policy: guide
+    policy: recipe
+    recipes:
+      - org.openrewrite.java.jackson.CodehausToFasterXML
     followup: >-
       Review the remaining org.codehaus.jackson.* code the fix loop ported (JsonNode, TypeReference, custom
       (de)serializers) and @JsonSerialize(include=...) behaviour.
+    docs:
+      - https://docs.openrewrite.org/recipes/java/jackson/codehaustofasterxml
+      - https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-mapper-asl/
+    notes: knowledge/notes/era-libraries.md
+
+  - id: jackson1-direct
+    library: jackson1
+    applies_to: [pure_java, servlet_tomcat, unknown]
+    status: eol
+    title: Jackson 1.x (org.codehaus.jackson) is end of life (no Spring recipe chain migrates it here)
+    summary: >-
+      Last release 1.9.13 (2013); it still compiles (jackson-mapper-asl / jackson-core-asl stay on their as-is
+      version), but nothing migrates non-Spring projects to Jackson 2 / 3 automatically.
+    replacement: tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or com.fasterxml.jackson.core:jackson-databind
+    replacement_version: Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)
+    policy: guide
+    followup: >-
+      Port org.codehaus.jackson.* to com.fasterxml.jackson.* (ObjectMapper, JsonNode, TypeReference, custom
+      (de)serializers; @JsonSerialize(include=...) → @JsonInclude) and drop jackson-mapper-asl / jackson-core-asl.
     docs:
       - https://docs.openrewrite.org/recipes/java/jackson/codehaustofasterxml
       - https://repo1.maven.org/maven2/org/codehaus/jackson/jackson-mapper-asl/

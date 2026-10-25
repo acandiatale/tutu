@@ -1,5 +1,10 @@
 """Fleet summaries, rewritten after every project: ``fleet/summary.md``, ``summary.csv``,
-``summary.json`` (= state) and ``fleet/learning.md`` (ledger summary of this fleet's runs + KB stats)."""
+``summary.json`` (= state) and ``fleet/learning.md`` (ledger summary of this fleet's runs + KB stats).
+
+Round 10: ``summary.csv`` is UTF-8 with BOM (Excel opens Korean paths correctly) and carries the ``attention`` codes
+(:mod:`sbmig.report.result_line`: why a human has to look, ``;``-separated, most important first) and the ``input``
+path; ``summary.md`` gets a "Needs attention" section grouped by the first code. Each file is written on its own:
+a ``summary.csv`` locked by Excel is skipped with a warning and the others are still written."""
 
 from __future__ import annotations
 
@@ -10,7 +15,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import FleetState
+from sbmig.core.models import FleetProjectResult, FleetState
+from sbmig.report.result_line import result_attention
 
 log = logging.getLogger("sbmig.fleet")
 
@@ -33,7 +39,11 @@ COLUMNS = [
     "attempt",
     "run_id",
     "error",
+    "attention",
+    "input",
 ]
+TABLE_COLUMNS = COLUMNS[:15] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
+ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`: projects printed per code
 
 
 def rows(state: FleetState) -> list[dict[str, Any]]:
@@ -59,9 +69,45 @@ def rows(state: FleetState) -> list[dict[str, Any]]:
                 "attempt": p.attempt,
                 "run_id": p.run_id or "",
                 "error": (p.error or "")[:200],
+                "attention": ";".join(result_attention(p)),
+                "input": p.input,
             }
         )
     return out
+
+
+def attention_groups(state: FleetState) -> dict[str, list[FleetProjectResult]]:
+    """First attention code → projects (in state order); the code order is that of the first occurrence after
+    sorting by importance (infra first, tests-not-compiled last)."""
+    from sbmig.report.result_line import ATTENTION_FLAGS
+
+    def rank(code: str) -> int:
+        for i, prefix in enumerate(("infra:", "skipped", "crash", "aborted", "blocked:", "unresolved:")):
+            if code.startswith(prefix):
+                return i
+        return 6 + (ATTENTION_FLAGS.index(code) if code in ATTENTION_FLAGS else len(ATTENTION_FLAGS))
+
+    groups: dict[str, list[FleetProjectResult]] = {}
+    for p in state.projects:
+        codes = result_attention(p)
+        if codes:
+            key = codes[0] if not codes[0].startswith("unresolved:") else "unresolved"
+            groups.setdefault(key, []).append(p)
+    return dict(sorted(groups.items(), key=lambda kv: (rank(kv[0]), kv[0])))
+
+
+def render_attention(state: FleetState, limit: int = ATTENTION_GROUP_LIMIT) -> list[str]:
+    """`fleet status --attention`: only the projects that need a human, grouped by their first attention code."""
+    groups = attention_groups(state)
+    n = sum(len(v) for v in groups.values())
+    lines = [f"fleet {state.fleet_id}: {n} of {len(state.projects)} project(s) need attention"]
+    for code, ps in groups.items():
+        lines.append(f"{code} ({len(ps)})")
+        for p in ps[:limit]:
+            lines.append(f"  {p.name}  {p.status}  {p.run_id or '-'}  {';'.join(result_attention(p))}  {p.input}")
+        if len(ps) > limit:
+            lines.append(f"  ... {len(ps) - limit} more (summary.csv, column attention)")
+    return lines
 
 
 def totals(state: FleetState) -> dict[str, Any]:
@@ -94,7 +140,7 @@ def _cell(v: Any) -> str:
 
 def render_table(state: FleetState) -> str:
     rs = rows(state)
-    cols = COLUMNS[:15]
+    cols = TABLE_COLUMNS
     lines = ["| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
     for r in rs:
         lines.append("| " + " | ".join(_cell(r[c]) for c in cols) + " |")
@@ -123,6 +169,14 @@ def render_summary_md(state: FleetState) -> str:
     elif not state.finished_at:
         head.append(f"* progress: {t['done']} of {t['projects']} done")
     head += ["", render_table(state), ""]
+    groups = attention_groups(state)
+    if groups:
+        head += ["## Needs attention", "",
+                 "Grouped by the first attention code (`summary.csv` column `attention` has all of them).", ""]
+        for code, ps in groups.items():
+            names = ", ".join(p.name for p in ps[:20]) + (f" … (+{len(ps) - 20})" if len(ps) > 20 else "")
+            head.append(f"* `{code}` ({len(ps)}): {_cell(names)}")
+        head.append("")
     errs = [p for p in state.projects if p.error]
     if errs:
         head += ["## Errors", ""] + [f"* **{p.name}** ({p.status}): {p.error}" for p in errs] + [""]
@@ -215,6 +269,7 @@ def render_learning(state: FleetState, kb: Any = None) -> str:
 def write_summaries(
     state: Optional[FleetState], fleet_dir: Path, cfg: Optional[Config] = None, kb: Any = None
 ) -> dict[str, Path]:
+    """Write every summary file on its own; returns the ones written (a file Excel holds open is skipped)."""
     from sbmig.kb.store import atomic_write
 
     if state is None:
@@ -222,15 +277,23 @@ def write_summaries(
     formats = list(cfg.fleet.summary_formats) if cfg is not None else ["md", "csv", "json"]
     out: dict[str, Path] = {}
     fleet_dir = Path(fleet_dir)
+    jobs: list[tuple[str, str, Any]] = []
     if "md" in formats:
-        out["md"] = fleet_dir / "summary.md"
-        atomic_write(out["md"], render_summary_md(state))
+        jobs.append(("md", "summary.md", lambda: render_summary_md(state)))
     if "csv" in formats:
-        out["csv"] = fleet_dir / "summary.csv"
-        atomic_write(out["csv"], render_csv(state))
+        jobs.append(("csv", "summary.csv", lambda: "\ufeff" + render_csv(state)))     # UTF-8 BOM for Excel
     if "json" in formats:
-        out["json"] = fleet_dir / "summary.json"
-        atomic_write(out["json"], state.model_dump_json(indent=2) + "\n")
-    out["learning"] = fleet_dir / "learning.md"
-    atomic_write(out["learning"], render_learning(state, kb))
+        jobs.append(("json", "summary.json", lambda: state.model_dump_json(indent=2) + "\n"))
+    jobs.append(("learning", "learning.md", lambda: render_learning(state, kb)))
+    for key, name, render in jobs:
+        path = fleet_dir / name
+        try:
+            atomic_write(path, render())
+        except PermissionError as e:
+            log.warning("fleet: %s not written (open in Excel or another program?): %s", path, e)
+            continue
+        except Exception as e:  # one summary must never cost the others
+            log.warning("fleet: %s not written: %s: %s", path, type(e).__name__, e)
+            continue
+        out[key] = path
     return out

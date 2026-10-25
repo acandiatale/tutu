@@ -15,6 +15,13 @@ round 9) and only a second such streak marks the LLM unavailable for the run.
 Merge-conflict hints (round 9): `merge_conflicts` (set by the orchestrator after the restructure step) — a cluster whose
 file is a first-wins merged file, or whose errors name its class, gets a note plus the dropped copy as read-only
 reference text in the fix prompt (`FixContext.reference_notes` / `reference_files`).
+
+Scoring (round 10, `_score`): "not visible" is not "resolved". An attempt is `improved` only when every targeted error
+is gone AND the build reached the stage that reports them; a timed-out build, a failed build without parsed errors,
+or a build that stopped earlier (dependency resolution, …) makes it `inconclusive` (no KB credit) — unless the
+attempt edited a pom and the earlier-stage errors are new, which is a structural regression (reverted). `partial` =
+some targeted errors gone, the rest remain, nothing new in the touched files. New errors in a touched file are
+counted by (file, signature) occurrences, not by L1 signature alone (the same L1 in another file hid them).
 """
 from __future__ import annotations
 
@@ -23,6 +30,8 @@ import logging
 import re
 import threading
 import time
+from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
@@ -34,23 +43,41 @@ from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, Bu
                                TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
-from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, error_key, sanitize_errors
+from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, sanitize_errors
 from .budget import LoopBudget
 from .components import profile_summary
+from .error_tracker import _SYNTHETIC_PREFIXES, STAGE   # the runner's stand-in errors: one definition
 
 log = logging.getLogger("sbmig.loop")
 
 TEST_COMPILING_GOALS = ("test-compile", "package", "verify", "install", "deploy", "test")
 TEST_RUNNING_GOALS = ("test", "package", "verify", "install", "deploy")
 RESOLUTION_PREFIXES = ("parent_resolution:", "pom_invalid:", "dependency_resolution:", "plugin_resolution:")
-# fixer analysis of a transport/config failure (vs. a protocol-garbage response, which is the model's fault)
-_LLM_TRANSPORT_RE = re.compile(r"(?i)request failed|status=|\bhttp\b|timed? ?out|timeout|connect|connection|refused|"
-                               r"unreachable|ssl|certificate|api[_ ]?key|unauthori[sz]ed|forbidden|\b40[13]\b|\b5\d\d\b|"
-                               r"llmconfigerror|not set|config|unknown llm\.provider|missing component|cannot be imported|"
-                               r"invalid json|cannot find the reply text|response_path|not found in the response")
-# the gateway rejected *this request* for its content (too long, malformed): the prompt's fault, not the wire's —
-# such a failure must not count towards "LLM unavailable for the run"
-_LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b|content[ _-]?filter")   # incl. Azure-style content filter
+# fixer analysis of a transport/config failure (vs. a protocol-garbage response, which is the model's fault). Round 10:
+# only explicit markers — the HTTP status the client reports (`status=<code>`: auth, endpoint 404, timeouts, rate
+# limit after the retries, 5xx; `status=None` = no HTTP answer at all), the transport exception (`cause=<Class>` or
+# the class name itself) and the known config phrases. The old list matched `config`, bare 5xx-looking numbers
+# (`line 512`) and paths, so a Windows `PermissionError [WinError 32] … config …` marked the LLM unavailable.
+_LLM_TRANSPORT_RE = re.compile(
+    r"(?i)\bstatus=(?:none|40[134]|408|429|5\d\d)\b|\bcause=[A-Za-z_][\w.]*|response_path|invalid json|"
+    r"cannot find the reply text|not found in the response|api[_ ]?key\b[^.]*\bnot set|needs an api key|"
+    r"\bllm[._][\w.]*\s+is not set|unknown llm\.provider|cannot be imported")
+_LLM_TRANSPORT_CLASS_RE = re.compile(      # case-sensitive: exception class names, not the English words
+    r"\b(?:ConnectionError|ConnectTimeout|ConnectTimeoutError|ConnectError|ReadTimeout|ReadTimeoutError|Timeout|"
+    r"TimeoutError|TimeoutException|WriteTimeout|PoolTimeout|ProxyError|SSLError|TransportError|RemoteProtocolError|"
+    r"RemoteDisconnected|ChunkedEncodingError|ConnectionResetError|ConnectionRefusedError|ConnectionAbortedError|"
+    r"NewConnectionError|MaxRetryError|NameResolutionError|LLMHardDeadline|LLMConfigError|MissingComponentError|"
+    r"PluginLoadError)\b")
+# the gateway rejected *this request* for its content (too long, malformed, cut by the token limit): the prompt's
+# fault, not the wire's — such a failure must not count towards "LLM unavailable for the run"
+_LLM_REQUEST_REJECTED_RE = re.compile(r"status=4(?:00|13|22)\b|content[ _-]?filter|"
+                                      r"finish_reason=(?:length|max_tokens)\b")
+# a 400 that says the prompt is too big: different prompts may well get the same text — never a configuration error
+_LLM_PROMPT_TOO_BIG_RE = re.compile(r"(?i)context[ _-]?length|too (?:long|large|many tokens)|"
+                                    r"max(?:imum)?[ _-]?(?:context|tokens?|input)|token limit|payload too large|"
+                                    r"finish_reason=(?:length|max_tokens)")
+_LLM_400_BODY_RE = re.compile(r"status=400\)?:?\s*(?P<body>.*)", re.S)
+LLM_CONFIG_ERROR_PROMPTS = 2         # the same HTTP 400 body for this many different prompts → configuration error
 _BLOCKED_RAT_RE = re.compile(r"blocked:\s*(?P<r>[a-z_]+)")
 REFERENCE_MAX_CHARS = 12_000         # one dropped merge copy in the fix prompt (round 9)
 WATCHDOG_S = 30.0                    # the fix loop's watchdog wakes up this often …
@@ -111,6 +138,7 @@ def _describe_decision(d: TriageDecision, c: ErrorCluster, history: list[FixAtte
 
 
 def is_llm_transport_error(analysis: str) -> bool:
+    """`llm-error: …` of a transport / configuration failure (counts towards the cool-down / "LLM unavailable")."""
     a = (analysis or "").strip()
     if not a.lower().startswith("llm-error:"):
         return False
@@ -118,7 +146,19 @@ def is_llm_transport_error(analysis: str) -> bool:
         return False
     if _LLM_REQUEST_REJECTED_RE.search(a):
         return False
-    return bool(_LLM_TRANSPORT_RE.search(a))
+    return bool(_LLM_TRANSPORT_RE.search(a) or _LLM_TRANSPORT_CLASS_RE.search(a))
+
+
+def llm_400_body(analysis: str) -> Optional[str]:
+    """The short body of an HTTP 400 `llm-error` (whitespace collapsed, ≤ 200 chars), or None — None as well for a
+    400 that says the prompt is too big (two big prompts legitimately get the same text)."""
+    a = (analysis or "").strip()
+    if not a.lower().startswith("llm-error:") or "status=400" not in a or _LLM_PROMPT_TOO_BIG_RE.search(a):
+        return None
+    m = _LLM_400_BODY_RE.search(a)
+    body = " ".join((m.group("body") if m else "").split())
+    body = body.split(" [sbmig] ", 1)[0]
+    return body[:200] or "(empty body)"
 
 
 def build_target_args(profile: Optional[ProjectProfile], target: Optional[str]) -> tuple[Optional[str], list[str]]:
@@ -179,8 +219,16 @@ def _label(c: ErrorCluster) -> str:
 
 
 def _related(cluster: ErrorCluster, attempts: list[FixAttempt]) -> list[FixAttempt]:
+    """Same cluster id or any shared signature (other files too): hint material, never a limit (round 10)."""
     sigs = set(cluster.signatures)
     return [a for a in attempts if a.cluster_id == cluster.id or (sigs and sigs & set(a.cluster_signatures))]
+
+
+def _same_cluster(cluster: ErrorCluster, attempts: list[FixAttempt],
+                  canon: Optional[Callable[[Optional[str]], str]] = None) -> list[FixAttempt]:
+    """The attempts made on THIS cluster (same id, or same — possibly moved — file with an overlapping signature)."""
+    from sbmig.triage.decide import same_cluster_attempts
+    return same_cluster_attempts(cluster, attempts, canon)
 
 
 class BuildFixLoop:
@@ -208,6 +256,10 @@ class BuildFixLoop:
         self.escalated: dict[str, TriageDecision] = {}
         self.test_compile_skipped = False
         self.tests_skipped = False               # round 8: only runtime test failures left → packaged with -DskipTests
+        # round 10: per build target ("" = the whole project) — one MSA service's fallback must not change how the
+        # other services' final builds run (`skips_for`)
+        self.test_compile_skipped_targets: set[str] = set()
+        self.tests_skipped_targets: set[str] = set()
         self._profile_summary: Optional[str] = None
         # run-wide blocked state (shared by every phase of the run through the orchestrator)
         self.blocked = blocked if blocked is not None else BlockedRegistry()
@@ -216,10 +268,14 @@ class BuildFixLoop:
         # library advisory findings of the run (round 6): matched per cluster → FixContext.advisory_hints
         self.advisories: list[AdvisoryFinding] = list(advisories or [])
         self.llm_unavailable: Optional[str] = None
+        self.llm_config_error: Optional[str] = None   # round 10: the same HTTP 400 for different prompts (the short body)
+        self._http400: dict[str, set[str]] = {}  # short 400 body → prompt hashes (cluster ids when a fixer sets none)
         self.aborted: Optional[str] = None       # set when the run must stop (configured parent not resolvable)
         self._llm_streak: list[tuple[ErrorCluster, str]] = []
         self._milestone = "idle"                 # last point the loop passed (watchdog, round 9c)
         self._milestone_at = time.monotonic()
+        self._busy: Optional[str] = None         # a Maven build / OpenRewrite run of the loop in progress (watchdog)
+        self._quiet_from = 0.0                   # the watchdog last saw such a call (or an LLM call) in progress
         self._streak_attempts: list[str] = []    # attempt ids of the current transport-failure streak
         self.llm_cooldown_used = False           # round 9 (L5): one cool-down per run
         self._cooled_attempts: set[str] = set()  # attempts of the streak that triggered the cool-down: not counted
@@ -244,17 +300,53 @@ class BuildFixLoop:
         self._milestone, self._milestone_at = what, time.monotonic()
         log.debug("[%s] → %s", self._cur_phase.value, what)
 
+    @contextmanager
+    def _busy_with(self, what: str):
+        """A call that logs its own heartbeat (Maven build, OpenRewrite run): the watchdog stays silent meanwhile, and
+        its quiet time starts again when the call returns."""
+        prev, self._busy = self._busy, what
+        try:
+            yield
+        finally:
+            self._busy = prev
+            self._quiet_from = time.monotonic()
+
+    def _activity(self) -> Optional[str]:
+        """What is running right now that heartbeats by itself (round 10, A12): a build / rewrite of this loop, an LLM
+        HTTP call (`sbmig.fix.client.llm_calls_in_flight`), a Maven child process (`sbmig.build.mvn.live_processes`,
+        e.g. the classpath attribution) — None when nothing is (the watchdog then speaks)."""
+        if self._busy:
+            return self._busy
+        try:
+            from sbmig.fix.client import llm_calls_in_flight
+            if llm_calls_in_flight():
+                return "LLM call"
+        except Exception:  # pragma: no cover - the fix package is ours; stay defensive
+            pass
+        try:
+            from sbmig.build.mvn import live_processes
+            if live_processes():
+                return "Maven child process"
+        except Exception:  # pragma: no cover
+            pass
+        return None
+
     def _start_watchdog(self, phase: Phase) -> threading.Event:
         """A daemon thread that says, every WATCHDOG_S once the loop was quiet for WATCHDOG_QUIET_S, where the loop is
         (last milestone) — a slow LLM / build keeps logging through its own heartbeat, so a quiet watchdog line
-        points at the code between those (hints, prompt packing, patch apply, git)."""
+        points at the code between those (hints, prompt packing, patch apply, git). Round 10: while such a call is in
+        progress (`_activity`) the watchdog neither warns nor dumps; the quiet time counts from its end."""
         stop = threading.Event()
         started = time.monotonic()
         dumped_for: set[float] = set()
 
         def beat() -> None:
             while not stop.wait(WATCHDOG_S):
-                quiet = time.monotonic() - self._milestone_at
+                now = time.monotonic()
+                if self._activity():
+                    self._quiet_from = now
+                    continue
+                quiet = now - max(self._milestone_at, self._quiet_from)
                 if quiet >= WATCHDOG_QUIET_S:
                     log.warning("[%s] fix loop quiet for %.0fs since '%s' (loop running %.0fs) — still working or "
                                 "stuck? a thread dump follows after %.0fs (also: GET /api/threads, kill -USR1 <pid>)",
@@ -304,7 +396,11 @@ class BuildFixLoop:
             pr.iterations = build_no
             reverted = self._score(pr, pending, build, prev_build)
             scored = [p.attempt for p in pending]
-            pending = []
+            # a revert rebuild shows the tree minus the reverted commits against the same "before" build: attempts the
+            # reverted round left inconclusive (a pom edit's new dependency error hid their errors) are scored again
+            pending = [p for p in pending if p.attempt.outcome == "inconclusive"] if reverted else []
+            for p in pending:
+                p.attempt.notes.append("scored again on the rebuild after the revert")
             # a reverted round's build shows a tree that no longer exists; a failed build without parsed errors (or a
             # timeout) says nothing about which errors are gone → void: only the scored attempts are annotated
             self._track("observe", phase, f"{phase.value}-{build_no}", build, scored,
@@ -476,10 +572,11 @@ class BuildFixLoop:
     def _register_blocked(self, phase: Phase, iteration: int, c: ErrorCluster, cand, rationale: str,
                           target: Optional[str] = None) -> list[BuildError]:
         """Record a BlockedItem for the errors `cand` covers; returns the cluster errors that are NOT blocked."""
-        covered = {error_key(e) for e in (cand.errors or c.errors)}
-        errs = [e for e in c.errors if error_key(e) in covered] or list(c.errors)
-        rest = [e for e in c.errors if error_key(e) not in covered]
-        attempts = len(_related(c, self.history))
+        key = self.blocked.key
+        covered = {key(e) for e in (cand.errors or c.errors)}
+        errs = [e for e in c.errors if key(e) in covered] or list(c.errors)
+        rest = [e for e in c.errors if key(e) not in covered]
+        attempts = len(_same_cluster(c, self.history, self.blocked.canonical_file))
         reason = cand.reason
         artifact: Optional[GAV] = None
         owner = cand.owner_class
@@ -498,7 +595,9 @@ class BuildFixLoop:
         item, created = self.blocked.block(c, reason, phase, errors=errs, iteration=iteration, attempts=attempts,
                                            required_type=required, found_type=found,
                                            owner_class=owner, artifact=artifact, notes=[rationale, *notes])
-        if created or not item.suggestion:
+        if getattr(cand, "suggestion", ""):          # round 10: a person's text (pinned `block` case action)
+            item.suggestion = cand.suggestion
+        elif created or not item.suggestion:
             extra = ""
             if reason == BlockReason.PLUGIN_INCOMPATIBLE:
                 extra = getattr(cand, "plugin", None) or ""
@@ -551,8 +650,8 @@ class BuildFixLoop:
             self._block_simple(phase, iteration, c, reason, why)
 
     def _block_oscillation(self, pr: PhaseResult, phase: Phase, iteration: int, clusters: list[ErrorCluster]) -> None:
-        phase_attempted = {a.cluster_id for a in pr.attempts} | {s for a in pr.attempts for s in a.cluster_signatures}
-        involved = [c for c in clusters if c.id in phase_attempted or set(c.signatures) & phase_attempted] or clusters
+        # round 10: the clusters this phase actually worked on — not every cluster that shares an L1 signature with one
+        involved = [c for c in clusters if _same_cluster(c, pr.attempts, self.blocked.canonical_file)] or clusters
         why = "fixes keep toggling between the same error sets (A↔B↔A) within loop.oscillation_window"
         pr.notes.append(f"build {iteration}: oscillation repeated → blocking {len(involved)} cluster(s)")
         self._block_remaining(pr, phase, iteration, involved, BlockReason.OSCILLATION, why)
@@ -581,6 +680,16 @@ class BuildFixLoop:
         self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
         return True
 
+    def skips_for(self, target: Optional[str]) -> tuple[bool, bool]:
+        """(test-compile skipped, tests skipped) by the L7 / L7b fallbacks for a build of `target` (round 10): a loop
+        on the whole project ("") applies to every target; a whole-project build (target None) inherits any
+        service's fallback (its reactor contains that service); a service build only its own."""
+        t = _target_key(target)
+        tc, ts = self.test_compile_skipped_targets, self.tests_skipped_targets
+        if not t:
+            return bool(tc), bool(ts)
+        return (t in tc or "" in tc), (t in ts or "" in ts)
+
     @staticmethod
     def test_compile_skipped_in(pr: PhaseResult) -> bool:
         return any("test-compile-skipped" in n for n in pr.notes)
@@ -597,14 +706,15 @@ class BuildFixLoop:
         kw: dict[str, Any] = {"module": module, "label": label, "skip_test_compile": skip_test_compile}
         if extra:
             kw["extra_args"] = extra
-        if skip_tests:
-            try:
-                res = self.build_runner.run(goal, **kw, skip_tests=True)
-            except TypeError:  # an older runner without the `skip_tests` option: pass -DskipTests as an argument
-                kw["extra_args"] = [*extra, "-DskipTests"]
+        with self._busy_with(f"mvn {goal} ({label})"):
+            if skip_tests:
+                try:
+                    res = self.build_runner.run(goal, **kw, skip_tests=True)
+                except TypeError:  # an older runner without the `skip_tests` option: pass -DskipTests as an argument
+                    kw["extra_args"] = [*extra, "-DskipTests"]
+                    res = self.build_runner.run(goal, **kw)
+            else:
                 res = self.build_runner.run(goal, **kw)
-        else:
-            res = self.build_runner.run(goal, **kw)
         self.ws.journal({"event": "build", "phase": phase.value, "iteration": iteration, "goal": goal,
                          "target": target, "extra_args": extra, "ok": res.ok, "exit_code": res.exit_code, "errors": res.error_count,
                          "duration_s": res.duration_s, "log": res.log_path, "skip_test_compile": skip_test_compile,
@@ -614,42 +724,79 @@ class BuildFixLoop:
     # ------------------------------------------------------------------ scoring
     def _score(self, pr: PhaseResult, pending: list[_Pending], build: BuildResult,
                prev: Optional[BuildResult]) -> bool:
-        """Score the previous round's attempts against `build`. Returns True when a revert changed the tree."""
+        """Score the previous round's attempts against `build`. Returns True when a revert changed the tree.
+
+        Outcomes: `build_ok`; `improved` = every targeted error gone AND the build reached the stage that reports them;
+        `partial` = some gone, the rest remain, nothing new in the touched files; `no_change`; `regressed` = new
+        errors in a touched file (by (file, signature) occurrences), the ×regression_ratio rule, or — after a pom
+        edit — a new structural error kind / new errors of an earlier stage that hide the targeted ones (reverted);
+        `inconclusive` = the build cannot tell (timed out, failed without parsed errors, stopped at an earlier stage
+        this attempt did not cause): no KB credit, scored again on a revert rebuild."""
         if not pending:
             return False
-        cur = {e.signature for e in build.errors}
-        # clusters are per file and L1 signatures carry no file: the same renamed method in two files is one
-        # signature, so "signature still present" alone scored a fixed file as no_change while the other file still
-        # failed (2026-10-23 e2e) — errors with a file are checked as (file, signature) pairs
-        cur_pairs = {(_norm_path(e.file), e.signature) for e in build.errors if e.file}
-        prev_sigs = {e.signature for e in prev.errors} if prev is not None else set()
+        real = [e for e in build.errors if not _synthetic(e)]
+        cur_count = Counter(_pair(e) for e in build.errors)
+        prev_errors = list(prev.errors) if prev is not None else []
+        prev_count = Counter(_pair(e) for e in prev_errors)
         total = build.error_count
         ratio = self.cfg.loop.regression_ratio
         struct_kinds = set(self.cfg.loop.structural_regression_kinds)
-        prev_kinds = {e.kind.value for e in prev.errors} if prev is not None else set()
-        new_struct = sorted({e.kind.value for e in build.errors if e.kind.value in struct_kinds} - prev_kinds)
+        prev_kinds = {e.kind.value for e in prev_errors}
+        new_struct = sorted({e.kind.value for e in real if e.kind.value in struct_kinds} - prev_kinds)
+        # a timed-out build, or a failed one without a single parsed error, says nothing about any attempt
+        blind = not build.ok and (bool(build.timed_out) or not real)
         structural: set[str] = set()
+        left_of: dict[int, tuple[int, int]] = {}
         for p in pending:
             a = p.attempt
             a.errors_after = total
             if build.ok:
                 a.outcome, a.cluster_resolved = "build_ok", True
                 continue
-            a.cluster_resolved = not _cluster_still_failing(a, cur, cur_pairs)
+            left, targeted = _targeted_left(a, cur_count)
+            left_of[id(a)] = (left, targeted)
+            # True = gone and the build could have shown them; None = gone from a build that could not; False = present
+            a.cluster_resolved = (False if left else
+                                  True if not blind and _visible_in(a.cluster_errors, build, real) else None)
         any_resolved = any(p.attempt.cluster_resolved for p in pending)
         for p in pending:
             a = p.attempt
             if build.ok:
                 continue
-            touched = {c.path for c in a.changes} | {c.new_path for c in a.changes if c.new_path}
-            if new_struct and any(t and t.replace("\\", "/").rsplit("/", 1)[-1] == "pom.xml" for t in touched):
+            if blind:
+                a.outcome, a.cluster_resolved = "inconclusive", None
+                a.notes.append("inconclusive: the build " + ("timed out" if build.timed_out else
+                               "failed without parseable errors") + " — it cannot show whether this attempt worked "
+                               "(no KB credit)")
+                continue
+            touched = _touched(a)
+            pom_touched = any(t.rsplit("/", 1)[-1] == "pom.xml" for t in touched)
+            if new_struct and pom_touched:
                 a.outcome = "regressed"
                 a.notes.append(f"regressed: structural error kind(s) {', '.join(new_struct)} appeared after this "
                                "attempt edited a pom.xml → reverted regardless of error counts")
-                a.introduced_errors = sanitize_errors([e for e in build.errors if e.kind.value in new_struct], 10)
+                a.introduced_errors = sanitize_errors([e for e in real if e.kind.value in new_struct], 10)
                 structural.add(a.id)
                 continue
-            new_in_touched = [e for e in build.errors if e.file and e.file in touched and e.signature not in prev_sigs]
+            left, targeted = left_of[id(a)]
+            if a.cluster_resolved is None:
+                # the targeted errors are not in this build, but the build never got to report them
+                stage = _stage_of(a.cluster_errors)
+                earlier = [e for e in _new_errors(real, prev_count) if STAGE.get(e.kind, 99) < stage]
+                if pom_touched and earlier:
+                    a.outcome = "regressed"
+                    kinds = ", ".join(sorted({e.kind.value for e in earlier}))
+                    a.notes.append(f"regressed: new {kinds} error(s) appeared after this attempt edited a pom.xml and "
+                                   "hide the targeted errors → reverted")
+                    a.introduced_errors = sanitize_errors(earlier, 10)
+                    structural.add(a.id)
+                    continue
+                a.outcome, a.cluster_resolved = "inconclusive", None
+                a.notes.append("inconclusive: the build stopped before the stage of the targeted errors ("
+                               + ", ".join(sorted({e.kind.value for e in real})[:4]) + " first) — whether they are "
+                               "gone is unknown (no KB credit)")
+                continue
+            new_in_touched = _new_in_files(build.errors, touched, prev_count)
             ratio_regress = (not any_resolved) and total > max(a.errors_before, 1) * ratio
             if not a.cluster_resolved and (new_in_touched or ratio_regress):
                 a.outcome = "regressed"
@@ -657,12 +804,22 @@ class BuildFixLoop:
                 why = (f"{len(new_in_touched)} new error(s) in touched files" if new_in_touched
                        else f"errors {a.errors_before} → {total} (> ×{ratio})")
                 a.notes.append(f"regressed: {why}")
+            elif a.cluster_resolved:
+                a.outcome = "improved"
+            elif 0 < left < targeted:
+                a.outcome = "partial"
+                a.notes.append(f"partial: {targeted - left} of {targeted} targeted error(s) gone, {left} remain")
             else:
-                a.outcome = "improved" if a.cluster_resolved else "no_change"
-        # credit KB recipes
+                a.outcome = "no_change"
+        # credit KB recipes: success / failure only — partial and inconclusive prove neither
         for p in pending:
+            outcome = p.attempt.outcome
             for rid in p.kb_recipe_ids:
-                ok = p.attempt.outcome in ("improved", "build_ok")
+                if outcome in ("partial", "inconclusive"):
+                    self.ws.journal({"event": "kb_credit_skipped", "phase": pr.phase.value, "recipes": [rid],
+                                     "attempt": p.attempt.id, "reason": outcome})
+                    continue
+                ok = outcome in ("improved", "build_ok")
                 try:
                     self.kb.credit_recipe(rid, ok, self.profile.fingerprint)
                     self.credited.append(f"{rid} ({'success' if ok else 'failure'})")
@@ -739,9 +896,33 @@ class BuildFixLoop:
                                   rationale=f"triage failed: {type(e).__name__}: {e}")
 
     def _previous(self, cluster: ErrorCluster) -> list[FixAttempt]:
-        """Earlier attempts on `cluster`, without the transport failures that triggered the LLM cool-down (L5): the
-        cool-down round must not count against `loop.max_llm_attempts_per_cluster`."""
-        return [a for a in _related(cluster, self.history) if a.id not in self._cooled_attempts]
+        """Earlier SCORED attempts on THIS cluster (round 10: not other files that share an L1 signature, not this
+        round's pending ones), without the transport failures that triggered the LLM cool-down (L5): the cool-down
+        round must not count against `loop.max_llm_attempts_per_cluster`."""
+        return [a for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
+                if a.id not in self._cooled_attempts and a.outcome != "pending"]
+
+    def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
+        """The same error in OTHER files of this run (shared signature): hint material for the prompt only (round 10)
+        — how a sibling was fixed, or what did not work there."""
+        mine = {id(a) for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)}
+        out: list[str] = []
+        for a in reversed(_related(cluster, self.history)):
+            if id(a) in mine or a.outcome in ("pending", "blocked") or a.id in self._cooled_attempts:
+                continue
+            where = next((e.file for e in a.cluster_errors if e.file), None) or a.cluster_id
+            sig = next((s for s in a.cluster_signatures if s in cluster.signatures), "")
+            who = a.decision.handler_id or ", ".join(a.decision.recipe_ids) or a.decision.kind.value
+            if a.outcome in ("improved", "build_ok", "partial"):
+                text = (f"this run: the same error ({sig}) in {where} was {'partly ' if a.outcome == 'partial' else ''}"
+                        f"fixed by attempt {a.id} ({who}): {_change_line(a)}")
+            else:
+                text = (f"this run: attempt {a.id} ({who}) on the same error ({sig}) in {where} did not fix it "
+                        f"({a.outcome}): {_change_line(a)}")
+            out.append(text[:400])
+            if len(out) >= limit:
+                break
+        return out
 
     def _fix_round(self, pr: PhaseResult, phase: Phase, iteration: int, build: BuildResult, target: Optional[str],
                    stall_level: int, clusters: Optional[list[ErrorCluster]] = None
@@ -1000,6 +1181,7 @@ class BuildFixLoop:
     def _apply_llm(self, att: FixAttempt, c: ErrorCluster, m: KBMatch, phase: Phase, iteration: int,
                    stall_level: int, others: dict[str, str]) -> None:
         hints = m.hints[: self.cfg.kb.max_hints] if self.cfg.kb.use_hints else []
+        hints = [*hints, *(h for h in self._sibling_hints(c) if h not in hints)]
         other = "\n".join(v for k, v in others.items() if k != c.id)[:4000]
         self._mark(f"advisory hints for {c.id}")
         adv_hints, att.advisory_ids = self._advisory_hints(c)
@@ -1018,7 +1200,8 @@ class BuildFixLoop:
             self.budget.charge_llm(1)
             log.warning("fixer.propose failed for %s: %s", c.id, e)
             self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
-            self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
+            if is_llm_transport_error(f"llm-error: {type(e).__name__}: {e}"):
+                self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
             return
         self.budget.charge_llm(max(1, proposal.llm_usage.calls))
         self._mark(f"LLM answered for {c.id}: applying")
@@ -1029,6 +1212,8 @@ class BuildFixLoop:
             self._llm_transport_failure(att, c, proposal.analysis.strip()[len("llm-error:"):].strip()[:300])
             return
         self._llm_streak, self._streak_attempts = [], []
+        if self._llm_config_check(att, c, proposal.analysis, proposal.prompt_hash):
+            return
         if ctx.use_escalation_model:
             att.notes.append("escalation model requested (final verify loop)" if phase == Phase.VERIFY
                              else f"escalation model requested (stall level {stall_level})")
@@ -1099,6 +1284,34 @@ class BuildFixLoop:
             self._block_simple(att.phase, att.iteration, x, BlockReason.LLM_UNAVAILABLE,
                                f"LLM unavailable ({self.llm_unavailable})")
         self._llm_streak, self._streak_attempts = [], []
+
+    def _llm_config_check(self, att: FixAttempt, c: ErrorCluster, analysis: str, prompt_hash: str) -> bool:
+        """Round 10: the gateway answered the same HTTP 400 body to LLM_CONFIG_ERROR_PROMPTS different prompts → not
+        the prompts' fault but the configuration (an unsupported model name, a payload field): stop calling the LLM
+        for the run (flag `llm-config-error`, one follow-up with the short body). True = this attempt ends here."""
+        body = llm_400_body(analysis)
+        if body is None:
+            return False
+        self._fail(att, analysis.strip()[:300])
+        seen = self._http400.setdefault(body, set())
+        seen.add(prompt_hash or f"{c.id}:{att.id}")
+        if len(seen) < LLM_CONFIG_ERROR_PROMPTS or self.llm_unavailable:
+            return True
+        self.llm_config_error = body
+        self.llm_unavailable = f"LLM configuration error: HTTP 400 '{body[:120]}' for {len(seen)} different prompts"
+        self._flag("llm-config-error")
+        setter = getattr(self.triager, "set_llm_unavailable", None)
+        if callable(setter):
+            setter(self.llm_unavailable)
+        log.error("LLM configuration error: the gateway answered HTTP 400 '%s' to %d different prompts — no more LLM "
+                  "calls in this run", body[:200], len(seen))
+        self._followup(f"the LLM gateway rejected {len(seen)} different prompts with the same HTTP 400 ({body[:160]}) "
+                       "— a configuration error (model name / payload fields in .env or llm.*), not the prompts; LLM "
+                       "calls stopped for this run, fix the setting and rerun")
+        self.ws.journal({"event": "llm_config_error", "phase": att.phase.value, "iteration": att.iteration,
+                         "body": body, "prompts": len(seen)})
+        self._block_simple(att.phase, att.iteration, c, BlockReason.LLM_UNAVAILABLE, self.llm_unavailable)
+        return True
 
     def _llm_cooldown(self, att: FixAttempt, why: str) -> bool:
         """Pause once per run instead of giving up on the LLM (round 9). False = no cool-down (used up, disabled,
@@ -1210,11 +1423,12 @@ class BuildFixLoop:
             from pathlib import Path
             kwargs = dict(extra_recipe_files=[Path(f) for f in files], module=target,
                           label=f"{phase.value}-{iteration}-kb")
-            try:
-                # the project does not compile at this point → rewrite:runNoFork (rewrite:run forks `compile` first)
-                res = self.rewrite_runner.run(refs, fork=False, **kwargs)
-            except TypeError:  # a runner without the `fork` option
-                res = self.rewrite_runner.run(refs, **kwargs)
+            with self._busy_with(f"rewrite {phase.value}-{iteration}-kb"):
+                try:
+                    # the project does not compile at this point → rewrite:runNoFork (rewrite:run forks `compile` first)
+                    res = self.rewrite_runner.run(refs, fork=False, **kwargs)
+                except TypeError:  # a runner without the `fork` option
+                    res = self.rewrite_runner.run(refs, **kwargs)
             pr.rewrite_results.append(res)
             if not res.ok:
                 error = res.error or "rewrite failed"
@@ -1246,7 +1460,10 @@ class BuildFixLoop:
         return sha is not None
 
     def _changed_between(self, a: str, b: str) -> list[str]:
-        out = self.ws._git("diff", "--name-only", a, b).stdout   # noqa: SLF001 - Workspace has no public API for this
+        changed = getattr(self.ws, "changed_between", None)          # NUL-separated: Korean / spaced names verbatim
+        if callable(changed):
+            return changed(a, b)
+        out = self.ws._git("diff", "--name-only", a, b).stdout   # noqa: SLF001 - a stand-in workspace without it
         return [l.strip() for l in out.splitlines() if l.strip()]
 
     # ------------------------------------------------------------------ fallback
@@ -1269,6 +1486,7 @@ class BuildFixLoop:
             return
         pr.build_ok = True
         self.test_compile_skipped = True
+        self.test_compile_skipped_targets.add(_target_key(target))
         self._flag("test-compile-skipped")
         pr.remaining_errors = list(last.errors)
         pr.notes.append(f"test-compile-skipped: main code builds, {len(last.errors)} test compile error(s) remain "
@@ -1300,6 +1518,7 @@ class BuildFixLoop:
             return
         pr.build_ok = True
         self.tests_skipped = True
+        self.tests_skipped_targets.add(_target_key(target))
         self._flag("tests-skipped")
         pr.remaining_errors = list(last.errors)
         pr.notes.append(f"tests-skipped: main code builds and packages, {len(last.errors)} test(s) fail at runtime "
@@ -1319,13 +1538,104 @@ class BuildFixLoop:
             self.followups.append(text)
 
 
+def _synthetic(e: BuildError) -> bool:
+    """The runner's stand-in error for a crashed / timed-out Maven: says nothing about how far the build got."""
+    return e.kind == ErrorKind.UNKNOWN and not e.file and (e.message or "").startswith(_SYNTHETIC_PREFIXES)
+
+
+def _pair(e: BuildError) -> tuple[str, str]:
+    """(file, signature) of an error — file '' for module / artifact errors. L1 signatures carry no file: the same
+    renamed method in two files is one signature, so scoring compares these pairs (with their occurrence counts)."""
+    return (_norm_path(e.file) if e.file else ""), (e.signature or f"{e.kind.value}|{e.message}")
+
+
+def _touched(a: FixAttempt) -> set[str]:
+    return {_norm_path(p) for c in a.changes for p in (c.path, c.new_path) if p}
+
+
+def _targeted_left(a: FixAttempt, cur: Counter) -> tuple[int, int]:
+    """(targeted errors still in the build, targeted errors) — by (file, signature) occurrence; attempts without
+    recorded errors fall back to the cluster signatures (all or nothing)."""
+    if not a.cluster_errors:
+        sigs = set(a.cluster_signatures)
+        return (1 if any(s in sigs for _f, s in cur) else 0), 1
+    targeted = Counter(_pair(e) for e in a.cluster_errors)
+    return sum(min(n, cur[k]) for k, n in targeted.items()), sum(targeted.values())
+
+
 def _cluster_still_failing(a: FixAttempt, cur: set[str], cur_pairs: set[tuple[str, str]]) -> bool:
-    """Is any error of the attempt's cluster in the new build? File errors by (file, signature), the others (artifact /
-    module errors) by signature; attempts without recorded errors fall back to the cluster signatures."""
+    """Is any error of the attempt's cluster in the new build? (kept for callers; `_score` counts occurrences)"""
     if not a.cluster_errors:
         return bool(set(a.cluster_signatures) & cur)
     return any(((_norm_path(e.file), e.signature) in cur_pairs) if e.file else (e.signature in cur)
                for e in a.cluster_errors)
+
+
+def _stage_of(errors: list[BuildError]) -> int:
+    """The earliest build stage (error_tracker.STAGE) at which these errors are reported; 99 when none has one."""
+    return min((STAGE[e.kind] for e in errors if e.kind in STAGE), default=99)
+
+
+def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildError]) -> bool:
+    """Could `build` have reported these (now absent) errors? Their module was built, or the build got at least as far
+    as their stage — the same notion as the error tracker's visibility (round 10: "not visible" ≠ "resolved")."""
+    if build.ok:
+        return True
+    if not real:
+        return False
+    built = set(build.modules_built or [])
+    failed = {build.failed_module} | {x.module for x in real if x.module}
+    # how far the build got: an UNKNOWN error without a file (a crashed JVM, `mvn` itself failing, a generic BUILD
+    # FAILURE line) proves no stage
+    reached = max((STAGE.get(x.kind, -1) for x in real if x.kind != ErrorKind.UNKNOWN or x.file), default=-1)
+    for e in errors:
+        if _synthetic(e):
+            return False                         # a stand-in error is never "fixed" by disappearing
+        m = e.module
+        if m and m in built:
+            continue
+        if m and build.failed_module and m not in failed:
+            return False                         # its module never ran (skipped after another one failed)
+        st = STAGE.get(e.kind)
+        if st is None or reached < st:
+            return False
+    return True
+
+
+def _new_errors(errors: list[BuildError], prev: Counter) -> list[BuildError]:
+    """The occurrences of (file, signature) beyond what the previous build had."""
+    seen: Counter = Counter()
+    out: list[BuildError] = []
+    for e in errors:
+        k = _pair(e)
+        seen[k] += 1
+        if seen[k] > prev[k]:
+            out.append(e)
+    return out
+
+
+def _new_in_files(errors: list[BuildError], files: set[str], prev: Counter) -> list[BuildError]:
+    """New errors (by (file, signature) occurrence) in `files` — round 10: a new error whose L1 signature another file
+    already had is still new here."""
+    return [e for e in _new_errors([e for e in errors if e.file and _norm_path(e.file) in files], prev)]
+
+
+def _target_key(target: Optional[str]) -> str:
+    t = _norm_path(target or "").strip("/")
+    if t.endswith("pom.xml"):
+        t = t[:-len("pom.xml")].rstrip("/")
+    return t
+
+
+def _change_line(a: FixAttempt) -> str:
+    """One line of what an attempt changed (sibling hints): its first change, or its analysis."""
+    for c in a.changes[:1]:
+        if c.op == "modify" and (c.search or c.replace):
+            s = (c.search or "").strip().splitlines()
+            r = (c.replace or "").strip().splitlines()
+            return f"MODIFY {c.path}: `{(s[0] if s else '')[:90]}` → `{(r[0] if r else '')[:90]}`"
+        return f"{c.op.upper()} {c.path}"
+    return _first_sentence(a.analysis or "", 160) or "-"
 
 
 def _norm_path(p: str) -> str:

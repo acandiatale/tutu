@@ -40,7 +40,7 @@
 | 06 | [06-restructure-and-layouts.md](06-restructure-and-layouts.md) | 재구성과 회사 레이아웃: `{name}-boot` / `-back` / `-front`, Boot as-is 유지, 역할 부모, 필수·선택 아티팩트, 멀티모듈 merge, JSP/WAR, 플레이스홀더 | 담당자, 개발자 |
 | 07 | [07-api-reference.md](07-api-reference.md) | CLI · REST · Python API · 플러그인 계약 · 환경 변수 · report.json / journal / ledger 스키마 | 개발자 |
 | 08 | [08-config-reference.md](08-config-reference.md) | 설정 레퍼런스: 모든 설정 키의 타입·기본값·의미·언제 바꾸나, 예시 파일 해설, 첫 설정 체크리스트 | 운영자 |
-| 09 | [09-operations.md](09-operations.md) | 운영과 진단: 사전 준비, Nexus 미러, Windows 메모, 리포트 읽는 법, "멈춘 건가?" 절차, 에러 카탈로그(한국어), 플릿 운영, KB 위생, 실제 실행 FAQ | 운영자 |
+| 09 | [09-operations.md](09-operations.md) | 운영과 진단: 사전 준비, Nexus 미러, Windows 메모, 리포트 읽는 법, 한 줄 결과 `SBMIG-RESULT`와 주의 코드, "멈춘 건가?" 절차(Ctrl+Break, `dump-threads` 파일), 에러 카탈로그(한국어, 인프라 문제 포함), 플릿 운영(사전 점검, 인프라 차단기, 디스크 정리), KB 위생, 실제 실행 FAQ, 지원 요청 때 옮겨 적을 줄 | 운영자 |
 
 ## 3. 역할별 읽는 순서
 
@@ -75,7 +75,7 @@
 | 핸들러(handler) | 결정적(LLM 없는) 수정기. 예: `lombok-version-floor`, `jstl-to-jakarta`, `resources-binary-filtering`, `jakarta-namespace-sweep`. 선제(pre-emptive)로 첫 빌드 전에 돌기도, 에러 문구를 보고 반응(reactive)하기도 합니다. |
 | blocked | 프로젝트 안에서 풀 수 없는 문제(외부 라이브러리가 javax API를 쓰는 경우, Nexus에 없는 아티팩트 등). LLM을 쓰지 않고 바로 리포트로 보냅니다. |
 | stall level | 같은 클러스터가 반복해서 안 풀릴 때 올라가는 단계. 단계가 오르면 더 넓은 문맥·상위 모델로 재시도하고, 한계에 닿으면 escalate합니다. |
-| KB(knowledge base) / ledger | 파일 기반 지식 베이스(`kb/`). `ledger.jsonl`에 모든 시도(에러 시그니처 → 수정 라벨 → 결과)가 기록되고, 성공한 패치는 다음 프로젝트에서 LLM 없이 재생(KB_PATCH)되거나 레시피 후보로 승격됩니다. DB는 쓰지 않습니다(불변식 3). |
+| KB(knowledge base) / ledger | 파일 기반 지식 베이스(`kb/`). `ledger.jsonl`에 모든 시도(에러 시그니처 → 수정 라벨 → 결과)가 기록되고, 성공한 패치는 다음 프로젝트에서 LLM 없이 재생(KB_PATCH)되거나 레시피 후보로 승격됩니다. DB는 쓰지 않습니다(불변식 3). round 10부터 쓰기는 프로세스 간 잠금(`.lock`)으로 직렬화되고, 저장 전에 비밀값을 가리며(`knowledge/kb/redact.yml`), 형식이 바뀌어 회사 KB는 한 번 지우고 다시 쌓습니다([05](05-directories-and-storage.md) 4.11). |
 | 수정 라벨(fix label) | 한 수정이 "무슨 종류의 수정이었나"를 결정적으로 붙인 이름(`method-rename`, `generic-rewrite` …). 레시피 승격의 단위입니다. |
 | 어드바이저리(advisory) | EOL·비관리 라이브러리(springfox, hystrix, sleuth …)에 대한 안내. 정책은 `guide`(안내만) 또는 `recipe`(레시피로 전환)뿐이며 `block`은 없습니다. 리포트의 Handover에 모입니다. |
 | Handover | 리포트 맨 앞의 인수인계 섹션: 못 푼 에러, blocked, 어드바이저리, 실행 전에 채워야 할 속성(`__SET_ME__`), merge 충돌, LLM이 고친 파일. as-is 담당자가 가장 먼저 읽는 곳입니다. |
@@ -86,8 +86,11 @@
 | 플릿(fleet) | 한 에이전트가 여러 프로젝트를 **엄격히 순차**로 처리하는 모드. 앞 프로젝트에서 배운 것이 KB를 통해 뒤 프로젝트에 쓰입니다. |
 | 픽스처(fixture) / e2e | `fixtures/projects/`의 소형 as-is 프로젝트와 기대 결과(`expected.json`). `scripts/e2e.sh`가 실제 Maven으로 끝까지 돌려 회귀를 잡습니다. |
 | 저널(journal) | `out/<run id>/journal.jsonl`. 실행 중 벌어진 일을 이벤트 단위로 기록한 기계 판독용 로그. 웹 UI도 이 스트림을 보여 줍니다. |
-| 워치독(watchdog) | 빌드-수정 루프가 일정 시간 조용하면 `fix loop quiet for Ns since '<milestone>'`를 찍고, 더 길어지면 스레드 덤프를 자동 저장하는 장치. "멈춘 건가?"의 1차 판단 근거입니다. |
-| exit code | 0 = 최종 빌드 성공이고 blocked 없음, 2 = blocked 또는 미해결 에러와 함께 종료(리포트 확인), 3 = 중단(Maven 없음, Maven 프로젝트 아님, 사내 부모 해석 불가 등). |
+| 워치독(watchdog) | 빌드-수정 루프가 일정 시간 조용하면 `fix loop quiet for Ns since '<milestone>'`를 찍고, 더 길어지면 스레드 덤프를 자동 저장하는 장치. "멈춘 건가?"의 1차 판단 근거입니다. 덤프는 사람이 요청할 수도 있습니다: 실행 디렉터리에 `dump-threads` 파일을 만들거나, CLI 콘솔에서 Ctrl+Break(Windows), 웹이면 `/api/threads`. |
+| exit code | 0 = 최종 빌드 성공이고 blocked 없음, 2 = blocked 또는 미해결 에러와 함께 종료(리포트 확인), 3 = 중단(Maven 없음, Maven이 Java 21이 아님, Maven 프로젝트 아님, 사내 부모 해석 불가 등). |
+| `SBMIG-RESULT` / 주의 코드(attention) | 실행(플릿은 프로젝트마다)이 끝날 때 남기는 ASCII 한 줄: `run=… exit=… build=ok|FAIL unresolved=… blocked=… llm=… attn=…`. `attn`은 사람이 봐야 하는 이유(`infra:llm`, `blocked:external_javax_api`, `unresolved:3` …). 문제를 알릴 때 가장 먼저 옮겨 적는 줄입니다([09](09-operations.md) 3.4). |
+| 채점 결과(outcome) | 시도 하나를 다음 빌드가 매긴 결과: `improved`(겨냥한 에러가 모두 사라짐), `partial`(일부만), `no_change`, `inconclusive`(그 빌드로는 판단 불가), `regressed` / `reverted`, `build_ok`. "안 보임"은 "해결"이 아닙니다([04](04-triage-and-loop.md) 6.5). |
+| 사전 점검(preflight) / 인프라 차단기 | 플릿이 첫 프로젝트 전에 디스크·Maven·Java·settings·저장소·LLM을 한 줄씩 점검하고(`preflight: … ok|FAIL`), 프로젝트가 연달아 인프라 이유로 끝나면 기다렸다 다시 점검하거나 `fleet stopped: …`로 멈추는 장치. 실패한 프로젝트는 `pending`으로 남아 같은 명령으로 이어 갑니다([09](09-operations.md) 7절). |
 
 ## 6. 문서 규약
 

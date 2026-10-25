@@ -1,7 +1,8 @@
 """Shared Maven invocation helpers (used by MavenRunner and OpenRewriteRunner).
 
 * ``base_command(cfg)``  → ``[mvn, *extra_args, -s settings, -Dmaven.repo.local=…, -o]``
-* ``mvn_env(cfg)``       → inherited env + ``cfg.build.env`` + ``JAVA_HOME`` / ``PATH`` when ``java_home`` is set
+* ``mvn_env(cfg)``       → inherited env + ``cfg.build.env`` + ``JAVA_HOME`` / ``PATH`` when ``java_home`` is set,
+  ``MAVEN_OPTS`` += ``-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`` (unless already set there)
 * ``run_logged(...)``    → runs a command in its own process group, streams merged stdout/stderr (ANSI stripped)
   to a log file as it arrives, enforces a timeout by killing the whole group.
 """
@@ -34,6 +35,22 @@ def _blank(v: str | None) -> bool:
     return v is None or str(v).strip() == ""
 
 
+# The Maven JVM writes its console output in the console code page when stdout is a pipe (MS949 on a Korean
+# Windows PC); sbmig decodes UTF-8, so Korean paths in javac errors came back garbled and the error's file was never
+# found (round 10). JDK 18+ honours these properties for System.out / System.err; older JDKs ignore them.
+UTF8_OUTPUT_PROPS: tuple[str, ...] = ("stdout.encoding", "stderr.encoding")
+
+
+def with_utf8_output(maven_opts: str | None) -> str:
+    """MAVEN_OPTS with `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` appended; a property the value already sets
+    (e.g. from `build.env`) is left alone."""
+    opts = (maven_opts or "").strip()
+    for prop in UTF8_OUTPUT_PROPS:
+        if f"-D{prop}=" not in opts:
+            opts = f"{opts} -D{prop}=UTF-8".strip()
+    return opts
+
+
 def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, str]:
     env = dict(os.environ)
     env.update({k: str(v) for k, v in (cfg.build.env or {}).items()})
@@ -43,6 +60,7 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
         env["PATH"] = os.pathsep.join([str(Path(jh) / "bin"), env.get("PATH", "")])
     if extra:
         env.update(extra)
+    env["MAVEN_OPTS"] = with_utf8_output(env.get("MAVEN_OPTS"))
     return env
 
 
@@ -165,6 +183,16 @@ def _popen(*args, **kwargs) -> subprocess.Popen:
 
 
 IS_WINDOWS = os.name == "nt"
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _popen_kwargs() -> dict[str, Any]:
+    """Windows: Maven / OpenRewrite get their own hidden console (`CREATE_NO_WINDOW`). The operator's Ctrl+Break
+    (thread dump, `sbmig.core.diag`) and Ctrl+C then never reach cmd.exe / java.exe directly — a Ctrl+Break used to
+    leave `mvn.cmd` at "Terminate batch job (Y/N)?"; sbmig still kills the whole tree itself (`taskkill /T /F`)."""
+    if not IS_WINDOWS:
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW)}
 
 
 def _kill_tree_windows(pid: int) -> None:
@@ -257,8 +285,8 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
         fh.flush()
         try:
             proc = _popen(list(cmd), cwd=str(cwd), env=dict(env), stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                    start_new_session=True)
+                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
+                          **_popen_kwargs())
         except (FileNotFoundError, PermissionError, NotADirectoryError) as exc:
             msg = f"cannot start {cmd[0]!r}: {exc}"
             fh.write(f"[ERROR] {msg}\n")
@@ -268,6 +296,7 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
         def pump() -> None:
             assert proc.stdout is not None
             for raw in iter(proc.stdout.readline, b""):
+                # UTF-8 (MAVEN_OPTS asks the JVM for it); a stray legacy byte becomes U+FFFD, never a dead reader
                 line = strip_ansi(raw.decode("utf-8", errors="replace"))
                 chunks.append(line)
                 fh.write(line)
@@ -325,5 +354,9 @@ def maven_available(cfg: Config) -> tuple[bool, str]:
     if cp.returncode != 0:
         return False, out.strip().splitlines()[-1] if out.strip() else f"mvn -v exited {cp.returncode}"
     maven = next((ln.strip() for ln in out.splitlines() if ln.startswith("Apache Maven")), out.strip()[:80])
-    java = next((ln.strip().split(",")[0] for ln in out.splitlines() if ln.startswith("Java version")), "")
+    line = next((ln.strip() for ln in out.splitlines() if ln.startswith("Java version")), "")
+    # "Java version: 21.0.1, vendor: …, runtime: C:\jdk-21" → keep the version and the runtime home (the jdk-not-21
+    # abort names the JDK Maven really used)
+    parts = [x.strip() for x in line.split(",")]
+    java = ", ".join([parts[0], *[x for x in parts[1:] if x.startswith("runtime:")]]) if line else ""
     return True, f"{maven}; {java}" if java else maven

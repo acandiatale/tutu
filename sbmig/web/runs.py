@@ -198,6 +198,9 @@ class RunManager:
                 report = self._run_thread_body(run)
                 run.report = report
                 run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
+                if report is not None:          # the line operators retype (round 10), also in this run's sbmig.log
+                    from sbmig.report.result_line import report_result_line
+                    log.info("%s", report_result_line(report, run.exit_code, run_id=run.run_id))
         except Exception as e:  # the orchestrator never raises; a crash here is a bug in the engine / this module
             log.exception("run %s failed", run.run_id)
             run.error = f"{type(e).__name__}: {e}"
@@ -467,9 +470,10 @@ def _finalize_stopped(orch: Any) -> None:
 
 
 def _detach_file_log(path: Path) -> None:
+    """Remove the per-run (thread-filtered) handlers of `path`; the process-wide one, if any, stays."""
     root = logging.getLogger("sbmig")
     for h in list(root.handlers):
-        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == Path(path) \
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == Path(path).resolve() \
                 and getattr(h, "sbmig_thread", None) is not None:
             root.removeHandler(h)
             h.close()

@@ -12,17 +12,23 @@ Public API:
     prepare_error_cases(errors, attempts, profile, ws, cfg) -> (errors, attempts)   error-case records → KB records
     ErrorCaseStore(kb_dir)                              kb/errors.jsonl, fix_attempts.jsonl, error_hints.json
     CaseCatalog(kb_dir, cfg=None) / case_id_for(L2)     kb/catalog/ (one case per L2 signature) + kb/views/
+    redact(text, cfg=None)                              secret VALUES masked by context (sbmig.kb.redact, round 10)
+    kb_lock(kb_dir, timeout)                            the cross-process write lock <kb>/.lock (sbmig.kb.lock)
+    pairset_hash(pairs) / case_replace_note(id, pairs)  how handler case-replace names the pair set it applied
 """
-from .catalog import CaseCatalog, case_id_for
+from .catalog import CaseCatalog, case_id_for, case_replace_note, pairset_hash
 from .changes import classify_diff
 from .cli import kb_cli
 from .error_cases import ErrorCaseStore, prepare_error_cases
 from .harvest import sanitize_case
 from .labels import LabelResult, compile_recipe, label_changes
 from .ledger import Ledger, SymbolIndex, render_learning_md
+from .lock import kb_lock
 from .recipes import WHITELIST, validate_recipe_yaml
+from .redact import redact
 from .store import FileKnowledgeBase
 
 __all__ = ["FileKnowledgeBase", "kb_cli", "validate_recipe_yaml", "sanitize_case", "WHITELIST", "LabelResult",
            "label_changes", "compile_recipe", "Ledger", "SymbolIndex", "render_learning_md", "classify_diff",
-           "prepare_error_cases", "ErrorCaseStore", "CaseCatalog", "case_id_for"]
+           "prepare_error_cases", "ErrorCaseStore", "CaseCatalog", "case_id_for", "redact", "kb_lock",
+           "pairset_hash", "case_replace_note"]

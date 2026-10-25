@@ -65,6 +65,7 @@ from typing import Any, Iterable, Optional
 import yaml
 
 from sbmig.core.models import PomInfo, PropertyFinding, PropertyInventory, PropertyRef, ServiceInfo
+from sbmig.core.workspace import is_build_output_path
 
 from .source_scanner import _COMMENT_RE, ScanResult
 
@@ -72,7 +73,7 @@ log = logging.getLogger("sbmig.analyze")
 
 MAX_FILE_BYTES = 1_000_000
 MAX_REFS_PER_KEY = 50            # refs kept per finding (the Handover shows cfg.externalized.max_refs_per_key)
-SKIP_PARTS = ("target", "node_modules", ".git")
+SKIP_PARTS = ("node_modules", ".git")   # + Maven build output (round 10: a `target` package is source)
 JNDI_PREFIX = "java:comp/env/"
 _DEF_EXT = (".properties", ".yml", ".yaml")
 _MAVEN_BUILTIN = re.compile(r"^(project|pom|maven|settings|env)\.|^basedir$")
@@ -191,7 +192,7 @@ def _raw(text: str) -> str:
 
 
 def _skipped(rel: str) -> bool:
-    return any(p in SKIP_PARTS for p in rel.replace("\\", "/").split("/"))
+    return any(p in SKIP_PARTS for p in rel.replace("\\", "/").split("/")) or is_build_output_path(rel)
 
 
 def _is_test(rel: str) -> bool:

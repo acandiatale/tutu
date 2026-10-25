@@ -217,3 +217,19 @@ def test_msa_nested_library_aggregator(tmp_path: Path, cfg) -> None:
     assert [(s.name, s.root_pom) for s in libs] == [("libs", "libs/pom.xml")]
     assert sorted(libs[0].poms) == ["libs/a/pom.xml", "libs/b/pom.xml", "libs/pom.xml"]
     assert libs[0].case_type == CaseType.PURE_JAVA
+
+
+# ------------------------------------------------------------------------------------------------- round 10 (D15)
+def test_wsdl_code_generators_are_reported_with_advice(tmp_path: Path, cfg) -> None:
+    write(tmp_path, "pom.xml", pom("soap", plugins=(
+        plugin("cxf-codegen-plugin", "3.5.5", g="org.apache.cxf"),
+        plugin("jaxws-maven-plugin", "2.6", g="org.codehaus.mojo"))))
+    write_java(tmp_path, "", "com.acme", "A")
+    p = analyze_path(tmp_path, cfg)
+    names = {lib.name for lib in p.libraries}
+    assert {"codegen:cxf-codegen-plugin", "codegen:jaxws-maven-plugin"} <= names
+    assert "plugin:org.codehaus.mojo:jaxws-maven-plugin" in _lib(p, "codegen:jaxws-maven-plugin").evidence
+    cxf = next(w for w in p.warnings if "cxf-codegen-plugin:3.5.5" in w)
+    assert "4.2.4" in cxf and "jakarta-library-floor" in cxf
+    jaxws = next(w for w in p.warnings if "jaxws-maven-plugin:2.6" in w)
+    assert "com.sun.xml.ws:jaxws-maven-plugin 4.0.5" in jaxws and "javax.xml.ws" in jaxws

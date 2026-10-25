@@ -265,8 +265,10 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | spring-security-oauth2-legacy | eol | guide | spring-boot-starter-oauth2-resource-server / -client | manual |
 | log4j1 | eol | guide | logback (Boot default) or log4j2 | manual |
 | commons-lang2 | eol | guide | org.apache.commons:commons-lang3 | manual |
-| httpclient4 | superseded | guide | org.apache.httpcomponents.client5:httpclient5 | manual |
-| jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; the LLM ports `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
+| httpclient4 | superseded | recipe (round 10; Spring cases only) | org.apache.httpcomponents.client5:httpclient5 | `UpgradeApacheHttpClient_5` (inside the Framework 7 chain and the Boot umbrella → `recipe_source: plan`) |
+| httpclient4-direct | superseded | guide (round 10; pure Java / servlet) | org.apache.httpcomponents.client5:httpclient5 | manual (4.5.x stays at its carried-over version) |
+| undertow | incompatible | guide (round 10) | spring-boot-starter-tomcat (or spring-boot-starter-jetty) | `dependency-relocation` swaps the starter; Undertow customizers / `server.undertow.*` are manual |
+| jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; `sun.misc.BASE64Encoder` / `BASE64Decoder` and the xerces `Base64` → handler `jdk-base64-shim` (round 10, no LLM); the LLM ports the rest of the `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
 | ibatis2 | incompatible | guide | org.mybatis:mybatis + org.mybatis:mybatis-spring | no recipe exists; the LLM ports `SqlMapClientDaoSupport` DAOs with the `## fix-loop: ibatis2` hint (`knowledge/notes/ibatis2.md`) |
 | jdk-generified-apis | incompatible | guide | JDK API: `Enumeration<TreeNode>` + cast / `asIterator()` | no recipe (not a dependency); the LLM ports `javax.swing.tree` code with the `## fix-loop: jdk-generified-apis` hint (`knowledge/notes/jdk21.md`) |
 | hibernate-commons-annotations | incompatible | guide | `org.jboss.logging.Logger` (LoggerFactory / Log), `java.lang.reflect` (XClass / ReflectionManager) | no recipe; HCANN came transitively with hibernate-core ≤ 6.x and Hibernate ORM 7 (Boot 4) dropped it — the LLM ports the imports with the `## fix-loop: hibernate-commons-annotations` hint (`knowledge/notes/hibernate-7.md`) |
@@ -303,7 +305,8 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | orika | eol | guide | MapStruct (org.mapstruct:mapstruct) or ModelMapper (mapstruct 1.6.3) | manual (artifacts) |
 | elasticsearch-rest-high-level | eol | guide | co.elastic.clients:elasticsearch-java (Boot-managed) (9.4.2 (Boot 4.1 managed)) | manual (artifacts) |
 | solr-legacy | eol | guide | org.apache.solr:solr-solrj (a SolrClient bean defined by the project) (9.11.0 (Solr 9 servers) / 10.0.0) | manual (artifacts) |
-| jackson1 | eol | guide | tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or … (Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)) | `CodehausToFasterXML` (inside the umbrella) maps 11 types; the rest via `## fix-loop: jackson1` (rule `jackson1`) |
+| jackson1 | eol | recipe (round 10; Spring cases only) | tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or … (Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)) | `CodehausToFasterXML` (inside the Framework 7 chain and the umbrella) maps 11 types; the rest via `## fix-loop: jackson1` (rule `jackson1`) |
+| jackson1-direct | eol | guide (round 10; pure Java / servlet) | same | manual (jackson-mapper-asl / jackson-core-asl keep their as-is version) |
 | json-lib | eol | guide | Jackson (tools.jackson.core:jackson-databind, Boot 4 default) or … (Boot 4.1 managed) | no recipe; `## fix-loop: json-lib` (rule `json-lib`) |
 | xstream | incompatible | guide | com.thoughtworks.xstream:xstream (bump) or Jackson XML … (1.4.21) | manual (artifacts) |
 | jdom1 | eol | guide | org.jdom:jdom2 (2.0.6.1 (Boot 4.1 managed)) | manual (artifacts; only below 2.0) |
@@ -392,19 +395,42 @@ preconditions). `Java8toJava11` already runs these recipes, so the jdk21 recipe 
 `DeprecatedLogRecordThreadID`. `UpgradeToJava21` adds `UpgradeBuildToJava21` and `lang.ThreadStopUnsupported`.
 
 What the recipes cannot do: OpenRewrite parses with JDK 21, so `sun.misc.BASE64Encoder` does not resolve and
-`UseJavaUtilBase64` leaves the code alone. The jdk21 compile then fails with `cannot find symbol … location: package
-sun.misc`. The advisory `jdk-removed-apis` (guide) matches that cluster, because `sun.misc` is an import package of
-its rule. The fix prompt gets the follow-up plus the `## fix-loop: jdk-removed-apis` section of
-`knowledge/notes/jdk21.md`. The verify step reports `replaced` once no source imports those packages any more. The
-Handover then lists the LLM-rewritten files.
+`UseJavaUtilBase64` leaves the code alone. Since round 10 the pre-emptive handler `jdk-base64-shim` (JDK21 group,
+selected when this advisory matched; docs/ERROR-HANDLING.md E15) generates `sbmig.compat.BASE64Encoder` /
+`BASE64Decoder` / `Base64` per source root (byte-for-byte the JDK 8 output, `decodeBuffer` still `throws
+IOException`) and repoints the imports, so those call sites compile unchanged without an LLM call (flag
+`jdk-base64-shimmed`; the follow-up says to move to `java.util.Base64` when convenient). Everything else the JDK 21
+compile reports (`cannot find symbol … location: package sun.misc`, …) is matched by the advisory `jdk-removed-apis`
+(guide), because `sun.misc` is an import package of its rule. The fix prompt gets the follow-up plus the
+`## fix-loop: jdk-removed-apis` section of `knowledge/notes/jdk21.md`. The verify step reports `replaced` once no
+source imports those packages any more. The Handover then lists the LLM-rewritten files.
 
-Fixture `java6-legacy`, with a replayed LLM:
+Fixture `java6-legacy` (replayed LLM configured, none needed since round 10):
 
 * The pre-emptive `jaxb-runtime-add` adds `jaxb-api` 2.3.1 + `jaxb-runtime` 2.3.9.
 * `UpgradeToJava21` turns the API into `jakarta.xml.bind-api` 2.3.3. The spring-phase `JavaxMigrationToJakarta`
   moves `Dates` to `jakarta.xml.bind` (3.0.1 / runtime 3.0.2).
-* One LLM fix ports `Codec` to `java.util.Base64`, plus one harvest recipe-candidate call (answer `NONE`).
+* `jdk-base64-shim` points `Codec` at the generated `sbmig.compat` shims (0 LLM calls; before round 10 one LLM fix
+  ported it to `java.util.Base64`).
 * Result: BUILD SUCCESS, exit 0.
+
+### Round 10: undertow, and httpclient4 / jackson1 split by case type (2026-10-26)
+
+* `undertow` (incompatible, `guide`; rule `undertow`: `io.undertow:*`, `spring-boot-starter-undertow`, imports
+  `io.undertow`): `spring-boot-starter-undertow` ends at 4.0.0-M1 on Maven Central and the `spring-boot-dependencies`
+  4.1.0 BOM manages neither the starter nor `io.undertow`. The relocation row `spring-boot-starter-undertow` →
+  `spring-boot-starter-tomcat` (`relocations.yml`, `min_target_boot: 4`, handler `dependency-relocation`) keeps the
+  build going; the follow-up names what is left (Undertow customizer beans such as `UndertowServletWebServerFactory` /
+  `UndertowBuilderCustomizer`, `server.undertow.*` → `server.tomcat.*`, HTTP/2 / WebSocket / buffer settings, an
+  exclusion of `spring-boot-starter-tomcat` that can go). Note `knowledge/notes/boot3-to-4.md`.
+* `httpclient4` / `jackson1` are now `recipe` with `applies_to: [spring_legacy, spring_boot, msa]`: the Spring
+  Framework 6.0 chain (reached by `UpgradeSpringFramework_7_0` and the Boot umbrella) already runs
+  `UpgradeApacheHttpClient_5` (rewrite-apache 2.30.0) and `UpgradeJackson_2_3` → `CodehausToFasterXML` (rewrite-jackson
+  1.28.4), both `provided_by` rewrite-spring in the catalog, so the finding is `recipe_source: plan` and the Handover
+  says what was migrated. The guide-only twins `httpclient4-direct` and `jackson1-direct` (`applies_to: [pure_java,
+  servlet_tomcat, unknown]`, same library rule) cover the projects no Spring chain migrates: the 4.5.x client and
+  Jackson 1 keep compiling at their carried-over versions and the owners port them.
+* Counts: 67 advisories (64 + 3).
 
 ### jdk-generified-apis (round 9c)
 Pre-Java-9 Swing tree code: JDK 9 generified `javax.swing.tree` (`DefaultMutableTreeNode.children()` and the

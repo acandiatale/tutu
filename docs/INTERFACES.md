@@ -642,7 +642,7 @@ Three parts, three owners: **tracker** (`sbmig/loop/error_tracker.py` + hooks in
 | `<kb.dir>/fix_attempts.jsonl` | KB `append_error_cases` | `FixAttemptRecord` per attempt per run (append-only, full diff) |
 | `<kb.dir>/error_hints.json` | KB (incremental; `sbmig kb reindex` rebuilds) | `{version: 1, updated_at, by_generic: {L2: entry}, by_symbol: {symbol: entry}}` |
 | `<run dir>/error_cases.jsonl`, `fix_attempts.jsonl` | orchestrator | the run's prepared records (also with `kb.harvest: false`; not in dry-run) |
-| `<run dir>/error_cases.csv` | orchestrator via KB `write_error_cases_csv` | Excel copy (UTF-8 with BOM) |
+| `<run dir>/error_cases.csv` | orchestrator via KB `write_error_cases_csv` | Excel copy (UTF-8 with BOM; columns `ERROR_CSV_COLUMNS`, round 10 below) |
 
 ### Tracker — `sbmig.loop.error_tracker.ErrorTracker(ws, cfg)`
 One per run, created by the orchestrator (not in dry-run), handed to the loop as `BuildFixLoop.error_tracker`
@@ -662,17 +662,20 @@ note_attempt(att: FixAttempt) -> None                     # every recorded attem
 note_decision(d: TriageDecision) -> None                  # every decision (SKIP / ESCALATE / BLOCKED rationales)
 finalize(blocked: list[BlockedItem], *, run_id: str) -> tuple[list[ErrorCaseRecord], list[FixAttemptRecord]]
     # raw records: ids, error fields (unsanitized), lifecycle, status, attribution, description, failure_reason,
-    # problem_errors, attempts history, block_reason / suggestion; FixAttemptRecord with description, failure,
-    # introduced / remaining errors, raw `diff` (git `base_commit..commit` limited to the attempt's files; the
-    # proposal as search/replace diff when nothing applied). Project fields, ChangeClass, labels, sanitizing and
-    # the denormalized change fields are left to `prepare_error_cases`.
+    # problem_errors, attempts history, block_reason / suggestion, introduced_by; FixAttemptRecord with description,
+    # failure, introduced / remaining errors, raw `diff` in FULL (git `base_commit..commit` limited to the attempt's
+    # files; the proposal as search/replace diff when nothing applied; only a pathological diff above
+    # `MAX_DIFF_CHARS` = 4 MB is cut — round 10). Project fields, ChangeClass, labels, sanitizing, the
+    # `kb.error_diff_chars` cap and the denormalized change fields are left to `prepare_error_cases`.
 ```
 
 Rules the tracker implements:
 * **Identity** of an error = `(kind, norm_file, signature or message[:120])`, `norm_file` = the path from the first
   `src/` segment on (survives the restructure moving files into `{name}-back/`), else the path; several occurrences
-  of one identity are matched by message, then nearest line. One record per occurrence. Record id =
-  `sha1(run_id|identity|occurrence index)[:16]`.
+  of one identity are matched by exact file first (round 10: the same relative path in two services is two
+  errors), then message, then nearest line; a targeted build (`observe(target=…)`, MSA per-service loops) only
+  matches records of its own scope — or a record of the root `src/` that the restructure may have moved into the
+  target. One record per occurrence. Record id = `sha1(run_id|identity|occurrence index)[:16]`.
 * **Visibility** of an absent error in a later build B: B ok → visible; the error's module in `B.modules_built` →
   visible; module == `B.failed_module` or module unknown → visible when B has an error of the same or a later stage
   (stage: pom_invalid / parent_resolution 0, dependency / plugin_resolution 1, enforcer / rewrite 2, compile /
@@ -691,6 +694,9 @@ Rules the tracker implements:
   the tree (only regressions are reverted), so its change (an import, a helper) is part of the fix the resolver
   completes; note "resolved by N attempts whose changes stayed in the tree: …" when N > 1. A reopen starts a new
   chain.
+* **introduced_by** (round 10) of a new error: the attempts scored in the build where it first appeared that
+  changed its file (applied, not reverted / apply_failed; note "appeared at <label> after attempt(s) … changed its
+  file"), else the plan steps noted since the previous build (`step:<id>`); comma-joined in the record.
 * **End state** (finalize): open and present in the last observation → `blocked` when a BlockedItem covers it
   (its signature in `item.signatures` or the item's errors; `block_reason`, `suggestion`), else `unresolved`;
   open and masked → `not_visible` (only when the last build failed).
@@ -700,7 +706,9 @@ Rules the tracker implements:
   (no_change), else its apply errors. Blocked: "blocked (`<reason>`): `<suggestion or evidence>`".
 * **FixAttemptRecord.failure** by outcome: apply_failed → apply errors; regressed / reverted → the "regressed: …"
   note + introduced errors; no_change → "the targeted error(s) were still there after the rebuild"; pending →
-  "not scored (the run ended before the rebuild)"; improved / build_ok → "". `description`: handler →
+  "not scored (the run ended before the rebuild)"; partial / inconclusive (round 10) → the loop's own note
+  ("partial: 1 of 2 targeted error(s) gone, 1 remain", "inconclusive: the build timed out — …"); improved /
+  build_ok → "". `description`: handler →
   "handler `<id>`: `<description>`" (+ notes); recipe → "OpenRewrite `<ids>`"; kb_patch → `att.analysis`; llm →
   "LLM `<model>`: `<analysis>`" (analysis ≤ 1500 chars). `fix_method` from the decision: HANDLER → handler,
   KB_RECIPE → recipe, KB_PATCH → kb_patch, LLM_FIX → llm.
@@ -722,15 +730,19 @@ files + CSV → `kb.append_error_cases(...)` when `kb.harvest and kb.error_cases
 from sbmig.kb.changes import classify_diff        # (diff_text: str) -> ChangeClass   pure, never raises
 from sbmig.kb.error_cases import prepare_error_cases
     # (errors, attempts, profile, ws, cfg) -> tuple[list[ErrorCaseRecord], list[FixAttemptRecord]]
-    # fills project / fingerprint / case_type; sanitizes (relative posix paths, ws roots stripped, secrets redacted,
-    # raw ≤ 2000, diff ≤ kb.error_diff_chars with diff_truncated); classify_diff → attempt.change; labels
+    # fills project / fingerprint / case_type (+ asis_java / asis_spring_boot / asis_spring / packaging from the
+    # profile, schema_version / agent_version, round 10); sanitizes (relative posix paths, ws roots stripped, secret
+    # VALUES masked by sbmig.kb.redact, raw ≤ 2000); classify_diff on the FULL diff → attempt.change, THEN the cap
+    # (diff ≤ kb.error_diff_chars, 0 or negative = no cap, diff_truncated); labels
     # (label_changes on the attempt's FileChanges when they carry search/replace, else from the diff's pairs);
     # error_symbol (symbol_for_errors); denormalizes the resolution into each resolved error: `resolution_attempts`
     # (the tracker's chain, else the resolver alone; unknown ids dropped), change_kind / replace_pairs of all of them
     # combined (`combine_changes`: one kind → it, several → mixed), fix_labels (union), diff_excerpt = per attempt the
-    # hunks of the error's own file ≤ kb.error_excerpt_chars ("# attempt <id>: <method> <resolver> → <outcome>"
-    # header per section when there are several), replace_rule_candidate = fix_method == "llm" and the combined
-    # change_kind == "text_replace"); attempt_count / llm_attempts.
+    # hunk of the error's own file containing / nearest the error line (`changes.excerpt_for`, then the next nearest
+    # while they fit) ≤ kb.error_excerpt_chars ("# attempt <id>: <method> <resolver> → <outcome>" header per section
+    # when there are several), replace_rule_candidate = fix_method == "llm" and the combined change_kind ==
+    # "text_replace" and no replace pair touched a masked secret); attempt_count / llm_attempts.
+    # A record that fails to prepare is stored minimal (no diff / raw), never as given.
 from sbmig.kb.changes import combine_changes      # (list[ChangeClass]) -> ChangeClass   pure, never raises
 from sbmig.kb.error_cases import write_error_cases_jsonl, write_error_cases_csv   # (records, path) -> Path
 from sbmig.kb.error_cases import ErrorCaseStore    # ErrorCaseStore(kb_dir): append(errors, attempts) -> int,
@@ -742,13 +754,18 @@ FileKnowledgeBase.match(cluster)    # KBMatch.hints also gets error-case hints (
                                     # the cluster at most 2 lines — the most frequent past fix ("past runs: fixed by
                                     # <method> <resolver> in N project(s): <description>; replace `a` → `b`") and the
                                     # most frequent past failure ("past failure ×k: <method> <outcome> — <failure>;
-                                    # do not repeat it"); kb.max_hints still caps the list
+                                    # do not repeat it"); kb.max_hints still caps the list. Round 10: a failure is
+                                    # counted per error from ITS attempts (`error_cases.failed_refs`): an attempt
+                                    # that is part of that error's resolution, or ended partial / inconclusive /
+                                    # pending, is never a failure for it
 ```
 CLI (`sbmig kb errors …`): `list` (filters `--status --method --change-kind --project --symbol --signature --run
---limit --json`), `show <id>` (record + its attempts; the resolving diff — every resolution attempt's diff, in
-run order, when there are several), `summary [--run]`, `replace-candidates
-[--min-projects]` (LLM text-replace fixes grouped by L2 + replace pair: count, projects, example — rule / command
-candidates), `export --csv PATH [--attempts-csv PATH]` (same filters). `sbmig kb reindex` also rebuilds
+--case <id prefix> --resolver <regex> --limit --json`; `--case` / `--resolver` round 10), `show <id>` (record + its
+attempts; the resolving diff — every resolution attempt's diff, in run order, when there are several), `summary
+[--run]` (streamed, round 10), `replace-candidates [--min-projects]` (LLM text-replace fixes grouped by L2 + replace
+pair: count, projects, example — rule / command candidates; never a pair with `***`), `export --csv PATH
+[--attempts-csv PATH]` (same filters; a filtered `--attempts-csv` also holds each error's resolution attempts).
+`sbmig kb reindex` also rebuilds
 `error_hints.json`; `sbmig kb stats` adds `error_cases` / `fix_attempts` counts. The fleet `learning.md`
 (`render_learning_md`) gains an "Error cases" section (status × method, top failure reasons, top text-replace
 candidates) when the KB has error cases for the fleet's runs.
@@ -778,8 +795,10 @@ Implementation notes (2026-10-23, as built — they refine the contract above):
   run directory only (no CSV, no KB). Journal `error_cases` also carries `kb_appended`, `llm_text_replace`.
 * KB: `ErrorCaseStore.append` returns errors + attempts written (`append_counts` gives both); `replace_rule_candidate`
   only for `status == "resolved"`; an error's `replace_pairs` = the pairs in its own file, else all of the attempt's;
-  classification runs on the path-stripped, not yet redacted diff (pairs inside a redacted secret become `***`);
-  sanitizing also maps the home directory to `~`; `error_*_chars <= 0` = no cap. Hint lines start with
+  classification runs on the path-stripped, not yet masked FULL diff, before the cap (round 10); a replace pair
+  that touches a masked secret value is dropped (note `redacted: …`) and that resolution is never a rule
+  candidate; the stored diff / excerpt are masked; sanitizing also maps the home directory to `~`;
+  `error_*_chars <= 0` = no cap. Hint lines start with
   `[error <key>]`; `error_hints.json` entries carry `variants` (≤ 25 per key, first-seen order) so an incremental
   update equals a rebuild. `Ledger.summary()` includes `error_cases` (read from `errors.jsonl` next to the ledger),
   so the fleet `learning.md` gets the section; `render_learning_md(..., error_cases=None)`. `sbmig kb export` /
@@ -836,16 +855,22 @@ there is no L2). Auto rules (recomputed on every update; `human` untouched):
 * **name**: `<Owner simple name>.<symbol> — <class with spaces>` when the top variant has an owner, else
   `<symbol> — <class>`; **variants**: by owner (`location` / symbol owner), each with its L1, seen, projects.
 * **evidence**: counts over the case's error records; `fixes` grouped by (method, resolver, replace pairs) with the
-  latest attempt as example; `failures` grouped by (method, outcome, failure prefix); `timeline` = last 20 records
-  (`attempts` = "method:outcome" in order, so a failure followed by a fix is visible); `action_*` = records resolved /
-  not resolved by the handler `case-replace` (`fix_method == "handler"` and `resolver_id == "case-replace"`).
+  latest attempt as example; `failures` grouped by (method, outcome, failure prefix) — round 10: counted per error
+  record from ITS attempts (`failed_refs`: an attempt in its `resolution_attempts` / `resolved_by`, or one that ended
+  `partial` / `inconclusive` / `pending`, is never a failure for it, so a working fix is no longer "do not repeat
+  it"); `timeline` = last 20 records (`attempts` = "method:outcome" in order, so a failure followed by a fix is
+  visible); `action_*` = records resolved / not resolved by the handler `case-replace` (`fix_method == "handler"`,
+  `resolver_id == "case-replace:<case id>:<pair-set hash>"` since round 10 — counted per pair set; a plain
+  `case-replace` of older records counts for the top-ranked set).
 * **action / status** (first that applies): (1) a KB recipe (active or candidate) whose signatures contain the L2 or a
   variant's L1 → `recipe` (status active if any such recipe is active, else candidate); (2) resolved records with
-  `replace_rule_candidate` (LLM text replaces) → `replace` with the most common pair set, status candidate; active once
-  `action_projects` ≥ `kb.auto_promote_after_projects` and `action_failures == 0`; a candidate replace with ≥ 2 action
-  failures and no success falls back to observed / hint; (3) replayable LLM patch cases (`KBCase` with this L2) →
-  `patch`, candidate (replayed by the existing KB_PATCH step); (4) otherwise `hint`, observed. `block` and `handler`
-  only come from `human.action`.
+  `replace_rule_candidate` (LLM text replaces) → `replace` with the pair set fixed in the most distinct PROJECTS
+  (then records, then first seen — round 10; before: the most records), status candidate; active once that set's
+  `action_projects` ≥ `kb.auto_promote_after_projects` and its `action_failures == 0`; a set with failures ≥ 2 and
+  failures > successes falls back (audit reason `fallen back: …`) and the next set is tried; (3) replayable LLM patch
+  cases (`KBCase` with this L2) → `patch`, candidate (replayed by the existing KB_PATCH step); (4) otherwise `hint`,
+  observed. `block` and `handler` only come from `human.action`; a hit whose action comes from `human.action` is
+  `CaseHit.pinned` and triage obeys it (round 10 below).
 * **hints** (≤ 3): the best fix ("past runs: fixed by …; replace `a` → `b`") and the top failure ("past failure ×k:
   … — do not repeat it"), same wording as the error hints; `human.hints` go first.
 
@@ -878,9 +903,12 @@ the specific built-in handlers win; the HANDLER step precedes KB recipes and the
 effective action `replace` and status candidate / active for an error with file + line. `apply`: per file, the
 reported lines (and `import` lines) — or the whole file with `case_replace_scope: file` — get each pair replaced
 (identifier-bounded `(?<![\w$])old(?![\w$])` when `old` is an identifier; otherwise literal but bounded at each end that is a word character, so `1.0.0` never hits `11.0.0` and `javax.servlet` never hits `javax.servletx`; all pairs of a case in one pass, longest first) only where `old` occurs; the scope comes from `kb.case_replace_scope` only (a case action's own `replace_scope` is not consulted);
-returns `FileChange(path, op="modify")` per changed file; `notes` name the case id and the pairs. The build scores
-it like any handler; the error records then carry `fix_method: handler`, `resolver_id: case-replace`, which the
-catalog counts as action successes / failures (auto promotion).
+returns `FileChange(path, op="modify")` per changed file; `notes` name the case id and the pairs, plus one
+`resolver: case-replace:<case id>:<8-hex pair-set hash>` note per applied case (`sbmig.kb.catalog.pairset_hash`: sha1
+of the sorted unique `old<TAB>new` lines, round 10). The build scores it like any handler; the tracker takes the
+attempt's `resolver_id` from those notes, so the error records carry `fix_method: handler`, `resolver_id:
+case-replace:<case>:<hash>`, which the catalog counts as action successes / failures of exactly that pair set (a
+changed action does not inherit old successes; auto promotion).
 
 Implementation notes (case catalog, as built 2026-10-23):
 * `CaseCatalog(kb_dir, cfg=None, *, kb=None)` (`kb` = the store, for recipes / patch cases); extras `resolve`,
@@ -901,3 +929,238 @@ Implementation notes (case catalog, as built 2026-10-23):
   `list -n`); `sbmig kb errors show` readable by default (`--json`, `--all-diffs`).
 * Handler `case-replace`: only errors whose L2 is the case key or whose L1 is a variant's get the replace (never a
   symbol-only hit); `clear_catalog_cache()` for tests. e2e `expect.error_cases.kb_cases_min`.
+
+## Round 10 (2026-10-26)
+
+A five-role review (architecture, fix-loop bugs, operations, KB data quality, migration coverage); every finding fixed
+in one round. The KB format changed without a migration (the company wipes `kb/` and rebuilds). Statements of the
+"Error cases" and "Case catalog" sections above were updated in place; the rest is here.
+
+### Models and seams (`sbmig/core/models.py`, `sbmig/core/interfaces.py`)
+* `AttemptOutcome` += **`partial`** (some of the cluster's targeted errors are gone, the rest remain, nothing new in
+  the touched files: progress — not a failure for the per-cluster limits or the KB failure counts, not a success for
+  harvest / recipe credit) and **`inconclusive`** (the scoring build cannot tell: timed out, failed without a parsed
+  error, or stopped at an earlier stage the attempt did not cause — no KB credit either way, counts as tried).
+  Outcome sets: triage `SUCCESS_OUTCOMES` = improved, build_ok; `FAILED_OUTCOMES` (what the limits count) = no_change,
+  regressed, reverted, apply_failed, inconclusive; `PROGRESS_OUTCOMES` = partial (a deterministic option that only got
+  this far is not chosen again); KB `FAILED_OUTCOMES` = no_change, regressed, reverted, apply_failed (partial /
+  inconclusive / pending never fail).
+* `KB_RECORD_SCHEMA = 2`: `FixAttemptRecord` / `ErrorCaseRecord.schema_version` (absent in a stored line = 1; bump on
+  a change of a field's meaning) and `agent_version` (`sbmig.__version__`); audit lines carry both.
+  `ErrorCaseRecord` += `asis_java`, `asis_spring_boot`, `asis_spring`, `packaging` (from the profile), `introduced_by`.
+* `CaseHit.pinned: bool` — the hit's action is the human block's (`sbmig kb cases pin --action …`); see triage below.
+* `LLMRequest.metadata` = `run_id`, `project` (workspace directory name), `phase`, `iteration`, `cluster_id`
+  (`LLMFixer.call_tags(ctx, cluster_id, ws)`); never secrets. Invariant 4 unchanged.
+* `LLMError` texts the fix loop classifies (explicit tokens, nothing else): `status=<code>` (`status=None` = no HTTP
+  answer), `cause=<ExceptionClass>: <innermost message ≤ 120 ASCII chars>` (`sbmig.fix.company.transport_cause`;
+  `[WinError N]` / `[Errno N]` kept, non-ASCII → `?`) on the company client's warning / retry / give-up lines and in
+  the give-up `LLMError`; `LLMAdapter` wraps a plugin exception as `LLM adapter <name> failed (status=<s>,
+  cause=<Class>): …`; an empty answer with `finish_reason=length` raises `LLMError(200, …, "empty answer with
+  finish_reason=length: request rejected by its size …")` (not retried; a cut answer that has text is returned with a
+  warning).
+* Flags: `jdk-not-21`, `llm-config-error`, `infra:llm | infra:maven | infra:jdk | infra:repository | infra:disk`,
+  `jdk-base64-shimmed`, `boot4-types-relocated`, `security-path-matchers-rewritten`, `specification-unrestricted`,
+  `tools-jar-removed` (handlers: docs/ERROR-HANDLING.md E15–E19).
+* Journal events: `kb_credit_skipped` (also per attempt: `{phase, recipes, attempt, reason: partial|inconclusive}`),
+  `llm_config_error {phase, iteration, body, prompts}`, `restructure_moves {step, moved, blocked_rekeyed}`,
+  `phase_end.interrupted`, `build_negative_cache_retry {goal, module, artifacts, first_log}`.
+
+### Config keys (mirrored in `config/default.yml`)
+| key | default | meaning |
+|---|---|---|
+| `build.require_java_major` | 21 | preflight: `mvn -v` must report this Java major (0 = no check) |
+| `build.retry_negative_cache` | true | a build failing on a cached resolution failure runs once more with `-U` |
+| `kb.redact_file` | `knowledge/kb/redact.yml` | secret-masking rules added to the built-ins (company additions) |
+| `kb.lock_timeout_seconds` | 300 | wait for `kb/.lock`; a lock older than this (or whose pid is gone) is stale |
+| `kb.error_diff_chars` | 12000 | cap of a stored attempt diff, applied AFTER the classification (0 or negative = no cap) |
+| `loop.structural_regression_kinds` | + `dependency_resolution` | a made-up dependency an LLM added is reverted like a broken pom |
+| `fleet.preflight` | true | infrastructure checks before the first project |
+| `fleet.infra_failure_limit` / `infra_retry_minutes` / `infra_max_waits` | 3 / 15 / 4 | infrastructure breaker |
+| `fleet.cleanup` | `build-output` | `none` \| `build-output` \| `workspace` |
+| `fleet.min_free_gb` | 5 | free space on the output drive before each project (0 = no check) |
+
+`RecipeSetConfig` defaults equal `openrewrite.recipes` of `config/default.yml` (drift test
+`tests/core/test_recipe_set_defaults.py`). `.env` is read as UTF-8 (BOM or not), UTF-16 or cp949 and read again when
+edited (shell variables still win; values the loader set earlier follow the file).
+
+### Fix loop, triage, orchestrator
+* **Scoring** (`BuildFixLoop._score`): `build_ok`; `improved` = every targeted error gone AND the build reached their
+  stage; `partial` (note "partial: k of n targeted error(s) gone, m remain"); `no_change`; `regressed` = new errors
+  in a touched file counted by (file, signature) occurrences (a same-L1 error elsewhere no longer hides them), the
+  ×`regression_ratio` rule, a new `structural_regression_kinds` kind after a pom edit, or — after a pom edit — new
+  errors of an earlier stage that hide the targeted ones; `inconclusive` otherwise when the build cannot show them.
+  A revert rebuild scores the reverted round's inconclusive attempts again (note "scored again on the rebuild after
+  the revert"). KB recipes are credited only on improved / build_ok vs failed outcomes (partial / inconclusive →
+  `kb_credit_skipped`).
+* **Per-cluster limits** (`max_llm_attempts_per_cluster`, `blocked_policy`, the repeated-failure limit) count only
+  SCORED failures of the SAME cluster (`sbmig.triage.decide.same_cluster`: same cluster id, or same file — followed
+  through restructure moves — with an overlapping signature); `pending` never counts. Attempts on other files with
+  the same signature only reach the prompt as KB hints ("this run: the same error (…) in … was fixed by attempt …",
+  `BuildFixLoop._sibling_hints`, ≤ 3).
+* **Blocked registry** keys = (L1, full posix path) (`''` for module / artifact errors); the orchestrator feeds the
+  restructure step's git renames (`git diff -M`) into `BlockedRegistry.note_moves` / `canonical_file` (journal
+  `restructure_moves`), so MSA services never share a block and a block survives the move.
+* **Pinned case actions** (`DecisionEngine._pinned_decision` in `sbmig/triage/decide.py`, step 0b after the run-wide
+  registry): `block` → BLOCKED without
+  handler or LLM (a `BlockReason` value as is; free text → `external_api_incompatible` with the text as the
+  suggestion); else `handler` → that registered handler first (unknown id → note + warning, already tried → note);
+  else `recipe` → a KB_RECIPE decision with the pinned ids not yet run; `replace` / `hint` follow the normal ladder.
+* **LLM classification** (`sbmig.loop.fixloop.is_llm_transport_error`): transport / configuration only on
+  `status=None|401|403|404|408|429|5xx`, `cause=…`, a known exception class name (`ConnectionError`, `ReadTimeout`,
+  `SSLError`, `LLMHardDeadline`, `PluginLoadError`, …) or the explicit config phrases (response path, invalid JSON,
+  API key not set, unknown provider); `status=400|413|422`, a content filter and `finish_reason=length|max_tokens` are
+  request rejections. The same HTTP 400 body (`llm_400_body`, prompt-too-big texts excluded) for
+  `LLM_CONFIG_ERROR_PROMPTS` = 2 different prompts → flag `llm-config-error`, no more LLM calls in the run, one
+  follow-up with the short body, journal `llm_config_error`, ERROR line `LLM configuration error: the gateway answered
+  HTTP 400 '…' to N different prompts — no more LLM calls in this run`.
+* **Invariant 1**: after an internal abort every planned final-build step without a result runs
+  (`_final_build_after_abort`); an interrupted phase stays in the report ("phase interrupted: …", journal `phase_end`
+  with `interrupted`); `report.success` is False when the run aborted or a planned final build has no result
+  (`_verify_missing`). `_abort` logs one ERROR line `run aborted: <reason>`.
+* Test-skip fallbacks are recorded per build target (`test_compile_skipped_targets` / `tests_skipped_targets`, `""` =
+  the whole project), not run-wide.
+* **Java preflight** (`Orchestrator._check_java_major`): `mvn -v` reporting another major than
+  `build.require_java_major` aborts before any build (exit 3, flag `jdk-not-21`, follow-up / ERROR line `run aborted:
+  Maven runs on Java X (<runtime home>), not Java 21: set build.java_home (or JAVA_HOME) to a JDK 21 home and rerun`);
+  `mvn-not-found` caused by JAVA_HOME says so instead of "install Maven" (`maven_available` keeps `runtime: <home>`).
+* **Finalize order**: KB records (advisories, error cases, ledger) and the report first, `changes.patch` /
+  `result.zip` last (paths announced up front; a path whose file could not be written is dropped and the report
+  rewritten).
+* **Infrastructure flags** (`Orchestrator._infra_flags`, at finalize): `infra:llm` (llm-unavailable /
+  llm-config-error on a run that did not succeed), `infra:maven` (mvn-not-found), `infra:jdk` (jdk-not-21, or
+  mvn-not-found because of JAVA_HOME), `infra:repository` (`aborted:parent-not-found`, or every error of the failed
+  final build(s) is a resolution error whose text names the repository / network: could not / failed to transfer,
+  connection refused / reset, timed out, unknown host, no route to host, PKIX, status / return code 401 / 403 / 5xx,
+  "was cached in the local repository"; a plain "Could not find artifact" does not count), `infra:disk` (a failed
+  run whose final-build errors say "No space left on device", "not enough space on the disk", "disk quota exceeded",
+  "디스크 공간이 부족" or ENOSPC).
+* The watchdog stays silent while a loop build, a rewrite run, an LLM HTTP call (`sbmig.fix.client.llm_call_in_flight`)
+  or a live Maven child is running.
+* `add-known-dependency`: a test library referenced from MAIN code is added with compile scope.
+
+### Build, workspace, signatures
+* `Workspace.rel()` / `glob()` / `java_files()` / `pom_files()` return POSIX paths on every OS; new
+  `sbmig.core.workspace.posix_rel(p)`, `Workspace.walk()` (os.walk with `.git` and build output pruned; `""` = root),
+  `Workspace.is_build_output(rel)`, `is_build_output_path(rel, root=None)`, `Workspace.changed_between(a, b)`
+  (NUL-separated name lists, non-ASCII names verbatim; `changed_files_since` too).
+* **`target` rule**: a `target` dir is build output only when no `src` component comes before it and a `pom.xml` sits
+  beside it (or it holds `maven-status/` / `maven-archiver/`). Packages named `target` stay in the run copy, KB scans,
+  restructure, analyze, handlers and `result.zip`.
+* **Generated `.gitignore`** (part of `changes.patch` / `result.zip`): `target/`, `!**/src/**/target/`,
+  `!**/src/**/target/**`, `!/<dir>/target/` (+ `/**`) for every non-output `target` dir, `.sbmig/`, `*.class`, and the
+  `GENERATED_IGNORES` (`.flattened-pom.xml`, `**/src/main/generated/`, `**/src/test/generated/`, `.apt_generated/`,
+  `.apt_generated_tests/`) unless the as-is tree has them.
+* Jars a project `.gitignore` hides (`*.jar`, `lib/`) are force-added to every snapshot (`_force_add_ignored_jars`;
+  outside build output and `node_modules/`); nothing else the project ignores is forced in.
+* Workspace git always passes `-c commit.gpgsign=false -c tag.gpgsign=false -c core.longpaths=true
+  -c core.autocrlf=false -c core.quotepath=false -c safe.directory=* -c core.hooksPath=<run dir>/no-hooks`
+  (`GIT_CONFIG`); `git_init` writes `.git/info/attributes` = `* -text -eol -filter -ident -working-tree-encoding`
+  (a project `.gitattributes eol=crlf` / LFS filter no longer rewrites files on revert). mvn / git children start
+  with `CREATE_NO_WINDOW` on Windows.
+* Windows javac paths `/C:/…`, `file:///C:/…`, `file:/C:/…`, percent-encoded (Korean folders) and lower-case drives
+  are relativized (roots compared case-insensitively); raw text and build summary scrubbed in every spelling.
+* `MavenRunner.run`: with `build.retry_negative_cache` a failed build whose log says a resolution failure "was
+  cached in the local repository" (Maven 3.6–3.9 wordings, `sbmig.build.runner.negative_cache_hits(text)` →
+  coordinates) runs once more with `-U` — once per artifact per run, never offline (`-o`) or when `-U` is already
+  there; log `maven: negative cache hit for <g:a:v> → retrying once with -U`, journal `build_negative_cache_retry`,
+  log file `NNN-build-<label>-U.log`; the retry's result is returned.
+* `mvn_env` appends `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` to `MAVEN_OPTS` (`with_utf8_output`); a property
+  already set in `build.env` / `MAVEN_OPTS` wins. The encoding-detection cache is a thread-safe LRU of 20,000 entries.
+* **Signatures (L2 = case key)**: `package_does_not_exist` keeps the whole package (`javax.xml.bind` ≠ `javax.xml.ws`);
+  `method_does_not_override` / `static_import_only` carry the method / class the log parser reads from the reported
+  source line into `BuildError.symbol`; `illegal_start` the javac phrase (first 8 words); `plugin_execution` = plugin
+  goal + the normalized cause (`CAUSE_WORDS` = 10: `plugin_execution|war:war|error assembling war: webxml attribute
+  is required`); L1 masks project FQCNs inside the symbol. Old L2s are not comparable — the KB must be rebuilt.
+* Thread dumps (`sbmig.core.diag`): Ctrl+Break (`SIGBREAK`) on Windows, and a trigger file `dump-threads` /
+  `dump-threads.txt` in the start dir, the out dir or a recent run dir (polled every 2 s; the dump is written next to
+  it, the file removed, log `thread dump requested by <path>`); under `sbmig serve` use the file or `/api/threads`.
+
+### Knowledge base
+* **Secret masking** (`sbmig/kb/redact.py`: `redact(text)`, `Redactor.spans` / `redact_ex`, `get_redactor(cfg)`):
+  built-in contexts + `kb.redact_file` (`key_words`, `key_patterns`, `patterns`, `allow_keys`; commented examples
+  only). Only VALUES are masked (`***`), by context: key = value / key: value whose key's last word is a secret word,
+  Java / XML / JS string literals assigned to such names, `<password>`, `<property name value>`, `<param-name>` /
+  `<param-value>`, JSON, URL user info, JDBC (Oracle `user/pass@`, `;password=`), Authorization / Bearer / Basic, PEM
+  keys; never comparisons, non-literal assignments or placeholders (`${…}`, `__SET_ME__`, …). Applied to raw Maven
+  text, messages, diffs, KB patch cases and ledger notes; KB patch cases with a masked secret get tag
+  `no-replay:redacted` (hint only).
+* **Append-only jsonl** (`sbmig/kb/jsonl.py`: `append_lines`, `repair_tail`, `parse_record`, `quarantine`) for
+  `errors.jsonl`, `fix_attempts.jsonl`, `ledger.jsonl`, `audit.jsonl`, `quarantine.jsonl`: a torn last line is moved to
+  `<file>.corrupt` (warning) before the next append; one write + fsync per batch; only whole records count as known.
+  Lines a model cannot validate → warning + `kb/quarantine.jsonl`; `rebuild` never deletes a case whose L2 had such
+  lines.
+* **Cross-process lock** (`sbmig/kb/lock.py`: `kb_lock(root, timeout=None)`): `kb/.lock` created with `O_CREAT |
+  O_EXCL` holding pid / host / time / token / cmd; re-entrant per process; stale after `kb.lock_timeout_seconds` or
+  when the pid is gone (same host); waits with backoff, then logs and proceeds without it (never fails a run). Every KB
+  write runs inside it; `index.json` is reloaded when it changed on disk (web, fleet and `sbmig kb …` may share one KB).
+* **Catalog** (`sbmig/kb/catalog.py`, rules in "Case catalog" above): `pairset_hash(pairs)`,
+  `case_replace_resolver(case_id, pairs)`; `kb/audit.jsonl` = every human edit through `sbmig kb cases …` (OS user,
+  command, before → after) and every automatic status / action transition (created / promoted / demoted / action
+  changed / `fallen back: …`) with the evidence counts; `cases show` has a history section; `cases reject` also stops
+  that L2's KB patch replay, KB recipes and symbol hints (`CaseCatalog.rejected_signatures`).
+* **Learned replace pairs** (`sbmig/kb/changes.py`): a package-qualified name is one token and a change in its package
+  part becomes one pair of the full package parts (`javax.xml.bind.JAXBContext → jakarta.xml.bind.JAXBContext` is
+  learned as `javax.xml.bind → jakarta.xml.bind`, never `javax → jakarta`); member renames stay single-token pairs.
+  Handler `case-replace` only renames javax names the jakarta table renames (`javax.sql`, `javax.xml.parsers`,
+  `javax.naming` untouched).
+* **Error CSV** (`ERROR_CSV_COLUMNS`, snapshot in `tests/kb/test_error_cases.py`): the round-9 columns, then `signature`
+  (L1), `location`, `module`, `case_type`, `asis_java`, `asis_spring_boot`, `asis_spring`, `packaging`, `targeted`,
+  `resolved_by`, `fix_labels`, `at`, `introduced_by`, `notes`, `schema_version`, `raw`, and `diff_excerpt` last. Formula
+  guard (`formula_guarded`): a leading `'` only for cells starting with `=` / `@` / tab / CR, or with `+` / `-` and
+  containing one of `( ) | ! = @` (`-source 8`, `-Xmx512m` stay as written; read back by dropping one `'`).
+* `ErrorCaseStore.summary()` / `FileKnowledgeBase.stats()` stream (30k records: +342 MB → +11 MB); `kb import
+  --replace` builds in a hidden sibling dir, swaps by rename and keeps `<kb>.bak-<ts>`; recipe moves write the new meta
+  first. New KB files: `audit.jsonl`, `quarantine.jsonl`, `*.jsonl.corrupt`, `.lock`, `kb.bak-<ts>/`; the repo
+  `.gitignore` ignores the KB data files (`.gitkeep`s stay).
+* `--no-kb` (CLI and `migrate(kb=False)`) = `sbmig.api.NO_KB_OVERRIDES`: also `catalog`, `case_replace`,
+  `error_hints`, `try_candidates_in_plan`, `ledger`, `symbol_index`, `deterministic_candidates` off (`error_cases`
+  stays on: the run dir still gets `error_cases.*`).
+
+### Fleet, CLI, web
+* `sbmig/fleet/preflight.py` (`run_preflight(cfg, out_dir, echo=…)`, `Check(name, ok, detail, kind, transient,
+  skipped)`, one line each `preflight: <check> ok|FAIL|skip <detail>`): disk, maven, java, settings, repository (one GET
+  to the settings mirror like Maven: settings `<proxy>` honoured, environment proxies not; any answer < 500 = up, an
+  unverifiable TLS handshake = up), llm (`sbmig.fix.company.probe_llm`; skipped for the fake provider or
+  `loop.max_llm_calls: 0`). Kinds `disk | maven | jdk | repository | llm`; `transient` (outage, full disk) vs a
+  configuration error.
+* **Infrastructure breaker** (`FleetRunner`): a project ending with `infra:<kind>` (or the older llm-unavailable /
+  llm-config-error / mvn-not-found / jdk-not-21 flags on a run that is not green, or crashing with an infrastructure
+  exception: full disk, requests / LLM error, mvn missing) goes back to `pending` with `error: infra:<kind>`; after
+  `fleet.infra_failure_limit` such projects in a row the fleet waits `fleet.infra_retry_minutes`, re-runs the
+  preflight and resumes (deferred projects first, each re-run at most `MAX_INFRA_REQUEUES` = 2 times); after
+  `fleet.infra_max_waits` waits, at once with `infra_retry_minutes: 0`, or at once on a configuration error it stops:
+  `fleet stopped: infrastructure <kind> unavailable since <project> - fix it and run sbmig fleet again` (state saved,
+  exit 3 = `EXIT_STOPPED_ON_INFRA`; a plain re-run resumes). Waiting line `fleet: infrastructure <kind> unavailable
+  since <project> - waiting N min, then re-checking (i/max)`. Before each project the free space is checked
+  (`fleet.min_free_gb`, kind `disk`).
+* `sbmig/fleet/cleanup.py`: `cleanup_run(run_dir, mode)` after the report / zip (`build-output` = `target/` dirs beside
+  a pom; `workspace` also `<run dir>/project` when `result.zip` exists, else falls back to `build-output`; keeps
+  `KEEP_FILES` + `logs/`); `plan_clean(...)` / `execute(items)` for `sbmig clean [--out DIR] [--fleet DIR]
+  [--older-than DAYS] [--keep-failed] [--dry-run] [--records DIR]` (finished runs' project copies, web uploads of
+  finished runs, stale `.part` uploads, `llm-*.json` records; prints per-kind count and size, then `would free …` /
+  `freed …`).
+* Fleet logging: every project logs DEBUG into its own `<run dir>/sbmig.log`; `fleet/sbmig.log` is INFO.
+* Manifests (`sbmig.fleet.manifest.read_text_any`): UTF-8 (BOM or not), UTF-16 (BOM or BOM-less LE), else cp949.
+  Names with non-ASCII characters or colliding names → ASCII slug + 6-char hash of the input path
+  (`name_with_hash`); plain ASCII names unchanged. Fleet state is keyed by `input_key(path)` (absolute, normalized,
+  case-folded on Windows; older state files match unchanged).
+* Summary: `summary.csv` UTF-8 with BOM, + columns `attention` (`;`-separated) and `input`; `summary.md` section
+  "Needs attention" grouped by the first code; each summary file is written on its own (an Excel-locked csv is
+  skipped with a log line).
+* `sbmig/report/result_line.py`: `result_line(...)`, `report_result_line(report, exit_code)` →
+  `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes|->` (ASCII)
+  at the end of `sbmig run` (also on a crash: `attn=crash`), one per fleet project, in a web run's `sbmig.log`.
+  `attention_codes(...)`, most important first: `infra:<kind>`, `skipped:<tool|input>`, `crash`, `aborted[:reason]`,
+  `blocked:<reason>` (per distinct reason), `unresolved:<n>`, `restructure-failed`, `llm-budget-exhausted`,
+  `time-budget-exhausted`, `javax-api-on-classpath`, `tests-skipped`, `test-compile-skipped`, `tests-not-compiled`,
+  `incomplete`. `sbmig fleet status --attention` (`summary.render_attention`) lists only those projects, grouped by
+  their first code.
+* Console: stdout / stderr / logging handlers use `errors="replace"` (a cp949 console never kills a run after the
+  report); the console summary prints `ok` / `FAIL`. `sbmig llm-probe` ends with `ProbeResult.line()` = `LLM-PROBE
+  ok|FAIL <kind> provider=… model=… status=…` (exit 0 / 1); `probe_llm(cfg)` is shared with the fleet preflight.
+* **Web token** (`sbmig.web.app.TokenGuard`, `create_app(..., token=None)`): without a token only loopback clients are
+  served (a LAN client gets 403, also under a plain `uvicorn --host 0.0.0.0`); `sbmig serve --token <t>` or
+  `SBMIG_WEB_TOKEN` (also from `.env`) is required for a non-loopback `--host`, else exit 2. Requests send
+  `Authorization: Bearer <token>`, or `?token=` once (sets an HttpOnly SameSite=Strict cookie holding a hash of the
+  token for 7 days; the page `/` is redirected without the token, an API call is answered and keeps the cookie);
+  401 / 403 bodies carry the hint the UI shows.

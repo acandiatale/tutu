@@ -113,7 +113,9 @@ def test_command_env_and_config_file(ws, rcfg, fake):
                            "-Drewrite.exportDatatables=false", "-Drewrite.failOnInvalidActiveRecipes=true",
         "-Drewrite.exclusions=**/*.jsp,**/*.jspx,**/*.html,**/*.htm"]
     assert call["cwd"] == str(ws.root)
-    assert call["env"]["MAVEN_OPTS"] == "-Dfoo=1 -Xmx4g -XX:+UseG1GC"
+    # inherited MAVEN_OPTS first, the rewrite JVM args last (round 10: mvn_env may add -Dstdout/-Dstderr.encoding)
+    opts = call["env"]["MAVEN_OPTS"]
+    assert opts.startswith("-Dfoo=1 ") and opts.endswith(" -Xmx4g -XX:+UseG1GC")
     assert call["env"]["JAVA_HOME"] == "/opt/jdk21"
     assert res.ok and res.command == call["cmd"] and Path(res.log_path).name == "001-rewrite-jdk21.log"
     assert "- org.openrewrite.java.migrate.UpgradeToJava21" in cfg_path.read_text()

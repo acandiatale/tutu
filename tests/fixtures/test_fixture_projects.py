@@ -38,7 +38,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
              "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
-             "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay"]
+             "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay", "spring5-security-batch"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 
@@ -77,6 +77,7 @@ BUILD_MATRIX = [
     ("boot2-qlrm-javax", ".", "11", ""),
     ("servlet-webxml-legacy", ".", "8", ""),
     ("servlet-nonstandard-dirs", ".", "8", ""),
+    ("spring5-security-batch", ".", "8", ""),          # round 10: Security 5.7 + Batch 4 + sun.misc Base64, 0 LLM
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),

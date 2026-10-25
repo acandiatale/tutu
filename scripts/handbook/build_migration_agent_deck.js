@@ -106,7 +106,7 @@ function addSec(t) { pres.addSection({ title: t }); CUR = t; }
 addSec("표지");
 { const s = pres.addSlide({ masterName: "TITLE", sectionTitle: "표지" });
   s.addText("migration agent", { placeholder: "title" });
-  s.addText("JDK 21 · Spring Boot 4.1 마이그레이션 에이전트 상세 설계\n2026-10-23 · 사내 Maven 프로젝트 약 500개를 순차 처리", { placeholder: "body" });
+  s.addText("JDK 21 · Spring Boot 4.1 마이그레이션 에이전트 상세 설계\n2026-10-26 (round 10) · 사내 Maven 프로젝트 약 500개를 순차 처리", { placeholder: "body" });
   s.addNotes("이 덱은 docs/migration-agent/README.md의 상세 설계를 요약합니다. 다이어그램은 같은 문서의 Mermaid 원본(diagrams/*.mmd)을 렌더링한 PNG입니다."); }
 
 { const s = content("목차", "표지", "문서의 13개 절과 같은 순서입니다.");
@@ -134,17 +134,17 @@ addSec("개요");
 { const s = content("지원 케이스와 인테이크 규칙", "개요", "케이스는 classifier가 결정적으로 정합니다. 같은 프로젝트와 같은 설정이면 같은 계획이 나옵니다.");
   table(s, [["case_type", "판정", "spring 레시피", "재구성"],
     ["pure_java", "Spring / 서블릿 없음", "javax EE import 있을 때 jakarta, JUnit 4→5", "layout: -boot / -back"],
-    ["spring_legacy", "Spring 4/5, Boot 없음", "jakarta + Framework 7 (+ Security 7)", "layout, XML → @ImportResource"],
-    ["spring_boot (+ MSA)", "Boot 2.x / 3.x", "Boot 4.0 umbrella + 4.1 props + 4.1 버전 + Jackson 쌍", "boot_pom (MSA: msa_pom)"],
-    ["servlet_tomcat", "HttpServlet / web.xml / war", "ServletToJakartaAndBoot", "layout, JSP면 boot WAR"]], 0.5, 1.15, 9, [1.7, 1.9, 3.3, 2.1], { size: 10.5 });
-  card(s, 0.5, 3.3, 9, 1.75, "인테이크", ["Maven 프로젝트만 받습니다. Gradle / Ant / 빌드 파일 없음 / pom 없는 트리는 Maven 호출 전에 거절(unsupported-build-tool:<tool>, exit 3)", "sbmig inventory <dir|zip>는 pom 없는 Tomcat webapp을 읽기만 하는 설명 도구입니다(JSP, 소스, WEB-INF/lib jar 좌표 추정)", "플릿에서 거절된 프로젝트는 skipped로 남고 다시 실행하지 않습니다"], { bodySize: 11 }); }
+    ["spring_legacy", "Spring 4/5, Boot 없음", "jakarta + Framework 7 (+ Security 6.0 → 7.0 체인) + Batch / Hibernate / Thymeleaf 레시피", "layout, XML → @ImportResource"],
+    ["spring_boot (+ MSA)", "Boot 2.x / 3.x", "Boot 4.0 umbrella + 4.1 props + 4.1 버전 + Jackson 쌍 + Boot 4 잔여 레시피", "boot_pom (MSA: msa_pom)"],
+    ["servlet_tomcat", "HttpServlet / web.xml / war", "ServletToJakartaAndBoot (Servlet 6 제거 API 포함)", "layout, JSP면 boot WAR"]], 0.5, 1.15, 9, [1.7, 1.9, 3.3, 2.1], { size: 10 });
+  card(s, 0.5, 3.3, 9, 1.75, "인테이크", ["Maven 프로젝트만 받습니다. Gradle / Ant / 빌드 파일 없음 / pom 없는 트리는 Maven 호출 전에 거절(unsupported-build-tool:<tool>, exit 3)", "sbmig inventory <dir|zip>는 pom 없는 Tomcat webapp을 읽기만 하는 설명 도구입니다(JSP, 소스, WEB-INF/lib jar 좌표 추정)", "플릿에서 거절된 프로젝트는 skipped. Maven이 JDK 21이 아니면 빌드 전에 중단(jdk-not-21, exit 3)"], { bodySize: 11 }); }
 
 { const s = content("불변식 6가지", "개요", "의도된 중단(Maven 없음, Maven 프로젝트 아님, 사내 parent 해석 불가)에서는 최종 빌드를 하지 않습니다. 보고서는 항상 씁니다.");
   const inv = [["1  빌드 게이트", "phase는 BUILD SUCCESS로만 완료. 실행은 마지막 clean package와 미해결 목록으로 끝남"],
     ["2  회사 특성은 YAML", "좌표, 레이아웃, 레시피, advisory는 config/와 knowledge/에"],
-    ["3  파일 기반 KB", "kb/는 json · jsonl · yml. 데이터베이스 없음"],
+    ["3  파일 기반 KB", "kb/는 json · jsonl · yml, 쓰기는 kb/.lock 안에서. 데이터베이스 없음"],
     ["4  플러그인 seam 고정", "LLMRequest / LLMResponse, FixerLike, sbmig.api.migrate(...)"],
-    ["5  레시피 id 단일 출처", "knowledge/recipes/catalog.yml (34개), recipe BOM 3.37.0"],
+    ["5  레시피 id 단일 출처", "knowledge/recipes/catalog.yml (50개), recipe BOM 3.37.0"],
     ["6  out/ 전용", "테스트와 데모는 out/ 아래에만 씀(e2e KB는 out/e2e/kb)"]];
   inv.forEach(([h, b], i) => { const col = i % 2, row = Math.floor(i / 2); card(s, 0.5 + col * 4.6, 1.15 + row * 1.3, 4.4, 1.15, h, b, { headSize: 12.5, bodySize: 11 }); }); }
 
@@ -160,9 +160,9 @@ diagram("컴포넌트", "아키텍처", "architecture", [
 
 diagram("데이터 저장소", "아키텍처", "data-stores", [
   "실행 디렉터리 out/<run id>/는 작업 사본(git), journal, 로그, 프로필 / 계획, 진단 파일, 산출물을 담습니다",
-  "kb/는 플릿 전체가 공유합니다: 사례, 인덱스, 레시피(candidates · active · rejected), ledger, symbols",
+  "kb/는 플릿 전체가 공유합니다: 사례, 인덱스, 레시피, ledger, symbols, 에러 케이스, 케이스 카탈로그, audit",
   "llm.record_dir에는 요청 / 응답이 키 없이 남습니다",
-  "모든 KB 쓰기는 temp 파일 + os.replace로 원자적입니다"],
+  "KB 쓰기는 kb/.lock 안에서 원자적이고, 비밀 값은 저장 전에 가립니다(round 10)"],
   "journal.jsonl의 마지막 줄은 항상 report입니다. 없으면 프로세스가 강제 종료된 것입니다.", { side: true, imgW: 5.4 });
 
 { const s = content("패키지 책임", "아키텍처", "README §2.1의 표를 줄인 것입니다.");
@@ -171,7 +171,7 @@ diagram("데이터 저장소", "아키텍처", "data-stores", [
     ["analyze · advisory", "pom 그래프, 소스, 라이브러리, 외부화 설정, web.xml, JSP, 케이스, advisory 판정 / 검증"],
     ["plan · rewrite", "규칙 기반 계획, 레시피 카탈로그, 선제 핸들러 선택 / OpenRewrite 실행"],
     ["build", "Maven 실행, 로그 파서, 시그니처, effective pom, classpath, dependency tree"],
-    ["triage", "클러스터, 핸들러 26개, 반응형 레시피 규칙, blocked 분류, 결정 엔진"],
+    ["triage", "클러스터, 핸들러 31개(+ case-replace), 반응형 레시피 규칙, blocked 분류, 결정 엔진"],
     ["fix · llm", "회사 게이트웨이, 컨텍스트 패커, 프로토콜, 패치 적용 / 플러그인 어댑터"],
     ["loop · graph", "오케스트레이터, 빌드-수정 루프, 예산, BlockedRegistry / LangGraph 엔진"],
     ["restructure · report", "회사 레이아웃, PomEditor, 템플릿, WebXmlRegistrations / 보고서, Handover, 비용"],
@@ -186,8 +186,8 @@ addSec("파이프라인");
 
 diagram("노드: intake", "파이프라인", "node-intake", [
   "작업 사본을 만들고 git 브랜치 sbmig/<run id>에 as-is 스냅샷을 커밋합니다",
-  "preflight가 mvn, artifacts.parent, role parents, java_home을 점검합니다",
-  "Maven 불가 → mvn-not-found, Gradle / Ant / none → unsupported-build-tool, 둘 다 exit 3",
+  "preflight가 mvn, Java 21 여부(build.require_java_major), artifacts.parent, role parents를 점검합니다",
+  "Maven 불가 → mvn-not-found, Java ≠ 21 → jdk-not-21, Gradle / Ant / none → unsupported-build-tool, 모두 exit 3",
   "as-is effective dependencyManagement를 캡처합니다(실패해도 계속)"],
   "journal: intake, graph_node, preflight, build_tool, effective_pom, effective_depmgmt.");
 
@@ -207,7 +207,7 @@ diagram("노드: plan", "파이프라인", "node-plan", [
 
 { const s = content("노드 상세 1: intake · analyze · plan", "파이프라인", "표의 journal 이벤트 이름은 코드의 journal({event: ...}) 호출 그대로입니다.");
   table(s, [["노드", "출력", "journal 이벤트", "설정 키", "실패 시"],
-    ["intake", "project/(git), effective/depmgmt.json", "intake, preflight, build_tool, effective_depmgmt", "build.mvn, build.java_home, artifacts.parent", "mvn 없음 / Gradle · Ant · none → abort exit 3"],
+    ["intake", "project/(git), effective/depmgmt.json", "intake, preflight, build_tool, effective_depmgmt", "build.mvn, build.java_home, build.require_java_major, artifacts.parent", "mvn 없음 / Java ≠ 21 / Gradle · Ant · none → abort exit 3"],
     ["analyze", "profile.json, advisories", "analyze, advisories", "advisories.*, externalized.*", "pom 없음 → abort. advisory 오류 → 빈 목록, 계속"],
     ["plan", "plan.json, 선제 핸들러, phase group", "advisories_planned, plan_advice, plan", "plan.parent_phase, plan.optional_bump_phase, plan.intermediate_builds, plan.advisor", "실패 경로 없음"]], 0.5, 1.15, 9, [1.0, 2.0, 2.1, 2.1, 1.8], { size: 10 }); }
 
@@ -249,9 +249,9 @@ diagram("노드: verify.build", "파이프라인", "node-verify", [
 diagram("노드: finalize", "파이프라인", "node-finalize", [
   "모델별 LLM 사용량 × llm.pricing = llm_cost, success와 unresolved 계산",
   "javax API 인벤토리(dependency:tree)가 blocked 항목의 via를 채웁니다",
-  "patch / zip → advisory 검증 → Handover → ledger → report.md / report.json",
+  "infra 플래그 → advisory 검증 → Handover → 에러 케이스 → ledger → report.md / report.json → 마지막에 patch / zip",
   "_run_guard의 finally에서 항상 돌고, 마지막 journal 줄은 report입니다"],
-  "result.zip과 changes.patch가 보고서보다 먼저 만들어지므로 zip에는 보고서가 없습니다.");
+  "round 10: KB 기록과 보고서를 먼저 쓰고 느린 changes.patch / result.zip은 마지막에 만듭니다. infra:llm / maven / jdk / repository / disk 플래그가 플릿 차단기에 쓰입니다.");
 
 { const s = content("노드 상세 2: 스텝 노드", "파이프라인", "loop 스텝의 내부는 5장에서 다룹니다.");
   table(s, [["노드", "journal 이벤트", "설정 키", "실패 시"],
@@ -266,8 +266,8 @@ diagram("노드: finalize", "파이프라인", "node-finalize", [
 { const s = content("실행 결과와 종료 코드", "파이프라인", "advisory와 carried-over 고정은 종료 코드를 바꾸지 않습니다.");
   stat(s, 0.5, 1.2, 2.9, "0", "최종 clean package 성공, blocked 없음");
   stat(s, 3.55, 1.2, 2.9, "2", "blocked / unresolved, restructure-failed, dry-run, stop-after");
-  stat(s, 6.6, 1.2, 2.9, "3", "중단: Maven 없음, 비 Maven, 사내 parent 해석 불가, 내부 오류, 웹 중단");
-  card(s, 0.5, 2.95, 9, 2.1, "success의 정의", ["verify 빌드가 하나 이상 있었고 모두 성공했으며 restructure-failed 플래그가 없을 때 참", "blocked가 남아도 success는 참일 수 있지만 종료 코드는 2", "실행 도중 예외가 나도 run guard가 계획의 verify 스텝을 돌리고 보고서를 씁니다(불변식 1)"], { bodySize: 11.5 }); }
+  stat(s, 6.6, 1.2, 2.9, "3", "중단: Maven 없음, Java ≠ 21, 비 Maven, 사내 parent 해석 불가, 내부 오류, 웹 중단");
+  card(s, 0.5, 2.95, 9, 2.1, "success의 정의", ["verify 빌드가 모두 성공하고 빠진 최종 빌드 · 중단 · restructure-failed가 없을 때 참(round 10)", "blocked가 남아도 success는 참일 수 있지만 종료 코드는 2", "실행 도중 예외가 나도 결과가 없는 verify 스텝을 모두 돌리고 보고서를 씁니다(불변식 1)", "마지막 줄: SBMIG-RESULT run=… exit=… build=ok|FAIL … attn=…"], { bodySize: 11 }); }
 
 // ================================================================ 4. LangGraph
 addSec("LangGraph");
@@ -289,7 +289,7 @@ diagram("웹 UI 스트림", "LangGraph", "web-stream", [
 addSec("루프와 트리아지");
 
 diagram("빌드-수정 루프 한 바퀴", "루프와 트리아지", "fix-loop", [
-  "모든 판정은 빌드 직후에만. 적용한 변경은 다음 라운드의 실제 빌드로 채점합니다",
+  "모든 판정은 빌드 직후에만. 채점: build_ok · improved · partial · no_change · regressed · inconclusive",
   "클러스터: compile은 파일, resolution은 g:a, 그 밖은 모듈. 라운드당 최대 8개",
   "resolution 클러스터가 같은 모듈의 compile 클러스터를 가립니다(마스킹)",
   "시도마다 git 커밋 하나: fix(handler:id), fix(kb-patch:…), fix(llm): cluster model"],
@@ -298,29 +298,29 @@ diagram("빌드-수정 루프 한 바퀴", "루프와 트리아지", "fix-loop",
 diagram("루프 안전장치", "루프와 트리아지", "loop-safety", [
   "L1 stall / L2 oscillation이 stall_level을 올리고 2 이상이면 escalation 모델을 씁니다",
   "L3 회귀는 되돌리고 바로 재빌드, L4 쓸모없는 답 2회는 repeated_failure",
-  "L5 전송 실패 2회 → 60초 cool-down 1회 → 다시 실패면 llm_unavailable",
-  "L6 예산(호출 60, 180분), L7 / L7b 테스트 대체 빌드, L12 verify 루프"],
+  "L5 전송 실패(status= / cause= 표기만) 2회 → 60초 cool-down 1회 → llm_unavailable",
+  "L6 예산, L7 / L7b 테스트 대체, L12 verify 루프, L13 partial / inconclusive, L14 같은 클러스터만 셈, L15 llm-config-error"],
   "LLM이 적용할 것을 내놓지 못하면 트리가 그대로이므로 재빌드 없이 같은 결과로 다음 라운드를 진행합니다(reround).", { imgW: 5.6 });
 
 diagram("트리아지 사다리", "루프와 트리아지", "triage-ladder", [
-  "0. 실행 전체 BlockedRegistry에 있으면 LLM 없이 건너뜀",
+  "0. BlockedRegistry(L1 + 전체 경로)에 있으면 건너뜀, 0b. 사람이 고정한 케이스 동작(block · handler · recipe)",
   "1. HANDLER → 2. KB_RECIPE(active ∪ 반응형 규칙 → 후보, runNoFork 배치) → 3. KB_PATCH 재생",
   "4. blocked 판정 X1–X6: 실패한 LLM 시도 ≥ loop.blocked_policy면 BLOCKED",
   "5. LLM_FIX(클러스터당 라운드 1회). 최종 BLOCKED: llm_unavailable / repeated_failure / budget_exhausted"],
   "결정적 선택지가 아무것도 바꾸지 못하면 시도함으로 표시하고 같은 클러스터를 다음 단계로 넘깁니다(최대 6번 재결정).", { imgW: 4.6 });
 
-{ const s = content("결정적 핸들러 26개", "루프와 트리아지", "HandlerRegistry.default().ids() 순서가 반응형 매칭 우선순위입니다. 선제 기준과 목표 버전은 다릅니다(예: lombok 1.18.30 미만이면 1.18.38 이상으로).");
+{ const s = content("결정적 핸들러 31개", "루프와 트리아지", "HandlerRegistry.default().ids() 순서가 반응형 매칭 우선순위입니다. 선제 기준과 목표 버전은 다릅니다(예: lombok 1.18.30 미만이면 1.18.38 이상으로).");
   table(s, [["묶음", "핸들러", "선제"],
     ["인코딩", "source-encoding, strip-utf8-bom", "항상"],
-    ["빌드 규칙 / 버전", "carry-over-managed-version, enforcer-relax, remove-werror, systempath-relocate, missing-dependency-version", "반응형만"],
-    ["레시피 빈틈", "jakarta-namespace-sweep, spring-data-crud-repository", "SPRING"],
+    ["빌드 규칙 / 버전", "carry-over-managed-version, enforcer-relax, remove-werror, remove-tools-jar, systempath-relocate, missing-dependency-version", "tools-jar JDK21, 나머지 반응형"],
+    ["레시피 빈틈", "jakarta-namespace-sweep, spring-data-crud-repository, jdk-base64-shim, boot4-type-relocation-sweep, security-path-pattern-matcher, spring-data-specification-unrestricted", "SPRING / base64 JDK21 / 반응형"],
     ["좌표 / jakarta", "mysql-connector-relocation, javax-servlet-api-to-jakarta, jstl-to-jakarta, dependency-relocation, jakarta-library-floor, querydsl-jakarta-classifier", "mysql JDK21, 나머지 SPRING"],
     ["누락 의존성", "jaxb-runtime-add, add-known-dependency", "JDK21 / SPRING"],
     ["프로세서 / 플러그인", "lombok-version-floor, mapstruct-version-floor, maven-compiler-plugin-floor, compiler-legacy-config, surefire-plugin-floor, remove-classic-loader-implementation", "JDK21"],
     ["리소스 / 저장소", "resources-binary-filtering, strip-pom-repositories (pom_repositories: remove)", "JDK21"],
     ["자리표시", "test-compile-skip (L7은 루프가 직접)", "없음"]], 0.5, 1.15, 9, [1.6, 5.6, 1.8], { size: 9.5 }); }
 
-{ const s = content("jakarta 처리와 의존성 보강", "루프와 트리아지", "표 파일: jakarta_packages.yml(30), jakarta_libraries.yml(44), relocations.yml(44), known_packages.yml(56).");
+{ const s = content("jakarta 처리와 의존성 보강", "루프와 트리아지", "표 파일: jakarta_packages.yml(30), jakarta_libraries.yml(44), relocations.yml(45), known_packages.yml(75).");
   table(s, [["처리", "언제", "무엇을"],
     ["JavaxMigrationToJakarta", "spring.rewrite, 반응형 규칙(spring / restructure)", "타입이 붙은 javax EE 참조"],
     ["jakarta-namespace-sweep", "선제(javax EE import / JSP), 반응형", "레시피가 남긴 Java와 JSP의 javax.* EE 참조. 플래그 jakarta-leftovers-renamed, jsp-javax-renamed"],
@@ -353,13 +353,14 @@ diagram("컨텍스트 패킹", "LLM과 Blocked", "context-packing", [
     ["재시도", "408 / 409 / 425 / 429 / 5xx 계열, max_retries 3, Retry-After"],
     ["heartbeat / deadline", "30초마다 in-flight 줄 / timeout + 30초 넘으면 전송 실패"],
     ["content filter", "요청 거절로 분류(장애로 세지 않음)"],
+    ["round 10", "status= / cause= 표기, 빈 답 + finish_reason=length는 요청 거절, 같은 400 두 번 → llm-config-error"],
     ["플러그인", "llm.plugin(tier 1), fix.plugin(tier 2, FixerLike)"]], 0.5, 1.15, 5.0, [1.5, 3.5], { size: 9.5 });
   mono(s, "<analysis>…</analysis>\n<confidence>0.0–1.0</confidence>\n<patches>\n=== MODIFY path/File.java\n<<<<<<< SEARCH\n기존 텍스트 (정확히 한 곳)\n=======\n바꿀 텍스트\n>>>>>>> REPLACE\n=== CREATE / DELETE / RENAME\n</patches>\n또는 <need_files> / <need_grep>", 5.7, 1.15, 3.8, 3.9, { size: 10, fill: K.lt2 }); }
 
 diagram("blocked 분류", "LLM과 Blocked", "blocked-classify", [
   "X1 javax API(0), X2 외부 API 변경(1), X3 아티팩트 없음(0), X4 parent(0), X5 플러그인(1), X6 지원 안 하는 소스(0) — 괄호는 허용 LLM 시도",
   "cannot find symbol, package javax.x does not exist, 프로젝트 소유 클래스는 X1이 아닙니다",
-  "BlockedRegistry 키는 L1 + src/ 경로라서 재구성 뒤에도 유지됩니다",
+  "BlockedRegistry 키는 L1 + 전체 경로, 재구성 이동은 git rename으로 따라갑니다(MSA 서비스끼리 공유 안 함)",
   "루프 사유: repeated_failure, budget_exhausted, llm_unavailable, oscillation"],
   "X7(advisory 레시피가 라이브러리 제거), X8(다운로드 실패), X9(pom 저장소 접속 불가)는 blocked가 아닌 별도 경로로 처리합니다.", { bulletH: 1.3 });
 
@@ -395,8 +396,8 @@ diagram("회사 레이아웃", "재구성 · 지식 · 플릿", "company-layout"
   "WebXmlRegistrations는 web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 Boot 4.1 RegistrationBean으로 옮깁니다(W1, 플래그 web-xml-registered). Boot가 직접 등록하는 클래스 14개는 skip 표로 제외합니다.", { bulletH: 1.45 });
 
 diagram("지식 표와 쓰는 곳", "재구성 · 지식 · 플릿", "knowledge-usage", [
-  "레시피 카탈로그 34, 반응형 규칙 6, advisory 64(guide 59 · recipe 5)",
-  "핸들러 표: jakarta 라이브러리 44, 재배치 44, 버전 51 + 플러그인 3, 패키지 56 / 30",
+  "레시피 카탈로그 50, 반응형 규칙 5, advisory 67(guide 60 · recipe 7), 라이브러리 레시피 3",
+  "핸들러 표: jakarta 라이브러리 44, 재배치 45, 버전 51 + 플러그인 3, 패키지 75 / 30, Boot 4 타입 25",
   "web.xml skip 14, 외부화 규칙, jar 이름 91, 노트 16(## fix-loop: 절은 advisory 힌트)",
   "회사 추가: advisories.extra_files, jar_names.yml 행, recipes/base + catalog.yml"],
   "모두 YAML / Markdown입니다(불변식 2). 코드에는 회사 값이 없습니다.", { bulletH: 1.3 });
@@ -406,14 +407,14 @@ diagram("KB 학습 루프", "재구성 · 지식 · 플릿", "kb-learning", [
   "기계적 라벨은 LLM 없이 레시피 후보로 컴파일됩니다(ChangeType, ChangeMethodName …)",
   "후보는 다음 프로젝트의 spring.rewrite에서 실행되고 빌드 결과로 점수를 받습니다",
   "서로 다른 2개 프로젝트에서 성공하면 active → 이후 LLM 0회"],
-  "증거 없는 결과(빌드 없는 phase, 해석 실패만 남은 phase)는 점수에 반영하지 않습니다. sbmig kb learning이 레시피로 만들 심볼과 여러 프로젝트를 막는 아티팩트를 보여 줍니다.", { imgW: 5.0 });
+  "증거 없는 결과(빌드 없는 phase, 해석 실패만 남은 phase, partial / inconclusive 시도)는 점수에 반영하지 않습니다. sbmig kb learning이 레시피로 만들 심볼과 여러 프로젝트를 막는 아티팩트를 보여 줍니다.", { imgW: 5.0 });
 
 diagram("플릿: 순차 실행", "재구성 · 지식 · 플릿", "fleet", [
-  "약 500개 프로젝트를 한 에이전트가 엄격히 순차로 처리합니다. KB는 항상 공유",
-  "state.json을 매 프로젝트 뒤 원자적으로 갱신, resume은 success를 건너뜀",
-  "summary.md / .csv / .json에 llm_calls, llm_cost, blocked, unresolved, advisories",
-  "learning.md: 레시피로 만들 심볼, 여러 프로젝트를 막는 아티팩트"],
-  "intake 거절 프로젝트는 skipped로 남고 --retry-failed로도 다시 돌지 않습니다. 종료 코드 0 / 2 / 3.", { imgW: 5.6 });
+  "약 500개 프로젝트를 한 에이전트가 엄격히 순차로 처리합니다. KB는 항상 공유(kb/.lock)",
+  "preflight(disk · maven · java · settings · repository · llm), 프로젝트마다 여유 공간 확인과 fleet.cleanup",
+  "infra:<kind>로 끝난 프로젝트는 pending으로 되돌림. 연속 3개면 15분 대기 후 재점검, 안 되면 중단(exit 3)",
+  "summary.csv(BOM)의 attention 열, fleet status --attention, 프로젝트마다 SBMIG-RESULT 한 줄"],
+  "state.json은 입력 경로를 키로 매 프로젝트 뒤 원자적으로 갱신하고, resume은 success를 건너뜁니다. learning.md는 레시피로 만들 심볼과 여러 프로젝트를 막는 아티팩트를 보여 줍니다. intake 거절 프로젝트는 skipped. 종료 코드 0 / 2 / 3.", { imgW: 5.6 });
 
 // ================================================================ 12–13. 운영과 검증
 addSec("운영과 검증");
@@ -433,10 +434,12 @@ diagram("설정 계층", "운영과 검증", "config-layering", [
     ["loop.stall_limit · verify_extra_llm_attempts", "2 · 2", "escalation 시작, verify 추가 시도"],
     ["build.skip_tests · skip_test_compile", "true · false (회사 true)", "테스트 실행 / 컴파일 생략"],
     ["build.settings_file · pom_repositories", "null · keep", "Nexus 미러, pom 저장소 제거"],
+    ["build.require_java_major · retry_negative_cache", "21 · true", "JDK 점검, negative cache면 -U 재시도"],
+    ["fleet.preflight · infra_* · cleanup · min_free_gb", "true · 3/15/4 · build-output · 5", "플릿 인프라 차단기, 디스크"],
     ["llm.model · escalation_model · recipe_model", ".env의 LLM_*", "역할별 모델"],
     ["llm.payload_extra · pricing", "need_origin: true · 단가표", "게이트웨이 필드, 비용"],
     ["report.language · javax_api_inventory", "en (회사 ko) · true", "보고서 언어, javax jar 인벤토리"],
-    ["layout.boot_as_is · multi_module_policy · web_xml_registrations", "in-place · merge · generate", "재구성 동작"]], 0.5, 1.15, 9, [3.6, 2.5, 2.9], { size: 9.5 }); }
+    ["layout.boot_as_is · multi_module_policy · web_xml_registrations", "in-place · merge · generate", "재구성 동작"]], 0.5, 1.15, 9, [3.6, 2.5, 2.9], { size: 9 }); }
 
 { const s = content("CLI와 웹 UI", "운영과 검증", "웹 실행은 한 번에 하나(queued). stop은 노드 사이에서만 효과가 있습니다.");
   table(s, [["명령", "용도"],
@@ -446,28 +449,29 @@ diagram("설정 계층", "운영과 검증", "config-layering", [
     ["sbmig recipes check --jars", "카탈로그 id를 jar로 검증"],
     ["sbmig advisories check", "advisory 파일 검증"],
     ["sbmig kb learning / promote / reject", "KB 관리"],
-    ["sbmig fleet run / status / resume", "플릿"],
-    ["sbmig serve", "웹 UI(FastAPI on uvicorn)"]], 0.5, 1.15, 5.2, [2.6, 2.6], { size: 9.5 });
-  card(s, 5.9, 1.15, 3.6, 3.9, "웹 REST", ["POST /api/runs (zip) → 202", "GET /api/runs/{id}/events: SSE", "POST /api/runs/{id}/stop", "GET /api/runs/{id}/files/{name}", "GET /api/threads: 스레드 덤프"], { bodySize: 11 }); }
+    ["sbmig fleet run / status [--attention] / resume", "플릿"],
+    ["sbmig clean [--older-than] [--dry-run]", "끝난 실행의 사본 · 업로드 · 기록 정리"],
+    ["sbmig serve [--token]", "웹 UI(FastAPI on uvicorn)"]], 0.5, 1.15, 5.2, [2.6, 2.6], { size: 9.5 });
+  card(s, 5.9, 1.15, 3.6, 3.9, "웹 REST", ["POST /api/runs (zip) → 202", "GET /api/runs/{id}/events: SSE", "POST /api/runs/{id}/stop", "GET /api/runs/{id}/files/{name}", "GET /api/threads: 스레드 덤프", "토큰 없으면 루프백만, LAN은 --token / SBMIG_WEB_TOKEN"], { bodySize: 11 }); }
 
 { const s = content("로그, journal, Windows", "운영과 검증", "운영자가 문제를 보고할 때는 sbmig.log, journal.jsonl, 워치독 줄, 스레드 덤프를 봅니다.");
-  card(s, 0.5, 1.15, 4.4, 3.9, "어디를 보나", ["지금 단계: sbmig.log 끝, 마지막 phase_start / step_start", "왜 이 스텝: plan.json notes, sbmig plan", "빌드 실패 이유: journal build의 log 경로, sbmig parse-log", "성공 여부: 마지막 report 줄의 success / flags", "멈춤: 워치독 줄, threads-*.txt, /api/threads"], { bodySize: 11 });
-  card(s, 5.1, 1.15, 4.4, 3.9, "Windows", ["git / Maven 출력은 UTF-8로 직접 디코딩(cp949 콘솔 무관)", "changes.patch는 git diff 원본 바이트", "Maven 타임아웃 시 taskkill /PID <pid> /T /F", "git은 비대화형 + 타임아웃", "SIGUSR1 대신 자동 덤프(300초)와 curl.exe …/api/threads"], { bodySize: 11 }); }
+  card(s, 0.5, 1.15, 4.4, 3.9, "어디를 보나", ["지금 단계: sbmig.log 끝, 마지막 phase_start / step_start", "왜 이 스텝: plan.json notes, sbmig plan", "빌드 실패 이유: journal build의 log 경로, sbmig parse-log", "성공 여부: 마지막 report 줄의 success / flags, SBMIG-RESULT 한 줄", "멈춤: 워치독 줄, threads-*.txt, /api/threads"], { bodySize: 11 });
+  card(s, 5.1, 1.15, 4.4, 3.9, "Windows", ["git / Maven 출력은 UTF-8로 직접 디코딩, MAVEN_OPTS에 stdout / stderr UTF-8", "changes.patch는 git diff 원본 바이트", "Maven 타임아웃 시 taskkill /PID <pid> /T /F", "git: 비대화형 + 타임아웃, core.longpaths / autocrlf=false / quotepath=false", "덤프: 자동(300초), Ctrl+Break, dump-threads 파일, /api/threads"], { bodySize: 10.5 }); }
 
 { const s = content("검증", "운영과 검증", "e2e는 JDK 21, Maven, Maven Central이 필요합니다. 로컬 e2e는 사내 좌표 대신 공개 대체물을 씁니다.");
-  stat(s, 0.5, 1.1, 2.2, "1,632", "오프라인 테스트 (not integration)", 32);
-  stat(s, 2.75, 1.1, 2.2, "27", "e2e 픽스처 (expected.json)", 32);
-  stat(s, 5.0, 1.1, 2.2, "26", "결정적 핸들러", 32);
-  stat(s, 7.25, 1.1, 2.25, "34", "레시피 카탈로그 id", 32);
+  stat(s, 0.5, 1.1, 2.2, "2,192", "오프라인 테스트 (not integration)", 32);
+  stat(s, 2.75, 1.1, 2.2, "32", "e2e 픽스처 (expected.json)", 32);
+  stat(s, 5.0, 1.1, 2.2, "31", "결정적 핸들러", 32);
+  stat(s, 7.25, 1.1, 2.25, "50", "레시피 카탈로그 id", 32);
   table(s, [["케이스", "픽스처"],
-    ["spring_boot (13)", "boot2, boot2-cloud-legacy, boot2-hystrix-command, boot2-javax-lib(-optional), boot2-method-rename, boot2-qlrm-javax, boot2-rewrite-excluded, boot3, company-boot-single, legacy-role-parents, multi-module-conflict / -merge"],
+    ["spring_boot (14)", "boot2, boot2-cloud-legacy, boot2-fix-failures, boot2-hystrix-command, boot2-javax-lib(-optional), boot2-method-rename, boot2-qlrm-javax, boot2-rewrite-excluded, boot3, company-boot-single, legacy-role-parents, multi-module-conflict / -merge"],
     ["pure_java (5)", "enforcer-java8-werror, euckr-legacy, java6-legacy, missing-artifact, pure-java"],
-    ["spring_legacy (4)", "company-spring5-web, legacy-external-config, legacy-ibatis, spring5-xml"],
-    ["servlet_tomcat (3) · msa (2)", "company-servlet-jsp, servlet-tomcat, servlet-webxml-legacy · msa, msa-shared-lib"]], 0.5, 2.55, 9, [2.0, 7.0], { size: 9.5 });
+    ["spring_legacy (5)", "company-spring5-web, legacy-external-config, legacy-ibatis, spring5-security-batch, spring5-xml"],
+    ["servlet_tomcat (6) · msa (2)", "company-servlet-jsp, ear-sibling-poms, servlet-nonstandard-dirs, servlet-tomcat, servlet-war-overlay, servlet-webxml-legacy · msa, msa-shared-lib"]], 0.5, 2.55, 9, [2.0, 7.0], { size: 9 });
   para(s, "scripts/e2e.sh → out/e2e/summary.md · scripts/demo-kb/run.sh(2회차 LLM 0회) · scripts/fleet-demo.sh", 0.5, 4.75, 9, 0.35, { size: 11, italic: true }); }
 
 { const s = content("요약", "운영과 검증", "설계의 두 축: 결정적 계획과 빌드 게이트. LLM은 사다리의 마지막에만, 결과는 빌드가 판정합니다.");
-  card(s, 0.5, 1.15, 2.9, 3.9, "결정적으로", ["규칙 기반 계획과 카탈로그 레시피", "핸들러 26개, 선제 실행", "KB 레시피와 패치 재생"], { bodySize: 11.5 });
+  card(s, 0.5, 1.15, 2.9, 3.9, "결정적으로", ["규칙 기반 계획과 카탈로그 레시피", "핸들러 31개, 선제 실행", "KB 레시피와 패치 재생"], { bodySize: 11.5 });
   card(s, 3.55, 1.15, 2.9, 3.9, "빌드로 판정", ["모든 시도는 다음 빌드가 채점", "phase마다 build gate", "실행은 항상 clean package로 끝남"], { bodySize: 11.5 });
   card(s, 6.6, 1.15, 2.9, 3.9, "넘겨주기", ["Handover가 보고서 맨 앞", "blocked는 원인과 제안까지", "플릿 학습으로 다음 프로젝트 비용 감소"], { bodySize: 11.5 }); }
 

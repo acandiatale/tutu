@@ -307,3 +307,36 @@ def test_msa_targets_are_tracked_per_service(cfg, ws, fake_kb_module):
     # both services number their attempts jdk21-1-1: the records stay distinct
     assert st["svc-a"].resolved_by != st["svc-b"].resolved_by
     assert st["svc-a"].first_seen == "jdk21-1@svc-a" and st["svc-b"].first_seen == "jdk21-1@svc-b"
+
+
+# --------------------------------------------------------------------------------------------- round 10 (2026-10-26)
+def test_orchestrator_with_the_real_prepare_stamps_versions_context_and_origin(cfg, ws):
+    """The real `sbmig.kb.error_cases` behind the orchestrator: every record carries schema / agent version and the
+    as-is project context, a new error names what came right before it, and the stored diffs are whole."""
+    import sbmig
+
+    from .fakes import make_profile
+
+    profile = make_profile().model_copy(update={"java_version": "1.8", "spring_boot_version": "2.7.18",
+                                                "spring_version": "5.3.31", "packaging": "jar"})
+    def rewrite_effect(w, refs):                             # the jdk21 rewrite changes the tree (a noted plan step)
+        if any("Java21" in r.id for r in refs):
+            w.write("rewritten.txt", "x\n")
+            return ["rewritten.txt"]
+        return []
+
+    kb = RecordingKB()
+    report = make_orch(cfg, ws, kb=kb, profile=profile, fixer=foo_second_try_fixer(), pre=[],
+                       rewrite=FakeRewriteRunner(ws, effect=rewrite_effect)).run()
+    assert report.error_cases and len(kb.appended) == 1
+    errors, attempts = kb.appended[0]
+    assert all(r.schema_version == 2 and r.agent_version == sbmig.__version__ for r in [*errors, *attempts])
+    assert all((e.asis_java, e.asis_spring_boot, e.asis_spring, e.packaging) == ("1.8", "2.7.18", "5.3.31", "jar")
+               for e in errors)
+    first = {e.file: e for e in errors}
+    assert first[FOO].introduced_by == "step:jdk21.rewrite"          # seen in the first build, after the rewrite
+    assert not any(a.diff_truncated for a in attempts)
+    lines = [json.loads(x) for x in (ws.run_dir / "error_cases.jsonl").read_text().splitlines()]
+    assert {x["schema_version"] for x in lines} == {2} and all("introduced_by" in x for x in lines)
+    header = (ws.run_dir / "error_cases.csv").read_text(encoding="utf-8-sig").splitlines()[0]
+    assert header.endswith("schema_version,raw,diff_excerpt") and ",introduced_by," in header

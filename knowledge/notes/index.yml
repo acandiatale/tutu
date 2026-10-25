@@ -149,6 +149,7 @@ notes:
   - RestTemplate|RestClient|HttpComponentsClientHttpRequestFactory|setConnectTimeout|setReadTimeout|SimpleClientHttpRequestFactory
   - acceptsProfiles|Profiles
   - HttpHeaders|MultiValueMap|containsKey|keySet|entrySet
+  - MappingJackson2HttpMessageConverter|MappingJackson2JsonView|JacksonJsonHttpMessageConverter|JacksonJsonView|JsonMapper
   - PathMatchConfigurer|AntPathMatcher|PathPatternParser|setUseSuffixPatternMatch|setUseTrailingSlashMatch|favorPathExtension
   - org\.springframework\.lang\.(Nullable|NonNull|NonNullApi)|jspecify
   - spring-retry|org\.springframework\.retry|RetryTemplate|@Retryable
@@ -174,6 +175,7 @@ notes:
   - AuthenticationManagerBuilder|AuthenticationManager|AuthenticationConfiguration|DaoAuthenticationProvider
   - PasswordEncoder|NoOpPasswordEncoder|withDefaultPasswordEncoder|BCryptPasswordEncoder
   - AntPathRequestMatcher|MvcRequestMatcher|PathPatternRequestMatcher
+  - AccessDecisionManager|AccessDecisionVoter|FilterSecurityInterceptor|FilterInvocationSecurityMetadataSource|SecurityMetadataSource|ConfigAttribute|spring-security-access
   - org\.springframework\.security
   - EnableWebSecurity
   - access\("|WebExpressionAuthorizationManager

@@ -6,8 +6,10 @@ sequenceDiagram
   participant R as Orchestrator (프로젝트 하나)
   participant K as kb/ (공유)
   O->>F: manifest (dir · txt · yml · csv) + --config
-  F->>S: 이전 상태 읽기 (resume 규칙)
+  F->>S: 이전 상태 읽기 (resume 규칙, 키 = 입력 경로)
+  F->>F: preflight (disk · maven · java · settings · repository · llm)
   loop 프로젝트마다 순차 (병렬 없음)
+    F->>F: 여유 공간 확인 (fleet.min_free_gb)
     F->>R: run(project, configs + overrides)
     alt Gradle / Ant / pom 없음
       R-->>F: exit 3, unsupported-build-tool
@@ -17,7 +19,13 @@ sequenceDiagram
       R->>K: harvest · ledger · symbols
       R-->>F: report.json (exit, llm_calls, llm_cost, blocked)
       F->>S: FleetProjectResult 원자적 갱신
+      F->>F: fleet.cleanup (run 사본의 target/ 삭제)
+    else infra:종류 (LLM · Nexus · JDK · 디스크)
+      R-->>F: report.json + infra 플래그
+      F->>S: pending 으로 되돌림 (error infra:종류)
+      Note over F: 연속 3개 → 15분 대기 후 재점검 · 재개<br/>대기 4회 또는 설정 오류 → 중단 (exit 3)
     end
+    F->>O: SBMIG-RESULT 한 줄
     F->>F: summary.md / .csv / .json 다시 쓰기
   end
   F->>F: learning.md (배운 것 · 여러 프로젝트를 막는 아티팩트)

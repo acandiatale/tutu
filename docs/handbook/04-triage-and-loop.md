@@ -7,6 +7,7 @@
 - `sbmig.log`의 `[spring it2] cluster compile:… — asking the LLM …` 같은 줄을 보고, 지금 어느 클러스터를 누가 왜 고치고 있는지 말할 수 있습니다.
 - 어떤 에러가 LLM 호출 없이 처리되는지(핸들러, 레시피, KB, blocked), 어떤 에러가 LLM으로 가는지 미리 예상할 수 있습니다.
 - 페이즈가 끝나는 조건(빌드 성공, 수정 라운드 소진, blocked만 남음, 더 할 수 있는 것이 없음, 시간 초과)과 대체 빌드 플래그(`test-compile-skipped`, `tests-skipped`)의 의미를 압니다.
+- 시도 채점 결과 `improved` / `partial` / `no_change` / `inconclusive` / `regressed`의 차이, 클러스터당 LLM 시도 상한이 무엇을 세는지, "안 보임"이 왜 "해결"이 아닌지 압니다(round 10).
 - 같은 문제가 다음 프로젝트에서 LLM 없이 해결되기까지 무엇이 기록되는지(ledger, 라벨, 레시피 후보) 압니다.
 - lombok, 바이너리 리소스 필터링, javax 라이브러리라는 세 가지 실제 사례에서 로그, journal, ledger, 리포트에 무엇이 남는지 압니다.
 
@@ -15,7 +16,7 @@
 - 루프: `sbmig/loop/fixloop.py` (`BuildFixLoop`), `sbmig/loop/budget.py`, `sbmig/loop/blocked_registry.py`, `sbmig/loop/orchestrator.py`
 - 빌드·로그: `sbmig/build/runner.py`, `sbmig/build/mvn.py`, `sbmig/build/log_parser.py`, `sbmig/build/signatures.py`, `sbmig/build/classpath.py`
 - 트리아지: `sbmig/triage/triager.py`, `sbmig/triage/cluster.py`, `sbmig/triage/decide.py`, `sbmig/triage/blocked.py`, `sbmig/triage/rules.py`, `sbmig/triage/recipe_rules.yml`
-- 핸들러: `sbmig/triage/handlers/base.py`, `sbmig/triage/handlers/pom_handlers.py`, `sbmig/triage/handlers/edge_handlers.py`, `sbmig/triage/handlers/versions.yml`, `sbmig/triage/handlers/relocations.yml`, `sbmig/triage/handlers/known_packages.yml`, `sbmig/plan/pre_handlers.py`
+- 핸들러: `sbmig/triage/handlers/base.py`, `sbmig/triage/handlers/pom_handlers.py`, `sbmig/triage/handlers/edge_handlers.py`, `sbmig/triage/handlers/source_handlers.py`, `sbmig/triage/handlers/jdk_compat.py`, `sbmig/triage/handlers/spring7_sources.py`, `sbmig/triage/handlers/boot4_types.yml`, `sbmig/triage/handlers/versions.yml`, `sbmig/triage/handlers/relocations.yml`, `sbmig/triage/handlers/known_packages.yml`, `sbmig/plan/pre_handlers.py`
 - LLM 수정: `sbmig/fix/fixer.py`, `sbmig/fix/context.py`, `sbmig/fix/protocol.py`, `sbmig/fix/apply.py`, `sbmig/fix/prompts/system_v1.md`, `sbmig/fix/prompts/user_v1.md.j2`, `knowledge/notes/index.yml`, `sbmig/advisory/hints.py`
 - KB: `sbmig/kb/store.py`, `sbmig/kb/harvest.py`, `sbmig/kb/labels.py`, `sbmig/kb/ledger.py`
 - 참고 문서: `docs/ERROR-HANDLING.md`(에러 카탈로그 X/E/L/S), `docs/ARCHITECTURE.md` §3–§7
@@ -40,7 +41,7 @@
 flowchart TD
     B["mvn goal<br/>(real build, log captured)"] --> OK{"BUILD SUCCESS?"}
     OK -- yes --> DONE(["phase ok"])
-    OK -- no --> SC["score previous attempts<br/>improved / no_change / regressed"]
+    OK -- no --> SC["score previous attempts<br/>improved / partial / no_change /<br/>inconclusive / regressed"]
     SC --> RV{"regressed?"}
     RV -- yes --> REV["git revert / reset"] --> B
     RV -- no --> P["parse log → BuildError list<br/>(L1 / L2 signatures)"]
@@ -59,15 +60,18 @@ flowchart TD
 클러스터 하나에 대한 결정은 아래 순서를 위에서부터 따라 내려가며, **처음 해당하는 단계에서 결정이 끝납니다**. 코드 주석에 적힌 원문은 다음과 같습니다.
 
 ```
-run-wide blocked registry → HANDLER > KB_RECIPE > KB_PATCH > blocked check (cfg.loop.blocked_policy) > LLM_FIX
-→ BLOCKED(repeated_failure | budget_exhausted | llm_unavailable)
+run-wide blocked registry → pinned case action (block | handler | recipe) → HANDLER > KB_RECIPE > KB_PATCH
+> blocked check (cfg.loop.blocked_policy) > LLM_FIX → BLOCKED(repeated_failure | budget_exhausted | llm_unavailable)
 ```
 
 ```mermaid
 flowchart TD
     S["cluster"] --> R0{"0. already blocked<br/>earlier in this run?"}
     R0 -- yes --> BL0["BLOCKED (skip, no LLM)"]
-    R0 -- no --> R1{"1. a deterministic handler matches<br/>and was not already tried?"}
+    R0 -- no --> R0B{"0b. a person pinned the case action?<br/>(sbmig kb cases pin)"}
+    R0B -- "block" --> BLP["BLOCKED (pinned, no LLM)"]
+    R0B -- "handler / recipe" --> PIN["HANDLER / KB_RECIPE (pinned)"]
+    R0B -- "no / already tried" --> R1{"1. a deterministic handler matches<br/>and was not already tried?"}
     R1 -- yes --> H["HANDLER"]
     R1 -- no --> R2{"2. active KB recipe / recipe rule<br/>(then KB candidate) not yet run?"}
     R2 -- yes --> KR["KB_RECIPE"]
@@ -84,6 +88,7 @@ flowchart TD
 - **결정적인 것이 먼저**: 핸들러와 레시피는 결과를 예측할 수 있고 비용이 들지 않습니다. 이전 에이전트의 실패 원인은 "작은 LLM이 레시피를 고르는 구조"였습니다. 그래서 `sbmig`에서는 어떤 레시피를 쓸지 규칙이 정합니다.
 - **고칠 수 없는 것은 LLM에게 보내지 않습니다**: 외부 jar가 javax 타입을 받는 문제는 프로젝트 코드를 아무리 고쳐도 해결되지 않습니다. 이런 데 LLM을 부르면 예산만 쓰고, 더 나쁘게는 LLM이 그럴듯한 버전 번호를 지어낼 수 있습니다(X3 정책: "the LLM must never invent versions").
 - **LLM은 유한합니다**: 클러스터마다 시도 횟수 상한이 있고, 실행 전체에도 호출 예산이 있습니다(§7).
+- **사람이 정한 것이 먼저**: 케이스 카탈로그에서 사람이 고정(`pin`)한 동작은 핸들러보다 먼저 따릅니다(round 10, §4.7). 고정하지 않은 케이스의 자동 동작은 예전처럼 핸들러 `case-replace` / KB 레시피 / KB 패치 / 힌트로 사다리 안에서 쓰입니다.
 
 ---
 
@@ -94,7 +99,8 @@ flowchart TD
 `parse_maven_log(text, project_root)`는 Maven 3.6–3.9의 `-B`(batch) 출력을 **한 번 훑으며** 줄 단위 상태 기계로 처리합니다.
 
 - **문맥 추적**: `-----< g:a >-----` 헤더, `Building <name> <version>`, `--- compiler:3.13.0:compile (default-compile) @ shop ---` 같은 mojo 줄을 읽어 지금 어느 모듈의 어느 goal인지 기억합니다. 그래서 에러마다 `module`과 `goal`이 채워집니다.
-- **경로 정규화**: 프로젝트 루트 절대 경로를 지워 상대 경로로 바꿉니다(`/private/tmp` 같은 macOS 별칭도 처리). 덕분에 실행 디렉터리가 달라도 같은 에러가 같은 시그니처를 갖습니다.
+- **경로 정규화**: 프로젝트 루트 절대 경로를 지워 상대 경로로 바꿉니다(`/private/tmp` 같은 macOS 별칭도 처리). 덕분에 실행 디렉터리가 달라도 같은 에러가 같은 시그니처를 갖습니다. round 10부터 Windows javac가 찍는 `/C:/…`, `file:///C:/…`, `file:/C:/…`, 퍼센트 인코딩(한글 폴더 이름), 소문자 드라이브 표기도 같은 루트로 보고(대소문자 무시) 지웁니다. 원문(`raw`)과 빌드 요약에서도 모든 표기를 지웁니다.
+- **심볼 보충(round 10)**: `method does not override or implement a method from a supertype`, `static import only from classes and interfaces`처럼 javac가 이름을 알려 주지 않는 에러는 보고된 소스 줄을 읽어 `BuildError.symbol`을 채웁니다(`method getErrorPath`, `class org.junit.Assert`). 시그니처가 문제를 구분할 수 있게 하려는 것입니다(§3.1).
 - **중복 병합**: javac 에러는 `COMPILATION ERROR :` 블록과 마지막 `[ERROR]` 반복에 두 번 나옵니다. 같은 (파일, 줄, 열, 메시지)는 하나로 합칩니다.
 - **안전망**: 아무것도 이해하지 못했는데 빌드가 실패했다면 `UNKNOWN` 에러 하나를 만듭니다(첫 의미 있는 `[ERROR]` 줄과 로그 마지막 40줄을 담음). 실패한 빌드인데 에러 목록이 비어 있는 일은 없습니다.
 
@@ -147,7 +153,7 @@ javac은 에러 한 건을 여러 줄에 걸쳐 출력합니다. 파서는 바�
 | 수준 | 형식 | 예 | 쓰임 |
 |---|---|---|---|
 | **L1 (구체적)** | `kind|메시지 분류|심볼|위치 유형` | `compile|cannot_find_symbol|class WebSecurityConfigurerAdapter` / `compile|cannot_find_symbol|class Foo|class *` / `dependency_resolution|com.example:does-not-exist:1.0` | 같은 문제 판정(정체, blocked 키), KB 패치 재생 조건 |
-| **L2 (일반적)** | `kind|메시지 분류|이름` | `compile|cannot_find_symbol|WebSecurityConfigurerAdapter` / `compile|package_does_not_exist|org.springframework.security` / `dependency_resolution|com.example:does-not-exist` | 프로젝트를 넘나드는 같은 종류의 문제 묶기, KB 사례 조회 |
+| **L2 (일반적)** | `kind|메시지 분류|이름` | `compile|cannot_find_symbol|WebSecurityConfigurerAdapter` / `compile|package_does_not_exist|org.springframework.security.config.annotation.web.configuration` / `compile|method_does_not_override|getErrorPath` / `plugin_execution|war:war|error assembling war: webxml attribute is required` / `dependency_resolution|com.example:does-not-exist` | 프로젝트를 넘나드는 같은 종류의 문제 묶기, KB 사례 조회, **케이스 카탈로그의 키**(§8.3c) |
 
 정규화 규칙:
 - 경로, URL, 줄·열 번호, 16진 주소(`@0x74a820bf` → `<hex>`), 버전(`<v>`), 숫자(`#`), 모듈 이름(`<module>`)을 지웁니다.
@@ -155,6 +161,12 @@ javac은 에러 한 건을 여러 줄에 걸쳐 출력합니다. 파서는 바�
 - **프로젝트 FQCN 마스킹**: `com.example.sec.SecurityConfig` 같은 프로젝트 고유 클래스는 `*`가 됩니다. `org.springframework.`, `javax.`, `lombok.` 등 라이브러리 접두사(`EXTERNAL_PACKAGE_PREFIXES`)만 남깁니다. 그래서 "Spring Security의 `WebSecurityConfigurerAdapter`가 없다"는 문제는 프로젝트가 달라도 같은 시그니처가 됩니다.
 - **사내 라이브러리 접두사**: `build.external_package_prefixes`에 적은 접두사와 `artifacts.parent` / `artifacts.mandatory` / `artifacts.optional`의 groupId는 자동으로 "라이브러리"로 취급해 마스킹하지 않습니다(`external_prefixes_from_config`). 사내 라이브러리의 API 변경이 프로젝트를 넘어 학습되려면 이 설정이 필요합니다.
 - lombok 같은 annotation processor 크래시는 L2가 `compile|annotation_processor|lombok`이 됩니다.
+- **L2는 서로 다른 문제를 합치지 않습니다(round 10).** L2가 케이스 카탈로그의 키가 되면서(케이스 하나 = L2 하나, 맞으면 그 케이스의 동작을 적용) 예전의 거친 L2가 다른 문제를 한 케이스로 묶던 것을 고쳤습니다.
+  - `package_does_not_exist`는 패키지 **전체**를 씁니다. 예전에는 앞 2–3마디만 남겨(`org.` / `com.` / `kr.` 등은 3마디, 그 밖은 2마디: `javax.xml.bind`와 `javax.xml.ws`가 같은 `javax.xml`, 사내 `kr.co.acme.common.util`과 `kr.co.acme.batch`가 같은 `kr.co.acme`) 해법이 다른 문제가 한 케이스였습니다. 이제 `javax.xml.bind` ≠ `javax.xml.ws`, `org.springframework.boot.context.embedded`, `kr.co.acme.common.util`처럼 따로입니다.
+  - `method_does_not_override` / `static_import_only`는 소스 줄에서 읽은 메서드 / 클래스 이름(`compile|method_does_not_override|getErrorPath`)을, `illegal_start`는 javac 문구(`illegal start of type`, `';' expected`)를 붙입니다(예전에는 이름 없이 한 케이스).
+  - `plugin_execution`은 플러그인 goal + 정규화한 원인 앞 10단어(`war:war|error assembling war: webxml attribute is required`)입니다. `webxml attribute is required`와 `could not copy webapp sources`가 더 이상 한 케이스가 아닙니다.
+  - L1은 심볼 안의 프로젝트 FQCN도 `*`로 가립니다.
+  - 시그니처가 바뀌었으므로 예전 KB의 케이스·힌트는 새 실행과 맞지 않습니다. **회사 KB는 지우고 다시 쌓습니다**(사용자 결정, [09](09-operations.md) 8절).
 
 ### 3.2 클러스터: 함께 고칠 묶음 (`sbmig/triage/cluster.py`)
 
@@ -174,6 +186,7 @@ javac은 에러 한 건을 여러 줄에 걸쳐 출력합니다. 파서는 바�
 
 클러스터는 **파일 단위**입니다. 라이브러리 메서드 하나의 이름이 바뀌었고 그 메서드를 프로젝트 파일 10개가 호출한다면, 클러스터는 10개가 되고 첫 프로젝트에서는 LLM 호출도 10번 일어납니다. 이것은 알려진 한계입니다(`CLAUDE.md` Known follow-ups: "cross-file clustering by symbol would cut that"). 대신 학습이 이를 상쇄합니다.
 
+0. round 10부터 같은 실행 안에서는 파일마다 자기 LLM 차례를 받습니다. 클러스터당 시도 상한은 **같은 클러스터**의 채점된 실패만 세므로(§4.5), 앞 파일의 시도가 뒤 파일의 상한을 깎지 않습니다(예전에는 파일 5개 중 3개만 LLM을 부르고 2개는 첫 라운드에 `repeated_failure`로 blocked). 앞 파일이 어떻게 고쳐졌는지(또는 무엇이 안 됐는지)는 뒤 파일 프롬프트의 KB 힌트 절에 `this run: the same error (…) in <파일> was fixed by attempt <id> (…): …` 줄로 들어갑니다.
 1. 첫 번째 LLM 수정이 성공하면 수확 단계에서 라벨 `method-rename`이 붙고, 소유 FQCN이 해석되면 `ChangeMethodName` 레시피 후보가 **LLM 없이** 컴파일됩니다(§8).
 2. 같은 실행의 다음 페이즈나 다음 프로젝트에서는 이 후보가 계획의 `spring.rewrite`에 들어가 모든 호출부를 한 번에 바꿉니다(`kb.try_candidates_in_plan`).
 3. 서로 다른 프로젝트 `kb.auto_promote_after_projects`(기본 2)곳에서 성공하면 active로 승격됩니다. 이후에는 LLM 호출이 0번입니다(`fixtures/projects/boot2-method-rename`: 첫 실행 LLM 2회 → 세 번째 실행 0회).
@@ -184,7 +197,7 @@ javac은 에러 한 건을 여러 줄에 걸쳐 출력합니다. 파서는 바�
 
 ### 4.0 이미 blocked인가 (실행 전체 레지스트리)
 
-`BlockedRegistry`(`sbmig/loop/blocked_registry.py`)는 실행 하나에 하나만 있고, 모든 페이즈의 루프가 공유합니다. 키는 L1 시그니처이고, compile 에러에는 `src/…` 아래 경로를 덧붙입니다(`normalize_file`). 재구성 단계에서 파일이 `{name}-back/src/...`로 옮겨져도 키가 그대로 유지되도록 하기 위해서입니다. spring 페이즈에서 blocked된 클러스터는 restructure와 verify에서도 핸들러나 LLM 없이 바로 건너뜁니다.
+`BlockedRegistry`(`sbmig/loop/blocked_registry.py`)는 실행 하나에 하나만 있고, 모든 페이즈의 루프가 공유합니다. 키는 (L1 시그니처, 파일)이고 compile 에러의 파일은 프로젝트 기준 **전체** POSIX 경로입니다(모듈·아티팩트 에러는 빈 값). round 10 전에는 `src/…` 아래 경로만 붙여서, MSA에서 svc-a의 `SwaggerConfig.java` blocked가 svc-b의 같은 상대 경로 파일까지 덮었습니다. 지금은 서비스마다 따로이고, 재구성 단계가 파일을 `{name}-back/src/...` 등으로 옮기면 그 단계의 git 이름 변경(`git diff -M`, 저널 `restructure_moves`)을 따라가 옛 경로의 blocked가 새 경로에서도 유지됩니다(`canonical_file`). spring 페이즈에서 blocked된 클러스터는 restructure와 verify에서도 핸들러나 LLM 없이 바로 건너뜁니다.
 
 클러스터의 **일부만** blocked일 수도 있습니다. 같은 파일에 javax 불일치 1건과 고칠 수 있는 에러 3건이 있다면 1건만 blocked로 등록하고, 나머지 3건으로 줄인 클러스터는 계속 처리합니다(`(rest of a partially blocked cluster)` 접두사).
 
@@ -196,7 +209,7 @@ javac은 에러 한 건을 여러 줄에 걸쳐 출력합니다. 파서는 바�
 
 후보는 다음과 같습니다.
 - **active KB 레시피**: `KBMatch.recipe_ids`. 클러스터의 L1/L2 시그니처가 레시피의 `signatures`와 겹치는 경우입니다(`sbmig/kb/store.py` `match`).
-- **반응형 레시피 규칙**: `sbmig/triage/recipe_rules.yml`. 에러 패턴에서 내장 OpenRewrite 레시피로 연결합니다. 현재 규칙은 `javax-ee-to-jakarta`(`package javax.(servlet|persistence|…) does not exist` → `JavaxMigrationToJakarta`), `javax-xml-bind`, `junit4-to-junit5`, `mockbean-spybean`, `spring-security-config`(`WebSecurityConfigurerAdapter|antMatchers|…` → `UpgradeSpringSecurity_6_0`), `boot4-modularized-autoconfigure`입니다. 규칙마다 적용 페이즈(`phases`)를 제한할 수 있습니다. 예를 들어 jakarta 레시피는 javax 클래스패스 위에서 돌면 안 되므로 spring·restructure 페이즈에서만 씁니다. `once_per_run`인 레시피는 계획에서 이미 실행했으면 다시 돌리지 않습니다.
+- **반응형 레시피 규칙**: `sbmig/triage/recipe_rules.yml`. 에러 패턴에서 내장 OpenRewrite 레시피로 연결합니다. 현재 규칙은 `javax-ee-to-jakarta`(`package javax.(servlet|persistence|…) does not exist` → `JavaxMigrationToJakarta`), `javax-xml-bind`, `junit4-to-junit5`, `mockbean-spybean`, `boot4-modularized-autoconfigure`입니다. round 10에서 `spring-security-config`(`WebSecurityConfigurerAdapter|antMatchers|…` → `UpgradeSpringSecurity_6_0`)는 뺐습니다. 그 에러는 클래스패스가 이미 Security 7일 때만 나는데, 그 위에서는 레시피의 타입 기반 방문자가 아무것도 찾지 못해 몇 분짜리 rewrite만 낭비했습니다. 대신 계획이 as-is 클래스패스에서 Security 6.0 … 6.5 → 7.0 체인 전체를 돌립니다(`openrewrite.recipes` 세트 `spring_security_7`, Boot 프로젝트는 Boot 우산 레시피가 같은 체인을 돌림). 규칙마다 적용 페이즈(`phases`)를 제한할 수 있습니다. 예를 들어 jakarta 레시피는 javax 클래스패스 위에서 돌면 안 되므로 spring·restructure 페이즈에서만 씁니다. `once_per_run`인 레시피는 계획에서 이미 실행했으면 다시 돌리지 않습니다.
 - 위 둘이 없으면 **KB 후보 레시피**(`candidate_recipe_ids`)를 씁니다.
 
 같은 라운드의 KB_RECIPE 결정들은 모아서 **OpenRewrite 한 번**으로 실행합니다(`_run_recipe_batch`). 이때 goal은 `rewrite:runNoFork`입니다. 프로젝트가 아직 컴파일되지 않는 상태라 `rewrite:run`(먼저 `compile`을 fork함)은 쓸 수 없기 때문입니다. 레시피가 아무 파일도 바꾸지 못하면 같은 라운드 안에서 그 클러스터들에 다음 선택지를 줍니다(`(after a no-op recipe run)` 접두사, 이때 레시피는 다시 고르지 않음).
@@ -237,15 +250,34 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 |---|---|
 | LLM이 이번 실행에서 unavailable로 표시됨 | `blocked: llm_unavailable` |
 | 쓸모없는 답(패치 없음, 적용 실패 = `apply_failed`)이 `loop.max_llm_attempts_per_cluster`(기본 2)회 이상 | `blocked: repeated_failure` |
-| 해결하지 못한 LLM 시도가 `max(max_llm_attempts_per_cluster, stall_limit + 1)` = 기본 3회 이상 | `blocked: repeated_failure` |
+| 해결하지 못한 LLM 시도(`no_change`, `regressed`, `reverted`, `apply_failed`, `inconclusive`)가 `max(max_llm_attempts_per_cluster, stall_limit + 1)` = 기본 3회 이상 | `blocked: repeated_failure` |
 | 실행의 LLM 호출 수가 `loop.max_llm_calls` 이상 | `blocked: budget_exhausted` |
 | 그 밖 | `LLM_FIX` (`no handler/recipe/KB patch for <label> → LLM fix`, 이전 시도가 있으면 `(attempt n/limit, previous attempts included in the prompt)`, 정체 중이면 `; stall level N`) |
 
 루프는 결정을 받은 뒤 한 번 더 확인합니다. 그사이 LLM이 unavailable이 됐거나 예산이 바닥났으면 LLM_FIX를 BLOCKED로 바꿉니다(`_handle_cluster`의 `forced`). 클러스터 하나에 대해 **한 라운드에 LLM은 한 번만** 부릅니다.
 
+**무엇을 세나(round 10).** 위 상한과 `loop.blocked_policy`의 허용 횟수는 **같은 클러스터의 채점된 실패**만 셉니다(`same_cluster`).
+- 같은 클러스터 = 같은 클러스터 id, 또는 같은 파일(재구성으로 옮겨진 경로도 따라감) + 겹치는 시그니처. L1 시그니처에는 파일이 없으므로, 예전에는 다른 파일의 같은 `cannot find symbol class X` 시도까지 세어 뒤 파일들이 LLM 없이 blocked됐습니다.
+- 아직 채점되지 않은 `pending`(이번 라운드에 적용, 빌드 전)은 세지 않습니다. `partial`(일부 해결)은 진전이라 실패가 아닙니다. 다만 결정적 선택지(핸들러, 레시피, KB 패치)가 `partial`까지만 갔다면 할 수 있는 만큼 한 것이므로 다시 고르지 않습니다.
+- 쿨다운에 걸린 두 시도(§7.6)도 세지 않습니다.
+- 다른 파일의 같은 에러에 대한 시도는 상한에 들어가지 않고 프롬프트의 KB 힌트 절에 한 줄(`this run: the same error (…) in … was fixed by …` / `… did not fix it (…)`)로만 들어갑니다(최대 3줄).
+
 ### 4.6 결정적 선택지가 "아무것도 바꾸지 못했을 때"
 
 `_handle_cluster`는 한 클러스터에 대해 최대 6번까지 결정을 다시 내립니다. 핸들러가 "바꿀 것이 없다"며 `apply_failed`로 끝나면 그 핸들러를 "이미 시도함"으로 표시하고 다음 단계(레시피 → KB 패치 → blocked → LLM)로 바로 넘어갑니다. 예외도 있습니다. 모듈 전체를 고치는 핸들러(`source-encoding`, `strip-utf8-bom` 등)가 같은 반복에서 이미 그 모듈을 고쳤다면 실패로 보지 않고 재빌드를 기다립니다(`no_change`).
+
+### 4.7 사람이 고정한 케이스 동작(pin, round 10)
+
+케이스 카탈로그(§8.3c)에서 사람이 `sbmig kb cases pin <id> --action …`으로 고정한 동작은 이제 트리아지가 **실제로** 따릅니다(예전에는 기록만 되고 결정에 쓰이지 않았음). 이 케이스의 에러가 클러스터에 있으면 이미 blocked인지 확인한 바로 다음, 핸들러보다 먼저 봅니다(`CaseHit.pinned`). 여러 케이스가 걸리면 `block` → `handler` → `recipe` 순서입니다.
+
+| 고정한 동작 | 결정 | 비고 |
+|---|---|---|
+| `block` / `block:<사유>` | LLM도 핸들러도 없이 바로 BLOCKED(rationale 끝에 `(pinned case action: no handler, no LLM)`) | 사유가 `BlockReason` 값(`external_javax_api` …)이면 그대로, 자유 문장이면 `external_api_incompatible` + 그 문장을 제안으로. 제안이 없으면 "`sbmig kb cases show <id>`를 보고 손으로 처리" |
+| `handler:<id>` | 그 핸들러를 먼저 시도(`pinned case action of case <id>: handler '<id>' — …`) | 등록되지 않은 id는 경고 + 결정 노트(`pinned handler '…' … is not registered — ignored`)만 남기고 평소 순서로. 이미 효과 없이 시도했으면 다음 단계로 |
+| `recipe:<id>[,…]` | 그 레시피로 KB_RECIPE | 이미 돈 레시피면 노트 후 평소 순서 |
+| `replace:<old>=<new>`, `hint` | 평소 순서(핸들러 `case-replace` / 프롬프트 힌트)로 적용 | 고정이 결정 순서를 바꾸지 않음 |
+
+`sbmig kb cases reject <id>`로 거부한 케이스는 다시 맞지 않을 뿐 아니라, round 10부터 그 L2의 KB 패치 재생, KB 레시피, 심볼 힌트도 멈춥니다.
 
 ---
 
@@ -260,18 +292,23 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 | `carry-over-managed-version` | `pom_invalid` + 버전 누락(`'dependencies.dependency.version' … is missing`), 그리고 as-is effective pom이 그 버전을 알고 있을 때 | intake에서 캡처한 as-is effective 버전을 명시적으로 고정합니다. 그보다 `sbmig/triage/handlers/versions.yml`의 하한이 높으면 하한을 씁니다. Spring Boot 아티팩트는 목표 Boot 버전. Handover에 ⚠(carried over)로 표시 | E6 |
 | `enforcer-relax` | `enforcer`, `RequireJavaVersion`, `DependencyConvergence`, `BannedDependencies` | `requireJavaVersion`을 `[21,)`로 완화하고, convergence/banned 실행을 건너뜀. 대안은 `enforcer.skip=true`(플래그). 정책 키 `build.enforcer_policy` | E4 |
 | `remove-werror` | `warnings found and -Werror specified` | 컴파일러 설정에서 `-Werror` 제거(플래그 `werror-removed`). `build.werror_policy` | E5 |
+| `remove-tools-jar` (round 10) | 선제(JDK21): pom이 `com.sun:tools` / `jdk.tools:jdk.tools`를 선언. 반응형: `com.sun:tools`, `jdk.tools:jdk.tools`, `lib/tools.jar` | 그 의존성 요소를 선언된 모든 pom에서 삭제(JDK 9부터 `tools.jar` 없음). 플래그 `tools-jar-removed`. `com.sun.tools.javac.*` 내부 API를 쓰는 코드는 여전히 `--add-exports`가 필요(빌드가 알려 줌) | E7 계열 |
 | `systempath-relocate` | `at specified path`, `refers to a non-existing file`, `systemPath` … | 재구성 뒤 위치가 바뀐 system 스코프 jar의 `systemPath`를 새 위치(`${project.basedir}/…`)로 고침. 후속 조치: Nexus에 설치 | E7 |
 | `missing-dependency-version` | `pom_invalid` 버전 누락 + 알려진 버전 있음 | `versions.yml`(또는 목표 Boot, optional 설정 버전)의 검증된 버전 설정 | E6 보조 |
 | `mysql-connector-relocation` | 해당 아티팩트 해석 에러 / 그 패키지 누락 (+ pom에 선언됨) | `mysql:mysql-connector-java` → `com.mysql:mysql-connector-j` | X3 앞 단계 |
 | `javax-servlet-api-to-jakarta` | 선제(SPRING): pom에 `javax.servlet:javax.servlet-api` / `servlet-api` | → `jakarta.servlet-api` 6.1.0 / `jakarta.servlet.jsp-api` 4.0.0 (provided) | – |
 | `jstl-to-jakarta` | 선제(SPRING): javax JSTL 의존성. 반응형: 누락 버전 / jstl 문구 | → `org.glassfish.web:jakarta.servlet.jsp.jstl` 등. 버전은 Boot BOM에 맡김 | E11 |
-| `dependency-relocation` | 표(`sbmig/triage/handlers/relocations.yml`)의 옛 아티팩트가 에러에 나오거나, 그 패키지가 누락되고 pom에 선언돼 있을 때 | javax→jakarta API, `hibernate` → `org.hibernate.orm`, Boot 4 starter 이름 변경 등 재배치. pom에 직접 선언된 javax API 아티팩트(`javax.persistence-api` 등)는 spring 레시피 뒤에 선제로도 처리(2026-10-22). 그 시절 라이브러리의 좌표 이동(옛 Oracle / MSSQL / CUBRID / DB2 드라이버 좌표, HikariCP-java7, c3p0, dom4j, iText 2.1.7 → OpenPDF 2.4.0, Bouncy Castle jdk15on → jdk18on, hamcrest-all, spring-session 1.x 등, 2026-10-22)은 반응형으로만(에러가 그 좌표를 지목할 때) | X3 앞 단계, X1 (4) |
+| `dependency-relocation` | 표(`sbmig/triage/handlers/relocations.yml`)의 옛 아티팩트가 에러에 나오거나, 그 패키지가 누락되고 pom에 선언돼 있을 때 | javax→jakarta API, `hibernate` → `org.hibernate.orm`, Boot 4 starter 이름 변경(round 10: Boot 4에 없는 `spring-boot-starter-undertow` → `spring-boot-starter-tomcat`, 권고 `undertow`) 등 재배치. pom에 직접 선언된 javax API 아티팩트(`javax.persistence-api` 등)는 spring 레시피 뒤에 선제로도 처리(2026-10-22). 그 시절 라이브러리의 좌표 이동(옛 Oracle / MSSQL / CUBRID / DB2 드라이버 좌표, HikariCP-java7, c3p0, dom4j, iText 2.1.7 → OpenPDF 2.4.0, Bouncy Castle jdk15on → jdk18on, hamcrest-all, spring-session 1.x 등, 2026-10-22)은 반응형으로만(에러가 그 좌표를 지목할 때) | X3 앞 단계, X1 (4) |
 | `jakarta-library-floor` | 선제(SPRING): pom이 `knowledge/libraries/jakarta_libraries.yml`의 라이브러리(현재 또는 옛 좌표)를 jakarta 이전 버전으로 선언했을 때. 반응형: X1의 `via_direct`가 그 표에 있을 때 | 그 라이브러리를 표의 버전으로 올림(옛 좌표면 새 좌표로 이전, 예: `ch.simas.qlrm:qlrm:1.7.1` → `org.qlrm:qlrm:4.2.1`, `displaytag:displaytag` → `com.github.hazendaz:displaytag:3.8.0`). 표 항목에 `classifier`가 있으면(Ehcache 3: `jakarta`) 올린 선언에 그 classifier도 붙이고, classifier 없는 선언은 버전이 충분해도 "이전"으로 봅니다(2026-10-22). 플래그 `jakarta-library-bumped` | X1 (1) |
 | `querydsl-jakarta-classifier` | 선제(SPRING): querydsl 사용. 반응형: `querydsl`, `javax/persistence`, `class Q…` | `querydsl-jpa` / `querydsl-apt` → 5.1.0 + classifier `jakarta` | – |
 | `jakarta-namespace-sweep` | 선제(SPRING): as-is 스캔에 javax Jakarta EE import(또는 javax를 쓰는 JSP, `SourceStats.jsp_javax_files`)가 있을 때(spring 레시피 뒤, 첫 spring 빌드 전). 반응형: `package javax.X does not exist`, `location: package javax.X`, `javax↔jakarta … cannot be converted to …`, `required: … found: …`, `class file for javax.X not found` | 레시피가 남긴 프로젝트 Java 소스의 `javax.*` Jakarta EE 참조(문자열 리터럴 밖, FQN 포함)를 `jakarta.*`로 바꿈. 표는 `sbmig/triage/handlers/jakarta_packages.yml`(OpenRewrite `JavaxMigrationToJakarta`의 ChangePackage 규칙 사본, `javax.annotation` / `javax.transaction`은 하위 패키지 제외, JDK 패키지는 건드리지 않음). 플래그 `jakarta-leftovers-renamed`, 문자열 리터럴 / 리소스 파일은 후속 조치. JSP / 태그 파일(`*.jsp`, `*.jspf`, `*.jspx`, `*.tag`, `*.tagx`)도 같은 표로 바꿈 — `<%@ page|tag import="…" %>` / `<jsp:directive.page import>`, 스크립틀릿 `<% %>` / `<%= %>` / `<%! %>`, `<jsp:useBean class|type>` 안에서만(HTML, EL, taglib `uri`, JSP 주석은 그대로). 플래그 `jsp-javax-renamed`(JSP는 Tomcat이 실행 시점에 컴파일하므로 화면 확인 필요). Java 파일이 없는 JSP 전용 프로젝트도 처리 | E13 |
 | `spring-data-crud-repository` | 선제(SPRING): `spring-data*` / `jpa` 라이브러리 사용. 반응형: `no suitable method found for findAll(no arguments)`, `symbol: method save|findById|deleteById|…(` | `PagingAndSortingRepository` / `ListPagingAndSortingRepository`만 상속하는 리포지토리 인터페이스에 `ListCrudRepository<T, ID>`(같은 타입 인자) + import 추가(Spring Data 3에서 CRUD 메서드가 빠짐). 플래그 `spring-data-crud-restored` | E14 |
+| `jdk-base64-shim` (round 10) | 선제(JDK21, 첫 JDK 21 빌드 전): 권고 `jdk-removed-apis`가 `sun.misc.BASE64*` import를 찾았을 때. 반응형: `BASE64Encoder` / `BASE64Decoder`, `com.sun.org.apache.xerces.internal.impl.dv.util` | 소스 루트마다 `sbmig.compat.BASE64Encoder` / `BASE64Decoder` / `Base64` 대체 클래스를 생성(JDK 8과 바이트 단위로 같은 출력, `decodeBuffer`의 `throws IOException` 유지)하고 import / FQN / 와일드카드 import를 그쪽으로 돌림. 호출부는 그대로 컴파일됩니다. 이미 있는 shim 파일은 덮어쓰지 않음, JDK 클래스를 상속한 클래스는 LLM 몫. 플래그 `jdk-base64-shimmed` | S8 |
+| `boot4-type-relocation-sweep` (round 10) | 선제(SPRING): Boot as-is 프로젝트이고 어느 pom도 Boot < 4를 고정하지 않을 때(spring 레시피 뒤). 반응형: 표의 옛 타입 / 패키지 | Boot 4 우산 레시피가 옮기지 않는 타입(`ErrorController` / `ErrorAttributes` → `webmvc.error`, `ErrorPage*` → `web.error`, `ServletWebServerFactory` 등 → `web.server.servlet`, `MultipartConfigFactory` / `Ordered*Filter` → `boot.servlet`, `ServerProperties`, `HttpMessageConverters`, `ServletComponentScan`)을 새 FQCN으로, 사라진 패키지의 와일드카드 import도 정리. 표 `sbmig/triage/handlers/boot4_types.yml`(프로젝트 레시피 `com.company.migrate.Boot4TypeRelocations`와 같은 목록 — 레시피가 건너뛴 파일 담당). 플래그 `boot4-types-relocated` | – |
+| `security-path-pattern-matcher` (round 10) | 반응형만: `AntPathRequestMatcher`, `MvcRequestMatcher` | Security 7에서 사라진 `new AntPathRequestMatcher(p[, m])` / `AntPathRequestMatcher.antMatcher(…)` / `new MvcRequestMatcher(x, p)` → `PathPatternRequestMatcher.pathPattern([HttpMethod, ]p)`, 남은 타입 참조 → `RequestMatcher`. 마지막 마디가 아닌 곳에 `**`가 있는 패턴은 시작 시점에 거부되므로 `// TODO sbmig:` 줄을 남김. 플래그 `security-path-matchers-rewritten` | – |
+| `spring-data-specification-unrestricted` (round 10) | 반응형만: `reference to where is ambiguous`, `where(org.springframework.data.jpa.domain.PredicateSpecification` | Spring Data JPA 4에서 모호해진 `Specification.where(null)` → `Specification.unrestricted()`. 플래그 `specification-unrestricted` | – |
 | `jaxb-runtime-add` | 선제: `javax.xml.bind` import. 반응형: `javax.xml.bind`, `JAXBContext` … | JAXB API + 런타임 추가(소스에 따라 javax 또는 jakarta) | S8 |
-| `add-known-dependency` | `package X does not exist` / `cannot access` / `class file for … not found` / `cannot find symbol`이고 그 패키지의 아티팩트를 알 때(`known_packages.yml`) | hamcrest, jakarta.*, `spring-boot-jackson2`, 모듈화된 `*-test` starter, jsr305, JUnit 4 잔재(`org.junit.experimental` / `rules` / `runner` … → `junit:junit` test, Boot 4.1 BOM 관리; 2026-10-22), 옛 라이브러리가 끌어오던 패키지(`org.dom4j`, `javassist`, `com.google.common`)와 레시피가 바꾼 패키지(fileupload2, commons-email2, collections4) 등을 모듈 pom에 추가. 부모가 관리하면 버전 생략 | – |
+| `add-known-dependency` | `package X does not exist` / `cannot access` / `class file for … not found` / `cannot find symbol`이고 그 패키지의 아티팩트를 알 때(`known_packages.yml`) | hamcrest, jakarta.*, `spring-boot-jackson2`, 모듈화된 `*-test` starter, jsr305, JUnit 4 잔재(`org.junit.experimental` / `rules` / `runner` … → `junit:junit` test, Boot 4.1 BOM 관리; 2026-10-22), 옛 라이브러리가 끌어오던 패키지(`org.dom4j`, `javassist`, `com.google.common`)와 레시피가 바꾼 패키지(fileupload2, commons-email2, collections4) 등을 모듈 pom에 추가. 부모가 관리하면 버전 생략. round 10: Security 7이 떼어 낸 접근 결정 API(`AccessDecisionManager`, `ConfigAttribute`, voter, `FilterSecurityInterceptor`, `WebExpressionVoter` … → `org.springframework.security:spring-security-access`, 프로젝트의 `${spring-security.version}`이 있으면 그 값으로 맞춤), Boot 4 모듈 패키지, `org.apache.log4j` → `log4j-1.2-api`. **main 코드**가 테스트 라이브러리를 쓰면 `test`가 아니라 compile scope로 추가 | – |
 | `lombok-version-floor` | 선제: lombok 버전 < 1.18.30(또는 모름). 반응형: `lombok`, `TypeTag :: UNKNOWN`, `com.sun.tools.javac.code.TypeTags`, `IllegalAccessError … lombok` | lombok을 1.18.38 이상으로. processor path 버전 고정, 상속받은 `annotationProcessorPaths`는 `combine.self="override"`로 끊음(§10.1) | X5 계열 |
 | `mapstruct-version-floor` | 선제: mapstruct < 1.6.0. 반응형: `mapstruct`, `No implementation was created for` | mapstruct / mapstruct-processor를 1.6.3 이상으로 | – |
 | `maven-compiler-plugin-floor` | 선제: 컴파일러 플러그인이 미선언이거나 < 3.13.0. 반응형: `invalid target release`, `Source option N is no longer supported`, `Unsupported class file major version` | maven-compiler-plugin 3.14.0 이상, `<source>/<target>` 대신 `<release>` | X5 |
@@ -293,8 +330,8 @@ blocked로 등록할 때는 행동할 수 있는 정보를 최대한 모읍니�
 |---|---|---|
 | 선택 | `pre_handlers_for(profile, cfg)` → `pre_handler_reasons`가 (id, 이유) 목록을 만듭니다. journal `plan` 이벤트의 `pre_handlers` | – |
 | 항상 추가 | `ALWAYS_PREEMPTIVE = ("strip-utf8-bom", "source-encoding")` (오케스트레이터) | 맨 앞 |
-| JDK21 그룹 | `preemptive_phase`가 `Phase.JDK21`인 핸들러 | 실행의 첫 rewrite/빌드 전(보통 `jdk21.rewrite` 전) |
-| SPRING 그룹 | `preemptive_phase`가 `Phase.SPRING`인 핸들러(`javax-servlet-api-to-jakarta`, `jstl-to-jakarta`, `querydsl-jakarta-classifier`, `jakarta-namespace-sweep`, `spring-data-crud-repository`, `add-known-dependency`) | spring 레시피(jakarta 변환)가 끝난 뒤 spring 빌드-수정 루프 직전. spring 루프가 없으면 restructure 전 |
+| JDK21 그룹 | `preemptive_phase`가 `Phase.JDK21`인 핸들러(round 10: `jdk-base64-shim`, `remove-tools-jar` 포함) | 실행의 첫 rewrite/빌드 전(보통 `jdk21.rewrite` 전) |
+| SPRING 그룹 | `preemptive_phase`가 `Phase.SPRING`인 핸들러(`javax-servlet-api-to-jakarta`, `jstl-to-jakarta`, `querydsl-jakarta-classifier`, `jakarta-namespace-sweep`, `spring-data-crud-repository`, `add-known-dependency`, round 10: `boot4-type-relocation-sweep`) | spring 레시피(jakarta 변환)가 끝난 뒤 spring 빌드-수정 루프 직전. spring 루프가 없으면 restructure 전 |
 
 jakarta에 의존하는 핸들러를 기다리게 하는 이유는, javax 소스가 아직 남아 있는 상태에서 servlet-api를 jakarta로 바꾸면 jakarta 레시피가 타입을 인식하지 못하고 jdk21 빌드도 깨지기 때문입니다.
 
@@ -335,7 +372,7 @@ jakarta에 의존하는 핸들러를 기다리게 하는 이유는, javax 소스
 | 3 | `POM (<path>)` | 가장 가까운 pom(`nearest_pom`). 250줄 이하면 전체, 아니면 발췌 |
 | 4 | `Library migration guidance (what to migrate TO)` | 이 클러스터에 맞는 advisory 힌트(`hints_for`). 대체 라이브러리와 `## fix-loop: <library>` 노트 |
 | 4.5 | `Module merge notes (…)` | "이 파일은 모듈 X에서 first-wins로 합쳐졌다" 등 |
-| 5 | `Knowledge-base hints (similar resolved cases)` | 비슷한 사례 요약, symbols.json의 "symbol X was fixed in N projects by Y: old → new". 최대 `kb.max_hints`(5)개 |
+| 5 | `Knowledge-base hints (similar resolved cases)` | 비슷한 사례 요약, symbols.json의 "symbol X was fixed in N projects by Y: old → new". 최대 `kb.max_hints`(5)개. round 10: 같은 실행에서 **다른 파일**의 같은 에러가 어떻게 됐는지 `this run: …` 줄(최대 3개) |
 | 6 | `Previous attempts on this cluster (they did NOT resolve it — do not repeat them)` | 이전 시도의 요약과 analysis(쿨다운에 걸린 시도는 제외) |
 | 7 | `Other error clusters in this build (…)` | 다른 클러스터 한 줄씩(최대 4,000자) |
 | 8 | `Plan notes` | 계획 노트 |
@@ -386,10 +423,14 @@ LLM의 "고쳤다"는 말은 판정 기준이 아닙니다. 다음 빌드 결과
 | 결과 | 조건 |
 |---|---|
 | `build_ok` | 다음 빌드가 성공함 |
-| `improved` | 이 시도의 클러스터 시그니처가 다음 빌드에서 사라짐(`cluster_resolved=True`) |
+| `improved` | 이 시도가 겨냥한 에러가 **모두** 사라졌고, 그 빌드가 그 에러를 보고하는 단계까지 갔음(`cluster_resolved=True`) |
+| `partial` (round 10) | 겨냥한 에러 일부가 사라지고 나머지는 남았으며, 건드린 파일에 새 에러가 없음. 노트 `partial: 1 of 2 targeted error(s) gone, 1 remain`. 진전이므로 상한·KB 실패 수에 세지 않지만, 수확·레시피 점수에서 성공으로도 치지 않음 |
 | `no_change` | 사라지지 않았지만 회귀도 아님 |
-| `regressed` | 시도가 건드린 파일에 새 에러가 생겼거나, 아무 클러스터도 해결되지 않았는데 전체 에러가 `loop.regression_ratio`(1.5)배를 넘거나, pom을 고친 뒤 구조적 종류(`loop.structural_regression_kinds`: `pom_invalid`, `parent_resolution`, `plugin_resolution`)가 새로 나타남 |
+| `inconclusive` (round 10) | 그 빌드로는 판단할 수 없음: 빌드가 타임아웃됐거나, 파싱된 에러 없이 실패했거나, 이 시도가 만들지 않은 앞 단계(의존성 해석 등)에서 멈춰 겨냥한 에러를 보여 줄 수 없었음. 노트 `inconclusive: the build timed out …` / `… stopped before the stage of the targeted errors …`. KB 점수 없음, 시도한 것으로는 셈. 회귀한 다른 시도를 되돌린 뒤의 재빌드에서 다시 채점 |
+| `regressed` | 시도가 건드린 파일에 새 에러가 생겼거나(round 10부터 (파일, 시그니처)별 개수로 셈 — 다른 파일의 같은 L1 에러가 가리지 않음), 아무 클러스터도 해결되지 않았는데 전체 에러가 `loop.regression_ratio`(1.5)배를 넘거나, pom을 고친 뒤 구조적 종류(`loop.structural_regression_kinds`: `pom_invalid`, `parent_resolution`, `plugin_resolution`, round 10부터 `dependency_resolution`)가 새로 나타나거나, pom을 고친 뒤 새로 생긴 앞 단계 에러가 겨냥한 에러를 가림 |
 | `reverted` | 회귀해서 되돌림(`loop.revert_on_regression`) |
+
+**"안 보임"은 "해결"이 아닙니다(round 10).** 회사 실행에서 LLM이 지어낸 의존성을 pom에 넣자 빌드가 의존성 해석에서 멈췄고, 컴파일 에러가 보이지 않으니 예전 채점은 그 시도를 `improved`로 쳤습니다. 이제 에러가 사라졌다고 하려면 빌드가 그 단계까지 가야 하고, pom 수정 뒤의 새 해석 에러는 구조적 회귀로 되돌립니다.
 
 ### 6.6 역할별 모델
 
@@ -470,8 +511,9 @@ LLM의 "고쳤다"는 말은 판정 기준이 아닙니다. 다음 빌드 결과
 
 ### 7.6 LLM 쿨다운과 unavailable (L5)
 
-- **전송·설정 실패로 분류하는 것**: `llm-error:`로 시작하는 analysis 중 HTTP 상태, timeout, connect, SSL, API key, 401/403, 5xx, `invalid JSON`, `cannot find the reply text`, `response_path` 등이 들어 있는 것(`is_llm_transport_error`).
-- **세지 않는 것**: 프로토콜을 지키지 않은 답(모델 탓), `status=400/413/422`, 콘텐츠 필터(요청 탓).
+- **전송·설정 실패로 분류하는 것**(round 10에서 좁힘): `llm-error:`로 시작하는 analysis 중 명시적 표시가 있는 것만입니다(`is_llm_transport_error`). 클라이언트가 붙인 `status=None|401|403|404|408|429|5xx`(`None` = HTTP 응답 자체가 없음), 전송 예외 `cause=<클래스>`나 그 클래스 이름(`ConnectTimeout`, `ProxyError`, `SSLError`, `ConnectionResetError`, `LLMHardDeadline` …), 알려진 설정 문구(`response_path`, `invalid JSON`, `cannot find the reply text`, API 키 없음, `unknown llm.provider` …). 예전 목록은 `config`라는 단어, 5xx처럼 보이는 숫자(`line 512`), 경로까지 맞아서 Windows의 `PermissionError [WinError 32] … config …`가 LLM을 unavailable로 만들었습니다.
+- **세지 않는 것**: 프로토콜을 지키지 않은 답(모델 탓), `status=400/413/422`, 콘텐츠 필터, `finish_reason=length`(답이 출력 토큰 한도에서 잘림 = 프롬프트가 너무 큼; 빈 답이면 재시도 없이 그 요청의 거절, 텍스트가 있으면 경고와 함께 사용)는 요청 탓입니다.
+- **설정 오류(round 10, `llm-config-error`)**: 같은 HTTP 400 본문이 **서로 다른 프롬프트 2개**(`LLM_CONFIG_ERROR_PROMPTS`)에 오면 프롬프트가 아니라 설정(모델 이름, payload 필드) 문제로 봅니다. 이 실행의 LLM 호출을 멈추고(LLM unavailable과 같은 처리, 클러스터는 `llm_unavailable` blocked), 플래그 `llm-config-error`, follow-up 한 줄, 저널 `llm_config_error`, ERROR 로그 `LLM configuration error: the gateway answered HTTP 400 '…' to 2 different prompts — no more LLM calls in this run`. 본문이 크기 문제(`context length`, `too long`, `max tokens` …)이면 프롬프트가 달라도 같은 본문일 수 있으므로 설정 오류로 보지 않습니다.
 - **연속 2회 실패**: 실행에서 처음이면 `llm.cooldown_seconds`(60초)만큼 쉬고 다시 시도합니다(journal `llm_cooldown`, 플래그 `llm-cooldown`, 로그 `LLM transport failed twice in a row (…) — cooling down 60s before retrying`). 이 두 시도는 클러스터당 LLM 시도 수에 넣지 않습니다.
 - **두 번째 연속 실패 묶음**(또는 `cooldown_seconds: 0`, 또는 남은 시간 예산이 쿨다운보다 짧음): LLM을 이번 실행 동안 unavailable로 표시합니다(플래그 `llm-unavailable`, journal `llm_unavailable`). LLM이 필요한 클러스터는 `llm_unavailable`로 blocked되고, 핸들러와 레시피는 계속 동작합니다.
 
@@ -481,7 +523,7 @@ LLM의 "고쳤다"는 말은 판정 기준이 아닙니다. 다음 빌드 결과
 
 ### 7.8 마일스톤, 워치독, 자동 스레드 덤프
 
-루프는 단계를 지날 때마다 마일스톤을 갱신합니다(`_mark`). 워치독 쓰레드는 30초마다 깨어나서, 60초 넘게 마일스톤이 바뀌지 않았으면 경고하고, 300초가 넘으면 실행 디렉터리에 스레드 덤프를 씁니다. 자세한 내용은 [03 §8](03-architecture.md)에 있습니다.
+루프는 단계를 지날 때마다 마일스톤을 갱신합니다(`_mark`). 워치독 쓰레드는 30초마다 깨어나서, 60초 넘게 마일스톤이 바뀌지 않았으면 경고하고, 300초가 넘으면 실행 디렉터리에 스레드 덤프를 씁니다. round 10부터 루프 빌드·rewrite·LLM HTTP 호출·살아 있는 Maven 자식 프로세스가 도는 동안에는 말하지 않습니다(각자 heartbeat가 있음). 자세한 내용은 [03 §8](03-architecture.md)에 있습니다.
 
 ---
 
@@ -554,7 +596,11 @@ ledger는 클러스터(파일) 단위라 "에러 N개 → 어떻게 됐나"를 �
 | `apply_failed` | 적용 오류(예: SEARCH 블록이 파일에 없음, 아무 파일도 바뀌지 않음, LLM이 변경을 제안하지 않음) |
 | `regressed` / `reverted` | 회귀 메모 + 고친 파일에 새로 생긴 에러 |
 | `no_change` | 겨냥한 에러가 다음 빌드에도 그대로 있음(남은 에러 목록) |
+| `partial` (round 10) | 루프의 노트 그대로: `partial: 1 of 2 targeted error(s) gone, 1 remain` — 실패로 세지 않음 |
+| `inconclusive` (round 10) | `inconclusive: the build timed out`, `… failed without parseable errors`, `… stopped before the stage of the targeted errors` |
 | `pending` | 다음 빌드 전에 실행이 끝나 채점되지 않음 |
+
+round 10부터 에러 기록에는 그 에러가 처음 나타난 빌드에서 그 파일을 바꾼 시도 id들(`introduced_by`), 시도가 없었다면 그 직전 빌드 이후의 계획 단계(`step:<id>,…`)가 남습니다. "이 에러를 누가 만들었나"를 볼 수 있습니다([05](05-directories-and-storage.md) 4.10b). MSA에서는 서비스별(대상) 빌드가 자기 서비스의 기록만 닫습니다.
 
 이 기록은 다음 프로젝트의 프롬프트로 돌아갑니다(`kb.error_hints`). 같은 L2 / 심볼의 가장 많이 성공한 수정과 **가장 많이 실패한 시도**가 KB 힌트로 들어가므로, LLM은 "과거에 이 방법은 `no_change` 였다"는 것을 보고 다른 길을 찾습니다. 파일 구조와 상태 정의는 [05. 디렉터리와 저장](05-directories-and-storage.md) 4.10b 절, 조회 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb errors` 입니다.
 
@@ -570,7 +616,15 @@ ledger는 클러스터(파일) 단위라 "에러 N개 → 어떻게 됐나"를 �
 | `hint` | 그 밖 | 프롬프트에 "과거 성공 방법"과 "과거 실패, 반복 금지"를 넣고 LLM이 수정 |
 | `handler`, `block` | 사람이 고정(`pin`)했을 때만 | 그 핸들러 / 바로 blocked + 제안 |
 
-**상태**는 `observed` → `candidate` → `active`이고 `rejected`는 사람이 정합니다. `replace` 케이스는 `case-replace`가 서로 다른 프로젝트 `kb.auto_promote_after_projects`(기본 2)곳에서 실패 없이 해결하면 자동으로 `active`가 됩니다. 후보 상태에서 두 번 실패하고 한 번도 성공하지 못하면 `hint`로 내려갑니다. 사람이 고친 `human:` 블록(이름, 상태, 고정 동작, 힌트, 메모)은 자동 갱신이 덮어쓰지 않고 항상 우선합니다. 파일 위치와 보는 법은 [05. 디렉터리와 저장](05-directories-and-storage.md) 4.10c 절, 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb cases` 입니다.
+**상태**는 `observed` → `candidate` → `active`이고 `rejected`는 사람이 정합니다. `replace` 케이스는 `case-replace`가 서로 다른 프로젝트 `kb.auto_promote_after_projects`(기본 2)곳에서 실패 없이 해결하면 자동으로 `active`가 됩니다. 사람이 고친 `human:` 블록(이름, 상태, 고정 동작, 힌트, 메모)은 자동 갱신이 덮어쓰지 않고 항상 우선하며, round 10부터 고정한 동작은 트리아지가 그대로 따릅니다(§4.7).
+
+**round 10에서 바뀐 계산**(KB 형식이 바뀌었으므로 회사 KB는 지우고 다시 쌓습니다):
+- **실패는 에러마다 그 에러의 시도로** 셉니다. 그 에러를 해결한 시도(해결에 들어간 시도 포함)와 `partial` / `inconclusive` / `pending`은 그 에러의 실패가 아닙니다. 예전에는 같은 실행의 다른 에러 때문에 잘 듣는 수정이 "반복 금지"로 올라가기도 했습니다.
+- **학습한 치환 동작은 서로 다른 프로젝트 수로** 고릅니다(같으면 기록 수). 힌트도 프로젝트 수 순입니다.
+- **치환 쌍은 패키지 단위**: `javax.xml.bind.JAXBContext → jakarta.xml.bind.JAXBContext`는 `javax.xml.bind → jakarta.xml.bind`로 배웁니다(예전의 `javax → jakarta`는 `javax.sql` import까지 바꿨음). `case-replace`도 jakarta 표가 바꾸는 javax 이름만 바꾸고 `javax.sql` / `javax.xml.parsers` / `javax.naming`은 건드리지 않습니다. 멤버 이름 바꾸기는 예전처럼 토큰 하나짜리 쌍입니다.
+- **물러남(fallback)**: 한 치환 쌍 묶음이 실패 ≥ 2이고 실패 > 성공이면 그 묶음을 내리고 다음 묶음을, 그다음 `patch` / `hint`를 씁니다. `case-replace`의 해결 수단 id는 `case-replace:<케이스 id>:<쌍 묶음 해시 8자>`이므로 동작이 바뀌면 예전 성공을 물려받지 않습니다.
+- **감사 기록**: 사람의 `sbmig kb cases …` 편집(OS 사용자, 명령, 전 → 후)과 자동 상태 / 동작 전환("fallen back: …", 근거 수 포함)이 `<kb.dir>/audit.jsonl`에 남고, `sbmig kb cases show`에 "history" 절이 생겼습니다.
+- **거부의 범위**: `rejected` 케이스는 그 L2의 KB 패치 재생, KB 레시피, 심볼 힌트도 멈춥니다. 파일 위치와 보는 법은 [05. 디렉터리와 저장](05-directories-and-storage.md) 4.10c 절, 명령은 [07. API 레퍼런스](07-api-reference.md)의 `sbmig kb cases` 입니다.
 
 ### 8.4 "빌드 없이는 KB 점수를 주지 않는다"
 
@@ -582,6 +636,7 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | 페이즈가 **의존성 해석만으로** 실패했으면 점수를 주지 않음 | 프록시 429, 레이트 리밋, 없는 아티팩트는 레시피가 만든 문제가 아닙니다(journal `kb_credit_skipped`). | `Orchestrator._resolution_only_failure` (round 9 X8) |
 | 최종 빌드 없이 멈춘(또는 중단된) 실행은 `unresolved` ledger 줄을 쓰지 않음 | 마이그레이션 도중의 에러는 결론이 아닙니다. | `FileKnowledgeBase.record_run` (round 7a R7) |
 | 수확은 다음 빌드에서 확인된(`improved`/`build_ok`) LLM 수정만 대상 | LLM의 자기 평가는 믿지 않습니다. | `_is_harvestable` |
+| `partial` / `inconclusive` 시도의 KB 레시피는 성공도 실패도 아님(round 10) | 일부만 고쳤거나 빌드가 보여 주지 못한 것은 증거가 아닙니다(journal `kb_credit_skipped`의 `reason`). | `BuildFixLoop._score` |
 
 ---
 
@@ -607,6 +662,10 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | `[spring it2] cluster compile:3f2a9c1d: LLM answered — 1 change(s) in src/main/java/…/OrderService.java — Renamed the call to newName().` | LLM이 답했고 변경 1건을 적용합니다. 끝은 LLM `<analysis>`의 첫 문장입니다. 적용 실패가 있으면 `, N apply error(s)`가 붙습니다. 판정은 **다음 빌드**에서 합니다. | 다음 `build` 줄에서 에러 수가 줄었는지 봅니다. |
 | `[spring] fix loop quiet for 120s since 'fixer.propose for compile:3f2a9c1d (prompt packing + LLM call)' (loop running 900s) — still working or stuck? a thread dump follows after 300s (also: GET /api/threads, kill -USR1 <pid>)` | 루프의 마지막 마일스톤 이후 120초 동안 아무 진척이 없습니다. LLM 하트비트도 같이 나오고 있다면 LLM을 기다리는 중이고, 하트비트가 없다면 그 사이의 코드가 오래 걸리는 것입니다. | 300초가 지나면 실행 디렉터리에 `threads-*.txt`가 생깁니다. 이 파일과 마지막 로그 30줄을 공유합니다. |
 | `LLM transport failed twice in a row (…) — cooling down 60s before retrying` | 게이트웨이 장애가 의심됩니다. 실행당 한 번 쉬었다가 다시 시도합니다. | 게이트웨이 상태를 확인합니다(`sbmig llm-probe`). |
+| `LLM configuration error: the gateway answered HTTP 400 '…' to 2 different prompts — no more LLM calls in this run` (round 10) | 같은 400이 다른 프롬프트에도 옴 → 설정 오류로 보고 이 실행의 LLM 호출을 멈춤(§7.6). | `.env`의 모델 이름 / `llm.payload_extra` 확인 후 재실행([09](09-operations.md) 9.22). |
+| attempt 노트 `partial: 1 of 2 targeted error(s) gone, 1 remain` / `inconclusive: the build timed out …` (round 10) | 채점 결과(§6.5). `partial`은 진전, `inconclusive`는 판단 불가. | – |
+| `preflight: Maven runs on Java 17.0.9 (…), not Java 21: …` → `run aborted: …` (round 10, `sbmig/loop/orchestrator.py`) | Maven의 Java가 `build.require_java_major`와 다름 → 빌드 전에 중단(`jdk-not-21`). | `build.java_home`을 JDK 21로([09](09-operations.md) 9.20). |
+| `run aborted: <사유>` (round 10) | 실행 중단의 ERROR 한 줄. follow-up 첫 줄과 같음. | 그 줄을 옮겨 적습니다. |
 
 ### 9.2 LLM 호출 (`sbmig/fix/company.py`, `sbmig/fix/fixer.py`)
 
@@ -619,6 +678,8 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | `llm call provider=company model=<model> in=5120 out=812 latency=42.3s finish=stop` | 응답 성공 |
 | `llm company HTTP 503 (attempt 1/4)` → `llm call retrying in 1s (attempt 1/4 failed: status=503)` | 재시도할 상태 코드라 다시 시도합니다. |
 | `llm company giving up after 4 attempt(s): status=… body=…` | 재시도를 모두 썼습니다. 이 시도는 전송 실패로 집계됩니다(§7.6). |
+| `… status=None cause=ConnectTimeout: <메시지 ≤ 120자>` (경고 / 재시도 / 포기 줄, round 10) | HTTP 응답이 없었던 전송 실패의 가장 안쪽 원인(`[WinError N]` / `[Errno N]` 포함). 옮겨 적을 부분입니다. |
+| `… finish_reason=length …` (round 10) | 빈 답이면 요청 거절(프롬프트가 너무 큼 → 게이트웨이 max_tokens를 올리거나 `llm.max_context_chars`를 줄이라는 힌트), 재시도 없음. 텍스트가 있으면 경고 후 사용. |
 | `fix prompt for …: the LLM asked for more context (round 1/2): 2 file(s) [...], 1 grep(s) [...]` | LLM이 파일이나 grep을 요청했습니다. |
 | `grep for the LLM: 1 pattern(s) over 812 file(s)` → `grep for the LLM done: 812 file(s) scanned in 0.4s, 7 line(s) returned` | 범위가 제한된 grep |
 | `fix prompt for …: 1 patch block(s) did not apply → one feedback round` | SEARCH 블록이 맞지 않아 실제 텍스트를 보여주며 다시 요청합니다. |
@@ -636,6 +697,7 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | `rewrite: download failure (…) → waiting 30s, retry 1/1` | 프록시 429·5xx 같은 다운로드 실패(X8)로 기다렸다 재시도합니다. |
 | `rewrite: OutOfMemoryError → retrying once with MAVEN_OPTS -Xmx8g` | OOM이 나서 메모리를 늘려 한 번 재시도합니다(E8). |
 | `handler lombok-version-floor changed pom.xml` | pom 핸들러가 파일을 바꿨습니다. |
+| `maven: negative cache hit for <g:a:v> → retrying once with -U` (round 10) | 로컬 저장소가 예전 해석 실패를 기억함("was cached in the local repository") → 같은 빌드를 `-U`로 한 번 더(`build.retry_negative_cache`, 아티팩트당 실행에 한 번, 로그 `NNN-build-<label>-U.log`). |
 
 ---
 
@@ -768,6 +830,11 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | `blocked` / `only_blocked` | blocked 등록 / blocked만 남음 | `reason`, `artifact`, `owner_class`, `required_type`, `found_type`, `suggestion` |
 | `llm_fix` | LLM 제안 하나 | `cluster_id`, `model`, `rounds`, `calls`, `tokens`, `changes`, `error`, `advisory_hints` |
 | `llm_cooldown` / `llm_unavailable` | L5 | `seconds`, `reason`, `clusters` |
+| `llm_config_error` (round 10) | 같은 HTTP 400이 다른 프롬프트에 옴 | `phase`, `iteration`, `body`, `prompts` |
+| `kb_credit_skipped` | KB 레시피를 평가하지 않음 | `phase`, `recipes`, `attempt`, `reason`(`partial` / `inconclusive`, 또는 해석 실패만 있던 단계) |
+| `build_negative_cache_retry` (round 10) | 네거티브 캐시 → `-U` 재빌드 | `goal`, `module`, `artifacts`, `first_log` |
+| `restructure_moves` (round 10) | 재구성 단계의 파일 이동을 blocked 레지스트리가 따라감 | `step`, `moved`, `blocked_rekeyed` |
+| `phase_end`의 `interrupted` (round 10) | 단계가 예외로 끊김(보고서 노트 `phase interrupted: …`) | `interrupted` |
 | `merge_conflict_hints` | 참조 사본 제공 | `cluster`, `reference_files` |
 | `test_compile_fallback` / `tests_fallback` | 대체 빌드 | `test_errors` / `failing` |
 | `budget_exhausted` / `abort` | 시간 예산 / 부모 해석 불가 | `kind` / `reason` |

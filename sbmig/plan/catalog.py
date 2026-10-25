@@ -95,11 +95,15 @@ _RECIPE_SET_NAMES = ("jdk21", "jakarta", "spring_boot_4", "spring_framework_7", 
 
 
 def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:
-    """set name → ids, as configured (`extra.<case>` sets appear as `extra.<case>`)."""
+    """set name → ids, as configured (`extra.<case>` sets appear as `extra.<case>`), plus the library-conditional
+    sets of knowledge/recipes/library_recipes.yml as `library.<library>` (round 10)."""
     rs = cfg.openrewrite.recipes
     out = {name: list(getattr(rs, name)) for name in _RECIPE_SET_NAMES}
     for case, ids in (rs.extra or {}).items():
         out[f"extra.{case}"] = list(ids)
+    from .library_recipes import library_recipe_sets
+
+    out.update(library_recipe_sets())
     return out
 
 
@@ -241,11 +245,13 @@ class RecipeCatalog:
         artifacts = set(cfg.openrewrite.recipe_artifacts)
 
         for name, ids in sets.items():
+            where = (f"knowledge/recipes/library_recipes.yml ({name})" if name.startswith("library.")
+                     else f"openrewrite.recipes.{name}")
             for rid in ids:
                 if rid not in self:
-                    problems.append(f"config set openrewrite.recipes.{name}: {rid} is not in the catalog")
+                    problems.append(f"config set {where}: {rid} is not in the catalog")
                 elif name not in self._by_id[rid].sets:
-                    problems.append(f"catalog {rid}: sets lacks {name!r} (referenced by openrewrite.recipes.{name})")
+                    problems.append(f"catalog {rid}: sets lacks {name!r} (referenced by {where})")
         for rule_id, ids in rules.items():
             for rid in ids:
                 if rid not in self:
@@ -347,6 +353,20 @@ def prefix_artifact(recipe_id: str) -> Optional[str]:
 _MIGRATE = "org.openrewrite.recipe:rewrite-migrate-java"
 _SPRING = "org.openrewrite.recipe:rewrite-spring"
 _TESTING = "org.openrewrite.recipe:rewrite-testing-frameworks"
+_SEC7_DESCRIPTION = ("Spring Security 6.x → 7.0 (version bump, SecurityConfigurer init/configure lose `throws Exception`, "
+                     "AuthorizationManager.check → authorize); planned after the 6.0 … 6.5 steps")
+# round 10: what the Framework 7 recipe / the Boot umbrella already run (verified in rewrite-spring 6.37.0 & co)
+_FW7_COVERS = ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+               "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
+               "org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5",
+               "org.openrewrite.java.jackson.CodehausToFasterXML"]
+_BOOT4_ROUND10_COVERS = [*(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" for v in range(6)),
+                         "org.openrewrite.java.spring.batch.SpringBatch5To6Migration",
+                         "org.openrewrite.hibernate.MigrateToHibernate71",
+                         "org.openrewrite.java.spring.boot3.MigrateThymeleafDependencies",
+                         "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
+                         "org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5",
+                         "org.openrewrite.java.jackson.CodehausToFasterXML"]
 
 _BUILTIN: list[dict[str, Any]] = [
     {"id": "org.openrewrite.java.migrate.UpgradeToJava21", "artifact": _MIGRATE, "phase": "jdk21",
@@ -369,17 +389,16 @@ _BUILTIN: list[dict[str, Any]] = [
                 "org.openrewrite.java.springdoc.SpringFoxToSpringDoc",
                 "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0",
                 "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing",
-                "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1"]},
+                "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1", *_BOOT4_ROUND10_COVERS]},
     {"id": "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1", "artifact": _SPRING, "advisor": True,
      "gate": "is_boot", "description": "Spring Boot 4.1 property renames"},
     {"id": "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean", "artifact": _SPRING, "advisor": True,
      "gate": "has_tests", "description": "@MockBean/@SpyBean → @MockitoBean/@MockitoSpyBean"},
     {"id": "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0", "artifact": _SPRING,
      "advisor": True, "gate": "is_spring",
-     "description": "Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)"},
+     "description": "Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)", "covers": list(_FW7_COVERS)},
     {"id": "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0", "artifact": _SPRING,
-     "advisor": True, "gate": "has_spring_security",
-     "description": "Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)"},
+     "advisor": True, "gate": "has_spring_security", "description": _SEC7_DESCRIPTION},
     {"id": "org.openrewrite.java.springdoc.SpringFoxToSpringDoc", "artifact": _SPRING, "advisories": ["springfox"]},
     {"id": "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0", "artifact": _SPRING, "advisories": ["springfox"]},
     {"id": "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing", "artifact": _SPRING,
@@ -390,7 +409,8 @@ _BUILTIN: list[dict[str, Any]] = [
      "gate": "has_junit4", "description": "JUnit 4 → JUnit 5"},
     {"id": "com.company.migrate.ServletToJakartaAndBoot", "origin": "project",
      "file": "knowledge/recipes/base/spring-boot-41-version.yml",
-     "covers": ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"]},
+     "covers": ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+                "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10"]},
 ]
 
 

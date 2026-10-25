@@ -3,6 +3,7 @@
 The catalog is faked through ``sys.modules["sbmig.kb.catalog"]`` so these tests do not depend on the KB module."""
 from __future__ import annotations
 
+import re
 import sys
 import types
 from pathlib import Path
@@ -112,6 +113,11 @@ class ClientIpFilter {
 """                 # line 6 = a (reported below), line 7 = b
 
 
+def _plain(notes):
+    """Handler notes without the round-10 `resolver: case-replace:<id>:<hash>` lines (read by the error tracker)."""
+    return [n for n in notes if not n.startswith("resolver: ")]
+
+
 def _handler(fake_kit):
     return fake_kit.handler("case-replace")
 
@@ -208,7 +214,7 @@ def test_error_lines_scope_reported_line_and_imports_only(fake_kit, catalog, rcf
         "LegacyRequestHelper.clientIp;", "LegacyRequestHelper.remoteClientIp;").replace(
         "a(Req r) { return clientIp(r)", "a(Req r) { return remoteClientIp(r)")
     assert "String b(Req r) { return clientIp(r); }" in p.read_text(encoding="utf-8")       # line 7 untouched
-    assert h.notes == [("case a1b2c3d4e5 (LegacyRequestHelper.clientIp — cannot find symbol): replaced "
+    assert _plain(h.notes) == [("case a1b2c3d4e5 (LegacyRequestHelper.clientIp — cannot find symbol): replaced "
                         "clientIp→remoteClientIp on 2 line(s) of ClientIpFilter.java")]
     assert h.flags == []
 
@@ -221,7 +227,7 @@ def test_file_scope(fake_kit, catalog, rcfg):
     assert [c.path for c in h.apply(fake_kit.ws, _cluster(_err(line=6)), None, rcfg)] == [FILTER]
     assert p.read_text(encoding="utf-8") == SRC.replace("clientIp(", "remoteClientIp(").replace(
         ".clientIp;", ".remoteClientIp;")
-    assert h.notes == [("case a1b2c3d4e5: replaced clientIp→remoteClientIp on 3 line(s) of ClientIpFilter.java "
+    assert _plain(h.notes) == [("case a1b2c3d4e5: replaced clientIp→remoteClientIp on 3 line(s) of ClientIpFilter.java "
                         "[scope: file]")]
 
 
@@ -250,7 +256,7 @@ def test_non_identifier_pair_on_import_line(fake_kit, catalog, rcfg):
     changes = h.apply(fake_kit.ws, _cluster(_err(line=6, file="src/main/java/com/acme/A.java", sig=sig)), None, rcfg)
     assert [c.path for c in changes] == ["src/main/java/com/acme/A.java"]
     assert p.read_text(encoding="utf-8") == src.replace("import javax.servlet.http.", "import jakarta.servlet.http.")
-    assert h.notes == [("case ffee001122 (javax.servlet — package does not exist): replaced "
+    assert _plain(h.notes) == [("case ffee001122 (javax.servlet — package does not exist): replaced "
                         "javax.servlet→jakarta.servlet on 1 line(s) of A.java")]
 
 
@@ -281,7 +287,11 @@ def test_each_case_only_on_its_own_lines(fake_kit, catalog, rcfg):
     assert [c.path for c in changes] == [FILTER]                       # one FileChange per file
     assert p.read_text(encoding="utf-8").splitlines()[1:3] == ["    String a = remoteClientIp + userId;",
                                                                "    String b = clientIp + memberId;"]
-    assert len(h.notes) == 2 and h.notes[1].startswith("case 0000000002: replaced userId→memberId on 1 line(s)")
+    notes = _plain(h.notes)
+    assert len(notes) == 2 and notes[1].startswith("case 0000000002: replaced userId→memberId on 1 line(s)")
+    assert [n for n in h.notes if n.startswith("resolver: ")] == [
+        f"resolver: case-replace:a1b2c3d4e5:{cr.pairset_hash([('clientIp', 'remoteClientIp')])}",
+        f"resolver: case-replace:0000000002:{cr.pairset_hash([('userId', 'memberId')])}"]
 
 
 def test_crlf_and_cp949_preserved(fake_kit, catalog, rcfg):
@@ -342,3 +352,69 @@ def test_specific_handler_wins(fake_kit, catalog, rcfg):
     prof.source = SourceStats(javax_imports={"javax.persistence": 3}, packages=["com.acme"], base_package="com.acme")
     ids = [h.id for h in fake_kit.registry.matching(_cluster(err), prof, rcfg)]
     assert ids[0] == "jakarta-namespace-sweep" and ids[-1] == "case-replace"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# round 10 (D17): resolver id per replace set, javax → jakarta package pairs never touch JDK packages
+# ---------------------------------------------------------------------------------------------------------------------
+def test_resolver_id_names_case_and_pairset(fake_kit, catalog, rcfg):
+    _case()
+    _write(fake_kit.root, FILTER, SRC)
+    h = _handler(fake_kit)
+    assert h.resolver_id == "case-replace"
+    h.apply(fake_kit.ws, _cluster(_err(line=6)), make_profile(), rcfg)
+    expected = cr.pairset_hash([("clientIp", "remoteClientIp")])
+    assert re.fullmatch(r"[0-9a-f]{8}", expected)
+    assert h.resolver_id == f"case-replace:a1b2c3d4e5:{expected}"
+    assert h.notes[-1] == f"resolver: case-replace:a1b2c3d4e5:{expected}"       # read by the error tracker
+    # nothing applied → plain handler id again (no stale resolver from the previous apply)
+    assert h.apply(fake_kit.ws, None, make_profile(), rcfg) == []
+    assert h.resolver_id == "case-replace"
+
+
+def test_pairset_hash_formula_is_order_and_duplicate_free():
+    import hashlib
+
+    a = cr.pairset_hash([("b", "c"), ("a", "b"), ("a", "b"), ("x", "x"), ("", "y")])
+    want = hashlib.sha1("a\tb\nb\tc".encode("utf-8")).hexdigest()[:8]
+    assert a == want == cr.pairset_hash([ReplacePair(old="a", new="b"), ReplacePair(old="b", new="c")])
+
+
+JAXB_SRC = """package com.acme.web;
+
+import javax.xml.bind.JAXBContext;
+import javax.xml.bind.annotation.*;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.sql.DataSource;
+import javax.naming.InitialContext;
+
+class Xml {
+    JAXBContext c; DataSource d; DocumentBuilderFactory f; InitialContext i;
+}
+"""
+JAXB_SIG = "compile|package_does_not_exist|javax.xml.bind"
+
+
+def test_dotted_javax_pair_renames_ee_packages_only(fake_kit, catalog, rcfg):
+    _case(sig=JAXB_SIG, cid="jaxb000001", name="javax.xml.bind",
+          action=_replace(("javax.xml.bind", "jakarta.xml.bind")))
+    p = _write(fake_kit.root, FILTER, JAXB_SRC)
+    h = _handler(fake_kit)
+    c = _cluster(_err(line=3, sig=JAXB_SIG))
+    assert h.matches(c, make_profile(), rcfg)
+    assert [x.path for x in h.apply(fake_kit.ws, c, make_profile(), rcfg)] == [FILTER]
+    text = p.read_text(encoding="utf-8")
+    assert "import jakarta.xml.bind.JAXBContext;" in text and "import jakarta.xml.bind.annotation.*;" in text
+    assert "import javax.xml.parsers.DocumentBuilderFactory;" in text and "import javax.sql.DataSource;" in text
+    assert "import javax.naming.InitialContext;" in text
+
+
+def test_broad_learned_javax_pair_never_touches_jdk_packages(fake_kit, catalog, rcfg):
+    _case(sig=JAXB_SIG, cid="jaxb000002", name="javax.xml", action=_replace(("javax.xml", "jakarta.xml")))
+    p = _write(fake_kit.root, FILTER, JAXB_SRC)
+    h = _handler(fake_kit)
+    h.apply(fake_kit.ws, _cluster(_err(line=3, sig=JAXB_SIG)), make_profile(), rcfg)
+    text = p.read_text(encoding="utf-8")
+    assert "import jakarta.xml.bind.JAXBContext;" in text             # under the jakarta table: renamed
+    assert "import javax.xml.parsers.DocumentBuilderFactory;" in text  # JDK: kept whatever was learned
+    assert "import javax.sql.DataSource;" in text

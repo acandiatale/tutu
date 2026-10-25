@@ -8,6 +8,7 @@ keywords:
   - "AuthenticationManagerBuilder|AuthenticationManager|AuthenticationConfiguration|DaoAuthenticationProvider"
   - "PasswordEncoder|NoOpPasswordEncoder|withDefaultPasswordEncoder|BCryptPasswordEncoder"
   - "AntPathRequestMatcher|MvcRequestMatcher|PathPatternRequestMatcher"
+  - "AccessDecisionManager|AccessDecisionVoter|FilterSecurityInterceptor|FilterInvocationSecurityMetadataSource|SecurityMetadataSource|ConfigAttribute|spring-security-access"
   - "org\\.springframework\\.security"
   - "EnableWebSecurity"
   - "access\\(\"|WebExpressionAuthorizationManager"
@@ -50,8 +51,19 @@ SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 - `authorizeRequests()` → `authorizeHttpRequests()`; `antMatchers`/`mvcMatchers`/`regexMatchers` → `requestMatchers`
   (`regexMatchers` → `requestMatchers(RegexRequestMatcher.regexMatcher("…"))`).
 - `.access("hasRole('A') and hasIpAddress('…')")` String → `.access(new WebExpressionAuthorizationManager("…"))`.
-- `AntPathRequestMatcher` / `MvcRequestMatcher` removed in 7 → `PathPatternRequestMatcher.withDefaults().matcher("/x/**")`
-  (`org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher`) or plain String patterns.
+- `AntPathRequestMatcher` / `MvcRequestMatcher` removed in 7 → `PathPatternRequestMatcher.pathPattern("/x/**")` /
+  `pathPattern(HttpMethod.POST, "/x/**")` (= `withDefaults().matcher(…)`;
+  `org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher`) or plain String patterns. The handler
+  `security-path-pattern-matcher` (round 10) rewrites `new AntPathRequestMatcher(p[, m])`, `AntPathRequestMatcher.antMatcher(…)`
+  and `new MvcRequestMatcher(introspector, p)` deterministically; a literal pattern with `**` before the last segment
+  (`/**/*.do`, `/api/**/list`) gets a `// TODO sbmig:` line — PathPattern rejects it at startup (`/{*path}` or explicit
+  segments). The 3-/4-argument (case-insensitive, UrlPathHelper) constructors are left for you.
+- Legacy access-decision API (eGovFrame-style DB URL authorization: `FilterSecurityInterceptor`,
+  `FilterInvocationSecurityMetadataSource`, `AccessDecisionManager` / `AffirmativeBased` / `RoleVoter`,
+  `WebExpressionVoter`, `SecurityMetadataSource`, `ConfigAttribute`) moved to `org.springframework.security:spring-security-access`
+  in 7.x (same packages; spring-security-config / -web do not depend on it). `add-known-dependency` adds it
+  (Boot-managed through spring-security-bom) when javac reports one of those classes/packages; the long-term target is
+  `AuthorizationFilter` + `AuthorizationManager<RequestAuthorizationContext>`.
 
 ## Method security
 - `@EnableGlobalMethodSecurity(prePostEnabled = true, securedEnabled = true)` → `@EnableMethodSecurity(securedEnabled = true)`

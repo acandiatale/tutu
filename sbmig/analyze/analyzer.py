@@ -19,6 +19,7 @@ from typing import Optional
 
 from sbmig.core.config import ArtifactSpec, Config
 from sbmig.core.models import GAV, CaseType, PomInfo, ProjectProfile
+from sbmig.core.workspace import is_build_output_path
 
 from .build_tool import detect_build_tool
 from .classifier import (boot_module_findings, build_library_services, build_services, classify, library_roots,
@@ -59,7 +60,7 @@ class PathView:
     def glob(self, pattern: str) -> list[str]:
         return sorted(self.rel(p) for p in self.root.rglob(pattern)
                       if ".git" not in p.relative_to(self.root).parts
-                      and "target" not in p.relative_to(self.root).parts)
+                      and not is_build_output_path(p.relative_to(self.root), self.root))   # a `target` package stays
 
     def java_files(self) -> list[str]:
         return self.glob("*.java")

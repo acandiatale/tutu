@@ -20,11 +20,13 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote
 
 from sbmig.core.models import GAV, BuildError, ErrorKind
 
-from .signatures import fill_signatures
+from .signatures import classify_javac, fill_signatures
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]")
 _TS_RE = re.compile(r"^(?:\d{4}-\d{2}-\d{2}[T ])?\d{2}:\d{2}:\d{2}(?:[.,]\d+)?Z?\s+(?=\[)")
@@ -128,10 +130,10 @@ def _is_boilerplate(body: str) -> bool:
 def _root_prefixes(project_root: Path | str | None) -> list[str]:
     if project_root is None or str(project_root) == "":
         return []
-    raw = str(project_root).replace("\\", "/").rstrip("/")
+    raw = _clean_path(str(project_root)).rstrip("/")
     cands = {raw}
     try:
-        cands.add(str(Path(project_root).resolve()).replace("\\", "/").rstrip("/"))
+        cands.add(_clean_path(str(Path(project_root).resolve())).rstrip("/"))
     except OSError:
         pass
     for c in sorted(cands):                              # copy: the set grows inside the loop
@@ -142,21 +144,62 @@ def _root_prefixes(project_root: Path | str | None) -> list[str]:
     return sorted(cands, key=len, reverse=True)
 
 
-def _relativize(path: str, prefixes: list[str]) -> str:
+_DRIVE_RE = re.compile(r"^[A-Za-z]:(?:/|$)")
+
+
+def _clean_path(path: str) -> str:
+    """One path as Maven / javac / kotlinc print it → forward slashes, no ``file:`` scheme, and a Windows drive path
+    without the URI-style leading slash. On Windows the in-process javac (plexus ``toUri().getPath()``) prints
+    ``/C:/work/proj/src/…``; kotlinc and some plugins print ``file:///C:/…`` or ``file:/C:/…`` (percent-encoded).
+    All become ``C:/work/proj/src/…`` — a leading ``/C:/`` made ``ws.abs`` build ``C:\\C:\\…`` (round 10)."""
     p = path.strip().replace("\\", "/")
-    p = p.removeprefix("file://")
+    if p[:5].lower() == "file:":
+        p = unquote(p[5:])
+        if p.startswith("///") or (p.startswith("//") and _DRIVE_RE.match(p[2:])):
+            p = p[2:]                                   # file:///C:/x, file:///work/x, file://C:/x
+    if p.startswith("/") and _DRIVE_RE.match(p[1:]):
+        p = p[1:]                                       # /C:/work/x → C:/work/x
+    return p
+
+
+def _is_drive_path(p: str) -> bool:
+    return bool(_DRIVE_RE.match(p))
+
+
+def _relativize(path: str, prefixes: list[str]) -> str:
+    """``path`` relative to the first matching project-root prefix (POSIX separators), else the cleaned path.
+    Windows prefixes (``C:/…``) compare case-insensitively: ``c:/work`` / ``C:/Work`` name the same directory."""
+    p = _clean_path(path)
     for pre in prefixes:
-        if p == pre:
+        fold = _is_drive_path(pre)
+        a, b = (p.lower(), pre.lower()) if fold else (p, pre)
+        if a == b:
             return "."
-        if p.startswith(pre + "/"):
+        if a.startswith(b + "/"):
             return str(PurePosixPath(p[len(pre) + 1:]))
     return p
 
 
+@lru_cache(maxsize=64)
+def _scrub_regex(prefixes: tuple[str, ...]) -> re.Pattern[str] | None:
+    """One alternation for every project-root prefix in every spelling a log uses: ``/work/proj/``,
+    ``file:///work/proj/``, ``C:/work/proj/``, ``C:\\work\\proj\\``, ``/C:/work/proj/``, ``file:///c:/…`` (Windows
+    prefixes case-insensitively)."""
+    alts: list[str] = []
+    for pre in prefixes:                                # longest first (`_root_prefixes` sorts them)
+        if not pre:
+            continue
+        body = "".join(r"[/\\]" if ch == "/" else re.escape(ch) for ch in pre)
+        if _is_drive_path(pre):
+            alts.append(r"(?i:(?:file:/{0,3})?/?" + body + r")[/\\]")
+        else:
+            alts.append(r"(?:file:(?://)?)?" + body + "/")
+    return re.compile("|".join(alts)) if alts else None
+
+
 def _scrub(text: str, prefixes: list[str]) -> str:
-    for pre in prefixes:
-        text = text.replace(pre + "/", "")
-    return text
+    rx = _scrub_regex(tuple(prefixes))
+    return rx.sub("", text) if rx is not None and text else text
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +221,7 @@ class _Block:
 class _Parser:
     def __init__(self, project_root: Path | str | None):
         self.prefixes = _root_prefixes(project_root)
+        self.root = Path(project_root) if project_root not in (None, "") else None
         self.errors: list[BuildError] = []
         self.module: str | None = None
         self.goal: str | None = None
@@ -632,8 +676,11 @@ class _Parser:
                              raw=raw))
 
     def finish(self, text: str) -> list[BuildError]:
+        sources = _SourceLines(self.root)
         for err in self._javac.values():
             err.raw = _scrub(err.raw, self.prefixes)
+            if not err.symbol:
+                _symbol_from_source(err, sources)
             fill_signatures(err)
         failed = "BUILD FAILURE" in text or (bool(self.meaningful_errors) and "BUILD SUCCESS" not in text)
         if not self.errors and failed:
@@ -641,6 +688,108 @@ class _Parser:
             tail = "\n".join(strip_ansi(text).splitlines()[-40:])
             self._add(BuildError(kind=ErrorKind.UNKNOWN, message=first, module=self.module, raw=tail))
         return self.errors
+
+
+# ---------------------------------------------------------------------------
+# symbols javac does not print (round 10: the L2 signature is the case-catalog key)
+# ---------------------------------------------------------------------------
+MAX_SOURCE_BYTES = 2_000_000
+_OVERRIDE_RE = re.compile(r"@\s*(?:java\.lang\.)?Override\b")
+_ANNOTATION_RE = re.compile(r"@\s*[\w$.]+\s*")
+_DECL_NAME_RE = re.compile(r"([A-Za-z_$][\w$]*)\s*\(")
+_STATIC_IMPORT_RE = re.compile(r"^\s*import\s+static\s+([\w$.]+?)\s*\.\s*(?:\*|[\w$]+)\s*;")
+_JAVA_NOISE_RE = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
+_NOT_A_NAME = frozenset({"if", "for", "while", "switch", "catch", "synchronized", "return", "new", "throw", "super",
+                         "this", "try", "do", "else", "case", "assert"})
+
+
+class _SourceLines:
+    """Lines of project sources, read once per parse (UTF-8, else MS949, else latin-1 — identifiers are ASCII)."""
+
+    def __init__(self, root: Path | None):
+        self.root = root
+        self._cache: dict[str, list[str] | None] = {}
+
+    def lines(self, file: str | None) -> list[str] | None:
+        if not file:
+            return None
+        if file in self._cache:
+            return self._cache[file]
+        out: list[str] | None = None
+        p = Path(file)
+        if not p.is_absolute() and not _is_drive_path(file):
+            p = self.root / file if self.root is not None else None
+        try:
+            if p is not None and p.is_file() and p.stat().st_size <= MAX_SOURCE_BYTES:
+                data = p.read_bytes()
+                for enc in ("utf-8", "cp949", "latin-1"):
+                    try:
+                        out = data.decode(enc).splitlines()
+                        break
+                    except UnicodeDecodeError:
+                        continue
+        except OSError:
+            out = None
+        self._cache[file] = out
+        return out
+
+
+def _overriding_method(lines: list[str], line_no: int, col: int | None) -> str:
+    """Name of the method an ``@Override`` at (line, col) annotates: the annotations after it (with their arguments)
+    are skipped, the first ``name(`` of the declaration header is the method."""
+    if not (1 <= line_no <= len(lines)):
+        return ""
+    first = lines[line_no - 1]
+    hits = [m.start() for m in _OVERRIDE_RE.finditer(first)]
+    start = min(hits, key=lambda h: abs(h - ((col or 1) - 1))) if hits else 0
+    text = _JAVA_NOISE_RE.sub(" ", "\n".join([first[start:], *lines[line_no:line_no + 20]]))
+    i, n = 0, len(text)
+    while i < n:
+        if text[i].isspace():
+            i += 1
+            continue
+        if text[i] != "@":
+            break
+        m = _ANNOTATION_RE.match(text, i)
+        if not m:
+            return ""
+        i = m.end()
+        if i < n and text[i] == "(":                    # @RequestMapping(value = "/x", method = GET)
+            depth = 0
+            while i < n:
+                if text[i] == "(":
+                    depth += 1
+                elif text[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                i += 1
+    header = re.split(r"[{;=]", text[i:], maxsplit=1)[0]
+    m = _DECL_NAME_RE.search(header)
+    return m.group(1) if m and m.group(1) not in _NOT_A_NAME else ""
+
+
+def _symbol_from_source(err: BuildError, sources: _SourceLines) -> None:
+    """``method does not override …`` and ``static import only from classes and interfaces`` never name what they are
+    about; without it every such error in the fleet shared one L2 (= one catalog case). Fills ``symbol`` from the
+    reported source line: ``method <name>`` of the annotated declaration, ``class <qualifier>`` of the static import.
+    Nothing when the source cannot be read (the L2 then stays the bare class)."""
+    cls = classify_javac(err.message)
+    if cls not in ("method_does_not_override", "static_import_only") or not err.line:
+        return
+    lines = sources.lines(err.file)
+    if not lines:
+        return
+    if cls == "method_does_not_override":
+        name = _overriding_method(lines, err.line, err.column)
+        if name:
+            err.symbol = f"method {name}"
+        return
+    if 1 <= err.line <= len(lines):
+        m = _STATIC_IMPORT_RE.match(lines[err.line - 1])
+        if m:
+            err.symbol = f"class {m.group(1)}"
 
 
 class _Shadow:

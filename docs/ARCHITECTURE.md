@@ -36,10 +36,10 @@ old types unattributed, so many `ChangeType`-style recipes would silently no-op.
 
 | Case | jdk21 | spring phase | restructure |
 |---|---|---|---|
-| pure_java | UpgradeToJava21 | jakarta (only if `javax.*` EE imports found); JUnit4→5 if junit4 | split into `{name}-boot` / `{name}-back` (+ `{name}-front`) + `spring-boot-starter`, generated `Application` |
-| servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + servlet-api swap) | split (`-boot` / `-back` / `-front`) + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → generated `WebXmlRegistrations` (W1, `layout.web_xml_registrations`) |
-| spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 (+Security 7 if present) | split (`-boot` / `-back` / `-front`) + webmvc starter, `@ImportResource` for XML bean files |
-| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4JacksonTwins (`@JsonComponent`→`@JacksonComponent`, `JsonObjectSerializer`→`ObjectValueSerializer` …; the umbrella already migrates bodies to Jackson 3) | `boot_pom` in place (default `layout.boot_as_is: in-place`): directories kept, poms only; `layout` → split like the others |
+| pure_java | UpgradeToJava21 | jakarta (`JavaxMigrationToJakarta` + `RemovalsServletJakarta10`, only if `javax.*` EE imports found; with it the Hibernate library recipe when hibernate is detected, round 10); JUnit4→5 if junit4 | split into `{name}-boot` / `{name}-back` (+ `{name}-front`) + `spring-boot-starter`, generated `Application` |
+| servlet_tomcat | UpgradeToJava21 | `ServletToJakartaAndBoot` (jakarta + Servlet 6 removals + servlet-api swap) + library recipes (Hibernate) | split (`-boot` / `-back` / `-front`) + `spring-boot-starter-webmvc`, `@ServletComponentScan`, web.xml → generated `WebXmlRegistrations` (W1, `layout.web_xml_registrations`) |
+| spring_legacy (Spring 4/5, no Boot) | UpgradeToJava21 | jakarta + UpgradeSpringFramework_7_0 + Spring7RemovedApis + Jackson3SpringConverters (+ the Security 6.0 … 6.5 → 7.0 chain if present) + library recipes (Batch 5→6, Hibernate 7.1, Thymeleaf; `knowledge/recipes/library_recipes.yml`, round 10) | split (`-boot` / `-back` / `-front`) + webmvc starter, `@ImportResource` for XML bean files |
+| spring_boot (2.x/3.x) | UpgradeToJava21 | UpgradeSpringBoot_4_0 (chains 2.x→3.5 internally) + SpringBootProperties_4_1 + SpringBoot41Version + Boot4JacksonTwins (`@JsonComponent`→`@JacksonComponent`, `JsonObjectSerializer`→`ObjectValueSerializer` …; the umbrella already migrates bodies to Jackson 3) + Boot4TypeRelocations + Spring7RemovedApis + Jackson3SpringConverters (round 10, docs/RECIPES.md) | `boot_pom` in place (default `layout.boot_as_is: in-place`): directories kept, poms only; `layout` → split like the others |
 | msa | per service | per service by its own sub-case | `msa_pom` only, directory structure untouched (`boot_modules` passed) |
 
 Restructure routing (round 9c, the company rule): **Boot as-is** (`spring_boot`, and MSA) keeps its directories —
@@ -74,7 +74,8 @@ for iteration in 1..max_iterations:
         apply(decision) ; commit               # one git commit per attempt
     (KB_RECIPE decisions are batched into ONE OpenRewrite run per iteration)
     rebuild happens at the top of the next iteration; attempts are scored by whether their cluster's
-    signatures disappeared (improved / no_change / regressed). Regression ⇒ revert that commit.
+    errors disappeared (improved / partial / no_change / regressed, or inconclusive when the build could not show
+    them — round 10). Regression ⇒ revert that commit.
     stall_level ≥ stall_limit ⇒ widen context + escalation model; still stalled ⇒ ESCALATE cluster to report.
 ```
 
@@ -96,7 +97,10 @@ Priority: PARENT_RESOLUTION < POM_INVALID < DEPENDENCY_RESOLUTION < PLUGIN_RESOL
 Resolution-type clusters mask compile clusters of the same module in the same iteration (SKIP) because
 they usually disappear once the pom is fixed.
 
-Decision order per cluster: deterministic handler → KB active recipe → KB patch replay → LLM → escalate.
+Decision order per cluster: run-wide blocked registry → a case action a person pinned (`CaseHit.pinned`: block |
+handler | recipe, round 10) → deterministic handler → KB active recipe → KB patch replay → LLM → escalate. The
+per-cluster limits count only scored failures of the same cluster (same id, or same file with an overlapping
+signature); attempts on other files with the same signature are prompt hints, not failures (round 10).
 A cluster that already went through an LLM attempt without improvement gets the previous attempt in its
 prompt (so the model does not repeat itself) and, after `stall_limit`, the escalation model.
 
@@ -104,8 +108,13 @@ prompt (so the model does not repeat itself) and, after `stall_limit`, the escal
 
 * **L1 (specific)** `kind|normalized message|symbol|location-type` — e.g.
   `compile|cannot find symbol|class WebSecurityConfigurerAdapter|package org.springframework.security.config.annotation.web.configuration`
-* **L2 (generic)** `kind|message-class|symbol-name` — e.g. `compile|cannot_find_symbol|WebSecurityConfigurerAdapter`
-* Paths, line numbers, module names and project-specific identifiers in messages are stripped.
+* **L2 (generic)** `kind|message-class|symbol-name` — e.g. `compile|cannot_find_symbol|WebSecurityConfigurerAdapter`.
+  L2 is the case-catalog key, so since round 10 it keeps what tells problems apart: the whole package of
+  `package … does not exist` (`javax.xml.bind` ≠ `javax.xml.ws`), the method / class of `method_does_not_override` /
+  `static_import_only` (read from the source line), the javac phrase of `illegal_start`, and plugin goal + normalized
+  cause for `plugin_execution` (`plugin_execution|war:war|error assembling war: webxml attribute is required`).
+* Paths, line numbers, module names and project-specific identifiers in messages are stripped (L1 also masks project
+  FQCNs inside the symbol).
   Dependency errors: `dependency_resolution|g:a` (version stripped) / `…|g:a:v` as L1.
 
 ## 6. LLM fix protocol
@@ -173,11 +182,20 @@ Harvest (end of each phase, only for attempts whose cluster was resolved and whi
    hints into the next prompt. `sbmig kb learning` turns the ledger into the to-do list for humans (symbols the LLM
    keeps fixing → write a recipe/handler; artifacts blocking many projects → library owners).
 
+7. **Integrity (round 10).** Every KB write runs under the cross-process lock `kb/.lock` (`sbmig/kb/lock.py`), so the
+   web server, a fleet and `sbmig kb …` can share one KB (index reloaded when it changed on disk); the append-only
+   jsonl files repair a torn last line before appending (`<file>.corrupt`) and fsync per batch; unreadable lines go
+   to `kb/quarantine.jsonl`; secret VALUES are masked by context before anything is stored (`sbmig/kb/redact.py`,
+   company rules in `knowledge/kb/redact.yml`); records carry `schema_version` / `agent_version`; human edits and
+   automatic case transitions are logged in `kb/audit.jsonl`.
+
 ## 7.5 Fleet mode (one agent, sequential)
 `sbmig fleet run <manifest>` (`sbmig/fleet`): projects are migrated strictly one after another with a shared KB, so
 project N+1 plans with the recipes learned from 1..N. State (`fleet/state.json`) is rewritten after every project and
 makes the run resumable; `summary.{md,csv,json}` + `learning.md` are regenerated each time. The per-project pipeline
-is unchanged (`Orchestrator`); the fleet only sequences, budgets (`fleet.max_llm_calls_total`) and aggregates.
+is unchanged (`Orchestrator`); the fleet only sequences, budgets (`fleet.max_llm_calls_total`) and aggregates — and,
+since round 10, guards the infrastructure (preflight, a breaker that defers projects ending with `infra:<kind>` and
+pauses / stops the fleet, disk check and `fleet.cleanup`; docs/FLEET.md).
 
 ## 7.6 Adapter seams (in-house gateway / agent platform)
 `LLMClientLike` (chat completion) and `FixerLike` (whole fixer) are the two replaceable units. `llm.provider: plugin`
@@ -206,7 +224,7 @@ graph TD;
 
 | Node | Step | Notes |
 |---|---|---|
-| `intake` | `step_intake` | git snapshot, preflight (`mvn-not-found` → abort), as-is effective depMgmt |
+| `intake` | `step_intake` | git snapshot, preflight (`mvn-not-found` / `jdk-not-21` → abort), as-is effective depMgmt |
 | `analyze` | `step_analyze` | profile + advisories; not Maven / no pom → abort |
 | `plan` | `step_plan` | plan, `BuildFixLoop`, phase groups (`None` = stopped after plan) |
 | `phase` | `step_phase` | one invocation per phase group (MSA: jdk21/spring repeat per service); `phase_skipped` after `stop_after`; credit + harvest; raises `_RunAborted` when the loop aborted |
@@ -227,9 +245,10 @@ graph TD;
   and asserts equal reports (minus timestamps / SHAs), flags, exit codes and journal event sequences.
 - `recursion_limit` is 1000 (one graph step per node invocation; MSA plans add phase groups per service).
 - **Invariant 1 on the abort paths.** An exception inside a node (missing component, bug) is caught by the guard,
-  the run is flagged `aborted`, and `_final_build_after_abort` still runs the plan's verify steps (not for dry runs
-  or `_RunAborted`, i.e. no Maven / unresolvable parent). The web UI's stop finalizes without the final build and
-  says so; a stop observed after the verify phase group finishes the run normally.
+  the run is flagged `aborted`, and `_final_build_after_abort` still runs every planned verify step that has no
+  result yet (not for dry runs or `_RunAborted`, i.e. no Maven / Maven on another JDK / unresolvable parent); an
+  aborted run or a missing final build is never `success` (round 10). The web UI's stop finalizes without the final
+  build and says so; a stop observed after the verify phase group finishes the run normally.
 
 ## 8. Restructure (company layout)
 

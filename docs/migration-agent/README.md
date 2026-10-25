@@ -1,7 +1,7 @@
 # migration agent — 상세 설계
 
 이 문서는 사내 Maven 프로젝트를 JDK 21과 Spring Boot 4.1로 옮기는 마이그레이션 에이전트(`sbmig`)의 설계를 설명합니다.
-2026-10-23 시점의 코드를 기준으로 씁니다.
+2026-10-26(round 10) 시점의 코드를 기준으로 씁니다.
 식별자, 경로, 설정 키, journal 이벤트 이름은 코드 그대로 영어로 적습니다.
 각 Mermaid 다이어그램 아래에는 같은 그림의 PNG(`diagrams/<이름>.png`)를 붙였습니다.
 Mermaid를 그리지 못하는 위키에서는 PNG를 보면 됩니다.
@@ -53,10 +53,10 @@ LLM이 "끝났다"고 말해도 완료로 보지 않습니다.
 
 | case_type | 판정 근거 | spring 단계 레시피 | 재구성 |
 |---|---|---|---|
-| `pure_java` | 소스는 있으나 Spring / 서블릿 없음 | Java EE `javax.*` import가 있을 때만 jakarta, JUnit 4가 있으면 JUnit 4→5 | `layout`: `{name}-boot` + `{name}-back` |
-| `spring_legacy` | Boot 없는 Spring Framework 4/5 | jakarta + Framework 7(+ Spring Security가 있으면 Security 7) | `layout`, XML 빈 설정은 `@ImportResource` |
-| `spring_boot` | Boot 2.x / 3.x (MSA 포함) | Boot 4.0 umbrella + 4.1 properties + 4.1 버전 고정 + Jackson 3 쌍 레시피 | `boot_pom`: 디렉터리 유지, pom만. MSA는 `msa_pom` |
-| `servlet_tomcat` | `HttpServlet` / web.xml / war, Spring 없음 | `com.company.migrate.ServletToJakartaAndBoot` | `layout`, JSP가 있으면 boot 모듈은 WAR |
+| `pure_java` | 소스는 있으나 Spring / 서블릿 없음 | Java EE `javax.*` import가 있을 때만 jakarta(+ Hibernate가 있으면 Hibernate 7.1), JUnit 4가 있으면 JUnit 4→5 | `layout`: `{name}-boot` + `{name}-back` |
+| `spring_legacy` | Boot 없는 Spring Framework 4/5 | jakarta + Framework 7 + `Spring7RemovedApis` + `Jackson3SpringConverters`(+ Spring Security가 있으면 Security 6.0 … 6.5 → 7.0 체인) + 라이브러리 레시피(Spring Batch 5→6, Hibernate 7.1, Thymeleaf; round 10) | `layout`, XML 빈 설정은 `@ImportResource` |
+| `spring_boot` | Boot 2.x / 3.x (MSA 포함) | Boot 4.0 umbrella + 4.1 properties + 4.1 버전 고정 + Jackson 3 쌍 레시피 + round 10의 `Boot4TypeRelocations` / `Spring7RemovedApis` / `Jackson3SpringConverters` | `boot_pom`: 디렉터리 유지, pom만. MSA는 `msa_pom` |
+| `servlet_tomcat` | `HttpServlet` / web.xml / war, Spring 없음 | `com.company.migrate.ServletToJakartaAndBoot`(Servlet 6 제거 API `RemovalsServletJakarta10` 포함) + 라이브러리 레시피(Hibernate) | `layout`, JSP가 있으면 boot 모듈은 WAR |
 
 MSA는 코드에서 별도 값 `msa`로 판정됩니다.
 서비스마다 같은 parent, mandatory, optional 규칙을 적용하고 디렉터리 구조는 그대로 둡니다.
@@ -68,6 +68,7 @@ MSA는 코드에서 별도 값 `msa`로 판정됩니다.
 - pom이 없는 Tomcat webapp 트리도 거절합니다.
 - `sbmig inventory <dir|zip>`는 그런 트리를 읽기만 하는 분석기입니다. JSP, 소스, `WEB-INF/lib` jar(`knowledge/libraries/jar_names.yml`로 좌표 추정)를 정리한 `inventory.md` / `inventory.json`을 씁니다. 거절 안내에 첨부할 설명용이며 마이그레이션은 하지 않습니다.
 - 플릿에서는 거절된 프로젝트를 `skipped`로 표시하고 다시 실행하지 않습니다.
+- Maven이 JDK 21이 아닌 Java로 돌면 빌드를 한 번도 하지 않고 중단합니다(플래그 `jdk-not-21`, 종료 코드 3, round 10).
 
 ### 1.5 불변식
 
@@ -75,9 +76,9 @@ MSA는 코드에서 별도 값 `msa`로 판정됩니다.
 |---|---|---|
 | 1 | 빌드 게이트: phase는 `BUILD SUCCESS`일 때만 완료. 실행은 마지막 `mvn clean package` 시도와 미해결 오류 목록이 담긴 보고서 없이 끝나지 않음 | 계획에 항상 `verify.build`, `loop.always_final_verify`, `_run_guard`의 `_final_build_after_abort` |
 | 2 | 회사 특성은 설정과 지식 YAML에 둠 | `config/*.yml`, `knowledge/**`, `sbmig/triage/handlers/*.yml` |
-| 3 | KB는 파일 기반(데이터베이스 없음) | `sbmig/kb/store.py` (원자적 temp 파일 + `os.replace`) |
+| 3 | KB는 파일 기반(데이터베이스 없음) | `sbmig/kb/store.py` (원자적 temp 파일 + `os.replace`), round 10: 프로세스 간 잠금 `kb/.lock`(`sbmig/kb/lock.py`), 찢어진 마지막 줄을 고치는 append-only jsonl(`sbmig/kb/jsonl.py`) |
 | 4 | 플러그인 seam 고정: `LLMRequest` / `LLMResponse`, `FixerLike`, `sbmig.api.migrate(...)` | `sbmig/core/interfaces.py`, `sbmig/llm/adapter.py`, `sbmig/api.py` |
-| 5 | 레시피 id의 단일 출처는 `knowledge/recipes/catalog.yml`(34개). recipe BOM 3.37.0 고정 | `sbmig recipes check`, 스냅샷 테스트 |
+| 5 | 레시피 id의 단일 출처는 `knowledge/recipes/catalog.yml`(50개: openrewrite 43, 프로젝트 레시피 7). recipe BOM 3.37.0 고정 | `sbmig recipes check`, 스냅샷 테스트 |
 | 6 | 테스트와 데모는 `out/` 아래에만 씀(로컬 e2e KB는 `out/e2e/kb`) | `scripts/e2e.sh`, 테스트 픽스처 |
 
 의도된 중단(Maven 없음, Maven 프로젝트 아님, 사내 parent 해석 불가)에서는 최종 빌드를 하지 않습니다.
@@ -155,7 +156,7 @@ CLI(`sbmig/cli.py`, typer), 웹 UI(`sbmig/web/app.py`, FastAPI on uvicorn), Pyth
 | `sbmig/plan` | 규칙 기반 계획, 레시피 카탈로그, 선제 핸들러 선택, jar 검증 | `planner.py`, `catalog.py`, `pre_handlers.py`, `jarcheck.py` |
 | `sbmig/rewrite` | OpenRewrite 실행(레시피 YAML 합성, BOM 버전 해석) | `runner.py`, `compose.py`, `versions.py` |
 | `sbmig/build` | Maven 실행, 로그 파서, 시그니처, effective pom, classpath, dependency tree | `mvn.py`, `runner.py`, `log_parser.py`, `signatures.py`, `effective.py`, `classpath.py`, `deptree.py` |
-| `sbmig/triage` | 클러스터링, 핸들러 26개, 반응형 레시피 규칙, blocked 분류, 결정 엔진 | `cluster.py`, `handlers/`, `rules.py`, `recipe_rules.yml`, `blocked.py`, `decide.py` |
+| `sbmig/triage` | 클러스터링, 핸들러 31개(+ `case-replace`), 반응형 레시피 규칙, blocked 분류, 결정 엔진 | `cluster.py`, `handlers/`, `rules.py`, `recipe_rules.yml`, `blocked.py`, `decide.py` |
 | `sbmig/fix` | LLM 클라이언트, 회사 게이트웨이, 컨텍스트 패커, 응답 프로토콜, 패치 적용 | `company.py`, `client.py`, `fixer.py`, `context.py`, `protocol.py`, `apply.py`, `prompts/` |
 | `sbmig/loop` | 오케스트레이터, 빌드-수정 루프, 예산, 실행 전체 blocked 레지스트리 | `orchestrator.py`, `fixloop.py`, `budget.py`, `blocked_registry.py` |
 | `sbmig/graph` | LangGraph 엔진 | `engine.py` |
@@ -196,7 +197,7 @@ flowchart TB
 |---|---|---|
 | `out/<run id>/project/` | 작업 사본. 입력 원본은 수정하지 않습니다. 단계마다 git 커밋이 쌓입니다 | 실행 |
 | `out/<run id>/journal.jsonl` | 이벤트 한 줄씩(`ts`, `run_id`, `event` + 필드). 마지막 줄은 항상 `report` | 실행 |
-| `out/<run id>/sbmig.log` | DEBUG 로그. 키는 기록하지 않습니다 | 실행 |
+| `out/<run id>/sbmig.log` | DEBUG 로그. 키는 기록하지 않습니다. 플릿에서도 프로젝트마다 하나씩 생깁니다(round 10) | 실행 |
 | `out/<run id>/logs/NNN-<label>.log` | Maven / OpenRewrite 호출마다 하나. 첫 두 줄이 `# cwd:`, `# cmd:` | 실행 |
 | `out/<run id>/profile.json`, `plan.json` | 분석 결과, 계획 | 실행 |
 | `out/<run id>/effective/` | as-is / 재구성 후 effective dependencyManagement | 실행 |
@@ -204,7 +205,7 @@ flowchart TB
 | `out/<run id>/merge-conflicts/` | 멀티 모듈 merge에서 버려진 사본 | 실행 |
 | `out/<run id>/changes.patch`, `result.zip` | as-is 스냅샷부터의 diff, 마이그레이션된 프로젝트 | 실행 |
 | `out/<run id>/report.md`, `report.json` | 보고서 | 실행 |
-| `kb/` | 사례, 인덱스, 레시피(candidates / active / rejected), 패턴, `ledger.jsonl`, `symbols.json` | 플릿 전체 |
+| `kb/` | 사례, 인덱스, 레시피(candidates / active / rejected), 패턴, `ledger.jsonl`, `symbols.json`, 에러 케이스(`errors.jsonl`, `fix_attempts.jsonl`, `error_hints.json`), 케이스 카탈로그(`catalog/`, `views/`). round 10: `audit.jsonl`(사람의 수정과 자동 상태 전이), `quarantine.jsonl`(검증할 수 없는 줄), `*.jsonl.corrupt`(찢어진 마지막 줄), `.lock`(프로세스 간 잠금) | 플릿 전체 |
 | `llm.record_dir` | LLM 요청 / 응답 기록 `llm-NNNN.json` | 운영자 지정 |
 
 ---
@@ -317,13 +318,15 @@ MSA는 서비스(그리고 공유 라이브러리 루트)마다 jdk21 / spring �
 flowchart TB
   subgraph a["① 작업 사본"]
     direction LR
-    A["입력 경로<br/>dir / zip"] --> B["Workspace.from_input<br/>복사 또는 안전 압축 해제<br/>(.git · target · .idea 제외)"] --> C["git_init<br/>브랜치 sbmig/&lt;run id&gt;<br/>커밋 as-is snapshot"] --> D["인코딩 후보 등록<br/>build.encoding_candidates"]
+    A["입력 경로<br/>dir / zip"] --> B["Workspace.from_input<br/>복사 또는 안전 압축 해제<br/>(.git · .idea · pom 옆 target 제외)"] --> C["git_init<br/>브랜치 sbmig/&lt;run id&gt;<br/>커밋 as-is snapshot"] --> D["인코딩 후보 등록<br/>build.encoding_candidates"]
   end
   subgraph b["② 사전 점검"]
     direction LR
     E["_preflight<br/>mvn -v · artifacts.parent<br/>role parents · java_home"] --> F{"Maven 실행<br/>가능?"}
     F -->|아니오| X1["mvn-not-found<br/>exit 3"]
-    F -->|예| G["_check_build_tool"]
+    F -->|예| JV{"mvn -v 의 Java<br/>= require_java_major?"}
+    JV -->|"아니오 (round 10)"| X3["jdk-not-21<br/>exit 3"]
+    JV -->|예| G["_check_build_tool"]
     G -->|"gradle / ant / none"| X2["unsupported-build-tool<br/>exit 3"]
     G -->|maven| H["_capture_effective<br/>as-is depMgmt"]
     H --> I{"--stop-after<br/>intake?"}
@@ -340,11 +343,24 @@ flowchart TB
 | 입력 | `sbmig run`의 위치 인자(디렉터리 또는 zip), `--out`, 선택 `--run-id` |
 | 출력 | `project/`(git, 브랜치 `sbmig/<run id>`, 첫 커밋 `sbmig: as-is snapshot`), `effective/depmgmt.json` |
 | journal 이벤트 | `intake`, `graph_node`, `preflight`, `build_tool`, `effective_pom`, `effective_depmgmt`, `stop_after` |
-| 관련 설정 키 | `build.mvn`, `build.java_home`, `build.settings_file`, `build.encoding_candidates`, `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent` |
-| 실패 시 | Maven 실행 불가 → 플래그 `mvn-not-found`, 중단(exit 3). Gradle / Ant / 빌드 없음 → `unsupported-build-tool:<tool>`, 중단(exit 3). effective pom 캡처 실패 → 경고만 남기고 계속 |
+| 관련 설정 키 | `build.mvn`, `build.java_home`, `build.require_java_major`(21), `build.settings_file`, `build.encoding_candidates`, `artifacts.parent`, `artifacts.boot_parent`, `artifacts.comp_parent` |
+| 실패 시 | Maven 실행 불가 → 플래그 `mvn-not-found`, 중단(exit 3). `mvn -v`의 Java가 `build.require_java_major`가 아님 → 플래그 `jdk-not-21`, 중단(exit 3). Gradle / Ant / 빌드 없음 → `unsupported-build-tool:<tool>`, 중단(exit 3). effective pom 캡처 실패 → 경고만 남기고 계속 |
 
 zip은 안전하게 압축을 풀고(`_safe_extract`), UTF-8 플래그 없는 zip의 파일 이름은 cp437 → cp949로 다시 해석합니다.
-`.git`, `target`, `.idea`, `*.iml`, `.DS_Store`, `__MACOSX`는 복사하지 않습니다.
+`.git`, `.idea`, `*.iml`, `.DS_Store`, `__MACOSX`는 복사하지 않습니다.
+`target`은 빌드 산출물일 때만 빼고 복사합니다(round 10).
+`src/` 아래가 아니고 옆에 `pom.xml`이 있거나(또는 안에 `maven-status/` / `maven-archiver/`가 있으면) 빌드 산출물입니다.
+`target`이라는 이름의 Java 패키지는 분석, 재구성, 핸들러, `result.zip`까지 그대로 남습니다.
+
+round 10에서 사전 점검과 작업 사본 git이 다음과 같이 바뀌었습니다.
+
+| 항목 | 동작 |
+|---|---|
+| Java 점검 | `mvn -v`가 보고한 Java 메이저 버전이 `build.require_java_major`(21, `0`이면 점검 안 함)와 다르면 빌드 전에 중단. 한 줄 `run aborted: Maven runs on Java X (<runtime home>), not Java 21: set build.java_home (or JAVA_HOME) to a JDK 21 home and rerun` |
+| JAVA_HOME 문제 | JAVA_HOME 때문에 Maven이 뜨지 못하면 여전히 `mvn-not-found`이지만 "Maven 설치" 대신 `build.java_home`(또는 JAVA_HOME)을 고치라고 안내 |
+| git 옵션 | 모든 git 호출에 `-c core.longpaths=true -c core.autocrlf=false -c core.quotepath=false -c safe.directory=*`(+ 서명 / 훅 끔). `git_init`이 `.git/info/attributes`에 `* -text -eol -filter -ident -working-tree-encoding`을 써서 프로젝트 `.gitattributes`(`eol=crlf`, LFS)가 되돌리기 때 파일을 바꾸지 못하게 함 |
+| `.gitignore` | 에이전트가 만든 줄: `target/`, `!**/src/**/target/`, 빌드 산출물이 아닌 `target`마다 `!/<dir>/target/`, `.sbmig/`, `*.class`, 생성 소스(`.flattened-pom.xml`, `**/src/main/generated/` 등, as-is에 이미 있으면 제외). `changes.patch`와 `result.zip`에 들어감 |
+| 숨은 jar | 프로젝트 `.gitignore`가 숨긴 jar(`*.jar`, `lib/`)는 스냅샷마다 강제로 추가(WEB-INF/lib, systemPath jar가 patch와 되돌리기에서 빠지지 않게). 그 밖에 무시된 파일은 건드리지 않음 |
 `artifacts.parent`의 groupId에 `CHANGE`가 들어 있으면 미설정으로 보고 후속 조치를 남깁니다.
 
 ### 3.3 노드: analyze
@@ -634,11 +650,11 @@ flowchart TB
 flowchart TB
   subgraph a["① 결과 계산"]
     direction LR
-    A["_run_guard finally<br/>→ _finalize"] --> B["모델별 LLM 사용량<br/>× llm.pricing → llm_cost"] --> B2["flag llm-budget-exhausted<br/>tests-not-compiled"] --> C["success = verify 모두 성공<br/>AND restructure-failed 없음"] --> D["unresolved =<br/>실패한 verify 의 오류"]
+    A["_run_guard finally<br/>→ _finalize"] --> B["모델별 LLM 사용량<br/>× llm.pricing → llm_cost"] --> B2["flag llm-budget-exhausted<br/>tests-not-compiled"] --> C["success = verify 모두 성공<br/>AND 빠진 최종 빌드 · 중단<br/>· restructure-failed 없음"] --> D["unresolved =<br/>실패한 verify 의 오류"]
   end
   subgraph b["② 정리와 산출물"]
     direction LR
-    E["javax API 인벤토리<br/>dependency:tree -Dincludes<br/>blocked 에 via 채움"] --> F["_finalize_blocked<br/>사라진 항목 제거"] --> G["changes.patch<br/>result.zip"] --> H["advisories 검증<br/>→ Handover"] --> J["record_run<br/>→ ledger.jsonl"] --> L["report.md (en/ko)<br/>report.json<br/>journal report"]
+    E["javax API 인벤토리<br/>dependency:tree -Dincludes<br/>blocked 에 via 채움"] --> F["_finalize_blocked<br/>사라진 항목 제거"] --> I["_infra_flags<br/>infra:llm · maven · jdk<br/>repository · disk"] --> H["advisories 검증 → Handover<br/>에러 케이스 기록"] --> J["record_run<br/>→ ledger.jsonl"] --> L["report.md (en/ko)<br/>report.json"] --> G["changes.patch<br/>result.zip (마지막)<br/>journal report"]
   end
   a --> b
 ```
@@ -650,13 +666,25 @@ flowchart TB
 | 항목 | 내용 |
 |---|---|
 | 입력 | `RunReport`, verify 결과, BlockedRegistry, 시도별 LLM 사용량 |
-| 출력 | `changes.patch`, `result.zip`(dry-run 제외), `report.md`, `report.json`, ledger 줄, `deptree/` |
+| 출력 | `report.md`, `report.json`, ledger 줄, 에러 케이스 파일, `deptree/`, 마지막에 `changes.patch`, `result.zip`(dry-run 제외) |
 | journal 이벤트 | `graph_node`(`finalize`), `deptree`, `javax_api_inventory`(`jars`, `via`), `blocked_resolved`, `advisories_verified`, `handover`(`changes`, `carried_over`, `from_here`), `report`(`success`, `flags`, `unresolved`, `blocked`, `llm_calls`, `outputs`) |
 | 관련 설정 키 | `report.formats`, `report.language`(en / ko), `report.zip_result`, `report.include_diff`, `report.javax_api_inventory`, `llm.pricing`, `llm.pricing_currency`, `advisories.report_carried_over` |
-| 실패 시 | 단계별 오류는 경고와 플래그(`blocked-finalize-failed: …`, `report-failed: …`)로 남기고 다음 단계를 계속. `_finalize`는 `_run_guard`의 `finally`에서 항상 돕니다 |
+| 실패 시 | 단계별 오류는 경고와 플래그(`blocked-finalize-failed: …`, `report-failed: …`)로 남기고 다음 단계를 계속. `_finalize`는 `_run_guard`의 `finally`에서 항상 돕니다. `changes.patch` / `result.zip`을 쓰지 못하면 그 경로를 빼고 보고서를 한 번 더 씁니다 |
 
 `success`는 verify 빌드가 하나 이상 있었고 모두 성공했으며 `restructure-failed` 플래그가 없을 때 참입니다.
-`result.zip`과 `changes.patch`는 보고서보다 먼저 만들어지므로 zip에는 보고서가 들어가지 않습니다.
+round 10부터는 실행이 중단(`aborted`)됐거나 계획된 최종 빌드 중 결과가 없는 것이 있어도 거짓입니다(MSA에서 svc-a의 verify만 성공하고 svc-b 스텝이 죽었는데 BUILD SUCCESS로 보이던 문제).
+내부 오류로 중단되면 결과가 없는 최종 빌드 스텝을 모두 돌리고, 끊긴 phase는 보고서에 "phase interrupted: …"로 남습니다(journal `phase_end`의 `interrupted`).
+KB 기록과 보고서를 먼저 쓰고 느린 `changes.patch` / `result.zip`을 마지막에 만듭니다(round 10). 경로는 미리 보고서에 적어 두므로 zip을 만드는 도중 프로세스가 죽어도 보고서와 KB는 남습니다.
+
+`_infra_flags`는 실행이 인프라 때문에 끝났는지 플래그로 남깁니다(round 10, 플릿 차단기와 attention 코드가 씁니다).
+
+| 플래그 | 조건 |
+|---|---|
+| `infra:llm` | `llm-unavailable` 또는 `llm-config-error`이고 실행이 성공하지 못함 |
+| `infra:maven` | `mvn-not-found` |
+| `infra:jdk` | `jdk-not-21`, 또는 JAVA_HOME 때문에 Maven이 뜨지 못함 |
+| `infra:repository` | `aborted:parent-not-found`, 또는 실패한 최종 빌드의 오류가 전부 resolution 오류이고 저장소 / 네트워크 문구(could not / failed to transfer, connection refused / reset, timed out, unknown host, no route to host, PKIX, status / return code 401 / 403 / 5xx, "was cached in the local repository")를 담음. 단순한 "Could not find artifact"는 해당하지 않음 |
+| `infra:disk` | 실패한 실행의 최종 빌드 오류가 "No space left on device", "not enough space on the disk", "디스크 공간이 부족", ENOSPC 등 |
 javax API 인벤토리는 spring 단계가 돌았고 dry-run이 아닐 때만 실행합니다.
 
 ### 3.12 실행 결과와 종료 코드
@@ -665,9 +693,10 @@ javax API 인벤토리는 spring 단계가 돌았고 dry-run이 아닐 때만 �
 |---|---|
 | 0 | 최종 `mvn clean package` 성공, blocked 없음 |
 | 2 | 끝까지 실행했으나 blocked / unresolved 있음, 또는 `restructure-failed`, dry-run, stop-after |
-| 3 | 중단: Maven 없음, Maven 프로젝트 아님(Gradle / Ant / pom 없음), 사내 parent 해석 불가, 내부 오류, 웹 중단 |
+| 3 | 중단: Maven 없음, Maven이 JDK 21이 아님(`jdk-not-21`), Maven 프로젝트 아님(Gradle / Ant / pom 없음), 사내 parent 해석 불가, 내부 오류, 웹 중단 |
 
 advisory와 carried-over 고정은 종료 코드를 바꾸지 않습니다.
+`sbmig run`은 마지막에 ASCII 한 줄 `SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes|->`를 출력합니다(round 10, 예외로 끝나도 `attn=crash`). attention 코드는 11장에 있습니다.
 
 ---
 
@@ -809,7 +838,7 @@ flowchart TB
     direction LR
     B["mvn &lt;goal&gt;<br/>logs/NNN-build-&lt;phase&gt;-N.log"] --> OK{"BUILD<br/>SUCCESS?"}
     OK -->|예| DONE(["phase ok"])
-    OK -->|아니오| SC["직전 시도 채점<br/>build_ok · improved<br/>no_change · regressed"]
+    OK -->|아니오| SC["직전 시도 채점<br/>build_ok · improved · partial<br/>no_change · regressed · inconclusive"]
     SC --> RV{"regressed?"}
     RV -->|"예 (L3)"| REV["git revert<br/>→ 바로 재빌드"]
   end
@@ -835,6 +864,8 @@ flowchart TB
 모든 판정은 빌드 직후에만 합니다.
 적용한 변경은 반드시 다음 라운드의 실제 빌드로 채점합니다.
 `max_iterations`는 수정 라운드 수이므로 빌드는 최대 "라운드 수 + 1"번입니다.
+빌드가 "… was cached in the local repository, resolution will not be reattempted …"(Maven의 negative cache)로 실패하면 같은 빌드를 `-U`로 한 번 더 돌리고 그 결과를 씁니다(round 10, `build.retry_negative_cache`; 아티팩트마다 실행당 한 번, 오프라인이거나 이미 `-U`면 안 함; 로그 `maven: negative cache hit for <g:a:v> → retrying once with -U`, journal `build_negative_cache_retry`).
+모든 mvn 호출의 `MAVEN_OPTS`에는 `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`이 붙습니다(이미 지정돼 있으면 그대로).
 
 | phase | goal | 수정 라운드 |
 |---|---|---|
@@ -848,7 +879,7 @@ flowchart TB
 | 단계 | 동작 | 코드 |
 |---|---|---|
 | 파싱 | Maven `-B` 출력을 한 번 훑는 상태 기계. 모듈과 goal 문맥, 경로 정규화, 중복 병합, javac 연속 줄(`symbol:`, `location:`, `required:`, `found:`) 결합. 이해하지 못한 실패는 `UNKNOWN` 오류 하나 | `sbmig/build/log_parser.py` |
-| 시그니처 | L1 = `kind|메시지 분류|심볼|위치 유형`, L2 = `kind|메시지 분류|이름`. 경로, 줄 번호, 버전, 16진 주소, 프로젝트 FQCN은 지움. 사내 groupId와 `build.external_package_prefixes`는 라이브러리로 취급 | `sbmig/build/signatures.py` |
+| 시그니처 | L1 = `kind|메시지 분류|심볼|위치 유형`, L2 = `kind|메시지 분류|이름`. 경로, 줄 번호, 버전, 16진 주소, 프로젝트 FQCN은 지움(L1은 심볼 안의 프로젝트 FQCN도). 사내 groupId와 `build.external_package_prefixes`는 라이브러리로 취급. round 10: L2가 케이스 키이므로 더 세분 — `package … does not exist`는 패키지 전체(`javax.xml.bind` ≠ `javax.xml.ws`), `method_does_not_override` / `static_import_only`는 소스 줄에서 읽은 메서드 / 클래스, `illegal_start`는 javac 문구, `plugin_execution`은 plugin goal(`war:war`) + 정규화한 원인(`error assembling war: webxml attribute is required`). 예전 L2와 비교할 수 없으므로 KB를 새로 쌓음 | `sbmig/build/signatures.py` |
 | 클러스터 | `compile` / `test_compile`: 파일(모르면 모듈). resolution 종류와 아티팩트가 있는 `pom_invalid`: `g:a`. 그 밖: 모듈. id는 `<kind>:<sha1 8자리>` | `sbmig/triage/cluster.py` |
 | 우선순위 | `parent_resolution` 10, `pom_invalid` 15, `dependency_resolution` 20, `plugin_resolution` 25, `enforcer` 30, `rewrite` 35, `compile` 50 + 리액터 순서, `test_compile` 80 + 리액터 순서, `plugin_execution` 90, `test_failure` 95, `unknown` 99 | 같음 |
 | 마스킹 | resolution 클러스터가 있으면 같은 모듈의 compile 클러스터는 이번 라운드 `SKIP`. 가린 쪽이 blocked / escalate되면 같은 라운드에서 다시 처리 | `plan_iteration` |
@@ -863,8 +894,15 @@ flowchart TB
 | `build_ok` | 다음 빌드가 성공 |
 | `improved` | 시도한 클러스터의 시그니처가 다음 빌드에서 사라짐 |
 | `no_change` | 사라지지 않았지만 회귀도 아님 |
-| `regressed` | 시도가 건드린 파일에 새 오류, 해결 없이 전체 오류가 `loop.regression_ratio`(1.5)배 초과, pom 수정 뒤 `pom_invalid` / `parent_resolution` / `plugin_resolution` 새로 등장 |
+| `partial` | round 10: 겨냥한 오류 일부만 사라지고 나머지는 남았으며 건드린 파일에 새 오류 없음(노트 "partial: k of n targeted error(s) gone, m remain"). 진전으로 보며 한도와 KB 실패 횟수에 넣지 않고, harvest / 레시피 credit의 성공으로도 보지 않음. 이렇게 끝난 결정적 선택지는 다시 고르지 않음 |
+| `regressed` | 시도가 건드린 파일에 새 오류((파일, 시그니처) 개수로 셈 — 다른 곳의 같은 L1 오류가 가리지 못함), 해결 없이 전체 오류가 `loop.regression_ratio`(1.5)배 초과, pom 수정 뒤 `pom_invalid` / `parent_resolution` / `plugin_resolution` / `dependency_resolution`(round 10) 새로 등장, pom 수정 뒤 겨냥한 오류보다 앞 단계의 새 오류가 그 오류를 가림 |
+| `inconclusive` | round 10: 빌드가 판단할 수 없음(타임아웃, 파싱된 오류 없는 실패, 시도와 무관하게 앞 단계에서 멈춤). KB credit 없음, 시도한 것으로는 셈. 되돌린 뒤 재빌드에서 다시 채점 |
 | `reverted` | 회귀해서 되돌림(`loop.revert_on_regression`) |
+
+예전에는 "보이지 않음"이 "해결"이었습니다.
+LLM이 지어낸 의존성을 넣어 빌드가 resolution에서 멈추면 컴파일 오류가 모두 사라진 것처럼 보였습니다.
+지금은 그 시도가 `regressed`로 되돌려지고, 판단할 수 없는 빌드는 `inconclusive`가 됩니다.
+KB 레시피는 `improved` / `build_ok`일 때만 성공, 실패 결과일 때만 실패로 credit하며 `partial` / `inconclusive`는 journal `kb_credit_skipped`만 남깁니다.
 
 ### 5.4 루프 안전장치
 
@@ -898,12 +936,15 @@ flowchart TB
 | L2 | oscillation: 최근 `loop.oscillation_window`(4) 빌드 중 하나와 같음 | stall로 취급. 2회째면 관련 클러스터를 `oscillation`으로 blocked | journal `oscillation` |
 | L3 | regression | 시도를 git으로 되돌리고 클러스터 처리 없이 바로 재빌드 | journal `revert` |
 | L4 | 패치 없음, 프로토콜 위반, 적용 실패 | `loop.max_llm_attempts_per_cluster`(2)회 쓸모없는 답 → `repeated_failure` | 시도 outcome `apply_failed` |
-| L5 | LLM 전송 실패 2회 연속 | 실행에서 한 번 `llm.cooldown_seconds`(60) 쉬고 재시도. 다시 연속 실패면 `llm_unavailable`. 핸들러와 레시피는 계속 동작 | 플래그 `llm-cooldown`, `llm-unavailable` |
+| L5 | LLM 전송 실패 2회 연속. round 10: `status=` None / 401 / 403 / 404 / 408 / 429 / 5xx, `cause=<예외 클래스>`, 알려진 예외 클래스 이름, 명시적 설정 문구만 전송 / 설정 실패로 셈. `status=` 400 / 413 / 422, content filter, `finish_reason=length`는 그 요청의 거절 | 실행에서 한 번 `llm.cooldown_seconds`(60) 쉬고 재시도. 다시 연속 실패면 `llm_unavailable`. 핸들러와 레시피는 계속 동작 | 플래그 `llm-cooldown`, `llm-unavailable` |
 | L6 | 예산: `loop.max_llm_calls`(60), `loop.max_total_minutes`(180), `loop.max_clusters_per_iteration`(8) | 남은 클러스터 `budget_exhausted`로 blocked. 시간 초과면 rewrite / 루프를 건너뛰고 verify와 보고서만 | 플래그 `llm-budget-exhausted`, `time-budget-exhausted` |
 | L7 | 남은 오류가 전부 `test_compile` | `-Dmaven.test.skip=true`로 재빌드. verify도 같은 옵션 | 플래그 `test-compile-skipped` |
 | L7b | 남은 오류가 전부 런타임 `test_failure` | `-DskipTests`로 재빌드 | 플래그 `tests-skipped` |
 | L10 | 재구성 스텝 실패 / 예외 | 변경 폐기, phase 나머지 건너뜀, verify는 실행 | 플래그 `restructure-failed` |
 | L12 | 최종 verify 실패 | verify 수정 루프 + `clean package` 재실행 | journal `verify_loop_start` / `verify_loop_end` |
+| L13 | round 10: 빌드가 판단할 수 없음 / 일부만 고침 | `inconclusive` / `partial`(§5.3) | 시도 노트, journal `kb_credit_skipped` |
+| L14 | round 10: 같은 오류가 여러 파일에 있음 | 클러스터당 한도는 **같은 클러스터**(같은 id, 또는 재구성 이동을 따라간 같은 파일 + 겹치는 시그니처)의 **채점된** 실패만 셈. `pending`은 세지 않음. 다른 파일에서 같은 오류를 고친 방법은 프롬프트 힌트("this run: the same error (…) in … was fixed by attempt …")로만 들어감. 예전에는 같은 `cannot find symbol`이 있는 5개 파일 중 3개만 LLM 호출을 받고 2개는 1라운드에서 `repeated_failure`로 blocked | 시도 노트 |
+| L15 | round 10: 서로 다른 프롬프트 2개에 같은 HTTP 400 본문 | 설정 오류(모델 이름, payload 필드)로 보고 이 실행의 LLM 호출을 멈춤. 후속 조치 하나에 짧은 본문, ERROR 줄 `LLM configuration error: the gateway answered HTTP 400 '…' to N different prompts — no more LLM calls in this run` | 플래그 `llm-config-error`, journal `llm_config_error` |
 
 LLM이 적용할 것을 하나도 내놓지 못하면 트리가 바뀌지 않았으므로 재빌드하지 않습니다.
 같은 빌드 결과로 다음 라운드를 진행합니다(journal `reround`).
@@ -917,6 +958,8 @@ KB harvest의 레시피 후보 호출도 `_BudgetedLLM`을 통해 같은 예산�
 `WATCHDOG_QUIET_S`(60초) 넘게 마일스톤이 바뀌지 않으면 `sbmig.log`에 경고 줄을 씁니다.
 `WATCHDOG_DUMP_S`(300초)가 넘으면 실행 디렉터리에 `threads-<timestamp>.txt` 스레드 덤프를 씁니다.
 Maven 실행과 LLM 호출도 각자 heartbeat 줄을 남깁니다.
+round 10부터 루프 빌드, rewrite 실행, LLM HTTP 호출, 살아 있는 Maven 자식 프로세스가 도는 동안에는 워치독이 경고하지 않습니다(그동안은 각자의 heartbeat가 진행을 보여 줍니다).
+Windows에서는 Ctrl+Break(`SIGBREAK`)나 시작 디렉터리 / out 디렉터리 / 최근 실행 디렉터리에 만든 `dump-threads`(또는 `dump-threads.txt`) 파일로도 스레드 덤프를 받습니다(2초 안에 옆에 쓰고 파일은 지움).
 
 ### 5.6 모델 역할
 
@@ -937,6 +980,7 @@ stateDiagram-v2
   direction TB
   state "cluster (파일 또는 g:a 단위)" as C
   state "0. BlockedRegistry 에 이미 있음?" as R0
+  state "0b. 고정된 케이스 동작<br/>CaseHit.pinned: block · handler · recipe" as PIN
   state "1. HANDLER<br/>매칭 순서 = 등록 순서, 첫 매치" as H
   state "2. KB_RECIPE<br/>active ∪ recipe_rules → candidates" as KR
   state "3. KB_PATCH<br/>같은 L1, SEARCH 텍스트가 그대로" as KP
@@ -946,7 +990,10 @@ stateDiagram-v2
   [*] --> C
   C --> R0
   R0 --> B : 예 (LLM 없이 건너뜀)
-  R0 --> H : 아니오
+  R0 --> PIN : 아니오
+  PIN --> B : block (LLM 없음)
+  PIN --> [*] : handler / recipe 적용 → 재빌드
+  PIN --> H : 고정 없음 / 이미 시도
   H --> KR : 매치 없음 / 이미 시도 / 바꾼 것 없음
   KR --> KP : 후보 없음 / no-op
   KP --> BC : 재생 불가
@@ -967,13 +1014,14 @@ stateDiagram-v2
 `sbmig/triage/decide.py`의 결정은 위에서부터 내려가며 처음 해당하는 단계에서 끝납니다.
 
 ```
-run-wide blocked registry → HANDLER > KB_RECIPE > KB_PATCH > blocked check (cfg.loop.blocked_policy) > LLM_FIX
-→ BLOCKED(repeated_failure | budget_exhausted | llm_unavailable)
+run-wide blocked registry → pinned case action (block | handler | recipe) → HANDLER > KB_RECIPE > KB_PATCH
+> blocked check (cfg.loop.blocked_policy) > LLM_FIX → BLOCKED(repeated_failure | budget_exhausted | llm_unavailable)
 ```
 
 | 단계 | 조건 | 결과 |
 |---|---|---|
-| 0. 레지스트리 | 같은 실행의 앞 phase에서 이미 blocked(키 = L1 시그니처 + `src/…` 아래 경로) | LLM 없이 건너뜀. 일부만 blocked면 나머지 오류로 클러스터를 줄여 계속 |
+| 0. 레지스트리 | 같은 실행의 앞 phase에서 이미 blocked(키 = L1 시그니처 + 프로젝트 기준 전체 경로. round 10: 재구성의 git 이름 변경(`git diff -M`, journal `restructure_moves`)을 따라가므로 이동 뒤에도 유지되고, MSA 서비스끼리 같은 상대 경로로 blocked를 공유하지 않음) | LLM 없이 건너뜀. 일부만 blocked면 나머지 오류로 클러스터를 줄여 계속 |
+| 0b. 고정된 케이스 동작 | round 10: 사람이 `sbmig kb cases pin --action …`으로 고정한 케이스(`CaseHit.pinned`)가 이 클러스터의 오류에 맞음. `block` > `handler` > `recipe` 순 | `block` → 핸들러와 LLM 없이 BLOCKED(`BlockReason` 값이면 그대로, 자유 문구면 `external_api_incompatible` + 그 문구를 제안으로). `handler` → 그 핸들러를 먼저(등록되지 않은 id는 노트). `recipe` → 아직 돌지 않은 고정 레시피로 KB_RECIPE. `replace` / `hint`는 보통 순서를 따름 |
 | 1. HANDLER | `kinds`, `triggers`(정규식), `applicable()`(프로필)이 맞는 첫 핸들러. KB 패턴의 `handler_ids`도 후보. 같은 클러스터에서 실패한 핸들러는 제외 | 결정적 수정 |
 | 2. KB_RECIPE | active KB 레시피(시그니처 일치) ∪ 반응형 규칙(`sbmig/triage/recipe_rules.yml`, 6개). 없으면 후보 레시피. 같은 라운드의 레시피는 `rewrite:runNoFork` 한 번으로 묶어 실행 | 레시피 배치 |
 | 3. KB_PATCH | 같은 L1 사례가 있고 그 SEARCH 텍스트가 지금 파일에 그대로 있음 | LLM 없이 패치 재생 |
@@ -984,15 +1032,15 @@ run-wide blocked registry → HANDLER > KB_RECIPE > KB_PATCH > blocked check (cf
 결정적 선택지가 아무것도 바꾸지 못하면(`apply_failed`) 그 선택지를 "시도함"으로 표시하고 같은 클러스터에 대해 다음 단계로 바로 넘어갑니다.
 한 클러스터당 최대 6번까지 다시 결정합니다.
 
-### 6.2 핸들러 26개
+### 6.2 핸들러 31개
 
 `HandlerRegistry.default().ids()` 순서가 반응형 매칭 우선순위입니다.
 
 | 묶음 | 핸들러(등록 순서) | 선제 실행 |
 |---|---|---|
 | 인코딩 | `source-encoding`(E1), `strip-utf8-bom`(E2) | 항상 |
-| 빌드 규칙 / pom 버전 | `carry-over-managed-version`(E6), `enforcer-relax`(E4), `remove-werror`(E5), `systempath-relocate`(E7), `missing-dependency-version` | 반응형만 |
-| 레시피 빈틈(소스) | `jakarta-namespace-sweep`(E13), `spring-data-crud-repository`(E14) | SPRING 그룹 |
+| 빌드 규칙 / pom 버전 | `carry-over-managed-version`(E6), `enforcer-relax`(E4), `remove-werror`(E5), `remove-tools-jar`(E19, round 10), `systempath-relocate`(E7), `missing-dependency-version` | `remove-tools-jar`는 JDK21 그룹(pom에 `com.sun:tools` / `jdk.tools:jdk.tools`가 있을 때), 나머지는 반응형만 |
+| 레시피 빈틈(소스) | `jakarta-namespace-sweep`(E13), `spring-data-crud-repository`(E14), round 10: `jdk-base64-shim`(E15), `boot4-type-relocation-sweep`(E16), `security-path-pattern-matcher`(E17), `spring-data-specification-unrestricted`(E18) | E13 / E14 / E16은 SPRING 그룹(E16은 Boot 프로젝트이고 Boot < 4를 고정한 pom이 없을 때), E15는 JDK21 그룹(advisory `jdk-removed-apis`), E17 / E18은 반응형만 |
 | 좌표 재배치 / jakarta | `mysql-connector-relocation`, `javax-servlet-api-to-jakarta`, `jstl-to-jakarta`(E11), `dependency-relocation`, `jakarta-library-floor`, `querydsl-jakarta-classifier` | mysql은 JDK21 그룹, 나머지는 SPRING 그룹 |
 | 누락 의존성 | `jaxb-runtime-add`, `add-known-dependency` | jaxb는 JDK21 그룹, add-known은 SPRING 그룹 |
 | 프로세서 / 플러그인 하한 | `lombok-version-floor`, `mapstruct-version-floor`, `maven-compiler-plugin-floor`, `compiler-legacy-config`(E10), `surefire-plugin-floor`, `remove-classic-loader-implementation` | JDK21 그룹(프로필 근거) |
@@ -1002,6 +1050,20 @@ run-wide blocked registry → HANDLER > KB_RECIPE > KB_PATCH > blocked check (cf
 선제 기준과 실제 목표 버전은 다릅니다.
 예를 들어 lombok은 1.18.30 미만이면 손대고 1.18.38 이상으로 올립니다.
 mapstruct는 1.6.0 / 1.6.3, maven-compiler-plugin은 3.13.0 / 3.14.0, surefire는 3.0.0 / 3.5.3입니다.
+학습한 치환을 적용하는 `case-replace`는 마지막에 등록되므로(32번째) 내장 핸들러가 먼저 이깁니다(§10.4).
+
+round 10에 추가된 핸들러와 플래그입니다(상세는 `docs/ERROR-HANDLING.md` E15–E19).
+
+| 핸들러 | 하는 일 | 플래그 |
+|---|---|---|
+| `jdk-base64-shim` | `sun.misc.BASE64Encoder` / `BASE64Decoder`와 xerces `Base64`를 소스 루트마다 생성한 `sbmig.compat.*`(JDK 8과 같은 출력, `decodeBuffer`는 계속 `throws IOException`)로 바꿔 가리킴. 호출부는 그대로 컴파일되고 LLM 호출이 없음 | `jdk-base64-shimmed` |
+| `boot4-type-relocation-sweep` | Boot 4.0 umbrella가 옮기지 않는 타입(`ErrorController`, `ErrorAttributes`, `ErrorPage`, `ServletWebServerFactory`, `MultipartConfigFactory`, `ServerProperties`, `HttpMessageConverters`, `ServletComponentScan` …, 표 `boot4_types.yml`)을 OpenRewrite가 건너뛴 파일과 와일드카드 import에서 바꿈. 같은 표의 프로젝트 레시피 `com.company.migrate.Boot4TypeRelocations`가 타입이 해석된 파일을 맡음 | `boot4-types-relocated` |
+| `security-path-pattern-matcher` | Spring Security 7에서 사라진 `AntPathRequestMatcher` / `MvcRequestMatcher` → `PathPatternRequestMatcher.pathPattern(...)`. 마지막 세그먼트가 아닌 곳의 `**`에는 `// TODO sbmig:` 줄 | `security-path-matchers-rewritten` |
+| `spring-data-specification-unrestricted` | 모호해진 `Specification.where(null)` → `Specification.unrestricted()` | `specification-unrestricted` |
+| `remove-tools-jar` | JDK 9부터 없는 `lib/tools.jar`를 가리키는 `com.sun:tools` / `jdk.tools:jdk.tools` 의존성 삭제 | `tools-jar-removed` |
+
+`add-known-dependency`는 main 코드가 쓰는 테스트 라이브러리를 compile scope로 추가하고, `spring-security-access`로 분리된 클래스(`AccessDecisionManager`, `ConfigAttribute`, `FilterSecurityInterceptor`, `WebExpressionVoter` 등)도 알아봅니다(round 10).
+`dependency-relocation`은 `spring-boot-starter-undertow`를 `spring-boot-starter-tomcat`으로 바꿉니다(advisory `undertow`).
 
 ### 6.3 jakarta 관련 처리
 
@@ -1133,7 +1195,11 @@ Situation과 Errors는 줄이지 않습니다.
 | heartbeat | 응답이 없는 동안 30초마다 "still in flight" 줄 |
 | hard deadline | `timeout + 30`초를 넘기면 호출을 버리고 전송 실패로 처리(재시도 → cool-down → unavailable) |
 | content filter | `finish_reason=content_filter` 등은 요청 거절로 분류. 장애로 세지 않음 |
-| 키 | 환경(`.env` 또는 셸)에서만 읽음. 로그와 기록에는 남기지 않음 |
+| `finish_reason=length` | round 10: 빈 답 + `finish_reason=length`(reasoning 모델이 게이트웨이 max_tokens를 다 씀)는 요청 거절(`LLMError` 문구에 `finish_reason=length`, 재시도 안 함, 안내: 게이트웨이 max_tokens를 올리거나 프롬프트를 줄임). 잘렸지만 글이 있는 답은 경고와 함께 사용 |
+| 실패 원인 표기 | round 10: 전송 실패는 경고 / 재시도 / 포기 줄과 `LLMError`에 `status=None cause=<예외 클래스>: <가장 안쪽 메시지, ASCII 120자>`를 남김(`[WinError N]` / `[Errno N]` 유지). 루프는 이 표기로만 전송 실패를 판정(§5.4 L5) |
+| 설정 오류 | round 10: 서로 다른 프롬프트 2개에 같은 HTTP 400 본문 → 플래그 `llm-config-error`, 이 실행의 LLM 호출 중단(§5.4 L15) |
+| metadata | round 10: 호출마다 `run_id`, `project`(작업 디렉터리 이름), `phase`, `iteration`, `cluster_id`. 회사 클라이언트는 받기만 하고 보내지 않음(플러그인 seam용) |
+| 키 | 환경(`.env` 또는 셸)에서만 읽음. 로그와 기록에는 남기지 않음. `.env`는 UTF-8(BOM 포함), UTF-16, cp949 어느 것이든 읽고, 고치면 다시 읽음(셸 변수가 우선, round 10) |
 
 플러그인 seam도 있습니다.
 tier 1 `llm.plugin`(`--llm-plugin mypkg.adapter:make_adapter`)은 채팅 완성 함수만 바꿉니다.
@@ -1170,7 +1236,7 @@ tier 2 `fix.plugin`(`--fix-plugin mypkg.agent:make_fixer`)은 `FixerLike`를 구
 | 피드백 | 실패한 블록이 있으면 현재 정확한 텍스트를 보여 주고 1회 재요청 |
 | 적용 | 파일 단위로 원자적으로 적용. 개행과 원래 인코딩 보존. 원래 크기의 30% 미만만 남기는 쓰기는 거부(120자 미만 파일 제외). 참조 사본을 겨냥한 패치는 버림 |
 | 커밋 | `fix(llm): <cluster> <model>`. 바뀐 파일이 없으면 `apply_failed` |
-| 채점 | 다음 빌드에서 `_score`(§5.3) |
+| 채점 | 다음 빌드에서 `_score`(§5.3). `partial` / `inconclusive`는 harvest 대상이 아님 |
 | harvest | phase 끝에 `improved` / `build_ok`인 LLM 시도만 KB 사례로 저장(§10) |
 | 비용 | 시도별 사용량 + 예산 카운터 + 플랜 조언 호출을 모델별로 합산 → `llm.pricing`(백만 토큰당 input / output / cached input) × 사용량 = `report.llm_cost`. 가격이 없는 모델은 목록에만 올리고 추정하지 않음 |
 
@@ -1476,16 +1542,16 @@ mandatory / optional / parent 아티팩트와 system 스코프 의존성은 건�
 flowchart LR
   subgraph p["계획과 레시피"]
     direction LR
-    CAT["recipes/catalog.yml<br/>34 recipe ids"] --> PLAN["planner<br/>sbmig recipes check"]
-    RR["triage/recipe_rules.yml<br/>6 rules"] --> KBR["KB_RECIPE 결정"]
-    ADV["libraries/advisories.yml<br/>64 (guide 59 · recipe 5)"] --> AN["analyze · plan · hints<br/>verify · Handover"]
+    CAT["recipes/catalog.yml<br/>50 recipe ids"] --> PLAN["planner<br/>sbmig recipes check"]
+    RR["triage/recipe_rules.yml<br/>5 rules"] --> KBR["KB_RECIPE 결정"]
+    ADV["libraries/advisories.yml<br/>67 (guide 60 · recipe 7)"] --> AN["analyze · plan · hints<br/>verify · Handover"]
   end
   subgraph h["결정적 핸들러"]
     direction LR
     JL["jakarta_libraries.yml 44"] --> H1["jakarta-library-floor<br/>X1 제안"]
-    REL["relocations.yml 44"] --> H2["dependency-relocation"]
+    REL["relocations.yml 45"] --> H2["dependency-relocation"]
     VER["versions.yml 51 + 3"] --> H3["missing-dependency-version<br/>carry-over-managed-version"]
-    KP["known_packages.yml 56"] --> H4["add-known-dependency"]
+    KP["known_packages.yml 75"] --> H4["add-known-dependency"]
     JP["jakarta_packages.yml 30"] --> H5["jakarta-namespace-sweep"]
   end
   subgraph o["재구성 · LLM · 인벤토리"]
@@ -1504,14 +1570,17 @@ flowchart LR
 
 | 파일 | 항목 수 | 쓰는 곳 |
 |---|---|---|
-| `knowledge/recipes/catalog.yml` | 레시피 34 | 레시피 id의 단일 출처. planner, `sbmig recipes list / show / sets / check`(`--jars`로 jar 안의 id 검증) |
-| `knowledge/recipes/base/*.yml` | 프로젝트 레시피(`spring-boot-41-version.yml`, `hystrix-to-resilience4j.yml`) | rewrite 합성 |
-| `sbmig/triage/recipe_rules.yml` | 반응형 규칙 6 | KB_RECIPE: `javax-ee-to-jakarta`, `javax-xml-bind`, `junit4-to-junit5`, `mockbean-spybean`, `spring-security-config`, `boot4-modularized-autoconfigure` |
-| `knowledge/libraries/advisories.yml` | advisory 64(guide 59, recipe 5) | analyze 판정, plan 레시피(recipe 정책), 수정 힌트, 최종 트리 검증, Handover, ledger(`resolution=advisory`). 회사 추가는 `advisories.extra_files` |
+| `knowledge/recipes/catalog.yml` | 레시피 50 | 레시피 id의 단일 출처. planner, `sbmig recipes list / show / sets / check`(`--jars`로 jar 안의 id 검증) |
+| `knowledge/recipes/base/*.yml` | 프로젝트 레시피(`spring-boot-41-version.yml`, `hystrix-to-resilience4j.yml`, round 10 `spring-7-leftovers.yml`: `Boot4TypeRelocations`, `Spring7RemovedApis`, `Jackson3SpringConverters`) | rewrite 합성 |
+| `knowledge/recipes/library_recipes.yml` | 규칙 3(round 10) | Boot umbrella가 없는 계획에 라이브러리별 레시피 추가: Spring Batch 5→6, Hibernate 7.1, Thymeleaf(세트 `library.<library>`) |
+| `sbmig/triage/recipe_rules.yml` | 반응형 규칙 5 | KB_RECIPE: `javax-ee-to-jakarta`, `javax-xml-bind`, `junit4-to-junit5`, `mockbean-spybean`, `boot4-modularized-autoconfigure`(`spring-security-config`는 round 10에 삭제: Security 7 classpath에서는 아무것도 찾지 못해 계획이 6.0 … 7.0 체인을 as-is classpath에서 돌림) |
+| `knowledge/libraries/advisories.yml` | advisory 67(guide 60, recipe 7) | analyze 판정, plan 레시피(recipe 정책), 수정 힌트, 최종 트리 검증, Handover, ledger(`resolution=advisory`). 회사 추가는 `advisories.extra_files` |
 | `knowledge/libraries/jakarta_libraries.yml` | 라이브러리 44(옛 좌표, classifier 포함) | `jakarta-library-floor`, X1 제안 |
-| `sbmig/triage/handlers/relocations.yml` | 재배치 44 | `dependency-relocation` |
+| `sbmig/triage/handlers/relocations.yml` | 재배치 45 | `dependency-relocation` |
 | `sbmig/triage/handlers/versions.yml` | 버전 51, 플러그인 3 | `missing-dependency-version`, `carry-over-managed-version` 하한 |
-| `sbmig/triage/handlers/known_packages.yml` | 패키지 56 | `add-known-dependency` |
+| `sbmig/triage/handlers/known_packages.yml` | 패키지 75 | `add-known-dependency` |
+| `sbmig/triage/handlers/boot4_types.yml` | 타입 25, 사라진 패키지 4(round 10) | `boot4-type-relocation-sweep`(`Boot4TypeRelocations`와 같은 목록) |
+| `knowledge/kb/redact.yml` | 회사 추가 규칙(예시만, round 10) | KB 비밀 값 가리기(`kb.redact_file`) |
 | `sbmig/triage/handlers/jakarta_packages.yml` | 패키지 30 | `jakarta-namespace-sweep` |
 | `knowledge/config/web_xml_rules.yml` | skip 14 | `WebXmlRegistrations` |
 | `knowledge/config/externalized.yml` | JNDI / context-param / system property 규칙 | 외부화 설정 자리표시자 |
@@ -1616,12 +1685,28 @@ flowchart TB
 **상태(`status`)**: `resolved`(겨냥한 시도나 그 파일을 고친 시도 뒤에 사라짐), `resolved_indirectly`(다른 수정이나 plan 단계로 사라짐), `blocked`(BlockedItem이 덮음, 사유와 제안 포함), `unresolved`(끝까지 남음), `not_visible`(마지막 빌드가 그 단계 전에 멈춰 판단 불가).
 사라졌다고 바로 해결로 보지 않습니다. 그 에러의 모듈이 그 단계까지 빌드됐을 때만 닫고, 다시 나타나면 다시 엽니다.
 
-**변경 형태(`change_kind`)**: `text_replace`는 바뀐 줄마다 옛 줄의 토큰만 바꾼 경우입니다(예: `clientIp` → `remoteClientIp`, `javax` → `jakarta`, 버전 문자열).
+**변경 형태(`change_kind`)**: `text_replace`는 바뀐 줄마다 옛 줄의 토큰만 바꾼 경우입니다(예: `clientIp` → `remoteClientIp`, `javax.xml.bind` → `jakarta.xml.bind`, 버전 문자열).
+패키지가 붙은 이름은 한 토큰이고 패키지 부분이 바뀌면 패키지 전체가 한 쌍이 됩니다(round 10: `javax.xml.bind.JAXBContext` → `jakarta.xml.bind.JAXBContext`는 `javax.xml.bind` → `jakarta.xml.bind`로 배우고, `javax.sql` import까지 건드리던 `javax` → `jakarta`로는 배우지 않음).
 `code_edit`는 줄이 늘거나 줄거나 구조가 바뀐 경우, `mixed`는 둘 다입니다.
 LLM이 고쳤는데 `text_replace`이면 `replace_rule_candidate: true`가 되고, `sbmig kb errors replace-candidates`가 이것을 L2 + 치환 쌍으로 모아 프로젝트 수 순으로 보여 줍니다.
 
-조회: `sbmig kb errors list | show | summary | replace-candidates | export --csv`.
+조회: `sbmig kb errors list | show | summary | replace-candidates | export --csv`(round 10: `--case <id 접두어>`, `--resolver <정규식>` 필터, 필터를 건 `--attempts-csv`에는 각 에러의 해결 시도도 포함).
 플릿의 `learning.md`에도 상태 × 방법 표, 자주 나온 실패 이유, 치환 후보가 들어갑니다.
+
+round 10(2026-10-26)에서 기록 형식이 바뀌었습니다. 이전 KB는 옮기지 않고 지우고 다시 쌓습니다.
+
+| 항목 | 동작 |
+|---|---|
+| 비밀 값 가리기 | `sbmig/kb/redact.py`: 맥락으로 **값만** `***`로 가림 — 마지막 단어가 비밀 단어인 key = value / key: value, 그런 이름에 대입한 Java / XML / JS 문자열 리터럴, `<password>`, `<property name value>`, `<param-name>` / `<param-value>`, JSON, URL 사용자 정보, JDBC(Oracle `user/pass@`, `;password=`), Authorization / Bearer / Basic, PEM 키. 비교식, 리터럴이 아닌 대입, 자리표시자(`${…}`, `__SET_ME__`)는 건드리지 않음. 회사 규칙은 `kb.redact_file`(`knowledge/kb/redact.yml`). 가린 값에 걸친 치환 쌍은 버리고 그 해결은 규칙 후보가 되지 않음(노트 `redacted: …`). 비밀이 가려진 KB 패치 사례는 태그 `no-replay:redacted`(힌트만) |
+| 버전 표시 | 모든 기록에 `schema_version`(2, 없으면 1)과 `agent_version` |
+| 맥락 필드 | 에러 기록에 `asis_java`, `asis_spring_boot`, `asis_spring`, `packaging`(프로필에서), `introduced_by`(처음 나타난 빌드에서 그 파일을 바꾼 시도 id, 없으면 직전 빌드 이후의 plan 스텝 `step:<id>`) |
+| diff | 추적기는 diff 전체를 넘기고(4 MB 보호선만), `prepare_error_cases`가 전체로 분류한 **뒤에** `kb.error_diff_chars`(0 = 제한 없음)로 자름. `diff_excerpt`는 에러 줄을 담거나 가장 가까운 hunk부터 `kb.error_excerpt_chars`까지 |
+| MSA 범위 | 대상 빌드(서비스별)는 자기 범위의 기록에만 맞춤. 같은 상대 경로라도 서비스가 다르면 다른 에러 |
+| 실패 셈 | 에러마다 **자기** 시도로 셈(`failed_refs`): 그 에러의 해결에 포함된 시도, `partial` / `inconclusive` / `pending`은 그 에러의 실패가 아님. 효과가 있었던 수정이 "반복하지 마십시오" 힌트가 되던 문제를 고침 |
+| 실패 문구 | `partial` / `inconclusive` 시도의 실패 이유는 루프의 노트("partial: 1 of 2 targeted error(s) gone, 1 remain", "inconclusive: the build timed out …") |
+| CSV | `error_cases.csv`에 16열 추가(`diff_excerpt` 앞): `signature`(L1), `location`, `module`, `case_type`, `asis_java`, `asis_spring_boot`, `asis_spring`, `packaging`, `targeted`, `resolved_by`, `fix_labels`, `at`, `introduced_by`, `notes`, `schema_version`, `raw`. 수식 방지 `'`는 `=` / `@` / 탭 / CR로 시작하거나, `+` / `-`로 시작하면서 괄호, 세로 막대, `!`, `=`, `@` 중 하나를 담은 칸에만(`-source 8`, `-Xmx512m`은 그대로) |
+| 파일 안전 | 모든 KB 쓰기는 `kb/.lock` 안에서(pid / host / 시각 / 토큰, `kb.lock_timeout_seconds`(300)이 지나거나 pid가 없으면 stale, 기다리다 안 되면 로그를 남기고 진행). append-only jsonl은 찢어진 마지막 줄을 `<file>.corrupt`로 옮긴 뒤 덧붙이고 묶음마다 fsync. 검증할 수 없는 줄은 경고 + `kb/quarantine.jsonl`. `index.json`은 디스크에서 바뀌면 다시 읽음(웹 + 플릿 + `sbmig kb …`가 한 KB를 같이 써도 됨) |
+| 기타 | `summary()` / `stats()`는 스트리밍(3만 건: +342 MB → +11 MB). `kb import --replace`는 숨은 형제 디렉터리에 만든 뒤 이름 바꾸기로 교체하고 `kb.bak-<ts>`를 남김. `replace-candidates`는 `***`가 든 쌍을 내지 않음. `--no-kb`는 카탈로그, 학습한 치환, 에러 힌트, 계획 안의 후보 레시피, ledger, 심볼 색인, 결정적 후보도 끔(`error_cases`는 켜 둠) |
 
 ### 10.4 케이스 카탈로그 (2026-10-23)
 
@@ -1653,7 +1738,7 @@ flowchart TB
   subgraph pro["④ 자동 승격"]
     direction LR
     S["서로 다른 프로젝트 2곳 성공<br/>실패 0"] --> A["active"]
-    F["후보가 2번 실패"] --> D["hint 로 내려감"]
+    F["실패 ≥ 2 이고<br/>실패 > 성공"] --> D["다음 치환 세트<br/>→ patch / hint 로 내려감"]
   end
   ev --> cat --> hit --> pro
 ```
@@ -1663,6 +1748,19 @@ flowchart TB
 *PNG: `diagrams/case-catalog.png` · 원본: `diagrams/case-catalog.mmd`*
 
 조회와 조정: `sbmig kb cases list | show | reject | pin | unpin | hint | note`, 사람용 목록 `kb/views/cases.md`, `kb/views/cases.csv`.
+
+round 10에서 카탈로그 규칙이 이렇게 바뀌었습니다.
+
+| 항목 | 동작 |
+|---|---|
+| 치환 세트 선택 | 학습한 치환 동작은 **서로 다른 프로젝트**에서 가장 많이 고친 쌍 세트(그다음 기록 수, 먼저 본 순서). 큰 프로젝트 하나의 기록 수가 이기지 않음 |
+| resolver id | 핸들러 `case-replace`는 적용한 케이스마다 `resolver: case-replace:<case id>:<쌍 세트 해시 8자리>` 노트를 남기고(`pairset_hash`: 정렬한 고유 `old<TAB>new` 줄의 sha1), 추적기가 이것을 시도의 `resolver_id`로 씀. 성공과 실패는 그 쌍 세트에만 쌓이므로 동작이 바뀌어도 예전 성공을 물려받지 않음 |
+| 승격 / 강등 | 그 세트가 `kb.auto_promote_after_projects`(2)곳에서 실패 없이 성공하면 `active`. 실패 ≥ 2이고 실패 > 성공이면 내려가고(감사 기록 사유 `fallen back: …`) 다음 세트, 그다음 patch / hint를 시도 |
+| 고정 동작 | `human:` 블록의 동작으로 맞은 케이스는 `CaseHit.pinned` — 트리아지가 그대로 따름(§6.1 0b) |
+| 감사 기록 | `kb/audit.jsonl`: `sbmig kb cases …`로 한 사람의 수정(OS 사용자, 명령, 전 → 후)과 자동 상태 / 동작 전이(근거 수 포함). `cases show`에 이력 절 |
+| reject | `cases reject`는 그 L2의 KB 패치 재생, KB 레시피, 심볼 힌트도 멈춤 |
+| javax 치환 | `case-replace`는 jakarta 표가 바꾸는 javax 이름만 바꿈(`javax.sql`, `javax.xml.parsers`, `javax.naming`은 그대로) |
+| 손상 줄 | 검증할 수 없는 `errors.jsonl` 줄이 있던 L2의 케이스 파일은 `rebuild`가 지우지 않음 |
 
 
 ---
@@ -1678,8 +1776,10 @@ sequenceDiagram
   participant R as Orchestrator (프로젝트 하나)
   participant K as kb/ (공유)
   O->>F: manifest (dir · txt · yml · csv) + --config
-  F->>S: 이전 상태 읽기 (resume 규칙)
+  F->>S: 이전 상태 읽기 (resume 규칙, 키 = 입력 경로)
+  F->>F: preflight (disk · maven · java · settings · repository · llm)
   loop 프로젝트마다 순차 (병렬 없음)
+    F->>F: 여유 공간 확인 (fleet.min_free_gb)
     F->>R: run(project, configs + overrides)
     alt Gradle / Ant / pom 없음
       R-->>F: exit 3, unsupported-build-tool
@@ -1689,7 +1789,13 @@ sequenceDiagram
       R->>K: harvest · ledger · symbols
       R-->>F: report.json (exit, llm_calls, llm_cost, blocked)
       F->>S: FleetProjectResult 원자적 갱신
+      F->>F: fleet.cleanup (run 사본의 target/ 삭제)
+    else infra:종류 (LLM · Nexus · JDK · 디스크)
+      R-->>F: report.json + infra 플래그
+      F->>S: pending 으로 되돌림 (error infra:종류)
+      Note over F: 연속 3개 → 15분 대기 후 재점검 · 재개<br/>대기 4회 또는 설정 오류 → 중단 (exit 3)
     end
+    F->>O: SBMIG-RESULT 한 줄
     F->>F: summary.md / .csv / .json 다시 쓰기
   end
   F->>F: learning.md (배운 것 · 여러 프로젝트를 막는 아티팩트)
@@ -1706,14 +1812,19 @@ sequenceDiagram
 
 | 항목 | 내용 |
 |---|---|
-| 명령 | `sbmig fleet run <manifest> --config … --out out/fleet`, `sbmig fleet status`, `sbmig fleet resume [--retry-failed]` |
-| 매니페스트 | 디렉터리(`*.zip`과 `pom.xml`이 있는 하위 디렉터리), `.txt`, `.yml`(`name`, `input`, `configs`, `overrides`, `tags`), `.csv` |
+| 명령 | `sbmig fleet run <manifest> --config … --out out/fleet`, `sbmig fleet status [--attention]`, `sbmig fleet resume [--retry-failed]`, 디스크 정리 `sbmig clean [--out DIR] [--fleet DIR] [--older-than DAYS] [--keep-failed] [--dry-run] [--records DIR]` |
+| 매니페스트 | 디렉터리(`*.zip`과 `pom.xml`이 있는 하위 디렉터리), `.txt`, `.yml`(`name`, `input`, `configs`, `overrides`, `tags`), `.csv`. round 10: UTF-8(BOM 포함), UTF-16(PowerShell 5.1 `>`), cp949 모두 읽음. 이름에 비ASCII 문자가 있거나 이름이 겹치면 ASCII slug + 입력 경로 해시 6자리(`v2-1a2b3c`) |
 | KB | 항상 플릿 공유(`kb.dir`은 프로젝트별로 덮어쓸 수 없음) |
-| 상태 | `<out>/fleet/state.json`: 프로젝트마다 `FleetProjectResult`. 매 프로젝트 뒤 원자적으로 다시 씀 |
-| 요약 | `<out>/fleet/summary.md` / `.csv` / `.json`. 열: `#`, `name`, `case`, `status`, `exit`, `duration_s`, `llm_calls`, `llm_cost`, `blocked`, `unresolved`, `advisories`, `carried_over`, `kb_used` 등. 합계 줄에 LLM 호출과 비용 |
+| 상태 | `<out>/fleet/state.json`: 프로젝트마다 `FleetProjectResult`. 매 프로젝트 뒤 원자적으로 다시 씀. round 10: 프로젝트는 이름이 아니라 정규화한 입력 경로(`input_key`, Windows는 대소문자 무시)로 식별하므로 폴더 이름을 바꾸거나 새로 넣어도 다른 프로젝트의 성공을 물려받지 않음 |
+| 요약 | `<out>/fleet/summary.md` / `.csv` / `.json`. 열: `#`, `name`, `case`, `status`, `exit`, `duration_s`, `llm_calls`, `llm_cost`, `blocked`, `unresolved`, `advisories`, `carried_over`, `kb_used` 등, round 10: `attention`, `input`. 합계 줄에 LLM 호출과 비용. `summary.csv`는 UTF-8 BOM, `summary.md`는 "Needs attention" 절로 시작. 파일마다 따로 쓰므로 엑셀이 연 csv만 건너뜀 |
+| 로그 | round 10: 프로젝트마다 `<run dir>/sbmig.log`(DEBUG), `<out>/fleet/sbmig.log`는 INFO(preflight, 프로젝트마다 `SBMIG-RESULT` 한 줄, 인프라 대기) |
+| 사전 점검 | round 10, `fleet.preflight`: 첫 프로젝트 전과 재점검마다 한 줄씩 `preflight: <check> <ok / FAIL / skip> <detail>` — `disk`(`fleet.min_free_gb`), `maven`, `java`(`build.require_java_major`), `settings`(`build.settings_file`와 catch-all 미러), `repository`(Maven처럼 그 미러에 GET 한 번, settings의 `<proxy>`만 씀, 500 미만이면 살아 있음), `llm`(`sbmig llm-probe`와 같은 `probe_llm` 호출, fake이거나 `loop.max_llm_calls: 0`이면 건너뜀) |
+| 인프라 차단기 | round 10: `infra:<kind>` 플래그로 끝났거나(§3.11) 인프라 예외(디스크 가득, 요청 / LLM 오류, mvn 없음)로 죽은 프로젝트는 실패로 세지 않고 `pending`(`error: infra:<kind>`)으로 되돌림. 연속 `fleet.infra_failure_limit`(3)개면 `fleet: infrastructure <kind> unavailable since <project> - waiting N min, then re-checking (i/max)`를 남기고 `fleet.infra_retry_minutes`(15)분 기다린 뒤 다시 점검하고 미룬 프로젝트부터 재개(프로젝트마다 최대 2번). `fleet.infra_max_waits`(4)번 기다렸거나, `infra_retry_minutes: 0`이거나, 재점검에서 설정 오류(Maven 없음, 다른 JDK, settings 없음, LLM 키 / 모델 거절)가 나오면 `fleet stopped: infrastructure <kind> unavailable since <project> - fix it and run sbmig fleet again` 한 줄로 멈춤(상태 저장, exit 3, 그냥 다시 실행하면 재개) |
+| 디스크 | round 10: 프로젝트마다 출력 드라이브 여유 공간 확인(`fleet.min_free_gb`, 5; 부족하면 kind `disk`). 보고서와 zip 뒤 `fleet.cleanup`: `build-output`(기본, run 사본에서 pom 옆의 `target/` 삭제), `workspace`(`result.zip`이 있으면 `<run dir>/project`까지 삭제), `none` |
+| attention 코드 | round 10: 사람이 봐야 하는 이유, 중요한 것부터 `infra:<kind>`, `skipped:<tool>` / `skipped:input`, `crash`, `aborted[:reason]`, `blocked:<reason>`, `unresolved:<n>`, `restructure-failed`, `llm-budget-exhausted`, `time-budget-exhausted`, `javax-api-on-classpath`, `tests-skipped`, `test-compile-skipped`, `tests-not-compiled`, `incomplete`. `SBMIG-RESULT … attn=`, `summary.csv`의 `attention`, `sbmig fleet status --attention`(첫 코드별 묶음)에 쓰임 |
 | 학습 보고서 | `<out>/fleet/learning.md`: 레시피로 만들 심볼, 아직 LLM이 고치는 것, 여러 프로젝트를 막는 아티팩트(라이브러리 담당자에게 넘길 표), advisory 통계 |
-| 재개 규칙 | `success`는 다시 돌리지 않음. `incomplete` / `aborted`는 `--retry-failed`일 때만(새 run id `…-r2`). intake에서 거절된 프로젝트는 `skipped`로 남고 재시도하지 않음. `running`으로 남은 프로젝트는 다시 돌림 |
-| 종료 코드 | 0 전부 성공, 2 일부 미완료 / skipped, 3 `--stop-on-abort`로 멈춤 |
+| 재개 규칙 | `success`는 다시 돌리지 않음. `incomplete` / `aborted`는 `--retry-failed`일 때만(새 run id `…-r2`). intake에서 거절된 프로젝트는 `skipped`로 남고 재시도하지 않음. `running`으로 남은 프로젝트는 다시 돌림. 인프라 때문에 미룬 `pending` 프로젝트를 먼저 돌림 |
+| 종료 코드 | 0 전부 성공, 2 일부 미완료 / skipped, 3 `--stop-on-abort`로 멈춤 또는 인프라 차단기로 멈춤 |
 
 ---
 
@@ -1762,6 +1873,9 @@ flowchart LR
 | `build.java_home` | `null` | JDK 21 경로(고정 권장) |
 | `build.source_encoding_policy` | `set-property` | `convert-utf8`이면 소스를 UTF-8로 변환 |
 | `build.pom_repositories` | `keep` | `remove`면 `strip-pom-repositories` |
+| `build.require_java_major` | 21 | round 10: `mvn -v`의 Java 메이저가 다르면 중단(`jdk-not-21`). `0`이면 점검 안 함 |
+| `build.retry_negative_cache` | `true` | round 10: negative cache 실패면 같은 빌드를 `-U`로 한 번 더 |
+| `loop.structural_regression_kinds` | `pom_invalid`, `parent_resolution`, `plugin_resolution`, `dependency_resolution` | pom 수정 뒤 나타나면 개수와 상관없이 되돌림(round 10에 `dependency_resolution` 추가) |
 | `llm.provider` | `company` | `company`, `openai_compatible`, `anthropic`, `fake`, `plugin` |
 | `llm.model` / `escalation_model` / `recipe_model` | `LLM_MODEL` / `LLM_ESCALATION_MODEL` / `LLM_RECIPE_MODEL` | 역할별 모델 |
 | `llm.payload_extra` | `{need_origin: true}` | 게이트웨이 JSON에 추가할 필드 |
@@ -1775,6 +1889,13 @@ flowchart LR
 | `layout.drop_managed_versions` | `gte` | 관리 버전 정리 |
 | `layout.web_xml_registrations` | `generate` | web.xml → `WebXmlRegistrations` (`followup`이면 노트만) |
 | `kb.dir`, `kb.auto_promote_after_projects`, `kb.try_candidates_in_plan` | `kb`, 2, `true` | KB 위치, 승격 기준, 후보 실행 |
+| `kb.error_diff_chars`, `kb.error_excerpt_chars` | 12000, 1500 | 저장하는 시도 diff 상한(분류 **뒤에** 적용, `0` = 제한 없음), 에러별 발췌 상한 |
+| `kb.redact_file` | `knowledge/kb/redact.yml` | round 10: 비밀 값 가리기 규칙(내장 규칙에 더함, 회사 추가분) |
+| `kb.lock_timeout_seconds` | 300 | round 10: `kb/.lock` 대기 / stale 기준 |
+| `fleet.preflight` | `true` | round 10: 첫 프로젝트 전 인프라 점검 |
+| `fleet.infra_failure_limit` / `infra_retry_minutes` / `infra_max_waits` | 3 / 15 / 4 | round 10: 인프라 차단기 |
+| `fleet.cleanup` | `build-output` | round 10: `none` / `build-output` / `workspace` |
+| `fleet.min_free_gb` | 5 | round 10: 프로젝트 전 여유 공간(`0` = 점검 안 함) |
 
 ### 12.3 CLI
 
@@ -1783,12 +1904,13 @@ flowchart LR
 | `sbmig run <dir|zip> --config …` | 마이그레이션 한 번(`--stop-after`, `--dry-run`, `--llm-plugin`, `--fix-plugin`, `--log-file`) |
 | `sbmig analyze`, `sbmig plan` | 변경 없이 프로필 / 계획 출력 |
 | `sbmig inventory <dir|zip>` | pom 없는 webapp 트리의 읽기 전용 설명 |
-| `sbmig llm-probe [--bare] [--model] [--payload-extra] [--no-system]` | 요청 하나를 보내 정확한 요청, 프록시, 응답을 출력 |
+| `sbmig llm-probe [--bare] [--model] [--payload-extra] [--no-system]` | 요청 하나를 보내 정확한 요청, 프록시, 응답을 출력. 마지막 줄 `LLM-PROBE ok` 또는 `LLM-PROBE FAIL <kind> …`(exit 0 / 1, round 10) |
 | `sbmig recipes list / show / sets / check [--jars]` | 레시피 카탈로그 확인 |
 | `sbmig advisories list / show / check` | advisory 파일 확인 |
 | `sbmig kb stats / list / show / match / promote / reject / ledger / symbols / learning / export / import / reindex / validate` | KB 관리 |
-| `sbmig fleet run / status / resume` | 플릿 |
-| `sbmig serve [--graceful-timeout] [--max-upload-mb]` | 웹 UI |
+| `sbmig fleet run / status [--attention] / resume` | 플릿 |
+| `sbmig clean [--out] [--fleet] [--older-than] [--keep-failed] [--dry-run] [--records]` | round 10: 끝난 실행의 프로젝트 사본, 끝난 웹 업로드, 오래된 `.part`, `llm-*.json` 기록을 지움. 종류별 개수와 크기, `would free …` / `freed …` |
+| `sbmig serve [--graceful-timeout] [--max-upload-mb] [--token]` | 웹 UI(루프백이 아닌 `--host`에는 토큰 필요, round 10) |
 | `sbmig parse-log`, `sbmig build`, `sbmig rewrite` | 디버깅 도구 |
 
 ### 12.4 로그와 journal
@@ -1799,8 +1921,9 @@ flowchart LR
 | 왜 이 스텝인가 | `plan.json`의 `notes`, `sbmig plan` 출력 |
 | 빌드가 왜 실패했나 | journal `build`의 `log` 경로, `sbmig parse-log <로그>` |
 | LLM이 몇 번 불렸고 얼마인가 | 보고서 요약 표와 "LLM usage and cost", journal `loop_end`의 `llm_calls_used` |
-| 실행이 성공인가 | journal 마지막 `report` 줄의 `success`와 `flags`, 종료 코드 |
-| 멈춘 것 같다 | 워치독 줄, `threads-*.txt`, 웹 `GET /api/threads` |
+| 실행이 성공인가 | journal 마지막 `report` 줄의 `success`와 `flags`, 종료 코드, 콘솔 / `sbmig.log` 마지막의 `SBMIG-RESULT` 한 줄(round 10) |
+| 인프라 때문인가 | 플래그 `infra:<kind>`, `jdk-not-21`, `llm-config-error`, ERROR 줄 `run aborted: …` |
+| 멈춘 것 같다 | 워치독 줄, `threads-*.txt`, 웹 `GET /api/threads`, `dump-threads` 파일(round 10) |
 
 journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 것입니다.
 `llm.record_dir`을 지정하면 LLM 요청 / 응답이 `llm-NNNN.json`으로 남습니다(키 없음).
@@ -1820,14 +1943,23 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 | `GET /api/runs/{id}/files/{name}` | `report.md`, `report.json`, `result.zip`, `sbmig.log`, `journal.jsonl`, `changes.patch`, `plan.json`, `profile.json`, `error_cases.csv`, `error_cases.jsonl`, `fix_attempts.jsonl` |
 | `GET /api/threads` | 스레드 덤프(응답 + 파일) |
 
+접근 토큰(round 10, `sbmig.web.app.TokenGuard`):
+토큰이 없으면 루프백 클라이언트(127.0.0.1 / ::1)만 받습니다. LAN에서 오면 안내와 함께 403이고, 그냥 `uvicorn --host 0.0.0.0`으로 띄워도 같습니다.
+루프백이 아닌 `--host`로 띄우려면 `sbmig serve --token <t>` 또는 `SBMIG_WEB_TOKEN`(`.env`에서도 읽음)이 있어야 하고, 없으면 exit 2로 끝납니다.
+요청은 `Authorization: Bearer <token>`을 보내거나 `?token=<token>`으로 한 번 엽니다. 그러면 토큰의 해시를 담은 HttpOnly / SameSite=Strict 쿠키가 7일 동안 남고, 페이지 `/`는 주소창에서 토큰을 뺀 주소로 다시 이동합니다.
+401 / 403 응답에는 UI가 보여 주는 안내 문구가 들어 있습니다.
+웹 실행의 `sbmig.log` 마지막에도 `SBMIG-RESULT` 한 줄이 남습니다.
+
 ### 12.6 Windows
 
 | 주제 | 동작 |
 |---|---|
-| 콘솔 코드 페이지 | git과 Maven 출력은 에이전트가 UTF-8로 직접 디코딩. `changes.patch`는 git diff 원본 바이트(MS949 소스는 패치에서도 MS949) |
-| 타임아웃 종료 | Maven 타임아웃(`build.timeout_minutes`) 시 `taskkill /PID <pid> /T /F`로 프로세스 트리 전체 종료 |
-| git | 비대화형, 타임아웃 적용 |
-| 스레드 덤프 | SIGUSR1이 없으므로 워치독 자동 덤프(300초)와 `curl.exe http://127.0.0.1:8765/api/threads` |
+| 콘솔 코드 페이지 | git과 Maven 출력은 에이전트가 UTF-8로 직접 디코딩. `changes.patch`는 git diff 원본 바이트(MS949 소스는 패치에서도 MS949). round 10: Maven JVM에 `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`(`MAVEN_OPTS`)을 줘서 한글 경로가 깨지지 않음. stdout / stderr / 로그 핸들러는 `errors="replace"`라 cp949 콘솔로 리디렉션해도 죽지 않고, 콘솔 요약은 ✅ / ❌ 대신 `ok` / `FAIL` |
+| javac 경로 | round 10: `/C:/…`, `file:///C:/…`, `file:/C:/…`, 퍼센트 인코딩(한글 폴더), 소문자 드라이브도 프로젝트 기준 상대 경로로 바꿈(루트는 대소문자 무시로 비교) |
+| 타임아웃 종료 | Maven 타임아웃(`build.timeout_minutes`) 시 `taskkill /PID <pid> /T /F`로 프로세스 트리 전체 종료. round 10: mvn / git 자식은 `CREATE_NO_WINDOW`로 띄워 Ctrl+Break가 `mvn.cmd`에 가지 않음 |
+| git | 비대화형, 타임아웃 적용. round 10: `core.longpaths=true`(260자 넘는 플릿 경로), `core.autocrlf=false`, `core.quotepath=false`(한글 파일 이름), `safe.directory=*`, `.git/info/attributes`로 줄 끝 변환 없음 |
+| 스레드 덤프 | SIGUSR1이 없으므로 워치독 자동 덤프(300초)와 `curl.exe http://127.0.0.1:8765/api/threads`. round 10: Ctrl+Break(`SIGBREAK`), 또는 `New-Item <run dir>\dump-threads -ItemType File`(시작 / out / 최근 실행 디렉터리, 2초 안에 덤프를 옆에 쓰고 파일을 지움, 로그 `thread dump requested by <path>`). `sbmig serve` 아래에서는 Ctrl+Break가 uvicorn을 멈추므로 파일이나 `/api/threads`를 씀 |
+| 텍스트 파일 인코딩 | round 10: `.env`와 플릿 매니페스트는 UTF-8(BOM 포함), UTF-16, cp949 어느 것이든 읽음 |
 | `mvn.cmd` | Maven 실행 파일을 Windows 이름으로 해석 |
 
 ---
@@ -1836,20 +1968,20 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 
 | 항목 | 내용 |
 |---|---|
-| 오프라인 테스트 | `python -m pytest -m "not integration"` → 1,632개 수집(약 3분). Python만 필요 |
+| 오프라인 테스트 | `python -m pytest -m "not integration"` → 2,192개 통과, integration 42개 제외(2026-10-26, 약 3분). Python만 필요 |
 | 통합 테스트 | `python -m pytest -q -m integration`: 실제 mvn + OpenRewrite(JDK 21, 네트워크 필요) |
 | e2e | `scripts/e2e.sh [--only boot2,msa]` → `out/e2e/summary.md`. 픽스처마다 `expected.json`과 비교. `JAVA21_HOME`, Maven, Maven Central 필요 |
 | KB 데모 | `scripts/demo-kb/run.sh`: 1회차 LLM 수정 → harvest → 2회차는 KB 레시피로 LLM 0회 |
 | 플릿 데모 | `scripts/fleet-demo.sh`: 여러 픽스처를 새 KB로 순차 실행 |
 | 문서 동기화 | `tests/docs/test_handbook.py`가 핸드북의 경로, 설정 키, CLI 이름을 코드와 대조 |
 
-픽스처는 31개입니다(`fixtures/projects/*/expected.json`).
+픽스처는 32개입니다(`fixtures/projects/*/expected.json`).
 
 | 케이스 | 픽스처 |
 |---|---|
 | `spring_boot` (14) | `boot2`, `boot2-cloud-legacy`, `boot2-fix-failures`, `boot2-hystrix-command`, `boot2-javax-lib`, `boot2-javax-lib-optional`, `boot2-method-rename`, `boot2-qlrm-javax`, `boot2-rewrite-excluded`, `boot3`, `company-boot-single`, `legacy-role-parents`, `multi-module-conflict`, `multi-module-merge` |
 | `pure_java` (5) | `enforcer-java8-werror`, `euckr-legacy`, `java6-legacy`, `missing-artifact`, `pure-java` |
-| `spring_legacy` (4) | `company-spring5-web`, `legacy-external-config`, `legacy-ibatis`, `spring5-xml` |
+| `spring_legacy` (5) | `company-spring5-web`, `legacy-external-config`, `legacy-ibatis`, `spring5-security-batch`, `spring5-xml` |
 | `servlet_tomcat` (6) | `company-servlet-jsp`, `ear-sibling-poms`, `servlet-nonstandard-dirs`, `servlet-tomcat`, `servlet-war-overlay`, `servlet-webxml-legacy` |
 | `msa` (2) | `msa`, `msa-shared-lib` |
 
@@ -1863,7 +1995,8 @@ journal 마지막 줄이 `report`가 아니면 프로세스가 강제 종료된 
 | X1 javax 라이브러리 / optional 경로 / 서드파티(X1b) | `boot2-javax-lib`, `boot2-javax-lib-optional`, `boot2-qlrm-javax` |
 | X2 메서드 이름 변경 학습 | `boot2-method-rename` |
 | X3 아티팩트 없음 | `missing-artifact` |
-| E1 / E4 / E5 / S8 레거시 빌드 | `euckr-legacy`, `enforcer-java8-werror`, `java6-legacy` |
+| E1 / E4 / E5 / S8 레거시 빌드 | `euckr-legacy`, `enforcer-java8-werror`, `java6-legacy`(round 10부터 E15로 LLM 0회) |
+| E15 / E17, Security 6.0 → 7.0 체인, Spring Batch 라이브러리 레시피, `spring-security-access` 분리 | `spring5-security-batch`(LLM 0회) |
 | E13 / E14 레시피 빈틈 | `boot2-rewrite-excluded` |
 | advisory(springfox, sleuth, hystrix, iBATIS) | `boot2-cloud-legacy`, `boot2-hystrix-command`, `legacy-ibatis` |
 | 외부화 설정 | `legacy-external-config` |

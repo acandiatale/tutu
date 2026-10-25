@@ -2,9 +2,13 @@
 
 Public API:
     load_manifest(path) -> list[FleetProject]
-    FleetRunner(cfg, manifest_path, out_dir, *, run_project=None, kb=None).run() -> FleetState
+    FleetRunner(cfg, manifest_path, out_dir, *, run_project=None, kb=None, preflight=None, disk_check=None,
+                sleep=time.sleep).run() -> FleetState
     write_summaries(state, fleet_dir, cfg, kb)
     fleet_cli                       typer sub-app, mounted by sbmig/cli.py as `sbmig fleet`
+    sbmig.fleet.preflight           run_preflight(cfg, out_dir, echo=) -> [Check]  (Java / Maven / settings /
+                                    repository / LLM / disk, round 10)
+    sbmig.fleet.cleanup             cleanup_run(run_dir, mode), plan_clean(...) / execute(items)  (`sbmig clean`)
 """
 
 from .manifest import FleetProject, ManifestError, load_manifest

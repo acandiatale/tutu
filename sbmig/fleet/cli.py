@@ -48,10 +48,8 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
     from pydantic import ValidationError
 
     from sbmig.core.config import load_config
-    from sbmig.kb.store import atomic_write
 
     from .runner import FleetRunner
-    from .summary import render_table
 
     saved = out / "fleet" / RUN_CONFIG
     try:
@@ -60,12 +58,31 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
         typer.secho(f"invalid configuration: {e}", fg=typer.colors.RED, err=True)
         return 1
     runner = FleetRunner(cfg, manifest, out, echo=typer.echo, dry_run=dry_run)
+    fleet_log: Optional[Path] = None
     if not dry_run:
         try:
+            import logging
+
             from sbmig.cli import attach_file_log
-            attach_file_log(Path(runner.fleet_dir) / "sbmig.log")      # one log for the whole fleet (+ per-run logs)
+            # INFO for the whole fleet (500 projects of DEBUG would not fit); each project logs DEBUG into its own
+            # <run dir>/sbmig.log (FleetRunner attaches and detaches it per project)
+            fleet_log = attach_file_log(Path(runner.fleet_dir) / "sbmig.log", level=logging.INFO)
         except Exception:  # pragma: no cover - logging must never stop a fleet
             pass
+    try:
+        return _run_fleet(runner, saved, manifest, configs, overrides, dry_run, cfg)
+    finally:
+        if fleet_log is not None:
+            from sbmig.cli import detach_file_log
+
+            detach_file_log(fleet_log)
+
+
+def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrides: dict, dry_run: bool, cfg) -> int:
+    from sbmig.kb.store import atomic_write
+
+    from .summary import render_table
+
     if not dry_run:
         atomic_write(
             saved,
@@ -85,7 +102,7 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
         typer.secho(f"fleet failed: {type(e).__name__}: {e}", fg=typer.colors.RED, err=True)
         return 1
     if dry_run:
-        typer.echo(f"fleet {state.fleet_id} (dry run, order: {cfg.fleet.order}) — nothing executed:")
+        typer.echo(f"fleet {state.fleet_id} (dry run, order: {cfg.fleet.order}) - nothing executed:")
         for idx, r, action in runner.planned:
             typer.echo(
                 f"  {idx:3d}. {r.name:<30} {r.status:<10} -> {action}" + (f"  ({r.error})" if r.error else "")
@@ -95,6 +112,8 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
     typer.echo(render_table(state))
     typer.echo("")
     typer.echo(f"summary: {runner.fleet_dir / 'summary.md'}   learning: {runner.fleet_dir / 'learning.md'}")
+    if runner.stopped_on_infra:          # the reason once more, as the last line on the screen
+        typer.echo(next((n for n in reversed(state.notes) if n.startswith("fleet stopped: ")), ""))
     return runner.exit_code
 
 
@@ -121,7 +140,8 @@ def run_cmd(
 
     Resumable by default: re-running with the same --out skips projects that already succeeded (and, unless
     --retry-failed, the incomplete/aborted ones). Exit 0 = all projects succeeded, 2 = some incomplete /
-    skipped / not run yet, 3 = stopped on an aborted project (--stop-on-abort)."""
+    skipped / not run yet, 3 = stopped on an aborted project (--stop-on-abort) or by the infrastructure guard
+    ("fleet stopped: infrastructure <kind> unavailable since <project> …": fix it and run the same command again)."""
     ov = _overrides(order, max_projects, retry_failed, stop_on_abort, llm_provider, max_llm_calls_total)
     raise typer.Exit(_run(manifest, out, list(config or []), ov, dry_run))
 
@@ -159,11 +179,14 @@ def resume_cmd(
 def status_cmd(
     out: Path = typer.Argument(Path("out"), help="the --out dir of a fleet run"),
     as_json: bool = typer.Option(False, "--json"),
+    attention: bool = typer.Option(False, "--attention",
+                                   help="only the projects that need a human, grouped by attention code "
+                                        "(infra:<kind>, blocked:<reason>, unresolved, restructure-failed, ...)"),
 ) -> None:
     """Print the fleet's progress table from <out>/fleet/state.json."""
     from sbmig.core.models import FleetState
 
-    from .summary import render_table, totals
+    from .summary import render_attention, render_table, totals
 
     p = out / "fleet" / "state.json"
     if not p.exists():
@@ -172,6 +195,10 @@ def status_cmd(
     state = FleetState.model_validate_json(p.read_text(encoding="utf-8"))
     if as_json:
         typer.echo(state.model_dump_json(indent=2))
+        return
+    if attention:
+        for line in render_attention(state):
+            typer.echo(line)
         return
     t = totals(state)
     typer.echo(

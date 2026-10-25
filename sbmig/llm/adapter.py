@@ -153,8 +153,11 @@ class AdapterClient:
             raise
         except Exception as exc:     # surface as LLMError so callers treat it as a transport failure
             status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
-            raise LLMError(status if isinstance(status, int) else None, str(exc)[:500],
-                           f"LLM adapter {self.name} failed: {type(exc).__name__}: {exc}") from exc
+            status = status if isinstance(status, int) else None
+            # round 10: the fix loop classifies by explicit markers — `status=<code>` and `cause=<ExceptionClass>`
+            raise LLMError(status, str(exc)[:500],
+                           f"LLM adapter {self.name} failed (status={status}, cause={type(exc).__name__}): "
+                           f"{exc}") from exc
         return coerce_response(raw, request.model or self.model or self.name, source=f"adapter {self.name}")
 
     def close(self) -> None:

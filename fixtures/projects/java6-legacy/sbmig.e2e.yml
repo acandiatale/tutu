@@ -1,8 +1,8 @@
 # Per-fixture config override, appended by scripts/e2e.py after config/artifacts.local-e2e.yml
 # (`--config config/artifacts.local-e2e.yml --config fixtures/projects/java6-legacy/sbmig.e2e.yml`).
-# Replayed ("scripted") LLM so the run is offline and deterministic: replay/llm-001.json ports the removed
-# sun.misc.BASE64Encoder/Decoder in Codec.java to java.util.Base64 (the jdk-removed-apis advisory hint is in that
-# prompt). Responses are consumed in order; the last one repeats.
+# Replayed ("scripted") LLM so the run is offline and deterministic. Since round 10 the handler jdk-base64-shim fixes
+# Codec.java without the LLM (expected: 0 calls); replay/llm-001.json (the java.util.Base64 port) stays for runs with
+# that handler off. Responses are consumed in order; the last one repeats.
 llm:
   provider: fake
   base_url: "replay:fixtures/projects/java6-legacy/replay"

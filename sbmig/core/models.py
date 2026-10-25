@@ -75,7 +75,11 @@ class DecisionKind(str, Enum):
 
 
 AttemptOutcome = Literal["pending", "improved", "no_change", "regressed", "reverted", "build_ok", "apply_failed",
-                         "blocked"]
+                         "blocked", "partial", "inconclusive"]
+# round 10 (2026-10-26): `partial` = some of the cluster's targeted errors are gone, the rest remain, nothing new in the
+# touched files (progress: not a failure for limits / KB failure counts, not a success for harvest / recipe credit);
+# `inconclusive` = the scoring build could not show the cluster's errors (timed out, failed without parsed errors,
+# stopped at an earlier stage that the attempt did not cause) — no KB credit either way, counts as tried
 
 
 class BlockReason(str, Enum):
@@ -889,9 +893,14 @@ class ChangeClass(BaseModel):
     lines_removed: int = 0
 
 
+KB_RECORD_SCHEMA = 2      # 1 (or absent) = before round 10 (2026-10-26); bump on a change of a field's meaning
+
+
 class FixAttemptRecord(BaseModel):
     """One line of kb/fix_attempts.jsonl: one fix attempt of a run — success or failure — with the code it applied."""
     id: str                                        # "<run_id>:<attempt id>"
+    schema_version: int = KB_RECORD_SCHEMA
+    agent_version: str = ""                        # sbmig version that wrote it (sbmig.__version__)
     at: datetime = Field(default_factory=utcnow)
     project: str = ""
     project_fingerprint: str = ""
@@ -939,6 +948,8 @@ class ErrorCaseRecord(BaseModel):
     """One line of kb/errors.jsonl: ONE build error of a run (N errors in a build → N records): what it was, what
     was tried, how it was resolved — or why not, and which errors were the problem."""
     id: str                                        # sha1(run_id | identity | occurrence)[:16]
+    schema_version: int = KB_RECORD_SCHEMA
+    agent_version: str = ""
     at: datetime = Field(default_factory=utcnow)
     project: str = ""
     project_fingerprint: str = ""
@@ -991,6 +1002,12 @@ class ErrorCaseRecord(BaseModel):
     llm_attempts: int = 0
     notes: list[str] = Field(default_factory=list)
     case_id: str = ""                              # CatalogCase id = sha1(signature_generic)[:10] (2026-10-23)
+    # round 10 context (from the ProjectProfile / the tracker): what the project was and what came right before
+    asis_java: str = ""
+    asis_spring_boot: str = ""
+    asis_spring: str = ""
+    packaging: str = ""
+    introduced_by: str = ""                        # "step:<plan step id>" or an attempt id that preceded its first build
 
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1136,7 @@ class CaseHit(BaseModel):
     errors: list[BuildError] = Field(default_factory=list)
     variant_owner: str = ""
     hints: list[str] = Field(default_factory=list)
+    pinned: bool = False                           # round 10: `action` is the human block's pinned action (triage obeys it)
 
 
 # ---------------------------------------------------------------------------

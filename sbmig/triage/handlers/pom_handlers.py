@@ -1399,6 +1399,9 @@ class KnownPackage(BaseModel):
     version: Optional[str] = None
     scope: Optional[str] = None
     symbols: tuple[str, ...] = ()
+    # round 10: in a project that is not BOM-managed yet, reuse the version (literal or ${prop}) of another declared
+    # dependency of the same groupId — spring-security-access must match spring-security-core / -config exactly
+    align_group_version: bool = False
 
     @property
     def key(self) -> str:
@@ -1445,6 +1448,34 @@ def _missing_refs(cluster: Optional[ErrorCluster]) -> list[tuple[str, str]]:
             for mm in pat.finditer(text):
                 out.append((mm.group(1).rstrip(".;,"), sym))
     return out
+
+
+_GROUP_VERSION_RE = r"<groupId>\s*{g}\s*</groupId>\s*<artifactId>\s*[^<\s]+\s*</artifactId>\s*<version>\s*([^<\s]+)\s*</version>"
+
+
+def _group_version(ws: Workspace, rel: str, group: str) -> Optional[str]:
+    """The version text of the first dependency of `group` declared with a version in the module pom, else in any
+    project pom (`${spring-security.version}` stays a property reference)."""
+    rx = re.compile(_GROUP_VERSION_RE.format(g=re.escape(group)), re.S)
+    for pom in [rel, *[x for x in all_poms(ws) if x != rel]]:
+        try:
+            m = rx.search(re.sub(r"<!--.*?-->", "", ws.read(pom), flags=re.S))
+        except OSError:
+            continue
+        if m:
+            return m.group(1)
+    return None
+
+
+def _test_sources_only(cluster: Optional[ErrorCluster]) -> bool:
+    """True when every error of the cluster is in test code: a test-compile error, or a compile error whose file lies
+    under a `src/test/` tree (build-helper setups compile tests in the compile goal)."""
+    if cluster is None:
+        return False
+    if cluster.kind == ErrorKind.TEST_COMPILE:
+        return True
+    files = [(e.file or "").replace("\\", "/") for e in cluster.errors if e.file]
+    return bool(files) and all("/src/test/" in f"/{f}" for f in files)
 
 
 def _boot_managed_project(ws: Workspace, cfg: Optional[Config]) -> bool:
@@ -1499,7 +1530,7 @@ class AddKnownDependency(PomHandler):
             return []
         managed = _boot_managed_project(ws, cfg)
         kv = known_versions()
-        test_scope = cluster.kind == ErrorKind.TEST_COMPILE
+        test_scope = _test_sources_only(cluster)
         changed: list[str] = []
         for rel in poms_for_cluster(ws, cluster, profile):
             ed = self.editor(ws, rel)
@@ -1508,13 +1539,17 @@ class AddKnownDependency(PomHandler):
                 g, a = row.artifact.split(":", 1)
                 if ed.has_dependency(g, a):
                     continue
+                aligned = _group_version(ws, rel, g) if row.align_group_version and not (row.managed and managed) \
+                    else None
                 version = None if (row.managed and managed) else \
-                    (row.version or kv.get(row.artifact) or version_for(row.artifact, cfg))
+                    (aligned or row.version or kv.get(row.artifact) or version_for(row.artifact, cfg))
                 if version is None and not (row.managed and managed):
                     log.info("add-known-dependency: no version known for %s in an unmanaged project — skipped",
                              row.artifact)
                     continue
-                scope = "test" if test_scope else row.scope
+                # round 10: a test library (JUnit 4 leftovers, hamcrest, mockito …) referenced from main code (test
+                # utilities under src/main) gets the default compile scope — `test` would leave the main code broken
+                scope = "test" if test_scope else (None if row.scope == "test" else row.scope)
                 ch |= bool(ed.add_dependency(GAV(group_id=g, artifact_id=a, version=version, scope=scope)))
                 log.info("add-known-dependency: %s%s → %s", row.artifact, f":{version}" if version else "", rel)
             if ch:

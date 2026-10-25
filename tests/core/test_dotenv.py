@@ -13,12 +13,12 @@ def test_dotenv_file_fills_missing_variables_only(tmp_path, monkeypatch):
     monkeypatch.setenv("SBMIG_T_KEEP", "shell")
     monkeypatch.delenv("LLM_API_KEY", raising=False)
     monkeypatch.delenv("SBMIG_T_NEW", raising=False)
-    cfgmod._DOTENV_LOADED.discard(str(f.resolve()))
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
     found = cfgmod.load_dotenv_files()
     assert f in found
     assert os.environ["LLM_API_KEY"] == "from-file" and os.environ["SBMIG_T_NEW"] == "v 1"
     assert os.environ["SBMIG_T_KEEP"] == "shell"          # the shell wins over the file
-    cfgmod._DOTENV_LOADED.discard(str(f.resolve()))
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
 
 
 def test_load_config_reads_dotenv_for_expansion(tmp_path, monkeypatch):
@@ -26,10 +26,10 @@ def test_load_config_reads_dotenv_for_expansion(tmp_path, monkeypatch):
     f.write_text("LLM_BASE_URL=http://gw.local/chat\n")
     monkeypatch.setenv("SBMIG_ENV_FILE", str(f))
     monkeypatch.delenv("LLM_BASE_URL", raising=False)
-    cfgmod._DOTENV_LOADED.discard(str(f.resolve()))
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
     c = cfgmod.load_config(overrides={"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}}})
     assert c.llm.base_url == "http://gw.local/chat"
-    cfgmod._DOTENV_LOADED.discard(str(f.resolve()))
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
 
 
 def test_dotenv_value_that_is_only_a_comment_is_empty(tmp_path, monkeypatch):
@@ -43,12 +43,12 @@ def test_dotenv_value_that_is_only_a_comment_is_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("SBMIG_ENV_FILE", str(f))
     for k in ("SBMIG_T_RECIPE", "SBMIG_T_ESC", "SBMIG_T_FIX", "SBMIG_T_HASH"):
         monkeypatch.delenv(k, raising=False)
-    cfgmod._DOTENV_LOADED.discard(str(f.resolve()))
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
     cfgmod.load_dotenv_files()
     assert os.environ["SBMIG_T_RECIPE"] == "" and os.environ["SBMIG_T_ESC"] == ""
     assert os.environ["SBMIG_T_FIX"] == "gpt-5.6-terra"
     assert os.environ["SBMIG_T_HASH"] == "#literal"        # quoted values are taken verbatim
-    cfgmod._DOTENV_LOADED.discard(str(f.resolve()))
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
 
 
 def test_llm_model_names_are_cleaned_at_config_load(caplog):
@@ -63,3 +63,25 @@ def test_llm_model_names_are_cleaned_at_config_load(caplog):
     c = cfgmod.load_config(overrides={"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}},
                                       "llm": {"model": "gpt-6-luna", "recipe_model": "${LLM_RECIPE_MODEL}"}})
     assert (c.llm.model, c.llm.recipe_model) == ("gpt-6-luna", "${LLM_RECIPE_MODEL}")
+
+
+def test_dotenv_encodings_and_reload_after_an_edit(tmp_path, monkeypatch):
+    """Round 10: Notepad's UTF-8 BOM, PowerShell 5.1 `>` (UTF-16) and cp949 files are read; an edited file is read
+    again (the web server reads .env per run), but a shell variable still wins."""
+    f = tmp_path / "w.env"
+    monkeypatch.setenv("SBMIG_ENV_FILE", str(f))
+    for k in ("SBMIG_T_BOM", "SBMIG_T_U16", "SBMIG_T_KO", "SBMIG_T_SHELL"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("SBMIG_T_SHELL", "shell")
+    f.write_bytes("SBMIG_T_BOM=one\nSBMIG_T_SHELL=file\n".encode("utf-8-sig"))
+    cfgmod.load_dotenv_files()
+    assert os.environ["SBMIG_T_BOM"] == "one" and os.environ["SBMIG_T_SHELL"] == "shell"
+    f.write_bytes("SBMIG_T_BOM=two\nSBMIG_T_U16=x\n".encode("utf-16"))
+    os.utime(f, (f.stat().st_atime, f.stat().st_mtime + 5))
+    cfgmod.load_dotenv_files()
+    assert os.environ["SBMIG_T_BOM"] == "two" and os.environ["SBMIG_T_U16"] == "x"
+    f.write_bytes("SBMIG_T_KO=한글\n".encode("cp949"))
+    os.utime(f, (f.stat().st_atime, f.stat().st_mtime + 10))
+    cfgmod.load_dotenv_files()
+    assert os.environ["SBMIG_T_KO"] == "한글"
+    cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)

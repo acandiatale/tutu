@@ -39,9 +39,9 @@ def _profile(kit, **kw):
 def test_order_and_registry():
     ids = [h.id for h in edge_handlers(None)]
     assert ids == ["source-encoding", "strip-utf8-bom", "carry-over-managed-version", "enforcer-relax",
-                   "remove-werror", "systempath-relocate"]
+                   "remove-werror", "remove-tools-jar", "systempath-relocate"]       # round 10: remove-tools-jar
     reg = HandlerRegistry.default(None).ids()
-    assert reg[:6] == ids and reg.index("carry-over-managed-version") < reg.index("missing-dependency-version")
+    assert reg[:7] == ids and reg.index("carry-over-managed-version") < reg.index("missing-dependency-version")
 
 
 def test_helpers():

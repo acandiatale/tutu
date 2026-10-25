@@ -80,3 +80,93 @@ def test_write_patch_keeps_legacy_encoded_bytes(ws):
     data = patch.read_bytes()
     assert "한글 주석".encode("cp949") in data and b"Legacy.java" in data
     assert ws.diff(ws.first_commit()).count("�") > 0 or "Legacy" in ws.diff(ws.first_commit())
+
+
+# ---------------------------------------------------------------------------------------------- round 10 (B3)
+def test_git_calls_carry_windows_safe_config(ws, monkeypatch):
+    seen: dict = {}
+
+    def fake_run(cmd, **kw):
+        seen["cmd"], seen["kw"] = cmd, kw
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(wsmod.subprocess, "run", fake_run)
+    ws._git("status", "--porcelain")
+    cmd = seen["cmd"]
+    pairs = [cmd[i + 1] for i, c in enumerate(cmd) if c == "-c"]
+    for kv in ("core.longpaths=true", "core.autocrlf=false", "core.quotepath=false", "safe.directory=*",
+               "commit.gpgsign=false"):
+        assert kv in pairs
+    assert cmd[-2:] == ["status", "--porcelain"] and seen["kw"]["creationflags"] == 0
+    monkeypatch.setattr(wsmod, "_on_windows", lambda: True)
+    ws._git("status")
+    assert seen["kw"]["creationflags"] == 0x08000000          # CREATE_NO_WINDOW: Ctrl+Break never reaches git
+
+
+def _real_git():
+    import shutil
+    if shutil.which("git") is None:  # pragma: no cover
+        pytest.skip("git not installed")
+
+
+def test_korean_file_names_are_listed_verbatim(ws):
+    _real_git()
+    (ws.root / "pom.xml").write_text("<project/>")
+    ws.git_init()
+    base = ws.head()
+    d = ws.root / "src/main/resources/한글"
+    d.mkdir(parents=True)
+    (d / "메시지.properties").write_text("a=b\n", encoding="utf-8")
+    (ws.root / "pom.xml").write_text("<project><x/></project>")
+    assert ws.changed_files_since(base) == ["pom.xml", "src/main/resources/한글/메시지.properties"]
+    sha = ws.commit("k")
+    assert ws.changed_between(base, sha) == ["pom.xml", "src/main/resources/한글/메시지.properties"]
+    assert "한글/메시지.properties" in ws.diff(base, sha, stat=True)
+
+
+def test_revert_keeps_line_endings_despite_global_autocrlf_and_gitattributes(ws, tmp_path, monkeypatch):
+    """Windows: a global core.autocrlf=true (Git for Windows default) or a project `* text=auto eol=crlf` rewrote
+    LF files with CRLF on `git reset --hard` (revert_to) — `run.sh` then failed with `$'\\r': command not found`."""
+    _real_git()
+    gcfg = tmp_path / "global.gitconfig"
+    gcfg.write_text("[core]\n\tautocrlf = true\n\teol = crlf\n")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gcfg))
+    (ws.root / ".gitattributes").write_text("* text=auto eol=crlf\n")
+    sh = b"#!/bin/sh\necho ok\n"
+    bat = b"@echo off\r\necho ok\r\n"
+    (ws.root / "run.sh").write_bytes(sh)
+    (ws.root / "run.bat").write_bytes(bat)
+    ws.git_init()
+    assert (ws.root / ".git/info/attributes").read_text().startswith("* -text")
+    snap = ws.head()
+    (ws.root / "run.sh").write_bytes(b"#!/bin/sh\necho changed\n")
+    (ws.root / "run.bat").unlink()
+    ws.commit("change")
+    ws.revert_to(snap)
+    assert (ws.root / "run.sh").read_bytes() == sh and (ws.root / "run.bat").read_bytes() == bat
+
+
+def test_jars_the_project_gitignore_hides_are_still_snapshotted(tmp_path):
+    """Round 10: `*.jar` in the project's .gitignore kept WEB-INF/lib jars out of the snapshots (patch, revert)."""
+    from sbmig.core.workspace import Workspace
+
+    src = tmp_path / "src-proj"
+    (src / "src/main/webapp/WEB-INF/lib").mkdir(parents=True)
+    (src / "src/main/webapp/WEB-INF/lib/legacy.jar").write_bytes(b"PK\x03\x04jar")
+    (src / "lib").mkdir()
+    (src / "lib/vendor.jar").write_bytes(b"PK\x03\x04v")
+    (src / "logs").mkdir()
+    (src / "logs/app.log").write_text("x")
+    (src / ".gitignore").write_text("*.jar\nlogs/\n")
+    (src / "pom.xml").write_text("<project/>")
+    ws = Workspace(src, tmp_path / "run", "r1")
+    ws.git_init()
+    tracked = ws._git("ls-files").stdout.splitlines()
+    assert "src/main/webapp/WEB-INF/lib/legacy.jar" in tracked and "lib/vendor.jar" in tracked
+    assert "logs/app.log" not in tracked                      # only jars are forced in
+    base = ws.head()
+    jar = ws.root / "src/main/webapp/WEB-INF/lib/legacy.jar"
+    jar.unlink()
+    ws.commit("moved away")
+    ws.revert_to(base)
+    assert jar.is_file()                                       # revert brings the jar back

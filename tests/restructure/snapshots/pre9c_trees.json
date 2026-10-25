@@ -21,7 +21,7 @@
    "pom.xml: org.springframework.boot:spring-boot-starter-parent:2.7.18 \u2192 com.company.platform:base-parent:4.0.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "README.md": "eb881200a7e05a4ff166187b70e4894b70ff820dd5de3f188ac581396e3ad69e",
    "lombok.config": "225fdf7668d2f2ba8223de6e80dc346fcd95a6d4e79fd61e4fab631383796429",
    "module/boot-jar/pom.xml": "322e06a697a87e420143f84432ee3d3f59a19d55fb348594192b92e660d26a2f",
@@ -60,7 +60,7 @@
    "pom.xml: org.springframework.boot:spring-boot-starter-parent:2.7.18 \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "README.md": "eb881200a7e05a4ff166187b70e4894b70ff820dd5de3f188ac581396e3ad69e",
    "lombok.config": "225fdf7668d2f2ba8223de6e80dc346fcd95a6d4e79fd61e4fab631383796429",
    "module/boot-jar/pom.xml": "72d082f112fabdcb2fb254659ac0b199d1dc3d3d22393bdf6f214a3436b3c996",
@@ -98,7 +98,7 @@
    "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "module/boot-jar/pom.xml": "c170e15defb48fbaf5f99b2728157db7dad15fc28d63e7029658b0391a9d0c9c",
    "module/boot-jar/src/main/java/com/acme/suite/SuiteApplication.java": "d59a6e1fe851b7c8a925c4f31ba164c0f7b1f293d983f6371446e73355e00ece",
    "module/boot-jar/src/main/resources/application.yml": "52663247565d9773b49c367c9d5f68c6761fa55d9ab9ed964f95d5517c06ae42",
@@ -133,7 +133,7 @@
    "pom.xml: com.company.platform:base-parent:1.0.0 \u2192 com.company.platform:base-parent:4.0.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "module/boot-jar/pom.xml": "f0ecc6140215ce890dab0f69e14c9d4bc18056ee571f9fbbe1478ef695f40e69",
    "module/boot-jar/src/main/java/com/acme/shop/ShopApplication.java": "3c3d55366acdb24c0244e1d8a9a4fe236516df80cb2ef32cc09dc2bac5cd14a9",
    "module/boot-jar/src/main/resources/application.yml": "a7c65ac4504f4b15c695cc9cad633374cf845136cbfab17af03eac1a48e37bbe",
@@ -160,7 +160,7 @@
    "user-service/pom.xml: org.springframework.boot:spring-boot-starter-parent:3.2.0 \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "order-service/pom.xml": "f455568da8a31fdebd7894c2d4432d2ca202313a6147d4cb197554acb6d4b0ff",
    "order-service/src/main/java/com/acme/order/OrderApp.java": "a91b2acd54850d2857115b2eb89459d3904ee0381d0793a7aa48e6cf955d4178",
    "pom.xml": "85c3c8f573fb481377f58bfe7dec57f3211266ba66f23d13f5237b02784e758b",
@@ -188,7 +188,7 @@
    "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "module/boot-jar/pom.xml": "0540a051059fdfccd9dcbc2b7c5c0c339f48f0ea936d57529adc96858ac84216",
    "module/boot-jar/src/main/java/com/acme/suite/SuiteApplication.java": "d59a6e1fe851b7c8a925c4f31ba164c0f7b1f293d983f6371446e73355e00ece",
    "module/boot-jar/src/main/resources/application.properties": "77e7ce77c707a8147bb65a710ac1af3fca02c8dd2be36762ec9611d90fb5c041",
@@ -221,7 +221,7 @@
    "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "module/boot-jar/pom.xml": "69bb9c3457f7c6674f6fb175e7fc798cf42ebf8ac4232ea05665c3d63aa0e6d5",
    "module/boot-jar/src/main/java/com/acme/suite/Application.java": "30e39cdbed97ffaa4bfb314372d2b4182d0c190b0a310d46c5b08080a25b0c70",
    "module/core/pom.xml": "d9b6be7c3e70c2dd2e4bcdfc5a9e225c70d9d9122a36c4ae8c0fba7070b1705c",
@@ -257,7 +257,7 @@
    "pom.xml: - \u2192 org.springframework.boot:spring-boot-starter-parent:4.1.0"
   ],
   "tree": {
-   ".gitignore": "25fdb35b6293273b9771010ef845320ddafc12a906f1be95e5dbab0e804de643",
+   ".gitignore": "106cbf7e73d7b91dac50b9f93bf084a85c9926d8b4fe7cb83a649975ba2feeac",
    "module/boot-jar/pom.xml": "eddc00bff0e7924f6dcbbaef8461de70990af04ca11016412f6e804db122078e",
    "module/boot-jar/src/main/java/com/acme/web/Application.java": "7cc79e7311f49479c06bd2eb479c29f16afadfe557061a40facb0f2565e77fb6",
    "module/boot-jar/src/main/resources/log4j2.xml": "2db30d6a988063ed529c0a891e8f4b9e782dcdad3977aafe61fb801cb84d932e",

@@ -28,7 +28,8 @@ def env(tmp_path, monkeypatch, repo_root, projects_dir):
 
     monkeypatch.setattr(runner_mod.FleetRunner, "_default_run_project", fake_run)
     kb_cfg = tmp_path / "kb.yml"
-    kb_cfg.write_text(f"kb: {{dir: {tmp_path / 'kb'}}}\n")
+    # no real preflight (mvn -v / LLM probe / disk) in unit tests: tests/fleet/test_infra.py covers it with fakes
+    kb_cfg.write_text(f"kb: {{dir: {tmp_path / 'kb'}}}\nfleet: {{preflight: false, min_free_gb: 0}}\n")
     return {
         "calls": calls,
         "cfg": [str(repo_root / REPO_CFG), str(kb_cfg)],

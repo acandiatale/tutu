@@ -1,0 +1,37 @@
+# Secret masking rules for everything the KB stores (kb.redact_file; sbmig/kb/redact.py, round 10).
+#
+# The built-in rules already mask the VALUES of: properties / yaml / env / -D keys and Java / XML string literals
+# whose key ends in password | passwd | pwd | pw | pass | passphrase | secret | token | credential(s) |
+# authorization | api key | private key | secret key | access key | client secret …; <password>…</password>;
+# <property name="…password" value="…"/>; <param-name>/<param-value>; JSON "password": "…"; https://user:pass@host;
+# jdbc:oracle:thin:user/pass@…; ;password=… / ?password=… / &password=…; Authorization headers, Bearer / Basic
+# tokens; PEM private keys. Placeholders (${…}, @…@, __SET_ME__, <…>) are never masked.
+#
+# Add COMPANY patterns here (invariant 2: company specifics live in config / knowledge yml, not in Python code).
+# Never put a real secret value into this file — only names and patterns. Changes apply to the next run.
+# 회사 고유의 비밀값 패턴은 여기에 추가합니다(실제 비밀값은 절대 적지 마세요 — 이름과 패턴만).
+version: 1
+
+# Extra secret key WORDS: a key whose last word is one of these has its value masked (words are split at
+# `.` `_` `-` and camelCase, compared case-insensitively; `otp` covers `login.otp`, `userOtp`, `USER_OTP`).
+key_words: []
+#  - otp
+#  - pin
+#  - seed
+
+# Whole key names (regex, full match, case-insensitive) whose value is a secret although their last word is not
+# a secret word.
+key_patterns: []
+#  - 'acme\.sso\.client-ref'
+#  - 'kr\.co\.acme\..*\.enc-value'
+
+# Free patterns, masked wherever they occur: the named group `value` when the regex has one, else the whole match.
+patterns: []
+#  - name: acme-api-token                 # an in-house token format
+#    regex: 'ACME-[A-Z0-9]{24}'
+#  - name: acme-sso-cookie
+#    regex: 'ACME_SSO=(?P<value>[^;\s]+)'
+
+# Keys that are never treated as secrets even though their last word is a secret word (exact, case-insensitive).
+allow_keys: []
+#  - csrf.header.token

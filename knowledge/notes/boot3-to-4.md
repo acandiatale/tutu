@@ -59,7 +59,17 @@ Every technology has a matching `spring-boot-starter-<tech>-test` test starter.
 - `@EntityScan` → `org.springframework.boot.persistence.autoconfigure.EntityScan`.
 - `EnvironmentPostProcessor` → `org.springframework.boot.EnvironmentPostProcessor` (was `…boot.env`).
 - `BootstrapRegistry`/`BootstrapRegistryInitializer` → `org.springframework.boot.bootstrap`.
-- `HttpMessageConverters` deprecated → `ClientHttpMessageConvertersCustomizer` / `ServerHttpMessageConvertersCustomizer` beans.
+- `HttpMessageConverters` deprecated → `ClientHttpMessageConvertersCustomizer` / `ServerHttpMessageConvertersCustomizer` beans
+  (the class itself moved to `org.springframework.boot.http.converter.autoconfigure`).
+- Round 10, moved but not by the 4.0 umbrella (project recipe `com.company.migrate.Boot4TypeRelocations` + handler
+  `boot4-type-relocation-sweep`): `web.servlet.error.{ErrorController, ErrorAttributes, DefaultErrorAttributes}` →
+  `org.springframework.boot.webmvc.error`; `web.server.{ErrorPage, ErrorPageRegistrar, ErrorPageRegistry}` →
+  `org.springframework.boot.web.error`; `web.servlet.server.{ConfigurableServletWebServerFactory, ServletWebServerFactory,
+  Session, Jsp, …}` → `org.springframework.boot.web.server.servlet`; `web.servlet.MultipartConfigFactory` and
+  `web.servlet.filter.Ordered*Filter` → `org.springframework.boot.servlet(.filter)`; `autoconfigure.web.ServerProperties`
+  → `org.springframework.boot.web.server.autoconfigure`; `web.servlet.ServletComponentScan` →
+  `org.springframework.boot.web.server.servlet.context` (modules spring-boot-webmvc / -web-server / -servlet /
+  -http-converter, all inside spring-boot-starter-webmvc). Nested types (`ServerProperties.Tomcat`) may have moved again.
 - `TestRestTemplate` → `org.springframework.boot.resttestclient.TestRestTemplate` + `@AutoConfigureTestRestTemplate`; deps
   `spring-boot-resttestclient` (test) and `spring-boot-restclient`.
 - `@PropertyMapping` → `org.springframework.boot.test.context.PropertyMapping`.
@@ -94,7 +104,8 @@ Every technology has a matching `spring-boot-starter-<tech>-test` test starter.
   `add-known-dependency` handler adds the deprecated `spring-boot-jackson2` module automatically.
 
 ## Removed
-Undertow (→ Tomcat/Jetty), Spring Session Hazelcast & MongoDB, Spock (restored in 4.1), Spring Retry dependency management
+Undertow (→ Tomcat/Jetty; `dependency-relocation` swaps spring-boot-starter-undertow for spring-boot-starter-tomcat,
+advisory `undertow`), Spring Session Hazelcast & MongoDB, Spock (restored in 4.1), Spring Retry dependency management
 (→ Framework 7 `org.springframework.core.retry.RetryTemplate`, annotations `org.springframework.resilience.annotation.Retryable`
 + `@EnableResilientMethods`; or keep `org.springframework.retry:spring-retry` with an explicit `<version>`),
 classic uber-jar loader (`<loaderImplementation>CLASSIC</loaderImplementation>` must be removed), fully-executable launch

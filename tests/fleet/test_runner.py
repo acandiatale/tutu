@@ -134,8 +134,12 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
         assert (fleet / f).exists(), f
     md = (fleet / "summary.md").read_text()
     assert "| 2 | beta | spring_boot | incomplete | 2 |" in md and "external_javax_api:com.co:legacy" in md
-    csv_lines = (fleet / "summary.csv").read_text().splitlines()
+    raw_csv = (fleet / "summary.csv").read_bytes()
+    assert raw_csv.startswith(b"\xef\xbb\xbf")                        # UTF-8 BOM: Excel opens Korean paths right
+    csv_lines = raw_csv.decode("utf-8-sig").splitlines()
     assert csv_lines[0].startswith("#,name,case,status") and len(csv_lines) == 4
+    assert csv_lines[0].endswith(",error,attention,input")
+    assert ",unresolved:1;blocked:" not in csv_lines[2] and "blocked:external_javax_api;unresolved:1" in csv_lines[2]
     assert json.loads((fleet / "summary.json").read_text())["fleet_id"] == state.fleet_id
     assert "what the KB learned" in (fleet / "learning.md").read_text()
 
@@ -360,7 +364,7 @@ def test_advisories_and_carried_over_columns(fleet_cfg, projects_dir, tmp_path):
     assert b.advisories == ["hystrix:still-present"] and b.carried_over == 0
     assert c.advisories == [] and c.carried_over == 0
     fleet = out / "fleet"
-    head = (fleet / "summary.csv").read_text().splitlines()[0].split(",")
+    head = (fleet / "summary.csv").read_text(encoding="utf-8-sig").splitlines()[0].split(",")
     assert head.index("advisories") == head.index("unresolved") + 1 and "carried_over" in head
     md = (fleet / "summary.md").read_text()
     assert "| advisories | carried_over |" in md

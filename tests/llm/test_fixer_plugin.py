@@ -32,7 +32,10 @@ def test_fixer_tags_calls_with_role_and_metadata(cfg, ws):
     client = FakeLLMClient()
     LLMFixer(cfg, client).propose(ws, make_cluster(file=A, cid="c-42"), ctx())
     assert client.calls[0]["role"] == "fix"
-    assert client.calls[0]["metadata"] == {"phase": "spring", "iteration": 2, "cluster_id": "c-42"}
+    md = client.calls[0]["metadata"]                       # round 10: + run_id / project (LLMRequest contract)
+    assert {k: md[k] for k in ("phase", "iteration", "cluster_id")} == {"phase": "spring", "iteration": 2,
+                                                                        "cluster_id": "c-42"}
+    assert "run_id" in md and "project" in md
 
     cfg.llm.escalation_model = "big-model"
     client2 = FakeLLMClient()

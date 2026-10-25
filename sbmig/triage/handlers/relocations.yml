@@ -33,6 +33,11 @@ relocations:
   - { from: "org.springframework.boot:spring-boot-starter-oauth2-client",               to: "org.springframework.boot:spring-boot-starter-security-oauth2-client",               min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-oauth2-resource-server",      to: "org.springframework.boot:spring-boot-starter-security-oauth2-resource-server",      min_target_boot: 4 }
   - { from: "org.springframework.boot:spring-boot-starter-oauth2-authorization-server", to: "org.springframework.boot:spring-boot-starter-security-oauth2-authorization-server", min_target_boot: 4 }
+  # round 10: Undertow support is gone in Boot 4 (spring-boot-starter-undertow ends at 4.0.0-M1 on Maven Central, not in
+  # the spring-boot-dependencies 4.1.0 BOM) → the default servlet container; advisory `undertow` names the follow-up
+  # (io.undertow.* code, server.undertow.* properties). An exclusion of spring-boot-starter-tomcat on the web starter
+  # does not hide the explicit dependency.
+  - { from: "org.springframework.boot:spring-boot-starter-undertow",    to: "org.springframework.boot:spring-boot-starter-tomcat",          min_target_boot: 4 }
   # --- 2026-10-22 era libraries (out/research/era-libraries-{web,data,util}.yml; Maven Central listings + the Boot
   # 4.1.0 BOM). Reactive only (no `packages`): the row fires when an error names `from` (typically a resolution error
   # for coordinates that are not on Central, or a version that went missing with the old parent). Not here on purpose:

@@ -363,6 +363,7 @@ flowchart TD
 - **정적 UI**: `sbmig/web/static/index.html`(순수 JS). `Cache-Control: no-store`로 제공됩니다.
 - **업로드 한도**: 기본 512 MB(`DEFAULT_MAX_UPLOAD_MB`). `create_app(..., max_upload_mb=)` — 즉 `sbmig serve --max-upload-mb N` 또는 환경 변수 `SBMIG_MAX_UPLOAD_MB`(`.env`도 가능: `create_app`이 `load_dotenv_files()`를 먼저 부릅니다; `resolve_max_upload`, 옵션이 변수보다 우선) — 로 바꾸고 `0`이면 한도가 없습니다. 본문은 `<out>/_uploads/.incoming-*.part`로 스트리밍하면서 한도와 `PK` 서명을 검사하고(400 / 413), 거절된 업로드는 지웁니다. 화면은 `/api/configs`의 `max_upload_mb`로 올리기 전에 크기를 미리 봅니다.
 - **anyio 쓰레드 풀**: 시작할 때 `THREAD_POOL_SIZE = 256`으로 늘립니다. 열린 SSE 스트림(브라우저 탭) 하나가 워커 쓰레드 하나를 차지하기 때문입니다.
+- **접근 토큰(round 10)**: `create_app(..., token=)`(`sbmig serve --token`, 또는 `SBMIG_WEB_TOKEN`)이면 미들웨어 `TokenGuard`가 모든 요청에 `Authorization: Bearer <토큰>`이나 쿠키를 요구합니다(`?token=`을 한 번 주면 토큰의 해시를 담은 HttpOnly·SameSite=Strict 쿠키를 7일 동안 줌, 없거나 틀리면 401). 토큰이 없으면 루프백(127.0.0.1 / ::1) 클라이언트만 받고 다른 주소는 403 — 순수 `uvicorn --host 0.0.0.0`으로 띄워도 같습니다. `sbmig serve`는 토큰 없이 루프백이 아닌 `--host`면 아예 뜨지 않습니다(종료 코드 2). 결과 zip(회사 소스)과 Maven이 실행할 pom 업로드를 네트워크에 열어 두지 않기 위해서입니다.
 
 | 라우트 | 용도 |
 |---|---|
@@ -374,7 +375,7 @@ flowchart TD
 | `GET /api/runs/{id}/events` | SSE: `status`, `node`, `error`, `journal`, `log`, `report`, `ping`, `end` |
 | `POST /api/runs/{id}/stop` | 다음 노드 경계에서 중단 |
 | `GET /api/runs/{id}/files/{name}` | `report.md`, `report.json`, `result.zip`, `sbmig.log`, `journal.jsonl`, `changes.patch`, `plan.json`, `profile.json`, `error_cases.csv`, `error_cases.jsonl`, `fix_attempts.jsonl`만 허용(`SERVED_FILES`) |
-| `GET /api/threads` | 모든 쓰레드의 스택(텍스트). 동시에 `<out>/threads-<ts>.txt`로도 기록합니다. SIGUSR1이 없는 Windows용입니다. |
+| `GET /api/threads` | 모든 쓰레드의 스택(텍스트). 동시에 `<out>/threads-<ts>.txt`로도 기록합니다. SIGUSR1이 없고 `sbmig serve` 창의 Ctrl+Break가 서버를 끄는 Windows용입니다(실행 디렉터리의 `dump-threads` 파일 트리거도 됨, §8). |
 
 ### 6.2 `RunManager` (`sbmig/web/runs.py`)
 
@@ -405,7 +406,7 @@ sequenceDiagram
 동작의 핵심:
 1. **검증은 동기로**: `start()`는 설정 이름, `stop_after`, 설정 로딩, Workspace 생성까지 요청 처리 중에 끝냅니다. 잘못된 요청은 그 자리에서 400을 받습니다.
 2. **실행 하나에 워커 쓰레드 하나**: 쓰레드 이름은 `sbmig-run-<run id>`이고 데몬 쓰레드입니다.
-3. **한 번에 마이그레이션 하나**: 모든 워커가 `RunManager._run_lock`을 기다립니다. 기다리는 동안 상태는 `queued`입니다. 파일 기반 KB(`kb/`)를 모든 실행이 공유하므로 동시에 쓰면 마지막에 쓴 쪽이 이기기 때문입니다.
+3. **한 번에 마이그레이션 하나**: 모든 워커가 `RunManager._run_lock`을 기다립니다. 기다리는 동안 상태는 `queued`입니다. 파일 기반 KB(`kb/`)를 모든 실행이 공유하므로 학습 순서를 지키기 위해서입니다. round 10부터 KB 쓰기 자체는 프로세스 간 잠금 `<kb.dir>/.lock`(`sbmig/kb/lock.py`)으로 직렬화되므로 웹·플릿·`sbmig kb` 명령이 같은 KB를 써도 파일이 깨지지 않습니다.
 4. **실행별 로그 분리**: `attach_file_log(path, thread_id=…)`는 `_ThreadFilter`를 붙입니다. 이 필터는 레코드의 `thread`가 실행 쓰레드이거나, contextvar `_LOG_THREAD`(`sbmig/cli.py`)가 그 쓰레드를 가리킬 때만 통과시킵니다. LLM 하트비트·호출 쓰레드와 워치독 쓰레드는 `contextvars.copy_context().run`으로 시작하므로 이들이 남기는 줄도 해당 실행의 `sbmig.log`에 들어갑니다.
 5. **SSE 순서 정렬**: `journal.jsonl`과 `sbmig.log`는 같은 쓰레드가 쓰는 두 파일입니다. 파일을 하나씩 읽어 보내면 순서가 뒤바뀌어 보일 수 있으므로, 매 tick마다 읽은 묶음을 타임스탬프(`ts`, 로그의 `asctime`) 순으로 정렬해 보냅니다. 타임스탬프가 없는 줄(트레이스백 등)은 파일 안에서의 위치를 유지합니다. 15초 동안 아무것도 없으면 `ping`을 보냅니다.
 6. **메모리 정리**: 끝난 실행은 최대 `max_finished_runs`(기본 `DEFAULT_MAX_FINISHED_RUNS = 200`)개까지 메모리에 둡니다. 넘는 오래된 실행은 메모리에서 지우되, 상태는 실행 디렉터리의 `report.json`과 `web-status.json`으로 계속 답합니다.
@@ -435,24 +436,25 @@ sequenceDiagram
 
 ### 7.2 Intake: 압축 해제와 복사
 
-- 디렉터리를 입력하면 `.git`, `target`, `.idea`, `*.iml`, `.DS_Store`, `__MACOSX`를 빼고 복사합니다.
+- 디렉터리를 입력하면 `.git`, 빌드 출력 `target`, `.idea`, `*.iml`, `.DS_Store`, `__MACOSX`를 빼고 복사합니다. round 10: `target`은 `src/` 아래가 아니고 옆에 `pom.xml`이 있을 때(또는 `maven-status/` / `maven-archiver/`를 담을 때)만 빌드 출력입니다(`is_build_output`). `target`이라는 Java 패키지는 복사·KB 스캔·재구성·분석·핸들러·`result.zip` 어디서도 빠지지 않습니다. `Workspace.rel()` / `glob()` / `java_files()` / `pom_files()`는 POSIX 경로를 돌려줍니다.
 - zip을 입력하면 `_safe_extract`로 풉니다. zip-slip(루트 밖 경로)은 막습니다. UTF-8 플래그가 없는 이름은 cp437로 읽은 뒤 UTF-8, 이어서 cp949로 다시 해석합니다(E3, 한국어 Windows 압축 도구 대응). 최상위에 폴더가 하나뿐이고 빌드 파일이 없으면 그 안으로 내려갑니다(`_detect_project_root`). Gradle·Ant 파일을 만나도 내려가기를 멈추므로, 거부 사유에 실제 도구 이름이 남습니다.
 
 ### 7.3 인코딩
 
-- `detect_encoding`은 UTF-8 BOM이면 `utf-8-sig`로 보고, 아니면 후보(`build.encoding_candidates`, 기본 utf-8 → cp949 → euc-kr → shift_jis → latin-1)를 차례로 대입해 파일 전체를 엄격하게 디코딩되는 첫 인코딩을 고릅니다. 결과는 경로·mtime·크기를 키로 캐시합니다.
+- `detect_encoding`은 UTF-8 BOM이면 `utf-8-sig`로 보고, 아니면 후보(`build.encoding_candidates`, 기본 utf-8 → cp949 → euc-kr → shift_jis → latin-1)를 차례로 대입해 파일 전체를 엄격하게 디코딩되는 첫 인코딩을 고릅니다. 결과는 경로·mtime·크기를 키로 캐시합니다(round 10: 스레드 안전 LRU, 20,000개).
 - `Workspace.read` / `write`는 파일마다 **원래 인코딩으로 읽고 다시 씁니다**. 개행(`\r\n`)도 그대로 둡니다. 원래 인코딩으로 표현할 수 없는 문자는 `.java`에서는 `\uXXXX` 이스케이프로 바꾸고, 다른 파일은 UTF-8로 다시 씁니다(경고 로그). LLM 패치가 MS949 소스의 한글 주석을 깨뜨리지 않는 것도 이 덕분입니다.
 
 ### 7.4 git 스냅샷
 
 | 메서드 | 동작 |
 |---|---|
-| `git_init()` | 저장소가 없으면 `git init` 후 브랜치 `sbmig/<run id>`를 만들고, 있으면 `checkout -B`로 그 브랜치에 섭니다. `.gitignore`에 `target/`, `.sbmig/`, `*.class`를 추가하고 `sbmig: as-is snapshot` 커밋(빈 커밋 허용)을 만듭니다. |
-| `commit(message)` | `git add -A` → `commit -q -m`. 변경이 없으면 HEAD를 돌려줍니다. 커밋 메시지는 `rewrite: <step id>`, `handlers: <ids>`, `fix(handler:<id>): <cluster>`, `fix(llm): <cluster> <model>`, `fix(kb-patch:<ids>): …`, `fix(recipe): <ids>`, `restructure: <step id>` 형식입니다. |
-| `revert_to(sha)` | `reset --hard` + `clean -qfd -e target/`. 회귀한 시도를 되돌리거나 X8 재실행 전에 씁니다. |
+| `git_init()` | 저장소가 없으면 `git init` 후 브랜치 `sbmig/<run id>`를 만들고, 있으면 `checkout -B`로 그 브랜치에 섭니다. `.git/info/attributes`에 `* -text -eol -filter -ident -working-tree-encoding`을 써서(round 10) 프로젝트 `.gitattributes`의 `eol=crlf` 등이 되돌리기 때 줄 끝을 바꾸지 않게 합니다. `.gitignore`에 없는 줄만 추가합니다: `target/`, `!**/src/**/target/`, `!**/src/**/target/**`, 빌드 출력이 아닌 `target`마다 `!/<디렉터리>/target/`, `.sbmig/`, `*.class`, `.flattened-pom.xml`, `**/src/main/generated/`, `**/src/test/generated/`, `.apt_generated/`, `.apt_generated_tests/`(생성물 항목은 as-is 트리에 이미 있으면 넣지 않음 — 빌드 뒤 `is_dirty()`가 늘 참이 되던 문제). 그리고 `sbmig: as-is snapshot` 커밋(빈 커밋 허용)을 만듭니다. |
+| `commit(message)` | `git add -A` → (round 10) 프로젝트 `.gitignore`가 숨긴 jar(`*.jar`, `lib/`)를 빌드 출력이 아니면 `git add -f`로 강제 추가(WEB-INF/lib · systemPath jar가 `changes.patch`에서 빠지고 되돌리기로 복구되지 않던 문제, 그 밖에 무시된 파일은 넣지 않음) → `commit -q -m`. 변경이 없으면 HEAD를 돌려줍니다. 커밋 메시지는 `rewrite: <step id>`, `handlers: <ids>`, `fix(handler:<id>): <cluster>`, `fix(llm): <cluster> <model>`, `fix(kb-patch:<ids>): …`, `fix(recipe): <ids>`, `restructure: <step id>` 형식입니다. |
+| `revert_to(sha)` | `reset --hard` + `clean -qfd -e target/ -e !**/src/**/target/`(+ `.gitignore`의 `!/<디렉터리>/target/` 줄). 회귀한 시도를 되돌리거나 X8 재실행 전에 씁니다. |
 | `discard_uncommitted()` | `checkout -- .` + `clean`. 적용에 실패했거나 핸들러가 예외를 냈을 때 씁니다. |
 | `diff_bytes(...)` / `write_patch()` | `git diff`를 **바이트 그대로** `changes.patch`에 씁니다. MS949 소스는 패치 안에서도 MS949로 남습니다. |
-| `zip_result()` | `result.zip`. `.git`과 `target`은 넣지 않습니다. 압축 안의 최상위 폴더는 `project`입니다. |
+| `zip_result()` | `result.zip`. `.git`과 빌드 출력 `target`은 넣지 않습니다(`target` 패키지는 넣음). 압축 안의 최상위 폴더는 `project`입니다. |
+| `changed_between(a, b)` | round 10: 두 커밋 사이에 바뀐 파일 이름(NUL 구분, 한글·공백 경로 안전). 재구성 이동은 `git diff -M`으로 따라가 blocked 레지스트리에 반영(저널 `restructure_moves`) |
 
 구조적 회귀(pom 편집 뒤 `pom_invalid` 등이 새로 나타남)는 `reset` 대신 `git revert --no-edit <sha>`로 되돌립니다. 그 뒤에 이어진 커밋을 보존하기 위해서입니다(`BuildFixLoop._score`).
 
@@ -461,7 +463,8 @@ sequenceDiagram
 회사 Windows에서 "llm_fix 뒤에 멈춤"으로 보였던 문제의 원인은 사용자 전역 git 설정이었습니다(GPG 서명 암호 입력, 훅, 자격 증명 관리자). 서비스 프로세스에서는 이런 입력을 영원히 기다리게 됩니다. 그래서 `_git_bytes`는 git 명령을 호출할 때마다 다음을 적용합니다.
 
 - 환경 변수: `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=echo`, `GCM_INTERACTIVE=never`, `GIT_EDITOR=true`, 작성자·커미터 `sbmig <sbmig@local>`
-- 옵션: `-c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=<run dir>/no-hooks`(존재하지 않는 디렉터리이므로 훅 없음)
+- 옵션: `-c commit.gpgsign=false -c tag.gpgsign=false -c core.hooksPath=<run dir>/no-hooks`(존재하지 않는 디렉터리이므로 훅 없음), round 10: `-c core.longpaths=true -c core.autocrlf=false -c core.quotepath=false -c safe.directory=*`(긴 Windows 경로, 줄 끝 변환 없음, 한글 경로를 따옴표 없이, 다른 사용자가 만든 디렉터리도 허용)
+- Windows에서는 git / mvn 자식 프로세스를 숨은 콘솔(`CREATE_NO_WINDOW`)로 띄웁니다(round 10). 콘솔의 Ctrl+Break가 `mvn.cmd`를 끊지 않고 sbmig의 스레드 덤프로만 가게 하기 위해서입니다. 타임아웃 때 트리 전체는 여전히 `taskkill /T /F`로 죽입니다.
 - `stdin=DEVNULL`, 타임아웃 `GIT_TIMEOUT_S = 600.0`초. 시간을 넘기면 "antivirus / indexer lock, a global hook, a credential or GPG prompt"를 언급하는 `GitError`가 납니다.
 - 출력은 콘솔 코드 페이지가 아니라 UTF-8(대체 문자 허용)로 디코딩합니다. cp949로 디코딩하다 subprocess 리더 쓰레드가 죽어 `changes.patch` 작성이 실패한 사례(2026-10-21)가 있었기 때문입니다.
 
@@ -478,9 +481,10 @@ sequenceDiagram
 | mvn 하트비트 | `sbmig/build/mvn.py` `run_logged` | `HEARTBEAT_S = 60`초마다 | `mvn still running: 120s elapsed (timeout 1800s) — N output line(s) so far, log: …` (실행 파일 이름 그대로, Windows에서는 `mvn.cmd`일 수 있음) |
 | mvn 타임아웃 종료 | 같은 곳 | `build.timeout_minutes`(빌드) / `openrewrite.timeout_minutes`(rewrite) | `timeout after Ns, killing process group of mvn`. POSIX에서는 `killpg`(SIGTERM → SIGKILL), Windows에서는 `taskkill /PID <pid> /T /F`(`_kill_tree_windows`)로 프로세스 트리 전체를 죽입니다. `terminate()`만 하면 자식 java가 남아 `target/`을 잠그기 때문입니다. 로그 끝에 `[ERROR] sbmig: killed after timeout of Ns`가 붙습니다. |
 | 수정 루프 마일스톤 | `sbmig/loop/fixloop.py` `BuildFixLoop._mark` | 단계를 지날 때마다 DEBUG `[<phase>] → <milestone>` | 예: `mvn compile (build 2)`, `KB match for <id>`, `deciding <id>`, `handler <hid> on <id>`, `advisory hints for <id>`, `merge-conflict hints for <id>`, `fixer.propose for <id> (prompt packing + LLM call)`, `LLM answered for <id>: applying`, `git commit for <id>` |
-| 수정 루프 워치독 | 같은 곳 `_start_watchdog` | `WATCHDOG_S = 30.0`초마다 깨어나서 마지막 마일스톤 이후 `WATCHDOG_QUIET_S = 60.0`초 이상 조용하면 경고, `WATCHDOG_DUMP_S = 300.0`초 이상이면 스레드 덤프를 자동으로 씀(같은 마일스톤에 한 번만) | `[spring] fix loop quiet for 120s since 'fixer.propose for compile:… (prompt packing + LLM call)' (loop running 300s) — still working or stuck? a thread dump follows after 300s (also: GET /api/threads, kill -USR1 <pid>)` |
-| 스레드 덤프 | `sbmig/core/diag.py` | 요청할 때(SIGUSR1 / `/api/threads`) 또는 워치독 | `dump_threads(out_dir)` → `threads-YYYYMMDD-HHMMSS.txt`(워치독은 실행 디렉터리, 신호는 기본 `out/`). 로그: `thread dump written to … (N threads)` |
-| SIGUSR1 | `install_thread_dump_signal()` (`setup_logging`에서 설치) | POSIX의 메인 쓰레드에서만 | `kill -USR1 <pid>`. Windows에는 SIGUSR1이 없으므로 `GET /api/threads`나 워치독 덤프를 씁니다. |
+| 수정 루프 워치독 | 같은 곳 `_start_watchdog` | `WATCHDOG_S = 30.0`초마다 깨어나서 마지막 마일스톤 이후 `WATCHDOG_QUIET_S = 60.0`초 이상 조용하면 경고, `WATCHDOG_DUMP_S = 300.0`초 이상이면 스레드 덤프를 자동으로 씀(같은 마일스톤에 한 번만). round 10: 루프 빌드·rewrite·LLM HTTP 호출·살아 있는 Maven 자식이 도는 동안에는 조용(그 시간은 하트비트가 맡음) | `[spring] fix loop quiet for 120s since 'fixer.propose for compile:… (prompt packing + LLM call)' (loop running 300s) — still working or stuck? a thread dump follows after 300s (also: GET /api/threads, kill -USR1 <pid>)` |
+| 스레드 덤프 | `sbmig/core/diag.py` | 요청할 때(SIGUSR1 / Ctrl+Break / `dump-threads` 파일 / `/api/threads`) 또는 워치독 | `dump_threads(out_dir)` → `threads-YYYYMMDD-HHMMSS.txt`(워치독은 실행 디렉터리, 신호는 기본 `out/`, 파일 트리거는 그 파일이 있던 디렉터리). 로그: `thread dump written to … (N threads)` |
+| SIGUSR1 / SIGBREAK | `install_thread_dump_signal()` (`setup_logging`에서 설치) | 메인 쓰레드에서만 | POSIX `kill -USR1 <pid>`, Windows 콘솔 Ctrl+Break(`SIGBREAK`, round 10). Windows 핸들러는 메인 쓰레드가 다음에 Python 코드를 돌 때(Maven을 기다리는 중이면 최대 60초 뒤) 실행됩니다. `sbmig serve`에서는 uvicorn이 Ctrl+Break를 받아 서버를 끕니다. |
+| `dump-threads` 파일 트리거 | `start_dump_trigger_watcher` / `check_dump_triggers` | `TRIGGER_POLL_S = 2.0`초마다, 시작 디렉터리와 최근 실행 디렉터리(`MAX_WATCHED_RUN_DIRS = 8`, `Workspace`가 등록) | round 10, Windows·웹에서도 동작: `dump-threads`(또는 `dump-threads.txt`) 파일이 생기면 그 자리에 덤프를 쓰고 파일을 지움. 로그 `thread dump requested by <경로>` |
 
 워치독이 조용하다는 것의 의미: LLM 호출과 빌드는 각자 하트비트로 계속 로그를 남깁니다. 따라서 워치독 경고가 나온다는 것은 **그 사이의 코드**(힌트 계산, 프롬프트 패킹, 패치 적용, git)가 오래 걸리고 있다는 뜻입니다. 2026-10-21의 "stuck in fixer.propose" 문제는 이 장치로 `nearest_pom`이 Windows 절대 경로에서 무한 루프를 돈다는 것을 찾아냈습니다(`8c41670`에서 수정).
 
@@ -560,6 +564,10 @@ LLM 호출에는 `LLMRole`(`fix`, `fix_escalation`, `plan_advisor`, `recipe_cand
 | 워치독 | 30초 / 60초 / 300초 | `WATCHDOG_S` / `WATCHDOG_QUIET_S` / `WATCHDOG_DUMP_S` | 경고 → 스레드 덤프 |
 | LLM / mvn 하트비트 | 30초 / 60초 | `CompanyClient.heartbeat_s` / `HEARTBEAT_S` | (정보성 로그) |
 | 웹 SSE keep-alive | 15초 | `KEEPALIVE_S` | `ping` 이벤트 |
+| KB 잠금 대기 / 낡음 | 300초 | `kb.lock_timeout_seconds` | 낡은 잠금은 경고와 함께 풀고, 기다린 쪽은 경고 후 잠금 없이 진행(round 10) |
+| 플릿 인프라 대기 | 15분 × 최대 4회, 연속 3개 | `fleet.infra_retry_minutes`, `fleet.infra_max_waits`, `fleet.infra_failure_limit` | 다시 점검해 이어 가거나 `fleet stopped: …`(종료 코드 3, round 10) |
+| 플릿 사전 점검의 저장소 GET | 10초 | `REPOSITORY_TIMEOUT_S` (`sbmig/fleet/preflight.py`) | `preflight: repository FAIL … unreachable: cause=…` |
+| Maven 네거티브 캐시 재빌드 | 아티팩트당 실행에 1회 | `build.retry_negative_cache` | 같은 빌드를 `-U`로 한 번 더(round 10) |
 
 LLM 호출 수를 세는 방법: `fixer.propose` 한 번은 LLM 호출 여러 번일 수 있습니다(첫 호출, 컨텍스트 라운드 최대 2회, 패치 검증 피드백 1회). 예산에서는 `max(1, proposal.llm_usage.calls)`만큼 차감합니다. HTTP 재시도는 호출 수에 들어가지 않습니다. KB 수확 중 레시피 후보 생성 호출도 같은 예산에서 차감합니다(`_BudgetedLLM`).
 
@@ -591,7 +599,7 @@ flowchart TD
 `sbmig fleet run <manifest>`(`sbmig/fleet/runner.py`)는 프로젝트를 하나씩 순서대로 처리합니다. 순차로 처리하는 이유는 다음과 같습니다.
 
 1. **학습이 다음 프로젝트에 바로 쓰입니다**: 프로젝트 k의 수정은 다음 프로젝트가 시작되기 전에 KB(케이스, 라벨, ledger, symbols, 레시피 후보)로 수확됩니다. 그래서 프로젝트 k+1은 k가 만든 레시피로 계획하고, 프롬프트에서 symbol 힌트를 받고, 효과가 있는 후보를 자동 승격시킵니다. 병렬로 돌리면 이 사슬이 끊깁니다.
-2. **KB는 파일 기반입니다**(불변식 3). 동시에 쓰면 인덱스와 ledger가 마지막 쓰기로 덮어써집니다.
+2. **KB는 파일 기반입니다**(불변식 3). round 10부터 쓰기는 `<kb.dir>/.lock`으로 직렬화되어 파일이 깨지지는 않지만, 병렬로 돌리면 학습 순서(앞 프로젝트의 수확 → 뒤 프로젝트의 계획)가 무너집니다.
 3. **운영 모델이 그렇습니다**: 에이전트 하나가 약 500개 프로젝트를 차례로 처리하고, 기록이 누적될수록 LLM 호출이 줄어드는 것이 목표입니다.
 
 `fleet/state.json`은 프로젝트마다 원자적으로 다시 쓰므로, 중단된 함대는 멈춘 자리에서 이어서 실행됩니다. 자세한 내용은 [02-workflows.md](02-workflows.md)와 `docs/FLEET.md`에 있습니다.

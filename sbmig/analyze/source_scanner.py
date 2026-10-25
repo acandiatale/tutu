@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from sbmig.core.models import PomInfo, SourceStats, WebXmlModel
+from sbmig.core.workspace import is_build_output_path
 
 from .jsp import JSP_GLOBS, jsp_javax_refs
 from .pom_parser import WorkspaceView
@@ -246,7 +247,8 @@ class ScanResult:
 
 def _glob_plain(ws: WorkspaceView, pattern: str) -> list[str]:
     return [p.replace("\\", "/") for p in ws.glob(pattern)
-            if not any(x in p.replace("\\", "/").split("/") for x in ("target", "node_modules", ".git"))]
+            if not any(x in p.replace("\\", "/").split("/") for x in ("node_modules", ".git"))
+            and not is_build_output_path(p)]
 
 
 def web_static_root(rel: str, web_dirs: Iterable[str] = (), resource_dirs: Iterable[str] = ()) -> Optional[str]:

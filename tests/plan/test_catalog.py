@@ -31,6 +31,13 @@ OLD_ADVISOR_CATALOG = {
     "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0": "Spring Security → 7 (lambda DSL, requestMatchers, no WebSecurityConfigurerAdapter)",
     "org.openrewrite.java.testing.junit5.JUnit4to5Migration": "JUnit 4 → JUnit 5",
 }
+# Round 10: the 7.0 description says what the step does (the 5.x / 6.x API changes run in the 6.0 … 6.5 steps)
+NEW_ADVISOR_CATALOG = {
+    **OLD_ADVISOR_CATALOG,
+    "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0":
+        "Spring Security 6.x → 7.0 (version bump, SecurityConfigurer init/configure lose `throws Exception`, "
+        "AuthorizationManager.check → authorize); planned after the 6.0 … 6.5 steps",
+}
 OLD_ADVISOR_COVERAGE = {
     "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0": [
         "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
@@ -94,22 +101,43 @@ ADVISORY_COVERS = [
     "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing",
     "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1",
 ]
+# Round 10 (verified in rewrite-spring 6.37.0 / rewrite-hibernate 2.25.0 / rewrite-apache 2.30.0 / rewrite-jackson 1.28.4)
+ROUND10_BOOT_COVERS = [
+    *(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" for v in range(6)),
+    "org.openrewrite.java.spring.batch.SpringBatch5To6Migration",
+    "org.openrewrite.hibernate.MigrateToHibernate71",
+    "org.openrewrite.java.spring.boot3.MigrateThymeleafDependencies",
+    "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
+    "org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5",
+    "org.openrewrite.java.jackson.CodehausToFasterXML",
+]
+ROUND10_FW7_COVERS = [
+    "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+    "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
+    "org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5",
+    "org.openrewrite.java.jackson.CodehausToFasterXML",
+]
 NEW_ADVISOR_COVERAGE = {
     **OLD_ADVISOR_COVERAGE,
     "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0":
-        OLD_ADVISOR_COVERAGE["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"] + ADVISORY_COVERS,
+        OLD_ADVISOR_COVERAGE["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"] + ADVISORY_COVERS
+        + ROUND10_BOOT_COVERS,
+    "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0": ROUND10_FW7_COVERS,
+    "com.company.migrate.ServletToJakartaAndBoot": [
+        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+        "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10"],
 }
 
 
 def test_derived_advisor_constants_match_the_old_literals():
-    assert ADVISOR_CATALOG == OLD_ADVISOR_CATALOG
+    assert ADVISOR_CATALOG == NEW_ADVISOR_CATALOG
     assert list(ADVISOR_CATALOG) == list(OLD_ADVISOR_CATALOG)       # prompt order unchanged
     assert ADVISOR_COVERAGE == NEW_ADVISOR_COVERAGE
     assert set(ADVISOR_GATES) == set(OLD_GATES)
     assert all(ADVISOR_GATES[rid] is GATES[g] for rid, g in OLD_GATES.items())
     # the built-in fallback (catalog file missing) is the same advisor view
     b = builtin_catalog()
-    assert b.advisor_catalog() == OLD_ADVISOR_CATALOG and b.coverage() == NEW_ADVISOR_COVERAGE
+    assert b.advisor_catalog() == NEW_ADVISOR_CATALOG and b.coverage() == NEW_ADVISOR_COVERAGE
     assert set(b.gates()) == set(OLD_GATES)
 
 
@@ -168,7 +196,7 @@ def test_check_reports_missing_ids_and_bad_entries(tmp_path, cfg):
 def test_default_catalog_falls_back_when_missing(cfg, caplog):
     cfg.plan.catalog_file = "does/not/exist.yml"
     cat = default_catalog(cfg)
-    assert cat.advisor_catalog() == OLD_ADVISOR_CATALOG
+    assert cat.advisor_catalog() == NEW_ADVISOR_CATALOG
     assert any("not found" in r.message for r in caplog.records)
 
 

@@ -9,17 +9,21 @@ Layout of one run:
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import zipfile
+from collections import OrderedDict
+from collections.abc import Iterator
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Optional
 
 from pydantic import BaseModel
@@ -27,6 +31,28 @@ from pydantic import BaseModel
 log = logging.getLogger("sbmig.core.workspace")
 
 GIT_TIMEOUT_S = 600.0      # one workspace git command (add / commit / status / reset)
+# per-call git config (round 10, Windows): fleet run dirs exceed 260 chars; a global `core.autocrlf=true` rewrote
+# `.sh` files with CRLF on `revert_to`; `core.quotepath` printed Korean names as "\355\225\234…" in name lists; a
+# run dir owned by another account ("dubious ownership") made every git call fail
+GIT_CONFIG: tuple[str, ...] = ("commit.gpgsign=false", "tag.gpgsign=false", "core.longpaths=true",
+                               "core.autocrlf=false", "core.quotepath=false", "safe.directory=*")
+# .git/info/attributes (beats every .gitattributes of the project): no EOL / filter / encoding conversion, ever —
+# a project's `* text=auto` / `eol=crlf` / LFS `filter=lfs` would otherwise rewrite files on `git reset --hard`
+GIT_INFO_ATTRIBUTES = "* -text -eol -filter -ident -working-tree-encoding\n"
+# build-generated files outside target/ (B8): ignored unless the as-is tree already has them (then they stay tracked)
+GENERATED_IGNORES: tuple[str, ...] = (".flattened-pom.xml", "**/src/main/generated/", "**/src/test/generated/",
+                                      ".apt_generated/", ".apt_generated_tests/")
+_CREATE_NO_WINDOW = 0x08000000
+
+
+def _on_windows() -> bool:
+    return os.name == "nt"
+
+
+def _child_creationflags() -> int:
+    """Windows: children get their own (hidden) console, so the operator's Ctrl+Break (thread dump, `sbmig.core.diag`)
+    and Ctrl+C never reach git / cmd.exe / java directly — sbmig decides what to kill."""
+    return getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW) if _on_windows() else 0
 
 
 def _as_text(x) -> str:
@@ -45,8 +71,41 @@ DEFAULT_ENCODING_CANDIDATES: tuple[str, ...] = ("utf-8", "cp949", "euc-kr", "shi
 _UTF8_BOM = b"\xef\xbb\xbf"
 _ZIP_UTF8_FLAG = 0x800
 
+ENCODING_CACHE_MAX = 20_000     # entries (~8 MB); the fleet touches ~1.5 M files, an unbounded dict grew ~40 MB/100k
+
+
+class _LRU:
+    """A small thread-safe LRU map (OrderedDict); the encoding cache is shared by every workspace of a fleet."""
+
+    def __init__(self, maxsize: int):
+        self.maxsize = maxsize
+        self._d: OrderedDict[str, Any] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> Any:
+        with self._lock:
+            v = self._d.get(key)
+            if v is not None:
+                self._d.move_to_end(key)
+            return v
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._d[key] = value
+            self._d.move_to_end(key)
+            while len(self._d) > self.maxsize:
+                self._d.popitem(last=False)
+
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._d.clear()
+
+
 # (resolved path) -> (mtime_ns, size, candidates, encoding)
-_ENCODING_CACHE: dict[str, tuple[int, int, tuple[str, ...], str]] = {}
+_ENCODING_CACHE = _LRU(ENCODING_CACHE_MAX)
 
 
 class GitError(RuntimeError):
@@ -138,6 +197,70 @@ def fix_zip_name(info: zipfile.ZipInfo) -> str:
     return name
 
 
+def posix_rel(p: str | PurePath) -> str:
+    """A relative path with forward slashes on every OS (`str(WindowsPath)` has backslashes, every consumer compares
+    with "/")."""
+    return p.as_posix() if isinstance(p, PurePath) else str(p).replace(os.sep, "/")
+
+
+def _relative_posix(p: PurePath, root: PurePath) -> Optional[str]:
+    """`p` relative to `root` as a POSIX string; None when it is not below `root` (Windows: case-insensitive)."""
+    try:
+        return p.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+_MAVEN_OUTPUT_MARKERS = ("maven-status", "maven-archiver")      # Maven's own bookkeeping inside target/
+
+
+def _is_output_target(parent: Path, parent_parts: tuple[str, ...] | list[str], has_pom: Optional[bool] = None) -> bool:
+    """Does `parent/target` hold Maven build output? Never below a `src` directory; otherwise when a pom.xml sits
+    beside it — or Maven's bookkeeping dirs are inside it (a module whose pom the restructure moved away)."""
+    if "src" in parent_parts:
+        return False
+    if has_pom is None:
+        has_pom = (parent / "pom.xml").is_file()
+    return has_pom or any((parent / "target" / m).is_dir() for m in _MAVEN_OUTPUT_MARKERS)
+
+
+def is_build_output_path(rel: str | PurePath, root: Optional[str | Path] = None) -> bool:
+    """Is the project-relative `rel` a Maven build-output directory (or inside one)? A path component `target`
+    counts only when no `src` component comes before it and — with `root` given — its parent directory holds a
+    pom.xml (or the dir has Maven's `maven-status/` / `maven-archiver/`). A package `com/x/target/` (under src/, or
+    without a pom.xml beside it) is source: the old rule (`"target" in parts`) dropped it silently from the run copy,
+    the KB scans and result.zip (round 10)."""
+    parts = [x for x in str(rel).replace("\\", "/").split("/") if x not in ("", ".")]
+    for i, part in enumerate(parts):
+        if part == "src":
+            return False
+        if part == "target" and (root is None or _is_output_target(Path(root).joinpath(*parts[:i]), parts[:i])):
+            return True
+    return False
+
+
+_INTAKE_PATTERNS = shutil.ignore_patterns(".git", ".idea", "*.iml", ".DS_Store", "__MACOSX")
+
+
+def _intake_ignore(base: Path):
+    """copytree `ignore`: IDE / VCS noise everywhere, `target` only where it is build output (B4)."""
+    base = Path(base)
+
+    def ignore(dirpath: str, names: list[str]) -> set[str]:
+        out = set(_INTAKE_PATTERNS(dirpath, names))
+        if "target" in names:
+            d = Path(dirpath)
+            try:
+                rel_parts = d.relative_to(base).parts
+            except ValueError:
+                rel_parts = ()
+            if (d / "target").is_dir() and _is_output_target(d, rel_parts):
+                out.add("target")
+        return out
+
+    return ignore
+
+
 def new_run_id(prefix: str = "run") -> str:
     return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
@@ -190,6 +313,11 @@ class Workspace:
         self._git_ready = False
         self.encoding_candidates: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES
         self._read_encodings: dict[str, str] = {}      # resolved path → encoding it was last read/written with
+        try:                                           # `dump-threads` file in the run dir → thread dump (diag)
+            from sbmig.core.diag import watch_dump_trigger
+            watch_dump_trigger(self.run_dir)
+        except Exception:  # noqa: BLE001  # pragma: no cover - diagnostics never break a run
+            log.debug("dump-threads trigger not registered for %s", self.run_dir, exc_info=True)
 
     # ------------------------------------------------------------------ factory
     @classmethod
@@ -203,16 +331,14 @@ class Workspace:
             raise FileExistsError(project_dir)
         project_dir.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
-            shutil.copytree(src, project_dir, symlinks=False,
-                            ignore=shutil.ignore_patterns(".git", "target", ".idea", "*.iml", ".DS_Store", "__MACOSX"))
+            shutil.copytree(src, project_dir, symlinks=False, ignore=_intake_ignore(src))
             root = project_dir
         elif zipfile.is_zipfile(src):
             tmp = Path(tempfile.mkdtemp(prefix="sbmig-unzip-", dir=str(run_dir)))
             with zipfile.ZipFile(src) as zf:
                 _safe_extract(zf, tmp)
             detected = _detect_project_root(tmp)
-            shutil.copytree(detected, project_dir, symlinks=False,
-                            ignore=shutil.ignore_patterns(".git", "target", ".idea", "*.iml", ".DS_Store", "__MACOSX"))
+            shutil.copytree(detected, project_dir, symlinks=False, ignore=_intake_ignore(detected))
             shutil.rmtree(tmp, ignore_errors=True)
             root = project_dir
         else:
@@ -227,11 +353,17 @@ class Workspace:
         return p if p.is_absolute() else self.root / p
 
     def rel(self, path: str | Path) -> str:
+        """Project-relative path with forward slashes on every OS (round 10: `str(Path)` gave backslashes on Windows
+        while every consumer compares with "/"). A path outside the project comes back absolute (also "/")."""
         p = Path(path)
-        try:
-            return str(p.resolve().relative_to(self.root)) if p.is_absolute() else str(p)
-        except ValueError:
-            return str(p)
+        if not p.is_absolute():
+            return p.as_posix()
+        rel = _relative_posix(p.resolve(), self.root)
+        return rel if rel is not None else p.as_posix()
+
+    def is_build_output(self, rel: str | Path) -> bool:
+        """`rel` is (inside) a Maven build-output `target/` of this project (see `is_build_output_path`)."""
+        return is_build_output_path(self.rel(rel), self.root)
 
     def exists(self, rel: str | Path) -> bool:
         return self.abs(rel).exists()
@@ -297,9 +429,31 @@ class Workspace:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
 
+    def walk(self) -> Iterator[tuple[str, list[str], list[str]]]:
+        """os.walk over the project: (rel dir with "/" — "" for the root, dir names, file names). `.git` and Maven
+        build output (`target` beside a pom.xml or with `maven-status/` inside, never below src/) are pruned, so their
+        contents are never listed."""
+        root = str(self.root)
+        for dirpath, dirnames, filenames in os.walk(root):
+            rel_dir = os.path.relpath(dirpath, root)
+            rel_dir = "" if rel_dir == "." else posix_rel(rel_dir)
+            parts = rel_dir.split("/") if rel_dir else []
+            dirnames[:] = sorted(d for d in dirnames if d != ".git" and not (
+                d == "target" and _is_output_target(Path(dirpath), parts, "pom.xml" in filenames)))
+            yield rel_dir, dirnames, filenames
+
     def glob(self, pattern: str) -> list[str]:
-        return sorted(self.rel(p) for p in self.root.rglob(pattern)
-                      if ".git" not in p.parts and "target" not in p.parts)
+        """Project-relative paths (POSIX) of files and directories whose *name* matches `pattern` (like
+        `rglob(pattern)`), outside `.git` and build output."""
+        if "/" in pattern or "\\" in pattern:
+            return sorted(r for r in (self.rel(p) for p in self.root.rglob(pattern))
+                          if ".git" not in r.split("/") and not is_build_output_path(r, self.root))
+        out: list[str] = []
+        for rel_dir, dirnames, filenames in self.walk():
+            for name in (*dirnames, *filenames):
+                if fnmatch.fnmatch(name, pattern):
+                    out.append(f"{rel_dir}/{name}" if rel_dir else name)
+        return sorted(out)
 
     def java_files(self) -> list[str]:
         return self.glob("*.java")
@@ -341,11 +495,13 @@ class Workspace:
                "GIT_EDITOR": "true", "GIT_AUTHOR_NAME": "sbmig", "GIT_AUTHOR_EMAIL": "sbmig@local",
                "GIT_COMMITTER_NAME": "sbmig", "GIT_COMMITTER_EMAIL": "sbmig@local"}
         no_hooks = str(self.run_dir / "no-hooks")                       # a dir that does not exist = no hooks
-        cmd = ["git", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", "-c", f"core.hooksPath={no_hooks}",
-               *args]
+        cmd = ["git"]
+        for kv in (*GIT_CONFIG, f"core.hooksPath={no_hooks}"):
+            cmd += ["-c", kv]
+        cmd += list(args)
         try:
             cp = subprocess.run(cmd, cwd=self.root, capture_output=True, env=env,
-                                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_S)
+                                stdin=subprocess.DEVNULL, timeout=GIT_TIMEOUT_S, creationflags=_child_creationflags())
         except subprocess.TimeoutExpired as e:
             raise GitError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_S:.0f}s in {self.root} — something "
                            "outside sbmig is blocking git (antivirus / indexer lock, a global hook, a credential or "
@@ -362,19 +518,64 @@ class Workspace:
             self._git("checkout", "-q", "-b", self.git_branch)
         else:
             self._git("checkout", "-q", "-B", self.git_branch)
+        info = self.root / ".git" / "info"
+        if info.parent.is_dir():
+            info.mkdir(exist_ok=True)
+            (info / "attributes").write_text(GIT_INFO_ATTRIBUTES, encoding="utf-8")
         ignore = self.root / ".gitignore"
         existing = ignore.read_text(encoding="utf-8") if ignore.exists() else ""
-        for line in ("target/", ".sbmig/", "*.class"):
-            if line not in existing:
+        present = set(existing.splitlines())
+        for line in self._gitignore_lines():
+            if line not in present:
                 existing += ("\n" if existing and not existing.endswith("\n") else "") + line + "\n"
+                present.add(line)
         ignore.write_text(existing, encoding="utf-8")
         self._git_ready = True
         return self.commit("sbmig: as-is snapshot", allow_empty=True)
+
+    def _gitignore_lines(self) -> list[str]:
+        """The lines git_init makes sure the root .gitignore has. `target/` is build output only where a pom.xml sits
+        beside it: `!**/src/**/target/` keeps packages such as `src/main/java/com/x/target/`, and every other
+        `target` dir of the as-is tree that is not build output gets its own `!/<dir>/target/` (B4); the `…/**` twins
+        re-include the files too when the project's own .gitignore says `**/target/**`. Generated files outside
+        target/ (`.flattened-pom.xml`, `src/main/generated/` …) are ignored unless the as-is tree has them (B8: they
+        made `is_dirty()` true after a build, so "no file changed" was never detected)."""
+        keep_targets: list[str] = []
+        seen_generated: set[str] = set()
+        for rel_dir, dirnames, filenames in self.walk():
+            parts = rel_dir.split("/") if rel_dir else []
+            if "target" in dirnames and "src" not in parts:
+                d = f"!/{rel_dir}/target/" if rel_dir else "!/target/"
+                keep_targets += [d, d + "**"]
+            if ".flattened-pom.xml" in filenames:
+                seen_generated.add(".flattened-pom.xml")
+            for d in (".apt_generated", ".apt_generated_tests"):
+                if d in dirnames:
+                    seen_generated.add(d + "/")
+            if "generated" in dirnames and len(parts) >= 2 and parts[-2] == "src" and parts[-1] in ("main", "test"):
+                seen_generated.add(f"**/src/{parts[-1]}/generated/")
+        lines = ["target/", "!**/src/**/target/", "!**/src/**/target/**", *keep_targets, ".sbmig/", "*.class"]
+        lines += [g for g in GENERATED_IGNORES if g not in seen_generated]
+        return lines
+
+    def _clean_excludes(self) -> list[str]:
+        """`git clean` arguments: build output stays, `target` dirs that are sources are cleaned like any other."""
+        out = ["-e", "target/", "-e", "!**/src/**/target/"]
+        try:
+            text = (self.root / ".gitignore").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return out
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("!/") and line.endswith("/target/"):
+                out += ["-e", line]
+        return out
 
     def commit(self, message: str, allow_empty: bool = False) -> str:
         if not self._git_ready:
             self.git_init()
         self._git("add", "-A")
+        self._force_add_ignored_jars()
         args = ["commit", "-q", "-m", message]
         if allow_empty:
             args.append("--allow-empty")
@@ -382,6 +583,16 @@ class Workspace:
         if cp.returncode != 0 and "nothing to commit" not in (cp.stdout + cp.stderr):
             raise GitError(cp.stderr.strip() or cp.stdout.strip())
         return self.head()
+
+    def _force_add_ignored_jars(self) -> None:
+        """A project .gitignore saying `*.jar` / `lib/` kept legacy WEB-INF/lib and systemPath jars out of every
+        snapshot: changes.patch missed them and revert_to could not bring back one a step had moved (round 10). Jars
+        outside build output are force-added; nothing else the project ignores is (logs, node_modules, local env)."""
+        cp = self._git("ls-files", "-z", "--others", "--ignored", "--exclude-standard", check=False)
+        jars = [f for f in (cp.stdout or "").split("\0")
+                if f.lower().endswith(".jar") and "node_modules/" not in f and not is_build_output_path(f, self.root)]
+        for i in range(0, len(jars), 200):
+            self._git("add", "-f", "--", *jars[i:i + 200], check=False)
 
     def head(self) -> str:
         return self._git("rev-parse", "HEAD").stdout.strip()
@@ -392,11 +603,11 @@ class Workspace:
     def revert_to(self, sha: str) -> None:
         """Hard reset the working copy to a previous snapshot (used on regressions)."""
         self._git("reset", "-q", "--hard", sha)
-        self._git("clean", "-qfd", "-e", "target/")
+        self._git("clean", "-qfd", *self._clean_excludes())
 
     def discard_uncommitted(self) -> None:
         self._git("checkout", "-q", "--", ".")
-        self._git("clean", "-qfd", "-e", "target/")
+        self._git("clean", "-qfd", *self._clean_excludes())
 
     def diff(self, from_sha: str, to_sha: Optional[str] = None, stat: bool = False) -> str:
         args = ["diff", "--no-color"]
@@ -413,10 +624,16 @@ class Workspace:
         return _as_bytes(self._git_bytes(*args).stdout)
 
     def changed_files_since(self, sha: str) -> list[str]:
-        out = self._git("diff", "--name-only", sha).stdout
-        untracked = self._git("ls-files", "--others", "--exclude-standard").stdout
-        files = {l.strip() for l in (out + untracked).splitlines() if l.strip()}
-        return sorted(files)
+        """Files changed since `sha` (committed or not) plus untracked ones; NUL-separated name lists, so Korean and
+        other non-ASCII names come back as they are (never `"\\355\\225…"`)."""
+        out = self._git("diff", "--name-only", "-z", sha).stdout
+        untracked = self._git("ls-files", "--others", "--exclude-standard", "-z").stdout
+        return sorted({f for f in (out + "\0" + untracked).split("\0") if f.strip()})
+
+    def changed_between(self, from_sha: str, to_sha: str) -> list[str]:
+        """Files that differ between two commits (POSIX paths, non-ASCII names verbatim), in git's order."""
+        out = self._git("diff", "--name-only", "-z", from_sha, to_sha).stdout
+        return [f for f in out.split("\0") if f.strip()]
 
     def first_commit(self) -> str:
         return self._git("rev-list", "--max-parents=0", "HEAD").stdout.strip().splitlines()[-1]
@@ -430,13 +647,10 @@ class Workspace:
     def zip_result(self, name: str = "result.zip") -> Path:
         out = self.run_dir / name
         with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path in self.root.rglob("*"):
-                if path.is_dir():
-                    continue
-                parts = path.relative_to(self.root).parts
-                if parts and (parts[0] == ".git" or "target" in parts):
-                    continue
-                zf.write(path, str(Path(self.root.name) / path.relative_to(self.root)))
+            for rel_dir, _dirs, filenames in self.walk():           # .git and build output pruned (B4)
+                for fname in sorted(filenames):
+                    rel = f"{rel_dir}/{fname}" if rel_dir else fname
+                    zf.write(self.root / rel, f"{self.root.name}/{rel}")
         return out
 
 

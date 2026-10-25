@@ -3,7 +3,7 @@ flowchart TB
     direction LR
     B["mvn &lt;goal&gt;<br/>logs/NNN-build-&lt;phase&gt;-N.log"] --> OK{"BUILD<br/>SUCCESS?"}
     OK -->|예| DONE(["phase ok"])
-    OK -->|아니오| SC["직전 시도 채점<br/>build_ok · improved<br/>no_change · regressed"]
+    OK -->|아니오| SC["직전 시도 채점<br/>build_ok · improved · partial<br/>no_change · regressed · inconclusive"]
     SC --> RV{"regressed?"}
     RV -->|"예 (L3)"| REV["git revert<br/>→ 바로 재빌드"]
   end

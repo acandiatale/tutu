@@ -38,3 +38,8 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
   `out/e2e/kb-fix-failures/errors.jsonl` / `fix_attempts.jsonl` hold the same records (`expect.error_cases`)
 * the case catalog holds the `clientIp` case (`out/e2e/kb-fix-failures/catalog/compile/cannot_find_symbol/…yml`,
   `views/cases.md`) with the failed attempts and the fix in its timeline (`expect.error_cases.kb_cases_min`)
+
+Round 10 (2026-10-26): the per-cluster LLM limit counts only the attempts of the same cluster. Before, the
+`MemberController` cluster shared its count with `ClientIpFilter` (same L1 signature, another file) and stopped after
+one own attempt; now it gets its own three (`spring-1-2`, `spring-2-2`, `spring-3-1`) before it is BLOCKED
+`repeated_failure`, so the run makes 11 LLM calls instead of 10 (`max_llm_calls: 11`).

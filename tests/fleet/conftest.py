@@ -26,7 +26,9 @@ def make_zip(root: Path, name: str) -> Path:
 
 @pytest.fixture()
 def fleet_cfg(cfg: Config, tmp_path: Path) -> Config:
-    return cfg.model_copy(update={"kb": cfg.kb.model_copy(update={"dir": str(tmp_path / "kb")})})
+    # injected runners run no preflight anyway; the disk check is off so a nearly full CI disk cannot pause a test
+    return cfg.model_copy(update={"kb": cfg.kb.model_copy(update={"dir": str(tmp_path / "kb")}),
+                                  "fleet": cfg.fleet.model_copy(update={"min_free_gb": 0})})
 
 
 @pytest.fixture()

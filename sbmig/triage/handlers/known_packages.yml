@@ -7,6 +7,8 @@
 #              BOM / the configured in-house parent (they manage it); otherwise `version` (or versions.yml) is used
 #   scope    : forced scope; a TEST_COMPILE error always yields scope test
 #   symbols  : only when the missing symbol is one of these simple names (optional)
+#   align_group_version: in a project no BOM manages yet, reuse the version (literal or ${prop}) another dependency of
+#              the same groupId is declared with (round 10: spring-security-access next to spring-security-config)
 # Boot 4.1.0 coordinates verified on Maven Central 2026-10; fallback versions = the spring-boot-dependencies 4.1.0 values
 # (refreshed 2026-10-22).
 packages:
@@ -84,3 +86,44 @@ packages:
   - { package: com.google.common,                  artifact: "com.google.guava:guava",                                  managed: false, version: "33.7.2-jre" }
   - { package: org.apache.commons.mail2.jakarta,   artifact: "org.apache.commons:commons-email2-jakarta",               managed: false, version: "2.0.0-M1" }
   - { package: org.apache.commons.mail2.core,      artifact: "org.apache.commons:commons-email2-core",                  managed: false, version: "2.0.0-M1" }
+  # --- round 10 (2026-10-26) --------------------------------------------------------------------------------------
+  # Spring Security 7 moved the legacy access-decision API (eGovFrame-style DB URL authorization: FilterSecurityInterceptor
+  # + FilterInvocationSecurityMetadataSource + AccessDecisionManager / voters) into spring-security-access, which
+  # spring-security-config / -web 7.1.0 do NOT depend on. Managed by spring-security-bom 7.1.0 (imported by
+  # spring-boot-dependencies 4.1.0). Class lists verified in spring-security-access-7.1.0.jar; split packages
+  # (classes left in spring-security-core / -web, e.g. AccessDeniedException, AuthorizationFilter) are listed by symbol.
+  - { package: org.springframework.security.access.vote,       artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true }
+  - { package: org.springframework.security.access.intercept,  artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true }
+  - { package: org.springframework.security.access.method,     artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true }
+  - { package: org.springframework.security.access.event,      artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true }
+  - { package: org.springframework.security.web.access.channel, artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true }
+  - { package: org.springframework.security.access,            artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [AccessDecisionManager, AccessDecisionVoter, AfterInvocationProvider, ConfigAttribute, SecurityConfig, SecurityMetadataSource] }
+  - { package: org.springframework.security.access.annotation, artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [AnnotationMetadataExtractor, Jsr250MethodSecurityMetadataSource, Jsr250SecurityConfig, Jsr250Voter, SecuredAnnotationSecurityMetadataSource] }
+  - { package: org.springframework.security.access.prepost,    artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [PostInvocationAdviceProvider, PostInvocationAttribute, PostInvocationAuthorizationAdvice, PreInvocationAttribute,
+                PreInvocationAuthorizationAdvice, PreInvocationAuthorizationAdviceVoter, PrePostAdviceReactiveMethodInterceptor,
+                PrePostAnnotationSecurityMetadataSource, PrePostInvocationAttributeFactory] }
+  - { package: org.springframework.security.access.expression.method, artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [AbstractExpressionBasedMethodConfigAttribute, ExpressionBasedAnnotationAttributeFactory, ExpressionBasedPostInvocationAdvice,
+                ExpressionBasedPreInvocationAdvice, PostInvocationExpressionAttribute, PreInvocationExpressionAttribute] }
+  - { package: org.springframework.security.web.access.intercept, artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [FilterSecurityInterceptor, FilterInvocationSecurityMetadataSource, DefaultFilterInvocationSecurityMetadataSource] }
+  - { package: org.springframework.security.web.access.expression, artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [WebExpressionVoter, ExpressionBasedFilterInvocationSecurityMetadataSource, WebExpressionConfigAttribute, DefaultWebSecurityExpressionHandler] }
+  - { package: org.springframework.security.web.access,        artifact: "org.springframework.security:spring-security-access", managed: true, version: "7.1.0", align_group_version: true,
+      symbols: [DefaultWebInvocationPrivilegeEvaluator] }
+  # Spring Boot 4 web modules that hold the relocated types of com.company.migrate.Boot4TypeRelocations (package →
+  # jar verified in the 4.1.0 jars; all reached through spring-boot-starter-webmvc, needed when a module depends on a
+  # narrower starter)
+  - { package: org.springframework.boot.webmvc.error,           artifact: "org.springframework.boot:spring-boot-webmvc",         managed: true }
+  - { package: org.springframework.boot.webmvc.autoconfigure,   artifact: "org.springframework.boot:spring-boot-webmvc",         managed: true }
+  - { package: org.springframework.boot.web.server.servlet,     artifact: "org.springframework.boot:spring-boot-web-server",     managed: true }
+  - { package: org.springframework.boot.web.server.autoconfigure, artifact: "org.springframework.boot:spring-boot-web-server",   managed: true }
+  - { package: org.springframework.boot.servlet,                artifact: "org.springframework.boot:spring-boot-servlet",        managed: true }
+  - { package: org.springframework.boot.http.converter.autoconfigure, artifact: "org.springframework.boot:spring-boot-http-converter", managed: true }
+  # Log4j 1 API users (org.apache.log4j.Logger …) after log4j:log4j went away: the Log4j 2 bridge (log4j-bom 2.25.4,
+  # imported by spring-boot-dependencies 4.1.0) — routed to SLF4J / Logback by spring-boot-starter-logging's
+  # log4j-to-slf4j. Advisory log4j1 still asks the owners to move to SLF4J.
+  - { package: org.apache.log4j,                                artifact: "org.apache.logging.log4j:log4j-1.2-api",              managed: true, version: "2.25.4" }

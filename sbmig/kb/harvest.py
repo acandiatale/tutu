@@ -3,6 +3,7 @@ compile a recipe candidate from the fix labels (no LLM) or — failing that — 
 the phase's ResolutionRecords to ``kb/ledger.jsonl`` / update ``kb/symbols.json``."""
 from __future__ import annotations
 
+import contextlib
 import difflib
 import logging
 import re
@@ -28,24 +29,32 @@ from sbmig.core.workspace import Workspace
 from .labels import compile_recipe, label_changes
 from .ledger import attempt_record, blocked_record, plan_recipe_records, project_name
 from .recipes import is_none_answer, short_recipe_name, strip_fences, validate_recipe_yaml, with_recipe_name
+from .redact import get_redactor
 
 if TYPE_CHECKING:  # pragma: no cover
     from .store import FileKnowledgeBase
 
 log = logging.getLogger("sbmig.kb")
 
-SECRET_RE = re.compile(r"(?i)(password|secret|token|api[_-]?key)(\s*[=:]\s*)\S+")
 RAW_LIMIT = 2000
 MECHANICAL_MAX_LINES = 40
 PROMPT_PATH = Path(__file__).with_name("prompts") / "recipe_candidate.md"
 SUCCESS_OUTCOMES = ("improved", "build_ok")
+NO_REPLAY_TAG = "no-replay:redacted"    # its search / replace text had a secret masked: hint only, never replayed
+
+
+def _lock(kb):
+    """The KB's cross-process lock, or a no-op for a KB-like object without one."""
+    lock = getattr(kb, "lock", None)
+    return lock() if callable(lock) else contextlib.nullcontext()
 
 
 # --------------------------------------------------------------------------- sanitization
-def redact(text: Optional[str]) -> Optional[str]:
+def redact(text: Optional[str], cfg=None) -> Optional[str]:
+    """Mask secret VALUES by context (``sbmig.kb.redact``: built-ins + ``kb.redact_file``); code is left alone."""
     if text is None:
         return None
-    return SECRET_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}***", text)
+    return get_redactor(cfg).redact(text)
 
 
 def _rel_posix(path: Optional[str], ws: Optional[Workspace]) -> Optional[str]:
@@ -68,14 +77,14 @@ def _strip_roots(text: str, ws: Optional[Workspace]) -> str:
     return text
 
 
-def _sanitize_error(e: BuildError, ws: Optional[Workspace]) -> BuildError:
-    raw = redact(_strip_roots(e.raw or "", ws)) or ""
+def _sanitize_error(e: BuildError, ws: Optional[Workspace], cfg=None) -> BuildError:
+    raw = redact(_strip_roots(e.raw or "", ws), cfg) or ""
     if len(raw) > RAW_LIMIT:
         raw = raw[:RAW_LIMIT] + "…[truncated]"
     return e.model_copy(update={
         "file": _rel_posix(e.file, ws),
-        "message": redact(_strip_roots(e.message, ws)) or "",
-        "location": redact(_strip_roots(e.location, ws)) if e.location else e.location,
+        "message": redact(_strip_roots(e.message, ws), cfg) or "",
+        "location": redact(_strip_roots(e.location, ws), cfg) if e.location else e.location,
         "raw": raw,
     })
 
@@ -196,10 +205,12 @@ def resolve_symbol_owner(changes: list[FileChange], errors: list[BuildError], ws
 
 def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None, ws: Optional[Workspace] = None,
                   phase: Phase | None = None, *, cfg=None) -> KBCase:
-    """Build a KBCase from a successful attempt: relative posix paths, secrets redacted, raw truncated.
-    ``symbol_owner`` is resolved from the changed files' imports (``cfg`` enables wildcard-import lookups)."""
+    """Build a KBCase from a successful attempt: relative posix paths, secret values masked, raw truncated.
+    ``symbol_owner`` is resolved from the changed files' imports (``cfg`` enables wildcard-import lookups). A change
+    whose search / replace / content had a secret masked is stored as it is masked, and the case is tagged
+    ``no-replay:redacted`` (its masked text is not the code to put back: hint only, never replayed)."""
     errors_src = attempt.cluster_errors or _errors_from_signatures(attempt.cluster_signatures)
-    errors = [_sanitize_error(e, ws) for e in errors_src]
+    errors = [_sanitize_error(e, ws, cfg) for e in errors_src]
     l1: list[str] = []
     for s in [*attempt.cluster_signatures, *(e.signature for e in errors)]:
         if s and s not in l1:
@@ -207,14 +218,14 @@ def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None,
     l2 = sorted({e.signature_generic for e in errors if e.signature_generic})
 
     changes = []
+    masked = False
     for ch in attempt.changes:
-        changes.append(ch.model_copy(update={
-            "path": _rel_posix(ch.path, ws) or ch.path,
-            "new_path": _rel_posix(ch.new_path, ws),
-            "search": redact(ch.search),
-            "replace": redact(ch.replace),
-            "content": redact(ch.content),
-        }))
+        upd = {"path": _rel_posix(ch.path, ws) or ch.path, "new_path": _rel_posix(ch.new_path, ws)}
+        for k in ("search", "replace", "content"):
+            v = getattr(ch, k)
+            upd[k] = redact(v, cfg)
+            masked = masked or upd[k] != v
+        changes.append(ch.model_copy(update=upd))
 
     first_line = next((ln.strip() for ln in (attempt.analysis or "").splitlines() if ln.strip()), "")
     if first_line:
@@ -222,10 +233,13 @@ def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None,
     else:
         sig = l2[0] if l2 else (l1[0] if l1 else "build error")
         summary = f"{sig} fixed by editing {', '.join(_changed_files(changes)) or 'nothing'}"
-    summary = redact(_strip_roots(summary, ws)) or summary
+    summary = redact(_strip_roots(summary, ws), cfg) or summary
 
     kind = errors[0].kind if errors else ErrorKind.UNKNOWN
     lab = label_changes(changes, errors)
+    tags = [f"attempt:{attempt.id}"] if attempt.id else []
+    if masked:
+        tags.append(NO_REPLAY_TAG)
     return KBCase(
         id="",
         project_fingerprint=profile.fingerprint if profile else "",
@@ -233,7 +247,7 @@ def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None,
         symbol=lab.symbol,
         symbol_owner=resolve_symbol_owner(changes, errors, ws, cfg),
         fix_labels=lab.labels,
-        replacement=redact(lab.replacement) or "",
+        replacement=redact(lab.replacement, cfg) or "",
         case_type=profile.case_type if profile else KBCase.model_fields["case_type"].default,
         phase=phase or attempt.phase,
         signatures=l1,
@@ -245,7 +259,7 @@ def sanitize_case(attempt: FixAttempt, profile: Optional[ProjectProfile] = None,
         summary=summary,
         outcome=attempt.outcome,
         model=attempt.model,
-        tags=[f"attempt:{attempt.id}"] if attempt.id else [],
+        tags=tags,
     )
 
 
@@ -326,29 +340,30 @@ def _store_candidate(kb: "FileKnowledgeBase", case: KBCase, text: str, parsed: d
     rid = short_recipe_name(parsed["name"])            # the LLM may still write the old com.company.kb. prefix
     if rid != parsed["name"]:
         text = with_recipe_name(text, rid)
-    existing = kb.get_recipe(rid)                      # also finds a legacy com.company.kb.<rid> (store)
-    if existing is not None:
-        for s in [*case.signatures, *case.signatures_generic]:
-            if s not in existing.signatures:
-                existing.signatures.append(s)
-        if case.id not in existing.source_case_ids:
-            existing.source_case_ids.append(case.id)
-        kb._write_recipe_meta(existing, kb._recipe_meta_extra(existing))
-        kb._index_recipe(existing)
-        kb._save_index()
-        notes.append(f"case {case.id}: recipe {rid} already exists ({existing.status}); linked")
-        return existing
-    if origin:
-        notes.append(f"case {case.id}: recipe candidate {rid} {origin}")
-    recipe = KBRecipe(
-        id=rid,
-        status="candidate",
-        path="",
-        description=str(parsed.get("description") or parsed.get("displayName") or ""),
-        signatures=[*case.signatures, *(s for s in case.signatures_generic if s not in case.signatures)],
-        source_case_ids=[case.id],
-    )
-    return kb.add_recipe(text, recipe)
+    with _lock(kb):                                    # read-modify-write of the recipe meta + index
+        existing = kb.get_recipe(rid)                  # also finds a legacy com.company.kb.<rid> (store)
+        if existing is not None:
+            for s in [*case.signatures, *case.signatures_generic]:
+                if s not in existing.signatures:
+                    existing.signatures.append(s)
+            if case.id not in existing.source_case_ids:
+                existing.source_case_ids.append(case.id)
+            kb._write_recipe_meta(existing, kb._recipe_meta_extra(existing))
+            kb._index_recipe(existing)
+            kb._save_index()
+            notes.append(f"case {case.id}: recipe {rid} already exists ({existing.status}); linked")
+            return existing
+        if origin:
+            notes.append(f"case {case.id}: recipe candidate {rid} {origin}")
+        recipe = KBRecipe(
+            id=rid,
+            status="candidate",
+            path="",
+            description=str(parsed.get("description") or parsed.get("displayName") or ""),
+            signatures=[*case.signatures, *(s for s in case.signatures_generic if s not in case.signatures)],
+            source_case_ids=[case.id],
+        )
+        return kb.add_recipe(text, recipe)
 
 
 def compile_candidate(kb: "FileKnowledgeBase", case: KBCase, notes: list[str]) -> Optional[KBRecipe]:
@@ -450,13 +465,14 @@ def harvest_phase(kb: "FileKnowledgeBase", phase_result: PhaseResult, profile: P
                 res.notes.append("recipe candidate generation skipped: no LLM client")
         indexed = new_cases + indexed
 
-        # 4. symbol index
+        # 4. symbol index (loaded, merged and saved under the lock: another process may have written it)
         if kbc.symbol_index and indexed:
             try:
-                idx = kb.symbol_index()
-                for c in indexed:
-                    idx.add(c, project_key=fp)
-                idx.save()
+                with _lock(kb):
+                    idx = kb.symbol_index()
+                    for c in indexed:
+                        idx.add(c, project_key=fp)
+                    idx.save()
             except Exception as e:
                 log.warning("kb symbol index update failed: %s", e)
                 res.notes.append(f"symbol index update failed: {e}")

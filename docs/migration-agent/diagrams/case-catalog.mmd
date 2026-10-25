@@ -17,6 +17,6 @@ flowchart TB
   subgraph pro["④ 자동 승격"]
     direction LR
     S["서로 다른 프로젝트 2곳 성공<br/>실패 0"] --> A["active"]
-    F["후보가 2번 실패"] --> D["hint 로 내려감"]
+    F["실패 ≥ 2 이고<br/>실패 > 성공"] --> D["다음 치환 세트<br/>→ patch / hint 로 내려감"]
   end
   ev --> cat --> hit --> pro

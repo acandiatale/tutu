@@ -33,6 +33,20 @@ log = logging.getLogger("sbmig.loop")
 _MISSING_RECIPE_RE = re.compile(r"(?i)(recipe(?:s|\(s\))? (?:were )?not found|could not find recipe|no recipe(?:s)? (?:found|named)|"
                                 r"unknown recipe|recipe\s+\S+\s+(?:does not exist|not found))")
 _PARENT_UNRESOLVABLE_RE = re.compile(r"(?i)non-resolvable parent|parent pom|failed to read artifact descriptor")
+# preflight (round 10): `mvn -v` detail → Java major; Maven that cannot start because of JAVA_HOME (not "install Maven")
+_JAVA_VERSION_RE = re.compile(r"(?i)java version:?\s*\"?(?P<v>[0-9][0-9._+-]*)")
+_JAVA_RUNTIME_RE = re.compile(r"(?i)runtime:\s*(?P<home>[^,;]+)")
+_JAVA_HOME_PROBLEM_RE = re.compile(r"(?i)JAVA_HOME|UnsupportedClassVersionError|Unable to locate a Java Runtime|"
+                                   r"java: (?:command )?not found|'java' is not recognized|no java runtime")
+# infrastructure classification at finalize (round 10, fleet circuit breaker): a resolution error that points at the
+# repository / network rather than at the project
+_INFRA_REPO_RE = re.compile(r"(?i)could not transfer|failed to transfer|connection refused|connection reset|timed out|"
+                            r"unknown ?host|no route to host|pkix path building failed|"
+                            r"(?:status code|return code is):?\s*(?:401|403|5\d\d)\b|"
+                            r"was cached in the local repository")
+# a full disk during a build (javac / Maven / git on Windows and POSIX; "디스크 공간이 부족" = the Korean Windows text)
+_INFRA_DISK_RE = re.compile(r"(?i)no space left on device|not enough space on the disk|disk quota exceeded|"
+                            r"디스크 공간이 부족|ENOSPC")
 _DEFAULT_MODE = {StepKind.MSA_POM: "msa_pom", StepKind.RESTRUCTURE: "layout"}
 ALWAYS_PREEMPTIVE = ("strip-utf8-bom", "source-encoding")   # inserted at the front → source-encoding runs first
 NON_FATAL_RESTRUCTURE_MODES = frozenset({"optional_bump"})   # a failure is noted, the phase continues
@@ -48,6 +62,29 @@ def _first_sentence(text: str, limit: int = 160) -> str:
 
 class _RunAborted(Exception):
     """Internal: stop the run (no further phases, no verify) — the report is still written."""
+
+
+def parse_renames(out: str) -> dict[str, str]:
+    """`git diff --name-status -M -z` output → {old path: new path} of the renames (`R<score>` entries)."""
+    toks = out.split("\0")
+    moves: dict[str, str] = {}
+    i = 0
+    while i < len(toks):
+        st = toks[i].strip()
+        if not st:
+            i += 1
+            continue
+        if st[0] in "RC" and i + 2 < len(toks):          # rename / copy: two paths follow
+            if st[0] == "R" and toks[i + 1] and toks[i + 2]:
+                moves[toks[i + 1]] = toks[i + 2]
+            i += 3
+        else:
+            i += 2
+    return moves
+
+
+def _aborted(flags: list[str]) -> bool:
+    return any(f == "aborted" or f.startswith("aborted:") for f in flags)
 
 
 _PHASE_ORDER = [Phase.INTAKE, Phase.ANALYZE, Phase.PLAN, Phase.JDK21, Phase.SPRING, Phase.RESTRUCTURE,
@@ -141,6 +178,8 @@ class Orchestrator:
         self._javax_inventory = javax_inventory
         self._running = False
         self.abort_reason: str | None = None   # first `_abort` reason of the current run
+        self._run_steps: list[PlanStep] = []   # the run's steps incl. an appended verify.build (step_plan)
+        self._verify_done: list[str] = []      # verify step ids whose final build has a result (invariant 1, round 10)
 
     # ------------------------------------------------------------------ lazy collaborators
     @property
@@ -277,6 +316,10 @@ class Orchestrator:
         self.abort_reason = None
         # per-run state (an orchestrator is normally used once; a second run must not see the first one's results)
         self._verify_results = []
+        self._verify_done = []
+        self._run_steps = []
+        self._mvn_java_problem = self._jdk_problem = ""
+        self._after_abort = False
         self._phase_failed = False
         self._pending_notes = []
         self.loop = None
@@ -304,16 +347,31 @@ class Orchestrator:
             report.timings_s["total"] = round(self.clock() - t0, 3)
             self._finalize(report)
 
+    def _verify_steps(self) -> list[PlanStep]:
+        """The run's final-build steps (MSA without an aggregator: one per service); `verify.build` when the plan had
+        none and `loop.always_final_verify` is set (as `step_plan` appends it)."""
+        steps = list(self._run_steps or (self.plan.steps if self.plan is not None else []))
+        out = [s for s in steps if s.kind == StepKind.BUILD and s.phase == Phase.VERIFY]
+        if not out and self.plan is not None and self.cfg.loop.always_final_verify:
+            out = [PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="final mvn clean package",
+                            build_goal="clean package", reason="always_final_verify")]
+        return out
+
+    def _verify_missing(self) -> list[PlanStep]:
+        return [s for s in self._verify_steps() if s.id not in self._verify_done]
+
     def _final_build_after_abort(self, report: RunReport) -> None:
         """Invariant 1 (build gate): a run that died of an internal error / missing component after planning still
         ends with the final `mvn clean package` attempt, so report.md lists the real unresolved errors of the tree
         as it was left. Deliberate aborts (`_RunAborted`: no Maven, unresolvable parent) build nothing — the build
-        would fail for the very reason the run aborted."""
-        if self._dry_run or self._verify_results or self.plan is None or not self.cfg.loop.always_final_verify:
+        would fail for the very reason the run aborted. Round 10: every final-build step without a result runs — an
+        MSA run whose svc-a verify passed before svc-b's step crashed still builds svc-b."""
+        if self._dry_run or self.plan is None or not self.cfg.loop.always_final_verify:
             return
-        steps = [s for s in self.plan.steps if s.kind == StepKind.BUILD and s.phase == Phase.VERIFY]
+        steps = self._verify_missing()
         if not steps:
             return
+        self._after_abort = True              # the build only: no last fix loop on top of what just crashed
         pr = PhaseResult(phase=Phase.VERIFY, step_ids=[s.id for s in steps], ok=False)
         pr.notes.append("final build after the run aborted (best effort: earlier phases are incomplete)")
         self.ws.journal({"event": "phase_start", "phase": Phase.VERIFY.value, "steps": pr.step_ids,
@@ -332,10 +390,12 @@ class Orchestrator:
                          "blocked": [], "after_abort": True})
 
     def _abort(self, report: RunReport, why: str) -> None:
-        report.flags.append("aborted")
+        if "aborted" not in report.flags:
+            report.flags.append("aborted")
         report.manual_followups.append(f"run aborted: {why}")
         if self.abort_reason is None:
             self.abort_reason = why
+        log.error("run aborted: %s", why)          # one greppable line (round 10)
         self.ws.journal({"event": "abort", "reason": why})
 
     def _stop(self, stop_after: Phase | None, phase: Phase) -> bool:
@@ -373,7 +433,14 @@ class Orchestrator:
             setter(list(self.cfg.build.encoding_candidates))
         self._preflight(report)
         if "mvn-not-found" in report.flags:
-            self._abort(report, f"'{self.cfg.build.mvn}' is not runnable (install Maven or set build.mvn)")
+            if self._mvn_java_problem:
+                self._abort(report, f"'{self.cfg.build.mvn}' cannot start: {self._mvn_java_problem} — set "
+                                    f"build.java_home (or JAVA_HOME) to a JDK {self._java_major_wanted()} home")
+            else:
+                self._abort(report, f"'{self.cfg.build.mvn}' is not runnable (install Maven or set build.mvn)")
+            return False
+        if "jdk-not-21" in report.flags:
+            self._abort(report, self._jdk_problem)
             return False
         if not self._check_build_tool(report):
             self._timed("intake", t)
@@ -505,6 +572,7 @@ class Orchestrator:
             steps.append(PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY,
                                   title="final mvn clean package", build_goal="clean package",
                                   reason="always_final_verify"))
+        self._run_steps = list(steps)
         self._last_spring_rewrite = max((i for i, s in enumerate(steps)
                                          if s.phase == Phase.SPRING and s.kind == StepKind.OPENREWRITE), default=-1)
         groups: list[tuple[Phase, list[tuple[int, PlanStep]]]] = []
@@ -527,7 +595,20 @@ class Orchestrator:
         t = self.clock()
         pr = PhaseResult(phase=phase, step_ids=[s.id for _, s in items], ok=True)
         self.ws.journal({"event": "phase_start", "phase": phase.value, "steps": pr.step_ids})
-        self._run_phase(pr, items)
+        try:
+            self._run_phase(pr, items)
+        except BaseException as e:
+            # round 10: an exception inside a phase (git timeout, a bug) must not lose what the phase did — svc-a's
+            # green verify of an MSA run stays in the report next to the abort
+            pr.ok = False
+            pr.notes.append(f"phase interrupted: {type(e).__name__}: {e}")
+            pr.finished_at = utcnow()
+            report.phases.append(pr)        # its blocked items are in the run-wide registry (report.blocked)
+            self.ws.journal({"event": "phase_end", "phase": phase.value, "ok": False, "build_ok": pr.build_ok,
+                             "iterations": pr.iterations, "attempts": len(pr.attempts),
+                             "remaining_errors": len(pr.remaining_errors), "blocked": [b.id for b in pr.blocked],
+                             "interrupted": f"{type(e).__name__}: {e}"[:300]})
+            raise
         pr.finished_at = utcnow()
         report.phases.append(pr)
         self.ws.journal({"event": "phase_end", "phase": phase.value, "ok": pr.ok, "build_ok": pr.build_ok,
@@ -644,9 +725,19 @@ class Orchestrator:
                     checks["mvn_detail"] = detail
                 if not ok:
                     report.flags.append("mvn-not-found")
-                    report.manual_followups.append(f"'{self.cfg.build.mvn}' is not runnable"
-                                                   + (f" ({detail})" if detail else "")
-                                                   + ": install Maven or set build.mvn; every build below will fail")
+                    if _JAVA_HOME_PROBLEM_RE.search(detail):     # Maven is there; its Java is not (round 10)
+                        self._mvn_java_problem = " ".join(detail.split())[:200]
+                        report.manual_followups.append(
+                            f"'{self.cfg.build.mvn}' cannot start: {self._mvn_java_problem} — set build.java_home "
+                            f"(or JAVA_HOME) to a JDK {self._java_major_wanted()} home ({self._java_home_text()}); "
+                            "every build below would fail")
+                    else:
+                        report.manual_followups.append(f"'{self.cfg.build.mvn}' is not runnable"
+                                                       + (f" ({detail})" if detail else "")
+                                                       + ": install Maven or set build.mvn; every build below will "
+                                                         "fail")
+                else:
+                    self._check_java_major(report, detail, checks)
             except MissingComponentError as e:
                 checks["mvn"] = f"unknown ({e})"
         parent = self.cfg.artifacts.parent
@@ -662,6 +753,42 @@ class Orchestrator:
                 checks[f"artifacts.{name}"] = f"{spec.key}:{spec.version or '-'}"
         checks["java_home"] = self.cfg.build.java_home or "(inherited)"
         self.ws.journal({"event": "preflight", **checks})
+
+    _mvn_java_problem = ""
+    _jdk_problem = ""
+
+    def _java_major_wanted(self) -> int:
+        return int(getattr(self.cfg.build, "require_java_major", 0) or 0) or 21
+
+    def _java_home_text(self) -> str:
+        import os
+        home = self.cfg.build.java_home or os.environ.get("JAVA_HOME") or ""
+        return (f"build.java_home={home}" if self.cfg.build.java_home else
+                f"JAVA_HOME={home}" if home else "JAVA_HOME not set: mvn uses the java on PATH")
+
+    def _check_java_major(self, report: RunReport, detail: str, checks: dict[str, Any]) -> None:
+        """Round 10 (A10): `mvn -v` must report `build.require_java_major` (21) — a JDK 17 on JAVA_HOME made every
+        build of a company run fail for a reason no fix loop can change. Unparseable / absent version → no check."""
+        want = int(getattr(self.cfg.build, "require_java_major", 0) or 0)
+        m = _JAVA_VERSION_RE.search(detail or "")
+        if want <= 0 or m is None:
+            return
+        ver = m.group("v").strip(".,")
+        parts = re.split(r"[._+-]", ver)
+        try:
+            major = int(parts[1]) if parts[0] == "1" and len(parts) > 1 else int(parts[0])
+        except ValueError:
+            return
+        checks["java_major"] = major
+        if major == want:
+            return
+        rt = _JAVA_RUNTIME_RE.search(detail or "")
+        where = f"runtime {rt.group('home').strip()}" if rt else self._java_home_text()
+        # one line, the abort's follow-up (`run aborted: Maven runs on Java 17.0.9 (…), not Java 21: …`)
+        self._jdk_problem = (f"Maven runs on Java {ver} ({where}), not Java {want}: set build.java_home (or JAVA_HOME) "
+                             f"to a JDK {want} home and rerun")
+        report.flags.append("jdk-not-21")
+        log.error("preflight: %s", self._jdk_problem)
 
     # ------------------------------------------------------------------ phases
     def _run_phase(self, pr: PhaseResult, items: list[tuple[int, PlanStep]]) -> None:
@@ -995,6 +1122,7 @@ class Orchestrator:
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
         if sha != pre:
             self._note_step(step.id, step.phase)
+            self._follow_moves(step, pre, sha)
         self.report.manual_followups += [f for f in res.manual_followups if f not in self.report.manual_followups]
         for flag in list(getattr(res, "flags", None) or []):      # 2026-10-23: e.g. web-xml-registered
             self._flag(flag)
@@ -1033,6 +1161,21 @@ class Orchestrator:
                             "the restructure phase (verify still runs)")
             self._restructure_failed(step, mode, res.error or "unknown error")
         return res.ok
+
+    def _follow_moves(self, step: PlanStep, pre: str, sha: str) -> None:
+        """Round 10 (A4): the files the step moved (`git diff -M` renames) → the run-wide blocked registry re-keys
+        them, so a file blocked before the move stays blocked at `{name}-back/src/…`. Best effort: a git problem
+        only means the moved errors are looked at again."""
+        try:
+            res = self.ws._git("diff", "--name-status", "-M", "-z", pre, sha, check=False)   # noqa: SLF001
+            moves = parse_renames(res.stdout or "") if res.returncode == 0 else {}
+        except Exception as e:  # noqa: BLE001 - never fail the restructure over the bookkeeping
+            log.debug("restructure moves of %s unavailable: %s", step.id, e)
+            return
+        if not moves:
+            return
+        n = self.blocked.note_moves(moves)
+        self.ws.journal({"event": "restructure_moves", "step": step.id, "moved": len(moves), "blocked_rekeyed": n})
 
     def _restructure_failed(self, step: PlanStep, mode: str, why: str) -> None:
         """Round 9c: a failed / crashed restructure step must not look like a successful migration — the final build
@@ -1131,12 +1274,13 @@ class Orchestrator:
         goal = step.build_goal or "clean package"
 
         def _skip_flags() -> tuple[bool, bool]:
-            # read at build time: the final fix loop may have triggered the test-compile / tests fallback (L7 / L7b)
-            skip_tests = bool(getattr(self.cfg.build, "skip_test_compile", False)) \
-                or bool(self.loop and self.loop.test_compile_skipped)
+            # read at build time: the final fix loop may have triggered the test-compile / tests fallback (L7 / L7b);
+            # round 10: per build target — svc-a's fallback does not change how svc-b's final build runs
+            tc, ts = self._loop_skips(step.target)
+            skip_tests = bool(getattr(self.cfg.build, "skip_test_compile", False)) or tc
             # round 8: only runtime test failures were left → the final verify packages with -DskipTests too
             # (skip_test_compile wins when both apply: -Dmaven.test.skip=true already implies no test run)
-            skip_run = bool(self.loop and getattr(self.loop, "tests_skipped", False)) and not skip_tests
+            skip_run = ts and not skip_tests
             return skip_tests, skip_run
 
         def _final_build() -> BuildResult:
@@ -1161,6 +1305,8 @@ class Orchestrator:
                 res = _final_build()
                 self._observe_final("verify-final-2", res, step.target)
         self._verify_results.append(res)
+        if step.id not in self._verify_done:
+            self._verify_done.append(step.id)
         skip_tests, skip_run = _skip_flags()
         assert self.report is not None
         self.report.final_build = res
@@ -1182,6 +1328,20 @@ class Orchestrator:
                          "skip_tests": skip_run})
         return res.ok
 
+    def _loop_skips(self, target: Optional[str]) -> tuple[bool, bool]:
+        """(test-compile skipped, tests skipped) of the fix loop's fallbacks for a build of `target`."""
+        lp = self.loop
+        if lp is None:
+            return False, False
+        fn = getattr(lp, "skips_for", None)
+        if callable(fn):
+            try:
+                tc, ts = fn(target)
+                return bool(tc), bool(ts)
+            except Exception:  # pragma: no cover - a foreign loop object
+                pass
+        return bool(getattr(lp, "test_compile_skipped", False)), bool(getattr(lp, "tests_skipped", False))
+
     def _verify_fix_loop(self, pr: PhaseResult, step: PlanStep, first: BuildResult) -> bool:
         """The final `mvn clean package` failed → one last build-fix loop on `loop.phases.verify` (goal `package`),
         after which the caller repeats the final build (invariant 1: the run still ends on a `clean package`).
@@ -1191,7 +1351,8 @@ class Orchestrator:
         `loop.verify_extra_llm_attempts` more LLM attempts (`decide.py`, escalation model when configured); policy
         blocks (javax API, missing artifact, …) and budget blocks stay. Returns True when the loop ran."""
         pc = self.cfg.loop.phases.get(Phase.VERIFY.value)
-        if pc is None or not pc.enabled or pc.max_iterations <= 0 or self.loop is None or self._dry_run:
+        if pc is None or not pc.enabled or pc.max_iterations <= 0 or self.loop is None or self._dry_run \
+                or getattr(self, "_after_abort", False):
             return False
         if self.budget.time_exceeded():
             pr.notes.append(f"{step.id}: failed; no final fix loop (run time budget exhausted)")
@@ -1624,6 +1785,42 @@ class Orchestrator:
             acc(u, k or self.cfg.llm.recipe_model or self.cfg.llm.model)
         return list(by.values())
 
+    def _infra_flags(self, report: RunReport) -> None:
+        """Round 10 (A14, fleet circuit breaker): `infra:<kind>` when the run ended for an infrastructure reason —
+        `infra:llm` (llm-unavailable / llm-config-error, and the run did not succeed), `infra:maven` (mvn-not-found),
+        `infra:jdk` (jdk-not-21, or a Maven that cannot start because of JAVA_HOME), `infra:repository` (the
+        configured parent is not resolvable, or every remaining error of the failed final build(s) is a dependency /
+        parent / plugin resolution error whose text points at the repository or the network: could not / failed to
+        transfer, connection refused / reset, timed out, unknown host, no route to host, PKIX, status / return code
+        401 / 403 / 5xx, "was cached in the local repository")."""
+        flags = report.flags
+        add: list[str] = []
+        if ("llm-unavailable" in flags or "llm-config-error" in flags) and not report.success:
+            add.append("infra:llm")                 # a run that still passed did not end for that reason
+        if "mvn-not-found" in flags:
+            add.append("infra:jdk" if self._mvn_java_problem else "infra:maven")
+        if "jdk-not-21" in flags:
+            add.append("infra:jdk")
+        if "aborted:parent-not-found" in flags or self._repository_trouble():
+            add.append("infra:repository")
+        if not report.success and self._disk_full():
+            add.append("infra:disk")                # the fleet pauses instead of failing the next projects too
+        for f in add:
+            if f not in flags:
+                flags.append(f)
+
+    def _disk_full(self) -> bool:
+        return any(_INFRA_DISK_RE.search(f"{e.message}\n{e.raw}") for r in self._verify_results if not r.ok
+                   for e in r.errors)
+
+    def _repository_trouble(self) -> bool:
+        failed = [r for r in self._verify_results if not r.ok]
+        errs = [e for r in failed for e in r.errors]
+        if not failed or not errs:
+            return False
+        return all(e.kind in self._RESOLUTION_KINDS and _INFRA_REPO_RE.search(f"{e.message}\n{e.raw}")
+                   for e in errs)
+
     def _finalize(self, report: RunReport) -> None:
         report.finished_at = utcnow()
         usage = LLMUsage()
@@ -1658,8 +1855,10 @@ class Orchestrator:
                   "compiles and fixes the tests (`mvn test-compile`) before relying on CI")
             if fu not in report.manual_followups:
                 report.manual_followups.append(fu)
+        # round 10 (invariant 1, A7): an aborted run is never a success, and every planned final build must have
+        # run — an MSA run whose svc-a verify passed before svc-b's step crashed used to say BUILD SUCCESS
         report.success = bool(self._verify_results) and all(r.ok for r in self._verify_results) \
-            and "restructure-failed" not in report.flags
+            and "restructure-failed" not in report.flags and not _aborted(report.flags) and not self._verify_missing()
         # unresolved: what the as-is owner must look at
         unresolved: list[BuildError] = []
         for r in self._verify_results:
@@ -1684,6 +1883,7 @@ class Orchestrator:
             log.exception("finalizing the blocked items failed")
             report.flags.append(f"blocked-finalize-failed: {e}")
         report.unresolved = [e for e in unresolved if not self.blocked.is_blocked_error(e)]
+        self._infra_flags(report)
         out = report.outputs
         out["run_dir"] = str(self.ws.run_dir)
         out["project_dir"] = str(self.ws.root)
@@ -1692,16 +1892,14 @@ class Orchestrator:
         for name in ("profile.json", "plan.json"):
             if (self.ws.run_dir / name).exists():
                 out[name.replace(".json", "")] = str(self.ws.run_dir / name)
-        try:
-            if self.cfg.report.include_diff and (self.ws.root / ".git").exists():
-                out["diff"] = str(self.ws.write_patch())
-        except Exception as e:
-            log.warning("could not write changes.patch: %s", e)
-        try:
-            if self.cfg.report.zip_result and not self._dry_run:
-                out["zip"] = str(self.ws.zip_result())
-        except Exception as e:
-            log.warning("could not write result.zip: %s", e)
+        # round 10 (A13): the KB records and the report come first, the slow patch / zip last — a kill while zipping
+        # a 1 GB tree loses nothing that matters; their paths are announced up front and dropped again on failure
+        want_diff = bool(self.cfg.report.include_diff and (self.ws.root / ".git").exists())
+        want_zip = bool(self.cfg.report.zip_result and not self._dry_run)
+        if want_diff:
+            out["diff"] = str(self.ws.run_dir / "changes.patch")
+        if want_zip:
+            out["zip"] = str(self.ws.run_dir / "result.zip")
         if "md" in self.cfg.report.formats:
             out["report_md"] = str(self.ws.run_dir / "report.md")
         if "json" in self.cfg.report.formats:
@@ -1713,12 +1911,30 @@ class Orchestrator:
         if writer is None:
             from sbmig.report import write_report
             writer = lambda r, w: write_report(r, w, cfg=self.cfg)      # noqa: E731 - report.language from the config
-        try:
-            paths = writer(report, self.ws) or {}
-            out.update({k: v for k, v in paths.items()})
-        except Exception as e:
-            log.exception("report writing failed")
-            report.flags.append(f"report-failed: {e}")
+
+        def write() -> None:
+            try:
+                paths = writer(report, self.ws) or {}
+                out.update({k: v for k, v in paths.items()})
+            except Exception as e:
+                log.exception("report writing failed")
+                report.flags.append(f"report-failed: {e}")
+        write()
+        dropped: list[str] = []
+        if want_diff:
+            try:
+                out["diff"] = str(self.ws.write_patch())
+            except Exception as e:
+                log.warning("could not write changes.patch: %s", e)
+                dropped.append(str(out.pop("diff", "")))
+        if want_zip:
+            try:
+                out["zip"] = str(self.ws.zip_result())
+            except Exception as e:
+                log.warning("could not write result.zip: %s", e)
+                dropped.append(str(out.pop("zip", "")))
+        if dropped:                        # the report named a file that does not exist: write it once more
+            write()
         self.ws.journal({"event": "report", "success": report.success, "flags": report.flags,
                          "unresolved": len(report.unresolved), "blocked": len(report.blocked),
                          "llm_calls": report.llm_usage.calls,

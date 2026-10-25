@@ -15,8 +15,15 @@ if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.interfaces import FixerLike, KnowledgeBaseLike, LLMAdapterLike, LLMClientLike
     from sbmig.core.models import RunReport
 
-_NO_KB_OVERRIDES = {"harvest": False, "use_active_recipes": False, "use_patch_replay": False,
-                    "use_hints": False, "generate_recipe_candidates": False}
+# `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed. Besides the KB object (a
+# NullKnowledgeBase) every step that reads `kb/` from disk by itself is switched off — the case catalog and its learned
+# text replaces (handler case-replace), the error hints, candidate recipes in the plan — so a "no KB" comparison run
+# edits nothing it learned (round 10: kb.catalog / kb.case_replace still applied learned replaces).
+NO_KB_OVERRIDES = {"harvest": False, "use_active_recipes": False, "use_patch_replay": False,
+                   "use_hints": False, "generate_recipe_candidates": False, "try_candidates_in_plan": False,
+                   "catalog": False, "case_replace": False, "error_hints": False, "ledger": False,
+                   "symbol_index": False, "deterministic_candidates": False}
+_NO_KB_OVERRIDES = NO_KB_OVERRIDES          # the pre-round-10 name
 
 
 def _merge(base: dict, extra: Mapping) -> dict:
@@ -61,7 +68,7 @@ def migrate(
     phase = parse_stop_after(stop_after)        # ValueError names the accepted values
     ov: dict = dict(overrides or {})
     if kb is False:
-        ov = _merge(ov, {"kb": _NO_KB_OVERRIDES})
+        ov = _merge(ov, {"kb": NO_KB_OVERRIDES})
     cfg = load_config(*configs, overrides=ov or None, repo_root=Path(repo_root) if repo_root else None)
 
     client: Any = None
@@ -91,4 +98,4 @@ def exit_code(report: "RunReport") -> int:
     return run_exit_code(report)
 
 
-__all__ = ["migrate", "exit_code"]
+__all__ = ["migrate", "exit_code", "NO_KB_OVERRIDES"]

@@ -9,7 +9,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import typer
 
@@ -26,9 +26,47 @@ LOG_FILE_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 from sbmig.core.diag import dump_threads, install_thread_dump_signal  # noqa: E402,F401 - re-exported
 
 
+def harden_console_streams() -> None:
+    """Keep the console encoding (cp949 on a Korean Windows console) but never crash on a character it cannot
+    encode: `errors="replace"` on stdout / stderr. Without it, stdout redirected to a file, `Tee-Object` or a Task
+    Scheduler job made `sbmig run` exit 1 with a UnicodeEncodeError after the report was written (✅ in the console
+    summary) and every log line with an em dash printed `--- Logging error ---` (round 10)."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            if (getattr(stream, "errors", None) or "strict") == "strict":
+                reconfigure(errors="replace")
+        except (ValueError, OSError, AttributeError):   # a detached / closed stream: nothing to protect
+            pass
+    for h in logging.getLogger("sbmig").handlers + logging.getLogger().handlers:
+        stream = getattr(h, "stream", None)
+        if isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) \
+                and stream not in (sys.stdout, sys.stderr) and hasattr(stream, "reconfigure"):
+            try:
+                if (getattr(stream, "errors", None) or "strict") == "strict":
+                    stream.reconfigure(errors="replace")
+            except (ValueError, OSError, AttributeError):
+                pass
+
+
+class _ConsoleFilter(logging.Filter):
+    """Records logged with `extra={"sbmig_console": False}` go to the log files only (the console already got the
+    same line through typer.echo: SBMIG-RESULT, fleet progress)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return getattr(record, "sbmig_console", True) is not False
+
+
+NO_CONSOLE = {"sbmig_console": False}
+
+
 def setup_logging(verbose: bool = False) -> None:
     from rich.logging import RichHandler
 
+    harden_console_streams()
     level = logging.DEBUG if verbose else logging.INFO
     root = logging.getLogger("sbmig")
     root.setLevel(logging.DEBUG)                       # handlers filter: console INFO (or DEBUG), file always DEBUG
@@ -37,6 +75,8 @@ def setup_logging(verbose: bool = False) -> None:
     for h in root.handlers:
         if isinstance(h, RichHandler):
             h.setLevel(level)
+            if not any(isinstance(f, _ConsoleFilter) for f in h.filters):
+                h.addFilter(_ConsoleFilter())
     root.propagate = False
     install_thread_dump_signal()
 
@@ -56,11 +96,12 @@ class _ThreadFilter(logging.Filter):
         return record.thread == self.thread_id or _LOG_THREAD.get() == self.thread_id
 
 
-def attach_file_log(path: Path, thread_id: Optional[int] = None) -> Path:
+def attach_file_log(path: Path, thread_id: Optional[int] = None, level: int = logging.DEBUG) -> Path:
     """Append DEBUG-level sbmig logs (LLM calls, builds, decisions; never keys) to `path`. One handler per file.
 
     With `thread_id` (in-process runs of the web app) the file only gets records of that thread (and of threads
-    running in its context), so concurrent runs keep separate `sbmig.log` files; one handler per (file, thread)."""
+    running in its context), so concurrent runs keep separate `sbmig.log` files; one handler per (file, thread).
+    `level` (round 10): the fleet's own `fleet/sbmig.log` is INFO — each project has its DEBUG `<run dir>/sbmig.log`."""
     path = Path(path).resolve()
     root = logging.getLogger("sbmig")
     for h in root.handlers:
@@ -74,7 +115,7 @@ def attach_file_log(path: Path, thread_id: Optional[int] = None) -> Path:
                 h.setLevel(logging.INFO if root.level in (logging.NOTSET, logging.INFO) else root.level)
         root.setLevel(logging.DEBUG)
     fh = logging.FileHandler(path, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(level)
     fh.setFormatter(logging.Formatter(LOG_FILE_FORMAT))
     fh.sbmig_thread = thread_id  # type: ignore[attr-defined]
     if thread_id is not None:
@@ -83,10 +124,28 @@ def attach_file_log(path: Path, thread_id: Optional[int] = None) -> Path:
             _LOG_THREAD.set(thread_id)
     root.addHandler(fh)
     if thread_id is None:
-        log.info("sbmig %s — log file %s", " ".join(sys.argv[1:])[:300], path)
+        log.info("sbmig %s - log file %s", " ".join(sys.argv[1:])[:300], path)
     else:
-        log.info("sbmig run (thread %s) — log file %s", thread_id, path)
+        log.info("sbmig run (thread %s) - log file %s", thread_id, path)
     return path
+
+
+_ANY_THREAD = object()
+
+
+def detach_file_log(path: Path, thread_id: Any = _ANY_THREAD) -> int:
+    """Remove (and close) the file handler(s) `attach_file_log` added for `path` — all of them, or only the one of
+    `thread_id` (None = the process-wide one). Returns how many were removed."""
+    path = Path(path).resolve()
+    root = logging.getLogger("sbmig")
+    n = 0
+    for h in list(root.handlers):
+        if isinstance(h, logging.FileHandler) and Path(h.baseFilename) == path \
+                and (thread_id is _ANY_THREAD or getattr(h, "sbmig_thread", None) == thread_id):
+            root.removeHandler(h)
+            h.close()
+            n += 1
+    return n
 
 
 @app.callback()
@@ -94,6 +153,7 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug log
           log_file: Optional[Path] = typer.Option(None, "--log-file",
                                                   help="also append DEBUG logs to this file (runs always log to "
                                                        "<run dir>/sbmig.log)")) -> None:
+    harden_console_streams()
     setup_logging(verbose)
     if log_file:
         attach_file_log(log_file)
@@ -197,8 +257,9 @@ def run(
     if settings:
         overrides.setdefault("build", {})["settings_file"] = settings
     if no_kb:
-        overrides["kb"] = {"harvest": False, "use_active_recipes": False, "use_patch_replay": False,
-                           "use_hints": False, "generate_recipe_candidates": False}
+        from sbmig.api import NO_KB_OVERRIDES
+
+        overrides["kb"] = dict(NO_KB_OVERRIDES)
     try:
         phase = parse_stop_after(stop_after)
     except ValueError as e:
@@ -207,6 +268,7 @@ def run(
     from sbmig.core.workspace import Workspace
     from sbmig.loop import NullKnowledgeBase, Orchestrator
     from sbmig.report import console_summary
+    from sbmig.report.result_line import report_result_line, result_line
 
     ws = Workspace.from_input(input, out, run_id=run_id)
     log_path = attach_file_log(ws.run_dir / "sbmig.log")
@@ -215,10 +277,17 @@ def run(
         report = orch.run(stop_after=phase, dry_run=dry_run)
     except Exception:
         log.exception("run aborted by an unexpected error (see %s)", log_path)
+        line = result_line(ws.run_id, 1, False, attention=["crash"])
+        typer.echo(line)
+        log.info("%s", line, extra=NO_CONSOLE)
         raise
     console_summary(report)
     typer.echo(f"log: {log_path}   (share this file + report.md when asking for help)")
-    raise typer.Exit(run_exit_code(report))
+    code = run_exit_code(report)
+    line = report_result_line(report, code)          # one ASCII line to retype / grep (round 10)
+    typer.echo(line)
+    log.info("%s", line, extra=NO_CONSOLE)
+    raise typer.Exit(code)
 
 
 def _mask_headers(headers) -> dict:
@@ -253,8 +322,9 @@ def _echo_wire(resp, timeout) -> None:
 
 
 def _probe_messages(prompt: str, no_system: bool = False) -> list[dict]:
-    msgs = [] if no_system else [{"role": "system", "content": "You are a helpful assistant."}]
-    return msgs + [{"role": "user", "content": prompt}]
+    from sbmig.fix.company import probe_messages
+
+    return probe_messages(prompt, no_system)
 
 
 def _probe_bare(cfg, prompt: str, no_system: bool = False) -> None:
@@ -291,27 +361,56 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
               max_upload_mb: Optional[int] = typer.Option(None, "--max-upload-mb", min=0,
                                                           help="largest project zip the UI accepts, in MB "
                                                                "(default: $SBMIG_MAX_UPLOAD_MB or 512; 0 = no "
-                                                               "limit, e.g. for one oversized project)")) -> None:
+                                                               "limit, e.g. for one oversized project)"),
+              token: Optional[str] = typer.Option(None, "--token",
+                                                  help="access token (default: $SBMIG_WEB_TOKEN, also read from "
+                                                       ".env); required when --host is not a loopback address")
+              ) -> None:
     """One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
     one worker thread per run), watch graph nodes / journal / log live (SSE), download report.md / result.zip.
-    Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`."""
+    Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`.
+
+    Access (round 10): on 127.0.0.1 no token is needed. Any other --host (0.0.0.0 to share on the LAN) needs
+    SBMIG_WEB_TOKEN (or --token): browsers open http://<host>:<port>/?token=<token> once (an HttpOnly cookie is set),
+    API clients send `Authorization: Bearer <token>`. Without a token the server refuses to start on such a host."""
     import uvicorn
 
     from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
-    from sbmig.web.app import MAX_UPLOAD_ENV, create_app, describe_max_upload, resolve_max_upload
+    from sbmig.web.app import (
+        MAX_UPLOAD_ENV,
+        TOKEN_ENV,
+        create_app,
+        describe_max_upload,
+        is_loopback_host,
+        resolve_max_upload,
+    )
 
     load_dotenv_files()                       # .env is read once here for the server itself, then per run
+    token = (token or os.environ.get(TOKEN_ENV, "")).strip() or None
+    if not token and not is_loopback_host(host):
+        typer.secho(f"refusing to serve on {host} without a token: anyone on the network could download result.zip "
+                    f"(company source code) or upload a pom whose plugins Maven runs here. Set {TOKEN_ENV}=<a long "
+                    f"random value> in .env or the shell (or pass --token), or bind to 127.0.0.1.",
+                    fg=typer.colors.RED, err=True)
+        raise typer.Exit(2)
     root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
-    attach_file_log(Path(out) / "sbmig-web.log")
+    web_log = attach_file_log(Path(out) / "sbmig-web.log")
     typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}   "
                f"upload limit: {describe_max_upload(resolve_max_upload(max_upload_mb))}")
+    if token:
+        typer.echo(f"access token required ({TOKEN_ENV}): open http://{host}:{port}/?token=<token> once per browser; "
+                   f"API clients send 'Authorization: Bearer <token>'")
     env_limit = f" {MAX_UPLOAD_ENV}={max_upload_mb}" if max_upload_mb is not None else ""
-    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit} "
+    env_token = f" {TOKEN_ENV}=<token>" if token else ""
+    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit}{env_token} "
                f"uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown {graceful_timeout})")
     # shutdown: open SSE streams end (RunManager.shutdown via the lifespan), running Maven processes are killed, and
     # uvicorn stops waiting for connections after `graceful_timeout` — without it Ctrl+C hung on the browser tabs
-    uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb), host=host, port=port, log_level="info",
-                timeout_graceful_shutdown=graceful_timeout)
+    try:
+        uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb, token=token), host=host, port=port,
+                    log_level="info", timeout_graceful_shutdown=graceful_timeout)
+    finally:
+        detach_file_log(web_log, None)
 
 
 @app.command("llm-probe")
@@ -331,11 +430,6 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     providers, then the extracted reply). Run this first on a new gateway; if the reply cannot be extracted, set
     `llm.response_path` to the dot path shown in the raw JSON. `--bare` sends the identical payload with a bare
     `requests.post` (no session, no extra headers) so a gateway problem can be told apart from a client problem."""
-    import json
-
-    from sbmig.core.interfaces import ChatMessage
-    from sbmig.fix import CompanyClient, LLMConfigError, LLMError, make_llm_client
-
     overrides: dict = {"llm": {}}
     if llm_provider:
         overrides["llm"]["provider"] = llm_provider
@@ -357,47 +451,33 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
     if bare:
         _probe_bare(cfg, prompt, no_system=no_system)
         return
+    from sbmig.fix.company import probe_llm
+
     typer.echo(f"provider={llm.provider} model={llm.model} url={llm.base_url} key_env={llm.api_key_env}"
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
-    try:
-        client = make_llm_client(cfg)
-    except LLMConfigError as e:          # missing key / URL / model: say which variable, no traceback
-        typer.echo(f"CONFIG ERROR: {e}")
-        typer.echo("hint: put LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env at the repo root (copy .env.example) "
-                   "or export them in the shell; `--llm-provider fake` runs the probe without a gateway")
-        raise typer.Exit(1)
-    inner = getattr(client, "inner", client)
-    msgs = [ChatMessage(role=m["role"], content=m["content"]) for m in _probe_messages(prompt, no_system)]
-    if isinstance(inner, CompanyClient):
-        payload = inner.payload(msgs)
-        typer.echo("request payload: " + json.dumps(payload, ensure_ascii=False)[:1500])
-        try:
-            resp = inner.post_once(payload)
-        except Exception as e:  # transport-level failure: the class and message say proxy / DNS / refused
-            typer.echo(f"TRANSPORT ERROR: {type(e).__name__}: {e}")
-            typer.echo("hints: URL (the full endpoint, http://...), proxy (NO_PROXY=<gateway host> in .env)")
-            raise typer.Exit(1)
-        _echo_wire(resp, inner.timeout)
-        typer.echo(f"HTTP {resp.status_code}")
-        try:
-            data = resp.json()
-            typer.echo(json.dumps(data, ensure_ascii=False, indent=2)[:4000])
-        except ValueError:
-            typer.echo(resp.text[:4000])
-            raise typer.Exit(1)
-        if resp.status_code >= 300:
-            raise typer.Exit(1)
-        try:
-            typer.echo("extracted reply: " + repr(inner._parse(data, inner.model).content[:500]))
-        except LLMError as e:
-            typer.echo(f"PROBLEM: {e}")
-            from sbmig.fix.client import _REPLY_PATHS
-            typer.echo("auto-detect paths tried: " + ", ".join(_REPLY_PATHS)
-                       + "  → set LLM_RESPONSE_PATH in .env to the dot path of the text in the JSON above")
-            raise typer.Exit(1)
-        return
-    out = client.complete(msgs, role="other")
-    typer.echo(f"reply ({type(client).__name__}): {out.content[:500]!r}")
+    # the same single call the fleet preflight makes (round 10); the verbose part below is only printed here
+    res = probe_llm(cfg, prompt, no_system=no_system,
+                    on_request=lambda payload: typer.echo("request payload: "
+                                                          + json.dumps(payload, ensure_ascii=False)[:1500]))
+    if res.response is not None:
+        _echo_wire(res.response, llm.timeout_seconds)
+        typer.echo(f"HTTP {res.status}")
+        if res.data is not None:
+            typer.echo(json.dumps(res.data, ensure_ascii=False, indent=2)[:4000])
+        else:
+            typer.echo(str(getattr(res.response, "text", ""))[:4000])
+    if res.ok:
+        if res.response is not None:
+            typer.echo("extracted reply: " + repr(res.reply[:500]))
+        else:
+            typer.echo(f"reply ({res.client_name}): {res.reply[:500]!r}")
+    else:
+        label = {"config": "CONFIG ERROR", "transport": "TRANSPORT ERROR"}.get(res.kind, "PROBLEM")
+        typer.echo(f"{label}: {res.problem}")
+        for h in res.hints:
+            typer.echo(f"hint: {h}")
+    typer.echo(res.line())                          # short, ASCII: the line to retype when asking for help
+    raise typer.Exit(0 if res.ok else 1)
 
 
 # --------------------------------------------------------------------------- analyze / plan
@@ -617,6 +697,53 @@ def rewrite(project_dir: Path = typer.Argument(..., exists=True, file_okay=False
     raise typer.Exit(0 if res.ok else 2)
 
 
+@app.command("clean")
+def clean_cmd(out: Path = typer.Option(Path("out"), "--out", "-o",
+                                       help="the --out of `sbmig run` / `sbmig serve` (e.g. out/web)"),
+              fleet: Optional[Path] = typer.Option(None, "--fleet",
+                                                   help="a fleet's --out directory: only that fleet's run copies"),
+              older_than: float = typer.Option(0.0, "--older-than", min=0.0,
+                                               help="only what finished more than DAYS ago (0 = every finished run)"),
+              keep_failed: bool = typer.Option(False, "--keep-failed",
+                                               help="keep runs that did not end green (exit code not 0)"),
+              dry_run: bool = typer.Option(False, "--dry-run", help="list what would be freed, delete nothing"),
+              records: Optional[List[Path]] = typer.Option(
+                  None, "--records", help="LLM record directory (repeatable; default: llm.record_dir / LLM_RECORD_DIR)"),
+              config: Optional[List[Path]] = ConfigOpt) -> None:
+    """Free disk space: the project copies of FINISHED runs (`<run dir>/project`: working tree + git history;
+    result.zip, report.md / .json, changes.patch, logs stay), the web UI's uploaded zips (`<out>/_uploads/`) of
+    finished runs and stale partial uploads, and the LLM records (`llm-NNNN.json`). Running / queued runs are never
+    touched. Prints what it frees (or would free with --dry-run)."""
+    from sbmig.fleet.cleanup import execute, human, plan_clean, summarize
+
+    target = Path(fleet) if fleet else Path(out)
+    if not target.is_dir():
+        _fail(f"no such directory: {target}", 2)
+    if records:
+        record_dirs = [Path(r) for r in records]
+    else:
+        cfg = _load(config) if config else _load(None, overrides=dict(_PROBE_ARTIFACTS_STUB))
+        record_dirs = [cfg.resolve_path(cfg.llm.record_dir)] if (cfg.llm.record_dir or "").strip() else []
+    items = plan_clean(target, older_than_days=older_than, keep_failed=keep_failed, fleet=fleet is not None,
+                       record_dirs=record_dirs)
+    total = sum(i.size for i in items)
+    scope = (f"older than {older_than:g} day(s)" if older_than else "every finished run") \
+        + (", keeping failed runs" if keep_failed else "")
+    typer.echo(f"clean: {target.resolve()} ({scope}){' - dry run' if dry_run else ''}")
+    for line in summarize(items):
+        typer.echo(line)
+    if dry_run:
+        for i in items[:20]:
+            typer.echo(f"    {i.kind:<15} {human(i.size):>9}  {i.path}")
+        if len(items) > 20:
+            typer.echo(f"    ... {len(items) - 20} more")
+        typer.echo(f"would free {human(total)} ({len(items)} item(s)); nothing deleted")
+        return
+    freed = execute(items)
+    typer.echo(f"freed {human(freed)} ({len(items)} item(s))")
+    log.info("sbmig clean %s: freed %s (%d item(s))", target, human(freed), len(items), extra=NO_CONSOLE)
+
+
 @app.command()
 def version() -> None:
     """Print the sbmig version."""
@@ -648,7 +775,7 @@ _mount("sbmig.kb", "kb_cli", "kb",
 _mount("sbmig.plan.catalog_cli", "recipes_cli", "recipes",
        "recipe catalog (knowledge/recipes/catalog.yml): list | show | check | sets")
 _mount("sbmig.fleet.cli", "fleet_cli", "fleet",
-       "one agent, many projects, sequential with KB learning: run | status")
+       "one agent, many projects, sequential with KB learning: run | resume | status [--attention]")
 _mount("sbmig.advisory.cli", "advisories_cli", "advisories",
        "library advisories (knowledge/libraries/advisories.yml): list | show | check")
 
