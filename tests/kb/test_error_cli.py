@@ -91,6 +91,23 @@ def test_errors_show(kb, ws, profile):
     assert _run(kb.root, "errors", "show", "nope").exit_code == 1
 
 
+def test_errors_show_prints_every_attempt_of_a_multi_attempt_resolution(kb, ws, profile):
+    # 2026-10-25: a0 (no_change) stayed in the tree and is part of the fix → both diffs by default, in run order
+    refs = [ErrorAttemptRef(attempt_id="r1:a0", fix_method="llm", outcome="no_change"),
+            ErrorAttemptRef(attempt_id="r1:a1", fix_method="llm", outcome="improved")]
+    errs, atts = prepare_error_cases(
+        [ec_error("e1", attempts=refs, resolution_attempts=["r1:a0", "r1:a1"])],
+        [ec_attempt("a0", outcome="no_change", diff=CODE_EDIT_DIFF), ec_attempt("a1")], profile, ws, kb.cfg)
+    kb.append_error_cases(errs, atts)
+    out = _run(kb.root, "errors", "show", "e1").output
+    assert "1. r1:a0  llm fake-model  no_change  [code_edit]  ← part of the resolution (kept in the tree)" in out
+    assert "2. r1:a1  llm fake-model  improved  [text_replace]  ← resolved it" in out
+    assert "--- resolution: 2 attempts whose changes stayed in the tree (run order)" in out
+    assert out.index("--- diff of r1:a0 (no_change)") < out.index("--- diff of r1:a1 (resolved it)")
+    assert "Locale.ROOT" in out and "+        return req.remoteClientIp();" in out
+    assert "--- resolving diff" not in out
+
+
 def test_errors_summary_and_replace_candidates(kb, ws, profile):
     _seed(kb, ws, profile)
     r = _run(kb.root, "errors", "summary")

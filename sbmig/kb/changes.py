@@ -368,6 +368,36 @@ def classify_diff(diff_text: str) -> ChangeClass:
         return ChangeClass()
 
 
+def combine_changes(changes: list[ChangeClass]) -> ChangeClass:
+    """Several changes read as one (the attempts of one resolution, 2026-10-25): kinds as in ``classify_diff`` (one
+    kind → that kind, several → ``mixed``, ``none`` ignored), replace pairs merged (counts summed, first-seen order
+    on ties), files / file types in first-seen order, line counts summed. Pure, never raises."""
+    try:
+        kinds = {c.change_kind for c in changes if c.change_kind != "none"}
+        kind = "none" if not kinds else next(iter(kinds)) if len(kinds) == 1 else "mixed"
+        agg: dict[tuple[str, str], ReplacePair] = {}
+        files: list[str] = []
+        types: list[str] = []
+        for c in changes:
+            for rp in c.replace_pairs:
+                cur = agg.get((rp.old, rp.new))
+                if cur is None:
+                    agg[(rp.old, rp.new)] = rp.model_copy(update={"files": list(rp.files)})
+                else:
+                    cur.count += rp.count
+                    cur.files += [f for f in rp.files if f not in cur.files]
+            files += [f for f in c.files if f not in files]
+            types += [t for t in c.file_types if t not in types]
+        order = {k: i for i, k in enumerate(agg)}
+        pairs = sorted(agg.values(), key=lambda rp: (-rp.count, order[(rp.old, rp.new)]))
+        return ChangeClass(change_kind=kind, replace_pairs=pairs, file_types=types, files=files,
+                           lines_added=sum(c.lines_added for c in changes),
+                           lines_removed=sum(c.lines_removed for c in changes))
+    except Exception as e:  # noqa: BLE001  # pragma: no cover - defensive
+        log.debug("combine_changes failed: %s: %s", type(e).__name__, e)
+        return ChangeClass()
+
+
 # --------------------------------------------------------------------------- per-file helpers
 def path_matches(a: Optional[str], b: Optional[str]) -> bool:
     """Same file, compared by path suffix (`src/main/java/X.java` matches `demo-back/src/main/java/X.java`)."""

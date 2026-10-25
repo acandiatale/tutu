@@ -132,6 +132,37 @@ def test_replace_rule_candidate_only_for_llm_text_replace_resolutions(kb_cfg, ws
     assert i.change_kind == "text_replace" and i.diff_excerpt          # still denormalized, just not a candidate
 
 
+IMPORT_DIFF = (f"diff --git a/{EC_FILE} b/{EC_FILE}\n--- a/{EC_FILE}\n+++ b/{EC_FILE}\n@@ -1,2 +1,3 @@\n"
+               " package com.example.web;\n+import com.example.legacy.RequestSupport;\n \n")
+
+
+def test_resolution_of_several_attempts_is_recorded_whole(kb_cfg, ws, profile, tmp_path):
+    # 2026-10-25: a0 (no_change, kept in the tree) added an import, a1 renamed the call and resolved the error
+    refs = [ErrorAttemptRef(attempt_id="r1:a0", fix_method="llm", outcome="no_change"),
+            ErrorAttemptRef(attempt_id="r1:a1", fix_method="llm", outcome="improved")]
+    err = ec_error(attempts=refs, resolution_attempts=["r1:a0", "r1:a1"])
+    errors, _ = _prepared(kb_cfg, ws, profile, [err], [ec_attempt("a0", outcome="no_change", diff=IMPORT_DIFF),
+                                                        ec_attempt("a1")])
+    e = errors[0]
+    assert e.resolution_attempts == ["r1:a0", "r1:a1"] and e.resolved_by == "r1:a1"
+    assert e.diff_excerpt.startswith("# attempt r1:a0: llm fake-model → no_change\ndiff --git")
+    assert "+import com.example.legacy.RequestSupport;" in e.diff_excerpt
+    assert "\n# attempt r1:a1: llm fake-model → improved\ndiff --git" in e.diff_excerpt
+    assert "+        return req.remoteClientIp();" in e.diff_excerpt
+    # read as one change: an inserted import + a token replace = mixed, so no longer a text-replace rule candidate
+    assert e.change_kind == "mixed" and e.replace_rule_candidate is False
+    assert [(p.old, p.new) for p in e.replace_pairs] == [("clientIp", "remoteClientIp")]
+    rows = list(csv.reader(open(write_error_cases_csv(errors, tmp_path / "e.csv"), encoding="utf-8-sig")))
+    row = dict(zip(rows[0], rows[1]))
+    assert row["resolution_attempts"] == "a0; a1" and "+import com.example.legacy.RequestSupport;" in row["diff_excerpt"]
+    # one attempt: as before (no section header), the list holds the resolver; an unknown id falls back to it
+    single = _prepared(kb_cfg, ws, profile, [ec_error()], [ec_attempt()])[0][0]
+    assert single.resolution_attempts == ["r1:a1"] and single.diff_excerpt.startswith("diff --git")
+    assert single.change_kind == "text_replace" and single.replace_rule_candidate is True
+    lost = _prepared(kb_cfg, ws, profile, [ec_error(resolution_attempts=["r1:gone", "r1:a1"])], [ec_attempt()])[0][0]
+    assert lost.resolution_attempts == ["r1:a1"] and lost.diff_excerpt.startswith("diff --git")
+
+
 def test_prepare_caps_diff_and_excerpt(kb_cfg, ws, profile):
     cfg = with_kb(kb_cfg, error_diff_chars=200, error_excerpt_chars=80)
     errors, attempts = prepare_error_cases([ec_error()], [ec_attempt()], profile, ws, cfg)

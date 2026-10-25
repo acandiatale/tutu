@@ -969,12 +969,17 @@ class ErrorCaseRecord(BaseModel):
     fix_method: FixMethod = "none"                 # of the resolving attempt / step
     resolver_id: str = ""
     resolved_by: Optional[str] = None              # FixAttemptRecord id, or "step:<step id>" for plan_step
+    # every attempt whose change is part of the resolution, in run order (2026-10-25; `resolved_by` among them): applied,
+    # kept in the tree (not reverted) and aimed at this error or changing its file since it (re)appeared — an
+    # earlier `no_change` attempt that added an import stays in the tree and belongs to the fix
+    resolution_attempts: list[str] = Field(default_factory=list)
     targeted: bool = False                         # the resolving attempt's cluster contained this error
     description: str = ""                          # how it was resolved, or what was tried (status-dependent)
-    change_kind: ChangeKind = "none"               # of the resolving change (denormalized from the attempt)
+    change_kind: ChangeKind = "none"               # of the resolving change (all `resolution_attempts` combined)
     replace_pairs: list[ReplacePair] = Field(default_factory=list)
     fix_labels: list[str] = Field(default_factory=list)
-    diff_excerpt: str = ""                         # the resolving diff restricted to this error's file (capped)
+    diff_excerpt: str = ""                         # the resolution diff restricted to this error's file: one
+    #   section per resolution attempt (`# attempt <id> …` headers when more than one), each ≤ kb.error_excerpt_chars
     replace_rule_candidate: bool = False           # resolved by the LLM with a pure text replace → a rule could do it
     # failure side
     failure_reason: str = ""                       # why not resolved ("" when resolved)
@@ -1013,6 +1018,7 @@ class CaseFix(BaseModel):
     replace_pairs: list[ReplacePair] = Field(default_factory=list)
     description: str = ""
     attempt_id: str = ""                           # FixAttemptRecord id of the latest such fix (diff there)
+    attempt_ids: list[str] = Field(default_factory=list)     # its resolution attempts when more than one
     error_id: str = ""
     project: str = ""
     at: Optional[datetime] = None

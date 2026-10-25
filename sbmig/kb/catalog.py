@@ -791,7 +791,8 @@ class CaseCatalog:
             fix_rows.append(CaseFix(
                 method=method, resolver_id=resolver, change_kind=r.change_kind,
                 replace_pairs=[ReplacePair(old=p.old, new=p.new, count=p.count) for p in r.replace_pairs],
-                description=_description(r.description), attempt_id=r.resolved_by or "", error_id=r.id,
+                description=_description(r.description), attempt_id=r.resolved_by or "",
+                attempt_ids=list(r.resolution_attempts) if len(r.resolution_attempts) > 1 else [], error_id=r.id,
                 project=r.project or r.project_fingerprint, at=r.at, count=g["count"], projects=len(g["pk"])))
         fix_rows.sort(key=lambda f: (-f.projects, -f.count))
         fail_rows = []

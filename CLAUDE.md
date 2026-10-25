@@ -192,7 +192,10 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   overwritten, generated evidence / timeline / action / hints), `kb/views/cases.md|csv`, `sbmig kb cases …`; a hit
   applies the case's action (handler `case-replace` for learned text replaces, KB recipe / patch, else hints).
 - 2026-10-25: KB recipe names are one PascalCase word without dots (`LegacyRequestHelperClientIpToRemoteClientIp`;
-  the `com.company.kb.` prefix is gone, legacy ids stay valid and are found by either spelling).
+  the `com.company.kb.` prefix is gone, legacy ids stay valid and are found by either spelling). Success records keep
+  the whole resolution: `ErrorCaseRecord.resolution_attempts` = every attempt still in the tree that led to it (the
+  loop reverts regressions only, so an earlier `no_change` import edit is part of the fix), combined `change_kind`,
+  one `diff_excerpt` section per attempt (user: "시도 전부를 남기는 것만"; replace safety grading deliberately not done).
 - Per-round tables with what was verified: `docs/PLAN.md`.
 
 ## Known follow-ups (candidates for the next round; the user decides)
@@ -234,7 +237,7 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,871 passed, 41 deselected
+- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 1,877 passed, 41 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
   so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.

@@ -423,3 +423,48 @@ def test_public_methods_never_raise(cfg, ws):
     t.note_decision(None)                                           # type: ignore[arg-type]
     assert t.finalize(None, run_id="r1") == ([], [])                # type: ignore[arg-type]
     assert t.problems and all(isinstance(p, str) for p in t.problems)
+
+
+def test_resolution_chain_keeps_earlier_attempts_that_stayed_in_the_tree(cfg, ws):
+    # 2026-10-25: a no_change attempt (it added an import, say) stays in the tree and is part of the fix the next
+    # attempt completes; reverted / unapplied attempts, other files' attempts and attempts that predate the error are not
+    t = ErrorTracker(ws, cfg)
+    early = attempt("jdk21-1-1", [err(BAR, msg="b")], changes=[FileChange(path=FOO, op="modify")])
+    t.note_attempt(early)
+    t.observe(Phase.JDK21, "jdk21-1", bad(err(FOO), err(BAR, msg="b")), [early])     # FOO first seen here
+    e = err(FOO)
+    kept = attempt("spring-1-1", [e], outcome="no_change")
+    gone = attempt("spring-1-2", [e], outcome="reverted")
+    unapplied = attempt("spring-1-3", [e], outcome="apply_failed", applied=False)
+    other = attempt("spring-1-4", [err(BAR, msg="b")], outcome="no_change",
+                    changes=[FileChange(path=BAR, op="modify")])
+    for a in (kept, gone, unapplied, other):
+        t.note_attempt(a)
+    t.observe(Phase.SPRING, "spring-1", bad(err(FOO), err(BAR, msg="b")), [kept, gone, unapplied, other])
+    fix = attempt("spring-2-1", [e])
+    t.note_attempt(fix)
+    t.observe(Phase.SPRING, "spring-2", ok(), [fix])
+    errors, attempts = t.finalize([], run_id="r1")
+    foo, bar = by_file(errors, FOO)[0], by_file(errors, BAR)[0]
+    assert foo.status == "resolved" and foo.resolved_by == "r1:spring-2-1"
+    assert foo.resolution_attempts == ["r1:spring-1-1", "r1:spring-2-1"]
+    assert "resolved by 2 attempts whose changes stayed in the tree: spring-1-1, spring-2-1" in foo.notes
+    # BAR went away after FOO's fix: the attempt aimed at it that stayed in the tree belongs to its resolution too
+    assert bar.status == "resolved_indirectly" and bar.resolution_attempts == ["r1:spring-1-4", "r1:spring-2-1"]
+    assert len(attempts) == 6                              # every attempt keeps its own record either way
+
+
+def test_resolution_chain_of_one_and_reset_on_reopen(cfg, ws):
+    t = ErrorTracker(ws, cfg)
+    t.observe(Phase.SPRING, "spring-1", bad(err(FOO)), [])
+    first = attempt("spring-1-1", [err(FOO)])
+    t.note_attempt(first)
+    t.observe(Phase.SPRING, "spring-2", ok(), [first])
+    t.observe(Phase.VERIFY, "verify-1", bad(err(FOO)), [])                           # reopened
+    second = attempt("verify-1-1", [err(FOO)])
+    t.note_attempt(second)
+    t.observe(Phase.VERIFY, "verify-2", ok(), [second])
+    errors, _ = t.finalize([], run_id="r1")
+    foo = errors[0]
+    assert foo.resolved_by == "r1:verify-1-1" and foo.resolution_attempts == ["r1:verify-1-1"]
+    assert not any(n.startswith("resolved by ") for n in foo.notes)

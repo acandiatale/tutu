@@ -685,6 +685,12 @@ Rules the tracker implements:
   `notes`; else steps noted since the last build → `resolved_indirectly`, `fix_method="plan_step"`,
   `resolved_by="step:<id>"`; else `resolved_indirectly`, `fix_method="none"`, note "gone between <label> and
   <label>".
+* **Resolution chain** (2026-10-25) of an error closed by an attempt: `resolution_attempts` = the attempts, in run
+  order, scored by build B since the error (re)appeared, that are applied, not `reverted` / `apply_failed`, and whose
+  cluster contained it or that changed its file — plus the resolver itself. An earlier `no_change` attempt stays in
+  the tree (only regressions are reverted), so its change (an import, a helper) is part of the fix the resolver
+  completes; note "resolved by N attempts whose changes stayed in the tree: …" when N > 1. A reopen starts a new
+  chain.
 * **End state** (finalize): open and present in the last observation → `blocked` when a BlockedItem covers it
   (its signature in `item.signatures` or the item's errors; `block_reason`, `suggestion`), else `unresolved`;
   open and masked → `not_visible` (only when the last build failed).
@@ -719,9 +725,13 @@ from sbmig.kb.error_cases import prepare_error_cases
     # fills project / fingerprint / case_type; sanitizes (relative posix paths, ws roots stripped, secrets redacted,
     # raw ≤ 2000, diff ≤ kb.error_diff_chars with diff_truncated); classify_diff → attempt.change; labels
     # (label_changes on the attempt's FileChanges when they carry search/replace, else from the diff's pairs);
-    # error_symbol (symbol_for_errors); denormalizes the resolving attempt into each resolved error (change_kind,
-    # replace_pairs, fix_labels, diff_excerpt = hunks of the error's own file ≤ kb.error_excerpt_chars,
-    # replace_rule_candidate = fix_method == "llm" and change_kind == "text_replace"); attempt_count / llm_attempts.
+    # error_symbol (symbol_for_errors); denormalizes the resolution into each resolved error: `resolution_attempts`
+    # (the tracker's chain, else the resolver alone; unknown ids dropped), change_kind / replace_pairs of all of them
+    # combined (`combine_changes`: one kind → it, several → mixed), fix_labels (union), diff_excerpt = per attempt the
+    # hunks of the error's own file ≤ kb.error_excerpt_chars ("# attempt <id>: <method> <resolver> → <outcome>"
+    # header per section when there are several), replace_rule_candidate = fix_method == "llm" and the combined
+    # change_kind == "text_replace"); attempt_count / llm_attempts.
+from sbmig.kb.changes import combine_changes      # (list[ChangeClass]) -> ChangeClass   pure, never raises
 from sbmig.kb.error_cases import write_error_cases_jsonl, write_error_cases_csv   # (records, path) -> Path
 from sbmig.kb.error_cases import ErrorCaseStore    # ErrorCaseStore(kb_dir): append(errors, attempts) -> int,
     # iter_errors(**regex filters: status, method, change_kind, project, symbol, signature, run_id),
@@ -735,7 +745,8 @@ FileKnowledgeBase.match(cluster)    # KBMatch.hints also gets error-case hints (
                                     # do not repeat it"); kb.max_hints still caps the list
 ```
 CLI (`sbmig kb errors …`): `list` (filters `--status --method --change-kind --project --symbol --signature --run
---limit --json`), `show <id>` (record + its attempts with diffs), `summary [--run]`, `replace-candidates
+--limit --json`), `show <id>` (record + its attempts; the resolving diff — every resolution attempt's diff, in
+run order, when there are several), `summary [--run]`, `replace-candidates
 [--min-projects]` (LLM text-replace fixes grouped by L2 + replace pair: count, projects, example — rule / command
 candidates), `export --csv PATH [--attempts-csv PATH]` (same filters). `sbmig kb reindex` also rebuilds
 `error_hints.json`; `sbmig kb stats` adds `error_cases` / `fix_attempts` counts. The fleet `learning.md`
@@ -857,7 +868,7 @@ FileKnowledgeBase.reindex / export / import # include catalog/ and views/
 ```
 CLI `sbmig kb cases list [--status --action --kind --search] [--json]`, `show <key>` (readable: name, match,
 effective status / action, evidence, timeline with failed attempts before the fix, the latest successful fix's diff
-from `fix_attempts.jsonl`), `reject <id> [--reason]`, `pin <id> --action recipe:<id>|replace:<old>=<new>[,…]|
+from `fix_attempts.jsonl` — every attempt's diff when `CaseFix.attempt_ids` holds a resolution of several), `reject <id> [--reason]`, `pin <id> --action recipe:<id>|replace:<old>=<new>[,…]|
 handler:<id>|hint|block[:<reason>]`, `unpin <id>`, `hint <id> "<text>"`, `note <id> "<text>"`. `sbmig kb errors show`
 prints a readable view by default (`--json` for the raw record) and names the case.
 

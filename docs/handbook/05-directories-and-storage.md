@@ -490,7 +490,7 @@ flowchart LR
 
 | 파일 | 한 줄 = | 주요 필드 |
 |---|---|---|
-| `errors.jsonl` (`ErrorCaseRecord`) | 실행 중 나온 빌드 에러 하나(같은 에러가 여러 빌드에 나와도 한 줄, 같은 파일에 3번 나오면 3줄) | 에러(`error_kind`, `message`, `file`, `line`, `symbol`, `signature`, `signature_generic`, `error_symbol`), 처음 / 마지막 빌드(`first_seen`, `last_seen`), `status`, 해결 방법(`fix_method`, `resolver_id`, `resolved_by`, `targeted`), `description`(어떻게 해결했나 / 무엇을 시도했나), `change_kind`, `replace_pairs`, `diff_excerpt`(그 파일의 diff), `replace_rule_candidate`, `failure_reason`, `problem_errors`, `block_reason`, `suggestion`, `attempts`(시도 이력, 실패 포함) |
+| `errors.jsonl` (`ErrorCaseRecord`) | 실행 중 나온 빌드 에러 하나(같은 에러가 여러 빌드에 나와도 한 줄, 같은 파일에 3번 나오면 3줄) | 에러(`error_kind`, `message`, `file`, `line`, `symbol`, `signature`, `signature_generic`, `error_symbol`), 처음 / 마지막 빌드(`first_seen`, `last_seen`), `status`, 해결 방법(`fix_method`, `resolver_id`, `resolved_by`, `targeted`), `resolution_attempts`(해결에 들어간 시도 전부, 실행 순서), `description`(어떻게 해결했나 / 무엇을 시도했나), `change_kind`, `replace_pairs`, `diff_excerpt`(해결에 들어간 시도마다 그 파일의 diff), `replace_rule_candidate`, `failure_reason`, `problem_errors`, `block_reason`, `suggestion`, `attempts`(시도 이력, 실패 포함) |
 | `fix_attempts.jsonl` (`FixAttemptRecord`) | 수정 시도 하나(핸들러 / 레시피 / KB 패치 재생 / LLM, 실패 포함) | `fix_method`, `resolver_id`, `model`, `outcome`, `description`, `failure`, `introduced_errors`(그 시도 뒤 고친 파일에 새로 생긴 에러), `remaining_errors`, `diff`(git으로 뽑은 적용 코드, 적용되지 않은 LLM 제안은 그 제안), `change`(`ChangeClass`), `fix_labels`, 토큰 수 |
 | `error_hints.json` | L2 시그니처 / 심볼 하나 | 본 횟수, 프로젝트, 방법별 해결 수, unresolved / blocked 수, 상위 성공 수정 3개(`fixes`), 상위 실패 3개(`failures`), 그 근거인 `variants`(키당 최대 25개, 처음 본 순서 — 실행마다 늘려 가는 갱신과 `sbmig kb reindex` 의 재구성이 같은 결과를 내게 합니다). 힌트 줄은 `[error <키>]` 로 시작합니다 |
 
@@ -505,6 +505,8 @@ flowchart LR
 | `not_visible` | 마지막 빌드가 그 단계 전에 멈춰 보이지 않음(판단 불가). 최종 빌드가 실패했을 때만 |
 
 에러가 사라졌다고 바로 해결로 보지 않습니다. 그 에러의 모듈이 그 단계까지 빌드됐을 때(성공 모듈 목록에 있거나, 같은 모듈에서 같거나 뒤 단계의 에러가 나왔을 때)만 닫습니다. pom 오류 때문에 컴파일이 멈춰 사라진 것처럼 보이는 에러는 열린 채로 두고, 다시 나타나면 이력에 남긴 채 다시 엽니다. 재구성으로 파일이 `{name}-back/` 아래로 옮겨져도 경로를 `src/` 부터 비교하므로 같은 에러로 봅니다. 되돌린(reverted) 라운드의 빌드는 판정에 쓰지 않습니다.
+
+**해결에 들어간 시도 전부(`resolution_attempts`, 2026-10-25)**. 수정 루프는 에러를 늘린 시도만 되돌리고(`git reset --hard`), 고치지 못했지만 새 에러도 만들지 않은 시도(`no_change`)는 코드에 남겨 둡니다. 그래서 "시도 1이 import를 추가(아직 에러 남음) → 시도 2가 호출을 고쳐 해결"이면 실제 해결은 두 시도를 합친 것입니다. 해결된 에러에는 그 에러가 (다시) 나타난 뒤 코드에 남은 시도 중 그 에러를 겨냥했거나 그 파일을 고친 것과 해결한 시도를 실행 순서대로 `resolution_attempts`에 남기고, `diff_excerpt`에는 시도마다 그 파일의 diff를 `# attempt <id>: <방법> → <결과>` 머리줄과 함께 이어 붙입니다(시도마다 `kb.error_excerpt_chars`까지). `change_kind`도 그 시도들을 합쳐서 정하므로, import 추가(줄 삽입)와 토큰 치환이 함께 필요했던 해결은 `mixed`가 되고 `replace_rule_candidate`가 되지 않습니다. 되돌린 시도, 적용되지 못한 시도, 다른 파일만 고친 다른 에러의 시도는 들어가지 않습니다. 시도 하나로 해결됐으면 예전과 같습니다(`resolution_attempts`에 그 시도 하나, 머리줄 없음). `error_cases.csv`에도 `resolution_attempts`, `diff_excerpt` 열이 있습니다.
 
 **변경 형태(`change_kind`)** 는 diff 만 보고 정합니다(`sbmig/kb/changes.py` 의 `classify_diff`). `text_replace` 는 바뀐 줄마다 옛 줄의 토큰만 바꾼 경우(`clientIp` → `remoteClientIp`, `javax` → `jakarta`, `1.0.0` → `3.0.0`)이고 바뀐 토큰 쌍이 `replace_pairs` 에 들어갑니다. 줄이 늘거나 줄거나 토큰이 끼어들면 `code_edit`, 둘이 섞이면 `mixed`, 파일 단위 작업은 `file_create` / `file_delete` / `file_rename` 입니다. **LLM이 고쳤는데 `text_replace`** 이면 `replace_rule_candidate: true` 입니다. 이런 경우는 규칙(명령) 하나로 대신할 수 있으므로 `sbmig kb errors replace-candidates` 가 L2 + 치환 쌍으로 모아 프로젝트 수 순으로 보여 줍니다.
 

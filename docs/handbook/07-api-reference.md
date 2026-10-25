@@ -231,11 +231,11 @@ sbmig rewrite PROJECT_DIR --recipe ID [--recipe ID]... [--dry-run] [--config FIL
 | `sbmig kb match SIGNATURE` | `--project`/`-p` 디렉터리 | 디버그: 이 시그니처(L1/L2)에 KB가 무엇을 돌려줄지 | 0 |
 | `sbmig kb validate RECIPE.yml` | — | 선언형 레시피가 KB 화이트리스트를 지키는지 | 0 / 1 |
 | `sbmig kb errors list` | `--status`, `--method`, `--change-kind`, `--project`, `--symbol`, `--signature`(모두 정규식), `--run`(실행 id 일치), `--limit`/`-n`(기본 50, 0 = 전부, 마지막 N개), `--json`(한 줄에 한 레코드) | 에러 기록 목록: 상태, 방법, 변경 형태, 프로젝트, `파일:줄`, 메시지, 어떻게 해결 / 왜 못 했나 | 0 |
-| `sbmig kb errors show ID` | 에러 id(유일한 앞부분도 됨) 또는 시도 id, `--json`(원본 기록), `--all-diffs`(실패한 시도의 diff까지) | 읽기 쉬운 화면: 에러, 그 케이스, 시도 이력과 실패 이유, 해결한 diff | 0 / 1(없음) |
+| `sbmig kb errors show ID` | 에러 id(유일한 앞부분도 됨) 또는 시도 id, `--json`(원본 기록), `--all-diffs`(실패한 시도의 diff까지) | 읽기 쉬운 화면: 에러, 그 케이스, 시도 이력과 실패 이유, 해결한 diff(여러 시도가 함께 해결했으면 `← part of the resolution` 표시와 그 시도들의 diff 전부, 실행 순서) | 0 / 1(없음) |
 | `sbmig kb errors summary` | `--run`(반복), `--top`(기본 15), `--json` | 상태 / 방법 / 변경 형태별 수, 상태 × 방법 표, 자주 나온 실패 이유, 남은 L2 | 0 |
 | `sbmig kb errors replace-candidates` | `--min-projects`(기본 1), `--limit`/`-n`(기본 50), `--json` | LLM이 고쳤지만 단순 텍스트 치환이었던 수정을 L2 + 치환 쌍으로 묶어 프로젝트 수 순으로 — 규칙(명령) 후보 | 0 |
 | `sbmig kb cases list` | `--status`(observed / candidate / active / rejected), `--action`(hint / recipe / replace / handler / patch / block), `--kind`(에러 종류 / 분류), `--search`(id, 이름, 시그니처, 심볼, 소유 클래스) — 모두 정규식, `--limit`/`-n`(기본 0 = 전부), `--json` | 케이스 목록(프로젝트 수 순). `*`는 사람이 정한 값 | 0 |
-| `sbmig kb cases show KEY` | id, id 앞부분, L2 / L1 시그니처 또는 심볼, `--json`(원본 케이스), `--no-diff` | 케이스 보고서: 이름, 키와 변형, 실제 적용되는 상태 / 동작(사람이 바꿨으면 자동값도), 근거 수, 타임라인(실패한 시도 → 수정), 성공 / 실패 방법, 힌트, 마지막 성공 수정의 diff | 0 / 1 |
+| `sbmig kb cases show KEY` | id, id 앞부분, L2 / L1 시그니처 또는 심볼, `--json`(원본 케이스), `--no-diff` | 케이스 보고서: 이름, 키와 변형, 실제 적용되는 상태 / 동작(사람이 바꿨으면 자동값도), 근거 수, 타임라인(실패한 시도 → 수정), 성공 / 실패 방법, 힌트, 마지막 성공 수정의 diff(여러 시도로 해결했으면 그 시도들의 diff 전부) | 0 / 1 |
 | `sbmig kb cases reject ID` | `--reason`/`-r` | 상태를 `rejected`로(다시 맞지 않음), 이유는 메모에 | 0 / 1 |
 | `sbmig kb cases pin ID` | `--action`/`-a` `recipe:<id>[,…]` / `replace:<old>=<new>[,…]` / `handler:<id>` / `hint` / `block[:<사유>]` | 사람이 동작을 고정하고 상태를 `active`로 | 0 / 1 |
 | `sbmig kb cases unpin ID` | — | 고정한 동작과 상태를 지움(거부도 풀림) | 0 / 1 |

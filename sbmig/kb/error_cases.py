@@ -38,7 +38,7 @@ from sbmig.core.models import (
     utcnow,
 )
 
-from .changes import classify_diff, diff_for_file, file_changes_from_diff, path_matches
+from .changes import classify_diff, combine_changes, diff_for_file, file_changes_from_diff, path_matches
 from .harvest import RAW_LIMIT, SECRET_RE, _rel_posix, redact
 from .labels import label_changes, symbol_for_errors
 from .ledger import project_name
@@ -65,7 +65,7 @@ ERROR_CSV_COLUMNS = [
     "id", "project", "run_id", "status", "error_kind", "file", "line", "message", "symbol", "signature_generic",
     "case_id", "first_seen", "resolved_at", "fix_method", "resolver_id", "change_kind", "replace_pairs",
     "replace_rule_candidate", "description", "failure_reason", "problem_errors", "block_reason", "suggestion",
-    "attempt_count", "llm_attempts", "attempts",
+    "attempt_count", "llm_attempts", "attempts", "resolution_attempts", "diff_excerpt",
 ]
 ATTEMPT_CSV_COLUMNS = [
     "id", "project", "run_id", "phase", "iteration", "attempt_id", "cluster_id", "fix_method", "resolver_id", "model",
@@ -239,20 +239,40 @@ def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], roots: list[tuple[s
 
     att = attempts.get(e.resolved_by or "") if e.status in RESOLVED else None
     if att is not None:
-        ch = att.change
+        # the resolution = every attempt whose change stayed in the tree and led to it (resolver included); a record
+        # without the list (written before 2026-10-25, a stand-in) is the resolver alone
+        chain: list[FixAttemptRecord] = []
+        for i in e.resolution_attempts or [att.id]:
+            a = attempts.get(i)
+            if a is not None and all(a.id != c.id for c in chain):
+                chain.append(a)
+        if all(att.id != c.id for c in chain):
+            chain.append(att)
+        ch = att.change if len(chain) == 1 else combine_changes([a.change for a in chain])
         own = [p for p in ch.replace_pairs if file and any(path_matches(f, file) for f in p.files)]
-        full = full_diffs.get(att.id, att.diff or "")
-        # an error without a file (pom / dependency errors): the head of the resolving diff
-        excerpt = diff_for_file(full, file) if file else full
-        excerpt, _ = _capped(excerpt, excerpt_cap)
+        sections = []
+        for a in chain:
+            full = full_diffs.get(a.id, a.diff or "")
+            # an error without a file (pom / dependency errors): the head of the resolving diff
+            part, _ = _capped(diff_for_file(full, file) if file else full, excerpt_cap)
+            if len(chain) > 1 and part.strip():
+                who = " ".join(x for x in (a.fix_method, a.resolver_id) if x)
+                part = f"# attempt {a.id}: {who} → {a.outcome}\n" + part
+            if part.strip():
+                sections.append(part)
+        excerpt = "\n".join(sections)
+        labels: list[str] = []
+        for a in chain:
+            labels += [x for x in a.fix_labels if x not in labels]
         method = e.fix_method if e.fix_method != "none" else att.fix_method
         upd.update({
             "fix_method": method,
             "resolver_id": e.resolver_id or att.resolver_id,
             "description": upd["description"] or att.description,
+            "resolution_attempts": [a.id for a in chain],
             "change_kind": ch.change_kind,
             "replace_pairs": own or list(ch.replace_pairs),
-            "fix_labels": list(att.fix_labels),
+            "fix_labels": labels,
             "diff_excerpt": excerpt,
             # only a targeted / own-file resolution makes "this L2 is fixed by replacing a → b" a rule candidate
             "replace_rule_candidate": e.status == "resolved" and method == "llm" and ch.change_kind == "text_replace",
@@ -377,8 +397,10 @@ def error_csv_row(e: ErrorCaseRecord) -> list[str]:
         "description": e.description, "failure_reason": e.failure_reason,
         "problem_errors": "\n".join(e.problem_errors), "block_reason": e.block_reason, "suggestion": e.suggestion,
         "attempt_count": e.attempt_count, "llm_attempts": e.llm_attempts, "attempts": attempts,
+        "resolution_attempts": "; ".join(_short_attempt(i, e.run_id) for i in e.resolution_attempts),
+        "diff_excerpt": e.diff_excerpt,
     }
-    return [_cell(values[c]) for c in ERROR_CSV_COLUMNS]
+    return [_cell(values[c], CSV_DIFF_LIMIT if c == "diff_excerpt" else CSV_CELL_LIMIT) for c in ERROR_CSV_COLUMNS]
 
 
 def write_error_cases_csv(errors: Iterable[ErrorCaseRecord], path: Union[str, Path]) -> Path:
@@ -634,8 +656,10 @@ class ErrorCaseStore:
         return next((a for a in self.iter_attempts() if a.id == attempt_id), None)
 
     def attempts_of(self, error: ErrorCaseRecord) -> list[FixAttemptRecord]:
-        """The attempts of an error in its history order (+ the resolving one, + any that list it in error_ids)."""
+        """The attempts of an error in its history order (+ the resolution attempts, + the resolving one, + any that
+        list it in error_ids)."""
         order = [r.attempt_id for r in error.attempts]
+        order += [i for i in error.resolution_attempts if i not in order]
         if error.resolved_by and error.resolved_by not in order and not error.resolved_by.startswith("step:"):
             order.append(error.resolved_by)
         found: dict[str, FixAttemptRecord] = {}

@@ -429,10 +429,10 @@ def _when(at) -> str:
     return at.strftime("%Y-%m-%d %H:%M") if at else "-"
 
 
-def _attempt_line(n: int, a, resolving: bool) -> list[str]:
+def _attempt_line(n: int, a, resolving: bool, part_of: bool = False) -> list[str]:
     who = " ".join(x for x in (a.fix_method, a.resolver_id) if x and x != "none")
-    head = f"  {n}. {a.id}  {who or '-'}  {a.outcome}  [{a.change.change_kind}]" + ("  ← resolved it" if resolving
-                                                                                  else "")
+    mark = "  ← resolved it" if resolving else "  ← part of the resolution (kept in the tree)" if part_of else ""
+    head = f"  {n}. {a.id}  {who or '-'}  {a.outcome}  [{a.change.change_kind}]" + mark
     out = [head]
     if a.description:
         out.append(f"     what:    {_trim(a.description, 300)}")
@@ -483,16 +483,27 @@ def _error_view(e, attempts: list, case: Optional[CatalogCase], all_diffs: bool)
     for x in e.notes[:10]:
         lines.append(f"  note:      {_trim(x, 300)}")
     lines.append("")
+    chain = [i for i in e.resolution_attempts if i != e.resolved_by] if len(e.resolution_attempts) > 1 else []
     if attempts:
         lines.append(f"attempts ({len(attempts)}, in order):")
         for n, a in enumerate(attempts, 1):
-            lines += _attempt_line(n, a, a.id == e.resolved_by)
-            if all_diffs and a.id != e.resolved_by:
+            lines += _attempt_line(n, a, a.id == e.resolved_by, a.id in chain)
+            if all_diffs and a.id != e.resolved_by and a.id not in chain:
                 lines += ["     --- diff" + (" (truncated)" if a.diff_truncated else ""), a.diff or "(no diff)"]
     else:
         lines.append("(no fix attempts recorded for this error)")
     res = next((a for a in attempts if a.id == e.resolved_by), None)
-    if res is not None:
+    by_id = {a.id: a for a in attempts}
+    if chain and all(i in by_id for i in e.resolution_attempts):
+        # several attempts together resolved it (an earlier one stayed in the tree): all their diffs, in run order
+        lines += ["", (f"--- resolution: {len(e.resolution_attempts)} attempts whose changes stayed in the tree "
+                       "(run order)")]
+        for i in e.resolution_attempts:
+            a = by_id[i]
+            role = "resolved it" if i == e.resolved_by else a.outcome
+            lines += [f"--- diff of {a.id} ({role})" + (" (truncated)" if a.diff_truncated else ""),
+                      a.diff or "(no diff)"]
+    elif res is not None:
         lines += ["", f"--- resolving diff ({res.id})" + (" (truncated)" if res.diff_truncated else ""),
                   res.diff or "(no diff)"]
     elif e.diff_excerpt:
@@ -866,7 +877,17 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
         att = None
         if latest is not None and latest.attempt_id and not latest.attempt_id.startswith("step:"):
             att = next(store.iter_attempts(ids={latest.attempt_id}), None)
-        if att is not None:
+        chain = []
+        if latest is not None and latest.attempt_ids:
+            chain = list(store.iter_attempts(ids=set(latest.attempt_ids)))
+        if att is not None and len(chain) > 1:
+            lines += ["", (f"--- latest successful fix: {len(chain)} attempts whose changes stayed in the tree "
+                           f"(run order, {att.id} resolved it)")]
+            for a in chain:
+                who = " ".join(x for x in (a.fix_method, a.resolver_id) if x)
+                lines += [f"--- {a.id} ({a.project or '-'}, {who}, {a.outcome}, {a.change.change_kind})"
+                          + (" (truncated)" if a.diff_truncated else ""), a.diff or "(no diff)"]
+        elif att is not None:
             who = " ".join(x for x in (att.fix_method, att.resolver_id) if x)
             lines += ["", f"--- latest successful fix: {att.id} ({att.project or '-'}, {who}, "
                           f"{att.change.change_kind})" + (" (truncated)" if att.diff_truncated else ""),

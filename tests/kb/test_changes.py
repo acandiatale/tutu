@@ -4,7 +4,14 @@ from __future__ import annotations
 import pytest
 
 from sbmig.core.models import FileChange
-from sbmig.kb.changes import classify_diff, diff_for_file, file_changes_from_diff, file_type, path_matches
+from sbmig.kb.changes import (
+    classify_diff,
+    combine_changes,
+    diff_for_file,
+    file_changes_from_diff,
+    file_type,
+    path_matches,
+)
 from sbmig.kb.harvest import changes_as_diff
 from sbmig.kb.labels import label_changes
 
@@ -178,3 +185,14 @@ def test_file_changes_from_diff_feed_the_labels():
     assert [(c.op, c.content) for c in file_changes_from_diff(new)] == [("create", "class C {}")]
     moved = "diff --git a/a.txt b/b.txt\nrename from a.txt\nrename to b.txt\n"
     assert [(c.op, c.path, c.new_path) for c in file_changes_from_diff(moved)] == [("rename", "a.txt", "b.txt")]
+
+
+def test_combine_changes_reads_several_attempts_as_one():
+    rename, edit = classify_diff(RENAME_DIFF), classify_diff(CODE_EDIT_DIFF)
+    both = combine_changes([edit, rename, rename])
+    assert both.change_kind == "mixed" and both.files == [EC_FILE] and both.file_types == ["java"]
+    assert [(p.old, p.new, p.count) for p in both.replace_pairs] == [("clientIp", "remoteClientIp", 2)]
+    assert both.lines_added == edit.lines_added + 2 * rename.lines_added
+    assert combine_changes([rename, rename]).change_kind == "text_replace"
+    assert combine_changes([rename, classify_diff("")]).change_kind == "text_replace"      # `none` is ignored
+    assert combine_changes([]).change_kind == "none"

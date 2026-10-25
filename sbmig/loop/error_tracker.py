@@ -196,6 +196,8 @@ class _Rec:
     resolver_id: str = ""
     resolved_by: Optional[str] = None      # attempt key, or "step:<id>"
     resolved_att: Optional[str] = None     # attempt key of the resolver (FixAttemptRecord id at finalize)
+    chain: list[str] = field(default_factory=list)              # attempt keys of the resolution (run order)
+    open_from: int = 0                     # len(_att_order) when it (re)appeared: earlier attempts predate it
     targeted: bool = False
     description: str = ""
     attempt_keys: list[str] = field(default_factory=list)
@@ -225,6 +227,7 @@ class _Att:
     targets: list[int] = field(default_factory=list)            # record keys of its cluster's errors
     target_ids: set = field(default_factory=set)                # identities of its cluster's errors
     scored_at: str = ""
+    scored_obs: int = -1                   # index of the observation that scored it
     remaining: list[str] = field(default_factory=list)
     scoring_note: str = ""
 
@@ -359,7 +362,7 @@ class ErrorTracker:
         void = void or (not build.ok and (build.timed_out or not build.errors))
         atts = [self._ensure_att(a) for a in scored]
         for x in atts:
-            x.scored_at = lab
+            x.scored_at, x.scored_obs = lab, len(self._obs)
             if not build.ok and not build.errors:
                 x.scoring_note = f"scored at {lab}: the build failed without parseable errors"
             elif build.timed_out:
@@ -406,7 +409,8 @@ class ErrorTracker:
                 r = pairs.get(i)
                 if r is None:
                     r = _Rec(key=len(self._recs), identity=ident, occurrence=len(recs), error=_cap_error(e),
-                             first_seen=lab, first_phase=phase, last_seen=lab, last_obs=idx, min_rank=rank)
+                             first_seen=lab, first_phase=phase, last_seen=lab, last_obs=idx, min_rank=rank,
+                             open_from=len(self._att_order))
                     self._recs.append(r)
                     recs.append(r)
                     by = [x.key for x in atts if norm_file(e.file) and norm_file(e.file) in _touched(x.att)]
@@ -416,7 +420,7 @@ class ErrorTracker:
                     if r.status != "open":
                         r.note(f"reopened at {lab}: was {r.status} at {r.resolved_at}"
                                + (f" by {r.resolved_by}" if r.resolved_by else f" ({r.fix_method})"))
-                        self._reopen(r)
+                        self._reopen(r, len(self._att_order))
                     r.error = _cap_error(e)
                     r.last_seen, r.last_obs = lab, idx
                     r.builds_present += 1
@@ -452,10 +456,11 @@ class ErrorTracker:
         return out
 
     @staticmethod
-    def _reopen(r: _Rec) -> None:
+    def _reopen(r: _Rec, open_from: int) -> None:
         r.status, r.state = "open", "present"
         r.resolved_at, r.resolved_phase, r.fix_method, r.resolver_id = "", None, "none", ""
         r.resolved_by, r.resolved_att, r.targeted, r.description = None, None, False, ""
+        r.chain, r.open_from = [], open_from
 
     @staticmethod
     def _in_scope(r: _Rec, build: BuildResult, target: Optional[str]) -> bool:
@@ -509,6 +514,7 @@ class ErrorTracker:
             x = (both or touched or targeted)[0]
             r.status, r.targeted = "resolved", x in targeted
             self._resolved_by_attempt(r, x)
+            self._set_chain(r, x, idx)
             if x not in targeted:
                 r.note(f"its file was changed by attempt {x.key}, whose cluster did not contain it")
             elif f and x not in touched and touched:
@@ -517,6 +523,7 @@ class ErrorTracker:
             x = cands[0]
             r.status, r.targeted = "resolved_indirectly", False
             self._resolved_by_attempt(r, x)
+            self._set_chain(r, x, idx)
             r.note("gone after attempt(s) that did not target it: " + ", ".join(c.key for c in cands[:MAX_LIST]))
         elif steps:
             r.status, r.targeted = "resolved_indirectly", False
@@ -535,6 +542,26 @@ class ErrorTracker:
     def _resolved_by_attempt(r: _Rec, x: _Att) -> None:
         r.fix_method, r.resolver_id = _method(x.att), _resolver(x.att)
         r.resolved_by, r.resolved_att = x.key, x.key
+
+    def _set_chain(self, r: _Rec, x: _Att, idx: int) -> None:
+        """The resolution of `r` = the resolver `x` plus every earlier-or-same-span attempt since `r` (re)appeared whose
+        change is still in the tree (applied, not reverted) and that aimed at `r` or changed its file: a `no_change`
+        attempt that added the import the resolver's edit needs is part of the fix (2026-10-25)."""
+        f = norm_file(r.error.file)
+        chain: list[str] = []
+        for y in self._att_order[r.open_from:]:
+            if y is not x:
+                a = y.att
+                if y.scored_obs < 0 or y.scored_obs > idx or not a.applied or a.outcome in ("reverted", "apply_failed"):
+                    continue
+                if not (r.key in y.targets or r.identity in y.target_ids or (f and f in _touched(a))):
+                    continue
+            chain.append(y.key)
+        if x.key not in chain:                         # x predates the (re)appearance (defensive): it still resolved it
+            chain.append(x.key)
+        r.chain = chain
+        if len(chain) > 1:
+            r.note(f"resolved by {len(chain)} attempts whose changes stayed in the tree: {', '.join(chain)}")
 
     # ------------------------------------------------------------------ internals: finalize
     def _finalize(self, blocked: list[BlockedItem], run_id: str
@@ -670,6 +697,7 @@ class ErrorTracker:
             if r.resolved_att and r.resolved_att in atts:
                 a = atts[r.resolved_att]
                 rec.resolved_by = aid[r.resolved_att]
+                rec.resolution_attempts = [aid[k] for k in r.chain if k in aid and k in atts] or [aid[r.resolved_att]]
                 how = a.description or f"{a.fix_method} {a.resolver_id}".strip()
                 rec.description = how if r.targeted else (
                     f"its file was changed by attempt {a.attempt_id}: {how}" if r.status == "resolved"

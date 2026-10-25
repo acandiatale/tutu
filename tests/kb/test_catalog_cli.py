@@ -13,7 +13,7 @@ from sbmig.kb.catalog import case_id_for
 from sbmig.kb.cli import parse_action
 
 from .helpers import EC_L2, RENAME_DIFF, recipe_yaml
-from .test_catalog import L1_REQ, failed_then_fixed, rec, unresolved
+from .test_catalog import L1_REQ, failed_then_fixed, rec, ref, unresolved
 
 runner = CliRunner()
 CID = case_id_for(EC_L2)
@@ -85,6 +85,24 @@ def test_cases_show_is_readable(kb):
     assert data["id"] == CID and data["evidence"]["seen"] == 2
     assert _run(kb.root, "cases", "show", EC_L2).output.startswith(f"case {CID}")
     assert _run(kb.root, "cases", "show", "nope").exit_code == 1
+
+
+def test_cases_show_prints_every_attempt_of_the_latest_multi_attempt_fix(kb):
+    # 2026-10-25: the latest fix took two attempts (a0 no_change stayed in the tree) → both diffs, in run order
+    kb.append_error_cases(
+        [rec("c-1", run="r5", project="card-api",
+             attempts=[ref("r5:a0", "llm", "no_change", "still there"), ref("r5:a1", "llm", "improved")],
+             resolution_attempts=["r5:a0", "r5:a1"])],
+        [FixAttemptRecord(id="r5:a0", run_id="r5", project="card-api", fix_method="llm", resolver_id="fake-model",
+                          outcome="no_change", applied=True, diff="+import com.example.legacy.RequestSupport;"),
+         FixAttemptRecord(id="r5:a1", run_id="r5", project="card-api", fix_method="llm", resolver_id="fake-model",
+                          outcome="improved", applied=True, diff=RENAME_DIFF)])
+    case = kb.catalog().get(CID)
+    assert case.evidence.fixes[0].attempt_ids == ["r5:a0", "r5:a1"]
+    out = _run(kb.root, "cases", "show", CID).output
+    assert "--- latest successful fix: 2 attempts whose changes stayed in the tree (run order, r5:a1 resolved it)" in out
+    assert out.index("--- r5:a0 (card-api, llm fake-model, no_change") < out.index("--- r5:a1 (card-api")
+    assert "+import com.example.legacy.RequestSupport;" in out and "+        return req.remoteClientIp();" in out
 
 
 def test_cases_show_ambiguous_prefix(kb):
