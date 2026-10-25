@@ -105,7 +105,7 @@ def test_redact_none():
 
 
 def test_credit_recipes_and_patches(kb, ws, profile):
-    r = kb.add_recipe(recipe_yaml(), KBRecipe(id="com.company.kb.RenameFooToBar", path="", signatures=[L1]))
+    r = kb.add_recipe(recipe_yaml(), KBRecipe(id="RenameFooToBar", path="", signatures=[L1]))
     cid = kb.record_case(make_case())
     attempts = [
         make_attempt("r1", kind=DecisionKind.KB_RECIPE, recipe_ids=[r.id, "org.openrewrite.Builtin"], changes=[]),
@@ -126,8 +126,8 @@ def test_credit_recipes_and_patches(kb, ws, profile):
 def test_recipe_candidate_valid_yaml(kb, ws, profile):
     llm = FakeLLM(VALID_RECIPE)
     res = kb.harvest(_phase(make_attempt()), profile, ws, llm=llm)
-    assert res.candidates_created == ["com.company.kb.RenameFooToBar"]
-    rec = kb.get_recipe("com.company.kb.RenameFooToBar")
+    assert res.candidates_created == ["RenameFooToBar"]
+    rec = kb.get_recipe("RenameFooToBar")
     assert rec.status == "candidate"
     assert rec.signatures == [L1, L2] and rec.source_case_ids == res.cases_created
     assert rec.description == "Foo moved to Bar in library 2.0."
@@ -157,19 +157,38 @@ def test_recipe_candidate_disallowed_type_rejected(kb, ws, profile):
 
 def test_recipe_candidate_fenced_yaml(kb, ws, profile):
     res = kb.harvest(_phase(make_attempt()), profile, ws, llm=FakeLLM("```yaml\n" + VALID_RECIPE + "```"))
-    assert res.candidates_created == ["com.company.kb.RenameFooToBar"]
-    text = (kb.root / "recipes" / "candidates" / "com.company.kb.RenameFooToBar.yml").read_text()
+    assert res.candidates_created == ["RenameFooToBar"]
+    text = (kb.root / "recipes" / "candidates" / "RenameFooToBar.yml").read_text()
     assert "```" not in text and text.startswith("type: specs.openrewrite.org")
 
 
 def test_recipe_candidate_existing_recipe_is_linked(kb, ws, profile):
-    kb.add_recipe(recipe_yaml(), KBRecipe(id="com.company.kb.RenameFooToBar", status="active", path="",
+    kb.add_recipe(recipe_yaml(), KBRecipe(id="RenameFooToBar", status="active", path="",
                                           signatures=["compile|old"]))
     res = kb.harvest(_phase(make_attempt()), profile, ws, llm=FakeLLM(VALID_RECIPE))
     assert res.candidates_created == []
-    rec = kb.get_recipe("com.company.kb.RenameFooToBar")
+    rec = kb.get_recipe("RenameFooToBar")
     assert rec.status == "active" and L1 in rec.signatures and res.cases_created[0] in rec.source_case_ids
     assert kb.get_case(res.cases_created[0]).recipe_candidate_id == rec.id
+
+
+def test_recipe_candidate_legacy_prefix_from_llm_is_dropped(kb, ws, profile):
+    answer = VALID_RECIPE.replace("name: RenameFooToBar", "name: com.company.kb.RenameFooToBar")
+    res = kb.harvest(_phase(make_attempt()), profile, ws, llm=FakeLLM(answer))
+    assert res.candidates_created == ["RenameFooToBar"]
+    text = (kb.root / "recipes" / "candidates" / "RenameFooToBar.yml").read_text()
+    assert "name: RenameFooToBar\n" in text and "com.company.kb" not in text
+
+
+def test_recipe_candidate_links_to_legacy_named_recipe(kb, ws, profile):
+    # a KB written before 2026-10-25 holds com.company.kb.RenameFooToBar: the same fix links to it, no twin recipe
+    kb.add_recipe(recipe_yaml("com.company.kb.RenameFooToBar"),
+                  KBRecipe(id="com.company.kb.RenameFooToBar", status="active", path="", signatures=["compile|old"]))
+    res = kb.harvest(_phase(make_attempt()), profile, ws, llm=FakeLLM(VALID_RECIPE))
+    assert res.candidates_created == [] and [r.id for r in kb.list_recipes()] == ["com.company.kb.RenameFooToBar"]
+    assert kb.get_recipe("RenameFooToBar").id == "com.company.kb.RenameFooToBar"
+    assert kb.get_recipe("com.company.kb.RenameFooToBar").id == "com.company.kb.RenameFooToBar"
+    assert kb.get_case(res.cases_created[0]).recipe_candidate_id == "com.company.kb.RenameFooToBar"
 
 
 def test_recipe_candidates_skipped_when_not_mechanical_or_disabled(kb_cfg, ws, profile):

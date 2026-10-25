@@ -55,7 +55,7 @@ from .catalog import CATALOG_DIR, VIEWS_DIR, CaseCatalog
 from .error_cases import ErrorCaseStore
 from .labels import symbol_for_error, symbol_for_errors
 from .ledger import Ledger, SymbolIndex, advisory_record, blocked_record, unresolved_records
-from .recipes import recipe_names_in_yaml
+from .recipes import LEGACY_NAME_PREFIX, recipe_names_in_yaml
 
 log = logging.getLogger("sbmig.kb")
 
@@ -420,9 +420,14 @@ class FileKnowledgeBase:
         return out
 
     def get_recipe(self, recipe_id: str) -> Optional[KBRecipe]:
-        for r in self.list_recipes():
-            if r.id == recipe_id or Path(r.path).stem == recipe_id:
-                return r
+        """By id or file stem; `Foo` also finds a legacy `com.company.kb.Foo` (and the other way round)."""
+        alt = (recipe_id[len(LEGACY_NAME_PREFIX):] if recipe_id.startswith(LEGACY_NAME_PREFIX)
+               else LEGACY_NAME_PREFIX + recipe_id if recipe_id and "." not in recipe_id else None)
+        recipes = self.list_recipes()
+        for want in (recipe_id, alt):
+            for r in recipes if want else ():
+                if r.id == want or Path(r.path).stem == want:
+                    return r
         return None
 
     def _active_with_names(self) -> list[tuple[KBRecipe, list[str]]]:

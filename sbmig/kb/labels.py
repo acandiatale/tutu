@@ -695,7 +695,7 @@ def _recipe_name(*parts: str) -> str:
     if len(name) > 90:
         h = hashlib.sha1(name.encode()).hexdigest()[:8]
         name = name[:80] + "H" + h
-    return f"com.company.kb.{name}"
+    return name                                   # one PascalCase word (sbmig.kb.recipes: KB recipe names)
 
 
 def _fqcn_ok(fqcn: str) -> bool:

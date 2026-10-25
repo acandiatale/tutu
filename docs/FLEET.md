@@ -89,7 +89,7 @@ project k+2…: active recipe is part of every plan; the error never reaches tri
   candidate prompt (which now also shows the labels).
 * **`method-rename` → `ChangeMethodName`** (round 5): all call sites (`X.old(` and method references `x::old`) must
   agree on `old → new`; the recipe is `methodPattern: "<owner FQCN> <old>(..)"`, `newMethodName`,
-  `matchOverrides: true`, named `com.company.kb.<OwnerSimple><Old>To<New>`. javac prints imported types by their
+  `matchOverrides: true`, named `<OwnerSimple><Old>To<New>`. javac prints imported types by their
   simple name (`location: class LegacyRequestHelper`) and argument types too, so harvest resolves the owner into
   `KBCase.symbol_owner` from the changed files' imports (explicit import, then wildcard via `locate_class`, then
   same package) and the pattern never carries argument types.
@@ -130,7 +130,7 @@ signature at the end of a run (`unresolved`). File names are basenames; no absol
   "MoneyJsonComponent.java"
  ],
  "case_id": "20261018-f16da61b53",
- "recipe_id": "com.company.kb.JsonComponentToJacksonComponent",
+ "recipe_id": "JsonComponentToJacksonComponent",
  "model": "fake",
  "notes": []
 }
@@ -155,7 +155,7 @@ with a different L1/L2 signature — starts with e.g.
 ```
 [symbol JsonComponent] fixed in 3 project(s) by annotation-replace, type-rename:
 org.springframework.boot.jackson.JsonComponent → org.springframework.boot.jackson.JacksonComponent
-(recipe com.company.kb.JsonComponentToJacksonComponent)
+(recipe JsonComponentToJacksonComponent)
 ```
 
 `sbmig kb symbols` prints the index.

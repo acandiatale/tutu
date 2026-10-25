@@ -92,7 +92,7 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
         decision=TriageDecision(
             cluster_id="c",
             kind=DecisionKind.KB_RECIPE,
-            recipe_ids=["com.company.kb.Foo", "org.openrewrite.Builtin"],
+            recipe_ids=["Foo", "com.company.kb.Legacy", "org.openrewrite.Builtin"],
         ),
     )
     patch = att.model_copy(
@@ -105,7 +105,7 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
     rw = RewriteResult(
         ok=True,
         recipes=[],
-        recipes_applied={"com.company.kb.Bar": ["A.java"], "org.openrewrite.X": ["B.java"]},
+        recipes_applied={"Bar": ["A.java"], "org.openrewrite.X": ["B.java"]},
     )
     phase = PhaseResult(phase=Phase.SPRING, attempts=[att, patch], rewrite_results=[rw], build_ok=True)
     fake = FakeRun(
@@ -126,7 +126,7 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
     assert a.llm_calls == 2 and a.llm_input_tokens == 20 and a.kb_cases_created == ["c1"]
     assert a.kb_candidates_created == ["r1"] and a.kb_recipes_promoted == ["r0"] and a.exit_code == 0
     assert b.blocked == 1 and b.blocked_reasons == ["external_javax_api:com.co:legacy"] and b.unresolved == 1
-    assert b.kb_recipes_used == ["com.company.kb.Foo", "case:20260101-aaa", "com.company.kb.Bar"]
+    assert b.kb_recipes_used == ["Foo", "com.company.kb.Legacy", "case:20260101-aaa", "Bar"]
     assert state.llm_calls_total == 2
     assert fake.calls[0][2] == f"{state.fleet_id}-001-alpha" and a.run_id == fake.calls[0][2]
     fleet = out / "fleet"

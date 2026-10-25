@@ -18,7 +18,7 @@ def _run(kb_dir, *args):
 
 def _seed(kb: FileKnowledgeBase):
     cid = kb.record_case(make_case())
-    kb.add_recipe(recipe_yaml(), KBRecipe(id="com.company.kb.RenameFooToBar", path="", signatures=[L1],
+    kb.add_recipe(recipe_yaml(), KBRecipe(id="RenameFooToBar", path="", signatures=[L1],
                                           description="rename"))
     return cid
 
@@ -26,11 +26,11 @@ def _seed(kb: FileKnowledgeBase):
 def test_list_show_promote_reject(kb):
     cid = _seed(kb)
     r = _run(kb.root, "list")
-    assert r.exit_code == 0 and "candidate com.company.kb.RenameFooToBar" in r.output
+    assert r.exit_code == 0 and "candidate RenameFooToBar" in r.output
     r = _run(kb.root, "list", "--status", "active")
     assert "no recipes" in r.output
     r = _run(kb.root, "list", "--json")
-    assert json.loads(r.output)[0]["id"] == "com.company.kb.RenameFooToBar"
+    assert json.loads(r.output)[0]["id"] == "RenameFooToBar"
     r = _run(kb.root, "list", "--cases")
     assert cid in r.output
     assert json.loads(_run(kb.root, "list", "--cases", "--json").output)[0]["id"] == cid
@@ -38,17 +38,17 @@ def test_list_show_promote_reject(kb):
 
     r = _run(kb.root, "show", cid)
     assert json.loads(r.output)["id"] == cid
-    r = _run(kb.root, "show", "com.company.kb.RenameFooToBar")
+    r = _run(kb.root, "show", "RenameFooToBar")
     assert "ChangeType" in r.output and '"status": "candidate"' in r.output
     assert _run(kb.root, "show", "nope").exit_code == 1
 
-    r = _run(kb.root, "promote", "com.company.kb.RenameFooToBar")
+    r = _run(kb.root, "promote", "RenameFooToBar")
     assert r.exit_code == 0 and "promoted" in r.output
-    assert kb.get_recipe("com.company.kb.RenameFooToBar").status == "active"
+    assert kb.get_recipe("RenameFooToBar").status == "active"
     assert _run(kb.root, "promote", "missing").exit_code == 1
-    r = _run(kb.root, "reject", "com.company.kb.RenameFooToBar", "--reason", "noisy")
-    assert r.exit_code == 0 and kb.get_recipe("com.company.kb.RenameFooToBar").status == "rejected"
-    assert "noisy" in _run(kb.root, "show", "com.company.kb.RenameFooToBar").output
+    r = _run(kb.root, "reject", "RenameFooToBar", "--reason", "noisy")
+    assert r.exit_code == 0 and kb.get_recipe("RenameFooToBar").status == "rejected"
+    assert "noisy" in _run(kb.root, "show", "RenameFooToBar").output
     assert _run(kb.root, "reject", "missing").exit_code == 1
 
 
@@ -61,7 +61,7 @@ def test_reindex_stats_match(kb):
     st = json.loads(_run(kb.root, "stats", "--json").output)
     assert st["cases"] == 1 and st["recipes_candidate"] == 1
     m = json.loads(_run(kb.root, "match", L1).output)
-    assert m["cases"] == [cid] and m["candidate_recipe_ids"] == ["com.company.kb.RenameFooToBar"]
+    assert m["cases"] == [cid] and m["candidate_recipe_ids"] == ["RenameFooToBar"]
     assert m["replayable"] == []
     m = json.loads(_run(kb.root, "match", "weird").output)
     assert m["cases"] == []

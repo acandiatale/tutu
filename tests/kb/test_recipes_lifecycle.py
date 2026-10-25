@@ -12,7 +12,7 @@ from sbmig.kb import FileKnowledgeBase
 from .helpers import L1, make_case, recipe_yaml, with_kb
 
 
-def _cand(kb, name="com.company.kb.RenameFooToBar", sigs=(L1,), status="candidate"):
+def _cand(kb, name="RenameFooToBar", sigs=(L1,), status="candidate"):
     return kb.add_recipe(recipe_yaml(name), KBRecipe(id=name, status=status, path="", signatures=list(sigs)))
 
 
@@ -48,23 +48,23 @@ def test_promote_and_reject(kb):
     again = kb.promote(r.id)
     assert again.status == "active" and kb.recipe_meta_extra(r.id)["rejected_reason"] == "too broad"
     with pytest.raises(KeyError):
-        kb.promote("com.company.kb.Missing")
+        kb.promote("Missing")
     with pytest.raises(KeyError):
-        kb.reject("com.company.kb.Missing")
+        kb.reject("Missing")
 
 
 def test_active_recipe_ids_parses_multi_doc_and_hand_added(kb):
     kb.ensure_layout()
     (kb.root / "recipes" / "active" / "hand.yml").write_text(
-        recipe_yaml("com.company.kb.First") + "---\n" + recipe_yaml("com.company.kb.Second"))
+        recipe_yaml("First") + "---\n" + recipe_yaml("Second"))
     (kb.root / "recipes" / "active" / "broken.yml").write_text("a: [x")
     ids = kb.active_recipe_ids()
-    assert ids == ["com.company.kb.First", "com.company.kb.Second"]   # broken.yml skipped
+    assert ids == ["First", "Second"]   # broken.yml skipped
     assert [p.name for p in kb.active_recipe_files()] == ["hand.yml"]
     assert kb.get_recipe("broken").status == "active"       # still listed (id falls back to the stem)
-    rec = kb.get_recipe("com.company.kb.First")
+    rec = kb.get_recipe("First")
     assert rec.status == "active" and rec.path.endswith("hand.yml")
-    assert kb.get_recipe("hand").id == "com.company.kb.First"
+    assert kb.get_recipe("hand").id == "First"
 
 
 def test_unreadable_meta_falls_back(kb):
@@ -84,7 +84,7 @@ def test_credit_and_auto_promote(kb):
     kb.credit_recipe(r.id, True, "p2")                       # 2 distinct projects (default threshold 2)
     cur = kb.get_recipe(r.id)
     assert cur.status == "active" and cur.success_count == 3 and cur.promoted_at is not None
-    kb.credit_recipe("com.company.kb.Unknown", True, "p1")   # ignored
+    kb.credit_recipe("Unknown", True, "p1")   # ignored
 
 
 def test_no_auto_promote_after_failure(kb):
@@ -116,7 +116,7 @@ def test_export_import_merge(kb, kb_cfg, tmp_path):
 
     other = FileKnowledgeBase(with_kb(kb_cfg, dir=str(tmp_path / "kb2")))
     other_cid = other.record_case(make_case(signatures=["compile|x"], signatures_generic=["compile|x"]))
-    _cand(other, "com.company.kb.OtherRecipe", sigs=("compile|x",), status="active")
+    _cand(other, "OtherRecipe", sigs=("compile|x",), status="active")
     # same case + recipe present locally with different counters
     other.record_case(make_case(project_fingerprint="zz"))
     other.credit_recipe
@@ -124,18 +124,18 @@ def test_export_import_merge(kb, kb_cfg, tmp_path):
     assert counters["cases_added"] == 0 and counters["cases_merged"] == 1
     assert counters["recipes_added"] == 1 and counters["patterns_added"] == 1
     assert {c.id for c in other.iter_cases()} == {cid, other_cid}
-    assert other.get_recipe("com.company.kb.RenameFooToBar").status == "candidate"
-    assert other.get_recipe("com.company.kb.OtherRecipe").status == "active"
+    assert other.get_recipe("RenameFooToBar").status == "candidate"
+    assert other.get_recipe("OtherRecipe").status == "active"
     idx = json.loads((other.root / "index.json").read_text())
-    assert idx["l1"][L1] == [cid] and idx["recipes"][L1] == ["com.company.kb.RenameFooToBar"]
+    assert idx["l1"][L1] == [cid] and idx["recipes"][L1] == ["RenameFooToBar"]
 
     # merge again: recipe now merged, local status wins, counters merged
-    kb.credit_recipe("com.company.kb.RenameFooToBar", True, "proj-z")
+    kb.credit_recipe("RenameFooToBar", True, "proj-z")
     out2 = kb.export_zip(tmp_path / "kb-2.zip")
-    other.promote("com.company.kb.RenameFooToBar")
+    other.promote("RenameFooToBar")
     counters = other.import_zip(out2)
     assert counters["recipes_merged"] == 1
-    r = other.get_recipe("com.company.kb.RenameFooToBar")
+    r = other.get_recipe("RenameFooToBar")
     assert r.status == "active" and r.success_count == 1 and r.projects == ["proj-z"]
 
 

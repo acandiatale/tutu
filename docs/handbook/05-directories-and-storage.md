@@ -107,7 +107,7 @@ knowledge/
 
 ### 3.1 recipes/catalog.yml — 레시피 id 의 단일 원천
 
-`knowledge/recipes/catalog.yml` 은 sbmig 가 아는 모든 OpenRewrite 레시피 id 를 한 곳에 적은 목록입니다(불변식 5). `sbmig/plan/catalog.py` 의 `RecipeCatalog` 가 읽어 LLM 플랜 어드바이저의 허용 목록, 복합 레시피의 포함 관계(coverage), 프로파일 게이트를 만들고, `sbmig recipes list|show|check|sets` 가 이를 조회·검증합니다. 다만 **규칙 기반 플래너가 무엇을 실행할지는 카탈로그가 아니라** `config/default.yml` 의 `openrewrite.recipes` 세트와 `sbmig/triage/recipe_rules.yml` 의 반응형 규칙이 정합니다. 카탈로그는 그 둘이 참조하는 id 를 설명하고, 어긋나면 `sbmig recipes check` 가 실패합니다. KB 가 학습한 레시피(`com.company.kb.*`)는 카탈로그에 넣지 않고 `kb/` 에서 실시간으로 읽습니다.
+`knowledge/recipes/catalog.yml` 은 sbmig 가 아는 모든 OpenRewrite 레시피 id 를 한 곳에 적은 목록입니다(불변식 5). `sbmig/plan/catalog.py` 의 `RecipeCatalog` 가 읽어 LLM 플랜 어드바이저의 허용 목록, 복합 레시피의 포함 관계(coverage), 프로파일 게이트를 만들고, `sbmig recipes list|show|check|sets` 가 이를 조회·검증합니다. 다만 **규칙 기반 플래너가 무엇을 실행할지는 카탈로그가 아니라** `config/default.yml` 의 `openrewrite.recipes` 세트와 `sbmig/triage/recipe_rules.yml` 의 반응형 규칙이 정합니다. 카탈로그는 그 둘이 참조하는 id 를 설명하고, 어긋나면 `sbmig recipes check` 가 실패합니다. KB 가 학습한 레시피(`*`)는 카탈로그에 넣지 않고 `kb/` 에서 실시간으로 읽습니다.
 
 항목 스키마(version 1)의 필드는 다음과 같습니다.
 
@@ -315,7 +315,7 @@ KB 루트는 `kb.dir`(기본 `kb`, 저장소 루트 기준) 입니다. 파일 �
   "outcome": "build_ok",
   "reuse_count": 0,
   "reuse_projects": [],
-  "recipe_candidate_id": "com.company.kb.JsonComponentToJacksonComponent",
+  "recipe_candidate_id": "JsonComponentToJacksonComponent",
   "tags": ["attempt:spring-1-1"],
   "model": "claude-sonnet-5"
 }
@@ -331,7 +331,7 @@ KB 루트는 `kb.dir`(기본 `kb`, 저장소 루트 기준) 입니다. 파일 �
 
 ```yaml
 type: specs.openrewrite.org/v1beta/recipe
-name: com.company.kb.JsonComponentToJacksonComponent
+name: JsonComponentToJacksonComponent
 displayName: Migrate Spring Boot JsonComponent to JacksonComponent
 description: Rename org.springframework.boot.jackson.JsonComponent to JacksonComponent for Spring Boot 4.1 compatibility.
 recipeList:
@@ -342,9 +342,9 @@ recipeList:
 
 ```json
 {
-  "id": "com.company.kb.JsonComponentToJacksonComponent",
+  "id": "JsonComponentToJacksonComponent",
   "status": "active",
-  "path": ".../kb/recipes/active/com.company.kb.JsonComponentToJacksonComponent.yml",
+  "path": ".../kb/recipes/active/JsonComponentToJacksonComponent.yml",
   "signatures": ["compile|cannot_find_symbol|class JsonComponent|package org.springframework.boot.jackson",
                  "compile|cannot_find_symbol|class JsonComponent",
                  "compile|cannot_find_symbol|JsonComponent"],
@@ -358,7 +358,7 @@ recipeList:
 **후보가 만들어지는 경로** (`kb.generate_recipe_candidates`):
 
 1. 결정적 컴파일(`kb.deterministic_candidates`, LLM 없음): 케이스의 수정 라벨이 기계적(1:1)이면 `sbmig/kb/labels.py` 의 `compile_recipe` 가 `ChangeType` / `ChangePackage` / `ChangeMethodName` / `AddDependency` / `ChangeDependency` / `UpgradeDependencyVersion` / `UpgradePluginVersion` / `ChangePropertyValue` / `ChangeSpringPropertyKey` 중 하나로 바꿉니다.
-2. 그렇지 않으면 레시피 모델(`LLM_RECIPE_MODEL`)에게 묻고(`sbmig/kb/prompts/recipe_candidate.md`), 답을 `sbmig/kb/recipes.py` 의 화이트리스트로 엄격 검증합니다. 이름은 `com.company.kb.` 접두사여야 하고 항목은 최대 12개, 알 수 없는 레시피·옵션·스크립트처럼 보이는 내용은 거부됩니다. "NONE" 답이면 후보를 만들지 않습니다.
+2. 그렇지 않으면 레시피 모델(`LLM_RECIPE_MODEL`)에게 묻고(`sbmig/kb/prompts/recipe_candidate.md`), 답을 `sbmig/kb/recipes.py` 의 화이트리스트로 엄격 검증합니다. 이름은 점(.) 없는 PascalCase 한 단어여야 하고(예: `JsonComponentToJacksonComponent`; OpenRewrite·회사 레시피 이름은 모두 점이 있는 전체 이름이라 KB 레시피가 그 이름을 가로챌 수 없습니다. 2026-10-25 이전에 만든 `…` 이름도 그대로 읽히고, LLM이 그 접두사를 붙여 답하면 떼고 저장합니다) 항목은 최대 12개, 알 수 없는 레시피·옵션·스크립트처럼 보이는 내용은 거부됩니다. "NONE" 답이면 후보를 만들지 않습니다.
 
 **승격(promote) 흐름.**
 
@@ -400,7 +400,7 @@ flowchart LR
 - id: example-pattern
   match:
     signature_regex: "compile\\|cannot_find_symbol\\|.*SomeOldType"
-  recipes: [com.company.kb.SomeRecipe]     # kb.use_active_recipes 일 때 활성 레시피처럼 추가
+  recipes: [SomeRecipe]     # kb.use_active_recipes 일 때 활성 레시피처럼 추가
   handler_ids: [add-known-dependency]      # 트리아지에 핸들러 후보로 전달
   hints: ["SomeOldType 은 NewType 으로 바뀌었습니다"]   # LLM 프롬프트 힌트
 ```
@@ -416,13 +416,13 @@ flowchart LR
 `<kb.dir>/ledger.jsonl` 은 한 줄에 `ResolutionRecord` JSON 하나씩, 추가만 하는 파일입니다. "프로젝트 P 에서 오류 사례 S 를 R 로 해결(또는 차단)했다"는 기록이며, 500개 프로젝트 운영에서 무엇을 자동화해야 하는지 알려 주는 핵심 자산입니다. 실제 줄(`out/fleet-demo/kb/ledger.jsonl`):
 
 ```json
-{"id":"3ecc753544c5a058","at":"2026-10-18T04:49:10.613055Z","project":"order-api","project_fingerprint":"04ec0c98792d3471","run_id":"fleet-20261018-134722-003-boot3","case_type":"spring_boot","phase":"spring","signature":"compile|cannot_find_symbol|class JsonComponent|package org.springframework.boot.jackson","signature_generic":"compile|cannot_find_symbol|JsonComponent","error_kind":"compile","symbol":"JsonComponent","resolution":"llm_patch","resolver_id":"fake","fix_labels":["annotation-replace","type-rename"],"replacement":"org.springframework.boot.jackson.JsonComponent → org.springframework.boot.jackson.JacksonComponent","outcome":"build_ok","files":["MoneyJsonComponent.java"],"case_id":"20261018-f16da61b53","recipe_id":"com.company.kb.JsonComponentToJacksonComponent","model":"fake","notes":[]}
+{"id":"3ecc753544c5a058","at":"2026-10-18T04:49:10.613055Z","project":"order-api","project_fingerprint":"04ec0c98792d3471","run_id":"fleet-20261018-134722-003-boot3","case_type":"spring_boot","phase":"spring","signature":"compile|cannot_find_symbol|class JsonComponent|package org.springframework.boot.jackson","signature_generic":"compile|cannot_find_symbol|JsonComponent","error_kind":"compile","symbol":"JsonComponent","resolution":"llm_patch","resolver_id":"fake","fix_labels":["annotation-replace","type-rename"],"replacement":"org.springframework.boot.jackson.JsonComponent → org.springframework.boot.jackson.JacksonComponent","outcome":"build_ok","files":["MoneyJsonComponent.java"],"case_id":"20261018-f16da61b53","recipe_id":"JsonComponentToJacksonComponent","model":"fake","notes":[]}
 ```
 
 같은 오류가 다음 프로젝트에서는 활성/후보 레시피로 해결되어 이렇게 남습니다.
 
 ```json
-{"project":"order-api","run_id":"fleet-20261018-134722-005-boot3-again","symbol":"JsonComponent","resolution":"plan_recipe","resolver_id":"com.company.kb.JsonComponentToJacksonComponent","outcome":"build_ok","notes":["active KB recipe ran in the plan's OpenRewrite step"]}
+{"project":"order-api","run_id":"fleet-20261018-134722-005-boot3-again","symbol":"JsonComponent","resolution":"plan_recipe","resolver_id":"JsonComponentToJacksonComponent","outcome":"build_ok","notes":["active KB recipe ran in the plan's OpenRewrite step"]}
 ```
 
 | 필드 | 의미 |
@@ -452,7 +452,7 @@ flowchart LR
     "replacement": "org.springframework.boot.jackson.JsonComponent → org.springframework.boot.jackson.JacksonComponent",
     "projects": 1, "project_keys": ["04ec0c98792d3471"],
     "cases": ["20261018-f16da61b53"],
-    "recipe_id": "com.company.kb.JsonComponentToJacksonComponent"}
+    "recipe_id": "JsonComponentToJacksonComponent"}
   ]
  }
 }

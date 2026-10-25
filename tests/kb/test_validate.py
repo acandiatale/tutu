@@ -3,12 +3,19 @@ from __future__ import annotations
 import pytest
 
 from sbmig.kb import WHITELIST, validate_recipe_yaml
-from sbmig.kb.recipes import is_none_answer, recipe_names_in_yaml, strip_fences
+from sbmig.kb.recipes import (
+    is_kb_recipe_name,
+    is_none_answer,
+    recipe_names_in_yaml,
+    short_recipe_name,
+    strip_fences,
+    with_recipe_name,
+)
 
 from .helpers import VALID_RECIPE
 
 
-def _recipe(entries: str, name: str = "com.company.kb.Fix", extra: str = "") -> str:
+def _recipe(entries: str, name: str = "Fix", extra: str = "") -> str:
     return (f"type: specs.openrewrite.org/v1beta/recipe\nname: {name}\ndisplayName: Fix\n"
             f"description: Does a fix.\n{extra}recipeList:\n{entries}")
 
@@ -16,7 +23,7 @@ def _recipe(entries: str, name: str = "com.company.kb.Fix", extra: str = "") -> 
 def test_valid_recipe():
     ok, errors, parsed = validate_recipe_yaml(VALID_RECIPE)
     assert ok, errors
-    assert parsed["name"] == "com.company.kb.RenameFooToBar"
+    assert parsed["name"] == "RenameFooToBar"
 
 
 def test_every_whitelisted_recipe_with_required_options_is_valid():
@@ -72,14 +79,16 @@ def test_too_many_entries():
     ("a: [b", "invalid YAML"),
     (VALID_RECIPE + "---\n" + VALID_RECIPE, "exactly one"),
     ("- a\n- b\n", "mapping"),
-    (VALID_RECIPE.replace("com.company.kb.RenameFooToBar", "org.evil.Recipe"), "must start with"),
-    (VALID_RECIPE.replace("com.company.kb.RenameFooToBar", "com.company.kb.lower.case"), "PascalCase"),
+    (VALID_RECIPE.replace("RenameFooToBar", "org.evil.Recipe"), "PascalCase"),
+    (VALID_RECIPE.replace("RenameFooToBar", "org.openrewrite.java.ChangeType"), "PascalCase"),
+    (VALID_RECIPE.replace("RenameFooToBar", "com.company.Fix"), "PascalCase"),
+    (VALID_RECIPE.replace("RenameFooToBar", "lower.case"), "PascalCase"),
     (VALID_RECIPE.replace("specs.openrewrite.org/v1beta/recipe", "specs.openrewrite.org/v1beta/style"), "type must"),
     (VALID_RECIPE.replace("displayName: Rename Foo to Bar\n", ""), "displayName"),
     (VALID_RECIPE.replace("description: Foo moved to Bar in library 2.0.\n", ""), "description"),
     (VALID_RECIPE + "preconditions: []\n", "unknown top-level"),
     (VALID_RECIPE + "tags: notalist\n", "tags"),
-    ("type: specs.openrewrite.org/v1beta/recipe\nname: com.company.kb.X\ndisplayName: X\ndescription: d\n"
+    ("type: specs.openrewrite.org/v1beta/recipe\nname: X\ndisplayName: X\ndescription: d\n"
      "recipeList: []\n", "non-empty"),
     (VALID_RECIPE.replace("Foo moved", "#!/bin/sh Foo moved"), "shell"),
 ])
@@ -112,7 +121,21 @@ def test_none_answers():
 
 
 def test_recipe_names_in_yaml():
-    assert recipe_names_in_yaml(VALID_RECIPE + "---\nname: com.company.kb.Two\n") == [
-        "com.company.kb.RenameFooToBar", "com.company.kb.Two"]
+    assert recipe_names_in_yaml(VALID_RECIPE + "---\nname: Two\n") == [
+        "RenameFooToBar", "Two"]
     assert recipe_names_in_yaml("a: [") == []
     assert recipe_names_in_yaml("type: specs.openrewrite.org/v1beta/style\nname: x\n") == []
+
+
+def test_kb_recipe_names_are_one_pascal_word_and_legacy_prefix_stays_valid():
+    # 2026-10-25: KB recipes are named `RenameFooToBar`; a KB written before keeps `com.company.kb.RenameFooToBar`
+    assert is_kb_recipe_name("RenameFooToBar") and is_kb_recipe_name("com.company.kb.RenameFooToBar")
+    for bad in ("org.openrewrite.java.ChangeType", "com.company.migrate.Run", "com.company.kb.lower", "rename", ""):
+        assert not is_kb_recipe_name(bad)
+    legacy = VALID_RECIPE.replace("name: RenameFooToBar", "name: com.company.kb.RenameFooToBar")
+    assert validate_recipe_yaml(legacy)[0]
+    assert short_recipe_name("com.company.kb.RenameFooToBar") == "RenameFooToBar"
+    assert short_recipe_name("org.openrewrite.java.ChangeType") == "org.openrewrite.java.ChangeType"
+    renamed = with_recipe_name(legacy, "RenameFooToBar")
+    assert renamed == VALID_RECIPE                         # only the top-level name line changes
+    assert "      oldFullyQualifiedTypeName: com.lib.Foo" in renamed

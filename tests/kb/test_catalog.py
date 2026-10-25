@@ -184,16 +184,16 @@ def test_other_kinds_name_and_layout(kb):
 
 def test_action_recipe_wins_and_follows_its_status(kb):
     add(kb, rec("e1"))                                               # would be a replace candidate on its own
-    kb.add_recipe(recipe_yaml("com.company.kb.RenameClientIp"),
-                  KBRecipe(id="com.company.kb.RenameClientIp", path="", signatures=[L1_REQ]))
+    kb.add_recipe(recipe_yaml("RenameClientIp"),
+                  KBRecipe(id="RenameClientIp", path="", signatures=[L1_REQ]))
     cat = kb.catalog()
     assert cat.refresh([EC_L2]) == [CID]
     c = cat.get(CID)
-    assert (c.action.kind, c.action.recipe_ids, c.status) == ("recipe", ["com.company.kb.RenameClientIp"], "candidate")
-    kb.promote("com.company.kb.RenameClientIp")
+    assert (c.action.kind, c.action.recipe_ids, c.status) == ("recipe", ["RenameClientIp"], "candidate")
+    kb.promote("RenameClientIp")
     assert cat.refresh_signatures([L1_REQ]) == [CID]
     assert cat.get(CID).status == "active"
-    kb.reject("com.company.kb.RenameClientIp")
+    kb.reject("RenameClientIp")
     cat.refresh([EC_L2])
     assert cat.get(CID).action.kind == "replace"                     # a rejected recipe no longer counts
 

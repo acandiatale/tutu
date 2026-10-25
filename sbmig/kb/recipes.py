@@ -1,8 +1,13 @@
 """Strict validation of declarative OpenRewrite recipes produced by the LLM (KB recipe candidates).
 
 Only a small whitelist of mechanical recipes is allowed, each with its required option keys (and a few known
-optional keys). Anything else — unknown recipe types, unknown/missing options, names outside
-``com.company.kb.``, more than 12 entries, ``$``/shell/script-looking content — is rejected.
+optional keys). Anything else — unknown recipe types, unknown/missing options, a name that is not one PascalCase
+word, more than 12 entries, ``$``/shell/script-looking content — is rejected.
+
+KB recipe names are one PascalCase word without dots (``LegacyRequestHelperClientIpToRemoteClientIp``, 2026-10-25).
+Every OpenRewrite and company recipe name is fully qualified (it has dots), so a KB recipe can never shadow one.
+Names written before that date carry the prefix ``com.company.kb.``; they stay valid and are read as they are,
+and ``short_recipe_name`` drops the prefix when the LLM still writes it.
 """
 from __future__ import annotations
 
@@ -12,7 +17,7 @@ from typing import Any, Optional
 import yaml
 
 RECIPE_TYPE = "specs.openrewrite.org/v1beta/recipe"
-NAME_PREFIX = "com.company.kb."
+LEGACY_NAME_PREFIX = "com.company.kb."         # KB recipe names before 2026-10-25 (still accepted)
 MAX_RECIPE_ENTRIES = 12
 MAX_VALUE_LEN = 300
 
@@ -53,7 +58,8 @@ WHITELIST: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 
 ALLOWED_TOP_KEYS = {"type", "name", "displayName", "description", "recipeList", "tags"}
-_NAME_RE = re.compile(r"^com\.company\.kb\.[A-Z][A-Za-z0-9]*$")
+_NAME_RE = re.compile(r"^(?:com\.company\.kb\.)?[A-Z][A-Za-z0-9]*$")
+_NAME_LINE_RE = re.compile(r"^name:[^\n]*$", re.MULTILINE)
 # anything that looks like interpolation, shell or script content (checked on the whole text)
 _DANGEROUS_TEXT_RE = re.compile(r"\$|`|<script|#!/|&&|\|\||\beval\(|\bexec\(|Runtime\.getRuntime|ProcessBuilder")
 # extra checks for option values
@@ -152,10 +158,10 @@ def validate_recipe_yaml(text: str) -> tuple[bool, list[str], Optional[dict]]:
     if doc.get("type") != RECIPE_TYPE:
         errors.append(f"type must be {RECIPE_TYPE}")
     name = doc.get("name")
-    if not isinstance(name, str) or not name.startswith(NAME_PREFIX):
-        errors.append(f"name must start with {NAME_PREFIX}")
-    elif not _NAME_RE.match(name):
-        errors.append(f"name must be {NAME_PREFIX}<PascalCase>: {name}")
+    if not isinstance(name, str) or not name.strip():
+        errors.append("name is required (one PascalCase word)")
+    elif not is_kb_recipe_name(name):
+        errors.append(f"name must be one PascalCase word (letters and digits, no dots), e.g. RenameFooToBar: {name}")
     for key in ("displayName", "description"):
         val = doc.get(key)
         if not isinstance(val, str) or not val.strip():
@@ -171,6 +177,21 @@ def validate_recipe_yaml(text: str) -> tuple[bool, list[str], Optional[dict]]:
         for i, entry in enumerate(rl):
             _check_entry(i, entry, errors)
     return (not errors), errors, doc
+
+
+def is_kb_recipe_name(name: str) -> bool:
+    """One PascalCase word, or a legacy ``com.company.kb.<PascalCase>`` name."""
+    return bool(_NAME_RE.match(name or ""))
+
+
+def short_recipe_name(name: str) -> str:
+    """``com.company.kb.Foo`` → ``Foo``; any other name unchanged."""
+    return name[len(LEGACY_NAME_PREFIX):] if (name or "").startswith(LEGACY_NAME_PREFIX) else name
+
+
+def with_recipe_name(text: str, name: str) -> str:
+    """The recipe yml with its top-level ``name:`` line set to ``name`` (one-document recipes)."""
+    return _NAME_LINE_RE.sub(f"name: {name}", text, count=1)
 
 
 def recipe_names_in_yaml(text: str) -> list[str]:

@@ -18,7 +18,7 @@ Otherwise output ONLY a single declarative OpenRewrite recipe in YAML — no pro
 
 ```
 type: specs.openrewrite.org/v1beta/recipe
-name: com.company.kb.<PascalCaseName>
+name: <PascalCaseName>
 displayName: <short title>
 description: <one sentence: what is changed and why>
 recipeList:
@@ -27,7 +27,7 @@ recipeList:
 ```
 
 Rules:
-- `name` must be `com.company.kb.` followed by one PascalCase word (letters and digits only).
+- `name` must be one PascalCase word (letters and digits only, no dots), e.g. `RenameFooToBar`.
 - Use at most 12 entries in `recipeList`, and ONLY these recipes with exactly these options
   (required options first; the ones in brackets are optional):
   - `org.openrewrite.java.ChangeType`: oldFullyQualifiedTypeName, newFullyQualifiedTypeName [ignoreDefinition]

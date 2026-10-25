@@ -117,8 +117,8 @@ def test_reject_pin_unpin_hint_note(kb, ws, profile):
 
     assert _run(kb.root, "cases", "pin", CID, "--action", "handler:jakarta-namespace-sweep").exit_code == 0
     assert kb.catalog().get(CID).effective_action().handler_id == "jakarta-namespace-sweep"
-    r = _run(kb.root, "cases", "pin", CID, "--action", "recipe:com.company.kb.Missing")
-    assert r.exit_code == 0 and kb.catalog().get(CID).effective_action().recipe_ids == ["com.company.kb.Missing"]
+    r = _run(kb.root, "cases", "pin", CID, "--action", "recipe:Missing")
+    assert r.exit_code == 0 and kb.catalog().get(CID).effective_action().recipe_ids == ["Missing"]
     assert _run(kb.root, "cases", "pin", CID, "--action", "block:external_api_incompatible").exit_code == 0
     a = kb.catalog().get(CID).effective_action()
     assert (a.kind, a.block_reason) == ("block", "external_api_incompatible")
@@ -184,14 +184,14 @@ def test_reindex_learning_match_and_promote_mention_cases(kb):
         assert any(h.startswith(f"[case {CID}]") for h in m["hints"])
     assert json.loads(_run(kb.root, "match", "compile|nothing").output)["case_hits"] == []
     # a recipe promoted by hand refreshes the cases it covers
-    kb.add_recipe(recipe_yaml("com.company.kb.RenameClientIp"),
-                  KBRecipe(id="com.company.kb.RenameClientIp", path="", signatures=[EC_L2]))
+    kb.add_recipe(recipe_yaml("RenameClientIp"),
+                  KBRecipe(id="RenameClientIp", path="", signatures=[EC_L2]))
     _run(kb.root, "reindex")
     assert kb.catalog().get(CID).status == "candidate" and kb.catalog().get(CID).action.kind == "recipe"
-    r = _run(kb.root, "promote", "com.company.kb.RenameClientIp")
+    r = _run(kb.root, "promote", "RenameClientIp")
     assert r.exit_code == 0 and f"case catalog: 1 case(s) updated ({CID})" in r.output
     assert kb.catalog().get(CID).status == "active"
-    r = _run(kb.root, "reject", "com.company.kb.RenameClientIp")
+    r = _run(kb.root, "reject", "RenameClientIp")
     assert f"({CID})" in r.output and kb.catalog().get(CID).action.kind == "replace"
     st = json.loads(_run(kb.root, "stats", "--json").output)
     assert st["catalog_cases"] == 2 and st["catalog_observed"] == 1

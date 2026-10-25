@@ -816,7 +816,7 @@ class KBCase(BaseModel):
 
 
 class KBRecipe(BaseModel):
-    id: str                                        # recipe name inside the yml, e.g. com.company.kb.ReplaceFooWithBar
+    id: str                                        # recipe name inside the yml, e.g. ReplaceFooWithBar
     status: Literal["candidate", "active", "rejected"] = "candidate"
     path: str                                      # absolute path of the declarative yml
     description: str = ""

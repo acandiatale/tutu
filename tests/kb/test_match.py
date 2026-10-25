@@ -124,10 +124,10 @@ def _add(kb, name, status, sigs):
 
 
 def test_match_active_and_candidate_recipes(kb, ws, profile):
-    a = _add(kb, "com.company.kb.ActiveOne", "active", [L1])
-    c = _add(kb, "com.company.kb.CandOne", "candidate", [L2])
-    _add(kb, "com.company.kb.Rejected", "rejected", [L1])
-    _add(kb, "com.company.kb.Other", "active", ["compile|other"])
+    a = _add(kb, "ActiveOne", "active", [L1])
+    c = _add(kb, "CandOne", "candidate", [L2])
+    _add(kb, "Rejected", "rejected", [L1])
+    _add(kb, "Other", "active", ["compile|other"])
     m = kb.match(make_cluster(), ws, profile)
     assert m.recipe_ids == [a.id] and m.recipe_files == [a.path]
     assert m.candidate_recipe_ids == [c.id] and m.candidate_recipe_files == [c.path]
@@ -135,7 +135,7 @@ def test_match_active_and_candidate_recipes(kb, ws, profile):
 
 def test_match_recipe_meta_edited_without_reindex(kb, ws, profile):
     import json
-    r = _add(kb, "com.company.kb.Edited", "active", ["compile|nothing"])
+    r = _add(kb, "Edited", "active", ["compile|nothing"])
     meta = kb._meta_path(__import__("pathlib").Path(r.path))
     data = json.loads(meta.read_text())
     data["signatures"] = [L2]
@@ -145,7 +145,7 @@ def test_match_recipe_meta_edited_without_reindex(kb, ws, profile):
 
 def test_active_recipes_disabled(kb_cfg, ws, profile):
     kb = FileKnowledgeBase(with_kb(kb_cfg, use_active_recipes=False))
-    _add(kb, "com.company.kb.ActiveOne", "active", [L1])
+    _add(kb, "ActiveOne", "active", [L1])
     m = kb.match(make_cluster(), ws, profile)
     assert m.recipe_ids == [] and kb.active_recipe_files() == [] and kb.active_recipe_ids() == []
 

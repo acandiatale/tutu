@@ -34,6 +34,6 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
   OpenRewrite spring phase leaves untouched (only the `javax.servlet` imports become `jakarta.servlet`)
 * BUILD SUCCESS → `success = true`, exit code 0, nothing blocked, 0 unresolved, `llm_usage.calls ≤ 2`
 * harvest labels the case `method-rename` and compiles — **without the LLM** — the candidate
-  `com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp` into `out/e2e/kb-method-rename/recipes/candidates/`:
+  `LegacyRequestHelperClientIpToRemoteClientIp` into `out/e2e/kb-method-rename/recipes/candidates/`:
   `org.openrewrite.java.ChangeMethodName {methodPattern: "com.company.legacy.web.LegacyRequestHelper clientIp(..)",
   newMethodName: remoteClientIp, matchOverrides: true}` (`expect.kb`; `report.harvest.candidates_created` ≥ 1)

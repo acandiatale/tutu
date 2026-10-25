@@ -115,7 +115,8 @@ from sbmig.kb import kb_cli                         # typer sub-app mounted by s
     candidates; otherwise "". `compile_recipe(case)` compiles `labels == {"method-rename"}` (all `method_renames`
     agreeing on old/new, owner a library FQCN via `details` or `case.symbol_owner`) to
     `org.openrewrite.java.ChangeMethodName {methodPattern: "<owner FQCN> <old>(..)", newMethodName: <new>,
-    matchOverrides: true}`, recipe name `com.company.kb.<OwnerSimple><Old>To<New>` (PascalCase of the parts).
+    matchOverrides: true}`, recipe name `<OwnerSimple><Old>To<New>` (PascalCase of the parts; KB recipe names are one PascalCase word
+    without dots since 2026-10-25, legacy `com.company.kb.<Name>` ids stay valid — `sbmig/kb/recipes.py`).
     Argument types never go into the pattern (javac prints simple names). Method references (`x::old`) are
     `method-rename` too.
   * `sbmig/plan/jarcheck.py` (new): `check_jars(catalog, cfg, *, work_dir, artifacts=None) -> JarCheckReport`

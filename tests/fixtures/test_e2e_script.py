@@ -553,7 +553,7 @@ def test_boot2_method_rename_expectations(e2e, capsys):
     assert line.startswith("boot2-method-rename [X2] +sbmig.e2e.yml: success=True; exit=0; llm<=2")
     assert "optional_bumped=[com.company.legacy:legacy-web-lib 1.0.0→3.0.0]" in line
     assert ("kb(dir=out/e2e/kb-method-rename, candidates_min=1, harvest_candidates_min=1, "
-            "org.openrewrite.java.ChangeMethodName@com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp)") in line
+            "org.openrewrite.java.ChangeMethodName@LegacyRequestHelperClientIpToRemoteClientIp)") in line
 
 
 def test_ga_ignores_handover_suffixes(e2e):

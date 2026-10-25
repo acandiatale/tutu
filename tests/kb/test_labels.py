@@ -268,7 +268,7 @@ def test_compile_type_rename():
         mod("@JsonComponent\nclass M {", "@JacksonComponent\nclass M {"),
     ]
     doc = _recipe(compile_recipe(case_of(changes)))
-    assert doc["name"] == "com.company.kb.JsonComponentToJacksonComponent"
+    assert doc["name"] == "JsonComponentToJacksonComponent"
     assert doc["recipeList"] == [
         {
             "org.openrewrite.java.ChangeType": {
@@ -303,7 +303,7 @@ def test_compile_dependency_add_and_version_and_replace():
         "pom.xml",
     )
     doc = _recipe(compile_recipe(case_of([add])))
-    assert doc["name"] == "com.company.kb.AddBarBaz"
+    assert doc["name"] == "AddBarBaz"
     assert doc["recipeList"] == [
         {
             "org.openrewrite.java.dependencies.AddDependency": {

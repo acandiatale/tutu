@@ -119,7 +119,7 @@ def test_ledger_summary(tmp_path):
                 project="p6",
                 symbol="Qux",
                 resolution="plan_recipe",
-                recipe_id="com.company.kb.Qux",
+                recipe_id="Qux",
                 outcome="build_ok",
             ),
             rec(
@@ -158,7 +158,7 @@ def test_ledger_summary(tmp_path):
         "project_names": ["p1", "p2"],
     }
     assert s["kb_fired"] == [
-        {"id": "com.company.kb.Qux", "kind": "plan_recipe", "count": 1, "projects": 1, "symbol": "Qux"}
+        {"id": "Qux", "kind": "plan_recipe", "count": 1, "projects": 1, "symbol": "Qux"}
     ]
     assert s["unresolved"] == [{"symbol": "Zed", "count": 1}]
     assert led.summary(run_ids=["nope"])["records"] == 0
@@ -202,7 +202,7 @@ def test_harvest_labels_case_and_compiles_candidate_without_llm(kb, ws, profile)
     llm = FakeLLM("NONE")
     res = kb.harvest(_phase(json_attempt()), profile, ws, llm=llm)
     assert llm.calls == []  # deterministic candidate: no LLM call
-    assert res.candidates_created == ["com.company.kb.JsonComponentToJacksonComponent"]
+    assert res.candidates_created == ["JsonComponentToJacksonComponent"]
     assert any("compiled from labels, no LLM" in n for n in res.notes)
     case = kb.get_case(res.cases_created[0])
     assert case.project == "demo" and case.symbol == "JsonComponent"
@@ -210,7 +210,7 @@ def test_harvest_labels_case_and_compiles_candidate_without_llm(kb, ws, profile)
     assert case.replacement == (
         "org.springframework.boot.jackson.JsonComponent → org.springframework.boot.jackson.JacksonComponent"
     )
-    assert case.recipe_candidate_id == "com.company.kb.JsonComponentToJacksonComponent"
+    assert case.recipe_candidate_id == "JsonComponentToJacksonComponent"
     r = kb.get_recipe(case.recipe_candidate_id)
     assert r.status == "candidate" and JSON_L2 in r.signatures and r.source_case_ids == [case.id]
     # symbols.json
@@ -230,7 +230,7 @@ def test_harvest_labels_case_and_compiles_candidate_without_llm(kb, ws, profile)
 def test_harvest_llm_candidate_is_tagged(kb, ws, profile):
     llm = FakeLLM(recipe_yaml())
     res = kb.harvest(_phase(make_attempt()), profile, ws, llm=llm)  # security_change: not compilable
-    assert res.candidates_created == ["com.company.kb.RenameFooToBar"] and len(llm.calls) == 1
+    assert res.candidates_created == ["RenameFooToBar"] and len(llm.calls) == 1
     assert llm.kwargs[0]["role"] == "recipe_candidate"
     assert llm.kwargs[0]["metadata"] == {"case_id": res.cases_created[0]}
     assert "## Deterministic labels of the fix" in llm.calls[0][1].content
@@ -245,7 +245,7 @@ def test_deterministic_candidates_can_be_disabled(kb_cfg, ws, profile):
 
 def test_harvest_ledger_lines_for_all_resolutions(kb, ws, profile):
     r = kb.add_recipe(
-        recipe_yaml(), KBRecipe(id="com.company.kb.RenameFooToBar", path="", signatures=[JSON_L2])
+        recipe_yaml(), KBRecipe(id="RenameFooToBar", path="", signatures=[JSON_L2])
     )
     cid = kb.record_case(make_case(symbol="Thing"))
     blocked = BlockedItem(
@@ -309,7 +309,7 @@ def test_harvest_ledger_lines_for_all_resolutions(kb, ws, profile):
 def test_recipes_promoted_reported(kb_cfg, ws, profile):
     kb = FileKnowledgeBase(with_kb(kb_cfg, auto_promote_after_projects=1))
     r = kb.add_recipe(
-        recipe_yaml(), KBRecipe(id="com.company.kb.RenameFooToBar", path="", signatures=[JSON_L2])
+        recipe_yaml(), KBRecipe(id="RenameFooToBar", path="", signatures=[JSON_L2])
     )
     res = kb.harvest(
         _phase(make_attempt("kr", kind=DecisionKind.KB_RECIPE, recipe_ids=[r.id], changes=[])), profile, ws
@@ -318,9 +318,9 @@ def test_recipes_promoted_reported(kb_cfg, ws, profile):
     assert kb.get_recipe(r.id).status == "active"
     assert kb.drain_promoted() == []
     # promotions done outside the harvest (loop / plan credit) are reported by the next harvest
-    r2 = kb.add_recipe(recipe_yaml("com.company.kb.Other"), KBRecipe(id="com.company.kb.Other", path=""))
+    r2 = kb.add_recipe(recipe_yaml("Other"), KBRecipe(id="Other", path=""))
     assert kb.credit_recipe(r2.id, True, "fp-x").status == "active"
-    assert kb.credit_recipe("com.company.kb.Missing", True, "fp") is None
+    assert kb.credit_recipe("Missing", True, "fp") is None
     assert kb.harvest(_phase(), profile, ws).recipes_promoted == [r2.id]
 
 
@@ -388,7 +388,7 @@ def test_kb_cli_ledger_symbols_learning(kb, ws, profile):
     assert len(cli("ledger", "--limit", "1").splitlines()) == 1
     assert "annotation-replace,type-rename" in cli("ledger", "--label", "type-rename")
     out = cli("symbols")
-    assert "JsonComponent" in out and "recipe=com.company.kb.JsonComponentToJacksonComponent" in out
+    assert "JsonComponent" in out and "recipe=JsonComponentToJacksonComponent" in out
     assert "JsonComponent" in json.loads(cli("symbols", "--json"))
     out = cli("learning")
     assert "blocking most projects" in out and "com.co:gone" in out

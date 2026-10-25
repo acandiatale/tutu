@@ -17,7 +17,7 @@ from sbmig.kb.recipes import validate_recipe_yaml
 from .helpers import FakeLLM, make_attempt
 
 OWNER = "com.company.legacy.web.LegacyRequestHelper"
-RECIPE_ID = "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp"
+RECIPE_ID = "LegacyRequestHelperClientIpToRemoteClientIp"
 CONTRACT_RECIPE_LIST = [
     {
         "org.openrewrite.java.ChangeMethodName": {

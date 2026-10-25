@@ -27,7 +27,7 @@ from sbmig.core.workspace import Workspace
 
 from .labels import compile_recipe, label_changes
 from .ledger import attempt_record, blocked_record, plan_recipe_records, project_name
-from .recipes import is_none_answer, strip_fences, validate_recipe_yaml
+from .recipes import is_none_answer, short_recipe_name, strip_fences, validate_recipe_yaml, with_recipe_name
 
 if TYPE_CHECKING:  # pragma: no cover
     from .store import FileKnowledgeBase
@@ -323,8 +323,10 @@ def propose_recipe_candidate(kb: "FileKnowledgeBase", case: KBCase, llm: LLMClie
 
 def _store_candidate(kb: "FileKnowledgeBase", case: KBCase, text: str, parsed: dict, notes: list[str],
                      origin: str = "") -> KBRecipe:
-    rid = parsed["name"]
-    existing = kb.get_recipe(rid)
+    rid = short_recipe_name(parsed["name"])            # the LLM may still write the old com.company.kb. prefix
+    if rid != parsed["name"]:
+        text = with_recipe_name(text, rid)
+    existing = kb.get_recipe(rid)                      # also finds a legacy com.company.kb.<rid> (store)
     if existing is not None:
         for s in [*case.signatures, *case.signatures_generic]:
             if s not in existing.signatures:

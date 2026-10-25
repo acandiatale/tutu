@@ -88,7 +88,7 @@ def make_attempt(aid: str = "a1", kind: DecisionKind = DecisionKind.LLM_FIX, out
 
 
 VALID_RECIPE = """type: specs.openrewrite.org/v1beta/recipe
-name: com.company.kb.RenameFooToBar
+name: RenameFooToBar
 displayName: Rename Foo to Bar
 description: Foo moved to Bar in library 2.0.
 recipeList:
@@ -98,8 +98,8 @@ recipeList:
 """
 
 
-def recipe_yaml(name: str = "com.company.kb.RenameFooToBar") -> str:
-    return VALID_RECIPE.replace("com.company.kb.RenameFooToBar", name)
+def recipe_yaml(name: str = "RenameFooToBar") -> str:
+    return VALID_RECIPE.replace("RenameFooToBar", name)
 
 
 def with_kb(cfg, **kw):

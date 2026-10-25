@@ -522,7 +522,7 @@ diff에서 결정적으로 붙는 라벨(`FixLabel`)입니다. 기계적인 라�
  "signature": "compile|cannot_find_symbol|method oldName()|class *", "signature_generic": "compile|cannot_find_symbol|oldName",
  "error_kind": "compile", "symbol": "oldName",
  "resolution": "llm_patch", "resolver_id": "<model>", "fix_labels": ["method-rename"], "replacement": "oldName → newName",
- "outcome": "improved", "files": ["OrderService.java"], "case_id": "…", "recipe_id": "com.company.kb.…", "model": "<model>",
+ "outcome": "improved", "files": ["OrderService.java"], "case_id": "…", "recipe_id": "<레시피 이름>", "model": "<model>",
  "notes": []}
 ```
 
@@ -598,7 +598,7 @@ KB가 엉뚱하게 학습하지 않도록, 증거가 없는 결과는 점수에 
 | `[jdk21] build 4: 3 error(s) in 2 cluster(s) — max fix rounds (3) used up; the phase ends here and the next phase / the final build carry the rest (reported as unresolved)` | 이 페이즈의 수정 라운드를 모두 썼습니다. 남은 에러는 다음 페이즈와 최종 빌드로 넘어가고, 끝까지 남으면 리포트의 "Unresolved errors"에 실립니다. | 리포트 확인 |
 | `[spring it2] cluster compile:3f2a9c1d (compile, 2 error(s), src/main/java/…/OrderService.java): asking the LLM (attempt 1/2 for this cluster; a call can take up to 180s × 4 tries — quiet until it answers)` + 다음 줄 `    first error: src/main/java/…/OrderService.java:42: cannot find symbol (symbol method oldName())` | 2번째 빌드의 이 클러스터를 LLM에게 맡깁니다. 응답이 올 때까지 조용할 수 있다는 안내도 함께 나옵니다. `first error:`는 클러스터의 첫 에러 `파일:줄: 메시지`입니다. | 기다립니다. 30초마다 `llm call still in flight`가 나오면 정상입니다. |
 | `…: deterministic handler lombok-version-floor` | 결정적 핸들러가 처리합니다. journal `decision`의 rationale에는 `deterministic handler 'lombok-version-floor' matches compile shop (1): raise lombok to ≥ 1.18.38 …`가 남습니다. | – |
-| `…: KB recipe(s) com.company.kb.… (OpenRewrite, no LLM)` | KB 레시피(또는 recipe rule)를 OpenRewrite 배치로 실행합니다. | – |
+| `…: KB recipe(s) <레시피 이름> (OpenRewrite, no LLM)` | KB 레시피(또는 recipe rule)를 OpenRewrite 배치로 실행합니다. | – |
 | `…: replaying KB patch <case id> (no LLM)` | 과거 사례의 패치를 다시 적용합니다. | – |
 | `…: blocked: external_javax_api — a dependency API requires javax.servlet.http.HttpServletRequest (project supplies jakarta.servlet.http.HttpServletRequest) (policy: no LLM attempt for this reason)` | 프로젝트 밖의 문제라 LLM 없이 blocked 처리합니다. | 리포트 "Blocked"의 제안대로 라이브러리 담당자에게 넘깁니다. |
 | `…: blocked: external_javax_api — already blocked earlier in this run (blk-…, spring); skipped` | 이전 페이즈에서 이미 blocked된 것입니다. | – |

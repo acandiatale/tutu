@@ -42,7 +42,7 @@
       "harvest_candidates_min": 1,
       "recipes": [
         {
-          "name": "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp",
+          "name": "LegacyRequestHelperClientIpToRemoteClientIp",
           "recipe": "org.openrewrite.java.ChangeMethodName",
           "options": {
             "methodPattern": "com.company.legacy.web.LegacyRequestHelper clientIp(..)",

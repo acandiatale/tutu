@@ -54,10 +54,10 @@ def test_symbol_hint_first(kb, ws, profile):
         "[symbol JsonComponent] fixed in 1 project(s) by annotation-replace, type-rename: "
         "org.springframework.boot.jackson.JsonComponent → "
         "org.springframework.boot.jackson.JacksonComponent "
-        "(recipe com.company.kb.JsonComponentToJacksonComponent)"
+        "(recipe JsonComponentToJacksonComponent)"
     )
     assert m.hints[1].startswith("[case ")
-    assert m.candidate_recipe_ids == ["com.company.kb.JsonComponentToJacksonComponent"]
+    assert m.candidate_recipe_ids == ["JsonComponentToJacksonComponent"]
 
 
 def test_symbol_hint_without_signature_match(kb, ws, profile):

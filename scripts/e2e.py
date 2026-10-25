@@ -54,7 +54,7 @@ captures the exit code + output, finds the run directory the CLI created under -
                       "harvest_candidates_min": 1,                 # len(report.harvest.candidates_created)
                       "recipes": [{"recipe": "org.openrewrite.java.ChangeMethodName",
                                    "options": {"newMethodName": "remoteClientIp"},          # subset of the entry
-                                   "name": "com.company.kb.LegacyRequestHelperClientIpToRemoteClientIp"}]},
+                                   "name": "LegacyRequestHelperClientIpToRemoteClientIp"}]},
                "error_cases": {"min": 2,                          # len(report.error_cases): one record per error
                                "status": {"resolved": 2},          # exact count for each listed status
                                "status_min": {"blocked": 1},       # at least that many

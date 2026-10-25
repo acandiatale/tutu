@@ -22,6 +22,7 @@ import yaml
 
 from sbmig.core.config import Config, _apply_env_overrides, _expand_env, deep_merge
 from sbmig.core.models import CaseType, DecisionKind, FleetProjectResult, FleetState, RunReport, utcnow
+from sbmig.kb.recipes import is_kb_recipe_name
 
 from .manifest import FleetProject, load_manifest
 
@@ -31,7 +32,6 @@ EXIT_ALL_SUCCESS = 0
 EXIT_INCOMPLETE = 2
 EXIT_STOPPED_ON_ABORT = 3
 SUCCESS_OUTCOMES = ("improved", "build_ok")
-KB_RECIPE_PREFIX = "com.company.kb."
 CASE_RANK = {
     CaseType.PURE_JAVA: 0,
     CaseType.SERVLET_TOMCAT: 1,
@@ -231,7 +231,7 @@ class FleetRunner:
         return rid
 
     def _is_kb_recipe(self, rid: str) -> bool:
-        if rid.startswith(KB_RECIPE_PREFIX):
+        if is_kb_recipe_name(rid):                    # one PascalCase word (or the legacy com.company.kb. name)
             return True
         try:
             return (
