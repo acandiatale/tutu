@@ -780,7 +780,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         kinds = Counter(a.decision.kind.value for a in pr.attempts)
         outs = Counter(a.outcome for a in pr.attempts)
         L.append(f"| {pr.phase.value} | {_cell(', '.join(pr.step_ids), 80)} | {pr.iterations} | "
-                 f"{'✅' if pr.build_ok else '❌'} | {_cell(', '.join(f'{k} {v}' for k, v in kinds.items()))} | "
+                 f"{'✅' if pr.build_ok else ('❌' if pr.iterations else '-')} | "
+                 f"{_cell(', '.join(f'{k} {v}' for k, v in kinds.items()))} | "
                  f"{_cell(', '.join(f'{k} {v}' for k, v in outs.items()))} |")
     L.append("")
     if any(pr.attempts for pr in r.phases):

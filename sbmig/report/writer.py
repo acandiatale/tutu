@@ -90,7 +90,8 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
         t.add_column(col)
     for pr in report.phases:
         outs = Counter(a.outcome for a in pr.attempts)
-        t.add_row(pr.phase.value, str(pr.iterations), "ok" if pr.build_ok else "FAIL", str(len(pr.attempts)),
+        built = "ok" if pr.build_ok else ("FAIL" if pr.iterations else "-")    # v2: transform / restructure build nothing
+        t.add_row(pr.phase.value, str(pr.iterations), built, str(len(pr.attempts)),
                   ", ".join(f"{k} {v}" for k, v in outs.items()) or "-", str(len(pr.remaining_errors)))
     console.print(t)
     u = report.llm_usage
