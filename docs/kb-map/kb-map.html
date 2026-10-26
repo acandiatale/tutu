@@ -174,6 +174,7 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
 ├── <span class="t-ops">*.jsonl.corrupt</span>                      <span class="t-c">중간에 끊겨 반쯤 쓰인 마지막 줄을 옮겨 둔 곳</span>
 └── <span class="t-ops">.lock</span>                                <span class="t-c">여러 프로세스가 동시에 쓰지 않게 하는 잠금</span>
 
+kb.bak-&lt;시각&gt;/                            <span class="t-c">kb import --replace 전에 남기는 이전 KB 백업 (kb 폴더 옆)</span>
 &lt;실행 폴더&gt;/error_cases.jsonl, fix_attempts.jsonl, error_cases.csv   <span class="t-c">그 실행분만 따로 (같은 형식, CSV는 엑셀용)</span></pre>
   </div>
 </section>
@@ -299,6 +300,12 @@ erDiagram
     str event "human, status, action"
     str who "사람 또는 sbmig"
   }
+  QUARANTINE["quarantine.jsonl: 읽지 못한 줄"] {
+    str id FK "에러 id"
+    str signature_generic "L2"
+    int line "errors.jsonl 몇째 줄"
+    str hash "줄 내용 해시"
+  }
   ERROR_CASE ||--o{ ATTEMPT_REF : "attempts"
   ATTEMPT_REF }o--|| FIX_ATTEMPT : "attempt_id = id"
   ERROR_CASE }o--o{ FIX_ATTEMPT : "resolved_by, resolution_attempts"
@@ -312,6 +319,8 @@ erDiagram
   CASE_FAILURE }o--|| FIX_ATTEMPT : "attempt_id"
   CASE_EVENT }o--|| ERROR_CASE : "error_id"
   AUDIT }o--|| CATALOG_CASE : "case_id"
+  QUARANTINE }o--|| ERROR_CASE : "id, line"
+  QUARANTINE }o--o| CATALOG_CASE : "signature_generic = L2"
 </pre>
   </div>
 </section>
@@ -374,6 +383,17 @@ erDiagram
     map by_l1 "L1 -> 케이스 id"
     map by_symbol "심볼 -> 케이스 id들"
   }
+  VIEW_ROW["views/cases.csv, cases.md: 케이스 1줄"] {
+    str id FK "case_id"
+    str signature_generic "L2"
+    str file "케이스 yml 경로"
+  }
+  PATTERN["patterns/*.yml: 사람이 쓴 규칙"] {
+    str id PK "규칙 이름"
+    str signature_regex "L1, L2에 정규식으로 매칭"
+    list recipes "OpenRewrite 레시피 id"
+    list handler_ids "핸들러 id"
+  }
   KB_CASE }o--o| KB_RECIPE : "recipe_candidate_id, source_case_ids"
   LEDGER }o--o| KB_CASE : "case_id"
   LEDGER }o--o| KB_RECIPE : "recipe_id"
@@ -385,8 +405,11 @@ erDiagram
   CATALOG_CASE }o--o{ KB_CASE : "action.patch_case_ids"
   CAT_INDEX ||--o{ CATALOG_CASE : "cases, by_l2, by_l1, by_symbol"
   HINTS }o--o{ CATALOG_CASE : "by_generic = signature_generic"
+  CATALOG_CASE ||--|| VIEW_ROW : "id = case_id"
+  PATTERN }o--o{ INDEX : "signature_regex로 L1, L2를 직접 매칭"
 </pre>
   </div>
+  <p class="note">그림 ①과 ②에 <code>kb/</code>의 모든 기록 파일이 들어 있습니다. 키로 다른 파일과 이어지지 않는 운영 파일 <code>.lock</code>(쓰기 잠금), <code>*.jsonl.corrupt</code>(반쯤 쓰인 줄), <code>kb.bak-&lt;시각&gt;/</code>(<code>kb import --replace</code> 전 백업)만 그림에서 뺐습니다. 실행 폴더(<code>out/&lt;run id&gt;/</code>의 <code>journal.jsonl</code>, <code>report.json</code>, <code>plan.json</code>, <code>changes.patch</code> 등)와 플릿 폴더(<code>state.json</code>, <code>summary.*</code>)는 KB가 아니라 이 지도에 넣지 않았습니다. 다만 실행 폴더의 <code>error_cases.jsonl</code>, <code>fix_attempts.jsonl</code>, <code>error_cases.csv</code>는 KB의 같은 이름 파일과 형식이 같습니다.</p>
 </section>
 
 <section id="sig">

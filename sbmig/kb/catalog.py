@@ -1168,7 +1168,9 @@ class CaseCatalog:
             with self.lock():
                 if not self.index_path.exists() and self._events_exist():
                     before = {cid: self._file_text(cid) for cid in map(case_id_for, l2s)}
-                    self.rebuild()
+                    # the first catalog build of a KB happens here: its new cases are real creations (2026-10-26:
+                    # the first project of a fresh KB left no `created` lines in audit.jsonl)
+                    self.rebuild(audit_new=True)
                     return [cid for cid in map(case_id_for, l2s) if self._file_text(cid) != before[cid]]
                 return self.refresh(l2s, extra=errs)
         except Exception as ex:
@@ -1224,10 +1226,12 @@ class CaseCatalog:
                 l2s.append(l2_of[cid])
         return self.refresh(l2s) if l2s else []
 
-    def rebuild(self) -> int:
+    def rebuild(self, *, audit_new: bool = False) -> int:
         """Rebuild every case from ``errors.jsonl`` + KB recipes + patch cases (human blocks kept; cases without
         events are kept only when a person edited them — or when ``errors.jsonl`` had lines of their L2, or of an
-        unknown L2, that could not be read: those are never deleted). Returns the number of cases."""
+        unknown L2, that could not be read: those are never deleted). Returns the number of cases. ``audit_new``:
+        also log cases that start above `observed` as created (the first catalog build of a run; `kb reindex`
+        does not, it only recomputes what exists)."""
         with self.lock():
             existing: dict[str, tuple[_Loaded, str]] = {}
             stale: list[Path] = []
@@ -1259,7 +1263,7 @@ class CaseCatalog:
                 cid = case_id_for(l2)
                 ld, rel = existing.get(cid, (None, None))
                 case = self.compute(l2, records, self._human_of(ld), ctx)
-                self._write_case(idx, case, ld, rel, audit_new=False)
+                self._write_case(idx, case, ld, rel, audit_new=audit_new)
                 keep.add(cid)
             for cid, (ld, rel) in existing.items():
                 if cid in keep:

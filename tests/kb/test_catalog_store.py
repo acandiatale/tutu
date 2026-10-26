@@ -189,3 +189,26 @@ def test_a_rejected_case_also_stops_patch_replay_recipes_and_symbol_hints(kb, ws
     assert m.case_hits == [] and m.replayable == [] and m.cases == [] and m.recipe_ids == []
     assert not any(h.startswith(("[symbol", "[case")) for h in m.hints)
     assert kb.catalog().rejected_signatures([EC_L2, L1_REQ, "other"]) == {EC_L2, L1_REQ}
+
+
+def test_first_catalog_build_of_a_fresh_kb_audits_created_cases(tmp_path):
+    """2026-10-26: the first update of a fresh KB builds the whole catalog (no index yet) and wrote no `created`
+    lines to audit.jsonl for its candidate cases; `kb reindex` still logs nothing for cases it merely recomputes."""
+    import json
+
+    from sbmig.core.config import load_config
+    from sbmig.kb.catalog import CaseCatalog
+
+    from .test_catalog import rec
+
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    cfg = load_config(overrides={"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}}, "kb": {"dir": str(kb)}})
+    r = rec("e1", run="r1", project="alpha")                       # resolved by an LLM text replace → candidate
+    (kb / "errors.jsonl").write_text(r.model_dump_json() + "\n", encoding="utf-8")
+    cat = CaseCatalog(kb, cfg)
+    assert cat.update_from([r]) and (kb / "catalog" / "index.json").exists()
+    lines = [json.loads(x) for x in (kb / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(x["event"], x["reason"], x["after"]["status"]) for x in lines] == [("status", "created", "candidate")]
+    CaseCatalog(kb, cfg).rebuild()                                  # kb reindex: nothing new to log
+    assert len((kb / "audit.jsonl").read_text(encoding="utf-8").splitlines()) == 1

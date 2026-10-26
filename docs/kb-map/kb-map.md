@@ -51,6 +51,7 @@ kb/
 ├── *.jsonl.corrupt                      중간에 끊겨 반쯤 쓰인 마지막 줄을 옮겨 둔 곳                   [운영 파일]
 └── .lock                                여러 프로세스가 동시에 쓰지 않게 하는 잠금                     [운영 파일]
 
+kb.bak-<시각>/                            kb import --replace 전에 남기는 이전 KB 백업 (kb 폴더 옆)
 <실행 폴더>/error_cases.jsonl, fix_attempts.jsonl, error_cases.csv   그 실행분만 따로 (같은 형식, CSV는 엑셀용)
 ```
 
@@ -122,6 +123,7 @@ flowchart LR
 | `CATALOG_CASE_YML` | `catalog/…/<심볼>--<case_id>.yml` 케이스 |
 | `CASE_VARIANT` / `CASE_FIX` / `CASE_FAILURE` / `CASE_EVENT` | 케이스 파일의 `variants[]` / `evidence.fixes[]` / `evidence.failures[]` / `evidence.timeline[]` |
 | `AUDIT_JSONL` | `audit.jsonl` 변경 이력 |
+| `QUARANTINE_JSONL` | `quarantine.jsonl` 읽지 못한 줄의 메모 |
 
 ```mermaid
 erDiagram
@@ -182,6 +184,12 @@ erDiagram
     str event "human, status, action"
     str who "사람 또는 sbmig"
   }
+  QUARANTINE_JSONL {
+    str id FK "에러 id"
+    str signature_generic "L2"
+    int line "errors.jsonl 몇째 줄"
+    str hash "줄 내용 해시"
+  }
   ERRORS_JSONL ||--o{ ERROR_ATTEMPT_REF : "attempts"
   ERROR_ATTEMPT_REF }o--|| FIX_ATTEMPTS_JSONL : "attempt_id = id"
   ERRORS_JSONL }o--o{ FIX_ATTEMPTS_JSONL : "resolved_by, resolution_attempts"
@@ -195,6 +203,8 @@ erDiagram
   CASE_FAILURE }o--|| FIX_ATTEMPTS_JSONL : "attempt_id"
   CASE_EVENT }o--|| ERRORS_JSONL : "error_id"
   AUDIT_JSONL }o--|| CATALOG_CASE_YML : "case_id"
+  QUARANTINE_JSONL }o--|| ERRORS_JSONL : "id, line"
+  QUARANTINE_JSONL }o--o| CATALOG_CASE_YML : "signature_generic = L2"
 ```
 
 <a id="er-know"></a>
@@ -210,6 +220,8 @@ erDiagram
 | `LEDGER_JSONL` | `ledger.jsonl` 클러스터 해결 1건 |
 | `SYMBOLS_JSON`, `INDEX_JSON`, `ERROR_HINTS_JSON`, `CATALOG_INDEX_JSON` | 같은 이름의 파생 인덱스 |
 | `CATALOG_CASE_YML` | 케이스 파일 |
+| `VIEWS_CASES` | `views/cases.csv`, `views/cases.md`의 케이스 한 줄 |
+| `PATTERNS_YML` | `patterns/*.yml` 사람이 쓴 규칙 |
 
 ```mermaid
 erDiagram
@@ -265,6 +277,17 @@ erDiagram
     map by_l1 "L1 -> 케이스 id"
     map by_symbol "심볼 -> 케이스 id들"
   }
+  VIEWS_CASES {
+    str id FK "case_id"
+    str signature_generic "L2"
+    str file "케이스 yml 경로"
+  }
+  PATTERNS_YML {
+    str id PK "규칙 이름"
+    str signature_regex "L1, L2에 정규식으로 매칭"
+    list recipes "OpenRewrite 레시피 id"
+    list handler_ids "핸들러 id"
+  }
   KB_CASE_JSON }o--o| KB_RECIPE : "recipe_candidate_id, source_case_ids"
   LEDGER_JSONL }o--o| KB_CASE_JSON : "case_id"
   LEDGER_JSONL }o--o| KB_RECIPE : "recipe_id"
@@ -276,7 +299,11 @@ erDiagram
   CATALOG_CASE_YML }o--o{ KB_CASE_JSON : "action.patch_case_ids"
   CATALOG_INDEX_JSON ||--o{ CATALOG_CASE_YML : "cases, by_l2, by_l1, by_symbol"
   ERROR_HINTS_JSON }o--o{ CATALOG_CASE_YML : "by_generic = signature_generic"
+  CATALOG_CASE_YML ||--|| VIEWS_CASES : "id = case_id"
+  PATTERNS_YML }o--o{ INDEX_JSON : "signature_regex로 L1, L2를 직접 매칭"
 ```
+
+> 그림 ①과 ②에 `kb/`의 모든 기록 파일이 들어 있습니다. 키로 다른 파일과 이어지지 않는 운영 파일 `.lock`(쓰기 잠금), `*.jsonl.corrupt`(반쯤 쓰인 줄), `kb.bak-<시각>/`(`kb import --replace` 전 백업)만 그림에서 뺐습니다. 실행 폴더(`out/<run id>/`의 `journal.jsonl`, `report.json`, `plan.json`, `changes.patch` 등)와 플릿 폴더(`state.json`, `summary.*`)는 KB가 아니라 이 지도에 넣지 않았습니다. 다만 실행 폴더의 `error_cases.jsonl`, `fix_attempts.jsonl`, `error_cases.csv`는 KB의 같은 이름 파일과 형식이 같습니다.
 
 <a id="sig"></a>
 
