@@ -1,0 +1,6 @@
+{
+  "note": "legacy-ibatis: every case of CatalogDao.java (orm.ibatis removed in Spring 4+) — the LLM declines a blind MyBatis port (no <script>) → each case BLOCKED repeated_failure after its LLM requests — L2 `compile|package_does_not_exist|org.springframework.orm.ibatis.support` (70cf5d17c7) / `compile|cannot_find_symbol|SqlMapClientDaoSupport` (f67d8b305c) / `compile|cannot_find_symbol|getSqlMapClientTemplate` (4b636ce784)",
+  "replay_role": "fix",
+  "match": "case: (?:70cf5d17c7|f67d8b305c|4b636ce784)",
+  "response": "<analysis>CatalogDao extends org.springframework.orm.ibatis.support.SqlMapClientDaoSupport; Spring 4 removed the iBATIS 2 support (orm.ibatis) and Spring 7 has no replacement — the \"Library migration guidance\" names MyBatis (mybatis-spring SqlSessionDaoSupport + mapper XML instead of the sqlmap files and the SqlMapClientFactoryBean in applicationContext.xml). That is a port of the DAO, its sqlmap XML and the Spring XML wiring, which needs the owning team's decisions (mapper namespaces, result maps, transactions); a compiling stub would only hide the runtime break. No script: this case needs a person (handover).</analysis>\n"
+}

@@ -1,0 +1,5 @@
+{
+  "note": "structure review of legacy-role-parents (one call): verdict issues",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"boot-jar/pom.xml\",\n      \"problem\": \"the boot application module is named boot-jar, not *-boot as the company rule expects\",\n      \"fix_hint\": \"rename the module directory to shop-boot when the team agrees\"\n    }\n  ],\n  \"analysis\": \"Spring Boot as-is project kept in place: the root inherits the configured parent and aggregates boot-jar, catalog-service and order-service; boot-jar (a Boot app) inherits the boot parent, the services the comp parent, all with <relativePath/>; the mandatory starters are in the root only.\"\n}\n</review>\n"
+}

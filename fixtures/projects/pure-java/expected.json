@@ -17,13 +17,74 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 3,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
       "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$",
       "regex:^com\\.google\\.guava:guava \\S+→33\\.4\\.8-jre$"
     ],
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 2,
+        "augment": 0,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|package_does_not_exist|jakarta.xml.bind",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ],
+          "versions": [
+            1
+          ],
+          "llm_calls": 1
+        },
+        {
+          "l2": "compile|package_does_not_exist|jakarta.xml.bind.annotation",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "apply_failed"
+          ],
+          "versions": [
+            1
+          ],
+          "llm_calls": 1
+        }
+      ],
+      "stored": [
+        {
+          "l2": "compile|package_does_not_exist|jakarta.xml.bind",
+          "version": 1,
+          "parent": null,
+          "status": "active",
+          "successes_min": 1,
+          "success_projects_min": 1,
+          "last_outcome": "build_ok",
+          "code_contains": [
+            "jakarta.xml.bind-api",
+            "jaxb-runtime"
+          ]
+        }
+      ],
+      "versions": {
+        "compile|package_does_not_exist|jakarta.xml.bind": 1
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-jaxb"
+    },
     "post_checks": [
       {
         "pom_dependency_unversioned": {

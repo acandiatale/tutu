@@ -1,0 +1,5 @@
+{
+  "note": "structure review of pure-java (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. The optional artifacts commons-lang3 / guava are on the configured versions (through root properties). Nothing to fix before the build.\"\n}\n</review>\n"
+}

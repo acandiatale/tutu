@@ -1,0 +1,12 @@
+# Per-fixture config override (boot2), appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# (`--config config/artifacts.local-e2e.yml --config fixtures/projects/boot2/sbmig.e2e.yml`).
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review), the other entries answer fix-script requests by `match` on `case: <case_id>`
+# (case_id = sha1(L2)[:10]; first unused match, the last match repeats, no match = "no fix").
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/boot2/replay"
+# Own KB (v2: stored fix scripts per case, reviews.jsonl, error cases): a shared KB would let one fixture
+# reuse another's scripts. scripts/e2e.py clears it before the run (expect.kb.dir).
+kb:
+  dir: out/e2e/kb-boot2

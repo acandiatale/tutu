@@ -1164,6 +1164,10 @@ class Orchestrator:
                 if sha == pre:
                     return None
                 rv.commit = sha
+                # the reviewer's note was written before this commit ("… — not committed yet"): say what happened
+                note = rv.note or ""
+                rv.note = (note.replace(" — not committed yet", f" — committed {sha[:10]}")
+                           if " — not committed yet" in note else note)
                 self._note_step(step.id, step.phase)
                 return sha
             self.ws.discard_uncommitted()

@@ -70,7 +70,35 @@ captures the exit code + output, finds the run directory the CLI created under -
                                "run_files": ["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"],
                                "kb_errors_min": 2,                 # lines in <expect.kb.dir>/errors.jsonl
                                "kb_attempts_min": 3,               # lines in <expect.kb.dir>/fix_attempts.jsonl
-                               "kb_cases_min": 1}}                 # <expect.kb.dir>/catalog/**.yml (+ views/cases.md)
+                               "kb_cases_min": 1},                 # <expect.kb.dir>/catalog/**.yml (+ views/cases.md)
+               # v2 (flow-v2, 2026-10-26)
+               "structure_review": {"verdict": "issues",           # report.structure_review: ok | issues | failed |
+                                                                   # skipped (a list = any of them)
+                                    "critical": 1, "critical_min": 1, "critical_max": 1,   # severity critical
+                                    "warnings_min": 0, "warnings_max": 2,
+                                    "issues_contain": ["regex:critical module/comp-jar/pom.xml: .*MS949.*"],
+                                                                   # over "<severity> <file>: <problem> -> <fix_hint>"
+                                    "sbmig_check": false,          # an issue sbmig added itself ("(sbmig check) …")
+                                    "script_status": "ok",         # script_result.status ("none" = no script ran)
+                                    "committed": true, "reverted": false,
+                                    "changed_files": ["module/comp-jar/pom.xml"],   # ⊆ script_result.changed_files
+                                    "llm_calls_max": 1},
+               "scripts": {"dir": "out/e2e/kb-jaxb",               # the fixture's KB (default: expect.kb.dir)
+                           "attempts": {"new": 1, "augment": 0, "reuse": 1},   # exact count of script attempts
+                           "attempts_min": {"new": 1}, "attempts_max": {"augment": 1},  # by FixAttempt.script_mode
+                           "reuse_without_llm": true,              # every reuse attempt made no LLM call
+                           "cases": [{"l2": "compile|package_does_not_exist|jakarta.xml.bind",   # or "case": id
+                                      "modes": ["reuse"],          # exact sequence of this case's attempt modes
+                                      "outcomes": ["build_ok"],    # ordered subsequence of its outcomes
+                                      "versions": [1],             # exact sequence of script_version
+                                      "llm_calls": 0}],            # sum of the case's attempts' llm_usage.calls
+                           "stored": [{"l2": "compile|cannot_find_symbol|clientIp", "version": 2,
+                                       "parent": 1, "status": "active",          # <dir>/scripts/<case>/vN.meta.json
+                                       "successes_min": 1, "failures_min": 0, "partials_min": 0,
+                                       "success_projects_min": 2, "last_outcome": "build_ok",
+                                       "code_contains": ["remoteClientIp"]}],    # substrings of vN.py
+                           "versions": {"compile|cannot_find_symbol|clientIp": 2}}}   # exact stored versions per
+                                                                   # case (key: case id or L2 signature)
 
 `*_contains` entries: `regex:<re>` = full match (re.DOTALL) of some entry, otherwise a substring of some entry;
 `removed_contains`/`added_contains` match by "g:a" (plus a version prefix when given).
@@ -80,7 +108,11 @@ equality); `replace_pairs` entries must each be in the record's pairs (old / new
 wanted recipe must match a document (`name` equal when given) with a `recipeList` entry `{<recipe>: {options}}` whose
 options are a superset of `options`. `kb.dir` must lie under `out/`: run_fixture deletes it before the run so a re-run
 is deterministic (a fixture that exercises the KB sets its own `kb.dir`, because every KB candidate is tried in every
-later plan).
+later plan). v2 reuse scenario: `kb.after: <fixture>` = this fixture continues the KB that <fixture> filled earlier in
+the SAME e2e run (the dir is not cleared; when <fixture> did not run before it, the fixture fails with a precondition
+mismatch — run them together, e.g. `--only pure-java,java6-legacy`).
+`scripts` / `structure_review` (v2): the script attempts are the report's `phases[].attempts` with a `script_mode`;
+a case is named by its id (`case`) or by its L2 signature (`l2`, hashed like `sbmig.kb.catalog.case_id_for`).
 
 Missing report fields are treated as empty (the engine features are built in parallel) — a mismatch is reported,
 the script never crashes on report shape. A summary table (with an `expect` PASS/FAIL column and the first
@@ -91,6 +123,7 @@ selected fixture meets its expectations (fixtures without an `expect` block must
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -143,6 +176,8 @@ class FixtureResult:
     log_path: str | None = None
     advisories: list[str] = field(default_factory=list)     # "advisory_id:outcome" per AdvisoryFinding
     carried_over: int | None = None                         # len(handover.carried_over); None = no handover
+    review: str | None = None                               # v2: structure_review.verdict (None = no review)
+    scripts: str = "-"                                      # v2: script attempts by mode, e.g. "new 2, aug 1, reuse 1"
     expect_ok: bool | None = None                           # None = fixture has no expect block
     mismatches: list[str] = field(default_factory=list)
 
@@ -331,6 +366,197 @@ def apply_report(res: FixtureResult, report: dict, journal: list[dict] | None = 
     res.advisories = [f"{_advisory_id(a)}:{a.get('outcome') or 'unknown'}" for a in advisory_findings(report)]
     ho = report.get("handover")
     res.carried_over = len(carried_over_items(ho)) if isinstance(ho, dict) else None
+    rv = report.get("structure_review")
+    res.review = str(rv.get("verdict") or "?") if isinstance(rv, dict) else None
+    res.scripts = format_script_modes(script_attempts(report))
+
+
+# ---------------------------------------------------------------------------------------------- v2 scripts / review
+SCRIPT_MODES = ("new", "augment", "reuse")
+_MODE_SHORT = {"new": "new", "augment": "aug", "reuse": "reuse"}
+
+
+def script_attempts(report: dict) -> list[dict]:
+    """v2 fix-script attempts (`phases[].attempts` with a `script_mode`), in run order."""
+    return [a for p in _list(report.get("phases")) if isinstance(p, dict)
+            for a in _list(p.get("attempts")) if isinstance(a, dict) and a.get("script_mode")]
+
+
+def format_script_modes(attempts: list[dict]) -> str:
+    counts = {m: sum(1 for a in attempts if a.get("script_mode") == m) for m in SCRIPT_MODES}
+    return ", ".join(f"{_MODE_SHORT[m]} {n}" for m, n in counts.items() if n) or "-"
+
+
+def case_ref(spec: dict | str) -> str:
+    """A case id: `case` as given, or `l2` hashed like sbmig.kb.catalog.case_id_for (sha1(L2)[:10])."""
+    if isinstance(spec, str):
+        return spec if re.fullmatch(r"[0-9a-f]{10}", spec) else hashlib.sha1(spec.encode("utf-8")).hexdigest()[:10]
+    if spec.get("case"):
+        return str(spec["case"])
+    return hashlib.sha1(str(spec.get("l2") or "").encode("utf-8")).hexdigest()[:10] if spec.get("l2") else ""
+
+
+def _calls(a: dict) -> int:
+    return int(_get(a, "llm_usage", "calls", default=0) or 0)
+
+
+def _counts_check(label: str, want: Any, got: dict[str, int], op: str) -> list[str]:
+    mm: list[str] = []
+    for mode, n in (want or {}).items():
+        have = got.get(mode, 0)
+        bad = have != n if op == "==" else (have < n if op == ">=" else have > n)
+        if bad:
+            mm.append(f"{label} {mode}={have} expected {op} {n} (got: {format_script_modes_from(got)})")
+    return mm
+
+
+def format_script_modes_from(counts: dict[str, int]) -> str:
+    return ", ".join(f"{m} {n}" for m, n in counts.items() if n) or "none"
+
+
+def _read_meta(kb_dir: Path, case_id: str, version: int) -> dict | None:
+    try:
+        data = json.loads((kb_dir / "scripts" / case_id / f"v{version}.meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _stored_versions(kb_dir: Path, case_id: str) -> list[int]:
+    d = kb_dir / "scripts" / case_id
+    if not d.is_dir():
+        return []
+    return sorted(int(m.group(1)) for f in d.iterdir() if (m := re.fullmatch(r"v(\d+)\.py", f.name)))
+
+
+def evaluate_scripts(want: dict, report: dict, kb_dir: Path | None) -> list[str]:
+    """`scripts` expectation (v2): the run's script attempts by mode / case, and the versions in the fixture's KB."""
+    mm: list[str] = []
+    atts = script_attempts(report)
+    counts = {m: sum(1 for a in atts if a.get("script_mode") == m) for m in SCRIPT_MODES}
+    mm += _counts_check("script attempts", want.get("attempts"), counts, "==")
+    mm += _counts_check("script attempts", want.get("attempts_min"), counts, ">=")
+    mm += _counts_check("script attempts", want.get("attempts_max"), counts, "<=")
+    if want.get("reuse_without_llm"):
+        for a in atts:
+            if a.get("script_mode") == "reuse" and _calls(a):
+                mm.append(f"reuse attempt {a.get('id')} made {_calls(a)} LLM call(s)")
+        if not counts["reuse"]:
+            mm.append("reuse_without_llm: no reuse attempt in the run")
+    for c in _list(want.get("cases")):
+        if not isinstance(c, dict):
+            continue
+        cid = case_ref(c)
+        mine = [a for a in atts if a.get("script_case_id") == cid]
+        seen = ", ".join(sorted({str(a.get("script_case_id")) for a in atts})) or "none"
+        if not mine:
+            mm.append(f"case {cid}: no script attempt (cases with attempts: {seen})")
+            continue
+        modes = [str(a.get("script_mode")) for a in mine]
+        if c.get("modes") is not None and modes != list(c["modes"]):
+            mm.append(f"case {cid}: modes {modes} expected {list(c['modes'])}")
+        versions = [int(a.get("script_version") or 0) for a in mine]
+        if c.get("versions") is not None and versions != [int(v) for v in c["versions"]]:
+            mm.append(f"case {cid}: versions {versions} expected {list(c['versions'])}")
+        outcomes = [str(a.get("outcome")) for a in mine]
+        it = iter(outcomes)
+        if c.get("outcomes") and not all(any(o == w for o in it) for w in c["outcomes"]):
+            mm.append(f"case {cid}: outcomes {outcomes} lack the sequence {list(c['outcomes'])}")
+        if c.get("llm_calls") is not None and sum(_calls(a) for a in mine) != int(c["llm_calls"]):
+            mm.append(f"case {cid}: llm_calls={sum(_calls(a) for a in mine)} expected {c['llm_calls']}")
+    stored = [s for s in _list(want.get("stored")) if isinstance(s, dict)]
+    versions_want = want.get("versions") if isinstance(want.get("versions"), dict) else {}
+    if (stored or versions_want) and (kb_dir is None or not kb_dir.is_dir()):
+        mm.append(f"scripts: kb dir {kb_dir} missing")
+        return mm
+    for s in stored:
+        cid, v = case_ref(s), int(s.get("version") or 0)
+        meta = _read_meta(kb_dir, cid, v)
+        if meta is None:
+            mm.append(f"stored script {cid} v{v} missing (versions: {_stored_versions(kb_dir, cid) or 'none'})")
+            continue
+        for key in ("parent", "status", "last_outcome"):
+            if key in s and meta.get(key) != s[key]:
+                mm.append(f"stored script {cid} v{v}: {key}={meta.get(key)!r} expected {s[key]!r}")
+        for key, field_name in (("successes_min", "successes"), ("failures_min", "failures"),
+                                ("partials_min", "partials")):
+            if s.get(key) is not None and int(meta.get(field_name) or 0) < int(s[key]):
+                mm.append(f"stored script {cid} v{v}: {field_name}={meta.get(field_name)} < min {s[key]}")
+        for key, field_name in (("successes_max", "successes"), ("failures_max", "failures")):
+            if s.get(key) is not None and int(meta.get(field_name) or 0) > int(s[key]):
+                mm.append(f"stored script {cid} v{v}: {field_name}={meta.get(field_name)} > max {s[key]}")
+        projects = _list(meta.get("success_projects"))
+        if s.get("success_projects_min") is not None and len(projects) < int(s["success_projects_min"]):
+            mm.append(f"stored script {cid} v{v}: success_projects={projects} < min {s['success_projects_min']}")
+        if s.get("code_contains"):
+            try:
+                code = (kb_dir / "scripts" / cid / f"v{v}.py").read_text(encoding="utf-8")
+            except OSError:
+                code = ""
+            for needle in _list(s["code_contains"]):
+                if needle not in code:
+                    mm.append(f"stored script {cid} v{v} lacks {needle!r}")
+    for key, n in versions_want.items():
+        cid = case_ref(key)
+        have = _stored_versions(kb_dir, cid)
+        if len(have) != int(n):
+            mm.append(f"stored versions of case {cid}: {have or 'none'} expected {n}")
+    return mm
+
+
+def _issue_text(i: dict) -> str:
+    hint = f" -> {i.get('fix_hint')}" if i.get("fix_hint") else ""
+    return f"{i.get('severity') or 'warning'} {i.get('file') or ''}: {i.get('problem') or ''}{hint}"
+
+
+def evaluate_structure_review(want: dict, report: dict) -> list[str]:
+    """`structure_review` expectation (v2): `report.structure_review` (verdict, issues, the script and its commit)."""
+    rv = report.get("structure_review")
+    if not isinstance(rv, dict):
+        return ["no structure_review in report.json"]
+    mm: list[str] = []
+    issues = [i for i in _list(rv.get("issues")) if isinstance(i, dict)]
+    critical = [i for i in issues if i.get("severity") == "critical"]
+    warnings = [i for i in issues if i.get("severity") != "critical"]
+    verdict = str(rv.get("verdict") or "")
+    allowed = want.get("verdict")
+    if allowed is not None and verdict not in (allowed if isinstance(allowed, list) else [allowed]):
+        mm.append(f"structure_review verdict={verdict!r} expected {allowed!r} (note: {rv.get('note') or '-'})"[:300])
+    for key, items, op in (("critical", critical, "=="), ("critical_min", critical, ">="),
+                           ("critical_max", critical, "<="), ("warnings_min", warnings, ">="),
+                           ("warnings_max", warnings, "<=")):
+        n = want.get(key)
+        if n is None:
+            continue
+        have = len(items)
+        if (op == "==" and have != n) or (op == ">=" and have < n) or (op == "<=" and have > n):
+            mm.append(f"structure_review {key.split('_')[0]}={have} expected {op} {n} "
+                      f"(got: {_short([_issue_text(i) for i in items])})")
+    texts = [_issue_text(i) for i in issues]
+    for pat in _list(want.get("issues_contain")):
+        if not _contains_match(pat, texts):
+            mm.append(f"structure_review issues lack {pat!r} (got: {_short(texts)})")
+    if want.get("sbmig_check") is not None:
+        has = any(str(i.get("problem") or "").startswith("(sbmig check)") for i in issues)
+        if has != bool(want["sbmig_check"]):
+            mm.append(f"structure_review sbmig_check={has} expected {want['sbmig_check']}")
+    res = rv.get("script_result") if isinstance(rv.get("script_result"), dict) else None
+    status = str(res.get("status")) if res else "none"
+    if want.get("script_status") is not None and status != want["script_status"]:
+        err = (res or {}).get("error") or rv.get("note") or "-"
+        mm.append(f"structure_review script_status={status} expected {want['script_status']} ({err})"[:300])
+    if want.get("committed") is not None and bool(rv.get("commit")) != bool(want["committed"]):
+        mm.append(f"structure_review commit={rv.get('commit')!r} expected committed={want['committed']}")
+    if want.get("reverted") is not None and bool(rv.get("reverted")) != bool(want["reverted"]):
+        mm.append(f"structure_review reverted={rv.get('reverted')} expected {want['reverted']}")
+    changed = _strings((res or {}).get("changed_files"))
+    for f in _list(want.get("changed_files")):
+        if f not in changed:
+            mm.append(f"structure_review script did not change {f} (changed: {_short(changed, 5)})")
+    calls = int(_get(rv, "llm_usage", "calls", default=0) or 0)
+    if want.get("llm_calls_max") is not None and calls > int(want["llm_calls_max"]):
+        mm.append(f"structure_review llm_calls={calls} > max {want['llm_calls_max']}")
+    return mm
 
 
 def advisory_findings(report: dict) -> list[dict]:
@@ -600,6 +826,8 @@ def evaluate_error_cases(want: dict, report: dict, run_dir: Path | None, kb_dir:
 def kb_dir_to_clear(expect: dict | None, repo: Path | None = None) -> Path | None:
     """The fixture's KB directory (expect.kb.dir) when it is safely inside <repo>/out/, else None."""
     if not isinstance(expect, dict) or not isinstance(expect.get("kb"), dict) or not expect["kb"].get("dir"):
+        return None
+    if expect["kb"].get("after"):          # v2 reuse scenario: continues the KB another fixture filled
         return None
     repo = repo or REPO
     target = (repo / str(expect["kb"]["dir"])).resolve()
@@ -882,6 +1110,11 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
                                    kb_dir)
     if isinstance(expect.get("properties"), dict):
         mm += evaluate_properties(expect["properties"], report, project)
+    if isinstance(expect.get("structure_review"), dict):
+        mm += evaluate_structure_review(expect["structure_review"], report)
+    if isinstance(expect.get("scripts"), dict):
+        sdir = expect["scripts"].get("dir") or (expect.get("kb") or {}).get("dir")
+        mm += evaluate_scripts(expect["scripts"], report, (repo or REPO) / str(sdir) if sdir else None)
     for check in _list(expect.get("post_checks")):
         problem = run_post_check(check, project, FIXTURES_DIR / res.fixture)
         if problem:
@@ -925,7 +1158,7 @@ def describe_expect(fixture: str, expected: dict) -> str:
         parts.append(f"followups=[{', '.join(exp['followups_contains'])}]")
     if isinstance(exp.get("kb"), dict):
         kb = exp["kb"]
-        kp = [f"dir={kb.get('dir')}"] + [f"{k}={kb[k]}" for k in ("candidates_min", "harvest_candidates_min")
+        kp = [f"dir={kb.get('dir')}"] + [f"{k}={kb[k]}" for k in ("after", "candidates_min", "harvest_candidates_min")
                                          if kb.get(k) is not None]
         kp += [f"{r.get('recipe')}" + (f"@{r['name']}" if r.get("name") else "")
                for r in _list(kb.get("recipes")) if isinstance(r, dict)]
@@ -944,6 +1177,19 @@ def describe_expect(fixture: str, expected: dict) -> str:
         pr += [f"{k}={len(pp[k])}" for k in ("external", "absent", "written", "placeholder_file_contains")
                if pp.get(k)]
         parts.append(f"properties({', '.join(pr)})")
+    if isinstance(exp.get("structure_review"), dict):
+        sr = exp["structure_review"]
+        parts.append("review(" + ", ".join(f"{k}={sr[k]}" for k in ("verdict", "critical", "critical_min",
+                                                                     "script_status", "committed")
+                                           if sr.get(k) is not None) + ")")
+    if isinstance(exp.get("scripts"), dict):
+        sc = exp["scripts"]
+        sp = [f"{k}={json.dumps(sc[k], sort_keys=True)}" for k in ("attempts", "attempts_min", "attempts_max")
+              if sc.get(k)]
+        sp += [f"cases={len(sc['cases'])}"] if sc.get("cases") else []
+        sp += [f"stored={len(sc['stored'])}"] if sc.get("stored") else []
+        sp += ["reuse_without_llm"] if sc.get("reuse_without_llm") else []
+        parts.append(f"scripts({', '.join(sp)})")
     if exp.get("post_checks"):
         parts.append(f"post_checks={len(exp['post_checks'])}")
     cfg = fixture_config(fixture)
@@ -973,8 +1219,17 @@ def find_run_dir(out: Path, before: dict[Path, float], started: float, output: s
     return max(pool, key=lambda p: after[p]) if pool else None
 
 
+def kb_after_problem(expect: dict | None, ran_before: list[str] | None) -> str | None:
+    """`kb.after: <fixture>` (v2 reuse scenario): <fixture> must have run earlier in this e2e run (None = fine)."""
+    after = (expect or {}).get("kb", {}).get("after") if isinstance((expect or {}).get("kb"), dict) else None
+    if not after or ran_before is None or after in ran_before:
+        return None
+    return (f"precondition: {after} must run before this fixture in the same e2e run (it continues the KB "
+            f"{expect['kb'].get('dir')}; e.g. --only {after},<this fixture>)")
+
+
 def run_fixture(fixture: str, args: argparse.Namespace, cmd: list[str] | None = None,
-                expected: dict | None = None) -> FixtureResult:
+                expected: dict | None = None, ran_before: list[str] | None = None) -> FixtureResult:
     cmd = cmd or build_command(fixture, args)
     res = FixtureResult(fixture=fixture, command=cmd)
     expected = load_expected(fixture) if expected is None else expected
@@ -986,7 +1241,8 @@ def run_fixture(fixture: str, args: argparse.Namespace, cmd: list[str] | None = 
     log_path = logs / f"{fixture}.log"
     res.log_path = str(log_path)
 
-    problem = preflight(fixture, expected, Path(getattr(args, "local_repo", None) or DEFAULT_LOCAL_REPO))
+    problem = preflight(fixture, expected, Path(getattr(args, "local_repo", None) or DEFAULT_LOCAL_REPO)) \
+        or kb_after_problem(expect, ran_before)
     if problem:
         res.error = problem
         if expect is not None:
@@ -1068,7 +1324,7 @@ def _fmt(v: Any) -> str:
 
 
 HEADERS = ["fixture", "case", "exit", "phases ok", "final build ok", "llm calls", "unresolved", "blocked",
-           "advisories", "carried", "duration s", "expect", "note"]
+           "advisories", "carried", "review", "scripts", "duration s", "expect", "note"]
 
 
 def _fmt_advisories(values: list[str], width: int = 60) -> str:
@@ -1095,7 +1351,7 @@ def _note(r: FixtureResult) -> str:
 def summary_rows(results: list[FixtureResult]) -> list[list[str]]:
     return [[r.fixture, r.case_type, _fmt(r.exit_code), r.phases_ok, _fmt_bool(r.final_build_ok),
              _fmt(r.llm_calls), _fmt(r.unresolved), str(len(r.blocked)), _fmt_advisories(r.advisories),
-             _fmt(r.carried_over), f"{r.duration_s:.1f}",
+             _fmt(r.carried_over), _fmt(r.review), r.scripts or "-", f"{r.duration_s:.1f}",
              "-" if r.expect_ok is None else ("PASS" if r.expect_ok else "FAIL"), _note(r)[:110]]
             for r in results]
 
@@ -1190,7 +1446,7 @@ def main(argv: list[str] | None = None) -> int:
     results: list[FixtureResult] = []
     for name in selected:
         print(f"==> {name}", flush=True)
-        r = run_fixture(name, args)
+        r = run_fixture(name, args, ran_before=[x.fixture for x in results])
         verdict = "-" if r.expect_ok is None else ("PASS" if r.expect_ok else "FAIL")
         status = _note(r) if (r.mismatches or r.error) else "ok"
         print(f"    exit={_fmt(r.exit_code)} final_build_ok={_fmt_bool(r.final_build_ok)} "

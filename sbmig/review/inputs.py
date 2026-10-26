@@ -589,6 +589,30 @@ def fact_lines(poms: list[PomInfo], cfg: Any) -> list[str]:
     return L
 
 
+MAX_BINARY_FACTS = 12
+
+
+def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
+    """Binary files a `<filtering>true</filtering>` resource runs through Maven's filter (the analyzer's scan,
+    `sbmig.analyze.properties.filtered_binary_resources`, on the restructured tree): the build passes, but the packaged
+    bytes are rewritten — v1 fixed this with a pre-emptive handler (E12), v2 leaves it to the review (2026-10-26).
+    Never raises."""
+    try:
+        from sbmig.analyze.properties import filtered_binary_resources
+        files = filtered_binary_resources(ws, poms)
+    except Exception:  # a fact line is never worth a failed review
+        log.debug("filtered binary resource scan for the review failed", exc_info=True)
+        return []
+    if not files:
+        return []
+    exts = sorted({f.rsplit(".", 1)[1].lower() for f in files if "." in posixpath.basename(f)})
+    shown = ", ".join(f"`{f}`" for f in files[:MAX_BINARY_FACTS])
+    more = f" (+{len(files) - MAX_BINARY_FACTS})" if len(files) > MAX_BINARY_FACTS else ""
+    return [f"- binary files under a filtered `<resource>` (Maven filtering rewrites their bytes unless "
+            f"maven-resources-plugin `<nonFilteredFileExtensions>` lists the extension): {shown}{more}"
+            + (f"; extensions: {', '.join(exts)}" if exts else "")]
+
+
 def select_poms(ws: Any, poms: list[PomInfo], max_poms: int, max_chars: int) -> tuple[list[PomText], list[str]]:
     from sbmig.analyze.pom_parser import module_order
 
@@ -622,7 +646,8 @@ def collect_review_input(ws: Any, profile: Optional[ProjectProfile], cfg: Any, *
     inp.rules, inp.external_parent = rule_lines(cfg, profile, name)
     inp.restructure = restructure_lines(notes, results)
     inp.modules = module_lines(poms, ws)
-    inp.facts = fact_lines(poms, cfg) + [f"- pom parse warning: {_cap(w)}" for w in warnings[:10]]
+    inp.facts = fact_lines(poms, cfg) + filtered_binary_lines(ws, poms) \
+        + [f"- pom parse warning: {_cap(w)}" for w in warnings[:10]]
     inp.encodings = source_encodings(ws, poms, getattr(cfg.build, "encoding_candidates", None),
                                      skip_tests=bool(getattr(cfg.build, "skip_test_compile", True)))
     inp.poms, inp.omitted_poms = select_poms(ws, poms, int(cfg.review.max_poms), int(cfg.review.max_pom_chars))

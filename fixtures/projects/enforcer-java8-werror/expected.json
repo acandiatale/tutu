@@ -11,9 +11,76 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 3,
     "blocked": [],
     "unresolved_max": 0,
-    "flags": ["regex:enforcer-(relaxed|skipped)", "werror-removed"]
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 0,
+      "warnings_min": 1,
+      "script_status": "none",
+      "llm_calls_max": 1,
+      "issues_contain": [
+        "regex:warning module/comp-jar/pom.xml: .*enforcer.*"
+      ]
+    },
+    "scripts": {
+      "attempts": {
+        "new": 2,
+        "augment": 0,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "enforcer|requirejavaversion: pricing-core must be built with",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "improved"
+          ],
+          "versions": [
+            1
+          ]
+        },
+        {
+          "l2": "compile|build|compilation failure",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ],
+          "versions": [
+            1
+          ]
+        }
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-enforcer-java8-werror"
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "module/comp-jar/pom.xml",
+          "contains": "<version>[21,)</version>",
+          "not_contains": "[1.8,9)"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "module/comp-jar/pom.xml",
+          "contains": "MIGRATION-TODO: -Werror removed",
+          "not_contains": "<arg>-Werror</arg>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "module/comp-jar/pom.xml",
+          "contains": "<arg>-Xlint:all</arg>"
+        }
+      }
+    ]
   }
 }

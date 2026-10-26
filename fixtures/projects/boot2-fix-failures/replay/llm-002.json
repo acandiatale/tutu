@@ -1,4 +1,6 @@
 {
-  "note": "scripted LLM response 2/5 (the feedback round of the same attempt): still a SEARCH block that is not in the file → the attempt ends apply_failed",
-  "response": "<analysis>legacy-web-lib 3.0.0 renamed LegacyRequestHelper.clientIp(HttpServletRequest) to remoteClientIp(HttpServletRequest); the filter only needs the new method name.</analysis>\n<confidence>0.7</confidence>\n<patches>\n=== MODIFY src/main/java/com/example/members/web/ClientIpFilter.java\n<<<<<<< SEARCH\n        request.setAttribute(ATTR, LegacyRequestHelper.clientIp(request));\n=======\n        request.setAttribute(ATTR, LegacyRequestHelper.remoteClientIp(request));\n>>>>>>> REPLACE\n</patches>\n"
+  "note": "boot2-fix-failures v1 (new): deliberately too narrow — an exact replace written for the argument name of the first file (`clientIp(request)`), so MemberController's `clientIp(http)` stays → partial, rolled back before the augment — L2 `compile|cannot_find_symbol|clientIp` (8bb4fd4a4a)",
+  "replay_role": "fix",
+  "match": "case: 8bb4fd4a4a",
+  "response": "<analysis>legacy-web-lib 3.0.0 renamed LegacyRequestHelper.clientIp(..) to remoteClientIp(..). The script replaces the call in the files of the case.</analysis>\n<script>\nOLD = \"LegacyRequestHelper.clientIp(request)\"\nNEW = \"LegacyRequestHelper.remoteClientIp(request)\"\n\n\ndef fix(p):\n    done = set()\n    for e in p.errors:\n        path = e.get(\"file\")\n        if not path or path in done or not p.exists(path):\n            continue\n        done.add(path)\n        n = p.replace(path, OLD, NEW)\n        p.log(f\"{path}: {n} call(s) renamed\" if n else f\"{path}: '{OLD}' not found\")\n</script>\n"
 }

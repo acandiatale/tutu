@@ -1,0 +1,6 @@
+{
+  "note": "boot2-rewrite-excluded: vendor/LegacyQueryHelper.java (excluded from the rewrite) still names javax.persistence fully qualified — L2 `compile|package_does_not_exist|javax.persistence` (e62cd43b29)",
+  "replay_role": "fix",
+  "match": "case: e62cd43b29",
+  "response": "<analysis>LegacyQueryHelper is under an openrewrite exclusion, so the jakarta recipes never saw its fully qualified javax.persistence.EntityManager / Query. The script renames javax.persistence. to jakarta.persistence. in the case's files.</analysis>\n<script>\nimport re\n\ndef error_files(p):\n    \"\"\"The case's files that still exist, in order, once each.\"\"\"\n    seen = []\n    for e in p.errors:\n        path = e.get(\"file\")\n        if path and path not in seen and p.exists(path):\n            seen.append(path)\n    return seen\n\n\ndef fix(p):\n    for path in error_files(p):\n        n = p.sub(path, r\"\\bjavax\\.persistence\\.\", \"jakarta.persistence.\")\n        p.log(f\"{path}: javax.persistence -> jakarta.persistence ({n})\" if n else f\"{path}: nothing to change\")\n</script>\n"
+}

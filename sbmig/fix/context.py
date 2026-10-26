@@ -302,6 +302,21 @@ def _truncate(text: str, max_chars: int) -> str:
     return text[: max(0, max_chars - len(marker))] + marker
 
 
+_PARENT_BLOCK_RE = re.compile(r"<parent>.*?</parent>", re.DOTALL)
+_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_ARTIFACT_ID_RE = re.compile(r"<artifactId>\s*([^<\s]+)\s*</artifactId>")
+
+
+def pom_artifact_id(ws: Workspace, pom: str) -> Optional[str]:
+    """The pom's own artifactId (not its parent's); None when unreadable."""
+    try:
+        text = _PARENT_BLOCK_RE.sub("", _COMMENT_RE.sub("", ws.read(pom)))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    m = _ARTIFACT_ID_RE.search(text)
+    return m.group(1) if m else None
+
+
 def nearest_pom(ws: Workspace, rel: Optional[str]) -> Optional[str]:
     """The module pom of a file: walk up from the file's directory to the project root. Root-relative posix paths
     only; a path with backslashes is normalized, an absolute one is made root-relative when it lies under the
@@ -715,7 +730,11 @@ class ContextPacker:
             except Exception:
                 poms = []
             for m in mods:
-                add(next((p for p in poms if PurePosixPath(p).parent.name == m), None))
+                # Maven names the module by its artifactId; the folder often differs (`module/comp-jar` holds
+                # `<name>-comp`, company `{name}-back` holds `<name>-comp`): the folder name first, then the poms'
+                # own artifactIds
+                add(next((p for p in poms if PurePosixPath(p).parent.name == m), None)
+                    or next((p for p in poms if pom_artifact_id(ws, p) == m), None))
         if ws.exists("pom.xml") and (not out or cluster.kind in POM_KINDS):
             add("pom.xml")
         return out[:SCRIPT_MAX_POMS]
@@ -945,6 +964,8 @@ class ContextPacker:
             return True
         if any(PurePosixPath(f).name == "pom.xml" for f in files):
             return True
+        if cluster.kind == ErrorKind.COMPILE and any(not e.file for e in cluster.errors):
+            return True                  # a compile failure without a source file = compiler / plugin configuration
         return any(POM_MESSAGE_RE.search(e.message or "") for e in cluster.errors)
 
     def _file_block(self, ws: Workspace, path: str, err_lines: list[int]) -> tuple[str, str]:

@@ -1,12 +1,12 @@
-# Per-fixture config override, appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# Per-fixture config override (java6-legacy), appended by scripts/e2e.py after config/artifacts.local-e2e.yml
 # (`--config config/artifacts.local-e2e.yml --config fixtures/projects/java6-legacy/sbmig.e2e.yml`).
-# Replayed ("scripted") LLM so the run is offline and deterministic. Since round 10 the handler jdk-base64-shim fixes
-# Codec.java without the LLM (expected: 0 calls); replay/llm-001.json (the java.util.Base64 port) stays for runs with
-# that handler off. Responses are consumed in order; the last one repeats.
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review), the other entries answer fix-script requests by `match` on `case: <case_id>`
+# (case_id = sha1(L2)[:10]; first unused match, the last match repeats, no match = "no fix").
 llm:
   provider: fake
   base_url: "replay:fixtures/projects/java6-legacy/replay"
-# Own KB: every KB candidate is appended to every later plan (kb.try_candidates_in_plan), so a shared KB would leak
-# this fixture's harvested case into the other fixtures. scripts/e2e.py clears it before the run (expect.kb.dir).
+# KB shared with the reuse scenario (pure-java fills it with the JAXB fix script, java6-legacy runs it again
+# without an LLM call — `expect.kb.after`); scripts/e2e.py clears it before pure-java only.
 kb:
-  dir: out/e2e/kb-java6-legacy
+  dir: out/e2e/kb-jaxb

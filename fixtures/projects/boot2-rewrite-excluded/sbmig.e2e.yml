@@ -2,7 +2,7 @@
 # (`--config config/artifacts.local-e2e.yml --config fixtures/projects/boot2-rewrite-excluded/sbmig.e2e.yml`).
 # Lists replace (deep_merge), so this is the complete exclusion list: the defaults (JSP / HTML, config/default.yml)
 # plus the two directories the recipes must not see — they reproduce "files the rewrite plugin did not parse"
-# (E13 jakarta leftovers, E14 paging repositories), which only the source handlers repair.
+# (E13 jakarta leftovers, E14 paging repositories); v2: the replayed fix scripts repair them from the build errors.
 openrewrite:
   exclusions:
     - "**/*.jsp"
@@ -11,3 +11,13 @@ openrewrite:
     - "**/*.htm"
     - "**/vendor/**"
     - "**/repository/**"
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review), the other entries answer fix-script requests by `match` on `case: <case_id>`
+# (case_id = sha1(L2)[:10]; first unused match, the last match repeats, no match = "no fix").
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/boot2-rewrite-excluded/replay"
+# Own KB (v2: stored fix scripts per case, reviews.jsonl, error cases): a shared KB would let one fixture
+# reuse another's scripts. scripts/e2e.py clears it before the run (expect.kb.dir).
+kb:
+  dir: out/e2e/kb-boot2-rewrite-excluded

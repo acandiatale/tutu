@@ -1,0 +1,5 @@
+{
+  "note": "structure review of boot3 (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. guava is on the configured 33.4.8-jre through ${guava.version}; the Boot 4 starters (webmvc, restclient, aspectj) are unversioned.\"\n}\n</review>\n"
+}

@@ -1,0 +1,5 @@
+{
+  "note": "structure review of multi-module-merge (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"The merged comp module and the kept boot module (shop-app) inherit the root, the root inherits the configured parent and aggregates both; commons-lang3 is on 3.17.0; the mandatory starters are in the root.\"\n}\n</review>\n"
+}

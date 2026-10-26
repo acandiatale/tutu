@@ -1,0 +1,5 @@
+{
+  "note": "structure review of servlet-war-overlay (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Company layout: board-boot war on the boot parent carries the legacy-base-web overlay (war dependency + overlays), board-back / board-front on the comp parent, root aggregator with the mandatory starters.\"\n}\n</review>\n"
+}

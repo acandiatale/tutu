@@ -18,25 +18,75 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 11,
     "blocked": [],
     "unresolved_max": 0,
-    "flags": [
-      "jdk-base64-shimmed",
-      "security-path-matchers-rewritten"
-    ],
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 3,
+      "script_status": "ok",
+      "committed": true,
+      "changed_files": [
+        "pom.xml",
+        "module/comp-jar/pom.xml"
+      ],
+      "issues_contain": [
+        "regex:critical pom.xml: spring-batch.version=4\\.3\\.10 .*"
+      ],
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts_min": {
+        "new": 9
+      },
+      "attempts": {
+        "augment": 0,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|package_does_not_exist|org.springframework.security.access.vote",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "improved"
+          ]
+        },
+        {
+          "l2": "compile|cannot_find_symbol|BASE64Encoder",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "improved"
+          ]
+        },
+        {
+          "l2": "compile|other|exception java.io.ioexception is never thrown in",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ]
+        }
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-spring5-security-batch"
+    },
     "advisories": [
       {
         "id": "jdk-removed-apis",
-        "policy": "guide",
-        "outcome": "replaced"
+        "policy": "guide"
       }
     ],
     "post_checks": [
       {
         "file_contains": {
           "path": "**/com/example/ops/config/WebSecurityConfig.java",
-          "contains": "SecurityFilterChain filterChain(HttpSecurity http)",
+          "contains": "SecurityFilterChain securityFilterChain(HttpSecurity http)",
           "not_contains": "extends WebSecurityConfigurerAdapter"
         }
       },
@@ -85,13 +135,14 @@
       {
         "file_contains": {
           "path": "**/com/example/ops/util/TokenCodec.java",
-          "contains": "import sbmig.compat.BASE64Encoder;",
+          "contains": "catch (IllegalArgumentException e)",
           "not_contains": "import sun.misc"
         }
       },
       {
-        "file_exists": {
-          "path": "**/sbmig/compat/BASE64Decoder.java"
+        "file_contains": {
+          "path": "**/com/example/ops/util/TokenCodec.java",
+          "contains": "Base64.getMimeDecoder().decode(encoded)"
         }
       },
       {
@@ -100,6 +151,21 @@
           "artifacts": [
             "org.springframework.security:spring-security-access"
           ]
+        }
+      },
+      {
+        "pom_dependency_unversioned": {
+          "path": "module/comp-jar/pom.xml",
+          "artifacts": [
+            "org.springframework:spring-context",
+            "org.springframework.batch:spring-batch-core"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "<spring-batch.version>"
         }
       },
       {

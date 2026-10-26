@@ -1,0 +1,5 @@
+{
+  "note": "structure review of enforcer-java8-werror (one call): verdict issues",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"module/comp-jar/pom.xml\",\n      \"problem\": \"maven-enforcer-plugin still requires Java [1.8,9) and maven-compiler-plugin 3.8.1 builds with -Xlint:all -Werror\",\n      \"fix_hint\": \"relax requireJavaVersion to 21 and review -Werror (JDK 21 lint warnings fail the build)\"\n    }\n  ],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. The old build rules of the comp module (enforcer Java 8 range, -Werror) will likely fail the build; they are reported as a warning because the build output will show exactly what fails.\"\n}\n</review>\n"
+}

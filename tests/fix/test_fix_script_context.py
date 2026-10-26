@@ -143,6 +143,33 @@ def test_pom_case_gets_the_module_poms(cfg, ws, put):
     assert not any(t.startswith("POM") for t, _ in packed.sections)
 
 
+def test_fileless_module_error_gets_its_pom_by_artifact_id(cfg, ws, put):
+    """A file-less error names the module by its artifactId (`ledger-utils-comp`), the folder is `module/comp-jar`
+    (pre-9c layout) or `{name}-back` (company layout): its pom is found by the pom's own artifactId (not the parent's).
+    A compile failure without a source file (javac options: `--boot-class-path` with `--release`) is a compiler
+    configuration problem, so it gets the module pom too (2026-10-26 e2e: java6-legacy, enforcer-java8-werror)."""
+    put("pom.xml", "<project>\n  <artifactId>ledger-utils</artifactId>\n  <modules><module>module/comp-jar</module>"
+                   "</modules>\n</project>\n")
+    put("module/comp-jar/pom.xml", "<project>\n  <parent>\n    <artifactId>ledger-utils</artifactId>\n  </parent>\n"
+                                   "  <artifactId>ledger-utils-comp</artifactId>\n  <build><plugins><plugin>"
+                                   "<artifactId>maven-compiler-plugin</artifactId></plugin></plugins></build>\n"
+                                   "</project>\n")
+    put("module/boot-jar/pom.xml", "<project>\n  <parent>\n    <artifactId>ledger-utils</artifactId>\n  </parent>\n"
+                                   "  <artifactId>ledger-utils-boot</artifactId>\n</project>\n")
+    err = BuildError(kind=ErrorKind.COMPILE, message="Compilation failure: Compilation failure:",
+                     module="ledger-utils-comp", raw="[ERROR] error: option --boot-class-path cannot be used together "
+                     "with --release", signature="compile|build|x", signature_generic="compile|build|x")
+    packed = ContextPacker(cfg).pack_script(ws, case([err]), sctx(), budget=30000)
+    titles = [t for t, _ in packed.sections]
+    assert "POM (module/comp-jar/pom.xml)" in titles and "POM (module/boot-jar/pom.xml)" not in titles
+    assert "maven-compiler-plugin" in dict(packed.sections)["POM (module/comp-jar/pom.xml)"]
+    # an enforcer failure (a pom kind) of the same module: the module pom, then the root
+    enf = err.model_copy(update={"kind": ErrorKind.ENFORCER, "message": "RequireJavaVersion: must be built with JDK 8"})
+    titles = [t for t, _ in ContextPacker(cfg).pack_script(ws, case([enf], kind=ErrorKind.ENFORCER), sctx(),
+                                                           budget=30000).sections]
+    assert titles.index("POM (module/comp-jar/pom.xml)") < titles.index("POM (pom.xml)")
+
+
 def test_deterministic_and_hints(cfg, ws, put, tmp_path):
     files = [f"app/src/main/java/a/D{i}.java" for i in range(8)]
     errors = []

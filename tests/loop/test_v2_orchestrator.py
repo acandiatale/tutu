@@ -193,6 +193,19 @@ def test_review_script_is_committed_journaled_and_reported(cfg, ws):
     assert any("structure review issues (2 issue(s), 1 critical); script ok" in n for n in report.phases[1].notes)
 
 
+def test_review_note_names_the_commit_instead_of_not_committed_yet(cfg, ws):
+    """The reviewer writes its note before the orchestrator commits (`… — not committed yet`); once committed, the
+    report, the journal and reviews.jsonl say `committed <sha>` (2026-10-26 e2e: euckr-legacy showed both)."""
+    rv = StructureReview(verdict="issues", issues=[ReviewIssue(severity="critical", file="pom.xml", problem="x")],
+                         note="review script changed 1 file(s): pom.xml — not committed yet")
+    reviewer = FakeReviewer(review=rv, files={"pom.xml": "<project><parent>base</parent></project>\n"})
+    report = make_v2(cfg, ws, reviewer=reviewer).run()
+    sha = report.structure_review.commit
+    assert sha and report.structure_review.note == f"review script changed 1 file(s): pom.xml — committed {sha[:10]}"
+    ev = next(e for e in journal_events(ws) if e["event"] == "structure_review")
+    assert "not committed yet" not in ev["note"] and sha[:10] in ev["note"]
+
+
 def test_failed_review_script_leaves_no_commit(cfg, ws):
     reviewer = FakeReviewer(review=StructureReview(verdict="issues"), files={"pom.xml": "<broken/>"}, status="error")
     report = make_v2(cfg, ws, reviewer=reviewer).run()

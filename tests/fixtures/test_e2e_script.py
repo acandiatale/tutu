@@ -76,7 +76,8 @@ def test_build_command_and_env(e2e, tmp_path):
     args = _args(e2e, tmp_path, "--stop-after", "spring", "--java-home", "/opt/jdk21", "--extra", "--foo", "1")
     cmd = e2e.build_command("boot3", args, python="py")
     assert cmd[:4] == ["py", "-m", "sbmig.cli", "run"] and cmd[4].endswith("fixtures/projects/boot3")
-    assert cmd.count("--config") == 1
+    assert cmd.count("--config") == 2 and cmd[cmd.index("--config", 6) + 1].endswith("boot3/sbmig.e2e.yml")
+    assert e2e.build_command("no-such-fixture", args, python="py").count("--config") == 1   # no override file
     assert "--stop-after" in cmd and cmd[-2:] == ["--foo", "1"] and "--llm-provider" not in cmd
     args.llm_provider_flag = True
     assert "--llm-provider" in e2e.build_command("boot3", args)
@@ -101,7 +102,8 @@ def test_main_writes_summary(e2e, tmp_path, monkeypatch):
     assert rc == 1                        # fake report: 4 LLM calls, 2 unresolved → both expectations fail
     md = (tmp_path / "out" / "summary.md").read_text()
     assert "boot2" in md and "boot3" in md and "2/2 fixtures reached" in md and "0/2 fixtures met" in md
-    assert "| FAIL | llm_calls=4 > max 0" in md and "MISMATCH: unresolved=2 > max 0" in md
+    assert "| FAIL | llm_calls=4 > max 1" in md and "MISMATCH: unresolved=2 > max 0" in md
+    assert "| review | scripts |" in md and "MISMATCH: no structure_review in report.json" in md
     data = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert [d["fixture"] for d in data] == ["boot2", "boot3"]
     assert e2e.discover_fixtures()[:2] == ["pure-java", "servlet-tomcat"]
@@ -119,22 +121,40 @@ for rel, (enc, text) in spec.get("files", {}).items():
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_bytes(text.encode(enc))
 (run / "journal.jsonl").write_text("\n".join(json.dumps(e) for e in spec.get("journal", [])) + "\nnot json\n")
+for d in spec.get("dirs", []):
+    pathlib.Path(d).mkdir(parents=True, exist_ok=True)
 rep = dict(spec["report"])
 rep.setdefault("outputs", {})["project_dir"] = str(run / "project")
 (run / "report.json").write_text(json.dumps(rep))
 sys.exit(spec.get("exit", 0))
 """
 
+def _att(i: int, case: str, outcome: str = "apply_failed", mode: str = "new", version: int = 0, calls: int = 1,
+         iteration: int = 1) -> dict:
+    """A v2 script attempt as report.json carries it (FixAttempt)."""
+    return {"id": f"verify-{iteration}-{i}", "phase": "verify", "iteration": iteration, "cluster_id": f"case:{case}",
+            "script_mode": mode, "script_case_id": case, "script_version": version, "outcome": outcome,
+            "llm_usage": {"calls": calls}}
+
+
+JAVAX_LIB_GA = {"group_id": "com.company.legacy", "artifact_id": "legacy-web-lib", "version": "1.0.0"}
 BLOCKED_REPORT = {
     "run_id": "run-x", "project_name": "member-api", "case_type": "spring_boot", "success": False,
-    "phases": [{"phase": "spring", "ok": False, "notes": []},
+    "phases": [{"phase": "transform", "ok": True, "notes": []},
                {"phase": "restructure", "ok": True,
                 "notes": [("restructure.apply (layout): 3 file(s) changed; mandatory added: -; "
-                           "optional bumped: org.apache.commons:commons-lang3 managed→3.17.0")]}],
-    "final_build": {"ok": False}, "llm_usage": {"calls": 0}, "unresolved": [],
-    "blocked": [{"id": "b1", "reason": "external_javax_api", "phase": "spring", "cluster_id": "c1",
-                 "artifact": {"group_id": "com.company.legacy", "artifact_id": "legacy-web-lib", "version": "1.0.0"},
-                 "owner_class": "com.company.legacy.web.LegacyRequestHelper"}],
+                           "optional bumped: org.apache.commons:commons-lang3 managed→3.17.0")]},
+               {"phase": "verify", "ok": False,
+                "attempts": [_att(1, "f2b133edd9"), _att(2, "61d819f63f"), _att(3, "f2b133edd9"),
+                             _att(4, "61d819f63f")]}],
+    "final_build": {"ok": False}, "llm_usage": {"calls": 5}, "unresolved": [],
+    "blocked": [{"id": "b1", "reason": "external_javax_api", "phase": "verify", "cluster_id": "case:f2b133edd9",
+                 "artifact": JAVAX_LIB_GA, "owner_class": "com.company.legacy.web.LegacyRequestHelper"},
+                {"id": "b2", "reason": "external_javax_api", "phase": "verify", "cluster_id": "case:61d819f63f",
+                 "artifact": JAVAX_LIB_GA}],
+    "structure_review": {"verdict": "issues", "llm_usage": {"calls": 1}, "issues": [
+        {"severity": "warning", "file": "module/comp-jar/pom.xml",
+         "problem": "the in-house com.company.legacy:legacy-web-lib:1.0.0 is a javax.servlet build", "fix_hint": "x"}]},
     "flags": [],
 }
 
@@ -147,55 +167,81 @@ def _run_spec(e2e, tmp_path, monkeypatch, fixture, spec):
     return e2e.run_fixture(fixture, args, cmd=[sys.executable, str(cli), "x", "--out", str(args.out)])
 
 
+def _kb_spec(e2e, tmp_path, monkeypatch, fixture, spec):
+    """The fixture's KB dir under a temporary repo (run_fixture clears it, the fake CLI creates it again)."""
+    monkeypatch.setattr(e2e, "REPO", tmp_path)
+    monkeypatch.setattr(e2e, "preflight", lambda *a, **k: None)
+    kb_dir = e2e.load_expected(fixture)["expect"]["kb"]["dir"]
+    return dict(spec, dirs=[str(tmp_path / kb_dir)])
+
+
 def test_blocked_scenario_passes(e2e, tmp_path, monkeypatch):
     spec = {"report": BLOCKED_REPORT, "exit": 2,
             "journal": [{"event": "restructure", "ok": True, "optional_bumped": []}]}
-    monkeypatch.setattr(e2e, "preflight", lambda *a, **k: None)
-    r = _run_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib", spec)
+    r = _run_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib", _kb_spec(e2e, tmp_path, monkeypatch,
+                                                                           "boot2-javax-lib", spec))
     assert r.expect_ok is True, r.mismatches
-    assert r.blocked == ["external_javax_api com.company.legacy:legacy-web-lib"]
+    assert r.blocked == ["external_javax_api com.company.legacy:legacy-web-lib"] * 2
     assert r.optional_bumped == ["org.apache.commons:commons-lang3 managed→3.17.0"]
+    assert r.review == "issues" and r.scripts == "new 4"
     assert e2e.fixture_passed(r)
 
 
 def test_blocked_scenario_mismatches_are_reported(e2e, tmp_path, monkeypatch):
     rep = dict(BLOCKED_REPORT, blocked=[dict(BLOCKED_REPORT["blocked"][0], reason="repeated_failure")],
-               llm_usage={"calls": 3})
-    monkeypatch.setattr(e2e, "preflight", lambda *a, **k: None)
-    r = _run_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib", {"report": rep, "exit": 2})
+               llm_usage={"calls": 9}, phases=BLOCKED_REPORT["phases"][:2])
+    rep.pop("structure_review")
+    r = _run_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib",
+                  _kb_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib", {"report": rep, "exit": 2}))
     assert r.expect_ok is False
     text = "\n".join(r.mismatches)
-    assert "llm_calls=3 > max 0" in text
+    assert "llm_calls=9 > max 5" in text
     assert "blocked external_javax_api com.company.legacy:legacy-web-lib missing" in text
     assert "unexpected blocked repeated_failure com.company.legacy:legacy-web-lib" in text
     assert 'no journal event matching {"event": "restructure", "ok": true}' in text
+    assert "no structure_review in report.json" in text
+    assert "script attempts new=0 expected == 4" in text
+    assert "case f2b133edd9: no script attempt (cases with attempts: none)" in text
 
 
 def test_engine_without_new_fields_fails_readably(e2e, tmp_path, monkeypatch):
-    """An engine that does not emit blocked/flags yet: mismatches, no crash."""
+    """An engine that does not emit the v2 fields (review, script attempts, KB) yet: mismatches, no crash."""
     rep = {"run_id": "run-x", "project_name": "p", "case_type": "pure_java", "success": True,
-           "phases": "garbage", "final_build": None}
+           "phases": "garbage", "final_build": None, "structure_review": "garbage"}
     r = _run_spec(e2e, tmp_path, monkeypatch, "enforcer-java8-werror", {"report": rep})
     assert r.expect_ok is False and r.error is None
-    assert any("flag 'werror-removed' missing" in m for m in r.mismatches)
-    assert any("enforcer-(relaxed|skipped)" in m for m in r.mismatches)
+    assert "no structure_review in report.json" in r.mismatches
+    assert any(m.startswith("script attempts new=0 expected == 2") for m in r.mismatches)
+    assert any(m.startswith("case ") and "no script attempt" in m for m in r.mismatches)
 
 
 def test_encoding_post_checks(e2e, tmp_path, monkeypatch):
     rel = "module/comp-jar/src/main/java/com/example/greeting/Greeting.java"
     rel2 = "module/comp-jar/src/main/java/com/example/greeting/notice/NoticeFormatter.java"
+    pom = "module/comp-jar/pom.xml"
+    review = {"verdict": "issues", "commit": "abc", "reverted": False, "llm_usage": {"calls": 1},
+              "issues": [{"severity": "critical", "file": pom, "problem": "MS949 sources build with UTF-8",
+                          "fix_hint": "set project.build.sourceEncoding to MS949"}],
+              "script_result": {"status": "ok", "changed_files": [pom]}}
     rep = {"run_id": "run-x", "project_name": "greeting-core", "case_type": "pure_java", "success": True,
-           "llm_usage": {"calls": 0}, "flags": ["source-encoding-set:cp949"], "blocked": [], "unresolved": []}
-    ok = {"report": rep, "files": {rel: ["cp949", "// 인사말\nString s = \"안녕하세요\";"],
-                                   rel2: ["cp949", "/** 공지사항 */"]}}
+           "llm_usage": {"calls": 1}, "flags": [], "blocked": [], "unresolved": [], "structure_review": review}
+    journal = [{"event": "structure_review", "verdict": "issues", "critical": 1, "script_status": "ok"}]
+    files = {rel: ["cp949", "// 인사말\nString s = \"안녕하세요\";"], rel2: ["cp949", "/** 공지사항 */"],
+             pom: ["utf-8", "<project><properties><project.build.sourceEncoding>MS949</project.build.sourceEncoding>"
+                            "</properties></project>"]}
+    ok = _kb_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", {"report": rep, "journal": journal, "files": files})
     r = _run_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", ok)
     assert r.expect_ok is True, r.mismatches
-    bad = {"report": rep, "files": {rel: ["utf-8", "String s = \"안녕하세요\";"], rel2: ["cp949", "/** 공지사항 */"]}}
+    bad = dict(ok, files=dict(files, **{rel: ["utf-8", "String s = \"안녕하세요\";"]}))
     r = _run_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", bad)
     assert r.expect_ok is False and "does not decode as cp949" in r.mismatches[0]
-    rep2 = dict(rep, flags=["source-encoding-set:utf-16"])
-    r = _run_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", dict(ok, report=rep2))
-    assert any("source-encoding-set" in m for m in r.mismatches)
+    # the LLM missed the encoding: sbmig's own `(sbmig check)` issue, no script ran
+    missed = dict(review, issues=[dict(review["issues"][0], problem="(sbmig check) MS949 Java sources ...")],
+                  script_result=None, commit=None)
+    r = _run_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", dict(ok, report=dict(rep, structure_review=missed)))
+    text = "\n".join(r.mismatches)
+    assert "structure_review sbmig_check=True expected False" in text
+    assert "structure_review script_status=none expected ok" in text and "expected committed=True" in text
 
 
 def test_pom_post_checks(e2e, tmp_path):
@@ -286,11 +332,17 @@ def test_expect_only_lists_all_fixtures(e2e, capsys):
     assert "boot2-javax-lib-optional [X1] +sbmig.e2e.yml" in out
     assert e2e.discover_fixtures().index("boot2-cloud-legacy") == e2e.discover_fixtures().index("msa-shared-lib") + 1
     line = next(ln for ln in out.splitlines() if ln.startswith("boot2-cloud-legacy ["))
-    assert "advisories=[springfox:policy=recipe:outcome=replaced:recipe_source=plan" in line
-    assert "hystrix:policy=recipe:outcome=replaced:recipe_source=advisory" in line
+    # v2: no advisory recipes — hystrix stays (guide), the Boot 4 umbrella replaces springfox / sleuth
+    assert "advisories=[springfox:outcome=replaced, sleuth:outcome=replaced, hystrix:policy=guide:outcome=still-present" \
+        in line
     assert "handover(carried_over_min=1, spring_boot_after=4.1.0, from_here_contains=2" in line
-    assert "followups=[regex:(?i).*hystrix → .*resilience4j applied by HystrixToResilience4j" in line
-    assert "post_checks=7" in line
+    assert "review(verdict=issues, critical=0, script_status=none)" in line
+    assert 'scripts(attempts={"augment": 0, "new": 1, "reuse": 0}, cases=1)' in line and "post_checks=4" in line
+    java6 = next(ln for ln in out.splitlines() if ln.startswith("java6-legacy ["))
+    assert "kb(dir=out/e2e/kb-jaxb, after=pure-java)" in java6
+    assert 'scripts(attempts={"augment": 0, "new": 2, "reuse": 1}, cases=2, stored=1, reuse_without_llm)' in java6
+    aug = next(ln for ln in out.splitlines() if ln.startswith("boot2-fix-failures ["))
+    assert 'scripts(attempts={"augment": 1, "new": 1, "reuse": 0}, cases=1, stored=2)' in aug
 
 
 # ------------------------------------------------------------------------------------------- advisories / handover
@@ -414,39 +466,35 @@ def test_advisory_summary_columns(e2e, tmp_path, monkeypatch):
     assert r2.advisories == [] and r2.carried_over is None
 
 
-def test_boot2_cloud_legacy_expectations_against_synthetic_report(e2e):
-    """The fixture's own expect block (minus post_checks) passes against a report shaped like the target run."""
+def test_boot2_cloud_legacy_expectations_against_synthetic_report(e2e, tmp_path):
+    """The fixture's own expect block (minus post_checks) passes against a report shaped like the v2 run: the Boot 4
+    umbrella replaces springfox / sleuth / the cloud train (recipe_source plan), hystrix stays (guide, still-present —
+    advisories are LLM hints + Handover in v2), one fix script drops @EnableCircuitBreaker."""
     exp = dict(e2e.load_expected("boot2-cloud-legacy")["expect"])
     exp.pop("post_checks")
-    # Boot projects: the springfox/sleuth/cloud-train recipes are inside the Boot 4 umbrella chain → recipe_source
-    # "plan"; the hystrix project composite is not → prepended, recipe_source "advisory" (shapes as in the
-    # 2026-10-20 run); the un-catalogued net.sf.ehcache dependency shows up as a carried-over pin in from_here
-    hystrix = {"advisory_id": "hystrix", "library": "hystrix", "status": "eol", "policy": "recipe",
-               "recipe_source": "advisory", "outcome": "replaced"}
-    advisories = [dict(a, recipe_source="plan") if a["advisory_id"] == "springfox" else
-                  hystrix if a["advisory_id"] == "hystrix" else a for a in ADVISORY_REPORT["advisories"]]
-    advisories.append({"advisory_id": "spring-cloud-bom", "policy": "recipe", "recipe_source": "plan",
-                       "outcome": "replaced"})
-    starter = "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j"
-    verify = (f"verify hystrix → {starter} (recipe com.company.migrate.HystrixToResilience4j): Configure the circuit "
-              "breakers by name (instance \"default\" unless a commandKey existed: "
-              "resilience4j.circuitbreaker.instances.<name> or configs.default), move hystrix.command.* timeouts "
-              "to resilience4j.timelimiter.*")
+    advisories = [dict(a, recipe_source="plan") for a in ADVISORY_REPORT["advisories"] if a["advisory_id"] != "hystrix"]
+    advisories += [{"advisory_id": "hystrix", "library": "hystrix", "status": "eol", "policy": "guide",
+                    "recipe_source": "none", "outcome": "still-present"},
+                   {"advisory_id": "spring-cloud-bom", "policy": "recipe", "recipe_source": "plan",
+                    "outcome": "replaced"}]
     handover = dict(ADVISORY_REPORT["handover"],
-                    added=ADVISORY_REPORT["handover"]["added"] + [f"{starter} (advisory:hystrix)"],
-                    removed=ADVISORY_REPORT["handover"]["removed"]
-                    + ["org.springframework.cloud:spring-cloud-starter-netflix-hystrix:2.2.10.RELEASE "
-                       "(advisory:hystrix)"],
-                    from_here=[verify, "verify springdoc UI path",
+                    from_here=["Netflix Hystrix is discontinued (not in any current Spring Cloud train): Configure …",
                                "net.sf.ehcache:ehcache pinned at 2.10.9.2 — the new parent/Boot BOM no longer "
                                "manages it: confirm the version or replace"])
-    followups = [verify.replace("verify hystrix", "hystrix").replace(
-        " (recipe com.company.migrate.HystrixToResilience4j): Configure", " applied by HystrixToResilience4j; "
-        "Configure")]
-    rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover, manual_followups=followups)
-    assert _eval(e2e, exp, rep) == []
-    # the old guide shape no longer satisfies the fixture
-    assert "advisory hystrix: policy='guide' expected 'recipe'" in _eval(e2e, exp, dict(ADVISORY_REPORT))
+    review = {"verdict": "issues", "llm_usage": {"calls": 1}, "issues": [
+        {"severity": "warning", "file": "module/comp-jar/pom.xml", "problem": "spring-cloud-starter-netflix-hystrix "
+         "is pinned: Hystrix is EOL"}, {"severity": "warning", "file": "pom.xml", "problem": "springfox.version left"}]}
+    phases = [{"phase": "verify", "ok": True, "attempts": [_att(1, "ec7cf32b91", outcome="build_ok")]}]
+    rep = dict(ADVISORY_REPORT, advisories=advisories, handover=handover, structure_review=review, phases=phases,
+               llm_usage={"calls": 2})
+    (tmp_path / exp["kb"]["dir"]).mkdir(parents=True)
+    def ev(r):
+        return e2e.evaluate(e2e.FixtureResult(fixture="x", exit_code=0), exp, r, [], None, tmp_path)
+    assert ev(rep) == []
+    # the v1 shape (hystrix converted by an advisory recipe) no longer satisfies the fixture
+    v1 = dict(rep, advisories=[dict(a, policy="recipe", outcome="replaced") if a["advisory_id"] == "hystrix" else a
+                               for a in advisories])
+    assert "advisory hystrix: policy='recipe' expected 'guide'" in ev(v1)
 
 
 # ------------------------------------------------------------------------------------------- kb (round 5)
@@ -546,14 +594,15 @@ def test_kb_dir_is_cleared_only_under_out(e2e, tmp_path, monkeypatch):
 
 def test_boot2_method_rename_expectations(e2e, capsys):
     exp = json.loads((REPO / "fixtures/projects/boot2-method-rename/expected.json").read_text())["expect"]
-    assert exp["kb"]["dir"] == "out/e2e/kb-method-rename"
-    assert e2e.kb_dir_to_clear(exp) == (REPO / "out/e2e/kb-method-rename").resolve()
+    assert exp["kb"]["dir"] == "out/e2e/kb-boot2-method-rename"
+    assert e2e.kb_dir_to_clear(exp) == (REPO / "out/e2e/kb-boot2-method-rename").resolve()
     assert e2e.main(["--expect-only", "--only", "boot2-method-rename"]) == 0
     line = capsys.readouterr().out.strip()
+    # v2: 1 review call + 1 fix-script call for the one case (both call sites), the script stored as v1
     assert line.startswith("boot2-method-rename [X2] +sbmig.e2e.yml: success=True; exit=0; llm<=2")
     assert "optional_bumped=[com.company.legacy:legacy-web-lib 1.0.0→3.0.0]" in line
-    assert ("kb(dir=out/e2e/kb-method-rename, candidates_min=1, harvest_candidates_min=1, "
-            "org.openrewrite.java.ChangeMethodName@LegacyRequestHelperClientIpToRemoteClientIp)") in line
+    assert "kb(dir=out/e2e/kb-boot2-method-rename)" in line
+    assert 'scripts(attempts={"augment": 0, "new": 1, "reuse": 0}, cases=1, stored=1)' in line
 
 
 def test_ga_ignores_handover_suffixes(e2e):
@@ -699,3 +748,107 @@ def test_error_cases_expectation_checks_the_case_catalog(e2e, tmp_path):
     (kb / "views").mkdir()
     (kb / "views" / "cases.md").write_text("# cases\n")
     assert e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb) == []
+
+
+# ---------------------------------------------------------------------------------------------- v2 (flow-v2)
+CLIENT_IP_L2 = "compile|cannot_find_symbol|clientIp"
+
+
+def _store(kb: Path, case: str, version: int, code: str, **meta) -> None:
+    d = kb / "scripts" / case
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"v{version}.py").write_text(code, encoding="utf-8")
+    (d / f"v{version}.meta.json").write_text(json.dumps({"case_id": case, "version": version, **meta}),
+                                             encoding="utf-8")
+
+
+def test_case_ref_hashes_l2_like_the_catalog(e2e):
+    from sbmig.kb.catalog import case_id_for
+
+    assert e2e.case_ref({"l2": CLIENT_IP_L2}) == case_id_for(CLIENT_IP_L2) == "8bb4fd4a4a"
+    assert e2e.case_ref({"case": "abc0123456"}) == "abc0123456" and e2e.case_ref("8bb4fd4a4a") == "8bb4fd4a4a"
+    assert e2e.case_ref(CLIENT_IP_L2) == "8bb4fd4a4a" and e2e.case_ref({}) == ""
+
+
+def test_scripts_expectation_augment_and_reuse(e2e, tmp_path):
+    kb = tmp_path / "kb"
+    _store(kb, "8bb4fd4a4a", 1, "def fix(p):\n    p.replace('a', 'clientIp(request)', 'x')\n", parent=None,
+           partials=1, successes=0, last_outcome="partial", status="active", success_projects=[])
+    _store(kb, "8bb4fd4a4a", 2, "def fix(p):\n    pass  # remoteClientIp(\n", parent=1, successes=2,
+           success_projects=["member-api", "shop"], last_outcome="build_ok", status="active")
+    report = {"phases": [{"phase": "verify", "attempts": [
+        _att(1, "8bb4fd4a4a", outcome="partial", version=1),
+        _att(1, "8bb4fd4a4a", outcome="build_ok", mode="augment", version=2, iteration=2),
+        _att(2, "7a52b1cea8", outcome="build_ok", mode="reuse", version=1, calls=0, iteration=2),
+        {"id": "verify-2-3", "cluster_id": "case:zz", "outcome": "apply_failed"}]}]}   # no script_mode: not counted
+    want = {"attempts": {"new": 1, "augment": 1, "reuse": 1}, "reuse_without_llm": True,
+            "cases": [{"l2": CLIENT_IP_L2, "modes": ["new", "augment"], "outcomes": ["partial", "build_ok"],
+                       "versions": [1, 2], "llm_calls": 2},
+                      {"case": "7a52b1cea8", "modes": ["reuse"], "llm_calls": 0}],
+            "stored": [{"l2": CLIENT_IP_L2, "version": 1, "parent": None, "partials_min": 1, "successes_max": 0,
+                        "code_contains": ["clientIp(request)"]},
+                       {"l2": CLIENT_IP_L2, "version": 2, "parent": 1, "status": "active", "successes_min": 2,
+                        "success_projects_min": 2, "last_outcome": "build_ok", "code_contains": ["remoteClientIp("]}],
+            "versions": {CLIENT_IP_L2: 2}}
+    assert e2e.evaluate_scripts(want, report, kb) == []
+    assert e2e.format_script_modes(e2e.script_attempts(report)) == "new 1, aug 1, reuse 1"
+    bad = dict(want, attempts={"new": 2}, attempts_max={"augment": 0},
+               cases=[{"l2": CLIENT_IP_L2, "modes": ["augment"], "outcomes": ["build_ok", "partial"]},
+                      {"l2": "compile|x|y"}],
+               stored=[{"l2": CLIENT_IP_L2, "version": 2, "parent": None, "successes_min": 3},
+                       {"l2": CLIENT_IP_L2, "version": 3}], versions={CLIENT_IP_L2: 3})
+    text = "\n".join(e2e.evaluate_scripts(bad, report, kb))
+    assert "script attempts new=1 expected == 2" in text and "script attempts augment=1 expected <= 0" in text
+    assert "case 8bb4fd4a4a: modes ['new', 'augment'] expected ['augment']" in text
+    assert "lack the sequence ['build_ok', 'partial']" in text
+    assert f"case {e2e.case_ref('compile|x|y')}: no script attempt" in text
+    assert "stored script 8bb4fd4a4a v2: parent=1 expected None" in text and "successes=2 < min 3" in text
+    assert "stored script 8bb4fd4a4a v3 missing (versions: [1, 2])" in text
+    assert "stored versions of case 8bb4fd4a4a: [1, 2] expected 3" in text
+    report["phases"][0]["attempts"][2]["llm_usage"]["calls"] = 1
+    assert any("reuse attempt verify-2-2 made 1 LLM call(s)" in m for m in e2e.evaluate_scripts(want, report, kb))
+    assert e2e.evaluate_scripts({"stored": [{"case": "abc", "version": 1}]}, report, tmp_path / "nope") == \
+        [f"scripts: kb dir {tmp_path / 'nope'} missing"]
+
+
+def test_structure_review_expectation(e2e):
+    rv = {"verdict": "issues", "commit": "c0ffee", "reverted": False, "llm_usage": {"calls": 1},
+          "issues": [{"severity": "critical", "file": "module/comp-jar/pom.xml", "problem": "MS949 sources",
+                      "fix_hint": "set MS949"}, {"severity": "warning", "file": "pom.xml", "problem": "old pin"}],
+          "script_result": {"status": "ok", "changed_files": ["module/comp-jar/pom.xml"]}}
+    want = {"verdict": ["issues", "ok"], "critical": 1, "warnings_min": 1, "warnings_max": 1, "sbmig_check": False,
+            "issues_contain": ["regex:critical module/comp-jar/pom.xml: MS949.* -> set MS949", "old pin"],
+            "script_status": "ok", "committed": True, "reverted": False, "changed_files": ["module/comp-jar/pom.xml"],
+            "llm_calls_max": 1}
+    assert e2e.evaluate_structure_review(want, {"structure_review": rv}) == []
+    text = "\n".join(e2e.evaluate_structure_review(
+        dict(want, verdict="ok", critical=0, script_status="error", committed=False, changed_files=["pom.xml"],
+             llm_calls_max=0, issues_contain=["regex:critical pom.xml: .*"]), {"structure_review": rv}))
+    assert "structure_review verdict='issues' expected 'ok'" in text and "structure_review critical=1 expected == 0" in text
+    assert "script_status=ok expected error" in text and "expected committed=False" in text
+    assert "did not change pom.xml" in text and "llm_calls=1 > max 0" in text
+    assert "issues lack 'regex:critical pom.xml: .*'" in text
+    assert e2e.evaluate_structure_review({"verdict": "ok"}, {}) == ["no structure_review in report.json"]
+    plain = {"verdict": "ok", "issues": [], "llm_usage": {"calls": 1}}
+    assert e2e.evaluate_structure_review({"script_status": "none", "critical": 0}, {"structure_review": plain}) == []
+
+
+def test_kb_after_keeps_the_shared_kb_and_needs_its_filler(e2e, tmp_path, monkeypatch):
+    """v2 reuse scenario: a fixture with `kb.after` continues the KB another fixture filled earlier in the same e2e
+    run — its dir is never cleared, and without that fixture the run is a precondition mismatch."""
+    exp = {"kb": {"dir": "out/e2e/kb-shared", "after": "pure-java"}}
+    assert e2e.kb_dir_to_clear(exp, tmp_path) is None
+    assert e2e.kb_dir_to_clear({"kb": {"dir": "out/e2e/kb-shared"}}, tmp_path) == (tmp_path / "out/e2e/kb-shared").resolve()
+    assert e2e.kb_after_problem(exp, ["pure-java"]) is None and e2e.kb_after_problem(exp, None) is None
+    assert "precondition: pure-java must run before" in e2e.kb_after_problem(exp, ["boot2"])
+    monkeypatch.setattr(e2e, "REPO", tmp_path)
+    monkeypatch.setattr(e2e, "preflight", lambda *a, **k: None)
+    shared = tmp_path / "out/e2e/kb-shared/scripts"
+    shared.mkdir(parents=True)
+    expected = {"expect": dict(exp, success=True, exit_code=0)}
+    r = e2e.run_fixture("java6-legacy", _args(e2e, tmp_path), cmd=["false"], expected=expected, ran_before=[])
+    assert r.expect_ok is False and r.mismatches[0].startswith("precondition: pure-java must run before")
+    assert shared.is_dir()                                                   # kept
+    real = e2e.load_expected("java6-legacy")["expect"]["kb"]
+    assert real == {"dir": "out/e2e/kb-jaxb", "after": "pure-java"}
+    assert e2e.load_expected("pure-java")["expect"]["kb"] == {"dir": "out/e2e/kb-jaxb"}     # cleared before pure-java

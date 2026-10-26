@@ -1,0 +1,5 @@
+{
+  "note": "structure review of servlet-tomcat (one call): verdict issues",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"module/comp-jar/pom.xml\",\n      \"problem\": \"jakarta.servlet-api is declared with scope compile in the comp module, so the API jar is packaged next to the embedded Tomcat that already provides it\",\n      \"fix_hint\": \"use scope provided (or drop it: spring-boot-starter-webmvc brings the API through Tomcat)\"\n    }\n  ],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. commons-io is on the configured 2.19.0. Only the servlet API scope is worth a look.\"\n}\n</review>\n"
+}

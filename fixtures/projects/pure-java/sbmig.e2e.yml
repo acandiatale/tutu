@@ -1,0 +1,12 @@
+# Per-fixture config override (pure-java), appended by scripts/e2e.py after config/artifacts.local-e2e.yml
+# (`--config config/artifacts.local-e2e.yml --config fixtures/projects/pure-java/sbmig.e2e.yml`).
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review), the other entries answer fix-script requests by `match` on `case: <case_id>`
+# (case_id = sha1(L2)[:10]; first unused match, the last match repeats, no match = "no fix").
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/pure-java/replay"
+# KB shared with the reuse scenario (pure-java fills it with the JAXB fix script, java6-legacy runs it again
+# without an LLM call — `expect.kb.after`); scripts/e2e.py clears it before pure-java only.
+kb:
+  dir: out/e2e/kb-jaxb

@@ -1,0 +1,5 @@
+{
+  "note": "structure review of ear-sibling-poms (one call): verdict issues",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"portal-back/pom.xml\",\n      \"problem\": \"javax.servlet:jstl:1.2 is still declared next to the jakarta JSTL that portal-boot brings\",\n      \"fix_hint\": \"drop javax.servlet:jstl (runtime only)\"\n    }\n  ],\n  \"analysis\": \"Generated aggregator: portal-back / portal-front on the comp parent, portal-boot war on the boot parent, root on the base parent with the mandatory starters; the EAR module is gone (context root to be configured).\"\n}\n</review>\n"
+}

@@ -23,11 +23,32 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
       "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$"
-    ]
+    ],
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 0,
+      "warnings_min": 1,
+      "script_status": "none",
+      "llm_calls_max": 1,
+      "issues_contain": [
+        "regex:warning pom.xml: .*lombok.*"
+      ]
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-boot2"
+    },
+    "post_checks": []
   }
 }

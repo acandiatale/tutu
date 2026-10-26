@@ -1,0 +1,5 @@
+{
+  "note": "structure review of company-boot-single (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Single Boot module wrapped: the root aggregator inherits the configured parent and lists shop-boot, which inherits the boot parent; the mandatory starters are in the root; Java 21.\"\n}\n</review>\n"
+}

@@ -35,12 +35,11 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "flags": [
-      "web-xml-registered",
-      "jsp-javax-renamed"
+      "web-xml-registered"
     ],
     "journal_events": [
       {
@@ -59,6 +58,21 @@
     ],
     "phases": {
       "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-servlet-webxml-legacy"
     },
     "followups_contains": [
       "regex:(?i)jsp-file servlet help .*help\\.jsp.*",
@@ -163,13 +177,6 @@
       {
         "file_exists": {
           "path": "legacy-boot/target/*.war"
-        }
-      },
-      {
-        "file_contains": {
-          "path": "legacy-front/src/main/resources/META-INF/resources/WEB-INF/jsp/list.jsp",
-          "contains": "jakarta.servlet.http.Cookie",
-          "not_contains": "javax.servlet"
         }
       }
     ]

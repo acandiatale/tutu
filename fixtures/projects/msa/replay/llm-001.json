@@ -1,0 +1,5 @@
+{
+  "note": "structure review of msa (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"MSA layout kept in place: the top aggregator lists order-service and user-service, each service inherits the configured parent and declares both mandatory starters (MSA: every service root); lombok is on 1.18.38; Java 21 per service. Nothing to fix.\"\n}\n</review>\n"
+}

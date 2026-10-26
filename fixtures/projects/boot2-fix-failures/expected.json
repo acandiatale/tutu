@@ -28,48 +28,89 @@
     "com.company.legacy:legacy-web-lib:3.0.0"
   ],
   "expect": {
-    "success": false,
-    "exit_code": 2,
-    "max_llm_calls": 11,
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 3,
+    "blocked": [],
+    "unresolved_max": 0,
     "optional_bumped": [
       "com.company.legacy:legacy-web-lib 1.0.0→3.0.0"
     ],
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 1,
+        "augment": 1,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|cannot_find_symbol|clientIp",
+          "modes": [
+            "new",
+            "augment"
+          ],
+          "outcomes": [
+            "partial",
+            "build_ok"
+          ],
+          "versions": [
+            1,
+            2
+          ],
+          "llm_calls": 2
+        }
+      ],
+      "stored": [
+        {
+          "l2": "compile|cannot_find_symbol|clientIp",
+          "version": 1,
+          "parent": null,
+          "partials_min": 1,
+          "successes_max": 0,
+          "last_outcome": "partial",
+          "code_contains": [
+            "LegacyRequestHelper.clientIp(request)"
+          ]
+        },
+        {
+          "l2": "compile|cannot_find_symbol|clientIp",
+          "version": 2,
+          "parent": 1,
+          "status": "active",
+          "successes_min": 1,
+          "success_projects_min": 1,
+          "last_outcome": "build_ok",
+          "code_contains": [
+            "remoteClientIp("
+          ]
+        }
+      ],
+      "versions": {
+        "compile|cannot_find_symbol|clientIp": 2
+      }
+    },
     "kb": {
-      "dir": "out/e2e/kb-fix-failures"
+      "dir": "out/e2e/kb-boot2-fix-failures"
     },
     "error_cases": {
       "min": 2,
       "status_min": {
-        "resolved": 1
+        "resolved": 2
       },
       "records": [
         {
-          "file": "regex:.*/web/ClientIpFilter\\.java",
-          "status": "resolved",
-          "fix_method": "llm",
-          "targeted": true,
-          "change_kind": "text_replace",
-          "replace_rule_candidate": true,
-          "replace_pairs": [
-            {
-              "old": "clientIp",
-              "new": "remoteClientIp"
-            }
-          ],
-          "attempts_min": 2,
-          "attempt_outcomes": [
-            "apply_failed",
-            "improved"
-          ]
-        },
-        {
           "file": "regex:.*/web/MemberController\\.java",
-          "status": "regex:blocked|unresolved",
+          "status": "resolved",
+          "fix_method": "script_augment",
           "attempt_outcomes": [
-            "no_change",
-            "apply_failed"
-          ],
-          "failure_reason": "regex:(?is).*(no_change|apply_failed|repeated_failure).*"
+            "partial",
+            "build_ok"
+          ]
         }
       ],
       "run_files": [
@@ -78,9 +119,22 @@
         "error_cases.csv"
       ],
       "kb_errors_min": 2,
-      "kb_attempts_min": 4,
+      "kb_attempts_min": 2,
       "kb_cases_min": 1
     },
-    "unresolved_max": 1
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/members/web/MemberController.java",
+          "contains": "LegacyRequestHelper.remoteClientIp(http)"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/members/web/ClientIpFilter.java",
+          "contains": "LegacyRequestHelper.remoteClientIp(request)"
+        }
+      }
+    ]
   }
 }

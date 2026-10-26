@@ -37,12 +37,11 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "flags": [
-      "web-xml-registered",
-      "jsp-javax-renamed"
+      "web-xml-registered"
     ],
     "journal_events": [
       {
@@ -53,6 +52,29 @@
     ],
     "phases": {
       "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 1,
+      "script_status": "ok",
+      "committed": true,
+      "changed_files": [
+        "ndirs-back/pom.xml"
+      ],
+      "issues_contain": [
+        "regex:critical ndirs-back/pom.xml: .*binary.*"
+      ],
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-servlet-nonstandard-dirs"
     },
     "post_checks": [
       {
@@ -113,13 +135,6 @@
       {
         "file_exists": {
           "path": "ndirs-front/src/main/resources/META-INF/resources/WEB-INF/jsp/report.jsp"
-        }
-      },
-      {
-        "file_contains": {
-          "path": "ndirs-front/src/main/resources/META-INF/resources/WEB-INF/jsp/report.jsp",
-          "contains": "jakarta.servlet.http.HttpSession",
-          "not_contains": "javax.servlet"
         }
       },
       {
@@ -208,6 +223,12 @@
       {
         "file_absent": {
           "path": "ndirs-back/STATIC/index.jsp"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ndirs-back/pom.xml",
+          "contains": "<nonFilteredFileExtension>xlsx</nonFilteredFileExtension>"
         }
       }
     ]

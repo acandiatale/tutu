@@ -21,11 +21,64 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 2,
+    "max_llm_calls": 3,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
       "regex:^org\\.slf4j:slf4j-api \\S+→2\\.0\\.17$"
+    ],
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 0,
+      "warnings_min": 2,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 2,
+        "augment": 0,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|cannot_find_symbol|WebMvcConfigurerAdapter",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ]
+        },
+        {
+          "l2": "compile|cannot_find_symbol|HandlerInterceptorAdapter",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ]
+        }
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-spring5-xml"
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/catalog/config/WebConfig.java",
+          "contains": "public class WebConfig implements WebMvcConfigurer",
+          "not_contains": "extends WebMvcConfigurerAdapter"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/com/example/catalog/web/AuditInterceptor.java",
+          "contains": "public class AuditInterceptor implements HandlerInterceptor",
+          "not_contains": "import org.springframework.web.servlet.handler.HandlerInterceptorAdapter;"
+        }
+      }
     ]
   }
 }

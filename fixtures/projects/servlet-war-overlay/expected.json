@@ -17,7 +17,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "flags": [
@@ -26,6 +26,21 @@
     ],
     "phases": {
       "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-servlet-war-overlay"
     },
     "followups_contains": [
       "regex:(?is).*legacy-base-web.*(nexus|repositor).*"

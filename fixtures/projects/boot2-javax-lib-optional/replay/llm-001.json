@@ -1,0 +1,5 @@
+{
+  "note": "structure review of boot2-javax-lib-optional (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. legacy-web-lib is on the configured 2.0.0 (jakarta build), commons-lang3 on 3.17.0.\"\n}\n</review>\n"
+}

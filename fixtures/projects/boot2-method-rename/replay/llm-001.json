@@ -1,4 +1,5 @@
 {
-  "note": "scripted LLM fix response 1/2 (spring phase, cluster compile:5e0f2951 = ClientIpFilter.java; clusters are per file and sorted by id, so this one comes first)",
-  "response": "<analysis>legacy-web-lib 3.0.0 renamed the static LegacyRequestHelper.clientIp(HttpServletRequest) to remoteClientIp(HttpServletRequest) (same parameter, same semantics, no deprecated alias); the call site only needs the new method name.</analysis>\n<confidence>0.9</confidence>\n<patches>\n=== MODIFY src/main/java/com/example/members/web/ClientIpFilter.java\n<<<<<<< SEARCH\n        request.setAttribute(CLIENT_IP_ATTRIBUTE, LegacyRequestHelper.clientIp(request));\n=======\n        request.setAttribute(CLIENT_IP_ATTRIBUTE, LegacyRequestHelper.remoteClientIp(request));\n>>>>>>> REPLACE\n</patches>\n"
+  "note": "structure review of boot2-method-rename (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. legacy-web-lib is on the configured 3.0.0, commons-lang3 on 3.17.0, the javax servlet API is gone.\"\n}\n</review>\n"
 }

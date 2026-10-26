@@ -38,10 +38,25 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [],
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-msa"
+    },
     "properties": {
       "external": [
         "order.tax-rate"

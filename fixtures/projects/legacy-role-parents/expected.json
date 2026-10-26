@@ -24,7 +24,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [],
@@ -37,6 +37,26 @@
     ],
     "phases": {
       "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 0,
+      "warnings_min": 1,
+      "script_status": "none",
+      "llm_calls_max": 1,
+      "issues_contain": [
+        "regex:warning boot-jar/pom.xml: .*-boot.*"
+      ]
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-legacy-role-parents"
     },
     "post_checks": [
       {

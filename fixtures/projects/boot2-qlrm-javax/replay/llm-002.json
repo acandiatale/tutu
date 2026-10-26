@@ -1,0 +1,6 @@
+{
+  "note": "boot2-qlrm-javax: QLRM 1.7.1 (ch.simas.qlrm) takes javax.persistence.Query → relocate to the jakarta line org.qlrm:qlrm:4.2.1 — L2 `compile|cannot_access|Query` (854a1d9f13)",
+  "replay_role": "fix",
+  "match": "case: 854a1d9f13",
+  "response": "<analysis>JpaResultMapper.list(Query, Class) of QLRM 1.7.1 (ch.simas.qlrm:qlrm) is compiled against javax.persistence.Query; the code passes a jakarta.persistence.Query now. QLRM moved to the org.qlrm groupId and to Jakarta Persistence in 4.x (same org.qlrm.mapper package). The script replaces the dependency with org.qlrm:qlrm:4.2.1 in every pom that declares the old one (scope kept).</analysis>\n<script>\nOLD = (\"ch.simas.qlrm\", \"qlrm\")\nNEW = (\"org.qlrm\", \"qlrm\", \"4.2.1\")\n\n\ndef fix(p):\n    for path in p.files(\"**/pom.xml\"):\n        pom = p.pom(path)\n        if not pom.has_dependency(*OLD):\n            continue\n        scope = next((d.get(\"scope\") for d in pom.dependencies()\n                      if (d.get(\"group_id\"), d.get(\"artifact_id\")) == OLD), None)\n        pom.remove_dependency(*OLD)\n        if not pom.has_dependency(NEW[0], NEW[1]):\n            pom.add_dependency(NEW[0], NEW[1], NEW[2], scope=scope)\n        pom.save()\n        p.log(f\"{path}: ch.simas.qlrm:qlrm -> org.qlrm:qlrm:4.2.1 (jakarta)\")\n</script>\n"
+}

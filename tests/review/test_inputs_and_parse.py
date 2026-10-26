@@ -124,6 +124,29 @@ def test_module_tree_and_facts(tmp_path, cfg):
     assert "- mandatory `org.springframework.boot:spring-boot-starter-validation`: **not declared in any pom**" in text
 
 
+def test_binary_files_under_a_filtered_resource_are_a_fact(tmp_path, cfg):
+    """v1 kept webfonts / Excel / media byte-identical with a pre-emptive handler (E12); v2 has no handlers, so the
+    review is told which binaries a filtered <resource> would rewrite (2026-10-26 e2e: servlet-nonstandard-dirs)."""
+    root = tmp_path / "p"
+    (root / "back/STATIC/resources/media").mkdir(parents=True)
+    (root / "back/pom.xml").write_text('<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0'
+                                       "</modelVersion><groupId>g</groupId><artifactId>back</artifactId><version>1"
+                                       "</version><build><resources><resource><directory>STATIC/resources</directory>"
+                                       "<filtering>true</filtering></resource></resources></build></project>\n")
+    (root / "back/STATIC/resources/sample.xlsx").write_bytes(b"PK\x03\x04\x00\x00binary\xff\xfe")
+    (root / "back/STATIC/resources/media/intro.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\xff")
+    (root / "back/STATIC/resources/messages.properties").write_text("title=${project.name}\n")
+    ws = Workspace(root, tmp_path / "run", "r")
+    text = collect_review_input(ws, None, cfg).render()
+    line = next(ln for ln in text.splitlines() if ln.startswith("- binary files under a filtered `<resource>`"))
+    assert "`back/STATIC/resources/sample.xlsx`" in line and "`back/STATIC/resources/media/intro.mp4`" in line
+    assert "messages.properties" not in line and line.endswith("extensions: mp4, xlsx")
+    assert "nonFilteredFileExtensions" in system_prompt(cfg)
+    # no filtering → no fact
+    (root / "back/pom.xml").write_text((root / "back/pom.xml").read_text().replace("<filtering>true</filtering>", ""))
+    assert "binary files under a filtered" not in collect_review_input(ws, None, cfg).render()
+
+
 def test_company_rules_come_from_the_config(tmp_path):
     company = load_config(REPO / "config" / "artifacts.example.yml", repo_root=REPO)
     ws = _tree(tmp_path, 1)

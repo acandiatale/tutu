@@ -22,11 +22,49 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 2,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
       "regex:^com\\.google\\.guava:guava \\S+→33\\.4\\.8-jre$"
+    ],
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 1,
+        "augment": 0,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|cannot_find_symbol|JsonComponent",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ],
+          "versions": [
+            1
+          ]
+        }
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-boot3"
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "**/com/example/orders/json/MoneyJsonComponent.java",
+          "contains": "@JacksonComponent",
+          "not_contains": "import org.springframework.boot.jackson.JsonComponent;"
+        }
+      }
     ]
   }
 }

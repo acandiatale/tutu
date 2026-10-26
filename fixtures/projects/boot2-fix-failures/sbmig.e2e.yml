@@ -13,16 +13,13 @@ artifacts:
     - { group_id: org.apache.commons, artifact_id: commons-collections4, version: 4.5.0 }
     - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
     - { group_id: com.company.legacy, artifact_id: legacy-web-lib, version: 3.0.0 }
-# Replayed ("scripted") LLM, consumed in call order (the last response repeats) — deliberately imperfect, so the run
-# leaves failed attempts behind for the error-case records (2026-10-23). The fixer re-asks once when a SEARCH block
-# does not match, so one attempt can take two responses: llm-001 + llm-002 = ClientIpFilter.java, SEARCH not in the
-# file twice (apply_failed); llm-003 = MemberController.java edit that keeps the old call (no_change); llm-004 = the
-# real ClientIpFilter fix; llm-005 = another MemberController edit that keeps the call (no_change; repeated by the
-# verify loop, where the file has moved → apply_failed).
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review), the other entries answer fix-script requests by `match` on `case: <case_id>`
+# (case_id = sha1(L2)[:10]; first unused match, the last match repeats, no match = "no fix").
 llm:
   provider: fake
   base_url: "replay:fixtures/projects/boot2-fix-failures/replay"
-# Own KB (errors.jsonl / fix_attempts.jsonl are asserted, and a shared KB would leak the ChangeMethodName candidate
-# into the other fixtures). scripts/e2e.py clears it before the run.
+# Own KB (v2: stored fix scripts per case, reviews.jsonl, error cases): a shared KB would let one fixture
+# reuse another's scripts. scripts/e2e.py clears it before the run (expect.kb.dir).
 kb:
-  dir: out/e2e/kb-fix-failures
+  dir: out/e2e/kb-boot2-fix-failures

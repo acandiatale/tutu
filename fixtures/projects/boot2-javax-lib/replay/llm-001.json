@@ -1,0 +1,5 @@
+{
+  "note": "structure review of boot2-javax-lib (one call): verdict issues",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"module/comp-jar/pom.xml\",\n      \"problem\": \"the in-house com.company.legacy:legacy-web-lib:1.0.0 is a javax.servlet build used next to jakarta.servlet-api; it is not in the optional list, so nothing bumps it\",\n      \"fix_hint\": \"ask the library owners for a jakarta release (or add it to the optional artifacts with that version)\"\n    }\n  ],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. The only concern is the javax-era in-house library; no build-file change can fix it.\"\n}\n</review>\n"
+}

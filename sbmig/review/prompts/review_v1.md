@@ -23,7 +23,9 @@ collected, and you decide whether the build files must be fixed before that buil
    jakarta now; explicit versions that override what the parent chain manages for the target (old Spring, Spring Boot,
    Hibernate, Jackson pins) are worth a warning.
 6. Build settings: Java level of the target (maven.compiler.release / source / target, or the parent), plugins that
-   cannot run on the target JDK, leftovers that only made sense in the old build.
+   cannot run on the target JDK, leftovers that only made sense in the old build. Binary files under a filtered
+   `<resource>` (listed in the facts) are rewritten by Maven's filter — the build passes, the packaged files are
+   corrupt — unless maven-resources-plugin `<nonFilteredFileExtensions>` lists their extensions: critical.
 7. Source encoding: the agent read the Java sources of every module ("Source encodings"). A module whose sources are
    not UTF-8 (MS949 / EUC-KR …) must build with a matching `project.build.sourceEncoding` (or maven-compiler-plugin
    `<encoding>`) in its own pom or in a pom it inherits from inside the project. The JDK defaults to UTF-8; with a
@@ -35,7 +37,7 @@ collected, and you decide whether the build files must be fixed before that buil
 - `critical`: the build cannot pass because of it, or a company layout rule is broken — a wrong or missing parent for
   a role, a missing mandatory dependency, a module listed but missing or present but not listed, wrong packaging of
   the boot module, duplicate conflicting declarations, javax EE API jars declared next to jakarta, non-UTF-8 sources
-  without a matching source encoding.
+  without a matching source encoding, binary files under a filtered resource without `nonFilteredFileExtensions`.
 - `warning`: everything else the owning team should know (versions to confirm, leftovers, oddities).
 
 Do not report Java compile problems (they are fixed later, one by one, from the build output), test code, runtime

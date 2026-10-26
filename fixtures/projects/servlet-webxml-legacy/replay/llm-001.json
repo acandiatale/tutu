@@ -1,0 +1,5 @@
+{
+  "note": "structure review of servlet-webxml-legacy (one call): verdict ok",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Company layout with JSPs: legacy-boot war (boot parent) with the generated WebXmlRegistrations, legacy-back / legacy-front (comp parent), root aggregator with the mandatory starters; UTF-8 sources.\"\n}\n</review>\n"
+}

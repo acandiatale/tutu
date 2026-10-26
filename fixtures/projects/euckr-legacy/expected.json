@@ -12,13 +12,63 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
-    "flags": ["regex:source-encoding-set:(cp949|ms949|euc-kr|euc_kr)"],
+    "journal_events": [
+      {
+        "event": "structure_review",
+        "verdict": "issues",
+        "critical": 1,
+        "script_status": "ok"
+      }
+    ],
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 1,
+      "sbmig_check": false,
+      "script_status": "ok",
+      "committed": true,
+      "reverted": false,
+      "changed_files": [
+        "module/comp-jar/pom.xml"
+      ],
+      "issues_contain": [
+        "regex:critical module/comp-jar/pom.xml: .*MS949.*"
+      ],
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-euckr-legacy"
+    },
     "post_checks": [
-      {"file_decodes_as": {"path": "**/com/example/greeting/Greeting.java", "encoding": "cp949", "contains": "안녕하세요"}},
-      {"file_decodes_as": {"path": "**/com/example/greeting/notice/NoticeFormatter.java", "encoding": "cp949", "contains": "공지사항"}}
+      {
+        "file_decodes_as": {
+          "path": "**/com/example/greeting/Greeting.java",
+          "encoding": "cp949",
+          "contains": "안녕하세요"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "**/com/example/greeting/notice/NoticeFormatter.java",
+          "encoding": "cp949",
+          "contains": "공지사항"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "module/comp-jar/pom.xml",
+          "contains": "<project.build.sourceEncoding>MS949</project.build.sourceEncoding>"
+        }
+      }
     ]
   }
 }

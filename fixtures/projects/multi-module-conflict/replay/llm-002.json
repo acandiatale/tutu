@@ -1,4 +1,6 @@
 {
-  "note": "scripted LLM response 2/2 (KB harvest, role recipe_candidate for the Shared.java case): NONE — porting a member from a dropped merge-conflict copy is project-specific, not a declarative recipe",
-  "response": "NONE"
+  "note": "multi-module-conflict: the merge kept core's Shared.java (first wins), which lacks the farewell(String) that web's dropped copy (shown as reference) has → add that method to the kept copy — L2 `compile|cannot_find_symbol|farewell` (72b586c8d0)",
+  "replay_role": "fix",
+  "match": "case: 72b586c8d0",
+  "response": "<analysis>core and web both defined com.example.shop.shared.Shared; the merge kept the core copy, which lacks farewell(String) — web's ShopController calls it, and the dropped web copy (reference) defines it. The script adds that method, copied from the dropped copy, to the kept Shared.java (once).</analysis>\n<script>\nMETHOD = \"\"\"\n    // added in the web copy only (the core copy was never updated) - restored after the module merge\n    public static String farewell(String name) {\n        return \"bye, \" + name;\n    }\n\"\"\"\n\n\ndef fix(p):\n    for path in p.files(\"**/com/example/shop/shared/Shared.java\"):\n        text = p.read(path)\n        if \"farewell(\" in text:\n            p.log(f\"{path}: farewell already there\")\n            continue\n        end = text.rstrip().rfind(\"}\")\n        if end < 0:\n            p.log(f\"{path}: no class body end found\")\n            continue\n        p.write(path, text[:end].rstrip(\"\\n\") + \"\\n\" + METHOD + text[end:])\n        p.log(f\"{path}: farewell(String) added from the dropped web copy\")\n</script>\n"
 }

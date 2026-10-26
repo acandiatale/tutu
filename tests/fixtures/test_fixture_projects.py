@@ -221,6 +221,7 @@ class KBRecipeExpect(BaseModel):
 class KBExpect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dir: str = Field(pattern=r"^out/[\w.\-/]+$")
+    after: str | None = None                       # v2 reuse scenario: continues the KB this fixture filled
     candidates_min: int | None = Field(default=None, ge=0)
     harvest_candidates_min: int | None = Field(default=None, ge=0)
     recipes: list[KBRecipeExpect] = Field(default_factory=list)
@@ -275,6 +276,78 @@ class ErrorCasesExpect(BaseModel):
     kb_cases_min: int | None = Field(default=None, ge=0)        # case catalog files (2026-10-23)
 
 
+Mode = Literal["new", "augment", "reuse"]
+CaseRef = str                                       # a 10-hex case id or an L2 signature
+
+
+class ScriptCaseExpect(BaseModel):
+    """v2: one case's script attempts in the run (scripts/e2e.py `evaluate_scripts`)."""
+    model_config = ConfigDict(extra="forbid")
+    case: str | None = Field(default=None, pattern=r"^[0-9a-f]{10}$")
+    l2: str | None = None
+    modes: list[Mode] | None = None
+    outcomes: list[str] = Field(default_factory=list)
+    versions: list[int] | None = None
+    llm_calls: int | None = Field(default=None, ge=0)
+
+
+class StoredScriptExpect(BaseModel):
+    """v2: `<kb>/scripts/<case_id>/v<N>.meta.json` (+ `v<N>.py`)."""
+    model_config = ConfigDict(extra="forbid")
+    case: str | None = Field(default=None, pattern=r"^[0-9a-f]{10}$")
+    l2: str | None = None
+    version: int = Field(ge=1)
+    parent: int | None = None
+    status: Literal["active", "retired", "quarantined"] | None = None
+    successes_min: int | None = Field(default=None, ge=0)
+    successes_max: int | None = Field(default=None, ge=0)
+    failures_min: int | None = Field(default=None, ge=0)
+    failures_max: int | None = Field(default=None, ge=0)
+    partials_min: int | None = Field(default=None, ge=0)
+    success_projects_min: int | None = Field(default=None, ge=0)
+    last_outcome: str | None = None
+    code_contains: list[str] = Field(default_factory=list)
+
+
+class ScriptsExpect(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dir: str | None = Field(default=None, pattern=r"^out/[\w.\-/]+$")
+    attempts: dict[Mode, int] = Field(default_factory=dict)
+    attempts_min: dict[Mode, int] = Field(default_factory=dict)
+    attempts_max: dict[Mode, int] = Field(default_factory=dict)
+    reuse_without_llm: bool = False
+    cases: list[ScriptCaseExpect] = Field(default_factory=list)
+    stored: list[StoredScriptExpect] = Field(default_factory=list)
+    versions: dict[CaseRef, int] = Field(default_factory=dict)
+
+
+class StructureReviewExpect(BaseModel):
+    """v2: report.structure_review (scripts/e2e.py `evaluate_structure_review`)."""
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["ok", "issues", "failed", "skipped"] | list[Literal["ok", "issues", "failed", "skipped"]] | None \
+        = None
+    critical: int | None = Field(default=None, ge=0)
+    critical_min: int | None = Field(default=None, ge=0)
+    critical_max: int | None = Field(default=None, ge=0)
+    warnings_min: int | None = Field(default=None, ge=0)
+    warnings_max: int | None = Field(default=None, ge=0)
+    issues_contain: list[str] = Field(default_factory=list)
+    sbmig_check: bool | None = None
+    script_status: Literal["ok", "error", "timeout", "rejected", "none"] | None = None
+    committed: bool | None = None
+    reverted: bool | None = None
+    changed_files: list[str] = Field(default_factory=list)
+    llm_calls_max: int | None = Field(default=None, ge=0)
+
+    @field_validator("issues_contain")
+    @classmethod
+    def _patterns(cls, v: list[str]) -> list[str]:
+        for pat in v:
+            if pat.startswith("regex:"):
+                re.compile(pat[len("regex:"):])
+        return v
+
+
 class Expect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: bool
@@ -297,6 +370,8 @@ class Expect(BaseModel):
     kb: KBExpect | None = None
     properties: PropertiesExpect | None = None
     error_cases: ErrorCasesExpect | None = None
+    structure_review: StructureReviewExpect | None = None       # v2 (flow-v2)
+    scripts: ScriptsExpect | None = None                         # v2 (flow-v2)
 
     @field_validator("flags", "forbidden_flags", "optional_bumped", "followups_contains")
     @classmethod
@@ -467,16 +542,12 @@ def test_base_config_has_exactly_8_optionals():
     assert "com.company.legacy:legacy-web-lib" not in {s.key for s in cfg.artifacts.optional}
 
 
-OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml, legacy-web-lib version in the optional list)
+OVERRIDES = {   # fixture → (top-level keys of its sbmig.e2e.yml besides llm / kb, legacy-web-lib version)
     "boot2-javax-lib-optional": ({"artifacts"}, "2.0.0"),
-    "boot2-method-rename": ({"artifacts", "llm", "kb"}, "3.0.0"),
-    "boot2-fix-failures": ({"artifacts", "llm", "kb"}, "3.0.0"),
+    "boot2-method-rename": ({"artifacts"}, "3.0.0"),
+    "boot2-fix-failures": ({"artifacts"}, "3.0.0"),
 }
-
-
-LLM_ONLY_OVERRIDES = {"boot2-hystrix-command": {"llm", "kb"}, "java6-legacy": {"llm", "kb"},
-                      "multi-module-conflict": {"llm", "kb"}}   # no artifacts override: the base 8 optionals apply
-# 2026-10-22: openrewrite.exclusions only — directories the recipes must not see (E13 / E14 source handlers)
+# 2026-10-22: openrewrite.exclusions only — directories the recipes must not see (E13 / E14 cases)
 REWRITE_ONLY_OVERRIDES = {"boot2-rewrite-excluded": {"**/vendor/**", "**/repository/**"}}
 # round 9c: company-layout fixtures — the override sets the company layout keys back (config/artifacts.local-e2e.yml
 # pins the pre-9c layout for the older fixtures) and adds the role parents (artifacts.boot_parent / comp_parent)
@@ -488,18 +559,20 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
 
 COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
                  "servlet-war-overlay": "board"}   # root artifactId (= `{name}`) when it is not `shop`
+# v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
+SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
+LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB
 
 
 def test_fixture_config_override_keeps_8_optionals():
     from sbmig.core.config import LayoutConfig
 
     overrides = sorted(p.parent.name for p in FIXTURES.glob("*/sbmig.e2e.yml"))
-    assert overrides == sorted([*OVERRIDES, *LLM_ONLY_OVERRIDES, *COMPANY_OVERRIDES,
-                                     *REWRITE_ONLY_OVERRIDES])
+    assert overrides == sorted(NAMES)                                   # v2: every fixture has its llm / kb block
     company = LayoutConfig()                                       # the company layout = the code defaults
     for name, keys in COMPANY_OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-        assert {k: set(v) for k, v in raw.items()} == keys, name
+        assert {k: set(v) for k, v in raw.items() if k not in LLM_KB} == keys, name
         cfg = _effective_cfg(name)
         for key in keys["layout"]:
             assert getattr(cfg.layout, key) == getattr(company, key), (name, key)
@@ -515,15 +588,11 @@ def test_fixture_config_override_keeps_8_optionals():
             COMPANY_NAMES.get(name, "shop")
     base = load_config(REPO / "config" / "artifacts.local-e2e.yml", repo_root=REPO).layout
     assert (base.module_dir, base.boot_module, base.front_module, base.boot_as_is) == ("module", "boot-jar", None, "layout")
-    for name, top in LLM_ONLY_OVERRIDES.items():
-        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-        assert set(raw) == top, name
-        assert len(_effective_cfg(name).artifacts.optional) == 8, name
     from sbmig.core.config import OpenRewriteConfig
 
     for name, extra in REWRITE_ONLY_OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-        assert raw == {"openrewrite": {"exclusions": raw["openrewrite"]["exclusions"]}}, name
+        assert set(raw) - LLM_KB == {"openrewrite"} and set(raw["openrewrite"]) == {"exclusions"}, name
         cfg = _effective_cfg(name)
         assert len(cfg.artifacts.optional) == 8, name
         excl = cfg.openrewrite.exclusions
@@ -531,7 +600,7 @@ def test_fixture_config_override_keeps_8_optionals():
         assert extra <= set(excl), name
     for name, (top, legacy_version) in OVERRIDES.items():
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
-        assert set(raw) == top and set(raw["artifacts"]) == {"optional"}, name
+        assert set(raw) - LLM_KB == top and set(raw["artifacts"]) == {"optional"}, name
         cfg = _effective_cfg(name)
         keys = {s.key: s.version for s in cfg.artifacts.optional}
         assert len(cfg.artifacts.optional) == 8, name
@@ -541,120 +610,167 @@ def test_fixture_config_override_keeps_8_optionals():
                     for n in OVERRIDES)
     for other in rest:                                                               # same list, other version
         assert [dict(x, version=None) for x in first] == [dict(x, version=None) for x in other]
+    plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES)
+    for name in plain:                                              # nothing but the replayed LLM and the own KB
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert set(raw) == LLM_KB, name
+        assert len(_effective_cfg(name).artifacts.optional) == 8, name
 
 
-def test_method_rename_override_replays_llm_into_own_kb():
-    """boot2-method-rename: scripted LLM (replay dir in the fixture) and its own KB dir under out/ — the same dir
-    its `expect.kb` reads (scripts/e2e.py clears it before the run)."""
-    name = "boot2-method-rename"
+@pytest.mark.parametrize("name", NAMES)
+def test_v2_replayed_llm_into_its_own_kb(name: str):
+    """v2 (2026-10-26): every fixture replays its LLM answers (`replay/llm-NNN.json`) with the fake provider and writes
+    its KB under out/ — its own `out/e2e/kb-<fixture>`, except the reuse pair that shares one (`kb.after`) — the same dir
+    its `expect.kb` reads (scripts/e2e.py clears it before the run). Never the repo's kb/ or kb-v2/."""
     cfg = _effective_cfg(name)
     assert cfg.llm.provider == "fake"
     assert cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
-    replay = cfg.resolve_path(cfg.llm.base_url[len("replay:"):])
-    assert replay.is_dir() and replay == FIXTURES / name / "replay"
-    kb = Expected.model_validate(_expected(name)).expect.kb
-    assert kb is not None and cfg.kb.dir == kb.dir and kb.dir.startswith("out/") and kb.dir != "out/e2e"
-    assert cfg.kb_dir.resolve() != (REPO / "kb").resolve()
-    assert any(r.recipe == "org.openrewrite.java.ChangeMethodName" for r in kb.recipes)
-
-
-def test_method_rename_replay_patches_match_the_call_sites():
-    """Each replayed response is a valid fix-protocol answer whose SEARCH text is a call-site line of the fixture
-    (the OpenRewrite spring phase only rewrites the javax imports, never these lines); together they rename every
-    `LegacyRequestHelper.clientIp(` call, one file per response (one LLM call per file cluster)."""
-    from sbmig.fix.client import load_replay_responses
-    from sbmig.fix.protocol import parse_fix_response
-
-    name = "boot2-method-rename"
-    responses = load_replay_responses(FIXTURES / name / "replay")
-    assert len(responses) == _expected(name)["expect"]["max_llm_calls"] == 2
-    touched = []
-    for text in responses:
-        parsed = parse_fix_response(text)
-        assert parsed.changes and not parsed.warnings and parsed.confidence is not None
-        assert len({ch.path for ch in parsed.changes}) == 1
-        for ch in parsed.changes:
-            src = (FIXTURES / name / ch.path).read_text(encoding="utf-8")
-            assert ch.op == "modify" and src.count(ch.search) == 1, ch.path
-            assert "LegacyRequestHelper.clientIp(" in ch.search and "javax" not in ch.search
-            assert ch.replace == ch.search.replace("LegacyRequestHelper.clientIp(", "LegacyRequestHelper.remoteClientIp(")
-            touched.append(ch.path)
-    callers = sorted(p.relative_to(FIXTURES / name).as_posix() for p in (FIXTURES / name).rglob("*.java")
-                     if "LegacyRequestHelper.clientIp(" in p.read_text(encoding="utf-8"))
-    assert sorted(touched) == callers and len(callers) == 2
-
-
-def test_hystrix_command_override_replays_llm_into_own_kb():
-    """boot2-hystrix-command (round 6): scripted LLM + own KB dir under out/ (cleared by scripts/e2e.py)."""
-    name = "boot2-hystrix-command"
-    cfg = _effective_cfg(name)
-    assert cfg.llm.provider == "fake" and cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
     assert cfg.resolve_path(cfg.llm.base_url[len("replay:"):]) == FIXTURES / name / "replay"
-    kb = Expected.model_validate(_expected(name)).expect.kb
-    assert kb is not None and cfg.kb.dir == kb.dir == "out/e2e/kb-hystrix-command"
-    assert cfg.kb_dir.resolve() != (REPO / "kb").resolve()
+    exp = Expected.model_validate(_expected(name)).expect
+    assert exp.kb is not None and cfg.kb.dir == exp.kb.dir == SHARED_KB.get(name, f"out/e2e/kb-{name}")
+    assert cfg.kb_dir.resolve() not in ((REPO / "kb").resolve(), (REPO / "kb-v2").resolve())
+    assert (exp.kb.after is not None) == (name == "java6-legacy")
+    assert exp.structure_review is not None and exp.scripts is not None
 
 
-def test_hystrix_command_replay_ports_the_subclass():
-    """Response 1 ports the programmatic HystrixCommand subclass to Resilience4j (SEARCH blocks copied from the
-    as-is file, which the spring phase does not touch) and keeps `public Integer execute()` for the caller;
-    response 2 (the caller's cluster) changes nothing. One LLM call per file cluster (2) + the harvest's
-    recipe-candidate call (the repeated replay answer is rejected) → max_llm_calls == 3."""
-    from sbmig.fix.client import load_replay_responses
-    from sbmig.fix.protocol import parse_fix_response
-
-    name = "boot2-hystrix-command"
-    rel = "src/main/java/com/example/stock/service/InventoryCommand.java"
-    src = (FIXTURES / name / rel).read_text(encoding="utf-8")
-    assert "extends HystrixCommand<Integer>" in src and "import com.netflix.hystrix.HystrixCommand;" in src
-    caller = (FIXTURES / name / "src/main/java/com/example/stock/service/StockService.java").read_text(encoding="utf-8")
-    assert "new InventoryCommand(gateway, sku).execute()" in caller
-    responses = load_replay_responses(FIXTURES / name / "replay")
-    assert len(responses) == 2 and _expected(name)["expect"]["max_llm_calls"] == 3   # 2 fix calls + the harvest's recipe-candidate call
-    first, second = (parse_fix_response(t) for t in responses)
-    assert first.changes and not first.warnings and {c.path for c in first.changes} == {rel}
-    out = src
-    for ch in first.changes:
-        assert ch.op == "modify" and out.count(ch.search) == 1, ch.search
-        out = out.replace(ch.search, ch.replace)
-    assert "com.netflix.hystrix" not in out and "extends HystrixCommand" not in out
-    assert "import io.github.resilience4j.circuitbreaker.CircuitBreaker;" in out
-    assert 'CircuitBreaker.ofDefaults("inventory")' in out and "public Integer execute()" in out
-    assert "MIGRATION-TODO" in out
-    assert second.changes == [] and not second.wants_context
+def _replay(name: str) -> list[dict]:
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted((FIXTURES / name / "replay").glob("llm-*.json"))]
 
 
-def test_multi_module_conflict_replay_patches_the_kept_copy():
-    """multi-module-conflict (round 9): response 1 is one SEARCH/REPLACE on the kept comp-jar Shared.java — the `core`
-    copy, moved verbatim by the first-wins merge — that adds the farewell() only the dropped `web` copy had;
-    response 2 answers the KB harvest with NONE. Own KB dir, replay dir in the fixture."""
-    from sbmig.fix.client import load_replay_responses
-    from sbmig.fix.protocol import parse_fix_response
+CASE_MATCH = re.compile(r"^case: (?:[0-9a-f]{10}|\(\?:[0-9a-f]{10}(?:\|[0-9a-f]{10})+\))$")
 
+
+@pytest.mark.parametrize("name", NAMES)
+def test_v2_replay_entries_are_valid_answers(name: str):
+    """llm-001 answers the structure review (one call, a readable `<review>`; a `<script>` only for critical issues);
+    every other entry answers fix-script requests of the case(s) its `match` names (`case: <sha1(L2)[:10]>`) with
+    `<analysis>` + a `<script>` that passes sbmig's static check — or, deliberately, only an `<analysis>` (no fix)."""
+    from sbmig.fix.script_protocol import parse_script_response
+    from sbmig.review.parse import parse_review_answer
+    from sbmig.script import check_script
+
+    entries = _replay(name)
+    assert entries and entries[0]["replay_role"] == "structure_review" and "match" not in entries[0]
+    rv = parse_review_answer(entries[0]["response"])
+    assert rv.ok and entries[0]["note"], name
+    assert bool(rv.script) == bool(rv.critical), name                   # a script only for critical issues
+    if rv.script:
+        assert check_script(rv.script) == [], name
+    for e in entries[1:]:
+        assert e["replay_role"] == "fix" and CASE_MATCH.match(e["match"]) and e["note"], (name, e.get("match"))
+        parsed = parse_script_response(e["response"])
+        assert parsed.analysis and not parsed.warnings, (name, e["match"])
+        if parsed.code:
+            assert check_script(parsed.code) == [], (name, e["match"])
+        else:
+            assert "<script>" not in e["response"], (name, e["match"])
+
+
+def _run_script(code: str, root: Path, errors: list[dict]):
+    from sbmig.script import ScriptRunner
+
+    class _WS:
+        pass
+
+    ws = _WS()
+    ws.root = root
+    cfg = load_config(REPO / "config" / "artifacts.local-e2e.yml", repo_root=REPO)
+    return ScriptRunner(cfg).run(ws, code, errors=errors)
+
+
+def _fix_codes(name: str, case: str) -> list[str]:
+    from sbmig.fix.script_protocol import parse_script_response
+
+    return [parse_script_response(e["response"]).code for e in _replay(name)[1:] if case in e["match"]]
+
+
+CLIENT_IP_CASE = "8bb4fd4a4a"          # sha1("compile|cannot_find_symbol|clientIp")[:10]
+
+
+def _client_ip_errors(root: Path) -> list[dict]:
+    out = []
+    for rel in ("src/main/java/com/example/members/web/ClientIpFilter.java",
+                "src/main/java/com/example/members/web/MemberController.java"):
+        rows = (root / rel).read_text(encoding="utf-8").split("\n")
+        line = next(i + 1 for i, r in enumerate(rows) if "LegacyRequestHelper.clientIp(" in r)
+        out.append({"file": rel, "line": line, "message": "cannot find symbol", "kind": "compile",
+                    "symbol": "method clientIp(HttpServletRequest)", "signature_generic": "compile|cannot_find_symbol|clientIp"})
+    return out
+
+
+def test_method_rename_script_renames_every_call_site(tmp_path: Path):
+    """boot2-method-rename: one script for the case renames the call on every reported line of both files (a case =
+    one L2 across files: one LLM call) and leaves the "member-api.clientIp" constant alone."""
+    import hashlib
+
+    assert hashlib.sha1(b"compile|cannot_find_symbol|clientIp").hexdigest()[:10] == CLIENT_IP_CASE
+    name = "boot2-method-rename"
+    root = tmp_path / name
+    shutil.copytree(FIXTURES / name, root)
+    (code,) = _fix_codes(name, CLIENT_IP_CASE)
+    res = _run_script(code, root, _client_ip_errors(root))
+    assert res.status == "ok" and len(res.changed_files) == 2, res
+    for rel in ("ClientIpFilter.java", "MemberController.java"):
+        text = (root / "src/main/java/com/example/members/web" / rel).read_text(encoding="utf-8")
+        assert "LegacyRequestHelper.remoteClientIp(" in text and "LegacyRequestHelper.clientIp(" not in text
+    assert '"member-api.clientIp"' in (root / "src/main/java/com/example/members/web/ClientIpFilter.java").read_text()
+    again = _run_script(code, root, _client_ip_errors_after(root))
+    assert again.status == "ok" and again.changed_files == []           # idempotent
+
+
+def _client_ip_errors_after(root: Path) -> list[dict]:
+    return [{"file": "src/main/java/com/example/members/web/ClientIpFilter.java", "line": 1, "kind": "compile",
+             "message": "cannot find symbol", "signature_generic": "compile|cannot_find_symbol|clientIp"}]
+
+
+def test_fix_failures_replay_v1_too_narrow_v2_augments(tmp_path: Path):
+    """boot2-fix-failures (augment scenario): v1 (new) is an exact replace written for `clientIp(request)`, so only
+    ClientIpFilter changes (partial); v2 (augment of v1) renames the call on every reported line — both files."""
+    name = "boot2-fix-failures"
+    v1, v2 = _fix_codes(name, CLIENT_IP_CASE)
+    assert v1 != v2 and "LegacyRequestHelper.clientIp(request)" in v1
+    for code, changed in ((v1, 1), (v2, 2)):
+        root = tmp_path / f"run-{changed}"
+        shutil.copytree(FIXTURES / name, root)
+        res = _run_script(code, root, _client_ip_errors(root))
+        assert res.status == "ok" and len(res.changed_files) == changed, res
+    exp = Expected.model_validate(_expected(name)).expect
+    case = next(c for c in exp.scripts.cases if c.l2 == "compile|cannot_find_symbol|clientIp")
+    assert case.modes == ["new", "augment"] and case.versions == [1, 2]
+    assert [s.parent for s in exp.scripts.stored] == [None, 1]
+
+
+def test_multi_module_conflict_script_patches_the_kept_copy(tmp_path: Path):
+    """multi-module-conflict: the script adds farewell(String) — the method only the dropped `web` copy had — to the
+    kept Shared.java; a copy that has it already stays as it is (here: the as-is tree holds both copies)."""
     name = "multi-module-conflict"
-    cfg = _effective_cfg(name)
-    assert cfg.llm.provider == "fake" and cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
-    kb = Expected.model_validate(_expected(name)).expect.kb
-    assert kb is not None and cfg.kb.dir == kb.dir == "out/e2e/kb-multi-module-conflict"
     rel = "src/main/java/com/example/shop/shared/Shared.java"
-    kept = (FIXTURES / name / "core" / rel).read_text(encoding="utf-8")
-    dropped = (FIXTURES / name / "web" / rel).read_text(encoding="utf-8")
-    assert "farewell(" not in kept and "public static String farewell(String name)" in dropped
-    ctrl = (FIXTURES / name / "web/src/main/java/com/example/shop/web/ShopController.java").read_text(encoding="utf-8")
-    assert "Shared.farewell(name)" in ctrl
-    core_svc = (FIXTURES / name / "core/src/main/resources/META-INF/services/com.example.shop.spi.Plugin").read_text()
-    web_svc = (FIXTURES / name / "web/src/main/resources/META-INF/services/com.example.shop.spi.Plugin").read_text()
-    assert core_svc.split() == ["com.example.shop.core.CorePlugin"] and web_svc.split() == ["com.example.shop.web.WebPlugin"]
-    responses = load_replay_responses(FIXTURES / name / "replay")
-    assert len(responses) == _expected(name)["expect"]["max_llm_calls"] == 2
-    first = parse_fix_response(responses[0])
-    assert first.changes and not first.warnings and {c.path for c in first.changes} == {f"module/comp-jar/{rel}"}
-    out = kept
-    for ch in first.changes:
-        assert ch.op == "modify" and out.count(ch.search) == 1, ch.search
-        out = out.replace(ch.search, ch.replace)
-    assert "public static String farewell(String name)" in out and "public static String greet(String name)" in out
-    assert responses[1].strip() == "NONE"
+    root = tmp_path / name
+    shutil.copytree(FIXTURES / name, root)
+    (code,) = _fix_codes(name, "72b586c8d0")           # sha1("compile|cannot_find_symbol|farewell")[:10]
+    res = _run_script(code, root, [])
+    assert res.status == "ok" and res.changed_files == [f"core/{rel}"], res
+    kept = (root / "core" / rel).read_text(encoding="utf-8")
+    assert "public static String farewell(String name)" in kept and "public static String greet(String name)" in kept
+    assert (root / "web" / rel).read_bytes() == (FIXTURES / name / "web" / rel).read_bytes()
+
+
+def test_reuse_pair_shares_the_jaxb_case():
+    """The reuse scenario: pure-java's JAXB case (L2 `compile|package_does_not_exist|jakarta.xml.bind`) is answered by
+    a script; java6-legacy has no answer for it — its expectation is a reuse of the stored version without an LLM call."""
+    jaxb = "7a52b1cea8"
+    assert _fix_codes("pure-java", jaxb) and not _fix_codes("java6-legacy", jaxb)
+    exp = Expected.model_validate(_expected("java6-legacy")).expect
+    assert exp.kb.after == "pure-java" and exp.scripts.reuse_without_llm and exp.scripts.attempts["reuse"] == 1
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location("sbmig_e2e_order", REPO / "scripts" / "e2e.py")
+    e2e = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = e2e                                        # dataclasses resolve their module
+    spec.loader.exec_module(e2e)
+    order = e2e.discover_fixtures()
+    assert order.index("pure-java") < order.index("java6-legacy")       # the KB is filled before it is reused
 
 
 def test_optional_artifacts_cover_config():
@@ -672,19 +788,18 @@ def test_optional_artifacts_cover_config():
         assert ga in used, f"{ga} not exercised by any fixture"
 
 
-@pytest.mark.parametrize("variant,extra", [
-    ("boot2-javax-lib-optional", {"sbmig.e2e.yml"}),
-    ("boot2-method-rename", {"sbmig.e2e.yml", "replay/llm-001.json", "replay/llm-002.json"}),
-    ("boot2-fix-failures", {"sbmig.e2e.yml", *(f"replay/llm-00{i}.json" for i in range(1, 6))}),
-])
-def test_javax_lib_variants_share_sources(variant: str, extra: set[str]):
+@pytest.mark.parametrize("variant", ["boot2-javax-lib-optional", "boot2-method-rename", "boot2-fix-failures"])
+def test_javax_lib_variants_share_sources(variant: str):
+    """The variants differ from boot2-javax-lib only in their sbmig.e2e.yml (optional legacy-web-lib version) and
+    their replayed LLM answers (replay/)."""
     a, b = FIXTURES / "boot2-javax-lib", FIXTURES / variant
-    files_a = sorted(p.relative_to(a).as_posix() for p in a.rglob("*") if p.is_file())
-    files_b = sorted(p.relative_to(b).as_posix() for p in b.rglob("*") if p.is_file())
-    assert set(files_b) - set(files_a) == extra
-    assert set(files_a) <= set(files_b)
-    for rel in files_a:
-        if rel.endswith((".java", ".xml", ".yml")) and rel != "sbmig.e2e.yml":
+
+    def sources(d: Path) -> list[str]:
+        return sorted(p.relative_to(d).as_posix() for p in d.rglob("*") if p.is_file()
+                      and p.relative_to(d).parts[0] != "replay" and p.name != "sbmig.e2e.yml")
+    assert sources(a) == sources(b)
+    for rel in sources(a):
+        if rel.endswith((".java", ".xml", ".yml")):
             assert (a / rel).read_bytes() == (b / rel).read_bytes(), rel
     src = (a / "src/main/java/com/example/members/web/MemberController.java").read_text(encoding="utf-8")
     assert "new LegacyRequestHelper(http)" in src and "LegacyRequestHelper.clientIp(http)" in src
@@ -871,30 +986,3 @@ def test_legacy_external_config_inventory_matches_expected():
     by = {f.key: f.status for f in prof.properties.findings}
     assert sorted(k for k, s in by.items() if s == "external") == sorted(exp["external"])
     assert sorted(k for k, s in by.items() if s == "defined") == sorted(exp["defined"])
-
-
-def test_fix_failures_replay_is_deliberately_imperfect():
-    """boot2-fix-failures (2026-10-23): llm-001 / llm-002 (an attempt and its feedback round) have SEARCH blocks that
-    are not in ClientIpFilter.java (apply_failed), llm-003 / llm-005 edit MemberController.java but keep the removed
-    `clientIp(` call (no_change), llm-004 is the real rename — so the run records a failed attempt before a fix, and a
-    cluster that stays broken."""
-    from sbmig.fix.client import load_replay_responses
-    from sbmig.fix.protocol import parse_fix_response
-
-    name = "boot2-fix-failures"
-    cfg = _effective_cfg(name)
-    assert cfg.llm.provider == "fake" and cfg.llm.base_url == f"replay:fixtures/projects/{name}/replay"
-    exp = Expected.model_validate(_expected(name)).expect
-    assert exp.kb is not None and cfg.kb.dir == exp.kb.dir == "out/e2e/kb-fix-failures"
-    assert exp.error_cases is not None and exp.error_cases.kb_errors_min
-    responses = [parse_fix_response(t) for t in load_replay_responses(FIXTURES / name / "replay")]
-    assert len(responses) == 5 and all(r.changes and not r.warnings for r in responses)
-    src = {ch.path: (FIXTURES / name / ch.path).read_text(encoding="utf-8") for r in responses for ch in r.changes}
-    bad1, bad2, keep1, real, keep2 = (r.changes[0] for r in responses)
-    for ch in (bad1, bad2):                                                         # apply_failed after feedback
-        assert ch.path.endswith("ClientIpFilter.java") and src[ch.path].count(ch.search) == 0
-    assert real.path == bad1.path and src[real.path].count(real.search) == 1
-    assert real.replace == real.search.replace(".clientIp(", ".remoteClientIp(")                     # text replace
-    for ch in (keep1, keep2):
-        assert ch.path.endswith("MemberController.java") and src[ch.path].count(ch.search) == 1
-        assert "LegacyRequestHelper.clientIp(http)" in ch.replace                                  # still broken

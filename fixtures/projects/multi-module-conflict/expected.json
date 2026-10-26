@@ -26,26 +26,48 @@
     "max_llm_calls": 2,
     "blocked": [],
     "unresolved_max": 0,
-    "phases": {
-      "restructure": "ok"
-    },
-    "followups_contains": [
-      "regex:merge conflicts: \\d+ file\\(s\\) existed in more than one module .*src/main/java/com/example/shop/shared/Shared\\.java.*"
-    ],
     "journal_events": [
       {
         "event": "merge_conflict_hints",
-        "phase": "restructure"
+        "phase": "verify"
       },
       {
         "event": "restructure",
         "ok": true
       }
     ],
-    "kb": {
-      "dir": "out/e2e/kb-multi-module-conflict",
-      "harvest_candidates_min": 0
+    "phases": {
+      "restructure": "ok"
     },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 1,
+        "augment": 0,
+        "reuse": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|cannot_find_symbol|farewell",
+          "modes": [
+            "new"
+          ],
+          "outcomes": [
+            "build_ok"
+          ]
+        }
+      ]
+    },
+    "kb": {
+      "dir": "out/e2e/kb-multi-module-conflict"
+    },
+    "followups_contains": [
+      "regex:merge conflicts: \\d+ file\\(s\\) existed in more than one module .*src/main/java/com/example/shop/shared/Shared\\.java.*"
+    ],
     "post_checks": [
       {
         "file_contains": {

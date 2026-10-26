@@ -1,0 +1,5 @@
+{
+  "note": "structure review of boot2 (one call): verdict issues",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"pom.xml\",\n      \"problem\": \"property lombok.version=1.18.48 overrides the parent-managed Lombok while the company floor is 1.18.38\",\n      \"fix_hint\": \"fine as long as 1.18.48 is intended; remove the property to follow the parent\"\n    }\n  ],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. Boot starters are unversioned (managed), commons-lang3 is on 3.17.0.\"\n}\n</review>\n"
+}

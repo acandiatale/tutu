@@ -22,30 +22,100 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 0,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
       "regex:^org\\.apache\\.commons:commons-lang3 \\S+→3\\.17\\.0$"
     ],
+    "journal_events": [
+      {
+        "event": "restructure",
+        "ok": true
+      }
+    ],
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-multi-module-merge"
+    },
     "followups_contains": [
       "regex:merge conflicts: 1 file\\(s\\) existed in more than one module .*"
     ],
-    "journal_events": [
-      {"event": "restructure", "ok": true}
-    ],
     "post_checks": [
-      {"file_exists": {"path": "module/boot-jar/src/main/java/**/ShopApplication.java"}},
-      {"file_exists": {"path": "module/boot-jar/src/main/resources/application.properties"}},
-      {"file_exists": {"path": "module/comp-jar/src/main/java/**/GreetingService.java"}},
-      {"file_exists": {"path": "module/comp-jar/src/main/java/**/GreetingController.java"}},
-      {"file_absent": {"path": "core"}},
-      {"file_absent": {"path": "web"}},
-      {"file_absent": {"path": "boot-jar"}},
-      {"file_absent": {"path": "module/boot-jar/src/main/java/**/Application.java"}},
-      {"file_contains": {"path": "**/src/main/resources/messages.properties", "contains": "hello from core"}},
-      {"pom_dependency_present": {"path": "module/boot-jar/pom.xml", "artifacts": ["${project.groupId}:shop-comp"]}},
-      {"pom_dependency_absent": {"path": "module/boot-jar/pom.xml", "artifacts": ["com.example:shop-web", "com.example:shop-core"]}}
+      {
+        "file_exists": {
+          "path": "module/boot-jar/src/main/java/**/ShopApplication.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/boot-jar/src/main/resources/application.properties"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/comp-jar/src/main/java/**/GreetingService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "module/comp-jar/src/main/java/**/GreetingController.java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "core"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "web"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "boot-jar"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "module/boot-jar/src/main/java/**/Application.java"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "**/src/main/resources/messages.properties",
+          "contains": "hello from core"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "module/boot-jar/pom.xml",
+          "artifacts": [
+            "${project.groupId}:shop-comp"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "module/boot-jar/pom.xml",
+          "artifacts": [
+            "com.example:shop-web",
+            "com.example:shop-core"
+          ]
+        }
+      }
     ]
   }
 }

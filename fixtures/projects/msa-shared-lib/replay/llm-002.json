@@ -1,0 +1,6 @@
+{
+  "note": "msa-shared-lib order-service: javax.validation.constraints imports (OrderView.java) — L2 `compile|package_does_not_exist|javax.validation.constraints` (f41593ce8e)",
+  "replay_role": "fix",
+  "match": "case: f41593ce8e",
+  "response": "<analysis>Bean Validation moved to jakarta.validation (Jakarta EE 9+); spring-boot-starter-validation brings jakarta.validation-api, but these sources still import javax.validation (the rewrite left this service's sources untouched). The script renames javax.validation.* to jakarta.validation.* in the case's files (imports and fully qualified names).</analysis>\n<script>\nimport re\n\ndef error_files(p):\n    \"\"\"The case's files that still exist, in order, once each.\"\"\"\n    seen = []\n    for e in p.errors:\n        path = e.get(\"file\")\n        if path and path not in seen and p.exists(path):\n            seen.append(path)\n    return seen\n\n\ndef fix(p):\n    for path in error_files(p):\n        n = p.sub(path, r\"\\bjavax\\.validation\\.\", \"jakarta.validation.\")\n        p.log(f\"{path}: javax.validation -> jakarta.validation ({n})\" if n else f\"{path}: nothing to change\")\n</script>\n"
+}

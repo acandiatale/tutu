@@ -178,4 +178,5 @@ flowchart LR
 |---|---|
 | 0 | 완료 (2026-10-26): 모델·설정·인터페이스, v2 기본값, 계약 테스트 `tests/core/test_v2_contracts.py`, `docs/INTERFACES.md` "v2 — flow-v2" |
 | 1a–1d | 완료 (2026-10-26): S 실행기 `sbmig/script/`, K 스크립트 KB `sbmig/kb/scripts.py` + 카탈로그 `script` 동작 + `sbmig kb scripts …`, F `LLMFixer.propose_script` + 프롬프트, R `sbmig/review/` + 리포트 "구조 점검", P v2 플래너, L 케이스별 스크립트 루프 + 오케스트레이터. 오프라인 테스트 2,465개 통과 |
-| 2–5 | 대기 |
+| 2 | 완료 (2026-10-27): 픽스처 32개 v2 기대값 + 재생 답(구조 점검 32, 수정 스크립트 19), 보강 시나리오 `boot2-fix-failures`(v1 partial → v2 build_ok), 재사용 시나리오 `pure-java` → `java6-legacy`(공유 KB `out/e2e/kb-jaxb`, LLM 호출 0으로 재사용). 실제 Maven e2e **32/32** 통과(성공 29, 의도된 BLOCKED 3: boot2-javax-lib, missing-artifact, legacy-ibatis) |
+| 3–5 | 대기 |
