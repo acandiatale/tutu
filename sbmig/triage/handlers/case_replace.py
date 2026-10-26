@@ -167,8 +167,13 @@ _QUALIFIED_RE = re.compile(r"[A-Za-z_$][\w$]*(?:\.[A-Za-z_$*][\w$]*)*")
 def _jakarta_guard(old: str, new: str):
     """For a javax.* → jakarta.* package pair: a predicate on the full dotted name a match belongs to — True when the
     javax → jakarta table renames that name (JDK packages such as javax.sql / javax.xml.parsers stay). None for any
-    other pair (no guard)."""
-    if not (old.startswith("javax.") and new.startswith("jakarta.")):
+    other pair (no guard). The bare token pair `javax` → `jakarta` (or `javax.` → `jakarta.`) that a KB written before
+    round 10 learned is guarded the same way: it renamed `javax.swing.tree.DefaultMutableTreeNode` and `javax.sql` imports
+    of a file with a jakarta error (company run, 2026-10-26)."""
+    def javax_root(s: str) -> bool:
+        return s in ("javax", "javax.") or s.startswith("javax.")
+
+    if not (javax_root(old) and (new in ("jakarta", "jakarta.") or new.startswith("jakarta."))):
         return None
     from .source_handlers import _rename_token, jakarta_packages
 

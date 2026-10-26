@@ -418,3 +418,32 @@ def test_broad_learned_javax_pair_never_touches_jdk_packages(fake_kit, catalog, 
     assert "import jakarta.xml.bind.JAXBContext;" in text             # under the jakarta table: renamed
     assert "import javax.xml.parsers.DocumentBuilderFactory;" in text  # JDK: kept whatever was learned
     assert "import javax.sql.DataSource;" in text
+
+
+SWING_SRC = """package com.acme.web;
+
+import javax.persistence.Query;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.TreeNode;
+import javax.sql.DataSource;
+
+class Menu {
+    Query q; DefaultMutableTreeNode n; TreeNode t; DataSource d;
+}
+"""
+PERSIST_SIG = "compile|package_does_not_exist|javax.persistence"
+
+
+@pytest.mark.parametrize("pair", [("javax", "jakarta"), ("javax.", "jakarta.")])
+def test_bare_learned_javax_pair_never_touches_swing(fake_kit, catalog, rcfg, pair):
+    """2026-10-26 (company run after round 10): a KB written by the old tokenizer learned the bare token pair
+    `javax` → `jakarta`; applied to the import lines of a file with a jakarta error it turned
+    `javax.swing.tree.DefaultMutableTreeNode` into `jakarta.swing.tree…` (cannot find symbol). The guard covers it."""
+    _case(sig=PERSIST_SIG, cid="pers000001", name="javax.persistence", action=_replace(pair))
+    p = _write(fake_kit.root, FILTER, SWING_SRC)
+    h = _handler(fake_kit)
+    h.apply(fake_kit.ws, _cluster(_err(line=3, sig=PERSIST_SIG)), make_profile(), rcfg)
+    text = p.read_text(encoding="utf-8")
+    assert "import jakarta.persistence.Query;" in text
+    assert "import javax.swing.tree.DefaultMutableTreeNode;" in text and "import javax.swing.tree.TreeNode;" in text
+    assert "import javax.sql.DataSource;" in text
