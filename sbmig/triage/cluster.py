@@ -15,7 +15,13 @@ v1 clusters (`cluster_errors`, still used by callers outside the fix loop) are k
 Priorities (both, lower = handled first): PARENT_RESOLUTION 10, POM_INVALID 15, DEPENDENCY_RESOLUTION 20,
 PLUGIN_RESOLUTION 25, ENFORCER 30, REWRITE 35, COMPILE 50 + reactor index, TEST_COMPILE 80 + reactor index,
 PLUGIN_EXECUTION 90, TEST_FAILURE 95, UNKNOWN 99. Unknown modules get +40; a case takes the lowest priority of its
-errors (its earliest reactor module). Ties: error count desc, then id.
+errors (its earliest reactor module). v1 ties: error count desc, then id.
+
+v2 cases of the same priority are ordered **root causes first** by their javac error class (`CAUSE_RANK`, below):
+a missing package / class file before the symbols it hides, an import before its body usages, the symbols before
+the type mismatches and overrides they cause (2026-10-26 probe: one missing `jakarta.xml.bind-api` gave 10 cases in
+2 files; the fix loop defers the consequences — `BuildFixLoop._deferral` — so the cause's script is asked for first).
+Then error count (desc), then id.
 """
 from __future__ import annotations
 
@@ -163,6 +169,46 @@ def case_files(c: ErrorCluster) -> list[str]:
     return list(dict.fromkeys(_posix(e.file) for e in c.errors if e.file))
 
 
+# v2 root-cause order of compile cases (lower = earlier; the error class is the 2nd segment of the L2 signature,
+# `sbmig.build.signatures.classify_javac` for an error without one). A `cannot_find_symbol` whose location is a
+# package is an import line (`import a.b.Gone;`): it goes before the body usages of the same symbol.
+CAUSE_RANK: dict[str, int] = {
+    "package_does_not_exist": 0,
+    "cannot_access": 1, "class_not_found_in_package": 1,
+    "cannot_find_symbol@import": 2, "static_import_only": 2,
+    "cannot_find_symbol": 3,
+    "incompatible_types": 4, "cannot_be_applied": 4, "no_suitable_method": 4,
+    "method_does_not_override": 5, "does_not_override_abstract": 5, "not_abstract_and_does_not_override": 5,
+}
+OTHER_CAUSE_RANK = 6                   # everything else (illegal_start, has_private_access, deprecated_removed, …)
+
+
+def error_class(e: BuildError) -> str:
+    """The javac error class of a compile error (`cannot_find_symbol`, …; `cannot_find_symbol@import` for an import
+    line); "" for other kinds."""
+    if e.kind not in FILE_KINDS:
+        return ""
+    parts = (e.signature_generic or "").split("|")
+    cls = parts[1] if len(parts) > 1 and parts[0] == e.kind.value else ""
+    if not cls:
+        try:
+            from sbmig.build.signatures import classify_javac
+            cls = classify_javac(e.message or "")
+        except Exception:  # pragma: no cover - the build package is ours
+            cls = ""
+    if cls == "cannot_find_symbol" and (e.location or "").strip().startswith("package "):
+        return "cannot_find_symbol@import"
+    return cls
+
+
+def cause_rank(c: ErrorCluster) -> int:
+    """Root-cause rank of a case (`CAUSE_RANK`; its most causal error). 0 for non-compile kinds — their priority
+    (`BASE_PRIORITY`) already puts them first."""
+    if c.kind not in FILE_KINDS:
+        return 0
+    return min((CAUSE_RANK.get(error_class(e), OTHER_CAUSE_RANK) for e in c.errors), default=OTHER_CAUSE_RANK)
+
+
 def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = None,
                   scope: Optional[str] = None) -> list[ErrorCluster]:
     """v2 clusters: one per case (L2) across files. `scope` (a targeted loop's build target, MSA services) is appended
@@ -185,5 +231,5 @@ def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = 
         prio = min(priority_for(e.kind, profile, e.module, e.file) for e in errs)
         out.append(ErrorCluster(id=f"{CASE_PREFIX}{cid}{suffix}", kind=first.kind, file=None, module=module,
                                 errors=errs, signatures=sigs, priority=prio, case_id=cid))
-    out.sort(key=lambda c: (c.priority, -len(c.errors), c.id))
+    out.sort(key=lambda c: (c.priority, cause_rank(c), -len(c.errors), c.id))     # root causes first
     return out
