@@ -124,15 +124,16 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
 <div class="wrap">
 
 <header>
-  <div class="eyebrow">sbmig · 지식 베이스(KB) · 스키마 버전 2 (2026-10-26)</div>
+  <div class="eyebrow">sbmig v2 · 지식 베이스(KB) kb-v2 · 스키마 버전 3 (2026-10-26)</div>
   <h1>sbmig KB 데이터 지도</h1>
-  <p class="lede">마이그레이션을 돌릴 때마다 <code>kb/</code> 폴더에 쌓이는 파일과 각 키의 뜻, 그리고 파일끼리 어떤 키로 이어지는지를 정리했습니다. 현업이 KB 데이터로 규칙을 만들 때 "이 값은 저 파일의 어느 키와 같다"를 찾는 용도입니다.</p>
+  <p class="lede">마이그레이션을 돌릴 때마다 <code>kb-v2/</code> 폴더에 쌓이는 파일과 각 키의 뜻, 그리고 파일끼리 어떤 키로 이어지는지를 정리했습니다. 현업이 KB 데이터로 규칙을 만들 때 "이 값은 저 파일의 어느 키와 같다"를 찾는 용도입니다.</p>
+  <p class="note">v2 흐름(브랜치 <code>flow-v2</code>): 빌드 에러는 모두 LLM이 쓴 <strong>파이썬 수정 스크립트</strong>로 고치고, 스크립트를 케이스(L2 시그니처)마다 버전으로 쌓습니다. 같은 케이스가 다음 프로젝트에 나오면 성적이 가장 좋은 버전을 LLM 없이 먼저 돌리고, 실패하면 그 버전을 LLM이 보강합니다. 그래서 KB는 에러 · 시도 · 구조 점검 기록, 케이스, 스크립트로 줄었고, 현업이 따라갈 연결 키는 <strong>run_id · 에러 id · 시도 id · case_id(L2) · 스크립트 버전</strong> 다섯 개(+ 보강 계보 <code>parent</code>)입니다. v1(태그 <code>company-v1</code>)의 <code>kb/</code> 폴더와는 섞지 않습니다. v1에서만 쓰던 파일은 <a href="#v1only">1절 끝 상자</a>에 모았습니다.</p>
   <nav class="toc" aria-label="목차">
     <a href="#layers">1. 네 가지 층</a>
     <a href="#keys">2. 연결 키</a>
     <a href="#flow">3. 데이터 흐름</a>
     <a href="#er-run">4. 관계도 ① 실행 기록</a>
-    <a href="#er-know">5. 관계도 ② 재사용 지식</a>
+    <a href="#er-know">5. 관계도 ② 케이스와 스크립트</a>
     <a href="#sig">6. 시그니처 계층</a>
     <a href="#states">7. 상태 변화</a>
     <a href="#fields">8. 파일별 필드 사전</a>
@@ -146,68 +147,90 @@ footer { color: var(--muted); font-size: 13px; border-top: 1px solid var(--line)
   <div class="layers">
     <div class="layer">
       <h3><span class="chip c-fact">사실 기록</span></h3>
-      <ul><li><code>errors.jsonl</code></li><li><code>fix_attempts.jsonl</code></li><li><code>ledger.jsonl</code></li></ul>
+      <ul><li><code>errors.jsonl</code></li><li><code>fix_attempts.jsonl</code></li><li><code>reviews.jsonl</code> 구조 점검 (v2 새로)</li></ul>
       <p>실행할 때마다 줄이 추가되고 이미 쓴 줄은 고치지 않습니다. 규칙을 만들 때 근거로 쓰는 원본 데이터입니다.</p>
     </div>
     <div class="layer">
       <h3><span class="chip c-know">재사용 지식</span></h3>
-      <ul><li><code>catalog/</code> 에러 케이스</li><li><code>recipes/</code> OpenRewrite 레시피</li><li><code>cases/</code> 재생용 패치</li><li><code>patterns/</code> 사람이 쓴 규칙</li></ul>
-      <p>다음 프로젝트에서 실제로 적용되는 지식입니다. 사람은 케이스 파일의 <code>human:</code> 블록만 고칩니다.</p>
+      <ul><li><code>catalog/</code> 에러 케이스</li><li><code>scripts/</code> 케이스별 수정 스크립트와 성적 (v2 새로)</li></ul>
+      <p>다음 프로젝트에서 실제로 다시 실행되는 지식입니다. 사람은 케이스 파일의 <code>human:</code> 블록과 <code>sbmig kb scripts retire</code> · <code>activate</code> 명령으로만 손댑니다.</p>
     </div>
     <div class="layer">
       <h3><span class="chip c-derived">파생 인덱스</span></h3>
-      <ul><li><code>index.json</code></li><li><code>symbols.json</code></li><li><code>error_hints.json</code></li><li><code>catalog/index.json</code>, <code>views/</code></li></ul>
+      <ul><li><code>catalog/index.json</code></li><li><code>views/</code> 사람이 보는 표</li></ul>
       <p>위 두 층에서 계산한 검색용 사본입니다. <code>sbmig kb reindex</code>로 언제든 다시 만들 수 있으니 직접 고치지 않습니다.</p>
     </div>
     <div class="layer">
       <h3><span class="chip c-ops">운영 파일</span></h3>
-      <ul><li><code>audit.jsonl</code> 변경 이력</li><li><code>quarantine.jsonl</code> 읽지 못한 줄</li><li><code>*.jsonl.corrupt</code>, <code>.lock</code></li></ul>
+      <ul><li><code>audit.jsonl</code> 변경 이력 (스크립트 포함)</li><li><code>quarantine.jsonl</code> 읽지 못한 줄</li><li><code>*.jsonl.corrupt</code>, <code>.lock</code></li></ul>
       <p>누가 언제 무엇을 바꿨는지, 깨진 줄은 무엇인지 남깁니다. 동시에 쓰지 않도록 잠금 파일도 둡니다.</p>
     </div>
   </div>
   <div class="frame">
-<pre class="tree">kb/
-├── <span class="t-fact">errors.jsonl</span>                         <span class="t-c">빌드 에러 1건 = 1줄 (ErrorCaseRecord)</span>
-├── <span class="t-fact">fix_attempts.jsonl</span>                   <span class="t-c">수정 시도 1건 = 1줄, 실패 포함, 적용한 diff (FixAttemptRecord)</span>
-├── <span class="t-fact">ledger.jsonl</span>                         <span class="t-c">에러 묶음(클러스터) 1건의 해결 방법 = 1줄 (ResolutionRecord)</span>
-├── <span class="t-know">catalog/&lt;종류&gt;/&lt;분류&gt;/&lt;심볼&gt;--&lt;case_id&gt;.yml</span>  <span class="t-c">L2 시그니처 1개 = 케이스 1개 (CatalogCase)</span>
-├── <span class="t-know">recipes/candidates|active|rejected/&lt;레시피 id&gt;.yml + .meta.json</span>  <span class="t-c">(KBRecipe)</span>
-├── <span class="t-know">cases/YYYY-MM/&lt;KB 케이스 id&gt;.json</span>      <span class="t-c">재생할 수 있는 LLM 패치 (KBCase)</span>
-├── <span class="t-know">patterns/*.yml</span>                       <span class="t-c">사람이 쓴 매칭 규칙 (항상 켜짐)</span>
-├── <span class="t-derived">index.json</span>                           <span class="t-c">시그니처 → KB 케이스 / 레시피</span>
-├── <span class="t-derived">symbols.json</span>                         <span class="t-c">에러 심볼 → 고친 방법 묶음</span>
-├── <span class="t-derived">error_hints.json</span>                     <span class="t-c">L2 / 에러 심볼 → 과거 성공·실패 (LLM 프롬프트 힌트)</span>
+<pre class="tree">kb-v2/
+├── <span class="t-fact">errors.jsonl</span>                         <span class="t-c">빌드 에러 1건 = 1줄, 어떤 스크립트 버전으로 고쳤나 포함 (ErrorCaseRecord)</span>
+├── <span class="t-fact">fix_attempts.jsonl</span>                   <span class="t-c">수정 시도 1건 = 1줄, 실패 포함: 돌린 스크립트 버전, 실행 로그, git diff (FixAttemptRecord)</span>
+├── <span class="t-fact">reviews.jsonl</span>                        <span class="t-c">구조 점검 1건 = 1줄, 실행마다 (StructureReview)                     v2 새로</span>
+├── <span class="t-know">catalog/&lt;종류&gt;/&lt;분류&gt;/&lt;심볼&gt;--&lt;case_id&gt;.yml</span>  <span class="t-c">L2 시그니처 1개 = 케이스 1개, 가장 좋은 스크립트 버전 (CatalogCase)</span>
+├── <span class="t-know">scripts/&lt;case_id&gt;/v1.py, v1.meta.json, v2.py, v2.meta.json …</span>  <span class="t-c">케이스별 수정 스크립트와 그 기록 (ScriptMeta)   v2 새로</span>
 ├── <span class="t-derived">catalog/index.json</span>                   <span class="t-c">케이스 id → 파일, L2 / L1 / 심볼 → 케이스 id</span>
-├── <span class="t-derived">views/cases.md, cases.csv</span>            <span class="t-c">사람이 보는 케이스 표</span>
-├── <span class="t-ops">audit.jsonl</span>                          <span class="t-c">사람의 케이스 수정 + 자동 상태 변화</span>
+├── <span class="t-derived">views/cases.md, cases.csv</span>            <span class="t-c">사람이 보는 케이스 표 (스크립트 버전 수, 재사용 1순위 포함)</span>
+├── <span class="t-ops">audit.jsonl</span>                          <span class="t-c">사람의 케이스 수정 + 자동 상태 변화 + 스크립트 저장·성적·폐기</span>
 ├── <span class="t-ops">quarantine.jsonl</span>                     <span class="t-c">errors.jsonl에서 읽지 못한 줄의 메모</span>
 ├── <span class="t-ops">*.jsonl.corrupt</span>                      <span class="t-c">중간에 끊겨 반쯤 쓰인 마지막 줄을 옮겨 둔 곳</span>
 └── <span class="t-ops">.lock</span>                                <span class="t-c">여러 프로세스가 동시에 쓰지 않게 하는 잠금</span>
 
-kb.bak-&lt;시각&gt;/                            <span class="t-c">kb import --replace 전에 남기는 이전 KB 백업 (kb 폴더 옆)</span>
+kb-v2.bak-&lt;시각&gt;/                         <span class="t-c">kb import --replace 전에 남기는 이전 KB 백업 (kb-v2 폴더 옆)</span>
 &lt;실행 폴더&gt;/error_cases.jsonl, fix_attempts.jsonl, error_cases.csv   <span class="t-c">그 실행분만 따로 (같은 형식, CSV는 엑셀용)</span></pre>
   </div>
+  <details id="v1only">
+    <summary><span class="path">v1에서만 쓰던 파일</span><span class="chip">v1 전용 (v2에서 쓰지 않음)</span><span class="what">태그 <code>company-v1</code>의 <code>kb/</code> 폴더에만 생김. v2 흐름은 이 파일을 쓰지도 읽지도 않음</span></summary>
+    <div class="body">
+      <div class="frame"><table>
+        <thead><tr><th>v1 파일</th><th>무엇이었나</th><th>v2에서는</th></tr></thead>
+        <tbody>
+          <tr><td><code>ledger.jsonl</code></td><td>에러 묶음(클러스터) 1건의 해결 방법 = 1줄 (ResolutionRecord), 플릿 학습 보고서의 원본</td><td>쓰지 않음. 해결 기록은 <code>errors.jsonl</code> · <code>fix_attempts.jsonl</code>의 스크립트 필드</td></tr>
+          <tr><td><code>recipes/</code></td><td>KB가 만든 OpenRewrite 레시피 (후보 → active), <code>.yml</code> + <code>.meta.json</code></td><td>KB 레시피를 돌리지 않음 (현업 결정). 다시 쓰는 지식은 <code>scripts/</code></td></tr>
+          <tr><td><code>cases/YYYY-MM/</code></td><td>재생할 수 있는 LLM 패치 (SEARCH/REPLACE, KBCase)</td><td>스크립트가 대신함: 같은 케이스는 저장된 스크립트를 다시 실행</td></tr>
+          <tr><td><code>patterns/*.yml</code></td><td>사람이 쓴 매칭 규칙 (레시피 · 핸들러 · 힌트)</td><td>v2 흐름에서 쓰지 않음</td></tr>
+          <tr><td><code>index.json</code></td><td>시그니처 → KB 케이스 / 레시피</td><td>필요 없음: case_id(= sha1(L2))로 <code>scripts/&lt;case_id&gt;/</code>를 바로 찾음</td></tr>
+          <tr><td><code>symbols.json</code></td><td>에러 심볼 → 고친 방법 묶음</td><td>쓰지 않음</td></tr>
+          <tr><td><code>error_hints.json</code></td><td>L2 / 에러 심볼 → 과거 성공·실패 (LLM 프롬프트 힌트)</td><td>스크립트 이력(버전 성적, 보강 계보)과 케이스의 <code>hints</code>가 대신함</td></tr>
+        </tbody>
+      </table></div>
+      <p>케이스 파일의 v1 동작(<code>action.kind</code> = <code>recipe</code> · <code>replace</code> · <code>patch</code>)도 v1 설정을 다시 켤 때만 계산됩니다. 이 파일들을 만드는 코드는 PLAN-v2 4단계(정리)에서 지울지 정합니다. v1 지도는 태그 <code>company-v1</code>의 같은 문서(<code>docs/kb-map/</code>)에 있습니다.</p>
+    </div>
+  </details>
 </section>
 
 <section id="keys">
   <h2>2. 파일을 잇는 연결 키</h2>
-  <p>아래 키들이 서로 다른 파일에 같은 값으로 나타납니다. 표에서 <span class="k">강조한 이름</span>이 조인할 때 쓰는 키입니다. 예시는 실제 기록(e2e 픽스처 <code>boot2-fix-failures</code>)에서 가져왔습니다.</p>
+  <p>v2에서 현업이 따라갈 키는 아래 다섯 개와 보강 계보입니다. 같은 값이 서로 다른 파일에 나타나므로 조인할 때 씁니다. 표에서 <span class="k">강조한 이름</span>이 조인 키입니다. 예시는 e2e 픽스처 <code>boot2-fix-failures</code>의 에러(<code>clientIp</code>)를 v2 흐름으로 고쳤을 때의 값 모양입니다.</p>
   <div class="frame">
   <table class="keys">
     <thead><tr><th>키</th><th>형식 / 만드는 법</th><th>예시</th><th>나오는 곳</th></tr></thead>
     <tbody>
-      <tr><td><span class="k">run_id</span></td><td>실행 한 번. <code>run-YYYYMMDD-HHMMSS-&lt;6자&gt;</code></td><td class="ex">run-20261026-104410-78da18</td><td>errors / fix_attempts / ledger의 <code>run_id</code>, 케이스 timeline의 <code>run_id</code>, 시도 id의 앞부분</td></tr>
-      <tr><td><span class="k">project_fingerprint</span></td><td>프로젝트 하나. sha256(루트 artifactId | pom 경로들) 앞 16자. 이름이 바뀌어도 pom 구조가 같으면 같은 값</td><td class="ex">83cb2456069393af</td><td>모든 기록의 <code>project_fingerprint</code>, symbols / hints의 <code>project_keys</code>, <code>projects</code>. 승격 기준인 "서로 다른 프로젝트 수"를 셀 때 씀</td></tr>
-      <tr><td><span class="k">에러 id</span><br><code>errors.id</code></td><td>sha1(run_id | 에러 정체성 | 같은 에러 순번) 앞 16자. 실행마다 새 값</td><td class="ex">e6852dd17399adbe</td><td>fix_attempts의 <code>error_ids[]</code>, 케이스의 <code>evidence.fixes[].error_id</code>, <code>timeline[].error_id</code></td></tr>
-      <tr><td><span class="k">시도 id</span><br><code>fix_attempts.id</code></td><td><code>&lt;run_id&gt;:&lt;attempt_id&gt;</code>. attempt_id = <code>&lt;단계&gt;-&lt;라운드&gt;-&lt;순번&gt;</code></td><td class="ex">run-20261026-104410-78da18:spring-2-1</td><td>errors의 <code>resolved_by</code>, <code>resolution_attempts[]</code>, <code>attempts[].attempt_id</code>. 케이스의 <code>fixes[].attempt_id</code>, <code>attempt_ids[]</code>, <code>failures[].attempt_id</code>. KB 케이스 <code>tags</code>의 <code>attempt:&lt;attempt_id&gt;</code>(run_id 없이)</td></tr>
-      <tr><td><span class="k">L1</span><br><code>signature</code></td><td>구체 시그니처. <code>종류|분류|심볼 전체|소유 클래스</code></td><td class="ex">compile|cannot_find_symbol|method clientIp(jakarta.servlet.http.HttpServletRequest)|class com.company.legacy.web.LegacyRequestHelper</td><td>errors / ledger의 <code>signature</code>, KB 케이스 <code>signatures[]</code>, 레시피 meta <code>signatures[]</code>, <code>index.json</code>의 <code>l1</code>, 케이스 <code>variants[].signature</code>, <code>catalog/index.json</code>의 <code>by_l1</code></td></tr>
-      <tr><td><span class="k">L2</span><br><code>signature_generic</code></td><td>일반화한 시그니처. <code>종류|분류|핵심 심볼</code>. 프로젝트마다 다른 부분(경로, 줄, 프로젝트 클래스)은 빠짐. <strong>케이스의 키</strong></td><td class="ex">compile|cannot_find_symbol|clientIp</td><td>errors / ledger의 <code>signature_generic</code>, KB 케이스 <code>signatures_generic[]</code>, 레시피 meta <code>signatures[]</code>, <code>index.json</code>의 <code>l2</code> · <code>recipes</code>, <code>error_hints.json</code>의 <code>by_generic</code>, 케이스 파일의 <code>signature_generic</code>, <code>catalog/index.json</code>의 <code>by_l2</code>, symbols의 <code>generic_signatures[]</code></td></tr>
-      <tr><td><span class="k">case_id</span></td><td>케이스 하나. sha1(L2) 앞 10자. L2가 같으면 프로젝트가 달라도 같은 값</td><td class="ex">8bb4fd4a4a</td><td>errors의 <code>case_id</code>, 케이스 파일 이름 끝(<code>clientIp--8bb4fd4a4a.yml</code>)과 <code>id</code>, <code>catalog/index.json</code>, <code>audit.jsonl</code>의 <code>case_id</code>, 학습 치환의 resolver id(<code>case-replace:&lt;case_id&gt;:…</code>)</td></tr>
-      <tr><td><span class="k">error_symbol</span></td><td>프로젝트를 넘어 같은 원인을 묶는 짧은 키. 메서드·클래스·패키지·아티팩트 이름</td><td class="ex">clientIp</td><td>errors의 <code>error_symbol</code>, ledger / KB 케이스의 <code>symbol</code>, <code>symbols.json</code>의 키, <code>error_hints.json</code>의 <code>by_symbol</code>, 케이스의 <code>symbol</code>, <code>catalog/index.json</code>의 <code>by_symbol</code></td></tr>
-      <tr><td><span class="k">KB 케이스 id</span><br><code>cases/…json</code></td><td>재생용 패치 하나. <code>YYYYMMDD-&lt;10자&gt;</code></td><td class="ex">20261026-cadcc69bb2</td><td>파일 이름, <code>index.json</code> l1/l2의 값, 레시피 meta <code>source_case_ids[]</code>, symbols <code>fixes[].cases[]</code>, ledger <code>case_id</code>, 케이스 <code>action.patch_case_ids[]</code>, 패치 재생 시도의 <code>resolver_id</code></td></tr>
-      <tr><td><span class="k">레시피 id</span></td><td>OpenRewrite 레시피 하나. 점 없는 PascalCase 한 단어</td><td class="ex">LegacyRequestHelperClientIpToRemoteClientIp</td><td>파일 이름과 yml의 <code>name</code>, KB 케이스 <code>recipe_candidate_id</code>, <code>index.json</code>의 <code>recipes</code>, symbols <code>fixes[].recipe_id</code>, ledger <code>recipe_id</code>, 케이스 <code>action.recipe_ids[]</code>, 레시피 시도의 <code>resolver_id</code></td></tr>
-      <tr><td><span class="k">resolver_id</span></td><td>"누가 고쳤나". 방법(<code>fix_method</code>)에 따라 값이 다름: 핸들러 id / 레시피 id들(쉼표) / KB 케이스 id들 / LLM 모델 이름 / <code>case-replace:&lt;case_id&gt;:&lt;치환 쌍 해시 8자&gt;</code></td><td class="ex">gpt-6-luna</td><td>errors / fix_attempts / ledger의 <code>resolver_id</code>, 케이스의 <code>fixes[].resolver_id</code>, hints의 <code>resolver</code></td></tr>
-      <tr><td><span class="k">cluster_id</span></td><td>한 빌드에서 같은 파일·종류로 묶은 에러 무리. <code>&lt;종류&gt;:&lt;8자&gt;</code></td><td class="ex">compile:5e0f2951</td><td>fix_attempts의 <code>cluster_id</code> (실행 폴더의 journal에서 같은 값으로 결정 과정을 찾을 수 있음)</td></tr>
+      <tr><td><span class="k">run_id</span></td><td>실행 한 번. <code>run-YYYYMMDD-HHMMSS-&lt;6자&gt;</code></td><td class="ex">run-20261026-104410-78da18</td><td>errors / fix_attempts / reviews의 <code>run_id</code>, 시도 id와 점검 id의 앞부분, 스크립트 meta의 <code>run_id</code>(만든 실행)와 <code>last_run_id</code>(마지막으로 돌린 실행), 케이스 timeline의 <code>run_id</code>, audit의 <code>run_id</code></td></tr>
+      <tr><td><span class="k">에러 id</span><br><code>errors.id</code></td><td>sha1(run_id | 에러 정체성 | 같은 에러 순번) 앞 16자. 실행마다 새 값</td><td class="ex">e6852dd17399adbe</td><td>fix_attempts의 <code>error_ids[]</code>, 케이스의 <code>evidence.fixes[].error_id</code>, <code>timeline[].error_id</code>, quarantine의 <code>id</code></td></tr>
+      <tr><td><span class="k">시도 id</span><br><code>fix_attempts.id</code></td><td><code>&lt;run_id&gt;:&lt;attempt_id&gt;</code>. attempt_id = <code>&lt;단계&gt;-&lt;라운드&gt;-&lt;순번&gt;</code>. v2의 시도는 모두 최종 빌드 뒤 수정 루프라서 <code>verify-…</code></td><td class="ex">run-20261026-104410-78da18:verify-1-1</td><td>errors의 <code>resolved_by</code>, <code>resolution_attempts[]</code>, <code>attempts[].attempt_id</code>. 케이스의 <code>fixes[].attempt_id</code>, <code>attempt_ids[]</code>, <code>failures[].attempt_id</code></td></tr>
+      <tr><td><span class="k">case_id</span><br>(L2)</td><td>케이스 하나. sha1(L2) 앞 10자. L2가 같으면 프로젝트가 달라도 같은 값. <strong>스크립트 폴더 이름도 이 값</strong></td><td class="ex">8bb4fd4a4a</td><td>errors의 <code>case_id</code> · <code>script_case_id</code>, fix_attempts의 <code>script_case_id</code>와 <code>cluster_id</code>(<code>case:&lt;case_id&gt;</code>), 케이스 파일 이름 끝(<code>clientIp--8bb4fd4a4a.yml</code>)과 <code>id</code>, <code>scripts/8bb4fd4a4a/</code>와 meta의 <code>case_id</code>, resolver id(<code>script:&lt;case_id&gt;:v&lt;N&gt;</code>), <code>catalog/index.json</code>, audit의 <code>case_id</code>, views의 <code>id</code></td></tr>
+      <tr><td><span class="k">스크립트 버전</span><br><code>v&lt;N&gt;</code></td><td>케이스 안에서 1, 2, 3 … 순서. 같은 코드는 한 번만 저장(코드 해시 <code>sha1</code>가 같으면 기존 버전). 번호는 다시 쓰지 않음. 0 = 저장되지 않은 스크립트(KB 없이 돌린 실행)</td><td class="ex">2</td><td>파일 이름 <code>v2.py</code> · <code>v2.meta.json</code>과 meta의 <code>version</code>, fix_attempts의 <code>script_version</code>, errors의 <code>script_version</code> · <code>attempts[].script_version</code>, resolver id 끝(<code>:v2</code>), 케이스의 <code>action.script_version</code>(가장 좋은 버전) · <code>human.action</code>(사람이 고정한 버전), views의 <code>best_script</code>, audit의 <code>version</code></td></tr>
+      <tr><td><span class="k">parent</span><br>(보강 계보)</td><td>이 버전이 보강한 원본 버전 번호. 처음부터 새로 쓴 버전은 <code>null</code>. 실패 버전도 저장되므로 계보가 끊기지 않음</td><td class="ex">1 (v2는 v1을 보강)</td><td>meta의 <code>parent</code>, fix_attempts의 <code>script_parent</code>, audit의 <code>parent</code>. <code>sbmig kb scripts show &lt;case_id&gt;</code>가 <code>v1 → v2 → v4</code>처럼 보여 줌</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <h3>보조 키</h3>
+  <div class="frame">
+  <table class="keys">
+    <thead><tr><th>키</th><th>형식 / 만드는 법</th><th>예시</th><th>나오는 곳</th></tr></thead>
+    <tbody>
+      <tr><td><span class="k">project_fingerprint</span></td><td>프로젝트 하나. sha256(루트 artifactId | pom 경로들) 앞 16자. 이름이 바뀌어도 pom 구조가 같으면 같은 값</td><td class="ex">83cb2456069393af</td><td>errors / fix_attempts의 <code>project_fingerprint</code>. 주의: 스크립트 meta의 <code>success_projects</code>는 지문이 아니라 <strong>프로젝트 이름</strong>(<code>project</code>)</td></tr>
+      <tr><td><span class="k">L1</span><br><code>signature</code></td><td>구체 시그니처. <code>종류|분류|심볼 전체|소유 클래스</code></td><td class="ex">compile|cannot_find_symbol|method clientIp(jakarta.servlet.http.HttpServletRequest)|class com.company.legacy.web.LegacyRequestHelper</td><td>errors의 <code>signature</code>, 케이스 <code>variants[].signature</code>, <code>catalog/index.json</code>의 <code>by_l1</code></td></tr>
+      <tr><td><span class="k">L2</span><br><code>signature_generic</code></td><td>일반화한 시그니처. <code>종류|분류|핵심 심볼</code>. 프로젝트마다 다른 부분(경로, 줄, 프로젝트 클래스)은 빠짐. <strong>케이스의 키</strong>(case_id의 원문)</td><td class="ex">compile|cannot_find_symbol|clientIp</td><td>errors의 <code>signature_generic</code>, 케이스 파일의 <code>signature_generic</code>, 스크립트 meta의 <code>signature_generic</code>, audit의 <code>signature_generic</code>, <code>catalog/index.json</code>의 <code>by_l2</code>, quarantine의 <code>signature_generic</code></td></tr>
+      <tr><td><span class="k">error_symbol</span></td><td>프로젝트를 넘어 같은 원인을 묶는 짧은 키. 메서드·클래스·패키지·아티팩트 이름</td><td class="ex">clientIp</td><td>errors의 <code>error_symbol</code>, 케이스의 <code>symbol</code>, <code>catalog/index.json</code>의 <code>by_symbol</code></td></tr>
+      <tr><td><span class="k">resolver_id</span></td><td>"누가 고쳤나". v2 스크립트 시도는 <code>script:&lt;case_id&gt;:v&lt;N&gt;</code> — case_id와 스크립트 버전을 한 값에 담음. plan 단계로 사라진 에러는 비어 있고 <code>resolved_by</code>가 <code>step:&lt;단계 id&gt;</code></td><td class="ex">script:8bb4fd4a4a:v2</td><td>errors / fix_attempts의 <code>resolver_id</code>, 케이스의 <code>fixes[].resolver_id</code>(스크립트 버전마다 1줄)</td></tr>
+      <tr><td><span class="k">cluster_id</span></td><td>한 빌드에서 같은 케이스로 묶은 에러 무리. v2는 파일이 여러 개여도 케이스 하나 = 무리 하나: <code>case:&lt;case_id&gt;</code> (MSA 서비스별 루프는 <code>@&lt;서비스 폴더&gt;</code>가 붙음)</td><td class="ex">case:8bb4fd4a4a</td><td>fix_attempts의 <code>cluster_id</code>, 커밋 메시지 <code>fix(script:&lt;case_id&gt;:v&lt;N&gt; &lt;방식&gt;): case:…</code> (실행 폴더의 journal에서 같은 값으로 결정 과정을 찾을 수 있음)</td></tr>
+      <tr><td><span class="k">점검 id</span><br><code>reviews.id</code></td><td>구조 점검 하나. <code>&lt;run_id&gt;:review</code> (실행마다 1개)</td><td class="ex">run-20261026-104410-78da18:review</td><td>reviews.jsonl의 <code>id</code>. 같은 실행의 에러·시도와는 <code>run_id</code>로 이어짐</td></tr>
     </tbody>
   </table>
   </div>
@@ -215,69 +238,105 @@ kb.bak-&lt;시각&gt;/                            <span class="t-c">kb import --
 
 <section id="flow">
   <h2>3. 데이터가 쌓이는 흐름</h2>
-  <p>빌드 에러 하나가 기록되고, 고친 방법이 다음 프로젝트에서 다시 쓰이기까지의 경로입니다. 원통 모양이 <code>kb/</code> 안의 파일입니다.</p>
+  <p>구조화 뒤 첫 빌드에서 나온 에러 하나가 기록되고, 그것을 고친 스크립트가 다음 프로젝트에서 다시 쓰이기까지의 경로입니다. 원통 모양이 <code>kb-v2/</code> 안의 파일입니다.</p>
   <div class="frame diagram">
 <pre class="mermaid">
 flowchart LR
   subgraph RUN["실행 한 번 (sbmig run / fleet)"]
+    REVIEW["구조 점검 (LLM, 빌드 전)"]
     BUILD["Maven 빌드 에러"] --> TRACK["에러 추적기"]
-    LOOP["수정 루프 시도 (핸들러 / 레시피 / 패치 재생 / LLM)"] --> TRACK
+    LOOP["스크립트 수정 루프 (재사용 / 보강 / 새로)"] --> TRACK
   end
+  REVIEW -->|"실행마다 1줄"| REV[("reviews.jsonl")]
   TRACK -->|"에러마다 1줄"| ERR[("errors.jsonl")]
-  TRACK -->|"시도마다 1줄 + diff"| ATT[("fix_attempts.jsonl")]
-  LOOP -->|"클러스터마다 1줄"| LED[("ledger.jsonl")]
-  LOOP -->|"성공한 LLM 수정"| HV["harvest"]
-  HV --> KC[("cases/ 재생용 패치")]
-  KC -->|"라벨로 컴파일 (LLM 없음)"| RC[("recipes/candidates")]
-  RC -->|"서로 다른 프로젝트 2곳 성공"| RA[("recipes/active")]
-  KC --> SYM[("symbols.json")]
+  TRACK -->|"시도마다 1줄 + diff + 스크립트 로그"| ATT[("fix_attempts.jsonl")]
+  LOOP -->|"LLM 스크립트는 실행 전에 저장, 채점 뒤 성적"| SCR[("scripts/case_id/vN.py + vN.meta.json")]
+  SCR -->|"created, credited ..."| AUD[("audit.jsonl")]
   ERR --> CAT[("catalog/ 케이스 yml")]
   ATT --> CAT
-  RC --> CAT
-  KC --> CAT
+  SCR -->|"가장 좋은 버전"| CAT
   CAT --> VIEW[("views/cases.md, cases.csv")]
-  ERR --> HINT[("error_hints.json")]
-  HUMAN["사람: human 블록 / kb cases 명령"] --> CAT
-  CAT --> AUD[("audit.jsonl")]
-  CAT -->|"케이스 적중"| NEXT["다음 프로젝트의 triage"]
-  RA --> NEXT
-  HINT -->|"LLM 프롬프트 힌트"| NEXT
+  HUMAN["사람: human 블록 / kb cases · kb scripts 명령"] --> CAT
+  HUMAN -->|"retire / activate"| SCR
+  CAT --> AUD
+  SCR -->|"같은 케이스: 검증된 버전 재사용 (LLM 없음), 실패하면 보강의 바탕"| NEXT["다음 프로젝트의 스크립트 수정 루프"]
 </pre>
   </div>
+  <p>한 케이스가 다음에 받는 스크립트는 아래 순서로 정해집니다(실행 한 번 안에서, 케이스마다).</p>
+  <div class="frame diagram">
+<pre class="mermaid">
+flowchart TD
+  E["케이스 에러 (L2 하나, 파일 여러 개)"] --> Q1{"이 실행에서 아직 안 돌린 검증된 버전이 KB에 있나?"}
+  Q1 -->|"있음"| R["reuse: 그 버전을 그대로 실행 (LLM 호출 없음) · fix_method script_reuse"]
+  Q1 -->|"없음"| Q2{"보강할 바탕이 있나? (이 실행의 직전 시도, 없으면 KB의 최신 버전)"}
+  Q2 -->|"있음"| A["augment: LLM이 완성된 새 버전 작성 · parent = 바탕 · script_augment"]
+  Q2 -->|"없음"| N["new: LLM이 첫 버전 작성 · parent 없음 · script"]
+  R --> S["다시 빌드 · 채점 · 성적 기록"]
+  A --> S
+  N --> S
+  S -->|"이 케이스 에러가 모두 사라짐"| OK["성공: 버전 성적 +1, 남겨 둠"]
+  S -->|"일부만 / 그대로 / 판정 불가"| RB["다음 시도 전에 되돌림 (git), 다시 사다리로"]
+  S -->|"고친 파일에 새 에러, 또는 전체 에러 1.5배 초과"| RV["바로 되돌림, 실패로 기록"]
+  RB --> Q1
+  RV --> Q1
+  Q2 -->|"보강 3번 넘음"| BLK["BLOCKED → Handover"]
+</pre>
+  </div>
+  <p class="note">LLM이 쓴 스크립트는 실행하기 <strong>전에</strong> <code>scripts/</code>에 저장됩니다. 실패한 버전도 남으므로 보강 계보(<code>parent</code>)가 끊기지 않습니다. 성적은 그 뒤 빌드로 채점한 결과입니다(7절 표). 되돌린 시도의 변경은 트리에 남지 않고, 그 시도로 사라졌던 에러는 다시 셉니다.</p>
 </section>
 
 <section id="er-run">
-  <h2>4. 관계도 ① 실행 기록: 에러 · 시도 · 케이스</h2>
-  <p>한 실행에서 생긴 에러와 시도, 그리고 그것들을 L2 기준으로 모은 케이스의 관계입니다. 선의 글자가 연결에 쓰이는 키입니다.</p>
-  <div class="legend"><span><code>||--o{</code> 1 : 여러 개</span><span><code>}o--o{</code> 여러 개 : 여러 개</span><span><code>}o--||</code> 여러 개 : 1</span><span>PK = 그 파일의 고유 키, FK = 다른 파일을 가리키는 키</span></div>
+  <h2>4. 관계도 ① 실행 기록: 에러 · 시도 · 점검 · 케이스</h2>
+  <p>한 실행에서 생긴 에러와 시도, 구조 점검, 그리고 그것들을 L2 기준으로 모은 케이스와 스크립트 버전의 관계입니다. 선의 글자가 연결에 쓰이는 키입니다.</p>
+  <div class="legend"><span><code>||--o{</code> 1 : 여러 개</span><span><code>}o--o{</code> 여러 개 : 여러 개</span><span><code>}o--||</code> 여러 개 : 1</span><span><code>}o--o|</code> 여러 개 : 0 또는 1</span><span>PK = 그 파일의 고유 키, FK = 다른 파일을 가리키는 키</span></div>
   <div class="frame diagram">
 <pre class="mermaid">
 erDiagram
   ERROR_CASE["errors.jsonl: 에러 1건"] {
     str id PK "sha1(run, 정체성, 순번) 16자"
     str run_id FK "실행"
-    str project_fingerprint FK "프로젝트"
+    str project_fingerprint "프로젝트"
     str signature "L1"
     str signature_generic "L2 = 케이스 키"
     str case_id FK "sha1(L2) 10자"
-    str error_symbol "프로젝트 간 묶음 키"
     str status "resolved, blocked ..."
     str resolved_by FK "해결한 시도 id"
     list resolution_attempts FK "해결에 들어간 시도 id들"
+    str script_case_id FK "해결한 스크립트의 케이스"
+    int script_version FK "해결한 스크립트 버전"
   }
   ATTEMPT_REF["errors.attempts: 시도 이력"] {
     str attempt_id FK "시도 id"
+    str fix_method "script, script_reuse, script_augment"
+    int script_version FK "돌린 버전"
     str outcome "결과"
     str failure "실패 이유"
   }
   FIX_ATTEMPT["fix_attempts.jsonl: 시도 1건"] {
-    str id PK "run_id:단계-라운드-순번"
+    str id PK "run_id:verify-라운드-순번"
     list error_ids FK "겨냥한 에러 id들"
-    str cluster_id "에러 무리"
-    str fix_method "handler, recipe, llm ..."
-    str resolver_id "누가 고쳤나"
+    str cluster_id "case:case_id"
+    str fix_method "script, script_reuse, script_augment"
+    str resolver_id "script:case_id:vN"
+    str script_case_id FK "케이스"
+    int script_version FK "돌린 버전"
+    int script_parent FK "보강 원본 버전"
+    str script_status "ok, error, timeout, rejected"
     str outcome "결과"
-    str diff "적용한 코드"
+    str diff "스크립트가 바꾼 코드"
+  }
+  SCRIPT_META["scripts: 스크립트 버전 vN"] {
+    str case_id PK "케이스"
+    int version PK "1, 2, 3 ..."
+    int parent FK "보강 원본 버전"
+    str run_id FK "만든 실행"
+  }
+  REVIEW["reviews.jsonl: 구조 점검 1건"] {
+    str id PK "run_id:review"
+    str run_id FK "실행"
+    str verdict "ok, issues, failed"
+    list issues "critical, warning"
+    str commit "점검 스크립트의 커밋"
   }
   CATALOG_CASE["catalog yml: 케이스"] {
     str id PK "sha1(L2) 10자"
@@ -293,7 +352,7 @@ erDiagram
     str attempt_id FK "최근 시도 id"
     list attempt_ids FK "여러 시도로 고친 경우"
     str error_id FK "에러 id"
-    str resolver_id "누가 고쳤나"
+    str resolver_id "script:case_id:vN"
   }
   CASE_FAILURE["evidence.failures: 실패한 방법"] {
     str attempt_id FK "시도 id"
@@ -307,7 +366,8 @@ erDiagram
   }
   AUDIT["audit.jsonl: 변경 이력"] {
     str case_id FK "케이스"
-    str event "human, status, action"
+    int version FK "스크립트 버전 (event script)"
+    str event "human, status, action, script"
     str who "사람 또는 sbmig"
   }
   QUARANTINE["quarantine.jsonl: 읽지 못한 줄"] {
@@ -320,7 +380,11 @@ erDiagram
   ATTEMPT_REF }o--|| FIX_ATTEMPT : "attempt_id = id"
   ERROR_CASE }o--o{ FIX_ATTEMPT : "resolved_by, resolution_attempts"
   FIX_ATTEMPT }o--o{ ERROR_CASE : "error_ids"
+  FIX_ATTEMPT }o--o| SCRIPT_META : "script_case_id + script_version"
+  ERROR_CASE }o--o| SCRIPT_META : "script_case_id + script_version"
   ERROR_CASE }o--|| CATALOG_CASE : "case_id = id"
+  CATALOG_CASE ||--o{ SCRIPT_META : "id = case_id"
+  REVIEW |o--o{ ERROR_CASE : "run_id (같은 실행)"
   CATALOG_CASE ||--o{ CASE_VARIANT : "variants"
   CATALOG_CASE ||--o{ CASE_FIX : "evidence.fixes"
   CATALOG_CASE ||--o{ CASE_FAILURE : "evidence.failures"
@@ -329,6 +393,7 @@ erDiagram
   CASE_FAILURE }o--|| FIX_ATTEMPT : "attempt_id"
   CASE_EVENT }o--|| ERROR_CASE : "error_id"
   AUDIT }o--|| CATALOG_CASE : "case_id"
+  AUDIT }o--o| SCRIPT_META : "case_id + version"
   QUARANTINE }o--|| ERROR_CASE : "id, line"
   QUARANTINE }o--o| CATALOG_CASE : "signature_generic = L2"
 </pre>
@@ -336,95 +401,76 @@ erDiagram
 </section>
 
 <section id="er-know">
-  <h2>5. 관계도 ② 재사용 지식: 패치 · 레시피 · 인덱스</h2>
-  <p>다음 프로젝트에서 실제로 적용되는 지식과, 그것을 빨리 찾기 위한 인덱스의 관계입니다. 케이스의 <code>action</code>이 레시피나 패치를 가리키면, 케이스가 적중했을 때 그것이 적용됩니다.</p>
+  <h2>5. 관계도 ② 재사용 지식: 케이스 · 스크립트 · 인덱스</h2>
+  <p>다음 프로젝트에서 실제로 다시 실행되는 지식과, 그것을 찾기 위한 인덱스의 관계입니다. 케이스의 <code>action</code>이 <code>script</code>이면 <code>action.script_version</code>이 가리키는 버전이 재사용 1순위입니다. 스크립트 버전은 <code>parent</code>로 자기 자신(같은 케이스의 다른 버전)을 가리켜 보강 계보를 이룹니다.</p>
   <div class="frame diagram">
 <pre class="mermaid">
 erDiagram
-  KB_CASE["cases json: 재생용 패치"] {
-    str id PK "YYYYMMDD-10자"
-    list signatures "L1"
-    list signatures_generic "L2"
-    str symbol "에러 심볼"
-    str recipe_candidate_id FK "여기서 만든 레시피"
-    list changes "재생할 search/replace"
-    list tags "attempt:시도, no-replay"
-  }
-  KB_RECIPE["recipes yml + meta.json: 레시피"] {
-    str id PK "PascalCase 한 단어"
-    str status "candidate, active, rejected"
-    list signatures "L1 / L2"
-    list source_case_ids FK "근거 KB 케이스"
-    int success_count "성공 횟수"
-    int fail_count "실패 횟수"
-  }
-  LEDGER["ledger.jsonl: 클러스터 해결 1건"] {
-    str id PK "sha1 16자"
-    str signature "L1"
-    str signature_generic "L2"
-    str symbol "에러 심볼"
-    str resolution "llm_patch, kb_recipe ..."
-    str case_id FK "KB 케이스"
-    str recipe_id FK "레시피"
-  }
-  SYMBOLS["symbols.json"] {
-    str symbol PK "에러 심볼 = 키"
-    list generic_signatures "L2"
-    list fixes "라벨, 치환, cases, recipe_id"
-  }
-  INDEX["index.json"] {
-    map l1 "L1 -> KB 케이스 id"
-    map l2 "L2 -> KB 케이스 id"
-    map recipes "시그니처 -> 레시피 id"
-  }
-  HINTS["error_hints.json"] {
-    map by_generic "L2 -> 과거 성공, 실패"
-    map by_symbol "에러 심볼 -> 과거 성공, 실패"
-  }
   CATALOG_CASE["catalog yml: 케이스"] {
-    str id PK "sha1(L2) 10자"
+    str id PK "case_id = sha1(L2) 10자"
     str signature_generic UK "L2"
-    obj action "recipe, replace, patch, hint"
-    obj human "사람이 고치는 블록"
+    str status "observed, candidate, active, rejected"
+    obj action "script + script_version, 또는 hint"
+    obj human "사람이 고치는 블록 (pin: script:N)"
+  }
+  SCRIPT_META["scripts/case_id/vN.meta.json: 버전 기록"] {
+    str case_id PK "케이스"
+    int version PK "케이스 안에서 1, 2, 3 ..."
+    int parent FK "보강 원본 버전, 없으면 null"
+    str sha1 "코드 해시: 같은 코드는 한 번만"
+    str run_id FK "만든 실행"
+    str model "쓴 LLM 모델"
+    int successes "성공 횟수"
+    int failures "실패 횟수"
+    list success_projects "고친 프로젝트 이름들"
+    str status "active, retired, quarantined"
+  }
+  SCRIPT_CODE["scripts/case_id/vN.py: 스크립트 코드"] {
+    str fix "def fix(p): 실행한 코드 그대로"
+  }
+  CASE_FIX["evidence.fixes: 버전마다 1줄"] {
+    str method "script"
+    str resolver_id FK "script:case_id:vN"
+    str attempt_id FK "최근 시도 id"
+    int projects "고친 프로젝트 수"
   }
   CAT_INDEX["catalog/index.json"] {
-    map cases "케이스 id -> 파일"
-    map by_l2 "L2 -> 케이스 id"
-    map by_l1 "L1 -> 케이스 id"
-    map by_symbol "심볼 -> 케이스 id들"
+    map cases "케이스 id → 파일"
+    map by_l2 "L2 → 케이스 id"
+    map by_l1 "L1 → 케이스 id"
+    map by_symbol "심볼 → 케이스 id들"
   }
   VIEW_ROW["views/cases.csv, cases.md: 케이스 1줄"] {
     str id FK "case_id"
-    str signature_generic "L2"
-    str file "케이스 yml 경로"
+    str action "script vN, hint"
+    int scripts "저장된 버전 수"
+    str best_script "재사용 1순위 버전과 성적"
   }
-  PATTERN["patterns/*.yml: 사람이 쓴 규칙"] {
-    str id PK "규칙 이름"
-    str signature_regex "L1, L2에 정규식으로 매칭"
-    list recipes "OpenRewrite 레시피 id"
-    list handler_ids "핸들러 id"
+  AUDIT["audit.jsonl: 변경 이력"] {
+    str event "script, human, status, action"
+    str case_id FK "케이스"
+    int version FK "스크립트 버전"
+    str action "created, credited, retired ..."
   }
-  KB_CASE }o--o| KB_RECIPE : "recipe_candidate_id, source_case_ids"
-  LEDGER }o--o| KB_CASE : "case_id"
-  LEDGER }o--o| KB_RECIPE : "recipe_id"
-  SYMBOLS ||--o{ KB_CASE : "fixes.cases"
-  SYMBOLS }o--o{ KB_RECIPE : "fixes.recipe_id"
-  INDEX ||--o{ KB_CASE : "l1, l2"
-  INDEX ||--o{ KB_RECIPE : "recipes"
-  CATALOG_CASE }o--o{ KB_RECIPE : "action.recipe_ids"
-  CATALOG_CASE }o--o{ KB_CASE : "action.patch_case_ids"
+  CATALOG_CASE ||--o{ SCRIPT_META : "id = case_id"
+  SCRIPT_META ||--|| SCRIPT_CODE : "같은 이름 vN"
+  SCRIPT_META |o--o{ SCRIPT_META : "parent = version"
+  CATALOG_CASE ||--o| SCRIPT_META : "action.script_version, human pin"
+  CATALOG_CASE ||--o{ CASE_FIX : "evidence.fixes"
+  CASE_FIX }o--|| SCRIPT_META : "resolver_id"
   CAT_INDEX ||--o{ CATALOG_CASE : "cases, by_l2, by_l1, by_symbol"
-  HINTS }o--o{ CATALOG_CASE : "by_generic = signature_generic"
   CATALOG_CASE ||--|| VIEW_ROW : "id = case_id"
-  PATTERN }o--o{ INDEX : "signature_regex로 L1, L2를 직접 매칭"
+  VIEW_ROW }o--o| SCRIPT_META : "best_script"
+  AUDIT }o--o| SCRIPT_META : "case_id + version"
+  AUDIT }o--o| CATALOG_CASE : "case_id"
 </pre>
   </div>
-  <p class="note">그림 ①과 ②에 <code>kb/</code>의 모든 기록 파일이 들어 있습니다. 키로 다른 파일과 이어지지 않는 운영 파일 <code>.lock</code>(쓰기 잠금), <code>*.jsonl.corrupt</code>(반쯤 쓰인 줄), <code>kb.bak-&lt;시각&gt;/</code>(<code>kb import --replace</code> 전 백업)만 그림에서 뺐습니다. 실행 폴더(<code>out/&lt;run id&gt;/</code>의 <code>journal.jsonl</code>, <code>report.json</code>, <code>plan.json</code>, <code>changes.patch</code> 등)와 플릿 폴더(<code>state.json</code>, <code>summary.*</code>)는 KB가 아니라 이 지도에 넣지 않았습니다. 다만 실행 폴더의 <code>error_cases.jsonl</code>, <code>fix_attempts.jsonl</code>, <code>error_cases.csv</code>는 KB의 같은 이름 파일과 형식이 같습니다.</p>
+  <p class="note">그림 ①과 ②에 <code>kb-v2/</code>의 모든 기록 파일이 들어 있습니다. 키로 다른 파일과 이어지지 않는 운영 파일 <code>.lock</code>(쓰기 잠금), <code>*.jsonl.corrupt</code>(반쯤 쓰인 줄), <code>kb-v2.bak-&lt;시각&gt;/</code>(<code>kb import --replace</code> 전 백업)만 그림에서 뺐습니다. v1에서만 쓰던 파일은 <a href="#v1only">1절 끝 상자</a>에 있습니다. 실행 폴더(<code>out/&lt;run id&gt;/</code>의 <code>journal.jsonl</code>, <code>report.json</code>, <code>plan.json</code>, <code>changes.patch</code> 등)와 플릿 폴더(<code>state.json</code>, <code>summary.*</code>)는 KB가 아니라 이 지도에 넣지 않았습니다. 다만 실행 폴더의 <code>error_cases.jsonl</code>, <code>fix_attempts.jsonl</code>, <code>error_cases.csv</code>는 KB의 같은 이름 파일과 형식이 같습니다.</p>
 </section>
 
 <section id="sig">
   <h2>6. 시그니처 계층: 에러 하나가 여러 키가 되는 과정</h2>
-  <p>같은 에러가 어느 정도로 "같은지"에 따라 키가 셋입니다. 케이스를 찾을 때는 L1 → L2 → 에러 심볼 순서로 맞춰 봅니다.</p>
+  <p>같은 에러가 어느 정도로 "같은지"에 따라 키가 셋입니다. v2는 L2(케이스)로 에러를 묶습니다. 같은 원인이 파일 N개에 있어도 스크립트 하나가 모두 고칩니다. 케이스 파일을 찾을 때는 L1 → L2 → 에러 심볼 순서로 맞춰 봅니다.</p>
   <div class="frame diagram">
 <pre class="mermaid">
 flowchart TD
@@ -432,14 +478,14 @@ flowchart TD
   L1 --> L2["L2 signature_generic: 종류 | 분류 | 핵심 심볼"]
   L2 --> CID["case_id = sha1(L2) 앞 10자"]
   CID --> FILE["catalog/종류/분류/심볼--case_id.yml"]
+  CID --> SDIR["scripts/case_id/v1.py, v2.py ..."]
+  CID --> CL["수정 루프의 묶음 cluster_id = case:case_id"]
+  SDIR --> RES["resolver_id = script:case_id:vN"]
   L1 --> VAR["케이스 variants: 소유 클래스별 L1"]
+  L1 --> IDX1["catalog/index.json by_l1"]
+  L2 --> IDX2["catalog/index.json by_l2"]
   RAW --> SYM["error_symbol (예: clientIp)"]
-  SYM --> SIDX["symbols.json 키"]
-  SYM --> HS["error_hints.json by_symbol"]
-  L2 --> HG["error_hints.json by_generic"]
-  L1 --> IDX1["index.json l1 -> KB 케이스"]
-  L2 --> IDX2["index.json l2 -> KB 케이스"]
-  L2 --> RCP["레시피 meta.signatures -> 레시피 적중"]
+  SYM --> IDX3["catalog/index.json by_symbol"]
 </pre>
   </div>
   <div class="frame">
@@ -447,17 +493,17 @@ flowchart TD
     <thead><tr><th>키</th><th>예시 (같은 에러)</th><th>얼마나 같은가</th></tr></thead>
     <tbody>
       <tr><td>L1</td><td class="ex">compile|cannot_find_symbol|method clientIp(jakarta.servlet.http.HttpServletRequest)|class com.company.legacy.web.LegacyRequestHelper</td><td>메서드 인자와 소유 클래스까지 같은 에러. 케이스 안에서 <code>variants</code>로 나뉨</td></tr>
-      <tr><td>L2</td><td class="ex">compile|cannot_find_symbol|clientIp</td><td>같은 이름이 같은 이유로 없는 에러. <strong>케이스 하나</strong> = L2 하나</td></tr>
-      <tr><td>case_id</td><td class="ex">8bb4fd4a4a</td><td>L2의 짧은 이름(해시). 파일 이름과 CSV에서 씀</td></tr>
+      <tr><td>L2</td><td class="ex">compile|cannot_find_symbol|clientIp</td><td>같은 이름이 같은 이유로 없는 에러. <strong>케이스 하나</strong> = L2 하나 = 스크립트 폴더 하나</td></tr>
+      <tr><td>case_id</td><td class="ex">8bb4fd4a4a</td><td>L2의 짧은 이름(해시). 파일·폴더 이름, 클러스터 id, resolver id, CSV에서 씀</td></tr>
       <tr><td>error_symbol</td><td class="ex">clientIp</td><td>가장 넓은 묶음. 종류가 달라도 같은 심볼이면 모임</td></tr>
     </tbody>
   </table>
   </div>
-  <p class="note">L2 규칙: 패키지 에러는 패키지 이름 전체(<code>javax.xml.bind</code>와 <code>javax.xml.ws</code>는 다른 케이스), 메서드 재정의 오류 등은 메서드·클래스 이름까지, 플러그인 실행 오류는 goal과 원인 문구까지 넣습니다. 프로젝트 경로, 줄 번호, 프로젝트 고유 클래스 이름은 넣지 않습니다.</p>
+  <p class="note">L2 규칙: 패키지 에러는 패키지 이름 전체(<code>javax.xml.bind</code>와 <code>javax.xml.ws</code>는 다른 케이스), 메서드 재정의 오류 등은 메서드·클래스 이름까지, 플러그인 실행 오류는 goal과 원인 문구까지 넣습니다. 프로젝트 경로, 줄 번호, 프로젝트 고유 클래스 이름은 넣지 않습니다. L2가 없는 드문 에러는 수정 루프가 sha1(종류 | 파일 | L1) 앞 10자를 케이스 id로 써서 그 이름으로 스크립트를 저장합니다.</p>
 </section>
 
 <section id="states">
-  <h2>7. 상태 변화: 케이스와 레시피</h2>
+  <h2>7. 상태 변화: 케이스와 스크립트 버전</h2>
   <div class="layers">
     <div class="layer">
       <h3>케이스 (<code>catalog/*.yml</code>의 <code>status</code>)</h3>
@@ -465,35 +511,47 @@ flowchart TD
 <pre class="mermaid">
 stateDiagram-v2
   [*] --> observed : 처음 본 에러
-  observed --> candidate : 다시 쓸 수정이 생김
-  candidate --> active : 서로 다른 프로젝트 2곳 성공, 실패 없음
-  candidate --> observed : 치환 실패가 2회 이상이고 성공보다 많음
+  observed --> candidate : 이 케이스의 스크립트 버전이 성공
+  candidate --> active : 그 버전이 서로 다른 프로젝트 2곳 성공, 실패 없음
+  active --> candidate : 그 버전이 실패
+  candidate --> observed : 검증된 버전이 없어짐 (사람이 retire)
   observed --> rejected : 사람이 reject
   candidate --> rejected : 사람이 reject
   active --> rejected : 사람이 reject
 </pre>
       </div>
-      <p>사람이 <code>human:</code> 블록의 <code>status</code>나 <code>action</code>을 정하면 자동 값보다 우선합니다. 상태가 바뀔 때마다 <code>audit.jsonl</code>에 한 줄이 남습니다.</p>
+      <p>사람이 <code>human:</code> 블록의 <code>status</code>나 <code>action</code>을 정하면 자동 값보다 우선합니다(<code>sbmig kb cases pin &lt;id&gt; --action script:N</code>). 상태가 바뀔 때마다 <code>audit.jsonl</code>에 한 줄이 남습니다. 승격 기준 프로젝트 수는 설정 <code>kb.auto_promote_after_projects</code>(기본 2)입니다.</p>
     </div>
     <div class="layer">
-      <h3>레시피 (<code>recipes/</code> 폴더)</h3>
+      <h3>스크립트 버전 (<code>v&lt;N&gt;.meta.json</code>의 <code>status</code>)</h3>
       <div class="frame diagram">
 <pre class="mermaid">
 stateDiagram-v2
-  [*] --> candidates : 성공한 LLM 수정의 라벨로 컴파일, 또는 레시피 모델이 작성
-  candidates --> active : 서로 다른 프로젝트 2곳 성공
-  candidates --> rejected : 사람이 kb reject
-  active --> rejected : 사람이 kb reject
+  [*] --> active : LLM이 쓴 스크립트를 실행 전에 저장
+  [*] --> quarantined : 코드에 비밀값 → 가려서 저장
+  active --> retired : 사람이 kb scripts retire
+  retired --> active : 사람이 kb scripts activate
 </pre>
       </div>
-      <p>승격 기준 프로젝트 수는 설정 <code>kb.auto_promote_after_projects</code>(기본 2)입니다. 성공·실패 횟수는 레시피의 <code>.meta.json</code>에 쌓입니다.</p>
+      <p><strong>재사용 후보</strong> = active이고 성공이 1번 이상인 버전. 순서: 고친 프로젝트 수 → 성공 − 실패 → 최신 버전. 사람이 고정한 버전은 active이면 맨 앞(성공이 없어도). <strong>retire가 고정보다 우선</strong>하고, quarantined는 절대 선택되지 않으며, 사람이 reject한 케이스는 재사용하지 않습니다. 보강의 바탕(<code>latest</code>)은 가장 최근의 active 버전입니다.</p>
     </div>
   </div>
+  <h3>채점 결과가 스크립트 성적이 되는 규칙 (<code>credit</code>)</h3>
+  <div class="frame"><table>
+    <thead><tr><th>시도 결과 (outcome)</th><th>스크립트 meta에 남는 것</th></tr></thead>
+    <tbody>
+      <tr><td><code>improved</code>, <code>build_ok</code></td><td><code>successes</code> +1, 프로젝트 이름을 <code>success_projects</code>에 추가</td></tr>
+      <tr><td><code>partial</code></td><td><code>partials</code> +1 (진전, 실패로 세지 않음)</td></tr>
+      <tr><td><code>no_change</code>, <code>regressed</code>, <code>reverted</code>, <code>apply_failed</code>, <code>blocked</code></td><td><code>failures</code> +1 (스크립트 오류·시간 초과·코드 검사 거부는 <code>apply_failed</code>)</td></tr>
+      <tr><td><code>inconclusive</code>, <code>pending</code></td><td>그대로 (빌드가 판정하지 못함)</td></tr>
+      <tr><td>모든 경우</td><td><code>last_outcome</code>, <code>last_at</code>, <code>last_run_id</code> 갱신, <code>audit.jsonl</code>에 <code>event: script</code>, <code>action: credited</code> 한 줄</td></tr>
+    </tbody>
+  </table></div>
 </section>
 
 <section id="fields">
   <h2>8. 파일별 필드 사전</h2>
-  <p><span class="k">강조</span>는 다른 파일과 이어지는 키입니다. 모든 레코드에 <code>schema_version</code>(현재 2, 없으면 1 = 2026-10-26 이전)과 <code>agent_version</code>(기록한 sbmig 버전)이 붙습니다.</p>
+  <p><span class="k">강조</span>는 다른 파일과 이어지는 키입니다. errors / fix_attempts 레코드에는 <code>schema_version</code>(v2 = 3, round 10 = 2, 없으면 1)과 <code>agent_version</code>(기록한 sbmig 버전)이 붙습니다. 스크립트 meta와 구조 점검 줄은 <code>schema_version</code> 3입니다.</p>
 
   <details open>
     <summary><span class="path">errors.jsonl</span><span class="chip c-fact">사실 기록</span><span class="what">빌드 에러 1건 = 1줄 (ErrorCaseRecord). 한 빌드에 에러가 N개면 N줄</span></summary>
@@ -515,92 +573,129 @@ stateDiagram-v2
         <tr><td>message</td><td>에러 메시지 첫 줄</td><td class="ex">cannot find symbol</td></tr>
         <tr><td>file / line</td><td>에러가 난 파일과 줄</td><td class="ex">src/main/java/…/ClientIpFilter.java / 24</td></tr>
         <tr><td>symbol / location</td><td>javac의 <code>symbol:</code>, <code>location:</code> 줄</td><td class="ex">method clientIp(…) / class …LegacyRequestHelper</td></tr>
-        <tr><td>module</td><td>Maven 모듈 (artifactId)</td><td class="ex">member-api-comp</td></tr>
+        <tr><td>module</td><td>Maven 모듈 (artifactId)</td><td class="ex">member-api-back</td></tr>
         <tr><td>artifact</td><td>의존성 해석 에러의 g:a[:v]</td><td class="ex">com.example:lib:1.0.0</td></tr>
         <tr><td><span class="k">signature</span></td><td>L1 시그니처 (6절)</td><td class="ex">compile|cannot_find_symbol|method …|class …</td></tr>
         <tr><td><span class="k">signature_generic</span></td><td>L2 시그니처 = 케이스 키</td><td class="ex">compile|cannot_find_symbol|clientIp</td></tr>
         <tr><td><span class="k">error_symbol</span></td><td>프로젝트 간 묶음 키</td><td class="ex">clientIp</td></tr>
         <tr><td>raw</td><td>Maven 로그의 에러 원문 (최대 2,000자)</td><td class="ex">[ERROR] …ClientIpFilter.java:[24,26] cannot find symbol …</td></tr>
-        <tr class="grp"><td colspan="3">실행 안에서의 경과 (빌드 이름 = <code>&lt;단계&gt;-&lt;번호&gt;</code>, 최종 빌드 = <code>verify-final</code>)</td></tr>
-        <tr><td>first_seen / first_phase</td><td>처음 나온 빌드와 단계</td><td class="ex">spring-1 / spring</td></tr>
-        <tr><td>last_seen / builds_present</td><td>마지막으로 보인 빌드, 보인 빌드 수</td><td class="ex">spring-2 / 2</td></tr>
-        <tr><td><span class="k">introduced_by</span></td><td>이 에러가 처음 나오기 직전에 그 파일을 바꾼 시도 id, 또는 <code>step:&lt;plan 단계&gt;</code></td><td class="ex">step:spring.rewrite</td></tr>
+        <tr class="grp"><td colspan="3">실행 안에서의 경과 (빌드 이름: v2의 첫 빌드 = 구조화 뒤 최종 빌드 <code>verify-final</code>, 수정 루프 빌드 <code>verify-2</code>, <code>verify-3</code> …, 루프 뒤 다시 하는 최종 빌드 <code>verify-final-2</code>)</td></tr>
+        <tr><td>first_seen / first_phase</td><td>처음 나온 빌드와 단계</td><td class="ex">verify-final / verify</td></tr>
+        <tr><td>last_seen / builds_present</td><td>마지막으로 보인 빌드, 보인 빌드 수</td><td class="ex">verify-2 / 2</td></tr>
+        <tr><td><span class="k">introduced_by</span></td><td>이 에러가 처음 나오기 직전에 그 파일을 바꾼 시도 id, 또는 <code>step:&lt;plan 단계&gt;</code></td><td class="ex">step:transform.rewrite</td></tr>
         <tr class="grp"><td colspan="3">해결된 경우</td></tr>
         <tr><td>status</td><td>최종 상태 (9절)</td><td class="ex">resolved</td></tr>
-        <tr><td>resolved_at / resolved_phase</td><td>사라진 빌드와 단계</td><td class="ex">spring-3 / spring</td></tr>
-        <tr><td>fix_method</td><td>고친 방법 (9절)</td><td class="ex">llm</td></tr>
-        <tr><td><span class="k">resolver_id</span></td><td>누가 고쳤나 (2절)</td><td class="ex">gpt-6-luna</td></tr>
-        <tr><td><span class="k">resolved_by</span></td><td>해결한 시도 id (<code>fix_attempts.id</code>), 또는 <code>step:&lt;단계 id&gt;</code></td><td class="ex">run-…:spring-2-1</td></tr>
-        <tr><td><span class="k">resolution_attempts</span></td><td>해결에 함께 들어간 시도 id 전부, 실행 순서. 앞 시도가 import를 추가하고 뒤 시도가 호출을 고친 경우 둘 다 들어감</td><td class="ex">["run-…:spring-1-2", "run-…:spring-2-1"]</td></tr>
+        <tr><td>resolved_at / resolved_phase</td><td>사라진 빌드와 단계</td><td class="ex">verify-3 / verify</td></tr>
+        <tr><td>fix_method</td><td>고친 방법 (9절)</td><td class="ex">script_augment</td></tr>
+        <tr><td><span class="k">resolver_id</span></td><td>누가 고쳤나: <code>script:&lt;case_id&gt;:v&lt;N&gt;</code> (2절)</td><td class="ex">script:8bb4fd4a4a:v2</td></tr>
+        <tr><td><span class="k">resolved_by</span></td><td>해결한 시도 id (<code>fix_attempts.id</code>), 또는 <code>step:&lt;단계 id&gt;</code>(예: 구조 점검 스크립트 <code>step:restructure.review</code>)</td><td class="ex">run-…:verify-2-1</td></tr>
+        <tr><td><span class="k">resolution_attempts</span></td><td>해결에 함께 들어간 시도 id 전부, 실행 순서. 다음 시도 전에 되돌린 시도는 들어가지 않음</td><td class="ex">["run-…:verify-2-1"]</td></tr>
+        <tr><td><span class="k">script_case_id</span> / <span class="k">script_version</span></td><td><strong>v2 새로.</strong> 해결한 시도가 돌린 스크립트 → <code>scripts/&lt;script_case_id&gt;/v&lt;script_version&gt;.py</code></td><td class="ex">8bb4fd4a4a / 2</td></tr>
         <tr><td>targeted</td><td>해결한 시도가 이 에러를 직접 겨냥했나</td><td class="ex">true</td></tr>
-        <tr><td>description</td><td>어떻게 해결했나 (해결 시) / 무엇을 시도했나 (미해결 시)</td><td class="ex">LLM gpt-6-luna: rename the call …</td></tr>
+        <tr><td>description</td><td>어떻게 해결했나 (해결 시: 스크립트를 쓴 LLM의 분석, 재사용이면 저장된 버전의 분석) / 무엇을 시도했나 (미해결 시)</td><td class="ex">rename the call clientIp → remoteClientIp in every caller …</td></tr>
         <tr><td>change_kind</td><td>바뀐 코드의 형태. 해결에 들어간 시도 전부를 합쳐 판정 (9절)</td><td class="ex">text_replace</td></tr>
         <tr><td>replace_pairs</td><td>단순 치환이면 바뀐 쌍 <code>[{old, new, count, files}]</code>. 패키지 이름은 패키지 단위로 남음</td><td class="ex">[{"old":"clientIp","new":"remoteClientIp"}]</td></tr>
-        <tr><td>fix_labels</td><td>수정의 종류 라벨 (9절)</td><td class="ex">["method-rename"]</td></tr>
+        <tr><td>fix_labels</td><td>수정의 종류 라벨 (9절, diff에서 계산)</td><td class="ex">["method-rename"]</td></tr>
         <tr><td>diff_excerpt</td><td>이 에러 파일의 해결 diff. 시도마다 한 구역, 에러 줄에 가까운 hunk (구역당 최대 1,500자)</td><td class="ex">@@ -21,7 +21,7 @@ …</td></tr>
-        <tr><td>replace_rule_candidate</td><td>LLM이 순수 텍스트 치환만으로 고침 → 규칙으로 바꿀 후보</td><td class="ex">true</td></tr>
+        <tr><td>replace_rule_candidate</td><td>v1의 LLM 수정이 순수 텍스트 치환일 때만 true. v2 스크립트로 고친 에러는 항상 false</td><td class="ex">false</td></tr>
         <tr class="grp"><td colspan="3">해결되지 않은 경우</td></tr>
-        <tr><td>failure_reason</td><td>왜 못 고쳤나 (마지막 시도의 결과와 이유)</td><td class="ex">llm attempt spring-1-2 no_change: …</td></tr>
+        <tr><td>failure_reason</td><td>왜 못 고쳤나 (마지막 시도의 방법, 결과와 이유)</td><td class="ex">script_augment attempt verify-3-1 no_change: …</td></tr>
         <tr><td>problem_errors</td><td>마지막 시도를 실패하게 만든 에러 <code>"file:line message"</code></td><td class="ex">["…Filter.java:24 cannot find symbol"]</td></tr>
         <tr><td>block_reason / suggestion</td><td>BLOCKED 이유와 사람에게 주는 제안</td><td class="ex">repeated_failure / …</td></tr>
         <tr class="grp"><td colspan="3">시도 이력</td></tr>
-        <tr><td><span class="k">attempts[]</span></td><td>이 에러를 겨냥한 시도의 요약, 순서대로: <code>attempt_id</code>(= 시도 id), <code>phase</code>, <code>iteration</code>, <code>fix_method</code>, <code>resolver_id</code>, <code>outcome</code>, <code>failure</code>, <code>change_kind</code></td><td class="ex">[{"attempt_id":"run-…:spring-1-1","outcome":"apply_failed", …}]</td></tr>
-        <tr><td>attempt_count / llm_attempts</td><td>시도 수 / 그중 LLM 시도 수</td><td class="ex">2 / 2</td></tr>
-        <tr><td>notes</td><td>추적기의 메모 (다시 나타남, 가려짐, 비밀값 가림 <code>redacted: …</code> 등)</td><td class="ex">["resolved by 2 attempts …"]</td></tr>
+        <tr><td><span class="k">attempts[]</span></td><td>이 에러를 겨냥한 시도의 요약, 순서대로: <code>attempt_id</code>(= 시도 id), <code>phase</code>, <code>iteration</code>, <code>fix_method</code>, <code>resolver_id</code>, <code>outcome</code>, <code>failure</code>, <code>change_kind</code>, <span class="k">script_version</span>(v2: 돌린 버전, 0 = 스크립트 없음)</td><td class="ex">[{"attempt_id":"run-…:verify-1-1","fix_method":"script","script_version":1,"outcome":"partial", …}]</td></tr>
+        <tr><td>attempt_count / llm_attempts</td><td>시도 수 / 그중 LLM을 부른 시도 수 (<code>script</code>, <code>script_augment</code>. 재사용 <code>script_reuse</code>는 세지 않음)</td><td class="ex">2 / 2</td></tr>
+        <tr><td>notes</td><td>추적기의 메모 (다시 나타남, 가려짐, 비밀값 가림 <code>redacted: …</code> 등)</td><td class="ex">["resolved by …"]</td></tr>
       </tbody>
     </table></div></div>
   </details>
 
   <details open>
-    <summary><span class="path">fix_attempts.jsonl</span><span class="chip c-fact">사실 기록</span><span class="what">수정 시도 1건 = 1줄 (FixAttemptRecord). 성공·실패 모두, 적용한 코드 포함</span></summary>
+    <summary><span class="path">fix_attempts.jsonl</span><span class="chip c-fact">사실 기록</span><span class="what">수정 시도 1건 = 1줄 (FixAttemptRecord). 성공·실패 모두, 바뀐 코드와 스크립트 실행 로그 포함</span></summary>
     <div class="body"><div class="frame"><table>
       <thead><tr><th>키</th><th>뜻</th><th>예시 / 값</th></tr></thead>
       <tbody>
-        <tr><td><span class="k">id</span></td><td>시도 id <code>&lt;run_id&gt;:&lt;attempt_id&gt;</code></td><td class="ex">run-20261026-104410-78da18:spring-1-1</td></tr>
-        <tr><td>attempt_id</td><td>실행 안의 시도 이름 <code>&lt;단계&gt;-&lt;라운드&gt;-&lt;순번&gt;</code></td><td class="ex">spring-1-1</td></tr>
+        <tr><td><span class="k">id</span></td><td>시도 id <code>&lt;run_id&gt;:&lt;attempt_id&gt;</code></td><td class="ex">run-20261026-104410-78da18:verify-1-1</td></tr>
+        <tr><td>attempt_id</td><td>실행 안의 시도 이름 <code>&lt;단계&gt;-&lt;라운드&gt;-&lt;순번&gt;</code></td><td class="ex">verify-1-1</td></tr>
         <tr><td>at / project / <span class="k">project_fingerprint</span> / <span class="k">run_id</span> / case_type</td><td>errors.jsonl과 같음</td><td class="ex"></td></tr>
-        <tr><td>phase / iteration</td><td>단계와 그 단계의 수정 라운드</td><td class="ex">spring / 1</td></tr>
-        <tr><td><span class="k">cluster_id</span></td><td>이 시도가 다룬 에러 무리</td><td class="ex">compile:5e0f2951</td></tr>
-        <tr><td><span class="k">error_ids[]</span></td><td>이 시도가 겨냥한 에러 기록 id들 (<code>errors.id</code>)</td><td class="ex">["e6852dd17399adbe"]</td></tr>
-        <tr><td>fix_method</td><td>방법 (9절)</td><td class="ex">llm</td></tr>
-        <tr><td><span class="k">resolver_id</span></td><td>누가 (2절)</td><td class="ex">gpt-6-luna</td></tr>
-        <tr><td>model</td><td>LLM 모델 이름 (LLM 시도만)</td><td class="ex">gpt-6-luna</td></tr>
-        <tr><td>outcome</td><td>결과 (9절)</td><td class="ex">apply_failed</td></tr>
-        <tr><td>applied</td><td>코드에 실제로 적용됐나</td><td class="ex">false</td></tr>
-        <tr><td>description</td><td>무엇을 했나 (핸들러 설명 / LLM 분석 / 레시피 / 케이스)</td><td class="ex">LLM gpt-6-luna: …</td></tr>
-        <tr><td>failure</td><td>왜 실패했나 (성공이면 빈 값)</td><td class="ex">…ClientIpFilter.java block 1: search text not found</td></tr>
+        <tr><td>phase / iteration</td><td>단계와 수정 라운드 (v2는 <code>verify</code>)</td><td class="ex">verify / 1</td></tr>
+        <tr><td><span class="k">cluster_id</span></td><td>이 시도가 다룬 케이스 묶음 <code>case:&lt;case_id&gt;</code></td><td class="ex">case:8bb4fd4a4a</td></tr>
+        <tr><td><span class="k">error_ids[]</span></td><td>이 시도가 겨냥한 에러 기록 id들 (<code>errors.id</code>). 같은 케이스의 모든 파일</td><td class="ex">["e6852dd17399adbe", …]</td></tr>
+        <tr><td>fix_method</td><td>방법 (9절): <code>script</code> / <code>script_reuse</code> / <code>script_augment</code></td><td class="ex">script</td></tr>
+        <tr><td><span class="k">resolver_id</span></td><td><code>script:&lt;case_id&gt;:v&lt;N&gt;</code> (2절)</td><td class="ex">script:8bb4fd4a4a:v1</td></tr>
+        <tr><td>model</td><td>스크립트를 쓴 LLM 모델 (새로 / 보강일 때)</td><td class="ex">gpt-6-luna</td></tr>
+        <tr><td>outcome</td><td>결과 (9절)</td><td class="ex">partial</td></tr>
+        <tr><td>applied</td><td>코드에 실제로 적용됐나 (스크립트가 파일을 하나 이상 바꾸고 커밋됨)</td><td class="ex">true</td></tr>
+        <tr><td>description</td><td>LLM의 분석 (스크립트 <code>&lt;analysis&gt;</code>), 재사용이면 저장된 버전의 분석</td><td class="ex">clientIp was renamed …</td></tr>
+        <tr><td>failure</td><td>왜 실패했나 (성공이면 빈 값)</td><td class="ex">script error: FileNotFoundError …</td></tr>
         <tr><td>introduced_errors[]</td><td>이 시도 뒤 고친 파일에 새로 생긴 에러</td><td class="ex">["…:31 incompatible types …"]</td></tr>
         <tr><td>remaining_errors[]</td><td>다시 빌드한 뒤에도 남은 겨냥 에러</td><td class="ex"></td></tr>
-        <tr><td>diff / diff_truncated</td><td>적용한 git diff (적용 못 했으면 LLM 제안). 분류는 자르기 전 전체로 함</td><td class="ex">diff --git a/… b/…</td></tr>
+        <tr><td>diff / diff_truncated</td><td>스크립트가 실제로 바꾼 git diff. 분류는 자르기 전 전체로 함. 스크립트 코드 자체는 <code>scripts/&lt;case_id&gt;/v&lt;N&gt;.py</code></td><td class="ex">diff --git a/… b/…</td></tr>
         <tr><td>change</td><td>diff의 형태: <code>change_kind</code>, <code>replace_pairs[]</code>, <code>file_types[]</code>, <code>files[]</code>, <code>lines_added</code>, <code>lines_removed</code></td><td class="ex">{"change_kind":"text_replace", …}</td></tr>
         <tr><td>fix_labels / replacement</td><td>수정 라벨과 "옛 → 새" 요약</td><td class="ex">["method-rename"] / LegacyRequestHelper.clientIp → remoteClientIp</td></tr>
-        <tr><td>llm_calls / input_tokens / output_tokens</td><td>이 시도의 LLM 호출 수와 토큰</td><td class="ex">2 / 5120 / 830</td></tr>
+        <tr><td>llm_calls / input_tokens / output_tokens</td><td>이 시도의 LLM 호출 수와 토큰 (재사용은 0)</td><td class="ex">1 / 5120 / 830</td></tr>
         <tr><td>advisory_ids[]</td><td>프롬프트에 넣은 라이브러리 지침</td><td class="ex">["jdk-generified-apis"]</td></tr>
-        <tr><td>notes</td><td>채점 메모 (<code>partial: …</code>, <code>inconclusive: …</code>, <code>resolver: case-replace:…</code> 등)</td><td class="ex"></td></tr>
+        <tr><td>notes</td><td>채점·루프 메모 (<code>partial: …</code>, <code>inconclusive: …</code>, <code>rolled back before …</code>(다음 시도 전에 되돌림), 많은 파일을 바꾼 경고 등)</td><td class="ex"></td></tr>
+        <tr class="grp"><td colspan="3">v2 스크립트 필드</td></tr>
+        <tr><td>script_mode</td><td>스크립트를 얻은 방식 (9절)</td><td class="ex">new</td></tr>
+        <tr><td><span class="k">script_case_id</span></td><td>돌린 스크립트의 케이스 = 폴더 이름</td><td class="ex">8bb4fd4a4a</td></tr>
+        <tr><td><span class="k">script_version</span></td><td>돌린 버전 (0 = 저장되지 않은 스크립트)</td><td class="ex">1</td></tr>
+        <tr><td><span class="k">script_parent</span></td><td>보강했다면 그 원본 버전, 아니면 null</td><td class="ex">null</td></tr>
+        <tr><td>script_status</td><td>스크립트 실행 결과 (9절)</td><td class="ex">ok</td></tr>
+        <tr><td>script_error</td><td>예외 · 거부 · 시간 초과의 내용 (ok면 빈 값)</td><td class="ex"></td></tr>
+        <tr><td>script_log[]</td><td>스크립트의 <code>p.log</code> / <code>print</code> 줄 (최대 50줄)</td><td class="ex">["src/…/ClientIpFilter.java: clientIp → remoteClientIp"]</td></tr>
       </tbody>
     </table></div></div>
   </details>
 
   <details open>
-    <summary><span class="path">ledger.jsonl</span><span class="chip c-fact">사실 기록</span><span class="what">에러 묶음(클러스터) 1건이 어떻게 끝났나 = 1줄 (ResolutionRecord). 플릿 학습 보고서의 원본</span></summary>
+    <summary><span class="path">reviews.jsonl</span><span class="chip c-fact">사실 기록</span><span class="what">구조 점검 1건 = 1줄 (StructureReview). v2 새로. 실행마다, 구조화 뒤 첫 빌드 전</span></summary>
     <div class="body"><div class="frame"><table>
       <thead><tr><th>키</th><th>뜻</th><th>예시 / 값</th></tr></thead>
       <tbody>
-        <tr><td>id</td><td>sha1(run_id, 단계, 시도, 클러스터, 결과) 앞 16자</td><td class="ex">6aed599178c7abbb</td></tr>
-        <tr><td>at / project / <span class="k">project_fingerprint</span> / <span class="k">run_id</span> / case_type / phase</td><td>errors.jsonl과 같음</td><td class="ex"></td></tr>
-        <tr><td><span class="k">signature</span> / <span class="k">signature_generic</span></td><td>클러스터 첫 에러의 L1 / L2</td><td class="ex">compile|cannot_find_symbol|clientIp</td></tr>
-        <tr><td>error_kind</td><td>에러 종류</td><td class="ex">compile</td></tr>
-        <tr><td><span class="k">symbol</span></td><td>에러 심볼 (= errors의 error_symbol)</td><td class="ex">clientIp</td></tr>
-        <tr><td>resolution</td><td>어떻게 끝났나 (9절)</td><td class="ex">llm_patch</td></tr>
-        <tr><td><span class="k">resolver_id</span></td><td>핸들러 id / 레시피 id / KB 케이스 id / BLOCK 이유</td><td class="ex">gpt-6-luna</td></tr>
-        <tr><td>fix_labels / replacement</td><td>수정 라벨 / "옛 → 새"</td><td class="ex"></td></tr>
-        <tr><td>outcome</td><td>improved / build_ok / blocked / unresolved</td><td class="ex">improved</td></tr>
-        <tr><td>files[]</td><td>바뀐 파일 이름 (경로 없이)</td><td class="ex">["ClientIpFilter.java"]</td></tr>
-        <tr><td><span class="k">case_id</span></td><td>만들었거나 재사용한 <strong>KB 케이스 id</strong> (카탈로그 case_id와 다름에 주의)</td><td class="ex">20261026-cadcc69bb2</td></tr>
-        <tr><td><span class="k">recipe_id</span></td><td>사용했거나 만든 레시피 id</td><td class="ex">LegacyRequestHelperClientIpToRemoteClientIp</td></tr>
-        <tr><td>model / notes</td><td>LLM 모델 / 메모</td><td class="ex"></td></tr>
+        <tr><td><span class="k">id</span></td><td>점검 id <code>&lt;run_id&gt;:review</code>. 같은 id는 한 번만 기록</td><td class="ex">run-20261026-104410-78da18:review</td></tr>
+        <tr><td>schema_version / at</td><td>형식 버전(3) / 기록 시각 (UTC)</td><td class="ex">3 / 2026-10-26T01:40:03Z</td></tr>
+        <tr><td><span class="k">run_id</span> / project / case_type</td><td>실행, 프로젝트 이름, 프로젝트 유형</td><td class="ex">run-… / member-api / spring_boot</td></tr>
+        <tr><td>model</td><td>점검한 LLM 모델</td><td class="ex">gpt-6-luna</td></tr>
+        <tr><td>verdict</td><td>판정 (9절). <code>skipped</code>(점검 꺼짐, dry run)는 기록하지 않음</td><td class="ex">issues</td></tr>
+        <tr><td>issues[]</td><td>지적 사항: <code>severity</code>(critical / warning), <code>file</code>(pom · 모듈 경로, 빈 값 = 프로젝트 전체), <code>problem</code>, <code>fix_hint</code>. sbmig가 직접 넣은 지적은 <code>(sbmig check)</code>로 시작 (예: 한글 소스 인코딩 미설정)</td><td class="ex">[{"severity":"critical","file":"member-api-back/pom.xml","problem":"(sbmig check) sources are MS949 …"}]</td></tr>
+        <tr><td>analysis</td><td>LLM의 전체 의견 (<code>report.language: ko</code>면 한국어)</td><td class="ex"></td></tr>
+        <tr><td>script</td><td>심각한 문제를 고친 스크립트 코드 (없으면 빈 값). <code>scripts/</code>에는 저장하지 않고 이 줄에만 남음</td><td class="ex">def fix(p): …</td></tr>
+        <tr><td>script_result</td><td>그 스크립트의 실행 결과: <code>status</code>, <code>changed_files[]</code>, <code>log[]</code>, <code>error</code>, <code>problems[]</code>, <code>duration_s</code></td><td class="ex">{"status":"ok","changed_files":["pom.xml"], …}</td></tr>
+        <tr><td>commit</td><td>스크립트 변경을 담은 커밋 (<code>review: fix critical structure issues (n)</code>). 되돌릴 수 있게 따로 커밋</td><td class="ex">3f1c9a0…</td></tr>
+        <tr><td>reverted</td><td>스크립트 변경을 되돌렸나 (스크립트 실패, 소스(<code>.java</code>, <code>.jsp</code> 등)를 건드림, pom을 깨뜨림)</td><td class="ex">false</td></tr>
+        <tr><td>llm_usage</td><td>점검의 LLM 사용량: <code>model</code>, <code>calls</code>(최대 2), <code>input_tokens</code>, <code>output_tokens</code></td><td class="ex">{"calls":1, …}</td></tr>
+        <tr><td>note</td><td>왜 실패했나 / 스크립트가 어떻게 됐나</td><td class="ex"></td></tr>
       </tbody>
-    </table></div></div>
+    </table></div>
+    <p>문장(지적, 분석, 메모, 스크립트, 로그)은 비밀값을 가리고 홈 폴더를 <code>~</code>로 바꿔 저장합니다. 리포트의 "구조 점검" 절과 Handover, 마지막 결과 줄(<code>SBMIG-RESULT … review=issues</code>)에도 같은 판정이 나옵니다.</p></div>
+  </details>
+
+  <details open>
+    <summary><span class="path">scripts/&lt;case_id&gt;/v&lt;N&gt;.py + v&lt;N&gt;.meta.json</span><span class="chip c-know">재사용 지식</span><span class="what">케이스별 수정 스크립트 버전과 그 기록 (ScriptMeta). v2 새로</span></summary>
+    <div class="body">
+    <p><code>v&lt;N&gt;.py</code>는 실제로 실행한 코드 그대로입니다(UTF-8, <code>def fix(p)</code>). 같은 코드는 한 번만 저장하고, 번호는 다시 쓰지 않습니다. 코드에 비밀값이 있으면 가려서 저장하고 <code>quarantined</code>로 둡니다(가린 코드는 실행한 코드가 아니므로 절대 선택하지 않음).</p>
+    <div class="frame"><table>
+      <thead><tr><th>키 (v&lt;N&gt;.meta.json)</th><th>뜻</th><th>예시 / 값</th></tr></thead>
+      <tbody>
+        <tr><td><span class="k">case_id</span></td><td>케이스 = 폴더 이름</td><td class="ex">8bb4fd4a4a</td></tr>
+        <tr><td><span class="k">signature_generic</span></td><td>그 케이스의 L2</td><td class="ex">compile|cannot_find_symbol|clientIp</td></tr>
+        <tr><td><span class="k">version</span></td><td>버전 번호 = 파일 이름의 N</td><td class="ex">2</td></tr>
+        <tr><td><span class="k">parent</span></td><td>보강한 원본 버전 (처음부터 쓴 버전은 null)</td><td class="ex">1</td></tr>
+        <tr><td>schema_version / sha1</td><td>형식 버전(3) / <code>.py</code> 파일의 sha1 (같은 코드 판별, <code>kb scripts validate</code>가 대조)</td><td class="ex">3 / 9c1e…</td></tr>
+        <tr><td>created_at</td><td>저장한 시각 (UTC). 실행 전에 저장</td><td class="ex">2026-10-26T01:52:40Z</td></tr>
+        <tr><td><span class="k">run_id</span> / project / model</td><td>만든 실행, 프로젝트 이름, LLM 모델</td><td class="ex">run-… / member-api / gpt-6-luna</td></tr>
+        <tr><td>source</td><td>누가 만들었나: <code>llm</code> (v2 수정 루프가 쓰는 값) / <code>human</code> / <code>review</code></td><td class="ex">llm</td></tr>
+        <tr><td>analysis</td><td>LLM의 <code>&lt;analysis&gt;</code> (비밀값 가림)</td><td class="ex">clientIp was renamed to remoteClientIp …</td></tr>
+        <tr class="grp"><td colspan="3">성적 (7절 표의 규칙으로 쌓임)</td></tr>
+        <tr><td>successes / failures / partials</td><td>이 버전을 돌린 시도의 성공 / 실패 / 일부 해결 수</td><td class="ex">3 / 0 / 1</td></tr>
+        <tr><td>success_projects[]</td><td>이 버전이 고친 프로젝트 <strong>이름</strong>들 (재사용 순서와 승격의 기준)</td><td class="ex">["member-api", "order-api"]</td></tr>
+        <tr><td>last_outcome / last_at / <span class="k">last_run_id</span></td><td>마지막으로 돌린 결과, 시각, 실행</td><td class="ex">improved / … / run-…</td></tr>
+        <tr><td>status</td><td><code>active</code> / <code>retired</code>(사람이 폐기) / <code>quarantined</code>(비밀값) (9절)</td><td class="ex">active</td></tr>
+        <tr><td>notes[]</td><td>메모: 폐기·복구한 사람과 시각, 가져온 버전(<code>imported (v3 there)</code>), 원본이 없는 parent 등</td><td class="ex"></td></tr>
+      </tbody>
+    </table></div>
+    <p>명령: <code>sbmig kb scripts list [--case ID] [--status S]</code>, <code>show &lt;case_id&gt; [--version N]</code>(기록, 계보, 분석, 코드), <code>retire &lt;case_id&gt; &lt;N&gt;</code>, <code>activate &lt;case_id&gt; &lt;N&gt;</code>, <code>validate</code>(meta · 코드 · sha1 · parent 점검). <code>kb export</code> / <code>import</code>는 <code>scripts/</code>와 <code>reviews.jsonl</code>도 옮기고, 가져올 때 같은 코드(sha1)는 성적을 합치고 새 코드는 다음 번호로 붙입니다(parent도 새 번호로 바꿈).</p></div>
   </details>
 
   <details open>
@@ -612,94 +707,44 @@ stateDiagram-v2
         <tr><td><span class="k">signature_generic</span></td><td>이 케이스의 L2</td><td class="ex">compile|cannot_find_symbol|clientIp</td></tr>
         <tr class="grp"><td colspan="3">human: 사람이 고치는 블록 (자동 값보다 항상 우선, 자동 갱신이 덮어쓰지 않음)</td></tr>
         <tr><td>human.name</td><td>사람이 붙인 이름</td><td class="ex">null</td></tr>
-        <tr><td>human.status</td><td>상태를 사람이 고정 (예: rejected)</td><td class="ex">null</td></tr>
-        <tr><td>human.action</td><td>적용할 동작을 사람이 고정 (<code>kb cases pin</code>). 수정 루프가 그대로 따름</td><td class="ex">{kind: handler, handler_id: …}</td></tr>
+        <tr><td>human.status</td><td>상태를 사람이 고정 (예: <code>rejected</code> → 이 케이스의 스크립트를 재사용하지 않음)</td><td class="ex">null</td></tr>
+        <tr><td>human.action</td><td>재사용할 버전을 사람이 고정 (<code>kb cases pin &lt;id&gt; --action script:N</code>). 저장된, 가리지 않은 버전만 고정 가능. 그 버전을 retire하면 고정은 무시됨</td><td class="ex">{kind: script, script_version: 2}</td></tr>
         <tr><td>human.hints / human.notes</td><td>LLM에 줄 힌트 / 메모</td><td class="ex"></td></tr>
-        <tr class="grp"><td colspan="3">자동 계산 부분 (실행할 때마다, <code>kb reindex</code> 때 errors.jsonl에서 다시 계산)</td></tr>
+        <tr class="grp"><td colspan="3">자동 계산 부분 (실행할 때마다, <code>kb reindex</code> 때 errors.jsonl · fix_attempts.jsonl · scripts/에서 다시 계산)</td></tr>
         <tr><td>name</td><td>자동 이름 "소유 클래스.심볼 — 에러"</td><td class="ex">LegacyRequestHelper.clientIp — cannot find symbol</td></tr>
         <tr><td>status</td><td>케이스 상태 (7절, 9절)</td><td class="ex">candidate</td></tr>
-        <tr><td>action.kind</td><td>적중했을 때 하는 일 (9절)</td><td class="ex">recipe</td></tr>
-        <tr><td><span class="k">action.recipe_ids[]</span></td><td>실행할 KB 레시피 id</td><td class="ex">["LegacyRequestHelperClientIpToRemoteClientIp"]</td></tr>
-        <tr><td>action.replace_pairs[] / replace_scope</td><td>학습된 텍스트 치환 쌍 / 범위(에러 줄 + import 줄, 또는 파일 전체)</td><td class="ex">[{old: clientIp, new: remoteClientIp}] / error-lines</td></tr>
-        <tr><td><span class="k">action.patch_case_ids[]</span></td><td>재생할 KB 케이스 id</td><td class="ex"></td></tr>
-        <tr><td>action.handler_id / block_reason / suggestion</td><td>사람이 고정한 핸들러 / 막는 이유와 제안</td><td class="ex"></td></tr>
-        <tr><td>hints[]</td><td>LLM 프롬프트에 들어가는 힌트 (가장 좋은 수정, 가장 잦은 실패)</td><td class="ex">past runs: fixed by llm … / past failure ×2 …</td></tr>
+        <tr><td>action.kind</td><td>적중했을 때 하는 일 (9절). v2는 <code>script</code> 또는 <code>hint</code></td><td class="ex">script</td></tr>
+        <tr><td><span class="k">action.script_version</span></td><td>재사용 1순위 버전 (7절의 순서)</td><td class="ex">2</td></tr>
+        <tr><td>hints[]</td><td>LLM 프롬프트에 들어가는 힌트. 맨 앞은 가장 좋은 스크립트(버전, 성적, 분석), 그다음 가장 좋은 수정과 가장 잦은 실패</td><td class="ex">stored fix script v2 fixed it in 2 project(s) …</td></tr>
         <tr><td>error_kind / error_class / <span class="k">symbol</span></td><td>L2의 세 부분</td><td class="ex">compile / cannot_find_symbol / clientIp</td></tr>
         <tr><td>variants[]</td><td>소유 클래스별 변형: <code>owner</code>, <span class="k">signature</span>(L1), <code>seen</code>, <code>projects</code></td><td class="ex">[{owner: com.company…LegacyRequestHelper, …}]</td></tr>
-        <tr><td>evidence.seen / projects / runs</td><td>본 에러 기록 수 / 프로젝트 수 / 실행 수</td><td class="ex">2 / 1 / 1</td></tr>
+        <tr><td>evidence.seen / projects / runs</td><td>본 에러 기록 수 / 프로젝트 수 / 실행 수</td><td class="ex">4 / 2 / 2</td></tr>
         <tr><td>evidence.first_at / last_at</td><td>처음 / 마지막 본 시각</td><td class="ex"></td></tr>
-        <tr><td>evidence.by_status / resolved_by</td><td>상태별 수 / 방법별 해결 수</td><td class="ex">{resolved: 1, blocked: 1} / {llm: 1}</td></tr>
-        <tr><td>evidence.fixes[]</td><td>성공한 방법 상위 5개: <code>method</code>, <code>resolver_id</code>, <code>change_kind</code>, <code>replace_pairs</code>, <code>description</code>, <span class="k">attempt_id</span>, <span class="k">attempt_ids</span>, <span class="k">error_id</span>, <code>project</code>, <code>at</code>, <code>count</code>, <code>projects</code></td><td class="ex"></td></tr>
-        <tr><td>evidence.failures[]</td><td>실패한 방법 상위 5개: <code>method</code>, <code>outcome</code>, <code>failure</code>, <span class="k">attempt_id</span>, <code>project</code>, <code>count</code>, <code>projects</code></td><td class="ex"></td></tr>
-        <tr><td>evidence.timeline[]</td><td>최근 20건, 오래된 순: <code>at</code>, <code>project</code>, <span class="k">run_id</span>, <span class="k">error_id</span>, <code>file</code>, <code>status</code>, <code>fix_method</code>, <code>attempts</code>("방법:결과" 순서), <span class="k">resolved_by</span></td><td class="ex">llm:apply_failed → llm:improved</td></tr>
-        <tr><td>evidence.action_successes / action_failures / action_projects</td><td>이 케이스의 학습 치환이 직접 성공·실패한 횟수와 성공한 프로젝트들 (승격 판단)</td><td class="ex">0 / 0 / []</td></tr>
+        <tr><td>evidence.by_status / resolved_by</td><td>상태별 수 / 방법별 해결 수</td><td class="ex">{resolved: 4} / {script_augment: 2, script_reuse: 2}</td></tr>
+        <tr><td>evidence.fixes[]</td><td>성공한 방법 상위 5개. 스크립트는 <strong>버전마다 1줄</strong>(새로 · 재사용 · 보강 모두 method <code>script</code>): <code>method</code>, <span class="k">resolver_id</span>(<code>script:…:vN</code>), <code>change_kind</code>, <code>description</code>, <span class="k">attempt_id</span>, <span class="k">attempt_ids</span>, <span class="k">error_id</span>, <code>project</code>, <code>at</code>, <code>count</code>, <code>projects</code></td><td class="ex"></td></tr>
+        <tr><td>evidence.failures[]</td><td>실패한 방법 상위 5개 (방법별): <code>method</code>, <code>outcome</code>, <code>failure</code>, <span class="k">attempt_id</span>, <code>project</code>, <code>count</code>, <code>projects</code></td><td class="ex"></td></tr>
+        <tr><td>evidence.timeline[]</td><td>최근 20건, 오래된 순: <code>at</code>, <code>project</code>, <span class="k">run_id</span>, <span class="k">error_id</span>, <code>file</code>, <code>status</code>, <code>fix_method</code>, <code>attempts</code>("방법 버전:결과" 순서), <span class="k">resolved_by</span></td><td class="ex">script v1:partial → script_augment v2:improved</td></tr>
         <tr><td>updated_at</td><td>마지막으로 다시 계산한 시각</td><td class="ex"></td></tr>
+        <tr class="grp"><td colspan="3">v1 전용 (v1 설정을 켤 때만 채워짐)</td></tr>
+        <tr><td>action.recipe_ids[] / replace_pairs[] / replace_scope / patch_case_ids[]</td><td>v1 동작 <code>recipe</code> · <code>replace</code> · <code>patch</code>의 대상 (KB 레시피, 학습 치환, 재생 패치)</td><td class="ex"></td></tr>
+        <tr><td>evidence.action_successes / action_failures / action_projects</td><td>v1 학습 치환의 직접 성적</td><td class="ex">0 / 0 / []</td></tr>
       </tbody>
     </table></div></div>
   </details>
 
   <details open>
-    <summary><span class="path">recipes/&lt;상태&gt;/&lt;레시피 id&gt;.yml + .meta.json</span><span class="chip c-know">재사용 지식</span><span class="what">OpenRewrite 레시피 (KBRecipe). yml = 레시피 본문, meta = 근거와 성적</span></summary>
-    <div class="body"><div class="frame"><table>
-      <thead><tr><th>키 (.meta.json)</th><th>뜻</th><th>예시 / 값</th></tr></thead>
-      <tbody>
-        <tr><td><span class="k">id</span></td><td>레시피 이름 = yml의 <code>name</code> = 파일 이름</td><td class="ex">LegacyRequestHelperClientIpToRemoteClientIp</td></tr>
-        <tr><td>status / path</td><td>candidate / active / rejected, yml 위치</td><td class="ex">candidate</td></tr>
-        <tr><td>description</td><td>무엇을 바꾸는지, 어디서 왔는지</td><td class="ex">method-rename: … Compiled from KB case 20261026-cadcc69bb2 labels (no LLM) …</td></tr>
-        <tr><td><span class="k">signatures[]</span></td><td>이 레시피가 적중하는 L1 / L2</td><td class="ex">["compile|cannot_find_symbol|clientIp", …]</td></tr>
-        <tr><td><span class="k">source_case_ids[]</span></td><td>근거가 된 KB 케이스 id</td><td class="ex">["20261026-cadcc69bb2"]</td></tr>
-        <tr><td>created_at / promoted_at</td><td>만든 시각 / active가 된 시각</td><td class="ex"></td></tr>
-        <tr><td>success_count / fail_count / projects[]</td><td>적용 성적과 성공한 프로젝트 (승격 판단)</td><td class="ex">0 / 1 / []</td></tr>
-      </tbody>
-    </table></div>
-    <p>yml 본문은 OpenRewrite 선언형 레시피입니다(<code>type</code>, <code>name</code>, <code>displayName</code>, <code>description</code>, <code>recipeList</code>). <code>recipeList</code>에는 허용된 기본 레시피(<code>ChangeMethodName</code>, <code>ChangeType</code>, <code>AddDependency</code> 등)만 들어갑니다.</p></div>
-  </details>
-
-  <details open>
-    <summary><span class="path">cases/YYYY-MM/&lt;KB 케이스 id&gt;.json</span><span class="chip c-know">재사용 지식</span><span class="what">재생할 수 있는 LLM 패치 (KBCase). 같은 코드가 다시 나오면 LLM 없이 다시 적용</span></summary>
-    <div class="body"><div class="frame"><table>
-      <thead><tr><th>키</th><th>뜻</th><th>예시 / 값</th></tr></thead>
-      <tbody>
-        <tr><td><span class="k">id</span></td><td>KB 케이스 id <code>YYYYMMDD-&lt;10자&gt;</code></td><td class="ex">20261026-cadcc69bb2</td></tr>
-        <tr><td>created_at / project / <span class="k">project_fingerprint</span></td><td>만든 시각과 프로젝트</td><td class="ex"></td></tr>
-        <tr><td><span class="k">symbol</span> / symbol_owner</td><td>에러 심볼 / 그 심볼을 가진 클래스 FQCN (메서드 이름 변경 레시피에 필요)</td><td class="ex">clientIp / com.company.legacy.web.LegacyRequestHelper</td></tr>
-        <tr><td>fix_labels / replacement</td><td>수정 라벨 / "옛 → 새"</td><td class="ex">["method-rename"] / LegacyRequestHelper.clientIp → remoteClientIp</td></tr>
-        <tr><td>case_type / phase / error_kind</td><td>프로젝트 유형 / 단계 / 에러 종류</td><td class="ex"></td></tr>
-        <tr><td><span class="k">signatures[]</span> / <span class="k">signatures_generic[]</span></td><td>L1 / L2 목록</td><td class="ex"></td></tr>
-        <tr><td>errors[]</td><td>당시 에러들 (kind, message, file, line, symbol, location, module, signature …)</td><td class="ex"></td></tr>
-        <tr><td>fix_kind</td><td>llm_patch / handler / recipe / manual</td><td class="ex">llm_patch</td></tr>
-        <tr><td>changes[]</td><td>재생할 편집: <code>path</code>, <code>op</code>(modify / create / delete / rename), <code>search</code>, <code>replace</code>, <code>content</code>, <code>new_path</code>. 변경 전 코드(<code>search</code>)가 글자 그대로 있을 때만 재생</td><td class="ex"></td></tr>
-        <tr><td>summary / outcome / model</td><td>요약 / 당시 결과 / LLM 모델</td><td class="ex"></td></tr>
-        <tr><td>reuse_count / reuse_projects[]</td><td>재생된 횟수와 프로젝트</td><td class="ex">0</td></tr>
-        <tr><td><span class="k">recipe_candidate_id</span></td><td>이 케이스에서 만든 레시피 id</td><td class="ex">LegacyRequestHelperClientIpToRemoteClientIp</td></tr>
-        <tr><td><span class="k">tags[]</span></td><td><code>attempt:&lt;attempt_id&gt;</code>(이 패치를 만든 시도), <code>no-replay:redacted</code>(비밀값이 섞여 재생 안 함)</td><td class="ex">["attempt:spring-2-1"]</td></tr>
-      </tbody>
-    </table></div></div>
-  </details>
-
-  <details open>
-    <summary><span class="path">파생 인덱스: index.json · symbols.json · error_hints.json · catalog/index.json · views/</span><span class="chip c-derived">파생 인덱스</span><span class="what">검색용 사본. <code>sbmig kb reindex</code>로 다시 만듦</span></summary>
+    <summary><span class="path">파생 인덱스: catalog/index.json · views/</span><span class="chip c-derived">파생 인덱스</span><span class="what">검색용 사본. <code>sbmig kb reindex</code>로 다시 만듦</span></summary>
     <div class="body"><div class="frame"><table>
       <thead><tr><th>파일 · 키</th><th>뜻</th><th>값 모양</th></tr></thead>
       <tbody>
-        <tr class="grp"><td colspan="3">index.json (KB 케이스와 레시피 찾기)</td></tr>
-        <tr><td><span class="k">l1</span> / <span class="k">l2</span></td><td>L1 / L2 → KB 케이스 id 목록</td><td class="ex">{"compile|cannot_find_symbol|clientIp": ["20261026-cadcc69bb2"]}</td></tr>
-        <tr><td><span class="k">recipes</span></td><td>시그니처 → 레시피 id 목록</td><td class="ex">{"compile|…|clientIp": ["LegacyRequest…"]}</td></tr>
-        <tr><td>version / updated_at</td><td>형식 버전 / 갱신 시각</td><td class="ex">1</td></tr>
-        <tr class="grp"><td colspan="3">symbols.json (에러 심볼별로 고친 방법 묶음)</td></tr>
-        <tr><td><span class="k">&lt;심볼&gt;</span></td><td>최상위 키 = 에러 심볼</td><td class="ex">"clientIp": {…}</td></tr>
-        <tr><td>error_kind / <span class="k">generic_signatures[]</span></td><td>에러 종류 / 이 심볼이 나온 L2</td><td class="ex"></td></tr>
-        <tr><td>fixes[]</td><td><code>labels</code>, <code>replacement</code>, <code>projects</code>, <code>project_keys</code>(지문), <span class="k">cases</span>(KB 케이스 id), <span class="k">recipe_id</span></td><td class="ex">[{"labels":["method-rename"], "cases":["20261026-…"], …}]</td></tr>
-        <tr class="grp"><td colspan="3">error_hints.json (LLM 프롬프트 힌트: 과거 성공과 실패)</td></tr>
-        <tr><td><span class="k">by_generic</span> / <span class="k">by_symbol</span></td><td>L2 / 에러 심볼 → 항목</td><td class="ex"></td></tr>
-        <tr><td>항목.seen / projects / resolved / unresolved / blocked</td><td>본 수 / 프로젝트 지문들 / 방법별 해결 수 / 미해결 수 / BLOCKED 수</td><td class="ex"></td></tr>
-        <tr><td>항목.fixes[] / failures[]</td><td>상위 3개 성공(<code>method</code>, <code>resolver</code>, <code>change_kind</code>, <code>description</code>, <code>replace_pairs</code>, <code>count</code>, <code>projects</code>) / 실패(<code>method</code>, <code>outcome</code>, <code>failure</code>, <code>count</code>). 프로젝트 수가 많은 순</td><td class="ex"></td></tr>
-        <tr><td>항목.variants</td><td>위 순위의 근거 목록 (키당 최대 25개)</td><td class="ex"></td></tr>
         <tr class="grp"><td colspan="3">catalog/index.json (케이스 찾기, 적중 순서 L1 → L2 → 심볼)</td></tr>
         <tr><td><span class="k">cases</span></td><td>케이스 id → yml 파일 경로</td><td class="ex">{"8bb4fd4a4a": "compile/cannot_find_symbol/clientIp--8bb4fd4a4a.yml"}</td></tr>
         <tr><td><span class="k">by_l2</span> / <span class="k">by_l1</span> / <span class="k">by_symbol</span></td><td>L2 / L1 → 케이스 id, 심볼 → 케이스 id 목록</td><td class="ex"></td></tr>
         <tr class="grp"><td colspan="3">views/cases.md, views/cases.csv (사람이 보는 표, 엑셀용)</td></tr>
-        <tr><td>열</td><td><code>id, name, status, action, seen, projects, resolved_by, latest_fix, top_failure, runs, first_at, last_at, error_kind, error_class, symbol, signature_generic, human, file</code></td><td class="ex"></td></tr>
+        <tr><td>열</td><td><code>id, name, status, action, seen, projects, resolved_by, latest_fix, top_failure, runs, first_at, last_at, error_kind, error_class, symbol, signature_generic, human, file, scripts, best_script</code></td><td class="ex"></td></tr>
+        <tr><td>scripts</td><td>v2 새로. 저장된 스크립트 버전 수</td><td class="ex">3</td></tr>
+        <tr><td>best_script</td><td>v2 새로. 재사용 1순위 버전과 성적. <code>*</code> = 사람이 고정한 버전. reject한 케이스는 빈 값</td><td class="ex">v2* (3 ok / 0 failed, 2 project(s))</td></tr>
+        <tr><td>action</td><td>케이스 동작 한 줄 (<code>script v2</code>, <code>hint</code>; <code>*</code> = 사람이 고정)</td><td class="ex">script v2*</td></tr>
       </tbody>
     </table></div></div>
   </details>
@@ -709,21 +754,25 @@ stateDiagram-v2
     <div class="body"><div class="frame"><table>
       <thead><tr><th>파일 · 키</th><th>뜻</th><th>예시 / 값</th></tr></thead>
       <tbody>
-        <tr class="grp"><td colspan="3">audit.jsonl (케이스 변경 1건 = 1줄)</td></tr>
+        <tr class="grp"><td colspan="3">audit.jsonl (변경 1건 = 1줄)</td></tr>
         <tr><td>at / schema_version / agent_version</td><td>시각과 버전</td><td class="ex"></td></tr>
-        <tr><td>event</td><td><code>human</code>(사람이 kb cases 명령이나 yml로 수정) / <code>status</code> · <code>action</code>(자동 변화)</td><td class="ex">status</td></tr>
+        <tr><td>event</td><td><code>human</code>(사람이 kb cases 명령이나 yml로 수정) / <code>status</code> · <code>action</code>(케이스의 자동 변화) / <code>script</code>(v2: 스크립트 버전의 저장·성적·폐기)</td><td class="ex">script</td></tr>
         <tr><td>who</td><td>OS 사용자 이름, 자동이면 <code>sbmig</code></td><td class="ex">sbmig</td></tr>
         <tr><td><span class="k">case_id</span> / <span class="k">signature_generic</span></td><td>어느 케이스</td><td class="ex">8bb4fd4a4a</td></tr>
-        <tr><td>command / fields</td><td>사람이 실행한 명령 / 바뀐 human 필드 (human만)</td><td class="ex">pin --action handler:… / ["action"]</td></tr>
-        <tr><td>reason</td><td>자동 변화의 이유: created / promoted / demoted / action changed …</td><td class="ex">promoted</td></tr>
+        <tr><td>command / fields</td><td>사람이 실행한 명령 / 바뀐 human 필드 (human만)</td><td class="ex">pin --action script:2 / ["action"]</td></tr>
+        <tr><td>reason</td><td>케이스 자동 변화의 이유: created / promoted / demoted / action changed …</td><td class="ex">promoted</td></tr>
         <tr><td>before / after</td><td>바뀌기 전과 후 (상태, 동작)</td><td class="ex">{status: candidate} → {status: active}</td></tr>
-        <tr><td>evidence</td><td>그때의 근거 수: <code>seen</code>, <code>projects</code>, <code>action_successes</code>, <code>action_failures</code>, <code>action_projects</code></td><td class="ex"></td></tr>
+        <tr><td>evidence</td><td>케이스 변화 때의 근거 수: <code>seen</code>, <code>projects</code> …</td><td class="ex"></td></tr>
+        <tr class="grp"><td colspan="3">audit.jsonl의 event: script 줄 (v2 새로, 스크립트 버전마다)</td></tr>
+        <tr><td>action</td><td><code>created</code> 저장 · <code>quarantined</code> 비밀값이라 가려서 저장 · <code>credited</code> 채점 결과 반영(채점한 시도마다 1줄) · <code>retired</code> / <code>activated</code> 사람이 폐기 / 복구</td><td class="ex">credited</td></tr>
+        <tr><td><span class="k">version</span> / <span class="k">parent</span></td><td>스크립트 버전과 그 보강 원본</td><td class="ex">2 / 1</td></tr>
+        <tr><td><span class="k">run_id</span> / project / model / outcome / reason / command / before</td><td>있는 것만: 만든·돌린 실행, 프로젝트, 모델, 채점 결과, 사람이 쓴 이유와 명령, 바뀌기 전 상태</td><td class="ex">run-… / member-api / gpt-6-luna / improved</td></tr>
+        <tr><td>after</td><td>그 뒤의 기록: <code>status</code>, <code>successes</code>, <code>failures</code>, <code>partials</code>, <code>success_projects</code>(수)</td><td class="ex">{status: active, successes: 3, …}</td></tr>
         <tr class="grp"><td colspan="3">quarantine.jsonl (errors.jsonl에서 읽지 못한 줄의 메모)</td></tr>
         <tr><td>at / file / line / id / signature_generic / hash / reason</td><td>언제, 어느 파일 몇째 줄, 그 줄의 id와 L2, 내용 해시, 이유. 이런 줄이 있는 케이스는 다시 계산할 때 지우지 않음</td><td class="ex">does not validate</td></tr>
         <tr class="grp"><td colspan="3">그 밖</td></tr>
         <tr><td>*.jsonl.corrupt</td><td>프로세스가 쓰다 죽어서 반쯤 남은 마지막 줄. 다음 기록 전에 여기로 옮겨 원본은 깨끗하게 유지</td><td class="ex">errors.jsonl.corrupt</td></tr>
-        <tr><td>.lock</td><td>쓰는 동안 잡는 잠금 (pid, host, 시각, 토큰). 웹·플릿·kb 명령이 같은 KB를 써도 안전. 300초가 지나거나 프로세스가 없으면 무시</td><td class="ex"></td></tr>
-        <tr><td>patterns/*.yml</td><td>사람이 쓴 규칙: <code>id</code>, <code>match.signature_regex</code>, <code>recipes</code>, <code>hints</code>, <code>handler_ids</code>. 항상 켜져 있음</td><td class="ex"></td></tr>
+        <tr><td>.lock</td><td>쓰는 동안 잡는 잠금 (pid, host, 시각, 토큰). 웹·플릿·kb 명령이 같은 KB를 써도 안전. 300초가 지나거나 프로세스가 없으면 무시. 스크립트 저장·성적도 이 잠금 안에서 씀</td><td class="ex"></td></tr>
       </tbody>
     </table></div></div>
   </details>
@@ -734,17 +783,22 @@ stateDiagram-v2
   <div class="frame"><table>
     <thead><tr><th>키</th><th>값과 뜻</th></tr></thead>
     <tbody>
-      <tr><td>status (errors)</td><td><code>resolved</code> 이 에러를 겨냥했거나 그 파일을 고친 시도 뒤에 사라짐 · <code>resolved_indirectly</code> 사라졌지만 겨냥한 시도 없음(pom 수정, 다른 파일 수정, plan 단계) · <code>blocked</code> 끝까지 남고 BLOCKED 항목이 덮음 · <code>unresolved</code> 끝까지 남음 · <code>not_visible</code> 마지막 빌드가 그 단계 전에 멈춰 알 수 없음</td></tr>
-      <tr><td>fix_method</td><td><code>handler</code> 결정적 핸들러 · <code>recipe</code> OpenRewrite 레시피 · <code>kb_patch</code> KB 패치 재생 · <code>llm</code> LLM · <code>plan_step</code> 수정 루프 밖의 plan 단계(rewrite, restructure, 선제 핸들러) · <code>none</code> 없음</td></tr>
-      <tr><td>outcome (시도)</td><td><code>build_ok</code> 빌드 성공 · <code>improved</code> 겨냥한 에러가 사라짐 · <code>partial</code> 일부만 사라짐(진전, 실패로 안 셈) · <code>no_change</code> 그대로 · <code>regressed</code> 새 에러를 만듦 · <code>reverted</code> 되돌림 · <code>apply_failed</code> 코드에 적용 못 함 · <code>inconclusive</code> 빌드가 판정할 수 없었음(타임아웃 등, 성공·실패 어느 쪽도 아님) · <code>pending</code> 채점 전 · <code>blocked</code></td></tr>
+      <tr><td>status (errors)</td><td><code>resolved</code> 이 에러를 겨냥했거나 그 파일을 고친 시도 뒤에 사라짐 · <code>resolved_indirectly</code> 사라졌지만 겨냥한 시도 없음(pom 수정, 다른 케이스의 수정, plan 단계) · <code>blocked</code> 끝까지 남고 BLOCKED 항목이 덮음 · <code>unresolved</code> 끝까지 남음 · <code>not_visible</code> 마지막 빌드가 그 단계 전에 멈춰 알 수 없음</td></tr>
+      <tr><td>fix_method</td><td>v2: <code>script</code> LLM이 새로 쓴 스크립트 · <code>script_reuse</code> 저장된 버전을 다시 실행(LLM 호출 없음) · <code>script_augment</code> LLM이 이전 버전을 보강한 새 버전 · <code>plan_step</code> 수정 루프 밖의 plan 단계(OpenRewrite 변환, 구조화, 구조 점검 스크립트) · <code>none</code> 없음. v1에서만: <code>handler</code> · <code>recipe</code> · <code>kb_patch</code> · <code>llm</code></td></tr>
+      <tr><td>script_mode (시도)</td><td><code>new</code> 저장된 것이 없어 LLM이 첫 버전 작성 · <code>reuse</code> 검증된 버전 재실행 · <code>augment</code> LLM이 바탕 버전을 보강(답은 완성된 새 스크립트)</td></tr>
+      <tr><td>script_status (시도)</td><td><code>ok</code> <code>fix(p)</code>가 끝남 · <code>error</code> 예외, 또는 프로젝트 밖·<code>.git</code>·빌드 출력 경로를 건드리려 함 · <code>timeout</code> 시간 초과(기본 60초)로 종료 · <code>rejected</code> 실행 전 코드 검사에서 거부(금지된 import · 이름 · 속성). ok가 아니면 바뀐 파일은 모두 원래대로</td></tr>
+      <tr><td>outcome (시도)</td><td><code>build_ok</code> 빌드 성공 · <code>improved</code> 겨냥한 에러가 모두 사라짐 · <code>partial</code> 일부만 사라짐(진전, 실패로 안 셈) · <code>no_change</code> 그대로 · <code>regressed</code> 새 에러를 만듦 · <code>reverted</code> 되돌림 · <code>apply_failed</code> 코드에 적용 못 함(스크립트 오류, 아무 파일도 안 바꿈 등) · <code>inconclusive</code> 빌드가 판정할 수 없었음(타임아웃 등) · <code>pending</code> 채점 전 · <code>blocked</code></td></tr>
       <tr><td>change_kind</td><td><code>text_replace</code> 토큰 치환만 · <code>code_edit</code> 줄 추가·삭제·구조 변경 · <code>mixed</code> 둘 다 · <code>file_create</code> / <code>file_delete</code> / <code>file_rename</code> · <code>none</code></td></tr>
-      <tr><td>status (케이스)</td><td><code>observed</code> 본 적만 있음 · <code>candidate</code> 다시 쓸 수정 있음 · <code>active</code> 검증됨 · <code>rejected</code> 사람이 막음</td></tr>
-      <tr><td>action.kind (케이스)</td><td><code>recipe</code> KB 레시피 실행 · <code>replace</code> 학습된 텍스트 치환(핸들러 case-replace) · <code>patch</code> KB 패치 재생 · <code>hint</code> LLM 힌트만 · <code>handler</code> / <code>block</code> 사람이 고정</td></tr>
-      <tr><td>resolution (ledger)</td><td><code>handler</code> · <code>plan_recipe</code> plan의 레시피 · <code>kb_recipe</code> · <code>kb_patch</code> · <code>llm_patch</code> · <code>optional_bump</code> 사내 선택 아티팩트 버전 올림 · <code>blocked</code> · <code>unresolved</code> · <code>advisory</code> 라이브러리 지침</td></tr>
+      <tr><td>status (케이스)</td><td><code>observed</code> 본 적만 있음 · <code>candidate</code> 성공한 스크립트 버전 있음 · <code>active</code> 그 버전이 여러 프로젝트에서 검증됨 · <code>rejected</code> 사람이 막음</td></tr>
+      <tr><td>action.kind (케이스)</td><td>v2: <code>script</code> 가장 좋은 스크립트 버전 실행 · <code>hint</code> LLM 힌트만 · <code>handler</code> / <code>block</code> 사람이 고정. v1에서만: <code>recipe</code> KB 레시피 · <code>replace</code> 학습된 텍스트 치환 · <code>patch</code> KB 패치 재생</td></tr>
+      <tr><td>status (스크립트 버전)</td><td><code>active</code> 선택될 수 있음 · <code>retired</code> 사람이 폐기(다시 선택되지 않음, 고정보다 우선) · <code>quarantined</code> 코드에 비밀값이 있어 가려서 저장(절대 선택되지 않음, 폐기·복구 불가)</td></tr>
+      <tr><td>verdict (구조 점검)</td><td><code>ok</code> 문제 없음 · <code>issues</code> 지적 있음(critical / warning) · <code>failed</code> 읽을 수 있는 답을 못 받음(빌드는 그대로 진행) · <code>skipped</code> 점검 꺼짐 / dry run (reviews.jsonl에 기록하지 않음)</td></tr>
+      <tr><td>severity (점검 지적)</td><td><code>critical</code> 빌드 전에 스크립트로 고침(<code>review.fix_critical</code>) · <code>warning</code> 리포트와 Handover에 기록만</td></tr>
+      <tr><td>event (audit)</td><td><code>human</code> · <code>status</code> · <code>action</code> · <code>script</code> (script의 <code>action</code>: <code>created</code> · <code>quarantined</code> · <code>credited</code> · <code>retired</code> · <code>activated</code>)</td></tr>
       <tr><td>error_kind</td><td><code>compile</code> · <code>test_compile</code> · <code>dependency_resolution</code> · <code>plugin_resolution</code> · <code>parent_resolution</code> · <code>plugin_execution</code> · <code>enforcer</code> · <code>pom_invalid</code> · <code>rewrite</code> · <code>test_failure</code> · <code>unknown</code></td></tr>
       <tr><td>case_type</td><td><code>pure_java</code> · <code>spring_legacy</code>(Boot 없는 Spring 4/5) · <code>spring_boot</code> · <code>servlet_tomcat</code> · <code>msa</code> · <code>unknown</code></td></tr>
-      <tr><td>phase</td><td><code>jdk21</code> · <code>spring</code> · <code>restructure</code> · <code>verify</code> (그 밖 intake, analyze, plan, report)</td></tr>
-      <tr><td>fix_labels</td><td><code>import-rename</code> · <code>type-rename</code> · <code>package-rename</code> · <code>annotation-replace</code> · <code>method-rename</code> · <code>method-signature-adapt</code> · <code>override-signature</code> · <code>dependency-add</code> · <code>dependency-replace</code> · <code>dependency-remove</code> · <code>dependency-version</code> · <code>plugin-version</code> · <code>pom-property</code> · <code>spring-property-rename</code> · <code>config-value</code> · <code>remove-code</code> · <code>add-code</code> · <code>generic-rewrite</code>. 기계적인 라벨(이름 변경, 의존성 변경 등)만 레시피로 컴파일됨</td></tr>
+      <tr><td>phase</td><td>v2: <code>transform</code> OpenRewrite 한 번 · <code>restructure</code> 구조화 + 구조 점검 · <code>verify</code> 최종 빌드와 스크립트 수정 루프 (그 밖 intake, analyze, plan, report). v1에서만: <code>jdk21</code> · <code>spring</code></td></tr>
+      <tr><td>fix_labels</td><td><code>import-rename</code> · <code>type-rename</code> · <code>package-rename</code> · <code>annotation-replace</code> · <code>method-rename</code> · <code>method-signature-adapt</code> · <code>override-signature</code> · <code>dependency-add</code> · <code>dependency-replace</code> · <code>dependency-remove</code> · <code>dependency-version</code> · <code>plugin-version</code> · <code>pom-property</code> · <code>spring-property-rename</code> · <code>config-value</code> · <code>remove-code</code> · <code>add-code</code> · <code>generic-rewrite</code>. 스크립트가 바꾼 diff에서 계산하는 참고용 라벨</td></tr>
     </tbody>
   </table></div>
 </section>
@@ -754,41 +808,46 @@ stateDiagram-v2
   <div class="qa">
     <div><h3>이 에러는 어떻게 고쳤나?</h3><ol>
       <li><code>errors.jsonl</code>에서 <code>status = resolved</code>인 줄</li>
-      <li><code>resolution_attempts[]</code>의 시도 id들</li>
-      <li>같은 id의 <code>fix_attempts.jsonl</code> 줄 → <code>diff</code></li>
+      <li><code>script_case_id</code> + <code>script_version</code> → <code>scripts/&lt;case_id&gt;/v&lt;N&gt;.py</code> (실행한 코드)</li>
+      <li><code>resolved_by</code>와 같은 id의 <code>fix_attempts.jsonl</code> 줄 → <code>diff</code>, <code>script_log</code></li>
       <li>명령으로 한 번에: <code>sbmig kb errors show &lt;에러 id&gt;</code></li></ol></div>
     <div><h3>무엇을 시도했다가 왜 실패했나?</h3><ol>
-      <li><code>errors.jsonl</code>의 <code>attempts[]</code>: <code>outcome</code>, <code>failure</code></li>
-      <li>실패한 시도의 코드: 같은 <code>attempt_id</code>의 <code>fix_attempts.diff</code></li>
+      <li><code>errors.jsonl</code>의 <code>attempts[]</code>: <code>fix_method</code>, <code>script_version</code>, <code>outcome</code>, <code>failure</code></li>
+      <li>같은 <code>attempt_id</code>의 <code>fix_attempts.jsonl</code>: <code>script_status</code>, <code>script_error</code>, <code>script_log</code>, <code>introduced_errors</code></li>
       <li><code>sbmig kb errors show &lt;id&gt; --all-diffs</code></li></ol></div>
+    <div><h3>이 스크립트는 어디서 왔고 무엇을 보강했나?</h3><ol>
+      <li><code>scripts/&lt;case_id&gt;/v&lt;N&gt;.meta.json</code>의 <code>run_id</code>, <code>project</code>, <code>model</code>, <code>analysis</code></li>
+      <li><code>parent</code>를 따라가면 보강 계보 (<code>v1 → v2 → v4</code>)</li>
+      <li><code>sbmig kb scripts show &lt;case_id&gt; --version N</code></li></ol></div>
+    <div><h3>다음 프로젝트에서 이 케이스는 무엇을 실행하나?</h3><ol>
+      <li>케이스 파일의 <code>action.script_version</code> (사람이 고정했으면 <code>human.action</code>)</li>
+      <li><code>views/cases.csv</code>의 <code>best_script</code></li>
+      <li><code>sbmig kb scripts list --case &lt;case_id&gt;</code></li></ol></div>
     <div><h3>같은 원인이 몇 프로젝트에서 나왔나?</h3><ol>
       <li><code>errors.jsonl</code>을 <code>case_id</code>로 묶고 <code>project_fingerprint</code>를 셈</li>
       <li>또는 케이스 파일의 <code>evidence.projects</code></li>
-      <li>더 넓게: <code>error_symbol</code>로 묶기</li></ol></div>
-    <div><h3>규칙으로 바꿀 후보는? (LLM이 단순 치환으로 고친 것)</h3><ol>
-      <li><code>errors.jsonl</code>에서 <code>replace_rule_candidate = true</code></li>
-      <li><code>replace_pairs</code>와 <code>case_id</code>로 묶기</li>
-      <li><code>sbmig kb errors replace-candidates</code></li></ol></div>
-    <div><h3>이 레시피는 어디서 나왔나?</h3><ol>
-      <li><code>recipes/…/&lt;id&gt;.meta.json</code>의 <code>source_case_ids</code></li>
-      <li><code>cases/…/&lt;KB 케이스 id&gt;.json</code>의 <code>tags</code> <code>attempt:&lt;attempt_id&gt;</code> + <code>project</code></li>
-      <li>그 실행의 <code>fix_attempts.jsonl</code>에서 diff</li></ol></div>
+      <li>스크립트가 고친 프로젝트: meta의 <code>success_projects</code></li></ol></div>
+    <div><h3>구조 점검은 무엇을 지적했나?</h3><ol>
+      <li><code>reviews.jsonl</code>에서 <code>run_id</code>가 같은 줄</li>
+      <li><code>issues[]</code>의 <code>severity</code>, <code>problem</code>, <code>fix_hint</code></li>
+      <li>고쳤다면 <code>commit</code>과 <code>script_result.changed_files</code></li></ol></div>
     <div><h3>사람이 무엇을 바꿨나?</h3><ol>
-      <li><code>audit.jsonl</code>에서 <code>event = human</code></li>
+      <li><code>audit.jsonl</code>에서 <code>event = human</code>, 또는 <code>event = script</code>이고 <code>action = retired / activated</code></li>
       <li><code>case_id</code> → 케이스 파일의 <code>human:</code> 블록</li>
       <li><code>sbmig kb cases show &lt;case_id&gt;</code> (history 구역)</li></ol></div>
     <div><h3>엑셀로 보고 싶다</h3><ol>
-      <li>실행 폴더의 <code>error_cases.csv</code> (UTF-8 BOM, 열 = errors.jsonl 필드)</li>
-      <li>KB 전체: <code>sbmig kb errors export --csv e.csv --attempts-csv a.csv</code> (<code>--case</code>, <code>--resolver</code> 필터)</li>
-      <li>케이스 표: <code>views/cases.csv</code></li></ol></div>
+      <li>실행 폴더의 <code>error_cases.csv</code> (UTF-8 BOM, 열 = errors.jsonl 필드, <code>raw</code> 앞에 <code>script_case_id</code>, <code>script_version</code>)</li>
+      <li>KB 전체: <code>sbmig kb errors export --csv e.csv --attempts-csv a.csv</code> (시도 CSV는 <code>diff_truncated</code> 앞에 <code>script_*</code> 7열)</li>
+      <li>케이스 표: <code>views/cases.csv</code> (끝에 <code>scripts</code>, <code>best_script</code>)</li></ol></div>
     <div><h3>주의할 점</h3><ol>
-      <li><code>ledger.case_id</code>는 KB 케이스 id(<code>2026…-…</code>), <code>errors.case_id</code>는 카탈로그 케이스 id(10자)로 서로 다름</li>
-      <li>파생 인덱스는 직접 고치지 말 것 (<code>kb reindex</code>로 다시 만듦)</li>
-      <li>KB 형식이 바뀌면 <code>schema_version</code>이 올라감</li></ol></div>
+      <li>v2 KB는 <code>kb-v2/</code>. v1 <code>kb/</code>와 섞지 말 것 (형식이 다름, <code>schema_version</code> 3)</li>
+      <li><code>script_version</code> 0 = 저장되지 않은 스크립트 (KB 없이 돌린 실행)</li>
+      <li><code>success_projects</code>는 프로젝트 이름, <code>project_fingerprint</code>는 해시로 서로 다름</li>
+      <li>파생 인덱스는 직접 고치지 말 것 (<code>kb reindex</code>로 다시 만듦)</li></ol></div>
   </div>
 </section>
 
-<footer>다이어그램은 위의 버튼(축소 · 확대 · 맞춤 · 100%)이나 Ctrl(맥은 Cmd)+휠로 크기를 바꾸고, 끌어서 옮겨 볼 수 있습니다. 기준: sbmig 스키마 버전 2 (round 10, 2026-10-26). 원본 정의는 저장소의 <code>sbmig/core/models.py</code>, <code>sbmig/kb/</code>, 문서 <code>docs/INTERFACES.md</code> "Error cases" · "Case catalog". 오프라인용 사본: <code>docs/kb-map/index.html</code>, Markdown 판: <code>docs/kb-map/kb-map.md</code>.</footer>
+<footer>다이어그램은 위의 버튼(축소 · 확대 · 맞춤 · 100%)이나 Ctrl(맥은 Cmd)+휠로 크기를 바꾸고, 끌어서 옮겨 볼 수 있습니다. 기준: sbmig v2 (브랜치 flow-v2) KB <code>kb-v2/</code>, 스키마 버전 3 (2026-10-26). 원본 정의는 저장소의 <code>sbmig/core/models.py</code>, <code>sbmig/kb/</code>(<code>scripts.py</code>, <code>catalog.py</code>, <code>store.py</code>), 문서 <code>docs/INTERFACES.md</code> "Error cases" · "Case catalog" · "v2 — flow-v2", 플랜 <code>docs/v2/PLAN-v2.md</code> §3.4. 오프라인용 사본: <code>docs/kb-map/index.html</code>, Markdown 판: <code>docs/kb-map/kb-map.md</code>.</footer>
 
 </div>
 
@@ -849,7 +908,8 @@ stateDiagram-v2
       svg.style.maxWidth = "none";
       svg.style.width = Math.round(wh[0] * scale) + "px";
       svg.style.height = Math.round(wh[1] * scale) + "px";
-      pct.textContent = Math.round(scale * 100) + "%";
+      var label = Math.round(scale * 100) + "%";
+      if (pct.textContent !== label) pct.textContent = label;
       frame.classList.toggle("pannable", frame.scrollWidth > frame.clientWidth + 1 || frame.scrollHeight > frame.clientHeight + 1);
     }
     function fit() {
@@ -901,10 +961,16 @@ stateDiagram-v2
   }
   if (window.MutationObserver) {
     new MutationObserver(function (records) {
-      scan();
-      for (var i = 0; i < records.length; i++) {
-        if (records[i].type === "attributes" || records[i].type === "childList") { refitAll(); break; }
+      // only diagram changes refit: the zoom bars' own updates (the % label) must not, or each refit triggers
+      // the next one and the page never settles
+      var diagram = false;
+      for (var i = 0; i < records.length && !diagram; i++) {
+        var t = records[i].target;
+        diagram = !(t.closest ? t.closest(".zoombar") : (t.parentElement && t.parentElement.closest(".zoombar")));
       }
+      if (!diagram) return;
+      scan();
+      refitAll();
     }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["viewBox"] });
   }
   scan();

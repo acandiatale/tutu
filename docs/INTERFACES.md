@@ -1171,15 +1171,17 @@ The business team's flow: every OpenRewrite recipe in ONE run without a build, t
 LLM structure review, then `mvn clean package`; every build error is fixed by an **LLM-written Python fix script**
 stored per case (L2) and reused / augmented on later projects. Stable v1 flow = tag `company-v1`. This section is the
 contract of PLAN-v2 step 0; the implementations follow it (step 1: S `sbmig/script/`, K `sbmig/kb/`, F `sbmig/fix/`,
-R `sbmig/review/` + `sbmig/report/`, L `sbmig/loop/` + `sbmig/plan/` + `sbmig/triage/` + `sbmig/graph/`).
+R `sbmig/review/` + `sbmig/report/`, L `sbmig/loop/` + `sbmig/plan/` + `sbmig/triage/` + `sbmig/graph/`). Statements
+that step 1 proved wrong are corrected in place; what it added is under "As built (step 1)" at the end.
 
 ### Models (`sbmig/core/models.py`)
 * `Phase.TRANSFORM = "transform"` (the one rewrite run; ordered between `plan` and `jdk21`), `StepKind.REVIEW`,
   `DecisionKind.SCRIPT`, `CaseActionKind` += `script` (`CaseAction.script_version` = the case's best version).
 * `ErrorCluster.case_id` — v2 clusters are ONE case (L2) across files (`file` None, id `case:<case_id>`).
 * `ScriptRunResult` (`status` ok | error | timeout | rejected, `changed_files`, `log`, `error`, `problems`,
-  `duration_s`), `ScriptMeta` (`<kb>/scripts/<case_id>/v<N>.meta.json`: version, parent, sha1, run / project / model,
-  analysis, successes / failures / partials, success_projects, last_outcome, status active | retired | quarantined),
+  `duration_s`), `ScriptMeta` (`<kb>/scripts/<case_id>/v<N>.meta.json`: case_id, signature_generic, version, parent,
+  sha1, created_at, run / project / model, source llm | human | review, analysis, successes / failures / partials,
+  success_projects, last_outcome / last_at / last_run_id, status active | retired | quarantined, notes),
   `ScriptBase` (the version an augment extends + what it did in this project + `history` lines), `ScriptProposal`
   (code, analysis, usage, `error` when there is no script), `ReviewIssue` / `StructureReview` (verdict ok | issues |
   skipped | failed, issues, script + result + commit, usage, note); `RunReport.structure_review`.
@@ -1196,8 +1198,9 @@ R `sbmig/review/` + `sbmig/report/`, L `sbmig/loop/` + `sbmig/plan/` + `sbmig/tr
   (changes stay uncommitted; never raises).
 * `ScriptStoreLike`: `versions`, `get`, `best(case_id, limit=1)` (active versions with ≥ 1 success: most success
   projects, then successes − failures, then newest; a human-pinned `{kind: script, script_version: N}` in the case's
-  `human` block comes first), `latest`, `add` (next version; same sha1 → existing meta), `credit(case_id, version,
-  outcome, project=, run_id=)`, `case_ids`. `ScriptKnowledgeLike` = `FileKnowledgeBase.scripts` + `record_review`.
+  `human` block comes first while that version is active — retire wins over a pin; a rejected case gives []),
+  `latest`, `add` (next version; same sha1 → existing meta), `credit(case_id, version, outcome, project=, run_id=)`,
+  `case_ids`. `ScriptKnowledgeLike` = `FileKnowledgeBase.scripts` + `record_review`.
 * `ScriptFixerLike.propose_script(ws, cluster, ctx) -> ScriptProposal` — `FixContext` += `script_mode` (new |
   augment), `case_id`, `signature_generic`, `script_base`. An augment answer is the COMPLETE new script (it replaces
   the base and runs on a tree where the base was rolled back). `FixerLike.propose` stays for tier-2 plugins; the v2
@@ -1230,12 +1233,13 @@ R `sbmig/review/` + `sbmig/report/`, L `sbmig/loop/` + `sbmig/plan/` + `sbmig/tr
 
 ### Plan (L)
 Non-MSA: `transform.rewrite` (OPENREWRITE, TRANSFORM; jdk21 set + jakarta set when the case needs it — spring_legacy,
-servlet_tomcat, pure_java with Java EE javax imports — + spring_boot_4 set for spring_boot; one run) →
+servlet_tomcat, pure_java with Java EE javax imports; never for spring_boot, the Boot umbrella migrates jakarta — +
+spring_boot_4 set for spring_boot; one run; no transform step without java sources) →
 `restructure.apply` | `restructure.boot_pom` | `restructure.pom_only` (RESTRUCTURE) → `restructure.review` (REVIEW,
-RESTRUCTURE) → `verify.build`. MSA: `transform.rewrite@<target>` per library root / service (one un-suffixed run under
-`top-aggregator`), `restructure.msa_pom`, `restructure.review`, `verify.build[@<svc>]`. No BUILD_FIX_LOOP steps before
-verify, no pre-emptive handlers, no project (`com.company.migrate.*`) / library / KB / advisory recipes;
-`plan.parent_phase` is ignored.
+RESTRUCTURE) → `verify.build`. MSA: `transform.rewrite@<target>` per library root (never the Boot set) / service
+(one un-suffixed run under `top-aggregator`), `restructure.msa_pom`, `restructure.review`, `verify.build[@<svc>]`.
+No BUILD_FIX_LOOP steps before verify, no pre-emptive handlers, no project (`com.company.migrate.*`) / library / KB /
+advisory recipes; `plan.parent_phase` is ignored.
 
 ### Script fix loop (L; `loop.phases.verify` after a failed final build)
 * Clusters by L2 (`signature_generic`) across files; errors without an L2 get `case_id =
@@ -1259,42 +1263,171 @@ verify, no pre-emptive handlers, no project (`com.company.migrate.*`) / library 
 
 ### Script contract (S)
 Answer: `<analysis>…</analysis>` + `<script>…</script>` (fences inside allowed) defining `def fix(p)`;
-`<need_file>` / `<need_grep>` as v1. Helper `p` (relative posix paths; absolute, `..`, drive letters, `.git/`,
-`target/` and anything resolving outside the project are refused → status error):
+`<need_files>` (`<need_file>` accepted) / `<need_grep>` as v1. Helper `p` (relative posix paths; absolute, `..`,
+drive letters, `.git/`, writes into Maven build output (`target/` beside a pom) and anything resolving outside the
+project are refused → status error):
 
 | API | |
 |---|---|
-| `p.errors` | list of dicts: file, line, column, message, symbol, location, kind, module, signature, signature_generic |
-| `p.files(glob="**/*")` | sorted relative posix paths (no `.git/`, `target/`, `node_modules/`) |
+| `p.errors` | list of dicts: file, line, column, message, symbol, location, kind, module, artifact, signature, signature_generic |
+| `p.files(glob="**/*")` | sorted relative posix paths (no `.git/`, `node_modules/`, Maven build output) |
 | `p.read(path)` / `p.exists(path)` | text decoded with the file's detected encoding (`build.encoding_candidates`) |
 | `p.write(path, text)` | same encoding and newline style as the original (a new file: UTF-8, `\n`) |
 | `p.replace(path, old, new, count=-1)` / `p.sub(path, pattern, repl, count=0, flags=0)` | number of replacements |
 | `p.create(path, text)` / `p.delete(path)` / `p.move(src, dst)` | create refuses an existing file |
-| `p.pom(path="pom.xml")` | editor (sbmig.restructure.pom_editor): `add_dependency(g, a, version=None, scope=None, type=None, classifier=None)`, `remove_dependency`, `set_dependency_version`, `add_exclusion(g, a, ex_g, ex_a)`, `add_managed_dependency`, `set_property`, `remove_property`, `set_plugin_version`, `text()`, `save()` — mutators return True when the pom changed |
+| `p.pom(path="pom.xml")` | editor (sbmig.restructure.pom_editor): `add_dependency(g, a, version=None, scope=None, type=None, classifier=None)`, `remove_dependency`, `set_dependency_version`, `add_exclusion(g, a, ex_g, ex_a)`, `add_managed_dependency`, `remove_managed_dependency`, `has_dependency`, `dependencies(managed=False)`, `get_property`, `set_property`, `remove_property`, `set_plugin_version`, `text()`, `save()` — mutators return True when the pom changed |
 | `p.log(msg)` | a log line (KB); `print` goes to the log too |
 
 Static check (`ast`): module-level `def fix(p)` required; imports only `re json textwrap fnmatch posixpath itertools
 collections functools string math` (+ `script.extra_allowed_imports`); refused names `open exec eval compile
 __import__ globals locals vars getattr setattr delattr input breakpoint help memoryview`; refused modules `os sys
-subprocess socket pathlib importlib shutil ctypes threading multiprocessing builtins io`; any `__dunder__` attribute;
-code longer than `script.max_code_chars`. Run: `python -I` harness in a temp cwd, restricted builtins and a guarded
-`__import__`, timeout → process tree killed (Windows `taskkill /T /F`), result JSON → `ScriptRunResult`. A guard
-against mistakes, not a sandbox against a hostile author (documented).
+subprocess socket pathlib importlib shutil ctypes threading multiprocessing builtins io` (never re-allowed by
+`script.extra_allowed_imports`); any attribute starting with `_`, and the refused module names / `codecs` / `open` as
+attributes (`posixpath.os`); code longer than `script.max_code_chars`. Run: `python -I -X utf8` harness in a temp
+cwd, restricted builtins and a guarded `__import__`, timeout → process tree killed (Windows `taskkill /T /F`), result
+JSON → `ScriptRunResult`. A guard against mistakes, not a sandbox against a hostile author (documented).
 
 ### Script KB (K)
 `<kb>/scripts/<case_id>/v<N>.py` (UTF-8) + `v<N>.meta.json`; writes under the KB lock; analysis / logs redacted; code
 matching a secret pattern → stored masked, `quarantined`, never selected. Catalog: action `script` (best version)
 when one is proven, `evidence.fixes` by resolver `script:<id>:v<N>`; views list versions / best. CLI `sbmig kb
-scripts list | show <case_id> [--version N] | retire <case_id> <N> | activate <case_id> <N>`. `record_review` → one
-line in `<kb>/reviews.jsonl`.
+scripts list | show <case_id> [--version N] | retire <case_id> <N> | activate <case_id> <N> | validate`.
+`record_review` → one line in `<kb>/reviews.jsonl`.
 
 ### Structure review (R) — `StructureReviewer(cfg, llm, runner, kb)`
 Input: every pom after the restructure (≤ `review.max_poms`, ≤ `review.max_pom_chars`, head + tail cut), module dirs
 and packaging, restructure notes, the company rules (`artifacts.parent` / `boot_parent` / `comp_parent`, mandatory
 target, optional artifacts, `layout.*`), case type, detected source encodings. Prompt `sbmig/review/prompts/
 review_v1.md`, role `structure_review`; answer JSON `{verdict, issues[{severity, file, problem, fix_hint}],
-analysis}` + `<script>` for critical issues. Non-UTF-8 sources without a matching `project.build.sourceEncoding` are
-critical (JDK 21 garbles them with a warning only — no build error would ever show it). Critical + script +
+analysis}` (inside `<review>…</review>`) + `<script>` for critical issues. Non-UTF-8 sources without a matching
+`project.build.sourceEncoding` are critical (JDK 21 garbles them with a warning only — no build error would ever show
+it); sbmig adds that issue itself (`(sbmig check) …`) when the LLM misses it. Critical + script +
 `review.fix_critical` → `runner.run(ws, code)` (uncommitted; the orchestrator commits `review: …` and fills
-`commit`); script failure → working tree restored, note. Recorded via `kb.record_review`; report section "Structure
+`commit`); script failure → working tree restored, note. Recorded by the orchestrator after its commit
+(`kb.record_review`, so the line carries `commit`; skipped reviews are not recorded); report section "Structure
 review" (ko/en) and warnings as Handover follow-ups.
+
+### As built (step 1, 2026-10-26)
+
+What the step-1 implementations (commits `cb9a3b1`, `63773af`) add to the contract above; wrong statements above were
+corrected in place. The v1 code paths stay in the tree until PLAN-v2 step 4 (v1 = tag `company-v1`).
+
+**Plan and flow**
+* Plan notes (English): `transform: one OpenRewrite run (…) — no build until the restructure is done (v2)`,
+  `pre-emptive handlers: off in v2 (errors are fixed by LLM scripts)`, `kb: KB recipes are not used in v2`; a v1
+  setting set again is named as ignored (`plan.parent_phase=spring ignored…`, `v2: no intermediate build-fix loops
+  (…ignored)`). `--stop-after` / web stop: intake | analyze | plan | transform | restructure | verify.
+  `config/artifacts.example.yml` no longer sets `plan.parent_phase` / `loop.phases.verify`.
+* The failed final build is the verify loop's build 1 (`loop.run(..., first_build=…)`, one Maven build saved): INFO
+  `verify: final build failed with N error(s) in M case(s) → script fix loop (mvn package, up to 12 round(s))`, then
+  `[verify] build 1 = the failed final build (N error(s), <log>) — not built again`; after the loop the final build runs
+  again (invariant 1).
+
+**Script fix loop** (`sbmig/loop/fixloop.py`, ladder `sbmig/triage/scripts.py` `plan_script_step`, clusters
+`sbmig.triage.cluster.cluster_cases`)
+* Cluster id `case:<case_id>`; a targeted MSA loop appends `@<target>` (`case:<id>@<svc>`: two services never count
+  against each other), `ErrorCluster.case_id` stays the plain id (store key). Order: triage priority, then error count.
+* Ladder details: **reuse** = `best(limit=script.reuse_versions)` versions not run in this run yet — no LLM call, so it
+  also works with the LLM down or the budget used up, and it comes before `loop.blocked_policy`; **augment** base =
+  this run's last attempt of the case that had code, else `latest(case_id)` (a stored but unproven version is
+  augmented, not re-run); **new** only when neither exists. LLM requests per case and run ≤
+  `script.max_augments_per_case` augments + the first `new`; a `new` answer without a script does not open an augment
+  (the next request is `new` again, inside that total). Escalation model on a stall (`loop.stall_limit`) or from a
+  case's second augment on. `loop.max_llm_attempts_per_cluster` / `loop.verify_extra_llm_attempts` are v1-only.
+* `loop.blocked_policy` v2 (LLM script attempts before BLOCKED): `external_javax_api`, `external_api_incompatible`,
+  `artifact_not_found`, `plugin_incompatible` 2; `parent_not_found`, `unsupported_source`, `encoding` 0.
+* **Rollback before the next try** (`BuildFixLoop._rollback_previous`): the case's previous applied script attempt is
+  rolled back when its outcome is partial / no_change / inconclusive (`NO_ROLLBACK` = improved, build_ok, reverted,
+  pending, apply_failed, blocked): HEAD = its commit → **reset** to its `base_commit`, else **`git revert --no-edit`**
+  (a failing revert is aborted and noted; the next version then runs on top of it). The errors it had removed come
+  back into the round and into the next scoring baseline (never counted as regressions); journal `script_rollback
+  {attempt, case, version, outcome, commit, mode: reset|git revert, restored_errors}`, note `rolled back before …`
+  (the tracker never puts such an attempt into a resolution chain). When the next attempt changes nothing the rollback
+  is **undone** (tree back to the HEAD the last build saw, journal `script_rollback_undone`). A partial attempt of a
+  case that ends BLOCKED stays in the tree.
+* Attempt extras: an augment identical to its base, or an LLM answer identical to a version already run (same sha1),
+  is `apply_failed` without running; writes to a merge-conflict reference copy are undone before the commit; more
+  than `script.max_files_changed_warn` changed files → note + WARNING line; journal `script_stored {case, version,
+  parent, mode, attempt}`, `script_credit`. Attempt ids stay `<phase>-<round>-<n>` (`verify-1-1`).
+* `LLMFixer.propose_script` (`sbmig/fix/fixer.py`, parser `sbmig/fix/script_protocol.py`, prompts
+  `sbmig/fix/prompts/script_system_v1.md`, `script_user_v1.md.j2`): `<need_files>` / `<need_grep>` rounds as v1, then
+  **one feedback round** when the script cannot be used (no `<script>`, no `def fix(p)`, static-check findings,
+  identical to the base, a v1 `<patches>` answer). The parser is tolerant (fences, CRLF, a block indented as a whole,
+  a missing `</script>`, a bare ```` ```python ```` block defining `fix(p)`) and never raises.
+* Flag **`fixer-without-scripts`**: a tier-2 `fix.plugin` without `propose_script` cannot write scripts in the run
+  (stored versions are still reused); one follow-up, journal `fixer_without_scripts`; not an `infra:llm` flag.
+* INFO lines per case: `[verify it1] case <id> (<kind>, N error(s) in M file(s)): <decision> — asking the LLM for a
+  fix script …`, `…: LLM answered (new|augment) — a script — <first sentence of the analysis>`, `…: script v<N> <mode>
+  — ok, K file(s) changed` (or the run status and error).
+
+**Script runner and helper API** (`sbmig/script/`)
+* `<script.python> -I -X utf8 harness.py <payload.json>` in a fresh temp dir outside the project, own process group,
+  killed with the tree on timeout and at web shutdown (the Maven child registry of `sbmig/build/mvn.py`); `sbmig`
+  cannot be imported by the script; environment variables matching `KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH` or `LLM_*`
+  are not passed on; a refused path (`PathRefused`) fails the run even when the script catches it; ~0.2–0.3 s per run.
+  `script.python` needs pydantic and lxml (else status error `ModuleNotFoundError`; RUNBOOK).
+* `p.files(glob)`: `**/` = zero or more folders (`**/*.java` also matches a root file), `*` / `?` / `[…]` stay inside
+  one segment (a glob without `/` matches the project root only), a trailing `/` = everything below. `p.write` returns
+  True when the bytes changed and keeps encoding, CRLF / LF and a UTF-8 BOM; a character the legacy encoding cannot
+  hold becomes `\uXXXX` in `.java` / `.properties`, any other such file is written as UTF-8 (log line). `p.delete` /
+  `p.move` take folders too (`move` refuses an existing `dst`); reads inside `target/` are allowed; `print` → log.
+
+**Structure review** (`sbmig/review/`, orchestrator `_step_review`)
+* Input also carries the facts sbmig computed (mandatory / optional artifacts where declared, javax next to jakarta,
+  duplicate declarations) and per-module source encodings as Java charset names (cp949 → `MS949`); `report.language:
+  ko` → the model answers in Korean. At most 2 LLM calls (one "answer in the format" retry when unreadable); an LLM
+  error → verdict `failed` and the build goes ahead (the fake LLM without answers ends `failed` after 2 calls).
+* Script guards: not run when the tree has uncommitted changes; after an `ok` run the tree is restored (`reverted`,
+  note) when the script touched sources (`.java .kt .groovy .scala .jsp .jspx .tag`) or left a pom that no longer
+  parses. The orchestrator commits `review: fix critical structure issues (<n>)` (uncommitted changes without an ok
+  run are discarded), then records the review, so the `reviews.jsonl` line has the commit sha. Journal
+  `structure_review {step, verdict, issues, critical, script_status, commit, note}`. The review script is not stored
+  under `scripts/` (it is in the review line, redacted).
+* Report: section "Structure review" / "구조 점검" after Handover, before Blocked; header row; console line; Handover
+  follow-ups (what the script changed + commit, each unfixed critical issue, warnings; at most 8). `SBMIG-RESULT …
+  attn=<codes> review=<ok|issues|skipped|failed>`: the `review=` token is appended only when the report has a review
+  (v1 and fleet lines unchanged).
+
+**Script KB** (`sbmig/kb/scripts.py`, `sbmig/kb/catalog.py`, `sbmig/kb/store.py`)
+* Identical code (sha1 of the stored bytes) → the existing version, nothing written; version numbers are never reused;
+  a broken meta is skipped with a warning. `credit`: improved / build_ok → success (+ project), partial → partial,
+  no_change / regressed / reverted / apply_failed / blocked → failure, inconclusive / pending → nothing; `last_*`
+  always.
+* best / pin / retire: a pin (`sbmig kb cases pin <id> --action script:N`, checked: a stored, not quarantined version
+  of that case) comes first while active and needs no success; **retire wins over a pin**; a case with `human.status:
+  rejected` gives nothing to reuse; `latest` = newest active (augment base).
+* Quarantine: code matching a secret pattern (`kb.redact_file` rules) → stored masked, status `quarantined`, note,
+  never selected; `retire` / `activate` refuse it (it stays quarantined).
+* Audit: `<kb>/audit.jsonl` lines `event: "script"`, `action` created | quarantined | credited | retired | activated,
+  with `case_id`, `signature_generic`, `version`, `parent`, `who`, run / project / model / outcome / reason / command /
+  `before` when known, and `after {status, successes, failures, partials, success_projects}` (one `credited` line per
+  scored attempt).
+* Catalog: action `script` (best proven version) is computed first; the v1 actions only when their v1 flags are on
+  (`recipe` ← `kb.use_active_recipes`, `replace` ← `kb.case_replace`, `patch` ← `kb.use_patch_replay`), so v2 gives
+  `script` or `hint`. Status `candidate` once a version succeeded, `active` after `kb.auto_promote_after_projects`
+  success projects with no failure of that version. `evidence.fixes` one row per script version (method `script`
+  whatever the mode), `evidence.failures` per method, timeline steps name the version (`script_reuse v1:improved`), the
+  case hint leads with the best script (version, record, analysis).
+* Views `cases.md|csv`: columns `scripts` (stored versions) and `best_script` (`v2* (3 ok / 0 failed, 2 project(s))`,
+  `*` = pinned) at the end. Error CSV: `script_case_id`, `script_version` before `raw`; attempt CSV: `script_mode`,
+  `script_case_id`, `script_version`, `script_parent`, `script_status`, `script_error`, `script_log` before
+  `diff_truncated`.
+* Tracker: fix method by mode, resolver `script:<case_id>:v<N>` (v0 = not stored), description = the LLM analysis (a
+  reuse: the stored version's), `llm_attempts` counts `llm` / `script` / `script_augment` (not `script_reuse`); error
+  records reach the KB without `kb.harvest`.
+* CLI: `sbmig kb scripts list [--case ID] [--status S] | show <case_id> [--version N] | retire <case_id> <N> | activate
+  <case_id> <N> | validate`; script lines in `sbmig kb errors list / show`; `sbmig kb stats` keys `script_cases`,
+  `script_versions`, `scripts_active`, `scripts_retired`, `scripts_quarantined`, `scripts_proven`, `reviews`.
+  `kb export` / `import` carry `scripts/` and `reviews.jsonl`: the import merge matches versions by sha1 (the larger
+  of each counter, success projects united, the newer `last_*`, the local status wins), adds the others as the next
+  local version with their parents mapped (note `imported (vN there)`); reviews by id.
+* `record_review`: texts, script and run log redacted, the home directory as `~`; an id already stored is not written
+  again.
+* v1 files v2 does not write: `recipes/`, `cases/`, `patterns/`, `symbols.json`, `index.json`, `ledger.jsonl`,
+  `error_hints.json` (their flags are off; code removed in step 4). Kept: `errors.jsonl`, `fix_attempts.jsonl`,
+  `catalog/`, `views/`, `audit.jsonl`, `quarantine.jsonl`, `.lock`; new: `scripts/`, `reviews.jsonl`.
+
+**E2E replay** (step-2 fixtures): `replay/llm-*.json` = `{"note", "match", "replay_role", "response"}`; `match` is a
+regex searched in the request's non-system messages (`case: <case_id>`), `replay_role` `fix` (also answers
+`fix_escalation`) | `structure_review`; each request takes the first unused matching entry (file order), the last
+match repeats, no match → the "no fix" answer; entries without `match` / `replay_role` = the old positional replay.
