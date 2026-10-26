@@ -180,7 +180,7 @@ recipes:
       - org.openrewrite.java.jackson.CodehausToFasterXML
     gate: is_spring
     advisor: true
-    sets: [spring_framework_7]
+    sets: []   # v1: [spring_framework_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md
@@ -194,7 +194,7 @@ recipes:
     covers: []
     gate: has_spring_security
     advisor: true
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
@@ -209,7 +209,7 @@ recipes:
     covers: []
     gate: has_junit4
     advisor: true
-    sets: [junit5]
+    sets: []   # v1: [junit5] — not in the v2 sets (flow-v2)
     rules: [junit4-to-junit5]
     verified: "2026-10"
     notes: knowledge/notes/junit4-to-5.md
@@ -238,7 +238,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []        # round 10: the reactive rule spring-security-config is gone — on the Security 7 classpath its
                      # type-attributed visitors find nothing; the plan runs the whole chain on the as-is classpath
     verified: "2026-10"
@@ -253,7 +253,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
@@ -267,7 +267,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
@@ -281,7 +281,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
@@ -295,7 +295,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
@@ -309,7 +309,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_security_7]
+    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
@@ -324,7 +324,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [jakarta]   # servlet_tomcat gets it through com.company.migrate.ServletToJakartaAndBoot
+    sets: []   # v1: [jakarta] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/servlet-to-boot.md
@@ -498,7 +498,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_boot_4]
+    sets: []   # v1: [spring_boot_4] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/boot40-to-41.md
@@ -513,7 +513,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_boot_4]
+    sets: []   # v1: [spring_boot_4] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/boot3-to-4.md
@@ -545,7 +545,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_boot_4]
+    sets: []   # v1: [spring_boot_4] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/boot3-to-4.md
@@ -560,7 +560,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_boot_4, spring_framework_7]
+    sets: []   # v1: [spring_boot_4, spring_framework_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md
@@ -575,7 +575,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [spring_boot_4, spring_framework_7]
+    sets: []   # v1: [spring_boot_4, spring_framework_7] — not in the v2 sets (flow-v2)
     rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md

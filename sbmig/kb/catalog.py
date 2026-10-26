@@ -38,6 +38,19 @@ Round 10 (2026-10-26):
   the KB patch replay / KB recipes / symbol hints of its L2 (:meth:`CaseCatalog.rejected_signatures`);
 * ``errors.jsonl`` lines that cannot be validated are counted, warned about and noted in ``kb/quarantine.jsonl``;
   ``rebuild`` never deletes a case file whose L2 had such lines.
+
+v2 (flow-v2, 2026-10-26; docs/v2/PLAN-v2.md §3.4):
+* every build error is fixed by an LLM-written fix script stored per case (:mod:`sbmig.kb.scripts`,
+  ``kb/scripts/<case id>/v<N>.py``); script attempts (fix methods ``script`` / ``script_reuse`` / ``script_augment``,
+  resolver ``script:<case id>:v<N>``) are grouped in ``evidence.fixes`` per script version (method ``script``) and in
+  ``evidence.failures`` per method;
+* the auto action is ``script`` with ``script_version`` = the best proven version of the store (most success
+  projects, then successes − failures, then the newest) — candidate, active after ``kb.auto_promote_after_projects``
+  projects without a failure of that version; the v1 actions are computed only when their v1 switches are on:
+  ``recipe`` (``kb.use_active_recipes``), ``replace`` (``kb.case_replace``), ``patch`` (``kb.use_patch_replay``), so
+  the v2 defaults give ``script`` or ``hint`` (``block`` / ``handler`` still only from a person); a pinned
+  ``{kind: script, script_version: N}`` must name a stored, not quarantined version;
+* the views get the columns ``scripts`` (stored versions) and ``best_script`` (what a reuse would run first).
 """
 from __future__ import annotations
 
@@ -57,6 +70,7 @@ from typing import Any, Iterable, Iterator, Optional, Union
 import yaml
 
 from sbmig import __version__ as AGENT_VERSION
+from sbmig.core.config import KBConfig
 from sbmig.core.models import (
     KB_RECORD_SCHEMA,
     BuildError,
@@ -90,6 +104,7 @@ from .jsonl import append_lines, lenient_fields, line_hash, parse_record, quaran
 from .labels import symbol_for_error
 from .lock import kb_lock
 from .redact import MASK
+from .scripts import SCRIPT_METHODS, ScriptStore, rank_with_pin
 
 log = logging.getLogger("sbmig.kb")
 
@@ -126,7 +141,9 @@ AUTO_KEY_ORDER = ("name", "status", "action", "hints", "error_kind", "error_clas
 CASE_CSV_COLUMNS = [
     "id", "name", "status", "action", "seen", "projects", "resolved_by", "latest_fix", "top_failure", "runs",
     "first_at", "last_at", "error_kind", "error_class", "symbol", "signature_generic", "human", "file",
+    "scripts", "best_script",                                         # v2: stored fix-script versions / reuse first
 ]
+SCRIPT_HINT_CHARS = 200
 
 _CLASS_TOKEN_RE = re.compile(r"[a-z][a-z0-9_]*")
 _SLUG_BAD_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -156,6 +173,7 @@ def _str_representer(dumper: Any, value: str) -> Any:
 _Dumper.add_representer(str, _str_representer)
 
 # process-wide caches: str(path) → (stamp, value); the stamp includes the inode, so an atomic replace always reloads
+_KB_DEFAULTS = KBConfig()
 _INDEX_CACHE: dict[str, tuple[Any, dict[str, Any]]] = {}
 _FILE_CACHE: dict[str, tuple[Any, _Loaded]] = {}
 _WARNED_LINES: set[str] = set()         # hashes of unreadable errors.jsonl lines already warned about
@@ -307,6 +325,8 @@ def action_text(action: CaseAction) -> str:
         return "patch " + (", ".join(action.patch_case_ids) or "?")
     if k == "handler":
         return "handler " + (action.handler_id or "?")
+    if k == "script":
+        return f"script v{action.script_version}" if action.script_version > 0 else "script ?"
     if k == "block":
         out = "block" + (f" ({action.block_reason})" if action.block_reason else "")
         return out + (f": {action.suggestion}" if action.suggestion else "")
@@ -329,6 +349,27 @@ def failure_hint(x: CaseFailure) -> str:
     if x.failure:
         body += f" — {x.failure}"
     return body + "; do not repeat it"
+
+
+def script_hint(meta: Any) -> str:
+    """The best stored fix script of a case, in the hint wording (v2): version, record, the LLM's analysis."""
+    projects = len(set(meta.success_projects))
+    body = (f"stored fix script v{meta.version} fixed it in {projects} project(s) ({meta.successes} ok / "
+            f"{meta.failures} failed)")
+    if meta.analysis:
+        body += ": " + _short(meta.analysis, SCRIPT_HINT_CHARS)
+    return body
+
+
+def _ref_method(ref: Any) -> str:
+    """A timeline step's method: a script attempt names its version (``script_reuse v2``)."""
+    v = getattr(ref, "script_version", 0)
+    return f"{ref.fix_method} v{v}" if v and ref.fix_method in SCRIPT_METHODS else ref.fix_method
+
+
+def _fix_group_method(method: str) -> str:
+    """Script attempts of one version are one fix whatever the mode (new / reuse / augment): method ``script``."""
+    return "script" if method in SCRIPT_METHODS else method
 
 
 def _stamp(path: Path) -> Optional[tuple[int, int, int]]:
@@ -489,21 +530,41 @@ def _index_put(idx: dict[str, Any], case: CatalogCase, rel: str) -> None:
 
 # --------------------------------------------------------------------------- context (recipes, patch cases)
 class _Context:
-    """KB recipes and patch cases, read once per update / rebuild through the store's API."""
+    """KB recipes and patch cases (read once per update / rebuild through the store's API — only when their v1
+    switch is on) and the fix-script store (v2)."""
 
     def __init__(self, cat: CaseCatalog):
         self.recipes: list[Any] = []
         self.l2_cases: dict[str, list[str]] = {}
-        self._kb = cat.kb()
         self._cases: dict[str, Any] = {}
-        try:
-            self.recipes = [r for r in self._kb.list_recipes() if r.status in ("active", "candidate")]
-        except Exception as e:
-            log.warning("case catalog: KB recipes unreadable: %s: %s", type(e).__name__, e)
-        try:
-            self.l2_cases = self._load_l2_cases(cat.root)
-        except Exception as e:
-            log.warning("case catalog: KB case index unreadable: %s: %s", type(e).__name__, e)
+        self.scripts = ScriptStore(cat.root, cat.cfg, lock_timeout=cat.lock_timeout)
+        self._script_versions: dict[str, list[Any]] = {}
+        self._kb = cat.kb() if (cat.flag("use_active_recipes") or cat.flag("use_patch_replay")) else None
+        if cat.flag("use_active_recipes"):
+            try:
+                self.recipes = [r for r in self._kb.list_recipes() if r.status in ("active", "candidate")]
+            except Exception as e:
+                log.warning("case catalog: KB recipes unreadable: %s: %s", type(e).__name__, e)
+        if cat.flag("use_patch_replay"):
+            try:
+                self.l2_cases = self._load_l2_cases(cat.root)
+            except Exception as e:
+                log.warning("case catalog: KB case index unreadable: %s: %s", type(e).__name__, e)
+
+    def script_versions(self, case_id: str) -> list[Any]:
+        """The stored fix-script versions of a case (ScriptMeta, oldest first; cached for this update)."""
+        if case_id not in self._script_versions:
+            try:
+                self._script_versions[case_id] = self.scripts.versions(case_id) if case_id else []
+            except Exception as e:  # noqa: BLE001 - a broken script store must not stop the catalog
+                log.warning("case catalog: fix scripts of %s unreadable: %s: %s", case_id, type(e).__name__, e)
+                self._script_versions[case_id] = []
+        return self._script_versions[case_id]
+
+    def best_script(self, case_id: str) -> Optional[Any]:
+        """The best proven version (no pin: the human block wins on its own), None when nothing is proven."""
+        ranked = rank_with_pin(self.script_versions(case_id))
+        return ranked[0] if ranked else None
 
     def _load_l2_cases(self, root: Path) -> dict[str, list[str]]:
         # read index.json directly: the store's _load_index may call reindex, which rebuilds this catalog
@@ -564,6 +625,16 @@ class CaseCatalog:
     def lock(self):
         """The cross-process KB lock (``<kb>/.lock``) around a write."""
         return kb_lock(self.root, self.lock_timeout)
+
+    def flag(self, name: str) -> bool:
+        """A ``kb.*`` switch of the config (read at use time); without a config the KBConfig default (v2: the v1
+        actions recipe / replace / patch are off)."""
+        kbc = getattr(self.cfg, "kb", None)
+        return bool(getattr(kbc, name, getattr(_KB_DEFAULTS, name, False)))
+
+    def scripts(self) -> ScriptStore:
+        """The fix-script store of this KB (``kb/scripts/``, v2)."""
+        return ScriptStore(self.root, self.cfg, lock_timeout=self.lock_timeout)
 
     @property
     def audit_path(self) -> Path:
@@ -663,6 +734,11 @@ class CaseCatalog:
         p = self.path_of(case_id)
         ld = self._load(p) if p is not None else None
         return ld.case if ld is not None else None
+
+    def human_of(self, case_id: str) -> CaseHuman:
+        """The (valid) ``human`` block of a case by its exact id; an empty one when the case is unknown."""
+        p = self.path_of(case_id) if case_id else None
+        return self._human_of(self._load(p) if p is not None else None)
 
     # ------------------------------------------------------------------ public reads
     def resolve(self, key: str) -> list[str]:
@@ -870,6 +946,9 @@ class CaseCatalog:
         action, status = self._action(l2, l1s, records, ev, ctx, cr_stats, cid)
         hints = ([fix_hint(ev.fixes[0])] if ev.fixes else []) + ([failure_hint(ev.failures[0])] if ev.failures
                                                                    else [])
+        best = ctx.best_script(cid) if action.kind == "script" else None
+        if best is not None:                                       # v2: what the stored script does, first
+            hints.insert(0, script_hint(best))
         cls_words = (cls or (kind.value if isinstance(kind, ErrorKind) else str(kind))).replace("_", " ")
         top_owner = variants[0].owner if variants else ""
         label = symbol
@@ -916,7 +995,8 @@ class CaseCatalog:
             pk = _project_key(r)
             if r.status == "resolved" and r.fix_method != "none" \
                     and not any(MASK in p.old or MASK in p.new for p in r.replace_pairs):
-                key = (r.fix_method, r.resolver_id, tuple((p.old, p.new) for p in r.replace_pairs))
+                # v2: one row per script version (resolver script:<id>:v<N>), new / reuse / augment alike
+                key = (_fix_group_method(r.fix_method), r.resolver_id, tuple((p.old, p.new) for p in r.replace_pairs))
                 g = fixes.setdefault(key, {"count": 0, "pk": set(), "latest": None})
                 g["count"] += 1
                 if pk:
@@ -969,7 +1049,7 @@ class CaseCatalog:
         ordered = sorted(records, key=lambda r: _ts(r.at))          # stable: same-time records keep file order
         timeline = [CaseEvent(at=r.at, project=r.project or r.project_fingerprint, run_id=r.run_id, error_id=r.id,
                               file=r.file or "", status=r.status, fix_method=r.fix_method,
-                              attempts=[f"{ref.fix_method}:{ref.outcome}" for ref in r.attempts],
+                              attempts=[f"{_ref_method(ref)}:{ref.outcome}" for ref in r.attempts],
                               resolved_by=r.resolved_by)
                     for r in ordered[-MAX_TIMELINE:]]
         return CaseEvidence(
@@ -984,15 +1064,23 @@ class CaseCatalog:
                 ) -> tuple[CaseAction, str]:
         cr_stats = cr_stats or {}
         self._fallen.pop(case_id, None)
-        # (1) KB recipes whose signatures contain the L2 or one of the case's L1s
-        recipes = ctx.recipes_for(l2, l1s)
+        # (0) v2: the best proven fix script of the case (kb/scripts/<id>/v<N>.py) — candidate, active after
+        # kb.auto_promote_after_projects projects without a failure of that version
+        best = ctx.best_script(case_id) if case_id else None
+        if best is not None:
+            promoted = (self.promote_after > 0 and len(set(best.success_projects)) >= self.promote_after
+                        and best.failures == 0)
+            return CaseAction(kind="script", script_version=best.version), "active" if promoted else "candidate"
+        # (1) KB recipes whose signatures contain the L2 or one of the case's L1s (v1: kb.use_active_recipes)
+        recipes = ctx.recipes_for(l2, l1s) if self.flag("use_active_recipes") else []
         if recipes:
             status = "active" if any(r.status == "active" for r in recipes) else "candidate"
             return CaseAction(kind="recipe", recipe_ids=[r.id for r in recipes]), status
         # (2) learned text replaces (LLM fixes that were pure token substitutions), the set fixed in the most
         # distinct projects first (then records, then first seen) — not the most records of one big project
+        # (v1: kb.case_replace)
         sets: dict[tuple, dict[str, Any]] = {}
-        for r in records:
+        for r in records if self.flag("case_replace") else ():
             if r.status == "resolved" and r.replace_rule_candidate and r.replace_pairs:
                 pairs = tuple(dict.fromkeys((p.old, p.new) for p in r.replace_pairs if _valid_pair(p.old, p.new)))
                 if not pairs:
@@ -1025,8 +1113,8 @@ class CaseCatalog:
             return action, "active" if promoted else "candidate"
         if fallen:
             self._fallen[case_id] = "fallen back: " + "; ".join(fallen)
-        # (3) replayable LLM patches (the existing KB_PATCH step replays them)
-        patch_ids = ctx.patch_ids(l2)
+        # (3) replayable LLM patches (the existing KB_PATCH step replays them; v1: kb.use_patch_replay)
+        patch_ids = ctx.patch_ids(l2) if self.flag("use_patch_replay") else []
         if patch_ids:
             return CaseAction(kind="patch", patch_case_ids=patch_ids), "candidate"
         return CaseAction(kind="hint"), "observed"
@@ -1338,6 +1426,8 @@ class CaseCatalog:
                 human = CaseHuman.model_validate(data)
             except ValueError as e:
                 raise ValueError(f"invalid human fields for case {cid}: {e}") from e
+            if "action" in fields and human.action is not None and human.action.kind == "script":
+                self._check_script_pin(cid, human.action)
             case = loaded.case.model_copy(update={"human": human})
             self._write_case(idx, case, loaded, rel, keep_human_text=False)
             self._save_index(idx)
@@ -1354,12 +1444,40 @@ class CaseCatalog:
         out = self._case(cid)
         return out if out is not None else case
 
+    def _check_script_pin(self, case_id: str, action: CaseAction) -> None:
+        """A pinned ``script`` action must name a stored version of THIS case that is not quarantined."""
+        v = action.script_version
+        if v <= 0:
+            raise ValueError(f"case {case_id}: a pinned script action needs a version (script:<N>)")
+        meta = self.scripts().get_meta(case_id, v)
+        if meta is None:
+            have = ", ".join(f"v{m.version}" for m in self.scripts().versions(case_id)) or "none"
+            raise ValueError(f"case {case_id} has no stored fix script v{v} (stored: {have}; "
+                             f"`sbmig kb scripts list --case {case_id}`)")
+        if meta.status == "quarantined":
+            raise ValueError(f"case {case_id}: fix script v{v} is quarantined (its code held a secret) and cannot be "
+                             "pinned")
+
     # ------------------------------------------------------------------ views
     def view_rows(self) -> list[dict[str, Any]]:
         rows = []
         idx = self._index()
+        store = self.scripts()
         for c in self.cases():
             st, act = c.effective_status(), c.effective_action()
+            try:
+                versions = store.versions(c.id)
+            except Exception as e:  # noqa: BLE001 - the views must come out without the script store
+                log.debug("case views: fix scripts of %s unreadable: %s", c.id, e)
+                versions = []
+            pin = c.human.action.script_version if c.human.action is not None and c.human.action.kind == "script" \
+                else 0
+            ranked = [] if st == "rejected" else rank_with_pin(versions, pin)
+            best_txt = ""
+            if ranked:
+                b = ranked[0]
+                best_txt = (f"v{b.version}" + ("*" if b.version == pin else "")
+                            + f" ({b.successes} ok / {b.failures} failed, {len(set(b.success_projects))} project(s))")
             latest = max(c.evidence.fixes, key=lambda f: _ts(f.at), default=None)
             fail = c.evidence.failures[0] if c.evidence.failures else None
             latest_txt = ""
@@ -1386,6 +1504,7 @@ class CaseCatalog:
                 "error_kind": c.error_kind.value, "error_class": c.error_class, "symbol": c.symbol,
                 "signature_generic": c.signature_generic, "human": "yes" if c.human != CaseHuman() else "",
                 "file": f"{CATALOG_DIR}/{idx['cases'].get(c.id, '')}",
+                "scripts": len(versions), "best_script": best_txt,
             })
         return rows
 
@@ -1431,12 +1550,15 @@ def render_cases_md(rows: list[dict[str, Any]], promote_after: int = DEFAULT_PRO
         "file; edit the case YAML instead. / 자동 생성 파일입니다 — 수정은 케이스 YAML 에서 하세요._",
         "",
         "**How to read.** One row per error signature (L2). *status*: `observed` (seen, no reusable fix yet) → "
-        "`candidate` (a fix that can be re-applied: learned text replace, KB recipe or replayable patch) → `active` "
-        f"(the case's own replace worked in ≥ {n} projects without a failure, or an active KB recipe); `rejected` = "
-        "switched off by a person, never applied. *action*: what a hit does at triage — `replace` (token replace on "
-        "the reported lines + imports, handler `case-replace`), `recipe` (KB OpenRewrite recipe), `patch` (replayed "
-        "LLM patch), `hint` (hints for the fix LLM only), `block` / `handler` (set by a person). `*` = set by a "
-        "person. *resolved by*: fix method → resolved errors; *top failure*: the most frequent failed attempt.",
+        "`candidate` (a fix that can be re-applied: a fix script that worked, learned text replace, KB recipe or "
+        "replayable patch) → `active` "
+        f"(the case's own fix worked in ≥ {n} projects without a failure, or an active KB recipe); `rejected` = "
+        "switched off by a person, never applied. *action*: what a hit does — `script` (v2: re-run the case's best "
+        "stored fix script `kb/scripts/<id>/v<N>.py`), `replace` (token replace on the reported lines + imports, "
+        "handler `case-replace`), `recipe` (KB OpenRewrite recipe), `patch` (replayed LLM patch), `hint` (hints for "
+        "the fix LLM only), `block` / `handler` (set by a person). `*` = set by a person. *scripts*: stored fix-script "
+        "versions; *best script*: the version a reuse runs first (`sbmig kb scripts show <id>`). *resolved by*: fix "
+        "method → resolved errors; *top failure*: the most frequent failed attempt.",
         "",
         "**How to edit.** Change the `human:` block of the case file (the `file` column of `cases.csv`, under `kb/`) "
         "— name, "
@@ -1445,11 +1567,13 @@ def render_cases_md(rows: list[dict[str, Any]], promote_after: int = DEFAULT_PRO
         "(timeline, fixes, failures, the latest fix's diff).",
         "",
         "**읽는 법.** 오류 시그니처(L2)마다 한 줄입니다. *status*: `observed`(관찰만, 재사용할 수정 없음) → "
-        "`candidate`(다시 적용할 수 있는 수정 있음: 학습된 텍스트 치환, KB 레시피, 재적용 가능한 패치) → `active`"
-        f"(케이스의 치환이 {n}개 이상 프로젝트에서 실패 없이 성공, 또는 active KB 레시피); `rejected` = 사람이 끔(적용 "
-        "안 함). *action*: 매칭될 때 하는 일 — `replace`(오류 줄 + import 줄의 토큰 치환, 핸들러 `case-replace`), "
-        "`recipe`(KB OpenRewrite 레시피), `patch`(LLM 패치 재적용), `hint`(수정 LLM 에 힌트만), `block` / `handler`"
-        "(사람이 지정). `*` = 사람이 지정한 값.",
+        "`candidate`(다시 적용할 수 있는 수정 있음: 성공한 수정 스크립트, 학습된 텍스트 치환, KB 레시피, 재적용 가능한 "
+        f"패치) → `active`(케이스의 수정이 {n}개 이상 프로젝트에서 실패 없이 성공, 또는 active KB 레시피); `rejected` = "
+        "사람이 끔(적용 "
+        "안 함). *action*: 매칭될 때 하는 일 — `script`(v2: 케이스의 가장 좋은 수정 스크립트 `kb/scripts/<id>/v<N>.py` "
+        "재실행), `replace`(오류 줄 + import 줄의 토큰 치환, 핸들러 `case-replace`), `recipe`(KB OpenRewrite 레시피), "
+        "`patch`(LLM 패치 재적용), `hint`(수정 LLM 에 힌트만), `block` / `handler`(사람이 지정). `*` = 사람이 지정한 값. "
+        "*scripts*: 저장된 스크립트 버전 수, *best script*: 재사용 때 먼저 돌릴 버전(`sbmig kb scripts show <id>`).",
         "",
         "**고치는 법.** 케이스 파일(`cases.csv` 의 `file` 열, `kb/` 아래)의 `human:` 블록(이름 / 상태 / 조치 / 힌트 / "
         "메모)을 수정하거나 `sbmig kb cases reject|pin|unpin|hint|note <id>` 를 사용하세요. 자동 계산 부분보다 "
@@ -1457,15 +1581,16 @@ def render_cases_md(rows: list[dict[str, Any]], promote_after: int = DEFAULT_PRO
         "",
         f"{len(rows)} case(s).",
         "",
-        "| id | name | status | action | seen | projects | resolved by | latest fix | top failure |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| id | name | status | action | seen | projects | resolved by | latest fix | top failure | scripts | "
+        "best script |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for r in rows:
         lines.append(f"| `{r['id']}` | {_md(r['name'])} | {_md(r['status'])} | {_md(r['action'])} | {r['seen']} | "
                      f"{r['projects']} | {_md(r['resolved_by'])} | {_md(r['latest_fix'])} | "
-                     f"{_md(r['top_failure'])} |")
+                     f"{_md(r['top_failure'])} | {r.get('scripts', 0)} | {_md(r.get('best_script'))} |")
     if not rows:
-        lines.append("| - | _no cases yet_ | | | | | | | |")
+        lines.append("| - | _no cases yet_ | | | | | | | | | |")
     return "\n".join(lines) + "\n"
 
 

@@ -1,0 +1,21 @@
+{% if mode == "augment" -%}
+Extend the fix script of this case ({{ base_label }}). It did not fix every error of the case — see what it did in this
+project below.
+{%- if base_kept %} Its changes are STILL in the tree (it fixed the errors it targeted; the errors below appeared after
+it). Answer with the COMPLETE new script: it replaces {{ base_label }} for later projects, so it must do what the old one
+did AND fix these errors, and it must not break on a tree where the old changes are already applied (idempotent).
+{%- else %} Answer with the COMPLETE new script: it replaces {{ base_label }} and runs on a tree WITHOUT its changes
+(they were rolled back). Keep what worked, fix what the result shows.
+{%- endif %}
+{%- else -%}
+Write ONE fix script for this case. It must fix every error of the case, in every file — find them through `p.errors`
+(it holds all of them, also those not shown here).
+{%- endif %}
+{% for title, body in sections %}
+## {{ title }}
+{{ body }}
+{% endfor %}
+{% if truncated %}
+(Context was shortened to fit the budget: {{ truncated | join(", ") }}. Ask with <need_files> / <need_grep> if you need more.)
+{% endif %}
+Answer now using only the output format: <analysis>, then <script> defining `def fix(p)`{% if mode == "augment" %} (the COMPLETE new script){% endif %} — or <need_files> / <need_grep>.

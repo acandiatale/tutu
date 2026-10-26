@@ -11,6 +11,7 @@ from .fakes import (
     FakeFixer,
     FakeKB,
     FakeRewriteRunner,
+    FakeScriptRunner,
     bad_build,
     compile_error,
     journal_events,
@@ -26,7 +27,7 @@ DOWN = FixProposal(changes=[], analysis="llm-error: LLM request failed after 4 a
 def make_loop(cfg, ws, profile, *, build, fixer, budget=None):
     t = Triager(cfg, registry=HandlerRegistry())
     return BuildFixLoop(cfg, ws, build, t, t.registry, fixer, FakeKB(), FakeRewriteRunner(ws), profile,
-                        budget=budget or LoopBudget.from_config(cfg))
+                        budget=budget or LoopBudget.from_config(cfg), script_runner=FakeScriptRunner())
 
 
 def _recording_fixer(loop_ref: list, answers: list):

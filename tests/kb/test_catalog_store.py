@@ -203,7 +203,8 @@ def test_first_catalog_build_of_a_fresh_kb_audits_created_cases(tmp_path):
 
     kb = tmp_path / "kb"
     kb.mkdir()
-    cfg = load_config(overrides={"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}}, "kb": {"dir": str(kb)}})
+    cfg = load_config(overrides={"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}},
+                                 "kb": {"dir": str(kb), "case_replace": True}})      # v1 learned replaces (off in v2)
     r = rec("e1", run="r1", project="alpha")                       # resolved by an LLM text replace → candidate
     (kb / "errors.jsonl").write_text(r.model_dump_json() + "\n", encoding="utf-8")
     cat = CaseCatalog(kb, cfg)

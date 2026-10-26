@@ -123,7 +123,7 @@ loop:
     restructure: { goal: package,      max_iterations: 6, enabled: false }
     verify:      { goal: package,      max_iterations: 12 }  # the script fix loop (one build per round)
   max_llm_calls: 100
-  verify_extra_llm_attempts: 2   # final verify loop: clusters blocked as repeated_failure / oscillation get N more LLM tries
+  verify_extra_llm_attempts: 2   # v1 only (v2: the verify loop is the only loop; script.max_augments_per_case limits a case)
   max_total_minutes: 240
   stall_limit: 2
   max_clusters_per_iteration: 8
@@ -131,13 +131,14 @@ loop:
   regression_ratio: 1.5
   always_final_verify: true
   oscillation_window: 4
-  max_llm_attempts_per_cluster: 2
-  blocked_policy:                # LLM attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
-    external_javax_api: 0        # dependency still exposes javax.* → library upgrade, not a code fix
-    external_api_incompatible: 1
-    artifact_not_found: 0
-    parent_not_found: 0
-    plugin_incompatible: 1
+  max_llm_attempts_per_cluster: 2  # v1 only (v2: script.max_augments_per_case)
+  blocked_policy:                # LLM script attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
+    # v2: no handler swaps a javax library / bumps a missing version / a plugin any more → the LLM script gets 2 tries
+    external_javax_api: 2        # dependency still exposes javax.* → the script may swap it for its jakarta release
+    external_api_incompatible: 2
+    artifact_not_found: 2
+    parent_not_found: 0          # in-house parent not resolvable: settings / Nexus, no code change fixes it
+    plugin_incompatible: 2
     unsupported_source: 0
     encoding: 0
 

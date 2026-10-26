@@ -14,6 +14,8 @@ from sbmig.kb.catalog import case_id_for
 from sbmig.triage.handlers import HandlerRegistry
 from sbmig.triage.handlers.case_replace import clear_catalog_cache
 
+from .helpers import V1_KB_FLAGS
+
 REPO = Path(__file__).resolve().parents[2]
 L2 = "compile|cannot_find_symbol|clientIp"
 L1 = "compile|cannot_find_symbol|method clientIp(HttpServletRequest)|class com.company.legacy.web.LegacyRequestHelper"
@@ -29,8 +31,9 @@ public class Filter {
 
 
 def _cfg(kb_dir: Path):
+    # v1 path (handler case-replace + learned replaces): its switches are off by default since v2
     return load_config(REPO / "config" / "artifacts.local-e2e.yml", repo_root=REPO,
-                       overrides={"kb": {"dir": str(kb_dir), "auto_promote_after_projects": 2}})
+                       overrides={"kb": {"dir": str(kb_dir), "auto_promote_after_projects": 2, **V1_KB_FLAGS}})
 
 
 def _record(project: str, run: str, *, method: str, resolver: str, status: str = "resolved", llm_replace: bool = False,

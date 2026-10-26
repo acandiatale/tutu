@@ -1,10 +1,26 @@
-"""The build-fix loop (ARCHITECTURE §3).
+"""The build-fix loop (ARCHITECTURE §3) — v2 (flow-v2): the script fix loop (docs/INTERFACES.md "Script fix loop (L)").
 
 Invariant: every applied change is followed by a real build. A loop round is
-    build → score previous attempts (revert regressions) → stop on BUILD SUCCESS → cluster → decide → apply+commit
+    build → score previous attempts (revert regressions, credit the scripts) → stop on BUILD SUCCESS → cluster by
+    case → decide → run the case's fix script + commit
 and the loop only exits *after* a build: on success, when the fix rounds are used up (the last round's changes are
 still built and scored), when nothing actionable is left, when only blocked clusters remain, or when the run's time
 budget is exceeded.
+
+v2 fix scripts: the errors of a build are clustered by **case** (L2 signature) across files (`Triager.cluster`,
+`sbmig.triage.cluster_cases`; ids `case:<case_id>`, `@<target>` in a targeted MSA loop) and every case gets at most
+one script attempt per fix round, by the ladder of `sbmig.triage.scripts` (reuse a proven stored version without an
+LLM call → augment the last version → a new script → BLOCKED repeated_failure). A script attempt:
+`ScriptRunner.run(ws, code, errors=case errors)` (a separate `python -I` process, `sbmig.script`); status rejected /
+error / timeout → `apply_failed` with the working tree restored (no partial application); ok without a change →
+`apply_failed` "no file changed"; ok with changes → commit `fix(script:<case_id>:v<N> <mode>): <cluster id>`. Every
+LLM script is stored in the KB (`kb.scripts.add`) BEFORE it runs, so failures keep their lineage; after scoring each
+script attempt is credited (`kb.scripts.credit`). **Rollback before the next try**: before a case's next attempt, its
+previous attempt is rolled back (reset when it is HEAD, else `git revert`) unless it was improved / build_ok (a
+regressed one was already reverted by scoring) — every version is measured from the same base, so a stored version
+is complete; the errors that previous attempt had removed come back into the case (and into the next scoring's
+baseline, so they never read as "new"). Handlers, KB recipes / patches, case-replace and SEARCH/REPLACE are not part
+of the v2 flow (`sbmig.triage.handlers` stays until PLAN-v2 step 4).
 
 Loop safety (docs/ERROR-HANDLING.md §3): blocked clusters (run-wide `BlockedRegistry`) are skipped in every later
 iteration and phase; oscillation (A↔B↔A) counts as a stall and, when it repeats, blocks the involved clusters;
@@ -38,15 +54,15 @@ from typing import Any, Callable, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
-from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster, ErrorKind,
-                               FixAttempt, IterationRecord, KBMatch, MergeConflict, Phase, PhaseResult, ProjectProfile, RecipeRef,
-                               TriageDecision, utcnow)
+from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster,
+                               ErrorKind, FileChange, FixAttempt, IterationRecord, KBMatch, MergeConflict, Phase,
+                               PhaseResult, ProjectProfile, ScriptBase, ScriptRunResult, TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
 from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, sanitize_errors
 from .budget import LoopBudget
-from .components import profile_summary
-from .error_tracker import _SYNTHETIC_PREFIXES, STAGE   # the runner's stand-in errors: one definition
+from .components import ScriptFixerMissing, profile_summary
+from .error_tracker import ROLLED_BACK_NOTE, _SYNTHETIC_PREFIXES, STAGE, fmt_error   # one definition each
 
 log = logging.getLogger("sbmig.loop")
 
@@ -85,6 +101,11 @@ WATCHDOG_QUIET_S = 60.0              # … and warns when no milestone was reach
 WATCHDOG_DUMP_S = 300.0              # … and writes a thread dump into the run dir by itself after this long (Windows has no SIGUSR1)
 REFERENCE_MAX_FILES = 3              # dropped copies per cluster
 _TRUNCATED_MARK = "\n… (truncated)"
+SCRIPT_KEEP = frozenset({"improved", "build_ok"})   # a case's previous script attempt is kept (not rolled back)
+NO_ROLLBACK = frozenset({"improved", "build_ok", "reverted", "pending", "apply_failed", "blocked"})
+SCRIPT_BASE_LOG = 50                 # ScriptBase.log lines (augment prompt)
+SCRIPT_HISTORY = 10                  # ScriptBase.history lines
+FIXER_WITHOUT_SCRIPTS_FLAG = "fixer-without-scripts"
 
 
 def sleep_seconds(seconds: float) -> None:
@@ -115,9 +136,25 @@ def _first_sentence(text: str, limit: int = 160) -> str:
     return t if len(t) <= limit else t[:limit - 1] + "…"
 
 
-def _describe_decision(d: TriageDecision, c: ErrorCluster, history: list[FixAttempt], cfg: Config) -> str:
-    """One human line per decision for the progress log ("asking the LLM (attempt 2/2 for this cluster)", …)."""
+def _head(c: ErrorCluster) -> str:
+    """'case abc1234567 (compile, 7 error(s) in 4 file(s))' — the progress-log name of a cluster."""
+    if c.case_id:
+        name = c.id[len("case:"):] if c.id.startswith("case:") else c.id
+        files = len({(e.file or "").replace("\\", "/") for e in c.errors if e.file})
+        return (f"case {name} ({c.kind.value}, {len(c.errors)} error(s)"
+                + (f" in {files} file(s))" if files else ")"))
+    return f"cluster {c.id} ({c.kind.value}, {len(c.errors)} error(s){', ' + c.file if c.file else ''})"
+
+
+def _describe_decision(d: TriageDecision, c: ErrorCluster, history: list[FixAttempt], cfg: Config,
+                       step: Any = None) -> str:
+    """One human line per decision for the progress log ("reuse: stored script v2 …", "augment 2/3 …", …)."""
     k = d.kind
+    if k == DecisionKind.SCRIPT:
+        if step is not None and getattr(step, "needs_llm", False):
+            return (f"{d.rationale} — asking the LLM for a fix script (a call can take up to "
+                    f"{cfg.llm.timeout_seconds}s × {cfg.llm.max_retries + 1} tries — quiet until it answers)")
+        return d.rationale or "fix script"
     if k == DecisionKind.HANDLER:
         return f"deterministic handler {d.handler_id or '?'}"
     if k == DecisionKind.KB_PATCH:
@@ -197,9 +234,8 @@ class _Round:
     applied_any: bool = False
     pending: list = field(default_factory=list)
     decisions: list = field(default_factory=list)
-    recipe_batch: list = field(default_factory=list)
     hopeless: set = field(default_factory=set)
-    handlers_applied: set = field(default_factory=set)
+    restored: list = field(default_factory=list)   # errors this round's rollbacks brought back (next baseline)
 
 
 @dataclass
@@ -207,7 +243,6 @@ class _Pending:
     attempt: FixAttempt
     pre_sha: str
     post_sha: str
-    kb_recipe_ids: tuple[str, ...] = ()
 
 
 def _label(c: ErrorCluster) -> str:
@@ -216,6 +251,11 @@ def _label(c: ErrorCluster) -> str:
         return cluster_label(c)
     except Exception:  # pragma: no cover - triage is ours, but stay defensive
         return c.id
+
+
+def _script_name(a: FixAttempt) -> str:
+    """'script abc1234567:v2 (augment)' — who made a script attempt (hints, logs)."""
+    return f"script {a.script_case_id or '?'}:v{a.script_version} ({a.script_mode or '?'})"
 
 
 def _related(cluster: ErrorCluster, attempts: list[FixAttempt]) -> list[FixAttempt]:
@@ -232,11 +272,16 @@ def _same_cluster(cluster: ErrorCluster, attempts: list[FixAttempt],
 
 
 class BuildFixLoop:
+    """v2 script fix loop. `handlers` / `rewrite_runner` are v1 collaborators kept in the signature (not used by the
+    v2 flow); `script_runner` = ScriptRunnerLike (the orchestrator passes a lazy `sbmig.script.ScriptRunner(cfg)`);
+    the KB's script store is `kb.scripts` (None = no KB: LLM scripts run unstored as v0, nothing is reused)."""
+
     def __init__(self, cfg: Config, ws: Workspace, build_runner: Any, triager: Any, handlers: Any, fixer: Any,
                  kb: Any, rewrite_runner: Any, profile: ProjectProfile, plan_notes: Optional[list[str]] = None,
                  budget: Optional[LoopBudget] = None, *, dry_run: bool = False,
                  history: Optional[list[FixAttempt]] = None, blocked: Optional[BlockedRegistry] = None,
-                 locator: Any = None, advisories: Optional[list[AdvisoryFinding]] = None):
+                 locator: Any = None, advisories: Optional[list[AdvisoryFinding]] = None,
+                 script_runner: Any = None):
         self.cfg = cfg
         self.ws = ws
         self.build_runner = build_runner
@@ -245,6 +290,7 @@ class BuildFixLoop:
         self.fixer = fixer
         self.kb = kb
         self.rewrite_runner = rewrite_runner
+        self.script_runner = script_runner
         self.profile = profile
         self.plan_notes = list(plan_notes or [])
         self.budget = budget or LoopBudget.from_config(cfg)
@@ -263,7 +309,10 @@ class BuildFixLoop:
         self._profile_summary: Optional[str] = None
         # run-wide blocked state (shared by every phase of the run through the orchestrator)
         self.blocked = blocked if blocked is not None else BlockedRegistry()
-        self.released_ids: list[str] = []        # final verify loop: items released for their extra attempts
+        # v1: blocked items released for the final verify loop (`loop.verify_extra_llm_attempts`). v2 releases nothing
+        # — the verify loop is the only fix loop and its per-case limit is script.max_augments_per_case; the list stays
+        # (always empty) for the orchestrator
+        self.released_ids: list[str] = []
         self.locator = locator                   # owner class → artifact (sbmig.build.classpath); None = no attribution
         # library advisory findings of the run (round 6): matched per cluster → FixContext.advisory_hints
         self.advisories: list[AdvisoryFinding] = list(advisories or [])
@@ -287,12 +336,33 @@ class BuildFixLoop:
         self.error_tracker: Any = None
         self._phase_items: list[str] = []
         self._cur_phase: Phase = Phase.JDK21
+        # v2 fix scripts: scripts credited (attempt → outcome credited), attempts rolled back before the next try, the
+        # errors the last fix round's rollbacks brought back (added to the next scoring's baseline)
+        self._credited: dict[int, str] = {}
+        self._rolled_back: set[int] = set()
+        self._ref_paths: dict[int, set[str]] = {}   # attempt → merge-conflict reference labels shown to the LLM
+        self._target: Optional[str] = None
         attach = getattr(triager, "attach_run", None)
         if callable(attach):
             try:
-                attach(blocked_registry=self.blocked, ws=ws)
+                attach(blocked_registry=self.blocked, ws=ws, scripts=self.scripts)
+            except TypeError:       # a triager from before v2 (no script store)
+                try:
+                    attach(blocked_registry=self.blocked, ws=ws)
+                except Exception as e:  # pragma: no cover - a foreign triager
+                    log.warning("triager.attach_run failed: %s", e)
             except Exception as e:  # pragma: no cover - a foreign triager
                 log.warning("triager.attach_run failed: %s", e)
+
+    @property
+    def scripts(self) -> Any:
+        """The KB's script store (`ScriptStoreLike`), None when the KB has none (NullKnowledgeBase, a v1 fake)."""
+        try:
+            st = getattr(self.kb, "scripts", None)
+        except Exception as e:  # noqa: BLE001 - a broken KB never stops the loop
+            log.warning("kb.scripts unavailable: %s: %s", type(e).__name__, e)
+            return None
+        return st if st is not None and callable(getattr(st, "add", None)) else None
 
     # ------------------------------------------------------------------ public
     def _mark(self, what: str) -> None:
@@ -363,23 +433,31 @@ class BuildFixLoop:
                          daemon=True).start()
         return stop
 
-    def run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None) -> PhaseResult:
+    def run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None,
+            first_build: Optional[BuildResult] = None) -> PhaseResult:
+        """`first_build` (v2): the build that made the caller start the loop (the failed final `clean package`) —
+        used as the loop's build 1 instead of building the same tree again (one Maven build less per failing
+        project; the caller already showed it to the error tracker)."""
         self._cur_phase = phase
         stop = self._start_watchdog(phase)
         try:
-            return self._run(phase, goal, max_iterations, target)
+            return self._run(phase, goal, max_iterations, target, first_build)
         finally:
             stop.set()
             self._mark("idle")
 
-    def _run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None) -> PhaseResult:
+    def _run(self, phase: Phase, goal: str, max_iterations: int, target: Optional[str] = None,
+             first_build: Optional[BuildResult] = None) -> PhaseResult:
         pr = PhaseResult(phase=phase)
         self._phase_items = []
         self._cur_phase = phase
+        self._target = target
         self._mark(f"loop start ({goal})")
         self.ws.journal({"event": "loop_start", "phase": phase.value, "goal": goal, "max_iterations": max_iterations,
-                         "target": target, "dry_run": self.dry_run, "blocked_known": len(self.blocked)})
+                         "target": target, "dry_run": self.dry_run, "blocked_known": len(self.blocked),
+                         "first_build": first_build.log_path if first_build is not None else None})
         prev_build: Optional[BuildResult] = None
+        prev_restored: list[BuildError] = []     # errors the previous round's rollbacks brought back (its baseline)
         prev_multiset: Optional[dict[str, int]] = None
         window: list[dict[str, int]] = []        # error multisets of the previous builds (oscillation detection)
         oscillations = 0
@@ -390,12 +468,22 @@ class BuildFixLoop:
         last: Optional[BuildResult] = None
         while True:
             build_no += 1
-            self._mark(f"mvn {goal} (build {build_no})")
-            build = self._build(goal, target, f"{phase.value}-{build_no}", phase, build_no)
+            reused = build_no == 1 and first_build is not None
+            if reused:
+                build = first_build
+                self.ws.journal({"event": "build", "phase": phase.value, "iteration": build_no, "goal": build.goal,
+                                 "target": target, "ok": build.ok, "exit_code": build.exit_code,
+                                 "errors": build.error_count, "log": build.log_path, "reused": True})
+                log.info("[%s] build 1 = the failed final build (%d error(s), %s) — not built again", phase.value,
+                         build.error_count, build.log_path or "-")
+            else:
+                self._mark(f"mvn {goal} (build {build_no})")
+                build = self._build(goal, target, f"{phase.value}-{build_no}", phase, build_no)
             last = build
             pr.iterations = build_no
-            reverted = self._score(pr, pending, build, prev_build)
+            reverted = self._score(pr, pending, build, prev_build, prev_restored)
             scored = [p.attempt for p in pending]
+            self._credit_scripts(pr, scored)
             # a revert rebuild shows the tree minus the reverted commits against the same "before" build: attempts the
             # reverted round left inconclusive (a pom edit's new dependency error hid their errors) are scored again
             pending = [p for p in pending if p.attempt.outcome == "inconclusive"] if reverted else []
@@ -403,9 +491,10 @@ class BuildFixLoop:
                 p.attempt.notes.append("scored again on the rebuild after the revert")
             # a reverted round's build shows a tree that no longer exists; a failed build without parsed errors (or a
             # timeout) says nothing about which errors are gone → void: only the scored attempts are annotated
-            self._track("observe", phase, f"{phase.value}-{build_no}", build, scored,
-                        void=bool(reverted) or (not build.ok and not build.errors) or bool(build.timed_out),
-                        target=target)
+            if not reused:      # the reused first build was observed by the caller (verify-final)
+                self._track("observe", phase, f"{phase.value}-{build_no}", build, scored,
+                            void=bool(reverted) or (not build.ok and not build.errors) or bool(build.timed_out),
+                            target=target)
             rec = IterationRecord(phase=phase, iteration=build_no, build_ok=build.ok, error_count=build.error_count,
                                   signatures=build.signature_multiset(), build_log=build.log_path)
             pr.iteration_records.append(rec)
@@ -432,20 +521,20 @@ class BuildFixLoop:
                 pr.notes.append(f"build {build_no}: error set equals an earlier one (oscillation #{oscillations}) — "
                                 "treated as a stall")
             window = (window + [multiset])[-max(2, self.cfg.loop.oscillation_window):]
-            clusters = self.triager.cluster(build.errors, self.profile)
+            clusters = self._cluster(build.errors, target)
             self._track("observe_clusters", clusters)
             if fix_rounds >= max_iterations:
-                log.info("[%s] build %d: %d error(s) in %d cluster(s) — max fix rounds (%d) used up; the phase ends "
-                         "here and the next phase / the final build carry the rest (reported as unresolved)",
+                log.info("[%s] build %d: %d error(s) in %d case(s) — max fix rounds (%d) used up; the phase ends "
+                         "here and the final build carries the rest (reported as unresolved)",
                          phase.value, build_no, build.error_count, len(clusters), max_iterations)
             else:
-                log.info("[%s] build %d: %d error(s) in %d cluster(s) → fix round %d/%d%s", phase.value, build_no,
+                log.info("[%s] build %d: %d error(s) in %d case(s) → fix round %d/%d%s", phase.value, build_no,
                          build.error_count, len(clusters), fix_rounds + 1, max_iterations,
                          " (stall level %d)" % stall_level if stall_level else "")
             if oscillating and oscillations >= 2:
                 self._block_oscillation(pr, phase, build_no, clusters)
-            if phase == Phase.VERIFY:
-                self._release_for_final_loop(pr, clusters, build_no)
+            # v2: no release of blocked items for the final loop (`loop.verify_extra_llm_attempts` is a v1 setting):
+            # the verify loop is the only fix loop, a case's limit is script.max_augments_per_case per run
             if self._only_blocked(pr, clusters, build_no):
                 break
             if fix_rounds >= max_iterations:
@@ -461,18 +550,20 @@ class BuildFixLoop:
                 break
             applied_any = False
             new_pending: list[_Pending] = []
+            restored: list[BuildError] = []
             while True:
                 fix_rounds += 1
-                new_pending, applied_any, decisions, llm_tried = self._fix_round(pr, phase, build_no, build, target,
-                                                                                 stall_level, clusters)
+                new_pending, applied_any, decisions, tried, back = self._fix_round(pr, phase, build_no, build, target,
+                                                                                   stall_level, clusters)
+                restored += back
                 rec.decisions += decisions
                 rec.cluster_count = len(rec.decisions)
                 rec.attempt_ids = [a.id for a in pr.attempts if a.iteration == build_no]
-                if self.dry_run or applied_any or not llm_tried or fix_rounds >= max_iterations \
+                if self.dry_run or applied_any or not tried or fix_rounds >= max_iterations \
                         or self.budget.time_exceeded() or all(self.blocked.covering(c) for c in clusters):
                     break
-                # the LLM produced nothing applicable: the tree is unchanged, so a rebuild would show the same errors —
-                # ask again on the same build (bounded by max_llm_attempts_per_cluster, then BLOCKED)
+                # no script changed anything: the tree is unchanged, so a rebuild would show the same errors — the
+                # next rung of each case's ladder on the same build (bounded by script.max_augments_per_case)
                 self.ws.journal({"event": "reround", "phase": phase.value, "iteration": build_no,
                                  "fix_round": fix_rounds + 1})
             pending = new_pending
@@ -485,9 +576,10 @@ class BuildFixLoop:
                 pr.notes.append(f"build {build_no}: no actionable fixes (all clusters skipped/escalated/blocked/failed "
                                 "to apply) — rebuilding would not change anything")
                 break
-            prev_build, prev_multiset = build, multiset
+            prev_build, prev_multiset, prev_restored = build, multiset, restored
 
         assert last is not None
+        self._credit_scripts(pr, [a for a in pr.attempts if a.outcome == "inconclusive"])
         if not pr.build_ok and not self.dry_run and not self.aborted:
             self._maybe_skip_test_compile(pr, phase, goal, target, last)
         if not pr.build_ok and not self.dry_run and not self.aborted:
@@ -509,32 +601,6 @@ class BuildFixLoop:
     def _touch_item(self, item_id: str) -> None:
         if item_id not in self._phase_items:
             self._phase_items.append(item_id)
-
-    def _release_for_final_loop(self, pr: PhaseResult, clusters: list[ErrorCluster], build_no: int) -> list[str]:
-        """Final verify loop (2026-10-22): a cluster blocked in an EARLIER phase for repeated_failure / oscillation that
-        shows up in this build — including one the reactor order hid until the previous cluster was fixed — is
-        released once and gets `loop.verify_extra_llm_attempts` more LLM attempts (`Triager.decide`). Policy / budget
-        blocks and items blocked inside this loop (phase verify) stay blocked."""
-        extra = max(0, int(getattr(self.cfg.loop, "verify_extra_llm_attempts", 0)))
-        if extra <= 0:
-            return []
-        released: list[str] = []
-        for c in clusters:
-            it = self.blocked.covering(c)
-            if it is None or it.id in released or it.phase == Phase.VERIFY \
-                    or it.reason not in (BlockReason.REPEATED_FAILURE, BlockReason.OSCILLATION):
-                continue
-            self.blocked.remove(it.id)
-            released.append(it.id)
-            self.released_ids.append(it.id)
-            pr.notes.append(f"build {build_no}: released blocked {it.id} ({it.reason.value}, {it.attempts} LLM "
-                            f"attempt(s) in {it.phase.value}) for the final fix loop (+{extra} LLM attempt(s))")
-            log.info("[verify] build %d: blocked %s (%s, %d attempt(s) in %s) released for the final fix loop (+%d)",
-                     build_no, it.id, it.reason.value, it.attempts, it.phase.value, extra)
-            self.ws.journal({"event": "blocked_released", "id": it.id, "reason": it.reason.value,
-                             "blocked_in": it.phase.value, "phase": pr.phase.value, "iteration": build_no,
-                             "extra_llm_attempts": extra})
-        return released
 
     def _only_blocked(self, pr: PhaseResult, clusters: list[ErrorCluster], build_no: int) -> bool:
         if not clusters:
@@ -723,8 +789,10 @@ class BuildFixLoop:
 
     # ------------------------------------------------------------------ scoring
     def _score(self, pr: PhaseResult, pending: list[_Pending], build: BuildResult,
-               prev: Optional[BuildResult]) -> bool:
+               prev: Optional[BuildResult], restored: Optional[list[BuildError]] = None) -> bool:
         """Score the previous round's attempts against `build`. Returns True when a revert changed the tree.
+        `restored` (v2) = the errors that round's rollbacks brought back: part of the baseline (`prev`), so they are
+        never "new errors in a touched file" nor counted by the ×regression_ratio rule.
 
         Outcomes: `build_ok`; `improved` = every targeted error gone AND the build reached the stage that reports them;
         `partial` = some gone, the rest remain, nothing new in the touched files; `no_change`; `regressed` = new
@@ -736,8 +804,10 @@ class BuildFixLoop:
             return False
         real = [e for e in build.errors if not _synthetic(e)]
         cur_count = Counter(_pair(e) for e in build.errors)
-        prev_errors = list(prev.errors) if prev is not None else []
+        restored = list(restored or [])
+        prev_errors = (list(prev.errors) if prev is not None else []) + restored
         prev_count = Counter(_pair(e) for e in prev_errors)
+        base_total = (prev.error_count if prev is not None else 0) + len(restored)
         total = build.error_count
         ratio = self.cfg.loop.regression_ratio
         struct_kinds = set(self.cfg.loop.structural_regression_kinds)
@@ -797,12 +867,13 @@ class BuildFixLoop:
                                "gone is unknown (no KB credit)")
                 continue
             new_in_touched = _new_in_files(build.errors, touched, prev_count)
-            ratio_regress = (not any_resolved) and total > max(a.errors_before, 1) * ratio
+            before = max(a.errors_before, base_total) if restored else a.errors_before
+            ratio_regress = (not any_resolved) and total > max(before, 1) * ratio
             if not a.cluster_resolved and (new_in_touched or ratio_regress):
                 a.outcome = "regressed"
                 a.introduced_errors = sanitize_errors(new_in_touched, 10)   # error cases: why it regressed
                 why = (f"{len(new_in_touched)} new error(s) in touched files" if new_in_touched
-                       else f"errors {a.errors_before} → {total} (> ×{ratio})")
+                       else f"errors {before} → {total} (> ×{ratio})")
                 a.notes.append(f"regressed: {why}")
             elif a.cluster_resolved:
                 a.outcome = "improved"
@@ -811,20 +882,8 @@ class BuildFixLoop:
                 a.notes.append(f"partial: {targeted - left} of {targeted} targeted error(s) gone, {left} remain")
             else:
                 a.outcome = "no_change"
-        # credit KB recipes: success / failure only — partial and inconclusive prove neither
-        for p in pending:
-            outcome = p.attempt.outcome
-            for rid in p.kb_recipe_ids:
-                if outcome in ("partial", "inconclusive"):
-                    self.ws.journal({"event": "kb_credit_skipped", "phase": pr.phase.value, "recipes": [rid],
-                                     "attempt": p.attempt.id, "reason": outcome})
-                    continue
-                ok = outcome in ("improved", "build_ok")
-                try:
-                    self.kb.credit_recipe(rid, ok, self.profile.fingerprint)
-                    self.credited.append(f"{rid} ({'success' if ok else 'failure'})")
-                except Exception as e:  # pragma: no cover - KB problems never break the loop
-                    log.warning("kb.credit_recipe(%s) failed: %s", rid, e)
+        # v2: no KB recipe credit (no KB recipes in the flow); the fix scripts are credited by the caller after the
+        # revert below settled the outcomes (`_credit_scripts`)
         reverted = False
         if not build.ok and self.cfg.loop.revert_on_regression and any(p.attempt.outcome == "regressed" for p in pending):
             commits: list[str] = []
@@ -904,7 +963,8 @@ class BuildFixLoop:
 
     def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
         """The same error in OTHER files of this run (shared signature): hint material for the prompt only (round 10)
-        — how a sibling was fixed, or what did not work there."""
+        — how a sibling was fixed, or what did not work there. v2: a case already spans its files, so this is the
+        same case in another scope (another MSA service's loop)."""
         mine = {id(a) for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)}
         out: list[str] = []
         for a in reversed(_related(cluster, self.history)):
@@ -912,7 +972,8 @@ class BuildFixLoop:
                 continue
             where = next((e.file for e in a.cluster_errors if e.file), None) or a.cluster_id
             sig = next((s for s in a.cluster_signatures if s in cluster.signatures), "")
-            who = a.decision.handler_id or ", ".join(a.decision.recipe_ids) or a.decision.kind.value
+            who = (_script_name(a) if a.decision.kind == DecisionKind.SCRIPT else
+                   a.decision.handler_id or ", ".join(a.decision.recipe_ids) or a.decision.kind.value)
             if a.outcome in ("improved", "build_ok", "partial"):
                 text = (f"this run: the same error ({sig}) in {where} was {'partly ' if a.outcome == 'partial' else ''}"
                         f"fixed by attempt {a.id} ({who}): {_change_line(a)}")
@@ -924,24 +985,34 @@ class BuildFixLoop:
                 break
         return out
 
+    def _cluster(self, errors: list[BuildError], target: Optional[str]) -> list[ErrorCluster]:
+        """v2: one cluster per case (L2) across files, scoped by the loop's build target (MSA services)."""
+        try:
+            return self.triager.cluster(errors, self.profile, scope=target)
+        except TypeError:           # a triager without `scope` (v1 / foreign): its own clusters
+            return self.triager.cluster(errors, self.profile)
+
     def _fix_round(self, pr: PhaseResult, phase: Phase, iteration: int, build: BuildResult, target: Optional[str],
                    stall_level: int, clusters: Optional[list[ErrorCluster]] = None
-                   ) -> tuple[list[_Pending], bool, list[TriageDecision], bool]:
-        """One fix round. Returns (pending attempts, anything applied, decisions, an LLM attempt was made)."""
+                   ) -> tuple[list[_Pending], bool, list[TriageDecision], bool, list[BuildError]]:
+        """One fix round: at most one script attempt per case, `loop.max_clusters_per_iteration` cases. Returns
+        (pending attempts, anything applied, decisions, a script attempt was made, errors brought back by rollbacks)."""
         if clusters is None:
-            clusters = self.triager.cluster(build.errors, self.profile)
+            clusters = self._cluster(build.errors, target)
         planned = self._plan(clusters)
         limit = max(1, self.cfg.loop.max_clusters_per_iteration)
         self.ws.journal({"event": "triage", "phase": phase.value, "iteration": iteration,
                          "clusters": [{"id": c.id, "kind": c.kind.value, "file": c.file, "module": c.module,
-                                       "errors": len(c.errors), "priority": c.priority} for c in clusters],
+                                       "case_id": c.case_id, "errors": len(c.errors),
+                                       "files": len({e.file for e in c.errors if e.file}), "priority": c.priority}
+                                      for c in clusters],
                          "masked": [c.id for c, skip, _ in planned if skip is not None]})
         st = _Round(phase=phase, iteration=iteration, build=build, target=target, stall_level=stall_level,
                     others={c.id: _label(c) for c in clusters},
                     n=sum(1 for a in pr.attempts if a.iteration == iteration))   # ids stay unique across re-rounds
         masked: list[tuple[ErrorCluster, TriageDecision, list[str]]] = []
         handled = 0
-        llm_before = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.LLM_FIX)
+        before = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.SCRIPT)
         for c, skip, by in planned:
             c2 = self._unblocked_part(st, c)
             if c2 is None:
@@ -962,16 +1033,8 @@ class BuildFixLoop:
             else:
                 st.decisions.append(skip)
                 self._journal_decision(st, skip)
-        if st.recipe_batch:
-            changed = self._run_recipe_batch(pr, st)
-            st.applied_any |= changed
-            if not changed:
-                # recipes did nothing: give those clusters their next option in this same round
-                retry, st.recipe_batch = st.recipe_batch, []
-                for c, _d, _m in retry:
-                    self._handle_cluster(pr, st, c, prefix="(after a no-op recipe run) ", allow_recipes=False)
-        llm_tried = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.LLM_FIX) > llm_before
-        return st.pending, st.applied_any, st.decisions, llm_tried
+        tried = sum(1 for a in pr.attempts if a.decision.kind == DecisionKind.SCRIPT) > before
+        return st.pending, st.applied_any, st.decisions, tried, list(st.restored)
 
     def _unblocked_part(self, st: "_Round", c: ErrorCluster) -> Optional[ErrorCluster]:
         """Drop the errors the run already blocked; None when nothing is left (decision BLOCKED is recorded)."""
@@ -1006,37 +1069,55 @@ class BuildFixLoop:
         except Exception as e:  # noqa: BLE001 - the tracker never breaks the loop
             log.warning("error tracker %s failed: %s: %s", method, type(e).__name__, e)
 
-    def _handle_cluster(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, prefix: str = "",
-                        allow_recipes: bool = True) -> str:
-        """Decide → apply → commit; a deterministic option that changes nothing falls through to the next one.
-        Returns "blocked" (nothing left to do for this cluster), "escalated", "skipped", "recipe" or "attempted"."""
+    def _script_step(self, c: ErrorCluster) -> Any:
+        """The ladder step of the triager's last SCRIPT decision for `c` (computed here for a triager without it)."""
+        getter = getattr(self.triager, "script_step", None)
+        step = None
+        if callable(getter):
+            try:
+                step = getter(c.id)
+            except Exception:  # pragma: no cover - a foreign triager
+                step = None
+        if step is None:
+            from sbmig.triage.scripts import plan_script_step
+            step = plan_script_step(c, self._previous(c), self.scripts, self.cfg)
+        return step
+
+    def _handle_cluster(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, prefix: str = "") -> str:
+        """Decide → (v2) run the case's fix script → commit. Returns "blocked" (nothing left to do for this cluster),
+        "escalated", "skipped" or "attempted"."""
         from sbmig.triage.blocked import BlockedCandidate
         self._mark(f"KB match for {c.id}")
-        m = self._kb_match(c)
-        for _ in range(6):
+        m = self._kb_match(c)            # v2: only a case pinned to `block` by a person is used from it
+        for _ in range(4):
             self._mark(f"deciding {c.id}")
             d = self._decide(st.phase, st.iteration, st.stall_level, c, m)
             if prefix:
                 d.rationale = prefix + d.rationale
+            if d.kind in (DecisionKind.HANDLER, DecisionKind.KB_RECIPE, DecisionKind.KB_PATCH, DecisionKind.LLM_FIX):
+                # a v1 decision (a foreign triager): v2 fixes every error with a fix script
+                d = TriageDecision(cluster_id=c.id, kind=DecisionKind.SCRIPT,
+                                   rationale=f"{d.kind.value} is not part of the v2 flow → fix script ({d.rationale})")
+            step = self._script_step(c) if d.kind == DecisionKind.SCRIPT else None
             forced = None
-            if d.kind == DecisionKind.LLM_FIX and self.llm_unavailable:
+            if step is not None and step.mode is None:
+                forced = BlockedCandidate(reason=BlockReason.REPEATED_FAILURE, errors=list(c.errors),
+                                          evidence=[(step.why or "fix-script limits reached") + "; needs a human"])
+            elif step is not None and step.needs_llm and self.llm_unavailable:
                 forced = BlockedCandidate(reason=BlockReason.LLM_UNAVAILABLE, errors=list(c.errors),
                                           evidence=[f"LLM unavailable ({self.llm_unavailable})"])
-            elif d.kind == DecisionKind.LLM_FIX and not self.budget.llm_allowed():
+            elif step is not None and step.needs_llm and not self.budget.llm_allowed():
                 forced = BlockedCandidate(reason=BlockReason.BUDGET_EXHAUSTED, errors=list(c.errors),
                                           evidence=[f"LLM budget exhausted ({self.budget.llm_calls}/"
                                                     f"{self.budget.max_llm_calls} calls)"])
             if forced is not None:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                                    rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
-            if d.kind == DecisionKind.KB_RECIPE and not allow_recipes:
-                d = TriageDecision(cluster_id=c.id, kind=DecisionKind.ESCALATE,
-                                   rationale=prefix + "escalated: only recipes left and they changed nothing")
+                step = None
             st.decisions.append(d)
             self._journal_decision(st, d)
-            log.info("[%s it%d] cluster %s (%s, %d error(s)%s): %s\n    first error: %s", st.phase.value,
-                     st.iteration, c.id, c.kind.value, len(c.errors), f", {c.file}" if c.file else "",
-                     _describe_decision(d, c, self.history, self.cfg), _first_error_line(c))
+            log.info("[%s it%d] %s: %s\n    first error: %s", st.phase.value, st.iteration, _head(c),
+                     _describe_decision(d, c, self.history, self.cfg, step), _first_error_line(c))
             if d.kind == DecisionKind.ESCALATE:
                 self.escalated[c.id] = d
                 st.hopeless.add(c.id)
@@ -1047,57 +1128,403 @@ class BuildFixLoop:
                 if not rest:
                     st.hopeless.add(c.id)
                     return "blocked"
-                # only part of the cluster is blocked: keep working on the rest of the file
+                # only part of the case is blocked (e.g. one javax constructor mismatch): keep working on the rest
                 c = _reduced(c, rest)
-                prefix = "(rest of a partially blocked cluster) "
+                prefix = "(rest of a partially blocked case) "
                 continue
             if d.kind == DecisionKind.SKIP or self.dry_run:
                 return "skipped"
-            if d.kind == DecisionKind.KB_RECIPE:
-                st.recipe_batch.append((c, d, m))
-                return "recipe"
-            st.n += 1
-            att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
-            pre = self.ws.head()
-            if d.kind == DecisionKind.HANDLER:
-                self._mark(f"handler {d.handler_id} on {c.id}")
-                self._apply_handler(att, c)
-                msg = f"fix(handler:{d.handler_id}): {c.id}"
-                if att.outcome == "apply_failed" and d.handler_id in st.handlers_applied:
-                    # whole-module handler (source-encoding, strip-utf8-bom …) already fixed this cluster's module in
-                    # this iteration: not a failure — wait for the rebuild instead of falling through to the LLM
-                    att.outcome, att.apply_errors = "no_change", []
-                    att.notes.append(f"handler {d.handler_id} already applied in this iteration (module-wide fix); "
-                                     "waiting for the rebuild")
-                    self._record(pr, att)
-                    return "attempted"
-            elif d.kind == DecisionKind.KB_PATCH:
-                self._apply_kb_patch(att, c, m)
-                msg = f"fix(kb-patch:{','.join(d.kb_case_ids)}): {c.id}"
-            else:
-                self._apply_llm(att, c, m, st.phase, st.iteration, st.stall_level, st.others)
-                msg = f"fix(llm): {c.id} {att.model or 'llm'}"
-                files = ", ".join(dict.fromkeys(ch.new_path or ch.path for ch in att.changes))[:200]
-                log.info("[%s it%d] cluster %s: LLM answered — %d change(s)%s%s%s", st.phase.value, st.iteration,
-                         c.id, len(att.changes), f" in {files}" if files else "",
-                         f", {len(att.apply_errors)} apply error(s)" if att.apply_errors else "",
-                         f" — {_first_sentence(att.analysis)}" if att.analysis else "")
-            if att.outcome != "apply_failed":
-                self._mark(f"git commit for {c.id}")
-                sha = self._commit(msg, pre)
-                if sha is None:
-                    att.outcome = "apply_failed"
-                    att.apply_errors.append("no file changed")
-                else:
-                    att.applied, att.commit = True, sha
-                    st.pending.append(_Pending(att, pre, sha))
-                    st.applied_any = True
-                    if d.kind == DecisionKind.HANDLER and d.handler_id:
-                        st.handlers_applied.add(d.handler_id)
-            self._record(pr, att)
-            if att.applied or d.kind == DecisionKind.LLM_FIX:
-                return "attempted"      # never call the LLM twice for one cluster in one round
+            self._script_attempt(pr, st, c, d, step)
+            return "attempted"      # one script attempt per case and round
         return "attempted"
+
+    # ------------------------------------------------------------------ v2 fix scripts
+    def _project(self) -> str:
+        """The project name the KB records use (`sbmig.kb.ledger.project_name`)."""
+        try:
+            from sbmig.kb.ledger import project_name
+            return project_name(self.profile, self.ws)
+        except Exception:  # pragma: no cover - the KB package is ours
+            return (getattr(self.profile, "name", "") or "") or self.ws.root.name
+
+    def _script_attempt(self, pr: PhaseResult, st: "_Round", c: ErrorCluster, d: TriageDecision, step: Any) -> None:
+        """One script attempt of a case: build the augment base (before anything moves), roll back the case's previous
+        attempt, get the code (stored version or the LLM — stored before it runs), run it, commit. An attempt that
+        changes nothing gives the rollback back (the tree stays as the last build saw it)."""
+        case_id = step.case_id
+        base = self._script_base(c, step) if step.mode == "augment" else None
+        head_before = self.ws.head()
+        rolled = self._rollback_previous(c, st)
+        restored = rolled[1] if rolled else []
+        if restored:                                    # the case as it stands on the rolled-back tree
+            c = _reduced(c, [*c.errors, *restored])
+        st.n += 1
+        att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
+        att.errors_before = st.build.error_count + len(st.restored)
+        att.script_mode, att.script_case_id = step.mode, case_id
+        if rolled is not None and rolled[2]:
+            att.notes.append(rolled[2])
+        if step.mode == "reuse":
+            meta = step.meta
+            code = step.code
+            att.script_version, att.script_parent, att.script_code = step.version, getattr(meta, "parent", None), code
+            att.analysis = (getattr(meta, "analysis", "") or "").strip() or \
+                f"stored fix script {case_id} v{step.version} (reused, no LLM call)"
+            att.notes.append(f"reused stored v{step.version}: {getattr(meta, 'successes', 0)} success(es) in "
+                             f"{len(getattr(meta, 'success_projects', None) or [])} project(s), "
+                             f"{getattr(meta, 'failures', 0)} failure(s)")
+        else:
+            code = self._ask_script(att, c, st, step, base)
+        if code:
+            self._run_script(att, c, code, st)
+        if rolled is not None and rolled[3]:
+            prev_att = rolled[0]
+            if att.applied:
+                self._rolled_back.add(id(prev_att))
+                prev_att.notes.append(ROLLED_BACK_NOTE + (f"v{att.script_version}" if att.script_version
+                                                           else f"attempt {att.id}"))
+                self._track("note_rollback", prev_att)
+            else:
+                self._undo_rollback(st, prev_att, head_before, restored, att)
+        self._record(pr, att)
+        if att.outcome == "apply_failed":
+            self._credit_script(att)
+        self._log_script_result(st, c, att)
+
+    def _script_base(self, c: ErrorCluster, step: Any) -> Optional[ScriptBase]:
+        """The augment context: the version to extend and what it did in this project (or, for the store's newest
+        version, what the store knows of it), the case's remaining errors and the version history."""
+        try:
+            a = step.base_attempt
+            if a is not None:
+                res = a.script_result
+                changed = [ch.new_path or ch.path for ch in a.changes] or (list(res.changed_files) if res else [])
+                err = (res.error if res is not None else "") or "; ".join(a.apply_errors)
+                return ScriptBase(case_id=step.case_id, version=int(a.script_version or 0), code=a.script_code,
+                                  outcome=a.outcome, status=(res.status if res is not None else ""), error=err[:2000],
+                                  log=list(res.log[-SCRIPT_BASE_LOG:]) if res is not None else [],
+                                  changed_files=list(dict.fromkeys(changed))[:100],
+                                  remaining_errors=[fmt_error(e) for e in c.errors][:30],
+                                  introduced_errors=[fmt_error(e) for e in a.introduced_errors][:20],
+                                  history=self._script_history(step.case_id, c))
+            meta = step.meta
+            return ScriptBase(case_id=step.case_id, version=int(getattr(meta, "version", 0) or 0), code=step.code,
+                              remaining_errors=[fmt_error(e) for e in c.errors][:30],
+                              history=self._script_history(step.case_id, c))
+        except Exception as e:  # noqa: BLE001 - a broken base means a new script, never a crash
+            log.warning("script base for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return None
+
+    def _script_history(self, case_id: str, c: ErrorCluster) -> list[str]:
+        """'v1: 2 ok / 1 failed / 0 partial — last: no_change' per stored version, then this run's attempts."""
+        out: list[str] = []
+        store = self.scripts
+        if store is not None:
+            try:
+                for m in list(store.versions(case_id) or [])[-SCRIPT_HISTORY:]:
+                    line = (f"v{m.version}: {m.successes} ok / {m.failures} failed / {m.partials} partial — last: "
+                            f"{m.last_outcome or '-'}")
+                    if m.parent:
+                        line += f" (augments v{m.parent})"
+                    if m.status != "active":
+                        line += f" [{m.status}]"
+                    out.append(line)
+            except Exception as e:  # noqa: BLE001
+                log.debug("script history of %s unavailable: %s", case_id, e)
+        for a in _same_cluster(c, self.history, self.blocked.canonical_file):
+            if a.decision.kind == DecisionKind.SCRIPT:
+                st = a.script_result.status if a.script_result is not None else "-"
+                out.append(f"this run: {a.id} v{a.script_version} {a.script_mode} → {a.outcome} (script {st})")
+        return out[-2 * SCRIPT_HISTORY:]
+
+    def _rollback_previous(self, c: ErrorCluster, st: "_Round"
+                           ) -> Optional[tuple[FixAttempt, list[BuildError], str, bool]]:
+        """Roll back the case's previous script attempt unless it was improved / build_ok (or already reverted /
+        never applied). Returns (that attempt, the errors it had removed — back in the tree now, a note for the next
+        attempt, rolled back) or None. A rollback that fails (a later commit changed the same lines) is a note (rolled
+        back False): the next version then runs on top of it."""
+        prev = [a for a in _same_cluster(c, self.history, self.blocked.canonical_file)
+                if a.decision.kind == DecisionKind.SCRIPT and a.applied and a.commit]
+        if not prev:
+            return None
+        a = prev[-1]
+        if a.outcome in NO_ROLLBACK or id(a) in self._rolled_back:
+            return None
+        how = ""
+        try:
+            if self.ws.head() == a.commit and a.base_commit:
+                self.ws.revert_to(a.base_commit)
+                how = "reset"
+            else:
+                res = self.ws._git("revert", "--no-edit", a.commit, check=False)   # noqa: SLF001
+                if res.returncode != 0:
+                    self.ws._git("revert", "--abort", check=False)                  # noqa: SLF001
+                    why = (res.stderr or res.stdout or "").strip()[:200]
+                    a.notes.append(f"rollback before the next attempt failed: {why}")
+                    log.warning("[%s it%d] %s: rollback of %s failed (%s) — the next version runs on top of it",
+                                st.phase.value, st.iteration, _head(c), a.id, why)
+                    return a, [], (f"the previous attempt {a.id} (v{a.script_version}, {a.outcome}) could not be "
+                                   f"rolled back ({why}): this version ran on top of it"), False
+                how = "git revert"
+        except Exception as e:  # noqa: BLE001 - a git problem: keep going on top of it
+            a.notes.append(f"rollback before the next attempt failed: {type(e).__name__}: {e}")
+            return a, [], (f"the previous attempt {a.id} could not be rolled back ({type(e).__name__}): this "
+                           "version ran on top of it"), False
+        restored = _gone(a.cluster_errors, st.build)
+        st.restored += restored
+        self.ws.journal({"event": "script_rollback", "phase": st.phase.value, "iteration": st.iteration,
+                         "attempt": a.id, "case": a.script_case_id, "version": a.script_version,
+                         "outcome": a.outcome, "commit": a.commit, "mode": how, "restored_errors": len(restored)})
+        log.info("[%s it%d] %s: rolled back v%s (%s, %s) before the next attempt%s", st.phase.value, st.iteration,
+                 _head(c), a.script_version, a.id, a.outcome,
+                 f" — {len(restored)} error(s) it had removed are back" if restored else "")
+        return a, restored, (f"the previous attempt {a.id} (v{a.script_version}, {a.outcome}) was rolled back "
+                             f"({how}) before this one"), True
+
+    def _undo_rollback(self, st: "_Round", prev_att: FixAttempt, head_before: str, restored: list[BuildError],
+                       att: FixAttempt) -> None:
+        """The next attempt changed nothing: put the rolled-back attempt back (the tree the last build saw)."""
+        try:
+            if self.ws.is_dirty():
+                self.ws.discard_uncommitted()
+            self.ws.revert_to(head_before)
+        except Exception as e:  # noqa: BLE001
+            log.warning("could not undo the rollback of %s: %s: %s", prev_att.id, type(e).__name__, e)
+            return
+        for e in restored:
+            if e in st.restored:
+                st.restored.remove(e)
+        att.notes.append(f"the rollback of {prev_att.id} was undone: this attempt changed nothing")
+        self.ws.journal({"event": "script_rollback_undone", "phase": st.phase.value, "iteration": st.iteration,
+                         "attempt": prev_att.id, "next_attempt": att.id, "head": head_before})
+
+    def _ask_script(self, att: FixAttempt, c: ErrorCluster, st: "_Round", step: Any,
+                    base: Optional[ScriptBase]) -> str:
+        """new / augment: the LLM writes the script; it is stored in the KB before it runs. Returns the code, or ""
+        when there is none (the attempt is then apply_failed with the reason)."""
+        hints = [h for h in self._sibling_hints(c)]
+        other = "\n".join(v for k, v in st.others.items() if k != c.id)[:4000]
+        self._mark(f"advisory hints for {c.id}")
+        adv_hints, att.advisory_ids = self._advisory_hints(c)
+        self._mark(f"merge-conflict hints for {c.id}")
+        ref_notes, ref_files = self._merge_conflict_hints(att, c)
+        if ref_files:
+            self._ref_paths[id(att)] = {_norm_path(k) for k in ref_files}
+        mode = step.mode if base is not None or step.mode == "new" else "new"
+        if step.mode == "augment" and base is None:
+            att.notes.append("augment without a usable base → asking for a new script")
+        att.script_mode = mode
+        if mode == "augment":
+            att.script_parent = int(base.version) or None
+        # the stronger model on a stall, and from the second augment of a case on (v2: every fix runs in the verify
+        # loop, so "the final loop" no longer selects it)
+        escalate = st.stall_level >= self.cfg.loop.stall_limit or (mode == "augment" and step.augments_used >= 1)
+        sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
+        ctx = FixContext(phase=st.phase, iteration=st.iteration, stall_level=st.stall_level,
+                         profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
+                         advisory_hints=adv_hints, previous_attempts=self._previous(c), other_errors_summary=other,
+                         use_escalation_model=escalate, reference_notes=ref_notes, reference_files=ref_files,
+                         script_mode=mode, case_id=step.case_id, signature_generic=sig,
+                         script_base=base if mode == "augment" else None)
+        self._mark(f"fixer.propose_script for {c.id} ({mode}: prompt packing + LLM call)")
+        try:
+            proposal = self.fixer.propose_script(self.ws, c, ctx)
+        except ScriptFixerMissing as e:
+            self._fail(att, str(e))
+            self._no_script_fixer(att, c, str(e))
+            return ""
+        except Exception as e:
+            self.budget.charge_llm(1)
+            log.warning("fixer.propose_script failed for %s: %s", c.id, e)
+            self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
+            if is_llm_transport_error(f"llm-error: {type(e).__name__}: {e}"):
+                self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
+            return ""
+        self.budget.charge_llm(max(1, proposal.llm_usage.calls))
+        self._mark(f"LLM answered for {c.id}")
+        att.model, att.prompt_hash, att.llm_usage = proposal.model, proposal.prompt_hash, proposal.llm_usage
+        att.analysis = proposal.analysis
+        if is_llm_transport_error(proposal.analysis):
+            self._fail(att, proposal.analysis.strip()[:300])
+            self._llm_transport_failure(att, c, proposal.analysis.strip()[len("llm-error:"):].strip()[:300])
+            return ""
+        self._llm_streak, self._streak_attempts = [], []
+        if self._llm_config_check(att, c, proposal.analysis, proposal.prompt_hash):
+            return ""
+        if escalate:
+            att.notes.append(f"escalation model requested (stall level {st.stall_level})"
+                             if st.stall_level >= self.cfg.loop.stall_limit else
+                             f"escalation model requested (augment {step.augments_used + 1} of the case)")
+        code = (proposal.code or "").strip("\n")
+        log.info("[%s it%d] %s: LLM answered (%s) — %s%s", st.phase.value, st.iteration, _head(c), mode,
+                 "a script" if code.strip() else "no script",
+                 f" — {_first_sentence(proposal.analysis)}" if proposal.analysis else "")
+        if not code.strip():
+            why = "LLM proposed no script" + (f": {proposal.error}" if proposal.error else "")
+            if proposal.requested_files:
+                why += f" (asked for: {', '.join(proposal.requested_files[:5])})"
+            self._fail(att, why)
+            return ""
+        att.script_code = code
+        if base is not None and mode == "augment" and code.strip() == (base.code or "").strip():
+            self._fail(att, f"the augmented script is identical to its base v{base.version} — not run again")
+            return ""
+        if not self._store_script(att, c, step, proposal, code):
+            return ""
+        return code
+
+    def _store_script(self, att: FixAttempt, c: ErrorCluster, step: Any, proposal: Any, code: str) -> bool:
+        """Store an LLM script before it runs (`kb.scripts.add`, parent = the augmented version): failures keep their
+        lineage. No KB → it runs unstored (v0). False = do not run it (the same code already ran in this run)."""
+        store = self.scripts
+        if store is None:
+            att.notes.append("fix script not stored (no knowledge base): v0")
+            return True
+        sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
+        try:
+            meta = store.add(step.case_id, sig, code, parent=att.script_parent, analysis=proposal.analysis or "",
+                             model=proposal.model or "", run_id=self.ws.run_id, project=self._project(), source="llm")
+        except Exception as e:  # noqa: BLE001 - the KB never stops the loop: run it unstored
+            log.warning("kb.scripts.add(%s) failed: %s: %s", step.case_id, type(e).__name__, e)
+            att.notes.append(f"fix script not stored ({type(e).__name__}: {e}): v0")
+            return True
+        att.script_version = int(getattr(meta, "version", 0) or 0)
+        if getattr(meta, "status", "active") == "quarantined":
+            att.notes.append(f"stored as v{att.script_version} masked and quarantined (the code matched a secret "
+                             "pattern) — never reused")
+        ran = next((a for a in _same_cluster(c, self.history, self.blocked.canonical_file)
+                    if a.decision.kind == DecisionKind.SCRIPT and a.script_version == att.script_version
+                    and att.script_version and a.script_result is not None), None)
+        if ran is not None:
+            self._credited[id(att)] = "duplicate"          # that run was credited already
+            self._fail(att, f"the LLM answered with v{att.script_version} again (identical code), which already "
+                            f"ran in this run ({ran.id}: {ran.outcome}) — not run again")
+            return False
+        self.ws.journal({"event": "script_stored", "case": step.case_id, "version": att.script_version,
+                         "parent": att.script_parent, "mode": att.script_mode, "attempt": att.id,
+                         "status": getattr(meta, "status", "")})
+        return True
+
+    def _run_script(self, att: FixAttempt, c: ErrorCluster, code: str, st: "_Round") -> None:
+        """Run the script on the project (`errors` = the case's errors); rejected / error / timeout → nothing applied
+        (working tree restored); ok + changes → commit."""
+        case_id, v = att.script_case_id, att.script_version
+        runner = self.script_runner
+        if runner is None:
+            return self._fail(att, "no script runner (sbmig.script) in this run")
+        pre = self.ws.head()
+        self._mark(f"fix script {case_id}:v{v} on {c.id}")
+        with self._busy_with(f"fix script {case_id}:v{v}"):
+            try:
+                res = runner.run(self.ws, code, errors=list(c.errors))
+            except Exception as e:  # noqa: BLE001 - the runner says it never raises; stay defensive
+                res = ScriptRunResult(status="error", error=f"script runner failed: {type(e).__name__}: {e}")
+        att.script_result = res
+        if res.status != "ok":
+            why = f"script {res.status}: {(res.error or '').strip()[:400] or 'no detail'}"
+            self._fail(att, why)                   # no partial application: the working tree is restored
+            if res.problems:
+                att.notes.append("static check: " + "; ".join(res.problems[:5]))
+            return
+        self._drop_reference_writes(att, pre)
+        self._mark(f"git commit for {c.id}")
+        sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre)
+        if sha is None:
+            att.outcome = "apply_failed"
+            att.apply_errors.append("no file changed")
+            return
+        att.applied, att.commit = True, sha
+        try:
+            files = self._changed_between(pre, sha)
+        except Exception:  # pragma: no cover - git trouble: fall back to the script's own account
+            files = list(res.changed_files)
+        att.changes = [FileChange(path=f, op="modify" if self.ws.exists(f) else "delete") for f in files]
+        warn = int(getattr(getattr(self.cfg, "script", None), "max_files_changed_warn", 0) or 0)
+        if warn and len(files) > warn:
+            note = (f"the script changed {len(files)} files (more than script.max_files_changed_warn = {warn}) — "
+                    "check its diff")
+            att.notes.append(note)
+            log.warning("[%s it%d] %s: %s", st.phase.value, st.iteration, _head(c), note)
+        st.pending.append(_Pending(att, pre, sha))
+        st.applied_any = True
+
+    def _drop_reference_writes(self, att: FixAttempt, pre: str) -> None:
+        """The merge-conflict reference copies the prompt showed are not in the build (they live under the run dir):
+        a script that wrote a file at such a path wrote junk into the project — undone before the commit (round 9:
+        "never a patch target")."""
+        refs = self._ref_paths.get(id(att))
+        if not refs:
+            return
+        try:
+            hit = [f for f in self.ws.changed_files_since(pre) if _norm_path(f) in refs]
+            for f in hit:
+                tracked = self.ws._git("cat-file", "-e", f"{pre}:{f}", check=False).returncode == 0   # noqa: SLF001
+                if tracked:
+                    self.ws._git("checkout", pre, "--", f, check=False)                            # noqa: SLF001
+                elif self.ws.exists(f):
+                    self.ws.delete(f)
+        except Exception as e:  # noqa: BLE001 - best effort; the diff shows what stayed
+            log.warning("could not undo writes to reference copies for %s: %s", att.id, e)
+            return
+        if hit:
+            att.notes.append(f"dropped {len(hit)} change(s) aimed at a read-only reference copy: {', '.join(hit[:3])}")
+
+    def _log_script_result(self, st: "_Round", c: ErrorCluster, att: FixAttempt) -> None:
+        """`[verify it2] case abc123 (compile, 7 error(s) in 4 file(s)): script v2 reuse — ok, 4 file(s) changed`."""
+        res = att.script_result
+        if res is None:
+            what = "no script — " + _first_sentence("; ".join(att.apply_errors) or "nothing to run", 200)
+        elif res.status != "ok":
+            what = f"{res.status} — {_first_sentence(res.error or '-', 200)} (nothing applied)"
+        elif att.applied:
+            what = f"ok, {len(att.changes)} file(s) changed"
+        else:
+            what = "ok, no file changed"
+        log.info("[%s it%d] %s: script v%s %s — %s", st.phase.value, st.iteration, _head(c), att.script_version,
+                 att.script_mode or "?", what)
+
+    def _credit_script(self, att: FixAttempt) -> None:
+        """`kb.scripts.credit(case, version, outcome)` once per attempt and final outcome (an inconclusive one is
+        credited again when a revert rebuild scores it); unstored (v0) scripts / dry run / no KB → nothing."""
+        if self.dry_run or att.decision.kind != DecisionKind.SCRIPT or not att.script_version \
+                or not att.script_case_id or att.outcome == "pending":
+            return
+        done = self._credited.get(id(att))
+        if done is not None and done != "inconclusive":
+            return
+        store = self.scripts
+        if store is None:
+            return
+        try:
+            store.credit(att.script_case_id, att.script_version, att.outcome, project=self._project(),
+                         run_id=self.ws.run_id)
+        except Exception as e:  # noqa: BLE001 - the store says it never raises
+            log.warning("kb.scripts.credit(%s v%s) failed: %s", att.script_case_id, att.script_version, e)
+            return
+        self._credited[id(att)] = att.outcome
+        self.ws.journal({"event": "script_credit", "case": att.script_case_id, "version": att.script_version,
+                         "attempt": att.id, "outcome": att.outcome})
+
+    def _credit_scripts(self, pr: PhaseResult, attempts: list[FixAttempt]) -> None:
+        for a in attempts:
+            self._credit_script(a)
+
+    def _no_script_fixer(self, att: FixAttempt, c: ErrorCluster, why: str) -> None:
+        """A v1 tier-2 fixer without `propose_script`: no LLM script can be written in this run (stored versions are
+        still reused). Not an infrastructure problem (no `llm-unavailable` / `infra:llm`): flag
+        `fixer-without-scripts` + one follow-up."""
+        if not self.llm_unavailable:
+            self.llm_unavailable = why[:300]
+            setter = getattr(self.triager, "set_llm_unavailable", None)
+            if callable(setter):
+                setter(self.llm_unavailable)
+            self._flag(FIXER_WITHOUT_SCRIPTS_FLAG)
+            self._followup(f"{why} — no LLM fix script could be written in this run; the cases that needed one are "
+                           "blocked (llm_unavailable)")
+            log.error("%s", why)
+            self.ws.journal({"event": "fixer_without_scripts", "phase": att.phase.value, "iteration": att.iteration,
+                             "reason": why})
+        self._block_simple(att.phase, att.iteration, c, BlockReason.LLM_UNAVAILABLE, self.llm_unavailable)
 
     def _new_attempt(self, phase: Phase, iteration: int, n: int, c: ErrorCluster, d: TriageDecision,
                      build: BuildResult) -> FixAttempt:
@@ -1119,7 +1546,13 @@ class BuildFixLoop:
                          "applied": att.applied, "commit": att.commit, "outcome": att.outcome,
                          "model": att.model, "files": [ch.path for ch in att.changes],
                          "apply_errors": att.apply_errors, "analysis": att.analysis[:500],
-                         "advisory_ids": list(att.advisory_ids)})
+                         "advisory_ids": list(att.advisory_ids),
+                         "script": ({"mode": att.script_mode, "case": att.script_case_id,
+                                     "version": att.script_version, "parent": att.script_parent,
+                                     "status": att.script_result.status if att.script_result is not None else None,
+                                     "error": (att.script_result.error or "")[:300] if att.script_result else "",
+                                     "log_lines": len(att.script_result.log) if att.script_result else 0}
+                                    if att.decision.kind == DecisionKind.SCRIPT else None)})
         self._track("note_attempt", att)
 
     def _commit(self, message: str, pre: str) -> Optional[str]:
@@ -1137,110 +1570,10 @@ class BuildFixLoop:
         except Exception:  # pragma: no cover
             pass
 
-    def _apply_handler(self, att: FixAttempt, c: ErrorCluster) -> None:
-        h = self.handlers.get(att.decision.handler_id) if self.handlers is not None else None
-        if h is None:
-            return self._fail(att, f"handler '{att.decision.handler_id}' is not registered")
-        try:
-            att.changes = list(h.apply(self.ws, c, self.profile, self.cfg) or [])
-        except Exception as e:
-            log.exception("handler %s failed", h.id)
-            return self._fail(att, f"handler {h.id} failed: {type(e).__name__}: {e}")
-        att.analysis = h.description
-        for f in list(getattr(h, "flags", None) or []):
-            self._flag(str(f))
-        for n in list(getattr(h, "notes", None) or []):
-            if n not in att.notes:
-                att.notes.append(str(n))
-            if self.cfg is not None and str(n).lower().startswith(("install", "followup", "follow-up")):
-                self._followup(str(n))
-        if not att.changes:
-            self._fail(att, f"handler {h.id} found nothing to change")
-
-    def _apply_kb_patch(self, att: FixAttempt, c: ErrorCluster, m: KBMatch) -> None:
-        case = next((k for k in m.replayable if k.id in att.decision.kb_case_ids), None)
-        if case is None:
-            return self._fail(att, "replayable KB case vanished")
-        try:
-            applied, errs = self.fixer.apply(self.ws, list(case.changes))
-        except Exception as e:
-            att.proposed_changes = list(case.changes)
-            return self._fail(att, f"patch replay failed: {type(e).__name__}: {e}")
-        att.changes, att.apply_errors = list(applied), list(errs)
-        if errs or len(applied) < len(case.changes):    # error cases: keep what was proposed, not only what applied
-            att.proposed_changes = list(case.changes)
-        att.analysis = f"replayed KB case {case.id}: {case.summary}"
-        if not applied:
-            self._fail(att, "no KB patch block applied")
-
     def _summary(self) -> str:
         if self._profile_summary is None:
             self._profile_summary = profile_summary(self.profile)
         return self._profile_summary
-
-    def _apply_llm(self, att: FixAttempt, c: ErrorCluster, m: KBMatch, phase: Phase, iteration: int,
-                   stall_level: int, others: dict[str, str]) -> None:
-        hints = m.hints[: self.cfg.kb.max_hints] if self.cfg.kb.use_hints else []
-        hints = [*hints, *(h for h in self._sibling_hints(c) if h not in hints)]
-        other = "\n".join(v for k, v in others.items() if k != c.id)[:4000]
-        self._mark(f"advisory hints for {c.id}")
-        adv_hints, att.advisory_ids = self._advisory_hints(c)
-        self._mark(f"merge-conflict hints for {c.id}")
-        ref_notes, ref_files = self._merge_conflict_hints(att, c)
-        self._mark(f"fixer.propose for {c.id} (prompt packing + LLM call)")
-        ctx = FixContext(phase=phase, iteration=iteration, stall_level=stall_level,
-                         profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
-                         advisory_hints=adv_hints, previous_attempts=self._previous(c),
-                         other_errors_summary=other,
-                         use_escalation_model=stall_level >= self.cfg.loop.stall_limit or phase == Phase.VERIFY,
-                         reference_notes=ref_notes, reference_files=ref_files)
-        try:
-            proposal = self.fixer.propose(self.ws, c, ctx)
-        except Exception as e:
-            self.budget.charge_llm(1)
-            log.warning("fixer.propose failed for %s: %s", c.id, e)
-            self._fail(att, f"LLM fixer failed: {type(e).__name__}: {e}")
-            if is_llm_transport_error(f"llm-error: {type(e).__name__}: {e}"):
-                self._llm_transport_failure(att, c, f"{type(e).__name__}: {e}")
-            return
-        self.budget.charge_llm(max(1, proposal.llm_usage.calls))
-        self._mark(f"LLM answered for {c.id}: applying")
-        att.model, att.prompt_hash, att.llm_usage = proposal.model, proposal.prompt_hash, proposal.llm_usage
-        att.analysis = proposal.analysis
-        if is_llm_transport_error(proposal.analysis):
-            self._fail(att, proposal.analysis.strip()[:300])
-            self._llm_transport_failure(att, c, proposal.analysis.strip()[len("llm-error:"):].strip()[:300])
-            return
-        self._llm_streak, self._streak_attempts = [], []
-        if self._llm_config_check(att, c, proposal.analysis, proposal.prompt_hash):
-            return
-        if ctx.use_escalation_model:
-            att.notes.append("escalation model requested (final verify loop)" if phase == Phase.VERIFY
-                             else f"escalation model requested (stall level {stall_level})")
-        changes = list(proposal.changes)
-        if ctx.reference_files:   # reference copies are not in the build: a patch for one is dropped, never applied
-            ref = {_norm_path(k) for k in ctx.reference_files}
-            kept = [ch for ch in changes if _norm_path(ch.path) not in ref]
-            if len(kept) < len(changes):
-                att.notes.append(f"dropped {len(changes) - len(kept)} change(s) aimed at a read-only reference copy")
-            changes = kept
-        if not changes:
-            if proposal.changes:      # only patches for read-only reference copies: keep them for the error case
-                att.proposed_changes = list(proposal.changes)
-            why = "LLM proposed no changes"
-            if proposal.requested_files:
-                why += f" (asked for: {', '.join(proposal.requested_files[:5])})"
-            return self._fail(att, why)
-        try:
-            applied, errs = self.fixer.apply(self.ws, changes)
-        except Exception as e:
-            att.proposed_changes = list(proposal.changes)
-            return self._fail(att, f"applying LLM patch failed: {type(e).__name__}: {e}")
-        att.changes, att.apply_errors = list(applied), list(errs)
-        if errs or len(applied) < len(proposal.changes):  # error cases: the failed proposal is not lost
-            att.proposed_changes = list(proposal.changes)
-        if not applied:
-            self._fail(att, "no patch block applied")
 
     def _advisory_hints(self, c: ErrorCluster) -> tuple[list[str], list[str]]:
         """(hints, advisory ids) of the run's library advisories that match this cluster (sbmig.advisory.hints_for)."""
@@ -1275,8 +1608,8 @@ class BuildFixLoop:
         setter = getattr(self.triager, "set_llm_unavailable", None)
         if callable(setter):
             setter(self.llm_unavailable)
-        self._followup(f"the LLM was unavailable during this run ({self.llm_unavailable}); clusters that needed it "
-                       "are listed as blocked (llm_unavailable) — deterministic handlers and recipes still ran")
+        self._followup(f"the LLM was unavailable during this run ({self.llm_unavailable}); cases that needed it "
+                       "are listed as blocked (llm_unavailable) — proven stored fix scripts were still reused")
         self.ws.journal({"event": "llm_unavailable", "phase": att.phase.value, "iteration": att.iteration,
                          "reason": self.llm_unavailable, "clusters": [x.id for x, _ in self._llm_streak],
                          "cooldown_used": self.llm_cooldown_used})
@@ -1389,75 +1722,6 @@ class BuildFixLoop:
             self.ws.journal({"event": "merge_conflict_hints", "phase": att.phase.value, "iteration": att.iteration,
                              "cluster": c.id, "reference_files": list(refs)})
         return notes, refs
-
-    def _run_recipe_batch(self, pr: PhaseResult, st: "_Round") -> bool:
-        phase, iteration, batch, build, target, pending = (st.phase, st.iteration, st.recipe_batch, st.build,
-                                                          st.target, st.pending)
-        refs: list[RecipeRef] = []
-        files: list[str] = []
-        kb_ids: set[str] = set()
-        for c, d, m in batch:
-            maker = getattr(self.triager, "recipe_refs", None)
-            rs = maker(d, m) if callable(maker) else [RecipeRef(id=r) for r in d.recipe_ids]
-            for r in rs:
-                if not any(x.id == r.id for x in refs):
-                    refs.append(r)
-            for f in [*m.recipe_files, *m.candidate_recipe_files]:
-                if f and f not in files:
-                    files.append(f)
-            kb_ids |= {r for r in d.recipe_ids if r in m.recipe_ids or r in m.candidate_recipe_ids}
-        if self.cfg.kb.use_active_recipes:
-            try:
-                for f in self.kb.active_recipe_files():
-                    if str(f) not in files:
-                        files.append(str(f))
-            except Exception as e:  # pragma: no cover
-                log.warning("kb.active_recipe_files failed: %s", e)
-        ids = [r.id for r in refs]
-        mark = getattr(self.triager, "mark_recipes_run", None)
-        if callable(mark):
-            mark(ids, phase)
-        pre = self.ws.head()
-        error: Optional[str] = None
-        try:
-            from pathlib import Path
-            kwargs = dict(extra_recipe_files=[Path(f) for f in files], module=target,
-                          label=f"{phase.value}-{iteration}-kb")
-            with self._busy_with(f"rewrite {phase.value}-{iteration}-kb"):
-                try:
-                    # the project does not compile at this point → rewrite:runNoFork (rewrite:run forks `compile` first)
-                    res = self.rewrite_runner.run(refs, fork=False, **kwargs)
-                except TypeError:  # a runner without the `fork` option
-                    res = self.rewrite_runner.run(refs, **kwargs)
-            pr.rewrite_results.append(res)
-            if not res.ok:
-                error = res.error or "rewrite failed"
-        except Exception as e:
-            error = f"rewrite run failed: {type(e).__name__}: {e}"
-        self.ws.journal({"event": "recipe_batch", "phase": phase.value, "iteration": iteration, "recipes": ids,
-                         "clusters": [c.id for c, _, _ in batch], "error": error})
-        sha = self._commit(f"fix(recipe): {', '.join(ids)}", pre)
-        if sha is None and self.ws.is_dirty():  # pragma: no cover - defensive
-            self.ws.discard_uncommitted()
-        for c, d, _m in batch:
-            st.n += 1
-            att = self._new_attempt(phase, iteration, st.n, c, d, build)
-            att.base_commit = pre      # the batch is committed before its attempts exist: diff from the pre-run HEAD
-            att.analysis = f"OpenRewrite: {', '.join(d.recipe_ids)}"
-            if error:
-                att.apply_errors.append(error)
-            if sha is None:
-                att.outcome = "apply_failed"
-                att.apply_errors.append("recipes changed no file")
-            else:
-                att.applied, att.commit = True, sha
-                try:
-                    att.changes = [_modify(p) for p in self._changed_between(pre, sha)]
-                except Exception:  # pragma: no cover
-                    att.changes = []
-                pending.append(_Pending(att, pre, sha, tuple(r for r in d.recipe_ids if r in kb_ids)))
-            self._record(pr, att)
-        return sha is not None
 
     def _changed_between(self, a: str, b: str) -> list[str]:
         changed = getattr(self.ws, "changed_between", None)          # NUL-separated: Korean / spaced names verbatim
@@ -1627,8 +1891,25 @@ def _target_key(target: Optional[str]) -> str:
     return t
 
 
+def _gone(errors: list[BuildError], build: BuildResult) -> list[BuildError]:
+    """The occurrences of `errors` (by (file, signature)) that `build` no longer has — what an attempt removed."""
+    cur = Counter(_pair(e) for e in build.errors)
+    seen: Counter = Counter()
+    out: list[BuildError] = []
+    for e in errors:
+        k = _pair(e)
+        seen[k] += 1
+        if seen[k] > cur[k]:
+            out.append(e)
+    return out
+
+
 def _change_line(a: FixAttempt) -> str:
-    """One line of what an attempt changed (sibling hints): its first change, or its analysis."""
+    """One line of what an attempt changed (sibling hints): its first change, or its analysis; a script attempt: the
+    files it changed."""
+    if a.decision.kind == DecisionKind.SCRIPT and a.changes:
+        files = [c.new_path or c.path for c in a.changes]
+        return f"changed {len(files)} file(s): {', '.join(files[:4])}" + (" …" if len(files) > 4 else "")
     for c in a.changes[:1]:
         if c.op == "modify" and (c.search or c.replace):
             s = (c.search or "").strip().splitlines()

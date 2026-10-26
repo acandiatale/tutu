@@ -12,7 +12,7 @@ from sbmig.kb import FileKnowledgeBase, kb_cli
 from sbmig.kb.catalog import case_id_for
 from sbmig.kb.cli import parse_action
 
-from .helpers import EC_L2, RENAME_DIFF, recipe_yaml
+from .helpers import EC_L2, RENAME_DIFF, recipe_yaml, v1_cli_obj
 from .test_catalog import L1_REQ, failed_then_fixed, rec, ref, unresolved
 
 runner = CliRunner()
@@ -22,7 +22,8 @@ OTHER = case_id_for(OTHER_L2)
 
 
 def _run(kb_dir, *args):
-    return runner.invoke(kb_cli, ["--kb-dir", str(kb_dir), *args], catch_exceptions=False)
+    # the v1 KB switches on (v2 turned them off by default; these tests exercise the v1 recipe / replace paths)
+    return runner.invoke(kb_cli, ["--kb-dir", str(kb_dir), *args], catch_exceptions=False, obj=v1_cli_obj())
 
 
 def _seed(kb: FileKnowledgeBase) -> None:

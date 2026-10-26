@@ -256,8 +256,8 @@ class LoopConfig(BaseModel):
         "verify": PhaseLoopConfig(goal="package", max_iterations=12),
     })
     max_llm_calls: int = 100
-    # final verify loop only: clusters blocked earlier for repeated_failure / oscillation are released and may get this
-    # many MORE LLM attempts (escalation model when configured); 0 = never release, policy blocks are never released
+    # v1 only — final verify loop: clusters blocked earlier for repeated_failure / oscillation are released and may get
+    # this many MORE LLM attempts; v2 ignores it (the verify loop is the only fix loop, nothing is released)
     verify_extra_llm_attempts: int = 2
     max_total_minutes: int = 240
     stall_limit: int = 2                     # identical error multiset N times → escalate strategy
@@ -268,11 +268,15 @@ class LoopConfig(BaseModel):
     engine: Literal["graph", "inline"] = "graph"   # graph: LangGraph StateGraph drives the phases (company
                                              # convention, sbmig.graph); inline: the original in-process loop
     oscillation_window: int = 4              # error-set history compared for A↔B toggling (≥ stall detection window)
-    max_llm_attempts_per_cluster: int = 2    # LLM tries per cluster signature set before it is BLOCKED(repeated_failure)
-    # how many LLM attempts a cluster of this BlockReason may get before it is blocked (0 = block immediately)
+    max_llm_attempts_per_cluster: int = 2    # v1: LLM tries per cluster signature set before BLOCKED(repeated_failure);
+                                             # v2 limits a case with script.max_augments_per_case
+    # how many LLM attempts a cluster of this BlockReason may get before it is blocked (0 = block immediately).
+    # v2: no deterministic handler swaps a javax library, bumps a missing version or a JDK-21-incompatible plugin any
+    # more, so those get LLM script attempts (a stored script is reused regardless); an unresolvable in-house parent
+    # stays 0 (settings / Nexus — no code change fixes it)
     blocked_policy: dict[str, int] = Field(default_factory=lambda: {
-        "external_javax_api": 0, "external_api_incompatible": 1, "artifact_not_found": 0, "parent_not_found": 0,
-        "plugin_incompatible": 1, "unsupported_source": 0, "encoding": 0,
+        "external_javax_api": 2, "external_api_incompatible": 2, "artifact_not_found": 2, "parent_not_found": 0,
+        "plugin_incompatible": 2, "unsupported_source": 0, "encoding": 0,
     })
     structural_regression_kinds: list[str] = Field(default_factory=lambda: [
         "pom_invalid", "parent_resolution", "plugin_resolution", "dependency_resolution"])

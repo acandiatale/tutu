@@ -1,5 +1,6 @@
-"""Round 10: library-conditional recipes (knowledge/recipes/library_recipes.yml) for plans without the Boot umbrella,
-the Spring Security 6.0 … 7.0 chain, Servlet 6 removals and the Spring 7 / Boot 4 project recipes."""
+"""Round 10: library-conditional recipes (knowledge/recipes/library_recipes.yml). The table, its catalog sets and the
+project recipe files stay (`sbmig recipes check` covers them); v2 (flow-v2) never plans them — library / project /
+Security chain recipes are out of the business-decided recipe scope (PLAN-v2 §2)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -18,7 +19,7 @@ SEC = [*(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" fo
        "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0"]
 
 
-def _recipes(plan, sid="spring.rewrite"):
+def _recipes(plan, sid="transform.rewrite"):
     return [r.id for r in next(s for s in plan.steps if s.id == sid).recipes]
 
 
@@ -59,43 +60,22 @@ def test_catalog_check_covers_the_library_sets(cfg):
     assert {BATCH6, HIBERNATE71, THYMELEAF, *SEC[:-1]} <= set(covered)
 
 
-def test_spring_legacy_plan_gets_security_chain_and_library_recipes(tmp_path, cfg):
-    profile = analyze_path(_spring5_batch_security(tmp_path), cfg)
+def test_v2_plans_no_library_or_project_recipes(tmp_path, cfg):
+    profile = analyze_path(_spring5_batch_security(tmp_path / "legacy"), cfg)
     assert profile.case_type == CaseType.SPRING_LEGACY
     plan = build_plan(profile, cfg)
-    rec = _recipes(plan)
-    assert rec[:5] == ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
-                       "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
-                       "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
-                       "com.company.migrate.Spring7RemovedApis", "com.company.migrate.Jackson3SpringConverters"]
-    assert rec[5:12] == SEC                                                 # order OpenRewrite's Boot chain uses
-    assert rec[12:15] == [BATCH6, HIBERNATE71, THYMELEAF]                   # after Framework / Security, table order
-    assert any("spring-batch detected → SpringBatch5To6Migration" in n for n in plan.notes)
-    assert not any("thymeleaf-spring4" in n for n in plan.notes)
-
-
-def test_thymeleaf_spring4_caveat_note(tmp_path, cfg):
-    plan = build_plan(analyze_path(_spring5_batch_security(tmp_path, thymeleaf="thymeleaf-spring4"), cfg), cfg)
-    assert THYMELEAF in _recipes(plan)
-    assert any("thymeleaf-spring4 is not migrated by MigrateThymeleafDependencies" in n for n in plan.notes)
-
-
-def test_boot_plan_gets_no_library_recipes_but_the_project_recipes(tmp_path, cfg):
-    plan = build_plan(analyze_path(make_boot27(tmp_path), cfg), cfg)
-    rec = _recipes(plan)
-    assert not {BATCH6, HIBERNATE71, THYMELEAF} & set(rec)
-    assert {"com.company.migrate.Boot4TypeRelocations", "com.company.migrate.Spring7RemovedApis",
-            "com.company.migrate.Jackson3SpringConverters"} <= set(rec)
-
-
-def test_servlet_plan_with_hibernate(tmp_path, cfg):
-    root = make_servlet(tmp_path)
+    assert _recipes(plan) == ["org.openrewrite.java.migrate.UpgradeToJava21",
+                              "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"]
+    assert not any("detected →" in n and "Migration" in n for n in plan.notes)
+    root = make_servlet(tmp_path / "servlet")
     text = (root / "pom.xml").read_text(encoding="utf-8").replace(
         "</dependencies>", "<dependency><groupId>org.hibernate</groupId><artifactId>hibernate-core</artifactId>"
                            "<version>5.4.33.Final</version></dependency></dependencies>")
     (root / "pom.xml").write_text(text, encoding="utf-8")
-    plan = build_plan(analyze_path(root, cfg), cfg)
-    assert _recipes(plan) == ["com.company.migrate.ServletToJakartaAndBoot", HIBERNATE71]
+    rec = _recipes(build_plan(analyze_path(root, cfg), cfg))
+    assert HIBERNATE71 not in rec and not any(r.startswith("com.company.") for r in rec)
+    boot = _recipes(build_plan(analyze_path(make_boot27(tmp_path / "boot"), cfg), cfg))
+    assert not {BATCH6, HIBERNATE71, THYMELEAF} & set(boot) and not any(r.startswith("com.company.") for r in boot)
 
 
 def test_servlet_project_recipe_runs_the_servlet6_removals():

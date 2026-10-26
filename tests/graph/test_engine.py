@@ -1,4 +1,5 @@
-"""Graph engine (LangGraph) vs inline engine: same steps, same report, same journal (+ `graph_node` events)."""
+"""Graph engine (LangGraph) vs inline engine: same steps, same report, same journal (+ `graph_node` events) —
+v2 plans (transform → restructure + review → verify)."""
 from __future__ import annotations
 
 import threading
@@ -18,8 +19,8 @@ from ..loop.fakes import (
     journal_events,
     make_profile,
     make_project,
-    msa_plan,
     ok_build,
+    v2_msa_plan,
     write_fix,
 )
 from ..loop.test_orchestrator import files_build, make_orch
@@ -74,7 +75,7 @@ def test_graph_and_inline_produce_the_same_report(cfg, tmp_path):
     _, ws_g, rg = run_engine(cfg, tmp_path, "graph")
     _, ws_i, ri = run_engine(cfg, tmp_path, "inline")
     assert rg.success and ri.success
-    assert [p.phase for p in rg.phases] == [Phase.JDK21, Phase.SPRING, Phase.RESTRUCTURE, Phase.VERIFY]
+    assert [p.phase for p in rg.phases] == [Phase.TRANSFORM, Phase.RESTRUCTURE, Phase.VERIFY]
     assert comparable(rg) == comparable(ri)
     assert set(rg.timings_s) == set(ri.timings_s)
     assert rg.flags == ri.flags and run_exit_code(rg) == run_exit_code(ri) == 0
@@ -83,7 +84,7 @@ def test_graph_and_inline_produce_the_same_report(cfg, tmp_path):
 
 
 def test_graph_and_inline_same_report_on_msa_plan(cfg, tmp_path):
-    kw = {"plan": msa_plan(), "profile": make_profile(CaseType.MSA),
+    kw = {"plan": v2_msa_plan(), "profile": make_profile(CaseType.MSA),
           "build": lambda w: FakeBuildRunner(w, fn=lambda *_: ok_build())}
     _, ws_g, rg = run_engine(cfg, tmp_path, "graph", **kw)
     _, ws_i, ri = run_engine(cfg, tmp_path, "inline", **kw)
@@ -99,7 +100,7 @@ def test_graph_and_inline_same_report_on_failure(cfg, tmp_path):
     cfg.loop.max_llm_calls = 1
     build = lambda w: FakeBuildRunner(w, fn=lambda *_: bad_build(compile_error()))
     reports = [run_engine(cfg, tmp_path, engine, build=build,
-                          fixer=FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "class F { broken 2 }")))[2]
+                          fixer=FakeFixer(fn=lambda w, c, ctx: write_fix(None, "class F { broken 2 }")))[2]
                for engine in ("graph", "inline")]
     rg, ri = reports
     assert not rg.success and comparable(rg) == comparable(ri)
@@ -107,7 +108,7 @@ def test_graph_and_inline_same_report_on_failure(cfg, tmp_path):
 
 
 # ---------------------------------------------------------------------------------------- (b) stop_after
-@pytest.mark.parametrize("stop", [Phase.INTAKE, Phase.ANALYZE, Phase.PLAN, Phase.JDK21])
+@pytest.mark.parametrize("stop", [Phase.INTAKE, Phase.ANALYZE, Phase.PLAN, Phase.TRANSFORM, Phase.RESTRUCTURE])
 def test_stop_after_same_in_both_engines(cfg, tmp_path, stop):
     _, ws_g, rg = run_engine(cfg, tmp_path, "graph", stop_after=stop)
     _, ws_i, ri = run_engine(cfg, tmp_path, "inline", stop_after=stop)
@@ -117,9 +118,12 @@ def test_stop_after_same_in_both_engines(cfg, tmp_path, stop):
     nodes = [e["node"] for e in journal_events(ws_g) if e["event"] == "graph_node"]
     if stop == Phase.ANALYZE:
         assert nodes == ["intake", "analyze", "finalize"] and rg.plan is None
-    if stop == Phase.JDK21:                       # later groups are journaled as phase_skipped by `phase` nodes
-        assert [p.phase for p in rg.phases] == [Phase.JDK21]
+    if stop == Phase.TRANSFORM:                   # later groups are journaled as phase_skipped by `phase` nodes
+        assert [p.phase for p in rg.phases] == [Phase.TRANSFORM]
         assert any(e["event"] == "phase_skipped" for e in journal_events(ws_g))
+    if stop == Phase.RESTRUCTURE:                 # the structure review is part of the restructure phase
+        assert [p.phase for p in rg.phases] == [Phase.TRANSFORM, Phase.RESTRUCTURE]
+        assert rg.structure_review is not None and rg.final_build is None
 
 
 # ---------------------------------------------------------------------------------------- (c) aborts
@@ -155,7 +159,9 @@ def test_build_loop_abort_propagates_out_of_the_graph(cfg, tmp_path):
     assert run_exit_code(rg) == run_exit_code(ri) == 3
     assert comparable(rg) == comparable(ri) and comparable_events(ws_g) == comparable_events(ws_i)
     nodes = [e["node"] for e in journal_events(ws_g) if e["event"] == "graph_node"]
-    assert nodes == ["intake", "analyze", "plan", "phase"]       # _RunAborted left the graph: no finalize node
+    # the final build hits the parent error, the verify loop aborts the run: _RunAborted left the graph in the
+    # verify phase node (transform, restructure ran before) — no finalize node
+    assert nodes == ["intake", "analyze", "plan", "phase", "phase", "phase"]
     assert journal_events(ws_g)[-1]["event"] == "report"         # ... but run() still finalized the report
 
     # called directly (outside run()), run_graph opens the guard itself and handles the abort the same way
@@ -191,21 +197,21 @@ def test_stream_graph_yields_nodes_in_order_and_journals_them(cfg, tmp_path):
         seen.append((node, update))
         assert isinstance(update, dict)
     names = [n for n, _ in seen]
-    assert names == ["intake", "analyze", "plan", "phase", "phase", "phase", "phase", "finalize"]
+    assert names == ["intake", "analyze", "plan", "phase", "phase", "phase", "finalize"]
     report = orch.report
     assert report is not None and report.success and not orch.running
     assert threads == {threading.get_ident()}            # nodes run in the caller's thread (per-run log filter)
     plan_update = dict(seen)["plan"]
-    assert plan_update["phases"] == ["jdk21", "spring", "restructure", "verify"]
+    assert plan_update["phases"] == ["transform", "restructure", "verify"]
     last_phase = [u for n, u in seen if n == "phase"][-1]
     assert last_phase["phases"] == [] and last_phase["phase"] == "verify"
     final = seen[-1][1]["summary"]
     assert final["case_type"] == report.case_type.value and final["llm_calls"] == orch.budget.llm_calls
-    assert [p["phase"] for p in final["phases"]] == ["jdk21", "spring", "restructure", "verify"]
+    assert [p["phase"] for p in final["phases"]] == ["transform", "restructure", "verify"]
     ev = journal_events(ws)
     graph_nodes = [(e["node"], e["phase"]) for e in ev if e["event"] == "graph_node"]
-    assert graph_nodes == [("intake", "intake"), ("analyze", "analyze"), ("plan", "plan"), ("phase", "jdk21"),
-                           ("phase", "spring"), ("phase", "restructure"), ("phase", "verify"), ("finalize", None)]
+    assert graph_nodes == [("intake", "intake"), ("analyze", "analyze"), ("plan", "plan"), ("phase", "transform"),
+                           ("phase", "restructure"), ("phase", "verify"), ("finalize", None)]
     assert ev[-1]["event"] == "report"                   # finalized by the guard after the stream ended
 
 
@@ -223,9 +229,9 @@ def test_stream_graph_json_able_updates(cfg, tmp_path):
     import json
     ws = new_ws(tmp_path, "json")
     orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
-    for _, update in stream_graph(orch, stop_after=Phase.SPRING):
+    for _, update in stream_graph(orch, stop_after=Phase.TRANSFORM):
         json.dumps(update)
-    assert "stopped-after-spring" in orch.report.flags
+    assert "stopped-after-transform" in orch.report.flags
 
 
 # ---------------------------------------------------------------------------------------- (e) graph shape

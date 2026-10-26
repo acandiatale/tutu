@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from sbmig.core.models import HarvestResult, KBMatch, KBRecipe
+from sbmig.core.models import HarvestResult, KBMatch, KBRecipe, ScriptRunResult
 
 log = logging.getLogger("sbmig.loop")
 
@@ -28,8 +28,15 @@ def lazy_attr(module: str, attr: str, workstream: str) -> Any:
             f"{module} (workstream {workstream}) does not expose '{attr}' yet — see docs/INTERFACES.md") from e
 
 
+class ScriptFixerMissing(RuntimeError):
+    """v2: the fixer (a tier-2 `fix.plugin` written for v1) has no `propose_script` — it cannot write fix scripts."""
+
+
 class NullKnowledgeBase:
-    """KnowledgeBaseLike that knows nothing (used with --no-kb or when sbmig.kb is unavailable)."""
+    """KnowledgeBaseLike that knows nothing (used with --no-kb or when sbmig.kb is unavailable). v2: no script store
+    (`scripts` None: nothing is reused, LLM scripts run unstored as v0) and no review log."""
+
+    scripts = None
 
     def match(self, cluster, ws, profile) -> KBMatch:
         return KBMatch()
@@ -77,6 +84,16 @@ class LazyFixer:
     def propose(self, ws, cluster, ctx):
         return self._get().propose(ws, cluster, ctx)
 
+    def propose_script(self, ws, cluster, ctx):
+        """v2 (ScriptFixerLike). A fixer without `propose_script` (a v1 tier-2 plugin) raises ScriptFixerMissing:
+        v2 has no SEARCH/REPLACE fallback (docs/INTERFACES.md "Seams")."""
+        fx = self._get()
+        fn = getattr(fx, "propose_script", None)
+        if not callable(fn):
+            raise ScriptFixerMissing(f"the fixer {type(fx).__name__} has no propose_script — v2 fixes every error with "
+                                     "a fix script; a fix.plugin must implement ScriptFixerLike")
+        return fn(ws, cluster, ctx)
+
     def apply(self, ws, changes):
         """Applying a patch needs no LLM: when the real fixer cannot be built (no LLM configured, plugin import
         failed) the plain `PatchApplier` applies it, so KB patch replays work in runs without an LLM."""
@@ -106,3 +123,32 @@ def profile_summary(profile) -> str:
         return fn(profile)
     except Exception:
         return basic_profile_summary(profile)
+
+
+class LazyScriptRunner:
+    """ScriptRunnerLike proxy (v2): the real `sbmig.script.ScriptRunner(cfg)` is built on first use; when it cannot
+    be built, every run is an `error` result naming why (never raises — the loop records a failed attempt)."""
+
+    def __init__(self, factory: Callable[[], Any]):
+        self._factory = factory
+        self._runner: Any = None
+        self._error: Optional[str] = None
+
+    def _get(self) -> Any:
+        if self._runner is None and self._error is None:
+            try:
+                self._runner = self._factory()
+            except Exception as e:  # noqa: BLE001 - reported on every run instead
+                self._error = f"script runner unavailable: {type(e).__name__}: {e}"
+                log.error("%s", self._error)
+        return self._runner
+
+    def check(self, code: str) -> list[str]:
+        r = self._get()
+        return [self._error or "script runner unavailable"] if r is None else list(r.check(code))
+
+    def run(self, ws, code: str, *, errors=(), timeout_s: Optional[int] = None) -> ScriptRunResult:
+        r = self._get()
+        if r is None:
+            return ScriptRunResult(status="error", error=self._error or "script runner unavailable")
+        return r.run(ws, code, errors=errors, timeout_s=timeout_s)

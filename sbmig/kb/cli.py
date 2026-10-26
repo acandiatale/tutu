@@ -1,5 +1,6 @@
 """`sbmig kb …` — typer sub-app for inspecting and curating the file-based knowledge base (incl. `sbmig kb errors …`
-for the error-case events and `sbmig kb cases …` for the case catalog built from them)."""
+for the error-case events, `sbmig kb cases …` for the case catalog built from them and `sbmig kb scripts …` for the
+v2 fix scripts stored per case)."""
 from __future__ import annotations
 
 import json
@@ -27,6 +28,7 @@ from sbmig.core.workspace import Workspace
 
 from .catalog import CaseCatalog, action_text, case_id_for, pairs_text
 from .recipes import validate_recipe_yaml
+from .scripts import SCRIPT_METHODS, ScriptStore, lineage_text, parse_script_resolver
 from .store import FileKnowledgeBase
 
 kb_cli = typer.Typer(help="File-based knowledge base: cases, recipe candidates, promotion.", no_args_is_help=True)
@@ -177,6 +179,12 @@ def reindex_cmd(ctx: typer.Context) -> None:
         counts = cat.status_counts()
         typer.echo(f"case catalog: {sum(counts.values())} case(s) ("
                    + ", ".join(f"{k} {v}" for k, v in counts.items() if v) + f") — views in {cat.views_dir}")
+    if kb.scripts.scripts_dir.exists():
+        sc = kb.scripts.counts()
+        problems = kb.scripts.check()
+        typer.echo(f"fix scripts: {sc['script_cases']} case(s), {sc['script_versions']} version(s) "
+                   f"({sc['scripts_proven']} proven, {sc['scripts_retired']} retired, {sc['scripts_quarantined']} "
+                   "quarantined)" + (f"; {len(problems)} problem(s) — `sbmig kb scripts validate`" if problems else ""))
 
 
 @kb_cli.command("stats")
@@ -367,7 +375,7 @@ errors_cli = typer.Typer(
 kb_cli.add_typer(errors_cli, name="errors")
 
 _STATUS_HELP = "regex: resolved|resolved_indirectly|blocked|unresolved|not_visible"
-_METHOD_HELP = "regex on the fix method: handler|recipe|kb_patch|llm|plan_step|none"
+_METHOD_HELP = "regex on the fix method: handler|recipe|kb_patch|llm|plan_step|none|script|script_reuse|script_augment"
 _CHANGE_HELP = "regex: text_replace|code_edit|file_create|file_delete|file_rename|mixed|none"
 
 
@@ -384,6 +392,11 @@ def _select_errors(kb: FileKnowledgeBase, status, method, change_kind, project, 
                                                       run_id=run, case=case, resolver=resolver))
     except re.error as e:
         raise typer.BadParameter(f"bad regex: {e}")
+
+
+def _method_text(fix_method: str, script_version: int = 0) -> str:
+    """The fix method, with the script version of a v2 script attempt (``script_reuse v2``)."""
+    return fix_method + (f" v{script_version}" if script_version else "")
 
 
 def _how_or_why(e) -> str:
@@ -425,7 +438,8 @@ def errors_list_cmd(
         return
     for e in rows:
         where = f"{e.file or '-'}:{e.line}" if e.line else (e.file or "-")
-        typer.echo(f"{e.id}  {e.status:<19} {e.fix_method:<9} {e.change_kind:<12} {_trim(e.project, 20):<20} "
+        method = _method_text(e.fix_method, e.script_version if e.fix_method in SCRIPT_METHODS else 0)
+        typer.echo(f"{e.id}  {e.status:<19} {method:<14} {e.change_kind:<12} {_trim(e.project, 20):<20} "
                    f"{_trim(where, 60)}  {_trim(e.message, 80)}  — {_trim(_how_or_why(e), 120)}")
 
 
@@ -433,11 +447,25 @@ def _when(at) -> str:
     return at.strftime("%Y-%m-%d %H:%M") if at else "-"
 
 
+def _script_text(a) -> str:
+    """``augment v3 (from v2), error: KeyError`` of a v2 script attempt; "" for any other attempt."""
+    if not (a.script_mode or a.script_version):
+        return ""
+    out = f"{a.script_mode or '?'} v{a.script_version}" if a.script_version else f"{a.script_mode} (not stored)"
+    if a.script_parent:
+        out += f" (from v{a.script_parent})"
+    if a.script_status:
+        out += f", {a.script_status}" + (f": {_trim(a.script_error, 160)}" if a.script_error else "")
+    return out
+
+
 def _attempt_line(n: int, a, resolving: bool, part_of: bool = False) -> list[str]:
     who = " ".join(x for x in (a.fix_method, a.resolver_id) if x and x != "none")
     mark = "  ← resolved it" if resolving else "  ← part of the resolution (kept in the tree)" if part_of else ""
     head = f"  {n}. {a.id}  {who or '-'}  {a.outcome}  [{a.change.change_kind}]" + mark
     out = [head]
+    if _script_text(a):
+        out.append(f"     script:  {_script_text(a)}")
     if a.description:
         out.append(f"     what:    {_trim(a.description, 300)}")
     if a.failure:
@@ -471,6 +499,10 @@ def _error_view(e, attempts: list, case: Optional[CatalogCase], all_diffs: bool)
         who = " ".join(x for x in (e.fix_method, e.resolver_id) if x and x != "none") or "gone"
         by = f" (attempt {e.resolved_by}" + (", targeted)" if e.targeted else ")") if e.resolved_by else ""
         lines.append(f"  resolved:  at {e.resolved_at or '-'} by {who}{by}")
+        script = (e.script_case_id, e.script_version) if e.script_case_id else parse_script_resolver(e.resolver_id)
+        if script and script[1]:
+            lines.append(f"  script:    case {script[0]} v{script[1]}  → sbmig kb scripts show {script[0]} "
+                         f"--version {script[1]}")
         if e.description:
             lines.append(f"  how:       {_trim(e.description, 400)}")
         change = e.change_kind + (f"; replace {pairs_text(e.replace_pairs[:5])}" if e.replace_pairs else "")
@@ -523,6 +555,10 @@ def _attempt_view(a) -> list[str]:
     if a.model:
         lines.append(f"  model:     {a.model}" + (f" ({a.llm_calls} call(s), {a.input_tokens}/{a.output_tokens} "
                                                    f"tokens)" if a.llm_calls else ""))
+    if _script_text(a):
+        lines.append(f"  script:    {_script_text(a)}  (case {a.script_case_id or '-'})")
+        for x in a.script_log[:20]:
+            lines.append(f"  log:       {_trim(x, 200)}")
     ch = a.change
     lines.append(f"  applied:   {'yes' if a.applied else 'no'}; change {ch.change_kind} (+{ch.lines_added} "
                  f"-{ch.lines_removed})" + (f"; replace {pairs_text(ch.replace_pairs[:5])}" if ch.replace_pairs
@@ -607,7 +643,7 @@ def errors_summary_cmd(
         typer.echo(f"  {st:<20} " + ", ".join(f"{m}={n}" for m, n in sorted(row.items(), key=lambda kv: -kv[1])))
     typer.echo("\nattempt outcomes per method:")
     for m, row in s["attempt_outcomes"].items():
-        typer.echo(f"  {m:<10} " + ", ".join(f"{o}={n}" for o, n in row.items()))
+        typer.echo(f"  {m:<14} " + ", ".join(f"{o}={n}" for o, n in row.items()))
     if not s["attempt_outcomes"]:
         typer.echo("  (none)")
     typer.echo("\ntop failure reasons:")
@@ -700,8 +736,9 @@ cases_cli = typer.Typer(
          "reject / pin / unpin / hint / note.", no_args_is_help=True)
 kb_cli.add_typer(cases_cli, name="cases")
 
-_ACTION_HELP = ("recipe:<id>[,<id>…] | replace:<old>=<new>[,<old>=<new>…] | handler:<id> | hint | "
-                "block[:<reason>] (reason = a BlockReason value, or free text kept as the suggestion)")
+_ACTION_HELP = ("script:<N> (v2: a stored fix-script version of the case) | recipe:<id>[,<id>…] | "
+                "replace:<old>=<new>[,<old>=<new>…] | handler:<id> | hint | block[:<reason>] (reason = a BlockReason "
+                "value, or free text kept as the suggestion)")
 
 
 def _catalog(ctx: typer.Context) -> CaseCatalog:
@@ -742,6 +779,11 @@ def parse_action(spec: str, replace_scope: str = "error-lines") -> CaseAction:
     """`--action` of `sbmig kb cases pin` → CaseAction (ValueError on a malformed spec)."""
     kind, _, arg = (spec or "").partition(":")
     kind, arg = kind.strip().lower(), arg.strip()
+    if kind == "script":
+        num = arg[1:] if arg[:1].lower() == "v" else arg
+        if not num.isdigit() or int(num) < 1:
+            raise ValueError("script:<N> needs a version number (script:2)")
+        return CaseAction(kind="script", script_version=int(num))
     if kind == "recipe":
         ids = [x.strip() for x in arg.split(",") if x.strip()]
         if not ids:
@@ -774,7 +816,7 @@ def cases_list_cmd(
     status: Optional[str] = typer.Option(None, "--status", help="regex on the effective status: "
                                                                  "observed|candidate|active|rejected"),
     action: Optional[str] = typer.Option(None, "--action", help="regex on the effective action kind: "
-                                                                 "hint|recipe|replace|handler|patch|block"),
+                                                                 "script|hint|recipe|replace|handler|patch|block"),
     kind: Optional[str] = typer.Option(None, "--kind", help="regex on the error kind / class (compile, "
                                                              "cannot_find_symbol …)"),
     search: Optional[str] = typer.Option(None, "--search", help="regex on id, name, signature, symbol, owners"),
@@ -844,9 +886,12 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
     lines.append("             by status: " + (", ".join(f"{k} {v}" for k, v in ev.by_status.items()) or "-")
                  + "; resolved by: " + (", ".join(f"{k} {v}" for k, v in ev.resolved_by.items()) or "-"))
     promote = cat.promote_after if cat.promote_after > 0 else "never (auto promotion off)"
-    lines.append(f"             own replace (handler case-replace): {ev.action_successes} success(es) in "
-                 f"{len(ev.action_projects)} project(s), {ev.action_failures} failure(s); active after {promote} "
-                 "project(s) without a failure; falls back at ≥ 2 failures and more failures than successes")
+    if cat.flag("case_replace") or a.kind == "replace" or ev.action_successes or ev.action_failures:
+        lines.append(f"             own replace (handler case-replace): {ev.action_successes} success(es) in "
+                     f"{len(ev.action_projects)} project(s), {ev.action_failures} failure(s); active after {promote} "
+                     "project(s) without a failure; falls back at ≥ 2 failures and more failures than successes")
+    elif a.kind == "script":
+        lines.append(f"             fix script: active after {promote} project(s) without a failure of the version")
     if c.variants:
         lines += ["", "variants (owner / L1):"]
         for v in c.variants[:10]:
@@ -874,6 +919,7 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
                      f"{x.project or '-'})")
     if not ev.failures:
         lines.append("  (none)")
+    lines += _script_section(cat, c)
     lines += ["", "hints (to the fix LLM, people's first):"]
     hints = [f"  [person] {h}" for h in c.human.hints] + [f"  {h}" for h in c.hints]
     lines += hints or ["  (none)"]
@@ -889,6 +935,10 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
             b, a = h.get("before") or {}, h.get("after") or {}
             if h.get("event") == "human":
                 what = f"{h.get('command') or 'edit'}: {', '.join(h.get('fields') or [])}"
+            elif h.get("event") == "script":
+                what = f"script v{h.get('version', '?')} {h.get('action', '')}" + (
+                    f" {h['outcome']}" if h.get("outcome") else "") + (
+                    f" ({h['project']})" if h.get("project") else "") + (f": {h['reason']}" if h.get("reason") else "")
             else:
                 what = (f"{b.get('status') or '-'} → {a.get('status')}" if b.get("status") != a.get("status") else
                         f"action {b.get('action') or '-'} → {a.get('action')}") + f" ({h.get('reason', '')})"
@@ -916,6 +966,23 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
         elif latest is not None:
             lines += ["", f"(the latest fix {latest.attempt_id or '-'} has no recorded diff)"]
     return lines
+
+
+def _script_section(cat: CaseCatalog, c: CatalogCase) -> list[str]:
+    """v2: the case's stored fix scripts (best first marker, record, lineage) for `cases show`."""
+    store = cat.scripts()
+    try:
+        metas = store.versions(c.id)
+        ranked = [m.version for m in store.ranked(c.id)]
+    except Exception as e:  # noqa: BLE001 - informative
+        return ["", f"fix scripts: unreadable ({e})"]
+    if not metas:
+        return []
+    out = ["", f"fix scripts ({len(metas)} version(s); `sbmig kb scripts show {c.id} [--version N]`):"]
+    for m in reversed(metas):
+        mark = "  ← reused first" if ranked and m.version == ranked[0] else ""
+        out.append(f"  {_script_row(m)}{mark}")
+    return out
 
 
 @cases_cli.command("show")
@@ -1010,3 +1077,222 @@ def cases_note_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="I
         raise typer.BadParameter("empty note")
     _set(ctx, c.id, "note added to", notes=_append_note(c, text.strip()))
 
+
+
+# --------------------------------------------------------------------------- sbmig kb scripts (v2)
+scripts_cli = typer.Typer(
+    help="v2 fix scripts: the LLM-written fix-script versions of every case (kb/scripts/<case id>/v<N>.py + "
+         "v<N>.meta.json) — record, lineage, the version a reuse runs first; retire / activate a version.",
+    no_args_is_help=True)
+kb_cli.add_typer(scripts_cli, name="scripts")
+
+
+def _script_case(store: ScriptStore, key: str) -> str:
+    """A case id of the script store by id or unique id prefix (exit 1 otherwise)."""
+    key = (key or "").strip()
+    ids = store.case_ids()
+    if key in ids:
+        return key
+    hits = [i for i in ids if key and i.startswith(key)]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        typer.echo(f"ambiguous case id prefix {key}: {', '.join(hits[:10])}", err=True)
+    else:
+        typer.echo(f"no fix scripts for case {key} (`sbmig kb scripts list`)", err=True)
+    raise typer.Exit(1)
+
+
+def _script_row(m) -> str:
+    """One version: number (← parent), status, record, last outcome, who made it."""
+    parent = f" ← v{m.parent}" if m.parent else ""
+    return (f"v{m.version}{parent:<6} {m.status:<11} ok={m.successes:<3} failed={m.failures:<3} "
+            f"partial={m.partials:<3} projects={len(set(m.success_projects)):<3} last={m.last_outcome or '-':<12} "
+            f"{m.source}/{m.model or '-'}  {_when(m.created_at)}  {m.project or '-'}")
+
+
+def _last_run(metas: list):
+    ran = [m for m in metas if m.last_at is not None]
+    return max(ran, key=lambda m: (m.last_at.timestamp(), m.version)) if ran else None
+
+
+def _refresh_script_case(kb: FileKnowledgeBase, meta) -> None:
+    """A version changed status by hand: the catalog case gets its action / views recomputed."""
+    if not kb.cfg.kb.catalog or not meta.signature_generic:
+        return
+    cat = kb.catalog()
+    if not cat.index_path.exists():
+        return
+    try:
+        changed = cat.refresh([meta.signature_generic])
+        cat.write_views()
+        if changed:
+            c = cat.get(meta.case_id)
+            typer.echo(f"case {meta.case_id}: action {action_text(c.effective_action()) if c else '?'}")
+    except Exception as e:  # the status change itself is stored
+        typer.echo(f"case catalog not refreshed ({e}); run `sbmig kb reindex`", err=True)
+
+
+@scripts_cli.command("list")
+def scripts_list_cmd(
+    ctx: typer.Context,
+    case: Optional[str] = typer.Option(None, "--case", help="case id (or id prefix): that case and its versions"),
+    status: Optional[str] = typer.Option(None, "--status", help="regex on the version status: "
+                                                                 "active|retired|quarantined"),
+    limit: int = typer.Option(0, "--limit", "-n", help="first N cases (0 = all)"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Cases with stored fix scripts, most success projects first: versions, the version a reuse runs first,
+    successes / failures over the versions, the last outcome, the L2 signature."""
+    try:
+        rx = re.compile(status) if status else None
+    except re.error as e:
+        raise typer.BadParameter(f"bad regex: {e}")
+    store = _kb(ctx).scripts
+    ids = store.case_ids()
+    if case:
+        ids = [i for i in ids if i.startswith(case.strip())]
+    rows = []
+    for cid in ids:
+        metas = [m for m in store.versions(cid) if rx is None or rx.search(m.status)]
+        if not metas:
+            continue
+        ranked = store.ranked(cid)
+        last = _last_run(metas)
+        rows.append({"case_id": cid, "signature_generic": next((m.signature_generic for m in reversed(metas)
+                                                               if m.signature_generic), ""),
+                     "versions": len(metas), "best": ranked[0].version if ranked else 0,
+                     "successes": sum(m.successes for m in metas), "failures": sum(m.failures for m in metas),
+                     "partials": sum(m.partials for m in metas),
+                     "success_projects": len({p for m in metas for p in m.success_projects}),
+                     "last_outcome": last.last_outcome if last else "", "metas": metas})
+    rows.sort(key=lambda r: (-r["success_projects"], -r["successes"], r["case_id"]))
+    if limit > 0:
+        rows = rows[:limit]
+    if as_json:
+        typer.echo(json.dumps([{**{k: v for k, v in r.items() if k != "metas"},
+                                "version_list": [m.model_dump(mode="json") for m in r["metas"]]} for r in rows],
+                              indent=2, ensure_ascii=False))
+        return
+    if not rows:
+        typer.echo("no fix scripts")
+        return
+    for r in rows:
+        best = f"v{r['best']}" if r["best"] else "-"
+        typer.echo(f"{r['case_id']}  versions={r['versions']:<3} best={best:<5} ok={r['successes']:<4} "
+                   f"failed={r['failures']:<4} projects={r['success_projects']:<3} last={r['last_outcome'] or '-':<12} "
+                   f"{_trim(r['signature_generic'], 90) or '-'}")
+        if case:
+            for m in reversed(r["metas"]):
+                typer.echo(f"  {_script_row(m)}")
+
+
+@scripts_cli.command("show")
+def scripts_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID",
+                                                                    help="case id or unique id prefix"),
+                     version: Optional[int] = typer.Option(None, "--version", "-v",
+                                                           help="default: the version a reuse runs first, else the "
+                                                                "newest active one, else the newest"),
+                     code: bool = typer.Option(True, "--code/--no-code", help="print the script"),
+                     as_json: bool = typer.Option(False, "--json", help="meta + code + lineage")) -> None:
+    """One fix-script version, readable: its record, lineage (v1 → v3 → v4), the LLM's analysis, the other versions
+    of the case and the code."""
+    kb = _kb(ctx)
+    store = kb.scripts
+    cid = _script_case(store, key)
+    metas = store.versions(cid)
+    if version is None:
+        ranked = store.ranked(cid)
+        pick = ranked[0] if ranked else next((m for m in reversed(metas) if m.status == "active"),
+                                             metas[-1] if metas else None)
+        version = pick.version if pick is not None else 0
+    got = store.get(cid, version)
+    if got is None:
+        have = ", ".join(f"v{m.version}" for m in metas) or "none readable"
+        typer.echo(f"no readable fix script {cid} v{version} (stored: {have})", err=True)
+        raise typer.Exit(1)
+    meta, text = got
+    chain = store.lineage(cid, meta.version)
+    if as_json:
+        typer.echo(json.dumps({"meta": meta.model_dump(mode="json"), "code": text,
+                               "lineage": [m.version for m in chain]}, indent=2, ensure_ascii=False))
+        return
+    order = [m.version for m in store.ranked(cid)]
+    lines = [f"fix script {cid} v{meta.version} — {meta.status}"]
+    case = kb.catalog().get(cid) if kb.cfg.kb.catalog else None
+    lines.append(f"  case:      {cid}" + (f"  {case.effective_name()}  → sbmig kb cases show {cid}" if case else ""))
+    lines.append(f"  key (L2):  {meta.signature_generic or '-'}")
+    lines.append(f"  lineage:   {lineage_text(chain)}" + ("" if not meta.parent or len(chain) > 1 else
+                                                          f"  (parent v{meta.parent} missing)"))
+    lines.append(f"  record:    {meta.successes} ok / {meta.failures} failed / {meta.partials} partial; fixed in "
+                 f"{len(set(meta.success_projects))} project(s)"
+                 + (f": {', '.join(meta.success_projects[:10])}" if meta.success_projects else ""))
+    if meta.last_outcome or meta.last_at:
+        lines.append(f"  last run:  {meta.last_outcome or '-'} at {_when(meta.last_at)} "
+                     f"(run {meta.last_run_id or '-'})")
+    lines.append(f"  made by:   {meta.source} {meta.model or '-'} in run {meta.run_id or '-'} "
+                 f"({meta.project or '-'}), {_when(meta.created_at)}")
+    reuse = ("reused first" if order and order[0] == meta.version else
+             f"#{order.index(meta.version) + 1} of the reuse order" if meta.version in order else
+             "not reused (" + ("quarantined" if meta.status == "quarantined" else meta.status if meta.status != "active"
+                               else "no success yet") + ")")
+    lines.append(f"  reuse:     {reuse}")
+    lines.append(f"  sha1:      {meta.sha1 or '-'}")
+    for n in meta.notes[:10]:
+        lines.append(f"  note:      {_trim(n, 300)}")
+    if meta.analysis:
+        lines += ["", "analysis:"] + [f"  {ln}" for ln in meta.analysis.splitlines()]
+    others = [m for m in metas if m.version != meta.version]
+    if others:
+        lines += ["", "other versions:"] + [f"  {_script_row(m)}" for m in reversed(others)]
+    if code:
+        lines += ["", f"--- {store.code_path(cid, meta.version).relative_to(kb.root).as_posix()}", text.rstrip("\n")]
+    typer.echo("\n".join(lines))
+
+
+def _set_script_status(ctx: typer.Context, key: str, version: int, status: str, reason: str) -> None:
+    kb = _kb(ctx)
+    store = kb.scripts
+    cid = _script_case(store, key)
+    command = f"sbmig kb scripts {'retire' if status == 'retired' else 'activate'}"
+    try:
+        meta = store.set_status(cid, version, status, reason=reason, command=command)   # type: ignore[arg-type]
+    except (KeyError, ValueError) as e:
+        typer.echo(str(e).strip("'\""), err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{'retired' if status == 'retired' else 'activated'} {cid} v{meta.version}: {_script_row(meta)}")
+    if status == "retired" and store.pinned_version(cid) == meta.version:
+        typer.echo(f"note: case {cid} pins v{meta.version} in its human block — the pin is ignored while the "
+                   f"version is retired (`sbmig kb cases unpin {cid}` clears it)", err=True)
+    _refresh_script_case(kb, meta)
+
+
+@scripts_cli.command("retire")
+def scripts_retire_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID"),
+                       version: int = typer.Argument(..., metavar="N"),
+                       reason: str = typer.Option("", "--reason", "-r")) -> None:
+    """Never reuse (or augment from) this version again (recorded in kb/audit.jsonl)."""
+    _set_script_status(ctx, key, version, "retired", reason)
+
+
+@scripts_cli.command("activate")
+def scripts_activate_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID"),
+                         version: int = typer.Argument(..., metavar="N"),
+                         reason: str = typer.Option("", "--reason", "-r")) -> None:
+    """Make a retired version selectable again (a quarantined one stays quarantined)."""
+    _set_script_status(ctx, key, version, "active", reason)
+
+
+@scripts_cli.command("validate")
+def scripts_validate_cmd(ctx: typer.Context) -> None:
+    """Check the stored fix scripts: every meta parses and names its case / version, the code exists and matches
+    its sha1, parents exist. Exit 1 when a problem is found."""
+    store = _kb(ctx).scripts
+    problems = store.check()
+    for p in problems:
+        typer.echo(f"PROBLEM: {p}")
+    sc = store.counts()
+    if problems:
+        typer.echo(f"{len(problems)} problem(s) in {store.scripts_dir}")
+        raise typer.Exit(1)
+    typer.echo(f"OK: {sc['script_cases']} case(s), {sc['script_versions']} version(s) in {store.scripts_dir}")

@@ -392,14 +392,15 @@ class AnthropicClient(_HTTPClient):
 # ---------------------------------------------------------------------------
 # Fake + recording
 # ---------------------------------------------------------------------------
-FakeScript = Union[list[Union[str, Exception]], Callable[[list[ChatMessage]], str], None]
+FakeScript = Union[list[Union[str, Exception]], Callable[[list[ChatMessage]], str], "ReplayResponder", None]
 
 
 class FakeLLMClient:
     """Scripted client for tests / offline runs.
 
     responses: list (consumed in order, last one repeats; an Exception item is raised), a callable
-    `fn(messages) -> str`, or None (always answers "no fix").
+    `fn(messages) -> str`, a `ReplayResponder` (recorded answers selected by role / regex), or None (always answers
+    "no fix"). Answers are plain text: SEARCH/REPLACE patches (v1), fix scripts (v2) or review JSON alike.
     """
 
     def __init__(self, responses: FakeScript = None, record_dir: Optional[str | Path] = None, model: str = "fake"):
@@ -418,6 +419,8 @@ class FakeLLMClient:
                            "metadata": dict(metadata) if metadata else None})
         if self.responses is None:
             text: Union[str, Exception] = NO_FIX_RESPONSE
+        elif isinstance(self.responses, ReplayResponder):
+            text = self.responses(list(messages), role=role)
         elif callable(self.responses):
             text = self.responses(list(messages))
         elif not self.responses:
@@ -511,12 +514,62 @@ class RecordingClient:
 
 def load_replay_responses(record_dir: str | Path) -> list[str]:
     """Responses of a recorded session (llm-*.json, in order) — feed to FakeLLMClient for replay."""
-    out = []
+    return [e.response for e in load_replay_entries(record_dir)]
+
+
+class ReplayEntry:
+    """One recorded answer (`llm-NNNN.json`): `response` text, optional `replay_role` (fix | structure_review | …;
+    "fix" also answers fix_escalation calls) and optional `match` regex searched in the request's non-system
+    messages. (The recorder's own `role` key is informational and never selects.)"""
+
+    def __init__(self, response: str, *, role: Optional[str] = None, match: Optional[str] = None, name: str = ""):
+        self.response = response
+        self.role = role or None
+        self.match = match or None
+        self.name = name
+        self._rx = re.compile(match, re.MULTILINE) if match else None
+
+    def matches(self, text: str, role: Optional[str]) -> bool:
+        if self.role and self.role != (role or "") and not (self.role == "fix" and role == "fix_escalation"):
+            return False
+        return self._rx is None or bool(self._rx.search(text))
+
+
+def load_replay_entries(record_dir: str | Path) -> list[ReplayEntry]:
+    """Every llm-*.json of a replay directory with a `response` (file-name order). Hand-written fixtures may add
+    `match` (regex) and / or `replay_role` to pick answers by request instead of by position (`ReplayResponder`)."""
+    out: list[ReplayEntry] = []
     for p in sorted(Path(record_dir).glob("llm-*.json")):
         data = json.loads(p.read_text(encoding="utf-8"))
-        if data.get("response") is not None:
-            out.append(data["response"])
+        if data.get("response") is None:
+            continue
+        out.append(ReplayEntry(str(data["response"]), role=data.get("replay_role") or None,
+                               match=data.get("match") or None, name=p.name))
     return out
+
+
+class ReplayResponder:
+    """Replays recorded answers chosen per request: the first unused entry (file order) whose `replay_role` fits the
+    call's role (entries without one take any role) and whose `match` regex is found in the request's user / assistant
+    messages (no `match` = any request); when every matching entry was used, the last matching one repeats; nothing
+    matches → the "no fix" answer. Without `match` / role fields this is the positional replay (in order, the last one
+    repeats)."""
+
+    def __init__(self, entries: list[ReplayEntry]):
+        self.entries = list(entries)
+        self.used: set[int] = set()
+        self.served: list[str] = []                  # entry names in serve order (tests / debugging)
+
+    def __call__(self, messages: list[ChatMessage], role: Optional[str] = None) -> str:
+        text = "\n\n".join(m.content for m in messages if m.role != "system")
+        hits = [i for i, e in enumerate(self.entries) if e.matches(text, role)]
+        if not hits:
+            log.warning("replay: no recorded answer matches this request (role=%s); answering 'no fix'", role or "-")
+            return NO_FIX_RESPONSE
+        pick = next((i for i in hits if i not in self.used), hits[-1])
+        self.used.add(pick)
+        self.served.append(self.entries[pick].name)
+        return self.entries[pick].response
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +596,10 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
     elif llm.provider == "fake":
         responses: FakeScript = None
         if llm.base_url and llm.base_url.startswith("replay:"):
-            responses = load_replay_responses(cfg.resolve_path(llm.base_url[len("replay:"):]))
+            entries = load_replay_entries(cfg.resolve_path(llm.base_url[len("replay:"):]))
+            # positional replay (v1 fixtures) unless an entry selects by request (`match` / `replay_role`)
+            responses = ReplayResponder(entries) if any(e.match or e.role for e in entries) \
+                else [e.response for e in entries]
         client = FakeLLMClient(responses)
     else:
         key = os.environ.get(llm.api_key_env or "")

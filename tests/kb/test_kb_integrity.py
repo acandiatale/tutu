@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from sbmig.core.models import ErrorCaseRecord, KBRecipe, ResolutionRecord
+from sbmig.core.models import KB_RECORD_SCHEMA, ErrorCaseRecord, KBRecipe, ResolutionRecord
 from sbmig.kb import ErrorCaseStore, FileKnowledgeBase
 from sbmig.kb.jsonl import append_lines, corrupt_path, parse_record, repair_tail
 from sbmig.kb.ledger import Ledger
@@ -73,7 +73,7 @@ def test_legacy_lines_read_as_schema_1(tmp_path):
     data.pop("agent_version")
     (tmp_path / "errors.jsonl").write_text(json.dumps(data) + "\n" + rec("B").model_dump_json() + "\n")
     got = {e.id: e.schema_version for e in ErrorCaseStore(tmp_path).iter_errors()}
-    assert got == {"A": 1, "B": 2}
+    assert got == {"A": 1, "B": KB_RECORD_SCHEMA}
 
 
 def test_ledger_append_is_torn_line_safe(tmp_path):

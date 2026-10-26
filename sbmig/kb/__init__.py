@@ -15,6 +15,8 @@ Public API:
     redact(text, cfg=None)                              secret VALUES masked by context (sbmig.kb.redact, round 10)
     kb_lock(kb_dir, timeout)                            the cross-process write lock <kb>/.lock (sbmig.kb.lock)
     pairset_hash(pairs) / case_replace_note(id, pairs)  how handler case-replace names the pair set it applied
+    ScriptStore(kb_dir, cfg=None)                       v2 fix scripts per case kb/scripts/<case>/v<N>.py (+ meta);
+                                                        FileKnowledgeBase.scripts, .record_review(review)
 """
 from .catalog import CaseCatalog, case_id_for, case_replace_note, pairset_hash
 from .changes import classify_diff
@@ -26,9 +28,10 @@ from .ledger import Ledger, SymbolIndex, render_learning_md
 from .lock import kb_lock
 from .recipes import WHITELIST, validate_recipe_yaml
 from .redact import redact
+from .scripts import ScriptStore, parse_script_resolver, script_resolver
 from .store import FileKnowledgeBase
 
 __all__ = ["FileKnowledgeBase", "kb_cli", "validate_recipe_yaml", "sanitize_case", "WHITELIST", "LabelResult",
            "label_changes", "compile_recipe", "Ledger", "SymbolIndex", "render_learning_md", "classify_diff",
            "prepare_error_cases", "ErrorCaseStore", "CaseCatalog", "case_id_for", "redact", "kb_lock",
-           "pairset_hash", "case_replace_note"]
+           "pairset_hash", "case_replace_note", "ScriptStore", "script_resolver", "parse_script_resolver"]

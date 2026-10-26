@@ -1,6 +1,9 @@
 """One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
-    SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes>
+    SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes>[ review=<v>]
+
+v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
+fleet lines and runs without a review keep the round-10 format).
 
 `sbmig run` prints (and logs) it at the end, the fleet prints one per project. `attn` is a comma list of short codes
 that say why a human has to look (`-` = nothing): the same codes fill the fleet's `summary.csv` `attention` column
@@ -102,11 +105,11 @@ def result_attention(r: Any) -> list[str]:
 
 
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
-                llm_calls: int = 0, attention: Iterable[str] = ()) -> str:
+                llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None) -> str:
     codes = ",".join(attention) or "-"
     return (f"SBMIG-RESULT run={_ascii_token(run_id or '-')} exit={'-' if exit_code is None else exit_code} "
             f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked} llm={llm_calls} "
-            f"attn={_ascii_token(codes)}")
+            f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else ""))
 
 
 def report_result_line(report: Any, exit_code: int, run_id: Optional[str] = None) -> str:
@@ -115,4 +118,5 @@ def report_result_line(report: Any, exit_code: int, run_id: Optional[str] = None
                        unresolved=len(getattr(report, "unresolved", []) or []),
                        blocked=len(getattr(report, "blocked", []) or []),
                        llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
-                       attention=report_attention(report, exit_code))
+                       attention=report_attention(report, exit_code),
+                       review=getattr(getattr(report, "structure_review", None), "verdict", None))

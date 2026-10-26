@@ -18,7 +18,10 @@ Layout under ``cfg.kb_dir`` (created on first use)::
                                         block edited by people, the rest derived from errors.jsonl)
     catalog/index.json                  case id → file, L2 / L1 / symbol → case id (derived)
     views/cases.md, views/cases.csv     generated case tables for people (derived)
-    audit.jsonl                         human case edits + automatic case status / action transitions (round 10)
+    audit.jsonl                         human case edits + automatic case status / action transitions (round 10),
+                                        fix-script versions created / credited / retired / activated (v2)
+    scripts/<case-id>/v<N>.py + .meta.json   v2 fix scripts per case (sbmig.kb.scripts, ``FileKnowledgeBase.scripts``)
+    reviews.jsonl                       v2 structure reviews, one line per run (``record_review``)
     quarantine.jsonl                    notes about errors.jsonl lines that could not be read (round 10)
     *.jsonl.corrupt                     torn last lines moved aside before the next append (round 10)
     .lock                               the cross-process write lock (sbmig.kb.lock)
@@ -39,7 +42,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 import yaml
 
@@ -54,6 +57,7 @@ from sbmig.core.models import (
     PhaseResult,
     ProjectProfile,
     RunReport,
+    StructureReview,
     utcnow,
 )
 from sbmig.core.workspace import Workspace
@@ -62,11 +66,13 @@ from .catalog import CATALOG_DIR, VIEWS_DIR, CaseCatalog
 from .catalog import clear_caches as clear_catalog_caches
 from .error_cases import ErrorCaseStore
 from .harvest import NO_REPLAY_TAG
-from .jsonl import append_lines
+from .jsonl import append_lines, line_ids, parse_record
 from .labels import symbol_for_error, symbol_for_errors
 from .ledger import Ledger, SymbolIndex, advisory_record, blocked_record, unresolved_records
 from .lock import LOCK_NAME, kb_lock
 from .recipes import LEGACY_NAME_PREFIX, recipe_names_in_yaml
+from .redact import get_redactor
+from .scripts import SCRIPTS_DIR, ScriptStore
 
 log = logging.getLogger("sbmig.kb")
 
@@ -77,6 +83,8 @@ _STATUS_DIR = {"active": "active", "candidate": "candidates", "rejected": "rejec
 _UPDATED_TAG = "updated:"
 MAX_MATCH_CASES = 10
 ERROR_CASE_FILES = ("errors.jsonl", "fix_attempts.jsonl", "error_hints.json")
+REVIEWS_FILE = "reviews.jsonl"           # v2 structure reviews (one line per run)
+REVIEW_TEXT_LIMIT = 4000
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -127,6 +135,7 @@ class FileKnowledgeBase:
         self._ledger_blocked: set[tuple[str, str]] = set()   # (run_id, blocked id) already in the ledger
         self._error_store: Optional[ErrorCaseStore] = None   # cached: keeps the hints index loaded across a fleet
         self._catalog: Optional[CaseCatalog] = None
+        self._scripts: Optional[ScriptStore] = None
 
     # ------------------------------------------------------------------ layout
     @property
@@ -179,6 +188,70 @@ class FileKnowledgeBase:
         if self._catalog is None or self._catalog.root != self.root:
             self._catalog = CaseCatalog(self.root, self.cfg, kb=self)
         return self._catalog
+
+    # ------------------------------------------------------------------ v2: fix scripts + structure reviews
+    @property
+    def scripts(self) -> ScriptStore:
+        """The per-case fix-script store ``<kb>/scripts/`` (``ScriptStoreLike``, v2; created on first use)."""
+        if self._scripts is None or self._scripts.root != self.root:
+            self._scripts = ScriptStore(self.root, self.cfg, lock_timeout=self.lock_timeout)
+        return self._scripts
+
+    @property
+    def reviews_path(self) -> Path:
+        return self.root / REVIEWS_FILE
+
+    def _review_record(self, review: StructureReview) -> StructureReview:
+        """The stored form of a review: issue texts, analysis, note, the script and its run log redacted (KB
+        rules), the home directory as ``~``, free texts capped; the script is kept (short) but masked too."""
+        from .error_cases import _roots, _strip
+
+        red, roots = get_redactor(self.cfg), _roots(None)
+
+        def clean(text: Optional[str], limit: int = REVIEW_TEXT_LIMIT) -> str:
+            out = red.redact(_strip(text or "", roots)) or ""
+            return out[:limit] + "…[truncated]" if limit > 0 and len(out) > limit else out
+
+        issues = [i.model_copy(update={"file": clean(i.file, 500), "problem": clean(i.problem),
+                                       "fix_hint": clean(i.fix_hint)}) for i in review.issues]
+        res = review.script_result
+        if res is not None:
+            res = res.model_copy(update={"log": [clean(x, 500) for x in res.log], "error": clean(res.error),
+                                         "problems": [clean(x, 500) for x in res.problems],
+                                         "changed_files": [clean(x, 500) for x in res.changed_files]})
+        rid = review.id or (f"{review.run_id}:review" if review.run_id else
+                            f"review:{review.at.strftime('%Y%m%d%H%M%S')}:{review.project or '-'}")
+        return review.model_copy(update={"id": rid, "issues": issues, "script_result": res,
+                                         "analysis": clean(review.analysis), "note": clean(review.note),
+                                         "script": clean(review.script, 0), "project": clean(review.project, 500)})
+
+    def record_review(self, review: StructureReview) -> None:
+        """One line in ``<kb>/reviews.jsonl`` per structure review (texts redacted, see :meth:`_review_record`); a
+        review whose id is already stored is not written again. Never raises (a warning instead)."""
+        try:
+            rec = self._review_record(review)
+            with self.lock():
+                if self.reviews_path.exists():
+                    with open(self.reviews_path, "r", encoding="utf-8", errors="replace") as fh:
+                        if any(rec.id in line_ids(ln) for ln in fh if ln.strip()):
+                            log.debug("structure review %s is already in %s", rec.id, self.reviews_path.name)
+                            return
+                append_lines(self.reviews_path, [rec.model_dump_json()])
+        except Exception as e:  # noqa: BLE001 - the review log must never fail a run
+            log.warning("kb.record_review failed: %s: %s", type(e).__name__, e)
+
+    def iter_reviews(self) -> Iterator[StructureReview]:
+        """The stored structure reviews (file order, first line of an id wins; unreadable lines skipped)."""
+        if not self.reviews_path.exists():
+            return
+        seen: set[str] = set()
+        with open(self.reviews_path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                r = parse_record(line, StructureReview)
+                if r is None or r.id in seen:
+                    continue
+                seen.add(r.id)
+                yield r
 
     def append_error_cases(self, errors, attempts) -> int:
         """Append a run's prepared error / attempt records (ids already stored are skipped), update the hints
@@ -884,7 +957,17 @@ class FileKnowledgeBase:
             "error_cases": self.error_case_store().count_errors(),
             "fix_attempts": self.error_case_store().count_attempts(),
             **self._catalog_stats(),
+            **self._script_stats(),
+            "reviews": self.error_case_store()._count(self.reviews_path),
         }
+
+    def _script_stats(self) -> dict[str, int]:
+        """v2: fix-script cases / versions by status (``ScriptStore.counts``)."""
+        try:
+            return self.scripts.counts()
+        except Exception as e:  # pragma: no cover - stats are informative
+            log.debug("fix script stats failed: %s", e)
+            return {}
 
     def _catalog_stats(self) -> dict[str, int]:
         """catalog_cases + counts by effective status (catalog_observed / _candidate / _active / _rejected)."""
@@ -899,8 +982,8 @@ class FileKnowledgeBase:
         return out
 
     def export_zip(self, path: str | Path) -> Path:
-        """Zip cases/, recipes/, patterns/, catalog/, views/, index.json and the event files (paths relative to
-        the kb root)."""
+        """Zip cases/, recipes/, patterns/, catalog/, views/, scripts/ (v2), index.json and the event files
+        (reviews.jsonl included; paths relative to the kb root)."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
@@ -914,9 +997,10 @@ class FileKnowledgeBase:
                         if p.is_dir() or p.name.startswith(".") or p.suffix == ".tmp":
                             continue
                         rel = p.relative_to(self.root)
-                        if rel.parts[0] not in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR) and \
-                                rel.as_posix() not in (
-                                "index.json", "ledger.jsonl", "symbols.json", *ERROR_CASE_FILES, *AUDIT_FILES):
+                        if rel.parts[0] not in ("cases", "recipes", "patterns", CATALOG_DIR, VIEWS_DIR,
+                                                SCRIPTS_DIR) and rel.as_posix() not in (
+                                "index.json", "ledger.jsonl", "symbols.json", *ERROR_CASE_FILES, *AUDIT_FILES,
+                                REVIEWS_FILE):
                             continue
                         zf.write(p, rel.as_posix())
         os.replace(tmp, path)
@@ -973,13 +1057,15 @@ class FileKnowledgeBase:
                 shutil.rmtree(build_dir, ignore_errors=True)
                 raise
             self._index, self._index_stamp, self._error_store, self._catalog = None, None, None, None
+            self._scripts = None
             clear_catalog_caches()
         return counters
 
     def _import_merge(self, path: str | Path, merge: bool) -> dict[str, int]:
         counters = {"cases_added": 0, "cases_merged": 0, "recipes_added": 0, "recipes_merged": 0,
                     "patterns_added": 0, "ledger_added": 0, "error_cases_added": 0, "fix_attempts_added": 0,
-                    "case_humans_added": 0}
+                    "case_humans_added": 0, "script_versions_added": 0, "script_versions_merged": 0,
+                    "reviews_added": 0}
         local_case_ids = set(self.catalog().ids_on_disk()) if merge else set()
         with tempfile.TemporaryDirectory(prefix="sbmig-kb-import-") as tmpd:
             tmp = Path(tmpd).resolve()
@@ -1046,6 +1132,18 @@ class FileKnowledgeBase:
             if src.errors_path.exists() or src.attempts_path.exists():
                 ne, na = self.error_case_store().append_counts(src.iter_errors(), src.iter_attempts())
                 counters["error_cases_added"], counters["fix_attempts_added"] = ne, na
+            # v2 fix scripts: into an empty KB as they are; into a local one by sha1 (same code = counts merged,
+            # other code = the next local version, parents mapped)
+            if other.scripts.scripts_dir.exists():
+                if not merge and not self.scripts.scripts_dir.exists():
+                    shutil.copytree(other.scripts.scripts_dir, self.scripts.scripts_dir)
+                    counters["script_versions_added"] = other.scripts.counts()["script_versions"]
+                else:
+                    counters.update(self.scripts.merge_from(other.scripts))
+            if other.reviews_path.exists():              # structure reviews: ids not stored yet
+                have = {r.id for r in self.iter_reviews()}
+                new = [r.model_dump_json() for r in other.iter_reviews() if r.id not in have]
+                counters["reviews_added"] = append_lines(self.reviews_path, new)
             for name in AUDIT_FILES:                     # audit / quarantine notes: whole lines not stored yet
                 src_p, dst_p = other.root / name, self.root / name
                 if src_p.exists():

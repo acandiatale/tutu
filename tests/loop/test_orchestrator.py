@@ -1,3 +1,6 @@
+"""Orchestrator (v2 flow: transform → restructure → structure review → verify + script fix loop): reports, phases,
+stop / dry-run, rewrite / restructure failures, aborts, finalize (advisories, handover, cost, flags). `make_orch` /
+`files_build` are shared by the other loop / graph tests."""
 from __future__ import annotations
 
 
@@ -9,8 +12,9 @@ from sbmig.loop import MissingComponentError, NullKnowledgeBase, Orchestrator, l
 from sbmig.triage import HandlerRegistry, Triager
 from sbmig.triage.handlers import Handler
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeRewriteRunner, bad_build, boot_plan,
-                    compile_error, journal_events, make_profile, msa_plan, ok_build, write_fix)
+from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeReviewer, FakeRewriteRunner,
+                    FakeScriptRunner, bad_build, compile_error, journal_events, make_profile, ok_build, v2_msa_plan,
+                    v2_plan, write_fix, write_script)
 
 FOO = "src/main/java/com/x/Foo.java"
 BAR = "src/main/java/com/x/Bar.java"
@@ -22,6 +26,7 @@ def files_build(ws, call):
 
 
 class PreHandler(Handler):
+    """A v1 pre-emptive handler: registered, never run by the v2 flow."""
     id = "lombok-version-floor"
     description = "fake lombok floor"
 
@@ -33,28 +38,23 @@ class PreHandler(Handler):
         return [FileChange(path="pom.xml", op="modify")]
 
 
-class SpringPreHandler(PreHandler):
-    id = "javax-servlet-api-to-jakarta"
-    preemptive_phase = Phase.SPRING
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):
-        ws.write("servlet.txt", "jakarta\n")
-        return [FileChange(path="servlet.txt", op="modify")]
+def fix_all(w, c, ctx):
+    return write_script({e.file: "class X { ok }\n" for e in c.errors if e.file}, analysis="fixed")
 
 
 def make_orch(cfg, ws, *, plan=None, profile=None, build=None, fixer=None, kb=None, rewrite=None,
-              restructurer=None, pre=None, clock=None, **kw):
-    reg = HandlerRegistry([PreHandler(), SpringPreHandler()])
+              restructurer=None, clock=None, runner=None, reviewer=None, **kw):
+    reg = HandlerRegistry([PreHandler()])
     kwargs = dict(
         analyzer=lambda w, c: profile or make_profile(),
-        planner=lambda p, c, k: plan or boot_plan(),
-        pre_handlers=lambda p, c: pre if pre is not None else ["lombok-version-floor", "javax-servlet-api-to-jakarta"],
+        planner=lambda p, c, k: plan or v2_plan(),
         restructurer=restructurer or FakeRestructurer(),
         rewrite_runner=rewrite or FakeRewriteRunner(ws),
         build_runner=build or FakeBuildRunner(ws, fn=files_build),
         triager=Triager(cfg, registry=reg), handlers=reg,
-        fixer=fixer or FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "class X { ok }\n")),
-        kb=kb or FakeKB(), llm=object(),
+        fixer=fixer or FakeFixer(script_fn=fix_all),
+        kb=kb or FakeKB(), llm=object(), script_runner=runner or FakeScriptRunner(),
+        reviewer=reviewer if reviewer is not None else FakeReviewer(),
     )
     if clock is not None:
         kwargs["clock"] = clock
@@ -62,37 +62,35 @@ def make_orch(cfg, ws, *, plan=None, profile=None, build=None, fixer=None, kb=No
     return Orchestrator(cfg, ws, **kwargs)
 
 
-def test_spring_boot_end_to_end(cfg, ws):
+def test_v2_end_to_end(cfg, ws):
     kb = FakeKB()
     build = FakeBuildRunner(ws, fn=files_build)
-    rw = FakeRewriteRunner(ws, effect=lambda w, refs: (w.write("rewritten.txt", ",".join(r.id for r in refs)) or ["rewritten.txt"]))
-    orch = make_orch(cfg, ws, kb=kb, build=build, rewrite=rw)
+    rw = FakeRewriteRunner(ws, effect=lambda w, refs: (w.write("rewritten.txt", ",".join(r.id for r in refs))
+                                                       or ["rewritten.txt"]))
+    orch = make_orch(cfg, ws, kb=kb, build=build, rewrite=rw,
+                     fixer=FakeFixer(fn=lambda w, c, ctx: write_fix(None, "class X { ok }\n")))
     report = orch.run()
     assert report.success and report.final_build.ok
-    assert [p.phase for p in report.phases] == [Phase.JDK21, Phase.SPRING, Phase.RESTRUCTURE, Phase.VERIFY]
-    assert report.phases[0].build_ok and report.phases[0].attempts
+    assert [p.phase for p in report.phases] == [Phase.TRANSFORM, Phase.RESTRUCTURE, Phase.VERIFY]
+    assert not report.phases[0].build_ok and report.phases[-1].attempts
     assert build.calls[-1]["label"] == "verify" and build.calls[-1]["goal"] == "clean package"
-    assert kb.harvests == [Phase.JDK21, Phase.SPRING, Phase.RESTRUCTURE]
-    assert report.harvest and report.harvest.cases_created
+    assert kb.harvests == [] and report.harvest is None
     log = ws._git("log", "--format=%s").stdout
-    assert "handlers: lombok-version-floor" in log and "handlers: javax-servlet-api-to-jakarta" in log
-    assert "rewrite: jdk21.rewrite" in log and "restructure: restructure.apply" in log
-    # jakarta handler ran after the spring rewrite, jdk21 handler before the first rewrite
-    subjects = log.splitlines()[::-1]
-    assert subjects.index("handlers: lombok-version-floor") < subjects.index("rewrite: jdk21.rewrite")
-    assert subjects.index("rewrite: spring.rewrite") < subjects.index("handlers: javax-servlet-api-to-jakarta")
+    assert "handlers:" not in log
+    assert "rewrite: transform.rewrite" in log and "restructure: restructure.apply" in log
     assert "web.xml not migrated" in report.manual_followups and "check web.xml" in report.manual_followups
-    assert report.llm_usage.calls == 2 and report.llm_usage.input_tokens == 200
+    assert report.llm_usage.calls == 1 and report.llm_usage.input_tokens == 100
     for k in ("report_md", "report_json", "diff", "zip", "journal", "project_dir", "profile", "plan"):
         assert k in report.outputs, k
     md = (ws.run_dir / "report.md").read_text()
     assert "BUILD SUCCESS" in md and "Unresolved errors" in md
     rep = RunReport.model_validate_json((ws.run_dir / "report.json").read_text())
-    assert rep.success
+    assert rep.success and rep.structure_review is not None
     ev = {e["event"] for e in journal_events(ws)}
     assert {"preflight", "analyze", "plan", "phase_start", "phase_end", "step_start", "step_end", "rewrite",
-            "handlers_preemptive", "restructure", "verify", "harvest", "report", "build"} <= ev
-    # plan-run recipes are not proposed again by triage
+            "restructure", "structure_review", "verify", "report", "build"} <= ev
+    assert not ev & {"handlers_preemptive", "harvest", "kb_credit"}
+    # plan-run recipes are recorded for the triager's bookkeeping
     assert "org.openrewrite.java.migrate.UpgradeToJava21" in orch.triager.engine.recipes_run_any
 
 
@@ -111,29 +109,26 @@ def test_msa_targets_passed_through(cfg, ws):
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
     rw = FakeRewriteRunner(ws)
     restr = FakeRestructurer()
-    report = make_orch(cfg, ws, plan=msa_plan(), build=build, rewrite=rw, restructurer=restr,
+    report = make_orch(cfg, ws, plan=v2_msa_plan(), build=build, rewrite=rw, restructurer=restr,
                        profile=make_profile(CaseType.MSA)).run()
     assert report.success
     assert [r["module"] for r in rw.runs] == ["svc-a", "svc-b"]
-    loop_modules = [c["module"] for c in build.calls if not c["label"].startswith("verify")]
-    assert loop_modules == ["svc-a", "svc-a", "svc-b", "svc-b"]
-    verify = [c for c in build.calls if c["label"].startswith("verify")]
-    assert [(c["module"], c["label"]) for c in verify] == [("svc-a", "verify-svc-a"), ("svc-b", "verify-svc-b")]
+    assert [(c["module"], c["label"]) for c in build.calls] == [("svc-a", "verify-svc-a"), ("svc-b", "verify-svc-b")]
     assert restr.calls == ["msa_pom"]
-    assert [p.phase for p in report.phases][:3] == [Phase.JDK21, Phase.SPRING, Phase.JDK21]
+    assert [p.phase for p in report.phases] == [Phase.TRANSFORM, Phase.RESTRUCTURE, Phase.VERIFY]
 
 
-def test_failed_loops_still_verify(cfg, ws):
+def test_failed_fixes_still_end_with_the_final_build(cfg, ws):
     cfg.loop.max_llm_calls = 1
     build = FakeBuildRunner(ws, fn=lambda w, c: bad_build(compile_error()))
-    report = make_orch(cfg, ws, build=build, fixer=FakeFixer(fn=lambda w, c, ctx: write_fix(FOO, "class F { broken 2 }"))).run()
+    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(FOO, "class F { broken 2 }"))
+    report = make_orch(cfg, ws, build=build, fixer=fixer).run()
     assert not report.success
     assert build.calls[-1]["label"] == "verify"
-    # L6: the LLM budget ran out → the remaining LLM-only cluster is BLOCKED(budget_exhausted), not "unresolved"
+    # L6: the LLM budget ran out → the remaining case is BLOCKED(budget_exhausted), not "unresolved"
     assert report.unresolved == []
     assert [b.reason.value for b in report.blocked] == ["budget_exhausted"] and report.blocked[0].files == [FOO]
     assert "llm-budget-exhausted" in report.flags
-    assert not report.phases[0].ok
     md = (ws.run_dir / "report.md").read_text()
     assert "NOT BUILDING" in md and FOO in md and "Blocked — needs human / library action" in md
     assert "(blocked clusters excluded)" not in md          # nothing unresolved left
@@ -141,10 +136,10 @@ def test_failed_loops_still_verify(cfg, ws):
 
 def test_verify_skipped_when_disabled_after_failure(cfg, ws):
     cfg.loop.always_final_verify = False
-    cfg.loop.max_llm_calls = 0
-    build = FakeBuildRunner(ws, fn=lambda w, c: bad_build(compile_error()))
-    report = make_orch(cfg, ws, build=build).run()
-    assert not report.success and all(c["label"] != "verify" for c in build.calls)
+    build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
+    report = make_orch(cfg, ws, build=build, restructurer=FakeRestructurer(ok=False)).run()
+    assert not report.success and build.calls == []
+    assert any("skipped (an earlier phase failed" in n for p in report.phases for n in p.notes)
 
 
 def test_synthetic_verify_and_time_budget(cfg, ws):
@@ -153,23 +148,23 @@ def test_synthetic_verify_and_time_budget(cfg, ws):
 
     def fix(w, c, ctx):
         t["now"] += 200
-        return write_fix(c.file, "class X { broken 3 }\n")
+        return write_script({e.file: "class X { broken 3 }\n" for e in c.errors})
 
-    plan = boot_plan()
+    plan = v2_plan()
     plan.steps = [s for s in plan.steps if s.kind != StepKind.BUILD]          # no verify step in the plan
     build = FakeBuildRunner(ws, fn=files_build)
-    report = make_orch(cfg, ws, plan=plan, build=build, fixer=FakeFixer(fn=fix), clock=lambda: t["now"]).run()
+    report = make_orch(cfg, ws, plan=plan, build=build, fixer=FakeFixer(script_fn=fix), clock=lambda: t["now"]).run()
     assert "time-budget-exhausted" in report.flags
     assert build.calls[-1]["label"] == "verify"                               # synthetic verify still ran
     notes = [n for p in report.phases for n in p.notes]
     assert any("time budget" in n for n in notes)
 
 
-def test_stop_after_and_dry_run(cfg, ws):
+def test_stop_after_transform(cfg, ws):
     build = FakeBuildRunner(ws, fn=files_build)
-    report = make_orch(cfg, ws, build=build).run(stop_after=Phase.JDK21)
-    assert [p.phase for p in report.phases] == [Phase.JDK21]
-    assert "stopped-after-jdk21" in report.flags and not report.success
+    report = make_orch(cfg, ws, build=build).run(stop_after=Phase.TRANSFORM)
+    assert [p.phase for p in report.phases] == [Phase.TRANSFORM]
+    assert "stopped-after-transform" in report.flags and not report.success and build.calls == []
     assert (ws.run_dir / "report.md").exists()
 
 
@@ -182,28 +177,25 @@ def test_stop_after_early(cfg, ws, phase):
 
 def test_dry_run_applies_nothing(cfg, ws):
     head = ws.head()
-    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "x"))
+    fixer = FakeFixer(script_fn=fix_all)
     rw = FakeRewriteRunner(ws, effect=lambda w, refs: (w.write("r.txt", "x") or ["r.txt"]))
     restr = FakeRestructurer()
-    report = make_orch(cfg, ws, fixer=fixer, rewrite=rw, restructurer=restr).run(dry_run=True)
+    reviewer = FakeReviewer()
+    report = make_orch(cfg, ws, fixer=fixer, rewrite=rw, restructurer=restr, reviewer=reviewer).run(dry_run=True)
     assert set(ws._git("log", "--format=%s").stdout.split("\n")) <= {"sbmig: as-is snapshot", ""}
     assert not ws.is_dirty() and head
-    assert not fixer.applied and restr.calls == []
+    assert not fixer.contexts and restr.calls == [] and reviewer.calls == []
     assert all(r["dry_run"] for r in rw.runs)
     assert "dry-run" in report.flags and not report.success
-    assert "zip" not in report.outputs
-    ev = journal_events(ws)
-    assert any(e["event"] == "decision" for e in ev)
-    assert any(e["event"] == "handlers_preemptive" and e["dry_run"] for e in ev)
+    assert "zip" not in report.outputs and report.structure_review.verdict == "skipped"
 
 
 def test_rewrite_failures(cfg, ws):
     rw = FakeRewriteRunner(ws, ok=False, error="Recipe(s) not found: org.Foo")
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
     report = make_orch(cfg, ws, rewrite=rw, build=build).run()
-    jdk = report.phases[0]
-    assert not jdk.ok and any("recipe id not found" in n for n in jdk.notes)
-    assert any("skipped: phase aborted" in n for n in jdk.notes)
+    tr = report.phases[0]
+    assert tr.phase == Phase.TRANSFORM and not tr.ok and any("recipe id not found" in n for n in tr.notes)
     assert report.success                                   # verify still decides
 
     ws2_rw = FakeRewriteRunner(ws, ok=False, error="parse failure")
@@ -214,10 +206,11 @@ def test_rewrite_failures(cfg, ws):
 
 def test_restructure_failure_still_verifies(cfg, ws):
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
-    report = make_orch(cfg, ws, restructurer=FakeRestructurer(ok=False), build=build).run()
+    reviewer = FakeReviewer()
+    report = make_orch(cfg, ws, restructurer=FakeRestructurer(ok=False), build=build, reviewer=reviewer).run()
     rs = next(p for p in report.phases if p.phase == Phase.RESTRUCTURE)
     assert not rs.ok and any("restructure failed" in n for n in rs.notes)
-    assert any("restructure.loop skipped" in n for n in rs.notes)
+    assert any("restructure.review skipped" in n for n in rs.notes) and reviewer.calls == []
     # round 9c: the final build passed on the as-is tree, but the layout was not produced → not a success (exit 2)
     assert build.calls[-1]["label"] == "verify" and not report.success and "restructure-failed" in report.flags
     assert any("restructure step restructure.apply (layout) failed" in f for f in report.manual_followups)
@@ -238,20 +231,21 @@ def test_restructure_crash(cfg, ws):
     assert any("crashed" in n for n in rs.notes) and not ws.exists("half.txt")
 
 
-def test_handler_step_and_test_compile_flag(cfg, ws):
+def test_handler_step_is_skipped_and_test_compile_fallback_in_the_verify_loop(cfg, ws):
+    cfg.build.skip_test_compile = False
+    cfg.loop.phases["verify"].max_iterations = 1        # one round: the test case is tried, not blocked
     terr = compile_error("src/test/java/T.java", kind=ErrorKind.TEST_COMPILE)
     plan = MigrationPlan(profile_fingerprint="x", case_type=CaseType.SPRING_BOOT, steps=[
-        PlanStep(id="jdk21.lombok-version-floor", kind=StepKind.HANDLER, phase=Phase.JDK21, title="h"),
-        PlanStep(id="spring.loop", kind=StepKind.BUILD_FIX_LOOP, phase=Phase.SPRING, title="l",
-                 build_goal="test-compile", max_iterations=1),
+        PlanStep(id="transform.lombok-version-floor", kind=StepKind.HANDLER, phase=Phase.TRANSFORM, title="h"),
         PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="v", build_goal="clean package")])
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build() if c["skip_test_compile"] else bad_build(terr))
-    report = make_orch(cfg, ws, plan=plan, build=build, pre=[]).run()
+    report = make_orch(cfg, ws, plan=plan, build=build, fixer=FakeFixer()).run()
     assert "test-compile-skipped" in report.flags and report.success
-    assert build.calls[-1]["skip_test_compile"] is True
+    assert build.calls[-1]["skip_test_compile"] is True and build.calls[-1]["label"] == "verify"
     assert report.unresolved == [terr]
     assert any("-Dmaven.test.skip=true" in f for f in report.manual_followups)
-    assert "handlers: lombok-version-floor" in ws._git("log", "--format=%s").stdout
+    assert "handlers:" not in ws._git("log", "--format=%s").stdout
+    assert any("handler steps are not part of the v2 flow" in n for n in report.phases[0].notes)
     md = (ws.run_dir / "report.md").read_text()
     assert "test-compile-skipped" in md and "T.java" in md
 
@@ -265,6 +259,7 @@ def test_aborts(cfg, ws):
 def test_abort_no_poms_and_internal_error(cfg, tmp_path, ws):
     report = make_orch(cfg, ws, profile=make_profile(poms=False)).run()
     assert "aborted" in report.flags and "no pom.xml" in report.manual_followups[-1]
+    assert "tests-not-compiled" not in report.flags                    # no build ran
 
     def boom(p, c, k):
         raise ValueError("bad plan")
@@ -292,29 +287,18 @@ def test_lazy_defaults_resolve(cfg, ws):
     """Default collaborators come from the other workstreams when they are importable."""
     orch = Orchestrator(cfg, ws)
     assert orch.triager is not None and orch.handlers.get("lombok-version-floor") is not None
-    for name in ("analyzer", "planner", "pre_handlers"):
+    for name in ("analyzer", "planner"):
         try:
             assert callable(getattr(orch, name))
         except MissingComponentError:  # pragma: no cover - workstream not ready
             pass
-    for name in ("kb", "build_runner", "rewrite_runner", "restructurer", "fixer"):
+    for name in ("kb", "build_runner", "rewrite_runner", "restructurer", "fixer", "script_runner"):
         try:
             assert getattr(orch, name) is not None
         except MissingComponentError:  # pragma: no cover
             pass
-
-
-def test_harvest_errors_and_kb_disabled(cfg, ws):
-    class BadKB(FakeKB):
-        def harvest(self, *a, **k):
-            raise RuntimeError("disk full")
-
-    report = make_orch(cfg, ws, kb=BadKB(), build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
-    assert any("kb harvest failed" in n for p in report.phases for n in p.notes)
-    cfg.kb.harvest = False
-    kb = FakeKB()
-    make_orch(cfg, ws, kb=kb, build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
-    assert kb.harvests == []
+    # the lazy script runner builds sbmig.script.ScriptRunner on first use (never raises: an error result instead)
+    assert callable(getattr(orch.script_runner, "run", None))
 
 
 # ---------------------------------------------------------------- library advisories: finalize side (round 4)
@@ -427,30 +411,36 @@ def test_skip_test_compile_policy_flags_and_follow_up(cfg, ws):
 
 
 def test_llm_cost_by_model_in_the_report(cfg, ws):
-    """Fix attempts (their model), the harvest recipe calls (through _BudgetedLLM) and the plan advisor are priced
-    per model with llm.pricing; the report carries llm_usage_by_model and llm_cost."""
+    """Fix-script attempts (their model), the structure review calls (through _BudgetedLLM) and the plan advisor are
+    priced per model with llm.pricing; the report carries llm_usage_by_model and llm_cost."""
     from sbmig.core.config import ModelPrice
     from sbmig.core.interfaces import LLMResponse
-    from sbmig.loop.orchestrator import _BudgetedLLM
-    from sbmig.loop.budget import LoopBudget
     cfg = cfg.model_copy(deep=True)
     cfg.llm.pricing = {"gpt-5.6-terra": ModelPrice(input_per_mtok=2.0, output_per_mtok=12.0),
                        "gpt-6-luna": ModelPrice(input_per_mtok=0.1, output_per_mtok=0.5)}
-    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "class X { ok }\n", model="gpt-5.6-terra"))
-    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), fixer=fixer)
-    # a recipe-model call as the harvest would make it (FakeKB.harvest itself never calls the LLM)
+    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(None, "class X { ok }\n", model="gpt-5.6-terra"))
+
     class Inner:
         def complete(self, *a, **k):
             return LLMResponse(content="NONE", model="gpt-6-luna", input_tokens=1_000, output_tokens=10)
-    _BudgetedLLM(Inner(), LoopBudget(max_llm_calls=60), sink=orch._harvest_usage).complete("x")
+
+    class Reviewer:                       # a review call through the budgeted client the orchestrator hands over
+        def __init__(self, cfg, llm, runner, kb):
+            self.llm = llm
+
+        def review(self, ws, profile, cfg, **kw):
+            from sbmig.core.models import StructureReview
+            self.llm.complete("x")
+            return StructureReview(verdict="ok")
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), fixer=fixer, llm=Inner(), reviewer=Reviewer)
     report = orch.run()
     by = {u.model: u for u in report.llm_usage_by_model}
-    assert by["gpt-5.6-terra"].calls == 2 and by["gpt-5.6-terra"].input_tokens == 200
+    assert by["gpt-5.6-terra"].calls == 1 and by["gpt-5.6-terra"].input_tokens == 100
     assert by["gpt-6-luna"].calls == 1 and by["gpt-6-luna"].input_tokens == 1_000
     c = report.llm_cost
     assert c is not None and c.unpriced_models == [] and c.currency == "USD"
     terra = next(m for m in c.by_model if m.model == "gpt-5.6-terra")
-    assert terra.cost == round(200 / 1e6 * 2.0 + 40 / 1e6 * 12.0, 6)
+    assert terra.cost == round(100 / 1e6 * 2.0 + 20 / 1e6 * 12.0, 6)
     assert c.total == round(terra.cost + (1_000 / 1e6 * 0.1 + 10 / 1e6 * 0.5), 6)
     md = (ws.run_dir / "report.md").read_text(encoding="utf-8")
     assert "## LLM usage and cost" in md and "| `gpt-6-luna` | 1 | 1,000 | 10 |" in md
@@ -461,7 +451,7 @@ def test_rewrite_parse_problems_flag_note_and_journal(cfg, ws):
     class ParseProblemRunner(FakeRewriteRunner):
         def run(self, recipes, **kw):
             res = super().run(recipes, **kw)
-            if kw.get("label") == "spring.rewrite":
+            if kw.get("label") == "transform.rewrite":
                 res.parse_problems = ["src/main/java/com/x/vendor/Legacy.java", "src/main/java/com/x/Old.java"]
             return res
 
@@ -469,10 +459,8 @@ def test_rewrite_parse_problems_flag_note_and_journal(cfg, ws):
     report = orch.run()
     assert report.success
     assert "rewrite-parse-problems" in report.flags
-    spring = next(p for p in report.phases if p.phase == Phase.SPRING)
-    note = next(n for n in spring.notes if "could not parse 2 source file(s)" in n)
-    assert "vendor/Legacy.java" in note and "jakarta-namespace-sweep" in note
+    tr = next(p for p in report.phases if p.phase == Phase.TRANSFORM)
+    note = next(n for n in tr.notes if "could not parse 2 source file(s)" in n)
+    assert "vendor/Legacy.java" in note and "fix scripts" in note
     ev = [e for e in journal_events(ws) if e["event"] == "rewrite_parse_problems"]
-    assert len(ev) == 1 and ev[0]["step"] == "spring.rewrite" and len(ev[0]["files"]) == 2
-    jdk = next(p for p in report.phases if p.phase == Phase.JDK21)
-    assert not any("could not parse" in n for n in jdk.notes)
+    assert len(ev) == 1 and ev[0]["step"] == "transform.rewrite" and len(ev[0]["files"]) == 2

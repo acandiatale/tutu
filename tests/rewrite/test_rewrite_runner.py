@@ -219,6 +219,7 @@ def test_kb_active_recipes_are_composed(ws, rcfg, fake, tmp_path):
         def active_recipe_files(self):
             return [kbfile]
 
+    rcfg.kb.use_active_recipes = True      # v1 KB recipes (off by default in v2, the composition still works)
     r = OpenRewriteRunner(ws, rcfg, kb=KB())
     res = r.run([RecipeRef(id="com.company.kb.Fix1", source="kb")])
     assert res.ok

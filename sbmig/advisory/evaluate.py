@@ -3,7 +3,7 @@
 * `evaluate_advisories(profile, cfg)` — which advisories match this project, with the effective policy
   (config override > catalog; `allow_recipes=false` and unavailable recipes downgrade to guide).
 * `advisory_recipe_refs(findings, cfg, planned_ids)` — the planner asks which advisory recipes are not already
-  part of the planned spring.rewrite recipes (directly or through a composite's `covers`).
+  part of the planned transform.rewrite recipes (directly or through a composite's `covers`).
 * `followups_for(findings)` — one "from here on, your team …" sentence per finding, not-replaced first.
 """
 from __future__ import annotations
@@ -188,7 +188,7 @@ def advisory_recipe_refs(findings: Optional[list[AdvisoryFinding]], cfg: Config,
                          catalog: Any = None) -> list[RecipeRef]:
     """Refs for policy=="recipe" findings whose recipes are not already planned (directly or via a planned
     composite's `covers`). Mutates the findings: recipe_source plan | advisory | none, plus a note.
-    `catalog` may be a RecipeCatalog (default: the configured one). Called once per spring.rewrite step;
+    `catalog` may be a RecipeCatalog (default: the configured one). Called once per transform.rewrite step;
     "advisory" is sticky across calls (MSA: one service adds it, another has it covered)."""
     if not findings:
         return []
@@ -208,12 +208,12 @@ def advisory_recipe_refs(findings: Optional[list[AdvisoryFinding]], cfg: Config,
                 out.append(_ref(r, cfg, rcat))
         if to_add:
             f.recipe_source = "advisory"
-            _add_note(f, "spring.rewrite: added " + ", ".join(to_add) + " (advisory recipe, runs before the umbrella)")
+            _add_note(f, "transform.rewrite: added " + ", ".join(to_add) + " (advisory recipe, runs before the umbrella)")
         elif f.recipe_source != "advisory":
             f.recipe_source = "plan"
         for r in already:
             via = "planned directly" if r in planned else f"included in {covered[r]}"
-            _add_note(f, f"spring.rewrite: {r} already {via}")
+            _add_note(f, f"transform.rewrite: {r} already {via}")
     return out
 
 

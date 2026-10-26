@@ -6,7 +6,8 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from sbmig.core.models import AdvisoryFinding, BlockedItem, BuildError, FixAttempt, PhaseResult, RunReport
+from sbmig.core.models import (AdvisoryFinding, BlockedItem, BuildError, DecisionKind, FixAttempt, PhaseResult,
+                               RunReport, StructureReview)
 
 from .i18n import normalize, tr, tr_line
 
@@ -72,6 +73,9 @@ BLOCKED_TITLE = "Blocked — needs human / library action"
 HANDOVER_TITLE = "Handover — what we replaced, what is yours"
 PROPERTIES_TITLE = "Properties to set before running"
 JAVAX_JARS_TITLE = "javax API jars still on the classpath"
+REVIEW_TITLE = "Structure review"
+REVIEW_MAX_ROWS = 30
+REVIEW_FILES_SHOWN = 8
 
 
 def flag_help(flag: str, lang: str = "en") -> Optional[str]:
@@ -201,8 +205,28 @@ def _duration(r: RunReport, lang: str = "en") -> str:
     return tr(lang, "{m}m {s}s", m=m, s=f"{s:02d}") if m else tr(lang, "{secs}s", secs=f"{secs:.1f}")
 
 
+def script_ref(case_id: str, version: int) -> str:
+    """The resolver id of a v2 script attempt: `script:<case_id>:v<N>` (`script:<case_id>` when not stored)."""
+    return f"script:{case_id or '?'}:v{version}" if version else f"script:{case_id or '?'}"
+
+
+def is_script_attempt(a: FixAttempt) -> bool:
+    return bool(a.script_mode or a.script_case_id) or a.decision.kind == DecisionKind.SCRIPT
+
+
+def script_label(a: FixAttempt) -> str:
+    """`script:<case>:v<N>` + mode (new / reuse / augment) + the run status of the script, e.g.
+    "`script:3f2a9c01de:v2` augment (ok)"."""
+    txt = f"`{script_ref(a.script_case_id, a.script_version)}`" + (f" {a.script_mode}" if a.script_mode else "")
+    if a.script_result is not None:
+        txt += f" ({a.script_result.status})"
+    return txt
+
+
 def _what(a: FixAttempt, lang: str = "en") -> str:
     d = a.decision
+    if is_script_attempt(a):                 # v2: the case's fix script (stored version, augmented or new)
+        return script_label(a)
     if d.handler_id:
         return tr(lang, "handler `{handler}`", handler=d.handler_id)
     if d.recipe_ids:
@@ -215,6 +239,11 @@ def _what(a: FixAttempt, lang: str = "en") -> str:
     return via
 
 
+def _attempt_text(a: FixAttempt) -> str:
+    script_error = a.script_result.error if a.script_result is not None else ""
+    return a.analysis or "; ".join(a.apply_errors) or script_error or a.decision.rationale
+
+
 def _attempt_rows(phases: Iterable[PhaseResult], lang: str = "en") -> list[str]:
     rows = [tr(lang, "| phase/iter | cluster | decision | via | outcome | commit | analysis |"),
             "|---|---|---|---|---|---|---|"]
@@ -222,7 +251,7 @@ def _attempt_rows(phases: Iterable[PhaseResult], lang: str = "en") -> list[str]:
         for a in pr.attempts:
             rows.append(f"| {pr.phase.value}/{a.iteration} | `{_cell(a.cluster_id, 40)}` | {a.decision.kind.value} | "
                         f"{_cell(_what(a, lang), 60)} | {a.outcome} | {(a.commit or '-')[:8]} | "
-                        f"{_cell(a.analysis or '; '.join(a.apply_errors) or a.decision.rationale, 120)} |")
+                        f"{_cell(_attempt_text(a), 120)} |")
     return rows
 
 
@@ -365,7 +394,8 @@ ERROR_CASE_MAX_ROWS = 40
 _STATUS_COUNT_ORDER = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
 _STATUS_ROW_ORDER = {s: i for i, s in enumerate(("unresolved", "blocked", "not_visible", "resolved",
                                                  "resolved_indirectly"))}
-_METHOD_ORDER = ("handler", "recipe", "kb_patch", "llm", "plan_step", "none")
+_METHOD_ORDER = ("handler", "recipe", "kb_patch", "llm", "script", "script_reuse", "script_augment", "plan_step",
+                 "none")
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 
 
@@ -405,6 +435,8 @@ def _error_case_how(e: Any, lang: str = "en") -> str:
     """Resolved: method + resolver + the description's first sentence (+ replace pairs); otherwise why not."""
     if e.status in ("resolved", "resolved_indirectly"):
         resolver = e.resolver_id or (e.resolved_by[5:] if (e.resolved_by or "").startswith("step:") else "")
+        if e.script_version and f":v{e.script_version}" not in resolver:    # v2: the script version that fixed it
+            resolver = script_ref(e.script_case_id or e.case_id, e.script_version)
         sentence = _first_sentence(e.description) or (_first_sentence(e.notes[0]) if e.notes else "")
         if sentence and resolver and resolver in sentence:      # the description already names who did it
             how = sentence
@@ -462,6 +494,93 @@ def error_case_lines(r: RunReport, lang: str = "en") -> list[str]:
                              "`error_cases.jsonl` in the run directory; every fix attempt with its diff: "
                              "`fix_attempts.jsonl`. Across projects: `sbmig kb errors` (`list`, `summary`, "
                              "`replace-candidates`).") + "_", ""]
+    return L
+
+
+# ---- v2 structure review (sbmig.review): LLM check of poms / dependencies / modules before the first build
+def _review_script_state(rv: StructureReview, lang: str = "en") -> str:
+    r = rv.script_result
+    if r is not None:
+        if rv.reverted:
+            return tr(lang, "script {status}, changes restored", status=r.status)
+        if rv.commit:
+            return tr(lang, "script {status}, {n} file(s) changed (commit `{commit}`)", status=r.status,
+                      n=len(r.changed_files), commit=rv.commit[:8])
+        return tr(lang, "script {status}, {n} file(s) changed", status=r.status, n=len(r.changed_files))
+    if rv.script:
+        return tr(lang, "script not run")
+    if rv.critical:
+        return tr(lang, "no script")
+    return ""
+
+
+def review_summary(rv: StructureReview, lang: str = "en") -> str:
+    """One line for the header table / console: verdict, counts, what the script did."""
+    if rv.verdict == "skipped":
+        return tr(lang, "skipped ({note})", note=_short(rv.note or "-", 160))
+    if rv.verdict == "failed":
+        return tr(lang, "failed — no usable answer, the build went ahead ({note})", note=_short(rv.note or "-", 160))
+    if not rv.issues:
+        return tr(lang, "ok — no issues")
+    crit = len(rv.critical)
+    txt = tr(lang, "{c} critical, {w} warning(s)", c=crit, w=len(rv.issues) - crit)
+    state = _review_script_state(rv, lang)
+    return f"{txt}; {state}" if state else txt
+
+
+def _review_script_lines(rv: StructureReview, lang: str = "en") -> list[str]:
+    r = rv.script_result
+    L: list[str] = []
+    if r is not None:
+        files = ", ".join(f"`{f}`" for f in r.changed_files[:REVIEW_FILES_SHOWN])
+        if len(r.changed_files) > REVIEW_FILES_SHOWN:
+            files += f" (+{len(r.changed_files) - REVIEW_FILES_SHOWN})"
+        L.append(tr(lang, "- script: run status `{status}`, {n} file(s) changed{files}", status=r.status,
+                    n=len(r.changed_files), files=f": {files}" if files else ""))
+        if rv.commit:
+            L.append(tr(lang, "- commit: `{commit}` (revert it to undo the review's changes)", commit=rv.commit[:12]))
+        if rv.reverted:
+            L.append(tr(lang, "- the script's changes were restored: they are not in the result"))
+        if r.error:
+            L.append(tr(lang, "- script error: {error}", error=_cell(r.error, 300)))
+        if r.log:
+            L.append(tr(lang, "- script log: {lines}", lines=_cell("; ".join(r.log[:6]), 400)))
+    elif rv.script:
+        L.append(tr(lang, "- script: not run"))
+    elif rv.critical:
+        L.append(tr(lang, "- no script for the critical issue(s): they are handed over"))
+    if rv.note:
+        L.append(tr(lang, "- note: {note}", note=_cell(rv.note, 400)))
+    return L
+
+
+def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """`## Structure review` (v2): verdict, issues table, what the script did or why not; [] without a review."""
+    rv = r.structure_review
+    if rv is None:
+        return []
+    L = [f"## {tr(lang, REVIEW_TITLE)}", "",
+         tr(lang, "After the restructure and before the first build, the LLM checked the poms, dependencies and "
+                  "module layout against the company rules. Critical issues get one fix script; warnings are only "
+                  "recorded."), "",
+         tr(lang, "- verdict: `{verdict}` — {summary}", verdict=rv.verdict, summary=review_summary(rv, lang))]
+    if rv.model or rv.llm_usage.calls:
+        L.append(tr(lang, "- model: `{model}`, {calls} LLM call(s)", model=rv.model or "-", calls=rv.llm_usage.calls))
+    if rv.issues:
+        issues = sorted(rv.issues, key=lambda i: i.severity != "critical")
+        L += ["", tr(lang, "| severity | file | problem | fix hint |"), "|---|---|---|---|"]
+        for i in issues[:REVIEW_MAX_ROWS]:
+            sev = f"**{tr(lang, 'critical')}**" if i.severity == "critical" else tr(lang, "warning")
+            where = f"`{_cell(i.file, 120)}`" if i.file else tr(lang, "(project)")
+            L.append(f"| {sev} | {where} | {_cell(i.problem, 400)} | {_cell(i.fix_hint or '-', 300)} |")
+        if len(issues) > REVIEW_MAX_ROWS:
+            L += ["", tr(lang, "… {n} more issue(s) — see `structure_review` in report.json",
+                         n=len(issues) - REVIEW_MAX_ROWS)]
+        L.append("")
+    L += _review_script_lines(rv, lang)
+    if rv.analysis:
+        L += ["", tr(lang, "Analysis: {analysis}", analysis=_cell(rv.analysis, 800))]
+    L.append("")
     return L
 
 
@@ -544,10 +663,16 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         L.append(tr(lang, "| **Blocked** | {line} (see below) |", line=blocked_count_line(r.blocked, lang)))
     if r.javax_api_jars:
         L.append(tr(lang, "| javax API jars | {n} |", n=len(r.javax_api_jars)))
+    if r.structure_review is not None:
+        L.append(tr(lang, "| Structure review | {summary} |", summary=_cell(review_summary(r.structure_review, lang),
+                                                                          300)))
     L.append("")
 
     # ---- handover first: what we replaced, what the owning team does from here on
     L += handover_lines(r, lang)
+
+    # ---- v2: the structure review ran before the first build — before every build / fix section
+    L += structure_review_lines(r, lang)
 
     # ---- blocked first: deliberately skipped, each row says what a human / the library owner must do
     if r.blocked:

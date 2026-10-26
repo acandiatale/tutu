@@ -1,95 +1,75 @@
-"""Round 10 (2026-10-26): A1 — the per-cluster limits count only scored failures of the SAME cluster; A9 — a case
-action a person pinned (`CaseHit.pinned`) is obeyed: handler first, block without an LLM, recipe ids."""
+"""Round 10 (2026-10-26) under v2: A1 — `same_cluster` (the limits count only the SAME cluster's scored attempts:
+a v2 case keeps its id across files and restructure moves); A9 — a case a person pinned to `block` is obeyed (the
+v1 pinned handler / recipe actions are not part of the v2 flow)."""
 from __future__ import annotations
 
 from sbmig.core.interfaces import TriageContext
-from sbmig.core.models import (BlockReason, BuildError, CaseAction, CaseHit, DecisionKind, ErrorKind, FileChange,
-                               FixAttempt, KBMatch, Phase, TriageDecision)
+from sbmig.core.models import (BlockReason, BuildError, CaseAction, CaseHit, DecisionKind, ErrorKind, FixAttempt,
+                               KBMatch, Phase, TriageDecision)
 from sbmig.loop.blocked_registry import BlockedRegistry
-from sbmig.triage import HandlerRegistry, Triager, cluster_errors
+from sbmig.triage import HandlerRegistry, Triager, cluster_cases, cluster_errors
 from sbmig.triage.decide import same_cluster
-from sbmig.triage.handlers import Handler
 
 GONE = "compile|cannot_find_symbol|class Gone"
 
 
 def l1(file: str, sig: str = GONE) -> BuildError:
     return BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file=file, line=3, module="demo",
-                      symbol="class Gone", signature=sig, signature_generic="compile|cannot_find_symbol")
+                      symbol="class Gone", signature=sig, signature_generic="compile|cannot_find_symbol|" + sig[-4:])
 
 
 def one(file: str = "src/main/java/a/Foo.java", sig: str = GONE):
-    return cluster_errors([l1(file, sig)])[0]
+    return cluster_cases([l1(file, sig)])[0]
 
 
 def ctx(**kw):
-    return TriageContext(phase=kw.pop("phase", Phase.SPRING), iteration=1, **kw)
+    return TriageContext(phase=kw.pop("phase", Phase.VERIFY), iteration=1, **kw)
 
 
-def attempt(cluster, outcome="no_change", kind=DecisionKind.LLM_FIX, aid="a", cluster_id=None, **dkw) -> FixAttempt:
-    return FixAttempt(id=aid, phase=Phase.SPRING, iteration=1, cluster_id=cluster_id or cluster.id,
+def attempt(cluster, outcome="no_change", kind=DecisionKind.SCRIPT, aid="a", cluster_id=None, mode="augment",
+            version=1, **dkw) -> FixAttempt:
+    return FixAttempt(id=aid, phase=Phase.VERIFY, iteration=1, cluster_id=cluster_id or cluster.id,
                       decision=TriageDecision(cluster_id=cluster.id, kind=kind, **dkw), outcome=outcome,
-                      cluster_signatures=list(cluster.signatures), cluster_errors=list(cluster.errors))
-
-
-class Named(Handler):
-    def __init__(self, hid: str, match: bool = True):
-        self.id, self.description, self._match = hid, f"handler {hid}", match
-
-    def matches(self, cluster, profile, cfg):
-        return self._match
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):  # pragma: no cover - decide() never applies
-        return [FileChange(path="pom.xml", op="modify")]
+                      cluster_signatures=list(cluster.signatures), cluster_errors=list(cluster.errors),
+                      script_mode=mode if kind == DecisionKind.SCRIPT else None, script_version=version,
+                      script_code="def fix(p):\n    pass\n" if kind == DecisionKind.SCRIPT else "")
 
 
 # ------------------------------------------------------------------------------------------------ A1
-def test_attempts_on_other_files_with_the_same_l1_do_not_count(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry())
-    foo, bar = one("src/main/java/a/Foo.java"), one("src/main/java/a/Bar.java")
+def test_v1_clusters_on_other_files_with_the_same_l1_are_not_the_same_cluster():
+    foo, bar = cluster_errors([l1("src/main/java/a/Foo.java")])[0], cluster_errors([l1("src/main/java/a/Bar.java")])[0]
     assert foo.signatures == bar.signatures and foo.id != bar.id
-    others = [attempt(bar, "no_change", aid=f"b{i}") for i in range(5)]
-    d = t.decide(foo, None, ctx(previous_attempts=others), profile)
-    assert d.kind == DecisionKind.LLM_FIX and "attempt" not in d.rationale       # Foo's first attempt
+    assert not same_cluster(foo, attempt(bar, aid="b"))
 
 
-def test_pending_is_not_a_failure_partial_is_progress(cfg, profile):
+def test_a_case_is_one_cluster_across_files_and_moves():
+    foo, bar = one("src/main/java/a/Foo.java"), one("src/main/java/a/Bar.java")
+    moved = one("demo-back/src/main/java/a/Foo.java")
+    assert foo.id == bar.id == moved.id and same_cluster(moved, attempt(foo))
+
+
+def test_pending_never_counts_partial_counts_as_an_llm_request(cfg, profile):
+    cfg.script.max_augments_per_case = 2
     t = Triager(cfg, registry=HandlerRegistry())
     c = one()
-    limit = max(cfg.loop.max_llm_attempts_per_cluster, cfg.loop.stall_limit + 1)
-    pend = [attempt(c, "pending", aid=f"p{i}") for i in range(limit + 2)]
-    assert t.decide(c, None, ctx(previous_attempts=pend), profile).kind == DecisionKind.LLM_FIX
-    part = [attempt(c, "partial", aid=f"q{i}") for i in range(limit + 2)]
-    assert t.decide(c, None, ctx(previous_attempts=part), profile).kind == DecisionKind.LLM_FIX
-    inc = [attempt(c, "inconclusive", aid=f"i{i}") for i in range(limit)]
-    d = t.decide(c, None, ctx(previous_attempts=inc), profile)
+    pend = [attempt(c, "pending", aid=f"p{i}", version=i + 1) for i in range(5)]
+    assert t.decide(c, None, ctx(previous_attempts=pend), profile).kind == DecisionKind.SCRIPT
+    assert t.script_step(c.id).mode == "new"
+    part = [attempt(c, "partial", aid=f"q{i}", version=i + 1) for i in range(2)]
+    d = t.decide(c, None, ctx(previous_attempts=part), profile)          # progress, but two augments used
     assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale
 
 
-def test_same_file_after_the_restructure_move_is_the_same_cluster(cfg, profile):
-    """The cluster id changes when the restructure moves the file; the registry's move map keeps the attempts
-    counted, so a released cluster gets `verify_extra_llm_attempts` more — not a fresh limit."""
+def test_same_file_after_the_restructure_move_is_the_same_v1_cluster():
+    """A v1 cluster id changes when the restructure moves the file; the registry's move map keeps the attempts."""
     old, new = "src/main/java/a/Foo.java", "demo-back/src/main/java/a/Foo.java"
-    before, after = one(old), one(new)
+    before, after = cluster_errors([l1(old)])[0], cluster_errors([l1(new)])[0]
     assert before.id != after.id
     a = attempt(before, "no_change")
     assert not same_cluster(after, a)
     reg = BlockedRegistry()
     reg.note_moves({old: new})
     assert same_cluster(after, a, reg.canonical_file)
-    t = Triager(cfg, registry=HandlerRegistry())
-    t.attach_run(blocked_registry=reg)
-    limit = max(cfg.loop.max_llm_attempts_per_cluster, cfg.loop.stall_limit + 1)
-    prev = [attempt(before, "no_change", aid=f"x{i}") for i in range(limit)]
-    d = t.decide(after, None, ctx(previous_attempts=prev), profile)
-    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale
-
-
-def test_partial_deterministic_option_is_not_chosen_again(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry([Named("h1")]))
-    c = one()
-    prev = [attempt(c, "partial", kind=DecisionKind.HANDLER, handler_id="h1")]
-    assert t.decide(c, None, ctx(previous_attempts=prev), profile).kind != DecisionKind.HANDLER
 
 
 # ------------------------------------------------------------------------------------------------ A9
@@ -98,30 +78,8 @@ def hit(action: CaseAction, cluster, pinned: bool = True, case_id: str = "case-1
                    pinned=pinned)
 
 
-def test_pinned_handler_is_tried_first(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry([Named("generic"), Named("pinned-one", match=False)]))
-    c = one()
-    m = KBMatch(case_hits=[hit(CaseAction(kind="handler", handler_id="pinned-one"), c)])
-    d = t.decide(c, m, ctx(), profile)
-    assert d.kind == DecisionKind.HANDLER and d.handler_id == "pinned-one" and "case-1" in d.rationale
-    # tried without effect → the normal order goes on
-    prev = [attempt(c, "no_change", kind=DecisionKind.HANDLER, handler_id="pinned-one")]
-    d = t.decide(c, m, ctx(previous_attempts=prev), profile)
-    assert d.kind == DecisionKind.HANDLER and d.handler_id == "generic"
-    assert "already tried" in d.rationale
-
-
-def test_unknown_pinned_handler_is_a_note(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry())
-    c = one()
-    m = KBMatch(case_hits=[hit(CaseAction(kind="handler", handler_id="no-such-handler"), c)])
-    d = t.decide(c, m, ctx(), profile)
-    assert d.kind == DecisionKind.LLM_FIX
-    assert "pinned handler 'no-such-handler' of case case-1 is not registered" in d.rationale
-
-
 def test_pinned_block_with_a_reason_value_never_asks_the_llm(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry([Named("generic")]))
+    t = Triager(cfg, registry=HandlerRegistry())
     c = one()
     m = KBMatch(case_hits=[hit(CaseAction(kind="block", block_reason="unsupported_source",
                                           suggestion="generated by the XYZ plugin: regenerate"), c)])
@@ -143,24 +101,13 @@ def test_pinned_block_with_free_text_uses_the_generic_reason(cfg, profile):
     assert cand.suggestion == "vendor jar, team X owns it"
 
 
-def test_pinned_recipe_ids(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry([Named("generic")]))
-    c = one()
-    m = KBMatch(case_hits=[hit(CaseAction(kind="recipe", recipe_ids=["KbFixGone"]), c)])
-    d = t.decide(c, m, ctx(), profile)
-    assert d.kind == DecisionKind.KB_RECIPE and d.recipe_ids == ["KbFixGone"] and "pinned" in d.rationale
-    prev = [attempt(c, "no_change", kind=DecisionKind.KB_RECIPE, recipe_ids=["KbFixGone"])]
-    d = t.decide(c, m, ctx(previous_attempts=prev), profile)
-    assert d.kind == DecisionKind.HANDLER and "already ran" in d.rationale
-
-
-def test_unpinned_case_actions_keep_todays_behaviour(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry([Named("generic")]))
+def test_unpinned_case_actions_keep_the_script_ladder(cfg, profile):
+    t = Triager(cfg, registry=HandlerRegistry())
     c = one()
     m = KBMatch(case_hits=[hit(CaseAction(kind="block", block_reason="artifact_not_found"), c, pinned=False),
                            hit(CaseAction(kind="handler", handler_id="nope"), c, pinned=False)])
     d = t.decide(c, m, ctx(), profile)
-    assert d.kind == DecisionKind.HANDLER and d.handler_id == "generic" and "pinned" not in d.rationale
+    assert d.kind == DecisionKind.SCRIPT and "pinned" not in d.rationale
 
 
 def test_pinned_hit_only_for_errors_still_in_the_cluster(cfg, profile):
@@ -168,4 +115,4 @@ def test_pinned_hit_only_for_errors_still_in_the_cluster(cfg, profile):
     c = one("src/main/java/a/Foo.java")
     other = one("src/main/java/a/Other.java", "compile|cannot_find_symbol|class Else")
     m = KBMatch(case_hits=[hit(CaseAction(kind="block", block_reason="unsupported_source"), other)])
-    assert t.decide(c, m, ctx(), profile).kind == DecisionKind.LLM_FIX
+    assert t.decide(c, m, ctx(), profile).kind == DecisionKind.SCRIPT

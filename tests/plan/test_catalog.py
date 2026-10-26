@@ -183,6 +183,8 @@ def test_check_reports_missing_ids_and_bad_entries(tmp_path, cfg):
                              "gate": "is_quantum"})
         d["recipes"].append({"id": "com.company.migrate.Ghost", "origin": "project",
                              "file": "knowledge/recipes/base/spring-boot-41-version.yml"})
+    # v2: the junit5 set is empty by default; a company config that opts back in must find the id in the catalog
+    cfg.openrewrite.recipes.junit5 = ["org.openrewrite.java.testing.junit5.JUnit4to5Migration"]
     p = _temp_catalog(tmp_path, "org.openrewrite.java.testing.junit5.JUnit4to5Migration", mutate)
     problems = RecipeCatalog.load(p).check(cfg)
     text = "\n".join(problems)
@@ -241,21 +243,26 @@ def test_advise_plan_uses_the_configured_catalog(tmp_path, cfg):
     from sbmig.core.interfaces import LLMResponse
     from sbmig.plan import advise_plan, build_plan
 
+    jakarta = "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"
+
     class _LLM:
         def complete(self, messages, **kw):
-            return LLMResponse(content='{"add": [{"recipe": "org.openrewrite.java.testing.junit5.JUnit4to5Migration",'
-                                       ' "phase": "spring", "reason": "junit4"}], "concerns": []}',
-                               model="m", input_tokens=1, output_tokens=1)
+            return LLMResponse(content='{"add": [{"recipe": "%s", "reason": "javax.annotation"}], "concerns": []}'
+                                       % jakarta, model="m", input_tokens=1, output_tokens=1)
 
     def no_advisor(d):
         for r in d["recipes"]:
-            if r["id"].endswith("JUnit4to5Migration"):
+            if r["id"] == jakarta:
                 r["advisor"] = False
+    # pure_java with javax.annotation only: the planner runs no jakarta set; the repo catalog lets the advisor add it
+    prof = _profile(case_type=CaseType.PURE_JAVA, spring_boot_version=None, libraries=[],
+                    source=SourceStats(java_files=3, javax_imports={"javax.annotation": 1}))
     cfg.plan.advisor = "llm"
-    cfg.openrewrite.recipes.junit5 = []
+    out = advise_plan(build_plan(prof, cfg), prof, llm=_LLM(), cfg=cfg)
+    assert any(n.startswith(f"advisor: +{jakarta} → transform.rewrite") for n in out.notes)
     cfg.plan.catalog_file = str(_temp_catalog(tmp_path, "none", no_advisor))
-    out = advise_plan(build_plan(_profile(), cfg), _profile(), llm=_LLM(), cfg=cfg)
-    assert any("ignored unknown recipe org.openrewrite.java.testing.junit5.JUnit4to5Migration" in n for n in out.notes)
+    out = advise_plan(build_plan(prof, cfg), prof, llm=_LLM(), cfg=cfg)
+    assert any(f"ignored unknown recipe {jakarta}" in n for n in out.notes)
 
 
 def test_check_cross_checks_advisories(tmp_path, cfg):

@@ -222,7 +222,7 @@ def run(
     out: Path = typer.Option(Path("out"), "--out", "-o", help="output directory"),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
     stop_after: Optional[str] = typer.Option(None, "--stop-after",
-                                             help="intake|analyze|plan|jdk21|spring|restructure|verify"),
+                                             help="intake|analyze|plan|transform|restructure|verify (v2; jdk21|spring are v1 phases)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="compute and journal decisions, apply nothing"),
     no_kb: bool = typer.Option(False, "--no-kb", help="do not use or feed the knowledge base"),
     llm_provider: Optional[str] = typer.Option(None, "--llm-provider",
@@ -522,7 +522,7 @@ def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[P
          as_json: bool = typer.Option(False, "--json")) -> None:
     """Analyze + plan (no changes) and print the migration plan."""
     from sbmig.analyze import analyze_project
-    from sbmig.plan import build_plan, pre_handlers_for
+    from sbmig.plan import build_plan
 
     cfg = _load(config)
     ws = _view_workspace(input, prefix="plan")
@@ -543,9 +543,6 @@ def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[P
         goal = f" mvn {s.build_goal}" if s.build_goal else ""
         tgt = f" @{s.target}" if s.target else ""
         typer.echo(f"  {i:2}. {s.id:<24} {s.kind.value:<15}{goal}{tgt}{rec}")
-    pre = pre_handlers_for(profile, cfg)
-    if pre:
-        typer.echo("  pre-emptive handlers: " + ", ".join(pre))
     for n in p.notes:
         typer.echo(f"  - {n}")
 

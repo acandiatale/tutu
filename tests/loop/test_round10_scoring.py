@@ -1,17 +1,19 @@
-"""Round 10 (2026-10-26, review fixes A1–A3, A5): per-cluster limits count only scored failures of the SAME cluster;
-"not visible" is not "resolved" (inconclusive / structural revert); partial progress; new errors in a touched file are
+"""Round 10 (2026-10-26, review fixes A1–A3, A5) under v2 fix scripts: one case across files gets one script; the
+per-case limit counts only that case's scored attempts; "not visible" is not "resolved" (inconclusive / structural
+revert); partial progress (v2: rolled back, so each augment is a complete script); new errors in a touched file are
 counted by (file, signature) occurrences.
 
 The errors here carry real, file-less L1 signatures (`compile|cannot_find_symbol|class Gone`) — `fakes.compile_error`
-puts the file into the signature, which hid the cross-file bugs."""
+puts the file into the signature, which hid the cross-file bugs. Their L2 (the case) is per file unless a test passes
+one shared L2."""
 from __future__ import annotations
 
 from typing import Optional
 
 from sbmig.core.models import (GAV, BlockReason, BuildError, BuildResult, DecisionKind, ErrorKind, FileChange,
-                               FixProposal, KBMatch, LLMUsage, Phase)
+                               FixProposal, LLMUsage, Phase)
 
-from .fakes import FakeBuildRunner, FakeFixer, FakeKB, FakeRewriteRunner, bad_build, journal_events, ok_build
+from .fakes import FakeBuildRunner, FakeFixer, FakeKB, bad_build, ok_build, write_script
 from .test_fixloop import make_loop
 
 FOO = "src/main/java/com/x/Foo.java"
@@ -20,10 +22,12 @@ GONE = "compile|cannot_find_symbol|class Gone"
 
 
 def l1(file: str, sig: str = GONE, msg: str = "cannot find symbol", line: int = 3,
-       kind: ErrorKind = ErrorKind.COMPILE) -> BuildError:
-    """A compile error with a file-less L1 signature, like the real parser produces."""
+       kind: ErrorKind = ErrorKind.COMPILE, l2: Optional[str] = None) -> BuildError:
+    """A compile error with a file-less L1 signature, like the real parser produces; L2 (the case) per file unless
+    given."""
+    stem = file.rsplit("/", 1)[-1]
     return BuildError(kind=kind, message=msg, file=file, line=line, module="demo", symbol=sig.rsplit("|", 1)[-1],
-                      signature=sig, signature_generic="|".join(sig.split("|")[:2]))
+                      signature=sig, signature_generic=l2 or ("|".join(sig.split("|")[:2]) + f"|{stem}"))
 
 
 def dep_error(artifact: str = "com.bogus:bogus-artifact:1.0", module: str = "demo",
@@ -42,78 +46,84 @@ def create(path: str, content: str) -> FileChange:
     return FileChange(path=path, op="create", content=content)
 
 
-# ------------------------------------------------------------------------------------------------ A1
-def test_same_l1_in_five_files_each_gets_its_own_llm_attempts(cfg, ws, profile):
+def first_file(c) -> str:
+    return c.errors[0].file
+
+
+# ------------------------------------------------------------------------------------------------ A1 (v2: one case)
+def test_same_l1_in_five_files_is_one_case_and_one_script(cfg, ws, profile):
     files = [f"src/main/java/com/x/C{i}.java" for i in range(5)]
     for f in files:
         ws.write(f, "class C { broken }\n")
     ws.commit("five files")
-    calls: list[str] = []
+    calls: list = []
 
     def build(w, call):
-        errs = [l1(f) for f in files if "broken" in w.read(f)]
+        errs = [l1(f, l2="compile|cannot_find_symbol|Gone") for f in files if "broken" in w.read(f)]
         return bad_build(*errs) if errs else ok_build()
 
     def fix(w, c, ctx):
-        calls.append(c.file)
-        assert ctx.previous_attempts == []          # other files' (pending) attempts are not this cluster's
-        return llm([create(c.file, "class C { ok }\n")])
+        calls.append(sorted(e.file for e in c.errors))
+        return write_script({e.file: "class C { ok }\n" for e in c.errors})
 
-    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 3)
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(script_fn=fix))
+    pr = loop.run(Phase.VERIFY, "package", 3)
     assert pr.ok and not pr.blocked
-    assert sorted(calls) == sorted(files)                       # all five in round 1, none blocked
-    assert {a.outcome for a in pr.attempts} == {"build_ok"}
-    assert [d.kind for d in pr.iteration_records[0].decisions] == [DecisionKind.LLM_FIX] * 5
+    assert calls == [sorted(files)]                              # one LLM call for the five files
+    assert [a.outcome for a in pr.attempts] == ["build_ok"]
+    assert [d.kind for d in pr.iteration_records[0].decisions] == [DecisionKind.SCRIPT]
 
 
-def test_repeated_failure_of_the_same_cluster_still_blocks(cfg, ws, profile):
+def test_repeated_failure_of_the_same_case_still_blocks(cfg, ws, profile):
     def build(w, call):
         return bad_build(l1(FOO)) if "broken" in w.read(FOO) else ok_build()
 
     n = {"i": 0}
 
-    def fix(w, c, ctx):                     # a different, still wrong patch every time → no_change
+    def fix(w, c, ctx):                     # a different, still wrong script every time → no_change
         n["i"] += 1
         return llm([create(FOO, f"class Foo {{ broken {n['i']} }}\n")])
 
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 8)
-    limit = max(cfg.loop.max_llm_attempts_per_cluster, cfg.loop.stall_limit + 1)
-    assert n["i"] == limit
+    pr = loop.run(Phase.VERIFY, "package", 8)
+    assert n["i"] == 1 + cfg.script.max_augments_per_case       # new + the augments, then BLOCKED
     assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE]
     assert {a.outcome for a in pr.attempts} == {"no_change"}
 
 
-def test_sibling_files_are_hint_material(cfg, ws, profile):
-    """Foo and Bar share an L1 error and both fail in round 1. In round 2 each prompt lists only its own previous
-    attempt; the sibling's attempt comes as a hint ("this run: …") — hint material, never a limit."""
+def test_the_same_case_in_another_service_is_hint_material(cfg, ws, profile):
+    """MSA: svc-a's loop tried the case; svc-b's loop (its own scope) gets that attempt as a hint ("this run: …"),
+    never as one of its own previous attempts."""
+    A, B = "svc-a/src/A.java", "svc-b/src/B.java"
+    ws.write(A, "class A { broken }\n")
+    ws.write(B, "class B { broken }\n")
+    ws.commit("services")
+    l2 = "compile|cannot_find_symbol|Gone"
+
     def build(w, call):
-        errs = [l1(f) for f in (FOO, BAR) if "broken" in w.read(f)]
+        files = [f for f in (A, B) if f.startswith(f"{call['module']}/")] if call["module"] else [A, B]
+        errs = [l1(f, l2=l2) for f in files if "broken" in w.read(f)]
         return bad_build(*errs) if errs else ok_build()
 
     seen: list = []
 
     def fix(w, c, ctx):
-        seen.append((c.file, list(ctx.kb_hints), [a.cluster_errors[0].file for a in ctx.previous_attempts]))
-        n = sum(1 for s in seen if s[0] == c.file)
-        return llm([create(c.file, f"class X {{ broken {n} }}\n")])
-
-    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix))
-    loop.run(Phase.SPRING, "compile", 2)
-    second = {f: (hints, prev) for f, hints, prev in seen[2:4]}
-    assert set(second) == {FOO, BAR}
-    for f, other in ((FOO, BAR), (BAR, FOO)):
-        hints, prev = second[f]
-        assert prev == [f]                                       # only its own attempt counts
-        assert any(h.startswith("this run: attempt") and other in h and GONE in h and "no_change" in h
-                   for h in hints), hints
+        seen.append((c.id, list(ctx.kb_hints), [a.id for a in ctx.previous_attempts]))
+        return write_script({e.file: "class X { broken still }\n" for e in c.errors})
+    cfg.script.max_augments_per_case = 1
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(script_fn=fix))
+    loop.run(Phase.VERIFY, "package", 3, target="svc-a")
+    loop.run(Phase.VERIFY, "package", 3, target="svc-b")
+    (a_id, _a_hints, _), _a2, (b_id, b_hints, b_prev) = seen[:3]
+    assert a_id.endswith("@svc-a") and b_id.endswith("@svc-b") and b_prev == []
+    assert any(h.startswith("this run: attempt") and A in h and GONE in h and "no_change" in h
+               for h in b_hints), b_hints
 
 
 # ------------------------------------------------------------------------------------------------ A2
 def test_made_up_dependency_is_reverted_not_improved(cfg, ws, profile):
     """repro_mask A: the LLM 'fixes' Foo by adding a dependency that does not exist; the next build stops at
-    dependency resolution and every compile error vanishes from it — reverted, never improved / harvested."""
+    dependency resolution and every compile error vanishes from it — reverted, never improved / credited a success."""
     kb = FakeKB()
 
     def build(w, call):
@@ -123,20 +133,21 @@ def test_made_up_dependency_is_reverted_not_improved(cfg, ws, profile):
         return bad_build(*errs) if errs else ok_build()
 
     def fix(w, c, ctx):
-        if c.file == FOO:
+        if first_file(c) == FOO:
             return llm([FileChange(path="pom.xml", op="modify", search="<artifactId>demo</artifactId>",
                                    replace="<artifactId>demo</artifactId><dependencies><dependency><groupId>com.bogus"
                                            "</groupId><artifactId>bogus-artifact</artifactId><version>1.0</version>"
                                            "</dependency></dependencies>")])
         return llm([create(BAR, "class Bar { ok }\n")])
 
+    cfg.script.max_augments_per_case = 0
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix), kb=kb)
-    pr = loop.run(Phase.SPRING, "compile", 2)
+    pr = loop.run(Phase.VERIFY, "package", 2)
     first = next(a for a in pr.attempts if a.cluster_errors[0].file == FOO)
     assert first.outcome == "reverted" and first.cluster_resolved is not True
     assert "bogus-artifact" not in ws.read("pom.xml")
     assert first.introduced_errors and first.introduced_errors[0].kind == ErrorKind.DEPENDENCY_RESOLUTION
-    assert "case-" + first.id not in kb.harvest(pr, profile, ws).cases_created
+    assert (first.script_case_id, first.script_version, "reverted") in [c[:3] for c in kb.scripts.credits]
 
 
 def test_new_dependency_error_of_another_artifact_after_a_pom_edit_is_reverted(cfg, ws, profile):
@@ -154,9 +165,10 @@ def test_new_dependency_error_of_another_artifact_after_a_pom_edit_is_reverted(c
         return llm([FileChange(path="pom.xml", op="modify", search="<artifactId>demo</artifactId>",
                                replace="<artifactId>demo</artifactId><!-- com.bogus:bogus-artifact -->")])
 
+    cfg.loop.blocked_policy["artifact_not_found"] = 0     # the other module's missing artifact stays blocked (v2: 2)
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 1)
-    a = next(a for a in pr.attempts if a.decision.kind == DecisionKind.LLM_FIX)
+    pr = loop.run(Phase.VERIFY, "package", 1)
+    a = next(a for a in pr.attempts if a.decision.kind == DecisionKind.SCRIPT)
     assert a.outcome == "reverted"
     assert any("hide the targeted errors" in n for n in a.notes)
     assert "bogus-artifact" not in ws.read("pom.xml")
@@ -177,14 +189,14 @@ def test_timed_out_build_scores_inconclusive(cfg, ws, profile):
         errs = [l1(f) for f in (FOO, BAR) if "broken" in w.read(f)]
         return bad_build(*errs) if errs else ok_build()
 
-    fixer = FakeFixer(fn=lambda w, c, ctx: llm([create(c.file, "class X { broken still }\n")]))
+    fixer = FakeFixer(fn=lambda w, c, ctx: llm([create(first_file(c), "class X { broken still }\n")]))
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=fixer, kb=kb)
-    pr = loop.run(Phase.SPRING, "compile", 1)
+    pr = loop.run(Phase.VERIFY, "package", 1)
     first = [a for a in pr.attempts if a.iteration == 1]
     assert len(first) == 2 and {a.outcome for a in first} == {"inconclusive"}
     assert all(a.cluster_resolved is None for a in first)
     assert any("timed out" in n for n in first[0].notes)
-    assert kb.harvest(pr, profile, ws).cases_created == []
+    assert {c[2] for c in kb.scripts.credits} <= {"inconclusive"}     # no success, no failure
 
 
 def test_failed_build_without_parsed_errors_scores_inconclusive(cfg, ws, profile):
@@ -197,7 +209,7 @@ def test_failed_build_without_parsed_errors_scores_inconclusive(cfg, ws, profile
         return bad_build(l1(FOO))
 
     fixer = FakeFixer(fn=lambda w, c, ctx: llm([create(FOO, "class Foo { maybe }\n")]))
-    pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=fixer).run(Phase.SPRING, "compile", 2)
+    pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=fixer).run(Phase.VERIFY, "package", 2)
     assert pr.attempts[0].outcome == "inconclusive"
     assert any("without parseable errors" in n for n in pr.attempts[0].notes)
 
@@ -214,7 +226,7 @@ def test_earlier_stage_the_attempt_did_not_cause_is_inconclusive(cfg, ws, profil
         return bad_build(l1(FOO)) if "broken" in w.read(FOO) else ok_build()
 
     fixer = FakeFixer(fn=lambda w, c, ctx: llm([create(FOO, "class Foo { ok }\n")]))
-    pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=fixer).run(Phase.SPRING, "compile", 1)
+    pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=fixer).run(Phase.VERIFY, "package", 1)
     a = pr.attempts[0]
     assert a.outcome == "inconclusive" and a.cluster_resolved is None
     assert any("stopped before the stage" in n for n in a.notes)
@@ -231,7 +243,7 @@ def test_inconclusive_attempt_is_scored_again_after_a_revert(cfg, ws, profile):
         return bad_build(*errs) if errs else ok_build()
 
     def fix(w, c, ctx):
-        if c.file == FOO:
+        if first_file(c) == FOO:
             return llm([FileChange(path="pom.xml", op="modify", search="<artifactId>demo</artifactId>",
                                    replace="<artifactId>demo</artifactId><dependencies><dependency><groupId>com.bogus"
                                            "</groupId><artifactId>bogus-artifact</artifactId><version>1.0</version>"
@@ -239,7 +251,7 @@ def test_inconclusive_attempt_is_scored_again_after_a_revert(cfg, ws, profile):
         return llm([create(BAR, "class Bar { ok }\n")])
 
     pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix)).run(
-        Phase.SPRING, "compile", 1)
+        Phase.VERIFY, "package", 1)
     bar = next(a for a in pr.attempts if a.cluster_errors[0].file == BAR)
     foo = next(a for a in pr.attempts if a.cluster_errors[0].file == FOO)
     assert foo.outcome == "reverted"
@@ -252,51 +264,37 @@ SIGS = [f"compile|cannot_find_symbol|class Gone{i}" for i in range(4)]
 
 
 def test_partial_progress_is_not_a_failure(cfg, ws, profile):
-    """Four targeted errors, one gone per attempt: partial, partial, partial, then build_ok — more attempts than the
-    repeated-failure limit, never blocked."""
+    """Four targeted errors of one case; each attempt (rolled back before the next: a complete script every time)
+    fixes one more: partial, partial, partial, then build_ok — new + max_augments_per_case attempts, never blocked,
+    each version credited as it scored."""
     ws.write(FOO, "class Foo { " + " ".join(f"e{i}" for i in range(4)) + " }\n")
     ws.commit("four errors")
+    kb = FakeKB()
 
     def build(w, call):
         text = w.read(FOO)
-        errs = [l1(FOO, SIGS[i], line=3 + i) for i in range(4) if f"e{i}" in text]
+        errs = [l1(FOO, SIGS[i], line=3 + i, l2="compile|cannot_find_symbol|Gone") for i in range(4)
+                if f"e{i}" in text]
         return bad_build(*errs) if errs else ok_build()
 
-    def fix(w, c, ctx):
-        text = w.read(FOO)
-        first = next(i for i in range(4) if f"e{i}" in text)
-        return llm([create(FOO, text.replace(f"e{first}", "ok"))])
+    n = {"k": 0}
 
-    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 6)
+    def fix(w, c, ctx):
+        n["k"] += 1
+        text = w.read(FOO)
+        assert all(f"e{i}" in text for i in range(4))           # the previous partial attempt was rolled back
+        for i in range(n["k"]):
+            text = text.replace(f"e{i}", "ok")
+        return write_script({FOO: text})
+
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(script_fn=fix), kb=kb)
+    pr = loop.run(Phase.VERIFY, "package", 6)
     assert pr.ok and not pr.blocked
     assert [a.outcome for a in pr.attempts] == ["partial", "partial", "partial", "build_ok"]
     assert "partial: 1 of 4 targeted error(s) gone, 3 remain" in pr.attempts[0].notes
-    assert 4 > max(cfg.loop.max_llm_attempts_per_cluster, cfg.loop.stall_limit + 1)
-
-
-def test_kb_recipe_is_not_credited_for_partial_progress(cfg, ws, profile):
-    ws.write(FOO, "class Foo { e0 e1 }\n")
-    ws.commit("two errors")
-
-    def build(w, call):
-        text = w.read(FOO)
-        errs = [l1(FOO, SIGS[i], line=3 + i) for i in range(2) if f"e{i}" in text]
-        return bad_build(*errs) if errs else ok_build()
-
-    def effect(w, refs):
-        w.write(FOO, w.read(FOO).replace("e0", "ok"))
-        return [FOO]
-
-    kb = FakeKB(match=lambda c: KBMatch(recipe_ids=["kb.Half"], recipe_files=["/kb/kb.Half.yml"]))
-    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), kb=kb,
-                     rewrite=FakeRewriteRunner(ws, effect=effect))
-    pr = loop.run(Phase.SPRING, "compile", 1)
-    rec = next(a for a in pr.attempts if a.decision.kind == DecisionKind.KB_RECIPE)
-    assert rec.outcome == "partial"
-    assert ("kb.Half", True) not in kb.credits and ("kb.Half", False) not in kb.credits
-    ev = [e for e in journal_events(ws) if e["event"] == "kb_credit_skipped"]
-    assert ev and ev[0]["reason"] == "partial" and ev[0]["recipes"] == ["kb.Half"]
+    assert "partial: 2 of 4 targeted error(s) gone, 2 remain" in pr.attempts[1].notes
+    assert len(pr.attempts) == 1 + cfg.script.max_augments_per_case
+    assert [c[2] for c in kb.scripts.credits] == ["partial", "partial", "partial", "build_ok"]
 
 
 # ------------------------------------------------------------------------------------------------ A5
@@ -315,12 +313,12 @@ def test_new_errors_in_a_touched_file_count_by_file_and_signature(cfg, ws, profi
         return bad_build(*errs) if errs else ok_build()
 
     def fix(w, c, ctx):
-        if c.file == FOO:
+        if first_file(c) == FOO:
             return llm([create(FOO, "class Foo { WORSE }\n")])
         return llm([], analysis="nothing")
 
     pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix)).run(
-        Phase.SPRING, "compile", 1)
+        Phase.VERIFY, "package", 1)
     foo = next(a for a in pr.attempts if a.cluster_errors[0].file == FOO)
     assert foo.outcome in ("regressed", "reverted")
     assert len(foo.introduced_errors) == 3 and all(e.file == FOO for e in foo.introduced_errors)

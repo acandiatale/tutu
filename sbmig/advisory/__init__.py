@@ -8,7 +8,7 @@ Contract (PM, round 4) — the orchestrator, the planner, the report and the fle
                                                allow_recipes, recipe availability in the recipe catalog); no plan
                                                knowledge yet (recipe_source stays "none")
     advisory_recipe_refs(findings, cfg, planned_ids, catalog=None) -> list[RecipeRef]
-                                               called by the planner for the spring.rewrite step(s): returns refs for
+                                               called by the planner for the transform.rewrite step(s): returns refs for
                                                policy=="recipe" findings whose recipes are neither in `planned_ids` nor
                                                covered by a planned composite (RecipeCatalog.covered_by); mutates each
                                                finding in place: recipes / recipe_source ("plan" | "advisory" | "none")

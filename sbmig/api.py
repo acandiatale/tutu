@@ -58,7 +58,7 @@ def migrate(
                Recorded to `llm.record_dir` when that is set.
     fixer      a FixerLike replacing LLMFixer (takes precedence over `fix.plugin`).
     kb         None/True → the file knowledge base; False → no KB (like --no-kb); an object → used as is.
-    stop_after intake|analyze|plan|jdk21|spring|restructure.
+    stop_after intake|analyze|plan|transform|restructure (v2; jdk21|spring are v1 phases).
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).
     Returns the RunReport; `exit_code(report)` maps it to the CLI exit code (0 / 2 / 3)."""
     from sbmig.core.config import load_config

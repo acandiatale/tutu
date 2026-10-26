@@ -9,6 +9,7 @@ optional and guarded: a tracker problem never breaks a run):
     observe          a build (the loop after scoring, the orchestrator after each final `clean package`)
     observe_clusters the triage clusters of the last observed build (which errors a decision was about)
     note_attempt     a recorded fix attempt (any outcome)
+    note_rollback    v2: the loop rolled a script attempt back before the case's next try (its fixes are undone)
     note_decision    a triage decision (SKIP / ESCALATE / BLOCKED rationales → "why no attempt")
     finalize         raw `ErrorCaseRecord`s + `FixAttemptRecord`s; `sbmig.kb.error_cases.prepare_error_cases`
                      sanitizes them and fills the project / change-classification / label fields
@@ -26,6 +27,13 @@ Round 10: a new error records `introduced_by` (the attempts scored in the build 
 its file, else the plan steps noted since the previous build); attempt diffs are passed in FULL (`prepare` classifies
 them and only then applies `kb.error_diff_chars`); a handler `case-replace` attempt takes its resolver id from the
 handler's `resolver: case-replace:<case>:<pair-set hash>` notes.
+
+v2 (flow-v2) fix scripts: a SCRIPT attempt's fix method follows its mode (new → `script`, reuse → `script_reuse`,
+augment → `script_augment`), its resolver is `script:<case_id>:v<N>`, its record carries the script fields (status,
+error, the script's own log ≤ 50 lines) and its description is the LLM analysis (a reuse: the stored version's); a
+resolved error names the resolving attempt's `script_case_id` / `script_version`; `llm_attempts` counts the attempts
+that asked the LLM (`llm`, `script`, `script_augment` — a reuse made no call). An attempt the loop rolled back before
+the case's next try (note `rolled back before …`) is no longer in the tree: never part of a resolution chain.
 """
 from __future__ import annotations
 
@@ -87,6 +95,10 @@ RESOLVER_NOTE = "resolver: "           # a handler note naming the attempt's res
 
 _METHOD: dict[DecisionKind, str] = {DecisionKind.HANDLER: "handler", DecisionKind.KB_RECIPE: "recipe",
                                     DecisionKind.KB_PATCH: "kb_patch", DecisionKind.LLM_FIX: "llm"}
+_SCRIPT_METHOD: dict[str, str] = {"new": "script", "reuse": "script_reuse", "augment": "script_augment"}
+LLM_METHODS = ("llm", "script", "script_augment")   # fix methods that called the LLM (llm_attempts)
+SCRIPT_LOG_LINES = 50                  # FixAttemptRecord.script_log
+ROLLED_BACK_NOTE = "rolled back before "   # the fix loop's note on a script attempt it rolled back (no longer in the tree)
 _SCORING_NOTE_PREFIXES = ("regressed:", "reverted", "not reverted", "structural revert")
 _SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
 
@@ -156,11 +168,19 @@ def _match_key(e: BuildError) -> tuple:
 
 
 def _method(att: FixAttempt) -> str:
+    if att.decision.kind == DecisionKind.SCRIPT:
+        return _SCRIPT_METHOD.get(att.script_mode or "", "script")
     return _METHOD.get(att.decision.kind, "none")
+
+
+def _rolled_back(att: FixAttempt) -> bool:
+    return any(str(n).startswith(ROLLED_BACK_NOTE) for n in att.notes or [])
 
 
 def _resolver(att: FixAttempt) -> str:
     d = att.decision
+    if d.kind == DecisionKind.SCRIPT:
+        return f"script:{att.script_case_id}:v{att.script_version}" if att.script_case_id else ""
     if d.kind == DecisionKind.HANDLER:
         # handler case-replace names the case + pair set it applied ("resolver: case-replace:<id>:<hash>"), so the
         # catalog ties the outcome to exactly those pairs (round 10)
@@ -322,6 +342,23 @@ class ErrorTracker:
             self._ensure_att(att)
         except Exception as e:
             self._problem(f"note_attempt({getattr(att, 'id', '?')})", e)
+
+    def note_rollback(self, att: FixAttempt) -> None:
+        """v2: `att` was rolled back before its case's next attempt — the errors it resolved are back in the tree
+        (present as of the last build, reopened); it is no candidate for later closes or chains."""
+        try:
+            x = self._atts.get(id(att))
+            if x is None:
+                return
+            last = len(self._obs) - 1
+            for r in self._recs:
+                if r.status == "open" or r.resolved_att != x.key:
+                    continue
+                r.note(f"reopened: attempt {x.key}, which resolved it, was rolled back before the case's next try")
+                self._reopen(r, len(self._att_order))
+                r.last_obs = max(r.last_obs, last)
+        except Exception as e:
+            self._problem(f"note_rollback({getattr(att, 'id', '?')})", e)
 
     def note_decision(self, d: TriageDecision) -> None:
         try:
@@ -539,7 +576,7 @@ class ErrorTracker:
 
     def _close(self, r: _Rec, idx: int, lab: str, phase: Phase) -> None:
         span = self._obs[r.last_obs + 1: idx + 1]
-        cands = [x for o in span for x in o.scored if x.att.outcome != "reverted"]
+        cands = [x for o in span for x in o.scored if x.att.outcome != "reverted" and not _rolled_back(x.att)]
         steps = list(dict.fromkeys(s for o in span for s in o.steps))
         r.resolved_at, r.resolved_phase = lab, phase
         targeted = [x for x in cands if r.key in x.targets or r.identity in x.target_ids]
@@ -591,7 +628,8 @@ class ErrorTracker:
         for y in self._att_order[r.open_from:]:
             if y is not x:
                 a = y.att
-                if y.scored_obs < 0 or y.scored_obs > idx or not a.applied or a.outcome in ("reverted", "apply_failed"):
+                if y.scored_obs < 0 or y.scored_obs > idx or not a.applied or a.outcome in ("reverted", "apply_failed") \
+                        or _rolled_back(a):
                     continue
                 if not (r.key in y.targets or r.identity in y.target_ids or (f and f in _touched(a))):
                     continue
@@ -634,7 +672,7 @@ class ErrorTracker:
         if att.applied and att.proposed_changes:
             notes.append(f"partially applied: {len(att.changes)} of {len(att.proposed_changes)} proposed change(s)")
         u = att.llm_usage
-        return FixAttemptRecord(
+        rec = FixAttemptRecord(
             id=f"{run_id}:{x.key}", at=att.created_at, run_id=run_id, phase=att.phase, iteration=att.iteration,
             attempt_id=att.id, cluster_id=att.cluster_id, error_ids=error_ids, fix_method=_method(att),
             resolver_id=_resolver(att), model=att.model or "", outcome=att.outcome, applied=att.applied,
@@ -644,6 +682,14 @@ class ErrorTracker:
             llm_calls=u.calls,
             input_tokens=u.input_tokens, output_tokens=u.output_tokens, advisory_ids=list(att.advisory_ids),
             notes=notes)
+        if att.decision.kind == DecisionKind.SCRIPT:          # v2: which version of which case ran, and how it went
+            res = att.script_result
+            rec.script_mode, rec.script_case_id = att.script_mode, att.script_case_id
+            rec.script_version, rec.script_parent = int(att.script_version or 0), att.script_parent
+            if res is not None:
+                rec.script_status, rec.script_error = res.status, _short(res.error or "", TEXT_CHARS)
+                rec.script_log = [_short(str(line), 300) for line in res.log[:SCRIPT_LOG_LINES]]
+        return rec
 
     @staticmethod
     def _describe(att: FixAttempt) -> str:
@@ -664,6 +710,11 @@ class ErrorTracker:
             if len(analysis) > ANALYSIS_CHARS:
                 analysis = analysis[:ANALYSIS_CHARS - 1] + "…"
             return f"LLM {att.model or '?'}: {analysis}".rstrip(": ")
+        if d.kind == DecisionKind.SCRIPT:             # v2: the analysis (a reuse: the stored version's)
+            analysis = (att.analysis or "").strip()
+            if len(analysis) > ANALYSIS_CHARS:
+                analysis = analysis[:ANALYSIS_CHARS - 1] + "…"
+            return analysis or f"fix script {att.script_case_id or '?'}:v{att.script_version} ({att.script_mode})"
         return _short(att.analysis or d.rationale or d.kind.value)
 
     @staticmethod
@@ -722,7 +773,8 @@ class ErrorTracker:
         e = r.error
         refs = [ErrorAttemptRef(attempt_id=aid[k], phase=atts[k].phase, iteration=atts[k].iteration,
                                 fix_method=atts[k].fix_method, resolver_id=atts[k].resolver_id,
-                                outcome=atts[k].outcome, failure=atts[k].failure)
+                                outcome=atts[k].outcome, failure=atts[k].failure,
+                                script_version=atts[k].script_version)
                 for k in r.attempt_keys if k in atts]
         notes = list(r.notes)
         if r.omitted_attempts:
@@ -735,7 +787,7 @@ class ErrorTracker:
             signature_generic=e.signature_generic, raw=e.raw or "", first_seen=r.first_seen,
             first_phase=r.first_phase, last_seen=r.last_seen, builds_present=r.builds_present, attempts=refs,
             attempt_count=len(refs) + r.omitted_attempts,
-            llm_attempts=sum(1 for a in refs if a.fix_method == "llm"), notes=notes, introduced_by=introduced)
+            llm_attempts=sum(1 for a in refs if a.fix_method in LLM_METHODS), notes=notes, introduced_by=introduced)
         if r.status != "open":
             rec.status = r.status                                      # type: ignore[assignment]
             rec.resolved_at, rec.resolved_phase = r.resolved_at, r.resolved_phase
@@ -743,6 +795,8 @@ class ErrorTracker:
             if r.resolved_att and r.resolved_att in atts:
                 a = atts[r.resolved_att]
                 rec.resolved_by = aid[r.resolved_att]
+                if a.script_case_id:                       # v2: the case script that resolved it
+                    rec.script_case_id, rec.script_version = a.script_case_id, a.script_version
                 rec.resolution_attempts = [aid[k] for k in r.chain if k in aid and k in atts] or [aid[r.resolved_att]]
                 how = a.description or f"{a.fix_method} {a.resolver_id}".strip()
                 rec.description = how if r.targeted else (

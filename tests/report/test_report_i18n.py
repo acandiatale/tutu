@@ -138,7 +138,7 @@ def _used_keys() -> set[str]:
     used = _tr_literals(Path(markdown_mod.__file__))
     used |= set(markdown_mod.FLAG_HELP.values()) | set(markdown_mod.FLAG_PREFIX_HELP.values())
     used |= {markdown_mod.BLOCKED_TITLE, markdown_mod.HANDOVER_TITLE, markdown_mod.PROPERTIES_TITLE,
-             markdown_mod.JAVAX_JARS_TITLE}
+             markdown_mod.JAVAX_JARS_TITLE, markdown_mod.REVIEW_TITLE}
     used |= {v for k, v in vars(handover_mod).items() if k.startswith("REASON_")}       # VersionChange.reason
     used |= set(handover_mod.PROPERTY_COLUMNS)
     used |= _tr_literals(Path(inventory_mod.__file__))                    # inventory.md (`sbmig inventory`)
@@ -204,6 +204,10 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
                         cfg=cfg).from_here
     assert not any("see that section" in x for x in h3)
     lines += h3
+    # v2 structure review: script changed files / critical not fixed / warnings / the cap line
+    from .test_review_report import review_report
+    lines += handover_mod.review_followups(review_report(script="ok"))
+    lines += handover_mod.review_followups(review_report(script="error", warnings=12))
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

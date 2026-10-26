@@ -1,6 +1,6 @@
-"""Failure-case handling in the loop/orchestrator (docs/ERROR-HANDLING.md §1, §3): blocked clusters across phases,
+"""Failure-case handling in the loop/orchestrator (docs/ERROR-HANDLING.md §1, §3), v2 fix scripts: blocked cases,
 loop safety (oscillation, structural regression, garbage / unavailable LLM, budgets), optional_bump dispatch,
-handler flags, intake effective-pom capture, aborts and exit codes."""
+intake effective-pom capture, aborts and exit codes."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -14,11 +14,18 @@ from sbmig.core.models import (GAV, BlockReason, BuildError, CaseType, DecisionK
                                FixProposal, LLMUsage, MigrationPlan, Phase, PlanStep, RunReport, StepKind)
 from sbmig.loop import BuildFixLoop, LazyFixer, LoopBudget
 from sbmig.triage import HandlerRegistry, Triager
-from sbmig.triage.handlers import Handler
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeRewriteRunner, bad_build, boot_plan,
-                    compile_error, journal_events, make_profile, ok_build, write_fix)
+from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeRewriteRunner, FakeScriptRunner,
+                    bad_build, case_of, compile_error, journal_events, make_profile, ok_build, v2_msa_plan, v2_plan,
+                    write_fix, write_script)
 from .test_orchestrator import make_orch
+
+
+@pytest.fixture(autouse=True)
+def javax_library_blocks_at_once(cfg):
+    """These scenarios are about blocking: a library that still exposes javax types is blocked without an LLM call
+    (`blocked_policy.external_javax_api: 0`; the v2 default 2 lets a script try to swap the library first)."""
+    cfg.loop.blocked_policy["external_javax_api"] = 0
 
 FOO = "src/main/java/com/x/Foo.java"
 BAR = "src/main/java/com/x/Bar.java"
@@ -39,11 +46,16 @@ def javac(ws, *blocks: str) -> list[BuildError]:
     return parse_maven_log(text, ws.root)
 
 
-def make_loop(cfg, ws, profile, *, build, fixer=None, triager=None, budget=None, locator=None):
+def make_loop(cfg, ws, profile, *, build, fixer=None, triager=None, budget=None, locator=None, kb=None):
     triager = triager or Triager(cfg, registry=HandlerRegistry())
-    return BuildFixLoop(cfg, ws, build, triager, triager.registry, fixer or FakeFixer(), FakeKB(),
+    return BuildFixLoop(cfg, ws, build, triager, triager.registry, fixer or FakeFixer(), kb or FakeKB(),
                         FakeRewriteRunner(ws), profile, budget=budget or LoopBudget.from_config(cfg),
-                        locator=locator)
+                        locator=locator, script_runner=FakeScriptRunner())
+
+
+def own_case(f: str):
+    """compile errors of `f` in a case of their own (L2 per file)."""
+    return compile_error(f, l2=f"compile|x|{f.rsplit('/', 1)[-1]}")
 
 
 class FakeLocator:
@@ -61,29 +73,27 @@ class FakeLocator:
 
 
 def javax_lib_build(ws, call):
-    """jdk21 phase is green; from the spring phase on Foo calls a library that still takes javax."""
-    if call["label"].startswith("jdk21"):
-        return ok_build()
+    """Foo calls a library that still takes javax; Bar has a plain error while it says `broken`."""
     blocks = [X1_BLOCK] + ([PLAIN_FOO.replace(FOO, BAR).replace("com.x.Foo", "com.x.Bar")]
                            if "broken" in ws.read(BAR) else [])
     return bad_build(*javac(ws, *blocks))
 
 
 # ------------------------------------------------------------------------------------------------ blocked flow
-def test_spring_blocked_restructure_and_verify_still_run(cfg, ws):
-    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "class Bar { ok }\n"))
+def test_blocked_case_is_reported_and_the_rest_is_fixed(cfg, ws):
+    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(BAR, "class Bar { ok }\n"))
     restr = FakeRestructurer()
     loc = FakeLocator()
     build = FakeBuildRunner(ws, fn=javax_lib_build)
     report = make_orch(cfg, ws, build=build, fixer=fixer, restructurer=restr, locator=loc).run()
 
     assert not report.success and run_exit_code(report) == 2
-    assert restr.calls == ["layout"]                                   # restructure ran despite the blocked spring
+    assert restr.calls == ["layout"]
     assert build.calls[-1]["label"] == "verify"
-    assert all(ch.path != FOO for chs in fixer.applied for ch in chs)  # never touched Foo
-    assert len(fixer.contexts) == 1                                     # only Bar went to the LLM
+    assert "class Foo { broken }" in ws.read(FOO)                      # never touched Foo
+    assert len(fixer.contexts) == 1                                     # only Bar's case went to the LLM
     [item] = report.blocked
-    assert item.reason == BlockReason.EXTERNAL_JAVAX_API and item.phase == Phase.SPRING
+    assert item.reason == BlockReason.EXTERNAL_JAVAX_API and item.phase == Phase.VERIFY
     assert item.artifact.coordinates == "com.company:legacy-web:1.4"
     assert item.owner_class == "com.company.legacy.web.LegacyRequestHelper"
     assert (item.required_type, item.found_type) == ("javax.servlet.http.HttpServletRequest",
@@ -92,10 +102,9 @@ def test_spring_blocked_restructure_and_verify_still_run(cfg, ws):
     assert "upgrade `com.company:legacy-web` to a Jakarta build" in item.suggestion
     assert "left unchanged on purpose" in item.suggestion
     assert loc.calls[0][:2] == ("class", "com.company.legacy.web.LegacyRequestHelper")
-    spring = next(p for p in report.phases if p.phase == Phase.SPRING)
-    restructure = next(p for p in report.phases if p.phase == Phase.RESTRUCTURE)
-    assert [b.id for b in spring.blocked] == [item.id] == [b.id for b in restructure.blocked]
-    assert restructure.iterations == 1                                  # only blocked left → no fix rounds burned
+    verify = report.phases[-1]
+    assert [b.id for b in verify.blocked] == [item.id]
+    assert any("only blocked cluster(s) remain" in n for n in verify.notes)
     assert report.unresolved == []                                      # blocked errors are not "unresolved"
     md = (ws.run_dir / "report.md").read_text()
     assert md.index("## Blocked — needs human / library action") < md.index("## Unresolved errors")
@@ -114,7 +123,7 @@ def test_optional_artifact_suggestion_points_at_the_bump(cfg, ws):
     pr = loop.run(Phase.SPRING, "test-compile", 3)
     s = pr.blocked[0].suggestion
     assert "`com.company:legacy-web` is a configured optional artifact" in s
-    assert "bump to `2.0.0` happens in step spring.optional_bump" in s and "Jakarta build" in s
+    assert "bump to `2.0.0` happens in the restructure" in s and "Jakarta build" in s
 
 
 def test_unattributed_owner_suggestion(cfg, ws):
@@ -140,7 +149,9 @@ def test_only_blocked_remaining_ends_phase_early(cfg, ws, profile):
     assert sum(e["event"] == "only_blocked" for e in journal_events(ws)) == 2
 
 
-def test_partially_blocked_cluster_rest_goes_to_llm(cfg, ws, profile):
+def test_partially_blocked_case_rest_goes_to_the_script(cfg, ws, profile):
+    """One case (same L2) whose errors the classifier covers only in part: the javax one is blocked, the rest of the
+    case goes to the script."""
     seen = []
 
     def fix(w, c, ctx):
@@ -149,15 +160,16 @@ def test_partially_blocked_cluster_rest_goes_to_llm(cfg, ws, profile):
 
     def build_fn(w, call):
         blocks = [X1_BLOCK] + ([PLAIN_FOO] if "broken" in w.read(FOO) else [])
-        return bad_build(*javac(w, *blocks))
+        errs = javac(w, *blocks)
+        return bad_build(*[e.model_copy(update={"signature_generic": "compile|mixed"}) for e in errs])
 
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 4)
+    pr = loop.run(Phase.VERIFY, "package", 4)
     assert seen == [["cannot find symbol"]]                             # only the fixable error was sent
     assert pr.attempts[0].outcome == "improved" and len(pr.blocked) == 1
     d = pr.iteration_records[0].decisions
-    assert [x.kind for x in d] == [DecisionKind.BLOCKED, DecisionKind.LLM_FIX]
-    assert "rest of a partially blocked cluster" in d[1].rationale
+    assert [x.kind for x in d] == [DecisionKind.BLOCKED, DecisionKind.SCRIPT]
+    assert "rest of a partially blocked case" in d[1].rationale
     assert pr.iterations == 2 and any("only blocked" in n for n in pr.notes)
 
 
@@ -176,7 +188,7 @@ def test_oscillation_blocks_involved_clusters(cfg, ws, profile):
     ws.write(FOO, "class Foo { A }\n")
     ws.commit("A")
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 10)
+    pr = loop.run(Phase.VERIFY, "package", 10)
     assert [r.signatures for r in pr.iteration_records][:4] == [{"sig-A": 1}, {"sig-B": 1}, {"sig-A": 1}, {"sig-B": 1}]
     assert [r.stalled for r in pr.iteration_records][:4] == [False, False, True, True]
     assert pr.iterations == 4 and n["i"] == 3
@@ -202,7 +214,7 @@ def test_structural_regression_after_pom_edit_is_reverted(cfg, ws, profile):
                              model="m", llm_usage=LLMUsage(calls=1)),
                  write_fix(FOO, "class Foo { ok }\n")]
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(proposals))
-    pr = loop.run(Phase.SPRING, "compile", 4)
+    pr = loop.run(Phase.VERIFY, "package", 4)
     first = pr.attempts[0]
     # its compile error is gone, but the build stopped at the pom (round 10: unknown, not resolved) — reverted
     assert first.cluster_resolved is None and first.outcome == "reverted"
@@ -218,21 +230,23 @@ def test_structural_regression_reverted_even_when_not_the_last_commit(cfg, ws, p
         errs = []
         if "<broken" in w.read("pom.xml"):
             return bad_build(_pom_invalid(w))
-        errs += [compile_error(f) for f in (FOO, BAR) if "broken" in w.read(f)]
+        errs += [compile_error(FOO, line=n, l2="compile|x|foo") for n in (1, 2) if "broken" in w.read(FOO)]
+        errs += [own_case(BAR)] if "broken" in w.read(BAR) else []      # Foo's case (2 errors) comes first
         return bad_build(*errs) if errs else ok_build()
 
     calls = {FOO: 0}
 
     def fix(w, c, ctx):
-        if c.file == FOO:
+        f = c.errors[0].file
+        if f == FOO:
             calls[FOO] += 1
             if calls[FOO] == 1:
                 return FixProposal(changes=[FileChange(path="pom.xml", op="create", content="<project><broken")],
                                    model="m", llm_usage=LLMUsage(calls=1))
-        return write_fix(c.file, "class X { ok }\n")
+        return write_fix(f, "class X { ok }\n")
 
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 4)
+    pr = loop.run(Phase.VERIFY, "package", 4)
     foo1 = pr.attempts[0]
     assert foo1.outcome == "reverted" and any("git revert" in n for n in foo1.notes)
     assert any(e["event"] == "revert" and e.get("mode") == "git-revert" for e in journal_events(ws))
@@ -245,58 +259,45 @@ def test_garbage_llm_is_blocked_as_repeated_failure_within_budget(cfg, ws, profi
     fixer = FakeFixer(fn=lambda w, c, ctx: prose)
     build = FakeBuildRunner(ws, script=[bad_build(compile_error(FOO))])
     loop = make_loop(cfg, ws, profile, build=build, fixer=fixer)
-    pr = loop.run(Phase.SPRING, "compile", 6)
-    assert len(fixer.contexts) == cfg.loop.max_llm_attempts_per_cluster == 2
+    pr = loop.run(Phase.VERIFY, "package", 6)
+    n = 1 + cfg.script.max_augments_per_case                           # no script ever: `new` again, same total
+    assert len(fixer.contexts) == n and {c.script_mode for c in fixer.contexts} == {"new"}
     assert len(build.calls) == 1                                       # re-asked on the same build, no rebuild
-    assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE] and pr.blocked[0].attempts == 2
+    assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE] and pr.blocked[0].attempts == n
     assert loop.llm_unavailable is None and "llm-unavailable" not in loop.flags
-    assert loop.budget.llm_calls == 2 < loop.budget.max_llm_calls
+    assert loop.budget.llm_calls == n < loop.budget.max_llm_calls
     assert any(e["event"] == "reround" for e in journal_events(ws))
 
 
-class BazHandler(Handler):
-    id = "baz-fix"
-    description = "fixes Baz"
-    flags = ["werror-removed"]
-
-    def matches(self, cluster, profile, cfg):
-        return cluster.file == "src/main/java/com/x/Baz.java"
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):
-        ws.write("src/main/java/com/x/Baz.java", "class Baz { ok }\n")
-        return [FileChange(path="src/main/java/com/x/Baz.java", op="modify")]
-
-
-def test_llm_unavailable_blocks_llm_clusters_handlers_keep_running(cfg, ws, profile):
+def test_llm_unavailable_blocks_llm_cases_stored_scripts_keep_running(cfg, ws, profile):
     cfg.llm.cooldown_seconds = 0                                       # pre-round-9 behaviour: no cool-down
     down = FixProposal(changes=[], analysis="llm-error: LLM request failed after 4 attempt(s) (status=503): busy",
                        model="m", llm_usage=LLMUsage(calls=1))
     fixer = FakeFixer(fn=lambda w, c, ctx: down)
-    t = Triager(cfg, registry=HandlerRegistry([BazHandler()]))
-    build = FakeBuildRunner(ws, script=[bad_build(compile_error(FOO), compile_error(BAR))])
-    loop = make_loop(cfg, ws, profile, build=build, fixer=fixer, triager=t)
-    pr = loop.run(Phase.SPRING, "compile", 4)
+    kb = FakeKB()
+    build = FakeBuildRunner(ws, script=[bad_build(own_case(FOO), own_case(BAR))])
+    loop = make_loop(cfg, ws, profile, build=build, fixer=fixer, kb=kb)
+    pr = loop.run(Phase.VERIFY, "package", 4)
     assert len(fixer.contexts) == 2 and loop.llm_unavailable and "status=503" in loop.llm_unavailable
     assert "llm-unavailable" in loop.flags
     assert {b.reason for b in pr.blocked} == {BlockReason.LLM_UNAVAILABLE} and len(pr.blocked) == 2
     assert "LLM was unavailable" in pr.blocked[0].suggestion
     assert any(e["event"] == "llm_unavailable" for e in journal_events(ws))
-    # next phase: a new LLM-only cluster is blocked without calling the fixer; the handler cluster is still fixed
-    baz = "src/main/java/com/x/Baz.java"
+    # next loop: a new LLM-only case is blocked without calling the fixer; a case with a proven script is reused
+    baz, qux = "src/main/java/com/x/Baz.java", "src/main/java/com/x/Qux.java"
     ws.write(baz, "class Baz { broken }\n")
     ws.commit("baz")
-    qux = "src/main/java/com/x/Qux.java"
+    kb.scripts.seed(case_of("compile|x|Baz.java"), write_script({baz: "class Baz { ok }\n"}).code)
 
     def build2(w, call):
-        errs = [compile_error(qux)] + ([compile_error(baz)] if "broken" in w.read(baz) else [])
+        errs = [own_case(qux)] + ([own_case(baz)] if "broken" in w.read(baz) else [])
         return bad_build(*errs)
 
     loop.build_runner = FakeBuildRunner(ws, fn=build2)
-    pr2 = loop.run(Phase.RESTRUCTURE, "package", 4)
+    pr2 = loop.run(Phase.VERIFY, "package", 4)
     assert len(fixer.contexts) == 2                                    # the LLM is not called again
-    assert [a.decision.handler_id for a in pr2.attempts] == ["baz-fix"] and pr2.attempts[0].outcome == "improved"
+    assert [a.script_mode for a in pr2.attempts] == ["reuse"] and pr2.attempts[0].outcome == "improved"
     assert any(b.reason == BlockReason.LLM_UNAVAILABLE and qux in b.files[0] for b in pr2.blocked)
-    assert "werror-removed" in loop.flags                              # handler flags are merged
 
 
 def test_llm_client_construction_failure_marks_llm_unavailable(cfg, ws, profile):
@@ -304,9 +305,9 @@ def test_llm_client_construction_failure_marks_llm_unavailable(cfg, ws, profile)
     def factory():
         raise ValueError("llm.base_url is not set (LLM_BASE_URL)")
 
-    build = FakeBuildRunner(ws, script=[bad_build(compile_error(FOO), compile_error(BAR))])
+    build = FakeBuildRunner(ws, script=[bad_build(own_case(FOO), own_case(BAR))])
     loop = make_loop(cfg, ws, profile, build=build, fixer=LazyFixer(factory))
-    pr = loop.run(Phase.SPRING, "compile", 3)
+    pr = loop.run(Phase.VERIFY, "package", 3)
     assert loop.llm_unavailable and "LLM_BASE_URL" in loop.llm_unavailable
     assert {b.reason for b in pr.blocked} == {BlockReason.LLM_UNAVAILABLE}
 
@@ -317,14 +318,14 @@ def test_time_budget_blocks_remaining_clusters(cfg, ws, profile):
 
     def fix(w, c, ctx):
         t["now"] += 120
-        return write_fix(c.file, "class X { broken 2 }\n")
+        return write_fix(c.errors[0].file, "class X { broken 2 }\n")
 
     def build_fn(w, call):
-        return bad_build(*[compile_error(f) for f in (FOO, BAR)])
+        return bad_build(*[own_case(f) for f in (FOO, BAR)])
 
     cfg.loop.max_clusters_per_iteration = 1
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix), budget=budget)
-    pr = loop.run(Phase.SPRING, "compile", 5)
+    pr = loop.run(Phase.VERIFY, "package", 5)
     assert "time-budget-exhausted" in loop.flags
     assert {b.reason for b in pr.blocked} == {BlockReason.BUDGET_EXHAUSTED}
     assert sorted(b.files[0] for b in pr.blocked) == sorted([FOO, BAR])
@@ -333,11 +334,12 @@ def test_time_budget_blocks_remaining_clusters(cfg, ws, profile):
 
 # ------------------------------------------------------------------------------------------------ orchestrator glue
 def bump_plan() -> MigrationPlan:
-    plan = boot_plan()
-    i = next(i for i, s in enumerate(plan.steps) if s.id == "spring.rewrite")
-    plan.steps.insert(i + 1, PlanStep(id="spring.optional_bump", kind=StepKind.RESTRUCTURE, phase=Phase.SPRING,
-                                      title="bump in-house optional artifacts", params={"mode": "optional_bump",
-                                                                                        "only": ["c:d"]}))
+    """v2 (plan.optional_bump_phase: restructure): the bump step runs inside the restructure phase."""
+    plan = v2_plan()
+    i = next(i for i, s in enumerate(plan.steps) if s.id == "restructure.apply")
+    plan.steps.insert(i, PlanStep(id="restructure.optional_bump", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
+                                  title="bump in-house optional artifacts", params={"mode": "optional_bump",
+                                                                                    "only": ["c:d"]}))
     return plan
 
 
@@ -348,7 +350,7 @@ def test_optional_bump_step_dispatch(cfg, ws):
     assert restr.calls == ["optional_bump", "layout"]
     assert restr.params[0] == {"mode": "optional_bump", "only": ["c:d"]}
     ev = [e for e in journal_events(ws) if e["event"] == "restructure"]
-    assert [e["mode"] for e in ev] == ["optional_bump", "layout"] and ev[0]["step"] == "spring.optional_bump"
+    assert [e["mode"] for e in ev] == ["optional_bump", "layout"] and ev[0]["step"] == "restructure.optional_bump"
     assert report.success and run_exit_code(report) == 0
 
 
@@ -356,33 +358,10 @@ def test_optional_bump_failure_does_not_abort_the_phase(cfg, ws):
     restr = FakeRestructurer(fail_modes=("optional_bump",))
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
     report = make_orch(cfg, ws, plan=bump_plan(), restructurer=restr, build=build).run()
-    spring = next(p for p in report.phases if p.phase == Phase.SPRING)
-    assert spring.ok and spring.build_ok
-    assert any("spring.optional_bump: failed — continuing" in n for n in spring.notes)
-    assert any(c["label"].startswith("spring-") for c in build.calls)       # the spring loop still ran
+    rs = next(p for p in report.phases if p.phase == Phase.RESTRUCTURE)
+    assert rs.ok
+    assert any("restructure.optional_bump: failed — continuing" in n for n in rs.notes)
     assert restr.calls == ["optional_bump", "layout"] and report.success
-
-
-class FlagPre(Handler):
-    id = "lombok-version-floor"
-    description = "pre-emptive with a flag"
-    flags = ["source-encoding-set:cp949"]
-
-    def matches(self, cluster, profile, cfg):
-        return False
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):
-        ws.write("pom.xml", "<project><enc>cp949</enc></project>\n")
-        return [FileChange(path="pom.xml", op="modify")]
-
-
-def test_preemptive_handler_flags_reach_the_report(cfg, ws):
-    reg = HandlerRegistry([FlagPre()])
-    report = make_orch(cfg, ws, triager=Triager(cfg, registry=reg), handlers=reg, pre=["lombok-version-floor"],
-                       build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
-    assert "source-encoding-set:cp949" in report.flags
-    md = (ws.run_dir / "report.md").read_text()
-    assert "`source-encoding-set:cp949`: legacy source encoding detected" in md
 
 
 def test_intake_captures_effective_depmgmt_before_any_change(cfg, ws, tmp_path):
@@ -441,7 +420,8 @@ def test_configured_parent_not_resolvable_aborts(cfg, ws):
     restr = FakeRestructurer()
     report = make_orch(cfg, ws, build=build, restructurer=restr).run()
     assert "aborted:parent-not-found" in report.flags and run_exit_code(report) == 3
-    assert len(build.calls) == 1 and restr.calls == []                 # no looping, no further phases, no verify
+    # v2: the final build is the first build; its loop (build 1 = that build) aborts — no looping, no repeat
+    assert len(build.calls) == 1 and restr.calls == ["layout"]
     [item] = report.blocked
     assert item.reason == BlockReason.PARENT_NOT_FOUND and item.artifact.key == parent.key
     assert "nexus (https://nexus.example/repo)" in item.suggestion
@@ -454,7 +434,7 @@ def test_parent_failure_inside_rewrite_aborts(cfg, ws):
                                                f"could not be resolved: {parent.key}:pom:{parent.version} (absent)")
     report = make_orch(cfg, ws, rewrite=rw, build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
     assert "aborted:parent-not-found" in report.flags and run_exit_code(report) == 3
-    assert [p.phase for p in report.phases] == [Phase.JDK21]
+    assert [p.phase for p in report.phases] == [Phase.TRANSFORM]
     assert report.blocked[0].artifact.coordinates == f"{parent.key}:{parent.version}"
 
 
@@ -513,67 +493,16 @@ def test_cli_run_exit_code(tmp_path, monkeypatch, repo_root, flags, blocked, suc
 
 
 # ------------------------------------------------------------------------------------------------ G1 wiring
-class EncodingHandler(Handler):
-    id = "source-encoding"
-    description = "fake whole-module encoding fix"
-
-    def __init__(self):
-        self.flags: list[str] = []
-        self.notes: list[str] = []
-        self.calls = 0
-
-    def matches(self, cluster, profile, cfg):
-        return cluster.kind == ErrorKind.COMPILE
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):
-        self.calls += 1
-        self.flags, self.notes = [], []
-        if "cp949" in ws.read("pom.xml"):
-            return []
-        ws.write("pom.xml", "<project><enc>cp949</enc></project>\n")
-        self.flags = ["source-encoding-set:cp949"]
-        self.notes = ["sources are cp949; project.build.sourceEncoding set"]
-        return [FileChange(path="pom.xml", op="modify")]
-
-
-def test_encoding_handler_runs_preemptively_before_first_build(cfg, ws):
-    enc = EncodingHandler()
-    reg = HandlerRegistry([enc])
-    build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
-    report = make_orch(cfg, ws, triager=Triager(cfg, registry=reg), handlers=reg, pre=[], build=build).run()
-    assert enc.calls == 1 and "source-encoding-set:cp949" in report.flags
-    first_build_head = build.calls[0]["head"]
-    assert "handlers: source-encoding" in ws._git("log", "--format=%s", first_build_head).stdout
-    assert any("cp949" in n for p in report.phases for n in p.notes)
-    assert ws.encoding_candidates[:2] == tuple(cfg.build.encoding_candidates[:2])
-
-
-def test_module_wide_handler_no_change_is_not_a_failure(cfg, ws, profile):
-    enc = EncodingHandler()
-    fixer = FakeFixer()
-
-    def build_fn(w, call):
-        return ok_build() if "cp949" in w.read("pom.xml") else bad_build(compile_error(FOO), compile_error(BAR))
-
-    t = Triager(cfg, registry=HandlerRegistry([enc]))
-    pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=fixer, triager=t).run(
-        Phase.JDK21, "compile", 3)
-    assert pr.ok and not fixer.contexts                                # the second cluster did not fall to the LLM
-    assert [a.outcome for a in pr.attempts] == ["build_ok", "no_change"]
-    assert "already applied in this iteration" in pr.attempts[1].notes[-1]
-
-
 def test_msa_targets_build_from_the_aggregator_with_pl_am(cfg, ws):
     from sbmig.core.models import PomInfo
 
-    from .fakes import msa_plan
     prof = make_profile(CaseType.MSA)
     prof.poms = [PomInfo(path="pom.xml", artifact_id="root", packaging="pom", modules=["svc-a", "./svc-b", "common"],
                          is_root=True, is_aggregator=True),
                  PomInfo(path="svc-a/pom.xml", artifact_id="svc-a"), PomInfo(path="svc-b/pom.xml", artifact_id="svc-b")]
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build())
     rw = FakeRewriteRunner(ws)
-    report = make_orch(cfg, ws, plan=msa_plan(), build=build, rewrite=rw, profile=prof).run()
+    report = make_orch(cfg, ws, plan=v2_msa_plan(), build=build, rewrite=rw, profile=prof).run()
     assert report.success
     assert {c["module"] for c in build.calls} == {None}
     assert [c["extra_args"] for c in build.calls if c["label"].startswith("verify")] == [

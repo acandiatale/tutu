@@ -1,17 +1,20 @@
-"""Decision engine (ARCHITECTURE §4, ERROR-HANDLING §1/§3):
+"""Decision engine (ARCHITECTURE §4, ERROR-HANDLING §1/§3; v2: docs/INTERFACES.md "Script fix loop (L)").
 
-    run-wide blocked registry → pinned case action (block | handler | recipe) → HANDLER > KB_RECIPE > KB_PATCH
-    > blocked check (cfg.loop.blocked_policy) > LLM_FIX → BLOCKED(repeated_failure | budget_exhausted | llm_unavailable)
+v2 (flow-v2) — every fix is a fix script, one decision per case (L2) and round:
 
-plus masking. A BLOCKED decision never calls the LLM; the build-fix loop records a BlockedItem for it and keeps
-working on everything else.
+    run-wide blocked registry → pinned `block` case action → script ladder: reuse a stored version (no LLM)
+    → blocked check (cfg.loop.blocked_policy, counted in LLM script attempts) → LLM unavailable
+    → ladder exhausted (repeated_failure) → LLM budget → SCRIPT augment | new
 
-Round 10 (2026-10-26): the per-cluster limits (`max_llm_attempts_per_cluster`, `blocked_policy`, the repeated-failure
-limit) count only SCORED failures of the SAME cluster (`same_cluster`: same cluster id, or same file — after the
-restructure move too — with an overlapping signature). L1 signatures carry no file, so before this the same
-`cannot find symbol class X` in five files let the attempts on the first files count against the later ones (only
-three got an LLM call, the rest were blocked `repeated_failure`). `partial` is progress (not a failure); `pending`
-(applied, not yet built) is not counted. A case pinned by a person (`CaseHit.pinned`) is obeyed first."""
+plus masking (`plan_iteration`). A BLOCKED decision never calls the LLM; the fix loop records a BlockedItem for it and
+keeps working on everything else. A stored, proven script of the case is reused even when the LLM is unavailable or
+its budget is spent — only the steps that need the LLM are blocked. Deterministic handlers, KB / reactive recipes and
+KB patch replay are not part of the v2 flow (their code stays until PLAN-v2 step 4; `mark_recipes_run` is kept for
+the orchestrator's bookkeeping).
+
+Round 10 rules kept: the per-case limits count only SCORED attempts of the SAME cluster (`same_cluster`: same cluster
+id — a case's id is stable across rounds —, or same file, also after the restructure move, with an overlapping
+signature); `pending` never counts. A case pinned to `block` by a person (`CaseHit.pinned`) is obeyed first."""
 from __future__ import annotations
 
 import logging
@@ -25,6 +28,7 @@ from sbmig.core.models import (BlockReason, DecisionKind, ErrorCluster, FixAttem
 from .blocked import BlockedCandidate, classify_blocked
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
 from .rules import RecipeRules
+from .scripts import LLM_MODES, ScriptStep, plan_script_step, script_attempts
 
 log = logging.getLogger("sbmig.triage")
 
@@ -32,10 +36,10 @@ SUCCESS_OUTCOMES = frozenset({"improved", "build_ok"})
 # scored failures: what the per-cluster limits count (round 10: no "pending" — an attempt applied this round and not
 # built yet proves nothing; "inconclusive" = the scoring build could not show the cluster's errors, counts as tried)
 FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "inconclusive"})
-# some targeted errors gone, the rest remain: progress, not a failure — but a deterministic option (handler, recipe,
-# KB patch) that only got this far has done what it can and is not chosen again
+# some targeted errors gone, the rest remain: progress, not a failure (v2: the next script attempt of the case is an
+# augment of it — the per-case limit is script.max_augments_per_case)
 PROGRESS_OUTCOMES = frozenset({"partial"})
-# LLM attempts that produced nothing usable (no patches parsed / nothing applied / llm-error)
+# attempts that produced nothing usable (no script / it did not run / nothing applied / llm-error)
 GARBAGE_OUTCOMES = frozenset({"apply_failed"})
 # a pinned `block` action whose block_reason is free text (not a BlockReason value): the generic library-side reason
 PINNED_BLOCK_FALLBACK = BlockReason.EXTERNAL_API_INCOMPATIBLE
@@ -88,14 +92,22 @@ def related_attempts(cluster: ErrorCluster, attempts: Iterable[FixAttempt]) -> l
     return [a for a in attempts if a.cluster_id == cluster.id or (sigs and sigs & set(a.cluster_signatures))]
 
 
+def _modules(c: ErrorCluster) -> set[str]:
+    """The modules a cluster's errors are in (a v2 case may span modules; its `module` is then None)."""
+    mods = {e.module for e in c.errors if e.module}
+    return mods or ({c.module} if c.module else set())
+
+
 def plan_iteration(clusters: list[ErrorCluster]) -> list[IterationItem]:
     """Masking: resolution-type clusters (parent/pom/dependency/plugin resolution) mask compile and test-compile
-    clusters of the same module (or of every module when the resolution error has no module)."""
+    clusters of the same module (or of every module when the resolution error has no module). A case spanning
+    modules is masked when one of its modules has such a problem (the pom is fixed first)."""
     resolution = [c for c in clusters if c.kind in RESOLUTION_KINDS]
     out: list[IterationItem] = []
     for c in clusters:
         if c.kind in FILE_KINDS and resolution:
-            maskers = [r for r in resolution if r.module is None or r.module == c.module]
+            mods = _modules(c)
+            maskers = [r for r in resolution if r.module is None or r.module in mods]
             if maskers:
                 names = ", ".join(cluster_label(r) for r in maskers[:3])
                 out.append(IterationItem(c, TriageDecision(
@@ -137,8 +149,11 @@ class DecisionEngine:
         self.blocked_registry = None            # sbmig.loop.blocked_registry.BlockedRegistry
         self.ws = None                          # Workspace: project-class checks for the blocked rules
         self.llm_unavailable: Optional[str] = None
+        self.scripts: Any = None                # v2: the KB's script store (ScriptStoreLike), None = no KB
         # cluster id → why it was blocked (read by the loop to build the BlockedItem)
         self.blocked_info: dict[str, BlockedCandidate] = {}
+        # cluster id → the script step of its last SCRIPT decision (read by the loop: what to run / ask for)
+        self.script_steps: dict[str, ScriptStep] = {}
 
     # -- bookkeeping from the loop/orchestrator ------------------------
     def mark_recipes_run(self, recipe_ids: Iterable[str], phase: Optional[Phase] = None) -> None:
@@ -146,14 +161,6 @@ class DecisionEngine:
         self.recipes_run_any |= ids
         if phase is not None:
             self.recipes_run_by_phase.setdefault(phase, set()).update(ids)
-
-    def _excluded_recipes(self, phase: Phase, failed: list[FixAttempt]) -> set[str]:
-        out = set(self.recipes_run_by_phase.get(phase, set()))
-        out |= self.recipes_run_any & self.rules.once_per_run_ids()
-        for a in failed:
-            if a.decision.kind == DecisionKind.KB_RECIPE:
-                out |= set(a.decision.recipe_ids)
-        return out
 
     def _canon(self) -> Optional[Callable[[Optional[str]], str]]:
         fn = getattr(self.blocked_registry, "canonical_file", None)
@@ -175,14 +182,11 @@ class DecisionEngine:
                 out.append((h, errs or list(cluster.errors)))
         return out
 
-    def _pinned_decision(self, cluster: ErrorCluster, kb_match: KBMatch, tried_handlers: set, excluded: set[str],
-                         notes: list[str]) -> Optional[TriageDecision]:
-        """The decision a pinned case action dictates, or None (nothing pinned / already tried → the normal order).
-        `block` wins over `handler` over `recipe`; an unknown handler id is a note, never an error."""
-        hits = self._pinned_hits(cluster, kb_match)
-        if not hits:
-            return None
-        for h, errs in hits:
+    def _pinned_block(self, cluster: ErrorCluster, kb_match: KBMatch) -> Optional[TriageDecision]:
+        """A case a person pinned to `block` → BLOCKED with their reason / text (round 10). The other pinned kinds
+        (handler, recipe) are v1 actions and not part of the v2 flow; a pinned `script` version is the store's
+        `best()` choice (sbmig.kb.scripts)."""
+        for h, errs in self._pinned_hits(cluster, kb_match):
             a = h.action
             if a.kind != "block":
                 continue
@@ -197,34 +201,7 @@ class DecisionEngine:
             cand = BlockedCandidate(reason=reason, errors=list(errs), evidence=[why], case_id=h.case_id,
                                     suggestion=sugg or f"a person pinned case {h.case_id} to `block`: handle it by hand "
                                                        "(see `sbmig kb cases show " + h.case_id + "`)")
-            return self._blocked(cluster, cand, " (pinned case action: no handler, no LLM)")
-        for h, _errs in hits:
-            a = h.action
-            if a.kind != "handler" or not a.handler_id:
-                continue
-            hd = self.registry.get(a.handler_id) if self.registry is not None else None
-            if hd is None:
-                note = f"pinned handler '{a.handler_id}' of case {h.case_id} is not registered — ignored"
-                log.warning("%s", note)
-                notes.append(note)
-                continue
-            if hd.id in tried_handlers:
-                notes.append(f"pinned handler '{hd.id}' of case {h.case_id} already tried without effect")
-                continue
-            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.HANDLER, handler_id=hd.id,
-                                  rationale=f"pinned case action of case {h.case_id}: handler '{hd.id}' — "
-                                            f"{hd.description}")
-        for h, _errs in hits:
-            a = h.action
-            if a.kind != "recipe":
-                continue
-            ids = [r for r in dict.fromkeys(a.recipe_ids or []) if r and r not in excluded]
-            if not ids:
-                if a.recipe_ids:
-                    notes.append(f"pinned recipe(s) of case {h.case_id} already ran: {', '.join(a.recipe_ids)}")
-                continue
-            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.KB_RECIPE, recipe_ids=ids,
-                                  rationale=f"pinned case action of case {h.case_id}: recipe(s) {', '.join(ids)}")
+            return self._blocked(cluster, cand, " (pinned case action: no script, no LLM)")
         return None
 
     # -- main ----------------------------------------------------------
@@ -234,15 +211,14 @@ class DecisionEngine:
                               rationale=blocked_rationale(cand.reason, cand.detail()) + extra)
 
     def decide(self, cluster: ErrorCluster, kb_match: Optional[KBMatch], ctx, profile: ProjectProfile) -> TriageDecision:
+        """v2: SCRIPT (with the ladder step in `script_steps[cluster.id]`), BLOCKED or ESCALATE (no case id)."""
         kb_match = kb_match or KBMatch()
         prev = same_cluster_attempts(cluster, ctx.previous_attempts, self._canon())
-        failed = [a for a in prev if a.outcome in FAILED_OUTCOMES]
-        # deterministic options that ran to a partial result are not chosen again either
-        tried_any = [a for a in prev if a.outcome in FAILED_OUTCOMES or a.outcome in PROGRESS_OUTCOMES]
         label = cluster_label(cluster)
         self.blocked_info.pop(cluster.id, None)
+        self.script_steps.pop(cluster.id, None)
 
-        # 0. already blocked earlier in this run (any phase) → no handler re-runs, no LLM
+        # 0. already blocked earlier in this run (any phase) → no script, no LLM
         reg = self.blocked_registry
         if reg is not None:
             item = reg.covering(cluster)
@@ -256,62 +232,23 @@ class DecisionEngine:
                                       rationale=f"blocked: {item.reason.value} — already blocked earlier in this run "
                                                 f"({item.id}, {item.phase.value}); skipped")
 
-        # 0b. a case action a person pinned (`sbmig kb cases pin --action …`): block | handler | recipe
-        tried = {a.decision.handler_id for a in tried_any if a.decision.kind == DecisionKind.HANDLER}
-        pin_notes: list[str] = []
-        d = self._pinned_decision(cluster, kb_match, tried, self._excluded_recipes(ctx.phase, tried_any), pin_notes)
+        # 0b. a person pinned the case to `block` (`sbmig kb cases pin --action block…`)
+        d = self._pinned_block(cluster, kb_match)
         if d is not None:
             return d
-        pin_note = ("; " + "; ".join(pin_notes)) if pin_notes else ""
 
-        # 1. deterministic handler
-        candidates = list(self.registry.matching(cluster, profile, self.cfg)) if self.registry is not None else []
-        for hid in kb_match.handler_ids:
-            h = self.registry.get(hid) if self.registry is not None else None
-            if h is not None and all(c.id != h.id for c in candidates):
-                candidates.append(h)
-        for h in candidates:
-            if h.id in tried:
-                continue
-            why = f"deterministic handler '{h.id}' matches {label}: {h.description}"
-            if tried:
-                why += f" (already tried without effect: {', '.join(sorted(t for t in tried if t))})"
-            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.HANDLER, handler_id=h.id,
-                                  rationale=why + pin_note)
+        # 1. the script ladder: a proven stored version first — no LLM call, so neither the blocked policy nor the
+        #    LLM budget / availability stops it
+        step = plan_script_step(cluster, prev, self.scripts, self.cfg)
+        if not step.case_id:
+            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
+                                  rationale=f"escalated: {label} has no case id (no errors)")
+        if step.mode == "reuse":
+            self.script_steps[cluster.id] = step
+            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.SCRIPT, rationale=step.why)
 
-        # 2. KB active recipes ∪ reactive recipe rules, then KB candidate recipes
-        excluded = self._excluded_recipes(ctx.phase, tried_any)
-        active: list[str] = []
-        if self.cfg.kb.use_active_recipes:
-            active += kb_match.recipe_ids
-        rule_hits = self.rules.matching_rules(cluster, ctx.phase)
-        for rule in rule_hits:
-            active += rule.recipes
-        fresh = [r for i, r in enumerate(active) if r not in excluded and r not in active[:i]]
-        source = "active KB recipe(s)/recipe rule(s)"
-        if not fresh and self.cfg.kb.use_active_recipes:
-            fresh = [r for r in dict.fromkeys(kb_match.candidate_recipe_ids) if r not in excluded]
-            source = "KB candidate recipe(s)"
-        if fresh:
-            rules_txt = f" [rules: {', '.join(r.id for r in rule_hits)}]" if rule_hits else ""
-            return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.KB_RECIPE, recipe_ids=fresh,
-                                  rationale=f"{source} for {label}: {', '.join(fresh)}{rules_txt}{pin_note}")
-
-        # 3. KB patch replay
-        if self.cfg.kb.use_patch_replay and kb_match.replayable:
-            tried_cases = {cid for a in tried_any if a.decision.kind == DecisionKind.KB_PATCH
-                           for cid in a.decision.kb_case_ids}
-            cases = [c for c in kb_match.replayable if c.id not in tried_cases]
-            if cases:
-                c = cases[0]
-                return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.KB_PATCH, kb_case_ids=[c.id],
-                                      rationale=f"replay KB case {c.id} (same signature, search text still present)"
-                                                + (f": {c.summary}" if c.summary else ""))
-
-        llm_failed = [a for a in failed if a.decision.kind == DecisionKind.LLM_FIX]
-        garbage = [a for a in llm_failed if a.outcome in GARBAGE_OUTCOMES]
-
-        # 4. blocked check: cannot be fixed inside the project → blocked_policy[reason] LLM attempts, then BLOCKED
+        # 2. blocked check: cannot be fixed inside the project → blocked_policy[reason] LLM script attempts, then BLOCKED
+        llm_failed = [a for a in script_attempts(prev) if a.script_mode in LLM_MODES and a.outcome in FAILED_OUTCOMES]
         policy_note = ""
         try:
             cand = classify_blocked(cluster, profile, self.cfg, ws=self.ws)
@@ -320,37 +257,28 @@ class DecisionEngine:
         if cand is not None:
             allowed = int(self.cfg.loop.blocked_policy.get(cand.reason.value, 0))
             if len(llm_failed) >= allowed:
-                extra = (f" (after {len(llm_failed)} LLM attempt(s))" if llm_failed else
-                         " (policy: no LLM attempt for this reason)")
+                extra = (f" (after {len(llm_failed)} LLM script attempt(s))" if llm_failed else
+                         " (policy: no LLM script for this reason)")
                 return self._blocked(cluster, cand, extra)
-            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM attempt "
+            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM script attempt "
                            f"{len(llm_failed) + 1}/{allowed} before blocking")
 
-        # 5. LLM (bounded) → BLOCKED
+        # 3. the LLM steps (augment / new) → BLOCKED when the LLM cannot be asked
         if self.llm_unavailable:
             return self._blocked(cluster, BlockedCandidate(
                 reason=BlockReason.LLM_UNAVAILABLE, errors=list(cluster.errors),
-                evidence=[f"LLM unavailable ({self.llm_unavailable}); no deterministic fix for {label}"]))
-        max_garbage = max(1, int(self.cfg.loop.max_llm_attempts_per_cluster))
-        limit = max(max_garbage, self.cfg.loop.stall_limit + 1)
-        if ctx.phase == Phase.VERIFY:        # final verify loop: released repeated_failure clusters get more tries
-            extra = max(0, int(getattr(self.cfg.loop, "verify_extra_llm_attempts", 0)))
-            max_garbage, limit = max_garbage + extra, limit + extra
-        if len(garbage) >= max_garbage or len(llm_failed) >= limit:
-            why = (f"{len(garbage)} LLM attempt(s) on {label} produced no usable patch (limit {max_garbage})"
-                   if len(garbage) >= max_garbage else
-                   f"{len(llm_failed)} LLM attempt(s) on {label} did not resolve it (limit {limit})")
+                evidence=[f"LLM unavailable ({self.llm_unavailable}); no stored script left to reuse for {label}"]))
+        if step.mode is None:
             return self._blocked(cluster, BlockedCandidate(
                 reason=BlockReason.REPEATED_FAILURE, errors=list(cluster.errors),
-                evidence=[why + "; needs a human"]))
+                evidence=[step.why + "; needs a human"]))
         if ctx.llm_calls_used >= ctx.llm_calls_budget:
             return self._blocked(cluster, BlockedCandidate(
                 reason=BlockReason.BUDGET_EXHAUSTED, errors=list(cluster.errors),
-                evidence=[f"LLM budget exhausted ({ctx.llm_calls_used}/{ctx.llm_calls_budget} calls) and no "
-                          f"deterministic fix for {label}"]))
-        why = f"no handler/recipe/KB patch for {label} → LLM fix"
-        if llm_failed:
-            why += f" (attempt {len(llm_failed) + 1}/{limit}, previous attempts included in the prompt)"
+                evidence=[f"LLM budget exhausted ({ctx.llm_calls_used}/{ctx.llm_calls_budget} calls) and no stored "
+                          f"script left to reuse for {label}"]))
+        self.script_steps[cluster.id] = step
+        why = step.why
         if ctx.stall_level:
             why += f"; stall level {ctx.stall_level}"
-        return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.LLM_FIX, rationale=why + policy_note + pin_note)
+        return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.SCRIPT, rationale=why + policy_note)

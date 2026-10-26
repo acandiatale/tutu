@@ -222,34 +222,31 @@ def sets_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """The config recipe sets per case, as the rule-based planner resolves them."""
+    """The config recipe sets and, per case, the one transform run the v2 planner resolves from them."""
     from sbmig.core.models import CaseType
 
     from .catalog import config_recipe_sets
-    from .planner import _Facts, spring_recipes
+    from .planner import _Facts, transform_recipes
 
     cfg = _load(config)
-    rs = cfg.openrewrite.recipes
     lo = ({}, set())
     hi = ({"javax.servlet": 1}, {"junit4", "spring-security", "javax-annotation"})
     resolved: dict[str, dict[str, list[str]]] = {}
     for case in (CaseType.PURE_JAVA, CaseType.SERVLET_TOMCAT, CaseType.SPRING_LEGACY, CaseType.SPRING_BOOT):
-        base = [r.id for r in spring_recipes(_Facts(case, lo[1], lo[0]), cfg, [])]
-        full = [r.id for r in spring_recipes(_Facts(case, hi[1], hi[0]), cfg, [])]
-        resolved[case.value] = {"jdk21": list(rs.jdk21), "spring": base,
-                                "spring_conditional": [i for i in full if i not in base]}
+        base = [r.id for r in transform_recipes(_Facts(case, lo[1], lo[0]), cfg, [])]
+        full = [r.id for r in transform_recipes(_Facts(case, hi[1], hi[0]), cfg, [])]
+        resolved[case.value] = {"transform": base, "transform_conditional": [i for i in full if i not in base]}
     if as_json:
         typer.echo(json.dumps({"sets": config_recipe_sets(cfg), "per_case": resolved}, indent=2))
         return
-    typer.echo("config sets (openrewrite.recipes):")
+    typer.echo("config sets (openrewrite.recipes; library.* = knowledge/recipes/library_recipes.yml, not run in v2):")
     for name, ids in config_recipe_sets(cfg).items():
         typer.echo(f"  {name}: {', '.join(ids) or '-'}")
-    typer.echo("\nper case (jdk21.rewrite / spring.rewrite):")
+    typer.echo("\nper case (transform.rewrite — one OpenRewrite run before the restructure):")
     for case, d in resolved.items():
-        typer.echo(f"  {case}:")
-        typer.echo(f"    jdk21:  {', '.join(d['jdk21']) or '-'}")
-        typer.echo(f"    spring: {', '.join(d['spring']) or '-'}")
-        if d["spring_conditional"]:
+        typer.echo(f"  {case}: {', '.join(d['transform']) or '-'}")
+        if d["transform_conditional"]:
             typer.echo(f"    + when detected (EE javax imports / junit4 / spring-security): "
-                       f"{', '.join(d['spring_conditional'])}")
-    typer.echo("\nmsa: per service, using the service's own case; KB active recipes (and candidates when kb.try_candidates_in_plan) are appended.")
+                       f"{', '.join(d['transform_conditional'])}")
+    typer.echo("\nmsa: one run per library root / service with its own case (library roots never get the Boot set); "
+               "top-aggregator: one run at the root with the union. No project / library / KB recipes in v2.")

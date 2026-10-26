@@ -21,9 +21,11 @@ def test_list_show_check_on_the_repo_file():
     r = runner.invoke(advisories_cli, ["list", "--json"])
     rows = json.loads(r.output)
     policies = {x["id"]: x["effective_policy"] for x in rows}
-    assert policies["hystrix"] == "recipe" and policies["ribbon"] == "guide"
+    # v2 (flow-v2): advisories.allow_recipes is false by default → every advisory is guide-only (hints + Handover)
+    assert policies["hystrix"] == "guide" and policies["ribbon"] == "guide"
+    assert {x["policy"] for x in rows if x["id"] == "hystrix"} == {"recipe"}   # the catalog entry keeps its policy
     r = runner.invoke(advisories_cli, ["show", "sleuth"])
-    assert r.exit_code == 0 and "micrometer-tracing-bridge-brave" in r.output and "effective_policy: recipe" in r.output
+    assert r.exit_code == 0 and "micrometer-tracing-bridge-brave" in r.output and "effective_policy: guide" in r.output
     assert json.loads(runner.invoke(advisories_cli, ["show", "zuul", "--json"]).output)["status"] == "eol"
     r = runner.invoke(advisories_cli, ["show", "nope"])
     assert r.exit_code == 1

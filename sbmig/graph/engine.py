@@ -7,6 +7,10 @@ and the inline engine (`loop.engine: inline`) produce identical reports, journal
 
 Errors are never handled in a node: `_RunAborted` (a build-fix loop abort), `MissingComponentError` and any other
 exception propagate out of the graph to the orchestrator's run guard, exactly as with the inline engine.
+
+v2 (flow-v2): the `phase` node runs whatever phase groups the plan has — normally transform (the one OpenRewrite
+run) → restructure (incl. the structure review step) → verify (final build + script fix loop); `stop_after`
+accepts every phase of `sbmig.loop.orchestrator.STOP_AFTER_PHASES` (incl. `transform`).
 """
 from __future__ import annotations
 
@@ -25,8 +29,8 @@ if TYPE_CHECKING:
 log = logging.getLogger("sbmig.graph")
 
 NODES = ("intake", "analyze", "plan", "phase", "finalize")
-# one graph step per node invocation; MSA plans repeat jdk21/spring per service, so the number of `phase`
-# invocations grows with the services — keep generous headroom (LangGraph's default is 25)
+# one graph step per node invocation; MSA plans may repeat a phase per target (transform@<svc>, verify@<svc>), so the
+# number of `phase` invocations grows with the services — keep generous headroom (LangGraph's default is 25)
 RECURSION_LIMIT = 1000
 
 

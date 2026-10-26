@@ -8,6 +8,7 @@ import logging
 import zipfile
 
 from sbmig.core.models import (
+    KB_RECORD_SCHEMA,
     BuildError,
     CaseType,
     ErrorAttemptRef,
@@ -433,7 +434,8 @@ def test_error_csv_column_order_snapshot():
         "replace_rule_candidate", "description", "failure_reason", "problem_errors", "block_reason", "suggestion",
         "attempt_count", "llm_attempts", "attempts", "resolution_attempts",
         "signature", "location", "module", "case_type", "asis_java", "asis_spring_boot", "asis_spring", "packaging",
-        "targeted", "resolved_by", "fix_labels", "at", "introduced_by", "notes", "schema_version", "raw",
+        "targeted", "resolved_by", "fix_labels", "at", "introduced_by", "notes", "schema_version",
+        "script_case_id", "script_version", "raw",                     # v2 (flow-v2): before the bulky columns
         "diff_excerpt",
     ]
 
@@ -455,12 +457,14 @@ def test_prepare_fills_versions_and_project_context(kb_cfg, ws, profile, tmp_pat
     errors, attempts = _prepared(kb_cfg, ws, p, [ec_error(introduced_by="step:spring.rewrite")], [ec_attempt()])
     e, a = errors[0], attempts[0]
     assert (e.asis_java, e.asis_spring_boot, e.asis_spring, e.packaging) == ("1.8", "2.7.18", "5.3.31", "war")
-    assert e.schema_version == a.schema_version == 2 and e.agent_version == a.agent_version == sbmig.__version__
+    assert e.schema_version == a.schema_version == KB_RECORD_SCHEMA and e.agent_version == a.agent_version == \
+        sbmig.__version__
     assert e.introduced_by == "step:spring.rewrite"
     path = write_error_cases_csv(errors, tmp_path / "e.csv")
     rows = list(csv.reader(path.open(encoding="utf-8-sig", newline="")))
     row = dict(zip(rows[0], rows[1]))
-    assert (row["asis_java"], row["packaging"], row["schema_version"], row["resolved_by"]) == ("1.8", "war", "2", "a1")
+    assert (row["asis_java"], row["packaging"], row["schema_version"], row["resolved_by"]) == (
+        "1.8", "war", str(KB_RECORD_SCHEMA), "a1")
     assert row["signature"] == e.signature and row["targeted"] == "true" and row["introduced_by"] == "step:spring.rewrite"
     assert row["fix_labels"] and row["at"] and row["module"] == "" and row["case_type"] == "spring_boot"
 

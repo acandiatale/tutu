@@ -14,8 +14,8 @@ from sbmig.loop.blocked_registry import BlockedRegistry
 from sbmig.loop.orchestrator import parse_renames
 from sbmig.triage import cluster_errors
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, bad_build, journal_events, make_profile, msa_plan, ok_build,
-                    write_fix)
+from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, bad_build, journal_events, make_profile, ok_build,
+                    v2_msa_plan, write_fix)
 from .test_orchestrator import make_orch
 
 GONE = "compile|cannot_find_symbol|class Gone"
@@ -24,8 +24,9 @@ BAR = "src/main/java/com/x/Bar.java"
 
 
 def l1(file: str, kind: ErrorKind = ErrorKind.COMPILE, module: str = "demo") -> BuildError:
+    """File-less L1; the L2 (case) per file name, so Foo and Bar are two cases (the services' SwaggerConfig one)."""
     return BuildError(kind=kind, message="cannot find symbol", file=file, line=3, module=module, symbol="class Gone",
-                      signature=GONE, signature_generic="compile|cannot_find_symbol")
+                      signature=GONE, signature_generic="compile|cannot_find_symbol|" + file.rsplit("/", 1)[-1])
 
 
 def pinned_block(c, case_id="case-x"):
@@ -86,13 +87,14 @@ def test_blocked_before_the_move_stays_blocked_after_it(cfg, ws):
         return bad_build(*errs) if errs else ok_build()
 
     def match(c):
-        return pinned_block(c) if c.file == FOO else KBMatch()       # only the pre-move path is pinned
+        return pinned_block(c) if c.errors[0].file == FOO else KBMatch()     # only the pre-move path is pinned
 
     fixed: list[str] = []
 
     def fix(w, c, ctx):
-        fixed.append(c.file)
-        return write_fix(c.file, "class X { ok }\n") if c.file.endswith("Bar.java") else write_fix(c.file, "x")
+        f = c.errors[0].file
+        fixed.append(f)
+        return write_fix(f, "class X { ok }\n") if f.endswith("Bar.java") else write_fix(f, "x")
 
     plan = MigrationPlan(profile_fingerprint="fp", case_type=CaseType.SPRING_BOOT, steps=[
         PlanStep(id="jdk21.loop", kind=StepKind.BUILD_FIX_LOOP, phase=Phase.JDK21, title="l", build_goal="compile",
@@ -103,7 +105,7 @@ def test_blocked_before_the_move_stays_blocked_after_it(cfg, ws):
                  build_goal="package", max_iterations=2),
         PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="v", build_goal="clean package")])
     report = make_orch(cfg, ws, plan=plan, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix),
-                       kb=FakeKB(match=match), restructurer=MoveToBack(), pre=[]).run()
+                       kb=FakeKB(match=match), restructurer=MoveToBack()).run()
     assert ws.exists("demo-back/" + FOO)
     assert "demo-back/" + FOO not in fixed                       # never sent to the LLM after the move
     ev = [e for e in journal_events(ws) if e["event"] == "restructure_moves"]
@@ -135,12 +137,12 @@ def test_msa_block_of_one_service_does_not_cover_the_other(cfg, ws):
     fixed: list[str] = []
 
     def fix(w, c, ctx):
-        fixed.append(c.file)
-        return write_fix(c.file, "class S { ok }\n")
+        fixed.append(c.errors[0].file)
+        return write_fix(c.errors[0].file, "class S { ok }\n")
 
-    report = make_orch(cfg, ws, plan=msa_plan(), profile=make_profile(CaseType.MSA), pre=[],
+    report = make_orch(cfg, ws, plan=v2_msa_plan(), profile=make_profile(CaseType.MSA),
                        build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix),
-                       kb=FakeKB(match=lambda c: pinned_block(c) if c.file == files[0] else KBMatch())).run()
+                       kb=FakeKB(match=lambda c: pinned_block(c) if c.errors[0].file == files[0] else KBMatch())).run()
     assert fixed == [files[1]]                                   # svc-b's file got its LLM attempt
     assert ws.read(files[1]) == "class S { ok }\n" and "broken" in ws.read(files[0])
     assert [b.files[0].split(":")[0] for b in report.blocked] == [files[0]]
@@ -156,7 +158,7 @@ def test_msa_internal_error_in_a_later_verify_is_never_build_success(cfg, ws):
                      signature="plugin_execution|maven-war-plugin", signature_generic="plugin_execution")
 
     def build(w, call):
-        if call["label"] == "verify-1":
+        if call["label"] == "verify-2":          # the loop's first own build (build 1 = the failed final build)
             raise RuntimeError("git commit timed out after 120s")
         if call["module"] != "svc-b":
             return ok_build()
@@ -166,12 +168,14 @@ def test_msa_internal_error_in_a_later_verify_is_never_build_success(cfg, ws):
         return bad_build(*errs)
 
     build_runner = FakeBuildRunner(ws, fn=build)
-    report = make_orch(cfg, ws, plan=msa_plan(), profile=make_profile(CaseType.MSA), pre=[], build=build_runner,
-                       kb=FakeKB(match=lambda c: pinned_block(c) if c.file == legacy else KBMatch())).run()
+    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix("svc-b/war-note.txt", "tried\n"))   # changes a file → a build
+    report = make_orch(cfg, ws, plan=v2_msa_plan(), profile=make_profile(CaseType.MSA), build=build_runner,
+                       fixer=fixer,
+                       kb=FakeKB(match=lambda c: pinned_block(c) if c.errors[0].file == legacy else KBMatch())).run()
     assert "aborted" in report.flags and not report.success and run_exit_code(report) == 3
     assert any("internal error: RuntimeError: git commit timed out" in f for f in report.manual_followups)
     labels = [c["label"] for c in build_runner.calls]
-    assert labels.count("verify-svc-a") == 1 and labels.count("verify-svc-b") == 2 and labels.count("verify-1") == 1
+    assert labels.count("verify-svc-a") == 1 and labels.count("verify-svc-b") == 2 and labels.count("verify-2") == 1
     verify_phases = [p for p in report.phases if p.phase == Phase.VERIFY]
     assert any("phase interrupted: RuntimeError" in n for n in verify_phases[0].notes)
     assert any("after the run aborted" in n for n in verify_phases[-1].notes)
@@ -182,6 +186,8 @@ def test_msa_internal_error_in_a_later_verify_is_never_build_success(cfg, ws):
 
 # ------------------------------------------------------------------------------------------------ A8
 def test_test_skip_fallback_of_one_service_does_not_reach_the_other(cfg, ws):
+    cfg.build.skip_test_compile = False            # the L7 fallback only acts where tests are compiled
+    cfg.loop.phases["verify"].max_iterations = 1
     test_file = "svc-a/src/test/java/com/x/T.java"
     _msa_project(ws, {test_file: "class T { broken }\n"})
 
@@ -192,7 +198,7 @@ def test_test_skip_fallback_of_one_service_does_not_reach_the_other(cfg, ws):
         return ok_build()
 
     build_runner = FakeBuildRunner(ws, fn=build)
-    report = make_orch(cfg, ws, plan=msa_plan(), profile=make_profile(CaseType.MSA), pre=[],
+    report = make_orch(cfg, ws, plan=v2_msa_plan(), profile=make_profile(CaseType.MSA),
                        build=build_runner).run()
     assert "test-compile-skipped" in report.flags
     verify = {c["label"]: c["skip_test_compile"] for c in build_runner.calls if c["label"].startswith("verify-svc")}
@@ -257,9 +263,9 @@ class OrderKB(FakeKB):
         self.ws = ws
         self.zip_at_record = None
 
-    def record_run(self, report, profile, ws):
-        self.zip_at_record = (ws.run_dir / "result.zip").exists()
-        return None
+    def append_error_cases(self, errors, attempts):       # v2: the KB records of the run (no run ledger)
+        self.zip_at_record = (self.ws.run_dir / "result.zip").exists()
+        return super().append_error_cases(errors, attempts)
 
 
 def test_kb_and_report_are_written_before_the_zip(cfg, ws):

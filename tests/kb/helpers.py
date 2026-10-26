@@ -107,6 +107,22 @@ def with_kb(cfg, **kw):
     return cfg.model_copy(update={"kb": cfg.kb.model_copy(update=kw)})
 
 
+# v2 (flow-v2) switched the v1 learning paths off by default (these kb.* switches and advisories.ledger). The v1 KB
+# code stays until PLAN-v2 step 4 and its tests exercise it with the switches on explicitly.
+V1_KB_FLAGS = dict(ledger=True, symbol_index=True, deterministic_candidates=True, use_active_recipes=True,
+                   use_patch_replay=True, use_hints=True, harvest=True, generate_recipe_candidates=True,
+                   try_candidates_in_plan=True, case_replace=True, error_hints=True)
+
+
+def v1_cli_obj() -> dict:
+    """``obj`` for ``CliRunner.invoke(kb_cli, …)``: the CLI's default config with the v1 KB switches on (``--kb-dir``
+    still picks the directory)."""
+    from sbmig.core.config import load_config
+
+    return {"cfg": load_config(overrides={"artifacts": {"parent": {"group_id": "unset", "artifact_id": "unset"}},
+                                          "kb": dict(V1_KB_FLAGS), "advisories": {"ledger": True}})}
+
+
 # --------------------------------------------------------------------------- error cases (2026-10-23)
 EC_L2 = "compile|cannot_find_symbol|clientIp"
 EC_FILE = "src/main/java/com/example/web/IpFilter.java"

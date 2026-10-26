@@ -499,8 +499,11 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
         spec = _optional_spec(cfg, a)
         if a is not None and spec is not None:
             v = spec.version or "the configured version"
-            return (f"`{spec.key}` is a configured optional artifact; its version bump to `{v}` happens in step "
-                    f"spring.optional_bump — if this is still blocked after the bump, `{v}` itself still exposes "
+            # v2: plan.optional_bump_phase restructure (the bump runs inside the restructure); v1: spring.optional_bump
+            phase = getattr(getattr(cfg, "plan", None), "optional_bump_phase", "restructure")
+            where = "step spring.optional_bump" if phase == "spring" else "the restructure"
+            return (f"`{spec.key}` is a configured optional artifact; its version bump to `{v}` happens in {where} "
+                    f"— if this is still blocked after the bump, `{v}` itself still exposes "
                     f"javax: ask the library owner for a Jakarta build")
         if a is not None:
             owner = f" (class `{item.owner_class}`)" if item.owner_class else ""

@@ -7,13 +7,14 @@ from typer.testing import CliRunner
 from sbmig.core.models import KBRecipe
 from sbmig.kb import FileKnowledgeBase, kb_cli
 
-from .helpers import L1, VALID_RECIPE, make_case, recipe_yaml, with_kb
+from .helpers import L1, VALID_RECIPE, make_case, recipe_yaml, v1_cli_obj, with_kb
 
 runner = CliRunner()
 
 
 def _run(kb_dir, *args):
-    return runner.invoke(kb_cli, ["--kb-dir", str(kb_dir), *args], catch_exceptions=False)
+    # the v1 KB switches on (v2 turned them off by default; these tests exercise the v1 recipe / replace paths)
+    return runner.invoke(kb_cli, ["--kb-dir", str(kb_dir), *args], catch_exceptions=False, obj=v1_cli_obj())
 
 
 def _seed(kb: FileKnowledgeBase):

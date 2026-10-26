@@ -7,12 +7,11 @@ import pytest
 
 from sbmig.build import parse_maven_log
 from sbmig.core.interfaces import TriageContext
-from sbmig.core.models import (BlockReason, DecisionKind, ErrorKind, FileChange, FixAttempt, Phase, SourceStats,
+from sbmig.core.models import (BlockReason, DecisionKind, ErrorKind, FixAttempt, Phase, SourceStats,
                                TriageDecision)
 from sbmig.core.workspace import Workspace
 from sbmig.loop.blocked_registry import BlockedRegistry
 from sbmig.triage import HandlerRegistry, Triager, classify_blocked, cluster_errors, extract_owner, is_project_class
-from sbmig.triage.handlers import Handler
 
 from .conftest import make_profile
 
@@ -265,73 +264,69 @@ def test_plain_compile_error_is_not_blocked(proj):
     assert classify_blocked(one(own).model_copy(update={"errors": []}), make_profile(), None) is None
 
 
-# --------------------------------------------------------------------------------------------- decide policy
-class AlwaysHandler(Handler):
-    id = "always"
-    description = "test handler"
-
-    def matches(self, cluster, profile, cfg):
-        return True
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):  # pragma: no cover
-        return [FileChange(path="pom.xml", op="modify")]
-
-
+# --------------------------------------------------------------------------------------------- decide policy (v2)
 def ctx(**kw):
-    return TriageContext(phase=kw.pop("phase", Phase.SPRING), iteration=1, **kw)
+    return TriageContext(phase=kw.pop("phase", Phase.VERIFY), iteration=1, **kw)
 
 
-def llm_attempt(cluster, outcome="no_change"):
-    return FixAttempt(id="a", phase=Phase.SPRING, iteration=1, cluster_id=cluster.id,
-                      decision=TriageDecision(cluster_id=cluster.id, kind=DecisionKind.LLM_FIX), outcome=outcome,
-                      cluster_signatures=cluster.signatures)
+def script_attempt(cluster, outcome="no_change", mode="new"):
+    return FixAttempt(id="a", phase=Phase.VERIFY, iteration=1, cluster_id=cluster.id,
+                      decision=TriageDecision(cluster_id=cluster.id, kind=DecisionKind.SCRIPT), outcome=outcome,
+                      cluster_signatures=cluster.signatures, script_mode=mode, script_version=1,
+                      script_code="def fix(p):\n    pass\n")
+
+
+def cases(text: str):
+    from sbmig.triage import cluster_cases
+    return cluster_cases(parse(text))[0]
 
 
 def test_policy_zero_blocks_immediately_without_llm(cfg, profile):
+    cfg.loop.blocked_policy["external_javax_api"] = 0          # v2 default 2 (a script may swap the library)
     t = Triager(cfg, registry=HandlerRegistry())
-    c = one(CTOR_JAVAX)
+    c = cases(CTOR_JAVAX)
     d = t.decide(c, None, ctx(), profile)
     assert d.kind == DecisionKind.BLOCKED
     assert d.rationale.startswith("blocked: external_javax_api — com.company.legacy.web.LegacyRequestHelper requires "
                                   "javax.servlet.http.HttpServletRequest")
     assert t.blocked_candidate(c.id).reason == BlockReason.EXTERNAL_JAVAX_API
-    # the handler still has priority (decision order: handler → recipe → patch → blocked → LLM)
-    t2 = Triager(cfg, registry=HandlerRegistry([AlwaysHandler()]))
-    assert t2.decide(c, None, ctx(), profile).kind == DecisionKind.HANDLER
 
 
-def test_policy_counts_llm_attempts(cfg, profile):
+def test_policy_counts_llm_script_attempts(cfg, profile):
     t = Triager(cfg, registry=HandlerRegistry())
-    c = one(LIB_SYMBOL)
-    assert cfg.loop.blocked_policy["external_api_incompatible"] == 1
+    c = cases(LIB_SYMBOL)
+    assert cfg.loop.blocked_policy["external_api_incompatible"] == 2     # v2 default
+    cfg.loop.blocked_policy["external_api_incompatible"] = 1
     d = t.decide(c, None, ctx(), profile)
-    assert d.kind == DecisionKind.LLM_FIX and "external_api_incompatible" in d.rationale and "1/1" in d.rationale
-    d = t.decide(c, None, ctx(previous_attempts=[llm_attempt(c)]), profile)
-    assert d.kind == DecisionKind.BLOCKED and "after 1 LLM attempt" in d.rationale
+    assert d.kind == DecisionKind.SCRIPT and "external_api_incompatible" in d.rationale and "1/1" in d.rationale
+    d = t.decide(c, None, ctx(previous_attempts=[script_attempt(c)]), profile)
+    assert d.kind == DecisionKind.BLOCKED and "after 1 LLM script attempt" in d.rationale
     cfg.loop.blocked_policy["external_javax_api"] = 2
-    c1 = one(CTOR_JAVAX)
-    assert t.decide(c1, None, ctx(previous_attempts=[llm_attempt(c1)]), profile).kind == DecisionKind.LLM_FIX
-    assert t.decide(c1, None, ctx(previous_attempts=[llm_attempt(c1)] * 2), profile).kind == DecisionKind.BLOCKED
+    c1 = cases(CTOR_JAVAX)
+    assert t.decide(c1, None, ctx(previous_attempts=[script_attempt(c1)]), profile).kind == DecisionKind.SCRIPT
+    two = [script_attempt(c1), script_attempt(c1, mode="augment")]
+    assert t.decide(c1, None, ctx(previous_attempts=two), profile).kind == DecisionKind.BLOCKED
 
 
 def test_registry_llm_unavailable_and_garbage(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry([AlwaysHandler()]))
+    t = Triager(cfg, registry=HandlerRegistry())
     reg = BlockedRegistry()
     t.attach_run(blocked_registry=reg)
-    c = one(LIB_SYMBOL)
-    reg.block(c, BlockReason.EXTERNAL_API_INCOMPATIBLE, Phase.SPRING)
-    d = t.decide(c, None, ctx(), profile)          # already blocked → no handler re-run
+    c = cases(LIB_SYMBOL)
+    reg.block(c, BlockReason.EXTERNAL_API_INCOMPATIBLE, Phase.VERIFY)
+    d = t.decide(c, None, ctx(), profile)          # already blocked → no script
     assert d.kind == DecisionKind.BLOCKED and "already blocked" in d.rationale
-    # LLM unavailable → LLM-only clusters are blocked
+    # LLM unavailable → cases that need the LLM are blocked
     t3 = Triager(cfg, registry=HandlerRegistry())
-    plain = cluster_errors(parse("[ERROR] /work/proj/src/main/java/com/acme/web/Foo.java:[3,5] cannot find symbol\n"
-                                 "  symbol:   class Missing\n  location: class com.acme.web.Foo\n"))[0]
+    plain = cases("[ERROR] /work/proj/src/main/java/com/acme/web/Foo.java:[3,5] cannot find symbol\n"
+                  "  symbol:   class Missing\n  location: class com.acme.web.Foo\n")
     t3.set_llm_unavailable("HTTP 503")
     d = t3.decide(plain, None, ctx(), profile)
     assert d.kind == DecisionKind.BLOCKED and "llm_unavailable" in d.rationale
     t3.set_llm_unavailable(None)
-    # protocol garbage counts toward max_llm_attempts_per_cluster (2)
-    garbage = [llm_attempt(plain, "apply_failed")]
-    assert t3.decide(plain, None, ctx(previous_attempts=garbage), profile).kind == DecisionKind.LLM_FIX
-    d = t3.decide(plain, None, ctx(previous_attempts=garbage * 2), profile)
-    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "no usable patch" in d.rationale
+    # answers without a script: `new` again, up to 1 + script.max_augments_per_case requests
+    garbage = [script_attempt(plain, "apply_failed").model_copy(update={"script_code": "", "script_version": 0})]
+    assert t3.decide(plain, None, ctx(previous_attempts=garbage), profile).kind == DecisionKind.SCRIPT
+    n = 1 + cfg.script.max_augments_per_case
+    d = t3.decide(plain, None, ctx(previous_attempts=garbage * n), profile)
+    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "no usable script" in d.rationale

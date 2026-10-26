@@ -20,18 +20,18 @@ def test_watchdog_names_the_last_milestone(cfg, ws, monkeypatch, caplog):
     monkeypatch.setattr(fl, "WATCHDOG_QUIET_S", 0.05)
 
     def slow(w, c, ctx):
-        time.sleep(0.25)                                   # the LLM "hangs" inside fixer.propose
-        return write_fix(c.file, "class X { ok }\n")
+        time.sleep(0.25)                                   # the LLM "hangs" inside fixer.propose_script
+        return write_fix(None, "class X { ok }\n")
 
     plan = MigrationPlan(profile_fingerprint="fp", case_type=CaseType.SPRING_BOOT, steps=[
         PlanStep(id="jdk21.loop", kind=StepKind.BUILD_FIX_LOOP, phase=Phase.JDK21, title="l", build_goal="compile",
                  max_iterations=2),
         PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="v", build_goal="clean package")])
     with caplog.at_level(logging.DEBUG, logger="sbmig"):
-        report = make_orch(cfg, ws, plan=plan, fixer=FakeFixer(fn=slow), pre=[]).run()
+        report = make_orch(cfg, ws, plan=plan, fixer=FakeFixer(fn=slow)).run()
     quiet = [r.getMessage() for r in caplog.records if "fix loop quiet for" in r.getMessage()]
     assert quiet, "the watchdog never spoke"
-    assert "since 'fixer.propose for" in quiet[0] and "kill -USR1" in quiet[0]
+    assert "since 'fixer.propose_script for" in quiet[0] and "kill -USR1" in quiet[0]
     marks = [r.getMessage() for r in caplog.records if "] → " in r.getMessage()]
     assert any("mvn compile (build 1)" in m for m in marks) and any("deciding " in m for m in marks)
     assert marks[-1].endswith("→ idle")                    # the loop always ends on the idle milestone
@@ -55,14 +55,14 @@ def test_watchdog_writes_a_thread_dump_by_itself(cfg, ws, monkeypatch, caplog):
 
     def slow(w, c, ctx):
         time.sleep(0.3)
-        return write_fix(c.file, "class X { ok }\n")
+        return write_fix(None, "class X { ok }\n")
 
     plan = MigrationPlan(profile_fingerprint="fp", case_type=CaseType.SPRING_BOOT, steps=[
         PlanStep(id="jdk21.loop", kind=StepKind.BUILD_FIX_LOOP, phase=Phase.JDK21, title="l", build_goal="compile",
                  max_iterations=2),
         PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="v", build_goal="clean package")])
     with caplog.at_level(logging.WARNING, logger="sbmig"):
-        make_orch(cfg, ws, plan=plan, fixer=FakeFixer(fn=slow), pre=[]).run()
+        make_orch(cfg, ws, plan=plan, fixer=FakeFixer(fn=slow)).run()
     dumps = sorted(ws.run_dir.glob("threads-*.txt"))
     assert dumps, "no automatic thread dump"
     assert "fixloop-watchdog" in dumps[0].read_text(encoding="utf-8")

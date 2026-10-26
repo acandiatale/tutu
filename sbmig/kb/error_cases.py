@@ -20,6 +20,13 @@ was tried, how it was resolved — with the code applied — or why not) and eve
 File-based on purpose (invariant 3): the jsonl files are the source of truth, ``error_hints.json`` is derived and
 ``sbmig kb reindex`` rebuilds it. Records carry ``schema_version`` (absent in a stored line = 1) and
 ``agent_version``.
+
+v2 (flow-v2, schema 3): a fix-script attempt carries ``script_mode`` / ``script_case_id`` / ``script_version`` /
+``script_parent`` / ``script_status`` / ``script_error`` / ``script_log`` (log and error masked like the other texts,
+the log ≤ :data:`SCRIPT_LOG_LINES` lines), fix method ``script`` / ``script_reuse`` / ``script_augment`` and resolver
+``script:<case_id>:v<N>``; a resolved error gets the resolving attempt's ``script_case_id`` / ``script_version`` and
+each history entry its ``script_version`` when the tracker left them empty. ``llm_attempts`` counts the attempts that
+asked the LLM (``llm``, ``script``, ``script_augment``; a ``script_reuse`` runs a stored version without a call).
 """
 from __future__ import annotations
 
@@ -73,6 +80,8 @@ HINT_PROJECTS = 50
 HINT_VARIANTS = 25               # fix / failure variants kept per key (first come; the same in incremental + rebuild)
 HINT_TOP = 3
 REDACTED_NOTE = "redacted:"      # prefix of the notes that say secret values were masked
+SCRIPT_LOG_LINES = 50            # FixAttemptRecord.script_log (v2): the script's own log lines kept per attempt
+LLM_METHODS = ("llm", "script", "script_augment")    # fix methods that called the LLM (llm_attempts)
 
 ERROR_CSV_COLUMNS = [
     "id", "project", "run_id", "status", "error_kind", "file", "line", "message", "symbol", "signature_generic",
@@ -81,13 +90,17 @@ ERROR_CSV_COLUMNS = [
     "attempt_count", "llm_attempts", "attempts", "resolution_attempts",
     # round 10 (2026-10-26): what the business rules need without opening the jsonl
     "signature", "location", "module", "case_type", "asis_java", "asis_spring_boot", "asis_spring", "packaging",
-    "targeted", "resolved_by", "fix_labels", "at", "introduced_by", "notes", "schema_version", "raw",
+    "targeted", "resolved_by", "fix_labels", "at", "introduced_by", "notes", "schema_version",
+    # v2 (flow-v2): the case's fix script that resolved it
+    "script_case_id", "script_version", "raw",
     "diff_excerpt",
 ]
 ATTEMPT_CSV_COLUMNS = [
     "id", "project", "run_id", "phase", "iteration", "attempt_id", "cluster_id", "fix_method", "resolver_id", "model",
     "outcome", "applied", "change_kind", "replace_pairs", "fix_labels", "replacement", "description", "failure",
     "introduced_errors", "remaining_errors", "files", "lines_added", "lines_removed", "error_ids", "llm_calls",
+    # v2 (flow-v2): the fix script the attempt ran
+    "script_mode", "script_case_id", "script_version", "script_parent", "script_status", "script_error", "script_log",
     "diff_truncated", "diff",
 ]
 
@@ -268,6 +281,9 @@ def _prepare_attempt(a: FixAttemptRecord, base: dict[str, Any], san: _Sanitizer,
         "introduced_errors": [san.clean(x, ITEM_LIMIT) for x in a.introduced_errors[:LIST_LIMIT]],
         "remaining_errors": [san.clean(x, ITEM_LIMIT) for x in a.remaining_errors[:LIST_LIMIT]],
         "notes": notes,
+        # v2: the script's own account (its log may print file contents): masked, capped
+        "script_error": san.clean(a.script_error, FAILURE_LIMIT),
+        "script_log": [san.clean(x, ITEM_LIMIT) for x in a.script_log[:SCRIPT_LOG_LINES]],
         **_versions(),
     })
     return a.model_copy(update=upd), full, not_rule
@@ -313,11 +329,13 @@ def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], err_base: dict[str,
             r_upd["change_kind"] = att.change.change_kind
         if att is not None and not ref.resolver_id:
             r_upd["resolver_id"] = att.resolver_id
+        if att is not None and not ref.script_version and att.script_version:
+            r_upd["script_version"] = att.script_version
         refs.append(ref.model_copy(update=r_upd))
     upd["attempts"] = refs
     if refs:
         upd["attempt_count"] = len(refs)
-        upd["llm_attempts"] = sum(1 for r in refs if r.fix_method == "llm")
+        upd["llm_attempts"] = sum(1 for r in refs if r.fix_method in LLM_METHODS)
 
     att = attempts.get(e.resolved_by or "") if e.status in RESOLVED else None
     if att is not None:
@@ -353,6 +371,9 @@ def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], err_base: dict[str,
         if why_not:
             prefix = f"{REDACTED_NOTE} " if "secret" in why_not else ""
             upd["notes"].append(f"{prefix}{why_not} — not a rule candidate")
+        if not e.script_case_id and att.script_case_id:   # v2: the case script that resolved it
+            upd["script_case_id"] = att.script_case_id
+            upd["script_version"] = e.script_version or att.script_version
         upd.update({
             "fix_method": method,
             "resolver_id": e.resolver_id or att.resolver_id,
@@ -387,7 +408,7 @@ def _minimal_attempt(a: FixAttemptRecord, base: dict[str, Any], ex: Exception) -
     original)."""
     upd = {**_safe(_base_update, a, base, default={}), "diff": "", "diff_truncated": bool(a.diff),
            "change": ChangeClass(), "description": "", "failure": "", "replacement": "", "introduced_errors": [],
-           "remaining_errors": [],
+           "remaining_errors": [], "script_error": "", "script_log": [],
            "notes": [f"prepare failed ({type(ex).__name__}): stored without its diff and texts"], **_versions()}
     return a.model_copy(update=upd)
 
@@ -563,6 +584,7 @@ def error_csv_row(e: ErrorCaseRecord) -> list[str]:
         "resolved_by": _short_attempt(e.resolved_by, e.run_id) if e.resolved_by else "",
         "fix_labels": ", ".join(e.fix_labels), "at": e.at.isoformat(timespec="seconds") if e.at else "",
         "introduced_by": e.introduced_by, "notes": "\n".join(e.notes), "schema_version": e.schema_version,
+        "script_case_id": e.script_case_id, "script_version": e.script_version or "",
         "raw": e.raw, "diff_excerpt": e.diff_excerpt,
     }
     return [_cell(values[c], CSV_DIFF_LIMIT if c == "diff_excerpt" else CSV_CELL_LIMIT) for c in ERROR_CSV_COLUMNS]
@@ -585,8 +607,11 @@ def write_fix_attempts_csv(attempts: Iterable[FixAttemptRecord], path: Union[str
             "failure": a.failure, "introduced_errors": "\n".join(a.introduced_errors),
             "remaining_errors": "\n".join(a.remaining_errors), "files": "\n".join(a.change.files),
             "lines_added": a.change.lines_added, "lines_removed": a.change.lines_removed,
-            "error_ids": ", ".join(a.error_ids), "llm_calls": a.llm_calls, "diff_truncated": a.diff_truncated,
-            "diff": a.diff,
+            "error_ids": ", ".join(a.error_ids), "llm_calls": a.llm_calls,
+            "script_mode": a.script_mode or "", "script_case_id": a.script_case_id,
+            "script_version": a.script_version or "", "script_parent": a.script_parent or "",
+            "script_status": a.script_status, "script_error": a.script_error, "script_log": "\n".join(a.script_log),
+            "diff_truncated": a.diff_truncated, "diff": a.diff,
         }
         return [_cell(values[c], CSV_DIFF_LIMIT if c == "diff" else CSV_CELL_LIMIT) for c in ATTEMPT_CSV_COLUMNS]
     return _write_csv(path, ATTEMPT_CSV_COLUMNS, (row(a) for a in attempts))

@@ -91,6 +91,40 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     " — location: {location}": " — 위치: {location}",
     "Last build log: `{path}`": "마지막 빌드 로그: `{path}`",
     "None.": "없음.",
+    # ---- v2 structure review (sbmig.review)
+    "Structure review": "구조 점검",
+    "| Structure review | {summary} |": "| 구조 점검 | {summary} |",
+    "After the restructure and before the first build, the LLM checked the poms, dependencies and module layout "
+    "against the company rules. Critical issues get one fix script; warnings are only recorded.":
+        "구조화 뒤, 첫 빌드 전에 LLM이 pom · 의존성 · 모듈 배치를 회사 규칙에 비춰 점검했다. 심각한 문제는 수정 "
+        "스크립트 하나로 고치고, 경고는 기록만 한다.",
+    "- verdict: `{verdict}` — {summary}": "- 판정: `{verdict}` — {summary}",
+    "- model: `{model}`, {calls} LLM call(s)": "- 모델: `{model}`, LLM {calls}회 호출",
+    "| severity | file | problem | fix hint |": "| 심각도 | 파일 | 문제 | 수정 힌트 |",
+    "critical": "심각",
+    "warning": "경고",
+    "(project)": "(프로젝트 전체)",
+    "… {n} more issue(s) — see `structure_review` in report.json":
+        "… 외 {n}건 — report.json의 `structure_review` 참조",
+    "Analysis: {analysis}": "분석: {analysis}",
+    "skipped ({note})": "건너뜀 ({note})",
+    "failed — no usable answer, the build went ahead ({note})": "실패 — 쓸 수 있는 답이 없어 점검 없이 빌드함 ({note})",
+    "ok — no issues": "ok — 문제 없음",
+    "{c} critical, {w} warning(s)": "심각 {c}건, 경고 {w}건",
+    "script {status}, changes restored": "스크립트 {status}, 변경 되돌림",
+    "script {status}, {n} file(s) changed (commit `{commit}`)": "스크립트 {status}, 파일 {n}개 변경 (커밋 `{commit}`)",
+    "script {status}, {n} file(s) changed": "스크립트 {status}, 파일 {n}개 변경",
+    "script not run": "스크립트 실행 안 함",
+    "no script": "스크립트 없음",
+    "- script: run status `{status}`, {n} file(s) changed{files}": "- 스크립트: 실행 결과 `{status}`, 파일 {n}개 변경{files}",
+    "- commit: `{commit}` (revert it to undo the review's changes)":
+        "- 커밋: `{commit}` (구조 점검의 변경을 취소하려면 이 커밋을 되돌린다)",
+    "- the script's changes were restored: they are not in the result": "- 스크립트의 변경은 되돌렸다: 결과물에 없음",
+    "- script error: {error}": "- 스크립트 오류: {error}",
+    "- script log: {lines}": "- 스크립트 로그: {lines}",
+    "- script: not run": "- 스크립트: 실행하지 않음",
+    "- no script for the critical issue(s): they are handed over": "- 심각한 문제에 대한 스크립트 없음: 인수인계로 넘김",
+    "- note: {note}": "- 메모: {note}",
     # ---- build errors, one record each (error cases, 2026-10-23)
     "## Build errors and how each was handled": "## 빌드 오류별 처리 내역",
     "{n} build error(s) seen in this run, one record each.": "이번 실행에서 확인한 빌드 오류 {n}건 (오류마다 기록 1건).",
@@ -390,6 +424,14 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     (r"^as-is effective dependencyManagement unavailable — versions the as-is parent managed are shown as '-'$",
      r"as-is effective dependencyManagement를 얻지 못했다 — as-is parent가 관리하던 버전은 '-'로 표시"),
     (r"^handover unavailable: (?P<x>.+)$", r"인수인계 정보를 만들지 못함: \g<x>"),
+    # v2 structure review follow-ups (handover.review_followups)
+    ((r"^structure review script changed (?P<n>\d+) file\(s\) for (?P<k>\d+) critical issue\(s\): (?P<files>.+) "
+      r"\(commit (?P<c>[^)]+)\) — check these pom changes$"),
+     r"구조 점검 스크립트가 심각한 문제 \g<k>건 때문에 파일 \g<n>개를 바꿈: \g<files> (커밋 \g<c>) — 이 pom 변경을 확인할 것"),
+    (r"^structure review: critical issue not fixed — (?P<rest>.+)$", r"구조 점검: 고치지 못한 심각한 문제 — \g<rest>"),
+    (r"^structure review warning — (?P<rest>.+)$", r"구조 점검 경고 — \g<rest>"),
+    (r"^… and (?P<n>\d+) more structure review issue\(s\) — see Structure review$",
+     r"… 외 구조 점검 문제 \g<n>건 — '구조 점검' 참조"),
     (r"^(?P<n>\d+) javax API jar\(s\) still on the classpath — see that section$",
      r"클래스패스에 남은 javax API jar \g<n>개 — '클래스패스에 남은 javax API jar' 절 참조"),
     ((r"^(?P<n>\d+) javax API jar\(s\) still on the classpath after the migration \(see the report section\) — "

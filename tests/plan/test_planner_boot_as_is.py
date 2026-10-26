@@ -1,17 +1,16 @@
-"""Round 9c routing: Boot as-is → restructure.boot_pom (in place) | restructure.apply (layout); MSA boot_modules."""
+"""Round 9c routing, unchanged in v2: Boot as-is → restructure.boot_pom (in place) | restructure.apply (layout);
+MSA boot_modules. The structure review always follows the restructure step."""
 from __future__ import annotations
 
 from pathlib import Path
 
 from sbmig.analyze import analyze_path
 from sbmig.core.models import Phase, StepKind
-from sbmig.loop.orchestrator import Orchestrator
 from sbmig.plan import build_plan
 from tests.analyze.helpers import (BOOT_PLUGIN, PSVM, make_boot27, make_servlet, make_spring_legacy, pom, write,
                                    write_java)
 
-IN_PLACE = ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.optional_bump", "spring.loop",
-            "restructure.boot_pom", "restructure.loop", "verify.build"]
+IN_PLACE = ["transform.rewrite", "restructure.boot_pom", "restructure.review", "verify.build"]
 
 
 def _ids(plan):
@@ -50,12 +49,13 @@ def test_boot_in_place_single_module(tmp_path: Path, cfg) -> None:
     assert st.kind == StepKind.MSA_POM and st.phase == Phase.RESTRUCTURE
     assert st.params == {"mode": "boot_pom", "boot_modules": []}
     assert st.title == "Boot as-is: parents / mandatory / optional in place (directories kept)" and st.reason
-    assert Orchestrator._step_mode(st) == "boot_pom"
+    assert _step(plan, "restructure.review").params == {"restructure_step": "restructure.boot_pom"}
     note = next(n for n in plan.notes if n.startswith("restructure: rule boot-as-is"))
     assert "single-module Boot app → wrapped into boot-app-boot" in note
-    # jdk21 / spring recipe steps are the same as with the layout rule
-    spring = [r.id for r in _step(plan, "spring.rewrite").recipes]
-    assert spring[0] == "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
+    # the transform step is the same as with the layout rule
+    assert [r.id for r in _step(plan, "transform.rewrite").recipes] == [
+        "org.openrewrite.java.migrate.UpgradeToJava21", "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
+        "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1"]
 
 
 def test_boot_in_place_multi_module_passes_boot_modules(tmp_path: Path, cfg) -> None:
@@ -75,6 +75,7 @@ def test_boot_layout_rule_keeps_restructure_apply(tmp_path: Path, cfg) -> None:
     st = _step(plan, "restructure.apply")
     assert st.kind == StepKind.RESTRUCTURE and st.params == {"mode": "layout", "starter": "auto"}
     assert st.title == "restructure into boot-app-back, boot-app-boot with the in-house parent"
+    assert _ids(plan) == ["transform.rewrite", "restructure.apply", "restructure.review", "verify.build"]
     assert any(n.startswith("restructure: rule boot-as-is=layout") for n in plan.notes)
 
 
@@ -123,3 +124,4 @@ def test_msa_params_carry_boot_modules(tmp_path: Path, cfg) -> None:
     st = _step(plan, "restructure.msa_pom")
     assert st.params["mode"] == "msa_pom" and st.params["boot_modules"] == ["a-boot", "b-boot"]
     assert "restructure.boot_pom" not in _ids(plan) and "restructure.apply" not in _ids(plan)
+    assert _ids(plan).index("restructure.msa_pom") + 1 == _ids(plan).index("restructure.review")

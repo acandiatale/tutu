@@ -1,4 +1,6 @@
-"""Round 8: tests-skipped fallback (-DskipTests when only runtime test failures remain) + report.properties."""
+"""Round 8: tests-skipped fallback (-DskipTests when only runtime test failures remain) + report.properties. The
+fallback only acts where a config compiles and runs tests (v2 default `build.skip_test_compile: true` never does):
+the tests here switch it off."""
 from __future__ import annotations
 
 import pytest
@@ -13,6 +15,11 @@ from .test_fixloop import make_loop
 from .test_orchestrator import make_orch
 
 RUN_GOALS = ("package", "verify", "install", "test")
+
+
+@pytest.fixture(autouse=True)
+def tests_compiled(cfg):
+    cfg.build.skip_test_compile = False
 
 
 def test_failure(name: str = "OrderServiceTest.contextLoads",
@@ -105,7 +112,7 @@ def test_orchestrator_tests_skipped_run(cfg, ws, engine):
     cfg.loop.engine = engine
     t1 = test_failure()
     build = FakeBuildRunner(ws, fn=runtime_fail_build(t1))
-    report = make_orch(cfg, ws, build=build, pre=[], fixer=FakeFixer()).run()     # proposes nothing applicable
+    report = make_orch(cfg, ws, build=build, fixer=FakeFixer()).run()     # proposes nothing applicable
     assert "tests-skipped" in report.flags and "test-compile-skipped" not in report.flags
     verify = build.calls[-1]
     assert verify["label"] == "verify" and verify["skip_tests"] is True and verify["skip_test_compile"] is False
@@ -128,7 +135,7 @@ def test_orchestrator_tests_skipped_failures_are_unresolved(cfg, ws, monkeypatch
     from sbmig.loop.blocked_registry import BlockedRegistry
     monkeypatch.setattr(BlockedRegistry, "is_blocked_error", lambda self, e: False)
     t1 = test_failure()
-    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=runtime_fail_build(t1)), pre=[])
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=runtime_fail_build(t1)))
     monkeypatch.setattr(orch, "_finalize_blocked", lambda report, unresolved: setattr(report, "blocked", []))
     report = orch.run()
     assert "tests-skipped" in report.flags and report.success and not report.blocked
@@ -138,7 +145,8 @@ def test_orchestrator_tests_skipped_failures_are_unresolved(cfg, ws, monkeypatch
 
 def test_graph_and_inline_same_report_on_tests_skipped(cfg, tmp_path):
     from ..graph.test_engine import comparable, run_engine
-    kw = {"build": lambda w: FakeBuildRunner(w, fn=runtime_fail_build()), "pre": []}
+    cfg.build.skip_test_compile = False
+    kw = {"build": lambda w: FakeBuildRunner(w, fn=runtime_fail_build())}
     _, _, rg = run_engine(cfg, tmp_path, "graph", **kw)
     _, _, ri = run_engine(cfg, tmp_path, "inline", **kw)
     assert "tests-skipped" in rg.flags and comparable(rg) == comparable(ri)
@@ -166,7 +174,7 @@ class PlaceholderRestructurer(FakeRestructurer):
 def test_restructure_merges_placeholders_into_report(cfg, ws):
     prof = make_profile()
     prof.properties = inventory()
-    report = make_orch(cfg, ws, profile=prof, restructurer=PlaceholderRestructurer(), pre=[],
+    report = make_orch(cfg, ws, profile=prof, restructurer=PlaceholderRestructurer(),
                        build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
     p = report.properties
     assert p is not None and [f.key for f in p.external] == ["mail.host"]
@@ -182,7 +190,7 @@ def test_restructure_merges_placeholders_into_report(cfg, ws):
 
 
 def test_no_placeholder_event_without_placeholders(cfg, ws):
-    report = make_orch(cfg, ws, pre=[], build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
+    report = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
     assert report.properties is not None and report.properties.placeholder_files == []
     assert not any(e["event"] == "placeholders" for e in journal_events(ws))
 

@@ -63,6 +63,15 @@ def properties_console_line(report: RunReport) -> Optional[str]:
     return f"properties to set: {n}" + (f" (placeholders in {', '.join(files)})" if files else "")
 
 
+def review_console_line(report: RunReport) -> Optional[str]:
+    """`structure review: …` (v2) — ASCII (cp949 consoles), None without a review."""
+    rv = report.structure_review
+    if rv is None:
+        return None
+    from .markdown import review_summary
+    return "structure review: " + review_summary(rv).replace(" — ", " - ").replace("`", "")
+
+
 def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     from rich.console import Console
     from rich.table import Table
@@ -87,6 +96,9 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
     u = report.llm_usage
     console.print(f"LLM: {u.calls} call(s), {u.input_tokens}/{u.output_tokens} tokens"
                   + (f"   flags: {', '.join(report.flags)}" if report.flags else ""))
+    rl = review_console_line(report)
+    if rl:
+        console.print(rl, markup=False, highlight=False)
     if report.llm_cost is not None and (report.llm_cost.by_model or u.calls):
         from .cost import fmt_money
         c = report.llm_cost

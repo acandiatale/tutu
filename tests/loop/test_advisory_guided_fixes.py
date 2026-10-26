@@ -26,6 +26,7 @@ from .fakes import (
     FakeFixer,
     FakeKB,
     FakeRewriteRunner,
+    FakeScriptRunner,
     bad_build,
     compile_error,
     journal_events,
@@ -54,14 +55,15 @@ def hystrix_build(ws, call):
     """Foo fails on the vanished Hystrix package, Bar on an unrelated symbol, while they still say 'broken'."""
     errs = []
     if "broken" in ws.read(FOO):
-        errs.append(compile_error(FOO, HYSTRIX_MSG))
+        errs.append(compile_error(FOO, HYSTRIX_MSG, l2="compile|package_does_not_exist|com.netflix.hystrix"))
     if "broken" in ws.read(BAR):
-        errs.append(compile_error(BAR, "cannot find symbol"))
+        errs.append(compile_error(BAR, "cannot find symbol", l2="compile|cannot_find_symbol|x"))
     return bad_build(*errs) if errs else ok_build()
 
 
 def fix(w, c, ctx):
-    return write_fix(c.file, "class X { ok }\n", analysis=ANALYSIS if c.file == FOO else "renamed a symbol")
+    f = c.errors[0].file
+    return write_fix(f, "class X { ok }\n", analysis=ANALYSIS if f == FOO else "renamed a symbol")
 
 
 def test_loop_passes_hints_and_records_advisory_ids(cfg, ws):
@@ -69,9 +71,9 @@ def test_loop_passes_hints_and_records_advisory_ids(cfg, ws):
     triager = Triager(cfg, registry=HandlerRegistry())
     loop = BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=hystrix_build), triager, triager.registry, fixer, FakeKB(),
                         FakeRewriteRunner(ws), make_profile(), budget=LoopBudget.from_config(cfg),
-                        advisories=[hystrix(), hystrix(advisory_id="springfox", library="springfox",
+                        script_runner=FakeScriptRunner(), advisories=[hystrix(), hystrix(advisory_id="springfox", library="springfox",
                                                        replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui")])
-    pr = loop.run(Phase.SPRING, "test-compile", 3)
+    pr = loop.run(Phase.VERIFY, "package", 3)
     assert pr.ok
     by_file = {a.cluster_errors[0].file: a for a in pr.attempts}
     assert by_file[FOO].advisory_ids == ["hystrix"] and by_file[BAR].advisory_ids == []
@@ -88,8 +90,9 @@ def test_loop_without_advisories_sends_no_hints(cfg, ws):
     fixer = FakeFixer(fn=fix)
     triager = Triager(cfg, registry=HandlerRegistry())
     loop = BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=hystrix_build), triager, triager.registry, fixer, FakeKB(),
-                        FakeRewriteRunner(ws), make_profile(), budget=LoopBudget.from_config(cfg))
-    assert loop.run(Phase.SPRING, "test-compile", 3).ok
+                        FakeRewriteRunner(ws), make_profile(), budget=LoopBudget.from_config(cfg),
+                        script_runner=FakeScriptRunner())
+    assert loop.run(Phase.VERIFY, "package", 3).ok
     assert all(c.advisory_hints == [] for c in fixer.contexts)
     assert all(a.advisory_ids == [] for a in loop.history)
 

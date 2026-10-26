@@ -1,4 +1,4 @@
-"""Planner edge cases: spring.optional_bump, MSA library roots / top-aggregator, pom-only (S3), Gradle (S4)."""
+"""v2 planner edge cases: MSA library roots / dependency order / top-aggregator, pom-only (S3), Gradle (S4)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,7 +9,11 @@ from sbmig.plan import build_plan
 from tests.analyze.helpers import BOOT_PLUGIN, dep, make_boot33, pom, write, write_java
 from tests.analyze.test_edges import make_msa_with_common
 
+J21 = "org.openrewrite.java.migrate.UpgradeToJava21"
+JAKARTA = "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"
 BOOT_UMBRELLA = "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
+PROPS41 = "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1"
+FW7 = "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0"
 
 
 def _ids(plan):
@@ -20,63 +24,36 @@ def _step(plan, sid):
     return next(s for s in plan.steps if s.id == sid)
 
 
-# ------------------------------------------------------------------------------------------------- optional bump
-def test_optional_bump_step_right_after_spring_rewrite(tmp_path: Path, cfg) -> None:
-    plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
-    ids = _ids(plan)
-    i = ids.index("spring.optional_bump")
-    assert ids[i - 1] == "spring.rewrite" and ids[i + 1] == "spring.loop"
-    s = _step(plan, "spring.optional_bump")
-    assert s.kind == StepKind.RESTRUCTURE and s.phase == Phase.SPRING and s.optional
-    assert s.params == {"mode": "optional_bump"} and s.target is None and s.reason
-    assert any("spring.optional_bump" in n for n in plan.notes)
-
-
-def test_optional_bump_phase_restructure_keeps_old_order(tmp_path: Path, cfg) -> None:
-    cfg.plan.optional_bump_phase = "restructure"
-    plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
-    assert "spring.optional_bump" not in _ids(plan)
-    assert _ids(plan)[2:4] == ["spring.rewrite", "spring.loop"]
-    assert any("optional_bump_phase=restructure" in n for n in plan.notes)
-
-
-def test_optional_bump_omitted_without_configured_artifacts(tmp_path: Path, cfg) -> None:
-    cfg.artifacts.optional = []
-    cfg.artifacts.remove_when_present = []
-    plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
-    assert "spring.optional_bump" not in _ids(plan)
-    assert any("none configured" in n for n in plan.notes)
-
-
-def test_optional_bump_without_spring_rewrite_still_before_loop(tmp_path: Path, cfg) -> None:
-    from tests.analyze.helpers import make_pure_java
-    plan = build_plan(analyze_path(make_pure_java(tmp_path), cfg), cfg)
-    ids = _ids(plan)
-    assert "spring.rewrite" not in ids
-    assert ids.index("jdk21.loop") < ids.index("spring.optional_bump") < ids.index("spring.loop")
+def _recipes(plan, sid):
+    return [r.id for r in _step(plan, sid).recipes]
 
 
 # ------------------------------------------------------------------------------------------------- MSA S1
 def test_msa_library_root_planned_first(tmp_path: Path, cfg) -> None:
     profile = analyze_path(make_msa_with_common(tmp_path, boot_dep_in_common=True), cfg)
     plan = build_plan(profile, cfg)
-    ids = _ids(plan)
-    per = ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.optional_bump", "spring.loop"]
     svcs = [s.name for s in profile.services if s.name != "common"]
-    assert ids == ([f"{i}@common" for i in per] + [f"{i}@{s}" for s in svcs for i in per]
-                   + ["restructure.msa_pom", "restructure.loop", "verify.build"])
-    lib_recipes = [r.id for r in _step(plan, "spring.rewrite@common").recipes]
-    assert BOOT_UMBRELLA not in lib_recipes
-    assert "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta" in lib_recipes
-    assert "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0" in lib_recipes
-    assert BOOT_UMBRELLA in [r.id for r in _step(plan, "spring.rewrite@shop").recipes]
-    ob = _step(plan, "spring.optional_bump@common")
-    assert ob.target == "common" and ob.params == {"mode": "optional_bump", "service": "common", "target": "common"}
+    assert _ids(plan) == (["transform.rewrite@common"] + [f"transform.rewrite@{s}" for s in svcs]
+                          + ["restructure.msa_pom", "restructure.review", "verify.build"])
+    lib = _step(plan, "transform.rewrite@common")
+    assert lib.kind == StepKind.OPENREWRITE and lib.phase == Phase.TRANSFORM
+    assert lib.target == "common" and lib.params == {"service": "common"}
+    assert _recipes(plan, "transform.rewrite@common") == [J21, JAKARTA]     # never the Boot set
+    assert _recipes(plan, "transform.rewrite@shop") == [J21, BOOT_UMBRELLA, PROPS41]
     msa = _step(plan, "restructure.msa_pom")
     assert msa.params["library_roots"] == ["common/pom.xml"]
     assert sorted(msa.params["services"]) == ["billing", "shop"]
+    assert msa.params["parent_policy"] == cfg.layout.msa_parent_policy and "boot_modules" in msa.params
     assert any("no mandatory dependencies" in n for n in plan.notes)
-    assert any("msa library root common" in n for n in plan.notes)
+    assert any(n.startswith("msa library root common") and "never the Boot set" in n for n in plan.notes)
+    assert not any(s.id.startswith("spring.optional_bump") for s in plan.steps)
+
+
+def test_msa_library_root_gets_the_opt_in_framework_set(tmp_path: Path, cfg) -> None:
+    cfg.openrewrite.recipes.spring_framework_7 = [FW7]
+    plan = build_plan(analyze_path(make_msa_with_common(tmp_path, boot_dep_in_common=True), cfg), cfg)
+    assert _recipes(plan, "transform.rewrite@common") == [J21, JAKARTA, FW7]
+    assert FW7 not in _recipes(plan, "transform.rewrite@shop")
 
 
 def test_msa_libraries_in_dependency_order_and_per_target_verify(tmp_path: Path, cfg) -> None:
@@ -90,9 +67,12 @@ def test_msa_libraries_in_dependency_order_and_per_target_verify(tmp_path: Path,
     profile = analyze_path(tmp_path, cfg)
     plan = build_plan(profile, cfg)
     ids = _ids(plan)
-    assert ids.index("jdk21.rewrite@zeta") < ids.index("jdk21.rewrite@alpha") < ids.index("jdk21.rewrite@shop")
+    assert ids.index("transform.rewrite@zeta") < ids.index("transform.rewrite@alpha") < ids.index(
+        "transform.rewrite@shop")
     verify = sorted(s.id for s in plan.steps if s.kind == StepKind.BUILD)
     assert verify == ["verify.build@alpha", "verify.build@billing", "verify.build@shop", "verify.build@zeta"]
+    assert all(_step(plan, v).params == {"service": v.split("@")[1]} for v in verify)
+    assert ids.index("restructure.review") < min(ids.index(v) for v in verify)
     assert any("and library root" in n for n in plan.notes)
 
 
@@ -100,14 +80,13 @@ def test_msa_top_aggregator_single_root_rewrite(tmp_path: Path, cfg) -> None:
     cfg.layout.msa_parent_policy = "top-aggregator"
     profile = analyze_path(make_msa_with_common(tmp_path), cfg)
     plan = build_plan(profile, cfg)
-    assert _ids(plan) == ["jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.optional_bump", "spring.loop",
-                          "restructure.msa_pom", "restructure.loop", "verify.build"]
-    rw = _step(plan, "spring.rewrite")
-    assert rw.target is None
+    assert _ids(plan) == ["transform.rewrite", "restructure.msa_pom", "restructure.review", "verify.build"]
+    rw = _step(plan, "transform.rewrite")
+    assert rw.target is None and rw.params == {} and rw.phase == Phase.TRANSFORM
     ids = [r.id for r in rw.recipes]
-    assert BOOT_UMBRELLA in ids and "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0" in ids
-    assert len(ids) == len(set(ids))
-    assert any("one rewrite + loop at the repo root" in n for n in plan.notes)
+    assert ids == [J21, JAKARTA, BOOT_UMBRELLA, PROPS41]               # union, in set order (jdk21, jakarta, boot)
+    assert any("one transform.rewrite at the repo root" in n for n in plan.notes)
+    assert "msa (all services)" in rw.reason
 
 
 def test_msa_top_aggregator_without_covering_aggregator_stays_per_service(tmp_path: Path, cfg) -> None:
@@ -116,17 +95,25 @@ def test_msa_top_aggregator_without_covering_aggregator_stays_per_service(tmp_pa
     make_boot33(tmp_path, module="shop", artifact="shop")
     make_boot33(tmp_path, module="billing", artifact="billing")
     plan = build_plan(analyze_path(tmp_path, cfg), cfg)
-    assert "jdk21.rewrite@shop" in _ids(plan) and "jdk21.rewrite@billing" in _ids(plan)
+    assert "transform.rewrite@shop" in _ids(plan) and "transform.rewrite@billing" in _ids(plan)
+    assert "transform.rewrite" not in _ids(plan)
 
 
-def test_msa_without_sources_has_no_rewrite_steps(cfg) -> None:
+def test_msa_without_sources_has_no_transform_steps(cfg) -> None:
     from sbmig.core.models import PomInfo, ServiceInfo
     prof = ProjectProfile(root="/x", name="x", case_type=CaseType.MSA, root_pom=PomInfo(
         path="pom.xml", artifact_id="x", packaging="pom", modules=["a", "b"], is_aggregator=True),
         services=[ServiceInfo(name="a", root_pom="a/pom.xml", case_type=CaseType.SPRING_BOOT),
                   ServiceInfo(name="b", root_pom="b/pom.xml", case_type=CaseType.SPRING_BOOT)])
     plan = build_plan(prof, cfg)
-    assert _ids(plan) == ["restructure.msa_pom", "restructure.loop", "verify.build"]
+    assert _ids(plan) == ["restructure.msa_pom", "restructure.review", "verify.build"]
+    assert any(n.startswith("msa: no java sources → no transform step") for n in plan.notes)
+
+
+def test_msa_review_disabled(tmp_path: Path, cfg) -> None:
+    cfg.review.enabled = False
+    plan = build_plan(analyze_path(make_msa_with_common(tmp_path), cfg), cfg)
+    assert "restructure.review" not in _ids(plan) and _ids(plan)[-2:] == ["restructure.msa_pom", "verify.build"]
 
 
 # ------------------------------------------------------------------------------------------------- S3 / S4
@@ -134,11 +121,12 @@ def test_pom_only_project_plan(tmp_path: Path, cfg) -> None:
     write(tmp_path, "pom.xml", pom("bom", packaging="pom", managed=(dep("com.google.guava", "guava", "31.0-jre"),),
                                    plugins=(BOOT_PLUGIN,)))
     plan = build_plan(analyze_path(tmp_path, cfg), cfg)
-    assert _ids(plan) == ["restructure.pom_only", "restructure.loop", "verify.build"]
+    assert _ids(plan) == ["restructure.pom_only", "restructure.review", "verify.build"]
     s = _step(plan, "restructure.pom_only")
     assert s.kind == StepKind.MSA_POM and s.params["mode"] == "msa_pom" and s.params["pom_only"] is True
-    assert not any(st.phase in (Phase.JDK21, Phase.SPRING) for st in plan.steps)
-    assert any("no java sources" in n for n in plan.notes)
+    assert _step(plan, "restructure.review").params == {"restructure_step": "restructure.pom_only"}
+    assert not any(st.phase in (Phase.TRANSFORM, Phase.JDK21, Phase.SPRING) for st in plan.steps)
+    assert any(n.startswith("no java sources → no transform step") for n in plan.notes)
 
 
 def test_gradle_project_empty_plan(tmp_path: Path, cfg) -> None:
@@ -148,3 +136,4 @@ def test_gradle_project_empty_plan(tmp_path: Path, cfg) -> None:
     plan = build_plan(profile, cfg)
     assert plan.steps == []
     assert any("build tool 'gradle' is not supported" in n and "Gradle build detected" in n for n in plan.notes)
+    assert not any(n.startswith(("pre-emptive", "transform", "review")) for n in plan.notes)

@@ -1,6 +1,6 @@
-"""Round 9 / catalog X8: the spring rewrite left literal `4.0.x` versions (its resolver could not download Maven
-metadata) → revert + wait + one re-run; still there → flag, note, follow-up, and the build loop still runs. KB recipe
-candidates are not credited a failure the phase took on dependency resolution."""
+"""Round 9 / catalog X8: the rewrite (v2: the one transform run) left literal `4.0.x` versions (its resolver could not
+download Maven metadata) → revert + wait + one re-run; still there → flag, note, follow-up, and the final build + fix
+loop still run. v2 credits no KB recipes at all."""
 from __future__ import annotations
 
 import json
@@ -90,12 +90,12 @@ def test_literal_versions_trigger_one_rerun_on_a_clean_tree(cfg, ws):
     assert ws.read("rewritten.txt") == "spring\n"                    # no duplicate changes
     assert "<version>4.0.1</version>" in ws.read("pom.xml")
     (ev,) = _events(ws, "rewrite_unresolved_versions")
-    assert ev["retry"] is True and ev["poms"] == {"pom.xml": ["4.0.x"]} and ev["step"] == "spring.rewrite"
+    assert ev["retry"] is True and ev["poms"] == {"pom.xml": ["4.0.x"]} and ev["step"] == "transform.rewrite"
     assert "rewrite-unresolved-versions" not in report.flags
-    spring = next(p for p in report.phases if p.phase == Phase.SPRING)
-    assert len(spring.rewrite_results) == 1 and spring.rewrite_results[0].log_path == "/tmp/rw-2.log"
-    assert _git_log(ws).count("rewrite: spring.rewrite") == 1
-    assert report.success and kb.credits == [(KB_RECIPE, True)]
+    tr = next(p for p in report.phases if p.phase == Phase.TRANSFORM)
+    assert len(tr.rewrite_results) == 1 and tr.rewrite_results[0].log_path == "/tmp/rw-2.log"
+    assert _git_log(ws).count("rewrite: transform.rewrite") == 1
+    assert report.success and kb.credits == []                   # v2: no KB recipe credit
 
 
 def test_literal_versions_twice_are_reported_and_the_build_still_runs(cfg, ws):
@@ -110,14 +110,12 @@ def test_literal_versions_twice_are_reported_and_the_build_still_runs(cfg, ws):
     fu = [f for f in report.manual_followups if "could not download Maven metadata" in f]
     assert fu == ["the recipe run could not download Maven metadata (proxy / rate limit): literal versions `4.0.x` "
                   "remain in pom.xml — re-run sbmig later or set the versions by hand"]
-    spring = next(p for p in report.phases if p.phase == Phase.SPRING)
-    assert any("rewrite-unresolved-versions" in n for n in spring.notes)
-    assert spring.iterations >= 1 and not spring.build_ok             # the build loop ran
-    assert report.final_build is not None and report.phases[-1].phase == Phase.VERIFY   # invariant 1
-    assert kb.credits == []                                           # resolution failure → not credited
-    (skip,) = _events(ws, "kb_credit_skipped")
-    assert skip["phase"] == "spring" and skip["recipes"] == [KB_RECIPE]
-    assert skip["reason"] == "rewrite-unresolved-versions"
+    tr = next(p for p in report.phases if p.phase == Phase.TRANSFORM)
+    assert any("rewrite-unresolved-versions" in n for n in tr.notes)
+    verify = report.phases[-1]
+    assert verify.phase == Phase.VERIFY and verify.iterations >= 1    # the final build + fix loop ran
+    assert report.final_build is not None and not report.final_build.ok          # invariant 1
+    assert kb.credits == [] and _events(ws, "kb_credit_skipped") == []
 
 
 def test_retry_off_reports_without_rerun(cfg, ws):
@@ -139,13 +137,13 @@ def test_dirty_tree_is_not_reverted(cfg, ws):
     orch = make_orch(cfg, ws, rewrite=rw)
     waits: list = []
     orch._sleep = waits.append
-    real_pre = orch._maybe_pre_handlers
+    real_step = orch._step_rewrite
 
-    def pre_then_dirty(step, idx):
-        real_pre(step, idx)
-        if step.id == "spring.rewrite":
+    def dirty_then_rewrite(pr, step):
+        if step.id == "transform.rewrite":
             ws.write("local.txt", "uncommitted\n")
-    orch._maybe_pre_handlers = pre_then_dirty
+        return real_step(pr, step)
+    orch._step_rewrite = dirty_then_rewrite
     report = orch.run()
     assert rw.spring_calls == 1 and waits == []
     assert ws.read("local.txt") == "uncommitted\n"

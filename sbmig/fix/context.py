@@ -2,7 +2,11 @@
 migration notes, history — within a budget.
 
 Round 9: module-merge notes (`FixContext.reference_notes`) and the dropped first-wins copies as read-only reference text
-(`FixContext.reference_files`): never part of the build, never a SEARCH/REPLACE target (the loop drops such patches)."""
+(`FixContext.reference_files`): never part of the build, never a SEARCH/REPLACE target (the loop drops such patches).
+
+v2 (flow-v2): `ContextPacker.pack_script` packs ONE case (L2 signature) that may span many files for a fix-script
+request — the budget is spread over the erroring files (import block + windows around the error lines, whole file when
+small), files beyond it are listed by name only (the script reaches them through `p.errors` / `p.files`)."""
 from __future__ import annotations
 
 import logging
@@ -15,7 +19,7 @@ import yaml
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext
-from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, FixAttempt
+from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, FixAttempt, ScriptBase
 from sbmig.core.workspace import Workspace
 
 log = logging.getLogger("sbmig.fix.context")
@@ -186,6 +190,111 @@ def summarize_attempt(a: FixAttempt) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# v2 fix scripts: helpers (one case across many files)
+# ---------------------------------------------------------------------------
+SCRIPT_MAX_ERROR_LINES = 80          # error lines in the prompt (all of them are in p.errors) …
+SCRIPT_ERRORS_SHARE = 0.30           # … within this share of the budget
+SCRIPT_INDEX_SHARE = 0.15            # the "Files with errors" index within this share of the budget
+SCRIPT_MAX_INDEX_FILES = 200         # files named in the "Files with errors" index
+SCRIPT_MAX_FILES_SHOWN = 40          # files whose text is shown at most …
+SCRIPT_MIN_FILE_SHARE = 1500         # … and at least this many chars per shown file (fewer files, readable windows)
+SCRIPT_WINDOW_RADII = (60, 25, 10, 3, 0)   # windows around the error lines, widest first
+SCRIPT_OPTIONAL_RESERVE = 0.35       # share of the budget kept for hints / notes / poms before the files take the rest
+SCRIPT_MAX_POMS = 4
+SCRIPT_BASE_MAX_LINES = 60           # log / remaining / introduced lines of an augment base
+SCRIPT_TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
+                         "advisory_hints", "reference_notes", "related_files", "files", "pom", "base_result")
+
+
+def format_error_line(e: BuildError, max_message: int = 300) -> str:
+    """One compact line per error for a script prompt: `- file:line:col: message | symbol: … | location: …`."""
+    loc = (e.file or "(no file)").replace("\\", "/")
+    if e.line:
+        loc += f":{e.line}"
+        if e.column:
+            loc += f":{e.column}"
+    msg = " ".join((e.message or e.raw or "").split())
+    if len(msg) > max_message:
+        msg = msg[:max_message - 1] + "…"
+    parts = [f"- {loc}: {msg}"]
+    if e.symbol:
+        parts.append(f"symbol: {e.symbol}")
+    if e.location:
+        parts.append(f"location: {e.location}")
+    if e.artifact:
+        parts.append(f"artifact: {e.artifact.coordinates}")
+    if e.module and not e.file:
+        parts.append(f"module: {e.module}")
+    return " | ".join(parts)
+
+
+def dedupe_errors(errors: list[BuildError]) -> list[BuildError]:
+    """The case's errors once each (reactor builds repeat them), sorted by file / line / column / message."""
+    seen: set[tuple] = set()
+    out: list[BuildError] = []
+    for e in errors:
+        key = ((e.file or "").replace("\\", "/"), e.line or 0, e.column or 0, e.message or "", e.symbol or "",
+               e.location or "", e.artifact.coordinates if e.artifact else "")
+        if key not in seen:
+            seen.add(key)
+            out.append(e)
+    return sorted(out, key=lambda e: ((e.file or "~").replace("\\", "/"), e.line or 0, e.column or 0, e.message or ""))
+
+
+def summarize_script_attempt(a: FixAttempt) -> str:
+    """An earlier attempt on the case for a script prompt (script attempts: mode, version, run status)."""
+    if not a.script_mode:
+        return summarize_attempt(a)
+    head = (f"- attempt {a.id} (iteration {a.iteration}): script {a.script_mode}"
+            + (f" v{a.script_version}" if a.script_version else "") + f" → outcome: {a.outcome}"
+            + (f", errors {a.errors_before}→{a.errors_after}" if a.errors_after is not None else ""))
+    lines = [head]
+    r = a.script_result
+    if r is not None:
+        lines.append(f"    run: {r.status}" + (f", {len(r.changed_files)} file(s) changed" if r.changed_files else "")
+                     + (f" — {r.error.strip()[:300]}" if r.error else ""))
+    if a.analysis:
+        lines.append(f"    analysis: {a.analysis.strip()[:300]}")
+    for ie in a.introduced_errors[:5]:
+        lines.append(f"    introduced: {format_error_line(ie, 200)[2:]}")
+    return "\n".join(lines)
+
+
+def _capped(items: list[str], limit: int, what: str = "line(s)") -> list[str]:
+    out = list(items[:limit])
+    if len(items) > limit:
+        out.append(f"… {len(items) - limit} more {what}")
+    return out
+
+
+def script_base_result(base: ScriptBase) -> str:
+    """What the script to extend did in this project (augment prompt)."""
+    lines = [f"outcome in this project: {base.outcome or 'not run in this project'}"]
+    if base.status:
+        lines.append(f"run status: {base.status}")
+    if base.error:
+        lines.append("error: " + base.error.strip()[:2000])
+    if base.changed_files:
+        lines.append(f"changed files ({len(base.changed_files)}): " + ", ".join(base.changed_files[:40])
+                     + (" …" if len(base.changed_files) > 40 else ""))
+    if base.log:
+        shown = base.log[-SCRIPT_BASE_MAX_LINES:]
+        lines.append(f"log ({len(base.log)} line(s)" + (f", last {len(shown)} shown" if len(shown) < len(base.log)
+                                                          else "") + "):")
+        lines += [f"    {ln}" for ln in shown]
+    if base.remaining_errors:
+        lines.append(f"errors of this case still present after it ({len(base.remaining_errors)}):")
+        lines += [f"- {x}" for x in _capped(base.remaining_errors, SCRIPT_BASE_MAX_LINES, "error(s)")]
+    if base.introduced_errors:
+        lines.append(f"errors it introduced in the files it touched ({len(base.introduced_errors)}):")
+        lines += [f"- {x}" for x in _capped(base.introduced_errors, SCRIPT_BASE_MAX_LINES, "error(s)")]
+    if base.history:
+        lines.append("earlier versions:")
+        lines += [f"- {x}" for x in _capped(base.history, 20, "version(s)")]
+    return "\n".join(lines)
+
+
 def _truncate(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
@@ -259,6 +368,7 @@ class PackedContext:
     notes_included: list[str] = field(default_factory=list)
     truncated: list[str] = field(default_factory=list)
     chars: int = 0
+    files_listed: list[str] = field(default_factory=list)   # v2 scripts: erroring files named but not shown
 
     def render(self) -> str:
         return "\n\n".join(f"## {t}\n{body}" for t, body in self.sections)
@@ -420,6 +530,327 @@ class ContextPacker:
         top = [n for _, _, n in scored[: self.max_notes]]
         return always + top            # always-notes first (rendered first, dropped last)
 
+    # ------------------------------------------------------------------ v2 fix scripts
+    SCRIPT_FILES_TITLE = "Source (exact text around the error lines; line numbers as in p.errors)"
+    SCRIPT_INDEX_TITLE = "Files with errors"
+    SCRIPT_REFERENCE_FILES_TITLE = ("Reference files (read-only, NOT in the build — the script must never write "
+                                    "these paths)")
+    SCRIPT_RELATED_FILES_TITLE = ("Related project types named in the errors (exact text — the script edits these when "
+                                  "the fix belongs there, e.g. a repository interface that lost its CRUD methods)")
+
+    def pack_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, profile_summary: str = "",
+                    *, case_type: Optional[str] = None, budget: Optional[int] = None) -> PackedContext:
+        """Context for a fix-script request: ONE case (L2) that may span many files. `llm.max_context_chars` is
+        spread over the erroring files (import block + windows around the error lines, the whole file when small;
+        small files first, their surplus goes to the big ones); files beyond the budget are listed by name only.
+        Poms of the modules involved when the case is a resolution / pom error. Deterministic for the same input."""
+        budget = budget or self.cfg.llm.max_context_chars
+        summary = profile_summary or ctx.profile_summary
+        if case_type is None:
+            m = re.search(r"case=(\w+)", summary or "")
+            case_type = m.group(1) if m else None
+        packed = PackedContext()
+        secs: list[_Section] = []
+        errors = dedupe_errors(cluster.errors)
+        by_file: dict[str, list[int]] = {}
+        counts: dict[str, int] = {}
+        for e in errors:
+            if not e.file:
+                continue
+            f = e.file.replace("\\", "/")
+            by_file.setdefault(f, [])
+            counts[f] = counts.get(f, 0) + 1
+            if e.line and e.line not in by_file[f]:
+                by_file[f].append(e.line)
+        for lines_of in by_file.values():
+            lines_of.sort()
+        base = ctx.script_base
+        mode = ctx.script_mode or ("augment" if base is not None else "new")
+        if mode == "augment" and base is None:
+            mode = "new"
+
+        # header + errors (never truncated)
+        case_id = ctx.case_id or cluster.case_id or cluster.id
+        sig = ctx.signature_generic or ", ".join(cluster.generic_signatures[:3])
+        modules = sorted({e.module for e in errors if e.module} | ({cluster.module} if cluster.module else set()))
+        if mode == "augment" and base is not None:
+            what = (f"augment version {base.version} of this case's fix script" if base.version
+                    else "augment this run's fix script for the case") + " — return the COMPLETE new script"
+        else:
+            what = "a new fix script for this case (no stored script exists for it)"
+        header = [f"request: {what}", f"case: {case_id}" + (f" — L2 signature: {sig}" if sig else ""),
+                  f"kind: {cluster.kind.value}" + (f", module(s): {', '.join(modules)}" if modules else ""),
+                  f"errors: {len(errors)} in {len(by_file)} file(s) — every one of them is in p.errors"]
+        if summary:
+            header.append(f"project: {summary}")
+        header.append(f"phase: {ctx.phase.value}, iteration {ctx.iteration}"
+                      + (f", stall level {ctx.stall_level}" if ctx.stall_level else ""))
+        secs.append(_Section("header", "Case", "\n".join(header), 0, truncatable=False))
+        err_cap = max(2000, int(budget * SCRIPT_ERRORS_SHARE))
+        err_lines: list[str] = []
+        used = 0
+        for e in errors[:SCRIPT_MAX_ERROR_LINES]:
+            line = format_error_line(e)
+            if err_lines and used + len(line) + 1 > err_cap:
+                break
+            err_lines.append(line)
+            used += len(line) + 1
+        if len(errors) > len(err_lines):
+            err_lines.append(f"… {len(errors) - len(err_lines)} more error(s) — the script gets all of them in "
+                             "p.errors")
+        secs.append(_Section("errors", f"Errors of this case ({len(errors)})", "\n".join(err_lines), 1,
+                             truncatable=False))
+
+        # augment: the script to extend (never truncated) and what it did here
+        if mode == "augment" and base is not None:
+            label = f"version {base.version}" if base.version else "this run's script, not stored"
+            code = base.code.replace("\r\n", "\n").rstrip("\n")
+            fence = fence_for(code)
+            secs.append(_Section("base_code", f"Script to extend ({label}) — answer with the COMPLETE new script",
+                                 f"{fence}python\n{code}\n{fence}", 1.5, truncatable=False))
+            secs.append(_Section("base_result", f"What {label} did in this project", script_base_result(base), 1.6))
+
+        # poms of the modules involved (resolution / pom cases)
+        files = list(by_file)
+        if self._wants_pom(cluster, files):
+            for i, pom in enumerate(self._script_poms(ws, cluster, files)):
+                try:
+                    secs.append(_Section("pom", f"POM ({pom})", pom_excerpt(ws.read(pom), pom), 3 + i / 100))
+                    packed.files_included.append(pom)
+                except (OSError, UnicodeDecodeError, ValueError):
+                    pass
+
+        related = self._related_type_files(ws, cluster, files)
+        if related:
+            blocks = [self._file_block(ws, f, [])[0] for f in related]
+            secs.append(_Section("related_files", self.SCRIPT_RELATED_FILES_TITLE, "\n\n".join(blocks), 2.2))
+        if ctx.reference_files:
+            secs.append(_Section("reference_files", self.SCRIPT_REFERENCE_FILES_TITLE,
+                                 "\n\n".join(self._reference_block(label, text)
+                                             for label, text in sorted(ctx.reference_files.items())), 2.5))
+        if ctx.advisory_hints:
+            secs.append(_Section("advisory_hints", self.ADVISORY_TITLE,
+                                 "The libraries below were removed or replaced by the migration on purpose. The script "
+                                 "rewrites the code that still uses them to the named replacement (public signatures "
+                                 "kept so callers still compile); it never re-adds the removed library.\n"
+                                 + "\n".join(f"- {h}" for h in ctx.advisory_hints), 4))
+        if ctx.reference_notes:
+            secs.append(_Section("reference_notes", self.REFERENCE_NOTES_TITLE,
+                                 "\n".join(f"- {n}" for n in ctx.reference_notes), 4.5))
+        if ctx.kb_hints:
+            secs.append(_Section("kb_hints", "Knowledge-base hints (similar cases)",
+                                 "\n".join(f"- {h}" for h in ctx.kb_hints), 5))
+        if ctx.previous_attempts:
+            secs.append(_Section("previous_attempts",
+                                 "Previous attempts on this case (they did NOT resolve it — do not repeat them)",
+                                 "\n".join(summarize_script_attempt(a) for a in ctx.previous_attempts), 6))
+        if ctx.other_errors_summary:
+            secs.append(_Section("other_errors", "Other error cases in this build (for awareness; fix only this case)",
+                                 ctx.other_errors_summary.strip(), 7))
+        if ctx.plan_notes:
+            secs.append(_Section("plan_notes", "Plan notes", "\n".join(f"- {n}" for n in ctx.plan_notes), 8))
+
+        # the erroring files, sized to what the other sections leave
+        renderings, import_text = self._script_renderings(ws, by_file)
+        match_text = "\n".join(
+            [e.message for e in errors] + [e.symbol or "" for e in errors] + [e.location or "" for e in errors]
+            + [e.raw[:2000] for e in errors[:40]] + [e.artifact.coordinates for e in errors if e.artifact]
+            + [import_text])
+        # always-notes (the v1 fix policy: SEARCH/REPLACE, "fix tests so they compile") are left out — the script
+        # system prompt carries the v2 policy; keyword-selected technical notes stay
+        notes = [n for n in self.select_notes(match_text, case_type, ctx.phase.value) if not n.always]
+        for i, n in enumerate(notes):
+            body = n.body()
+            if body:
+                secs.append(_Section("notes", f"Migration note: {n.title}", body, 10 + i, always=n.always))
+
+        def size(s: _Section) -> int:
+            return len(s.title) + len(s.text) + 6
+
+        fixed = sum(size(s) for s in secs if not s.truncatable or s.key in ("base_result", "pom"))
+        optional = sum(size(s) for s in secs if s.truncatable and s.key not in ("base_result", "pom"))
+        index_cap = max(1500, int(budget * SCRIPT_INDEX_SHARE))
+        index_estimate = len(self._file_index(by_file, counts, set(), set(), index_cap)) + 40 if by_file else 0
+        avail = budget - fixed - index_estimate
+        file_budget = max(SCRIPT_MIN_FILE_SHARE, avail - min(optional, int(max(avail, 0) * SCRIPT_OPTIONAL_RESERVE)))
+        chosen = self._allocate_files(by_file, counts, renderings, file_budget)
+        shown = sorted(chosen)
+        missing = sorted(f for f in by_file if PurePosixPath(f).name != "pom.xml" and not ws.exists(f))
+        packed.files_included = [*shown, *packed.files_included]
+        packed.files_listed = sorted(f for f in by_file if f not in chosen and f not in missing
+                                     and PurePosixPath(f).name != "pom.xml")
+        packed.files_included += [f for f in related if f not in packed.files_included]
+        if by_file:
+            secs.append(_Section("file_index", f"{self.SCRIPT_INDEX_TITLE} ({len(by_file)})",
+                                 self._file_index(by_file, counts, set(chosen), set(missing), index_cap), 1.8,
+                                 truncatable=False))
+        if shown:
+            secs.append(_Section("files", self.SCRIPT_FILES_TITLE, "\n\n".join(chosen[f] for f in shown), 2))
+
+        self._fit(secs, budget, packed, order=SCRIPT_TRUNCATE_ORDER)
+        secs.sort(key=lambda s: s.order)
+        packed.sections = [(s.title, s.text) for s in secs]
+        packed.notes_included = [s.title.removeprefix("Migration note: ") for s in secs if s.key == "notes"]
+        packed.chars = sum(len(t) + len(b) + 4 for t, b in packed.sections)
+        return packed
+
+    def _script_poms(self, ws: Workspace, cluster: ErrorCluster, files: list[str]) -> list[str]:
+        """The poms of the modules a case touches: erroring poms, the module pom of every erroring file, the pom of a
+        module named by a file-less error (directory name), and the root pom for resolution errors."""
+        out: list[str] = []
+
+        def add(p: Optional[str]) -> None:
+            if p and p not in out:
+                out.append(p)
+
+        for f in files:
+            if PurePosixPath(f).name == "pom.xml" and ws.exists(f):
+                add(f)
+        for f in files:
+            add(nearest_pom(ws, f))
+        mods = sorted({e.module for e in cluster.errors if e.module and not e.file})
+        if mods:
+            try:
+                poms = sorted(p.replace("\\", "/") for p in ws.pom_files())
+            except Exception:
+                poms = []
+            for m in mods:
+                add(next((p for p in poms if PurePosixPath(p).parent.name == m), None))
+        if ws.exists("pom.xml") and (not out or cluster.kind in POM_KINDS):
+            add("pom.xml")
+        return out[:SCRIPT_MAX_POMS]
+
+    def _script_renderings(self, ws: Workspace, by_file: dict[str, list[int]]) -> tuple[dict[str, list[str]], str]:
+        """Per erroring file (poms excluded — they get a POM section): its possible renderings, most informative
+        first (whole file when small, then import block + ever narrower windows around the error lines, then windows
+        without the import block), and the import lines of all files (note selection)."""
+        out: dict[str, list[str]] = {}
+        imports_all: list[str] = []
+        for f in sorted(by_file):
+            if PurePosixPath(f).name == "pom.xml":
+                continue
+            try:
+                if not ws.exists(f):
+                    continue
+                text = ws.read(f).replace("\r\n", "\n")
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            lines = text.split("\n")
+            if lines and lines[-1] == "":
+                lines = lines[:-1]
+            imports_all += [ln for ln in lines if ln.startswith(("import ", "package "))]
+            total = len(lines)
+            imp = self._import_range(lines) if f.endswith(".java") else None
+            cands: list[str] = []
+            if total <= WHOLE_FILE_MAX_LINES:
+                cands.append(self._render_spans(f, lines, [(1, total)] if total else []))
+            for r in SCRIPT_WINDOW_RADII:
+                cands.append(self._render_spans(f, lines, self._spans(imp, by_file[f], r, total)))
+            if imp:
+                for r in (3, 0):
+                    cands.append(self._render_spans(f, lines, self._spans(None, by_file[f], r, total)))
+            out[f] = list(dict.fromkeys(c for c in cands if c))
+        return out, "\n".join(imports_all) + "\n"
+
+    @staticmethod
+    def _allocate_files(by_file: dict[str, list[int]], counts: dict[str, int], renderings: dict[str, list[str]],
+                        budget: int) -> dict[str, str]:
+        """Water-filling: at most SCRIPT_MAX_FILES_SHOWN files (most errors first, then path), each at least
+        SCRIPT_MIN_FILE_SHARE chars; files that need little take it and leave the rest to the big ones (each takes
+        its most informative rendering that fits its share); a file with no rendering that fits is listed by name
+        only."""
+        ranked = sorted((f for f in renderings if renderings[f]), key=lambda f: (-counts.get(f, 0), f))
+        max_shown = max(1, min(SCRIPT_MAX_FILES_SHOWN, budget // SCRIPT_MIN_FILE_SHARE))
+        cands = ranked[:max_shown]
+        order = sorted(cands, key=lambda f: (len(renderings[f][0]), f))
+        chosen: dict[str, str] = {}
+        remaining, left = budget, len(order)
+        for f in order:
+            share = remaining // max(left, 1)
+            left -= 1
+            pick = next((r for r in renderings[f] if len(r) + 2 <= share), None)
+            if pick is None:
+                continue
+            chosen[f] = pick
+            remaining -= len(pick) + 2
+        return chosen
+
+    @staticmethod
+    def _file_index(by_file: dict[str, list[int]], counts: dict[str, int], shown: set[str], missing: set[str],
+                    max_chars: int = 30000) -> str:
+        """Every erroring file with its error count and lines (shown files first, then by path), within `max_chars`
+        and SCRIPT_MAX_INDEX_FILES entries."""
+        lines = [("Files marked \"not shown\" are not in the source section — the script must reach them through "
+                  "`p.errors` / `p.files(...)`.")]
+        names = sorted(by_file, key=lambda f: (f not in shown, f))
+        used = len(lines[0])
+        listed = 0
+        for f in names[:SCRIPT_MAX_INDEX_FILES]:
+            ls = by_file[f]
+            where = (", line(s) " + ", ".join(str(x) for x in ls[:12]) + (" …" if len(ls) > 12 else "")) if ls else ""
+            if PurePosixPath(f).name == "pom.xml":
+                mark = " (see the POM section)"
+            elif f in missing:
+                mark = " (file not found in the project)"
+            elif f in shown:
+                mark = ""
+            else:
+                mark = " (not shown)"
+            entry = f"- {f} — {counts.get(f, 0)} error(s){where}{mark}"
+            if listed and used + len(entry) + 1 > max_chars:
+                break
+            lines.append(entry)
+            used += len(entry) + 1
+            listed += 1
+        if len(names) > listed:
+            lines.append(f"… {len(names) - listed} more file(s), not shown (all of them in p.errors)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _import_range(lines: list[str]) -> Optional[tuple[int, int]]:
+        """1-based (first package/import line, last import line) of a Java file, or None."""
+        first = next((i for i, ln in enumerate(lines) if ln.startswith(("package ", "import "))), None)
+        if first is None:
+            return None
+        last = max((i for i, ln in enumerate(lines) if ln.startswith("import ")), default=first)
+        return first + 1, max(first, last) + 1
+
+    @staticmethod
+    def _spans(imp: Optional[tuple[int, int]], err_lines: list[int], radius: int, total: int) -> list[tuple[int, int]]:
+        if total <= 0:
+            return []
+        spans: list[tuple[int, int]] = [imp] if imp else []
+        lines = sorted({ln for ln in err_lines if 0 < ln <= total})
+        if lines:
+            spans += [(max(1, ln - radius), min(total, ln + radius)) for ln in lines]
+        else:                                            # no line numbers (or stale ones): the head of the file
+            spans.append((1, min(total, max(2 * radius, 20))))
+        spans.sort()
+        merged: list[tuple[int, int]] = []
+        for a, b in spans:
+            if merged and a <= merged[-1][1] + 4:          # a gap of ≤ 3 lines costs less than another header
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return merged
+
+    @staticmethod
+    def _render_spans(path: str, lines: list[str], spans: list[tuple[int, int]]) -> str:
+        if not spans:
+            return f"// {path} (empty file)"
+        total = len(lines)
+        lang = lang_for(path)
+        if spans == [(1, total)]:
+            body = "\n".join(lines)
+            fence = fence_for(body)
+            return f"// {path} lines 1-{total} (whole file)\n{fence}{lang}\n{body}\n{fence}"
+        out = []
+        for a, b in spans:
+            body = "\n".join(lines[a - 1:b])
+            fence = fence_for(body)
+            out.append(f"// {path} lines {a}-{b} (of {total})\n{fence}{lang}\n{body}\n{fence}")
+        return "\n".join(out)
+
     # ------------------------------------------------------------------ internals
     @staticmethod
     def _cluster_files(cluster: ErrorCluster) -> list[str]:
@@ -541,14 +972,15 @@ class ContextPacker:
             blocks.append(f"// {path} lines {a}-{b} (of {len(lines)})\n{fence}{lang}\n{body}\n{fence}")
         return "\n".join(blocks), imports
 
-    def _fit(self, secs: list[_Section], budget: int, packed: PackedContext) -> None:
+    def _fit(self, secs: list[_Section], budget: int, packed: PackedContext,
+             order: Optional[tuple[str, ...]] = None) -> None:
         def total() -> int:
             return sum(len(s.title) + len(s.text) + 6 for s in secs)
 
         over = total() - budget
         if over <= 0:
             return
-        for key in self.TRUNCATE_ORDER:
+        for key in order or self.TRUNCATE_ORDER:
             if over <= 0:
                 break
             group = [s for s in secs if s.key == key and s.truncatable]

@@ -1,13 +1,21 @@
 """Error clustering (ARCHITECTURE §4).
 
-Clusters are keyed by
+v2 (flow-v2, docs/INTERFACES.md "Script fix loop (L)"): the fix loop works on **cases** — `cluster_cases` groups the
+errors of a build by their L2 signature (`signature_generic`) ACROSS files, so one fix script fixes the same cause in
+every file (v1 asked the LLM once per file). The case id is the case catalog's: ``sha1(signature_generic)[:10]``
+(`sbmig.kb.catalog.case_id_for`), so ids match ``kb/catalog`` and ``kb/scripts/<case_id>/``; an error without an L2
+gets ``sha1(kind|file|L1)[:10]``. A case cluster has ``id = "case:<case_id>"``, ``case_id``, ``file = None`` and the
+common module (None when the case spans modules).
+
+v1 clusters (`cluster_errors`, still used by callers outside the fix loop) are keyed by
 * ``(kind, file)``          for COMPILE / TEST_COMPILE (falls back to the module when the file is unknown)
 * ``(kind, artifact.key)``  for DEPENDENCY / PLUGIN / PARENT resolution and POM_INVALID with an artifact
 * ``(kind, module)``        otherwise
 
-Priorities (lower = handled first): PARENT_RESOLUTION 10, POM_INVALID 15, DEPENDENCY_RESOLUTION 20,
+Priorities (both, lower = handled first): PARENT_RESOLUTION 10, POM_INVALID 15, DEPENDENCY_RESOLUTION 20,
 PLUGIN_RESOLUTION 25, ENFORCER 30, REWRITE 35, COMPILE 50 + reactor index, TEST_COMPILE 80 + reactor index,
-PLUGIN_EXECUTION 90, TEST_FAILURE 95, UNKNOWN 99. Unknown modules get +40. Ties: error count desc, then id.
+PLUGIN_EXECUTION 90, TEST_FAILURE 95, UNKNOWN 99. Unknown modules get +40; a case takes the lowest priority of its
+errors (its earliest reactor module). Ties: error count desc, then id.
 """
 from __future__ import annotations
 
@@ -104,6 +112,78 @@ def cluster_errors(errors: list[BuildError], profile: Optional[ProjectProfile] =
 
 
 def cluster_label(c: ErrorCluster) -> str:
-    """Short human label: 'compile src/main/java/Foo.java (3)'."""
+    """Short human label: 'compile src/main/java/Foo.java (3)'; a case: 'compile case abc1234567
+    cannot_find_symbol|clientIp (7 in 4 files)'."""
+    if c.case_id:
+        sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
+        sig = sig.split("|", 1)[1] if "|" in sig else sig
+        return (f"{c.kind.value} case {c.case_id}{' ' + sig[:80] if sig else ''} "
+                f"({len(c.errors)} in {len(case_files(c))} file(s))")
     where = c.file or (c.errors[0].artifact.key if c.errors and c.errors[0].artifact else None) or c.module or "-"
     return f"{c.kind.value} {where} ({len(c.errors)})"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2: cases (one L2 signature across files)
+# ---------------------------------------------------------------------------------------------------------------------
+CASE_PREFIX = "case:"
+
+
+def _posix(path: Optional[str]) -> str:
+    p = (path or "").replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    return p
+
+
+def l2_case_id(signature_generic: Optional[str]) -> str:
+    """The case catalog's id of an L2 signature (``sha1(signature_generic)[:10]``; "" without one) — the function of
+    `sbmig.kb.catalog` when it imports, the same formula otherwise (ids must match kb/catalog and kb/scripts)."""
+    if not signature_generic:
+        return ""
+    try:
+        from sbmig.kb.catalog import case_id_for
+        return case_id_for(signature_generic)
+    except Exception:  # pragma: no cover - the KB package is ours; the formula is the contract
+        return hashlib.sha1(signature_generic.encode("utf-8")).hexdigest()[:10]
+
+
+def case_id_of(e: BuildError) -> str:
+    """The case of one error: its L2 id, or — no L2 — ``sha1(kind|file|L1)[:10]`` (file = posix path, '' for none;
+    L1 = the signature, else ``kind|message``)."""
+    cid = l2_case_id(e.signature_generic)
+    if cid:
+        return cid
+    key = "|".join((e.kind.value, _posix(e.file), e.signature or f"{e.kind.value}|{e.message}"))
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+
+
+def case_files(c: ErrorCluster) -> list[str]:
+    """The distinct files of a cluster's errors (posix, in error order)."""
+    return list(dict.fromkeys(_posix(e.file) for e in c.errors if e.file))
+
+
+def cluster_cases(errors: list[BuildError], profile: Optional[ProjectProfile] = None,
+                  scope: Optional[str] = None) -> list[ErrorCluster]:
+    """v2 clusters: one per case (L2) across files. `scope` (a targeted loop's build target, MSA services) is appended
+    to the id (``case:<id>@<scope>``) so two services' attempts on the same case never count against each other —
+    `case_id` stays the plain case id (the script store key)."""
+    groups: dict[str, list[BuildError]] = {}
+    for e in errors:
+        groups.setdefault(case_id_of(e), []).append(e)
+    suffix = f"@{_posix(scope).strip('/')}" if scope and _posix(scope).strip("/") else ""
+    out: list[ErrorCluster] = []
+    for cid, errs in groups.items():
+        first = errs[0]
+        sigs: list[str] = []
+        for e in errs:
+            s = e.signature or f"{e.kind.value}|{e.message}"
+            if s not in sigs:
+                sigs.append(s)
+        modules = list(dict.fromkeys(e.module for e in errs if e.module))
+        module = modules[0] if len(modules) == 1 and all(e.module for e in errs) else None
+        prio = min(priority_for(e.kind, profile, e.module, e.file) for e in errs)
+        out.append(ErrorCluster(id=f"{CASE_PREFIX}{cid}{suffix}", kind=first.kind, file=None, module=module,
+                                errors=errs, signatures=sigs, priority=prio, case_id=cid))
+    out.sort(key=lambda c: (c.priority, -len(c.errors), c.id))
+    return out

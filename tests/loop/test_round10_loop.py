@@ -22,8 +22,10 @@ GONE = "compile|cannot_find_symbol|class Gone"
 
 
 def l1(file: str) -> BuildError:
+    """File-less L1, the case (L2) per file: Foo and Bar are two cases."""
     return BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file=file, line=3, module="demo",
-                      symbol="class Gone", signature=GONE, signature_generic="compile|cannot_find_symbol")
+                      symbol="class Gone", signature=GONE,
+                      signature_generic="compile|cannot_find_symbol|" + file.rsplit("/", 1)[-1])
 
 
 def files_build(w, call):
@@ -71,8 +73,8 @@ def test_same_400_for_two_prompts_is_a_configuration_error(cfg, ws, profile):
     calls: list[str] = []
 
     def fix(w, c, ctx):
-        calls.append(c.file)
-        return FixProposal(changes=[], model="m", prompt_hash=f"h-{c.file}-{len(calls)}",
+        calls.append(c.errors[0].file)
+        return FixProposal(changes=[], model="m", prompt_hash=f"h-{c.errors[0].file}-{len(calls)}",
                            analysis='llm-error: LLM request failed (status=400): {"error": "unsupported model #m"}',
                            llm_usage=LLMUsage(model="m", calls=1))
 
@@ -95,10 +97,10 @@ def test_one_400_is_only_a_failed_attempt(cfg, ws, profile):
         if n["i"] == 1:
             return FixProposal(changes=[], model="m", prompt_hash="h1", llm_usage=LLMUsage(model="m", calls=1),
                                analysis='llm-error: LLM request failed (status=400): {"error": "bad tool call"}')
-        return write_fix(c.file, "class X { ok }\n")
+        return write_fix(c.errors[0].file, "class X { ok }\n")
 
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=files_build), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 4)
+    pr = loop.run(Phase.VERIFY, "package", 4)
     assert pr.ok and "llm-config-error" not in loop.flags and loop.llm_unavailable is None
 
 
@@ -108,7 +110,7 @@ def test_non_transport_exception_from_the_fixer_is_a_failed_attempt(cfg, ws, pro
 
     cfg.llm.cooldown_seconds = 0
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=files_build), fixer=FakeFixer(fn=fix))
-    pr = loop.run(Phase.SPRING, "compile", 4)
+    pr = loop.run(Phase.VERIFY, "package", 8)          # no script ever → `new` again, then repeated_failure
     assert loop.llm_unavailable is None and "llm-unavailable" not in loop.flags
     assert {b.reason for b in pr.blocked} == {BlockReason.REPEATED_FAILURE}
 
@@ -116,16 +118,16 @@ def test_non_transport_exception_from_the_fixer_is_a_failed_attempt(cfg, ws, pro
 # ------------------------------------------------------------------------------------------------ A9 (loop)
 def test_pinned_block_case_becomes_a_blocked_item_with_the_persons_text(cfg, ws, profile):
     def match(c):
-        if c.file != FOO:
+        if c.errors[0].file != FOO:
             return KBMatch()
         return KBMatch(case_hits=[CaseHit(case_id="case-9", name="Gone", errors=list(c.errors), pinned=True,
                                           action=CaseAction(kind="block", block_reason="vendor API, ask team X",
                                                             suggestion="see ticket ABC-1"))])
 
-    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(c.file, "class X { ok }\n"))
+    fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(c.errors[0].file, "class X { ok }\n"))
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=files_build), fixer=fixer,
                      kb=FakeKB(match=match))
-    pr = loop.run(Phase.SPRING, "compile", 3)
+    pr = loop.run(Phase.VERIFY, "package", 3)
     assert [ctx_c for ctx_c in fixer.contexts]                         # Bar still went to the LLM
     item = next(b for b in pr.blocked if any(FOO in f for f in b.files))
     assert item.reason == BlockReason.EXTERNAL_API_INCOMPATIBLE
@@ -154,7 +156,7 @@ def test_watchdog_silent_while_a_build_or_an_llm_call_runs(cfg, ws, profile, mon
     def slow_llm(w, c, ctx):
         with llm_call_in_flight():                         # the HTTP call (LLMFixer._call marks it)
             time.sleep(0.9)
-        return write_fix(c.file, "class X { ok }\n")
+        return write_fix(c.errors[0].file, "class X { ok }\n")
 
     with caplog.at_level(logging.WARNING, logger="sbmig"):
         pr = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=slow_build),
@@ -170,7 +172,7 @@ def test_watchdog_still_speaks_when_nothing_heartbeats(cfg, ws, profile, monkeyp
 
     def slow_prompt_packing(w, c, ctx):                    # stuck outside the HTTP call (nearest_pom, grep …)
         time.sleep(0.25)
-        return write_fix(c.file, "class X { ok }\n")
+        return write_fix(c.errors[0].file, "class X { ok }\n")
 
     with caplog.at_level(logging.WARNING, logger="sbmig"):
         make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=files_build),

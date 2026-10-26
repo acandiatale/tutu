@@ -1,31 +1,42 @@
-"""Rule-based migration planner (no LLM): ProjectProfile + Config (+ KB) → MigrationPlan.
+"""Rule-based migration planner (no LLM), v2 (flow-v2): ProjectProfile + Config → MigrationPlan.
 
-Step ids (non-MSA):  jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, spring.loop,
-restructure.apply, restructure.loop, verify.build.
+Step ids (non-MSA): transform.rewrite, restructure.apply | restructure.boot_pom | restructure.pom_only,
+restructure.review, verify.build. No build runs before verify.build; its fix loop (`loop.phases.verify`) fixes every
+error with LLM scripts.
 
-* Round 9c routing: `case_type == spring_boot` with `layout.boot_as_is == "in-place"` (default) plans
-  `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules": profile.boot_modules})
-  instead of `restructure.apply` — directories kept, poms only; `boot_as_is == "layout"` and every non-Boot case
-  keep `restructure.apply` (mode layout: `{name}-boot` / `{name}-back` / `{name}-front`). MSA `restructure.msa_pom`
-  params also carry `boot_modules`.
-
-* `spring.optional_bump` (StepKind.RESTRUCTURE, phase SPRING, params {"mode": "optional_bump"}, optional=True) is
-  emitted when `cfg.plan.optional_bump_phase == "spring"` and optional / remove_when_present artifacts are configured;
-  with `"restructure"` the bumps happen inside the restructure step only (previous behaviour).
-* MSA: per target `jdk21.rewrite@<x>`, `jdk21.loop@<x>`, `spring.rewrite@<x>`, `spring.optional_bump@<x>`
-  (params also carry `service` / `target`), `spring.loop@<x>` (target = root dir) — shared **library roots first**
-  (dependency / reactor order), then the services; then `restructure.msa_pom` (params `services`, `parent_policy`,
-  `library_roots` = library root pom paths), `restructure.loop` and `verify.build` (or `verify.build@<x>` per target
-  when there is no root aggregator). With `layout.msa_parent_policy == "top-aggregator"` and a root aggregator whose
-  reactor covers every target, a single un-suffixed rewrite/loop chain runs at the repo root instead.
-* No java sources (pom-only, S3): no jdk21/spring steps; `restructure.pom_only` (StepKind.MSA_POM, mode msa_pom) or
-  `restructure.msa_pom`, the restructure loop and verify.
+* `transform.rewrite` (StepKind.OPENREWRITE, Phase.TRANSFORM): ONE OpenRewrite run on the as-is classpath. Recipes,
+  in this order: `openrewrite.recipes.jdk21`; advisory recipes (only with `advisories.allow_recipes`); `jakarta`
+  (spring_legacy and servlet_tomcat always, pure_java only with Java EE javax imports, never spring_boot — the Boot
+  umbrella migrates jakarta itself); `spring_framework_7` / `spring_security_7` (spring_legacy; security only with
+  spring-security) — both empty by default; `spring_boot_4` (spring_boot); `junit5` (junit4 detected) — empty by
+  default; `extra.<case>` + `extra.all`. Never: project recipes (`com.company.migrate.*`), library recipes
+  (`knowledge/recipes/library_recipes.yml`), KB recipes / candidates (business decision, PLAN-v2 §2).
+* Restructure (unchanged from v1, round 9c routing): `case_type == spring_boot` with `layout.boot_as_is ==
+  "in-place"` (default) plans `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules"})
+  — directories kept, poms only; `boot_as_is == "layout"` and every non-Boot case plan `restructure.apply`
+  (StepKind.RESTRUCTURE, params {"mode": "layout", "starter"}: `{name}-boot` / `{name}-back` / `{name}-front`).
+  The in-house optional artifacts are bumped inside the restructure step; v2 never plans `spring.optional_bump`.
+* `restructure.review` (StepKind.REVIEW, Phase.RESTRUCTURE, params {"restructure_step": <id>}): the LLM structure
+  review of poms / dependencies / modules right after the restructure (business rule, PLAN-v2 §1.4); omitted with a
+  note when `review.enabled` is false.
+* `verify.build` (StepKind.BUILD, Phase.VERIFY, `mvn clean package`).
+* MSA: `transform.rewrite@<x>` per target (params `service`, target = its directory) — shared **library roots
+  first** (dependency / reactor order; never the Boot set), then the services with their own sub-case; then
+  `restructure.msa_pom` (params `services`, `parent_policy`, `boot_modules`, `library_roots`), `restructure.review`
+  and `verify.build` (or `verify.build@<x>` per target when there is no root aggregator). With
+  `layout.msa_parent_policy == "top-aggregator"` and a root aggregator whose reactor covers every target, one
+  un-suffixed `transform.rewrite` at the repo root runs the union of the sub-case recipes instead.
+* No java sources (pom-only, S3): no transform step; `restructure.pom_only` (StepKind.MSA_POM, mode msa_pom) or
+  `restructure.msa_pom`, the review and verify.
 * `profile.build_tool != "maven"` (S4): zero steps and a note (the orchestrator aborts).
-* Library advisories (`build_plan(..., advisories=findings)`, sbmig.advisory): for policy "recipe" findings the
-  advisory recipes that are neither planned nor covered by a planned composite are PREPENDED to each
-  spring.rewrite step (before the Boot umbrella); plan notes `advisory: <id> → <recipes> (added)` /
-  `(covered by the plan)` / `advisory: <id> → guide (<reason>)`. MSA per-service steps only get the advisories
-  whose library the service uses. Follow-ups are not planner notes (the handover writes them).
+* v1 settings that v2 ignores (each noted when set): `plan.intermediate_builds`, `loop.phases.{jdk21,spring,
+  restructure}.enabled`, `plan.parent_phase: spring`, `plan.optional_bump_phase: spring`. Pre-emptive handlers are
+  off (sbmig/plan/pre_handlers.py stays until PLAN-v2 step 4).
+* Library advisories (`build_plan(..., advisories=findings)`, sbmig.advisory): findings are guide-only unless
+  `advisories.allow_recipes` is set; then the advisory recipes that are neither planned nor covered by a planned
+  composite run in the transform step right after the jdk21 set (v1 order: before the Boot umbrella). Plan notes
+  `advisory: <id> → <recipes> (added)` / `(covered by the plan)` / `advisory: <id> → guide (<reason>)`. MSA
+  per-service steps only get the advisories whose library the service uses. Follow-ups are written by the handover.
 """
 from __future__ import annotations
 
@@ -34,20 +45,13 @@ import posixpath
 import re
 from typing import Any, Optional
 
-from sbmig.core.config import Config
+from sbmig.core.config import Config, RecipeSetConfig
 from sbmig.core.models import (CaseType, MigrationPlan, Phase, PlanStep, ProjectProfile, RecipeRef, ServiceInfo,
                                StepKind)
 
 from .catalog import GATES, default_catalog, prefix_artifact
-from .pre_handlers import pre_handler_reasons
 
 log = logging.getLogger("sbmig.plan")
-
-ART_MIGRATE = "org.openrewrite.recipe:rewrite-migrate-java"
-ART_SPRING = "org.openrewrite.recipe:rewrite-spring"
-ART_TESTING = "org.openrewrite.recipe:rewrite-testing-frameworks"
-ART_STATIC = "org.openrewrite.recipe:rewrite-static-analysis"
-SERVLET_RECIPE = "com.company.migrate.ServletToJakartaAndBoot"
 
 # javax packages that are Java EE (→ jakarta); JDK packages like javax.swing/sql/crypto/naming/net are excluded
 EE_JAVAX = ("javax.servlet", "javax.persistence", "javax.xml.bind", "javax.validation", "javax.inject",
@@ -57,6 +61,17 @@ EE_JAVAX = ("javax.servlet", "javax.persistence", "javax.xml.bind", "javax.valid
             "javax.security.enterprise")
 # javax.annotation is shared with JSR-305 (@Nullable) and the JDK (javax.annotation.processing): count it as EE
 # only when the analyzer confirmed EE usage (library "javax-annotation").
+
+TRANSFORM = "transform.rewrite"
+REVIEW = "restructure.review"
+V1_LOOP_PHASES = ("jdk21", "spring", "restructure")
+
+# recipe buckets of one transform run, in run order (labels for the step title)
+_BUCKETS: tuple[tuple[str, str], ...] = (
+    ("jdk21", "Java 21"), ("advisory", "advisory recipes"), ("jakarta", "jakarta"),
+    ("framework", "Spring Framework 7"), ("security", "Spring Security 7"), ("boot", "Spring Boot 4.1"),
+    ("junit5", "JUnit 5"), ("extra", "extra recipes"),
+)
 
 
 def artifact_for(recipe_id: str, cfg: Optional[Config] = None) -> Optional[str]:
@@ -76,15 +91,11 @@ def _project_recipe_file(recipe_id: str, cfg: Config) -> Optional[str]:
 
 
 def recipe_ref(recipe_id: str, cfg: Config) -> RecipeRef:
+    """A recipe id → RecipeRef (`com.company.*` ids = project recipes of `openrewrite.base_recipe_dir`; v2 plans
+    them only when a company config lists them in `openrewrite.recipes.extra`)."""
     if recipe_id.startswith("com.company."):
         return RecipeRef(id=recipe_id, source="project", file=_project_recipe_file(recipe_id, cfg))
     return RecipeRef(id=recipe_id, source="builtin", artifact=artifact_for(recipe_id, cfg))
-
-
-def _refs(ids: list[str], cfg: Config, into: list[RecipeRef]) -> None:
-    for i in ids:
-        if not any(r.id == i for r in into):
-            into.append(recipe_ref(i, cfg))
 
 
 def ee_javax_packages(profile_source_javax: dict[str, int], has_javax_annotation: bool) -> list[str]:
@@ -94,117 +105,98 @@ def ee_javax_packages(profile_source_javax: dict[str, int], has_javax_annotation
     return sorted(set(hits))
 
 
+def _short(recipe_id: str) -> str:
+    return recipe_id.rsplit(".", 1)[-1]
+
+
+def _shorts(ids: list[str]) -> str:
+    return ", ".join(_short(i) for i in ids)
+
+
 # ---------------------------------------------------------------------------
-# per-case spring recipes
+# per-case transform recipes
 # ---------------------------------------------------------------------------
 class _Facts:
-    """The few profile facts the recipe rules need; for MSA computed per service. `artifacts` = declared
-    dependency keys (direct + managed) of the poms concerned — library-rule caveats (round 10)."""
+    """The few profile facts the recipe rules need; for MSA computed per service."""
 
-    def __init__(self, case: CaseType, libs: set[str], javax: dict[str, int], artifacts: Optional[set[str]] = None):
+    def __init__(self, case: CaseType, libs: set[str], javax: dict[str, int]):
         self.case = case
         self.libs = libs
         self.javax = javax
-        self.artifacts = set(artifacts or ())
 
 
-def _declared_keys(poms: list[Any]) -> set[str]:
-    return {d.key for p in poms for d in [*p.dependencies, *p.dependency_management]}
-
-
-def _library_refs(facts: _Facts, cfg: Config, out: list[RecipeRef], notes: list[str], where: str) -> None:
-    """Round 10: library-conditional recipes (knowledge/recipes/library_recipes.yml) for plans without the Boot
-    umbrella — Spring Batch 4 → 6, Hibernate 5 → 7.1, Thymeleaf spring5 → spring6 — appended after the case's own
-    recipes, in table order. Never raises (an unreadable table only costs the recipes)."""
-    try:
-        from .library_recipes import rules_for
-
-        rules = rules_for(facts.case, facts.libs)
-    except Exception as e:  # pragma: no cover - defensive
-        log.warning("library recipes unavailable for planning: %s", e)
-        return
-    for rule in rules:
-        added = [i for i in rule.recipes if not any(r.id == i for r in out)]
-        _refs(rule.recipes, cfg, out)
-        if added:
-            notes.append(f"spring{where}: {rule.library} detected → {', '.join(_short(i) for i in added)}"
-                         + (f" ({rule.note})" if rule.note else ""))
-        for c in rule.caveats:
-            if c.artifact in facts.artifacts:
-                notes.append(f"spring{where}: {rule.library}: {c.note}")
-
-
-def spring_recipes(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> list[RecipeRef]:
+def _case_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> dict[str, list[str]]:
+    """Recipe ids per bucket for one transform run (the advisory bucket is filled by the caller)."""
     rs = cfg.openrewrite.recipes
-    out: list[RecipeRef] = []
+    out: dict[str, list[str]] = {k: [] for k, _ in _BUCKETS}
     where = f" [{label}]" if label else ""
     case = facts.case
+    out["jdk21"] = list(rs.jdk21)
     if case == CaseType.PURE_JAVA:
         ee = ee_javax_packages(facts.javax, "javax-annotation" in facts.libs)
         if ee:
-            _refs(rs.jakarta, cfg, out)
-            notes.append(f"spring{where}: pure_java with Java EE javax imports ({', '.join(ee)}) → jakarta recipes")
-            _library_refs(facts, cfg, out, notes, where)        # e.g. Hibernate 5 next to jakarta.persistence
+            out["jakarta"] = list(rs.jakarta)
+            notes.append(f"transform{where}: pure_java with Java EE javax imports ({', '.join(ee)}) → jakarta set")
         else:
-            notes.append(f"spring{where}: pure_java without Java EE javax imports → no jakarta migration")
+            notes.append(f"transform{where}: pure_java without Java EE javax imports → no jakarta migration")
     elif case == CaseType.SERVLET_TOMCAT:
-        out.append(RecipeRef(id=SERVLET_RECIPE, source="project", file=_project_recipe_file(SERVLET_RECIPE, cfg)))
-        notes.append(f"spring{where}: servlet_tomcat → {SERVLET_RECIPE} (javax→jakarta, Servlet 6 removals, "
-                     "servlet-api swap)")
-        _library_refs(facts, cfg, out, notes, where)
+        out["jakarta"] = list(rs.jakarta)
+        notes.append(f"transform{where}: servlet_tomcat → jakarta set (javax → jakarta)")
     elif case == CaseType.SPRING_LEGACY:
-        _refs(rs.jakarta, cfg, out)
-        _refs(rs.spring_framework_7, cfg, out)
-        msg = f"spring{where}: spring_legacy → jakarta + Spring Framework 7"
-        if "spring-security" in facts.libs and rs.spring_security_7:
-            _refs(rs.spring_security_7, cfg, out)
-            first, last = _short(rs.spring_security_7[0]), _short(rs.spring_security_7[-1])
-            chain = f"{first} … {last}" if len(rs.spring_security_7) > 1 else first
-            msg += f" + Spring Security chain {chain} (spring-security detected)"
+        out["jakarta"] = list(rs.jakarta)
+        msg = f"transform{where}: spring_legacy → jakarta set"
+        if rs.spring_framework_7:
+            out["framework"] = list(rs.spring_framework_7)
+            msg += " + Spring Framework 7 set"
+        if "spring-security" in facts.libs:
+            if rs.spring_security_7:
+                out["security"] = list(rs.spring_security_7)
+                first, last = _short(rs.spring_security_7[0]), _short(rs.spring_security_7[-1])
+                chain = f"{first} … {last}" if len(rs.spring_security_7) > 1 else first
+                msg += f" + Spring Security set {chain} (spring-security detected)"
+            else:
+                msg += "; spring-security detected, the Spring Security set is empty (v2)"
         notes.append(msg)
-        _library_refs(facts, cfg, out, notes, where)
     elif case == CaseType.SPRING_BOOT:
-        _refs(rs.spring_boot_4, cfg, out)
-        notes.append(f"spring{where}: spring_boot → Boot 4.0 umbrella + 4.1 properties + 4.1 version pin")
+        out["boot"] = list(rs.spring_boot_4)
+        notes.append(f"transform{where}: spring_boot → Spring Boot 4 set (the umbrella migrates javax → jakarta "
+                     "itself)")
     if "junit4" in facts.libs and case != CaseType.UNKNOWN:
-        _refs(rs.junit5, cfg, out)
-        notes.append(f"spring{where}: junit4 detected → JUnit 4→5 migration")
+        if rs.junit5:
+            out["junit5"] = list(rs.junit5)
+            notes.append(f"transform{where}: junit4 detected → JUnit 5 set")
+        else:
+            notes.append(f"transform{where}: junit4 detected, the JUnit 5 set is empty (v2) → tests not migrated")
     extra = rs.extra.get(case.value, []) + rs.extra.get("all", [])
     if extra:
-        _refs(extra, cfg, out)
-        notes.append(f"spring{where}: extra recipes from config ({case.value}/all): {', '.join(extra)}")
+        out["extra"] = list(extra)
+        notes.append(f"transform{where}: extra recipes from config ({case.value}/all): {', '.join(extra)}")
     return out
 
 
-def kb_recipes(kb: Any, cfg: Config, notes: list[str]) -> list[RecipeRef]:
-    if kb is None or not cfg.kb.use_active_recipes:
-        return []
-    try:
-        ids = list(kb.active_recipe_ids())
-        files = list(kb.active_recipe_files())
-    except Exception as e:  # a missing/broken KB must never break planning
-        log.warning("knowledge base unavailable for planning: %s", e)
-        notes.append(f"kb: active recipes unavailable ({type(e).__name__}); planning without them")
-        return []
-    out = [RecipeRef(id=i, source="kb", file=str(f) if f is not None else None)
-           for i, f in zip(ids, files + [None] * (len(ids) - len(files)))]
-    if out:
-        notes.append(f"kb: {len(out)} active KB recipe(s) appended to the spring phase: "
-                     + ", ".join(r.id for r in out))
-    if getattr(cfg.kb, "try_candidates_in_plan", False):
-        # Candidates are whitelisted declarative recipes (ChangeType, dependency/property changes …): no-ops when the
-        # old symbol is absent, and only reliable while the as-is classpath is intact (type attribution). Running
-        # them here, next to the plan's recipes, is what lets a candidate earn its promotion on the next project.
-        try:
-            cands = [r for r in kb.list_recipes("candidate") if r.id not in ids]
-        except Exception as e:  # pragma: no cover - optional capability
-            log.warning("knowledge base candidates unavailable for planning: %s", e)
-            cands = []
-        if cands:
-            out += [RecipeRef(id=r.id, source="kb", file=str(r.path) if r.path else None) for r in cands]
-            notes.append(f"kb: {len(cands)} candidate KB recipe(s) tried in the spring phase (credited by the build): "
-                         + ", ".join(r.id for r in cands))
+def _flatten(buckets: dict[str, list[str]]) -> list[str]:
+    seen: list[str] = []
+    for key, _ in _BUCKETS:
+        for i in buckets.get(key, []):
+            if i not in seen:
+                seen.append(i)
+    return seen
+
+
+def _union(parts: list[dict[str, list[str]]]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {k: [] for k, _ in _BUCKETS}
+    for b in parts:
+        for k, ids in b.items():
+            out[k] += [i for i in ids if i not in out[k]]
     return out
+
+
+def transform_recipes(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> list[RecipeRef]:
+    """The case's recipes of one transform run (jdk21 set first, no advisory recipes), as RecipeRefs."""
+    return [recipe_ref(i, cfg) for i in _flatten(_case_buckets(facts, cfg, notes, label))]
+
+
+spring_recipes = transform_recipes          # v1 name (sbmig.plan exports both)
 
 
 # ---------------------------------------------------------------------------
@@ -214,40 +206,9 @@ def _sfx(svc: Optional[str]) -> str:
     return f"@{svc}" if svc else ""
 
 
-def _loop_step(phase_key: str, phase: Phase, cfg: Config, reason: str, *, step_id: str,
-               target: Optional[str] = None, params: Optional[dict[str, Any]] = None) -> Optional[PlanStep]:
-    pc = cfg.loop.phases.get(phase_key)
-    if pc is None or not pc.enabled:
-        return None
-    return PlanStep(id=step_id, kind=StepKind.BUILD_FIX_LOOP, phase=phase,
-                    title=f"{phase_key} build-fix loop (mvn {pc.goal})", build_goal=pc.goal,
-                    max_iterations=pc.max_iterations, target=target, reason=reason, params=params or {})
-
-
-def _optional_bump_wanted(cfg: Config) -> bool:
-    return cfg.plan.optional_bump_phase == "spring" and bool(cfg.artifacts.optional or cfg.artifacts.remove_when_present)
-
-
-def _optional_bump_step(svc: Optional[str], target: Optional[str]) -> PlanStep:
-    params: dict[str, Any] = {"mode": "optional_bump"}
-    if svc:
-        params["service"] = svc
-        params["target"] = target
-    return PlanStep(
-        id="spring.optional_bump" + _sfx(svc), kind=StepKind.RESTRUCTURE, phase=Phase.SPRING,
-        title="bump in-house optional artifacts (+ remove_when_present)" + (f" ({svc})" if svc else ""),
-        params=params, target=target, optional=True,
-        reason="jakarta builds of in-house libraries must be on the classpath before the first spring build "
-               "(plan.optional_bump_phase=spring); no moves, no parent change")
-
-
-def _short(recipe_id: str) -> str:
-    return recipe_id.rsplit(".", 1)[-1]
-
-
-def _advisory_refs(advisories: Optional[list[Any]], facts: _Facts, cfg: Config, recipes: list[RecipeRef],
+def _advisory_refs(advisories: Optional[list[Any]], facts: _Facts, cfg: Config, planned: list[str],
                    notes: list[str], label: str, per_service: bool) -> list[RecipeRef]:
-    """Advisory recipe refs for one spring.rewrite step (to prepend) + plan notes. Never raises."""
+    """Advisory recipe refs for one transform step + plan notes. Never raises."""
     if not advisories:
         return []
     findings = [f for f in advisories if f.policy == "recipe"]
@@ -260,7 +221,7 @@ def _advisory_refs(advisories: Optional[list[Any]], facts: _Facts, cfg: Config, 
     try:
         from sbmig.advisory import advisory_recipe_refs
 
-        refs = list(advisory_recipe_refs(findings, cfg, [r.id for r in recipes]) or [])
+        refs = list(advisory_recipe_refs(findings, cfg, planned) or [])
     except Exception as e:  # advisories must never break planning
         log.warning("advisory recipes unavailable for planning: %s", e)
         notes.append(f"advisory: recipe planning failed ({type(e).__name__}: {e}); advisories stay guide-only")
@@ -269,56 +230,55 @@ def _advisory_refs(advisories: Optional[list[Any]], facts: _Facts, cfg: Config, 
     where = f" [{label}]" if label else ""
     for f in findings:
         mine = [r for r in f.recipes if r in added]
-        ids = ", ".join(_short(r) for r in f.recipes)
         if mine:
-            notes.append(f"advisory: {f.advisory_id} → {', '.join(_short(r) for r in mine)} (added){where}")
+            notes.append(f"advisory: {f.advisory_id} → {_shorts(mine)} (added){where}")
         else:
-            notes.append(f"advisory: {f.advisory_id} → {ids} (covered by the plan){where}")
+            notes.append(f"advisory: {f.advisory_id} → {_shorts(f.recipes)} (covered by the plan){where}")
     return refs
 
 
-def _recipe_phase_steps(facts: _Facts, cfg: Config, kb_refs: list[RecipeRef], notes: list[str], *,
-                        svc: Optional[str] = None, target: Optional[str] = None,
-                        recipes: Optional[list[RecipeRef]] = None, title_case: Optional[str] = None,
-                        advisories: Optional[list[Any]] = None) -> list[PlanStep]:
-    """jdk21.rewrite, jdk21.loop, spring.rewrite, spring.optional_bump, spring.loop (ids suffixed `@svc`).
+def _transform_step(facts: _Facts, cfg: Config, notes: list[str], *, svc: Optional[str] = None,
+                    target: Optional[str] = None, buckets: Optional[dict[str, list[str]]] = None,
+                    title_case: Optional[str] = None, advisories: Optional[list[Any]] = None) -> Optional[PlanStep]:
+    """`transform.rewrite[@svc]` — every recipe of the case in one run, or None when no recipe applies.
 
-    `recipes` overrides the per-case spring recipes (MSA single root rewrite: union of the services' recipes)."""
-    steps: list[PlanStep] = []
-    params = {"service": svc} if svc else {}
-    jdk = [recipe_ref(i, cfg) for i in cfg.openrewrite.recipes.jdk21]
-    if jdk:
-        steps.append(PlanStep(
-            id="jdk21.rewrite" + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.JDK21,
-            title="OpenRewrite: upgrade to Java 21" + (f" ({svc})" if svc else ""), recipes=jdk, target=target,
-            params=dict(params), reason="every case runs UpgradeToJava21 first (type attribution on as-is classpath)"))
-    if cfg.plan.intermediate_builds:
-        s = _loop_step("jdk21", Phase.JDK21, cfg, "gate: the JDK 21 rewrite must compile before Spring recipes",
-                       step_id="jdk21.loop" + _sfx(svc), target=target, params=dict(params))
-        if s:
-            steps.append(s)
+    `buckets` overrides the per-case recipes (MSA single root run: union of the targets' buckets)."""
     label = svc or ""
-    if recipes is None:
-        recipes = spring_recipes(facts, cfg, notes, label)
-    recipes = list(recipes) + [r for r in kb_refs if not any(x.id == r.id for x in recipes)]
-    adv = _advisory_refs(advisories, facts, cfg, recipes, notes, label, per_service=svc is not None)
-    recipes = adv + [r for r in recipes if not any(x.id == r.id for x in adv)]
-    if recipes:
-        steps.append(PlanStep(
-            id="spring.rewrite" + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.SPRING,
-            title=f"OpenRewrite: {title_case or facts.case.value} → jakarta / Spring Boot 4.1"
-                  + (f" ({svc})" if svc else ""),
-            recipes=recipes, target=target, params=dict(params),
-            reason=f"case {title_case or facts.case.value}: recipes per ARCHITECTURE §2 case matrix"))
-    else:
-        notes.append(f"spring{f' [{label}]' if label else ''}: no spring-phase recipes apply → spring.rewrite omitted")
-    if _optional_bump_wanted(cfg):
-        steps.append(_optional_bump_step(svc, target))
-    s = _loop_step("spring", Phase.SPRING, cfg, "gate: sources and tests must compile after the Spring phase",
-                   step_id="spring.loop" + _sfx(svc), target=target, params=dict(params))
-    if s:
-        steps.append(s)
-    return steps
+    where = f" [{label}]" if label else ""
+    if buckets is None:
+        buckets = _case_buckets(facts, cfg, notes, label)
+    adv = _advisory_refs(advisories, facts, cfg, _flatten(buckets), notes, label, per_service=svc is not None)
+    adv_by_id = {r.id: r for r in adv}
+    buckets = dict(buckets, advisory=[r.id for r in adv])
+    ids = _flatten(buckets)
+    if not ids:
+        notes.append(f"transform{where}: no recipes apply → {TRANSFORM}{_sfx(svc)} omitted")
+        return None
+    recipes = [adv_by_id.get(i) or recipe_ref(i, cfg) for i in ids]
+    parts = [lbl for key, lbl in _BUCKETS if buckets.get(key)]
+    notes.append(f"transform{where}: one OpenRewrite run ({_shorts(ids)}) — no build until the restructure is "
+                 "done (v2)")
+    return PlanStep(
+        id=TRANSFORM + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.TRANSFORM,
+        title="OpenRewrite in one run: " + " + ".join(parts) + (f" ({svc})" if svc else ""),
+        recipes=recipes, target=target, params={"service": svc} if svc else {},
+        reason=f"v2 case {title_case or facts.case.value}: Java 21 / jakarta / Spring Boot recipes in one run on the "
+               "as-is classpath (type attribution), no build before the restructure (business decision)")
+
+
+def _review_step(restructure_step: str, cfg: Config, notes: list[str]) -> Optional[PlanStep]:
+    if not cfg.review.enabled:
+        notes.append(f"review: review.enabled=false → {REVIEW} omitted (the build follows the restructure)")
+        return None
+    notes.append("review: the LLM checks poms / dependencies / modules after the restructure"
+                 + ("; critical issues → one fix script" if cfg.review.fix_critical else "; findings recorded only")
+                 + " (restructure.review)")
+    return PlanStep(
+        id=REVIEW, kind=StepKind.REVIEW, phase=Phase.RESTRUCTURE,
+        title="LLM structure review (poms / dependencies / modules)",
+        params={"restructure_step": restructure_step},
+        reason="business rule: the LLM confirms poms, dependencies and the module split against the company rules "
+               "before the first build; critical issues are fixed by a script, warnings are recorded")
 
 
 def _verify(target: Optional[str] = None, svc: Optional[str] = None) -> PlanStep:
@@ -391,7 +351,7 @@ def _order_libraries(profile: ProjectProfile, libs: list[ServiceInfo]) -> list[S
     return out
 
 
-def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str],
+def _msa_steps(profile: ProjectProfile, cfg: Config, notes: list[str],
                advisories: Optional[list[Any]] = None) -> list[PlanStep]:
     from sbmig.analyze.classifier import is_library_root
 
@@ -401,36 +361,33 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
     targets = libs + svcs
     for lib in libs:
         notes.append(f"msa library root {lib.name} ({_service_dir(lib)}): shared module, migrated before the services "
-                     f"as sub-case {lib.case_type.value} (jakarta / Framework recipes, never the Boot umbrella)")
+                     f"as sub-case {lib.case_type.value} (jakarta recipes, never the Boot set)")
     facts_of: dict[str, _Facts] = {}
     for t in targets:
         case = t.case_type
         if t in libs and case in (CaseType.SPRING_BOOT, CaseType.MSA):
             case = CaseType.SPRING_LEGACY
-        facts_of[t.name] = _Facts(case, _service_libs(profile, t), profile.source.javax_imports,
-                                  _declared_keys([p for p in profile.poms if p.path in set(t.poms)]))
+        facts_of[t.name] = _Facts(case, _service_libs(profile, t), profile.source.javax_imports)
         if t in svcs:
             notes.append(f"msa service {t.name} ({_service_dir(t)}): sub-case {t.case_type.value}, "
                          f"boot {t.spring_boot_version or '-'}, java {t.java_version or '-'}")
     no_sources = profile.source.java_files == 0
     single = cfg.layout.msa_parent_policy == "top-aggregator" and _aggregator_covers(profile, targets)
     if no_sources:
-        notes.append("msa: no java sources → no OpenRewrite / build-fix steps for jdk21 and spring (pom edits + verify)")
+        notes.append("msa: no java sources → no transform step (pom edits, structure review, verify)")
     elif single:
-        union: list[RecipeRef] = []
-        for t in targets:
-            for r in spring_recipes(facts_of[t.name], cfg, notes, t.name):
-                if not any(x.id == r.id for x in union):
-                    union.append(r)
+        union = _union([_case_buckets(facts_of[t.name], cfg, notes, t.name) for t in targets])
         notes.append(f"msa: top-aggregator policy and {profile.root_pom.path if profile.root_pom else 'pom.xml'} "
-                     "aggregates every service/library → one rewrite + loop at the repo root (union of the "
-                     "sub-case recipes) instead of per service")
-        steps += _recipe_phase_steps(_Facts(CaseType.MSA, set(), profile.source.javax_imports), cfg, kb_refs, notes,
-                                     recipes=union, title_case="msa (all services)", advisories=advisories)
+                     f"aggregates every service/library → one {TRANSFORM} at the repo root (union of the sub-case "
+                     "recipes) instead of per service")
+        st = _transform_step(_Facts(CaseType.MSA, set(), profile.source.javax_imports), cfg, notes, buckets=union,
+                             title_case="msa (all services)", advisories=advisories)
+        steps += [st] if st else []
     else:
         for t in targets:
-            steps += _recipe_phase_steps(facts_of[t.name], cfg, kb_refs, notes, svc=t.name, target=_service_dir(t),
-                                         advisories=advisories)
+            st = _transform_step(facts_of[t.name], cfg, notes, svc=t.name, target=_service_dir(t),
+                                 advisories=advisories)
+            steps += [st] if st else []
     params: dict[str, Any] = {"mode": "msa_pom", "services": [s.name for s in svcs],
                               "parent_policy": cfg.layout.msa_parent_policy,
                               "boot_modules": list(profile.boot_modules)}
@@ -445,10 +402,8 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
     if libs:
         notes.append("restructure: library roots " + ", ".join(s.root_pom for s in libs) + " get the parent swap + "
                      "optional bumps + remove_when_present, but no mandatory dependencies (those go to deployables)")
-    s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: every service must package after pom edits",
-                   step_id="restructure.loop")
-    if s:
-        steps.append(s)
+    rv = _review_step("restructure.msa_pom", cfg, notes)
+    steps += [rv] if rv else []
     rp = profile.root_pom
     if rp is not None and rp.is_aggregator:
         steps.append(_verify())
@@ -461,32 +416,30 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], n
     return steps
 
 
-def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef], notes: list[str],
+def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str],
                   advisories: Optional[list[Any]] = None) -> list[PlanStep]:
     steps: list[PlanStep] = []
     case = profile.case_type
     if case == CaseType.MSA:
         notes.append("msa without discovered services → planned as a single project")
     libs = {lib.name for lib in profile.libraries}
-    libs_facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports,
-                        _declared_keys(profile.poms))
+    facts = _Facts(case if case != CaseType.MSA else CaseType.SPRING_BOOT, libs, profile.source.javax_imports)
     if profile.source.java_files == 0 and profile.poms:
         # S3: pom-only aggregator / BOM / parent → pom edits only (parent, mandatory, optional, cleanup) + verify
-        notes.append("no java sources → no OpenRewrite / build-fix steps for jdk21 and spring; restructure is "
-                     "limited to pom edits (no module split, no Application)")
+        notes.append("no java sources → no transform step; restructure is limited to pom edits (no module split, "
+                     "no Application)")
         steps.append(PlanStep(
             id="restructure.pom_only", kind=StepKind.MSA_POM, phase=Phase.RESTRUCTURE,
             title="pom-only parent / mandatory / optional edits (no sources)",
             params={"mode": "msa_pom", "services": [], "parent_policy": cfg.layout.msa_parent_policy,
                     "pom_only": True},
             reason="pom-only project: nothing to split; align the root pom(s) to the in-house parent"))
-        s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: the poms must package after the edits",
-                       step_id="restructure.loop")
-        if s:
-            steps.append(s)
+        rv = _review_step("restructure.pom_only", cfg, notes)
+        steps += [rv] if rv else []
         steps.append(_verify())
         return steps
-    steps += _recipe_phase_steps(libs_facts, cfg, kb_refs, notes, advisories=advisories)
+    st = _transform_step(facts, cfg, notes, advisories=advisories)
+    steps += [st] if st else []
     if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place":
         # round 9c company rule: a Boot as-is project keeps its directories; only the poms change
         steps.append(PlanStep(
@@ -506,7 +459,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
         notes.append("restructure: rule boot-as-is (layout.boot_as_is=in-place) → pom-only edits in place "
                      f"(boot_pom), directories kept; {where}")
     else:
-        starter = cfg.layout.starter_by_case.get(libs_facts.case.value, "auto")
+        starter = cfg.layout.starter_by_case.get(facts.case.value, "auto")
         name = cfg.layout.project_name or profile.name
         boot_m = cfg.layout.module_path("boot", name)
         comp_m = cfg.layout.module_path("comp", name)
@@ -518,9 +471,9 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
             id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,
             title=f"restructure into {', '.join(m for m in mods if m)} with the in-house parent",
             params={"mode": "layout", "starter": starter},
-            reason=f"non-msa: company layout; boot module starter '{starter}' for {libs_facts.case.value}"))
+            reason=f"non-msa: company layout; boot module starter '{starter}' for {facts.case.value}"))
         rule = ("rule boot-as-is=layout (Boot split like the other cases)" if case == CaseType.SPRING_BOOT
-                else f"rule non-boot ({libs_facts.case.value})")
+                else f"rule non-boot ({facts.case.value})")
         notes.append(f"restructure: {rule} → layout split into {', '.join(m for m in mods if m)}, starter '{starter}'"
                      + (f", multi-module policy '{cfg.layout.multi_module_policy}'" if profile.is_multi_module else ""))
         if front_m and has_web:
@@ -529,7 +482,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
                          f"{front_m}"
                          + (f"; JSPs → {boot_m} packaged as {cfg.layout.jsp_boot_packaging}"
                             if (src.jsp_paths or src.jsp_count) else ""))
-    if libs_facts.case == CaseType.SERVLET_TOMCAT and profile.source.has_web_xml:
+    if facts.case == CaseType.SERVLET_TOMCAT and profile.source.has_web_xml:
         src_ = profile.source
         if cfg.layout.web_xml_registrations == "generate" and \
                 (src_.web_xml_servlets or src_.web_xml_filters or src_.web_xml_listeners):
@@ -539,49 +492,43 @@ def _single_steps(profile: ProjectProfile, cfg: Config, kb_refs: list[RecipeRef]
                          "generated WebXmlRegistrations in the boot module")
         else:
             notes.append("followup: web.xml wiring is not migrated automatically (runtime owners)")
-    if libs_facts.case == CaseType.SPRING_LEGACY and profile.source.xml_bean_configs:
+    if facts.case == CaseType.SPRING_LEGACY and profile.source.xml_bean_configs:
         notes.append(f"restructure: {len(profile.source.xml_bean_configs)} XML bean config(s) → @ImportResource")
-    s = _loop_step("restructure", Phase.RESTRUCTURE, cfg, "gate: the restructured project must package",
-                   step_id="restructure.loop")
-    if s:
-        steps.append(s)
+    rv = _review_step(steps[-1].id, cfg, notes)
+    steps += [rv] if rv else []
     steps.append(_verify())
     return steps
 
 
-def _apply_parent_phase(steps: list[PlanStep], cfg: Config, notes: list[str]) -> list[PlanStep]:
-    """`plan.parent_phase: spring` (round 9c): the restructure step(s) (`restructure.apply` / `boot_pom` / `msa_pom`)
-    move into the spring phase right before the first spring build-fix loop, so that loop fixes against the company
-    parent chain; the restructure-phase loop goes (the final verify stays). Default `restructure` = unchanged."""
-    if cfg.plan.parent_phase != "spring":
-        return steps
-    restr = [s for s in steps if s.kind in (StepKind.RESTRUCTURE, StepKind.MSA_POM) and s.phase == Phase.RESTRUCTURE
-             and str(s.params.get("mode") or "") != "optional_bump"]
-    if not restr:
-        return steps
-    drop = set(id(s) for s in restr) | {id(s) for s in steps
-                                        if s.kind == StepKind.BUILD_FIX_LOOP and s.phase == Phase.RESTRUCTURE}
-    out = [s for s in steps if id(s) not in drop]
-    idx = next((i for i, s in enumerate(out) if s.kind == StepKind.BUILD_FIX_LOOP and s.phase == Phase.SPRING), None)
-    if idx is None:
-        spring_idx = [i for i, s in enumerate(out) if s.phase == Phase.SPRING]
-        if not spring_idx:
-            notes.append("plan.parent_phase=spring ignored: no spring-phase step (pom-only project)")
-            return steps
-        idx = spring_idx[-1] + 1
-    moved = [s.model_copy(update={"phase": Phase.SPRING,
-                                  "reason": (s.reason + "; plan.parent_phase=spring: applied before the spring "
-                                             "build-fix loop so it fixes against the company parent chain")})
-             for s in restr]
-    out[idx:idx] = moved
-    notes.append("restructure: parents / layout applied in the spring phase right after spring.rewrite, before the "
-                 "spring build-fix loop (plan.parent_phase=spring); the restructure phase keeps only the final verify")
-    return out
+def _ignored_v1_settings(cfg: Config, kb: Any, notes: list[str]) -> None:
+    """Notes for the v1 knobs a config may still set; v2 plans the same flow whatever they say."""
+    if cfg.plan.intermediate_builds:
+        notes.append("plan.intermediate_builds=true ignored: v2 has no build before the restructure")
+    on = [k for k in V1_LOOP_PHASES if (pc := cfg.loop.phases.get(k)) is not None and pc.enabled]
+    if on:
+        notes.append(f"v2: no intermediate build-fix loops (loop.phases.{{{','.join(on)}}}.enabled=true ignored)")
+    vc = cfg.loop.phases.get("verify")
+    if vc is not None and not vc.enabled:
+        notes.append("loop.phases.verify.enabled=false → the final build is not followed by the script fix loop")
+    if cfg.plan.parent_phase == "spring":
+        notes.append("plan.parent_phase=spring ignored: v2 restructures right after the transform")
+    if cfg.plan.optional_bump_phase == "spring":
+        notes.append("plan.optional_bump_phase=spring ignored: v2 bumps the optional artifacts inside the restructure")
+    if cfg.artifacts.optional or cfg.artifacts.remove_when_present:
+        notes.append("optional artifacts: bumped inside the restructure step (no separate bump step in v2)")
+    else:
+        notes.append("optional artifacts: none configured")
+    if kb is not None or cfg.kb.use_active_recipes or cfg.kb.try_candidates_in_plan:
+        flags = [k for k in ("use_active_recipes", "try_candidates_in_plan") if getattr(cfg.kb, k, False)]
+        notes.append("kb: KB recipes are not used in v2"
+                     + (f" (kb.{', kb.'.join(flags)}=true ignored)" if flags else ""))
 
 
 def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
                advisories: Optional[list[Any]] = None) -> MigrationPlan:
-    """Rule-based plan. `advisories` = `sbmig.advisory.evaluate_advisories` findings (mutated: recipe_source)."""
+    """Rule-based v2 plan. `kb` is accepted for the seam but not used (no KB recipes in v2). `advisories` =
+    `sbmig.advisory.evaluate_advisories` findings (mutated: recipe_source, and policy → guide when no transform step
+    took a recipe finding)."""
     notes: list[str] = []
     steps: list[PlanStep] = []
     case = profile.case_type
@@ -594,49 +541,35 @@ def build_plan(profile: ProjectProfile, cfg: Config, kb: Any = None,
         for w in profile.warnings[1:]:
             notes.append(f"warning: {w}")
         return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=[], notes=notes)
-    if not cfg.plan.intermediate_builds:
-        notes.append("plan.intermediate_builds=false → no jdk21 build-fix loop (JDK 21 errors are fixed in the spring loop)")
-    for key, pc in cfg.loop.phases.items():
-        if not pc.enabled:
-            notes.append(f"loop.phases.{key}.enabled=false → {key} build-fix loop omitted")
-    if cfg.plan.optional_bump_phase == "spring":
-        if _optional_bump_wanted(cfg):
-            notes.append("optional artifacts: bumped right after spring.rewrite (spring.optional_bump, "
-                         "plan.optional_bump_phase=spring) so jakarta builds of in-house libraries are on the "
-                         "classpath before the first spring build; restructure finds nothing left to bump")
-        else:
-            notes.append("optional artifacts: none configured → no spring.optional_bump step")
-    else:
-        notes.append("optional artifacts: bumped during restructure (plan.optional_bump_phase=restructure)")
-    kb_refs = kb_recipes(kb, cfg, notes)
+    _ignored_v1_settings(cfg, kb, notes)
     advisories = list(advisories or [])
 
     if case == CaseType.MSA and profile.services:
-        steps += _msa_steps(profile, cfg, kb_refs, notes, advisories)
+        steps += _msa_steps(profile, cfg, notes, advisories)
     else:
-        steps += _single_steps(profile, cfg, kb_refs, notes, advisories)
-    steps = _apply_parent_phase(steps, cfg, notes)
+        steps += _single_steps(profile, cfg, notes, advisories)
+    transform = any(st.kind == StepKind.OPENREWRITE and st.phase == Phase.TRANSFORM for st in steps)
     for f in advisories:
         if f.policy != "recipe":
             notes.append(f"advisory: {f.advisory_id} → guide ({f.policy_reason or 'catalog'})")
-        elif f.recipe_source == "none":       # no spring.rewrite step took it (pom-only, module outside services)
-            spring = any(st.kind == StepKind.OPENREWRITE and st.phase == Phase.SPRING for st in steps)
+        elif f.recipe_source == "none":       # no transform step took it (pom-only, module outside services)
             f.policy, f.recipes = "guide", []
-            f.policy_reason = (f"no spring.rewrite step for {f.library} → guide" if spring
-                               else "no spring.rewrite step → guide")
+            f.policy_reason = (f"no {TRANSFORM} step for {f.library} → guide" if transform
+                               else f"no {TRANSFORM} step → guide")
             notes.append(f"advisory: {f.advisory_id} → guide ({f.policy_reason})")
-
-    pre = pre_handler_reasons(profile, cfg)
-    if pre:
-        notes.append("pre-emptive handlers: " + "; ".join(f"{h} ({why})" for h, why in pre))
+    notes.append("pre-emptive handlers: off in v2 (errors are fixed by LLM scripts)")
     for w in profile.warnings:
         notes.append(f"warning: {w}")
     return MigrationPlan(profile_fingerprint=profile.fingerprint, case_type=case, steps=steps, notes=notes)
 
 
+# ---------------------------------------------------------------------------
+# optional LLM plan advisor (plan.advisor: llm)
+# ---------------------------------------------------------------------------
 # The advisor whitelist / coverage / gates are derived from the recipe catalog (knowledge/recipes/catalog.yml,
 # see sbmig/plan/catalog.py and docs/RECIPES.md). Module-level snapshots of the repo catalog, taken at import time;
-# `advise_plan(cfg=...)` re-reads `cfg.recipe_catalog_file`.
+# `advise_plan(cfg=...)` re-reads `cfg.recipe_catalog_file`. v2: `advise_plan` narrows the whitelist to the recipes
+# of the configured sets + extras (`v2_recipe_scope`); the constants stay the catalog's full advisor view.
 _DEFAULT_CATALOG = default_catalog()
 
 # Recipes the advisor may ADD (ids verified against docs.openrewrite.org / our recipe sets; never removes anything).
@@ -649,6 +582,23 @@ ADVISOR_COVERAGE: dict[str, list[str]] = _DEFAULT_CATALOG.coverage()
 ADVISOR_GATES: dict[str, Any] = _DEFAULT_CATALOG.gates()
 
 _has_javax_ee = GATES["has_javax_ee"]          # backwards-compatible alias
+
+
+def v2_recipe_scope(cfg: Optional[Config] = None) -> set[str]:
+    """Every recipe id v2 may run: the configured sets (jdk21, jakarta, spring_boot_4 and the opt-in framework /
+    security / junit5 sets) plus every `extra` list."""
+    rs = cfg.openrewrite.recipes if cfg is not None else RecipeSetConfig()
+    ids = {*rs.jdk21, *rs.jakarta, *rs.spring_boot_4, *rs.spring_framework_7, *rs.spring_security_7, *rs.junit5}
+    for extra in (rs.extra or {}).values():
+        ids.update(extra)
+    return ids
+
+
+def advisor_whitelist(cfg: Optional[Config] = None) -> dict[str, str]:
+    """The advisor-eligible catalog recipes inside the v2 scope (catalog order)."""
+    cat = default_catalog(cfg) if cfg is not None else _DEFAULT_CATALOG
+    scope = v2_recipe_scope(cfg)
+    return {rid: desc for rid, desc in (cat.advisor_catalog() or ADVISOR_CATALOG).items() if rid in scope}
 
 
 def _covered_by(planned: set[str], coverage: Optional[dict[str, list[str]]] = None) -> dict[str, str]:
@@ -672,7 +622,7 @@ def _advisor_prompt(plan: MigrationPlan, profile: ProjectProfile, catalog: dict[
     javax = ", ".join(f"{k}:{v}" for k, v in sorted(profile.source.javax_imports.items())) or "-"
     steps = "\n".join(f"- {st.id} [{st.phase.value}]: " + (", ".join(r.id for r in st.recipes) or "(no recipes)")
                       for st in plan.steps if st.recipes or st.kind.value == "openrewrite")
-    cat = "\n".join(f"- {rid}: {desc}" for rid, desc in catalog.items())
+    cat = "\n".join(f"- {rid}: {desc}" for rid, desc in catalog.items()) or "- (none)"
     planned_ids = {r.id for st in plan.steps for r in st.recipes}
     covered = _covered_by(planned_ids, coverage)
     cov_text = "\n".join(f"- {rid} is already included by {comp}" for rid, comp in sorted(covered.items())) or "- (none)"
@@ -686,15 +636,14 @@ def _advisor_prompt(plan: MigrationPlan, profile: ProjectProfile, catalog: dict[
         f"web.xml: {profile.source.has_web_xml}, xml bean configs: {len(profile.source.xml_bean_configs)}, "
         f"java files: {profile.source.java_files}, test files: {profile.source.test_files}\n"
         f"- warnings: {'; '.join(profile.warnings[:6]) or '-'}\n\n"
-        "RULE-BASED PLAN (OpenRewrite steps)\n" + steps + "\n\n"
+        "RULE-BASED PLAN (one OpenRewrite run per transform step, before the restructure)\n" + steps + "\n\n"
         "CATALOG OF RECIPES YOU MAY ADD\n" + cat + "\n\n"
         "ALREADY COVERED BY PLANNED COMPOSITE RECIPES (do not suggest these)\n" + cov_text + "\n\n"
         "Task: suggest ONLY additional recipes from the catalog that the profile clearly warrants and the plan lacks "
-        "(e.g. junit4 present but no JUnit4to5Migration). Do not suggest recipes already planned, do not remove anything, "
-        "do not invent ids. If nothing is missing, return an empty list. Also list short concerns the migration team "
-        "should know (max 5).\n"
-        'Answer with JSON only: {"add": [{"recipe": "<catalog id>", "phase": "spring" | "jdk21", "reason": "<why>"}], '
-        '"concerns": ["<text>"]}'
+        "(e.g. Java EE javax imports but no JavaxMigrationToJakarta). Do not suggest recipes already planned, do not "
+        "remove anything, do not invent ids. If nothing is missing, return an empty list. Also list short concerns "
+        "the migration team should know (max 5).\n"
+        'Answer with JSON only: {"add": [{"recipe": "<catalog id>", "reason": "<why>"}], "concerns": ["<text>"]}'
     )
 
 
@@ -722,17 +671,18 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
                 cfg: Optional[Config] = None, *, catalog: Optional[dict[str, str]] = None) -> MigrationPlan:
     """Optional LLM review of the rule-based plan (`cfg.plan.advisor == "llm"`, model `cfg.llm.recipe_model`).
 
-    The advisor is additive only: it may add catalog recipes to the OpenRewrite steps and record concerns in
-    `plan.notes`; unknown ids, already-planned ids and malformed answers are ignored (noted). Never raises."""
+    The advisor is additive only: it may add whitelisted recipes to the transform step(s) and record concerns in
+    `plan.notes`; unknown ids, already-planned ids and malformed answers are ignored (noted). The whitelist is
+    `catalog` when given, else the advisor-eligible catalog recipes inside the v2 scope (`advisor_whitelist`).
+    Never raises."""
     if llm is None or (cfg is not None and cfg.plan.advisor == "none"):
         return plan
     cat_obj = default_catalog(cfg) if cfg is not None else _DEFAULT_CATALOG
     if cfg is not None:
         coverage, gates = cat_obj.coverage(), cat_obj.gates()
-        catalog = catalog or cat_obj.advisor_catalog() or ADVISOR_CATALOG
     else:
         coverage, gates = ADVISOR_COVERAGE, ADVISOR_GATES
-        catalog = catalog or ADVISOR_CATALOG
+    catalog = catalog if catalog is not None else advisor_whitelist(cfg)
     model = (cfg.llm.recipe_model or None) if cfg is not None else None
     try:
         from sbmig.core.interfaces import ChatMessage
@@ -759,9 +709,9 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
         plan.notes.append(f"advisor: {err}; plan unchanged")
         return plan
     planned = {r.id for st in plan.steps for r in st.recipes}
+    targets = [st for st in plan.steps if st.id == TRANSFORM or st.id.startswith(TRANSFORM + "@")]
     for a in adds:
         rid = str(a.get("recipe", "")).strip()
-        phase = str(a.get("phase", "spring")).strip().lower()
         reason = str(a.get("reason", "")).strip()[:200]
         if rid not in catalog:
             plan.notes.append(f"advisor: ignored unknown recipe {rid}")
@@ -781,15 +731,13 @@ def advise_plan(plan: MigrationPlan, profile: ProjectProfile, llm: Any = None,
         if not warranted:
             plan.notes.append(f"advisor: {rid} not warranted by the profile; ignored ({reason or 'no reason'})")
             continue
-        step_prefix = "jdk21.rewrite" if phase == "jdk21" else "spring.rewrite"
-        targets = [st for st in plan.steps if st.id == step_prefix or st.id.startswith(step_prefix + "@")]
         if not targets:
-            plan.notes.append(f"advisor: no {step_prefix} step to attach {rid}; ignored")
+            plan.notes.append(f"advisor: no {TRANSFORM} step to attach {rid}; ignored")
             continue
         for st in targets:
             st.recipes.append(RecipeRef(id=rid, source="builtin", artifact=_artifact_for(rid, cat_obj)))
         planned.add(rid)
-        plan.notes.append(f"advisor: +{rid} → {step_prefix} ({reason or 'no reason given'})")
+        plan.notes.append(f"advisor: +{rid} → {TRANSFORM} ({reason or 'no reason given'})")
     for c in concerns:
         plan.notes.append(f"advisor concern: {c}")
     return plan

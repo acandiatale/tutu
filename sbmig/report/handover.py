@@ -9,7 +9,9 @@ team" list (advisories not replaced, replaced-but-verify, carried-over pins, blo
 manual follow-ups) and the multi-module merge conflicts (`report.merge_conflicts`). Round 8: one
 `properties_to_set` row per `external` externalized-config finding (`report.properties`, see `property_rows`) plus the
 guide lines of `knowledge/config/externalized.yml`. Round 9: file paths recorded by fix attempts before the restructure
-moved the sources (`llm_fixed_files`) are mapped to where the file lives now (`resolve_current_path`). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
+moved the sources (`llm_fixed_files`) are mapped to where the file lives now (`resolve_current_path`). v2: the
+structure review (`report.structure_review`) adds what its script changed, unfixed critical issues and warnings
+(`review_followups`). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
 """
 from __future__ import annotations
 
@@ -34,6 +36,9 @@ LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM f
 # the orchestrator's X1b follow-up (report.javax_api_inventory, 2026-10-22)
 _JAVAX_FOLLOWUP_RE = re.compile(r"^\d+ javax API jar\(s\) still on the classpath after the migration")
 IDENTICAL_LIST_MAX = 5           # paths named in the "N identical duplicate(s) dropped" line
+REVIEW_FOLLOWUPS_MAX = 8         # v2 structure-review lines in "from here on" (then one "… and N more" line)
+REVIEW_FILES_MAX = 5
+REVIEW_SBMIG_CHECK = "(sbmig check) "   # issues sbmig added itself (sbmig.review): never fixed by the review script
 PROPERTY_SEP = " | "             # cell separator of a properties_to_set row (cells never contain "|")
 PROPERTY_COLUMNS = ("key", "before migration", "referenced at", "written as", "set via")
 DEFAULT_SENTINEL = "__SET_ME__"
@@ -492,6 +497,9 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     if jars and not any(_JAVAX_FOLLOWUP_RE.match(m) for m in report.manual_followups):
         # the orchestrator's follow-up (listed under (e)) already names the libraries; the pointer stands in for it
         _dedupe_add(out, f"{len(jars)} javax API jar(s) still on the classpath — see that section")
+    # (d1) v2 structure review: what its script changed, critical issues left, warnings for the owning team
+    for line in review_followups(report):
+        _dedupe_add(out, line)
     # (d2) externalized settings — the restructurer's follow-up says the same; keep that one when it exists
     try:
         item = None if _properties_followup_present(report) else _properties_item(_inventory(report), cfg)
@@ -518,6 +526,42 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     if cap > 0 and len(out) > cap:
         rest = len(out) - (cap - 1)
         out = out[: cap - 1] + [f"… and {rest} more — see Manual follow-ups / Blocked / Unresolved errors"]
+    return out
+
+
+def _short(text: object, limit: int) -> str:
+    s = " ".join(str(text if text is not None else "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def review_followups(report: RunReport) -> list[str]:
+    """v2 structure review → compact "from here on" lines: what the review script changed (one line, to check),
+    critical issues it did not fix, warnings; at most REVIEW_FOLLOWUPS_MAX lines. [] without issues."""
+    rv = getattr(report, "structure_review", None)
+    if rv is None or not rv.issues:
+        return []
+    res = rv.script_result
+    fixed = res is not None and res.status == "ok" and not rv.reverted and bool(res.changed_files)
+
+    def where(i: Any) -> str:
+        hint = f" → {_short(i.fix_hint, 160)}" if i.fix_hint else ""
+        return f"{i.file or '(project)'}: {_short(i.problem, 220)}{hint}"
+
+    out: list[str] = []
+    critical = [i for i in rv.issues if i.severity == "critical"]
+    if fixed:
+        files = ", ".join(res.changed_files[:REVIEW_FILES_MAX])
+        if len(res.changed_files) > REVIEW_FILES_MAX:
+            files += f" (+{len(res.changed_files) - REVIEW_FILES_MAX} more)"
+        handled = [i for i in critical if not i.problem.startswith(REVIEW_SBMIG_CHECK)]
+        out.append(f"structure review script changed {len(res.changed_files)} file(s) for {len(handled)} critical "
+                   f"issue(s): {files} (commit {(rv.commit or '-')[:8]}) — check these pom changes")
+        critical = [i for i in critical if i.problem.startswith(REVIEW_SBMIG_CHECK)]
+    out += [f"structure review: critical issue not fixed — {where(i)}" for i in critical]
+    out += [f"structure review warning — {where(i)}" for i in rv.issues if i.severity != "critical"]
+    if len(out) > REVIEW_FOLLOWUPS_MAX:
+        rest = len(out) - (REVIEW_FOLLOWUPS_MAX - 1)
+        out = out[: REVIEW_FOLLOWUPS_MAX - 1] + [f"… and {rest} more structure review issue(s) — see Structure review"]
     return out
 
 

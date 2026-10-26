@@ -9,7 +9,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from sbmig.core.config import Config
 from sbmig.core.models import (
+    KB_RECORD_SCHEMA,
     BuildError,
     CaseAction,
     ErrorAttemptRef,
@@ -536,8 +538,13 @@ def test_catalog_without_cfg_or_store(tmp_path):
     ErrorCaseStore(root).append([r], [])
     cat = CaseCatalog(root)
     assert cat.update_from([r]) == [CID]
-    assert cat.get(CID).action.kind == "replace"
+    # no config = the KBConfig defaults: since v2 the learned replace (kb.case_replace) is off → hint
+    assert cat.get(CID).action.kind == "hint"
     assert (root / "catalog" / "index.json").exists()
+    v1 = CaseCatalog(root, Config(artifacts={"parent": {"group_id": "g", "artifact_id": "p"}},
+                                  kb={"dir": str(root), "case_replace": True}))
+    v1.refresh([r.signature_generic])
+    assert v1.get(CID).action.kind == "replace"
 
 
 # --------------------------------------------------------------------------- round 10 (2026-10-26)
@@ -648,7 +655,7 @@ def test_audit_log_of_human_edits_and_automatic_transitions(kb, monkeypatch):
     assert [(a["before"]["status"], a["after"]["status"]) for a in auto] == [("observed", "candidate"),
                                                                              ("candidate", "active")]
     assert auto[1]["reason"] == "promoted" and auto[1]["evidence"]["action_projects"] == 2
-    assert all(a["schema_version"] == 2 and a["agent_version"] and a["at"] for a in auto)
+    assert all(a["schema_version"] == KB_RECORD_SCHEMA and a["agent_version"] and a["at"] for a in auto)
     cat.set_human(CID, audit_note="sbmig kb cases reject", status="rejected", notes="rejected: wrong owner")
     human = [a for a in cat.iter_audit(CID) if a["event"] == "human"]
     assert len(human) == 1 and human[0]["who"] == "jdoe" and human[0]["command"] == "sbmig kb cases reject"

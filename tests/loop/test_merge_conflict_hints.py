@@ -18,7 +18,8 @@ from sbmig.fix.fixer import LLMFixer
 from sbmig.loop import BuildFixLoop, LoopBudget
 from sbmig.triage import HandlerRegistry, Triager
 
-from .fakes import FakeBuildRunner, FakeFixer, FakeKB, FakeRewriteRunner, bad_build, journal_events, ok_build
+from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRewriteRunner, FakeScriptRunner, bad_build,
+                    journal_events, ok_build)
 
 KEPT = "module/comp-jar/src/main/java/com/x/Shared.java"
 USER = "module/comp-jar/src/main/java/com/x/Foo.java"
@@ -53,7 +54,7 @@ def setup_tree(ws, dropped: str = DROPPED_SRC) -> None:
 def make_loop(cfg, ws, profile, *, build, fixer, conflicts):
     t = Triager(cfg, registry=HandlerRegistry())
     loop = BuildFixLoop(cfg, ws, build, t, t.registry, fixer, FakeKB(), FakeRewriteRunner(ws), profile,
-                        budget=LoopBudget.from_config(cfg))
+                        budget=LoopBudget.from_config(cfg), script_runner=FakeScriptRunner())
     assert loop.merge_conflicts == []                                 # default: no hints
     loop.merge_conflicts = list(conflicts)
     return loop
@@ -127,7 +128,7 @@ def test_large_copy_is_truncated_and_unreadable_copy_noted(cfg, ws, profile):
     assert any("could not be read" in n for n in ctx.reference_notes) and len(ctx.reference_notes) == 2
 
 
-def test_patch_aimed_at_a_reference_copy_is_dropped(cfg, ws, profile):
+def test_script_write_aimed_at_a_reference_copy_is_dropped(cfg, ws, profile):
     setup_tree(ws)
     fixed = KEPT_SRC.replace("public void a() {}", "public void a() {}\n    public int extra() { return 1; }")
     prop = FixProposal(changes=[FileChange(path=SAVED, op="create", content="junk"),
@@ -136,11 +137,12 @@ def test_patch_aimed_at_a_reference_copy_is_dropped(cfg, ws, profile):
     fixer = FakeFixer(proposals=[prop])
     build = FakeBuildRunner(ws, fn=lambda w, call: ok_build() if "extra" in w.read(KEPT) else bad_build(err(KEPT)))
     loop = make_loop(cfg, ws, profile, build=build, fixer=fixer, conflicts=[conflict()])
-    pr = loop.run(Phase.RESTRUCTURE, "package", 2)
+    pr = loop.run(Phase.VERIFY, "package", 2)
     assert pr.build_ok
-    assert [c.path for c in fixer.applied[0]] == [KEPT]                # the reference path never reaches apply
-    assert not ws.exists(SAVED)
+    assert not ws.exists(SAVED)                                        # the script's write there was undone
+    assert [ch.path for ch in pr.attempts[0].changes] == [KEPT]
     assert any("read-only reference copy" in n for n in pr.attempts[0].notes)
+    assert (ws.run_dir / SAVED).read_text(encoding="utf-8") == DROPPED_SRC    # the reference itself untouched
 
 
 # ---------------------------------------------------------------- packer / prompt
