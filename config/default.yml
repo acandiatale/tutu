@@ -70,37 +70,21 @@ openrewrite:
     - org.openrewrite.recipe:rewrite-testing-frameworks
     - org.openrewrite.recipe:rewrite-static-analysis
   recipes:
+    # v2 (flow-v2, business decision 2026-10-26): ONE OpenRewrite run with only these sets — Java 21, javax → jakarta
+    # (projects with Java EE javax imports), and for Spring Boot projects the Boot 4 umbrella + 4.1 properties — then
+    # the restructure; every remaining error is fixed by LLM fix scripts ("레시피가 무엇을 바꿀지 모르니 넣지 않는다").
+    # Spring Framework 7 / Security 7 / JUnit 5, the project recipes (knowledge/recipes/base), library recipes and KB
+    # recipes are not run; the empty sets stay so a company config can opt back in.
     jdk21:
       - org.openrewrite.java.migrate.UpgradeToJava21
     jakarta:
       - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
-      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10   # round 10: Servlet 6 removals (encodeUrl → encodeURL, getValue → getAttribute …)
     spring_boot_4:
-      # no UpgradeSpringBoot_4_1 umbrella exists yet (2026-10): 4.0 umbrella + 4.1 properties + our version bump recipe
       - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
       - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
-      - com.company.migrate.SpringBoot41Version
-      - com.company.migrate.Boot4JacksonTwins       # @JsonComponent → @JacksonComponent & co (pure renames; bodies are migrated by the umbrella)
-      - com.company.migrate.Boot4TypeRelocations    # round 10: error / servlet / converter types the 4.0 umbrella does not move
-      - com.company.migrate.Spring7RemovedApis      # round 10: removed PathMatchConfigurer / ContentNegotiationConfigurer options, HttpHeaders Map view
-      - com.company.migrate.Jackson3SpringConverters  # round 10: MappingJackson2HttpMessageConverter / JsonView → Jackson 3 twins
-    spring_framework_7:
-      - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
-      - com.company.migrate.Spring7RemovedApis
-      - com.company.migrate.Jackson3SpringConverters
-    spring_security_7:
-      # round 10: the whole chain — UpgradeSpringSecurity_7_0 alone only bumps versions and drops `throws Exception`;
-      # 6_0 chains 5_8 → 5_7 (WebSecurityConfigurerAdapter → SecurityFilterChain, lambda DSL, antMatchers →
-      # requestMatchers); every step is a Singleton, so the Boot umbrella running them too costs nothing
-      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0
-      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1
-      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_2
-      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_3
-      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4
-      - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5
-      - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
-    junit5:
-      - org.openrewrite.java.testing.junit5.JUnit4to5Migration
+    spring_framework_7: []
+    spring_security_7: []
+    junit5: []
   base_recipe_dir: knowledge/recipes/base
   timeout_minutes: 40
   jvm_args: ["-Xmx4g"]
@@ -117,8 +101,8 @@ build:
   offline: false
   extra_args: ["-B", "-ntp", "-Dstyle.color=never"]
   skip_tests: true
-  skip_test_compile: false         # true = -Dmaven.test.skip=true on every build: tests neither compiled nor run
-                                   # (flag tests-not-compiled + follow-up); the company sets true (2026-10-22)
+  skip_test_compile: true          # -Dmaven.test.skip=true on every build: tests neither compiled nor run
+                                   # (flag tests-not-compiled + follow-up); v2 default = the company decision (2026-10-22)
   allow_skip_test_compile_fallback: true
   allow_skip_tests_fallback: true  # only runtime test failures left → -DskipTests, flag tests-skipped, tests listed
   timeout_minutes: 30
@@ -131,14 +115,16 @@ build:
   retry_negative_cache: true    # "…was cached in the local repository…" → the same build once more with -U
 
 loop:
+  # v2: no intermediate builds. transform (all recipes) → restructure → structure review → the first build is the final
+  # `mvn clean package`; when it fails, the verify loop fixes the errors case by case with fix scripts and builds again
   phases:
-    jdk21:       { goal: compile,      max_iterations: 3 }
-    spring:      { goal: test-compile, max_iterations: 6 }
-    restructure: { goal: package,      max_iterations: 6 }
-    verify:      { goal: package,      max_iterations: 3 }   # last-chance loop when the final clean package fails
-  max_llm_calls: 60
+    jdk21:       { goal: compile,      max_iterations: 3, enabled: false }
+    spring:      { goal: test-compile, max_iterations: 6, enabled: false }
+    restructure: { goal: package,      max_iterations: 6, enabled: false }
+    verify:      { goal: package,      max_iterations: 12 }  # the script fix loop (one build per round)
+  max_llm_calls: 100
   verify_extra_llm_attempts: 2   # final verify loop: clusters blocked as repeated_failure / oscillation get N more LLM tries
-  max_total_minutes: 180
+  max_total_minutes: 240
   stall_limit: 2
   max_clusters_per_iteration: 8
   revert_on_regression: true
@@ -191,26 +177,49 @@ llm:
   pricing_currency: USD
   pricing_note: "OpenAI list prices as of 2026-10-22 (developers.openai.com model pages); the company gateway may bill differently"
 
+script:                            # v2 fix scripts (docs/v2/PLAN-v2.md §3.2): `def fix(p)` from the LLM, static check, then
+                                   # a separate `python -I` process with the helper API p (project-folder files only)
+  timeout_seconds: 60              # per run; the process tree is killed after it
+  python: null                     # interpreter for the script process (null = the one running sbmig)
+  extra_allowed_imports: []        # added to the built-in whitelist (re, json, textwrap, fnmatch, posixpath, …)
+  max_code_chars: 30000
+  log_lines: 200
+  max_files_changed_warn: 40       # a run that changes more files gets a warning note
+  reuse: true                      # case seen before → its best stored version runs first, without an LLM call
+  reuse_versions: 1
+  max_augments_per_case: 3         # LLM extensions per case and run, then BLOCKED (repeated_failure) → Handover
+
+review:                            # v2 structure review: the LLM checks poms / dependencies / modules after the restructure
+  enabled: true
+  fix_critical: true               # critical findings → one fix script (committed, revertible); warnings → report + kb
+  max_pom_chars: 60000
+  max_poms: 40
+  record: true                     # <kb>/reviews.jsonl
+
 kb:
-  dir: kb
-  use_active_recipes: true
-  use_patch_replay: true
-  use_hints: true
-  harvest: true
-  generate_recipe_candidates: true
+  dir: kb-v2                       # v2 keeps its own KB (main / company-v1 use kb/)
+  # v1 learning paths, off in v2 (the fix-script history per case replaces them; removed in PLAN-v2 step 4)
+  ledger: false
+  symbol_index: false
+  deterministic_candidates: false
+  use_active_recipes: false
+  use_patch_replay: false
+  use_hints: false
+  harvest: false
+  generate_recipe_candidates: false
   auto_promote_after_projects: 2
-  try_candidates_in_plan: true     # candidates run with the plan's recipes (as-is classpath) and get credited by the build
+  try_candidates_in_plan: false
   max_hints: 5
   # every build error on its own record (what / what was tried / how resolved or why not) + every fix attempt with the
   # code it applied, failures included: kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json, <run dir>/error_cases.*
   error_cases: true
-  error_hints: true                # past fixes AND failures of the same error → hints in the fix prompt
+  error_hints: false               # v1: past fixes AND failures of the same error → hints in the fix prompt
   error_diff_chars: 12000          # cap of a stored attempt diff, applied after classification (0 = no cap)
   error_excerpt_chars: 1500
   # case catalog: one reusable case per error signature (kb/catalog/<kind>/<class>/<symbol>--<id>.yml, views kb/views/cases.md|csv);
   # a hit applies the case's action; candidate → active after kb.auto_promote_after_projects successes, no failure
   catalog: true
-  case_replace: true               # learned text replaces (handler case-replace)
+  case_replace: false              # v1: learned text replaces (handler case-replace)
   case_replace_scope: error-lines  # error-lines (the reported lines + imports) | file
   redact_file: knowledge/kb/redact.yml   # secret masking rules added to the built-ins (company patterns go here)
   lock_timeout_seconds: 300        # cross-process kb/.lock wait (web + fleet + kb commands share one KB)
@@ -225,9 +234,9 @@ fleet:                             # `sbmig fleet`: ~500 projects one after anot
 
 plan:
   advisor: none
-  intermediate_builds: true
-  optional_bump_phase: spring      # in-house optional artifacts are bumped before the first spring-phase build
-  parent_phase: restructure        # spring = parents / layout right after spring.rewrite, before the spring fix loop
+  intermediate_builds: false       # v2: no build between the recipes and the restructure
+  optional_bump_phase: restructure # v2: the in-house optional artifacts are bumped inside the restructure
+  parent_phase: restructure        # v1 only (the v2 planner always restructures right after the transform)
 
 report:
   formats: [md, json]
@@ -241,10 +250,10 @@ advisories:                        # library advisories (docs/ADVISORIES.md): EO
   enabled: true
   file: knowledge/libraries/advisories.yml
   extra_files: []                  # company additions / overrides, same schema, merged by id (later wins)
-  allow_recipes: true              # false → every advisory is "guide" only (no advisory recipes in spring.rewrite)
+  allow_recipes: false             # v2: advisories are LLM hints + Handover only (true = advisory recipes in the transform)
   policy_overrides: {}             # e.g. {springfox: guide, hystrix: off}
   report_carried_over: true        # handover lists dependencies pinned at as-is versions (unmanaged after the swap)
-  ledger: true                     # findings go to kb/ledger.jsonl (resolution=advisory) → fleet learning report
+  ledger: false                    # v1: findings go to kb/ledger.jsonl (resolution=advisory) → fleet learning report
   max_from_here: 40
 
 externalized:                      # settings the code reads that no packaged resource defines (round 8)

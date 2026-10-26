@@ -34,6 +34,7 @@ class Phase(str, Enum):
     INTAKE = "intake"
     ANALYZE = "analyze"
     PLAN = "plan"
+    TRANSFORM = "transform"      # v2 (flow-v2): every OpenRewrite recipe in one run, no build in between
     JDK21 = "jdk21"              # OpenRewrite UpgradeToJava21 + build-fix loop
     SPRING = "spring"            # OpenRewrite jakarta / Spring Boot 4 / Framework 7 + build-fix loop
     RESTRUCTURE = "restructure"  # parent / mandatory / optional / module split (or MSA pom-only) + build-fix loop
@@ -48,6 +49,7 @@ class StepKind(str, Enum):
     MSA_POM = "msa_pom"            # MSA: pom-only parent/mandatory/optional edits
     BUILD_FIX_LOOP = "build_fix_loop"
     BUILD = "build"                # single build without fixing (verify)
+    REVIEW = "review"              # v2: LLM structure review of poms / dependencies / modules before the first build
 
 
 class ErrorKind(str, Enum):
@@ -72,6 +74,7 @@ class DecisionKind(str, Enum):
     SKIP = "skip"              # masked by another cluster this iteration
     ESCALATE = "escalate"      # give up on this cluster; goes to report
     BLOCKED = "blocked"        # cannot be fixed inside this project (external library / infra) → skip now, report
+    SCRIPT = "script"          # v2: run a fix script for the cluster's case (stored version, augmented or new)
 
 
 AttemptOutcome = Literal["pending", "improved", "no_change", "regressed", "reverted", "build_ok", "apply_failed",
@@ -597,6 +600,8 @@ class ErrorCluster(BaseModel):
     errors: list[BuildError]
     signatures: list[str] = Field(default_factory=list)
     priority: int = 100                            # lower = handle first
+    case_id: Optional[str] = None                  # v2: the cluster is ONE case (L2 signature) across files —
+                                                   # CatalogCase id = sha1(signature_generic)[:10]; `file` is then None
 
     @property
     def generic_signatures(self) -> list[str]:
@@ -660,6 +665,114 @@ class LLMCost(BaseModel):
     note: str = ""                                 # llm.pricing_note: where the prices come from / as of when
 
 
+# ---------------------------------------------------------------------------
+# v2 fix scripts (flow-v2, docs/v2/PLAN-v2.md §3.2): every build-error fix is a Python script `def fix(p)` written by
+# the LLM, checked (AST) and run in a separate `python -I` process against a restricted helper API (sbmig.script),
+# stored per case in <kb>/scripts/<case_id>/v<N>.py + v<N>.meta.json (sbmig.kb.scripts)
+# ---------------------------------------------------------------------------
+ScriptMode = Literal["new", "reuse", "augment"]
+ScriptRunStatus = Literal["ok", "error", "timeout", "rejected"]
+# ok = fix(p) returned; error = it raised (or a helper refused a path); timeout = killed after script.timeout_seconds;
+# rejected = the static check refused the code before it ran (forbidden import / name / dunder access, no fix(p))
+
+
+class ScriptRunResult(BaseModel):
+    """What one run of a fix script did (sbmig.script.ScriptRunner.run). The exact change is the git diff the loop
+    records; this is the script's own account."""
+    status: ScriptRunStatus = "ok"
+    changed_files: list[str] = Field(default_factory=list)    # relative posix paths written / created / deleted / moved
+    log: list[str] = Field(default_factory=list)              # p.log(...) lines (capped by script.log_lines)
+    error: str = ""                                           # exception / refusal / timeout text ("" when ok)
+    problems: list[str] = Field(default_factory=list)         # static-check findings when rejected
+    duration_s: float = 0.0
+
+
+class ScriptMeta(BaseModel):
+    """<kb>/scripts/<case_id>/v<N>.meta.json — one stored version of a case's fix script and its record."""
+    case_id: str
+    signature_generic: str = ""                    # the case's L2 signature
+    version: int                                   # 1, 2, … per case
+    parent: Optional[int] = None                   # the version it augments (lineage); None = written from scratch
+    schema_version: int = 3
+    sha1: str = ""                                 # of the code (an identical script is stored once)
+    created_at: datetime = Field(default_factory=utcnow)
+    run_id: str = ""
+    project: str = ""
+    model: str = ""
+    source: Literal["llm", "human", "review"] = "llm"
+    analysis: str = ""                             # the LLM's <analysis> (redacted)
+    successes: int = 0                             # runs that resolved every targeted error of the case
+    failures: int = 0                              # no_change / regressed / apply_failed / script error
+    partials: int = 0                              # some targeted errors gone, the rest left
+    success_projects: list[str] = Field(default_factory=list)
+    last_outcome: str = ""                         # AttemptOutcome of the last run
+    last_at: Optional[datetime] = None
+    last_run_id: str = ""
+    status: Literal["active", "retired", "quarantined"] = "active"   # retired = by a person; quarantined = the code
+                                                   # matched a secret pattern (stored masked, never selected)
+    notes: list[str] = Field(default_factory=list)
+
+
+class ScriptBase(BaseModel):
+    """The script an augment request extends (FixContext.script_base): the previous version and what it did here."""
+    case_id: str
+    version: int = 0                               # 0 = an unstored script of this run
+    code: str
+    outcome: str = ""                              # AttemptOutcome of its run in this project ("" = not run here)
+    status: str = ""                               # ScriptRunStatus of that run
+    error: str = ""
+    log: list[str] = Field(default_factory=list)
+    changed_files: list[str] = Field(default_factory=list)
+    remaining_errors: list[str] = Field(default_factory=list)    # "file:line message" of the case still present
+    introduced_errors: list[str] = Field(default_factory=list)   # "file:line message" new in the files it touched
+    history: list[str] = Field(default_factory=list)             # earlier versions: "v1: 2 ok / 1 failed — <failure>"
+
+
+class ScriptProposal(BaseModel):
+    """The fixer's answer to a script request (ScriptFixerLike.propose_script)."""
+    code: str = ""                                 # the <script> body (must define `def fix(p)`); "" = no script
+    analysis: str = ""
+    model: str = ""
+    prompt_hash: str = ""
+    llm_usage: LLMUsage = Field(default_factory=LLMUsage)
+    requested_files: list[str] = Field(default_factory=list)
+    raw_response: str = ""
+    error: str = ""                                # why there is no script (unparsable answer, transport, refusal)
+
+
+class ReviewIssue(BaseModel):
+    severity: Literal["critical", "warning"] = "warning"
+    file: str = ""                                 # relative pom / module path ("" = project-wide)
+    problem: str = ""
+    fix_hint: str = ""
+
+
+class StructureReview(BaseModel):
+    """v2 structure review (sbmig.review): the LLM checks poms / dependencies / module layout after the restructure,
+    before the first build. One line per run in <kb>/reviews.jsonl; RunReport.structure_review."""
+    id: str = ""                                   # "<run_id>:review"
+    schema_version: int = 3
+    at: datetime = Field(default_factory=utcnow)
+    run_id: str = ""
+    project: str = ""
+    case_type: CaseType = CaseType.UNKNOWN
+    model: str = ""
+    verdict: Literal["ok", "issues", "skipped", "failed"] = "skipped"   # skipped = review.enabled false / dry run /
+                                                   # no LLM; failed = no usable answer (the build goes ahead anyway)
+    issues: list[ReviewIssue] = Field(default_factory=list)
+    analysis: str = ""
+    script: str = ""                               # the script for the critical issues ("" = none)
+    script_result: Optional[ScriptRunResult] = None
+    commit: Optional[str] = None                   # commit of the script's changes (revertible)
+    reverted: bool = False
+    llm_usage: LLMUsage = Field(default_factory=LLMUsage)
+    note: str = ""                                 # why skipped / failed, or what happened to the script
+
+    @property
+    def critical(self) -> list[ReviewIssue]:
+        return [i for i in self.issues if i.severity == "critical"]
+
+
 class FixProposal(BaseModel):
     changes: list[FileChange]
     analysis: str = ""
@@ -701,6 +814,14 @@ class FixAttempt(BaseModel):
                                                    # (fully) apply — `changes` holds only what applied
     introduced_errors: list[BuildError] = Field(default_factory=list)  # errors new in the touched files after the
                                                    # rebuild (set by the loop's scoring; why "regressed")
+    # v2 fix scripts (decision SCRIPT): which version of which case's script ran, how it came about and what it did
+    script_mode: Optional[ScriptMode] = None       # new (LLM, no stored version) | reuse (stored version, no LLM) |
+                                                   # augment (LLM extended `script_parent`)
+    script_case_id: str = ""
+    script_version: int = 0                        # stored version that ran (0 = none / not stored)
+    script_parent: Optional[int] = None
+    script_code: str = ""
+    script_result: Optional[ScriptRunResult] = None
 
 
 class IterationRecord(BaseModel):
@@ -862,7 +983,10 @@ class HarvestResult(BaseModel):
 # ---------------------------------------------------------------------------
 # who / what made the change: a deterministic handler, an OpenRewrite recipe (plan recipe ids or KB recipes), a
 # replayed KB patch, the LLM, a plan step outside the fix loop (rewrite / restructure / pre-emptive handlers / bump)
-FixMethod = Literal["handler", "recipe", "kb_patch", "llm", "plan_step", "none"]
+FixMethod = Literal["handler", "recipe", "kb_patch", "llm", "plan_step", "none",
+                    "script", "script_reuse", "script_augment"]
+# v2: script = a new LLM script (no stored version), script_reuse = a stored version run again (no LLM call),
+# script_augment = the LLM extended an earlier version; resolver_id = "script:<case_id>:v<N>"
 # what the change looks like textually (sbmig.kb.changes.classify_diff), independent of who made it:
 #   text_replace = every changed line is the old line with token substitutions (import swaps included) — a rule /
 #   command could do it; code_edit = lines added / removed / restructured; file_* = whole-file operations;
@@ -893,7 +1017,8 @@ class ChangeClass(BaseModel):
     lines_removed: int = 0
 
 
-KB_RECORD_SCHEMA = 2      # 1 (or absent) = before round 10 (2026-10-26); bump on a change of a field's meaning
+KB_RECORD_SCHEMA = 3      # 1 (or absent) = before round 10 (2026-10-26); 2 = round 10; 3 = v2 fix scripts
+                          # (flow-v2: script_* fields, fix methods script / script_reuse / script_augment)
 
 
 class FixAttemptRecord(BaseModel):
@@ -930,6 +1055,14 @@ class FixAttemptRecord(BaseModel):
     output_tokens: int = 0
     advisory_ids: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    # v2 fix scripts
+    script_mode: Optional[ScriptMode] = None
+    script_case_id: str = ""
+    script_version: int = 0
+    script_parent: Optional[int] = None
+    script_status: str = ""                        # ScriptRunStatus
+    script_error: str = ""
+    script_log: list[str] = Field(default_factory=list)
 
 
 class ErrorAttemptRef(BaseModel):
@@ -942,6 +1075,7 @@ class ErrorAttemptRef(BaseModel):
     outcome: AttemptOutcome = "pending"
     failure: str = ""
     change_kind: ChangeKind = "none"
+    script_version: int = 0                        # v2: the script version the attempt ran (0 = no script)
 
 
 class ErrorCaseRecord(BaseModel):
@@ -1008,6 +1142,9 @@ class ErrorCaseRecord(BaseModel):
     asis_spring: str = ""
     packaging: str = ""
     introduced_by: str = ""                        # "step:<plan step id>" or an attempt id that preceded its first build
+    # v2: the case script that resolved it (from the resolving attempt)
+    script_case_id: str = ""
+    script_version: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1017,7 +1154,8 @@ class ErrorCaseRecord(BaseModel):
 # field is recomputed. A hit at triage applies the case's action (see docs/INTERFACES.md "Case catalog").
 # ---------------------------------------------------------------------------
 CaseStatus = Literal["observed", "candidate", "active", "rejected"]
-CaseActionKind = Literal["hint", "recipe", "replace", "handler", "patch", "block"]
+CaseActionKind = Literal["hint", "recipe", "replace", "handler", "patch", "block", "script"]
+# v2: script = run the case's best stored fix script (CaseAction.script_version) — the flow-v2 action
 
 
 class CaseVariant(BaseModel):
@@ -1075,6 +1213,7 @@ class CaseAction(BaseModel):
     patch_case_ids: list[str] = Field(default_factory=list)   # patch: KBCase ids (replayable LLM patches)
     block_reason: str = ""                                    # block: BlockReason value + suggestion
     suggestion: str = ""
+    script_version: int = 0                                   # script: <kb>/scripts/<case id>/v<N>.py
 
 
 class CaseEvidence(BaseModel):
@@ -1344,6 +1483,7 @@ class RunReport(BaseModel):
     # and fix_attempts.jsonl — the report copy has `diff_excerpt` emptied to keep report.json small)
     error_cases: list[ErrorCaseRecord] = Field(default_factory=list)
     error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count, plus "llm_text_replace"
+    structure_review: Optional[StructureReview] = None           # v2: LLM review of poms / modules before the first build
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
 

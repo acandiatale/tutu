@@ -34,3 +34,5 @@ kb/**/*.tmp
 .coverage
 node_modules/
 package-lock.json
+# v2 KB (flow-v2, kb.dir: kb-v2): everything in it is written by runs / fleets / `sbmig kb …`
+/kb-v2/

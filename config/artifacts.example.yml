@@ -48,21 +48,9 @@ artifacts:
                                         # service root + the top aggregator) — the company rule; `modules` = role module poms
   optional_version_policy: floor        # floor = never downgrade (default) | pin = exactly the listed version
 
-plan:
-  # company runs: apply base-parent / boot-jar / comp-jar right after spring.rewrite, BEFORE the spring build-fix
-  # loop, so the loop fixes against the company parent chain (an unresolvable parent then fails fast); the
-  # restructure phase keeps only the final verify. `restructure` = after the spring loop (the default).
-  parent_phase: spring
-
-loop:
-  # Company runs: with plan.parent_phase=spring the final `mvn clean package` is the first package-goal build of the
-  # run, so a failure there (a packaging-only error, or a cluster the spring loop ran out of rounds on) gets one last
-  # build-fix loop and the final build is repeated. Clusters blocked earlier as repeated_failure / oscillation are
-  # released with verify_extra_llm_attempts more LLM attempts (LLM_ESCALATION_MODEL when set); policy blocks
-  # (javax API in a library, missing artifact, …) and budget blocks stay blocked. Defaults: 3 rounds / +2 attempts.
-  phases:
-    verify: { goal: package, max_iterations: 4 }
-  verify_extra_llm_attempts: 2
+# plan / loop: nothing to set for v2 (flow-v2) — the defaults are the company flow: one OpenRewrite run, restructure,
+# structure review, then `mvn clean package` and the script fix loop (loop.phases.verify, 12 rounds). The v1 settings
+# `plan.parent_phase: spring` and `loop.phases.verify.max_iterations: 4` of company-v1 must NOT be carried over.
 
 report:
   language: ko                          # report.md in Korean for the operators (report.json stays English)
@@ -71,6 +59,7 @@ build:
   # The company does not fix tests (2026-10-22): every build runs with -Dmaven.test.skip=true, so test sources are
   # neither compiled nor run and can never block the migration. The report flags `tests-not-compiled` and the
   # Handover tells the owning team to compile and fix the tests. (`skip_tests: true` alone still COMPILES tests.)
+  # v2: also the default in config/default.yml; kept here so the company file says it.
   skip_test_compile: true
   settings_file: null                   # config/settings.nexus.xml — copy config/settings.nexus.example.xml, set the group URL;
                                         # its mirrorOf external:* also covers the <repositories> declared inside the poms

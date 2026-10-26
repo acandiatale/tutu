@@ -176,6 +176,6 @@ flowchart LR
 
 | 단계 | 상태 |
 |---|---|
-| 0 | 진행 중 (2026-10-26) |
-| 1a–1d | 대기 |
+| 0 | 완료 (2026-10-26): 모델·설정·인터페이스, v2 기본값, 계약 테스트 `tests/core/test_v2_contracts.py`, `docs/INTERFACES.md` "v2 — flow-v2" |
+| 1a–1d | 진행 중: 에이전트 6개 — S 실행기(`sbmig/script/`), K 스크립트 KB(`sbmig/kb/`), F 스크립트 요청·프롬프트(`sbmig/fix/`), R 구조 점검·리포트(`sbmig/review/`, `sbmig/report/`), P 플래너(`sbmig/plan/`), L 루프·오케스트레이터(`sbmig/loop/`, `sbmig/triage/`, `sbmig/graph/`) |
 | 2–5 | 대기 |

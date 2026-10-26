@@ -158,38 +158,22 @@ class LayoutConfig(BaseModel):
 
 
 class RecipeSetConfig(BaseModel):
-    # mirrors `openrewrite.recipes` of config/default.yml (a Config() built without the yml plans the same recipes)
+    # mirrors `openrewrite.recipes` of config/default.yml (a Config() built without the yml plans the same recipes).
+    # v2 (flow-v2, business decision 2026-10-26): only Java 21, javax → jakarta and — for Spring Boot projects — the
+    # Boot 4 recipes run, all in ONE OpenRewrite run before the restructure ("레시피가 무엇을 바꿀지 모르니 넣지
+    # 않는다"); Spring Framework 7 / Security / JUnit 5 / project / library / KB recipes are off, everything else is
+    # fixed by LLM scripts. The empty sets stay so a company config can opt back in.
     jdk21: list[str] = Field(default_factory=lambda: ["org.openrewrite.java.migrate.UpgradeToJava21"])
     jakarta: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
-        "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",     # round 10: Servlet 6 removals
     ])
     spring_boot_4: list[str] = Field(default_factory=lambda: [
         "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
-        "com.company.migrate.SpringBoot41Version",       # project recipe in knowledge/recipes/base
-        "com.company.migrate.Boot4JacksonTwins",        # project recipe: Boot Jackson types → Jackson 3 twins
-        "com.company.migrate.Boot4TypeRelocations",     # round 10: types the 4.0 umbrella does not move
-        "com.company.migrate.Spring7RemovedApis",
-        "com.company.migrate.Jackson3SpringConverters",
     ])
-    spring_framework_7: list[str] = Field(default_factory=lambda: [
-        "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
-        "com.company.migrate.Spring7RemovedApis",
-        "com.company.migrate.Jackson3SpringConverters",
-    ])
-    spring_security_7: list[str] = Field(default_factory=lambda: [   # round 10: the whole 6.x → 7 chain
-        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0",
-        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_1",
-        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_2",
-        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_3",
-        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_4",
-        "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5",
-        "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
-    ])
-    junit5: list[str] = Field(default_factory=lambda: [
-        "org.openrewrite.java.testing.junit5.JUnit4to5Migration",
-    ])
+    spring_framework_7: list[str] = Field(default_factory=list)
+    spring_security_7: list[str] = Field(default_factory=list)
+    junit5: list[str] = Field(default_factory=list)
     extra: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -231,7 +215,7 @@ class BuildConfig(BaseModel):
     # -Dmaven.test.skip=true on EVERY build: test sources are neither compiled nor run, so a test-source error can
     # never block the migration (the company's decision, 2026-10-22: the fleet does not fix tests). The report flags
     # `tests-not-compiled` and lists the follow-up; the L7 / L7b fallbacks become moot.
-    skip_test_compile: bool = False
+    skip_test_compile: bool = True                      # v2 default (the company decision of 2026-10-22)
     allow_skip_test_compile_fallback: bool = True       # -Dmaven.test.skip=true as last resort (flagged in report)
     allow_skip_tests_fallback: bool = True              # -DskipTests when only runtime test failures remain
                                                         # (flag `tests-skipped`, failing tests listed as follow-ups)
@@ -263,19 +247,19 @@ class PhaseLoopConfig(BaseModel):
 
 
 class LoopConfig(BaseModel):
+    # v2: no intermediate builds — the jdk21 / spring / restructure loops are off; the first build is the final
+    # `mvn clean package` after transform + restructure + review, and its fix loop (`verify`) does all the fixing
     phases: dict[str, PhaseLoopConfig] = Field(default_factory=lambda: {
-        "jdk21": PhaseLoopConfig(goal="compile", max_iterations=3),
-        "spring": PhaseLoopConfig(goal="test-compile", max_iterations=6),
-        "restructure": PhaseLoopConfig(goal="package", max_iterations=6),
-        # the final `mvn clean package` failed → one last build-fix loop on this goal, then the final build again
-        # (2026-10-22: company runs with plan.parent_phase=spring have no package-goal loop before verify)
-        "verify": PhaseLoopConfig(goal="package", max_iterations=3),
+        "jdk21": PhaseLoopConfig(goal="compile", max_iterations=3, enabled=False),
+        "spring": PhaseLoopConfig(goal="test-compile", max_iterations=6, enabled=False),
+        "restructure": PhaseLoopConfig(goal="package", max_iterations=6, enabled=False),
+        "verify": PhaseLoopConfig(goal="package", max_iterations=12),
     })
-    max_llm_calls: int = 60
+    max_llm_calls: int = 100
     # final verify loop only: clusters blocked earlier for repeated_failure / oscillation are released and may get this
     # many MORE LLM attempts (escalation model when configured); 0 = never release, policy blocks are never released
     verify_extra_llm_attempts: int = 2
-    max_total_minutes: int = 180
+    max_total_minutes: int = 240
     stall_limit: int = 2                     # identical error multiset N times → escalate strategy
     max_clusters_per_iteration: int = 8
     revert_on_regression: bool = True
@@ -357,6 +341,34 @@ class LLMConfig(BaseModel):
     pricing_note: str = ""                   # printed under the cost table (source + date of the prices)
 
 
+class ScriptConfig(BaseModel):
+    """v2 fix scripts (sbmig.script): the LLM answers with `def fix(p)`; it runs in a separate `python -I` process
+    against the helper API `p` (project-folder files only), after a static check (allowed imports only; no open /
+    exec / eval / os / subprocess / socket / dunder access). Not a sandbox against a hostile author — a guard
+    against a script that reaches outside the project by mistake (docs/v2/PLAN-v2.md §3.2)."""
+    timeout_seconds: int = 60                # per run; the process tree is killed after it (status timeout)
+    python: Optional[str] = None             # interpreter for the script process; None = the one running sbmig
+    extra_allowed_imports: list[str] = Field(default_factory=list)   # added to the built-in whitelist (company call)
+    max_code_chars: int = 30000              # a longer script is refused (status rejected)
+    log_lines: int = 200                     # p.log lines kept per run
+    max_files_changed_warn: int = 40         # a run that changes more files gets a warning note (the diff is kept)
+    reuse: bool = True                       # same case seen before → run its best stored version first (no LLM)
+    reuse_versions: int = 1                  # stored versions tried per case and run before the LLM is asked
+    max_augments_per_case: int = 3           # LLM extensions per case and run; then the case is BLOCKED
+                                             # (repeated_failure) and handed over
+
+
+class ReviewConfig(BaseModel):
+    """v2 structure review (sbmig.review): after the restructure, before the first build, the LLM checks the poms,
+    dependencies and module layout against the company rules. Critical findings → one fix script (committed, can be
+    reverted); warnings → the report section "Structure review" and <kb>/reviews.jsonl."""
+    enabled: bool = True
+    fix_critical: bool = True                # run the review's script when it reports critical issues
+    max_pom_chars: int = 60000               # all pom text in the prompt; longer poms are cut (head + tail)
+    max_poms: int = 40
+    record: bool = True                      # one line per run in <kb>/reviews.jsonl
+
+
 class FixConfig(BaseModel):
     """Second adapter tier: replace the whole fixer (our SEARCH/REPLACE protocol over a chat completion) with an
     in-house coding agent. `plugin` = "pkg.module:attr" where attr is a FixerLike class or a factory
@@ -366,30 +378,32 @@ class FixConfig(BaseModel):
 
 
 class KBConfig(BaseModel):
-    dir: str = "kb"                          # relative to repo root unless absolute
-    ledger: bool = True                      # append one ResolutionRecord per resolved/blocked cluster to kb/ledger.jsonl
-    symbol_index: bool = True                # maintain kb/symbols.json: error symbol → fix labels / replacements
-    deterministic_candidates: bool = True    # compile recipe candidates from labeled fixes without the LLM when possible
-    use_active_recipes: bool = True
-    use_patch_replay: bool = True
-    use_hints: bool = True
-    harvest: bool = True
-    generate_recipe_candidates: bool = True
+    dir: str = "kb-v2"                       # relative to repo root unless absolute; v2 keeps its own KB (flow-v2)
+    # v2: the ledger / symbol index / KB recipes / patch replay / harvest / learned replaces / error hints of v1 are off
+    # (the fix-script history per case replaces them); the flags stay until the v1 code is removed (PLAN-v2 step 4)
+    ledger: bool = False                     # append one ResolutionRecord per resolved/blocked cluster to kb/ledger.jsonl
+    symbol_index: bool = False               # maintain kb/symbols.json: error symbol → fix labels / replacements
+    deterministic_candidates: bool = False   # compile recipe candidates from labeled fixes without the LLM when possible
+    use_active_recipes: bool = False
+    use_patch_replay: bool = False
+    use_hints: bool = False
+    harvest: bool = False
+    generate_recipe_candidates: bool = False
     auto_promote_after_projects: int = 2     # candidate → active after success in N distinct projects (0 = never)
-    try_candidates_in_plan: bool = True      # run candidate recipes inside the plan's OpenRewrite step (as-is classpath →
+    try_candidates_in_plan: bool = False     # run candidate recipes inside the plan's OpenRewrite step (as-is classpath →
                                              # type attribution works); credited success/fail by the phase's build
     max_hints: int = 5
     # error cases (2026-10-23): one record per build error + one per fix attempt (failures included), with the code
     # applied → kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json and <run dir>/error_cases.*
     error_cases: bool = True
-    error_hints: bool = True                 # past outcomes of the same error (fixes AND failures) → fix-prompt hints
+    error_hints: bool = False                # past outcomes of the same error (fixes AND failures) → fix-prompt hints
     error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff, applied AFTER classification (0 = no cap)
     error_excerpt_chars: int = 1500          # cap of ErrorCaseRecord.diff_excerpt (the error's own file)
     # case catalog (2026-10-23): one case per error signature (L2) in kb/catalog/, human views in kb/views/; a hit applies
     # the case's action (replace via handler case-replace; recipe / patch through the existing KB steps; hints always).
     # Promotion candidate → active uses kb.auto_promote_after_projects (successes in N distinct projects, no failure)
     catalog: bool = True
-    case_replace: bool = True                # apply learned text replaces (handler case-replace) for candidate / active cases
+    case_replace: bool = False               # apply learned text replaces (handler case-replace) for candidate / active cases
     case_replace_scope: Literal["error-lines", "file"] = "error-lines"   # error-lines = only the lines javac reported
                                              # + import lines of that file; file = the whole file (riskier)
     # round 10: secret masking rules (built-ins + this yml: company additions, invariant 2), relative to the repo root
@@ -401,8 +415,8 @@ class PlanConfig(BaseModel):
     advisor: Literal["none", "llm"] = "none"   # optional LLM review of the rule-based plan
     catalog_file: str = "knowledge/recipes/catalog.yml"   # single source of truth for known recipes (advisor
                                              # whitelist, coverage, gates, descriptions); relative to repo root
-    intermediate_builds: bool = True           # build after jdk21 phase before spring phase
-    optional_bump_phase: Literal["spring", "restructure"] = "spring"   # bump in-house optional artifacts right after the
+    intermediate_builds: bool = False          # v1: build after the jdk21 phase before the spring phase (v2: never)
+    optional_bump_phase: Literal["spring", "restructure"] = "restructure"   # bump in-house optional artifacts right after the
                                              # spring rewrite so jakarta builds of in-house libs are on the classpath before the first build
     # round 9c: when the in-house parents / layout are applied. `restructure` (default) = after the spring build-fix
     # loop, on a tree that already compiles against the as-is parent chain; `spring` = right after spring.rewrite (and
@@ -450,11 +464,12 @@ class AdvisoryConfig(BaseModel):
     file: str = "knowledge/libraries/advisories.yml"      # relative to repo root unless absolute
     extra_files: list[str] = Field(default_factory=list)  # company additions / overrides (same schema, merged by id,
                                                           # later files win)
-    allow_recipes: bool = True                            # False → every advisory behaves as policy "guide"
+    allow_recipes: bool = False                           # False → every advisory behaves as policy "guide"
+                                                          # (v2: advisories are LLM hints + Handover only)
     policy_overrides: dict[str, Literal["guide", "recipe", "off"]] = Field(default_factory=dict)
                                                           # advisory id → policy ("off" disables the entry)
     report_carried_over: bool = True                      # list as-is-version pins (unmanaged after the parent swap)
-    ledger: bool = True                                   # write advisory findings to kb/ledger.jsonl (resolution=advisory)
+    ledger: bool = False                                  # write advisory findings to kb/ledger.jsonl (resolution=advisory)
     max_from_here: int = 40                               # cap of the handover's "from here on" list
 
 
@@ -480,6 +495,8 @@ class Config(BaseModel):
     loop: LoopConfig = Field(default_factory=LoopConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     fix: FixConfig = Field(default_factory=FixConfig)
+    script: ScriptConfig = Field(default_factory=ScriptConfig)
+    review: ReviewConfig = Field(default_factory=ReviewConfig)
     kb: KBConfig = Field(default_factory=KBConfig)
     plan: PlanConfig = Field(default_factory=PlanConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)

@@ -1164,3 +1164,137 @@ edited (shell variables still win; values the loader set earlier follow the file
   `Authorization: Bearer <token>`, or `?token=` once (sets an HttpOnly SameSite=Strict cookie holding a hash of the
   token for 7 days; the page `/` is redirected without the token, an API call is answered and keeps the cookie);
   401 / 403 bodies carry the hint the UI shows.
+
+## v2 — flow-v2 (2026-10-26, branch `flow-v2`, plan `docs/v2/PLAN-v2.md`)
+
+The business team's flow: every OpenRewrite recipe in ONE run without a build, the company restructure as before, an
+LLM structure review, then `mvn clean package`; every build error is fixed by an **LLM-written Python fix script**
+stored per case (L2) and reused / augmented on later projects. Stable v1 flow = tag `company-v1`. This section is the
+contract of PLAN-v2 step 0; the implementations follow it (step 1: S `sbmig/script/`, K `sbmig/kb/`, F `sbmig/fix/`,
+R `sbmig/review/` + `sbmig/report/`, L `sbmig/loop/` + `sbmig/plan/` + `sbmig/triage/` + `sbmig/graph/`).
+
+### Models (`sbmig/core/models.py`)
+* `Phase.TRANSFORM = "transform"` (the one rewrite run; ordered between `plan` and `jdk21`), `StepKind.REVIEW`,
+  `DecisionKind.SCRIPT`, `CaseActionKind` += `script` (`CaseAction.script_version` = the case's best version).
+* `ErrorCluster.case_id` — v2 clusters are ONE case (L2) across files (`file` None, id `case:<case_id>`).
+* `ScriptRunResult` (`status` ok | error | timeout | rejected, `changed_files`, `log`, `error`, `problems`,
+  `duration_s`), `ScriptMeta` (`<kb>/scripts/<case_id>/v<N>.meta.json`: version, parent, sha1, run / project / model,
+  analysis, successes / failures / partials, success_projects, last_outcome, status active | retired | quarantined),
+  `ScriptBase` (the version an augment extends + what it did in this project + `history` lines), `ScriptProposal`
+  (code, analysis, usage, `error` when there is no script), `ReviewIssue` / `StructureReview` (verdict ok | issues |
+  skipped | failed, issues, script + result + commit, usage, note); `RunReport.structure_review`.
+* `FixAttempt` += `script_mode` (new | reuse | augment), `script_case_id`, `script_version`, `script_parent`,
+  `script_code`, `script_result`.
+* `FixMethod` += `script` (new LLM script), `script_reuse` (stored version, no LLM call), `script_augment`; the
+  resolver id of a script attempt is `script:<case_id>:v<N>`. `FixAttemptRecord` += `script_mode`, `script_case_id`,
+  `script_version`, `script_parent`, `script_status`, `script_error`, `script_log` (≤ 50 lines);
+  `ErrorCaseRecord` += `script_case_id`, `script_version` (of the resolving attempt); `ErrorAttemptRef.script_version`.
+  `KB_RECORD_SCHEMA = 3`.
+
+### Seams (`sbmig/core/interfaces.py`)
+* `ScriptRunnerLike.check(code) -> list[str]`, `.run(ws, code, *, errors=(), timeout_s=None) -> ScriptRunResult`
+  (changes stay uncommitted; never raises).
+* `ScriptStoreLike`: `versions`, `get`, `best(case_id, limit=1)` (active versions with ≥ 1 success: most success
+  projects, then successes − failures, then newest; a human-pinned `{kind: script, script_version: N}` in the case's
+  `human` block comes first), `latest`, `add` (next version; same sha1 → existing meta), `credit(case_id, version,
+  outcome, project=, run_id=)`, `case_ids`. `ScriptKnowledgeLike` = `FileKnowledgeBase.scripts` + `record_review`.
+* `ScriptFixerLike.propose_script(ws, cluster, ctx) -> ScriptProposal` — `FixContext` += `script_mode` (new |
+  augment), `case_id`, `signature_generic`, `script_base`. An augment answer is the COMPLETE new script (it replaces
+  the base and runs on a tree where the base was rolled back). `FixerLike.propose` stays for tier-2 plugins; the v2
+  loop needs `propose_script` (a tier-2 plugin without it cannot fix in v2 — documented, no fallback).
+* `StructureReviewerLike.review(ws, profile, cfg, *, run_id, restructure_notes, restructure_results)
+  -> StructureReview`. `LLMRole` += `structure_review`.
+
+### Config keys (mirrored in `config/default.yml`; `tests/core/test_v2_contracts.py`)
+| key | default | meaning |
+|---|---|---|
+| `openrewrite.recipes.*` | jdk21 `UpgradeToJava21`; jakarta `JavaxMigrationToJakarta`; spring_boot_4 `UpgradeSpringBoot_4_0`, `SpringBootProperties_4_1`; framework 7 / security 7 / junit5 empty | v2 recipe scope (business decision) |
+| `plan.intermediate_builds` | false | |
+| `plan.optional_bump_phase` | restructure | the bump runs inside the restructure |
+| `loop.phases.{jdk21,spring,restructure}.enabled` | false | no intermediate loops |
+| `loop.phases.verify` | package, 12 rounds | the script fix loop |
+| `loop.max_llm_calls` / `max_total_minutes` | 100 / 240 | |
+| `build.skip_test_compile` | true | `-Dmaven.test.skip=true` on every build |
+| `kb.dir` | `kb-v2` | v1 KB (`kb/`) stays apart |
+| `kb.{ledger,symbol_index,deterministic_candidates,use_active_recipes,use_patch_replay,use_hints,harvest,generate_recipe_candidates,try_candidates_in_plan,case_replace,error_hints}` | false | v1 learning paths (code removed in step 4) |
+| `advisories.allow_recipes` / `advisories.ledger` | false / false | advisories = LLM hints + Handover only |
+| `script.timeout_seconds` | 60 | per run, then the process tree is killed |
+| `script.python` | null | interpreter of the script process (null = sys.executable) |
+| `script.extra_allowed_imports` | [] | added to the import whitelist |
+| `script.max_code_chars` / `script.log_lines` | 30000 / 200 | |
+| `script.max_files_changed_warn` | 40 | a run changing more files gets a warning note |
+| `script.reuse` / `script.reuse_versions` | true / 1 | stored versions tried before the LLM is asked |
+| `script.max_augments_per_case` | 3 | LLM extensions per case and run, then BLOCKED (repeated_failure) |
+| `review.enabled` / `fix_critical` / `record` | true / true / true | structure review, its script, `<kb>/reviews.jsonl` |
+| `review.max_pom_chars` / `max_poms` | 60000 / 40 | prompt size |
+
+### Plan (L)
+Non-MSA: `transform.rewrite` (OPENREWRITE, TRANSFORM; jdk21 set + jakarta set when the case needs it — spring_legacy,
+servlet_tomcat, pure_java with Java EE javax imports — + spring_boot_4 set for spring_boot; one run) →
+`restructure.apply` | `restructure.boot_pom` | `restructure.pom_only` (RESTRUCTURE) → `restructure.review` (REVIEW,
+RESTRUCTURE) → `verify.build`. MSA: `transform.rewrite@<target>` per library root / service (one un-suffixed run under
+`top-aggregator`), `restructure.msa_pom`, `restructure.review`, `verify.build[@<svc>]`. No BUILD_FIX_LOOP steps before
+verify, no pre-emptive handlers, no project (`com.company.migrate.*`) / library / KB / advisory recipes;
+`plan.parent_phase` is ignored.
+
+### Script fix loop (L; `loop.phases.verify` after a failed final build)
+* Clusters by L2 (`signature_generic`) across files; errors without an L2 get `case_id =
+  sha1(kind|normalized file|L1)[:10]`. Triage priorities (pom / parent / dependency resolution first, masking) as v1.
+  Decisions: SCRIPT, or BLOCKED / SKIP / ESCALATE as v1 (`loop.blocked_policy`, budget, LLM unavailable, already
+  blocked). One attempt per case and round; the rebuild scores every pending attempt (`_score`, round 10 rules).
+* Ladder per case and run: (1) **reuse** — `script.reuse` and `kb.scripts.best(case_id, limit=script.reuse_versions)`
+  versions not yet tried in this run (no LLM call); (2) **augment** — base = this run's last script attempt of the
+  case (code, result, remaining / introduced errors) or else `kb.scripts.latest(case_id)`; ask `propose_script(mode
+  augment)`, `add(parent=base.version)`, run; at most `script.max_augments_per_case`; (3) **new** — nothing stored and
+  nothing tried: `propose_script(mode new)`, `add(parent=None)`, run; (4) limits reached → BLOCKED repeated_failure.
+* A script attempt: `base_commit = ws.head()`; `ScriptRunner.run(ws, code, errors=cluster.errors)`; status rejected /
+  error / timeout → `apply_failed` with the working tree restored (no partial application); ok without a change →
+  `apply_failed` "no file changed"; ok with changes → commit `fix(script:<case_id>:v<N> <mode>): <cluster id>`.
+* Before a case's next attempt, its previous attempt is rolled back unless it was improved / build_ok (regressed was
+  already reverted by scoring) — every version is measured from the same base, so a stored version is complete.
+* Every LLM script is stored before it runs (failures keep their lineage); after scoring `kb.scripts.credit(...)` for
+  every script attempt. Records: `FixAttempt.script_*`; tracker fix method by mode, resolver `script:<id>:v<N>`.
+* Out of the flow (code removed in step 4): reactive and pre-emptive handlers (incl. `case-replace`), KB recipe /
+  candidate batches, KB patch replay, `recipe_rules.yml`, harvest / ledger / symbols / recipe credit, SEARCH/REPLACE.
+
+### Script contract (S)
+Answer: `<analysis>…</analysis>` + `<script>…</script>` (fences inside allowed) defining `def fix(p)`;
+`<need_file>` / `<need_grep>` as v1. Helper `p` (relative posix paths; absolute, `..`, drive letters, `.git/`,
+`target/` and anything resolving outside the project are refused → status error):
+
+| API | |
+|---|---|
+| `p.errors` | list of dicts: file, line, column, message, symbol, location, kind, module, signature, signature_generic |
+| `p.files(glob="**/*")` | sorted relative posix paths (no `.git/`, `target/`, `node_modules/`) |
+| `p.read(path)` / `p.exists(path)` | text decoded with the file's detected encoding (`build.encoding_candidates`) |
+| `p.write(path, text)` | same encoding and newline style as the original (a new file: UTF-8, `\n`) |
+| `p.replace(path, old, new, count=-1)` / `p.sub(path, pattern, repl, count=0, flags=0)` | number of replacements |
+| `p.create(path, text)` / `p.delete(path)` / `p.move(src, dst)` | create refuses an existing file |
+| `p.pom(path="pom.xml")` | editor (sbmig.restructure.pom_editor): `add_dependency(g, a, version=None, scope=None, type=None, classifier=None)`, `remove_dependency`, `set_dependency_version`, `add_exclusion(g, a, ex_g, ex_a)`, `add_managed_dependency`, `set_property`, `remove_property`, `set_plugin_version`, `text()`, `save()` — mutators return True when the pom changed |
+| `p.log(msg)` | a log line (KB); `print` goes to the log too |
+
+Static check (`ast`): module-level `def fix(p)` required; imports only `re json textwrap fnmatch posixpath itertools
+collections functools string math` (+ `script.extra_allowed_imports`); refused names `open exec eval compile
+__import__ globals locals vars getattr setattr delattr input breakpoint help memoryview`; refused modules `os sys
+subprocess socket pathlib importlib shutil ctypes threading multiprocessing builtins io`; any `__dunder__` attribute;
+code longer than `script.max_code_chars`. Run: `python -I` harness in a temp cwd, restricted builtins and a guarded
+`__import__`, timeout → process tree killed (Windows `taskkill /T /F`), result JSON → `ScriptRunResult`. A guard
+against mistakes, not a sandbox against a hostile author (documented).
+
+### Script KB (K)
+`<kb>/scripts/<case_id>/v<N>.py` (UTF-8) + `v<N>.meta.json`; writes under the KB lock; analysis / logs redacted; code
+matching a secret pattern → stored masked, `quarantined`, never selected. Catalog: action `script` (best version)
+when one is proven, `evidence.fixes` by resolver `script:<id>:v<N>`; views list versions / best. CLI `sbmig kb
+scripts list | show <case_id> [--version N] | retire <case_id> <N> | activate <case_id> <N>`. `record_review` → one
+line in `<kb>/reviews.jsonl`.
+
+### Structure review (R) — `StructureReviewer(cfg, llm, runner, kb)`
+Input: every pom after the restructure (≤ `review.max_poms`, ≤ `review.max_pom_chars`, head + tail cut), module dirs
+and packaging, restructure notes, the company rules (`artifacts.parent` / `boot_parent` / `comp_parent`, mandatory
+target, optional artifacts, `layout.*`), case type, detected source encodings. Prompt `sbmig/review/prompts/
+review_v1.md`, role `structure_review`; answer JSON `{verdict, issues[{severity, file, problem, fix_hint}],
+analysis}` + `<script>` for critical issues. Non-UTF-8 sources without a matching `project.build.sourceEncoding` are
+critical (JDK 21 garbles them with a warning only — no build error would ever show it). Critical + script +
+`review.fix_critical` → `runner.run(ws, code)` (uncommitted; the orchestrator commits `review: …` and fills
+`commit`); script failure → working tree restored, note. Recorded via `kb.record_review`; report section "Structure
+review" (ko/en) and warnings as Handover follow-ups.

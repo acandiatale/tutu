@@ -11,8 +11,13 @@ Implementations (module → class):
     sbmig.triage.handlers.HandlerRegistry           (HandlerLike items)
     sbmig.fix.client.*                              (LLMClientLike)
     sbmig.fix.fixer.LLMFixer                        (FixerLike)
-    sbmig.kb.store.FileKnowledgeBase                (KnowledgeBaseLike)
+    sbmig.kb.store.FileKnowledgeBase                (KnowledgeBaseLike, ScriptKnowledgeLike)
     sbmig.loop.orchestrator.Orchestrator            drives everything
+v2 (flow-v2, docs/v2/PLAN-v2.md):
+    sbmig.script.ScriptRunner                       (ScriptRunnerLike)      fix scripts: static check + `python -I` run
+    sbmig.kb.scripts.ScriptStore                    (ScriptStoreLike)       <kb>/scripts/<case_id>/v<N>.py + meta
+    sbmig.fix.fixer.LLMFixer                        (ScriptFixerLike)       propose_script: new / augment
+    sbmig.review.StructureReviewer                  (StructureReviewerLike) LLM structure review before the first build
 """
 from __future__ import annotations
 
@@ -24,6 +29,7 @@ from pydantic import BaseModel, Field
 from .config import Config
 from .models import (
     BuildError,
+    CaseType,
     BuildResult,
     ErrorCluster,
     FileChange,
@@ -41,6 +47,11 @@ from .models import (
     ProjectProfile,
     RecipeRef,
     RewriteResult,
+    ScriptBase,
+    ScriptMeta,
+    ScriptProposal,
+    ScriptRunResult,
+    StructureReview,
     TriageDecision,
 )
 from .workspace import Workspace
@@ -63,7 +74,8 @@ class LLMResponse(BaseModel):
 
 
 # Who is asking — lets an in-house gateway / agent platform route or budget by purpose.
-LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "recipe_candidate", "other"]
+LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "recipe_candidate", "structure_review", "other"]
+# v2: fix scripts keep role fix / fix_escalation; the structure review asks with role structure_review
 
 
 class LLMRequest(BaseModel):
@@ -253,6 +265,11 @@ class FixContext(BaseModel):
     # as-is module; first-wins kept one copy) and the dropped copies as read-only reference text
     reference_notes: list[str] = Field(default_factory=list)   # one line per hint ("<kept path> was merged first-wins …")
     reference_files: dict[str, str] = Field(default_factory=dict)   # label/path → content (read-only, never patched)
+    # v2 fix scripts (ScriptFixerLike.propose_script): what is asked for and, for augment, the script to extend
+    script_mode: Optional[Literal["new", "augment"]] = None
+    case_id: str = ""                             # the cluster's case (L2 signature id)
+    signature_generic: str = ""
+    script_base: Optional[ScriptBase] = None      # augment: the previous version and what it did in this project
 
 
 @runtime_checkable
@@ -261,6 +278,64 @@ class FixerLike(Protocol):
     def apply(self, ws: Workspace, changes: list[FileChange]) -> tuple[list[FileChange], list[str]]:
         """Apply changes; return (applied, errors). Must be atomic per file and never leave partial edits."""
         ...
+
+
+@runtime_checkable
+class ScriptFixerLike(Protocol):
+    """v2: the fixer answers with a fix script instead of SEARCH/REPLACE blocks. `ctx.script_mode` = "new" (no
+    stored script for the case) or "augment" (`ctx.script_base` = the version to extend; the answer must be the
+    COMPLETE new script — it replaces the base and runs on a tree where the base was rolled back). The cluster is one
+    case (L2) and may span many files; `<need_file>` rounds stay inside the fixer. Never raises: a failure is
+    `ScriptProposal(code="", error=...)` (transport errors keep the v1 analysis prefixes the loop classifies)."""
+    def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal: ...
+
+
+# ---------------------------------------------------------------------------
+# v2 fix scripts
+# ---------------------------------------------------------------------------
+@runtime_checkable
+class ScriptRunnerLike(Protocol):
+    """Runs one fix script against the project folder of `ws` (sbmig.script). `check` = the static check alone
+    (empty list = allowed). `run` = check, then a separate `python -I` process with the helper API `p`
+    (p.errors = `errors`), killed after `timeout_s` (default script.timeout_seconds). Changes stay uncommitted in the
+    working tree — the caller commits / reverts. Never raises."""
+    def check(self, code: str) -> list[str]: ...
+    def run(self, ws: Workspace, code: str, *, errors: Iterable[BuildError] = (),
+            timeout_s: Optional[int] = None) -> ScriptRunResult: ...
+
+
+@runtime_checkable
+class ScriptStoreLike(Protocol):
+    """<kb>/scripts/<case_id>/v<N>.py + v<N>.meta.json (sbmig.kb.scripts). Writes hold the KB lock; analysis and
+    logs are redacted; a script whose code matches a secret pattern is stored masked as `quarantined`."""
+    def versions(self, case_id: str) -> list[ScriptMeta]: ...                  # oldest first
+    def get(self, case_id: str, version: int) -> Optional[tuple[ScriptMeta, str]]: ...
+    def best(self, case_id: str, *, limit: int = 1) -> list[tuple[ScriptMeta, str]]:
+        """Reuse candidates, best first: active versions with at least one success (most success projects, then
+        successes − failures, then the newest). Empty = nothing proven for this case."""
+        ...
+    def latest(self, case_id: str) -> Optional[tuple[ScriptMeta, str]]: ...   # newest active version (augment base)
+    def add(self, case_id: str, signature_generic: str, code: str, *, parent: Optional[int] = None,
+            analysis: str = "", model: str = "", run_id: str = "", project: str = "",
+            source: Literal["llm", "human", "review"] = "llm") -> ScriptMeta:
+        """Store the next version (an identical script — same sha1 — returns the existing meta)."""
+        ...
+    def credit(self, case_id: str, version: int, outcome: str, *, project: str = "", run_id: str = "") -> None:
+        """After the scoring build: improved / build_ok = success (when every targeted error of the case is gone),
+        partial = partial, no_change / regressed / apply_failed / blocked = failure, inconclusive / pending = nothing."""
+        ...
+    def case_ids(self) -> list[str]: ...
+
+
+@runtime_checkable
+class StructureReviewerLike(Protocol):
+    """v2 (sbmig.review): after the restructure, before the first build — the LLM checks poms, dependencies and the
+    module layout against the company rules (artifacts.* / layout.*). Critical issues with a script → the script
+    runs through the ScriptRunnerLike (uncommitted; the orchestrator commits it as `review: …`); the review is
+    recorded in <kb>/reviews.jsonl when `kb` is given. Never raises (verdict failed / skipped instead)."""
+    def review(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *, run_id: str = "",
+               restructure_notes: Iterable[str] = (), restructure_results: Iterable["RestructureResult"] = ()
+               ) -> StructureReview: ...
 
 
 # ---------------------------------------------------------------------------
@@ -279,3 +354,11 @@ class KnowledgeBaseLike(Protocol):
     def promote(self, recipe_id: str) -> KBRecipe: ...
     def reject(self, recipe_id: str, reason: str = "") -> KBRecipe: ...
     def reindex(self) -> int: ...
+
+
+@runtime_checkable
+class ScriptKnowledgeLike(Protocol):
+    """v2 additions of the file KB (sbmig.kb.store.FileKnowledgeBase): the per-case script store and the review log."""
+    scripts: ScriptStoreLike
+
+    def record_review(self, review: StructureReview) -> None: ...             # one line in <kb>/reviews.jsonl
