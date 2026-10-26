@@ -816,6 +816,43 @@ BINARY_RESOURCE_EXTENSIONS: tuple[str, ...] = (
     "class", "ser", "dat", "bin", "db", "sqlite", "mdb",                    # binary data
 )
 MAX_BINARY_RESOURCES = 200
+# never binary, whatever the bytes say (a cp949 .properties is text the filter must see)
+TEXT_RESOURCE_EXTENSIONS = frozenset({
+    "properties", "xml", "yml", "yaml", "json", "txt", "text", "html", "htm", "xhtml", "jsp", "jspf", "jspx", "tag",
+    "tld", "js", "mjs", "ts", "css", "scss", "sass", "less", "map", "svg", "sql", "ddl", "md", "csv", "tsv", "vm",
+    "ftl", "ftlh", "mustache", "hbs", "xsd", "dtd", "wsdl", "xsl", "xslt", "jrxml", "conf", "cfg", "ini", "sh", "bat",
+    "cmd", "groovy", "java", "kt", "py", "factories", "imports", "mf", "log", "lst", "tpl", "rtf", "ics", "vcf",
+})
+SNIFF_BYTES = 8192
+
+
+def looks_binary(path: Any) -> bool:
+    """Content sniff for a resource of an unknown extension (round 10 follow-up, company run 2026-10-26: an
+    `.items.dmdb` under `static/img/.dm/` failed the filtered copy with MalformedInputException): a NUL byte in the
+    first 8 KB, or bytes that are neither UTF-8 nor cp949. Never raises (unreadable = not binary)."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(SNIFF_BYTES)
+    except OSError:
+        return False
+    if b"\x00" in head:
+        return True
+    for enc in ("utf-8", "cp949"):
+        try:
+            head.decode(enc)
+            return False
+        except UnicodeDecodeError as e:
+            if e.start >= len(head) - 4:          # a multi-byte sequence cut by the 8 KB window
+                return False
+    return True
+
+
+PLUGIN_UNFILTERED_DEFAULTS = frozenset({"jpg", "jpeg", "gif", "bmp", "png"})   # the plugins copy these as-is already
+
+
+def _binary_by_content(name: str) -> bool:
+    ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
+    return ext not in TEXT_RESOURCE_EXTENSIONS and ext not in PLUGIN_UNFILTERED_DEFAULTS
 _RESOURCE_SETS_RE = re.compile(r"<(resources|testResources|webResources)>(.*?)</\1>", re.S)
 _ANY_RESOURCE_RE = re.compile(r"<(resource|testResource)>(.*?)</\1>", re.S)
 _PATTERN_RE = re.compile(r"<(include|exclude)>\s*([^<]+?)\s*</\1>")
@@ -886,7 +923,8 @@ def _filtered_resource_specs(ws: Any, poms: list[PomInfo]) -> list[tuple[str, li
 def filtered_binary_resources(ws: Any, poms: list[PomInfo],
                               extensions: Iterable[str] = BINARY_RESOURCE_EXTENSIONS) -> list[str]:
     """Root-relative binary files a filtered resource would run through the filter (includes / excludes honoured),
-    sorted and capped at MAX_BINARY_RESOURCES. Never raises."""
+    sorted and capped at MAX_BINARY_RESOURCES: a known binary extension, or (round 10 follow-up) a file of an unknown
+    extension whose content is binary (`looks_binary`). Never raises."""
     try:
         specs = _filtered_resource_specs(ws, poms)
         if not specs:
@@ -896,7 +934,10 @@ def filtered_binary_resources(ws: Any, poms: list[PomInfo],
         for rel in ws.glob("*"):
             rel = rel.replace("\\", "/")
             name = posixpath.basename(rel)
-            if "." not in name or name.rsplit(".", 1)[1].lower() not in exts or _skipped(rel):
+            if _skipped(rel):
+                continue
+            known = "." in name and name.rsplit(".", 1)[1].lower() in exts
+            if not known and not _binary_by_content(name):
                 continue
             for d, incl, excl in specs:
                 if d in ("", "."):
@@ -909,7 +950,8 @@ def filtered_binary_resources(ws: Any, poms: list[PomInfo],
                     continue
                 if any(x.match(sub) for x in excl):
                     continue
-                out.add(rel)
+                if known or looks_binary(ws.abs(rel)):
+                    out.add(rel)
                 break
         return sorted(out)[:MAX_BINARY_RESOURCES]
     except Exception:  # noqa: BLE001 - never fail the analysis over this

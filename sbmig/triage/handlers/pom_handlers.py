@@ -10,6 +10,7 @@ anchored text substitutions after the editor saved. `apply` returns one `FileCha
 from __future__ import annotations
 
 import logging
+import posixpath
 import re
 from abc import abstractmethod
 from functools import lru_cache
@@ -24,7 +25,7 @@ from sbmig.core.models import GAV, ErrorCluster, ErrorKind, FileChange, Phase, P
 from sbmig.core.workspace import Workspace
 
 from .base import (Handler, _default_pom_editor_factory, all_poms, cluster_artifact_keys, cluster_text,
-                   parse_version, poms_for_cluster, profile_declares, root_pom, version_lt)
+                   nearest_pom, parse_version, poms_for_cluster, profile_declares, root_pom, version_lt)
 
 log = logging.getLogger("sbmig.triage.handlers")
 
@@ -1178,18 +1179,40 @@ class ResourcesBinaryFiltering(PomHandler):
     _FILTERING_RE = re.compile(r"<filtering>\s*true\s*</filtering>")
     _PLUGIN_BLOCK = r"<plugin>(?:(?!</plugin>).)*?<artifactId>\s*{a}\s*</artifactId>(?:(?!</plugin>).)*?</plugin>"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.flags: list[str] = []
+        self.notes: list[str] = []                   # read by the orchestrator / loop (`getattr(handler, "notes")`)
+
+    def note(self, n: str) -> None:
+        if n not in self.notes:
+            self.notes.append(n)
+
     # -- what to add ----------------------------------------------------
-    def wanted_extensions(self, cluster: Optional[ErrorCluster]) -> list[str]:
-        """The table + the extension of every file the error names (an unusual one is still binary)."""
+    def wanted_extensions(self, cluster: Optional[ErrorCluster], ws: Optional[Workspace] = None) -> list[str]:
+        """The table + the extension of every file the error names (an unusual one is still binary) + (round 10
+        follow-up) the extension of every file under a filtered resource dir of the live tree whose CONTENT is binary:
+        maven-resources-plugin names one failing file per build (3.2.x names none: `Input length = 1`), so a tree with
+        several unknown binaries (`.dm/.items.dmdb` …) needs them all in one go."""
         from sbmig.analyze.properties import BINARY_RESOURCE_EXTENSIONS
 
         exts = [e.lower() for e in BINARY_RESOURCE_EXTENSIONS]
-        for m in self._FILE_RE.finditer(cluster_text(cluster)):
-            base = m.group("path").replace("\\", "/").rsplit("/", 1)[-1]
+        names = [m.group("path").replace("\\", "/").rsplit("/", 1)[-1] for m in self._FILE_RE.finditer(cluster_text(cluster))]
+        names += [posixpath.basename(r) for r in (self.binary_files(ws) if ws is not None else [])]
+        for base in names:
             ext = base.rsplit(".", 1)[-1].lower() if "." in base else ""
             if re.fullmatch(r"[a-z0-9]{1,8}", ext) and ext not in exts and ext not in self.IMAGE_DEFAULTS:
                 exts.append(ext)
         return exts
+
+    @staticmethod
+    def binary_files(ws: Workspace) -> list[str]:
+        """Binary files (known extension or binary content) under the filtered resources of the current poms."""
+        from types import SimpleNamespace
+
+        from sbmig.analyze.properties import filtered_binary_resources
+
+        return filtered_binary_resources(ws, [SimpleNamespace(path=p) for p in all_poms(ws)])
 
     def plugin_for(self, cluster: Optional[ErrorCluster]) -> str:
         text = cluster_text(cluster)
@@ -1197,6 +1220,19 @@ class ResourcesBinaryFiltering(PomHandler):
 
     def _declares_filtering(self, text: str) -> bool:
         return bool(self._FILTERING_RE.search(_mask_comments(text)))
+
+    @staticmethod
+    def _child_of(module_text: str, root_text: str) -> bool:
+        """The module's `<parent>` is the root project: only then does the root's plugin configuration reach it (a
+        company module on the in-house `comp-jar` parent gets nothing from the aggregator root — round 10 follow-up)."""
+        def own(t: str) -> str:
+            m = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>",
+                          re.sub(r"<parent>.*?</parent>", "", _mask_comments(t), flags=re.S))
+            return m.group(1) if m else ""
+
+        par = re.search(r"<parent>.*?<artifactId>\s*([^<\s]+)\s*</artifactId>.*?</parent>", _mask_comments(module_text),
+                        flags=re.S)
+        return bool(par) and par.group(1) == own(root_text)
 
     def plugins_for_pom(self, text: str) -> list[str]:
         """Pre-emptive: the resources plugin, plus the war plugin when the pom filters `<webResources>`."""
@@ -1212,17 +1248,28 @@ class ResourcesBinaryFiltering(PomHandler):
             return [p for p in poms if self._declares_filtering(ws.read(p))]
         root = root_pom(ws, profile)
         out: list[str] = []
-        for p in poms_for_cluster(ws, cluster, profile):
+        # the file the plugin failed on names its module best (the error's `on project <artifactId>` may be a module
+        # the restructure created, unknown to the as-is profile — round 10 follow-up)
+        named: list[str] = []
+        for m in self._FILE_RE.finditer(cluster_text(cluster)):
+            p = nearest_pom(ws, m.group("path"))
+            if p and p != root and p not in named:
+                named.append(p)
+        for p in named or poms_for_cluster(ws, cluster, profile):
             pick = p
             if root and p != root and not self._declares_filtering(ws.read(p)) \
-                    and self._declares_filtering(ws.read(root)):
+                    and self._declares_filtering(ws.read(root)) and self._child_of(ws.read(p), ws.read(root)):
                 pick = root                      # filtering inherited from the root → one list for every module
             if pick not in out:
                 out.append(pick)
         return out
 
     def edit(self, ws, cluster, profile, cfg) -> list[str]:
-        exts = self.wanted_extensions(cluster)
+        exts = self.wanted_extensions(cluster, ws)
+        for rel in self.binary_files(ws):
+            if "." not in posixpath.basename(rel):         # no extension → nonFilteredFileExtensions cannot cover it
+                self.note(f"binary file without an extension under a filtered resource dir: {rel} — exclude it from "
+                          "filtering (a second <resource> with <filtering>false</filtering>) or rename it")
         changed: list[str] = []
         for rel in self.targets(ws, cluster, profile):
             text = ws.read(rel)

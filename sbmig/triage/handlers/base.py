@@ -103,6 +103,16 @@ def pom_for_module(ws: Workspace, profile: Optional[ProjectProfile], module: str
         d = posixpath.dirname(p)
         if d and (posixpath.basename(d) == module or d == module):
             return p
+    # a module the restructure created (`{name}-back`, `member-api-comp` in `module/comp-jar/`) is unknown to the as-is
+    # profile and its dir may not carry its artifactId: read the current poms' own artifactIds (round 10 follow-up)
+    for p in all_poms(ws):
+        try:
+            text = re.sub(r"<parent>.*?</parent>", "", re.sub(r"<!--.*?-->", "", ws.read(p), flags=re.S), flags=re.S)
+        except OSError:
+            continue
+        m = re.search(r"<artifactId>\s*([^<\s]+)\s*</artifactId>", text)
+        if m and m.group(1) == module:
+            return p
     return None
 
 

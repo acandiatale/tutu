@@ -420,3 +420,22 @@ def test_filtered_binary_resources_includes_and_copy_resources(tmp_path: Path, c
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"\x00")
     assert inv(tmp_path, cfg).filtered_binary_files == ["dist/bundle.zip", "src/main/resources/top.ttf"]  # `*.ttf` = top level
+
+
+def test_filtered_binary_resources_sniff_unknown_extensions(tmp_path: Path, cfg) -> None:
+    """Company run 2026-10-26: `static/img/.dm/.items.dmdb` (no table extension) failed the filtered copy. Unknown
+    extensions count when the content is binary (NUL / neither UTF-8 nor cp949); text never does — a cp949
+    .properties, a UTF-8 file of an odd extension, a known text extension with stray bytes."""
+    write(tmp_path, "pom.xml", pom("app").replace(
+        "</project>", "<build><resources><resource><directory>src/main/resources</directory>"
+                      "<filtering>true</filtering></resource></resources></build></project>"))
+    base = tmp_path / "src/main/resources"
+    (base / "static/img/.dm").mkdir(parents=True)
+    (base / "static/img/.dm/.items.dmdb").write_bytes(bytes([0x53, 0x51, 0x4C, 0xFF, 0xFE, 0x00, 0x81]) * 40)
+    (base / "static/img/.dm/raw.idx").write_bytes(bytes([0xFF, 0xFE, 0xFD, 0x80, 0x81]) * 40)   # no NUL, not text
+    (base / "messages_ko.properties").write_bytes("title=회원 목록\n".encode("cp949"))
+    (base / "notes.abc").write_text("plain text\n", encoding="utf-8")
+    (base / "legacy.sql").write_bytes(b"select 1;\x00\n")                                  # text extension: kept
+    i = inv(tmp_path, cfg)
+    assert i.filtered_binary_files == ["src/main/resources/static/img/.dm/.items.dmdb",
+                                       "src/main/resources/static/img/.dm/raw.idx"]

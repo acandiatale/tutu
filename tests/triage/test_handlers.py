@@ -660,6 +660,12 @@ def _font_cluster(module: str = "demo", goal: str = "resources:resources", msg: 
     return c
 
 
+def _child_of_root(pom: str, parent: str = "parent") -> str:
+    return pom.replace("  <modelVersion>4.0.0</modelVersion>\n", "  <modelVersion>4.0.0</modelVersion>\n  <parent>\n"
+                       f"    <groupId>com.example</groupId>\n    <artifactId>{parent}</artifactId>\n"
+                       "    <version>1.0.0</version>\n  </parent>\n", 1)
+
+
 def test_resources_binary_filtering_extends_existing_configuration(fake_kit, cfg):
     (fake_kit.root / "pom.xml").write_text(_filtering_pom("""
       <plugin>
@@ -721,7 +727,8 @@ def test_resources_binary_filtering_root_declares_filtering_and_war_plugin(fake_
     (fake_kit.root / "pom.xml").write_text(_filtering_pom(artifact="parent"), encoding="utf-8")
     for name, block in (("svc", ""), ("web", _WAR_WEBRESOURCES)):
         (fake_kit.root / name).mkdir()
-        (fake_kit.root / name / "pom.xml").write_text(_filtering_pom(block, artifact=name, filtering=False),
+        (fake_kit.root / name / "pom.xml").write_text(_child_of_root(_filtering_pom(block, artifact=name,
+                                                                                    filtering=False)),
                                                       encoding="utf-8")
     h = fake_kit.handler("resources-binary-filtering")
     # resources plugin failing in svc, filtering inherited from the root → the root gets the list, svc untouched
@@ -830,3 +837,61 @@ def test_add_known_dependency_junit4_leftovers_and_platform_rows(kit):
                              message="package org.junit.jupiter.params does not exist")])[0]
     assert h.apply(kit.ws, c3, make_profile(), None)
     assert kit.dep("org.junit.jupiter:junit-jupiter") is not None          # not junit:junit again
+
+
+_DMDB_BYTES = bytes([0x53, 0x51, 0x4C, 0xFF, 0xFE, 0x00, 0x81, 0x9F]) * 64
+
+
+def _dmdb_cluster(ws_root, rel: str, module: str):
+    msg = (f"filtering {ws_root}/{rel} to {ws_root}/{rel.replace('src/main/resources', 'target/classes')} "
+           "failed with MalformedInputException: Input length = 1")
+    return _font_cluster(module=module, msg=msg,
+                         raw=f"Failed to execute goal org.apache.maven.plugins:maven-resources-plugin:3.4.0:resources "
+                             f"(default-resources) on project {module}: {msg}")
+
+
+def test_resources_binary_filtering_restructured_module_and_sniffed_binaries(fake_kit, cfg):
+    """Company run 2026-10-26: `on project member-api-comp` names a module the restructure created (dir comp-jar,
+    unknown to the as-is profile) → the root pom got the list and the module kept failing; the file in the message
+    now picks the module's pom, and every binary under its filtered resources (content sniff: `.items.dmdb`, `.idx`)
+    is listed at once — the plugin names one failing file per build."""
+    (fake_kit.root / "pom.xml").write_text(_filtering_pom(artifact="member-api", filtering=False), encoding="utf-8")
+    mod = fake_kit.root / "module" / "comp-jar"
+    (mod / "src/main/resources/static/img/.dm").mkdir(parents=True)
+    (mod / "pom.xml").write_text(_child_of_root(_filtering_pom(artifact="member-api-comp"), parent="member-api"),
+                                 encoding="utf-8")
+    rel = "module/comp-jar/src/main/resources/static/img/.dm/.items.dmdb"
+    (fake_kit.root / rel).write_bytes(_DMDB_BYTES)
+    (mod / "src/main/resources/static/img/.dm/tree.idx").write_bytes(_DMDB_BYTES)
+    (mod / "src/main/resources/static/img/.dm/blob").write_bytes(_DMDB_BYTES)            # no extension
+    (mod / "src/main/resources/messages_ko.properties").write_bytes("title=회원 목록\n".encode("cp949"))
+    h = fake_kit.handler("resources-binary-filtering")
+    c = _dmdb_cluster(fake_kit.root, rel, "member-api-comp")
+    assert [x.path for x in h.apply(fake_kit.ws, c, None, cfg)] == ["module/comp-jar/pom.xml"]
+    exts = _nfe(fake_kit.text("module/comp-jar/pom.xml"))
+    assert {"dmdb", "idx"} <= set(exts) and "properties" not in exts
+    assert _nfe(fake_kit.text()) == []                                             # the root is left alone
+    assert any("module/comp-jar/src/main/resources/static/img/.dm/blob" in n for n in h.notes)
+
+
+def test_resources_binary_filtering_module_on_an_outside_parent_keeps_its_own_list(fake_kit, cfg):
+    """A company module on the in-house comp-jar parent: the root's plugin configuration never reaches it, even when
+    the aggregator root declares filtering too → the module pom gets the list."""
+    (fake_kit.root / "pom.xml").write_text(_filtering_pom(artifact="shop"), encoding="utf-8")
+    (fake_kit.root / "shop-front").mkdir()
+    (fake_kit.root / "shop-front" / "pom.xml").write_text(
+        _child_of_root(_filtering_pom(artifact="shop-front", filtering=False), parent="comp-jar"), encoding="utf-8")
+    h = fake_kit.handler("resources-binary-filtering")
+    c = _dmdb_cluster(fake_kit.root, "shop-front/src/main/resources/static/x.dmdb", "shop-front")
+    assert [x.path for x in h.apply(fake_kit.ws, c, None, cfg)] == ["shop-front/pom.xml"]
+    assert "dmdb" in _nfe(fake_kit.text("shop-front/pom.xml")) and _nfe(fake_kit.text()) == []
+
+
+def test_pom_for_module_finds_a_module_by_its_current_artifact_id(fake_kit):
+    from sbmig.triage.handlers.base import pom_for_module
+
+    (fake_kit.root / "module" / "comp-jar").mkdir(parents=True)
+    (fake_kit.root / "module" / "comp-jar" / "pom.xml").write_text(
+        _child_of_root(_filtering_pom(artifact="member-api-comp"), parent="member-api"), encoding="utf-8")
+    assert pom_for_module(fake_kit.ws, None, "member-api-comp") == "module/comp-jar/pom.xml"
+    assert pom_for_module(fake_kit.ws, None, "no-such-module") is None
