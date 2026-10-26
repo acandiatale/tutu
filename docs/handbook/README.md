@@ -57,6 +57,7 @@
 |---|---|---|
 | `README.md`, `01-…` ~ `09-…` | Markdown | 본문. 코드와의 불일치는 `tests/docs/test_handbook.py`가 검사합니다(백틱으로 적은 저장소 경로·설정 키·CLI 명령·상호 링크가 실제로 존재하는지). |
 | `sbmig-overview.pptx` | PowerPoint | 발표용 요약: 배경과 원칙, 파이프라인, 트리아지/루프, 회사 레이아웃, 아키텍처, 운영, 검증 현황 |
+| [`../kb-map/index.html`](../kb-map/index.html) | HTML (Mermaid, 오프라인) | KB 데이터 지도: `kb/`에 쌓이는 파일별 키의 뜻, 파일끼리 잇는 연결 키(run_id, 에러 id, 시도 id, L1/L2, case_id, error_symbol, KB 케이스 id, 레시피 id), 관계도와 흐름도, 자주 찾는 질문 — 현업이 KB 데이터로 규칙을 만들 때 보는 지도. 원본 `docs/kb-map/kb-map.html`, 생성 `scripts/handbook/build_kb_map.py`(Mermaid는 같은 폴더의 `mermaid.min.js`, 인터넷 없이 열림) |
 | `sbmig-reference.xlsx` | Excel | 표 중심 레퍼런스: 설정 키 전체, 핸들러 카탈로그, 에러 카탈로그, CLI 명령, REST API, 픽스처, 저널 이벤트, 리포트 플래그, 레시피 카탈로그, 어드바이저리, 지식 노트, 디렉터리 — 코드에서 직접 추출 |
 
 ## 5. 용어집
