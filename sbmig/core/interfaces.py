@@ -285,6 +285,7 @@ class ScriptRunnerLike(Protocol):
             timeout_s: Optional[int] = None) -> ScriptRunResult: ...
 
 
+@runtime_checkable
 class ScriptStoreLike(Protocol):
     """v2.1: the per-case script store is `sbmig.errors.cases.CaseStore` (<kb>/cases/<case_id>/case.json + fix_v<N>.py):
     `find(case_id) -> CaseInfo | None`, `best(case_id) -> (CaseScript, code) | None` (proven newest, else unverified
