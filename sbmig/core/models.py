@@ -80,6 +80,16 @@ AttemptOutcome = Literal["pending", "improved", "no_change", "regressed", "rever
 # stopped at an earlier stage that the attempt did not cause) — no KB credit either way, counts as tried
 
 
+EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved", "note"]
+# open = still in the last build; pom-verify = a restructure pom correction the next build verifies; note = a review
+# warning / informational entry (never fixed)
+TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review"]
+# kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
+# extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
+# structure review's own fix
+TryApplied = Literal["script", "edits", "none"]
+
+
 class BlockReason(str, Enum):
     EXTERNAL_JAVAX_API = "external_javax_api"            # a dependency still exposes javax.* types in its API
     EXTERNAL_API_INCOMPATIBLE = "external_api_incompatible"  # dependency API changed/removed (non-javax)
@@ -761,14 +771,6 @@ FixAnswer = ScriptProposal                      # the v2.1 name
 # <run dir>/errors.jsonl, appended to <kb>/errors.jsonl at the end; what it was, every try with the LLM's answer and
 # the applied diff, how it ended. Replaces ErrorCaseRecord / FixAttemptRecord / the case catalog / reviews.jsonl.
 # ---------------------------------------------------------------------------
-EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved", "note"]
-# open = still in the last build; pom-verify = a restructure pom correction the next build verifies; note = a review
-# warning / informational entry (never fixed)
-TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review"]
-# kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
-# extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
-# structure review's own fix
-TryApplied = Literal["script", "edits", "none"]
 
 
 class FixTry(BaseModel):
@@ -867,6 +869,7 @@ class StructureReview(BaseModel):
     analysis: str = ""
     script: str = ""                               # the script for the critical issues ("" = none)
     script_result: Optional[ScriptRunResult] = None
+    answer: Optional["ScriptProposal"] = None      # v2.1: the LLM's 원인 / 해결 / edits / script (edits applied by the reviewer)
     commit: Optional[str] = None                   # commit of the script's changes (revertible)
     reverted: bool = False
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
@@ -913,6 +916,11 @@ class FixAttempt(BaseModel):
     script_parent: Optional[int] = None
     script_code: str = ""
     script_result: Optional[ScriptRunResult] = None
+    # v2.1: the try as the error list records it
+    source: Optional[TrySource] = None             # kb-script | llm-new | llm-augment | llm-edit
+    solution: str = ""                             # 해결 방법 (the LLM's <solution>)
+    no_script_reason: str = ""
+    edits_applied: int = 0                         # direct edits applied (0 = a script ran)
 
 
 class IterationRecord(BaseModel):
@@ -1301,6 +1309,7 @@ class FleetProjectResult(BaseModel):
     unresolved: int = 0
     flags: list[str] = Field(default_factory=list)
     advisories: list[str] = Field(default_factory=list)           # "<advisory_id>:<outcome>" (library advisories)
+    error_counts: dict[str, int] = Field(default_factory=dict)    # v2.1: ErrorEntry status → count (open / resolved / …)
     carried_over: int = 0                                         # dependencies pinned at as-is versions (handover)
     error: Optional[str] = None
     attempt: int = 1
