@@ -71,7 +71,8 @@ def test_export_import_merge_and_replace(kb_cfg, tmp_path: Path):
     (other.root / "junk.txt").write_text("not exported")
     zp = other.export_zip(tmp_path / "other.zip")
     names = zipfile.ZipFile(zp).namelist()
-    assert set(names) == {"errors.jsonl", "cases.md", f"cases/{CASE}/case.json", f"cases/{CASE}/fix_v1.py"}
+    assert set(names) == {"errors.jsonl", "cases.md", f"cases/{CASE}/case.json", f"cases/{CASE}/fix_v1.py",
+                          f"cases/{CASE}/errors/ro-o1.json"}          # v2.1c: the readable per-error file travels too
 
     local = FileKnowledgeBase(kb_cfg)
     local.record_run([entry("l1")])
