@@ -597,11 +597,15 @@ class Workspace:
             self._git("add", "-A")
             self._force_add_ignored_jars()
         else:
-            wanted = [p for p in dict.fromkeys(str(x).replace("\\", "/").strip("/") for x in paths) if p]
+            wanted = [p for p in dict.fromkeys(str(x).replace("\\", "/").strip("/") for x in paths)
+                      if p and not Path(p).is_absolute() and ".." not in p.split("/")]   # inside the project only
             if not wanted and not allow_empty:
                 return self.head()
             for i in range(0, len(wanted), 200):          # -f: a path the script changed on purpose, even if ignored
-                self._git("add", "-A", "-f", "--", *wanted[i:i + 200], check=False)
+                chunk = wanted[i:i + 200]
+                if self._git("add", "-A", "-f", "--", *chunk, check=False).returncode != 0:
+                    for one in chunk:                     # one bad pathspec must not drop the others
+                        self._git("add", "-A", "-f", "--", one, check=False)
             if not allow_empty and self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
                 return self.head()                        # the reported files are back as they were: nothing staged
         args = ["commit", "-q", "-m", message]
