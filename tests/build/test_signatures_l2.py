@@ -77,8 +77,7 @@ def test_illegal_start_keyed_by_phrase(msg, key):
                               "following"),
     ("filtering /work/proj/src/main/resources/app.properties to /work/proj/target/classes/app.properties failed "
      "with MalformedInputException: Input length = 1", "resources:resources",
-     "plugin_execution|resources:resources|filtering <path> to <path> failed with malformedinputexception: input "
-     "length"),
+     "plugin_execution|resources:resources|malformedinputexception input length"),
     ("Duplicate class com.acme.billing.Invoice found in module", "shade:shade",
      "plugin_execution|shade:shade|duplicate class * found in module"),
 ])
