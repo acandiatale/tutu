@@ -63,7 +63,8 @@ def test_log_stage_context_tags_records():
 
 
 def test_v21_limits_and_keys(repo_root):
-    for cfg in (load_config(repo_root=repo_root), Config(artifacts={"parent": {"group_id": "g", "artifact_id": "p"}})):
+    for cfg in (load_config(repo_root / "config" / "artifacts.example.yml", repo_root=repo_root),
+                Config(artifacts={"parent": {"group_id": "g", "artifact_id": "p"}})):
         assert cfg.loop.phases["verify"].max_iterations == 50
         assert cfg.loop.max_llm_calls == 0                       # 0 = unlimited
         assert cfg.errors.diff_chars == 6000 and cfg.errors.md_view
