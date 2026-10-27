@@ -39,6 +39,7 @@ directory are stripped before it is stored; ``raw`` is capped by ``errors.raw_ch
 from __future__ import annotations
 
 import logging
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
@@ -52,6 +53,7 @@ from sbmig.core.models import (
     ErrorEntry,
     ErrorKind,
     FixTry,
+    ResolvedBy,
     utcnow,
 )
 
@@ -124,6 +126,71 @@ def round_of(seen: str) -> int:
     """``fix r3`` → 3; anything else → 0."""
     m = _ROUND_RE.search(seen or "")
     return int(m.group(1)) if m else 0
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1f: an error gone from a build without a try of its own → the applied try that probably fixed it
+# ---------------------------------------------------------------------------------------------------------------------
+FIXER_SKIP_RESULTS = ("reverted", "apply_failed", "blocked")   # a try that is not in the tree cannot have fixed it
+FIXERS_MAX = 3
+
+
+def _pom_covers(pom: str, file: str) -> int:
+    """Depth of ``pom`` (a pom.xml) above ``file``: 0 for the root pom, the folder depth for a module pom; -1 when
+    the pom is not above the file."""
+    if posixpath.basename(pom) != "pom.xml":
+        return -1
+    d = posixpath.dirname(pom)
+    if not d:
+        return 0
+    return d.count("/") + 1 if file.startswith(d + "/") else -1
+
+
+def probable_fixers(e: ErrorEntry, tries: Iterable[tuple[str, FixTry]], *, rounds: Optional[Iterable[int]] = None,
+                    match: str = "file", limit: int = FIXERS_MAX) -> list[ResolvedBy]:
+    """The applied tries (``(case_id, try)`` pairs, any entry's) that changed the entry's file or a pom above it —
+    the probable fix of an error resolved by ``build`` (no try of its own). ``rounds`` limits the tries (live: the
+    round the build scores; None = any). Nearest first: the same file, then the deepest pom; a try that was reverted
+    / never applied is never a fixer. ``match`` labels live ("file" / "pom") or "reindex" attribution."""
+    file = posix(e.file or "")
+    if not file:
+        return []
+    allowed = {int(r) for r in rounds} if rounds is not None else None
+    found: dict[tuple[str, int, int], tuple[tuple[int, int, int, int], ResolvedBy]] = {}
+    for case_id, t in tries:
+        if not case_id or t.applied == "none" or t.result in FIXER_SKIP_RESULTS or not t.files:
+            continue
+        if allowed is not None and int(t.round) not in allowed:
+            continue
+        key = (case_id, int(t.round), int(t.n))
+        if key in found:
+            continue
+        hit, kind, depth = "", "", -1
+        for f in t.files:
+            pf = posix(f)
+            if pf == file:
+                hit, kind, depth = pf, "file", 99
+                break
+            d = _pom_covers(pf, file)
+            if d > depth:
+                hit, kind, depth = pf, "pom", d
+        if not hit:
+            continue
+        note = next((n for n in t.edits if posix(n.path) == hit), None)
+        what = note_text(note, 160) if note is not None else hit
+        rb = ResolvedBy(case_id=case_id, round=int(t.round), n=int(t.n), commit=t.commit or "", files=[hit],
+                        match="reindex" if match == "reindex" else kind,
+                        text=f"{case_id} r{t.round} try {t.n} — {what}")
+        found[key] = ((0 if kind == "file" else 1, -depth, int(t.round), int(t.n)), rb)
+    return [rb for _, rb in sorted(found.values(), key=lambda x: x[0])][:limit]
+
+
+def resolved_text(e: ErrorEntry) -> str:
+    """``r3 try 2`` / ``build`` / ``build ← 7a52b1cea8 r1 try 1`` (the probable fixer of an error resolved by build)."""
+    if e.resolved == "build" and e.resolved_by:
+        rb = e.resolved_by[0]
+        return f"build ← {rb.case_id} r{rb.round} try {rb.n}"
+    return e.resolved or ""
 
 
 def fmt_entry(e: ErrorEntry) -> str:
@@ -346,7 +413,10 @@ class ErrorList:
                 last = e.tries[-1] if e.tries else None
                 if last is not None and last.round == rnd and rnd and last.result == "pending":
                     continue                              # this build scores that try: the loop's resolve() decides
-                self._resolve_entry(e, last if last is not None and last.result in SUCCESS_RESULTS else None)
+                by = last if last is not None and last.result in SUCCESS_RESULTS else None
+                self._resolve_entry(e, by)
+                if by is None and e.case_id:              # v2.1f: gone without a try → who probably fixed it
+                    e.resolved_by = probable_fixers(e, self._all_tries(), rounds=[rnd])
                 resolved += 1
             self._present = present
             self._last = b
@@ -527,6 +597,14 @@ class ErrorList:
             if len(out) >= MAJOR_MAX:
                 break
         return out
+
+    def _all_tries(self) -> list[tuple[str, FixTry]]:
+        """Every try of the run as ``(case_id, try)``, one per (case, round, n)."""
+        out: dict[tuple[str, int, int], tuple[str, FixTry]] = {}
+        for x in self.entries:
+            for t in x.tries:
+                out.setdefault((x.case_id, int(t.round), int(t.n)), (x.case_id, t))
+        return list(out.values())
 
     def _resolve_entry(self, e: ErrorEntry, t: Optional[FixTry], how: str = "") -> None:
         e.status = "resolved"
@@ -730,7 +808,7 @@ def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "")
         msg = e.message + (f" — {e.note}" if e.note and e.status in ("pom-verify", "blocked", "note") else "")
         L.append(f"| {i} | {_cell(e.seen, 20)} | {e.status} | {e.case_id or '-'} | {_cell(loc, 90)} | "
                  f"{_cell(msg)} | {_cell(tries_text(e, with_change=True), 260) or '-'} | "
-                 f"{_cell(e.resolved, 30) or '-'} |")
+                 f"{_cell(resolved_text(e), 60) or '-'} |")
     seen_tries: dict[tuple[str, int], tuple[FixTry, list[int]]] = {}
     for i, e in enumerate(entries, 1):
         for t in e.tries:

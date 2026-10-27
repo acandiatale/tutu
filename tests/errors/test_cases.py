@@ -343,7 +343,7 @@ def test_recount_rebuilds_the_runs_and_the_augment_lineage_from_errors_jsonl(sto
     _write_jsonl(store, es, extra_lines=["{broken"])
     with caplog.at_level(logging.INFO, logger="sbmig.errors"):
         assert store.recount() == 1
-    assert "reindex: 3 script run record(s) rebuilt, 0 entr(ies) given as-is/to-be hunks" in _augment_log(caplog)
+    assert "reindex: 3 script run record(s) rebuilt, 0 entr(ies) given as-is/to-be hunks, 0 build-resolved entr(ies) given a probable fixer" in _augment_log(caplog)
     v1, v2 = store.find(CID).scripts
     [r1] = v1.runs                                                  # the store's own record kept its counts
     assert (r1.run_id, r1.round, r1.n, r1.result, r1.errors_before, r1.errors_left) == ("r1", 1, 1, "no_change", 4, 4)
@@ -380,7 +380,7 @@ def test_recount_backfills_as_is_to_be_hunks_once(store: CaseStore, monkeypatch,
     with caplog.at_level(logging.INFO, logger="sbmig.errors"):
         store.recount()
     assert calls == [(1, "-old()\n+new()", 0)]
-    assert "reindex: 0 script run record(s) rebuilt, 1 entr(ies) given as-is/to-be hunks" in _augment_log(caplog)
+    assert "reindex: 0 script run record(s) rebuilt, 1 entr(ies) given as-is/to-be hunks, 0 build-resolved entr(ies) given a probable fixer" in _augment_log(caplog)
     after = store.errors_path.read_text(encoding="utf-8").splitlines()
     assert after[1:] == before[1:] and after[0] != before[0]       # one line rewritten, the rest byte for byte
     [e1, e2] = list(store.iter_errors())

@@ -1618,3 +1618,22 @@ Snippets are whole by default (user: "사람이 보는 거면 40줄 고정 안 �
   `parent`, `reason`, `last failure` and `runs (N, newest last)` per script; `cases.md` shows `v2 unverified 0/1 —
   <last_failure>`. `_clean_entry` masks note `where` / `change` and hunk text; `merge_from` (KB import) maps an
   imported script's `parent` to the local numbering and merges runs.
+
+## v2.1f — who fixed an error that had no try of its own (2026-10-28)
+
+User (company KB): a case with `seen 4 / resolved 4`, no script, no try — "뭘 어떻게 수정했다 이런 건 안 적혀 있는데". Such an
+error disappeared from a build after ANOTHER case's fix of the same round (root causes first; the `does not override
+renderMergedOutputModel` error vanishes once the file's javax → jakarta import case is applied). The record now says so.
+
+* `ResolvedBy(case_id, round, n, commit, files, match: file|pom|reindex, text)`; `ErrorEntry.resolved_by: list[ResolvedBy]`
+  (nearest first: the try that changed the same file, else the deepest pom above it, up to 3).
+* `sbmig.errors.entries.probable_fixers(entry, tries, *, rounds=None, match="file", limit=3)` — the applied tries
+  (`(case_id, FixTry)` pairs; not `reverted` / `apply_failed` / `blocked`) of the given rounds that touched the entry's
+  file or a pom above it. Live: `ErrorList.add_build` fills it for every entry it resolves by `build` with a case
+  (`rounds=[rnd]`, the round the build scores; round 0 = the review's edits). `resolved_text(entry)` → `build ←
+  7a52b1cea8 r1 try 1` for `errors.md`, the report's error list and the case summary (`case.json` `last_result`:
+  `resolved 4 (build ← 7a52b1cea8 r1 try 1) — …`, so `cases.md` shows it); `kb errors show` / `cases show` print
+  `resolved by: <case> r<round> try <n> — <file lines — change>`.
+* `kb reindex` backfills it for old records (`CaseStore._fixer_attributed`): entries resolved by `build` without
+  tries get the run's applied tries from their `seen` round on, earliest round first, `match="reindex"`; INFO line
+  `… N build-resolved entr(ies) given a probable fixer`. Restructure (`pom-verify`) entries are never attributed.

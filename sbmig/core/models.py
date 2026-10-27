@@ -900,6 +900,19 @@ class FixTry(BaseModel):
     seconds: float = 0.0
 
 
+class ResolvedBy(BaseModel):
+    """v2.1f (2026-10-28, user: "뭘 어떻게 수정했다 이런 건 안 적혀 있는데"): an error that disappeared from a build WITHOUT a try
+    of its own (`ErrorEntry.resolved == "build"`) names the applied try of the round that touched its file or its
+    module's pom — the probable fix, so a case with no script is not a mystery in the KB."""
+    case_id: str = ""                              # the try's case
+    round: int = 0
+    n: int = 0
+    commit: str = ""
+    files: list[str] = Field(default_factory=list) # the try's changed files that match (the entry's file / a pom above it)
+    match: Literal["file", "pom", "reindex"] = "file"   # how it was matched (reindex = backfilled from errors.jsonl)
+    text: str = ""                                 # one line: "7a52b1cea8 r1 try 1 — module/comp-jar/pom.xml +28–36 — jakarta.xml.bind-api 추가"
+
+
 class ErrorEntry(BaseModel):
     id: str                                        # sha1(run_id | case_id | file | line | message)[:12]
     run_id: str = ""
@@ -916,6 +929,8 @@ class ErrorEntry(BaseModel):
     status: EntryStatus = "open"
     tries: list[FixTry] = Field(default_factory=list)
     resolved: str = ""                             # "r3 try 2" | "build" (gone without a try) | "review"
+    resolved_by: list[ResolvedBy] = Field(default_factory=list)   # v2.1f: "build" → the same-round try that probably
+                                                   # fixed it (nearest first: same file, then its module pom, then root)
     script: str = ""                               # cases/<case_id>/fix_v2.py — the script that resolved it
     note: str = ""                                 # pom-verify: what the restructure did; note entries: the text
     at: datetime = Field(default_factory=utcnow)

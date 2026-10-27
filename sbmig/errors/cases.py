@@ -35,7 +35,7 @@ from sbmig.core.models import CaseInfo, CaseScript, EditNote, ErrorEntry, ErrorK
 from sbmig.core.stage import stage
 
 from .common import Cleaner, atomic_write, atomic_write_bytes, case_id_for, first_line, note_text, posix
-from .entries import change_line, guide_lines, tries_text
+from .entries import change_line, guide_lines, probable_fixers, resolved_text, round_of, tries_text
 
 log = logging.getLogger("sbmig.errors")
 
@@ -556,7 +556,7 @@ class CaseStore:
         for e in es:
             status[e.status] = status.get(e.status, 0) + 1
         last = es[-1]
-        how = next((e.resolved for e in es if e.status == "resolved" and e.resolved), "")
+        how = next((resolved_text(e) for e in es if e.status == "resolved" and e.resolved), "")
         extra["last_result"] = (", ".join(f"{k} {v}" for k, v in sorted(status.items())) + (f" ({how})" if how else "")
                                 + f" — {last.project or '-'} {last.run_id or ''}".rstrip())
         case.updated_at = utcnow()
@@ -630,8 +630,10 @@ class CaseStore:
                 log.info("writing %d per-error JSON file(s) missing under cases/*/errors/", len(missing))
                 self._write_entry_files(missing)
             self._write_md_locked()
-            self.last_reindex = {"cases": len(ids), "runs": rebuilt, "hunks": hunked}
-            log.info("reindex: %d script run record(s) rebuilt, %d entr(ies) given as-is/to-be hunks", rebuilt, hunked)
+            fixers = int(getattr(self, "_fixers_backfilled", 0) or 0)
+            self.last_reindex = {"cases": len(ids), "runs": rebuilt, "hunks": hunked, "resolved_by": fixers}
+            log.info("reindex: %d script run record(s) rebuilt, %d entr(ies) given as-is/to-be hunks, %d build-resolved "
+                     "entr(ies) given a probable fixer", rebuilt, hunked, fixers)
             return len(ids)
 
     # ------------------------------------------------------------------ v2.1e: runs + hunks from errors.jsonl
@@ -738,6 +740,20 @@ class CaseStore:
             tries.append(t)
         return e.model_copy(update={"tries": tries}) if changed else None
 
+    @staticmethod
+    def _fixer_attributed(e: ErrorEntry, tries: list[tuple[str, FixTry]]) -> Optional[ErrorEntry]:
+        """v2.1f: an entry resolved by ``build`` without a try and without ``resolved_by`` → the run's applied tries
+        from its ``seen`` round on that changed its file / a pom above it (match ``reindex``); None when nothing."""
+        if e.resolved != "build" or e.resolved_by or e.tries or not e.case_id or e.seen == "restructure":
+            return None
+        start = round_of(e.seen)
+        later = [(c, t) for c, t in tries if int(t.round) >= start]
+        by = probable_fixers(e, later, match="reindex")
+        if not by:
+            return None
+        by.sort(key=lambda rb: (rb.round, rb.n, rb.match))          # the earliest round after `seen` first
+        return e.model_copy(update={"resolved_by": by})
+
     def _backfill_hunks(self) -> int:
         """errors.jsonl entries stored before v2.1e: as-is / to-be hunks from their diffs (``attach_hunks``,
         ``errors.snippet_lines`` per side; skipped when it is not there). Rewrites errors.jsonl atomically (other lines byte for byte, a line that does not read
@@ -756,17 +772,30 @@ class CaseStore:
         out: list[bytes] = []
         changed: list[ErrorEntry] = []
         bad, cut = 0, self.snippet_lines
+        parsed: list[tuple[bytes, Optional[ErrorEntry]]] = []
+        tries_by_run: dict[str, dict[tuple[str, int, int], tuple[str, FixTry]]] = {}
         for b in raw.split(b"\n"):
-            if not b.strip():
-                out.append(b)
-                continue
-            try:
-                e = ErrorEntry.model_validate_json(b.decode("utf-8").strip())
-            except (UnicodeDecodeError, ValueError):
-                bad += 1
+            e = None
+            if b.strip():
+                try:
+                    e = ErrorEntry.model_validate_json(b.decode("utf-8").strip())
+                except (UnicodeDecodeError, ValueError):
+                    bad += 1
+            parsed.append((b, e))
+            if e is not None:
+                per = tries_by_run.setdefault(e.run_id, {})
+                for t in e.tries:
+                    per.setdefault((e.case_id, int(t.round), int(t.n)), (e.case_id, t))
+        self._fixers_backfilled = 0
+        for b, e in parsed:
+            if e is None:
                 out.append(b)
                 continue
             new = self._hunked(e, attach_hunks, cut)
+            fixed = self._fixer_attributed(new or e, list(tries_by_run.get(e.run_id, {}).values()))
+            if fixed is not None:
+                new = fixed
+                self._fixers_backfilled += 1
             if new is None:
                 out.append(b)
                 continue
@@ -991,6 +1020,8 @@ def entry_lines(e: ErrorEntry, *, diff: bool = True) -> list[str]:
         L.append(f"  note: {e.note}")
     if e.script:
         L.append(f"  script: {e.script}")
+    for rb in e.resolved_by:                       # v2.1f: resolved by build → the try that probably fixed it
+        L.append(f"  resolved by: {rb.text}" + (" (reindex)" if rb.match == "reindex" else ""))
     if e.raw and e.raw != e.message:
         L += ["  raw:"] + ["    " + ln for ln in e.raw.splitlines()[:15]]
     if e.tries:

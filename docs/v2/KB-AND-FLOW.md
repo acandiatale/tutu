@@ -1,6 +1,6 @@
 # sbmig v2.1 — 실행 흐름, 케이스, KB 적재물, LLM 개입 지점과 한도 (사내 설명용)
 
-2026-10-28, 브랜치 `flow-v2` (`fd91084` 기준). 아래 샘플은 전부 로컬 e2e 실행(`pure-java` → `java6-legacy`, KB `out/e2e/kb-jaxb`)의
+2026-10-28, 브랜치 `flow-v2` (v2.1f 포함). 아래 샘플은 전부 로컬 e2e 실행(`pure-java` → `java6-legacy`, KB `out/e2e/kb-jaxb`)의
 실물을 줄여서 옮긴 것이다. 자세한 계약은 `docs/INTERFACES.md`(v2 · v2.1 · v2.1d · v2.1e 절), 결정 이력은 `docs/v2/PLAN-v2.1.md`.
 
 ## 0. 한 장 요약
@@ -229,6 +229,7 @@ def fix(p):
 | `tries[].result` / `note` | 채점: `improved`(이 케이스 오류 전부 사라짐) · `build_ok` · `partial` · `no_change` · `regressed`(새 오류 → 되돌림 `reverted`) · `inconclusive`(빌드가 판단 못 함) · `apply_failed` · `blocked`; `note` 는 실패·되돌림 설명 |
 | `tries[].llm_calls` / `seconds` | 이 시도의 LLM 호출 수와 소요 시간 |
 | `resolved` | 무엇이 해결했나: `r3 try 1`(3라운드 1번째 시도) · `build`(시도 없이 다른 수정으로 사라짐) · `review` |
+| `resolved_by[]` | `build` 로 닫힌 오류가 **누구 덕에 사라졌는지**: 같은 라운드에 이 파일(또는 이 모듈의 pom)을 바꾼 시도 — `case_id` · `round` · `n` · `commit` · 맞은 파일 · `match`(file / pom / reindex) · 한 줄 설명(`7a52b1cea8 r1 try 1 — module/comp-jar/pom.xml +28–36 — jakarta.xml.bind-api 추가`). 표와 `cases.md` 에는 `build ← 7a52b1cea8 r1 try 1` 로 보인다 |
 | `script` | 해결한 저장 스크립트 경로 |
 
 사람이 읽기엔 `sbmig kb errors show 8aeabf607152` 가 같은 내용을 이렇게 보여 준다:
@@ -342,6 +343,9 @@ LLM 이 **개입하지 않는** 곳: intake · analyze · plan · OpenRewrite ·
 
 - **폴더 이름을 예외 이름으로 바꾸면 매칭이 좋아지나?** 아니다. 매칭은 L2 로 한다(§2). 폴더는 키다. 이름은 `cases.md` 와 `case.json` 에 있다.
 - **첫 프로젝트인데 "KB match" 가 떴다?** 지금 로그는 탐색 **결과**를 말한다: `KB 탐색: 저장된 스크립트 없음 (처음 보는 케이스) → LLM 에 새 수정 요청` / `KB 탐색: 저장된 스크립트 v1 (proven, 성공 2 / 실패 0, 프로젝트 2) → 실행`.
+- **케이스에 스크립트도 시도도 없는데 seen 4 / resolved 4 인 건?** 다른 케이스의 수정으로 같은 라운드에 함께 사라진 오류다(예: `does not override
+  renderMergedOutputModel` 은 같은 파일의 javax → jakarta import 케이스가 적용되자 사라진다). `resolved: build` 이고 `resolved_by` 가 그 시도를 가리킨다
+  (`cases.md`: `resolved 4 (build ← 7a52b1cea8 r1 try 1)`). 과거 기록은 `sbmig kb reindex` 가 채운다.
 - **스크립트가 실패하면?** 되돌리고 LLM 에 보강을 요청한다. 실패 이유는 `case.json` 의 `scripts[].runs[].reason` 과 `last_failure`, 그리고 보강본의 `reason` 에 남는다.
 - **LLM 이 코드를 막 고치나?** 오류가 난 자리만, 기록을 남기며, 되돌릴 수 있게. 규칙(리팩터링 금지, 로직 삭제 금지, 메이저 금지)은 프롬프트에, 가드(프로젝트 폴더 밖 금지, 재빌드 채점, 되돌림)는 코드에 있다. 동작 변화는 빌드가 못 잡으니 수정 기록(as-is/to-be)을 사람이 본다.
 - **빌드는 됐는데 런타임이 걱정이면?** Handover 의 "운영자 확인 필요"와 `MIGRATION-TODO` 주석, `Manual follow-ups` 를 본다. 런타임은 as-is 담당팀 몫이라는 게 회사 결정이다.

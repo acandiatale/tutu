@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Iterable, Optional
 
 from sbmig.core.models import AdvisoryFinding, BlockedItem, BuildError, RunReport, StructureReview
+from sbmig.errors.entries import resolved_text
 
 from .errors import (
     case_rows,
@@ -434,7 +435,7 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
                 loc = where(e)
                 L.append(f"| {i} | {('`' + e.case_id[:12] + '`') if e.case_id else '-'} | "
                          f"{('`' + _cell(loc, 140) + '`') if loc else '-'} | {_cell(entry_text(e), 200)} | "
-                         f"{e.status} | {_cell(tries_text(e.tries) or '-', 300)} | {_cell(e.resolved or '-', 40)} |")
+                         f"{e.status} | {_cell(tries_text(e.tries) or '-', 300)} | {_cell(resolved_text(e) or '-', 60)} |")
             if len(rows) > ERROR_LIST_MAX_ROWS:
                 L += ["", tr(lang, "… {n} more in this group — see `errors.md`", n=len(rows) - ERROR_LIST_MAX_ROWS)]
             L.append("")
