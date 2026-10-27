@@ -149,3 +149,23 @@ def test_parser_reads_override_and_static_import_symbols(tmp_path):
         "compile|method_does_not_override|handle", "test_compile|static_import_only|Assert",
         "test_compile|static_import_only|Consts", "compile|method_does_not_override"]
     assert all(str(root) not in e.signature for e in errs)
+
+
+def test_filtering_failures_share_one_case_whatever_the_file_or_path():
+    """Company run 2026-10-27: Maven on Windows prints relative paths (`src\\main\\…\\a.otf`), which were not masked, so
+    every font / data file under a filtered resource became its own case and the KB never matched. The plugin
+    execution key is now the goal + the exception class (+ a few words), path-free."""
+    from sbmig.build.signatures import normalize_message, signature_for
+    from sbmig.core.models import BuildError, ErrorKind
+    tail = "failed with MalformedInputException: Input length = 1"
+    msgs = [r"filtering src\main\resources\static\fonts\NanumGothic.otf to target\classes\static\fonts\NanumGothic.otf " + tail,
+            r"filtering src\main\resources\static\img\.dm\.temsdl.dmdb to target\classes\static\img\.dm\.temsdl.dmdb " + tail,
+            r"filtering C:\w\app\src\main\resources\static\fonts\a.woff2 to C:\w\app\target\classes\static\fonts\a.woff2 " + tail,
+            "filtering src/main/resources/static/fonts/b.ttf to target/classes/static/fonts/b.ttf " + tail.replace("= 1", "= 2")]
+    keys = {signature_for(BuildError(kind=ErrorKind.PLUGIN_EXECUTION, message=m, module="app", goal="resources:resources",
+                                     raw="[ERROR] " + m))[1] for m in msgs}
+    assert keys == {"plugin_execution|resources:resources|malformedinputexception input length"}
+    assert normalize_message(r"copy src\main\webapp\WEB-INF\web.xml failed") == "copy <path> failed"
+    other = BuildError(kind=ErrorKind.PLUGIN_EXECUTION, goal="war:war", module="app",
+                       message="Error assembling WAR: webxml attribute is required (or pre-existing WEB-INF/web.xml if executing in update mode)")
+    assert signature_for(other)[1].startswith("plugin_execution|war:war|error assembling war")   # no exception: as before

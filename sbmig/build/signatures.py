@@ -62,6 +62,11 @@ _JAVAC_CLASSES: list[tuple[str, re.Pattern[str]]] = [
 
 _URL_RE = re.compile(r"\b(?:https?|file|ftp)://\S+")
 _WINPATH_RE = re.compile(r"\b[A-Za-z]:\\[^\s:;,'\"()\[\]]+")
+# a RELATIVE Windows path (`src\main\resources\static\fonts\a.otf`): Maven on Windows prints resource paths this
+# way, and an unmasked file name made every font / data file its own case (company run 2026-10-27: the KB never
+# matched the second font although the first was fixed)
+_RELWINPATH_RE = re.compile(r"(?<![\w.])(?:[\w.\-@$+~]+\\){1,}[\w.\-@$+~]+")
+_EXCEPTION_RE = re.compile(r"\b([A-Z][A-Za-z0-9]*(?:Exception|Error|Throwable))\b")
 _PATH_RE = re.compile(r"(?<![\w.])(?:\.{0,2}/)?(?:[\w.\-@$+~]+/){2,}[\w.\-@$+~]+/?")
 _ABS_PATH_RE = re.compile(r"(?<![\w])/(?:[\w.\-@$+~]+/)+[\w.\-@$+~]*")
 _HEX_RE = re.compile(r"@?\b0x[0-9a-fA-F]+\b|@[0-9a-f]{6,}\b")
@@ -84,6 +89,7 @@ def normalize_message(msg: str, *, module: str | None = None, lower: bool = True
     s = _HELP_RE.sub("", s)
     s = _URL_RE.sub("<url>", s)
     s = _WINPATH_RE.sub("<path>", s)
+    s = _RELWINPATH_RE.sub("<path>", s)
     s = _POS_RE.sub("", s)
     s = _LINECOL_RE.sub("", s)
     s = _ABS_PATH_RE.sub("<path>", s)
@@ -275,8 +281,14 @@ def _plugin_execution_key(err: BuildError) -> str:
             goal = _plugin_goal(m.group("coords"))
         msg = msg[m.end():]
     msg = _PARENS_RE.sub("", _HELP_RE.sub("", msg))
-    cause = _mask_project_types(normalize_message(msg, module=err.module, lower=False, max_chars=400)).lower()
-    cause = _first_words(cause, CAUSE_WORDS).rstrip(" :;,.=-")
+    cause = _mask_project_types(normalize_message(msg, module=err.module, lower=False, max_chars=400))
+    exc = _EXCEPTION_RE.search(cause)
+    if exc:
+        # the exception class is the case ("MalformedInputException: Input length = 1" from any file, any path),
+        # plus the few words after it that tell the kind of failure apart
+        tail = _first_words(cause[exc.end():].lstrip(" :"), 3).rstrip(" :;,.=-")
+        return _join(goal, (exc.group(1) + (" " + tail if tail else "")).lower())
+    cause = _first_words(cause.lower(), CAUSE_WORDS).rstrip(" :;,.=-")
     return _join(goal, cause)
 
 
