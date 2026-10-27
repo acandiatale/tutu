@@ -12,7 +12,8 @@ Lifecycle (the orchestrator / fix loop call these):
     add_build(build, "build")          `mvn clean package` → only NEW errors are added; open entries no longer
                                        reported are resolved ("build"); verify_poms(build) checks the pom-verify ones
     begin_try(case, round, source)     a fix try on every open entry of the case → FixTry n (1, 2, … per case)
-    finish_try(case, n, …)             what the try did: analysis / solution / edits or script / diff / result
+    finish_try(case, n, …)             what the try did: analysis / solution / edits or script / 수정 notes
+                                       (``edits``: EditNote per change, v2.1b) / diff / result
     add_build(build, "fix r3")         the build that scores round 3: absent entries whose last try is this round's
                                        (still pending) stay open for the loop's verdict …
     resolve(case, 3, n)                … which resolves the entries gone from that build ("r3 try n")
@@ -32,7 +33,8 @@ out or failed without parsed errors (``void``) resolves nothing.
 
 Every text is masked (``kb.redact_file`` + built-ins, :mod:`sbmig.kb.redact`) and the workspace roots / home
 directory are stripped before it is stored; ``raw`` is capped by ``errors.raw_chars``, a try's ``diff`` by
-``errors.diff_chars`` (the full diff is in ``changes.patch``). Writing never raises (a warning + ``problems``).
+``errors.diff_chars`` (the full diff is in ``changes.patch``), a try's 수정 notes (``FixTry.edits``) at
+``NOTES_MAX`` with their texts capped. Writing never raises (a warning + ``problems``).
 """
 from __future__ import annotations
 
@@ -41,9 +43,9 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
-from sbmig.core.models import BuildError, BuildResult, ErrorEntry, ErrorKind, FixTry, utcnow
+from sbmig.core.models import BuildError, BuildResult, EditNote, ErrorEntry, ErrorKind, FixTry, utcnow
 
-from .common import Cleaner, atomic_write, case_id_for, case_id_of, entry_id, first_line, posix
+from .common import Cleaner, atomic_write, case_id_for, case_id_of, entry_id, first_line, note_text, posix
 
 log = logging.getLogger("sbmig.errors")
 
@@ -53,6 +55,11 @@ MESSAGE_CHARS = 300
 NOTE_CHARS = 2000
 TEXT_CHARS = 4000                     # analysis / solution / no_script_reason of a try
 MD_DIFF_CHARS = 2000                  # a try's diff in errors.md (the jsonl keeps errors.diff_chars)
+NOTES_MAX = 100                       # 수정 notes kept per try (v2.1b; a script that touched more files: the diff says)
+NOTE_WHERE_CHARS = 200                # EditNote.where / lines
+NOTE_CHANGE_CHARS = 600               # EditNote.change
+MD_NOTES = 30                         # 수정 notes per try in errors.md
+TRIES_CELL_CHANGE = 60                # the first note's change in the errors.md tries cell
 SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
 SUCCESS_RESULTS = frozenset({"improved", "build_ok", "partial"})
 # how far a build got when it stopped with an error of this kind (an absent entry of stage s is only gone when the
@@ -91,11 +98,16 @@ def fmt_entry(e: ErrorEntry) -> str:
     return f"{loc} {e.message}".strip()
 
 
-def tries_text(e: ErrorEntry) -> str:
-    """``1 llm-new edits improved → 2 kb-script v2 script build_ok``."""
+def tries_text(e: ErrorEntry, with_change: bool = False) -> str:
+    """``1 llm-new edits improved → 2 kb-script v2 script build_ok``; ``with_change`` (errors.md) appends each try's
+    first 수정 note's change (≤ 60 characters): ``1 llm-new edits improved (jaxb-runtime 의존성을 추가합니다)``."""
     parts = []
     for t in e.tries:
         bits = [str(t.n), t.source] + ([f"v{t.script_version}"] if t.script_version else []) + [t.applied, t.result]
+        first = next((" ".join((getattr(x, "change", "") or "").split()) for x in (t.edits or [])
+                      if getattr(x, "change", "")), "") if with_change else ""
+        if first:
+            bits.append(f"({first if len(first) <= TRIES_CELL_CHANGE else first[:TRIES_CELL_CHANGE - 1] + '…'})")
         parts.append(" ".join(bits))
     return " → ".join(parts)
 
@@ -376,9 +388,11 @@ class ErrorList:
                    no_script_reason: Optional[str] = None, applied: Optional[str] = None,
                    files: Optional[Iterable[str]] = None, diff: Optional[str] = None, commit: Optional[str] = None,
                    result: Optional[str] = None, note: Optional[str] = None, llm_calls: Optional[int] = None,
-                   seconds: Optional[float] = None, script_version: Optional[int] = None) -> Optional[FixTry]:
+                   seconds: Optional[float] = None, script_version: Optional[int] = None,
+                   edits: Optional[Iterable[Any]] = None) -> Optional[FixTry]:
         """Fill in what try ``n`` of the case did; a field left None keeps its value (call it after applying and
-        again with the scoring ``result``). Texts are masked; the diff is capped by ``errors.diff_chars``."""
+        again with the scoring ``result``). Texts are masked; the diff is capped by ``errors.diff_chars``.
+        ``edits`` = the 수정 notes (``EditNote`` or dicts: where / change by the LLM, lines from the diff)."""
         t = self.get_try(case_id, n)
         if t is None:
             log.warning("error list: no try %s of case %s to finish", n, case_id or "-")
@@ -395,6 +409,8 @@ class ErrorList:
             t.files = list(dict.fromkeys(posix(self.clean(f)) for f in files if f))
         if diff is not None:
             t.diff = self.clean(diff, self.diff_chars)
+        if edits is not None:
+            t.edits = self._notes(edits)
         if commit is not None:
             t.commit = commit or ""
         if result is not None:
@@ -409,6 +425,24 @@ class ErrorList:
             t.script_version = int(script_version)
         self.write()
         return t
+
+    def _notes(self, notes: Iterable[Any]) -> list[EditNote]:
+        """The try's 수정 notes, masked and capped (an unreadable item is skipped, never fails the try)."""
+        out: list[EditNote] = []
+        for x in notes or []:
+            try:
+                d = x if isinstance(x, dict) else {k: getattr(x, k, "") for k in ("path", "where", "change", "lines",
+                                                                                   "source")}
+                n = x if isinstance(x, EditNote) else EditNote.model_validate(
+                    {k: v for k, v in d.items() if v not in (None, "") and (k != "source" or v in ("llm", "diff"))})
+            except Exception:  # noqa: BLE001 - a malformed note (no path) is left out
+                continue
+            out.append(EditNote(path=posix(self.clean(n.path)) or "-", where=self.clean(n.where, NOTE_WHERE_CHARS),
+                                change=self.clean(n.change, NOTE_CHANGE_CHARS),
+                                lines=(n.lines or "")[:NOTE_WHERE_CHARS], source=n.source))
+            if len(out) >= NOTES_MAX:
+                break
+        return out
 
     def _resolve_entry(self, e: ErrorEntry, t: Optional[FixTry], how: str = "") -> None:
         e.status = "resolved"
@@ -563,7 +597,7 @@ def _cell(text: Any, limit: int = 160) -> str:
 
 def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "") -> str:
     """``errors.md``: the table (``#``, seen, status, case, file:line, message, tries, resolved) and, per case
-    with tries, what each try found and did (원인 / 해결 / diff)."""
+    with tries, what each try found and did (원인 / 해결 / 수정 — ``path lines — change`` per note — / diff)."""
     counts: dict[str, int] = {}
     for e in entries:
         counts[e.status] = counts.get(e.status, 0) + 1
@@ -578,7 +612,8 @@ def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "")
         loc = (e.file or e.module or "-") + (f":{e.line}" if e.file and e.line else "")
         msg = e.message + (f" — {e.note}" if e.note and e.status in ("pom-verify", "blocked", "note") else "")
         L.append(f"| {i} | {_cell(e.seen, 20)} | {e.status} | {e.case_id or '-'} | {_cell(loc, 90)} | "
-                 f"{_cell(msg)} | {_cell(tries_text(e), 200) or '-'} | {_cell(e.resolved, 30) or '-'} |")
+                 f"{_cell(msg)} | {_cell(tries_text(e, with_change=True), 260) or '-'} | "
+                 f"{_cell(e.resolved, 30) or '-'} |")
     seen_tries: dict[tuple[str, int], tuple[FixTry, list[int]]] = {}
     for i, e in enumerate(entries, 1):
         for t in e.tries:
@@ -597,6 +632,11 @@ def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "")
                                 ("note", t.note)):
                 if text:
                     L.append(f"- {label}: {_cell(text, 1200)}")
+            if t.edits:
+                L.append("- 수정:")
+                L += [f"  - {_cell(note_text(x), 600)}" for x in t.edits[:MD_NOTES]]
+                if len(t.edits) > MD_NOTES:
+                    L.append(f"  - … {len(t.edits) - MD_NOTES} more (errors.jsonl)")
             if t.files:
                 L.append(f"- files: {', '.join(t.files)}")
             if t.diff:

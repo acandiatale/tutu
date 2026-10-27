@@ -31,7 +31,7 @@ from typing import Any, Iterable, Iterator, Optional, Union
 from sbmig.core.models import CaseInfo, CaseScript, ErrorEntry, ErrorKind, utcnow
 from sbmig.core.stage import stage
 
-from .common import Cleaner, atomic_write, atomic_write_bytes, case_id_for, first_line
+from .common import Cleaner, atomic_write, atomic_write_bytes, case_id_for, first_line, note_text
 from .entries import tries_text
 
 log = logging.getLogger("sbmig.errors")
@@ -643,6 +643,8 @@ def entry_lines(e: ErrorEntry, *, diff: bool = True) -> list[str]:
                             ("note", t.note)):
             if text:
                 L.append(f"    {label}: {text}")
+        if t.edits:
+            L += ["    수정:"] + [f"      {note_text(x)}" for x in t.edits]
         if t.files:
             L.append(f"    files: {', '.join(t.files)}")
         if diff and t.diff:

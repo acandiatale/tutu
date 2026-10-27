@@ -170,3 +170,31 @@ def test_jars_the_project_gitignore_hides_are_still_snapshotted(tmp_path):
     ws.commit("moved away")
     ws.revert_to(base)
     assert jar.is_file()                                       # revert brings the jar back
+
+
+def test_commit_paths_stages_only_the_given_files_and_build_products_are_set_aside(tmp_path: Path):
+    """v2.1b (company run, 2026-10-27): a build copied a module jar into lib/ (outside target/) and `git add -A` in
+    the next LLM attempt committed it — the attempt's `files` named the jar. Attempts stage only their own files,
+    and whatever a build dirtied is set aside right after it."""
+    src = tmp_path / "proj"
+    (src / "lib").mkdir(parents=True)
+    (src / "pom.xml").write_text("<project/>")
+    (src / "lib" / "app-1.0.jar").write_bytes(b"PK\x03\x04old")
+    ws = Workspace.from_input(src, tmp_path / "out", run_id="r1")
+    base = ws.git_init()
+    # a build rewrites the checked-in jar and creates a new one outside target/
+    before = ws.status_paths()
+    (ws.root / "lib" / "app-1.0.jar").write_bytes(b"PK\x03\x04new")
+    (ws.root / "lib" / "app-1.0-SNAPSHOT.jar").write_bytes(b"PK\x03\x04built")
+    (ws.root / "target").mkdir(exist_ok=True)
+    (ws.root / "target" / "x.class").write_bytes(b"\xca\xfe")
+    assert sorted(ws.restore_build_byproducts(before)) == ["lib/app-1.0-SNAPSHOT.jar", "lib/app-1.0.jar"]
+    assert (ws.root / "lib" / "app-1.0.jar").read_bytes().endswith(b"old")          # tracked → restored
+    assert not ws.is_dirty()                                                        # untracked → excluded
+    # an attempt changes pom.xml only; a stray edit elsewhere is not part of its commit
+    ws.write("pom.xml", "<project><x/></project>")
+    ws.write("README.md", "stray")
+    sha = ws.commit("fix", paths=["pom.xml"])
+    assert sha != base and ws.changed_between(base, sha) == ["pom.xml"]
+    assert ws.is_dirty()                                                            # README.md still uncommitted
+    assert ws.commit("nothing", paths=[]) == sha                                    # no paths → no commit

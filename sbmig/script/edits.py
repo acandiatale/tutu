@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import posixpath
 import re
+import textwrap
 from collections.abc import Iterable, Sequence
 from typing import Any, Optional
 
@@ -67,7 +68,11 @@ _ARG_SHOWN = {"g": "group_id", "a": "artifact_id", "ex_g": "exclusion_group_id",
               "key": "name"}
 # keys of an edit object that are not pom calls (everything else on a pom edit is a call name)
 _ITEM_KEYS = {"op", "action", "path", "file", "pom", "comment", "note", "why", "reason", "description", "explanation",
-              "old", "new", "count", "content", "text", "to"}
+              "old", "new", "count", "content", "text", "to", "desc", "summary", "change", "where", "location"}
+# the edit's description for the business team (v2.1b, `Edit.desc`): the first of these keys that holds text
+_DESC_KEYS = ("desc", "description", "summary", "change", "explanation", "comment", "note", "why", "reason")
+_WHERE_KEYS = ("where", "location")
+DESC_CHARS = 500
 _OLD_KEYS = ("old", "search", "old_text", "find")
 _NEW_KEYS = ("new", "replace", "new_text", "replacement")
 _CONTENT_KEYS = ("content", "text", "new_content")
@@ -246,6 +251,21 @@ def _first(item: dict[str, Any], keys: Iterable[str]) -> tuple[bool, Any]:
     return False, None
 
 
+def _one_line(v: Any, limit: int = DESC_CHARS) -> str:
+    text = " ".join(str(v).split()) if isinstance(v, (str, int, float)) and not isinstance(v, bool) else ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def edit_desc(item: dict[str, Any]) -> str:
+    """The LLM's one-line description of an edit object (`desc`; also `description` / `summary` / `change` /
+    `comment` …), with a separate `where` folded in front when the sentence does not already name it."""
+    desc = next((t for t in (_one_line(item.get(k)) for k in _DESC_KEYS) if t), "")
+    where = next((t for t in (_one_line(item.get(k), 200) for k in _WHERE_KEYS) if t), "")
+    if where and where not in desc:
+        desc = f"{where}: {desc}" if desc else where
+    return desc[:DESC_CHARS]
+
+
 def edit_from_item(item: Any) -> tuple[Optional[Edit], list[str]]:
     """One edit object of the LLM's JSON → (`Edit`, problems). Lenient about key spellings (`file` for `path`,
     `search` / `replace` for `old` / `new`, `dst` for `to`); a pom edit's extra keys are its editor calls."""
@@ -262,7 +282,7 @@ def edit_from_item(item: Any) -> tuple[Optional[Edit], list[str]]:
     rel, why = _norm_path(path)
     if why:
         return None, [why]
-    data: dict[str, Any] = {"op": op, "path": rel}
+    data: dict[str, Any] = {"op": op, "path": rel, "desc": edit_desc(item)}
     problems: list[str] = []
     if op == "replace":
         has_old, old = _first(item, _OLD_KEYS)
@@ -436,8 +456,19 @@ def _edit_body(n: int, e: Edit) -> list[str]:
     return L
 
 
+def desc_comment(desc: str, indent: str = "    ", width: int = 116) -> list[str]:
+    """The edit's description as comment line(s) of the synthesized script (one sentence, wrapped at `width`; every
+    whitespace run incl. line breaks is one space, so the text can never end the comment)."""
+    text = _one_line(desc or "")
+    if not text:
+        return []
+    return [f"{indent}# {ln}" for ln in textwrap.wrap(text, width=max(40, width - len(indent) - 2),
+                                                      break_long_words=False, break_on_hyphens=False) or [text]]
+
+
 def edits_script(edits: Sequence[Edit]) -> str:
-    """The `def fix(p)` that applies `edits` in order through the helper API (texts embedded with `repr`). Raises
+    """The `def fix(p)` that applies `edits` in order through the helper API (texts embedded with `repr`; each edit's
+    `desc` as a comment above its block, so the stored script reads like the record). Raises
     ValueError with the problems when an edit is invalid (`edit_problems`). The code passes `check_script`; it is
     what `apply_edits` runs and what the loop may keep with the try for traceability."""
     edits = list(edits)
@@ -450,6 +481,7 @@ def edits_script(edits: Sequence[Edit]) -> str:
     for n, e in enumerate(edits, 1):
         what = f"{e.op} {_norm_path(e.path)[0]}"
         lines.append(f"    # edit {n}: {what}")
+        lines += desc_comment(e.desc)
         lines.append("    try:")
         lines += _edit_body(n, e)
         lines.append(_GUARD.format(n=n, what=_lit(what)).rstrip("\n"))
@@ -466,16 +498,19 @@ def edit_error(error: str) -> str:
 
 
 def summarize_edits(edits: Sequence[Edit]) -> str:
-    """One line per edit for logs and notes: "replace pom.xml", "pom a/pom.xml add_dependency", …"""
+    """One part per edit for logs and notes: "replace pom.xml", "pom a/pom.xml add_dependency", … followed by the
+    LLM's description when the edit has one ("pom a/pom.xml add_dependency — a/pom.xml 의 <dependencies> 에 …")."""
     out = []
     for e in edits:
         if e.op == "pom":
             calls = [c for c, _ in pom_calls(e.pom)[0]]
-            out.append(f"pom {e.path} " + ", ".join(calls))
+            part = f"pom {e.path} " + ", ".join(calls)
         elif e.op == "move":
-            out.append(f"move {e.path} -> {e.to}")
+            part = f"move {e.path} -> {e.to}"
         else:
-            out.append(f"{e.op} {e.path}")
+            part = f"{e.op} {e.path}"
+        desc = _one_line(getattr(e, "desc", "") or "", 200)
+        out.append(f"{part} — {desc}" if desc else part)
     return "; ".join(out)
 
 
@@ -514,6 +549,8 @@ __all__ = [
     "EDIT_OPS",
     "POM_CALLS",
     "apply_edits",
+    "desc_comment",
+    "edit_desc",
     "edit_error",
     "edit_from_item",
     "edit_problems",

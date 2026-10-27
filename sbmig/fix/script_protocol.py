@@ -1,10 +1,13 @@
 """Fix answer protocol (v2.1, docs/v2/PLAN-v2.1.md §3.6; v2 script contract docs/INTERFACES.md "Script contract (S)").
 
-The model answers with four parts::
+The model answers with four parts (v2.1b: plus the change notes the business team reads)::
 
     <analysis>원인: what broke and why</analysis>
     <solution>해결 방법: how it is fixed (one paragraph a person can follow)</solution>
-    <edits>[{"op": "replace", "path": "a/B.java", "old": "…", "new": "…"}, {"op": "pom", "path": "pom.xml", …}]</edits>
+    <edits>[{"op": "replace", "path": "a/B.java", "desc": "a/B.java 의 import 줄에서 …", "old": "…", "new": "…"},
+            {"op": "pom", "path": "pom.xml", "desc": "…", …}]</edits>
+    <changes>[{"path": "a/B.java", "where": "import 줄", "change": "javax.annotation 을 jakarta.annotation 으로 바꿉니다"}]
+    </changes>
     <script>
     def fix(p):
         ...
@@ -12,7 +15,13 @@ The model answers with four parts::
 
 `<no_script>reason</no_script>` instead of `<script>` when the fix cannot be a reusable script; `<need_files>a, b
 </need_files>` / `<need_grep>regex</need_grep>` (`<need_file>` is accepted too) to ask for more context. Every part is
-optional for the parser: a v2 answer with `<analysis>` + `<script>` only parses as before (solution "", edits []).
+optional for the parser: a v2 answer with `<analysis>` + `<script>` only parses as before (solution "", edits [],
+changes []).
+
+Change notes (v2.1b, `ParsedScript.changes` → `FixAnswer.changes`): the `<changes>` list (`{"path", "where",
+"change"}`, required with a script, allowed with edits) first, then each edit's `desc` for a path the list did not
+describe (`sbmig.script.notes.answer_notes`). Same tolerant JSON as the edits; a bullet list ("path: what") is read
+too; what still does not read is `changes_problem` — never a reason to reject the answer.
 
 The parser is tolerant and never raises. Script: a ```python fence inside `<script>`, CRLF, a block indented as a
 whole, a missing `</script>`, a `</script>` inside the code (a JSP edit), a bare ```python block that defines `fix(p)`
@@ -33,7 +42,7 @@ import textwrap
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from sbmig.core.models import Edit
+from sbmig.core.models import Edit, EditNote
 
 NO_SCRIPT = "no <script> block"
 EDITS_UNREADABLE = "edits JSON unreadable"
@@ -41,13 +50,15 @@ EDITS_INVALID = "edits invalid"
 NO_FIX_DEF = "script has no def fix(p)"
 PROTOCOL_WARNING = "response did not follow the protocol"
 PATCHES_WARNING = "answered with v1 <patches> instead of a <script>"
+CHANGES_UNREADABLE = "changes unreadable"
+CHANGES_MISSING = "the answer did not describe its changes"   # a script without a <changes> list ([sbmig] note)
 
-_TAG_NAMES = ("analysis", "solution", "edits", "no_script", "script", "need_files?", "need_grep", "confidence",
-              "patches")
+_TAG_NAMES = ("analysis", "solution", "edits", "changes", "no_script", "script", "need_files?", "need_grep",
+              "confidence", "patches")
 _OPEN_SCRIPT_RE = re.compile(r"<\s*script\s*>", re.IGNORECASE)
 _CLOSE_SCRIPT_LINE_RE = re.compile(r"^[ \t]*<\s*/\s*script\s*>", re.IGNORECASE | re.MULTILINE)
 _CLOSE_SCRIPT_RE = re.compile(r"<\s*/\s*script\s*>", re.IGNORECASE)
-_NEXT_TAG_LINE_RE = re.compile(r"^[ \t]*<\s*(?:analysis|solution|edits|no_script|need_files?|need_grep)\s*>",
+_NEXT_TAG_LINE_RE = re.compile(r"^[ \t]*<\s*(?:analysis|solution|edits|changes|no_script|need_files?|need_grep)\s*>",
                                re.IGNORECASE | re.MULTILINE)
 _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})[\w+.-]*\s*$")
 _FENCED_BLOCK_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(?:python3?|py)?[ \t]*\n(.*?)^[ \t]*\1[ \t]*$",
@@ -66,6 +77,10 @@ class ParsedScript:
     edits: list[Edit] = field(default_factory=list)   # validated; [] when absent or unreadable
     edits_block: bool = False                      # an <edits> block was there (maybe empty / unreadable)
     edits_problem: str = ""                        # "edits JSON unreadable: …" / "edits invalid: …" ("" = fine)
+    changes: list[EditNote] = field(default_factory=list)   # <changes> list + each edit's desc (answer_notes)
+    changes_count: int = 0                         # how many of `changes` came from the <changes> list itself
+    changes_block: bool = False                    # a <changes> block was there
+    changes_problem: str = ""                      # "changes unreadable: …" / skipped items ("" = fine)
     no_script_reason: str = ""                     # <no_script>
     need_files: list[str] = field(default_factory=list)
     need_grep: list[str] = field(default_factory=list)
@@ -85,6 +100,20 @@ class ParsedScript:
     @property
     def used_patches(self) -> bool:
         return PATCHES_WARNING in self.warnings
+
+    @property
+    def described(self) -> bool:
+        """The answer's `<changes>` list describes something (a script needs one)."""
+        return any(n.change or n.where for n in self.changes[:self.changes_count])
+
+    def changes_note(self) -> str:
+        """"" when the changes are described; else the `[sbmig]` note text for an answer with a script but no usable
+        `<changes>` list (the loop then builds the notes from the diff)."""
+        if self.described:
+            return ""
+        if self.changes_problem and self.changes_block:
+            return f"{CHANGES_MISSING} ({self.changes_problem[:200]})"
+        return CHANGES_MISSING
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +364,25 @@ def parse_edits(text: str) -> tuple[list[Edit], str]:
     return edits, ""
 
 
+def parse_changes(text: str) -> tuple[list[EditNote], str]:
+    """The `<changes>` block → (notes, problem). JSON as lenient as the edits (`load_edits_json`); a text that is not
+    JSON is read line by line ("path: what" bullets). An empty block = no notes, no problem."""
+    from sbmig.script.notes import note_from_text, notes_from_json
+
+    body = _strip_outer_fence(text.replace("\r\n", "\n")).strip()
+    if not body:
+        return [], ""
+    obj, err = load_edits_json(body)
+    if obj is None:
+        if body[:1] not in "[{":                          # meant as text: one "path: what" per line
+            notes = [n for n in (note_from_text(ln) for ln in body.split("\n") if ln.strip()) if n is not None]
+            if notes:
+                return notes, ""
+        return [], f"{CHANGES_UNREADABLE}: {err or 'not a JSON list'}"
+    notes, problems = notes_from_json(obj)
+    return notes, ("; ".join(problems[:5]) if problems else "")
+
+
 def _mask(t: str, start: int, end: int) -> str:
     """`t` with [start, end) blanked (newlines kept, offsets unchanged)."""
     return t[:start] + re.sub(r"[^\n]", " ", t[start:end]) + t[end:]
@@ -375,6 +423,10 @@ def parse_script_response(text: str) -> ParsedScript:
     if body is not None:
         res.edits_block = True
         res.edits, res.edits_problem = parse_edits(body)
+    body, masked = _take_block(t, masked, "changes")
+    if body is not None:
+        res.changes_block = True
+        res.changes, res.changes_problem = parse_changes(body)
     body, masked = _take_block(t, masked, "no_script")
     if body is not None:
         res.no_script_reason = _strip_outer_fence(body).strip() or "(no reason given)"
@@ -408,14 +460,21 @@ def parse_script_response(text: str) -> ParsedScript:
             res.warnings.append(PATCHES_WARNING)
 
     answered = (res.code or res.candidate or res.wants_context or res.analysis or res.solution or res.edits_block
-                or res.no_script_reason)
+                or res.no_script_reason or res.changes_block)
     if not answered and raw.strip():
         res.warnings.append(PROTOCOL_WARNING)
         res.analysis = raw.strip()[:500]
+    if res.changes_problem:
+        res.warnings.append(f"<changes>: {res.changes_problem[:200]}")
+    res.changes_count = len(res.changes)
+    from sbmig.script.notes import answer_notes
+    res.changes = answer_notes(res.changes, res.edits)
     return res
 
 
 __all__ = [
+    "CHANGES_MISSING",
+    "CHANGES_UNREADABLE",
     "EDITS_INVALID",
     "EDITS_UNREADABLE",
     "NO_FIX_DEF",
@@ -426,6 +485,7 @@ __all__ = [
     "clean_code",
     "load_edits_json",
     "normalize_path",
+    "parse_changes",
     "parse_edits",
     "parse_script_response",
     "script_problem",

@@ -7,7 +7,12 @@ dir and <need_files>/<need_grep> context rounds. v2.1 (docs/v2/PLAN-v2.1.md §3.
 `sbmig.script.apply_edits`), `<script>` 스크립트 (stored for the same case in other projects) or `<no_script>` with the
 reason. Mode `new` asks for both edits and a script; `augment` for a better script, or no_script + edits. The answer
 is parsed by `sbmig.fix.script_protocol`, the script statically pre-checked (`sbmig.script.check_script`); an
-unusable script or unreadable edits get ONE feedback round. The fixer never edits the tree."""
+unusable script or unreadable edits get ONE feedback round. The fixer never edits the tree.
+
+v2.1b (2026-10-27): every modification is described for the business team — each edit's `desc` and, with a script,
+the `<changes>` list (`FixAnswer.changes`, EditNote); the language follows `report.language` (`describe_language`).
+A script without a `<changes>` list is not an error: `analysis` gets "[sbmig] the answer did not describe its
+changes" and the loop builds the notes from the diff (`sbmig.script.notes.merge_notes`)."""
 from __future__ import annotations
 
 import inspect
@@ -156,6 +161,16 @@ def _unset(v: Optional[str]) -> bool:
     return not v or "${" in v or v == "default"
 
 
+
+def describe_language(cfg: Optional[Config]) -> str:
+    """The language of the change descriptions for the prompts (`sbmig.script.notes.describe_language`)."""
+    try:
+        from sbmig.script.notes import describe_language as _describe
+    except Exception:  # noqa: BLE001 - sbmig.script missing / half-built
+        return "Korean (한국어)"
+    return _describe(cfg)
+
+
 def _same_code(a: str, b: str) -> bool:
     """Two scripts are the same code when they differ in whitespace only."""
     def norm(t: str) -> list[str]:
@@ -281,6 +296,8 @@ class LLMFixer:
                     no_script = no_script or f"[sbmig] the script could not be used: {problems[0][:200]}"
                 if parsed.edits_problem:                             # the script kept, the broken edits dropped
                     notes.append(f"edits dropped: {parsed.edits_problem[:200]}")
+            if code and not parsed.described:                       # not an error: the loop describes it from the diff
+                notes.append(parsed.changes_note())
             if last and last.finish_reason in ("length", "max_tokens"):
                 notes.append(f"output truncated (finish_reason={last.finish_reason})")
             if notes:
@@ -290,6 +307,7 @@ class LLMFixer:
                 analysis=analysis,
                 solution=parsed.solution,
                 edits=edits,
+                changes=list(parsed.changes) if (code or edits) else [],
                 no_script_reason=no_script if not code else "",
                 model=last.model if last else (model or ""),
                 prompt_hash=messages_hash(messages),
@@ -298,7 +316,8 @@ class LLMFixer:
                 raw_response=last.content if last else "",
                 error=error,
             )
-            log.debug("answer for %s: %d edit(s), script %s, solution %d chars%s", cluster.id, len(proposal.edits),
+            log.debug("answer for %s: %d edit(s), %d change note(s), script %s, solution %d chars%s", cluster.id,
+                      len(proposal.edits), len(proposal.changes),
                       "yes" if proposal.code else ("no: " + (proposal.no_script_reason or proposal.error or "-"))[:120],
                       len(proposal.solution), f", error {proposal.error[:120]}" if proposal.error else "")
         except LLMError as exc:
@@ -336,7 +355,7 @@ class LLMFixer:
         # and the case's errors are ones javac showed after it)
         kept = base is not None and base.outcome in ("improved", "build_ok")
         user = user_template.render(sections=packed.sections, truncated=packed.truncated, mode=mode, base_label=label,
-                                    base_kept=kept)
+                                    base_kept=kept, desc_language=describe_language(self.cfg))
         return [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user.strip() + "\n")]
 
     def _static_problems(self, code: str) -> list[str]:
@@ -421,10 +440,10 @@ class LLMFixer:
             parts.append("<edits> must be ONE valid JSON list: double-quoted keys and strings, `\\n` and `\\\"` "
                          "escaped inside strings, no comments, no trailing commas; `op` one of replace / write / "
                          "create / delete / move / pom; paths relative to the project root.")
-        what = ("<analysis>, <solution>, <edits> and <script> with a module-level `def fix(p)` (or <no_script> with the "
-                "reason)") if mode != "augment" else \
-            ("<analysis>, <solution> and the COMPLETE new <script> with a module-level `def fix(p)` — or <no_script> "
-             "with the reason and <edits>")
+        what = ("<analysis>, <solution>, <edits> (each with its \"desc\"), <changes> and <script> with a module-level "
+                "`def fix(p)` (or <no_script> with the reason)") if mode != "augment" else \
+            ("<analysis>, <solution>, <changes> and the COMPLETE new <script> with a module-level `def fix(p)` — or "
+             "<no_script> with the reason and <edits> (each with its \"desc\")")
         parts.append(f"Re-send the COMPLETE corrected answer: {what}. Use only the helper API `p` and the allowed "
                      "imports in the script (no open / os / sys / subprocess / eval / exec / __dunder__ access).")
         return "\n\n".join(parts) + "\n"
@@ -571,12 +590,12 @@ class LLMFixer:
         if need_grep:
             parts.append(self.grep(ws, need_grep))
         if remaining_rounds <= 0:
-            parts.append("This was the LAST context round. Answer now with <analysis>, <solution>, <edits> and "
-                         "<script> (or <no_script> with the reason and <edits>; or explain in <analysis> why this "
+            parts.append("This was the LAST context round. Answer now with <analysis>, <solution>, <edits>, <changes> "
+                         "and <script> (or <no_script> with the reason and <edits>; or explain in <analysis> why this "
                          "case cannot be fixed safely).")
         else:
             parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering now "
-                         "(<analysis>, <solution>, <edits>, <script>).")
+                         "(<analysis>, <solution>, <edits>, <changes>, <script>).")
         return "\n\n".join(parts) + "\n"
 
     def grep(self, ws: Workspace, patterns: list[str]) -> str:
@@ -652,5 +671,5 @@ class LLMFixer:
             log.debug("record failed", exc_info=True)
 
 
-__all__ = ["LLMFixer", "profile_summary", "load_script_prompts", "default_script_checker",
+__all__ = ["LLMFixer", "profile_summary", "load_script_prompts", "default_script_checker", "describe_language",
            "script_allowed_imports", "script_helper_api_doc", "normalize_path"]

@@ -59,9 +59,12 @@ critical issues yourself — add after the review block:
 <analysis>원인: why the build structure is wrong (the critical issues, one to four sentences)</analysis>
 <solution>해결 방법: what you change, one paragraph a person can follow</solution>
 <edits>
-[{"op": "pom", "path": "shop-back/pom.xml", "set_property": {"name": "project.build.sourceEncoding", "value": "MS949"}},
- {"op": "replace", "path": "pom.xml", "old": "    <module>shop-front</module>\n", "new": ""}]
+[{"op": "pom", "path": "shop-back/pom.xml", "desc": "shop-back/pom.xml 의 <properties> 에서 project.build.sourceEncoding 을 MS949 로 설정합니다", "set_property": {"name": "project.build.sourceEncoding", "value": "MS949"}},
+ {"op": "replace", "path": "pom.xml", "desc": "pom.xml 의 <modules> 에서 존재하지 않는 shop-front 모듈 줄을 삭제합니다", "old": "    <module>shop-front</module>\n", "new": ""}]
 </edits>
+<changes>
+[{"path": "shop-back/pom.xml", "where": "<properties>", "change": "project.build.sourceEncoding 을 MS949 로 설정합니다"}]
+</changes>
 <script>
 def fix(p):
     pom = p.pom("shop-back/pom.xml")
@@ -84,6 +87,15 @@ comments, no trailing commas; one object per change, applied in order; paths rel
   and line breaks included), short but unique; `new` = its replacement. If an `old` text is not found the edits fail
   and the project is restored — copy it exactly.
 - `write` / `create` (`path`, `content`), `delete` (`path`), `move` (`path`, `to`) for build files only.
+- Every edit object also takes `"desc"`: ONE sentence saying where in which file and what changes.
+
+Describing every change (수정 설명): the business team reads the record of each modification next to the git diff —
+the diff alone is not enough for them. Give EVERY edit its `desc` in the form "<파일> 의 <위치> 에서 <무엇을> <어떻게>
+수정합니다" (e.g. "module/comp-jar/pom.xml 의 <dependencies> 끝에 jakarta.xml.bind-api 의존성을 추가합니다"), naming the
+real element (parent, module, dependency, property, plugin). With a `<script>`, `<changes>` is REQUIRED: a JSON list
+with one `{"path": "<file>", "where": "<location in the file>", "change": "<what changes, how>"}` object per
+modification the script makes. Write the sentences in {{ desc_language }}; identifiers, paths and coordinates stay as
+they are.
 
 Script — optional: the same fix as a reusable `def fix(p)` for another project with the same problem (it is stored,
 not run when edits are given). When the fix cannot be reused, write `<no_script>why</no_script>` instead.

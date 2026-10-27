@@ -258,4 +258,5 @@ def test_script_answer_replays_through_propose_script(cfg, ws, put, tmp_path):
     f = "app/src/main/java/a/A.java"
     put(f, "package a;\n\npublic class A {\n    int x = y();\n}\n")
     p = LLMFixer(cfg, make_llm_client(cfg)).propose_script(ws, case(errs_for(f, [4])), sctx())
-    assert p.code == "def fix(p):\n    p.log('x')\n" and p.analysis == "rename" and p.error == ""
+    assert p.code == "def fix(p):\n    p.log('x')\n" and p.error == "" and p.changes == []    # a v2 replay
+    assert p.analysis == "rename\n[sbmig] the answer did not describe its changes"

@@ -39,7 +39,8 @@ from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, lazy_attr
 from .entries import REVIEW_L2, CaseScripts, RunErrors
-from .fixloop import BuildFixLoop, refine_build
+from .fixloop import NOTES_LOGGED, BuildFixLoop, _restore_build_byproducts, _status_paths, refine_build
+from .notes import answer_notes, note_line, try_notes
 
 log = logging.getLogger("sbmig.loop")
 
@@ -1020,9 +1021,11 @@ class Orchestrator:
         goal = step.build_goal or COMPILE_GOAL
         label = "compile" + (f"-{step.params['service']}" if step.params.get("service") else "")
         t = self.clock()
+        before = _status_paths(self.ws)
         try:
             res = refine_build(self.build_runner.run(goal, module=module, label=label,
                                                      skip_test_compile=bool(self.cfg.build.skip_test_compile), **kw))
+            _restore_build_byproducts(self.ws, before)
         except Exception as e:  # noqa: BLE001 - a recording step: the verify build shows the real state
             log.warning("mvn %s failed to run: %s: %s — the error list starts at the first build", goal,
                         type(e).__name__, e)
@@ -1225,7 +1228,8 @@ class Orchestrator:
                 return None
             if rv.script_result is not None and rv.script_result.status == "ok":
                 pre = self.ws.head()
-                sha = self.ws.commit(f"review: fix critical structure issues ({len(rv.critical)})")
+                sha = self.ws.commit(f"review: fix critical structure issues ({len(rv.critical)})",
+                                     paths=list(rv.script_result.changed_files or []) or None)
                 if sha == pre:
                     return None
                 rv.commit = sha
@@ -1246,7 +1250,9 @@ class Orchestrator:
         """v2.1: the review on the error list and in the KB (never raises, nothing for a skipped review / dry run):
         a `note` entry per warning — and per critical issue no committed fix addressed —, an entry resolved by
         `review` per critical issue the committed fix addressed (one try: source review, 원인 / 해결 / edits /
-        diff / commit), and the answer's script stored in the KB case `review|structure` (source review)."""
+        diff / commit), and the answer's script stored in the KB case `review|structure` (source review). v2.1b:
+        the committed fix's 수정 notes (the edits' `desc` / the answer's `<changes>` + the diff's lines,
+        `sbmig.loop.notes`) go on every such try and are logged once, one `수정: …` INFO line per note."""
         if self._dry_run or rv is None or rv.verdict == "skipped":
             return
         try:
@@ -1260,6 +1266,13 @@ class Orchestrator:
                     log.debug("review diff unavailable: %s", e)
             n_edits = len(getattr(ans, "edits", None) or []) if ans is not None else 0
             applied = ("edits" if n_edits else "script") if sha else "none"
+            notes: list = []
+            if sha:
+                notes = try_notes(answer_notes(ans, edits=bool(n_edits)), diff)
+                for nt in notes[:NOTES_LOGGED]:
+                    log.info("수정: %s", note_line(nt))
+                if len(notes) > NOTES_LOGGED:
+                    log.info("수정: … %d more (errors.md)", len(notes) - NOTES_LOGGED)
             for issue in rv.issues:
                 text = " ".join((issue.problem or "").split()) + (f" — {issue.fix_hint}" if issue.fix_hint else "")
                 if issue.severity == "critical" and sha:
@@ -1268,7 +1281,7 @@ class Orchestrator:
                         analysis=(getattr(ans, "analysis", "") if ans is not None else "") or rv.analysis,
                         solution=getattr(ans, "solution", "") if ans is not None else "",
                         no_script_reason=getattr(ans, "no_script_reason", "") if ans is not None else "",
-                        applied=applied, files=files, diff=diff, commit=sha, result="improved",
+                        applied=applied, files=files, edits=list(notes), diff=diff, commit=sha, result="improved",
                         note=f"fixed by the structure review ({n_edits} edit(s), commit {sha[:10]})",
                         llm_calls=int(rv.llm_usage.calls or 0), seconds=0.0)
                 elif issue.severity == "critical":
@@ -1458,7 +1471,10 @@ class Orchestrator:
             return self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
 
         def _final_build() -> BuildResult:
-            return refine_build(_run_final())          # the refined case keys (sbmig.triage.cluster)
+            before = _status_paths(self.ws)
+            res = refine_build(_run_final())           # the refined case keys (sbmig.triage.cluster)
+            _restore_build_byproducts(self.ws, before)
+            return res
 
         res = _final_build()
         self._observe_build(goal, res, step.target)

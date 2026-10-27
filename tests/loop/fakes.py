@@ -22,10 +22,10 @@ from typing import Any, Callable, Optional, Union
 from sbmig.core.interfaces import RestructureResult
 from pydantic import BaseModel, Field
 
-from sbmig.core.models import (BuildError, BuildResult, CaseInfo, CaseScript, CaseType, Edit, ErrorKind, FileChange,
-                               FixAnswer, FixTry, KBMatch, LLMUsage, MigrationPlan, Phase, PlanStep, PomInfo,
-                               ProjectProfile, RecipeRef, RewriteResult, ScriptProposal, ScriptRunResult, StepKind,
-                               StructureReview)
+from sbmig.core.models import (BuildError, BuildResult, CaseInfo, CaseScript, CaseType, Edit, EditNote, ErrorKind,
+                               FileChange, FixAnswer, FixTry, KBMatch, LLMUsage, MigrationPlan, Phase, PlanStep,
+                               PomInfo, ProjectProfile, RecipeRef, RewriteResult, ScriptProposal, ScriptRunResult,
+                               StepKind, StructureReview)
 from sbmig.core.workspace import Workspace
 
 
@@ -465,16 +465,19 @@ class FakeEditApplier:
 
 
 def answer(*, code: str = "", edits: Optional[list] = None, analysis: str = "the cause.", solution: str = "the fix.",
-           no_script_reason: str = "", model: str = "fake-model", calls: int = 1, error: str = "") -> FixAnswer:
-    """A FixAnswer (원인 · 해결 · edits · script); `edits` = Edit objects or dicts."""
+           no_script_reason: str = "", model: str = "fake-model", calls: int = 1, error: str = "",
+           changes: Optional[list] = None) -> FixAnswer:
+    """A FixAnswer (원인 · 해결 · edits · script · v2.1b `<changes>`); `edits` = Edit objects or dicts, `changes` =
+    EditNote objects or dicts."""
     es = [e if isinstance(e, Edit) else Edit(**e) for e in (edits or [])]
+    ch = [c if isinstance(c, EditNote) else EditNote(**c) for c in (changes or [])]
     return FixAnswer(code=code, edits=es, analysis=analysis, solution=solution, no_script_reason=no_script_reason,
-                     model=model, error=error,
+                     model=model, error=error, changes=ch,
                      llm_usage=LLMUsage(model=model, calls=calls, input_tokens=100, output_tokens=20))
 
 
-def write_edit(path: str, content: str) -> Edit:
-    return Edit(op="write", path=path, content=content)
+def write_edit(path: str, content: str, desc: str = "") -> Edit:
+    return Edit(op="write", path=path, content=content, desc=desc)
 
 
 class FakeRewriteRunner:
@@ -579,9 +582,11 @@ class FakeReviewer:
     `raises` → an exception; records the call's arguments."""
 
     def __init__(self, review: Optional[StructureReview] = None, files: Optional[dict[str, str]] = None,
-                 raises: Optional[Exception] = None, status: str = "ok", code: str = ""):
+                 raises: Optional[Exception] = None, status: str = "ok", code: str = "",
+                 descs: Optional[dict[str, str]] = None):
         self.review_obj = review
         self.files = dict(files or {})
+        self.descs = dict(descs or {})          # path → the edit's `desc` (v2.1b)
         self.raises = raises
         self.status = status
         self.code = code
@@ -597,7 +602,8 @@ class FakeReviewer:
         if self.files:
             for k, v in self.files.items():
                 ws.write(k, v)
-            rv.answer = answer(code=self.code, edits=[write_edit(k, v) for k, v in self.files.items()],
+            rv.answer = answer(code=self.code, edits=[write_edit(k, v, self.descs.get(k, ""))
+                                                      for k, v in self.files.items()],
                                analysis=rv.analysis or "the poms break the company rules.",
                                solution="set the parent and the encoding.")
             rv.script = self.code

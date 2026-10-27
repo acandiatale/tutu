@@ -34,7 +34,7 @@ from sbmig.core.models import (CaseType, LLMUsage, ProjectProfile, ReviewIssue, 
 from sbmig.core.stage import stage
 
 from .inputs import ReviewInput, collect_review_input, java_charset
-from .parse import ParsedReview, parse_review_answer
+from .parse import ParsedReview, changes_note, parse_review_answer
 
 log = logging.getLogger("sbmig.review")
 
@@ -43,15 +43,16 @@ ROLE = "structure_review"
 STEP_ID = "restructure.review"
 RETRY_MESSAGE = ("Your answer could not be read. Answer again with exactly one <review>{…}</review> block holding the "
                  "JSON object described in the system prompt (verdict, issues, analysis) and — only for critical "
-                 "issues you can fix in the build files — <analysis>, <solution>, <edits> (a JSON list) and "
-                 "optionally <script>. No other text.")
+                 "issues you can fix in the build files — <analysis>, <solution>, <edits> (a JSON list, every edit "
+                 "with its \"desc\") and optionally <script> with <changes>. No other text.")
 EDITS_RETRY_MESSAGE = ("Your <edits> could not be read: {problem}. Answer again with the COMPLETE answer: the <review> "
                        "block, <analysis>, <solution> and <edits> as ONE valid JSON list (double quotes, `\\n` and "
                        "`\\\"` escaped inside strings, no comments, no trailing commas), optionally <script>.")
 APPLY_RETRY_MESSAGE = ("Your edits could not be applied: {error}. The project was restored to the state before your "
                        "edits. Answer again with the COMPLETE answer (<review>, <analysis>, <solution>, corrected "
-                       "<edits>, optionally <script>): copy every `old` text exactly from the poms shown (indentation "
-                       "and line breaks included), prefer `op: pom` editor calls, change build files only.")
+                       "<edits> each with its \"desc\", optionally <script> with <changes>): copy every `old` text "
+                       "exactly from the poms shown (indentation and line breaks included), prefer `op: pom` editor "
+                       "calls, change build files only.")
 SOURCE_SUFFIXES = (".java", ".kt", ".groovy", ".scala", ".jsp", ".jspx", ".tag")
 _ENCODING_WORDS = ("encoding", "인코딩", "ms949", "cp949", "euc-kr", "euc_kr", "charset")
 SBMIG_CHECK = "(sbmig check) "
@@ -95,8 +96,11 @@ def helper_api_doc() -> str:
 
 def system_prompt(cfg: Config, version: str = "v1") -> str:
     extra = [m for m in (getattr(cfg.script, "extra_allowed_imports", None) or []) if m]
+    from sbmig.script.notes import describe_language    # report.language → the language of the change notes
+
     return (_system_template(version)
             .replace("{{ extra_imports }}", "".join(f", {m}" for m in extra))
+            .replace("{{ desc_language }}", describe_language(cfg))
             .replace("{{ helper_api }}", helper_api_doc().strip())).strip() + "\n"
 
 
@@ -134,6 +138,29 @@ def _diff_stats(diff: str) -> dict[str, tuple[int, int]]:
         elif line.startswith("-"):
             out[cur][1] += 1
     return {k: (v[0], v[1]) for k, v in out.items()}
+
+
+def _file_desc(path: str, notes: list[Any], changed: list[str]) -> str:
+    """The LLM's description(s) of the change to `path` ("where: change", several joined by "; "); a note with a
+    short path counts when its basename names only this one of the changed files."""
+    from sbmig.script.notes import same_path
+
+    base = PurePosixPath(path).name.lower()
+    out: list[str] = []
+    for n in notes:
+        npath = str(getattr(n, "path", "") or "")
+        if not npath:
+            continue
+        hit = same_path(npath, path)
+        if not hit and PurePosixPath(npath.replace("\\", "/")).name.lower() == base:
+            hit = sum(1 for c in changed if PurePosixPath(c).name.lower() == base) == 1
+        if not hit:
+            continue
+        where, change = str(getattr(n, "where", "") or ""), str(getattr(n, "change", "") or "")
+        text = f"{where}: {change}" if where and change and where not in change else (change or where)
+        if text and text not in out:
+            out.append(text)
+    return "; ".join(out)
 
 
 class StructureReviewer:
@@ -214,9 +241,14 @@ class StructureReviewer:
         rv.issues = list(parsed.issues)
         rv.analysis = parsed.analysis
         rv.script = parsed.script
-        rv.answer = ScriptProposal(code=parsed.script, analysis=parsed.fix_analysis, solution=parsed.solution,
-                                   edits=list(parsed.edits), no_script_reason=parsed.no_script_reason,
-                                   model=rv.model, raw_response=parsed.raw, error=parsed.edits_problem)
+        analysis = parsed.fix_analysis
+        missing = changes_note(parsed)
+        if missing:
+            analysis = (analysis + "\n" if analysis else "") + f"[sbmig] {missing}"
+        rv.answer = ScriptProposal(code=parsed.script, analysis=analysis, solution=parsed.solution,
+                                   edits=list(parsed.edits), changes=list(parsed.changes),
+                                   no_script_reason=parsed.no_script_reason, model=rv.model, raw_response=parsed.raw,
+                                   error=parsed.edits_problem)
         self._encoding_check(rv, inp)
         rv.verdict = "issues" if rv.issues else "ok"
 
@@ -357,7 +389,8 @@ class StructureReviewer:
         if broken:
             self._restore(ws, rv, "review edits left unparsable pom(s): " + "; ".join(broken[:3]) + " — restored")
             return "retry"
-        self._log_diff(ws, changed, rv.answer.solution if rv.answer is not None else "")
+        self._log_diff(ws, changed, rv.answer.solution if rv.answer is not None else "",
+                       rv.answer.changes if rv.answer is not None else ())
         rv.note = (f"review edits changed {len(changed)} file(s): {', '.join(changed[:8])}"
                    + (f" (+{len(changed) - 8})" if len(changed) > 8 else "")
                    + f" ({len(edits)} edit(s)) — not committed yet")
@@ -413,7 +446,7 @@ class StructureReviewer:
         if broken:
             self._restore(ws, rv, "review script left unparsable pom(s): " + "; ".join(broken[:3]) + " — restored")
             return
-        self._log_diff(ws, changed, "")
+        self._log_diff(ws, changed, "", rv.answer.changes if rv.answer is not None else ())
         rv.note = (f"review script changed {len(changed)} file(s): {', '.join(changed[:8])}"
                    + (f" (+{len(changed) - 8})" if len(changed) > 8 else "") + " — not committed yet")
 
@@ -435,8 +468,9 @@ class StructureReviewer:
         return sorted(out)
 
     @staticmethod
-    def _log_diff(ws: Any, changed: list[str], solution: str) -> None:
-        """`수정: <file> (+a −b) — <solution> … diff N lines` per changed file, the diff itself at DEBUG."""
+    def _log_diff(ws: Any, changed: list[str], solution: str, notes: Iterable[Any] = ()) -> None:
+        """`수정: <file> (+a −b) — <the LLM's description of that file's change, else the solution> … diff N lines`
+        per changed file, the diff itself at DEBUG."""
         try:
             diff = ws.diff(ws.head())
         except Exception as e:  # noqa: BLE001 - no git: the file list is all there is
@@ -444,10 +478,13 @@ class StructureReviewer:
             diff = ""
         stats = _diff_stats(diff)
         lines = len([ln for ln in diff.splitlines() if ln[:1] in "+-" and not ln.startswith(("+++", "---"))])
+        notes = list(notes or ())
         for f in changed:
             add, rem = stats.get(f, (0, 0))
+            desc = _file_desc(f, notes, changed)
+            what = _short(desc, 240) if desc else (_short(solution, 160) if solution else "")
             log.info("structure review 수정: %s%s%s", f, f" (+{add} −{rem})" if f in stats else " (new / deleted)",
-                     (f" — {_short(solution, 160)}" if solution else "") + (f" … diff {lines} lines" if lines else ""))
+                     (f" — {what}" if what else "") + (f" … diff {lines} lines" if lines else ""))
         if diff:
             log.debug("structure review diff:\n%s", diff[:6000])
 

@@ -141,8 +141,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "{counts}.",
     "| # | case | file:line | message | status | tries | resolved |": "| # | 케이스 | 파일:줄 | 메시지 | 상태 | 시도 | 해결 |",
     "… {n} more in this group — see `errors.md`": "… 이 그룹에 {n}건 더 — `errors.md` 참조",
-    "| case | errors | cause | solution | changes (files, +/−) | script |":
-        "| 케이스 | 에러 | 원인 | 해결 방법 | 수정 (파일, +/−) | 스크립트 |",
+    "| case | errors | cause | solution | changes (files, +/−) | edits | script |":
+        "| 케이스 | 에러 | 원인 | 해결 방법 | 변경 파일 (+/−) | 수정 | 스크립트 |",
     "{resolved}/{n} resolved": "{resolved}/{n} 해결",
     "(no solution text) {reason}": "(해결 설명 없음) {reason}",
     "no script: {reason}": "스크립트 없음: {reason}",

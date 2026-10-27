@@ -20,9 +20,12 @@ same answer is applied instead. Edits go through `sbmig.script.apply_edits` (the
 are committed `fix(script:<case>:v<N> <mode>)` / `fix(edits:<case> <source>)`.
 
 Every try is one `FixTry` of the run's error list (`sbmig.loop.entries.RunErrors`: begin_try when its source is
-known, finish_try with 원인 / 해결 / applied / files / diff / commit / result, again after scoring; resolve on
-improved / build_ok; block for a blocked case). Every log line carries the stage (`sbmig.core.stage`): `fix r3` for
-the round, `fix r3 7a52b1cea8` for a case's work in it.
+known, finish_try with 원인 / 해결 / applied / files / 수정 notes / diff / commit / result, again after scoring; resolve
+on improved / build_ok; block for a blocked case). v2.1b: the 수정 notes (`FixTry.edits`, `sbmig.loop.notes`) describe
+every modification of a committed change — the LLM's `desc` / `<changes>` with the lines from the diff, a note made
+from the diff for whatever the LLM did not describe (a reused stored script: the diff only) — and each is one INFO
+line `수정: <path> <lines> — <change>` (the diff itself stays at DEBUG). Every log line carries the stage
+(`sbmig.core.stage`): `fix r3` for the round, `fix r3 7a52b1cea8` for a case's work in it.
 
 Kept from v2 / round 10: the cases of a round come root causes first (`sbmig.triage.cluster.CAUSE_RANK`) and a case
 whose error files are ALL error files of cases already worked on in this round is **deferred**, as is a compile case
@@ -61,6 +64,7 @@ from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, sa
 from .budget import LoopBudget
 from .components import ScriptFixerMissing, profile_summary
 from .entries import CaseScripts, RunErrors, script_path
+from .notes import answer_notes, note_line, try_notes
 
 log = logging.getLogger("sbmig.loop")
 
@@ -120,6 +124,7 @@ except ImportError:  # pragma: no cover - the error list package is part of sbmi
         ErrorKind.TEST_FAILURE: 6,
     }
 TRY_NOTE_CHARS = 600                 # FixTry.note: the try's failure / rollback / scoring notes, joined
+NOTES_LOGGED = 20                    # `수정:` INFO lines per applied change (the rest: errors.md / errors.jsonl)
 
 
 def fmt_error(e: BuildError) -> str:
@@ -130,6 +135,27 @@ def fmt_error(e: BuildError) -> str:
     msg = " ".join((e.message or e.raw or "").split())
     return f"{loc} {msg[:300]}".strip()
 
+
+
+def _status_paths(ws: Any) -> set[str]:
+    fn = getattr(ws, "status_paths", None)
+    try:
+        return set(fn()) if callable(fn) else set()
+    except Exception:  # noqa: BLE001 - a workspace fake / git trouble
+        return set()
+
+
+def _restore_build_byproducts(ws: Any, before: set[str]) -> list[str]:
+    """v2.1b: files a build wrote outside target/ (a jar copied into lib/) are set aside right after the build, so
+    an attempt's commit and `files` hold only what the fix changed (sbmig.core.workspace.restore_build_byproducts)."""
+    fn = getattr(ws, "restore_build_byproducts", None)
+    if not callable(fn):
+        return []
+    try:
+        return list(fn(before) or [])
+    except Exception as e:  # noqa: BLE001 - never fail a build over the bookkeeping
+        log.debug("build byproducts not restored: %s", e)
+        return []
 
 def sleep_seconds(seconds: float) -> None:
     """The LLM cool-down pause (module-level so a test conftest can replace it for every loop)."""
@@ -367,6 +393,8 @@ class BuildFixLoop:
         self._seconds: dict[int, float] = {}
         self._tally: dict[int, tuple[int, int]] = {}
         self._try_seq: dict[str, int] = {}       # case id → local try counter (an error list that returns no FixTry)
+        self._answers: dict[int, Any] = {}       # v2.1b: attempt → the LLM answer it applied (its edit descriptions)
+        self._notes: dict[int, list] = {}        # v2.1b: attempt → its 수정 notes (EditNote per change)
         self._match_hints: dict[str, list[str]] = {}   # cluster id → kb.match hint lines (the case's last solution)
         self._cases = CaseScripts.of(kb)
         attach = getattr(triager, "attach_run", None)
@@ -848,6 +876,7 @@ class BuildFixLoop:
         kw: dict[str, Any] = {"module": module, "label": label, "skip_test_compile": skip_test_compile}
         if extra:
             kw["extra_args"] = extra
+        before = _status_paths(self.ws)
         with self._busy_with(f"mvn {goal} ({label})"):
             if skip_tests:
                 try:
@@ -857,6 +886,7 @@ class BuildFixLoop:
                     res = self.build_runner.run(goal, **kw)
             else:
                 res = self.build_runner.run(goal, **kw)
+        _restore_build_byproducts(self.ws, before)
         refine_build(res)
         self.ws.journal({"event": "build", "phase": phase.value, "iteration": iteration, "goal": goal,
                          "target": target, "extra_args": extra, "ok": res.ok, "exit_code": res.exit_code, "errors": res.error_count,
@@ -1380,6 +1410,7 @@ class BuildFixLoop:
             log.info("LLM 답변 없음 (%.0fs): %s", secs, _first_sentence("; ".join(att.apply_errors) or "-", 240))
             self._begin_try(att, st)
             return
+        self._answers[id(att)] = ans
         code = (ans.code or "").strip("\n")
         edits = list(ans.edits or [])
         att.analysis = ans.analysis or ""
@@ -1484,7 +1515,8 @@ class BuildFixLoop:
                                commit=att.commit or "", result=att.outcome, note=_try_note(att),
                                llm_calls=int(att.llm_usage.calls or 0),
                                seconds=round(self._seconds.get(id(att), 0.0), 1),
-                               optional={"script_version": int(att.script_version or 0)})
+                               optional={"script_version": int(att.script_version or 0),
+                                         "edits": list(self._notes.get(id(att), []))})
 
     def _ran_on_files(self, att: FixAttempt) -> bool:
         res = att.script_result
@@ -1712,7 +1744,7 @@ class BuildFixLoop:
             return
         self._drop_reference_writes(att, pre)
         self._mark(f"git commit for {c.id}")
-        sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre)
+        sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre, paths=res.changed_files)
         if sha is None:
             att.outcome = "apply_failed"
             att.apply_errors.append("no file changed")
@@ -1750,7 +1782,7 @@ class BuildFixLoop:
             return
         self._drop_reference_writes(att, pre)
         self._mark(f"git commit for {c.id}")
-        sha = self._commit(f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}", pre)
+        sha = self._commit(f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}", pre, paths=res.changed_files)
         if sha is None:
             att.outcome = "apply_failed"
             att.apply_errors.append("the edits changed no file")
@@ -1761,7 +1793,9 @@ class BuildFixLoop:
 
     def _applied(self, att: FixAttempt, c: ErrorCluster, st: "_Round", pre: str, sha: str, how: str,
                  reported: list[str]) -> None:
-        """A committed change: the attempt's files, the diff (DEBUG, full; the FixTry, capped), the `적용(…)` line."""
+        """A committed change: the attempt's files, the diff (DEBUG, full; the FixTry, capped), the `적용(…)` line and
+        one `수정: <path> <lines> — <change>` line per note (v2.1b: the LLM's descriptions of the edits it applied /
+        the script it wrote, lines from the diff; a reused stored script has no answer → notes from the diff)."""
         att.applied, att.commit = True, sha
         try:
             files = self._changed_between(pre, sha)
@@ -1778,6 +1812,12 @@ class BuildFixLoop:
         shown = [f"{p} (+{a} −{d})" for p, a, d in stats] or files
         log.info("적용(%s): %s, 커밋 %s", how, ", ".join(shown[:8]) + (f", … (+{len(shown) - 8})" if len(shown) > 8
                                                                        else ""), sha[:7])
+        notes = try_notes(answer_notes(self._answers.get(id(att)), edits=how == "edits"), diff)
+        self._notes[id(att)] = notes
+        for n in notes[:NOTES_LOGGED]:
+            log.info("수정: %s", note_line(n))
+        if len(notes) > NOTES_LOGGED:
+            log.info("수정: … %d more (errors.md)", len(notes) - NOTES_LOGGED)
         if diff:
             log.debug("diff:\n%s", diff)
         warn = int(getattr(getattr(self.cfg, "script", None), "max_files_changed_warn", 0) or 0)
@@ -1903,7 +1943,14 @@ class BuildFixLoop:
                                      "log_lines": len(att.script_result.log) if att.script_result else 0}
                                     if att.decision.kind == DecisionKind.SCRIPT else None)})
 
-    def _commit(self, message: str, pre: str) -> Optional[str]:
+    def _commit(self, message: str, pre: str, paths: Optional[list[str]] = None) -> Optional[str]:
+        """Commit an attempt: only the files its script / edits reported (`paths`, v2.1b) — a jar the last build
+        copied into `lib/` is not part of the fix; None when nothing changed."""
+        if paths is not None:
+            if not paths:
+                return None
+            sha = self.ws.commit(message, paths=paths)
+            return sha if sha != pre else None
         if not self.ws.is_dirty():
             return None
         sha = self.ws.commit(message)

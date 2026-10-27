@@ -26,6 +26,7 @@ FULL = ("<analysis>javax.annotation left the JDK</analysis>\n"
         "<solution>switch the imports to jakarta.annotation and declare jakarta.annotation-api</solution>\n"
         f"<edits>\n{json.dumps(EDITS, indent=1)}\n</edits>\n<script>\n{CODE}</script>\n")
 SIG = "compile|package_missing|javax.annotation"
+MISSING = "[sbmig] the answer did not describe its changes"      # v2.1b: a script without a <changes> list
 FILES = [f"demo-back/src/main/java/a/S{i}.java" for i in range(2)]
 
 
@@ -177,7 +178,8 @@ def test_answer_with_all_four_parts(cfg, proj):
     client = FakeLLMClient([FULL])
     a = LLMFixer(cfg, client).propose_script(proj, cluster(), ctx())
     assert isinstance(a, FixAnswer) and len(client.calls) == 1
-    assert a.analysis == "javax.annotation left the JDK" and a.solution.startswith("switch the imports")
+    assert a.analysis == "javax.annotation left the JDK\n" + MISSING and a.solution.startswith("switch the imports")
+    assert a.changes == []                                           # no <changes>, no desc: the loop uses the diff
     assert a.code == CODE and len(a.edits) == 2 and a.edits[1].op == "pom" and a.no_script_reason == ""
     assert a.error == "" and a.raw_response == FULL
     ev = [json.loads(ln) for ln in proj.journal_path.read_text().splitlines() if '"llm_script"' in ln][-1]
@@ -208,7 +210,7 @@ def test_unreadable_edits_get_one_feedback_round(cfg, proj):
     feedback = client.calls[1]["messages"][-1].content
     assert feedback.startswith("Your answer cannot be used. Problems:\n\n- edits JSON unreadable: ")
     assert "ONE valid JSON list" in feedback and "COMPLETE corrected answer" in feedback
-    assert "<solution>, <edits> and <script>" in feedback
+    assert '<solution>, <edits> (each with its "desc"), <changes> and <script>' in feedback
     assert len(a.edits) == 2 and a.code == CODE and a.error == ""
 
 
@@ -229,7 +231,8 @@ def test_broken_script_next_to_valid_edits(cfg, proj):
     assert a.no_script_reason.startswith("[sbmig] the script could not be used: script does not parse")
     assert "[sbmig] script dropped: script does not parse" in a.analysis
     fixed = LLMFixer(cfg, FakeLLMClient([broken, FULL])).propose_script(proj, cluster(), ctx())
-    assert fixed.code == CODE and fixed.no_script_reason == "" and "[sbmig]" not in fixed.analysis
+    assert fixed.code == CODE and fixed.no_script_reason == "" and fixed.analysis == "javax.annotation left the JDK\n" \
+        + MISSING                                                    # nothing of the first answer's notes left
 
 
 def test_nothing_usable_after_the_feedback_round(cfg, proj):

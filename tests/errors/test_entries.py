@@ -274,3 +274,63 @@ def test_for_workspace(tmp_path: Path, cfg):
     assert el.run_id == "r9" and el.project == "demo" and el.path == ws.run_dir / "errors.jsonl"
     e = el.add_build(build(err(raw=f"{ws.root}/src/A.java:[6,1] error")), "compile")[0]
     assert str(ws.root) not in e.raw and e.raw.startswith("src/A.java")
+
+
+# ---------------------------------------------------------------------------------------- v2.1b 수정 notes
+POM_NOTE = {"path": "module/comp-jar/pom.xml", "where": "<dependencies> 블록", "lines": "+42–47",
+            "change": "jakarta.xml.bind-api 와 jaxb-runtime 의존성을 추가합니다", "source": "llm"}
+
+
+def test_finish_try_stores_the_edit_notes_masked(tmp_path: Path, cfg):
+    from sbmig.core.models import EditNote
+
+    root = tmp_path / "run" / "project"
+    el = ErrorList(tmp_path / "run", "r", project="p", cfg=cfg, roots=[root])
+    cid = el.add_build(build(err()), "compile")[0].case_id
+    el.begin_try(cid, 1, "llm-new")
+    diff_note = EditNote(path=f"{root}/src/A.java", lines="~3", change="A.java 3행 수정", source="diff")
+    el.finish_try(cid, 1, applied="edits", diff="+x",
+                  edits=[POM_NOTE, diff_note, {"where": "no path"},
+                         EditNote(path="app.properties", change="db.password=hunter2 로 바꿉니다")])
+    t = el.get_try(cid, 1)
+    assert [n.path for n in t.edits] == ["module/comp-jar/pom.xml", "src/A.java", "app.properties"]   # no path → out
+    assert t.edits[0] == EditNote(**POM_NOTE) and (t.edits[1].source, t.edits[1].lines) == ("diff", "~3")
+    assert "hunter2" not in t.edits[2].change
+    el.finish_try(cid, 1, result="improved")                 # edits None → kept
+    assert len(el.get_try(cid, 1).edits) == 3
+    row = lines(el)[0]["tries"][0]
+    assert row["edits"][0]["lines"] == "+42–47" and row["edits"][1]["source"] == "diff"
+    assert "hunter2" not in el.path.read_text(encoding="utf-8")
+    assert el.to_report()[0].tries[0].edits[0].change.startswith("jakarta.xml.bind-api")
+
+
+def test_errors_md_lists_the_edit_notes_before_the_diff(el: ErrorList):
+    cid = el.add_build(build(err()), "compile")[0].case_id
+    el.begin_try(cid, 1, "llm-new")
+    el.finish_try(cid, 1, analysis="JAXB left the JDK", solution="의존성 추가", applied="edits",
+                  files=["module/comp-jar/pom.xml"], diff="+<dependency/>", result="improved",
+                  edits=[POM_NOTE, {"path": "src/A.java", "lines": "~3", "change": "A.java 3행 수정", "source": "diff"}])
+    md = el.md_path.read_text(encoding="utf-8")
+    block = md[md.index(f"### case {cid} try 1"):]
+    assert ("- 수정:\n  - module/comp-jar/pom.xml +42–47 (<dependencies> 블록) — jakarta.xml.bind-api 와 jaxb-runtime "
+            "의존성을 추가합니다\n  - src/A.java ~3 — A.java 3행 수정\n") in block
+    assert block.index("- 해결: 의존성 추가") < block.index("- 수정:") < block.index("- files:") < block.index("```diff")
+    # the compact tries cell: the first note's change, ≤ 60 characters
+    assert "| 1 llm-new edits improved (jakarta.xml.bind-api 와 jaxb-runtime 의존성을 추가합니다) |" in md
+    assert tries_text(el.entries[0]) == "1 llm-new edits improved"                  # the plain text stays plain
+    long = "x" * 80
+    el.finish_try(cid, 1, edits=[{"path": "a", "change": long}])
+    assert f"1 llm-new edits improved ({'x' * 59}…)" in tries_text(el.entries[0], with_change=True)
+
+
+def test_kb_entry_lines_show_the_edit_notes(el: ErrorList):
+    from sbmig.errors import entry_lines, note_text
+
+    cid = el.add_build(build(err()), "compile")[0].case_id
+    el.begin_try(cid, 1, "llm-new")
+    el.finish_try(cid, 1, applied="edits", diff="+x", edits=[POM_NOTE])
+    out = "\n".join(entry_lines(el.entries[0]))
+    assert "    수정:\n      module/comp-jar/pom.xml +42–47 (<dependencies> 블록) — jakarta.xml.bind-api" in out
+    assert out.index("수정:") < out.index("diff:")
+    assert note_text({"path": "pom.xml"}) == "pom.xml" and note_text({"path": "p", "lines": "-3"}) == "p -3"
+    assert note_text(POM_NOTE, limit=30) == "module/comp-jar/pom.xml +42–4…"

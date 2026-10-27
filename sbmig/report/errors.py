@@ -1,12 +1,15 @@
 """The run's error list (`RunReport.error_entries`, v2.1) as the report needs it: counts, `seen` groups, the tries cell,
-diff +/- per file and one row per case ("Fixes by case"). Pure data — rendering (and translation) is in markdown.py /
-writer.py; everything here tolerates an empty list and entries with missing fields."""
+diff +/- per file and one row per case ("Fixes by case", with the kept tries' 수정 notes — v2.1b `FixTry.edits`).
+Pure data — rendering (and translation) is in markdown.py / writer.py; everything here tolerates an empty list and
+entries with missing fields."""
 from __future__ import annotations
 
 import re
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
+
+from sbmig.errors.common import note_text
 
 STATUS_ORDER = ("unresolved", "open", "blocked", "pom-verify", "resolved", "note")
 OPEN_STATUSES = ("open", "unresolved")         # SBMIG-RESULT `open=` (finalize turns open into unresolved)
@@ -180,6 +183,7 @@ class CaseRow:
     solution: str = ""                             # 해결 방법
     no_script_reason: str = ""
     changes: "OrderedDict[str, list[int]]" = field(default_factory=OrderedDict)
+    edits: list[Any] = field(default_factory=list)   # 수정: the kept tries' EditNotes (path / where / change / lines)
     script: str = ""                               # cases/<id>/fix_vN.py (resolving script, else the newest stored)
     script_version: int = 0
     seen: str = ""
@@ -238,6 +242,7 @@ def case_rows(entries: Iterable[Any]) -> list[CaseRow]:
                                          if getattr(t, "no_script_reason", "")), "")
         row.changes = merge_stats(diff_stats(getattr(t, "diff", "") or "", getattr(t, "files", None) or [])
                                   for t in row.tries if kept(t))
+        row.edits = kept_notes(row.tries)
         if scripts.get(cid):
             row.script = scripts[cid][-1]
             m = re.search(r"fix_v(\d+)\.py$", row.script)
@@ -248,6 +253,32 @@ def case_rows(entries: Iterable[Any]) -> list[CaseRow]:
                 row.script_version = max(versions)
                 row.script = f"cases/{cid}/fix_v{row.script_version}.py"
     return list(rows.values())
+
+
+def kept_notes(tries: Iterable[Any]) -> list[Any]:
+    """The 수정 notes (`FixTry.edits`) of the tries whose changes are still in the tree, first-seen order, the same
+    note (path, lines, change) once."""
+    out: list[Any] = []
+    seen: set[tuple[str, str, str]] = set()
+    for t in tries:
+        if not kept(t):
+            continue
+        for n in getattr(t, "edits", None) or []:
+            k = (str(getattr(n, "path", "") or ""), str(getattr(n, "lines", "") or ""),
+                 " ".join(str(getattr(n, "change", "") or "").split()))
+            if k not in seen:
+                seen.add(k)
+                out.append(n)
+    return out
+
+
+def notes_text(notes: Iterable[Any], limit: int = 8, sep: str = "; ") -> str:
+    """`path lines — change` per note (`sbmig.errors.common.note_text`), `limit` of them, then "(+N more)"."""
+    ns = list(notes)
+    items = [note_text(n) for n in ns[:limit]]
+    if len(ns) > limit:
+        items.append(f"(+{len(ns) - limit} more)")
+    return sep.join(items)
 
 
 def review_entries(entries: Iterable[Any]) -> list[Any]:

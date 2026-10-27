@@ -4,13 +4,15 @@
                                                       | plugin / entry-point name (→ sbmig.llm, docs/ADAPTERS.md)
     LLMFixer(cfg, client, notes_dir=None)             ScriptFixerLike: propose_script(ws, cluster, ctx)
                                                       -> FixAnswer (= ScriptProposal): analysis 원인, solution
-                                                         해결 방법, edits (apply: sbmig.script.apply_edits), code
-                                                         (the script), no_script_reason, error, …
+                                                         해결 방법, edits (apply: sbmig.script.apply_edits; each
+                                                         with its desc), changes (EditNote: <changes> + the edits'
+                                                         desc), code (the script), no_script_reason, error, …
     ContextPacker(cfg).pack_script(ws, cluster, ctx, ctx.profile_summary)
                                                       -> PackedContext; fixer plugins can reuse it for the same
                                                          errors/files/hints our LLM gets (.render() → markdown)
     parse_script_response(text)                       -> ParsedScript(code, analysis, solution, edits, edits_problem,
-                                                         no_script_reason, need_files, need_grep, problem, …)
+                                                         changes, changes_problem, no_script_reason, need_files,
+                                                         need_grep, problem, …)
     parse_edits(text)                                 -> (list[Edit], problem) of one <edits> block (lenient JSON)
     ReplayResponder(load_replay_entries(dir))         FakeLLMClient answers picked by `match` / `replay_role`
 """

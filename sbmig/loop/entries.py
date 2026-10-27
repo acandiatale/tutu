@@ -9,6 +9,7 @@ changes what the loop does: an exception is logged (WARNING) and the call return
     add_pom_verify(file, note)       → the entry                one per pom correction of the restructure
     add_note(file, text, seen)       → the entry                review warnings
     review_fixed(file, text, try)    → the entry                a critical review issue the review's edits fixed
+                                                                (try fields incl. `edits`, the 수정 notes)
     verify_poms(build_errors)        → pom-verify entries resolved by that build
     begin_try / finish_try / resolve / block                    the fix loop's tries
     end_of_run / write / to_report / entries / open_count       finalize
@@ -143,10 +144,13 @@ class RunErrors(_Guarded):
         return self._call("begin_try", case_id, round, source, script_version=script_version)
 
     def finish_try(self, case_id: str, n: int, *, optional: Optional[dict[str, Any]] = None, **fields: Any) -> None:
-        """Set the try's fields (analysis, solution, no_script_reason, applied, files, diff, commit, result, note,
-        llm_calls, seconds); called after the apply, again after the scoring / a rollback. `optional` fields
-        (script_version) are dropped when the list does not take them."""
-        self._call("finish_try", case_id, n, optional=optional, **fields)
+        """Set the try's fields (analysis, solution, no_script_reason, applied, files, edits, diff, commit, result,
+        note, llm_calls, seconds); called after the apply, again after the scoring / a rollback. `optional` fields
+        (script_version, edits — the v2.1b 수정 notes) are dropped when the list does not take them."""
+        opt = dict(optional or {})
+        if "edits" in fields:
+            opt["edits"] = fields.pop("edits")
+        self._call("finish_try", case_id, n, optional=opt, **fields)
 
     def resolve(self, case_id: str, round: int, n: int) -> None:
         self._call("resolve", case_id, round, n)

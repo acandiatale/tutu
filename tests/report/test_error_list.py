@@ -7,11 +7,11 @@ from pathlib import Path
 
 from rich.console import Console
 
-from sbmig.core.models import ErrorEntry, ErrorKind, FixTry
+from sbmig.core.models import EditNote, ErrorEntry, ErrorKind, FixTry
 from sbmig.core.workspace import Workspace
 from sbmig.report import console_summary, render_markdown, write_report
-from sbmig.report.errors import (case_rows, diff_stats, open_count, resolved_count, seen_groups, stats_text,
-                                 status_counts, try_text)
+from sbmig.report.errors import (case_rows, diff_stats, kept_notes, notes_text, open_count, resolved_count,
+                                 seen_groups, stats_text, status_counts, try_text)
 from sbmig.report.markdown import ERROR_LIST_MAX_ROWS
 
 from .test_report import sample_report
@@ -26,6 +26,9 @@ POM_DIFF = ("diff --git a/module/comp-jar/pom.xml b/module/comp-jar/pom.xml\n---
             "+    </dependency>\n-    <!-- old -->\n")
 JAVA_DIFF = ("diff --git a/src/A.java b/src/A.java\n--- a/src/A.java\n+++ b/src/A.java\n@@ -1 +1 @@\n"
              "-import javax.x.Y;\n+import jakarta.x.Y;\n")
+POM_NOTE = EditNote(path="module/comp-jar/pom.xml", where="<dependencies> 블록", lines="+11–14",
+                    change="jakarta.xml.bind-api 의존성을 추가합니다")
+JAVA_NOTE = EditNote(path="src/A.java", lines="~1", change="A.java 1행 수정", source="diff")
 
 
 def _try(n: int, rnd: int, source: str, result: str, **kw) -> FixTry:
@@ -36,11 +39,12 @@ def entries() -> list[ErrorEntry]:
     """Deliberately out of pipeline order: fix r2, build, compile ×3, restructure, review."""
     t1 = _try(1, 1, "llm-new", "improved", script_version=1, applied="edits", analysis="JAXB left the JDK",
               solution="declare jakarta.xml.bind-api", files=["module/comp-jar/pom.xml"], diff=POM_DIFF,
-              commit="a1b2c3d", llm_calls=1)
+              commit="a1b2c3d", llm_calls=1, edits=[POM_NOTE])
     t_bad = _try(1, 1, "llm-new", "regressed", applied="edits", analysis="wrong guess", files=["src/A.java"],
-                 diff=JAVA_DIFF)
+                 diff=JAVA_DIFF, edits=[EditNote(path="src/A.java", lines="~1", change="a wrong guess")])
     t_ok = _try(2, 2, "llm-augment", "build_ok", script_version=2, applied="script", analysis="javax import left",
-                solution="rename the import | then compile", files=["src/A.java"], diff=JAVA_DIFF)
+                solution="rename the import | then compile", files=["src/A.java"], diff=JAVA_DIFF,
+                edits=[JAVA_NOTE])
     t_edit = _try(1, 2, "llm-edit", "no_change", applied="edits", no_script_reason="generated code differs per project",
                   files=["src/G.java"])
     return [
@@ -87,7 +91,7 @@ def test_counts_groups_and_tries_text():
     assert list(seen_groups(es)) == ["compile", "restructure", "review", "build", "fix r2"]
     assert [i for i, _ in seen_groups(es)["compile"]] == [1, 2, 3]          # # numbers the entries in that order
     assert [i for i, _ in seen_groups(es)["fix r2"]] == [7]
-    assert try_text(es[2].tries[0]) == "1 llm-new v1 edits improved"
+    assert try_text(es[2].tries[0]) == "1 llm-new v1 edits improved"       # the tries cell: no 수정 text
     assert try_text(_try(2, 3, "kb-script", "build_ok", script_version=2, applied="script")) == "2 kb-script v2 build_ok"
     assert status_counts([]) == {} and seen_groups([]) == {} and case_rows([]) == []
 
@@ -102,6 +106,19 @@ def test_diff_stats_per_file():
     assert diff_stats("", ["pom.xml"]) == {"pom.xml": [0, 0]} and stats_text(diff_stats("", ["pom.xml"])) == "`pom.xml`"
     gone = "diff --git a/old.txt b/old.txt\ndeleted file mode 100644\n--- a/old.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\n"
     assert diff_stats(gone) == {"old.txt": [0, 2]}
+
+
+def test_kept_notes_and_notes_text():
+    es = entries()
+    rows = {r.case_id: r for r in case_rows(es)}
+    assert rows["7a52b1cea8"].edits == [POM_NOTE]                    # one try shared by two entries: one note
+    assert rows["3333333333"].edits == [JAVA_NOTE]                   # the regressed try's note is not kept
+    assert rows["9999999999"].edits == [] and rows["4444444444"].edits == []
+    same = _try(3, 3, "kb-script", "improved", applied="script", edits=[POM_NOTE])
+    assert kept_notes([es[2].tries[0], same]) == [POM_NOTE]          # the same note of two tries once
+    many = [EditNote(path=f"src/F{i}.java", lines=f"~{i}", change=f"c{i}") for i in range(10)]
+    assert notes_text(many, limit=2) == "src/F0.java ~0 — c0; src/F1.java ~1 — c1; (+8 more)"
+    assert notes_text([]) == "" and notes_text([EditNote(path="pom.xml")]) == "pom.xml"
 
 
 def test_case_rows_dedupe_tries_and_pick_the_deciding_one():
@@ -147,12 +164,17 @@ def test_error_list_section_english():
 def test_fixes_by_case_section():
     md = render_markdown(report_with(entries()))
     sec = section(md, FIXES_EN)
-    assert "| case | errors | cause | solution | changes (files, +/−) | script |" in sec
+    assert "| case | errors | cause | solution | changes (files, +/−) | edits | script |" in sec
     assert ("| `7a52b1cea8` package jakarta.xml.bind does not exist | 2/2 resolved | JAXB left the JDK | "
-            "declare jakarta.xml.bind-api | `module/comp-jar/pom.xml` (+4 −1) | v1 `cases/7a52b1cea8/fix_v1.py` |") in sec
-    assert "| javax import left | rename the import \\| then compile | `src/A.java` (+1 −1) | v2 `cases/3333333333/fix_v2.py` |" in sec
+            "declare jakarta.xml.bind-api | `module/comp-jar/pom.xml` (+4 −1) | "
+            "module/comp-jar/pom.xml +11–14 (<dependencies> 블록) — jakarta.xml.bind-api 의존성을 추가합니다 | "
+            "v1 `cases/7a52b1cea8/fix_v1.py` |") in sec
+    # the regressed try was rolled back: neither its +/- nor its note is in the row
+    assert ("| javax import left | rename the import \\| then compile | `src/A.java` (+1 −1) | "
+            "src/A.java ~1 — A.java 1행 수정 | v2 `cases/3333333333/fix_v2.py` |") in sec
+    assert "a wrong guess" not in sec
     assert ("| `9999999999` new in round 2 | 0/1 resolved | - | (no solution text) generated code differs per project | "
-            "`src/G.java` | no script: generated code differs per project |") in sec
+            "`src/G.java` | - | no script: generated code differs per project |") in sec
     assert "`<kb>/cases/<case>/fix_vN.py`" in sec
 
 
@@ -162,7 +184,8 @@ def test_korean_sections():
     assert "이번 실행의 에러 7건" in sec and "### compile — OpenRewrite 뒤 `mvn compile` (3)" in sec
     assert "### fix r2 — 라운드 2 빌드의 새 에러 (1)" in sec and "| # | 케이스 | 파일:줄 | 메시지 | 상태 | 시도 | 해결 |" in sec
     fx = section(md, FIXES_KO)
-    assert "| 케이스 | 에러 | 원인 | 해결 방법 | 수정 (파일, +/−) | 스크립트 |" in fx and "2/2 해결" in fx
+    assert "| 케이스 | 에러 | 원인 | 해결 방법 | 변경 파일 (+/−) | 수정 | 스크립트 |" in fx and "2/2 해결" in fx
+    assert "| module/comp-jar/pom.xml +11–14 (<dependencies> 블록) — jakarta.xml.bind-api 의존성을 추가합니다 |" in fx
     assert "스크립트 없음: generated code differs per project" in fx
     assert "| **에러 목록** | 7건: unresolved 2, pom-verify 1, resolved 4 (\"에러 목록\" 참조) |" in md
     assert EN_TITLE not in md and FIXES_EN not in md

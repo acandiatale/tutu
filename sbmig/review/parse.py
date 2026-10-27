@@ -1,7 +1,7 @@
 """Reading the structure-review answer (v2.1): `<review>{json}</review>` with the verdict and the issues, plus the
 fix answer of docs/v2/PLAN-v2.1.md §3.6 — `<analysis>` 원인, `<solution>` 해결 방법, `<edits>` (JSON list of `Edit`, the
-reviewer applies them) and an optional `<script>` (or `<no_script>`). A v2 answer (`<review>` + `<script>`) parses as
-before (edits []).
+reviewer applies them; each with its `desc`), `<changes>` (what the fix modifies where, v2.1b) and an optional
+`<script>` (or `<no_script>`). A v2 answer (`<review>` + `<script>`) parses as before (edits [], changes []).
 
 Tolerant on purpose: the JSON may sit in a code fence, be followed by prose, carry trailing commas, or come without
 the `<review>` tags; `issues` may be a single object instead of a list; unknown severities become `warning`. The fix
@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from sbmig.core.models import Edit, ReviewIssue
+from sbmig.core.models import Edit, EditNote, ReviewIssue
 
 MAX_ISSUES = 60
 PROBLEM_CHARS = 600
@@ -25,9 +25,9 @@ ANALYSIS_CHARS = 4000
 FILE_CHARS = 300
 
 _SCRIPT_RE = re.compile(r"<script>(.*?)(?:</script>|\Z)", re.S | re.I)
-_REVIEW_RE = re.compile(r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|edits|no_script|script)>)|\Z)",
+_REVIEW_RE = re.compile(r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|edits|changes|no_script|script)>)|\Z)",
                         re.S | re.I)
-_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|edits|no_script|script)>.*?(?:</\1>|\Z)", re.S | re.I)
+_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|edits|changes|no_script|script)>.*?(?:</\1>|\Z)", re.S | re.I)
 _ANALYSIS_RE = re.compile(r"<analysis>(.*?)</analysis>", re.S | re.I)
 _FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n(.*?)(?:```|\Z)", re.S)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
@@ -49,6 +49,9 @@ class ParsedReview:
     solution: str = ""                          # <solution> 해결 방법
     edits: list[Edit] = field(default_factory=list)
     edits_problem: str = ""                     # "edits JSON unreadable: …" / "edits invalid: …"
+    changes: list[EditNote] = field(default_factory=list)   # <changes> list + each edit's desc (v2.1b)
+    changes_described: bool = False             # the <changes> list itself described something
+    changes_problem: str = ""                   # "changes unreadable: …"
     no_script_reason: str = ""
     warnings: list[str] = field(default_factory=list)
     error: str = ""
@@ -155,6 +158,9 @@ def _fix_blocks(text: str, out: ParsedReview) -> None:
     out.solution = _cap(fx.solution, ANALYSIS_CHARS)
     out.edits = list(fx.edits)
     out.edits_problem = fx.edits_problem
+    out.changes = list(fx.changes)
+    out.changes_described = fx.described
+    out.changes_problem = fx.changes_problem
     out.no_script_reason = _cap(fx.no_script_reason, ANALYSIS_CHARS)
     code = fx.code or (fx.candidate if re.search(r"^\s*def\s+fix\s*\(", fx.candidate or "", re.M) else "")
     out.script = code                                   # a broken script that defines fix: the runner refuses it
@@ -218,5 +224,23 @@ def parse_review_answer(text: str) -> ParsedReview:
         edits, problems = edits_from_json(obj["edits"])
         out.edits = edits
         out.edits_problem = ("edits invalid: " + "; ".join(problems[:8])) if problems else ""
+        if edits:
+            from sbmig.script.notes import answer_notes
+            out.changes = answer_notes(out.changes, edits)
+    if not out.changes_described and isinstance(obj.get("changes"), list):
+        from sbmig.script.notes import answer_notes, notes_from_json   # changes inside the JSON object: accepted too
+        notes, _ = notes_from_json(obj["changes"])
+        if notes:
+            out.changes = answer_notes(notes, out.edits)
+            out.changes_described = any(n.change or n.where for n in notes)
     out.ok = True
     return out
+
+
+def changes_note(parsed: ParsedReview) -> str:
+    """The `[sbmig]` note for a review answer with a script but no `<changes>` list ("" = described / no script)."""
+    from sbmig.fix.script_protocol import CHANGES_MISSING
+
+    if not parsed.script or parsed.changes_described:
+        return ""
+    return f"{CHANGES_MISSING} ({parsed.changes_problem[:200]})" if parsed.changes_problem else CHANGES_MISSING

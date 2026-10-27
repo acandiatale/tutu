@@ -30,7 +30,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from pydantic import BaseModel
 
@@ -587,16 +587,29 @@ class Workspace:
                 out += ["-e", line]
         return out
 
-    def commit(self, message: str, allow_empty: bool = False) -> str:
+    def commit(self, message: str, allow_empty: bool = False, *, paths: Optional[Iterable[str]] = None) -> str:
+        """Commit the working tree (`paths` None: everything, incl. ignored jars the as-is tree keeps) or ONLY the
+        given root-relative paths (v2.1b, 2026-10-27: an LLM attempt stages what its script / edits reported — a
+        module jar the build copied into `lib/` must not ride along into the attempt and its `files`)."""
         if not self._git_ready:
             self.git_init()
-        self._git("add", "-A")
-        self._force_add_ignored_jars()
+        if paths is None:
+            self._git("add", "-A")
+            self._force_add_ignored_jars()
+        else:
+            wanted = [p for p in dict.fromkeys(str(x).replace("\\", "/").strip("/") for x in paths) if p]
+            if not wanted and not allow_empty:
+                return self.head()
+            for i in range(0, len(wanted), 200):          # -f: a path the script changed on purpose, even if ignored
+                self._git("add", "-A", "-f", "--", *wanted[i:i + 200], check=False)
+            if not allow_empty and self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
+                return self.head()                        # the reported files are back as they were: nothing staged
         args = ["commit", "-q", "-m", message]
         if allow_empty:
             args.append("--allow-empty")
         cp = self._git(*args, check=False)
-        if cp.returncode != 0 and "nothing to commit" not in (cp.stdout + cp.stderr):
+        if cp.returncode != 0 and "nothing to commit" not in (cp.stdout + cp.stderr) \
+                and "no changes added to commit" not in (cp.stdout + cp.stderr):
             raise GitError(cp.stderr.strip() or cp.stdout.strip())
         return self.head()
 
@@ -612,6 +625,59 @@ class Workspace:
 
     def head(self) -> str:
         return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def status_paths(self) -> set[str]:
+        """Root-relative posix paths `git status` reports (modified / deleted / untracked; ignored files excluded)."""
+        out = self._git("status", "--porcelain", "-z", "--untracked-files=all", check=False).stdout or ""
+        paths: set[str] = set()
+        items = out.split("\0")
+        i = 0
+        while i < len(items):
+            item = items[i]
+            if len(item) > 3:
+                paths.add(item[3:].replace("\\", "/"))
+                if item[0] in "RC":                      # a rename / copy carries the old name in the next item
+                    i += 1
+            i += 1
+        return paths
+
+    def restore_build_byproducts(self, before: set[str]) -> list[str]:
+        """v2.1b (company run, 2026-10-27): a build writes files OUTSIDE `target/` too — a module jar copied into
+        `lib/` by maven-dependency-plugin, generated sources, a rewritten `.flattened-pom.xml` — and `git add -A`
+        in the next commit (an LLM attempt, the restructure) then carried them along: the attempt's `files` named
+        `xxx-swing/lib/xxx-swing-1.0-SNAPSHOT.jar`, its diff held a jar, the review refused to run on a dirty tree.
+        Called right after a build with the `status_paths()` taken before it: every path that became dirty DURING the
+        build is a build product — a tracked one is checked out again, an untracked one is excluded through
+        `.git/info/exclude`. Returns the paths handled. Never raises."""
+        try:
+            after = self.status_paths()
+        except Exception:  # noqa: BLE001 - git trouble: the next commit behaves as before
+            return []
+        new = sorted(p for p in after - set(before) if p and not is_build_output_path(p, self.root))
+        if not new:
+            return []
+        tracked: set[str] = set()
+        for i in range(0, len(new), 200):
+            cp = self._git("ls-files", "-z", "--", *new[i:i + 200], check=False)
+            tracked |= {x.replace("\\", "/") for x in (cp.stdout or "").split("\0") if x}
+        restored = [p for p in new if p in tracked]
+        for i in range(0, len(restored), 200):
+            self._git("checkout", "-q", "--", *restored[i:i + 200], check=False)
+        untracked = [p for p in new if p not in tracked]
+        if untracked:
+            exclude = self.root / ".git" / "info" / "exclude"
+            try:
+                exclude.parent.mkdir(exist_ok=True)
+                present = set(exclude.read_text(encoding="utf-8").splitlines()) if exclude.exists() else set()
+                lines = [f"/{p}" for p in untracked if f"/{p}" not in present]
+                if lines:
+                    with exclude.open("a", encoding="utf-8") as fh:
+                        fh.write(("" if not present else "\n") + "\n".join(lines) + "\n")
+            except OSError as e:
+                log.warning("could not exclude build products %s: %s", untracked[:3], e)
+        log.info("build products outside target/ set aside: %s%s", ", ".join(new[:5]),
+                 f" (+{len(new) - 5} more)" if len(new) > 5 else "")
+        return new
 
     def is_dirty(self) -> bool:
         return bool(self._git("status", "--porcelain").stdout.strip())

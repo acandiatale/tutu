@@ -63,6 +63,20 @@ def first_line(text: Optional[str], limit: int = 300) -> str:
     return ""
 
 
+def note_text(n: Any, limit: int = 0) -> str:
+    """One 수정 note (``EditNote``, v2.1b) as a person reads it — the one format of errors.md, report.md and the log:
+    ``module/comp-jar/pom.xml +42–47 (<dependencies> 블록) — jakarta.xml.bind-api 와 jaxb-runtime 의존성을 추가합니다``
+    (``(where)`` only when the LLM gave one; whitespace collapsed; ``limit`` caps the result, 0 = no cap). Duck-typed:
+    a dict or any object with ``path`` / ``where`` / ``change`` / ``lines``."""
+    def get(k: str) -> str:
+        v = n.get(k, "") if isinstance(n, dict) else getattr(n, k, "")
+        return " ".join(str(v or "").split())
+    head = " ".join(x for x in (get("path") or "-", get("lines")) if x)
+    where, change = get("where"), get("change")
+    s = head + (f" ({where})" if where else "") + (f" — {change}" if change else "")
+    return s[: limit - 1] + "…" if limit and len(s) > limit else s
+
+
 def cap(text: Optional[str], limit: int) -> str:
     """``text`` cut to ``limit`` characters (0 = no cap) with a marker."""
     t = text or ""

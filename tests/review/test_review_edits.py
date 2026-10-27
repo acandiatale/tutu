@@ -70,7 +70,8 @@ def test_critical_edits_are_applied_uncommitted(tmp_path, cfg, caplog):
     assert "<project.build.sourceEncoding>MS949</project.build.sourceEncoding>" in ws.read("module/comp-jar/pom.xml")
     assert rv.note == "review edits changed 1 file(s): module/comp-jar/pom.xml (1 edit(s)) — not committed yet"
     a = rv.answer
-    assert isinstance(a, ScriptProposal) and a.analysis == "MS949 sources, UTF-8 build"
+    assert isinstance(a, ScriptProposal) and a.changes == []      # no desc, no <changes>: notes come from the diff
+    assert a.analysis == "MS949 sources, UTF-8 build\n[sbmig] the answer did not describe its changes"
     assert a.solution.startswith("declare") and len(a.edits) == 1 and a.code == SCRIPT and a.error == ""
     assert a.llm_usage.calls == 1 and a.model == "gpt-review" and rv.script == SCRIPT
     lines = [(r.stage, r.getMessage()) for r in caplog.records if r.name.startswith("sbmig.review")]

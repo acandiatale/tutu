@@ -193,8 +193,10 @@ def test_propose_script_new(cfg, proj):
     assert user.startswith("Fix this case now and write ONE fix script for it.")
     assert "BOTH `<edits>`" in user and "`<no_script>` with the reason" in user and "p.errors" in user
     assert "fix this case now (<edits>) and write a reusable fix script" in user
-    assert user.rstrip().endswith("<analysis>, <solution>, <edits>, then <script> defining `def fix(p)` (or "
-                                  "<no_script> with the reason) — or <need_files> / <need_grep>.")
+    assert user.rstrip().endswith('<analysis>, <solution>, <edits> (each with its "desc"), <changes>, then <script> '
+                                  "defining `def fix(p)` (or <no_script> with the reason) — or <need_files> / "
+                                  "<need_grep>.")
+    assert "<파일> 의 <위치> 에서 <무엇을> <어떻게> 수정합니다" in user and "business team" in user
     assert "case: abc123 — L2 signature: " + SIG in user and "errors: 3 in 3 file(s)" in user
     for f in FILES:                                                           # every erroring file: error line + text
         assert f"- {f}:3:24: package javax.annotation does not exist" in user
@@ -204,7 +206,7 @@ def test_propose_script_new(cfg, proj):
     assert call["role"] == "fix" and call["max_tokens"] == cfg.llm.max_output_tokens
     assert call["metadata"]["script_mode"] == "new" and call["metadata"]["case_id"] == "abc123"
     assert call["metadata"]["cluster_id"] == "case:abc123" and call["metadata"]["run_id"] == "t-run"
-    assert p.code == CODE and p.error == "" and p.analysis == "javax.annotation moved to jakarta"
+    assert p.code == CODE and p.error == "" and p.analysis.startswith("javax.annotation moved to jakarta")
     assert p.llm_usage.calls == 1 and p.llm_usage.input_tokens > 0 and len(p.prompt_hash) == 64
     assert p.raw_response == GOOD and p.model == cfg.llm.model
     ev = [e for e in journal(proj) if e["event"] == "llm_script"][-1]
@@ -225,8 +227,8 @@ def test_propose_script_augment(cfg, proj):
     assert "WITHOUT its changes" in user and "no `<edits>` are needed with it" in user
     assert "`<no_script>` with the reason and `<edits>` that fix this project directly" in user
     assert "(or <no_script> + <edits>)" in user
-    assert user.rstrip().endswith("then the COMPLETE new <script> defining `def fix(p)` — or <no_script> with the "
-                                  "reason and <edits> — or <need_files> / <need_grep>.")
+    assert user.rstrip().endswith("<changes>, then the COMPLETE new <script> defining `def fix(p)` — or <no_script> "
+                                  'with the reason and <edits> (each with its "desc") — or <need_files> / <need_grep>.')
     assert "## Script to extend (version 2)" in user and "p.log('only S0')" in user
     assert "outcome in this project: partial" in user and "S0.java: import" in user
     assert f"- {FILES[1]}:3 package javax.annotation does not exist" in user
@@ -284,8 +286,8 @@ def test_still_requesting_context_after_the_rounds(cfg, proj):
     client = FakeLLMClient([ask])
     p = LLMFixer(cfg, client).propose_script(proj, case_cluster(), sctx())
     assert len(client.calls) == 1 + cfg.llm.max_context_rounds
-    assert "This was the LAST context round. Answer now with <analysis>, <solution>, <edits> and <script>" in \
-        client.calls[-1]["messages"][-1].content
+    assert "This was the LAST context round. Answer now with <analysis>, <solution>, <edits>, <changes> and " \
+        "<script>" in client.calls[-1]["messages"][-1].content
     assert p.code == "" and p.error.startswith("still requesting context") and "(still requesting context" in p.analysis
 
 

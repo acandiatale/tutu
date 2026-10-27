@@ -13,6 +13,7 @@ from .errors import (
     counts_text,
     entries_of,
     entry_text,
+    notes_text,
     review_changes,
     seen_groups,
     stats_text,
@@ -416,19 +417,22 @@ def _case_script_cell(row: Any, lang: str = "en") -> str:
 
 def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
     """`## Fixes by case`: one row per case that was worked on — cause / solution of the deciding try, the files the
-    kept tries changed (+/−) and the stored script; [] when no case had a try."""
+    kept tries changed (+/−), what each change did (수정, v2.1b: `path lines — change` per note) and the stored
+    script; [] when no case had a try."""
     rows = case_rows(entries_of(r))
     if not rows:
         return []
     L = [f"## {tr(lang, FIXES_TITLE)}", "",
-         tr(lang, "| case | errors | cause | solution | changes (files, +/−) | script |"), "|---|---|---|---|---|---|"]
+         tr(lang, "| case | errors | cause | solution | changes (files, +/−) | edits | script |"),
+         "|---|---|---|---|---|---|---|"]
     for row in rows[:FIXES_MAX_ROWS]:
         solution = row.solution or (tr(lang, "(no solution text) {reason}", reason=row.no_script_reason)
                                     if row.no_script_reason else "")
         L.append(f"| `{row.case_id}` {_cell(_short(row.name, 100), 120)} | "
                  f"{tr(lang, '{resolved}/{n} resolved', resolved=row.resolved, n=row.entries)} | "
                  f"{_cell(row.analysis or '-', 400)} | {_cell(solution or '-', 400)} | "
-                 f"{_cell(stats_text(row.changes) or '-', 300)} | {_case_script_cell(row, lang)} |")
+                 f"{_cell(stats_text(row.changes) or '-', 300)} | {_cell(notes_text(row.edits) or '-', 700)} | "
+                 f"{_case_script_cell(row, lang)} |")
     if len(rows) > FIXES_MAX_ROWS:
         L += ["", tr(lang, "… {n} more case(s) — see `errors.md`", n=len(rows) - FIXES_MAX_ROWS)]
     L += ["", "_" + tr(lang, "Stored scripts live in the KB (`<kb>/cases/<case>/fix_vN.py`); every try with its diff "

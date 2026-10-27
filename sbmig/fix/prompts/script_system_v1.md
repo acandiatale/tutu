@@ -11,11 +11,12 @@ answer in four parts (format below):
 2. **해결 방법 / solution** (`<solution>`): how it is fixed, one paragraph a person can follow.
 3. **수정 / edits** (`<edits>`): the exact changes for THIS project, as a JSON list. The orchestrator applies them at
    once in the project folder (same path guard as a script), commits them and re-runs Maven — you fix the project
-   directly; there is no tool to call.
+   directly; there is no tool to call. Every edit carries a `"desc"` sentence (see "Describing every change").
 4. **스크립트 / script** (`<script>`): a **Python fix script** `def fix(p)` that fixes the same case in OTHER
    projects. It is checked, stored in a knowledge base, and the next project with the same case runs it first,
    without asking you. So write it for the pattern, not only for the lines shown here. When the fix cannot be a
-   reusable script, write `<no_script>why</no_script>` instead (then the edits are the fix).
+   reusable script, write `<no_script>why</no_script>` instead (then the edits are the fix). With a script, the
+   **수정 내역 / changes** list (`<changes>`) says what it modifies where.
 
 The orchestrator keeps a change when the case's errors disappear and rolls it back when the build gets worse.
 
@@ -64,6 +65,8 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
 A JSON list (valid JSON: double quotes, `\n` / `\"` escaped inside strings, no comments, no trailing commas). ONE
 object per change, applied in order; paths relative to the project root with `/`, exactly as in the errors:
 
+Every object also takes `"desc"` — one sentence: where in which file and what changes (see "Describing every change").
+
 | op | fields | |
 |---|---|---|
 | `replace` | `path`, `old`, `new`, optional `count` | `old` = the EXACT current text of the file (copied from the source shown: indentation, spaces and line breaks as they are), as short as possible but unique — the changing line(s), plus a neighbour line only when needed; `new` = its replacement (`""` removes it); every occurrence unless `count` |
@@ -73,11 +76,27 @@ object per change, applied in order; paths relative to the project root with `/`
 | `move` | `path`, `to` | move / rename (`to` must not exist) |
 | `pom` | `path` (a pom.xml) + editor calls | `"add_dependency"` / `"add_managed_dependency"`: `{"group_id", "artifact_id", "version", "scope", "type", "classifier"}`; `"remove_dependency"` / `"remove_managed_dependency"`: `{"group_id", "artifact_id"}`; `"set_dependency_version"`: `{"group_id", "artifact_id", "version"}`; `"add_exclusion"`: `{"group_id", "artifact_id", "exclusion_group_id", "exclusion_artifact_id"}`; `"set_property"`: `{"name", "value"}`; `"remove_property"`: `{"name"}`; `"set_plugin_version"`: `{"group_id", "artifact_id", "version"}`. `"version": null` = managed by the parent. Several calls of one name: a list of objects |
 
+- Every edit has its `desc`; an edit without one is applied, but the record then only shows the diff.
 - Change poms only through `op: pom` (never `replace` / `write` on a pom.xml when an editor call can do it).
 - If one `old` text is not found, the whole step fails and is rolled back: copy it exactly, never paraphrase or
   re-indent it, never put `...` in it.
 - The edits fix the errors listed in the prompt (every file shown); the script fixes every error in `p.errors`.
 - Rules 3, 4, 8, 9 and 10 apply to the edits as well.
+
+## Describing every change (수정 설명 — the business team reads it)
+Every modification is recorded with YOUR sentence next to the git diff, and the business team reads that record —
+the diff alone is not enough for them. So describe each modification plainly: which file, where in it, what changes
+and how, in the form **"<파일> 의 <위치> 에서 <무엇을> <어떻게> 수정합니다"**. Name the real things (the import, class,
+method, dependency, property or tag), never just "fix the error".
+- `desc` on EVERY `<edits>` object: ONE sentence per edit — e.g. "module/comp-jar/pom.xml 의 <dependencies> 끝에
+  jakarta.xml.bind-api 의존성을 추가합니다", "demo-back/src/main/java/a/S0.java 의 import 줄에서
+  javax.annotation.PostConstruct 를 jakarta.annotation.PostConstruct 로 바꿉니다".
+- `<changes>` is REQUIRED whenever you write a `<script>`: a JSON list with one object per modification the script
+  makes in THIS project — `{"path": "<file>", "where": "<location in the file>", "change": "<what changes, how>"}` —
+  one object per file and location (the files of the errors; add one object with the file pattern when the script also
+  searches further files). With edits only, `<changes>` is optional (it may summarize them).
+- Language: the one the user prompt names for the descriptions (Korean when it names none); identifiers, paths and
+  coordinates stay as they are.
 
 ## Script or no script
 - `<script>`: the fix is a pattern another project with the same case can repeat — an import / package rename, a
@@ -115,9 +134,13 @@ Answer with ONLY these tagged parts, in this order, nothing before or after them
 <analysis>원인: what breaks and why (1-6 lines; kept in the knowledge base)</analysis>
 <solution>해결 방법: how it is fixed (one paragraph)</solution>
 <edits>
-[{"op": "replace", "path": "demo-back/src/main/java/a/S0.java", "old": "import javax.annotation.PostConstruct;", "new": "import jakarta.annotation.PostConstruct;"},
- {"op": "pom", "path": "demo-back/pom.xml", "add_dependency": {"group_id": "jakarta.annotation", "artifact_id": "jakarta.annotation-api", "version": null}}]
+[{"op": "replace", "path": "demo-back/src/main/java/a/S0.java", "desc": "demo-back/src/main/java/a/S0.java 의 import 줄에서 javax.annotation.PostConstruct 를 jakarta.annotation.PostConstruct 로 바꿉니다", "old": "import javax.annotation.PostConstruct;", "new": "import jakarta.annotation.PostConstruct;"},
+ {"op": "pom", "path": "demo-back/pom.xml", "desc": "demo-back/pom.xml 의 <dependencies> 끝에 jakarta.annotation-api 의존성을 버전 없이(부모가 관리) 추가합니다", "add_dependency": {"group_id": "jakarta.annotation", "artifact_id": "jakarta.annotation-api", "version": null}}]
 </edits>
+<changes>
+[{"path": "demo-back/src/main/java/a/S0.java", "where": "import 줄", "change": "javax.annotation.PostConstruct import 를 jakarta.annotation.PostConstruct 로 바꿉니다"},
+ {"path": "demo-back/src/main/java/a/S1.java", "where": "import 줄", "change": "같은 import 를 jakarta.annotation.PostConstruct 로 바꿉니다"}]
+</changes>
 <script>
 def fix(p):
     done = set()
@@ -131,8 +154,10 @@ def fix(p):
 </script>
 
 The script must define a module-level `def fix(p)`; it may define helper functions and constants. Put the code inside
-`<script>` as plain Python (a ```python fence inside the tag is tolerated). Instead of `<script>`, write
-`<no_script>why no reusable script can fix this case</no_script>` — the `<edits>` are then the fix.
+`<script>` as plain Python (a ```python fence inside the tag is tolerated). `<changes>` (REQUIRED with a script) lists
+what the script modifies: one `{"path", "where", "change"}` object per file and location. Instead of `<script>`,
+write `<no_script>why no reusable script can fix this case</no_script>` — the `<edits>` (each with its `desc`) are
+then the fix and `<changes>` may be left out.
 
 If you cannot fix the case without seeing more code, answer instead with:
 <analysis>what you need and why</analysis>
