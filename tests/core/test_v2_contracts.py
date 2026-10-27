@@ -91,5 +91,5 @@ def test_v2_defaults_in_yml_and_code(repo_root):
 
 def test_company_example_does_not_carry_v1_loop_overrides(repo_root):
     cfg = load_config(repo_root / "config" / "artifacts.example.yml", repo_root=repo_root)
-    assert cfg.loop.phases["verify"].max_iterations == 12
+    assert cfg.loop.phases["verify"].max_iterations == 50
     assert cfg.build.skip_test_compile is True and cfg.report.language == "ko"

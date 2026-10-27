@@ -198,7 +198,8 @@ def _ensure_console_logging() -> None:
     if not any(not isinstance(h, logging.FileHandler) for h in root.handlers):
         h = logging.StreamHandler()
         h.setLevel(logging.INFO)
-        h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+        from sbmig.core.stage import stage_formatter
+        h.setFormatter(stage_formatter("%(asctime)s %(levelname)-7s [%(stage)s] %(name)s: %(message)s", datefmt=None))
         root.addHandler(h)
         if root.level == logging.NOTSET or root.level > logging.INFO:
             root.setLevel(logging.INFO)

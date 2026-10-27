@@ -249,9 +249,9 @@ class LoopConfig(BaseModel):
         "jdk21": PhaseLoopConfig(goal="compile", max_iterations=3, enabled=False),
         "spring": PhaseLoopConfig(goal="test-compile", max_iterations=6, enabled=False),
         "restructure": PhaseLoopConfig(goal="package", max_iterations=6, enabled=False),
-        "verify": PhaseLoopConfig(goal="package", max_iterations=12),
+        "verify": PhaseLoopConfig(goal="package", max_iterations=50),   # v2.1: "라운드(빌드) 50회"
     })
-    max_llm_calls: int = 100
+    max_llm_calls: int = 0                   # 0 = no limit on LLM calls (v2.1); > 0 = a hard cap per project
     max_total_minutes: int = 240
     stall_limit: int = 2                     # identical error multiset N times → escalate strategy
     max_clusters_per_iteration: int = 8
@@ -351,6 +351,13 @@ class ScriptConfig(BaseModel):
     reuse_versions: int = 1                  # stored versions tried per case and run before the LLM is asked
     max_augments_per_case: int = 3           # LLM extensions per case and run; then the case is BLOCKED
                                              # (repeated_failure) and handed over
+
+
+class ErrorsConfig(BaseModel):
+    """v2.1 error list (docs/v2/PLAN-v2.1.md §3.3): <run dir>/errors.jsonl + errors.md, appended to <kb>/errors.jsonl."""
+    diff_chars: int = 6000                   # cap of a try's stored diff (0 = no cap); the full diff is in changes.patch
+    raw_chars: int = 600                     # cap of an entry's raw error block
+    md_view: bool = True                     # write <run dir>/errors.md and <kb>/cases.md
 
 
 class ReviewConfig(BaseModel):
@@ -463,6 +470,7 @@ class Config(BaseModel):
     fix: FixConfig = Field(default_factory=FixConfig)
     script: ScriptConfig = Field(default_factory=ScriptConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
+    errors: ErrorsConfig = Field(default_factory=ErrorsConfig)
     kb: KBConfig = Field(default_factory=KBConfig)
     plan: PlanConfig = Field(default_factory=PlanConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)

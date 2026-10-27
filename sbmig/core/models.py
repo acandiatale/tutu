@@ -719,16 +719,129 @@ class ScriptBase(BaseModel):
     history: list[str] = Field(default_factory=list)             # earlier versions: "v1: 2 ok / 1 failed — <failure>"
 
 
+EditOp = Literal["replace", "write", "create", "delete", "move", "pom"]
+
+
+class Edit(BaseModel):
+    """One direct modification the LLM asked for (`<edits>` JSON, v2.1): applied by sbmig through the script helper
+    API (project folder only, same guard as a fix script) — "LLM 이 직접 수정". `pom` edits carry the editor call in
+    `pom` (`{"add_dependency": {"group_id": …, "artifact_id": …, "version": null}}`, `set_property`, …)."""
+    op: EditOp
+    path: str
+    old: str = ""                                  # replace: exact text to replace (count = -1 → every occurrence)
+    new: str = ""
+    count: int = -1
+    content: str = ""                              # write / create
+    to: str = ""                                   # move
+    pom: dict[str, Any] = Field(default_factory=dict)
+
+
 class ScriptProposal(BaseModel):
-    """The fixer's answer to a script request (ScriptFixerLike.propose_script)."""
+    """The fixer's answer (FixerLike.propose_script). v2.1 (2026-10-27): 원인 `analysis` · 해결 방법 `solution` ·
+    수정 `edits` (applied directly) · 스크립트 `code` (stored for reuse); `no_script_reason` when the LLM says the
+    fix cannot be a reusable script (then `edits` is the fix)."""
     code: str = ""                                 # the <script> body (must define `def fix(p)`); "" = no script
     analysis: str = ""
+    solution: str = ""
+    edits: list[Edit] = Field(default_factory=list)
+    no_script_reason: str = ""
     model: str = ""
     prompt_hash: str = ""
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
     requested_files: list[str] = Field(default_factory=list)
     raw_response: str = ""
     error: str = ""                                # why there is no script (unparsable answer, transport, refusal)
+
+
+FixAnswer = ScriptProposal                      # the v2.1 name
+
+
+# ---------------------------------------------------------------------------
+# v2.1 error list (2026-10-27, docs/v2/PLAN-v2.1.md §3.3): ONE record per build error / pom correction of a run —
+# <run dir>/errors.jsonl, appended to <kb>/errors.jsonl at the end; what it was, every try with the LLM's answer and
+# the applied diff, how it ended. Replaces ErrorCaseRecord / FixAttemptRecord / the case catalog / reviews.jsonl.
+# ---------------------------------------------------------------------------
+EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved", "note"]
+# open = still in the last build; pom-verify = a restructure pom correction the next build verifies; note = a review
+# warning / informational entry (never fixed)
+TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review"]
+# kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
+# extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
+# structure review's own fix
+TryApplied = Literal["script", "edits", "none"]
+
+
+class FixTry(BaseModel):
+    n: int                                         # 1, 2, … within the entry's case and run
+    round: int = 0                                 # fix round (0 = review)
+    source: TrySource
+    script_version: int = 0                        # stored version run / created (0 = none)
+    analysis: str = ""                             # 원인
+    solution: str = ""                             # 해결 방법
+    no_script_reason: str = ""
+    applied: TryApplied = "none"
+    files: list[str] = Field(default_factory=list)
+    diff: str = ""                                 # unified diff of what was applied (capped by errors.diff_chars)
+    commit: str = ""
+    result: AttemptOutcome = "pending"
+    note: str = ""                                 # failure text, rollback, script error …
+    llm_calls: int = 0
+    seconds: float = 0.0
+
+
+class ErrorEntry(BaseModel):
+    id: str                                        # sha1(run_id | case_id | file | line | message)[:12]
+    run_id: str = ""
+    project: str = ""
+    case_id: str = ""                              # sha1(l2)[:10] — the KB case (cases/<case_id>/)
+    l2: str = ""                                   # signature_generic
+    kind: ErrorKind = ErrorKind.UNKNOWN
+    file: Optional[str] = None
+    line: Optional[int] = None
+    module: Optional[str] = None
+    message: str = ""
+    raw: str = ""                                  # ≤ 600 chars
+    seen: str = ""                                 # compile | restructure | review | build | fix r3
+    status: EntryStatus = "open"
+    tries: list[FixTry] = Field(default_factory=list)
+    resolved: str = ""                             # "r3 try 2" | "build" (gone without a try) | "review"
+    script: str = ""                               # cases/<case_id>/fix_v2.py — the script that resolved it
+    note: str = ""                                 # pom-verify: what the restructure did; note entries: the text
+    at: datetime = Field(default_factory=utcnow)
+
+
+CaseScriptStatus = Literal["unverified", "proven", "retired"]
+# unverified = stored from an answer whose edits fixed this project (or run here once); proven = resolved the case in
+# another project on reuse; retired = a person switched it off (`sbmig kb cases retire`)
+
+
+class CaseScript(BaseModel):
+    version: int
+    file: str                                      # fix_v<N>.py (relative to the case folder)
+    status: CaseScriptStatus = "unverified"
+    source: TrySource = "llm-new"
+    created_by: str = ""                           # run_id
+    project: str = ""
+    successes: int = 0
+    failures: int = 0
+    projects: list[str] = Field(default_factory=list)    # distinct projects it resolved the case in
+    last_result: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class CaseInfo(BaseModel):
+    """<kb>/cases/<case_id>/case.json — the case (L2) and its scripts."""
+    case_id: str
+    l2: str = ""
+    name: str = ""                                 # e.g. "package jakarta.xml.bind does not exist"
+    kind: ErrorKind = ErrorKind.UNKNOWN
+    projects: list[str] = Field(default_factory=list)
+    seen: int = 0                                  # entries over all runs
+    resolved: int = 0
+    scripts: list[CaseScript] = Field(default_factory=list)
+    last_analysis: str = ""
+    last_solution: str = ""
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 class ReviewIssue(BaseModel):
@@ -1357,6 +1470,7 @@ class RunReport(BaseModel):
     error_cases: list[ErrorCaseRecord] = Field(default_factory=list)
     error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count
     structure_review: Optional[StructureReview] = None           # v2: LLM review of poms / modules before the first build
+    error_entries: list[ErrorEntry] = Field(default_factory=list)    # v2.1: the run's error list (diffs capped)
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
 

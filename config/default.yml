@@ -116,8 +116,8 @@ loop:
     jdk21:       { goal: compile,      max_iterations: 3, enabled: false }
     spring:      { goal: test-compile, max_iterations: 6, enabled: false }
     restructure: { goal: package,      max_iterations: 6, enabled: false }
-    verify:      { goal: package,      max_iterations: 12 }  # the script fix loop (one build per round)
-  max_llm_calls: 100
+    verify:      { goal: package,      max_iterations: 50 }  # the fix loop: one build per round ("라운드 50회", v2.1)
+  max_llm_calls: 0                 # 0 = no limit on LLM calls (v2.1); > 0 = hard cap per project
   max_total_minutes: 240
   stall_limit: 2
   max_clusters_per_iteration: 8
@@ -182,6 +182,11 @@ script:                            # v2 fix scripts (docs/v2/PLAN-v2.md §3.2): 
   reuse: true                      # case seen before → its best stored version runs first, without an LLM call
   reuse_versions: 1
   max_augments_per_case: 3         # LLM extensions per case and run, then BLOCKED (repeated_failure) → Handover
+
+errors:                            # v2.1 error list: <run dir>/errors.jsonl + errors.md, appended to <kb>/errors.jsonl
+  diff_chars: 6000                 # cap of a try's stored diff (the full diff is in changes.patch)
+  raw_chars: 600
+  md_view: true
 
 review:                            # v2 structure review: the LLM checks poms / dependencies / modules after the restructure
   enabled: true

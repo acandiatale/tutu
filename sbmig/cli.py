@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextvars
+
+from sbmig.core.stage import stage_formatter
 import json
 import logging
 import os
@@ -20,7 +22,7 @@ log = logging.getLogger("sbmig.cli")
 ConfigOpt = typer.Option(None, "--config", "-c", help="extra config yml (repeatable; later wins)")
 
 
-LOG_FILE_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+LOG_FILE_FORMAT = "%(asctime)s %(levelname)-7s [%(stage)s] %(name)s: %(message)s"   # v2.1: the pipeline stage
 
 
 from sbmig.core.diag import dump_threads, install_thread_dump_signal  # noqa: E402,F401 - re-exported
@@ -71,7 +73,9 @@ def setup_logging(verbose: bool = False) -> None:
     root = logging.getLogger("sbmig")
     root.setLevel(logging.DEBUG)                       # handlers filter: console INFO (or DEBUG), file always DEBUG
     if not any(isinstance(h, RichHandler) for h in root.handlers):
-        root.addHandler(RichHandler(rich_tracebacks=True, show_path=False, markup=False))
+        h = RichHandler(rich_tracebacks=True, show_path=False, markup=False, show_time=True, show_level=True)
+        h.setFormatter(stage_formatter("[%(stage)s] %(message)s", datefmt=None))   # v2.1: the pipeline stage
+        root.addHandler(h)
     for h in root.handlers:
         if isinstance(h, RichHandler):
             h.setLevel(level)
@@ -116,7 +120,7 @@ def attach_file_log(path: Path, thread_id: Optional[int] = None, level: int = lo
         root.setLevel(logging.DEBUG)
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setLevel(level)
-    fh.setFormatter(logging.Formatter(LOG_FILE_FORMAT))
+    fh.setFormatter(stage_formatter(LOG_FILE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     fh.sbmig_thread = thread_id  # type: ignore[attr-defined]
     if thread_id is not None:
         fh.addFilter(_ThreadFilter(thread_id))
