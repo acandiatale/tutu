@@ -16,7 +16,7 @@
   "expect": {
     "success": false,
     "exit_code": 2,
-    "max_llm_calls": 13,
+    "max_llm_calls": 11,
     "blocked": [
       {
         "reason": "repeated_failure"
@@ -46,7 +46,7 @@
     },
     "scripts": {
       "attempts": {
-        "new": 12,
+        "new": 9,
         "augment": 0,
         "reuse": 0
       },
@@ -56,16 +56,14 @@
           "modes": [
             "new",
             "new",
-            "new",
             "new"
           ],
           "versions": [
             0,
             0,
-            0,
             0
           ],
-          "llm_calls": 4
+          "llm_calls": 3
         }
       ]
     },

@@ -70,12 +70,12 @@
           "l2": "compile|cannot_find_symbol|clientIp",
           "version": 1,
           "parent": null,
-          "partials_min": 1,
           "successes_max": 0,
           "last_outcome": "partial",
           "code_contains": [
             "LegacyRequestHelper.clientIp(request)"
-          ]
+          ],
+          "status": "active"
         },
         {
           "l2": "compile|cannot_find_symbol|clientIp",
