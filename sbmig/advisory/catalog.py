@@ -1,7 +1,9 @@
 """Advisory catalog: `knowledge/libraries/advisories.yml` (+ `advisories.extra_files`), merged by id.
 
 File schema (version 1): `{version: 1, advisories: [LibraryAdvisory …]}` — see `sbmig.core.models.LibraryAdvisory`
-and docs/ADVISORIES.md. Later files win per id (company overrides); missing files are ignored (logged at info).
+and docs/ADVISORIES.md. Advisories are guide-only (LLM hints + Handover): an entry names the library / artifacts, the
+replacement and the follow-up; it never runs a recipe (a `policy` / `recipes` key left in a company file is ignored).
+Later files win per id (company overrides); missing files are ignored (logged at info).
 """
 from __future__ import annotations
 
@@ -94,12 +96,6 @@ class AdvisoryCatalog:
     def ids(self) -> list[str]:
         return list(self._by_id)
 
-    def recipe_ids(self) -> list[str]:
-        out: list[str] = []
-        for e in self._by_id.values():
-            out += [r for r in e.recipes if r not in out]
-        return out
-
     def __contains__(self, advisory_id: object) -> bool:
         return advisory_id in self._by_id
 
@@ -110,13 +106,12 @@ class AdvisoryCatalog:
         return len(self._by_id)
 
     # ---- validation ----------------------------------------------------
-    def check(self, cfg: Config, recipe_catalog: Any = None) -> list[str]:
-        """Problems ([] = consistent): unknown library, recipe policy without recipes, recipes missing from the
-        recipe catalog or whose artifact is not configured, duplicate ids, bad applies_to values."""
+    def check(self, cfg: Config) -> list[str]:
+        """Problems ([] = consistent): unknown library, bad artifact patterns, missing notes files, duplicate ids,
+        bad applies_to values."""
         from sbmig.analyze.libraries import LIBRARY_NAMES
 
         problems = list(self.load_problems)
-        rcat = recipe_catalog if recipe_catalog is not None else _recipe_catalog(cfg)
         for e in self._by_id.values():
             if e.library is None and not e.artifacts:
                 problems.append(f"advisory {e.id}: needs a library or artifacts")
@@ -126,38 +121,9 @@ class AdvisoryCatalog:
             for a in e.artifacts:
                 if a.count(":") != 1:
                     problems.append(f"advisory {e.id}: artifact pattern {a!r} must be 'group:artifact-glob'")
-            if e.policy == "recipe" and not e.recipes:
-                problems.append(f"advisory {e.id}: policy recipe without recipes")
-            for rid in e.recipes:
-                why = recipe_unavailable(rid, cfg, rcat)
-                if why:
-                    problems.append(f"advisory {e.id}: recipe {rid} {why}")
+            if e.notes and not cfg.resolve_path(e.notes).is_file():
+                problems.append(f"advisory {e.id}: notes file {e.notes} does not exist")
         return problems
-
-
-def _recipe_catalog(cfg: Optional[Config]) -> Any:
-    from sbmig.plan.catalog import default_catalog
-
-    return default_catalog(cfg)
-
-
-def recipe_unavailable(recipe_id: str, cfg: Optional[Config], recipe_catalog: Any = None) -> Optional[str]:
-    """None when the recipe can run (in the recipe catalog, artifact configured / provided / core), else why not."""
-    from sbmig.plan.catalog import CORE_GROUP
-
-    rcat = recipe_catalog if recipe_catalog is not None else _recipe_catalog(cfg)
-    entry = rcat.get(recipe_id) if rcat is not None else None
-    if entry is None:
-        return "is not in the recipe catalog"
-    if entry.origin == "project":
-        return None if entry.file else "is a project recipe without file"
-    art = entry.artifact
-    if not art or art.startswith(CORE_GROUP):
-        return None
-    configured = set(cfg.openrewrite.recipe_artifacts) if cfg is not None else set()
-    if art in configured or (entry.provided_by or "") in configured:
-        return None
-    return f"artifact {art} is not in openrewrite.recipe_artifacts"
 
 
 def load_advisories(cfg: Config) -> AdvisoryCatalog:

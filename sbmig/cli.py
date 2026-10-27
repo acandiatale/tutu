@@ -512,9 +512,8 @@ def analyze(input: Path = typer.Argument(..., exists=True), config: Optional[Lis
         log.warning("advisories unavailable: %s", e)
         findings = []
     for f in findings:
-        rec = f" (recipe: {', '.join(f.recipes)})" if f.recipes else ""
-        typer.echo(f"  advisory [{f.policy}] {f.advisory_id}@{f.detected_version or '?'} — {f.title}"
-                   f"{' → ' + f.replacement if f.replacement else ''}{rec}")
+        typer.echo(f"  advisory {f.advisory_id}@{f.detected_version or '?'} — {f.title}"
+                   f"{' → ' + f.replacement if f.replacement else ''}")
 
 
 @app.command()
@@ -527,13 +526,7 @@ def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[P
     cfg = _load(config)
     ws = _view_workspace(input, prefix="plan")
     profile = analyze_project(ws, cfg)
-    kb = None
-    try:
-        from sbmig.kb import FileKnowledgeBase
-        kb = FileKnowledgeBase(cfg)
-    except Exception as e:
-        log.info("planning without KB: %s", e)
-    p = build_plan(profile, cfg, kb)
+    p = build_plan(profile, cfg)
     if as_json:
         typer.echo(p.model_dump_json(indent=2))
         return
@@ -767,8 +760,7 @@ def _mount(module: str, attr: str, name: str, help_text: str) -> None:
 
 
 _mount("sbmig.kb", "kb_cli", "kb",
-       "knowledge base: list | show | promote | reject | reindex | ledger | symbols | learning | errors | export | "
-       "import")
+       "knowledge base: errors | cases | scripts | reviews | reindex | stats | validate | export | import")
 _mount("sbmig.plan.catalog_cli", "recipes_cli", "recipes",
        "recipe catalog (knowledge/recipes/catalog.yml): list | show | check | sets")
 _mount("sbmig.fleet.cli", "fleet_cli", "fleet",

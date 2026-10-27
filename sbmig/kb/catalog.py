@@ -3,7 +3,7 @@
 The error-case events (``kb/errors.jsonl``, ``kb/fix_attempts.jsonl``, see :mod:`sbmig.kb.error_cases`) record every
 build error of every run. The catalog folds them into one case per L2 signature (the case key; variants by the owner
 class / L1) so people can browse "what is this error, how was it fixed, what failed before", edit it, and so that a
-hit applies the case's logic automatically. See docs/INTERFACES.md "Case catalog".
+hit re-runs the case's best fix script. See docs/INTERFACES.md "Case catalog".
 
 Files (under the KB root)::
 
@@ -19,37 +19,29 @@ Rules:
   its records in file order. The ``human:`` block is never written by the KB: its text (comments included) is kept
   verbatim as long as it parses to the same values; a ``set_human`` / ``sbmig kb cases …`` edit re-renders it
   (comments inside the block are then lost). An invalid ``human:`` block is kept as it is and ignored (warning).
-* Reads are cached per process (index by its stat stamp, each case file by its own stamp), so the triage handler can
-  create a ``CaseCatalog`` per cluster and a fleet of 500 projects never re-parses an unchanged file.
+* Reads are cached per process (index by its stat stamp, each case file by its own stamp), so a fleet of 500
+  projects never re-parses an unchanged file.
 * File-based on purpose (invariant 3); every write is atomic and runs under the KB lock (``<kb>/.lock``,
   :mod:`sbmig.kb.lock`); ``update_from`` never raises.
 
 Round 10 (2026-10-26):
 * evidence: a failure is counted per error record from ITS attempts — an attempt that resolved that error (in its
   ``resolution_attempts`` / ``resolved_by``) or ended ``partial`` / ``inconclusive`` is never a failure for it;
-* the learned replace action is the pair set fixed in the most distinct PROJECTS (then records); the handler
-  ``case-replace`` reports ``resolver_id = "case-replace:<case id>:<pair-set hash>"`` (:func:`pairset_hash`), so a
-  pair set's successes / failures stay with that pair set (a plain ``case-replace`` of older records counts for the
-  top-ranked set); a set falls back once ``failures ≥ 2 and failures > successes`` (the next set is tried, then
-  patch / hint) and is promoted to ``active`` after ``kb.auto_promote_after_projects`` projects without a failure;
 * ``kb/audit.jsonl``: every human edit (``sbmig kb cases …``: who, when, case, before → after) and every automatic
-  status / action transition (observed → candidate → active, fallen back) with the evidence counts;
-* a hit whose action comes from the human block is ``CaseHit.pinned`` (triage obeys it); a rejected case also stops
-  the KB patch replay / KB recipes / symbol hints of its L2 (:meth:`CaseCatalog.rejected_signatures`);
+  status / action transition (observed → candidate → active) with the evidence counts;
+* a hit whose action comes from the human block is ``CaseHit.pinned`` (triage obeys a pinned ``block``);
 * ``errors.jsonl`` lines that cannot be validated are counted, warned about and noted in ``kb/quarantine.jsonl``;
   ``rebuild`` never deletes a case file whose L2 had such lines.
 
-v2 (flow-v2, 2026-10-26; docs/v2/PLAN-v2.md §3.4):
+v2 (flow-v2, 2026-10-26; docs/v2/PLAN-v2.md §3.4; PLAN-v2 step 4 removed the v1 actions recipe / replace / patch):
 * every build error is fixed by an LLM-written fix script stored per case (:mod:`sbmig.kb.scripts`,
   ``kb/scripts/<case id>/v<N>.py``); script attempts (fix methods ``script`` / ``script_reuse`` / ``script_augment``,
   resolver ``script:<case id>:v<N>``) are grouped in ``evidence.fixes`` per script version (method ``script``) and in
   ``evidence.failures`` per method;
 * the auto action is ``script`` with ``script_version`` = the best proven version of the store (most success
   projects, then successes − failures, then the newest) — candidate, active after ``kb.auto_promote_after_projects``
-  projects without a failure of that version; the v1 actions are computed only when their v1 switches are on:
-  ``recipe`` (``kb.use_active_recipes``), ``replace`` (``kb.case_replace``), ``patch`` (``kb.use_patch_replay``), so
-  the v2 defaults give ``script`` or ``hint`` (``block`` / ``handler`` still only from a person); a pinned
-  ``{kind: script, script_version: N}`` must name a stored, not quarantined version;
+  projects without a failure of that version; otherwise ``hint`` (observed). A person may pin ``block`` or
+  ``{kind: script, script_version: N}`` (a stored, not quarantined version) in the human block;
 * the views get the columns ``scripts`` (stored versions) and ``best_script`` (what a reuse would run first).
 """
 from __future__ import annotations
@@ -70,7 +62,6 @@ from typing import Any, Iterable, Iterator, Optional, Union
 import yaml
 
 from sbmig import __version__ as AGENT_VERSION
-from sbmig.core.config import KBConfig
 from sbmig.core.models import (
     KB_RECORD_SCHEMA,
     BuildError,
@@ -99,7 +90,6 @@ from .error_cases import (
     _write_csv,
     failed_refs,
 )
-from .harvest import NO_REPLAY_TAG
 from .jsonl import append_lines, lenient_fields, line_hash, parse_record, quarantine
 from .labels import symbol_for_error
 from .lock import kb_lock
@@ -112,17 +102,15 @@ INDEX_VERSION = 1
 CATALOG_DIR = "catalog"
 VIEWS_DIR = "views"
 AUDIT_FILE = "audit.jsonl"
-CASE_REPLACE = "case-replace"           # the triage handler applying a case's replace action
-FALLBACK_MIN_FAILURES = 2               # a replace pair set falls back at ≥ 2 failures and more failures than successes
 STATUS_RANK = {"rejected": -1, "observed": 0, "candidate": 1, "active": 2}
 MAX_VARIANTS = 50
 MAX_FIXES = 5
 MAX_FAILURES = 5
 MAX_TIMELINE = 20
 MAX_HIT_HINTS = 3
-MAX_PATCH_CASES = 5
 DESCRIPTION_LIMIT = 300
 DEFAULT_PROMOTE_AFTER = 2
+PIN_KINDS = ("script", "hint", "block")    # actions a person can pin (v2; the v1 recipe / replace / patch are gone)
 _CACHE_LIMIT = 20000                    # parsed case files kept per process (a fleet KB has a few thousand)
 
 GENERATED_MARK = "# ---- generated by sbmig: everything below is recomputed — do not edit below this line ----"
@@ -173,7 +161,6 @@ def _str_representer(dumper: Any, value: str) -> Any:
 _Dumper.add_representer(str, _str_representer)
 
 # process-wide caches: str(path) → (stamp, value); the stamp includes the inode, so an atomic replace always reloads
-_KB_DEFAULTS = KBConfig()
 _INDEX_CACHE: dict[str, tuple[Any, dict[str, Any]]] = {}
 _FILE_CACHE: dict[str, tuple[Any, _Loaded]] = {}
 _WARNED_LINES: set[str] = set()         # hashes of unreadable errors.jsonl lines already warned about
@@ -228,76 +215,6 @@ def _owner_label(owner: str) -> str:
     return last if last[:1].isupper() else owner
 
 
-def _valid_pair(old: str, new: str) -> bool:
-    return (bool(old) and old != new and MASK not in old and MASK not in (new or "") and "\n" not in old
-            and "\r" not in old)
-
-
-def pairset_hash(pairs: Iterable[Any]) -> str:
-    """8 hex chars identifying a replace pair set, independent of order and duplicates: sha1 of the sorted unique
-    ``old<TAB>new`` lines. ``pairs``: ReplacePair objects or (old, new) tuples; invalid pairs (empty / equal / with a
-    newline) are left out — exactly the pairs handler ``case-replace`` can apply."""
-    lines: set[str] = set()
-    for p in pairs or []:
-        old, new = (p.old, p.new) if hasattr(p, "old") else (p[0], p[1])
-        new = new or ""
-        if old and old != new and "\n" not in old and "\r" not in old:
-            lines.add(f"{old}\t{new}")
-    return hashlib.sha1("\n".join(sorted(lines)).encode("utf-8")).hexdigest()[:8]
-
-
-def case_replace_resolver(case_id: str, pairs: Iterable[Any]) -> str:
-    """The ``resolver_id`` handler ``case-replace`` reports for one applied case: ``case-replace:<id>:<hash>``."""
-    return f"{CASE_REPLACE}:{case_id}:{pairset_hash(pairs)}"
-
-
-RESOLVER_NOTE = "resolver: "            # a handler note "resolver: case-replace:<id>:<hash>" sets the attempt's resolver
-_RESOLVER_NOTE_RE = re.compile(r"^resolver: (case-replace(?::[0-9a-f]*(?::[0-9a-f]*)?)?)\s*$")
-
-
-def case_replace_note(case_id: str, pairs: Iterable[Any]) -> str:
-    """The note handler ``case-replace`` adds (``self.note(...)``) for every case it applied; the error tracker
-    turns these notes into the attempt's ``resolver_id`` (comma-joined when several cases were applied)."""
-    return RESOLVER_NOTE + case_replace_resolver(case_id, pairs)
-
-
-def resolver_from_notes(notes: Iterable[str]) -> str:
-    """``case-replace:<id>:<hash>[,…]`` from an attempt's notes, "" when there is none."""
-    found: list[str] = []
-    for n in notes or []:
-        m = _RESOLVER_NOTE_RE.match(str(n))
-        if m and m.group(1) not in found:
-            found.append(m.group(1))
-    return ",".join(found)
-
-
-def parse_case_replace_resolver(resolver_id: Optional[str]) -> list[tuple[str, str]]:
-    """(case id, pair-set hash) of every case-replace part of a resolver id (comma-separated when one attempt
-    applied several cases); a plain ``case-replace`` (records before round 10) gives ("", "")."""
-    out: list[tuple[str, str]] = []
-    for part in (resolver_id or "").split(","):
-        part = part.strip()
-        if part != CASE_REPLACE and not part.startswith(CASE_REPLACE + ":"):
-            continue
-        _, _, rest = part.partition(":")
-        cid, _, h = rest.partition(":")
-        out.append((cid, h))
-    return out
-
-
-def _cr_hash(resolver_id: Optional[str], case_id: str) -> Optional[str]:
-    """The pair-set hash a case-replace resolver id carries for THIS case ('' = unknown / legacy), None when it is
-    not a case-replace of this case."""
-    found: Optional[str] = None
-    for cid, h in parse_case_replace_resolver(resolver_id):
-        if cid and cid != case_id:
-            continue
-        if h:
-            return h
-        found = ""
-    return found
-
-
 def _who() -> str:
     try:
         return getpass.getuser() or "unknown"
@@ -316,25 +233,16 @@ def pairs_text(pairs: Iterable[ReplacePair], sep: str = ", ") -> str:
 def action_text(action: CaseAction) -> str:
     """One-line description of an action (views, CLI)."""
     k = action.kind
-    if k == "replace":
-        return "replace " + pairs_text(action.replace_pairs) + (" (whole file)" if action.replace_scope == "file"
-                                                                  else "")
-    if k == "recipe":
-        return "recipe " + (", ".join(action.recipe_ids) or "?")
-    if k == "patch":
-        return "patch " + (", ".join(action.patch_case_ids) or "?")
-    if k == "handler":
-        return "handler " + (action.handler_id or "?")
     if k == "script":
         return f"script v{action.script_version}" if action.script_version > 0 else "script ?"
     if k == "block":
         out = "block" + (f" ({action.block_reason})" if action.block_reason else "")
         return out + (f": {action.suggestion}" if action.suggestion else "")
-    return "hint"
+    return str(k or "hint")
 
 
 def fix_hint(f: CaseFix) -> str:
-    """Same wording as the error hints (``sbmig.kb.error_cases._entry_lines``)."""
+    """The most common past fix of a case as one hint line for the fix LLM."""
     who = " ".join(x for x in (f.method, f.resolver_id) if x)
     body = f"past runs: fixed by {who} in {f.projects} project(s)"
     if f.description:
@@ -528,28 +436,13 @@ def _index_put(idx: dict[str, Any], case: CatalogCase, rel: str) -> None:
             ids.sort()
 
 
-# --------------------------------------------------------------------------- context (recipes, patch cases)
+# --------------------------------------------------------------------------- context (fix scripts)
 class _Context:
-    """KB recipes and patch cases (read once per update / rebuild through the store's API — only when their v1
-    switch is on) and the fix-script store (v2)."""
+    """The fix-script store of one update / rebuild (each case's versions read once)."""
 
     def __init__(self, cat: CaseCatalog):
-        self.recipes: list[Any] = []
-        self.l2_cases: dict[str, list[str]] = {}
-        self._cases: dict[str, Any] = {}
         self.scripts = ScriptStore(cat.root, cat.cfg, lock_timeout=cat.lock_timeout)
         self._script_versions: dict[str, list[Any]] = {}
-        self._kb = cat.kb() if (cat.flag("use_active_recipes") or cat.flag("use_patch_replay")) else None
-        if cat.flag("use_active_recipes"):
-            try:
-                self.recipes = [r for r in self._kb.list_recipes() if r.status in ("active", "candidate")]
-            except Exception as e:
-                log.warning("case catalog: KB recipes unreadable: %s: %s", type(e).__name__, e)
-        if cat.flag("use_patch_replay"):
-            try:
-                self.l2_cases = self._load_l2_cases(cat.root)
-            except Exception as e:
-                log.warning("case catalog: KB case index unreadable: %s: %s", type(e).__name__, e)
 
     def script_versions(self, case_id: str) -> list[Any]:
         """The stored fix-script versions of a case (ScriptMeta, oldest first; cached for this update)."""
@@ -566,71 +459,24 @@ class _Context:
         ranked = rank_with_pin(self.script_versions(case_id))
         return ranked[0] if ranked else None
 
-    def _load_l2_cases(self, root: Path) -> dict[str, list[str]]:
-        # read index.json directly: the store's _load_index may call reindex, which rebuilds this catalog
-        p = root / "index.json"
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and isinstance(data.get("l2"), dict):
-                    return {k: list(v) for k, v in data["l2"].items() if isinstance(v, list)}
-            except (OSError, ValueError):
-                pass
-        out: dict[str, list[str]] = {}
-        for c in self._kb.iter_cases() or []:
-            self._cases[c.id] = c
-            for s in c.signatures_generic:
-                out.setdefault(s, []).append(c.id)
-        return out
-
-    def recipes_for(self, l2: str, l1s: set[str]) -> list[Any]:
-        sigs = {l2} | l1s
-        hits = [r for r in self.recipes if sigs.intersection(r.signatures)]
-        return [r for r in hits if r.status == "active"] + [r for r in hits if r.status != "active"]
-
-    def patch_ids(self, l2: str) -> list[str]:
-        out: list[str] = []
-        for cid in self.l2_cases.get(l2, []):
-            if cid not in self._cases:
-                try:
-                    self._cases[cid] = self._kb.get_case(cid)
-                except Exception:
-                    self._cases[cid] = None
-            c = self._cases[cid]
-            if c is not None and c.fix_kind == "llm_patch" and c.changes and c.outcome in ("improved", "build_ok") \
-                    and NO_REPLAY_TAG not in c.tags:
-                out.append(c.id)
-            if len(out) >= MAX_PATCH_CASES:
-                break
-        return out
-
 
 # --------------------------------------------------------------------------- the catalog
 class CaseCatalog:
-    """``kb/catalog/`` + ``kb/views/`` (see the module doc). ``kb`` (optional): the FileKnowledgeBase whose recipes /
-    patch cases feed the actions; by default one is opened on ``kb_dir``."""
+    """``kb/catalog/`` + ``kb/views/`` (see the module doc); ``cfg`` (optional) gives ``kb.auto_promote_after_projects``
+    and ``kb.lock_timeout_seconds``."""
 
-    def __init__(self, kb_dir: Union[str, Path], cfg: Any = None, *, kb: Any = None):
+    def __init__(self, kb_dir: Union[str, Path], cfg: Any = None):
         self.root = Path(kb_dir)
         self.cfg = cfg
-        self._kb = kb
         kbc = getattr(cfg, "kb", None)
         self.promote_after = int(getattr(kbc, "auto_promote_after_projects", DEFAULT_PROMOTE_AFTER))
-        self.replace_scope = getattr(kbc, "case_replace_scope", "error-lines") or "error-lines"
         self.lock_timeout = getattr(kbc, "lock_timeout_seconds", None)
         self.bad_lines: list[dict[str, Any]] = []        # unreadable errors.jsonl lines of the last iter_records
-        self._fallen: dict[str, str] = {}               # case id → why its replace action fell back (compute)
         self._audit: list[dict[str, Any]] = []          # transitions not yet written to kb/audit.jsonl
 
     def lock(self):
         """The cross-process KB lock (``<kb>/.lock``) around a write."""
         return kb_lock(self.root, self.lock_timeout)
-
-    def flag(self, name: str) -> bool:
-        """A ``kb.*`` switch of the config (read at use time); without a config the KBConfig default (v2: the v1
-        actions recipe / replace / patch are off)."""
-        kbc = getattr(self.cfg, "kb", None)
-        return bool(getattr(kbc, name, getattr(_KB_DEFAULTS, name, False)))
 
     def scripts(self) -> ScriptStore:
         """The fix-script store of this KB (``kb/scripts/``, v2)."""
@@ -656,13 +502,6 @@ class CaseCatalog:
     @property
     def errors_path(self) -> Path:
         return self.root / "errors.jsonl"
-
-    def kb(self) -> Any:
-        if self._kb is None:
-            from .store import FileKnowledgeBase  # store imports this module
-
-            self._kb = FileKnowledgeBase(self.cfg, kb_dir=self.root)
-        return self._kb
 
     def rel_path(self, case: CatalogCase) -> str:
         kind = case.error_kind.value if isinstance(case.error_kind, ErrorKind) else str(case.error_kind)
@@ -848,25 +687,6 @@ class CaseCatalog:
         owner = owner_of(e.location)
         return owner if owner and any(v.owner == owner for v in c.variants) else ""
 
-    def rejected_signatures(self, signatures: Iterable[str]) -> set[str]:
-        """The given L1 / L2 signatures whose case a person rejected (``sbmig kb cases reject``): the KB match
-        then skips their patch replay, KB recipes and symbol hints too. Never raises."""
-        out: set[str] = set()
-        try:
-            idx = self._index()
-            if not idx["cases"]:
-                return out
-            for s in signatures or []:
-                cid = idx["by_l2"].get(s) or idx["by_l1"].get(s) if s else None
-                if not cid:
-                    continue
-                c = self._case(cid)
-                if c is not None and c.effective_status() == "rejected":
-                    out.add(s)
-        except Exception as ex:  # noqa: BLE001 - best effort, like match
-            log.warning("case catalog rejected lookup failed: %s: %s", type(ex).__name__, ex)
-        return out
-
     # ------------------------------------------------------------------ events
     def _events_exist(self) -> bool:
         st = _stamp(self.errors_path)
@@ -941,9 +761,8 @@ class CaseCatalog:
 
         variants = self._variants(records)
         cid = case_id_for(l2)
-        ev, cr_stats = self._evidence(records, cid)
-        l1s = {r.signature for r in records if r.signature} | {v.signature for v in variants if v.signature}
-        action, status = self._action(l2, l1s, records, ev, ctx, cr_stats, cid)
+        ev = self._evidence(records)
+        action, status = self._action(ctx, cid)
         hints = ([fix_hint(ev.fixes[0])] if ev.fixes else []) + ([failure_hint(ev.failures[0])] if ev.failures
                                                                    else [])
         best = ctx.best_script(cid) if action.kind == "script" else None
@@ -975,9 +794,9 @@ class CaseCatalog:
         out.sort(key=lambda v: (-v.seen, -v.projects))             # stable: ties keep the first-seen order
         return out[:MAX_VARIANTS]
 
-    def _evidence(self, records: list[ErrorCaseRecord], case_id: str = "") -> tuple[CaseEvidence, dict[str, Any]]:
-        """The evidence + per pair-set stats of the case's own replace action (handler ``case-replace``):
-        {pair-set hash ('' = a plain legacy resolver id): {"succ", "fail", "pk": [project keys of the successes]}}."""
+    def _evidence(self, records: list[ErrorCaseRecord]) -> CaseEvidence:
+        """Seen / projects / runs, the fixes (one row per method + resolver + pair set; script attempts per version),
+        the failures (per method + outcome + normalized failure text) and the timeline of the case's records."""
         pks: list[str] = []
         runs: set[str] = set()
         for r in records:
@@ -990,7 +809,6 @@ class CaseCatalog:
 
         fixes: dict[tuple, dict[str, Any]] = {}
         failures: dict[tuple, dict[str, Any]] = {}
-        cr: dict[str, dict[str, Any]] = {}
         for r in records:
             pk = _project_key(r)
             if r.status == "resolved" and r.fix_method != "none" \
@@ -1013,20 +831,6 @@ class CaseCatalog:
                 if pk:
                     g["pk"].add(pk)
                 g["latest"] = (ref, r)
-            # the case's own replace action (handler case-replace), per applied pair set: a success resolved it, a
-            # failure tried it (a failed outcome) and did not
-            h = _cr_hash(r.resolver_id, case_id) if r.status == "resolved" and r.fix_method == "handler" else None
-            if h is not None:
-                s = cr.setdefault(h, {"succ": 0, "fail": 0, "pk": []})
-                s["succ"] += 1
-                if pk and pk not in s["pk"]:
-                    s["pk"].append(pk)
-            for fh in {x for x in (_cr_hash(ref.resolver_id, case_id) for ref in failed if ref.fix_method == "handler")
-                       if x is not None}:
-                cr.setdefault(fh, {"succ": 0, "fail": 0, "pk": []})["fail"] += 1
-        succ = sum(s["succ"] for s in cr.values())
-        fail = sum(s["fail"] for s in cr.values())
-        succ_pk = list(dict.fromkeys(pk for s in cr.values() for pk in s["pk"]))
 
         fix_rows = []
         for (method, resolver, _), g in fixes.items():
@@ -1056,67 +860,17 @@ class CaseCatalog:
             seen=len(records), projects=len(pks), runs=len(runs), first_at=min(ats) if ats else None,
             last_at=max(ats) if ats else None, by_status=dict(Counter(r.status for r in records).most_common()),
             resolved_by=dict(Counter(r.fix_method for r in records if r.status in RESOLVED).most_common()),
-            fixes=fix_rows[:MAX_FIXES], failures=fail_rows[:MAX_FAILURES], timeline=timeline,
-            action_successes=succ, action_failures=fail, action_projects=succ_pk), cr
+            fixes=fix_rows[:MAX_FIXES], failures=fail_rows[:MAX_FAILURES], timeline=timeline)
 
-    def _action(self, l2: str, l1s: set[str], records: list[ErrorCaseRecord], ev: CaseEvidence,
-                ctx: _Context, cr_stats: Optional[dict[str, Any]] = None, case_id: str = ""
-                ) -> tuple[CaseAction, str]:
-        cr_stats = cr_stats or {}
-        self._fallen.pop(case_id, None)
-        # (0) v2: the best proven fix script of the case (kb/scripts/<id>/v<N>.py) — candidate, active after
-        # kb.auto_promote_after_projects projects without a failure of that version
+    def _action(self, ctx: _Context, case_id: str) -> tuple[CaseAction, str]:
+        """The auto action: the best proven fix script of the case (``kb/scripts/<id>/v<N>.py``) — candidate, active
+        after ``kb.auto_promote_after_projects`` projects without a failure of that version; else ``hint``
+        (observed). ``block`` (and a pinned script version) only come from a person's human block."""
         best = ctx.best_script(case_id) if case_id else None
         if best is not None:
             promoted = (self.promote_after > 0 and len(set(best.success_projects)) >= self.promote_after
                         and best.failures == 0)
             return CaseAction(kind="script", script_version=best.version), "active" if promoted else "candidate"
-        # (1) KB recipes whose signatures contain the L2 or one of the case's L1s (v1: kb.use_active_recipes)
-        recipes = ctx.recipes_for(l2, l1s) if self.flag("use_active_recipes") else []
-        if recipes:
-            status = "active" if any(r.status == "active" for r in recipes) else "candidate"
-            return CaseAction(kind="recipe", recipe_ids=[r.id for r in recipes]), status
-        # (2) learned text replaces (LLM fixes that were pure token substitutions), the set fixed in the most
-        # distinct projects first (then records, then first seen) — not the most records of one big project
-        # (v1: kb.case_replace)
-        sets: dict[tuple, dict[str, Any]] = {}
-        for r in records if self.flag("case_replace") else ():
-            if r.status == "resolved" and r.replace_rule_candidate and r.replace_pairs:
-                pairs = tuple(dict.fromkeys((p.old, p.new) for p in r.replace_pairs if _valid_pair(p.old, p.new)))
-                if not pairs:
-                    continue
-                g = sets.setdefault(tuple(sorted(pairs)), {"pairs": pairs, "count": 0, "pk": set(),
-                                                           "order": len(sets)})
-                g["count"] += 1
-                pk = _project_key(r)
-                if pk:
-                    g["pk"].add(pk)
-        ranked = sorted(sets.values(), key=lambda g: (-len(g["pk"]), -g["count"], g["order"]))
-        legacy = cr_stats.get("", {"succ": 0, "fail": 0, "pk": []})
-        fallen: list[str] = []
-        for i, g in enumerate(ranked):
-            st = cr_stats.get(pairset_hash(g["pairs"]), {"succ": 0, "fail": 0, "pk": []})
-            succ, fail, pks = st["succ"], st["fail"], list(st["pk"])
-            if i == 0:                                   # plain `case-replace` (older records): the top-ranked set
-                succ, fail = succ + legacy["succ"], fail + legacy["fail"]
-                pks += [p for p in legacy["pk"] if p not in pks]
-            if fail >= FALLBACK_MIN_FAILURES and fail > succ:
-                fallen.append(f"replace {pairs_text(ReplacePair(old=o, new=n) for o, n in g['pairs'])}: "
-                              f"{fail} failure(s) > {succ} success(es)")
-                continue
-            action = CaseAction(kind="replace", replace_scope=self.replace_scope,
-                                replace_pairs=[ReplacePair(old=o, new=nw, count=g["count"]) for o, nw in g["pairs"]])
-            ev.action_successes, ev.action_failures, ev.action_projects = succ, fail, pks
-            if fallen:
-                self._fallen[case_id] = "fallen back: " + "; ".join(fallen)
-            promoted = self.promote_after > 0 and len(pks) >= self.promote_after and fail == 0
-            return action, "active" if promoted else "candidate"
-        if fallen:
-            self._fallen[case_id] = "fallen back: " + "; ".join(fallen)
-        # (3) replayable LLM patches (the existing KB_PATCH step replays them; v1: kb.use_patch_replay)
-        patch_ids = ctx.patch_ids(l2) if self.flag("use_patch_replay") else []
-        if patch_ids:
-            return CaseAction(kind="patch", patch_case_ids=patch_ids), "candidate"
         return CaseAction(kind="hint"), "observed"
 
     # ------------------------------------------------------------------ writes
@@ -1132,20 +886,17 @@ class CaseCatalog:
             if b_status == case.status and b_action == a_after:
                 return
         ev = case.evidence
-        reason = self._fallen.get(case.id, "")
-        if not reason:
-            if before is not None and STATUS_RANK.get(case.status, 0) > STATUS_RANK.get(b_status or "", 0):
-                reason = "promoted"
-            elif before is not None and STATUS_RANK.get(case.status, 0) < STATUS_RANK.get(b_status or "", 0):
-                reason = "demoted"
-            else:
-                reason = "action changed" if before is not None else "created"
+        if before is not None and STATUS_RANK.get(case.status, 0) > STATUS_RANK.get(b_status or "", 0):
+            reason = "promoted"
+        elif before is not None and STATUS_RANK.get(case.status, 0) < STATUS_RANK.get(b_status or "", 0):
+            reason = "demoted"
+        else:
+            reason = "action changed" if before is not None else "created"
         self._audit.append({
             "event": "status" if b_status != case.status else "action", "who": "sbmig", "case_id": case.id,
             "signature_generic": case.signature_generic, "reason": reason,
             "before": {"status": b_status, "action": b_action}, "after": {"status": case.status, "action": a_after},
-            "evidence": {"seen": ev.seen, "projects": ev.projects, "action_successes": ev.action_successes,
-                         "action_failures": ev.action_failures, "action_projects": len(ev.action_projects)},
+            "evidence": {"seen": ev.seen, "projects": ev.projects},
         })
 
     def audit(self, entries: Iterable[dict[str, Any]]) -> int:
@@ -1271,8 +1022,8 @@ class CaseCatalog:
         return _without_updated(ld.text) if ld is not None else None
 
     def refresh(self, l2s: Iterable[str], extra: Iterable[ErrorCaseRecord] = ()) -> list[str]:
-        """Recompute the cases of these L2 signatures from the events (e.g. after a recipe was promoted by hand).
-        Returns the ids whose file changed."""
+        """Recompute the cases of these L2 signatures from the events (e.g. after a fix-script version was retired /
+        activated by hand). Returns the ids whose file changed."""
         l2s = [s for s in dict.fromkeys(l2s or []) if s]
         if not l2s:
             return []
@@ -1303,19 +1054,8 @@ class CaseCatalog:
             self._flush_audit()
         return changed
 
-    def refresh_signatures(self, signatures: Iterable[str]) -> list[str]:
-        """Refresh the cases whose L2 or a variant L1 is one of these signatures (recipe promoted / rejected)."""
-        idx = self._index()
-        l2_of = {cid: sig for sig, cid in idx["by_l2"].items()}
-        l2s: list[str] = []
-        for s in signatures or []:
-            cid = idx["by_l2"].get(s) or idx["by_l1"].get(s)
-            if cid and l2_of.get(cid) and l2_of[cid] not in l2s:
-                l2s.append(l2_of[cid])
-        return self.refresh(l2s) if l2s else []
-
     def rebuild(self, *, audit_new: bool = False) -> int:
-        """Rebuild every case from ``errors.jsonl`` + KB recipes + patch cases (human blocks kept; cases without
+        """Rebuild every case from ``errors.jsonl`` + the fix-script store (human blocks kept; cases without
         events are kept only when a person edited them — or when ``errors.jsonl`` had lines of their L2, or of an
         unknown L2, that could not be read: those are never deleted). Returns the number of cases. ``audit_new``:
         also log cases that start above `observed` as created (the first catalog build of a run; `kb reindex`
@@ -1426,8 +1166,12 @@ class CaseCatalog:
                 human = CaseHuman.model_validate(data)
             except ValueError as e:
                 raise ValueError(f"invalid human fields for case {cid}: {e}") from e
-            if "action" in fields and human.action is not None and human.action.kind == "script":
-                self._check_script_pin(cid, human.action)
+            if "action" in fields and human.action is not None:
+                if human.action.kind not in PIN_KINDS:
+                    raise ValueError(f"case {cid}: action {human.action.kind!r} cannot be pinned (v2: "
+                                     f"{' / '.join(PIN_KINDS)})")
+                if human.action.kind == "script":
+                    self._check_script_pin(cid, human.action)
             case = loaded.case.model_copy(update={"human": human})
             self._write_case(idx, case, loaded, rel, keep_human_text=False)
             self._save_index(idx)
@@ -1550,15 +1294,13 @@ def render_cases_md(rows: list[dict[str, Any]], promote_after: int = DEFAULT_PRO
         "file; edit the case YAML instead. / 자동 생성 파일입니다 — 수정은 케이스 YAML 에서 하세요._",
         "",
         "**How to read.** One row per error signature (L2). *status*: `observed` (seen, no reusable fix yet) → "
-        "`candidate` (a fix that can be re-applied: a fix script that worked, learned text replace, KB recipe or "
-        "replayable patch) → `active` "
-        f"(the case's own fix worked in ≥ {n} projects without a failure, or an active KB recipe); `rejected` = "
-        "switched off by a person, never applied. *action*: what a hit does — `script` (v2: re-run the case's best "
-        "stored fix script `kb/scripts/<id>/v<N>.py`), `replace` (token replace on the reported lines + imports, "
-        "handler `case-replace`), `recipe` (KB OpenRewrite recipe), `patch` (replayed LLM patch), `hint` (hints for "
-        "the fix LLM only), `block` / `handler` (set by a person). `*` = set by a person. *scripts*: stored fix-script "
-        "versions; *best script*: the version a reuse runs first (`sbmig kb scripts show <id>`). *resolved by*: fix "
-        "method → resolved errors; *top failure*: the most frequent failed attempt.",
+        "`candidate` (a stored fix script of the case worked) → `active` "
+        f"(that fix script worked in ≥ {n} projects without a failure); `rejected` = switched off by a person, never "
+        "applied. *action*: what a hit does — `script` (re-run the case's best stored fix script "
+        "`kb/scripts/<id>/v<N>.py`), `hint` (hints for the fix LLM only), `block` (set by a person: hand the error "
+        "over without a fix attempt). `*` = set by a person. *scripts*: stored fix-script versions; *best script*: "
+        "the version a reuse runs first (`sbmig kb scripts show <id>`). *resolved by*: fix method → resolved errors; "
+        "*top failure*: the most frequent failed attempt.",
         "",
         "**How to edit.** Change the `human:` block of the case file (the `file` column of `cases.csv`, under `kb/`) "
         "— name, "
@@ -1567,12 +1309,10 @@ def render_cases_md(rows: list[dict[str, Any]], promote_after: int = DEFAULT_PRO
         "(timeline, fixes, failures, the latest fix's diff).",
         "",
         "**읽는 법.** 오류 시그니처(L2)마다 한 줄입니다. *status*: `observed`(관찰만, 재사용할 수정 없음) → "
-        "`candidate`(다시 적용할 수 있는 수정 있음: 성공한 수정 스크립트, 학습된 텍스트 치환, KB 레시피, 재적용 가능한 "
-        f"패치) → `active`(케이스의 수정이 {n}개 이상 프로젝트에서 실패 없이 성공, 또는 active KB 레시피); `rejected` = "
-        "사람이 끔(적용 "
-        "안 함). *action*: 매칭될 때 하는 일 — `script`(v2: 케이스의 가장 좋은 수정 스크립트 `kb/scripts/<id>/v<N>.py` "
-        "재실행), `replace`(오류 줄 + import 줄의 토큰 치환, 핸들러 `case-replace`), `recipe`(KB OpenRewrite 레시피), "
-        "`patch`(LLM 패치 재적용), `hint`(수정 LLM 에 힌트만), `block` / `handler`(사람이 지정). `*` = 사람이 지정한 값. "
+        "`candidate`(케이스의 저장된 수정 스크립트가 성공한 적 있음) → "
+        f"`active`(그 스크립트가 {n}개 이상 프로젝트에서 실패 없이 성공); `rejected` = 사람이 끔(적용 안 함). "
+        "*action*: 매칭될 때 하는 일 — `script`(케이스의 가장 좋은 수정 스크립트 `kb/scripts/<id>/v<N>.py` 재실행), "
+        "`hint`(수정 LLM 에 힌트만), `block`(사람이 지정: 수정 시도 없이 인계). `*` = 사람이 지정한 값. "
         "*scripts*: 저장된 스크립트 버전 수, *best script*: 재사용 때 먼저 돌릴 버전(`sbmig kb scripts show <id>`).",
         "",
         "**고치는 법.** 케이스 파일(`cases.csv` 의 `file` 열, `kb/` 아래)의 `human:` 블록(이름 / 상태 / 조치 / 힌트 / "

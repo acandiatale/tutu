@@ -17,7 +17,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 3,
+    "max_llm_calls": 2,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
@@ -31,7 +31,7 @@
     },
     "scripts": {
       "attempts": {
-        "new": 2,
+        "new": 1,
         "augment": 0,
         "reuse": 0
       },
@@ -43,19 +43,6 @@
           ],
           "outcomes": [
             "build_ok"
-          ],
-          "versions": [
-            1
-          ],
-          "llm_calls": 1
-        },
-        {
-          "l2": "compile|package_does_not_exist|jakarta.xml.bind.annotation",
-          "modes": [
-            "new"
-          ],
-          "outcomes": [
-            "apply_failed"
           ],
           "versions": [
             1

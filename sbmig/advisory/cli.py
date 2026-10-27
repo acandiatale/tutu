@@ -21,12 +21,19 @@ def _load(configs: Optional[List[Path]]):
     return load_cfg(configs)
 
 
-def _effective(entry: Any, cfg: Any) -> tuple[str, str]:
-    """(policy, reason) as a run would resolve it (config override, allow_recipes, recipe availability)."""
-    from .evaluate import _recipe_catalog, _resolve_policy
+def _state(entry: Any, cfg: Any) -> str:
+    """"off" when `advisories.policy_overrides` switches the entry off, else "guide" (LLM hints + Handover)."""
+    from .evaluate import switched_off
 
-    r = _resolve_policy(entry, cfg, _recipe_catalog(cfg))
-    return ("off", "config override") if r is None else r
+    return "off" if switched_off(entry, cfg) else "guide"
+
+
+_DROPPED_FIELDS = ("policy", "recipes")      # still on the core model; guide-only advisories do not use them
+
+
+def _row(entry: Any, cfg: Any) -> dict[str, Any]:
+    data = {k: v for k, v in entry.model_dump(mode="json").items() if k not in _DROPPED_FIELDS}
+    return {**data, "state": _state(entry, cfg)}
 
 
 def _table(rows: list[list[str]], heads: list[str]) -> list[str]:
@@ -41,23 +48,18 @@ def list_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """Every advisory: id, library, status, effective policy, replacement, recipes."""
+    """Every advisory: id, library, status, state (guide | off), replacement, notes file."""
     from .catalog import load_advisories
 
     cfg = _load(config)
     cat = load_advisories(cfg)
-    rows: list[dict[str, Any]] = []
-    for e in cat.entries:
-        policy, reason = _effective(e, cfg)
-        rows.append({**e.model_dump(mode="json"), "effective_policy": policy, "policy_reason": reason})
+    rows = [_row(e, cfg) for e in cat.entries]
     if as_json:
         typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
         return
-    table = [[r["id"], r.get("library") or ",".join(r.get("artifacts") or []) or "-", r["status"],
-              r["effective_policy"] + ("" if r["effective_policy"] == r["policy"] else f" (catalog {r['policy']})"),
-              r.get("replacement") or "-", ",".join(x.rsplit(".", 1)[-1] for x in r.get("recipes") or []) or "-"]
-             for r in rows]
-    for line in _table(table, ["id", "library", "status", "policy", "replacement", "recipes"]):
+    table = [[r["id"], r.get("library") or ",".join(r.get("artifacts") or []) or "-", r["status"], r["state"],
+              r.get("replacement") or "-", r.get("notes") or "-"] for r in rows]
+    for line in _table(table, ["id", "library", "status", "state", "replacement", "notes"]):
         typer.echo(line)
     typer.echo(f"\n{len(cat)} advisory(ies) — " + (", ".join(str(s) for s in cat.sources) or "no advisory file"))
 
@@ -68,7 +70,7 @@ def show_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """One advisory with its effective policy."""
+    """One advisory (state guide | off)."""
     from .catalog import load_advisories
 
     cfg = _load(config)
@@ -76,8 +78,7 @@ def show_cmd(
     if entry is None:
         typer.echo(f"unknown advisory {advisory_id}", err=True)
         raise typer.Exit(1)
-    policy, reason = _effective(entry, cfg)
-    data = {**entry.model_dump(mode="json"), "effective_policy": policy, "policy_reason": reason}
+    data = _row(entry, cfg)
     if as_json:
         typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
         return
@@ -89,7 +90,7 @@ def show_cmd(
 
 @advisories_cli.command("check")
 def check_cmd(config: Optional[List[Path]] = ConfigOpt) -> None:
-    """Validate the advisory files against the analyzer rules and the recipe catalog (exit 1 on problems)."""
+    """Validate the advisory files: analyzer library names, artifact patterns, notes files (exit 1 on problems)."""
     from .catalog import load_advisories
 
     cfg = _load(config)
@@ -100,6 +101,5 @@ def check_cmd(config: Optional[List[Path]] = ConfigOpt) -> None:
     if problems:
         typer.echo(f"{len(problems)} problem(s)", err=True)
         raise typer.Exit(1)
-    typer.echo(f"advisories OK: {len(cat)} advisory(ies), "
-               f"{sum(1 for e in cat.entries if e.policy == 'recipe')} with recipes — "
+    typer.echo(f"advisories OK: {len(cat)} advisory(ies), guide-only — "
                + (", ".join(str(s) for s in cat.sources) or "no advisory file"))

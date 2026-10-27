@@ -4,14 +4,13 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from sbmig.advisory import advisory_recipe_refs, evaluate_advisories, hints_for, load_advisories
+from sbmig.advisory import evaluate_advisories, hints_for, load_advisories
 from sbmig.advisory.hints import note_section
 from sbmig.core.models import BuildError, CaseType, ErrorKind, LibraryUsage
 from tests.advisory.helpers import profile
 
 REPO = Path(__file__).resolve().parents[2]
 NOTE = REPO / "knowledge" / "notes" / "era-libraries.md"
-COLLECTIONS = "org.openrewrite.apache.commons.collections.UpgradeApacheCommonsCollections_3_4"
 # `## fix-loop: <library>` sections — keyed on the finding's library (analyzer rule name, or the advisory id for
 # artifact-only advisories), which is what sbmig.advisory.hints looks up
 FIX_LOOP = ("hibernate-template", "commons-fileupload", "jackson1", "tiles", "velocity", "ehcache2",
@@ -27,15 +26,13 @@ def _lib(name: str, version: str | None = None, ev: str = "pom:x:y") -> LibraryU
     return LibraryUsage(name=name, version=version, evidence=[ev])
 
 
-def test_era_entries_are_guide_except_collections_and_point_to_existing_notes(cfg):
+def test_era_entries_point_to_existing_notes(cfg):
     cat = load_advisories(cfg)
     era = [e for e in cat.entries if e.notes == "knowledge/notes/era-libraries.md"]
     assert len(era) >= 15
     for e in cat.entries:
         if e.notes:
             assert (REPO / e.notes).is_file(), e.id
-        assert e.policy in {"guide", "recipe"}
-    assert cat.get("commons-collections3").policy == "recipe" and cat.get("commons-collections3").recipes == [COLLECTIONS]
     assert cat.get("jjwt-legacy").library == "jjwt" and cat.get("poi-legacy").library == "poi"
     assert cat.get("commons-dbcp1").library == "dbcp1"
 
@@ -76,13 +73,11 @@ def test_no_noise_from_unversioned_managed_artifacts(cfg):
     assert "hypersistence-utils" in _ids(cfg, deps=("com.vladmihalcea:hibernate-types-52:2.21.1",))
 
 
-def test_commons_collections3_recipe_is_added_to_spring_rewrite(cfg):
-    p = profile(libs=(_lib("commons-collections3", "3.2.2"),), case=CaseType.SPRING_LEGACY)
-    [f] = [f for f in evaluate_advisories(p, cfg) if f.advisory_id == "commons-collections3"]
-    assert f.policy == "recipe" and f.recipes == [COLLECTIONS]
-    refs = advisory_recipe_refs([f], cfg, planned_ids=["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"])
-    assert [r.id for r in refs] == [COLLECTIONS] and refs[0].artifact == "org.openrewrite.recipe:rewrite-apache"
-    assert f.recipe_source == "advisory"
+def test_commons_collections3_is_a_guide_with_its_fix_loop_hint(cfg):
+    hints, ids = _hint(cfg, "commons-collections3", "package org.apache.commons.collections does not exist",
+                       "commons-collections3", version="3.2.2", ev="import:org.apache.commons.collections")
+    assert ids == ["commons-collections3"]
+    assert hints[0].startswith("commons-collections3 (eol): replace with org.apache.commons:commons-collections4")
 
 
 def _hint(cfg, library: str, message: str, advisory: str, version: str | None = None, ev: str = "import:x"):
@@ -97,7 +92,7 @@ def test_hint_hibernate_template_carries_the_fix_loop_note(cfg):
     hints, ids = _hint(cfg, "hibernate-template", "package org.springframework.orm.hibernate5 does not exist",
                        "hibernate-template", ev="import:org.springframework.orm.hibernate5")
     assert ids == ["hibernate-template"]
-    assert hints[0].startswith("hibernate-template (incompatible, policy guide): replace with "
+    assert hints[0].startswith("hibernate-template (incompatible): replace with "
                                "org.springframework.orm.jpa.hibernate.LocalSessionFactoryBean")
     assert "Note (era-libraries.md § fix-loop: hibernate-template)" in hints[0]
     assert "getCurrentSession()" in hints[0]

@@ -451,14 +451,14 @@ def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
         if lib is not None and via.key != lib.key:                                           # (1) relocated
             java = f", requires Java {lib.requires_java}" if lib.requires_java else ""
             return (f"`{via.coordinates}` is `{lib.key}` under its earlier coordinates → `{lib.key}:{lib.version}` "
-                    f"(jakarta.* since {lib.jakarta_since}{java}); handler jakarta-library-floor relocates it when "
-                    f"the pom declares it (it drags in `{api}`, direct dependency of {where})")
+                    f"(jakarta.* since {lib.jakarta_since}{java}): relocate the declaration (it drags in `{api}`, "
+                    f"direct dependency of {where})")
         if lib is not None:                                                                   # (1)
             java = f" (requires Java {lib.requires_java})" if lib.requires_java else ""
             note = (lib.note or "").split(";", 1)[0].strip()
             return (f"`{api}` comes through `{via.coordinates}` (direct dependency of {where}): `{lib.key}` moved to "
-                    f"jakarta.* in {lib.jakarta_since} — raise it to {lib.version}{java}; handler "
-                    f"jakarta-library-floor does this when the pom declares it" + (f" ({note})" if note else ""))
+                    f"jakarta.* in {lib.jakarta_since} — raise it to {lib.version}{java}"
+                    + (f" ({note})" if note else ""))
         if is_in_house(via, cfg):                                                             # (2)
             line = getattr(getattr(getattr(cfg, "artifacts", None), "parent", None), "version", None)
             on = f"on the {line} line" if line else "on the configured in-house version line"
@@ -471,7 +471,7 @@ def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
     pom = f"`{jar.module}/pom.xml`" if jar is not None and getattr(jar, "module", None) else (
         "the root `pom.xml`" if jar is not None else f"the pom of {where}")
     return (f"`{api}` is declared in {pom} — remove it (its jakarta.* successor comes with the Spring Boot "           # (4)
-            f"starters) — handler dependency-relocation does this after the spring recipes")
+            f"starters)")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -499,12 +499,9 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
         spec = _optional_spec(cfg, a)
         if a is not None and spec is not None:
             v = spec.version or "the configured version"
-            # v2: plan.optional_bump_phase restructure (the bump runs inside the restructure); v1: spring.optional_bump
-            phase = getattr(getattr(cfg, "plan", None), "optional_bump_phase", "restructure")
-            where = "step spring.optional_bump" if phase == "spring" else "the restructure"
-            return (f"`{spec.key}` is a configured optional artifact; its version bump to `{v}` happens in {where} "
-                    f"— if this is still blocked after the bump, `{v}` itself still exposes "
-                    f"javax: ask the library owner for a Jakarta build")
+            return (f"`{spec.key}` is a configured optional artifact; its version bump to `{v}` happens in the "
+                    f"restructure — if this is still blocked after the bump, `{v}` itself still exposes javax: ask "
+                    f"the library owner for a Jakarta build")
         if a is not None:
             owner = f" (class `{item.owner_class}`)" if item.owner_class else ""
             if is_javax_api_artifact(a):
@@ -538,8 +535,8 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
                 f"repository mirror and artifacts.parent; nothing else can build until it resolves")
     if r == BlockReason.PLUGIN_INCOMPATIBLE:
         p = extra or "the plugin"
-        return (f"build plugin `{p}` fails on JDK 21: upgrade it (add a version floor to knowledge/versions.yml) or "
-                f"remove/replace it; left unchanged on purpose")
+        return (f"build plugin `{p}` fails on JDK 21: upgrade it (raise its version in the pom) or remove/replace "
+                f"it; left unchanged on purpose")
     if r == BlockReason.UNSUPPORTED_SOURCE:
         return ("non-Java / generated sources (Kotlin, Groovy, Scala, protobuf/jaxb/openapi generators) are not "
                 "migrated by sbmig: migrate this module or generator configuration by hand")
@@ -549,8 +546,8 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
         return ("the run's LLM/time budget was used up before this cluster could be fixed: rerun with a higher "
                 "loop.max_llm_calls / loop.max_total_minutes or fix it by hand")
     if r == BlockReason.LLM_UNAVAILABLE:
-        return ("the LLM was unavailable for this run (handlers and recipes still ran): fix the LLM endpoint / key "
-                "and rerun, or fix it by hand" + (f" — last error: {extra}" if extra else ""))
+        return ("the LLM was unavailable for this run (proven stored fix scripts were still reused): fix the LLM "
+                "endpoint / key and rerun, or fix it by hand" + (f" — last error: {extra}" if extra else ""))
     if r == BlockReason.REPEATED_FAILURE:
         return (f"{item.attempts} fix attempt(s) did not resolve it; needs a human (see the fix attempts and the "
                 "journal for what was tried)")

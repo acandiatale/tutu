@@ -1,5 +1,5 @@
 """Append-only jsonl files of the KB (round 10, 2026-10-26): ``errors.jsonl``, ``fix_attempts.jsonl``,
-``ledger.jsonl``, ``audit.jsonl``, ``quarantine.jsonl``.
+``reviews.jsonl``, ``audit.jsonl``, ``quarantine.jsonl``.
 
 A process killed half-way through a write (or a full disk) leaves a last line without its newline; the next append
 used to glue its first record onto it, so both were lost and the torn id still counted as stored. Now:

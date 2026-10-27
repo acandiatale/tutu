@@ -1,5 +1,5 @@
 """v2 orchestrator (flow-v2): transform → restructure → structure review → verify (final build + script fix loop);
-no pre-emptive handlers, no KB recipes / credit / harvest; the review's script is committed and reported."""
+the review's script is committed and reported."""
 from __future__ import annotations
 
 import pytest
@@ -7,17 +7,13 @@ import pytest
 from sbmig.core.interfaces import LLMResponse
 from sbmig.core.models import (
     CaseType,
-    FileChange,
     Phase,
-    PlanStep,
     ReviewIssue,
-    StepKind,
     StructureReview,
 )
 from sbmig.loop import Orchestrator, parse_stop_after
 from sbmig.loop.orchestrator import _BudgetedLLM
-from sbmig.triage import HandlerRegistry, Triager
-from sbmig.triage.handlers import Handler
+from sbmig.triage import Triager
 
 from .fakes import (
     FakeBuildRunner,
@@ -52,19 +48,6 @@ def fix_all(ws, cluster, ctx):
     return write_script({e.file: FIXED for e in cluster.errors if e.file}, analysis="fixed the case")
 
 
-class WouldWrite(Handler):
-    """A handler v1 ran pre-emptively (source-encoding): v2 must never run it."""
-    id = "source-encoding"
-    description = "fake encoding handler"
-
-    def matches(self, cluster, profile, cfg):
-        return True
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):
-        ws.write("handler-ran.txt", "x\n")
-        return [FileChange(path="handler-ran.txt", op="create")]
-
-
 class FakeLLM:
     def __init__(self):
         self.calls = 0
@@ -76,11 +59,10 @@ class FakeLLM:
 
 def make_v2(cfg, ws, *, plan=None, profile=None, build=None, fixer=None, kb=None, rewrite=None, restructurer=None,
             reviewer=None, runner=None, llm=None, **kw) -> Orchestrator:
-    reg = HandlerRegistry([WouldWrite()])
     kwargs = dict(analyzer=lambda w, c: profile or make_profile(), planner=lambda p, c, k: plan or v2_plan(),
                   restructurer=restructurer or FakeRestructurer(), rewrite_runner=rewrite or FakeRewriteRunner(ws),
-                  build_runner=build or FakeBuildRunner(ws, fn=files_build), triager=Triager(cfg, registry=reg),
-                  handlers=reg, fixer=fixer or FakeFixer(script_fn=fix_all), kb=kb if kb is not None else FakeKB(),
+                  build_runner=build or FakeBuildRunner(ws, fn=files_build), triager=Triager(cfg),
+                  fixer=fixer or FakeFixer(script_fn=fix_all), kb=kb if kb is not None else FakeKB(),
                   llm=llm if llm is not None else FakeLLM(), script_runner=runner or FakeScriptRunner(),
                   reviewer=reviewer if reviewer is not None else FakeReviewer())
     kwargs.update(kw)
@@ -120,28 +102,19 @@ def test_v2_plan_runs_transform_restructure_review_verify_in_order(cfg, ws, engi
     assert ev.index("rewrite") < ev.index("restructure") < ev.index("structure_review") < ev.index("verify")
 
 
-def test_no_preemptive_handlers_kb_recipes_credit_or_harvest(cfg, ws):
-    class KB(FakeKB):
-        def active_recipe_files(self):
-            return ["/kb/recipes/active/Cand.yml"]
-    cfg.kb.use_active_recipes = True                # even when a config switches v1 KB recipes on
-    kb = KB()
+def test_the_rewrite_gets_only_the_step_recipes_and_the_kb_no_learning_calls(cfg, ws):
+    kb = FakeKB()
     rw = FakeRewriteRunner(ws)
-    plan = v2_plan()
-    plan.steps.insert(1, PlanStep(id="jdk21.handlers", kind=StepKind.HANDLER, phase=Phase.TRANSFORM, title="h",
-                                  params={"handlers": ["source-encoding"]}))
-    report = make_v2(cfg, ws, kb=kb, rewrite=rw, plan=plan).run()
+    report = make_v2(cfg, ws, kb=kb, rewrite=rw).run()
     assert report.success
-    assert not ws.exists("handler-ran.txt") and not any(s.startswith("handlers:") for s in subjects(ws))
-    assert rw.runs[0]["files"] == []
-    assert kb.harvests == [] and kb.credits == [] and report.harvest is None
-    assert any("handler steps are not part of the v2 flow" in n for n in report.phases[0].notes)
-    plan_ev = next(e for e in journal_events(ws) if e["event"] == "plan")
-    assert plan_ev["pre_handlers"] == []
+    assert rw.runs[0]["files"] == []                             # no KB recipe files ride along
+    ev = journal_events(ws)
+    assert not {e["event"] for e in ev} & {"handlers_preemptive", "harvest", "kb_credit"}
+    plan_ev = next(e for e in ev if e["event"] == "plan")
+    assert "pre_handlers" not in plan_ev
 
 
-def test_error_cases_reach_the_kb_without_harvest(cfg, ws):
-    assert cfg.kb.harvest is False
+def test_error_cases_reach_the_kb(cfg, ws):
     kb = FakeKB()
     report = make_v2(cfg, ws, kb=kb).run()
     assert report.success and kb.appended

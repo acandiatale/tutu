@@ -8,9 +8,7 @@ v2 (flow-v2) — every fix is a fix script, one decision per case (L2) and round
 
 plus masking (`plan_iteration`). A BLOCKED decision never calls the LLM; the fix loop records a BlockedItem for it and
 keeps working on everything else. A stored, proven script of the case is reused even when the LLM is unavailable or
-its budget is spent — only the steps that need the LLM are blocked. Deterministic handlers, KB / reactive recipes and
-KB patch replay are not part of the v2 flow (their code stays until PLAN-v2 step 4; `mark_recipes_run` is kept for
-the orchestrator's bookkeeping).
+its budget is spent — only the steps that need the LLM are blocked.
 
 Round 10 rules kept: the per-case limits count only SCORED attempts of the SAME cluster (`same_cluster`: same cluster
 id — a case's id is stable across rounds —, or same file, also after the restructure move, with an overlapping
@@ -22,12 +20,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import (BlockReason, DecisionKind, ErrorCluster, FixAttempt, KBMatch, Phase, ProjectProfile,
-                               RecipeRef, TriageDecision)
+from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttempt, KBMatch, ProjectProfile, TriageDecision
 
 from .blocked import BlockedCandidate, classify_blocked
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
-from .rules import RecipeRules
 from .scripts import LLM_MODES, ScriptStep, plan_script_step, script_attempts
 
 log = logging.getLogger("sbmig.triage")
@@ -120,31 +116,9 @@ def plan_iteration(clusters: list[ErrorCluster]) -> list[IterationItem]:
     return out
 
 
-def recipe_refs_for(recipe_ids: list[str], kb_match: Optional[KBMatch], rules: RecipeRules) -> list[RecipeRef]:
-    out: list[RecipeRef] = []
-    for rid in recipe_ids:
-        ref: Optional[RecipeRef] = None
-        if kb_match is not None:
-            for ids, files in ((kb_match.recipe_ids, kb_match.recipe_files),
-                               (kb_match.candidate_recipe_ids, kb_match.candidate_recipe_files)):
-                if rid in ids:
-                    i = ids.index(rid)
-                    ref = RecipeRef(id=rid, source="kb", file=files[i] if len(files) == len(ids) else None)
-                    break
-        if ref is None:
-            ref = rules.ref_for(rid) or RecipeRef(id=rid, source="builtin")
-        if not any(r.id == ref.id for r in out):
-            out.append(ref)
-    return out
-
-
 class DecisionEngine:
-    def __init__(self, cfg: Config, registry, rules: RecipeRules):
+    def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.registry = registry
-        self.rules = rules
-        self.recipes_run_by_phase: dict[Phase, set[str]] = {}
-        self.recipes_run_any: set[str] = set()
         # run-wide state attached by the build-fix loop (see Triager.attach_run)
         self.blocked_registry = None            # sbmig.loop.blocked_registry.BlockedRegistry
         self.ws = None                          # Workspace: project-class checks for the blocked rules
@@ -154,13 +128,6 @@ class DecisionEngine:
         self.blocked_info: dict[str, BlockedCandidate] = {}
         # cluster id → the script step of its last SCRIPT decision (read by the loop: what to run / ask for)
         self.script_steps: dict[str, ScriptStep] = {}
-
-    # -- bookkeeping from the loop/orchestrator ------------------------
-    def mark_recipes_run(self, recipe_ids: Iterable[str], phase: Optional[Phase] = None) -> None:
-        ids = set(recipe_ids)
-        self.recipes_run_any |= ids
-        if phase is not None:
-            self.recipes_run_by_phase.setdefault(phase, set()).update(ids)
 
     def _canon(self) -> Optional[Callable[[Optional[str]], str]]:
         fn = getattr(self.blocked_registry, "canonical_file", None)
@@ -183,9 +150,8 @@ class DecisionEngine:
         return out
 
     def _pinned_block(self, cluster: ErrorCluster, kb_match: KBMatch) -> Optional[TriageDecision]:
-        """A case a person pinned to `block` → BLOCKED with their reason / text (round 10). The other pinned kinds
-        (handler, recipe) are v1 actions and not part of the v2 flow; a pinned `script` version is the store's
-        `best()` choice (sbmig.kb.scripts)."""
+        """A case a person pinned to `block` → BLOCKED with their reason / text (round 10). A pinned `script` version
+        is the store's `best()` choice (sbmig.kb.scripts), not a decision here."""
         for h, errs in self._pinned_hits(cluster, kb_match):
             a = h.action
             if a.kind != "block":

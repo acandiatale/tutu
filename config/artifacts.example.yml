@@ -63,7 +63,6 @@ build:
   skip_test_compile: true
   settings_file: null                   # config/settings.nexus.xml — copy config/settings.nexus.example.xml, set the group URL;
                                         # its mirrorOf external:* also covers the <repositories> declared inside the poms
-  pom_repositories: keep                # remove = strip <repositories>/<pluginRepositories> from the poms (needs the mirror)
   java_home: null                       # /usr/lib/jvm/java-21
 
 # llm: nothing to set here — the gateway comes from .env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL); see config/default.yml

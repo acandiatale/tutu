@@ -1,9 +1,10 @@
-"""LLMFixer: context packing → LLM → protocol parsing → validation/feedback → FixProposal (implements FixerLike).
+"""LLMFixer: the default fixer seam (`propose_script`, ScriptFixerLike): context packing → LLM → script parsing →
+static pre-check / one feedback round → ScriptProposal.
 
-v2 (flow-v2): `propose_script` (ScriptFixerLike) asks for a Python fix script for ONE case (L2) across files — same
-transport, model choice, call tags, usage accounting, prompt hash, record dir and <need_files>/<need_grep> rounds as
-`propose`; the answer is parsed by `sbmig.fix.script_protocol` and statically pre-checked (`sbmig.script.check_script`
-when available); an unusable script gets one feedback round."""
+`propose_script` asks for a Python fix script for ONE case (L2) across files: model choice, call tags, usage
+accounting, prompt hash, record dir and <need_files>/<need_grep> context rounds; the answer is parsed by
+`sbmig.fix.script_protocol` and statically pre-checked (`sbmig.script.check_script` when available); an unusable
+script gets one feedback round. Scripts apply themselves (sbmig.script) — the fixer never edits the tree."""
 from __future__ import annotations
 
 import inspect
@@ -19,22 +20,12 @@ import jinja2
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import ChatMessage, FixContext, LLMClientLike, LLMResponse
-from sbmig.core.models import (
-    ErrorCluster,
-    FileChange,
-    FixProposal,
-    LLMUsage,
-    ProjectProfile,
-    ScriptBase,
-    ScriptProposal,
-)
+from sbmig.core.models import ErrorCluster, LLMUsage, ProjectProfile, ScriptBase, ScriptProposal
 from sbmig.core.workspace import Workspace
 
-from .apply import BlockFailure, PatchApplier, best_window
 from .client import LLMError, RecordingClient, llm_call_in_flight, messages_hash, usage_from
 from .context import ContextPacker, PackedContext, fence_for, lang_for
-from .protocol import ParsedResponse, normalize_path, parse_fix_response, render_protocol_instructions
-from .script_protocol import NO_SCRIPT, PROTOCOL_WARNING, ParsedScript, parse_script_response
+from .script_protocol import NO_SCRIPT, PROTOCOL_WARNING, ParsedScript, normalize_path, parse_script_response
 
 log = logging.getLogger("sbmig.fix.fixer")
 
@@ -47,22 +38,9 @@ MAX_GREP_LINES = 40
 MAX_GREP_FILES = 3000             # a <need_grep> scans at most this many project files …
 MAX_GREP_FILE_BYTES = 512_000     # … skipping files bigger than this (generated sources, bundles)
 GREP_BUDGET_S = 45.0              # … and stops after this long (Windows + on-access antivirus made it crawl)
-FEEDBACK_PAD = 4
 # the contract's import whitelist (docs/INTERFACES.md "Script contract (S)"); sbmig.script.ALLOWED_IMPORTS wins when present
 DEFAULT_SCRIPT_IMPORTS = ("re", "json", "textwrap", "fnmatch", "posixpath", "itertools", "collections", "functools",
                           "string", "math")
-
-
-@lru_cache(maxsize=8)
-def load_prompts(version: str = "v1") -> tuple[str, jinja2.Template]:
-    sys_path = PROMPTS_DIR / f"system_{version}.md"
-    user_path = PROMPTS_DIR / f"user_{version}.md.j2"
-    if not sys_path.exists() or not user_path.exists():
-        raise FileNotFoundError(f"prompt version {version!r} not found in {PROMPTS_DIR}")
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True, autoescape=False)
-    system = env.from_string(sys_path.read_text(encoding="utf-8")).render(protocol=render_protocol_instructions())
-    user_t = env.from_string(user_path.read_text(encoding="utf-8"))
-    return system.strip() + "\n", user_t
 
 
 def _script_module_attr(name: str) -> Any:
@@ -183,11 +161,12 @@ def _same_code(a: str, b: str) -> bool:
 
 
 class LLMFixer:
-    """Default FixerLike: our SEARCH/REPLACE protocol over a chat completion.
+    """Default fixer (ScriptFixerLike): one Python fix script per case over a chat completion.
 
-    A fix.plugin (in-house coding agent, docs/ADAPTERS.md) can reuse the same packed context we give our LLM:
-    `ContextPacker(cfg).pack(ws, cluster, ctx, ctx.profile_summary)` → PackedContext (sections with the errors,
-    source files, pom excerpt, KB hints, previous attempts; `.render()` gives one markdown string)."""
+    A fix.plugin (in-house coding agent, docs/ADAPTERS.md) implements `propose_script` itself and can reuse the same
+    packed context we give our LLM: `ContextPacker(cfg).pack_script(ws, cluster, ctx, ctx.profile_summary)` →
+    PackedContext (sections with the case's errors, source windows, poms, hints, previous attempts; `.render()`
+    gives one markdown string)."""
 
     def __init__(self, cfg: Config, client: LLMClientLike, notes_dir: Optional[str | Path] = None,
                  *, packer: Optional[ContextPacker] = None,
@@ -195,116 +174,17 @@ class LLMFixer:
         self.cfg = cfg
         self.client = client
         self.packer = packer or ContextPacker(cfg, notes_dir)
-        self.system_prompt, self.user_template = load_prompts(cfg.llm.prompt_version)
-        # v2: the static pre-check of a proposed script (default: sbmig.script.check_script, looked up lazily;
-        # a ScriptRunnerLike's `check` fits as well)
+        # the static pre-check of a proposed script (default: sbmig.script.check_script, looked up lazily; a
+        # ScriptRunnerLike's `check` fits as well)
         self.script_checker = script_checker
         self._script_prompts: Optional[tuple[str, jinja2.Template]] = None
 
-    # ------------------------------------------------------------------ FixerLike
-    def apply(self, ws: Workspace, changes: list[FileChange]) -> tuple[list[FileChange], list[str]]:
-        return PatchApplier(ws).apply(changes)
-
-    def propose(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> FixProposal:
-        model = self._model(ctx)
-        usage = LLMUsage()
-        requested: list[str] = []
-        transcript: list[dict] = []
-        rounds = 0
-        messages: list[ChatMessage] = []
-        last: Optional[LLMResponse] = None
-        role, meta = self.call_tags(ctx, cluster.id, ws)
-        adv_in_prompt = 0
-        try:
-            log.info("fix prompt for %s: packing (%d advisory hint(s), %d KB hint(s), %d reference file(s))",
-                     cluster.id, len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files))
-            packed = self.packer.pack(ws, cluster, ctx, ctx.profile_summary)
-            log.info("fix prompt for %s packed: %d chars, sections [%s]%s → calling the LLM", cluster.id, packed.chars,
-                     ", ".join(t[:28] for t, _ in packed.sections),
-                     f", truncated {', '.join(packed.truncated)}" if packed.truncated else "")
-            guidance = next((b for t, b in packed.sections if t == ContextPacker.ADVISORY_TITLE), "")
-            if guidance:                      # round 6: the library advisories' "what to migrate TO" in this prompt
-                adv_in_prompt = sum(1 for ln in guidance.splitlines() if ln.startswith("- "))
-                log.debug("advisory guidance in the prompt for %s:\n%s", cluster.id, guidance)
-            messages = self.build_messages(packed)
-            last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
-
-            # 1) context rounds
-            while parsed.wants_context and not parsed.changes and rounds < self.cfg.llm.max_context_rounds:
-                rounds += 1
-                requested.extend(p for p in parsed.need_files if p not in requested)
-                remaining = self.cfg.llm.max_context_rounds - rounds
-                log.info("fix prompt for %s: the LLM asked for more context (round %d/%d): %d file(s) %s, %d grep(s) %s",
-                         cluster.id, rounds, self.cfg.llm.max_context_rounds, len(parsed.need_files),
-                         parsed.need_files[:4], len(parsed.need_grep), parsed.need_grep[:3])
-                served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining)
-                messages = messages + [ChatMessage(role="assistant", content=last.content),
-                                       ChatMessage(role="user", content=served)]
-                last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
-            if parsed.wants_context and not parsed.changes:
-                requested.extend(p for p in parsed.need_files if p not in requested)
-
-            # 2) validation + one feedback round
-            notes: list[str] = []
-            if parsed.changes:
-                failures = PatchApplier(ws).check(parsed.changes)
-                if failures:
-                    rounds += 1
-                    log.info("fix prompt for %s: %d patch block(s) did not apply → one feedback round", cluster.id,
-                             len(failures))
-                    feedback = self.feedback_message(ws, failures)
-                    messages = messages + [ChatMessage(role="assistant", content=last.content),
-                                           ChatMessage(role="user", content=feedback)]
-                    prev = parsed
-                    last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta)
-                    if not parsed.changes:
-                        notes.append("feedback round returned no patches; keeping first proposal")
-                        parsed = ParsedResponse(changes=prev.changes, analysis=prev.analysis,
-                                                confidence=prev.confidence, raw=prev.raw,
-                                                warnings=prev.warnings + parsed.warnings)
-                    still = PatchApplier(ws).check(parsed.changes)
-                    if still:
-                        notes.append(f"validation: {len(still)} block(s) still do not apply: "
-                                     + "; ".join(f.message for f in still[:3]))
-
-            analysis = parsed.analysis
-            if not parsed.changes and not parsed.wants_context and "response did not follow the protocol" in parsed.warnings:
-                analysis = "llm-error: response did not follow the protocol: " + (parsed.raw.strip()[:300])
-            elif not parsed.changes and parsed.wants_context:
-                analysis = (analysis + "\n" if analysis else "") + \
-                    f"(still requesting context after {self.cfg.llm.max_context_rounds} round(s): " + \
-                    ", ".join(parsed.need_files + parsed.need_grep) + ")"
-            if last and last.finish_reason in ("length", "max_tokens"):
-                notes.append(f"output truncated (finish_reason={last.finish_reason})")
-            if notes:
-                analysis = (analysis + "\n" if analysis else "") + "\n".join(f"[sbmig] {n}" for n in notes)
-
-            proposal = FixProposal(
-                changes=parsed.changes,
-                analysis=analysis,
-                confidence=parsed.confidence if parsed.confidence is not None else 0.5,
-                model=last.model if last else (model or ""),
-                prompt_hash=messages_hash(messages),
-                llm_usage=usage,
-                requested_files=requested,
-                raw_response=last.content if last else "",
-            )
-        except LLMError as exc:
-            proposal = self._error_proposal(f"llm-error: {exc}", model, messages, usage, requested)
-        except Exception as exc:  # never raise into the orchestrator
-            log.exception("LLM fixer failed for cluster %s", cluster.id)
-            proposal = self._error_proposal(f"llm-error: {type(exc).__name__}: {exc}", model, messages, usage, requested)
-
-        self._journal(ws, cluster, proposal, rounds, adv_in_prompt)
-        self._record(cluster, transcript, proposal)
-        return proposal
-
-    # ------------------------------------------------------------------ ScriptFixerLike (v2)
+    # ------------------------------------------------------------------ ScriptFixerLike
     def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal:
         """A fix script for ONE case (`ctx.script_mode` new | augment, `ctx.script_base` = the version to extend).
         Never raises. No usable script → `ScriptProposal(code="", error=<short reason>, analysis=…)`; transport and
-        configuration failures keep the v1 analysis texts (`llm-error: …`, `llm-error: response did not follow the
-        protocol: …`) so the loop classifies them with `is_llm_transport_error` / `llm_400_body` as for `propose`."""
+        configuration failures carry the analysis texts the loop classifies with `is_llm_transport_error` /
+        `llm_400_body` (`llm-error: …`, `llm-error: response did not follow the protocol: …`)."""
         model = self._model(ctx)
         usage = LLMUsage()
         requested: list[str] = []
@@ -350,7 +230,7 @@ class LLMFixer:
                 log.info("script prompt for %s: the LLM asked for more context (round %d/%d): %d file(s) %s, %d grep(s) "
                          "%s", cluster.id, rounds, self.cfg.llm.max_context_rounds, len(parsed.need_files),
                          parsed.need_files[:4], len(parsed.need_grep), parsed.need_grep[:3])
-                served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining, script=True)
+                served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining)
                 messages = messages + [ChatMessage(role="assistant", content=last.content),
                                        ChatMessage(role="user", content=served)]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
@@ -407,7 +287,7 @@ class LLMFixer:
                                           f"LLM call failed ({type(exc).__name__})", model, messages, usage, requested)
 
         self._journal_script(ws, cluster, ctx, mode, proposal, rounds, adv_in_prompt, packed)
-        self._record(cluster, transcript, proposal, prefix="script")
+        self._record(cluster, transcript, proposal)
         return proposal
 
     def script_prompts(self) -> tuple[str, jinja2.Template]:
@@ -514,11 +394,6 @@ class LLMFixer:
             log.debug("journal failed", exc_info=True)
 
     # ------------------------------------------------------------------ building blocks
-    def build_messages(self, packed: PackedContext) -> list[ChatMessage]:
-        user = self.user_template.render(sections=packed.sections, truncated=packed.truncated)
-        return [ChatMessage(role="system", content=self.system_prompt),
-                ChatMessage(role="user", content=user.strip() + "\n")]
-
     def _model(self, ctx: FixContext) -> Optional[str]:
         llm = self.cfg.llm
         if ctx.use_escalation_model and not _unset(llm.escalation_model):
@@ -528,7 +403,7 @@ class LLMFixer:
     @staticmethod
     def call_tags(ctx: Optional[FixContext], cluster_id: Optional[str] = None,
                   ws: Optional[Workspace] = None) -> tuple[str, dict]:
-        """(role, metadata) sent with every LLM call of one propose() — lets a gateway route/budget by purpose.
+        """(role, metadata) sent with every LLM call of one propose_script() — lets a gateway route/budget by purpose.
         Round 10: `run_id` and `project` (the workspace's run id / project directory name) as the LLMRequest contract
         says (`sbmig.core.interfaces.LLMRequest.metadata`); never secrets."""
         meta: dict = {}
@@ -550,7 +425,7 @@ class LLMFixer:
 
     def _call(self, messages: list[ChatMessage], model: Optional[str], usage: LLMUsage,
               transcript: list[dict], *, role: str = "fix", metadata: Optional[dict] = None,
-              parse: Callable[[str], Any] = parse_fix_response) -> tuple[LLMResponse, Any]:
+              parse: Callable[[str], Any] = parse_script_response) -> tuple[LLMResponse, Any]:
         with llm_call_in_flight():          # the loop's watchdog stays silent while the call heartbeats (round 10)
             resp = self.client.complete(messages, model=model, max_tokens=self.cfg.llm.max_output_tokens,
                                         temperature=self.cfg.llm.temperature, role=role,
@@ -566,13 +441,6 @@ class LLMFixer:
         if parsed.warnings:
             log.debug("protocol warnings: %s", parsed.warnings)
         return resp, parsed
-
-    def _error_proposal(self, analysis: str, model: Optional[str], messages: list[ChatMessage], usage: LLMUsage,
-                        requested: list[str]) -> FixProposal:
-        log.warning("%s", analysis[:300])
-        return FixProposal(changes=[], analysis=analysis[:1000], confidence=0.0, model=model or "",
-                           prompt_hash=messages_hash(messages) if messages else "", llm_usage=usage,
-                           requested_files=requested)
 
     # ------------------------------------------------------------------ context serving
     def resolve_path(self, ws: Workspace, want: str) -> tuple[Optional[str], list[str]]:
@@ -608,8 +476,7 @@ class LLMFixer:
                         out.append(f)
         return sorted(set(out))
 
-    def serve_context(self, ws: Workspace, need_files: list[str], need_grep: list[str], remaining_rounds: int,
-                      *, script: bool = False) -> str:
+    def serve_context(self, ws: Workspace, need_files: list[str], need_grep: list[str], remaining_rounds: int) -> str:
         parts: list[str] = ["Here is the requested context."]
         for want in need_files[:MAX_SERVED_FILES]:
             path, cands = self.resolve_path(ws, want)
@@ -642,17 +509,12 @@ class LLMFixer:
                          + ", ".join(need_files[MAX_SERVED_FILES:]) + ")")
         if need_grep:
             parts.append(self.grep(ws, need_grep))
-        if script and remaining_rounds <= 0:
+        if remaining_rounds <= 0:
             parts.append("This was the LAST context round. Answer now with <analysis> and <script> (or explain in "
                          "<analysis> why no script can fix this case safely, without a <script>).")
-        elif script:
+        else:
             parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering with "
                          "<script> now.")
-        elif remaining_rounds <= 0:
-            parts.append("This was the LAST context round. Answer now with <patches> (or explain in <analysis> why no "
-                         "safe fix exists and return empty <patches></patches>).")
-        else:
-            parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering with <patches> now.")
         return "\n\n".join(parts) + "\n"
 
     def grep(self, ws: Workspace, patterns: list[str]) -> str:
@@ -710,59 +572,9 @@ class LLMFixer:
                  time.monotonic() - t0, total, " (budget hit)" if budget_hit else "")
         return "\n\n".join(out)
 
-    # ------------------------------------------------------------------ validation feedback
-    def feedback_message(self, ws: Workspace, failures: list[BlockFailure]) -> str:
-        parts = ["Your patch could not be applied. Problems:"]
-        shown: set[tuple[str, int, int]] = set()
-        for f in failures[:8]:
-            if f.reason in ("not_found", "ambiguous") and ws.exists(f.path):
-                text = ws.read(f.path).replace("\r\n", "\n")
-                if f.reason == "not_found":
-                    a, b = best_window(text, f.search or "", pad=FEEDBACK_PAD)
-                    lines = text.split("\n")
-                    body = "\n".join(lines[a - 1:b])
-                    fence = fence_for(body)
-                    head = f"- block {f.block} of {f.path}: search text not found. Here is the current exact text of lines {a}-{b}:"
-                    if (f.path, a, b) not in shown:
-                        shown.add((f.path, a, b))
-                        parts.append(f"{head}\n{fence}{lang_for(f.path)}\n{body}\n{fence}")
-                    else:
-                        parts.append(head + " (see above)")
-                else:
-                    parts.append(f"- block {f.block} of {f.path}: search text matches {f.matches} times (ambiguous) — "
-                                 f"add surrounding lines so it matches exactly once.")
-            elif f.reason == "missing_file":
-                _, cands = self.resolve_path(ws, PurePosixPath(f.path).name)
-                hint = f" Existing files with that name: {', '.join(cands)}" if cands else ""
-                parts.append(f"- {f.message}.{hint}")
-            elif f.reason == "exists":
-                parts.append(f"- {f.message}. Use MODIFY with SEARCH/REPLACE blocks for existing files.")
-            elif f.reason == "truncated":
-                parts.append(f"- {f.message}. Never output partial files; use small SEARCH/REPLACE blocks.")
-            else:
-                parts.append(f"- {f.message}")
-        if len(failures) > 8:
-            parts.append(f"- … and {len(failures) - 8} more problem(s)")
-        parts.append("Re-send the COMPLETE corrected answer (<analysis>, <confidence>, <patches> with ALL changes, "
-                     "including those that were fine). Copy SEARCH text exactly from the text shown.")
-        return "\n\n".join(parts) + "\n"
-
     # ------------------------------------------------------------------ bookkeeping
-    def _journal(self, ws: Workspace, cluster: ErrorCluster, p: FixProposal, rounds: int,
-                 advisory_hints: int = 0) -> None:
-        try:
-            ws.journal({"event": "llm_fix", "cluster_id": cluster.id, "model": p.model, "rounds": rounds,
-                        "calls": p.llm_usage.calls,
-                        "tokens": {"input": p.llm_usage.input_tokens, "output": p.llm_usage.output_tokens},
-                        "changes": [{"op": c.op, "path": c.path} for c in p.changes],
-                        "confidence": p.confidence, "prompt_hash": p.prompt_hash,
-                        "error": p.analysis if p.analysis.startswith("llm-error") else None,
-                        "advisory_hints": advisory_hints})   # library-guidance lines that reached the prompt
-        except Exception:  # pragma: no cover
-            log.debug("journal failed", exc_info=True)
-
-    def _record(self, cluster: ErrorCluster, transcript: list[dict], p: FixProposal | ScriptProposal,
-                prefix: str = "fix") -> None:
+    def _record(self, cluster: ErrorCluster, transcript: list[dict], p: ScriptProposal,
+                prefix: str = "script") -> None:
         rd = self.cfg.llm.record_dir
         if not rd or isinstance(self.client, RecordingClient):
             return
@@ -778,5 +590,5 @@ class LLMFixer:
             log.debug("record failed", exc_info=True)
 
 
-__all__ = ["LLMFixer", "profile_summary", "load_prompts", "load_script_prompts", "default_script_checker",
+__all__ = ["LLMFixer", "profile_summary", "load_script_prompts", "default_script_checker",
            "script_allowed_imports", "script_helper_api_doc", "normalize_path"]

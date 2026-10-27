@@ -2,15 +2,14 @@
 (`llm.cooldown_seconds`) and retries; only a second streak marks the LLM unavailable. 0 = the old behaviour."""
 from __future__ import annotations
 
-from sbmig.core.models import BlockReason, FixProposal, LLMUsage, Phase
+from sbmig.core.models import BlockReason, LLMUsage, Phase
 from sbmig.loop import BuildFixLoop, LoopBudget
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
-from .fakes import (
+from .fakes import (FixProposal, 
     FakeBuildRunner,
     FakeFixer,
     FakeKB,
-    FakeRewriteRunner,
     FakeScriptRunner,
     bad_build,
     compile_error,
@@ -25,8 +24,8 @@ DOWN = FixProposal(changes=[], analysis="llm-error: LLM request failed after 4 a
 
 
 def make_loop(cfg, ws, profile, *, build, fixer, budget=None):
-    t = Triager(cfg, registry=HandlerRegistry())
-    return BuildFixLoop(cfg, ws, build, t, t.registry, fixer, FakeKB(), FakeRewriteRunner(ws), profile,
+    t = Triager(cfg)
+    return BuildFixLoop(cfg, ws, build, t, fixer, FakeKB(), profile,
                         budget=budget or LoopBudget.from_config(cfg), script_runner=FakeScriptRunner())
 
 
@@ -54,7 +53,7 @@ def test_cooldown_then_one_failure_still_available_then_unavailable(cfg, ws, pro
     assert [u for u, _ in seen] == [None, None, None, None]                     # available before each call
     assert loop.llm_unavailable and "status=503" in loop.llm_unavailable
     assert loop.llm_cooldown_used and {"llm-cooldown", "llm-unavailable"} <= set(loop.flags)
-    # the cool-down round does not count against max_llm_attempts_per_cluster: blocked as llm_unavailable,
+    # the cool-down round does not count against the case's limits: blocked as llm_unavailable,
     # not repeated_failure, and the third call did not see the two cooled-down attempts
     assert [b.reason for b in pr.blocked] == [BlockReason.LLM_UNAVAILABLE]
     assert seen[2][1] == [] and len(seen[3][1]) == 1

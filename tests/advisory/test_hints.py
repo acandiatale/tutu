@@ -12,7 +12,7 @@ R4J = "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4
 
 def finding(**kw) -> AdvisoryFinding:
     base = dict(advisory_id="hystrix", library="hystrix", status="eol", title="Netflix Hystrix is discontinued",
-                policy="recipe", replacement=R4J, replacement_version="managed by the Spring Cloud BOM",
+                policy="guide", replacement=R4J, replacement_version="managed by the Spring Cloud BOM",
                 artifacts=["org.springframework.cloud:spring-cloud-starter-netflix-hystrix"],
                 followup="Configure the circuit breakers by name; HystrixCommand subclasses stay manual.")
     base.update(kw)
@@ -21,7 +21,7 @@ def finding(**kw) -> AdvisoryFinding:
 
 def springfox() -> AdvisoryFinding:
     return AdvisoryFinding(advisory_id="springfox", library="springfox", status="eol", title="Springfox is gone",
-                           policy="recipe", replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui",
+                           policy="guide", replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui",
                            artifacts=["io.springfox:springfox-boot-starter"], followup="check the Swagger UI path")
 
 
@@ -40,7 +40,7 @@ def test_match_on_import_package_with_segment_boundary():
     hints, ids = hints_for([err("package com.netflix.hystrix does not exist")], [springfox(), finding()])
     assert ids == ["hystrix"] and len(hints) == 1
     h = hints[0]
-    assert h.startswith(f"hystrix (eol, policy recipe): replace with {R4J} (managed by the Spring Cloud BOM). ")
+    assert h.startswith(f"hystrix (eol): replace with {R4J} (managed by the Spring Cloud BOM). ")
     assert "HystrixCommand subclasses stay manual" in h
     # symbol / location / raw count too; a longer package name or a prefix inside another package does not
     assert hints_for([err(symbol="class com.netflix.hystrix.HystrixCommand")], [finding()])[1] == ["hystrix"]
@@ -78,7 +78,7 @@ def test_hint_is_compact_and_falls_back_to_title():
     assert len(h) <= HINT_MAX and h.endswith(".")
     bare = finding(followup="", replacement=None, replacement_version=None)
     h = hints_for([err("package com.netflix.hystrix does not exist")], [bare])[0][0]
-    assert h == "hystrix (eol, policy recipe). Netflix Hystrix is discontinued"
+    assert h == "hystrix (eol). Netflix Hystrix is discontinued"
 
 
 def test_note_excerpt_prefers_fix_loop_heading(tmp_path: Path):

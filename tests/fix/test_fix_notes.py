@@ -46,14 +46,19 @@ def test_keywords_hit_expected_notes():
     assert by["hibernate-7.md"].score("package org.hibernate.annotations.common.util.impl does not exist") > 0
 
 
-def test_restructure_notes_also_apply_in_the_final_verify_loop():
-    """The final verify loop (2026-10-22) fixes the restructured tree: a note written for `restructure` applies to
-    phase `verify` as well; spring-only notes stay spring-only."""
+def test_every_note_applies_in_the_verify_loop():
+    """v2 fixes every error in the `verify` script loop: a note's `phases` (the v1 phase it was written for) never
+    keeps it out of a verify-phase prompt; cases still restrict, other phases are still narrowed."""
     by = {e.file: e for e in load_notes_index(NOTES)}
+    for e in by.values():
+        assert e.applies(None, "verify"), e.file
     n = by["hibernate-7.md"]
     assert n.applies("spring_boot", "restructure") and n.applies("spring_boot", "verify")
     assert not n.applies("spring_boot", "jdk21")
-    assert not by["ibatis2.md"].applies("spring_boot", "verify")
+    assert by["ibatis2.md"].applies("spring_boot", "verify") and not by["ibatis2.md"].applies("spring_boot", "jdk21")
+    assert by["jdk21.md"].phases == ["jdk21"] and by["jdk21.md"].applies("pure_java", "verify")
+    sec = by["spring-security-7.md"]
+    assert sec.applies("spring_legacy", "verify") and not sec.applies("pure_java", "verify")    # cases still count
     assert by["fix-policy.md"].applies("pure_java", "verify")           # no phase restriction
 
 

@@ -41,8 +41,7 @@ def advisory_lines(report: RunReport) -> list[str]:
     """One line per advisory finding + the handover counts (console / CLI)."""
     out: list[str] = []
     for f in report.advisories:
-        via = "recipe" if f.recipes else f.policy
-        out.append(f"advisory {f.advisory_id} [{via}] → {f.outcome}")
+        out.append(f"advisory {f.advisory_id} → {f.outcome}")
     h = report.handover
     if h is not None:
         out.append(f"handover: {len(h.changes)} versions replaced, {len(h.carried_over)} carried over, "

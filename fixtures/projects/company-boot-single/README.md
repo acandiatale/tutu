@@ -14,7 +14,8 @@ the pre-9c layout for the older fixtures — and the role parents, every one sto
   packaging jar, every source under `shop-boot/src/main/java/…`, `application.properties` under
   `shop-boot/src/main/resources`; no `shop-back` / `shop-front` (nothing is split), no `module/`, no root `src/`.
 
-Expected: BUILD SUCCESS, exit 0, 0 LLM calls.
+Expected (v2, `expected.json` → `expect`): BUILD SUCCESS, exit 0, **1 LLM call** (the structure review, verdict `ok`),
+no fix script.
 
 As-is build (JDK 11):
 

@@ -1,4 +1,4 @@
-"""The case catalog inside FileKnowledgeBase: append → case files + views, match → case_hits + hints, reindex,
+"""The case catalog inside FileKnowledgeBase: append → case files + views, match → case_hits + their hints, reindex,
 stats, export / import (human blocks), prepare_error_cases → case_id."""
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def test_append_writes_catalog_and_views(kb_cfg, ws, profile):
     assert (kb.root / "catalog" / "index.json").exists()
     assert (kb.root / "views" / "cases.md").exists() and (kb.root / "views" / "cases.csv").exists()
     c = kb.catalog().get(CID)
-    assert c.evidence.seen == 1 and c.evidence.projects == 1 and c.action.kind == "replace"
+    assert c.evidence.seen == 1 and c.evidence.projects == 1 and c.action.kind == "hint"
     assert kb.append_error_cases(errs, atts) == 0                    # nothing new, catalog unchanged
     assert kb.catalog().get(CID).evidence.seen == 1
     # kb.catalog: false → events only
@@ -65,42 +65,37 @@ def test_match_case_hits_and_hints(kb, ws, profile, kb_cfg):
     kb.append_error_cases([unresolved("e0", "r0", "zeta")], [])
     kb.append_error_cases([rec("e1", hours=1)], [])
     m = kb.match(_cluster(), ws, profile)
-    assert [h.case_id for h in m.case_hits] == [CID] and m.case_hits[0].action.kind == "replace"
+    assert [h.case_id for h in m.case_hits] == [CID] and m.case_hits[0].action.kind == "hint"
     assert m.hints == [
         f"[case {CID}] past runs: fixed by llm fake-model in 1 project(s): renamed clientIp to remoteClientIp; "
         "replace `clientIp` → `remoteClientIp`",
         f"[case {CID}] past failure ×1: llm no_change — the targeted error(s) were still there after the rebuild; "
         "do not repeat it",
     ]
-    assert not any(h.startswith("[error ") for h in m.hints)         # the raw error-hint lines are not repeated
-    # people's hints first, then the generated ones; existing pattern hints stay in front; max_hints caps
+    # people's hints first, then the generated ones
     kb.catalog().set_human(CID, hints=["check RequestWrapper first"])
-    kb.ensure_layout()
-    (kb.patterns_dir / "p.yml").write_text("match: {signature_regex: 'cannot_find_symbol'}\nhints: [use X]\n")
     m = kb.match(_cluster(), ws, profile)
-    assert m.hints[:3] == ["[pattern p] use X", f"[case {CID}] check RequestWrapper first",
+    assert m.hints[:2] == [f"[case {CID}] check RequestWrapper first",
                            f"[case {CID}] past runs: fixed by llm fake-model in 1 project(s): renamed clientIp to "
                            "remoteClientIp; replace `clientIp` → `remoteClientIp`"]
-    assert FileKnowledgeBase(with_kb(kb_cfg, max_hints=2)).match(_cluster(), ws, profile).hints == m.hints[:2]
-    # kb.error_hints: false keeps only people's hints
-    only_human = FileKnowledgeBase(with_kb(kb_cfg, error_hints=False)).match(_cluster(), ws, profile).hints
-    assert only_human == ["[pattern p] use X", f"[case {CID}] check RequestWrapper first"]
-    # kb.catalog: false → the old raw error-hint lines, no case hits
+    # kb.catalog: false → no case hits, no hints
     old = FileKnowledgeBase(with_kb(kb_cfg, catalog=False)).match(_cluster(), ws, profile)
-    assert old.case_hits == [] and any(h.startswith(f"[error {EC_L2}]") for h in old.hints)
+    assert old.case_hits == [] and old.hints == []
     # a rejected case gives neither hits nor hints
     kb.catalog().set_human(CID, status="rejected")
     m = kb.match(_cluster(), ws, profile)
-    assert m.case_hits == [] and m.hints == ["[pattern p] use X"]
+    assert m.case_hits == [] and m.hints == []
 
 
-def test_match_without_catalog_index_falls_back_to_error_hints(kb, ws, profile):
+def test_match_without_catalog_index_is_empty(kb, ws, profile):
     kb.append_error_cases([rec("e1")], [])
     import shutil
 
     shutil.rmtree(kb.root / "catalog")
     m = kb.match(_cluster(), ws, profile)
-    assert m.case_hits == [] and m.hints and m.hints[0].startswith(f"[error {EC_L2}]")
+    assert m.case_hits == [] and m.hints == []
+    kb.reindex()
+    assert [h.case_id for h in kb.match(_cluster(), ws, profile).case_hits] == [CID]
 
 
 def test_reindex_rebuilds_catalog_and_keeps_human(kb):
@@ -121,9 +116,9 @@ def test_reindex_rebuilds_catalog_and_keeps_human(kb):
     assert c.human.notes == "keep me" and c.evidence.seen == 2
     assert "# comment" in cat.path_of(CID).read_text(encoding="utf-8")
     st = kb.stats()
-    assert st["catalog_cases"] == 1 and st["catalog_candidate"] == 1 and st["catalog_rejected"] == 0
+    assert st["catalog_cases"] == 1 and st["catalog_observed"] == 1 and st["catalog_rejected"] == 0
     cat.set_human(CID, status="rejected")
-    assert kb.stats()["catalog_rejected"] == 1 and kb.stats()["catalog_candidate"] == 0
+    assert kb.stats()["catalog_rejected"] == 1 and kb.stats()["catalog_observed"] == 0
 
 
 def test_export_import_round_trip_with_human_blocks(kb, kb_cfg, tmp_path):
@@ -162,35 +157,6 @@ def test_export_import_round_trip_with_human_blocks(kb, kb_cfg, tmp_path):
     assert c.human.notes == "from the zip" and c.evidence.seen == 1
 
 
-def test_a_rejected_case_also_stops_patch_replay_recipes_and_symbol_hints(kb, ws, profile):
-    """Round 10 (C5): `sbmig kb cases reject` used to stop only the case's own action / hints."""
-    from sbmig.core.models import FileChange, KBRecipe
-
-    from .helpers import make_case, recipe_yaml
-
-    target = "src/main/java/com/example/web/IpFilter.java"
-    ws.write(target, "class IpFilter { String ip(Request req) { return req.clientIp(); } }\n")
-    change = FileChange(path=target, op="modify", search="return req.clientIp();",
-                        replace="return req.remoteClientIp();")
-    case = make_case(signatures=[L1_REQ], signatures_generic=[EC_L2], changes=[change], symbol="clientIp",
-                     fix_labels=["method-rename"], replacement="clientIp → remoteClientIp")
-    kb.record_case(case)
-    kb.add_recipe(recipe_yaml("RenameClientIp"), KBRecipe(id="RenameClientIp", status="active", path="",
-                                                            signatures=[EC_L2]))
-    idx = kb.symbol_index()
-    idx.add(kb.get_case(next(iter(kb._load_index()["l2"][EC_L2]))))
-    idx.save()
-    kb.append_error_cases([rec("e1")], [])
-    m = kb.match(_cluster(), ws, profile)
-    assert m.replayable and m.recipe_ids == ["RenameClientIp"] and any(h.startswith("[symbol clientIp]")
-                                                                      for h in m.hints)
-    kb.catalog().set_human(CID, status="rejected")
-    m = kb.match(_cluster(), ws, profile)
-    assert m.case_hits == [] and m.replayable == [] and m.cases == [] and m.recipe_ids == []
-    assert not any(h.startswith(("[symbol", "[case")) for h in m.hints)
-    assert kb.catalog().rejected_signatures([EC_L2, L1_REQ, "other"]) == {EC_L2, L1_REQ}
-
-
 def test_first_catalog_build_of_a_fresh_kb_audits_created_cases(tmp_path):
     """2026-10-26: the first update of a fresh KB builds the whole catalog (no index yet) and wrote no `created`
     lines to audit.jsonl for its candidate cases; `kb reindex` still logs nothing for cases it merely recomputes."""
@@ -198,18 +164,24 @@ def test_first_catalog_build_of_a_fresh_kb_audits_created_cases(tmp_path):
 
     from sbmig.core.config import load_config
     from sbmig.kb.catalog import CaseCatalog
+    from sbmig.kb.scripts import ScriptStore
 
     from .test_catalog import rec
+    from .test_scripts import FIX_A
 
     kb = tmp_path / "kb"
     kb.mkdir()
     cfg = load_config(overrides={"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}},
-                                 "kb": {"dir": str(kb), "case_replace": True}})      # v1 learned replaces (off in v2)
-    r = rec("e1", run="r1", project="alpha")                       # resolved by an LLM text replace → candidate
+                                 "kb": {"dir": str(kb)}})
+    ScriptStore(kb, cfg).add(CID, EC_L2, FIX_A)                     # a proven fix script → candidate
+    ScriptStore(kb, cfg).credit(CID, 1, "improved", project="alpha")
+    r = rec("e1", run="r1", project="alpha")
     (kb / "errors.jsonl").write_text(r.model_dump_json() + "\n", encoding="utf-8")
     cat = CaseCatalog(kb, cfg)
     assert cat.update_from([r]) and (kb / "catalog" / "index.json").exists()
     lines = [json.loads(x) for x in (kb / "audit.jsonl").read_text(encoding="utf-8").splitlines()]
+    lines = [x for x in lines if x["event"] != "script"]           # the script store's own lines
     assert [(x["event"], x["reason"], x["after"]["status"]) for x in lines] == [("status", "created", "candidate")]
+    n = len((kb / "audit.jsonl").read_text(encoding="utf-8").splitlines())
     CaseCatalog(kb, cfg).rebuild()                                  # kb reindex: nothing new to log
-    assert len((kb / "audit.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+    assert len((kb / "audit.jsonl").read_text(encoding="utf-8").splitlines()) == n

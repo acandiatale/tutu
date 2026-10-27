@@ -6,14 +6,7 @@ from typer.testing import CliRunner
 
 from sbmig.core.models import CaseType, LibraryUsage, PomInfo, ProjectProfile, SourceStats
 from sbmig.plan import ADVISOR_CATALOG, ADVISOR_COVERAGE, ADVISOR_GATES, recipes_cli
-from sbmig.plan.catalog import (
-    GATES,
-    RecipeCatalog,
-    base_recipes,
-    builtin_catalog,
-    default_catalog,
-    reactive_rules,
-)
+from sbmig.plan.catalog import GATES, RecipeCatalog, builtin_catalog, default_catalog
 from sbmig.plan.planner import artifact_for
 
 REPO = Path(__file__).resolve().parents[2]
@@ -46,7 +39,6 @@ OLD_ADVISOR_COVERAGE = {
         "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_0",
     ],
-    "com.company.migrate.ServletToJakartaAndBoot": ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"],
     "org.openrewrite.java.migrate.UpgradeToJava21": ["org.openrewrite.java.migrate.javax.AddJaxbDependenciesWithRuntime"],
 }
 OLD_GATES = {
@@ -77,7 +69,8 @@ def test_catalog_loads_and_is_cached():
     assert len(cat) >= 15 and len(set(cat.ids())) == len(cat)
     e = cat.get("org.openrewrite.java.migrate.UpgradeToJava21")
     assert e is not None and e.origin == "openrewrite" and e.phase == "jdk21"
-    assert cat.get("com.company.migrate.SpringBoot41Version").origin == "project"
+    assert all(x.origin == "openrewrite" for x in cat.entries)               # v2: no project recipes
+    assert not any(x.id.startswith("com.company.") for x in cat.entries)
     assert cat.get("nope") is None
 
 
@@ -88,10 +81,16 @@ def test_repo_catalog_is_consistent_with_every_source(cfg):
     rs = cfg.openrewrite.recipes
     for rid in [*rs.jdk21, *rs.jakarta, *rs.spring_boot_4, *rs.spring_framework_7, *rs.spring_security_7, *rs.junit5]:
         assert rid in cat, rid
-    for ids in reactive_rules().values():
-        assert all(rid in cat for rid in ids)
-    for name, info in base_recipes(cfg.base_recipe_dir).items():
-        assert name in cat and all(u in cat for u in info["uses"])
+
+
+def test_catalog_check_passes_with_every_shipped_config():
+    """`sbmig recipes check` must stay green for the default, the company example and the local e2e config."""
+    from sbmig.core.config import load_config
+
+    for extra in ((), (REPO / "config" / "artifacts.example.yml",), (REPO / "config" / "artifacts.local-e2e.yml",)):
+        c = load_config(*extra, repo_root=REPO, overrides=None if extra else
+                        {"artifacts": {"parent": {"group_id": "unset", "artifact_id": "unset"}}})
+        assert RecipeCatalog.load(CATALOG).check(c) == [], extra
 
 
 # Round 4 (library advisories): the 4.0 umbrella's verified chain also includes these (rewrite-spring 6.37.1).
@@ -123,9 +122,6 @@ NEW_ADVISOR_COVERAGE = {
         OLD_ADVISOR_COVERAGE["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"] + ADVISORY_COVERS
         + ROUND10_BOOT_COVERS,
     "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0": ROUND10_FW7_COVERS,
-    "com.company.migrate.ServletToJakartaAndBoot": [
-        "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
-        "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10"],
 }
 
 
@@ -160,7 +156,6 @@ def test_artifact_lookup_and_coverage(cfg):
         "org.openrewrite.recipe:rewrite-testing-frameworks"
     assert cat.artifact_for("org.openrewrite.staticanalysis.CommonStaticAnalysis") == \
         "org.openrewrite.recipe:rewrite-static-analysis"                      # prefix fallback
-    assert cat.artifact_for("com.company.migrate.SpringBoot41Version") is None
     assert artifact_for("x.y.Z") is None
     cov = cat.covered_by({"org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"})
     assert cov["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"] == \
@@ -181,18 +176,20 @@ def test_check_reports_missing_ids_and_bad_entries(tmp_path, cfg):
     def mutate(d):
         d["recipes"].append({"id": "org.example.Foo", "origin": "openrewrite", "artifact": "org.example:rewrite-foo",
                              "gate": "is_quantum"})
-        d["recipes"].append({"id": "com.company.migrate.Ghost", "origin": "project",
-                             "file": "knowledge/recipes/base/spring-boot-41-version.yml"})
+        d["recipes"].append({"id": "com.company.migrate.Ghost", "origin": "project"})
+        for r in d["recipes"]:
+            if r["id"] == "org.openrewrite.java.migrate.UpgradeToJava21":
+                r["sets"] = ["jdk21", "jakarta"]
     # v2: the junit5 set is empty by default; a company config that opts back in must find the id in the catalog
     cfg.openrewrite.recipes.junit5 = ["org.openrewrite.java.testing.junit5.JUnit4to5Migration"]
     p = _temp_catalog(tmp_path, "org.openrewrite.java.testing.junit5.JUnit4to5Migration", mutate)
     problems = RecipeCatalog.load(p).check(cfg)
     text = "\n".join(problems)
     assert "openrewrite.recipes.junit5: org.openrewrite.java.testing.junit5.JUnit4to5Migration is not in the catalog" in text
-    assert "reactive rule junit4-to-junit5" in text
     assert "unknown gate 'is_quantum'" in text
     assert "artifact org.example:rewrite-foo is not in openrewrite.recipe_artifacts" in text
-    assert "com.company.migrate.Ghost: file knowledge/recipes/base/spring-boot-41-version.yml does not declare it" in text
+    assert "com.company.migrate.Ghost: origin 'project' is not supported" in text
+    assert "UpgradeToJava21: lists set 'jakarta' but openrewrite.recipes.jakarta does not contain it" in text
 
 
 def test_default_catalog_falls_back_when_missing(cfg, caplog):
@@ -200,19 +197,6 @@ def test_default_catalog_falls_back_when_missing(cfg, caplog):
     cat = default_catalog(cfg)
     assert cat.advisor_catalog() == NEW_ADVISOR_CATALOG
     assert any("not found" in r.message for r in caplog.records)
-
-
-def test_with_kb_merges_live_recipes(cfg, tmp_path):
-    from sbmig.core.models import KBRecipe
-
-    class _KB:
-        def list_recipes(self):
-            return [KBRecipe(id="com.company.kb.Fix1", status="candidate", path=str(tmp_path / "x.yml"),
-                             signatures=["sig"], success_count=2, fail_count=0, projects=["a", "b"])]
-    rows = default_catalog(cfg).with_kb(_KB())
-    kb = [r for r in rows if r["origin"] == "kb"]
-    assert kb == [dict(kb[0], id="com.company.kb.Fix1", status="candidate", success_count=2, projects=2)]
-    assert kb[0]["signatures"] == ["sig"]
 
 
 def test_cli_list_show_check(tmp_path):
@@ -225,11 +209,14 @@ def test_cli_list_show_check(tmp_path):
     res = r.invoke(recipes_cli, ["list", "--json"])
     import json
     rows = json.loads(res.output)
-    assert any(x["id"] == "com.company.migrate.ServletToJakartaAndBoot" for x in rows)
+    assert any(x["id"] == "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10" for x in rows)
+    assert not any("rules" in x or "file" in x for x in rows)
+    assert "--kb" not in r.invoke(recipes_cli, ["list", "--help"]).output
     res = r.invoke(recipes_cli, ["show", "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"])
     assert res.exit_code == 0
     assert "referenced_by.config_sets: jakarta" in res.output
-    assert "referenced_by.rules: javax-ee-to-jakarta" in res.output
+    assert "referenced_by.covered_by: org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0" in res.output
+    assert "referenced_by.rules" not in res.output
     assert r.invoke(recipes_cli, ["show", "org.example.Unknown"]).exit_code == 1
     res = r.invoke(recipes_cli, ["sets"])
     assert res.exit_code == 0 and "spring_boot:" in res.output
@@ -265,26 +252,10 @@ def test_advise_plan_uses_the_configured_catalog(tmp_path, cfg):
     assert any(f"ignored unknown recipe {jakarta}" in n for n in out.notes)
 
 
-def test_check_cross_checks_advisories(tmp_path, cfg):
-    def mutate(d):
-        for r in d["recipes"]:
-            if r["id"] == "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0":
-                r["advisories"] = ["springfox", "no-such-advisory"]
-            if r["id"] == "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1":
-                r["advisories"] = ["hystrix"]
-    p = _temp_catalog(tmp_path, "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing", mutate)
-    text = "\n".join(RecipeCatalog.load(p).check(cfg))
-    assert "advisory sleuth: recipe org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing " \
-        "is not in the catalog" in text
-    assert "lists advisory 'no-such-advisory' but no such advisory exists" in text
-    assert "UpgradeSpringCloud_2025_1: lists advisory 'hystrix' but that advisory does not use it" in text
-    assert "lists advisory 'springfox'" not in text
-
-
-def test_advisory_recipes_are_not_advisor_eligible_and_covered_by_the_umbrella(cfg):
+def test_library_migrations_are_not_advisor_eligible_and_covered_by_the_umbrella(cfg):
     cat = default_catalog(cfg)
     cov = cat.covered_by({"org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"})
     for rid in ADVISORY_COVERS:
         e = cat.get(rid)
-        assert e is not None and not e.advisor and e.advisories and rid not in ADVISOR_CATALOG
+        assert e is not None and not e.advisor and rid not in ADVISOR_CATALOG
         assert cov[rid] == "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"

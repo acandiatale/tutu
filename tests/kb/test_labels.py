@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import yaml
-
-from sbmig.core.models import GAV, BlockedItem, BlockReason, BuildError, ErrorKind, FileChange, KBCase, Phase
-from sbmig.kb.labels import compile_recipe, label_changes, symbol_for_blocked, symbol_for_errors
-from sbmig.kb.recipes import validate_recipe_yaml
+from sbmig.core.models import GAV, BuildError, ErrorKind, FileChange
+from sbmig.kb.labels import label_changes, symbol_for_errors
 
 JAVA = "src/main/java/com/example/A.java"
 
@@ -34,19 +31,6 @@ def err(
     **kw,
 ) -> BuildError:
     return BuildError(kind=kind, message=message, symbol=symbol, location=location, **kw)
-
-
-def case_of(changes, errors=None) -> KBCase:
-    res = label_changes(changes, errors or [])
-    return KBCase(
-        id="20260101-abc",
-        changes=changes,
-        errors=errors or [],
-        fix_labels=res.labels,
-        replacement=res.replacement,
-        symbol=res.symbol,
-        signatures_generic=["compile|x|Y"],
-    )
 
 
 # --------------------------------------------------------------------------- java labels
@@ -240,149 +224,21 @@ def test_symbol_extraction():
     assert symbol_for_errors([res]) == "com.company:legacy"
     assert symbol_for_errors([err(None, "x", signature_generic="compile|cannot_access|Foo")]) == "Foo"
     assert symbol_for_errors([]) == ""
-    b = BlockedItem(
-        id="b",
-        reason=BlockReason.EXTERNAL_JAVAX_API,
-        phase=Phase.SPRING,
-        cluster_id="c",
-        owner_class="com.company.web.LegacyFilter",
-        artifact=GAV(group_id="com.company", artifact_id="legacy-web"),
-    )
-    assert symbol_for_blocked(b) == "com.company.web.LegacyFilter"
-    assert symbol_for_blocked(b.model_copy(update={"owner_class": None})) == "com.company:legacy-web"
 
 
-# --------------------------------------------------------------------------- compile_recipe
-def _recipe(text: str) -> dict:
-    ok, errors, doc = validate_recipe_yaml(text)
-    assert ok, errors
-    return doc
+def test_method_reference_rename_is_method_rename():
+    """(from the round-5 method-rename tests) a renamed method reference is a `method-rename` with its owner."""
+    ch = mod("    list.forEach(helper::oldName);", "    list.forEach(helper::newName);")
+    e = BuildError(kind=ErrorKind.COMPILE, message="invalid method reference", symbol="method oldName(String)",
+                   location="class Helper")
+    r = label_changes([ch], [e])
+    assert r.labels == ["method-rename"]
+    assert r.details["method_renames"] == [{"owner": "Helper", "old": "oldName", "new": "newName"}]
+    assert r.replacement == "Helper.oldName → newName"
+    # a single `:` (ternary) before the token is not a method reference
+    assert label_changes([mod("x = c ? a : old;", "x = c ? a : fresh;")]).labels != ["method-rename"]
 
 
-def test_compile_type_rename():
-    changes = [
-        mod(
-            "import org.springframework.boot.jackson.JsonComponent;",
-            "import org.springframework.boot.jackson.JacksonComponent;",
-        ),
-        mod("@JsonComponent\nclass M {", "@JacksonComponent\nclass M {"),
-    ]
-    doc = _recipe(compile_recipe(case_of(changes)))
-    assert doc["name"] == "JsonComponentToJacksonComponent"
-    assert doc["recipeList"] == [
-        {
-            "org.openrewrite.java.ChangeType": {
-                "oldFullyQualifiedTypeName": "org.springframework.boot.jackson.JsonComponent",
-                "newFullyQualifiedTypeName": "org.springframework.boot.jackson.JacksonComponent",
-            }
-        }
-    ]
-    assert "no LLM" in doc["description"]
-
-
-def test_compile_package_rename():
-    ch = mod(
-        "import javax.servlet.Filter;\nimport javax.servlet.ServletRequest;",
-        "import jakarta.servlet.Filter;\nimport jakarta.servlet.ServletRequest;",
-    )
-    doc = _recipe(compile_recipe(case_of([ch])))
-    assert doc["recipeList"] == [
-        {
-            "org.openrewrite.java.ChangePackage": {
-                "oldPackageName": "javax.servlet",
-                "newPackageName": "jakarta.servlet",
-            }
-        }
-    ]
-
-
-def test_compile_dependency_add_and_version_and_replace():
-    add = mod(
-        "<dependencies>\n</dependencies>",
-        "<dependencies>\n" + dep("org.foo", "bar-baz", "1.2", "test") + "\n</dependencies>",
-        "pom.xml",
-    )
-    doc = _recipe(compile_recipe(case_of([add])))
-    assert doc["name"] == "AddBarBaz"
-    assert doc["recipeList"] == [
-        {
-            "org.openrewrite.java.dependencies.AddDependency": {
-                "groupId": "org.foo",
-                "artifactId": "bar-baz",
-                "version": "1.2",
-                "scope": "test",
-            }
-        }
-    ]
-    ver = mod(dep("com.foo", "bar", "1.0"), dep("com.foo", "bar", "2.0.1"), "pom.xml")
-    doc = _recipe(compile_recipe(case_of([ver])))
-    assert doc["recipeList"] == [
-        {
-            "org.openrewrite.java.dependencies.UpgradeDependencyVersion": {
-                "groupId": "com.foo",
-                "artifactId": "bar",
-                "newVersion": "2.0.1",
-            }
-        }
-    ]
-    rep = mod(
-        dep("javax.servlet", "javax.servlet-api"), dep("jakarta.servlet", "jakarta.servlet-api"), "pom.xml"
-    )
-    doc = _recipe(compile_recipe(case_of([rep])))
-    assert list(doc["recipeList"][0]) == ["org.openrewrite.java.dependencies.ChangeDependency"]
-
-
-def test_compile_plugin_version_and_property():
-    old = "<plugin>\n<artifactId>maven-war-plugin</artifactId>\n<version>2.6</version>\n</plugin>"
-    doc = _recipe(compile_recipe(case_of([mod(old, old.replace("2.6", "3.4.0"), "pom.xml")])))
-    assert doc["recipeList"][0]["org.openrewrite.maven.UpgradePluginVersion"]["newVersion"] == "3.4.0"
-    doc = _recipe(
-        compile_recipe(
-            case_of(
-                [
-                    mod(
-                        "<lombok.version>1.18.20</lombok.version>",
-                        "<lombok.version>1.18.38</lombok.version>",
-                        "pom.xml",
-                    )
-                ]
-            )
-        )
-    )
-    assert doc["recipeList"] == [
-        {"org.openrewrite.maven.ChangePropertyValue": {"key": "lombok.version", "newValue": "1.18.38"}}
-    ]
-
-
-def test_compile_spring_property_rename():
-    ch = mod("spring.redis.host=x", "spring.data.redis.host=x", "src/main/resources/application.properties")
-    doc = _recipe(compile_recipe(case_of([ch])))
-    assert doc["recipeList"] == [
-        {
-            "org.openrewrite.java.spring.ChangeSpringPropertyKey": {
-                "oldPropertyKey": "spring.redis.host",
-                "newPropertyKey": "spring.data.redis.host",
-            }
-        }
-    ]
-    assert yaml.safe_load(compile_recipe(case_of([ch])))["type"] == "specs.openrewrite.org/v1beta/recipe"
-
-
-def test_compile_none_for_project_owned_logic_or_ambiguous():
+def test_project_owned_import_rename_is_still_labelled():
     own = mod("import com.example.util.OldHelper;", "import com.example.util.NewHelper;")
     assert label_changes([own]).labels == ["import-rename"]
-    assert compile_recipe(case_of([own])) is None  # project-owned FQCN
-    logic = mod("http.csrf().disable();", "http.csrf(c -> c.disable());")
-    assert compile_recipe(case_of([logic])) is None  # logic change
-    mixed = [mod("import org.lib.Old;", "import org.lib.New;"), mod("a();\nb();", "a();")]
-    assert compile_recipe(case_of(mixed)) is None  # mechanical + removed code
-    two = mod("import org.lib.A;\nimport org.other.B;", "import org.lib2.X;\nimport org.other2.Y;")
-    assert compile_recipe(case_of([two])) is None  # not 1:1
-    managed = mod(
-        "<dependencies>\n</dependencies>",
-        "<dependencies>\n" + dep("org.foo", "bar") + "\n</dependencies>",
-        "pom.xml",
-    )
-    assert compile_recipe(case_of([managed])) is None  # AddDependency needs a version
-    prop = mod("<v>${a}</v>", "<v>${b}</v>", "pom.xml")
-    assert compile_recipe(case_of([prop])) is None  # '$' never passes validation

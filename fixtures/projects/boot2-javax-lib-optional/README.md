@@ -14,8 +14,8 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
   mvn -q -DskipTests package
 ```
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* `legacy-web-lib` is bumped **right after the spring rewrite** (`plan.optional_bump_phase = spring`), so the jakarta
-  call sites compile against 2.0.0: `optional_bumped` contains `com.company.legacy:legacy-web-lib 1.0.0→2.0.0`
-* nothing blocked, `success = true`, exit code 0, `llm_usage.calls == 0`
+`legacy-web-lib` is bumped inside the restructure (v2: the optional bump is part of it), so the jakarta call sites
+compile against 2.0.0 at the first build: `optional_bumped` contains `com.company.legacy:legacy-web-lib 1.0.0→2.0.0`;
+nothing blocked, `success = true`, exit code 0, **1 LLM call** (the structure review, verdict `ok`), no fix script.

@@ -23,35 +23,19 @@ FLAG_HELP = {
     "dry-run": "dry run: decisions were computed but nothing was applied",
     "aborted": "the run stopped early (see follow-ups for the reason)",
     "mvn-not-found": "Maven was not runnable on this machine",
-    "llm-unavailable": "the LLM failed twice in a row (transport/config); LLM-only clusters are listed as blocked "
-                       "(llm_unavailable) — handlers and recipes still ran",
+    "llm-unavailable": "the LLM failed twice in a row (transport/config); the cases still needing a fix script are "
+                       "listed as blocked (llm_unavailable) — stored scripts and the final build still ran",
     "aborted:parent-not-found": "the configured in-house parent POM is not resolvable — nothing can build until it is "
                                 "(see Blocked)",
-    "enforcer-relaxed": "a maven-enforcer rule that fails on JDK 21 was relaxed in the pom",
-    "enforcer-skipped": "maven-enforcer is skipped (-Denforcer.skip=true) — review the rules",
-    "werror-removed": "-Werror was removed from the compiler configuration (JDK 21 deprecations would be fatal)",
-    "managed-versions-carried-over": "some dependencies were pinned at the version the as-is parent managed, because "
-                                     "the new parent / Boot BOM no longer manages them (⚠ in Handover) — the owners "
-                                     "must confirm or replace them",
     "rewrite-parse-problems": "OpenRewrite could not parse some source files (see the phase notes / rewrite log): "
-                              "recipes that need type information skipped them; the source handlers and the fix loop "
-                              "covered what the build found",
-    "jakarta-leftovers-renamed": "javax.* Jakarta EE references the recipes had left in the sources were renamed to "
-                                 "jakarta.* by the jakarta-namespace-sweep handler (string literals / resource files "
-                                 "are listed as follow-ups)",
-    "jsp-javax-renamed": "javax.* Jakarta EE references inside JSP / tag files (page imports, scriptlets, useBean) "
-                         "were renamed to jakarta.* by the jakarta-namespace-sweep handler — JSPs are compiled by "
-                         "Tomcat at runtime, so the build cannot prove them: smoke-test the pages",
-    "spring-data-crud-restored": "repository interfaces that extended only PagingAndSortingRepository got "
-                                 "ListCrudRepository<T, ID> back (Spring Data 3 removed its CRUD methods)",
+                              "recipes that need type information skipped them; the fix loop covered what the build "
+                              "found",
     "javax-api-on-classpath": "javax EE API jars are still on the resolved classpath after the migration (section "
                               "\"javax API jars still on the classpath\"): the direct dependencies that drag them in "
                               "are compiled against javax and need Jakarta builds",
     "web-xml-registered": "web.xml servlets / filters / listeners / error pages were turned into a generated "
                           "WebXmlRegistrations @Configuration in the boot module (web.xml itself is not read by "
                           "Spring Boot) — verify the mappings in the Handover",
-    "jakarta-library-bumped": "a third-party library with a known jakarta.* release was raised to it "
-                              "(knowledge/libraries/jakarta_libraries.yml, handler jakarta-library-floor)",
     "aggregator-generated": "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)",
     "ear-without-modules": "the input was an EAR pom whose modules are not in the directory (e.g. APP/EAR alone): run sbmig on the directory that contains every module",
     "ear-module-dropped": "an EAR module (application-server packaging) was dropped: its modules were merged and the boot module is deployed instead; descriptors are kept under asis-ear/ and the context root is a follow-up",
@@ -63,7 +47,6 @@ FLAG_HELP = {
                         "gateway rejected the key / model): LLM fixes were skipped — check with `sbmig llm-probe`",
 }
 FLAG_PREFIX_HELP = {
-    "source-encoding-set:": "legacy source encoding detected; project.build.sourceEncoding was set accordingly",
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
     "aborted:": "the run stopped early (see Blocked / follow-ups)",
     "infra:": "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not "
@@ -158,7 +141,7 @@ def _javax_what_to_do(j: Any, groups: list[str], lang: str = "en") -> str:
             return tr(lang, "in-house → Jakarta build")
         return tr(lang, "upgrade / replace")
     if j.declared:
-        return tr(lang, "remove the declaration (handler dependency-relocation)")
+        return tr(lang, "remove the declaration from the pom")
     return tr(lang, "upgrade / replace")
 
 
@@ -224,15 +207,8 @@ def script_label(a: FixAttempt) -> str:
 
 
 def _what(a: FixAttempt, lang: str = "en") -> str:
-    d = a.decision
-    if is_script_attempt(a):                 # v2: the case's fix script (stored version, augmented or new)
+    if is_script_attempt(a):                 # the case's fix script (stored version, augmented or new)
         return script_label(a)
-    if d.handler_id:
-        return tr(lang, "handler `{handler}`", handler=d.handler_id)
-    if d.recipe_ids:
-        return ", ".join(f"`{r.rsplit('.', 1)[-1]}`" for r in d.recipe_ids)
-    if d.kb_case_ids:
-        return tr(lang, "KB case {cases}", cases=", ".join(d.kb_case_ids))
     via = f"`{a.model}`" if a.model else "-"
     if a.advisory_ids:                       # round 6: the prompt carried these advisories' migration guidance
         via += tr(lang, " + advisory {ids}", ids=", ".join(a.advisory_ids))
@@ -270,9 +246,10 @@ def _v(v: Optional[str]) -> str:
 
 
 def _what_we_did(f: AdvisoryFinding, lang: str = "en") -> str:
-    if f.recipes:
-        src = {"plan": tr(lang, "in the plan"), "advisory": tr(lang, "added for this advisory")}.get(f.recipe_source, "")
-        return ", ".join(f"`{r.rsplit('.', 1)[-1]}`" for r in f.recipes) + (f" ({src})" if src else "")
+    """Advisories are guide-only: the library was replaced during the run (the plan's recipes / fix scripts) or the
+    build kept the as-is version."""
+    if f.outcome == "replaced":
+        return tr(lang, "replaced during the run")
     return tr(lang, "built with the as-is version pinned")
 
 
@@ -359,8 +336,8 @@ def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
             L.append("")
     if findings:
         L += [tr(lang, "### Libraries needing your attention"), ""]
-        L += [tr(lang, "| library | as-is | status | policy | what we did | outcome | what you do next | docs |"),
-              "|---|---|---|---|---|---|---|---|"]
+        L += [tr(lang, "| library | as-is | status | what we did | outcome | what you do next | docs |"),
+              "|---|---|---|---|---|---|---|"]
         outcomes = {"replaced": tr(lang, "✅ replaced"), "still-present": tr(lang, "⚠ still present")}
         for f in findings:
             nxt = f.followup or f.summary
@@ -370,7 +347,7 @@ def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
             docs = ", ".join(f"[{i}]({d})" for i, d in enumerate(f.docs[:3], 1)) or "-"
             outcome = outcomes.get(f.outcome, f.outcome)
             L.append(f"| **{_cell(f.library, 60)}** | {_cell(f.detected_version or '-', 40)} | {f.status} | "
-                     f"{f.policy} | {_cell(_what_we_did(f, lang), 160)} | {outcome} | {_cell(nxt, 400)} | {docs} |")
+                     f"{_cell(_what_we_did(f, lang), 160)} | {outcome} | {_cell(nxt, 400)} | {docs} |")
         L.append("")
     if h is not None and h.merge_conflicts:
         L += [tr(lang, "**Merge conflicts** (multi-module merge: first module in `<modules>` order wins)"), ""]
@@ -394,8 +371,7 @@ ERROR_CASE_MAX_ROWS = 40
 _STATUS_COUNT_ORDER = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
 _STATUS_ROW_ORDER = {s: i for i, s in enumerate(("unresolved", "blocked", "not_visible", "resolved",
                                                  "resolved_indirectly"))}
-_METHOD_ORDER = ("handler", "recipe", "kb_patch", "llm", "script", "script_reuse", "script_augment", "plan_step",
-                 "none")
+_METHOD_ORDER = ("script", "script_reuse", "script_augment", "plan_step", "none")   # others (old records) follow
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 
 
@@ -478,10 +454,6 @@ def error_case_lines(r: RunReport, lang: str = "en") -> list[str]:
          tr(lang, "- by status: {counts}", counts=_count_text(by_status, _STATUS_COUNT_ORDER))]
     if by_method:
         L.append(tr(lang, "- fixed by (resolved errors): {counts}", counts=_count_text(by_method, _METHOD_ORDER)))
-    text_replace = int(counts.get("llm_text_replace") or 0)
-    if text_replace > 0:
-        L.append(tr(lang, "- {n} LLM fix(es) were plain text replaces — candidates for a deterministic rule "
-                          "(`sbmig kb errors replace-candidates`)", n=text_replace))
     L += ["", tr(lang, "| status | where | message | how resolved / why not | attempts |"), "|---|---|---|---|---|"]
     rows = sorted(cases, key=lambda e: _STATUS_ROW_ORDER.get(e.status, len(_STATUS_ROW_ORDER)))
     for e in rows[:ERROR_CASE_MAX_ROWS]:
@@ -492,8 +464,8 @@ def error_case_lines(r: RunReport, lang: str = "en") -> list[str]:
         L += ["", tr(lang, "… {n} more — see `error_cases.csv`", n=len(rows) - ERROR_CASE_MAX_ROWS)]
     L += ["", "_" + tr(lang, "Every error with its full history: `error_cases.csv` (opens in Excel) and "
                              "`error_cases.jsonl` in the run directory; every fix attempt with its diff: "
-                             "`fix_attempts.jsonl`. Across projects: `sbmig kb errors` (`list`, `summary`, "
-                             "`replace-candidates`).") + "_", ""]
+                             "`fix_attempts.jsonl`. Across projects: `sbmig kb errors` (`list`, `summary`).") + "_",
+          ""]
     return L
 
 
@@ -765,7 +737,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
                      f"{tr(lang, 'yes') if x.ok else tr(lang, 'no: {error}', error=_cell(x.error, 80))} |")
         L.append("")
     struct = [n for pr in r.phases for n in pr.notes
-              if n.startswith(("restructure.", "handlers ")) or "mandatory added" in n]
+              if n.startswith("restructure.") or "mandatory added" in n]
     if struct:
         L.append(tr(lang, "Restructure / deterministic edits:"))
         L += [f"- {_cell(n, 400)}" for n in struct]
@@ -804,22 +776,6 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
 
     # ---- LLM usage and cost (2026-10-22: the company wants the API cost per project)
     L += cost_lines(r, lang)
-
-    # ---- KB
-    L.append(tr(lang, "## Knowledge base"))
-    L.append("")
-    h = r.harvest
-    if h is None:
-        L.append(tr(lang, "Nothing harvested."))
-    else:
-        L.append(tr(lang, "- cases created: {x}", x=", ".join(h.cases_created) or "-"))
-        L.append(tr(lang, "- recipe candidates created: {x}", x=", ".join(h.candidates_created) or "-"))
-        L.append(tr(lang, "- recipes credited: {x}", x=", ".join(h.recipes_credited) or "-"))
-        L += [f"- {n}" for n in h.notes]
-    used = sorted({rid for pr in r.phases for a in pr.attempts for rid in a.decision.recipe_ids})
-    if used:
-        L.append(tr(lang, "- recipes run by triage: {x}", x=", ".join(f"`{x}`" for x in used)))
-    L.append("")
 
     notes = [(pr.phase.value, n) for pr in r.phases for n in pr.notes]
     if notes or (r.plan and r.plan.notes):

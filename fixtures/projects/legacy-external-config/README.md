@@ -13,7 +13,7 @@
   * `web.xml`: `contextConfigLocation` (rule-skipped: the XML is imported via `@ImportResource`) and
     `<context-param>catalog.region=kr</context-param>` (→ `server.servlet.context-parameters.catalog.region=kr`)
 * `jackson-databind` 2.13.5 and `slf4j-api` 1.7.36 (optional artifacts → bump); no `WebMvcConfigurerAdapter`, so the
-  run needs no LLM
+  run needs no fix script
 * tests: one plain JUnit 4 test (no Spring context), so the test phase runs without any container value
 
 ## Build as-is
@@ -23,7 +23,8 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
   mvn -q -DskipTests package
 ```
 
-Expected migration result: builds (exit 0, 0 LLM calls); `module/boot-jar/src/main/resources/application.properties`
+Expected (v2, `expected.json` → `expect`): builds (exit 0, **1 LLM call** — the structure review, one warning on the
+`spring.version` property left in the root pom; no fix script); `module/boot-jar/src/main/resources/application.properties`
 gets the `# --- sbmig externalized-config` block with `mail.host`, `catalog.home`, `spring.datasource.*` as
 `__SET_ME__` and `server.servlet.context-parameters.catalog.region=kr`; the Handover lists them under
 "Properties to set before running".

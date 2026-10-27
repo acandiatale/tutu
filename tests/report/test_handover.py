@@ -87,8 +87,7 @@ EFFECTIVE = {"managed": {"org.apache.commons:commons-lang3": "3.12.0",
 def findings() -> list[AdvisoryFinding]:
     return [
         AdvisoryFinding(advisory_id="springfox", library="springfox", status="eol", title="Springfox is discontinued",
-                        policy="recipe", detected_version="2.9.2", artifacts=["io.springfox:springfox-swagger2"],
-                        recipes=["org.openrewrite.java.springdoc.SwaggerToSpringDoc"], recipe_source="advisory",
+                        policy="guide", detected_version="2.9.2", artifacts=["io.springfox:springfox-swagger2"],
                         outcome="replaced", replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui",
                         replacement_version="3.x", followup="check the Swagger UI path and the OpenAPI groups",
                         docs=["https://springdoc.org/#migrating-from-springfox"]),
@@ -103,14 +102,12 @@ def make_report(**kw) -> RunReport:
     t0 = datetime(2026, 10, 18, tzinfo=timezone.utc)
     notes = ["restructure.apply (layout): 3 file(s) changed, 1 moved, 2 generated; mandatory added: "
              "com.company:company-logging; optional bumped: org.projectlombok:lombok 1.18.20→1.18.38"]
-    att = FixAttempt(id="a1", phase=Phase.RESTRUCTURE, iteration=1, cluster_id="c1",
-                     decision=TriageDecision(cluster_id="c1", kind=DecisionKind.HANDLER,
-                                             handler_id="carry-over-managed-version"),
-                     notes=["org.apache.commons:commons-lang3 pinned to 3.12.0 (as-is effective pom) — it was "
-                            "managed by the as-is parent"])
+    att = FixAttempt(id="a1", phase=Phase.VERIFY, iteration=1, cluster_id="case:c1", outcome="build_ok",
+                     decision=TriageDecision(cluster_id="case:c1", kind=DecisionKind.SCRIPT),
+                     script_mode="new", script_case_id="c1", script_version=1)
     pr = PhaseResult(phase=Phase.RESTRUCTURE, notes=notes, attempts=[att])
     base = dict(run_id="r1", project_name="demo", case_type=CaseType.SPRING_BOOT, started_at=t0, finished_at=t0,
-                success=True, phases=[pr], advisories=findings(), flags=["managed-versions-carried-over"],
+                success=True, phases=[pr], advisories=findings(), flags=["tests-not-compiled"],
                 manual_followups=["web.xml not migrated", "Hystrix is discontinued: replace @HystrixCommand with "
                                                           "Resilience4j circuit breakers"])
     base.update(kw)
@@ -134,7 +131,7 @@ def test_versions_and_reasons(tmp_path, cfg):
     assert lang.carried_over and lang.before_source == "managed" and lang.reason.startswith("carried over")
     assert lang.pom == "module/comp-jar/pom.xml"
     assert by[("dependency", "org.projectlombok:lombok")].reason == "optional bump"
-    assert by[("dependency", "com.google.guava:guava")].reason == "recipe/handler"
+    assert by[("dependency", "com.google.guava:guava")].reason == "recipe / fix script"
     assert ("dependency", "org.springframework.boot:spring-boot-starter-web") not in by   # managed → managed
     assert ("dependency", "com.netflix.hystrix:hystrix-core") not in by                   # unchanged
     assert h.carried_over == [lang]
@@ -154,7 +151,8 @@ def test_from_here_order_and_dedupe(tmp_path, cfg):
     h = build_handover(as_is_profile(), final_tree(tmp_path), report, effective=EFFECTIVE, cfg=cfg)
     fh = h.from_here
     assert fh[0].startswith("Hystrix is discontinued: replace @HystrixCommand") and "resilience4j" in fh[0]
-    assert fh[1].startswith("verify springfox → org.springdoc:springdoc-openapi-starter-webmvc-ui (recipe ")
+    assert fh[1].startswith("verify springfox → org.springdoc:springdoc-openapi-starter-webmvc-ui "
+                            "(replaced during the run)")
     assert fh[2].startswith("org.apache.commons:commons-lang3 pinned at 3.12.0 — the new parent/Boot BOM")
     assert fh[3] == "1 cluster(s) blocked — see Blocked"
     assert fh[4].startswith("1 unresolved error(s)")
@@ -214,8 +212,9 @@ def test_rendered_section(tmp_path, cfg):
     md = render_markdown(report)
     assert "## Handover — what we replaced, what is yours" in md
     assert "| ⚠ dependency `org.apache.commons:commons-lang3` | 3.12.0 (managed) | 3.12.0 | carried over" in md
-    assert "| **springfox** | 2.9.2 | eol | recipe | `SwaggerToSpringDoc` (added for this advisory) | ✅ replaced |" in md
-    assert "| **hystrix** | 1.5.18 | eol | guide | built with the as-is version pinned | ⚠ still present |" in md
+    assert "| **springfox** | 2.9.2 | eol | replaced during the run | ✅ replaced |" in md
+    assert "| **hystrix** | 1.5.18 | eol | built with the as-is version pinned | ⚠ still present |" in md
+    assert "| policy |" not in md and "added for this advisory" not in md
     assert "1. Hystrix is discontinued" in md
 
 
@@ -250,7 +249,7 @@ def test_from_here_lists_llm_rewritten_files(tmp_path, cfg):
 
 def test_attempts_table_shows_advisory_ids(tmp_path, cfg):
     att = FixAttempt(id="s1", phase=Phase.SPRING, iteration=1, cluster_id="compile:1", model="m1",
-                     decision=TriageDecision(cluster_id="compile:1", kind=DecisionKind.LLM_FIX),
+                     decision=TriageDecision(cluster_id="compile:1", kind=DecisionKind.ESCALATE),
                      advisory_ids=["hystrix"], applied=True, outcome="build_ok", analysis="ported")
     report = make_report(phases=[PhaseResult(phase=Phase.SPRING, attempts=[att])])
     md = render_markdown(report)

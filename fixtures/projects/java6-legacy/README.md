@@ -9,22 +9,18 @@ tree on JDK 21.
   `config/artifacts.local-e2e.yml`, so it takes the optional-bump path (→ 3.17.0).
 * `Codec` uses `sun.misc.BASE64Encoder` / `BASE64Decoder`. These are JDK internals and `javac --release 21` does not
   see them. OpenRewrite's `UseJavaUtilBase64` (inside `UpgradeToJava21`) cannot resolve the types on JDK 21 and
-  leaves the class alone. Since round 10 (2026-10-26) the handler `jdk-base64-shim` generates
-  `sbmig.compat.BASE64Encoder` / `BASE64Decoder` (same output as the JDK 8 classes, `decodeBuffer` still
-  `throws IOException`) and repoints the imports, so the call sites compile unchanged without an LLM call (flag
-  `jdk-base64-shimmed`). Before round 10 the `jdk-removed-apis` advisory hint + the replayed LLM answer
-  (`replay/llm-001.json`, kept for runs with the handler switched off) ported the class to `java.util.Base64`.
+  leaves the class alone, so the build reports `cannot find symbol BASE64Encoder / BASE64Decoder` (the advisory
+  `jdk-removed-apis` gives the fix script its hint).
 * `Dates` uses `javax.xml.bind.DatatypeConverter.printDateTime/parseDateTime`. JAXB was removed from the JDK in 11.
-  The pre-emptive handler `jaxb-runtime-add` adds `jaxb-api` + `jaxb-runtime` 2.3. `UpgradeToJava21`
-  (`AddJaxbAPIDependencies`) turns the API into `jakarta.xml.bind:jakarta.xml.bind-api` 2.3.3. The spring-phase
-  `JavaxMigrationToJakarta` moves the import to `jakarta.xml.bind` (API 3.0.1, `jaxb-runtime` 3.0.2).
+  The one OpenRewrite run moves the import to `jakarta.xml.bind`; the build then misses the JAXB API — the same
+  case as `pure-java` (`compile|package_does_not_exist|jakarta.xml.bind`, `7a52b1cea8`).
 * `LedgerLines` is written in pre-Java-7 style: no diamond, no try-with-resources, an anonymous `Comparator`.
   It compiles unchanged on 21.
-* `LedgerUtilsTest` is a single JUnit 4 test (→ JUnit 5 by `JUnit4to5Migration`).
+* `LedgerUtilsTest` is a single JUnit 4 test (not compiled by the migration build: `-Dmaven.test.skip=true`).
 
-`sbmig.e2e.yml` replays the LLM (`llm.provider: fake`, `replay/`) and uses its own KB (`out/e2e/kb-java6-legacy`);
-the expected run makes no LLM call any more (`max_llm_calls: 0`). `llm-002.json` answered the KB harvest's
-recipe-candidate call with `NONE`.
+`sbmig.e2e.yml` replays the LLM (`llm.provider: fake`, `replay/`: the review, the bootclasspath script, the Base64
+script — **no answer for the JAXB case**) and shares the KB `out/e2e/kb-jaxb` with `pure-java` (the reuse scenario,
+`expect.kb.after: pure-java`: run `--only pure-java,java6-legacy` to run the pair alone).
 
 ## Build as-is
 
@@ -36,8 +32,16 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 JDK 8 accepts `-source 1.6` with an "obsolete" warning. `mvn -q clean package` (without `-DskipTests`) also passes
 the 3 tests.
 
-Expected migration result: release 21, compiler plugin 3.16.0, surefire 3.5.3, commons-lang3 3.17.0, JAXB on
-jakarta, `Codec` on the generated `sbmig.compat.BASE64Decoder` / `BASE64Encoder` (0 LLM calls, flag
-`jdk-base64-shimmed`), and the `jdk-removed-apis` advisory `replaced`.
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-The pom also carries a JDK 6-era compiler setup (`<fork>true</fork>` + `<compilerArguments><bootclasspath>${java.home}/lib/rt.jar</bootclasspath>`): javac 21 rejects `-bootclasspath` together with release 21, so the pre-emptive handler `compiler-legacy-config` strips it before the first build (round 9; post-checks assert no `<bootclasspath>` / `<fork>` remains in any pom).
+Success, exit 0, **3 LLM calls** (review + 2 new scripts) and **one reuse**. Round 1: javac 21 rejects the JDK 6
+compiler `<bootclasspath>` together with `--release 21` (file-less, case `c5d089fead`) → a new script drops it
+(`improved`). Round 2: the JAXB case of `Dates.java` **reuses pure-java's stored v1 without an LLM call** (`reuse`;
+the meta ends with 2 successes in 2 projects, error record `fix_method: script_reuse`); the Base64 cases of that round
+wait, because the reused script changed their module's pom. Round 3: a new script ports `Codec` from
+`sun.misc.BASE64*` to `java.util.Base64` → `build_ok`. Result: release 21, commons-lang3 3.17.0, JAXB on jakarta
+with `jakarta.xml.bind-api` + `jaxb-runtime` unversioned in `module/comp-jar/pom.xml`, no `<bootclasspath>` /
+`<source>1.6` left in any pom, advisory `jdk-removed-apis` = `guide` (hint + Handover).
+
+The pom's JDK 6-era compiler setup (`<fork>true</fork>` + `<compilerArguments><bootclasspath>${java.home}/lib/rt.jar</bootclasspath>`)
+is what round 1 fixes (v1 stripped it with the pre-emptive handler `compiler-legacy-config`).

@@ -20,9 +20,9 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 i.e. the standard `mvn -q -DskipTests package` plus `-Dmaven.repo.local.tail=…`. Without it the build fails in
 dependency resolution — which is exactly what sbmig sees. **Never** `mvn install` `fixtures/libs/ghost-lib`.
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* **blocked**: `reason = artifact_not_found`, `artifact = com.company.nonexistent:ghost-lib` (the LLM must not
-  invent a version; 0 LLM calls), suggestion "proxy it in Nexus or fix the coordinates"
-* `success = false`, exit code **2**, `llm_usage.calls == 0`, and the run is short (no fix loop):
-  `max_duration_s` in `expected.json`
+**Blocked** `artifact_not_found` `com.company.nonexistent:ghost-lib` (case `dependency_resolution|com.company.nonexistent:ghost-lib`)
+after the blocked policy's 2 fix-script requests, which the replayed LLM answers without a script (a script cannot make
+the artifact exist, and the LLM must not invent a version); `success = false`, exit code **2**, 3 LLM calls (review +
+2), and the run stays short: `max_duration_s` 240 in `expected.json`.

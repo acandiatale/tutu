@@ -10,7 +10,7 @@ A finding matches a cluster when any error's message / symbol / location / raw t
   (c) the replacement artifact (`g:a` or its artifactId, e.g. a missing `spring-cloud-starter-circuitbreaker-resilience4j`).
 
 One hint per matched finding (order of `findings`):
-    "<library> (<status>, policy <policy>): replace with <replacement>[ (<replacement_version>)]. <followup>"
+    "<library> (<status>): replace with <replacement>[ (<replacement_version>)]. <followup>"
 (≤ HINT_MAX chars; the title stands in when there is no follow-up) plus, when the advisory references a note
 (`notes: knowledge/notes/<file>.md`, carried on the finding as "see <path>"), an excerpt of that note's section:
 a `## fix-loop: <library>` heading wins (convention for loop guidance written for this purpose), otherwise the
@@ -159,7 +159,7 @@ def _note_excerpt(f: AdvisoryFinding, notes_root: Optional[Path]) -> str:
 
 
 def hint_text(f: AdvisoryFinding, notes_root: Optional[Path] = None) -> str:
-    head = f"{f.library} ({f.status}, policy {f.policy})"
+    head = f"{f.library} ({f.status})"
     if f.replacement:
         head += f": replace with {f.replacement}"
         if f.replacement_version:

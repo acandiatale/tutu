@@ -2,7 +2,7 @@
 
 Public API (docs/INTERFACES.md):
     OpenRewriteRunner(ws, cfg, kb=None).run(recipes, *, extra_recipe_files=(), module=None, dry_run=False, label="")
-    compose_rewrite_yaml(recipes, *, base_dir, kb_files=(), extra_files=(), target=None) -> str
+    compose_rewrite_yaml(recipes, *, extra_files=(), target=None) -> str
     resolve_recipe_artifact_versions(cfg, mvn_env, *, artifacts=None, cache_path=None, work_dir=None) -> {"g:a": v}
 """
 from .compose import COMPOSITE_RECIPE_ID, RecipeCompositionError, compose_rewrite_yaml, recipe_documents

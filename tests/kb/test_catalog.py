@@ -1,5 +1,6 @@
-"""sbmig.kb.catalog: one reusable case per L2 signature — auto rules (name, variants, evidence, timeline, action /
-status priority, promotion, fallback, hints), the human block, match, incremental == rebuild, views, caching."""
+"""sbmig.kb.catalog: one reusable case per L2 signature — auto rules (name, variants, evidence, timeline, the `hint`
+action without a proven fix script, hints), the human block (pins: block / script / hint), match, incremental ==
+rebuild, views, caching. The `script` action and its promotion: test_scripts_catalog.py."""
 from __future__ import annotations
 
 import csv
@@ -9,7 +10,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from sbmig.core.config import Config
 from sbmig.core.models import (
     KB_RECORD_SCHEMA,
     BuildError,
@@ -17,7 +17,6 @@ from sbmig.core.models import (
     ErrorAttemptRef,
     ErrorCaseRecord,
     ErrorKind,
-    KBRecipe,
     ReplacePair,
 )
 from sbmig.kb import FileKnowledgeBase
@@ -30,7 +29,7 @@ from sbmig.kb.catalog import (
     split_l2,
 )
 
-from .helpers import EC_FILE, EC_L2, make_case, recipe_yaml, with_kb
+from .helpers import EC_FILE, EC_L2
 
 T0 = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
 L1_REQ = "compile|cannot find symbol|method clientIp()|class *"
@@ -59,7 +58,6 @@ def rec(eid: str, *, run: str = "r1", project: str = "alpha", status: str = "res
         description=description if resolved else "",
         change_kind=change_kind if resolved else "none",
         replace_pairs=[ReplacePair(old=o, new=n) for o, n in pairs] if resolved else [],
-        replace_rule_candidate=status == "resolved" and method == "llm" and change_kind == "text_replace",
         failure_reason="" if resolved else "llm attempt a0 no_change: still there", attempts=attempts,
         attempt_count=len(attempts), case_id=case_id_for(l2))
     data.update(kw)
@@ -75,15 +73,6 @@ def failed_then_fixed(eid: str, run: str, project: str, hours: int = 0) -> Error
 def unresolved(eid: str, run: str, project: str, hours: int = 0, outcome: str = "no_change") -> ErrorCaseRecord:
     return rec(eid, run=run, project=project, status="unresolved", hours=hours,
                attempts=[ref(f"{run}:a0", "llm", outcome, "the targeted error(s) were still there after the rebuild")])
-
-
-def by_case_replace(eid: str, run: str, project: str, ok: bool = True, hours: int = 0) -> ErrorCaseRecord:
-    a = ref(f"{run}:a1", "handler", "improved" if ok else "no_change",
-            "" if ok else "the targeted error(s) were still there after the rebuild", resolver="case-replace")
-    if ok:
-        return rec(eid, run=run, project=project, method="handler", resolver="case-replace", attempts=[a],
-                   change_kind="text_replace", description="handler `case-replace`: replaced clientIp", hours=hours)
-    return rec(eid, run=run, project=project, status="unresolved", attempts=[a], hours=hours)
 
 
 def add(kb: FileKnowledgeBase, *records: ErrorCaseRecord) -> list[str]:
@@ -151,10 +140,8 @@ def test_name_variants_evidence_and_timeline(kb):
         ("gamma", "resolved", ["llm:improved"]),
     ]
     assert ev.timeline[1].error_id == "b-1" and ev.timeline[1].resolved_by == "r2:a1" and ev.timeline[1].file == EC_FILE
-    # learned text replace → replace candidate; hints use the error-hint wording
-    assert c.status == "candidate" and c.action.kind == "replace"
-    assert [(p.old, p.new, p.count) for p in c.action.replace_pairs] == [("clientIp", "remoteClientIp", 3)]
-    assert c.action.replace_scope == "error-lines"
+    # no proven fix script → hint only (v2; PLAN-v2 step 4 removed the learned replace action)
+    assert c.status == "observed" and c.action == CaseAction(kind="hint")
     assert c.hints == [
         "past runs: fixed by llm fake-model in 2 project(s): renamed clientIp to remoteClientIp; "
         "replace `clientIp` → `remoteClientIp`",
@@ -184,30 +171,6 @@ def test_other_kinds_name_and_layout(kb):
         f"catalog/dependency_resolution/other/com.x-legacy-lib--{c.id}.yml"
 
 
-def test_action_recipe_wins_and_follows_its_status(kb):
-    add(kb, rec("e1"))                                               # would be a replace candidate on its own
-    kb.add_recipe(recipe_yaml("RenameClientIp"),
-                  KBRecipe(id="RenameClientIp", path="", signatures=[L1_REQ]))
-    cat = kb.catalog()
-    assert cat.refresh([EC_L2]) == [CID]
-    c = cat.get(CID)
-    assert (c.action.kind, c.action.recipe_ids, c.status) == ("recipe", ["RenameClientIp"], "candidate")
-    kb.promote("RenameClientIp")
-    assert cat.refresh_signatures([L1_REQ]) == [CID]
-    assert cat.get(CID).status == "active"
-    kb.reject("RenameClientIp")
-    cat.refresh([EC_L2])
-    assert cat.get(CID).action.kind == "replace"                     # a rejected recipe no longer counts
-
-
-def test_action_patch_for_replayable_llm_patch_cases(kb):
-    l2 = "compile|cannot_find_symbol|WebSecurityConfigurerAdapter"
-    kid = kb.record_case(make_case(signatures_generic=[l2]))
-    add(kb, rec("e1", l2=l2, change_kind="code_edit", pairs=()))     # a code edit: no learned replace
-    c = kb.catalog().get(case_id_for(l2))
-    assert (c.action.kind, c.action.patch_case_ids, c.status) == ("patch", [kid], "candidate")
-
-
 def test_plain_hint_observed(kb):
     add(kb, unresolved("e1", "r1", "alpha"))
     c = kb.catalog().get(CID)
@@ -215,64 +178,6 @@ def test_plain_hint_observed(kb):
     assert c.hints == ["past failure ×1: llm no_change — the targeted error(s) were still there after the rebuild; "
                        "do not repeat it"]
     assert c.evidence.fixes == []
-
-
-def test_promotion_after_distinct_project_successes(kb, kb_cfg):
-    add(kb, rec("e1", run="r1", project="alpha"))
-    cat = kb.catalog()
-    assert cat.get(CID).status == "candidate"
-    add(kb, by_case_replace("e2", "r2", "beta", hours=1))
-    add(kb, by_case_replace("e3", "r3", "beta", hours=2))            # same project twice: still one project
-    c = cat.get(CID)
-    assert (c.evidence.action_successes, c.evidence.action_projects, c.status) == (2, ["fp-beta"], "candidate")
-    add(kb, by_case_replace("e4", "r4", "gamma", hours=3))
-    c = cat.get(CID)
-    assert c.status == "active" and c.action.kind == "replace" and c.evidence.action_projects == ["fp-beta", "fp-gamma"]
-    assert c.evidence.resolved_by == {"llm": 1, "handler": 3}
-    # kb.auto_promote_after_projects decides (0 = never)
-    for n, want in ((3, "candidate"), (0, "candidate"), (2, "active")):
-        other = CaseCatalog(kb.root, with_kb(kb_cfg, auto_promote_after_projects=n))
-        other.rebuild()
-        assert other.get(CID).status == want, n
-    # one failure of the case's own replace → back to candidate (the action stays)
-    add(kb, by_case_replace("e5", "r5", "delta", ok=False, hours=4))
-    c = cat.get(CID)
-    assert (c.evidence.action_failures, c.status, c.action.kind) == (1, "candidate", "replace")
-
-
-def test_fallback_after_two_action_failures_without_success(kb):
-    add(kb, rec("e1"))
-    add(kb, by_case_replace("e2", "r2", "beta", ok=False, hours=1))
-    assert kb.catalog().get(CID).action.kind == "replace"            # one failure: still a candidate
-    add(kb, by_case_replace("e3", "r3", "gamma", ok=False, hours=2))
-    c = kb.catalog().get(CID)
-    assert (c.evidence.action_failures, c.evidence.action_successes) == (2, 0)
-    assert (c.action.kind, c.status) == ("hint", "observed")
-    assert "past failure ×2: handler no_change" in c.hints[1]
-    # round 10: a failure RATE — one later success does not bring it back (2 failures > 1 success) …
-    add(kb, by_case_replace("e4", "r4", "delta", hours=3))
-    c = kb.catalog().get(CID)
-    assert (c.action.kind, c.status) == ("hint", "observed")
-    # … a second one does (2 successes, 2 failures)
-    add(kb, by_case_replace("e5", "r5", "epsilon", hours=4))
-    c = kb.catalog().get(CID)
-    assert (c.action.kind, c.status) == ("replace", "candidate")
-    assert (c.evidence.action_successes, c.evidence.action_failures) == (2, 2)
-
-
-def test_replace_scope_from_config(kb_cfg):
-    kb = FileKnowledgeBase(with_kb(kb_cfg, case_replace_scope="file"))
-    add(kb, rec("e1"))
-    assert kb.catalog().get(CID).action.replace_scope == "file"
-
-
-def test_most_common_pair_set_and_masked_pairs(kb):
-    add(kb, rec("e1", pairs=(("clientIp", "ip"),)),
-        rec("e2", run="r2", project="beta", pairs=(("clientIp", "remoteClientIp"),)),
-        rec("e3", run="r3", project="gamma", pairs=(("clientIp", "remoteClientIp"),)),
-        rec("e4", run="r4", project="delta", pairs=(("***", "***"),)))
-    c = kb.catalog().get(CID)
-    assert [(p.old, p.new, p.count) for p in c.action.replace_pairs] == [("clientIp", "remoteClientIp", 2)]
 
 
 # --------------------------------------------------------------------------- human block
@@ -288,7 +193,7 @@ def test_human_block_survives_update_and_rebuild(kb):
         "  hints: []\n", "  hints:\n  - check RequestWrapper first   # team note\n")
     path.write_text(edited, encoding="utf-8")
     c = cat.get(CID)
-    assert c.human.status == "rejected" and c.effective_status() == "rejected" and c.status == "candidate"
+    assert c.human.status == "rejected" and c.effective_status() == "rejected" and c.status == "observed"
     assert c.human.hints == ["check RequestWrapper first"]
     add(kb, rec("e2", run="r2", project="beta", hours=1))           # incremental update
     after = path.read_text(encoding="utf-8")
@@ -310,7 +215,7 @@ def test_invalid_human_block_is_kept_verbatim_and_ignored(kb, caplog):
     bad = path.read_text(encoding="utf-8").replace("  status: null\n", "  status: maybe-later\n")
     path.write_text(bad, encoding="utf-8")
     c = cat.get(CID)
-    assert c is not None and c.human.status is None and c.effective_status() == "candidate"
+    assert c is not None and c.human.status is None and c.effective_status() == "observed"
     add(kb, rec("e2", run="r2", project="beta", hours=1))
     assert "  status: maybe-later\n" in path.read_text(encoding="utf-8")   # not lost
     assert cat.get(CID).evidence.seen == 2
@@ -326,10 +231,15 @@ def test_set_human_validation(kb):
         cat.set_human(CID, status="maybe")
     with pytest.raises(KeyError):
         cat.set_human("0000000000", status="rejected")
-    c = cat.set_human(CID[:6], action={"kind": "handler", "handler_id": "jakarta-namespace-sweep"}, status="active")
-    assert c.effective_action().kind == "handler" and c.effective_status() == "active"
+    for kind in ("handler", "recipe", "replace", "patch"):            # v1 kinds: no longer a CaseActionKind at all
+        with pytest.raises(ValueError, match="cannot be pinned|Input should be 'hint', 'block' or 'script'"):
+            cat.set_human(CID, action={"kind": kind})
+    with pytest.raises(ValueError, match="no stored fix script v3"):
+        cat.set_human(CID, action={"kind": "script", "script_version": 3})
+    c = cat.set_human(CID[:6], action={"kind": "block", "suggestion": "the owner fixes the library"}, status="active")
+    assert c.effective_action().kind == "block" and c.effective_status() == "active"
     c = cat.set_human(CID, action=None, status=None)
-    assert c.human.action is None and c.effective_action().kind == "replace"
+    assert c.human.action is None and c.effective_action().kind == "hint"
 
 
 # --------------------------------------------------------------------------- match
@@ -346,8 +256,7 @@ def test_match_by_l1_l2_and_symbol(kb):
     assert len(hits) == 1
     h = hits[0]
     assert (h.case_id, h.name, h.status, h.action.kind, h.variant_owner) == (
-        CID, "Request.clientIp — cannot find symbol", "candidate", "replace", "com.example.Request")
-    assert [(p.old, p.new) for p in h.action.replace_pairs] == [("clientIp", "remoteClientIp")]
+        CID, "Request.clientIp — cannot find symbol", "observed", "hint", "com.example.Request")
     assert h.errors[0].line == 7 and len(h.hints) == 1 and h.hints[0].startswith(f"[case {CID}] past runs: fixed by")
     assert cat.match([_err(l1=L1_WRAP, location="class com.lib.RequestWrapper")])[0].variant_owner == \
         "com.lib.RequestWrapper"
@@ -379,11 +288,11 @@ def test_match_uses_effective_human_values(kb):
     add(kb, rec("e1"))
     cat = kb.catalog()
     cat.set_human(CID, name="Request.clientIp renamed in lib 2.0", hints=["use remoteClientIp()"],
-                  action=CaseAction(kind="replace", replace_pairs=[ReplacePair(old="clientIp", new="ip")]),
+                  action=CaseAction(kind="block", suggestion="the library owner ships remoteClientIp"),
                   status="active")
     h = cat.match([_err()])[0]
     assert (h.name, h.status) == ("Request.clientIp renamed in lib 2.0", "active")
-    assert [(p.old, p.new) for p in h.action.replace_pairs] == [("clientIp", "ip")]
+    assert (h.action.kind, h.action.suggestion, h.pinned) == ("block", "the library owner ships remoteClientIp", True)
     assert h.hints[0] == f"[case {CID}] use remoteClientIp()" and len(h.hints) == 2
 
 
@@ -405,14 +314,14 @@ def test_incremental_update_equals_rebuild(kb):
                                                l1="compile|incompatible_types|q", change_kind="code_edit", pairs=())],
         [failed_then_fixed("b-1", "r2", "beta", hours=1),
          rec("b-2", run="r2", project="beta", l1=L1_WRAP, location="class com.lib.RequestWrapper", hours=1)],
-        [by_case_replace("c-1", "r3", "gamma", hours=2), unresolved("c-2", "r3", "gamma", hours=2, outcome="regressed")],
-        [by_case_replace("d-1", "r4", "delta", hours=3)],
+        [rec("c-1", run="r3", project="gamma", hours=2), unresolved("c-2", "r3", "gamma", hours=2, outcome="regressed")],
+        [rec("d-1", run="r4", project="delta", hours=3)],
     ]
     for b in batches:
         add(kb, *b)
     cat = kb.catalog()
     incremental = snapshot(cat)
-    assert len(incremental["files"]) == 2 and cat.get(CID).status == "active"
+    assert len(incremental["files"]) == 2 and cat.get(CID).evidence.seen == 6
     assert cat.rebuild() == 2
     assert snapshot(cat) == incremental
     # from scratch (no catalog at all) too
@@ -472,8 +381,8 @@ def test_views_content(kb):
     assert "sbmig kb cases reject|pin|unpin|hint|note <id>" in md and "2 case(s)." in md
     assert "| id | name | status | action | seen | projects | resolved by | latest fix | top failure |" in md
     rows = [ln for ln in md.splitlines() if ln.startswith("| `")]
-    assert len(rows) == 2 and rows[0].startswith(f"| `{CID}` | Request.clientIp — cannot find symbol | candidate |")
-    assert "replace `clientIp` → `remoteClientIp`" in rows[0] and "| 3 | 3 | llm 2 |" in rows[0]
+    assert len(rows) == 2 and rows[0].startswith(f"| `{CID}` | Request.clientIp — cannot find symbol | observed | hint |")
+    assert "renamed clientIp to remoteClientIp; `clientIp` → `remoteClientIp`" in rows[0] and "| 3 | 3 | llm 2 |" in rows[0]
     assert "(beta, 2026-10-20)" in rows[0] and "llm no_change ×1" in rows[0]
     assert rows[1].startswith("| `") and "Other — cannot find symbol | observed | hint |" in rows[1]
     raw = csv_path.read_bytes()
@@ -481,7 +390,7 @@ def test_views_content(kb):
     table = list(csv.reader(csv_path.open(encoding="utf-8-sig", newline="")))
     assert table[0] == CASE_CSV_COLUMNS and len(table) == 3
     row = dict(zip(table[0], table[1]))
-    assert row["id"] == CID and row["status"] == "candidate" and row["seen"] == "3" and row["human"] == "yes"
+    assert row["id"] == CID and row["status"] == "observed" and row["seen"] == "3" and row["human"] == "yes"
     assert row["file"] == f"catalog/compile/cannot_find_symbol/clientIp--{CID}.yml"
     # a person's status shows with a star
     cat.set_human(CID, status="rejected")
@@ -529,7 +438,7 @@ def test_parsed_cases_are_cached(kb, monkeypatch):
 
 
 def test_catalog_without_cfg_or_store(tmp_path):
-    """The handler builds CaseCatalog(cfg.kb_dir, cfg); a bare directory works too (no recipes, no index)."""
+    """CaseCatalog(cfg.kb_dir, cfg); a bare directory works too (no config, no index)."""
     root = tmp_path / "kb"
     root.mkdir()
     from sbmig.kb.error_cases import ErrorCaseStore
@@ -538,25 +447,11 @@ def test_catalog_without_cfg_or_store(tmp_path):
     ErrorCaseStore(root).append([r], [])
     cat = CaseCatalog(root)
     assert cat.update_from([r]) == [CID]
-    # no config = the KBConfig defaults: since v2 the learned replace (kb.case_replace) is off → hint
-    assert cat.get(CID).action.kind == "hint"
+    assert cat.get(CID).action.kind == "hint" and cat.promote_after == 2
     assert (root / "catalog" / "index.json").exists()
-    v1 = CaseCatalog(root, Config(artifacts={"parent": {"group_id": "g", "artifact_id": "p"}},
-                                  kb={"dir": str(root), "case_replace": True}))
-    v1.refresh([r.signature_generic])
-    assert v1.get(CID).action.kind == "replace"
 
 
 # --------------------------------------------------------------------------- round 10 (2026-10-26)
-from sbmig.kb.catalog import (  # noqa: E402
-    case_replace_note,
-    case_replace_resolver,
-    pairset_hash,
-    parse_case_replace_resolver,
-    resolver_from_notes,
-)
-
-
 def test_an_attempt_that_resolved_the_error_is_not_its_failure(kb):
     """review-kb/repro4: attempt a1 fixed this error (its cluster stayed `no_change` because of another error)."""
     r = rec("e1", attempts=[ref("r1:a1", "llm", "no_change"), ref("r1:a2", "llm", "partial"),
@@ -570,62 +465,14 @@ def test_an_attempt_that_resolved_the_error_is_not_its_failure(kb):
     assert [(x.outcome, x.count) for x in c.evidence.failures] == [("no_change", 1)]      # a failure for e2 only
 
 
-def test_learned_replace_is_chosen_by_projects_not_records(kb):
+def test_fixes_are_ranked_by_projects_not_records(kb):
     """review-kb/repro2: one project with 10 errors fixed one way must not outrank 3 projects fixed another way."""
     big = [rec(f"b{i}", run="rb", project="big", pairs=(("clientIp", "getRemoteAddr"),)) for i in range(10)]
     small = [rec(f"s{i}", run=f"r{i}", project=p) for i, p in enumerate(["b", "c", "d"])]
     c = kb.catalog().compute(EC_L2, big + small)
-    assert [(p.old, p.new, p.count) for p in c.action.replace_pairs] == [("clientIp", "remoteClientIp", 3)]
-    assert "in 3 project(s)" in c.hints[0]
-
-
-def test_a_failing_replace_falls_back_by_rate_and_the_next_set_is_tried(kb):
-    """review-kb/repro2: 1 success + 6 failures used to keep applying (fallback only at 0 successes)."""
-    learned = [rec(f"s{i}", run=f"r{i}", project=p) for i, p in enumerate(["b", "c", "d"])]
-    alt = [rec("alt", run="ralt", project="alt", pairs=(("clientIp", "getRemoteAddr"),))]
-    ok = by_case_replace("ok", "rok", "e1")
-    fails = [by_case_replace(f"f{i}", f"rf{i}", f"f{i}", ok=False) for i in range(6)]
-    c = kb.catalog().compute(EC_L2, learned + alt + [ok] + fails)
-    # the legacy plain `case-replace` outcomes count for the top-ranked set → it falls back; the next set is tried
-    assert [(p.old, p.new) for p in c.action.replace_pairs] == [("clientIp", "getRemoteAddr")]
-    assert (c.status, c.evidence.action_successes, c.evidence.action_failures) == ("candidate", 0, 0)
-    c = kb.catalog().compute(EC_L2, learned + [ok] + fails)
-    assert c.action.kind == "hint" and (c.evidence.action_successes, c.evidence.action_failures) == (1, 6)
-
-
-def test_pairset_hash_and_resolver_ids():
-    a = [ReplacePair(old="clientIp", new="remoteClientIp"), ReplacePair(old="javax.a", new="jakarta.a")]
-    assert pairset_hash(a) == pairset_hash(list(reversed(a)) + a[:1]) == pairset_hash([("javax.a", "jakarta.a"),
-                                                                                       ("clientIp", "remoteClientIp")])
-    assert len(pairset_hash(a)) == 8 and pairset_hash(a) != pairset_hash(a[:1])
-    rid = case_replace_resolver("abc1234567", a)
-    assert rid == f"case-replace:abc1234567:{pairset_hash(a)}"
-    assert parse_case_replace_resolver(f"{rid},case-replace:ffff:00000000,other") == [
-        ("abc1234567", pairset_hash(a)), ("ffff", "00000000")]
-    assert parse_case_replace_resolver("case-replace") == [("", "")] and parse_case_replace_resolver("h1") == []
-    assert resolver_from_notes(["x", case_replace_note("abc1234567", a), case_replace_note("abc1234567", a)]) == rid
-
-
-def test_outcomes_stay_with_the_pair_set_that_was_applied(kb):
-    """A silently changed action must not inherit the old pairs' successes (handler resolver ids carry the hash)."""
-    old_pairs = (("clientIp", "getRemoteAddr"),)
-    new_pairs = (("clientIp", "remoteClientIp"),)
-    h_old = case_replace_resolver(CID, [ReplacePair(old=o, new=n) for o, n in old_pairs])
-    h_new = case_replace_resolver(CID, [ReplacePair(old=o, new=n) for o, n in new_pairs])
-    learned = [rec(f"s{i}", run=f"r{i}", project=p) for i, p in enumerate(["b", "c"])]       # new_pairs: 2 projects
-    old_ok = [rec(f"o{i}", run=f"ro{i}", project=f"o{i}", method="handler", resolver=h_old, change_kind="text_replace",
-                  attempts=[ref(f"ro{i}:a1", "handler", "improved", resolver=h_old)]) for i in range(3)]
-    c = kb.catalog().compute(EC_L2, learned + old_ok)
-    assert [(p.old, p.new) for p in c.action.replace_pairs] == list(new_pairs)
-    assert (c.evidence.action_successes, c.status) == (0, "candidate")          # the old set's successes don't count
-    new_ok = [rec(f"n{i}", run=f"rn{i}", project=f"n{i}", method="handler", resolver=h_new, change_kind="text_replace",
-                  attempts=[ref(f"rn{i}:a1", "handler", "improved", resolver=h_new)]) for i in range(2)]
-    c = kb.catalog().compute(EC_L2, learned + old_ok + new_ok)
-    assert (c.evidence.action_successes, c.evidence.action_projects, c.status) == (2, ["fp-n0", "fp-n1"], "active")
-    other_case = case_replace_resolver("0000000000", [ReplacePair(old=o, new=n) for o, n in new_pairs])
-    bad = rec("x", run="rx", project="x", status="unresolved",
-              attempts=[ref("rx:a1", "handler", "no_change", resolver=other_case)])
-    assert kb.catalog().compute(EC_L2, learned + new_ok + [bad]).evidence.action_failures == 0   # another case
+    assert [([(p.old, p.new) for p in f.replace_pairs], f.count, f.projects) for f in c.evidence.fixes] == [
+        ([("clientIp", "remoteClientIp")], 3, 3), ([("clientIp", "getRemoteAddr")], 10, 1)]
+    assert "in 3 project(s)" in c.hints[0] and c.action.kind == "hint"
 
 
 def test_pinned_hits(kb):
@@ -636,41 +483,26 @@ def test_pinned_hits(kb):
     assert cat.match([err])[0].pinned is False
     cat.set_human(CID, status="active")
     assert cat.match([err])[0].pinned is False                                  # a status alone pins no action
-    cat.set_human(CID, action=CaseAction(kind="handler", handler_id="jakarta-namespace-sweep"))
+    cat.set_human(CID, action=CaseAction(kind="block", block_reason="external_javax_api"))
     hit = cat.match([err])[0]
-    assert hit.pinned is True and hit.action.kind == "handler" and hit.action.handler_id == "jakarta-namespace-sweep"
+    assert hit.pinned is True and hit.action.kind == "block" and hit.action.block_reason == "external_javax_api"
 
 
 def test_audit_log_of_human_edits_and_automatic_transitions(kb, monkeypatch):
     import sbmig.kb.catalog as catalog_mod
 
     monkeypatch.setattr(catalog_mod, "_who", lambda: "jdoe")
-    kb.cfg.kb.auto_promote_after_projects = 2
     add(kb, unresolved("e0", "r0", "zeta"))                                    # observed: nothing to audit
+    add(kb, rec("e1", hours=1))                                                # still observed (no fix script)
     cat = kb.catalog()
     assert list(cat.iter_audit()) == []
-    add(kb, rec("e1", hours=1))                                                # observed → candidate
-    add(kb, by_case_replace("e2", "r2", "beta", hours=2), by_case_replace("e3", "r3", "gamma", hours=3))
-    auto = [a for a in cat.iter_audit(CID) if a["who"] == "sbmig"]
-    assert [(a["before"]["status"], a["after"]["status"]) for a in auto] == [("observed", "candidate"),
-                                                                             ("candidate", "active")]
-    assert auto[1]["reason"] == "promoted" and auto[1]["evidence"]["action_projects"] == 2
-    assert all(a["schema_version"] == KB_RECORD_SCHEMA and a["agent_version"] and a["at"] for a in auto)
     cat.set_human(CID, audit_note="sbmig kb cases reject", status="rejected", notes="rejected: wrong owner")
     human = [a for a in cat.iter_audit(CID) if a["event"] == "human"]
     assert len(human) == 1 and human[0]["who"] == "jdoe" and human[0]["command"] == "sbmig kb cases reject"
+    assert human[0]["schema_version"] == KB_RECORD_SCHEMA and human[0]["agent_version"] and human[0]["at"]
     assert human[0]["before"] == {} and human[0]["after"] == {"status": "rejected", "notes": "rejected: wrong owner"}
     cat.set_human(CID, status="rejected", notes="rejected: wrong owner")           # no change → no line
     assert len([a for a in cat.iter_audit(CID) if a["event"] == "human"]) == 1
-
-
-def test_fall_back_is_audited(kb):
-    add(kb, rec("e1"))
-    add(kb, by_case_replace("e2", "r2", "beta", ok=False, hours=1), by_case_replace("e3", "r3", "gamma", ok=False,
-                                                                                   hours=2))
-    last = [a for a in kb.catalog().iter_audit(CID) if a["who"] == "sbmig"][-1]
-    assert last["before"]["status"] == "candidate" and last["after"]["status"] == "observed"
-    assert last["reason"].startswith("fallen back: replace `clientIp` → `remoteClientIp`: 2 failure(s) > 0")
 
 
 def test_unreadable_event_lines_are_quarantined_and_their_case_is_kept(kb, caplog):

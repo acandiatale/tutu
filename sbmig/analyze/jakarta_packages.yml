@@ -1,19 +1,18 @@
-# javax.* → jakarta.* package table for the `jakarta-namespace-sweep` handler (catalog E13).
+# javax.* → jakarta.* package table of the analyzer (sbmig/analyze/jsp.py `jakarta_rules`: which JSP / tag files
+# still name a javax EE type — `SourceStats.jsp_javax_paths`). Until PLAN-v2 step 4 the deterministic handler
+# `jakarta-namespace-sweep` (catalog E13) renamed with it; v2 fixes what the build reports with fix scripts.
 #
 # Source: the ChangePackage rules of org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
-# (rewrite-migrate-java 3.42.0, verified 2026-10-22 from the jar). The handler only renames what the recipe would
-# have renamed; it exists for the files the recipe skipped (unparsed / not type-attributed / openrewrite.exclusions)
-# and for fully-qualified javax.* names the ChangePackage run left behind.
+# (rewrite-migrate-java 3.42.0, verified 2026-10-22 from the jar).
 #
-# Semantics (sbmig/triage/handlers/source_handlers.py::rename_javax):
+# Semantics (sbmig/analyze/jsp.py::javax_ee_token):
 #   recursive: true  → `<from>.` followed by anything (classes, sub-packages, `*`)
 #   recursive: false → only `<from>.<Identifier starting with an uppercase letter>` (+ nested names) or `<from>.*`
 #                      (direct classes of the package, like ChangePackage(recursive=false))
 #   the longest matching `from` wins: javax.annotation.security.RolesAllowed takes the recursive
 #   javax.annotation.security rule, javax.annotation.processing.Generated matches nothing.
-#   String / char / text-block literals are never edited (counted as follow-ups); comments may be renamed.
 #
-# Never renamed (JDK or non-EE packages — the matcher is table-driven, so they are untouched automatically):
+# Never matched (JDK or non-EE packages — the matcher is table-driven, so they are untouched automatically):
 #   javax.annotation.processing, javax.annotation.concurrent, javax.transaction.xa, javax.sql, javax.naming,
 #   javax.crypto, javax.net, javax.swing, javax.xml.parsers / transform / xpath / stream / namespace / crypto,
 #   javax.script, javax.tools, javax.lang.model, javax.management, javax.security.auth (except .message), javax.cache

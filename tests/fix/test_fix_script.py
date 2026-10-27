@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from sbmig.core.interfaces import FixContext, FixerLike, ScriptFixerLike
+from sbmig.core.interfaces import FixContext, ScriptFixerLike
 from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, Phase, ScriptBase
 from sbmig.fix import FakeLLMClient, LLMFixer, RecordingClient
 from sbmig.fix.client import LLMError
@@ -14,10 +14,10 @@ from sbmig.fix.script_protocol import (
     PATCHES_WARNING,
     PROTOCOL_WARNING,
     clean_code,
+    normalize_path,
     parse_script_response,
     script_problem,
 )
-from tests.fix.conftest import make_cluster
 
 CODE = ('import re\n\n\ndef fix(p):\n    for e in p.errors:\n        path = e.get("file")\n'
         '        if path and p.exists(path):\n'
@@ -82,6 +82,18 @@ def test_parse_closing_tag_inside_the_code_and_missing_closing_tag():
 def test_parse_analysis_may_mention_the_script_tag():
     r = parse_script_response("<analysis>I return a <script> that edits imports</analysis>\n" + GOOD.split("\n", 1)[1])
     assert r.code == CODE and "<script>" in r.analysis
+
+
+def test_normalize_path_rejects_absolute_and_parent_paths():
+    assert normalize_path("/etc/passwd")[0] is None
+    assert normalize_path("C:\\x\\y.java")[0] is None
+    assert normalize_path("a/../../b")[0] is None
+    assert normalize_path("~/x")[0] is None
+    assert normalize_path(" `./src\\main\\A.java` ") == ("src/main/A.java", None)
+    assert normalize_path("src/A.java (new file)") == ("src/A.java", None)
+    assert normalize_path("``")[0] is None
+    r = parse_script_response("<analysis>a</analysis><need_files>/abs/X.java, ../up.java, ./ok/B.java</need_files>")
+    assert r.need_files == ["ok/B.java"] and len([w for w in r.warnings if w.startswith("need_files:")]) == 2
 
 
 def test_parse_need_file_and_need_grep():
@@ -170,7 +182,7 @@ def test_prompt_fallback_table_when_sbmig_script_is_missing(monkeypatch):
 def test_propose_script_new(cfg, proj):
     client = FakeLLMClient([GOOD])
     fixer = LLMFixer(cfg, client)
-    assert isinstance(fixer, ScriptFixerLike) and isinstance(fixer, FixerLike)
+    assert isinstance(fixer, ScriptFixerLike)
     p = fixer.propose_script(proj, case_cluster(), sctx())
     assert len(client.calls) == 1
     call = client.calls[0]
@@ -313,24 +325,30 @@ def test_unusable_answers(cfg, proj):
     assert p.code == "" and p.analysis == "no fix"
 
 
-def test_failure_texts_match_propose(cfg, proj, put):
-    """The loop classifies script failures with the v1 functions: the analysis texts must be the same."""
+def test_failure_texts_the_loop_classifies(cfg, proj):
+    """The loop classifies fixer failures by their analysis text (`is_llm_transport_error`, `llm_400_body`): these
+    texts are a contract (they were the SEARCH/REPLACE fixer's before; pinned here since that fixer is gone)."""
     from sbmig.loop.fixloop import is_llm_transport_error, llm_400_body
 
-    put("src/main/java/a/A.java", "package a;\n\nimport javax.servlet.Filter;\n\npublic class A {\n}\n")
-    v1_cluster = make_cluster(file="src/main/java/a/A.java")
-    cases = [LLMError(503, "overloaded"), LLMError(None, "ConnectError: refused",
-                                                    "LLM request failed after 4 attempt(s) (status=None, cause=ConnectError): x"),
-             LLMError(400, '{"error": "unsupported model"}'), RuntimeError("kaboom"), TimeoutError("read timed out"),
-             "Sure! Just change the import."]
-    for item in cases:
-        v1 = LLMFixer(cfg, FakeLLMClient([item])).propose(proj, v1_cluster,
-                                                          FixContext(phase=Phase.VERIFY, iteration=1))
+    cases = [
+        (LLMError(503, "overloaded"), "llm-error: LLM request failed (status=503): overloaded", True, None),
+        (LLMError(None, "ConnectError: refused",
+                  "LLM request failed after 4 attempt(s) (status=None, cause=ConnectError): x"),
+         "llm-error: LLM request failed after 4 attempt(s) (status=None, cause=ConnectError): x", True, None),
+        (LLMError(400, '{"error": "unsupported model"}'),
+         'llm-error: LLM request failed (status=400): {"error": "unsupported model"}', False,
+         '{"error": "unsupported model"}'),
+        (RuntimeError("kaboom"), "llm-error: RuntimeError: kaboom", False, None),
+        (TimeoutError("read timed out"), "llm-error: TimeoutError: read timed out", True, None),
+        ("Sure! Just change the import.",
+         "llm-error: response did not follow the protocol: Sure! Just change the import.", False, None),
+    ]
+    for item, analysis, transport, body in cases:
         v2 = LLMFixer(cfg, FakeLLMClient([item])).propose_script(proj, case_cluster(), sctx())
-        assert v2.analysis == v1.analysis, item
+        assert v2.analysis == analysis, item
         assert v2.code == "" and v2.error, item
-        assert is_llm_transport_error(v2.analysis) == is_llm_transport_error(v1.analysis), item
-        assert llm_400_body(v2.analysis) == llm_400_body(v1.analysis), item
+        assert is_llm_transport_error(v2.analysis) is transport, item
+        assert llm_400_body(v2.analysis) == body, item
     p = LLMFixer(cfg, FakeLLMClient([LLMError(503, "overloaded")])).propose_script(proj, case_cluster(), sctx())
     assert p.analysis.startswith("llm-error:") and is_llm_transport_error(p.analysis)
     assert p.error == "LLM call failed (status=503)"

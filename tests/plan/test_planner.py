@@ -65,12 +65,11 @@ def test_spring_boot_plan(tmp_path: Path, cfg) -> None:
     v = _step(plan, "verify.build")
     assert v.kind == StepKind.BUILD and v.phase == Phase.VERIFY and v.build_goal == "clean package"
     assert all(s.reason for s in plan.steps)
-    assert not any(s.kind in (StepKind.BUILD_FIX_LOOP, StepKind.HANDLER) for s in plan.steps)
+    assert not any(s.kind.value in ("build_fix_loop", "handler") for s in plan.steps)
     assert "transform: one OpenRewrite run (UpgradeToJava21, UpgradeSpringBoot_4_0, SpringBootProperties_4_1) — no " \
            "build until the restructure is done (v2)" in plan.notes
     assert any("umbrella migrates javax → jakarta itself" in n for n in plan.notes)
-    assert "pre-emptive handlers: off in v2 (errors are fixed by LLM scripts)" in plan.notes
-    assert not any("lombok-version-floor" in n for n in plan.notes)
+    assert not any("pre-emptive" in n or "lombok-version-floor" in n for n in plan.notes)
     assert _no_project_recipes(plan)
 
 
@@ -165,7 +164,7 @@ def test_extra_recipes_from_config_come_last(tmp_path: Path, cfg) -> None:
     rec = {r.id: r for r in _step(plan, "transform.rewrite").recipes}
     assert rec["org.openrewrite.staticanalysis.CommonStaticAnalysis"].artifact == \
         "org.openrewrite.recipe:rewrite-static-analysis"
-    assert rec["com.company.migrate.Custom"].source == "project" and rec["com.company.migrate.Custom"].file is None
+    assert rec["com.company.migrate.Custom"].source == "builtin"
     assert any("extra recipes from config (spring_boot/all)" in n for n in plan.notes)
     assert artifact_for("x.y.Z") is None
     # extras of another case are not planned
@@ -189,16 +188,14 @@ def test_transform_recipes_helper_and_v1_alias(cfg) -> None:
 
 
 # ------------------------------------------------------------------------------------------------- v1 knobs ignored
-def test_re_enabled_v1_loops_and_intermediate_builds_are_ignored(tmp_path: Path, cfg) -> None:
+def test_re_enabled_v1_loops_are_ignored(tmp_path: Path, cfg) -> None:
     for k in ("jdk21", "spring", "restructure"):
         cfg.loop.phases[k].enabled = True
-    cfg.plan.intermediate_builds = True
     plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
     assert _ids(plan) == ORDER
     assert not set(V1_IDS) & set(_ids(plan))
     assert "v2: no intermediate build-fix loops (loop.phases.{jdk21,spring,restructure}.enabled=true ignored)" \
         in plan.notes
-    assert "plan.intermediate_builds=true ignored: v2 has no build before the restructure" in plan.notes
 
 
 def test_v2_defaults_emit_no_v1_loop_notes(tmp_path: Path, cfg) -> None:
@@ -206,22 +203,10 @@ def test_v2_defaults_emit_no_v1_loop_notes(tmp_path: Path, cfg) -> None:
     assert not any("loop.phases" in n or "intermediate_builds" in n or "parent_phase" in n for n in plan.notes)
 
 
-def test_parent_phase_spring_is_ignored(tmp_path: Path, cfg) -> None:
-    cfg.plan.parent_phase = "spring"
-    plan = build_plan(analyze_path(make_spring_legacy(tmp_path), cfg), cfg)
-    assert _ids(plan) == ORDER
-    assert _step(plan, "restructure.apply").phase == Phase.RESTRUCTURE
-    assert "plan.parent_phase=spring ignored: v2 restructures right after the transform" in plan.notes
-
-
 def test_optional_bump_runs_inside_the_restructure(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
     assert "spring.optional_bump" not in _ids(plan)
     assert "optional artifacts: bumped inside the restructure step (no separate bump step in v2)" in plan.notes
-    cfg.plan.optional_bump_phase = "spring"
-    plan = build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg)
-    assert _ids(plan) == ORDER
-    assert any(n.startswith("plan.optional_bump_phase=spring ignored") for n in plan.notes)
     cfg.artifacts.optional, cfg.artifacts.remove_when_present = [], []
     assert "optional artifacts: none configured" in build_plan(analyze_path(make_boot33(tmp_path), cfg), cfg).notes
 
@@ -263,16 +248,10 @@ class FakeKB:
 
 def test_kb_recipes_are_not_used(tmp_path: Path, cfg) -> None:
     profile = analyze_path(make_pure_java(tmp_path), cfg)
-    plan = build_plan(profile, cfg, kb=FakeKB())
-    assert _recipes(plan) == [J21]
-    assert "kb: KB recipes are not used in v2" in plan.notes
-    cfg.kb.use_active_recipes = cfg.kb.try_candidates_in_plan = True
-    plan = build_plan(profile, cfg, kb=FakeKB())
-    assert _recipes(plan) == [J21]
-    assert "kb: KB recipes are not used in v2 (kb.use_active_recipes, kb.try_candidates_in_plan=true ignored)" \
-        in plan.notes
-    cfg.kb.use_active_recipes = cfg.kb.try_candidates_in_plan = False
-    assert not any(n.startswith("kb:") for n in build_plan(profile, cfg).notes)
+    plan = build_plan(profile, cfg, kb=FakeKB())                  # the kb argument stays for the seam, unused
+    assert _recipes(plan) == [J21] and _no_project_recipes(plan)
+    assert plan.model_dump(exclude={"created_at"}) == build_plan(profile, cfg).model_dump(exclude={"created_at"})
+    assert not any(n.startswith("kb:") for n in plan.notes)
 
 
 # ------------------------------------------------------------------------------------------------- MSA / misc

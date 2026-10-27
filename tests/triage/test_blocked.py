@@ -11,7 +11,7 @@ from sbmig.core.models import (BlockReason, DecisionKind, ErrorKind, FixAttempt,
                                TriageDecision)
 from sbmig.core.workspace import Workspace
 from sbmig.loop.blocked_registry import BlockedRegistry
-from sbmig.triage import HandlerRegistry, Triager, classify_blocked, cluster_errors, extract_owner, is_project_class
+from sbmig.triage import Triager, classify_blocked, cluster_errors, extract_owner, is_project_class
 
 from .conftest import make_profile
 
@@ -283,7 +283,7 @@ def cases(text: str):
 
 def test_policy_zero_blocks_immediately_without_llm(cfg, profile):
     cfg.loop.blocked_policy["external_javax_api"] = 0          # v2 default 2 (a script may swap the library)
-    t = Triager(cfg, registry=HandlerRegistry())
+    t = Triager(cfg)
     c = cases(CTOR_JAVAX)
     d = t.decide(c, None, ctx(), profile)
     assert d.kind == DecisionKind.BLOCKED
@@ -293,7 +293,7 @@ def test_policy_zero_blocks_immediately_without_llm(cfg, profile):
 
 
 def test_policy_counts_llm_script_attempts(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry())
+    t = Triager(cfg)
     c = cases(LIB_SYMBOL)
     assert cfg.loop.blocked_policy["external_api_incompatible"] == 2     # v2 default
     cfg.loop.blocked_policy["external_api_incompatible"] = 1
@@ -309,7 +309,7 @@ def test_policy_counts_llm_script_attempts(cfg, profile):
 
 
 def test_registry_llm_unavailable_and_garbage(cfg, profile):
-    t = Triager(cfg, registry=HandlerRegistry())
+    t = Triager(cfg)
     reg = BlockedRegistry()
     t.attach_run(blocked_registry=reg)
     c = cases(LIB_SYMBOL)
@@ -317,7 +317,7 @@ def test_registry_llm_unavailable_and_garbage(cfg, profile):
     d = t.decide(c, None, ctx(), profile)          # already blocked → no script
     assert d.kind == DecisionKind.BLOCKED and "already blocked" in d.rationale
     # LLM unavailable → cases that need the LLM are blocked
-    t3 = Triager(cfg, registry=HandlerRegistry())
+    t3 = Triager(cfg)
     plain = cases("[ERROR] /work/proj/src/main/java/com/acme/web/Foo.java:[3,5] cannot find symbol\n"
                   "  symbol:   class Missing\n  location: class com.acme.web.Foo\n")
     t3.set_llm_unavailable("HTTP 503")

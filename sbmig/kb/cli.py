@@ -1,11 +1,11 @@
-"""`sbmig kb …` — typer sub-app for inspecting and curating the file-based knowledge base (incl. `sbmig kb errors …`
-for the error-case events, `sbmig kb cases …` for the case catalog built from them and `sbmig kb scripts …` for the
-v2 fix scripts stored per case)."""
+"""`sbmig kb …` — typer sub-app for inspecting and curating the file-based knowledge base: `sbmig kb errors …` for
+the error-case events, `sbmig kb cases …` for the case catalog built from them, `sbmig kb scripts …` for the v2 fix
+scripts stored per case, `sbmig kb reviews` for the structure reviews, plus reindex / stats / validate / export /
+import of the whole KB."""
 from __future__ import annotations
 
 import json
 import re
-import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -13,25 +13,16 @@ import typer
 from pydantic import ValidationError
 
 from sbmig.core.config import Config, load_config
-from sbmig.core.models import (
-    BlockReason,
-    BuildError,
-    CaseAction,
-    CaseType,
-    CatalogCase,
-    ErrorCluster,
-    ErrorKind,
-    ProjectProfile,
-    ReplacePair,
-)
-from sbmig.core.workspace import Workspace
+from sbmig.core.models import BlockReason, CaseAction, CatalogCase
 
 from .catalog import CaseCatalog, action_text, case_id_for, pairs_text
-from .recipes import validate_recipe_yaml
 from .scripts import SCRIPT_METHODS, ScriptStore, lineage_text, parse_script_resolver
 from .store import FileKnowledgeBase
 
-kb_cli = typer.Typer(help="File-based knowledge base: cases, recipe candidates, promotion.", no_args_is_help=True)
+kb_cli = typer.Typer(
+    help="File-based knowledge base (v2): error cases (`errors`), the case catalog (`cases`), fix scripts per case "
+         "(`scripts`), structure reviews (`reviews`); reindex, stats, validate, export / import.",
+    no_args_is_help=True)
 
 
 def _load_cfg(configs: list[Path]) -> Config:
@@ -68,117 +59,19 @@ def _main(
         obj["kb_dir"] = kb_dir
 
 
-@kb_cli.command("list")
-def list_cmd(
-    ctx: typer.Context,
-    status: Optional[str] = typer.Option(None, "--status", "-s", help="active | candidate | rejected"),
-    cases: bool = typer.Option(False, "--cases", help="List cases instead of recipes."),
-    as_json: bool = typer.Option(False, "--json"),
-) -> None:
-    """List recipes (default) or cases."""
-    kb = _kb(ctx)
-    if cases:
-        rows = list(kb.iter_cases())
-        if as_json:
-            typer.echo(json.dumps([c.model_dump(mode="json") for c in rows], indent=2))
-            return
-        if not rows:
-            typer.echo("no cases")
-        for c in rows:
-            typer.echo(f"{c.id}  {c.phase.value:<11} reused={c.reuse_count:<3} {c.summary}")
-        return
-    try:
-        recipes = kb.list_recipes(status)
-    except ValueError as e:
-        raise typer.BadParameter(str(e))
-    if as_json:
-        typer.echo(json.dumps([r.model_dump(mode="json") for r in recipes], indent=2))
-        return
-    if not recipes:
-        typer.echo("no recipes")
-    for r in recipes:
-        typer.echo(f"{r.status:<9} {r.id}  ok={r.success_count} fail={r.fail_count} "
-                   f"projects={len(r.projects)}  {r.description}")
-
-
-@kb_cli.command("show")
-def show_cmd(ctx: typer.Context, item_id: str = typer.Argument(..., metavar="ID")) -> None:
-    """Show a case (by case id) or a recipe (by recipe id) including its YAML."""
-    kb = _kb(ctx)
-    case = kb.get_case(item_id)
-    if case is not None:
-        typer.echo(case.model_dump_json(indent=2))
-        return
-    r = kb.get_recipe(item_id)
-    if r is None:
-        typer.echo(f"not found: {item_id}", err=True)
-        raise typer.Exit(1)
-    data = r.model_dump(mode="json")
-    data.update(kb.recipe_meta_extra(r.id))
-    typer.echo(json.dumps(data, indent=2))
-    typer.echo("---")
-    typer.echo(Path(r.path).read_text(encoding="utf-8"))
-
-
-@kb_cli.command("promote")
-def promote_cmd(ctx: typer.Context, recipe_id: str = typer.Argument(..., metavar="ID")) -> None:
-    """Move a candidate (or rejected) recipe to active."""
-    kb = _kb(ctx)
-    try:
-        r = kb.promote(recipe_id)
-    except KeyError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    typer.echo(f"promoted {r.id} -> {r.path}")
-    _refresh_cases_for(kb, r.signatures)
-
-
-@kb_cli.command("reject")
-def reject_cmd(ctx: typer.Context, recipe_id: str = typer.Argument(..., metavar="ID"),
-               reason: str = typer.Option("", "--reason", "-r")) -> None:
-    """Move a recipe to rejected."""
-    kb = _kb(ctx)
-    try:
-        r = kb.reject(recipe_id, reason)
-    except KeyError as e:
-        typer.echo(str(e), err=True)
-        raise typer.Exit(1)
-    typer.echo(f"rejected {r.id}")
-    _refresh_cases_for(kb, r.signatures)
-
-
-def _refresh_cases_for(kb: FileKnowledgeBase, signatures: list[str]) -> None:
-    """A recipe changed status by hand: the catalog cases it covers get their action recomputed."""
-    if not kb.cfg.kb.catalog or not signatures:
-        return
-    cat = kb.catalog()
-    if not cat.index_path.exists():
-        return
-    try:
-        changed = cat.refresh_signatures(signatures)
-        if changed:
-            cat.write_views()
-            typer.echo(f"case catalog: {len(changed)} case(s) updated ({', '.join(changed[:10])})")
-    except Exception as e:  # the recipe change itself is done
-        typer.echo(f"case catalog not refreshed ({e}); run `sbmig kb reindex`", err=True)
-
-
 @kb_cli.command("reindex")
 def reindex_cmd(ctx: typer.Context) -> None:
-    """Rebuild index.json and symbols.json from the case and recipe files (and error_hints.json from errors.jsonl)."""
+    """Rebuild the case catalog (kb/catalog/ + index, human blocks kept) and its views from errors.jsonl and the
+    fix-script store."""
     kb = _kb(ctx)
     n = kb.reindex()
-    typer.echo(f"indexed {n} cases")
-    store = kb.error_case_store()
-    if store.hints_path.exists():
-        idx = store.hints_index()
-        typer.echo(f"error hints: {len(idx.get('by_generic', {}))} L2 signature(s), "
-                   f"{len(idx.get('by_symbol', {}))} symbol(s)")
     cat = kb.catalog()
     if kb.cfg.kb.catalog and cat.index_path.exists():
         counts = cat.status_counts()
-        typer.echo(f"case catalog: {sum(counts.values())} case(s) ("
+        typer.echo(f"case catalog: {n} case(s) ("
                    + ", ".join(f"{k} {v}" for k, v in counts.items() if v) + f") — views in {cat.views_dir}")
+    else:
+        typer.echo("case catalog: nothing to index" + ("" if kb.cfg.kb.catalog else " (kb.catalog is off)"))
     if kb.scripts.scripts_dir.exists():
         sc = kb.scripts.counts()
         problems = kb.scripts.check()
@@ -189,130 +82,36 @@ def reindex_cmd(ctx: typer.Context) -> None:
 
 @kb_cli.command("stats")
 def stats_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json")) -> None:
-    """Counts of cases, recipes per status, patterns and indexed signatures."""
+    """Counts: error cases, fix attempts, catalog cases by status, fix-script cases / versions, structure reviews."""
     st = _kb(ctx).stats()
     if as_json:
         typer.echo(json.dumps(st, indent=2))
         return
     for k, v in st.items():
-        typer.echo(f"{k:<18} {v}")
+        typer.echo(f"{k:<22} {v}")
 
 
-@kb_cli.command("ledger")
-def ledger_cmd(
-    ctx: typer.Context,
-    project: Optional[str] = typer.Option(None, "--project", help="regex on the project name"),
-    symbol: Optional[str] = typer.Option(None, "--symbol", help="regex on the error-case symbol"),
-    label: Optional[str] = typer.Option(None, "--label", help="regex on any fix label"),
-    resolution: Optional[str] = typer.Option(
-        None, "--resolution",
-        help="regex: handler|plan_recipe|kb_recipe|kb_patch|llm_patch|optional_bump|blocked|unresolved|advisory"),
-    signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
-    limit: int = typer.Option(50, "--limit", "-n", help="show the last N matching records (0 = all)"),
-    as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),
-) -> None:
-    """Resolution ledger: in project P, error-case symbol S was resolved (or blocked) by R."""
+@kb_cli.command("validate")
+def validate_cmd(ctx: typer.Context) -> None:
+    """Check the KB files: every line of errors.jsonl / fix_attempts.jsonl / reviews.jsonl / audit.jsonl /
+    quarantine.jsonl reads, every case file of catalog/ reads (generated part and human block), the catalog index
+    parses, the fix scripts are whole (as `sbmig kb scripts validate`). Exit 1 when a problem is found."""
     kb = _kb(ctx)
-    try:
-        rows = list(kb.ledger().iter(project=project, symbol=symbol, label=label, resolution=resolution,
-                                     signature=signature))
-    except re.error as e:
-        raise typer.BadParameter(f"bad regex: {e}")
-    if limit > 0:
-        rows = rows[-limit:]
-    if as_json:
-        for r in rows:
-            typer.echo(r.model_dump_json())
-        return
-    if not rows:
-        typer.echo("no ledger records")
-        return
-    for r in rows:
-        what = r.replacement or r.resolver_id or "-"
-        typer.echo(f"{r.at.strftime('%Y-%m-%d %H:%M')}  {r.project:<20} {r.phase.value:<11} "
-                   f"{r.resolution:<11} {r.outcome:<10} {r.symbol or '-':<28} "
-                   f"[{','.join(r.fix_labels) or '-'}] {what}")
-
-
-@kb_cli.command("symbols")
-def symbols_cmd(ctx: typer.Context, as_json: bool = typer.Option(False, "--json"),
-                symbol: Optional[str] = typer.Option(None, "--symbol", help="regex filter")) -> None:
-    """Symbol index: error-case symbol → how it was fixed, in how many projects, by which case / recipe."""
-    data = _kb(ctx).symbol_index().load()
-    if symbol:
-        rx = re.compile(symbol)
-        data = {k: v for k, v in data.items() if rx.search(k)}
-    if as_json:
-        typer.echo(json.dumps(data, indent=2, ensure_ascii=False))
-        return
-    if not data:
-        typer.echo("no symbols indexed")
-        return
-    for sym, ent in sorted(data.items(), key=lambda kv: -max((f.get("projects", 0) for f in kv[1]["fixes"]),
-                                                              default=0)):
-        for f in ent.get("fixes", []):
-            typer.echo(f"{sym:<32} {ent.get('error_kind', ''):<14} projects={f.get('projects', 0):<3} "
-                       f"cases={len(f.get('cases', [])):<3} [{','.join(f.get('labels') or []) or '-'}] "
-                       f"{f.get('replacement') or '-'}"
-                       + (f"  recipe={f['recipe_id']}" if f.get("recipe_id") else ""))
-
-
-@kb_cli.command("learning")
-def learning_cmd(ctx: typer.Context, md: bool = typer.Option(False, "--md", help="print markdown"),
-                 as_json: bool = typer.Option(False, "--json"),
-                 top: int = typer.Option(15, "--top")) -> None:
-    """What did we learn / what still needs the LLM / what blocks most projects (from the ledger)."""
-    from .ledger import render_learning_md
-
-    kb = _kb(ctx)
-    summary = kb.ledger().summary(top=top)
-    if as_json:
-        typer.echo(json.dumps(summary, indent=2, ensure_ascii=False))
-        return
-    if md:
-        typer.echo(render_learning_md(summary, kb.stats()), nl=False)
-        return
-    typer.echo(f"{summary['records']} ledger record(s), {summary['projects']} project(s), "
-               f"{summary['runs']} run(s)")
-    typer.echo("resolutions: " + (", ".join(f"{k}={v}" for k, v in summary["by_resolution"].items()) or "-"))
-    typer.echo("\nwrite a recipe/handler for these (LLM-fixed ≥2×, no KB recipe):")
-    for r in summary["llm_symbols_without_recipe"] or []:
-        typer.echo(f"  {r['symbol']:<32} fixed={r['count']:<3} projects={r['projects']:<3} {r['label']}: "
-                   f"{r['replacement'] or '-'}")
-    if not summary["llm_symbols_without_recipe"]:
-        typer.echo("  (none)")
-    typer.echo("\nstill resolved by the LLM:")
-    for r in summary["llm_symbols"] or []:
-        typer.echo(f"  {r['symbol']:<32} fixed={r['count']:<3} projects={r['projects']:<3} "
-                   f"recipe={'yes' if r['has_recipe'] else 'no'}  {r['label']}: {r['replacement'] or '-'}")
-    if not summary["llm_symbols"]:
-        typer.echo("  (none)")
-    typer.echo("\nblocking most projects:")
-    for r in summary["blocked"] or []:
-        typer.echo(f"  {r['symbol']:<40} {r['reason']:<26} projects={r['projects']:<3} "
-                   f"{', '.join(r['project_names'][:6])}")
-    if not summary["blocked"]:
-        typer.echo("  (none)")
-    typer.echo("\nKB recipes / patches that paid off:")
-    for r in summary["kb_fired"] or []:
-        typer.echo(f"  {r['id']:<48} {r['kind']:<11} projects={r['projects']:<3} count={r['count']}")
-    if not summary["kb_fired"]:
-        typer.echo("  (none)")
-    ec = summary.get("error_cases")
-    if ec:
-        typer.echo(f"\nerror cases: {ec['errors']} ({', '.join(f'{k}={v}' for k, v in ec['by_status'].items())}); "
-                   f"LLM text replaces: {ec['llm_text_replace']} — `sbmig kb errors summary` for details")
-    top_cases = summary.get("top_cases") or []
-    if top_cases:
-        typer.echo("\ntop error cases (`sbmig kb cases show <id>`):")
-        for r in top_cases:
-            typer.echo(f"  {r['id']}  {r['status']:<10} projects={r['projects']:<3} seen={r['seen']:<4} "
-                       f"{_trim(r['name'], 60)}  — {_trim(r['action'], 60)}")
+    problems = kb.validate()
+    for p in problems:
+        typer.echo(f"PROBLEM: {p}")
+    if problems:
+        typer.echo(f"{len(problems)} problem(s) in {kb.root}")
+        raise typer.Exit(1)
+    st = kb.stats()
+    typer.echo(f"OK: {st['error_cases']} error case(s), {st['fix_attempts']} fix attempt(s), {st['catalog_cases']} "
+               f"case(s), {st.get('script_versions', 0)} fix-script version(s), {st['reviews']} review(s) in "
+               f"{kb.root}")
 
 
 @kb_cli.command("export")
 def export_cmd(ctx: typer.Context, out: Path = typer.Argument(..., metavar="OUT.zip")) -> None:
-    """Export the KB as a zip (to move it between machines; error cases included)."""
+    """Export the KB as a zip (to move it between machines): catalog/, views/, scripts/ and the event files."""
     p = _kb(ctx).export_zip(out)
     typer.echo(f"exported {p}")
 
@@ -320,52 +119,47 @@ def export_cmd(ctx: typer.Context, out: Path = typer.Argument(..., metavar="OUT.
 @kb_cli.command("import")
 def import_cmd(ctx: typer.Context, src: Path = typer.Argument(..., metavar="IN.zip", exists=True),
                replace: bool = typer.Option(False, "--replace", help="Replace instead of merge.")) -> None:
-    """Import a KB zip (merge by default)."""
+    """Import a KB zip (merge by default; --replace swaps the KB and keeps the old one as <kb>.bak-<timestamp>)."""
     counters = _kb(ctx).import_zip(src, merge=not replace)
     typer.echo(" ".join(f"{k}={v}" for k, v in counters.items()))
 
 
-@kb_cli.command("match")
-def match_cmd(ctx: typer.Context, signature: str = typer.Argument(...),
-              project: Optional[Path] = typer.Option(None, "--project", "-p",
-                                                     help="Project dir for patch-replay checks.")) -> None:
-    """Debug: what would kb.match return for a cluster with this (L1 or L2) signature?"""
-    kb = _kb(ctx)
-    head = signature.split("|", 1)[0]
+@kb_cli.command("reviews")
+def reviews_cmd(
+    ctx: typer.Context,
+    project: Optional[str] = typer.Option(None, "--project", help="regex on the project name"),
+    verdict: Optional[str] = typer.Option(None, "--verdict", help="regex: ok|issues|skipped|failed"),
+    limit: int = typer.Option(20, "--limit", "-n", help="show the last N matching reviews (0 = all)"),
+    as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),
+) -> None:
+    """Structure reviews (v2, kb/reviews.jsonl): one line per run — verdict, issues by severity, the script's
+    result."""
     try:
-        kind = ErrorKind(head)
-    except ValueError:
-        kind = ErrorKind.UNKNOWN
-    err = BuildError(kind=kind, message=signature, signature=signature, signature_generic=signature)
-    cluster = ErrorCluster(id="debug", kind=kind, errors=[err], signatures=[signature])
-    with tempfile.TemporaryDirectory(prefix="sbmig-kb-match-") as tmp:
-        root = project.resolve() if project else Path(tmp) / "project"
-        root.mkdir(parents=True, exist_ok=True)
-        ws = Workspace(root, Path(tmp) / "run", "kb-match")
-        profile = ProjectProfile(root=str(root), name=root.name, case_type=CaseType.UNKNOWN)
-        m = kb.match(cluster, ws, profile)
-    typer.echo(json.dumps({
-        "recipe_ids": m.recipe_ids,
-        "candidate_recipe_ids": m.candidate_recipe_ids,
-        "handler_ids": m.handler_ids,
-        "cases": [c.id for c in m.cases],
-        "replayable": [c.id for c in m.replayable],
-        "case_hits": [{"case_id": h.case_id, "name": h.name, "status": h.status, "action": action_text(h.action)}
-                      for h in m.case_hits],
-        "hints": m.hints,
-    }, indent=2, ensure_ascii=False))
-
-
-@kb_cli.command("validate")
-def validate_cmd(recipe: Path = typer.Argument(..., metavar="RECIPE.yml", exists=True)) -> None:
-    """Validate a declarative recipe against the KB whitelist."""
-    ok, errors, _ = validate_recipe_yaml(recipe.read_text(encoding="utf-8"))
-    if ok:
-        typer.echo("OK")
+        r_project = re.compile(project) if project else None
+        r_verdict = re.compile(verdict) if verdict else None
+    except re.error as e:
+        raise typer.BadParameter(f"bad regex: {e}")
+    rows = [r for r in _kb(ctx).iter_reviews()
+            if (r_project is None or r_project.search(r.project or ""))
+            and (r_verdict is None or r_verdict.search(str(r.verdict or "")))]
+    if limit > 0:
+        rows = rows[-limit:]
+    if as_json:
+        for r in rows:
+            typer.echo(r.model_dump_json())
         return
-    for e in errors:
-        typer.echo(f"ERROR: {e}")
-    raise typer.Exit(1)
+    if not rows:
+        typer.echo("no structure reviews")
+        return
+    for r in rows:
+        crit = sum(1 for i in r.issues if i.severity == "critical")
+        warn = len(r.issues) - crit
+        res = r.script_result
+        script = f"script {res.status}" if res is not None else ("script (not run)" if r.script else "no script")
+        typer.echo(f"{_when(r.at)}  {_trim(r.project or '-', 24):<24} {str(r.verdict or '-'):<8} critical={crit:<2} "
+                   f"warnings={warn:<2} {script:<18} {_trim(r.run_id or '-', 40)}")
+        for i in r.issues[:5]:
+            typer.echo(f"    {i.severity:<8} {_trim(i.file or '-', 50)}: {_trim(i.problem, 120)}")
 
 
 # --------------------------------------------------------------------------- sbmig kb errors
@@ -375,7 +169,7 @@ errors_cli = typer.Typer(
 kb_cli.add_typer(errors_cli, name="errors")
 
 _STATUS_HELP = "regex: resolved|resolved_indirectly|blocked|unresolved|not_visible"
-_METHOD_HELP = "regex on the fix method: handler|recipe|kb_patch|llm|plan_step|none|script|script_reuse|script_augment"
+_METHOD_HELP = "regex on the fix method: script|script_reuse|script_augment|plan_step|none"
 _CHANGE_HELP = "regex: text_replace|code_edit|file_create|file_delete|file_rename|mixed|none"
 
 
@@ -420,8 +214,8 @@ def errors_list_cmd(
     signature: Optional[str] = typer.Option(None, "--signature", help="regex on the L1 or L2 signature"),
     run: Optional[str] = typer.Option(None, "--run", help="exact run id"),
     case: Optional[str] = typer.Option(None, "--case", help="case id (or id prefix) of the case catalog"),
-    resolver: Optional[str] = typer.Option(None, "--resolver", help="regex on the resolver id (handler / recipes / "
-                                                                    "model / case-replace:<case>:<pairs>)"),
+    resolver: Optional[str] = typer.Option(None, "--resolver", help="regex on the resolver id (script:<case>:v<N> / "
+                                                                    "model)"),
     limit: int = typer.Option(50, "--limit", "-n", help="show the last N matching records (0 = all)"),
     as_json: bool = typer.Option(False, "--json", help="one JSON object per line"),
 ) -> None:
@@ -508,8 +302,7 @@ def _error_view(e, attempts: list, case: Optional[CatalogCase], all_diffs: bool)
         change = e.change_kind + (f"; replace {pairs_text(e.replace_pairs[:5])}" if e.replace_pairs else "")
         if e.fix_labels:
             change += f"; labels {', '.join(e.fix_labels)}"
-        lines.append(f"  change:    {change}" + ("  (LLM text replace → rule candidate)" if e.replace_rule_candidate
-                                                 else ""))
+        lines.append(f"  change:    {change}")
     else:
         lines.append(f"  why not:   {_trim(e.failure_reason, 400) or '-'}")
         if e.block_reason or e.suggestion:
@@ -634,7 +427,7 @@ def errors_summary_cmd(
         typer.echo(json.dumps(s, indent=2, ensure_ascii=False))
         return
     typer.echo(f"{s['errors']} error case(s), {s['attempts']} attempt(s), {s['projects']} project(s), "
-               f"{s['runs']} run(s); LLM text replaces: {s['llm_text_replace']}")
+               f"{s['runs']} run(s)")
     typer.echo("status:      " + (", ".join(f"{k}={v}" for k, v in s["by_status"].items()) or "-"))
     typer.echo("resolved by: " + (", ".join(f"{k}={v}" for k, v in s["by_method"].items()) or "-"))
     typer.echo("change kind: " + (", ".join(f"{k}={v}" for k, v in s["by_change_kind"].items()) or "-"))
@@ -658,29 +451,6 @@ def errors_summary_cmd(
                    f"blocked={r['blocked']}")
     if not s["top_unresolved"]:
         typer.echo("  (none)")
-
-
-@errors_cli.command("replace-candidates")
-def errors_replace_candidates_cmd(
-    ctx: typer.Context,
-    min_projects: int = typer.Option(1, "--min-projects", help="only pairs seen in at least N projects"),
-    limit: int = typer.Option(50, "--limit", "-n", help="0 = all"),
-    as_json: bool = typer.Option(False, "--json"),
-) -> None:
-    """LLM fixes that were only text replaces, grouped by L2 + replace pair — deterministic rule / command
-    candidates."""
-    rows = _kb(ctx).error_case_store().replace_candidates(min_projects=min_projects)
-    if limit > 0:
-        rows = rows[:limit]
-    if as_json:
-        typer.echo(json.dumps(rows, indent=2, ensure_ascii=False))
-        return
-    if not rows:
-        typer.echo("no text-replace candidates")
-        return
-    for r in rows:
-        typer.echo(f"projects={r['projects']:<3} count={r['count']:<3} {_trim(r['signature_generic'], 60):<60} "
-                   f"`{r['old']}` → `{r['new']}`  e.g. {r['example_file'] or '-'} ({r['example_attempt'] or '-'})")
 
 
 @errors_cli.command("export")
@@ -736,9 +506,8 @@ cases_cli = typer.Typer(
          "reject / pin / unpin / hint / note.", no_args_is_help=True)
 kb_cli.add_typer(cases_cli, name="cases")
 
-_ACTION_HELP = ("script:<N> (v2: a stored fix-script version of the case) | recipe:<id>[,<id>…] | "
-                "replace:<old>=<new>[,<old>=<new>…] | handler:<id> | hint | block[:<reason>] (reason = a BlockReason "
-                "value, or free text kept as the suggestion)")
+_ACTION_HELP = ("script:<N> (a stored fix-script version of the case) | hint | block[:<reason>] (reason = a "
+                "BlockReason value, or free text kept as the suggestion)")
 
 
 def _catalog(ctx: typer.Context) -> CaseCatalog:
@@ -775,8 +544,9 @@ def _done(cat: CaseCatalog, c: CatalogCase, what: str) -> None:
                f"({cat.path_of(c.id) or '-'})")
 
 
-def parse_action(spec: str, replace_scope: str = "error-lines") -> CaseAction:
-    """`--action` of `sbmig kb cases pin` → CaseAction (ValueError on a malformed spec)."""
+def parse_action(spec: str) -> CaseAction:
+    """`--action` of `sbmig kb cases pin` → CaseAction (ValueError on a malformed spec or a kind other than
+    script / hint / block)."""
     kind, _, arg = (spec or "").partition(":")
     kind, arg = kind.strip().lower(), arg.strip()
     if kind == "script":
@@ -784,29 +554,15 @@ def parse_action(spec: str, replace_scope: str = "error-lines") -> CaseAction:
         if not num.isdigit() or int(num) < 1:
             raise ValueError("script:<N> needs a version number (script:2)")
         return CaseAction(kind="script", script_version=int(num))
-    if kind == "recipe":
-        ids = [x.strip() for x in arg.split(",") if x.strip()]
-        if not ids:
-            raise ValueError("recipe:<id> needs a recipe id")
-        return CaseAction(kind="recipe", recipe_ids=ids)
-    if kind == "replace":
-        pairs = []
-        for part in arg.split(","):
-            old, sep, new = part.partition("=")
-            if not sep or not old.strip() or old.strip() == new.strip():
-                raise ValueError(f"replace pair {part!r} is not <old>=<new>")
-            pairs.append(ReplacePair(old=old.strip(), new=new.strip()))
-        return CaseAction(kind="replace", replace_pairs=pairs, replace_scope=replace_scope)
-    if kind == "handler":
-        if not arg:
-            raise ValueError("handler:<id> needs a handler id")
-        return CaseAction(kind="handler", handler_id=arg)
     if kind == "hint":
         return CaseAction(kind="hint")
     if kind == "block":
         if arg in {r.value for r in BlockReason}:
             return CaseAction(kind="block", block_reason=arg)
         return CaseAction(kind="block", suggestion=arg)
+    if kind in ("recipe", "replace", "handler", "patch"):
+        raise ValueError(f"action {kind!r} is no longer supported: the v2 flow fixes every error with a fix script; "
+                         f"pin one of {_ACTION_HELP}")
     raise ValueError(f"unknown action {spec!r}; expected {_ACTION_HELP}")
 
 
@@ -816,7 +572,7 @@ def cases_list_cmd(
     status: Optional[str] = typer.Option(None, "--status", help="regex on the effective status: "
                                                                  "observed|candidate|active|rejected"),
     action: Optional[str] = typer.Option(None, "--action", help="regex on the effective action kind: "
-                                                                 "script|hint|recipe|replace|handler|patch|block"),
+                                                                 "script|hint|block"),
     kind: Optional[str] = typer.Option(None, "--kind", help="regex on the error kind / class (compile, "
                                                              "cannot_find_symbol …)"),
     search: Optional[str] = typer.Option(None, "--search", help="regex on id, name, signature, symbol, owners"),
@@ -875,7 +631,7 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
                  + (f", symbol {c.symbol}" if c.symbol else ""))
     lines.append(f"  status:    {_status_text(c)}")
     a = c.effective_action()
-    lines.append(f"  action:    {_action_text(c)}" + (f" (scope {a.replace_scope})" if a.kind == "replace" else ""))
+    lines.append(f"  action:    {_action_text(c)}")
     if c.human.status or c.human.action or c.human.name:
         lines.append(f"  generated: {c.name}: status {c.status}, action {action_text(c.action)}  "
                      "(`*` = the human block overrides it)")
@@ -886,11 +642,7 @@ def case_report(cat: CaseCatalog, c: CatalogCase, store=None, diff: bool = True)
     lines.append("             by status: " + (", ".join(f"{k} {v}" for k, v in ev.by_status.items()) or "-")
                  + "; resolved by: " + (", ".join(f"{k} {v}" for k, v in ev.resolved_by.items()) or "-"))
     promote = cat.promote_after if cat.promote_after > 0 else "never (auto promotion off)"
-    if cat.flag("case_replace") or a.kind == "replace" or ev.action_successes or ev.action_failures:
-        lines.append(f"             own replace (handler case-replace): {ev.action_successes} success(es) in "
-                     f"{len(ev.action_projects)} project(s), {ev.action_failures} failure(s); active after {promote} "
-                     "project(s) without a failure; falls back at ≥ 2 failures and more failures than successes")
-    elif a.kind == "script":
+    if a.kind == "script":
         lines.append(f"             fix script: active after {promote} project(s) without a failure of the version")
     if c.variants:
         lines += ["", "variants (owner / L1):"]
@@ -1036,16 +788,12 @@ def cases_reject_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar=
 @cases_cli.command("pin")
 def cases_pin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="ID"),
                   action: str = typer.Option(..., "--action", "-a", help=_ACTION_HELP)) -> None:
-    """Pin the action a hit applies (a person's decision: status active)."""
-    kb = _kb(ctx)
+    """Pin the action a hit applies (a person's decision: status active): a stored fix-script version, hint only, or
+    block (the error is handed over without a fix attempt)."""
     try:
-        act = parse_action(action, kb.cfg.kb.case_replace_scope)
+        act = parse_action(action)
     except ValueError as e:
         raise typer.BadParameter(str(e))
-    for rid in act.recipe_ids:
-        if kb.get_recipe(rid) is None:
-            typer.echo(f"note: {rid} is not a KB recipe (kb/recipes/); the KB recipe step runs KB recipes only",
-                       err=True)
     _set(ctx, key, "pinned", action=act, status="active")
 
 

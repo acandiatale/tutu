@@ -1,9 +1,0 @@
-Fix the following build error cluster.
-{% for title, body in sections %}
-## {{ title }}
-{{ body }}
-{% endfor %}
-{% if truncated %}
-(Context was shortened to fit the budget: {{ truncated | join(", ") }}. Ask with <need_files> if you need more.)
-{% endif %}
-Answer now using only the output protocol (<analysis>, <confidence>, then <patches> — or <need_files>/<need_grep>).

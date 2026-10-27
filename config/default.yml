@@ -85,7 +85,6 @@ openrewrite:
     spring_framework_7: []
     spring_security_7: []
     junit5: []
-  base_recipe_dir: knowledge/recipes/base
   timeout_minutes: 40
   jvm_args: ["-Xmx4g"]
   plugin_goal: run
@@ -106,10 +105,6 @@ build:
   allow_skip_test_compile_fallback: true
   allow_skip_tests_fallback: true  # only runtime test failures left → -DskipTests, flag tests-skipped, tests listed
   timeout_minutes: 30
-  source_encoding_policy: set-property   # set-property | convert-utf8 (legacy MS949/EUC-KR sources)
-  enforcer_policy: relax-rule            # relax-rule | skip | keep
-  werror_policy: remove
-  pom_repositories: keep        # keep | remove — <repositories> declared in the poms (RUNBOOK §0.1; remove needs the mirror)
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
   require_java_major: 21        # preflight: `mvn -v` must report this Java major, else abort (jdk-not-21); 0 = no check
   retry_negative_cache: true    # "…was cached in the local repository…" → the same build once more with -U
@@ -123,7 +118,6 @@ loop:
     restructure: { goal: package,      max_iterations: 6, enabled: false }
     verify:      { goal: package,      max_iterations: 12 }  # the script fix loop (one build per round)
   max_llm_calls: 100
-  verify_extra_llm_attempts: 2   # v1 only (v2: the verify loop is the only loop; script.max_augments_per_case limits a case)
   max_total_minutes: 240
   stall_limit: 2
   max_clusters_per_iteration: 8
@@ -131,7 +125,6 @@ loop:
   regression_ratio: 1.5
   always_final_verify: true
   oscillation_window: 4
-  max_llm_attempts_per_cluster: 2  # v1 only (v2: script.max_augments_per_case)
   blocked_policy:                # LLM script attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
     # v2: no handler swaps a javax library / bumps a missing version / a plugin any more → the LLM script gets 2 tries
     external_javax_api: 2        # dependency still exposes javax.* → the script may swap it for its jakarta release
@@ -199,29 +192,15 @@ review:                            # v2 structure review: the LLM checks poms / 
 
 kb:
   dir: kb-v2                       # v2 keeps its own KB (main / company-v1 use kb/)
-  # v1 learning paths, off in v2 (the fix-script history per case replaces them; removed in PLAN-v2 step 4)
-  ledger: false
-  symbol_index: false
-  deterministic_candidates: false
-  use_active_recipes: false
-  use_patch_replay: false
-  use_hints: false
-  harvest: false
-  generate_recipe_candidates: false
-  auto_promote_after_projects: 2
-  try_candidates_in_plan: false
-  max_hints: 5
+  auto_promote_after_projects: 2   # a case is active once its best script succeeded in N distinct projects
   # every build error on its own record (what / what was tried / how resolved or why not) + every fix attempt with the
   # code it applied, failures included: kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json, <run dir>/error_cases.*
   error_cases: true
-  error_hints: false               # v1: past fixes AND failures of the same error → hints in the fix prompt
   error_diff_chars: 12000          # cap of a stored attempt diff, applied after classification (0 = no cap)
   error_excerpt_chars: 1500
   # case catalog: one reusable case per error signature (kb/catalog/<kind>/<class>/<symbol>--<id>.yml, views kb/views/cases.md|csv);
-  # a hit applies the case's action; candidate → active after kb.auto_promote_after_projects successes, no failure
+  # a hit runs the case's best stored script first; candidate → active after kb.auto_promote_after_projects successes
   catalog: true
-  case_replace: false              # v1: learned text replaces (handler case-replace)
-  case_replace_scope: error-lines  # error-lines (the reported lines + imports) | file
   redact_file: knowledge/kb/redact.yml   # secret masking rules added to the built-ins (company patterns go here)
   lock_timeout_seconds: 300        # cross-process kb/.lock wait (web + fleet + kb commands share one KB)
 
@@ -234,10 +213,7 @@ fleet:                             # `sbmig fleet`: ~500 projects one after anot
   min_free_gb: 5                   # free space needed on the output drive before each project (0 = no check)
 
 plan:
-  advisor: none
-  intermediate_builds: false       # v2: no build between the recipes and the restructure
-  optional_bump_phase: restructure # v2: the in-house optional artifacts are bumped inside the restructure
-  parent_phase: restructure        # v1 only (the v2 planner always restructures right after the transform)
+  advisor: none                    # llm = the LLM may add OpenRewrite recipes of the catalog to the transform step
 
 report:
   formats: [md, json]
@@ -251,10 +227,8 @@ advisories:                        # library advisories (docs/ADVISORIES.md): EO
   enabled: true
   file: knowledge/libraries/advisories.yml
   extra_files: []                  # company additions / overrides, same schema, merged by id (later wins)
-  allow_recipes: false             # v2: advisories are LLM hints + Handover only (true = advisory recipes in the transform)
-  policy_overrides: {}             # e.g. {springfox: guide, hystrix: off}
+  policy_overrides: {}             # e.g. {hystrix: off} switches an entry off
   report_carried_over: true        # handover lists dependencies pinned at as-is versions (unmanaged after the swap)
-  ledger: false                    # v1: findings go to kb/ledger.jsonl (resolution=advisory) → fleet learning report
   max_from_here: 40
 
 externalized:                      # settings the code reads that no packaged resource defines (round 8)

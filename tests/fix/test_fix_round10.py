@@ -23,15 +23,17 @@ MSGS = [ChatMessage(role="user", content="hi")]
 
 
 def ctx(**kw):
-    return FixContext(phase=Phase.SPRING, iteration=2, profile_summary="case=spring_boot java=17", **kw)
+    return FixContext(phase=Phase.VERIFY, iteration=2, profile_summary="case=spring_boot java=17", script_mode="new",
+                      **kw)
 
 
 def test_metadata_carries_run_id_and_project(cfg, ws):
     ws.write(A, "package a;\n\npublic class A {}\n")
     client = FakeLLMClient()
-    LLMFixer(cfg, client).propose(ws, make_cluster(file=A, cid="c-42"), ctx())
+    LLMFixer(cfg, client).propose_script(ws, make_cluster(file=A, cid="c-42"), ctx(case_id="k42"))
     meta = client.calls[0]["metadata"]
-    assert meta == {"run_id": "t-run", "project": "project", "phase": "spring", "iteration": 2, "cluster_id": "c-42"}
+    assert meta == {"run_id": "t-run", "project": "project", "phase": "verify", "iteration": 2, "cluster_id": "c-42",
+                    "script_mode": "new", "case_id": "k42"}
     role, m = LLMFixer.call_tags(None, "c1", ws)
     assert role == "fix" and m == {"run_id": "t-run", "project": "project", "cluster_id": "c1"}
     assert LLMFixer.call_tags(None) == ("fix", {})
@@ -46,14 +48,14 @@ class _Probe:
     def complete(self, messages, **kw):
         from sbmig.core.interfaces import LLMResponse
         self.seen.append(llm_calls_in_flight())
-        return LLMResponse(content="<analysis>no fix</analysis><patches></patches>", model="m")
+        return LLMResponse(content="<analysis>no fix</analysis>", model="m")
 
 
 def test_llm_calls_are_marked_in_flight(cfg, ws):
     ws.write(A, "package a;\n\npublic class A {}\n")
     probe = _Probe()
     assert llm_calls_in_flight() == 0
-    LLMFixer(cfg, probe).propose(ws, make_cluster(file=A), ctx())
+    LLMFixer(cfg, probe).propose_script(ws, make_cluster(file=A), ctx())
     assert probe.seen and all(n >= 1 for n in probe.seen) and llm_calls_in_flight() == 0
     rec = RecordingClient(_Probe(), ws.run_dir / "rec")
     rec.complete(MSGS)

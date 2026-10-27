@@ -8,8 +8,8 @@ and (v2, flow-v2) a `sbmig.e2e.yml` with a **replayed fake LLM** (`replay/llm-NN
 `fixtures/libs/` (installed by `fixtures/libs/install.sh`).
 
 > The `expect` blocks and this matrix describe the **v2 flow** (one OpenRewrite run → restructure → LLM structure
-> review → build → script fix loop, docs/v2/PLAN-v2.md). The "Expected sbmig outcome" sections of some per-fixture
-> READMEs still describe v1 (tag `company-v1`: handlers, KB recipes); the `expect` block is what is asserted.
+> review → build → script fix loop, docs/v2/PLAN-v2.md). The per-fixture READMEs describe the as-is project and the v2
+> outcome (the v1 outcomes — handlers, KB recipes — are in tag `company-v1`); the `expect` block is what is asserted.
 
 ## Matrix (v2)
 
@@ -19,7 +19,7 @@ previous version, `reuse` = a stored version runs again without an LLM call). Me
 
 | fixture | case | catalog | as-is JDK | review (replayed) | scripts / cases | v2 outcome (`expect`) |
 |---|---|---|---|---|---|---|
-| `pure-java` | `pure_java` | — | 8 | ok | new 2: JAXB `jakarta.xml.bind` (adds `jakarta.xml.bind-api` + `jaxb-runtime`, unversioned) → build_ok; `jakarta.xml.bind.annotation` (same script, nothing left to change → apply_failed) | success, 3 LLM; **fills the shared KB `out/e2e/kb-jaxb`** (reuse scenario) |
+| `pure-java` | `pure_java` | — | 8 | ok | new 1: JAXB `jakarta.xml.bind` (adds `jakarta.xml.bind-api` + `jaxb-runtime`, unversioned) → build_ok; the other 9 JAXB cases of the module are deferred behind that pom change and vanish with the rebuild | success, 2 LLM; **fills the shared KB `out/e2e/kb-jaxb`** (reuse scenario) |
 | `servlet-tomcat` | `servlet_tomcat` | — | 8 | warning (servlet-api scope) | — | success, 1 LLM, commons-io → 2.19.0 |
 | `spring5-xml` | `spring_legacy` | — | 8 | 2 warnings | new 2: `WebMvcConfigurerAdapter` → `implements WebMvcConfigurer`, `HandlerInterceptorAdapter` → `implements HandlerInterceptor` (the override / type errors of the same files are deferred and vanish) | success, 3 LLM, slf4j-api → 2.0.17 |
 | `boot2` | `spring_boot` | — | 11 | warning (lombok.version) | — | success, 1 LLM, commons-lang3 → 3.17.0 |
@@ -36,7 +36,7 @@ previous version, `reuse` = a stored version runs again without an LLM call). Me
 | `boot2-hystrix-command` | `spring_boot` | advisory | 11 | warning (hystrix pin) | — | success, 1 LLM: v2 keeps the Hystrix starter, `InventoryCommand` still compiles against it (hystrix still-present, handover) |
 | `multi-module-merge` | `spring_boot` | layout `merge` | 11 | ok | — | success, 1 LLM; merge as in round 7b |
 | `legacy-external-config` | `spring_legacy` | externalized config | 8 | warning (spring.version left) | — | success, 1 LLM; properties inventory + placeholders as in round 8 |
-| `java6-legacy` | `pure_java` | S8 | 8 | 2 warnings (bootclasspath, surefire 2.4.3) | new 2 + **reuse 1**: `--boot-class-path` dropped; then the JAXB case **reuses pure-java's stored v1 without an LLM call**; `sun.misc.BASE64*` → `java.util.Base64` | success, 3 LLM; **`kb.after: pure-java`** (reuse scenario) |
+| `java6-legacy` | `pure_java` | S8 | 8 | 2 warnings (bootclasspath, surefire 2.4.3) | new 2 + **reuse 1**: `--boot-class-path` dropped; then the JAXB case **reuses pure-java's stored v1 without an LLM call** (improved — the Base64 case is still there); `sun.misc.BASE64*` → `java.util.Base64` | success, 3 LLM; **`kb.after: pure-java`** (reuse scenario) |
 | `multi-module-conflict` | `spring_boot` | merge conflict | 11 | ok | new 1: `farewell(String)` from the dropped web copy (shown as reference) added to the kept `Shared.java` | success, 2 LLM |
 | `legacy-ibatis` | `spring_legacy` | advisory `ibatis2` | 8 | warning (iBATIS 2) | new 12: 3 cases × 4 requests, the LLM declines a blind MyBatis port (no script) | **blocked** `repeated_failure` ×3, exit **2**, 13 LLM, ibatis2 guide / still-present |
 | `legacy-role-parents` | `spring_boot` | company rule | 11 | warning (`boot-jar` not `*-boot`) | — | success, 1 LLM; poms only (round 9b/9c) |

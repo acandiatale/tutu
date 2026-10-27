@@ -8,12 +8,12 @@ import time
 
 import pytest
 
-from sbmig.core.models import (BlockReason, BuildError, CaseAction, CaseHit, ErrorKind, FixProposal, KBMatch,
+from sbmig.core.models import (BlockReason, BuildError, CaseAction, CaseHit, ErrorKind, KBMatch,
                                LLMUsage, Phase)
 from sbmig.loop import fixloop as fl
 from sbmig.loop.fixloop import is_llm_transport_error, llm_400_body
 
-from .fakes import FakeBuildRunner, FakeFixer, FakeKB, bad_build, journal_events, ok_build, write_fix
+from .fakes import FixProposal, FakeBuildRunner, FakeFixer, FakeKB, bad_build, journal_events, ok_build, write_fix
 from .test_fixloop import make_loop
 
 FOO = "src/main/java/com/x/Foo.java"

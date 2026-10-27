@@ -36,8 +36,8 @@ phases: [spring, jdk21]
 | `javax.ejb`, `javax.enterprise` (CDI), `javax.json`, `javax.batch`, `javax.security.enterprise` | `jakarta.*` same suffix | matching `jakarta.*-api` |
 
 JSP / tag files are not compiled by the build (Tomcat compiles them at runtime) and OpenRewrite skips them: the
-`jakarta-namespace-sweep` handler renames the same packages inside `<%@ page|tag import="…" %>`, scriptlets
-(`<% %>`, `<%= %>`, `<%! %>`) and `<jsp:useBean class|type>` (flag `jsp-javax-renamed`). Never rename taglib URIs
+same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %>`, `<%! %>`) and
+`<jsp:useBean class|type>` still say `javax.*` — rename them where a fix touches them. Never rename taglib URIs
 (`http://java.sun.com/jsp/jstl/core` is a URI, not a package — JSTL 3 accepts it) or EL / HTML text.
 
 ## Stays `javax.*` (part of the JDK — never rename)
@@ -99,8 +99,8 @@ JSP / tag files are not compiled by the build (Tomcat compiles them at runtime) 
   extends only the paging interface: `no suitable method found for findAll(no arguments)`, `cannot find symbol:
   method save(…)` / `findById(…)` / `deleteById(…)` / `count()`.
   Fix: add `ListCrudRepository<T, ID>` (or `CrudRepository<T, ID>`) next to the paging interface with the same type
-  arguments, or switch to `JpaRepository<T, ID>`. The handler `spring-data-crud-repository` already does this
-  deterministically (pre-emptive in SPRING and on these errors) — an LLM fix only sees what it missed.
+  arguments, or switch to `JpaRepository<T, ID>` — on the repository interface (named in `location:`), not at
+  every call site.
 - `getOne(id)` / `getById(id)` deprecated → `getReferenceById(id)`; `deleteInBatch(..)` → `deleteAllInBatch(..)`
   (both still present in Spring Data JPA 4.1, so the build compiles — change them only when you touch the file).
 - `PageRequest.of(..)`, `Sort.by(..)`, `Pageable`, derived query methods: unchanged.

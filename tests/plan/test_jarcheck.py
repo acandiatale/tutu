@@ -191,11 +191,11 @@ def test_core_entry_declared_by_a_recipe_artifact_is_a_problem(world):
                              "not in an org.openrewrite:* jar")]
 
 
-def test_project_and_unconfigured_entries(world):
+def test_non_openrewrite_and_unconfigured_entries(world):
     rep = _run(world,
-               {"id": "com.company.migrate.X", "origin": "project", "file": "knowledge/recipes/base/x.yml"},
+               {"id": "com.company.migrate.X", "origin": "project"},
                {"id": "com.a.One", "artifact": "org.example:elsewhere"})
-    assert [r.id for r in rep.rows] == ["com.a.One"]              # project composites are validated offline
+    assert [r.id for r in rep.rows] == ["com.a.One"]              # only OpenRewrite ids are looked up in the jars
     assert rep.problems == [
         ("catalog com.a.One: artifact org.example:elsewhere is not in openrewrite.recipe_artifacts and has no "
          "provided_by"),

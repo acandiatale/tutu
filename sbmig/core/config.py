@@ -188,7 +188,6 @@ class OpenRewriteConfig(BaseModel):
     ])
     recipe_artifact_versions: dict[str, str] = Field(default_factory=dict)   # override per artifact; else BOM-managed
     recipes: RecipeSetConfig = Field(default_factory=RecipeSetConfig)
-    base_recipe_dir: str = "knowledge/recipes/base"    # project-owned declarative recipes (relative to repo root)
     timeout_minutes: int = 40
     jvm_args: list[str] = Field(default_factory=lambda: ["-Xmx4g"])
     oom_retry_jvm_args: list[str] = Field(default_factory=lambda: ["-Xmx8g"])   # one retry after OutOfMemoryError
@@ -221,15 +220,12 @@ class BuildConfig(BaseModel):
                                                         # (flag `tests-skipped`, failing tests listed as follow-ups)
     timeout_minutes: int = 30
     env: dict[str, str] = Field(default_factory=dict)
-    # legacy source encodings (JDK 18+ defaults to UTF-8 → "unmappable character" on MS949/EUC-KR sources)
-    source_encoding_policy: Literal["set-property", "convert-utf8"] = "set-property"
+    # legacy source encodings (JDK 18+ defaults to UTF-8 → "unmappable character" on MS949/EUC-KR sources): the
+    # detection candidates the structure review and the script helper use
     encoding_candidates: list[str] = Field(default_factory=lambda: ["utf-8", "cp949", "euc-kr", "shift_jis", "latin-1"])
-    enforcer_policy: Literal["relax-rule", "skip", "keep"] = "relax-rule"    # requireJavaVersion/convergence failures
-    werror_policy: Literal["remove", "keep"] = "remove"                       # -Werror makes JDK 21 deprecations fatal
-    # <repositories> / <pluginRepositories> declared in the project poms (old Nexus URLs, Central, Spring milestones):
-    # keep = leave them (route them through a `settings_file` mirror, mirrorOf external:*); remove = the pre-emptive
-    # handler `strip-pom-repositories` deletes the blocks before the first build (needs the settings mirror)
-    pom_repositories: Literal["keep", "remove"] = "keep"
+    # <repositories> / <pluginRepositories> declared in the project poms (old Nexus URLs, Central, Spring milestones)
+    # are left as they are; route them through a `settings_file` mirror (mirrorOf external:*) — the plan notes say
+    # whether the mirror covers them
     # package prefixes treated as *library* code in error signatures (project-owned FQCNs are masked as '*').
     # In-house library namespaces (parent/mandatory/optional group ids) are added automatically.
     external_package_prefixes: list[str] = Field(default_factory=list)
@@ -256,9 +252,6 @@ class LoopConfig(BaseModel):
         "verify": PhaseLoopConfig(goal="package", max_iterations=12),
     })
     max_llm_calls: int = 100
-    # v1 only — final verify loop: clusters blocked earlier for repeated_failure / oscillation are released and may get
-    # this many MORE LLM attempts; v2 ignores it (the verify loop is the only fix loop, nothing is released)
-    verify_extra_llm_attempts: int = 2
     max_total_minutes: int = 240
     stall_limit: int = 2                     # identical error multiset N times → escalate strategy
     max_clusters_per_iteration: int = 8
@@ -268,8 +261,6 @@ class LoopConfig(BaseModel):
     engine: Literal["graph", "inline"] = "graph"   # graph: LangGraph StateGraph drives the phases (company
                                              # convention, sbmig.graph); inline: the original in-process loop
     oscillation_window: int = 4              # error-set history compared for A↔B toggling (≥ stall detection window)
-    max_llm_attempts_per_cluster: int = 2    # v1: LLM tries per cluster signature set before BLOCKED(repeated_failure);
-                                             # v2 limits a case with script.max_augments_per_case
     # how many LLM attempts a cluster of this BlockReason may get before it is blocked (0 = block immediately).
     # v2: no deterministic handler swaps a javax library, bumps a missing version or a JDK-21-incompatible plugin any
     # more, so those get LLM script attempts (a stored script is reused regardless); an unresolvable in-house parent
@@ -382,34 +373,17 @@ class FixConfig(BaseModel):
 
 
 class KBConfig(BaseModel):
-    dir: str = "kb-v2"                       # relative to repo root unless absolute; v2 keeps its own KB (flow-v2)
-    # v2: the ledger / symbol index / KB recipes / patch replay / harvest / learned replaces / error hints of v1 are off
-    # (the fix-script history per case replaces them); the flags stay until the v1 code is removed (PLAN-v2 step 4)
-    ledger: bool = False                     # append one ResolutionRecord per resolved/blocked cluster to kb/ledger.jsonl
-    symbol_index: bool = False               # maintain kb/symbols.json: error symbol → fix labels / replacements
-    deterministic_candidates: bool = False   # compile recipe candidates from labeled fixes without the LLM when possible
-    use_active_recipes: bool = False
-    use_patch_replay: bool = False
-    use_hints: bool = False
-    harvest: bool = False
-    generate_recipe_candidates: bool = False
-    auto_promote_after_projects: int = 2     # candidate → active after success in N distinct projects (0 = never)
-    try_candidates_in_plan: bool = False     # run candidate recipes inside the plan's OpenRewrite step (as-is classpath →
-                                             # type attribution works); credited success/fail by the phase's build
-    max_hints: int = 5
+    dir: str = "kb-v2"                       # relative to repo root unless absolute (main / company-v1 used kb/)
+    auto_promote_after_projects: int = 2     # a case is `active` once its best script succeeded in N distinct projects
     # error cases (2026-10-23): one record per build error + one per fix attempt (failures included), with the code
     # applied → kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json and <run dir>/error_cases.*
     error_cases: bool = True
     error_hints: bool = False                # past outcomes of the same error (fixes AND failures) → fix-prompt hints
     error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff, applied AFTER classification (0 = no cap)
     error_excerpt_chars: int = 1500          # cap of ErrorCaseRecord.diff_excerpt (the error's own file)
-    # case catalog (2026-10-23): one case per error signature (L2) in kb/catalog/, human views in kb/views/; a hit applies
-    # the case's action (replace via handler case-replace; recipe / patch through the existing KB steps; hints always).
-    # Promotion candidate → active uses kb.auto_promote_after_projects (successes in N distinct projects, no failure)
+    # case catalog (2026-10-23): one case per error signature (L2) in kb/catalog/, human views in kb/views/; a hit
+    # runs the case's best stored script first (action `script`), a pinned `block` is never tried; hints always
     catalog: bool = True
-    case_replace: bool = False               # apply learned text replaces (handler case-replace) for candidate / active cases
-    case_replace_scope: Literal["error-lines", "file"] = "error-lines"   # error-lines = only the lines javac reported
-                                             # + import lines of that file; file = the whole file (riskier)
     # round 10: secret masking rules (built-ins + this yml: company additions, invariant 2), relative to the repo root
     redact_file: str = "knowledge/kb/redact.yml"
     lock_timeout_seconds: int = 300          # cross-process kb/.lock wait before a write gives up (logged, never fatal)
@@ -419,15 +393,6 @@ class PlanConfig(BaseModel):
     advisor: Literal["none", "llm"] = "none"   # optional LLM review of the rule-based plan
     catalog_file: str = "knowledge/recipes/catalog.yml"   # single source of truth for known recipes (advisor
                                              # whitelist, coverage, gates, descriptions); relative to repo root
-    intermediate_builds: bool = False          # v1: build after the jdk21 phase before the spring phase (v2: never)
-    optional_bump_phase: Literal["spring", "restructure"] = "restructure"   # bump in-house optional artifacts right after the
-                                             # spring rewrite so jakarta builds of in-house libs are on the classpath before the first build
-    # round 9c: when the in-house parents / layout are applied. `restructure` (default) = after the spring build-fix
-    # loop, on a tree that already compiles against the as-is parent chain; `spring` = right after spring.rewrite (and
-    # the optional bump), BEFORE the spring build-fix loop — the loop then fixes against the company parent chain
-    # (base-parent / boot-jar / comp-jar) instead of the as-is one, and an unresolvable parent fails fast; the
-    # restructure phase keeps only the final verify. Company runs set `spring` (the user's call, 2026-10-21).
-    parent_phase: Literal["restructure", "spring"] = "restructure"
 
 
 class FleetConfig(BaseModel):
@@ -468,12 +433,9 @@ class AdvisoryConfig(BaseModel):
     file: str = "knowledge/libraries/advisories.yml"      # relative to repo root unless absolute
     extra_files: list[str] = Field(default_factory=list)  # company additions / overrides (same schema, merged by id,
                                                           # later files win)
-    allow_recipes: bool = False                           # False → every advisory behaves as policy "guide"
-                                                          # (v2: advisories are LLM hints + Handover only)
-    policy_overrides: dict[str, Literal["guide", "recipe", "off"]] = Field(default_factory=dict)
-                                                          # advisory id → policy ("off" disables the entry)
+    policy_overrides: dict[str, Literal["guide", "off"]] = Field(default_factory=dict)
+                                                          # advisory id → "off" disables the entry ("guide" = as is)
     report_carried_over: bool = True                      # list as-is-version pins (unmanaged after the parent swap)
-    ledger: bool = False                                  # write advisory findings to kb/ledger.jsonl (resolution=advisory)
     max_from_here: int = 40                               # cap of the handover's "from here on" list
 
 
@@ -517,10 +479,6 @@ class Config(BaseModel):
     @property
     def kb_dir(self) -> Path:
         return self.resolve_path(self.kb.dir)
-
-    @property
-    def base_recipe_dir(self) -> Path:
-        return self.resolve_path(self.openrewrite.base_recipe_dir)
 
     @property
     def recipe_catalog_file(self) -> Path:

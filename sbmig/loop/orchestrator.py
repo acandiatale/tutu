@@ -3,9 +3,8 @@
 v2 (flow-v2, docs/v2/PLAN-v2.md): transform (every OpenRewrite recipe in ONE run, no build) → restructure (the
 company layout, unchanged) → structure review (`StepKind.REVIEW`: the LLM checks poms / dependencies / modules; its
 script for critical issues is committed as `review: …`) → verify: the final `mvn clean package`; when it fails, the
-script fix loop (`loop.phases.verify`) fixes the errors case by case and the final build runs again. No pre-emptive
-handlers, no KB recipes in the plan steps, no KB recipe credit, no harvest / ledger (v1 learning paths; their code is
-removed in PLAN-v2 step 4); the KB learns from the error-case records and the fix-script store.
+script fix loop (`loop.phases.verify`) fixes the errors case by case and the final build runs again. The KB learns
+from the error-case records and the fix-script store.
 
 The orchestrator owns the loop. A phase is green only on BUILD SUCCESS, and the final `mvn clean package` runs
 whenever `loop.always_final_verify` is set — even after failures, blocked clusters or budget exhaustion.
@@ -33,7 +32,7 @@ from sbmig.core.workspace import Workspace
 from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, lazy_attr
-from .fixloop import BuildFixLoop
+from .fixloop import BuildFixLoop, refine_build
 
 log = logging.getLogger("sbmig.loop")
 
@@ -136,16 +135,15 @@ class _BudgetedLLM:
 
 class Orchestrator:
     def __init__(self, cfg: Config, ws: Workspace, *, analyzer: Optional[Callable] = None,
-                 planner: Optional[Callable] = None, pre_handlers: Optional[Callable] = None,
+                 planner: Optional[Callable] = None,
                  restructurer: Any = None, rewrite_runner: Any = None, build_runner: Any = None,
-                 triager: Any = None, handlers: Any = None, fixer: Any = None, kb: Any = None, llm: Any = None,
+                 triager: Any = None, fixer: Any = None, kb: Any = None, llm: Any = None,
                  report_writer: Optional[Callable] = None, clock: Callable[[], float] = time.monotonic,
                  locator: Any = None, effective_capture: Optional[Callable] = None,
                  javax_inventory: Any = None, script_runner: Any = None, reviewer: Any = None):
         """v2 collaborators: `script_runner` (ScriptRunnerLike; None = `sbmig.script.ScriptRunner(cfg)` on first use)
         and `reviewer` (a StructureReviewerLike object, or a factory `fn(cfg, llm, runner, kb)`; None =
-        `sbmig.review.StructureReviewer`). `pre_handlers` is a v1 hook, accepted and ignored (no pre-emptive handlers
-        in v2)."""
+        `sbmig.review.StructureReviewer`)."""
         self.cfg = cfg
         self.ws = ws
         self.clock = clock
@@ -157,7 +155,6 @@ class Orchestrator:
         self._rewrite_runner = rewrite_runner
         self._build_runner = build_runner
         self._triager = triager
-        self._handlers = handlers
         self._fixer = fixer
         self._kb = kb
         self._llm = llm
@@ -230,20 +227,10 @@ class Orchestrator:
         return self._build_runner
 
     @property
-    def handlers(self) -> Any:
-        if self._handlers is None:
-            reg = getattr(self._triager, "registry", None) if self._triager is not None else None
-            if reg is None:
-                from sbmig.triage import HandlerRegistry
-                reg = HandlerRegistry.default(self.cfg)
-            self._handlers = reg
-        return self._handlers
-
-    @property
     def triager(self) -> Any:
         if self._triager is None:
             from sbmig.triage import Triager
-            self._triager = Triager(self.cfg, registry=self.handlers)
+            self._triager = Triager(self.cfg)
         return self._triager
 
     @property
@@ -561,10 +548,7 @@ class Orchestrator:
         self.plan = plan
         report.plan = plan
         self.ws.save_model("plan.json", plan)
-        # v2: no pre-emptive handlers (the structure review covers the source-encoding case; the rest are build errors
-        # for the fix scripts) — the key stays in the event for older readers
-        self.ws.journal({"event": "plan", "steps": [s.id for s in plan.steps], "pre_handlers": [],
-                         "notes": plan.notes})
+        self.ws.journal({"event": "plan", "steps": [s.id for s in plan.steps], "notes": plan.notes})
         for n in plan.notes:
             if n.startswith("followup:"):
                 report.manual_followups.append(n[len("followup:"):].strip())
@@ -572,8 +556,8 @@ class Orchestrator:
         if self._stop(stop_after, Phase.PLAN):
             return None
         # 4. phases ------------------------------------------------------------
-        self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.handlers, self.fixer,
-                                 self.kb, self._rewrite_runner_or_none(), profile, plan_notes=plan.notes,
+        self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.fixer, self.kb, profile,
+                                 plan_notes=plan.notes,
                                  budget=self.budget, dry_run=dry_run, blocked=self.blocked,
                                  locator=self._resolve_locator(), advisories=list(report.advisories or []),
                                  script_runner=self.script_runner)
@@ -595,8 +579,7 @@ class Orchestrator:
     def step_phase(self, report: RunReport, phase: Phase, items: list[tuple[int, PlanStep]],
                    stop_after: Phase | None) -> PhaseResult | None:
         """One phase group: run its steps. Returns the `PhaseResult` (also appended to `report.phases`), or None when
-        the group lies after `stop_after` (``phase_skipped``). Raises `_RunAborted` when the fix loop aborted the run.
-        v2: no KB recipe credit and no harvest after a phase (the error cases and the script store are the KB)."""
+        the group lies after `stop_after` (``phase_skipped``). Raises `_RunAborted` when the fix loop aborted the run."""
         if stop_after is not None and _PHASE_ORDER.index(phase) > _PHASE_ORDER.index(stop_after):
             # MSA plans repeat jdk21/spring per service: skip only the phases after `stop_after`
             self.ws.journal({"event": "phase_skipped", "phase": phase.value, "reason": f"stop_after={stop_after.value}"})
@@ -637,13 +620,6 @@ class Orchestrator:
         if stop_after is not None and stop_after != Phase.VERIFY:
             self._stop(stop_after, stop_after)
 
-    def _rewrite_runner_or_none(self) -> Any:
-        try:
-            return self.rewrite_runner
-        except MissingComponentError as e:
-            log.warning("%s", e)
-            return None
-
     def _resolve_locator(self) -> Any:
         if self._locator is not None:
             return self._locator or None
@@ -681,8 +657,7 @@ class Orchestrator:
                 log.info("planner does not take advisories (%s); planning without them", e)
                 plan = self.planner(profile, self.cfg, self.kb)
             self.ws.journal({"event": "advisories_planned",
-                             "findings": [{"id": f.advisory_id, "policy": f.policy, "recipes": f.recipes,
-                                           "recipe_source": f.recipe_source} for f in findings]})
+                             "findings": [{"id": f.advisory_id, "policy": f.policy} for f in findings]})
             return plan
         return self.planner(profile, self.cfg, self.kb)
 
@@ -807,14 +782,10 @@ class Orchestrator:
                 if ok is None:          # missing recipe → programming error
                     aborted, ok = True, False
                     pr.ok = False
-            elif step.kind == StepKind.HANDLER:
-                # v2: deterministic handlers are not part of the flow (code removed in PLAN-v2 step 4)
-                pr.notes.append(f"step {step.id} skipped: handler steps are not part of the v2 flow (fix scripts "
-                                "handle what the build reports)")
             elif step.kind == StepKind.REVIEW:
                 ok = self._step_review(pr, step)
             elif step.kind == StepKind.BUILD_FIX_LOOP:
-                # a v1-style intermediate loop (only when a config enables loop.phases.<phase>): the script fix loop
+                # an intermediate fix loop (the v2 planner plans none; a hand-made plan may): the script fix loop
                 loop_ran = True
                 ok = self._step_loop(pr, step)
                 pr.ok = ok
@@ -840,10 +811,6 @@ class Orchestrator:
         if self._pending_notes:
             pr.notes.extend(self._pending_notes)
             self._pending_notes = []
-
-    def _extra_recipe_files(self, step: PlanStep) -> list[Path]:
-        """The step's own recipe files only (v2: no KB recipes ride along with the plan's OpenRewrite run)."""
-        return [Path(r.file) for r in step.recipes if r.file]
 
     def _step_rewrite(self, pr: PhaseResult, step: PlanStep) -> Optional[bool]:
         self._flush_notes(pr)
@@ -873,9 +840,6 @@ class Orchestrator:
         if unresolved:
             self._report_unresolved_versions(pr, step, res, unresolved)
         pr.rewrite_results.append(res)
-        mark = getattr(self.triager, "mark_recipes_run", None)
-        if callable(mark):
-            mark([r.id for r in step.recipes], step.phase)
         sha = None
         if not self._dry_run and self.ws.is_dirty():
             sha = self.ws.commit(f"rewrite: {step.id}")
@@ -911,7 +875,7 @@ class Orchestrator:
         # in-repo reactor siblings (shared library roots) only resolve when the plugin runs from the aggregator root
         from .fixloop import build_target_args
         module, reactor_args = build_target_args(self.profile, step.target)
-        kwargs = dict(extra_recipe_files=self._extra_recipe_files(step), dry_run=self._dry_run, label=step.id)
+        kwargs = dict(dry_run=self._dry_run, label=step.id)
         try:
             return runner.run(list(step.recipes), module=module, extra_args=reactor_args, **kwargs)
         except TypeError:                      # a runner without `extra_args` (fakes / older implementations)
@@ -952,7 +916,7 @@ class Orchestrator:
             self.report.manual_followups.append(fu)
 
     # 2026-10-22 (company run): files the rewrite plugin could not parse never see the type-attributed recipes
-    # (Spring Data, Hibernate, method renames) — the source handlers / fix loop cover them; say so in the report
+    # (Spring Data, Hibernate, method renames) — the fix scripts cover what the build finds; say so in the report
     PARSE_PROBLEMS_FLAG = "rewrite-parse-problems"
 
     def _report_parse_problems(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
@@ -996,8 +960,6 @@ class Orchestrator:
         pc = self.cfg.loop.phases.get(step.phase.value)
         goal = step.build_goal or (pc.goal if pc else "compile")
         max_it = step.max_iterations or (pc.max_iterations if pc else 5)
-        if self.loop.rewrite_runner is None:
-            self.loop.rewrite_runner = self._rewrite_runner_or_none()
         res = self.loop.run(step.phase, goal, max_it, target=step.target)
         pr.iterations += res.iterations
         pr.attempts += res.attempts
@@ -1271,7 +1233,7 @@ class Orchestrator:
     def _effective_pom_after(self) -> Optional[dict]:
         """Round 9 (`layout.drop_managed_versions`): the effective dependencyManagement of the tree *after* the
         restructurer set the in-house parent, captured into a separate file so the as-is capture (`depmgmt.json`,
-        used by the carry-over handler) is never overwritten. None = not available (custom build runner without a
+        the as-is versions of the Handover) is never overwritten. None = not available (custom build runner without a
         capture, a capture that cannot take a file name, Maven failure) → the restructurer skips the cleanup."""
         fn = self._effective_capture
         if fn is None:
@@ -1321,7 +1283,7 @@ class Orchestrator:
             skip_run = ts and not skip_tests
             return skip_tests, skip_run
 
-        def _final_build() -> BuildResult:
+        def _run_final() -> BuildResult:
             skip_tests, skip_run = _skip_flags()
             if skip_run:
                 try:
@@ -1331,6 +1293,9 @@ class Orchestrator:
                     kw["extra_args"] = [*extra, "-DskipTests"]
                     return self.build_runner.run(goal, module=module, label=label, skip_test_compile=False, **kw)
             return self.build_runner.run(goal, module=module, label=label, skip_test_compile=skip_tests, **kw)
+
+        def _final_build() -> BuildResult:
+            return refine_build(_run_final())          # the refined case keys (sbmig.triage.cluster)
 
         res = _final_build()
         self._observe_final("verify-final", res, step.target)
@@ -1383,9 +1348,9 @@ class Orchestrator:
     def _verify_fix_loop(self, pr: PhaseResult, step: PlanStep, first: BuildResult) -> bool:
         """The final `mvn clean package` failed → the script fix loop on `loop.phases.verify` (goal `package`), after
         which the caller repeats the final build (invariant 1: the run still ends on a `clean package`). v2: this is
-        THE fix loop (no intermediate loops); its build 1 is the failed final build itself (not built again).
-        Nothing is released from the blocked registry (v1 `loop.verify_extra_llm_attempts`): a case's limit is
-        script.max_augments_per_case per run. Returns True when the loop ran."""
+        THE fix loop (no intermediate loops); its build 1 is the failed final build itself (not built again). A case
+        blocked earlier stays blocked: its limit is script.max_augments_per_case per run. Returns True when the loop
+        ran."""
         pc = self.cfg.loop.phases.get(Phase.VERIFY.value)
         if pc is None or not pc.enabled or pc.max_iterations <= 0 or self.loop is None or self._dry_run \
                 or getattr(self, "_after_abort", False):
@@ -1402,10 +1367,9 @@ class Orchestrator:
             return False
         self.ws.journal({"event": "verify_loop_start", "step": step.id, "goal": pc.goal, "target": step.target,
                          "max_iterations": pc.max_iterations, "errors": first.error_count,
-                         "clusters": [c.id for c in clusters], "releasable": [], "extra_llm_attempts": 0})
+                         "clusters": [c.id for c in clusters]})
         log.info("verify: final build failed with %d error(s) in %d case(s) → script fix loop (mvn %s, up to %d "
                  "round(s))", first.error_count, len(clusters), pc.goal, pc.max_iterations)
-        self.loop.released_ids = []
         res = self.loop.run(Phase.VERIFY, pc.goal, pc.max_iterations, target=step.target, first_build=first)
         pr.iterations += res.iterations
         pr.attempts += res.attempts
@@ -1417,7 +1381,7 @@ class Orchestrator:
             pr.remaining_errors += [e for e in res.remaining_errors if e not in pr.remaining_errors]
         self._merge_blocked(pr, res.blocked)
         self.ws.journal({"event": "verify_loop_end", "step": step.id, "build_ok": res.build_ok,
-                         "attempts": len(res.attempts), "iterations": res.iterations, "released": [],
+                         "attempts": len(res.attempts), "iterations": res.iterations,
                          "blocked": [b.id for b in res.blocked]})
         return True
 
@@ -1481,9 +1445,8 @@ class Orchestrator:
     def _finalize_error_cases(self, report: RunReport) -> None:
         """Every build error of the run on its own record + every fix attempt (failures included, with the code it
         applied): `<run dir>/error_cases.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`, the KB's append-only
-        `errors.jsonl` / `fix_attempts.jsonl` + the case catalog (v2: whenever `kb.error_cases` is on and the run has
-        a file KB — `kb.harvest` is a v1 switch and off; `--no-kb` gives a NullKnowledgeBase, which has no
-        `append_error_cases`), `report.error_cases`. Never fails the run: a problem becomes the flag
+        `errors.jsonl` / `fix_attempts.jsonl` + the case catalog (whenever `kb.error_cases` is on and the run has a
+        file KB — `--no-kb` gives a NullKnowledgeBase, which has no `append_error_cases`), `report.error_cases`. Never fails the run: a problem becomes the flag
         `error-cases-failed: <msg>`."""
         t = self.error_tracker
         if t is None or self._dry_run:
@@ -1522,8 +1485,7 @@ class Orchestrator:
             by_status: dict[str, int] = {}
             for r in errors:
                 by_status[r.status] = by_status.get(r.status, 0) + 1
-            report.error_case_counts = {**by_status,
-                                        "llm_text_replace": sum(1 for r in errors if r.replace_rule_candidate)}
+            report.error_case_counts = dict(by_status)
             for p in list(getattr(t, "problems", None) or [])[:3]:
                 flag(f"error-cases-failed: {p}")
             kb_n = None
@@ -1537,8 +1499,7 @@ class Orchestrator:
                         log.warning("kb.append_error_cases failed: %s", e)
                         flag(f"error-cases-failed: kb: {type(e).__name__}: {e}")
             self.ws.journal({"event": "error_cases", "count": len(errors), "by_status": by_status,
-                             "attempts": len(attempts), "kb_appended": kb_n,
-                             "llm_text_replace": report.error_case_counts["llm_text_replace"]})
+                             "attempts": len(attempts), "kb_appended": kb_n})
             log.info("error cases: %d error(s) (%s), %d fix attempt(s)%s", len(errors),
                      ", ".join(f"{k} {v}" for k, v in by_status.items()) or "-", len(attempts),
                      f", {kb_n} appended to the KB" if kb_n is not None else "")
@@ -1671,7 +1632,7 @@ class Orchestrator:
         advisory's hint (FixAttempt.advisory_ids; v2: LLM fix scripts — new / augment, a reuse had no prompt —,
         applied, improved / build_ok, cluster not left unresolved). Runs before the Handover is built."""
         good = [a for pr in report.phases for a in pr.attempts
-                if a.advisory_ids and a.decision.kind in (DecisionKind.LLM_FIX, DecisionKind.SCRIPT) and a.applied
+                if a.advisory_ids and a.decision.kind == DecisionKind.SCRIPT and a.applied
                 and a.outcome in ("improved", "build_ok") and a.cluster_resolved is not False]
         for f in findings:
             files: list[str] = []
@@ -1827,7 +1788,7 @@ class Orchestrator:
         if "json" in self.cfg.report.formats:
             out["report_json"] = str(self.ws.run_dir / "report.json")
         self._finalize_advisories(report)
-        self._finalize_error_cases(report)          # v2: no run ledger (kb.record_run is a v1 learning path)
+        self._finalize_error_cases(report)
         writer = self._report_writer
         if writer is None:
             from sbmig.report import write_report

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from sbmig.core.workspace import Workspace
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
 from .fakes import FakeKB, FakeRewriteRunner, make_profile, make_project
 
@@ -22,7 +22,7 @@ def profile():
 
 @pytest.fixture()
 def triager(cfg):
-    return Triager(cfg, registry=HandlerRegistry())
+    return Triager(cfg)
 
 
 @pytest.fixture()

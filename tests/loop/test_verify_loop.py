@@ -1,8 +1,7 @@
 """The verify loop (v2: THE fix loop). A failed final `clean package` gets the script fix loop (`loop.phases.verify`,
-goal `package`, build 1 = the failed final build itself) and the final build is repeated (invariant 1). v2 releases
-nothing from the blocked registry (`loop.verify_extra_llm_attempts` is a v1 setting): a case blocked earlier — only
-possible when a config enables an intermediate loop — stays blocked, and a final build that fails with blocked cases
-only gets no loop."""
+goal `package`, build 1 = the failed final build itself) and the final build is repeated (invariant 1). Nothing is
+released from the blocked registry: a case blocked earlier — only possible with a hand-made plan that has an
+intermediate loop — stays blocked, and a final build that fails with blocked cases only gets no loop."""
 from __future__ import annotations
 
 import pytest
@@ -37,7 +36,7 @@ def package_only_build(ws, call):
 
 
 def with_jdk21_loop():
-    """A config that switched an intermediate loop back on (v1 style): the script loop runs in jdk21 too."""
+    """A hand-made plan with an intermediate loop: the script loop runs in jdk21 too."""
     plan = v2_plan()
     plan.steps.insert(1, PlanStep(id="jdk21.loop", kind=StepKind.BUILD_FIX_LOOP, phase=Phase.JDK21, title="loop",
                                   build_goal="compile", max_iterations=3))
@@ -60,16 +59,14 @@ def test_failed_final_build_gets_the_script_loop_and_is_repeated(cfg, ws):
     assert any("final build repeated after the fix loop" in n for n in vp.notes)
     ev = journal_events(ws)
     start = [e for e in ev if e["event"] == "verify_loop_start"]
-    assert len(start) == 1 and start[0]["errors"] == 2 and start[0]["releasable"] == [] and start[0]["goal"] == "package"
-    assert [(e["build_ok"], e["released"]) for e in ev if e["event"] == "verify_loop_end"] == [(True, [])]
+    assert len(start) == 1 and start[0]["errors"] == 2 and start[0]["goal"] == "package"
+    assert [e["build_ok"] for e in ev if e["event"] == "verify_loop_end"] == [True]
     assert [e["ok"] for e in ev if e["event"] == "verify"] == [True]       # journaled once, for the final result
-    assert kb.harvests == []                                               # v2: no harvest
     assert report.unresolved == [] and report.blocked == []
 
 
 @pytest.mark.parametrize("why", ["repeated_failure", "budget_exhausted"])
 def test_blocked_cases_are_never_released_and_get_no_loop(cfg, ws, why):
-    cfg.loop.verify_extra_llm_attempts = 2                 # a v1 setting: no effect in v2
     (ws.root / DAO).write_text("class Dao { ok }\n")
     if why == "repeated_failure":
         cfg.script.max_augments_per_case = 0

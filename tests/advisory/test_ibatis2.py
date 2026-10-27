@@ -21,8 +21,8 @@ def _finding(cfg, evidence=("import:org.springframework.orm.ibatis",)):
 
 def test_catalog_entry_shape(cfg):
     e = load_advisories(cfg).get("ibatis2")
-    assert e is not None and e.library == "ibatis2" and e.status == "incompatible" and e.policy == "guide"
-    assert e.recipes == [] and e.notes == "knowledge/notes/ibatis2.md"
+    assert e is not None and e.library == "ibatis2" and e.status == "incompatible"
+    assert e.notes == "knowledge/notes/ibatis2.md"
     assert e.docs == ["https://mybatis.org/mybatis-3/", "https://mybatis.org/spring/"]
     assert "org.mybatis:mybatis-spring" in e.replacement
     for s in ("SqlSessionTemplate", "#{name}", "${name}", "selectList", "selectOne", "<configuration>"):
@@ -38,7 +38,7 @@ def test_detected_end_to_end_from_pom_and_imports(tmp_path: Path, cfg):
     assert [lib.name for lib in libs if "batis" in lib.name] == ["ibatis2"]
     p = profile(libs=tuple(libs), case=CaseType.SPRING_LEGACY)
     [f] = [f for f in evaluate_advisories(p, cfg) if f.advisory_id == "ibatis2"]
-    assert f.policy == "guide" and f.detected_version == "2.3.4.726"
+    assert f.detected_version == "2.3.4.726"
     assert f.notes == ["see knowledge/notes/ibatis2.md"]
 
 
@@ -54,7 +54,7 @@ def test_hint_for_orm_ibatis_compile_error_carries_the_fix_loop_note(cfg):
                    file="src/main/java/com/acme/dao/OrderDao.java")
     hints, ids = hints_for([e], [f])
     assert ids == ["ibatis2"] and len(hints) == 1
-    assert hints[0].startswith("ibatis2 (incompatible, policy guide): replace with org.mybatis:mybatis")
+    assert hints[0].startswith("ibatis2 (incompatible): replace with org.mybatis:mybatis")
     assert "Note (ibatis2.md § fix-loop: ibatis2)" in hints[0]
     assert "SqlSessionTemplate" in hints[0]
     # a symbol-only error matches through the raw javac block (import line)

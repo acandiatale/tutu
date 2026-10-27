@@ -8,17 +8,15 @@ from sbmig.core.models import (
     ErrorCluster,
     ErrorKind,
     FileChange,
-    FixProposal,
     LLMUsage,
     MergeConflict,
     Phase,
 )
 from sbmig.fix import ContextPacker
-from sbmig.fix.fixer import LLMFixer
 from sbmig.loop import BuildFixLoop, LoopBudget
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRewriteRunner, FakeScriptRunner, bad_build,
+from .fakes import (FixProposal, FakeBuildRunner, FakeFixer, FakeKB, FakeScriptRunner, bad_build,
                     journal_events, ok_build)
 
 KEPT = "module/comp-jar/src/main/java/com/x/Shared.java"
@@ -26,7 +24,6 @@ USER = "module/comp-jar/src/main/java/com/x/Foo.java"
 SAVED = "merge-conflicts/web/src/main/java/com/x/Shared.java"
 KEPT_SRC = "package com.x;\npublic class Shared {\n    public void a() {}\n}\n"
 DROPPED_SRC = "package com.x;\npublic class Shared {\n    public void a() {}\n    public int extra() { return 1; }\n}\n"
-REF_TITLE = "Reference files (read-only, NOT in the build — never write SEARCH/REPLACE blocks for these paths)"
 NOTES_TITLE = "Module merge notes (first-wins; the dropped copy is below as reference)"
 
 
@@ -52,8 +49,8 @@ def setup_tree(ws, dropped: str = DROPPED_SRC) -> None:
 
 
 def make_loop(cfg, ws, profile, *, build, fixer, conflicts):
-    t = Triager(cfg, registry=HandlerRegistry())
-    loop = BuildFixLoop(cfg, ws, build, t, t.registry, fixer, FakeKB(), FakeRewriteRunner(ws), profile,
+    t = Triager(cfg)
+    loop = BuildFixLoop(cfg, ws, build, t, fixer, FakeKB(), profile,
                         budget=LoopBudget.from_config(cfg), script_runner=FakeScriptRunner())
     assert loop.merge_conflicts == []                                 # default: no hints
     loop.merge_conflicts = list(conflicts)
@@ -155,42 +152,19 @@ def _ctx(**kw) -> FixContext:
     return FixContext(phase=Phase.RESTRUCTURE, iteration=1, **kw)
 
 
-def test_packer_sections_order_and_prompt_text(cfg, ws):
+def test_script_packer_shows_notes_and_reference_copies_read_only(cfg, ws):
     setup_tree(ws)
-    c = _ctx(advisory_hints=["hystrix → resilience4j"], kb_hints=["use X"],
-             reference_notes=[f"{KEPT} was merged first-wins from module `core`"],
-             reference_files={SAVED: DROPPED_SRC})
-    p = ContextPacker(cfg).pack(ws, _cluster(), c, "case=spring_boot")
-    titles = [t for t, _ in p.sections]
-    src = titles.index("Source (exact text; copy SEARCH blocks from here)")
-    assert titles[src + 1] == REF_TITLE
-    adv = titles.index(ContextPacker.ADVISORY_TITLE)
-    assert titles[adv + 1] == NOTES_TITLE and titles[adv + 2].startswith("Knowledge-base hints")
-    body = dict(p.sections)[REF_TITLE]
-    assert f"// reference copy (read-only, not in the build): {SAVED}\n```java\n" in body and "extra()" in body
-    assert SAVED not in p.files_included
-    assert SAVED not in dict(p.sections)["Source (exact text; copy SEARCH blocks from here)"]
-    user = LLMFixer(cfg, client=None).build_messages(p)[1].content
-    assert REF_TITLE in user and NOTES_TITLE in user
-    # the reference path appears only inside the reference section, after its read-only warning
-    i_ref = user.index(REF_TITLE)
-    assert user.find(SAVED) > i_ref and user.count(SAVED) == 1
-    # no reference sections when the context has none
-    p = ContextPacker(cfg).pack(ws, _cluster(), _ctx(), "case=spring_boot")
-    assert REF_TITLE not in [t for t, _ in p.sections] and NOTES_TITLE not in [t for t, _ in p.sections]
-
-
-def test_reference_sections_shrink_before_files(cfg, ws):
-    order = ContextPacker.TRUNCATE_ORDER
-    assert order.index("reference_files") < order.index("files")
-    assert order.index("reference_notes") < order.index("files")
-    assert order.index("kb_hints") < order.index("reference_files")
-    setup_tree(ws)
-    c = _ctx(reference_notes=["n" * 200], reference_files={SAVED: "r" * 5000})
+    c = _ctx(reference_notes=[f"{KEPT} was merged first-wins from module `core`"],
+             reference_files={SAVED: DROPPED_SRC}, script_mode="new", case_id="k1")
     packer = ContextPacker(cfg)
-    full = packer.pack(ws, _cluster(), c, "case=x", budget=10**6)
-    notes_chars = sum(len(t) + len(b) + 6 for t, b in full.sections if t.startswith("Migration note"))
-    p = packer.pack(ws, _cluster(), c, "case=x", budget=full.chars - notes_chars - 2000)
-    kinds = [t.split(" ")[0] for t in p.truncated]
-    assert "reference_files" in kinds and "files" not in kinds
-    assert KEPT_SRC.strip() in dict(p.sections)["Source (exact text; copy SEARCH blocks from here)"]
+    p = packer.pack_script(ws, _cluster(), c, "case=spring_boot")
+    titles = [t for t, _ in p.sections]
+    assert ContextPacker.SCRIPT_REFERENCE_FILES_TITLE in titles and NOTES_TITLE in titles
+    body = dict(p.sections)[ContextPacker.SCRIPT_REFERENCE_FILES_TITLE]
+    assert f"// reference copy (read-only, not in the build): {SAVED}" in body and "extra()" in body
+    assert SAVED not in p.files_included
+    assert SAVED not in dict(p.sections)[ContextPacker.SCRIPT_FILES_TITLE]
+    # no reference sections when the context has none
+    p = packer.pack_script(ws, _cluster(), _ctx(script_mode="new", case_id="k1"), "case=spring_boot")
+    assert ContextPacker.SCRIPT_REFERENCE_FILES_TITLE not in [t for t, _ in p.sections]
+    assert NOTES_TITLE not in [t for t, _ in p.sections]

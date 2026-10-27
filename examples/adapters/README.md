@@ -5,7 +5,7 @@ Two ways to plug in-house infrastructure into sbmig (full reference: `docs/ADAPT
 | File | Tier | What it shows |
 |---|---|---|
 | `company_gateway_adapter.py` | 1: LLM adapter | An `LLMAdapter` subclass for an OpenAI-style internal gateway. It sends an `X-Api-Key` header, maps requests and responses, retries 429/5xx with httpx, and routes models by role. |
-| `agent_fixer.py` | 2: fixer | A `FixerLike` that packs context with `ContextPacker`, calls `MyAgent.run(task)` (a stub: replace it with your agent framework) and turns its `{"path", "search", "replace"}` list into a `FixProposal`. |
+| `agent_fixer.py` | 2: fixer | A script fixer (`propose_script`) that packs the error case with `ContextPacker.pack_script`, calls `MyAgent.run(task)` (a stub: replace it with your agent framework) and parses its `<analysis>` / `<script>` answer into a `ScriptProposal`. |
 
 ## Tier 1: your LLM gateway
 
@@ -18,7 +18,7 @@ llm:
     base_url: https://llm-gateway.internal.example/api
     default_model: internal-coder-m
     models: {fix: internal-coder-l, fix_escalation: internal-coder-xl, plan_advisor: internal-small,
-             recipe_candidate: internal-small}
+             structure_review: internal-coder-l}
   record_dir: out/llm-records         # optional: plugin calls are recorded too (role + metadata, no secrets)
 ```
 
@@ -47,12 +47,12 @@ fix:
   plugin: examples.adapters.agent_fixer:make_fixer
   plugin_options:
     agent: code-migrator
-    max_files: 6
 ```
 
 The factory gets `(options, cfg, llm)`, where `llm` is sbmig's configured LLM client or `None`. Replace
-`MyAgent.run` with a call into your framework. The agent returns changes and must not edit files itself.
-sbmig applies them atomically, commits, rebuilds and rolls back on regressions.
+`MyAgent.run` with a call into your framework. The agent answers with one Python fix script per error case
+(`def fix(p)` over sbmig's helper API) and must not edit files itself. sbmig checks the script, runs it in a separate
+process against the project folder, commits, rebuilds and rolls back on regressions.
 
 ## Python embedding
 

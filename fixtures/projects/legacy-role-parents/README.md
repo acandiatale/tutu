@@ -5,9 +5,8 @@ boot module next to the service modules and made **every module inherit an in-ho
 the root — `boot-jar` the `boot-jar` parent, each service the `comp-jar` parent, all on the old 1.0.0 line (stood in
 here by `spring-boot-starter-parent` 2.7.18 with `<relativePath/>`; the root inherits the same stand-in for
 `base-parent`). The module poms therefore carry explicit `groupId` / `version`. `catalog-service` uses lombok
-without a version (managed by the old role parent: 1.18.24, too old for JDK 21 javac → handler `lombok-version-floor`
-pins it for the jdk21 phase; the Boot 4.1 role parent then manages it above the optional floor, so no optional bump
-is reported).
+without a version (managed by the old role parent: 1.18.24, too old for JDK 21 javac; v2 builds only after the
+restructure, where the Boot 4.1 role parent manages it above the optional floor, so no optional bump is reported).
 
 Migration (round 9c, the company rule): `sbmig.e2e.yml` sets the company layout keys back (`module_dir: ""`,
 `{name}-boot` / `{name}-back` / `{name}-front`, `boot_as_is: in-place` — the local e2e config pins the pre-9c layout
@@ -22,7 +21,8 @@ the poms change:
 * `catalog-service` / `order-service` → `comp_parent`;
 * every module parent external with `<relativePath/>`, explicit groupId/version kept; no `module/`, no `shop-boot`.
 
-Expected: BUILD SUCCESS, exit 0, 0 LLM calls.
+Expected (v2, `expected.json` → `expect`): BUILD SUCCESS, exit 0, **1 LLM call** (the structure review: one warning that
+`boot-jar` does not match `*-boot`), no fix script.
 
 As-is build (JDK 11):
 

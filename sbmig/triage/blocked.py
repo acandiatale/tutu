@@ -5,9 +5,9 @@ API (X1), a dependency API changed (X2), an artifact / parent is not in any repo
 broken on JDK 21 (X5) or the sources are not Java (X6). ``classify_blocked`` only *classifies*; how many LLM attempts
 a reason gets before the cluster is blocked is ``cfg.loop.blocked_policy`` (see ``decide.py``).
 
-The rules are deliberately conservative: when in doubt the cluster is **not** blocked (the recipes / handlers / LLM
-get their chance). In particular a missing ``javax.*`` package or a ``cannot find symbol`` of a ``javax`` class is the
-jakarta recipe's job, never a blocker, and an X1 match is discarded when the project itself still imports the javax
+The rules are deliberately conservative: when in doubt the cluster is **not** blocked (the recipes / fix scripts get
+their chance). In particular a missing ``javax.*`` package or a ``cannot find symbol`` of a ``javax`` class is the
+jakarta recipe's (or a fix script's) job, never a blocker, and an X1 match is discarded when the project itself still imports the javax
 package (the migration did not finish → fixable here) or the owner class is a project class.
 """
 from __future__ import annotations

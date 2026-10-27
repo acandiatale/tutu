@@ -6,7 +6,7 @@ phases: []
 ---
 # Fix policy (always included)
 
-Context: you are one step inside an automated loop. The orchestrator applies your patch, commits it, and
+Context: you are one step inside an automated loop. The orchestrator runs your fix (a Python fix script), commits it, and
 re-runs Maven (`compile` / `test-compile` / `package`). A phase only ends with `BUILD SUCCESS`; regressions are
 reverted automatically. Your job is to make **this cluster of errors** disappear with the smallest correct change.
 

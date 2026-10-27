@@ -11,9 +11,9 @@ from __future__ import annotations
 from typing import Optional
 
 from sbmig.core.models import (GAV, BlockReason, BuildError, BuildResult, DecisionKind, ErrorKind, FileChange,
-                               FixProposal, LLMUsage, Phase)
+                               LLMUsage, Phase)
 
-from .fakes import FakeBuildRunner, FakeFixer, FakeKB, bad_build, ok_build, write_script
+from .fakes import FixProposal, FakeBuildRunner, FakeFixer, FakeKB, bad_build, ok_build, write_script
 from .test_fixloop import make_loop
 
 FOO = "src/main/java/com/x/Foo.java"

@@ -6,9 +6,8 @@
 * `applicationContext.xml`: `<context:component-scan>`, `<jdbc:embedded-database>` (H2 1.4.200 runtime), ObjectMapper bean
 * `dispatcher-servlet.xml`: `<mvc:annotation-driven/>`, JSP view resolver
 * `WebConfig extends WebMvcConfigurerAdapter` and `AuditInterceptor extends HandlerInterceptorAdapter` — both classes
-  are **removed in Spring Framework 6** → `cannot find symbol` errors that OpenRewrite
-  (`UpgradeSpringFramework_7_0` chain) or the LLM must fix (→ `implements WebMvcConfigurer` / `HandlerInterceptor`).
-  Good KB recipe-candidate targets.
+  are **removed in Spring Framework 6** → `cannot find symbol` errors that v2 (no Spring Framework 7 recipes) leaves
+  to LLM fix scripts (→ `implements WebMvcConfigurer` / `HandlerInterceptor`).
 * `jackson-databind` 2.13.5 and `slf4j-api` 1.7.36 (optional artifacts → bump)
 * tests: JUnit 4.13.2 + `spring-test` MockMvc standalone + Mockito 4
 
@@ -21,3 +20,10 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 
 Expected migration hot spots: jakarta servlet, removed adapters, Framework 7, XML bean configs → `@ImportResource`,
 JSP / web.xml follow-ups, JUnit 4 → 5, jackson/slf4j bumps.
+
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+
+Success, exit 0, **3 LLM calls**: the structure review (2 warnings) and two new fix scripts — `WebConfig` →
+`implements WebMvcConfigurer` (case `compile|cannot_find_symbol|WebMvcConfigurerAdapter`, `f3aceea80f`) and
+`AuditInterceptor` → `implements HandlerInterceptor` (`43323914ef`); the override / type errors of the same files are
+deferred in that round and vanish with the rebuild. slf4j-api → 2.0.17.

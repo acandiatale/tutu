@@ -1,5 +1,6 @@
 """Fleet summaries, rewritten after every project: ``fleet/summary.md``, ``summary.csv``,
-``summary.json`` (= state) and ``fleet/learning.md`` (ledger summary of this fleet's runs + KB stats).
+``summary.json`` (= state) and ``fleet/learning.md`` (the error cases of this fleet's runs, the most widespread cases
+of the catalog and the fix scripts stored in the KB).
 
 Round 10: ``summary.csv`` is UTF-8 with BOM (Excel opens Korean paths correctly) and carries the ``attention`` codes
 (:mod:`sbmig.report.result_line`: why a human has to look, ``;``-separated, most important first) and the ``input``
@@ -33,16 +34,13 @@ COLUMNS = [
     "unresolved",
     "advisories",
     "carried_over",
-    "kb_used",
-    "kb_created",
-    "kb_promoted",
     "attempt",
     "run_id",
     "error",
     "attention",
     "input",
 ]
-TABLE_COLUMNS = COLUMNS[:15] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
+TABLE_COLUMNS = COLUMNS[:12] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
 ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`: projects printed per code
 
 
@@ -63,9 +61,6 @@ def rows(state: FleetState) -> list[dict[str, Any]]:
                 "unresolved": p.unresolved,
                 "advisories": len(p.advisories),
                 "carried_over": p.carried_over,
-                "kb_used": len(p.kb_recipes_used),
-                "kb_created": len(p.kb_cases_created) + len(p.kb_candidates_created),
-                "kb_promoted": len(p.kb_recipes_promoted),
                 "attempt": p.attempt,
                 "run_id": p.run_id or "",
                 "error": (p.error or "")[:200],
@@ -125,10 +120,6 @@ def totals(state: FleetState) -> dict[str, Any]:
         "unresolved": sum(p.unresolved for p in ps),
         "advisories": sum(len(p.advisories) for p in ps),
         "carried_over": sum(p.carried_over for p in ps),
-        "kb_used": sum(len(p.kb_recipes_used) for p in ps),
-        "kb_cases_created": sum(len(p.kb_cases_created) for p in ps),
-        "kb_candidates_created": sum(len(p.kb_candidates_created) for p in ps),
-        "kb_recipes_promoted": sum(len(p.kb_recipes_promoted) for p in ps),
         "done": sum(1 for p in ps if p.status in ("success", "incomplete", "aborted", "skipped")),
         "running": next((p.name for p in ps if p.status == "running"), None),
     }
@@ -161,8 +152,6 @@ def render_summary_md(state: FleetState) -> str:
         f"* LLM calls: {t['llm_calls']} (cost {t['llm_cost']:.4f}, see llm.pricing), blocked: {t['blocked']}, "
         f"unresolved: {t['unresolved']}, duration: {t['duration_s']:.0f}s",
         f"* library advisories: {t['advisories']}, dependencies carried over: {t['carried_over']}",
-        f"* KB: used {t['kb_used']}, cases created {t['kb_cases_created']}, candidates created "
-        f"{t['kb_candidates_created']}, recipes promoted {t['kb_recipes_promoted']}",
     ]
     if t["running"]:
         head.append(f"* still running: {t['running']} ({t['done']} of {t['projects']} done)")
@@ -188,7 +177,7 @@ def render_summary_md(state: FleetState) -> str:
     head += advisory_section(state)
     if state.notes:
         head += ["## Notes", ""] + [f"* {n}" for n in state.notes] + [""]
-    head.append("See `learning.md` for what the KB learned across these projects.")
+    head.append("See `learning.md` for the error cases across these projects and the fix scripts in the KB.")
     return "\n".join(head) + "\n"
 
 
@@ -239,31 +228,136 @@ def render_csv(state: FleetState) -> str:
     return buf.getvalue()
 
 
-def render_learning(state: FleetState, kb: Any = None) -> str:
-    from sbmig.kb.ledger import Ledger, render_learning_md
+_EC_METHODS = ("script", "script_reuse", "script_augment", "llm", "plan_step", "none")
+_EC_STATUSES = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
+TOP_CASES = 10
 
+
+def _md_cell(v: Any) -> str:
+    return str(v if v not in (None, "") else "-").replace("|", "\\|").replace("\n", " ")
+
+
+def error_cases_md(ec: dict[str, Any]) -> list[str]:
+    """The "Error cases across projects" section (``ErrorCaseStore.summary``): status × method, top failure
+    reasons, the L2 signatures still unresolved / blocked most often."""
+    lines = ["## Error cases across projects", ""]
+    if not ec.get("errors"):
+        return lines + ["_No error cases recorded for these projects yet._", ""]
+    lines.append(f"{ec.get('errors', 0)} build error(s) recorded one by one from {ec.get('projects', 0)} project(s) / "
+                 f"{ec.get('runs', 0)} run(s), {ec.get('attempts', 0)} fix attempt(s).")
+    if ec.get("by_status"):
+        lines.append("Status: " + ", ".join(f"{k} {v}" for k, v in ec["by_status"].items()) + ".")
+    if ec.get("by_method"):
+        lines.append("Resolved by: " + ", ".join(f"{k} {v}" for k, v in ec["by_method"].items()) + ".")
+    matrix = ec.get("status_method") or {}
+    if matrix:
+        methods = [m for m in _EC_METHODS if any(m in row for row in matrix.values())]
+        methods += sorted({m for row in matrix.values() for m in row} - set(methods))
+        statuses = [st for st in _EC_STATUSES if st in matrix] + sorted(set(matrix) - set(_EC_STATUSES))
+        lines += ["", "Status × method (resolved: the method that fixed it; otherwise the method of the last attempt, "
+                      "none = never attempted):", "",
+                  "| status | " + " | ".join(methods) + " |", "|---|" + "---|" * len(methods)]
+        lines += [f"| {st} | " + " | ".join(str(matrix[st].get(m, 0)) for m in methods) + " |" for st in statuses]
+    lines += ["", "### Top failure reasons", ""]
+    if ec.get("top_failure_reasons"):
+        lines += ["| L2 signature | errors | projects | why not resolved |", "|---|---|---|---|"]
+        lines += [f"| {_md_cell(r['signature_generic'])} | {r['count']} | {r['projects']} | {_md_cell(r['reason'])} |"
+                  for r in ec["top_failure_reasons"]]
+    else:
+        lines.append("_none_")
+    lines += ["", "### Still unresolved / blocked most often", ""]
+    if ec.get("top_unresolved"):
+        lines += ["| L2 signature | symbol | errors | blocked | projects |", "|---|---|---|---|---|"]
+        lines += [f"| {_md_cell(r['signature_generic'])} | {_md_cell(r.get('symbol'))} | {r['count']} | "
+                  f"{r.get('blocked', 0)} | {r['projects']} |" for r in ec["top_unresolved"]]
+    else:
+        lines.append("_none_")
+    return lines + [""]
+
+
+def _top_cases(kb: Any, top: int = TOP_CASES) -> list[dict[str, Any]]:
+    """The most widespread cases of the KB's case catalog (whole KB), [] without one."""
+    try:
+        from sbmig.kb.catalog import action_text
+
+        cat = kb.catalog()
+        if not cat.index_path.exists():
+            return []
+        return [{"id": c.id, "name": c.effective_name(), "status": c.effective_status(),
+                 "action": action_text(c.effective_action()), "projects": c.evidence.projects,
+                 "seen": c.evidence.seen} for c in cat.cases()[:top]]
+    except Exception as e:  # pragma: no cover - the learning report must not fail on it
+        log.warning("case catalog summary failed: %s: %s", type(e).__name__, e)
+        return []
+
+
+def _script_rows(kb: Any, top: int = TOP_CASES) -> list[dict[str, Any]]:
+    """Cases with stored fix scripts, most success projects first (the version a reuse runs first)."""
+    try:
+        store = kb.scripts
+        rows = []
+        for cid in store.case_ids():
+            metas = store.versions(cid)
+            if not metas:
+                continue
+            ranked = store.ranked(cid)
+            rows.append({"case_id": cid, "versions": len(metas), "best": ranked[0].version if ranked else 0,
+                         "successes": sum(m.successes for m in metas), "failures": sum(m.failures for m in metas),
+                         "projects": len({p for m in metas for p in m.success_projects}),
+                         "signature_generic": next((m.signature_generic for m in reversed(metas)
+                                                    if m.signature_generic), "")})
+        rows.sort(key=lambda r: (-r["projects"], -r["successes"], r["case_id"]))
+        return rows[:top]
+    except Exception as e:  # pragma: no cover - the learning report must not fail on it
+        log.warning("fix script summary failed: %s: %s", type(e).__name__, e)
+        return []
+
+
+def render_learning(state: FleetState, kb: Any = None) -> str:
+    """``learning.md``: this fleet's projects / LLM calls, the error cases of its runs, the most widespread cases of
+    the catalog and the fix scripts of the KB (both whole KB)."""
     run_ids = [p.run_id for p in state.projects if p.run_id]
-    ledger = (
-        kb.ledger() if kb is not None and hasattr(kb, "ledger") else Ledger(Path("/nonexistent/ledger.jsonl"))
-    )
-    summary = ledger.summary(run_ids=run_ids)
-    stats = None
-    if kb is not None and hasattr(kb, "stats"):
+    ps = state.projects
+    lines = [f"# Fleet {state.fleet_id} — error cases and fix scripts", "", "## This fleet", "",
+             f"* projects: {len(ps)} ({sum(1 for p in ps if p.run_id)} run)",
+             f"* LLM calls: {sum(p.llm_calls for p in ps)}", ""]
+    ec: dict[str, Any] = {}
+    stats: dict[str, Any] = {}
+    if kb is not None:
+        try:
+            ec = kb.error_case_store().summary(run_ids=run_ids) if run_ids else {}
+        except Exception as e:  # pragma: no cover - the learning report must not fail on it
+            log.warning("error-case summary failed: %s: %s", type(e).__name__, e)
         try:
             stats = kb.stats()
         except Exception as e:  # pragma: no cover
             log.warning("kb stats failed: %s", e)
-    ps = state.projects
-    extra = {
-        "cases created": sum(len(p.kb_cases_created) for p in ps),
-        "recipe candidates created": sorted({c for p in ps for c in p.kb_candidates_created}) or 0,
-        "recipes auto-promoted to active": sorted({c for p in ps for c in p.kb_recipes_promoted}) or 0,
-        "projects where the KB fixed something": sum(1 for p in ps if p.kb_recipes_used),
-        "LLM calls": sum(p.llm_calls for p in ps),
-    }
-    return render_learning_md(
-        summary, stats, title=f"Fleet {state.fleet_id} — what the KB learned", extra=extra
-    )
+    lines += error_cases_md(ec)
+    cases = _top_cases(kb) if kb is not None else []
+    if cases:
+        lines += ["### Top error cases (case catalog, whole KB — `sbmig kb cases show <id>`)", "",
+                  "| case | name | status | action | projects | seen |", "|---|---|---|---|---|---|"]
+        lines += [f"| `{r['id']}` | {_md_cell(r['name'])} | {r['status']} | {_md_cell(r['action'])} | "
+                  f"{r['projects']} | {r['seen']} |" for r in cases]
+        lines.append("")
+    lines += ["## Fix scripts (whole KB — `sbmig kb scripts list`)", ""]
+    if stats:
+        lines.append(f"* cases with scripts: {stats.get('script_cases', 0)}, versions: {stats.get('script_versions', 0)} "
+                     f"(proven {stats.get('scripts_proven', 0)}, retired {stats.get('scripts_retired', 0)}, "
+                     f"quarantined {stats.get('scripts_quarantined', 0)})")
+        lines.append(f"* catalog cases: {stats.get('catalog_cases', 0)} (active {stats.get('catalog_active', 0)}, "
+                     f"candidate {stats.get('catalog_candidate', 0)}, observed {stats.get('catalog_observed', 0)}, "
+                     f"rejected {stats.get('catalog_rejected', 0)})")
+    rows = _script_rows(kb) if kb is not None else []
+    if rows:
+        lines += ["", "| case | versions | reused first | ok | failed | projects | L2 signature |",
+                  "|---|---|---|---|---|---|---|"]
+        lines += [f"| `{r['case_id']}` | {r['versions']} | {'v' + str(r['best']) if r['best'] else '-'} | "
+                  f"{r['successes']} | {r['failures']} | {r['projects']} | {_md_cell(r['signature_generic'])} |"
+                  for r in rows]
+    elif not stats:
+        lines.append("_no KB_")
+    return "\n".join(lines) + "\n"
 
 
 def write_summaries(

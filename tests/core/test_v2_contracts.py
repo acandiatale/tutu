@@ -78,15 +78,13 @@ def test_v2_defaults_in_yml_and_code(repo_root):
         assert rs.spring_boot_4 == ["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
                                     "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1"]
         assert rs.spring_framework_7 == rs.spring_security_7 == rs.junit5 == []
-        assert cfg.plan.intermediate_builds is False
         assert not any(cfg.loop.phases[k].enabled for k in ("jdk21", "spring", "restructure"))
         assert cfg.loop.phases["verify"].enabled and cfg.loop.phases["verify"].max_iterations >= 10
         assert cfg.build.skip_test_compile is True
         assert cfg.kb.dir == "kb-v2"
-        assert not (cfg.kb.use_active_recipes or cfg.kb.use_patch_replay or cfg.kb.case_replace or cfg.kb.harvest
-                    or cfg.kb.generate_recipe_candidates or cfg.kb.try_candidates_in_plan or cfg.kb.ledger)
         assert cfg.kb.error_cases and cfg.kb.catalog
-        assert cfg.advisories.allow_recipes is False
+        for gone in ("use_active_recipes", "harvest", "case_replace", "ledger"):        # v1 KB switches (step 4)
+            assert not hasattr(cfg.kb, gone)
         assert cfg.script.timeout_seconds == 60 and cfg.script.max_augments_per_case == 3 and cfg.script.reuse
         assert cfg.review.enabled and cfg.review.fix_critical and cfg.review.record
 
@@ -94,5 +92,4 @@ def test_v2_defaults_in_yml_and_code(repo_root):
 def test_company_example_does_not_carry_v1_loop_overrides(repo_root):
     cfg = load_config(repo_root / "config" / "artifacts.example.yml", repo_root=repo_root)
     assert cfg.loop.phases["verify"].max_iterations == 12
-    assert cfg.plan.parent_phase == "restructure"
     assert cfg.build.skip_test_compile is True and cfg.report.language == "ko"

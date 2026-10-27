@@ -2,8 +2,8 @@
 #   source .venv/bin/activate && export LLM_API_KEY=sk-ant-...
 #   sbmig run fixtures/projects/boot3 --config config/artifacts.local-e2e.yml --config config/llm-anthropic.yml --out out/llm
 # Roles:
-#   llm.model        — source fixes (build-fix loop)             → Claude Sonnet 5
-#   llm.recipe_model — recipe selection advisor + KB recipe-candidate generation → Claude Haiku 4.5
+#   llm.model        — fix scripts (script fix loop) + structure review → Claude Sonnet 5
+#   llm.recipe_model — recipe selection advisor (plan.advisor: llm)    → Claude Haiku 4.5
 llm:
   provider: anthropic
   base_url: https://api.anthropic.com
@@ -17,6 +17,3 @@ llm:
 
 plan:
   advisor: llm                         # Haiku reviews the rule-based plan and may ADD recipes from the known catalog
-
-kb:
-  generate_recipe_candidates: true     # Haiku turns harvested fixes into declarative recipe candidates

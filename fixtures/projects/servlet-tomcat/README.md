@@ -14,7 +14,12 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
   mvn -q -DskipTests package
 ```
 
-Expected migration hot spots: `javax.servlet` → `jakarta.servlet` (`ServletToJakartaAndBoot`),
+Expected migration hot spots: `javax.servlet` → `jakarta.servlet` (`JavaxMigrationToJakarta`),
 servlet-api dependency swap, war → Boot jar with `spring-boot-starter-webmvc` + `@ServletComponentScan`
 (servlets/filters are registered in web.xml, not annotated → reported as manual follow-up), JSP not supported
 in an executable jar (follow-up), JUnit 4 → 5, commons-io bump.
+
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+
+Success, exit 0, **1 LLM call** (the structure review: one warning on the servlet-api scope), no fix script;
+commons-io → 2.19.0. The JUnit 4 tests are not compiled (`-Dmaven.test.skip=true`).

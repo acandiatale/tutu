@@ -16,9 +16,8 @@ phases: [spring, restructure]
 # Spring Cloud Netflix, Sleuth, springfox on Boot 4 (see docs/ADVISORIES.md)
 
 These libraries are EOL. The run never blocks on them: the build goes as far as it can and the report's
-Handover section tells the owning team what to replace. In the build-fix loop, make the code COMPILE with the
-smallest change; do NOT start a library migration the advisory says the team owns (ribbon/zuul, and the
-Hystrix code the recipe does not cover).
+Handover section tells the owning team what to replace. In the fix loop, make the code COMPILE with the
+smallest change; do NOT start a library migration the advisory says the team owns (ribbon/zuul).
 
 ## Release train
 - Spring Cloud 2025.1.x is the Boot 4.0 train (`UpgradeSpringCloud_2025_1`, part of the Boot 4.0 umbrella,
@@ -27,18 +26,16 @@ Hystrix code the recipe does not cover).
   starter without an explicit version then fails with "dependencies.dependency.version is missing".
   Minimal fix: keep the as-is version explicitly on that dependency (carried over → handover).
 
-## Hystrix → Resilience4j (project recipe `com.company.migrate.HystrixToResilience4j`)
-- The `hystrix` advisory (policy `recipe`) prepends the composite to spring.rewrite, before the Boot umbrella:
-  `spring-cloud-starter-netflix-hystrix` / `-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`
-  (BOM-managed, explicit version dropped; 5.0.3 when no Spring Cloud BOM), `hystrix-javanica` / `hystrix-core` /
+## Hystrix → Resilience4j
+- `hystrix` is a guide advisory: no recipe runs for it; its errors reach the fix loop with this note and the
+  advisory's "Library migration guidance", and the Handover lists every file the fix scripts rewrote for it.
+- Target: `spring-cloud-starter-netflix-hystrix` / `-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`
+  (BOM-managed, no explicit version; 5.0.3 when no Spring Cloud BOM), `hystrix-javanica` / `hystrix-core` /
   the dashboard starter removed, `@HystrixCommand` → `@CircuitBreaker` (io.github.resilience4j.circuitbreaker.annotation),
   `commandKey` → `name`, otherwise `name = "default"`, `fallbackMethod` kept, Hystrix-only attributes and nested
   `@HystrixProperty` removed, `@EnableHystrix` / `@EnableCircuitBreaker` / `@EnableHystrixDashboard` deleted.
   `@CircuitBreaker` comes from `resilience4j-annotations` (the starter → spring-cloud-circuitbreaker-resilience4j →
   resilience4j-spring-boot3 → resilience4j-spring6).
-- Leftover compile errors after the recipe come from what it does not cover; the build-fix loop rewrites them to
-  Resilience4j with the guidance below (it is sent to the LLM as "Library migration guidance"; the Handover lists
-  every file the LLM rewrote for this advisory).
 
 ## fix-loop: hystrix
 Rewrite, do not re-add: the Hystrix starter and `hystrix-core` were removed on purpose; never put

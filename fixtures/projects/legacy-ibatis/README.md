@@ -12,8 +12,9 @@ A 2012-era batch jar (case `spring_legacy`): Spring **3.2.18.RELEASE** XML conte
 * `sqlmap-config.xml` (`useStatementNamespaces="true"`) + `sqlmap/catalog-sqlmap.xml` (namespace `catalog`).
 * `Main` loads the context and prints the rows (`1:pencil`, `2:notebook` as-is on JDK 8).
 
-No `sbmig.e2e.yml`: the base e2e config's `llm.provider: fake` without a replay dir answers every fix request with
-"no fix".
+`sbmig.e2e.yml` replays the LLM (own KB `out/e2e/kb-legacy-ibatis`): `llm-001.json` = the structure review (a warning on
+iBATIS 2), `llm-002.json` answers every case of `CatalogDao.java` with an analysis and **no script** (the LLM declines
+a blind MyBatis port).
 
 ## Build as-is
 
@@ -22,13 +23,12 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
   mvn -q -DskipTests package
 ```
 
-## Expected migration
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-Spring 3.2.18 → 7.0.x drops `org.springframework.orm.ibatis` → `CatalogDao.java` no longer compiles (4 errors, one
-cluster) in the spring phase. The fake LLM answers "no fix" twice (`loop.max_llm_attempts_per_cluster: 2`; the
-`ibatis2` advisory hint is in both prompts) → the cluster is blocked `repeated_failure`; restructure and the final
-`mvn clean package` still run (invariant 1) and fail on the same errors; the final verify loop releases the cluster
-for two more LLM tries (`loop.verify_extra_llm_attempts`, 2026-10-22), which answer "no fix" again → blocked
-`repeated_failure` in phase verify → `success: false`, exit **2**, 4 LLM calls,
-advisory `ibatis2` (`guide`, `still-present`, `ibatis-sqlmap` kept with its version), the advisory's MyBatis
-follow-up in the Handover.
+Spring 3.2.18 → 7.0.x drops `org.springframework.orm.ibatis`, so the first (final) build fails in `CatalogDao.java` with
+three cases (`package_does_not_exist org.springframework.orm.ibatis.support`, `cannot_find_symbol SqlMapClientDaoSupport`,
+`cannot_find_symbol getSqlMapClientTemplate`). Each case gets 4 fix-script requests (all `new`: without a stored
+version there is nothing to augment; `script.max_augments_per_case` 3), every one answered without a script → **BLOCKED
+`repeated_failure` ×3**; the final build runs again and fails (invariant 1) → `success: false`, exit **2**, 13 LLM calls.
+Advisory `ibatis2` (`guide`, `still-present`: `ibatis-sqlmap` kept with its version, `CatalogDao` still
+`extends SqlMapClientDaoSupport`) and its MyBatis follow-up in the Handover.

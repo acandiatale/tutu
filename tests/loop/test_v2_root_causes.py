@@ -1,6 +1,8 @@
 """v2 LLM-call cost (2026-10-26 fixture probe): one root cause splits into many L2 cases in the same files. The cases of
 a round come root causes first (`CAUSE_RANK`) and a case whose error files are all covered by a case whose script ran
-earlier in the round is deferred (SKIP, no attempt) until the rebuild — never a reuse, never counted in any limit."""
+earlier in the round is deferred (SKIP, no attempt) until the rebuild — never a reuse, never counted in any limit.
+PLAN-v2 step 4 (e2e open problem 1): once a script of the round CHANGED a pom.xml, the later compile cases of that
+pom's module (`nearest_pom`; the root pom: every module) are deferred as well."""
 from __future__ import annotations
 
 from sbmig.cli import run_exit_code
@@ -77,23 +79,27 @@ def test_spring5_removed_class_comes_before_its_consequences(cfg, ws):
 
 
 # ------------------------------------------------------------------------------------------ deferral
-def test_pure_java_ten_cases_cost_two_llm_calls(cfg, ws):
+def test_pure_java_ten_cases_cost_one_llm_call(cfg, ws):
+    """The JAXB pom script of case 1 changes the (root) pom: the other package case (Bar) and the 8 symbol cases wait
+    for the rebuild — 1 LLM call (before the pom rule: 2, the second script found the pom fixed)."""
     fixer = FakeFixer(script_fn=lambda w, c, ctx: script(ADD_DEP, analysis="add jakarta.xml.bind-api"))
     loop = make_loop(cfg, ws, jaxb_build, fixer)
     pr = loop.run(Phase.VERIFY, "package", 4)
-    assert pr.ok and loop.budget.llm_calls == 2
-    first = [c.case_id for c, _ctx in fixer.script_calls]
-    assert first == [case_of("compile|package_does_not_exist|jakarta.xml.bind"),
-                     case_of("compile|package_does_not_exist|jakarta.xml.bind.annotation")]
-    assert [a.outcome for a in pr.attempts] == ["build_ok", "apply_failed"]     # the 2nd found the pom fixed
-    assert pr.attempts[1].apply_errors == ["no file changed"]
+    assert pr.ok and loop.budget.llm_calls == 1
+    cause = case_of("compile|package_does_not_exist|jakarta.xml.bind")
+    assert [c.case_id for c, _ctx in fixer.script_calls] == [cause]
+    assert [a.outcome for a in pr.attempts] == ["build_ok"]
     decisions = pr.iteration_records[0].decisions
     deferred = [d for d in decisions if d.kind == DecisionKind.SKIP and d.rationale.startswith("deferred:")]
-    assert len(deferred) == 8 and len(pr.iteration_records) == 2               # the rebuild cleared the 8
+    assert len(deferred) == 9 and len(pr.iteration_records) == 2               # the rebuild cleared the 9
+    by_pom = [d for d in deferred if d.rationale.startswith("deferred: its module's pom was changed by case ")]
+    by_files = [d for d in deferred if d.rationale.startswith("deferred: its files are being fixed by case ")]
+    assert len(by_files) == 4 and len(by_pom) == 5                             # Foo's 4 / Bar's package + 4
+    assert all(cause in d.rationale for d in deferred)
+    assert any(d.cluster_id == f"case:{case_of('compile|package_does_not_exist|jakarta.xml.bind.annotation')}"
+               for d in by_pom)
     ev = [e for e in journal_events(ws) if e["event"] == "decision" and e["kind"] == "skip"]
-    assert len(ev) == 8
-    by_file = {d.cluster_id for d in deferred}
-    assert len(by_file) == 8
+    assert len(ev) == 9 and len({d.cluster_id for d in deferred}) == 9
 
 
 def test_a_reuse_is_never_deferred(cfg, ws):
@@ -106,6 +112,82 @@ def test_a_reuse_is_never_deferred(cfg, ws):
     modes = [(a.script_case_id, a.script_mode) for a in pr.attempts]
     assert (sym, "reuse") in modes                                 # Foo was covered by the package case: still ran
     assert pr.attempts[-1].script_mode == "reuse" and pr.attempts[-1].outcome == "build_ok"
+
+
+# ------------------------------------------------------------------------------------------ pom deferral (modules)
+MOD_A, MOD_B = "mod-a/pom.xml", "mod-b/pom.xml"
+A1, A2 = "mod-a/src/main/java/a/A.java", "mod-a/src/main/java/a/A2.java"
+B1 = "mod-b/src/main/java/b/B.java"
+
+
+def two_modules(ws):
+    ws.write("pom.xml", "<project><artifactId>demo</artifactId><modules><module>mod-a</module>"
+                        "<module>mod-b</module></modules></project>\n")
+    for pom in (MOD_A, MOD_B):
+        ws.write(pom, f"<project><artifactId>{pom.split('/')[0]}</artifactId></project>\n")
+    ws.write(A1, "class A { }\n")
+    ws.write(A2, "class A2 { }\n")
+    ws.write(B1, "class B { broken }\n")
+    ws.commit("two modules")
+
+
+def module_build(dep_pom):
+    def build(w, call):
+        errs = []
+        if DEP not in w.read(dep_pom):
+            errs += [jerr(A1, "package_does_not_exist", "jakarta.xml.bind", location="class a.A"),
+                     jerr(A2, "cannot_find_symbol", "JAXBContext", location="class a.A2")]
+        if "broken" in w.read(B1):
+            errs.append(jerr(B1, "cannot_find_symbol", "Helper", location="class b.B"))
+        return bad_build(*errs) if errs else ok_build()
+    return build
+
+
+def module_fixer(dep_pom):
+    def fix(w, c, ctx):
+        if c.case_id == case_of("compile|package_does_not_exist|jakarta.xml.bind"):
+            return script(ADD_DEP.replace("'pom.xml'", repr(dep_pom)), analysis="add the API to the pom")
+        return write_script({e.file: "class Fixed { }\n" for e in c.errors})
+    return FakeFixer(script_fn=fix)
+
+
+def test_a_module_pom_defers_its_module_not_the_other_module(cfg, ws):
+    two_modules(ws)
+    fixer = module_fixer(MOD_A)
+    pr = make_loop(cfg, ws, module_build(MOD_A), fixer).run(Phase.VERIFY, "package", 4)
+    assert pr.ok and len(pr.iteration_records) == 2
+    helper, jaxb = case_of("compile|cannot_find_symbol|Helper"), case_of("compile|cannot_find_symbol|JAXBContext")
+    assert [c.case_id for c, _ in fixer.script_calls] == [case_of("compile|package_does_not_exist|jakarta.xml.bind"),
+                                                          helper]          # B (mod-b) in the same round
+    assert {a.iteration for a in pr.attempts} == {1}
+    skip = [d for d in pr.iteration_records[0].decisions if d.kind == DecisionKind.SKIP]
+    assert [d.cluster_id for d in skip] == [f"case:{jaxb}"]                # A2 (mod-a, its own file) waited
+    assert skip[0].rationale.startswith("deferred: its module's pom was changed by case ")
+
+
+def test_a_root_pom_change_defers_every_module(cfg, ws):
+    two_modules(ws)
+    fixer = module_fixer("pom.xml")
+    pr = make_loop(cfg, ws, module_build("pom.xml"), fixer).run(Phase.VERIFY, "package", 4)
+    assert pr.ok
+    r1 = pr.iteration_records[0].decisions
+    assert [d.kind for d in r1].count(DecisionKind.SKIP) == 2               # A2 and B waited for the rebuild
+    helper = case_of("compile|cannot_find_symbol|Helper")
+    assert [(a.script_case_id, a.iteration) for a in pr.attempts][-1] == (helper, 2)   # B came back in round 2
+    assert len(fixer.script_calls) == 2
+
+
+def test_a_reuse_is_never_deferred_by_a_pom_change(cfg, ws):
+    kb = FakeKB()
+    other = case_of("compile|package_does_not_exist|jakarta.xml.bind.annotation")
+    kb.scripts.seed(other, script("p.log('stored annotation fix')\n" + ADD_DEP).code)
+    fixer = FakeFixer(script_fn=lambda w, c, ctx: script(ADD_DEP, analysis="add jakarta.xml.bind-api"))
+    loop = make_loop(cfg, ws, jaxb_build, fixer, kb=kb)
+    pr = loop.run(Phase.VERIFY, "package", 4)
+    assert pr.ok and loop.budget.llm_calls == 1
+    r1 = [(a.script_case_id, a.script_mode) for a in pr.attempts if a.iteration == 1]
+    assert r1 == [(case_of("compile|package_does_not_exist|jakarta.xml.bind"), "new"), (other, "reuse")]
+    assert pr.attempts[1].apply_errors == ["no file changed"]               # it ran (the pom was fixed already)
 
 
 def test_a_deferred_case_is_attempted_in_the_next_round(cfg, ws):

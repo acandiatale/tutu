@@ -1,5 +1,5 @@
-"""KB integrity (round 10, C2 / C3 / C9): torn jsonl lines, the cross-process lock, stale in-memory indexes,
-`kb import --replace` swap + backup, the crash-safe recipe move, streamed stats."""
+"""KB integrity (round 10, C2 / C3 / C9): torn jsonl lines, the cross-process lock, two KB instances on one
+catalog, `kb import --replace` swap + backup, streamed stats."""
 from __future__ import annotations
 
 import json
@@ -15,13 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from sbmig.core.models import KB_RECORD_SCHEMA, ErrorCaseRecord, KBRecipe, ResolutionRecord
+from sbmig.core.models import KB_RECORD_SCHEMA, ErrorCaseRecord, StructureReview
 from sbmig.kb import ErrorCaseStore, FileKnowledgeBase
 from sbmig.kb.jsonl import append_lines, corrupt_path, parse_record, repair_tail
-from sbmig.kb.ledger import Ledger
 from sbmig.kb.lock import LOCK_NAME, holding, kb_lock, pid_alive
-
-from .helpers import make_case, recipe_yaml
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -76,15 +73,13 @@ def test_legacy_lines_read_as_schema_1(tmp_path):
     assert got == {"A": 1, "B": KB_RECORD_SCHEMA}
 
 
-def test_ledger_append_is_torn_line_safe(tmp_path):
-    led = Ledger(tmp_path / "ledger.jsonl")
-    r1 = ResolutionRecord(id="r1", project="p", resolution="unresolved", outcome="unresolved")
-    led.append([r1])
-    with open(led.path, "a", encoding="utf-8") as fh:
-        fh.write('{"id":"r2","proj')
-    assert led.count() == 1
-    led.append([r1.model_copy(update={"id": "r3"})])
-    assert [r.id for r in led.iter()] == ["r1", "r3"] and corrupt_path(led.path).exists()
+def test_review_append_is_torn_line_safe(kb):
+    kb.record_review(StructureReview(id="r1:review", run_id="r1", verdict="ok"))
+    with open(kb.reviews_path, "a", encoding="utf-8") as fh:
+        fh.write('{"id":"r2:review","ver')
+    assert [r.id for r in kb.iter_reviews()] == ["r1:review"]
+    kb.record_review(StructureReview(id="r3:review", run_id="r3", verdict="issues"))
+    assert [r.id for r in kb.iter_reviews()] == ["r1:review", "r3:review"] and corrupt_path(kb.reviews_path).exists()
 
 
 def test_append_lines_fsyncs_one_batch(tmp_path, monkeypatch):
@@ -190,24 +185,22 @@ def test_another_process_waits_for_the_lock(tmp_path):
         proc.wait(30)
 
 
-def test_a_fleet_kb_reloads_an_index_another_process_wrote(kb_cfg):
-    """Two FileKnowledgeBase objects on one KB (fleet + web server): the second one used to save its stale
-    in-memory index over the first one's case."""
+def test_two_kb_instances_see_each_others_catalog_writes(kb_cfg):
+    """Two FileKnowledgeBase objects on one KB (fleet + web server): each one's catalog update keeps the other's
+    case (the catalog index is re-read by its stamp under the lock)."""
     kb1, kb2 = FileKnowledgeBase(kb_cfg), FileKnowledgeBase(kb_cfg)
-    kb2._load_index()                                          # loaded before kb1 wrote
-    a = kb1.record_case(make_case(signatures=["L1-a"], signatures_generic=["L2-a"]))
-    b = kb2.record_case(make_case(signatures=["L1-b"], signatures_generic=["L2-b"],
-                                  summary="another fix", changes=[]))
-    idx = json.loads(kb1.index_path.read_text())
-    assert idx["l1"]["L1-a"] == [a] and idx["l1"]["L1-b"] == [b]
-    assert kb1._load_index()["l1"].get("L1-b") == [b]         # kb1 sees kb2's write too
+    kb2.catalog().cases()                                      # loaded before kb1 wrote
+    kb1.append_error_cases([rec("a", "compile|x|A")], [])
+    kb2.append_error_cases([rec("b", "compile|x|B")], [])
+    idx = json.loads(kb1.catalog().index_path.read_text())
+    assert set(idx["by_l2"]) == {"compile|x|A", "compile|x|B"}
+    assert {c.signature_generic for c in kb1.catalog().cases()} == {"compile|x|A", "compile|x|B"}
 
 
-# --------------------------------------------------------------------------- import --replace, recipe move (C9)
+# --------------------------------------------------------------------------- import --replace (C9)
 def _seeded(kb_cfg, sub: str) -> FileKnowledgeBase:
     kb = FileKnowledgeBase(kb_cfg, kb_dir=Path(kb_cfg.kb.dir).parent / sub)
-    kb.record_case(make_case())
-    kb.error_case_store().append([rec(f"{sub}-e")], [])
+    kb.append_error_cases([rec(f"{sub}-e")], [])
     return kb
 
 
@@ -215,14 +208,15 @@ def test_import_replace_swaps_in_a_new_kb_and_keeps_a_backup(kb_cfg, tmp_path):
     other = _seeded(kb_cfg, "other")
     zp = other.export_zip(tmp_path / "other.zip")
     local = _seeded(kb_cfg, "kb")
-    (local.root / "cases" / ".gitkeep").write_text("")
+    (local.root / "scripts").mkdir(exist_ok=True)
+    (local.root / "scripts" / ".gitkeep").write_text("")
     (local.root / "notes.txt").write_text("mine")
     counters = local.import_zip(zp, merge=False)
     backups = sorted(local.root.parent.glob("kb.bak-*"))
     assert len(backups) == 1 and counters["backup"] == str(backups[0])
     assert (backups[0] / "notes.txt").read_text() == "mine" and not (backups[0] / LOCK_NAME).exists()
     assert [e.id for e in local.error_case_store().iter_errors()] == ["other-e"]
-    assert not (local.root / "notes.txt").exists() and (local.root / "cases" / ".gitkeep").exists()
+    assert not (local.root / "notes.txt").exists() and (local.root / "scripts" / ".gitkeep").exists()
     assert not list(local.root.parent.glob(".kb.import-*")) and not (local.root / LOCK_NAME).exists()
 
 
@@ -241,37 +235,13 @@ def test_a_failed_import_replace_leaves_the_kb_untouched(kb_cfg, tmp_path, monke
     assert not list(local.root.parent.glob("kb.bak-*")) and not list(local.root.parent.glob(".kb.import-*"))
 
 
-def test_move_recipe_writes_the_new_meta_before_moving(kb, monkeypatch):
-    r = kb.add_recipe(recipe_yaml("MoveMe"), KBRecipe(id="MoveMe", path="", signatures=["sig"]))
-    import sbmig.kb.store as store_mod
-
-    real = store_mod.os.replace
-    seen: list[bool] = []
-
-    def crash(src, dst):
-        if not str(dst).endswith("MoveMe.yml"):
-            return real(src, dst)                              # atomic writes (the meta) go through
-        seen.append(Path(dst).with_name("MoveMe.meta.json").exists())
-        raise OSError("killed")                                # the process dies while moving the yml
-
-    monkeypatch.setattr(store_mod.os, "replace", crash)
-    with pytest.raises(OSError):
-        kb.promote(r.id)
-    monkeypatch.setattr(store_mod.os, "replace", real)
-    assert seen == [True]                                      # the destination meta came first
-    back = kb.get_recipe("MoveMe")
-    assert back is not None and back.status == "candidate"    # the old state is intact (orphan meta ignored)
-    assert kb.promote("MoveMe").status == "active"
-    assert [x.status for x in kb.list_recipes() if x.id == "MoveMe"] == ["active"]
-
-
 def test_export_of_a_missing_kb_creates_nothing(kb, tmp_path):
     out = kb.export_zip(tmp_path / "empty.zip")
     assert zipfile.ZipFile(out).namelist() == [] and not any(kb.root.glob("*.json"))
 
 
 def test_stats_counts_without_listing_everything(kb, monkeypatch):
-    kb.record_case(make_case())
     kb.error_case_store().append([rec("A"), rec("B")], [])
+    monkeypatch.setattr(ErrorCaseStore, "iter_errors", lambda *a, **k: (_ for _ in ()).throw(AssertionError("read")))
     st = kb.stats()
-    assert st["cases"] == 1 and st["error_cases"] == 2 and st["cases_reused"] == 0
+    assert st["error_cases"] == 2 and st["fix_attempts"] == 0

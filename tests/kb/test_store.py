@@ -1,104 +1,33 @@
+"""FileKnowledgeBase after PLAN-v2 step 4: atomic writes, v2 stats, reindex = catalog rebuild, match = case hits,
+validate, and the v1 files (cases/, recipes/, patterns/, index.json, ledger.jsonl, symbols.json, error_hints.json)
+neither read, written nor exported."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import zipfile
 
-from sbmig.core.models import KBCase
-from sbmig.kb import FileKnowledgeBase
-from sbmig.kb.store import atomic_write, case_content_hash
+from sbmig.core.models import BuildError, ErrorCluster, ErrorKind
+from sbmig.kb import FileKnowledgeBase, prepare_error_cases
+from sbmig.kb.catalog import case_id_for
+from sbmig.kb.store import atomic_write
 
-from .helpers import L1, L2, make_case, security_change
+from .helpers import EC_FILE, EC_L2, ec_attempt, ec_error, with_kb
 
-
-def test_record_case_roundtrip_and_index(kb: FileKnowledgeBase):
-    case = make_case(created_at=datetime(2026, 3, 9, 12, 0, tzinfo=timezone.utc))
-    cid = kb.record_case(case)
-    assert cid == f"20260309-{case_content_hash(case)}"
-    path = kb.root / "cases" / "2026-03" / f"{cid}.json"
-    assert path.exists()
-    loaded = KBCase.model_validate_json(path.read_text())
-    assert loaded.id == cid and loaded.changes == case.changes and loaded.summary == case.summary
-    assert kb.get_case(cid) == loaded
-    idx = json.loads((kb.root / "index.json").read_text())
-    assert idx["version"] == 1
-    assert idx["l1"][L1] == [cid] and idx["l2"][L2] == [cid]
-    assert "updated_at" in idx and idx["recipes"] == {}
-    # layout created on first use
-    for d in ("patterns", "recipes/active", "recipes/candidates", "recipes/rejected"):
-        assert (kb.root / d).is_dir()
+CID = case_id_for(EC_L2)
+V1_FILES = ("index.json", "ledger.jsonl", "symbols.json", "error_hints.json", "cases/2026-10/20261020-abc.json",
+            "recipes/active/RenameFoo.yml", "patterns/p.yml")
 
 
-def test_case_id_is_content_based(kb: FileKnowledgeBase):
-    a = make_case()
-    b = make_case(signatures=[L1, "compile|other|x|y"])
-    c = make_case(changes=[security_change("other/Path.java")])
-    assert len({case_content_hash(a), case_content_hash(b), case_content_hash(c)}) == 3
-    assert case_content_hash(a) == case_content_hash(make_case(summary="different summary"))
+def _seed(kb: FileKnowledgeBase, ws, profile) -> None:
+    errs, atts = prepare_error_cases([ec_error()], [ec_attempt()], profile, ws, kb.cfg)
+    assert kb.append_error_cases(errs, atts) == 2
 
 
-def test_dedupe_bumps_reuse_and_keeps_first(kb: FileKnowledgeBase):
-    first = make_case(created_at=datetime(2026, 1, 1, tzinfo=timezone.utc), project_fingerprint="fp-a")
-    cid = kb.record_case(first)
-    again = make_case(created_at=datetime(2026, 5, 1, tzinfo=timezone.utc), project_fingerprint="fp-b")
-    cid2, created = kb.record_case_ex(again)
-    assert cid2 == cid and created is False
-    c = kb.get_case(cid)
-    assert c.reuse_count == 1 and c.reuse_projects == ["fp-b"]
-    assert c.created_at == first.created_at
-    assert any(t.startswith("updated:") for t in c.tags)
-    kb.record_case(make_case(project_fingerprint="fp-b"))
-    c = kb.get_case(cid)
-    assert c.reuse_count == 2 and c.reuse_projects == ["fp-b"]
-    assert len([t for t in c.tags if t.startswith("updated:")]) == 1
-    assert len(list(kb.iter_cases())) == 1
-
-
-def test_reindex_rebuilds_from_files(kb: FileKnowledgeBase):
-    ids = [kb.record_case(make_case(signatures=[f"compile|m|s{i}|l"], signatures_generic=[L2])) for i in range(3)]
-    (kb.root / "index.json").unlink()
-    fresh = FileKnowledgeBase(kb.cfg)
-    assert fresh.reindex() == 3
-    idx = json.loads((kb.root / "index.json").read_text())
-    assert sorted(idx["l2"][L2]) == sorted(ids)
-    assert idx["l1"]["compile|m|s1|l"] == [ids[1]]
-
-
-def test_missing_or_corrupt_index_is_rebuilt_lazily(kb: FileKnowledgeBase):
-    cid = kb.record_case(make_case())
-    (kb.root / "index.json").write_text("{not json")
-    fresh = FileKnowledgeBase(kb.cfg)
-    assert fresh._load_index()["l1"][L1] == [cid]
-    (kb.root / "index.json").write_text(json.dumps({"version": 99}))
-    assert FileKnowledgeBase(kb.cfg)._load_index()["l1"][L1] == [cid]
-    (kb.root / "index.json").unlink()
-    assert FileKnowledgeBase(kb.cfg)._load_index()["l1"][L1] == [cid]
-
-
-def test_unreadable_case_files_are_skipped(kb: FileKnowledgeBase):
-    kb.record_case(make_case())
-    bad = kb.root / "cases" / "2026-01" / "20260101-deadbeef00.json"
-    bad.parent.mkdir(parents=True, exist_ok=True)
-    bad.write_text("garbage")
-    assert len(list(kb.iter_cases())) == 1
-    assert kb.get_case("20260101-deadbeef00") is None
-    assert kb.get_case("nope") is None
-    assert kb.reindex() == 1
-
-
-def test_get_case_with_non_dated_id(kb: FileKnowledgeBase):
-    c = make_case(id="manual-1")
-    p = kb.root / "cases" / "2025-12" / "manual-1.json"
-    p.parent.mkdir(parents=True)
-    p.write_text(c.model_dump_json())
-    assert kb.get_case("manual-1").id == "manual-1"
-    assert kb.case_path("manual-1").parent.name == "misc"
-
-
-def test_bump_case_reuse(kb: FileKnowledgeBase):
-    cid = kb.record_case(make_case())
-    assert kb.bump_case_reuse(cid, "fp-x").reuse_count == 1
-    assert kb.bump_case_reuse(cid, "fp-x").reuse_projects == ["fp-x"]
-    assert kb.bump_case_reuse("missing") is None
+def _cluster() -> ErrorCluster:
+    e = BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file=EC_FILE, line=5,
+                   symbol="method clientIp()", signature="compile|cannot find symbol|method clientIp()",
+                   signature_generic=EC_L2)
+    return ErrorCluster(id="c1", kind=e.kind, file=e.file, errors=[e], signatures=[e.signature])
 
 
 def test_atomic_write_leaves_no_temp(tmp_path):
@@ -125,9 +54,73 @@ def test_atomic_write_cleans_up_on_failure(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_stats_on_empty_and_filled_kb(kb: FileKnowledgeBase):
+def test_stats_on_empty_and_filled_kb(kb: FileKnowledgeBase, ws, profile):
     st = kb.stats()
-    assert st["cases"] == 0 and st["recipes_active"] == 0
-    kb.record_case(make_case())
+    assert (st["error_cases"], st["fix_attempts"], st["catalog_cases"], st["script_versions"], st["reviews"]) == \
+        (0, 0, 0, 0, 0)
+    assert not {"cases", "recipes_active", "patterns", "symbols", "ledger_entries", "signatures_l1"} & set(st)
+    _seed(kb, ws, profile)
     st = kb.stats()
-    assert st["cases"] == 1 and st["signatures_l1"] == 1 and st["signatures_l2"] == 1
+    assert (st["error_cases"], st["fix_attempts"], st["catalog_cases"], st["catalog_observed"]) == (1, 1, 1, 1)
+
+
+def test_append_writes_no_error_hints_index(kb: FileKnowledgeBase, ws, profile):
+    _seed(kb, ws, profile)
+    assert (kb.root / "errors.jsonl").exists() and (kb.root / "views" / "cases.md").exists()
+    assert not (kb.root / "error_hints.json").exists()
+
+
+def test_reindex_rebuilds_the_catalog(kb: FileKnowledgeBase, ws, profile, kb_cfg):
+    assert kb.reindex() == 0                                  # nothing to build from
+    _seed(kb, ws, profile)
+    path = kb.catalog().path_of(CID)
+    path.unlink()
+    assert kb.reindex() == 1 and kb.catalog().path_of(CID).exists()
+    assert FileKnowledgeBase(with_kb(kb_cfg, catalog=False)).reindex() == 0
+
+
+def test_match_gives_case_hits_and_their_hints(kb: FileKnowledgeBase, ws, profile):
+    assert kb.match(_cluster(), ws, profile).case_hits == []          # no KB yet
+    _seed(kb, ws, profile)
+    m = kb.match(_cluster(), ws, profile)
+    assert [h.case_id for h in m.case_hits] == [CID] and not m.case_hits[0].pinned
+    assert m.hints and all(h.startswith(f"[case {CID}]") for h in m.hints)
+    kb.catalog().set_human(CID, hints=["check RequestWrapper first"], action={"kind": "block"})
+    m = kb.match(_cluster(), ws, profile)
+    assert m.hints[0] == f"[case {CID}] check RequestWrapper first"
+    assert m.case_hits[0].pinned and m.case_hits[0].action.kind == "block"
+    off = FileKnowledgeBase(with_kb(kb.cfg, catalog=False))
+    assert off.match(_cluster(), ws, profile).case_hits == [] and off.match(_cluster(), ws, profile).hints == []
+
+
+def test_v1_files_are_ignored_and_not_exported(kb: FileKnowledgeBase, ws, profile, tmp_path):
+    for rel in V1_FILES:
+        p = kb.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}\n" if rel.endswith((".json", ".jsonl")) else "x: 1\n", encoding="utf-8")
+    _seed(kb, ws, profile)
+    names = set(zipfile.ZipFile(kb.export_zip(tmp_path / "kb.zip")).namelist())
+    assert {"errors.jsonl", "fix_attempts.jsonl", "views/cases.md"} <= names
+    assert not names & set(V1_FILES)
+    assert kb.validate() == []
+    other = FileKnowledgeBase(with_kb(kb.cfg, dir=str(tmp_path / "kb2")))
+    counters = other.import_zip(tmp_path / "kb.zip")
+    assert counters["error_cases_added"] == 1 and counters["fix_attempts_added"] == 1
+    assert not any((other.root / rel).exists() for rel in V1_FILES)
+
+
+def test_validate_names_unreadable_lines_and_cases(kb: FileKnowledgeBase, ws, profile):
+    _seed(kb, ws, profile)
+    with open(kb.root / "errors.jsonl", "a", encoding="utf-8") as fh:
+        fh.write('{"id": "broken", "status": 7}\n')
+    (kb.root / "audit.jsonl").write_text('{"event": "human"}\nnot json\n', encoding="utf-8")
+    path = kb.catalog().path_of(CID)
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.replace("\nhuman:", "\nhuman: [unclosed", 1), encoding="utf-8")
+    (kb.root / "catalog" / "index.json").write_text("{", encoding="utf-8")
+    problems = kb.validate()
+    assert "errors.jsonl: line 2 does not validate as ErrorCaseRecord" in problems
+    assert "audit.jsonl: line 2 is no JSON object" in problems
+    assert any("index.json: does not parse" in p for p in problems)
+    assert any(p.endswith("the `human:` block is invalid (ignored until fixed)") for p in problems)
+    json.loads((kb.root / "fix_attempts.jsonl").read_text(encoding="utf-8").splitlines()[0])   # untouched

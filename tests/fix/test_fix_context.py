@@ -1,19 +1,27 @@
+"""Context packing helpers + ContextPacker.pack_script: notes selection, related project types, truncation order.
+(The one-case-many-files budget of pack_script is in test_fix_script_context.py.)"""
 from sbmig.core.interfaces import FixContext
-from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, FileChange, FixAttempt, Phase, TriageDecision, DecisionKind
+from sbmig.core.models import (BuildError, DecisionKind, ErrorCluster, ErrorKind, FileChange, FixAttempt, Phase,
+                               TriageDecision)
 from sbmig.fix import ContextPacker
-from sbmig.fix.context import merge_windows, nearest_pom, pom_excerpt, summarize_attempt
+from sbmig.fix.context import SCRIPT_TRUNCATE_ORDER, merge_windows, nearest_pom, pom_excerpt, summarize_attempt
+from sbmig.fix.context import summarize_script_attempt
 
-from tests.fix.conftest import make_cluster
-
+A = "src/main/java/a/A.java"
 SMALL = "package a;\n\nimport javax.persistence.Entity;\n\n@Entity\npublic class A {\n}\n"
+RELATED = ContextPacker.SCRIPT_RELATED_FILES_TITLE
 
 
 def ctx(**kw):
-    return FixContext(phase=kw.pop("phase", Phase.SPRING), iteration=1, **kw)
+    return FixContext(phase=kw.pop("phase", Phase.VERIFY), iteration=1, script_mode="new", case_id="k1", **kw)
 
 
-def big_java(n=1000):
-    return "package a;\n\nimport javax.persistence.Entity;\n\npublic class A {\n" + "".join(f"    int f{i};\n" for i in range(n)) + "}\n"
+def case(file: str = A, lines=(3,), message: str = "cannot find symbol", symbol: str | None = "class Foo",
+         **kw) -> ErrorCluster:
+    errs = [BuildError(kind=ErrorKind.COMPILE, message=message, file=file, line=ln, column=5, symbol=symbol,
+                       location="class a.A", signature=f"sig{ln}", **kw) for ln in lines]
+    return ErrorCluster(id="case:k1", kind=ErrorKind.COMPILE, errors=errs, case_id="k1",
+                        signatures=[e.signature for e in errs])
 
 
 def notes_dir(tmp_path):
@@ -23,79 +31,25 @@ def notes_dir(tmp_path):
     (d / "jak.md").write_text("---\ntitle: Jakarta\n---\nJAKARTA NOTE " + "j" * 3000 + "\n")
     (d / "sec.md").write_text("---\ntitle: Security\n---\nSECURITY NOTE\n")
     (d / "boot.md").write_text("---\ntitle: Boot only\n---\nBOOT NOTE\n")
+    (d / "jdk.md").write_text("---\ntitle: JDK only\n---\nJDK NOTE\n")
     (d / "index.yml").write_text(
         "notes:\n"
         "- {file: fix-policy.md, title: Fix policy, keywords: [], cases: [], phases: [], always: true}\n"
-        "- {file: jak.md, title: Jakarta, keywords: ['javax[.]persistence', 'Entity'], cases: [], phases: [spring]}\n"
+        "- {file: jak.md, title: Jakarta, keywords: ['javax[.]persistence', 'Entity'], cases: [], "
+        "phases: [restructure]}\n"
         "- {file: sec.md, title: Security, keywords: ['WebSecurityConfigurerAdapter'], cases: [], phases: []}\n"
-        "- {file: boot.md, title: Boot only, keywords: ['Entity'], cases: [spring_boot], phases: []}\n")
+        "- {file: boot.md, title: Boot only, keywords: ['Entity'], cases: [spring_boot], phases: []}\n"
+        "- {file: jdk.md, title: JDK only, keywords: ['Entity'], cases: [], phases: [jdk21]}\n")
     return d
 
 
+# ---------------------------------------------------------------- helpers
 def test_merge_windows():
     assert merge_windows([100, 150], 1000, 60) == [(40, 210)]
     assert merge_windows([100, 300], 1000, 60) == [(40, 160), (240, 360)]
     assert merge_windows([5], 20, 60) == [(1, 20)]
     assert merge_windows([100, 221], 1000, 60) == [(40, 281)]          # adjacent → merged
     assert merge_windows([], 50, 60) == [(1, 50)]
-
-
-def test_small_file_whole_and_errors_first(cfg, ws, put, tmp_path):
-    put("src/main/java/a/A.java", SMALL)
-    cl = make_cluster(lines=(3, 5), message="package javax.persistence does not exist", symbol=None)
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, cl, ctx(), "case=spring_legacy java=1.8")
-    titles = [t for t, _ in p.sections]
-    assert titles[0] == "Situation" and titles[1].startswith("Errors to fix (2)")
-    errors = p.sections[1][1]
-    assert "src/main/java/a/A.java:3:5: package javax.persistence does not exist" in errors
-    assert "location: class a.A" in errors
-    src = dict(p.sections)["Source (exact text; copy SEARCH blocks from here)"]
-    assert "// src/main/java/a/A.java lines 1-7 (whole file)" in src
-    assert "```java\npackage a;\n" in src and "@Entity\npublic class A {\n}\n```" in src
-    assert "src/main/java/a/A.java" in p.files_included
-    assert p.chars > 0 and p.truncated == []
-
-
-def test_large_file_windows_and_import_block(cfg, ws, put, tmp_path):
-    put("src/main/java/a/A.java", big_java())
-    cl = make_cluster(lines=(200, 230, 800))
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, cl, ctx(), "")
-    src = dict(p.sections)["Source (exact text; copy SEARCH blocks from here)"]
-    assert "// src/main/java/a/A.java lines 1-3 (of 1006)" in src            # import block
-    assert "// src/main/java/a/A.java lines 140-290 (of 1006)" in src        # merged window
-    assert "// src/main/java/a/A.java lines 740-860 (of 1006)" in src
-    assert "    int f500;" not in src
-    assert src.count("```java") == 3
-    # no line numbers inside code
-    assert "\n200:" not in src and "\n200 " not in src
-
-
-def test_missing_file_reported(cfg, ws, tmp_path):
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(file="src/Nope.java"), ctx(), "")
-    assert "file not found" in dict(p.sections)["Source (exact text; copy SEARCH blocks from here)"]
-    assert p.files_included == []
-
-
-def test_pom_inclusion_rules(cfg, ws, put, tmp_path):
-    put("pom.xml", "<project>\n<dependencies>\n</dependencies>\n</project>\n")
-    put("mod/pom.xml", "<project><artifactId>mod</artifactId></project>\n")
-    put("mod/src/main/java/a/A.java", SMALL)
-    nd = notes_dir(tmp_path)
-    packer = ContextPacker(cfg, nd)
-    plain = make_cluster(file="mod/src/main/java/a/A.java", message="cannot find symbol")
-    assert not any(t.startswith("POM") for t, _ in packer.pack(ws, plain, ctx(), "").sections)
-    pkg = make_cluster(file="mod/src/main/java/a/A.java", message="package org.foo does not exist")
-    secs = dict(packer.pack(ws, pkg, ctx(), "").sections)
-    assert "POM (mod/pom.xml)" in secs and "<artifactId>mod</artifactId>" in secs["POM (mod/pom.xml)"]
-    dep = ErrorCluster(id="d", kind=ErrorKind.DEPENDENCY_RESOLUTION, file="pom.xml",
-                       errors=[BuildError(kind=ErrorKind.DEPENDENCY_RESOLUTION, message="Could not resolve x:y:1",
-                                          file="pom.xml")])
-    p = packer.pack(ws, dep, ctx(), "")
-    secs = dict(p.sections)
-    assert "POM (pom.xml)" in secs and "(whole file)" in secs["POM (pom.xml)"]
-    assert "Source (exact text; copy SEARCH blocks from here)" not in secs
-    assert nearest_pom(ws, "mod/src/main/java/a/A.java") == "mod/pom.xml"
-    assert nearest_pom(ws, None) == "pom.xml"
 
 
 def test_pom_excerpt_large():
@@ -111,133 +65,12 @@ def test_pom_excerpt_large():
     assert "// pom.xml lines 2-4 <parent>" in out
 
 
-def test_notes_selection_by_keywords_case_phase(cfg, ws, put, tmp_path):
-    put("src/main/java/a/A.java", SMALL)
-    packer = ContextPacker(cfg, notes_dir(tmp_path))
-    cl = make_cluster(message="package javax.persistence does not exist", symbol=None)
-    p = packer.pack(ws, cl, ctx(), "case=spring_legacy")
-    assert p.notes_included == ["Fix policy", "Jakarta"]               # boot-only filtered by case; sec no match
-    p = packer.pack(ws, cl, ctx(), "case=spring_boot")
-    assert p.notes_included == ["Fix policy", "Jakarta", "Boot only"]
-    p = packer.pack(ws, cl, ctx(phase=Phase.JDK21), "case=spring_legacy")
-    assert p.notes_included == ["Fix policy"]                          # jakarta restricted to spring phase
-    # imports of the cluster file are matched too
-    cl2 = make_cluster(message="cannot find symbol", symbol="class X")
-    p = packer.pack(ws, cl2, ctx(), "case=spring_legacy")
-    assert "Jakarta" in p.notes_included
-    p = ContextPacker(cfg, notes_dir(tmp_path), max_notes=1).pack(ws, cl, ctx(), "case=spring_boot")
-    assert p.notes_included == ["Fix policy", "Jakarta"]
-
-
-def test_history_hints_other_errors_and_plan(cfg, ws, put, tmp_path):
-    put("src/main/java/a/A.java", SMALL)
-    att = FixAttempt(id="a1", phase=Phase.SPRING, iteration=1, cluster_id="c1", outcome="no_change",
-                     decision=TriageDecision(cluster_id="c1", kind=DecisionKind.LLM_FIX), errors_before=3, errors_after=3,
-                     analysis="tried import swap", apply_errors=["x block 1: search text not found"],
-                     changes=[FileChange(path="A.java", op="modify", search="import a;", replace="import b;"),
-                              FileChange(path="B.java", op="rename", new_path="C.java"),
-                              FileChange(path="D.java", op="delete")])
-    c = ctx(kb_hints=["use jakarta.persistence"], previous_attempts=[att], other_errors_summary="c2: compile B.java (3)",
-            plan_notes=["spring phase after OpenRewrite"])
-    secs = dict(ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), c, "case=x").sections)
-    prev = next(v for k, v in secs.items() if k.startswith("Previous attempts"))
-    assert "do not repeat" in next(k for k in secs if k.startswith("Previous attempts"))
-    assert "tried import swap" in prev and "MODIFY A.java: `import a;` → `import b;`" in prev and "errors 3→3" in prev
-    assert "RENAME B.java -> C.java" in prev and "DELETE D.java" in prev and "apply error" in prev
-    assert "use jakarta.persistence" in next(v for k, v in secs.items() if k.startswith("Knowledge-base"))
-    assert "c2: compile B.java" in next(v for k, v in secs.items() if k.startswith("Other error"))
-    assert "spring phase" in secs["Plan notes"]
-    many = att.model_copy(update={"changes": [FileChange(path=f"F{i}.java", op="delete") for i in range(15)]})
-    assert "3 more change(s)" in summarize_attempt(many)
-
-
-def test_budget_truncation_order(cfg, ws, put, tmp_path):
-    put("src/main/java/a/A.java", big_java(300))                       # ~4.5k chars, whole file
-    nd = notes_dir(tmp_path)
-    att = FixAttempt(id="a1", phase=Phase.SPRING, iteration=1, cluster_id="c1",
-                     decision=TriageDecision(cluster_id="c1", kind=DecisionKind.LLM_FIX), analysis="x" * 2000)
-    c = ctx(previous_attempts=[att], other_errors_summary="o" * 2000)
-    cl = make_cluster(message="package javax.persistence does not exist", symbol=None)
-    packer = ContextPacker(cfg, nd)
-    full = packer.pack(ws, cl, c, "case=spring_boot", budget=10**6)
-    assert full.truncated == []
-    # small cut: only the lowest-ranked notes go
-    p = packer.pack(ws, cl, c, "case=spring_boot", budget=full.chars - 20)
-    assert p.truncated == ["notes:Migration note: Boot only (dropped)"]
-    # bigger cut: all optional notes, fix policy shortened, then other errors
-    p = packer.pack(ws, cl, c, "case=spring_boot", budget=full.chars - 4000 - 1500)
-    kinds = [t.split(" ")[0] for t in p.truncated]
-    assert kinds[:2] == ["notes:Migration", "notes:Migration"]
-    assert any(t.startswith("other_errors") for t in p.truncated)
-    assert not any(t.startswith("files") for t in p.truncated)
-    # tiny budget: errors are never truncated, files shrink last
-    p = packer.pack(ws, cl, c, "case=spring_boot", budget=500)
-    titles = [t for t, _ in p.sections]
-    assert any(t.startswith("Errors to fix") for t in titles)
-    order = [t.split(" ")[0].split(":")[0] for t in p.truncated]
-    first = {k: order.index(k) for k in ("notes", "other_errors", "previous_attempts", "files") if k in order}
-    assert first["notes"] < first["other_errors"] < first["previous_attempts"] < first["files"]
-
-
-def test_broken_notes_index_does_not_break(cfg, ws, put, tmp_path):
-    d = tmp_path / "bad"
-    d.mkdir()
-    (d / "index.yml").write_text("notes: [::::")
-    put("src/main/java/a/A.java", SMALL)
-    p = ContextPacker(cfg, d).pack(ws, make_cluster(), ctx(), "")
-    assert p.notes_included == []
-
-
-def test_default_notes_dir_is_repo_knowledge(cfg, ws, put):
-    put("src/main/java/a/A.java", SMALL)
-    cl = make_cluster(message="cannot find symbol", symbol="class WebSecurityConfigurerAdapter")
-    p = ContextPacker(cfg).pack(ws, cl, ctx(), "case=spring_boot")
-    assert "Fix policy for the build-fix loop" in p.notes_included
-    assert any("Security" in n for n in p.notes_included)
-
-
-# ---------------------------------------------------------------- round 6: library migration guidance (advisories)
-ADV_TITLE = "Library migration guidance (what to migrate TO)"
-
-
-def test_advisory_hints_section_after_sources_before_kb_hints(cfg, ws, put, tmp_path):
-    put("src/main/java/a/A.java", SMALL)
-    hint = ("hystrix (eol, policy recipe): replace with org.springframework.cloud:spring-cloud-starter-circuitbreaker-"
-            "resilience4j (managed by the Spring Cloud BOM). Port HystrixCommand subclasses.")
-    c = ctx(advisory_hints=[hint], kb_hints=["use jakarta.persistence"], other_errors_summary="c2: B.java (3)")
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), c, "case=spring_boot")
-    titles = [t for t, _ in p.sections]
-    i = titles.index(ADV_TITLE)
-    assert titles[i - 1].startswith("Source (exact text") and titles[i + 1].startswith("Knowledge-base hints")
-    body = dict(p.sections)[ADV_TITLE]
-    assert f"- {hint}" in body and "do not re-add the removed library" in body
-    assert ADV_TITLE in p.render()
-    # absent when there are no hints
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), ctx(), "case=spring_boot")
-    assert ADV_TITLE not in [t for t, _ in p.sections]
-
-
-def test_advisory_hints_truncated_after_kb_hints(cfg, ws, put, tmp_path):
-    assert ContextPacker.TRUNCATE_ORDER.index("kb_hints") < ContextPacker.TRUNCATE_ORDER.index("advisory_hints") \
-        < ContextPacker.TRUNCATE_ORDER.index("files")
-    put("src/main/java/a/A.java", SMALL)
-    c = ctx(advisory_hints=["a" * 1500], kb_hints=["k" * 1500])
-    packer = ContextPacker(cfg, notes_dir(tmp_path))
-    full = packer.pack(ws, make_cluster(), c, "case=x", budget=10**6)
-    p = packer.pack(ws, make_cluster(), c, "case=x", budget=full.chars - 4000 - 1200)
-    kinds = [t.split(" ")[0] for t in p.truncated]
-    assert "kb_hints" in kinds and "advisory_hints" not in kinds
-    assert "a" * 1500 in dict(p.sections)[ADV_TITLE]
-
-
-
 def test_nearest_pom_never_spins_on_absolute_or_windows_paths(tmp_path):
     """Round 9c: an absolute error path (Windows Maven output that could not be made root-relative) made nearest_pom
     loop forever on `/`; now it is relativized when under the workspace and dropped otherwise, and backslashes work."""
     import time
 
     from sbmig.core.workspace import Workspace
-    from sbmig.fix.context import nearest_pom
     root = tmp_path / "project"
     (root / "core" / "src" / "main" / "java" / "a").mkdir(parents=True)
     (root / "pom.xml").write_text("<project/>", encoding="utf-8")
@@ -253,8 +86,98 @@ def test_nearest_pom_never_spins_on_absolute_or_windows_paths(tmp_path):
     assert time.monotonic() - t0 < 2.0
 
 
+def test_summarize_attempt_of_a_non_script_attempt():
+    """Old (non-script) attempts in the history still render as one block: outcome, analysis, the files changed."""
+    att = FixAttempt(id="a1", phase=Phase.VERIFY, iteration=1, cluster_id="c1", outcome="no_change",
+                     decision=TriageDecision(cluster_id="c1", kind=DecisionKind.ESCALATE), errors_before=3,
+                     errors_after=3, analysis="tried import swap", apply_errors=["x: not applied"],
+                     changes=[FileChange(path="A.java", op="modify", search="import a;", replace="import b;"),
+                              FileChange(path="B.java", op="rename", new_path="C.java"),
+                              FileChange(path="D.java", op="delete")])
+    text = summarize_script_attempt(att)                         # no script_mode → the generic rendering
+    assert text == summarize_attempt(att)
+    assert "tried import swap" in text and "MODIFY A.java: `import a;` → `import b;`" in text and "errors 3→3" in text
+    assert "RENAME B.java -> C.java" in text and "DELETE D.java" in text and "apply error" in text
+    many = att.model_copy(update={"changes": [FileChange(path=f"F{i}.java", op="delete") for i in range(15)]})
+    assert "3 more change(s)" in summarize_attempt(many)
+
+
+# ---------------------------------------------------------------- pack_script: notes
+def test_notes_selection_by_keywords_case_phase(cfg, ws, put, tmp_path):
+    put(A, SMALL)
+    packer = ContextPacker(cfg, notes_dir(tmp_path))
+    cl = case(message="package javax.persistence does not exist", symbol=None)
+    # the always-note (old fix policy) never reaches a script prompt; boot-only filtered by case; sec no match;
+    # phases are advisory: in verify the restructure note and the jdk21-only note are both selected by keyword
+    assert packer.pack_script(ws, cl, ctx(), "case=spring_legacy").notes_included == ["Jakarta", "JDK only"]
+    assert packer.pack_script(ws, cl, ctx(), "case=spring_boot").notes_included == ["Jakarta", "Boot only",
+                                                                                   "JDK only"]
+    # another phase is still narrowed by the list
+    assert packer.pack_script(ws, cl, ctx(phase=Phase.JDK21), "case=spring_legacy").notes_included == ["JDK only"]
+    # the imports of the erroring file are matched too
+    plain = case(message="cannot find symbol", symbol="class X")
+    assert "Jakarta" in packer.pack_script(ws, plain, ctx(), "case=spring_legacy").notes_included
+    one = ContextPacker(cfg, notes_dir(tmp_path), max_notes=1).pack_script(ws, cl, ctx(), "case=spring_boot")
+    assert one.notes_included == ["Jakarta"]
+
+
+def test_jdk21_tagged_repo_note_reaches_a_verify_phase_script_prompt(cfg, ws, put):
+    """PLAN-v2: every fix happens in the verify loop — the repo's jdk21-only note (`phases: [jdk21]`) is selected
+    there by its keywords (it never was while phases filtered)."""
+    put(A, "package a;\n\nimport sun.misc.BASE64Encoder;\n\npublic class A {\n}\n")
+    packer = ContextPacker(cfg)
+    jdk = next(n for n in packer.notes if n.file == "jdk21.md")
+    assert jdk.phases == ["jdk21"]
+    assert jdk in packer.select_notes("package sun.misc does not exist", "pure_java", "verify")
+    cl = case(message="package sun.misc does not exist", symbol=None)
+    p = packer.pack_script(ws, cl, ctx(phase=Phase.VERIFY), "case=pure_java")
+    assert jdk.title in p.notes_included
+    assert any(t == f"Migration note: {jdk.title}" for t, _ in p.sections)
+
+
+def test_broken_notes_index_does_not_break(cfg, ws, put, tmp_path):
+    d = tmp_path / "bad"
+    d.mkdir()
+    (d / "index.yml").write_text("notes: [::::")
+    put(A, SMALL)
+    assert ContextPacker(cfg, d).pack_script(ws, case(), ctx(), "").notes_included == []
+
+
+def test_default_notes_dir_is_repo_knowledge(cfg, ws, put):
+    put(A, SMALL)
+    cl = case(message="cannot find symbol", symbol="class HystrixCommand")
+    p = ContextPacker(cfg).pack_script(ws, cl, ctx(), "case=spring_boot")
+    assert any("Spring Cloud Netflix" in n for n in p.notes_included)
+    assert not any("Fix policy" in n for n in p.notes_included)          # always-notes stay out of script prompts
+
+
+# ---------------------------------------------------------------- pack_script: truncation order
+def test_script_truncation_order():
+    order = SCRIPT_TRUNCATE_ORDER
+    assert order.index("notes") == 0
+    assert order.index("kb_hints") < order.index("reference_files") < order.index("advisory_hints") \
+        < order.index("files")
+    assert order.index("reference_notes") < order.index("files") and "errors" not in order and "header" not in order
+
+
+def test_kb_hints_shrink_before_advisory_hints(cfg, ws, put, tmp_path):
+    put(A, SMALL)
+    c = ctx(advisory_hints=["a" * 1500], kb_hints=["k" * 1500])
+    packer = ContextPacker(cfg, notes_dir(tmp_path))
+    full = packer.pack_script(ws, case(), c, "case=x", budget=10**6)
+    assert full.truncated == []
+    notes = sum(len(t) + len(b) + 6 for t, b in full.sections if t.startswith("Migration note"))
+    p = packer.pack_script(ws, case(), c, "case=x", budget=full.chars - notes - 1000)   # notes first, then kb hints
+    kinds = [t.split(" ")[0] for t in p.truncated]
+    assert "kb_hints" in kinds and "advisory_hints" not in kinds
+    assert "a" * 1500 in dict(p.sections)[ContextPacker.ADVISORY_TITLE]
+    assert any(t.startswith("Errors of this case") for t, _ in p.sections)        # errors are never truncated
+
+
+# ---------------------------------------------------------------- pack_script: related project types
 def test_related_type_files_from_location(cfg, ws, put, tmp_path):
-    """2026-10-22: the repository interface named in `location:` is shown so the LLM can patch it (Spring Data 3 CRUD)."""
+    """2026-10-22: the repository interface named in `location:` is shown so the script can edit it (Spring Data 3
+    CRUD)."""
     put("src/main/java/com/x/service/MemberService.java",
         "package com.x.service;\n\nimport com.x.repo.MemberRepository;\n\npublic class MemberService {\n"
         "    MemberRepository repository;\n    void f() { repository.findAll(); }\n}\n")
@@ -269,18 +192,14 @@ def test_related_type_files_from_location(cfg, ws, put, tmp_path):
                      raw="no suitable method found for findAll(no arguments)\n    method org.springframework.data."
                          "repository.PagingAndSortingRepository.findAll(Sort) is not applicable\n"
                          "    method com.x.repo.BaseRepository.findAll(int) is not applicable")
-    cl = ErrorCluster(id="c1", kind=ErrorKind.COMPILE, file=err.file, errors=[err], signatures=["s1"])
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, cl, ctx(), "case=spring_boot")
-    secs = dict(p.sections)
-    rel = secs[ContextPacker.RELATED_FILES_TITLE]
+    cl = ErrorCluster(id="case:k1", kind=ErrorKind.COMPILE, errors=[err], signatures=["s1"], case_id="k1")
+    p = ContextPacker(cfg, notes_dir(tmp_path)).pack_script(ws, cl, ctx(), "case=spring_boot")
+    rel = dict(p.sections)[RELATED]
     assert "src/main/java/com/x/repo/MemberRepository.java" in rel and "interface MemberRepository" in rel
     assert "src/main/java/com/x/repo/BaseRepository.java" in rel          # the candidate owner, a project type
     assert "PagingAndSortingRepository" not in p.files_included            # library types are never files
     assert "src/main/java/com/x/repo/MemberRepository.java" in p.files_included
-    # the cluster file itself is never repeated as a related file
-    assert rel.count("MemberService.java") == 0
-    order = [t for t, _ in p.sections]
-    assert order.index("Source (exact text; copy SEARCH blocks from here)") < order.index(ContextPacker.RELATED_FILES_TITLE)
+    assert rel.count("MemberService.java") == 0                            # the erroring file is never repeated
 
 
 def test_related_type_files_simple_name_via_import_and_cap(cfg, ws, put, tmp_path):
@@ -288,21 +207,21 @@ def test_related_type_files_simple_name_via_import_and_cap(cfg, ws, put, tmp_pat
     for n in ("R1", "R2", "R3", "R4"):
         put(f"src/main/java/com/x/r/{n}.java", f"package com.x.r;\n\npublic interface {n} {{}}\n")
     put("src/main/java/com/x/Same.java", "package com.x;\n\npublic class Same {}\n")
-    errs = [BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file="src/main/java/com/x/A.java", line=5,
-                       signature="s1", symbol="method save(Foo)", location="variable r of type R1"),
-            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=6, signature="s2",
-                       location="class Same"),
-            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=7, signature="s3",
+    f = "src/main/java/com/x/A.java"
+    errs = [BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file=f, line=5, signature="s1",
+                       symbol="method save(Foo)", location="variable r of type R1"),
+            BuildError(kind=ErrorKind.COMPILE, message="x", file=f, line=6, signature="s2", location="class Same"),
+            BuildError(kind=ErrorKind.COMPILE, message="x", file=f, line=7, signature="s3",
                        location="variable q of type com.x.r.R2"),
-            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=8, signature="s4",
+            BuildError(kind=ErrorKind.COMPILE, message="x", file=f, line=8, signature="s4",
                        location="variable q of type com.x.r.R3"),
-            BuildError(kind=ErrorKind.COMPILE, message="x", file="src/main/java/com/x/A.java", line=9, signature="s5",
+            BuildError(kind=ErrorKind.COMPILE, message="x", file=f, line=9, signature="s5",
                        location="variable q of type com.x.r.R4")]
-    cl = ErrorCluster(id="c1", kind=ErrorKind.COMPILE, file="src/main/java/com/x/A.java", errors=errs,
-                      signatures=[e.signature for e in errs])
-    p = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, cl, ctx(), "")
-    rel = dict(p.sections)[ContextPacker.RELATED_FILES_TITLE]
+    cl = ErrorCluster(id="case:k1", kind=ErrorKind.COMPILE, errors=errs, signatures=[e.signature for e in errs],
+                      case_id="k1")
+    packer = ContextPacker(cfg, notes_dir(tmp_path))
+    rel = dict(packer.pack_script(ws, cl, ctx(), "").sections)[RELATED]
     assert "r/R1.java" in rel and "Same.java" in rel and "r/R2.java" in rel       # import, same package, FQCN
     assert "r/R3.java" not in rel and "r/R4.java" not in rel                     # capped at MAX_RELATED_FILES
-    plain = ContextPacker(cfg, notes_dir(tmp_path)).pack(ws, make_cluster(), ctx(), "")
-    assert ContextPacker.RELATED_FILES_TITLE not in dict(plain.sections)
+    put(A, SMALL)
+    assert RELATED not in dict(packer.pack_script(ws, case(), ctx(), "").sections)

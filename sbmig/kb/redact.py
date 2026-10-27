@@ -1,5 +1,5 @@
-"""Secret masking for everything the KB stores (round 10, 2026-10-26): raw Maven text, messages, diffs, KB patch
-cases, ledger notes.
+"""Secret masking for everything the KB stores (round 10, 2026-10-26): raw Maven text, messages, diffs, fix-script
+logs and code, structure reviews.
 
 Only VALUES are masked (``***``), and only where the context says they are secrets:
 

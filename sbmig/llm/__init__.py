@@ -3,13 +3,13 @@
 Tier 1 (LLM): `llm.provider: plugin` + `llm.plugin: "pkg.module:attr"` (or an entry point in `sbmig.llm_adapters`)
     → an `LLMAdapterLike` (`complete(request: LLMRequest) -> LLMResponse`, wrapped in `AdapterClient`) or an
     `LLMClientLike` (message-based, used as is).
-Tier 2 (fixer): `fix.plugin: "pkg.module:attr"` → a `FixerLike` (`propose` [+ `apply`]) replacing LLMFixer.
+Tier 2 (fixer): `fix.plugin: "pkg.module:attr"` → a fixer with `propose_script(ws, cluster, ctx) -> ScriptProposal`
+    (the script seam, `ScriptFixerLike`) replacing LLMFixer.
 """
 from .adapter import AdapterClient, KwargFilterClient, LLMAdapter, coerce_response, is_request_adapter
 from .registry import (
     FIXER_ENTRY_POINT_GROUP,
     LLM_ENTRY_POINT_GROUP,
-    ApplyDelegatingFixer,
     PluginLoadError,
     instantiate,
     load_entry_point,
@@ -22,5 +22,5 @@ from .registry import (
 __all__ = [
     "AdapterClient", "LLMAdapter", "KwargFilterClient", "coerce_response", "is_request_adapter",
     "PluginLoadError", "load_plugin", "load_entry_point", "instantiate", "resolve_llm_plugin",
-    "resolve_fixer_plugin", "wrap_llm", "ApplyDelegatingFixer", "LLM_ENTRY_POINT_GROUP", "FIXER_ENTRY_POINT_GROUP",
+    "resolve_fixer_plugin", "wrap_llm", "LLM_ENTRY_POINT_GROUP", "FIXER_ENTRY_POINT_GROUP",
 ]

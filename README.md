@@ -1,91 +1,93 @@
 # sbmig — JDK 21 / Spring Boot 4.1 migration agent
 
-`sbmig` takes an as-is Maven project (zip or directory), runs OpenRewrite for everything mechanical, then drives a
-**triage → fix → build** loop until `mvn` says `BUILD SUCCESS`, restructures the project into the company layout
-(in-house parent, 2 mandatory dependencies, 8 optional bumps, `module/{comp-jar,boot-jar}`), and writes a report the
-as-is owner can act on — starting with a **Handover** (versions replaced, ⚠ pins carried over, EOL / unmanaged
-libraries such as springfox, sleuth, hystrix that still compile, and a numbered "from here on, your team" list;
-`recipe`-policy advisories like springfox → springdoc are migrated by OpenRewrite, none ever fails the build). Settings the external Tomcat used to supply
-(JNDI DataSource, web.xml `<context-param>`, `-D` flags, `$CATALINA_BASE/conf/*.properties`) are inventoried at
-analyze time and written as `__SET_ME__` placeholders into the boot-jar `application.properties`; the Handover's
-"Properties to set before running" table says which key, where it is read and how to supply it. Every LLM fix that worked is stored in a file-based knowledge base and, when mechanical,
-promoted to an OpenRewrite recipe for the next project.
+`sbmig` takes an as-is **Maven** project (zip or directory: pure Java, Spring 4/5, servlet / Tomcat, Spring Boot 2/3,
+MSA), migrates it to JDK 21 + Spring Boot 4.1, restructures it into the company layout (in-house parent, 2 mandatory
+dependencies, 8 optional bumps, `{name}-boot` / `-back` / `-front` modules) and stops only after a final
+`mvn clean package` (tests skipped). Build errors are fixed by **LLM-written Python fix scripts** that are stored per
+error case in a file-based knowledge base, so a later project with the same case runs the stored script first —
+without an LLM call. The report starts with a **Handover** for the as-is owners (versions replaced, ⚠ pins carried over,
+EOL libraries that still compile, properties to set, blocked items).
+
+This branch is **v2** (`flow-v2`, docs/v2/PLAN-v2.md). The previous flow (handlers, KB recipes, SEARCH/REPLACE fixes) is
+the git tag **`company-v1`**.
+
+## The flow
 
 ```
-intake ─► analyze ─► advisories ─► plan ─► JDK21 (rewrite + build-fix loop) ─► SPRING (rewrite + loop) ─► RESTRUCTURE (+ loop) ─► verify ─► handover + report + KB harvest
+intake      Maven only (Gradle / Ant / pom-less trees are rejected, exit 3)
+analyze     case (pure_java | servlet_tomcat | spring_legacy | spring_boot | msa), libraries, advisories, properties
+plan        the recipes of the one OpenRewrite run: UpgradeToJava21, JavaxMigrationToJakarta, Boot 4.0 + 4.1 properties
+transform   one OpenRewrite run — no build in between
+restructure company layout (parent / mandatory / optional, module split or poms only for Boot / MSA)
+review      the LLM checks poms, dependencies and modules; critical issues are fixed by its script and committed
+verify      mvn clean package -Dmaven.test.skip=true; on failure the script fix loop, then the final build again
+finalize    report.md / report.json (Handover first), KB records (errors, attempts, scripts, reviews)
 ```
 
-| Doc | Content |
-|---|---|
-| `docs/ARCHITECTURE.md` | pipeline, case → recipe matrix, loop algorithm, triage, signatures, LLM protocol, KB layout |
-| `docs/RUNBOOK.md` | installing in the company environment, running, reading reports, KB workflow, tuning |
-| `docs/PLAN.md` | delivery plan, workstreams, acceptance criteria, risks |
-| `docs/INTERFACES.md` | contracts between packages + change log |
-| `docs/ADAPTERS.md` | plugging in the in-house LLM gateway (`llm.plugin`) or an in-house coding agent (`fix.plugin`); Python embedding via `sbmig.api.migrate` |
-| `docs/RECIPES.md` | how recipe lists are managed: `knowledge/recipes/catalog.yml` (single source), config sets, base recipes, reactive rules, KB recipes |
-| `docs/FLEET.md` | one agent over hundreds of projects, sequentially: `sbmig fleet`, resume, the learning ledger (`kb/ledger.jsonl`), symbol → fix labels |
-| `docs/ADVISORIES.md` | library advisories: EOL / no-longer-managed libraries that still compile (`knowledge/libraries/advisories.yml`), `guide` / `recipe` policies, company overrides, `sbmig advisories` |
-| `docs/ERROR-HANDLING.md` | error-case catalog: what is fixed, what is blocked and reported, loop safety, library advisories + carried-over pins |
+Script fix loop, per error case (case = L2 signature, one script for every file that has it): **reuse** the best stored
+version (no LLM) → **augment** the previous version (LLM, up to 3) → **new** (LLM) → BLOCKED → Handover. An attempt that
+makes things worse is rolled back (git); every script version and its outcome is recorded.
+
+## Business decisions (kept in config / knowledge, not in code)
+
+* Scope = packaging + build passing. Runtime errors belong to the as-is owners; tests are not compiled.
+* OpenRewrite only for Java 21, javax → jakarta and Spring Boot; everything else is fixed by LLM scripts.
+* EOL / unmanaged libraries are never a blocker: advisories (`guide`) give the LLM hints and go into the Handover.
+* One agent migrates ~500 projects strictly sequentially (`sbmig fleet`); the KB is file-based, no database.
+* Real in-house coordinates live in `config/artifacts.yml` (from `config/artifacts.example.yml`); LLM keys only in
+  the environment / `.env` (`LLM_API_KEY`), never in a file of the repo.
 
 ## Quick start
+
 ```bash
 uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"
-cp config/artifacts.example.yml config/artifacts.yml        # in-house parent / mandatory ×2 / optional ×8
-cp .env.example .env                 # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
-sbmig llm-probe --config config/artifacts.yml
-sbmig run <project> --config config/artifacts.yml
+cp config/artifacts.example.yml config/artifacts.yml   # in-house parent / role parents / mandatory ×2 / optional ×8
+cp .env.example .env                                    # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
+sbmig llm-probe                                         # one request to the gateway, prints request and reply
+sbmig run <project dir|zip> --config config/artifacts.yml
 ```
 
-Web UI (FastAPI app served by uvicorn): `sbmig serve --port 8765` → http://127.0.0.1:8765 (or
-`SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`) — upload a project zip, tick the config files, watch
-the LangGraph nodes (intake → analyze → plan → phase × N → finalize), the journal (rewrite / builds / LLM fixes) and
-the log live (SSE), download `report.md` and `result.zip`. Runs execute in-process (one worker thread each) under
-`out/web/<run id>/`, each with its own `sbmig.log`. Uploads are capped at 512 MB; `sbmig serve --max-upload-mb N`
-(or `SBMIG_MAX_UPLOAD_MB`, `0` = no limit) lifts the cap for an oversized project.
-In-house LLM gateway / agent platform instead of our HTTP clients (see `docs/ADAPTERS.md`):
-```bash
-sbmig run project.zip --config config/artifacts.yml --llm-plugin mypkg.adapter:make_adapter     # tier 1: chat completion
-sbmig run project.zip --config config/artifacts.yml --fix-plugin  mypkg.agent:make_fixer        # tier 2: whole fixer = your agent
-```
-Local end-to-end without the company Nexus/LLM (public artifacts + fake LLM):
+Needs JDK 21 (`build.java_home` or `JAVA21_HOME`) and Maven. Fix scripts run in a separate process of sbmig's own
+Python unless `script.python` names another one (it needs pydantic + lxml, docs/RUNBOOK.md).
+
+## Commands
+
+| command | what it does |
+|---|---|
+| `sbmig run <input>` | migrate one project → `out/<run id>/` (`report.md`, `report.json`, `result.zip`, `changes.patch`, `sbmig.log`); exit 0 ok, 2 blocked / unresolved, 3 aborted |
+| `sbmig fleet run <manifest>` / `resume` / `status` | many projects, one after the other, one shared KB → `<out>/fleet/summary.md`, `learning.md` |
+| `sbmig serve` | web UI (FastAPI on uvicorn, LangGraph engine): upload a zip, watch the run live, download the report |
+| `sbmig analyze` / `plan` / `inventory` | read-only: project profile, migration plan, a pom-less Tomcat tree described for its owners |
+| `sbmig kb scripts list\|show\|retire\|activate` | stored fix scripts per case (versions, successes, lineage) |
+| `sbmig kb errors …` / `cases …` / `reviews` / `stats` / `validate` / `export` / `import` | error cases, case catalog, structure reviews, KB upkeep |
+| `sbmig recipes …` / `advisories …` | the OpenRewrite recipe catalog, the library advisories |
+| `sbmig llm-probe` / `build` / `parse-log` / `clean` | gateway check, Maven debugging aids, disk cleanup |
+
+In-house LLM gateway or agent platform through the adapter seams (docs/ADAPTERS.md): `--llm-plugin pkg.mod:attr`
+(tier 1, chat completion) or `--fix-plugin pkg.mod:attr` (tier 2, a fixer with `propose_script`;
+example `examples/adapters/agent_fixer.py`).
+
+## Local demos (offline: public artifacts + replayed LLM answers)
+
 ```bash
 export JAVA21_HOME=/path/to/jdk-21
-scripts/e2e.sh                       # all fixtures → out/e2e/summary.md
-scripts/e2e.sh --only boot2,msa      # subset
-scripts/demo-kb/run.sh               # KB learning loop: run 1 LLM fix → harvested → run 2 fixed by the KB recipe, 0 LLM calls
+scripts/e2e.sh                       # every fixture (fixtures/projects/README.md) → out/e2e/summary.md
+scripts/e2e.sh --only boot3,msa      # a subset
+scripts/demo-kb/run.sh               # boot3 twice, one KB: run 1 writes the fix script, run 2 reuses it (0 fix LLM calls)
+scripts/fleet-demo.sh                # six fixtures as one fleet: later projects reuse the stored scripts
 ```
 
-## Project cases handled
-| Case | Detection | Spring phase recipes | Restructure |
-|---|---|---|---|
-| `pure_java` | sources, no Spring/servlet | jakarta (if `javax.*` EE imports), JUnit 4→5 | layout + `spring-boot-starter`, generated `Application` |
-| `servlet_tomcat` | `HttpServlet`/web.xml/war, no Spring | javax→jakarta + servlet-api swap | layout + `webmvc` starter, `@ServletComponentScan`, web.xml follow-up |
-| `spring_legacy` | Spring 4/5 without Boot | jakarta + Spring Framework 7 (+ Security 7) | layout + `@ImportResource` for XML bean files |
-| `spring_boot` | Boot 2.x/3.x | `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1` + 4.1 version pin | layout; existing `@SpringBootApplication` moves to boot-jar |
-| `msa` | several deployable services | per service by its own sub-case | pom-only: parent + mandatory + optional, directories untouched |
+Tests: `python -m pytest -m "not integration"` (offline), `python -m pytest -m integration` (real Maven, JDK 21).
 
-## Layout
-```
-sbmig/core        models, config, workspace (git snapshots), interfaces   ← contracts
-sbmig/analyze     pom graph + source scan + classifier → ProjectProfile
-sbmig/plan        rule-based planner → MigrationPlan, pre-emptive handler ids
-sbmig/rewrite     OpenRewrite runner (rewrite.yml composition, BOM version resolution)
-sbmig/build       Maven runner, log parser (javac/dependency/plugin/enforcer…), error signatures
-sbmig/triage      clustering, deterministic handlers, recipe rules, decision engine
-sbmig/fix         LLM clients (openai-compatible / anthropic / fake), context packer, patch protocol + applier
-sbmig/loop        orchestrator + build-fix loop (stall, regression revert, budgets, test-compile fallback)
-sbmig/restructure PomEditor (lxml, format-preserving) + layout transform + MSA pom mode
-sbmig/kb          file knowledge base: cases, index, recipe candidates/active, harvest, CLI
-sbmig/report      report.md / report.json / console summary
-knowledge/notes   migration notes fed to the LLM (JDK 21, jakarta, Boot 2→3→4→4.1, Framework 7, Security 7…)
-knowledge/recipes project-owned declarative OpenRewrite recipes
-sbmig/advisory    library advisories: match → policy → verify on the final tree → handover
-knowledge/libraries advisories.yml (EOL / unmanaged library catalog)
-fixtures/projects as-is sample projects (one per case + MSA + failure / advisory scenarios) with expected.json
-```
+## Docs
 
-## Tests
-```bash
-python -m pytest -q -m "not integration"      # ~520 offline tests
-python -m pytest -q -m integration            # real mvn + OpenRewrite on tiny projects (needs JDK 21, network)
-```
+| doc | content |
+|---|---|
+| `CLAUDE.md` | working notes: constraints, invariants, status per round |
+| `docs/v2/PLAN-v2.md` | the v2 flow: decisions, script contract, structure review, KB v2 (Korean) |
+| `docs/migration-agent/README.md` | the current design per flow / node with diagrams (Korean) + deck |
+| `docs/INTERFACES.md` | contracts between packages, config keys (section "v2 — flow-v2") |
+| `docs/ARCHITECTURE.md`, `ERROR-HANDLING.md`, `RECIPES.md`, `ADVISORIES.md`, `FLEET.md`, `ADAPTERS.md` | design areas |
+| `docs/RUNBOOK.md` | installing and running in the company environment |
+| `docs/handbook/` | the Korean operator handbook (+ pptx / xlsx) |
+| `fixtures/projects/README.md` | the 32 test projects and their v2 outcomes |

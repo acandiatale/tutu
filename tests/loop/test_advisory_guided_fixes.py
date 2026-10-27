@@ -1,5 +1,5 @@
 """Round 6: advisory-guided LLM fixes — the loop attaches the matching library advisories to the fixer context,
-records them on the attempt (journal + ledger line), and finalize attributes the rewritten files to the advisory
+records them on the attempt (journal), and finalize attributes the rewritten files to the advisory
 (AdvisoryFinding.llm_fixed_files / llm_fix_notes → Handover "from here on")."""
 from __future__ import annotations
 
@@ -17,15 +17,13 @@ from sbmig.core.models import (
     TriageDecision,
     utcnow,
 )
-from sbmig.kb.ledger import attempt_record
 from sbmig.loop import BuildFixLoop, LoopBudget, Orchestrator
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
 from .fakes import (
     FakeBuildRunner,
     FakeFixer,
     FakeKB,
-    FakeRewriteRunner,
     FakeScriptRunner,
     bad_build,
     compile_error,
@@ -44,7 +42,7 @@ ANALYSIS = "Foo extended HystrixCommand; ported to a Resilience4j CircuitBreaker
 
 def hystrix(**kw) -> AdvisoryFinding:
     base = dict(advisory_id="hystrix", library="hystrix", status="eol", title="Hystrix is discontinued",
-                policy="recipe", recipes=["com.company.migrate.HystrixToResilience4j"],
+                policy="guide",
                 replacement="org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j",
                 followup="configure resilience4j.circuitbreaker.instances")
     base.update(kw)
@@ -68,9 +66,9 @@ def fix(w, c, ctx):
 
 def test_loop_passes_hints_and_records_advisory_ids(cfg, ws):
     fixer = FakeFixer(fn=fix)
-    triager = Triager(cfg, registry=HandlerRegistry())
-    loop = BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=hystrix_build), triager, triager.registry, fixer, FakeKB(),
-                        FakeRewriteRunner(ws), make_profile(), budget=LoopBudget.from_config(cfg),
+    triager = Triager(cfg)
+    loop = BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=hystrix_build), triager, fixer, FakeKB(),
+                        make_profile(), budget=LoopBudget.from_config(cfg),
                         script_runner=FakeScriptRunner(), advisories=[hystrix(), hystrix(advisory_id="springfox", library="springfox",
                                                        replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui")])
     pr = loop.run(Phase.VERIFY, "package", 3)
@@ -80,17 +78,17 @@ def test_loop_passes_hints_and_records_advisory_ids(cfg, ws):
     hints = [c.advisory_hints for c in fixer.contexts]
     assert sorted(len(h) for h in hints) == [0, 1]
     hint = next(h for h in hints if h)[0]
-    assert hint.startswith("hystrix (eol, policy recipe): replace with "
-                           "org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j.")
+    assert hint.startswith("hystrix (eol") and \
+        "replace with org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j." in hint
     ev = [e for e in journal_events(ws) if e["event"] == "attempt"]
     assert {tuple(e["advisory_ids"]) for e in ev} == {("hystrix",), ()}
 
 
 def test_loop_without_advisories_sends_no_hints(cfg, ws):
     fixer = FakeFixer(fn=fix)
-    triager = Triager(cfg, registry=HandlerRegistry())
-    loop = BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=hystrix_build), triager, triager.registry, fixer, FakeKB(),
-                        FakeRewriteRunner(ws), make_profile(), budget=LoopBudget.from_config(cfg),
+    triager = Triager(cfg)
+    loop = BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=hystrix_build), triager, fixer, FakeKB(),
+                        make_profile(), budget=LoopBudget.from_config(cfg),
                         script_runner=FakeScriptRunner())
     assert loop.run(Phase.VERIFY, "package", 3).ok
     assert all(c.advisory_hints == [] for c in fixer.contexts)
@@ -126,7 +124,7 @@ def _report(*attempts: FixAttempt) -> RunReport:
 
 def _att(**kw) -> FixAttempt:
     base = dict(id="s-1-1", phase=Phase.SPRING, iteration=1, cluster_id="c1", advisory_ids=["hystrix"],
-                decision=TriageDecision(cluster_id="c1", kind=DecisionKind.LLM_FIX), applied=True, outcome="build_ok",
+                decision=TriageDecision(cluster_id="c1", kind=DecisionKind.SCRIPT), applied=True, outcome="build_ok",
                 analysis="ported the command. more.", changes=[FileChange(path="a/Foo.java", op="modify")])
     base.update(kw)
     return FixAttempt(**base)
@@ -139,7 +137,7 @@ def _att(**kw) -> FixAttempt:
     ({"applied": False}, False),
     ({"cluster_resolved": False}, False),
     ({"advisory_ids": ["springfox"]}, False),
-    ({"decision": TriageDecision(cluster_id="c1", kind=DecisionKind.HANDLER, handler_id="h")}, False),
+    ({"decision": TriageDecision(cluster_id="c1", kind=DecisionKind.SKIP)}, False),
 ])
 def test_attribution_predicate(update, attributed):
     f = hystrix()
@@ -158,9 +156,3 @@ def test_attribution_dedupes_files_and_includes_renames():
     Orchestrator._attribute_llm_fixes(report, [f])
     assert f.llm_fixed_files == ["a/Foo.java", "a/Old.java", "a/New.java"]
     assert f.llm_fix_notes[0] == "ported the command." and len(f.llm_fix_notes[1]) == 160
-
-
-def test_ledger_line_carries_advisory_ids(cfg, ws):
-    rec = attempt_record(_att(advisory_ids=["hystrix", "ribbon"]), make_profile(), ws, Phase.SPRING)
-    assert rec.resolution == "llm_patch" and rec.notes == ["advisory:hystrix", "advisory:ribbon"]
-    assert attempt_record(_att(advisory_ids=[]), make_profile(), ws, Phase.SPRING).notes == []

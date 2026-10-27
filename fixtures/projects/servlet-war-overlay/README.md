@@ -15,11 +15,11 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
   mvn -q -DskipTests package
 ```
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
 * `board-back` (BoardServlet on `jakarta.servlet`) and `board-front` (`list.jsp`) carry no `legacy-base-web`
   dependency; `board-boot` is the WAR for the external Tomcat and declares `legacy-base-web` `<type>war</type>` with
   the `maven-war-plugin` `<overlays>` block: the built WAR contains the overlay's `WEB-INF/jsp/common/header.jsp`
   and `css/base.css`
 * flag `war-overlay-moved` and a follow-up that the overlay WAR must be resolvable from the company repositories;
-  `web-xml-registered`; BUILD SUCCESS, exit 0, 0 LLM calls
+  `web-xml-registered`; BUILD SUCCESS, exit 0, **1 LLM call** (the structure review, verdict `ok`), no fix script

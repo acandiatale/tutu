@@ -26,10 +26,10 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
 
 Tests also pass on JDK 11 (`mvn -q test`).
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* **blocked**: one `BlockedItem` with `reason = external_javax_api`, `artifact = com.company.legacy:legacy-web-lib`,
-  0 LLM calls for it (catalog policy: block immediately), suggestion "upgrade to a Jakarta build or add it to
-  `artifacts.optional`"
-* everything else is migrated (jakarta, Security 7 DSL, lombok floor …) and the **restructure still runs**
-* final build fails → `success = false`, exit code **2**, `llm_usage.calls == 0`
+**Blocked** `external_javax_api` `com.company.legacy:legacy-web-lib` for both cases
+(`compile|incompatible_types|HttpServletRequest->HttpServletRequest` `61d819f63f`, `compile|cannot_access|HttpServletRequest`
+`f2b133edd9`) after the blocked policy's 2 fix-script requests per case, which the replayed LLM answers without a script
+(no script can fix a library binary). The restructure still runs; the final build fails → `success = false`, exit code
+**2**, 5 LLM calls (review + 4).

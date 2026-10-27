@@ -68,7 +68,8 @@ def test_run_dry_run_with_patched_orchestrator(tmp_path, monkeypatch, repo_root)
     assert s["dry_run"] is True and s["stop_after"].value == "spring"
     cfg = s["cfg"]
     assert cfg.llm.provider == "fake" and cfg.build.java_home == "/jdk21" and cfg.build.settings_file == "/s.xml"
-    assert cfg.kb.harvest is False and s["kw"]["kb"] is not None
+    from sbmig.loop import NullKnowledgeBase
+    assert isinstance(s["kw"]["kb"], NullKnowledgeBase)                  # --no-kb
     assert (tmp_path / "out" / "cli-1" / "project" / "pom.xml").exists()
     # failure exit code + bad phase
     res = runner.invoke(app, ["run", str(src), "--config", str(cfg_file), "--out", str(tmp_path / "out"),

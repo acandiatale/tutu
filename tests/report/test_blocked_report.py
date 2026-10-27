@@ -76,6 +76,9 @@ def test_console_summary_counts_blocked():
 
 
 def test_flag_help_prefixes():
-    assert "cp949" not in (flag_help("source-encoding-set:cp949") or "x") and flag_help("source-encoding-set:cp949")
-    assert flag_help("aborted:parent-not-found") and flag_help("llm-unavailable") and flag_help("werror-removed")
+    assert flag_help("aborted:parent-not-found") and flag_help("llm-unavailable") and flag_help("infra:llm")
     assert flag_help("stopped-after-spring") and flag_help("nope") is None
+    # flags only the removed v1 handlers raised have no help text any more
+    for gone in ("source-encoding-set:cp949", "werror-removed", "enforcer-relaxed", "jakarta-leftovers-renamed",
+                 "managed-versions-carried-over"):
+        assert flag_help(gone) is None, gone

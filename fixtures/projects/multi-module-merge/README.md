@@ -21,7 +21,10 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
 `mvn -q clean package` (with tests) also passes on JDK 11 and on JDK 21 (Boot 2.7 compiles with `--release 11`
 semantics on javac 21; no lombok here).
 
-## Expected migration (default `merge` policy)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+
+Success, exit 0, **1 LLM call** (the structure review, verdict `ok`), no fix script; commons-lang3 → 3.17.0. The
+default `merge` policy:
 
 * `core` + `web` are folded into `module/comp-jar` (`shop-comp`); `boot-jar` is the **kept boot module**: moved to
   `module/boot-jar`, its dependency on `shop-web` replaced by `${project.groupId}:shop-comp:${project.version}`,

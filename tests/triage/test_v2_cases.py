@@ -21,7 +21,7 @@ from sbmig.core.models import (
     TriageDecision,
 )
 from sbmig.kb.catalog import case_id_for
-from sbmig.triage import HandlerRegistry, Triager, case_id_of, cluster_cases, plan_iteration, plan_script_step
+from sbmig.triage import Triager, case_id_of, cluster_cases, plan_iteration, plan_script_step
 
 from .conftest import make_profile
 
@@ -93,7 +93,7 @@ def test_scope_suffix_keeps_services_apart():
 
 
 def test_triager_clusters_by_case(cfg):
-    t = Triager(cfg, registry=HandlerRegistry())
+    t = Triager(cfg)
     assert [c.case_id for c in t.cluster([err("A.java"), err("B.java")], None)] == [case_id_for(L2)]
 
 
@@ -151,7 +151,7 @@ def test_ladder_limits(cfg):
 
 # ----------------------------------------------------------------------------------------- decisions
 def engine(cfg, store=None) -> Triager:
-    t = Triager(cfg, registry=HandlerRegistry())
+    t = Triager(cfg)
     t.attach_run(scripts=store)
     return t
 
@@ -209,14 +209,6 @@ def test_llm_unavailable_budget_and_exhausted_ladder_block(cfg):
     assert d.kind == DecisionKind.BLOCKED and t.blocked_candidate(c.id).reason == BlockReason.LLM_UNAVAILABLE
 
 
-def test_max_llm_attempts_per_cluster_does_not_limit_scripts(cfg):
-    cfg.loop.max_llm_attempts_per_cluster = 1
-    t = engine(cfg)
-    [c] = t.cluster([err()], None)
-    prev = [script_att("new", 1, "no_change", c.id), script_att("augment", 2, "no_change", c.id)]
-    assert t.decide(c, None, ctx(previous_attempts=prev), make_profile()).kind == DecisionKind.SCRIPT
-
-
 def test_already_blocked_and_pinned_block(cfg):
     from sbmig.loop.blocked_registry import BlockedRegistry
     t = engine(cfg)
@@ -233,8 +225,9 @@ def test_already_blocked_and_pinned_block(cfg):
     assert d.kind == DecisionKind.BLOCKED and "already blocked" in d.rationale
 
 
-def test_a_pinned_handler_is_not_part_of_the_v2_flow(cfg):
+def test_a_pinned_hint_action_keeps_the_script_ladder(cfg):
+    """Only `block` and `script` pins are instructions; a pinned `hint` (the auto default) changes nothing."""
     t = engine(cfg)
     [c] = t.cluster([err()], None)
-    hit = CaseHit(case_id="abc", action=CaseAction(kind="handler", handler_id="source-encoding"), pinned=True)
+    hit = CaseHit(case_id="abc", action=CaseAction(kind="hint"), pinned=True)
     assert t.decide(c, KBMatch(case_hits=[hit]), ctx(), make_profile()).kind == DecisionKind.SCRIPT

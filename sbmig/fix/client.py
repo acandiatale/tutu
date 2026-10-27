@@ -30,7 +30,7 @@ RETRY_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524, 529}
 DEFAULT_ANTHROPIC_MODEL = "claude-opus-5-5"
 ANTHROPIC_VERSION = "2023-06-01"
 _DEFAULT_OPENAI_BASE = "http://localhost:8000/v1"     # default.yml fallback; meaningless for anthropic
-NO_FIX_RESPONSE = "<analysis>no fix</analysis><patches></patches>"
+NO_FIX_RESPONSE = "<analysis>no fix</analysis>"            # analysis only: no <script> → "no script" proposal
 
 # Current Claude generations reject sampling parameters (temperature/top_p/top_k) with HTTP 400.
 _ANTHROPIC_NO_SAMPLING_RE = re.compile(
@@ -400,7 +400,7 @@ class FakeLLMClient:
 
     responses: list (consumed in order, last one repeats; an Exception item is raised), a callable
     `fn(messages) -> str`, a `ReplayResponder` (recorded answers selected by role / regex), or None (always answers
-    "no fix"). Answers are plain text: SEARCH/REPLACE patches (v1), fix scripts (v2) or review JSON alike.
+    "no fix"). Answers are plain text: fix scripts or structure-review JSON alike.
     """
 
     def __init__(self, responses: FakeScript = None, record_dir: Optional[str | Path] = None, model: str = "fake"):
@@ -597,7 +597,7 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
         responses: FakeScript = None
         if llm.base_url and llm.base_url.startswith("replay:"):
             entries = load_replay_entries(cfg.resolve_path(llm.base_url[len("replay:"):]))
-            # positional replay (v1 fixtures) unless an entry selects by request (`match` / `replay_role`)
+            # positional replay (older fixtures) unless an entry selects by request (`match` / `replay_role`)
             responses = ReplayResponder(entries) if any(e.match or e.role for e in entries) \
                 else [e.response for e in entries]
         client = FakeLLMClient(responses)

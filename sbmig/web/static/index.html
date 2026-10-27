@@ -193,10 +193,10 @@
     if (name === 'phase_end' || name === 'step_end' || name === 'loop_end' || name === 'build' || name === 'verify') {
       icon = ev.ok === false ? '✗' : (ev.ok === true ? '✓' : '■'); cls = ev.ok === false ? 'bad' : (ev.ok === true ? 'ok' : '');
     }
-    if (name === 'llm_fix' || name === 'llm_call') { icon = '🤖'; cls = 'llm'; }
+    if (name === 'llm_script' || name === 'llm_call') { icon = '🤖'; cls = 'llm'; }
     if (name === 'attempt' || name === 'attempt_scored' || name === 'decision' || name === 'triage') icon = '🧩';
     if (name === 'rewrite') icon = '🔄'; if (name === 'restructure') icon = '📦';
-    if (name === 'handover' || name === 'report') icon = '📄'; if (name === 'harvest') icon = '🧠';
+    if (name === 'handover' || name === 'report') icon = '📄';
     if (name === 'analyze' || name === 'plan' || name === 'intake' || name === 'preflight') icon = '🔍';
     const bits = [];
     for (const [k, v] of Object.entries(ev)) {

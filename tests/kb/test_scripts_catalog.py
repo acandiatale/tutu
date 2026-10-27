@@ -1,16 +1,16 @@
 """v2 case catalog + error records over the fix-script KB: the auto action `script` (best proven version), its
-promotion, the hint, script fixes grouped per version, the v1 actions gated by their switches, the view columns, and
-the script fields of the error / attempt records (prepare, CSV)."""
+promotion, the hint, script fixes grouped per version, no action without a proven script, the view columns, and the
+script fields of the error / attempt records (prepare, CSV)."""
 from __future__ import annotations
 
 import csv
 
-from sbmig.core.models import CaseAction, ErrorAttemptRef, FixAttemptRecord, KBRecipe
+from sbmig.core.models import CaseAction, ErrorAttemptRef, FixAttemptRecord
 from sbmig.kb import FileKnowledgeBase, prepare_error_cases
 from sbmig.kb.catalog import CASE_CSV_COLUMNS, action_text, case_id_for
 from sbmig.kb.error_cases import ATTEMPT_CSV_COLUMNS, write_error_cases_csv, write_fix_attempts_csv
 
-from .helpers import EC_L2, ec_attempt, ec_error, make_case, recipe_yaml
+from .helpers import EC_L2, ec_attempt, ec_error
 from .test_catalog import add, rec, unresolved
 from .test_scripts import FIX_A, FIX_B
 
@@ -89,34 +89,24 @@ def test_incremental_equals_rebuild_with_scripts(v2_kb_cfg):
     assert snapshot(cat) == inc
 
 
-def test_v1_actions_only_with_their_switches(v2_kb_cfg, kb_cfg):
-    """v2 defaults: a learned replace, a KB recipe and a replayable patch give no action (hint); the v1 switches
-    bring them back."""
-    v2 = FileKnowledgeBase(v2_kb_cfg)
-    add(v2, rec("e1"), rec("e2", run="r2", project="beta", hours=1))       # LLM text replaces in two projects
-    c = v2.catalog().get(CID)
+def test_no_action_without_a_proven_script(v2_kb_cfg):
+    """PLAN-v2 step 4: LLM text replaces in two projects (and v1 recipe / patch files left in an old KB) give no
+    action — hint only; a proven script is the action."""
+    kb = FileKnowledgeBase(v2_kb_cfg)
+    for rel in ("recipes/active/RenameIt.yml", "cases/2026-10/20261020-abc.json", "index.json"):
+        p = kb.root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("{}\n", encoding="utf-8")
+    add(kb, rec("e1"), rec("e2", run="r2", project="beta", hours=1))
+    c = kb.catalog().get(CID)
     assert (c.action.kind, c.status) == ("hint", "observed")
     assert c.evidence.fixes and c.hints[0].startswith("past runs: fixed by llm fake-model")
-    v2.add_recipe(recipe_yaml("RenameIt"), KBRecipe(id="RenameIt", status="active", path="", signatures=[EC_L2]))
-    v2.record_case(make_case(signatures=["compile|x"], signatures_generic=[EC_L2], outcome="improved"))
-    v2.catalog().refresh([EC_L2])
-    assert v2.catalog().get(CID).action.kind == "hint"
-    # the same KB read with the v1 switches: recipe first (use_active_recipes), then replace, then patch
-    v1 = FileKnowledgeBase(kb_cfg, kb_dir=v2.root)
-    v1.catalog().refresh([EC_L2])
-    assert v1.catalog().get(CID).action.kind == "recipe"
-    v1.reject("RenameIt")
-    v1.catalog().refresh([EC_L2])
-    assert v1.catalog().get(CID).action.kind == "replace"
-    only_patch = FileKnowledgeBase(kb_cfg.model_copy(update={"kb": kb_cfg.kb.model_copy(update={
-        "case_replace": False, "use_active_recipes": False})}), kb_dir=v2.root)
-    only_patch.catalog().refresh([EC_L2])
-    assert only_patch.catalog().get(CID).action.kind == "patch"
-    # a proven script wins over the v1 actions
-    v1.scripts.add(CID, EC_L2, FIX_A)
-    v1.scripts.credit(CID, 1, "improved", project="alpha")
-    v1.catalog().refresh([EC_L2])
-    assert v1.catalog().get(CID).action == CaseAction(kind="script", script_version=1)
+    kb.scripts.add(CID, EC_L2, FIX_A)
+    kb.catalog().refresh([EC_L2])
+    assert kb.catalog().get(CID).action.kind == "hint"                      # stored, not proven
+    kb.scripts.credit(CID, 1, "improved", project="alpha")
+    kb.catalog().refresh([EC_L2])
+    assert kb.catalog().get(CID).action == CaseAction(kind="script", script_version=1)
 
 
 def test_views_have_script_columns(v2_kb_cfg):
@@ -168,7 +158,7 @@ def test_prepare_passes_script_fields_through_and_masks_the_log(v2_kb_cfg, ws, p
     # the resolving attempt's script → the error; the history refs get their versions
     assert (e.script_case_id, e.script_version) == (CID, 3)
     assert [r.script_version for r in e.attempts] == [2, 3]
-    assert e.llm_attempts == 2 and e.replace_rule_candidate is False
+    assert e.llm_attempts == 2
     # CSV columns
     path = write_error_cases_csv(errors, tmp_path / "e.csv")
     table = list(csv.reader(path.open(encoding="utf-8-sig", newline="")))

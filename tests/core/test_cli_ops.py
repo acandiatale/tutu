@@ -160,10 +160,8 @@ def test_no_kb_switches_off_everything_that_reads_the_kb(tmp_path, fake_orch):
     orch = fake_orch.seen[-1]
     kb = orch.cfg.kb
     assert isinstance(orch.kb, NullKnowledgeBase)
-    for key in ("catalog", "case_replace", "error_hints", "harvest", "use_active_recipes", "use_patch_replay",
-                "use_hints", "generate_recipe_candidates", "try_candidates_in_plan"):
-        assert getattr(kb, key) is False, key
-        assert NO_KB_OVERRIDES[key] is False
+    # v2: the catalog is the only KB switch left (scripts / reviews live behind the NullKnowledgeBase)
+    assert kb.catalog is False and NO_KB_OVERRIDES == {"catalog": False}
     assert kb.error_cases is True              # the run's own error_cases.* files are still written
 
 
@@ -180,7 +178,7 @@ def test_api_no_kb_uses_the_same_overrides(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop, "Orchestrator", Orch)
     api.migrate(_project(tmp_path), configs=[E2E], out=tmp_path / "out", kb=False)
-    assert seen and seen[0].kb.catalog is False and seen[0].kb.case_replace is False and not seen[0].kb.error_hints
+    assert seen and seen[0].kb.catalog is False
 
 
 def test_llm_probe_ends_with_the_short_line(tmp_path, monkeypatch):

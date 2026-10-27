@@ -155,8 +155,8 @@ def test_script_attempts_in_the_fix_attempts_table():
             in md)
     assert "`script:3f2a9c01de` new (timeout) | apply_failed | 00112233 | killed after 60s |" in md
     assert script_label(_script_attempt(script_result=None, script_mode="reuse")) == "`script:3f2a9c01de:v2` reuse"
-    # v1 attempts render as before
-    assert "handler `lombok-version-floor`" in md and "KB case case-1" in md
+    # the sample report's own script attempts render beside them
+    assert "`script:abcd1234:v1` new" in md and "`script:c2:v2` reuse (ok)" in md
 
 
 def test_error_case_names_the_resolving_script_version():
@@ -174,7 +174,7 @@ def test_error_case_names_the_resolving_script_version():
     md = render_markdown(r)
     assert "script_reuse `script:3f2a9c01de:v3`: ran the stored script" in md
     assert "script_augment `script:77aa:v4`" in md and "handler `lombok-version-floor`" in md
-    assert "- fixed by (resolved errors): handler 1, script_reuse 1, script_augment 1" in md
+    assert "- fixed by (resolved errors): script_reuse 1, script_augment 1, handler 1" in md   # old methods last
 
 
 def test_result_line_review_token_and_console_line():

@@ -5,7 +5,7 @@ was, what was done about it, how it was resolved (with the code that was applied
 were the problem — failed fix attempts included. The fix loop and the orchestrator feed this tracker (all hooks are
 optional and guarded: a tracker problem never breaks a run):
 
-    note_step        a plan step outside the fix loop changed the tree (rewrite / handlers / restructure / bump)
+    note_step        a plan step outside the fix loop changed the tree (rewrite / restructure / review)
     observe          a build (the loop after scoring, the orchestrator after each final `clean package`)
     observe_clusters the triage clusters of the last observed build (which errors a decision was about)
     note_attempt     a recorded fix attempt (any outcome)
@@ -25,14 +25,14 @@ error that shows up again reopens.
 
 Round 10: a new error records `introduced_by` (the attempts scored in the build where it first appeared that changed
 its file, else the plan steps noted since the previous build); attempt diffs are passed in FULL (`prepare` classifies
-them and only then applies `kb.error_diff_chars`); a handler `case-replace` attempt takes its resolver id from the
-handler's `resolver: case-replace:<case>:<pair-set hash>` notes.
+them and only then applies `kb.error_diff_chars`).
 
 v2 (flow-v2) fix scripts: a SCRIPT attempt's fix method follows its mode (new → `script`, reuse → `script_reuse`,
 augment → `script_augment`), its resolver is `script:<case_id>:v<N>`, its record carries the script fields (status,
 error, the script's own log ≤ 50 lines) and its description is the LLM analysis (a reuse: the stored version's); a
 resolved error names the resolving attempt's `script_case_id` / `script_version`; `llm_attempts` counts the attempts
-that asked the LLM (`llm`, `script`, `script_augment` — a reuse made no call). An attempt the loop rolled back before
+that asked the LLM (`script`, `script_augment` — a reuse made no call). Every attempt of the v2 flow is a SCRIPT
+attempt; anything else is recorded with fix method `none`. An attempt the loop rolled back before
 the case's next try (note `rolled back before …`) is no longer in the tree: never part of a resolution chain.
 """
 from __future__ import annotations
@@ -91,15 +91,10 @@ ANALYSIS_CHARS = 1500                  # LLM analysis in FixAttemptRecord.descri
 TEXT_CHARS = 600                       # failure texts, rationales
 TRUNCATED_MARK = "\n… (truncated)"
 MAX_DIFF_CHARS = 4_000_000             # a pathological diff only (a regenerated file); kb.error_diff_chars caps later
-RESOLVER_NOTE = "resolver: "           # a handler note naming the attempt's resolver (sbmig.kb.catalog.RESOLVER_NOTE)
-
-_METHOD: dict[DecisionKind, str] = {DecisionKind.HANDLER: "handler", DecisionKind.KB_RECIPE: "recipe",
-                                    DecisionKind.KB_PATCH: "kb_patch", DecisionKind.LLM_FIX: "llm"}
 _SCRIPT_METHOD: dict[str, str] = {"new": "script", "reuse": "script_reuse", "augment": "script_augment"}
-LLM_METHODS = ("llm", "script", "script_augment")   # fix methods that called the LLM (llm_attempts)
+LLM_METHODS = ("script", "script_augment")   # fix methods that called the LLM (llm_attempts)
 SCRIPT_LOG_LINES = 50                  # FixAttemptRecord.script_log
 ROLLED_BACK_NOTE = "rolled back before "   # the fix loop's note on a script attempt it rolled back (no longer in the tree)
-_SCORING_NOTE_PREFIXES = ("regressed:", "reverted", "not reverted", "structural revert")
 _SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
 
 
@@ -170,7 +165,7 @@ def _match_key(e: BuildError) -> tuple:
 def _method(att: FixAttempt) -> str:
     if att.decision.kind == DecisionKind.SCRIPT:
         return _SCRIPT_METHOD.get(att.script_mode or "", "script")
-    return _METHOD.get(att.decision.kind, "none")
+    return "none"
 
 
 def _rolled_back(att: FixAttempt) -> bool:
@@ -178,23 +173,9 @@ def _rolled_back(att: FixAttempt) -> bool:
 
 
 def _resolver(att: FixAttempt) -> str:
-    d = att.decision
-    if d.kind == DecisionKind.SCRIPT:
-        return f"script:{att.script_case_id}:v{att.script_version}" if att.script_case_id else ""
-    if d.kind == DecisionKind.HANDLER:
-        # handler case-replace names the case + pair set it applied ("resolver: case-replace:<id>:<hash>"), so the
-        # catalog ties the outcome to exactly those pairs (round 10)
-        tokens = [n[len(RESOLVER_NOTE):].strip() for n in att.notes or [] if str(n).startswith(RESOLVER_NOTE)]
-        tokens = [t for t in dict.fromkeys(tokens) if t and (t == d.handler_id or t.startswith(f"{d.handler_id}:"))]
-        if tokens:
-            return ",".join(tokens)
-        return d.handler_id or ""
-    if d.kind == DecisionKind.KB_RECIPE:
-        return ",".join(d.recipe_ids)
-    if d.kind == DecisionKind.KB_PATCH:
-        return ",".join(d.kb_case_ids)
-    if d.kind == DecisionKind.LLM_FIX:
-        return att.model or ""
+    """`script:<case_id>:v<N>` of a script attempt; "" otherwise."""
+    if att.decision.kind == DecisionKind.SCRIPT and att.script_case_id:
+        return f"script:{att.script_case_id}:v{att.script_version}"
     return ""
 
 
@@ -317,8 +298,13 @@ class ErrorTracker:
     def observe(self, phase: Phase, label: str, build: BuildResult, scored: Optional[list[FixAttempt]] = None, *,
                 void: bool = False, target: Optional[str] = None) -> None:
         """`target` (additive to the contract): the module directory a targeted build covered (MSA per-service
-        loops / verify steps) — errors outside it are neither present nor absent in that build."""
+        loops / verify steps) — errors outside it are neither present nor absent in that build. The build's errors
+        get their refined case keys first (`sbmig.triage.cluster.refine_signatures`, idempotent — the loop and the
+        orchestrator already refined them), so a record's L2 is the case the fix loop worked on."""
         try:
+            if build is not None and build.errors:
+                from sbmig.triage.cluster import refine_signatures
+                refine_signatures(build.errors)
             self._observe(phase, label, build, list(scored or []), void, target)
         except Exception as e:
             self._problem(f"observe({label})", e)
@@ -669,8 +655,6 @@ class ErrorTracker:
             notes.append(f"scored at {x.scored_at}")
         if x.scoring_note:
             notes.append(x.scoring_note)
-        if att.applied and att.proposed_changes:
-            notes.append(f"partially applied: {len(att.changes)} of {len(att.proposed_changes)} proposed change(s)")
         u = att.llm_usage
         rec = FixAttemptRecord(
             id=f"{run_id}:{x.key}", at=att.created_at, run_id=run_id, phase=att.phase, iteration=att.iteration,
@@ -694,23 +678,7 @@ class ErrorTracker:
     @staticmethod
     def _describe(att: FixAttempt) -> str:
         d = att.decision
-        if d.kind == DecisionKind.HANDLER:
-            text = f"handler {d.handler_id or '?'}: {att.analysis}".rstrip(": ")
-            extra = [n for n in att.notes if not n.lower().startswith(_SCORING_NOTE_PREFIXES)
-                     and not n.startswith(RESOLVER_NOTE)]
-            if extra:
-                text += " — " + "; ".join(extra[:5])
-            return _short(text, ANALYSIS_CHARS)
-        if d.kind == DecisionKind.KB_RECIPE:
-            return f"OpenRewrite {', '.join(d.recipe_ids) or '?'}"
-        if d.kind == DecisionKind.KB_PATCH:
-            return _short(att.analysis or f"replayed KB case(s) {', '.join(d.kb_case_ids)}", ANALYSIS_CHARS)
-        if d.kind == DecisionKind.LLM_FIX:
-            analysis = (att.analysis or "").strip()
-            if len(analysis) > ANALYSIS_CHARS:
-                analysis = analysis[:ANALYSIS_CHARS - 1] + "…"
-            return f"LLM {att.model or '?'}: {analysis}".rstrip(": ")
-        if d.kind == DecisionKind.SCRIPT:             # v2: the analysis (a reuse: the stored version's)
+        if d.kind == DecisionKind.SCRIPT:             # the analysis (a reuse: the stored version's)
             analysis = (att.analysis or "").strip()
             if len(analysis) > ANALYSIS_CHARS:
                 analysis = analysis[:ANALYSIS_CHARS - 1] + "…"
@@ -755,11 +723,11 @@ class ErrorTracker:
                     text = git(*args, check=False).stdout or ""
             else:  # pragma: no cover - a workspace without git access
                 text = self.ws.diff(att.base_commit, att.commit)
-        if not text.strip():
-            changes = att.proposed_changes or att.changes
+        if not text.strip():                     # no git diff: what the attempt reports it changed
+            changes = att.changes
             if changes and any(ch.search is not None or ch.content is not None or ch.op != "modify"
                                for ch in changes):
-                from sbmig.kb.harvest import changes_as_diff
+                from sbmig.kb.common import changes_as_diff
                 text = changes_as_diff(list(changes))
         # the FULL diff (round 10): prepare_error_cases classifies it, then applies kb.error_diff_chars — a cap here
         # cut later files' code edits off (misread as text replaces) and emptied errors' own excerpts

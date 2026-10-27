@@ -1,21 +1,19 @@
 """Round 9 / catalog X8: the rewrite (v2: the one transform run) left literal `4.0.x` versions (its resolver could not
 download Maven metadata) → revert + wait + one re-run; still there → flag, note, follow-up, and the final build + fix
-loop still run. v2 credits no KB recipes at all."""
+loop still run."""
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
 from sbmig.core.models import BuildError, ErrorKind, Phase, RewriteResult
 from sbmig.core.workspace import Workspace
 
-from .fakes import FakeBuildRunner, FakeKB, bad_build, make_project
+from .fakes import FakeBuildRunner, bad_build, make_project
 from .test_orchestrator import files_build, make_orch
 
 SPRING = "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
-KB_RECIPE = "com.company.kb.Cand"
 POM = ("<project><parent><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-parent</artifactId>"
        "<version>{v}</version></parent><artifactId>demo</artifactId></project>\n")
 
@@ -47,12 +45,7 @@ class PomRewriter:
         prev = self.ws.read("rewritten.txt") if self.ws.exists("rewritten.txt") else ""
         self.ws.write("rewritten.txt", prev + "spring\n")
         return RewriteResult(ok=True, recipes=ids, changed_files=["pom.xml", "rewritten.txt"],
-                             recipes_applied={KB_RECIPE: ["pom.xml"]}, log_path=f"/tmp/rw-{self.spring_calls}.log")
-
-
-class CreditKB(FakeKB):
-    def list_recipes(self, status=None):
-        return [SimpleNamespace(id=KB_RECIPE)]
+                             recipes_applied={SPRING: ["pom.xml"]}, log_path=f"/tmp/rw-{self.spring_calls}.log")
 
 
 def resolution_build(ws, call):
@@ -79,8 +72,7 @@ def test_literal_versions_trigger_one_rerun_on_a_clean_tree(cfg, ws):
     cfg = cfg.model_copy(deep=True)
     cfg.openrewrite.download_retry_wait_s = 5
     rw = PomRewriter(ws, ["4.0.x", "4.0.1"])
-    kb = CreditKB()
-    orch = make_orch(cfg, ws, rewrite=rw, kb=kb)
+    orch = make_orch(cfg, ws, rewrite=rw)
     waits: list = []
     orch._sleep = waits.append
     report = orch.run()
@@ -95,13 +87,12 @@ def test_literal_versions_trigger_one_rerun_on_a_clean_tree(cfg, ws):
     tr = next(p for p in report.phases if p.phase == Phase.TRANSFORM)
     assert len(tr.rewrite_results) == 1 and tr.rewrite_results[0].log_path == "/tmp/rw-2.log"
     assert _git_log(ws).count("rewrite: transform.rewrite") == 1
-    assert report.success and kb.credits == []                   # v2: no KB recipe credit
+    assert report.success
 
 
 def test_literal_versions_twice_are_reported_and_the_build_still_runs(cfg, ws):
     rw = PomRewriter(ws, ["4.0.x"])
-    kb = CreditKB()
-    orch = make_orch(cfg, ws, rewrite=rw, kb=kb, build=FakeBuildRunner(ws, fn=resolution_build))
+    orch = make_orch(cfg, ws, rewrite=rw, build=FakeBuildRunner(ws, fn=resolution_build))
     orch._sleep = lambda s: None
     report = orch.run()
     assert rw.spring_calls == 2
@@ -115,7 +106,6 @@ def test_literal_versions_twice_are_reported_and_the_build_still_runs(cfg, ws):
     verify = report.phases[-1]
     assert verify.phase == Phase.VERIFY and verify.iterations >= 1    # the final build + fix loop ran
     assert report.final_build is not None and not report.final_build.ok          # invariant 1
-    assert kb.credits == [] and _events(ws, "kb_credit_skipped") == []
 
 
 def test_retry_off_reports_without_rerun(cfg, ws):

@@ -11,11 +11,11 @@ from sbmig.build import parse_maven_log
 from sbmig.cli import run_exit_code
 from sbmig.core.config import ArtifactSpec
 from sbmig.core.models import (GAV, BlockReason, BuildError, CaseType, DecisionKind, ErrorKind, FileChange,
-                               FixProposal, LLMUsage, MigrationPlan, Phase, PlanStep, RunReport, StepKind)
+                               LLMUsage, MigrationPlan, Phase, PlanStep, RunReport, StepKind)
 from sbmig.loop import BuildFixLoop, LazyFixer, LoopBudget
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeRewriteRunner, FakeScriptRunner,
+from .fakes import (FixProposal, FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeRewriteRunner, FakeScriptRunner,
                     bad_build, case_of, compile_error, journal_events, make_profile, ok_build, v2_msa_plan, v2_plan,
                     write_fix, write_script)
 from .test_orchestrator import make_orch
@@ -47,9 +47,9 @@ def javac(ws, *blocks: str) -> list[BuildError]:
 
 
 def make_loop(cfg, ws, profile, *, build, fixer=None, triager=None, budget=None, locator=None, kb=None):
-    triager = triager or Triager(cfg, registry=HandlerRegistry())
-    return BuildFixLoop(cfg, ws, build, triager, triager.registry, fixer or FakeFixer(), kb or FakeKB(),
-                        FakeRewriteRunner(ws), profile, budget=budget or LoopBudget.from_config(cfg),
+    triager = triager or Triager(cfg)
+    return BuildFixLoop(cfg, ws, build, triager, fixer or FakeFixer(), kb or FakeKB(),
+                        profile, budget=budget or LoopBudget.from_config(cfg),
                         locator=locator, script_runner=FakeScriptRunner())
 
 
@@ -161,7 +161,8 @@ def test_partially_blocked_case_rest_goes_to_the_script(cfg, ws, profile):
     def build_fn(w, call):
         blocks = [X1_BLOCK] + ([PLAIN_FOO] if "broken" in w.read(FOO) else [])
         errs = javac(w, *blocks)
-        return bad_build(*[e.model_copy(update={"signature_generic": "compile|mixed"}) for e in errs])
+        # one L2 for both (a key segment: a catch-all `compile|mixed` would be refined into two cases)
+        return bad_build(*[e.model_copy(update={"signature_generic": "compile|mixed|case"}) for e in errs])
 
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix))
     pr = loop.run(Phase.VERIFY, "package", 4)
@@ -223,8 +224,13 @@ def test_structural_regression_after_pom_edit_is_reverted(cfg, ws, profile):
 
 
 def test_structural_regression_reverted_even_when_not_the_last_commit(cfg, ws, profile):
+    """Foo's script breaks the pom, Bar's case (a stored script: a reuse is never deferred by the pom change) is
+    committed after it in the same round → the structural revert of Foo's commit is a `git revert`."""
     good_pom = ws.read("pom.xml")
     cfg.loop.max_clusters_per_iteration = 2
+    kb = FakeKB()
+    kb.scripts.seed(case_of(f"compile|x|{BAR.rsplit('/', 1)[-1]}"),
+                    write_script({BAR: "class X { ok }\n"}).code)
 
     def build_fn(w, call):
         errs = []
@@ -245,9 +251,10 @@ def test_structural_regression_reverted_even_when_not_the_last_commit(cfg, ws, p
                                    model="m", llm_usage=LLMUsage(calls=1))
         return write_fix(f, "class X { ok }\n")
 
-    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix))
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix), kb=kb)
     pr = loop.run(Phase.VERIFY, "package", 4)
     foo1 = pr.attempts[0]
+    assert pr.attempts[1].script_mode == "reuse" and pr.attempts[1].iteration == foo1.iteration
     assert foo1.outcome == "reverted" and any("git revert" in n for n in foo1.notes)
     assert any(e["event"] == "revert" and e.get("mode") == "git-revert" for e in journal_events(ws))
     assert pr.ok and ws.read("pom.xml") == good_pom
@@ -334,7 +341,7 @@ def test_time_budget_blocks_remaining_clusters(cfg, ws, profile):
 
 # ------------------------------------------------------------------------------------------------ orchestrator glue
 def bump_plan() -> MigrationPlan:
-    """v2 (plan.optional_bump_phase: restructure): the bump step runs inside the restructure phase."""
+    """v2: the optional bump step runs inside the restructure phase."""
     plan = v2_plan()
     i = next(i for i, s in enumerate(plan.steps) if s.id == "restructure.apply")
     plan.steps.insert(i, PlanStep(id="restructure.optional_bump", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE,

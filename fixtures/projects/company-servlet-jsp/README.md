@@ -18,7 +18,8 @@ one stood in by `spring-boot-starter-parent` 4.1.0). JSPs exist → the boot mod
 * `shop-front` (parent `comp_parent`): the JSP under `src/main/resources/META-INF/resources/WEB-INF/jsp/hello.jsp`
   (Servlet 3 jar resources, so the `/WEB-INF/jsp/hello.jsp` forward still resolves), `static/css/site.css`; no Java.
 
-Expected: BUILD SUCCESS, exit 0, 0 LLM calls.
+Expected (v2, `expected.json` → `expect`): BUILD SUCCESS, exit 0, **1 LLM call** (the structure review: two warnings —
+`javax.servlet:jstl` in `shop-back/pom.xml` and the servlet-api scope), no fix script.
 
 As-is build (JDK 8):
 

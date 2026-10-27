@@ -44,7 +44,7 @@
           ]
         },
         {
-          "l2": "compile|build|compilation failure",
+          "l2": "compile|build|warnings found and -werror specified",
           "modes": [
             "new"
           ],

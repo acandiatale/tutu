@@ -253,9 +253,9 @@ def test_clients_accept_role_and_metadata(tmp_path, ws):
     assert f.calls[0]["role"] == "plan_advisor" and f.calls[0]["metadata"] == {"phase": "plan"}
 
     rc = RecordingClient(FakeLLMClient(["r"]), tmp_path / "rec", ws=ws)
-    rc.complete(MSGS, role="recipe_candidate", metadata={"cluster_id": "c9"})
+    rc.complete(MSGS, role="structure_review", metadata={"cluster_id": "c9"})
     rc.complete(MSGS)
     first, second = [json.loads(p.read_text()) for p in sorted((tmp_path / "rec").glob("llm-*.json"))]
-    assert first["role"] == "recipe_candidate" and first["metadata"] == {"cluster_id": "c9"}
+    assert first["role"] == "structure_review" and first["metadata"] == {"cluster_id": "c9"}
     assert second["role"] is None and second["metadata"] is None
-    assert '"role": "recipe_candidate"' in ws.journal_path.read_text()
+    assert '"role": "structure_review"' in ws.journal_path.read_text()

@@ -6,26 +6,29 @@ from pathlib import Path
 from rich.console import Console
 
 from sbmig.core.models import (GAV, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind, FixAttempt,
-                               HarvestResult, IterationRecord, LLMUsage, MigrationPlan, Phase, PhaseResult,
-                               PlanStep, RewriteResult, RunReport, StepKind, TriageDecision)
+                               IterationRecord, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, RewriteResult,
+                               RunReport, ScriptRunResult, StepKind, TriageDecision)
 from sbmig.core.workspace import Workspace
 from sbmig.report import console_summary, group_by_file, render_markdown, write_report
 
 
 def sample_report(success: bool = False) -> RunReport:
     t0 = datetime(2026, 10, 18, 9, 0, tzinfo=timezone.utc)
-    att = FixAttempt(id="spring-1-1", phase=Phase.SPRING, iteration=1, cluster_id="compile:abcd1234",
-                     decision=TriageDecision(cluster_id="compile:abcd1234", kind=DecisionKind.LLM_FIX,
-                                             rationale="no handler | llm"),
+    att = FixAttempt(id="spring-1-1", phase=Phase.SPRING, iteration=1, cluster_id="case:abcd1234",
+                     decision=TriageDecision(cluster_id="case:abcd1234", kind=DecisionKind.SCRIPT,
+                                             rationale="new script | llm"),
                      commit="0123456789abcdef", model="gpt-x", outcome="no_change", analysis="tried | renaming",
+                     script_mode="new", script_case_id="abcd1234", script_version=1,
                      llm_usage=LLMUsage(model="gpt-x", calls=1, input_tokens=10, output_tokens=5))
-    att2 = att.model_copy(update={"id": "spring-1-2", "decision": TriageDecision(
-        cluster_id="c2", kind=DecisionKind.HANDLER, handler_id="lombok-version-floor"), "outcome": "improved",
-        "analysis": ""})
-    att3 = att.model_copy(update={"id": "spring-1-3", "decision": TriageDecision(
-        cluster_id="c3", kind=DecisionKind.KB_RECIPE, recipe_ids=["org.openrewrite.java.Foo"]), "outcome": "build_ok"})
-    att4 = att.model_copy(update={"id": "spring-1-4", "decision": TriageDecision(
-        cluster_id="c4", kind=DecisionKind.KB_PATCH, kb_case_ids=["case-1"]), "model": ""})
+    att2 = att.model_copy(update={"id": "spring-1-2", "cluster_id": "case:c2", "script_case_id": "c2",
+                                  "script_mode": "reuse", "script_version": 2, "outcome": "improved", "analysis": "",
+                                  "script_result": ScriptRunResult(status="ok", changed_files=["pom.xml"])})
+    att3 = att.model_copy(update={"id": "spring-1-3", "cluster_id": "case:c3", "script_case_id": "c3",
+                                  "script_mode": "augment", "script_version": 3, "outcome": "build_ok",
+                                  "script_result": ScriptRunResult(status="error", error="KeyError: 'file'")})
+    att4 = att.model_copy(update={"id": "spring-1-4", "cluster_id": "c4", "decision": TriageDecision(
+        cluster_id="c4", kind=DecisionKind.ESCALATE, rationale="no script"), "model": "", "script_mode": None,
+        "script_case_id": "", "script_version": 0, "advisory_ids": ["hystrix"]})
     errs = [BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file="src/A.java", line=3,
                        symbol="class Foo", location="class A"),
             BuildError(kind=ErrorKind.COMPILE, message="incompatible types", file="src/A.java"),
@@ -52,7 +55,6 @@ def sample_report(success: bool = False) -> RunReport:
                      finished_at=t0, success=success, plan=plan, phases=[pr], unresolved=[] if success else errs,
                      manual_followups=["web.xml not migrated"], flags=["test-compile-skipped", "custom-flag"],
                      llm_usage=LLMUsage(model="gpt-x", calls=3, input_tokens=30, output_tokens=15),
-                     harvest=HarvestResult(cases_created=["case-9"], recipes_credited=["r.A (success)"], notes=["n"]),
                      final_build=BuildResult(ok=success, goal="clean package", command=[], exit_code=1, duration_s=1,
                                              log_path="/logs/verify.log"),
                      timings_s={"total": 125.0}, outputs={"project_dir": "/out/p"})
@@ -64,14 +66,16 @@ def test_markdown_sections():
               "L3: cannot find symbol — symbol: `class Foo` — location: class A", "artifact a:b:1", "module core",
               "(no file)", "## Manual follow-ups", "web.xml not migrated", "## Flags", "-Dmaven.test.skip=true",
               "`custom-flag`", "## What we changed", "`spring.loop` — spring loop", "| spring | r.A | 2 | yes |",
-              "no: boom", "mandatory added", "## Phases", "## Fix attempts", "handler `lombok-version-floor`",
-              "`Foo`", "KB case case-1", "01234567", "tried \\| renaming", "## Escalated clusters", "needs a human",
-              "## Knowledge base", "case-9", "r.A (success)", "recipes run by triage", "## Notes", "plan: plan note",
+              "no: boom", "mandatory added", "## Phases", "## Fix attempts", "`script:abcd1234:v1` new",
+              "`script:c2:v2` reuse (ok)", "`script:c3:v3` augment (error)", "| - + advisory hystrix |", "01234567",
+              "tried \\| renaming", "## Escalated clusters", "needs a human", "## Notes", "plan: plan note",
               "spring: spring note", "## Outputs", "/logs/verify.log", "2m 05s", "3 call(s)"):
         assert s in md, s
     assert md.count("c9") == 1                                       # escalations de-duplicated
-    ok = render_markdown(sample_report(success=True).model_copy(update={"harvest": None, "timings_s": {}}))
-    assert "✅ BUILD SUCCESS" in ok and "The final build passed." in ok and "Nothing harvested." in ok
+    for gone in ("## Knowledge base", "Nothing harvested.", "recipes run by triage", "handler `", "KB case"):
+        assert gone not in md, gone
+    ok = render_markdown(sample_report(success=True).model_copy(update={"timings_s": {}}))
+    assert "✅ BUILD SUCCESS" in ok and "The final build passed." in ok and "## Knowledge base" not in ok
 
 
 def test_markdown_minimal():
@@ -131,8 +135,8 @@ def test_handover_section_first_and_tables():
               "`com.company:company-parent:4.1.0`", "- java: `1.8` → `21`", "| what | before | after | why |",
               "| ⚠ dependency `org.apache.commons:commons-lang3` | 3.12.0 (managed) | 3.12.0 |",
               "Added: `a:b:1 (mandatory)`", "Removed: `c:d:2`", "### Libraries needing your attention",
-              "| library | as-is | status | policy | what we did | outcome | what you do next | docs |",
-              "| **sleuth** | 3.1.9 | eol | guide | built with the as-is version pinned | ⚠ still present | "
+              "| library | as-is | status | what we did | outcome | what you do next | docs |",
+              "| **sleuth** | 3.1.9 | eol | built with the as-is version pinned | ⚠ still present | "
               "move to Micrometer Tracing → `io.micrometer:micrometer-tracing-bridge-brave` | [1](https://x/doc) |",
               "### From here on, your team", "1. Sleuth is gone: move to Micrometer Tracing",
               "2. web.xml not migrated"):
@@ -157,6 +161,6 @@ def test_handover_console_and_flag_help():
     console = Console(record=True, width=160)
     console_summary(_handover_report(), console)
     text = console.export_text()
-    assert "advisory sleuth [guide] → still-present" in text
+    assert "advisory sleuth → still-present" in text and "[guide]" not in text
     assert "handover: 1 versions replaced, 1 carried over, 2 items for the owners" in text
-    assert "no longer manages" in flag_help("managed-versions-carried-over")
+    assert flag_help("managed-versions-carried-over") is None          # a v1 handler flag: no help text any more

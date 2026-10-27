@@ -1,7 +1,9 @@
 # Migration notes index used by sbmig.fix.context.ContextPacker.
 #   keywords: Python regexes matched (case-sensitive) against error messages, symbols, locations, the cluster
 #             file's imports and pom artifactIds. Score = number of distinct keywords that match.
-#   cases / phases: restrict the note to these case types / phases (empty = any).
+#   cases: restrict the note to these case types (empty = any).
+#   phases: advisory — the v1 phase the note was written for. v2 fixes every error in the `verify` script loop, so
+#           `verify` always selects the note (keywords + cases decide); other phases are still narrowed by it.
 #   always: include regardless of score (budget permitting, dropped last).
 # Keep in sync with each note's front-matter (tests/fix/test_notes.py checks it).
 notes:

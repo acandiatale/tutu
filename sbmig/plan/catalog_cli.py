@@ -45,7 +45,7 @@ def _catalog(cfg):
 
 
 def _where(row: dict) -> str:
-    return row.get("artifact") or row.get("file") or ("(core)" if row.get("origin") == "openrewrite" else "-")
+    return row.get("artifact") or ("(core)" if row.get("origin") == "openrewrite" else "-")
 
 
 def _table(rows: list[dict], cols: list[tuple[str, Any]]) -> list[str]:
@@ -60,38 +60,27 @@ def _table(rows: list[dict], cols: list[tuple[str, Any]]) -> list[str]:
 def list_cmd(
     config: Optional[List[Path]] = ConfigOpt,
     catalog: Optional[Path] = CatalogOpt,
-    kb: bool = typer.Option(False, "--kb", help="also list live KB recipes (status, credits)"),
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """Every catalog recipe (origin, phase, artifact/file, gate, advisor, sets, rules)."""
+    """Every catalog recipe (origin, phase, artifact, gate, advisor, sets)."""
     cfg = _load(config, catalog)
     cat = _catalog(cfg)
-    if kb:
-        from sbmig.kb import FileKnowledgeBase
-
-        rows = cat.with_kb(FileKnowledgeBase(cfg))
-    else:
-        rows = cat.rows()
+    rows = cat.rows()
     if as_json:
         typer.echo(json.dumps(rows, indent=2, ensure_ascii=False, default=str))
         return
     cols: list[tuple[str, Any]] = [
         ("id", lambda r: r["id"]),
-        ("origin", lambda r: r["origin"] if r["origin"] != "kb" else f"kb:{r.get('status')}"),
+        ("origin", lambda r: r["origin"]),
         ("phase", lambda r: r.get("phase") or "-"),
-        ("artifact/file", _where),
+        ("artifact", _where),
         ("gate", lambda r: r.get("gate") or "-"),
         ("advisor", lambda r: "yes" if r.get("advisor") else "-"),
         ("sets", lambda r: ",".join(r.get("sets") or []) or "-"),
-        ("rules", lambda r: ",".join(r.get("rules") or []) or "-"),
     ]
-    if kb:
-        cols.append(("credits", lambda r: f"+{r['success_count']}/-{r['fail_count']} ({r['projects']}p)"
-                     if r.get("origin") == "kb" else "-"))
     for line in _table(rows, cols):
         typer.echo(line)
-    n_kb = sum(1 for r in rows if r.get("origin") == "kb")
-    typer.echo(f"\n{len(cat)} catalog recipe(s){f', {n_kb} kb recipe(s)' if kb else ''} — {cat.path}")
+    typer.echo(f"\n{len(cat)} catalog recipe(s) — {cat.path}")
 
 
 @recipes_cli.command("show")
@@ -101,51 +90,29 @@ def show_cmd(
     catalog: Optional[Path] = CatalogOpt,
     as_json: bool = typer.Option(False, "--json", help="machine-readable output"),
 ) -> None:
-    """One recipe: catalog entry, the config sets / reactive rules / composites that reference it, KB meta."""
-    from .catalog import base_recipes, config_recipe_sets, reactive_rules
+    """One recipe: catalog entry and the config sets / composites that reference it."""
+    from .catalog import config_recipe_sets
 
     cfg = _load(config, catalog)
     cat = _catalog(cfg)
     entry = cat.get(recipe_id)
-    out: dict[str, Any] = {"id": recipe_id, "catalog": entry.model_dump() if entry else None}
+    if entry is None:
+        typer.echo(f"unknown recipe {recipe_id} (not in the catalog)", err=True)
+        raise typer.Exit(1)
+    out: dict[str, Any] = {"id": recipe_id, "catalog": entry.model_dump()}
     out["referenced_by"] = {
         "config_sets": [n for n, ids in config_recipe_sets(cfg).items() if recipe_id in ids],
-        "rules": [r for r, ids in reactive_rules().items() if recipe_id in ids],
         "covered_by": [e.id for e in cat.entries if recipe_id in e.covers],
-        "project_recipes": [n for n, info in base_recipes(cfg.base_recipe_dir).items() if recipe_id in info["uses"]],
     }
-    kb_meta = None
-    try:
-        from sbmig.kb import FileKnowledgeBase
-
-        kbs = FileKnowledgeBase(cfg)
-        r = kbs.get_recipe(recipe_id)
-        if r is not None:
-            kb_meta = {**r.model_dump(mode="json"), **kbs.recipe_meta_extra(r.id)}
-    except Exception as e:  # KB is optional for `show`
-        kb_meta = {"error": f"{type(e).__name__}: {e}"}
-    out["kb"] = kb_meta
-    if entry is None and not (kb_meta and "id" in kb_meta):
-        typer.echo(f"unknown recipe {recipe_id} (not in the catalog nor in the KB)", err=True)
-        raise typer.Exit(1)
     if as_json:
         typer.echo(json.dumps(out, indent=2, ensure_ascii=False, default=str))
         return
     typer.echo(recipe_id)
-    if entry is not None:
-        for k, v in entry.model_dump().items():
-            if k != "id" and v not in (None, [], ""):
-                typer.echo(f"  {k}: {', '.join(v) if isinstance(v, list) else v}")
-    else:
-        typer.echo("  (not in the catalog)")
+    for k, v in entry.model_dump().items():
+        if k != "id" and v not in (None, [], ""):
+            typer.echo(f"  {k}: {', '.join(v) if isinstance(v, list) else v}")
     for k, v in out["referenced_by"].items():
         typer.echo(f"  referenced_by.{k}: {', '.join(v) or '-'}")
-    if kb_meta:
-        typer.echo("  kb:")
-        for k in ("status", "path", "description", "success_count", "fail_count", "projects", "signatures",
-                  "promoted_at", "error"):
-            if k in kb_meta and kb_meta[k] not in (None, [], ""):
-                typer.echo(f"    {k}: {kb_meta[k]}")
 
 
 @recipes_cli.command("check")
@@ -158,7 +125,7 @@ def check_cmd(
     as_json: bool = typer.Option(False, "--json", help="with --jars: print the jar check report as JSON"),
     artifact: list[str] | None = ArtifactOpt,
 ) -> None:
-    """Cross-check the catalog against config sets, reactive rules, base recipes and recipe artifacts.
+    """Cross-check the catalog against the config recipe sets and the recipe artifacts.
 
     With --jars, also resolve the configured recipe artifacts with Maven and check every openrewrite id
     against the jars that declare it (artifact, provided_by; see docs/RECIPES.md)."""
@@ -239,7 +206,7 @@ def sets_cmd(
     if as_json:
         typer.echo(json.dumps({"sets": config_recipe_sets(cfg), "per_case": resolved}, indent=2))
         return
-    typer.echo("config sets (openrewrite.recipes; library.* = knowledge/recipes/library_recipes.yml, not run in v2):")
+    typer.echo("config sets (openrewrite.recipes):")
     for name, ids in config_recipe_sets(cfg).items():
         typer.echo(f"  {name}: {', '.join(ids) or '-'}")
     typer.echo("\nper case (transform.rewrite — one OpenRewrite run before the restructure):")
@@ -249,4 +216,4 @@ def sets_cmd(
             typer.echo(f"    + when detected (EE javax imports / junit4 / spring-security): "
                        f"{', '.join(d['transform_conditional'])}")
     typer.echo("\nmsa: one run per library root / service with its own case (library roots never get the Boot set); "
-               "top-aggregator: one run at the root with the union. No project / library / KB recipes in v2.")
+               "top-aggregator: one run at the root with the union.")

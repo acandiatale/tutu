@@ -1,4 +1,0 @@
-{
-  "note": "scripted LLM fix response (run 1, cluster MoneyJsonComponent)",
-  "response": "<analysis>Spring Boot 4 (Jackson 3) renamed org.springframework.boot.jackson.JsonComponent to JacksonComponent. OpenRewrite already migrated the serializer body to tools.jackson (ValueSerializer/SerializationContext), so only the annotation import and usage need to change.</analysis>\n<confidence>0.9</confidence>\n<patches>\n=== MODIFY src/main/java/com/example/orders/json/MoneyJsonComponent.java\n<<<<<<< SEARCH\nimport org.springframework.boot.jackson.JsonComponent;\n=======\nimport org.springframework.boot.jackson.JacksonComponent;\n>>>>>>> REPLACE\n<<<<<<< SEARCH\n@JsonComponent\npublic class MoneyJsonComponent {\n=======\n@JacksonComponent\npublic class MoneyJsonComponent {\n>>>>>>> REPLACE\n</patches>\n"
-}

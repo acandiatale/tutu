@@ -53,11 +53,11 @@ SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 - `.access("hasRole('A') and hasIpAddress('…')")` String → `.access(new WebExpressionAuthorizationManager("…"))`.
 - `AntPathRequestMatcher` / `MvcRequestMatcher` removed in 7 → `PathPatternRequestMatcher.pathPattern("/x/**")` /
   `pathPattern(HttpMethod.POST, "/x/**")` (= `withDefaults().matcher(…)`;
-  `org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher`) or plain String patterns. The handler
-  `security-path-pattern-matcher` (round 10) rewrites `new AntPathRequestMatcher(p[, m])`, `AntPathRequestMatcher.antMatcher(…)`
-  and `new MvcRequestMatcher(introspector, p)` deterministically; a literal pattern with `**` before the last segment
-  (`/**/*.do`, `/api/**/list`) gets a `// TODO sbmig:` line — PathPattern rejects it at startup (`/{*path}` or explicit
-  segments). The 3-/4-argument (case-insensitive, UrlPathHelper) constructors are left for you.
+  `org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher`) or plain String patterns: covers
+  `new AntPathRequestMatcher(p[, m])`, `AntPathRequestMatcher.antMatcher(…)` and `new MvcRequestMatcher(introspector, p)`.
+  A literal pattern with `**` before the last segment (`/**/*.do`, `/api/**/list`) needs a `// MIGRATION-TODO:` line —
+  PathPattern rejects it at startup (`/{*path}` or explicit segments). The 3-/4-argument (case-insensitive,
+  UrlPathHelper) constructors need a hand-written matcher.
 - Legacy access-decision API (eGovFrame-style DB URL authorization: `FilterSecurityInterceptor`,
   `FilterInvocationSecurityMetadataSource`, `AccessDecisionManager` / `AffirmativeBased` / `RoleVoter`,
   `WebExpressionVoter`, `SecurityMetadataSource`, `ConfigAttribute`) moved to `org.springframework.security:spring-security-access`

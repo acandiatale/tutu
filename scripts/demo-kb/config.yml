@@ -1,17 +1,13 @@
-# KB learning-loop demo (see scripts/demo-kb/run.sh).
-# Reproduces the To-be flow with a scripted ("replayed") LLM so it runs offline:
-#   run 1: build error only the LLM can fix → fix applied → BUILD SUCCESS → case harvested → recipe candidate stored
-#   run 2: same error on a fresh copy → KB candidate recipe fixes it with ZERO LLM calls → credited → promoted to active
-# The project recipe that normally handles this rename (Boot4JacksonTwins) is disabled here on purpose.
-openrewrite:
-  recipes:
-    spring_boot_4:
-      - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
-      - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
-      - com.company.migrate.SpringBoot41Version
+# KB demo (v2, see scripts/demo-kb/run.sh): two migrations of the same project with ONE demo KB.
+#   run 1: the replayed LLM writes a fix script for the case `compile|cannot_find_symbol|JsonComponent` (Boot 4 renamed
+#          @JsonComponent to @JacksonComponent) → stored as kb/scripts/8dc5ebcf6d/v1.py → BUILD SUCCESS → credited
+#   run 2: fresh copy, same error → the stored v1 runs first (`reuse`, no fix LLM call) → BUILD SUCCESS → credited again
+# The structure review is one LLM call in each run (replay/llm-001.json of the fixture), so run 1 = 2 calls, run 2 = 1.
+# Appended after config/artifacts.local-e2e.yml; a real LLM profile given to run.sh is appended after this file.
 llm:
   provider: fake
-  base_url: "replay:scripts/demo-kb/replay"     # llm-001.json = the fix, llm-002.json = the recipe-candidate answer
+  base_url: "replay:fixtures/projects/boot3/replay"   # run.sh swaps in <fixture>/replay for another fixture
+review:
+  enabled: true
 kb:
   dir: out/demo-kb/kb
-  auto_promote_after_projects: 1

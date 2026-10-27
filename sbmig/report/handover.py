@@ -30,7 +30,7 @@ REASON_PARENT = "parent swap"
 REASON_OPTIONAL = "optional bump"
 REASON_MANDATORY = "mandatory"
 REASON_BOOT = "spring boot 4 upgrade"
-REASON_OTHER = "recipe/handler"
+REASON_OTHER = "recipe / fix script"
 CARRIED_LIST_MAX = 5
 LLM_FILES_MAX = 5                # files listed per "code rewritten by the LLM for <library>" line
 # the orchestrator's X1b follow-up (report.javax_api_inventory, 2026-10-22)
@@ -44,7 +44,6 @@ PROPERTY_COLUMNS = ("key", "before migration", "referenced at", "written as", "s
 DEFAULT_SENTINEL = "__SET_ME__"
 DEFAULT_MAX_REFS = 3
 
-_PINNED_RE = re.compile(r"([\w.\-]+:[\w.\-]+) pinned to (\S+) \(")
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
 _MANDATORY_RE = re.compile(r"mandatory added: ([^;]*)")
 
@@ -166,11 +165,10 @@ def _notes(report: RunReport) -> list[str]:
     return out
 
 
-def _restructure_keys(notes: list[str]) -> tuple[set[str], set[str], dict[str, str]]:
-    """(optional bumped keys, mandatory added keys, carried-over key → version) from phase / attempt notes."""
+def _restructure_keys(notes: list[str]) -> tuple[set[str], set[str]]:
+    """(optional bumped keys, mandatory added keys) from the restructure's phase / attempt notes."""
     optional: set[str] = set()
     mandatory: set[str] = set()
-    pinned: dict[str, str] = {}
     for n in notes:
         m = _OPTIONAL_RE.search(n)
         if m:
@@ -184,9 +182,7 @@ def _restructure_keys(notes: list[str]) -> tuple[set[str], set[str], dict[str, s
                 tok = tok.strip()
                 if tok and tok != "-" and ":" in tok:
                     mandatory.add(":".join(tok.split(":")[:2]))
-        for m in _PINNED_RE.finditer(n):
-            pinned.setdefault(m.group(1), m.group(2))
-    return optional, mandatory, pinned
+    return optional, mandatory
 
 
 def _replacement_key(f: AdvisoryFinding) -> Optional[str]:
@@ -456,16 +452,15 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
         if f.replacement:
             txt += f" (replacement: {f.replacement}{' ' + f.replacement_version if f.replacement_version else ''})"
         _dedupe_add(out, txt)
-    # (b) replaced → verify
+    # (b) replaced → verify (advisories are guide-only: the plan's recipes / the fix scripts replaced it)
     for f in findings:
         if f.outcome != "replaced":
             continue
-        via = f"recipe {', '.join(f.recipes)}" if f.recipes else "replaced during the run"
-        txt = f"verify {f.library} → {f.replacement or '?'} ({via})"
+        txt = f"verify {f.library} → {f.replacement or '?'} (replaced during the run)"
         if f.followup:
             txt += f": {f.followup}"
         _dedupe_add(out, txt)
-    # (b2) code the LLM rewrote for a library advisory (round 6: the recipe left it behind) → review
+    # (b2) code the LLM fix scripts rewrote with a library advisory's guidance → review
     for f in findings:
         if not f.llm_fixed_files:
             continue
@@ -601,7 +596,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
         setattr(h, k, v)
 
     notes = _notes(report)
-    optional, mandatory, pinned = _restructure_keys(notes)
+    optional, mandatory = _restructure_keys(notes)
     adv_arts, adv_repl = _advisory_maps(list(report.advisories or []))
     changes: list[VersionChange] = []
     main = _main_pom(final)
@@ -664,7 +659,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
             if bv == av and bs == as_:
                 continue
             carried = (bs == "managed" and as_ == "declared" and av is not None
-                       and av == _eff_lookup(effective, k)) or (k in pinned and as_ == "declared")
+                       and av == _eff_lookup(effective, k))
             if bv == av and not carried:
                 continue                              # same version, only the declaring place changed
             changes.append(VersionChange(kind="dependency", key=k, before=bv, after=av, before_source=bs,

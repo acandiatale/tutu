@@ -80,8 +80,9 @@ def recipe_artifact_for(recipe_id: str) -> str | None:
 
 
 class OpenRewriteRunner:
-    """``OpenRewriteRunner(ws, cfg, kb).run([RecipeRef(...)])`` → ``RewriteResult``. Never raises for a failed run;
-    raises ``RecipeCompositionError`` only when project/kb recipe ids are not defined in any composed file."""
+    """``OpenRewriteRunner(ws, cfg).run([RecipeRef(...)])`` → ``RewriteResult``. Never raises for a failed run;
+    raises ``RecipeCompositionError`` only when a recipe that names its own file is not defined in it. `kb` is
+    accepted for the orchestrator's constructor call and not used (no KB recipes in v2)."""
 
     def __init__(self, ws: Workspace, cfg: Config, kb: KnowledgeBaseLike | None = None, *,
                  timeout_s: float | None = None):
@@ -93,14 +94,8 @@ class OpenRewriteRunner:
         self._sleep = time.sleep                 # download retry wait; tests replace it with a recorder
 
     # ------------------------------------------------------------------ composition
-    def _kb_files(self) -> list[Path]:
-        if self.kb is None or not self.cfg.kb.use_active_recipes:
-            return []
-        return [Path(p) for p in self.kb.active_recipe_files()]
-
     def compose(self, recipes: Sequence[RecipeRef], extra_recipe_files: Iterable[Path] = ()) -> tuple[Path, str]:
-        text = compose_rewrite_yaml(recipes, base_dir=self.cfg.base_recipe_dir, kb_files=self._kb_files(),
-                                    extra_files=list(extra_recipe_files), target=self.cfg.target)
+        text = compose_rewrite_yaml(recipes, extra_files=list(extra_recipe_files), target=self.cfg.target)
         self.work_dir.mkdir(parents=True, exist_ok=True)
         n = len(list(self.work_dir.glob("rewrite-*.yml"))) + 1
         path = self.work_dir / f"rewrite-{n}.yml"
@@ -111,8 +106,8 @@ class OpenRewriteRunner:
         return path, text
 
     def required_artifacts(self, recipes: Sequence[RecipeRef], composed_text: str) -> list[str]:
-        """g:a recipe artifacts needed: explicit ``RecipeRef.artifact``, inferred from builtin ids, and for
-        project/kb recipes rewrite-migrate-java + rewrite-spring plus whatever their recipeLists reference."""
+        """g:a recipe artifacts needed: explicit ``RecipeRef.artifact``, inferred from builtin ids, and for a recipe
+        declared in a composed file rewrite-migrate-java + rewrite-spring plus whatever its recipeList references."""
         docs = recipe_documents(composed_text)
         needed: list[str] = []
 
@@ -132,7 +127,7 @@ class OpenRewriteRunner:
 
         for r in recipes:
             add(r.artifact)
-            if r.source in ("project", "kb") or r.id in docs:
+            if r.id in docs:
                 add(MIGRATE_JAVA)
                 add(SPRING)
                 walk(r.id, set())
@@ -229,7 +224,7 @@ class OpenRewriteRunner:
     @staticmethod
     def parse_recipe_attribution(text: str) -> dict[str, list[str]]:
         """recipe id → files it changed, from the plugin's indented 'Changes have been made to <f> by:' blocks
-        (every recipe id in the chain is credited, so a KB composite and the primitive it wraps both appear)."""
+        (every recipe id in the chain is credited, so a composite and the primitive it wraps both appear)."""
         out: dict[str, list[str]] = {}
         current: str | None = None
         for raw in text.splitlines():

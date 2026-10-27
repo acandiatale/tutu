@@ -1,16 +1,16 @@
 """Regressions from the 2026-10-20 end-to-end flow review (docs/PLAN.md "round 7a"), v2 flow: the nodes take the
 right path in the odd cases — a stored script reused without an LLM, the final build after an internal abort, LLM
-transport classification, attempt ids across re-rounds, no harvest in v2, `stop_after` validation."""
+transport classification, attempt ids across re-rounds, `stop_after` validation."""
 from __future__ import annotations
 
 import pytest
 
-from sbmig.core.models import FixProposal, LLMUsage, Phase
+from sbmig.core.models import LLMUsage, Phase
 from sbmig.core.workspace import Workspace
 from sbmig.loop import MissingComponentError, parse_stop_after
 from sbmig.loop.fixloop import is_llm_transport_error
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, case_of, make_project, write_fix,
+from .fakes import (FixProposal, FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, case_of, make_project, write_fix,
                     write_script)
 from .test_orchestrator import BAR, FOO, files_build, make_orch
 
@@ -98,15 +98,6 @@ def test_reround_keeps_attempt_ids_unique(cfg, ws):
     report = make_orch(cfg, ws, fixer=FakeFixer(fn=fx)).run()
     ids = [a.id for a in report.phases[-1].attempts]
     assert report.success and len(ids) == 2 and len(ids) == len(set(ids))
-
-
-# ------------------------------------------------------------------ R1 / R5 (v2): no KB recipe credit, no harvest
-def test_v2_never_harvests_even_when_kb_harvest_is_on(cfg, ws):
-    cfg = cfg.model_copy(deep=True)
-    cfg.kb.harvest = cfg.kb.generate_recipe_candidates = True
-    kb = FakeKB()
-    report = make_orch(cfg, ws, kb=kb).run()
-    assert report.success and kb.harvests == [] and kb.credits == [] and report.harvest is None
 
 
 # ------------------------------------------------------------------ N1: stop_after validation (CLI / web / api)

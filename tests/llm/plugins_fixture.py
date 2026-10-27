@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import Field
 
 from sbmig.core.interfaces import LLMRequest, LLMResponse
-from sbmig.core.models import FileChange, FixProposal
+from sbmig.core.models import ScriptProposal
 from sbmig.llm import LLMAdapter
 
 SEEN: list = []
@@ -76,19 +76,38 @@ def broken_factory(options, cfg):
     raise RuntimeError("missing base_url")
 
 
-class ProposeOnly:
+SCRIPT = "def fix(p):\n    p.replace('A.txt', 'old', 'new')\n"
+
+
+class ScriptAgent:
+    """A tier-2 fixer on the script seam: one fix script per case (the script applies itself)."""
+
     def __init__(self, options, cfg, llm):
         self.options, self.cfg, self.llm = options, cfg, llm
+        self.seen: list = []
 
-    def propose(self, ws, cluster, ctx):
-        return FixProposal(changes=[FileChange(path="A.txt", op="modify", search="old", replace="new")],
-                           model="agent")
+    def propose_script(self, ws, cluster, ctx):
+        self.seen.append((cluster.id, ctx.script_mode))
+        return ScriptProposal(code=SCRIPT, analysis="agent script", model="agent")
 
 
-def make_propose_only(options, cfg, llm=None, notes_dir=None):
-    f = ProposeOnly(options, cfg, llm)
+def make_script_agent(options, cfg, llm=None, notes_dir=None):
+    f = ScriptAgent(options, cfg, llm)
     f.notes_dir = notes_dir
     return f
+
+
+class ProposeOnly:
+    """A SEARCH/REPLACE-era fixer (`propose` / `apply` only): refused by the script seam."""
+
+    def __init__(self, options=None, cfg=None, llm=None):
+        self.options = options
+
+    def propose(self, ws, cluster, ctx):  # pragma: no cover - never called
+        raise AssertionError("v1 propose must not be called")
+
+    def apply(self, ws, changes):  # pragma: no cover - never called
+        raise AssertionError("v1 apply must not be called")
 
 
 def returns_junk(options):

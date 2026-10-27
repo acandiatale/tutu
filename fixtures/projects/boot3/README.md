@@ -20,3 +20,10 @@ Tests also pass (`mvn -q test`).
 
 Expected migration hot spots: Boot 4 starter split (`spring-boot-starter-webmvc`, test autoconfigure modules),
 `RestTemplateBuilder` timeout API, `@MockBean`, Jackson 3 package move / `@JsonComponent`, guava bump.
+
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+
+Success, exit 0, **2 LLM calls**: the structure review (verdict `ok`) and one new fix script for the case
+`compile|cannot_find_symbol|JsonComponent` (`8dc5ebcf6d`): Boot 4 renamed `@JsonComponent` to `@JacksonComponent`
+(the recipe moved the serializer to `tools.jackson` but left the annotation). guava → 33.4.8-jre. `scripts/demo-kb/run.sh`
+and `scripts/fleet-demo.sh` use this case to show a stored script reused without a fix LLM call.

@@ -10,17 +10,11 @@ from sbmig.core.models import (
     BlockReason,
     BuildError,
     CaseType,
-    DecisionKind,
     ErrorKind,
-    FixAttempt,
     FleetState,
-    HarvestResult,
     LLMUsage,
     Phase,
-    PhaseResult,
-    RewriteResult,
     RunReport,
-    TriageDecision,
     utcnow,
 )
 from sbmig.fleet import FleetRunner
@@ -28,9 +22,7 @@ from sbmig.fleet import FleetRunner
 from .conftest import make_project
 
 
-def report(
-    name: str, *, success=True, aborted=False, blocked=0, llm=0, harvest=None, phases=None
-) -> RunReport:
+def report(name: str, *, success=True, aborted=False, blocked=0, llm=0, phases=None) -> RunReport:
     r = RunReport(
         run_id="x",
         project_name=name,
@@ -38,7 +30,6 @@ def report(
         started_at=utcnow(),
         success=success and not aborted,
         llm_usage=LLMUsage(calls=llm, input_tokens=10 * llm),
-        harvest=harvest,
         phases=phases or [],
     )
     if aborted:
@@ -82,51 +73,15 @@ def _state(out) -> FleetState:
 
 def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
     out = tmp_path / "out"
-    att = FixAttempt(
-        id="a",
-        phase=Phase.SPRING,
-        iteration=1,
-        cluster_id="c",
-        applied=True,
-        outcome="improved",
-        decision=TriageDecision(
-            cluster_id="c",
-            kind=DecisionKind.KB_RECIPE,
-            recipe_ids=["Foo", "com.company.kb.Legacy", "org.openrewrite.Builtin"],
-        ),
-    )
-    patch = att.model_copy(
-        update={
-            "decision": TriageDecision(
-                cluster_id="c", kind=DecisionKind.KB_PATCH, kb_case_ids=["20260101-aaa"]
-            )
-        }
-    )
-    rw = RewriteResult(
-        ok=True,
-        recipes=[],
-        recipes_applied={"Bar": ["A.java"], "org.openrewrite.X": ["B.java"]},
-    )
-    phase = PhaseResult(phase=Phase.SPRING, attempts=[att, patch], rewrite_results=[rw], build_ok=True)
-    fake = FakeRun(
-        alpha={
-            "llm": 2,
-            "harvest": HarvestResult(
-                cases_created=["c1"], candidates_created=["r1"], recipes_promoted=["r0"]
-            ),
-        },
-        beta={"success": False, "blocked": 1, "phases": [phase]},
-    )
+    fake = FakeRun(alpha={"llm": 2}, beta={"success": False, "blocked": 1})
     runner = FleetRunner(fleet_cfg, projects_dir, out, run_project=fake)
     state = runner.run()
     assert [c[0] for c in fake.calls] == ["alpha", "beta", "gamma"]
     assert [p.status for p in state.projects] == ["success", "incomplete", "success"]
     assert runner.exit_code == 2 and state.finished_at is not None
     a, b, _ = state.projects
-    assert a.llm_calls == 2 and a.llm_input_tokens == 20 and a.kb_cases_created == ["c1"]
-    assert a.kb_candidates_created == ["r1"] and a.kb_recipes_promoted == ["r0"] and a.exit_code == 0
+    assert a.llm_calls == 2 and a.llm_input_tokens == 20 and a.exit_code == 0
     assert b.blocked == 1 and b.blocked_reasons == ["external_javax_api:com.co:legacy"] and b.unresolved == 1
-    assert b.kb_recipes_used == ["Foo", "com.company.kb.Legacy", "case:20260101-aaa", "Bar"]
     assert state.llm_calls_total == 2
     assert fake.calls[0][2] == f"{state.fleet_id}-001-alpha" and a.run_id == fake.calls[0][2]
     fleet = out / "fleet"
@@ -138,10 +93,13 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
     assert raw_csv.startswith(b"\xef\xbb\xbf")                        # UTF-8 BOM: Excel opens Korean paths right
     csv_lines = raw_csv.decode("utf-8-sig").splitlines()
     assert csv_lines[0].startswith("#,name,case,status") and len(csv_lines) == 4
-    assert csv_lines[0].endswith(",error,attention,input")
+    assert csv_lines[0].endswith(",carried_over,attempt,run_id,error,attention,input") and "kb_" not in csv_lines[0]
     assert ",unresolved:1;blocked:" not in csv_lines[2] and "blocked:external_javax_api;unresolved:1" in csv_lines[2]
     assert json.loads((fleet / "summary.json").read_text())["fleet_id"] == state.fleet_id
-    assert "what the KB learned" in (fleet / "learning.md").read_text()
+    learning = (fleet / "learning.md").read_text()
+    assert learning.startswith(f"# Fleet {state.fleet_id} — error cases and fix scripts")
+    assert "## Error cases across projects" in learning and "## Fix scripts" in learning
+    assert "recipe" not in learning.lower() and "ledger" not in learning.lower()
 
 
 def test_resume_skips_successes_and_retry_failed(fleet_cfg, projects_dir, tmp_path):
@@ -341,7 +299,7 @@ def test_advisories_and_carried_over_columns(fleet_cfg, projects_dir, tmp_path):
     def with_advisories(project, cfg):
         r = report(project.name)
         r.advisories = [
-            AdvisoryFinding(advisory_id="springfox", library="springfox", status="eol", title="t", policy="recipe",
+            AdvisoryFinding(advisory_id="springfox", library="springfox", status="eol", title="t", policy="guide",
                             outcome="replaced"),
             AdvisoryFinding(advisory_id="hystrix", library="hystrix", status="eol", title="t", policy="guide",
                             outcome="still-present"),
@@ -378,3 +336,42 @@ def test_advisories_and_carried_over_columns(fleet_cfg, projects_dir, tmp_path):
     for p in raw["projects"]:
         p.pop("advisories"), p.pop("carried_over")
     assert FleetState.model_validate(raw).projects[0].carried_over == 0
+
+
+def test_learning_md_has_the_fleets_error_cases_and_the_kbs_fix_scripts(fleet_cfg, tmp_path):
+    """PLAN-v2 step 4: learning.md = the error cases of this fleet's runs + top cases + fix scripts (no ledger)."""
+    from sbmig.core.models import ErrorAttemptRef, ErrorCaseRecord, FleetProjectResult
+    from sbmig.fleet.summary import render_learning
+    from sbmig.kb import FileKnowledgeBase, case_id_for
+
+    l2 = "compile|cannot_find_symbol|clientIp"
+    cid = case_id_for(l2)
+    kb = FileKnowledgeBase(fleet_cfg)
+    kb.scripts.add(cid, l2, "def fix(p):\n    p.replace('src/A.java', 'clientIp', 'remoteClientIp')\n")
+    kb.scripts.credit(cid, 1, "improved", project="alpha")
+
+    def err(eid, run, status, method="script"):
+        refs = [ErrorAttemptRef(attempt_id=f"{run}:a1", fix_method=method,
+                                outcome="improved" if status == "resolved" else "no_change")]
+        return ErrorCaseRecord(id=eid, run_id=run, project=run, signature_generic=l2, status=status,
+                               fix_method=method if status == "resolved" else "none", attempts=refs,
+                               resolved_by=f"{run}:a1" if status == "resolved" else None,
+                               resolver_id=f"script:{cid}:v1" if status == "resolved" else "",
+                               failure_reason="" if status == "resolved" else "script v1 no_change: still there")
+
+    kb.append_error_cases([err("e1", "run-a", "resolved"), err("e2", "run-b", "unresolved"),
+                           err("e3", "other-fleet", "resolved")], [])
+    state = FleetState(fleet_id="fleet-x", manifest="m.yml",
+                       projects=[FleetProjectResult(name="a", input="a", run_id="run-a", llm_calls=1),
+                                 FleetProjectResult(name="b", input="b", run_id="run-b")])
+    md = render_learning(state, kb)
+    assert md.startswith("# Fleet fleet-x — error cases and fix scripts")
+    assert "* projects: 2 (2 run)" in md and "* LLM calls: 1" in md
+    assert "2 build error(s) recorded one by one from 2 project(s) / 2 run(s)" in md      # this fleet's runs only
+    assert "| status | script |" in md and "| resolved | 1 |" in md and "| unresolved | 1 |" in md
+    assert "| script v1 no_change: still there |" in md and "### Still unresolved / blocked most often" in md
+    assert f"| `{cid}` | clientIp — cannot find symbol | candidate | script v1 | 3 | 3 |" in md   # whole KB
+    assert "* cases with scripts: 1, versions: 1 (proven 1, retired 0, quarantined 0)" in md
+    assert f"| `{cid}` | 1 | v1 | 1 | 0 | 1 | {l2.replace('|', chr(92) + '|')} |" in md
+    empty = render_learning(FleetState(fleet_id="f0", manifest="m.yml"), None)
+    assert "_No error cases recorded for these projects yet._" in empty and "_no KB_" in empty

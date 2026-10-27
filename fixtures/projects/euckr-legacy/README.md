@@ -28,11 +28,11 @@ JAVA_TOOL_OPTIONS=-Dfile.encoding=MS949 \
 error sbmig sees on JDK 21 (JDK 18+ defaults to UTF-8, JEP 400): `unmappable character (0xC0) for encoding UTF-8`
 followed by `illegal character: '\ufffd'` in `notice/NoticeFormatter.java`.
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* handler `source-encoding` detects cp949 and sets `project.build.sourceEncoding` (or converts to UTF-8) →
-  flag matching `source-encoding-set:(cp949|ms949|euc-kr|euc_kr)`
-* `success = true`, exit 0, `llm_usage.calls == 0`
-* post-check: the migrated `Greeting.java` (anywhere under the run's `project/`) still decodes as **cp949** and
-  contains `안녕하세요` — i.e. no step (rewrite, handler, restructure) re-encoded or corrupted the Korean text.
-  If the engine chooses `convert-utf8` instead, this post-check must be changed to `"encoding": "utf-8"`.
+Success, exit 0, **1 LLM call**, no fix script: the **structure review** fixes it before the build. Its input lists the
+MS949 sources of `module/comp-jar` next to the parent's UTF-8, the replayed review reports a **critical** issue and its
+script sets `<project.build.sourceEncoding>MS949</project.build.sourceEncoding>` in `module/comp-jar/pom.xml` (committed
+`review: fix critical structure issues (1)`; v1 did this with the handler `source-encoding`). Post-checks: the migrated
+`Greeting.java` and `NoticeFormatter.java` (anywhere under the run's `project/`) still decode as **cp949** and contain
+`안녕하세요` / `공지사항` — no step (rewrite, restructure, review script) re-encoded or corrupted the Korean text.

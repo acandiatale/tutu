@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from sbmig.core.models import ErrorKind, Phase, PomInfo
-from sbmig.triage import RecipeRules, Triager, cluster_errors, cluster_id, plan_iteration
+from sbmig.core.models import ErrorKind, PomInfo
+from sbmig.triage import Triager, cluster_errors, cluster_id, plan_iteration
 from sbmig.triage.cluster import cluster_label, module_index
 
 from .conftest import make_profile
@@ -77,35 +77,6 @@ def test_masking_same_module_only():
     items = plan_iteration(cluster_errors([err(ErrorKind.PARENT_RESOLUTION, "p", artifact="p:q:1"),
                                            err(file="web/W.java", module="web")], PROFILE))
     assert sum(1 for i in items if i.skip) == 1
-
-
-def test_recipe_rules_match():
-    rules = RecipeRules.default()
-    c = cluster_errors([err(message="package javax.persistence does not exist", file="A.java")])[0]
-    assert [r.id for r in rules.match(c, Phase.SPRING)] == ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"]
-    assert rules.match(c, Phase.JDK21) == []                       # jakarta never during the javax phase
-    assert rules.match(c)[0].artifact == "org.openrewrite.recipe:rewrite-migrate-java"
-    jx = cluster_errors([err(message="package javax.xml.bind.annotation does not exist", file="A.java")])[0]
-    assert len(rules.match(jx, Phase.SPRING)) == 2
-    j4 = cluster_errors([err(ErrorKind.TEST_COMPILE, "cannot find symbol", file="T.java", symbol="class RunWith")])[0]
-    assert rules.match(j4)[0].id == "org.openrewrite.java.testing.junit5.JUnit4to5Migration"
-    mb = cluster_errors([err(ErrorKind.TEST_COMPILE, "cannot find symbol", file="T.java", symbol="class MockBean")])[0]
-    assert rules.match(mb, Phase.SPRING)[0].id == "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean"
-    sec = cluster_errors([err(message="cannot find symbol", file="S.java", symbol="class WebSecurityConfigurerAdapter")])[0]
-    # round 10: no reactive security rule — the plan runs the Spring Security 6.0 … 7.0 chain on the as-is classpath
-    assert not [r for r in rules.match(sec, Phase.SPRING) if "security6" in r.id]
-    sig = cluster_errors([err(ErrorKind.DEPENDENCY_RESOLUTION, "x", artifact="a:b:1")])[0]
-    assert rules.match(sig) == []                                   # kinds filter
-    assert rules.ref_for("nope") is None
-    assert "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta" in rules.once_per_run_ids()
-
-
-def test_signature_regex_rule(tmp_path):
-    p = tmp_path / "r.yml"
-    p.write_text("rules:\n  - id: x\n    match: {signature_regex: 'special'}\n    recipes: [a.B]\n    once_per_run: false\n")
-    rules = RecipeRules.load(p)
-    c = cluster_errors([err(file="A.java", sig="compile|special|x")])[0]
-    assert rules.match(c)[0].id == "a.B"
 
 
 def test_triager_cluster_delegates(cfg):

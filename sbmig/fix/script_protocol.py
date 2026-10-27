@@ -8,8 +8,8 @@ The model answers with::
         ...
     </script>
 
-or ``<need_files>a, b</need_files>`` / ``<need_grep>regex</need_grep>`` (as v1; ``<need_file>`` is accepted too) to ask
-for more context. The parser is tolerant — a ```python fence inside ``<script>``, CRLF, a block indented as a whole, a
+or ``<need_files>a, b</need_files>`` / ``<need_grep>regex</need_grep>`` (``<need_file>`` is accepted too) to ask for
+more context. The parser is tolerant — a ```python fence inside ``<script>``, CRLF, a block indented as a whole, a
 missing ``</script>``, a ``</script>`` inside the code (a JSP edit), a bare ```python block that defines ``fix(p)``
 when the tag is missing — and never raises. The code is kept as written otherwise (line ends normalized to ``\\n``,
 surrounding blank lines dropped, one trailing newline). Only "does it parse and define a module-level ``def fix``" is
@@ -22,8 +22,6 @@ import re
 import textwrap
 from dataclasses import dataclass, field
 from typing import Optional
-
-from .protocol import _split_list, _strip_outer_fence, normalize_path
 
 NO_SCRIPT = "no <script> block"
 NO_FIX_DEF = "script has no def fix(p)"
@@ -39,7 +37,7 @@ _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})[\w+.-]*\s*$")
 _FENCED_BLOCK_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(?:python3?|py)?[ \t]*\n(.*?)^[ \t]*\1[ \t]*$",
                               re.IGNORECASE | re.MULTILINE | re.DOTALL)
 _DEF_FIX_RE = re.compile(r"^def\s+fix\s*\(", re.MULTILINE)
-# a v1 answer with at least one operation (an empty <patches></patches> is a deliberate "no fix")
+# an answer in the old SEARCH/REPLACE format with at least one operation (an empty <patches></patches> = "no fix")
 _PATCHES_RE = re.compile(r"^\s*(?:[#*>\-]\s*)*={3}\s*(?:MODIFY|CREATE|DELETE|RENAME)\b", re.IGNORECASE | re.MULTILINE)
 
 
@@ -66,6 +64,47 @@ class ParsedScript:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def normalize_path(raw: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (normalized posix relative path, warning). Rejects absolute paths and `..`."""
+    p = raw.strip().strip("`'\"*").strip()
+    p = re.sub(r"\s+\(.*\)$", "", p)          # "path (new file)" → "path"
+    p = p.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    if not p:
+        return None, "empty path"
+    if p.startswith("/") or re.match(r"^[A-Za-z]:/", p) or p.startswith("~"):
+        return None, f"absolute path rejected: {raw.strip()}"
+    parts = [s for s in p.split("/") if s not in ("", ".")]
+    if any(s == ".." for s in parts):
+        return None, f"path with '..' rejected: {raw.strip()}"
+    return "/".join(parts), None
+
+
+def _strip_outer_fence(text: str) -> str:
+    """The text without surrounding blank lines and without one code fence wrapped around it."""
+    lines = text.split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and _FENCE_LINE_RE.match(lines[0]):
+        lines.pop(0)
+        if lines and _FENCE_LINE_RE.match(lines[-1]):
+            lines.pop()
+    return "\n".join(lines)
+
+
+def _split_list(text: str) -> list[str]:
+    """Items of a `<need_files>` list (comma / newline / semicolon separated, bullets stripped)."""
+    items = []
+    for tok in re.split(r"[,\n;]+", text):
+        tok = tok.strip().lstrip("-*").strip()
+        if tok:
+            items.append(tok)
+    return items
+
+
 def _find_simple(text: str, name: str) -> Optional[tuple[str, int]]:
     """(content, end offset) of <name>…</name>; a missing closing tag ends at the next known tag or EOF. With a
     closing tag the content may mention other tags ("I return a <script> …")."""
@@ -216,6 +255,7 @@ __all__ = [
     "PROTOCOL_WARNING",
     "ParsedScript",
     "clean_code",
+    "normalize_path",
     "parse_script_response",
     "script_problem",
 ]

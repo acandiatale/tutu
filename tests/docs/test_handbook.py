@@ -17,6 +17,14 @@ TOP_LEVEL = ("sbmig/", "docs/", "config/", "knowledge/", "kb/", "fixtures/", "te
 ROOT_FILES = {"CLAUDE.md", "README.md", "pyproject.toml", ".env.example"}
 # files the company creates locally from the examples (git-ignored / never in the repo) — legitimate to name
 LOCAL_FILES = {"config/artifacts.yml", "config/settings.nexus.xml", "config/settings.xml", ".env", "coding/.env"}
+# v1 files deleted in v2 step 4 (2026-10-27) that the handbook still names: the handbook describes v1 until the user
+# asks for its v2 rewrite ("핸드북은 내가 말할 때만", 2026-10-27) — a path under these prefixes is not a drift finding
+V1_PATHS_PENDING_REWRITE = ("knowledge/recipes/base", "knowledge/recipes/library_recipes.yml", "sbmig/kb/harvest.py",
+                            "sbmig/kb/ledger.py", "sbmig/kb/recipes.py", "sbmig/kb/prompts/recipe_candidate.md",
+                            "sbmig/plan/library_recipes.py", "sbmig/plan/pre_handlers.py", "sbmig/triage/handlers",
+                            "sbmig/triage/recipe_rules.yml", "sbmig/triage/rules.py", "sbmig/fix/apply.py",
+                            "sbmig/fix/protocol.py", "sbmig/fix/prompts/system_v1.md", "sbmig/fix/prompts/user_v1.md.j2",
+                            "scripts/demo-kb/replay")
 _TICK = re.compile(r"`([^`\n]+)`")
 _LINK = re.compile(r"\]\(([^)\s#]+)(?:#[^)]*)?\)")
 _SKIP_CHARS = set("<>{}*…$@ \t\"'|,;()")
@@ -71,7 +79,7 @@ def test_handbook_paths_exist(doc: Path) -> None:
         t = tok.strip().rstrip("/")
         if not t or any(c in _SKIP_CHARS for c in t) or t.startswith(("http://", "https://", "/", "~")):
             continue
-        if t in LOCAL_FILES:
+        if t in LOCAL_FILES or t.startswith(V1_PATHS_PENDING_REWRITE):
             continue
         if t.startswith(TOP_LEVEL) or t in ROOT_FILES:
             if not (REPO / t).exists():

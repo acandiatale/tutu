@@ -63,7 +63,7 @@
           ]
         },
         {
-          "l2": "compile|other|exception java.io.ioexception is never thrown in",
+          "l2": "compile|other|exception java.io.ioexception is never thrown in body of corresponding try statement",
           "modes": [
             "new"
           ],

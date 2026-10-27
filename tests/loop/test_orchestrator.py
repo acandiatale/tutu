@@ -6,11 +6,9 @@ from __future__ import annotations
 
 import pytest
 
-from sbmig.core.models import (CaseType, ErrorKind, FileChange, MigrationPlan, Phase, PlanStep,
-                               RunReport, StepKind)
+from sbmig.core.models import CaseType, ErrorKind, MigrationPlan, Phase, PlanStep, RunReport, StepKind
 from sbmig.loop import MissingComponentError, NullKnowledgeBase, Orchestrator, lazy_attr
-from sbmig.triage import HandlerRegistry, Triager
-from sbmig.triage.handlers import Handler
+from sbmig.triage import Triager
 
 from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRestructurer, FakeReviewer, FakeRewriteRunner,
                     FakeScriptRunner, bad_build, compile_error, journal_events, make_profile, ok_build, v2_msa_plan,
@@ -25,33 +23,19 @@ def files_build(ws, call):
     return bad_build(*errs) if errs else ok_build()
 
 
-class PreHandler(Handler):
-    """A v1 pre-emptive handler: registered, never run by the v2 flow."""
-    id = "lombok-version-floor"
-    description = "fake lombok floor"
-
-    def matches(self, cluster, profile, cfg):
-        return False
-
-    def apply(self, ws, cluster=None, profile=None, cfg=None):
-        ws.write("pom.xml", "<project><lombok>1.18.38</lombok></project>\n")
-        return [FileChange(path="pom.xml", op="modify")]
-
-
 def fix_all(w, c, ctx):
     return write_script({e.file: "class X { ok }\n" for e in c.errors if e.file}, analysis="fixed")
 
 
 def make_orch(cfg, ws, *, plan=None, profile=None, build=None, fixer=None, kb=None, rewrite=None,
               restructurer=None, clock=None, runner=None, reviewer=None, **kw):
-    reg = HandlerRegistry([PreHandler()])
     kwargs = dict(
         analyzer=lambda w, c: profile or make_profile(),
         planner=lambda p, c, k: plan or v2_plan(),
         restructurer=restructurer or FakeRestructurer(),
         rewrite_runner=rewrite or FakeRewriteRunner(ws),
         build_runner=build or FakeBuildRunner(ws, fn=files_build),
-        triager=Triager(cfg, registry=reg), handlers=reg,
+        triager=Triager(cfg),
         fixer=fixer or FakeFixer(script_fn=fix_all),
         kb=kb or FakeKB(), llm=object(), script_runner=runner or FakeScriptRunner(),
         reviewer=reviewer if reviewer is not None else FakeReviewer(),
@@ -74,9 +58,7 @@ def test_v2_end_to_end(cfg, ws):
     assert [p.phase for p in report.phases] == [Phase.TRANSFORM, Phase.RESTRUCTURE, Phase.VERIFY]
     assert not report.phases[0].build_ok and report.phases[-1].attempts
     assert build.calls[-1]["label"] == "verify" and build.calls[-1]["goal"] == "clean package"
-    assert kb.harvests == [] and report.harvest is None
     log = ws._git("log", "--format=%s").stdout
-    assert "handlers:" not in log
     assert "rewrite: transform.rewrite" in log and "restructure: restructure.apply" in log
     assert "web.xml not migrated" in report.manual_followups and "check web.xml" in report.manual_followups
     assert report.llm_usage.calls == 1 and report.llm_usage.input_tokens == 100
@@ -90,8 +72,6 @@ def test_v2_end_to_end(cfg, ws):
     assert {"preflight", "analyze", "plan", "phase_start", "phase_end", "step_start", "step_end", "rewrite",
             "restructure", "structure_review", "verify", "report", "build"} <= ev
     assert not ev & {"handlers_preemptive", "harvest", "kb_credit"}
-    # plan-run recipes are recorded for the triager's bookkeeping
-    assert "org.openrewrite.java.migrate.UpgradeToJava21" in orch.triager.engine.recipes_run_any
 
 
 def test_report_md_follows_report_language(cfg, ws):
@@ -231,12 +211,11 @@ def test_restructure_crash(cfg, ws):
     assert any("crashed" in n for n in rs.notes) and not ws.exists("half.txt")
 
 
-def test_handler_step_is_skipped_and_test_compile_fallback_in_the_verify_loop(cfg, ws):
+def test_test_compile_fallback_in_the_verify_loop(cfg, ws):
     cfg.build.skip_test_compile = False
     cfg.loop.phases["verify"].max_iterations = 1        # one round: the test case is tried, not blocked
     terr = compile_error("src/test/java/T.java", kind=ErrorKind.TEST_COMPILE)
     plan = MigrationPlan(profile_fingerprint="x", case_type=CaseType.SPRING_BOOT, steps=[
-        PlanStep(id="transform.lombok-version-floor", kind=StepKind.HANDLER, phase=Phase.TRANSFORM, title="h"),
         PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY, title="v", build_goal="clean package")])
     build = FakeBuildRunner(ws, fn=lambda w, c: ok_build() if c["skip_test_compile"] else bad_build(terr))
     report = make_orch(cfg, ws, plan=plan, build=build, fixer=FakeFixer()).run()
@@ -244,8 +223,6 @@ def test_handler_step_is_skipped_and_test_compile_fallback_in_the_verify_loop(cf
     assert build.calls[-1]["skip_test_compile"] is True and build.calls[-1]["label"] == "verify"
     assert report.unresolved == [terr]
     assert any("-Dmaven.test.skip=true" in f for f in report.manual_followups)
-    assert "handlers:" not in ws._git("log", "--format=%s").stdout
-    assert any("handler steps are not part of the v2 flow" in n for n in report.phases[0].notes)
     md = (ws.run_dir / "report.md").read_text()
     assert "test-compile-skipped" in md and "T.java" in md
 
@@ -286,7 +263,7 @@ def test_missing_component_reports_workstream(cfg, ws, monkeypatch):
 def test_lazy_defaults_resolve(cfg, ws):
     """Default collaborators come from the other workstreams when they are importable."""
     orch = Orchestrator(cfg, ws)
-    assert orch.triager is not None and orch.handlers.get("lombok-version-floor") is not None
+    assert orch.triager is not None and not hasattr(orch, "handlers")
     for name in ("analyzer", "planner"):
         try:
             assert callable(getattr(orch, name))
@@ -306,7 +283,7 @@ def _finding(**kw):
     from sbmig.core.models import AdvisoryFinding
 
     base = dict(advisory_id="springfox", library="springfox", status="eol", title="Springfox is discontinued",
-                policy="recipe", recipes=["org.openrewrite.java.springdoc.SwaggerToSpringDoc"],
+                policy="guide",
                 replacement="org.springdoc:springdoc-openapi-starter-webmvc-ui", followup="check the UI path")
     base.update(kw)
     return AdvisoryFinding(**base)
@@ -319,7 +296,7 @@ def advisory_fakes(monkeypatch):
     calls = {"verify": 0, "followups": 0}
 
     def evaluate(profile, cfg, catalog=None):
-        return [_finding(), _finding(advisory_id="hystrix", library="hystrix", policy="guide", recipes=[],
+        return [_finding(), _finding(advisory_id="hystrix", library="hystrix", policy="guide",
                                      title="Hystrix is discontinued", followup="use resilience4j")]
 
     def verify(findings, view, cfg):
@@ -351,7 +328,7 @@ def test_finalize_verifies_advisories_and_builds_handover(cfg, ws, advisory_fake
     assert not [x for x in fh if x == "Hystrix is discontinued: use resilience4j"][1:]   # no duplicate
     ev = journal_events(ws)
     ver = next(e for e in ev if e["event"] == "advisories_verified")
-    assert ver["findings"] == [{"id": "springfox", "policy": "recipe", "outcome": "replaced"},
+    assert ver["findings"] == [{"id": "springfox", "policy": "guide", "outcome": "replaced"},
                                {"id": "hystrix", "policy": "guide", "outcome": "still-present"}]
     ho = next(e for e in ev if e["event"] == "handover")
     assert set(ho) >= {"changes", "carried_over", "from_here"} and ho["from_here"] == len(fh)

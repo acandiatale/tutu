@@ -10,7 +10,7 @@ Wire it in (config yml):
         base_url: https://llm-gateway.internal.example/api
         default_model: internal-coder-m
         models: {fix: internal-coder-l, fix_escalation: internal-coder-xl, plan_advisor: internal-small,
-                 recipe_candidate: internal-small}
+                 structure_review: internal-coder-l}
         timeout: 120
         max_retries: 3
         team: platform-migration              # sent as X-Team for chargeback

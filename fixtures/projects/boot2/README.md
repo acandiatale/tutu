@@ -22,11 +22,17 @@ Tests also pass on JDK 11 (`mvn -q test`).
 
 On **JDK 21** the same command fails with
 `Fatal error compiling: java.lang.NoSuchFieldError: Class com.sun.tools.javac.tree.JCTree$JCImport does not have member field 'com.sun.tools.javac.tree.JCTree qualid'`
-— lombok < 1.18.30 cannot run on javac 21. This is exactly the error the pre-emptive lombok handler
-(lombok ≥ 1.18.30 for JDK 21) must prevent before the first build of the jdk21 phase.
+— lombok < 1.18.30 cannot run on javac 21. v2 never builds before the restructure: the one OpenRewrite run
+(`UpgradeToJava21`) raises lombok first, so the build never sees this error (v1 had a pre-emptive handler for it).
 
 Expected migration hot spots: lombok floor, javax → jakarta (persistence, validation), Security 7 DSL
 (`WebSecurityConfigurerAdapter` → `SecurityFilterChain` bean, `antMatchers` → `requestMatchers`, lambda DSL),
 `spring.redis.*` → `spring.data.redis.*`, `@MockBean` → `@MockitoBean`, Boot 4 starter renames.
 
 Note: lombok is not expected in `optional_bumped` — `UpgradeToJava21` already raises it above the configured 1.18.38 and `artifacts.optional_version_policy: floor` (default) never downgrades.
+
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+
+Success, exit 0, **1 LLM call** (the replayed structure review: verdict `issues`, one warning about the `lombok.version`
+property), no fix script: the one OpenRewrite run (Java 21 + Boot 4 umbrella) and the restructure leave nothing for the
+build to fail on; commons-lang3 → 3.17.0.

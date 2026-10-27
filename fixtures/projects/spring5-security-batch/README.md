@@ -1,20 +1,22 @@
-# spring5-security-batch fixture (round 10: the deterministic paths for non-Boot Spring projects)
+# spring5-security-batch fixture (non-Boot Spring 5 + Security 5.7 + Batch 4.3: the largest v2 fix-script run)
 
 Spring Framework **5.3.31** without Boot (jar, Java 8, Java config only), **Spring Security 5.7.11** and **Spring Batch
-4.3.10** — the shape of the company's `APP/BATCH` + admin-console projects. Every migration problem in it has a
-deterministic path since round 10, so the run needs **no LLM call**:
+4.3.10** — the shape of the company's `APP/BATCH` + admin-console projects. v1 (tag `company-v1`, round 10) migrated
+all of it deterministically with no LLM call; v2 runs no Spring Framework 7 / Security / Batch recipes and no
+handlers, so the structure review and the fix scripts do it:
 
-| file | as-is | what migrates it (round 10 item) |
+| file | as-is | what fixes it in v2 (replayed answers) |
 |---|---|---|
-| `config/WebSecurityConfig` | `extends WebSecurityConfigurerAdapter`, `authorizeRequests().antMatchers(…)…and()`, `csrf().disable()` | plan set `spring_security_7` = `UpgradeSpringSecurity_6_0` (→ 5_8 → 5_7) … `6_5`, `7_0` → `SecurityFilterChain` bean, lambda DSL, `requestMatchers` (D1) |
-| `security/UrlAccessConfig`, `security/DbUrlSecurityMetadataSource` | eGovFrame-style DB URL authorization: `AccessDecisionManager` / `AffirmativeBased` / `RoleVoter`, `FilterInvocationSecurityMetadataSource`, `ConfigAttribute`, `new AntPathRequestMatcher(url, method)` | Security 7 moved the access API to `spring-security-access` → `add-known-dependency` (D3, version aligned with the declared Security version); `AntPathRequestMatcher` removed → handler `security-path-pattern-matcher` (D6) |
-| `batch/BatchConfig`, `batch/CleanupTasklet` | `JobBuilderFactory` / `StepBuilderFactory`, `org.springframework.batch.item.support.ListItemReader`, `…batch.repeat.RepeatStatus` | `knowledge/recipes/library_recipes.yml` → `SpringBatch5To6Migration` (D2): `JobBuilder` / `StepBuilder` with `JobRepository` + `PlatformTransactionManager`, `…batch.infrastructure.*` |
-| `web/MvcConfig` | `setUseSuffixPatternMatch(false).setUseTrailingSlashMatch(true)`, `favorPathExtension(false)`, `HttpHeaders.containsKey / keySet` | project recipe `com.company.migrate.Spring7RemovedApis` (D9) |
-| `util/TokenCodec` | `sun.misc.BASE64Encoder` / `BASE64Decoder` | handler `jdk-base64-shim` (D5): generated `sbmig.compat.*` drop-ins, call sites unchanged |
+| `config/WebSecurityConfig` | `extends WebSecurityConfigurerAdapter`, `authorizeRequests().antMatchers(…)…and()`, `csrf().disable()` | fix script: a `SecurityFilterChain` bean with the lambda DSL (`authorizeHttpRequests` / `requestMatchers` / `formLogin` / `csrf`) |
+| `security/UrlAccessConfig`, `security/DbUrlSecurityMetadataSource` | eGovFrame-style DB URL authorization: `AccessDecisionManager` / `AffirmativeBased` / `RoleVoter`, `FilterInvocationSecurityMetadataSource`, `ConfigAttribute`, `new AntPathRequestMatcher(url, method)` | fix scripts: declare `spring-security-access` (one answer for the nine access-API cases); `AntPathRequestMatcher` → `PathPatternRequestMatcher.pathPattern` |
+| `batch/BatchConfig`, `batch/CleanupTasklet` | `JobBuilderFactory` / `StepBuilderFactory`, `org.springframework.batch.item.support.ListItemReader`, `…batch.repeat.RepeatStatus` | fix scripts: Batch 6 packages (`…batch.infrastructure.*`, `StepContribution` → `core.step`); `JobBuilder` / `StepBuilder` with the `JobRepository` bean |
+| `web/MvcConfig` | `setUseSuffixPatternMatch(false).setUseTrailingSlashMatch(true)`, `favorPathExtension(false)`, `HttpHeaders.containsKey / keySet` | fix scripts: suffix-pattern / trailing-slash / path-extension matching removed; `HttpHeaders` → `containsHeader` / `headerNames` |
+| `util/TokenCodec` | `sun.misc.BASE64Encoder` / `BASE64Decoder` | fix script: `java.util.Base64`; javac then reports the `catch (IOException)` it leaves as a new case, fixed in round 3 |
 
-Verified 2026-10-26 by a probe outside sbmig: the planned jdk21 + spring recipe runs (rewrite-maven-plugin 6.46.1,
-rewrite-spring 6.37.0, rewrite-migrate-java 3.42.0) plus the two reactive handlers compile on JDK 21 against Spring 7.0,
-Security 7.0 / 7.1 and Batch 6.0 (also with the versions spring-boot-starter-parent 4.1.0 manages).
+Before any build, the structure review finds the as-is `spring-batch.version` (4.3.10 — there is no
+`spring-batch-bom` 4.3.10), `spring-security.version` and `spring.version` overriding the Boot parent's own properties:
+**3 critical** issues; its script removes them and the explicit Spring versions so the parent manages Spring 7 /
+Security 7 / Batch 6.
 
 ## Build as-is
 
@@ -23,8 +25,8 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
   mvn -q -DskipTests package
 ```
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-success, exit 0, **0 LLM calls**, nothing blocked; flags `jdk-base64-shimmed`, `security-path-matchers-rewritten`;
-advisory `jdk-removed-apis` replaced; `module/comp-jar/pom.xml` declares `spring-security-access`; `post_checks` on every
-migrated file.
+Success, exit 0, **11 LLM calls** (review + 10 new fix scripts over 3 rounds), nothing blocked; advisory
+`jdk-removed-apis` = `guide`; `module/comp-jar/pom.xml` declares `spring-security-access`, `spring-context` /
+`spring-batch-core` unversioned, no `<spring-batch.version>` left; `post_checks` on every migrated file.

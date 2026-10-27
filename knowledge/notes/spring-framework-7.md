@@ -58,16 +58,15 @@ phases: [spring]
   (`setConnectTimeout(Duration.ofMillis(x))`); if `setReadTimeout` is missing, configure `SocketConfig`/`ConnectionConfig` on the HttpClient 5 connection manager.
 - `SimpleClientHttpRequestFactory.setConnectTimeout(int)` → `setConnectTimeout(Duration)`.
 - `HttpHeaders` no longer implements `MultiValueMap` (7.0): `headers.containsKey(n)` → `containsHeader(n)`,
-  `keySet()` → `headerNames()`, `entrySet()` → `headerSet()` (round 10: the project recipe
-  `com.company.migrate.Spring7RemovedApis` renames these three), passing it where a `MultiValueMap`/`Map` is expected →
+  `keySet()` → `headerNames()`, `entrySet()` → `headerSet()`, passing it where a `MultiValueMap`/`Map` is expected →
   `headers.asMultiValueMap()` (deprecated bridge) or copy; `get`, `getFirst`, `add`, `set`, `addAll`, `forEach` remain.
 
 ## Jackson 3 message converters / views (round 10)
 - The Framework 7 chain (UpgradeJackson_2_3) moves the project's Jackson code to `tools.jackson.*`; Spring keeps its
-  Jackson 2 classes (deprecated) whose constructors take `com.fasterxml.jackson.databind.ObjectMapper`. The project recipe
-  `com.company.migrate.Jackson3SpringConverters` renames `MappingJackson2HttpMessageConverter` →
-  `JacksonJsonHttpMessageConverter`, `MappingJackson2JsonView` → `JacksonJsonView`, `MappingJackson2XmlHttpMessageConverter`
-  → `org.springframework.http.converter.xml.JacksonXmlHttpMessageConverter`, `MappingJackson2XmlView` → `JacksonXmlView`.
+  Jackson 2 classes (deprecated) whose constructors take `com.fasterxml.jackson.databind.ObjectMapper`. Their Jackson 3
+  twins: `MappingJackson2HttpMessageConverter` → `JacksonJsonHttpMessageConverter`, `MappingJackson2JsonView` →
+  `JacksonJsonView`, `MappingJackson2XmlHttpMessageConverter` →
+  `org.springframework.http.converter.xml.JacksonXmlHttpMessageConverter`, `MappingJackson2XmlView` → `JacksonXmlView`.
 - Constructor arguments: the Jackson 3 twins take `tools.jackson.databind.json.JsonMapper` (XML: `XmlMapper`) or its
   `Builder`, not `ObjectMapper` — `new JacksonJsonHttpMessageConverter(objectMapper)` with an `ObjectMapper` does not
   compile: declare the bean as `JsonMapper` (`JsonMapper.builder()…build()`), or pass `(JsonMapper) objectMapper` when it
@@ -85,8 +84,7 @@ phases: [spring]
 - `PathPatternParser` is the only option for annotated controllers in 7.0: `PathMatchConfigurer.setUseSuffixPatternMatch`,
   `setUseTrailingSlashMatch`, `setUseRegisteredSuffixPatternMatch` removed (`setPathMatcher` still exists, deprecated) →
   delete the call + `// MIGRATION-TODO: suffix/trailing-slash matching removed`. `ContentNegotiationConfigurer.favorPathExtension`
-  / `ignoreUnknownPathExtensions` removed → delete. Round 10: `com.company.migrate.Spring7RemovedApis` deletes these calls
-  (chained ones too) wherever OpenRewrite attributed the types; the fix loop only sees files it could not parse.
+  / `ignoreUnknownPathExtensions` removed → delete (chained calls too).
 - PathPattern syntax: `**` only at the end of a pattern (`/api/**/x` invalid) → `/api/{*rest}` or explicit segments.
 
 ## Nullability / Kotlin / retry

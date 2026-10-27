@@ -23,10 +23,11 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-18.0.2/Co
   mvn -q -DskipTests package
 ```
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* planner treats `common` as a migration target (every in-repo root pom), MSA pom-only restructure
-* `common` and both services end on **jakarta** (`TraceIdFilter` → `jakarta.servlet.*` / `jakarta.annotation.PostConstruct`)
-* `common/pom.xml` gets the in-house parent (local-e2e: `org.springframework.boot:spring-boot-starter-parent:4.1.0`)
-  but **none** of the mandatory dependencies (it is a library, not a service)
-* `success = true`, exit 0, `llm_usage.calls == 0`
+* planner treats `common` as a migration target (every in-repo root pom), MSA pom-only restructure; `common` ends on
+  **jakarta** (`TraceIdFilter` → `jakarta.servlet.*` / `jakarta.annotation.PostConstruct`) and gets the in-house parent
+  (local-e2e: `org.springframework.boot:spring-boot-starter-parent:4.1.0`) but **none** of the mandatory dependencies
+* order-service: 3 new fix scripts — the `javax.validation.constraints` and `javax.validation` imports → jakarta (two
+  cases, one script each), `RestTemplateBuilder` → `org.springframework.boot.restclient` + `spring-boot-starter-restclient`
+* `success = true`, exit 0, **4 LLM calls** (review with 2 warnings + 3 scripts)

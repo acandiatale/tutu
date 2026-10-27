@@ -1,4 +1,5 @@
-"""Catalog E1/E3: encoding-preserving Workspace I/O, cp949 zip entry names, PatchApplier keeps legacy encodings."""
+"""Catalog E1/E3: encoding-preserving Workspace I/O, cp949 zip entry names, the fix-script helper API (`p`) keeps
+legacy encodings."""
 from __future__ import annotations
 
 import zipfile
@@ -6,9 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from sbmig.core.models import FileChange
 from sbmig.core.workspace import Workspace, detect_encoding, fix_zip_name
-from sbmig.fix.apply import PatchApplier
+from sbmig.script.api import FixHelper
 
 KOREAN = "// 한글 주석입니다 (설명)\n"
 JAVA = "package com.acme;\n" + KOREAN + "public class A {\n    String s = \"안녕하세요\";\n    int x = 1;\n}\n"
@@ -159,14 +159,13 @@ def test_zip_utf8_flag_names_untouched_and_slip_guard(tmp_path: Path):
         Workspace.from_input(bad, tmp_path / "out", run_id="bad")
 
 
-# ---------------------------------------------------------------------------- PatchApplier (E1)
-def test_patch_on_cp949_file_preserves_bytes_outside_span(ws: Workspace):
+# ---------------------------------------------------------------------------- fix-script helper API `p` (E1)
+def test_script_replace_on_cp949_crlf_file_preserves_bytes_outside_span(ws: Workspace):
     data = JAVA.replace("\n", "\r\n").encode("cp949")
     _put(ws, "src/main/java/com/acme/A.java", data)
-    change = FileChange(path="src/main/java/com/acme/A.java", op="modify", search="int x = 1;",
-                        replace="long x = 1L;")
-    applied, errors = PatchApplier(ws).apply([change])
-    assert applied and not errors
+    p = FixHelper(ws.root)
+    assert "안녕하세요" in p.read("src/main/java/com/acme/A.java")          # read in its detected encoding
+    assert p.replace("src/main/java/com/acme/A.java", "int x = 1;", "long x = 1L;") == 1
     after = ws.abs("src/main/java/com/acme/A.java").read_bytes()
     i = data.index(b"int x = 1;")
     assert after[:i] == data[:i]
@@ -175,10 +174,12 @@ def test_patch_on_cp949_file_preserves_bytes_outside_span(ws: Workspace):
     assert "한글 주석" in after.decode("cp949")
 
 
-def test_patch_rename_keeps_source_encoding(ws: Workspace):
+def test_script_move_keeps_source_encoding(ws: Workspace):
     data = JAVA.encode("cp949")
     _put(ws, "A.java", data)
-    applied, errors = PatchApplier(ws).apply([FileChange(path="A.java", op="rename", new_path="B.java")])
-    assert applied and not errors
+    p = FixHelper(ws.root)
+    assert p.move("A.java", "B.java")
     assert not ws.exists("A.java")
     assert ws.abs("B.java").read_bytes() == data
+    assert p.replace("B.java", "int x = 1;", "int x = 2;") == 1               # the moved file keeps cp949 on write
+    assert ws.abs("B.java").read_bytes() == data.replace(b"int x = 1;", b"int x = 2;")

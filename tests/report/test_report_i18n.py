@@ -22,11 +22,11 @@ from .test_report import sample_report
 
 KO = STRINGS["ko"]
 EN_HEADINGS = ("# Migration report — ", "## Handover — what we replaced, what is yours", "## Unresolved errors",
-               "## Manual follow-ups", "## Flags", "## What we changed", "## Phases", "## Knowledge base",
+               "## Manual follow-ups", "## Flags", "## What we changed", "## Phases",
                "### Versions replaced", "### Libraries needing your attention", "### From here on, your team",
                "### Properties to set before running", "| Run id |", "**Merge conflicts**")
 KO_HEADINGS = ("# 마이그레이션 보고서 — ", "## 인수인계 — 교체한 것과 이제 팀이 맡을 것", "## 미해결 오류",
-               "## 수동 후속 조치", "## 플래그", "## 변경 내역", "## 단계별 결과", "## 지식 베이스",
+               "## 수동 후속 조치", "## 플래그", "## 변경 내역", "## 단계별 결과",
                "### 교체된 버전", "### 조치가 필요한 라이브러리", "### 이후 담당 팀이 할 일",
                "### 실행 전에 설정할 프로퍼티", "| 실행 ID |", "**병합 충돌**")
 
@@ -34,7 +34,7 @@ KO_HEADINGS = ("# 마이그레이션 보고서 — ", "## 인수인계 — 교�
 def _full_report(tmp_path, cfg):
     """Handover with versions, advisories, merge conflicts, properties, blocked, unresolved and flags."""
     blocked = BlockedItem(id="b1", reason=BlockReason.EXTERNAL_JAVAX_API, phase=Phase.SPRING, cluster_id="c")
-    report = make_report(blocked=[blocked], flags=["test-compile-skipped", "managed-versions-carried-over"],
+    report = make_report(blocked=[blocked], flags=["test-compile-skipped", "rewrite-parse-problems"],
                          unresolved=[BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol",
                                                 file="src/A.java", line=3, symbol="class Foo")],
                          merge_conflicts=[DIFFERING, IDENTICAL], properties=inventory(), success=False)
@@ -72,15 +72,15 @@ def test_blocked_not_building_in_korean():
     assert "<details><summary><code>blk-1</code> — 오류 1건</summary>" in ko
     assert "마지막 빌드 후 남은 오류 5건 (차단된 클러스터 제외, 파일별):" in ko
     assert "### `모듈 core`" in ko and "### `(파일 없음)`" in ko
-    assert "| 시작 / 종료 |" in ko and "(2분 05초)" in ko and "핸들러 `lombok-version-floor`" in ko
+    assert "| 시작 / 종료 |" in ko and "(2분 05초)" in ko and "`script:c2:v2` reuse (ok)" in ko
+    assert "- + 어드바이저리 hystrix" in ko and "핸들러" not in ko
     assert "## 에스컬레이션된 클러스터" in ko and "- 계획: plan note" in ko and "- spring: spring note" in ko
     assert "Blocked —" not in ko and "item(s)" not in ko and "error(s)" not in ko
 
 
 def test_success_in_korean():
-    ok = render_markdown(sample_report(success=True).model_copy(update={"harvest": None, "timings_s": {}}),
-                         language="ko")
-    assert "✅ 빌드 성공" in ok and "없음. 최종 빌드가 통과했다." in ok and "수집한 항목 없음." in ok
+    ok = render_markdown(sample_report(success=True).model_copy(update={"timings_s": {}}), language="ko")
+    assert "✅ 빌드 성공" in ok and "없음. 최종 빌드가 통과했다." in ok and "지식 베이스" not in ok
     assert "BUILD SUCCESS" not in ok and "이번 실행에서 기록된 버전 변경과 라이브러리 어드바이저리가 없다." in ok
 
 

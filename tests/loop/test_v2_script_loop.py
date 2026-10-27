@@ -6,13 +6,12 @@ from __future__ import annotations
 from sbmig.core.models import BlockReason, BuildError, DecisionKind, ErrorKind, Phase
 from sbmig.loop import BuildFixLoop, LazyFixer, LoopBudget, NullKnowledgeBase
 from sbmig.loop.error_tracker import ErrorTracker
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
 from .fakes import (
     FakeBuildRunner,
     FakeFixer,
     FakeKB,
-    FakeRewriteRunner,
     FakeScriptRunner,
     bad_build,
     case_of,
@@ -41,9 +40,9 @@ def broken_build(*files: str, l2: str = L2):
 
 
 def make_loop(cfg, ws, build, fixer=None, *, kb=None, runner=None, profile=None, **kw) -> BuildFixLoop:
-    triager = Triager(cfg, registry=HandlerRegistry())
-    return BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=build), triager, triager.registry,
-                        fixer or FakeFixer(), kb if kb is not None else FakeKB(), FakeRewriteRunner(ws),
+    triager = Triager(cfg)
+    return BuildFixLoop(cfg, ws, FakeBuildRunner(ws, fn=build), triager,
+                        fixer or FakeFixer(), kb if kb is not None else FakeKB(),
                         profile or make_profile(), budget=LoopBudget.from_config(cfg),
                         script_runner=runner or FakeScriptRunner(), **kw)
 

@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import importlib
 import logging
-from pathlib import Path
 from typing import Any, Callable, Optional
 
-from sbmig.core.models import HarvestResult, KBMatch, KBRecipe, ScriptRunResult
+from sbmig.core.models import KBMatch, ScriptRunResult
 
 log = logging.getLogger("sbmig.loop")
 
@@ -33,44 +32,22 @@ class ScriptFixerMissing(RuntimeError):
 
 
 class NullKnowledgeBase:
-    """KnowledgeBaseLike that knows nothing (used with --no-kb or when sbmig.kb is unavailable). v2: no script store
-    (`scripts` None: nothing is reused, LLM scripts run unstored as v0) and no review log."""
+    """The knowledge base that knows nothing (``--no-kb``, or sbmig.kb unavailable) — what the v2 flow calls on a KB:
+    `match` (an empty KBMatch: no pinned case actions), `scripts` None (nothing is reused, LLM scripts run unstored as
+    v0) and `record_review` (nothing recorded). No `append_error_cases`: a run without a KB writes its error cases
+    into the run directory only."""
 
     scripts = None
 
     def match(self, cluster, ws, profile) -> KBMatch:
         return KBMatch()
 
-    def active_recipe_files(self) -> list[Path]:
-        return []
-
-    def active_recipe_ids(self) -> list[str]:
-        return []
-
-    def record_case(self, case) -> str:
-        return case.id
-
-    def credit_recipe(self, recipe_id: str, success: bool, project_fingerprint: str) -> None:
+    def record_review(self, review) -> None:
         return None
-
-    def harvest(self, phase_result, profile, ws, llm=None) -> HarvestResult:
-        return HarvestResult()
-
-    def list_recipes(self, status: Optional[str] = None) -> list[KBRecipe]:
-        return []
-
-    def promote(self, recipe_id: str) -> KBRecipe:  # pragma: no cover - never used by the loop
-        raise KeyError(recipe_id)
-
-    def reject(self, recipe_id: str, reason: str = "") -> KBRecipe:  # pragma: no cover
-        raise KeyError(recipe_id)
-
-    def reindex(self) -> int:
-        return 0
 
 
 class LazyFixer:
-    """FixerLike proxy that creates the real fixer (and its LLM client) only when first needed."""
+    """Fixer proxy that creates the real fixer (and its LLM client) only when the first fix script is asked for."""
 
     def __init__(self, factory: Callable[[], Any]):
         self._factory = factory
@@ -81,31 +58,15 @@ class LazyFixer:
             self._fixer = self._factory()
         return self._fixer
 
-    def propose(self, ws, cluster, ctx):
-        return self._get().propose(ws, cluster, ctx)
-
     def propose_script(self, ws, cluster, ctx):
-        """v2 (ScriptFixerLike). A fixer without `propose_script` (a v1 tier-2 plugin) raises ScriptFixerMissing:
-        v2 has no SEARCH/REPLACE fallback (docs/INTERFACES.md "Seams")."""
+        """A fixer without `propose_script` (a tier-2 plugin written for v1) raises ScriptFixerMissing: v2 fixes every
+        error with a fix script (docs/INTERFACES.md "Seams")."""
         fx = self._get()
         fn = getattr(fx, "propose_script", None)
         if not callable(fn):
             raise ScriptFixerMissing(f"the fixer {type(fx).__name__} has no propose_script — v2 fixes every error with "
-                                     "a fix script; a fix.plugin must implement ScriptFixerLike")
+                                     "a fix script; a fix.plugin must implement propose_script(ws, cluster, ctx)")
         return fn(ws, cluster, ctx)
-
-    def apply(self, ws, changes):
-        """Applying a patch needs no LLM: when the real fixer cannot be built (no LLM configured, plugin import
-        failed) the plain `PatchApplier` applies it, so KB patch replays work in runs without an LLM."""
-        if self._fixer is None:
-            try:
-                self._get()
-            except Exception as e:
-                log.info("fixer unavailable for a patch replay (%s: %s); applying with PatchApplier",
-                         type(e).__name__, e)
-                from sbmig.fix.apply import PatchApplier
-                return PatchApplier(ws).apply(list(changes))
-        return self._fixer.apply(ws, changes)
 
 
 def basic_profile_summary(profile) -> str:

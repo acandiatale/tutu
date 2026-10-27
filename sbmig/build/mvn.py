@@ -125,8 +125,8 @@ def settings_catch_all_mirror(cfg: Config) -> Optional[bool]:
 
 def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
     """Operator notes about repositories the project poms declare (`PomInfo.repositories`): empty when the poms
-    declare none or `build.pom_repositories: remove` strips them; otherwise one note saying whether the settings
-    file mirrors them. The note starts with `followup:` when Maven would contact the declared URLs directly."""
+    declare none; otherwise one note saying whether the settings file mirrors them. The note starts with
+    `followup:` when Maven would contact the declared URLs directly."""
     urls: list[str] = []
     for p in poms:
         for u in getattr(p, "repositories", []) or []:
@@ -135,13 +135,6 @@ def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
     if not urls:
         return []
     shown = ", ".join(urls[:5]) + (f" (+{len(urls) - 5} more)" if len(urls) > 5 else "")
-    policy = getattr(cfg.build, "pom_repositories", "keep")
-    if policy == "remove":
-        hint = ("" if settings_catch_all_mirror(cfg) else
-                " — make sure build.settings_file mirrors everything (mirrorOf external:*), the removed URLs were the "
-                "only route otherwise")
-        return [(f"poms declare {len(urls)} repository URL(s) ({shown}); build.pom_repositories=remove strips them "
-                 f"before the first build{hint}")]
     mirror = settings_catch_all_mirror(cfg)
     if mirror:
         return [(f"poms declare {len(urls)} repository URL(s) ({shown}); routed through the settings mirror "
@@ -150,7 +143,7 @@ def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
              f"{cfg.build.settings_file} has no catch-all <mirrorOf>*</mirrorOf> / external:* mirror")
     return [(f"followup: poms declare {len(urls)} repository URL(s) ({shown}) and {where}: Maven contacts them directly "
              "(unreachable → resolution failures / long timeouts). Copy config/settings.nexus.example.xml, set the Nexus "
-             "group URL and point build.settings_file at it; or set build.pom_repositories: remove")]
+             "group URL and point build.settings_file at it")]
 
 
 def local_repo_path(cfg: Config) -> Path:

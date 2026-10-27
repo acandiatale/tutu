@@ -8,10 +8,9 @@ Implementations (module → class):
     sbmig.rewrite.runner.OpenRewriteRunner          (RewriteRunnerLike)
     sbmig.build.runner.MavenRunner                  (BuildRunnerLike)
     sbmig.triage.triager.Triager                    (TriagerLike)
-    sbmig.triage.handlers.HandlerRegistry           (HandlerLike items)
     sbmig.fix.client.*                              (LLMClientLike)
-    sbmig.fix.fixer.LLMFixer                        (FixerLike)
-    sbmig.kb.store.FileKnowledgeBase                (KnowledgeBaseLike, ScriptKnowledgeLike)
+    sbmig.fix.fixer.LLMFixer                        (FixerLike = ScriptFixerLike)
+    sbmig.kb.store.FileKnowledgeBase                (KnowledgeBaseLike = ScriptKnowledgeLike)
     sbmig.loop.orchestrator.Orchestrator            drives everything
 v2 (flow-v2, docs/v2/PLAN-v2.md):
     sbmig.script.ScriptRunner                       (ScriptRunnerLike)      fix scripts: static check + `python -I` run
@@ -32,17 +31,11 @@ from .models import (
     CaseType,
     BuildResult,
     ErrorCluster,
-    FileChange,
     FixAttempt,
-    FixProposal,
     GAV,
-    HarvestResult,
-    KBCase,
     KBMatch,
-    KBRecipe,
     MergeConflict,
     Phase,
-    PhaseResult,
     PluginInfo,
     ProjectProfile,
     RecipeRef,
@@ -74,8 +67,8 @@ class LLMResponse(BaseModel):
 
 
 # Who is asking — lets an in-house gateway / agent platform route or budget by purpose.
-LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "recipe_candidate", "structure_review", "other"]
-# v2: fix scripts keep role fix / fix_escalation; the structure review asks with role structure_review
+LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "structure_review", "other"]
+# fix scripts use fix / fix_escalation; the structure review asks with structure_review; the plan advisor plan_advisor
 
 
 class LLMRequest(BaseModel):
@@ -234,16 +227,6 @@ class TriageContext(BaseModel):
 
 
 @runtime_checkable
-class HandlerLike(Protocol):
-    """Deterministic fix. `matches` must be cheap and side-effect free."""
-    id: str
-    description: str
-
-    def matches(self, cluster: ErrorCluster, profile: ProjectProfile, cfg: Config) -> bool: ...
-    def apply(self, ws: Workspace, cluster: ErrorCluster, profile: ProjectProfile, cfg: Config) -> list[FileChange]: ...
-
-
-@runtime_checkable
 class TriagerLike(Protocol):
     def cluster(self, errors: list[BuildError], profile: ProjectProfile) -> list[ErrorCluster]: ...
     def decide(self, cluster: ErrorCluster, kb_match: KBMatch, ctx: TriageContext, profile: ProjectProfile) -> TriageDecision: ...
@@ -274,20 +257,15 @@ class FixContext(BaseModel):
 
 @runtime_checkable
 class FixerLike(Protocol):
-    def propose(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> FixProposal: ...
-    def apply(self, ws: Workspace, changes: list[FileChange]) -> tuple[list[FileChange], list[str]]:
-        """Apply changes; return (applied, errors). Must be atomic per file and never leave partial edits."""
-        ...
-
-
-@runtime_checkable
-class ScriptFixerLike(Protocol):
-    """v2: the fixer answers with a fix script instead of SEARCH/REPLACE blocks. `ctx.script_mode` = "new" (no
+    """The fixer seam (invariant 4; tier 2 `fix.plugin`): the fixer answers a case with a fix script. `ctx.script_mode` = "new" (no
     stored script for the case) or "augment" (`ctx.script_base` = the version to extend; the answer must be the
     COMPLETE new script — it replaces the base and runs on a tree where the base was rolled back). The cluster is one
     case (L2) and may span many files; `<need_file>` rounds stay inside the fixer. Never raises: a failure is
     `ScriptProposal(code="", error=...)` (transport errors keep the v1 analysis prefixes the loop classifies)."""
     def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal: ...
+
+
+ScriptFixerLike = FixerLike          # the name step 1 introduced; one seam since step 4
 
 
 # ---------------------------------------------------------------------------
@@ -343,22 +321,13 @@ class StructureReviewerLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class KnowledgeBaseLike(Protocol):
+    """The file KB (sbmig.kb.store.FileKnowledgeBase): catalog hits for a cluster's case, the per-case script store,
+    the review log and the catalog rebuild. `NullKnowledgeBase` (`--no-kb`) answers with nothing."""
+    scripts: Optional[ScriptStoreLike]
+
     def match(self, cluster: ErrorCluster, ws: Workspace, profile: ProjectProfile) -> KBMatch: ...
-    def active_recipe_files(self) -> list[Path]: ...
-    def active_recipe_ids(self) -> list[str]: ...
-    def record_case(self, case: KBCase) -> str: ...
-    def credit_recipe(self, recipe_id: str, success: bool, project_fingerprint: str) -> None: ...
-    def harvest(self, phase_result: PhaseResult, profile: ProjectProfile, ws: Workspace,
-                llm: Optional[LLMClientLike] = None) -> HarvestResult: ...
-    def list_recipes(self, status: Optional[str] = None) -> list[KBRecipe]: ...
-    def promote(self, recipe_id: str) -> KBRecipe: ...
-    def reject(self, recipe_id: str, reason: str = "") -> KBRecipe: ...
+    def record_review(self, review: StructureReview) -> None: ...             # one line in <kb>/reviews.jsonl
     def reindex(self) -> int: ...
 
 
-@runtime_checkable
-class ScriptKnowledgeLike(Protocol):
-    """v2 additions of the file KB (sbmig.kb.store.FileKnowledgeBase): the per-case script store and the review log."""
-    scripts: ScriptStoreLike
-
-    def record_review(self, review: StructureReview) -> None: ...             # one line in <kb>/reviews.jsonl
+ScriptKnowledgeLike = KnowledgeBaseLike   # the name step 1 introduced; one protocol since step 4

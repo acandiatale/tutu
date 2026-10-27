@@ -20,15 +20,19 @@ the 3.2+ plugin of the Boot 4 parents the filtered xlsx / mp4 fail the build wit
 Migration (company layout; `sbmig.e2e.yml` as in `company-servlet-jsp`):
 
 * `ndirs-back` — `APP/src/**` (on `jakarta.servlet`) and `STATIC/resources/**` at the same relative paths, the copied
-  `<sourceDirectory>APP/src` / `<resource><directory>STATIC/resources` entries; `resources-binary-filtering` adds
+  `<sourceDirectory>APP/src` / `<resource><directory>STATIC/resources` entries; the structure review's script adds
   `<nonFilteredFileExtensions>` so `sample.xlsx` / `intro.mp4` reach `target/classes` byte-identical;
 * `ndirs-front` — the JSPs under `src/main/resources/META-INF/resources/` (`index.jsp`, `WEB-INF/jsp/report.jsp`
-  with `jakarta.servlet.http.HttpSession`), `static/css/app.css`, `static/img/logo.png`;
+  keeps `javax.servlet.http.HttpSession`: v2 renames nothing inside JSPs), `static/css/app.css`, `static/img/logo.png`;
 * `ndirs-boot` — WAR (JSPs), generated `WebXmlRegistrations` for the filter + servlet, `web.xml` stashed under
   `asis-webinf/`; no `warSourceDirectory` in its pom;
 * nothing of `STATIC/` is left at the root; `DB/` stays where it is.
 
-Expected: BUILD SUCCESS, exit 0, 0 LLM calls, flags `web-xml-registered` + `jsp-javax-renamed`.
+Expected (v2, `expected.json` → `expect`): BUILD SUCCESS, exit 0, **1 LLM call**, no fix script, flag
+`web-xml-registered`. The structure review's input lists the binary files under the filtered `STATIC/resources`
+as a fact; the replayed review reports it as **critical** and its script adds `nonFilteredFileExtensions` xlsx / mp4
+to `ndirs-back/pom.xml` (committed; the resources plugin 2.6 pin is a warning). The JSPs keep `javax.servlet` (not
+compiled by the build; Tomcat 10+ needs them on jakarta — an open point, fixtures/projects/README.md).
 
 As-is build (JDK 8):
 

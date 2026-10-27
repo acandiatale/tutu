@@ -1,8 +1,9 @@
 """Sequential fleet runner: ONE agent migrates N projects one after the other, feeding one shared KB.
 
-Every project's fixes are harvested into the KB (cases, labels, ledger, symbol index, recipe candidates)
-before the next project starts, so project k+1 already plans with the recipes project k produced, gets the
-symbol hints in its LLM prompts, and credits (→ auto-promotes) the candidates that work for it.
+Every project's error cases and fix scripts go into the KB (``errors.jsonl`` / ``fix_attempts.jsonl``, the case
+catalog, ``scripts/<case>/v<N>.py``) before the next project starts, so project k+1 re-runs the scripts project k
+stored for the same error signature (reuse → augment → new, PLAN-v2 §3.1) and credits (→ promotes) the versions that
+work for it.
 
 State lives in ``<out>/fleet/state.json`` (:class:`FleetState`), rewritten atomically after every project,
 so a killed fleet resumes where it stopped (``sbmig fleet run`` is resumable by default). Projects are identified by
@@ -40,8 +41,7 @@ from typing import Any, Callable, Optional
 import yaml
 
 from sbmig.core.config import Config, _apply_env_overrides, _expand_env, deep_merge
-from sbmig.core.models import CaseType, DecisionKind, FleetProjectResult, FleetState, RunReport, utcnow
-from sbmig.kb.recipes import is_kb_recipe_name
+from sbmig.core.models import CaseType, FleetProjectResult, FleetState, RunReport, utcnow
 from sbmig.report.result_line import infra_kind, result_attention, result_line
 
 from .manifest import FleetProject, input_key, load_manifest
@@ -55,7 +55,6 @@ EXIT_STOPPED_ON_INFRA = 3          # stopped by the infrastructure guard (state 
 INFRA_PREFIX = "infra:"
 MAX_INFRA_REQUEUES = 2             # a deferred project is re-run at most this often per fleet process
 NO_CONSOLE = {"sbmig_console": False}   # fleet/sbmig.log only: the console already got the line via `echo`
-SUCCESS_OUTCOMES = ("improved", "build_ok")
 CASE_RANK = {
     CaseType.PURE_JAVA: 0,
     CaseType.SERVLET_TOMCAT: 1,
@@ -167,10 +166,9 @@ class FleetRunner:
     # ------------------------------------------------------------------ kb
     @property
     def kb(self) -> Any:
-        """One FileKnowledgeBase for the whole fleet: its in-memory index cache stays warm and
-        auto-promotions / recorded blocked items are tracked across projects. Everything is written to
-        files immediately, so a new instance per project would see the same KB — sharing just avoids
-        re-reading the index 500 times."""
+        """One FileKnowledgeBase for the whole fleet: its caches (known record ids, parsed case files) stay warm
+        across projects. Everything is written to files immediately, so a new instance per project would see the
+        same KB — sharing just avoids re-reading it 500 times."""
         if self._kb is None:
             from sbmig.kb import FileKnowledgeBase
 
@@ -301,18 +299,6 @@ class FleetRunner:
             rid = f"{base}-{n}"
         return rid
 
-    def _is_kb_recipe(self, rid: str) -> bool:
-        if is_kb_recipe_name(rid):                    # one PascalCase word (or the legacy com.company.kb. name)
-            return True
-        try:
-            return (
-                self._kb is not None
-                and hasattr(self._kb, "get_recipe")
-                and self._kb.get_recipe(rid) is not None
-            )
-        except Exception:  # pragma: no cover
-            return False
-
     def fill_result(self, r: FleetProjectResult, report: RunReport, code: int) -> None:
         r.exit_code = code
         r.status = _status_for(code)  # type: ignore[assignment]
@@ -334,27 +320,6 @@ class FleetRunner:
         r.flags = list(report.flags)
         r.advisories = [f"{f.advisory_id}:{f.outcome}" for f in report.advisories]
         r.carried_over = len(report.handover.carried_over) if report.handover is not None else 0
-        h = report.harvest
-        r.kb_cases_created = list(h.cases_created) if h else []
-        r.kb_candidates_created = list(h.candidates_created) if h else []
-        r.kb_recipes_promoted = list(h.recipes_promoted) if h else []
-        used: list[str] = []
-        for pr in report.phases:
-            for a in pr.attempts:
-                if not (a.applied and a.outcome in SUCCESS_OUTCOMES):
-                    continue
-                if a.decision.kind == DecisionKind.KB_RECIPE:
-                    used += [x for x in a.decision.recipe_ids if self._is_kb_recipe(x)]
-                elif a.decision.kind == DecisionKind.KB_PATCH:
-                    used += [f"case:{x}" for x in a.decision.kb_case_ids]
-            if pr.build_ok:
-                for rr in pr.rewrite_results:
-                    used += [
-                        rid
-                        for rid, files in (rr.recipes_applied or {}).items()
-                        if files and self._is_kb_recipe(rid)
-                    ]
-        r.kb_recipes_used = list(dict.fromkeys(used))
         r.out_dir = report.outputs.get("run_dir") or r.out_dir
         if code == 3 and not r.error:
             r.error = next((m for m in report.manual_followups if m.startswith("run aborted")), None)
@@ -556,8 +521,7 @@ class FleetRunner:
                                   llm_calls=r.llm_calls, attention=result_attention(r)))
             self._say(
                 f"[{pos}/{total}] {proj.name}: {r.status} (exit {r.exit_code}, {r.duration_s:.0f}s, "
-                f"llm {r.llm_calls}, blocked {r.blocked}, kb used {len(r.kb_recipes_used)} / created "
-                f"{len(r.kb_candidates_created)} / promoted {len(r.kb_recipes_promoted)})"
+                f"llm {r.llm_calls}, blocked {r.blocked}, unresolved {r.unresolved})"
                 + (f" - {r.error}" if kind else "")
             )
             self._cleanup(r)

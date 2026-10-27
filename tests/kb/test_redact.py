@@ -1,16 +1,14 @@
 """sbmig.kb.redact (round 10, C1): secret VALUES masked by context, code never mangled, company rules from yml, and
-what the KB does with masked text (pairs dropped, never a rule candidate, patch cases hint-only)."""
+what the KB does with masked text (replace pairs that touch a secret are dropped)."""
 from __future__ import annotations
 
 import pytest
 
-from sbmig.core.models import FileChange
-from sbmig.kb import prepare_error_cases, sanitize_case
+from sbmig.kb import prepare_error_cases
 from sbmig.kb.changes import classify_diff_ex
-from sbmig.kb.harvest import NO_REPLAY_TAG, redact
-from sbmig.kb.redact import Redactor, get_redactor, key_words, load_rules
+from sbmig.kb.redact import Redactor, get_redactor, key_words, load_rules, redact
 
-from .helpers import EC_FILE, ec_attempt, ec_error, make_attempt, with_kb
+from .helpers import EC_FILE, ec_attempt, ec_error, with_kb
 
 MASKED = [
     ("<password>s3cr3t</password>", "<password>***</password>"),
@@ -137,14 +135,14 @@ def test_classification_drops_pairs_that_touch_a_secret():
     assert dropped2 == 0 and len(c2.replace_pairs) == 2
 
 
-def test_a_secret_resolution_is_never_a_rule_candidate(kb_cfg, ws, profile):
+def test_a_secret_resolution_keeps_no_pair(kb_cfg, ws, profile):
     diff = (f"diff --git a/{EC_FILE} b/{EC_FILE}\n--- a/{EC_FILE}\n+++ b/{EC_FILE}\n@@ -3,1 +3,1 @@\n"
             '-        String apiKey = "old-key-123";\n+        String apiKey = "new-key-456";\n')
     errors, attempts = prepare_error_cases([ec_error()], [ec_attempt(diff=diff)], profile, ws, kb_cfg)
     a, e = attempts[0], errors[0]
     assert "old-key-123" not in a.diff and "new-key-456" not in a.diff and a.diff.count("***") == 2
     assert a.change.change_kind == "text_replace" and a.change.replace_pairs == []
-    assert e.replace_rule_candidate is False and e.replace_pairs == []
+    assert e.replace_pairs == []
     assert any(n.startswith("redacted:") for n in a.notes) and any(n.startswith("redacted:") for n in e.notes)
     assert "old-key-123" not in e.model_dump_json() + a.model_dump_json()
 
@@ -160,20 +158,6 @@ def test_a_multiline_secret_context_drops_the_pair_too(kb_cfg, ws, profile):
     a = attempts[0]
     assert "tiger" not in a.model_dump_json() and "lion" not in a.model_dump_json()
     assert a.change.replace_pairs == []
-
-
-def test_patch_case_with_a_masked_secret_is_hint_only(kb, ws, profile):
-    changes = [FileChange(path="src/main/resources/application.yml", op="modify",
-                          search="spring.datasource.password=s3cr3t", replace="spring.datasource.password=n3w")]
-    case = sanitize_case(make_attempt(changes=changes), profile, ws)
-    assert NO_REPLAY_TAG in case.tags and "s3cr3t" not in case.model_dump_json()
-    clean = sanitize_case(make_attempt(), profile, ws)
-    assert NO_REPLAY_TAG not in clean.tags
-    cid = kb.record_case(case)
-    stored = kb.get_case(cid)
-    ws.write("src/main/resources/application.yml", "spring.datasource.password=***\n")
-    assert kb.replay_view(stored, ws) is None                                  # never replayed
-    assert kb.catalog().kb() is kb
 
 
 def test_prepare_failure_stores_a_minimal_record_never_the_original(kb_cfg, ws, profile, monkeypatch):

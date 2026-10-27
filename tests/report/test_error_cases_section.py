@@ -1,5 +1,5 @@
 """report.md "Build errors and how each was handled" (error cases, 2026-10-23): counts, row order, the 40-row cap,
-the LLM text-replace line, escaping, Korean rendering, no section without records."""
+escaping, Korean rendering, no section without records."""
 from __future__ import annotations
 
 import json
@@ -27,26 +27,26 @@ def cases() -> list[ErrorCaseRecord]:
         _case("e-ind", "resolved_indirectly", file="src/main/java/a/C.java", message="incompatible types",
               fix_method="plan_step", resolved_by="step:spring.rewrite"),
         _case("e-llm", "resolved", file="src/main/java/a/A.java", line=3,
-              message="package javax.persistence does not exist", fix_method="llm", resolver_id="gpt-x",
-              description="LLM `gpt-x`: Replaced the javax import with jakarta. Then tidied the imports.",
-              change_kind="text_replace", replace_rule_candidate=True, attempt_count=1, llm_attempts=1,
+              message="package javax.persistence does not exist", fix_method="script", resolver_id="script:k1:v1",
+              description="script `script:k1:v1`: Replaced the javax import with jakarta. Then tidied the imports.",
+              change_kind="text_replace", attempt_count=1, llm_attempts=1,
               replace_pairs=[ReplacePair(old="javax.persistence", new="jakarta.persistence", count=2)]),
-        _case("e-hdl", "resolved", file="pom.xml", message="lombok too old", fix_method="handler",
-              resolver_id="lombok-version-floor", attempt_count=1,
-              description="handler `lombok-version-floor`: raised lombok to 1.18.36. More text."),
+        _case("e-hdl", "resolved", file="pom.xml", message="lombok too old", fix_method="script_reuse",
+              resolver_id="script:k2:v3", attempt_count=1,
+              description="stored script `script:k2:v3`: raised lombok to 1.18.36. More text."),
         _case("e-kb", "resolved", file="src/main/java/a/D.java", line=7, message="cannot find symbol",
-              fix_method="kb_patch", resolver_id="case-12", description="replayed the stored patch", attempt_count=1),
+              fix_method="script_augment", resolver_id="script:k3:v2", description="extended the stored script",
+              attempt_count=1),
         _case("e-nv", "not_visible", module="core", message="weird"),
         _case("e-blk", "blocked", artifact="com.acme:legacy:1.0", message="could not resolve",
               block_reason="artifact_not_found", suggestion="publish com.acme:legacy:1.0 to the company Nexus"),
         _case("e-unr", "unresolved", file="src/main/java/a/B.java", line=9, message="cannot find symbol Foo",
-              failure_reason="`llm` attempt `spring-1-1` `no_change`: the targeted error(s) were still there after "
-                             "the rebuild", attempt_count=2, llm_attempts=2),
+              failure_reason="`script` attempt `verify-1-1` `no_change`: the targeted error(s) were still there "
+                             "after the rebuild", attempt_count=2, llm_attempts=2),
     ]
 
 
-COUNTS = {"resolved": 3, "resolved_indirectly": 1, "blocked": 1, "unresolved": 1, "not_visible": 1,
-          "llm_text_replace": 1}
+COUNTS = {"resolved": 3, "resolved_indirectly": 1, "blocked": 1, "unresolved": 1, "not_visible": 1}
 
 
 def report_with(records: list[ErrorCaseRecord], counts: dict[str, int] | None = None, success: bool = False):
@@ -73,30 +73,29 @@ def test_section_placed_after_unresolved_with_counts_table_and_note():
     sec = section(md)
     assert "7 build error(s) seen in this run, one record each." in sec
     assert "- by status: resolved 3, resolved_indirectly 1, blocked 1, unresolved 1, not_visible 1" in sec
-    assert "- fixed by (resolved errors): handler 1, kb_patch 1, llm 1, plan_step 1" in sec
-    assert ("- 1 LLM fix(es) were plain text replaces — candidates for a deterministic rule "
-            "(`sbmig kb errors replace-candidates`)") in sec
+    assert "- fixed by (resolved errors): script 1, script_reuse 1, script_augment 1, plan_step 1" in sec
+    assert "plain text replaces" not in sec and "replace-candidates" not in sec
     assert "| status | where | message | how resolved / why not | attempts |" in sec
     assert "`error_cases.csv`" in sec and "`error_cases.jsonl`" in sec and "`fix_attempts.jsonl`" in sec
     assert "`sbmig kb errors`" in sec
     body = rows(sec)
     assert len(body) == 7
     by_id = dict(zip(["unr", "blk", "nv", "llm", "hdl", "kb", "ind"], body))
-    assert by_id["unr"] == ("| unresolved | `src/main/java/a/B.java:9` | cannot find symbol Foo | `llm` attempt "
-                            "`spring-1-1` `no_change`: the targeted error(s) were still there after the rebuild | "
+    assert by_id["unr"] == ("| unresolved | `src/main/java/a/B.java:9` | cannot find symbol Foo | `script` attempt "
+                            "`verify-1-1` `no_change`: the targeted error(s) were still there after the rebuild | "
                             "2 (llm 2) |")
     assert by_id["blk"] == ("| blocked | `com.acme:legacy:1.0` | could not resolve | `artifact_not_found`: publish "
                             "com.acme:legacy:1.0 to the company Nexus | 0 |")
     assert "| not_visible | `core` | weird | the last build stopped before this error's stage — status unknown |" \
         in by_id["nv"]
     # resolved: the description's first sentence (it names the resolver, so no prefix) + the replace pair
-    assert ("| LLM `gpt-x`: Replaced the javax import with jakarta. · replace `javax.persistence` → "
+    assert ("| script `script:k1:v1`: Replaced the javax import with jakarta. · replace `javax.persistence` → "
             "`jakarta.persistence` | 1 (llm 1) |") in by_id["llm"]
     assert "Then tidied" not in sec
-    assert "| handler `lombok-version-floor`: raised lombok to 1.18.36. | 1 |" in by_id["hdl"]
+    assert "| stored script `script:k2:v3`: raised lombok to 1.18.36. | 1 |" in by_id["hdl"]
     assert "More text" not in sec
     # the description does not name the resolver → method + resolver first
-    assert "| kb_patch `case-12`: replayed the stored patch | 1 |" in by_id["kb"]
+    assert "| script_augment `script:k3:v2`: extended the stored script | 1 |" in by_id["kb"]
     # plan step: resolver from resolved_by "step:<id>"
     assert "| resolved_indirectly | `src/main/java/a/C.java` | incompatible types | plan_step `spring.rewrite` | 0 |" \
         == by_id["ind"]
@@ -113,7 +112,7 @@ def test_rows_ordered_unresolved_blocked_not_visible_resolved_indirect():
 
 
 def test_capped_at_40_rows_with_more_line_and_unresolved_first():
-    many = [_case(f"r{i}", "resolved", file=f"src/R{i}.java", fix_method="llm", resolver_id="m",
+    many = [_case(f"r{i}", "resolved", file=f"src/R{i}.java", fix_method="script", resolver_id="m",
                   description="fixed") for i in range(43)]
     many += [_case("u1", "unresolved", file="src/U1.java", failure_reason="gave up"),
              _case("u2", "unresolved", file="src/U2.java", failure_reason="gave up")]
@@ -129,14 +128,12 @@ def test_capped_at_40_rows_with_more_line_and_unresolved_first():
     assert len(rows(exact)) == 40 and "more — see" not in exact
 
 
-def test_text_replace_line_only_when_positive_and_counts_fall_back_to_records():
+def test_counts_fall_back_to_records_and_no_text_replace_line():
     recs = cases()
-    sec = section(render_markdown(report_with(recs, counts={"llm_text_replace": 0})))
+    sec = section(render_markdown(report_with(recs, counts={"llm_text_replace": 4})))   # an old count: ignored
     assert "plain text replaces" not in sec
     # no status counts in error_case_counts → counted from the records
     assert "- by status: resolved 3, resolved_indirectly 1, blocked 1, unresolved 1, not_visible 1" in sec
-    sec = section(render_markdown(report_with(recs, counts={**COUNTS, "llm_text_replace": 4})))
-    assert "- 4 LLM fix(es) were plain text replaces" in sec
     # nothing resolved → no fix-method line
     only_open = [c for c in recs if c.status not in ("resolved", "resolved_indirectly")]
     sec = section(render_markdown(report_with(only_open, counts={})))
@@ -191,8 +188,8 @@ def test_korean_rendering():
     assert "이번 실행에서 확인한 빌드 오류 7건 (오류마다 기록 1건)." in sec
     # statuses / methods are identifiers: they stay English
     assert "- 상태별: resolved 3, resolved_indirectly 1, blocked 1, unresolved 1, not_visible 1" in sec
-    assert "- 해결 수단별 (해결된 오류): handler 1, kb_patch 1, llm 1, plan_step 1" in sec
-    assert "- LLM 수정 1건은 단순 텍스트 치환이었다" in sec and "`sbmig kb errors replace-candidates`" in sec
+    assert "- 해결 수단별 (해결된 오류): script 1, script_reuse 1, script_augment 1, plan_step 1" in sec
+    assert "단순 텍스트 치환" not in sec and "replace-candidates" not in sec
     assert "| 상태 | 위치 | 메시지 | 해결 방법 / 미해결 사유 | 시도 |" in sec
     assert "· 치환 `javax.persistence` → `jakarta.persistence`" in sec
     assert "마지막 빌드가 이 오류의 단계 전에 멈춤 — 상태를 알 수 없음" in sec

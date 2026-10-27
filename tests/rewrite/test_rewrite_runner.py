@@ -12,7 +12,8 @@ import sbmig.build.mvn as mvn_mod
 from sbmig.build import maven_available
 from sbmig.core.models import RecipeRef
 from sbmig.core.workspace import Workspace
-from sbmig.rewrite import COMPOSITE_RECIPE_ID, OpenRewriteRunner, RecipeCompositionError, recipe_artifact_for
+from sbmig.rewrite import (COMPOSITE_RECIPE_ID, OpenRewriteRunner, RecipeCompositionError, recipe_artifact_for,
+                           recipe_documents)
 
 LOGS = Path(__file__).parent / "logs"
 JDK21 = Path(os.environ.get("SBMIG_TEST_JAVA21_HOME",
@@ -85,12 +86,9 @@ def test_recipe_artifact_inference(ws, rcfg):
         "org.openrewrite.recipe:rewrite-testing-frameworks"
     assert recipe_artifact_for("org.openrewrite.java.ChangeType") is None
     r = OpenRewriteRunner(ws, rcfg)
-    _, text = r.compose([RecipeRef(id="com.company.migrate.SpringBoot41Version", source="project")])
-    assert r.required_artifacts([RecipeRef(id="com.company.migrate.SpringBoot41Version", source="project")], text) \
-        == [MJ, SP, "org.openrewrite.recipe:rewrite-java-dependencies"]
-    assert r.required_artifacts([RecipeRef(id="org.openrewrite.maven.UpgradeParentVersion"),
-                                 RecipeRef(id="x.y.Custom", artifact="com.acme:custom-recipes")], text) == \
-        ["com.acme:custom-recipes"]
+    pin = RecipeRef(id="org.openrewrite.java.dependencies.UpgradeDependencyVersion")   # ids only in v2: no own files
+    _, text = r.compose([pin])
+    assert r.required_artifacts([pin], text) == ["org.openrewrite.recipe:rewrite-java-dependencies"]
 
 
 # ------------------------------------------------------------------------------------------------ command
@@ -194,12 +192,6 @@ def test_empty_recipe_list_is_noop(ws, rcfg, fake):
     assert res.ok and res.recipes == [] and fake.calls == []
 
 
-def test_missing_project_recipe_raises(ws, rcfg, fake):
-    with pytest.raises(RecipeCompositionError):
-        OpenRewriteRunner(ws, rcfg).run([RecipeRef(id="com.company.migrate.Nope", source="project")])
-    assert fake.calls == []
-
-
 def test_artifact_resolution_failure_returns_not_ok(ws, cfg, fake, tmp_path):
     cfg.build.local_repo = str(tmp_path / "empty-repo")
     cfg.build.mvn = str(tmp_path / "no-mvn")
@@ -209,24 +201,19 @@ def test_artifact_resolution_failure_returns_not_ok(ws, cfg, fake, tmp_path):
     assert events(ws)[-1]["ok"] is False
 
 
-def test_kb_active_recipes_are_composed(ws, rcfg, fake, tmp_path):
-    kbfile = tmp_path / "kb-active.yml"
-    kbfile.write_text("type: specs.openrewrite.org/v1beta/recipe\nname: com.company.kb.Fix1\nrecipeList:\n"
-                      "  - org.openrewrite.java.ChangePackage:\n      oldPackageName: javax.foo\n"
-                      "      newPackageName: jakarta.foo\n")
-
+def test_no_project_or_kb_recipe_files_are_composed(ws, rcfg, fake):
+    """v2: a planned run is the composite alone — no knowledge/recipes/base/*, no KB active recipes."""
     class KB:
-        def active_recipe_files(self):
-            return [kbfile]
+        def active_recipe_files(self):  # pragma: no cover - must not be asked
+            raise AssertionError("v2 composes no KB recipes")
 
-    rcfg.kb.use_active_recipes = True      # v1 KB recipes (off by default in v2, the composition still works)
     r = OpenRewriteRunner(ws, rcfg, kb=KB())
-    res = r.run([RecipeRef(id="com.company.kb.Fix1", source="kb")])
+    res = r.run([RecipeRef(id=UP21)])
     assert res.ok
-    assert f"-Drewrite.recipeArtifactCoordinates={MJ}:3.42.0,{SP}:6.37.0" in fake.calls[0]["cmd"]
-    rcfg.kb.use_active_recipes = False
-    with pytest.raises(RecipeCompositionError):
-        r.run([RecipeRef(id="com.company.kb.Fix1", source="kb")])
+    config = next(c for c in fake.calls[0]["cmd"] if c.startswith("-Drewrite.configLocation="))
+    text = Path(config.split("=", 1)[1]).read_text()
+    assert recipe_documents(text).keys() == {COMPOSITE_RECIPE_ID}                    # only the composite
+    assert "knowledge/recipes/base" not in text
 
 
 def test_timeout(ws, rcfg, tmp_path):

@@ -1,5 +1,5 @@
 """`sbmig kb cases …` over a temp KB (list / show / reject / pin / unpin / hint / note) and the case parts of
-`kb errors show`, `kb learning`, `kb reindex`, `kb match`, `kb promote`."""
+`kb errors show`, `kb reindex`, `kb stats`. Pins (v2): `script:<N>`, `hint`, `block[:<reason>]` only."""
 from __future__ import annotations
 
 import json
@@ -7,13 +7,14 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from sbmig.core.models import FixAttemptRecord, KBRecipe
+from sbmig.core.models import FixAttemptRecord
 from sbmig.kb import FileKnowledgeBase, kb_cli
 from sbmig.kb.catalog import case_id_for
 from sbmig.kb.cli import parse_action
 
-from .helpers import EC_L2, RENAME_DIFF, recipe_yaml, v1_cli_obj
+from .helpers import EC_L2, RENAME_DIFF
 from .test_catalog import L1_REQ, failed_then_fixed, rec, ref, unresolved
+from .test_scripts import FIX_A
 
 runner = CliRunner()
 CID = case_id_for(EC_L2)
@@ -22,12 +23,14 @@ OTHER = case_id_for(OTHER_L2)
 
 
 def _run(kb_dir, *args):
-    # the v1 KB switches on (v2 turned them off by default; these tests exercise the v1 recipe / replace paths)
-    return runner.invoke(kb_cli, ["--kb-dir", str(kb_dir), *args], catch_exceptions=False, obj=v1_cli_obj())
+    return runner.invoke(kb_cli, ["--kb-dir", str(kb_dir), *args], catch_exceptions=False)
 
 
 def _seed(kb: FileKnowledgeBase) -> None:
-    """alpha: unresolved after a no_change; beta: fixed after an apply_failed (with the fix's diff); a second case."""
+    """alpha: unresolved after a no_change; beta: fixed after an apply_failed (with the fix's diff); a proven fix
+    script v1 for that case (→ candidate, action `script v1`); a second case (observed, hint)."""
+    kb.scripts.add(CID, EC_L2, FIX_A, analysis="clientIp became remoteClientIp", project="order-api")
+    kb.scripts.credit(CID, 1, "improved", project="order-api")
     kb.append_error_cases([unresolved("a-1", "r1", "member-api")], [])
     kb.append_error_cases(
         [failed_then_fixed("b-1", "r2", "order-api", hours=24)],
@@ -47,16 +50,16 @@ def test_cases_list_and_filters(kb):
     assert r.exit_code == 0
     lines = r.output.strip().splitlines()
     assert len(lines) == 2 and lines[0].startswith(f"{CID}  candidate") and "projects=2" in lines[0]
-    assert "Request.clientIp — cannot find symbol" in lines[0] and "replace `clientIp` → `remoteClientIp`" in lines[0]
+    assert "Request.clientIp — cannot find symbol" in lines[0] and lines[0].rstrip().endswith("script v1")
     assert lines[1].startswith(f"{OTHER}  observed") and lines[1].rstrip().endswith("hint")
     assert _run(kb.root, "cases", "list", "--status", "obs").output.startswith(OTHER)
-    assert _run(kb.root, "cases", "list", "--action", "replace").output.startswith(CID)
+    assert _run(kb.root, "cases", "list", "--action", "script").output.startswith(CID)
     assert _run(kb.root, "cases", "list", "--kind", "package_does").output.startswith(OTHER)
     assert _run(kb.root, "cases", "list", "--search", "com.example.Request").output.count("\n") == 1
     assert _run(kb.root, "cases", "list", "--search", "nothing-like-this").output.strip() == "no cases"
     assert len(_run(kb.root, "cases", "list", "-n", "1").output.strip().splitlines()) == 1
     rows = json.loads(_run(kb.root, "cases", "list", "--json").output)
-    assert [x["id"] for x in rows] == [CID, OTHER] and rows[0]["action"]["kind"] == "replace"
+    assert [x["id"] for x in rows] == [CID, OTHER] and (rows[0]["action"]["kind"], rows[0]["action"]["script_version"]) == ("script", 1)
     assert _run(kb.root, "cases", "list", "--status", "(").exit_code != 0
 
 
@@ -67,7 +70,8 @@ def test_cases_show_is_readable(kb):
     out = r.output
     assert out.startswith(f"case {CID} — Request.clientIp — cannot find symbol")
     assert f"key (L2):  {EC_L2}" in out and "status:    candidate" in out
-    assert "action:    replace `clientIp` → `remoteClientIp` (scope error-lines)" in out
+    assert "action:    script v1\n" in out and "fix script: active after 2 project(s) without a failure" in out
+    assert "fix scripts (1 version(s);" in out and "← reused first" in out
     assert "seen 2× in 2 project(s) / 2 run(s), 2026-10-20 … 2026-10-21" in out
     assert "by status: unresolved 1, resolved 1; resolved by: llm 1" in out
     assert f"com.example.Request  {L1_REQ}   seen 2, 2 project(s)" in out
@@ -126,29 +130,27 @@ def test_reject_pin_unpin_hint_note(kb, ws, profile):
     assert kb.catalog().match([_err()]) == []
     assert "| rejected* |" in (kb.root / "views" / "cases.md").read_text(encoding="utf-8")
 
-    r = _run(kb.root, "cases", "pin", CID, "--action", "replace:clientIp=remoteClientIp,Request=HttpRequest")
-    assert r.exit_code == 0 and "status active*" in r.output
+    r = _run(kb.root, "cases", "pin", CID, "--action", "script:1")
+    assert r.exit_code == 0 and "status active*" in r.output and "action script v1*" in r.output
     c = kb.catalog().get(CID)
-    assert c.effective_status() == "active" and c.effective_action().kind == "replace"
-    assert [(p.old, p.new) for p in c.effective_action().replace_pairs] == [("clientIp", "remoteClientIp"),
-                                                                            ("Request", "HttpRequest")]
+    assert c.effective_status() == "active" and c.effective_action() == c.action
     assert kb.catalog().match([_err()])[0].status == "active"
+    assert _run(kb.root, "cases", "pin", CID, "--action", "script:9").exit_code == 1     # no stored v9
 
-    assert _run(kb.root, "cases", "pin", CID, "--action", "handler:jakarta-namespace-sweep").exit_code == 0
-    assert kb.catalog().get(CID).effective_action().handler_id == "jakarta-namespace-sweep"
-    r = _run(kb.root, "cases", "pin", CID, "--action", "recipe:Missing")
-    assert r.exit_code == 0 and kb.catalog().get(CID).effective_action().recipe_ids == ["Missing"]
+    for spec in ("replace:clientIp=remoteClientIp", "handler:jakarta-namespace-sweep", "recipe:Missing", "patch:x"):
+        r = _run(kb.root, "cases", "pin", CID, "--action", spec)
+        assert r.exit_code != 0 and "no longer supported" in r.output, spec
     assert _run(kb.root, "cases", "pin", CID, "--action", "block:external_api_incompatible").exit_code == 0
     a = kb.catalog().get(CID).effective_action()
     assert (a.kind, a.block_reason) == ("block", "external_api_incompatible")
     assert _run(kb.root, "cases", "pin", CID, "--action", "hint").exit_code == 0
     assert _run(kb.root, "cases", "pin", CID, "--action", "bogus").exit_code != 0
-    assert _run(kb.root, "cases", "pin", CID, "--action", "replace:a").exit_code != 0
+    assert _run(kb.root, "cases", "pin", CID, "--action", "script:x").exit_code != 0
 
     r = _run(kb.root, "cases", "unpin", CID)
     assert r.exit_code == 0 and "status candidate," in r.output
     c = kb.catalog().get(CID)
-    assert c.human.action is None and c.human.status is None and c.effective_action().kind == "replace"
+    assert c.human.action is None and c.human.status is None and c.effective_action().kind == "script"
 
     assert _run(kb.root, "cases", "hint", CID, "check   RequestWrapper first").exit_code == 0
     assert _run(kb.root, "cases", "hint", CID, "check RequestWrapper first").exit_code == 0     # no duplicate
@@ -165,55 +167,41 @@ def test_reject_pin_unpin_hint_note(kb, ws, profile):
 
 def test_pin_shows_generated_values_when_overridden(kb):
     _seed(kb)
-    _run(kb.root, "cases", "pin", OTHER, "--action", "replace:javax.persistence=jakarta.persistence")
+    _run(kb.root, "cases", "pin", OTHER, "--action", "block:the persistence owner migrates it")
     out = _run(kb.root, "cases", "show", OTHER).output
     assert "status:    active*" in out
     assert "generated: javax.persistence — package does not exist: status observed, action hint" in out
 
 
 def test_parse_action():
-    assert parse_action("recipe:a.B, c.D").recipe_ids == ["a.B", "c.D"]
-    a = parse_action("replace:x=y", "file")
-    assert (a.kind, a.replace_scope, a.replace_pairs[0].old, a.replace_pairs[0].new) == ("replace", "file", "x", "y")
+    assert parse_action("script:2").script_version == 2 and parse_action("script:v3").script_version == 3
+    assert parse_action("hint").kind == "hint"
     assert parse_action("block").kind == "block" and parse_action("block:needs lib 3").suggestion == "needs lib 3"
-    for bad in ("recipe:", "handler", "replace:x=x", "replace:=y", "frobnicate"):
+    assert parse_action("block:external_api_incompatible").block_reason == "external_api_incompatible"
+    for bad in ("script:", "script:0", "frobnicate"):
         with pytest.raises(ValueError):
             parse_action(bad)
+    for gone in ("recipe:a.B", "replace:x=y", "handler:h", "patch:p"):
+        with pytest.raises(ValueError, match="no longer supported"):
+            parse_action(gone)
 
 
 def test_errors_show_names_the_case(kb):
     _seed(kb)
     out = _run(kb.root, "errors", "show", "b-1").output
-    assert f"case:      {CID}  Request.clientIp — cannot find symbol  [candidate, replace" in out
+    assert f"case:      {CID}  Request.clientIp — cannot find symbol  [candidate, script v1" in out
     assert f"sbmig kb cases show {CID}" in out and "--- resolving diff (r2:a1)" in out
     assert "failure: search text not found" in out and "1. r2:a0  llm  apply_failed" in out
 
 
-def test_reindex_learning_match_and_promote_mention_cases(kb):
+def test_reindex_and_stats_mention_cases(kb):
     _seed(kb)
     r = _run(kb.root, "reindex")
     assert "case catalog: 2 case(s) (observed 1, candidate 1)" in r.output
-    out = _run(kb.root, "learning").output
-    assert "top error cases" in out and CID in out and "Request.clientIp — cannot find symbol" in out
-    md = _run(kb.root, "learning", "--md").output
-    assert "### Top error cases (case catalog" in md and f"| `{CID}` |" in md
-    for sig in (L1_REQ, EC_L2):
-        m = json.loads(_run(kb.root, "match", sig).output)
-        assert [h["case_id"] for h in m["case_hits"]] == [CID] and m["case_hits"][0]["action"].startswith("replace")
-        assert any(h.startswith(f"[case {CID}]") for h in m["hints"])
-    assert json.loads(_run(kb.root, "match", "compile|nothing").output)["case_hits"] == []
-    # a recipe promoted by hand refreshes the cases it covers
-    kb.add_recipe(recipe_yaml("RenameClientIp"),
-                  KBRecipe(id="RenameClientIp", path="", signatures=[EC_L2]))
-    _run(kb.root, "reindex")
-    assert kb.catalog().get(CID).status == "candidate" and kb.catalog().get(CID).action.kind == "recipe"
-    r = _run(kb.root, "promote", "RenameClientIp")
-    assert r.exit_code == 0 and f"case catalog: 1 case(s) updated ({CID})" in r.output
-    assert kb.catalog().get(CID).status == "active"
-    r = _run(kb.root, "reject", "RenameClientIp")
-    assert f"({CID})" in r.output and kb.catalog().get(CID).action.kind == "replace"
+    assert "fix scripts: 1 case(s), 1 version(s) (1 proven, 0 retired, 0 quarantined)" in r.output
     st = json.loads(_run(kb.root, "stats", "--json").output)
-    assert st["catalog_cases"] == 2 and st["catalog_observed"] == 1
+    assert st["catalog_cases"] == 2 and st["catalog_observed"] == 1 and st["catalog_candidate"] == 1
+    assert st["script_versions"] == 1
 
 
 def _err():

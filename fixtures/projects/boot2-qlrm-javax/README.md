@@ -17,9 +17,9 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
   mvn -q -DskipTests package
 ```
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* handler `jakarta-library-floor` (pre-emptive after the spring recipes; `knowledge/libraries/jakarta_libraries.yml`)
-  relocates `ch.simas.qlrm:qlrm:1.7.1` → `org.qlrm:qlrm:4.2.1` (flag `jakarta-library-bumped`), the sources keep
-  `jakarta.persistence.Query` (the recipes converted them), **0 LLM calls**, success, exit 0
-* `post_checks`: `org.qlrm:qlrm` declared with a version, `ch.simas.qlrm:qlrm` gone, `MemberSummaryQuery.java` on jakarta
+Success, exit 0, **2 LLM calls**: the structure review (one warning on QLRM 1.7.1) and one new fix script for the case
+`compile|cannot_access|Query` (`854a1d9f13`) that relocates `ch.simas.qlrm:qlrm:1.7.1` → `org.qlrm:qlrm:4.2.1` (v1 did
+this with the handler `jakarta-library-floor`, gone in v2). `post_checks`: `org.qlrm:qlrm` declared with a version,
+`ch.simas.qlrm:qlrm` gone, `MemberSummaryQuery.java` on jakarta.

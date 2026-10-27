@@ -39,10 +39,8 @@ Old pre-jakarta `javax.xml.bind:jaxb-api` 2.3 still works on JDK 21 but conflict
 
 ## Encapsulated / removed internals (JEP 403 strong encapsulation since JDK 17)
 - `sun.misc.BASE64Encoder/BASE64Decoder` (removed) → `java.util.Base64.getEncoder().encodeToString(b)` /
-  `Base64.getDecoder().decode(s)`; MIME variant `Base64.getMimeEncoder()`. Round 10: the handler `jdk-base64-shim`
-  normally points them (and `com.sun.org.apache.xerces.internal.impl.dv.util.Base64`) at generated drop-in classes
-  `sbmig.compat.BASE64Encoder` / `BASE64Decoder` / `Base64` before the first JDK 21 build (same output, call sites
-  unchanged); only subclasses of the JDK classes reach the fix loop.
+  `Base64.getDecoder().decode(s)`; MIME variant `Base64.getMimeEncoder()` (`BASE64Encoder.encode` wrapped lines at 76
+  chars like the MIME encoder; `com.sun.org.apache.xerces.internal.impl.dv.util.Base64` → `java.util.Base64` too).
 - `sun.misc.Unsafe` still in `jdk.unsupported` (compiles, warns); memory methods deprecated for removal → VarHandle / FFM.
 - `sun.reflect.Reflection.getCallerClass` → `StackWalker.getInstance(RETAIN_CLASS_REFERENCE).getCallerClass()`.
 - `sun.security.*`, `sun.net.*`, `com.sun.org.apache.*.internal.*` (internal Xerces/Xalan) → standard JAXP

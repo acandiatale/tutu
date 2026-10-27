@@ -4,33 +4,28 @@
 # (ADVISOR_CATALOG), the composite coverage (ADVISOR_COVERAGE) and the profile gates (ADVISOR_GATES) from it,
 # and `sbmig recipes list|show|check|sets` reads it. See docs/RECIPES.md.
 #
-# The catalog does NOT decide what the rule-based planner runs — that is still config/default.yml
-# `openrewrite.recipes.*` (plan sets) and sbmig/triage/recipe_rules.yml (reactive rules). The catalog describes
-# every id those reference, and `sbmig recipes check` fails when they drift apart.
-# Learned KB recipes (kb/recipes/{candidates,active,rejected}) are NOT listed here; they are read live from kb/.
+# The catalog does NOT decide what the rule-based planner runs — that is config/default.yml
+# `openrewrite.recipes.*` (plan sets; a company config may opt into the framework / security / junit5 sets or add
+# `extra` ids). The catalog describes every id those may reference, and `sbmig recipes check` fails when they drift
+# apart. v2 runs OpenRewrite recipes only: no project recipes, no library recipes, no KB recipes.
 #
 # Schema (version 1), one entry per recipe id:
 #   id:          fully-qualified recipe name (unique)
-#   origin:      openrewrite | project            (kb recipes are never listed here)
-#   artifact:    Maven groupId:artifactId of the recipe jar; null for project recipes and for core recipes that
-#                ship with rewrite-maven-plugin itself (org.openrewrite.java.ChangeType, org.openrewrite.maven.*)
+#   origin:      openrewrite (the only supported origin; `check` flags anything else)
+#   artifact:    Maven groupId:artifactId of the recipe jar; null for core recipes that ship with
+#                rewrite-maven-plugin itself (org.openrewrite.java.ChangeType, org.openrewrite.maven.*)
 #   provided_by: optional — a configured recipe artifact that brings `artifact` in transitively
 #                (`check` accepts the entry when either is listed in openrewrite.recipe_artifacts;
 #                `recipes check --jars` verifies that `artifact` is on provided_by's transitive classpath)
-#   file:        project recipes only — declarative yml relative to the repo root (knowledge/recipes/base/..)
-#   phase:       default phase when the recipe is added: jdk21 | spring | restructure
+#   phase:       default phase when the recipe is added: jdk21 | spring | restructure (informational)
 #   description: one line (advisor entries: shown verbatim to the LLM advisor)
 #   docs:        upstream documentation URL
 #   covers:      recipes this composite already includes (the advisor never adds them on top)
 #   gate:        named profile predicate (sbmig/plan/catalog.py GATES) or null = always allowed
 #   advisor:     may the LLM plan advisor add it? (false for internal / pinning / building-block recipes)
-#   sets:        config/default.yml openrewrite.recipes sets that reference it, or `library.<library>` for the
-#                library-conditional rules of knowledge/recipes/library_recipes.yml (round 10)   (informational, checked)
-#   rules:       sbmig/triage/recipe_rules.yml rule ids that use it              (informational, checked)
+#   sets:        config/default.yml openrewrite.recipes sets that reference it              (informational, checked)
 #   verified:    when the id was verified against docs.openrewrite.org / a recipe jar (YYYY-MM)
 #   notes:       optional pointer to a knowledge/notes/*.md migration note
-#   advisories:  knowledge/libraries/advisories.yml ids this recipe resolves (informational, checked both ways:
-#                every advisory recipe must be listed here, every id listed here must be an advisory)
 #
 # Order matters for the advisor: advisor entries are shown to the LLM in file order.
 version: 1
@@ -47,7 +42,6 @@ recipes:
     gate: null
     advisor: false
     sets: [jdk21]
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/jdk21.md
 
@@ -62,7 +56,6 @@ recipes:
     gate: has_javax_ee
     advisor: true
     sets: [jakarta]
-    rules: [javax-ee-to-jakarta]
     verified: "2026-10"
     notes: knowledge/notes/jakarta.md
 
@@ -76,7 +69,6 @@ recipes:
     gate: has_xml_bind_any
     advisor: true
     sets: []
-    rules: [javax-xml-bind]
     verified: "2026-10"
     notes: knowledge/notes/jdk21.md
 
@@ -90,7 +82,6 @@ recipes:
     gate: has_javax_xml_bind
     advisor: true
     sets: []
-    rules: [javax-xml-bind]
     verified: "2026-10"
     notes: knowledge/notes/jakarta.md
 
@@ -132,7 +123,6 @@ recipes:
     gate: is_boot
     advisor: true
     sets: [spring_boot_4]
-    rules: [boot4-modularized-autoconfigure]
     verified: "2026-10"
     notes: knowledge/notes/boot3-to-4.md
 
@@ -146,7 +136,6 @@ recipes:
     gate: is_boot
     advisor: true
     sets: [spring_boot_4]
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/boot40-to-41.md
 
@@ -160,7 +149,6 @@ recipes:
     gate: has_tests
     advisor: true
     sets: []
-    rules: [mockbean-spybean]
     verified: "2026-10"
     notes: knowledge/notes/boot3-to-4.md
 
@@ -181,7 +169,6 @@ recipes:
     gate: is_spring
     advisor: true
     sets: []   # v1: [spring_framework_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md
 
@@ -195,7 +182,6 @@ recipes:
     gate: has_spring_security
     advisor: true
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -210,7 +196,6 @@ recipes:
     gate: has_junit4
     advisor: true
     sets: []   # v1: [junit5] — not in the v2 sets (flow-v2)
-    rules: [junit4-to-junit5]
     verified: "2026-10"
     notes: knowledge/notes/junit4-to-5.md
 
@@ -225,7 +210,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/boot3-to-4.md
 
@@ -239,8 +223,6 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []        # round 10: the reactive rule spring-security-config is gone — on the Security 7 classpath its
-                     # type-attributed visitors find nothing; the plan runs the whole chain on the as-is classpath
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -254,7 +236,6 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -268,7 +249,6 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -282,7 +262,6 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -296,7 +275,6 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -310,11 +288,10 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
-  # ------------------------------------------------------------------ round 10: servlet removals + library-conditional recipes
+  # ------------------------------------------------------------------ round 10: servlet removals + library migrations
   - id: org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-migrate-java
@@ -325,11 +302,10 @@ recipes:
     gate: null
     advisor: false
     sets: []   # v1: [jakarta] — not in the v2 sets (flow-v2)
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/servlet-to-boot.md
 
-  # knowledge/recipes/library_recipes.yml — appended to non-Boot plans when the library is detected (set library.<name>)
+  # reached through the Boot 4 umbrella (covers); a company config may list them in `openrewrite.recipes.extra`
   - id: org.openrewrite.java.spring.batch.SpringBatch5To6Migration
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-spring
@@ -339,8 +315,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [library.spring-batch]
-    rules: []
+    sets: []
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md
 
@@ -354,8 +329,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [library.hibernate]
-    rules: []
+    sets: []
     verified: "2026-10"
     notes: knowledge/notes/hibernate-7.md
 
@@ -368,14 +342,13 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: [library.thymeleaf]
-    rules: []
+    sets: []
     verified: "2026-10"
     notes: knowledge/notes/era-libraries.md
 
-  # ------------------------------------------------------------------ library advisories (knowledge/libraries/advisories.yml)
-  # Not advisor-eligible: they are added by sbmig.advisory (policy recipe) only when not already covered by
-  # the planned composites — for Boot projects UpgradeSpringBoot_4_0 includes all four.
+  # ------------------------------------------------------------------ library migrations the Boot umbrella runs
+  # Not advisor-eligible: UpgradeSpringBoot_4_0 includes all four for Boot projects; the matching library advisories
+  # (knowledge/libraries/advisories.yml) are guide-only (LLM hints + Handover).
   - id: org.openrewrite.java.springdoc.SpringFoxToSpringDoc
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-spring
@@ -386,10 +359,8 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-cloud.md
-    advisories: [springfox]
 
   - id: org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0
     origin: openrewrite
@@ -401,10 +372,8 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-cloud.md
-    advisories: [springfox]
 
   - id: org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing
     origin: openrewrite
@@ -416,10 +385,8 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-cloud.md
-    advisories: [sleuth]
 
   - id: org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1
     origin: openrewrite
@@ -431,10 +398,8 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-cloud.md
-    advisories: [spring-cloud-bom]
 
   # 2026-10-22 era libraries: rewrite-apache 2.30.0 is a runtime dependency of rewrite-spring 6.37.0 (recipe BOM 3.37.0)
   - id: org.openrewrite.apache.commons.collections.UpgradeApacheCommonsCollections_3_4
@@ -448,13 +413,11 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/era-libraries.md
-    advisories: [commons-collections3]
 
-  # round 10: the Framework 6.0 / 7.0 chains already run these (catalog covers of UpgradeSpringFramework_7_0 and the
-  # Boot umbrella), so the Spring-case advisories httpclient4 / jackson1 are policy recipe (Handover accurate)
+  # round 10: the Framework 6.0 / 7.0 chains run these (catalog covers of UpgradeSpringFramework_7_0 and the Boot
+  # umbrella)
   - id: org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-apache
@@ -466,10 +429,8 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md
-    advisories: [httpclient4]
 
   - id: org.openrewrite.java.jackson.CodehausToFasterXML
     origin: openrewrite
@@ -482,121 +443,10 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
     notes: knowledge/notes/era-libraries.md
-    advisories: [jackson1]
 
-  # ------------------------------------------------------------------ project recipes (knowledge/recipes/base)
-  - id: com.company.migrate.SpringBoot41Version
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/spring-boot-41-version.yml
-    phase: spring
-    description: pin parent / BOM / plugin / direct spring-boot dependencies to the configured 4.1.x line
-    docs: null
-    covers: []
-    gate: null
-    advisor: false
-    sets: []   # v1: [spring_boot_4] — not in the v2 sets (flow-v2)
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/boot40-to-41.md
-
-  - id: com.company.migrate.Boot4JacksonTwins
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/spring-boot-41-version.yml
-    phase: spring
-    description: Boot Jackson support types → Boot 4 / Jackson 3 twins (@JsonComponent → @JacksonComponent & co)
-    docs: null
-    covers: []
-    gate: null
-    advisor: false
-    sets: []   # v1: [spring_boot_4] — not in the v2 sets (flow-v2)
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/boot3-to-4.md
-
-  - id: com.company.migrate.ServletToJakartaAndBoot
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/spring-boot-41-version.yml
-    phase: spring
-    description: raw servlet/Tomcat projects — javax → jakarta, Servlet 6 removals, servlet-api dependency swap
-    docs: null
-    covers:
-      - org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta
-      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
-    gate: null
-    advisor: false
-    sets: []          # planned directly for case servlet_tomcat (sbmig/plan/planner.py SERVLET_RECIPE)
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/servlet-to-boot.md
-
-  - id: com.company.migrate.Boot4TypeRelocations
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/spring-7-leftovers.yml
-    phase: spring
-    description: Boot 4 type moves the 4.0 umbrella misses (web.servlet.error → webmvc.error, web.server.ErrorPage* → web.error, web.servlet.server → web.server.servlet, MultipartConfigFactory / Ordered*Filter → boot.servlet, ServerProperties, HttpMessageConverters, ServletComponentScan)
-    docs: null
-    covers: []
-    gate: null
-    advisor: false
-    sets: []   # v1: [spring_boot_4] — not in the v2 sets (flow-v2)
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/boot3-to-4.md
-
-  - id: com.company.migrate.Spring7RemovedApis
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/spring-7-leftovers.yml
-    phase: spring
-    description: Spring 7 removals the Framework chain leaves — PathMatchConfigurer suffix / trailing-slash options and ContentNegotiationConfigurer path-extension options deleted, HttpHeaders containsKey / keySet / entrySet → containsHeader / headerNames / headerSet
-    docs: null
-    covers: []
-    gate: null
-    advisor: false
-    sets: []   # v1: [spring_boot_4, spring_framework_7] — not in the v2 sets (flow-v2)
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/spring-framework-7.md
-
-  - id: com.company.migrate.Jackson3SpringConverters
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/spring-7-leftovers.yml
-    phase: spring
-    description: Spring's Jackson 2 converters / views → Jackson 3 twins (MappingJackson2HttpMessageConverter → JacksonJsonHttpMessageConverter, MappingJackson2JsonView → JacksonJsonView, XML variants)
-    docs: null
-    covers: []
-    gate: null
-    advisor: false
-    sets: []   # v1: [spring_boot_4, spring_framework_7] — not in the v2 sets (flow-v2)
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/spring-framework-7.md
-
-  - id: com.company.migrate.HystrixToResilience4j
-    origin: project
-    artifact: null
-    file: knowledge/recipes/base/hystrix-to-resilience4j.yml
-    phase: spring
-    description: Hystrix → Resilience4j (@HystrixCommand → @CircuitBreaker, starter swap, @Enable* annotations dropped)
-    docs: https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
-    covers: []
-    gate: null
-    advisor: false
-    sets: []          # added by the hystrix library advisory (policy recipe), prepended to spring.rewrite
-    rules: []
-    verified: "2026-10"
-    notes: knowledge/notes/spring-cloud.md
-    advisories: [hystrix]
-
-  # ------------------------------------------------------------------ building blocks used inside project recipes
+  # ------------------------------------------------------------------ building blocks (core / dependency recipes for company `extra` sets)
   - id: org.openrewrite.maven.UpgradeParentVersion
     origin: openrewrite
     artifact: null                 # core recipe (rewrite-maven), bundled with rewrite-maven-plugin
@@ -607,7 +457,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.maven.UpgradePluginVersion
@@ -620,7 +469,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.ChangeType
@@ -633,7 +481,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.dependencies.UpgradeDependencyVersion
@@ -647,7 +494,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.dependencies.ChangeDependency
@@ -661,7 +507,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.ChangeAnnotationAttributeName
@@ -674,7 +519,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.AddOrUpdateAnnotationAttribute
@@ -687,7 +531,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.RemoveAnnotationAttribute
@@ -700,7 +543,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.RemoveAnnotation
@@ -713,7 +555,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.xml.ChangeTagValue
@@ -726,7 +567,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.maven.ChangeDependencyGroupIdAndArtifactId
@@ -739,7 +579,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.maven.RemoveDependency
@@ -752,7 +591,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.maven.RemoveRedundantDependencyVersions
@@ -765,7 +603,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.ChangeMethodName
@@ -778,7 +615,6 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"
 
   - id: org.openrewrite.java.RemoveMethodInvocations
@@ -791,5 +627,4 @@ recipes:
     gate: null
     advisor: false
     sets: []
-    rules: []
     verified: "2026-10"

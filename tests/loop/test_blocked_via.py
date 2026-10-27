@@ -60,7 +60,7 @@ def test_qlrm_known_jakarta_library(cfg):
     s = item.suggestion
     assert s.startswith(f"`{API}` comes through `org.qlrm:qlrm:2.1.1` (direct dependency of module `shop-back`)")
     assert "moved to jakarta.* in 4.0.1 — raise it to 4.2.1 (requires Java 17)" in s
-    assert "handler jakarta-library-floor does this when the pom declares it" in s
+    assert "handler" not in s                                    # v2: no deterministic handler does it
     assert "upgrade `javax.persistence:javax.persistence-api` to a Jakarta build" not in s
 
 
@@ -70,7 +70,7 @@ def test_qlrm_old_coordinates_relocate(cfg):
     s = item.suggestion
     assert s.startswith("`ch.simas.qlrm:qlrm:1.7.1` is `org.qlrm:qlrm` under its earlier coordinates → "
                         "`org.qlrm:qlrm:4.2.1` (jakarta.* since 4.0.1, requires Java 17)")
-    assert "handler jakarta-library-floor relocates it when the pom declares it" in s
+    assert "relocate the declaration (it drags in" in s and "handler" not in s
 
 
 def test_in_house_library(cfg):
@@ -104,8 +104,7 @@ def test_declared_api_jar(cfg):
     assert item.via_direct is None and len(item.via) == 2
     assert not any(n.startswith("via: ") for n in item.notes)
     assert item.suggestion == (f"`{API}` is declared in `shop-back/pom.xml` — remove it (its jakarta.* successor "
-                               "comes with the Spring Boot starters) — handler dependency-relocation does this after "
-                               "the spring recipes")
+                               "comes with the Spring Boot starters)")
 
 
 def test_no_artifact_type_package_lookup(cfg):

@@ -25,7 +25,6 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "## Phases": "## 단계별 결과",
     "## Fix attempts": "## 수정 시도",
     "## Escalated clusters": "## 에스컬레이션된 클러스터",
-    "## Knowledge base": "## 지식 베이스",
     "## LLM usage and cost": "## LLM 사용량과 비용",
     "| LLM cost | {cost} (see \"LLM usage and cost\") |": "| LLM 비용 | {cost} (\"LLM 사용량과 비용\" 참조) |",
     "(+ unpriced: {models})": "(+ 단가 없음: {models})",
@@ -130,9 +129,6 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "{n} build error(s) seen in this run, one record each.": "이번 실행에서 확인한 빌드 오류 {n}건 (오류마다 기록 1건).",
     "- by status: {counts}": "- 상태별: {counts}",
     "- fixed by (resolved errors): {counts}": "- 해결 수단별 (해결된 오류): {counts}",
-    "- {n} LLM fix(es) were plain text replaces — candidates for a deterministic rule "
-    "(`sbmig kb errors replace-candidates`)":
-        "- LLM 수정 {n}건은 단순 텍스트 치환이었다 — 결정적 규칙으로 바꿀 후보 (`sbmig kb errors replace-candidates`)",
     "| status | where | message | how resolved / why not | attempts |":
         "| 상태 | 위치 | 메시지 | 해결 방법 / 미해결 사유 | 시도 |",
     "replace {pairs}": "치환 {pairs}",
@@ -142,10 +138,9 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "… {n} more — see `error_cases.csv`": "… 외 {n}건 — `error_cases.csv` 참조",
     "Every error with its full history: `error_cases.csv` (opens in Excel) and `error_cases.jsonl` in the run "
     "directory; every fix attempt with its diff: `fix_attempts.jsonl`. Across projects: `sbmig kb errors` "
-    "(`list`, `summary`, `replace-candidates`).":
+    "(`list`, `summary`).":
         "오류별 전체 이력은 실행 디렉터리의 `error_cases.csv`(Excel로 열림)와 `error_cases.jsonl`에, 수정 시도별 "
-        "diff는 `fix_attempts.jsonl`에 있다. 여러 프로젝트를 함께 보려면 `sbmig kb errors`(`list`, `summary`, "
-        "`replace-candidates`)를 쓴다.",
+        "diff는 `fix_attempts.jsonl`에 있다. 여러 프로젝트를 함께 보려면 `sbmig kb errors`(`list`, `summary`)를 쓴다.",
     # ---- what we changed / phases / attempts
     "Plan steps executed:": "실행한 계획 단계:",
     "OpenRewrite runs:": "OpenRewrite 실행:",
@@ -157,15 +152,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "| 단계 | 스텝 | 빌드 횟수 | 빌드 성공 | 결정별 시도 | 결과 |",
     "| phase/iter | cluster | decision | via | outcome | commit | analysis |":
         "| 단계/반복 | 클러스터 | 결정 | 수단 | 결과 | 커밋 | 분석 |",
-    "handler `{handler}`": "핸들러 `{handler}`",
-    "KB case {cases}": "KB 사례 {cases}",
     " + advisory {ids}": " + 어드바이저리 {ids}",
-    # ---- knowledge base / notes
-    "Nothing harvested.": "수집한 항목 없음.",
-    "- cases created: {x}": "- 생성된 사례: {x}",
-    "- recipe candidates created: {x}": "- 생성된 레시피 후보: {x}",
-    "- recipes credited: {x}": "- 성공으로 기록된 레시피: {x}",
-    "- recipes run by triage: {x}": "- 트리아지가 실행한 레시피: {x}",
+    # ---- notes
     "- plan: {note}": "- 계획: {note}",
     # ---- handover
     "No version changes and no library advisories recorded for this run.":
@@ -184,12 +172,11 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Removed: {items}": "제거: {items}",
     "No dependency versions changed.": "변경된 의존성 버전 없음.",
     "_note: {note}_": "_참고: {note}_",
-    "| library | as-is | status | policy | what we did | outcome | what you do next | docs |":
-        "| 라이브러리 | as-is | 상태 | 정책 | 수행한 조치 | 결과 | 다음 할 일 | 문서 |",
+    "| library | as-is | status | what we did | outcome | what you do next | docs |":
+        "| 라이브러리 | as-is | 상태 | 수행한 조치 | 결과 | 다음 할 일 | 문서 |",
     "✅ replaced": "✅ 교체됨",
     "⚠ still present": "⚠ 남아 있음",
-    "in the plan": "계획에 포함",
-    "added for this advisory": "이 어드바이저리를 위해 추가",
+    "replaced during the run": "실행 중 교체됨",
     "built with the as-is version pinned": "as-is 버전을 고정한 채 빌드",
     "**Merge conflicts** (multi-module merge: first module in `<modules>` order wins)":
         "**병합 충돌** (멀티 모듈 병합: `<modules>` 순서상 첫 모듈이 우선)",
@@ -201,7 +188,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "optional bump": "선택 아티팩트 버전 상향",
     "mandatory": "필수 아티팩트",
     "spring boot 4 upgrade": "spring boot 4 업그레이드",
-    "recipe/handler": "레시피/핸들러",
+    "recipe / fix script": "레시피 / 수정 스크립트",
     # properties (round 8)
     "key": "키",
     "before migration": "마이그레이션 전 공급처",
@@ -238,36 +225,18 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "web content that no pom references (e.g. a STATIC/ folder with JSPs / downloads) was left in place — serve it as before or move it into the front module":
         "어떤 pom도 참조하지 않는 웹 콘텐츠(예: JSP·다운로드 파일이 있는 STATIC/)는 그대로 두었다 — 예전처럼 웹 서버에서 내보내거나 front 모듈로 옮길 것",
     "OpenRewrite could not parse some source files (see the phase notes / rewrite log): recipes that need type "
-    "information skipped them; the source handlers and the fix loop covered what the build found":
+    "information skipped them; the fix loop covered what the build found":
         "OpenRewrite가 일부 소스 파일을 파싱하지 못함(phase 노트 / rewrite 로그 참고): 타입 정보가 필요한 레시피는 그 "
-        "파일을 건너뛰었고, 빌드가 찾아낸 것은 소스 핸들러와 수정 루프가 처리했다",
-    "javax.* Jakarta EE references the recipes had left in the sources were renamed to jakarta.* by the "
-    "jakarta-namespace-sweep handler (string literals / resource files are listed as follow-ups)":
-        "레시피가 소스에 남긴 javax.* Jakarta EE 참조를 jakarta-namespace-sweep 핸들러가 jakarta.*로 바꿨다"
-        "(문자열 리터럴 / 리소스 파일은 후속 작업에 나열)",
-    "javax.* Jakarta EE references inside JSP / tag files (page imports, scriptlets, useBean) were renamed to "
-    "jakarta.* by the jakarta-namespace-sweep handler — JSPs are compiled by Tomcat at runtime, so the build cannot "
-    "prove them: smoke-test the pages":
-        "JSP / 태그 파일 안의 javax.* Jakarta EE 참조(page import, 스크립틀릿, useBean)를 jakarta-namespace-sweep "
-        "핸들러가 jakarta.*로 바꿨다 — JSP는 Tomcat이 실행 시점에 컴파일하므로 빌드로는 확인할 수 없다: 화면을 직접 "
-        "열어 확인할 것",
+        "파일을 건너뛰었고, 빌드가 찾아낸 것은 수정 루프가 처리했다",
     "web.xml servlets / filters / listeners / error pages were turned into a generated WebXmlRegistrations "
     "@Configuration in the boot module (web.xml itself is not read by Spring Boot) — verify the mappings in the "
     "Handover":
         "web.xml의 서블릿 / 필터 / 리스너 / 오류 페이지를 boot 모듈에 생성한 WebXmlRegistrations @Configuration으로 "
         "옮겼다(Spring Boot는 web.xml 자체를 읽지 않음) — 인수인계에서 매핑을 확인할 것",
-    "repository interfaces that extended only PagingAndSortingRepository got ListCrudRepository<T, ID> back "
-    "(Spring Data 3 removed its CRUD methods)":
-        "PagingAndSortingRepository만 상속하던 리포지토리 인터페이스에 ListCrudRepository<T, ID>를 다시 추가했다"
-        "(Spring Data 3에서 CRUD 메서드가 빠짐)",
     "javax EE API jars are still on the resolved classpath after the migration (section \"javax API jars still on "
     "the classpath\"): the direct dependencies that drag them in are compiled against javax and need Jakarta builds":
         "마이그레이션 후에도 javax EE API jar가 해석된 클래스패스에 남아 있다(\"클래스패스에 남은 javax API jar\" 절): "
         "이를 끌어오는 직접 의존성이 javax 기준으로 컴파일되어 있어 Jakarta 빌드가 필요하다",
-    "a third-party library with a known jakarta.* release was raised to it "
-    "(knowledge/libraries/jakarta_libraries.yml, handler jakarta-library-floor)":
-        "jakarta.* 릴리스가 알려진 서드파티 라이브러리를 그 버전으로 올렸다"
-        "(knowledge/libraries/jakarta_libraries.yml, jakarta-library-floor 핸들러)",
     # ---- javax API jars still on the classpath (X1b, 2026-10-22)
     "javax API jars still on the classpath": "클래스패스에 남은 javax API jar",
     "| javax API jars | {n} |": "| javax API jar | {n}개 |",
@@ -288,7 +257,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     ", requires Java {java}": ", Java {java} 이상 필요",
     "in-house → Jakarta build": "사내 아티팩트 → Jakarta 빌드 필요",
     "upgrade / replace": "업그레이드 / 교체",
-    "remove the declaration (handler dependency-relocation)": "선언 제거 (dependency-relocation 핸들러)",
+    "remove the declaration from the pom": "pom에서 선언 제거",
     "every build ran with `-Dmaven.test.skip=true` (build.skip_test_compile): test sources were neither compiled nor "
     "run — the owning team compiles and fixes them":
         "모든 빌드가 `-Dmaven.test.skip=true`로 실행됨(build.skip_test_compile): 테스트 소스는 컴파일도 실행도 하지 "
@@ -308,24 +277,12 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "dry run: decisions were computed but nothing was applied": "dry run: 결정만 계산했고 아무것도 적용하지 않았다",
     "the run stopped early (see follow-ups for the reason)": "실행이 일찍 멈췄다(이유는 후속 조치 참조)",
     "Maven was not runnable on this machine": "이 머신에서 Maven을 실행할 수 없었다",
-    "the LLM failed twice in a row (transport/config); LLM-only clusters are listed as blocked (llm_unavailable) "
-    "— handlers and recipes still ran":
-        "LLM이 연속 두 번 실패했다(전송/설정). LLM으로만 풀 수 있는 클러스터는 차단(llm_unavailable)으로 "
-        "표시했다 — 핸들러와 레시피는 그대로 실행했다",
+    "the LLM failed twice in a row (transport/config); the cases still needing a fix script are listed as blocked "
+    "(llm_unavailable) — stored scripts and the final build still ran":
+        "LLM이 연속 두 번 실패했다(전송/설정). 아직 수정 스크립트가 필요한 케이스는 차단(llm_unavailable)으로 "
+        "표시했다 — 저장된 스크립트와 최종 빌드는 그대로 실행했다",
     "the configured in-house parent POM is not resolvable — nothing can build until it is (see Blocked)":
         "설정한 사내 parent POM을 해석할 수 없다 — 해결될 때까지 아무것도 빌드되지 않는다('차단됨' 참조)",
-    "a maven-enforcer rule that fails on JDK 21 was relaxed in the pom":
-        "JDK 21에서 실패하는 maven-enforcer 규칙을 pom에서 완화했다",
-    "maven-enforcer is skipped (-Denforcer.skip=true) — review the rules":
-        "maven-enforcer를 건너뛴다(-Denforcer.skip=true) — 규칙을 검토할 것",
-    "-Werror was removed from the compiler configuration (JDK 21 deprecations would be fatal)":
-        "컴파일러 설정에서 -Werror를 제거했다(JDK 21 deprecation 경고가 오류가 되기 때문)",
-    "some dependencies were pinned at the version the as-is parent managed, because the new parent / Boot BOM no "
-    "longer manages them (⚠ in Handover) — the owners must confirm or replace them":
-        "새 parent / Boot BOM이 더 이상 관리하지 않아 일부 의존성을 as-is parent가 관리하던 버전으로 고정했다"
-        "(인수인계의 ⚠) — 담당 팀이 확인하거나 교체해야 한다",
-    "legacy source encoding detected; project.build.sourceEncoding was set accordingly":
-        "레거시 소스 인코딩을 감지해 project.build.sourceEncoding을 그에 맞게 설정했다",
     "the run was stopped on purpose after this phase (--stop-after)":
         "이 단계 뒤에서 의도적으로 실행을 멈췄다(--stop-after)",
     "the run stopped early (see Blocked / follow-ups)": "실행이 일찍 멈췄다('차단됨' / 후속 조치 참조)",
@@ -405,8 +362,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     ((r"^code rewritten by the LLM for (?P<lib>[^:]+): (?P<rest>.+) — review these changes \(changes\.patch, "
       r"attempts table\)$"),
      r"LLM이 \g<lib> 때문에 재작성한 코드: \g<rest> — 변경 내용을 검토할 것 (changes.patch, '수정 시도' 표)"),
-    (r"^verify (?P<lib>.+?) → (?P<repl>.+?) \((?P<via>recipe .+?|replaced during the run)\)(?P<rest>: .+)?$",
-     r"확인 필요: \g<lib> → \g<repl> (\g<via>)\g<rest>"),
+    (r"^verify (?P<lib>.+?) → (?P<repl>.+?) \(replaced during the run\)(?P<rest>: .+)?$",
+     r"확인 필요: \g<lib> → \g<repl> (실행 중 교체됨)\g<rest>"),
     ((r"^(?P<n>\d+) externalized setting\(s\) need values before the first start — placeholders "
       r"\((?P<s>[^)]*)\) in (?P<files>.+); see 'Properties to set'$"),
      (r"외부 설정 \g<n>개는 첫 기동 전에 값이 필요하다 — 플레이스홀더(\g<s>) 위치: \g<files>; "

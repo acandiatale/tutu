@@ -2,33 +2,23 @@
 errors (no LLM).
 
 ``label_changes(changes, errors)`` → :class:`LabelResult` (labels most-specific first, an ``old → new``
-replacement when the labels imply one, the error-case symbol and machine-readable details).
-``compile_recipe(case)`` turns a mechanical, 1:1 labeled case into a whitelisted declarative OpenRewrite
-recipe without asking the LLM (ChangeType / ChangePackage / ChangeMethodName / AddDependency /
-ChangeDependency / UpgradeDependencyVersion / UpgradePluginVersion / ChangePropertyValue /
-ChangeSpringPropertyKey). A ``method-rename`` compiles only with a library-owned owner FQCN, taken from the
-javac location or from ``KBCase.symbol_owner`` (javac prints imported types by their simple name; harvest
-resolves them through the changed files' imports); the pattern is always ``<owner> <old>(..)``.
+replacement when the labels imply one, the error-case symbol and machine-readable details). The error records
+(:mod:`sbmig.kb.error_cases`) label every fix attempt — a v2 fix script's diff included — with it;
+``symbol_for_error(s)`` gives the cross-project error symbol (records, case catalog names and matching).
 
-The heuristics are deliberately simple; anything they cannot explain is ``generic-rewrite``, which never
-compiles to a recipe.
+The heuristics are deliberately simple; anything they cannot explain is ``generic-rewrite``.
 """
 
 from __future__ import annotations
 
 import difflib
-import hashlib
 import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Optional
 
-import yaml
-
-from sbmig.build.signatures import _is_external, _symbol_name, classify_javac
-from sbmig.core.models import BlockedItem, BuildError, ErrorKind, FileChange, KBCase
-
-from .recipes import RECIPE_TYPE, validate_recipe_yaml
+from sbmig.build.signatures import _symbol_name, classify_javac
+from sbmig.core.models import BuildError, ErrorKind, FileChange
 
 ARROW = " → "
 
@@ -53,23 +43,6 @@ LABEL_ORDER: tuple[str, ...] = (
     "add-code",
     "generic-rewrite",
 )
-MECHANICAL_LABELS = frozenset(
-    {
-        "package-rename",
-        "annotation-replace",
-        "type-rename",
-        "import-rename",
-        "method-rename",
-        "dependency-replace",
-        "dependency-version",
-        "dependency-add",
-        "dependency-remove",
-        "plugin-version",
-        "pom-property",
-        "spring-property-rename",
-    }
-)
-
 
 @dataclass
 class LabelResult:
@@ -110,14 +83,6 @@ def symbol_for_errors(errors: Iterable[BuildError]) -> str:
         if s:
             return s
     return ""
-
-
-def symbol_for_blocked(item: BlockedItem) -> str:
-    if item.owner_class:
-        return item.owner_class
-    if item.artifact is not None:
-        return item.artifact.key
-    return symbol_for_errors(item.errors)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -676,204 +641,3 @@ def label_changes(changes: list[FileChange], errors: Optional[list[BuildError]] 
     res.labels = sorted(set(res.labels), key=LABEL_ORDER.index)
     res.replacement = _replacement(res)
     return res
-
-
-# --------------------------------------------------------------------------- public: compile_recipe
-def _pascal(*parts: str) -> str:
-    out = ""
-    for p in parts:
-        for w in re.split(r"[^A-Za-z0-9]+", p or ""):
-            if w:
-                out += w[0].upper() + w[1:]
-    return out
-
-
-def _recipe_name(*parts: str) -> str:
-    name = _pascal(*parts) or "Fix"
-    if not name[0].isalpha():
-        name = "Kb" + name
-    if len(name) > 90:
-        h = hashlib.sha1(name.encode()).hexdigest()[:8]
-        name = name[:80] + "H" + h
-    return name                                   # one PascalCase word (sbmig.kb.recipes: KB recipe names)
-
-
-def _fqcn_ok(fqcn: str) -> bool:
-    """A real, library-owned FQCN (project-owned types must never become a recipe)."""
-    return (
-        bool(re.match(r"^[a-z_][\w]*(\.[\w$]+)+$", fqcn or ""))
-        and not fqcn.endswith(".*")
-        and _is_external(fqcn)
-    )
-
-
-def _pkg_ok(pkg: str) -> bool:
-    return bool(re.match(r"^[a-z_][\w]*(\.[\w]+)*$", pkg or "")) and _is_external(pkg + ".X")
-
-
-def _ga(key: str) -> Optional[tuple[str, str]]:
-    parts = (key or "").split(":")
-    if len(parts) == 2 and all(parts):
-        return parts[0], parts[1]
-    return None
-
-
-_METHOD_NAME_RE = re.compile(r"^[a-z_][A-Za-z0-9_]*$")
-
-
-def _compile_method_rename(renames: list[dict], symbol_owner: str) -> tuple[dict, str, str] | None:
-    """ChangeMethodName for 1:1 renames: every call site agrees on (old, new) and on the owner; the owner FQCN
-    comes from the javac location when it is qualified, else from ``symbol_owner`` (same simple name)."""
-    if not renames:
-        return None
-    pairs = {(r.get("old", ""), r.get("new", "")) for r in renames}
-    if len(pairs) != 1:
-        return None
-    old, new = next(iter(pairs))
-    if old == new or not (_METHOD_NAME_RE.match(old) and _METHOD_NAME_RE.match(new)):
-        return None
-    owners = {r.get("owner") or "" for r in renames} - {""}
-    qualified = {o for o in owners if "." in o}
-    if len({_simple(o) for o in owners}) > 1 or len(qualified) > 1:
-        return None
-    if qualified:
-        owner = next(iter(qualified))
-        if not _fqcn_ok(owner):
-            return None
-    elif _fqcn_ok(symbol_owner) and (not owners or _simple(symbol_owner) == next(iter(owners))):
-        owner = symbol_owner
-    else:
-        return None
-    entry = {
-        "org.openrewrite.java.ChangeMethodName": {
-            "methodPattern": f"{owner} {old}(..)",
-            "newMethodName": new,
-            "matchOverrides": True,
-        }
-    }
-    return entry, _recipe_name(_simple(owner), old, "To", new), f"{owner}.{old}(..) -> {new}"
-
-
-def compile_recipe(case: KBCase) -> Optional[str]:
-    """Build a declarative recipe YAML for a mechanical, confidently 1:1 labeled case — or None."""
-    res = label_changes(case.changes, case.errors)
-    labels = set(res.labels)
-    if not labels or not labels <= MECHANICAL_LABELS:
-        return None
-    det = res.details
-    entry: Optional[dict] = None
-    name = title = ""
-    type_family = {"import-rename", "type-rename", "annotation-replace"}
-    if labels <= {"package-rename", "import-rename"} and "package-rename" in labels:
-        p = det.get("package_rename") or {}
-        if not (_pkg_ok(p.get("old", "")) and _pkg_ok(p.get("new", ""))):
-            return None
-        opts: dict[str, Any] = {"oldPackageName": p["old"], "newPackageName": p["new"]}
-        if p.get("recursive"):
-            opts["recursive"] = True
-        entry = {"org.openrewrite.java.ChangePackage": opts}
-        name, title = _recipe_name(p["old"], "To", p["new"]), f"Move package {p['old']} to {p['new']}"
-    elif labels <= type_family:
-        pairs = det.get("type_pairs") or []
-        if len(pairs) != 1:
-            return None
-        old, new = pairs[0]
-        if not (_fqcn_ok(old) and _fqcn_ok(new)) or old == new:
-            return None
-        entry = {
-            "org.openrewrite.java.ChangeType": {
-                "oldFullyQualifiedTypeName": old,
-                "newFullyQualifiedTypeName": new,
-            }
-        }
-        so, sn = _simple(old), _simple(new)
-        name = _recipe_name(so, "To", sn) if so != sn else _recipe_name(_pkg(old), so, "To", _pkg(new))
-        title = f"{old} -> {new}"
-    elif labels == {"method-rename"}:
-        compiled = _compile_method_rename(det.get("method_renames") or [], case.symbol_owner or "")
-        if compiled is None:
-            return None
-        entry, name, title = compiled
-    elif labels == {"dependency-add"}:
-        adds = det.get("dependency_add") or []
-        if len(adds) != 1 or not _ga(adds[0]["key"]) or not adds[0].get("version"):
-            return None
-        g, a = _ga(adds[0]["key"])  # type: ignore[misc]
-        opts = {"groupId": g, "artifactId": a, "version": adds[0]["version"]}
-        if adds[0].get("scope"):
-            opts["scope"] = adds[0]["scope"]
-        entry = {"org.openrewrite.java.dependencies.AddDependency": opts}
-        name, title = _recipe_name("Add", a), f"Add dependency {g}:{a}"
-    elif labels == {"dependency-replace"}:
-        reps = det.get("dependency_replace") or []
-        if len(reps) != 1 or not _ga(reps[0]["old"]) or not _ga(reps[0]["new"]):
-            return None
-        (og, oa), (ng, na) = _ga(reps[0]["old"]), _ga(reps[0]["new"])  # type: ignore[misc]
-        opts = {"oldGroupId": og, "oldArtifactId": oa, "newGroupId": ng, "newArtifactId": na}
-        if reps[0].get("new_version"):
-            opts["newVersion"] = reps[0]["new_version"]
-        entry = {"org.openrewrite.java.dependencies.ChangeDependency": opts}
-        name, title = _recipe_name("Change", oa, "To", na), f"Replace {og}:{oa} with {ng}:{na}"
-    elif labels == {"dependency-version"}:
-        vs = det.get("dependency_versions") or []
-        if len(vs) != 1 or not _ga(vs[0]["key"]) or not vs[0].get("new"):
-            return None
-        g, a = _ga(vs[0]["key"])  # type: ignore[misc]
-        entry = {
-            "org.openrewrite.java.dependencies.UpgradeDependencyVersion": {
-                "groupId": g,
-                "artifactId": a,
-                "newVersion": vs[0]["new"],
-            }
-        }
-        name, title = _recipe_name("Upgrade", a, vs[0]["new"]), f"Upgrade {g}:{a} to {vs[0]['new']}"
-    elif labels == {"plugin-version"}:
-        vs = det.get("plugin_versions") or []
-        if len(vs) != 1 or not _ga(vs[0]["key"]) or not vs[0].get("new"):
-            return None
-        g, a = _ga(vs[0]["key"])  # type: ignore[misc]
-        entry = {
-            "org.openrewrite.maven.UpgradePluginVersion": {
-                "groupId": g,
-                "artifactId": a,
-                "newVersion": vs[0]["new"],
-            }
-        }
-        name, title = _recipe_name("Upgrade", a, vs[0]["new"]), f"Upgrade plugin {g}:{a} to {vs[0]['new']}"
-    elif labels == {"pom-property"}:
-        ps = det.get("pom_properties") or []
-        if len(ps) != 1 or ps[0]["old"] is None or ps[0]["new"] is None:
-            return None
-        entry = {"org.openrewrite.maven.ChangePropertyValue": {"key": ps[0]["key"], "newValue": ps[0]["new"]}}
-        name, title = _recipe_name("Set", ps[0]["key"], ps[0]["new"]), f"Set property {ps[0]['key']}"
-    elif labels == {"spring-property-rename"}:
-        rs = det.get("property_renames") or []
-        if len(rs) != 1:
-            return None
-        entry = {
-            "org.openrewrite.java.spring.ChangeSpringPropertyKey": {
-                "oldPropertyKey": rs[0]["old"],
-                "newPropertyKey": rs[0]["new"],
-            }
-        }
-        name, title = (
-            _recipe_name("Rename", rs[0]["old"], "To", rs[0]["new"]),
-            f"Rename property {rs[0]['old']} to {rs[0]['new']}",
-        )
-    if entry is None:
-        return None
-    sig = (case.signatures_generic or case.signatures or [""])[0]
-    desc = (
-        f"{', '.join(res.labels)}: {res.replacement or title}. Compiled from KB case {case.id or '-'} "
-        f"labels (no LLM){' for ' + sig if sig else ''}."
-    )
-    doc = {
-        "type": RECIPE_TYPE,
-        "name": name,
-        "displayName": title[:200],
-        "description": re.sub(r"\s+", " ", desc)[:400],
-        "recipeList": [entry],
-    }
-    text = yaml.safe_dump(doc, sort_keys=False, allow_unicode=True, width=1000)
-    ok, _errors, _ = validate_recipe_yaml(text)
-    return text if ok else None

@@ -15,9 +15,9 @@ def _finding(cfg):
     return f
 
 
-def test_detected_from_imports_with_guide_policy(cfg):
+def test_detected_from_imports(cfg):
     f = _finding(cfg)
-    assert f.status == "incompatible" and f.policy == "guide" and f.recipes == []
+    assert f.status == "incompatible"
     assert "org.jboss.logging.Logger" in (f.replacement or "") and f.notes == ["see knowledge/notes/hibernate-7.md"]
     assert "7.0.3.Final" in f.followup
 

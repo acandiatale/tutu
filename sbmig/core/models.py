@@ -44,7 +44,6 @@ class Phase(str, Enum):
 
 class StepKind(str, Enum):
     OPENREWRITE = "openrewrite"
-    HANDLER = "handler"            # deterministic pre-emptive fix (e.g. lombok version floor)
     RESTRUCTURE = "restructure"    # non-MSA layout transform
     MSA_POM = "msa_pom"            # MSA: pom-only parent/mandatory/optional edits
     BUILD_FIX_LOOP = "build_fix_loop"
@@ -67,10 +66,6 @@ class ErrorKind(str, Enum):
 
 
 class DecisionKind(str, Enum):
-    HANDLER = "handler"        # built-in / kb pattern deterministic fix
-    KB_RECIPE = "kb_recipe"    # run promoted OpenRewrite recipe(s) from the knowledge base
-    KB_PATCH = "kb_patch"      # replay a previously successful search/replace patch
-    LLM_FIX = "llm_fix"
     SKIP = "skip"              # masked by another cluster this iteration
     ESCALATE = "escalate"      # give up on this cluster; goes to report
     BLOCKED = "blocked"        # cannot be fixed inside this project (external library / infra) → skip now, report
@@ -498,9 +493,8 @@ class ProjectProfile(BaseModel):
 # ---------------------------------------------------------------------------
 class RecipeRef(BaseModel):
     id: str                                        # fully qualified recipe id
-    source: Literal["builtin", "kb", "project"] = "builtin"
+    source: Literal["builtin"] = "builtin"         # v2: OpenRewrite recipes only (no project / KB recipes)
     artifact: Optional[str] = None                 # "org.openrewrite.recipe:rewrite-spring" (version from config)
-    file: Optional[str] = None                     # declarative yml path for kb/project recipes (absolute)
 
 
 class PlanStep(BaseModel):
@@ -611,9 +605,6 @@ class ErrorCluster(BaseModel):
 class TriageDecision(BaseModel):
     cluster_id: str
     kind: DecisionKind
-    handler_id: Optional[str] = None
-    recipe_ids: list[str] = Field(default_factory=list)
-    kb_case_ids: list[str] = Field(default_factory=list)
     rationale: str = ""
 
 
@@ -773,17 +764,6 @@ class StructureReview(BaseModel):
         return [i for i in self.issues if i.severity == "critical"]
 
 
-class FixProposal(BaseModel):
-    changes: list[FileChange]
-    analysis: str = ""
-    confidence: float = 0.5
-    model: str = ""
-    prompt_hash: str = ""
-    llm_usage: LLMUsage = Field(default_factory=LLMUsage)
-    requested_files: list[str] = Field(default_factory=list)   # filled when the LLM asked for more context
-    raw_response: str = ""
-
-
 class FixAttempt(BaseModel):
     id: str
     phase: Phase
@@ -810,8 +790,6 @@ class FixAttempt(BaseModel):
     # error cases (2026-10-23): what the KB needs to record failures as well as fixes
     base_commit: Optional[str] = None              # HEAD before the attempt: `git diff base_commit..commit` = the
                                                    # exact code it applied (handlers / recipes return paths only)
-    proposed_changes: list[FileChange] = Field(default_factory=list)  # the LLM / KB proposal when it did not
-                                                   # (fully) apply — `changes` holds only what applied
     introduced_errors: list[BuildError] = Field(default_factory=list)  # errors new in the touched files after the
                                                    # rebuild (set by the loop's scoring; why "regressed")
     # v2 fix scripts (decision SCRIPT): which version of which case's script ran, how it came about and what it did
@@ -883,96 +861,10 @@ FixLabel = Literal[
 ]
 
 
-class ResolutionRecord(BaseModel):
-    """One line of kb/ledger.jsonl: in project P, error-case S was resolved (or blocked) by R. The cross-project
-    memory a fleet run leaves behind, queryable with `sbmig kb ledger`."""
-    id: str
-    at: datetime = Field(default_factory=utcnow)
-    project: str                                   # ws.root.name (no paths)
-    project_fingerprint: str = ""
-    run_id: str = ""
-    case_type: CaseType = CaseType.UNKNOWN
-    phase: Phase = Phase.SPRING
-    signature: str = ""                            # L1
-    signature_generic: str = ""                    # L2
-    error_kind: ErrorKind = ErrorKind.COMPILE
-    symbol: str = ""                               # javac symbol / artifact key / owner class — the "error-case symbol"
-    resolution: Literal["handler", "plan_recipe", "kb_recipe", "kb_patch", "llm_patch", "optional_bump",
-                        "blocked", "unresolved", "advisory"] = "llm_patch"   # advisory: library advisory finding
-                                                   # (symbol = library, resolver_id = "<policy>:<recipes|->",
-                                                   #  replacement = "lib → replacement", outcome = AdvisoryOutcome)
-    resolver_id: str = ""                          # handler id / recipe id / kb case id / block reason
-    fix_labels: list[str] = Field(default_factory=list)      # FixLabel values
-    replacement: str = ""                          # "old → new" when the label implies one (FQCN, g:a, key …)
-    outcome: str = ""                              # improved | build_ok | blocked | unresolved
-    files: list[str] = Field(default_factory=list)           # basenames only
-    case_id: Optional[str] = None                  # KBCase created/reused
-    recipe_id: Optional[str] = None                # KB recipe used or generated
-    model: str = ""
-    notes: list[str] = Field(default_factory=list)
-
-
-class KBCase(BaseModel):
-    id: str
-    created_at: datetime = Field(default_factory=utcnow)
-    project_fingerprint: str = ""
-    project: str = ""                              # ws.root.name — for the ledger / fleet learning report
-    symbol: str = ""                               # error-case symbol (see ResolutionRecord.symbol)
-    symbol_owner: str = ""                         # FQCN of the type that owns `symbol` (javac prints imported types by
-                                                   # their simple name; harvest resolves it from the changed files'
-                                                   # imports / classpath) — ChangeMethodName needs it (round 5)
-    fix_labels: list[str] = Field(default_factory=list)      # FixLabel values (deterministic, sbmig.kb.labels)
-    replacement: str = ""                          # "old → new" when the labels imply one
-    case_type: CaseType = CaseType.UNKNOWN
-    phase: Phase = Phase.SPRING
-    signatures: list[str] = Field(default_factory=list)          # L1
-    signatures_generic: list[str] = Field(default_factory=list)  # L2
-    error_kind: ErrorKind = ErrorKind.COMPILE
-    errors: list[BuildError] = Field(default_factory=list)       # sanitized (no abs paths)
-    fix_kind: Literal["llm_patch", "handler", "recipe", "manual"] = "llm_patch"
-    changes: list[FileChange] = Field(default_factory=list)
-    summary: str = ""
-    outcome: AttemptOutcome = "improved"
-    reuse_count: int = 0
-    reuse_projects: list[str] = Field(default_factory=list)
-    recipe_candidate_id: Optional[str] = None
-    tags: list[str] = Field(default_factory=list)
-    model: str = ""
-
-
-class KBRecipe(BaseModel):
-    id: str                                        # recipe name inside the yml, e.g. ReplaceFooWithBar
-    status: Literal["candidate", "active", "rejected"] = "candidate"
-    path: str                                      # absolute path of the declarative yml
-    description: str = ""
-    signatures: list[str] = Field(default_factory=list)          # L1/L2 signatures that trigger it
-    source_case_ids: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=utcnow)
-    promoted_at: Optional[datetime] = None
-    success_count: int = 0
-    fail_count: int = 0
-    projects: list[str] = Field(default_factory=list)
-
-
 class KBMatch(BaseModel):
-    recipe_ids: list[str] = Field(default_factory=list)              # ACTIVE recipes whose signatures match
-    recipe_files: list[str] = Field(default_factory=list)
-    candidate_recipe_ids: list[str] = Field(default_factory=list)    # CANDIDATE recipes (tried after active, before LLM)
-    candidate_recipe_files: list[str] = Field(default_factory=list)
-    cases: list[KBCase] = Field(default_factory=list)            # similar cases → prompt hints
-    replayable: list[KBCase] = Field(default_factory=list)       # same signature AND search text still present
-    handler_ids: list[str] = Field(default_factory=list)
-    hints: list[str] = Field(default_factory=list)               # short natural-language hints for the LLM prompt
+    """What the KB knows about a cluster's case (`FileKnowledgeBase.match`): the catalog hits and their hint lines."""
+    hints: list[str] = Field(default_factory=list)               # short natural-language hints for the script prompt
     case_hits: list[Any] = Field(default_factory=list)           # CaseHit (case catalog, 2026-10-23)
-
-
-class HarvestResult(BaseModel):
-    cases_created: list[str] = Field(default_factory=list)
-    candidates_created: list[str] = Field(default_factory=list)
-    recipes_credited: list[str] = Field(default_factory=list)
-    recipes_promoted: list[str] = Field(default_factory=list)      # auto-promoted during this harvest
-    ledger_entries: int = 0                                        # ResolutionRecords appended
-    notes: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1125,7 +1017,6 @@ class ErrorCaseRecord(BaseModel):
     fix_labels: list[str] = Field(default_factory=list)
     diff_excerpt: str = ""                         # the resolution diff restricted to this error's file: one
     #   section per resolution attempt (`# attempt <id> …` headers when more than one), each ≤ kb.error_excerpt_chars
-    replace_rule_candidate: bool = False           # resolved by the LLM with a pure text replace → a rule could do it
     # failure side
     failure_reason: str = ""                       # why not resolved ("" when resolved)
     problem_errors: list[str] = Field(default_factory=list)  # "file:line message" that made the last attempt fail
@@ -1154,8 +1045,9 @@ class ErrorCaseRecord(BaseModel):
 # field is recomputed. A hit at triage applies the case's action (see docs/INTERFACES.md "Case catalog").
 # ---------------------------------------------------------------------------
 CaseStatus = Literal["observed", "candidate", "active", "rejected"]
-CaseActionKind = Literal["hint", "recipe", "replace", "handler", "patch", "block", "script"]
-# v2: script = run the case's best stored fix script (CaseAction.script_version) — the flow-v2 action
+CaseActionKind = Literal["hint", "block", "script"]
+# script = run the case's best stored fix script (CaseAction.script_version); block = never try (BlockReason +
+# suggestion); hint = nothing proven yet (the case's hints go into the script prompt)
 
 
 class CaseVariant(BaseModel):
@@ -1206,11 +1098,6 @@ class CaseEvent(BaseModel):
 
 class CaseAction(BaseModel):
     kind: CaseActionKind = "hint"
-    recipe_ids: list[str] = Field(default_factory=list)       # recipe: KB recipe ids (OpenRewrite)
-    handler_id: str = ""                                      # handler: a built-in handler id
-    replace_pairs: list[ReplacePair] = Field(default_factory=list)   # replace: token pairs (old → new)
-    replace_scope: Literal["error-lines", "file"] = "error-lines"
-    patch_case_ids: list[str] = Field(default_factory=list)   # patch: KBCase ids (replayable LLM patches)
     block_reason: str = ""                                    # block: BlockReason value + suggestion
     suggestion: str = ""
     script_version: int = 0                                   # script: <kb>/scripts/<case id>/v<N>.py
@@ -1227,9 +1114,6 @@ class CaseEvidence(BaseModel):
     fixes: list[CaseFix] = Field(default_factory=list)         # top 5 by projects, count
     failures: list[CaseFailure] = Field(default_factory=list)  # top 5
     timeline: list[CaseEvent] = Field(default_factory=list)    # last 20, oldest first
-    action_successes: int = 0                      # the case's own replace action (handler case-replace) resolved it
-    action_failures: int = 0
-    action_projects: list[str] = Field(default_factory=list)   # distinct projects of those successes (promotion)
 
 
 class CaseHuman(BaseModel):
@@ -1303,10 +1187,6 @@ class FleetProjectResult(BaseModel):
     blocked_reasons: list[str] = Field(default_factory=list)   # "external_javax_api:com.company:legacy-web"
     unresolved: int = 0
     flags: list[str] = Field(default_factory=list)
-    kb_cases_created: list[str] = Field(default_factory=list)
-    kb_candidates_created: list[str] = Field(default_factory=list)
-    kb_recipes_promoted: list[str] = Field(default_factory=list)
-    kb_recipes_used: list[str] = Field(default_factory=list)      # KB recipes/patches that fired (learning paid off)
     advisories: list[str] = Field(default_factory=list)           # "<advisory_id>:<outcome>" (library advisories)
     carried_over: int = 0                                         # dependencies pinned at as-is versions (handover)
     error: Optional[str] = None
@@ -1333,7 +1213,7 @@ class FleetState(BaseModel):
 #   guide  = build as far as we can, tell the owners what to do next (report "Handover" + manual follow-ups + ledger)
 #   recipe = additionally run verified OpenRewrite recipe(s) in the spring phase; falls back to guide when the
 #            recipe is unavailable (not in the catalog / artifact not configured / advisories.allow_recipes=false)
-AdvisoryPolicy = Literal["guide", "recipe"]
+AdvisoryPolicy = Literal["guide"]              # v2: advisories are LLM hints + Handover only
 AdvisoryStatus = Literal["eol", "unmanaged", "incompatible", "superseded"]
 #   eol          = project discontinued (springfox, hystrix, sleuth, ribbon, zuul …)
 #   unmanaged    = still alive but the target parent / Boot BOM no longer manages its version
@@ -1355,8 +1235,6 @@ class LibraryAdvisory(BaseModel):
     summary: str = ""                              # one paragraph for the report
     replacement: Optional[str] = None              # "org.springdoc:springdoc-openapi-starter-webmvc-ui" or free text
     replacement_version: Optional[str] = None      # "3.x (Boot 4)"
-    policy: AdvisoryPolicy = "guide"
-    recipes: list[str] = Field(default_factory=list)     # OpenRewrite recipe ids (must exist in the recipe catalog)
     followup: str = ""                             # the "from here on, your team …" sentence (runtime work)
     docs: list[str] = Field(default_factory=list)
     applies_to: list[CaseType] = Field(default_factory=list)   # empty = every case type
@@ -1375,14 +1253,10 @@ class AdvisoryFinding(BaseModel):
     status: AdvisoryStatus
     title: str
     summary: str = ""
-    policy: AdvisoryPolicy                         # effective policy after config overrides / recipe availability
-    policy_reason: str = ""                        # "catalog" | "config override" | "recipe unavailable → guide" …
+    policy: AdvisoryPolicy = "guide"               # always guide in v2 (kept for report.json readers)
     detected_version: Optional[str] = None
     evidence: list[str] = Field(default_factory=list)     # LibraryUsage evidence strings
     artifacts: list[str] = Field(default_factory=list)    # "g:a" keys found in the as-is poms
-    recipes: list[str] = Field(default_factory=list)      # recipe ids that will run for it
-    recipe_source: Literal["plan", "advisory", "none"] = "none"   # plan = already inside the planned composites,
-                                                   # advisory = added to spring.rewrite because of this finding
     outcome: AdvisoryOutcome = "unknown"
     replacement: Optional[str] = None
     replacement_version: Optional[str] = None
@@ -1469,7 +1343,6 @@ class RunReport(BaseModel):
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
     llm_usage_by_model: list[LLMUsage] = Field(default_factory=list)   # fix / escalation / recipe models apart
     llm_cost: Optional[LLMCost] = None                                  # priced with llm.pricing (2026-10-22)
-    harvest: Optional[HarvestResult] = None
     unresolved: list[BuildError] = Field(default_factory=list)
     blocked: list[BlockedItem] = Field(default_factory=list)       # deliberately skipped: needs library/infra/human action
     manual_followups: list[str] = Field(default_factory=list)    # things the as-is owner must do (runtime concerns)
@@ -1482,7 +1355,7 @@ class RunReport(BaseModel):
     # every build error of the run, one record each (2026-10-23; full detail incl. diffs in <run dir>/error_cases.jsonl
     # and fix_attempts.jsonl — the report copy has `diff_excerpt` emptied to keep report.json small)
     error_cases: list[ErrorCaseRecord] = Field(default_factory=list)
-    error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count, plus "llm_text_replace"
+    error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count
     structure_review: Optional[StructureReview] = None           # v2: LLM review of poms / modules before the first build
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)

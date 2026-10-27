@@ -1,4 +1,5 @@
-"""`sbmig kb errors …` over a temp KB: list / show / summary / replace-candidates / export."""
+"""`sbmig kb errors …` over a temp KB: list / show / summary / export (`replace-candidates` is gone with the
+learned text replaces, PLAN-v2 step 4)."""
 from __future__ import annotations
 
 import csv
@@ -55,7 +56,7 @@ def test_errors_list(kb, ws, profile):
     assert _run(kb.root, "errors", "list", "--signature", "nothing").output.strip() == "no error cases"
     assert len(_run(kb.root, "errors", "list", "--symbol", "clientIp", "--limit", "1").output.splitlines()) == 1
     rows = [json.loads(x) for x in _run(kb.root, "errors", "list", "--json").output.splitlines()]
-    assert [x["id"] for x in rows] == ["e1", "e9"] and rows[0]["replace_rule_candidate"] is True
+    assert [x["id"] for x in rows] == ["e1", "e9"] and rows[0]["change_kind"] == "text_replace"
     assert _run(kb.root, "errors", "list", "--status", "(").exit_code != 0       # bad regex
 
 
@@ -108,21 +109,17 @@ def test_errors_show_prints_every_attempt_of_a_multi_attempt_resolution(kb, ws, 
     assert "--- resolving diff" not in out
 
 
-def test_errors_summary_and_replace_candidates(kb, ws, profile):
+def test_errors_summary(kb, ws, profile):
     _seed(kb, ws, profile)
     r = _run(kb.root, "errors", "summary")
     assert r.exit_code == 0
-    assert "2 error case(s), 3 attempt(s), 2 project(s), 2 run(s); LLM text replaces: 1" in r.output
+    assert "2 error case(s), 3 attempt(s), 2 project(s), 2 run(s)\n" in r.output and "text replaces" not in r.output
     assert "status:      resolved=1, unresolved=1" in r.output and "resolved by: llm=1" in r.output
     assert "regressed" in r.output and EC_L2 in r.output
     s = json.loads(_run(kb.root, "errors", "summary", "--run", "r2", "--json").output)
     assert s["by_status"] == {"unresolved": 1} and s["errors"] == 1
-    r = _run(kb.root, "errors", "replace-candidates")
-    assert r.exit_code == 0 and "`clientIp` → `remoteClientIp`" in r.output and "projects=1" in r.output
-    rows = json.loads(_run(kb.root, "errors", "replace-candidates", "--json").output)
-    assert rows[0]["old"] == "clientIp" and rows[0]["example_attempt"] == "r1:a1"
-    assert "no text-replace candidates" in _run(kb.root, "errors", "replace-candidates", "--min-projects",
-                                                "2").output
+    r = runner.invoke(kb_cli, ["--kb-dir", str(kb.root), "errors", "replace-candidates"])
+    assert r.exit_code != 0 and "No such command" in r.output
 
 
 def test_errors_export(kb, ws, profile, tmp_path):
@@ -140,15 +137,13 @@ def test_errors_export(kb, ws, profile, tmp_path):
     assert [x["id"] for x in arows] == ["r2:a0"] and arows[0]["outcome"] == "regressed"
 
 
-def test_stats_reindex_learning_mention_error_cases(kb, ws, profile):
+def test_stats_and_reindex_mention_error_cases(kb, ws, profile):
     _seed(kb, ws, profile)
     st = json.loads(_run(kb.root, "stats", "--json").output)
     assert st["error_cases"] == 2 and st["fix_attempts"] == 3
-    kb.error_case_store().hints_path.unlink()
     r = _run(kb.root, "reindex")
-    assert "error hints: 1 L2 signature(s), 1 symbol(s)" in r.output
-    assert "error cases: 2 (resolved=1, unresolved=1)" in _run(kb.root, "learning").output
-    assert "## Error cases" in _run(kb.root, "learning", "--md").output
+    assert "case catalog: 1 case(s) (observed 1)" in r.output and "error hints" not in r.output
+    assert not (kb.root / "error_hints.json").exists()
 
 
 def test_errors_export_filters_by_case_and_resolver_with_the_resolution_chain(kb, ws, profile, tmp_path):

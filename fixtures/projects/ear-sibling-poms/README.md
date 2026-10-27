@@ -22,12 +22,12 @@ done
 # a single module: cd APP/BATCH && mvn -q -DskipTests package
 ```
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
 * intake writes a root aggregator `pom.xml` (`portal-aggregator`, modules `APP/BATCH`, `APP/WEB`, `APP/EAR` in
   dependency order, property `sbmig.project-name = portal`): flag `aggregator-generated`, journal
   `aggregator_generated`, a follow-up that says so
-* the three modules build in one reactor through jdk21 / spring; the restructure merges them (company layout,
+* one OpenRewrite run over the three modules (no build before the restructure); the restructure merges them (company layout,
   `{name}` = `portal`, the root renamed `portal` once the EAR module is gone): `portal-back` (NoticeServlet on
   `jakarta.servlet`, NoticeCleaner, `commons-io` from the EAR's lib), `portal-front` (`list.jsp` under
   `META-INF/resources/WEB-INF/jsp/notice/`, `static/css/portal.css`), `portal-boot` WAR for external Tomcat with the
@@ -36,4 +36,4 @@ done
   descriptor kept under `portal-boot/src/main/resources/asis-ear/…`; flag `ear-module-dropped` and a follow-up with
   the context root `/portal`; a follow-up for `NoticeCleaner`'s `main` (a standalone batch merged into the back module)
 * `STATIC/` and `DB/` untouched: flag `web-content-left` + a follow-up naming `STATIC/`
-* BUILD SUCCESS, exit 0, 0 LLM calls
+* BUILD SUCCESS, exit 0, **1 LLM call** (the structure review: a warning on `javax.servlet:jstl` in `portal-back`), no fix script

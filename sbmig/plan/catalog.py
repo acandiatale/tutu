@@ -1,9 +1,9 @@
 """Recipe catalog (`knowledge/recipes/catalog.yml`) — the single managed list of known recipe ids.
 
-The planner derives the LLM advisor whitelist / coverage / gates from it and `sbmig recipes …` reads it.
-It describes (and `check()` cross-validates) the other recipe sources: config recipe sets, reactive rules
-(`sbmig/triage/recipe_rules.yml`), project recipes (`knowledge/recipes/base/*.yml`) and the configured recipe
-artifacts. Learned KB recipes are not listed in the file; `with_kb()` merges them in live. See docs/RECIPES.md.
+The planner derives the LLM advisor whitelist / coverage / gates from it and `sbmig recipes …` reads it. It
+describes (and `check()` cross-validates) the config recipe sets (`openrewrite.recipes.*`) and the configured recipe
+artifacts. v2 runs OpenRewrite recipes only: no project recipes, no library recipes, no KB recipes. See
+docs/RECIPES.md.
 """
 from __future__ import annotations
 
@@ -74,10 +74,9 @@ GATES: dict[str, Callable[[ProjectProfile], bool]] = {
 # ---------------------------------------------------------------------------
 class CatalogEntry(BaseModel):
     id: str
-    origin: Literal["openrewrite", "project", "kb"] = "openrewrite"
+    origin: str = "openrewrite"                # v2 knows OpenRewrite recipes only (`check` flags anything else)
     artifact: Optional[str] = None
     provided_by: Optional[str] = None          # configured artifact that brings `artifact` in transitively
-    file: Optional[str] = None                 # project recipes: yml relative to the repo root
     phase: Literal["jdk21", "spring", "restructure"] = "spring"
     description: str = ""
     docs: Optional[str] = None
@@ -85,70 +84,19 @@ class CatalogEntry(BaseModel):
     gate: Optional[str] = None
     advisor: bool = False
     sets: list[str] = Field(default_factory=list)
-    rules: list[str] = Field(default_factory=list)
     verified: Optional[str] = None
     notes: Optional[str] = None
-    advisories: list[str] = Field(default_factory=list)   # advisory ids it resolves (informational, checked)
 
 
 _RECIPE_SET_NAMES = ("jdk21", "jakarta", "spring_boot_4", "spring_framework_7", "spring_security_7", "junit5")
 
 
 def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:
-    """set name → ids, as configured (`extra.<case>` sets appear as `extra.<case>`), plus the library-conditional
-    sets of knowledge/recipes/library_recipes.yml as `library.<library>` (round 10)."""
+    """set name → ids, as configured (`extra.<case>` sets appear as `extra.<case>`)."""
     rs = cfg.openrewrite.recipes
     out = {name: list(getattr(rs, name)) for name in _RECIPE_SET_NAMES}
     for case, ids in (rs.extra or {}).items():
         out[f"extra.{case}"] = list(ids)
-    from .library_recipes import library_recipe_sets
-
-    out.update(library_recipe_sets())
-    return out
-
-
-def _rules_path() -> Path:
-    try:
-        from sbmig.triage.rules import DEFAULT_RULES_PATH
-        return Path(DEFAULT_RULES_PATH)
-    except Exception:  # pragma: no cover - triage package broken
-        return PACKAGE_ROOT / "sbmig" / "triage" / "recipe_rules.yml"
-
-
-def reactive_rules(path: Optional[Path] = None) -> dict[str, list[str]]:
-    """rule id → recipe ids (sbmig/triage/recipe_rules.yml)."""
-    p = path or _rules_path()
-    try:
-        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as e:
-        log.warning("cannot read recipe rules %s: %s", p, e)
-        return {}
-    return {str(r.get("id")): [str(x) for x in (r.get("recipes") or [])] for r in data.get("rules") or []}
-
-
-def _recipe_list_id(item: Any) -> Optional[str]:
-    if isinstance(item, str):
-        return item
-    if isinstance(item, dict) and len(item) == 1:
-        return str(next(iter(item)))
-    return None
-
-
-def base_recipes(base_dir: Path) -> dict[str, dict[str, Any]]:
-    """declared project recipe name → {"file": path, "uses": [recipeList ids]} for every yml in `base_dir`."""
-    out: dict[str, dict[str, Any]] = {}
-    if not base_dir.is_dir():
-        return out
-    for f in sorted([*base_dir.glob("*.yml"), *base_dir.glob("*.yaml")]):
-        try:
-            docs = list(yaml.safe_load_all(f.read_text(encoding="utf-8")))
-        except (OSError, yaml.YAMLError) as e:
-            log.warning("cannot read project recipe file %s: %s", f, e)
-            continue
-        for d in docs:
-            if isinstance(d, dict) and d.get("name"):
-                uses = [i for i in (_recipe_list_id(x) for x in d.get("recipeList") or []) if i]
-                out[str(d["name"])] = {"file": f, "uses": uses}
     return out
 
 
@@ -219,7 +167,7 @@ class RecipeCatalog:
         return out
 
     def artifact_for(self, recipe_id: str) -> Optional[str]:
-        """Catalog first, then the prefix fallback (None for project / core / unknown recipes)."""
+        """Catalog first, then the prefix fallback (None for core / unknown recipes)."""
         e = self._by_id.get(recipe_id)
         if e is not None:
             return e.artifact
@@ -236,107 +184,39 @@ class RecipeCatalog:
         return out
 
     # ---- validation ----------------------------------------------------
-    def check(self, cfg: Config, *, rules_path: Optional[Path] = None) -> list[str]:
-        """Problems between the catalog and the other recipe sources ([] = consistent)."""
+    def check(self, cfg: Config) -> list[str]:
+        """Problems between the catalog, the config recipe sets and the recipe artifacts ([] = consistent)."""
         problems: list[str] = []
         sets = config_recipe_sets(cfg)
-        rules = reactive_rules(rules_path)
-        base = base_recipes(cfg.base_recipe_dir)
         artifacts = set(cfg.openrewrite.recipe_artifacts)
 
         for name, ids in sets.items():
-            where = (f"knowledge/recipes/library_recipes.yml ({name})" if name.startswith("library.")
-                     else f"openrewrite.recipes.{name}")
             for rid in ids:
                 if rid not in self:
-                    problems.append(f"config set {where}: {rid} is not in the catalog")
+                    problems.append(f"config set openrewrite.recipes.{name}: {rid} is not in the catalog")
                 elif name not in self._by_id[rid].sets:
-                    problems.append(f"catalog {rid}: sets lacks {name!r} (referenced by {where})")
-        for rule_id, ids in rules.items():
-            for rid in ids:
-                if rid not in self:
-                    problems.append(f"reactive rule {rule_id}: {rid} is not in the catalog")
-                elif rule_id not in self._by_id[rid].rules:
-                    problems.append(f"catalog {rid}: rules lacks {rule_id!r} (recipe_rules.yml uses it)")
-        for name, info in base.items():
-            if name not in self:
-                problems.append(f"project recipe {name} ({info['file'].name}) is not in the catalog")
-            for rid in info["uses"]:
-                if rid not in self and rid not in base:
-                    problems.append(f"project recipe {name} uses {rid}, which is not in the catalog")
+                    problems.append(f"catalog {rid}: sets lacks {name!r} (referenced by openrewrite.recipes.{name})")
 
         for e in self.entries:
             for s in e.sets:
                 if s not in sets or e.id not in sets[s]:
                     problems.append(f"catalog {e.id}: lists set {s!r} but openrewrite.recipes.{s} does not contain it")
-            for r in e.rules:
-                if r not in rules or e.id not in rules[r]:
-                    problems.append(f"catalog {e.id}: lists rule {r!r} but recipe_rules.yml rule does not use it")
             if e.gate is not None and e.gate not in GATES:
                 problems.append(f"catalog {e.id}: unknown gate {e.gate!r} (known: {', '.join(GATES)})")
             for c in e.covers:
                 if c not in self:
                     problems.append(f"catalog {e.id}: covers unknown recipe {c}")
-            if e.origin == "kb":
-                problems.append(f"catalog {e.id}: origin kb entries are read live from kb/, not listed in the catalog")
-            if e.origin == "project":
-                if not e.file:
-                    problems.append(f"catalog {e.id}: project recipe without file")
-                else:
-                    f = cfg.resolve_path(e.file)
-                    info = base.get(e.id)
-                    if not f.exists():
-                        problems.append(f"catalog {e.id}: file {e.file} does not exist")
-                    elif info is None or Path(info["file"]).resolve() != f.resolve():
-                        problems.append(f"catalog {e.id}: file {e.file} does not declare it")
+            if e.origin != "openrewrite":
+                problems.append(f"catalog {e.id}: origin {e.origin!r} is not supported — sbmig runs OpenRewrite "
+                                "recipes only (no project / KB recipes)")
             elif e.artifact and not e.artifact.startswith(CORE_GROUP):
                 if e.artifact not in artifacts and (e.provided_by or "") not in artifacts:
                     problems.append(f"catalog {e.id}: artifact {e.artifact} is not in openrewrite.recipe_artifacts")
-        problems += self._check_advisories(cfg)
-        return problems
-
-    def _check_advisories(self, cfg: Config) -> list[str]:
-        """Cross-check with knowledge/libraries/advisories.yml (+ extra files): every advisory recipe is in the
-        catalog, every catalog `advisories: [x]` names an existing advisory that lists the recipe."""
-        try:
-            from sbmig.advisory.catalog import load_advisories
-            adv = load_advisories(cfg)
-        except Exception as e:  # pragma: no cover - advisory package broken
-            return [f"advisories: cannot load ({type(e).__name__}: {e})"]
-        problems: list[str] = []
-        for a in adv.entries:
-            for rid in a.recipes:
-                if rid not in self:
-                    problems.append(f"advisory {a.id}: recipe {rid} is not in the catalog")
-        for e in self.entries:
-            for aid in e.advisories:
-                entry = adv.get(aid)
-                if entry is None:
-                    problems.append(f"catalog {e.id}: lists advisory {aid!r} but no such advisory exists")
-                elif e.id not in entry.recipes:
-                    problems.append(f"catalog {e.id}: lists advisory {aid!r} but that advisory does not use it")
         return problems
 
     # ---- listing -------------------------------------------------------
     def rows(self) -> list[dict[str, Any]]:
         return [e.model_dump() for e in self.entries]
-
-    def with_kb(self, kb: Any) -> list[dict[str, Any]]:
-        """Catalog rows plus live KB recipes (origin kb, status, credits, signatures)."""
-        rows = self.rows()
-        try:
-            recipes = kb.list_recipes() if kb is not None else []
-        except Exception as e:  # listing must not fail because of a broken KB
-            log.warning("cannot list kb recipes: %s", e)
-            recipes = []
-        for r in recipes:
-            rows.append({
-                "id": r.id, "origin": "kb", "artifact": None, "file": r.path, "phase": None,
-                "description": r.description, "gate": None, "advisor": False, "sets": [], "rules": [],
-                "status": r.status, "success_count": r.success_count, "fail_count": r.fail_count,
-                "projects": len(r.projects), "signatures": list(r.signatures),
-            })
-        return rows
 
 
 def prefix_artifact(recipe_id: str) -> Optional[str]:
@@ -399,18 +279,12 @@ _BUILTIN: list[dict[str, Any]] = [
      "description": "Spring Framework 5.x/6.x → 7.0 (non-Boot Spring projects)", "covers": list(_FW7_COVERS)},
     {"id": "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0", "artifact": _SPRING,
      "advisor": True, "gate": "has_spring_security", "description": _SEC7_DESCRIPTION},
-    {"id": "org.openrewrite.java.springdoc.SpringFoxToSpringDoc", "artifact": _SPRING, "advisories": ["springfox"]},
-    {"id": "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0", "artifact": _SPRING, "advisories": ["springfox"]},
-    {"id": "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing", "artifact": _SPRING,
-     "advisories": ["sleuth"]},
-    {"id": "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1", "artifact": _SPRING,
-     "advisories": ["spring-cloud-bom"]},
+    {"id": "org.openrewrite.java.springdoc.SpringFoxToSpringDoc", "artifact": _SPRING},
+    {"id": "org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0", "artifact": _SPRING},
+    {"id": "org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing", "artifact": _SPRING},
+    {"id": "org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1", "artifact": _SPRING},
     {"id": "org.openrewrite.java.testing.junit5.JUnit4to5Migration", "artifact": _TESTING, "advisor": True,
      "gate": "has_junit4", "description": "JUnit 4 → JUnit 5"},
-    {"id": "com.company.migrate.ServletToJakartaAndBoot", "origin": "project",
-     "file": "knowledge/recipes/base/spring-boot-41-version.yml",
-     "covers": ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
-                "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10"]},
 ]
 
 

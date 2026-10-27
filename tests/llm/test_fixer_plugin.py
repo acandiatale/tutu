@@ -1,13 +1,16 @@
+"""Tier-2 fixer seam (`fix.plugin`): a plugin implements `propose_script(ws, cluster, ctx) -> ScriptProposal`
+(ScriptFixerLike); a SEARCH/REPLACE-only `propose` fixer is refused. Plus the call tags of our own LLMFixer and the
+example adapters in examples/adapters/."""
 from pathlib import Path
 
 import httpx
 import pytest
 
-from sbmig.core.interfaces import ChatMessage, FixContext, FixerLike, LLMRequest
-from sbmig.core.models import FileChange, Phase
+from sbmig.core.interfaces import ChatMessage, FixContext, LLMRequest, ScriptFixerLike
+from sbmig.core.models import Phase, ScriptProposal
 from sbmig.core.workspace import Workspace
 from sbmig.fix import FakeLLMClient, LLMFixer
-from sbmig.llm import AdapterClient, ApplyDelegatingFixer, PluginLoadError, resolve_fixer_plugin
+from sbmig.llm import AdapterClient, PluginLoadError, resolve_fixer_plugin
 from sbmig.loop import Orchestrator
 from tests.fix.conftest import make_cluster
 from tests.loop.fakes import journal_events
@@ -24,22 +27,23 @@ def ws(tmp_path: Path) -> Workspace:
 
 
 def ctx(**kw):
-    return FixContext(phase=Phase.SPRING, iteration=2, profile_summary="case=spring_boot java=17", **kw)
+    return FixContext(phase=Phase.VERIFY, iteration=2, profile_summary="case=spring_boot java=17", script_mode="new",
+                      **kw)
 
 
 def test_fixer_tags_calls_with_role_and_metadata(cfg, ws):
     ws.write(A, "package a;\n\npublic class A {}\n")
     client = FakeLLMClient()
-    LLMFixer(cfg, client).propose(ws, make_cluster(file=A, cid="c-42"), ctx())
+    LLMFixer(cfg, client).propose_script(ws, make_cluster(file=A, cid="c-42"), ctx())
     assert client.calls[0]["role"] == "fix"
     md = client.calls[0]["metadata"]                       # round 10: + run_id / project (LLMRequest contract)
-    assert {k: md[k] for k in ("phase", "iteration", "cluster_id")} == {"phase": "spring", "iteration": 2,
-                                                                        "cluster_id": "c-42"}
+    assert {k: md[k] for k in ("phase", "iteration", "cluster_id", "script_mode")} == {
+        "phase": "verify", "iteration": 2, "cluster_id": "c-42", "script_mode": "new"}
     assert "run_id" in md and "project" in md
 
     cfg.llm.escalation_model = "big-model"
     client2 = FakeLLMClient()
-    LLMFixer(cfg, client2).propose(ws, make_cluster(file=A), ctx(use_escalation_model=True))
+    LLMFixer(cfg, client2).propose_script(ws, make_cluster(file=A), ctx(use_escalation_model=True))
     assert client2.calls[0]["role"] == "fix_escalation" and client2.calls[0]["model"] == "big-model"
 
 
@@ -51,75 +55,80 @@ def test_call_signature_backward_compatible(cfg):
     assert client.calls[0]["role"] == "fix" and client.calls[0]["metadata"] is None
 
 
-def test_propose_only_plugin_gets_patch_applier(cfg, ws):
-    ws.write("A.txt", "old text\n")
-    cfg.fix.plugin = f"{MOD}:make_propose_only"
+def test_script_plugin_is_built_with_options_llm_and_notes_dir(cfg, ws):
+    cfg.fix.plugin = f"{MOD}:make_script_agent"
     cfg.fix.plugin_options = {"agent": "x"}
     llm = FakeLLMClient()
     fx = resolve_fixer_plugin(cfg, llm, notes_dir="notes")
-    assert isinstance(fx, ApplyDelegatingFixer) and isinstance(fx, FixerLike)
-    assert fx.inner.options == {"agent": "x"} and fx.inner.llm is llm and fx.inner.notes_dir == "notes"
-    p = fx.propose(ws, make_cluster(file="A.txt"), ctx())
-    applied, errs = fx.apply(ws, p.changes)
-    assert errs == [] and len(applied) == 1 and ws.read("A.txt") == "new text\n"
-    _, errs = fx.apply(ws, [FileChange(path="A.txt", op="modify", search="absent", replace="y")])
-    assert errs
+    assert isinstance(fx, ScriptFixerLike) and not hasattr(fx, "apply")       # used as is, no wrapper
+    assert fx.options == {"agent": "x"} and fx.llm is llm and fx.notes_dir == "notes"
+    p = fx.propose_script(ws, make_cluster(file="A.txt"), ctx())
+    assert isinstance(p, ScriptProposal) and p.code.startswith("def fix(p):") and fx.seen == [("c1", "new")]
+
+
+def test_propose_only_plugin_is_refused(cfg):
+    for spec in (f"{MOD}:ProposeOnly", f"{MOD}:EchoAdapter"):
+        cfg.fix.plugin = spec
+        with pytest.raises(PluginLoadError, match="propose_script"):
+            resolve_fixer_plugin(cfg, None)
 
 
 def test_fixer_plugin_none_and_errors(cfg):
     assert resolve_fixer_plugin(cfg, None) is None
-    cfg.fix.plugin = f"{MOD}:EchoAdapter"
-    with pytest.raises(PluginLoadError, match="propose"):
-        resolve_fixer_plugin(cfg, None)
     cfg.fix.plugin = "plainname"
     with pytest.raises(PluginLoadError, match="sbmig.fixers"):
         resolve_fixer_plugin(cfg, None)
 
 
 def test_orchestrator_uses_fixer_plugin_and_journals(cfg, ws):
-    cfg.fix.plugin = f"{MOD}:ProposeOnly"
+    cfg.fix.plugin = f"{MOD}:ScriptAgent"
     orch = Orchestrator(cfg, ws, llm=FakeLLMClient())
-    fx = orch.fixer
-    ws.write("A.txt", "old\n")
-    p = fx.propose(ws, make_cluster(file="A.txt"), ctx())
-    assert p.model == "agent"
-    assert fx.apply(ws, p.changes)[0]
+    p = orch.fixer.propose_script(ws, make_cluster(file="A.txt"), ctx())
+    assert p.model == "agent" and p.code
     ev = [e for e in journal_events(ws) if e.get("event") == "fixer"]
-    assert ev == [{**ev[0], "plugin": f"{MOD}:ProposeOnly"}] and "error" not in ev[0]
+    assert ev == [{**ev[0], "plugin": f"{MOD}:ScriptAgent"}] and "error" not in ev[0]
 
 
 def test_orchestrator_fixer_plugin_without_llm(cfg, ws, monkeypatch):
-    cfg.fix.plugin = f"{MOD}:make_propose_only"
+    cfg.fix.plugin = f"{MOD}:make_script_agent"
     cfg.llm.provider = "openai_compatible"
     cfg.llm.base_url = "${LLM_BASE_URL}"
     monkeypatch.delenv(cfg.llm.api_key_env, raising=False)
     orch = Orchestrator(cfg, ws)
-    ws.write("A.txt", "old\n")
-    orch.fixer.propose(ws, make_cluster(file="A.txt"), ctx())
-    assert orch.fixer._get().inner.llm is None
+    orch.fixer.propose_script(ws, make_cluster(file="A.txt"), ctx())
+    assert orch.fixer._get().llm is None
 
 
 def test_example_agent_fixer(cfg, ws):
     from examples.adapters import agent_fixer
 
-    ws.write(A, "package a;\n\nimport javax.servlet.Filter;\n")
+    ws.write(A, "package a;\n\nimport javax.servlet.Filter;\n\npublic class A {}\n")
     cfg.fix.plugin = "examples.adapters.agent_fixer:make_fixer"
+    cfg.fix.plugin_options = {"agent": "migrator-x"}
     fx = resolve_fixer_plugin(cfg, None)
+    assert isinstance(fx, agent_fixer.AgentFixer) and isinstance(fx, ScriptFixerLike) and fx.agent.name == "migrator-x"
     seen = {}
+    script = "def fix(p):\n    for e in p.errors:\n        p.replace(e['file'], 'javax.servlet', 'jakarta.servlet')\n"
 
     def run(task):
         seen.update(task)
-        return {"analysis": "jakarta", "confidence": 0.9,
-                "changes": [{"path": A, "search": "javax.servlet", "replace": "jakarta.servlet"}]}
+        return {"answer": f"<analysis>jakarta</analysis>\n<script>\n{script}</script>",
+                "usage": {"model": "agent-m", "calls": 2, "input_tokens": 100, "output_tokens": 20}}
 
     fx.agent.run = run
-    p = fx.propose(ws, make_cluster(file=A), ctx())
-    assert "Errors to fix" in seen["context"] and seen["cluster_id"] == "c1"
-    applied, errs = fx.apply(ws, p.changes)
-    assert not errs and "jakarta.servlet.Filter" in ws.read(A)
+    p = fx.propose_script(ws, make_cluster(file=A), ctx(case_id="k1"))
+    assert p.code == script and p.analysis == "jakarta" and p.error == "" and p.model == "agent-m"
+    assert p.llm_usage.calls == 2 and p.llm_usage.input_tokens == 100
+    assert "Errors of this case" in seen["context"] and "import javax.servlet.Filter;" in seen["context"]
+    assert seen["mode"] == "new" and seen["base_script"] == "" and seen["case_id"] == "k1"
+    assert "def fix(p)" in seen["instructions"] and "p.replace" in seen["instructions"]
+    # no usable script → empty code with the parser's reason; agent failure → llm-error (classified as transport)
+    fx.agent.run = lambda task: {"answer": "<analysis>no safe fix</analysis>"}
+    p = fx.propose_script(ws, make_cluster(file=A), ctx())
+    assert p.code == "" and p.error == "no <script> block" and p.analysis == "no safe fix"
     fx.agent.run = lambda task: (_ for _ in ()).throw(RuntimeError("agent down"))
-    assert fx.propose(ws, make_cluster(file=A), ctx()).analysis.startswith("llm-error:")
-    assert isinstance(fx, agent_fixer.AgentFixer)
+    p = fx.propose_script(ws, make_cluster(file=A), ctx())
+    assert p.code == "" and p.analysis.startswith("llm-error:") and p.error == "agent failed (RuntimeError)"
 
 
 def test_example_gateway_adapter_routing_and_retry(cfg, monkeypatch):

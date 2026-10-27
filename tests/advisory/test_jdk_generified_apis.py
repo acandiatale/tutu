@@ -13,9 +13,9 @@ def _finding(cfg):
     return f
 
 
-def test_detected_from_imports_with_guide_policy(cfg):
+def test_detected_from_imports(cfg):
     f = _finding(cfg)
-    assert f.status == "incompatible" and f.policy == "guide" and f.recipes == []
+    assert f.status == "incompatible"
     assert "Enumeration<TreeNode>" in f.followup and f.notes == ["see knowledge/notes/jdk21.md"]
 
 

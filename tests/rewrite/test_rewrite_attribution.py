@@ -10,7 +10,7 @@ LOG = """[INFO] Running recipe(s)...
 [WARNING]             org.openrewrite.maven.UpgradePluginVersion: {groupId=org.apache.maven.plugins, artifactId=maven-compiler-plugin, newVersion=3.x}
 [WARNING] Changes have been made to src/main/java/com/example/orders/json/MoneyJsonComponent.java by:
 [WARNING]     com.company.migrate.Run
-[WARNING]         com.company.kb.JsonComponentToJacksonComponent
+[WARNING]         org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
 [WARNING]             org.openrewrite.java.ChangeType: {oldFullyQualifiedTypeName=org.springframework.boot.jackson.JsonComponent, newFullyQualifiedTypeName=org.springframework.boot.jackson.JacksonComponent}
 [WARNING] Please review and commit the results.
 [INFO] BUILD SUCCESS
@@ -19,7 +19,7 @@ LOG = """[INFO] Running recipe(s)...
 
 def test_parse_recipe_attribution():
     att = OpenRewriteRunner.parse_recipe_attribution(LOG)
-    assert att["com.company.kb.JsonComponentToJacksonComponent"] == ["src/main/java/com/example/orders/json/MoneyJsonComponent.java"]
+    assert att["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"] == ["src/main/java/com/example/orders/json/MoneyJsonComponent.java"]
     assert att["org.openrewrite.java.migrate.UpgradeToJava21"] == ["pom.xml"]
     assert sorted(att["com.company.migrate.Run"]) == ["pom.xml", "src/main/java/com/example/orders/json/MoneyJsonComponent.java"]
     assert "Please" not in att and "{oldFullyQualifiedTypeName=org.springframework.boot.jackson.JsonComponent," not in att

@@ -1,20 +1,30 @@
 # sbmig — working notes for Claude (read this first)
 
 In-house **JDK 21 + Spring Boot 4.1.0 migration agent** for company Maven projects. Python 3.10+, CLI `sbmig`.
-Read in this order: `README.md` → `docs/migration-agent/README.md` (the current design in one place: Mermaid per flow /
-node, Korean; `migration-agent.pptx` beside it, rebuilt by `scripts/handbook/build_migration_agent_deck.js`) → `docs/PLAN.md`
-(one "Status — round N" table per round, newest at the bottom)
-→ `docs/INTERFACES.md` (contracts) → the doc for the area you touch (`ARCHITECTURE`, `FLEET`, `ADAPTERS`,
-`RECIPES`, `ADVISORIES`, `ERROR-HANDLING`, `RUNBOOK`).
+This branch (`flow-v2`) is **v2**: one OpenRewrite run, the company restructure, an LLM structure review, then
+`mvn clean package`, and every build error fixed by an **LLM-written Python fix script** stored per error case and
+reused on later projects. The v1 flow (deterministic handlers, KB recipes, SEARCH/REPLACE patches) is the git tag
+**`company-v1`** on `main`; its code is deleted here (PLAN-v2 step 4).
+Read in this order: `README.md` → `docs/v2/PLAN-v2.md` (the business request, the decisions, the step table) →
+`docs/migration-agent/README.md` (the design in one place: Mermaid per flow / node, Korean; `migration-agent.pptx`
+beside it, rebuilt by `scripts/handbook/build_migration_agent_deck.js`) → `docs/INTERFACES.md` (contracts; the
+"v2 — flow-v2" section is the one that counts, the older sections are history) → `docs/PLAN.md` (one "Status" table
+per round, newest at the bottom) → the doc for the area you touch (`ARCHITECTURE`, `ERROR-HANDLING`, `FLEET`,
+`ADAPTERS`, `RECIPES`, `ADVISORIES`, `RUNBOOK`).
 The Korean handbook for the company (`docs/handbook/`, README → 01…09 + `sbmig-overview.pptx` + `sbmig-reference.xlsx`)
 explains the same system for operators; `tests/docs/test_handbook.py` keeps its paths / config keys / CLI names /
-links in sync with the code, and `scripts/handbook/` regenerates the xlsx / pptx. Update the handbook when behaviour
-the operators see changes (CLI, config keys, handlers, report sections, log lines).
+links in sync with the code, and `scripts/handbook/` regenerates the xlsx / pptx. The KB data map for the business
+team is `docs/kb-map/` (`kb-map.html` source, `index.html` single file, `kb-map.md`; `scripts/handbook/build_kb_map.py`).
+**The handbook is updated only when the user asks for it** (2026-10-27: the code keeps changing, one tidy-up pass
+later); record operator-visible changes (CLI, config keys, report sections, log lines) in `docs/PLAN.md` /
+`docs/INTERFACES.md` meanwhile, and keep `tests/docs` green with minimal reference fixes only.
 
 ## Why this exists
 - The user takes this code into their company to test it there. Company source code is **not** reachable from here.
 - The previous in-house agent failed for two reasons we must not repeat: the fix LLM "finished" without running
-  the build, and recipe selection by a small LLM was weak. Hence: deterministic planning, build-gated phases.
+  the build, and recipe selection by a small LLM was weak. Hence: deterministic planning, build-gated runs.
+- v2 (business team, 2026-10-26): "레시피가 무엇을 바꿀지 모르니 넣지 않는다" — only the Java 21 / jakarta / Boot 4
+  recipes run; everything else is a build error the LLM fixes with a script that the KB keeps and reuses.
 
 ## Company constraints (stated by the user; not derivable from the code)
 - Four project cases: pure Java, Spring 4/5 + Boot 2/3, Tomcat servlet-only, MSA (several deployable services).
@@ -38,220 +48,106 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   stays as the tool that describes such a tree for the rejection note to the owners; it changes nothing.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
-  Tests are out of scope entirely (user, 2026-10-22: "테스트는 다 스킵"): company runs set `build.skip_test_compile: true`
-  (`-Dmaven.test.skip=true` on every build, flag `tests-not-compiled`, Handover follow-up for the owning team).
+  Tests are out of scope entirely (user, 2026-10-22: "테스트는 다 스킵"): every build runs with
+  `-Dmaven.test.skip=true` (`build.skip_test_compile: true` is the v2 default; flag `tests-not-compiled`, Handover
+  follow-up for the owning team).
 - Real in-house coordinates are unknown here → placeholders in `config/artifacts.example.yml`; public stand-ins in
   `config/artifacts.local-e2e.yml` for local e2e. Never invent "real" company coordinates.
 - The company has its own LLM API gateway and its own agent-building framework. They plug in through the adapter
-  seams (`llm.plugin` tier 1, `fix.plugin` tier 2, see `docs/ADAPTERS.md`), not through new HTTP clients.
-- Operating model: **one agent migrates ~500 projects strictly sequentially**. Every fix is recorded
-  (error-case symbol → fix label → recipe) so later projects benefit: `sbmig fleet`, `kb/ledger.jsonl`, `kb/symbols.json`.
+  seams (`llm.plugin` tier 1, `fix.plugin` tier 2 = `propose_script`, see `docs/ADAPTERS.md`), not through new HTTP clients.
+- Operating model: **one agent migrates ~500 projects strictly sequentially**. Every fix script is recorded per
+  error case (L2 signature) so later projects reuse it without an LLM call: `sbmig fleet`, `kb-v2/scripts/`,
+  `sbmig kb scripts list`.
 - EOL / unmanaged libraries (springfox, hystrix, sleuth, old Spring Cloud trains, …): **no `block` policy, ever**
-  (user: "정책상 빌드로 보지 않는건 없을거야" — 500 projects cannot all be perfect). Build as far as possible, then
-  hand over a compressed summary: report **Handover** section first, advisory policies `guide` | `recipe` only.
+  (user: "정책상 빌드로 보지 않는건 없을거야" — 500 projects cannot all be perfect). Advisories are guide-only in v2:
+  hints in the script prompt + the report **Handover** section first.
+- v2 decisions (user, 2026-10-26, `docs/v2/PLAN-v2.md` §2): recipes = `UpgradeToJava21`, `JavaxMigrationToJakarta`
+  (when the case needs it), Boot projects `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`; no intermediate
+  builds; the 32 deterministic handlers are out; the structure review fixes only critical findings by script; fix
+  scripts get a restricted API in a separate process; advisories = hints + Handover; KB in `kb-v2/`.
 - LLM keys come only from the environment (`LLM_API_KEY`). Never write a key into the repo, a config file, or a log.
   The user knowingly keeps using a free Anthropic test key; do not remind them to rotate it.
 
 ## Invariants (do not break)
-1. **Build gate**: a phase is done only on BUILD SUCCESS; a run never ends without a final `mvn clean package`
-   attempt and a report that lists unresolved errors.
+1. **Build gate**: a run never ends without a final `mvn clean package` attempt and a report that lists unresolved
+   errors; the script fix loop scores every attempt by a rebuild and rolls back what did not help.
 2. Company specifics live in config / knowledge YAML, not in Python code.
 3. The knowledge base is **file-based** (no database allowed).
-4. Plugin seams stay stable: `LLMRequest` / `LLMResponse`, `FixerLike`, `sbmig.api.migrate(...)`.
+4. Plugin seams stay stable: `LLMRequest` / `LLMResponse` (tier 1), `FixerLike.propose_script` (tier 2),
+   `sbmig.api.migrate(...)`.
 5. `knowledge/recipes/catalog.yml` is the single source of recipe ids; `sbmig recipes check` and a snapshot test
-   guard drift. Recipe BOM pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central), which resolves rewrite-spring
-   6.37.0 (recipe ids were verified against the 6.37.1 docs / jars).
-6. Test and demo runs write under `out/` only, never into the repo's `kb/` (local e2e KB is `out/e2e/kb`).
+   guard drift (a company config that re-fills an empty set must re-list the ids in the catalog's `sets:`). Recipe BOM
+   pinned to **3.37.0** (3.38.0 is inconsistent on Maven Central), which resolves rewrite-spring 6.37.0.
+6. Test and demo runs write under `out/` only, never into the repo's `kb-v2/` (local e2e KBs are `out/e2e/kb-*`).
+7. Fix scripts run through `sbmig.script` only: static check, `python -I` child process, helper API `p` limited to
+   the project folder, timeout + process-tree kill. A guard against mistakes, not a sandbox against a hostile author.
 
-## Status — 2026-10-21, rounds 5–9c complete (`main`)
-- Round 1: pipeline + 6 fixtures e2e. Round 2: blocked-cluster triage, 6 failure fixtures, real-LLM validation
-  (fixes `claude-sonnet-5`, recipe work `claude-haiku-4-5`, `config/llm-anthropic.yml`). Round 3: adapter seams,
-  recipe catalog, fleet mode + learning ledger + deterministic fix labels. Round 4: library advisories + Handover. Round 5: `method-rename` → `ChangeMethodName` (owner FQCN resolved at
-  harvest into `KBCase.symbol_owner`), jar-checked recipe catalog (`sbmig recipes check --jars`), fixture `boot2-method-rename`.
-- 2026-10-20: `llm-probe` + per-run log files; `coding/` agent; LangGraph engine, FastAPI web UI; then simplified
-  on the user's request: LLM = provider `company` (plain `requests.post`, settings from `.env`), LangChain tier removed. Round 6: Hystrix → Resilience4j by recipe (pom + annotations) and advisory-guided
-  LLM fixes for what recipes cannot convert (Handover names the rewritten files). 917 offline tests green; asserted fixture e2e **14/14** (2026-10-18 tree) + 2 round-6 fixtures passing individually
-  (`scripts/e2e.sh`, 15 fixtures then; 16 since round 7b); fleet demo 5/5 with 1 LLM call total.
-- Round 7a (flow review, `docs/PLAN.md` last table): KB patch replay without an LLM, final build after an internal abort
-  (invariant 1), LLM transport classification, unique attempt ids, no KB credit without a build, budgeted harvest
-  calls, no `unresolved` ledger lines without a final build, web runs serialized (`queued`), stop after the final
-  build finishes normally, `parse_stop_after` shared by CLI/web/api. 941 offline tests green.
-- Round 7b: multi-module `merge` is the default (`layout.multi_module_policy`): an as-is `boot-jar` module is kept,
-  every other module + root `src/` is folded into comp-jar, collisions first-wins (dropped copies under
-  `<run dir>/merge-conflicts/`, Handover "Merge conflicts"), `merge_collision: fail` restores the hard error;
-  Gradle / Ant / no-build projects are rejected at intake (`unsupported-build-tool:<tool>`, exit 3) before any
-  Maven call. Fixture `multi-module-merge` (16 fixtures), e2e PASS. 991 offline tests green.
-- Round 8 (2026-10-21): externalized configuration — `sbmig.analyze.properties` inventories every key the code reads
-  (`@Value`, `Environment`, `System.getProperty`, XML `${…}`, web.xml context-param, JNDI, `@PropertySource`) against
-  the packaged resources (`defined | defaulted | external`); restructure writes `__SET_ME__` placeholders for the
-  external keys into boot-jar `application.properties` (rules: `knowledge/config/externalized.yml`, JNDI →
-  `spring.datasource.*`, context-param → `server.servlet.context-parameters.*`, `-D`-only keys listed but not
-  written); Handover "Properties to set before running" + supply guide; `-DskipTests` fallback when only runtime
-  test failures remain (flag `tests-skipped`; note `build.skip_tests: true` is the default). Round 8b: Java 1.6/1.7
-  as-is projects — recipe coverage verified in the pinned jars, advisory `jdk-removed-apis` (+ fix-loop note),
-  fixture `java6-legacy`. Fixtures `legacy-external-config`, `java6-legacy` (18 fixtures), e2e PASS. 1,072 offline
-  tests green.
-- Round 9 (2026-10-21, follow-ups + edge cases): rewrite-run download retry + literal-version re-run + no KB credit
-  on resolution-only failures (X8); LLM cool-down before "unavailable" (L5) and content-filter answers classified as
-  request rejections; merge-conflict dropped copies shown to the fix LLM as read-only reference; Handover paths after
-  restructure; web run-list pruning; per-service MSA property inventory + placeholders, `config-placeholder` source,
-  scanner edge sweep; advisory `ibatis2`; restructure drops explicit versions the new parent manages (second
-  effective-pom capture, `layout.drop_managed_versions`), registry-union merges, pom-packaging / outside / WAR /
-  custom-resources module edges; fleet skips intake-rejected projects; handler `compiler-legacy-config`
-  (fork/executable/bootclasspath). Fixtures `multi-module-conflict`, `legacy-ibatis` (20 fixtures), e2e PASS.
-  1,200 offline tests green.
-- Round 9b (2026-10-21, first company run feedback): role parents (`artifacts.boot_parent` / `comp_parent`) in the
-  restructure incl. moving old role parents of an earlier migration; `sbmig llm-probe` on `.env` alone with
-  `--model` / `--payload-extra` / `--no-system`; gateway flag `need_origin`; content-filter answers = request
-  rejections; role models from `.env` (`LLM_RECIPE_MODEL`, `LLM_ESCALATION_MODEL`); operator progress logging (LLM
-  call start / heartbeat / retry delay, per-cluster decisions with the error text, mvn heartbeat, web stream ordered
-  by time) and a wall-clock hard deadline per LLM call; lombok handler covers inherited old lombok (unversioned
-  processor path, parent-inherited dependency, inherited `annotationProcessorPaths` → `combine.self="override"`);
-  an already restructured project moves to the configured parent versions. Fixture `legacy-role-parents` (21).
-- Round 9c (2026-10-21): the company layout proper — root = base-parent aggregator (mandatory deps there),
-  `{name}-boot` / `{name}-back` / `{name}-front` directly under the root, JSP → boot WAR + front jar (Servlet 3),
-  Spring Boot as-is / MSA kept in place (`boot_pom`: poms only, `*-boot` naming + pom check), single-module Boot
-  wrapped; a failed restructure step is no longer reported as success. Pre-9c layout pinned for the 21 older
-  fixtures; fixtures `company-boot-single`, `company-spring5-web`, `company-servlet-jsp` (24). 1,295 offline tests green.
-- Same-day follow-ups from the first company runs (Windows, 2026-10-21): gateway flag `need_origin`; JSP/HTML excluded
-  from the rewrite parse; `jstl-to-jakarta`; `jdk-generified-apis`; `resources-binary-filtering` (webfonts & co under a
-  filtered resource → `nonFilteredFileExtensions`, pre-emptive from the analysis — E12); git / Maven subprocess output
-  decoded as UTF-8 (the cp949 console code page killed `changes.patch` on Windows); Korean handbook + PPT + xlsx in
-  `docs/handbook/` (2026-10-21 evening; review found the Maven preflight tuple bug and relative Maven paths, fixed);
-  web shutdown no longer hangs (SSE streams end on `RunManager.shutdown()`, live Maven children killed via the registry in
-  `sbmig/build/mvn.py` + `atexit`, `sbmig serve --graceful-timeout`); mandatory artifacts take `type: pom` / `scope: import` (pom-only in-house artifacts; BOM style goes to
-  dependencyManagement; an as-is declaration without `<type>` is aligned); pom-declared repositories the host
-  cannot reach → `build.settings_file` catch-all mirror (`config/settings.nexus.example.xml`, RUNBOOK §0.1), plan note /
-  follow-up without one, opt-in `build.pom_repositories: remove` (`strip-pom-repositories`); operator diagnostics (LLM / mvn heartbeats,
-  fix-loop watchdog + milestones, `/api/threads`, auto thread dump, non-interactive git with timeout, `taskkill /T`);
-  bounded `<need_grep>`; `plan.parent_phase: spring` (company: parents right after `spring.rewrite`, set in
-  `artifacts.example.yml`); the hang "stuck in fixer.propose" was `nearest_pom` spinning on an absolute Windows
-  path (fixed `8c41670`) — the user still has to confirm a fresh run passes `spring it2`. 2026-10-22: the final
-  `clean package` of a company run failed on `org.hibernate.annotations.common` with no fix attempt (`parent_phase:
-  spring` leaves no package-goal loop) → `loop.phases.verify` last-chance loop + repeated final build,
-  `loop.verify_extra_llm_attempts` releases `repeated_failure` clusters (L12; released inside the loop, so a cluster the
-  reactor order hid in the first verify build is covered too); advisory + note `hibernate-commons-annotations` (HCANN gone
-  in Hibernate 7); JUnit 4 leftovers (`org.junit.experimental…`) → `add-known-dependency` re-adds `junit:junit` (test);
-  `report.language: ko` renders `report.md` in Korean (`sbmig/report/i18n.py`; identifiers, paths, Maven messages and loop
-  notes stay English; `report.json` unchanged) — the company example sets it; per-project API cost: `llm.pricing`
-  (OpenAI list prices for `gpt-5.6-terra` / `gpt-6-luna`, 2026-10-22) × per-model usage → report "LLM usage and cost",
-  fleet `llm_cost` column (`sbmig/report/cost.py`; unpriced models are listed, never guessed). Fourth project: many
-  jakarta errors (`findAll(no arguments)`, `jakarta.persistence.Query cannot be converted to javax.persistence.Query`)
-  = type-attributed recipes silently skipping unparsed / excluded files → source handlers `jakarta-namespace-sweep`
-  (E13, table `sbmig/triage/handlers/jakarta_packages.yml`) and `spring-data-crud-repository` (E14,
-  `ListCrudRepository<T, ID>` for paging-only repositories), pre-emptive after the spring recipes + reactive;
-  `RewriteResult.parse_problems` → flag `rewrite-parse-problems` (E8b); note `jakarta.md` (Spring Data 3 / Hibernate 6
-  query API); fixture `boot2-rewrite-excluded`. Second look (user's lines): the javax consumer was QLRM
-  `ch.simas.qlrm:qlrm:1.7.1` — X1 had blamed the API jar → `sbmig/build/deptree.py` (`dependency:tree`) fills
-  `BlockedItem.via` and the suggestion names the library; report section "javax API jars still on the classpath"
-  (`report.javax_api_inventory`, flag `javax-api-on-classpath`); `knowledge/libraries/jakarta_libraries.yml` + handler
-  `jakarta-library-floor` (QLRM → `org.qlrm:qlrm:4.2.1`, flag `jakarta-library-bumped`); `dependency-relocation`
-  pre-emptive for declared javax APIs; E14b (library base repository → `ListCrudRepository`); the fix LLM sees the
-  project types the errors name ("Related project types" section). Fixture `boot2-qlrm-javax` (26 fixtures).
-  Era-library coverage (user's idea, same day): 179 libraries of the 2013–2020 Korean Spring era researched against Maven
-  Central / the Boot 4.1 BOM and folded into the tables — `jakarta_libraries.yml` 44 entries (+ `classifier` for Ehcache 3),
-  `relocations.yml` 44 rows, `known_packages.yml` 56, advisories 64 (`knowledge/notes/era-libraries.md` fix-loop sections,
-  16 new analyzer rules; the pinned `FileuploadToFileUpload2` recipe is broken — advisory `commons-fileupload`). Company
-  additions go into those yml files; the floor handler never pins a parent-managed (unversioned) declaration.
-- 2026-10-23: pom-less exploded Tomcat webapps (JSP + Java + WEB-INF/lib, "quite many" in the company) — round 1
-  `sbmig inventory <dir|zip>` (read-only: webapp roots, web.xml spec / frameworks, jars → coordinates via
-  `knowledge/libraries/jar_names.yml`, class-file Java level, source roots + encoding, classes without source,
-  duplicates, module proposals → `inventory.md` / `.json`); fixture `fixtures/webapps/legacy-exploded`. The first real
-  run (10 webapp roots, 1,081 / 408 / 264 JSPs on Servlet 2.2, cp949 sources, only `*.jar.old` in WEB-INF/lib, 140
-  duplicate classes) led to the company decision to reject pom-less trees; rounds 2 / 3 (pom synthesis, JSP sweep)
-  were dropped and the inventory remains a read-only triage aid.
-- 2026-10-23 (pom-based plain servlet / JSP projects → Boot): web.xml is parsed (`sbmig/analyze/webxml.py`) and the
-  restructure generates `WebXmlRegistrations` (servlets / filters / listeners / error pages / session timeout) in the
-  boot module (`layout.web_xml_registrations`, skip table `knowledge/config/web_xml_rules.yml`, flag `web-xml-registered`);
-  the jakarta sweep also renames javax references inside JSP / tag files (flag `jsp-javax-renamed`); fixture
-  `servlet-webxml-legacy`. Non-standard trees (`APP` sources, `STATIC` web root via `warSourceDirectory` / `webResources`,
-  `STATIC/resources` with Excel / templates / media, `DB/` scripts): web roots from the war plugin are honoured, the web root is split
-  (JSP / static → front, `<resource>` dirs → comp resources, WEB-INF → stash), large media files are noted; fixture
-  `servlet-nonstandard-dirs` (28 fixtures). Web upload cap configurable for one oversized company project (980 MB):
-  `sbmig serve --max-upload-mb N` / `SBMIG_MAX_UPLOAD_MB` (`0` = none, default 512 MB; `.env` is read at server
-  start too), body streamed to `<out>/_uploads/` instead of read into memory. `.env` `KEY=   # comment` no longer
-  yields the comment as the value (it sent `#model` as a role model name → gateway HTTP 400 "unsupported model"
-  mid-run); `LLMConfig` strips `# …` tails from model names.
-- 2026-10-23 error cases (business requirement: "the KB holds too little"): every build error of a run → one
-  `ErrorCaseRecord` in `kb/errors.jsonl` (what it was, status resolved / resolved_indirectly / blocked / unresolved /
-  not_visible, how resolved with the diff excerpt, or `failure_reason` + `problem_errors`, attempt history), every fix
-  attempt incl. failures → `kb/fix_attempts.jsonl` (applied git diff, outcome, failure); `fix_method` (handler / recipe
-  / kb_patch / llm / plan_step) vs `change_kind` (text_replace / code_edit / mixed …, `sbmig/kb/changes.py`), LLM text
-  replaces flagged `replace_rule_candidate`; past fixes and failures come back as prompt hints (`kb/error_hints.json`);
-  `sbmig kb errors …`; run dir `error_cases.jsonl | .csv`, `fix_attempts.jsonl`; tracker `sbmig/loop/error_tracker.py`;
-  fixture `boot2-fix-failures` (29 fixtures).
-- 2026-10-23 sibling poms / EAR (company project: `APP/BATCH` jar, `APP/WEB` war, `APP/EAR` ear, `DB/`, `STATIC/`, no
-  root pom, no parents): intake generates a root aggregator for sibling poms that depend on each other
-  (`sbmig/analyze/aggregator.py`, `layout.generate_aggregator`, flag `aggregator-generated`) and rejects an EAR pom
-  given alone (`ear-without-modules`, exit 3); the merge drops EAR modules (`asis-ear/`, context-root follow-up),
-  never puts a `<type>war</type>` dependency into a jar module (overlay → boot WAR), moves `../` module dirs inside the
-  project into back, leaves unreferenced web folders (`web-content-left`). Fixtures `ear-sibling-poms`,
-  `servlet-war-overlay` (31 fixtures, e2e 31/31).
-- 2026-10-23 case catalog (user decisions: case key = L2 signature, automatic promotion, learned replaces on the
-  reported lines + imports): `kb/catalog/<kind>/<class>/<symbol>--<id>.yml` (one case per L2, `human:` block never
-  overwritten, generated evidence / timeline / action / hints), `kb/views/cases.md|csv`, `sbmig kb cases …`; a hit
-  applies the case's action (handler `case-replace` for learned text replaces, KB recipe / patch, else hints).
-- 2026-10-25: KB recipe names are one PascalCase word without dots (`LegacyRequestHelperClientIpToRemoteClientIp`;
-  the `com.company.kb.` prefix is gone, legacy ids stay valid and are found by either spelling). Success records keep
-  the whole resolution: `ErrorCaseRecord.resolution_attempts` = every attempt still in the tree that led to it (the
-  loop reverts regressions only, so an earlier `no_change` import edit is part of the fix), combined `change_kind`,
-  one `diff_excerpt` section per attempt (user: "시도 전부를 남기는 것만"; replace safety grading deliberately not done).
-- 2026-10-26, round 10 (a 5-role review — architecture, fix-loop bugs, operations, KB data, coverage — every finding
-  fixed; the company wipes `kb/` because the record format and L2 signatures changed): scoring outcomes `partial` /
-  `inconclusive` (no KB credit for "not visible"), same-cluster limits, pinned case actions obeyed, JDK 21 preflight,
-  `infra:*` flags + fleet preflight / infrastructure breaker / disk cleanup / `sbmig clean`, `SBMIG-RESULT` line,
-  Windows paths / git options / `target` packages kept / Maven negative cache `-U` / UTF-8 Maven output, value-only
-  secret masking, KB lock + torn-line repair + audit log + schema version, package-part learned replaces, finer L2,
-  Security 6→7 chain, Batch / Hibernate recipes for non-Boot, `spring-security-access`, Boot 4 type moves, Base64 shim,
-  web token for non-loopback hosts. 32 fixtures (`spring5-security-batch`). Details: `docs/PLAN.md` round 10.
-- Per-round tables with what was verified: `docs/PLAN.md`.
+## The v2 flow (what the code does; details in `docs/v2/PLAN-v2.md` and `docs/INTERFACES.md`)
+intake (Maven only, aggregator for sibling poms, preflight) → analyze (profile, advisories as findings) → plan
+(`transform.rewrite`, `restructure.*`, `restructure.review`, `verify.build`) → **transform** (one OpenRewrite run,
+no build) → **restructure** (company layout exactly as v1, optional bump inside) → **structure review** (LLM checks
+poms / dependencies / modules / source encodings / binary resources under filtering against the company rules;
+critical → one fix script, committed `review: …`; warnings → report + `kb-v2/reviews.jsonl`) → **verify**
+(`mvn clean package -Dmaven.test.skip=true`); on failure the **script fix loop** (`loop.phases.verify`, 12 rounds):
+errors grouped per **case** (L2 signature; coarse `build` / `other` keys refined from the javac line), root causes
+first, cases whose files / module pom a script already touched this round wait for the rebuild; per case
+**reuse** the best stored script (no LLM) → **augment** it (LLM, ≤ `script.max_augments_per_case`) → **new** (LLM)
+→ BLOCKED `repeated_failure`; every attempt is committed, scored by the rebuild (round-10 rules: improved / partial
+/ no_change / regressed → reverted / inconclusive), rolled back before the case's next try unless it improved, and
+credited to the stored version (`kb-v2/scripts/<case_id>/v<N>.py` + meta: lineage, successes / failures / projects).
+Then the final build again, the report (Handover first, "Structure review", fix attempts as `script:<case>:v<N>`),
+`error_cases.*` / `fix_attempts.jsonl` in the run dir and the KB (`errors.jsonl`, `fix_attempts.jsonl`, catalog,
+views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line operators retype.
 
-## Known follow-ups (candidates for the next round; the user decides)
-- Label heuristics are deliberately simple (whitespace-only edits → `generic-rewrite`; `override-signature` and
-  `method-signature-adapt` never compile). A `method-rename` compiles only when the owner FQCN is resolvable from
-  the changed file's imports; a project class overriding a renamed library method stays `override-signature`.
-- `ADVISOR_CATALOG` is small by design (verified ids only); extend it with the company recipe inventory.
-- Build-fix clusters are keyed by file, so one renamed library method used in N files costs N LLM calls in the
-  first project (then 0 via the compiled `ChangeMethodName` candidate); cross-file clustering by symbol would cut that.
-- ribbon / zuul / netflix-feign stay `guide` (Spring Cloud LoadBalancer / Gateway / OpenFeign need structural
-  rewrites); hystrix is `recipe` since round 6, with the LLM (advisory-guided) handling programmatic subclasses.
-  Advisory hints only exist for advisories with a `## fix-loop: <library>` note section (today: `spring-cloud.md` for
-  hystrix, `ibatis2.md`, `jdk21.md` for jdk-removed-apis / jdk-generified-apis, `externalized-config.md`).
-- Items to validate in the company environment: `docs/RUNBOOK.md` §0, `docs/ARCHITECTURE.md` §7.5.
-- `build.skip_tests: true` is the default: builds never run unit tests, so missing externalized values cannot
-  break the build and the `tests-skipped` fallback (round 8) only acts where a company config sets
-  `skip_tests: false`. Decided 2026-10-22: the fleet skips tests entirely (`build.skip_test_compile: true` in the
-  company config); the L7 / L7b fallbacks stay for configs that compile tests.
-- Multi-module `merge`: a same-FQCN class differing across modules is first-wins; since round 9 the dropped copy
-  reaches the fix LLM as read-only reference (`multi-module-conflict`). Still open: `pluginManagement` of a merged
-  pom-packaging module is not folded into the root; a union `spring.factories` is rewritten normalized (comments
-  dropped, originals saved); a kept boot module whose @SpringBootApplication scans only its own package will not
-  see the merged beans (runtime, reported as a note).
-- Rewrite-run download failures (HTTP 429 through the cloud proxy, 2026-10-20) are retried since round 9 (X8) and a
-  literal `4.0.x` left by the recipe triggers one revert + re-run; the orchestrator re-runs a step at most once
-  whatever `openrewrite.download_retry` says. L5: one cool-down per run (`llm.cooldown_seconds`), then unavailable;
-  a blocked item's attempt count still includes the two cooled-down attempts.
-- Role parents (9b): a kept boot module on an external parent gets no root properties (relies on `boot_parent` for
-  e.g. `project.build.sourceEncoding`); under `wrap` the wrapped modules stay on the root (only the generated
-  boot-jar takes `boot_parent`); merged pom modules' management goes to the comp pom only; when both role parents
-  share one key the module location decides. Properties: relaxed-binding spellings of one key (`my-key` / `myKey` / `MY_KEY`) stay separate findings (three
-  placeholders); `ibatis2` is detected from the pom + imports only (a `SqlMapClientFactoryBean` named only in
-  Spring XML is missed).
+## Status — 2026-10-27 (`flow-v2`)
+- v1 history (rounds 1–10, 2026-10-18 … 10-26, all on `main` / tag `company-v1`): pipeline + fixtures, blocked-cluster
+  triage, adapter seams, recipe catalog, fleet + learning ledger, library advisories + Handover, `ChangeMethodName`
+  harvest, LangGraph engine + FastAPI web UI, Hystrix → Resilience4j, multi-module `merge`, externalized config
+  placeholders, Java 1.6/1.7 projects, role parents, the company layout (9c), pom-less webapp inventory, web.xml
+  registrations, error cases + case catalog, a 5-role review (round 10). `docs/PLAN.md` has one table per round.
+- v2 step 0 (contracts) `55d776e`, step 1 (six agents: script runtime, script KB, script prompts, structure review +
+  report, v2 planner, script fix loop + orchestrator) `cb9a3b1`, root-cause ordering + deferral `50e9a49`, step 2
+  (e2e: every fixture on the v2 flow with replayed LLM scripts; reuse pure-java → java6-legacy, augment
+  boot2-fix-failures) `43d8b36`, step 4 (v1 code deleted; pom-change deferral; refined case keys) — this commit.
+  Offline tests: **__OFFLINE_TESTS__** passed (42 integration deselected); real-Maven e2e `scripts/e2e.sh` **32/32**
+  (29 build, 3 intended BLOCKED: boot2-javax-lib, missing-artifact, legacy-ibatis).
+- Step 5 (company trial vs `company-v1`) is the user's: real projects, LLM calls / time / success rate.
+
+## Known follow-ups (the user decides)
+- **JSP `javax.servlet` references are not renamed in v2** (no handler; OpenRewrite excludes JSP): the build passes
+  but Tomcat 10+ fails at runtime. Pending decision: a text rename inside the restructure's front-module step, or
+  Handover only (today: Handover).
+- Guide advisories (hystrix, ribbon, zuul, …) leave compiling code as it is; the Handover lists them.
+- A case that cannot be fixed by code (legacy-ibatis) costs up to 4 LLM calls (new + 3 augments) before BLOCKED;
+  `script.max_augments_per_case` is the knob. `loop.blocked_policy` gives javax libraries / missing artifacts /
+  plugins 2 script attempts (a stored script is reused regardless).
+- `script.python` must have pydantic and lxml installed (else the run reports `ModuleNotFoundError`); Windows paths
+  over 260 characters are not handled specially.
+- Items to validate in the company environment: `docs/RUNBOOK.md` §0; the first v2 runs should be compared with
+  `company-v1` on the same projects.
+- Multi-module `merge` (unchanged from v1): a same-FQCN class differing across modules is first-wins (the dropped
+  copy reaches the script prompt as read-only reference); `pluginManagement` of a merged pom-packaging module is not
+  folded into the root; a kept boot module whose @SpringBootApplication scans only its own package will not see the
+  merged beans (runtime, reported as a note). Properties: relaxed-binding spellings of one key stay separate findings;
+  `ibatis2` is detected from the pom + imports only.
 
 ## How to work here
 - **Working mode the user asked for**: Claude plans and acts as PM in the main session. Write shared contracts
   first (`sbmig/core/{models,config,interfaces}.py`, docs), then fan implementation out to parallel `model: opus`
   subagents on **disjoint directories** with explicit briefs. Subagents never commit. Integration, test runs and
-  commits happen in the main session. Per round: append a "Status — round N" table to `docs/PLAN.md`, update
-  `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` for every new scenario.
+  commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
+  `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~3 min): `python -m pytest -m "not integration"` → 2,192 passed, 42 deselected
+- Fast check (Python only, ~6 min): `python -m pytest -m "not integration"` → __OFFLINE_TESTS__ passed, 42 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
-  `ruff check sbmig tests` has ~1,000 pre-existing style findings (mostly `UP045`); lint is not a gate here,
-  so fix only what you touch and never run a repo-wide `ruff --fix` inside a feature round.
+  `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
+  you touch and never run a repo-wide `ruff --fix` inside a feature round.
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
-  (`--only boot2,msa` for a subset); KB loop `scripts/demo-kb/run.sh`; fleet `scripts/fleet-demo.sh`.
+  (`--only boot2,msa` for a subset; the reuse scenario needs pure-java before java6-legacy — `kb.after` in
+  `expected.json`); KB demo `scripts/demo-kb/run.sh` (run 2 reuses run 1's script); fleet `scripts/fleet-demo.sh`.
   Integration tests: `python -m pytest -q -m integration`.
+- Offline LLM: `llm.provider: fake` + `llm.base_url: replay:<dir>` replays `<dir>/llm-NNN.json` (`match: "case:
+  <case_id>"`, `replay_role: fix | structure_review`); the fixtures' `sbmig.e2e.yml` do this.
 - Real-LLM runs: provider `company` is the default (`config/default.yml`): `requests.post(LLM_BASE_URL,
   headers={Authorization: Bearer LLM_API_KEY}, json={model, messages, need_origin}, timeout)` in
   `sbmig/fix/company.py`; URL / key / model / `LLM_RESPONSE_PATH` / `LLM_RECORD_DIR` come from `.env` (git-ignored,
@@ -259,17 +155,17 @@ the operators see changes (CLI, config keys, handlers, report sections, log line
   this after 503s on the gateway; keep it this simple). `sbmig llm-probe` (and `--bare`) prints the exact request,
   proxies and response. `config/llm-anthropic.yml` remains for Anthropic validation runs. Keys never go into yml.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
-  `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems.
+  `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems;
+  on the company's Windows PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: FAIL`, `cause=`).
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
-- **Company convention (2026-10-20): agents run on LangGraph under uvicorn** (LangChain was dropped for the LLM
-  path, see above). sbmig complies without changing behaviour: `loop.engine: graph` (default) drives the phases from a LangGraph `StateGraph`
-  (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize; `inline` is the old loop, reports are
-  identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
-  `sbmig serve`), runs migrations in-process through `stream_graph` (one worker thread per run, per-run
-  `sbmig.log` by thread filter) and streams `node` / `journal` / `log` / `report` events over SSE to
-  `sbmig/web/static/index.html` (vanilla JS). Stop takes effect between graph nodes only (a stop before the verify
-  phase aborts without the final build and says so; after it the run finishes normally). One migration at a time:
-  further uploads are `queued` (shared file KB).
+- **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
+  the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
+  `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
+  `sbmig serve`), runs migrations in-process through `stream_graph` (one worker thread per run, per-run `sbmig.log`
+  by thread filter) and streams `node` / `journal` / `log` / `report` events over SSE to `sbmig/web/static/index.html`
+  (vanilla JS). Stop takes effect between graph nodes only. One migration at a time: further uploads are `queued`
+  (shared file KB).
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
-  compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a `claude/...` branch; the user merges to `main` locally.
+  compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a
+  `claude/...` branch; the user merges locally.

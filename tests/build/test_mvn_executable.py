@@ -70,13 +70,7 @@ def test_settings_catch_all_mirror_and_repository_notes(tmp_path, cfg):
     assert settings_catch_all_mirror(good) is True
     (n,) = repository_notes(poms, good)
     assert not n.startswith("followup:") and "routed through the settings mirror" in n
-    strip = good.model_copy(deep=True)
-    strip.build.pom_repositories = "remove"
-    (n,) = repository_notes(poms, strip)
-    assert "strips them" in n and "make sure" not in n
-    strip_no_mirror = none.model_copy(deep=True)
-    strip_no_mirror.build.pom_repositories = "remove"
-    assert "make sure build.settings_file mirrors" in repository_notes(poms, strip_no_mirror)[0]
+
 
 
 def test_relative_settings_local_repo_and_java_home_become_absolute(tmp_path, cfg, monkeypatch):

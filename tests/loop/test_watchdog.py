@@ -8,10 +8,10 @@ import time
 
 import pytest
 
-from sbmig.core.models import CaseType, FixProposal, LLMUsage, MigrationPlan, Phase, PlanStep, StepKind
+from sbmig.core.models import CaseType, LLMUsage, MigrationPlan, Phase, PlanStep, StepKind
 from sbmig.loop import fixloop as fl
 
-from .fakes import FakeFixer, write_fix
+from .fakes import FixProposal, FakeFixer, write_fix
 from .test_orchestrator import make_orch
 
 

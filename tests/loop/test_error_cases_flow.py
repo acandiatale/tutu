@@ -1,5 +1,5 @@
 """Error cases through the real loop / orchestrator (fakes for mvn, LLM, KB), v2 fix scripts: N errors → N records,
-failed attempts with their reasons, regressions, run-dir files, report fields, KB append (without kb.harvest)."""
+failed attempts with their reasons, regressions, run-dir files, report fields, KB append."""
 from __future__ import annotations
 
 import json
@@ -8,10 +8,10 @@ import types
 
 import pytest
 
-from sbmig.core.models import BuildError, ErrorKind, FileChange, FixProposal, LLMUsage, Phase
+from sbmig.core.models import BuildError, ErrorKind, FileChange, LLMUsage, Phase
 from sbmig.loop.error_tracker import ErrorTracker
 
-from .fakes import (
+from .fakes import (FixProposal, 
     FakeBuildRunner,
     FakeFixer,
     FakeKB,
@@ -160,8 +160,8 @@ class RecordingKB(FakeKB):
 
 @pytest.fixture()
 def fake_kb_module(monkeypatch):
-    """Stand-in for `sbmig.kb.error_cases` (written by the KB workstream): marks resolved LLM fixes as text-replace
-    candidates and fills `project`, so the test sees the prepared records flow into report / files / KB."""
+    """Stand-in for `sbmig.kb.error_cases` (written by the KB workstream): fills `project`, so the test sees the
+    prepared records flow into report / files / KB."""
     calls: dict[str, list] = {"prepare": [], "jsonl": [], "csv": []}
     mod = types.ModuleType("sbmig.kb.error_cases")
 
@@ -170,8 +170,6 @@ def fake_kb_module(monkeypatch):
         out = []
         for e in errors:
             upd = {"project": profile.name, "diff_excerpt": "excerpt"}
-            if e.status == "resolved" and e.fix_method.startswith("script"):
-                upd["replace_rule_candidate"] = True
             out.append(e.model_copy(update=upd))
         return out, [a.model_copy(update={"project": profile.name}) for a in attempts]
 
@@ -205,7 +203,7 @@ def test_orchestrator_writes_error_cases(cfg, ws, fake_kb_module):
     n_bar = 1 + cfg.script.max_augments_per_case
     assert len(st[BAR].attempts) == n_bar
     assert all(e.diff_excerpt == "" for e in report.error_cases)   # the report copy is slim
-    assert report.error_case_counts == {"resolved": 1, "blocked": 1, "llm_text_replace": 1}
+    assert report.error_case_counts == {"resolved": 1, "blocked": 1}
     run_dir = ws.run_dir
     assert report.outputs["error_cases"] == str(run_dir / "error_cases.jsonl")
     assert report.outputs["fix_attempts"] == str(run_dir / "fix_attempts.jsonl")
@@ -215,8 +213,7 @@ def test_orchestrator_writes_error_cases(cfg, ws, fake_kb_module):
     att_lines = [json.loads(x) for x in (run_dir / "fix_attempts.jsonl").read_text().splitlines()]
     assert len(att_lines) == 2 + n_bar and any(a["script_status"] == "error" for a in att_lines)
     assert fake_kb_module["prepare"] == [(2, 2 + n_bar)] and fake_kb_module["csv"] == ["error_cases.csv"]
-    # v2: the KB gets the records although kb.harvest is off (a v1 switch)
-    assert not cfg.kb.harvest and len(kb.appended) == 1 and len(kb.appended[0][0]) == 2
+    assert len(kb.appended) == 1 and len(kb.appended[0][0]) == 2
     ev = [e for e in journal_events(ws) if e["event"] == "error_cases"]
     assert ev and ev[0]["count"] == 2 and ev[0]["attempts"] == 2 + n_bar
     assert ev[0]["by_status"] == {"resolved": 1, "blocked": 1}
@@ -262,7 +259,7 @@ def test_without_the_kb_module_raw_records_are_written(cfg, ws, monkeypatch):
     assert report.success and not any(f.startswith("error-cases-failed") for f in report.flags)
     assert (ws.run_dir / "error_cases.jsonl").exists() and (ws.run_dir / "fix_attempts.jsonl").exists()
     assert "error_cases_csv" not in report.outputs and kb.appended == []
-    assert len(report.error_cases) == 2 and report.error_case_counts == {"resolved": 2, "llm_text_replace": 0}
+    assert len(report.error_cases) == 2 and report.error_case_counts == {"resolved": 2}
 
 
 def test_msa_targets_are_tracked_per_service(cfg, ws, fake_kb_module):

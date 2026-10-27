@@ -28,7 +28,7 @@ def test_stream_orders_journal_and_log_by_time(tmp_path: Path):
     t1 = t0 + timedelta(seconds=1)
     # journal: the build event of build 1 (t0) and an LLM call at t1
     (rd / "journal.jsonl").write_text(json.dumps({"ts": t0.isoformat(), "event": "build", "goal": "test-compile", "ok": False})
-                                       + "\n" + json.dumps({"ts": t1.isoformat(), "event": "llm_fix"}) + "\n",
+                                       + "\n" + json.dumps({"ts": t1.isoformat(), "event": "llm_script"}) + "\n",
                                        encoding="utf-8")
     # log: FAILED line (t0), its continuation line (no timestamp), the next build's start (t1 + 0.5 s)
     (rd / "sbmig.log").write_text(_local(t0) + " INFO sbmig.build: build test-compile: FAILED (3 errors, 12.0s)\n"
@@ -43,7 +43,7 @@ def test_stream_orders_journal_and_log_by_time(tmp_path: Path):
         ("journal", "build"),
         ("log", kinds[1][1]),            # FAILED line (same second as the build event, after it: file position)
         ("log", kinds[2][1]),            # its continuation line keeps its place
-        ("journal", "llm_fix"),
+        ("journal", "llm_script"),
         ("log", kinds[4][1]),            # the next build's start line comes last
     ]
     assert "FAILED" in kinds[1][1] and "detail" in kinds[2][1] and "mvn test-compile" in kinds[4][1]

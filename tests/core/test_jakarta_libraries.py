@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sbmig.core.jakarta_libraries import JAKARTA_LIBRARIES_FILE, jakarta_libraries, jakarta_library_for
-from sbmig.triage.handlers import version_lt
+from sbmig.plan.versions import version_lt
 
 
 def test_table_entries_are_consistent():

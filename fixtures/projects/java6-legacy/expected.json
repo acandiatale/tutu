@@ -44,7 +44,7 @@
       "reuse_without_llm": true,
       "cases": [
         {
-          "l2": "compile|build|compilation failure: compilation failure",
+          "l2": "compile|build|option --boot-class-path cannot be used together with --release",
           "modes": [
             "new"
           ],
@@ -62,7 +62,7 @@
             "reuse"
           ],
           "outcomes": [
-            "build_ok"
+            "improved"
           ],
           "versions": [
             1
@@ -78,7 +78,7 @@
           "status": "active",
           "successes_min": 2,
           "success_projects_min": 2,
-          "last_outcome": "build_ok"
+          "last_outcome": "improved"
         }
       ],
       "versions": {

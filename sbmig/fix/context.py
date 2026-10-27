@@ -1,12 +1,12 @@
 """Context packing for the LLM fixer: errors, file windows, pom excerpts, library migration guidance (advisories),
 migration notes, history — within a budget.
 
-Round 9: module-merge notes (`FixContext.reference_notes`) and the dropped first-wins copies as read-only reference text
-(`FixContext.reference_files`): never part of the build, never a SEARCH/REPLACE target (the loop drops such patches).
+`ContextPacker.pack_script` packs ONE case (L2 signature) that may span many files for a fix-script request — the
+budget is spread over the erroring files (import block + windows around the error lines, whole file when small),
+files beyond it are listed by name only (the script reaches them through `p.errors` / `p.files`).
 
-v2 (flow-v2): `ContextPacker.pack_script` packs ONE case (L2 signature) that may span many files for a fix-script
-request — the budget is spread over the erroring files (import block + windows around the error lines, whole file when
-small), files beyond it are listed by name only (the script reaches them through `p.errors` / `p.files`)."""
+Round 9: module-merge notes (`FixContext.reference_notes`) and the dropped first-wins copies as read-only reference text
+(`FixContext.reference_files`): never part of the build, never written by a script."""
 from __future__ import annotations
 
 import logging
@@ -63,12 +63,13 @@ class NoteEntry:
         return sum(1 for rx in self.compiled() if rx.search(text))
 
     def applies(self, case: Optional[str], phase: Optional[str]) -> bool:
+        """`cases` restricts the note; `phases` is advisory (the v1 phase the note was written for): v2 fixes every
+        error — Java 21, jakarta, Spring, restructure — in the one `verify` script loop, so `verify` is always
+        allowed; another phase is still narrowed by the list."""
         if self.cases and case and case not in self.cases:
             return False
-        if self.phases and phase and phase not in self.phases:
-            # the final verify loop fixes the restructured tree: notes written for `restructure` apply there too
-            if not (phase == "verify" and "restructure" in self.phases):
-                return False
+        if self.phases and phase and phase != "verify" and phase not in self.phases:
+            return False
         return True
 
     def body(self) -> str:
@@ -149,27 +150,8 @@ def merge_windows(lines: list[int], total: int, radius: int = WINDOW_RADIUS) -> 
     return spans
 
 
-def format_error(e: BuildError) -> str:
-    loc = e.file or "-"
-    if e.line:
-        loc += f":{e.line}"
-        if e.column:
-            loc += f":{e.column}"
-    parts = [f"- [{e.kind.value}] {loc}: {e.message}"]
-    if e.symbol:
-        parts.append(f"    symbol:   {e.symbol}")
-    if e.location:
-        parts.append(f"    location: {e.location}")
-    if e.artifact:
-        parts.append(f"    artifact: {e.artifact.coordinates}")
-    if e.module:
-        parts.append(f"    module:   {e.module}")
-    if e.goal:
-        parts.append(f"    goal:     {e.goal}")
-    return "\n".join(parts)
-
-
 def summarize_attempt(a: FixAttempt) -> str:
+    """An earlier attempt that is not a script attempt (old records): outcome, analysis, the files it changed."""
     lines = [f"- attempt {a.id} (iteration {a.iteration}, model {a.model or '-'}) → outcome: {a.outcome}"
              + (f", errors {a.errors_before}→{a.errors_after}" if a.errors_after is not None else "")]
     if a.analysis:
@@ -400,16 +382,10 @@ class _Section:
 
 
 class ContextPacker:
-    # truncation priority (first = dropped/shrunk first); "errors" and "header" are never truncated
-    TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
-                      "advisory_hints", "reference_notes", "pom", "related_files", "files")
-    RELATED_FILES_TITLE = ("Related project types named in the errors (exact text — patch these when the fix belongs "
-                           "there, e.g. a repository interface that lost its CRUD methods)")
+    # truncation priority: SCRIPT_TRUNCATE_ORDER (first = dropped/shrunk first); "errors" and "header" never shrink
     MAX_RELATED_FILES = 3
     ADVISORY_TITLE = "Library migration guidance (what to migrate TO)"
     REFERENCE_NOTES_TITLE = "Module merge notes (first-wins; the dropped copy is below as reference)"
-    REFERENCE_FILES_TITLE = ("Reference files (read-only, NOT in the build — never write SEARCH/REPLACE blocks for "
-                             "these paths)")
 
     def __init__(self, cfg: Config, notes_dir: Optional[str | Path] = None, max_notes: int = DEFAULT_MAX_NOTES):
         self.cfg = cfg
@@ -428,107 +404,6 @@ class ContextPacker:
         return self._notes
 
     # ------------------------------------------------------------------ public
-    def pack(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, profile_summary: str = "",
-             *, case_type: Optional[str] = None, budget: Optional[int] = None) -> PackedContext:
-        budget = budget or self.cfg.llm.max_context_chars
-        summary = profile_summary or ctx.profile_summary
-        if case_type is None:
-            m = re.search(r"case=(\w+)", summary or "")
-            case_type = m.group(1) if m else None
-        packed = PackedContext()
-        secs: list[_Section] = []
-
-        header = [f"phase: {ctx.phase.value}, iteration {ctx.iteration}" + (f", stall level {ctx.stall_level}" if ctx.stall_level else "")]
-        if summary:
-            header.append(f"project: {summary}")
-        header.append(f"cluster: {cluster.id} kind={cluster.kind.value}" + (f" module={cluster.module}" if cluster.module else "")
-                      + (f" file={cluster.file}" if cluster.file else ""))
-        secs.append(_Section("header", "Situation", "\n".join(header), 0, truncatable=False))
-
-        secs.append(_Section("errors", f"Errors to fix ({len(cluster.errors)})",
-                             "\n".join(format_error(e) for e in cluster.errors), 1, truncatable=False))
-
-        # files
-        files = self._cluster_files(cluster)
-        pom_path = nearest_pom(ws, cluster.file or next((e.file for e in cluster.errors if e.file), None))
-        file_texts: list[str] = []
-        import_text = ""
-        for f in files:
-            if PurePosixPath(f).name == "pom.xml":
-                continue                                     # handled as pom section
-            block, imports = self._file_block(ws, f, [e.line for e in cluster.errors if e.file == f and e.line])
-            file_texts.append(block)
-            import_text += imports
-            if ws.exists(f):
-                packed.files_included.append(f)
-        if file_texts:
-            secs.append(_Section("files", "Source (exact text; copy SEARCH blocks from here)", "\n\n".join(file_texts), 2))
-        # 2026-10-22 (fourth company project): the fix often lives in another project file — the repository
-        # interface named in `location: variable repo of type com.x.MemberRepository` (Spring Data 3 CRUD), the owner
-        # of a `no suitable method` candidate — and an LLM that cannot see it patches blindly (apply_failed) or asks
-        # for it in a second round. Show the project types the errors name right away.
-        related = self._related_type_files(ws, cluster, files)
-        if related:
-            blocks = [self._file_block(ws, f, [])[0] for f in related]
-            secs.append(_Section("related_files", self.RELATED_FILES_TITLE, "\n\n".join(blocks), 2.2))
-            packed.files_included += [f for f in related if f not in packed.files_included]
-        # dropped module-merge copies (round 9): context only, right after the source they differ from
-        if ctx.reference_files:
-            secs.append(_Section("reference_files", self.REFERENCE_FILES_TITLE,
-                                 "\n\n".join(self._reference_block(label, text)
-                                             for label, text in ctx.reference_files.items()), 2.5))
-
-        # pom
-        if pom_path and self._wants_pom(cluster, files):
-            try:
-                secs.append(_Section("pom", f"POM ({pom_path})", pom_excerpt(ws.read(pom_path), pom_path), 3))
-                packed.files_included.append(pom_path)
-            except OSError:
-                pass
-
-        # library advisories that match this cluster (round 6): the library was replaced on purpose — say what TO
-        if ctx.advisory_hints:
-            secs.append(_Section("advisory_hints", self.ADVISORY_TITLE,
-                                 "The libraries below were removed or replaced by the migration on purpose. Rewrite the "
-                                 "code that still uses them to the named replacement (keep public signatures so callers "
-                                 "still compile); do not re-add the removed library.\n"
-                                 + "\n".join(f"- {h}" for h in ctx.advisory_hints), 4))
-        if ctx.reference_notes:
-            secs.append(_Section("reference_notes", self.REFERENCE_NOTES_TITLE,
-                                 "\n".join(f"- {n}" for n in ctx.reference_notes), 4.5))
-        if ctx.kb_hints:
-            secs.append(_Section("kb_hints", "Knowledge-base hints (similar resolved cases)",
-                                 "\n".join(f"- {h}" for h in ctx.kb_hints), 5))
-        if ctx.previous_attempts:
-            secs.append(_Section("previous_attempts",
-                                 "Previous attempts on this cluster (they did NOT resolve it — do not repeat them)",
-                                 "\n".join(summarize_attempt(a) for a in ctx.previous_attempts), 6))
-        if ctx.other_errors_summary:
-            secs.append(_Section("other_errors", "Other error clusters in this build (for awareness; fix only this cluster)",
-                                 ctx.other_errors_summary.strip(), 7))
-        if ctx.plan_notes:
-            secs.append(_Section("plan_notes", "Plan notes", "\n".join(f"- {n}" for n in ctx.plan_notes), 8))
-
-        # notes: one section, built from selected notes in rank order
-        match_text = "\n".join(
-            [e.message for e in cluster.errors] + [e.symbol or "" for e in cluster.errors]
-            + [e.location or "" for e in cluster.errors] + [e.raw[:2000] for e in cluster.errors]
-            + [e.artifact.coordinates for e in cluster.errors if e.artifact] + [import_text])
-        selected = self.select_notes(match_text, case_type, ctx.phase.value)
-        note_secs = []
-        for i, n in enumerate(selected):
-            body = n.body()
-            if body:
-                note_secs.append(_Section("notes", f"Migration note: {n.title}", body, 10 + i, always=n.always))
-        secs.extend(note_secs)
-
-        self._fit(secs, budget, packed)
-        secs.sort(key=lambda s: s.order)
-        packed.sections = [(s.title, s.text) for s in secs]
-        packed.notes_included = [s.title.removeprefix("Migration note: ") for s in secs if s.key == "notes"]
-        packed.chars = sum(len(t) + len(b) + 4 for t, b in packed.sections)
-        return packed
-
     def select_notes(self, text: str, case: Optional[str], phase: Optional[str]) -> list[NoteEntry]:
         scored = []
         always = []
@@ -671,8 +546,8 @@ class ContextPacker:
             [e.message for e in errors] + [e.symbol or "" for e in errors] + [e.location or "" for e in errors]
             + [e.raw[:2000] for e in errors[:40]] + [e.artifact.coordinates for e in errors if e.artifact]
             + [import_text])
-        # always-notes (the v1 fix policy: SEARCH/REPLACE, "fix tests so they compile") are left out — the script
-        # system prompt carries the v2 policy; keyword-selected technical notes stay
+        # always-notes (the old fix policy note: "fix tests so they compile" …) are left out — the script system
+        # prompt carries the fix policy; keyword-selected technical notes stay
         notes = [n for n in self.select_notes(match_text, case_type, ctx.phase.value) if not n.always]
         for i, n in enumerate(notes):
             body = n.body()
@@ -871,14 +746,6 @@ class ContextPacker:
         return "\n".join(out)
 
     # ------------------------------------------------------------------ internals
-    @staticmethod
-    def _cluster_files(cluster: ErrorCluster) -> list[str]:
-        out: list[str] = []
-        for f in [cluster.file] + [e.file for e in cluster.errors]:
-            if f and f not in out:
-                out.append(f)
-        return out
-
     _LOC_TYPE_RES = (re.compile(r"location:\s*variable\s+[\w$]+\s+of\s+type\s+([\w$.]+)"),
                      re.compile(r"location:\s*(?:class|interface|enum|record)\s+([\w$.]+)"),
                      re.compile(r"(?:method|constructor)\s+([\w$.]+)\.[\w$]+\([^)]*\)\s+is not applicable"))
@@ -1001,7 +868,7 @@ class ContextPacker:
         over = total() - budget
         if over <= 0:
             return
-        for key in order or self.TRUNCATE_ORDER:
+        for key in order or SCRIPT_TRUNCATE_ORDER:
             if over <= 0:
                 break
             group = [s for s in secs if s.key == key and s.truncatable]

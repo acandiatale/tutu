@@ -2,7 +2,7 @@
 
     load_plugin("pkg.module:attr")             -> the object (class, factory or instance)
     resolve_llm_plugin(cfg)                    -> LLMClientLike   (tier 1: llm.provider = plugin | <entry point>)
-    resolve_fixer_plugin(cfg, llm, notes_dir)  -> FixerLike | None (tier 2: fix.plugin)
+    resolve_fixer_plugin(cfg, llm, notes_dir)  -> fixer | None   (tier 2: fix.plugin; must provide propose_script)
 """
 from __future__ import annotations
 
@@ -197,30 +197,12 @@ def resolve_llm_plugin(cfg: Config) -> Any:
 # ---------------------------------------------------------------------------
 # tier 2: fixer
 # ---------------------------------------------------------------------------
-class ApplyDelegatingFixer:
-    """Adds `apply` (our atomic PatchApplier) to a fixer plugin that only implements `propose`."""
-
-    def __init__(self, inner: Any):
-        self.inner = inner
-
-    def propose(self, ws, cluster, ctx):
-        return self.inner.propose(ws, cluster, ctx)
-
-    def apply(self, ws, changes):
-        from sbmig.fix.apply import PatchApplier
-
-        return PatchApplier(ws).apply(list(changes))
-
-    def __getattr__(self, item: str) -> Any:
-        if item == "inner":
-            raise AttributeError(item)
-        return getattr(self.inner, item)
-
-
 def resolve_fixer_plugin(cfg: Config, llm: Any = None, notes_dir: Optional[str | Path] = None) -> Optional[Any]:
-    """Tier 2. `fix.plugin` → FixerLike, or None when not configured. Factory signature
-    `(options, cfg, llm)` (any prefix of it), optionally with a `notes_dir` keyword. A plain name without ':' or
-    '.' is looked up as an entry point in group `sbmig.fixers`."""
+    """Tier 2. `fix.plugin` → the in-house fixer, or None when not configured. The plugin implements the script seam
+    (`ScriptFixerLike`): `propose_script(ws, cluster, ctx) -> ScriptProposal` — one Python fix script per case; the
+    script applies itself (sbmig.script), so there is no `apply`. Factory signature `(options, cfg, llm)` (any prefix
+    of it), optionally with a `notes_dir` keyword. A plain name without ':' or '.' is looked up as an entry point in
+    group `sbmig.fixers`. A plugin without `propose_script` (a SEARCH/REPLACE-only `propose` fixer) is refused."""
     spec = (cfg.fix.plugin or "").strip()
     if not spec:
         return None
@@ -232,13 +214,10 @@ def resolve_fixer_plugin(cfg: Config, llm: Any = None, notes_dir: Optional[str |
     else:
         obj = load_plugin(spec)
     optional = {"notes_dir": notes_dir} if notes_dir is not None else {}
-    fixer = instantiate(obj, [dict(cfg.fix.plugin_options or {}), cfg, llm], optional,
-                        required_method="propose", spec=spec)
-    if not callable(getattr(fixer, "apply", None)):
-        fixer = ApplyDelegatingFixer(fixer)
-    return fixer
+    return instantiate(obj, [dict(cfg.fix.plugin_options or {}), cfg, llm], optional,
+                       required_method="propose_script", spec=spec)
 
 
 __all__ = ["PluginLoadError", "load_plugin", "load_entry_point", "instantiate", "resolve_llm_plugin",
-           "resolve_fixer_plugin", "wrap_llm", "llm_plugin_options", "ApplyDelegatingFixer",
+           "resolve_fixer_plugin", "wrap_llm", "llm_plugin_options",
            "LLM_ENTRY_POINT_GROUP", "FIXER_ENTRY_POINT_GROUP"]

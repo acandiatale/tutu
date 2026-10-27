@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from sbmig.core.models import GAV, DecisionKind, ErrorKind, Phase, ScriptProposal
 from sbmig.loop import BuildFixLoop, LoopBudget
-from sbmig.triage import HandlerRegistry, Triager
+from sbmig.triage import Triager
 
-from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeRewriteRunner, FakeScriptRunner, bad_build, case_of,
+from .fakes import (FakeBuildRunner, FakeFixer, FakeKB, FakeScriptRunner, bad_build, case_of,
                     compile_error, journal_events, ok_build, script, write_script)
 
 FOO = "src/main/java/com/x/Foo.java"
@@ -27,9 +27,9 @@ def two_case_build(ws, call):
 
 def make_loop(cfg, ws, profile, *, build=None, fixer=None, kb=None, triager=None, budget=None, dry_run=False,
               runner=None):
-    triager = triager or Triager(cfg, registry=HandlerRegistry())
-    return BuildFixLoop(cfg, ws, build or FakeBuildRunner(ws, fn=files_build), triager, triager.registry,
-                        fixer or FakeFixer(), kb or FakeKB(), FakeRewriteRunner(ws), profile,
+    triager = triager or Triager(cfg)
+    return BuildFixLoop(cfg, ws, build or FakeBuildRunner(ws, fn=files_build), triager,
+                        fixer or FakeFixer(), kb or FakeKB(), profile,
                         plan_notes=["note"], budget=budget or LoopBudget.from_config(cfg), dry_run=dry_run,
                         script_runner=runner or FakeScriptRunner())
 

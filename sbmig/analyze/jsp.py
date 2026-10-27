@@ -1,5 +1,5 @@
-"""JSP / tag-file code regions (pure, dependency-free) — shared by the source scanner (`SourceStats.jsp_javax_files`)
-and the `jakarta-namespace-sweep` handler (`rename_javax_jsp`).
+"""JSP / tag-file code regions (pure, dependency-free) — used by the source scanner (`SourceStats.jsp_javax_files`),
+with the javax → jakarta package table `jakarta_packages.yml` next to this module.
 
 JSPs are compiled by the servlet container at runtime, never by the Maven build, and OpenRewrite does not parse them
 (`openrewrite.exclusions` lists `**/*.jsp`). The only places where a JSP names Java types are:
@@ -72,14 +72,14 @@ def is_jsp_path(rel: str) -> bool:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# detection (the analyzer side; the handler renames with the same spans + rename_javax)
+# detection (the analyzer side)
 # ---------------------------------------------------------------------------------------------------------------------
-_JAKARTA_TABLE = Path(__file__).resolve().parent.parent / "triage" / "handlers" / "jakarta_packages.yml"
+_JAKARTA_TABLE = Path(__file__).resolve().with_name("jakarta_packages.yml")
 
 
 @lru_cache(maxsize=1)
 def jakarta_rules() -> tuple[tuple[str, bool], ...]:
-    """(from-package, recursive) of the handler's table (read directly: importing sbmig.triage here is too heavy)."""
+    """(from-package, recursive) of the javax → jakarta package table (`jakarta_packages.yml` next to this module)."""
     try:
         doc = yaml.safe_load(_JAKARTA_TABLE.read_text(encoding="utf-8")) or {}
     except OSError:
@@ -88,8 +88,8 @@ def jakarta_rules() -> tuple[tuple[str, bool], ...]:
 
 
 def javax_ee_token(token: str, rules: Iterable[tuple[str, bool]]) -> bool:
-    """`token` (e.g. `javax.servlet.http.Cookie`) is renamed by the table — same semantics as the handler's
-    `_rename_token`: the longest prefix decides, non-recursive rules take only `*` / an upper-case class name."""
+    """`token` (e.g. `javax.servlet.http.Cookie`) is a javax EE name of the table: the longest prefix decides,
+    non-recursive rules take only `*` / an upper-case class name."""
     by_from = dict(rules)
     parts = token.split(".")
     for i in range(len(parts) - 1, 1, -1):

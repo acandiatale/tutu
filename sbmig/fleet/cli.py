@@ -9,7 +9,8 @@ from typing import List, Optional
 import typer
 
 fleet_cli = typer.Typer(
-    help="Sequential multi-project migration with cross-project KB learning.", no_args_is_help=True
+    help="Sequential multi-project migration; one shared KB (error cases, fix scripts reused across projects).",
+    no_args_is_help=True
 )
 
 RUN_CONFIG = "fleet-config.json"  # <out>/fleet/fleet-config.json: configs + overrides of the last `run`
@@ -204,8 +205,8 @@ def status_cmd(
     typer.echo(
         f"fleet {state.fleet_id}: {t['done']} of {t['projects']} done "
         f"({', '.join(f'{k} {v}' for k, v in sorted(t['by_status'].items()))}); "
-        f"llm calls {t['llm_calls']}; kb used {t['kb_used']}, candidates {t['kb_candidates_created']}, "
-        f"promoted {t['kb_recipes_promoted']}" + (f"; still running: {t['running']}" if t["running"] else "")
+        f"llm calls {t['llm_calls']} (cost {t['llm_cost']:.4f}); blocked {t['blocked']}, unresolved {t['unresolved']}"
+        + (f"; still running: {t['running']}" if t["running"] else "")
     )
     typer.echo(render_table(state))
     for n in state.notes:

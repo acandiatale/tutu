@@ -17,10 +17,10 @@ def _finding(cfg):
     return f
 
 
-def test_detected_from_imports_with_guide_policy(cfg):
+def test_detected_from_imports(cfg):
     f = _finding(cfg)
-    assert f.library == "jdk-removed-apis" and f.status == "incompatible" and f.policy == "guide"
-    assert f.recipes == [] and f.evidence == ["import:sun.misc"]
+    assert f.library == "jdk-removed-apis" and f.status == "incompatible"
+    assert f.evidence == ["import:sun.misc"]
     assert "java.util.Base64" in f.followup and "jakarta.xml.bind-api" in f.followup
     assert "jaxb-runtime" in f.followup and "Thread.stop" in f.followup and "`_`" in f.followup
     assert f.notes == ["see knowledge/notes/jdk21.md"]
@@ -37,7 +37,7 @@ def test_hint_for_sun_misc_compile_error_carries_the_fix_loop_note(cfg):
                    file="src/main/java/com/acme/Codec.java")
     hints, ids = hints_for([e], [f])
     assert ids == ["jdk-removed-apis"] and len(hints) == 1
-    assert hints[0].startswith("jdk-removed-apis (incompatible, policy guide): replace with java.util.Base64")
+    assert hints[0].startswith("jdk-removed-apis (incompatible): replace with java.util.Base64")
     assert "Note (jdk21.md § fix-loop: jdk-removed-apis)" in hints[0]
     assert "getMimeEncoder" in hints[0]
     other = BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", symbol="class Codec",

@@ -5,7 +5,7 @@ Spring Framework 5.3.31 / Java 11, packaging `war` (`com.example:shop`), no Spri
 scans `web`, `<mvc:default-servlet-handler/>`, `InternalResourceViewResolver` `/` + `.html`); one `@Controller`
 (`HomeController`, `/home` returns the view name `index`, `/api/greeting` a `@ResponseBody` text), one `@Service`
 (`GreetingService`); static `src/main/webapp/index.html`, `css/site.css`, `js/app.js`; **no JSP**. Nothing the
-recipes cannot convert (no `WebMvcConfigurerAdapter`, unlike `spring5-xml`) → no LLM.
+recipes cannot convert (no `WebMvcConfigurerAdapter`, unlike `spring5-xml`) → no fix script.
 
 Migration (round 9c, the company rule; `sbmig.e2e.yml` sets the company layout keys back and the role parents, every
 one stood in by `spring-boot-starter-parent` 4.1.0):
@@ -19,7 +19,8 @@ one stood in by `spring-boot-starter-parent` 4.1.0):
 * `shop-front` (parent `comp_parent`): `src/main/resources/static/index.html`, `static/css/site.css`, `static/js/app.js`;
   no Java; no root `src/`, no `module/`.
 
-Expected: BUILD SUCCESS, exit 0, 0 LLM calls.
+Expected (v2, `expected.json` → `expect`): BUILD SUCCESS, exit 0, **1 LLM call** (the structure review: one warning on
+the `spring.version` property left in `shop-back/pom.xml`), no fix script.
 
 As-is build (JDK 11):
 

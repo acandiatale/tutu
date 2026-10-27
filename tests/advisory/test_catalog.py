@@ -4,8 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from sbmig.advisory import AdvisoryCatalog, load_advisories
-from sbmig.advisory.catalog import recipe_unavailable
 from tests.advisory.helpers import write_advisories
+
+REPO = Path(__file__).resolve().parents[2]
 
 REPO_IDS = {"springfox", "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign", "spring-cloud-bom",
             "spring-security-oauth2-legacy", "log4j1", "commons-lang2", "httpclient4", "jdk-removed-apis", "ibatis2",
@@ -20,19 +21,17 @@ REPO_IDS = {"springfox", "sleuth", "hystrix", "ribbon", "zuul", "netflix-feign",
             "json-lib", "xstream", "jdom1", "axis1", "commons-email1", "commons-configuration1", "cglib",
             "commons-httpclient3", "jjwt-legacy", "poi-legacy", "jxls1", "jexcelapi", "slf4j-1-pin",
             "mockito-legacy", "powermock",
-            # round 10: non-Spring twins of httpclient4 / jackson1 (those two are policy recipe for Spring cases now)
+            # round 10: non-Spring twins of httpclient4 / jackson1
             "httpclient4-direct", "jackson1-direct", "undertow"}
-FOX = "org.openrewrite.java.springdoc.SpringFoxToSpringDoc"
 
 
 def test_repo_advisories_load_and_check_clean(cfg):
     cat = load_advisories(cfg)
     assert set(cat.ids()) == REPO_IDS
     assert cat.check(cfg) == []
-    policies = {e.id: e.policy for e in cat.entries}
-    assert {k for k, v in policies.items() if v == "recipe"} == {"springfox", "sleuth", "hystrix",
-                                                                  "spring-cloud-bom", "commons-collections3",
-                                                                  "httpclient4", "jackson1"}
+    assert all(not hasattr(e, "policy") and not hasattr(e, "recipes") for e in cat.entries)   # guide-only: no policy / recipes
+    raw = (REPO / "knowledge" / "libraries" / "advisories.yml").read_text(encoding="utf-8")
+    assert "\n    policy:" not in raw and "\n    recipes:" not in raw
     assert all(e.followup and e.replacement and e.docs for e in cat.entries)
     assert cat.get("spring-cloud-bom").applies_when_version_below == "2025.1"
 
@@ -65,7 +64,7 @@ def test_empty_and_missing_catalog(tmp_path: Path, cfg):
 def test_check_reports_every_problem(tmp_path: Path, cfg):
     p = write_advisories(tmp_path / "a.yml", [
         {"id": "a", "library": "no-such-rule", "title": "A"},
-        {"id": "b", "library": "springfox", "title": "B", "policy": "recipe"},
+        {"id": "b", "library": "springfox", "title": "B", "notes": "knowledge/notes/missing.md"},
         {"id": "c", "library": "springfox", "title": "C", "policy": "recipe", "recipes": ["org.example.Missing"]},
         {"id": "c", "library": "springfox", "title": "C2"},
         {"id": "d", "library": "hystrix", "title": "D", "applies_to": ["spring_boot", "spring_bootz"]},
@@ -76,7 +75,8 @@ def test_check_reports_every_problem(tmp_path: Path, cfg):
     cat = AdvisoryCatalog.from_files([p])
     text = "\n".join(cat.check(cfg))
     assert "advisory a: unknown library 'no-such-rule'" in text
-    assert "advisory b: policy recipe without recipes" in text
+    assert "advisory b: notes file knowledge/notes/missing.md does not exist" in text
+    assert "recipe" not in text                                           # a v1 recipe list is no longer checked
     assert "duplicate advisory id c" in text
     assert "bad applies_to spring_bootz" in text
     assert "advisory e: needs a library or artifacts" in text
@@ -84,15 +84,3 @@ def test_check_reports_every_problem(tmp_path: Path, cfg):
     assert "advisory g invalid" in text
     assert cat.get("c").title == "C2"                                    # later wins even inside one file
     assert cat.get("d").applies_to and cat.get("d").applies_to[0].value == "spring_boot"
-
-
-def test_recipe_artifact_availability(cfg):
-    assert recipe_unavailable(FOX, cfg) is None
-    assert "not in the recipe catalog" in recipe_unavailable("org.example.Nope", cfg)
-    cfg.openrewrite.recipe_artifacts = ["org.openrewrite.recipe:rewrite-migrate-java"]
-    assert "artifact org.openrewrite.recipe:rewrite-spring is not in openrewrite.recipe_artifacts" in \
-        recipe_unavailable(FOX, cfg)
-    assert recipe_unavailable("com.company.migrate.SpringBoot41Version", cfg) is None      # project recipe
-    assert recipe_unavailable("org.openrewrite.java.ChangeType", cfg) is None              # core recipe
-    text = "\n".join(load_advisories(cfg).check(cfg))
-    assert f"advisory springfox: recipe {FOX} artifact org.openrewrite.recipe:rewrite-spring" in text

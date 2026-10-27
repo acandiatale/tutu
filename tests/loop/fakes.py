@@ -14,11 +14,25 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Union
 
 from sbmig.core.interfaces import RestructureResult
-from sbmig.core.models import (BuildError, BuildResult, CaseType, ErrorKind, FileChange, FixProposal,
-                               HarvestResult, KBMatch, LLMUsage, MigrationPlan, Phase, PlanStep, PomInfo,
-                               ProjectProfile, RecipeRef, RewriteResult, ScriptMeta, ScriptProposal, ScriptRunResult,
-                               StepKind, StructureReview)
+from pydantic import BaseModel, Field
+
+from sbmig.core.models import (BuildError, BuildResult, CaseType, ErrorKind, FileChange, KBMatch,
+                               LLMUsage, MigrationPlan, Phase, PlanStep, PomInfo, ProjectProfile, RecipeRef,
+                               RewriteResult, ScriptMeta, ScriptProposal, ScriptRunResult, StepKind, StructureReview)
 from sbmig.core.workspace import Workspace
+
+
+class FixProposal(BaseModel):
+    """Test-only: the v1 SEARCH/REPLACE answer shape the loop fakes still describe fixes with (`write_fix`,
+    `FakeFixer.fn`); `script_for` turns it into the fix script the v2 loop runs."""
+    changes: list[FileChange]
+    analysis: str = ""
+    confidence: float = 0.5
+    model: str = ""
+    prompt_hash: str = ""
+    llm_usage: LLMUsage = Field(default_factory=LLMUsage)
+    requested_files: list[str] = Field(default_factory=list)
+    raw_response: str = ""
 
 from tests.triage.fakes import err  # noqa: F401  (re-export)
 
@@ -60,9 +74,8 @@ class FakeBuildRunner:
 
 
 class FakeFixer:
-    """propose → scripted proposals (or a function); apply → writes files (search/replace or create).
-    v2 propose_script → `scripts` (ScriptProposals, in order), `script_fn(ws, cluster, ctx)`, or the v1 answer of
-    `fn` / `proposals` turned into a script (`script_for`)."""
+    """propose_script → `scripts` (ScriptProposals, in order), `script_fn(ws, cluster, ctx)`, or — test shorthand —
+    the FixProposal of `fn` / `proposals` turned into a script (`script_for`)."""
 
     def __init__(self, proposals: Optional[list[FixProposal]] = None,
                  fn: Optional[Callable[[Workspace, Any, Any], FixProposal]] = None,
@@ -73,7 +86,6 @@ class FakeFixer:
         self.scripts = list(scripts or [])
         self.script_fn = script_fn
         self.contexts: list[Any] = []
-        self.applied: list[list[FileChange]] = []
         self.script_calls: list[tuple[Any, Any]] = []      # (cluster, ctx) per propose_script call
 
     def propose_script(self, ws, cluster, ctx) -> ScriptProposal:
@@ -91,36 +103,6 @@ class FakeFixer:
                                   error="" if fp.changes else "no <script> block")
         return ScriptProposal(code="", analysis="nothing", model="fake", error="no <script> block",
                               llm_usage=LLMUsage(model="fake", calls=1))
-
-    def propose(self, ws, cluster, ctx) -> FixProposal:
-        self.contexts.append(ctx)
-        if self.fn is not None:
-            return self.fn(ws, cluster, ctx)
-        if self.proposals:
-            return self.proposals.pop(0)
-        return FixProposal(changes=[], analysis="nothing", model="fake", llm_usage=LLMUsage(model="fake", calls=1))
-
-    def apply(self, ws, changes):
-        self.applied.append(list(changes))
-        done, errs = [], []
-        for ch in changes:
-            if ch.op == "create":
-                ws.write(ch.path, ch.content or "")
-                done.append(ch)
-            elif ch.op == "delete":
-                ws.delete(ch.path)
-                done.append(ch)
-            elif ch.op == "modify":
-                if not ws.exists(ch.path):
-                    errs.append(f"{ch.path}: missing")
-                    continue
-                text = ws.read(ch.path)
-                if ch.search is None or text.count(ch.search) != 1:
-                    errs.append(f"{ch.path}: search not found")
-                    continue
-                ws.write(ch.path, text.replace(ch.search, ch.replace or ""))
-                done.append(ch)
-        return done, errs
 
 
 def write_fix(path: Optional[str], content: str, analysis: str = "fix", model: str = "fake-model") -> FixProposal:
@@ -308,12 +290,13 @@ class FakeScriptStore:
 
 
 class FakeKB:
+    """What the v2 flow calls on a KB: `match` (case hits only), `scripts` (ScriptStoreLike), `record_review`,
+    `append_error_cases`."""
+
     def __init__(self, match: Optional[Callable[[Any], KBMatch]] = None, raise_match: bool = False,
                  scripts: Any = "default"):
         self._match = match
         self.raise_match = raise_match
-        self.harvests: list[Phase] = []
-        self.credits: list[tuple[str, bool]] = []
         self.scripts = FakeScriptStore() if scripts == "default" else scripts     # v2: ScriptStoreLike
         self.reviews: list[StructureReview] = []
         self.appended: list[tuple[list, list]] = []
@@ -329,35 +312,6 @@ class FakeKB:
         if self.raise_match:
             raise RuntimeError("kb down")
         return self._match(cluster) if self._match else KBMatch()
-
-    def active_recipe_files(self):
-        return []
-
-    def active_recipe_ids(self):
-        return []
-
-    def record_case(self, case):
-        return case.id
-
-    def credit_recipe(self, recipe_id, success, project_fingerprint):
-        self.credits.append((recipe_id, success))
-
-    def harvest(self, phase_result, profile, ws, llm=None) -> HarvestResult:
-        self.harvests.append(phase_result.phase)
-        ok_attempts = [a.id for a in phase_result.attempts if a.outcome in ("improved", "build_ok")]
-        return HarvestResult(cases_created=[f"case-{a}" for a in ok_attempts], notes=[f"harvested {phase_result.phase.value}"])
-
-    def list_recipes(self, status=None):
-        return []
-
-    def promote(self, recipe_id):  # pragma: no cover
-        raise KeyError(recipe_id)
-
-    def reject(self, recipe_id, reason=""):  # pragma: no cover
-        raise KeyError(recipe_id)
-
-    def reindex(self):
-        return 0
 
 
 class FakeRewriteRunner:

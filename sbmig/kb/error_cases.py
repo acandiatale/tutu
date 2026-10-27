@@ -8,18 +8,17 @@ was tried, how it was resolved — with the code applied — or why not) and eve
   :func:`sbmig.kb.changes.classify_diff` per attempt on the FULL diff (the ``kb.error_diff_chars`` cap is applied
   after it), fix labels from the diff, the cross-project error symbol and the resolving attempt denormalized into
   each resolved error (its excerpt = the hunk(s) around the error line). A replace pair that touched a masked secret
-  is dropped and such a resolution is never a rule candidate (notes say ``redacted: …``). A record that cannot be
-  prepared is stored minimal — never the unsanitized original.
+  is dropped (notes say ``redacted: …``). A record that cannot be prepared is stored minimal — never the
+  unsanitized original.
 * :func:`write_error_cases_jsonl` / :func:`write_error_cases_csv` / :func:`write_fix_attempts_csv`: run-dir files
   (the CSVs are UTF-8 with BOM so Excel opens Korean text; see :func:`_cell` for the formula guard).
-* :class:`ErrorCaseStore` (``kb/errors.jsonl``, ``kb/fix_attempts.jsonl``, ``kb/error_hints.json``): append-only
-  store (torn-line safe, under the KB lock), regex queries, streamed summaries, text-replace rule candidates and the
-  hints index the fix prompt reads (past fixes AND past failures of the same L2 signature / error symbol). The case
-  catalog (:mod:`sbmig.kb.catalog`) folds these events into one reusable case per L2 (``ErrorCaseRecord.case_id``).
+* :class:`ErrorCaseStore` (``kb/errors.jsonl``, ``kb/fix_attempts.jsonl``): append-only store (torn-line safe, under
+  the KB lock), regex queries and streamed summaries. The case catalog (:mod:`sbmig.kb.catalog`) folds these events
+  into one reusable case per L2 (``ErrorCaseRecord.case_id``); past fixes and failures reach the fix prompt through
+  the case hits and the stored fix scripts (PLAN-v2 step 4: ``error_hints.json`` is no longer written).
 
-File-based on purpose (invariant 3): the jsonl files are the source of truth, ``error_hints.json`` is derived and
-``sbmig kb reindex`` rebuilds it. Records carry ``schema_version`` (absent in a stored line = 1) and
-``agent_version``.
+File-based on purpose (invariant 3): the jsonl files are the source of truth. Records carry ``schema_version``
+(absent in a stored line = 1) and ``agent_version``.
 
 v2 (flow-v2, schema 3): a fix-script attempt carries ``script_mode`` / ``script_case_id`` / ``script_version`` /
 ``script_parent`` / ``script_status`` / ``script_error`` / ``script_log`` (log and error masked like the other texts,
@@ -50,20 +49,18 @@ from sbmig.core.models import (
     ErrorCaseRecord,
     FixAttemptRecord,
     ProjectProfile,
-    utcnow,
 )
 
 from .changes import classify_diff_ex, combine_changes, excerpt_for, file_changes_from_diff, path_matches
-from .harvest import RAW_LIMIT, _rel_posix
+from .common import RAW_LIMIT, project_name
+from .common import rel_posix as _rel_posix
 from .jsonl import append_lines, line_ids, parse_record, repair_tail
 from .labels import label_changes, symbol_for_errors
-from .ledger import project_name
 from .lock import kb_lock
 from .redact import MASK, Redactor, get_redactor
 
 log = logging.getLogger("sbmig.kb")
 
-HINTS_VERSION = 1
 RESOLVED = ("resolved", "resolved_indirectly")
 NOT_RESOLVED = ("unresolved", "blocked", "not_visible")
 FAILED_OUTCOMES = ("no_change", "regressed", "reverted", "apply_failed")
@@ -75,18 +72,16 @@ ITEM_LIMIT = 500                 # one "file:line message" of problem / introduc
 LIST_LIMIT = 20
 CSV_CELL_LIMIT = 2000
 CSV_DIFF_LIMIT = 30000           # Excel's cell limit is 32,767 characters
-HINT_TEXT_LIMIT = 200
-HINT_PROJECTS = 50
-HINT_VARIANTS = 25               # fix / failure variants kept per key (first come; the same in incremental + rebuild)
-HINT_TOP = 3
+HINT_TEXT_LIMIT = 200            # a one-line summary of a description / failure (case hints, summaries)
 REDACTED_NOTE = "redacted:"      # prefix of the notes that say secret values were masked
+DROPPED_PAIRS = "replace pair(s) dropped"
 SCRIPT_LOG_LINES = 50            # FixAttemptRecord.script_log (v2): the script's own log lines kept per attempt
 LLM_METHODS = ("llm", "script", "script_augment")    # fix methods that called the LLM (llm_attempts)
 
 ERROR_CSV_COLUMNS = [
     "id", "project", "run_id", "status", "error_kind", "file", "line", "message", "symbol", "signature_generic",
     "case_id", "first_seen", "resolved_at", "fix_method", "resolver_id", "change_kind", "replace_pairs",
-    "replace_rule_candidate", "description", "failure_reason", "problem_errors", "block_reason", "suggestion",
+    "description", "failure_reason", "problem_errors", "block_reason", "suggestion",
     "attempt_count", "llm_attempts", "attempts", "resolution_attempts",
     # round 10 (2026-10-26): what the business rules need without opening the jsonl
     "signature", "location", "module", "case_type", "asis_java", "asis_spring_boot", "asis_spring", "packaging",
@@ -229,10 +224,8 @@ def _versions() -> dict[str, Any]:
 
 
 def _prepare_attempt(a: FixAttemptRecord, base: dict[str, Any], san: _Sanitizer, ws: Any,
-                     errors_by_id: dict[str, ErrorCaseRecord], diff_cap: int
-                     ) -> tuple[FixAttemptRecord, str, str]:
-    """(sanitized record, full masked diff for the error excerpts, why its pairs can never make a rule: "" | a
-    replace pair touched a secret | the diff came in truncated)."""
+                     errors_by_id: dict[str, ErrorCaseRecord], diff_cap: int) -> tuple[FixAttemptRecord, str]:
+    """(sanitized record, full masked diff for the error excerpts)."""
     upd = _base_update(a, base)
     stripped = _strip(a.diff or "", san.roots)              # classified unmasked: masking would hide real changes
     full, values = san.red.redact_ex(stripped)
@@ -265,12 +258,9 @@ def _prepare_attempt(a: FixAttemptRecord, base: dict[str, Any], san: _Sanitizer,
     if values:
         notes.append(f"{REDACTED_NOTE} {len(values)} secret value(s) masked in the diff")
     if dropped:
-        notes.append(f"{REDACTED_NOTE} {dropped} replace pair(s) dropped (they touched a masked secret value) — "
-                     "not a rule candidate")
-    not_rule = "a replace pair of its resolution touched a masked secret value" if dropped else ""
+        notes.append(f"{REDACTED_NOTE} {dropped} {DROPPED_PAIRS} (they touched a masked secret value)")
     if a.diff_truncated and stripped.strip():               # only the tracker's pathological-size guard does that
-        not_rule = not_rule or "its resolution was classified on a truncated diff"
-        notes.append("classified on a truncated diff (it came in cut) — not a rule candidate")
+        notes.append("classified on a truncated diff (it came in cut)")
     diff, cut = _capped(full, diff_cap)                      # the cap comes after the classification
     upd.update({
         "diff": diff,
@@ -286,7 +276,7 @@ def _prepare_attempt(a: FixAttemptRecord, base: dict[str, Any], san: _Sanitizer,
         "script_log": [san.clean(x, ITEM_LIMIT) for x in a.script_log[:SCRIPT_LOG_LINES]],
         **_versions(),
     })
-    return a.model_copy(update=upd), full, not_rule
+    return a.model_copy(update=upd), full
 
 
 def _case_id(signature_generic: str) -> str:
@@ -296,8 +286,8 @@ def _case_id(signature_generic: str) -> str:
 
 
 def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], err_base: dict[str, Any], san0: _Sanitizer, ws: Any,
-                   attempts: dict[str, FixAttemptRecord], full_diffs: dict[str, str], excerpt_cap: int,
-                   not_rule: dict[str, str]) -> ErrorCaseRecord:
+                   attempts: dict[str, FixAttemptRecord], full_diffs: dict[str, str], excerpt_cap: int
+                   ) -> ErrorCaseRecord:
     san = san0.fork()
     upd = _base_update(e, base)
     upd.update(_base_update(e, err_base))
@@ -367,10 +357,9 @@ def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], err_base: dict[str,
             labels += [x for x in a.fix_labels if x not in labels]
         method = e.fix_method if e.fix_method != "none" else att.fix_method
         pairs = own or list(ch.replace_pairs)
-        why_not = next((not_rule[a.id] for a in chain if not_rule.get(a.id)), "")
-        if why_not:
-            prefix = f"{REDACTED_NOTE} " if "secret" in why_not else ""
-            upd["notes"].append(f"{prefix}{why_not} — not a rule candidate")
+        if any(n.startswith(REDACTED_NOTE) and DROPPED_PAIRS in n for a in chain for n in a.notes):
+            upd["notes"].append(f"{REDACTED_NOTE} a replace pair of its resolution touched a masked secret value "
+                                "(dropped)")
         if not e.script_case_id and att.script_case_id:   # v2: the case script that resolved it
             upd["script_case_id"] = att.script_case_id
             upd["script_version"] = e.script_version or att.script_version
@@ -383,14 +372,7 @@ def _prepare_error(e: ErrorCaseRecord, base: dict[str, Any], err_base: dict[str,
             "replace_pairs": pairs,
             "fix_labels": labels,
             "diff_excerpt": excerpt,
-            # only a targeted / own-file resolution makes "this L2 is fixed by replacing a → b" a rule candidate; a
-            # pair that touched a secret (dropped) or kept a mask never makes one
-            "replace_rule_candidate": (e.status == "resolved" and method == "llm" and ch.change_kind == "text_replace"
-                                       and bool(pairs) and not why_not
-                                       and not any(MASK in p.old or MASK in p.new for p in pairs)),
         })
-    else:
-        upd["replace_rule_candidate"] = False
     if san.masked:
         upd["notes"].append(f"{REDACTED_NOTE} {san.masked} secret value(s) masked in its texts")
     return e.model_copy(update=upd)
@@ -425,7 +407,7 @@ def _minimal_error(e: ErrorCaseRecord, base: dict[str, Any], err_base: dict[str,
            "file": f if f is not None else (Path(e.file).name if e.file else None),
            "message": clean(e.message), "location": clean(e.location) or None, "raw": "", "description": "",
            "failure_reason": clean(e.failure_reason), "problem_errors": [], "suggestion": "", "diff_excerpt": "",
-           "replace_pairs": [], "replace_rule_candidate": False, "introduced_by": clean(e.introduced_by),
+           "replace_pairs": [], "introduced_by": clean(e.introduced_by),
            "attempts": [r.model_copy(update={"failure": ""}) for r in e.attempts],
            "case_id": e.case_id or _safe(_case_id, e.signature_generic),
            "notes": [f"prepare failed ({type(ex).__name__}): stored without its raw text and diff excerpt"],
@@ -462,13 +444,10 @@ def prepare_error_cases(errors: Iterable[ErrorCaseRecord], attempts: Iterable[Fi
 
         out_attempts: list[FixAttemptRecord] = []
         full_diffs: dict[str, str] = {}
-        not_rule: dict[str, str] = {}
         for a in attempts:
             try:
-                pa, full, why = _prepare_attempt(a, base, san, ws, errors_by_id, diff_cap)
+                pa, full = _prepare_attempt(a, base, san, ws, errors_by_id, diff_cap)
                 full_diffs[pa.id] = full
-                if why:
-                    not_rule[pa.id] = why
                 out_attempts.append(pa)
             except Exception as ex:
                 log.warning("error cases: preparing attempt %s failed: %s: %s", a.id, type(ex).__name__, ex)
@@ -482,8 +461,7 @@ def prepare_error_cases(errors: Iterable[ErrorCaseRecord], attempts: Iterable[Fi
         out_errors: list[ErrorCaseRecord] = []
         for e in errors:
             try:
-                out_errors.append(_prepare_error(e, base, err_base, san, ws, by_id, full_diffs, excerpt_cap,
-                                                 not_rule))
+                out_errors.append(_prepare_error(e, base, err_base, san, ws, by_id, full_diffs, excerpt_cap))
             except Exception as ex:
                 log.warning("error cases: preparing error %s failed: %s: %s", e.id, type(ex).__name__, ex)
                 out_errors.append(_minimal_error(e, base, err_base, san, ws, ex))
@@ -573,7 +551,7 @@ def error_csv_row(e: ErrorCaseRecord) -> list[str]:
         "signature_generic": e.signature_generic, "case_id": e.case_id or _case_id(e.signature_generic),
         "first_seen": e.first_seen, "resolved_at": e.resolved_at,
         "fix_method": e.fix_method, "resolver_id": e.resolver_id, "change_kind": e.change_kind,
-        "replace_pairs": pairs_text(e.replace_pairs), "replace_rule_candidate": e.replace_rule_candidate,
+        "replace_pairs": pairs_text(e.replace_pairs),
         "description": e.description, "failure_reason": e.failure_reason,
         "problem_errors": "\n".join(e.problem_errors), "block_reason": e.block_reason, "suggestion": e.suggestion,
         "attempt_count": e.attempt_count, "llm_attempts": e.llm_attempts, "attempts": attempts,
@@ -617,7 +595,7 @@ def write_fix_attempts_csv(attempts: Iterable[FixAttemptRecord], path: Union[str
     return _write_csv(path, ATTEMPT_CSV_COLUMNS, (row(a) for a in attempts))
 
 
-# --------------------------------------------------------------------------- hints index entries
+# --------------------------------------------------------------------------- shared text helpers
 _DIGITS_RE = re.compile(r"\d+")
 _PATHISH_RE = re.compile(r"(?:[\w.\-]+[/\\])+([\w.\-]+)")
 
@@ -638,94 +616,8 @@ def _short(text: str, limit: int = HINT_TEXT_LIMIT) -> str:
     return t if len(t) <= limit else t[: limit - 1] + "…"
 
 
-def _new_entry() -> dict[str, Any]:
-    return {"seen": 0, "projects": [], "resolved": {}, "unresolved": 0, "blocked": 0, "fixes": [], "failures": [],
-            "variants": {"fixes": [], "failures": []}}
-
-
 def _project_key(e: ErrorCaseRecord) -> str:
     return e.project_fingerprint or e.project
-
-
-def _add_to_entry(ent: dict[str, Any], e: ErrorCaseRecord) -> None:
-    pk = _project_key(e)
-    ent["seen"] += 1
-    if pk and pk not in ent["projects"] and len(ent["projects"]) < HINT_PROJECTS:
-        ent["projects"].append(pk)
-    if e.status in RESOLVED:
-        ent["resolved"][e.fix_method] = ent["resolved"].get(e.fix_method, 0) + 1
-    elif e.status == "unresolved":
-        ent["unresolved"] += 1
-    elif e.status == "blocked":
-        ent["blocked"] += 1
-    variants = ent.setdefault("variants", {"fixes": [], "failures": []})
-    if e.status == "resolved" and e.fix_method != "none" and not any(MASK in p.old or MASK in p.new
-                                                                      for p in e.replace_pairs):
-        pairs = [{"old": p.old, "new": p.new} for p in e.replace_pairs[:HINT_TOP]]
-        key = [e.fix_method, e.resolver_id, e.change_kind, [[p["old"], p["new"]] for p in pairs]]
-        v = next((x for x in variants["fixes"] if x["key"] == key), None)
-        if v is None and len(variants["fixes"]) < HINT_VARIANTS:
-            v = {"key": key, "method": e.fix_method, "resolver": e.resolver_id, "change_kind": e.change_kind,
-                 "description": _short(_WHO_PREFIX_RE.sub("", e.description or "")), "replace_pairs": pairs,
-                 "count": 0, "projects": 0,
-                 "project_keys": []}
-            variants["fixes"].append(v)
-        if v is not None:
-            v["count"] += 1
-            if pk and pk not in v["project_keys"] and len(v["project_keys"]) < HINT_PROJECTS:
-                v["project_keys"].append(pk)
-            v["projects"] = len(v["project_keys"])
-    for ref in failed_refs(e):              # an attempt that resolved THIS error is not a failure for it (round 10)
-        key = [ref.fix_method, ref.outcome, _norm_failure(ref.failure)]
-        v = next((x for x in variants["failures"] if x["key"] == key), None)
-        if v is None and len(variants["failures"]) < HINT_VARIANTS:
-            v = {"key": key, "method": ref.fix_method, "outcome": ref.outcome, "failure": _short(ref.failure),
-                 "count": 0}
-            variants["failures"].append(v)
-        if v is not None:
-            v["count"] += 1
-    # stable sorts: ties keep the first-seen order, identical in incremental updates and rebuilds; a fix is ranked by
-    # its distinct projects first (one project with 10 errors must not outrank 3 projects, round 10)
-    fixes = sorted(variants["fixes"], key=lambda x: (-x["projects"], -x["count"]))
-    ent["fixes"] = [{k: x[k] for k in ("method", "resolver", "change_kind", "description", "replace_pairs", "count",
-                                       "projects")} for x in fixes[:HINT_TOP]]
-    failures = sorted(variants["failures"], key=lambda x: -x["count"])
-    ent["failures"] = [{k: x[k] for k in ("method", "outcome", "failure", "count")} for x in failures[:HINT_TOP]]
-
-
-def _empty_hints() -> dict[str, Any]:
-    return {"version": HINTS_VERSION, "updated_at": "", "by_generic": {}, "by_symbol": {}}
-
-
-def _index_error(data: dict[str, Any], e: ErrorCaseRecord) -> None:
-    if e.signature_generic:
-        _add_to_entry(data["by_generic"].setdefault(e.signature_generic, _new_entry()), e)
-    if e.error_symbol:
-        _add_to_entry(data["by_symbol"].setdefault(e.error_symbol, _new_entry()), e)
-
-
-def _entry_lines(key: str, ent: dict[str, Any]) -> list[tuple[str, str]]:
-    """(prefix, body) of at most two hint lines: the most frequent past fix and the most frequent past failure."""
-    out: list[tuple[str, str]] = []
-    prefix = f"[error {key}] "
-    fixes = ent.get("fixes") or []
-    if fixes:
-        f = fixes[0]
-        who = " ".join(x for x in (f.get("method"), f.get("resolver")) if x)
-        body = f"past runs: fixed by {who} in {f.get('projects', 0)} project(s)"
-        if f.get("description"):
-            body += f": {f['description']}"
-        if f.get("replace_pairs"):
-            body += "; replace " + ", ".join(f"`{p['old']}` → `{p['new']}`" for p in f["replace_pairs"])
-        out.append((prefix, body))
-    failures = ent.get("failures") or []
-    if failures:
-        x = failures[0]
-        body = f"past failure ×{x.get('count', 0)}: {x.get('method', '')} {x.get('outcome', '')}"
-        if x.get("failure"):
-            body += f" — {x['failure']}"
-        out.append((prefix, body + "; do not repeat it"))
-    return out
 
 
 # --------------------------------------------------------------------------- store
@@ -798,8 +690,6 @@ class _Summary:
         self.unresolved: dict[str, dict[str, Any]] = {}
         self.outcomes: dict[str, Counter] = {}
         self.seen_attempts: set[str] = set()
-        self.llm_text_replace = 0
-        self.replace_groups: dict[tuple[str, str, str], dict[str, Any]] = {}
 
     def add(self, e: ErrorCaseRecord) -> None:
         self.n += 1
@@ -823,9 +713,6 @@ class _Summary:
         if e.status in RESOLVED:
             for i in resolving_ids(e):
                 self.seen_attempts.add(i)
-        if e.replace_rule_candidate:
-            self.llm_text_replace += 1
-            _add_replace_candidate(self.replace_groups, e)
         if e.status not in NOT_RESOLVED:
             return
         if e.failure_reason:
@@ -845,40 +732,13 @@ class _Summary:
         u["projects"].add(pk)
 
 
-def _add_replace_candidate(groups: dict[tuple[str, str, str], dict[str, Any]], e: ErrorCaseRecord) -> None:
-    for p in e.replace_pairs:
-        if MASK in p.old or MASK in p.new:              # never list a masked secret as a rule
-            continue
-        g = groups.setdefault((e.signature_generic, p.old, p.new), {
-            "signature_generic": e.signature_generic, "old": p.old, "new": p.new,
-            "error_kind": e.error_kind.value, "error_symbol": e.error_symbol, "count": 0, "projects": set(),
-            "project_names": [], "example_file": e.file or "", "example_attempt": e.resolved_by or "",
-            "example_error": e.id, "fix_labels": list(e.fix_labels)})
-        g["count"] += 1
-        pk = _project_key(e)
-        if pk:
-            g["projects"].add(pk)
-        if e.project and e.project not in g["project_names"] and len(g["project_names"]) < 10:
-            g["project_names"].append(e.project)
-
-
-def _candidate_rows(groups: dict[tuple[str, str, str], dict[str, Any]], min_projects: int = 1) -> list[dict]:
-    out = [{**g, "projects": len(g["projects"])} for g in groups.values()]
-    if min_projects > 1:
-        out = [g for g in out if g["projects"] >= min_projects]
-    out.sort(key=lambda g: (-g["projects"], -g["count"], g["signature_generic"], g["old"], g["new"]))
-    return out
-
-
 class ErrorCaseStore:
-    """``kb/errors.jsonl`` + ``kb/fix_attempts.jsonl`` (append-only) and ``kb/error_hints.json`` (derived)."""
+    """``kb/errors.jsonl`` + ``kb/fix_attempts.jsonl`` (append-only)."""
 
     def __init__(self, kb_dir: Union[str, Path], lock_timeout: Optional[float] = None):
         self.root = Path(kb_dir)
         self.lock_timeout = lock_timeout
         self._ids: dict[str, tuple[Optional[tuple[int, int]], set[str]]] = {}
-        self._hints: Optional[dict[str, Any]] = None
-        self._hints_stamp: Optional[tuple[int, int]] = None
 
     @property
     def errors_path(self) -> Path:
@@ -887,10 +747,6 @@ class ErrorCaseStore:
     @property
     def attempts_path(self) -> Path:
         return self.root / "fix_attempts.jsonl"
-
-    @property
-    def hints_path(self) -> Path:
-        return self.root / "error_hints.json"
 
     def lock(self):
         """The cross-process KB lock (``<kb>/.lock``) around a write."""
@@ -1020,15 +876,14 @@ class ErrorCaseStore:
 
     def append_counts(self, errors: Iterable[ErrorCaseRecord],
                       attempts: Iterable[FixAttemptRecord]) -> tuple[int, int]:
-        """Append records whose id is not stored yet; update the hints index. Returns (errors, attempts) added.
-        Runs under the KB lock; a torn last line of either file is moved to ``<file>.corrupt`` first."""
+        """Append records whose id is not stored yet. Returns (errors, attempts) added. Runs under the KB lock; a
+        torn last line of either file is moved to ``<file>.corrupt`` first."""
         errors, attempts = [r for r in errors or [] if r is not None], [r for r in attempts or [] if r is not None]
         if not errors and not attempts:
             return 0, 0
         with self.lock():
             for p in (self.errors_path, self.attempts_path):
                 repair_tail(p)
-            had_errors = bool(self._stamp_size(self.errors_path))
             known_e, known_a = self._known_ids(self.errors_path), self._known_ids(self.attempts_path)
 
             def fresh(records: list[Any], known: set[str]) -> list[Any]:
@@ -1043,97 +898,12 @@ class ErrorCaseStore:
             new_a: list[FixAttemptRecord] = fresh(attempts, known_a)
             self._append_lines(self.errors_path, new_e)
             self._append_lines(self.attempts_path, new_a)
-            if new_e:
-                try:
-                    data = self._load_hints_file()
-                    if data is None or (had_errors and not self.hints_path.exists()):
-                        self.rebuild_hints()             # missing / unreadable index over existing records
-                    else:
-                        for e in new_e:
-                            _index_error(data, e)
-                        self._save_hints(data)
-                except Exception as ex:
-                    log.warning("error hints update failed: %s: %s", type(ex).__name__, ex)
             return len(new_e), len(new_a)
 
     def append(self, errors: Iterable[ErrorCaseRecord], attempts: Iterable[FixAttemptRecord]) -> int:
         """Append-only (ids already stored are skipped); returns the number of new records (errors + attempts)."""
         ne, na = self.append_counts(errors, attempts)
         return ne + na
-
-    @staticmethod
-    def _stamp_size(path: Path) -> int:
-        st = _stamp(path)
-        return st[1] if st else 0
-
-    # ------------------------------------------------------------------ hints index
-    def _load_hints_file(self) -> Optional[dict[str, Any]]:
-        """The stored index, an empty one when there is none, None when it is unreadable / of another version."""
-        if not self.hints_path.exists():
-            return _empty_hints()
-        try:
-            data = json.loads(self.hints_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            log.warning("error hints index unreadable (%s); rebuilding", e)
-            return None
-        if not isinstance(data, dict) or data.get("version") != HINTS_VERSION:
-            log.warning("error hints index %s has an unknown version; rebuilding", self.hints_path)
-            return None
-        data.setdefault("by_generic", {})
-        data.setdefault("by_symbol", {})
-        return data
-
-    def _save_hints(self, data: dict[str, Any]) -> None:
-        from .store import atomic_write
-
-        data["updated_at"] = utcnow().isoformat(timespec="seconds")
-        data["by_generic"] = dict(sorted(data["by_generic"].items()))
-        data["by_symbol"] = dict(sorted(data["by_symbol"].items()))
-        with self.lock():
-            atomic_write(self.hints_path, json.dumps(data, indent=1, ensure_ascii=False) + "\n")
-        self._hints, self._hints_stamp = data, _stamp(self.hints_path)
-
-    def rebuild_hints(self) -> int:
-        """Rebuild ``error_hints.json`` from ``errors.jsonl``; returns the number of keys (L2 + symbol)."""
-        with self.lock():
-            data = _empty_hints()
-            for e in self.iter_errors():
-                _index_error(data, e)
-            self._save_hints(data)
-        return len(data["by_generic"]) + len(data["by_symbol"])
-
-    def hints_index(self) -> dict[str, Any]:
-        """The hints index, loaded lazily and reloaded only when the file changes (a fleet runs 500 projects in
-        one process). An unreadable index reads as empty here (``rebuild_hints`` / the next append repairs it)."""
-        stamp = _stamp(self.hints_path)
-        if stamp is None:
-            return _empty_hints()
-        if self._hints is not None and self._hints_stamp == stamp:
-            return self._hints
-        data = self._load_hints_file() or _empty_hints()
-        self._hints, self._hints_stamp = data, stamp
-        return data
-
-    def hints_for(self, signature_generic: Optional[str] = None, symbol: Optional[str] = None) -> list[str]:
-        """At most two lines per key (past fix, past failure) for the L2 signature and the error symbol."""
-        return self.hints_for_keys([signature_generic] if signature_generic else [], [symbol] if symbol else [])
-
-    def hints_for_keys(self, signatures: Iterable[str], symbols: Iterable[str]) -> list[str]:
-        """:meth:`hints_for` over several L2 signatures / symbols (a cluster); a line whose text another key
-        already gave (the L2 and the symbol of one error usually share their history) is left out."""
-        idx = self.hints_index()
-        out: list[str] = []
-        bodies: set[str] = set()
-        keys = [("by_generic", k) for k in signatures if k] + [("by_symbol", k) for k in symbols if k]
-        for table, key in keys:
-            ent = idx.get(table, {}).get(key)
-            if not ent:
-                continue
-            for prefix, body in _entry_lines(key, ent):
-                if body not in bodies:
-                    bodies.add(body)
-                    out.append(prefix + body)
-        return out
 
     # ------------------------------------------------------------------ aggregates
     @staticmethod
@@ -1145,8 +915,8 @@ class ErrorCaseStore:
 
     def summary(self, run_ids: Optional[Iterable[str]] = None, top: int = 15) -> dict[str, Any]:
         """Counts by status / fix method / change kind, status × method, top failure reasons by L2, top
-        unresolved L2s, attempt outcomes per method, LLM text-replace count and the top rule candidates. Streams
-        the records (one in memory at a time; round 10: 30k records used to cost ~340 MB)."""
+        unresolved L2s and attempt outcomes per method. Streams the records (one in memory at a time; round 10: 30k
+        records used to cost ~340 MB)."""
         wanted = list(run_ids) if run_ids is not None else None
         s = _Summary()
         for e in self.iter_errors(run_ids=wanted):
@@ -1169,17 +939,4 @@ class ErrorCaseStore:
             "attempt_outcomes": {m: dict(c.most_common()) for m, c in sorted(s.outcomes.items())},
             "top_failure_reasons": rows(s.reasons),
             "top_unresolved": rows(s.unresolved),
-            "llm_text_replace": s.llm_text_replace,
-            "replace_candidates": _candidate_rows(s.replace_groups)[:top],
         }
-
-    def replace_candidates(self, min_projects: int = 1, run_ids: Optional[Iterable[str]] = None,
-                           _errors: Optional[Iterable[ErrorCaseRecord]] = None) -> list[dict[str, Any]]:
-        """LLM fixes that were only text replaces, grouped by (L2 signature, old, new): rule / command candidates,
-        most projects first. A pair with a masked secret (``***``) is never listed."""
-        errs = _errors if _errors is not None else self.iter_errors(run_ids=run_ids)
-        groups: dict[tuple[str, str, str], dict[str, Any]] = {}
-        for e in errs:
-            if e.replace_rule_candidate:
-                _add_replace_candidate(groups, e)
-        return _candidate_rows(groups, min_projects)

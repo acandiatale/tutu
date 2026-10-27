@@ -1,4 +1,4 @@
-"""sbmig.kb.changes: text replace vs code edit of git / harvest-format diffs (error cases, 2026-10-23)."""
+"""sbmig.kb.changes: text replace vs code edit of git / changes_as_diff-format diffs (error cases, 2026-10-23)."""
 from __future__ import annotations
 
 import pytest
@@ -12,7 +12,7 @@ from sbmig.kb.changes import (
     file_type,
     path_matches,
 )
-from sbmig.kb.harvest import changes_as_diff
+from sbmig.kb.common import changes_as_diff
 from sbmig.kb.labels import label_changes
 
 from .helpers import CODE_EDIT_DIFF, EC_FILE, RENAME_DIFF
@@ -113,7 +113,7 @@ def test_git_new_deleted_and_renamed_files():
     assert classify_diff(new + gone).change_kind == "mixed"
 
 
-def test_harvest_format_blocks():
+def test_changes_as_diff_format_blocks():
     changes = [
         FileChange(path="src/A.java", op="modify", search="x\nreq.clientIp();\ny", replace="x\nreq.remoteClientIp();\ny"),
         FileChange(path="src/C.java", op="create", content="class C {\n}\n"),
@@ -241,21 +241,12 @@ def test_a_package_with_two_targets_falls_back_to_the_full_names():
         ("org.apache.commons.lang.StringEscapeUtils", "org.apache.commons.text.StringEscapeUtils")]
 
 
-def test_learned_package_pair_no_longer_rewrites_other_javax_imports():
-    """review-kb/repro1+2: `javax.xml.bind.JAXBContext` → jakarta was learned as `javax` → `jakarta`, which the
-    case-replace handler then applied to `javax.xml.parsers` / `javax.sql` imports too."""
-    import re as _re
-
-    from sbmig.triage.handlers.case_replace import _compile
-
+def test_a_package_change_is_one_package_pair_not_javax_to_jakarta():
+    """review-kb/repro1+2: `javax.xml.bind.JAXBContext` → jakarta used to be learned as `javax` → `jakarta` (a pair that
+    also matched `javax.xml.parsers` / `javax.sql`); it is the package pair now."""
     c = classify_diff(_git("src/main/java/A.java", "-import javax.xml.bind.JAXBContext;",
                            "+import jakarta.xml.bind.JAXBContext;"))
-    rx, repl = _compile([(p.old, p.new) for p in c.replace_pairs])
-    src = ("import javax.xml.bind.Marshaller;\nimport javax.xml.parsers.DocumentBuilder;\nimport javax.sql.DataSource;\n")
-    out = rx.sub(lambda m: repl[m.lastgroup], src)
-    assert out == ("import jakarta.xml.bind.Marshaller;\nimport javax.xml.parsers.DocumentBuilder;\n"
-                   "import javax.sql.DataSource;\n")
-    assert _re.search(r"jakarta\.sql", out) is None
+    assert [(p.old, p.new) for p in c.replace_pairs] == [("javax.xml.bind", "jakarta.xml.bind")]
 
 
 # --------------------------------------------------------------------------- round 10: excerpts (C7)

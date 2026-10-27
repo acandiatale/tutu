@@ -12,7 +12,7 @@ Per case and run, in this order:
 
 LLM requests per case and run: at most `max_augments_per_case` augments, plus the first `new` when the case had no
 stored script (a `new` answer without a script does not open an augment — the next request is `new` again, inside
-the same total). `loop.max_llm_attempts_per_cluster` does not apply to scripts.
+the same total).
 
 Pure bookkeeping over the case's earlier attempts in this run (`FixAttempt.script_*`) and the script store
 (`ScriptStoreLike`, None = no KB): the decision engine calls it to decide SCRIPT vs BLOCKED, the fix loop executes

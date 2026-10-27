@@ -5,7 +5,7 @@ replaces (``clientIp`` → ``remoteClientIp``, ``javax`` → ``jakarta``, ``1.0.
 so that the former can become deterministic rules / commands later.
 
 Input: a git unified diff (``diff --git``, ``new file mode``, ``deleted file mode``, ``rename from`` / ``rename to``,
-``@@`` hunks, ``\\ No newline at end of file``) or the format of :func:`sbmig.kb.harvest.changes_as_diff` (unified
+``@@`` hunks, ``\\ No newline at end of file``) or the format of :func:`sbmig.kb.common.changes_as_diff` (unified
 hunks with ``a/`` / ``b/`` headers plus ``=== CREATE`` / ``=== DELETE`` / ``=== RENAME a -> b`` /
 ``=== MODIFY path (no textual change)`` blocks).
 
@@ -67,7 +67,7 @@ FILE_OPS = ("file_create", "file_delete", "file_rename")
 @dataclass
 class _Hunk:
     lines: list[tuple[str, str]] = field(default_factory=list)       # (" " | "-" | "+", text)
-    old_start: Optional[int] = None       # from the `@@ -a,b +c,d @@` header (None: harvest CREATE block)
+    old_start: Optional[int] = None       # from the `@@ -a,b +c,d @@` header (None: a changes_as_diff CREATE block)
     old_len: int = 0
     raw: list[str] = field(default_factory=list)                    # the header + content lines as written
 
@@ -198,7 +198,7 @@ def _parse(text: str) -> list[_FileDiff]:
         if raw.startswith("--- "):
             p = raw[4:]
             if cur is None or not cur.git or cur.seen_minus:
-                cur = open_file()                            # harvest format: every `---` starts a file
+                cur = open_file()                            # changes_as_diff format: every `---` starts a file
             cur.seen_minus = True
             if p.strip() == "/dev/null":
                 if cur.op != "rename":

@@ -21,9 +21,10 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 
 (Tests pass on JDK 8 with `mvn -q test`.)
 
-## Expected sbmig outcome (asserted by `scripts/e2e.py`)
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-* handler `enforcer-relax` relaxes the rule in the pom (flag `enforcer-relaxed`) — or falls back to
-  `-Denforcer.skip=true` (flag `enforcer-skipped`); either is accepted
-* handler `remove-werror` drops `-Werror` (flag `werror-removed`)
-* `success = true`, exit 0, `llm_usage.calls == 0`
+Success, exit 0, **3 LLM calls** (review + 2 fix scripts; v1 had the handlers `enforcer-relax` / `remove-werror`, gone in
+v2). Round 1: the file-less enforcer failure (case `630b997bc5`) → the script finds the rule in the poms and sets
+`requireJavaVersion` to `[21,)`. Round 2: `warnings found and -Werror specified` (refined case key
+`compile|build|warnings found and -werror specified`, `b2b6bc54b7`) → the script drops `-Werror`, keeps `-Xlint:all`
+and leaves a `MIGRATION-TODO: -Werror removed` (post-checks on `module/comp-jar/pom.xml`).

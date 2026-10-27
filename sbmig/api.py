@@ -12,17 +12,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
 
 if TYPE_CHECKING:  # pragma: no cover
-    from sbmig.core.interfaces import FixerLike, KnowledgeBaseLike, LLMAdapterLike, LLMClientLike
+    from sbmig.core.interfaces import KnowledgeBaseLike, LLMAdapterLike, LLMClientLike, ScriptFixerLike
     from sbmig.core.models import RunReport
 
-# `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed. Besides the KB object (a
-# NullKnowledgeBase) every step that reads `kb/` from disk by itself is switched off — the case catalog and its learned
-# text replaces (handler case-replace), the error hints, candidate recipes in the plan — so a "no KB" comparison run
-# edits nothing it learned (round 10: kb.catalog / kb.case_replace still applied learned replaces).
-NO_KB_OVERRIDES = {"harvest": False, "use_active_recipes": False, "use_patch_replay": False,
-                   "use_hints": False, "generate_recipe_candidates": False, "try_candidates_in_plan": False,
-                   "catalog": False, "case_replace": False, "error_hints": False, "ledger": False,
-                   "symbol_index": False, "deterministic_candidates": False}
+# `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed. The KB object is a
+# NullKnowledgeBase (no script store → no stored fix script is reused; no `append_error_cases` → kb/errors.jsonl and
+# the case catalog are not fed; no review line); the run's own error_cases.* files are still written to the run dir
+# (`kb.error_cases` stays on). `kb.catalog: false` keeps the case catalog off for any file KB built anyway.
+NO_KB_OVERRIDES = {"catalog": False}
 _NO_KB_OVERRIDES = NO_KB_OVERRIDES          # the pre-round-10 name
 
 
@@ -44,7 +41,7 @@ def migrate(
     run_id: Optional[str] = None,
     overrides: Optional[dict] = None,
     llm: "LLMClientLike | LLMAdapterLike | None" = None,
-    fixer: "FixerLike | None" = None,
+    fixer: "ScriptFixerLike | None" = None,
     kb: "KnowledgeBaseLike | None | bool" = None,
     stop_after: Optional[str] = None,
     dry_run: bool = False,
@@ -56,7 +53,8 @@ def migrate(
     llm        an LLMClientLike (message-based) or an LLMAdapterLike (`complete(request)`, wrapped in
                AdapterClient automatically). None → built from config (`llm.provider`, incl. plugins).
                Recorded to `llm.record_dir` when that is set.
-    fixer      a FixerLike replacing LLMFixer (takes precedence over `fix.plugin`).
+    fixer      a fixer with `propose_script(ws, cluster, ctx) -> ScriptProposal` (ScriptFixerLike) replacing
+               LLMFixer (takes precedence over `fix.plugin`).
     kb         None/True → the file knowledge base; False → no KB (like --no-kb); an object → used as is.
     stop_after intake|analyze|plan|transform|restructure (v2; jdk21|spring are v1 phases).
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).

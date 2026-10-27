@@ -61,8 +61,8 @@ Every technology has a matching `spring-boot-starter-<tech>-test` test starter.
 - `BootstrapRegistry`/`BootstrapRegistryInitializer` → `org.springframework.boot.bootstrap`.
 - `HttpMessageConverters` deprecated → `ClientHttpMessageConvertersCustomizer` / `ServerHttpMessageConvertersCustomizer` beans
   (the class itself moved to `org.springframework.boot.http.converter.autoconfigure`).
-- Round 10, moved but not by the 4.0 umbrella (project recipe `com.company.migrate.Boot4TypeRelocations` + handler
-  `boot4-type-relocation-sweep`): `web.servlet.error.{ErrorController, ErrorAttributes, DefaultErrorAttributes}` →
+- Moved but NOT by the 4.0 umbrella (change the imports / FQCNs yourself):
+  `web.servlet.error.{ErrorController, ErrorAttributes, DefaultErrorAttributes}` →
   `org.springframework.boot.webmvc.error`; `web.server.{ErrorPage, ErrorPageRegistrar, ErrorPageRegistry}` →
   `org.springframework.boot.web.error`; `web.servlet.server.{ConfigurableServletWebServerFactory, ServletWebServerFactory,
   Session, Jsp, …}` → `org.springframework.boot.web.server.servlet`; `web.servlet.MultipartConfigFactory` and
@@ -95,13 +95,13 @@ Every technology has a matching `spring-boot-starter-<tech>-test` test starter.
 ## Jackson code on Boot 4 (what sbmig does)
 - `UpgradeSpringBoot_4_0` migrates serializer/deserializer bodies to Jackson 3 (`tools.jackson.databind.ValueSerializer`,
   `SerializationContext`, unchecked `tools.jackson.core.JacksonException`, `writeStringProperty`/`writeNumberProperty`).
-- Project recipe `com.company.migrate.Boot4JacksonTwins` renames Boot's own types: `JsonComponent`→`JacksonComponent`,
+- Boot's own Jackson support types were renamed (the umbrella does not do it): `JsonComponent`→`JacksonComponent`,
   `JsonMixin`→`JacksonMixin`, `JsonObjectSerializer`→`ObjectValueSerializer`, `JsonObjectDeserializer`→`ObjectValueDeserializer`
   (all still in `org.springframework.boot.jackson`).
 - `Jackson2ObjectMapperBuilderCustomizer` → `org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer`
   (`customize(JsonMapper.Builder builder)`); rewrite the body, don't just rename.
-- Only if a class must stay on Jackson 2 (e.g. Jersey): import `org.springframework.boot.jackson2.*`; the
-  `add-known-dependency` handler adds the deprecated `spring-boot-jackson2` module automatically.
+- Only if a class must stay on Jackson 2 (e.g. Jersey): import `org.springframework.boot.jackson2.*` and add the
+  deprecated `org.springframework.boot:spring-boot-jackson2` module (BOM-managed, no version).
 
 ## Removed
 Undertow (→ Tomcat/Jetty; `dependency-relocation` swaps spring-boot-starter-undertow for spring-boot-starter-tomcat,

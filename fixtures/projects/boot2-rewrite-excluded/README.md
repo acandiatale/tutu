@@ -26,11 +26,10 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/azul-11.0.18/Conte
 
 Tests also pass on JDK 11 (`mvn -q test`).
 
-## Expected outcome
+## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-Success, exit 0, **0 LLM calls**: the pre-emptive SPRING handlers (selected from the as-is scan: javax Jakarta EE
-imports → `jakarta-namespace-sweep`, `jpa` library → `spring-data-crud-repository`) run after the spring recipes
-and before the first spring build. `MemberRepository` then extends
-`PagingAndSortingRepository<Member, Long>, ListCrudRepository<Member, Long>` and `LegacyQueryHelper` names
-`jakarta.persistence.*` only. Flags `jakarta-leftovers-renamed` and `spring-data-crud-restored`; commons-lang3 is
-bumped to 3.17.0 like in `boot2`.
+Success, exit 0, **3 LLM calls**: v2 has no pre-emptive handlers, so the build reports what the recipes did not see and
+two new fix scripts repair it in two rounds — first the fully-qualified `javax.persistence` names in
+`vendor/LegacyQueryHelper` (case `compile|package_does_not_exist|javax.persistence`, `e62cd43b29`), then
+`ListCrudRepository<Member, Long>` added to `MemberRepository` (one answer for the `save` / `findAll()` / `deleteById`
+cases). commons-lang3 is bumped to 3.17.0 like in `boot2`.

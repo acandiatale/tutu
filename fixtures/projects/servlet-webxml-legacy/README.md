@@ -13,7 +13,8 @@ annotation anywhere):
   `404` and `java.lang.Exception` → `/WEB-INF/jsp/error.jsp`, one `context-param` (`legacy.region=kr`).
 
 JSPs: `index.jsp`, `WEB-INF/jsp/{help,error,list}.jsp` (`list.jsp` imports `javax.servlet.http.Cookie` and names
-`javax.servlet.http.HttpSession` in a scriptlet — the JSP sweep renames them); static `css/app.css`.
+`javax.servlet.http.HttpSession` in a scriptlet — v2 leaves them: JSPs are not compiled by the build, Tomcat 10+
+needs them on jakarta, an open point); static `css/app.css`.
 
 Migration (company layout, `sbmig.e2e.yml` as in `company-servlet-jsp`): `legacy-boot` (WAR for an external Tomcat),
 `legacy-back` (all Java on `jakarta.servlet`), `legacy-front` (JSPs under `META-INF/resources/WEB-INF/jsp`, static
@@ -24,7 +25,8 @@ beans (orders 1 / 2, `audit` with `setDispatcherTypes(REQUEST, FORWARD)`), 1 lis
 Follow-ups: the jsp-file servlet `help`, the welcome file, the MIME mapping, the session timeout on an external
 Tomcat, and the Handover line `web.xml (2.3) → WebXmlRegistrations: 2 servlet(s), 2 filter(s), 1 listener(s), 2 error page(s)`.
 
-Expected: BUILD SUCCESS (the generated class compiles against Spring Boot 4.1), exit 0, 0 LLM calls, flag
+Expected (v2, `expected.json` → `expect`): BUILD SUCCESS (the generated class compiles against Spring Boot 4.1), exit 0,
+**1 LLM call** (the structure review, verdict `ok`), no fix script, flag
 `web-xml-registered`, journal `web_xml_registrations` (servlets 2, filters 2, listeners 1, error pages 2),
 `legacy-boot/target/*.war`. Catalog id W1 (`docs/ERROR-HANDLING.md`).
 

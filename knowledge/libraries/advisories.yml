@@ -1,19 +1,18 @@
 # Library advisories — EOL / no-longer-managed / runtime-incompatible libraries that still COMPILE after the
 # migration and would otherwise leave the run looking green. Read by sbmig/advisory (docs/ADVISORIES.md).
 #
-# Policies (there is NO "block" on purpose — 500 projects cannot all be perfect; the build goes as far as it can
-# and the owners get a compressed handover):
-#   guide  : build, then tell the owning team in the report's Handover section + manual follow-ups + ledger
-#   recipe : additionally run the listed OpenRewrite recipe(s) in spring.rewrite (ids must exist in
-#            knowledge/recipes/catalog.yml); falls back to guide when unavailable
+# Advisories are guide-only (business decision, PLAN-v2 §2): they never add a recipe and never block (500 projects
+# cannot all be perfect; the build goes as far as it can and the owners get a compressed handover). A matching
+# advisory gives the fix loop's LLM a "what to migrate TO" hint (+ the `## fix-loop: <library>` section of its notes
+# file) and the owning team a line in the report's Handover section.
 #
 # Schema (version 1): see LibraryAdvisory in sbmig/core/models.py — id, library (analyzer rule name) and/or
 # artifacts (g:a globs), status (eol|unmanaged|incompatible|superseded), title, summary, replacement,
-# replacement_version, policy, recipes, followup, docs, applies_to, applies_when_version_below,
-# resolved_min_version, notes.
+# replacement_version, followup, docs, applies_to, applies_when_version_below, resolved_min_version, notes.
+# (`policy` / `recipes` keys are no longer read.)
 #
-# Company additions / overrides: advisories.extra_files (same schema, merged by id, later wins),
-# advisories.policy_overrides {id: guide|recipe|off}.
+# Company additions / overrides: advisories.extra_files (same schema, merged by id, later wins);
+# advisories.policy_overrides {id: off} switches an entry off.
 version: 1
 advisories:
   # ------------------------------------------------------------------ API docs
@@ -27,10 +26,6 @@ advisories:
       (path matching, jakarta). springdoc-openapi is the maintained replacement.
     replacement: org.springdoc:springdoc-openapi-starter-webmvc-ui
     replacement_version: "3.x (Boot 4)"
-    policy: recipe
-    recipes:
-      - org.openrewrite.java.springdoc.SpringFoxToSpringDoc
-      - org.openrewrite.java.springdoc.UpgradeSpringDoc_3_0
     followup: >-
       Review the generated GroupedOpenApi beans and the TODO comments the recipe left on complex Docket code,
       then check /swagger-ui/index.html and /v3/api-docs (springdoc.* properties replace springfox.*).
@@ -49,9 +44,6 @@ advisories:
       bridge), which the Boot BOM manages.
     replacement: io.micrometer:micrometer-tracing-bridge-brave
     replacement_version: managed by the Boot 4 BOM
-    policy: recipe
-    recipes:
-      - org.openrewrite.java.spring.cloud2022.MigrateCloudSleuthToMicrometerTracing
     followup: >-
       Remove the explicit micrometer-tracing 1.0.x version if the recipe left one (the Boot BOM manages it), then
       check management.tracing.sampling.probability, the exporter (zipkin/otlp) and the traceId/spanId log pattern.
@@ -66,23 +58,20 @@ advisories:
     title: Netflix Hystrix is discontinued (not in any current Spring Cloud train)
     summary: >-
       Hystrix is in maintenance-only mode since 2018 and was removed from Spring Cloud 2020.0. It may still compile
-      against the pinned 2.2.x starter, but it is unsupported on Boot 3+/4. The project recipe swaps the starter for
-      spring-cloud-starter-circuitbreaker-resilience4j and @HystrixCommand for Resilience4j @CircuitBreaker (name from
-      commandKey, else "default"; fallbackMethod kept; Hystrix-only attributes and @EnableHystrix/@EnableCircuitBreaker
-      dropped).
+      against the pinned 2.2.x starter, but it is unsupported on Boot 3+/4. The replacement is
+      spring-cloud-starter-circuitbreaker-resilience4j with Resilience4j @CircuitBreaker instead of @HystrixCommand
+      (name from commandKey, else "default"; fallbackMethod kept; Hystrix-only attributes and
+      @EnableHystrix/@EnableCircuitBreaker dropped); the fix loop ports what the build reports with this guidance.
     replacement: org.springframework.cloud:spring-cloud-starter-circuitbreaker-resilience4j
     replacement_version: managed by the Spring Cloud BOM
-    policy: recipe
-    recipes:
-      - com.company.migrate.HystrixToResilience4j
     followup: >-
       Configure the circuit breakers by name (instance "default" unless a commandKey existed:
       resilience4j.circuitbreaker.instances.<name> or configs.default), move hystrix.command.* timeouts to
       resilience4j.timelimiter.*, give every fallback method a trailing Throwable parameter (Resilience4j does not find
       fallbacks without it) and re-test failure paths: thread-pool isolation, groupKey/threadPoolKey,
       commandProperties and ignoreExceptions were removed, and the @CircuitBreaker aspect needs
-      spring-boot-starter-aspectj at runtime. HystrixCommand subclasses are rewritten by the LLM in the build-fix
-      loop with Resilience4j guidance (the Handover lists those files — review them); dashboards/Turbine stay manual.
+      spring-boot-starter-aspectj at runtime. Code the LLM fix scripts rewrote with Resilience4j guidance is listed
+      in the Handover — review it; dashboards/Turbine stay manual.
     docs:
       - https://docs.spring.io/spring-cloud-circuitbreaker/reference/spring-cloud-circuitbreaker-resilience4j.html
       - https://resilience4j.readme.io/docs/getting-started-3
@@ -95,7 +84,6 @@ advisories:
     summary: Ribbon was removed from Spring Cloud 2020.0; client-side load balancing is Spring Cloud LoadBalancer.
     replacement: org.springframework.cloud:spring-cloud-starter-loadbalancer
     replacement_version: managed by the Spring Cloud BOM
-    policy: guide
     followup: >-
       Replace the Ribbon starter with spring-cloud-starter-loadbalancer, delete IRule/IPing beans and
       <client>.ribbon.* properties, and configure spring.cloud.loadbalancer.* (or a ServiceInstanceListSupplier).
@@ -110,7 +98,6 @@ advisories:
     summary: Zuul 1 was removed from Spring Cloud 2020.0 and does not run on jakarta servlets.
     replacement: org.springframework.cloud:spring-cloud-starter-gateway-server-webmvc
     replacement_version: managed by the Spring Cloud BOM
-    policy: guide
     followup: >-
       Rebuild the zuul.routes.* as Spring Cloud Gateway (server-webmvc) routes and port ZuulFilter subclasses to
       gateway filter functions; test every route, header and timeout.
@@ -127,7 +114,6 @@ advisories:
       spring-cloud-starter-openfeign. The Boot umbrella recipe renames the starter; com.netflix.feign code stays.
     replacement: org.springframework.cloud:spring-cloud-starter-openfeign
     replacement_version: managed by the Spring Cloud BOM
-    policy: guide
     followup: >-
       Move com.netflix.feign imports to io.github.openfeign (feign.*) and use
       org.springframework.cloud.openfeign.@FeignClient/@EnableFeignClients; check the starter rename in the pom.
@@ -144,9 +130,6 @@ advisories:
       Spring Cloud 2025.1 is the Boot 4.0 train.
     replacement: org.springframework.cloud:spring-cloud-dependencies
     replacement_version: "2025.1.x"
-    policy: recipe
-    recipes:
-      - org.openrewrite.java.spring.cloud2025.UpgradeSpringCloud_2025_1
     applies_when_version_below: "2025.1"
     resolved_min_version: "2025.1"
     followup: >-
@@ -168,7 +151,6 @@ advisories:
       move to Spring Authorization Server.
     replacement: org.springframework.boot:spring-boot-starter-oauth2-resource-server (or -oauth2-client)
     replacement_version: managed by the Boot 4 BOM (authorization servers → spring-boot-starter-oauth2-authorization-server)
-    policy: guide
     followup: >-
       Replace @EnableResourceServer/@EnableOAuth2Sso/@EnableAuthorizationServer and OAuth2RestTemplate with
       http.oauth2ResourceServer()/oauth2Login() and WebClient/RestClient OAuth2 support; re-test token validation.
@@ -185,7 +167,6 @@ advisories:
     summary: log4j:log4j 1.2.x is EOL and has known vulnerabilities; Boot logs through Logback (or Log4j 2).
     replacement: ch.qos.logback:logback-classic (Boot default; or log4j-core 2.x)
     replacement_version: managed by the Boot 4 BOM
-    policy: guide
     followup: >-
       Remove log4j:log4j, log through SLF4J (org.slf4j.Logger), convert log4j.properties/xml to logback-spring.xml
       (or add log4j-1.2-api only as a temporary bridge).
@@ -200,16 +181,15 @@ advisories:
     summary: commons-lang:commons-lang 2.6 (2011) is unmaintained; Commons Lang 3 is the supported line.
     replacement: org.apache.commons:commons-lang3
     replacement_version: "3.x"
-    policy: guide
     followup: >-
       Replace org.apache.commons.lang.* imports with org.apache.commons.lang3.* (StringEscapeUtils moved to
       commons-text) and drop commons-lang:commons-lang.
     docs:
       - https://commons.apache.org/proper/commons-lang/article3_0.html
 
-  # round 10: Spring cases run UpgradeApacheHttpClient_5 anyway (UpgradeSpringFramework_6_0, reached by the Framework 7
-  # recipe and the Boot umbrella; rewrite-apache 2.30.0) → policy recipe, the Handover reports what was migrated.
-  # Plain Java / servlet projects keep the 4.5.x client (it still compiles, carried-over version) → httpclient4-direct.
+  # round 10: the Boot umbrella (and an opted-in Framework 7 set) runs UpgradeApacheHttpClient_5 (UpgradeSpringFramework_6_0;
+  # rewrite-apache 2.30.0). Plain Java / servlet projects keep the 4.5.x client (it still compiles, carried-over
+  # version) → httpclient4-direct.
   - id: httpclient4
     library: httpclient4
     applies_to: [spring_legacy, spring_boot, msa]
@@ -222,9 +202,6 @@ advisories:
       deprecated methods, TimeUnit timeouts); what it cannot map is ported in the build-fix loop.
     replacement: org.apache.httpcomponents.client5:httpclient5
     replacement_version: managed by the Boot 4 BOM
-    policy: recipe
-    recipes:
-      - org.openrewrite.apache.httpclient5.UpgradeApacheHttpClient_5
     followup: >-
       Re-test the migrated HTTP client code: timeouts (TimeUnit / Timeout), connection pooling
       (PoolingHttpClientConnectionManagerBuilder), TLS / SSLContext setup and retry handling; drop any explicit
@@ -243,7 +220,6 @@ advisories:
       over). Non-Spring projects get no automatic HttpClient 5 migration.
     replacement: org.apache.httpcomponents.client5:httpclient5
     replacement_version: managed by the Boot 4 BOM
-    policy: guide
     followup: >-
       Move org.apache.http.* client code to org.apache.hc.client5/hc.core5 (or RestClient), drop the explicit
       httpclient 4.x version and re-test timeouts, connection pooling and TLS settings.
@@ -257,12 +233,11 @@ advisories:
     title: Undertow is not supported by Spring Boot 4 (spring-boot-starter-undertow is gone)
     summary: >-
       spring-boot-starter-undertow ends at 4.0.0-M1 on Maven Central and the spring-boot-dependencies 4.1.0 BOM manages
-      neither the starter nor io.undertow. The handler dependency-relocation swaps the starter for
-      spring-boot-starter-tomcat (Boot's default container) when the build names it; code against io.undertow.* or
+      neither the starter nor io.undertow. Swap the starter for spring-boot-starter-tomcat (Boot's default
+      container) in the pom (a fix script does it when the build names it); code against io.undertow.* or
       Boot's Undertow customizers (UndertowServletWebServerFactory, UndertowBuilderCustomizer …) no longer compiles.
     replacement: org.springframework.boot:spring-boot-starter-tomcat (or spring-boot-starter-jetty)
     replacement_version: managed by the Boot 4 BOM
-    policy: guide
     followup: >-
       Remove the Undertow customizer beans, move server.undertow.* properties to server.tomcat.* (threads, max
       connections, access log) and re-test HTTP/2, WebSocket and buffer settings under Tomcat; exclusions of
@@ -287,7 +262,6 @@ advisories:
       generated drop-in classes (sbmig.compat.*, same output as the JDK 8 originals, call sites unchanged).
     replacement: java.util.Base64 / javax.imageio / java.security, jakarta.* API jars (JDK replacements)
     replacement_version: JDK 21 (jakarta.xml.bind-api, jakarta.annotation-api, jakarta.activation-api are Boot-managed)
-    policy: guide
     followup: >-
       Review the ported JDK API calls: sun.misc.BASE64Encoder/Decoder (now the generated sbmig.compat shims, which
       keep the 76-character line breaks) → java.util.Base64 when convenient (MIME line breaks:
@@ -314,7 +288,6 @@ advisories:
       OpenRewrite recipe ports it; the build-fix loop ports the DAOs with this guidance.
     replacement: org.mybatis:mybatis + org.mybatis:mybatis-spring
     replacement_version: mybatis 3.5.19 + mybatis-spring 4.1.0 (Spring 7 line; mybatis-spring-boot-starter 4.1.0 on Boot)
-    policy: guide
     followup: >-
       Review every ported DAO: SqlMapClient / SqlMapClientTemplate → SqlSessionTemplate or mapper interfaces;
       sqlmap XML → MyBatis mapper XML (#name# → #{name}, $name$ → ${name}, queryForList / queryForObject / insert /
@@ -340,7 +313,6 @@ advisories:
       fix is a source change the build-fix loop makes with this guidance; no dependency is involved.
     replacement: Enumeration<TreeNode> / Enumeration<? extends TreeNode> with a cast per element (JDK API)
     replacement_version: JDK 9+
-    policy: guide
     followup: >-
       Review the ported tree code: Enumeration<DefaultMutableTreeNode> e = node.children() →
       Enumeration<TreeNode> e = node.children() and cast each element ((DefaultMutableTreeNode) e.nextElement()),
@@ -363,7 +335,6 @@ advisories:
       package build of a company run. No OpenRewrite recipe; the build-fix loop ports the usages with this guidance.
     replacement: org.jboss.logging.Logger.getLogger(Foo.class) for LoggerFactory / Log (or SLF4J); java.lang.reflect for XClass / ReflectionManager
     replacement_version: jboss-logging via hibernate-core 7.x (Boot-managed); HCANN 7.0.3.Final only as an explicit EOL fallback
-    policy: guide
     followup: >-
       Review the ported logger / reflection code (jboss-logging Logger keeps the BasicLogger calls, SLF4J needs
       format changes for infof / debugv); if a module still declares org.hibernate.common:hibernate-commons-annotations
@@ -391,7 +362,6 @@ advisories:
       dropped tiles2): Java config naming TilesConfigurer fails to compile, XML config fails at startup.
     replacement: Thymeleaf + thymeleaf-layout-dialect (Boot-managed), SiteMesh 3 (org.sitemesh:sitemesh) or JSP includes
     replacement_version: thymeleaf-layout-dialect 4.0.1 (Boot 4.1 managed) / org.sitemesh:sitemesh 3.3.0
-    policy: guide
     followup: >-
       Replace the Tiles definitions (tiles*.xml) with layout templates (Thymeleaf layout:decorate or SiteMesh 3
       decorators), remove the TilesConfigurer / TilesViewResolver beans; JSPs can keep <jsp:include> fragments.
@@ -412,7 +382,6 @@ advisories:
       velocity-tools-view 3.1 is javax.servlet with no Jakarta release.
     replacement: Thymeleaf or FreeMarker for web views; org.apache.velocity:velocity-engine-core for non-web templating
     replacement_version: velocity-engine-core 2.4.1 / velocity-tools-generic 3.1
-    policy: guide
     followup: >-
       Port .vm web views to Thymeleaf / FreeMarker; for mail / text templates switch to velocity-engine-core 2.4.1 and
       replace VelocityEngineUtils.mergeTemplateIntoString(...) with engine.getTemplate(name, encoding).merge(...);
@@ -438,7 +407,6 @@ advisories:
       #servletContext expression objects (runtime).
     replacement: org.thymeleaf:thymeleaf-spring6 / thymeleaf-extras-springsecurity6 / thymeleaf-layout-dialect (Boot-managed)
     replacement_version: 3.1.5.RELEASE / layout dialect 4.0.1 (Boot 4.1 managed)
-    policy: guide
     followup: >-
       Swap thymeleaf-spring4 → thymeleaf-spring6 (imports org.thymeleaf.spring4 → org.thymeleaf.spring6), drop
       spring.thymeleaf.mode=LEGACYHTML5 and nekohtml, replace layout:decorator="x" with layout:decorate="~{x}", fix the
@@ -463,7 +431,6 @@ advisories:
       exist"); FileUpload 2 (packages org.apache.commons.fileupload2.core / .jakarta.servlet6) has milestones only.
     replacement: StandardServletMultipartResolver / Boot multipart (spring.servlet.multipart.*) with MultipartFile; or org.apache.commons:commons-fileupload2-jakarta-servlet6
     replacement_version: commons-fileupload2-jakarta-servlet6 2.0.0-M5 (milestone)
-    policy: guide
     followup: >-
       Delete the CommonsMultipartResolver bean and move maxUploadSize / maxInMemorySize to
       spring.servlet.multipart.max-file-size / max-request-size / file-size-threshold; port direct ServletFileUpload
@@ -484,7 +451,6 @@ advisories:
       under the same names.
     replacement: Jersey 4 (org.glassfish.jersey.*, Boot-managed, spring-boot-starter-jersey) or Spring MVC @RestController
     replacement_version: 4.0.2 (Boot 4.1 managed)
-    policy: guide
     followup: >-
       Port com.sun.jersey.spi.* / ClientConfig / WebResource client code to jakarta.ws.rs.client or RestClient;
       resource classes keep their JAX-RS annotations (jakarta.ws.rs).
@@ -503,7 +469,6 @@ advisories:
       No OpenRewrite recipe in the pinned rewrite-spring.
     replacement: org.springframework.hateoas:spring-hateoas (Boot-managed) / spring-boot-starter-hateoas
     replacement_version: 3.1.1 (Boot 4.1 managed)
-    policy: guide
     followup: Apply the 1.0 type renames (the project's migrate-to-1.0 script or the fix loop), then rebuild; HAL output is unchanged.
     docs:
       - https://docs.spring.io/spring-hateoas/docs/1.0.0.RELEASE/reference/html/#migrate-to-1.0
@@ -517,7 +482,6 @@ advisories:
       in Spring and is not covered by the jakarta package sweep.
     replacement: Spring MVC controllers (servlet) — the portal integration must be redesigned
     replacement_version: n/a
-    policy: guide
     followup: Port the portlet controllers (@RenderMapping / @ActionMapping) to servlet MVC or the portal vendor's current API.
     docs:
       - https://github.com/spring-projects/spring-framework/wiki/Spring-Framework-5.0-Release-Notes
@@ -532,7 +496,6 @@ advisories:
       (DeviceResolverHandlerInterceptor, DeviceUtils).
     replacement: User-Agent parsing in an own HandlerInterceptor (e.g. ua-parser) or a responsive front end
     replacement_version: n/a
-    policy: guide
     followup: Replace Device / DeviceUtils / SitePreference usages with a small in-house User-Agent check and remove the interceptor beans.
     docs:
       - https://github.com/spring-attic/spring-mobile
@@ -549,7 +512,6 @@ advisories:
       Spring's JasperReportsView family was removed in Spring 5.0.
     replacement: net.sf.jasperreports:jasperreports 7.1.0 + the extension artifacts for the exporters used
     replacement_version: 7.1.0
-    policy: guide
     followup: >-
       Convert every .jrxml / .jrtx with Jaspersoft Studio 7, recompile .jasper at build time, add the exporter
       artifacts (PDF / XLSX) and replace JasperReportsPdfView / JasperReportsMultiFormatView with a controller that
@@ -570,7 +532,6 @@ advisories:
       in the pinned recipe jars.
     replacement: org.apache.struts:struts2-core 7.4.0 (+ same-version plugins); long term Spring MVC
     replacement_version: 7.4.0
-    policy: guide
     followup: >-
       Upgrade every struts2-* artifact to 7.4.0, rename com.opensymphony.xwork2.* imports (ActionSupport,
       ActionContext, Preparable, ModelDriven …) to org.apache.struts2.*, fix custom FreeMarker themes, review struts.xml
@@ -590,7 +551,6 @@ advisories:
       1.4.5; 1.5.0-RC2 (2024, release candidate only) is Jakarta.
     replacement: Spring MVC (preferred) or io.github.weblegacy:struts-* 1.5.0-RC2 (RC, unsupported)
     replacement_version: io.github.weblegacy:struts-core 1.5.0-RC2
-    policy: guide
     followup: >-
       Decide between a rewrite to Spring MVC and the weblegacy RC; Action / ActionForm code compiles against the fork
       only after the javax → jakarta sweep.
@@ -608,7 +568,6 @@ advisories:
       (package org.apache.commons.chain.web.jakarta.servlet).
     replacement: keep commons-chain 1.2 for the core; web layer → io.github.weblegacy:commons-chain-web-jakarta-servlet
     replacement_version: 1.3.0
-    policy: guide
     followup: Only when org.apache.commons.chain.web.servlet.* is used — switch to the weblegacy Jakarta artifact and rename the package.
     docs:
       - https://commons.apache.org/dormant/index.html
@@ -626,7 +585,6 @@ advisories:
       in most cases, runtime compatibility unverified).
     replacement: org.egovframe.rte:egovframe-rte-* 5.0.2 (Jakarta)
     replacement_version: 5.0.2
-    policy: guide
     followup: >-
       3.x projects rename egovframework.rte.* imports to org.egovframe.rte.* (EgovAbstractServiceImpl,
       EgovAbstractMapper, EgovPropertyService …) and take the 5.0 artifactIds (egovframe-rte-fdl-cmmn, -ptl-mvc,
@@ -648,7 +606,6 @@ advisories:
       fails to compile). The pinned UpgradeSpringBoot_3_4 recipe already swaps the dependency.
     replacement: org.webjars:webjars-locator-lite (Boot-managed)
     replacement_version: 1.1.3 (Boot 4.1 managed)
-    policy: guide
     followup: >-
       Replace `new WebJarsResourceResolver()` with `new LiteWebJarsResourceResolver()` in the resource-handler
       configuration; version-less /webjars/… URLs keep working with -lite.
@@ -671,7 +628,6 @@ advisories:
       exist → resolution failure) — which is why Shiro is not in jakarta_libraries.yml.
     replacement: org.apache.shiro:shiro-* 3.0.1 (no classifier)
     replacement_version: 3.0.1
-    policy: guide
     followup: >-
       Either stay on what the recipe leaves (2.0.x + classifier jakarta, EOL) or move every org.apache.shiro:* to
       3.0.1 and delete the <classifier>jakarta</classifier>; then check the 3.0 breaking changes (immutable default
@@ -694,7 +650,6 @@ advisories:
       org.springframework.orm.hibernate5 does not exist" / "cannot find symbol HibernateTemplate". No pinned recipe.
     replacement: org.springframework.orm.jpa.hibernate.LocalSessionFactoryBean / HibernateTransactionManager + SessionFactory.getCurrentSession() (or JPA EntityManager)
     replacement_version: spring-orm 7.0.x (Boot-managed)
-    policy: guide
     followup: >-
       Review the ported DAOs: imports org.springframework.orm.hibernate5.{LocalSessionFactoryBean,
       HibernateTransactionManager, SpringSessionContext} (and hibernate3 / 4) → org.springframework.orm.jpa.hibernate.*,
@@ -714,7 +669,6 @@ advisories:
       (javax.persistence), so leaving it in a Boot 4 pom pulls hibernate-core 5.x next to 7.x.
     replacement: remove it — org.hibernate.orm:hibernate-core (Boot-managed, via spring-boot-starter-data-jpa)
     replacement_version: 7.4.1.Final (Boot 4.1 managed)
-    policy: guide
     followup: Remove the hibernate-entitymanager dependency (no new coordinates) and check dependency:tree for a leftover hibernate-core 5.x.
     docs:
       - https://repo1.maven.org/maven2/org/hibernate/hibernate-entitymanager/
@@ -729,7 +683,6 @@ advisories:
       jakarta); hibernate.cache.region.factory_class=…EhCacheRegionFactory and the Ehcache 2 ehcache.xml must change.
     replacement: org.hibernate.orm:hibernate-jcache + org.ehcache:ehcache (classifier jakarta)
     replacement_version: 7.4.1.Final + 3.12.0 (both Boot 4.1 managed)
-    policy: guide
     followup: >-
       Set hibernate.cache.region.factory_class=jcache, hibernate.javax.cache.provider=
       org.ehcache.jsr107.EhcacheCachingProvider and convert ehcache.xml to the Ehcache 3 schema (runtime only).
@@ -750,7 +703,6 @@ advisories:
       6+ @TypeDef is gone (use @Type(JsonType.class)).
     replacement: io.hypersistence:hypersistence-utils-hibernate-73
     replacement_version: 3.16.0
-    policy: guide
     followup: >-
       Swap the dependency, change imports com.vladmihalcea.hibernate.type.* → io.hypersistence.utils.hibernate.type.*,
       replace @TypeDef / @Type(type="jsonb") by @Type(JsonBinaryType.class) or @JdbcTypeCode(SqlTypes.JSON).
@@ -771,7 +723,6 @@ advisories:
       line for ORM 7.4 (8.3 = 7.3, 8.2 = 7.2); the index format changes → full reindex. No recipe.
     replacement: org.hibernate.search:hibernate-search-mapper-orm + hibernate-search-backend-lucene (or -backend-elasticsearch)
     replacement_version: 8.4.0.Final
-    policy: guide
     followup: >-
       Port mappings (@Field → @FullTextField / @KeywordField / @GenericField), queries (FullTextEntityManager →
       Search.session(em).search(...)) and configuration keys (hibernate.search.backend.*), then reindex with the
@@ -793,7 +744,6 @@ advisories:
       plain JPAQueryFactory users stay on the Boot-managed line).
     replacement: io.github.openfeign.querydsl:querydsl-jpa / querydsl-apt (no classifier)
     replacement_version: "7.7"
-    policy: guide
     followup: >-
       Either port HibernateQueryFactory / HibernateQuery code to JPAQueryFactory (stay on com.querydsl 5.1.0:jakarta) or
       swap every com.querydsl:* artifact for io.github.openfeign.querydsl:* 7.7 (same packages, drop the jakarta
@@ -813,7 +763,6 @@ advisories:
       "package org.springframework.cache.ehcache does not exist" in Java config, ClassNotFound for XML bean classes.
     replacement: org.ehcache:ehcache (classifier jakarta) through JCache (javax.cache:cache-api) — or Caffeine
     replacement_version: 3.12.0 + cache-api 1.1.1 (both Boot 4.1 managed)
-    policy: guide
     followup: >-
       Replace EhCacheCacheManager with JCacheCacheManager (or spring.cache.type=jcache +
       spring.cache.jcache.config=classpath:ehcache.xml), rewrite ehcache.xml to the Ehcache 3 schema (<cache alias> /
@@ -835,7 +784,6 @@ advisories:
       hazelcast, the config XML schema changed. Boot 4 no longer supports Spring Session Hazelcast itself.
     replacement: com.hazelcast:hazelcast (Boot-managed)
     replacement_version: 5.5.0
-    policy: guide
     followup: Port the 3.x API usages (IMap / ITopic / ILock packages, client config) and hazelcast.xml; drop hazelcast-client / hazelcast-all.
     docs:
       - https://docs.hazelcast.com/hazelcast/5.5/migrate/upgrading-from-imdg-3
@@ -852,7 +800,6 @@ advisories:
       with <property name="maxActive">) fails only at runtime after a package swap — the build stays green.
     replacement: org.apache.commons:commons-dbcp2 (Boot-managed) — or HikariCP (Boot default)
     replacement_version: 2.14.0 (Boot 4.1 managed)
-    policy: guide
     followup: >-
       Swap the dependency, rename the class in XML / Java (org.apache.commons.dbcp.BasicDataSource →
       org.apache.commons.dbcp2.BasicDataSource) and the renamed properties, check validationQuery / testOnBorrow and
@@ -873,7 +820,6 @@ advisories:
       Boot 4.0 milestone).
     replacement: com.alibaba:druid-spring-boot-4-starter (Boot) / com.alibaba:druid 1.2.28 + com.alibaba.druid.support.jakarta.*
     replacement_version: 1.2.28
-    policy: guide
     followup: >-
       Swap the starter artifactId, change StatViewServlet / WebStatFilter imports and web.xml classes from
       com.alibaba.druid.support.http to com.alibaba.druid.support.jakarta and verify /druid/* on Boot 4.1.
@@ -891,7 +837,6 @@ advisories:
       decryption failure (DB passwords), not a build error.
     replacement: com.github.ulisesbocchio:jasypt-spring-boot-starter (latest)
     replacement_version: 4.0.4
-    policy: guide
     followup: >-
       Bump to 4.0.4, start the application once and confirm the ENC(...) values decrypt; values encrypted with the old
       PBEWithMD5AndDES default need jasypt.encryptor.algorithm=PBEWithMD5AndDES and
@@ -911,7 +856,6 @@ advisories:
       4.x / 5.x are javax.transaction.
     replacement: com.atomikos:transactions-spring-boot4-starter
     replacement_version: 6.0.1
-    policy: guide
     followup: >-
       Replace spring-boot-starter-jta-atomikos with transactions-spring-boot4-starter 6.0.1 (or transactions-jta /
       -jdbc 6.0.1 with classifier jakarta for plain Spring), rename the spring.jta.atomikos.* properties per the
@@ -929,7 +873,6 @@ advisories:
       dropped its starter, so it cannot serve jakarta.transaction code.
     replacement: com.atomikos:transactions-spring-boot4-starter (or Narayana)
     replacement_version: 6.0.1
-    policy: guide
     followup: Replace the transaction-manager configuration (XA datasources, BitronixTransactionManager bean) with Atomikos 6 or Narayana and test the XA flows.
     docs:
       - https://repo1.maven.org/maven2/org/codehaus/btm/btm/
@@ -938,21 +881,18 @@ advisories:
   - id: commons-collections3
     library: commons-collections3
     status: eol
-    title: Commons Collections 3.2.2 is EOL — migrate to commons-collections4 (recipe)
+    title: Commons Collections 3.2.2 is EOL — migrate to commons-collections4
     summary: >-
       3.2.2 (2015) is the last 3.x; it compiles on Java 21 and has no javax dependency, so the build stays green
-      (commons-beanutils 1.11.0 still depends on it). The pinned rewrite-apache 2.30.0 recipe
-      UpgradeApacheCommonsCollections_3_4 swaps the dependency to commons-collections4, maps IdentityMap →
+      (commons-beanutils 1.11.0 still depends on it). The upstream recipe UpgradeApacheCommonsCollections_3_4
+      (rewrite-apache 2.30.0, not run by sbmig) shows the mapping: dependency → commons-collections4, IdentityMap →
       IdentityHashMap, FastArrayList → CopyOnWriteArrayList, MapUtils.EMPTY_MAP / ListUtils.EMPTY_LIST → Collections.*
-      and renames org.apache.commons.collections → collections4; generics changes may still need the fix loop.
+      and org.apache.commons.collections → collections4; generics changes come with it.
     replacement: org.apache.commons:commons-collections4
     replacement_version: 4.5.0 (not managed by Boot)
-    policy: recipe
-    recipes:
-      - org.openrewrite.apache.commons.collections.UpgradeApacheCommonsCollections_3_4
     followup: >-
-      Review the recipe's raw-type / generics fixes; leave commons-collections 3 on the classpath while
-      commons-beanutils 1.x still needs it.
+      Migrate to commons-collections4 (raw-type / generics fixes included); leave commons-collections 3 on the
+      classpath while commons-beanutils 1.x still needs it.
     docs:
       - https://docs.openrewrite.org/recipes/apache/commons/collections/upgradeapachecommonscollections_3_4
       - https://commons.apache.org/proper/commons-collections/
@@ -968,7 +908,6 @@ advisories:
       (DozerBeanMapper → DozerBeanMapperBuilder); its README calls the project inactive and points to MapStruct.
     replacement: com.github.dozermapper:dozer-core (short term) or MapStruct
     replacement_version: 7.0.0
-    policy: guide
     followup: >-
       Swap the coordinates, rewrite org.dozer imports to com.github.dozermapper.core, replace new DozerBeanMapper(...)
       with DozerBeanMapperBuilder.create()…build() and update the mapping XML namespace — or port the mappers to MapStruct.
@@ -985,7 +924,6 @@ advisories:
       ("module java.base does not open java.lang") — upstream issue #377, open since 2021.
     replacement: MapStruct (org.mapstruct:mapstruct) or ModelMapper
     replacement_version: mapstruct 1.6.3
-    policy: guide
     followup: >-
       Short term start the JVM with --add-opens java.base/java.lang=ALL-UNNAMED (and java.util as needed) on the
       external Tomcat / java -jar; long term port the mappers to MapStruct.
@@ -1002,7 +940,6 @@ advisories:
       drags org.elasticsearch:elasticsearch 7.x onto the classpath. Spring Data Elasticsearch 6.1 uses the Java API client.
     replacement: co.elastic.clients:elasticsearch-java (Boot-managed)
     replacement_version: 9.4.2 (Boot 4.1 managed)
-    policy: guide
     followup: >-
       Port RestHighLevelClient calls (SearchRequest / SearchSourceBuilder / QueryBuilders) to ElasticsearchClient
       builders; short-term fallback: pin 7.17.29 explicitly (compiles; cluster compatibility is the owners' call).
@@ -1020,15 +957,14 @@ advisories:
       SolrRepository / SolrTemplate code does not survive Spring 7.
     replacement: org.apache.solr:solr-solrj (a SolrClient bean defined by the project)
     replacement_version: 9.11.0 (Solr 9 servers) / 10.0.0
-    policy: guide
     followup: Replace SolrTemplate / SolrCrudRepository with a SolrClient bean and explicit queries; match the SolrJ major to the Solr server.
     docs:
       - https://repo1.maven.org/maven2/org/springframework/data/spring-data-solr/
       - https://solr.apache.org/guide/solr/latest/deployment-guide/solrj.html
 
   # ------------------------------------------------------------------ JSON / XML / SOAP / HTTP / security
-  # round 10: Spring cases run CodehausToFasterXML anyway (UpgradeSpringFramework_7_0 → UpgradeJackson_2_3, also in the
-  # Boot umbrella; rewrite-jackson 1.28.4) → policy recipe; plain Java / servlet projects → jackson1-direct (guide)
+  # round 10: the Boot umbrella (and an opted-in Framework 7 set) runs CodehausToFasterXML (UpgradeSpringFramework_7_0
+  # → UpgradeJackson_2_3; rewrite-jackson 1.28.4); plain Java / servlet projects → jackson1-direct
   - id: jackson1
     library: jackson1
     applies_to: [spring_legacy, spring_boot, msa]
@@ -1043,9 +979,6 @@ advisories:
       "package org.codehaus.jackson… does not exist" in the fix loop.
     replacement: tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or com.fasterxml.jackson.core:jackson-databind
     replacement_version: Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)
-    policy: recipe
-    recipes:
-      - org.openrewrite.java.jackson.CodehausToFasterXML
     followup: >-
       Review the remaining org.codehaus.jackson.* code the fix loop ported (JsonNode, TypeReference, custom
       (de)serializers) and @JsonSerialize(include=...) behaviour.
@@ -1064,7 +997,6 @@ advisories:
       version), but nothing migrates non-Spring projects to Jackson 2 / 3 automatically.
     replacement: tools.jackson.core:jackson-databind (Jackson 3; Boot 4 default) or com.fasterxml.jackson.core:jackson-databind
     replacement_version: Boot 4.1 managed (Jackson 3.1.4 / Jackson 2 2.21.4)
-    policy: guide
     followup: >-
       Port org.codehaus.jackson.* to com.fasterxml.jackson.* (ObjectMapper, JsonNode, TypeReference, custom
       (de)serializers; @JsonSerialize(include=...) → @JsonInclude) and drop jackson-mapper-asl / jackson-core-asl.
@@ -1083,7 +1015,6 @@ advisories:
       commons-collections 3, commons-beanutils and ezmorph onto the compile classpath.
     replacement: Jackson (tools.jackson.core:jackson-databind, Boot 4 default) or com.google.code.gson:gson
     replacement_version: Boot 4.1 managed
-    policy: guide
     followup: Replace JSONObject.fromObject / JSONArray / JSONSerializer with ObjectMapper; keep the jdk15 classifier while json-lib is still used.
     docs:
       - https://json-lib.sourceforge.net/
@@ -1101,7 +1032,6 @@ advisories:
       deserialization CVEs.
     replacement: com.thoughtworks.xstream:xstream (bump) or Jackson XML (tools.jackson.dataformat:jackson-dataformat-xml)
     replacement_version: 1.4.21
-    policy: guide
     followup: Bump to 1.4.21, call xstream.allowTypes(...) / allowTypesByWildcard(...) and add the needed --add-opens to the run script (runtime).
     docs:
       - https://x-stream.github.io/faq.html
@@ -1118,7 +1048,6 @@ advisories:
       no recipe in the pinned jars.
     replacement: org.jdom:jdom2
     replacement_version: 2.0.6.1 (Boot 4.1 managed)
-    policy: guide
     followup: Rename org.jdom.* imports to org.jdom2.* (the API is close) and swap the dependency.
     docs:
       - https://github.com/hunterhacker/jdom/wiki/JDOM2-Migration-Issues
@@ -1134,7 +1063,6 @@ advisories:
       Axis 1 APIs. AxisServlet (javax.servlet) cannot run on Tomcat 11 / Boot 4.
     replacement: JAX-WS client generated from the WSDL (com.sun.xml.ws:jaxws-rt + jaxws-maven-plugin), Apache CXF 4.x or Spring WS WebServiceTemplate
     replacement_version: jaxws-rt 4.0.5 / cxf-rt-frontend-jaxws 4.2.4 / spring-ws 5.0.2 (Boot-managed)
-    policy: guide
     followup: >-
       Keep the javax.xml.rpc / javax.xml.soap imports in Axis code (exclude them from the jakarta rename), declare
       axis-jaxrpc and axis-saaj 1.4 explicitly and plan the regeneration of the stubs with JAX-WS (wsimport) or CXF.
@@ -1154,7 +1082,6 @@ advisories:
       runs UpdateApacheCommonsEmailDependencies (newVersion 2.0.x); whether it accepts the milestone is unverified.
     replacement: org.apache.commons:commons-email2-jakarta (or Spring JavaMailSender, spring-boot-starter-mail)
     replacement_version: 2.0.0-M1 (milestone)
-    policy: guide
     followup: >-
       After the recipe check the pom: if commons-email2-jakarta has no resolvable version set 2.0.0-M1 explicitly (a
       milestone in production is the owners' call) or move to JavaMailSender.
@@ -1171,7 +1098,6 @@ advisories:
       package and a builder-based API.
     replacement: org.apache.commons:commons-configuration2
     replacement_version: 2.15.1
-    policy: guide
     followup: Rewrite PropertiesConfiguration / XMLConfiguration use to configuration2 builders (FileBasedConfigurationBuilder) or Spring @ConfigurationProperties.
     docs:
       - https://commons.apache.org/proper/commons-configuration/userguide/upgradeto2_0.html
@@ -1187,7 +1113,6 @@ advisories:
       --add-opens java.base/java.lang=ALL-UNNAMED.
     replacement: net.bytebuddy:byte-buddy (Boot-managed) or MapStruct / BeanUtils.copyProperties
     replacement_version: Boot 4.1 managed
-    policy: guide
     followup: Remove cglib when nothing uses it directly; replace BeanCopier / Enhancer use (MapStruct, BeanUtils.copyProperties, ByteBuddy).
     docs:
       - https://github.com/cglib/cglib
@@ -1201,7 +1126,6 @@ advisories:
       receives no fixes; the httpclient4 advisory does not cover it and the httpclient5 recipes start from 4.x.
     replacement: org.apache.httpcomponents.client5:httpclient5 (or Spring RestClient)
     replacement_version: Boot 4.1 managed (5.6.1)
-    policy: guide
     followup: Rewrite HttpClient / GetMethod / PostMethod / NameValuePair code to httpclient5 (or RestClient) and drop commons-httpclient.
     docs:
       - https://hc.apache.org/httpclient-legacy/
@@ -1220,7 +1144,6 @@ advisories:
       and the parser setters, deprecated parseClaimsJws → parseSignedClaims and SignatureAlgorithm.
     replacement: io.jsonwebtoken:jjwt-api + jjwt-impl (runtime) + jjwt-jackson (runtime)
     replacement_version: 0.13.0
-    policy: guide
     followup: >-
       Short term keep 0.9.1 and add javax.xml.bind:jaxb-api 2.3.1 (runtime); proper fix: 0.13.0 with
       Jwts.parser().verifyWith(key).build().parseSignedClaims(..) and signWith(Keys.hmacShaKeyFor(bytes)).
@@ -1244,7 +1167,6 @@ advisories:
       in the recipe catalog yet; HSSFColor.* inner classes are not covered.
     replacement: org.apache.poi:poi / poi-ooxml
     replacement_version: 5.5.1
-    policy: guide
     followup: >-
       Review the ported constants / style calls and HSSFColor / IndexedColors use, then re-test the generated Excel
       files (fonts, borders, merged cells).
@@ -1263,7 +1185,6 @@ advisories:
       different template syntax (jx:area comments) and API.
     replacement: org.jxls:jxls-poi (2.x for minimal change, 3.x current)
     replacement_version: 2.14.0 / 3.2.0
-    policy: guide
     followup: Keep POI 3.x pinned for the JXLS 1 modules (if the owners accept it) or port the templates to jx:area markup and JxlsHelper (2.x).
     docs:
       - https://jxls.sourceforge.net/
@@ -1276,7 +1197,6 @@ advisories:
     summary: No javax EE references; it compiles and runs on Java 21 but is unmaintained and reads / writes only BIFF8 .xls.
     replacement: org.apache.poi:poi (HSSF / XSSF)
     replacement_version: 5.5.1
-    policy: guide
     followup: Port Workbook / WritableWorkbook code to POI when the module is next touched.
     docs:
       - https://jexcelapi.sourceforge.net/
@@ -1294,7 +1214,6 @@ advisories:
       org.apache.commons.logging.*.
     replacement: org.slf4j:slf4j-api (Boot-managed) + spring-boot-starter-logging
     replacement_version: 2.0.18 (Boot 4.1 managed)
-    policy: guide
     followup: >-
       Drop explicit versions on org.slf4j:* and logback, remove slf4j-log4j12 / slf4j-jdk14 / slf4j-simple bindings and
       jcl-over-slf4j; keep log4j-over-slf4j only for leftover Log4j 1 calls.
@@ -1313,7 +1232,6 @@ advisories:
       Irrelevant while build.skip_test_compile is true (company runs).
     replacement: org.mockito:mockito-core (+ mockito-junit-jupiter)
     replacement_version: 5.23.0 (Boot 4.1 managed)
-    policy: guide
     followup: Replace mockito-all with mockito-core and run Mockito1to5Migration when the tests come back into scope.
     docs:
       - https://docs.openrewrite.org/recipes/java/testing/mockito/mockito1to5migration
@@ -1327,7 +1245,6 @@ advisories:
       tests fail. The verified recipe ReplacePowerMockito rewrites mockStatic / when / spy / Whitebox to plain Mockito.
     replacement: org.mockito:mockito-core (MockedStatic / MockedConstruction)
     replacement_version: 5.23.0 (Boot 4.1 managed)
-    policy: guide
     followup: Remove PowerMock and rewrite private / final / static mocking with Mockito 5 (or refactor the code under test) when the tests come back into scope.
     docs:
       - https://docs.openrewrite.org/recipes/java/testing/mockito/replacepowermockito
