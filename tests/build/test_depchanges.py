@@ -204,11 +204,22 @@ def test_apply_table_version_equals_after():
     table = [_lib("org.qlrm:qlrm", "4.2.1", old_keys=["ch.simas.qlrm:qlrm"], jakarta_since="4.0.1",
                   note="QLRM moved to jakarta in 4.0.1.")]
     apply_table([major, relocated], table)
-    assert major.approved and relocated.approved
-    assert major.note == "approved by the shipped table: QLRM moved to jakarta in 4.0.1."
+    # a cross-major pin is a FACT of the shipped table, not an approval ("approved" = a person's allow_major or a
+    # same-major pin); the change stays an operator check, the note says the table knows the release
+    assert not major.approved and not relocated.approved
+    assert major.note == "the shipped table knows this jakarta release (no same-major jakarta build listed)"
+    assert relocated.note == major.note
     other = DependencyChange(path="pom.xml", key="org.qlrm:qlrm", before="1.7.1", after="4.0.1", kind="major")
     apply_table([other], table)
     assert not other.approved and other.note == ""
+    same = DependencyChange(path="pom.xml", key="org.qlrm:qlrm", before="4.0.1", after="4.2.1", kind="minor")
+    apply_table([same], table)
+    assert same.approved and same.note == "approved by the shipped table: QLRM moved to jakarta in 4.0.1."
+    allowed = [_lib("org.qlrm:qlrm", "4.2.1", old_keys=["ch.simas.qlrm:qlrm"], jakarta_since="4.0.1",
+                    allow_major=True, source="company")]
+    major2 = DependencyChange(path="pom.xml", key="org.qlrm:qlrm", before="1.7.1", after="4.2.1", kind="major")
+    apply_table([major2], allowed)
+    assert major2.approved and major2.note.startswith("approved by the company table")
 
 
 def test_apply_table_same_major_note_and_no_cross_library_approval():

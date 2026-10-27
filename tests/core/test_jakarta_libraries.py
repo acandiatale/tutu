@@ -194,5 +194,6 @@ def test_library_hint_line():
     q = jakarta_library_for("org.qlrm:qlrm")
     line = library_hint_line(q, "1.7.1")
     assert "crosses 1.x → 4.x" in line and "<verify>" in line and "source: shipped table" in line
+    assert line.startswith("org.qlrm:qlrm: the table knows the jakarta release 4.2.1 (") and "approved" not in line
     eh = library_hint_line(jakarta_library_for("org.ehcache:ehcache"))
     assert "classifier jakarta" in eh and "\n" not in eh

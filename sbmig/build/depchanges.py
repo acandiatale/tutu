@@ -346,11 +346,19 @@ def _apply_one(ch: DependencyChange, libs: list[Any]) -> None:
         on_line = ch.after is None or ch.after == version or (
             major_of(ch.after) is not None and major_of(ch.after) == major_of(version))
         covers = target_key in keys and (ch.kind != "replaced" or ch.key in keys)
-        if (getattr(e, "allow_major", False) and on_line) or (covers and version is not None and version == ch.after):
+        # a pin (`version` == after) approves only inside the major line: a cross-major move is approved by a person's
+        # `allow_major` alone — the shipped table's cross-major versions are facts, not approvals (rule 14)
+        same_line = major_of(ch.before) is None or major_of(ch.after) is None or \
+            major_of(ch.before) == major_of(ch.after)
+        pinned = covers and version is not None and version == ch.after
+        if (getattr(e, "allow_major", False) and on_line) or (pinned and same_line):
             ch.approved = True
             src = getattr(e, "source", "shipped")
             first = _first_sentence(getattr(e, "note", ""))
             ch.note = f"approved by the {src} table" + (f": {first}" if first else "")
+            return
+        if pinned and ch.needs_operator:
+            ch.note = f"the {getattr(e, 'source', 'shipped')} table knows this jakarta release (no same-major jakarta build listed)"
             return
     if ch.needs_operator and old_e is not None:
         v = getattr(old_e, "version", None)

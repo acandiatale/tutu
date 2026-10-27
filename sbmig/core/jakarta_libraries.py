@@ -193,17 +193,22 @@ def library_hint_line(entry: JakartaLibrary, current: Optional[str] = None) -> s
         from sbmig.build.repo_versions import parse_version
 
         reached = bool(current and "${" not in current and parse_version(current) >= parse_version(entry.version))
+        cm, vm = major_of(current), major_of(entry.version)
+        crosses = cm is not None and vm is not None and cm < vm and not reached
         if reached:
             head = (f"{entry.key}: current {current} is already at or above the table's {entry.version} — keep it, "
                     f"no version change needed")
         elif entry.allow_major:
             head = f"{entry.key}: approved — a person allowed the major upgrade to {entry.version}"
+        elif crosses:
+            # "approved" is reserved for a person's allow_major or a same-major pin: a cross-major table version is a
+            # fact (the known jakarta release), not an approval — rule 14 decides whether the move is allowed
+            head = (f"{entry.key}: the table knows the jakarta release {entry.version} (crosses {cm}.x → {vm}.x — "
+                    f"use it only if the repository has no same-major jakarta build, then port what that major "
+                    f"changes and write <verify>)")
         else:
             head = f"{entry.key}: approved — raise to {entry.version}"
         tail: list[str] = []
-        cm, vm = major_of(current), major_of(entry.version)
-        if not entry.allow_major and cm is not None and vm is not None and cm < vm and not reached:
-            tail.append(f"crosses {cm}.x → {vm}.x: port what that major changes and write <verify>")
         facts = [f"jakarta since {entry.jakarta_since}"]
         if entry.classifier:
             facts.append(f"classifier {entry.classifier}")

@@ -1503,10 +1503,14 @@ passed, the runtime is unverified): "메이저를 올리지 마라. 마이너에
   Handover; `major=<n>` on the result line.
 
 ### As built (v2.1d, 2026-10-27)
-* **Table approval is stricter than the brief**: a table entry approves a change only for the library it describes — the
-  key's own entry, or for `replaced` an entry whose `old_keys` cover the old coordinates (a relocation). `allow_major`
-  approves only a move onto the entry's major line. So the shipped `org.sitemesh:sitemesh` 3.3.0 entry does **not**
-  approve a SiteMesh 2 → 3 swap; a company entry with `allow_major: true` does. A company entry may omit
+* **Table approval is stricter than the brief**: "approved" means a person's `allow_major` (onto the entry's major
+  line) or a same-major pin (`version` == after, for the library the entry describes — the key's own entry, or for
+  `replaced` an entry whose `old_keys` cover the old coordinates). A cross-major table version without `allow_major`
+  is a **fact**, not an approval: the hint line says `the table knows the jakarta release 4.2.1 (crosses 1.x → 4.x —
+  use it only if the repository has no same-major jakarta build, then port … and write <verify>)`, the read-back note
+  says `the shipped table knows this jakarta release (no same-major jakarta build listed)` and the change stays an
+  unapproved operator check. So the shipped `org.sitemesh:sitemesh` 3.3.0 entry does **not** approve a SiteMesh 2 →
+  3 swap; a company entry with `allow_major: true` does. A company entry may omit
   `jakarta_since` (defaults to `version`); YAML numbers become strings. A broken company file → one warning, shipped
   table only. `library_hint_line` adds "crosses N.x → M.x: port what that major changes and write <verify>" when a
   non-approved table version is a higher major.
