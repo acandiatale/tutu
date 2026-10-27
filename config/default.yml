@@ -108,6 +108,9 @@ build:
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
   require_java_major: 21        # preflight: `mvn -v` must report this Java major, else abort (jdk-not-21); 0 = no check
   retry_negative_cache: true    # "…was cached in the local repository…" → the same build once more with -U
+  repository_url: null          # v2.1d: where maven-metadata.xml / poms are read to list releases for the LLM;
+                                # null → the catch-all mirror of settings_file, else Maven Central (unless offline)
+  repository_timeout_seconds: 10
 
 loop:
   # v2: no intermediate builds. transform (all recipes) → restructure → structure review → the first build is the final
@@ -188,6 +191,16 @@ errors:                            # v2.1 error list: <run dir>/errors.jsonl + e
   raw_chars: 600
   md_view: true
   json_files: true                 # one readable JSON per error under cases/<case_id>/errors/ (people browse these)
+
+libraries:                         # v2.1d dependency version policy: never a major upgrade / library swap on the LLM's own;
+                                   # same-major jakarta release first, a higher major only with a 운영자 확인 guide
+  lookup: true                     # read the repository's maven-metadata.xml / poms → "Dependency versions" in the prompt
+  max_pom_checks: 6                # candidate poms fetched per library to tell jakarta builds apart
+  include_prerelease: false
+  max_artifacts_per_case: 3
+  company_file: libraries.yml      # people's additions / approvals, relative to kb.dir (no redeploy): same schema as
+                                   # knowledge/libraries/jakarta_libraries.yml + allow_major: true
+  verify_guide_llm: true           # answer without <verify> after a major upgrade → one more LLM call for the guide
 
 review:                            # v2 structure review: the LLM checks poms / dependencies / modules after the restructure
   enabled: true

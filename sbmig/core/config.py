@@ -234,6 +234,11 @@ class BuildConfig(BaseModel):
     # "… was cached in the local repository, resolution will not be reattempted …" (a Nexus 404 remembered for a day)
     # → the same build once more with -U before the error is triaged
     retry_negative_cache: bool = True
+    # v2.1d: where sbmig reads `maven-metadata.xml` / poms to tell the LLM which releases exist (same major first).
+    # None → the catch-all <mirror> of `settings_file` (its <server> credentials, `${env.X}` resolved), else Maven
+    # Central unless `offline`; a URL here wins
+    repository_url: Optional[str] = None
+    repository_timeout_seconds: int = 10
 
 
 class PhaseLoopConfig(BaseModel):
@@ -363,6 +368,21 @@ class ErrorsConfig(BaseModel):
                                              # (people browse these; errors.jsonl stays the machine copy)
 
 
+class LibrariesConfig(BaseModel):
+    """v2.1d dependency version policy (2026-10-27): the LLM never raises a dependency's major version or replaces a
+    library on its own — same-major jakarta release first (the prompt lists what the repository has); a higher major
+    only when the same major has no jakarta build, and then with a 운영자 확인 guide. People extend the shipped
+    table (knowledge/libraries/jakarta_libraries.yml) in `<kb>/libraries.yml` without a redeploy."""
+    lookup: bool = True                      # ask the repository (build.repository_url / settings mirror / Central)
+                                             # which releases exist; off → the prompt carries the table + policy only
+    max_pom_checks: int = 6                  # candidate poms fetched per library to tell jakarta builds apart
+    include_prerelease: bool = False         # milestones / RCs / alphas listed as candidates
+    max_artifacts_per_case: int = 3          # libraries looked up per case (the errors' artifacts / owner classes)
+    company_file: str = "libraries.yml"      # the people's table, relative to kb.dir (same schema; its entry wins)
+    verify_guide_llm: bool = True            # a major upgrade whose answer has no <verify> → ONE more LLM call for
+                                             # the guide; off (or no LLM) → sbmig synthesizes it from the diff
+
+
 class ReviewConfig(BaseModel):
     """v2 structure review (sbmig.review): after the restructure, before the first build, the LLM checks the poms,
     dependencies and module layout against the company rules. Critical findings → one fix script (committed, can be
@@ -464,6 +484,7 @@ class Config(BaseModel):
     script: ScriptConfig = Field(default_factory=ScriptConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
     errors: ErrorsConfig = Field(default_factory=ErrorsConfig)
+    libraries: LibrariesConfig = Field(default_factory=LibrariesConfig)
     kb: KBConfig = Field(default_factory=KBConfig)
     plan: PlanConfig = Field(default_factory=PlanConfig)
     fleet: FleetConfig = Field(default_factory=FleetConfig)

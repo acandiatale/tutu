@@ -1431,3 +1431,73 @@ corrected in place. The v1 code paths stay in the tree until PLAN-v2 step 4 (v1 
 regex searched in the request's non-system messages (`case: <case_id>`), `replay_role` `fix` (also answers
 `fix_escalation`) | `structure_review`; each request takes the first unused matching entry (file order), the last
 match repeats, no match → the "no fix" answer; entries without `match` / `replay_role` = the old positional replay.
+
+## v2.1d — dependency version policy (2026-10-27)
+
+User request (company run, SiteMesh 2 → the LLM added `org.sitemesh:sitemesh:3.2.1` and ported the filter; the build
+passed, the runtime is unverified): "메이저를 올리지 마라. 마이너에서 jdk21 / jakarta 를 지원하는지 검색 후 올려라. 메이저를
+올렸으면 이런이런 거 변경했으니 운영자분이 꼭 확인해 보세요 라고 가이드를 줘라. 라이브러리별 지식은 사람이 주입하고,
+재배포는 없어야 한다. 빌드는 꼭 통과해야 하니 Handover 로 막지 마라." Four pieces, none of them a block:
+
+1. **Policy in the prompt** (`sbmig/fix/prompts/script_system_v1.md`, also the review prompt): never change a
+   dependency's major version or replace a library on your own; raise a javax-era library to the newest release of the
+   SAME major that is a jakarta build (the prompt section "Dependency versions" lists what the repository has); a
+   higher major only when the same major has no jakarta build — then port everything that major changes (config
+   files, registrations, JSP tags, renamed packages), add `<verify>` (운영자 확인 사항) and MIGRATION-TODO what is left.
+   A table entry marked approved may be used as given. If the model can look releases up itself it says so in
+   `<analysis>`; the repository list is authoritative for what the build can download.
+2. **Facts in the prompt** (`sbmig/build/repo_versions.py`, `FixContext.library_hints`): for the libraries behind a
+   case (the errors' `artifact`, else the owner class located on the module classpath → `ClassLocation.artifact`,
+   ≤ `libraries.max_artifacts_per_case`), the people's table entry and the repository's releases: same-major releases
+   newer than the current one with "jakarta ✓ / javax" from their poms, the newest release of each higher major.
+3. **Read-back guard** (`sbmig/build/depchanges.py`): after every applied try (script or edits) and the review commit,
+   the pom diff is parsed; `major` / `replaced` changes become `FixAttempt.major_upgrades` / `FixTry.major_upgrades`
+   / `StructureReview.major_upgrades` with a guide (`verify`): the answer's `<verify>`, else ONE LLM call
+   (`VerifyGuideLike.verify_guide`, `libraries.verify_guide_llm`), else `synthesized_guide`. WARNING log line
+   `메이저 업그레이드: <key> <before> → <after> (<pom>) — 운영자 확인 필요` + the guide lines at INFO. Nothing is
+   blocked or reverted for this reason.
+4. **Operator section**: `RunReport.operator_checks` (changes still in the final tree, `still_applied`), rendered
+   first in the report Handover as "운영자 확인 필요 (메이저 업그레이드 N건)" / "Operator checks (N major upgrades)",
+   `report.json`, the error list (`errors.md`: `메이저 변경:` + `운영자 확인:` lines, the per-error JSON), and
+   `SBMIG-RESULT … major=<n>` (token appended only when n > 0, like `review=`).
+
+### Models (`sbmig/core/models.py`)
+* `DependencyChange(path, key, before, after, kind: major|minor|added|removed|replaced, replaced_by, section:
+  dependencies|dependencyManagement|plugins|pluginManagement|parent, approved, note)`; `.needs_operator` (major or
+  replaced), `.text` (`g:a 2.4.2 → 3.2.1`).
+* `VersionCandidate(version, jakarta: bool|None, prerelease, java)`; `RepositoryVersions(key, current, major,
+  same_major[], higher[], first_jakarta, source, error, checked_at)`.
+* `OperatorCheck(kind: major_upgrade|library_replaced, change, case_id, source "fix r3 try 2"|"review", commit, guide,
+  guide_source llm|sbmig, files)`; `RunReport.operator_checks`.
+* `ScriptProposal.verify` (`<verify>`), `FixTry.major_upgrades` / `.verify`, `FixAttempt.major_upgrades` / `.verify` /
+  `.verify_source`, `StructureReview.major_upgrades`.
+* `JakartaLibrary.allow_major` (a person allows the cross-major move to `version`), `.source` shipped|company.
+
+### Seams (`sbmig/core/interfaces.py`)
+* `FixContext.library_hints: list[str]` — the "Dependency versions" section lines (table entry + repository facts).
+* `VerifyGuideLike.verify_guide(ws, cluster, ctx, changes, diff) -> str` (optional on a fixer; `LLMFixer` has it;
+  "" on failure, never raises).
+
+### Config (`config/default.yml`, `tests/core/test_v21d_contracts.py`)
+* `build.repository_url` (None → settings mirror → Central unless offline), `build.repository_timeout_seconds` 10.
+* `libraries.lookup` true, `max_pom_checks` 6, `include_prerelease` false, `max_artifacts_per_case` 3,
+  `company_file` `libraries.yml` (relative to `kb.dir`), `verify_guide_llm` true.
+
+### Functions
+* `sbmig.core.jakarta_libraries`: `jakarta_libraries(path=None, company_path=None)` merges the shipped table and the
+  company file (same schema, `allow_major`; a company entry replaces the shipped one with the same key);
+  `jakarta_library_for(key, ...)`; `company_libraries_file(cfg) -> Path`; `library_hint_line(entry, current) -> str`.
+  The company file is read fresh per run (mtime-aware cache).
+* `sbmig.build.repo_versions`: `RepositoryLookup(cfg, fetch=None)` (`repository_url()`, `versions(g, a)`,
+  `pom_text(g, a, v)`, `candidates(key, current) -> RepositoryVersions`), `mirror_from_settings(path)`,
+  `parse_version`, `is_prerelease`, `hint_lines(rv, entry)`.
+* `sbmig.build.depchanges`: `major_of`, `dependency_changes(before, after, path)`, `changes_in_commit(ws, pre, sha)`
+  (needs `Workspace.file_at(sha, path) -> str | None`, `git show sha:path`), `apply_table(changes, libraries)`,
+  `still_applied(ws, change)`, `synthesized_guide(changes, lang)`.
+* Fix loop (`sbmig/loop/fixloop.py`): `_library_hints(c)` before `_ask_llm` (new and augment; INFO line
+  `의존성 버전 조회: <key> <current> → 같은 메이저 …, 상위 …` or the lookup error); after `_applied` the diff read-back,
+  the guide and `finish_try(..., major_upgrades=…, verify=…)`; the reused stored script goes through the same read-back
+  (guide synthesized). Orchestrator: the review commit read back into `StructureReview.major_upgrades`; at finalize
+  `report.operator_checks` from the entries' tries + the review, `still_applied` filter.
+* Report (`sbmig/report/handover.py`, `markdown.py`, `result_line.py`, `i18n.py`): the operator block first in
+  Handover; `major=<n>` on the result line.

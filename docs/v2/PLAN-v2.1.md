@@ -143,4 +143,5 @@ def fix(p): …            # 같은 케이스를 다른 프로젝트에서 고�
 | E1–E4 | 완료 (2026-10-27): 에러 목록 `sbmig/errors/`, 흐름·사다리·단계 로그, 답변 형식·직접 수정·점검, 슬림 리포트·실행 파일 축소 |
 | 통합 · e2e | 완료: 오프라인 테스트 통과, 실제 Maven e2e **32/32** (`out/e2e-v21/summary.md`) |
 | v2.1b (2026-10-27) | 완료: 수정마다 LLM 설명(`<changes>` / `desc`: 어디의 무엇을 어떻게) + diff 줄 범위를 시도의 `edits` 에 기록 — errors.md · 리포트 "케이스별 해결" · 로그 `수정:` 줄; LLM 시도 커밋은 스크립트/edits 가 바꾼 파일만 담고, 빌드가 `target/` 밖에 만든 파일(lib/ 로 복사된 jar 등)은 빌드 직후 되돌리거나 제외 (회사 실행의 jar 혼입 원인). e2e 32/32 |
+| v2.1d (2026-10-27) | 진행 중: 의존성 버전 정책 — LLM 은 메이저를 올리거나 라이브러리를 바꾸지 않고 같은 메이저의 jakarta 빌드로 올림 (프롬프트에 저장소 버전 목록 `sbmig/build/repo_versions.py` + 사람이 채우는 `<kb>/libraries.yml`); 메이저를 올린 수정은 pom diff 로 읽어 내 `운영자 확인 필요` 가이드(LLM `<verify>` 또는 sbmig 생성)를 errors.md · Handover 첫 블록 · `SBMIG-RESULT major=N` 에 기록 (막지 않음, 빌드는 통과). 계약: `docs/INTERFACES.md` "v2.1d" |
 | 문서 | 대기 (핸드북·설계 문서는 사용자가 요청할 때) |

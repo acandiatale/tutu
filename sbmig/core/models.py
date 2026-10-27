@@ -769,6 +769,8 @@ class ScriptProposal(BaseModel):
     edits: list[Edit] = Field(default_factory=list)
     changes: list[EditNote] = Field(default_factory=list)   # `<changes>`: what the fix modifies where (script or edits)
     no_script_reason: str = ""
+    verify: str = ""                               # v2.1d `<verify>`: 운영자 확인 사항 — what the operator must check at
+                                                   # runtime after a major version upgrade / a library replaced ("" = none)
     model: str = ""
     prompt_hash: str = ""
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
@@ -778,6 +780,83 @@ class ScriptProposal(BaseModel):
 
 
 FixAnswer = ScriptProposal                      # the v2.1 name
+
+
+# ---------------------------------------------------------------------------
+# v2.1d dependency version policy (2026-10-27, user: "메이저를 올리지 마라; 같은 메이저에서 jakarta / JDK 21 을 지원하는
+# 버전을 찾아 올려라; 메이저를 올렸으면 무엇을 바꿨고 운영자가 무엇을 확인해야 하는지 가이드를 남겨라"). The LLM is told the
+# policy and what the repository has (sbmig.build.repo_versions); after a fix, the pom diff is read back
+# (sbmig.build.depchanges) and every major upgrade / library replacement becomes an OperatorCheck in the report's
+# Handover ("운영자 확인 필요") — never a block: the build must pass.
+# ---------------------------------------------------------------------------
+DependencyChangeKind = Literal["major", "minor", "added", "removed", "replaced"]
+# major = the major number of the version changed (2.4.2 → 3.2.1); minor = any other version change (incl. a
+# classifier / property change); replaced = one library removed and another added in the same pom that stands in
+# for it (same artifactId or one artifactId contains the other); added / removed = the rest
+PomSection = Literal["dependencies", "dependencyManagement", "plugins", "pluginManagement", "parent"]
+
+
+class DependencyChange(BaseModel):
+    """One coordinate change read from a pom diff (sbmig.build.depchanges.dependency_changes)."""
+    path: str                                      # the pom, project-relative posix
+    key: str                                       # groupId:artifactId before the change (added: the new one)
+    before: Optional[str] = None                   # version before (None = absent / managed by the parent)
+    after: Optional[str] = None                    # version after (replaced: the NEW library's version)
+    kind: DependencyChangeKind
+    replaced_by: Optional[str] = None              # replaced: the new groupId:artifactId
+    section: PomSection = "dependencies"
+    approved: bool = False                         # a person's table entry (libraries.yml: allow_major / version)
+                                                   # allows this move — still listed for the operator, marked approved
+    note: str = ""                                 # the table entry's note / what the repository offered instead
+
+    @property
+    def needs_operator(self) -> bool:
+        """A change the operator must verify at runtime (major upgrade or a library replaced)."""
+        return self.kind in ("major", "replaced")
+
+    @property
+    def text(self) -> str:
+        """`org.sitemesh:sitemesh 2.4.2 → 3.2.1` / `opensymphony:sitemesh 2.4.2 → org.sitemesh:sitemesh 3.2.1`."""
+        a = f"{self.replaced_by} {self.after or '-'}" if self.replaced_by else (self.after or "-")
+        return f"{self.key} {self.before or '-'} → {a}"
+
+
+class VersionCandidate(BaseModel):
+    """One release the repository has (sbmig.build.repo_versions)."""
+    version: str
+    jakarta: Optional[bool] = None                 # its pom depends on jakarta.* (None = pom not checked / unknown)
+    prerelease: bool = False                       # milestone / RC / alpha / beta / SNAPSHOT
+    java: Optional[int] = None                     # minimum Java the pom states (maven.compiler.release / target)
+
+
+class RepositoryVersions(BaseModel):
+    """What the configured repository (settings.xml mirror / build.repository_url / Maven Central) has for one
+    library — the facts the fix prompt lists under "Dependency versions" (sbmig.build.repo_versions.RepositoryLookup)."""
+    key: str                                       # groupId:artifactId
+    current: Optional[str] = None                  # the version the project uses (None = unknown)
+    major: Optional[int] = None                    # major of `current`
+    same_major: list[VersionCandidate] = Field(default_factory=list)   # releases of the current major newer than
+                                                   # `current`, oldest → newest (prereleases only when configured)
+    higher: list[VersionCandidate] = Field(default_factory=list)       # the newest release of every higher major
+    first_jakarta: Optional[str] = None            # lowest checked release whose pom is a jakarta build (any major)
+    source: str = ""                               # metadata URL / local repository path / "" (nothing found)
+    error: str = ""                                # why the lookup gave nothing (timeout, 404, offline, no url)
+    checked_at: datetime = Field(default_factory=utcnow)
+
+
+class OperatorCheck(BaseModel):
+    """v2.1d: a modification the operator must verify at runtime — a major version upgrade or a library replaced by
+    another one. Report Handover "운영자 확인 필요" (first block), report.json `operator_checks`, `SBMIG-RESULT …
+    major=<n>`. Built at the end from the error list's tries (+ the structure review) for changes still in the
+    final tree (a rolled-back try is not listed)."""
+    kind: Literal["major_upgrade", "library_replaced"] = "major_upgrade"
+    change: DependencyChange
+    case_id: str = ""                              # "" for the structure review
+    source: str = ""                               # "fix r3 try 2" | "review"
+    commit: str = ""
+    guide: str = ""                                # 운영자 확인 사항: the LLM's <verify> text, or sbmig's synthesized lines
+    guide_source: Literal["llm", "sbmig"] = "llm"
+    files: list[str] = Field(default_factory=list) # files the same try changed (what the port touched)
 
 
 # ---------------------------------------------------------------------------
@@ -798,6 +877,9 @@ class FixTry(BaseModel):
     applied: TryApplied = "none"
     files: list[str] = Field(default_factory=list)
     edits: list[EditNote] = Field(default_factory=list)   # 수정: per change, where / what (LLM) + lines (diff)
+    major_upgrades: list[DependencyChange] = Field(default_factory=list)   # v2.1d: major / replaced changes this try
+                                                   # made in poms (read back from its diff)
+    verify: str = ""                               # v2.1d 운영자 확인 사항 for them (LLM <verify> or sbmig synthesized)
     diff: str = ""                                 # unified diff of what was applied (capped by errors.diff_chars)
     commit: str = ""
     result: AttemptOutcome = "pending"
@@ -887,6 +969,7 @@ class StructureReview(BaseModel):
     script: str = ""                               # the script for the critical issues ("" = none)
     script_result: Optional[ScriptRunResult] = None
     answer: Optional["ScriptProposal"] = None      # v2.1: the LLM's 원인 / 해결 / edits / script (edits applied by the reviewer)
+    major_upgrades: list[DependencyChange] = Field(default_factory=list)   # v2.1d: major / replaced changes of its commit
     commit: Optional[str] = None                   # commit of the script's changes (revertible)
     reverted: bool = False
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
@@ -938,6 +1021,10 @@ class FixAttempt(BaseModel):
     solution: str = ""                             # 해결 방법 (the LLM's <solution>)
     no_script_reason: str = ""
     edits_applied: int = 0                         # direct edits applied (0 = a script ran)
+    # v2.1d: major upgrades / library replacements this attempt made in poms, and the operator guide for them
+    major_upgrades: list[DependencyChange] = Field(default_factory=list)
+    verify: str = ""                               # 운영자 확인 사항 (the answer's <verify>, or synthesized)
+    verify_source: Literal["", "llm", "sbmig"] = ""
 
 
 class IterationRecord(BaseModel):
@@ -1497,6 +1584,8 @@ class RunReport(BaseModel):
     error_case_counts: dict[str, int] = Field(default_factory=dict)   # status → count
     structure_review: Optional[StructureReview] = None           # v2: LLM review of poms / modules before the first build
     error_entries: list[ErrorEntry] = Field(default_factory=list)    # v2.1: the run's error list (diffs capped)
+    operator_checks: list[OperatorCheck] = Field(default_factory=list)   # v2.1d: 운영자 확인 필요 (major upgrades /
+                                                   # library replacements still in the final tree, with their guide)
     outputs: dict[str, str] = Field(default_factory=dict)        # project_dir, zip, diff, journal, report_md, report_json
     timings_s: dict[str, float] = Field(default_factory=dict)
 

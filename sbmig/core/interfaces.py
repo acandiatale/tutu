@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 from .config import Config
 from .models import (
     BuildError,
+    DependencyChange,
     CaseType,
     BuildResult,
     ErrorCluster,
@@ -256,6 +257,10 @@ class FixContext(BaseModel):
     case_id: str = ""                             # the cluster's case (L2 signature id)
     signature_generic: str = ""
     script_base: Optional[ScriptBase] = None      # augment: the previous version and what it did in this project
+    # v2.1d dependency version policy: facts for the prompt section "Dependency versions" — the people's table entry
+    # (libraries.yml) and what the repository has for the libraries behind this case (same-major releases, which are
+    # jakarta builds, the higher majors), one line each; [] when nothing is known
+    library_hints: list[str] = Field(default_factory=list)
 
 
 @runtime_checkable
@@ -269,6 +274,17 @@ class FixerLike(Protocol):
 
 
 ScriptFixerLike = FixerLike          # the name step 1 introduced; one seam since step 4
+
+
+@runtime_checkable
+class VerifyGuideLike(Protocol):
+    """v2.1d, optional on a fixer: after a fix that raised a dependency's major version or replaced a library, the loop
+    asks ONCE for the 운영자 확인 사항 the answer did not carry (`libraries.verify_guide_llm`). `changes` = the
+    DependencyChange items read from the applied diff, `diff` = that diff (capped). Returns the guide text (plain
+    lines, the report language) or "" on any failure; never raises. A fixer without it gets sbmig's synthesized
+    guide (`sbmig.build.depchanges.synthesized_guide`)."""
+    def verify_guide(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, changes: list[DependencyChange],
+                     diff: str) -> str: ...
 
 
 # ---------------------------------------------------------------------------

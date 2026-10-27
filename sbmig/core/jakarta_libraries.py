@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -26,6 +26,10 @@ class JakartaLibrary(BaseModel):
     requires_java: Optional[int] = None
     note: str = ""
     docs: list[str] = Field(default_factory=list)
+    # v2.1d (2026-10-27): a person's entry may allow what the policy forbids by default
+    allow_major: bool = False                 # the LLM may move to `version` even when it crosses the major line
+    source: Literal["shipped", "company"] = "shipped"   # shipped = knowledge/libraries/jakarta_libraries.yml;
+                                              # company = <kb>/libraries.yml (people edit it; no redeploy)
 
     @property
     def group_id(self) -> str:
