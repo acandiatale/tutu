@@ -302,11 +302,16 @@ def test_hint_lines_text(tmp_path):
     assert "source: company table" in lines[0] and "More text" not in lines[0]
     assert lines[1] == ("opensymphony:sitemesh — current 2.4.2; same major (2.x) in the repository, newer than "
                         "current: 2.5.0 (javax), 2.6.0 (jakarta ✓, Java 17)")
-    assert len(lines) == 2
+    assert lines[2] == ("opensymphony:sitemesh → verdict: raise to 2.6.0 (same major 2.x, jakarta build) — no major "
+                        "change, no <verify> needed")
+    assert len(lines) == 3
     lines = hint_lines(look.candidates("org.sitemesh:sitemesh", "2.4.2"))
-    assert lines == ["org.sitemesh:sitemesh — current 2.4.2; no newer release on the 2.x line in the repository",
-                     ("org.sitemesh:sitemesh — higher majors: 3.x: 3.3.0 (jakarta ✓, Java 8; first jakarta release "
-                      "3.2.0)")]
+    assert lines[:2] == ["org.sitemesh:sitemesh — current 2.4.2; no newer release on the 2.x line in the repository",
+                         ("org.sitemesh:sitemesh — higher majors: 3.x: 3.3.0 (jakarta ✓, Java 8; first jakarta "
+                          "release 3.2.0)")]
+    assert lines[2].startswith("org.sitemesh:sitemesh → verdict: the 2.x line has NO jakarta build, so a major upgrade "
+                               "to 3.3.0 is allowed here (rule 14: the newest release of that major; first jakarta "
+                               "release 3.2.0)") and len(lines) == 3
 
 
 def test_hint_lines_error_cap_and_unknown_current():
@@ -322,3 +327,57 @@ def test_hint_lines_error_cap_and_unknown_current():
     assert hint_lines(local) == [("a:b — current version unknown; newest release per major in the repository "
                                   "(local repository only): 1.x: 1.9; 2.x: 2.1 (jakarta ✓)")]
     assert hint_lines(None) == []                                     # never raises
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# the rule-14 verdict line (2026-10-27: "qlrm 같은 경우는 메이저로 올라가야 하지 않아?")
+# ---------------------------------------------------------------------------------------------------------------------
+def _rv(key: str, current: str, same=(), higher=(), first_jakarta=None, major=None):
+    from sbmig.core.models import RepositoryVersions, VersionCandidate
+    from sbmig.build.depchanges import major_of
+    return RepositoryVersions(key=key, current=current, major=major if major is not None else major_of(current),
+                              same_major=[VersionCandidate(version=v, jakarta=j) for v, j in same],
+                              higher=[VersionCandidate(version=v, jakarta=j) for v, j in higher],
+                              first_jakarta=first_jakarta, source="https://repo/")
+
+
+def _entry(key: str, version: str, **kw):
+    from sbmig.core.jakarta_libraries import JakartaLibrary
+    return JakartaLibrary(key=key, jakarta_since=kw.pop("jakarta_since", version), version=version, **kw)
+
+
+def test_verdict_same_major_jakarta_build():
+    rv = _rv("opensymphony:sitemesh", "2.4.2", same=[("2.5.0", False), ("2.6.0", True)], higher=[("3.3.0", True)])
+    assert hint_lines(rv)[-1] == ("opensymphony:sitemesh → verdict: raise to 2.6.0 (same major 2.x, jakarta build) — "
+                                  "no major change, no <verify> needed")
+    # the table pins a same-major release the repository did not pom-check
+    rv2 = _rv("opensymphony:sitemesh", "2.4.2", same=[("2.5.0", None), ("2.6.0", None)])
+    assert hint_lines(rv2, _entry("opensymphony:sitemesh", "2.6.0"))[-1].startswith(
+        "opensymphony:sitemesh → verdict: raise to 2.6.0 (same major 2.x, jakarta build)")
+
+
+def test_verdict_major_upgrade_allowed_when_the_line_has_no_jakarta_build():
+    entry = _entry("org.qlrm:qlrm", "4.2.1", old_keys=["ch.simas.qlrm:qlrm"], jakarta_since="4.0.1")
+    rv = _rv("ch.simas.qlrm:qlrm", "1.7.1", same=[], higher=[("2.1.1", None), ("3.0.4", None), ("4.2.1", None)])
+    line = hint_lines(rv, entry)[-1]
+    assert line.startswith("ch.simas.qlrm:qlrm → verdict: the 1.x line has NO jakarta build, so a major upgrade to "
+                           "4.2.1 is allowed here (rule 14: the newest release of that major; jakarta since 4.0.1)")
+    assert "write <verify>" in line and "listed for the operator" in line
+    # no table entry: the repository's own jakarta ✓ on a higher major decides
+    rv2 = _rv("g:a", "1.2", same=[("1.3", False)], higher=[("2.0", False), ("3.1", True)], first_jakarta="3.0")
+    line = hint_lines(rv2)[-1]
+    assert "a major upgrade to 3.1 is allowed here" in line and "first jakarta release 3.0" in line
+
+
+def test_verdict_allow_major_nothing_known_and_no_facts():
+    rv = _rv("org.sitemesh:sitemesh", "2.4.2", same=[], higher=[("3.3.0", True)])
+    assert hint_lines(rv, _entry("org.sitemesh:sitemesh", "3.3.0", allow_major=True, source="company"))[-1] == (
+        "org.sitemesh:sitemesh → verdict: a person approved the move to 3.3.0 (allow_major) — use it as given and "
+        "write <verify>")
+    rv = _rv("g:a", "1.2", same=[("1.3", False)], higher=[("2.0", False)])
+    assert hint_lines(rv)[-1] == ("g:a → verdict: no jakarta build is known on any line — stay on 1.x, say so in "
+                                  "<analysis> and answer <no_script> if the case cannot be fixed without it")
+    from sbmig.core.models import RepositoryVersions
+    assert not any("verdict" in ln for ln in hint_lines(RepositoryVersions(key="g:a", current=None, higher=[])))
+    err = RepositoryVersions(key="g:a", current="1.2", major=1, error="timeout")
+    assert not any("verdict" in ln for ln in hint_lines(err))

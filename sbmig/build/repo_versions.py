@@ -662,6 +662,56 @@ def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
                 lines.append(f"{key} — {cur}; newest release per major in the repository{where}: {majors}")
             else:
                 lines.append(f"{key} — {cur}; the repository lists no release{where}")
+        verdict = _verdict_line(rv, entry)
+        if verdict:
+            lines.append(verdict)
     except Exception as e:  # noqa: BLE001 - a prompt line never breaks a fix
         log.debug("hint_lines(%s): %s", getattr(rv, "key", "?"), e)
     return lines
+
+
+def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
+    """ONE explicit rule-14 verdict so the model does not have to combine the table line and the repository line
+    itself (2026-10-27, "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"):
+    * a same-major jakarta build exists (repository ✓, or the table pins one on the current line) → raise to it, no
+      `<verify>`;
+    * none on the current line but the table / the repository knows a jakarta release of a higher major → the major
+      upgrade is allowed here: newest release of that major, port what changes, `<verify>` required;
+    * a person's `allow_major` → approved as given;
+    * nothing known → stay on the major and say so in `<analysis>` (BLOCKED / Handover is better than a guess).
+    "" when the facts are not there (lookup error, unknown current version)."""
+    try:
+        current = rv.current
+        cm = rv.major if rv.major is not None else major_of(current)
+        if not current or cm is None:
+            return ""
+        allow = bool(getattr(entry, "allow_major", False)) if entry is not None else False
+        ev = str(getattr(entry, "version", "") or "") if entry is not None else ""
+        em = major_of(ev) if ev else None
+        if allow and ev:
+            return (f"{rv.key} → verdict: a person approved the move to {ev} (allow_major) — use it as given and "
+                    f"write <verify>")
+        same_jakarta = [c.version for c in rv.same_major if c.jakarta]
+        pinned_same = ev if ev and em == cm and (not current or parse_version(ev) > parse_version(current)) else ""
+        if same_jakarta or pinned_same:
+            target = same_jakarta[-1] if same_jakarta else pinned_same
+            return (f"{rv.key} → verdict: raise to {target} (same major {cm}.x, jakarta build) — no major change, "
+                    f"no <verify> needed")
+        higher_jakarta = [c for c in rv.higher if c.jakarta]
+        table_higher = ev if ev and em is not None and em > cm else ""
+        if table_higher or higher_jakarta:
+            best = table_higher or higher_jakarta[-1].version
+            since = f"; first jakarta release {rv.first_jakarta}" if rv.first_jakarta and rv.first_jakarta != best \
+                else (f"; jakarta since {getattr(entry, 'jakarta_since', '')}"
+                      if entry is not None and getattr(entry, "jakarta_since", "") else "")
+            return (f"{rv.key} → verdict: the {cm}.x line has NO jakarta build, so a major upgrade to {best} is "
+                    f"allowed here (rule 14: the newest release of that major{since}) — port what that major "
+                    f"changes (coordinates, removed packages, API) and write <verify>; the change will be listed "
+                    f"for the operator")
+        if rv.same_major or rv.higher:
+            return (f"{rv.key} → verdict: no jakarta build is known on any line — stay on {cm}.x, say so in "
+                    f"<analysis> and answer <no_script> if the case cannot be fixed without it")
+        return ""
+    except Exception as e:  # noqa: BLE001
+        log.debug("_verdict_line(%s): %s", getattr(rv, "key", "?"), e)
+        return ""

@@ -1533,6 +1533,14 @@ passed, the runtime is unverified): "메이저를 올리지 마라. 마이너에
   `apply_failed` or rolled back are skipped; `still_applied` filters the rest (a failing check keeps the item). Flag
   `major-upgrade` is an attention flag (`attn=`, fleet `attention` column). `SBMIG-RESULT … review=… major=<n>`.
 * **Prompt section** "Dependency versions (what the repository has; policy: same major first, see rule 14)" sits after
-  the POM sections (order 3.5) and is dropped late in truncation (after `reference_notes`).
+  the POM sections (order 3.5) and is dropped late in truncation (after `reference_notes`). Its last line per library
+  is an explicit **verdict** (`hint_lines` → `_verdict_line`, 2026-10-27 "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"):
+  `raise to 2.6.0 (same major 2.x, jakarta build) — no major change, no <verify> needed` / `the 1.x line has NO
+  jakarta build, so a major upgrade to 4.2.1 is allowed here (rule 14: …; jakarta since 4.0.1) — port … and write
+  <verify>; the change will be listed for the operator` / `a person approved the move to 3.3.0 (allow_major)` / `no
+  jakarta build is known on any line — stay on 1.x … <no_script>`. No verdict without facts (lookup error, unknown
+  current version). QLRM is the reference case: coordinates moved (`ch.simas.qlrm` → `org.qlrm`), the Java packages
+  `org.qlrm.*` did not (4.x drops `org.qlrm.util`) — the port is the pom coordinates; the change is still an
+  unapproved operator check unless the company table says `allow_major`.
 * Tests never reach a repository: `tests/conftest.py` installs an offline `RepositoryLookup` stand-in (autouse);
   `tests/build/test_repo_versions.py` drives the real class with a fake fetch.
