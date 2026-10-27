@@ -1544,3 +1544,48 @@ passed, the runtime is unverified): "메이저를 올리지 마라. 마이너에
   unapproved operator check unless the company table says `allow_major`.
 * Tests never reach a repository: `tests/conftest.py` installs an offline `RepositoryLookup` stand-in (autouse);
   `tests/build/test_repo_versions.py` drives the real class with a fake fetch.
+
+## v2.1e — KB learning records: why a script failed, as-is / to-be code (2026-10-27)
+
+User: "비슷한 케이스는 스크립트로 실행해서 고치고, 실패하면 개선 버전을 만드는데 **왜 실패했는지 이유도 json 에**, 성공한 카운트도;
+코드 수정은 코드화 가망이 희박하지만 뭐가 바뀐지 알면 써먹으니 **as-is 코드와 to-be 코드도**; 사람이 같이 개선하는 에이전트."
+Snippets are whole by default (user: "사람이 보는 거면 40줄 고정 안 해도 되지 않을까" — `errors.snippet_lines: 0`).
+
+### Models (`sbmig/core/models.py`)
+* `EditHunk(lines, before, after, truncated)` — one changed region: `before` = the removed / replaced lines (as-is),
+  `after` = the added lines (to-be), `lines` spelled like `EditNote.lines` (`~12`, `+42–47`, `-3`).
+  `EditNote.hunks: list[EditHunk]` in diff order (a note that covers several regions has several hunks; a new file =
+  one hunk with `before == ""`; a deletion = `after == ""`; a binary / mode-only change = no hunks).
+* `ScriptRun(run_id, project, round, n, result, reason, errors_before, errors_left, errors_new, files, at)` — one run
+  of a stored version; `reason` = the try's note in words (`no_change: 3 error(s) remained …`, `regressed: 2 new
+  error(s) in … `, `script error: KeyError …`, `timeout after 60s`, `rejected: …`), "" when it resolved the case.
+* `CaseScript.parent` (augment lineage), `.reason` (why the version was made = the parent's failure text),
+  `.last_failure`, `.runs` (newest last, `errors.script_runs` kept). `successes / failures / projects / last_result`
+  stay as they are (the counts the user asked for were already there; now the reasons sit next to them).
+* Config: `errors.snippet_lines` 0 (whole hunks), `errors.script_runs` 30.
+
+### Functions
+* `sbmig.script.notes` (agent N): `hunks_from_diff(diff_text, *, max_lines=0) -> dict[str, list[EditHunk]]` (path →
+  hunks, the diff's "after" path, old path for a deletion); `notes_from_diff` fills `hunks` on its diff notes;
+  `merge_notes(llm_notes, diff)` attaches the matched file's hunks to each LLM note (a note that names a `where` still
+  gets ALL the file's hunks — the diff is the truth); `attach_hunks(notes, diff, *, max_lines=0) -> list[EditNote]`
+  for notes that lack hunks (the reindex backfill). `max_lines` > 0 keeps that many lines per side and sets
+  `truncated`. Never raises.
+* `sbmig.errors.entries.ErrorList.finish_try` keeps `hunks` (masked with `clean`, no cap unless `snippet_lines`);
+  `sbmig.errors.common.note_text` is unchanged (one line); a new `note_block(n) -> list[str]` renders the note line
+  plus fenced `as-is` / `to-be` blocks per hunk for `kb errors show` / `cases show` (`entry_lines`); `errors.md` /
+  report.md keep the one-line notes (the JSON files carry the code).
+* `sbmig.errors.cases.CaseStore` (agent K): `add_script(..., parent: int | None = None, reason: str = "")`;
+  `credit(case_id, version, result, project="", run_id="", *, reason="", round=0, n=0, errors_before=None,
+  errors_left=None, errors_new=None, files=())` appends a `ScriptRun` (capped), sets `last_failure` on a failure;
+  `recount()` also rebuilds every version's `runs` from `errors.jsonl` (tries with `script_version` > 0 and source
+  `kb-script` / `llm-new` / `llm-augment`: result, note → reason, files; deduplicated by run_id + round + n) and
+  `parent` / `reason` where an augment try's record says so, and backfills `hunks` on tries that have a `diff` but
+  notes without hunks (rewrites `errors.jsonl` and the per-error JSON files once, under the lock).
+* Fix loop (agent K): `_store_script` passes `parent=att.script_parent` and `reason=` the base attempt's failure
+  (its `_try_note`, prefixed `v<N>: `) for an augment; `_credit_script` passes `reason=_try_note(att)` (only for a
+  non-success), `round`, `n` (the try), `errors_before=att.errors_before`, `errors_left=att.errors_after`,
+  `errors_new=len(att.introduced_errors)`, `files` = the attempt's changed paths. Journal `script_credit` gains
+  `reason`. INFO line after a credit: `cases/<id>/fix_v<N>.py: <result> (성공 S / 실패 F) — <reason>`.
+* `cases.md` gets a "last failure" cell per script (`v2 unverified 0/1 — no_change: 3 error(s) remained`).
+* Report: unchanged (the KB files carry the detail).

@@ -191,6 +191,8 @@ errors:                            # v2.1 error list: <run dir>/errors.jsonl + e
   raw_chars: 600
   md_view: true
   json_files: true                 # one readable JSON per error under cases/<case_id>/errors/ (people browse these)
+  snippet_lines: 0                 # v2.1e: as-is / to-be lines kept per changed region (0 = whole; people read them)
+  script_runs: 30                  # run history records kept per stored script version (result + why)
 
 libraries:                         # v2.1d dependency version policy: never a major upgrade / library swap on the LLM's own;
                                    # same-major jakarta release first, a higher major only with a 운영자 확인 guide

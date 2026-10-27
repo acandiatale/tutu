@@ -732,6 +732,16 @@ class ScriptBase(BaseModel):
 EditOp = Literal["replace", "write", "create", "delete", "move", "pom"]
 
 
+class EditHunk(BaseModel):
+    """v2.1e (2026-10-27, user: "as-is 코드와 to-be 코드도 들어갔으면"): one changed region of a file as a person reads
+    it — the lines that were there (as-is) and the lines that are there now (to-be), taken from the applied diff.
+    Whole by default (`errors.snippet_lines: 0`); people read these in the per-error JSON and `kb errors show`."""
+    lines: str = ""                                # "~12" | "+42–47" | "-3" — the same spelling as EditNote.lines
+    before: str = ""                               # as-is: the removed / replaced lines ("" for an insertion / new file)
+    after: str = ""                                # to-be: the added / replacing lines ("" for a deletion)
+    truncated: bool = False                        # errors.snippet_lines cut this hunk
+
+
 class EditNote(BaseModel):
     """One modification as a person reads it (v2.1b, 2026-10-27: "edit 란에 어디의 어떤 줄을 어떻게 수정하는지"):
     the LLM writes `where` / `change` (every `<edits>` item's `desc`, and the `<changes>` list for a script);
@@ -742,6 +752,7 @@ class EditNote(BaseModel):
     change: str = ""                               # "jakarta.xml.bind-api 와 jaxb-runtime 의존성을 추가합니다"
     lines: str = ""                                # from the diff: "+42–47" added, "~12" changed, "-3" removed, several joined by ", "
     source: Literal["llm", "diff"] = "llm"         # who wrote the note
+    hunks: list[EditHunk] = Field(default_factory=list)   # v2.1e: as-is / to-be per changed region, in diff order
 
 
 class Edit(BaseModel):
@@ -915,6 +926,24 @@ CaseScriptStatus = Literal["unverified", "proven", "retired"]
 # another project on reuse; retired = a person switched it off (`sbmig kb cases retire`)
 
 
+class ScriptRun(BaseModel):
+    """v2.1e (user: "왜 실패했는지 이유도 json 에 실렸으면"): one run of a stored script version in one project — the
+    scored result and the reason in words (the try's note: errors left, new errors, the script's exception / timeout
+    / static-check refusal), so people and a later similarity step see why a version was augmented."""
+    run_id: str = ""
+    project: str = ""
+    round: int = 0                                 # fix round of the try
+    n: int = 0                                     # try number within the case and run
+    result: str = ""                               # AttemptOutcome as scored (improved / build_ok / partial / no_change /
+                                                   # regressed / reverted / apply_failed / inconclusive / blocked)
+    reason: str = ""                               # why (the try's note) — "" when it simply resolved the case
+    errors_before: Optional[int] = None            # the case's errors before the run
+    errors_left: Optional[int] = None              # still there after the rebuild
+    errors_new: Optional[int] = None               # new errors in the touched files (regressions)
+    files: list[str] = Field(default_factory=list) # files the run changed
+    at: datetime = Field(default_factory=utcnow)
+
+
 class CaseScript(BaseModel):
     version: int
     file: str                                      # fix_v<N>.py (relative to the case folder)
@@ -927,6 +956,12 @@ class CaseScript(BaseModel):
     projects: list[str] = Field(default_factory=list)    # distinct projects it resolved the case in
     last_result: str = ""
     created_at: datetime = Field(default_factory=utcnow)
+    # v2.1e lineage and history (docs/INTERFACES.md "v2.1e")
+    parent: Optional[int] = None                   # augment: the version this one extends (None = written new)
+    reason: str = ""                               # why this version was made: the parent's failure in words
+                                                   # ("v1: no_change — 3 error(s) remained: …"), "" for a new script
+    last_failure: str = ""                         # the most recent failed run's reason (quick view; runs[] has all)
+    runs: list[ScriptRun] = Field(default_factory=list)   # newest last, capped by errors.script_runs
 
 
 class CaseInfo(BaseModel):

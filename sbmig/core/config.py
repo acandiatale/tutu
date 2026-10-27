@@ -366,6 +366,10 @@ class ErrorsConfig(BaseModel):
     md_view: bool = True                     # write <run dir>/errors.md and <kb>/cases.md
     json_files: bool = True                  # one readable <kb>/cases/<case_id>/errors/<run_id>-<id>.json per error
                                              # (people browse these; errors.jsonl stays the machine copy)
+    # v2.1e: as-is / to-be code per modification (EditNote.hunks) and the stored scripts' run history
+    snippet_lines: int = 0                   # lines kept per side of a hunk; 0 = the whole hunk (user: "사람이 보는
+                                             # 거면 40줄 고정 안 해도 되지 않을까")
+    script_runs: int = 30                    # ScriptRun records kept per stored script version (newest last)
 
 
 class LibrariesConfig(BaseModel):
