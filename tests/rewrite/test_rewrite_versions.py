@@ -72,7 +72,7 @@ def test_parse_bom_interpolates_and_merges_imports(repo, cfg):
 
 def test_resolve_with_overrides_and_cache(repo, cfg, tmp_path):
     cfg.openrewrite.recipe_artifact_versions = {"org.openrewrite.recipe:rewrite-spring": "6.0.0-override"}
-    cache = tmp_path / "run" / "rewrite" / "artifact-versions.json"
+    cache = tmp_path / "run" / "logs" / "rewrite-artifact-versions.json"
     got = resolve_recipe_artifact_versions(cfg, mvn_env(cfg), cache_path=cache,
                                            artifacts=["org.openrewrite.recipe:rewrite-migrate-java",
                                                       "org.openrewrite.recipe:rewrite-spring"])

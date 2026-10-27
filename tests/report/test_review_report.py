@@ -1,5 +1,5 @@
-"""v2 report parts: the "Structure review" section (en / ko), its Handover follow-ups, script attempts in the fix
-attempts table and the error cases, the console line and the `review=` token of the SBMIG-RESULT line."""
+"""v2 report parts: the "Structure review" section (en / ko, v2.1 answer lines), its Handover follow-ups, the console
+line and the `review=` token of the SBMIG-RESULT line."""
 from __future__ import annotations
 
 import io
@@ -8,13 +8,13 @@ from pathlib import Path
 
 from rich.console import Console
 
-from sbmig.core.models import (DecisionKind, ErrorCaseRecord, FixAttempt, LLMUsage, Phase, PhaseResult, ReviewIssue,
-                               RunReport, ScriptRunResult, StructureReview, TriageDecision)
+from sbmig.core.models import (Edit, LLMUsage, ReviewIssue, RunReport, ScriptProposal, ScriptRunResult,
+                               StructureReview)
 from sbmig.core.workspace import Workspace
 from sbmig.report import build_handover, console_summary, render_markdown, write_report
 from sbmig.report.handover import REVIEW_FOLLOWUPS_MAX, review_followups
 from sbmig.report.i18n import tr_line
-from sbmig.report.markdown import review_summary, script_label
+from sbmig.report.markdown import review_summary
 from sbmig.report.result_line import report_result_line, result_line
 from sbmig.report.writer import review_console_line
 
@@ -63,27 +63,28 @@ def section(md: str, title: str = EN_TITLE) -> str:
 def test_section_english():
     md = render_markdown(review_report())
     sec = section(md)
-    assert "- verdict: `issues` — 2 critical, 1 warning(s); script ok, 1 file(s) changed (commit `abcdef12`)" in sec
+    assert "- verdict: `issues` — 2 critical, 1 warning(s); fix ok, 1 file(s) changed (commit `abcdef12`)" in sec
     assert "| severity | file | problem | fix hint |" in sec
     assert ("| **critical** | `shop-back/pom.xml` | the module still inherits spring-boot-starter-parent 2.7.18 | "
             "parent com.company.platform:comp-jar:4.0.0 |") in sec
     assert "| warning | `m0/pom.xml` | explicit jackson version 0 | drop the version |" in sec
-    assert "- script: run status `ok`, 1 file(s) changed: `shop-back/pom.xml`" in sec
+    assert "- fix (edits / script): `ok`, 1 file(s) changed: `shop-back/pom.xml`" in sec
     assert "- commit: `abcdef123456` (revert it to undo the review's changes)" in sec
     assert "- model: `gpt-x`, 1 LLM call(s)" in sec and "Analysis: Checked 3 poms. \\| One parent wrong." in sec
-    # header row, and the section sits after the Handover and before every build / fix section
-    assert "| Structure review | 2 critical, 1 warning(s); script ok, 1 file(s) changed (commit `abcdef12`) |" in md
-    assert md.index("## Handover") < md.index(EN_TITLE) < md.index("## Unresolved errors") < md.index("## Phases")
+    # header row; v2.1: the section follows the error list / fixes by case and comes before Blocked
+    assert "| Structure review | 2 critical, 1 warning(s); fix ok, 1 file(s) changed (commit `abcdef12`) |" in md
+    assert md.index("## Handover") < md.index("## Error list") < md.index(EN_TITLE) < md.index("## Manual follow-ups")
+    assert "## Phases" not in md
 
 
 def test_section_korean():
     md = render_markdown(review_report(script="error"), language="ko")
     sec = section(md, KO_TITLE)
-    assert "- 판정: `issues` — 심각 2건, 경고 1건; 스크립트 error, 변경 되돌림" in sec
+    assert "- 판정: `issues` — 심각 2건, 경고 1건; 수정 error, 변경 되돌림" in sec
     assert "| 심각도 | 파일 | 문제 | 수정 힌트 |" in sec and "| **심각** |" in sec and "| 경고 |" in sec
-    assert "- 스크립트: 실행 결과 `error`, 파일 0개 변경" in sec and "- 스크립트의 변경은 되돌렸다" in sec
-    assert "- 스크립트 오류: NameError: name 'x'" in sec and "- 메모: review script failed" in sec
-    assert "| 구조 점검 | 심각 2건, 경고 1건; 스크립트 error, 변경 되돌림 |" in md
+    assert "- 수정 (edits / script): 결과 `error`, 파일 0개 변경" in sec and "- 수정한 내용은 되돌렸다" in sec
+    assert "- 수정 오류: NameError: name 'x'" in sec and "- 메모: review script failed" in sec
+    assert "| 구조 점검 | 심각 2건, 경고 1건; 수정 error, 변경 되돌림 |" in md
     assert "Structure review" not in md and "verdict:" not in md
 
 
@@ -101,18 +102,18 @@ def test_verdict_variants_and_no_section_without_a_review():
     sec = section(render_markdown(r))
     assert "- verdict: `failed`" in sec and "| severity |" not in sec and "- note: llm-error: LLMError: 503" in sec
     no_script = review(script="")
-    assert review_summary(no_script).endswith("; no script")
+    assert review_summary(no_script).endswith("; no fix")
     r.structure_review = no_script
-    assert "- no script for the critical issue(s): they are handed over" in render_markdown(r)
+    assert "- no fix for the critical issue(s): they are handed over" in render_markdown(r)
     not_run = no_script.model_copy(update={"script": "def fix(p):\n    pass\n", "note": "script not run: off"})
-    assert review_summary(not_run).endswith("; script not run")
+    assert review_summary(not_run).endswith("; fix not applied")
 
 
 def test_handover_followups():
     lines = review_followups(review_report())
     assert lines == [
-        "structure review script changed 1 file(s) for 1 critical issue(s): shop-back/pom.xml (commit abcdef12) — "
-        "check these pom changes",
+        "structure review fix (edits / script) changed 1 file(s) for 1 critical issue(s): shop-back/pom.xml "
+        "(commit abcdef12) — check these pom changes",
         "structure review: critical issue not fixed — shop-back/pom.xml: (sbmig check) MS949 Java sources in "
         "`shop-back` build with UTF-8 → set `project.build.sourceEncoding` to MS949",
         "structure review warning — m0/pom.xml: explicit jackson version 0 → drop the version"]
@@ -121,8 +122,8 @@ def test_handover_followups():
     assert failed[0].startswith("structure review: critical issue not fixed — shop-back/pom.xml: the module")
     assert failed[-1] == "… and 7 more structure review issue(s) — see Structure review"
     assert review_followups(sample_report()) == []
-    assert tr_line("ko", lines[0]) == ("구조 점검 스크립트가 심각한 문제 1건 때문에 파일 1개를 바꿈: shop-back/pom.xml "
-                                       "(커밋 abcdef12) — 이 pom 변경을 확인할 것")
+    assert tr_line("ko", lines[0]) == ("구조 점검 수정(edits / script)이 심각한 문제 1건 때문에 파일 1개를 바꿈: "
+                                       "shop-back/pom.xml (커밋 abcdef12) — 이 pom 변경을 확인할 것")
     assert tr_line("ko", lines[2]).startswith("구조 점검 경고 — m0/pom.xml")
     assert tr_line("ko", failed[-1]) == "… 외 구조 점검 문제 7건 — '구조 점검' 참조"
 
@@ -136,45 +137,21 @@ def test_handover_from_here_lists_the_review(tmp_path, cfg):
     assert "구조 점검: 고치지 못한 심각한 문제 — shop-back/pom.xml" in md
 
 
-def _script_attempt(**kw) -> FixAttempt:
-    base = dict(id="verify-1-1", phase=Phase.VERIFY, iteration=1, cluster_id="case:3f2a9c01de",
-                decision=TriageDecision(cluster_id="case:3f2a9c01de", kind=DecisionKind.SCRIPT, rationale="reuse"),
-                commit="0011223344556677", outcome="improved", script_mode="augment", script_case_id="3f2a9c01de",
-                script_version=2, script_parent=1, script_result=ScriptRunResult(status="ok", changed_files=["a"]))
-    base.update(kw)
-    return FixAttempt(**base)
-
-
-def test_script_attempts_in_the_fix_attempts_table():
-    r = sample_report()
-    failed = _script_attempt(id="verify-1-2", script_mode="new", script_version=0, outcome="apply_failed",
-                             script_result=ScriptRunResult(status="timeout", error="killed after 60s"))
-    r.phases.append(PhaseResult(phase=Phase.VERIFY, attempts=[_script_attempt(), failed]))
-    md = render_markdown(r)
-    assert ("| verify/1 | `case:3f2a9c01de` | script | `script:3f2a9c01de:v2` augment (ok) | improved | 00112233 |"
-            in md)
-    assert "`script:3f2a9c01de` new (timeout) | apply_failed | 00112233 | killed after 60s |" in md
-    assert script_label(_script_attempt(script_result=None, script_mode="reuse")) == "`script:3f2a9c01de:v2` reuse"
-    # the sample report's own script attempts render beside them
-    assert "`script:abcd1234:v1` new" in md and "`script:c2:v2` reuse (ok)" in md
-
-
-def test_error_case_names_the_resolving_script_version():
-    r = sample_report()
-    r.error_cases = [
-        ErrorCaseRecord(id="e1", status="resolved", file="src/A.java", line=3, message="cannot find symbol",
-                        fix_method="script_reuse", resolver_id="script:3f2a9c01de:v3", script_case_id="3f2a9c01de",
-                        script_version=3, description="ran the stored script"),
-        ErrorCaseRecord(id="e2", status="resolved", file="src/B.java", message="package javax.x does not exist",
-                        fix_method="script_augment", case_id="77aa", script_version=4, attempt_count=2,
-                        llm_attempts=1),
-        ErrorCaseRecord(id="e3", status="resolved", file="pom.xml", message="lombok", fix_method="handler",
-                        resolver_id="lombok-version-floor")]
-    r.error_case_counts = {"resolved": 3}
-    md = render_markdown(r)
-    assert "script_reuse `script:3f2a9c01de:v3`: ran the stored script" in md
-    assert "script_augment `script:77aa:v4`" in md and "handler `lombok-version-floor`" in md
-    assert "- fixed by (resolved errors): script_reuse 1, script_augment 1, handler 1" in md   # old methods last
+def test_v21_answer_lines():
+    r = review_report()
+    r.structure_review.answer = ScriptProposal(
+        analysis="", solution="set the parent to comp-jar 4.0.0",
+        edits=[Edit(op="replace", path="shop-back/pom.xml", old="a", new="b")], code="def fix(p):\n    pass\n")
+    sec = section(render_markdown(r))
+    assert "- solution: set the parent to comp-jar 4.0.0" in sec and "- direct edits in the answer: 1" in sec
+    assert "- script for the KB: yes" in sec
+    # v2.1: an answer with only edits that did not run is a pending fix, not "no fix"
+    pending = review(script="").model_copy(update={"answer": ScriptProposal(edits=[Edit(op="delete", path="x")])})
+    assert review_summary(pending).endswith("; fix not applied")
+    r.structure_review.answer = ScriptProposal(analysis="only the answer has it", no_script_reason="one-off")
+    r.structure_review.analysis = ""
+    ko = section(render_markdown(r, language="ko"), KO_TITLE)
+    assert "- KB용 스크립트: 없음 — one-off" in ko and "분석: only the answer has it" in ko
 
 
 def test_result_line_review_token_and_console_line():
@@ -183,9 +160,10 @@ def test_result_line_review_token_and_console_line():
     assert line.endswith(" review=issues") and line.isascii()
     assert "review=" not in report_result_line(sample_report(), 2)
     assert result_line("r", 0, True) == "SBMIG-RESULT run=r exit=0 build=ok unresolved=0 blocked=0 llm=0 attn=-"
+    assert " blocked=0 open=0 resolved=0 llm=" in line
     assert result_line("r", 0, True, review="ok").endswith("attn=- review=ok")
     cl = review_console_line(r)
-    assert cl == "structure review: 2 critical, 1 warning(s); script ok, 1 file(s) changed (commit abcdef12)"
+    assert cl == "structure review: 2 critical, 1 warning(s); fix ok, 1 file(s) changed (commit abcdef12)"
     assert review_console_line(sample_report()) is None
     buf = io.StringIO()
     console_summary(r, Console(file=buf, width=200))

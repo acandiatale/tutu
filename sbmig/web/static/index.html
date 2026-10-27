@@ -166,7 +166,7 @@
     else if (st.state === 'queued') { cls = 'running'; text = '대기열 (다른 실행이 끝나면 시작)'; }
     else if (st.state === 'finished') {
       if (st.success === true) { cls = 'ok'; text = 'BUILD SUCCESS'; }
-      else if (st.success === false) { cls = (st.exit_code === 3) ? 'bad' : 'warn'; text = st.exit_code === 3 ? '중단됨' : `미완료 (blocked ${st.blocked||0}, unresolved ${st.unresolved||0})`; }
+      else if (st.success === false) { cls = (st.exit_code === 3) ? 'bad' : 'warn'; text = st.exit_code === 3 ? '중단됨' : `미완료 (blocked ${st.blocked||0}, 미해결 에러 ${st.open ?? st.unresolved ?? 0}, 해결 ${st.resolved||0})`; }
       else { cls = st.exit_code === 0 ? 'ok' : 'bad'; text = `종료 코드 ${st.exit_code}`; }
     }
     return `<span class="badge ${cls}">${esc(text)}</span>`;
@@ -268,11 +268,12 @@
   }
 
   function logLine(kind, line) {
-    const m = /^\S+ \S+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\S+): (.*)$/.exec(line);
+    // sbmig.log: "<date> <time> LEVEL   [stage] logger: message" (v2.1: the pipeline stage in brackets, kept)
+    const m = /^\S+ \S+ (DEBUG|INFO|WARNING|ERROR|CRITICAL)\s+(\[[^\]]*\] )?(\S+): (.*)$/.exec(line);
     const level = m ? m[1] : (kind === 'console' ? 'INFO' : 'INFO');
     const span = document.createElement('span');
     span.className = (kind === 'error') ? 'runerror' : level + (kind === 'console' ? ' console' : '');
-    span.textContent = (m ? `${line.slice(11, 19)} ${level.padEnd(7)} ${m[3]}` : line) + '\n';
+    span.textContent = (m ? `${line.slice(11, 19)} ${level.padEnd(7)} ${m[2] || ''}${m[4]}` : line) + '\n';
     if (level === 'DEBUG' && kind !== 'error' && !$('showdebug').checked) span.style.display = 'none';
     $('log').appendChild(span); logLines++;
     $('logcount').textContent = `${logLines}줄`;

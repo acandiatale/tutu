@@ -34,7 +34,7 @@ def test_msa_library_root_planned_first(tmp_path: Path, cfg) -> None:
     plan = build_plan(profile, cfg)
     svcs = [s.name for s in profile.services if s.name != "common"]
     assert _ids(plan) == (["transform.rewrite@common"] + [f"transform.rewrite@{s}" for s in svcs]
-                          + ["restructure.msa_pom", "restructure.review", "verify.build"])
+                          + ["transform.compile", "restructure.msa_pom", "restructure.review", "verify.build"])
     lib = _step(plan, "transform.rewrite@common")
     assert lib.kind == StepKind.OPENREWRITE and lib.phase == Phase.TRANSFORM
     assert lib.target == "common" and lib.params == {"service": "common"}
@@ -69,7 +69,7 @@ def test_msa_libraries_in_dependency_order_and_per_target_verify(tmp_path: Path,
     ids = _ids(plan)
     assert ids.index("transform.rewrite@zeta") < ids.index("transform.rewrite@alpha") < ids.index(
         "transform.rewrite@shop")
-    verify = sorted(s.id for s in plan.steps if s.kind == StepKind.BUILD)
+    verify = sorted(s.id for s in plan.steps if s.kind == StepKind.BUILD and s.phase == Phase.VERIFY)
     assert verify == ["verify.build@alpha", "verify.build@billing", "verify.build@shop", "verify.build@zeta"]
     assert all(_step(plan, v).params == {"service": v.split("@")[1]} for v in verify)
     assert ids.index("restructure.review") < min(ids.index(v) for v in verify)
@@ -80,7 +80,8 @@ def test_msa_top_aggregator_single_root_rewrite(tmp_path: Path, cfg) -> None:
     cfg.layout.msa_parent_policy = "top-aggregator"
     profile = analyze_path(make_msa_with_common(tmp_path), cfg)
     plan = build_plan(profile, cfg)
-    assert _ids(plan) == ["transform.rewrite", "restructure.msa_pom", "restructure.review", "verify.build"]
+    assert _ids(plan) == ["transform.rewrite", "transform.compile", "restructure.msa_pom", "restructure.review",
+                         "verify.build"]
     rw = _step(plan, "transform.rewrite")
     assert rw.target is None and rw.params == {} and rw.phase == Phase.TRANSFORM
     ids = [r.id for r in rw.recipes]

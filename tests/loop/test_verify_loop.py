@@ -69,7 +69,7 @@ def test_failed_final_build_gets_the_script_loop_and_is_repeated(cfg, ws):
 def test_blocked_cases_are_never_released_and_get_no_loop(cfg, ws, why):
     (ws.root / DAO).write_text("class Dao { ok }\n")
     if why == "repeated_failure":
-        cfg.script.max_augments_per_case = 0
+        cfg.script.max_augments_per_case = 1          # v2.1: one LLM try per case, then repeated_failure
     else:
         cfg.loop.max_llm_calls = 1
     fixer = FakeFixer(fn=lambda w, c, ctx: write_fix(None, "class X { broken again }\n"))

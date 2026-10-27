@@ -55,6 +55,28 @@ captures the exit code + output, finds the run directory the CLI created under -
                       "recipes": [{"recipe": "org.openrewrite.java.ChangeMethodName",
                                    "options": {"newMethodName": "remoteClientIp"},          # subset of the entry
                                    "name": "LegacyRequestHelperClientIpToRemoteClientIp"}]},
+               # v2.1 (2026-10-27): the run's error list, report.error_entries (one ErrorEntry per error)
+               "error_entries": {"min": 2, "max": 40,              # len(report.error_entries)
+                                 "status": {"resolved": 2},        # exact count per status (open / pom-verify /
+                                                                   # resolved / blocked / unresolved / note)
+                                 "status_min": {"resolved": 1}, "status_max": {"unresolved": 0},
+                                 "open_max": 0,                    # status open + unresolved (SBMIG-RESULT open=)
+                                 "seen": {"compile": 3}, "seen_min": {"build": 1},   # by where it was first seen
+                                 "cases": [{"l2": "compile|package_does_not_exist|jakarta.xml.bind",  # or "case"
+                                            "entries_min": 1, "status": "resolved",   # every entry of the case
+                                            "sources": ["llm-new"],                  # exact sequence of its tries
+                                            "sources_contain": ["kb-script"],        # ordered subsequence
+                                            "results": ["improved"],                 # ordered subsequence
+                                            "versions": [1],                         # script versions of the tries
+                                            "applied": "edits",                      # some try applied this
+                                            "llm_calls": 1,                          # sum over the case's tries
+                                            "resolved": "regex:r\\d+ try \\d+", "script": "regex:cases/.*"}],
+                                 "records": [{"file": "regex:.*/B\\.java", "status": "resolved", "seen": "compile",
+                                              "tries_min": 1, "sources": ["llm-new"], "results": ["improved"]}],
+                                 "run_files": ["errors.jsonl", "errors.md"],
+                                 "kb_errors_min": 2,               # lines in <expect.kb.dir>/errors.jsonl
+                                 "kb_cases_min": 1},               # <kb>/cases/*/case.json (+ cases.md)
+               # legacy (2026-10-23, ErrorCaseRecord): evaluated against the v2.1 error list, see below
                "error_cases": {"min": 2,                          # len(report.error_cases): one record per error
                                "status": {"resolved": 2},          # exact count for each listed status
                                "status_min": {"blocked": 1},       # at least that many
@@ -112,7 +134,18 @@ later plan). v2 reuse scenario: `kb.after: <fixture>` = this fixture continues t
 the SAME e2e run (the dir is not cleared; when <fixture> did not run before it, the fixture fails with a precondition
 mismatch — run them together, e.g. `--only pure-java,java6-legacy`).
 `scripts` / `structure_review` (v2): the script attempts are the report's `phases[].attempts` with a `script_mode`;
-a case is named by its id (`case`) or by its L2 signature (`l2`, hashed like `sbmig.kb.catalog.case_id_for`).
+a case is named by its id (`case`) or by its L2 signature (`l2`, hashed like `sbmig.errors.common.case_id_for`).
+v2.1 KB layout: `scripts.stored` / `scripts.versions` read `<dir>/cases/<case>/case.json` (CaseInfo.scripts) and
+`fix_v<N>.py`; `status: active` = unverified or proven, `parent: N` = the version was an augment (source
+llm-augment of v N+1), `last_outcome` = last_result, `success_projects_min` = projects, `partials_min` is not
+recorded any more (always 0).
+`error_entries` (v2.1): records / cases match like `error_cases` records; a case's tries are de-duplicated over its
+entries (one try fixes the whole case). `error_cases` (legacy) is mapped onto the error list: statuses
+resolved_indirectly → resolved, not_visible → unresolved; `fix_method` script / llm → a try from llm-new (or
+llm-edit), script_reuse → kb-script, script_augment → llm-augment; `attempt_outcomes` → the tries' results,
+`attempts_min` → tries_min; run files error_cases.* / fix_attempts.jsonl → errors.jsonl / errors.md; kb_attempts_min
+counts the tries in <kb>/errors.jsonl, kb_cases_min the case.json files; any other legacy record field is reported
+as having no v2.1 equivalent.
 
 Missing report fields are treated as empty (the engine features are built in parallel) — a mismatch is reported,
 the script never crashes on report shape. A summary table (with an `expect` PASS/FAIL column and the first
@@ -178,6 +211,7 @@ class FixtureResult:
     carried_over: int | None = None                         # len(handover.carried_over); None = no handover
     review: str | None = None                               # v2: structure_review.verdict (None = no review)
     scripts: str = "-"                                      # v2: script attempts by mode, e.g. "new 2, aug 1, reuse 1"
+    errors: str = "-"                                       # v2.1: error list by status, e.g. "resolved 23, unresolved 2"
     expect_ok: bool | None = None                           # None = fixture has no expect block
     mismatches: list[str] = field(default_factory=list)
 
@@ -369,6 +403,261 @@ def apply_report(res: FixtureResult, report: dict, journal: list[dict] | None = 
     rv = report.get("structure_review")
     res.review = str(rv.get("verdict") or "?") if isinstance(rv, dict) else None
     res.scripts = format_script_modes(script_attempts(report))
+    res.errors = format_error_counts(error_entries(report))
+
+
+# ---------------------------------------------------------------------------------------------- v2.1 error list
+ENTRY_STATUS_ORDER = ("unresolved", "open", "blocked", "pom-verify", "resolved", "note")
+OPEN_STATUSES = ("open", "unresolved")
+
+
+def error_entries(report: dict) -> list[dict]:
+    return [e for e in _list(report.get("error_entries")) if isinstance(e, dict)]
+
+
+def _count_by(entries: list[dict], key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for e in entries:
+        k = str(e.get(key) or "")
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def format_error_counts(entries: list[dict]) -> str:
+    c = _count_by(entries, "status")
+    keys = [k for k in ENTRY_STATUS_ORDER if c.get(k)] + sorted(k for k in c if k not in ENTRY_STATUS_ORDER)
+    return ", ".join(f"{k} {c[k]}" for k in keys) or "-"
+
+
+def _tries(e: dict) -> list[dict]:
+    return [t for t in _list(e.get("tries")) if isinstance(t, dict)]
+
+
+def _try_key(t: dict) -> tuple:
+    return (t.get("round"), t.get("n"), t.get("source"), t.get("script_version"), t.get("commit"))
+
+
+def case_tries(entries: list[dict]) -> list[dict]:
+    """The distinct tries of some entries (a try fixes the whole case, every entry carries it), by (round, n)."""
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for e in entries:
+        for t in _tries(e):
+            if _try_key(t) not in seen:
+                seen.add(_try_key(t))
+                out.append(t)
+    return sorted(out, key=lambda t: (int(t.get("round") or 0), int(t.get("n") or 0)))
+
+
+def _subsequence(want: list, got: list) -> bool:
+    it = iter(got)
+    return all(any(g == w for g in it) for w in want)
+
+
+def _tries_match(want: dict, tries: list[dict]) -> list[str]:
+    """Mismatches of the try-level keys (sources / sources_contain / results / versions / applied / llm_calls /
+    tries_min / _sources_any) against `tries`."""
+    mm: list[str] = []
+    sources = [str(t.get("source")) for t in tries]
+    results = [str(t.get("result")) for t in tries]
+    if want.get("tries_min") is not None and len(tries) < int(want["tries_min"]):
+        mm.append(f"tries={len(tries)} < min {want['tries_min']}")
+    if want.get("sources") is not None and sources != list(want["sources"]):
+        mm.append(f"sources {sources} expected {list(want['sources'])}")
+    if want.get("sources_contain") and not _subsequence(list(want["sources_contain"]), sources):
+        mm.append(f"sources {sources} lack the sequence {list(want['sources_contain'])}")
+    if want.get("_sources_any") and not set(sources) & set(want["_sources_any"]):
+        mm.append(f"sources {sources} have none of {list(want['_sources_any'])}")
+    if want.get("results") and not _subsequence(list(want["results"]), results):
+        mm.append(f"results {results} lack the sequence {list(want['results'])}")
+    versions = [int(t.get("script_version") or 0) for t in tries if t.get("script_version")]
+    if want.get("versions") is not None and versions != [int(v) for v in want["versions"]]:
+        mm.append(f"script versions {versions} expected {list(want['versions'])}")
+    if want.get("applied") and not any(t.get("applied") == want["applied"] for t in tries):
+        mm.append(f"no try applied {want['applied']!r} (got: {[t.get('applied') for t in tries]})")
+    if want.get("llm_calls") is not None and sum(int(t.get("llm_calls") or 0) for t in tries) != int(want["llm_calls"]):
+        mm.append(f"llm_calls={sum(int(t.get('llm_calls') or 0) for t in tries)} expected {want['llm_calls']}")
+    return mm
+
+
+_TRY_KEYS = ("tries_min", "sources", "sources_contain", "_sources_any", "results", "versions", "applied", "llm_calls")
+
+
+def _entry_matches(want: dict, e: dict) -> bool:
+    for k, v in want.items():
+        if k in _TRY_KEYS:
+            continue
+        if k == "case":
+            if e.get("case_id") != case_ref({"case": v}):
+                return False
+        elif k == "l2" and "case" not in want:
+            if e.get("case_id") != case_ref({"l2": v}) and not _field_matches(v, e.get("l2")):
+                return False
+        elif k == "status" and isinstance(v, list):
+            if e.get("status") not in v:
+                return False
+        elif not _field_matches(v, e.get(k)):
+            return False
+    return not _tries_match({k: want[k] for k in _TRY_KEYS if k in want}, _tries(e))
+
+
+def _entry_text(e: dict) -> str:
+    loc = (e.get("file") or e.get("module") or "-") + (f":{e.get('line')}" if e.get("file") and e.get("line") else "")
+    srcs = ",".join(f"{t.get('source')}:{t.get('result')}" for t in _tries(e))
+    return f"{loc}:{e.get('status')}:{e.get('seen')}" + (f":{srcs}" if srcs else "")
+
+
+def _kb_error_lines(kb_dir: Path | None) -> list[dict]:
+    if kb_dir is None:
+        return []
+    out = []
+    try:
+        for line in (kb_dir / "errors.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                d = json.loads(line) if line.strip() else None
+            except ValueError:
+                continue
+            if isinstance(d, dict):
+                out.append(d)
+    except OSError:
+        return []
+    return out
+
+
+def _kb_case_files(kb_dir: Path | None) -> list[Path]:
+    if kb_dir is None or not (kb_dir / "cases").is_dir():
+        return []
+    return sorted((kb_dir / "cases").glob("*/case.json"))
+
+
+def _counts_want(label: str, want: Any, got: dict[str, int], op: str, total: str) -> list[str]:
+    mm: list[str] = []
+    for k, n in (want or {}).items():
+        have = got.get(k, 0)
+        if (op == "==" and have != n) or (op == ">=" and have < n) or (op == "<=" and have > n):
+            mm.append(f"{label} {k}={have} expected {op} {n} (got: {total})")
+    return mm
+
+
+def evaluate_error_entries(want: dict, report: dict, run_dir: Path | None, kb_dir: Path | None) -> list[str]:
+    """`error_entries` expectation (v2.1): the run's error list (`report.error_entries`)."""
+    mm: list[str] = []
+    es = error_entries(report)
+    total = format_error_counts(es)
+    if want.get("min") is not None and len(es) < int(want["min"]):
+        mm.append(f"error_entries={len(es)} < min {want['min']} (got: {total})")
+    if want.get("max") is not None and len(es) > int(want["max"]):
+        mm.append(f"error_entries={len(es)} > max {want['max']} (got: {total})")
+    by_status = _count_by(es, "status")
+    mm += _counts_want("error_entries status", want.get("status"), by_status, "==", total)
+    mm += _counts_want("error_entries status", want.get("status_min"), by_status, ">=", total)
+    mm += _counts_want("error_entries status", want.get("status_max"), by_status, "<=", total)
+    if want.get("open_max") is not None:
+        n = sum(by_status.get(s, 0) for s in OPEN_STATUSES)
+        if n > int(want["open_max"]):
+            mm.append(f"error_entries open={n} > max {want['open_max']} (got: {total})")
+    by_seen = _count_by(es, "seen")
+    seen_txt = ", ".join(f"{k} {v}" for k, v in sorted(by_seen.items())) or "none"
+    mm += _counts_want("error_entries seen", want.get("seen"), by_seen, "==", seen_txt)
+    mm += _counts_want("error_entries seen", want.get("seen_min"), by_seen, ">=", seen_txt)
+    known = ", ".join(sorted({str(e.get("case_id")) for e in es if e.get("case_id")})) or "none"
+    for c in _list(want.get("cases")):
+        if not isinstance(c, dict):
+            continue
+        cid = case_ref(c)
+        mine = [e for e in es if e.get("case_id") == cid]
+        if not mine:
+            mm.append(f"case {cid}: no entry (cases: {known[:200]})")
+            continue
+        if c.get("entries_min") is not None and len(mine) < int(c["entries_min"]):
+            mm.append(f"case {cid}: entries={len(mine)} < min {c['entries_min']}")
+        if c.get("status") is not None:
+            wanted = c["status"] if isinstance(c["status"], list) else [c["status"]]
+            bad = sorted({str(e.get("status")) for e in mine} - set(wanted))
+            if bad:
+                mm.append(f"case {cid}: status {bad} expected {wanted}")
+        for key in ("resolved", "script"):
+            if c.get(key) is not None and not any(_field_matches(c[key], e.get(key)) for e in mine):
+                mm.append(f"case {cid}: no entry with {key} {c[key]!r} (got: {[e.get(key) for e in mine][:4]})")
+        mm += [f"case {cid}: {m}" for m in _tries_match(c, case_tries(mine))]
+    for w in _list(want.get("records")):
+        if isinstance(w, dict) and not any(_entry_matches(w, e) for e in es):
+            got = "; ".join(_entry_text(e) for e in es[:4]) or "none"
+            mm.append(f"no error entry matching {json.dumps(w, ensure_ascii=False)[:160]} (got: {got[:200]})")
+    for name in _list(want.get("run_files")):
+        if run_dir is None or not (run_dir / str(name)).is_file():
+            mm.append(f"run file {name} missing")
+    if want.get("kb_errors_min") is not None:
+        n = len(_kb_error_lines(kb_dir))
+        if n < int(want["kb_errors_min"]):
+            mm.append(f"kb errors.jsonl lines={n} < min {want['kb_errors_min']}")
+    if want.get("kb_tries_min") is not None:
+        n = sum(len(_tries(e)) for e in _kb_error_lines(kb_dir))
+        if n < int(want["kb_tries_min"]):
+            mm.append(f"kb errors.jsonl tries={n} < min {want['kb_tries_min']}")
+    if want.get("kb_cases_min") is not None:
+        n = len(_kb_case_files(kb_dir))
+        if n < int(want["kb_cases_min"]):
+            mm.append(f"kb cases={n} < min {want['kb_cases_min']}")
+        if kb_dir is None or not (kb_dir / "cases.md").is_file():
+            mm.append("kb cases.md missing")
+    return mm
+
+
+_LEGACY_STATUS = {"resolved_indirectly": "resolved", "not_visible": "unresolved"}
+_LEGACY_SOURCES = {"script": ["llm-new", "llm-edit"], "llm": ["llm-new", "llm-edit"], "script_reuse": ["kb-script"],
+                   "script_augment": ["llm-augment"], "review": ["review"]}
+_LEGACY_RUN_FILES = {"error_cases.jsonl": "errors.jsonl", "fix_attempts.jsonl": "errors.jsonl",
+                     "error_cases.csv": "errors.md"}
+_LEGACY_RECORD_KEYS = {"file", "line", "module", "message", "status", "seen", "kind"}
+
+
+def legacy_error_cases_want(want: dict) -> tuple[dict, list[str]]:
+    """A legacy `error_cases` expectation as an `error_entries` one + the fields that have no v2.1 equivalent."""
+    out: dict[str, Any] = {}
+    gaps: list[str] = []
+
+    def status_map(d: dict) -> dict:
+        m: dict[str, int] = {}
+        for k, v in (d or {}).items():
+            m[_LEGACY_STATUS.get(k, k)] = m.get(_LEGACY_STATUS.get(k, k), 0) + int(v)
+        return m
+    for k in ("min", "kb_errors_min", "kb_cases_min"):
+        if want.get(k) is not None:
+            out[k] = want[k]
+    if want.get("status"):
+        out["status"] = status_map(want["status"])
+    if want.get("status_min"):
+        out["status_min"] = status_map(want["status_min"])
+    if want.get("kb_attempts_min") is not None:
+        out["kb_tries_min"] = want["kb_attempts_min"]
+    if want.get("run_files"):
+        out["run_files"] = list(dict.fromkeys(_LEGACY_RUN_FILES.get(str(f), str(f)) for f in want["run_files"]))
+    recs = []
+    for r in _list(want.get("records")):
+        if not isinstance(r, dict):
+            continue
+        n: dict[str, Any] = {}
+        for k, v in r.items():
+            if k == "status":
+                n["status"] = _LEGACY_STATUS.get(v, v) if isinstance(v, str) else v
+            elif k in _LEGACY_RECORD_KEYS:
+                n[k] = v
+            elif k == "fix_method":
+                if v in _LEGACY_SOURCES:
+                    n["_sources_any"] = _LEGACY_SOURCES[v]
+                elif v != "none":
+                    gaps.append(f"error_cases record fix_method {v!r} has no v2.1 equivalent")
+            elif k == "attempt_outcomes":
+                n["results"] = list(v)
+            elif k == "attempts_min":
+                n["tries_min"] = v
+            else:
+                gaps.append(f"error_cases record field {k!r} has no v2.1 equivalent")
+        recs.append(n)
+    if recs:
+        out["records"] = recs
+    return out, gaps
 
 
 # ---------------------------------------------------------------------------------------------- v2 scripts / review
@@ -414,19 +703,42 @@ def format_script_modes_from(counts: dict[str, int]) -> str:
     return ", ".join(f"{m} {n}" for m, n in counts.items() if n) or "none"
 
 
-def _read_meta(kb_dir: Path, case_id: str, version: int) -> dict | None:
+def _case_json(kb_dir: Path, case_id: str) -> dict | None:
     try:
-        data = json.loads((kb_dir / "scripts" / case_id / f"v{version}.meta.json").read_text(encoding="utf-8"))
+        data = json.loads((kb_dir / "cases" / case_id / "case.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) else None
 
 
+def _read_meta(kb_dir: Path, case_id: str, version: int) -> dict | None:
+    """v2.1: the CaseScript of `<kb>/cases/<case>/case.json` in the shape the v2 `stored` keys read (parent from an
+    augment source, last_outcome = last_result, success_projects = projects, partials 0)."""
+    case = _case_json(kb_dir, case_id)
+    s = next((x for x in _list((case or {}).get("scripts")) if isinstance(x, dict)
+              and int(x.get("version") or 0) == int(version)), None)
+    if s is None:
+        return None
+    return {**s, "parent": (int(version) - 1 if s.get("source") == "llm-augment" and int(version) > 1 else None),
+            "last_outcome": s.get("last_result") or None, "success_projects": _list(s.get("projects")),
+            "partials": 0}
+
+
+def _script_code(kb_dir: Path, case_id: str, version: int) -> str:
+    try:
+        return (kb_dir / "cases" / case_id / f"fix_v{version}.py").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
 def _stored_versions(kb_dir: Path, case_id: str) -> list[int]:
-    d = kb_dir / "scripts" / case_id
+    case = _case_json(kb_dir, case_id)
+    if case is not None:
+        return sorted(int(x.get("version") or 0) for x in _list(case.get("scripts")) if isinstance(x, dict))
+    d = kb_dir / "cases" / case_id
     if not d.is_dir():
         return []
-    return sorted(int(m.group(1)) for f in d.iterdir() if (m := re.fullmatch(r"v(\d+)\.py", f.name)))
+    return sorted(int(m.group(1)) for f in d.iterdir() if (m := re.fullmatch(r"fix_v(\d+)\.py", f.name)))
 
 
 def evaluate_scripts(want: dict, report: dict, kb_dir: Path | None) -> list[str]:
@@ -476,7 +788,13 @@ def evaluate_scripts(want: dict, report: dict, kb_dir: Path | None) -> list[str]
             mm.append(f"stored script {cid} v{v} missing (versions: {_stored_versions(kb_dir, cid) or 'none'})")
             continue
         for key in ("parent", "status", "last_outcome"):
-            if key in s and meta.get(key) != s[key]:
+            if key not in s:
+                continue
+            if key == "status" and s[key] == "active":           # v2 "active" = v2.1 unverified or proven
+                if meta.get("status") not in ("unverified", "proven"):
+                    mm.append(f"stored script {cid} v{v}: status={meta.get('status')!r} expected active "
+                              "(unverified / proven)")
+            elif meta.get(key) != s[key]:
                 mm.append(f"stored script {cid} v{v}: {key}={meta.get(key)!r} expected {s[key]!r}")
         for key, field_name in (("successes_min", "successes"), ("failures_min", "failures"),
                                 ("partials_min", "partials")):
@@ -489,10 +807,7 @@ def evaluate_scripts(want: dict, report: dict, kb_dir: Path | None) -> list[str]
         if s.get("success_projects_min") is not None and len(projects) < int(s["success_projects_min"]):
             mm.append(f"stored script {cid} v{v}: success_projects={projects} < min {s['success_projects_min']}")
         if s.get("code_contains"):
-            try:
-                code = (kb_dir / "scripts" / cid / f"v{v}.py").read_text(encoding="utf-8")
-            except OSError:
-                code = ""
+            code = _script_code(kb_dir, cid, v)
             for needle in _list(s["code_contains"]):
                 if needle not in code:
                     mm.append(f"stored script {cid} v{v} lacks {needle!r}")
@@ -757,70 +1072,12 @@ def _field_matches(want: Any, got: Any) -> bool:
     return got == want
 
 
-def _error_record_matches(want: dict, rec: dict) -> bool:
-    for k, v in want.items():
-        if k == "attempts_min":
-            if len(_list(rec.get("attempts"))) < int(v):
-                return False
-        elif k == "attempt_outcomes":
-            outcomes = iter(str(a.get("outcome")) for a in _list(rec.get("attempts")) if isinstance(a, dict))
-            if not all(any(o == w for o in outcomes) for w in _list(v)):     # ordered subsequence
-                return False
-        elif k == "replace_pairs":
-            pairs = [(p.get("old"), p.get("new")) for p in _list(rec.get("replace_pairs")) if isinstance(p, dict)]
-            if not all((w.get("old"), w.get("new")) in pairs for w in _list(v) if isinstance(w, dict)):
-                return False
-        elif not _field_matches(v, rec.get(k)):
-            return False
-    return True
-
-
-def _jsonl_lines(path: Path) -> int:
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return sum(1 for ln in fh if ln.strip())
-    except OSError:
-        return 0
-
-
 def evaluate_error_cases(want: dict, report: dict, run_dir: Path | None, kb_dir: Path | None) -> list[str]:
-    """`error_cases` expectation (2026-10-23): one record per build error, failures included."""
-    mm: list[str] = []
-    recs = [r for r in _list(report.get("error_cases")) if isinstance(r, dict)]
-    by_status: dict[str, int] = {}
-    for r in recs:
-        by_status[str(r.get("status"))] = by_status.get(str(r.get("status")), 0) + 1
-    got = ", ".join(f"{k}={v}" for k, v in sorted(by_status.items())) or "none"
-    if want.get("min") is not None and len(recs) < want["min"]:
-        mm.append(f"error_cases={len(recs)} < min {want['min']}")
-    for st, n in (want.get("status") or {}).items():
-        if by_status.get(st, 0) != n:
-            mm.append(f"error_cases status {st}={by_status.get(st, 0)} expected {n} (got: {got})")
-    for st, n in (want.get("status_min") or {}).items():
-        if by_status.get(st, 0) < n:
-            mm.append(f"error_cases status {st}={by_status.get(st, 0)} < min {n} (got: {got})")
-    for w in _list(want.get("records")):
-        if isinstance(w, dict) and not any(_error_record_matches(w, r) for r in recs):
-            seen = "; ".join(f"{r.get('file')}:{r.get('status')}:{r.get('fix_method')}:"
-                             + ",".join(str(a.get('outcome')) for a in _list(r.get('attempts')) if isinstance(a, dict))
-                             for r in recs[:4]) or "none"
-            mm.append(f"no error case matching {json.dumps(w, ensure_ascii=False)[:160]} (got: {seen[:200]})")
-    for name in _list(want.get("run_files")):
-        if run_dir is None or not (run_dir / str(name)).is_file():
-            mm.append(f"run file {name} missing")
-    for key, fname in (("kb_errors_min", "errors.jsonl"), ("kb_attempts_min", "fix_attempts.jsonl")):
-        if want.get(key) is None:
-            continue
-        n = _jsonl_lines(kb_dir / fname) if kb_dir is not None else 0
-        if n < want[key]:
-            mm.append(f"kb {fname} lines={n} < min {want[key]}")
-    if want.get("kb_cases_min") is not None:          # case catalog (2026-10-23): kb/catalog/**.yml + views/cases.md
-        cases = list((kb_dir / "catalog").rglob("*.yml")) if kb_dir is not None and (kb_dir / "catalog").is_dir() else []
-        if len(cases) < want["kb_cases_min"]:
-            mm.append(f"kb catalog cases={len(cases)} < min {want['kb_cases_min']}")
-        if kb_dir is None or not (kb_dir / "views" / "cases.md").is_file():
-            mm.append("kb views/cases.md missing")
-    return mm
+    """Legacy `error_cases` expectation (2026-10-23, ErrorCaseRecord): v2.1 no longer writes those records, so the
+    expectation is mapped onto the error list (`legacy_error_cases_want`) and evaluated as `error_entries`."""
+    mapped, gaps = legacy_error_cases_want(want)
+    return [m.replace("error_entries", "error_cases") for m in evaluate_error_entries(mapped, report, run_dir, kb_dir)] \
+        + gaps
 
 
 def kb_dir_to_clear(expect: dict | None, repo: Path | None = None) -> Path | None:
@@ -1102,10 +1359,12 @@ def evaluate(res: FixtureResult, expect: dict, report: dict, journal: list[dict]
             mm.append(f"manual_followups lack {pat!r} (got: {_short(followups)})")
     if isinstance(expect.get("kb"), dict):
         mm += evaluate_kb(expect["kb"], report, repo)
+    kb_dir = (repo or REPO) / str(expect["kb"]["dir"]) \
+        if isinstance(expect.get("kb"), dict) and expect["kb"].get("dir") else None
+    if isinstance(expect.get("error_entries"), dict):
+        mm += evaluate_error_entries(expect["error_entries"], report, Path(res.run_dir) if res.run_dir else None,
+                                     kb_dir)
     if isinstance(expect.get("error_cases"), dict):
-        kb_dir = None
-        if isinstance(expect.get("kb"), dict) and expect["kb"].get("dir"):
-            kb_dir = (repo or REPO) / str(expect["kb"]["dir"])
         mm += evaluate_error_cases(expect["error_cases"], report, Path(res.run_dir) if res.run_dir else None,
                                    kb_dir)
     if isinstance(expect.get("properties"), dict):
@@ -1163,6 +1422,13 @@ def describe_expect(fixture: str, expected: dict) -> str:
         kp += [f"{r.get('recipe')}" + (f"@{r['name']}" if r.get("name") else "")
                for r in _list(kb.get("recipes")) if isinstance(r, dict)]
         parts.append(f"kb({', '.join(kp)})")
+    if isinstance(exp.get("error_entries"), dict):
+        ee = exp["error_entries"]
+        ep = [f"{k}={ee[k]}" for k in ("min", "max", "open_max") if ee.get(k) is not None]
+        ep += [f"{k}={v}" for key in ("status", "seen") for k, v in (ee.get(key) or {}).items()]
+        ep += [f"{k}>={v}" for key in ("status_min", "seen_min") for k, v in (ee.get(key) or {}).items()]
+        ep += [f"{k}={len(ee[k])}" for k in ("cases", "records") if ee.get(k)]
+        parts.append(f"error_entries({', '.join(ep)})")
     if isinstance(exp.get("error_cases"), dict):
         ec = exp["error_cases"]
         ep = [f"min={ec['min']}"] if ec.get("min") is not None else []
@@ -1324,7 +1590,7 @@ def _fmt(v: Any) -> str:
 
 
 HEADERS = ["fixture", "case", "exit", "phases ok", "final build ok", "llm calls", "unresolved", "blocked",
-           "advisories", "carried", "review", "scripts", "duration s", "expect", "note"]
+           "advisories", "carried", "review", "scripts", "errors", "duration s", "expect", "note"]
 
 
 def _fmt_advisories(values: list[str], width: int = 60) -> str:
@@ -1351,7 +1617,7 @@ def _note(r: FixtureResult) -> str:
 def summary_rows(results: list[FixtureResult]) -> list[list[str]]:
     return [[r.fixture, r.case_type, _fmt(r.exit_code), r.phases_ok, _fmt_bool(r.final_build_ok),
              _fmt(r.llm_calls), _fmt(r.unresolved), str(len(r.blocked)), _fmt_advisories(r.advisories),
-             _fmt(r.carried_over), _fmt(r.review), r.scripts or "-", f"{r.duration_s:.1f}",
+             _fmt(r.carried_over), _fmt(r.review), r.scripts or "-", r.errors or "-", f"{r.duration_s:.1f}",
              "-" if r.expect_ok is None else ("PASS" if r.expect_ok else "FAIL"), _note(r)[:110]]
             for r in results]
 

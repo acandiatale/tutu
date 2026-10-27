@@ -39,7 +39,7 @@ def test_section_rendered_after_blocked(cfg):
     c.artifacts.parent = ArtifactSpec(group_id="com.company", artifact_id="base-parent", version="4.0.0")
     md = render_markdown(report_with_jars(), cfg=c)
     assert f"## {JAVAX_JARS_TITLE}" in md and "| javax API jars | 5 |" in md
-    assert md.index(f"## {JAVAX_JARS_TITLE}") < md.index("## Unresolved errors")
+    assert md.index("## Error list") < md.index(f"## {JAVAX_JARS_TITLE}") < md.index("## Manual follow-ups")
     assert "| artifact | module | scope | via (direct dependency) | declared in pom | what to do |" in md
     assert (f"| `{API}` | shop-back | compile | `org.qlrm:qlrm:2.1.1` | no | raise to 4.2.1 (jakarta.* since "
             "4.0.1), requires Java 17 — QLRM") in md

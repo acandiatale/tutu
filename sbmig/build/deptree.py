@@ -6,7 +6,7 @@ jar (``javax.persistence:javax.persistence-api:2.2``), not the library that stil
 The dependency tree knows: ``mvn dependency:tree -Dincludes=javax.persistence:*`` prints the path root → qlrm → API.
 
 * ``dependency_tree(ws, cfg, module, includes)`` → parsed trees (one root per reactor module that printed one),
-  cached under ``<run_dir>/deptree/`` and invalidated when the module's (or root) pom changes.
+  cached as ``<run_dir>/logs/deptree-<module>.txt`` and invalidated when the module's (or root) pom changes.
 * ``parse_tree(text)`` / ``paths_to(roots, predicate)`` → the plugin's text output as ``TreeNode``s / root→node paths.
 * ``javax_api_inventory(ws, cfg, profile)`` → every javax EE API jar still on a module's classpath after the
   migration, with the direct dependency that brings it (``JavaxApiJar``; report section "javax API jars still on the
@@ -29,7 +29,7 @@ from typing import Any, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.models import GAV, JavaxApiJar
-from sbmig.core.workspace import Workspace
+from sbmig.core.workspace import Workspace, logs_dir
 
 from .classpath import _PACKAGE_SKIPS, _has_modules, _module_dir, _pom_stamp, _safe
 from .mvn import base_command, mvn_env, run_logged
@@ -218,11 +218,11 @@ def dependency_tree(ws: Workspace, cfg: Config, module: Optional[str] = None,
         if mdir is None:
             log.info("deptree: unknown module %r", module)
             return []
-        out_dir = ws.run_dir / "deptree"
+        out_dir = logs_dir(ws)                       # v2.1: logs/deptree-<module>.txt (+ .meta.json), no deptree/
         out_dir.mkdir(parents=True, exist_ok=True)
         name = (_safe(mdir.replace("/", "__")) if mdir else "root") + _includes_suffix(incl)
-        out_file = out_dir / f"{name}.txt"
-        meta_file = out_dir / f"{name}.meta.json"
+        out_file = out_dir / f"deptree-{name}.txt"
+        meta_file = out_dir / f"deptree-{name}.meta.json"
         stamp = _pom_stamp(ws, mdir)
         if out_file.is_file() and meta_file.is_file():
             try:

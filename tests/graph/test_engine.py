@@ -45,7 +45,7 @@ def run_engine(cfg, tmp_path, engine: str, *, name: str | None = None, stop_afte
 
 
 TIME_KEYS = {"started_at", "finished_at", "created_at", "timestamp", "duration_s", "commit",   # + git SHAs (time-stamped)
-             "base_commit", "at"}   # error cases (2026-10-23): HEAD before an attempt, record timestamps
+             "base_commit", "at", "at", "seconds", "commit"}   # v2.1 error entries: timestamps, try duration, git sha   # error cases (2026-10-23): HEAD before an attempt, record timestamps
 
 
 def _scrub(x):
@@ -268,3 +268,37 @@ def test_mvn_not_found_with_the_real_tuple_return(cfg, tmp_path, monkeypatch):
     orch2 = make_orch(c, ws2)
     orch2._build_runner = None
     assert "mvn-not-found" not in orch2.run().flags
+
+
+# ------------------------------------------------------------------------------------------ v2.1 log stages
+def test_every_graph_node_runs_in_its_stage_and_resets_it(cfg, tmp_path, monkeypatch):
+    """v2.1: intake / analyze / plan / the phase group / report (finalize) — set when the node starts, reset after."""
+    from sbmig.core import stage as st
+    from sbmig.loop.orchestrator import Orchestrator
+
+    seen: dict[str, str] = {}
+    for name in ("step_intake", "step_analyze", "step_plan", "step_phase", "step_finish"):
+        orig = getattr(Orchestrator, name)
+
+        def spy(self, *a, _orig=orig, _name=name, **k):
+            seen.setdefault(_name if _name != "step_phase" else f"phase:{a[1].value}", st.current_stage())
+            return _orig(self, *a, **k)
+        monkeypatch.setattr(Orchestrator, name, spy)
+    orch, ws, report = run_engine(cfg, tmp_path, "graph")
+    assert report.success
+    assert seen["step_intake"] == "intake" and seen["step_analyze"] == "analyze" and seen["step_plan"] == "plan"
+    assert seen["phase:transform"] == "transform" and seen["phase:verify"] == "verify"
+    assert seen["step_finish"] == "report"
+    assert st.current_stage() == "-"                      # nothing leaks out of the run
+
+
+def test_staged_resets_the_stage_when_a_node_raises():
+    from sbmig.core.stage import current_stage
+    from sbmig.graph.engine import _staged
+
+    def boom(state):
+        assert current_stage() == "plan"
+        raise RuntimeError("x")
+    with pytest.raises(RuntimeError):
+        _staged("plan", boom)({})
+    assert current_stage() == "-"

@@ -1,8 +1,13 @@
-"""Reading the structure-review answer: `<review>{json}</review>` (+ optional `<analysis>`) and `<script>…</script>`.
+"""Reading the structure-review answer (v2.1): `<review>{json}</review>` with the verdict and the issues, plus the
+fix answer of docs/v2/PLAN-v2.1.md §3.6 — `<analysis>` 원인, `<solution>` 해결 방법, `<edits>` (JSON list of `Edit`, the
+reviewer applies them) and an optional `<script>` (or `<no_script>`). A v2 answer (`<review>` + `<script>`) parses as
+before (edits []).
 
 Tolerant on purpose: the JSON may sit in a code fence, be followed by prose, carry trailing commas, or come without
-the `<review>` tags; `issues` may be a single object instead of a list; unknown severities become `warning`. Nothing
-readable → `ParsedReview(ok=False, error=…)` and the reviewer asks once more (then verdict `failed`).
+the `<review>` tags; `issues` may be a single object instead of a list; unknown severities become `warning`. The fix
+blocks are read by `sbmig.fix.script_protocol` (same repair of the edits JSON, same script extraction). Nothing
+readable → `ParsedReview(ok=False, error=…)` and the reviewer asks once more (then verdict `failed`); readable review
+JSON with unreadable edits → `ok=True`, `edits_problem` set.
 """
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from sbmig.core.models import ReviewIssue
+from sbmig.core.models import Edit, ReviewIssue
 
 MAX_ISSUES = 60
 PROBLEM_CHARS = 600
@@ -20,7 +25,9 @@ ANALYSIS_CHARS = 4000
 FILE_CHARS = 300
 
 _SCRIPT_RE = re.compile(r"<script>(.*?)(?:</script>|\Z)", re.S | re.I)
-_REVIEW_RE = re.compile(r"<review>(.*?)(?:</review>|\Z)", re.S | re.I)
+_REVIEW_RE = re.compile(r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|edits|no_script|script)>)|\Z)",
+                        re.S | re.I)
+_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|edits|no_script|script)>.*?(?:</\1>|\Z)", re.S | re.I)
 _ANALYSIS_RE = re.compile(r"<analysis>(.*?)</analysis>", re.S | re.I)
 _FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n(.*?)(?:```|\Z)", re.S)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
@@ -36,10 +43,16 @@ class ParsedReview:
     ok: bool = False
     verdict: str = "ok"                         # ok | issues (only meaningful when ok)
     issues: list[ReviewIssue] = field(default_factory=list)
-    analysis: str = ""
+    analysis: str = ""                          # the review's summary (JSON "analysis", else the <analysis> block)
     script: str = ""
+    fix_analysis: str = ""                      # <analysis> 원인 (the JSON analysis when the block is missing)
+    solution: str = ""                          # <solution> 해결 방법
+    edits: list[Edit] = field(default_factory=list)
+    edits_problem: str = ""                     # "edits JSON unreadable: …" / "edits invalid: …"
+    no_script_reason: str = ""
     warnings: list[str] = field(default_factory=list)
     error: str = ""
+    raw: str = ""                               # the answer text
 
     @property
     def critical(self) -> list[ReviewIssue]:
@@ -131,19 +144,42 @@ def to_issue(item: Any, warnings: list[str]) -> Optional[ReviewIssue]:
                        problem=_cap(problem, PROBLEM_CHARS), fix_hint=_cap(_pick(item, _HINT_KEYS), HINT_CHARS))
 
 
+def _fix_blocks(text: str, out: ParsedReview) -> None:
+    """The four-part fix answer outside the <review> block (sbmig.fix.script_protocol)."""
+    from sbmig.fix.script_protocol import PROTOCOL_WARNING, parse_script_response
+
+    fx = parse_script_response(text)
+    if PROTOCOL_WARNING in fx.warnings:                 # no tagged block at all: nothing to take
+        return
+    out.fix_analysis = _cap(fx.analysis, ANALYSIS_CHARS)
+    out.solution = _cap(fx.solution, ANALYSIS_CHARS)
+    out.edits = list(fx.edits)
+    out.edits_problem = fx.edits_problem
+    out.no_script_reason = _cap(fx.no_script_reason, ANALYSIS_CHARS)
+    code = fx.code or (fx.candidate if re.search(r"^\s*def\s+fix\s*\(", fx.candidate or "", re.M) else "")
+    out.script = code                                   # a broken script that defines fix: the runner refuses it
+    out.warnings += [w for w in fx.warnings if w != PROTOCOL_WARNING]
+
+
 def parse_review_answer(text: str) -> ParsedReview:
     """`ParsedReview` of one LLM answer (see the module docstring)."""
-    out = ParsedReview()
-    script, rest = extract_script(text or "")
-    m = _REVIEW_RE.search(rest)
-    body = m.group(1) if m else rest
+    text = text or ""
+    out = ParsedReview(raw=text)
+    m = _REVIEW_RE.search(text)
+    if m:
+        body = m.group(1)
+        rest = text[: m.start()] + "\n" + text[m.end():]
+    else:                                               # no tags: the JSON is what the fix blocks leave
+        body = _FIX_BLOCK_RE.sub("\n", text)
+        rest = text
+    _fix_blocks(rest, out)
     obj: Optional[Any] = None
     for cand in _json_candidates(body):
         obj = _decode(cand)
         if obj is not None:
             break
     if obj is None:
-        out.error = "no review JSON in the answer" if (text or "").strip() else "empty answer"
+        out.error = "no review JSON in the answer" if text.strip() else "empty answer"
         return out
     if isinstance(obj, list):
         obj = {"issues": obj}
@@ -170,12 +206,17 @@ def parse_review_answer(text: str) -> ParsedReview:
     out.verdict = "issues" if out.issues else "ok"
     analysis = obj.get("analysis")
     if not (isinstance(analysis, str) and analysis.strip()):
-        am = _ANALYSIS_RE.search(text or "")
-        analysis = am.group(1) if am else ""
+        analysis = out.fix_analysis
     out.analysis = _cap(analysis, ANALYSIS_CHARS)
-    if not script and isinstance(obj.get("script"), str):
+    if not out.fix_analysis:
+        out.fix_analysis = out.analysis
+    if not out.script and isinstance(obj.get("script"), str):
         cand = strip_fences(obj["script"])
-        script = cand if re.search(r"^\s*def\s+fix\s*\(", cand, re.M) else ""
-    out.script = script
+        out.script = cand if re.search(r"^\s*def\s+fix\s*\(", cand, re.M) else ""
+    if not out.edits and not out.edits_problem and isinstance(obj.get("edits"), list):
+        from sbmig.script.edits import edits_from_json   # edits inside the JSON object: accepted too
+        edits, problems = edits_from_json(obj["edits"])
+        out.edits = edits
+        out.edits_problem = ("edits invalid: " + "; ".join(problems[:8])) if problems else ""
     out.ok = True
     return out

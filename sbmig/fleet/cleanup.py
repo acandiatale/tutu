@@ -3,8 +3,8 @@
 * :func:`cleanup_run` — what the fleet does after each project (``fleet.cleanup``), AFTER the report and
   ``result.zip`` were written: ``build-output`` deletes the ``target/`` directories of the run copy (only a ``target``
   that sits next to a ``pom.xml`` — a Java package named ``target`` is never touched); ``workspace`` also deletes the
-  project copy ``<run dir>/project`` (git history included) and keeps ``result.zip``, ``report.*``, ``changes.patch``,
-  ``journal.jsonl``, ``sbmig.log``, ``logs/`` — only when ``result.zip`` exists, otherwise it falls back to
+  project copy ``<run dir>/project`` (git history included) and keeps ``result.zip``, ``report.*``, ``errors.*``,
+  ``changes.patch``, ``journal.jsonl``, ``sbmig.log``, ``logs/`` — only when ``result.zip`` exists, otherwise it falls back to
   ``build-output`` (the migrated code must survive somewhere).
 * :func:`plan_clean` / :func:`execute` — ``sbmig clean``: finished run copies under an ``--out`` directory (or a
   fleet's), the web UI's ``_uploads/`` and the LLM records (``llm-NNNN.json``), with ``--older-than`` /
@@ -30,7 +30,8 @@ from typing import Iterable, Optional
 log = logging.getLogger("sbmig.fleet")
 
 CLEANUP_MODES = ("none", "build-output", "workspace")
-KEEP_FILES = ("result.zip", "report.md", "report.json", "changes.patch", "journal.jsonl", "sbmig.log")
+KEEP_FILES = ("result.zip", "report.md", "report.json", "errors.jsonl", "errors.md", "changes.patch", "journal.jsonl",
+              "sbmig.log", "plan.json", "profile.json")      # = workspace.RUN_DIR_FILES (+ logs/), PLAN-v2.1 §3.5
 _SKIP_DIRS = {".git", "node_modules", ".idea", ".svn"}
 _UPLOAD_RE = re.compile(r"^(web-\d{8}-\d{6}-[0-9a-f]{6})-")
 STALE_PART_S = 24 * 3600          # an `.incoming-*.part` older than this is a dead upload

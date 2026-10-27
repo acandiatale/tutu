@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import contextvars
-
-from sbmig.core.stage import stage_formatter
 import json
 import logging
 import os
@@ -14,6 +12,8 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import typer
+
+from sbmig.core.stage import stage_formatter
 
 app = typer.Typer(add_completion=False, no_args_is_help=True,
                   help="JDK 21 + Spring Boot 4.1 migration agent (OpenRewrite + triage + LLM build-fix loop).")
@@ -120,7 +120,8 @@ def attach_file_log(path: Path, thread_id: Optional[int] = None, level: int = lo
         root.setLevel(logging.DEBUG)
     fh = logging.FileHandler(path, encoding="utf-8")
     fh.setLevel(level)
-    fh.setFormatter(stage_formatter(LOG_FILE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+    # default asctime "2026-10-27 10:12:03,123": the web stream orders log lines by it (sbmig.web.runs._event_time)
+    fh.setFormatter(stage_formatter(LOG_FILE_FORMAT, datefmt=None))
     fh.sbmig_thread = thread_id  # type: ignore[attr-defined]
     if thread_id is not None:
         fh.addFilter(_ThreadFilter(thread_id))
@@ -205,12 +206,10 @@ EXIT_ABORTED = 3          # aborted: no Maven / not a Maven project / configured
 
 
 def run_exit_code(report) -> int:
-    flags = list(getattr(report, "flags", []) or [])
-    if any(f == "aborted" or f.startswith("aborted:") or f == "mvn-not-found" for f in flags):
-        return EXIT_ABORTED
-    if report.success and not getattr(report, "blocked", None):
-        return EXIT_SUCCESS
-    return EXIT_INCOMPLETE
+    """0 / 2 / 3 (see `run`); the same mapping prints the SBMIG-RESULT row of report.md."""
+    from sbmig.report.result_line import report_exit_code
+
+    return report_exit_code(report)
 
 
 def _fail(msg: str, code: int = 1) -> None:
@@ -243,7 +242,7 @@ def run(
     """Migrate a project end to end.
 
     Exit code 0 = final `mvn clean package` passed and nothing is blocked; 2 = finished with blocked and/or
-    unresolved errors (see report.md "Blocked" / "Unresolved errors"); 3 = aborted (no Maven, not a Maven project,
+    unresolved errors (see report.md "Error list" / "Blocked"); 3 = aborted (no Maven, not a Maven project,
     configured parent POM not resolvable, internal error)."""
     if verbose:
         setup_logging(True)
@@ -764,7 +763,8 @@ def _mount(module: str, attr: str, name: str, help_text: str) -> None:
 
 
 _mount("sbmig.kb", "kb_cli", "kb",
-       "knowledge base: errors | cases | scripts | reviews | reindex | stats | validate | export | import")
+       "knowledge base (kb-v2/: errors.jsonl + cases/<case>/): errors list|show | cases "
+       "list|show|retire|activate|pin|unpin | stats | validate | export | import | reindex")
 _mount("sbmig.plan.catalog_cli", "recipes_cli", "recipes",
        "recipe catalog (knowledge/recipes/catalog.yml): list | show | check | sets")
 _mount("sbmig.fleet.cli", "fleet_cli", "fleet",

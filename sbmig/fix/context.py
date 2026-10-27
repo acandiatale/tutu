@@ -465,9 +465,10 @@ class ContextPacker:
         modules = sorted({e.module for e in errors if e.module} | ({cluster.module} if cluster.module else set()))
         if mode == "augment" and base is not None:
             what = (f"augment version {base.version} of this case's fix script" if base.version
-                    else "augment this run's fix script for the case") + " — return the COMPLETE new script"
+                    else "augment this run's fix script for the case") + \
+                " — return the COMPLETE new script (or <no_script> + <edits>)"
         else:
-            what = "a new fix script for this case (no stored script exists for it)"
+            what = "fix this case now (<edits>) and write a reusable fix script for it (no stored script exists for it)"
         header = [f"request: {what}", f"case: {case_id}" + (f" — L2 signature: {sig}" if sig else ""),
                   f"kind: {cluster.kind.value}" + (f", module(s): {', '.join(modules)}" if modules else ""),
                   f"errors: {len(errors)} in {len(by_file)} file(s) — every one of them is in p.errors"]

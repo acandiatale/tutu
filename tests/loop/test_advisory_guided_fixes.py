@@ -114,7 +114,7 @@ def test_orchestrator_attributes_llm_fixes_to_the_advisory(cfg, ws, hystrix_advi
     assert f.llm_fix_notes == ["Foo extended HystrixCommand; ported to a Resilience4j CircuitBreaker."]
     line = next(x for x in report.handover.from_here if x.startswith("code rewritten by the LLM for hystrix"))
     assert line == (f"code rewritten by the LLM for hystrix: {FOO} — {f.llm_fix_notes[0]} — review these changes "
-                    "(changes.patch, attempts table)")
+                    "(changes.patch, Fixes by case)")
 
 
 def _report(*attempts: FixAttempt) -> RunReport:

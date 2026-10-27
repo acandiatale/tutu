@@ -105,7 +105,7 @@ def test_pure_java_ten_cases_cost_one_llm_call(cfg, ws):
 def test_a_reuse_is_never_deferred(cfg, ws):
     kb = FakeKB()
     sym = case_of("compile|cannot_find_symbol|JAXBContext")
-    kb.scripts.seed(sym, script("p.log('stored JAXBContext fix')\n" + ADD_DEP).code)
+    kb.cases.seed(sym, script("p.log('stored JAXBContext fix')\n" + ADD_DEP).code)
     fixer = FakeFixer(script_fn=lambda w, c, ctx: script("p.log('looked')"))      # the LLM's scripts change nothing
     pr = make_loop(cfg, ws, jaxb_build, fixer, kb=kb).run(Phase.VERIFY, "package", 4)
     assert pr.ok
@@ -180,7 +180,7 @@ def test_a_root_pom_change_defers_every_module(cfg, ws):
 def test_a_reuse_is_never_deferred_by_a_pom_change(cfg, ws):
     kb = FakeKB()
     other = case_of("compile|package_does_not_exist|jakarta.xml.bind.annotation")
-    kb.scripts.seed(other, script("p.log('stored annotation fix')\n" + ADD_DEP).code)
+    kb.cases.seed(other, script("p.log('stored annotation fix')\n" + ADD_DEP).code)
     fixer = FakeFixer(script_fn=lambda w, c, ctx: script(ADD_DEP, analysis="add jakarta.xml.bind-api"))
     loop = make_loop(cfg, ws, jaxb_build, fixer, kb=kb)
     pr = loop.run(Phase.VERIFY, "package", 4)
@@ -218,7 +218,7 @@ def test_deferral_counts_in_no_limit_and_does_not_use_the_round_cap(cfg, ws):
     """The cause never gets fixed: its consequence (same file) is deferred every round until the cause is blocked,
     then gets a fresh ladder (`new`, no previous attempts). A deferred case does not use a slot of
     max_clusters_per_iteration: the case in another file is attempted in round 1."""
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_augments_per_case = 2           # v2.1: LLM tries per case (new + 1 augment)
     cfg.loop.max_clusters_per_iteration = 2
     BAZ = "src/main/java/com/x/Baz.java"
     ws.write(BAZ, "class Baz { broken }\n")

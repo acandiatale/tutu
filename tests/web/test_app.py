@@ -155,7 +155,7 @@ def test_run_log_holds_only_its_own_thread(client, tmp_path):
     _sse(client, rid)
     text = (tmp_path / "out" / rid / "sbmig.log").read_text()
     assert "llm request role=fix" in text and "log file" in text
-    assert f"SBMIG-RESULT run={rid} exit=0 build=ok unresolved=0 blocked=0 llm=0 attn=-" in text      # round 10
+    assert f"SBMIG-RESULT run={rid} exit=0 build=ok unresolved=0 blocked=0 open=0 resolved=0 llm=0 attn=-" in text
     assert not any(getattr(h, "sbmig_thread", None) for h in logging.getLogger("sbmig").handlers)   # detached
 
 

@@ -9,19 +9,25 @@ Errors are never handled in a node: `_RunAborted` (a build-fix loop abort), `Mis
 exception propagate out of the graph to the orchestrator's run guard, exactly as with the inline engine.
 
 v2 (flow-v2): the `phase` node runs whatever phase groups the plan has — normally transform (the one OpenRewrite
-run) → restructure (incl. the structure review step) → verify (final build + script fix loop); `stop_after`
-accepts every phase of `sbmig.loop.orchestrator.STOP_AFTER_PHASES` (incl. `transform`).
+run + v2.1's one `mvn clean compile`) → restructure (incl. the structure review step) → verify (final build + fix
+loop); `stop_after` accepts every phase of `sbmig.loop.orchestrator.STOP_AFTER_PHASES` (incl. `transform`).
+
+v2.1 (2026-10-27): every node runs inside its log stage (`sbmig.core.stage`: `intake`, `analyze`, `plan`, the phase
+group's name, `report` for finalize) — set when the node starts, reset when it ends (LangGraph may run a node in an
+executor thread with a copied context; the stage is set inside the node, so it is that thread's); the orchestrator's
+steps set the finer stages inside (`rewrite`, `compile`, `restructure`, `review`, `build`, `fix r3 …`).
 """
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from sbmig.core.models import Phase, PhaseResult, RunReport
+from sbmig.core.stage import reset_stage, set_stage
 
 if TYPE_CHECKING:
     from sbmig.loop.orchestrator import Orchestrator
@@ -81,6 +87,19 @@ def _halted(orch: Orchestrator, report: RunReport, ok: bool) -> dict:
 
 def _journal_node(orch: Orchestrator, node: str, phase: str | None = None) -> None:
     orch.ws.journal({"event": "graph_node", "node": node, "phase": phase})
+
+
+def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[MigrationState], dict]
+            ) -> Callable[[MigrationState], dict]:
+    """The node `fn` inside its log stage (`name`, or `name(state)`); the stage is reset however the node ends."""
+    def node(state: MigrationState) -> dict:
+        token = set_stage(name(state) if callable(name) else name)
+        try:
+            return fn(state)
+        finally:
+            reset_stage(token)
+    node.__name__ = getattr(fn, "__name__", "node")
+    return node
 
 
 # ---------------------------------------------------------------------------- graph
@@ -144,12 +163,15 @@ def build_graph(orch: Orchestrator) -> Any:
     def after_phase(state: MigrationState) -> str:
         return "phase" if holder["groups"] and not (state.get("stopped") or state.get("aborted")) else "finalize"
 
+    def phase_stage(state: MigrationState) -> str:
+        return holder["groups"][0][0].value if holder["groups"] else "phase"
+
     g = StateGraph(MigrationState)
-    g.add_node("intake", intake)
-    g.add_node("analyze", analyze)
-    g.add_node("plan", plan)
-    g.add_node("phase", phase)
-    g.add_node("finalize", finalize)
+    g.add_node("intake", _staged("intake", intake))
+    g.add_node("analyze", _staged("analyze", analyze))
+    g.add_node("plan", _staged("plan", plan))
+    g.add_node("phase", _staged(phase_stage, phase))
+    g.add_node("finalize", _staged("report", finalize))
     g.add_edge(START, "intake")
     g.add_conditional_edges("intake", after_step, {"next": "analyze", "finalize": "finalize"})
     g.add_conditional_edges("analyze", after_step, {"next": "plan", "finalize": "finalize"})

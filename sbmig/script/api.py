@@ -514,8 +514,8 @@ def helper_api_doc(extra_imports: Iterable[str] = (), timeout_s: Optional[int] =
     limit = f"a limit of {timeout_s} s" if timeout_s else "a time limit"
     rows = "\n".join(f"| {api} | {what} |" for api, what in _API_ROWS)
     return (
-        "Answer with `<analysis>…</analysis>` and `<script>…</script>`; the script defines `def fix(p)` and changes "
-        "files only through `p` (paths relative to the project folder, `/` separators):\n\n"
+        "The script defines `def fix(p)` and changes files only through `p` (paths relative to the project folder, "
+        "`/` separators):\n\n"
         f"| API | what it does |\n|---|---|\n{rows}\n\n"
         f"Rules: imports only {allowed}. Not available: the builtins {names} (`re.compile` is fine), the modules "
         f"{modules}, attributes starting with `_`. Absolute paths, drive letters, `..` leaving the project, `.git/` "

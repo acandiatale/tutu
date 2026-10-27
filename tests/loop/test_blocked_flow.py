@@ -107,7 +107,7 @@ def test_blocked_case_is_reported_and_the_rest_is_fixed(cfg, ws):
     assert any("only blocked cluster(s) remain" in n for n in verify.notes)
     assert report.unresolved == []                                      # blocked errors are not "unresolved"
     md = (ws.run_dir / "report.md").read_text()
-    assert md.index("## Blocked — needs human / library action") < md.index("## Unresolved errors")
+    assert md.index("## Error list") < md.index("## Blocked — needs human / library action")
     assert "| **Blocked** | 1 item(s) — external_javax_api 1" in md
     assert "`com.company:legacy-web:1.4` (class `com.company.legacy.web.LegacyRequestHelper`)" in md
     blocked_ev = [e for e in journal_events(ws) if e["event"] == "blocked"]
@@ -229,7 +229,7 @@ def test_structural_regression_reverted_even_when_not_the_last_commit(cfg, ws, p
     good_pom = ws.read("pom.xml")
     cfg.loop.max_clusters_per_iteration = 2
     kb = FakeKB()
-    kb.scripts.seed(case_of(f"compile|x|{BAR.rsplit('/', 1)[-1]}"),
+    kb.cases.seed(case_of(f"compile|x|{BAR.rsplit('/', 1)[-1]}"),
                     write_script({BAR: "class X { ok }\n"}).code)
 
     def build_fn(w, call):
@@ -267,12 +267,12 @@ def test_garbage_llm_is_blocked_as_repeated_failure_within_budget(cfg, ws, profi
     build = FakeBuildRunner(ws, script=[bad_build(compile_error(FOO))])
     loop = make_loop(cfg, ws, profile, build=build, fixer=fixer)
     pr = loop.run(Phase.VERIFY, "package", 6)
-    n = 1 + cfg.script.max_augments_per_case                           # no script ever: `new` again, same total
+    n = cfg.script.max_augments_per_case                               # no script ever: `new` again, same total
     assert len(fixer.contexts) == n and {c.script_mode for c in fixer.contexts} == {"new"}
     assert len(build.calls) == 1                                       # re-asked on the same build, no rebuild
     assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE] and pr.blocked[0].attempts == n
     assert loop.llm_unavailable is None and "llm-unavailable" not in loop.flags
-    assert loop.budget.llm_calls == n < loop.budget.max_llm_calls
+    assert loop.budget.llm_calls == n and loop.budget.llm_allowed()      # v2.1: no LLM cap by default
     assert any(e["event"] == "reround" for e in journal_events(ws))
 
 
@@ -294,7 +294,7 @@ def test_llm_unavailable_blocks_llm_cases_stored_scripts_keep_running(cfg, ws, p
     baz, qux = "src/main/java/com/x/Baz.java", "src/main/java/com/x/Qux.java"
     ws.write(baz, "class Baz { broken }\n")
     ws.commit("baz")
-    kb.scripts.seed(case_of("compile|x|Baz.java"), write_script({baz: "class Baz { ok }\n"}).code)
+    kb.cases.seed(case_of("compile|x|Baz.java"), write_script({baz: "class Baz { ok }\n"}).code)
 
     def build2(w, call):
         errs = [own_case(qux)] + ([own_case(baz)] if "broken" in w.read(baz) else [])

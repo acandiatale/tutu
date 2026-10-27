@@ -10,6 +10,7 @@ from sbmig.core.models import (
     BlockReason,
     BuildError,
     CaseType,
+    ErrorEntry,
     ErrorKind,
     FleetState,
     LLMUsage,
@@ -47,6 +48,9 @@ def report(name: str, *, success=True, aborted=False, blocked=0, llm=0, phases=N
         )
     if not success and not aborted:
         r.unresolved.append(BuildError(kind=ErrorKind.COMPILE, message="x"))
+        r.error_entries = [ErrorEntry(id=f"{name}-1", status="unresolved", case_id="c1", seen="build"),
+                           ErrorEntry(id=f"{name}-2", status="resolved", case_id="c2", seen="compile"),
+                           ErrorEntry(id=f"{name}-3", status="resolved", case_id="c2", seen="compile")]
     return r
 
 
@@ -82,6 +86,7 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
     a, b, _ = state.projects
     assert a.llm_calls == 2 and a.llm_input_tokens == 20 and a.exit_code == 0
     assert b.blocked == 1 and b.blocked_reasons == ["external_javax_api:com.co:legacy"] and b.unresolved == 1
+    assert b.error_counts == {"unresolved": 1, "resolved": 2} and a.error_counts == {}      # v2.1 error list
     assert state.llm_calls_total == 2
     assert fake.calls[0][2] == f"{state.fleet_id}-001-alpha" and a.run_id == fake.calls[0][2]
     fleet = out / "fleet"
@@ -94,11 +99,14 @@ def test_runs_all_and_writes_summaries(fleet_cfg, projects_dir, tmp_path):
     csv_lines = raw_csv.decode("utf-8-sig").splitlines()
     assert csv_lines[0].startswith("#,name,case,status") and len(csv_lines) == 4
     assert csv_lines[0].endswith(",carried_over,attempt,run_id,error,attention,input") and "kb_" not in csv_lines[0]
+    assert ",llm_cost,open,resolved,blocked,advisories," in csv_lines[0] and ",unresolved," not in csv_lines[0]
+    assert csv_lines[2].split(",")[8:11] == ["1", "2", "0"]           # beta: open 1, resolved 2, blocked entries 0
+    assert "* error list: open 1, resolved 2, blocked 0 (blocked items: 1)" in md
     assert ",unresolved:1;blocked:" not in csv_lines[2] and "blocked:external_javax_api;unresolved:1" in csv_lines[2]
     assert json.loads((fleet / "summary.json").read_text())["fleet_id"] == state.fleet_id
     learning = (fleet / "learning.md").read_text()
-    assert learning.startswith(f"# Fleet {state.fleet_id} — error cases and fix scripts")
-    assert "## Error cases across projects" in learning and "## Fix scripts" in learning
+    assert learning.startswith(f"# Fleet {state.fleet_id} — cases and fix scripts")
+    assert "* error list: open 1, resolved 2, blocked 0" in learning and "_No cases in the KB yet._" in learning
     assert "recipe" not in learning.lower() and "ledger" not in learning.lower()
 
 
@@ -190,11 +198,21 @@ def test_llm_budget_threading(fleet_cfg, projects_dir, tmp_path):
     )
     fake = FakeRun(alpha={"llm": 7}, beta={"llm": 5})
     state = FleetRunner(cfg, projects_dir, tmp_path / "out", run_project=fake).run()
-    assert [c[1] for c in fake.calls] == [10, 5, 0]  # min(per-project, remaining)
+    assert [c[1] for c in fake.calls] == [10, 5, -1]  # min(per-project, remaining); exhausted = -1 (no LLM)
     assert state.llm_calls_total == 12 and "llm-budget-exhausted:gamma" in state.notes
     unlimited = FakeRun()
     FleetRunner(fleet_cfg, projects_dir, tmp_path / "out2", run_project=unlimited).run()
     assert {c[1] for c in unlimited.calls} == {fleet_cfg.loop.max_llm_calls}
+    # v2.1: a per-project 0 (= no limit) is capped by the fleet's remainder
+    capped = FakeRun(alpha={"llm": 7})
+    cfg0 = fleet_cfg.model_copy(update={"loop": fleet_cfg.loop.model_copy(update={"max_llm_calls": 0}),
+                                        "fleet": fleet_cfg.fleet.model_copy(update={"max_llm_calls_total": 12})})
+    FleetRunner(cfg0, projects_dir, tmp_path / "out3", run_project=capped).run()
+    assert [c[1] for c in capped.calls] == [12, 5, 5]
+    off = FakeRun()
+    cfg_off = cfg0.model_copy(update={"loop": cfg0.loop.model_copy(update={"max_llm_calls": -1})})
+    FleetRunner(cfg_off, projects_dir, tmp_path / "out4", run_project=off).run()
+    assert {c[1] for c in off.calls} == {-1}                                 # -1 stays "no LLM call"
 
 
 def test_crash_is_aborted_and_fleet_continues(fleet_cfg, projects_dir, tmp_path):
@@ -323,7 +341,7 @@ def test_advisories_and_carried_over_columns(fleet_cfg, projects_dir, tmp_path):
     assert c.advisories == [] and c.carried_over == 0
     fleet = out / "fleet"
     head = (fleet / "summary.csv").read_text(encoding="utf-8-sig").splitlines()[0].split(",")
-    assert head.index("advisories") == head.index("unresolved") + 1 and "carried_over" in head
+    assert head.index("advisories") == head.index("blocked") + 1 and "carried_over" in head
     md = (fleet / "summary.md").read_text()
     assert "| advisories | carried_over |" in md
     assert "## Libraries flagged across the fleet" in md
@@ -338,40 +356,49 @@ def test_advisories_and_carried_over_columns(fleet_cfg, projects_dir, tmp_path):
     assert FleetState.model_validate(raw).projects[0].carried_over == 0
 
 
-def test_learning_md_has_the_fleets_error_cases_and_the_kbs_fix_scripts(fleet_cfg, tmp_path):
-    """PLAN-v2 step 4: learning.md = the error cases of this fleet's runs + top cases + fix scripts (no ledger)."""
-    from sbmig.core.models import ErrorAttemptRef, ErrorCaseRecord, FleetProjectResult
-    from sbmig.fleet.summary import render_learning
+def test_learning_md_lists_the_cases_met_and_their_scripts(fleet_cfg, tmp_path):
+    """v2.1: learning.md = the KB cases this fleet's projects met (run errors.jsonl, CaseInfo.projects) with every
+    stored script version (status successes/failures); the whole KB when none is known."""
+    from sbmig.core.models import FleetProjectResult
+    from sbmig.fleet.summary import fleet_case_projects, read_cases, render_learning
     from sbmig.kb import FileKnowledgeBase, case_id_for
 
     l2 = "compile|cannot_find_symbol|clientIp"
     cid = case_id_for(l2)
     kb = FileKnowledgeBase(fleet_cfg)
-    kb.scripts.add(cid, l2, "def fix(p):\n    p.replace('src/A.java', 'clientIp', 'remoteClientIp')\n")
-    kb.scripts.credit(cid, 1, "improved", project="alpha")
-
-    def err(eid, run, status, method="script"):
-        refs = [ErrorAttemptRef(attempt_id=f"{run}:a1", fix_method=method,
-                                outcome="improved" if status == "resolved" else "no_change")]
-        return ErrorCaseRecord(id=eid, run_id=run, project=run, signature_generic=l2, status=status,
-                               fix_method=method if status == "resolved" else "none", attempts=refs,
-                               resolved_by=f"{run}:a1" if status == "resolved" else None,
-                               resolver_id=f"script:{cid}:v1" if status == "resolved" else "",
-                               failure_reason="" if status == "resolved" else "script v1 no_change: still there")
-
-    kb.append_error_cases([err("e1", "run-a", "resolved"), err("e2", "run-b", "unresolved"),
-                           err("e3", "other-fleet", "resolved")], [])
+    kb.cases.add_script(cid, l2, "def fix(p):\n    p.replace('src/A.java', 'clientIp', 'remoteClientIp')\n",
+                        run_id="run-a", project="alpha")
+    kb.cases.add_script(cid, l2, "def fix(p):\n    pass\n", source="llm-augment", run_id="run-a", project="alpha")
+    kb.cases.credit(cid, 1, "improved", project="beta", run_id="run-b")          # another project → proven
+    kb.cases.credit(cid, 2, "no_change", project="beta", run_id="run-b")
+    kb.cases.record_run([ErrorEntry(id="e1", run_id="run-a", project="alpha", case_id=cid, l2=l2, status="resolved",
+                                    message="cannot find symbol", seen="compile")])
+    other = case_id_for("compile|package_does_not_exist|x")
+    kb.cases.record_run([ErrorEntry(id="e9", run_id="run-z", project="zeta", case_id=other,
+                                    l2="compile|package_does_not_exist|x", status="unresolved",
+                                    message="package x does not exist", seen="build")])
+    run_b = tmp_path / "out" / "run-b"
+    run_b.mkdir(parents=True)
+    (run_b / "errors.jsonl").write_text(json.dumps({"id": "e2", "case_id": cid, "status": "resolved"}) + "\n",
+                                        encoding="utf-8")
     state = FleetState(fleet_id="fleet-x", manifest="m.yml",
-                       projects=[FleetProjectResult(name="a", input="a", run_id="run-a", llm_calls=1),
-                                 FleetProjectResult(name="b", input="b", run_id="run-b")])
+                       projects=[FleetProjectResult(name="alpha", input="a", run_id="run-a", llm_calls=1,
+                                                    error_counts={"resolved": 1}),
+                                 FleetProjectResult(name="b-dir", input="b", run_id="run-b", out_dir=str(run_b),
+                                                    error_counts={"unresolved": 2, "blocked": 1})])
+    cases = read_cases(kb)
+    assert {c.case_id for c, _ in cases} == {cid, other}
+    assert fleet_case_projects(state, cases) == {cid: ["b-dir", "alpha"]}
     md = render_learning(state, kb)
-    assert md.startswith("# Fleet fleet-x — error cases and fix scripts")
+    assert md.startswith("# Fleet fleet-x — cases and fix scripts")
     assert "* projects: 2 (2 run)" in md and "* LLM calls: 1" in md
-    assert "2 build error(s) recorded one by one from 2 project(s) / 2 run(s)" in md      # this fleet's runs only
-    assert "| status | script |" in md and "| resolved | 1 |" in md and "| unresolved | 1 |" in md
-    assert "| script v1 no_change: still there |" in md and "### Still unresolved / blocked most often" in md
-    assert f"| `{cid}` | clientIp — cannot find symbol | candidate | script v1 | 3 | 3 |" in md   # whole KB
-    assert "* cases with scripts: 1, versions: 1 (proven 1, retired 0, quarantined 0)" in md
-    assert f"| `{cid}` | 1 | v1 | 1 | 0 | 1 | {l2.replace('|', chr(92) + '|')} |" in md
+    assert "* error list: open 2, resolved 1, blocked 1" in md
+    assert "2 case(s) in the KB, 1 met by this fleet's projects; 2 script version(s) (proven 1, unverified 1" in md
+    assert f"| `{cid}` | clientIp | 2: b-dir, alpha | 1 | 1 / 1 | v1 proven 1/0, v2 unverified 0/1 | - |" in md
+    assert other not in md                                                   # only the cases this fleet met
+    # the same table straight from <kb.dir>/cases/*/case.json (no KB object); the whole KB without a fleet match
+    assert {c.case_id for c, _ in read_cases(None, fleet_cfg.kb_dir)} == {cid, other}
+    lone = render_learning(FleetState(fleet_id="f1", manifest="m.yml"), None, fleet_cfg.kb_dir)
+    assert f"`{cid}`" in lone and f"`{other}`" in lone
     empty = render_learning(FleetState(fleet_id="f0", manifest="m.yml"), None)
-    assert "_No error cases recorded for these projects yet._" in empty and "_no KB_" in empty
+    assert "_No cases in the KB yet._" in empty

@@ -27,9 +27,11 @@ def test_serve_context_files_grep_and_round_hints(cfg, setup):
     assert "nope/X.java: file not found" in served
     assert "src/main/resources/application.properties:1: spring.redis.host=localhost" in served
     assert "grep /[unclosed/ → 0 matching line(s)" in served                        # bad regex → literal search
-    assert "1 more time(s), but prefer answering with <script> now." in served and "<patches>" not in served
+    assert "1 more time(s), but prefer answering now (<analysis>, <solution>, <edits>, <script>)." in served
+    assert "<patches>" not in served
     last = fixer.serve_context(setup, ["pom.xml"], [], 0)
-    assert "This was the LAST context round. Answer now with <analysis> and <script>" in last
+    assert "This was the LAST context round. Answer now with <analysis>, <solution>, <edits> and <script>" in last
+    assert "<no_script>" in last
 
 
 def test_large_file_served_head_tail_and_ambiguous_candidates(cfg, setup, put):

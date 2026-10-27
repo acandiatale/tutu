@@ -32,18 +32,17 @@ class ScriptFixerMissing(RuntimeError):
 
 
 class NullKnowledgeBase:
-    """The knowledge base that knows nothing (``--no-kb``, or sbmig.kb unavailable) — what the v2 flow calls on a KB:
-    `match` (an empty KBMatch: no pinned case actions), `scripts` None (nothing is reused, LLM scripts run unstored as
-    v0) and `record_review` (nothing recorded). No `append_error_cases`: a run without a KB writes its error cases
-    into the run directory only."""
+    """The knowledge base that knows nothing (``--no-kb``, or sbmig.kb unavailable) — what the v2.1 flow calls on a KB:
+    `match` (an empty KBMatch: no pinned case actions, no hints), `cases` None (nothing is reused, LLM scripts run
+    unstored as v0) and `record_run` (nothing recorded: the run's errors.jsonl stays in the run directory)."""
 
-    scripts = None
+    cases = None
 
     def match(self, cluster, ws, profile) -> KBMatch:
         return KBMatch()
 
-    def record_review(self, review) -> None:
-        return None
+    def record_run(self, entries) -> int:
+        return 0
 
 
 class LazyFixer:

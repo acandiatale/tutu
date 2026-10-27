@@ -1,10 +1,13 @@
-"""LLMFixer: the default fixer seam (`propose_script`, ScriptFixerLike): context packing → LLM → script parsing →
-static pre-check / one feedback round → ScriptProposal.
+"""LLMFixer: the default fixer seam (`propose_script`, ScriptFixerLike): context packing → LLM → answer parsing →
+static pre-check / one feedback round → FixAnswer (= ScriptProposal).
 
-`propose_script` asks for a Python fix script for ONE case (L2) across files: model choice, call tags, usage
-accounting, prompt hash, record dir and <need_files>/<need_grep> context rounds; the answer is parsed by
-`sbmig.fix.script_protocol` and statically pre-checked (`sbmig.script.check_script` when available); an unusable
-script gets one feedback round. Scripts apply themselves (sbmig.script) — the fixer never edits the tree."""
+`propose_script` asks for ONE case (L2) across files: model choice, call tags, usage accounting, prompt hash, record
+dir and <need_files>/<need_grep> context rounds. v2.1 (docs/v2/PLAN-v2.1.md §3.6): the answer has four parts —
+`<analysis>` 원인, `<solution>` 해결 방법, `<edits>` 수정 (JSON list of `Edit`, applied by the loop through
+`sbmig.script.apply_edits`), `<script>` 스크립트 (stored for the same case in other projects) or `<no_script>` with the
+reason. Mode `new` asks for both edits and a script; `augment` for a better script, or no_script + edits. The answer
+is parsed by `sbmig.fix.script_protocol`, the script statically pre-checked (`sbmig.script.check_script`); an
+unusable script or unreadable edits get ONE feedback round. The fixer never edits the tree."""
 from __future__ import annotations
 
 import inspect
@@ -181,8 +184,12 @@ class LLMFixer:
 
     # ------------------------------------------------------------------ ScriptFixerLike
     def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal:
-        """A fix script for ONE case (`ctx.script_mode` new | augment, `ctx.script_base` = the version to extend).
-        Never raises. No usable script → `ScriptProposal(code="", error=<short reason>, analysis=…)`; transport and
+        """The answer for ONE case (`ctx.script_mode` new | augment, `ctx.script_base` = the version to extend) as a
+        FixAnswer: `analysis` 원인, `solution` 해결 방법, `edits` (validated `Edit`s; the loop applies them with
+        `sbmig.script.apply_edits`), `code` (the script; "" = none) and `no_script_reason`. Usable = `code` or
+        `edits`; `error` is set only when neither is (then `code=""`, `edits=[]`). A script dropped after the
+        feedback round next to valid edits → `no_script_reason` "[sbmig] the script could not be used: …"; edits
+        dropped next to a valid script → an "[sbmig] edits dropped: …" line in `analysis`. Never raises; transport and
         configuration failures carry the analysis texts the loop classifies with `is_llm_transport_error` /
         `llm_400_body` (`llm-error: …`, `llm-error: response did not follow the protocol: …`)."""
         model = self._model(ctx)
@@ -223,7 +230,7 @@ class LLMFixer:
                                       parse=parse_script_response)
 
             # 1) context rounds
-            while parsed.wants_context and not parsed.code and rounds < self.cfg.llm.max_context_rounds:
+            while parsed.wants_context and not parsed.usable and rounds < self.cfg.llm.max_context_rounds:
                 rounds += 1
                 requested.extend(p for p in parsed.need_files if p not in requested)
                 remaining = self.cfg.llm.max_context_rounds - rounds
@@ -235,35 +242,45 @@ class LLMFixer:
                                        ChatMessage(role="user", content=served)]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
                                           parse=parse_script_response)
-            if parsed.wants_context and not parsed.code:
+            if parsed.wants_context and not parsed.usable:
                 requested.extend(p for p in parsed.need_files if p not in requested)
 
-            # 2) static pre-check + one feedback round for a script that cannot be used as written
+            # 2) static pre-check + one feedback round for a script that cannot be used as written / edits that
+            #    cannot be read
             notes: list[str] = []
-            problems = self._script_problems(parsed, base if mode == "augment" else None)
-            if problems and (parsed.candidate or parsed.used_patches):
+            sbase = base if mode == "augment" else None
+            problems = self._script_problems(parsed, sbase)
+            if self._wants_feedback(parsed, problems):
                 rounds += 1
-                log.info("script for %s cannot be used (%s) → one feedback round", cluster.id, problems[0][:160])
+                fb = self._feedback_problems(parsed, problems)
+                log.info("answer for %s cannot be used (%s) → one feedback round", cluster.id, fb[0][:160])
                 messages = messages + [ChatMessage(role="assistant", content=last.content),
-                                       ChatMessage(role="user", content=self.script_feedback_message(parsed, problems))]
-                first_problem = problems[0]
+                                       ChatMessage(role="user", content=self.script_feedback_message(parsed, fb, mode))]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
                                           parse=parse_script_response)
-                problems = self._script_problems(parsed, base if mode == "augment" else None)
-                if problems:
-                    notes.append(f"feedback round did not give a usable script (first answer: {first_problem[:200]})")
+                problems = self._script_problems(parsed, sbase)
+                if not (parsed.code and not problems) and not (parsed.edits and not parsed.edits_problem):
+                    notes.append(f"feedback round did not give a usable script or edits (first answer: {fb[0][:200]})")
 
             code = parsed.code if not problems else ""
+            edits = list(parsed.edits) if not parsed.edits_problem else []
             analysis = parsed.analysis
+            no_script = parsed.no_script_reason
             error = ""
-            if not code:
-                error = self._script_error(parsed, problems)
+            if not code and not edits:
+                error = self._answer_error(parsed, problems)
                 if not parsed.candidate and not parsed.wants_context and PROTOCOL_WARNING in parsed.warnings:
                     analysis = "llm-error: response did not follow the protocol: " + parsed.raw.strip()[:300]
                 elif parsed.wants_context and not parsed.candidate:
                     analysis = (analysis + "\n" if analysis else "") + \
                         f"(still requesting context after {self.cfg.llm.max_context_rounds} round(s): " + \
                         ", ".join(parsed.need_files + parsed.need_grep) + ")"
+            else:
+                if parsed.candidate and not code and problems:       # edits kept, the broken script dropped
+                    notes.append(f"script dropped: {problems[0][:200]}")
+                    no_script = no_script or f"[sbmig] the script could not be used: {problems[0][:200]}"
+                if parsed.edits_problem:                             # the script kept, the broken edits dropped
+                    notes.append(f"edits dropped: {parsed.edits_problem[:200]}")
             if last and last.finish_reason in ("length", "max_tokens"):
                 notes.append(f"output truncated (finish_reason={last.finish_reason})")
             if notes:
@@ -271,6 +288,9 @@ class LLMFixer:
             proposal = ScriptProposal(
                 code=code,
                 analysis=analysis,
+                solution=parsed.solution,
+                edits=edits,
+                no_script_reason=no_script if not code else "",
                 model=last.model if last else (model or ""),
                 prompt_hash=messages_hash(messages),
                 llm_usage=usage,
@@ -278,6 +298,9 @@ class LLMFixer:
                 raw_response=last.content if last else "",
                 error=error,
             )
+            log.debug("answer for %s: %d edit(s), script %s, solution %d chars%s", cluster.id, len(proposal.edits),
+                      "yes" if proposal.code else ("no: " + (proposal.no_script_reason or proposal.error or "-"))[:120],
+                      len(proposal.solution), f", error {proposal.error[:120]}" if proposal.error else "")
         except LLMError as exc:
             proposal = self._error_script(f"llm-error: {exc}", f"LLM call failed (status={exc.status})", model,
                                           messages, usage, requested)
@@ -327,7 +350,8 @@ class LLMFixer:
             return []
 
     def _script_problems(self, parsed: ParsedScript, base: Optional[ScriptBase]) -> list[str]:
-        """Why the parsed answer is not a usable script ([] = usable)."""
+        """Why the parsed answer's script is not usable ([] = usable, or no script at all next to valid edits /
+        a <no_script> reason)."""
         if parsed.code:
             problems = self._static_problems(parsed.code)
             if not problems and base is not None and _same_code(parsed.code, base.code):
@@ -338,11 +362,39 @@ class LLMFixer:
         if parsed.candidate:
             return [parsed.problem]
         if parsed.used_patches:
-            return ["the answer used SEARCH/REPLACE <patches>; this loop takes ONE Python fix script in <script>"]
+            return ["the answer used SEARCH/REPLACE <patches>; this loop takes <edits> (a JSON list) and ONE Python "
+                    "fix script in <script>"]
+        if parsed.edits or parsed.no_script_reason:
+            return []                                     # no script, on purpose or with edits: not a script problem
         return [parsed.problem or NO_SCRIPT]
 
+    @staticmethod
+    def _feedback_problems(parsed: ParsedScript, problems: list[str]) -> list[str]:
+        """What the feedback round names: the unreadable edits and / or the script's problems."""
+        out = [parsed.edits_problem] if parsed.edits_problem else []
+        if parsed.candidate or parsed.used_patches:
+            out += problems
+        return out or problems or [NO_SCRIPT]
+
+    @staticmethod
+    def _wants_feedback(parsed: ParsedScript, problems: list[str]) -> bool:
+        """One feedback round when a script block is there but unusable, the answer used v1 patches, or the edits
+        block cannot be read. An answer without any fix (only an analysis / a <no_script> without edits) is the
+        model's decision: no feedback round."""
+        return bool(parsed.edits_problem) or bool(problems and (parsed.candidate or parsed.used_patches))
+
+    def _answer_error(self, parsed: ParsedScript, problems: list[str]) -> str:
+        """The short reason of an answer with neither a usable script nor valid edits (ScriptProposal.error)."""
+        err = self._script_error(parsed, problems)
+        if parsed.edits_problem:
+            return parsed.edits_problem if err == NO_SCRIPT and not parsed.candidate else \
+                f"{err}; {parsed.edits_problem}"
+        if parsed.no_script_reason and not parsed.candidate and err == NO_SCRIPT:
+            return f"no script and no edits: {parsed.no_script_reason[:200]}"
+        return err
+
     def _script_error(self, parsed: ParsedScript, problems: list[str]) -> str:
-        """The short reason of a proposal without a script (ScriptProposal.error)."""
+        """The short reason of a proposal without a script."""
         if parsed.code and problems:
             if problems[0].startswith("the script is identical"):
                 return problems[0]
@@ -355,18 +407,26 @@ class LLMFixer:
             return NO_SCRIPT + " (the answer used the v1 <patches> format)"
         return NO_SCRIPT
 
-    def script_feedback_message(self, parsed: ParsedScript, problems: list[str]) -> str:
+    def script_feedback_message(self, parsed: ParsedScript, problems: list[str], mode: str = "new") -> str:
         parts = ["Your answer cannot be used. Problems:"]
         parts += [f"- {p}" for p in problems[:10]]
         if len(problems) > 10:
             parts.append(f"- … and {len(problems) - 10} more problem(s)")
         if parsed.used_patches and not parsed.candidate:
-            parts.append("This loop does not take SEARCH/REPLACE patches: write ONE Python fix script that makes the "
-                         "same edits through the helper API `p` (p.replace / p.sub / p.pom …) for every error in "
-                         "p.errors.")
-        parts.append("Re-send the COMPLETE corrected answer: <analysis> and <script> with a module-level `def fix(p)`. "
-                     "Use only the helper API `p` and the allowed imports (no open / os / sys / subprocess / eval / "
-                     "exec / __dunder__ access).")
+            parts.append("This loop does not take SEARCH/REPLACE patches: give the changes as <edits> (a JSON list of "
+                         "{\"op\": \"replace\", \"path\": …, \"old\": …, \"new\": …} objects) and ONE Python fix script "
+                         "that makes the same edits through the helper API `p` (p.replace / p.sub / p.pom …) for "
+                         "every error in p.errors.")
+        if parsed.edits_problem:
+            parts.append("<edits> must be ONE valid JSON list: double-quoted keys and strings, `\\n` and `\\\"` "
+                         "escaped inside strings, no comments, no trailing commas; `op` one of replace / write / "
+                         "create / delete / move / pom; paths relative to the project root.")
+        what = ("<analysis>, <solution>, <edits> and <script> with a module-level `def fix(p)` (or <no_script> with the "
+                "reason)") if mode != "augment" else \
+            ("<analysis>, <solution> and the COMPLETE new <script> with a module-level `def fix(p)` — or <no_script> "
+             "with the reason and <edits>")
+        parts.append(f"Re-send the COMPLETE corrected answer: {what}. Use only the helper API `p` and the allowed "
+                     "imports in the script (no open / os / sys / subprocess / eval / exec / __dunder__ access).")
         return "\n\n".join(parts) + "\n"
 
     def _error_script(self, analysis: str, error: str, model: Optional[str], messages: list[ChatMessage],
@@ -384,7 +444,8 @@ class LLMFixer:
                         "base_version": ctx.script_base.version if mode == "augment" and ctx.script_base else None,
                         "model": p.model, "rounds": rounds, "calls": p.llm_usage.calls,
                         "tokens": {"input": p.llm_usage.input_tokens, "output": p.llm_usage.output_tokens},
-                        "prompt_hash": p.prompt_hash, "code_chars": len(p.code),
+                        "prompt_hash": p.prompt_hash, "code_chars": len(p.code), "edits": len(p.edits),
+                        "solution_chars": len(p.solution), "no_script": bool(p.no_script_reason),
                         "files_shown": len(packed.files_included) if packed else 0,
                         "files_listed": len(packed.files_listed) if packed else 0,
                         "error": p.error or None,
@@ -510,11 +571,12 @@ class LLMFixer:
         if need_grep:
             parts.append(self.grep(ws, need_grep))
         if remaining_rounds <= 0:
-            parts.append("This was the LAST context round. Answer now with <analysis> and <script> (or explain in "
-                         "<analysis> why no script can fix this case safely, without a <script>).")
+            parts.append("This was the LAST context round. Answer now with <analysis>, <solution>, <edits> and "
+                         "<script> (or <no_script> with the reason and <edits>; or explain in <analysis> why this "
+                         "case cannot be fixed safely).")
         else:
-            parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering with "
-                         "<script> now.")
+            parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering now "
+                         "(<analysis>, <solution>, <edits>, <script>).")
         return "\n\n".join(parts) + "\n"
 
     def grep(self, ws: Workspace, patterns: list[str]) -> str:

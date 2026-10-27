@@ -217,3 +217,22 @@ def test_encoding_cache_is_bounded_lru(tmp_path, monkeypatch):
     keys = list(cache._d)
     assert str(files[2].resolve()) in keys and str(files[3].resolve()) not in keys and len(keys) == 3
     assert wsmod.ENCODING_CACHE_MAX == 20_000
+
+
+def test_v21_run_dir_layout(tmp_path):
+    """PLAN-v2.1 §3.5: logs/ holds every Maven / OpenRewrite / deptree / effective-pom file; no other directories
+    besides project/ (merge-conflicts/ only after a merge that dropped copies)."""
+    from sbmig.core.workspace import RUN_DIR_FILES, Workspace, logs_dir
+    from sbmig.fleet.cleanup import KEEP_FILES
+
+    ws = Workspace(tmp_path / "p", tmp_path / "run", "run-1")
+    assert logs_dir(ws) == ws.logs_dir == ws.run_dir / "logs" and ws.logs_dir.is_dir()
+
+    class View:                                    # a stand-in with only run_dir
+        run_dir = tmp_path / "other"
+    assert logs_dir(View()) == tmp_path / "other" / "logs"
+    assert set(RUN_DIR_FILES) == {"errors.jsonl", "errors.md", "report.md", "report.json", "sbmig.log",
+                                  "changes.patch", "journal.jsonl", "plan.json", "profile.json", "result.zip"}
+    assert set(RUN_DIR_FILES) == set(KEEP_FILES)
+    assert ws.new_log_path("deptree-root").parent == ws.logs_dir
+    assert sorted(p.name for p in ws.run_dir.iterdir() if p.is_dir()) == ["logs"]

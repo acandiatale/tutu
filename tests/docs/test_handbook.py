@@ -24,7 +24,11 @@ V1_PATHS_PENDING_REWRITE = ("knowledge/recipes/base", "knowledge/recipes/library
                             "sbmig/plan/library_recipes.py", "sbmig/plan/pre_handlers.py", "sbmig/triage/handlers",
                             "sbmig/triage/recipe_rules.yml", "sbmig/triage/rules.py", "sbmig/fix/apply.py",
                             "sbmig/fix/protocol.py", "sbmig/fix/prompts/system_v1.md", "sbmig/fix/prompts/user_v1.md.j2",
-                            "scripts/demo-kb/replay")
+                            "scripts/demo-kb/replay",
+                            # v2.1 (error list + case folders): the v2 KB records / catalog modules
+                            "sbmig/kb/changes.py", "sbmig/kb/error_cases.py", "sbmig/kb/labels.py",
+                            "sbmig/kb/scripts.py", "sbmig/kb/catalog.py", "sbmig/loop/error_tracker.py",
+                            "tests/kb/test_error_cases.py")
 _TICK = re.compile(r"`([^`\n]+)`")
 _LINK = re.compile(r"\]\(([^)\s#]+)(?:#[^)]*)?\)")
 _SKIP_CHARS = set("<>{}*…$@ \t\"'|,;()")

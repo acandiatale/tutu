@@ -1,21 +1,18 @@
-"""Append-only jsonl files of the KB (round 10, 2026-10-26): ``errors.jsonl``, ``fix_attempts.jsonl``,
-``reviews.jsonl``, ``audit.jsonl``, ``quarantine.jsonl``.
+"""Append-only jsonl files of the KB (round 10, 2026-10-26; v2.1: only ``<kb>/errors.jsonl`` is left).
 
 A process killed half-way through a write (or a full disk) leaves a last line without its newline; the next append
-used to glue its first record onto it, so both were lost and the torn id still counted as stored. Now:
+would glue its first record onto it. So:
 
 * :func:`append_lines` repairs the tail first (:func:`repair_tail`: a torn last line is moved to
   ``<file>.corrupt`` — appended, with a warning — a complete record that only lacks its newline gets one), then
   writes the batch with one ``write``, ``flush`` and ``os.fsync``;
-* :func:`parse_record` reads one line; a torn record with a whole one glued to it (an append after a crash, before
-  round 10) gives the whole one back;
-* :func:`lenient_fields` pulls ``id`` / ``signature_generic`` out of a line a model cannot validate (quarantine).
+* :func:`parse_record` reads one line; a torn record with a whole one glued to it gives the whole one back;
+* :func:`line_ids` — the id(s) a stored line really holds (dedupe on append / import).
 
 File-based on purpose (invariant 3). Callers hold the KB lock (:mod:`sbmig.kb.lock`) around appends.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -23,13 +20,10 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from sbmig.core.models import utcnow
-
 log = logging.getLogger("sbmig.kb")
 
 CORRUPT_SUFFIX = ".corrupt"
 ID_HEAD = '{"id":"'
-_SIG_RE = re.compile(r'"signature_generic":"((?:[^"\\]|\\.)*)"')
 _ID_RE = re.compile(r'^\{"id":"((?:[^"\\]|\\.)*)"')
 _CHUNK = 1 << 16
 
@@ -162,60 +156,3 @@ def line_ids(line: str) -> list[str]:
         if isinstance(obj, dict) and obj.get("id"):
             return [str(obj["id"])]
     return []
-
-
-def lenient_fields(line: str) -> dict[str, str]:
-    """``id`` / ``signature_generic`` of a line that does not validate (as far as they can be read)."""
-    s = (line or "").strip()
-    out = {"id": "", "signature_generic": ""}
-    try:
-        obj = json.loads(s)
-        if isinstance(obj, dict):
-            out["id"] = str(obj.get("id") or "")
-            out["signature_generic"] = str(obj.get("signature_generic") or "")
-            return out
-    except ValueError:
-        pass
-    m = _ID_RE.match(s)
-    if m:
-        out["id"] = m.group(1)
-    sigs = _SIG_RE.findall(s)
-    if sigs:
-        try:
-            out["signature_generic"] = json.loads(f'"{sigs[0]}"')
-        except ValueError:
-            out["signature_generic"] = sigs[0]
-    return out
-
-
-def line_hash(line: str) -> str:
-    return hashlib.sha1((line or "").strip().encode("utf-8", "replace")).hexdigest()[:16]
-
-
-def quarantine(kb_root: Path, source: str, items: list[dict[str, Any]]) -> int:
-    """Append the unreadable lines of ``source`` (one note per line content, never twice) to
-    ``<kb>/quarantine.jsonl``. Returns the number of new notes. Never raises."""
-    if not items:
-        return 0
-    path = Path(kb_root) / "quarantine.jsonl"
-    try:
-        known: set[str] = set()
-        if path.exists():
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                for ln in fh:
-                    try:
-                        known.add(str(json.loads(ln).get("hash", "")))
-                    except ValueError:
-                        continue
-        lines = []
-        for it in items:
-            h = str(it.get("hash") or "")
-            if not h or h in known:
-                continue
-            known.add(h)
-            lines.append(json.dumps({"at": utcnow().isoformat(timespec="seconds"), "file": source, **it},
-                                    ensure_ascii=False))
-        return append_lines(path, lines)
-    except Exception as e:  # noqa: BLE001 - a note about bad lines must never fail the caller
-        log.warning("kb quarantine note failed: %s: %s", type(e).__name__, e)
-        return 0

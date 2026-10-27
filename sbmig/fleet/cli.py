@@ -205,7 +205,8 @@ def status_cmd(
     typer.echo(
         f"fleet {state.fleet_id}: {t['done']} of {t['projects']} done "
         f"({', '.join(f'{k} {v}' for k, v in sorted(t['by_status'].items()))}); "
-        f"llm calls {t['llm_calls']} (cost {t['llm_cost']:.4f}); blocked {t['blocked']}, unresolved {t['unresolved']}"
+        f"llm calls {t['llm_calls']} (cost {t['llm_cost']:.4f}); errors open {t['errors_open']}, resolved "
+        f"{t['errors_resolved']}, blocked {t['errors_blocked']}; blocked items {t['blocked']}"
         + (f"; still running: {t['running']}" if t["running"] else "")
     )
     typer.echo(render_table(state))

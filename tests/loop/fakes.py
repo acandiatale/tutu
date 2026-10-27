@@ -1,9 +1,14 @@
 """Fake collaborators for loop/orchestrator tests (no mvn, no network, no LLM).
 
 v2 (flow-v2): `FakeScriptRunner` runs a fix script IN-PROCESS against a tiny helper `p` bound to the workspace (the
-real `sbmig.script.ScriptRunner` uses a `python -I` process); `FakeScriptStore` is an in-memory `ScriptStoreLike`;
-`FakeFixer.propose_script` answers with scripted `ScriptProposal`s, a `script_fn`, or — for tests written against
-SEARCH/REPLACE proposals — turns the `FixProposal` of `fn` / `proposals` into a script (`script_for`).
+real `sbmig.script.ScriptRunner` uses a `python -I` process); `FakeFixer.propose_script` answers with scripted
+`FixAnswer`s, a `script_fn`, or — for tests written against SEARCH/REPLACE proposals — turns the `FixProposal` of
+`fn` / `proposals` into a script (`script_for`).
+
+v2.1: `FakeCaseStore` is an in-memory `kb.cases` (best / code / find / add_script / credit / describe);
+`FakeKB` the KB facade (`cases`, `match`, `record_run`); `FakeErrorList` records every error-list call (and keeps
+FixTry objects per case); `FakeEditApplier` applies `Edit`s like `sbmig.script.apply_edits`; `answer(...)` builds a
+FixAnswer with 원인 / 해결 / edits / script / no_script_reason.
 """
 from __future__ import annotations
 
@@ -11,14 +16,16 @@ import fnmatch
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Optional, Union
 
 from sbmig.core.interfaces import RestructureResult
 from pydantic import BaseModel, Field
 
-from sbmig.core.models import (BuildError, BuildResult, CaseType, ErrorKind, FileChange, KBMatch,
-                               LLMUsage, MigrationPlan, Phase, PlanStep, PomInfo, ProjectProfile, RecipeRef,
-                               RewriteResult, ScriptMeta, ScriptProposal, ScriptRunResult, StepKind, StructureReview)
+from sbmig.core.models import (BuildError, BuildResult, CaseInfo, CaseScript, CaseType, Edit, ErrorKind, FileChange,
+                               FixAnswer, FixTry, KBMatch, LLMUsage, MigrationPlan, Phase, PlanStep, PomInfo,
+                               ProjectProfile, RecipeRef, RewriteResult, ScriptProposal, ScriptRunResult, StepKind,
+                               StructureReview)
 from sbmig.core.workspace import Workspace
 
 
@@ -224,94 +231,250 @@ class FakeScriptRunner:
         return ScriptRunResult(status="ok", changed_files=list(dict.fromkeys(p.changed)), log=p.lines)
 
 
-class FakeScriptStore:
-    """In-memory ScriptStoreLike (best = active versions with a success: most success projects, then successes −
-    failures, then the newest; same code → the existing version)."""
+class FakeCaseStore:
+    """In-memory `kb.cases` (E1 CaseStore): best = the newest proven version, else the newest unverified one (never
+    retired); add_script stores the next version `unverified` (same code → the stored version); credit improved /
+    build_ok → successes +1 and `proven` once that is a project other than the creator's."""
 
     def __init__(self):
-        self.data: dict[str, list[tuple[ScriptMeta, str]]] = {}
-        self.credits: list[tuple[str, int, str, str]] = []      # (case, version, outcome, project)
-        self.added: list[ScriptMeta] = []
+        self.data: dict[str, CaseInfo] = {}
+        self.codes: dict[tuple[str, int], str] = {}
+        self.credits: list[tuple[str, int, str, str]] = []      # (case, version, result, project)
+        self.added: list[tuple[str, CaseScript, dict]] = []      # (case, script, kwargs)
 
-    def versions(self, case_id):
-        return [m for m, _ in self.data.get(case_id, [])]
+    def find(self, case_id):
+        return self.data.get(case_id)
 
-    def get(self, case_id, version):
-        return next(((m, c) for m, c in self.data.get(case_id, []) if m.version == version), None)
+    def scripts(self, case_id):
+        c = self.data.get(case_id)
+        return list(c.scripts) if c else []
 
-    def best(self, case_id, *, limit=1):
-        ok = [(m, c) for m, c in self.data.get(case_id, []) if m.status == "active" and m.successes >= 1]
-        ok.sort(key=lambda mc: (len(mc[0].success_projects), mc[0].successes - mc[0].failures, mc[0].version),
-                reverse=True)
-        return ok[:limit]
+    def code(self, case_id, version):
+        return self.codes.get((case_id, version))
+
+    def best(self, case_id):
+        ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired"),
+                        key=lambda s: (s.status == "proven", s.version), reverse=True)
+        for s in ranked:
+            code = self.code(case_id, s.version)
+            if code:
+                return s, code
+        return None
 
     def latest(self, case_id):
-        act = [(m, c) for m, c in self.data.get(case_id, []) if m.status == "active"]
-        return act[-1] if act else None
+        for s in sorted(self.scripts(case_id), key=lambda s: s.version, reverse=True):
+            if s.status != "retired" and self.code(case_id, s.version):
+                return s, self.code(case_id, s.version)
+        return None
 
-    def add(self, case_id, signature_generic, code, *, parent=None, analysis="", model="", run_id="", project="",
-            source="llm"):
-        sha = hashlib.sha1(code.encode()).hexdigest()
-        for m, _c in self.data.get(case_id, []):
-            if m.sha1 == sha:
-                return m
-        n = len(self.data.get(case_id, [])) + 1
-        meta = ScriptMeta(case_id=case_id, signature_generic=signature_generic, version=n, parent=parent, sha1=sha,
-                          run_id=run_id, project=project, model=model, source=source, analysis=analysis)
-        self.data.setdefault(case_id, []).append((meta, code))
-        self.added.append(meta)
-        return meta
+    def describe(self, case_id):
+        if case_id not in self.data:
+            return "저장된 스크립트 없음 (처음 보는 케이스)"
+        b = self.best(case_id)
+        if b is None:
+            return "케이스는 있으나 쓸 스크립트 없음"
+        s = b[0]
+        return f"저장된 스크립트 v{s.version} ({s.status}, 성공 {s.successes} / 실패 {s.failures}, 프로젝트 {len(s.projects)})"
 
-    def seed(self, case_id, code, *, successes=1, projects=("p0",), failures=0, analysis="stored fix",
-             signature_generic="") -> ScriptMeta:
-        meta = self.add(case_id, signature_generic, code, analysis=analysis)
-        meta.successes, meta.failures, meta.success_projects = successes, failures, list(projects)
-        self.added.remove(meta)
-        return meta
+    def add_script(self, case_id, l2, code, *, source="llm-new", run_id="", project="", analysis="", solution="",
+                   name="", kind=None):
+        case = self.data.setdefault(case_id, CaseInfo(case_id=case_id, l2=l2))
+        for sc in case.scripts:
+            if self.codes.get((case_id, sc.version)) == code:
+                return sc
+        v = 1 + max((sc.version for sc in case.scripts), default=0)
+        sc = CaseScript(version=v, file=f"fix_v{v}.py", source=source, created_by=run_id, project=project)
+        case.scripts.append(sc)
+        self.codes[(case_id, v)] = code
+        case.last_analysis, case.last_solution = analysis or case.last_analysis, solution or case.last_solution
+        self.added.append((case_id, sc, {"source": source, "run_id": run_id, "project": project,
+                                         "analysis": analysis, "solution": solution, "l2": l2}))
+        return sc
 
-    def credit(self, case_id, version, outcome, *, project="", run_id=""):
-        self.credits.append((case_id, version, outcome, project))
-        hit = self.get(case_id, version)
-        if hit is None:
-            return
-        m = hit[0]
-        if outcome in ("improved", "build_ok"):
-            m.successes += 1
-            if project and project not in m.success_projects:
-                m.success_projects.append(project)
-        elif outcome == "partial":
-            m.partials += 1
-        elif outcome in ("no_change", "regressed", "reverted", "apply_failed", "blocked"):
-            m.failures += 1
-        m.last_outcome = outcome
+    def seed(self, case_id, code, *, status="proven", successes=1, projects=("p0",), failures=0) -> CaseScript:
+        sc = self.add_script(case_id, "", code, source="llm-new", project="p0")
+        self.added.pop()
+        sc.status, sc.successes, sc.failures, sc.projects = status, successes, failures, list(projects)
+        return sc
+
+    def credit(self, case_id, version, result, project="", run_id=""):
+        self.credits.append((case_id, version, result, project))
+        sc = next((x for x in self.scripts(case_id) if x.version == version), None)
+        if sc is None:
+            return None
+        if result in ("improved", "build_ok"):
+            sc.successes += 1
+            if project and project not in sc.projects:
+                sc.projects.append(project)
+            if project and project != sc.project and sc.status == "unverified":
+                sc.status = "proven"
+        elif result in ("no_change", "regressed", "reverted", "apply_failed"):
+            sc.failures += 1
+        sc.last_result = result
+        return sc
 
     def case_ids(self):
         return sorted(self.data)
 
 
 class FakeKB:
-    """What the v2 flow calls on a KB: `match` (case hits only), `scripts` (ScriptStoreLike), `record_review`,
-    `append_error_cases`."""
+    """The v2.1 KB facade: `cases` (FakeCaseStore; `cases=None` = no store), `match` (case hits only),
+    `record_run(entries)` (recorded)."""
 
     def __init__(self, match: Optional[Callable[[Any], KBMatch]] = None, raise_match: bool = False,
-                 scripts: Any = "default"):
+                 cases: Any = "default"):
         self._match = match
         self.raise_match = raise_match
-        self.scripts = FakeScriptStore() if scripts == "default" else scripts     # v2: ScriptStoreLike
-        self.reviews: list[StructureReview] = []
-        self.appended: list[tuple[list, list]] = []
+        self.cases = FakeCaseStore() if cases == "default" else cases
+        self.recorded: list[list] = []
 
-    def record_review(self, review) -> None:
-        self.reviews.append(review)
-
-    def append_error_cases(self, errors, attempts) -> int:
-        self.appended.append((list(errors), list(attempts)))
-        return len(errors) + len(attempts)
+    def record_run(self, entries) -> int:
+        self.recorded.append(list(entries))
+        return len(self.recorded[-1])
 
     def match(self, cluster, ws, profile) -> KBMatch:
         if self.raise_match:
             raise RuntimeError("kb down")
         return self._match(cluster) if self._match else KBMatch()
+
+
+class FakeErrorList:
+    """Records every call of the error-list contract (`calls`: (name, args, kwargs)); keeps one FixTry per (case, n)
+    so tests can read what the loop wrote. `new_per_build` = what add_build returns (a list of that many items)."""
+
+    def __init__(self, ws=None, cfg=None, project: str = "", new_per_build: Optional[Callable[[Any], int]] = None):
+        self.project = project
+        self.calls: list[tuple[str, tuple, dict]] = []
+        self.tries: dict[tuple[str, int], FixTry] = {}
+        self.entries: list = []
+        self.new_per_build = new_per_build
+
+    def _rec(self, name, *args, **kw):
+        self.calls.append((name, args, kw))
+
+    def names(self) -> list[str]:
+        return [c[0] for c in self.calls]
+
+    def of(self, name: str) -> list[tuple[tuple, dict]]:
+        return [(a, k) for n, a, k in self.calls if n == name]
+
+    def add_build(self, build, seen, *, round=None, void=False):
+        self._rec("add_build", build, seen, round=round, void=void)
+        n = self.new_per_build(build) if self.new_per_build else len(getattr(build, "errors", None) or [])
+        return [object()] * n
+
+    def add_pom_verify(self, file, note):
+        self._rec("add_pom_verify", file, note)
+        e = SimpleNamespace(id=f"p{len(self.entries)}", case_id="", status="pom-verify", file=file, note=note)
+        self.entries.append(e)
+        return e
+
+    def add_note(self, file, text, seen="review", *, status="note", l2=""):
+        self._rec("add_note", file, text, seen, status=status, l2=l2)
+        e = SimpleNamespace(id=f"n{len(self.entries)}", case_id=hashlib.sha1(l2.encode()).hexdigest()[:10] if l2 else "",
+                            status=status, file=file, note=text, resolved="")
+        self.entries.append(e)
+        return e
+
+    def verify_poms(self, build):
+        self._rec("verify_poms", build)
+        hit = [e for e in self.entries if getattr(e, "status", "") == "pom-verify"]
+        if getattr(build, "ok", False):
+            for e in hit:
+                e.status = "resolved"
+            return hit
+        return []
+
+    def begin_try(self, case_id, round, source, script_version=0, *, entry_ids=None):
+        self._rec("begin_try", case_id, round, source, script_version=script_version, entry_ids=entry_ids)
+        n = 1 + max((k[1] for k in self.tries if k[0] == case_id), default=0)
+        t = FixTry(n=n, round=round, source=source, script_version=script_version)
+        self.tries[(case_id, n)] = t
+        return t
+
+    def finish_try(self, case_id, n, **fields):
+        self._rec("finish_try", case_id, n, **fields)
+        t = self.tries.get((case_id, n))
+        if t is not None:
+            for k, v in fields.items():
+                if v is not None:
+                    setattr(t, k, v)
+        return t
+
+    def resolve(self, case_id, round, n, *, entry_ids=None, how=""):
+        self._rec("resolve", case_id, round, n, entry_ids=entry_ids)
+        for e in self.entries:
+            if entry_ids is not None and getattr(e, "id", None) in entry_ids:
+                e.status, e.resolved = "resolved", "review" if not round else f"r{round} try {n}"
+        return []
+
+    def block(self, case_id, reason):
+        self._rec("block", case_id, reason)
+        return []
+
+    def end_of_run(self):
+        self._rec("end_of_run")
+        return self.counts()
+
+    def counts(self):
+        out: dict[str, int] = {}
+        for e in self.entries:
+            out[e.status] = out.get(e.status, 0) + 1
+        return out
+
+    def write(self):
+        self._rec("write")
+
+    def to_report(self):
+        self._rec("to_report")
+        return []
+
+    def tries_of(self, case_id: str) -> list[FixTry]:
+        return [t for (c, _n), t in sorted(self.tries.items(), key=lambda kv: kv[0][1]) if c == case_id]
+
+
+class FakeEditApplier:
+    """`sbmig.script.apply_edits` in-process: replace / write / create / delete on the workspace; a replace whose
+    text is missing → error "edit N: text not found in <path>" (the caller restores the tree); `result` overrides."""
+
+    def __init__(self, result: Optional[ScriptRunResult] = None):
+        self.result = result
+        self.calls: list[list[Edit]] = []
+
+    def __call__(self, ws, edits, *, cfg=None, errors=(), runner=None, timeout_s=None) -> ScriptRunResult:
+        self.calls.append(list(edits))
+        if self.result is not None:
+            return self.result
+        changed: list[str] = []
+        for i, e in enumerate(edits, 1):
+            if e.op == "replace":
+                text = ws.read(e.path) if ws.exists(e.path) else ""
+                if e.old not in text or not e.old:
+                    return ScriptRunResult(status="error", changed_files=changed,
+                                           error=f"edit {i}: text not found in {e.path}")
+                ws.write(e.path, text.replace(e.old, e.new) if e.count < 0 else text.replace(e.old, e.new, e.count))
+            elif e.op in ("write", "create"):
+                ws.write(e.path, e.content)
+            elif e.op == "delete":
+                ws.delete(e.path)
+            else:
+                return ScriptRunResult(status="rejected", problems=[f"edit {i}: op {e.op} not supported here"],
+                                       error=f"rejected: edit {i}: op {e.op}")
+            changed.append(e.path)
+        return ScriptRunResult(status="ok", changed_files=list(dict.fromkeys(changed)))
+
+
+def answer(*, code: str = "", edits: Optional[list] = None, analysis: str = "the cause.", solution: str = "the fix.",
+           no_script_reason: str = "", model: str = "fake-model", calls: int = 1, error: str = "") -> FixAnswer:
+    """A FixAnswer (원인 · 해결 · edits · script); `edits` = Edit objects or dicts."""
+    es = [e if isinstance(e, Edit) else Edit(**e) for e in (edits or [])]
+    return FixAnswer(code=code, edits=es, analysis=analysis, solution=solution, no_script_reason=no_script_reason,
+                     model=model, error=error,
+                     llm_usage=LLMUsage(model=model, calls=calls, input_tokens=100, output_tokens=20))
+
+
+def write_edit(path: str, content: str) -> Edit:
+    return Edit(op="write", path=path, content=content)
 
 
 class FakeRewriteRunner:
@@ -411,15 +574,17 @@ def msa_plan() -> MigrationPlan:
 
 
 class FakeReviewer:
-    """StructureReviewerLike: returns `review` (default verdict ok); `files` → written like a review script would (left
-    uncommitted, script_result ok); `raises` → an exception; records the call's arguments."""
+    """StructureReviewerLike (v2.1): returns `review` (default verdict ok); `files` → applied like the review's edits
+    (left uncommitted, script_result ok, `answer` = FixAnswer with those write edits + `code` as its script);
+    `raises` → an exception; records the call's arguments."""
 
     def __init__(self, review: Optional[StructureReview] = None, files: Optional[dict[str, str]] = None,
-                 raises: Optional[Exception] = None, status: str = "ok"):
+                 raises: Optional[Exception] = None, status: str = "ok", code: str = ""):
         self.review_obj = review
         self.files = dict(files or {})
         self.raises = raises
         self.status = status
+        self.code = code
         self.calls: list[dict] = []
 
     def review(self, ws, profile, cfg, *, run_id="", restructure_notes=(), restructure_results=()):
@@ -432,19 +597,27 @@ class FakeReviewer:
         if self.files:
             for k, v in self.files.items():
                 ws.write(k, v)
-            rv.script = rv.script or "def fix(p):\n    pass\n"
+            rv.answer = answer(code=self.code, edits=[write_edit(k, v) for k, v in self.files.items()],
+                               analysis=rv.analysis or "the poms break the company rules.",
+                               solution="set the parent and the encoding.")
+            rv.script = self.code
             rv.script_result = ScriptRunResult(status=self.status, changed_files=list(self.files))
             if self.status != "ok":
                 ws.discard_uncommitted()
         return rv
 
 
-def v2_plan(case: CaseType = CaseType.SPRING_BOOT, review: bool = True) -> MigrationPlan:
-    """transform.rewrite → restructure.apply → restructure.review → verify.build (docs/INTERFACES.md "Plan (L)")."""
+def v2_plan(case: CaseType = CaseType.SPRING_BOOT, review: bool = True, compile: bool = False) -> MigrationPlan:
+    """transform.rewrite [→ transform.compile (v2.1)] → restructure.apply → restructure.review → verify.build."""
     steps = [
         PlanStep(id="transform.rewrite", kind=StepKind.OPENREWRITE, phase=Phase.TRANSFORM, title="all recipes",
                  recipes=[RecipeRef(id="org.openrewrite.java.migrate.UpgradeToJava21"),
                           RecipeRef(id="org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0")]),
+    ]
+    if compile:
+        steps.append(PlanStep(id="transform.compile", kind=StepKind.BUILD, phase=Phase.TRANSFORM, title="compile",
+                              build_goal="clean compile"))
+    steps += [
         PlanStep(id="restructure.apply", kind=StepKind.RESTRUCTURE, phase=Phase.RESTRUCTURE, title="restructure",
                  params={"mode": "layout"}),
     ]

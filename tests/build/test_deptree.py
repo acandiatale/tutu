@@ -121,8 +121,9 @@ def test_dependency_tree_command_cache_and_journal(tmp_path, cfg, monkeypatch):
     assert "org.apache.maven.plugins:maven-dependency-plugin:3.8.1:tree" in cmd
     assert "-DappendOutput=true" in cmd and "-Dincludes=javax.persistence:*,javax.servlet:*" in cmd and "-q" in cmd
     assert "-pl" not in cmd
-    files = sorted(p.name for p in (ws.run_dir / "deptree").iterdir())
-    assert files[0].startswith("root-") and files[0].endswith(".meta.json") and files[1].endswith(".txt")
+    files = sorted(p.name for p in (ws.run_dir / "logs").iterdir() if p.name.startswith("deptree-"))   # v2.1: logs/
+    assert files[0].startswith("deptree-root-") and files[0].endswith(".meta.json") and files[1].endswith(".txt")
+    assert not (ws.run_dir / "deptree").exists()
     # cached: no second Maven run while the pom is unchanged
     dependency_tree(ws, cfg, None, ["javax.servlet:*", "javax.persistence:*"])
     assert len(calls) == 1

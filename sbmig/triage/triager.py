@@ -35,15 +35,15 @@ class Triager:
         return plan_iteration(clusters)
 
     # run-wide blocked state (ERROR-HANDLING §1/§3) -----------------------------
-    def attach_run(self, blocked_registry=None, ws=None, scripts=None) -> None:
-        """Share the run-wide BlockedRegistry, the workspace (project-class checks) and the KB's script store with
-        the decision engine."""
+    def attach_run(self, blocked_registry=None, ws=None, cases=None) -> None:
+        """Share the run-wide BlockedRegistry, the workspace (project-class checks) and the KB's case store
+        (`kb.cases`, v2.1) with the decision engine."""
         if blocked_registry is not None:
             self.engine.blocked_registry = blocked_registry
         if ws is not None:
             self.engine.ws = ws
-        if scripts is not None:
-            self.engine.scripts = scripts
+        if cases is not None:
+            self.engine.cases = cases
 
     def set_llm_unavailable(self, reason: Optional[str]) -> None:
         self.engine.llm_unavailable = reason
@@ -53,5 +53,6 @@ class Triager:
         return self.engine.blocked_info.get(cluster_id)
 
     def script_step(self, cluster_id: str) -> Optional[ScriptStep]:
-        """v2: the script step (reuse / augment / new) of the last SCRIPT decision for `cluster_id`."""
+        """The ladder step (reuse / augment / new, with its KB search line) of the last SCRIPT decision for
+        `cluster_id`."""
         return self.engine.script_steps.get(cluster_id)

@@ -1,5 +1,6 @@
-"""v2 triage: clustering by case (L2) across files, masking, the fix-script ladder and the v2 decision engine
-(SCRIPT / BLOCKED / ESCALATE; docs/INTERFACES.md "Script fix loop (L)")."""
+"""v2 triage: clustering by case (L2) across files, masking, the v2.1 fix ladder (docs/v2/PLAN-v2.1.md §3.1: KB
+search → stored script → LLM augment / new, 1 stored + 3 LLM tries per case) and the decision engine (SCRIPT / BLOCKED
+/ ESCALATE)."""
 from __future__ import annotations
 
 import hashlib
@@ -17,11 +18,11 @@ from sbmig.core.models import (
     KBMatch,
     Phase,
     PomInfo,
-    ScriptMeta,
+    CaseScript,
     TriageDecision,
 )
-from sbmig.kb.catalog import case_id_for
 from sbmig.triage import Triager, case_id_of, cluster_cases, plan_iteration, plan_script_step
+from sbmig.triage.cluster import l2_case_id as case_id_for
 
 from .conftest import make_profile
 
@@ -39,20 +40,20 @@ def ctx(**kw) -> TriageContext:
 
 
 class Store:
-    """Minimal ScriptStoreLike for the ladder."""
+    """Minimal case store for the ladder (`kb.cases`: best → (CaseScript, code) | None, describe)."""
 
-    def __init__(self, proven=(), latest=None):
-        self.proven, self._latest = list(proven), latest
+    def __init__(self, best=None, describe: str = ""):
+        self._best, self._describe = best, describe
 
-    def best(self, case_id, *, limit=1):
-        return self.proven[:limit]
+    def best(self, case_id):
+        return self._best
 
-    def latest(self, case_id):
-        return self._latest
+    def describe(self, case_id):
+        return self._describe
 
 
-def meta(v: int, successes=1) -> ScriptMeta:
-    return ScriptMeta(case_id="x", version=v, successes=successes, success_projects=["p"] * successes)
+def meta(v: int, successes=1, status="proven") -> CaseScript:
+    return CaseScript(version=v, file=f"fix_v{v}.py", status=status, successes=successes, projects=["p"] * successes)
 
 
 def script_att(mode: str, version: int, outcome: str, cid: str, code: str = "def fix(p):\n    pass\n") -> FixAttempt:
@@ -110,49 +111,59 @@ def test_a_case_in_a_module_with_a_pom_problem_is_masked():
 def test_ladder_new_when_nothing_is_stored_or_tried(cfg):
     [c] = cluster_cases([err()], None)
     st = plan_script_step(c, [], None, cfg)
-    assert st.mode == "new" and st.needs_llm and st.llm_limit == 4
+    assert st.mode == "new" and st.needs_llm and st.llm_limit == 3
+    assert st.kb_line == "KB 탐색: 저장된 스크립트 없음 (처음 보는 케이스) → LLM 에 새 수정 요청"
 
 
-def test_ladder_reuses_proven_versions_not_tried_in_this_run(cfg):
+def test_ladder_runs_the_stored_script_once_then_augments_it(cfg):
     [c] = cluster_cases([err()], None)
-    cfg.script.reuse_versions = 2
-    store = Store(proven=[(meta(3), "code3"), (meta(1), "code1")])
+    store = Store(best=(meta(3), "code3"), describe="저장된 스크립트 v3 (proven, 성공 1 / 실패 0, 프로젝트 1)")
     st = plan_script_step(c, [], store, cfg)
     assert (st.mode, st.version, st.code) == ("reuse", 3, "code3") and not st.needs_llm
-    st = plan_script_step(c, [script_att("reuse", 3, "no_change", c.id)], store, cfg)
-    assert (st.mode, st.version) == ("reuse", 1)
-    cfg.script.reuse = False
-    assert plan_script_step(c, [], store, cfg).mode != "reuse"
-
-
-def test_ladder_augments_this_runs_last_attempt_with_code_else_the_store(cfg):
-    [c] = cluster_cases([err()], None)
-    store = Store(latest=(meta(5, successes=0), "stored code"))
+    assert st.kb_line == "KB 탐색: 저장된 스크립트 v3 (proven, 성공 1 / 실패 0, 프로젝트 1) → 실행"
+    ran = script_att("reuse", 3, "no_change", c.id, code="code3")
+    st = plan_script_step(c, [ran], store, cfg)        # v3 failed here → the LLM extends it (the prompt gets v3)
+    assert st.mode == "augment" and st.base_attempt is ran and st.base_version == 3
+    assert "이번 실행에서 v3 실패" in st.kb_line and "LLM 보강 요청 (1/3" in st.kb_line
+    cfg.script.reuse = False                           # reuse off: the stored version is the augment base
     st = plan_script_step(c, [], store, cfg)
-    assert st.mode == "augment" and st.base_version == 5 and st.code == "stored code" and st.base_attempt is None
-    a1 = script_att("augment", 6, "no_change", c.id)
-    nocode = script_att("augment", 0, "apply_failed", c.id, code="")
-    st = plan_script_step(c, [a1, nocode], store, cfg)
-    assert st.mode == "augment" and st.base_attempt is a1 and st.augments_used == 2
+    assert st.mode == "augment" and st.base_attempt is None and st.base_version == 3 and st.code == "code3"
 
 
-def test_ladder_limits(cfg):
-    cfg.script.max_augments_per_case = 2
+def test_ladder_without_describe_builds_the_phrase_and_skips_retired(cfg):
     [c] = cluster_cases([err()], None)
-    tried = [script_att("new", 1, "no_change", c.id), script_att("augment", 2, "no_change", c.id),
-             script_att("augment", 3, "no_change", c.id)]
-    st = plan_script_step(c, tried, None, cfg)
-    assert st.mode is None and "max_augments_per_case 2" in st.why
-    # a "new" answer without a script opens no augment: new again, inside the same total (max_augments + 1)
+    st = plan_script_step(c, [], Store(best=(meta(2, successes=3), "x")), cfg)
+    assert st.kb_found == "저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 3)" and st.mode == "reuse"
+    assert plan_script_step(c, [], Store(best=(meta(2, status="retired"), "x")), cfg).mode == "new"
+
+
+def test_ladder_augments_this_runs_last_attempt_with_code(cfg):
+    [c] = cluster_cases([err()], None)
+    a1 = script_att("new", 6, "no_change", c.id)
+    nocode = script_att("augment", 0, "apply_failed", c.id, code="")    # an llm-edit try: no script
+    st = plan_script_step(c, [a1, nocode], None, cfg)
+    assert st.mode == "augment" and st.base_attempt is a1 and st.llm_used == 2 and st.augments_used == 1
+
+
+def test_ladder_limits_one_stored_plus_three_llm_tries(cfg):
+    assert cfg.script.max_augments_per_case == 3
+    [c] = cluster_cases([err()], None)
+    tried = [script_att("reuse", 1, "no_change", c.id), script_att("augment", 2, "no_change", c.id),
+             script_att("augment", 3, "no_change", c.id), script_att("augment", 4, "no_change", c.id)]
+    st = plan_script_step(c, tried, Store(best=(meta(1), "c")), cfg)
+    assert st.mode is None and "max_augments_per_case 3" in st.why
+    assert "한도 도달 (저장본 1 + LLM 3회) → blocked" in st.kb_line
+    # answers without a script open no augment: new again, inside the same 3
     empty = [script_att("new", 0, "apply_failed", c.id, code="") for _ in range(2)]
-    assert plan_script_step(c, empty, None, cfg).mode == "new"
+    st = plan_script_step(c, empty, None, cfg)
+    assert st.mode == "new" and "(3/3)" in st.kb_line
     assert plan_script_step(c, empty + [script_att("new", 0, "apply_failed", c.id, code="")], None, cfg).mode is None
 
 
 # ----------------------------------------------------------------------------------------- decisions
 def engine(cfg, store=None) -> Triager:
     t = Triager(cfg)
-    t.attach_run(scripts=store)
+    t.attach_run(cases=store)
     return t
 
 
@@ -160,7 +171,7 @@ def test_decision_is_a_script_with_its_step(cfg):
     t = engine(cfg)
     [c] = t.cluster([err()], None)
     d = t.decide(c, None, ctx(), make_profile())
-    assert d.kind == DecisionKind.SCRIPT and "new script" in d.rationale
+    assert d.kind == DecisionKind.SCRIPT and "new fix" in d.rationale
     assert t.script_step(c.id).mode == "new"
 
 
@@ -171,7 +182,7 @@ def missing_artifact_cluster(t):
 
 
 def test_reuse_comes_before_the_blocked_policy_llm_and_budget(cfg):
-    store = Store(proven=[(meta(2), "stored")])
+    store = Store(best=(meta(2), "stored"))
     t = engine(cfg, store)
     c = missing_artifact_cluster(t)                  # policy artifact_not_found: 0 LLM attempts
     t.set_llm_unavailable("down")
@@ -201,6 +212,13 @@ def test_llm_unavailable_budget_and_exhausted_ladder_block(cfg):
     [c] = t.cluster([err()], None)
     d = t.decide(c, None, ctx(llm_calls_used=5, llm_calls_budget=5), make_profile())
     assert d.kind == DecisionKind.BLOCKED and t.blocked_candidate(c.id).reason == BlockReason.BUDGET_EXHAUSTED
+    # v2.1: 0 = no limit; -1 = no LLM call at all (the fleet's total is used up)
+    assert t.decide(c, None, ctx(llm_calls_used=500, llm_calls_budget=0), make_profile()).kind == DecisionKind.SCRIPT
+    d = t.decide(c, None, ctx(llm_calls_used=0, llm_calls_budget=-1), make_profile())
+    assert d.kind == DecisionKind.BLOCKED and "LLM budget exhausted (fleet)" in d.rationale
+    t.attach_run(cases=Store(best=(meta(2), "stored")))       # a stored script still runs without the LLM
+    assert t.decide(c, None, ctx(llm_calls_budget=-1), make_profile()).kind == DecisionKind.SCRIPT
+    t.engine.cases = None
     cfg.script.max_augments_per_case = 0
     d = t.decide(c, None, ctx(previous_attempts=[script_att("new", 1, "no_change", c.id)]), make_profile())
     assert d.kind == DecisionKind.BLOCKED and t.blocked_candidate(c.id).reason == BlockReason.REPEATED_FAILURE

@@ -32,8 +32,9 @@ def test_watchdog_names_the_last_milestone(cfg, ws, monkeypatch, caplog):
     quiet = [r.getMessage() for r in caplog.records if "fix loop quiet for" in r.getMessage()]
     assert quiet, "the watchdog never spoke"
     assert "since 'fixer.propose_script for" in quiet[0] and "kill -USR1" in quiet[0]
-    marks = [r.getMessage() for r in caplog.records if "] → " in r.getMessage()]
+    marks = [r.getMessage() for r in caplog.records if r.getMessage().startswith("→ ")]
     assert any("mvn compile (build 1)" in m for m in marks) and any("deciding " in m for m in marks)
+    assert any("KB 탐색 for " in m for m in marks)
     assert marks[-1].endswith("→ idle")                    # the loop always ends on the idle milestone
     assert not [t for t in threading.enumerate() if t.name == "fixloop-watchdog" and t.is_alive()] or True
 

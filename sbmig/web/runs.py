@@ -55,10 +55,9 @@ SERVED_FILES = {"report.md": "text/markdown; charset=utf-8", "report.json": "app
                 "result.zip": "application/zip", "sbmig.log": "text/plain; charset=utf-8",
                 "journal.jsonl": "application/x-ndjson", "changes.patch": "text/plain; charset=utf-8",
                 "plan.json": "application/json", "profile.json": "application/json",
-                # every build error of the run + every fix attempt (2026-10-23, see INTERFACES "Error cases")
-                "error_cases.csv": "text/csv; charset=utf-8",
-                "error_cases.jsonl": "application/x-ndjson; charset=utf-8",
-                "fix_attempts.jsonl": "application/x-ndjson; charset=utf-8"}
+                # v2.1: the run's error list — every error with its tries, the LLM's answer and the applied diff
+                "errors.md": "text/markdown; charset=utf-8",
+                "errors.jsonl": "application/x-ndjson; charset=utf-8"}
 POLL_S = 0.5
 KEEPALIVE_S = 15.0
 MAX_UPDATE_CHARS = 20_000          # a node update larger than this is summarized (keys only) in the `node` event
@@ -90,7 +89,7 @@ class Run:
     started: float = field(default_factory=time.time)
 
 
-_LOG_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[,.](\d{3})\b")
+_LOG_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?\b")
 
 
 def _event_time(kind: str, data: Any) -> float | None:
@@ -102,7 +101,7 @@ def _event_time(kind: str, data: Any) -> float | None:
         if kind == "log" and isinstance(data, str):
             m = _LOG_TS_RE.match(data)
             if m:
-                return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() + int(m.group(2)) / 1000.0
+                return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp() + int(m.group(2) or 0) / 1000.0
     except (ValueError, OverflowError, OSError):
         return None
     return None
@@ -331,6 +330,8 @@ class RunManager:
                 info["blocked"] = len(data.get("blocked") or [])
                 info["unresolved"] = len(data.get("unresolved") or [])
                 info["llm_calls"] = (data.get("llm_usage") or {}).get("calls")
+                from sbmig.report.result_line import entry_counts
+                info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
             except (OSError, ValueError):
                 pass
         for name in SERVED_FILES:

@@ -19,7 +19,7 @@ The repository check is one GET to the settings.xml mirror URL the way Maven wou
 ignores HTTP_PROXY; a ``<proxy>`` of the settings is used), any HTTP answer below 500 counts as reachable (401 / 404
 included), and a TLS handshake Python cannot verify still means the server is up (Maven trusts the JDK truststore,
 Python does not know the company CA). The LLM check is ``sbmig.fix.company.probe_llm`` — the call `sbmig llm-probe`
-makes — skipped for the fake provider or when ``loop.max_llm_calls`` is 0.
+makes — skipped for the fake provider and for ``loop.max_llm_calls: -1`` (v2.1: 0 means no limit, -1 no LLM call).
 """
 from __future__ import annotations
 
@@ -221,8 +221,8 @@ def check_llm(cfg: Config, probe: Optional[Callable[[Config], Any]] = None) -> C
     provider = str(cfg.llm.provider)
     if provider in ("fake",):
         return Check("llm", True, f"not checked (llm.provider {provider})", skipped=True)
-    if int(getattr(cfg.loop, "max_llm_calls", 1) or 0) <= 0:
-        return Check("llm", True, "not checked (loop.max_llm_calls 0)", skipped=True)
+    if int(getattr(cfg.loop, "max_llm_calls", 0) or 0) < 0:          # -1 = no LLM call at all
+        return Check("llm", True, "not checked (loop.max_llm_calls -1: no LLM calls)", skipped=True)
     if probe is None:
         from sbmig.fix.company import probe_llm as probe
     try:

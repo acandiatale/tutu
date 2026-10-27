@@ -38,8 +38,8 @@ def test_blocked_section_rendering():
     r.blocked = blocked_items()
     md = render_markdown(r)
     assert f"## {BLOCKED_TITLE}" in md
-    # right after the summary header, before "Unresolved"
-    assert md.index("| Run id |") < md.index(f"## {BLOCKED_TITLE}") < md.index("## Unresolved errors")
+    # v2.1: after the error list (the centre) and before the follow-ups
+    assert md.index("## Error list") < md.index(f"## {BLOCKED_TITLE}") < md.index("## Manual follow-ups")
     assert "| **Blocked** | 3 item(s) — external_javax_api 1, artifact_not_found 1, repeated_failure 1 (see below) |" in md
     assert ("| `external_javax_api` (spring) | `com.company:legacy-web:1.4` (class "
             "`com.company.legacy.web.LegacyRequestHelper`) | `javax.servlet.http.HttpServletRequest` → "
@@ -50,7 +50,6 @@ def test_blocked_section_rendering():
     assert "| `repeated_failure` (spring) | - | - | - | 3 | needs a human |" in md
     assert "<details><summary><code>blk-1</code> — 1 error(s)</summary>" in md
     assert "`src/main/java/com/x/Foo.java:12` constructor LegacyRequestHelper" in md
-    assert "(blocked clusters excluded)" in md
     assert BLOCKED_TITLE not in render_markdown(sample_report())
 
 

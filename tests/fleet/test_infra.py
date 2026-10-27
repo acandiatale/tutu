@@ -259,6 +259,11 @@ def test_settings_repository_llm_and_disk_checks(fleet_cfg, tmp_path):
             "m", 0.1, []
     c = check_llm(company, probe=lambda cfg: Res())
     assert c.failed and c.kind == "llm" and c.transient and "transport cause=X" in c.detail
+    # v2.1: max_llm_calls 0 = no limit (probed); -1 = no LLM call at all (not probed)
+    unlimited = company.model_copy(update={"loop": company.loop.model_copy(update={"max_llm_calls": 0})})
+    assert check_llm(unlimited, probe=lambda cfg: Res()).failed
+    off = company.model_copy(update={"loop": company.loop.model_copy(update={"max_llm_calls": -1})})
+    assert check_llm(off, probe=lambda cfg: Res()).skipped
     assert check_disk(tmp_path, 10 ** 6).failed and check_disk(tmp_path, 0).skipped
     lines = []
     mvn_v = "Apache Maven 3.9.9; Java version: 21.0.1"

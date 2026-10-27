@@ -1,9 +1,13 @@
 """One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
-    SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> llm=<calls> attn=<codes>[ review=<v>]
+    SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
+                 attn=<codes>[ review=<v>]
 
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
+v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`): open = status open or unresolved
+(finalize turns open into unresolved), resolved = status resolved (pom-verify / note / blocked in neither; blocked
+items are `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
 
 `sbmig run` prints (and logs) it at the end, the fleet prints one per project. `attn` is a comma list of short codes
 that say why a human has to look (`-` = nothing): the same codes fill the fleet's `summary.csv` `attention` column
@@ -105,18 +109,56 @@ def result_attention(r: Any) -> list[str]:
 
 
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
-                llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None) -> str:
+                llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
+                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None) -> str:
     codes = ",".join(attention) or "-"
+    errs = ""
+    if open_errors is not None or resolved_errors is not None:
+        errs = f" open={open_errors or 0} resolved={resolved_errors or 0}"
     return (f"SBMIG-RESULT run={_ascii_token(run_id or '-')} exit={'-' if exit_code is None else exit_code} "
-            f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked} llm={llm_calls} "
+            f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked}{errs} llm={llm_calls} "
             f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else ""))
 
 
-def report_result_line(report: Any, exit_code: int, run_id: Optional[str] = None) -> str:
-    """The `SBMIG-RESULT …` line of a finished `sbmig run` (`run_id` overrides the report's)."""
-    return result_line(run_id or getattr(report, "run_id", "-"), exit_code, bool(getattr(report, "success", False)),
+OPEN_STATUSES = ("open", "unresolved")
+
+
+def entry_counts(entries: Iterable[Any]) -> tuple[int, int]:
+    """(open, resolved) of an error list (`ErrorEntry` objects or their dicts)."""
+    o = r = 0
+    for e in entries or ():
+        st = e.get("status") if isinstance(e, dict) else getattr(e, "status", None)
+        o += st in OPEN_STATUSES
+        r += st == "resolved"
+    return o, r
+
+
+def counts_open_resolved(counts: Optional[dict]) -> tuple[int, int]:
+    """(open, resolved) from a status → count dict (`FleetProjectResult.error_counts`)."""
+    c = counts or {}
+    return sum(int(c.get(s, 0) or 0) for s in OPEN_STATUSES), int(c.get("resolved", 0) or 0)
+
+
+def report_exit_code(report: Any) -> int:
+    """The `sbmig run` exit code of a report: 3 aborted (flag `aborted[:…]` / `mvn-not-found`), 0 green with nothing
+    blocked, else 2 (`sbmig.cli.run_exit_code` is this function)."""
+    flags = list(getattr(report, "flags", []) or [])
+    if any(f == "aborted" or f.startswith("aborted:") or f == "mvn-not-found" for f in flags):
+        return 3
+    if getattr(report, "success", False) and not getattr(report, "blocked", None):
+        return 0
+    return 2
+
+
+def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Optional[str] = None) -> str:
+    """The `SBMIG-RESULT …` line of a finished `sbmig run` (`run_id` overrides the report's; `exit_code` defaults
+    to `report_exit_code(report)`)."""
+    code = report_exit_code(report) if exit_code is None else exit_code
+    o, r = entry_counts(getattr(report, "error_entries", None) or [])
+    return result_line(run_id or getattr(report, "run_id", "-"), code, bool(getattr(report, "success", False)),
                        unresolved=len(getattr(report, "unresolved", []) or []),
                        blocked=len(getattr(report, "blocked", []) or []),
                        llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
-                       attention=report_attention(report, exit_code),
-                       review=getattr(getattr(report, "structure_review", None), "verdict", None))
+                       attention=report_attention(report, code),
+                       review=getattr(getattr(report, "structure_review", None), "verdict", None),
+                       open_errors=o, resolved_errors=r)

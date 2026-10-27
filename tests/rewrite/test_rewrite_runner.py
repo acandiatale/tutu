@@ -102,7 +102,7 @@ def test_command_env_and_config_file(ws, rcfg, fake):
     finally:
         del os.environ["MAVEN_OPTS"]
     call = fake.calls[0]
-    cfg_path = ws.run_dir / "rewrite" / "rewrite-1.yml"
+    cfg_path = ws.run_dir / "logs" / "rewrite-1.yml"           # v2.1: no rewrite/ directory
     assert call["cmd"] == [mvn_mod.mvn_executable(rcfg), "-B", "-ntp", "-Dstyle.color=never", "-Dmaven.repo.local=/tmp/m2repo",
                            "org.openrewrite.maven:rewrite-maven-plugin:6.46.1:run",
                            f"-Drewrite.activeRecipes={COMPOSITE_RECIPE_ID}",
@@ -132,7 +132,7 @@ def test_dry_run_module_and_numbering(ws, rcfg, fake):
     assert call["cwd"] == str(ws.root / "svc")
     assert res.dry_run and res.ok
     assert res.changed_files == ["svc/pom.xml", "svc/src/main/java/com/example/App.java"]
-    assert (ws.run_dir / "rewrite" / "rewrite-2.yml").exists()
+    assert (ws.run_dir / "logs" / "rewrite-2.yml").exists() and not (ws.run_dir / "rewrite").exists()
 
 
 def test_changed_files_union_of_log_and_git(ws, rcfg, fake):

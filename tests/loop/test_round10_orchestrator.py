@@ -263,9 +263,9 @@ class OrderKB(FakeKB):
         self.ws = ws
         self.zip_at_record = None
 
-    def append_error_cases(self, errors, attempts):       # v2: the KB records of the run (no run ledger)
+    def record_run(self, entries):                        # v2.1: the run's error list into the KB
         self.zip_at_record = (self.ws.run_dir / "result.zip").exists()
-        return super().append_error_cases(errors, attempts)
+        return super().record_run(entries)
 
 
 def test_kb_and_report_are_written_before_the_zip(cfg, ws):

@@ -90,7 +90,8 @@ class OpenRewriteRunner:
         self.cfg = cfg
         self.kb = kb
         self.timeout_s = timeout_s if timeout_s is not None else float(cfg.openrewrite.timeout_minutes) * 60.0
-        self.work_dir = ws.run_dir / "rewrite"
+        # v2.1: the composed rewrite-N.yml and the recipe-version cache sit next to the rewrite logs (no rewrite/ dir)
+        self.work_dir = getattr(ws, "logs_dir", None) or ws.run_dir / "logs"
         self._sleep = time.sleep                 # download retry wait; tests replace it with a recorder
 
     # ------------------------------------------------------------------ composition
@@ -406,7 +407,7 @@ class OpenRewriteRunner:
         try:
             versions = resolve_recipe_artifact_versions(
                 self.cfg, env, artifacts=self.required_artifacts(recipes, text),
-                cache_path=self.work_dir / "artifact-versions.json", work_dir=self.work_dir)
+                cache_path=self.work_dir / "rewrite-artifact-versions.json", work_dir=self.work_dir)
         except RecipeArtifactError as exc:
             log_path.write_text(f"[ERROR] {exc}\n", encoding="utf-8")
             res = RewriteResult(ok=False, recipes=ids, log_path=str(log_path), error=str(exc), dry_run=dry_run)

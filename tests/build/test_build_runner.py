@@ -67,6 +67,7 @@ def script(tmp_path: Path, name: str, body: str) -> str:
 
 # ------------------------------------------------------------------------------------------------ composition
 def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path):
+    cfg.build.skip_test_compile = False                  # v2 default is on (-Dmaven.test.skip=true); test -DskipTests
     cfg.build.settings_file = "/etc/m2/settings.xml"
     cfg.build.local_repo = str(tmp_path / "repo")
     cfg.build.offline = True
@@ -95,6 +96,7 @@ def test_command_env_and_cwd_composition(ws, cfg, fake, tmp_path):
 
 
 def test_blank_java_home_and_skip_flags(ws, cfg, fake):
+    cfg.build.skip_test_compile = False
     cfg.build.java_home = ""
     r = MavenRunner(ws, cfg)
     assert r.command("compile")[-1] == "-DskipTests"
@@ -109,6 +111,7 @@ def test_blank_java_home_and_skip_flags(ws, cfg, fake):
 def test_skip_tests_flag(ws, cfg, fake):
     """Round 8 tests-skipped fallback: `skip_tests=True` → -DskipTests even with build.skip_tests off; never together
     with -Dmaven.test.skip=true (skip_test_compile wins)."""
+    cfg.build.skip_test_compile = False
     cfg.build.java_home = ""
     cfg.build.skip_tests = False
     r = MavenRunner(ws, cfg)
@@ -278,6 +281,7 @@ def test_real_mvn_package_success_and_test_skip(tmp_path, real_cfg):
     ws = _real_ws(tmp_path, "it-ok", {
         "src/main/java/com/example/A.java": "package com.example; public class A {}\n",
         "src/test/java/com/example/ATest.java": "package com.example; public class ATest { Broken b; }\n"})
+    real_cfg.build.skip_test_compile = False             # v2 default compiles no tests: this test needs them compiled
     broken = MavenRunner(ws, real_cfg).run("package")
     assert not broken.ok and broken.errors[0].kind == ErrorKind.TEST_COMPILE
     res = MavenRunner(ws, real_cfg).run("package", skip_test_compile=True, label="fallback")

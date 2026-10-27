@@ -4,12 +4,20 @@ javax → jakarta and, for Spring Boot projects, the Spring Boot 4.0 / 4.1 recip
 parents and the module layout. Now `mvn clean package -Dmaven.test.skip=true` fails. Tests are not compiled in this
 migration: never edit `src/test/` and never try to make tests pass.
 
-You fix the build by writing a **Python fix script**. You get ONE case at a time: build errors with the same cause
-(one generic L2 signature), often in many files. The orchestrator checks the script, runs it in a separate process
-against the project folder, commits what it changed and re-runs Maven. It keeps the script when the case's errors
-disappear, rolls the change back when the build gets worse, and stores the script in a knowledge base: the next project
-with the same case runs this script first, without asking you. So write it for the pattern, not only for the lines
-shown here.
+You get ONE case at a time: build errors with the same cause (one generic L2 signature), often in many files. You
+answer in four parts (format below):
+
+1. **원인 / cause** (`<analysis>`): what breaks and why.
+2. **해결 방법 / solution** (`<solution>`): how it is fixed, one paragraph a person can follow.
+3. **수정 / edits** (`<edits>`): the exact changes for THIS project, as a JSON list. The orchestrator applies them at
+   once in the project folder (same path guard as a script), commits them and re-runs Maven — you fix the project
+   directly; there is no tool to call.
+4. **스크립트 / script** (`<script>`): a **Python fix script** `def fix(p)` that fixes the same case in OTHER
+   projects. It is checked, stored in a knowledge base, and the next project with the same case runs it first,
+   without asking you. So write it for the pattern, not only for the lines shown here. When the fix cannot be a
+   reusable script, write `<no_script>why</no_script>` instead (then the edits are the fix).
+
+The orchestrator keeps a change when the case's errors disappear and rolls it back when the build gets worse.
 
 ## Rules
 1. ONE script fixes every error of this case in every file. Find the files and lines through `p.errors` — it holds
@@ -48,8 +56,35 @@ shown here.
 12. When a previous version of the script is shown (augment), answer with the COMPLETE new script: it replaces that
     version and runs on a tree WITHOUT that version's changes (they were rolled back) — unless the prompt says they
     are still in the tree; then it must also be a no-op for what is already applied. Keep what worked; fix what its
-    result shows (errors still present, errors it introduced, its exception or log).
+    result shows (errors still present, errors it introduced, its exception or log). If no reusable script can fix
+    the case, answer `<no_script>` with the reason and give the fix for this project as `<edits>`.
 13. Earlier attempts listed in the prompt did not work. Do something different.
+
+## Edits (`<edits>`)
+A JSON list (valid JSON: double quotes, `\n` / `\"` escaped inside strings, no comments, no trailing commas). ONE
+object per change, applied in order; paths relative to the project root with `/`, exactly as in the errors:
+
+| op | fields | |
+|---|---|---|
+| `replace` | `path`, `old`, `new`, optional `count` | `old` = the EXACT current text of the file (copied from the source shown: indentation, spaces and line breaks as they are), as short as possible but unique — the changing line(s), plus a neighbour line only when needed; `new` = its replacement (`""` removes it); every occurrence unless `count` |
+| `write` | `path`, `content` | the complete new text of a small file (prefer `replace`) |
+| `create` | `path`, `content` | a new file (refused when it exists) |
+| `delete` | `path` | a file or folder |
+| `move` | `path`, `to` | move / rename (`to` must not exist) |
+| `pom` | `path` (a pom.xml) + editor calls | `"add_dependency"` / `"add_managed_dependency"`: `{"group_id", "artifact_id", "version", "scope", "type", "classifier"}`; `"remove_dependency"` / `"remove_managed_dependency"`: `{"group_id", "artifact_id"}`; `"set_dependency_version"`: `{"group_id", "artifact_id", "version"}`; `"add_exclusion"`: `{"group_id", "artifact_id", "exclusion_group_id", "exclusion_artifact_id"}`; `"set_property"`: `{"name", "value"}`; `"remove_property"`: `{"name"}`; `"set_plugin_version"`: `{"group_id", "artifact_id", "version"}`. `"version": null` = managed by the parent. Several calls of one name: a list of objects |
+
+- Change poms only through `op: pom` (never `replace` / `write` on a pom.xml when an editor call can do it).
+- If one `old` text is not found, the whole step fails and is rolled back: copy it exactly, never paraphrase or
+  re-indent it, never put `...` in it.
+- The edits fix the errors listed in the prompt (every file shown); the script fixes every error in `p.errors`.
+- Rules 3, 4, 8, 9 and 10 apply to the edits as well.
+
+## Script or no script
+- `<script>`: the fix is a pattern another project with the same case can repeat — an import / package rename, a
+  dependency to declare, a call whose API changed, a configuration key that moved. Write it against `p.errors` /
+  `p.files(...)`, idempotent, without this project's file names hard-coded.
+- `<no_script>reason</no_script>`: the fix depends on this project's own code — business logic to adapt, a project
+  class to rewrite by hand, a one-off module structure. Say why in one line; the edits are the fix.
 
 ## Helper API `p`
 {% if helper_api -%}
@@ -75,9 +110,14 @@ starting with `_`.
 {%- endif %}
 
 ## Output format (mandatory)
-Answer with ONLY these tagged sections, nothing before or after them:
+Answer with ONLY these tagged parts, in this order, nothing before or after them:
 
-<analysis>what breaks, why, and what the script changes (1-6 lines; kept in the knowledge base)</analysis>
+<analysis>원인: what breaks and why (1-6 lines; kept in the knowledge base)</analysis>
+<solution>해결 방법: how it is fixed (one paragraph)</solution>
+<edits>
+[{"op": "replace", "path": "demo-back/src/main/java/a/S0.java", "old": "import javax.annotation.PostConstruct;", "new": "import jakarta.annotation.PostConstruct;"},
+ {"op": "pom", "path": "demo-back/pom.xml", "add_dependency": {"group_id": "jakarta.annotation", "artifact_id": "jakarta.annotation-api", "version": null}}]
+</edits>
 <script>
 def fix(p):
     done = set()
@@ -91,12 +131,13 @@ def fix(p):
 </script>
 
 The script must define a module-level `def fix(p)`; it may define helper functions and constants. Put the code inside
-`<script>` as plain Python (a ```python fence inside the tag is tolerated).
+`<script>` as plain Python (a ```python fence inside the tag is tolerated). Instead of `<script>`, write
+`<no_script>why no reusable script can fix this case</no_script>` — the `<edits>` are then the fix.
 
-If you cannot write the script without seeing more code, answer instead with:
+If you cannot fix the case without seeing more code, answer instead with:
 <analysis>what you need and why</analysis>
 <need_files>relative/path/A.java, relative/path/pom.xml</need_files>
 and/or
 <need_grep>a Python regular expression to search in *.java, pom.xml and resources</need_grep>
 
-If no script can fix this case safely, answer with only `<analysis>` explaining why (no `<script>`).
+If nothing can fix this case safely, answer with only `<analysis>` explaining why (no `<edits>`, no `<script>`).

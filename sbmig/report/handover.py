@@ -472,7 +472,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
         txt = f"code rewritten by the LLM for {f.library}: {files}"
         if f.llm_fix_notes:
             txt += f" — {'; '.join(f.llm_fix_notes[:2])}"
-        _dedupe_add(out, txt + " — review these changes (changes.patch, attempts table)")
+        _dedupe_add(out, txt + " — review these changes (changes.patch, Fixes by case)")
     # (c) carried-over pins
     if adv_cfg is None or getattr(adv_cfg, "report_carried_over", True):
         co = h.carried_over
@@ -486,8 +486,11 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     # (d) pointers
     if report.blocked:
         _dedupe_add(out, f"{len(report.blocked)} cluster(s) blocked — see Blocked")
-    if report.unresolved:
-        _dedupe_add(out, f"{len(report.unresolved)} unresolved error(s) — see Unresolved errors")
+    entries = list(getattr(report, "error_entries", None) or [])
+    left = sum(1 for e in entries if getattr(e, "status", "") in ("open", "unresolved")) if entries \
+        else len(report.unresolved)
+    if left:                               # v2.1: the error list holds them (the old section is its fallback)
+        _dedupe_add(out, f"{left} unresolved error(s) — see Error list")
     jars = list(getattr(report, "javax_api_jars", None) or [])
     if jars and not any(_JAVAX_FOLLOWUP_RE.match(m) for m in report.manual_followups):
         # the orchestrator's follow-up (listed under (e)) already names the libraries; the pointer stands in for it
@@ -520,7 +523,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     cap = int(getattr(adv_cfg, "max_from_here", 0) or 0) if adv_cfg is not None else 0
     if cap > 0 and len(out) > cap:
         rest = len(out) - (cap - 1)
-        out = out[: cap - 1] + [f"… and {rest} more — see Manual follow-ups / Blocked / Unresolved errors"]
+        out = out[: cap - 1] + [f"… and {rest} more — see Manual follow-ups / Blocked / Error list"]
     return out
 
 
@@ -530,7 +533,7 @@ def _short(text: object, limit: int) -> str:
 
 
 def review_followups(report: RunReport) -> list[str]:
-    """v2 structure review → compact "from here on" lines: what the review script changed (one line, to check),
+    """v2 structure review → compact "from here on" lines: what the review's fix (edits / script) changed (one line),
     critical issues it did not fix, warnings; at most REVIEW_FOLLOWUPS_MAX lines. [] without issues."""
     rv = getattr(report, "structure_review", None)
     if rv is None or not rv.issues:
@@ -549,8 +552,9 @@ def review_followups(report: RunReport) -> list[str]:
         if len(res.changed_files) > REVIEW_FILES_MAX:
             files += f" (+{len(res.changed_files) - REVIEW_FILES_MAX} more)"
         handled = [i for i in critical if not i.problem.startswith(REVIEW_SBMIG_CHECK)]
-        out.append(f"structure review script changed {len(res.changed_files)} file(s) for {len(handled)} critical "
-                   f"issue(s): {files} (commit {(rv.commit or '-')[:8]}) — check these pom changes")
+        out.append(f"structure review fix (edits / script) changed {len(res.changed_files)} file(s) for "
+                   f"{len(handled)} critical issue(s): {files} (commit {(rv.commit or '-')[:8]}) — check these pom "
+                   "changes")
         critical = [i for i in critical if i.problem.startswith(REVIEW_SBMIG_CHECK)]
     out += [f"structure review: critical issue not fixed — {where(i)}" for i in critical]
     out += [f"structure review warning — {where(i)}" for i in rv.issues if i.severity != "critical"]

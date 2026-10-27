@@ -113,6 +113,8 @@ def _read_journal(path: Path) -> tuple[list[str], list[str]]:
 class ScriptRunner:
     """Runs LLM fix scripts against a workspace (docs/INTERFACES.md "Script contract (S)")."""
 
+    label = "fix script"              # the log line's subject (`apply_edits` runs its synthesized script as "edits")
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
@@ -136,7 +138,7 @@ class ScriptRunner:
             result = ScriptRunResult(status="error", error=f"sbmig script runner failed: {type(exc).__name__}: {exc}")
         result.duration_s = round(time.monotonic() - t0, 3)
         first = _first_line(result.error)
-        log.info("fix script %s in %.1fs: %d file(s) changed%s", result.status, result.duration_s,
+        log.info("%s %s in %.1fs: %d file(s) changed%s", self.label, result.status, result.duration_s,
                  len(result.changed_files), f" — {first}" if first else "")
         return result
 

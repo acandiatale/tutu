@@ -114,12 +114,26 @@ def test_the_rewrite_gets_only_the_step_recipes_and_the_kb_no_learning_calls(cfg
     assert "pre_handlers" not in plan_ev
 
 
-def test_error_cases_reach_the_kb(cfg, ws):
+def test_the_error_list_reaches_the_report_and_the_kb(cfg, ws):
+    """v2.1 finalize: the run's error list (the real `sbmig.errors.entries.ErrorList`) → errors.jsonl / errors.md,
+    report.error_entries, kb.record_run(entries)."""
     kb = FakeKB()
     report = make_v2(cfg, ws, kb=kb).run()
-    assert report.success and kb.appended
-    errors, attempts = kb.appended[0]
-    assert errors and attempts[0].fix_method == "script" and attempts[0].resolver_id.startswith("script:")
+    assert report.success and len(kb.recorded) == 1
+    every = kb.recorded[0]
+    entries = [e for e in every if e.seen == "build"]
+    assert sorted(e.file for e in entries) == [BAR, FOO] and {e.status for e in entries} == {"resolved"}
+    assert {e.resolved for e in entries} == {"r1 try 1"}
+    # the restructure's pom corrections (FakeRestructurer: mandatory a:b, optional c:d, a generated pom), verified
+    poms = [e for e in every if e.seen == "restructure"]
+    assert sorted((e.file, e.status, e.resolved) for e in poms) == [
+        ("module/boot-jar/pom.xml", "resolved", "build"), ("pom.xml", "resolved", "build"),
+        ("pom.xml", "resolved", "build")]
+    [t] = {id(e.tries[0]): e.tries[0] for e in entries}.values()        # the case's one try, shared
+    assert (t.source, t.applied, t.result, t.round) == ("llm-new", "script", "build_ok", 1)
+    assert t.analysis == "fixed the case" and t.commit and "+class X { ok }" in t.diff
+    assert [e.id for e in report.error_entries] == [e.id for e in every]
+    assert report.outputs["errors"].endswith("errors.jsonl") and (ws.run_dir / "errors.md").exists()
 
 
 def test_final_build_is_always_attempted_when_the_scripts_fail(cfg, ws):
@@ -157,13 +171,19 @@ def test_review_script_is_committed_journaled_and_reported(cfg, ws):
     report = make_v2(cfg, ws, reviewer=reviewer, kb=kb).run()
     assert report.success
     sha = report.structure_review.commit
-    assert [r.commit for r in kb.reviews] == [sha]                      # recorded after the commit
     assert sha and "review: fix critical structure issues (1)" in subjects(ws)
+    # v2.1: the critical issue is an entry resolved by `review` (try source review), the warning a note
+    crit = [e for e in report.error_entries if e.seen == "review" and e.status == "resolved"]
+    notes = [e for e in report.error_entries if e.seen == "review" and e.status == "note"]
+    assert len(crit) == 1 and crit[0].resolved == "review" and "no parent" in crit[0].message
+    assert crit[0].tries[0].source == "review" and crit[0].tries[0].commit == sha
+    assert "+<project><parent>base</parent></project>" in crit[0].tries[0].diff
+    assert len(notes) == 1 and "duplicate dependency" in notes[0].message
     assert ws._git("log", "-1", "--format=%s", sha).stdout.strip() == "review: fix critical structure issues (1)"
     ev = next(e for e in journal_events(ws) if e["event"] == "structure_review")
     assert (ev["verdict"], ev["issues"], ev["critical"], ev["script_status"], ev["commit"]) == ("issues", 2, 1, "ok",
                                                                                                   sha)
-    assert any("structure review issues (2 issue(s), 1 critical); script ok" in n for n in report.phases[1].notes)
+    assert any("structure review issues (2 issue(s), 1 critical); edits (1) ok" in n for n in report.phases[1].notes)
 
 
 def test_review_note_names_the_commit_instead_of_not_committed_yet(cfg, ws):
@@ -217,7 +237,7 @@ def test_reviewer_gets_the_budgeted_llm_runner_and_kb_and_its_calls_count(cfg, w
     report = orch.run()
     # kb=None: the orchestrator records the review itself, after committing its script (the line names the commit)
     assert isinstance(seen["llm"], _BudgetedLLM) and seen["runner"] is orch.script_runner and seen["kb"] is None
-    assert [r.verdict for r in kb.reviews] == ["ok"]
+    assert not [e for e in report.error_entries if e.seen == "review"]   # verdict ok: nothing to record
     assert llm.calls == 1
     fix_calls = sum(a.llm_usage.calls for p in report.phases for a in p.attempts)
     assert orch.budget.llm_calls == 1 + fix_calls and report.llm_usage.calls == 1 + fix_calls

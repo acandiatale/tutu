@@ -1,6 +1,7 @@
-"""v2 structure review (sbmig.review.StructureReviewer): fake LLM + fake script runner + fake KB on a real git
-workspace — ok / warnings / critical with a script (left uncommitted) / script failure (tree restored) / unreadable
-answers / LLM errors / disabled, the encoding rule, the KB record (failures swallowed)."""
+"""v2 structure review (sbmig.review.StructureReviewer): fake LLM + fake script runner on a real git workspace —
+ok / warnings / critical with a script (left uncommitted) / script failure (tree restored) / unreadable answers / LLM
+errors / disabled, the encoding rule; v2.1: the four-part answer (`StructureReview.answer`), edits applied through
+`apply_edits` (real script process), guards, the apply retry, the KB is never written by the reviewer."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -75,15 +76,15 @@ class FakeRunner:
 
 
 class FakeKB:
-    def __init__(self, fail: bool = False):
-        self.fail = fail
-        self.reviews: list = []
-        self.scripts = None
+    """A spy: the reviewer must never touch the KB (v2.1 — the loop records the review's entries and stores its
+    script); any attribute the reviewer reads is noted in `reviews`."""
 
-    def record_review(self, review) -> None:
-        if self.fail:
-            raise OSError("disk full")
-        self.reviews.append(review)
+    def __init__(self, fail: bool = False):
+        object.__setattr__(self, "reviews", [])
+
+    def __getattr__(self, name):
+        self.reviews.append(name)
+        raise AttributeError(name)
 
 
 def make_ws(tmp_path: Path, *, java: Optional[bytes] = None, comp_pom: str = COMP_POM) -> Workspace:
@@ -128,7 +129,10 @@ def test_ok_answer(tmp_path, cfg):
                  "spring-boot-starter-validation", "# Module tree after the restructure", "`module/comp-jar/pom.xml`",
                  "restructure.apply (layout): 3 changed", "# Source encodings", "```xml", "<artifactId>demo-comp"):
         assert part in user, part
-    assert runner.calls == [] and kb.reviews == [rv]
+    assert runner.calls == [] and kb.reviews == []                 # v2.1: the loop records the review, not the reviewer
+    assert rv.answer is not None and rv.answer.analysis == "All poms follow the rules." and rv.answer.edits == []
+    assert rv.answer.llm_usage.calls == 1 and rv.answer.raw_response == OK
+    assert "<edits>" in system and "<solution>" in system and "직접 고쳐라" in system
 
 
 def test_warnings_only_never_run_the_script(tmp_path, cfg):
@@ -138,7 +142,7 @@ def test_warnings_only_never_run_the_script(tmp_path, cfg):
     assert rv.verdict == "issues" and [i.severity for i in rv.issues] == ["warning"]
     assert rv.issues[0].file == "module/comp-jar/pom.xml" and rv.issues[0].fix_hint == "drop it"
     assert runner.calls == [] and rv.script_result is None
-    assert rv.note == "script not run: the review reported no critical issue"
+    assert rv.note == "script not applied: the review reported no critical issue"
 
 
 def test_critical_with_script_runs_and_leaves_the_change_uncommitted(tmp_path, cfg):
@@ -179,7 +183,7 @@ def test_script_not_run_when_off_without_runner_or_dirty(tmp_path, cfg):
     off = cfg.model_copy(update={"review": cfg.review.model_copy(update={"fix_critical": False})})
     runner = FakeRunner(edits={"pom.xml": ROOT_POM + "<!-- y -->"})
     rv = StructureReviewer(off, FakeLLM(CRITICAL), runner).review(ws, profile(), off, run_id="r")
-    assert runner.calls == [] and rv.note == "script not run: review.fix_critical is off" and rv.script
+    assert runner.calls == [] and rv.note == "script not applied: review.fix_critical is off" and rv.script
     rv = StructureReviewer(cfg, FakeLLM(CRITICAL), None).review(ws, profile(), cfg, run_id="r")
     assert rv.note == "script not run: no script runner in this run"
     ws.write("module/boot-jar/pom.xml", BOOT_POM + "<!-- uncommitted restructure edit -->")
@@ -188,7 +192,7 @@ def test_script_not_run_when_off_without_runner_or_dirty(tmp_path, cfg):
     assert "uncommitted restructure edit" in ws.read("module/boot-jar/pom.xml")
     no_script = CRITICAL.split("<script>")[0]
     rv = StructureReviewer(cfg, FakeLLM(no_script), runner).review(ws, profile(), cfg, run_id="r")
-    assert rv.script == "" and rv.note == "no script for the critical issue(s): they are handed over"
+    assert rv.script == "" and rv.note == "no edits or script for the critical issue(s): they are handed over"
 
 
 def test_unreadable_answer_is_retried_once(tmp_path, cfg):
@@ -202,7 +206,7 @@ def test_unreadable_answer_is_retried_once(tmp_path, cfg):
     kb = FakeKB()
     _, rv = _review(cfg, ws, llm, kb=kb)
     assert rv.verdict == "failed" and len(llm.calls) == 2 and "unreadable answer twice" in rv.note
-    assert kb.reviews == [rv]                                         # failed reviews are recorded too
+    assert kb.reviews == [] and rv.answer is None
 
 
 def test_llm_error_fails_without_retry(tmp_path, cfg):
@@ -227,14 +231,13 @@ def test_disabled_or_no_llm_is_skipped(tmp_path, cfg):
     assert rv.verdict == "skipped" and "no LLM client" in rv.note and kb.reviews == []
 
 
-def test_record_review_failures_are_swallowed(tmp_path, cfg, caplog):
+def test_the_reviewer_never_writes_the_kb(tmp_path, cfg):
+    """v2.1: `kb` is kept in the signature (the orchestrator's factory passes it) but unused — the loop records the
+    review in the error list."""
     ws = make_ws(tmp_path)
-    _, rv = _review(cfg, ws, FakeLLM(OK), kb=FakeKB(fail=True))
-    assert rv.verdict == "ok" and "not recorded in the KB" in caplog.text
-    off = cfg.model_copy(update={"review": cfg.review.model_copy(update={"record": False})})
     kb = FakeKB()
-    StructureReviewer(off, FakeLLM(OK), None, kb).review(ws, profile(), off, run_id="r")
-    assert kb.reviews == []
+    _, rv = _review(cfg, ws, FakeLLM(OK), kb=kb)
+    assert rv.verdict == "ok" and kb.reviews == []
 
 
 def test_unexpected_errors_never_raise(tmp_path, cfg, monkeypatch):

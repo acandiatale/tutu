@@ -82,7 +82,7 @@ def test_stall_escalation_model_and_repeated_failure(cfg, ws, profile):
         return write_script({"notes.txt": f"v{n['i']}\n"})
 
     cfg.loop.stall_limit = 1
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_augments_per_case = 3
     fixer = FakeFixer(script_fn=fix)
     loop = make_loop(cfg, ws, profile, fixer=fixer)
     pr = loop.run(Phase.VERIFY, "package", 10)
@@ -171,7 +171,7 @@ def test_llm_budget_exhaustion(cfg, ws, profile):
 
 
 def test_no_script_and_propose_exception_are_apply_failed(cfg, ws, profile):
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_augments_per_case = 2
 
     def fn(w, c, ctx):
         if c.errors[0].file == FOO:
@@ -181,7 +181,8 @@ def test_no_script_and_propose_exception_are_apply_failed(cfg, ws, profile):
     pr = loop.run(Phase.VERIFY, "package", 3)
     assert {a.outcome for a in pr.attempts} == {"apply_failed"}
     assert any("llm down" in e for a in pr.attempts for e in a.apply_errors)
-    assert any("LLM proposed no script: no <script> block" in e for a in pr.attempts for e in a.apply_errors)
+    assert any("LLM answered with neither a script nor edits: no <script> block" in e
+               for a in pr.attempts for e in a.apply_errors)
     # counted even when empty / failed; nothing applied → asked again on the same build (no rebuild), then blocked
     assert loop.budget.llm_calls == 4 and pr.iterations == 1
     assert {b.reason.value for b in pr.blocked} == {"repeated_failure"} and len(pr.blocked) == 2
@@ -223,8 +224,8 @@ def test_masking_and_unmasking(cfg, ws, profile):
                         l2="dependency_resolution|a:b")
     dep = dep.model_copy(update={"module": "demo", "file": None, "artifact": GAV.parse("a:b:1")})
     kb = FakeKB()
-    kb.scripts.seed(case_of("compile|x"), write_script({FOO: "class Foo { ok }\n"}).code)
-    budget = LoopBudget(max_llm_calls=0, max_minutes=60)     # the pom case is blocked → the compile case is unmasked
+    kb.cases.seed(case_of("compile|x"), write_script({FOO: "class Foo { ok }\n"}).code)
+    budget = LoopBudget(max_llm_calls=-1, max_minutes=60)    # no LLM: the pom case is blocked → the compile case is unmasked
     build = FakeBuildRunner(ws, script=[bad_build(dep, compile_error(FOO))])
     pr = make_loop(cfg, ws, profile, build=build, kb=kb, budget=budget).run(Phase.VERIFY, "package", 1)
     decisions = pr.iteration_records[0].decisions

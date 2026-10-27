@@ -2,7 +2,8 @@
 
 Swapping an as-is parent (Boot starter parent, an old in-house parent …) for the company parent drops every version
 the old chain managed. `capture_effective_depmgmt` runs `mvn help:effective-pom` on the **as-is** project once at
-intake and stores the versions in `<run_dir>/effective/depmgmt.json`:
+intake and stores the versions in `<run_dir>/logs/effective-depmgmt.json` (v2.1: no effective/ directory; the
+effective pom xml itself is deleted once parsed, the Maven log stays):
 
     {"managed": {"g:a": "v"}, "direct": {"g:a": "v"}, "plugins": {"g:a": "v"},
      "properties": {...}, "parent": "g:a:v", "modules": ["g:a", ...],
@@ -22,7 +23,7 @@ from typing import Any, Optional
 from lxml import etree
 
 from sbmig.core.config import Config
-from sbmig.core.workspace import Workspace
+from sbmig.core.workspace import Workspace, logs_dir
 
 from .mvn import base_command, mvn_env, run_logged
 
@@ -133,7 +134,12 @@ def parse_effective_pom(text: str | bytes) -> dict[str, Any]:
 
 
 def _effective_dir(ws: Workspace) -> Path:
-    return ws.run_dir / "effective"
+    return logs_dir(ws)
+
+
+def _effective_path(ws: Workspace, name: str) -> Path:
+    """`<run_dir>/logs/effective-<name>` (depmgmt.json → effective-depmgmt.json)."""
+    return _effective_dir(ws) / f"effective-{name}"
 
 
 def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] = None,
@@ -147,7 +153,7 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
         stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in (module or "root").strip("/")) or "root"
         if name != DEPMGMT_FILE:                    # keep the as-is effective pom xml / log next to the new one
             stem = f"{Path(name).stem}-{stem}"
-        xml_path = out_dir / f"{stem}.xml"
+        xml_path = out_dir / f"effective-pom-{stem}.xml"
         xml_path.unlink(missing_ok=True)
         cmd = base_command(cfg)
         if module:
@@ -163,7 +169,8 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
                         "log": str(log_path)})
             return None
         data = parse_effective_pom(xml_path.read_bytes())
-        target = out_dir / name
+        xml_path.unlink(missing_ok=True)            # parsed: the json below holds what the run needs
+        target = _effective_path(ws, name)
         if target.is_file():
             try:
                 prev = json.loads(target.read_text(encoding="utf-8"))
@@ -200,9 +207,9 @@ def _last_error(text: str) -> str:
 
 
 def load_effective(ws: Workspace, name: str = DEPMGMT_FILE) -> dict[str, Any]:
-    """The captured depmgmt dict (`<run_dir>/effective/<name>`), or an empty one
+    """The captured depmgmt dict (`<run_dir>/logs/effective-<name>`), or an empty one
     (`{"managed": {}, "direct": {}, …, "parent": None}`)."""
-    p = _effective_dir(ws) / name
+    p = _effective_path(ws, name)
     if not p.is_file():
         return _empty()
     try:
@@ -222,7 +229,7 @@ def effective_pom_provider(ws: Workspace, cfg: Config, module: Optional[str] = N
     *now* (after the restructure's pom edits) and returns the loaded dict — None when Maven fails / is unavailable."""
     def _provide() -> Optional[dict[str, Any]]:
         try:
-            (_effective_dir(ws) / name).unlink(missing_ok=True)
+            _effective_path(ws, name).unlink(missing_ok=True)
         except OSError:
             pass
         if capture_effective_depmgmt(ws, cfg, module, name=name) is None:

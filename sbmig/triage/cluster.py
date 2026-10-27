@@ -2,13 +2,13 @@
 
 v2 (flow-v2, docs/INTERFACES.md "Script fix loop (L)"): the fix loop works on **cases** — `cluster_cases` groups the
 errors of a build by their L2 signature (`signature_generic`) ACROSS files, so one fix script fixes the same cause in
-every file (v1 asked the LLM once per file). The case id is the case catalog's: ``sha1(signature_generic)[:10]``
-(`sbmig.kb.catalog.case_id_for`), so ids match ``kb/catalog`` and ``kb/scripts/<case_id>/``; an error without an L2
+every file (v1 asked the LLM once per file). The case id is ``sha1(signature_generic)[:10]``
+(v2.1: the error list's `ErrorEntry.case_id` and ``<kb>/cases/<case_id>/``); an error without an L2
 gets ``sha1(kind|file|L1)[:10]``. A case cluster has ``id = "case:<case_id>"``, ``case_id``, ``file = None`` and the
 common module (None when the case spans modules).
 
 **Refined L2 for catch-all compile signatures** (`refine_signature`, applied to every error before it is grouped —
-and by the fix loop / orchestrator right after each build, so the error tracker, the case catalog, the scoring and
+and by the fix loop / orchestrator right after each build, so the error list, the KB cases, the scoring and
 the clusters all see the same key): a COMPILE / TEST_COMPILE L2 is a *catch-all* when its error class (2nd segment)
 is ``build`` (a file-less ``Compilation failure`` / ``Fatal error compiling`` summary — what Maven prints when javac
 wrote non-standard output such as ``option --boot-class-path cannot be used together with --release`` or
@@ -162,15 +162,11 @@ def _posix(path: Optional[str]) -> str:
 
 
 def l2_case_id(signature_generic: Optional[str]) -> str:
-    """The case catalog's id of an L2 signature (``sha1(signature_generic)[:10]``; "" without one) — the function of
-    `sbmig.kb.catalog` when it imports, the same formula otherwise (ids must match kb/catalog and kb/scripts)."""
+    """The case id of an L2 signature: ``sha1(signature_generic)[:10]`` ("" without one) — the contract of
+    `ErrorEntry.case_id` and ``<kb>/cases/<case_id>/`` (v2.1, docs/v2/PLAN-v2.1.md §3.3)."""
     if not signature_generic:
         return ""
-    try:
-        from sbmig.kb.catalog import case_id_for
-        return case_id_for(signature_generic)
-    except Exception:  # pragma: no cover - the KB package is ours; the formula is the contract
-        return hashlib.sha1(signature_generic.encode("utf-8")).hexdigest()[:10]
+    return hashlib.sha1(signature_generic.encode("utf-8")).hexdigest()[:10]
 
 
 def case_id_of(e: BuildError) -> str:

@@ -62,27 +62,30 @@ def sample_report(success: bool = False) -> RunReport:
 
 def test_markdown_sections():
     md = render_markdown(sample_report())
-    for s in ("# Migration report — demo", "❌ NOT BUILDING", "## Unresolved errors", "### `src/A.java`",
+    for s in ("# Migration report — demo", "❌ NOT BUILDING", "## Error list", "### `src/A.java`",
               "L3: cannot find symbol — symbol: `class Foo` — location: class A", "artifact a:b:1", "module core",
               "(no file)", "## Manual follow-ups", "web.xml not migrated", "## Flags", "-Dmaven.test.skip=true",
               "`custom-flag`", "## What we changed", "`spring.loop` — spring loop", "| spring | r.A | 2 | yes |",
-              "no: boom", "mandatory added", "## Phases", "## Fix attempts", "`script:abcd1234:v1` new",
-              "`script:c2:v2` reuse (ok)", "`script:c3:v3` augment (error)", "| - + advisory hystrix |", "01234567",
-              "tried \\| renaming", "## Escalated clusters", "needs a human", "## Notes", "plan: plan note",
-              "spring: spring note", "## Outputs", "/logs/verify.log", "2m 05s", "3 call(s)"):
+              "no: boom", "## Notes", "plan: plan note", "spring: spring note", "## Outputs", "/logs/verify.log",
+              "2m 05s", "3 call(s)",
+              "| SBMIG-RESULT | `SBMIG-RESULT run=run-1 exit=2 build=FAIL unresolved=5 blocked=0 open=0 resolved=0 "
+              "llm=3 attn=unresolved:5,test-compile-skipped` |"):
         assert s in md, s
-    assert md.count("c9") == 1                                       # escalations de-duplicated
-    for gone in ("## Knowledge base", "Nothing harvested.", "recipes run by triage", "handler `", "KB case"):
+    # v2.1: the phases / attempts / escalation tables are gone (the error list and fixes by case replace them)
+    for gone in ("## Knowledge base", "## Phases", "## Fix attempts", "## Escalated clusters", "## Unresolved errors",
+                 "Restructure / deterministic edits:", "script:abcd1234", "needs a human"):
         assert gone not in md, gone
     ok = render_markdown(sample_report(success=True).model_copy(update={"timings_s": {}}))
     assert "✅ BUILD SUCCESS" in ok and "The final build passed." in ok and "## Knowledge base" not in ok
+    assert "`SBMIG-RESULT run=run-1 exit=0 build=ok" in ok
 
 
 def test_markdown_minimal():
     r = RunReport(run_id="r", project_name="p", case_type=CaseType.UNKNOWN,
                   started_at=datetime.now(timezone.utc))
     md = render_markdown(r)
-    assert "No structured errors" in md and "None." in md and "| Flags |" not in md
+    assert "No structured errors" in md and "| Flags |" not in md and "## Manual follow-ups" not in md
+    assert "## What we changed" not in md
 
 
 def test_write_report_roundtrip(tmp_path: Path):
@@ -129,7 +132,7 @@ def _handover_report() -> RunReport:
 def test_handover_section_first_and_tables():
     md = render_markdown(_handover_report())
     i = md.index("## Handover — what we replaced, what is yours")
-    assert md.index("| Run id |") < i < md.index("## Unresolved errors")
+    assert md.index("| Run id |") < i < md.index("## Error list")
     assert md[:i].count("\n## ") == 0                               # first section after the header table
     for s in ("### Versions replaced", "- parent: `org.springframework.boot:spring-boot-starter-parent:2.7.18` → "
               "`com.company:company-parent:4.1.0`", "- java: `1.8` → `21`", "| what | before | after | why |",
@@ -151,7 +154,7 @@ def test_handover_nothing_to_say():
     rep = sample_report()
     rep.handover = HandoverSummary()
     md = render_markdown(rep)
-    sec = md[md.index("## Handover"):md.index("## Unresolved errors")]
+    sec = md[md.index("## Handover"):md.index("## Error list")]
     assert "No version changes and no library advisories recorded" in sec and "###" not in sec
 
 

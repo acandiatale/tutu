@@ -1,15 +1,18 @@
 {% if mode == "augment" -%}
-Extend the fix script of this case ({{ base_label }}). It did not fix every error of the case — see what it did in this
-project below.
+Extend the fix script of this case ({{ base_label }}). It did not fix every error of the case — see its code and what it
+did in this project below.
 {%- if base_kept %} Its changes are STILL in the tree (it fixed the errors it targeted; the errors below appeared after
 it). Answer with the COMPLETE new script: it replaces {{ base_label }} for later projects, so it must do what the old one
 did AND fix these errors, and it must not break on a tree where the old changes are already applied (idempotent).
 {%- else %} Answer with the COMPLETE new script: it replaces {{ base_label }} and runs on a tree WITHOUT its changes
 (they were rolled back). Keep what worked, fix what the result shows.
-{%- endif %}
+{%- endif %} The orchestrator runs the new script here and stores it; no `<edits>` are needed with it. If no reusable
+script can fix this case, answer `<no_script>` with the reason and `<edits>` that fix this project directly.
 {%- else -%}
-Write ONE fix script for this case. It must fix every error of the case, in every file — find them through `p.errors`
-(it holds all of them, also those not shown here).
+Fix this case now and write ONE fix script for it. This case has no stored script: answer with BOTH `<edits>` that fix
+this project now (applied at once) and a `<script>` for the same case in other projects (stored for reuse; it must fix
+every error of the case, in every file — find them through `p.errors`, which holds all of them, also those not shown
+here) — or `<no_script>` with the reason when the fix cannot be reused.
 {%- endif %}
 {% for title, body in sections %}
 ## {{ title }}
@@ -18,4 +21,8 @@ Write ONE fix script for this case. It must fix every error of the case, in ever
 {% if truncated %}
 (Context was shortened to fit the budget: {{ truncated | join(", ") }}. Ask with <need_files> / <need_grep> if you need more.)
 {% endif %}
-Answer now using only the output format: <analysis>, then <script> defining `def fix(p)`{% if mode == "augment" %} (the COMPLETE new script){% endif %} — or <need_files> / <need_grep>.
+{% if mode == "augment" -%}
+Answer now using only the output format: <analysis>, <solution>, then the COMPLETE new <script> defining `def fix(p)` — or <no_script> with the reason and <edits> — or <need_files> / <need_grep>.
+{%- else -%}
+Answer now using only the output format: <analysis>, <solution>, <edits>, then <script> defining `def fix(p)` (or <no_script> with the reason) — or <need_files> / <need_grep>.
+{%- endif %}

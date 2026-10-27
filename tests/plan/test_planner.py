@@ -1,4 +1,5 @@
-"""v2 planner (flow-v2): ONE transform.rewrite run → restructure → restructure.review → verify.build, per case."""
+"""v2 planner (flow-v2, v2.1): ONE transform.rewrite run → transform.compile → restructure → restructure.review →
+verify.build, per case."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -10,7 +11,7 @@ from sbmig.plan.planner import artifact_for, ee_javax_packages
 from tests.analyze.helpers import (make_boot27, make_boot33, make_pure_java, make_servlet, make_spring_legacy, pom,
                                    write)
 
-ORDER = ["transform.rewrite", "restructure.apply", "restructure.review", "verify.build"]
+ORDER = ["transform.rewrite", "transform.compile", "restructure.apply", "restructure.review", "verify.build"]
 J21 = "org.openrewrite.java.migrate.UpgradeToJava21"
 JAKARTA = "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"
 BOOT4 = "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
@@ -66,8 +67,11 @@ def test_spring_boot_plan(tmp_path: Path, cfg) -> None:
     assert v.kind == StepKind.BUILD and v.phase == Phase.VERIFY and v.build_goal == "clean package"
     assert all(s.reason for s in plan.steps)
     assert not any(s.kind.value in ("build_fix_loop", "handler") for s in plan.steps)
-    assert "transform: one OpenRewrite run (UpgradeToJava21, UpgradeSpringBoot_4_0, SpringBootProperties_4_1) — no " \
-           "build until the restructure is done (v2)" in plan.notes
+    assert "transform: one OpenRewrite run (UpgradeToJava21, UpgradeSpringBoot_4_0, SpringBootProperties_4_1) — then " \
+           "one compile, no fixing until the restructure is done (v2.1)" in plan.notes
+    comp = _step(plan, "transform.compile")
+    assert comp.kind == StepKind.BUILD and comp.phase == Phase.TRANSFORM and comp.build_goal == "clean compile"
+    assert any(n.startswith("compile: one mvn clean compile after OpenRewrite") for n in plan.notes)
     assert any("umbrella migrates javax → jakarta itself" in n for n in plan.notes)
     assert not any("pre-emptive" in n or "lombok-version-floor" in n for n in plan.notes)
     assert _no_project_recipes(plan)
@@ -175,7 +179,7 @@ def test_extra_recipes_from_config_come_last(tmp_path: Path, cfg) -> None:
 def test_empty_sets_omit_the_transform_step(tmp_path: Path, cfg) -> None:
     cfg.openrewrite.recipes.jdk21 = []
     plan = build_plan(analyze_path(make_pure_java(tmp_path), cfg), cfg)
-    assert _ids(plan) == ["restructure.apply", "restructure.review", "verify.build"]
+    assert _ids(plan) == ["transform.compile", "restructure.apply", "restructure.review", "verify.build"]
     assert "transform: no recipes apply → transform.rewrite omitted" in plan.notes
 
 
@@ -222,7 +226,7 @@ def test_verify_loop_disabled_is_noted(tmp_path: Path, cfg) -> None:
 def test_review_disabled_is_omitted_with_a_note(tmp_path: Path, cfg) -> None:
     cfg.review.enabled = False
     plan = build_plan(analyze_path(make_spring_legacy(tmp_path), cfg), cfg)
-    assert _ids(plan) == ["transform.rewrite", "restructure.apply", "verify.build"]
+    assert _ids(plan) == ["transform.rewrite", "transform.compile", "restructure.apply", "verify.build"]
     assert "review: review.enabled=false → restructure.review omitted (the build follows the restructure)" in plan.notes
 
 
@@ -263,7 +267,10 @@ def test_msa_plan_with_aggregator(tmp_path: Path, cfg) -> None:
     plan = build_plan(profile, cfg, kb=FakeKB())
     order = [s.name for s in profile.services]
     assert _ids(plan) == [f"transform.rewrite@{svc}" for svc in order] + [
-        "restructure.msa_pom", "restructure.review", "verify.build"]
+        "transform.compile", "restructure.msa_pom", "restructure.review", "verify.build"]
+    comp = _step(plan, "transform.compile")              # v2.1: one compile at the root aggregator, no fixing
+    assert comp.kind == StepKind.BUILD and comp.phase == Phase.TRANSFORM and comp.build_goal == "clean compile"
+    assert comp.target is None
     shop = _step(plan, "transform.rewrite@shop")
     assert shop.kind == StepKind.OPENREWRITE and shop.phase == Phase.TRANSFORM
     assert shop.target == "shop" and shop.params == {"service": "shop"}
@@ -286,8 +293,11 @@ def test_msa_plan_without_aggregator(tmp_path: Path, cfg) -> None:
     profile = analyze_path(tmp_path, cfg)
     assert profile.case_type == CaseType.MSA
     plan = build_plan(profile, cfg)
-    verify = [s for s in plan.steps if s.kind == StepKind.BUILD]
+    verify = [s for s in plan.steps if s.kind == StepKind.BUILD and s.phase == Phase.VERIFY]
     assert sorted(s.id for s in verify) == ["verify.build@shop", "verify.build@web"]
+    comp = [s for s in plan.steps if s.kind == StepKind.BUILD and s.phase == Phase.TRANSFORM]
+    assert sorted(s.id for s in comp) == ["transform.compile@shop", "transform.compile@web"]   # per target, like verify
+    assert {s.target for s in comp} == {"shop", "web"}
     assert {s.target for s in verify} == {"shop", "web"}
     assert _recipes(plan, "transform.rewrite@web") == [J21, JAKARTA]
     ids = _ids(plan)

@@ -10,7 +10,7 @@ from sbmig.plan import build_plan
 from tests.analyze.helpers import (BOOT_PLUGIN, PSVM, make_boot27, make_servlet, make_spring_legacy, pom, write,
                                    write_java)
 
-IN_PLACE = ["transform.rewrite", "restructure.boot_pom", "restructure.review", "verify.build"]
+IN_PLACE = ["transform.rewrite", "transform.compile", "restructure.boot_pom", "restructure.review", "verify.build"]
 
 
 def _ids(plan):
@@ -75,7 +75,7 @@ def test_boot_layout_rule_keeps_restructure_apply(tmp_path: Path, cfg) -> None:
     st = _step(plan, "restructure.apply")
     assert st.kind == StepKind.RESTRUCTURE and st.params == {"mode": "layout", "starter": "auto"}
     assert st.title == "restructure into boot-app-back, boot-app-boot with the in-house parent"
-    assert _ids(plan) == ["transform.rewrite", "restructure.apply", "restructure.review", "verify.build"]
+    assert _ids(plan) == ["transform.rewrite", "transform.compile", "restructure.apply", "restructure.review", "verify.build"]
     assert any(n.startswith("restructure: rule boot-as-is=layout") for n in plan.notes)
 
 

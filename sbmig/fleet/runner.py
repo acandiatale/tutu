@@ -1,9 +1,9 @@
 """Sequential fleet runner: ONE agent migrates N projects one after the other, feeding one shared KB.
 
-Every project's error cases and fix scripts go into the KB (``errors.jsonl`` / ``fix_attempts.jsonl``, the case
-catalog, ``scripts/<case>/v<N>.py``) before the next project starts, so project k+1 re-runs the scripts project k
-stored for the same error signature (reuse → augment → new, PLAN-v2 §3.1) and credits (→ promotes) the versions that
-work for it.
+Every project's error list and fix scripts go into the KB (``errors.jsonl``, ``cases/<case>/case.json`` +
+``fix_v<N>.py``, PLAN-v2.1 §3.4) before the next project starts, so project k+1 runs the script project k stored for
+the same case first (stored script → augment → direct edits, PLAN-v2.1 §3.1) and credits (→ proven) the versions
+that work for it.
 
 State lives in ``<out>/fleet/state.json`` (:class:`FleetState`), rewritten atomically after every project,
 so a killed fleet resumes where it stopped (``sbmig fleet run`` is resumable by default). Projects are identified by
@@ -42,11 +42,14 @@ import yaml
 
 from sbmig.core.config import Config, _apply_env_overrides, _expand_env, deep_merge
 from sbmig.core.models import CaseType, FleetProjectResult, FleetState, RunReport, utcnow
-from sbmig.report.result_line import infra_kind, result_attention, result_line
+from sbmig.report.errors import status_counts
+from sbmig.report.result_line import counts_open_resolved, infra_kind, result_attention, result_line
 
 from .manifest import FleetProject, input_key, load_manifest
 
 log = logging.getLogger("sbmig.fleet")
+
+NO_LLM_CALLS = -1                        # `loop.max_llm_calls: -1` = no LLM call at all (v2.1)
 
 EXIT_ALL_SUCCESS = 0
 EXIT_INCOMPLETE = 2
@@ -272,7 +275,13 @@ class FleetRunner:
         data["kb"]["dir"] = self.cfg.kb.dir  # the KB is fleet-wide
         data["repo_root"] = self.cfg.repo_root
         if remaining_llm is not None:
-            data["loop"]["max_llm_calls"] = max(0, min(int(data["loop"]["max_llm_calls"]), remaining_llm))
+            # v2.1 `loop.max_llm_calls`: 0 = no limit, > 0 = cap, -1 = no LLM call at all. The fleet's remainder caps
+            # an unlimited project; an exhausted fleet budget means no LLM call (-1, noted llm-budget-exhausted)
+            per = int(data["loop"].get("max_llm_calls") or 0)
+            if per < 0 or remaining_llm <= 0:
+                data["loop"]["max_llm_calls"] = NO_LLM_CALLS
+            else:
+                data["loop"]["max_llm_calls"] = remaining_llm if per == 0 else min(per, remaining_llm)
         return Config.model_validate(data)
 
     def _remaining_llm(self) -> Optional[int]:
@@ -317,6 +326,7 @@ class FleetRunner:
             for b in report.blocked
         ]
         r.unresolved = len(report.unresolved)
+        r.error_counts = dict(status_counts(getattr(report, "error_entries", None) or []))   # v2.1 error list
         r.flags = list(report.flags)
         r.advisories = [f"{f.advisory_id}:{f.outcome}" for f in report.advisories]
         r.carried_over = len(report.handover.carried_over) if report.handover is not None else 0
@@ -481,6 +491,7 @@ class FleetRunner:
                 r.attempt += 1
             r.status, r.error = "running", None
             r.started_at, r.finished_at = utcnow(), None
+            r.error_counts = {}
             run_id = self._run_id(index_of[id(proj)], proj, r.attempt)
             r.run_id = run_id
             r.out_dir = str(self.out_dir / run_id)
@@ -489,6 +500,7 @@ class FleetRunner:
             t0 = time.monotonic()
             kind: Optional[str] = None
             build_ok = False
+            reported = False                     # a report came back: the result line carries open= / resolved=
             run_log = self._attach_run_log(self.out_dir / run_id)
             try:
                 pcfg = self.project_config(proj, remaining)
@@ -496,7 +508,7 @@ class FleetRunner:
                 report = runner(proj, pcfg, self.out_dir, run_id)
                 code = exit_code_for(report)
                 self.fill_result(r, report, code)
-                build_ok = bool(report.success)
+                build_ok, reported = bool(report.success), True
                 kind = report_infra_kind(report, code) if r.status != "skipped" else None
             except KeyboardInterrupt:
                 r.status, r.error = "pending", "interrupted"
@@ -517,11 +529,14 @@ class FleetRunner:
             r.duration_s = round(time.monotonic() - t0, 1)
             ran += 1
             self.save_state()
+            o_err, r_err = counts_open_resolved(r.error_counts)
             self._say(result_line(run_id, r.exit_code, build_ok, unresolved=r.unresolved, blocked=r.blocked,
-                                  llm_calls=r.llm_calls, attention=result_attention(r)))
+                                  llm_calls=r.llm_calls, attention=result_attention(r),
+                                  open_errors=o_err if reported else None, resolved_errors=r_err if reported else None))
             self._say(
                 f"[{pos}/{total}] {proj.name}: {r.status} (exit {r.exit_code}, {r.duration_s:.0f}s, "
-                f"llm {r.llm_calls}, blocked {r.blocked}, unresolved {r.unresolved})"
+                f"llm {r.llm_calls}, errors open {o_err} / resolved {r_err}, blocked {r.blocked}, "
+                f"unresolved {r.unresolved})"
                 + (f" - {r.error}" if kind else "")
             )
             self._cleanup(r)

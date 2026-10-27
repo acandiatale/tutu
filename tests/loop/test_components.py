@@ -14,9 +14,20 @@ def test_null_kb_is_what_the_v2_flow_calls():
     c = ErrorCluster(id="x", kind=ErrorKind.COMPILE, errors=[])
     m = kb.match(c, None, None)
     assert isinstance(m, KBMatch) and m.case_hits == [] and m.hints == []
-    assert kb.scripts is None                              # no store: nothing reused, LLM scripts run unstored (v0)
-    assert kb.record_review(object()) is None
-    assert not hasattr(kb, "append_error_cases")           # --no-kb: the error cases stay in the run dir
+    assert kb.cases is None                                # no store: nothing reused, LLM scripts run unstored (v0)
+    assert kb.record_run([object()]) == 0                  # --no-kb: errors.jsonl stays in the run dir
+    assert not hasattr(kb, "scripts") and not hasattr(kb, "record_review")    # v2.1: gone from the facade
+
+
+def test_budget_zero_is_unlimited_and_minus_one_is_no_llm():
+    b = LoopBudget(max_llm_calls=0)
+    b.charge_llm(10_000)
+    assert b.llm_allowed() and not b.llm_exhausted() and b.llm_text() == "10000 calls (no limit)"
+    capped = LoopBudget(max_llm_calls=2)
+    capped.charge_llm(2)
+    assert not capped.llm_allowed() and capped.llm_exhausted() and capped.llm_text() == "2/2 calls"
+    off = LoopBudget(max_llm_calls=-1)
+    assert not off.llm_allowed() and off.llm_exhausted() and off.llm_text() == "fleet"
 
 
 def test_lazy_fixer_and_summaries():

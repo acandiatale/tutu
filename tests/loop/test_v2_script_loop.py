@@ -1,11 +1,11 @@
-"""v2 script fix loop (docs/INTERFACES.md "Script fix loop (L)"): cases across files, the ladder reuse → augment →
-new → BLOCKED, scripts stored before they run and credited after scoring, rollback before the next try, no partial
-application of a failed script."""
+"""v2 / v2.1 script fix loop (docs/v2/PLAN-v2.1.md §3.1): cases across files, the ladder stored script → augment →
+new → BLOCKED (1 stored + `script.max_augments_per_case` LLM tries), scripts stored before they run and credited after
+scoring, rollback before the next try, no partial application of a failed script. The answers with edits and the
+error list: test_v21_loop.py."""
 from __future__ import annotations
 
 from sbmig.core.models import BlockReason, BuildError, DecisionKind, ErrorKind, Phase
 from sbmig.loop import BuildFixLoop, LazyFixer, LoopBudget, NullKnowledgeBase
-from sbmig.loop.error_tracker import ErrorTracker
 from sbmig.triage import Triager
 
 from .fakes import (
@@ -66,11 +66,12 @@ def test_one_case_across_files_is_one_script(cfg, ws):
     assert a.decision.kind == DecisionKind.SCRIPT and a.script_mode == "new" and a.script_case_id == CASE
     assert a.script_version == 1 and a.script_parent is None and a.outcome == "build_ok" and a.applied
     assert sorted(ch.path for ch in a.changes) == [BAR, FOO] and a.script_result.status == "ok"
-    assert f"fix(script:{CASE}:v1 new): case:{CASE}" in subjects(ws)
+    assert f"fix(script:{CASE}:v1 new): case:{CASE}" in subjects(ws) and a.source == "llm-new"
     # stored BEFORE it ran (analysis kept), credited after scoring
-    [meta] = kb.scripts.added
-    assert meta.version == 1 and meta.analysis == "clientIp moved. Rename it." and meta.project == "demo"
-    assert kb.scripts.credits == [(CASE, 1, "build_ok", "demo")]
+    [(cid, sc, kw)] = kb.cases.added
+    assert (cid, sc.version, sc.project, kw["source"]) == (CASE, 1, "demo", "llm-new")
+    assert kw["analysis"] == "clientIp moved. Rename it." and kw["l2"] == L2
+    assert kb.cases.credits == [(CASE, 1, "build_ok", "demo")]
     ev = [e for e in journal_events(ws) if e["event"] == "attempt"]
     assert ev[0]["script"]["case"] == CASE and ev[0]["script"]["version"] == 1 and ev[0]["decision"] == "script"
 
@@ -99,7 +100,7 @@ def test_targeted_loop_scopes_the_case_id(cfg, ws):
 
 # ------------------------------------------------------------------------------------------ the ladder
 def test_ladder_new_then_augment_then_blocked_repeated_failure(cfg, ws):
-    cfg.script.max_augments_per_case = 2
+    assert cfg.script.max_augments_per_case == 3                   # 3 LLM tries per case and run
     kb = FakeKB()
     n = {"i": 0}
 
@@ -126,16 +127,17 @@ def test_ladder_new_then_augment_then_blocked_repeated_failure(cfg, ws):
     assert ws.read("notes.txt") == "try 3\n"
     [blk] = pr.blocked
     assert blk.reason == BlockReason.REPEATED_FAILURE and "max_augments_per_case" in " ".join(blk.notes)
-    assert [m.parent for m in kb.scripts.added] == [None, 1, 2]
-    assert kb.scripts.credits == [(CASE, 1, "no_change", "demo"), (CASE, 2, "no_change", "demo"),
-                                  (CASE, 3, "no_change", "demo")]
+    assert [(sc.version, kw["source"]) for _c, sc, kw in kb.cases.added] == [
+        (1, "llm-new"), (2, "llm-augment"), (3, "llm-augment")]
+    assert kb.cases.credits == [(CASE, 1, "no_change", "demo"), (CASE, 2, "no_change", "demo"),
+                                (CASE, 3, "no_change", "demo")]
     assert loop.budget.llm_calls == 3
 
 
 def test_reuse_of_a_proven_version_needs_no_llm(cfg, ws):
     kb = FakeKB()
     code = write_script({FOO: FIXED, BAR: FIXED}).code
-    kb.scripts.seed(CASE, code, successes=3, projects=("p1", "p2"), analysis="stored: rename clientIp")
+    kb.cases.seed(CASE, code, successes=3, projects=("p1", "p2"))
 
     def no_llm(w, c, ctx):
         raise AssertionError("the LLM must not be asked")
@@ -144,17 +146,17 @@ def test_reuse_of_a_proven_version_needs_no_llm(cfg, ws):
     pr = loop.run(Phase.VERIFY, "package", 3)
     assert pr.ok and fixer.script_calls == [] and loop.budget.llm_calls == 0
     [a] = pr.attempts
-    assert a.script_mode == "reuse" and a.script_version == 1 and a.analysis == "stored: rename clientIp"
-    assert a.llm_usage.calls == 0 and a.model == ""
+    assert a.script_mode == "reuse" and a.script_version == 1 and a.source == "kb-script"
+    assert "reused, no LLM call" in a.analysis and a.llm_usage.calls == 0 and a.model == ""
     assert f"fix(script:{CASE}:v1 reuse): case:{CASE}" in subjects(ws)
-    assert kb.scripts.credits == [(CASE, 1, "build_ok", "demo")]
-    assert kb.scripts.added == []                     # nothing new stored
+    assert kb.cases.credits == [(CASE, 1, "build_ok", "demo")]
+    assert kb.cases.added == []                       # nothing new stored
 
 
 def test_reuse_failure_is_rolled_back_and_augmented_with_its_base(cfg, ws):
     kb = FakeKB()
     stored = write_script({"other.txt": "old idea\n"}).code       # proven elsewhere, useless here
-    kb.scripts.seed(CASE, stored, successes=1, projects=("p1",))
+    kb.cases.seed(CASE, stored, successes=1, projects=("p1",))
     seen = {}
 
     def augment(w, c, ctx):
@@ -170,12 +172,28 @@ def test_reuse_failure_is_rolled_back_and_augmented_with_its_base(cfg, ws):
     assert (reuse.script_mode, reuse.outcome) == ("reuse", "no_change") and "rolled back before v2" in reuse.notes
     assert (aug.script_mode, aug.script_version, aug.script_parent, aug.outcome) == ("augment", 2, 1, "build_ok")
     assert not ws.exists("other.txt")
-    assert kb.scripts.credits == [(CASE, 1, "no_change", "demo"), (CASE, 2, "build_ok", "demo")]
+    assert kb.cases.credits == [(CASE, 1, "no_change", "demo"), (CASE, 2, "build_ok", "demo")]
+    assert (reuse.source, aug.source) == ("kb-script", "llm-augment")
 
 
-def test_augment_base_comes_from_the_store_when_nothing_ran_here(cfg, ws):
+def test_an_unverified_stored_script_runs_first_too(cfg, ws):
+    """v2.1: the store's best = proven newest, else unverified newest — an unproven script is run before any LLM call."""
     kb = FakeKB()
-    kb.scripts.seed(CASE, write_script({"x.txt": "1"}).code, successes=0, projects=(), failures=2)   # unproven
+    kb.cases.seed(CASE, write_script({"x.txt": "1"}).code, status="unverified", successes=0, projects=(),
+                  failures=2)
+    fixer = FakeFixer(scripts=[write_script({FOO: FIXED})])
+    pr = make_loop(cfg, ws, broken_build(FOO), fixer, kb=kb).run(Phase.VERIFY, "package", 3)
+    assert pr.ok
+    assert [(a.script_mode, a.script_version, a.outcome) for a in pr.attempts] == [
+        ("reuse", 1, "no_change"), ("augment", 2, "build_ok")]
+    ctx = fixer.script_calls[0][1]
+    assert ctx.script_mode == "augment" and ctx.script_base.version == 1 and ctx.script_base.outcome == "no_change"
+
+
+def test_reuse_off_extends_the_stored_version(cfg, ws):
+    cfg.script.reuse = False
+    kb = FakeKB()
+    kb.cases.seed(CASE, write_script({"x.txt": "1"}).code)
     fixer = FakeFixer(scripts=[write_script({FOO: FIXED})])
     pr = make_loop(cfg, ws, broken_build(FOO), fixer, kb=kb).run(Phase.VERIFY, "package", 3)
     assert pr.ok
@@ -208,7 +226,7 @@ def test_partial_attempt_is_rolled_back_and_its_errors_come_back(cfg, ws):
 def test_rolled_back_errors_are_baseline_not_regressions(cfg, ws):
     """Partial v1, then an augment that fixes nothing in Foo / Bar but touches Foo: the error brought back by the
     rollback is part of the baseline, so the augment is no_change — not regressed by 'new errors in a touched file'."""
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_augments_per_case = 2
     n = {"i": 0}
 
     def fn(w, c, ctx):
@@ -243,7 +261,7 @@ def test_improved_attempt_is_kept_when_the_case_shows_up_again(cfg, ws):
 
 # ------------------------------------------------------------------------------------------ failed runs
 def test_rejected_error_and_timeout_apply_nothing_and_leave_a_clean_tree(cfg, ws):
-    cfg.script.max_augments_per_case = 3
+    cfg.script.max_augments_per_case = 4
     answers = [script("pass  # reject"),                                         # static check refuses it
                script(f"p.write({FOO!r}, 'half')\nraise KeyError('clientIp')"),    # raises after a write
                script(f"p.write({FOO!r}, 'half')  # timeout"),                     # killed after a write
@@ -261,7 +279,7 @@ def test_rejected_error_and_timeout_apply_nothing_and_leave_a_clean_tree(cfg, ws
     # the failed versions keep their lineage and were credited as failures right away
     assert [(a.script_mode, a.script_version, a.script_parent) for a in atts] == [
         ("new", 1, None), ("augment", 2, 1), ("augment", 3, 2), ("augment", 4, 3)]
-    assert [c[2] for c in kb.scripts.credits] == ["apply_failed", "apply_failed", "apply_failed", "build_ok"]
+    assert [c[2] for c in kb.cases.credits] == ["apply_failed", "apply_failed", "apply_failed", "build_ok"]
     # the augment saw the base's failure
     assert fixer.script_calls[2][1].script_base.status == "error"
     assert "KeyError" in fixer.script_calls[2][1].script_base.error
@@ -270,7 +288,7 @@ def test_rejected_error_and_timeout_apply_nothing_and_leave_a_clean_tree(cfg, ws
 
 
 def test_ok_script_that_changes_nothing_is_apply_failed(cfg, ws):
-    cfg.script.max_augments_per_case = 0
+    cfg.script.max_augments_per_case = 1
     fixer = FakeFixer(scripts=[script("p.log('looked, nothing to do')")])
     pr = make_loop(cfg, ws, broken_build(FOO), fixer).run(Phase.VERIFY, "package", 3)
     [a] = pr.attempts
@@ -280,7 +298,7 @@ def test_ok_script_that_changes_nothing_is_apply_failed(cfg, ws):
 
 
 def test_identical_augment_is_not_run_again(cfg, ws):
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_augments_per_case = 2
     same = write_script({"n.txt": "1\n"})
     fixer = FakeFixer(scripts=[same, same.model_copy()])
     runner = FakeScriptRunner()
@@ -306,10 +324,10 @@ def test_many_changed_files_get_a_warning_note(cfg, ws):
 
 # ------------------------------------------------------------------------------------------ LLM / budget
 def test_budget_exhausted_still_reuses_stored_scripts(cfg, ws):
-    cfg.loop.max_llm_calls = 0
+    cfg.loop.max_llm_calls = -1                     # v2.1: -1 = no LLM call (the fleet's total is used up)
     kb = FakeKB()
     l2b = "compile|cannot_find_symbol|other"
-    kb.scripts.seed(CASE, write_script({FOO: FIXED}).code)
+    kb.cases.seed(CASE, write_script({FOO: FIXED}).code)
 
     def build(w, call):
         errs = []
@@ -322,12 +340,20 @@ def test_budget_exhausted_still_reuses_stored_scripts(cfg, ws):
     pr = make_loop(cfg, ws, build, fixer, kb=kb).run(Phase.VERIFY, "package", 3)
     assert [a.script_mode for a in pr.attempts] == ["reuse"] and pr.attempts[0].outcome == "improved"
     assert [(b.reason, b.files) for b in pr.blocked] == [(BlockReason.BUDGET_EXHAUSTED, [BAR])]
+    assert "LLM budget exhausted (fleet)" in pr.blocked[0].notes[0]
     assert ws.read(FOO) == FIXED
+
+
+def test_no_llm_cap_by_default(cfg, ws):
+    assert cfg.loop.max_llm_calls == 0                # v2.1: 0 = no limit
+    loop = make_loop(cfg, ws, broken_build(FOO), FakeFixer(scripts=[write_script({FOO: FIXED})]))
+    loop.budget.llm_calls = 10_000
+    assert loop.budget.llm_allowed() and loop.run(Phase.VERIFY, "package", 3).ok
 
 
 def test_llm_unavailable_still_reuses_stored_scripts(cfg, ws):
     kb = FakeKB()
-    kb.scripts.seed(CASE, write_script({FOO: FIXED}).code)
+    kb.cases.seed(CASE, write_script({FOO: FIXED}).code)
     loop = make_loop(cfg, ws, broken_build(FOO), FakeFixer(), kb=kb)
     loop.llm_unavailable = "gateway down"
     loop.triager.set_llm_unavailable("gateway down")
@@ -356,7 +382,7 @@ def test_transport_failures_cool_down_then_block(cfg, ws, no_llm_cooldown_sleep)
 
 
 def test_escalation_model_from_the_second_augment(cfg, ws):
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_augments_per_case = 3
     n = {"i": 0}
 
     def fn(w, c, ctx):
@@ -384,45 +410,6 @@ def test_first_build_is_reused_as_build_one(cfg, ws):
     pr = loop.run(Phase.VERIFY, "package", 3, first_build=first)
     assert pr.ok and [c["label"] for c in loop.build_runner.calls] == ["verify-2"]
     assert any(e["event"] == "build" and e.get("reused") for e in journal_events(ws))
-
-
-# ------------------------------------------------------------------------------------------ error cases
-def test_tracker_records_script_methods_resolvers_and_fields(cfg, ws):
-    kb = FakeKB()
-    kb.scripts.seed(CASE, write_script({"other.txt": "x"}).code)          # reuse → no_change
-    fixer = FakeFixer(scripts=[script(f"p.write({FOO!r}, {FIXED!r})\np.write({BAR!r}, {FIXED!r})\n"
-                                      "p.log('Foo, Bar: clientIp')", analysis="rename clientIp")])
-    loop = make_loop(cfg, ws, broken_build(FOO, BAR), fixer, kb=kb)
-    loop.error_tracker = ErrorTracker(ws, cfg)
-    assert loop.run(Phase.VERIFY, "package", 4).ok
-    errors, attempts = loop.error_tracker.finalize([], run_id="t-run")
-    by = {a.script_mode: a for a in attempts}
-    assert by["reuse"].fix_method == "script_reuse" and by["reuse"].resolver_id == f"script:{CASE}:v1"
-    aug = by["augment"]
-    assert aug.fix_method == "script_augment" and aug.resolver_id == f"script:{CASE}:v2"
-    assert (aug.script_case_id, aug.script_version, aug.script_parent, aug.script_status) == (CASE, 2, 1, "ok")
-    assert aug.script_log == ["Foo, Bar: clientIp"] and aug.description == "rename clientIp"
-    assert by["reuse"].description == "stored fix"                       # the stored version's analysis
-    assert {e.status for e in errors} == {"resolved"}
-    for e in errors:
-        assert (e.script_case_id, e.script_version, e.fix_method) == (CASE, 2, "script_augment")
-        assert [r.script_version for r in e.attempts] == [1, 2]
-        assert e.llm_attempts == 1                                        # the reuse made no LLM call
-
-
-def test_a_rolled_back_attempt_is_never_part_of_a_resolution_chain(cfg, ws):
-    n = {"i": 0}
-
-    def fn(w, c, ctx):
-        n["i"] += 1
-        return write_script({FOO: FIXED} if n["i"] == 1 else {FOO: FIXED, BAR: FIXED})
-    loop = make_loop(cfg, ws, broken_build(FOO, BAR), FakeFixer(script_fn=fn))
-    loop.error_tracker = ErrorTracker(ws, cfg)
-    assert loop.run(Phase.VERIFY, "package", 4).ok
-    errors, attempts = loop.error_tracker.finalize([], run_id="t-run")
-    second = next(a for a in attempts if a.script_version == 2)
-    for e in errors:
-        assert e.resolution_attempts == [second.id]
 
 
 def test_the_case_errors_reach_the_runner(cfg, ws):

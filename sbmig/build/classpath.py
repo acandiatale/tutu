@@ -1,7 +1,8 @@
 """Class → jar → GAV attribution (catalog X1/X2: "which dependency still exposes javax.* in its API?").
 
 * ``module_classpath(ws, cfg, module)``  → resolved test-scope classpath of a module (``dependency:build-classpath``),
-  cached in ``<run_dir>/classpath/<module or root>.txt`` and invalidated when the module's (or root) pom changes.
+  cached in ``<run_dir>/logs/classpath-<module or root>.txt`` and invalidated when the module's (or root) pom
+  changes.
 * ``locate_class(ws, cfg, fqcn, module)`` → ``ClassLocation`` (project source, repository jar with GAV, or a
   non-repository jar such as a ``systemPath`` one).
 * ``locate_type_owner(ws, cfg, error, module)`` → the library class a javac error is about (``method … in class X``,
@@ -23,7 +24,7 @@ from pydantic import BaseModel
 
 from sbmig.core.config import Config
 from sbmig.core.models import GAV, BuildError
-from sbmig.core.workspace import Workspace
+from sbmig.core.workspace import Workspace, logs_dir
 
 from .mvn import base_command, local_repo_path, mvn_env, run_logged
 
@@ -127,11 +128,11 @@ def module_classpath(ws: Workspace, cfg: Config, module: Optional[str] = None) -
         if mdir is None:
             log.info("classpath: unknown module %r", module)
             return []
-        out_dir = ws.run_dir / "classpath"
+        out_dir = logs_dir(ws)                       # v2.1: logs/classpath-<module>.txt (+ .meta.json)
         out_dir.mkdir(parents=True, exist_ok=True)
         name = _safe(mdir.replace("/", "__")) if mdir else "root"
-        out_file = out_dir / f"{name}.txt"
-        meta_file = out_dir / f"{name}.meta.json"
+        out_file = out_dir / f"classpath-{name}.txt"
+        meta_file = out_dir / f"classpath-{name}.meta.json"
         stamp = _pom_stamp(ws, mdir)
         if out_file.is_file() and meta_file.is_file():
             try:

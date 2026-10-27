@@ -237,7 +237,7 @@ def test_from_here_lists_llm_rewritten_files(tmp_path, cfg):
     assert "src/main/java/a/F0.java, src/main/java/a/F1.java" in line and "F4.java (+2 more)" in line
     assert "F5.java" not in line
     assert "— HystrixCommand subclass ported to a Resilience4j CircuitBreaker.; second note. —" in line
-    assert line.endswith("— review these changes (changes.patch, attempts table)")
+    assert line.endswith("— review these changes (changes.patch, Fixes by case)")
     # right after the advisory lines (a)/(b), before carried-over pins and pointers — survives the cap
     assert fh.index(line) == 2 and fh[3].startswith("org.apache.commons:commons-lang3 pinned at")
     # no line for findings without LLM-rewritten files
@@ -245,12 +245,3 @@ def test_from_here_lists_llm_rewritten_files(tmp_path, cfg):
     small = cfg.model_copy(update={"advisories": cfg.advisories.model_copy(update={"max_from_here": 4})})
     capped = build_handover(as_is_profile(), final_tree(tmp_path), report, effective=EFFECTIVE, cfg=small).from_here
     assert any(x.startswith("code rewritten by the LLM for hystrix") for x in capped)
-
-
-def test_attempts_table_shows_advisory_ids(tmp_path, cfg):
-    att = FixAttempt(id="s1", phase=Phase.SPRING, iteration=1, cluster_id="compile:1", model="m1",
-                     decision=TriageDecision(cluster_id="compile:1", kind=DecisionKind.ESCALATE),
-                     advisory_ids=["hystrix"], applied=True, outcome="build_ok", analysis="ported")
-    report = make_report(phases=[PhaseResult(phase=Phase.SPRING, attempts=[att])])
-    md = render_markdown(report)
-    assert "`m1` + advisory hystrix" in md

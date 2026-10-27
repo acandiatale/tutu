@@ -18,13 +18,9 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Handover — what we replaced, what is yours": "인수인계 — 교체한 것과 이제 팀이 맡을 것",
     "Properties to set before running": "실행 전에 설정할 프로퍼티",
     "# Migration report — {name}": "# 마이그레이션 보고서 — {name}",
-    "## Unresolved errors": "## 미해결 오류",
     "## Manual follow-ups": "## 수동 후속 조치",
     "## Flags": "## 플래그",
     "## What we changed": "## 변경 내역",
-    "## Phases": "## 단계별 결과",
-    "## Fix attempts": "## 수정 시도",
-    "## Escalated clusters": "## 에스컬레이션된 클러스터",
     "## LLM usage and cost": "## LLM 사용량과 비용",
     "| LLM cost | {cost} (see \"LLM usage and cost\") |": "| LLM 비용 | {cost} (\"LLM 사용량과 비용\" 참조) |",
     "(+ unpriced: {models})": "(+ 단가 없음: {models})",
@@ -62,6 +58,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "| LLM | {calls}회 호출, 토큰 입력 {inp} / 출력 {out}{model} |",
     "| Flags | {flags} |": "| 플래그 | {flags} |",
     "| **Blocked** | {line} (see below) |": "| **차단됨** | {line} (아래 참조) |",
+    "| **Error list** | {n} error(s): {counts} (see \"Error list\") |": "| **에러 목록** | {n}건: {counts} (\"에러 목록\" 참조) |",
+    "| To-be | {versions} |": "| 전환 후 | {versions} |",
     "{m}m {s}s": "{m}분 {s}초",
     "{secs}s": "{secs}초",
     # ---- blocked
@@ -80,23 +78,27 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "None. The final build passed.": "없음. 최종 빌드가 통과했다.",
     "None. No structured errors were captured; check the last build log.":
         "없음. 구조화된 오류를 수집하지 못했다. 마지막 빌드 로그를 확인할 것.",
-    "{n} error(s) left after the last build, grouped by file:": "마지막 빌드 후 남은 오류 {n}건 (파일별):",
-    "{n} error(s) left after the last build (blocked clusters excluded), grouped by file:":
-        "마지막 빌드 후 남은 오류 {n}건 (차단된 클러스터 제외, 파일별):",
+    "No error list was kept for this run; {n} error(s) were left after the last build, grouped by file:":
+        "이번 실행은 에러 목록을 남기지 않았다. 마지막 빌드 후 남은 오류 {n}건 (파일별):",
     "module {module}": "모듈 {module}",
     "artifact {coords}": "아티팩트 {coords}",
     "(no file)": "(파일 없음)",
     " — symbol: `{symbol}`": " — 심볼: `{symbol}`",
     " — location: {location}": " — 위치: {location}",
     "Last build log: `{path}`": "마지막 빌드 로그: `{path}`",
-    "None.": "없음.",
     # ---- v2 structure review (sbmig.review)
     "Structure review": "구조 점검",
     "| Structure review | {summary} |": "| 구조 점검 | {summary} |",
     "After the restructure and before the first build, the LLM checked the poms, dependencies and module layout "
-    "against the company rules. Critical issues get one fix script; warnings are only recorded.":
-        "구조화 뒤, 첫 빌드 전에 LLM이 pom · 의존성 · 모듈 배치를 회사 규칙에 비춰 점검했다. 심각한 문제는 수정 "
-        "스크립트 하나로 고치고, 경고는 기록만 한다.",
+    "against the company rules. It fixes critical issues itself (committed, revertible) and leaves a script for the "
+    "KB; warnings are only recorded.":
+        "구조화 뒤, 첫 빌드 전에 LLM이 pom · 의존성 · 모듈 배치를 회사 규칙에 비춰 점검했다. 심각한 문제는 LLM이 직접 "
+        "고치고(커밋, 되돌릴 수 있음) KB용 스크립트를 남긴다. 경고는 기록만 한다.",
+    "- solution: {solution}": "- 해결 방법: {solution}",
+    "- direct edits in the answer: {n}": "- 답변의 직접 수정: {n}건",
+    "- script for the KB: yes": "- KB용 스크립트: 있음",
+    "- script for the KB: none — {reason}": "- KB용 스크립트: 없음 — {reason}",
+    "- changed: {files}": "- 변경: {files}",
     "- verdict: `{verdict}` — {summary}": "- 판정: `{verdict}` — {summary}",
     "- model: `{model}`, {calls} LLM call(s)": "- 모델: `{model}`, LLM {calls}회 호출",
     "| severity | file | problem | fix hint |": "| 심각도 | 파일 | 문제 | 수정 힌트 |",
@@ -110,49 +112,51 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "failed — no usable answer, the build went ahead ({note})": "실패 — 쓸 수 있는 답이 없어 점검 없이 빌드함 ({note})",
     "ok — no issues": "ok — 문제 없음",
     "{c} critical, {w} warning(s)": "심각 {c}건, 경고 {w}건",
-    "script {status}, changes restored": "스크립트 {status}, 변경 되돌림",
-    "script {status}, {n} file(s) changed (commit `{commit}`)": "스크립트 {status}, 파일 {n}개 변경 (커밋 `{commit}`)",
-    "script {status}, {n} file(s) changed": "스크립트 {status}, 파일 {n}개 변경",
-    "script not run": "스크립트 실행 안 함",
-    "no script": "스크립트 없음",
-    "- script: run status `{status}`, {n} file(s) changed{files}": "- 스크립트: 실행 결과 `{status}`, 파일 {n}개 변경{files}",
+    "fix {status}, changes restored": "수정 {status}, 변경 되돌림",
+    "fix {status}, {n} file(s) changed (commit `{commit}`)": "수정 {status}, 파일 {n}개 변경 (커밋 `{commit}`)",
+    "fix {status}, {n} file(s) changed": "수정 {status}, 파일 {n}개 변경",
+    "fix not applied": "수정 적용 안 함",
+    "no fix": "수정 없음",
+    "- fix (edits / script): `{status}`, {n} file(s) changed{files}":
+        "- 수정 (edits / script): 결과 `{status}`, 파일 {n}개 변경{files}",
     "- commit: `{commit}` (revert it to undo the review's changes)":
         "- 커밋: `{commit}` (구조 점검의 변경을 취소하려면 이 커밋을 되돌린다)",
-    "- the script's changes were restored: they are not in the result": "- 스크립트의 변경은 되돌렸다: 결과물에 없음",
-    "- script error: {error}": "- 스크립트 오류: {error}",
-    "- script log: {lines}": "- 스크립트 로그: {lines}",
-    "- script: not run": "- 스크립트: 실행하지 않음",
-    "- no script for the critical issue(s): they are handed over": "- 심각한 문제에 대한 스크립트 없음: 인수인계로 넘김",
+    "- the fix's changes were restored: they are not in the result": "- 수정한 내용은 되돌렸다: 결과물에 없음",
+    "- fix error: {error}": "- 수정 오류: {error}",
+    "- fix log: {lines}": "- 수정 로그: {lines}",
+    "- fix (edits / script): not applied": "- 수정 (edits / script): 적용하지 않음",
+    "- no fix for the critical issue(s): they are handed over": "- 심각한 문제에 대한 수정 없음: 인수인계로 넘김",
     "- note: {note}": "- 메모: {note}",
-    # ---- build errors, one record each (error cases, 2026-10-23)
-    "## Build errors and how each was handled": "## 빌드 오류별 처리 내역",
-    "{n} build error(s) seen in this run, one record each.": "이번 실행에서 확인한 빌드 오류 {n}건 (오류마다 기록 1건).",
-    "- by status: {counts}": "- 상태별: {counts}",
-    "- fixed by (resolved errors): {counts}": "- 해결 수단별 (해결된 오류): {counts}",
-    "| status | where | message | how resolved / why not | attempts |":
-        "| 상태 | 위치 | 메시지 | 해결 방법 / 미해결 사유 | 시도 |",
-    "replace {pairs}": "치환 {pairs}",
-    "the last build stopped before this error's stage — status unknown":
-        "마지막 빌드가 이 오류의 단계 전에 멈춤 — 상태를 알 수 없음",
-    "no fix attempt recorded": "기록된 수정 시도 없음",
-    "… {n} more — see `error_cases.csv`": "… 외 {n}건 — `error_cases.csv` 참조",
-    "Every error with its full history: `error_cases.csv` (opens in Excel) and `error_cases.jsonl` in the run "
-    "directory; every fix attempt with its diff: `fix_attempts.jsonl`. Across projects: `sbmig kb errors` "
-    "(`list`, `summary`).":
-        "오류별 전체 이력은 실행 디렉터리의 `error_cases.csv`(Excel로 열림)와 `error_cases.jsonl`에, 수정 시도별 "
-        "diff는 `fix_attempts.jsonl`에 있다. 여러 프로젝트를 함께 보려면 `sbmig kb errors`(`list`, `summary`)를 쓴다.",
-    # ---- what we changed / phases / attempts
+    # ---- v2.1 error list + fixes by case
+    "Error list": "에러 목록",
+    "Fixes by case": "케이스별 해결",
+    "compile — `mvn compile` after OpenRewrite": "compile — OpenRewrite 뒤 `mvn compile`",
+    "restructure — pom corrections, verified by the next build": "restructure — 구조화의 pom 정정, 다음 빌드에서 검증",
+    "review — structure review": "review — 구조 점검",
+    "build — first `mvn clean package`, new errors only": "build — 첫 `mvn clean package`, 새 에러만",
+    "{seen} — new errors of round {n}'s build": "{seen} — 라운드 {n} 빌드의 새 에러",
+    "{n} error(s) in this run, one line each (all of them with every try and diff: `errors.md` / `errors.jsonl` in "
+    "the run directory): {counts}.":
+        "이번 실행의 에러 {n}건, 한 줄에 하나(시도와 diff까지 전부: 실행 디렉터리의 `errors.md` / `errors.jsonl`): "
+        "{counts}.",
+    "| # | case | file:line | message | status | tries | resolved |": "| # | 케이스 | 파일:줄 | 메시지 | 상태 | 시도 | 해결 |",
+    "… {n} more in this group — see `errors.md`": "… 이 그룹에 {n}건 더 — `errors.md` 참조",
+    "| case | errors | cause | solution | changes (files, +/−) | script |":
+        "| 케이스 | 에러 | 원인 | 해결 방법 | 수정 (파일, +/−) | 스크립트 |",
+    "{resolved}/{n} resolved": "{resolved}/{n} 해결",
+    "(no solution text) {reason}": "(해결 설명 없음) {reason}",
+    "no script: {reason}": "스크립트 없음: {reason}",
+    "… {n} more case(s) — see `errors.md`": "… 케이스 {n}개 더 — `errors.md` 참조",
+    "Stored scripts live in the KB (`<kb>/cases/<case>/fix_vN.py`); every try with its diff is in `errors.md`, the "
+    "whole change set in `changes.patch`.":
+        "저장된 스크립트는 KB(`<kb>/cases/<case>/fix_vN.py`)에 있다. 시도별 diff는 `errors.md`에, 전체 변경은 "
+        "`changes.patch`에 있다.",
+    # ---- what we changed
     "Plan steps executed:": "실행한 계획 단계:",
     "OpenRewrite runs:": "OpenRewrite 실행:",
     "| phase | recipes | changed files | ok |": "| 단계 | 레시피 | 변경 파일 | 성공 |",
     "yes": "예",
     "no: {error}": "아니오: {error}",
-    "Restructure / deterministic edits:": "구조 변경 / 결정적 수정:",
-    "| phase | steps | builds | build ok | attempts by decision | outcomes |":
-        "| 단계 | 스텝 | 빌드 횟수 | 빌드 성공 | 결정별 시도 | 결과 |",
-    "| phase/iter | cluster | decision | via | outcome | commit | analysis |":
-        "| 단계/반복 | 클러스터 | 결정 | 수단 | 결과 | 커밋 | 분석 |",
-    " + advisory {ids}": " + 어드바이저리 {ids}",
     # ---- notes
     "- plan: {note}": "- 계획: {note}",
     # ---- handover
@@ -347,7 +351,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
     (r"^(?P<n>\d+) cluster\(s\) blocked — see Blocked$", r"클러스터 \g<n>개 차단됨 — '차단됨' 참조"),
-    (r"^(?P<n>\d+) unresolved error\(s\) — see Unresolved errors$", r"미해결 오류 \g<n>건 — '미해결 오류' 참조"),
+    (r"^(?P<n>\d+) unresolved error\(s\) — see Error list$", r"미해결 오류 \g<n>건 — '에러 목록' 참조"),
     ((r"^test sources do not compile yet \(main code builds with -Dmaven\.test\.skip=true\) — fix the tests "
       r"before relying on CI$"),
      (r"테스트 소스가 아직 컴파일되지 않는다(메인 코드는 -Dmaven.test.skip=true로 빌드됨) — CI에 의존하기 전에 "
@@ -360,8 +364,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"새 parent / Boot BOM이 더 이상 관리하지 않아 의존성 \g<n>개를 as-is 버전으로 고정함('교체된 버전'의 ⚠) — "
       r"각각 확인하거나 교체할 것. 처음 \g<m>개:")),
     ((r"^code rewritten by the LLM for (?P<lib>[^:]+): (?P<rest>.+) — review these changes \(changes\.patch, "
-      r"attempts table\)$"),
-     r"LLM이 \g<lib> 때문에 재작성한 코드: \g<rest> — 변경 내용을 검토할 것 (changes.patch, '수정 시도' 표)"),
+      r"Fixes by case\)$"),
+     r"LLM이 \g<lib> 때문에 재작성한 코드: \g<rest> — 변경 내용을 검토할 것 (changes.patch, '케이스별 해결' 표)"),
     (r"^verify (?P<lib>.+?) → (?P<repl>.+?) \(replaced during the run\)(?P<rest>: .+)?$",
      r"확인 필요: \g<lib> → \g<repl> (실행 중 교체됨)\g<rest>"),
     ((r"^(?P<n>\d+) externalized setting\(s\) need values before the first start — placeholders "
@@ -372,8 +376,8 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"written \(see the table\); see 'Properties to set'$"),
      (r"외부 설정 \g<n>개는 첫 기동 전에 값이 필요하다 — 플레이스홀더는 기록하지 않았다(표 참조); "
       r"'실행 전에 설정할 프로퍼티' 참조")),
-    (r"^… and (?P<n>\d+) more — see Manual follow-ups / Blocked / Unresolved errors$",
-     r"… 외 \g<n>건 — '수동 후속 조치' / '차단됨' / '미해결 오류' 참조"),
+    (r"^… and (?P<n>\d+) more — see Manual follow-ups / Blocked / Error list$",
+     r"… 외 \g<n>건 — '수동 후속 조치' / '차단됨' / '에러 목록' 참조"),
     (r"^(?P<p>.+): kept the copy from (?P<k>.+?), dropped (?P<d>.+?) \(saved: (?P<s>.*)\)$",
      r"\g<p>: \g<k> 모듈의 사본을 유지, \g<d> 사본은 제외 (보관: \g<s>)"),
     (r"^(?P<n>\d+) identical duplicate\(s\) dropped \(same content in every module\): (?P<names>.+)$",
@@ -382,9 +386,9 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      r"as-is effective dependencyManagement를 얻지 못했다 — as-is parent가 관리하던 버전은 '-'로 표시"),
     (r"^handover unavailable: (?P<x>.+)$", r"인수인계 정보를 만들지 못함: \g<x>"),
     # v2 structure review follow-ups (handover.review_followups)
-    ((r"^structure review script changed (?P<n>\d+) file\(s\) for (?P<k>\d+) critical issue\(s\): (?P<files>.+) "
-      r"\(commit (?P<c>[^)]+)\) — check these pom changes$"),
-     r"구조 점검 스크립트가 심각한 문제 \g<k>건 때문에 파일 \g<n>개를 바꿈: \g<files> (커밋 \g<c>) — 이 pom 변경을 확인할 것"),
+    ((r"^structure review fix \(edits / script\) changed (?P<n>\d+) file\(s\) for (?P<k>\d+) critical issue\(s\): "
+      r"(?P<files>.+) \(commit (?P<c>[^)]+)\) — check these pom changes$"),
+     r"구조 점검 수정(edits / script)이 심각한 문제 \g<k>건 때문에 파일 \g<n>개를 바꿈: \g<files> (커밋 \g<c>) — 이 pom 변경을 확인할 것"),
     (r"^structure review: critical issue not fixed — (?P<rest>.+)$", r"구조 점검: 고치지 못한 심각한 문제 — \g<rest>"),
     (r"^structure review warning — (?P<rest>.+)$", r"구조 점검 경고 — \g<rest>"),
     (r"^… and (?P<n>\d+) more structure review issue\(s\) — see Structure review$",

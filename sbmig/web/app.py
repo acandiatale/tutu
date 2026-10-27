@@ -13,7 +13,7 @@ Routes:
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
     GET  /api/runs/{id}/files/{name}     report.md | report.json | result.zip | sbmig.log | journal.jsonl |
-                                         changes.patch | plan.json | profile.json
+                                         changes.patch | plan.json | profile.json | errors.md | errors.jsonl
 
 Runs execute in worker threads of this process (see `sbmig.web.runs`); the SSE generator blocks on the run's events
 in a threadpool thread, never on the event loop.

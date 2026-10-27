@@ -103,7 +103,7 @@ def test_main_writes_summary(e2e, tmp_path, monkeypatch):
     md = (tmp_path / "out" / "summary.md").read_text()
     assert "boot2" in md and "boot3" in md and "2/2 fixtures reached" in md and "0/2 fixtures met" in md
     assert "| FAIL | llm_calls=4 > max 1" in md and "MISMATCH: unresolved=2 > max 0" in md
-    assert "| review | scripts |" in md and "MISMATCH: no structure_review in report.json" in md
+    assert "| review | scripts | errors |" in md and "MISMATCH: no structure_review in report.json" in md
     data = json.loads((tmp_path / "out" / "summary.json").read_text())
     assert [d["fixture"] for d in data] == ["boot2", "boot3"]
     assert e2e.discover_fixtures()[:2] == ["pure-java", "servlet-tomcat"]
@@ -679,52 +679,114 @@ def test_file_same_as_post_check(e2e, tmp_path):
     assert "not found" in e2e.run_post_check(missing, proj, fixture)
 
 
-# ---------------------------------------------------------------- error_cases expectation (2026-10-23)
-EC_REPORT = {"error_cases": [
-    {"file": "src/main/java/a/ClientIpFilter.java", "status": "resolved", "fix_method": "llm",
-     "change_kind": "text_replace", "replace_rule_candidate": True,
-     "replace_pairs": [{"old": "clientIp", "new": "remoteClientIp", "count": 1}],
-     "attempts": [{"outcome": "apply_failed"}, {"outcome": "improved"}], "failure_reason": ""},
-    {"file": "src/main/java/a/MemberController.java", "status": "blocked", "fix_method": "none",
-     "attempts": [{"outcome": "no_change"}, {"outcome": "no_change"}],
-     "failure_reason": "llm attempt spring-2-2 no_change: the targeted error(s) were still there after the rebuild"},
+# ---------------------------------------------------------------- error_entries expectation (v2.1, 2026-10-27)
+JAXB = "compile|package_does_not_exist|jakarta.xml.bind"
+
+
+def _try(n, rnd, source, result, **kw):
+    return {"n": n, "round": rnd, "source": source, "result": result, "applied": kw.pop("applied", "edits"), **kw}
+
+
+EE_REPORT = {"error_entries": [
+    {"id": "e1", "case_id": "c1aaaaaaaa", "file": "src/main/java/a/web/MemberController.java", "line": 4,
+     "status": "resolved", "seen": "compile", "resolved": "r2 try 2", "script": "cases/c1aaaaaaaa/fix_v2.py",
+     "tries": [_try(1, 1, "llm-new", "partial", script_version=1, llm_calls=1),
+               _try(2, 2, "llm-augment", "build_ok", script_version=2, applied="script", llm_calls=1)]},
+    {"id": "e2", "case_id": "c1aaaaaaaa", "file": "src/main/java/a/web/OtherController.java", "status": "resolved",
+     "seen": "compile", "resolved": "r2 try 2",
+     "tries": [_try(1, 1, "llm-new", "partial", script_version=1, llm_calls=1),
+               _try(2, 2, "llm-augment", "build_ok", script_version=2, applied="script", llm_calls=1)]},
+    {"id": "e3", "case_id": "7a52b1cea8", "l2": JAXB, "file": "src/main/java/com/example/legacy/util/Dates.java",
+     "status": "resolved", "seen": "build", "tries": [_try(1, 1, "kb-script", "build_ok", script_version=1,
+                                                             applied="script")]},
+    {"id": "p1", "seen": "restructure", "status": "pom-verify", "file": "pom.xml", "note": "parent → base-parent"},
+    {"id": "e4", "case_id": "dddddddddd", "file": "src/X.java", "status": "unresolved", "seen": "fix r2",
+     "tries": [_try(1, 2, "llm-edit", "no_change", no_script_reason="one-off")]},
 ]}
 
 
-def test_error_cases_expectation_passes(e2e, tmp_path):
+def _kb_v21(kb: Path, cases: int = 1, tries: int = 2) -> None:
+    kb.mkdir(parents=True, exist_ok=True)
+    (kb / "errors.jsonl").write_text("".join(json.dumps({"id": f"k{i}", "tries": [{}] * (tries if i == 0 else 0)})
+                                             + "\n" for i in range(2)), encoding="utf-8")
+    for i in range(cases):
+        (kb / "cases" / f"case{i}").mkdir(parents=True)
+        (kb / "cases" / f"case{i}" / "case.json").write_text("{}", encoding="utf-8")
+    (kb / "cases.md").write_text("# KB cases\n", encoding="utf-8")
+
+
+def test_error_entries_expectation_passes(e2e, tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    for n in ("error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"):
+    for n in ("errors.jsonl", "errors.md"):
         (run_dir / n).write_text("{}\n", encoding="utf-8")
     kb = tmp_path / "kb"
-    kb.mkdir()
-    (kb / "errors.jsonl").write_text("{}\n{}\n", encoding="utf-8")
-    (kb / "fix_attempts.jsonl").write_text("{}\n{}\n{}\n", encoding="utf-8")
-    want = {"min": 2, "status": {"resolved": 1}, "status_min": {"blocked": 1},
-            "records": [{"file": "regex:.*/ClientIpFilter\\.java", "status": "resolved", "fix_method": "llm",
-                         "change_kind": "text_replace", "replace_rule_candidate": True,
-                         "replace_pairs": [{"old": "clientIp", "new": "remoteClientIp"}],
-                         "attempts_min": 2, "attempt_outcomes": ["apply_failed", "improved"]},
-                        {"status": "blocked", "attempt_outcomes": ["no_change", "no_change"],
-                         "failure_reason": "regex:(?i).*still there.*"}],
-            "run_files": ["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"],
-            "kb_errors_min": 2, "kb_attempts_min": 3}
-    assert e2e.evaluate_error_cases(want, EC_REPORT, run_dir, kb) == []
+    _kb_v21(kb)
+    want = {"min": 5, "max": 5, "status": {"resolved": 3, "pom-verify": 1, "unresolved": 1}, "open_max": 1,
+            "status_min": {"resolved": 2}, "status_max": {"blocked": 0},
+            "seen": {"compile": 2, "restructure": 1}, "seen_min": {"build": 1},
+            "cases": [{"case": "c1aaaaaaaa", "entries_min": 2, "status": "resolved",
+                       "sources": ["llm-new", "llm-augment"], "results": ["partial", "build_ok"], "versions": [1, 2],
+                       "applied": "script", "llm_calls": 2, "resolved": "regex:r\\d+ try \\d+",
+                       "script": "regex:cases/c1aaaaaaaa/fix_v\\d\\.py"},
+                      {"l2": JAXB, "sources": ["kb-script"], "llm_calls": 0},
+                      {"case": "dddddddddd", "status": ["unresolved", "blocked"], "sources_contain": ["llm-edit"]}],
+            "records": [{"file": "regex:.*/MemberController\\.java", "status": "resolved", "seen": "compile",
+                         "tries_min": 2, "sources": ["llm-new", "llm-augment"], "results": ["build_ok"]},
+                        {"status": "pom-verify", "note": "regex:parent .*"}],
+            "run_files": ["errors.jsonl", "errors.md"], "kb_errors_min": 2, "kb_tries_min": 2, "kb_cases_min": 1}
+    assert e2e.evaluate_error_entries(want, EE_REPORT, run_dir, kb) == []
+    assert e2e.format_error_counts(e2e.error_entries(EE_REPORT)) == "unresolved 1, pom-verify 1, resolved 3"
+    assert len(e2e.case_tries([e for e in EE_REPORT["error_entries"] if e.get("case_id") == "c1aaaaaaaa"])) == 2
 
 
-def test_error_cases_expectation_mismatches(e2e, tmp_path):
-    mm = e2e.evaluate_error_cases(
-        {"min": 3, "status": {"resolved": 2}, "records": [{"status": "resolved", "attempt_outcomes": ["improved",
-                                                                                                    "apply_failed"]}],
-         "run_files": ["error_cases.csv"], "kb_errors_min": 1}, EC_REPORT, None, None)
-    assert any("error_cases=2 < min 3" in m for m in mm)
-    assert any("status resolved=1 expected 2" in m for m in mm)
-    assert any("no error case matching" in m for m in mm)          # the order of outcomes matters
-    assert any("run file error_cases.csv missing" in m for m in mm)
-    assert any("errors.jsonl lines=0" in m for m in mm)
-    assert e2e.evaluate_error_cases({"records": [{"replace_pairs": [{"old": "x", "new": "y"}]}]}, EC_REPORT, None,
-                                    None)
-    assert e2e.evaluate_error_cases({}, {}, None, None) == []        # missing report fields never crash
+def test_error_entries_expectation_mismatches(e2e, tmp_path):
+    want = {"min": 6, "status": {"resolved": 2}, "open_max": 0, "seen": {"build": 2},
+            "cases": [{"case": "c1aaaaaaaa", "sources": ["llm-augment"], "results": ["build_ok", "partial"],
+                       "versions": [2], "llm_calls": 1, "status": "unresolved"},
+                      {"l2": "compile|x|y"}],
+            "records": [{"file": "regex:.*/Nope\\.java"}],
+            "run_files": ["errors.md"], "kb_errors_min": 1, "kb_cases_min": 1}
+    text = "\n".join(e2e.evaluate_error_entries(want, EE_REPORT, None, tmp_path / "nokb"))
+    for needle in ("error_entries=5 < min 6", "status resolved=3 expected == 2", "open=1 > max 0",
+                   "seen build=1 expected == 2", "case c1aaaaaaaa: sources ['llm-new', 'llm-augment'] expected",
+                   "lack the sequence ['build_ok', 'partial']", "script versions [1, 2] expected [2]",
+                   "llm_calls=2 expected 1", "case c1aaaaaaaa: status ['resolved'] expected ['unresolved']",
+                   f"case {e2e.case_ref('compile|x|y')}: no entry", "no error entry matching",
+                   "run file errors.md missing", "kb errors.jsonl lines=0 < min 1", "kb cases=0 < min 1",
+                   "kb cases.md missing"):
+        assert needle in text, needle
+    assert e2e.evaluate_error_entries({}, {}, None, None) == []        # missing report fields never crash
+
+
+def test_legacy_error_cases_are_mapped_onto_the_error_list(e2e, tmp_path):
+    """The two fixtures that still carry `error_cases` (boot2-fix-failures, java6-legacy) are evaluated against the
+    v2.1 error list; fields without an equivalent are reported, never ignored."""
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    for n in ("errors.jsonl", "errors.md"):
+        (run_dir / n).write_text("{}\n", encoding="utf-8")
+    kb = tmp_path / "kb"
+    _kb_v21(kb)
+    fix_failures = {"min": 2, "status_min": {"resolved": 2},
+                    "records": [{"file": "regex:.*/web/MemberController\\.java", "status": "resolved",
+                                 "fix_method": "script_augment", "attempt_outcomes": ["partial", "build_ok"]}],
+                    "run_files": ["error_cases.jsonl", "fix_attempts.jsonl", "error_cases.csv"],
+                    "kb_errors_min": 2, "kb_attempts_min": 2, "kb_cases_min": 1}
+    assert e2e.evaluate_error_cases(fix_failures, EE_REPORT, run_dir, kb) == []
+    java6 = {"records": [{"file": "regex:.*/com/example/legacy/util/Dates\\.java", "status": "resolved",
+                          "fix_method": "script_reuse"}]}
+    assert e2e.evaluate_error_cases(java6, EE_REPORT, run_dir, kb) == []
+    mapped, gaps = e2e.legacy_error_cases_want({"status": {"resolved": 1, "resolved_indirectly": 2, "not_visible": 1},
+                                                "records": [{"change_kind": "text_replace", "fix_method": "handler"}]})
+    assert mapped["status"] == {"resolved": 3, "unresolved": 1}
+    assert gaps == ["error_cases record field 'change_kind' has no v2.1 equivalent",
+                    "error_cases record fix_method 'handler' has no v2.1 equivalent"]
+    mm = e2e.evaluate_error_cases({"min": 9, "records": [{"status": "resolved", "fix_method": "script_reuse",
+                                                          "file": "regex:.*/MemberController\\.java"}]},
+                                  EE_REPORT, None, None)
+    assert any("error_cases=5 < min 9" in m for m in mm) and any("no error entry matching" in m for m in mm)
+    assert e2e.evaluate_error_cases({}, {}, None, None) == []
 
 
 def test_fixture_without_root_pom_is_discovered_and_war_libs_satisfy_preconditions(e2e, tmp_path):
@@ -739,31 +801,23 @@ def test_fixture_without_root_pom_is_discovered_and_war_libs_satisfy_preconditio
     assert e2e.preflight("x", want, tmp_path) is None
 
 
-def test_error_cases_expectation_checks_the_case_catalog(e2e, tmp_path):
-    kb = tmp_path / "kb"
-    assert any("catalog cases=0" in m for m in e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb))
-    (kb / "catalog" / "compile" / "cannot_find_symbol").mkdir(parents=True)
-    (kb / "catalog" / "compile" / "cannot_find_symbol" / "clientIp--8bb4fd4a4a.yml").write_text("id: x\n")
-    assert e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb) == ["kb views/cases.md missing"]
-    (kb / "views").mkdir()
-    (kb / "views" / "cases.md").write_text("# cases\n")
-    assert e2e.evaluate_error_cases({"kb_cases_min": 1}, {}, None, kb) == []
-
-
 # ---------------------------------------------------------------------------------------------- v2 (flow-v2)
 CLIENT_IP_L2 = "compile|cannot_find_symbol|clientIp"
 
 
 def _store(kb: Path, case: str, version: int, code: str, **meta) -> None:
-    d = kb / "scripts" / case
+    """v2.1 KB layout: <kb>/cases/<case>/fix_v<N>.py + the CaseScript in case.json."""
+    d = kb / "cases" / case
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"v{version}.py").write_text(code, encoding="utf-8")
-    (d / f"v{version}.meta.json").write_text(json.dumps({"case_id": case, "version": version, **meta}),
-                                             encoding="utf-8")
+    (d / f"fix_v{version}.py").write_text(code, encoding="utf-8")
+    cj = d / "case.json"
+    data = json.loads(cj.read_text(encoding="utf-8")) if cj.is_file() else {"case_id": case, "scripts": []}
+    data["scripts"].append({"version": version, "file": f"fix_v{version}.py", **meta})
+    cj.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_case_ref_hashes_l2_like_the_catalog(e2e):
-    from sbmig.kb.catalog import case_id_for
+    from sbmig.errors.common import case_id_for
 
     assert e2e.case_ref({"l2": CLIENT_IP_L2}) == case_id_for(CLIENT_IP_L2) == "8bb4fd4a4a"
     assert e2e.case_ref({"case": "abc0123456"}) == "abc0123456" and e2e.case_ref("8bb4fd4a4a") == "8bb4fd4a4a"
@@ -772,10 +826,10 @@ def test_case_ref_hashes_l2_like_the_catalog(e2e):
 
 def test_scripts_expectation_augment_and_reuse(e2e, tmp_path):
     kb = tmp_path / "kb"
-    _store(kb, "8bb4fd4a4a", 1, "def fix(p):\n    p.replace('a', 'clientIp(request)', 'x')\n", parent=None,
-           partials=1, successes=0, last_outcome="partial", status="active", success_projects=[])
-    _store(kb, "8bb4fd4a4a", 2, "def fix(p):\n    pass  # remoteClientIp(\n", parent=1, successes=2,
-           success_projects=["member-api", "shop"], last_outcome="build_ok", status="active")
+    _store(kb, "8bb4fd4a4a", 1, "def fix(p):\n    p.replace('a', 'clientIp(request)', 'x')\n", source="llm-new",
+           successes=0, last_result="partial", status="unverified", projects=[])
+    _store(kb, "8bb4fd4a4a", 2, "def fix(p):\n    pass  # remoteClientIp(\n", source="llm-augment", successes=2,
+           projects=["member-api", "shop"], last_result="build_ok", status="proven")
     report = {"phases": [{"phase": "verify", "attempts": [
         _att(1, "8bb4fd4a4a", outcome="partial", version=1),
         _att(1, "8bb4fd4a4a", outcome="build_ok", mode="augment", version=2, iteration=2),
@@ -785,7 +839,7 @@ def test_scripts_expectation_augment_and_reuse(e2e, tmp_path):
             "cases": [{"l2": CLIENT_IP_L2, "modes": ["new", "augment"], "outcomes": ["partial", "build_ok"],
                        "versions": [1, 2], "llm_calls": 2},
                       {"case": "7a52b1cea8", "modes": ["reuse"], "llm_calls": 0}],
-            "stored": [{"l2": CLIENT_IP_L2, "version": 1, "parent": None, "partials_min": 1, "successes_max": 0,
+            "stored": [{"l2": CLIENT_IP_L2, "version": 1, "parent": None, "partials_min": 0, "successes_max": 0,
                         "code_contains": ["clientIp(request)"]},
                        {"l2": CLIENT_IP_L2, "version": 2, "parent": 1, "status": "active", "successes_min": 2,
                         "success_projects_min": 2, "last_outcome": "build_ok", "code_contains": ["remoteClientIp("]}],

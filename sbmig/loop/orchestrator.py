@@ -1,10 +1,15 @@
 """Orchestrator: intake → analyze → plan → phases → verify → report.
 
-v2 (flow-v2, docs/v2/PLAN-v2.md): transform (every OpenRewrite recipe in ONE run, no build) → restructure (the
-company layout, unchanged) → structure review (`StepKind.REVIEW`: the LLM checks poms / dependencies / modules; its
-script for critical issues is committed as `review: …`) → verify: the final `mvn clean package`; when it fails, the
-script fix loop (`loop.phases.verify`) fixes the errors case by case and the final build runs again. The KB learns
-from the error-case records and the fix-script store.
+v2.1 (2026-10-27, docs/v2/PLAN-v2.1.md §3): transform (every OpenRewrite recipe in ONE run, `transform.rewrite`) →
+`transform.compile` (`mvn clean compile` once, no fixing: every error goes on the run's error list, seen `compile`)
+→ restructure (the company layout; every pom correction it reports — parents set, mandatory added, optional bumped,
+managed versions dropped, generated poms — is an entry with status `pom-verify`) → structure review (`StepKind.
+REVIEW`: the LLM checks poms / dependencies / modules and fixes critical issues with edits — committed `review: …`;
+warnings become `note` entries, a fixed critical issue an entry resolved by `review`, its script is stored in the KB
+case `review|structure`) → verify: `mvn clean package` (only NEW errors are added, the pom-verify entries are
+verified); when it fails, the fix loop (`loop.phases.verify`, ≤ 50 rounds) works on the open entries case by case and
+the final build runs again → finalize: `end_of_run`, `errors.jsonl` / `errors.md`, `report.error_entries`, the KB
+gets the run's entries (`kb.record_run`). Every log line carries its stage (`sbmig.core.stage`).
 
 The orchestrator owns the loop. A phase is green only on BUILD SUCCESS, and the final `mvn clean package` runs
 whenever `loop.always_final_verify` is set — even after failures, blocked clusters or budget exhaustion.
@@ -20,18 +25,20 @@ import logging
 import re
 import time
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Callable, Iterator, Optional
 
 from sbmig.core.config import Config
 from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
-                               LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile, RunReport,
-                               StepKind, utcnow)
+                               IterationRecord, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile,
+                               RunReport, StepKind, utcnow)
+from sbmig.core.stage import stage
 from sbmig.core.workspace import Workspace
 
 from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, lazy_attr
+from .entries import REVIEW_L2, CaseScripts, RunErrors
 from .fixloop import BuildFixLoop, refine_build
 
 log = logging.getLogger("sbmig.loop")
@@ -54,6 +61,21 @@ _INFRA_REPO_RE = re.compile(r"(?i)could not transfer|failed to transfer|connecti
 _INFRA_DISK_RE = re.compile(r"(?i)no space left on device|not enough space on the disk|disk quota exceeded|"
                             r"디스크 공간이 부족|ENOSPC")
 _DEFAULT_MODE = {StepKind.MSA_POM: "msa_pom", StepKind.RESTRUCTURE: "layout"}
+COMPILE_GOAL = "clean compile"            # transform.compile: OpenRewrite's result compiled once, before the restructure
+
+
+def step_stage(step: PlanStep) -> str:
+    """The log stage of a plan step (§3.2): rewrite / compile / restructure / review / build / fix."""
+    k = step.kind
+    if k == StepKind.OPENREWRITE:
+        return "rewrite"
+    if k == StepKind.BUILD:
+        return "build" if step.phase == Phase.VERIFY else "compile"
+    if k in (StepKind.RESTRUCTURE, StepKind.MSA_POM):
+        return "restructure"
+    if k == StepKind.REVIEW:
+        return "review"
+    return "fix" if k == StepKind.BUILD_FIX_LOOP else step.phase.value
 NON_FATAL_RESTRUCTURE_MODES = frozenset({"optional_bump"})   # a failure is noted, the phase continues
 
 
@@ -140,10 +162,13 @@ class Orchestrator:
                  triager: Any = None, fixer: Any = None, kb: Any = None, llm: Any = None,
                  report_writer: Optional[Callable] = None, clock: Callable[[], float] = time.monotonic,
                  locator: Any = None, effective_capture: Optional[Callable] = None,
-                 javax_inventory: Any = None, script_runner: Any = None, reviewer: Any = None):
+                 javax_inventory: Any = None, script_runner: Any = None, reviewer: Any = None,
+                 error_list: Optional[Callable[..., Any]] = None, edit_applier: Optional[Callable[..., Any]] = None):
         """v2 collaborators: `script_runner` (ScriptRunnerLike; None = `sbmig.script.ScriptRunner(cfg)` on first use)
         and `reviewer` (a StructureReviewerLike object, or a factory `fn(cfg, llm, runner, kb)`; None =
-        `sbmig.review.StructureReviewer`)."""
+        `sbmig.review.StructureReviewer`). v2.1: `error_list` = `fn(ws, cfg, project)` → the run's error list (None =
+        `sbmig.errors.entries.ErrorList.for_workspace`), `edit_applier` = `fn(ws, edits, *, cfg) -> ScriptRunResult`
+        for the LLM's direct edits (None = `sbmig.script.apply_edits`)."""
         self.cfg = cfg
         self.ws = ws
         self.clock = clock
@@ -151,6 +176,8 @@ class Orchestrator:
         self._planner = planner
         self._script_runner = script_runner
         self._reviewer = reviewer
+        self._error_list_factory = error_list
+        self._edit_applier = edit_applier
         self._restructurer = restructurer
         self._rewrite_runner = rewrite_runner
         self._build_runner = build_runner
@@ -164,7 +191,7 @@ class Orchestrator:
         self.profile: Optional[ProjectProfile] = None
         self.plan: Optional[MigrationPlan] = None
         self.loop: Optional[BuildFixLoop] = None
-        self.error_tracker: Any = None              # sbmig.loop.error_tracker.ErrorTracker of the run (2026-10-23)
+        self.errors = RunErrors(None)               # v2.1: the run's error list (errors.jsonl), set in step_plan
         self._verify_results: list[BuildResult] = []
         self._review_usage: dict[str, LLMUsage] = {}       # v2: structure-review calls, by model
         self._restructure_results: list[Any] = []          # v2: this run's RestructureResults (structure review input)
@@ -319,7 +346,7 @@ class Orchestrator:
         self._phase_failed = False
         self._pending_notes = []
         self.loop = None
-        self.error_tracker = None
+        self.errors = RunErrors(None)
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
@@ -333,15 +360,18 @@ class Orchestrator:
         except MissingComponentError as e:
             log.error("%s", e)
             self._abort(report, f"missing component: {e}")
-            self._final_build_after_abort(report)
+            with stage("build"):
+                self._final_build_after_abort(report)
         except Exception as e:  # never lose the report because of a bug
             log.exception("run failed")
             self._abort(report, f"internal error: {type(e).__name__}: {e}")
-            self._final_build_after_abort(report)
+            with stage("build"):
+                self._final_build_after_abort(report)
         finally:
             self._running = False
             report.timings_s["total"] = round(self.clock() - t0, 3)
-            self._finalize(report)
+            with stage("report"):
+                self._finalize(report)
 
     def _verify_steps(self) -> list[PlanStep]:
         """The run's final-build steps (MSA without an aggregator: one per service); `verify.build` when the plan had
@@ -422,6 +452,10 @@ class Orchestrator:
     # ------------------------------------------------------------------ steps (shared by both engines)
     def step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
         """1. intake: git snapshot, preflight, effective dependencyManagement. False = stop or abort."""
+        with stage("intake"):
+            return self._step_intake(report, stop_after)
+
+    def _step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
         t = self.clock()
         self.ws.git_init()
         setter = getattr(self.ws, "set_encoding_candidates", None)
@@ -498,13 +532,17 @@ class Orchestrator:
         if plan.excluded:
             msg += f"; not linked to them and left out: {', '.join(plan.excluded)}"
         report.manual_followups.append(msg)
-        log.info("intake: %s", msg)
+        log.info("%s", msg)
         self.ws.journal({"event": "aggregator_generated", "path": path, "artifact_id": plan.artifact_id,
                          "name": plan.name, "modules": plan.modules, "excluded": plan.excluded})
         return True
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
         """2. analyze: profile + library advisories. False = stop or abort (not Maven, no pom.xml)."""
+        with stage("analyze"):
+            return self._step_analyze(report, stop_after)
+
+    def _step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
         t = self.clock()
         profile = self.analyzer(self.ws, self.cfg)
         self.profile = profile
@@ -529,9 +567,14 @@ class Orchestrator:
 
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
-        """3. plan: the migration plan, the run's `BuildFixLoop` and the phase groups (consecutive plan steps of
-        the same phase; v2: transform → restructure (+ review) → verify; MSA plans may repeat a phase per target).
-        None = the run stops after `plan`."""
+        """3. plan: the migration plan, the run's error list and `BuildFixLoop`, and the phase groups (consecutive
+        plan steps of the same phase; v2.1: transform (rewrite + compile) → restructure (+ review) → verify; MSA
+        plans may repeat a phase per target). None = the run stops after `plan`."""
+        with stage("plan"):
+            return self._step_plan(report, stop_after, dry_run)
+
+    def _step_plan(self, report: RunReport, stop_after: Phase | None,
+                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
         profile = self.profile
         assert profile is not None
         t = self.clock()
@@ -556,14 +599,16 @@ class Orchestrator:
         if self._stop(stop_after, Phase.PLAN):
             return None
         # 4. phases ------------------------------------------------------------
+        self._start_error_list(dry_run)
         self.loop = BuildFixLoop(self.cfg, self.ws, self.build_runner, self.triager, self.fixer, self.kb, profile,
                                  plan_notes=plan.notes,
                                  budget=self.budget, dry_run=dry_run, blocked=self.blocked,
                                  locator=self._resolve_locator(), advisories=list(report.advisories or []),
-                                 script_runner=self.script_runner)
-        self._start_error_tracker(dry_run)
+                                 script_runner=self.script_runner, edit_applier=self._edit_applier,
+                                 errors=self.errors)
         steps = list(plan.steps)
-        if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD for s in steps):
+        if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD and s.phase == Phase.VERIFY
+                                                         for s in steps):
             steps.append(PlanStep(id="verify.build", kind=StepKind.BUILD, phase=Phase.VERIFY,
                                   title="final mvn clean package", build_goal="clean package",
                                   reason="always_final_verify"))
@@ -588,7 +633,8 @@ class Orchestrator:
         pr = PhaseResult(phase=phase, step_ids=[s.id for _, s in items], ok=True)
         self.ws.journal({"event": "phase_start", "phase": phase.value, "steps": pr.step_ids})
         try:
-            self._run_phase(pr, items)
+            with stage(phase.value):
+                self._run_phase(pr, items)
         except BaseException as e:
             # round 10: an exception inside a phase (git timeout, a bug) must not lose what the phase did — svc-a's
             # green verify of an MSA run stays in the report next to the abort
@@ -776,36 +822,44 @@ class Orchestrator:
                 continue
             self.ws.journal({"event": "step_start", "step": step.id, "kind": step.kind.value,
                              "phase": step.phase.value, "target": step.target})
-            ok = True
-            if step.kind == StepKind.OPENREWRITE:
-                ok = self._step_rewrite(pr, step)
-                if ok is None:          # missing recipe → programming error
-                    aborted, ok = True, False
-                    pr.ok = False
-            elif step.kind == StepKind.REVIEW:
-                ok = self._step_review(pr, step)
-            elif step.kind == StepKind.BUILD_FIX_LOOP:
-                # an intermediate fix loop (the v2 planner plans none; a hand-made plan may): the script fix loop
-                loop_ran = True
-                ok = self._step_loop(pr, step)
-                pr.ok = ok
-            elif step.kind in (StepKind.RESTRUCTURE, StepKind.MSA_POM):
-                ok = self._step_restructure(pr, step)
-                if not ok and self._step_mode(step) in NON_FATAL_RESTRUCTURE_MODES:
-                    pr.notes.append(f"{step.id}: failed — continuing with the rest of the {step.phase.value} phase")
-                elif not ok:
-                    aborted = True
-                    pr.ok = False
-            elif step.kind == StepKind.BUILD:
-                ok = self._step_verify(pr, step)
+            with stage(step_stage(step)):
+                ok, aborted = self._run_step(pr, step, aborted)
             self.ws.journal({"event": "step_end", "step": step.id, "ok": bool(ok)})
             if self.loop is not None and self.loop.aborted:
                 pr.ok = False
                 break
+            loop_ran = loop_ran or step.kind == StepKind.BUILD_FIX_LOOP
         if pr.phase == Phase.VERIFY:
             pr.ok = pr.build_ok = bool(self._verify_results) and all(r.ok for r in self._verify_results)
         elif not loop_ran and pr.ok:
             pr.build_ok = False
+
+    def _run_step(self, pr: PhaseResult, step: PlanStep, aborted: bool) -> tuple[Any, bool]:
+        """One plan step (inside its log stage). Returns (ok, the phase is aborted)."""
+        ok: Any = True
+        if step.kind == StepKind.OPENREWRITE:
+            ok = self._step_rewrite(pr, step)
+            if ok is None:          # missing recipe → programming error
+                aborted, ok = True, False
+                pr.ok = False
+        elif step.kind == StepKind.REVIEW:
+            ok = self._step_review(pr, step)
+        elif step.kind == StepKind.BUILD_FIX_LOOP:
+            # an intermediate fix loop (the v2 planner plans none; a hand-made plan may)
+            ok = self._step_loop(pr, step)
+            pr.ok = ok
+        elif step.kind in (StepKind.RESTRUCTURE, StepKind.MSA_POM):
+            ok = self._step_restructure(pr, step)
+            if not ok and self._step_mode(step) in NON_FATAL_RESTRUCTURE_MODES:
+                pr.notes.append(f"{step.id}: failed — continuing with the rest of the {step.phase.value} phase")
+            elif not ok:
+                aborted = True
+                pr.ok = False
+        elif step.kind == StepKind.BUILD and step.phase != Phase.VERIFY:
+            ok = self._step_compile(pr, step)
+        elif step.kind == StepKind.BUILD:
+            ok = self._step_verify(pr, step)
+        return ok, aborted
 
     def _flush_notes(self, pr: PhaseResult) -> None:
         if self._pending_notes:
@@ -843,8 +897,6 @@ class Orchestrator:
         sha = None
         if not self._dry_run and self.ws.is_dirty():
             sha = self.ws.commit(f"rewrite: {step.id}")
-        if sha and sha != pre:
-            self._note_step(step.id, step.phase)
         self.ws.journal({"event": "rewrite", "step": step.id, "ok": res.ok, "recipes": res.recipes,
                          "changed_files": len(res.changed_files), "commit": sha if sha != pre else None,
                          "error": res.error, "log": res.log_path, "dry_run": self._dry_run})
@@ -950,6 +1002,50 @@ class Orchestrator:
             if all(b.id != it.id for b in pr.blocked):
                 pr.blocked.append(it)
 
+    def _step_compile(self, pr: PhaseResult, step: PlanStep) -> bool:
+        """v2.1 `transform.compile` (StepKind.BUILD outside the verify phase): `mvn clean compile` once on
+        OpenRewrite's result — no fixing; every error goes on the error list (seen `compile`) and the restructure /
+        review / build that follow work from it. Never fails the phase (a failed compile is the expected input)."""
+        self._flush_notes(pr)
+        if self._dry_run:
+            pr.notes.append(f"{step.id}: dry-run → compile skipped")
+            return True
+        if self.budget.time_exceeded():
+            pr.notes.append(f"{step.id} skipped: run time budget exhausted")
+            self._flag("time-budget-exhausted")
+            return True
+        from .fixloop import build_target_args
+        module, extra = build_target_args(self.profile, step.target)
+        kw: dict[str, Any] = {"extra_args": extra} if extra else {}
+        goal = step.build_goal or COMPILE_GOAL
+        label = "compile" + (f"-{step.params['service']}" if step.params.get("service") else "")
+        t = self.clock()
+        try:
+            res = refine_build(self.build_runner.run(goal, module=module, label=label,
+                                                     skip_test_compile=bool(self.cfg.build.skip_test_compile), **kw))
+        except Exception as e:  # noqa: BLE001 - a recording step: the verify build shows the real state
+            log.warning("mvn %s failed to run: %s: %s — the error list starts at the first build", goal,
+                        type(e).__name__, e)
+            pr.notes.append(f"{step.id}: mvn {goal} could not run ({type(e).__name__}: {e})")
+            return True
+        finally:
+            self._timed("compile", t)
+        added = self.errors.add_build(res, "compile", void=bool(res.timed_out), scope=step.target)
+        pr.iterations += 1
+        pr.iteration_records.append(IterationRecord(phase=step.phase, iteration=pr.iterations, build_ok=res.ok,
+                                                    error_count=res.error_count,
+                                                    signatures=res.signature_multiset(), build_log=res.log_path))
+        if res.ok:
+            line = f"mvn {goal}: BUILD SUCCESS → 목록 0건"
+        else:
+            line = (f"mvn {goal}: {res.error_count} error(s) → 목록에 {added}건 (seen=compile)"
+                    + (" — timed out" if res.timed_out else ""))
+        log.info("%s", line)
+        pr.notes.append(f"{step.id}: {line}")
+        self.ws.journal({"event": "compile", "step": step.id, "goal": goal, "target": step.target, "ok": res.ok,
+                         "errors": res.error_count, "added": added, "log": res.log_path})
+        return True
+
     def _step_loop(self, pr: PhaseResult, step: PlanStep) -> bool:
         self._flush_notes(pr)
         assert self.loop is not None
@@ -993,8 +1089,8 @@ class Orchestrator:
             return False
         sha = self.ws.commit(f"restructure: {step.id}") if self.ws.is_dirty() else self.ws.head()
         if sha != pre:
-            self._note_step(step.id, step.phase)
             self._follow_moves(step, pre, sha)
+        self._pom_verify_entries(res)
         self.report.manual_followups += [f for f in res.manual_followups if f not in self.report.manual_followups]
         for flag in list(getattr(res, "flags", None) or []):      # 2026-10-23: e.g. web-xml-registered
             self._flag(flag)
@@ -1049,14 +1145,13 @@ class Orchestrator:
                 why = f"no LLM client: {type(e).__name__}: {e}"
                 log.info("structure review: %s", why)
         else:
-            why = f"LLM budget exhausted ({self.budget.llm_calls}/{self.budget.max_llm_calls} calls)"
+            why = f"LLM budget exhausted ({self.budget.llm_text()})"
         made = self._reviewer
         try:
             if made is not None and not isinstance(made, type) and callable(getattr(made, "review", None)):
                 return made, why                    # an instance (a class is a factory, like StructureReviewer)
             factory = made if callable(made) else lazy_attr("sbmig.review", "StructureReviewer", "R (review)")
-            # kb=None: the orchestrator records the review itself after committing its script (`_record_review`),
-            # so the line in <kb>/reviews.jsonl carries the commit
+            # kb=None: the orchestrator records the review (error list + the KB case of its script) after the commit
             return factory(self.cfg, llm, self.script_runner, None), why
         except Exception as e:  # noqa: BLE001 - ImportError / a broken reviewer: noted, the run goes on
             return None, f"structure reviewer unavailable: {type(e).__name__}: {e}"
@@ -1075,6 +1170,12 @@ class Orchestrator:
                     or self.report.project_name or self.ws.root.name,
                     case_type=self.profile.case_type if self.profile is not None else CaseType.UNKNOWN)
         rv: Optional[StructureReview] = None
+        pre: Optional[str] = None
+        if not self._dry_run:
+            try:
+                pre = self.ws.head()
+            except Exception:  # noqa: BLE001 - no git: no diff for the review's entries
+                pre = None
         if self._dry_run:
             rv = StructureReview(**base, verdict="skipped", note="dry run: no LLM call, nothing changed")
         elif not getattr(getattr(self.cfg, "review", None), "enabled", True):
@@ -1097,15 +1198,17 @@ class Orchestrator:
                     rv.note = why
         self._review_llm_usage(rv)
         sha = self._commit_review(pr, step, rv)
-        self._record_review(rv)
+        self._review_entries(rv, pre, sha)
         self.report.structure_review = rv
         critical = len(rv.critical)
         status = rv.script_result.status if rv.script_result is not None else None
         self.ws.journal({"event": "structure_review", "step": step.id, "verdict": rv.verdict,
                          "issues": len(rv.issues), "critical": critical, "script_status": status, "commit": sha,
                          "note": (rv.note or "")[:300]})
+        ans = getattr(rv, "answer", None)
+        how = f"edits ({len(ans.edits)})" if ans is not None and ans.edits else "script"   # v2.1: what the fix was
         line = (f"{step.id}: structure review {rv.verdict} ({len(rv.issues)} issue(s), {critical} critical)"
-                + (f"; script {status}" if status else "") + (f" → commit {sha[:10]}" if sha else "")
+                + (f"; {how} {status}" if status else "") + (f" → commit {sha[:10]}" if sha else "")
                 + (f" — {rv.note}" if rv.note else ""))
         pr.notes.append(line[:600])
         log.info("%s", line[:600])
@@ -1130,7 +1233,6 @@ class Orchestrator:
                 note = rv.note or ""
                 rv.note = (note.replace(" — not committed yet", f" — committed {sha[:10]}")
                            if " — not committed yet" in note else note)
-                self._note_step(step.id, step.phase)
                 return sha
             self.ws.discard_uncommitted()
             pr.notes.append(f"{step.id}: the structure review left uncommitted changes without a successful script "
@@ -1140,16 +1242,52 @@ class Orchestrator:
             pr.notes.append(f"{step.id}: committing the review script failed: {type(e).__name__}: {e}")
         return None
 
-    def _record_review(self, rv: Any) -> None:
-        """One line in <kb>/reviews.jsonl (`review.record`), after the commit so the line names it; a skipped review
-        (dry run, review off) is not recorded. Never raises."""
-        rec = getattr(self.kb, "record_review", None)
-        if self._dry_run or rv.verdict == "skipped" or not callable(rec) \
-                or not getattr(getattr(self.cfg, "review", None), "record", True):
+    def _review_entries(self, rv: Any, pre: Optional[str], sha: Optional[str]) -> None:
+        """v2.1: the review on the error list and in the KB (never raises, nothing for a skipped review / dry run):
+        a `note` entry per warning — and per critical issue no committed fix addressed —, an entry resolved by
+        `review` per critical issue the committed fix addressed (one try: source review, 원인 / 해결 / edits /
+        diff / commit), and the answer's script stored in the KB case `review|structure` (source review)."""
+        if self._dry_run or rv is None or rv.verdict == "skipped":
             return
         try:
-            rec(rv)
-        except Exception as e:  # noqa: BLE001 - the KB never stops a run
+            ans = getattr(rv, "answer", None)
+            diff, files = "", []
+            if sha and pre:
+                try:
+                    diff = self.ws.diff(pre, sha)
+                    files = self.ws.changed_between(pre, sha)
+                except Exception as e:  # noqa: BLE001 - the commit is there; only its text is missing
+                    log.debug("review diff unavailable: %s", e)
+            n_edits = len(getattr(ans, "edits", None) or []) if ans is not None else 0
+            applied = ("edits" if n_edits else "script") if sha else "none"
+            for issue in rv.issues:
+                text = " ".join((issue.problem or "").split()) + (f" — {issue.fix_hint}" if issue.fix_hint else "")
+                if issue.severity == "critical" and sha:
+                    self.errors.review_fixed(
+                        issue.file or "", f"critical: {text}",
+                        analysis=(getattr(ans, "analysis", "") if ans is not None else "") or rv.analysis,
+                        solution=getattr(ans, "solution", "") if ans is not None else "",
+                        no_script_reason=getattr(ans, "no_script_reason", "") if ans is not None else "",
+                        applied=applied, files=files, diff=diff, commit=sha, result="improved",
+                        note=f"fixed by the structure review ({n_edits} edit(s), commit {sha[:10]})",
+                        llm_calls=int(rv.llm_usage.calls or 0), seconds=0.0)
+                elif issue.severity == "critical":
+                    self.errors.add_note(issue.file or "", f"critical (not fixed by the review): {text}", "review")
+                else:
+                    self.errors.add_note(issue.file or "", f"warning: {text}", "review")
+            code = ((getattr(ans, "code", "") if ans is not None else "") or rv.script or "").strip("\n")
+            store = CaseScripts.of(self.kb)
+            if code.strip() and rv.critical and store.active:
+                from sbmig.triage.cluster import l2_case_id
+                cs = store.add_script(l2_case_id(REVIEW_L2), REVIEW_L2, code, source="review", run_id=self.ws.run_id,
+                                      project=(self.profile.name if self.profile is not None else "") or
+                                      self.ws.root.name,
+                                      analysis=(getattr(ans, "analysis", "") if ans is not None else "") or rv.analysis,
+                                      solution=getattr(ans, "solution", "") if ans is not None else "")
+                if cs is not None:
+                    self.ws.journal({"event": "review_script_stored", "case": l2_case_id(REVIEW_L2),
+                                     "version": getattr(cs, "version", 0), "status": getattr(cs, "status", "")})
+        except Exception as e:  # noqa: BLE001 - recording never stops a run
             log.warning("recording the structure review failed: %s: %s", type(e).__name__, e)
 
     def _review_llm_usage(self, rv: Any) -> None:
@@ -1191,6 +1329,31 @@ class Orchestrator:
         self.report.manual_followups.append(
             f"restructure step {step.id} ({mode}) failed: {why[:300]} — the tree keeps the as-is layout / parents; "
             "the final build ran on it, so BUILD SUCCESS here does not mean the migration is complete")
+
+    _MANAGED_POM_RE = re.compile(r"\(([^()]*pom\.xml)\)\s*$")
+
+    def _pom_verify_entries(self, res: Any) -> None:
+        """v2.1: every pom correction the restructure reports → one error-list entry, status `pom-verify` (the next
+        build verifies it): parents set (`<pom>: old → new`), mandatory artifacts added and optional ones bumped (the
+        root pom), explicit versions dropped for the managed ones (`… (<pom>)`), generated poms."""
+        root = "pom.xml"
+        items: list[tuple[str, str]] = []
+        for e in list(getattr(res, "parents_set", None) or []):
+            pom, sep, what = str(e).partition(": ")
+            items.append((pom if sep else root, f"parent {what if sep else e}"))
+        for k in list(getattr(res, "mandatory_added", None) or []):
+            items.append((root, f"mandatory {k} added"))
+        for k in list(getattr(res, "optional_bumped", None) or []):
+            items.append((root, f"optional {k}"))
+        for d in list(getattr(res, "managed_versions_dropped", None) or []):
+            m = self._MANAGED_POM_RE.search(str(d))
+            items.append((m.group(1) if m else root, f"explicit version dropped: {str(d)[:m.start()].strip() if m else d}"))
+        for g in list(getattr(res, "generated_files", None) or []):
+            if PurePosixPath(str(g).replace("\\", "/")).name == "pom.xml":
+                items.append((str(g).replace("\\", "/"), "generated by the restructure"))
+        for pom, note in items:
+            self.errors.add_pom_verify(pom, note)
+            log.info("%s: %s (pom-verify #%d)", pom, note, self.errors.size())
 
     def _merge_placeholders(self, files: list[str], keys: list[str]) -> None:
         """RunReport.properties = profile inventory + the placeholders every restructure step wrote (dedupe, ordered)."""
@@ -1298,15 +1461,15 @@ class Orchestrator:
             return refine_build(_run_final())          # the refined case keys (sbmig.triage.cluster)
 
         res = _final_build()
-        self._observe_final("verify-final", res, step.target)
+        self._observe_build(goal, res, step.target)
         if not res.ok and self._verify_fix_loop(pr, step, res):
             if self.loop is not None and self.loop.aborted:
                 pr.notes.append(f"{step.id}: final fix loop aborted the run ({self.loop.aborted}); the failed build stands")
             else:
                 pr.notes.append(f"{step.id}: final build repeated after the fix loop")
-                log.info("verify: repeating `mvn %s` after the final fix loop", goal)
+                log.info("repeating `mvn %s` after the fix loop", goal)
                 res = _final_build()
-                self._observe_final("verify-final-2", res, step.target)
+                self._observe_build(goal, res, step.target)
         self._verify_results.append(res)
         if step.id not in self._verify_done:
             self._verify_done.append(step.id)
@@ -1315,7 +1478,6 @@ class Orchestrator:
         self.report.final_build = res
         pr.iterations += 1
         pr.remaining_errors += res.errors
-        from sbmig.core.models import IterationRecord
         pr.iteration_records.append(IterationRecord(phase=Phase.VERIFY, iteration=pr.iterations, build_ok=res.ok,
                                                     error_count=res.error_count, signatures=res.signature_multiset(),
                                                     build_log=res.log_path))
@@ -1368,8 +1530,8 @@ class Orchestrator:
         self.ws.journal({"event": "verify_loop_start", "step": step.id, "goal": pc.goal, "target": step.target,
                          "max_iterations": pc.max_iterations, "errors": first.error_count,
                          "clusters": [c.id for c in clusters]})
-        log.info("verify: final build failed with %d error(s) in %d case(s) → script fix loop (mvn %s, up to %d "
-                 "round(s))", first.error_count, len(clusters), pc.goal, pc.max_iterations)
+        log.info("final build failed with %d error(s) in %d case(s) → fix loop (mvn %s per round, up to %d round(s))",
+                 first.error_count, len(clusters), pc.goal, pc.max_iterations)
         res = self.loop.run(Phase.VERIFY, pc.goal, pc.max_iterations, target=step.target, first_build=first)
         pr.iterations += res.iterations
         pr.attempts += res.attempts
@@ -1408,48 +1570,39 @@ class Orchestrator:
             self.ws.journal({"event": "plan_advice", "error": f"{type(e).__name__}: {e}"})
         return plan
 
-    # ------------------------------------------------------------------ error cases (2026-10-23)
-    def _start_error_tracker(self, dry_run: bool) -> None:
-        """One `ErrorTracker` per run, handed to the loop (docs/INTERFACES.md "Error cases"); none in dry-run or
-        with `kb.error_cases: false`."""
-        self.error_tracker = None
-        if dry_run or self.loop is None or not getattr(self.cfg.kb, "error_cases", False):
+    # ------------------------------------------------------------------ v2.1 error list
+    def _start_error_list(self, dry_run: bool) -> None:
+        """The run's error list (`sbmig.errors`, through `RunErrors`): from the compile step on, every build error,
+        pom correction, review finding and fix try. None in a dry run (nothing builds)."""
+        self.errors = RunErrors(None)
+        if dry_run:
             return
-        try:
-            from .error_tracker import ErrorTracker
-            self.error_tracker = ErrorTracker(self.ws, self.cfg)
-        except Exception as e:  # noqa: BLE001 - error cases are a by-product, never a reason to fail a run
-            log.warning("error tracker unavailable: %s: %s", type(e).__name__, e)
-            return
-        self.loop.error_tracker = self.error_tracker
+        project = ((self.profile.name if self.profile is not None else "") or
+                   (self.report.project_name if self.report is not None else "") or self.ws.root.name)
+        self.errors = RunErrors.create(self.ws, self.cfg, project, factory=self._error_list_factory)
 
-    def _note_step(self, step_id: str, phase: Phase) -> None:
-        t = self.error_tracker
-        if t is None:
-            return
-        try:
-            t.note_step(step_id, phase)
-        except Exception as e:  # noqa: BLE001
-            log.warning("error tracker note_step(%s) failed: %s", step_id, e)
+    def _observe_build(self, goal: str, res: BuildResult, target: Optional[str]) -> None:
+        """A final `mvn clean package` on the error list (only its NEW errors are added; the open entries it no longer
+        shows are resolved; the pom-verify entries are verified) + one line: `mvn clean package: 25 error(s), 새 에러
+        2건 추가, pom-verify 1건 resolved`."""
+        void = bool(res.timed_out) or (not res.ok and not res.errors)
+        added = self.errors.add_build(res, "build", void=void, scope=target)
+        poms = self.errors.verify_poms(res)
+        if res.ok:
+            line = f"mvn {goal}: BUILD SUCCESS"
+        else:
+            line = f"mvn {goal}: {res.error_count} error(s)" + (", timed out" if res.timed_out else "")
+            line += f", 새 에러 {added}건 추가" if self.errors.active else ""
+        if poms:
+            line += f", pom-verify {poms}건 resolved"
+        log.info("%s", line)
 
-    def _observe_final(self, label: str, res: BuildResult, target: Optional[str]) -> None:
-        t = self.error_tracker
-        if t is None:
-            return
-        try:
-            t.observe(Phase.VERIFY, label, res, [], void=bool(res.timed_out) or (not res.ok and not res.errors),
-                      target=target)
-        except Exception as e:  # noqa: BLE001
-            log.warning("error tracker observe(%s) failed: %s", label, e)
-
-    def _finalize_error_cases(self, report: RunReport) -> None:
-        """Every build error of the run on its own record + every fix attempt (failures included, with the code it
-        applied): `<run dir>/error_cases.jsonl` / `fix_attempts.jsonl` / `error_cases.csv`, the KB's append-only
-        `errors.jsonl` / `fix_attempts.jsonl` + the case catalog (whenever `kb.error_cases` is on and the run has a
-        file KB — `--no-kb` gives a NullKnowledgeBase, which has no `append_error_cases`), `report.error_cases`. Never fails the run: a problem becomes the flag
-        `error-cases-failed: <msg>`."""
-        t = self.error_tracker
-        if t is None or self._dry_run:
+    def _finalize_errors(self, report: RunReport) -> None:
+        """v2.1 finalize: the open entries → unresolved (`end_of_run`), `<run dir>/errors.jsonl` + `errors.md`,
+        `report.error_entries` (diffs capped), the KB gets the run's entries (`kb.record_run`; not with `--no-kb`).
+        Never fails the run: a problem becomes the flag `errors-failed: <msg>`."""
+        el = self.errors
+        if not el.active or self._dry_run:
             return
 
         def flag(text: str) -> None:
@@ -1457,55 +1610,29 @@ class Orchestrator:
                 report.flags.append(text)
 
         try:
-            errors, attempts = t.finalize(list(report.blocked), run_id=self.ws.run_id)
-            prepare = write_jsonl = write_csv = None
-            try:
-                from sbmig.kb.error_cases import prepare_error_cases as prepare
-                from sbmig.kb.error_cases import write_error_cases_csv as write_csv
-                from sbmig.kb.error_cases import write_error_cases_jsonl as write_jsonl
-            except ModuleNotFoundError as e:   # the KB part is not installed: raw records, no CSV, no KB
-                if not (e.name or "").startswith("sbmig"):
-                    raise
-                log.warning("error cases: %s not available — writing the raw records only", e.name)
-            if prepare is not None:
-                errors, attempts = prepare(errors, attempts, self.profile, self.ws, self.cfg)
-            out = report.outputs
-            run_dir = self.ws.run_dir
-            p_err, p_att = run_dir / "error_cases.jsonl", run_dir / "fix_attempts.jsonl"
-            if write_jsonl is not None:
-                out["error_cases"] = str(write_jsonl(errors, p_err))
-                out["fix_attempts"] = str(write_jsonl(attempts, p_att))
-            else:
-                for path, recs in ((p_err, errors), (p_att, attempts)):
-                    path.write_text("".join(r.model_dump_json() + "\n" for r in recs), encoding="utf-8")
-                out["error_cases"], out["fix_attempts"] = str(p_err), str(p_att)
-            if write_csv is not None:
-                out["error_cases_csv"] = str(write_csv(errors, run_dir / "error_cases.csv"))
-            report.error_cases = [r.model_copy(update={"diff_excerpt": ""}) for r in errors]
-            by_status: dict[str, int] = {}
-            for r in errors:
-                by_status[r.status] = by_status.get(r.status, 0) + 1
-            report.error_case_counts = dict(by_status)
-            for p in list(getattr(t, "problems", None) or [])[:3]:
-                flag(f"error-cases-failed: {p}")
+            counts = el.end_of_run()
+            report.outputs.update(el.write())
+            report.error_entries = el.to_report()
+            for p in el.problems[:3]:
+                flag(f"errors-failed: {p}")
             kb_n = None
-            if prepare is not None and self.cfg.kb.error_cases and self.profile is not None \
-                    and self._kb is not None:          # unsanitized raw records never go into the shared KB
-                append = getattr(self._kb, "append_error_cases", None)
-                if callable(append):
+            rec = getattr(self._kb, "record_run", None) if self._kb is not None else None
+            if callable(rec):
+                with stage("kb"):
                     try:
-                        kb_n = append(errors, attempts)
-                    except Exception as e:  # noqa: BLE001 - the KB store says it never raises; stay defensive
-                        log.warning("kb.append_error_cases failed: %s", e)
-                        flag(f"error-cases-failed: kb: {type(e).__name__}: {e}")
-            self.ws.journal({"event": "error_cases", "count": len(errors), "by_status": by_status,
-                             "attempts": len(attempts), "kb_appended": kb_n})
-            log.info("error cases: %d error(s) (%s), %d fix attempt(s)%s", len(errors),
-                     ", ".join(f"{k} {v}" for k, v in by_status.items()) or "-", len(attempts),
-                     f", {kb_n} appended to the KB" if kb_n is not None else "")
-        except Exception as e:  # noqa: BLE001 - never fail the run over the error-case records
-            log.exception("error cases failed")
-            flag(f"error-cases-failed: {type(e).__name__}: {e}")
+                        kb_n = rec(el.entries())
+                    except Exception as e:  # noqa: BLE001 - the KB says it never raises; stay defensive
+                        log.warning("kb.record_run failed: %s: %s", type(e).__name__, e)
+                        flag(f"errors-failed: kb: {type(e).__name__}: {e}")
+            self.ws.journal({"event": "error_list", "counts": counts, "entries": len(report.error_entries),
+                             "kb_recorded": kb_n})
+            log.info("error list: %d entr%s (%s)%s", len(report.error_entries),
+                     "y" if len(report.error_entries) == 1 else "ies",
+                     ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) or "-",
+                     f"; {kb_n} recorded in the KB" if kb_n is not None else "")
+        except Exception as e:  # noqa: BLE001 - never fail the run over the error list
+            log.exception("error list failed")
+            flag(f"errors-failed: {type(e).__name__}: {e}")
 
     def _flag(self, flag: str) -> None:
         if self.report is not None and flag not in self.report.flags:
@@ -1728,7 +1855,9 @@ class Orchestrator:
                 if f not in report.flags:
                     report.flags.append(f)
             report.manual_followups += [f for f in self.loop.followups if f not in report.manual_followups]
-        if self.budget.llm_calls >= self.budget.max_llm_calls and self.budget.max_llm_calls > 0:
+        # a cap (loop.max_llm_calls > 0) reached, or -1 (the fleet's total used up) when a case needed the LLM
+        if (self.budget.llm_limited and self.budget.llm_exhausted()) or (
+                self.budget.llm_off and any(it.reason.value == "budget_exhausted" for it in self.blocked.items())):
             self._flag("llm-budget-exhausted")
         built = bool(self._verify_results) or any(pr.iterations for pr in report.phases)
         if getattr(self.cfg.build, "skip_test_compile", False) and not self._dry_run and built:
@@ -1788,7 +1917,7 @@ class Orchestrator:
         if "json" in self.cfg.report.formats:
             out["report_json"] = str(self.ws.run_dir / "report.json")
         self._finalize_advisories(report)
-        self._finalize_error_cases(report)
+        self._finalize_errors(report)
         writer = self._report_writer
         if writer is None:
             from sbmig.report import write_report

@@ -141,7 +141,7 @@ def test_module_classpath_caches_and_never_raises(tmp_path: Path, cfg, monkeypat
         return ProcessResult(exit_code=0, text="", duration_s=0.1)
     monkeypatch.setattr(cpmod, "run_logged", ok_run)
     assert module_classpath(ws, cfg, "web-art") == [Path("/r/a.jar"), Path("/r/b.jar")]
-    assert "-pl" in runs[0] and "web" in runs[0] and (ws.run_dir / "classpath" / "web.txt").is_file()
+    assert "-pl" in runs[0] and "web" in runs[0] and (ws.run_dir / "logs" / "classpath-web.txt").is_file()
     assert module_classpath(ws, cfg, "web") == [Path("/r/a.jar"), Path("/r/b.jar")]
     assert len(runs) == 1                                           # cached
     st = (root / "web/pom.xml").stat()

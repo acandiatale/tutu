@@ -30,7 +30,7 @@ def test_stored_script_is_reused_without_an_llm(cfg, ws, monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)          # → make_llm_client raises LLMConfigError
     monkeypatch.setenv("SBMIG_ENV_FILE", str(ws.run_dir / "none.env"))
     kb = FakeKB()
-    kb.scripts.seed(case_of("compile|x"), write_script({FOO: "class Foo { ok }\n", BAR: "class Bar { ok }\n"}).code)
+    kb.cases.seed(case_of("compile|x"), write_script({FOO: "class Foo { ok }\n", BAR: "class Bar { ok }\n"}).code)
     orch = make_orch(cfg, ws, kb=kb)
     orch._fixer = None          # the production default: LazyFixer(LLMFixer(cfg, make_llm_client(cfg)))
     orch._llm = None

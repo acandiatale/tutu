@@ -103,7 +103,8 @@ def test_capture_writes_json_and_merges(ws: Workspace, cfg, monkeypatch):
         return ProcessResult(exit_code=0, text="", duration_s=0.1)
     monkeypatch.setattr(effmod, "run_logged", fake_run)
     p = capture_effective_depmgmt(ws, cfg)
-    assert p == ws.run_dir / "effective" / "depmgmt.json" and p.is_file()
+    assert p == ws.run_dir / "logs" / "effective-depmgmt.json" and p.is_file()       # v2.1: logs/, no effective/
+    assert not (ws.run_dir / "effective").exists() and not list((ws.run_dir / "logs").glob("*.xml"))   # xml parsed
     assert any(c.endswith(":effective-pom") for c in cmds[0]) and "-pl" not in cmds[0]
     assert json.loads(p.read_text())["managed"]["org.projectlombok:lombok"] == "1.18.30"
     capture_effective_depmgmt(ws, cfg, module="svc")
@@ -130,8 +131,7 @@ def test_capture_failure_returns_none(ws: Workspace, cfg, monkeypatch):
         raise OSError("disk full")
     monkeypatch.setattr(effmod, "run_logged", boom)
     assert capture_effective_depmgmt(ws, cfg) is None
-    (ws.run_dir / "effective").mkdir(exist_ok=True)
-    (ws.run_dir / "effective" / "depmgmt.json").write_text("{not json", encoding="utf-8")
+    (ws.run_dir / "logs" / "effective-depmgmt.json").write_text("{not json", encoding="utf-8")
     assert load_effective(ws)["managed"] == {}
 
 
@@ -146,15 +146,15 @@ def test_capture_named_file_keeps_asis_capture(ws: Workspace, cfg, monkeypatch):
         Path(out).write_text(next(docs), encoding="utf-8")
         return ProcessResult(exit_code=0, text="", duration_s=0.1)
     monkeypatch.setattr(effmod, "run_logged", fake_run)
-    assert capture_effective_depmgmt(ws, cfg) == ws.run_dir / "effective" / "depmgmt.json"
+    assert capture_effective_depmgmt(ws, cfg) == ws.run_dir / "logs" / "effective-depmgmt.json"
     p = capture_effective_depmgmt(ws, cfg, name=AFTER_RESTRUCTURE_FILE)
-    assert p == ws.run_dir / "effective" / AFTER_RESTRUCTURE_FILE
-    assert outs == ["root.xml", "depmgmt-after-restructure-root.xml"]          # as-is xml not overwritten
+    assert p == ws.run_dir / "logs" / f"effective-{AFTER_RESTRUCTURE_FILE}"
+    assert outs == ["effective-pom-root.xml", "effective-pom-depmgmt-after-restructure-root.xml"]
     assert load_effective(ws)["managed"]["org.projectlombok:lombok"] == "1.18.30"
     after = load_effective(ws, AFTER_RESTRUCTURE_FILE)
     assert after["managed"] == {"g:a": "1.0", "g:b": "3.0"} and "org.projectlombok:lombok" not in after["managed"]
     # provider: drops the stale capture first, returns the fresh dict
-    (ws.run_dir / "effective" / AFTER_RESTRUCTURE_FILE).write_text(json.dumps({"managed": {"stale:x": "9"}}))
+    (ws.run_dir / "logs" / f"effective-{AFTER_RESTRUCTURE_FILE}").write_text(json.dumps({"managed": {"stale:x": "9"}}))
     data = effective_pom_provider(ws, cfg)()
     assert data is not None and "stale:x" not in data["managed"] and data["by_module"]["shop:user"]
 

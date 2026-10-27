@@ -1,10 +1,11 @@
 """Decision engine (ARCHITECTURE §4, ERROR-HANDLING §1/§3; v2: docs/INTERFACES.md "Script fix loop (L)").
 
-v2 (flow-v2) — every fix is a fix script, one decision per case (L2) and round:
+v2 (flow-v2) / v2.1 — one decision per case (L2) and round, the ladder of `sbmig.triage.scripts`:
 
-    run-wide blocked registry → pinned `block` case action → script ladder: reuse a stored version (no LLM)
-    → blocked check (cfg.loop.blocked_policy, counted in LLM script attempts) → LLM unavailable
-    → ladder exhausted (repeated_failure) → LLM budget → SCRIPT augment | new
+    run-wide blocked registry → pinned `block` case action → KB search: the stored script (no LLM)
+    → blocked check (cfg.loop.blocked_policy, counted in LLM tries) → LLM unavailable
+    → ladder exhausted (repeated_failure: stored 1 + LLM 3) → LLM budget (`loop.max_llm_calls`, 0 = no limit)
+    → SCRIPT augment | new
 
 plus masking (`plan_iteration`). A BLOCKED decision never calls the LLM; the fix loop records a BlockedItem for it and
 keeps working on everything else. A stored, proven script of the case is reused even when the LLM is unavailable or
@@ -123,10 +124,10 @@ class DecisionEngine:
         self.blocked_registry = None            # sbmig.loop.blocked_registry.BlockedRegistry
         self.ws = None                          # Workspace: project-class checks for the blocked rules
         self.llm_unavailable: Optional[str] = None
-        self.scripts: Any = None                # v2: the KB's script store (ScriptStoreLike), None = no KB
+        self.cases: Any = None                  # v2.1: the KB's case store (`kb.cases` / CaseScripts), None = no KB
         # cluster id → why it was blocked (read by the loop to build the BlockedItem)
         self.blocked_info: dict[str, BlockedCandidate] = {}
-        # cluster id → the script step of its last SCRIPT decision (read by the loop: what to run / ask for)
+        # cluster id → the ladder step of its last decision (read by the loop: what to run / ask for, the KB line)
         self.script_steps: dict[str, ScriptStep] = {}
 
     def _canon(self) -> Optional[Callable[[Optional[str]], str]]:
@@ -151,7 +152,7 @@ class DecisionEngine:
 
     def _pinned_block(self, cluster: ErrorCluster, kb_match: KBMatch) -> Optional[TriageDecision]:
         """A case a person pinned to `block` → BLOCKED with their reason / text (round 10). A pinned `script` version
-        is the store's `best()` choice (sbmig.kb.scripts), not a decision here."""
+        is the store's `best()` choice (`kb.cases`), not a decision here."""
         for h, errs in self._pinned_hits(cluster, kb_match):
             a = h.action
             if a.kind != "block":
@@ -205,12 +206,12 @@ class DecisionEngine:
 
         # 1. the script ladder: a proven stored version first — no LLM call, so neither the blocked policy nor the
         #    LLM budget / availability stops it
-        step = plan_script_step(cluster, prev, self.scripts, self.cfg)
+        step = plan_script_step(cluster, prev, self.cases, self.cfg)
+        self.script_steps[cluster.id] = step          # also for a BLOCKED decision: its KB search line (the log)
         if not step.case_id:
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
                                   rationale=f"escalated: {label} has no case id (no errors)")
         if step.mode == "reuse":
-            self.script_steps[cluster.id] = step
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.SCRIPT, rationale=step.why)
 
         # 2. blocked check: cannot be fixed inside the project → blocked_policy[reason] LLM script attempts, then BLOCKED
@@ -238,12 +239,12 @@ class DecisionEngine:
             return self._blocked(cluster, BlockedCandidate(
                 reason=BlockReason.REPEATED_FAILURE, errors=list(cluster.errors),
                 evidence=[step.why + "; needs a human"]))
-        if ctx.llm_calls_used >= ctx.llm_calls_budget:
+        # v2.1: 0 = no limit, > 0 = a cap, -1 = no LLM call at all (the fleet's total is used up)
+        if ctx.llm_calls_budget < 0 or (ctx.llm_calls_budget > 0 and ctx.llm_calls_used >= ctx.llm_calls_budget):
+            spent = ("fleet" if ctx.llm_calls_budget < 0 else f"{ctx.llm_calls_used}/{ctx.llm_calls_budget} calls")
             return self._blocked(cluster, BlockedCandidate(
                 reason=BlockReason.BUDGET_EXHAUSTED, errors=list(cluster.errors),
-                evidence=[f"LLM budget exhausted ({ctx.llm_calls_used}/{ctx.llm_calls_budget} calls) and no stored "
-                          f"script left to reuse for {label}"]))
-        self.script_steps[cluster.id] = step
+                evidence=[f"LLM budget exhausted ({spent}) and no stored script left to reuse for {label}"]))
         why = step.why
         if ctx.stall_level:
             why += f"; stall level {ctx.stall_level}"

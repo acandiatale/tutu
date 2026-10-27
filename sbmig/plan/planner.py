@@ -1,8 +1,8 @@
 """Rule-based migration planner (no LLM), v2 (flow-v2): ProjectProfile + Config → MigrationPlan.
 
-Step ids (non-MSA): transform.rewrite, restructure.apply | restructure.boot_pom | restructure.pom_only,
-restructure.review, verify.build. No build runs before verify.build; its fix loop (`loop.phases.verify`) fixes every
-error with LLM scripts.
+Step ids (non-MSA): transform.rewrite, transform.compile, restructure.apply | restructure.boot_pom |
+restructure.pom_only, restructure.review, verify.build. The only build before verify.build is v2.1's one compile
+(recorded, never fixed); verify.build's fix loop (`loop.phases.verify`) fixes the errors.
 
 * `transform.rewrite` (StepKind.OPENREWRITE, Phase.TRANSFORM): ONE OpenRewrite run on the as-is classpath. Recipes,
   in this order: `openrewrite.recipes.jdk21`; `jakarta` (spring_legacy and servlet_tomcat always, pure_java only with
@@ -10,6 +10,10 @@ error with LLM scripts.
   `spring_security_7` (spring_legacy; security only with spring-security) — both empty by default; `spring_boot_4`
   (spring_boot); `junit5` (junit4 detected) — empty by default; `extra.<case>` + `extra.all`. OpenRewrite recipes
   only: no project, library or KB recipes (business decision, PLAN-v2 §2).
+* `transform.compile` (StepKind.BUILD, Phase.TRANSFORM, `mvn clean compile`, v2.1 — "OpenRewrite 를 다 돌린 뒤
+  compile 을 한 번"): every error goes on the run's error list (seen `compile`), nothing is fixed. Planned whenever the
+  project has java sources (also when no recipe applied). MSA: one at the root aggregator, else
+  `transform.compile@<x>` per target (like verify).
 * Restructure (unchanged from v1, round 9c routing): `case_type == spring_boot` with `layout.boot_as_is ==
   "in-place"` (default) plans `restructure.boot_pom` (StepKind.MSA_POM, params {"mode": "boot_pom", "boot_modules"})
   — directories kept, poms only; `boot_as_is == "layout"` and every non-Boot case plan `restructure.apply`
@@ -200,8 +204,8 @@ def _transform_step(facts: _Facts, cfg: Config, notes: list[str], *, svc: Option
         return None
     recipes = [recipe_ref(i, cfg) for i in ids]
     parts = [lbl for key, lbl in _BUCKETS if buckets.get(key)]
-    notes.append(f"transform{where}: one OpenRewrite run ({_shorts(ids)}) — no build until the restructure is "
-                 "done (v2)")
+    notes.append(f"transform{where}: one OpenRewrite run ({_shorts(ids)}) — then one compile, no fixing until the "
+                 "restructure is done (v2.1)")
     return PlanStep(
         id=TRANSFORM + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.TRANSFORM,
         title="OpenRewrite in one run: " + " + ".join(parts) + (f" ({svc})" if svc else ""),
@@ -223,6 +227,21 @@ def _review_step(restructure_step: str, cfg: Config, notes: list[str]) -> Option
         params={"restructure_step": restructure_step},
         reason="business rule: the LLM confirms poms, dependencies and the module split against the company rules "
                "before the first build; critical issues are fixed by a script, warnings are recorded")
+
+
+COMPILE = "transform.compile"
+
+
+def _compile(notes: list[str], target: Optional[str] = None, svc: Optional[str] = None,
+             note: bool = True) -> PlanStep:
+    if note:
+        notes.append("compile: one mvn clean compile after OpenRewrite → every error on the error list (seen "
+                     "compile), no fixing (v2.1)")
+    return PlanStep(id=COMPILE + _sfx(svc), kind=StepKind.BUILD, phase=Phase.TRANSFORM,
+                    title="mvn clean compile once — errors to the error list, no fixing" + (f" ({svc})" if svc else ""),
+                    build_goal="clean compile", target=target, params={"service": svc} if svc else {},
+                    reason="v2.1: OpenRewrite's result compiled once; the error list keeps every error (seen compile) "
+                           "and the build after the restructure adds only new ones")
 
 
 def _verify(target: Optional[str] = None, svc: Optional[str] = None) -> PlanStep:
@@ -330,6 +349,14 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[P
         for t in targets:
             st = _transform_step(facts_of[t.name], cfg, notes, svc=t.name, target=_service_dir(t))
             steps += [st] if st else []
+    rp = profile.root_pom
+    aggregated = rp is not None and rp.is_aggregator
+    if not no_sources:
+        if aggregated:
+            steps.append(_compile(notes))
+        else:
+            for i, t in enumerate(targets):
+                steps.append(_compile(notes, target=_service_dir(t), svc=t.name, note=i == 0))
     params: dict[str, Any] = {"mode": "msa_pom", "services": [s.name for s in svcs],
                               "parent_policy": cfg.layout.msa_parent_policy,
                               "boot_modules": list(profile.boot_modules)}
@@ -346,8 +373,7 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[P
                      "optional bumps + remove_when_present, but no mandatory dependencies (those go to deployables)")
     rv = _review_step("restructure.msa_pom", cfg, notes)
     steps += [rv] if rv else []
-    rp = profile.root_pom
-    if rp is not None and rp.is_aggregator:
+    if aggregated:
         steps.append(_verify())
         notes.append(f"verify: root aggregator {rp.path} → one mvn clean package for the whole repo")
     else:
@@ -381,6 +407,7 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
         return steps
     st = _transform_step(facts, cfg, notes)
     steps += [st] if st else []
+    steps.append(_compile(notes))
     if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place":
         # round 9c company rule: a Boot as-is project keeps its directories; only the poms change
         steps.append(PlanStep(

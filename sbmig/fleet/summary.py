@@ -1,23 +1,27 @@
 """Fleet summaries, rewritten after every project: ``fleet/summary.md``, ``summary.csv``,
-``summary.json`` (= state) and ``fleet/learning.md`` (the error cases of this fleet's runs, the most widespread cases
-of the catalog and the fix scripts stored in the KB).
+``summary.json`` (= state) and ``fleet/learning.md`` (the KB cases these projects met, with their stored scripts).
 
 Round 10: ``summary.csv`` is UTF-8 with BOM (Excel opens Korean paths correctly) and carries the ``attention`` codes
 (:mod:`sbmig.report.result_line`: why a human has to look, ``;``-separated, most important first) and the ``input``
 path; ``summary.md`` gets a "Needs attention" section grouped by the first code. Each file is written on its own:
-a ``summary.csv`` locked by Excel is skipped with a warning and the others are still written."""
+a ``summary.csv`` locked by Excel is skipped with a warning and the others are still written.
+
+v2.1: per project the error-list counts ``open`` / ``resolved`` / ``blocked`` (``FleetProjectResult.error_counts``,
+the statuses of ``RunReport.error_entries``; a state written before v2.1 falls back to ``unresolved`` / ``blocked``);
+``learning.md`` lists the cases of ``<kb>/cases/*/case.json`` (CaseInfo) with their script versions."""
 
 from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 from pathlib import Path
 from typing import Any, Optional
 
 from sbmig.core.config import Config
-from sbmig.core.models import FleetProjectResult, FleetState
-from sbmig.report.result_line import result_attention
+from sbmig.core.models import CaseInfo, FleetProjectResult, FleetState
+from sbmig.report.result_line import counts_open_resolved, result_attention
 
 log = logging.getLogger("sbmig.fleet")
 
@@ -30,8 +34,9 @@ COLUMNS = [
     "duration_s",
     "llm_calls",
     "llm_cost",
+    "open",
+    "resolved",
     "blocked",
-    "unresolved",
     "advisories",
     "carried_over",
     "attempt",
@@ -40,13 +45,24 @@ COLUMNS = [
     "attention",
     "input",
 ]
-TABLE_COLUMNS = COLUMNS[:12] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
+TABLE_COLUMNS = COLUMNS[:13] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
 ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`: projects printed per code
+
+
+def error_columns(p: FleetProjectResult) -> tuple[int, int, int]:
+    """(open, resolved, blocked) of a project's error list; without counts (a pre-v2.1 state, a run that never
+    reported) the old `unresolved` / `blocked` fields."""
+    counts = dict(getattr(p, "error_counts", None) or {})
+    if not counts:
+        return p.unresolved, 0, p.blocked
+    o, r = counts_open_resolved(counts)
+    return o, r, int(counts.get("blocked", 0) or 0)
 
 
 def rows(state: FleetState) -> list[dict[str, Any]]:
     out = []
     for i, p in enumerate(state.projects, 1):
+        o, r, b = error_columns(p)
         out.append(
             {
                 "#": i,
@@ -57,8 +73,9 @@ def rows(state: FleetState) -> list[dict[str, Any]]:
                 "duration_s": round(p.duration_s, 1),
                 "llm_calls": p.llm_calls,
                 "llm_cost": "" if p.llm_cost is None else round(p.llm_cost, 4),
-                "blocked": p.blocked,
-                "unresolved": p.unresolved,
+                "open": o,
+                "resolved": r,
+                "blocked": b,
                 "advisories": len(p.advisories),
                 "carried_over": p.carried_over,
                 "attempt": p.attempt,
@@ -118,6 +135,9 @@ def totals(state: FleetState) -> dict[str, Any]:
         "duration_s": round(sum(p.duration_s for p in ps), 1),
         "blocked": sum(p.blocked for p in ps),
         "unresolved": sum(p.unresolved for p in ps),
+        "errors_open": sum(error_columns(p)[0] for p in ps),
+        "errors_resolved": sum(error_columns(p)[1] for p in ps),
+        "errors_blocked": sum(error_columns(p)[2] for p in ps),
         "advisories": sum(len(p.advisories) for p in ps),
         "carried_over": sum(p.carried_over for p in ps),
         "done": sum(1 for p in ps if p.status in ("success", "incomplete", "aborted", "skipped")),
@@ -149,8 +169,9 @@ def render_summary_md(state: FleetState) -> str:
         f"{state.updated_at.isoformat(timespec='seconds')}"
         + (f", finished: {state.finished_at.isoformat(timespec='seconds')}" if state.finished_at else ""),
         f"* projects: {t['projects']} ({status or '-'})",
-        f"* LLM calls: {t['llm_calls']} (cost {t['llm_cost']:.4f}, see llm.pricing), blocked: {t['blocked']}, "
-        f"unresolved: {t['unresolved']}, duration: {t['duration_s']:.0f}s",
+        f"* LLM calls: {t['llm_calls']} (cost {t['llm_cost']:.4f}, see llm.pricing), duration: {t['duration_s']:.0f}s",
+        f"* error list: open {t['errors_open']}, resolved {t['errors_resolved']}, blocked {t['errors_blocked']} "
+        f"(blocked items: {t['blocked']})",
         f"* library advisories: {t['advisories']}, dependencies carried over: {t['carried_over']}",
     ]
     if t["running"]:
@@ -177,7 +198,8 @@ def render_summary_md(state: FleetState) -> str:
     head += advisory_section(state)
     if state.notes:
         head += ["## Notes", ""] + [f"* {n}" for n in state.notes] + [""]
-    head.append("See `learning.md` for the error cases across these projects and the fix scripts in the KB.")
+    head.append("See `learning.md` for the KB cases these projects met and their stored fix scripts; each project's "
+                "error list is `errors.md` in its run directory.")
     return "\n".join(head) + "\n"
 
 
@@ -228,135 +250,122 @@ def render_csv(state: FleetState) -> str:
     return buf.getvalue()
 
 
-_EC_METHODS = ("script", "script_reuse", "script_augment", "llm", "plan_step", "none")
-_EC_STATUSES = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
-TOP_CASES = 10
+TOP_CASES = 40
 
 
-def _md_cell(v: Any) -> str:
-    return str(v if v not in (None, "") else "-").replace("|", "\\|").replace("\n", " ")
+def _md_cell(v: Any, limit: int = 160) -> str:
+    s = " ".join(str(v if v not in (None, "") else "-").split()).replace("|", "\\|")
+    return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
-def error_cases_md(ec: dict[str, Any]) -> list[str]:
-    """The "Error cases across projects" section (``ErrorCaseStore.summary``): status × method, top failure
-    reasons, the L2 signatures still unresolved / blocked most often."""
-    lines = ["## Error cases across projects", ""]
-    if not ec.get("errors"):
-        return lines + ["_No error cases recorded for these projects yet._", ""]
-    lines.append(f"{ec.get('errors', 0)} build error(s) recorded one by one from {ec.get('projects', 0)} project(s) / "
-                 f"{ec.get('runs', 0)} run(s), {ec.get('attempts', 0)} fix attempt(s).")
-    if ec.get("by_status"):
-        lines.append("Status: " + ", ".join(f"{k} {v}" for k, v in ec["by_status"].items()) + ".")
-    if ec.get("by_method"):
-        lines.append("Resolved by: " + ", ".join(f"{k} {v}" for k, v in ec["by_method"].items()) + ".")
-    matrix = ec.get("status_method") or {}
-    if matrix:
-        methods = [m for m in _EC_METHODS if any(m in row for row in matrix.values())]
-        methods += sorted({m for row in matrix.values() for m in row} - set(methods))
-        statuses = [st for st in _EC_STATUSES if st in matrix] + sorted(set(matrix) - set(_EC_STATUSES))
-        lines += ["", "Status × method (resolved: the method that fixed it; otherwise the method of the last attempt, "
-                      "none = never attempted):", "",
-                  "| status | " + " | ".join(methods) + " |", "|---|" + "---|" * len(methods)]
-        lines += [f"| {st} | " + " | ".join(str(matrix[st].get(m, 0)) for m in methods) + " |" for st in statuses]
-    lines += ["", "### Top failure reasons", ""]
-    if ec.get("top_failure_reasons"):
-        lines += ["| L2 signature | errors | projects | why not resolved |", "|---|---|---|---|"]
-        lines += [f"| {_md_cell(r['signature_generic'])} | {r['count']} | {r['projects']} | {_md_cell(r['reason'])} |"
-                  for r in ec["top_failure_reasons"]]
-    else:
-        lines.append("_none_")
-    lines += ["", "### Still unresolved / blocked most often", ""]
-    if ec.get("top_unresolved"):
-        lines += ["| L2 signature | symbol | errors | blocked | projects |", "|---|---|---|---|---|"]
-        lines += [f"| {_md_cell(r['signature_generic'])} | {_md_cell(r.get('symbol'))} | {r['count']} | "
-                  f"{r.get('blocked', 0)} | {r['projects']} |" for r in ec["top_unresolved"]]
-    else:
-        lines.append("_none_")
-    return lines + [""]
+def _scripts_cell(c: CaseInfo) -> str:
+    """``v1 proven 3/0, v2 unverified 0/1`` (successes / failures)."""
+    return ", ".join(f"v{s.version} {s.status} {s.successes}/{s.failures}" for s in c.scripts) or "-"
 
 
-def _top_cases(kb: Any, top: int = TOP_CASES) -> list[dict[str, Any]]:
-    """The most widespread cases of the KB's case catalog (whole KB), [] without one."""
-    try:
-        from sbmig.kb.catalog import action_text
-
-        cat = kb.catalog()
-        if not cat.index_path.exists():
-            return []
-        return [{"id": c.id, "name": c.effective_name(), "status": c.effective_status(),
-                 "action": action_text(c.effective_action()), "projects": c.evidence.projects,
-                 "seen": c.evidence.seen} for c in cat.cases()[:top]]
-    except Exception as e:  # pragma: no cover - the learning report must not fail on it
-        log.warning("case catalog summary failed: %s: %s", type(e).__name__, e)
-        return []
-
-
-def _script_rows(kb: Any, top: int = TOP_CASES) -> list[dict[str, Any]]:
-    """Cases with stored fix scripts, most success projects first (the version a reuse runs first)."""
-    try:
-        store = kb.scripts
-        rows = []
-        for cid in store.case_ids():
-            metas = store.versions(cid)
-            if not metas:
-                continue
-            ranked = store.ranked(cid)
-            rows.append({"case_id": cid, "versions": len(metas), "best": ranked[0].version if ranked else 0,
-                         "successes": sum(m.successes for m in metas), "failures": sum(m.failures for m in metas),
-                         "projects": len({p for m in metas for p in m.success_projects}),
-                         "signature_generic": next((m.signature_generic for m in reversed(metas)
-                                                    if m.signature_generic), "")})
-        rows.sort(key=lambda r: (-r["projects"], -r["successes"], r["case_id"]))
-        return rows[:top]
-    except Exception as e:  # pragma: no cover - the learning report must not fail on it
-        log.warning("fix script summary failed: %s: %s", type(e).__name__, e)
-        return []
-
-
-def render_learning(state: FleetState, kb: Any = None) -> str:
-    """``learning.md``: this fleet's projects / LLM calls, the error cases of its runs, the most widespread cases of
-    the catalog and the fix scripts of the KB (both whole KB)."""
-    run_ids = [p.run_id for p in state.projects if p.run_id]
-    ps = state.projects
-    lines = [f"# Fleet {state.fleet_id} — error cases and fix scripts", "", "## This fleet", "",
-             f"* projects: {len(ps)} ({sum(1 for p in ps if p.run_id)} run)",
-             f"* LLM calls: {sum(p.llm_calls for p in ps)}", ""]
-    ec: dict[str, Any] = {}
-    stats: dict[str, Any] = {}
-    if kb is not None:
+def read_cases(kb: Any = None, kb_dir: Optional[Path] = None) -> list[tuple[CaseInfo, dict[str, Any]]]:
+    """(CaseInfo, extra keys such as "pin") of every case, most widespread first: through the KB's case store
+    (`kb.cases.cases()`), else straight from `<kb_dir>/cases/*/case.json`; damaged files are skipped."""
+    store = getattr(kb, "cases", None) if kb is not None else None
+    if store is not None and callable(getattr(store, "cases", None)):
         try:
-            ec = kb.error_case_store().summary(run_ids=run_ids) if run_ids else {}
+            return list(store.cases())
         except Exception as e:  # pragma: no cover - the learning report must not fail on it
-            log.warning("error-case summary failed: %s: %s", type(e).__name__, e)
+            log.warning("fleet: kb cases unreadable: %s: %s", type(e).__name__, e)
+            return []
+    out: list[tuple[CaseInfo, dict[str, Any]]] = []
+    root = Path(kb_dir) / "cases" if kb_dir is not None else None
+    if root is None or not root.is_dir():
+        return out
+    for f in sorted(root.glob("*/case.json")):
         try:
-            stats = kb.stats()
-        except Exception as e:  # pragma: no cover
-            log.warning("kb stats failed: %s", e)
-    lines += error_cases_md(ec)
-    cases = _top_cases(kb) if kb is not None else []
-    if cases:
-        lines += ["### Top error cases (case catalog, whole KB — `sbmig kb cases show <id>`)", "",
-                  "| case | name | status | action | projects | seen |", "|---|---|---|---|---|---|"]
-        lines += [f"| `{r['id']}` | {_md_cell(r['name'])} | {r['status']} | {_md_cell(r['action'])} | "
-                  f"{r['projects']} | {r['seen']} |" for r in cases]
-        lines.append("")
-    lines += ["## Fix scripts (whole KB — `sbmig kb scripts list`)", ""]
-    if stats:
-        lines.append(f"* cases with scripts: {stats.get('script_cases', 0)}, versions: {stats.get('script_versions', 0)} "
-                     f"(proven {stats.get('scripts_proven', 0)}, retired {stats.get('scripts_retired', 0)}, "
-                     f"quarantined {stats.get('scripts_quarantined', 0)})")
-        lines.append(f"* catalog cases: {stats.get('catalog_cases', 0)} (active {stats.get('catalog_active', 0)}, "
-                     f"candidate {stats.get('catalog_candidate', 0)}, observed {stats.get('catalog_observed', 0)}, "
-                     f"rejected {stats.get('catalog_rejected', 0)})")
-    rows = _script_rows(kb) if kb is not None else []
-    if rows:
-        lines += ["", "| case | versions | reused first | ok | failed | projects | L2 signature |",
-                  "|---|---|---|---|---|---|---|"]
-        lines += [f"| `{r['case_id']}` | {r['versions']} | {'v' + str(r['best']) if r['best'] else '-'} | "
-                  f"{r['successes']} | {r['failures']} | {r['projects']} | {_md_cell(r['signature_generic'])} |"
-                  for r in rows]
-    elif not stats:
-        lines.append("_no KB_")
+            data = json.loads(f.read_text(encoding="utf-8"))
+            case = CaseInfo.model_validate({k: v for k, v in data.items() if k in CaseInfo.model_fields})
+            out.append((case, {k: v for k, v in data.items() if k not in CaseInfo.model_fields}))
+        except Exception as e:  # noqa: BLE001 - one damaged case never costs the report
+            log.warning("fleet: %s skipped: %s: %s", f, type(e).__name__, e)
+    out.sort(key=lambda h: (-len(h[0].projects), -h[0].seen, h[0].case_id))
+    return out
+
+
+_RUN_CASES: dict[str, tuple[float, frozenset[str]]] = {}     # errors.jsonl path → (mtime, case ids): read once
+
+
+def _run_case_ids(run_dir: Optional[str]) -> frozenset[str]:
+    """Case ids of a run's `<run dir>/errors.jsonl` (cached by mtime; a summary is rewritten after every project)."""
+    if not run_dir:
+        return frozenset()
+    f = Path(run_dir) / "errors.jsonl"
+    try:
+        mtime = f.stat().st_mtime
+    except OSError:
+        return frozenset()
+    hit = _RUN_CASES.get(str(f))
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
+    ids: set[str] = set()
+    try:
+        for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                cid = json.loads(line).get("case_id") if line.strip() else None
+            except ValueError:
+                continue
+            if cid:
+                ids.add(str(cid))
+    except OSError:
+        return frozenset()
+    _RUN_CASES[str(f)] = (mtime, frozenset(ids))
+    return _RUN_CASES[str(f)][1]
+
+
+def fleet_case_projects(state: FleetState, cases: list[tuple[CaseInfo, dict[str, Any]]]) -> dict[str, list[str]]:
+    """case id → this fleet's projects that met it: from each project's run errors.jsonl, plus the case's own
+    project list (CaseInfo.projects holds the profile name, usually the fleet name too)."""
+    out: dict[str, list[str]] = {}
+    for p in state.projects:
+        for cid in _run_case_ids(p.out_dir):
+            out.setdefault(cid, []).append(p.name)
+    names = {p.name for p in state.projects}
+    for c, _ in cases:
+        for n in c.projects:
+            if n in names and n not in out.setdefault(c.case_id, []):
+                out[c.case_id].append(n)
+    return {k: v for k, v in out.items() if v}
+
+
+def render_learning(state: FleetState, kb: Any = None, kb_dir: Optional[Path] = None) -> str:
+    """``learning.md``: this fleet's error-list counts, then the KB cases its projects met (most projects first;
+    the whole KB when none is known) with projects / seen / resolved and every stored script version (status
+    successes/failures)."""
+    ps = state.projects
+    t = totals(state)
+    lines = [f"# Fleet {state.fleet_id} — cases and fix scripts", "", "## This fleet", "",
+             f"* projects: {len(ps)} ({sum(1 for p in ps if p.run_id)} run)",
+             f"* LLM calls: {t['llm_calls']}",
+             f"* error list: open {t['errors_open']}, resolved {t['errors_resolved']}, blocked {t['errors_blocked']}",
+             ""]
+    cases = read_cases(kb, kb_dir)
+    lines += ["## Cases across projects (`sbmig kb cases show <case>`)", ""]
+    if not cases:
+        return "\n".join(lines + ["_No cases in the KB yet._", ""]) + "\n"
+    met = fleet_case_projects(state, cases)
+    scripts = [s for c, _ in cases for s in c.scripts]
+    by = {k: sum(1 for s in scripts if s.status == k) for k in ("proven", "unverified", "retired")}
+    lines += [f"{len(cases)} case(s) in the KB, {sum(1 for c, _ in cases if c.case_id in met)} met by this fleet's "
+              f"projects; {len(scripts)} script version(s) (proven {by['proven']}, unverified {by['unverified']}, "
+              f"retired {by['retired']}).", ""]
+    shown = [h for h in cases if h[0].case_id in met] or cases           # this fleet's cases, else the whole KB
+    shown.sort(key=lambda h: -len(met.get(h[0].case_id, [])))           # stable: KB order (most widespread) next
+    lines += ["| case | name | this fleet | KB projects | seen / resolved | scripts (status ok/failed) | pin |",
+              "|---|---|---|---|---|---|---|"]
+    for c, extra in shown[:TOP_CASES]:
+        here = met.get(c.case_id, [])
+        fleet_cell = f"{len(here)}: " + ", ".join(here[:5]) + (" …" if len(here) > 5 else "") if here else "-"
+        lines.append(f"| `{c.case_id}` | {_md_cell(c.name or c.l2, 120)} | {_md_cell(fleet_cell, 140)} | "
+                     f"{len(c.projects)} | {c.seen} / {c.resolved} | {_md_cell(_scripts_cell(c), 200)} | "
+                     f"{_md_cell(extra.get('pin'), 60)} |")
+    if len(shown) > TOP_CASES:
+        lines += ["", f"… {len(shown) - TOP_CASES} more case(s) — `<kb>/cases.md` has every one"]
     return "\n".join(lines) + "\n"
 
 
@@ -364,7 +373,7 @@ def write_summaries(
     state: Optional[FleetState], fleet_dir: Path, cfg: Optional[Config] = None, kb: Any = None
 ) -> dict[str, Path]:
     """Write every summary file on its own; returns the ones written (a file Excel holds open is skipped)."""
-    from sbmig.kb.store import atomic_write
+    from sbmig.kb.store import atomic_write          # tmp file + os.replace, retried while Windows holds the file
 
     if state is None:
         return {}
@@ -378,7 +387,8 @@ def write_summaries(
         jobs.append(("csv", "summary.csv", lambda: "\ufeff" + render_csv(state)))     # UTF-8 BOM for Excel
     if "json" in formats:
         jobs.append(("json", "summary.json", lambda: state.model_dump_json(indent=2) + "\n"))
-    jobs.append(("learning", "learning.md", lambda: render_learning(state, kb)))
+    kb_dir = cfg.resolve_path(cfg.kb.dir) if cfg is not None else None
+    jobs.append(("learning", "learning.md", lambda: render_learning(state, kb, kb_dir)))
     for key, name, render in jobs:
         path = fleet_dir / name
         try:

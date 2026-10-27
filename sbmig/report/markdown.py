@@ -6,10 +6,22 @@ from collections import Counter, OrderedDict
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
-from sbmig.core.models import (AdvisoryFinding, BlockedItem, BuildError, DecisionKind, FixAttempt, PhaseResult,
-                               RunReport, StructureReview)
+from sbmig.core.models import AdvisoryFinding, BlockedItem, BuildError, RunReport, StructureReview
 
+from .errors import (
+    case_rows,
+    counts_text,
+    entries_of,
+    entry_text,
+    review_changes,
+    seen_groups,
+    stats_text,
+    status_counts,
+    tries_text,
+    where,
+)
 from .i18n import normalize, tr, tr_line
+from .result_line import report_result_line
 
 FLAG_HELP = {
     "test-compile-skipped": "main code builds, but test sources only compile with `-Dmaven.test.skip=true` "
@@ -188,49 +200,6 @@ def _duration(r: RunReport, lang: str = "en") -> str:
     return tr(lang, "{m}m {s}s", m=m, s=f"{s:02d}") if m else tr(lang, "{secs}s", secs=f"{secs:.1f}")
 
 
-def script_ref(case_id: str, version: int) -> str:
-    """The resolver id of a v2 script attempt: `script:<case_id>:v<N>` (`script:<case_id>` when not stored)."""
-    return f"script:{case_id or '?'}:v{version}" if version else f"script:{case_id or '?'}"
-
-
-def is_script_attempt(a: FixAttempt) -> bool:
-    return bool(a.script_mode or a.script_case_id) or a.decision.kind == DecisionKind.SCRIPT
-
-
-def script_label(a: FixAttempt) -> str:
-    """`script:<case>:v<N>` + mode (new / reuse / augment) + the run status of the script, e.g.
-    "`script:3f2a9c01de:v2` augment (ok)"."""
-    txt = f"`{script_ref(a.script_case_id, a.script_version)}`" + (f" {a.script_mode}" if a.script_mode else "")
-    if a.script_result is not None:
-        txt += f" ({a.script_result.status})"
-    return txt
-
-
-def _what(a: FixAttempt, lang: str = "en") -> str:
-    if is_script_attempt(a):                 # the case's fix script (stored version, augmented or new)
-        return script_label(a)
-    via = f"`{a.model}`" if a.model else "-"
-    if a.advisory_ids:                       # round 6: the prompt carried these advisories' migration guidance
-        via += tr(lang, " + advisory {ids}", ids=", ".join(a.advisory_ids))
-    return via
-
-
-def _attempt_text(a: FixAttempt) -> str:
-    script_error = a.script_result.error if a.script_result is not None else ""
-    return a.analysis or "; ".join(a.apply_errors) or script_error or a.decision.rationale
-
-
-def _attempt_rows(phases: Iterable[PhaseResult], lang: str = "en") -> list[str]:
-    rows = [tr(lang, "| phase/iter | cluster | decision | via | outcome | commit | analysis |"),
-            "|---|---|---|---|---|---|---|"]
-    for pr in phases:
-        for a in pr.attempts:
-            rows.append(f"| {pr.phase.value}/{a.iteration} | `{_cell(a.cluster_id, 40)}` | {a.decision.kind.value} | "
-                        f"{_cell(_what(a, lang), 60)} | {a.outcome} | {(a.commit or '-')[:8]} | "
-                        f"{_cell(_attempt_text(a), 120)} |")
-    return rows
-
-
 def group_by_file(errors: Iterable[BuildError], lang: str = "en") -> "OrderedDict[str, list[BuildError]]":
     groups: "OrderedDict[str, list[BuildError]]" = OrderedDict()
     for e in errors:
@@ -366,19 +335,19 @@ def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
-# ---- build errors, one record each (2026-10-23; records from the error tracker, see INTERFACES "Error cases")
-ERROR_CASE_MAX_ROWS = 40
-_STATUS_COUNT_ORDER = ("resolved", "resolved_indirectly", "blocked", "unresolved", "not_visible")
-_STATUS_ROW_ORDER = {s: i for i, s in enumerate(("unresolved", "blocked", "not_visible", "resolved",
-                                                 "resolved_indirectly"))}
-_METHOD_ORDER = ("script", "script_reuse", "script_augment", "plan_step", "none")   # others (old records) follow
-_SENTENCE_END = re.compile(r"(?<=[.!?])\s")
-
-
-def _first_sentence(text: str) -> str:
-    s = " ".join(str(text or "").split())
-    m = _SENTENCE_END.search(s)
-    return s[: m.start()] if m else s
+# ---- v2.1 error list (RunReport.error_entries): one line per build error / pom correction, grouped by where it was
+# first seen, and one row per case with the LLM's cause / solution, the applied changes and the stored script
+ERROR_LIST_TITLE = "Error list"
+FIXES_TITLE = "Fixes by case"
+ERROR_LIST_MAX_ROWS = 50                     # per `seen` group; errors.md in the run directory has every entry
+FIXES_MAX_ROWS = 40
+SEEN_TITLES = {
+    "compile": "compile — `mvn compile` after OpenRewrite",
+    "restructure": "restructure — pom corrections, verified by the next build",
+    "review": "review — structure review",
+    "build": "build — first `mvn clean package`, new errors only",
+}
+SEEN_FIX_TITLE = "{seen} — new errors of round {n}'s build"
 
 
 def _short(text: object, limit: int) -> str:
@@ -387,107 +356,112 @@ def _short(text: object, limit: int) -> str:
     return s[: limit - 1] + "…" if len(s) > limit else s
 
 
-def _error_case_where(e: Any) -> str:
-    if e.file:
-        return f"`{_cell(f'{e.file}:{e.line}' if e.line else e.file, 140)}`"
-    if e.artifact:
-        return f"`{_cell(e.artifact, 140)}`"
-    if e.module:
-        return f"`{_cell(e.module, 140)}`"
+def _seen_title(seen: str, n: int, lang: str = "en") -> str:
+    if seen in SEEN_TITLES:
+        title = tr(lang, SEEN_TITLES[seen])
+    else:
+        m = re.match(r"^fix r(\d+)$", seen)
+        title = tr(lang, SEEN_FIX_TITLE, seen=seen, n=m.group(1)) if m else seen
+    return f"{title} ({n})"
+
+
+def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """`## Error list`: counts, one table per `seen` group (compile → restructure → review → build → fix rN), the
+    last build log. Without entries: the unresolved errors of the last build grouped by file (runs that stopped
+    before the error list was kept), else one line."""
+    entries = entries_of(r)
+    L = [f"## {tr(lang, ERROR_LIST_TITLE)}", ""]
+    if entries:
+        L += [tr(lang, "{n} error(s) in this run, one line each (all of them with every try and diff: `errors.md` / "
+                       "`errors.jsonl` in the run directory): {counts}.", n=len(entries),
+                 counts=counts_text(status_counts(entries))), ""]
+        for seen, rows in seen_groups(entries).items():
+            L += [f"### {_seen_title(seen, len(rows), lang)}", "",
+                  tr(lang, "| # | case | file:line | message | status | tries | resolved |"),
+                  "|---|---|---|---|---|---|---|"]
+            for i, e in rows[:ERROR_LIST_MAX_ROWS]:
+                loc = where(e)
+                L.append(f"| {i} | {('`' + e.case_id[:12] + '`') if e.case_id else '-'} | "
+                         f"{('`' + _cell(loc, 140) + '`') if loc else '-'} | {_cell(entry_text(e), 200)} | "
+                         f"{e.status} | {_cell(tries_text(e.tries) or '-', 300)} | {_cell(e.resolved or '-', 40)} |")
+            if len(rows) > ERROR_LIST_MAX_ROWS:
+                L += ["", tr(lang, "… {n} more in this group — see `errors.md`", n=len(rows) - ERROR_LIST_MAX_ROWS)]
+            L.append("")
+    elif r.unresolved:
+        L += [tr(lang, "No error list was kept for this run; {n} error(s) were left after the last build, grouped by "
+                       "file:", n=len(r.unresolved)), ""]
+        for key, errs in group_by_file(r.unresolved, lang).items():
+            L.append(f"### `{key}`")
+            for e in errs:
+                loc = f"L{e.line}: " if e.line else ""
+                extra = tr(lang, " — symbol: `{symbol}`", symbol=e.symbol) if e.symbol else ""
+                at = tr(lang, " — location: {location}", location=e.location) if e.location else ""
+                L.append(f"- [{e.kind.value}] {loc}{_cell(e.message, 300)}{extra}{at}")
+            L.append("")
+    else:
+        L += [tr(lang, "None. The final build passed.") if r.success
+              else tr(lang, "None. No structured errors were captured; check the last build log."), ""]
+    if r.final_build is not None and r.final_build.log_path:
+        L += [tr(lang, "Last build log: `{path}`", path=r.final_build.log_path), ""]
+    return L
+
+
+def _case_script_cell(row: Any, lang: str = "en") -> str:
+    if row.script:
+        return f"v{row.script_version} `{_cell(row.script, 120)}`" if row.script_version else f"`{_cell(row.script, 120)}`"
+    if row.no_script_reason:
+        return tr(lang, "no script: {reason}", reason=_cell(row.no_script_reason, 200))
     return "-"
 
 
-def _replace_pairs_text(e: Any, lang: str = "en") -> str:
-    pairs = list(e.replace_pairs or [])
-    if not pairs:
-        return ""
-    shown = ", ".join(f"`{_short(p.old, 60)}` → `{_short(p.new, 60)}`" for p in pairs[:2])
-    if len(pairs) > 2:
-        shown += f" (+{len(pairs) - 2})"
-    return tr(lang, "replace {pairs}", pairs=shown)
-
-
-def _error_case_how(e: Any, lang: str = "en") -> str:
-    """Resolved: method + resolver + the description's first sentence (+ replace pairs); otherwise why not."""
-    if e.status in ("resolved", "resolved_indirectly"):
-        resolver = e.resolver_id or (e.resolved_by[5:] if (e.resolved_by or "").startswith("step:") else "")
-        if e.script_version and f":v{e.script_version}" not in resolver:    # v2: the script version that fixed it
-            resolver = script_ref(e.script_case_id or e.case_id, e.script_version)
-        sentence = _first_sentence(e.description) or (_first_sentence(e.notes[0]) if e.notes else "")
-        if sentence and resolver and resolver in sentence:      # the description already names who did it
-            how = sentence
-        else:
-            who = e.fix_method + (f" `{resolver}`" if resolver else "")
-            how = f"{who}: {sentence}" if sentence else who
-        rp = _replace_pairs_text(e, lang)
-        return _cell(f"{how} · {rp}" if rp else how, 400)
-    why = " ".join(str(e.failure_reason or "").split())
-    if e.status == "blocked":
-        if not why:
-            why = " ".join(str(e.suggestion or "").split())
-        if e.block_reason and e.block_reason not in why:
-            why = f"`{e.block_reason}`" + (f": {why}" if why else "")
-    if not why:
-        why = (tr(lang, "the last build stopped before this error's stage — status unknown")
-               if e.status == "not_visible" else tr(lang, "no fix attempt recorded"))
-    return _cell(why, 400)
-
-
-def _count_text(counter: Counter, order: Iterable[str]) -> str:
-    keys = [k for k in order if counter.get(k)] + sorted(k for k in counter if k not in order and counter[k])
-    return ", ".join(f"{k} {counter[k]}" for k in keys)
-
-
-def error_case_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """`## Build errors and how each was handled`: counts by status / fix method, ≤ 40 rows (unresolved first),
-    pointers to the run-dir files; [] when the run recorded no error cases."""
-    cases = list(r.error_cases or [])
-    if not cases:
+def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """`## Fixes by case`: one row per case that was worked on — cause / solution of the deciding try, the files the
+    kept tries changed (+/−) and the stored script; [] when no case had a try."""
+    rows = case_rows(entries_of(r))
+    if not rows:
         return []
-    counts = r.error_case_counts or {}
-    by_status = Counter({s: n for s, n in counts.items() if s in _STATUS_ROW_ORDER and n})
-    if not by_status:
-        by_status = Counter(e.status for e in cases)
-    by_method = Counter(e.fix_method for e in cases if e.status in ("resolved", "resolved_indirectly"))
-    L = [tr(lang, "## Build errors and how each was handled"), "",
-         tr(lang, "{n} build error(s) seen in this run, one record each.", n=sum(by_status.values())), "",
-         tr(lang, "- by status: {counts}", counts=_count_text(by_status, _STATUS_COUNT_ORDER))]
-    if by_method:
-        L.append(tr(lang, "- fixed by (resolved errors): {counts}", counts=_count_text(by_method, _METHOD_ORDER)))
-    L += ["", tr(lang, "| status | where | message | how resolved / why not | attempts |"), "|---|---|---|---|---|"]
-    rows = sorted(cases, key=lambda e: _STATUS_ROW_ORDER.get(e.status, len(_STATUS_ROW_ORDER)))
-    for e in rows[:ERROR_CASE_MAX_ROWS]:
-        attempts = f"{e.attempt_count}" + (f" (llm {e.llm_attempts})" if e.llm_attempts else "")
-        L.append(f"| {e.status} | {_error_case_where(e)} | {_cell(e.message, 200)} | {_error_case_how(e, lang)} | "
-                 f"{attempts} |")
-    if len(rows) > ERROR_CASE_MAX_ROWS:
-        L += ["", tr(lang, "… {n} more — see `error_cases.csv`", n=len(rows) - ERROR_CASE_MAX_ROWS)]
-    L += ["", "_" + tr(lang, "Every error with its full history: `error_cases.csv` (opens in Excel) and "
-                             "`error_cases.jsonl` in the run directory; every fix attempt with its diff: "
-                             "`fix_attempts.jsonl`. Across projects: `sbmig kb errors` (`list`, `summary`).") + "_",
-          ""]
+    L = [f"## {tr(lang, FIXES_TITLE)}", "",
+         tr(lang, "| case | errors | cause | solution | changes (files, +/−) | script |"), "|---|---|---|---|---|---|"]
+    for row in rows[:FIXES_MAX_ROWS]:
+        solution = row.solution or (tr(lang, "(no solution text) {reason}", reason=row.no_script_reason)
+                                    if row.no_script_reason else "")
+        L.append(f"| `{row.case_id}` {_cell(_short(row.name, 100), 120)} | "
+                 f"{tr(lang, '{resolved}/{n} resolved', resolved=row.resolved, n=row.entries)} | "
+                 f"{_cell(row.analysis or '-', 400)} | {_cell(solution or '-', 400)} | "
+                 f"{_cell(stats_text(row.changes) or '-', 300)} | {_case_script_cell(row, lang)} |")
+    if len(rows) > FIXES_MAX_ROWS:
+        L += ["", tr(lang, "… {n} more case(s) — see `errors.md`", n=len(rows) - FIXES_MAX_ROWS)]
+    L += ["", "_" + tr(lang, "Stored scripts live in the KB (`<kb>/cases/<case>/fix_vN.py`); every try with its diff "
+                             "is in `errors.md`, the whole change set in `changes.patch`.") + "_", ""]
     return L
 
 
 # ---- v2 structure review (sbmig.review): LLM check of poms / dependencies / modules before the first build
+def _review_fix_pending(rv: StructureReview) -> bool:
+    """The review proposed a fix (edits or a script) that did not run."""
+    a = getattr(rv, "answer", None)
+    return bool(rv.script) or (a is not None and bool(a.edits or a.code))
+
+
 def _review_script_state(rv: StructureReview, lang: str = "en") -> str:
+    """What the review's fix (v2.1: direct edits and / or a script; `script_result` either way) did."""
     r = rv.script_result
     if r is not None:
         if rv.reverted:
-            return tr(lang, "script {status}, changes restored", status=r.status)
+            return tr(lang, "fix {status}, changes restored", status=r.status)
         if rv.commit:
-            return tr(lang, "script {status}, {n} file(s) changed (commit `{commit}`)", status=r.status,
+            return tr(lang, "fix {status}, {n} file(s) changed (commit `{commit}`)", status=r.status,
                       n=len(r.changed_files), commit=rv.commit[:8])
-        return tr(lang, "script {status}, {n} file(s) changed", status=r.status, n=len(r.changed_files))
-    if rv.script:
-        return tr(lang, "script not run")
+        return tr(lang, "fix {status}, {n} file(s) changed", status=r.status, n=len(r.changed_files))
+    if _review_fix_pending(rv):
+        return tr(lang, "fix not applied")
     if rv.critical:
-        return tr(lang, "no script")
+        return tr(lang, "no fix")
     return ""
 
 
 def review_summary(rv: StructureReview, lang: str = "en") -> str:
-    """One line for the header table / console: verdict, counts, what the script did."""
+    """One line for the header table / console: verdict, counts, what the fix (edits / script) did."""
     if rv.verdict == "skipped":
         return tr(lang, "skipped ({note})", note=_short(rv.note or "-", 160))
     if rv.verdict == "failed":
@@ -507,34 +481,54 @@ def _review_script_lines(rv: StructureReview, lang: str = "en") -> list[str]:
         files = ", ".join(f"`{f}`" for f in r.changed_files[:REVIEW_FILES_SHOWN])
         if len(r.changed_files) > REVIEW_FILES_SHOWN:
             files += f" (+{len(r.changed_files) - REVIEW_FILES_SHOWN})"
-        L.append(tr(lang, "- script: run status `{status}`, {n} file(s) changed{files}", status=r.status,
+        L.append(tr(lang, "- fix (edits / script): `{status}`, {n} file(s) changed{files}", status=r.status,
                     n=len(r.changed_files), files=f": {files}" if files else ""))
         if rv.commit:
             L.append(tr(lang, "- commit: `{commit}` (revert it to undo the review's changes)", commit=rv.commit[:12]))
         if rv.reverted:
-            L.append(tr(lang, "- the script's changes were restored: they are not in the result"))
+            L.append(tr(lang, "- the fix's changes were restored: they are not in the result"))
         if r.error:
-            L.append(tr(lang, "- script error: {error}", error=_cell(r.error, 300)))
+            L.append(tr(lang, "- fix error: {error}", error=_cell(r.error, 300)))
         if r.log:
-            L.append(tr(lang, "- script log: {lines}", lines=_cell("; ".join(r.log[:6]), 400)))
-    elif rv.script:
-        L.append(tr(lang, "- script: not run"))
+            L.append(tr(lang, "- fix log: {lines}", lines=_cell("; ".join(r.log[:6]), 400)))
+    elif _review_fix_pending(rv):
+        L.append(tr(lang, "- fix (edits / script): not applied"))
     elif rv.critical:
-        L.append(tr(lang, "- no script for the critical issue(s): they are handed over"))
+        L.append(tr(lang, "- no fix for the critical issue(s): they are handed over"))
     if rv.note:
         L.append(tr(lang, "- note: {note}", note=_cell(rv.note, 400)))
     return L
 
 
+def _review_answer_lines(r: RunReport, rv: StructureReview, lang: str = "en") -> list[str]:
+    """v2.1: the review's answer (solution, direct edits, script for the KB) and what its kept tries changed."""
+    L: list[str] = []
+    a = getattr(rv, "answer", None)
+    if a is not None:
+        if a.solution:
+            L.append(tr(lang, "- solution: {solution}", solution=_cell(a.solution, 600)))
+        if a.edits:
+            L.append(tr(lang, "- direct edits in the answer: {n}", n=len(a.edits)))
+        if a.code:
+            L.append(tr(lang, "- script for the KB: yes"))
+        elif a.no_script_reason:
+            L.append(tr(lang, "- script for the KB: none — {reason}", reason=_cell(a.no_script_reason, 300)))
+    changes = review_changes(entries_of(r))
+    if changes:
+        L.append(tr(lang, "- changed: {files}", files=_cell(stats_text(changes, limit=REVIEW_FILES_SHOWN), 600)))
+    return L
+
+
 def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """`## Structure review` (v2): verdict, issues table, what the script did or why not; [] without a review."""
+    """`## Structure review`: verdict, issues table, what the review changed (edits / script) or why not; []
+    without a review."""
     rv = r.structure_review
     if rv is None:
         return []
     L = [f"## {tr(lang, REVIEW_TITLE)}", "",
          tr(lang, "After the restructure and before the first build, the LLM checked the poms, dependencies and "
-                  "module layout against the company rules. Critical issues get one fix script; warnings are only "
-                  "recorded."), "",
+                  "module layout against the company rules. It fixes critical issues itself (committed, revertible) "
+                  "and leaves a script for the KB; warnings are only recorded."), "",
          tr(lang, "- verdict: `{verdict}` — {summary}", verdict=rv.verdict, summary=review_summary(rv, lang))]
     if rv.model or rv.llm_usage.calls:
         L.append(tr(lang, "- model: `{model}`, {calls} LLM call(s)", model=rv.model or "-", calls=rv.llm_usage.calls))
@@ -550,8 +544,10 @@ def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
                          n=len(issues) - REVIEW_MAX_ROWS)]
         L.append("")
     L += _review_script_lines(rv, lang)
-    if rv.analysis:
-        L += ["", tr(lang, "Analysis: {analysis}", analysis=_cell(rv.analysis, 800))]
+    L += _review_answer_lines(r, rv, lang)
+    analysis = rv.analysis or (rv.answer.analysis if getattr(rv, "answer", None) is not None else "")
+    if analysis:
+        L += ["", tr(lang, "Analysis: {analysis}", analysis=_cell(analysis, 800))]
     L.append("")
     return L
 
@@ -601,9 +597,27 @@ def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+def _to_be(r: RunReport) -> Optional[str]:
+    h = r.handover
+    if h is None or not (h.java_after or h.spring_boot_after or h.parent_after):
+        return None
+    parts = []
+    if h.java_after:
+        parts.append(f"java {h.java_after}")
+    if h.spring_boot_after:
+        parts.append(f"spring boot {h.spring_boot_after}")
+    if h.parent_after:
+        parts.append(f"parent `{_cell(h.parent_after, 160)}`")
+    return ", ".join(parts)
+
+
 def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) -> str:
     """report.md for `language` (`report.language`: "en" | "ko"; anything else renders English). `cfg` (optional)
-    only sharpens the javax API section's in-house detection."""
+    only sharpens the javax API section's in-house detection.
+
+    v2.1 (slim): header → Handover → Error list → Fixes by case → Structure review → Blocked → javax API jars →
+    Manual follow-ups → Flags → What we changed (plan steps, OpenRewrite runs) → LLM usage and cost → Notes →
+    Outputs."""
     lang = normalize(language)
     r = report
     L: list[str] = []
@@ -613,12 +627,20 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     L.append("| | |")
     L.append("|---|---|")
     L.append(tr(lang, "| **Result** | {ok} (final `mvn clean package`) |", ok=ok))
+    L.append(f"| SBMIG-RESULT | `{report_result_line(r)}` |")
+    entries = entries_of(r)
+    if entries:
+        L.append(tr(lang, "| **Error list** | {n} error(s): {counts} (see \"Error list\") |", n=len(entries),
+                    counts=counts_text(status_counts(entries))))
     L.append(tr(lang, "| Case | `{case}` |", case=r.case_type.value))
     if r.profile is not None:
         p = r.profile
         L.append(tr(lang, "| As-is | java {java}, spring boot {boot}, spring {spring}, {poms} pom(s) |",
                     java=p.java_version or '?', boot=p.spring_boot_version or '-', spring=p.spring_version or '-',
                     poms=len(p.poms)))
+    to_be = _to_be(r)
+    if to_be:
+        L.append(tr(lang, "| To-be | {versions} |", versions=to_be))
     L.append(tr(lang, "| Run id | `{run_id}` |", run_id=r.run_id))
     L.append(tr(lang, "| Started / finished | {started} / {finished} ({duration}) |", started=_dt(r.started_at),
                 finished=_dt(r.finished_at), duration=_duration(r, lang)))
@@ -643,10 +665,14 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     # ---- handover first: what we replaced, what the owning team does from here on
     L += handover_lines(r, lang)
 
-    # ---- v2: the structure review ran before the first build — before every build / fix section
+    # ---- the centre: every error of the run, then how each case was fixed
+    L += error_list_lines(r, lang)
+    L += fixes_by_case_lines(r, lang)
+
+    # ---- the structure review (ran before the first build; its own entries are in the error list too)
     L += structure_review_lines(r, lang)
 
-    # ---- blocked first: deliberately skipped, each row says what a human / the library owner must do
+    # ---- blocked: deliberately skipped, each row says what a human / the library owner must do
     if r.blocked:
         L.append(f"## {tr(lang, BLOCKED_TITLE)}")
         L.append("")
@@ -673,41 +699,11 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     # ---- javax API jars still on the classpath (X1b): the libraries the Blocked rows point at
     L += javax_api_lines(r, lang, cfg)
 
-    # ---- unresolved: it is what the reader acts on
-    L.append(tr(lang, "## Unresolved errors"))
-    L.append("")
-    if not r.unresolved:
-        L.append(tr(lang, "None. The final build passed.") if r.success
-                 else tr(lang, "None. No structured errors were captured; check the last build log."))
-    else:
-        if r.blocked:
-            L.append(tr(lang, "{n} error(s) left after the last build (blocked clusters excluded), grouped by file:",
-                        n=len(r.unresolved)))
-        else:
-            L.append(tr(lang, "{n} error(s) left after the last build, grouped by file:", n=len(r.unresolved)))
-        L.append("")
-        for key, errs in group_by_file(r.unresolved, lang).items():
-            L.append(f"### `{key}`")
-            for e in errs:
-                loc = f"L{e.line}: " if e.line else ""
-                extra = tr(lang, " — symbol: `{symbol}`", symbol=e.symbol) if e.symbol else ""
-                where = tr(lang, " — location: {location}", location=e.location) if e.location else ""
-                L.append(f"- [{e.kind.value}] {loc}{_cell(e.message, 300)}{extra}{where}")
-            L.append("")
-    if r.final_build is not None:
-        L.append(tr(lang, "Last build log: `{path}`", path=r.final_build.log_path))
-        L.append("")
-
-    # ---- every build error of the run, one record each: how it was handled (resolved / why not)
-    L += error_case_lines(r, lang)
-
-    L.append(tr(lang, "## Manual follow-ups"))
-    L.append("")
     if r.manual_followups:
+        L.append(tr(lang, "## Manual follow-ups"))
+        L.append("")
         L += [f"- {f}" for f in r.manual_followups]
-    else:
-        L.append(tr(lang, "None."))
-    L.append("")
+        L.append("")
 
     if r.flags:
         L.append(tr(lang, "## Flags"))
@@ -717,16 +713,17 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
             L.append(f"- `{f}`" + (f": {h}" if h else ""))
         L.append("")
 
-    # ---- what we changed
-    L.append(tr(lang, "## What we changed"))
-    L.append("")
+    # ---- what we changed (the fixes themselves are in "Fixes by case", the diff in changes.patch)
     titles = {s.id: s.title for s in (r.plan.steps if r.plan else [])}
     executed = [sid for pr in r.phases for sid in pr.step_ids]
+    rw = [(pr.phase.value, x) for pr in r.phases for x in pr.rewrite_results]
+    if executed or rw:
+        L.append(tr(lang, "## What we changed"))
+        L.append("")
     if executed:
         L.append(tr(lang, "Plan steps executed:"))
         L += [f"1. `{sid}` — {titles.get(sid, '')}" for sid in executed]
         L.append("")
-    rw = [(pr.phase.value, x) for pr in r.phases for x in pr.rewrite_results]
     if rw:
         L.append(tr(lang, "OpenRewrite runs:"))
         L.append("")
@@ -735,43 +732,6 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
         for ph, x in rw:
             L.append(f"| {ph} | {_cell(', '.join(x.recipes), 200)} | {len(x.changed_files)} | "
                      f"{tr(lang, 'yes') if x.ok else tr(lang, 'no: {error}', error=_cell(x.error, 80))} |")
-        L.append("")
-    struct = [n for pr in r.phases for n in pr.notes
-              if n.startswith("restructure.") or "mandatory added" in n]
-    if struct:
-        L.append(tr(lang, "Restructure / deterministic edits:"))
-        L += [f"- {_cell(n, 400)}" for n in struct]
-        L.append("")
-
-    # ---- per phase
-    L.append(tr(lang, "## Phases"))
-    L.append("")
-    L.append(tr(lang, "| phase | steps | builds | build ok | attempts by decision | outcomes |"))
-    L.append("|---|---|---|---|---|---|")
-    for pr in r.phases:
-        kinds = Counter(a.decision.kind.value for a in pr.attempts)
-        outs = Counter(a.outcome for a in pr.attempts)
-        L.append(f"| {pr.phase.value} | {_cell(', '.join(pr.step_ids), 80)} | {pr.iterations} | "
-                 f"{'✅' if pr.build_ok else ('❌' if pr.iterations else '-')} | "
-                 f"{_cell(', '.join(f'{k} {v}' for k, v in kinds.items()))} | "
-                 f"{_cell(', '.join(f'{k} {v}' for k, v in outs.items()))} |")
-    L.append("")
-    if any(pr.attempts for pr in r.phases):
-        L.append(tr(lang, "## Fix attempts"))
-        L.append("")
-        L += _attempt_rows(r.phases, lang)
-        L.append("")
-    escal = [(pr.phase.value, it.iteration, d) for pr in r.phases for it in pr.iteration_records
-             for d in it.decisions if d.kind.value == "escalate"]
-    if escal:
-        L.append(tr(lang, "## Escalated clusters"))
-        L.append("")
-        seen: set[str] = set()
-        for ph, it, d in escal:
-            if d.cluster_id in seen:
-                continue
-            seen.add(d.cluster_id)
-            L.append(f"- {ph}/{it} `{d.cluster_id}`: {_cell(d.rationale, 300)}")
         L.append("")
 
     # ---- LLM usage and cost (2026-10-22: the company wants the API cost per project)

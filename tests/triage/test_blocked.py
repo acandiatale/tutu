@@ -324,9 +324,9 @@ def test_registry_llm_unavailable_and_garbage(cfg, profile):
     d = t3.decide(plain, None, ctx(), profile)
     assert d.kind == DecisionKind.BLOCKED and "llm_unavailable" in d.rationale
     t3.set_llm_unavailable(None)
-    # answers without a script: `new` again, up to 1 + script.max_augments_per_case requests
+    # answers without a script: `new` again, up to script.max_augments_per_case LLM tries (v2.1: 1 stored + 3 LLM)
     garbage = [script_attempt(plain, "apply_failed").model_copy(update={"script_code": "", "script_version": 0})]
     assert t3.decide(plain, None, ctx(previous_attempts=garbage), profile).kind == DecisionKind.SCRIPT
-    n = 1 + cfg.script.max_augments_per_case
+    n = cfg.script.max_augments_per_case
     d = t3.decide(plain, None, ctx(previous_attempts=garbage * n), profile)
-    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "no usable script" in d.rationale
+    assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "3 LLM tries" in d.rationale
