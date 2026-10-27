@@ -36,12 +36,14 @@ def test_error_entry_round_trip():
 
 def test_log_stage_context_tags_records():
     lg = logging.getLogger("sbmig.test.stage")
+    lg.setLevel(logging.INFO)
     install_stage_filter(logging.getLogger("sbmig"))
     seen: list[str] = []
+    fmt = stage_formatter("[%(stage)s] %(message)s")      # records of a child logger get the stage from the formatter
 
     class Grab(logging.Handler):
         def emit(self, record):
-            seen.append(f"[{record.stage}] {record.getMessage()}")
+            seen.append(fmt.format(record))
     h = Grab(); lg.addHandler(h)
     try:
         lg.info("outside")
