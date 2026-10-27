@@ -100,9 +100,14 @@ def test_custom_web_root_split(tmp_path: Path, ccfg: Config, roles: bool) -> Non
     assert (root / f"{front}/static/css/app.css").is_file() and (root / f"{front}/static/img/logo.png").is_file()
     assert (root / f"{front}/static/docs/manual.pdf").is_file()
     assert (root / "ndirs-boot/src/main/resources/asis-webinf/web.xml").is_file()
-    # what <resource><directory>STATIC/resources covers stays classpath content of the comp module
+    # what <resource><directory>STATIC/resources covers stays classpath content of the comp module …
     assert _tree(ws, "ndirs-back/STATIC") == ["WEB-INF/lib/old.jar", "resources/media/intro.mp4",
                                               "resources/sample.xlsx", "resources/templates/report-template.xml"]
+    # … AND (2026-10-28, layout.front_copy_resource_dirs) is served as before from the front jar, same web path
+    assert _tree(ws, f"{front}/static/resources") == ["media/intro.mp4", "sample.xlsx",
+                                                      "templates/report-template.xml"]
+    assert (root / f"{front}/static/resources/media/intro.mp4").read_bytes() == \
+        (root / "ndirs-back/STATIC/resources/media/intro.mp4").read_bytes()
     assert (root / "ndirs-back/APP/src/com/example/ndirs/web/ReportServlet.java").is_file()
     assert not (root / "STATIC").exists() and not (root / "APP").exists()
     assert (root / "DB/schema.sql").is_file()                                  # unreferenced: left alone
@@ -117,22 +122,62 @@ def test_custom_web_root_split(tmp_path: Path, ccfg: Config, roles: bool) -> Non
     assert any(n.startswith("front module ndirs-front: 3 static web file(s)") and "web root(s) from "
                "maven-war-plugin: STATIC" in n for n in res.notes), res.notes
     assert any(n.startswith("3 file(s) under a <resource> / source directory inside a web root stay in ndirs-back")
-               for n in res.notes)
+               and n.endswith("served as before from the front jar's src/main/resources/static copy") for n in res.notes)
+    assert any("3 file(s) of <resource> dir(s) inside the web root copied to src/main/resources/static at their web "
+               "path (the classpath copies stay in ndirs-back)" in n for n in res.notes), res.notes
+    assert res.front_files == 3 + 2 + 3                                       # static + JSPs + copies
     assert any("maven-war-plugin webResources dropped from" in n for n in res.notes), res.notes
     assert any("WEB-INF/lib, WEB-INF/classes or META-INF stay in ndirs-back/STATIC" in f for f in res.manual_followups)
     assert not any("large media" in n for n in res.notes)
 
 
-def test_static_files_under_a_resource_dir_get_a_followup(tmp_path: Path, ccfg: Config) -> None:
+def test_static_files_under_a_resource_dir_are_copied_to_the_front_jar(tmp_path: Path, ccfg: Config) -> None:
+    """2026-10-28 (user: "정적 리소스들도 front resources 에 디렉토리 그대로"): the css under the <resource> dir keeps its
+    classpath copy in the comp module and is also served from the front jar; no follow-up any more."""
     files = _files()
     files["STATIC/resources/css/print.css"] = "@media print{}\n"
     ws = make_ws(tmp_path, files, "ndirs")
     res = Restructurer().apply(ws, _profile(ws), ccfg, mode="layout")
     assert res.ok, res.error
     assert (ws.root / "ndirs-back/STATIC/resources/css/print.css").is_file()
+    assert (ws.root / "ndirs-front/src/main/resources/static/resources/css/print.css").read_text() == "@media print{}\n"
+    assert not any("static web file(s) under a <resource> directory" in f for f in res.manual_followups)
+    assert any("4 file(s) of <resource> dir(s) inside the web root copied" in n for n in res.notes), res.notes
+
+
+def test_static_files_under_a_resource_dir_get_a_followup_when_copying_is_off(tmp_path: Path, ccfg: Config) -> None:
+    ccfg.layout.front_copy_resource_dirs = False                             # the pre-10-28 behaviour
+    files = _files()
+    files["STATIC/resources/css/print.css"] = "@media print{}\n"
+    ws = make_ws(tmp_path, files, "ndirs")
+    res = Restructurer().apply(ws, _profile(ws), ccfg, mode="layout")
+    assert res.ok, res.error
+    assert (ws.root / "ndirs-back/STATIC/resources/css/print.css").is_file()
+    assert not (ws.root / "ndirs-front/src/main/resources/static/resources").exists()
     assert any(f.startswith("1 static web file(s) under a <resource> directory inside the web root stay classpath "
                             "resources in ndirs-back (ndirs-back/STATIC/resources/css/print.css)")
                for f in res.manual_followups), res.manual_followups
+
+
+def test_webinf_views_and_fragments_go_to_the_front_jar_configs_to_the_stash(tmp_path: Path, ccfg: Config) -> None:
+    """2026-10-28: WEB-INF files that are not configuration (html / js / css fragments, templates, downloads) keep
+    their path under the front jar's META-INF/resources/WEB-INF/ (jsp:include / RequestDispatcher reach them, the
+    browser does not); web.xml / Spring XML / properties still go to the boot stash."""
+    files = _files()
+    files["STATIC/WEB-INF/views/frag.html"] = "<div/>\n"
+    files["STATIC/WEB-INF/js/inner.js"] = "x();\n"
+    files["STATIC/WEB-INF/spring/app-context.xml"] = "<beans/>\n"
+    files["STATIC/WEB-INF/classes/app.properties"] = "a=b\n"
+    ws = make_ws(tmp_path, files, "ndirs")
+    res = Restructurer().apply(ws, _profile(ws), ccfg, mode="layout")
+    assert res.ok, res.error
+    front = ws.root / "ndirs-front/src/main/resources/META-INF/resources/WEB-INF"
+    assert (front / "views/frag.html").is_file() and (front / "js/inner.js").is_file()
+    assert (front / "jsp/report.jsp").is_file()
+    stash = ws.root / "ndirs-boot/src/main/resources/asis-webinf"
+    assert (stash / "web.xml").is_file() and (stash / "spring/app-context.xml").is_file()
+    assert not (stash / "views").exists()
+    assert (ws.root / "ndirs-back/STATIC/WEB-INF/classes/app.properties").is_file()     # classes/: left, follow-up
 
 
 def test_web_resources_target_path(tmp_path: Path, ccfg: Config) -> None:

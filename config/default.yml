@@ -19,6 +19,8 @@ layout:
   project_name: null                     # overrides {name}
   front_static_dir: src/main/resources/static                          # HTML / css / js / images → jar
   front_jsp_dir: src/main/resources/META-INF/resources/WEB-INF/jsp     # JSPs per Servlet 3 (jar resources)
+  front_copy_resource_dirs: true         # files of a <resource> dir inside the web root (media, templates, css …) stay on
+                                         # the comp classpath AND are copied to the front static dir at their web path
   # Spring Boot as-is projects (incl. MSA): in-place = keep the directories, change the poms only (root →
   # artifacts.parent, modules matching boot_module_pattern whose pom is a boot app → boot_parent, the rest →
   # comp_parent; a single-module Boot app is wrapped into {name}-boot) | layout = split like the other cases

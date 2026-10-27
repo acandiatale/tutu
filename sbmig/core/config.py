@@ -106,6 +106,11 @@ class LayoutConfig(BaseModel):
     project_name: Optional[str] = None                  # `{name}`; default = the root pom's artifactId
     front_static_dir: str = "src/main/resources/static"                          # HTML / css / js / images
     front_jsp_dir: str = "src/main/resources/META-INF/resources/WEB-INF/jsp"     # JSPs (Servlet 3 jar resources)
+    # 2026-10-28 (user: "정적 리소스들도 front resources 에 디렉토리 그대로"): files under a <resource> / source directory
+    # that lies INSIDE the web root (`STATIC/resources/**`: media, templates, downloads, css) stay classpath content
+    # of the comp module AND are copied into the front module's `front_static_dir` at their web path, as the as-is WAR
+    # served them. False = the pre-10-28 behaviour (kept in comp only, a follow-up names the static web files).
+    front_copy_resource_dirs: bool = True
     boot_as_is: Literal["in-place", "layout"] = "in-place"   # Spring Boot as-is: keep directories (poms only) | split
     boot_module_pattern: str = "*-boot"                 # module dirs that are boot apps in Boot as-is / MSA (pom confirms)
     jsp_boot_packaging: Literal["war", "jar"] = "war"   # JSPs present → the boot module is a WAR for external Tomcat

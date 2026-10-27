@@ -1637,3 +1637,26 @@ renderMergedOutputModel` error vanishes once the file's javax → jakarta import
 * `kb reindex` backfills it for old records (`CaseStore._fixer_attributed`): entries resolved by `build` without
   tries get the run's applied tries from their `seen` round on, earliest round first, `match="reindex"`; INFO line
   `… N build-resolved entr(ies) given a probable fixer`. Restructure (`pom-verify`) entries are never attributed.
+
+## v2.1g — every static resource reaches the front module (2026-10-28)
+
+User (company run): "정적 리소스들(html, js, mp4, exe …)은 기존 디렉토리에 그대로 남고 jsp 만 front 로 간다 — 어디다 쓸지 모르니 일단
+front resources 에 디렉토리까지 똑같이 그대로". The company layout (`APP/` + `STATIC/` + `DB/`, fixture
+`servlet-nonstandard-dirs`) keeps files under a `<resource>` dir INSIDE the web root (`STATIC/resources/**`: media,
+templates, css, downloads) as classpath content of the comp module (rule 3 of `_populate_front`) — that is what the
+user saw left behind.
+
+* `layout.front_copy_resource_dirs` (default **true**): those files stay on the comp classpath (the copied
+  `<resources>` entry still points at them) AND are **copied** byte for byte into `<front>/<front_static_dir>/<web
+  path>` — the same URL the as-is WAR served (`/resources/media/intro.mp4` → `static/resources/media/intro.mp4`).
+  `_Ctx.copy(src, dst)` (never overwrites; counts in `moved_files` / `front_files`). The note says `N file(s) of
+  <resource> dir(s) inside the web root copied to src/main/resources/static at their web path (the classpath copies
+  stay in <comp>)`; the old follow-up ("copy them into … if pages link them") only appears with the switch off.
+* WEB-INF files that are not configuration (`WEBINF_CONFIG_EXTS` = xml, properties, yml, yaml, conf, ini, cfg) —
+  views, html / js / css fragments, templates, downloads — keep their path under the front jar's
+  `META-INF/resources/WEB-INF/…` (reachable by jsp:include / RequestDispatcher, never served to the browser), like
+  JSPs, tags and TLDs already did; configuration files still go to the boot stash `asis-webinf/`; `WEB-INF/lib`,
+  `WEB-INF/classes` and `META-INF` stay in the comp module (follow-up, unchanged).
+* Unchanged: everything else under a web root already moved to the front module whatever its extension; web
+  content in a directory no pom references (`_web_content_left`) is still only a follow-up (`web-content-left`); the
+  Boot as-is mode (`boot_as_is: in-place`) moves nothing.

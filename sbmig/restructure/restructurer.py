@@ -119,6 +119,10 @@ APPLICATION_XML_WEB_RE = re.compile(
     r"<(?:\w+:)?web-uri>\s*([^<]+?)\s*</(?:\w+:)?web-uri>\s*<(?:\w+:)?context-root>\s*([^<]*?)\s*"
     r"</(?:\w+:)?context-root>")
 JSP_EXTS = (".jsp", ".jspf", ".jspx")
+# 2026-10-28: WEB-INF files that are configuration (web.xml, Spring XML, properties …) go to the boot stash; every
+# other WEB-INF file (views, html / js / css fragments, templates, downloads) keeps its path under the front jar's
+# META-INF/resources/WEB-INF/ — reachable by jsp:include / RequestDispatcher as before, never served directly
+WEBINF_CONFIG_EXTS = (".xml", ".properties", ".yml", ".yaml", ".conf", ".ini", ".cfg")
 WEB_RESOURCE_DIRS = ("static", "public", "templates")   # src/main/resources/<dir>/** → the front module, same path
 JSTL_URI_RE = re.compile(r"""<%@\s*taglib\b[^%]*\buri\s*=\s*["'](?:https?://java\.sun\.com/jsp/jstl/|"""
                          r"""https?://xmlns\.jcp\.org/jsp/jstl/|jakarta\.tags\.)""", re.IGNORECASE)
@@ -239,6 +243,20 @@ class _Ctx:
         self.changed.update(rels)
         self.result.moved_files += len(rels)
         return len(rels)
+
+    def copy(self, src: str, dst: str) -> int:
+        """Copy ONE file byte for byte (2026-10-28: a <resource> dir file inside the web root reaches the front
+        module's static dir while its classpath copy stays). 0 when `src` is not a file; never overwrites."""
+        absrc, abdst = self.ws.abs(src), self.ws.abs(dst)
+        if not absrc.is_file():
+            return 0
+        if abdst.exists():
+            raise RestructureError(f"cannot copy {src}: {dst} already exists")
+        abdst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(absrc, abdst)
+        self.changed.add(dst)
+        self.result.moved_files += 1
+        return 1
 
     def write(self, rel: str, text: str, generated: bool = True) -> None:
         self.ws.write(rel, text)
@@ -2327,6 +2345,7 @@ class Restructurer:
         left: list[str] = []
         kept_web: list[str] = []                        # static-extension files kept as classpath resources (rule 3)
         kept_res = 0
+        copy_res = bool(getattr(L, "front_copy_resource_dirs", True))
         roots, keep = self._web_layout(c, list(eds or ()))
         web_dirs = [f"{comp}/{d}" for d, _ in roots]
         for wdir, target in roots:
@@ -2350,6 +2369,8 @@ class Restructurer:
                         plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp", web))
                     elif sub.startswith(("lib/", "classes/")):
                         left.append(src)
+                    elif posixpath.splitext(sub)[1].lower() not in WEBINF_CONFIG_EXTS:
+                        plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "static", web))   # a view / fragment / file
                     else:
                         plan.append((src, f"{stash}/{sub}", "webinf", web))
                 elif top == "META-INF" and sub:
@@ -2360,6 +2381,8 @@ class Restructurer:
                     kept_res += 1
                     if posixpath.splitext(rel)[1].lstrip(".").lower() in WEB_STATIC_EXTENSIONS:
                         kept_web.append(src)
+                    if copy_res:                       # 2026-10-28: also served as before, from the front jar
+                        plan.append((src, f"{static_dst}/{web}", "copy", web))
                 else:
                     plan.append((src, f"{static_dst}/{web}", "static", web))
         for d in WEB_RESOURCE_DIRS:
@@ -2370,10 +2393,10 @@ class Restructurer:
                 rel = f.relative_to(rabs).as_posix()
                 plan.append((f"{comp}/src/main/resources/{d}/{rel}", f"{front}/src/main/resources/{d}/{rel}",
                              "static", rel))
-        if not any(k in ("static", "jsp") for _, _, k, _ in plan):
+        if not any(k in ("static", "jsp", "copy") for _, _, k, _ in plan):
             return                                     # no web resources: no front module
         taken: set[str] = set()
-        moved = {"static": 0, "jsp": 0, "webinf": 0}
+        moved = {"static": 0, "jsp": 0, "webinf": 0, "copy": 0}
         clash: list[str] = []
         jsp_relocated: list[str] = []
         for src, dst, kind, web in plan:
@@ -2390,13 +2413,16 @@ class Restructurer:
             elif kind == "jsp" and src.lower().endswith(JSP_EXTS):
                 c.jstl = c.jstl or bool(JSTL_URI_RE.search(c.ws.abs(src).read_text(encoding="utf-8",
                                                                                     errors="replace")))
-            c.move(src, dst)
+            if kind == "copy":
+                c.copy(src, dst)
+            else:
+                c.move(src, dst)
             moved[kind] += 1
         for d in (*web_dirs, *(f"{comp}/src/main/resources/{x}" for x in WEB_RESOURCE_DIRS)):
             self._prune_empty_dirs(c, d)
         c.front_made = True
         c.jsp_moved = sum(1 for s_, d, k, _ in plan if k == "jsp" and s_.lower().endswith(JSP_EXTS) and d in taken)
-        c.result.front_files = moved["static"] + moved["jsp"]
+        c.result.front_files = moved["static"] + moved["jsp"] + moved["copy"]
         c.boot_war = c.boot_war or (c.jsp_moved > 0 and L.jsp_boot_packaging == "war")   # a WAR overlay may set it
         self._write_front_pom(c, coords, front)
         custom = [d for d, _ in roots
@@ -2405,16 +2431,19 @@ class Restructurer:
                f"{moved['jsp']} JSP file(s) → {L.front_jsp_dir} (META-INF/resources of the front jar)"
                + (f"; {moved['webinf']} other WEB-INF file(s) (web.xml, XML configs) → {stash}" if moved["webinf"]
                   else "")
+               + (f"; {moved['copy']} file(s) of <resource> dir(s) inside the web root copied to {L.front_static_dir} "
+                  f"at their web path (the classpath copies stay in {comp})" if moved["copy"] else "")
                + (f"; web root(s) from maven-war-plugin: {', '.join(custom)}" if custom else ""))
         if kept_res:
             c.note(f"{kept_res} file(s) under a <resource> / source directory inside a web root stay in {comp} as "
-                   "classpath resources (the copied <resources> entries still point at them)")
-        if kept_web:
+                   "classpath resources (the copied <resources> entries still point at them)"
+                   + (f"; served as before from the front jar's {L.front_static_dir} copy" if moved["copy"] else ""))
+        if kept_web and not moved["copy"]:
             c.followup(f"{len(kept_web)} static web file(s) under a <resource> directory inside the web root stay "
                        f"classpath resources in {comp} ({', '.join(kept_web[:3])}"
                        f"{' …' if len(kept_web) > 3 else ''}); "
                        f"the as-is WAR also served them as web content — copy them into {static_dst} if pages link "
-                       "them")
+                       "them (layout.front_copy_resource_dirs: true does it)")
         if jsp_relocated:
             c.followup(f"{len(jsp_relocated)} JSP(s) outside /WEB-INF/jsp/ now live under /WEB-INF/jsp/ in "
                        f"{front} ({', '.join(jsp_relocated[:3])}{' …' if len(jsp_relocated) > 3 else ''}): update "
