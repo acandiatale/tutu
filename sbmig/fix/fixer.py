@@ -12,7 +12,11 @@ unusable script or unreadable edits get ONE feedback round. The fixer never edit
 v2.1b (2026-10-27): every modification is described for the business team — each edit's `desc` and, with a script,
 the `<changes>` list (`FixAnswer.changes`, EditNote); the language follows `report.language` (`describe_language`).
 A script without a `<changes>` list is not an error: `analysis` gets "[sbmig] the answer did not describe its
-changes" and the loop builds the notes from the diff (`sbmig.script.notes.merge_notes`)."""
+changes" and the loop builds the notes from the diff (`sbmig.script.notes.merge_notes`).
+
+v2.1d (2026-10-27, dependency version policy): the answer may carry `<verify>` 운영자 확인 사항 (REQUIRED after a major
+version upgrade / a library replaced, rule 14 of the script prompt) → `ScriptProposal.verify`. `verify_guide`
+(`VerifyGuideLike`) is the ONE extra call the loop makes when such a change was applied without a `<verify>`."""
 from __future__ import annotations
 
 import inspect
@@ -20,6 +24,7 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
@@ -28,11 +33,18 @@ import jinja2
 
 from sbmig.core.config import Config
 from sbmig.core.interfaces import ChatMessage, FixContext, LLMClientLike, LLMResponse
-from sbmig.core.models import ErrorCluster, LLMUsage, ProjectProfile, ScriptBase, ScriptProposal
+from sbmig.core.models import (
+    DependencyChange,
+    ErrorCluster,
+    LLMUsage,
+    ProjectProfile,
+    ScriptBase,
+    ScriptProposal,
+)
 from sbmig.core.workspace import Workspace
 
 from .client import LLMError, RecordingClient, llm_call_in_flight, messages_hash, usage_from
-from .context import ContextPacker, PackedContext, fence_for, lang_for
+from .context import ContextPacker, PackedContext, dedupe_errors, fence_for, format_error_line, lang_for
 from .script_protocol import NO_SCRIPT, PROTOCOL_WARNING, ParsedScript, normalize_path, parse_script_response
 
 log = logging.getLogger("sbmig.fix.fixer")
@@ -49,6 +61,19 @@ GREP_BUDGET_S = 45.0              # … and stops after this long (Windows + on-
 # the contract's import whitelist (docs/INTERFACES.md "Script contract (S)"); sbmig.script.ALLOWED_IMPORTS wins when present
 DEFAULT_SCRIPT_IMPORTS = ("re", "json", "textwrap", "fnmatch", "posixpath", "itertools", "collections", "functools",
                           "string", "math")
+# v2.1d verify_guide (VerifyGuideLike): the 운영자 확인 사항 after a major upgrade the answer did not describe
+VERIFY_ROLE = "verify_guide"
+VERIFY_MAX_ERRORS = 5             # the case's errors shown (one line each)
+VERIFY_MAX_CHANGES = 20           # dependency changes listed
+VERIFY_MAX_DIFF_CHARS = 6000      # the applied diff, capped
+VERIFY_MAX_SOLUTION_CHARS = 1500
+VERIFY_MAX_CHARS = 4000           # the guide returned
+_VERIFY_OPEN_RE = re.compile(r"<\s*verify\s*>", re.IGNORECASE)
+_VERIFY_CLOSE_RE = re.compile(r"<\s*/\s*verify\s*>", re.IGNORECASE)
+# a fix / review answer (a replayed fix answer, the "no fix" answer) is not a guide
+_FIX_TAG_RE = re.compile(r"<\s*(?:analysis|solution|edits|changes|no_script|script|need_files?|need_grep|review)\s*>",
+                         re.IGNORECASE)
+_HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.MULTILINE)
 
 
 def _script_module_attr(name: str) -> Any:
@@ -171,6 +196,78 @@ def describe_language(cfg: Optional[Config]) -> str:
     return _describe(cfg)
 
 
+@lru_cache(maxsize=4)
+def load_verify_prompt(version: str = "v1") -> str:
+    """The system prompt of a `verify_guide` request (`verify_system_<version>.md`, v1 when the version has none);
+    `{{ language }}` is filled by the caller."""
+    path = PROMPTS_DIR / f"verify_system_{version}.md"
+    if not path.exists():
+        path = PROMPTS_DIR / "verify_system_v1.md"
+    return path.read_text(encoding="utf-8").strip() + "\n"
+
+
+@dataclass
+class VerifyAnswer:
+    """A parsed `verify_guide` answer: the guide text ("" = nothing usable) and why it was dropped."""
+    text: str = ""
+    warnings: list[str] = field(default_factory=list)
+
+
+def _cap_lines(text: str, limit: int) -> str:
+    """`text` cut at a line end within `limit` characters (with a "…" line), or as it is."""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit - 2]
+    nl = cut.rfind("\n")
+    if nl > limit // 2:
+        cut = cut[:nl]
+    return cut.rstrip() + "\n…"
+
+
+def parse_verify_answer(text: str) -> VerifyAnswer:
+    """The guide of a `verify_guide` answer: the `<verify>` block when there is one (closing tag optional), else the
+    whole answer — unless it is a fix answer (`<analysis>` / `<script>` / … without `<verify>`, e.g. a replayed fix
+    answer or the "no fix" answer): then "". Outer code fence and markdown heading markers dropped, blank-line runs
+    collapsed, capped at VERIFY_MAX_CHARS."""
+    t = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    out = VerifyAnswer()
+    m = _VERIFY_OPEN_RE.search(t)
+    if m:
+        rest = t[m.end():]
+        close = _VERIFY_CLOSE_RE.search(rest)
+        body = rest[:close.start()] if close else rest
+    elif _FIX_TAG_RE.search(t):
+        out.warnings.append("verify guide: the answer is a fix answer, not a guide")
+        return out
+    else:
+        body = t
+    lines = body.split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if lines and re.match(r"^\s*(`{3,}|~{3,})[\w+.-]*\s*$", lines[0]):
+        lines.pop(0)
+        if lines and re.match(r"^\s*(`{3,}|~{3,})\s*$", lines[-1]):
+            lines.pop()
+    body = _HEADING_RE.sub("", "\n".join(ln.rstrip() for ln in lines))
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    if not body:
+        out.warnings.append("verify guide: empty answer")
+    out.text = _cap_lines(body, VERIFY_MAX_CHARS)
+    return out
+
+
+def _change_line(c: DependencyChange) -> str:
+    """One dependency change for the verify prompt: `- [major] g:a 2.4.2 → 3.2.1 — dependencies in demo-back/pom.xml`."""
+    line = f"- [{c.kind}] {c.text} — {c.section} in {c.path}"
+    if c.approved:
+        line += " — approved by a person (libraries.yml)" + (f": {c.note}" if c.note else "")
+    elif c.note:
+        line += f" — note: {c.note}"
+    return line
+
+
 def _same_code(a: str, b: str) -> bool:
     """Two scripts are the same code when they differ in whitespace only."""
     def norm(t: str) -> list[str]:
@@ -196,6 +293,10 @@ class LLMFixer:
         # ScriptRunnerLike's `check` fits as well)
         self.script_checker = script_checker
         self._script_prompts: Optional[tuple[str, jinja2.Template]] = None
+        # v2.1d verify_guide: usage of the last call (the loop charges it: the method returns only the text) and of
+        # every call of this fixer
+        self.last_verify_usage = LLMUsage()
+        self.verify_usage = LLMUsage()
 
     # ------------------------------------------------------------------ ScriptFixerLike
     def propose_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext) -> ScriptProposal:
@@ -230,8 +331,9 @@ class LLMFixer:
         try:
             system, user_t = self.script_prompts()
             log.info("script prompt for %s (%s%s): packing %d error(s) (%d advisory hint(s), %d KB hint(s), %d reference "
-                     "file(s))", cluster.id, mode, f" of v{base.version}" if mode == "augment" and base else "",
-                     len(cluster.errors), len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files))
+                     "file(s)%s)", cluster.id, mode, f" of v{base.version}" if mode == "augment" and base else "",
+                     len(cluster.errors), len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files),
+                     f", {len(ctx.library_hints)} dependency version line(s)" if ctx.library_hints else "")
             packed = self.packer.pack_script(ws, cluster, ctx, ctx.profile_summary)
             log.info("script prompt for %s packed: %d chars, %d file(s) shown, %d listed by name, sections [%s]%s → "
                      "calling the LLM", cluster.id, packed.chars, len(packed.files_included), len(packed.files_listed),
@@ -243,6 +345,7 @@ class LLMFixer:
             messages = self.build_script_messages(packed, mode, base, system=system, user_template=user_t)
             last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
                                       parse=parse_script_response)
+            verify = parsed.verify                  # v2.1d: the latest <verify> of any round
 
             # 1) context rounds
             while parsed.wants_context and not parsed.usable and rounds < self.cfg.llm.max_context_rounds:
@@ -257,6 +360,7 @@ class LLMFixer:
                                        ChatMessage(role="user", content=served)]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
                                           parse=parse_script_response)
+                verify = parsed.verify or verify
             if parsed.wants_context and not parsed.usable:
                 requested.extend(p for p in parsed.need_files if p not in requested)
 
@@ -273,6 +377,7 @@ class LLMFixer:
                                        ChatMessage(role="user", content=self.script_feedback_message(parsed, fb, mode))]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta,
                                           parse=parse_script_response)
+                verify = parsed.verify or verify
                 problems = self._script_problems(parsed, sbase)
                 if not (parsed.code and not problems) and not (parsed.edits and not parsed.edits_problem):
                     notes.append(f"feedback round did not give a usable script or edits (first answer: {fb[0][:200]})")
@@ -309,6 +414,7 @@ class LLMFixer:
                 edits=edits,
                 changes=list(parsed.changes) if (code or edits) else [],
                 no_script_reason=no_script if not code else "",
+                verify=verify if (code or edits) else "",
                 model=last.model if last else (model or ""),
                 prompt_hash=messages_hash(messages),
                 llm_usage=usage,
@@ -316,10 +422,11 @@ class LLMFixer:
                 raw_response=last.content if last else "",
                 error=error,
             )
-            log.debug("answer for %s: %d edit(s), %d change note(s), script %s, solution %d chars%s", cluster.id,
+            log.debug("answer for %s: %d edit(s), %d change note(s), script %s, solution %d chars%s%s", cluster.id,
                       len(proposal.edits), len(proposal.changes),
                       "yes" if proposal.code else ("no: " + (proposal.no_script_reason or proposal.error or "-"))[:120],
-                      len(proposal.solution), f", error {proposal.error[:120]}" if proposal.error else "")
+                      len(proposal.solution), f", 운영자 확인 {len(proposal.verify)} chars" if proposal.verify else "",
+                      f", error {proposal.error[:120]}" if proposal.error else "")
         except LLMError as exc:
             proposal = self._error_script(f"llm-error: {exc}", f"LLM call failed (status={exc.status})", model,
                                           messages, usage, requested)
@@ -331,6 +438,102 @@ class LLMFixer:
         self._journal_script(ws, cluster, ctx, mode, proposal, rounds, adv_in_prompt, packed)
         self._record(cluster, transcript, proposal)
         return proposal
+
+    # ------------------------------------------------------------------ VerifyGuideLike (v2.1d)
+    def verify_guide(self, ws: Workspace, cluster: ErrorCluster | None, ctx: FixContext | None,
+                     changes: list[DependencyChange], diff: str, *, solution: str = "") -> str:
+        """The 운영자 확인 사항 for an applied fix that raised a dependency's major version / replaced a library and
+        whose answer carried no `<verify>` (`VerifyGuideLike`): ONE LLM call (role `verify_guide`) with the project,
+        the case's first errors, the changes (approved ones marked), the diff (capped) and the answer's `<solution>`
+        when the loop passes it. Plain lines in the report language, at most VERIFY_MAX_CHARS. "" when `changes` is
+        empty, `libraries.verify_guide_llm` is off, or on any failure; never raises. The call's usage is
+        `self.last_verify_usage` (added to `self.verify_usage`) — the loop charges it to the budget."""
+        self.last_verify_usage = LLMUsage()
+        if not changes:
+            return ""
+        libs = getattr(self.cfg, "libraries", None)
+        if libs is not None and not getattr(libs, "verify_guide_llm", True):
+            return ""
+        usage = LLMUsage()
+        transcript: list[dict] = []
+        messages: list[ChatMessage] = []
+        model: str | None = None
+        text, error = "", ""
+        cid = cluster.id if cluster is not None else "review"
+        case_id = (ctx.case_id if ctx is not None else "") or (cluster.case_id if cluster is not None else "") or ""
+        try:
+            model = self._model(ctx) if ctx is not None else (None if _unset(self.cfg.llm.model) else self.cfg.llm.model)
+            _, meta = self.call_tags(ctx, cid, ws)
+            meta["purpose"] = VERIFY_ROLE
+            if case_id:
+                meta["case_id"] = case_id
+            messages = self.build_verify_messages(cluster, ctx, changes, diff, solution=solution)
+            log.info("운영자 확인 가이드 요청 (%s): %d change(s) %s", case_id or cid, len(changes),
+                     ", ".join(c.text for c in changes[:3])[:200])
+            _, ans = self._call(messages, model, usage, transcript, role=VERIFY_ROLE, metadata=meta,
+                                parse=parse_verify_answer)
+            text = ans.text
+            if not text:
+                error = "; ".join(ans.warnings) or "empty answer"
+        except LLMError as exc:
+            error = f"llm-error: {exc}"
+        except Exception as exc:  # never raise into the loop
+            log.debug("verify guide request failed for %s", cid, exc_info=True)
+            error = f"llm-error: {type(exc).__name__}: {exc}"
+        if error:
+            log.warning("운영자 확인 가이드: LLM 응답 없음 (%s) — %s", case_id or cid, error[:300])
+        else:
+            log.info("운영자 확인 가이드 (%s): %d line(s), %d chars", case_id or cid, text.count("\n") + 1, len(text))
+        self.last_verify_usage = usage
+        self.verify_usage = self.verify_usage.add(usage)
+        try:
+            ws.journal({"event": "llm_verify_guide", "cluster_id": cid, "case_id": case_id or None,
+                        "model": usage.model or model or "", "calls": usage.calls,
+                        "tokens": {"input": usage.input_tokens, "output": usage.output_tokens},
+                        "prompt_hash": messages_hash(messages) if messages else "",
+                        "changes": [c.text for c in changes[:VERIFY_MAX_CHANGES]], "chars": len(text),
+                        "error": error or None})
+        except Exception:  # pragma: no cover
+            log.debug("journal failed", exc_info=True)
+        self._record_json("verify", cid, messages_hash(messages) if messages else "",
+                          {"cluster_id": cid, "case_id": case_id, "calls": transcript, "guide": text,
+                           "error": error, "changes": [c.model_dump(mode="json") for c in changes]})
+        return text
+
+    def build_verify_messages(self, cluster: ErrorCluster | None, ctx: FixContext | None,
+                              changes: list[DependencyChange], diff: str, *, solution: str = "") -> list[ChatMessage]:
+        """(system, user) of a `verify_guide` request."""
+        lang = describe_language(self.cfg)
+        system = load_verify_prompt(self.cfg.llm.prompt_version).replace("{{ language }}", lang)
+        parts = [("A fix applied to this project raised a dependency's major version or replaced a library. The "
+                  "build passes; the runtime is unverified. Write the 운영자 확인 사항 for the operator.")]
+        if ctx is not None and ctx.profile_summary:
+            parts.append(f"## Project\n{ctx.profile_summary}")
+        if cluster is not None:
+            errors = dedupe_errors(cluster.errors)
+            case_id = (ctx.case_id if ctx is not None else "") or cluster.case_id or cluster.id
+            head = f"## Case {case_id} ({cluster.kind.value}, {len(errors)} error(s))"
+            lines = [format_error_line(e, 240) for e in errors[:VERIFY_MAX_ERRORS]]
+            if len(errors) > VERIFY_MAX_ERRORS:
+                lines.append(f"… {len(errors) - VERIFY_MAX_ERRORS} more error(s)")
+            parts.append(head + ("\n" + "\n".join(lines) if lines else ""))
+        ch = [_change_line(c) for c in changes[:VERIFY_MAX_CHANGES]]
+        if len(changes) > VERIFY_MAX_CHANGES:
+            ch.append(f"… {len(changes) - VERIFY_MAX_CHANGES} more change(s)")
+        parts.append("## Dependency changes (read from the applied pom diff)\n" + "\n".join(ch))
+        if solution.strip():
+            sol = solution.strip()
+            if len(sol) > VERIFY_MAX_SOLUTION_CHARS:
+                sol = sol[:VERIFY_MAX_SOLUTION_CHARS].rstrip() + " …"
+            parts.append(f"## What the fix says it does (해결 방법)\n{sol}")
+        d = (diff or "").replace("\r\n", "\n").strip("\n")
+        if d:
+            if len(d) > VERIFY_MAX_DIFF_CHARS:
+                d = d[:VERIFY_MAX_DIFF_CHARS].rstrip("\n") + f"\n… diff cut ({len(d) - VERIFY_MAX_DIFF_CHARS} more chars)"
+            f = fence_for(d)
+            parts.append(f"## Applied diff\n{f}diff\n{d}\n{f}")
+        parts.append(f"Answer with the 운영자 확인 lines only, inside <verify>…</verify>, written in {lang}.")
+        return [ChatMessage(role="system", content=system), ChatMessage(role="user", content="\n\n".join(parts) + "\n")]
 
     def script_prompts(self) -> tuple[str, jinja2.Template]:
         """(system, user template) of the script requests — loaded on first use (`llm.prompt_version`, falling back
@@ -444,8 +647,9 @@ class LLMFixer:
                 "`def fix(p)` (or <no_script> with the reason)") if mode != "augment" else \
             ("<analysis>, <solution>, <changes> and the COMPLETE new <script> with a module-level `def fix(p)` — or "
              "<no_script> with the reason and <edits> (each with its \"desc\")")
-        parts.append(f"Re-send the COMPLETE corrected answer: {what}. Use only the helper API `p` and the allowed "
-                     "imports in the script (no open / os / sys / subprocess / eval / exec / __dunder__ access).")
+        parts.append(f"Re-send the COMPLETE corrected answer: {what}, plus <verify> after a major version upgrade "
+                     "(rule 14). Use only the helper API `p` and the allowed imports in the script (no open / os / sys / "
+                     "subprocess / eval / exec / __dunder__ access).")
         return "\n\n".join(parts) + "\n"
 
     def _error_script(self, analysis: str, error: str, model: Optional[str], messages: list[ChatMessage],
@@ -465,6 +669,7 @@ class LLMFixer:
                         "tokens": {"input": p.llm_usage.input_tokens, "output": p.llm_usage.output_tokens},
                         "prompt_hash": p.prompt_hash, "code_chars": len(p.code), "edits": len(p.edits),
                         "solution_chars": len(p.solution), "no_script": bool(p.no_script_reason),
+                        "verify_chars": len(p.verify),
                         "files_shown": len(packed.files_included) if packed else 0,
                         "files_listed": len(packed.files_listed) if packed else 0,
                         "error": p.error or None,
@@ -656,20 +861,24 @@ class LLMFixer:
     # ------------------------------------------------------------------ bookkeeping
     def _record(self, cluster: ErrorCluster, transcript: list[dict], p: ScriptProposal,
                 prefix: str = "script") -> None:
+        self._record_json(prefix, cluster.id, p.prompt_hash, {"cluster_id": cluster.id, "calls": transcript,
+                                                              "proposal": p.model_dump(mode="json")})
+
+    def _record_json(self, prefix: str, cluster_id: str, prompt_hash: str, payload: dict) -> None:
+        """`<llm.record_dir>/<prefix>-<cluster>-<hash>.json` (nothing when no record dir or the client records)."""
         rd = self.cfg.llm.record_dir
         if not rd or isinstance(self.client, RecordingClient):
             return
         try:
             d = self.cfg.resolve_path(rd)
             d.mkdir(parents=True, exist_ok=True)
-            safe = re.sub(r"[^\w.-]+", "_", cluster.id)[:80]
-            path = d / f"{prefix}-{safe}-{(p.prompt_hash or 'none')[:12]}.json"
-            path.write_text(json.dumps({"cluster_id": cluster.id, "calls": transcript,
-                                        "proposal": p.model_dump(mode="json")}, ensure_ascii=False, indent=2),
-                            encoding="utf-8")
-        except OSError:  # pragma: no cover
+            safe = re.sub(r"[^\w.-]+", "_", cluster_id)[:80]
+            path = d / f"{prefix}-{safe}-{(prompt_hash or 'none')[:12]}.json"
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except (OSError, TypeError, ValueError):  # pragma: no cover
             log.debug("record failed", exc_info=True)
 
 
 __all__ = ["LLMFixer", "profile_summary", "load_script_prompts", "default_script_checker", "describe_language",
-           "script_allowed_imports", "script_helper_api_doc", "normalize_path"]
+           "script_allowed_imports", "script_helper_api_doc", "normalize_path", "load_verify_prompt",
+           "parse_verify_answer", "VerifyAnswer", "VERIFY_ROLE"]

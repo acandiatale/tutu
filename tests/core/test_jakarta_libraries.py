@@ -87,3 +87,112 @@ def test_library_families_share_version_and_note():
         assert len(members) >= 2, prefix
         assert {lib.version for lib in members} == {version}, prefix
         assert len({lib.note for lib in members}) == 1 and len({lib.jakarta_since for lib in members}) == 1, prefix
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1d (2026-10-27): the people's table <kb>/libraries.yml merged over the shipped one, prompt lines
+# ---------------------------------------------------------------------------------------------------------------------
+COMPANY = """version: 1
+libraries:
+  - key: opensymphony:sitemesh
+    jakarta_since: "2.6.0"
+    version: "2.6.1"
+    note: Company build of SiteMesh 2. Second sentence.
+  - key: org.sitemesh:sitemesh
+    version: 3.3
+    allow_major: true
+  - {key: 'com.acme:widgets', jakarta_since: '5.0', version: '5.1', note: in-house}
+  - {key: 'broken entry without colon', version: '1'}
+  - just a string
+"""
+
+
+def test_company_file_replaces_by_key_and_appends_unknown(tmp_path: Path):
+    from sbmig.core.jakarta_libraries import jakarta_libraries as libs_of
+
+    f = tmp_path / "libraries.yml"
+    f.write_text(COMPANY, encoding="utf-8")
+    shipped = jakarta_libraries()
+    merged = libs_of(company_path=f)
+    assert len(merged) == len(shipped) + 1                              # 2 replaced, 1 appended, 2 bad skipped
+    sm = jakarta_library_for("opensymphony:sitemesh", company_path=f)
+    assert (sm.version, sm.source, sm.allow_major) == ("2.6.1", "company", False)
+    assert [lib.key for lib in merged].index("opensymphony:sitemesh") == \
+        [lib.key for lib in shipped].index("opensymphony:sitemesh")    # replaced in place
+    s3 = jakarta_library_for("org.sitemesh:sitemesh", company_path=f)
+    assert s3.allow_major and s3.version == "3.3" and s3.jakarta_since == "3.3"   # float → str, since := version
+    assert merged[-1].key == "com.acme:widgets" and merged[-1].source == "company"
+    assert jakarta_library_for("org.qlrm:qlrm", company_path=f).source == "shipped"
+    assert jakarta_library_for("opensymphony:sitemesh").source == "shipped"        # without the company file
+    assert libs_of(company_path=tmp_path / "missing.yml") == shipped
+
+
+def test_company_entry_old_keys_replace_the_shipped_entry(tmp_path: Path):
+    f = tmp_path / "libraries.yml"
+    f.write_text("libraries:\n  - {key: 'org.sitemesh:sitemesh', old_keys: ['opensymphony:sitemesh'], "
+                 "jakarta_since: '3.2.0', version: '3.3.0', allow_major: true}\n", encoding="utf-8")
+    merged = jakarta_libraries(company_path=f)
+    assert [lib.key for lib in merged].count("org.sitemesh:sitemesh") == 1
+    assert "opensymphony:sitemesh" not in [lib.key for lib in merged]
+    assert jakarta_library_for("opensymphony:sitemesh", company_path=f).key == "org.sitemesh:sitemesh"
+
+
+def test_company_file_is_reread_when_it_changes(tmp_path: Path):
+    import os
+
+    f = tmp_path / "libraries.yml"
+    f.write_text("libraries:\n  - {key: 'a:b', version: '1.0'}\n", encoding="utf-8")
+    assert jakarta_library_for("a:b", company_path=f).version == "1.0"
+    f.write_text("libraries:\n  - {key: 'a:b', version: '2.0.0'}\n", encoding="utf-8")
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+    assert jakarta_library_for("a:b", company_path=f).version == "2.0.0"
+
+
+def test_bad_company_file_uses_the_shipped_table(tmp_path: Path, caplog):
+    shipped = jakarta_libraries()
+    for i, text in enumerate(("libraries: [unclosed\n", "libraries: {a: b}\n", "", "version: 1\n", "\x00\x01")):
+        f = tmp_path / f"bad{i}.yml"
+        f.write_text(text, encoding="utf-8")
+        with caplog.at_level("WARNING", logger="sbmig.core.jakarta_libraries"):
+            assert jakarta_libraries(company_path=f) == shipped
+    assert any("using the shipped table only" in r.getMessage() for r in caplog.records)
+
+
+def test_company_libraries_file(tmp_path: Path):
+    from sbmig.core.config import Config
+    from sbmig.core.jakarta_libraries import company_libraries_file
+
+    kb = tmp_path / "kb-v2"
+    cfg = Config.model_validate({"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}},
+                                 "kb": {"dir": str(kb)}})
+    assert company_libraries_file(cfg) == kb / "libraries.yml"
+    cfg.libraries.company_file = "people/libs.yml"
+    assert company_libraries_file(cfg) == kb / "people" / "libs.yml"
+    cfg.libraries.company_file = str(tmp_path / "elsewhere" / "libraries.yml")
+    assert company_libraries_file(cfg) == tmp_path / "elsewhere" / "libraries.yml"
+    rel = Config.model_validate({"artifacts": {"parent": {"group_id": "g", "artifact_id": "a"}},
+                                 "repo_root": str(tmp_path)})
+    assert company_libraries_file(rel) == tmp_path / "kb-v2" / "libraries.yml"     # kb.dir relative to the repo root
+
+
+def test_library_hint_line():
+    from sbmig.core.jakarta_libraries import JakartaLibrary, library_hint_line
+
+    sm = JakartaLibrary(key="opensymphony:sitemesh", jakarta_since="2.6.0", version="2.6.0", requires_java=17,
+                        note="Same packages and filter class as 2.x. Long term: SiteMesh 3.", source="company")
+    assert library_hint_line(sm, "2.4.2") == (
+        "opensymphony:sitemesh: approved — raise to 2.6.0 (jakarta since 2.6.0, requires Java 17; Same packages and "
+        "filter class as 2.x; source: company table)")
+    assert "already at or above the table's 2.6.0" in library_hint_line(sm, "2.6.0")
+    assert "already at or above" in library_hint_line(sm, "2.7.0")
+    s3 = JakartaLibrary(key="org.sitemesh:sitemesh", jakarta_since="3.2.0", version="3.3.0", allow_major=True,
+                        source="company")
+    line = library_hint_line(s3, "2.4.2")
+    assert line.startswith("org.sitemesh:sitemesh: approved — a person allowed the major upgrade to 3.3.0 (")
+    assert "crosses" not in line and "source: company table" in line
+    q = jakarta_library_for("org.qlrm:qlrm")
+    line = library_hint_line(q, "1.7.1")
+    assert "crosses 1.x → 4.x" in line and "<verify>" in line and "source: shipped table" in line
+    eh = library_hint_line(jakarta_library_for("org.ehcache:ehcache"))
+    assert "classifier jakarta" in eh and "\n" not in eh

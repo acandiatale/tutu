@@ -100,10 +100,17 @@ they are.
 Script — optional: the same fix as a reusable `def fix(p)` for another project with the same problem (it is stored,
 not run when edits are given). When the fix cannot be reused, write `<no_script>why</no_script>` instead.
 
+`<verify>` — only if your edits nevertheless raise a dependency's major version or replace a library (the fix rules
+below forbid it): right after `<solution>`, one plain line per thing the operator must check at runtime, naming the
+file / screen / job (`<verify>운영자 확인: …</verify>`). Otherwise leave it out.
+
 Fix rules:
 - Change build files only (pom.xml files and Maven configuration). Never edit, move, create or delete Java / JSP
   sources or resources — the agent refuses such edits and restores the project if a change touches them.
 - Keep every change minimal. Never invent coordinates or versions.
+- Dependency versions: never raise a dependency's major version or replace a library in the review; prefer the
+  parent-managed release (omit `version`) or a release of the same major. If a critical issue can only be fixed by a
+  major upgrade, say so in `<analysis>` / `fix_hint` and leave it to the fix loop (it applies the `<verify>` rules).
 - A critical issue the build files cannot fix (for example an artifact that does not exist yet): describe it in
   `fix_hint` and leave it out of the edits.
 - No critical issue → no `<edits>` and no `<script>`.

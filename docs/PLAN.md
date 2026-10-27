@@ -400,3 +400,21 @@ critical review findings only, restricted script API, advisories guide-only, the
 | Step 3 — docs: handbook 01–09 + xlsx / pptx, design doc + deck, ARCHITECTURE / ERROR-HANDLING / RECIPES / ADVISORIES / FLEET / ADAPTERS / RUNBOOK / INTERFACES, KB map, README, demos (`scripts/demo-kb`, `scripts/fleet-demo.sh`), fixture READMEs | next commit | in progress |
 | Step 5 — company trial vs `company-v1` (LLM calls, time, success rate on real projects) | — | the user |
 | Open (the user decides) | — | JSP `javax.servlet` references are not renamed in v2 (build ok, Tomcat 10 runtime fails): rename inside the restructure, or Handover only; guide advisories leave compiling code; a hopeless case costs ≤ 4 LLM calls before BLOCKED (`script.max_augments_per_case`) |
+
+## Status — 2026-10-27, v2.1d (dependency version policy: "메이저를 올리지 마라")
+
+Company run: SiteMesh 2 (`opensymphony:sitemesh`, javax) made the LLM add `org.sitemesh:sitemesh:3.2.1` and port the
+filter to `ConfigurableSiteMeshFilter`; the build passed, the runtime (decorators.xml, JSP decorator tags) is unverified
+— the 3.2.1 jar has no `com.opensymphony.*` class. User decisions: the LLM never raises a major version or swaps a
+library on its own (same-major jakarta release first — SiteMesh 2.6.0 is one); library knowledge is **injected by
+people** in `<kb>/libraries.yml`, no redeploy per library; a major upgrade is **not blocked** (the build must pass) but
+leaves an operator guide ("이런이런 거 바꿨으니 운영자가 꼭 확인"). Contract: `docs/INTERFACES.md` "v2.1d".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Contracts: `DependencyChange` / `VersionCandidate` / `RepositoryVersions` / `OperatorCheck`, `ScriptProposal.verify`, `FixTry` / `FixAttempt` / `StructureReview` / `RunReport` fields, `FixContext.library_hints`, `VerifyGuideLike`, `libraries.*` + `build.repository_url` / `repository_timeout_seconds`, `JakartaLibrary.allow_major` / `source` | `f363222`, `tests/core/test_v21d_contracts.py` | done |
+| V — `sbmig/build/repo_versions.py` (settings mirror / `build.repository_url` / Central → `maven-metadata.xml`, candidate poms → jakarta ✓ / javax, min Java; local repository fallback; two failures in a row → no more calls this run), `sbmig/build/depchanges.py` (pom diff → major / minor / added / removed / replaced incl. `<parent>` and plugins, property-resolved; `apply_table`, `still_applied`, `synthesized_guide` ko / en), `jakarta_libraries.py` company merge (`<kb>/libraries.yml`, mtime-aware), `Workspace.file_at`, `knowledge/libraries/libraries.company.example.yml` | this commit | done |
+| P — prompt rule 14 + `<verify>` (`script_system_v1.md`, user template, `verify_system_v1.md`), parser `ParsedScript.verify`, "Dependency versions" section from `ctx.library_hints`, `LLMFixer.verify_guide` (one call, `last_verify_usage`), review prompt policy + `<verify>` | this commit | done |
+| L — `_library_hints` (errors' artifacts / owner classes → table + repository facts → prompt + INFO `의존성 버전 조회:`), read-back after every applied try and the review commit (`major_upgrades`, guide = `<verify>` → `verify_guide` → synthesized; WARNING `메이저 업그레이드: … — 운영자 확인 필요`), error list (`메이저 변경:` / `운영자 확인:`, `⚠ 메이저 업그레이드 N`), `report.operator_checks` (kept changes only), Handover block "운영자 확인 필요 (메이저 업그레이드 N건)" first, `SBMIG-RESULT … major=<n>`, flag `major-upgrade` (attention) | this commit | done |
+| PM — `LazyFixer` forwards `verify_guide` / usage, `FixTry.verify_source`, root offline guard for the repository lookup in tests | this commit | done |
+| Pending (the user) | — | `DB/` SQL directories: stay at the root (default) or move into `{name}-back/src/main/resources` — decided with the business team; the company KB's SiteMesh 3.2.1 case folder: delete + `sbmig kb reindex` |

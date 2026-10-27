@@ -44,6 +44,21 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "### Versions replaced": "### 교체된 버전",
     "### Libraries needing your attention": "### 조치가 필요한 라이브러리",
     "### From here on, your team": "### 이후 담당 팀이 할 일",
+    # ---- v2.1d operator checks (major upgrades / library replacements)
+    "### Operator checks ({n} major upgrades)": "### 운영자 확인 필요 (메이저 업그레이드 {n}건)",
+    "The build passes, but these changes cross a major version line or replace a library: check the runtime "
+    "behaviour (configuration, registrations, renamed packages) before you ship.":
+        "빌드는 통과했지만 아래 변경은 메이저 버전을 넘었거나 라이브러리를 바꿨다: 배포 전에 실행 시 동작(설정, 등록, "
+        "바뀐 패키지 이름)을 꼭 확인할 것.",
+    "case `{case}`": "케이스 `{case}`",
+    "structure review": "구조 점검",
+    "commit `{sha}`": "커밋 `{sha}`",
+    " — approved ({src})": " — 승인됨 ({src})",
+    "… {n} more (report.json)": "… 외 {n}줄 (report.json)",
+    "(no guide recorded)": "(가이드 없음)",
+    "guide source: LLM": "가이드 출처: LLM",
+    "guide source: sbmig (synthesized)": "가이드 출처: sbmig 자동 생성",
+    "⚠ major ({n}, see Operator checks)": "⚠ 메이저 ({n}건, \"운영자 확인 필요\" 참조)",
     # ---- header table
     "✅ BUILD SUCCESS": "✅ 빌드 성공",
     "❌ NOT BUILDING": "❌ 빌드 실패",
@@ -214,6 +229,10 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "model): LLM fixes were skipped — check with `sbmig llm-probe`":
         "LLM 설정이 안 되어 있다(.env의 LLM_BASE_URL / LLM_API_KEY / LLM_MODEL, 또는 게이트웨이가 키 / 모델을 거부함) "
         "— LLM 수정은 건너뛰었다: `sbmig llm-probe`로 확인할 것",
+    "a fix raised a dependency across its major version or replaced a library (the build passes): the operator "
+    "verifies the runtime behaviour — see \"Operator checks\" in the Handover":
+        "수정이 의존성을 메이저 버전 너머로 올렸거나 라이브러리를 바꿨다(빌드는 통과): 운영자가 실행 시 동작을 확인할 것 — "
+        "인수인계의 \"운영자 확인 필요\" 참조",
     "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not because of "
     "the project: fix the environment and run it again (a fleet re-queues the project)":
         "프로젝트가 아니라 인프라(LLM 게이트웨이, Maven, JDK, 저장소 / Nexus, 디스크) 문제로 실행이 끝났다 — 환경을 "
@@ -350,6 +369,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
+    (r'^operator checks: (?P<n>\d+) major upgrade\(s\) — see "Operator checks" above$',
+     r'운영자 확인 필요: 메이저 업그레이드 \g<n>건 — 위 "운영자 확인 필요" 참조'),
     (r"^(?P<n>\d+) cluster\(s\) blocked — see Blocked$", r"클러스터 \g<n>개 차단됨 — '차단됨' 참조"),
     (r"^(?P<n>\d+) unresolved error\(s\) — see Error list$", r"미해결 오류 \g<n>건 — '에러 목록' 참조"),
     ((r"^test sources do not compile yet \(main code builds with -Dmaven\.test\.skip=true\) — fix the tests "

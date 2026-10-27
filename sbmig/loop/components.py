@@ -67,6 +67,23 @@ class LazyFixer:
                                      "a fix script; a fix.plugin must implement propose_script(ws, cluster, ctx)")
         return fn(ws, cluster, ctx)
 
+    # v2.1d: the operator-guide call (VerifyGuideLike) and its usage counters pass through to the real fixer, so the
+    # loop sees them on the proxy as it would on an LLMFixer (a fixer without them → AttributeError, as before)
+    def verify_guide(self, ws, cluster, ctx, changes, diff, **kw):
+        fx = self._get()
+        fn = getattr(fx, "verify_guide", None)
+        if not callable(fn):
+            raise AttributeError(f"the fixer {type(fx).__name__} has no verify_guide")
+        return fn(ws, cluster, ctx, changes, diff, **kw)
+
+    @property
+    def last_verify_usage(self):
+        return getattr(self._fixer, "last_verify_usage", None) if self._fixer is not None else None
+
+    @property
+    def verify_usage(self):
+        return getattr(self._fixer, "verify_usage", None) if self._fixer is not None else None
+
 
 def basic_profile_summary(profile) -> str:
     if profile is None:

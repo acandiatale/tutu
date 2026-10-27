@@ -198,3 +198,24 @@ def test_commit_paths_stages_only_the_given_files_and_build_products_are_set_asi
     assert sha != base and ws.changed_between(base, sha) == ["pom.xml"]
     assert ws.is_dirty()                                                            # README.md still uncommitted
     assert ws.commit("nothing", paths=[]) == sha                                    # no paths → no commit
+
+
+# ---------------------------------------------------------------------------------------------- v2.1d (file_at)
+def test_file_at_reads_a_file_as_it_was_at_a_commit(ws):
+    """`changes_in_commit` reads the pom before and after a try with `git show <sha>:<path>`."""
+    _real_git()
+    (ws.root / "m").mkdir()
+    (ws.root / "m" / "pom.xml").write_text("<project><version>1</version></project>\n", encoding="utf-8")
+    base = ws.git_init()
+    (ws.root / "m" / "pom.xml").write_text("<project><version>2</version><!-- 한글 --></project>\n", encoding="utf-8")
+    (ws.root / "m" / "새파일.txt").write_text("new\n", encoding="utf-8")
+    sha = ws.commit("bump")
+    assert ws.file_at(base, "m/pom.xml") == "<project><version>1</version></project>\n"
+    assert ws.file_at(sha, "m/pom.xml") == "<project><version>2</version><!-- 한글 --></project>\n"
+    assert ws.file_at(sha, "m\\pom.xml") == ws.file_at(sha, "m/pom.xml")     # a Windows-style path works too
+    assert ws.file_at(sha, "m/새파일.txt") == "new\n"
+    assert ws.file_at(base, "m/새파일.txt") is None                          # did not exist there
+    assert ws.file_at("0" * 40, "m/pom.xml") is None                        # unknown commit: None, no raise
+    (ws.root / "m" / "legacy.properties").write_bytes("k=한글\n".encode("cp949"))
+    sha2 = ws.commit("legacy")
+    assert "�" in ws.file_at(sha2, "m/legacy.properties")              # UTF-8 with replacement characters

@@ -2,6 +2,7 @@
 fix answer of docs/v2/PLAN-v2.1.md §3.6 — `<analysis>` 원인, `<solution>` 해결 방법, `<edits>` (JSON list of `Edit`, the
 reviewer applies them; each with its `desc`), `<changes>` (what the fix modifies where, v2.1b) and an optional
 `<script>` (or `<no_script>`). A v2 answer (`<review>` + `<script>`) parses as before (edits [], changes []).
+v2.1d: an optional `<verify>` (운영자 확인 사항, only when the review's edits raise a major version anyway) → `verify`.
 
 Tolerant on purpose: the JSON may sit in a code fence, be followed by prose, carry trailing commas, or come without
 the `<review>` tags; `issues` may be a single object instead of a list; unknown severities become `warning`. The fix
@@ -25,9 +26,9 @@ ANALYSIS_CHARS = 4000
 FILE_CHARS = 300
 
 _SCRIPT_RE = re.compile(r"<script>(.*?)(?:</script>|\Z)", re.S | re.I)
-_REVIEW_RE = re.compile(r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|edits|changes|no_script|script)>)|\Z)",
-                        re.S | re.I)
-_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|edits|changes|no_script|script)>.*?(?:</\1>|\Z)", re.S | re.I)
+_REVIEW_RE = re.compile(
+    r"<review>(.*?)(?:</review>|(?=<(?:analysis|solution|verify|edits|changes|no_script|script)>)|\Z)", re.S | re.I)
+_FIX_BLOCK_RE = re.compile(r"<(analysis|solution|verify|edits|changes|no_script|script)>.*?(?:</\1>|\Z)", re.S | re.I)
 _ANALYSIS_RE = re.compile(r"<analysis>(.*?)</analysis>", re.S | re.I)
 _FENCE_RE = re.compile(r"```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n(.*?)(?:```|\Z)", re.S)
 _TRAILING_COMMA_RE = re.compile(r",(\s*[}\]])")
@@ -47,6 +48,7 @@ class ParsedReview:
     script: str = ""
     fix_analysis: str = ""                      # <analysis> 원인 (the JSON analysis when the block is missing)
     solution: str = ""                          # <solution> 해결 방법
+    verify: str = ""                            # v2.1d <verify> 운영자 확인 사항 (only after a major upgrade)
     edits: list[Edit] = field(default_factory=list)
     edits_problem: str = ""                     # "edits JSON unreadable: …" / "edits invalid: …"
     changes: list[EditNote] = field(default_factory=list)   # <changes> list + each edit's desc (v2.1b)
@@ -152,6 +154,7 @@ def _fix_blocks(text: str, out: ParsedReview) -> None:
     from sbmig.fix.script_protocol import PROTOCOL_WARNING, parse_script_response
 
     fx = parse_script_response(text)
+    out.verify = _cap(fx.verify, ANALYSIS_CHARS)        # a <verify> alone is no fix answer, but it is kept
     if PROTOCOL_WARNING in fx.warnings:                 # no tagged block at all: nothing to take
         return
     out.fix_analysis = _cap(fx.analysis, ANALYSIS_CHARS)

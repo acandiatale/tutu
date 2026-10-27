@@ -180,3 +180,139 @@ def _merge(llm: list[EditNote], diff: str) -> list[EditNote]:
         covered.add(hit.path)
         out.append(n.model_copy(update={"path": hit.path, "lines": n.lines or hit.lines}))
     return out + [d for k, d in by_file.items() if k not in covered]
+
+
+# ---------------------------------------------------------------------------- v2.1d dependency read-back
+# (docs/INTERFACES.md "v2.1d"): what an applied try / the review commit changed in the poms, the major upgrades /
+# library replacements among it, and the 운영자 확인 guide for them. The fix loop and the orchestrator share these;
+# every call into `sbmig.build.depchanges` / `sbmig.core.jakarta_libraries` is best effort (a failure → DEBUG and the
+# "nothing" value): nothing is ever reverted or blocked because of a major upgrade.
+GUIDE_LOG_LINES = 8                  # `운영자 확인:` INFO lines per guide (then `… (+N)`)
+_BULLET_RE = re.compile(r"^\s*(?:[-*•]\s+)")
+
+
+def library_table(cfg: Any) -> list:
+    """The shipped table + the people's `<kb>/libraries.yml` (`jakarta_libraries(company_path=…)`); [] on failure."""
+    try:
+        from sbmig.core.jakarta_libraries import company_libraries_file, jakarta_libraries
+        return list(jakarta_libraries(company_path=company_libraries_file(cfg)) or [])
+    except Exception as e:  # noqa: BLE001 - the table is a hint, never a reason to stop
+        log.debug("library table unavailable: %s: %s", type(e).__name__, e)
+        return []
+
+
+def table_entry(key: str | None, cfg: Any) -> Any:
+    """The table entry (`JakartaLibrary`) of `key` with the company file, None when unknown / on failure."""
+    if not key:
+        return None
+    try:
+        from sbmig.core.jakarta_libraries import company_libraries_file, jakarta_library_for
+        return jakarta_library_for(key, company_path=company_libraries_file(cfg))
+    except Exception as e:  # noqa: BLE001
+        log.debug("table entry for %s unavailable: %s: %s", key, type(e).__name__, e)
+        return None
+
+
+def pom_changed(files: Any) -> bool:
+    """Did the commit touch a pom.xml (the read-back only parses poms)?"""
+    return any(_norm(str(f or "")).rsplit("/", 1)[-1] == "pom.xml" for f in (files or []))
+
+
+def operator_changes(ws: Any, pre: str | None, sha: str | None, cfg: Any) -> list:
+    """The `major` / `replaced` DependencyChange items of the commit `pre..sha` (`changes_in_commit`, then
+    `apply_table` marks the ones a table entry allows). [] when git / the parser cannot tell; never raises."""
+    if not pre or not sha:
+        return []
+    try:
+        from sbmig.build.depchanges import changes_in_commit
+        changes = list(changes_in_commit(ws, pre, sha) or [])
+    except Exception as e:  # noqa: BLE001
+        log.debug("dependency read-back %s..%s unavailable: %s: %s", str(pre)[:10], str(sha)[:10],
+                  type(e).__name__, e)
+        return []
+    if not changes:
+        return []
+    try:
+        from sbmig.build.depchanges import apply_table
+        apply_table(changes, library_table(cfg))
+    except Exception as e:  # noqa: BLE001 - not approved is the safe default
+        log.debug("apply_table failed: %s: %s", type(e).__name__, e)
+    out = []
+    for c in changes:
+        try:
+            if c.needs_operator:
+                out.append(c)
+        except Exception:  # noqa: BLE001 - a foreign object without the property
+            if getattr(c, "kind", "") in ("major", "replaced"):
+                out.append(c)
+    return out
+
+
+def fallback_guide(changes: list, lang: str = "ko") -> str:
+    """sbmig's guide when the LLM gave none: `synthesized_guide` (sbmig.build.depchanges), else one line per change."""
+    try:
+        from sbmig.build.depchanges import synthesized_guide
+        text = str(synthesized_guide(list(changes), lang=lang) or "").strip()
+        if text:
+            return text
+    except Exception as e:  # noqa: BLE001
+        log.debug("synthesized_guide failed: %s: %s", type(e).__name__, e)
+    out = []
+    for c in changes:
+        what = getattr(c, "text", None) or f"{getattr(c, 'key', '?')}"
+        if lang == "en":
+            out.append(f"{what} ({getattr(c, 'path', '-')}): major version crossed — check the configuration files, "
+                       "registrations (web.xml / filters / listeners), renamed packages and the runtime behaviour")
+        else:
+            out.append(f"{what} ({getattr(c, 'path', '-')}): 메이저 버전이 바뀜 — 설정 파일, 등록(web.xml / 필터 / "
+                       "리스너), 바뀐 패키지 이름, 실행 시 동작을 확인할 것")
+    return "\n".join(out)
+
+
+def guide_lines(guide: str | None) -> list[str]:
+    """The guide as lines (bullets stripped, empty lines dropped)."""
+    out = []
+    for ln in str(guide or "").splitlines():
+        t = _BULLET_RE.sub("", ln).strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def approved_by(change: Any, cfg: Any) -> str:
+    """The table file that approves `change` (`libraries.yml` for a company entry, `jakarta_libraries.yml` for a
+    shipped one); "" when not approved."""
+    if not getattr(change, "approved", False):
+        return ""
+    note = str(getattr(change, "note", "") or "")       # apply_table: "approved by the shipped / company table…"
+    if "shipped table" in note:
+        return "jakarta_libraries.yml"
+    if "company table" in note:
+        return "libraries.yml"
+    for key in (getattr(change, "replaced_by", None), getattr(change, "key", None)):
+        entry = table_entry(key, cfg)
+        if entry is not None:
+            return "jakarta_libraries.yml" if getattr(entry, "source", "company") == "shipped" else "libraries.yml"
+    return "libraries.yml"
+
+
+def log_major_upgrades(changes: list, guide: str, cfg: Any, offered: dict[str, str] | None = None) -> None:
+    """One WARNING per change (`메이저 업그레이드: <text> (<pom>) — 운영자 확인 필요 [승인: libraries.yml]` /
+    `[같은 메이저 jakarta 빌드 있음: 2.6.0]`), then the guide at INFO (`운영자 확인: …`, GUIDE_LOG_LINES lines)."""
+    offered = offered or {}
+    for c in changes:
+        tail = ""
+        src = approved_by(c, cfg)
+        if src:
+            tail = f" [승인: {src}]"
+        elif offered.get(getattr(c, "key", "")):
+            tail = f" [같은 메이저 jakarta 빌드 있음: {offered[c.key]}]"
+        elif getattr(c, "note", ""):
+            tail = f" [{_one(c.note)[:160]}]"
+        log.warning("메이저 업그레이드: %s (%s) — 운영자 확인 필요%s", getattr(c, "text", getattr(c, "key", "?")),
+                    getattr(c, "path", "-"), tail)
+    lines = guide_lines(guide)
+    for ln in lines[:GUIDE_LOG_LINES]:
+        log.info("운영자 확인: %s", ln[:400])
+    if len(lines) > GUIDE_LOG_LINES:
+        log.info("운영자 확인: … (+%d)", len(lines) - GUIDE_LOG_LINES)

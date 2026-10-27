@@ -43,7 +43,16 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional, Union
 
-from sbmig.core.models import BuildError, BuildResult, EditNote, ErrorEntry, ErrorKind, FixTry, utcnow
+from sbmig.core.models import (
+    BuildError,
+    BuildResult,
+    DependencyChange,
+    EditNote,
+    ErrorEntry,
+    ErrorKind,
+    FixTry,
+    utcnow,
+)
 
 from .common import Cleaner, atomic_write, case_id_for, case_id_of, entry_id, first_line, note_text, posix
 
@@ -60,6 +69,8 @@ NOTE_WHERE_CHARS = 200                # EditNote.where / lines
 NOTE_CHANGE_CHARS = 600               # EditNote.change
 MD_NOTES = 30                         # 수정 notes per try in errors.md
 TRIES_CELL_CHANGE = 60                # the first note's change in the errors.md tries cell
+MAJOR_MAX = 50                        # v2.1d major upgrades / library replacements kept per try
+MAJOR_MARK = "⚠ 메이저 업그레이드"      # errors.md: the tries cell of a try with major upgrades (운영자 확인)
 SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
 SUCCESS_RESULTS = frozenset({"improved", "build_ok", "partial"})
 # how far a build got when it stopped with an error of this kind (an absent entry of stage s is only gone when the
@@ -132,8 +143,17 @@ def tries_text(e: ErrorEntry, with_change: bool = False) -> str:
                       if getattr(x, "change", "")), "") if with_change else ""
         if first:
             bits.append(f"({first if len(first) <= TRIES_CELL_CHANGE else first[:TRIES_CELL_CHANGE - 1] + '…'})")
+        if with_change and getattr(t, "major_upgrades", None):
+            bits.append(f"{MAJOR_MARK} {len(t.major_upgrades)}")
         parts.append(" ".join(bits))
     return " → ".join(parts)
+
+
+def change_line(c: Any) -> str:
+    """`org.sitemesh:sitemesh 2.4.2 → 3.2.1 (dependencies, demo-back/pom.xml), approved` — one 메이저 변경 line."""
+    text = getattr(c, "text", None) or f"{getattr(c, 'key', '?')}"
+    return (f"{text} ({getattr(c, 'section', 'dependencies')}, {getattr(c, 'path', '-')})"
+            + (", approved" if getattr(c, "approved", False) else ""))
 
 
 def _src_tail(path: str) -> str:
@@ -413,10 +433,13 @@ class ErrorList:
                    files: Optional[Iterable[str]] = None, diff: Optional[str] = None, commit: Optional[str] = None,
                    result: Optional[str] = None, note: Optional[str] = None, llm_calls: Optional[int] = None,
                    seconds: Optional[float] = None, script_version: Optional[int] = None,
-                   edits: Optional[Iterable[Any]] = None) -> Optional[FixTry]:
+                   edits: Optional[Iterable[Any]] = None, major_upgrades: Iterable[Any] | None = None,
+                   verify: str | None = None, verify_source: str | None = None) -> Optional[FixTry]:
         """Fill in what try ``n`` of the case did; a field left None keeps its value (call it after applying and
         again with the scoring ``result``). Texts are masked; the diff is capped by ``errors.diff_chars``.
-        ``edits`` = the 수정 notes (``EditNote`` or dicts: where / change by the LLM, lines from the diff)."""
+        ``edits`` = the 수정 notes (``EditNote`` or dicts: where / change by the LLM, lines from the diff);
+        ``major_upgrades`` (v2.1d) = the try's major upgrades / library replacements (``DependencyChange`` or dicts),
+        ``verify`` = the 운영자 확인 guide for them (capped at TEXT_CHARS)."""
         t = self.get_try(case_id, n)
         if t is None:
             log.warning("error list: no try %s of case %s to finish", n, case_id or "-")
@@ -435,6 +458,12 @@ class ErrorList:
             t.diff = self.clean(diff, self.diff_chars)
         if edits is not None:
             t.edits = self._notes(edits)
+        if major_upgrades is not None:
+            t.major_upgrades = self._changes(major_upgrades)
+        if verify is not None:
+            t.verify = self.clean(verify, TEXT_CHARS)
+        if verify_source is not None:
+            t.verify_source = verify_source if verify_source in ("llm", "sbmig") else ""
         if commit is not None:
             t.commit = commit or ""
         if result is not None:
@@ -465,6 +494,26 @@ class ErrorList:
                                 change=self.clean(n.change, NOTE_CHANGE_CHARS),
                                 lines=(n.lines or "")[:NOTE_WHERE_CHARS], source=n.source))
             if len(out) >= NOTES_MAX:
+                break
+        return out
+
+    def _changes(self, items: Iterable[Any]) -> list[DependencyChange]:
+        """v2.1d: the try's major upgrades, masked (an unreadable item is skipped, never fails the try)."""
+        out: list[DependencyChange] = []
+        for x in items or []:
+            try:
+                c = x if isinstance(x, DependencyChange) else DependencyChange.model_validate(
+                    x if isinstance(x, dict) else x.model_dump())
+            except Exception as e:  # noqa: BLE001 - a malformed change (no path / key / kind) is left out
+                log.debug("error list: dependency change skipped: %s: %s", type(e).__name__, e)
+                continue
+            out.append(c.model_copy(update={
+                "path": posix(self.clean(c.path)) or "-", "key": self.clean(c.key, NOTE_WHERE_CHARS),
+                "before": self.clean(c.before, NOTE_WHERE_CHARS) if c.before else c.before,
+                "after": self.clean(c.after, NOTE_WHERE_CHARS) if c.after else c.after,
+                "replaced_by": self.clean(c.replaced_by, NOTE_WHERE_CHARS) if c.replaced_by else c.replaced_by,
+                "note": self.clean(c.note, NOTE_CHANGE_CHARS)}))
+            if len(out) >= MAJOR_MAX:
                 break
         return out
 
@@ -614,6 +663,11 @@ def _pom_hit(e: ErrorEntry, x: BuildError) -> bool:
 
 
 # --------------------------------------------------------------------------- errors.md
+def guide_lines(text: str) -> list[str]:
+    """A 운영자 확인 guide as lines (leading bullets stripped, empty lines dropped)."""
+    return [x for x in (re.sub(r"^\s*[-*•]\s+", "", ln).strip() for ln in (text or "").splitlines()) if x]
+
+
 def _cell(text: Any, limit: int = 160) -> str:
     s = " ".join(str(text or "").split()).replace("|", "\\|")
     return s if len(s) <= limit else s[: limit - 1] + "…"
@@ -661,6 +715,12 @@ def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "")
                 L += [f"  - {_cell(note_text(x), 600)}" for x in t.edits[:MD_NOTES]]
                 if len(t.edits) > MD_NOTES:
                     L.append(f"  - … {len(t.edits) - MD_NOTES} more (errors.jsonl)")
+            if t.major_upgrades:
+                L.append(f"- 메이저 변경 ({MAJOR_MARK}, 운영자 확인 필요):")
+                L += [f"  - {_cell(change_line(x), 400)}" for x in t.major_upgrades[:MD_NOTES]]
+            if t.verify:
+                L.append("- 운영자 확인:")
+                L += [f"  - {_cell(x, 600)}" for x in guide_lines(t.verify)[:MD_NOTES]]
             if t.files:
                 L.append(f"- files: {', '.join(t.files)}")
             if t.diff:

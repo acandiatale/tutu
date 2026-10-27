@@ -247,8 +247,8 @@ class StructureReviewer:
             analysis = (analysis + "\n" if analysis else "") + f"[sbmig] {missing}"
         rv.answer = ScriptProposal(code=parsed.script, analysis=analysis, solution=parsed.solution,
                                    edits=list(parsed.edits), changes=list(parsed.changes),
-                                   no_script_reason=parsed.no_script_reason, model=rv.model, raw_response=parsed.raw,
-                                   error=parsed.edits_problem)
+                                   no_script_reason=parsed.no_script_reason, verify=parsed.verify, model=rv.model,
+                                   raw_response=parsed.raw, error=parsed.edits_problem)
         self._encoding_check(rv, inp)
         rv.verdict = "issues" if rv.issues else "ok"
 

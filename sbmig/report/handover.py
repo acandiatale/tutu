@@ -440,10 +440,19 @@ def project_name(profile: Any) -> str:
     return (getattr(rp, "artifact_id", None) or getattr(profile, "name", None) or "") if profile is not None else ""
 
 
+def operator_checks_item(n: int) -> str:
+    """The first "from here on" line when the run made major upgrades (v2.1d, `report.operator_checks`)."""
+    return f"operator checks: {n} major upgrade(s) — see \"Operator checks\" above"
+
+
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
+    # (0) v2.1d: major upgrades / library replacements the operator must verify (the block above Versions replaced)
+    checks = list(getattr(report, "operator_checks", None) or [])
+    if checks:
+        _dedupe_add(out, operator_checks_item(len(checks)))
     # (a) advisories not replaced
     for f in findings:
         if f.outcome == "replaced":

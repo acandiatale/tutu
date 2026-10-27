@@ -23,7 +23,7 @@ here) — or `<no_script>` with the reason when the fix cannot be reused.
 {% endif %}
 The business team reads the record of every modification: give each edit its "desc" and, with a script, the <changes> list — one sentence per modification in the form "<파일> 의 <위치> 에서 <무엇을> <어떻게> 수정합니다", written in {{ desc_language | default("Korean (한국어)") }}.
 {% if mode == "augment" -%}
-Answer now using only the output format: <analysis>, <solution>, <changes>, then the COMPLETE new <script> defining `def fix(p)` — or <no_script> with the reason and <edits> (each with its "desc") — or <need_files> / <need_grep>.
+Answer now using only the output format: <analysis>, <solution>, <verify> (only after a major upgrade), <changes>, then the COMPLETE new <script> defining `def fix(p)` — or <no_script> with the reason and <edits> (each with its "desc") — or <need_files> / <need_grep>.
 {%- else -%}
-Answer now using only the output format: <analysis>, <solution>, <edits> (each with its "desc"), <changes>, then <script> defining `def fix(p)` (or <no_script> with the reason) — or <need_files> / <need_grep>.
+Answer now using only the output format: <analysis>, <solution>, <verify> (only after a major upgrade), <edits> (each with its "desc"), <changes>, then <script> defining `def fix(p)` (or <no_script> with the reason) — or <need_files> / <need_grep>.
 {%- endif %}

@@ -187,6 +187,7 @@ class CaseRow:
     script: str = ""                               # cases/<id>/fix_vN.py (resolving script, else the newest stored)
     script_version: int = 0
     seen: str = ""
+    major_upgrades: int = 0                        # v2.1d: major upgrades / replacements of the deciding try
 
 
 def _try_key(t: Any) -> tuple:
@@ -237,6 +238,7 @@ def case_rows(entries: Iterable[Any]) -> list[CaseRow]:
             row.analysis = getattr(d, "analysis", "") or ""
             row.solution = getattr(d, "solution", "") or ""
             row.no_script_reason = getattr(d, "no_script_reason", "") or ""
+            row.major_upgrades = len(getattr(d, "major_upgrades", None) or []) if kept(d) else 0
         if not row.no_script_reason:
             row.no_script_reason = next((t.no_script_reason for t in reversed(row.tries)
                                          if getattr(t, "no_script_reason", "")), "")

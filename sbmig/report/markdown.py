@@ -58,6 +58,8 @@ FLAG_HELP = {
                   "JAVA_HOME to a JDK 21 and run again",
     "llm-config-error": "the LLM is not configured (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env, or the "
                         "gateway rejected the key / model): LLM fixes were skipped — check with `sbmig llm-probe`",
+    "major-upgrade": "a fix raised a dependency across its major version or replaced a library (the build passes): "
+                     "the operator verifies the runtime behaviour — see \"Operator checks\" in the Handover",
 }
 FLAG_PREFIX_HELP = {
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
@@ -249,10 +251,55 @@ def properties_lines(h: Any, r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+OPERATOR_GUIDE_LINES = 20                    # guide lines per check in report.md (report.json keeps them all)
+
+
+def _guide_items(guide: str) -> list[str]:
+    return [x for x in (re.sub(r"^\s*[-*•]\s+", "", ln).strip() for ln in (guide or "").splitlines()) if x]
+
+
+def operator_check_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """v2.1d Handover block "Operator checks (N major upgrades)" (`report.operator_checks`): one item per major
+    upgrade / library replacement still in the final tree — coordinates, pom, case, the try, the commit, approved —
+    with the 운영자 확인 guide and who wrote it. [] without checks."""
+    checks = list(getattr(r, "operator_checks", None) or [])
+    if not checks:
+        return []
+    L = [tr(lang, "### Operator checks ({n} major upgrades)", n=len(checks)), "",
+         tr(lang, "The build passes, but these changes cross a major version line or replace a library: check the "
+                  "runtime behaviour (configuration, registrations, renamed packages) before you ship."), ""]
+    for c in checks:
+        ch = c.change
+        where = [f"`{_cell(ch.path, 160)}` ({ch.section})"]
+        if c.case_id:
+            where.append(tr(lang, "case `{case}`", case=c.case_id))
+        if c.source:
+            where.append(tr(lang, "structure review") if c.source == "review" else c.source)
+        if c.commit:
+            where.append(tr(lang, "commit `{sha}`", sha=c.commit[:7]))
+        line = f"- **{_cell(ch.text, 200)}** — " + ", ".join(where)
+        if ch.approved:                          # depchanges.apply_table: "approved by the shipped / company table"
+            src = "jakarta_libraries.yml" if "shipped table" in (ch.note or "") else "libraries.yml"
+            line += tr(lang, " — approved ({src})", src=src)
+        L.append(line)
+        items = _guide_items(c.guide)
+        L += [f"  - {_cell(x, 500)}" for x in items[:OPERATOR_GUIDE_LINES]]
+        if len(items) > OPERATOR_GUIDE_LINES:
+            L.append("  - " + tr(lang, "… {n} more (report.json)", n=len(items) - OPERATOR_GUIDE_LINES))
+        if not items:
+            L.append("  - " + tr(lang, "(no guide recorded)"))
+        L.append("  - " + (tr(lang, "guide source: LLM") if c.guide_source == "llm"
+                           else tr(lang, "guide source: sbmig (synthesized)")))
+    L.append("")
+    return L
+
+
 def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """The first section of report.md: versions replaced, libraries needing attention, 'from here on'."""
+    """The first section of report.md: operator checks (v2.1d), versions replaced, libraries needing attention,
+    'from here on'."""
     lang = normalize(lang)
     L = [f"## {tr(lang, HANDOVER_TITLE)}", ""]
+    L += operator_check_lines(r, lang)
     h = r.handover
     findings = list(r.advisories or [])
     has_versions = h is not None and bool(h.changes or h.added or h.removed or h.parent_before or h.parent_after)
@@ -328,6 +375,9 @@ def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
     L += [tr(lang, "### From here on, your team"), ""]
     items = h.from_here if h is not None else [f"{f.title}: {f.followup}".rstrip(": ") for f in findings
                                                if f.outcome != "replaced"]
+    if h is None and r.operator_checks:
+        from .handover import operator_checks_item
+        items = [operator_checks_item(len(r.operator_checks)), *items]
     if items:
         L += [f"{i}. {_cell(tr_line(lang, x), 500)}" for i, x in enumerate(items, 1)]
     else:
@@ -428,7 +478,9 @@ def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
     for row in rows[:FIXES_MAX_ROWS]:
         solution = row.solution or (tr(lang, "(no solution text) {reason}", reason=row.no_script_reason)
                                     if row.no_script_reason else "")
-        L.append(f"| `{row.case_id}` {_cell(_short(row.name, 100), 120)} | "
+        major = (" " + tr(lang, "⚠ major ({n}, see Operator checks)", n=row.major_upgrades)) if row.major_upgrades \
+            else ""
+        L.append(f"| `{row.case_id}`{major} {_cell(_short(row.name, 100), 120)} | "
                  f"{tr(lang, '{resolved}/{n} resolved', resolved=row.resolved, n=row.entries)} | "
                  f"{_cell(row.analysis or '-', 400)} | {_cell(solution or '-', 400)} | "
                  f"{_cell(stats_text(row.changes) or '-', 300)} | {_cell(notes_text(row.edits) or '-', 700)} | "

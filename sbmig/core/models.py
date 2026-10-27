@@ -880,6 +880,7 @@ class FixTry(BaseModel):
     major_upgrades: list[DependencyChange] = Field(default_factory=list)   # v2.1d: major / replaced changes this try
                                                    # made in poms (read back from its diff)
     verify: str = ""                               # v2.1d 운영자 확인 사항 for them (LLM <verify> or sbmig synthesized)
+    verify_source: Literal["", "llm", "sbmig"] = ""   # who wrote the guide ("" = no major upgrade)
     diff: str = ""                                 # unified diff of what was applied (capped by errors.diff_chars)
     commit: str = ""
     result: AttemptOutcome = "pending"

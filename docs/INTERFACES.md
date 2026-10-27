@@ -1501,3 +1501,34 @@ passed, the runtime is unverified): "메이저를 올리지 마라. 마이너에
   `report.operator_checks` from the entries' tries + the review, `still_applied` filter.
 * Report (`sbmig/report/handover.py`, `markdown.py`, `result_line.py`, `i18n.py`): the operator block first in
   Handover; `major=<n>` on the result line.
+
+### As built (v2.1d, 2026-10-27)
+* **Table approval is stricter than the brief**: a table entry approves a change only for the library it describes — the
+  key's own entry, or for `replaced` an entry whose `old_keys` cover the old coordinates (a relocation). `allow_major`
+  approves only a move onto the entry's major line. So the shipped `org.sitemesh:sitemesh` 3.3.0 entry does **not**
+  approve a SiteMesh 2 → 3 swap; a company entry with `allow_major: true` does. A company entry may omit
+  `jakarta_since` (defaults to `version`); YAML numbers become strings. A broken company file → one warning, shipped
+  table only. `library_hint_line` adds "crosses N.x → M.x: port what that major changes and write <verify>" when a
+  non-approved table version is a higher major.
+* **Repository lookup**: `build.repository_url` wins (borrowing the mirror's credentials when the URLs match), else the
+  catch-all mirror of `build.settings_file`, else `~/.m2/settings.xml`'s mirror (what Maven uses), else Maven Central
+  unless `build.offline`. Two timeouts / connection failures in a row stop all further calls for the run (one INFO
+  line); the local repository is the fallback. Same-major candidate poms are checked newest → oldest and stop at the
+  first javax build; the remaining `max_pom_checks` budget walks a jakarta higher major down to `first_jakarta`.
+  `is_prerelease` treats any unknown qualifier as a prerelease except RELEASE / Final / GA / sp / jre / android.
+* **Read-back**: a classifier-only change is `minor` / `major` with a `classifier a → b` note (not `replaced`); an
+  empty pom text (new / deleted pom) gives []. `changes_in_commit` needs `Workspace.file_at(sha, rel)` (`git show`).
+* **Guide**: a reused stored script (`kb-script`) never spends an LLM call — its guide is synthesized; a `new` /
+  `augment` answer without `<verify>` gets ONE `verify_guide` call (`libraries.verify_guide_llm`, budget allowing),
+  usage read from `fixer.last_verify_usage` (the method returns text only) and charged like `_ask_llm`; the review
+  commit prefers `rv.answer.verify`, else synthesized. Replay clients are role-scoped, so e2e runs synthesize. The
+  synthesized guide follows `report.language` (log lines stay Korean). `FixTry.verify_source` records who wrote it.
+  The orchestrator's `LazyFixer` forwards `verify_guide` / `last_verify_usage` / `verify_usage` (explicit methods only:
+  no catch-all `__getattr__`, so a probe never builds the LLM client).
+* **Operator checks**: deduplicated by (pom, key, after) — the latest try wins; tries `regressed` / `reverted` /
+  `apply_failed` or rolled back are skipped; `still_applied` filters the rest (a failing check keeps the item). Flag
+  `major-upgrade` is an attention flag (`attn=`, fleet `attention` column). `SBMIG-RESULT … review=… major=<n>`.
+* **Prompt section** "Dependency versions (what the repository has; policy: same major first, see rule 14)" sits after
+  the POM sections (order 3.5) and is dropped late in truncation (after `reference_notes`).
+* Tests never reach a repository: `tests/conftest.py` installs an offline `RepositoryLookup` stand-in (autouse);
+  `tests/build/test_repo_versions.py` drives the real class with a fake fetch.

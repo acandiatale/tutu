@@ -11,7 +11,8 @@ changes what the loop does: an exception is logged (WARNING) and the call return
     review_fixed(file, text, try)    → the entry                a critical review issue the review's edits fixed
                                                                 (try fields incl. `edits`, the 수정 notes)
     verify_poms(build_errors)        → pom-verify entries resolved by that build
-    begin_try / finish_try / resolve / block                    the fix loop's tries
+    begin_try / finish_try / resolve / block                    the fix loop's tries (finish_try: v2.1d
+                                                                major_upgrades / verify, optional)
     end_of_run / write / to_report / entries / open_count       finalize
 
 `CaseScripts` wraps `kb.cases` (None = no KB): best / code / find / add_script / credit.
@@ -68,6 +69,7 @@ class _Guarded:
 
 
 REVIEW_L2 = "review|structure"      # the case of the structure review's own fixes (entries + stored scripts)
+OPTIONAL_TRY_FIELDS = ("edits", "major_upgrades", "verify", "verify_source")   # finish_try fields an older error list may not take
 
 
 class RunErrors(_Guarded):
@@ -146,10 +148,12 @@ class RunErrors(_Guarded):
     def finish_try(self, case_id: str, n: int, *, optional: Optional[dict[str, Any]] = None, **fields: Any) -> None:
         """Set the try's fields (analysis, solution, no_script_reason, applied, files, edits, diff, commit, result,
         note, llm_calls, seconds); called after the apply, again after the scoring / a rollback. `optional` fields
-        (script_version, edits — the v2.1b 수정 notes) are dropped when the list does not take them."""
+        (script_version, edits — the v2.1b 수정 notes —, major_upgrades / verify — v2.1d 메이저 변경 + 운영자 확인)
+        are dropped when the list does not take them."""
         opt = dict(optional or {})
-        if "edits" in fields:
-            opt["edits"] = fields.pop("edits")
+        for k in OPTIONAL_TRY_FIELDS:
+            if k in fields:
+                opt[k] = fields.pop(k)
         self._call("finish_try", case_id, n, optional=opt, **fields)
 
     def resolve(self, case_id: str, round: int, n: int) -> None:

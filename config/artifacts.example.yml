@@ -64,5 +64,10 @@ build:
   settings_file: null                   # config/settings.nexus.xml — copy config/settings.nexus.example.xml, set the group URL;
                                         # its mirrorOf external:* also covers the <repositories> declared inside the poms
   java_home: null                       # /usr/lib/jvm/java-21
+  repository_url: null                  # v2.1d: where sbmig reads maven-metadata.xml / poms to tell the LLM which releases
+                                        # exist (same major first); null = the mirror of settings_file (its credentials)
+
+# libraries: the dependency version policy (v2.1d) needs no setting here. People's additions / approvals go to
+# <kb dir>/libraries.yml (copy knowledge/libraries/libraries.company.example.yml) — read fresh on every run, no redeploy.
 
 # llm: nothing to set here — the gateway comes from .env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL); see config/default.yml

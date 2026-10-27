@@ -6,7 +6,10 @@ budget is spread over the erroring files (import block + windows around the erro
 files beyond it are listed by name only (the script reaches them through `p.errors` / `p.files`).
 
 Round 9: module-merge notes (`FixContext.reference_notes`) and the dropped first-wins copies as read-only reference text
-(`FixContext.reference_files`): never part of the build, never written by a script."""
+(`FixContext.reference_files`): never part of the build, never written by a script.
+
+v2.1d: `FixContext.library_hints` → the section "Dependency versions" (the people's table entry and what the repository
+has for the libraries behind the case; the script prompt's rule 14 is the policy), right after the poms, dropped late."""
 from __future__ import annotations
 
 import logging
@@ -186,7 +189,8 @@ SCRIPT_OPTIONAL_RESERVE = 0.35       # share of the budget kept for hints / note
 SCRIPT_MAX_POMS = 4
 SCRIPT_BASE_MAX_LINES = 60           # log / remaining / introduced lines of an augment base
 SCRIPT_TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
-                         "advisory_hints", "reference_notes", "related_files", "files", "pom", "base_result")
+                         "advisory_hints", "reference_notes", "library_hints", "related_files", "files", "pom",
+                         "base_result")
 
 
 def format_error_line(e: BuildError, max_message: int = 300) -> str:
@@ -385,6 +389,8 @@ class ContextPacker:
     # truncation priority: SCRIPT_TRUNCATE_ORDER (first = dropped/shrunk first); "errors" and "header" never shrink
     MAX_RELATED_FILES = 3
     ADVISORY_TITLE = "Library migration guidance (what to migrate TO)"
+    # v2.1d: FixContext.library_hints — the people's table entry + what the repository has (sbmig.build.repo_versions)
+    LIBRARY_HINTS_TITLE = "Dependency versions (what the repository has; policy: same major first, see rule 14)"
     REFERENCE_NOTES_TITLE = "Module merge notes (first-wins; the dropped copy is below as reference)"
 
     def __init__(self, cfg: Config, notes_dir: Optional[str | Path] = None, max_notes: int = DEFAULT_MAX_NOTES):
@@ -519,6 +525,9 @@ class ContextPacker:
             secs.append(_Section("reference_files", self.SCRIPT_REFERENCE_FILES_TITLE,
                                  "\n\n".join(self._reference_block(label, text)
                                              for label, text in sorted(ctx.reference_files.items())), 2.5))
+        if ctx.library_hints:                          # right after the poms (3.x), before the advisories (4)
+            secs.append(_Section("library_hints", self.LIBRARY_HINTS_TITLE,
+                                 "\n".join(f"- {h}" for h in ctx.library_hints), 3.5))
         if ctx.advisory_hints:
             secs.append(_Section("advisory_hints", self.ADVISORY_TITLE,
                                  "The libraries below were removed or replaced by the migration on purpose. The script "

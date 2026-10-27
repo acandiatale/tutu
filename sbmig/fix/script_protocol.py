@@ -18,6 +18,10 @@ The model answers with four parts (v2.1b: plus the change notes the business tea
 optional for the parser: a v2 answer with `<analysis>` + `<script>` only parses as before (solution "", edits [],
 changes []).
 
+v2.1d: `<verify>운영자 확인 사항</verify>` (after `<solution>`, only after a major version upgrade / a library replaced)
+→ `ParsedScript.verify` → `ScriptProposal.verify`; outer fence stripped, trimmed, masked like the other prose blocks.
+A `<verify>` alone is not an answer.
+
 Change notes (v2.1b, `ParsedScript.changes` → `FixAnswer.changes`): the `<changes>` list (`{"path", "where",
 "change"}`, required with a script, allowed with edits) first, then each edit's `desc` for a path the list did not
 describe (`sbmig.script.notes.answer_notes`). Same tolerant JSON as the edits; a bullet list ("path: what") is read
@@ -53,13 +57,14 @@ PATCHES_WARNING = "answered with v1 <patches> instead of a <script>"
 CHANGES_UNREADABLE = "changes unreadable"
 CHANGES_MISSING = "the answer did not describe its changes"   # a script without a <changes> list ([sbmig] note)
 
-_TAG_NAMES = ("analysis", "solution", "edits", "changes", "no_script", "script", "need_files?", "need_grep",
+_TAG_NAMES = ("analysis", "solution", "verify", "edits", "changes", "no_script", "script", "need_files?", "need_grep",
               "confidence", "patches")
 _OPEN_SCRIPT_RE = re.compile(r"<\s*script\s*>", re.IGNORECASE)
 _CLOSE_SCRIPT_LINE_RE = re.compile(r"^[ \t]*<\s*/\s*script\s*>", re.IGNORECASE | re.MULTILINE)
 _CLOSE_SCRIPT_RE = re.compile(r"<\s*/\s*script\s*>", re.IGNORECASE)
-_NEXT_TAG_LINE_RE = re.compile(r"^[ \t]*<\s*(?:analysis|solution|edits|changes|no_script|need_files?|need_grep)\s*>",
-                               re.IGNORECASE | re.MULTILINE)
+_NEXT_TAG_LINE_RE = re.compile(
+    r"^[ \t]*<\s*(?:analysis|solution|verify|edits|changes|no_script|need_files?|need_grep)\s*>",
+    re.IGNORECASE | re.MULTILINE)
 _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})[\w+.-]*\s*$")
 _FENCED_BLOCK_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(?:python3?|py)?[ \t]*\n(.*?)^[ \t]*\1[ \t]*$",
                               re.IGNORECASE | re.MULTILINE | re.DOTALL)
@@ -74,6 +79,7 @@ class ParsedScript:
     candidate: str = ""                            # the extracted script text even when it is not usable
     analysis: str = ""                             # 원인
     solution: str = ""                             # 해결 방법
+    verify: str = ""                               # v2.1d <verify>: 운영자 확인 사항 after a major upgrade ("" = none)
     edits: list[Edit] = field(default_factory=list)   # validated; [] when absent or unreadable
     edits_block: bool = False                      # an <edits> block was there (maybe empty / unreadable)
     edits_problem: str = ""                        # "edits JSON unreadable: …" / "edits invalid: …" ("" = fine)
@@ -419,6 +425,9 @@ def parse_script_response(text: str) -> ParsedScript:
     body, masked = _take_block(t, masked, "solution")
     if body is not None:
         res.solution = _strip_outer_fence(body).strip()
+    body, masked = _take_block(t, masked, "verify")
+    if body is not None:
+        res.verify = _strip_outer_fence(body).strip()
     body, masked = _take_block(t, masked, "edits")
     if body is not None:
         res.edits_block = True

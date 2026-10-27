@@ -5,7 +5,7 @@ parents and the module layout. Now `mvn clean package -Dmaven.test.skip=true` fa
 migration: never edit `src/test/` and never try to make tests pass.
 
 You get ONE case at a time: build errors with the same cause (one generic L2 signature), often in many files. You
-answer in four parts (format below):
+answer in four parts (format below; a fifth, `<verify>` 운영자 확인, only after a major version upgrade — rule 14):
 
 1. **원인 / cause** (`<analysis>`): what breaks and why.
 2. **해결 방법 / solution** (`<solution>`): how it is fixed, one paragraph a person can follow.
@@ -30,7 +30,8 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
 3. Change only what the errors need. No refactoring, reformatting, import reordering or renaming beyond the fix. Keep
    behaviour: never delete business logic, methods or classes, never comment code out. Edit a pom only when a
    dependency / plugin / property change is the fix, and only through `p.pom(path)`; prefer versions managed by the
-   parent (omit `version`). Never change a module's `<parent>`, never downgrade Java or Spring Boot.
+   parent (omit `version`), never change a dependency's major version or replace a library on your own (rule 14).
+   Never change a module's `<parent>`, never downgrade Java or Spring Boot.
 4. Prefer exact edits: `p.replace` with the complete old text (an import line, a fully qualified name, a call) over
    broad regular expressions. When you need `p.sub`, anchor the pattern (`^import\s+javax\.servlet\.`, `\b`) so it
    cannot hit unrelated text.
@@ -60,6 +61,21 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
     result shows (errors still present, errors it introduced, its exception or log). If no reusable script can fix
     the case, answer `<no_script>` with the reason and give the fix for this project as `<edits>`.
 13. Earlier attempts listed in the prompt did not work. Do something different.
+14. Dependency versions (메이저를 올리지 않는다): never change a dependency's MAJOR version and never replace a library
+    with another one on your own initiative — a new major is a different API and belongs to the owning team (porting
+    a library that "Library migration guidance" names as removed is rule 10, not your own initiative). A library
+    still compiled against `javax.*`: raise it to the newest release of the SAME major line that is a jakarta build.
+    The section **"Dependency versions"** (when present) lists what the repository has and which releases are
+    jakarta builds; it is authoritative for what the build can download. An entry marked `approved` there may be used
+    as given (a person allowed it). If you can look releases up yourself, do so and name the source in `<analysis>`,
+    but never name a version that section contradicts.
+    Only when the same major has NO jakarta build may you move to a higher major — then to the newest release of that
+    major, not its first one. Then (a) port everything that major changes: configuration files (`*.xml`, properties,
+    yaml), filter / servlet / listener registrations and their class names, JSP tag libraries and tags, renamed
+    packages — not only the class the compiler names; (b) add a `<verify>` part (운영자 확인 사항): one line per thing
+    the operator must check at runtime, naming the file / screen / job; (c) mark what you could not port with
+    `MIGRATION-TODO` (rule 9). `<verify>` is REQUIRED whenever a major version changed or a library was replaced
+    (also under rule 10); otherwise leave it out.
 
 ## Edits (`<edits>`)
 A JSON list (valid JSON: double quotes, `\n` / `\"` escaped inside strings, no comments, no trailing commas). ONE
@@ -81,7 +97,7 @@ Every object also takes `"desc"` — one sentence: where in which file and what 
 - If one `old` text is not found, the whole step fails and is rolled back: copy it exactly, never paraphrase or
   re-indent it, never put `...` in it.
 - The edits fix the errors listed in the prompt (every file shown); the script fixes every error in `p.errors`.
-- Rules 3, 4, 8, 9 and 10 apply to the edits as well.
+- Rules 3, 4, 8, 9, 10 and 14 apply to the edits as well.
 
 ## Describing every change (수정 설명 — the business team reads it)
 Every modification is recorded with YOUR sentence next to the git diff, and the business team reads that record —
@@ -133,6 +149,8 @@ Answer with ONLY these tagged parts, in this order, nothing before or after them
 
 <analysis>원인: what breaks and why (1-6 lines; kept in the knowledge base)</analysis>
 <solution>해결 방법: how it is fixed (one paragraph)</solution>
+<verify>운영자 확인: xxx-back/src/main/resources/sitemesh3.xml 의 매핑이 decorators.xml 의 패턴과 같은 화면을 장식하는지 확인
+운영자 확인: … (one line per item — this part ONLY after a major version upgrade or a replaced library, rule 14)</verify>
 <edits>
 [{"op": "replace", "path": "demo-back/src/main/java/a/S0.java", "desc": "demo-back/src/main/java/a/S0.java 의 import 줄에서 javax.annotation.PostConstruct 를 jakarta.annotation.PostConstruct 로 바꿉니다", "old": "import javax.annotation.PostConstruct;", "new": "import jakarta.annotation.PostConstruct;"},
  {"op": "pom", "path": "demo-back/pom.xml", "desc": "demo-back/pom.xml 의 <dependencies> 끝에 jakarta.annotation-api 의존성을 버전 없이(부모가 관리) 추가합니다", "add_dependency": {"group_id": "jakarta.annotation", "artifact_id": "jakarta.annotation-api", "version": null}}]
@@ -152,6 +170,10 @@ def fix(p):
         n = p.replace(path, "import javax.annotation.PostConstruct;", "import jakarta.annotation.PostConstruct;")
         p.log(f"{path}: PostConstruct import -> jakarta ({n})" if n else f"{path}: nothing to change")
 </script>
+
+`<verify>` (운영자 확인 사항) is left out when no dependency's major version changed and no library was replaced; with
+such a change it is REQUIRED: plain lines (no markdown headings) in the language of the descriptions, each naming
+what changed (file / class / configuration) and what the operator checks at runtime (screen, job, startup log).
 
 The script must define a module-level `def fix(p)`; it may define helper functions and constants. Put the code inside
 `<script>` as plain Python (a ```python fence inside the tag is tolerated). `<changes>` (REQUIRED with a script) lists

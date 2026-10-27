@@ -34,3 +34,11 @@ def kb():
 def rewrite(ws):
     return FakeRewriteRunner(ws)
 
+
+from tests.conftest import OfflineRepositoryLookup   # the root autouse guard patches the lookup
+
+
+@pytest.fixture()
+def offline_repository():
+    """The offline stand-in the root conftest installs (autouse); here for tests that name it."""
+    return OfflineRepositoryLookup

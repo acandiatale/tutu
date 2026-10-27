@@ -40,7 +40,8 @@ from .budget import LoopBudget
 from .components import LazyFixer, LazyScriptRunner, MissingComponentError, NullKnowledgeBase, lazy_attr
 from .entries import REVIEW_L2, CaseScripts, RunErrors
 from .fixloop import NOTES_LOGGED, BuildFixLoop, _restore_build_byproducts, _status_paths, refine_build
-from .notes import answer_notes, note_line, try_notes
+from .notes import (answer_notes, fallback_guide, log_major_upgrades, note_line, operator_changes, pom_changed,
+                    try_notes)
 
 log = logging.getLogger("sbmig.loop")
 
@@ -195,6 +196,8 @@ class Orchestrator:
         self.errors = RunErrors(None)               # v2.1: the run's error list (errors.jsonl), set in step_plan
         self._verify_results: list[BuildResult] = []
         self._review_usage: dict[str, LLMUsage] = {}       # v2: structure-review calls, by model
+        self._review_commit_pre: str | None = None          # v2.1d: HEAD before the review commit (read-back)
+        self._review_guide_source = ""                     # v2.1d: "llm" | "sbmig" — who wrote the review's guide
         self._restructure_results: list[Any] = []          # v2: this run's RestructureResults (structure review input)
         self._restructure_notes: list[str] = []
         self._phase_failed = False
@@ -1201,6 +1204,8 @@ class Orchestrator:
                     rv.note = why
         self._review_llm_usage(rv)
         sha = self._commit_review(pr, step, rv)
+        if sha:
+            self._review_major_upgrades(rv, self._review_commit_pre or pre, sha)
         self._review_entries(rv, pre, sha)
         self.report.structure_review = rv
         critical = len(rv.critical)
@@ -1221,6 +1226,7 @@ class Orchestrator:
     def _commit_review(self, pr: PhaseResult, step: PlanStep, rv: Any) -> Optional[str]:
         """Commit the review script's changes (`review.commit`); changes without a successful script run are
         discarded (a reviewer must leave the tree as it found it when its script failed)."""
+        self._review_commit_pre = None
         if self._dry_run:
             return None
         try:
@@ -1228,6 +1234,7 @@ class Orchestrator:
                 return None
             if rv.script_result is not None and rv.script_result.status == "ok":
                 pre = self.ws.head()
+                self._review_commit_pre = pre
                 sha = self.ws.commit(f"review: fix critical structure issues ({len(rv.critical)})",
                                      paths=list(rv.script_result.changed_files or []) or None)
                 if sha == pre:
@@ -1283,7 +1290,12 @@ class Orchestrator:
                         no_script_reason=getattr(ans, "no_script_reason", "") if ans is not None else "",
                         applied=applied, files=files, edits=list(notes), diff=diff, commit=sha, result="improved",
                         note=f"fixed by the structure review ({n_edits} edit(s), commit {sha[:10]})",
-                        llm_calls=int(rv.llm_usage.calls or 0), seconds=0.0)
+                        llm_calls=int(rv.llm_usage.calls or 0), seconds=0.0,
+                        major_upgrades=list(getattr(rv, "major_upgrades", None) or []),
+                        verify=(getattr(ans, "verify", "") if ans is not None else "") or "",
+                        verify_source=(self._review_guide_source or ("llm" if ans is not None and ans.verify
+                                                                      else "")) if getattr(rv, "major_upgrades", None)
+                        else "")
                 elif issue.severity == "critical":
                     self.errors.add_note(issue.file or "", f"critical (not fixed by the review): {text}", "review")
                 else:
@@ -1302,6 +1314,42 @@ class Orchestrator:
                                      "version": getattr(cs, "version", 0), "status": getattr(cs, "status", "")})
         except Exception as e:  # noqa: BLE001 - recording never stops a run
             log.warning("recording the structure review failed: %s: %s", type(e).__name__, e)
+
+    def _review_major_upgrades(self, rv: Any, pre: str | None, sha: str) -> None:
+        """v2.1d: the review commit's major upgrades / library replacements (`sbmig.build.depchanges`) →
+        `rv.major_upgrades` with the 운영자 확인 guide (the answer's `<verify>`, else sbmig's synthesized one, stored
+        into `rv.answer.verify` — or the note without an answer). Same WARNING / INFO lines as the fix loop (stage
+        review). Never raises; nothing is reverted for it."""
+        try:
+            files: list[str] = []
+            try:
+                files = list(self.ws.changed_between(pre, sha)) if pre else []
+            except Exception:  # noqa: BLE001 - let the read-back look at every pom of the commit
+                files = ["pom.xml"]
+            if not pom_changed(files):
+                return
+            changes = operator_changes(self.ws, pre, sha, self.cfg)
+            if not changes:
+                return
+            rv.major_upgrades = changes
+            ans = getattr(rv, "answer", None)
+            guide = str(getattr(ans, "verify", "") or "").strip() if ans is not None else ""
+            source = "llm" if guide else "sbmig"
+            if not guide:
+                lang = str(getattr(self.cfg.report, "language", "") or "ko").lower()
+                guide = fallback_guide(changes, lang if lang in ("en", "ko") else "ko")
+                if ans is not None:
+                    ans.verify = guide
+                else:
+                    rv.note = (f"{rv.note}; " if rv.note else "") + "운영자 확인: " + " / ".join(
+                        x.strip() for x in guide.splitlines() if x.strip())[:600]
+            self._review_guide_source = source
+            log_major_upgrades(changes, guide, self.cfg)
+            for ch in changes:
+                self.ws.journal({"event": "major_upgrade", "step": "review", "change": ch.model_dump(mode="json"),
+                                 "guide_source": source})
+        except Exception as e:  # noqa: BLE001 - a report aid, never a reason to fail the review
+            log.debug("review read-back failed: %s: %s", type(e).__name__, e)
 
     def _review_llm_usage(self, rv: Any) -> None:
         """The review's LLM calls count toward the run's usage and budget: through the budgeted client (`_review_usage`)
@@ -1654,6 +1702,90 @@ class Orchestrator:
         if self.report is not None and flag not in self.report.flags:
             self.report.flags.append(flag)
 
+    def _finalize_operator_checks(self, report: RunReport) -> None:
+        """v2.1d `report.operator_checks` (운영자 확인 필요): one OperatorCheck per major upgrade / library replacement
+        of the error list's tries (the fix attempts' records without a list) and of the structure review — only the
+        changes still in the final tree (`still_applied`; a rolled-back try is not listed), the same (pom, library,
+        version) once (the latest try that made it). Flag `major-upgrade`. Never raises."""
+        try:
+            checks = self._operator_checks(report)
+        except Exception as e:  # noqa: BLE001 - never lose the report over it
+            log.warning("operator checks failed: %s: %s", type(e).__name__, e)
+            return
+        report.operator_checks = checks
+        if checks:
+            self._flag("major-upgrade")
+            log.warning("운영자 확인 필요: 메이저 업그레이드 %d건 (report Handover \"운영자 확인 필요\")", len(checks))
+            self.ws.journal({"event": "operator_checks", "count": len(checks),
+                             "changes": [c.change.text for c in checks]})
+
+    def _operator_checks(self, report: RunReport) -> list:
+        from sbmig.core.models import OperatorCheck
+
+        from .fixloop import ROLLED_BACK_NOTE
+        by_commit = {a.commit: a for pr in report.phases for a in pr.attempts if a.commit}
+        found: dict[tuple, OperatorCheck] = {}
+
+        def add(ch: Any, **kw: Any) -> None:
+            key = (ch.path, ch.key, ch.after)
+            found.pop(key, None)                    # the latest try that made the change wins (its guide, commit)
+            found[key] = OperatorCheck(kind="library_replaced" if ch.kind == "replaced" else "major_upgrade",
+                                       change=ch, **kw)
+
+        rv = report.structure_review
+        if rv is not None and rv.commit and not rv.reverted:
+            ans = rv.answer
+            for ch in rv.major_upgrades or []:
+                add(ch, source="review", commit=rv.commit or "", guide=(ans.verify if ans is not None else "") or "",
+                    guide_source=self._review_guide_source or ("llm" if ans is not None and ans.verify else "sbmig"))
+        tries: list[tuple[str, Any]] = []
+        seen: set[tuple] = set()
+        for e in list(self.errors.entries() or []):
+            for t in getattr(e, "tries", None) or []:
+                k = (getattr(e, "case_id", ""), getattr(t, "n", 0), getattr(t, "round", 0))
+                if k in seen or not getattr(t, "major_upgrades", None) or getattr(t, "source", "") == "review":
+                    continue
+                seen.add(k)
+                tries.append((str(getattr(e, "case_id", "") or ""), t))
+        tries.sort(key=lambda ct: (getattr(ct[1], "round", 0), getattr(ct[1], "n", 0)))
+        if tries:
+            for case_id, t in tries:
+                if getattr(t, "applied", "none") == "none" or t.result in ("regressed", "reverted", "apply_failed") \
+                        or ROLLED_BACK_NOTE in (t.note or ""):
+                    continue
+                att = by_commit.get(t.commit) if t.commit else None
+                for ch in t.major_upgrades:
+                    add(ch, case_id=case_id, source=f"fix r{t.round} try {t.n}", commit=t.commit or "",
+                        guide=t.verify or "",
+                        guide_source=(getattr(t, "verify_source", "") or (att.verify_source if att is not None
+                                                                           and att.verify_source else "sbmig")),
+                        files=list(t.files or []))
+        else:                                       # no error list (inactive): the attempts carry the same facts
+            for pr in report.phases:
+                for a in pr.attempts:
+                    if not a.major_upgrades or not a.applied or a.outcome in ("regressed", "reverted",
+                                                                               "apply_failed") \
+                            or any(n.startswith(ROLLED_BACK_NOTE) for n in a.notes):
+                        continue
+                    for ch in a.major_upgrades:
+                        add(ch, case_id=a.script_case_id, source=f"fix {a.id}", commit=a.commit or "",
+                            guide=a.verify, guide_source=a.verify_source or "sbmig",
+                            files=list(dict.fromkeys(c.new_path or c.path for c in a.changes)))
+        out = []
+        for c in found.values():
+            if self._still_applied(c.change):
+                out.append(c)
+        return out
+
+    def _still_applied(self, change: Any) -> bool:
+        """`sbmig.build.depchanges.still_applied` (a failure keeps the check: better listed once too often)."""
+        try:
+            from sbmig.build.depchanges import still_applied
+            return bool(still_applied(self.ws, change))
+        except Exception as e:  # noqa: BLE001
+            log.debug("still_applied(%s) unavailable: %s: %s", getattr(change, "key", "?"), type(e).__name__, e)
+            return True
+
     # ------------------------------------------------------------------ finalize
     def _finalize_blocked(self, report: RunReport, unresolved: list[BuildError]) -> None:
         """RunReport.blocked = every item of the run (dedupe by id). After a green final build, items whose errors no
@@ -1932,6 +2064,7 @@ class Orchestrator:
             out["report_md"] = str(self.ws.run_dir / "report.md")
         if "json" in self.cfg.report.formats:
             out["report_json"] = str(self.ws.run_dir / "report.json")
+        self._finalize_operator_checks(report)
         self._finalize_advisories(report)
         self._finalize_errors(report)
         writer = self._report_writer

@@ -721,6 +721,18 @@ class Workspace:
         out = self._git("diff", "--name-only", "-z", from_sha, to_sha).stdout
         return [f for f in out.split("\0") if f.strip()]
 
+    def file_at(self, sha: str, rel: str) -> Optional[str]:
+        """v2.1d: the text of a project-relative (posix) file at commit `sha` (`git show <sha>:<path>`), decoded as
+        UTF-8 with replacement characters; None when the path did not exist there or git fails. Never raises."""
+        path = str(rel).replace("\\", "/").lstrip("/").removeprefix("./")
+        try:
+            cp = self._git("show", f"{sha}:{path}", check=False)
+        except Exception:  # noqa: BLE001 - GitError (timeout) / OSError: unknown
+            return None
+        if cp.returncode != 0:
+            return None
+        return cp.stdout or ""
+
     def first_commit(self) -> str:
         return self._git("rev-list", "--max-parents=0", "HEAD").stdout.strip().splitlines()[-1]
 

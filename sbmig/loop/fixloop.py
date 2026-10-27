@@ -37,6 +37,14 @@ cannot tell (no KB credit), `partial` = some gone and nothing new in the touched
 edit revert that try; blocked clusters (run-wide `BlockedRegistry`), stall / oscillation, the LLM cool-down (L5) and
 the configuration-error stop, library-advisory hints and the round-9 merge-conflict reference copies (never a patch
 target).
+
+v2.1d (dependency version policy, docs/INTERFACES.md "v2.1d"): before every LLM call `_library_hints` puts the facts
+of the libraries behind the case into `FixContext.library_hints` (the table entry `<kb>/libraries.yml` + shipped, and
+what the repository has: same-major releases with jakarta ✓ / javax, the higher majors; INFO `의존성 버전 조회: …`);
+after every applied try whose commit touched a pom, `_read_back` lists its major upgrades / library replacements
+(`FixAttempt.major_upgrades`, `FixTry.major_upgrades`) with the 운영자 확인 guide (`<verify>` → one `verify_guide` LLM
+call → sbmig's synthesized one; WARNING `메이저 업그레이드: … — 운영자 확인 필요`). Nothing is reverted or blocked for
+it; every call into `sbmig.build.depchanges` / `repo_versions` / `jakarta_libraries` is best effort.
 """
 from __future__ import annotations
 
@@ -54,7 +62,8 @@ from typing import Any, Callable, Optional
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
 from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster,
-                               ErrorKind, FileChange, FixAttempt, IterationRecord, KBMatch, MergeConflict, Phase,
+                               ErrorKind, FileChange, FixAttempt, IterationRecord, KBMatch, LLMUsage, MergeConflict,
+                               Phase,
                                PhaseResult, ProjectProfile, ScriptBase, ScriptRunResult, TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
@@ -62,9 +71,10 @@ from sbmig.core.stage import stage
 
 from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, sanitize_errors
 from .budget import LoopBudget
-from .components import ScriptFixerMissing, profile_summary
+from .components import LazyFixer, ScriptFixerMissing, profile_summary
 from .entries import CaseScripts, RunErrors, script_path
-from .notes import answer_notes, note_line, try_notes
+from .notes import (answer_notes, fallback_guide, log_major_upgrades, note_line, operator_changes, pom_changed,
+                    table_entry, try_notes)
 
 log = logging.getLogger("sbmig.loop")
 
@@ -401,6 +411,12 @@ class BuildFixLoop:
         self._answers: dict[int, Any] = {}       # v2.1b: attempt → the LLM answer it applied (its edit descriptions)
         self._notes: dict[int, list] = {}        # v2.1b: attempt → its 수정 notes (EditNote per change)
         self._match_hints: dict[str, list[str]] = {}   # cluster id → kb.match hint lines (the case's last solution)
+        # v2.1d dependency version policy: the "Dependency versions" prompt lines per library (cached for the run),
+        # the repository lookup (lazy; None + off after a failure), what the repository said per library
+        self._library_hint_cache: dict[str, list[str]] = {}
+        self._repo_lookup: Any = None
+        self._repo_lookup_off = False
+        self._repo_facts: dict[str, Any] = {}    # g:a → RepositoryVersions (the read-back's "same major offered")
         self._cases = CaseScripts.of(kb)
         attach = getattr(triager, "attach_run", None)
         if callable(attach):
@@ -1522,7 +1538,9 @@ class BuildFixLoop:
                                llm_calls=int(att.llm_usage.calls or 0),
                                seconds=round(self._seconds.get(id(att), 0.0), 1),
                                optional={"script_version": int(att.script_version or 0),
-                                         "edits": list(self._notes.get(id(att), []))})
+                                         "edits": list(self._notes.get(id(att), [])),
+                                         "major_upgrades": list(att.major_upgrades), "verify": att.verify,
+                                         "verify_source": att.verify_source})
 
     def _ran_on_files(self, att: FixAttempt) -> bool:
         res = att.script_result
@@ -1655,12 +1673,14 @@ class BuildFixLoop:
         # the stronger model on a stall, and from the second augment of a case on
         escalate = st.stall_level >= self.cfg.loop.stall_limit or (mode == "augment" and step.augments_used >= 1)
         sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
+        self._mark(f"library hints for {c.id}")
+        lib_hints = self._library_hints(c)
         ctx = FixContext(phase=st.phase, iteration=st.iteration, stall_level=st.stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
                          advisory_hints=adv_hints, previous_attempts=self._previous(c), other_errors_summary=other,
                          use_escalation_model=escalate, reference_notes=ref_notes, reference_files=ref_files,
                          script_mode=mode, case_id=step.case_id, signature_generic=sig,
-                         script_base=base if mode == "augment" else None)
+                         script_base=base if mode == "augment" else None, library_hints=lib_hints)
         self._mark(f"fixer.propose_script for {c.id} ({mode}: prompt packing + LLM call)")
         try:
             proposal = self.fixer.propose_script(self.ws, c, ctx)
@@ -1826,6 +1846,8 @@ class BuildFixLoop:
             log.info("수정: … %d more (errors.md)", len(notes) - NOTES_LOGGED)
         if diff:
             log.debug("diff:\n%s", diff)
+        if pom_changed(files or reported):             # v2.1d: major upgrades / library replacements → 운영자 확인
+            self._read_back(att, c, st, pre, sha, diff)
         warn = int(getattr(getattr(self.cfg, "script", None), "max_files_changed_warn", 0) or 0)
         if warn and len(files) > warn:
             note = (f"the fix changed {len(files)} files (more than script.max_files_changed_warn = {warn}) — "
@@ -1834,6 +1856,215 @@ class BuildFixLoop:
             log.warning("%s", note)
         st.pending.append(_Pending(att, pre, sha))
         st.applied_any = True
+
+    # ------------------------------------------------------------------ v2.1d dependency version policy
+    def _read_back(self, att: FixAttempt, c: ErrorCluster, st: _Round, pre: str, sha: str, diff: str) -> None:
+        """The applied commit's pom changes (`sbmig.build.depchanges`): every major upgrade / library replacement
+        becomes `att.major_upgrades` with the 운영자 확인 guide — the answer's `<verify>`, else ONE LLM call
+        (`fixer.verify_guide`, `libraries.verify_guide_llm`), else sbmig's synthesized guide. Never reverts or
+        blocks anything; a failure is a DEBUG line."""
+        try:
+            changes = operator_changes(self.ws, pre, sha, self.cfg)
+            if not changes:
+                return
+            att.major_upgrades = changes
+            guide, source = self._verify_guide(att, c, st, changes, diff)
+            att.verify, att.verify_source = guide, source
+            offered = {k: v for k, v in ((ch.key, self._same_major_offer(ch)) for ch in changes) if v}
+            log_major_upgrades(changes, guide, self.cfg, offered)
+            for ch in changes:
+                self.ws.journal({"event": "major_upgrade", "attempt": att.id, "case": att.script_case_id,
+                                 "change": ch.model_dump(mode="json"), "guide_source": source})
+        except Exception as e:  # noqa: BLE001 - the read-back is a report aid, never a reason to fail a try
+            log.debug("dependency read-back for %s failed: %s: %s", att.id, type(e).__name__, e)
+
+    def _verify_guide(self, att: FixAttempt, c: ErrorCluster, st: _Round, changes: list, diff: str
+                      ) -> tuple[str, str]:
+        """(guide, "llm" | "sbmig") for the try's major upgrades. A reused stored script (`kb-script`) costs no LLM
+        call: its guide is synthesized (docs/INTERFACES.md v2.1d)."""
+        ans = self._answers.get(id(att))
+        text = str(getattr(ans, "verify", "") or "").strip() if ans is not None else ""
+        if text:
+            return text, "llm"
+        fx = self._verify_fixer()
+        if fx is not None and att.source != "kb-script" \
+                and getattr(getattr(self.cfg, "libraries", None), "verify_guide_llm", True) \
+                and not self.dry_run and not self.llm_unavailable and self.budget.llm_allowed():
+            ctx = FixContext(phase=st.phase, iteration=st.iteration, profile_summary=self._summary(),
+                             case_id=att.script_case_id)
+            self._mark(f"fixer.verify_guide for {c.id}")
+            got = ""
+            try:
+                try:
+                    got = fx.verify_guide(self.ws, c, ctx, list(changes), diff, solution=att.solution or "")
+                except TypeError as e:              # a VerifyGuideLike without the `solution` keyword
+                    if "solution" not in str(e):
+                        raise
+                    got = fx.verify_guide(self.ws, c, ctx, list(changes), diff)
+                got = str(got or "").strip()
+            except Exception as e:  # noqa: BLE001 - the seam says it never raises; stay defensive
+                log.debug("verify_guide failed for %s: %s: %s", c.id, type(e).__name__, e)
+            self._charge_verify_usage(att, fx)
+            if got:
+                return got, "llm"
+        return fallback_guide(changes, self._lang()), "sbmig"
+
+    def _verify_fixer(self) -> Any:
+        """The fixer that has `verify_guide` (VerifyGuideLike): the fixer itself, or the real one behind the
+        orchestrator's `LazyFixer` proxy once `propose_script` created it; None = sbmig synthesizes the guide."""
+        fx = self.fixer
+        if callable(getattr(fx, "verify_guide", None)):
+            return fx
+        inner = getattr(fx, "_fixer", None) if isinstance(fx, LazyFixer) else None
+        return inner if inner is not None and callable(getattr(inner, "verify_guide", None)) else None
+
+    def _charge_verify_usage(self, att: FixAttempt, fx: Any) -> None:
+        """The verify_guide call's usage (`fixer.last_verify_usage`, an LLMUsage; a fixer without it = one call) on
+        the budget and on the attempt (its try's `llm_calls`, the report's usage) — like `_ask_llm` does."""
+        u = getattr(fx, "last_verify_usage", None)
+        if not isinstance(u, LLMUsage):
+            u = LLMUsage(calls=1)
+        elif not u.calls:
+            u = u.model_copy(update={"calls": 1})   # the call was asked for: charged once even when it failed early
+        self.budget.charge_llm(max(1, int(u.calls or 0)))
+        att.llm_usage = att.llm_usage.add(u)
+
+    def _lang(self) -> str:
+        lang = str(getattr(getattr(self.cfg, "report", None), "language", "") or "ko").lower()
+        return lang if lang in ("en", "ko") else "ko"
+
+    def _same_major_offer(self, ch: Any) -> str:
+        """The newest same-major jakarta release the repository / the table offered for `ch.key` ("" = none) — the
+        WARNING line says so (the policy asked for it instead of the major upgrade)."""
+        try:
+            rv = self._repo_facts.get(ch.key)
+            if rv is not None:
+                hit = [v.version for v in rv.same_major if v.jakarta]
+                if hit:
+                    return hit[-1]
+            entry = table_entry(ch.key, self.cfg)
+            if entry is not None and entry.version:
+                from sbmig.build.depchanges import major_of
+                if major_of(entry.version) is not None and major_of(entry.version) == major_of(ch.before):
+                    return entry.version
+        except Exception as e:  # noqa: BLE001
+            log.debug("same-major offer for %s unavailable: %s", getattr(ch, "key", "?"), e)
+        return ""
+
+    def _library_hints(self, c: ErrorCluster) -> list[str]:
+        """FixContext.library_hints (the prompt's "Dependency versions" section): for the libraries behind the case
+        (`_case_libraries`) the table entry and what the repository has (`RepositoryLookup.candidates` →
+        `hint_lines`), cached per library for the run. Never raises ([] on any problem)."""
+        try:
+            libs = self._case_libraries(c)
+            if not libs:
+                return []
+            out: list[str] = []
+            for gav in libs:
+                lines = self._library_hint_cache.get(gav.key)
+                if lines is None:
+                    lines = self._library_lines(gav.key, gav.version)
+                    self._library_hint_cache[gav.key] = lines
+                out += lines
+            out = list(dict.fromkeys(x for x in out if x))
+            if out:
+                self.ws.journal({"event": "library_hints", "case": c.case_id or c.id,
+                                 "keys": [g.key for g in libs], "lines": out})
+            return out
+        except Exception as e:  # noqa: BLE001 - hints never break a fix attempt
+            log.debug("library hints for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return []
+
+    def _case_libraries(self, c: ErrorCluster) -> list[GAV]:
+        """The libraries behind the case (≤ `libraries.max_artifacts_per_case`, one per g:a): the errors' `artifact`,
+        else the owner class of the first compile errors located on the module classpath (`ClassLocation.artifact`).
+        In-house artifacts and project classes are left out."""
+        from .blocked_registry import is_in_house
+        cap = int(getattr(getattr(self.cfg, "libraries", None), "max_artifacts_per_case", 3) or 0)
+        if cap <= 0:
+            return []
+        found: dict[str, GAV] = {}
+        for e in c.errors:
+            a = e.artifact
+            if a is None or not a.group_id or not a.artifact_id or is_in_house(a, self.cfg):
+                continue
+            found.setdefault(a.key, a)
+            if len(found) >= cap:
+                return list(found.values())
+        loc = self.locator
+        if found or loc is None or not hasattr(loc, "locate_class"):
+            return list(found.values())
+        seen: set[str] = set()
+        for e in [x for x in c.errors if x.kind in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE)][:3]:
+            names: list[str] = []
+            if hasattr(loc, "owner_fqcn"):
+                names.append(loc.owner_fqcn(e) or "")
+            if hasattr(loc, "type_mismatch"):
+                names.append((loc.type_mismatch(e) or (None, None))[1] or "")     # the found type of a mismatch
+            for fq in names:
+                if not fq or fq in seen or fq.startswith(("java.", "javax.", "jakarta.")):
+                    continue
+                seen.add(fq)
+                self._mark(f"locating {fq} for {c.id}")
+                where = loc.locate_class(self.ws, self.cfg, fq, c.module)
+                a = getattr(where, "artifact", None) if where is not None else None
+                if a is None or getattr(where, "in_project", False) or is_in_house(a, self.cfg):
+                    continue
+                found.setdefault(a.key, a)
+                if len(found) >= cap:
+                    return list(found.values())
+        return list(found.values())
+
+    def _repository(self) -> Any:
+        """The run's `RepositoryLookup` (lazy; None when `libraries.lookup` is off or it cannot be built — then off
+        for the rest of the run with one WARNING)."""
+        if self._repo_lookup is not None or self._repo_lookup_off:
+            return self._repo_lookup
+        if not getattr(getattr(self.cfg, "libraries", None), "lookup", True):
+            self._repo_lookup_off = True
+            return None
+        try:
+            from sbmig.build.repo_versions import RepositoryLookup
+            self._repo_lookup = RepositoryLookup(self.cfg)
+        except Exception as e:  # noqa: BLE001 - no lookups: the prompt carries the table + the policy only
+            self._repo_lookup_off = True
+            log.warning("의존성 버전 조회 끔: 저장소 조회를 시작할 수 없음 (%s: %s) — 이 실행은 표만 사용",
+                        type(e).__name__, str(e)[:200])
+        return self._repo_lookup
+
+    def _library_lines(self, key: str, current: str | None) -> list[str]:
+        """The prompt lines of one library (table entry + repository facts); logs what was found."""
+        entry = table_entry(key, self.cfg)
+        if entry is not None:
+            log.info("표 항목: %s → %s (approved%s)", key, getattr(entry, "version", "?"),
+                     ", allow_major" if getattr(entry, "allow_major", False) else "")
+        rv = None
+        lookup = self._repository()
+        if lookup is not None:
+            self._mark(f"repository lookup {key}")
+            try:
+                rv = lookup.candidates(key, current)
+            except Exception as e:  # noqa: BLE001 - the lookup says it never raises; stay defensive
+                log.debug("repository lookup %s failed: %s: %s", key, type(e).__name__, e)
+                rv = None
+        if rv is not None:
+            self._repo_facts[key] = rv
+            log.info("%s", _versions_line(rv, key, current))
+            try:
+                from sbmig.build.repo_versions import hint_lines
+                lines = [str(x) for x in (hint_lines(rv, entry) or []) if x]
+                if lines:
+                    return lines
+            except Exception as e:  # noqa: BLE001
+                log.debug("hint_lines for %s failed: %s: %s", key, type(e).__name__, e)
+        if entry is not None:
+            try:
+                from sbmig.core.jakarta_libraries import library_hint_line
+                line = str(library_hint_line(entry, current) or "")
+                return [line] if line else []
+            except Exception as e:  # noqa: BLE001
+                log.debug("library_hint_line for %s failed: %s: %s", key, type(e).__name__, e)
+        return []
 
     def _numstat(self, a: str, b: str) -> list[tuple[str, int, int]]:
         """(path, added, removed) per file between two commits (`git diff --numstat -z`; binary files 0 / 0)."""
@@ -2201,6 +2432,34 @@ class BuildFixLoop:
     def _followup(self, text: str) -> None:
         if text not in self.followups:
             self.followups.append(text)
+
+
+VERSIONS_LOGGED = 6                  # versions per list in the `의존성 버전 조회:` line (the newest ones)
+
+
+def _versions_text(cands: list) -> str:
+    """'2.5.0, 2.6.0 (jakarta ✓)' — the newest VERSIONS_LOGGED candidates, each tagged when its pom was checked."""
+    items = []
+    for v in cands:
+        tag = " (jakarta ✓)" if getattr(v, "jakarta", None) is True else (
+            " (javax)" if getattr(v, "jakarta", None) is False else "")
+        items.append(f"{v.version}{tag}")
+    if len(items) > VERSIONS_LOGGED:
+        items = ["…"] + items[-VERSIONS_LOGGED:]
+    return ", ".join(items)
+
+
+def _versions_line(rv: Any, key: str, current: str | None) -> str:
+    """`의존성 버전 조회: opensymphony:sitemesh 2.4.2 → 같은 메이저 2.5.0, 2.6.0 (jakarta ✓) / 상위 3.3.0` or
+    `의존성 버전 조회 실패: <key> — <error>`."""
+    k = getattr(rv, "key", "") or key
+    if getattr(rv, "error", "") and not (rv.same_major or rv.higher):
+        return f"의존성 버전 조회 실패: {k} — {' '.join(str(rv.error).split())[:200]}"
+    cur = getattr(rv, "current", None) or current or "?"
+    line = f"의존성 버전 조회: {k} {cur} → 같은 메이저 {_versions_text(rv.same_major) or '없음'}"
+    if rv.higher:
+        line += f" / 상위 {_versions_text(rv.higher)}"
+    return line
 
 
 def _try_note(att: FixAttempt) -> str:

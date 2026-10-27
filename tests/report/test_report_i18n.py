@@ -209,6 +209,14 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     from .test_review_report import review_report
     lines += handover_mod.review_followups(review_report(script="ok"))
     lines += handover_mod.review_followups(review_report(script="error", warnings=12))
+    # v2.1d: the operator checks pointer (first "from here on" line)
+    from sbmig.core.models import DependencyChange, OperatorCheck
+    chk = OperatorCheck(change=DependencyChange(path="pom.xml", key="org.sitemesh:sitemesh", before="2.4.2",
+                                                after="3.2.1", kind="major"))
+    h4 = build_handover(as_is_profile(), final_tree(tmp_path / "oc"), make_report(operator_checks=[chk]),
+                        effective=EFFECTIVE, cfg=cfg).from_here
+    assert h4[0] == handover_mod.operator_checks_item(1)
+    lines += h4
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

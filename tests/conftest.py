@@ -52,3 +52,33 @@ def no_llm_cooldown_sleep(monkeypatch):
     slept: list[float] = []
     monkeypatch.setattr("sbmig.loop.fixloop.sleep_seconds", slept.append)
     return slept
+
+
+class OfflineRepositoryLookup:
+    """v2.1d: no test asks a real repository (Maven Central / Nexus) which releases exist — every lookup answers
+    "offline". Tests that need facts monkeypatch their own fake; `tests/build/test_repo_versions.py` imports the real
+    class at module import time and drives it with a fake fetch, so this patch does not reach it."""
+
+    def __init__(self, cfg=None, *, fetch=None):
+        self.cfg = cfg
+        self.asked: list[tuple[str, object]] = []
+
+    def repository_url(self):
+        return None
+
+    def versions(self, group_id, artifact_id):
+        return []
+
+    def pom_text(self, group_id, artifact_id, version):
+        return None
+
+    def candidates(self, key, current):
+        from sbmig.core.models import RepositoryVersions
+        self.asked.append((key, current))
+        return RepositoryVersions(key=key, current=current, error="offline (tests)")
+
+
+@pytest.fixture(autouse=True)
+def _offline_repository_lookup(monkeypatch):
+    monkeypatch.setattr("sbmig.build.repo_versions.RepositoryLookup", OfflineRepositoryLookup)
+    return OfflineRepositoryLookup

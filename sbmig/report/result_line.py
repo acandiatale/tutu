@@ -1,13 +1,15 @@
 """One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
     SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
-                 attn=<codes>[ review=<v>]
+                 attn=<codes>[ review=<v>][ major=<n>]
 
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
 v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`): open = status open or unresolved
 (finalize turns open into unresolved), resolved = status resolved (pom-verify / note / blocked in neither; blocked
 items are `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
+v2.1d: ` major=<n>` is appended when the run made n > 0 major upgrades / library replacements that are still in the
+final tree (`report.operator_checks`, Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
 
 `sbmig run` prints (and logs) it at the end, the fleet prints one per project. `attn` is a comma list of short codes
 that say why a human has to look (`-` = nothing): the same codes fill the fleet's `summary.csv` `attention` column
@@ -24,7 +26,7 @@ Codes, most important first:
     blocked:<reason>      one per distinct BlockReason (`blocked:external_javax_api`)
     unresolved:<n>        errors left after the final build
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
-    test-compile-skipped, tests-not-compiled      the flags of the same name
+    test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요)      the flags of the same name
     incomplete            exit 2 with none of the above
 """
 from __future__ import annotations
@@ -35,7 +37,7 @@ from typing import Any, Iterable, Optional
 LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-not-found": "maven",
                       "jdk-not-21": "jdk"}
 ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
-                   "tests-skipped", "test-compile-skipped", "tests-not-compiled")
+                   "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade")
 INFRA_PREFIX = "infra:"
 _NON_ASCII_RE = re.compile(r"[^\x21-\x7e]+")
 
@@ -110,14 +112,15 @@ def result_attention(r: Any) -> list[str]:
 
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
                 llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
-                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None) -> str:
+                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0) -> str:
     codes = ",".join(attention) or "-"
     errs = ""
     if open_errors is not None or resolved_errors is not None:
         errs = f" open={open_errors or 0} resolved={resolved_errors or 0}"
     return (f"SBMIG-RESULT run={_ascii_token(run_id or '-')} exit={'-' if exit_code is None else exit_code} "
             f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked}{errs} llm={llm_calls} "
-            f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else ""))
+            f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else "")
+            + (f" major={int(major)}" if major and int(major) > 0 else ""))
 
 
 OPEN_STATUSES = ("open", "unresolved")
@@ -161,4 +164,4 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
                        llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
                        attention=report_attention(report, code),
                        review=getattr(getattr(report, "structure_review", None), "verdict", None),
-                       open_errors=o, resolved_errors=r)
+                       open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []))

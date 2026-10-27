@@ -8,7 +8,9 @@ real `sbmig.script.ScriptRunner` uses a `python -I` process); `FakeFixer.propose
 v2.1: `FakeCaseStore` is an in-memory `kb.cases` (best / code / find / add_script / credit / describe);
 `FakeKB` the KB facade (`cases`, `match`, `record_run`); `FakeErrorList` records every error-list call (and keeps
 FixTry objects per case); `FakeEditApplier` applies `Edit`s like `sbmig.script.apply_edits`; `answer(...)` builds a
-FixAnswer with 원인 / 해결 / edits / script / no_script_reason.
+FixAnswer with 원인 / 해결 / edits / script / no_script_reason (v2.1d: `verify`).
+
+v2.1d: `FakeVerifyFixer` = a FakeFixer with `verify_guide` (the plain FakeFixer has none: `hasattr` is False).
 """
 from __future__ import annotations
 
@@ -110,6 +112,24 @@ class FakeFixer:
                                   error="" if fp.changes else "no <script> block")
         return ScriptProposal(code="", analysis="nothing", model="fake", error="no <script> block",
                               llm_usage=LLMUsage(model="fake", calls=1))
+
+
+class FakeVerifyFixer(FakeFixer):
+    """v2.1d: a FakeFixer that also has `verify_guide` (VerifyGuideLike) — answers `verify_guides` in order ("" once
+    they are used up); records each call's (cluster, ctx, changes, diff). A plain FakeFixer has no such attribute."""
+
+    def __init__(self, *args: Any, verify_guides: list[str] | None = None, **kw: Any):
+        super().__init__(*args, **kw)
+        self.verify_guides = list(verify_guides or [])
+        self.verify_calls: list[tuple[Any, Any, list, str]] = []
+        self.verify_solutions: list[str] = []
+        self.last_verify_usage = LLMUsage()
+
+    def verify_guide(self, ws, cluster, ctx, changes, diff, *, solution: str = "") -> str:
+        self.verify_calls.append((cluster, ctx, list(changes), diff))
+        self.verify_solutions.append(solution)
+        self.last_verify_usage = LLMUsage(model="fake-verify", calls=1, input_tokens=50, output_tokens=10)
+        return self.verify_guides.pop(0) if self.verify_guides else ""
 
 
 def write_fix(path: Optional[str], content: str, analysis: str = "fix", model: str = "fake-model") -> FixProposal:
@@ -466,13 +486,13 @@ class FakeEditApplier:
 
 def answer(*, code: str = "", edits: Optional[list] = None, analysis: str = "the cause.", solution: str = "the fix.",
            no_script_reason: str = "", model: str = "fake-model", calls: int = 1, error: str = "",
-           changes: Optional[list] = None) -> FixAnswer:
-    """A FixAnswer (원인 · 해결 · edits · script · v2.1b `<changes>`); `edits` = Edit objects or dicts, `changes` =
-    EditNote objects or dicts."""
+           changes: Optional[list] = None, verify: str = "") -> FixAnswer:
+    """A FixAnswer (원인 · 해결 · edits · script · v2.1b `<changes>` · v2.1d `<verify>`); `edits` = Edit objects or
+    dicts, `changes` = EditNote objects or dicts."""
     es = [e if isinstance(e, Edit) else Edit(**e) for e in (edits or [])]
     ch = [c if isinstance(c, EditNote) else EditNote(**c) for c in (changes or [])]
     return FixAnswer(code=code, edits=es, analysis=analysis, solution=solution, no_script_reason=no_script_reason,
-                     model=model, error=error, changes=ch,
+                     model=model, error=error, changes=ch, verify=verify,
                      llm_usage=LLMUsage(model=model, calls=calls, input_tokens=100, output_tokens=20))
 
 

@@ -1,7 +1,9 @@
 # Third-party libraries that were compiled against javax.* up to some release and moved to jakarta.* in a later
 # one. Read by sbmig.core.jakarta_libraries (handler `jakarta-library-floor`, blocked-item suggestions, the
-# "javax API jars still on the classpath" report section). Company additions: edit this file (it is knowledge, not
-# code). Verified on Maven Central / the project README on the date given.
+# "javax API jars still on the classpath" report section, the v2.1d "Dependency versions" prompt lines). It is
+# knowledge, not code. Verified on Maven Central / the project README on the date given.
+# Company additions / approvals (allow_major) go to <kb dir>/libraries.yml without a redeploy, see
+# libraries.company.example.yml (same schema; a company entry replaces the shipped one with the same key).
 #
 #   key           : groupId:artifactId (the current coordinates)
 #   old_keys      : earlier coordinates of the same library (relocated to `key` + `version` by the handler)
