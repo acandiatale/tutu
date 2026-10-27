@@ -479,6 +479,11 @@ class CaseStore:
                 for run_es in runs.values():
                     self._apply(case, extra, run_es)
                 self._save(case, extra)
+            # the readable per-error files for entries stored before they existed (or deleted by hand)
+            missing = [e for e in self.iter_errors() if not self.entry_file(e).is_file()]
+            if missing:
+                log.info("writing %d per-error JSON file(s) missing under cases/*/errors/", len(missing))
+                self._write_entry_files(missing)
             self._write_md_locked()
             return len(ids)
 

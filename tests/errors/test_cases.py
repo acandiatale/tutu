@@ -226,3 +226,17 @@ def test_record_run_writes_one_readable_json_per_error(tmp_path, store: CaseStor
     assert (tmp_path / "kb" / "cases" / "_other" / "errors" / "run-1-deadbeef0001.json").is_file()
     st.record_run([e])                                                  # already stored: no duplicate, no error
     assert len(st.entry_files("7a52b1cea8")) == 1
+
+
+def test_recount_writes_the_per_error_files_that_are_missing(tmp_path, store: CaseStore):
+    """`sbmig kb reindex` gives errors stored before v2.1c (or whose file a person deleted) their JSON file."""
+    from sbmig.core.models import ErrorEntry, ErrorKind
+    e = ErrorEntry(id="aaaa00000001", run_id="run-9", project="demo", case_id="7a52b1cea8",
+                   l2="compile|package_does_not_exist|jakarta.xml.bind", kind=ErrorKind.COMPILE, message="x",
+                   seen="compile", status="resolved")
+    store.record_run([e])
+    f = store.entry_file(e)
+    f.unlink()
+    assert not f.exists()
+    store.recount()
+    assert f.is_file()
