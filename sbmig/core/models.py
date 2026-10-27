@@ -732,12 +732,25 @@ class ScriptBase(BaseModel):
 EditOp = Literal["replace", "write", "create", "delete", "move", "pom"]
 
 
+class EditNote(BaseModel):
+    """One modification as a person reads it (v2.1b, 2026-10-27: "edit 란에 어디의 어떤 줄을 어떻게 수정하는지"):
+    the LLM writes `where` / `change` (every `<edits>` item's `desc`, and the `<changes>` list for a script);
+    sbmig fills `lines` from the applied diff (`+42–47`, `~12`, `-3`) and, when the LLM wrote nothing for a file the
+    diff touched, generates the note from the diff itself so the key is never empty."""
+    path: str
+    where: str = ""                                # the LLM's location hint ("<dependencies> 블록", "import 줄", "42행 부근")
+    change: str = ""                               # "jakarta.xml.bind-api 와 jaxb-runtime 의존성을 추가합니다"
+    lines: str = ""                                # from the diff: "+42–47" added, "~12" changed, "-3" removed, several joined by ", "
+    source: Literal["llm", "diff"] = "llm"         # who wrote the note
+
+
 class Edit(BaseModel):
     """One direct modification the LLM asked for (`<edits>` JSON, v2.1): applied by sbmig through the script helper
     API (project folder only, same guard as a fix script) — "LLM 이 직접 수정". `pom` edits carry the editor call in
     `pom` (`{"add_dependency": {"group_id": …, "artifact_id": …, "version": null}}`, `set_property`, …)."""
     op: EditOp
     path: str
+    desc: str = ""                                 # the LLM's one-line description of this edit (→ EditNote.change)
     old: str = ""                                  # replace: exact text to replace (count = -1 → every occurrence)
     new: str = ""
     count: int = -1
@@ -754,6 +767,7 @@ class ScriptProposal(BaseModel):
     analysis: str = ""
     solution: str = ""
     edits: list[Edit] = Field(default_factory=list)
+    changes: list[EditNote] = Field(default_factory=list)   # `<changes>`: what the fix modifies where (script or edits)
     no_script_reason: str = ""
     model: str = ""
     prompt_hash: str = ""
@@ -783,6 +797,7 @@ class FixTry(BaseModel):
     no_script_reason: str = ""
     applied: TryApplied = "none"
     files: list[str] = Field(default_factory=list)
+    edits: list[EditNote] = Field(default_factory=list)   # 수정: per change, where / what (LLM) + lines (diff)
     diff: str = ""                                 # unified diff of what was applied (capped by errors.diff_chars)
     commit: str = ""
     result: AttemptOutcome = "pending"
