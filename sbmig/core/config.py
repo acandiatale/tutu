@@ -251,7 +251,8 @@ class LoopConfig(BaseModel):
         "restructure": PhaseLoopConfig(goal="package", max_iterations=6, enabled=False),
         "verify": PhaseLoopConfig(goal="package", max_iterations=50),   # v2.1: "라운드(빌드) 50회"
     })
-    max_llm_calls: int = 0                   # 0 = no limit on LLM calls (v2.1); > 0 = a hard cap per project
+    max_llm_calls: int = 0                   # 0 = no limit on LLM calls (v2.1); > 0 = a hard cap per project;
+                                             # -1 = no LLM call at all (a fleet whose max_llm_calls_total is used up)
     max_total_minutes: int = 240
     stall_limit: int = 2                     # identical error multiset N times → escalate strategy
     max_clusters_per_iteration: int = 8

@@ -117,7 +117,7 @@ loop:
     spring:      { goal: test-compile, max_iterations: 6, enabled: false }
     restructure: { goal: package,      max_iterations: 6, enabled: false }
     verify:      { goal: package,      max_iterations: 50 }  # the fix loop: one build per round ("라운드 50회", v2.1)
-  max_llm_calls: 0                 # 0 = no limit on LLM calls (v2.1); > 0 = hard cap per project
+  max_llm_calls: 0                 # 0 = no limit on LLM calls (v2.1); > 0 = hard cap per project; -1 = no LLM call at all
   max_total_minutes: 240
   stall_limit: 2
   max_clusters_per_iteration: 8
