@@ -1993,8 +1993,18 @@ class BuildFixLoop:
                 return list(found.values())
         loc = self.locator
         if found or loc is None or not hasattr(loc, "locate_class"):
+            if not found:
+                log.debug("library hints for %s: no artifact on the errors and no classpath locator", c.id)
             return list(found.values())
         seen: set[str] = set()
+
+        def take(where: Any) -> bool:
+            a = getattr(where, "artifact", None) if where is not None else None
+            if a is None or getattr(where, "in_project", False) or is_in_house(a, self.cfg):
+                return False
+            found.setdefault(a.key, a)
+            return len(found) >= cap
+
         for e in [x for x in c.errors if x.kind in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE)][:3]:
             names: list[str] = []
             if hasattr(loc, "owner_fqcn"):
@@ -2006,13 +2016,17 @@ class BuildFixLoop:
                     continue
                 seen.add(fq)
                 self._mark(f"locating {fq} for {c.id}")
-                where = loc.locate_class(self.ws, self.cfg, fq, c.module)
-                a = getattr(where, "artifact", None) if where is not None else None
-                if a is None or getattr(where, "in_project", False) or is_in_house(a, self.cfg):
-                    continue
-                found.setdefault(a.key, a)
-                if len(found) >= cap:
+                if take(loc.locate_class(self.ws, self.cfg, fq, c.module)):
                     return list(found.values())
+            # the library class BEHIND the error (the class called on the error line — `LegacyRequestHelper` of a
+            # `cannot access javax.servlet…` / `incompatible types` error): the same attribution the BLOCKED
+            # registry uses (sbmig.build.classpath.locate_type_owner)
+            if hasattr(loc, "locate_type_owner"):
+                self._mark(f"locating the type owner of {e.file}:{e.line} for {c.id}")
+                if take(loc.locate_type_owner(self.ws, self.cfg, e, c.module)):
+                    return list(found.values())
+        if not found:
+            log.debug("library hints for %s: no external library located behind the first errors", c.id)
         return list(found.values())
 
     def _repository(self) -> Any:

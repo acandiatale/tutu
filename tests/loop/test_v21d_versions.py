@@ -260,6 +260,43 @@ def test_the_owner_class_on_the_classpath_names_the_library(cfg, ws, table, monk
     assert loop2._library_hints(c) == []
 
 
+class TypeOwnerLocator(FakeLocator):
+    """An error whose message names no owner class (`cannot access javax.servlet…`, `incompatible types`): the
+    library is found behind the error line (`locate_type_owner`, the BLOCKED registry's attribution)."""
+
+    def __init__(self, where):
+        super().__init__({})
+        self.owner_where, self.type_asked = where, []
+
+    def owner_fqcn(self, e):
+        return None
+
+    def locate_type_owner(self, ws, cfg, e, module=None):
+        self.type_asked.append((e.file, e.line, module))
+        return self.owner_where
+
+
+def test_the_library_behind_the_error_line_is_located_when_the_message_names_no_owner(cfg, ws, table, monkeypatch):
+    """e2e boot2-javax-lib (2026-10-27): `cannot access javax.servlet.http.HttpServletRequest` names no owner and
+    the found type is a javax API → the loop must still attribute the helper library through locate_type_owner."""
+    from sbmig.build.classpath import ClassLocation
+    use_lookup(monkeypatch, rv=SITEMESH_RV)
+    monkeypatch.setattr("sbmig.build.repo_versions.hint_lines", lambda rv, entry: [f"facts {rv.key} {rv.current}"])
+    fq = "com.company.legacy.LegacyRequestHelper"
+    loc = TypeOwnerLocator(ClassLocation(artifact=SITEMESH2, jar="/repo/sitemesh-2.4.2.jar", fqcn=fq))
+    loop = make_loop(cfg, ws, FakeFixer(), locator=loc)
+    c = ErrorCluster(id="case:c", kind=ErrorKind.COMPILE, module="demo", errors=[sitemesh_error(artifact=None)])
+    assert loop._library_hints(c) == ["facts opensymphony:sitemesh 2.4.2"]
+    assert loc.asked == [] and len(loc.type_asked) == 1 and loc.type_asked[0][2] == "demo"
+    # a project class behind the line is not a library; a locator without locate_type_owner finds nothing
+    loop2 = make_loop(cfg, ws, FakeFixer(), locator=TypeOwnerLocator(ClassLocation(in_project=True, fqcn=fq,
+                                                                                      source_file=FOO)))
+    assert loop2._library_hints(c) == []
+    plain = FakeLocator({})
+    plain.owner_fqcn = lambda e: None
+    assert make_loop(cfg, ws, FakeFixer(), locator=plain)._library_hints(c) == []
+
+
 # ------------------------------------------------------------------------------------------ (b) read-back
 @pytest.fixture()
 def readback(monkeypatch):
