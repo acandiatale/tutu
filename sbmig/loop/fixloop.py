@@ -111,7 +111,7 @@ FIXER_WITHOUT_SCRIPTS_FLAG = "fixer-without-scripts"
 ROLLED_BACK_NOTE = "rolled back before "   # the note on a try the next try of its case rolled back (not in the tree)
 try:    # one definition each, shared with the error list: the runner's stand-in errors of a crashed build and the
     # Maven stage at which an error kind is reported ("not visible" is not "resolved", round 10)
-    from sbmig.errors.entries import STAGE
+    from sbmig.errors.entries import STAGE, error_stage
     from sbmig.errors.entries import SYNTHETIC_PREFIXES as _SYNTHETIC_PREFIXES
 except ImportError:  # pragma: no cover - the error list package is part of sbmig (E1)
     _SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
@@ -123,6 +123,11 @@ except ImportError:  # pragma: no cover - the error list package is part of sbmi
         ErrorKind.TEST_COMPILE: 4,
         ErrorKind.TEST_FAILURE: 6,
     }
+
+    def error_stage(e: BuildError) -> Optional[int]:
+        if e.kind == ErrorKind.PLUGIN_EXECUTION:
+            return 2 if "resources" in (e.goal or "").lower() else 5
+        return STAGE.get(e.kind)
 TRY_NOTE_CHARS = 600                 # FixTry.note: the try's failure / rollback / scoring notes, joined
 NOTES_LOGGED = 20                    # `수정:` INFO lines per applied change (the rest: errors.md / errors.jsonl)
 
@@ -962,7 +967,8 @@ class BuildFixLoop:
             if a.cluster_resolved is None:
                 # the targeted errors are not in this build, but the build never got to report them
                 stage = _stage_of(a.cluster_errors)
-                earlier = [e for e in _new_errors(real, prev_count) if STAGE.get(e.kind, 99) < stage]
+                earlier = [e for e in _new_errors(real, prev_count)
+                           if (error_stage(e) if error_stage(e) is not None else 99) < stage]
                 if pom_touched and earlier:
                     a.outcome = "regressed"
                     kinds = ", ".join(sorted({e.kind.value for e in earlier}))
@@ -2230,8 +2236,8 @@ def _targeted_left(a: FixAttempt, cur: Counter) -> tuple[int, int]:
 
 
 def _stage_of(errors: list[BuildError]) -> int:
-    """The earliest build stage (`STAGE`) at which these errors are reported; 99 when none has one."""
-    return min((STAGE[e.kind] for e in errors if e.kind in STAGE), default=99)
+    """The earliest build stage (`STAGE` / `error_stage`) at which these errors are reported; 99 when none has one."""
+    return min((error_stage(e) for e in errors if error_stage(e) is not None), default=99)
 
 
 def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildError]) -> bool:
@@ -2245,7 +2251,8 @@ def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildEr
     failed = {build.failed_module} | {x.module for x in real if x.module}
     # how far the build got: an UNKNOWN error without a file (a crashed JVM, `mvn` itself failing, a generic BUILD
     # FAILURE line) proves no stage
-    reached = max((STAGE.get(x.kind, -1) for x in real if x.kind != ErrorKind.UNKNOWN or x.file), default=-1)
+    reached = max((error_stage(x) if error_stage(x) is not None else -1
+                   for x in real if x.kind != ErrorKind.UNKNOWN or x.file), default=-1)
     for e in errors:
         if _synthetic(e):
             return False                         # a stand-in error is never "fixed" by disappearing
@@ -2254,7 +2261,7 @@ def _visible_in(errors: list[BuildError], build: BuildResult, real: list[BuildEr
             continue
         if m and build.failed_module and m not in failed:
             return False                         # its module never ran (skipped after another one failed)
-        st = STAGE.get(e.kind)
+        st = error_stage(e)
         if st is None or reached < st:
             return False
     return True

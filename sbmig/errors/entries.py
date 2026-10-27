@@ -64,6 +64,30 @@ SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
 SUCCESS_RESULTS = frozenset({"improved", "build_ok", "partial"})
 # how far a build got when it stopped with an error of this kind (an absent entry of stage s is only gone when the
 # build reached s); plugin_execution has no stage — only its module building (or an ok build) proves it gone
+def stage_of(kind: ErrorKind, goal: Optional[str] = None, l2: str = "") -> Optional[int]:
+    """The Maven stage at which an error of this kind is reported (`STAGE`); a plugin execution failure is placed
+    by its goal — `resources:resources` runs BEFORE compile (process-resources), `compiler:*` with it,
+    surefire / failsafe after the tests compile, every other plugin at package time. Company run 2026-10-27: a
+    resources-filtering failure (kind plugin_execution) had no stage, so the compile errors its fix uncovered
+    counted as "earlier errors hiding the target" and a correct pom fix was reverted three times."""
+    if kind == ErrorKind.PLUGIN_EXECUTION:
+        g = (goal or "").lower()
+        if not g and l2.startswith("plugin_execution|"):
+            g = l2.split("|")[1].lower() if l2.count("|") >= 1 else ""
+        if "resources" in g:
+            return 2
+        if "compiler" in g:
+            return 3
+        if "surefire" in g or "failsafe" in g:
+            return 6
+        return 5
+    return STAGE.get(kind)
+
+
+def error_stage(e: BuildError) -> Optional[int]:
+    return stage_of(e.kind, getattr(e, "goal", None), getattr(e, "signature_generic", "") or "")
+
+
 STAGE: dict[ErrorKind, int] = {
     ErrorKind.POM_INVALID: 0, ErrorKind.PARENT_RESOLUTION: 0,
     ErrorKind.DEPENDENCY_RESOLUTION: 1, ErrorKind.PLUGIN_RESOLUTION: 1,
@@ -147,8 +171,8 @@ class _Build:
         self.ok = (r.ok if r is not None else not errs) and not void
         self.void = bool(void) or (r is not None and (bool(r.timed_out) or (not r.ok and not self.real))) or \
             (r is None and bool(errs) and not self.real)
-        self.reached = max((STAGE.get(e.kind, -1) for e in self.real if e.kind != ErrorKind.UNKNOWN or e.file),
-                           default=-1)
+        self.reached = max((error_stage(e) if error_stage(e) is not None else -1
+                            for e in self.real if e.kind != ErrorKind.UNKNOWN or e.file), default=-1)
 
     def can_show(self, e: ErrorEntry) -> bool:
         """Could this build have reported ``e`` (now absent)?"""
@@ -163,7 +187,7 @@ class _Build:
             failed = {r.failed_module} | {x.module for x in self.real if x.module}
             if m and r.failed_module and m not in failed:
                 return False                              # its module never ran (skipped after another one failed)
-        st = STAGE.get(e.kind)
+        st = stage_of(e.kind, None, e.l2 or "")
         return st is not None and self.reached >= st
 
 
