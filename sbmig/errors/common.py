@@ -7,11 +7,13 @@ values masked, workspace roots and the home directory stripped) and atomic file 
   fallback for an error without an L2, so a cluster's ``case_id`` and the error list agree).
 * :func:`entry_id` — one error-list entry: ``sha1(run_id|case_id|file|line|message)[:12]``.
 * :class:`Cleaner` — what every stored text goes through (``kb.redact_file`` rules, :mod:`sbmig.kb.redact`).
+* :func:`note_text` — one 수정 note as one line; :func:`note_block` (v2.1e) — the line plus its as-is / to-be code.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -75,6 +77,44 @@ def note_text(n: Any, limit: int = 0) -> str:
     where, change = get("where"), get("change")
     s = head + (f" ({where})" if where else "") + (f" — {change}" if change else "")
     return s[: limit - 1] + "…" if limit and len(s) > limit else s
+
+
+def _field(obj: Any, key: str, default: Any = "") -> Any:
+    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+
+def _fenced(text: str, fence: str) -> list[str]:
+    """``text`` between fences — a longer backtick fence when the code itself holds one."""
+    longest = max((len(m) for m in re.findall(r"`+", text)), default=0) if fence.startswith("`") else 0
+    f = fence if longest < len(fence) else "`" * (longest + 1)
+    return [f, *text.split("\n"), f]
+
+
+def note_block(n: Any, *, fence: str = "```") -> list[str]:
+    """v2.1e: one 수정 note with its code — the :func:`note_text` line, then per hunk ``  as-is (<lines>):`` + the
+    fenced ``before`` (skipped when empty) and ``  to-be (<lines>):`` + the fenced ``after`` (skipped when empty); a
+    hunk cut by ``errors.snippet_lines`` adds ``  (cut: errors.snippet_lines)``. For ``sbmig kb errors show`` /
+    ``cases show`` (errors.md / report.md / the log keep the one line). Duck-typed like ``note_text`` (a dict or an
+    object; the hunks dicts or objects); never raises."""
+    out = [note_text(n)]
+    try:
+        hunks = list(_field(n, "hunks", None) or [])
+    except Exception:  # noqa: BLE001 - not a list: the line alone
+        hunks = []
+    for h in hunks:
+        try:
+            lines = " ".join(str(_field(h, "lines") or "").split())
+            label = f" ({lines})" if lines else ""
+            before, after = str(_field(h, "before") or ""), str(_field(h, "after") or "")
+            if before:
+                out += [f"  as-is{label}:", *_fenced(before, fence)]
+            if after:
+                out += [f"  to-be{label}:", *_fenced(after, fence)]
+            if _field(h, "truncated", False) is True:
+                out.append("  (cut: errors.snippet_lines)")
+        except Exception:  # noqa: BLE001, S112 - an odd hunk is skipped
+            continue
+    return out
 
 
 def cap(text: Optional[str], limit: int) -> str:

@@ -1589,3 +1589,32 @@ Snippets are whole by default (user: "사람이 보는 거면 40줄 고정 안 �
   `reason`. INFO line after a credit: `cases/<id>/fix_v<N>.py: <result> (성공 S / 실패 F) — <reason>`.
 * `cases.md` gets a "last failure" cell per script (`v2 unverified 0/1 — no_change: 3 error(s) remained`).
 * Report: unchanged (the KB files carry the detail).
+
+### As built (v2.1e, 2026-10-27)
+* `hunks_from_diff` keys: the "after" path (old path for a deletion, new path for a rename; quoted Korean paths
+  decoded); binary / mode-only files map to `[]`; line ends normalized to `\n`; `\ No newline at end of file`
+  dropped. A stored diff cut at `errors.diff_chars` yields a last hunk ending in the line `DIFF_CUT_LINE = "… (diff
+  cut: errors.diff_chars)"` — not marked `truncated` (that flag is reserved for `snippet_lines`); the loop attaches
+  hunks from the FULL diff at apply time, so only the reindex backfill of old records sees cut diffs.
+* `merge_notes`: every LLM note of a file gets ALL of that file's hunks (separate copies per note); `try_notes(…,
+  max_lines=)` / the review call site pass `errors.snippet_lines`.
+* `ErrorList.to_report()` drops the hunks from the report copies (report.json stays size-bounded; the report text was
+  already one line per note); `record_run` keeps the full entries, so `<kb>/errors.jsonl` and the per-error JSON
+  files carry the code. `note_block` renders the code in `sbmig kb errors show` / `cases show`.
+* Masking: each hunk's `before` / `after` goes through `ErrorList.clean` (secret patterns), no length cap.
+* `CaseStore(kb_dir, cfg=None, *, lock_timeout=None, script_runs=None)` — `errors.script_runs` **0 = no cap** (same
+  convention as `snippet_lines`). `credit` replaces an earlier run with the same (run_id, round, n) only when n > 0;
+  `last_failure = reason or result` on a failure. `ScriptRun.round` = the **fix round** (`FixTry.round`), not the
+  attempt's iteration, so live records and reindex-rebuilt ones deduplicate. The loop's `_run_reason(att)` makes the
+  reason say something (`no_change: 1 of 1 targeted error(s) remained — <first error>`, the try's note without the
+  reuse banner / escalation / merge-hint noise, the first new error of a regression); the adapter
+  `sbmig.loop.entries.CaseScripts.add_script / credit` pass the v2.1e keywords through `**optional` (dropped on an
+  older store).
+* `kb reindex`: rebuilt runs are **merged** with the store's own records (the store's error counts win; the rebuild
+  fills blanks); a try counts as a run only when its script really ran (a script stored next to applied edits, a
+  "not run again" duplicate and pending tries are skipped; a failure before the edits applied counts `apply_failed`).
+  `errors.jsonl` is rewritten atomically under the lock, only changed lines re-serialized, unreadable lines kept.
+  INFO `reindex: N script run record(s) rebuilt, M entr(ies) given as-is/to-be hunks`. `kb cases show` prints
+  `parent`, `reason`, `last failure` and `runs (N, newest last)` per script; `cases.md` shows `v2 unverified 0/1 —
+  <last_failure>`. `_clean_entry` masks note `where` / `change` and hunk text; `merge_from` (KB import) maps an
+  imported script's `parent` to the local numbering and merges runs.

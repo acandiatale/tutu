@@ -264,15 +264,18 @@ class CaseScripts(_Guarded):
         return str(self._call("describe", case_id, default="") or "")
 
     def add_script(self, case_id: str, l2: str, code: str, *, source: str, run_id: str, project: str,
-                   analysis: str = "", solution: str = "") -> Any:
-        """Store a script → its CaseScript (version, file, status); None = not stored."""
+                   analysis: str = "", solution: str = "", **optional: Any) -> Any:
+        """Store a script → its CaseScript (version, file, status); None = not stored. `optional` (v2.1e `parent`,
+        `reason`) is dropped when the store does not take it."""
         return self._call("add_script", case_id, l2, code, source=source, run_id=run_id, project=project,
-                          analysis=analysis, solution=solution)
+                          analysis=analysis, solution=solution, optional=dict(optional))
 
-    def credit(self, case_id: str, version: int, result: str, *, project: str, run_id: str) -> bool:
+    def credit(self, case_id: str, version: int, result: str, *, project: str, run_id: str, **optional: Any) -> bool:
+        """Credit a run of a stored version. `optional` (v2.1e ScriptRun fields: reason, round, n, errors_before,
+        errors_left, errors_new, files) is dropped when the store does not take it."""
         if not self.active:
             return False
-        self._call("credit", case_id, version, result, project=project, run_id=run_id)
+        self._call("credit", case_id, version, result, project=project, run_id=run_id, optional=dict(optional))
         return True
 
 

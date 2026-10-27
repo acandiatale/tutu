@@ -1275,7 +1275,8 @@ class Orchestrator:
             applied = ("edits" if n_edits else "script") if sha else "none"
             notes: list = []
             if sha:
-                notes = try_notes(answer_notes(ans, edits=bool(n_edits)), diff)
+                notes = try_notes(answer_notes(ans, edits=bool(n_edits)), diff,       # v2.1e: + as-is / to-be hunks
+                                  max_lines=int(getattr(getattr(self.cfg, "errors", None), "snippet_lines", 0) or 0))
                 for nt in notes[:NOTES_LOGGED]:
                     log.info("수정: %s", note_line(nt))
                 if len(notes) > NOTES_LOGGED:

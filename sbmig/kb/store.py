@@ -51,9 +51,18 @@ class FileKnowledgeBase:
         return kb_lock(self.root, self.lock_timeout)
 
     @property
+    def script_runs(self) -> int:
+        """``errors.script_runs``: ScriptRun records kept per stored script version (v2.1e; 0 = no cap)."""
+        try:
+            return max(0, int(getattr(getattr(self.cfg, "errors", None), "script_runs", 30)))
+        except (TypeError, ValueError):
+            return 30
+
+    @property
     def cases(self) -> CaseStore:
         if self._cases is None or self._cases.root != self.root:
-            self._cases = CaseStore(self.root, self.cfg, lock_timeout=self.lock_timeout)
+            self._cases = CaseStore(self.root, self.cfg, lock_timeout=self.lock_timeout,
+                                    script_runs=self.script_runs)
         return self._cases
 
     # ------------------------------------------------------------------ the fix loop
@@ -106,8 +115,10 @@ class FileKnowledgeBase:
             return 0
 
     def reindex(self) -> int:
-        """Recount every case from ``errors.jsonl`` and rewrite ``cases.md``. Returns the number of cases (0 for a
-        KB that does not exist yet — nothing is created). Never raises."""
+        """Recount every case from ``errors.jsonl`` and rewrite ``cases.md`` (v2.1e: also every stored script's run
+        history, augment lineage and last failure, and the as-is / to-be hunks of entries stored without them —
+        :meth:`CaseStore.recount`). Returns the number of cases (0 for a KB that does not exist yet — nothing is
+        created). Never raises."""
         if not self.root.exists():
             return 0
         try:
@@ -162,7 +173,8 @@ class FileKnowledgeBase:
                         raise ValueError(f"zip slip blocked: {m.filename}")
                 zf.extractall(tmp)
             kb.root.mkdir(parents=True, exist_ok=True)
-            return kb.cases.merge_from(CaseStore(tmp, kb.cfg, lock_timeout=kb.lock_timeout))
+            return kb.cases.merge_from(CaseStore(tmp, kb.cfg, lock_timeout=kb.lock_timeout,
+                                                 script_runs=kb.script_runs))
 
     def _import_replace(self, path: str | Path) -> dict[str, Any]:
         stamp = utcnow().strftime("%Y%m%d-%H%M%S")

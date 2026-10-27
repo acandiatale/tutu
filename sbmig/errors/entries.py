@@ -47,6 +47,7 @@ from sbmig.core.models import (
     BuildError,
     BuildResult,
     DependencyChange,
+    EditHunk,
     EditNote,
     ErrorEntry,
     ErrorKind,
@@ -480,19 +481,29 @@ class ErrorList:
         return t
 
     def _notes(self, notes: Iterable[Any]) -> list[EditNote]:
-        """The try's 수정 notes, masked and capped (an unreadable item is skipped, never fails the try)."""
+        """The try's 수정 notes, masked and capped (an unreadable item is skipped, never fails the try). v2.1e: each
+        note keeps its as-is / to-be `hunks`, masked WITHOUT a length cap (`errors.snippet_lines` already cut them
+        where the notes were made); an unreadable hunk is left out, never the note."""
         out: list[EditNote] = []
         for x in notes or []:
             try:
-                d = x if isinstance(x, dict) else {k: getattr(x, k, "") for k in ("path", "where", "change", "lines",
-                                                                                   "source")}
-                n = x if isinstance(x, EditNote) else EditNote.model_validate(
-                    {k: v for k, v in d.items() if v not in (None, "") and (k != "source" or v in ("llm", "diff"))})
+                if isinstance(x, EditNote):
+                    n, hunks = x, list(x.hunks)
+                else:
+                    d = x if isinstance(x, dict) else {k: getattr(x, k, "") for k in ("path", "where", "change",
+                                                                                       "lines", "source", "hunks")}
+                    hunks = _hunk_items(d.get("hunks"))
+                    n = EditNote.model_validate(
+                        {k: v for k, v in d.items() if k != "hunks" and v not in (None, "")
+                         and (k != "source" or v in ("llm", "diff"))})
             except Exception:  # noqa: BLE001 - a malformed note (no path) is left out
                 continue
             out.append(EditNote(path=posix(self.clean(n.path)) or "-", where=self.clean(n.where, NOTE_WHERE_CHARS),
                                 change=self.clean(n.change, NOTE_CHANGE_CHARS),
-                                lines=(n.lines or "")[:NOTE_WHERE_CHARS], source=n.source))
+                                lines=(n.lines or "")[:NOTE_WHERE_CHARS], source=n.source,
+                                hunks=[EditHunk(lines=(h.lines or "")[:NOTE_WHERE_CHARS], before=self.clean(h.before),
+                                                after=self.clean(h.after), truncated=bool(h.truncated))
+                                       for h in hunks]))
             if len(out) >= NOTES_MAX:
                 break
         return out
@@ -604,13 +615,17 @@ class ErrorList:
         return self._by_id.get(entry_id_)
 
     def to_report(self) -> list[ErrorEntry]:
-        """Copies for the RunReport (raw ≤ ``errors.raw_chars``, diffs ≤ ``errors.diff_chars``)."""
+        """Copies for the RunReport (raw ≤ ``errors.raw_chars``, diffs ≤ ``errors.diff_chars``). v2.1e: the notes'
+        as-is / to-be ``hunks`` stay out of the report (it is size-bounded like the diff; the whole code lives in
+        ``errors.jsonl``, the KB and the per-error JSON files)."""
         out = []
         for e in self.entries:
             c = e.model_copy(deep=True)
             c.raw = _cap(c.raw, self.raw_chars)
             for t in c.tries:
                 t.diff = _cap(t.diff, self.diff_chars)
+                for n in t.edits:
+                    n.hunks = []
             out.append(c)
         return out
 
@@ -642,6 +657,30 @@ class ErrorList:
                     except ValueError:
                         continue
         return out
+
+
+def _hunk_items(raw: Any) -> list[EditHunk]:
+    """The readable hunks of a stored / foreign note (``EditHunk``, dicts, objects with the fields); the rest — and a
+    hunk with neither as-is nor to-be text — is skipped."""
+    out: list[EditHunk] = []
+    if not isinstance(raw, (list, tuple)):
+        return out
+    for h in raw:
+        try:
+            if isinstance(h, EditHunk):
+                got = h
+            elif isinstance(h, dict):
+                got = EditHunk.model_validate({k: v for k, v in h.items() if v is not None})
+            elif hasattr(h, "before") or hasattr(h, "after"):
+                got = EditHunk(lines=str(getattr(h, "lines", "") or ""), before=str(getattr(h, "before", "") or ""),
+                               after=str(getattr(h, "after", "") or ""), truncated=bool(getattr(h, "truncated", False)))
+            else:
+                continue
+        except Exception:  # noqa: BLE001, S112 - a malformed hunk is left out
+            continue
+        if got.before or got.after:
+            out.append(got)
+    return out
 
 
 def _cap(text: str, limit: int) -> str:

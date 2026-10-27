@@ -1716,15 +1716,30 @@ class BuildFixLoop:
                       check_duplicate: bool = True) -> bool:
         """Store an LLM script in the KB case (`kb.cases.add_script`, source = the try's): a script run stores it
         BEFORE it runs (failures keep their lineage), an edits answer stores it `unverified` next to the fix. No KB →
-        unstored (v0). False = do not run it (the same version already ran in this run)."""
+        unstored (v0). False = do not run it (the same version already ran in this run). v2.1e: an augment's version
+        records its `parent` and the `reason` it was made (`v1: <the parent's failure in words>`)."""
         store = self.cases
         if not store.active:
             att.notes.append("fix script not stored (no knowledge base): v0")
             return True
         sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
+        lineage: dict[str, Any] = {"parent": att.script_parent, "reason": ""}
+        if att.script_mode == "augment":
+            base_att = getattr(step, "base_attempt", None)
+            note = self._run_reason(base_att) if base_att is not None else ""
+            meta = getattr(step, "meta", None)
+            if not note and meta is None and att.script_parent:      # a stored version of an earlier run
+                info = store.find(step.case_id)
+                meta = next((x for x in (getattr(info, "scripts", None) or [])
+                             if int(getattr(x, "version", 0) or 0) == att.script_parent), None)
+            if not note and meta is not None:
+                note = str(getattr(meta, "last_failure", "") or getattr(meta, "last_result", "") or "")
+            note = note or "augment requested"
+            lineage["reason"] = f"v{att.script_parent}: {note}" if att.script_parent else note
+        # the adapter (sbmig.loop.entries.CaseScripts) drops the v2.1e keywords an older store does not take
         cs = store.add_script(step.case_id, sig, code, source=att.source or "llm-new", run_id=self.ws.run_id,
                               project=self._project(), analysis=getattr(ans, "analysis", "") or "",
-                              solution=getattr(ans, "solution", "") or "")
+                              solution=getattr(ans, "solution", "") or "", **lineage)
         if cs is None:
             att.notes.append("fix script not stored (kb.cases.add_script failed): v0")
             return True
@@ -1838,7 +1853,14 @@ class BuildFixLoop:
         shown = [f"{p} (+{a} −{d})" for p, a, d in stats] or files
         log.info("적용(%s): %s, 커밋 %s", how, ", ".join(shown[:8]) + (f", … (+{len(shown) - 8})" if len(shown) > 8
                                                                        else ""), sha[:7])
-        notes = try_notes(answer_notes(self._answers.get(id(att)), edits=how == "edits"), diff)
+        llm_notes = answer_notes(self._answers.get(id(att)), edits=how == "edits")
+        try:                                           # v2.1e: as-is / to-be hunks, errors.snippet_lines per side
+            notes = try_notes(llm_notes, diff,
+                              max_lines=int(getattr(getattr(self.cfg, "errors", None), "snippet_lines", 0) or 0))
+        except TypeError as e:                         # a try_notes without the keyword (before v2.1e)
+            if "max_lines" not in str(e):
+                raise
+            notes = try_notes(llm_notes, diff)
         self._notes[id(att)] = notes
         for n in notes[:NOTES_LOGGED]:
             log.info("수정: %s", note_line(n))
@@ -2138,12 +2160,45 @@ class BuildFixLoop:
         done = self._credited.get(id(att))
         if done is not None and done != "inconclusive":
             return
+        if not self.cases.active:
+            return
+        # v2.1e: the run's record beside the counts — the try (round, n), why it failed, error counts, files
+        _cid, n, rnd = self._tries.get(id(att), (att.script_case_id, 0, 0))
+        reason = "" if att.outcome in ("improved", "build_ok") else self._run_reason(att)
+        run = {"reason": reason, "round": int(rnd or 0), "n": int(n or 0), "errors_before": att.errors_before,
+               "errors_left": att.errors_after, "errors_new": len(att.introduced_errors),
+               "files": list(dict.fromkeys(ch.new_path or ch.path for ch in att.changes))}
+        # the adapter (sbmig.loop.entries.CaseScripts) drops the v2.1e keywords an older store does not take
         if not self.cases.credit(att.script_case_id, att.script_version, att.outcome, project=self._project(),
-                                 run_id=self.ws.run_id):
+                                 run_id=self.ws.run_id, **run):
             return
         self._credited[id(att)] = att.outcome
         self.ws.journal({"event": "script_credit", "case": att.script_case_id, "version": att.script_version,
-                         "attempt": att.id, "outcome": att.outcome})
+                         "attempt": att.id, "outcome": att.outcome, "reason": reason})
+
+    def _run_reason(self, att: FixAttempt) -> str:
+        """Why a scored try did not resolve its case, one line (v2.1e ScriptRun.reason / an augment's
+        CaseScript.reason; "" for improved / build_ok): `no_change: 2 of 2 targeted error(s) remained — <the first
+        one>`, else the try's notes (regressed / partial / inconclusive / script error / timeout / rejected …) and
+        the first new error of a regression."""
+        if att is None or att.outcome in ("improved", "build_ok", "pending"):
+            return ""
+        head = ""
+        if att.outcome == "no_change":
+            gone, targeted = self._tally.get(id(att), (0, len(att.cluster_errors)))
+            head = (f"no_change: {max(0, targeted - gone)} of {targeted} targeted error(s) remained" if targeted
+                    else "no_change: the targeted error(s) remained")
+            first = next((fmt_error(e) for e in att.cluster_errors), "")
+            if first:
+                head += f" — {_first_sentence(first, 160)}"
+        note = _try_note(att)
+        if att.outcome in ("regressed", "reverted") and att.introduced_errors:
+            note += ("; " if note else "") + f"new: {_first_sentence(fmt_error(att.introduced_errors[0]), 160)}"
+        try:
+            from sbmig.errors.cases import run_reason
+            return run_reason(att.outcome, note, head)
+        except Exception:  # noqa: BLE001 - the KB package is part of sbmig; stay defensive
+            return "; ".join(x for x in (head, note) if x) or att.outcome
 
     def _credit_scripts(self, pr: PhaseResult, attempts: list[FixAttempt]) -> None:
         for a in attempts:

@@ -260,6 +260,7 @@ class FakeCaseStore:
         self.data: dict[str, CaseInfo] = {}
         self.codes: dict[tuple[str, int], str] = {}
         self.credits: list[tuple[str, int, str, str]] = []      # (case, version, result, project)
+        self.credit_runs: list[dict] = []                        # v2.1e: every credit's keywords (reason, round, n, …)
         self.added: list[tuple[str, CaseScript, dict]] = []      # (case, script, kwargs)
 
     def find(self, case_id):
@@ -297,18 +298,20 @@ class FakeCaseStore:
         return f"저장된 스크립트 v{s.version} ({s.status}, 성공 {s.successes} / 실패 {s.failures}, 프로젝트 {len(s.projects)})"
 
     def add_script(self, case_id, l2, code, *, source="llm-new", run_id="", project="", analysis="", solution="",
-                   name="", kind=None):
+                   name="", kind=None, parent=None, reason=""):
         case = self.data.setdefault(case_id, CaseInfo(case_id=case_id, l2=l2))
         for sc in case.scripts:
             if self.codes.get((case_id, sc.version)) == code:
                 return sc
         v = 1 + max((sc.version for sc in case.scripts), default=0)
-        sc = CaseScript(version=v, file=f"fix_v{v}.py", source=source, created_by=run_id, project=project)
+        sc = CaseScript(version=v, file=f"fix_v{v}.py", source=source, created_by=run_id, project=project,
+                        parent=parent or None, reason=reason)
         case.scripts.append(sc)
         self.codes[(case_id, v)] = code
         case.last_analysis, case.last_solution = analysis or case.last_analysis, solution or case.last_solution
         self.added.append((case_id, sc, {"source": source, "run_id": run_id, "project": project,
-                                         "analysis": analysis, "solution": solution, "l2": l2}))
+                                         "analysis": analysis, "solution": solution, "l2": l2, "parent": parent,
+                                         "reason": reason}))
         return sc
 
     def seed(self, case_id, code, *, status="proven", successes=1, projects=("p0",), failures=0) -> CaseScript:
@@ -317,8 +320,13 @@ class FakeCaseStore:
         sc.status, sc.successes, sc.failures, sc.projects = status, successes, failures, list(projects)
         return sc
 
-    def credit(self, case_id, version, result, project="", run_id=""):
+    def credit(self, case_id, version, result, project="", run_id="", *, reason="", round=0, n=0,
+               errors_before=None, errors_left=None, errors_new=None, files=()):
         self.credits.append((case_id, version, result, project))
+        self.credit_runs.append({"case": case_id, "version": version, "result": result, "project": project,
+                                 "run_id": run_id, "reason": reason, "round": round, "n": n,
+                                 "errors_before": errors_before, "errors_left": errors_left,
+                                 "errors_new": errors_new, "files": list(files)})
         sc = next((x for x in self.scripts(case_id) if x.version == version), None)
         if sc is None:
             return None
@@ -330,6 +338,7 @@ class FakeCaseStore:
                 sc.status = "proven"
         elif result in ("no_change", "regressed", "reverted", "apply_failed"):
             sc.failures += 1
+            sc.last_failure = reason or result
         sc.last_result = result
         return sc
 

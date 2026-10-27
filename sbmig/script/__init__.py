@@ -12,7 +12,7 @@ notes for the files it did not mention), in `sbmig.script.notes`."""
 from .api import HELPER_API_DOC, helper_api_doc
 from .check import ALLOWED_IMPORTS, REFUSED_MODULES, REFUSED_NAMES, check_script
 from .edits import EDIT_OPS, POM_CALLS, apply_edits, edit_problems, edits_from_json, edits_script
-from .notes import answer_notes, merge_notes, notes_from_diff
+from .notes import answer_notes, attach_hunks, hunks_from_diff, merge_notes, notes_from_diff
 from .runner import ScriptRunner
 
 __all__ = [
@@ -24,6 +24,8 @@ __all__ = [
     "REFUSED_NAMES",
     "ScriptRunner",
     "answer_notes",
+    "attach_hunks",
+    "hunks_from_diff",
     "apply_edits",
     "check_script",
     "edit_problems",

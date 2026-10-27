@@ -8,7 +8,7 @@ import logging
 
 import pytest
 
-from sbmig.core.models import EditNote, Phase, ReviewIssue, StructureReview
+from sbmig.core.models import EditHunk, EditNote, Phase, ReviewIssue, StructureReview
 from sbmig.core.stage import install_stage_filter
 from sbmig.loop import notes as notes_mod
 from sbmig.loop.entries import REVIEW_L2, RunErrors
@@ -164,3 +164,46 @@ def test_the_review_try_carries_the_notes_and_logs_them(cfg, ws, logs):
     [n] = t.edits
     assert (n.path, n.change, n.source) == ("pom.xml", desc, "llm") and n.lines.startswith("~")
     assert ("review", f"수정: pom.xml {n.lines} — {desc}") in info(logs)
+    # v2.1e: the review's notes carry the as-is / to-be code too (the same try_notes path as the fix loop)
+    assert n.hunks == [EditHunk(lines="~1", before="<project><artifactId>demo</artifactId></project>",
+                                after="<project>utf8</project>")]
+    assert not any("as-is" in m for _, m in info(logs))                       # the log keeps the one line
+
+
+# ------------------------------------------------------------------------------------------ v2.1e hunks
+def test_the_fix_try_notes_carry_the_hunks(cfg, ws):
+    pr, [t] = run_edits(cfg, ws)
+    assert pr.ok
+    by = {n.path: n for n in t.edits}
+    for path, name in ((FOO, "Foo"), (BAR, "Bar")):                            # an LLM note and a diff note
+        assert by[path].hunks == [EditHunk(lines="~1", before=f"class {name} {{ broken }}", after=FIXED.rstrip("\n"))]
+
+
+def test_the_review_notes_follow_errors_snippet_lines(cfg, ws):
+    cfg = cfg.model_copy(deep=True)
+    cfg.errors.snippet_lines = 2
+    rv = StructureReview(verdict="issues", issues=[ReviewIssue(severity="critical", file="pom.xml", problem="p")])
+    pom = "<project>\n" + "".join(f"  <x{i}/>\n" for i in range(6)) + "</project>\n"
+    el = FakeErrorList()
+    make_v2(cfg, ws, reviewer=FakeReviewer(review=rv, files={"pom.xml": pom}), error_list=lambda w, c, p: el).run()
+    [t] = el.tries_of(l2_case_id(REVIEW_L2))
+    [h] = t.edits[0].hunks
+    assert h.truncated and h.after == "<project>\n  <x0/>\n… (+6 lines)"
+    assert h.before == "<project><artifactId>demo</artifactId></project>"
+
+
+def test_try_notes_threads_max_lines_and_survives_an_old_helper(monkeypatch):
+    diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n-a\n-b\n-c\n+A\n+B\n+C\n"
+    [n] = notes_mod.try_notes([], diff, max_lines=1)
+    assert n.hunks == [EditHunk(lines="~1–3", before="a\n… (+2 lines)", after="A\n… (+2 lines)", truncated=True)]
+    [n] = notes_mod.try_notes([EditNote(path="A.java", change="x")], diff)
+    assert n.source == "llm" and n.hunks[0].after == "A\nB\nC"
+    # a helper without the keyword (a plugin's older copy): called without it, never the fallback
+    seen = []
+
+    def old(llm, d):
+        seen.append(d)
+        return [EditNote(path="A.java", change="old helper")]
+    monkeypatch.setattr(notes_mod, "_helper", lambda name: old)
+    assert [n.change for n in notes_mod.try_notes([EditNote(path="A.java", change="x")], diff, max_lines=3)] == \
+        ["old helper"] and seen == [diff]

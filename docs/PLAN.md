@@ -418,3 +418,16 @@ leaves an operator guide ("이런이런 거 바꿨으니 운영자가 꼭 확인
 | L — `_library_hints` (errors' artifacts / owner classes → table + repository facts → prompt + INFO `의존성 버전 조회:`), read-back after every applied try and the review commit (`major_upgrades`, guide = `<verify>` → `verify_guide` → synthesized; WARNING `메이저 업그레이드: … — 운영자 확인 필요`), error list (`메이저 변경:` / `운영자 확인:`, `⚠ 메이저 업그레이드 N`), `report.operator_checks` (kept changes only), Handover block "운영자 확인 필요 (메이저 업그레이드 N건)" first, `SBMIG-RESULT … major=<n>`, flag `major-upgrade` (attention) | this commit | done |
 | PM — `LazyFixer` forwards `verify_guide` / usage, `FixTry.verify_source`, root offline guard for the repository lookup in tests | this commit | done |
 | Pending (the user) | — | `DB/` SQL directories: stay at the root (default) or move into `{name}-back/src/main/resources` — decided with the business team; the company KB's SiteMesh 3.2.1 case folder: delete + `sbmig kb reindex` |
+
+## Status — 2026-10-28, v2.1e (KB learning records: why a script failed, as-is / to-be code)
+
+User (2026-10-27): "비슷한 케이스는 스크립트로 고치고 실패하면 개선 버전을 만드는데 **왜 실패했는지 이유도 json 에**, 성공 카운트도;
+코드 수정은 코드화 가망이 희박하지만 **as-is / to-be 코드**가 있으면 나중에 써먹는다; 사람이 같이 개선하는 에이전트" — snippets
+whole, not capped ("사람이 보는 거면 40줄 고정 안 해도"). Contract: `docs/INTERFACES.md` "v2.1e".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Contracts: `EditHunk` / `EditNote.hunks`, `ScriptRun` / `CaseScript.parent` / `reason` / `last_failure` / `runs`, `errors.snippet_lines` 0 / `errors.script_runs` 30 | `fa19ae6`, `tests/core/test_v21e_contracts.py` | done |
+| N — `sbmig/script/notes.py` hunks from the diff (`hunks_from_diff`, `attach_hunks`, notes carry as-is / to-be), `ErrorList` keeps + masks them (report copies without), `note_block` for `kb errors show` / `cases show`, review notes too | this commit | done |
+| K — `CaseStore.add_script(parent, reason)` / `credit(reason, round, n, errors_*, files)` → `ScriptRun` history + `last_failure`, loop reasons (`_run_reason`), `kb reindex` rebuilds runs + backfills hunks from `errors.jsonl`, `cases show` / `cases.md` views, KB import merges lineage | this commit | done |
+| PM — adapter `**optional` pass-through, package exports, blocked-flow test (v2.1d call order) | this commit | done |

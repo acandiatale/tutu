@@ -3,9 +3,12 @@ modification described in words (`EditNote`: path, where, change, lines, source 
 
     answer_notes(answer, edits=True)   the LLM's own descriptions: the answer's `<changes>` + each applied edit's
                                        `desc` for a file `<changes>` does not describe; a script run: `<changes>` only
-    try_notes(llm_notes, diff)         → `sbmig.script.notes.merge_notes` (workstream A: lines from the diff, a diff
+    try_notes(llm_notes, diff, max_lines=0)
+                                       → `sbmig.script.notes.merge_notes` (workstream A: lines from the diff, a diff
                                        note for every file the LLM did not describe; `notes_from_diff` without LLM
-                                       notes); a minimal fallback when they are missing
+                                       notes); v2.1e: the notes carry the as-is / to-be `hunks` (`max_lines` =
+                                       `errors.snippet_lines`, 0 = whole); a minimal fallback (no hunks) when they
+                                       are missing
     note_line(note)                    `module/comp-jar/pom.xml +42–47 — jakarta.xml.bind-api 와 … 추가합니다`
                                        (`sbmig.errors.common.note_text`: one format for errors.md, report.md, the log)
 
@@ -88,14 +91,19 @@ def answer_notes(ans: Any, *, edits: bool) -> list[EditNote]:
                       if _norm(e.path) not in covered]
 
 
-def try_notes(llm_notes: list[EditNote], diff: str) -> list[EditNote]:
+def try_notes(llm_notes: list[EditNote], diff: str, *, max_lines: int = 0) -> list[EditNote]:
     """The try's 수정 notes: A's `merge_notes(llm_notes, diff)` — `notes_from_diff(diff)` when the LLM described
-    nothing (a reused stored script); without them (or when they fail) the fallback below."""
+    nothing (a reused stored script); v2.1e: with the as-is / to-be hunks, `max_lines` lines per side (the callers
+    pass `errors.snippet_lines`; 0 = whole). Without them (or when they fail) the fallback below."""
     llm_notes = list(llm_notes or [])
     fn = _helper("merge_notes") if llm_notes else _helper("notes_from_diff")
     if fn is not None:
         try:
-            got = fn(llm_notes, diff or "") if llm_notes else fn(diff or "")
+            args = (llm_notes, diff or "") if llm_notes else (diff or "",)
+            try:
+                got = fn(*args, max_lines=int(max_lines or 0))
+            except TypeError:                          # a helper without the v2.1e keyword
+                got = fn(*args)
             if isinstance(got, list):
                 return [n if isinstance(n, EditNote) else EditNote.model_validate(n) for n in got]
         except Exception as e:  # noqa: BLE001 - a broken helper never loses the try's record

@@ -11,7 +11,7 @@ import typer
 from pydantic import ValidationError
 
 from sbmig.core.config import Config, load_config
-from sbmig.errors.cases import CaseStore, entry_lines, scripts_text
+from sbmig.errors.cases import CaseStore, entry_lines, run_line, scripts_text
 from sbmig.errors.entries import fmt_entry, tries_text
 
 from .store import FileKnowledgeBase
@@ -68,11 +68,14 @@ def _main(
 # --------------------------------------------------------------------------- whole KB
 @kb_cli.command("reindex")
 def reindex_cmd(ctx: typer.Context) -> None:
-    """Recount every case (seen / resolved / projects / last solution) from errors.jsonl and rewrite cases.md."""
+    """Recount every case (seen / resolved / projects / last solution) from errors.jsonl and rewrite cases.md; rebuild
+    every stored script's run history (why it failed) and give old entries their as-is / to-be code."""
     kb = _kb(ctx)
     n = kb.reindex()
     st = kb.stats()
-    typer.echo(f"{n} case(s), {st['script_versions']} script version(s) — {kb.cases.md_path}")
+    done = getattr(kb.cases, "last_reindex", None) or {}
+    typer.echo(f"{n} case(s), {st['script_versions']} script version(s); {done.get('runs', 0)} script run "
+               f"record(s) rebuilt, {done.get('hunks', 0)} entr(ies) given as-is/to-be hunks — {kb.cases.md_path}")
 
 
 @kb_cli.command("stats")
@@ -207,6 +210,16 @@ def cases_show_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="C
         typer.echo(f"  script v{s.version} ({s.file}) {s.status}, {s.source}, successes {s.successes} / failures "
                    f"{s.failures}, projects {', '.join(s.projects) or '-'}, made by {s.project or '-'} "
                    f"{s.created_by or ''}".rstrip() + (f", last {s.last_result}" if s.last_result else ""))
+        # v2.1e: lineage, why it was made, why it failed, every run
+        typer.echo(f"    parent: {f'v{s.parent}' if s.parent else '- (written new)'}")
+        if s.reason:
+            typer.echo(f"    reason: {s.reason}")
+        if s.last_failure:
+            typer.echo(f"    last failure: {s.last_failure}")
+        if s.runs:
+            typer.echo(f"    runs ({len(s.runs)}, newest last):")
+            for r in s.runs:
+                typer.echo(f"      {run_line(r)}")
         if code:
             body = store.code(cid, s.version)
             for ln in (body if body is not None else "(file missing)").splitlines():

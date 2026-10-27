@@ -101,7 +101,9 @@ def test_blocked_case_is_reported_and_the_rest_is_fixed(cfg, ws):
     assert item.files == [f"{FOO}:12"] and item.attempts == 0 and item.errors
     assert "upgrade `com.company:legacy-web` to a Jakarta build" in item.suggestion
     assert "left unchanged on purpose" in item.suggestion
-    assert loc.calls[0][:2] == ("class", "com.company.legacy.web.LegacyRequestHelper")
+    # v2.1d: the fix loop's library hints ask the locator too (locate_type_owner for Bar's case) before the blocked
+    # registry attributes Foo's case — the attribution call is still there, no longer the first one
+    assert ("class", "com.company.legacy.web.LegacyRequestHelper") in [c[:2] for c in loc.calls]
     verify = report.phases[-1]
     assert [b.id for b in verify.blocked] == [item.id]
     assert any("only blocked cluster(s) remain" in n for n in verify.notes)

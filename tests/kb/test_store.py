@@ -117,3 +117,59 @@ def test_export_of_a_missing_kb_is_empty_and_zip_slip_is_blocked(kb: FileKnowled
 def test_atomic_write_is_reexported(tmp_path: Path):
     atomic_write(tmp_path / "a" / "b.txt", "한글\n")
     assert (tmp_path / "a" / "b.txt").read_text(encoding="utf-8") == "한글\n"
+
+
+# ------------------------------------------------------------------------------------------ v2.1e
+def test_the_store_keeps_errors_script_runs_records_per_version(kb_cfg):
+    cfg = kb_cfg.model_copy(update={"errors": kb_cfg.errors.model_copy(update={"script_runs": 2})})
+    kb = FileKnowledgeBase(cfg)
+    assert kb.cases.script_runs == 2 and FileKnowledgeBase(kb_cfg).cases.script_runs == 30
+    kb.cases.add_script(CASE, L2, CODE, run_id="r1", project="demo")
+    for n in (1, 2, 3):
+        kb.cases.credit(CASE, 1, "no_change", project="demo", run_id="r1", round=n, n=n, reason=f"no_change: {n}")
+    assert [r.n for r in kb.cases.find(CASE).scripts[0].runs] == [2, 3]
+
+
+def _cli(kb, *args):
+    from typer.testing import CliRunner
+
+    from sbmig.kb import kb_cli
+
+    res = CliRunner().invoke(kb_cli, list(args), obj={"kb": kb}, catch_exceptions=False)
+    return res.exit_code, res.output
+
+
+def test_cases_show_prints_lineage_reasons_and_runs(kb: FileKnowledgeBase):
+    from sbmig.core.models import FixTry
+
+    kb.cases.add_script(CASE, L2, CODE, run_id="r1", project="demo")
+    kb.cases.add_script(CASE, L2, CODE + "# v2\n", source="llm-augment", run_id="r1", project="demo", parent=1,
+                        reason="v1: no_change: 1 of 1 targeted error(s) remained — A.java:5 cannot find symbol")
+    kb.cases.credit(CASE, 1, "no_change", project="demo", run_id="r1", round=1, n=1, errors_before=3, errors_left=3,
+                    errors_new=0, files=["notes.txt"],
+                    reason="no_change: 1 of 1 targeted error(s) remained — A.java:5 cannot find symbol")
+    kb.cases.credit(CASE, 2, "build_ok", project="demo", run_id="r1", round=2, n=2, errors_before=3, errors_left=0,
+                    errors_new=0, files=["A.java"])
+    kb.record_run([entry("e1", run_id="r1", tries=[
+        FixTry(n=1, round=1, source="kb-script", script_version=1, applied="script", result="no_change"),
+        FixTry(n=2, round=2, source="llm-augment", script_version=2, applied="script", result="build_ok")])])
+    code, out = _cli(kb, "cases", "show", CASE, "--no-code")
+    assert code == 0
+    lines = out.splitlines()
+    i = next(n for n, ln in enumerate(lines) if ln.startswith("  script v1 "))
+    assert lines[i + 1:i + 5] == [
+        "    parent: - (written new)",
+        "    last failure: no_change: 1 of 1 targeted error(s) remained — A.java:5 cannot find symbol",
+        "    runs (1, newest last):",
+        ("      run r1 demo r1 try 1: no_change — no_change: 1 of 1 targeted error(s) remained — A.java:5 cannot "
+         "find symbol [errors 3 → 3, new 0; files: notes.txt]")]
+    j = next(n for n, ln in enumerate(lines) if ln.startswith("  script v2 "))
+    assert lines[j + 1:j + 5] == [
+        "    parent: v1",
+        "    reason: v1: no_change: 1 of 1 targeted error(s) remained — A.java:5 cannot find symbol",
+        "    runs (1, newest last):",
+        "      run r1 demo r2 try 2: build_ok [errors 3 → 0, new 0; files: A.java]"]
+    code, out = _cli(kb, "reindex")
+    assert code == 0 and out.strip().splitlines()[-1].startswith(
+        "1 case(s), 2 script version(s); 2 script run record(s) rebuilt, 0 entr(ies) given as-is/to-be hunks — ")
+    assert [len(s.runs) for s in kb.cases.find(CASE).scripts] == [1, 1]          # merged with the store's records
