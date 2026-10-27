@@ -21,7 +21,7 @@ v2 (flow-v2, docs/v2/PLAN-v2.md):
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Literal, Optional, Protocol, runtime_checkable
+from typing import Any, Iterable, Literal, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
@@ -31,6 +31,9 @@ from .models import (
     CaseType,
     BuildResult,
     ErrorCluster,
+    ErrorEntry,
+    CaseScript,
+    CaseInfo,
     FixAttempt,
     GAV,
     KBMatch,
@@ -282,27 +285,17 @@ class ScriptRunnerLike(Protocol):
             timeout_s: Optional[int] = None) -> ScriptRunResult: ...
 
 
-@runtime_checkable
 class ScriptStoreLike(Protocol):
-    """<kb>/scripts/<case_id>/v<N>.py + v<N>.meta.json (sbmig.kb.scripts). Writes hold the KB lock; analysis and
-    logs are redacted; a script whose code matches a secret pattern is stored masked as `quarantined`."""
-    def versions(self, case_id: str) -> list[ScriptMeta]: ...                  # oldest first
-    def get(self, case_id: str, version: int) -> Optional[tuple[ScriptMeta, str]]: ...
-    def best(self, case_id: str, *, limit: int = 1) -> list[tuple[ScriptMeta, str]]:
-        """Reuse candidates, best first: active versions with at least one success (most success projects, then
-        successes − failures, then the newest). Empty = nothing proven for this case."""
-        ...
-    def latest(self, case_id: str) -> Optional[tuple[ScriptMeta, str]]: ...   # newest active version (augment base)
-    def add(self, case_id: str, signature_generic: str, code: str, *, parent: Optional[int] = None,
-            analysis: str = "", model: str = "", run_id: str = "", project: str = "",
-            source: Literal["llm", "human", "review"] = "llm") -> ScriptMeta:
-        """Store the next version (an identical script — same sha1 — returns the existing meta)."""
-        ...
-    def credit(self, case_id: str, version: int, outcome: str, *, project: str = "", run_id: str = "") -> None:
-        """After the scoring build: improved / build_ok = success (when every targeted error of the case is gone),
-        partial = partial, no_change / regressed / apply_failed / blocked = failure, inconclusive / pending = nothing."""
-        ...
-    def case_ids(self) -> list[str]: ...
+    """v2.1: the per-case script store is `sbmig.errors.cases.CaseStore` (<kb>/cases/<case_id>/case.json + fix_v<N>.py):
+    `find(case_id) -> CaseInfo | None`, `best(case_id) -> (CaseScript, code) | None` (proven newest, else unverified
+    newest; retired never), `code(case_id, version)`, `add_script(case_id, l2, code, *, source, run_id, project,
+    analysis, solution) -> CaseScript`, `credit(case_id, version, result, project, run_id)`, `retire` / `activate`,
+    `pin_of` / `set_pin`, `describe(case_id)` (the "KB 탐색" log phrase), `record_run(entries)`, `stats()`."""
+    def find(self, case_id: str) -> Optional[CaseInfo]: ...
+    def best(self, case_id: str) -> Optional[tuple[CaseScript, str]]: ...
+    def add_script(self, case_id: str, l2: str, code: str, *, source: str, run_id: str, project: str,
+                   analysis: str = "", solution: str = "") -> CaseScript: ...
+    def credit(self, case_id: str, version: int, result: str, project: str = "", run_id: str = "") -> None: ...
 
 
 @runtime_checkable
@@ -321,13 +314,15 @@ class StructureReviewerLike(Protocol):
 # ---------------------------------------------------------------------------
 @runtime_checkable
 class KnowledgeBaseLike(Protocol):
-    """The file KB (sbmig.kb.store.FileKnowledgeBase): catalog hits for a cluster's case, the per-case script store,
-    the review log and the catalog rebuild. `NullKnowledgeBase` (`--no-kb`) answers with nothing."""
-    scripts: Optional[ScriptStoreLike]
+    """The v2.1 file KB (sbmig.kb.FileKnowledgeBase, a facade over sbmig.errors.cases.CaseStore): the case store
+    (`cases`: find / best / code / add_script / credit / describe / pin), catalog hits for a cluster's case
+    (`match`: a CaseHit for a stored script or a pinned block), the end-of-run append (`record_run`) and the
+    `cases.md` rebuild (`reindex`). `NullKnowledgeBase` (`--no-kb`, sbmig.loop) answers with nothing."""
+    cases: Any
 
     def match(self, cluster: ErrorCluster, ws: Workspace, profile: ProjectProfile) -> KBMatch: ...
-    def record_review(self, review: StructureReview) -> None: ...             # one line in <kb>/reviews.jsonl
+    def record_run(self, entries: Iterable[ErrorEntry]) -> None: ...
     def reindex(self) -> int: ...
 
 
-ScriptKnowledgeLike = KnowledgeBaseLike   # the name step 1 introduced; one protocol since step 4
+ScriptKnowledgeLike = KnowledgeBaseLike   # the step-1 name; one protocol since step 4

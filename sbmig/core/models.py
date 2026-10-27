@@ -844,6 +844,8 @@ class CaseInfo(BaseModel):
     last_analysis: str = ""
     last_solution: str = ""
     updated_at: datetime = Field(default_factory=utcnow)
+    # case.json may carry extra keys the store keeps beside the model: "pin" ("block[:<reason>]", a person's
+    # instruction never to try the case) and "last_result" (sbmig.errors.cases.CaseStore.extra)
 
 
 class ReviewIssue(BaseModel):

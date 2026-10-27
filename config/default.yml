@@ -196,16 +196,7 @@ review:                            # v2 structure review: the LLM checks poms / 
   record: true                     # <kb>/reviews.jsonl
 
 kb:
-  dir: kb-v2                       # v2 keeps its own KB (main / company-v1 use kb/)
-  auto_promote_after_projects: 2   # a case is active once its best script succeeded in N distinct projects
-  # every build error on its own record (what / what was tried / how resolved or why not) + every fix attempt with the
-  # code it applied, failures included: kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json, <run dir>/error_cases.*
-  error_cases: true
-  error_diff_chars: 12000          # cap of a stored attempt diff, applied after classification (0 = no cap)
-  error_excerpt_chars: 1500
-  # case catalog: one reusable case per error signature (kb/catalog/<kind>/<class>/<symbol>--<id>.yml, views kb/views/cases.md|csv);
-  # a hit runs the case's best stored script first; candidate → active after kb.auto_promote_after_projects successes
-  catalog: true
+  dir: kb-v2                       # v2.1: errors.jsonl (every run's error list), cases.md, cases/<case_id>/ (case.json + fix_v<N>.py)
   redact_file: knowledge/kb/redact.yml   # secret masking rules added to the built-ins (company patterns go here)
   lock_timeout_seconds: 300        # cross-process kb/.lock wait (web + fleet + kb commands share one KB)
 

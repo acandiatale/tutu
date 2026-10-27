@@ -380,18 +380,8 @@ class FixConfig(BaseModel):
 
 
 class KBConfig(BaseModel):
-    dir: str = "kb-v2"                       # relative to repo root unless absolute (main / company-v1 used kb/)
-    auto_promote_after_projects: int = 2     # a case is `active` once its best script succeeded in N distinct projects
-    # error cases (2026-10-23): one record per build error + one per fix attempt (failures included), with the code
-    # applied → kb/errors.jsonl, kb/fix_attempts.jsonl, kb/error_hints.json and <run dir>/error_cases.*
-    error_cases: bool = True
-    error_hints: bool = False                # past outcomes of the same error (fixes AND failures) → fix-prompt hints
-    error_diff_chars: int = 12000            # cap of FixAttemptRecord.diff, applied AFTER classification (0 = no cap)
-    error_excerpt_chars: int = 1500          # cap of ErrorCaseRecord.diff_excerpt (the error's own file)
-    # case catalog (2026-10-23): one case per error signature (L2) in kb/catalog/, human views in kb/views/; a hit
-    # runs the case's best stored script first (action `script`), a pinned `block` is never tried; hints always
-    catalog: bool = True
-    # round 10: secret masking rules (built-ins + this yml: company additions, invariant 2), relative to the repo root
+    dir: str = "kb-v2"                       # relative to repo root unless absolute: errors.jsonl, cases.md, cases/<id>/
+    # secret masking rules (built-ins + this yml: company additions, invariant 2), relative to the repo root
     redact_file: str = "knowledge/kb/redact.yml"
     lock_timeout_seconds: int = 300          # cross-process kb/.lock wait before a write gives up (logged, never fatal)
 

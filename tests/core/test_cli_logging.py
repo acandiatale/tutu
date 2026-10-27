@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -32,7 +33,8 @@ def test_attach_file_log_writes_debug_lines_once(tmp_path):
         for h in handlers:
             h.flush()
         text = p.read_text(encoding="utf-8")
-        assert "DEBUG   sbmig.test: debug-line" in text and "info-line" in text and "log file" in text
+        assert "DEBUG   [-] sbmig.test: debug-line" in text and "info-line" in text and "log file" in text
+        assert re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} ", text)    # ms kept: the web stream sorts by it
     finally:
         _detach(p)
 

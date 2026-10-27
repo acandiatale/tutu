@@ -90,8 +90,8 @@ def test_cp949_run_finishes_with_its_exit_code_and_result_line(tmp_path):
     out = r.stdout.decode("cp949")
     assert r.returncode == 2, (out, err)
     assert "Logging error" not in err and "UnicodeEncodeError" not in err + out
-    assert out.splitlines()[-1] == ("SBMIG-RESULT run=r-1 exit=2 build=FAIL unresolved=1 blocked=0 llm=2 "
-                                    "attn=unresolved:1,tests-not-compiled")
+    assert out.splitlines()[-1] == ("SBMIG-RESULT run=r-1 exit=2 build=FAIL unresolved=1 blocked=0 open=0 resolved=0 "
+                                    "llm=2 attn=unresolved:1,tests-not-compiled")
     assert "SBMIG-RESULT run=r-1 exit=2" in (tmp_path / "out" / "r-1" / "sbmig.log").read_text(encoding="utf-8")
 
 
@@ -141,7 +141,7 @@ def test_run_prints_the_result_line(tmp_path, fake_orch):
     finally:
         _detach_run_logs(out)
     assert r.exit_code == 0, r.output
-    assert r.output.splitlines()[-1] == "SBMIG-RESULT run=rid-7 exit=0 build=ok unresolved=0 blocked=0 llm=1 attn=-"
+    assert r.output.splitlines()[-1] == "SBMIG-RESULT run=rid-7 exit=0 build=ok unresolved=0 blocked=0 open=0 resolved=0 llm=1 attn=-"
 
 
 def test_no_kb_switches_off_everything_that_reads_the_kb(tmp_path, fake_orch):
@@ -160,9 +160,8 @@ def test_no_kb_switches_off_everything_that_reads_the_kb(tmp_path, fake_orch):
     orch = fake_orch.seen[-1]
     kb = orch.cfg.kb
     assert isinstance(orch.kb, NullKnowledgeBase)
-    # v2: the catalog is the only KB switch left (scripts / reviews live behind the NullKnowledgeBase)
-    assert kb.catalog is False and NO_KB_OVERRIDES == {"catalog": False}
-    assert kb.error_cases is True              # the run's own error_cases.* files are still written
+    # v2.1: no KB switch is left in the config — the NullKnowledgeBase alone makes a run KB-less
+    assert NO_KB_OVERRIDES == {} and not hasattr(kb, "catalog")
 
 
 def test_api_no_kb_uses_the_same_overrides(tmp_path, monkeypatch):
@@ -178,7 +177,7 @@ def test_api_no_kb_uses_the_same_overrides(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop, "Orchestrator", Orch)
     api.migrate(_project(tmp_path), configs=[E2E], out=tmp_path / "out", kb=False)
-    assert seen and seen[0].kb.catalog is False
+    assert seen and seen[0].kb.dir
 
 
 def test_llm_probe_ends_with_the_short_line(tmp_path, monkeypatch):

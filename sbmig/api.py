@@ -15,11 +15,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.interfaces import KnowledgeBaseLike, LLMAdapterLike, LLMClientLike, ScriptFixerLike
     from sbmig.core.models import RunReport
 
-# `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed. The KB object is a
-# NullKnowledgeBase (no script store → no stored fix script is reused; no `append_error_cases` → kb/errors.jsonl and
-# the case catalog are not fed; no review line); the run's own error_cases.* files are still written to the run dir
-# (`kb.error_cases` stays on). `kb.catalog: false` keeps the case catalog off for any file KB built anyway.
-NO_KB_OVERRIDES = {"catalog": False}
+# `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed — the KB object is a
+# NullKnowledgeBase (no stored fix script is reused, nothing is recorded); the run's own errors.jsonl / errors.md are
+# still written to the run dir. v2.1 has no KB switches left in the config, so nothing is overridden.
+NO_KB_OVERRIDES: dict = {}
 _NO_KB_OVERRIDES = NO_KB_OVERRIDES          # the pre-round-10 name
 
 

@@ -1,11 +1,17 @@
 """Workspace: the migrated project copy + run output directory + git snapshots + journal.
 
-Layout of one run:
+Layout of one run (v2.1, docs/v2/PLAN-v2.1.md §3.5 — nothing else is kept):
     <out_dir>/<run_id>/
         project/            ← working copy (git repo; one commit per step/attempt)
-        logs/               ← build-*.log, rewrite-*.log, llm-*.json
-        journal.jsonl       ← append-only event log (every step, build, decision, attempt)
-        profile.json, plan.json, report.json, report.md, result.zip, changes.patch
+        logs/               ← every Maven / OpenRewrite / deptree / classpath / effective-pom log (NNN-<label>.log)
+                              and their work files: rewrite-N.yml, rewrite-artifact-versions.json,
+                              deptree-<module>.txt, classpath-<module>.txt (+ .meta.json caches),
+                              effective-depmgmt*.json
+        errors.jsonl        ← the run's error list (one ErrorEntry per line), errors.md its human view
+        journal.jsonl       ← append-only event log (every step, build, decision, attempt; the web stream)
+        sbmig.log           ← DEBUG log, `[stage]` per line
+        profile.json, plan.json, report.json, report.md, changes.patch, result.zip (the migrated project)
+    (+ merge-conflicts/ when a multi-module merge dropped differing copies, web-status.json for web runs)
 """
 from __future__ import annotations
 
@@ -298,6 +304,16 @@ def _detect_project_root(extracted: Path) -> Path:
     if len(entries) == 1 and entries[0].is_dir():
         return _detect_project_root(entries[0])
     return extracted
+
+
+RUN_DIR_FILES = ("errors.jsonl", "errors.md", "report.md", "report.json", "sbmig.log", "changes.patch",
+                 "journal.jsonl", "plan.json", "profile.json", "result.zip")   # + logs/, project/ (PLAN-v2.1 §3.5)
+
+
+def logs_dir(ws: Any) -> Path:
+    """`<run dir>/logs` of a Workspace — or of a stand-in that only has `run_dir` (tests, views)."""
+    d = getattr(ws, "logs_dir", None)
+    return Path(d) if d is not None else Path(ws.run_dir) / "logs"
 
 
 class Workspace:
