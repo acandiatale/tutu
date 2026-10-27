@@ -109,7 +109,7 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   report, v2 planner, script fix loop + orchestrator) `cb9a3b1`, root-cause ordering + deferral `50e9a49`, step 2
   (e2e: every fixture on the v2 flow with replayed LLM scripts; reuse pure-java → java6-legacy, augment
   boot2-fix-failures) `43d8b36`, step 4 (v1 code deleted; pom-change deferral; refined case keys) — this commit.
-  Offline tests: **__OFFLINE_TESTS__** passed (42 integration deselected); real-Maven e2e `scripts/e2e.sh` **32/32**
+  Offline tests: **2,032** passed (42 integration deselected); real-Maven e2e `scripts/e2e.sh` **32/32**
   (29 build, 3 intended BLOCKED: boot2-javax-lib, missing-artifact, legacy-ibatis).
 - Step 5 (company trial vs `company-v1`) is the user's: real projects, LLM calls / time / success rate.
 
@@ -138,7 +138,7 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~6 min): `python -m pytest -m "not integration"` → __OFFLINE_TESTS__ passed, 42 deselected
+- Fast check (Python only, ~6 min): `python -m pytest -m "not integration"` → 2,032 passed, 42 deselected
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
