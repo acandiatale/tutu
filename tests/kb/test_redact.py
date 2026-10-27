@@ -1,14 +1,11 @@
-"""sbmig.kb.redact (round 10, C1): secret VALUES masked by context, code never mangled, company rules from yml, and
-what the KB does with masked text (replace pairs that touch a secret are dropped)."""
+"""sbmig.kb.redact (round 10, C1): secret VALUES masked by context, code never mangled, company rules from yml."""
 from __future__ import annotations
 
 import pytest
 
-from sbmig.kb import prepare_error_cases
-from sbmig.kb.changes import classify_diff_ex
 from sbmig.kb.redact import Redactor, get_redactor, key_words, load_rules, redact
 
-from .helpers import EC_FILE, ec_attempt, ec_error, with_kb
+from .helpers import with_kb
 
 MASKED = [
     ("<password>s3cr3t</password>", "<password>***</password>"),
@@ -121,67 +118,3 @@ def test_the_shipped_redact_yml_loads_and_adds_nothing_by_default(cfg):
     assert path.is_file()
     extra = load_rules(path)
     assert not extra.words and not extra.patterns and not extra.key_patterns
-
-
-def test_classification_drops_pairs_that_touch_a_secret():
-    diff = ("diff --git a/src/main/resources/app.properties b/src/main/resources/app.properties\n"
-            "--- a/src/main/resources/app.properties\n+++ b/src/main/resources/app.properties\n@@ -1,2 +1,2 @@\n"
-            "-spring.datasource.password=old-pw\n+spring.datasource.password=new-pw\n"
-            "-server.port=8080\n+server.port=9090\n")
-    c, dropped = classify_diff_ex(diff)
-    assert dropped == 1 and c.change_kind == "text_replace"
-    assert [(p.old, p.new) for p in c.replace_pairs] == [("8080", "9090")]
-    c2, dropped2 = classify_diff_ex(diff, None)                                 # no redactor: every pair
-    assert dropped2 == 0 and len(c2.replace_pairs) == 2
-
-
-def test_a_secret_resolution_keeps_no_pair(kb_cfg, ws, profile):
-    diff = (f"diff --git a/{EC_FILE} b/{EC_FILE}\n--- a/{EC_FILE}\n+++ b/{EC_FILE}\n@@ -3,1 +3,1 @@\n"
-            '-        String apiKey = "old-key-123";\n+        String apiKey = "new-key-456";\n')
-    errors, attempts = prepare_error_cases([ec_error()], [ec_attempt(diff=diff)], profile, ws, kb_cfg)
-    a, e = attempts[0], errors[0]
-    assert "old-key-123" not in a.diff and "new-key-456" not in a.diff and a.diff.count("***") == 2
-    assert a.change.change_kind == "text_replace" and a.change.replace_pairs == []
-    assert e.replace_pairs == []
-    assert any(n.startswith("redacted:") for n in a.notes) and any(n.startswith("redacted:") for n in e.notes)
-    assert "old-key-123" not in e.model_dump_json() + a.model_dump_json()
-
-
-def test_a_multiline_secret_context_drops_the_pair_too(kb_cfg, ws, profile):
-    """`<param-name>` on the line before the changed value: the line-local check misses it, the masked value of the
-    whole diff catches it."""
-    diff = ("diff --git a/src/main/webapp/WEB-INF/web.xml b/src/main/webapp/WEB-INF/web.xml\n"
-            "--- a/src/main/webapp/WEB-INF/web.xml\n+++ b/src/main/webapp/WEB-INF/web.xml\n@@ -1,2 +1,2 @@\n"
-            " <param-name>db.password</param-name>\n-<param-value>tiger</param-value>\n"
-            "+<param-value>lion</param-value>\n")
-    _, attempts = prepare_error_cases([], [ec_attempt(diff=diff)], profile, ws, kb_cfg)
-    a = attempts[0]
-    assert "tiger" not in a.model_dump_json() and "lion" not in a.model_dump_json()
-    assert a.change.replace_pairs == []
-
-
-def test_prepare_failure_stores_a_minimal_record_never_the_original(kb_cfg, ws, profile, monkeypatch):
-    import sbmig.kb.error_cases as ec
-
-    def boom(*a, **k):
-        raise RuntimeError("classifier down")
-
-    monkeypatch.setattr(ec, "classify_diff_ex", boom)
-    raw = f"[ERROR] {ws.root}/{EC_FILE} password=hunter2"
-    diff = ec_attempt().diff + "+spring.datasource.password=hunter2\n"
-    errors, attempts = prepare_error_cases([ec_error(raw=raw, message=f"{ws.root}/X.java password=hunter2")],
-                                           [ec_attempt(diff=diff, description="password=hunter2")], profile, ws,
-                                           kb_cfg)
-    a, e = attempts[0], errors[0]
-    assert a.diff == "" and a.description == "" and a.change.change_kind == "none"
-    assert a.notes and a.notes[0].startswith("prepare failed (RuntimeError)") and a.project == "demo"
-    assert "hunter2" not in a.model_dump_json()
-    # the error itself prepared fine (its resolver attempt is the minimal one)
-    assert "hunter2" not in e.model_dump_json() and str(ws.root) not in e.model_dump_json()
-
-    monkeypatch.setattr(ec, "_prepare_error", boom)
-    errors, _ = prepare_error_cases([ec_error(raw=raw, message=f"{ws.root}/X.java password=hunter2")], [],
-                                    profile, ws, kb_cfg)
-    e = errors[0]
-    assert e.raw == "" and e.diff_excerpt == "" and e.notes[0].startswith("prepare failed")
-    assert "hunter2" not in e.model_dump_json() and str(ws.root) not in e.message and e.case_id

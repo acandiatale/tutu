@@ -82,9 +82,8 @@ def test_v2_defaults_in_yml_and_code(repo_root):
         assert cfg.loop.phases["verify"].enabled and cfg.loop.phases["verify"].max_iterations >= 10
         assert cfg.build.skip_test_compile is True
         assert cfg.kb.dir == "kb-v2"
-        assert cfg.kb.error_cases and cfg.kb.catalog
-        for gone in ("use_active_recipes", "harvest", "case_replace", "ledger"):        # v1 KB switches (step 4)
-            assert not hasattr(cfg.kb, gone)
+        for gone in ("use_active_recipes", "harvest", "case_replace", "ledger", "catalog", "error_cases"):
+            assert not hasattr(cfg.kb, gone)                 # v1 / v2 KB switches (gone since v2.1)
         assert cfg.script.timeout_seconds == 60 and cfg.script.max_augments_per_case == 3 and cfg.script.reuse
         assert cfg.review.enabled and cfg.review.fix_critical and cfg.review.record
 

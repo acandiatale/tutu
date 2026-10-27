@@ -1,126 +1,118 @@
-"""FileKnowledgeBase after PLAN-v2 step 4: atomic writes, v2 stats, reindex = catalog rebuild, match = case hits,
-validate, and the v1 files (cases/, recipes/, patterns/, index.json, ledger.jsonl, symbols.json, error_hints.json)
-neither read, written nor exported."""
+"""sbmig.kb.store.FileKnowledgeBase (v2.1): the facade over sbmig.errors.CaseStore — match (stored script / pin /
+nothing), record_run, reindex, stats, validate, export / import (merge, replace with a backup)."""
 from __future__ import annotations
 
-import json
 import zipfile
+from pathlib import Path
 
-from sbmig.core.models import BuildError, ErrorCluster, ErrorKind
-from sbmig.kb import FileKnowledgeBase, prepare_error_cases
-from sbmig.kb.catalog import case_id_for
-from sbmig.kb.store import atomic_write
+import pytest
 
-from .helpers import EC_FILE, EC_L2, ec_attempt, ec_error, with_kb
+from sbmig.core.models import KBMatch
+from sbmig.kb import FileKnowledgeBase, atomic_write
+from sbmig.kb.lock import LOCK_NAME
 
-CID = case_id_for(EC_L2)
-V1_FILES = ("index.json", "ledger.jsonl", "symbols.json", "error_hints.json", "cases/2026-10/20261020-abc.json",
-            "recipes/active/RenameFoo.yml", "patterns/p.yml")
+from .helpers import CASE, L2, entry, make_cluster, make_error
 
-
-def _seed(kb: FileKnowledgeBase, ws, profile) -> None:
-    errs, atts = prepare_error_cases([ec_error()], [ec_attempt()], profile, ws, kb.cfg)
-    assert kb.append_error_cases(errs, atts) == 2
+CODE = "def fix(p):\n    p.log('x')\n"
 
 
-def _cluster() -> ErrorCluster:
-    e = BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file=EC_FILE, line=5,
-                   symbol="method clientIp()", signature="compile|cannot find symbol|method clientIp()",
-                   signature_generic=EC_L2)
-    return ErrorCluster(id="c1", kind=e.kind, file=e.file, errors=[e], signatures=[e.signature])
+def test_match_on_an_empty_kb_creates_nothing(kb: FileKnowledgeBase):
+    m = kb.match(make_cluster(), None, None)
+    assert isinstance(m, KBMatch) and m.case_hits == [] and m.hints == [] and not kb.root.exists()
 
 
-def test_atomic_write_leaves_no_temp(tmp_path):
-    p = tmp_path / "a" / "b.json"
-    atomic_write(p, "one")
-    atomic_write(p, "two")
-    assert p.read_text() == "two"
-    assert [x.name for x in p.parent.iterdir()] == ["b.json"]
+def test_match_gives_the_best_script_and_the_last_solution(kb: FileKnowledgeBase):
+    kb.record_run([entry("e1")])
+    m = kb.match(make_cluster(), None, None)
+    assert m.case_hits == [] and m.hints and "use a SecurityFilterChain bean" in m.hints[0]   # no script: hint only
+    kb.cases.add_script(CASE, L2, CODE, run_id="r1", project="demo")
+    m = kb.match(make_cluster(), None, None)
+    (hit,) = m.case_hits
+    assert (hit.case_id, hit.status, hit.action.kind, hit.action.script_version, hit.pinned) == \
+        (CASE, "candidate", "script", 1, False)
+    assert hit.errors == make_cluster().errors
+    kb.cases.credit(CASE, 1, "improved", project="other")
+    assert kb.match(make_cluster(), None, None).case_hits[0].status == "active"
+    other = make_error(l2="compile|cannot_find_symbol|Nope", file="B.java")
+    assert kb.match(make_cluster(other), None, None).case_hits == []
 
 
-def test_atomic_write_cleans_up_on_failure(tmp_path, monkeypatch):
-    import os
+def test_a_block_pin_is_a_pinned_hit_the_triage_obeys(kb: FileKnowledgeBase):
+    from sbmig.triage.decide import DecisionEngine  # noqa: F401 - the consumer exists
 
-    import pytest
-
-    p = tmp_path / "x.txt"
-
-    def boom(*a, **k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(os, "replace", boom)
-    with pytest.raises(OSError):
-        atomic_write(p, "data")
-    assert list(tmp_path.iterdir()) == []
+    kb.cases.add_script(CASE, L2, CODE)
+    kb.cases.set_pin(CASE, "block:needs a person")
+    (hit,) = kb.match(make_cluster(), None, None).case_hits
+    assert hit.pinned and hit.action.kind == "block" and hit.action.block_reason == "needs a person"
+    kb.cases.set_pin(CASE, "block")
+    assert kb.match(make_cluster(), None, None).case_hits[0].action.block_reason == ""
 
 
-def test_stats_on_empty_and_filled_kb(kb: FileKnowledgeBase, ws, profile):
+def test_match_never_raises(kb: FileKnowledgeBase, monkeypatch):
+    kb.cases.add_script(CASE, L2, CODE)
+    monkeypatch.setattr(type(kb.cases), "find", lambda *a: (_ for _ in ()).throw(OSError("disk")))
+    assert kb.match(make_cluster(), None, None).case_hits == []
+
+
+def test_record_run_reindex_stats_validate(kb: FileKnowledgeBase, monkeypatch):
+    assert kb.reindex() == 0 and not kb.root.exists()
+    assert kb.record_run([entry("e1"), entry("e2", status="unresolved", tries=[])]) == 2
     st = kb.stats()
-    assert (st["error_cases"], st["fix_attempts"], st["catalog_cases"], st["script_versions"], st["reviews"]) == \
-        (0, 0, 0, 0, 0)
-    assert not {"cases", "recipes_active", "patterns", "symbols", "ledger_entries", "signatures_l1"} & set(st)
-    _seed(kb, ws, profile)
-    st = kb.stats()
-    assert (st["error_cases"], st["fix_attempts"], st["catalog_cases"], st["catalog_observed"]) == (1, 1, 1, 1)
+    assert (st["errors"], st["cases"], st["script_versions"]) == (2, 1, 0)
+    assert kb.reindex() == 1 and kb.cases.md_path.is_file() and kb.validate() == []
+    monkeypatch.setattr(type(kb.cases), "record_run", lambda *a: (_ for _ in ()).throw(OSError("full")))
+    assert kb.record_run([entry("e3")]) == 0                     # never raises
 
 
-def test_append_writes_no_error_hints_index(kb: FileKnowledgeBase, ws, profile):
-    _seed(kb, ws, profile)
-    assert (kb.root / "errors.jsonl").exists() and (kb.root / "views" / "cases.md").exists()
-    assert not (kb.root / "error_hints.json").exists()
+def test_export_import_merge_and_replace(kb_cfg, tmp_path: Path):
+    other = FileKnowledgeBase(kb_cfg, kb_dir=tmp_path / "other")
+    other.record_run([entry("o1", run_id="ro", project="theirs")])
+    other.cases.add_script(CASE, L2, CODE, project="theirs")
+    (other.root / "junk.txt").write_text("not exported")
+    zp = other.export_zip(tmp_path / "other.zip")
+    names = zipfile.ZipFile(zp).namelist()
+    assert set(names) == {"errors.jsonl", "cases.md", f"cases/{CASE}/case.json", f"cases/{CASE}/fix_v1.py"}
+
+    local = FileKnowledgeBase(kb_cfg)
+    local.record_run([entry("l1")])
+    c = local.import_zip(zp)
+    assert c["errors_added"] == 1 and c["scripts_added"] == 1
+    assert local.import_zip(zp)["errors_added"] == 0              # idempotent
+    case = local.cases.find(CASE)
+    assert case.seen == 2 and sorted(case.projects) == ["demo", "theirs"] and len(case.scripts) == 1
+
+    (local.root / "mine.txt").write_text("mine")
+    c = local.import_zip(zp, merge=False)
+    backups = sorted(local.root.parent.glob("kb.bak-*"))
+    assert len(backups) == 1 and c["backup"] == str(backups[0]) and (backups[0] / "mine.txt").read_text() == "mine"
+    assert [e.id for e in local.cases.iter_errors()] == ["o1"] and not (local.root / "mine.txt").exists()
+    assert not (local.root / LOCK_NAME).exists() and not (backups[0] / LOCK_NAME).exists()
+    assert not list(local.root.parent.glob(".kb.import-*"))
 
 
-def test_reindex_rebuilds_the_catalog(kb: FileKnowledgeBase, ws, profile, kb_cfg):
-    assert kb.reindex() == 0                                  # nothing to build from
-    _seed(kb, ws, profile)
-    path = kb.catalog().path_of(CID)
-    path.unlink()
-    assert kb.reindex() == 1 and kb.catalog().path_of(CID).exists()
-    assert FileKnowledgeBase(with_kb(kb_cfg, catalog=False)).reindex() == 0
+def test_a_failed_replace_leaves_the_kb_untouched(kb_cfg, tmp_path: Path, monkeypatch):
+    other = FileKnowledgeBase(kb_cfg, kb_dir=tmp_path / "other")
+    other.record_run([entry("o1")])
+    zp = other.export_zip(tmp_path / "o.zip")
+    local = FileKnowledgeBase(kb_cfg)
+    local.record_run([entry("l1")])
+    monkeypatch.setattr(FileKnowledgeBase, "_import_into",
+                        staticmethod(lambda kb, path: (_ for _ in ()).throw(RuntimeError("disk full"))))
+    with pytest.raises(RuntimeError):
+        local.import_zip(zp, merge=False)
+    assert [e.id for e in local.cases.iter_errors()] == ["l1"]
+    assert not list(local.root.parent.glob("kb.bak-*")) and not list(local.root.parent.glob(".kb.import-*"))
 
 
-def test_match_gives_case_hits_and_their_hints(kb: FileKnowledgeBase, ws, profile):
-    assert kb.match(_cluster(), ws, profile).case_hits == []          # no KB yet
-    _seed(kb, ws, profile)
-    m = kb.match(_cluster(), ws, profile)
-    assert [h.case_id for h in m.case_hits] == [CID] and not m.case_hits[0].pinned
-    assert m.hints and all(h.startswith(f"[case {CID}]") for h in m.hints)
-    kb.catalog().set_human(CID, hints=["check RequestWrapper first"], action={"kind": "block"})
-    m = kb.match(_cluster(), ws, profile)
-    assert m.hints[0] == f"[case {CID}] check RequestWrapper first"
-    assert m.case_hits[0].pinned and m.case_hits[0].action.kind == "block"
-    off = FileKnowledgeBase(with_kb(kb.cfg, catalog=False))
-    assert off.match(_cluster(), ws, profile).case_hits == [] and off.match(_cluster(), ws, profile).hints == []
+def test_export_of_a_missing_kb_is_empty_and_zip_slip_is_blocked(kb: FileKnowledgeBase, tmp_path: Path):
+    assert zipfile.ZipFile(kb.export_zip(tmp_path / "empty.zip")).namelist() == []
+    evil = tmp_path / "evil.zip"
+    with zipfile.ZipFile(evil, "w") as zf:
+        zf.writestr("../escape.txt", "x")
+    with pytest.raises(ValueError):
+        kb.import_zip(evil)
 
 
-def test_v1_files_are_ignored_and_not_exported(kb: FileKnowledgeBase, ws, profile, tmp_path):
-    for rel in V1_FILES:
-        p = kb.root / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("{}\n" if rel.endswith((".json", ".jsonl")) else "x: 1\n", encoding="utf-8")
-    _seed(kb, ws, profile)
-    names = set(zipfile.ZipFile(kb.export_zip(tmp_path / "kb.zip")).namelist())
-    assert {"errors.jsonl", "fix_attempts.jsonl", "views/cases.md"} <= names
-    assert not names & set(V1_FILES)
-    assert kb.validate() == []
-    other = FileKnowledgeBase(with_kb(kb.cfg, dir=str(tmp_path / "kb2")))
-    counters = other.import_zip(tmp_path / "kb.zip")
-    assert counters["error_cases_added"] == 1 and counters["fix_attempts_added"] == 1
-    assert not any((other.root / rel).exists() for rel in V1_FILES)
-
-
-def test_validate_names_unreadable_lines_and_cases(kb: FileKnowledgeBase, ws, profile):
-    _seed(kb, ws, profile)
-    with open(kb.root / "errors.jsonl", "a", encoding="utf-8") as fh:
-        fh.write('{"id": "broken", "status": 7}\n')
-    (kb.root / "audit.jsonl").write_text('{"event": "human"}\nnot json\n', encoding="utf-8")
-    path = kb.catalog().path_of(CID)
-    text = path.read_text(encoding="utf-8")
-    path.write_text(text.replace("\nhuman:", "\nhuman: [unclosed", 1), encoding="utf-8")
-    (kb.root / "catalog" / "index.json").write_text("{", encoding="utf-8")
-    problems = kb.validate()
-    assert "errors.jsonl: line 2 does not validate as ErrorCaseRecord" in problems
-    assert "audit.jsonl: line 2 is no JSON object" in problems
-    assert any("index.json: does not parse" in p for p in problems)
-    assert any(p.endswith("the `human:` block is invalid (ignored until fixed)") for p in problems)
-    json.loads((kb.root / "fix_attempts.jsonl").read_text(encoding="utf-8").splitlines()[0])   # untouched
+def test_atomic_write_is_reexported(tmp_path: Path):
+    atomic_write(tmp_path / "a" / "b.txt", "한글\n")
+    assert (tmp_path / "a" / "b.txt").read_text(encoding="utf-8") == "한글\n"

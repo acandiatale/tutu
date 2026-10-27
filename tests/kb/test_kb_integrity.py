@@ -1,5 +1,4 @@
-"""KB integrity (round 10, C2 / C3 / C9): torn jsonl lines, the cross-process lock, two KB instances on one
-catalog, `kb import --replace` swap + backup, streamed stats."""
+"""KB integrity (round 10, kept for v2.1): torn-line safe appends to <kb>/errors.jsonl and the cross-process lock."""
 from __future__ import annotations
 
 import json
@@ -10,76 +9,53 @@ import subprocess
 import sys
 import threading
 import time
-import zipfile
 from pathlib import Path
 
-import pytest
-
-from sbmig.core.models import KB_RECORD_SCHEMA, ErrorCaseRecord, StructureReview
-from sbmig.kb import ErrorCaseStore, FileKnowledgeBase
-from sbmig.kb.jsonl import append_lines, corrupt_path, parse_record, repair_tail
+from sbmig.core.models import ErrorEntry
+from sbmig.errors import CaseStore
+from sbmig.kb.jsonl import append_lines, corrupt_path, line_ids, parse_record, repair_tail
 from sbmig.kb.lock import LOCK_NAME, holding, kb_lock, pid_alive
 
 REPO = Path(__file__).resolve().parents[2]
 
 
-def rec(eid: str, l2: str = "compile|x|Foo") -> ErrorCaseRecord:
-    return ErrorCaseRecord(id=eid, signature_generic=l2, message="m")
+def rec(eid: str, l2: str = "compile|x|Foo") -> ErrorEntry:
+    return ErrorEntry(id=eid, run_id="r1", l2=l2, message="m", status="unresolved")
 
 
 # --------------------------------------------------------------------------- torn lines (C2)
-def test_torn_last_line_is_moved_aside_and_later_records_survive(tmp_path, caplog):
-    """review-arch/torn.py: a write killed half-way used to swallow the next record and count the torn id."""
-    s = ErrorCaseStore(tmp_path)
-    s.append([rec("A")], [])
+def test_torn_last_line_is_moved_aside_and_later_records_survive(tmp_path, caplog, cfg):
+    s = CaseStore(tmp_path, cfg)
+    s.record_run([rec("A")])
     line = rec("B", "compile|x|Bar").model_dump_json()
     with open(s.errors_path, "a", encoding="utf-8") as fh:
         fh.write(line[: len(line) // 2])                       # crash mid-write of B
-    assert "B" not in ErrorCaseStore(tmp_path)._known_ids(s.errors_path)   # a torn id is not "stored"
-    s2 = ErrorCaseStore(tmp_path)
+    assert "B" not in s._known_ids()                           # a torn id is not "stored"
     with caplog.at_level(logging.WARNING, logger="sbmig.kb"):
-        assert s2.append_counts([rec("B", "compile|x|Bar"), rec("C", "compile|x|Baz")], []) == (2, 0)
-    assert [e.id for e in s2.iter_errors()] == ["A", "B", "C"]
+        assert s.record_run([rec("B", "compile|x|Bar"), rec("C", "compile|x|Baz")]) == 2
+    assert [e.id for e in s.iter_errors()] == ["A", "B", "C"]
     assert corrupt_path(s.errors_path).read_text(encoding="utf-8") == line[: len(line) // 2] + "\n"
     assert any("torn last line" in r.getMessage() for r in caplog.records)
-    assert s.errors_path.read_bytes().endswith(b"\n") and s2.count_errors() == 3
+    assert s.errors_path.read_bytes().endswith(b"\n") and s.count_errors() == 3
 
 
-def test_a_whole_record_without_newline_keeps_its_place(tmp_path):
+def test_a_whole_record_without_newline_keeps_its_place(tmp_path, cfg):
     p = tmp_path / "errors.jsonl"
     p.write_text(rec("A").model_dump_json() + "\n" + rec("B").model_dump_json(), encoding="utf-8")
     assert repair_tail(p) is True and not corrupt_path(p).exists()
-    assert [e.id for e in ErrorCaseStore(tmp_path).iter_errors()] == ["A", "B"]
+    assert [e.id for e in CaseStore(tmp_path, cfg).iter_errors()] == ["A", "B"]
     assert repair_tail(p) is False                                   # nothing to do any more
 
 
-def test_glued_line_from_before_round_10_is_salvaged(tmp_path):
-    """The old bug: torn B + whole C on one line. C is read back (and counted), B is not."""
+def test_a_glued_line_is_salvaged(tmp_path, cfg):
+    """A torn B + a whole C on one line (an append after a crash, before round 10): C is read back, B is not."""
     p = tmp_path / "errors.jsonl"
     b, c = rec("B").model_dump_json(), rec("C").model_dump_json()
     p.write_text(rec("A").model_dump_json() + "\n" + b[:40] + c + "\n", encoding="utf-8")
-    s = ErrorCaseStore(tmp_path)
-    assert [e.id for e in s.iter_errors()] == ["A", "C"]
-    assert s._known_ids(p) == {"A", "C"}
-    assert parse_record(b[:40] + c, ErrorCaseRecord).id == "C" and parse_record(b[:40], ErrorCaseRecord) is None
-
-
-def test_legacy_lines_read_as_schema_1(tmp_path):
-    data = json.loads(rec("A").model_dump_json())
-    data.pop("schema_version")
-    data.pop("agent_version")
-    (tmp_path / "errors.jsonl").write_text(json.dumps(data) + "\n" + rec("B").model_dump_json() + "\n")
-    got = {e.id: e.schema_version for e in ErrorCaseStore(tmp_path).iter_errors()}
-    assert got == {"A": 1, "B": KB_RECORD_SCHEMA}
-
-
-def test_review_append_is_torn_line_safe(kb):
-    kb.record_review(StructureReview(id="r1:review", run_id="r1", verdict="ok"))
-    with open(kb.reviews_path, "a", encoding="utf-8") as fh:
-        fh.write('{"id":"r2:review","ver')
-    assert [r.id for r in kb.iter_reviews()] == ["r1:review"]
-    kb.record_review(StructureReview(id="r3:review", run_id="r3", verdict="issues"))
-    assert [r.id for r in kb.iter_reviews()] == ["r1:review", "r3:review"] and corrupt_path(kb.reviews_path).exists()
+    s = CaseStore(tmp_path, cfg)
+    assert [e.id for e in s.iter_errors()] == ["A", "C"] and s._known_ids() == {"A", "C"}
+    assert parse_record(b[:40] + c, ErrorEntry).id == "C" and parse_record(b[:40], ErrorEntry) is None
+    assert line_ids(b[:40] + c) == ["C"]
 
 
 def test_append_lines_fsyncs_one_batch(tmp_path, monkeypatch):
@@ -128,12 +104,12 @@ def test_an_old_lock_of_another_host_is_stale(tmp_path):
         assert held and json.loads((tmp_path / LOCK_NAME).read_text())["token"] != "theirs"
 
 
-def test_a_live_lock_is_waited_for_then_the_write_goes_on_without_it(tmp_path, caplog):
+def test_a_live_lock_is_waited_for_then_the_write_goes_on_without_it(tmp_path, caplog, cfg):
     p = _foreign_lock(tmp_path, future=True)                  # fresh, another host: never stale within the wait
-    s = ErrorCaseStore(tmp_path, lock_timeout=0.4)
+    s = CaseStore(tmp_path, cfg, lock_timeout=0.4)
     t0 = time.monotonic()
     with caplog.at_level(logging.WARNING, logger="sbmig.kb"):
-        assert s.append([rec("A")], []) == 1                  # never fails the run
+        assert s.record_run([rec("A")]) == 1                  # never fails the run
     assert 0.35 <= time.monotonic() - t0 < 5
     assert any("going on without it" in r.getMessage() for r in caplog.records)
     assert json.loads(p.read_text())["token"] == "theirs"     # their lock is left alone
@@ -183,65 +159,3 @@ def test_another_process_waits_for_the_lock(tmp_path):
         assert held and waited >= 0.4
     finally:
         proc.wait(30)
-
-
-def test_two_kb_instances_see_each_others_catalog_writes(kb_cfg):
-    """Two FileKnowledgeBase objects on one KB (fleet + web server): each one's catalog update keeps the other's
-    case (the catalog index is re-read by its stamp under the lock)."""
-    kb1, kb2 = FileKnowledgeBase(kb_cfg), FileKnowledgeBase(kb_cfg)
-    kb2.catalog().cases()                                      # loaded before kb1 wrote
-    kb1.append_error_cases([rec("a", "compile|x|A")], [])
-    kb2.append_error_cases([rec("b", "compile|x|B")], [])
-    idx = json.loads(kb1.catalog().index_path.read_text())
-    assert set(idx["by_l2"]) == {"compile|x|A", "compile|x|B"}
-    assert {c.signature_generic for c in kb1.catalog().cases()} == {"compile|x|A", "compile|x|B"}
-
-
-# --------------------------------------------------------------------------- import --replace (C9)
-def _seeded(kb_cfg, sub: str) -> FileKnowledgeBase:
-    kb = FileKnowledgeBase(kb_cfg, kb_dir=Path(kb_cfg.kb.dir).parent / sub)
-    kb.append_error_cases([rec(f"{sub}-e")], [])
-    return kb
-
-
-def test_import_replace_swaps_in_a_new_kb_and_keeps_a_backup(kb_cfg, tmp_path):
-    other = _seeded(kb_cfg, "other")
-    zp = other.export_zip(tmp_path / "other.zip")
-    local = _seeded(kb_cfg, "kb")
-    (local.root / "scripts").mkdir(exist_ok=True)
-    (local.root / "scripts" / ".gitkeep").write_text("")
-    (local.root / "notes.txt").write_text("mine")
-    counters = local.import_zip(zp, merge=False)
-    backups = sorted(local.root.parent.glob("kb.bak-*"))
-    assert len(backups) == 1 and counters["backup"] == str(backups[0])
-    assert (backups[0] / "notes.txt").read_text() == "mine" and not (backups[0] / LOCK_NAME).exists()
-    assert [e.id for e in local.error_case_store().iter_errors()] == ["other-e"]
-    assert not (local.root / "notes.txt").exists() and (local.root / "scripts" / ".gitkeep").exists()
-    assert not list(local.root.parent.glob(".kb.import-*")) and not (local.root / LOCK_NAME).exists()
-
-
-def test_a_failed_import_replace_leaves_the_kb_untouched(kb_cfg, tmp_path, monkeypatch):
-    other = _seeded(kb_cfg, "other")
-    zp = other.export_zip(tmp_path / "other.zip")
-    local = _seeded(kb_cfg, "kb")
-
-    def boom(self, path, merge):
-        raise RuntimeError("disk full")
-
-    monkeypatch.setattr(FileKnowledgeBase, "_import_merge", boom)
-    with pytest.raises(RuntimeError):
-        local.import_zip(zp, merge=False)
-    assert [e.id for e in local.error_case_store().iter_errors()] == ["kb-e"]
-    assert not list(local.root.parent.glob("kb.bak-*")) and not list(local.root.parent.glob(".kb.import-*"))
-
-
-def test_export_of_a_missing_kb_creates_nothing(kb, tmp_path):
-    out = kb.export_zip(tmp_path / "empty.zip")
-    assert zipfile.ZipFile(out).namelist() == [] and not any(kb.root.glob("*.json"))
-
-
-def test_stats_counts_without_listing_everything(kb, monkeypatch):
-    kb.error_case_store().append([rec("A"), rec("B")], [])
-    monkeypatch.setattr(ErrorCaseStore, "iter_errors", lambda *a, **k: (_ for _ in ()).throw(AssertionError("read")))
-    st = kb.stats()
-    assert st["error_cases"] == 2 and st["fix_attempts"] == 0
