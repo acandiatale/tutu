@@ -204,3 +204,25 @@ def test_merge_from_is_idempotent(tmp_path: Path, cfg):
     assert a.code(case_id_for(other), 1) == CODE1
     st = a.stats()
     assert (st["cases"], st["script_versions"], st["errors"]) == (2, 3, 2)
+
+
+def test_record_run_writes_one_readable_json_per_error(tmp_path, store: CaseStore):
+    """v2.1c: the business team browses the stored errors as files, not as errors.jsonl lines."""
+    import json
+    from sbmig.core.models import ErrorEntry, ErrorKind, FixTry
+    st = store
+    e = ErrorEntry(id="8871c2ca3c4d", run_id="run-1", project="demo", case_id="7a52b1cea8",
+                   l2="compile|package_does_not_exist|jakarta.xml.bind", kind=ErrorKind.COMPILE, file="a/B.java",
+                   line=6, message="package jakarta.xml.bind does not exist", seen="compile", status="resolved",
+                   tries=[FixTry(n=1, round=1, source="llm-new", analysis="JAXB left the JDK", solution="declare it",
+                                 applied="edits", files=["pom.xml"], diff="+<dependency>", result="improved")])
+    pv = ErrorEntry(id="deadbeef0001", run_id="run-1", project="demo", seen="restructure", status="pom-verify",
+                    file="pom.xml", note="parent → base-parent")
+    st.record_run([e, pv])
+    f = tmp_path / "kb" / "cases" / "7a52b1cea8" / "errors" / "run-1-8871c2ca3c4d.json"
+    assert f.is_file() and st.entry_files("7a52b1cea8") == [f]
+    data = json.loads(f.read_text(encoding="utf-8"))
+    assert data["tries"][0]["solution"] == "declare it" and "\n  \"tries\"" in f.read_text(encoding="utf-8")
+    assert (tmp_path / "kb" / "cases" / "_other" / "errors" / "run-1-deadbeef0001.json").is_file()
+    st.record_run([e])                                                  # already stored: no duplicate, no error
+    assert len(st.entry_files("7a52b1cea8")) == 1

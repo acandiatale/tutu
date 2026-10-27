@@ -37,6 +37,8 @@ from .entries import tries_text
 log = logging.getLogger("sbmig.errors")
 
 CASES_DIR = "cases"
+ENTRIES_DIR = "errors"            # <kb>/cases/<case_id>/errors/<run_id>-<id>.json (one readable file per error)
+OTHER_DIR = "_other"              # entries without a case (pom-verify, notes)
 CASE_FILE = "case.json"
 KB_ERRORS = "errors.jsonl"
 CASES_MD = "cases.md"
@@ -374,10 +376,38 @@ class CaseStore:
                 case, extra = self._case_or_new(cid, es[0].l2, case_name(es[0].message, es[0].l2), es[0].kind)
                 self._apply(case, extra, es)
                 self._save(case, extra)
+            self._write_entry_files(fresh)
             self._write_md_locked()
             log.info("errors.jsonl +%d (%d already stored), %d case(s) updated, cases.md rewritten", n,
                      len(entries) - len(fresh), len(by_case))
         return n
+
+    @property
+    def json_files(self) -> bool:
+        return bool(getattr(getattr(self.cfg, "errors", None), "json_files", True))
+
+    def entry_file(self, e: ErrorEntry) -> Path:
+        """``<kb>/cases/<case_id>/errors/<run_id>-<id>.json`` — entries without a case (pom-verify, notes) go under
+        ``cases/_other/errors/``."""
+        folder = e.case_id if e.case_id and valid_case_id(e.case_id) else OTHER_DIR
+        return self.cases_dir / folder / ENTRIES_DIR / f"{e.run_id or 'run'}-{e.id}.json"
+
+    def _write_entry_files(self, entries: list[ErrorEntry]) -> int:
+        """v2.1c (2026-10-27, the business team wants to browse the stored errors): one indented JSON file per
+        error beside its case — the same record as the errors.jsonl line, readable in any editor."""
+        if not self.json_files:
+            return 0
+        n = 0
+        for e in entries:
+            try:
+                atomic_write(self.entry_file(e), json.dumps(e.model_dump(mode="json"), ensure_ascii=False, indent=2) + "\n")
+                n += 1
+            except OSError as ex:
+                log.warning("could not write %s: %s", self.entry_file(e), ex)
+        return n
+
+    def entry_files(self, case_id: str) -> list[Path]:
+        return sorted((self.cases_dir / case_id / ENTRIES_DIR).glob("*.json"))
 
     @staticmethod
     def _apply(case: CaseInfo, extra: dict[str, Any], es: list[ErrorEntry]) -> None:

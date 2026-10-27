@@ -359,6 +359,8 @@ class ErrorsConfig(BaseModel):
     diff_chars: int = 6000                   # cap of a try's stored diff (0 = no cap); the full diff is in changes.patch
     raw_chars: int = 600                     # cap of an entry's raw error block
     md_view: bool = True                     # write <run dir>/errors.md and <kb>/cases.md
+    json_files: bool = True                  # one readable <kb>/cases/<case_id>/errors/<run_id>-<id>.json per error
+                                             # (people browse these; errors.jsonl stays the machine copy)
 
 
 class ReviewConfig(BaseModel):

@@ -97,7 +97,8 @@ kb-v2/
 └── cases/<case_id>/
     ├── case.json                case_id, l2, name, projects, scripts[version, file, status, successes, failures, projects, created_by], last_analysis, last_solution
     ├── fix_v1.py
-    └── fix_v2.py
+    ├── fix_v2.py
+    └── errors/<run_id>-<id>.json   에러 1건 = 파일 1개 (errors.jsonl 과 같은 내용을 들여쓰기한 사람용 사본; 케이스 없는 항목은 cases/_other/errors/)
 ```
 없어지는 것: `catalog/`, `views/`, `audit.jsonl`, `quarantine.jsonl`, `reviews.jsonl`, `fix_attempts.jsonl`, `scripts/*/meta.json`, `index.json`. 남는 것: `.lock`(순차 실행이라도 웹·플릿이 같은 KB 를 쓰므로), 비밀값 가림.
 

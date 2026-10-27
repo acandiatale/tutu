@@ -187,6 +187,7 @@ errors:                            # v2.1 error list: <run dir>/errors.jsonl + e
   diff_chars: 6000                 # cap of a try's stored diff (the full diff is in changes.patch)
   raw_chars: 600
   md_view: true
+  json_files: true                 # one readable JSON per error under cases/<case_id>/errors/ (people browse these)
 
 review:                            # v2 structure review: the LLM checks poms / dependencies / modules after the restructure
   enabled: true
