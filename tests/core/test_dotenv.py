@@ -85,3 +85,34 @@ def test_dotenv_encodings_and_reload_after_an_edit(tmp_path, monkeypatch):
     cfgmod.load_dotenv_files()
     assert os.environ["SBMIG_T_KO"] == "한글"
     cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
+
+
+def test_dotenv_is_found_up_to_the_git_root(tmp_path, monkeypatch):
+    """The package may live in a sub-folder of another repo (`<root>/src/migration-agent/sbmig`): the root's `.env`
+    is read; a nearer `.env` wins a key; nothing above the folder that holds `.git` is read (2026-10-28)."""
+    root = tmp_path / "company-repo"; (root / ".git").mkdir(parents=True)
+    pkg = root / "src" / "migration-agent"; pkg.mkdir(parents=True)
+    (tmp_path / ".env").write_text("SBMIG_T_ABOVE=leak\n")                 # above the git root: must not be read
+    (root / ".env").write_text("SBMIG_T_ROOT=root\nSBMIG_T_BOTH=root\n")
+    (pkg / ".env").write_text("SBMIG_T_BOTH=near\n")
+    for k in ("SBMIG_T_ABOVE", "SBMIG_T_ROOT", "SBMIG_T_BOTH"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("SBMIG_ENV_FILE", raising=False)
+    monkeypatch.setattr(cfgmod, "PACKAGE_ROOT", pkg)
+    monkeypatch.chdir(pkg)
+    for f in (tmp_path / ".env", root / ".env", pkg / ".env"):
+        cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
+    try:
+        found = cfgmod.load_dotenv_files()
+        assert root / ".env" in found and pkg / ".env" in found and (tmp_path / ".env") not in found
+        assert os.environ["SBMIG_T_ROOT"] == "root"
+        assert os.environ["SBMIG_T_BOTH"] == "near"              # the nearer file wins
+        assert "SBMIG_T_ABOVE" not in os.environ
+        chain = cfgmod.dotenv_chain(pkg)
+        assert chain[0] == pkg / ".env" and chain[-1] == root / ".env"
+    finally:
+        for f in (tmp_path / ".env", root / ".env", pkg / ".env"):
+            cfgmod._DOTENV_LOADED.pop(str(f.resolve()), None)
+        for k in ("SBMIG_T_ROOT", "SBMIG_T_BOTH"):
+            cfgmod._DOTENV_SET.pop(k, None)
+

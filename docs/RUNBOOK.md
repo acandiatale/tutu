@@ -60,7 +60,9 @@ content-filter answer (`finish_reason=content_filter`, null content) is reported
 as an outage (round 9).
 Windows: Maven is `mvn.cmd`; sbmig resolves `build.mvn` through PATH / `MAVEN_HOME` (`shutil.which`), so `mvn` works
 when `where mvn` finds it — otherwise set `build.mvn: C:/apache-maven-3.9.x/bin/mvn.cmd` and `build.java_home`.
-Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored) or point
+Windows / no shell profile: put the variables in `.env` at the repo root (copy `.env.example`; git-ignored — also found
+when sbmig lives in a sub-folder of a bigger repo: every `.env` from the package folder and from the cwd up to the
+folder that holds `.git` is read, nearest first) or point
 `SBMIG_ENV_FILE` at a file; `load_config` reads it before anything else and never overrides variables already set.
 Round 10: `.env` may be saved as UTF-8 (with or without BOM), UTF-16 (Notepad "Unicode", PowerShell `>`) or cp949, and
 an edited `.env` is read again by the next run (the web server's next run, the fleet's next project); shell variables
@@ -465,3 +467,31 @@ sbmig inventory path/to/webapps.zip  --out out/inventory/<name> --config config/
 * The agent only edits the copy under `out/<run>/project`; the input zip/dir is never modified.
 * No LLM call contains credentials; prompts include only the files/errors needed for the cluster.
 * `llm.record_dir` records every request/response for audit and offline replay tests.
+
+## sbmig 를 다른 레포의 하위 폴더에 둘 때 (`<root>/src/migration-agent/`, 2026-10-28)
+
+회사 레포가 `pyproject.toml` 과 `.env` 를 루트에 두고 sbmig 전체(`config/` … `sbmig/`, `tests/`, `fixtures/`, `scripts/`)를
+`src/migration-agent/` 아래에 두는 경우. import 는 전부 `sbmig.…` 라서 폴더 이름은 상관없고, 설정·지식·KB 는 `sbmig/` 의
+두 단계 위(`src/migration-agent/`)를 기준으로 찾는다. 루트 `.env` 는 git 루트까지 올라가며 읽으므로 그대로 쓰인다.
+루트 `pyproject.toml` 에는 패키지 위치만 알려 주면 된다:
+
+```toml
+[tool.setuptools.packages.find]
+where = ["src/migration-agent"]
+include = ["sbmig*"]
+
+[tool.setuptools.package-data]
+sbmig = ["**/*.yml", "**/*.yaml", "**/*.md", "**/*.j2", "**/*.json", "**/*.html"]
+
+[project.scripts]
+sbmig = "sbmig.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["src/migration-agent/tests"]
+addopts = "-q"
+markers = ["integration: needs mvn/java/network (deselect with -m 'not integration')", "llm: needs a real LLM endpoint"]
+```
+
+그리고 루트에서 `pip install -e .`, `python -m pytest -m "not integration"`, `sbmig run …`. `readme = "src/migration-agent/README.md"`
+로 바꾸고, `[tool.ruff]` 는 그대로 둔다. e2e 는 `python src/migration-agent/scripts/e2e.py …` (스크립트가 자기 위치로 루트를 찾는다).
+

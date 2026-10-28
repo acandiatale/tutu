@@ -759,15 +759,36 @@ def _read_env_text(f: Path) -> str:
         return data.decode("cp949", errors="replace")
 
 
-def load_dotenv_files(*extra: str | Path) -> list[Path]:
-    """`$SBMIG_ENV_FILE`, `<repo>/.env`, `<cwd>/.env` 의 KEY=VALUE 를 os.environ 으로 읽는다. 셸 변수가
-    이기고, 파일이 바뀌면 다시 읽는다(웹 서버·플릿). 키는 Config 에 들어가지 않고 환경 변수로만 쓰인다.
+def dotenv_chain(start: Path) -> list[Path]:
+    """``start`` 부터 위로 올라가며 ``.env`` 후보를 모은다: ``start/.env``, ``start.parent/.env`` … ``.git`` 이 있는
+    폴더(git 루트)까지 포함하고 거기서 멈춘다(없으면 파일시스템 루트까지). 가까운 것이 앞에 온다 — 패키지가
+    ``<repo>/src/migration-agent/`` 처럼 하위에 있어도 레포 루트의 ``.env`` 를 찾는다(2026-10-28).
 
-    Read `KEY=VALUE` lines from `$SBMIG_ENV_FILE`, `<repo root>/.env` and `<cwd>/.env` into `os.environ`
-    (existing variables win; `export KEY=...`, quotes and `#` comments are accepted). The files are git-ignored
-    and are never read into the config itself: keys still reach sbmig only through environment variables."""
+    `.env` candidates from `start` upwards, nearest first, up to and including the folder that holds `.git`
+    (else the filesystem root): the repo root's `.env` is found when the package lives in a sub-folder."""
+    out: list[Path] = []
+    d = Path(start)
+    while True:
+        out.append(d / ".env")
+        if (d / ".git").exists() or d.parent == d:
+            return out
+        d = d.parent
+
+
+def load_dotenv_files(*extra: str | Path) -> list[Path]:
+    """`$SBMIG_ENV_FILE`, 패키지 폴더에서 git 루트까지의 `.env`, 현재 디렉토리에서 git 루트까지의 `.env` 의
+    KEY=VALUE 를 os.environ 으로 읽는다(:func:`dotenv_chain`). 이 로더가 넣은 값은 뒤에 읽는 파일이 덮어쓰므로
+    먼 파일(git 루트)부터 읽어 **가까운 파일이 이기고**, 예전처럼 현재 디렉토리의 `.env` 가 패키지 쪽을 이긴다.
+    셸 변수는 언제나 이기고, 파일이 바뀌면 다시 읽는다(웹 서버·플릿). 키는 Config 에 들어가지 않고 환경 변수로만 쓰인다.
+
+    Read `KEY=VALUE` lines from `$SBMIG_ENV_FILE`, every `.env` from the git root down to the package root and from
+    the git root down to the cwd into `os.environ`. A later file overrides what this loader set earlier, so the
+    nearest file wins a key and `<cwd>/.env` still beats the package's; shell variables win everything;
+    `export KEY=...`, quotes and `#` comments are accepted. The files are git-ignored and are never read into the
+    config itself: keys still reach sbmig only through environment variables."""
     found: list[Path] = []
-    candidates = [os.environ.get("SBMIG_ENV_FILE"), PACKAGE_ROOT / ".env", Path.cwd() / ".env", *extra]
+    candidates = [os.environ.get("SBMIG_ENV_FILE"), *reversed(dotenv_chain(PACKAGE_ROOT)),
+                  *reversed(dotenv_chain(Path.cwd())), *extra]
     for c in candidates:
         if not c:
             continue

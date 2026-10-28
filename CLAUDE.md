@@ -157,7 +157,8 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   <case_id>"`, `replay_role: fix | structure_review`); the fixtures' `sbmig.e2e.yml` do this.
 - Real-LLM runs: provider `company` is the default (`config/default.yml`): `requests.post(LLM_BASE_URL,
   headers={Authorization: Bearer LLM_API_KEY}, json={model, messages, need_origin}, timeout)` in
-  `sbmig/fix/company.py`; URL / key / model / `LLM_RESPONSE_PATH` / `LLM_RECORD_DIR` come from `.env` (git-ignored,
+  `sbmig/fix/company.py`; URL / key / model / `LLM_RESPONSE_PATH` / `LLM_RECORD_DIR` come from `.env` (git-ignored; read
+  from the package folder and the cwd up to the git root, nearest first — the company keeps sbmig under `src/migration-agent/`,
   read by `load_config`, shell variables win) — no yml profile, no LangChain, no httpx knobs (the user asked for
   this after 503s on the gateway; keep it this simple). `sbmig llm-probe` (and `--bare`) prints the exact request,
   proxies and response. `config/llm-anthropic.yml` remains for Anthropic validation runs. Keys never go into yml.

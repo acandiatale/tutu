@@ -1732,4 +1732,7 @@ Docs: `docs/v2/KB-AND-FLOW.md` review call limit 2 → 3 (A3).
   `errors` only when the signature takes it (`_accepted`, A22); docs/ADAPTERS.md "Edit applier (tier 2b)".
 - Still the old shape: `fixloop.py` `try_notes` / `verify_guide` TypeError-retry (A22 fixed `_Guarded` only); the
   `examples/adapters/company_gateway_adapter.py` models table has no `verify_guide` row.
+- `.env` lookup (2026-10-28, the company keeps the package under `<root>/src/migration-agent/`): `load_dotenv_files` reads
+  `$SBMIG_ENV_FILE`, then every `.env` from `PACKAGE_ROOT` up to the folder holding `.git` (`dotenv_chain`), then the same
+  from the cwd; nearest first, so a nearer file wins a key and shell variables still win everything.
 
