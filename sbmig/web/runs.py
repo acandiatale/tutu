@@ -39,6 +39,11 @@ in the line when `start_file` accepts it (before its thread starts) and starts w
 plain `threading.Lock` (the earlier `_run_lock`) does not hand itself over in arrival order, so with two or
 more uploads waiting the later one could start first.
 
+Switches (v2.1i, the token comparison): `fix_mode` (`script` | `edits`; None = the config's `fix.mode`) and `no_kb`
+(the run gets a `NullKnowledgeBase`, like `sbmig run --no-kb`). The run record (`status()` / `list_runs()`) carries
+`fix_mode` and `kb` (`on` | `off`) — from memory, else from `web-status.json`, else `report.json`'s `fix_mode`; the
+run's `sbmig.log` and `journal.jsonl` (event `web_run`) name them at the start.
+
 Memory (round 9): `runs` keeps at most `max_finished_runs` finished runs; when a worker finishes, the oldest finished
 ones are dropped from memory (running / queued runs never are). An evicted run is still answered from its run
 directory: `report.json` and `web-status.json` (exit code / error / stop flag, written when the worker finishes).
@@ -97,6 +102,8 @@ class Run:
     configs: list[str] = field(default_factory=list)
     stop_after: str | None = None
     llm_provider: str | None = None
+    fix_mode: str = "script"           # v2.1i: the effective fix.mode of the run (script | edits)
+    no_kb: bool = False                # v2.1i: NullKnowledgeBase (no stored script reused, nothing recorded)
     orch: Any = None
     thread: threading.Thread | None = None
     history: list[tuple[str, Any]] = field(default_factory=list)    # node / error / finished events, append-only
@@ -214,29 +221,32 @@ class RunManager:
         return uploads / f".incoming-{uuid.uuid4().hex}.part"
 
     def start(self, zip_bytes: bytes, name: str, configs: list[str], stop_after: str | None = None,
-              llm_provider: str | None = None) -> str:
+              llm_provider: str | None = None, *, fix_mode: str | None = None, no_kb: bool = False) -> str:
         """메모리에 이미 있는 본문용 ``start_file`` (테스트, 다른 코드에서 부를 때). ValueError = 잘못된 요청.
 
         `start_file` for a body already in memory (tests, embedding callers). ValueError = bad request."""
         tmp = self.incoming_path()
         tmp.write_bytes(zip_bytes)
         try:
-            return self.start_file(tmp, name, configs, stop_after, llm_provider)
+            return self.start_file(tmp, name, configs, stop_after, llm_provider, fix_mode=fix_mode, no_kb=no_kb)
         finally:
             tmp.unlink(missing_ok=True)
 
     def start_file(self, incoming: Path, name: str, configs: list[str], stop_after: str | None = None,
-                   llm_provider: str | None = None) -> str:
+                   llm_provider: str | None = None, *, fix_mode: str | None = None, no_kb: bool = False) -> str:
         """검사 → 올라온 zip 을 실행 ID 이름으로 옮김 → 설정·워크스페이스·오케스트레이터 생성 → 작업 스레드
         시작. ValueError 면 ``incoming`` 은 호출자 몫(라우트가 지운다), 옮긴 뒤에는 실행 몫이다. zip 이 깨져
         워크스페이스를 못 만들면 실행 폴더·zip 을 남기지 않는다(유령 실행 방지).
 
         Validate, move the uploaded zip (`incoming`, written by the caller) under its run id, build config +
         workspace + orchestrator, start the worker. ValueError = bad request — `incoming` is then left to the caller
-        (the web route deletes it); after the move it belongs to the run."""
+        (the web route deletes it); after the move it belongs to the run.
+
+        v2.1i: `fix_mode` (`script` | `edits`, None = the config's `fix.mode`) becomes the override
+        `{"fix": {"mode": …}}` next to the LLM one; `no_kb` gives the run a `NullKnowledgeBase`."""
         from sbmig.core.config import load_config
         from sbmig.core.workspace import Workspace
-        from sbmig.loop import Orchestrator, parse_stop_after
+        from sbmig.loop import NullKnowledgeBase, Orchestrator, parse_stop_after
 
         # 설정 이름도 RUN_ID_RE 로 검사: ``../`` 로 config 폴더 밖의 파일을 읽지 못하게
         for c in configs:
@@ -244,8 +254,13 @@ class RunManager:
                 raise ValueError(f"unknown config {c}")
         phase = parse_stop_after(stop_after)                  # ValueError names the accepted values
         stop_after = phase.value if phase is not None else None
-        overrides = {"llm": {"provider": llm_provider}} if llm_provider else None
-        cfg = load_config(*[self.repo_root / "config" / c for c in configs], overrides=overrides,
+        mode = parse_fix_mode(fix_mode)                       # ValueError names the accepted values
+        overrides: dict[str, Any] = {}
+        if llm_provider:
+            overrides["llm"] = {"provider": llm_provider}
+        if mode:              # v2.1i: only an explicit switch overrides a ticked config's fix.mode
+            overrides["fix"] = {"mode": mode}
+        cfg = load_config(*[self.repo_root / "config" / c for c in configs], overrides=overrides or None,
                           repo_root=self.repo_root)        # pydantic ValidationError is a ValueError
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
@@ -260,8 +275,16 @@ class RunManager:
             shutil.rmtree(self.out_dir / run_id, ignore_errors=True)
             zip_path.unlink(missing_ok=True)
             raise
-        run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider)
-        run.orch = Orchestrator(cfg, ws)                      # KB on (the web app has no --no-kb)
+        run = Run(run_id, ws.run_dir, zip_path, list(configs), stop_after, llm_provider,
+                  fix_mode=cfg.fix.mode, no_kb=bool(no_kb))
+        # v2.1i: KB 끔 = sbmig run --no-kb 와 같은 NullKnowledgeBase (저장 스크립트 재사용·기록 없음)
+        run.orch = Orchestrator(cfg, ws, kb=NullKnowledgeBase() if run.no_kb else None)
+        # 실행 폴더의 첫 기록: 토큰 비교의 두 실행(기본 / edits + KB off)을 journal 만 보고도 구별하게
+        try:
+            ws.journal({"event": "web_run", "fix_mode": run.fix_mode, "kb": _kb_label(run.no_kb),
+                        "configs": list(configs), "stop_after": stop_after, "llm_provider": llm_provider})
+        except OSError as e:                   # the journal line is a convenience; never refuse the run on it
+            log.debug("run %s: web_run journal line not written: %s", run_id, e)
         # daemon: 서버 프로세스가 끝나면 스레드도 함께 끝난다(정리는 shutdown 의 멈춤 요청 + Maven 종료)
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-run-{run_id}", daemon=True)
         with self._lock:
@@ -276,8 +299,9 @@ class RunManager:
             with self._lock:
                 self.runs.pop(run_id, None)
             raise
-        log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s", run_id, zip_path.name,
-                 ",".join(configs) or "-", stop_after or "-", llm_provider or "-")
+        log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s fix_mode=%s kb=%s", run_id,
+                 zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-", run.fix_mode,
+                 _kb_label(run.no_kb))
         return run_id
 
     def _worker(self, run: Run) -> None:
@@ -297,6 +321,10 @@ class RunManager:
                 # thread_id: 이 스레드(와 그 컨텍스트를 물려받은 LangGraph 실행기 스레드)의 로그만 이 파일로 —
                 # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
                 log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
+                # 이 실행 sbmig.log 의 첫 줄: 어떤 스위치로 돌았는지(v2.1i)
+                log.info("run %s: fix_mode=%s kb=%s configs=%s stop_after=%s llm_provider=%s", run.run_id,
+                         run.fix_mode, _kb_label(run.no_kb), ",".join(run.configs) or "-", run.stop_after or "-",
+                         run.llm_provider or "-")
                 report = self._run_thread_body(run)
                 run.report = report
                 run.exit_code = run_exit_code(report) if report is not None else EXIT_ABORTED
@@ -429,6 +457,7 @@ class RunManager:
         if run is not None:
             info["state"] = "finished" if run.done.is_set() else ("running" if run.active.is_set() else "queued")
             info["exit_code"] = run.exit_code
+            info["fix_mode"], info["kb"] = run.fix_mode, _kb_label(run.no_kb)
             info["node"] = run.last_node
             if run.cancel.is_set():
                 info["stop_requested"] = True
@@ -443,6 +472,10 @@ class RunManager:
                     info["stop_requested"] = True
                 if saved.get("error"):
                     info["error"] = saved["error"]
+                if saved.get("fix_mode"):
+                    info["fix_mode"] = saved["fix_mode"]
+                if saved.get("kb") in ("on", "off"):
+                    info["kb"] = saved["kb"]
             else:
                 info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
                 info["exit_code"] = None
@@ -456,8 +489,13 @@ class RunManager:
                 info["llm_calls"] = (data.get("llm_usage") or {}).get("calls")
                 from sbmig.report.result_line import entry_counts
                 info["open"], info["resolved"] = entry_counts(data.get("error_entries") or [])   # v2.1 error list
+                if data.get("fix_mode"):                     # v2.1i: RunReport.fix_mode (a run of an older server)
+                    info.setdefault("fix_mode", data["fix_mode"])
             except (OSError, ValueError):
                 pass
+        # v2.1i: 기록이 없는 실행(이 스위치 전의 실행)은 기본값 — 그때 웹 실행은 늘 script + KB 켬이었다
+        info.setdefault("fix_mode", "script")
+        info.setdefault("kb", "on")
         for name in SERVED_FILES:
             if (rd / name).is_file():
                 info.setdefault("files", []).append(name)
@@ -556,13 +594,52 @@ class RunManager:
                 time.sleep(POLL_S)
 
 
+def _kb_label(no_kb: bool) -> str:
+    """실행 기록의 KB 표기: ``off`` (KB 끔) / ``on``."""
+    return "off" if no_kb else "on"
+
+
+def parse_fix_mode(value: str | None) -> str | None:
+    """웹 요청의 ``fix_mode`` 검사: None / 빈 값 → None (설정대로), ``script`` / ``edits`` → 그대로, 그 밖 →
+    ValueError(라우트가 400 으로 답한다). 허용 값은 ``sbmig.cli.fix_modes`` (설정 모델) 에서 읽는다.
+
+    None / "" → None (as configured); an accepted value → itself; anything else → ValueError (400)."""
+    from sbmig.cli import fix_modes
+
+    if value is None or not str(value).strip():
+        return None
+    v = str(value).strip().lower()
+    allowed = fix_modes()
+    if v not in allowed:
+        raise ValueError(f"fix_mode must be one of {' | '.join(allowed)} (got {value!r})")
+    return v
+
+
+_TRUE, _FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off")
+
+
+def parse_flag(value: str | None, name: str = "no_kb") -> bool:
+    """웹 요청의 켜기/끄기 값(``1`` / ``true`` / ``0`` / ``false``, 없으면 끔). 그 밖은 ValueError(400).
+
+    `1` / `true` / `yes` / `on` → True, `0` / `false` / `no` / `off` / missing → False; anything else → ValueError."""
+    if value is None or not str(value).strip():
+        return False
+    v = str(value).strip().lower()
+    if v in _TRUE:
+        return True
+    if v in _FALSE:
+        return False
+    raise ValueError(f"{name} must be 0 | 1 | true | false (got {value!r})")
+
+
 def _write_web_status(run: Run) -> None:
     """작업 스레드가 끝날 때 web-status.json(종료 코드·오류·멈춤 요청·마지막 노드)을 쓴다 — 메모리에서
     밀려났거나 서버를 다시 띄운 뒤에도 상태를 답하려고. 못 써도 실행 결과에는 영향이 없다."""
     try:
         data = {"run_id": run.run_id, "exit_code": run.exit_code, "error": run.error,
                 "stop_requested": run.cancel.is_set(), "last_node": run.last_node,
-                "success": getattr(run.report, "success", None)}
+                "success": getattr(run.report, "success", None),
+                "fix_mode": run.fix_mode, "kb": _kb_label(run.no_kb)}      # v2.1i switches
         (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")
     except (OSError, TypeError, ValueError) as e:   # the status file is a convenience; never fail the run on it
         log.debug("cannot write %s for %s: %s", WEB_STATUS_FILE, run.run_id, e)

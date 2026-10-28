@@ -32,6 +32,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "## Flags": "## 플래그",
     "## What we changed": "## 변경 내역",
     "## LLM usage and cost": "## LLM 사용량과 비용",
+    "fix mode: edits — no fix scripts generated, stored or reused":
+        "수정 방식: edits — 수정 스크립트를 만들지도, 저장·재사용하지도 않음",
     "| LLM cost | {cost} (see \"LLM usage and cost\") |": "| LLM 비용 | {cost} (\"LLM 사용량과 비용\" 참조) |",
     "(+ unpriced: {models})": "(+ 단가 없음: {models})",
     "(token counts missing for some calls)": "(일부 호출의 토큰 수 누락)",
@@ -122,6 +124,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "- solution: {solution}": "- 해결 방법: {solution}",
     "- direct edits in the answer: {n}": "- 답변의 직접 수정: {n}건",
     "- script for the KB: yes": "- KB용 스크립트: 있음",
+    "- script in the answer: not stored (fix.mode edits)": "- 답변의 스크립트: 저장 안 함 (fix.mode edits)",
     "- script for the KB: none — {reason}": "- KB용 스크립트: 없음 — {reason}",
     "- changed: {files}": "- 변경: {files}",
     "- verdict: `{verdict}` — {summary}": "- 판정: `{verdict}` — {summary}",
@@ -168,6 +171,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "… {n} more in this group — see `errors.md`": "… 이 그룹에 {n}건 더 — `errors.md` 참조",
     "| case | errors | cause | solution | changes (files, +/−) | edits | script |":
         "| 케이스 | 에러 | 원인 | 해결 방법 | 변경 파일 (+/−) | 수정 | 스크립트 |",
+    "| case | errors | cause | solution | changes (files, +/−) | edits | fix try |":
+        "| 케이스 | 에러 | 원인 | 해결 방법 | 변경 파일 (+/−) | 수정 | 수정 시도 |",
     "{resolved}/{n} resolved": "{resolved}/{n} 해결",
     "(no solution text) {reason}": "(해결 설명 없음) {reason}",
     "no script: {reason}": "스크립트 없음: {reason}",
@@ -176,6 +181,10 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "whole change set in `changes.patch`.":
         "저장된 스크립트는 KB(`<kb>/cases/<case>/fix_vN.py`)에 있다. 시도별 diff는 `errors.md`에, 전체 변경은 "
         "`changes.patch`에 있다.",
+    "fix.mode edits: no fix scripts; `edits:<case>#<n>` is try n of the case in `errors.md` (with its diff), the "
+    "whole change set is in `changes.patch`.":
+        "fix.mode edits: 수정 스크립트 없음. `edits:<case>#<n>` 은 `errors.md` 에 있는 그 케이스의 n번째 시도(diff 포함)이고, "
+        "전체 변경은 `changes.patch`에 있다.",
     # ---- what we changed
     "Plan steps executed:": "실행한 계획 단계:",
     "OpenRewrite runs:": "OpenRewrite 실행:",

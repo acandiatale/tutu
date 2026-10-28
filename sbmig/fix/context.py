@@ -8,7 +8,10 @@ ctx.profile_summary)` 를 부른다. 사내 fixer 플러그인도 같은 문맥�
 같은 프롬프트(결정적). 머리말의 `case: <case_id>` 줄은 재생 픽스처의 `match: "case: <id>"` 가 찾는 자리라
 형식을 바꾸지 말 것. 참고 파일(모듈 병합에서 빠진 사본)은 읽기 전용 — 빌드에 없고 스크립트가 쓰면 안 된다.
 v2.1d `library_hints` → "Dependency versions" 섹션(사람이 넣은 `libraries.yml` 항목 + 저장소에 있는 버전;
-정책은 스크립트 프롬프트 규칙 14), pom 바로 뒤에 두고 늦게 버린다.
+정책은 스크립트 프롬프트 규칙 14), pom 바로 뒤에 두고 늦게 버린다. v2.1i edits 모드(ctx.fix_mode 나
+cfg.fix.mode): 같은 문맥을 스크립트 말 없이 꾸린다(`p.errors` 안내 대신 `<need_files>`, 보강 base 무시) — 이전
+시도는 "Previous tries"(무엇을 고쳤고 왜 실패했는지, `summarize_edit_attempt`)로 오류 목록 바로 뒤에 두고 가장
+늦게 줄인다.
 
 Context packing for the LLM fixer: errors, file windows, pom excerpts, library migration guidance (advisories),
 migration notes, history — within a budget.
@@ -21,11 +24,18 @@ Round 9: module-merge notes (`FixContext.reference_notes`) and the dropped first
 (`FixContext.reference_files`): never part of the build, never written by a script.
 
 v2.1d: `FixContext.library_hints` → the section "Dependency versions" (the people's table entry and what the repository
-has for the libraries behind the case; the script prompt's rule 14 is the policy), right after the poms, dropped late."""
+has for the libraries behind the case; the script prompt's rule 14 is the policy), right after the poms, dropped late.
+
+v2.1i (edits mode — `effective_fix_mode`: `FixContext.fix_mode` or `cfg.fix.mode`): the same sections without script
+wording (no `p.errors` / `p.files`, files not shown are asked for with `<need_files>`, an augment base is ignored);
+`ctx.previous_attempts` become "Previous tries"
+(`summarize_edit_attempt`: what each try edited — the edits themselves when `pack_script(attempt_edits=…)` knows them by
+the attempt's `prompt_hash` — and why it failed), placed right after the errors and shrunk last (EDITS_TRUNCATE_ORDER)."""
 from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -34,7 +44,7 @@ import yaml
 
 from sbmig.core.config import Config, TargetConfig
 from sbmig.core.interfaces import FixContext
-from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, FixAttempt, ScriptBase
+from sbmig.core.models import BuildError, Edit, ErrorCluster, ErrorKind, FixAttempt, ScriptBase
 from sbmig.core.workspace import Workspace
 
 log = logging.getLogger("sbmig.fix.context")
@@ -158,6 +168,18 @@ def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
 TARGET_MARK = " | target: "           # the tail of `sbmig.fix.profile_summary` (the migration target)
 
 
+def effective_fix_mode(cfg: Config | None, ctx: FixContext | None = None) -> str:
+    """이번 요청의 수정 방식(v2.1i): `ctx.fix_mode` 나 `cfg.fix.mode` 중 하나라도 "edits" 면 "edits", 아니면
+    "script". 루프는 ctx 를 cfg 에서 채우고, ctx 를 직접 만드는 플러그인·테스트는 cfg 만으로도 edits 가 된다.
+
+    The fix mode of a request (v2.1i): "edits" when `ctx.fix_mode` or `cfg.fix.mode` says so, else "script" — the loop
+    fills ctx from the config; a caller that builds its own FixContext gets the config's mode."""
+    if ctx is not None and getattr(ctx, "fix_mode", "script") == "edits":
+        return "edits"
+    fix = getattr(cfg, "fix", None) if cfg is not None else None
+    return "edits" if getattr(fix, "mode", "script") == "edits" else "script"
+
+
 def target_text(cfg: Config | None = None) -> str:
     """프롬프트의 목표 버전 구절 ``JDK 21, Spring Boot 4.1.0`` — ``cfg.target``(설정이 없으면 TargetConfig 기본값).
     하드코딩하지 않는다(A20: 회사가 목표를 바꾸면 프롬프트도 따라간다).
@@ -245,6 +267,11 @@ SCRIPT_BASE_MAX_LINES = 60           # log / remaining / introduced lines of an 
 SCRIPT_TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
                          "advisory_hints", "reference_notes", "library_hints", "related_files", "files", "pom",
                          "base_result")
+# v2.1i edits mode: the earlier tries are what the retry knows about the case — shrunk last (like an augment base)
+EDITS_TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "kb_hints", "reference_files", "advisory_hints",
+                        "reference_notes", "library_hints", "related_files", "files", "pom", "previous_attempts")
+EDITS_HISTORY_TITLE = "Previous tries on this case in this run (they did NOT resolve it — do not repeat them)"
+EDITS_MAX_SHOWN = 12                 # edits listed per earlier try
 
 
 def format_error_line(e: BuildError, max_message: int = 300) -> str:
@@ -303,6 +330,75 @@ def summarize_script_attempt(a: FixAttempt) -> str:
                      + (f" — {r.error.strip()[:300]}" if r.error else ""))
     if a.analysis:
         lines.append(f"    analysis: {a.analysis.strip()[:300]}")
+    for ie in a.introduced_errors[:5]:
+        lines.append(f"    introduced: {format_error_line(ie, 200)[2:]}")
+    return "\n".join(lines)
+
+
+def _first_line(text: str, limit: int = 100) -> str:
+    """첫 비어 있지 않은 줄(`limit` 자에서 자름).
+
+    The first non-blank line of `text`, cut at `limit` characters ("" when blank)."""
+    line = next((ln.strip() for ln in (text or "").split("\n") if ln.strip()), "")
+    return line if len(line) <= limit else line[:limit - 1] + "…"
+
+
+def _prose(text: str, limit: int) -> str:
+    """`[sbmig]` 메모 줄을 뺀 한 줄 문장(`limit` 자에서 자름) — 재시도 이력에 sbmig 자신의 메모를 싣지 않는다.
+
+    `text` without sbmig's own `[sbmig] …` note lines, on one line, cut at `limit` characters."""
+    kept = " ".join(ln.strip() for ln in (text or "").split("\n") if ln.strip() and not ln.lstrip().startswith("[sbmig]"))
+    return kept if len(kept) <= limit else kept[:limit - 1] + "…"
+
+
+def _edit_line(e: Edit) -> str:
+    """재시도 이력의 이전 편집 한 줄: op·경로·desc, replace 면 old → new 첫 줄.
+
+    One earlier edit for the retry history: `replace <path> — <desc> | `old` → `new``."""
+    line = f"{e.op} {e.path}" + (f" → {e.to}" if e.op == "move" and e.to else "")
+    if e.desc:
+        line += f" — {_first_line(e.desc, 200)}"
+    if e.op == "replace":
+        line += f" | `{_first_line(e.old)}` → `{_first_line(e.new) if e.new.strip() else '(removed)'}`"
+    elif e.op == "pom" and e.pom:
+        line += " | " + ", ".join(sorted(str(k) for k in e.pom))[:120]
+    return line
+
+
+def summarize_edit_attempt(a: FixAttempt, edits: Sequence[Edit] | None = None, n: int = 0) -> str:
+    """edits 모드(v2.1i)의 이전 시도 요약 — 재시도 프롬프트의 "Previous tries": 결과와 오류 수, 트리에
+    남았는지(되돌림·미적용), 원인·해결(sbmig 메모 줄 제외), 고친 내용(편집을 알면 편집마다 한 줄, 모르면 바뀐
+    파일), 적용 실패 이유, 새로 생긴 오류. 스크립트라는 말을 쓰지 않는다.
+
+    An earlier try on the case for an edits-mode retry (v2.1i): outcome and error counts, whether its changes are still
+    in the tree, its cause / solution (without `[sbmig]` note lines), what it edited (one line per edit when `edits` is
+    known — the fixer keeps them by prompt hash — else the files it changed), why it did not apply, the errors it
+    introduced. No script wording."""
+    if not a.applied:
+        state = "not applied"
+    elif a.outcome in ("improved", "build_ok"):
+        state = "its changes are STILL in the tree"
+    else:
+        state = "rolled back"
+    head = (f"- try {n or '?'} (attempt {a.id}, iteration {a.iteration}) → outcome: {a.outcome}"
+            + (f", errors {a.errors_before}→{a.errors_after}" if a.errors_after is not None else "") + f" — {state}")
+    lines = [head]
+    cause = _prose(a.analysis, 300)
+    if cause:
+        lines.append(f"    cause: {cause}")
+    solution = _prose(a.solution, 300)
+    if solution:
+        lines.append(f"    solution: {solution}")
+    shown = list(edits or [])
+    for e in shown[:EDITS_MAX_SHOWN]:
+        lines.append(f"    edit: {_edit_line(e)}")
+    if len(shown) > EDITS_MAX_SHOWN:
+        lines.append(f"    … {len(shown) - EDITS_MAX_SHOWN} more edit(s)")
+    if not shown and a.changes:
+        files = [c.path for c in a.changes]
+        lines.append(f"    files changed ({len(files)}): " + ", ".join(files[:12]) + (" …" if len(files) > 12 else ""))
+    for err in a.apply_errors[:5]:
+        lines.append(f"    failed: {_first_line(err, 300)}")
     for ie in a.introduced_errors[:5]:
         lines.append(f"    introduced: {format_error_line(ie, 200)[2:]}")
     return "\n".join(lines)
@@ -514,9 +610,15 @@ class ContextPacker:
                                     "these paths)")
     SCRIPT_RELATED_FILES_TITLE = ("Related project types named in the errors (exact text — the script edits these when "
                                   "the fix belongs there, e.g. a repository interface that lost its CRUD methods)")
+    # v2.1i edits mode: the same sections without script wording
+    EDITS_FILES_TITLE = "Source (exact text around the error lines; line numbers as in the errors)"
+    EDITS_REFERENCE_FILES_TITLE = "Reference files (read-only, NOT in the build — never edit these paths)"
+    EDITS_RELATED_FILES_TITLE = ("Related project types named in the errors (exact text — edit these when the fix "
+                                 "belongs there, e.g. a repository interface that lost its CRUD methods)")
 
     def pack_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, profile_summary: str = "",
-                    *, case_type: Optional[str] = None, budget: Optional[int] = None) -> PackedContext:
+                    *, case_type: Optional[str] = None, budget: Optional[int] = None,
+                    attempt_edits: Mapping[str, Sequence[Edit]] | None = None) -> PackedContext:
         """수정 스크립트 요청의 문맥: 여러 파일에 걸칠 수 있는 케이스(L2) 하나. 섹션(순서 값): Case 머리말(0)
         → 오류 목록(1) → 보강이면 보강할 스크립트(1.5)와 그 결과(1.6) → 오류 파일 색인(1.8) → 소스 발췌(2) →
         관련 타입 파일(2.2) → 참고 파일(2.5) → POM(3.x) → Dependency versions(3.5) → 권고(4) → 병합 메모(4.5)
@@ -525,7 +627,10 @@ class ContextPacker:
         Context for a fix-script request: ONE case (L2) that may span many files. `llm.max_context_chars` is
         spread over the erroring files (import block + windows around the error lines, the whole file when small;
         small files first, their surplus goes to the big ones); files beyond the budget are listed by name only.
-        Poms of the modules involved when the case is a resolution / pom error. Deterministic for the same input."""
+        Poms of the modules involved when the case is a resolution / pom error. Deterministic for the same input.
+
+        v2.1i edits mode (`effective_fix_mode`): no script wording, no augment base; `ctx.previous_attempts` → "Previous tries"
+        (order 1.7, shrunk last), each with its edits when `attempt_edits` (attempt `prompt_hash` → edits) has them."""
         budget = budget or self.cfg.llm.max_context_chars
         summary = with_target(profile_summary or ctx.profile_summary, self.cfg)     # A20: cfg.target, not a constant
         if case_type is None:
@@ -546,7 +651,9 @@ class ContextPacker:
                 by_file[f].append(e.line)
         for lines_of in by_file.values():
             lines_of.sort()
-        base = ctx.script_base
+        # v2.1i: edits 모드는 스크립트 말을 빼고, 보강 base 를 보지 않는다(모든 시도가 새 질문)
+        edits_only = effective_fix_mode(self.cfg, ctx) == "edits"
+        base = ctx.script_base if not edits_only else None
         mode = ctx.script_mode or ("augment" if base is not None else "new")
         if mode == "augment" and base is None:
             mode = "new"
@@ -561,11 +668,15 @@ class ContextPacker:
             what = (f"augment version {base.version} of this case's fix script" if base.version
                     else "augment this run's fix script for the case") + \
                 " — return the COMPLETE new script (or <no_script> + <edits>)"
+        elif edits_only:
+            what = ("fix this case now with <edits> (applied at once) — every error of the case, in every file"
+                    + (", knowing what the earlier tries below did" if ctx.previous_attempts else ""))
         else:
             what = "fix this case now (<edits>) and write a reusable fix script for it (no stored script exists for it)"
         header = [f"request: {what}", f"case: {case_id}" + (f" — L2 signature: {sig}" if sig else ""),
                   f"kind: {cluster.kind.value}" + (f", module(s): {', '.join(modules)}" if modules else ""),
-                  f"errors: {len(errors)} in {len(by_file)} file(s) — every one of them is in p.errors"]
+                  f"errors: {len(errors)} in {len(by_file)} file(s)" + ("" if edits_only else
+                                                                       " — every one of them is in p.errors")]
         if summary:
             header.append(f"project: {summary}")
         header.append(f"phase: {ctx.phase.value}, iteration {ctx.iteration}"
@@ -581,8 +692,9 @@ class ContextPacker:
             err_lines.append(line)
             used += len(line) + 1
         if len(errors) > len(err_lines):
-            err_lines.append(f"… {len(errors) - len(err_lines)} more error(s) — the script gets all of them in "
-                             "p.errors")
+            err_lines.append(f"… {len(errors) - len(err_lines)} more error(s) — " + (
+                "not listed; \"Files with errors\" names their files and lines" if edits_only else
+                "the script gets all of them in p.errors"))
         secs.append(_Section("errors", f"Errors of this case ({len(errors)})", "\n".join(err_lines), 1,
                              truncatable=False))
 
@@ -609,19 +721,23 @@ class ContextPacker:
         related = self._related_type_files(ws, cluster, files)
         if related:
             blocks = [self._file_block(ws, f, [])[0] for f in related]
-            secs.append(_Section("related_files", self.SCRIPT_RELATED_FILES_TITLE, "\n\n".join(blocks), 2.2))
+            secs.append(_Section("related_files", self.EDITS_RELATED_FILES_TITLE if edits_only else
+                                 self.SCRIPT_RELATED_FILES_TITLE, "\n\n".join(blocks), 2.2))
         if ctx.reference_files:
-            secs.append(_Section("reference_files", self.SCRIPT_REFERENCE_FILES_TITLE,
+            secs.append(_Section("reference_files", self.EDITS_REFERENCE_FILES_TITLE if edits_only else
+                                 self.SCRIPT_REFERENCE_FILES_TITLE,
                                  "\n\n".join(self._reference_block(label, text)
                                              for label, text in sorted(ctx.reference_files.items())), 2.5))
         if ctx.library_hints:                          # right after the poms (3.x), before the advisories (4)
             secs.append(_Section("library_hints", self.LIBRARY_HINTS_TITLE,
                                  "\n".join(f"- {h}" for h in ctx.library_hints), 3.5))
         if ctx.advisory_hints:
+            who = ("Rewrite the code that still uses them to the named replacement (public signatures kept so callers "
+                   "still compile); never re-add the removed library.") if edits_only else \
+                ("The script rewrites the code that still uses them to the named replacement (public signatures "
+                 "kept so callers still compile); it never re-adds the removed library.")
             secs.append(_Section("advisory_hints", self.ADVISORY_TITLE,
-                                 "The libraries below were removed or replaced by the migration on purpose. The script "
-                                 "rewrites the code that still uses them to the named replacement (public signatures "
-                                 "kept so callers still compile); it never re-adds the removed library.\n"
+                                 "The libraries below were removed or replaced by the migration on purpose. " + who + "\n"
                                  + "\n".join(f"- {h}" for h in ctx.advisory_hints), 4))
         if ctx.reference_notes:
             secs.append(_Section("reference_notes", self.REFERENCE_NOTES_TITLE,
@@ -629,7 +745,13 @@ class ContextPacker:
         if ctx.kb_hints:
             secs.append(_Section("kb_hints", "Knowledge-base hints (similar cases)",
                                  "\n".join(f"- {h}" for h in ctx.kb_hints), 5))
-        if ctx.previous_attempts:
+        if ctx.previous_attempts and edits_only:
+            # 재시도가 아는 것은 이것뿐이다: 무엇을 고쳤고 왜 실패했는지 — 오류 목록 바로 뒤, 가장 늦게 줄인다
+            known = attempt_edits or {}
+            secs.append(_Section("previous_attempts", EDITS_HISTORY_TITLE, "\n".join(
+                summarize_edit_attempt(a, known.get(a.prompt_hash) if a.prompt_hash else None, i)
+                for i, a in enumerate(ctx.previous_attempts, 1)), 1.7))
+        elif ctx.previous_attempts:
             secs.append(_Section("previous_attempts",
                                  "Previous attempts on this case (they did NOT resolve it — do not repeat them)",
                                  "\n".join(summarize_script_attempt(a) for a in ctx.previous_attempts), 6))
@@ -658,10 +780,12 @@ class ContextPacker:
 
         # 예산 계산: 줄일 수 없는 섹션(+ base_result, pom)을 먼저 빼고, 선택 섹션 몫(남는 것의 최대 35%)을
         # 남긴 나머지를 오류 파일이 쓴다(최소 SCRIPT_MIN_FILE_SHARE 자)
-        fixed = sum(size(s) for s in secs if not s.truncatable or s.key in ("base_result", "pom"))
-        optional = sum(size(s) for s in secs if s.truncatable and s.key not in ("base_result", "pom"))
+        late = ("base_result", "pom") + (("previous_attempts",) if edits_only else ())
+        fixed = sum(size(s) for s in secs if not s.truncatable or s.key in late)
+        optional = sum(size(s) for s in secs if s.truncatable and s.key not in late)
         index_cap = max(1500, int(budget * SCRIPT_INDEX_SHARE))
-        index_estimate = len(self._file_index(by_file, counts, set(), set(), index_cap)) + 40 if by_file else 0
+        index_estimate = len(self._file_index(by_file, counts, set(), set(), index_cap, edits_only=edits_only)) + 40 \
+            if by_file else 0
         avail = budget - fixed - index_estimate
         file_budget = max(SCRIPT_MIN_FILE_SHARE, avail - min(optional, int(max(avail, 0) * SCRIPT_OPTIONAL_RESERVE)))
         chosen = self._allocate_files(by_file, counts, renderings, file_budget)
@@ -673,12 +797,13 @@ class ContextPacker:
         packed.files_included += [f for f in related if f not in packed.files_included]
         if by_file:
             secs.append(_Section("file_index", f"{self.SCRIPT_INDEX_TITLE} ({len(by_file)})",
-                                 self._file_index(by_file, counts, set(chosen), set(missing), index_cap), 1.8,
-                                 truncatable=False))
+                                 self._file_index(by_file, counts, set(chosen), set(missing), index_cap,
+                                                  edits_only=edits_only), 1.8, truncatable=False))
         if shown:
-            secs.append(_Section("files", self.SCRIPT_FILES_TITLE, "\n\n".join(chosen[f] for f in shown), 2))
+            secs.append(_Section("files", self.EDITS_FILES_TITLE if edits_only else self.SCRIPT_FILES_TITLE,
+                                 "\n\n".join(chosen[f] for f in shown), 2))
 
-        self._fit(secs, budget, packed, order=SCRIPT_TRUNCATE_ORDER)
+        self._fit(secs, budget, packed, order=EDITS_TRUNCATE_ORDER if edits_only else SCRIPT_TRUNCATE_ORDER)
         secs.sort(key=lambda s: s.order)
         packed.sections = [(s.title, s.text) for s in secs]
         packed.notes_included = [s.title.removeprefix("Migration note: ") for s in secs if s.key == "notes"]
@@ -782,13 +907,15 @@ class ContextPacker:
 
     @staticmethod
     def _file_index(by_file: dict[str, list[int]], counts: dict[str, int], shown: set[str], missing: set[str],
-                    max_chars: int = 30000) -> str:
+                    max_chars: int = 30000, *, edits_only: bool = False) -> str:
         """오류 파일 색인: 파일마다 오류 수와 줄 번호(보여 준 파일 먼저, 다음은 경로 순). 안 보여 준 파일은
         "not shown" — 스크립트는 `p.errors` / `p.files` 로 닿는다.
 
         Every erroring file with its error count and lines (shown files first, then by path), within `max_chars`
-        and SCRIPT_MAX_INDEX_FILES entries."""
-        lines = [("Files marked \"not shown\" are not in the source section — the script must reach them through "
+        and SCRIPT_MAX_INDEX_FILES entries. v2.1i `edits_only`: files not shown are asked for with `<need_files>`."""
+        lines = [("Files marked \"not shown\" are not in the source section — ask for them with <need_files> before "
+                  "you edit them (an `old` text must be copied exactly).") if edits_only else
+                 ("Files marked \"not shown\" are not in the source section — the script must reach them through "
                   "`p.errors` / `p.files(...)`.")]
         names = sorted(by_file, key=lambda f: (f not in shown, f))
         used = len(lines[0])
@@ -811,7 +938,8 @@ class ContextPacker:
             used += len(entry) + 1
             listed += 1
         if len(names) > listed:
-            lines.append(f"… {len(names) - listed} more file(s), not shown (all of them in p.errors)")
+            lines.append(f"… {len(names) - listed} more file(s), not shown" + ("" if edits_only else
+                                                                              " (all of them in p.errors)"))
         return "\n".join(lines)
 
     @staticmethod

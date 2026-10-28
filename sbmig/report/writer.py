@@ -14,9 +14,11 @@ from typing import Any, Optional
 from sbmig.core.models import RunReport
 
 from .errors import (
+    EDITS_FIX_MODE,
     OPEN_STATUSES,
     case_rows,
     counts_text,
+    deciding_label,
     entries_of,
     entry_text,
     seen_groups,
@@ -26,7 +28,7 @@ from .errors import (
     where,
 )
 from .i18n import normalize
-from .markdown import BLOCKED_TITLE, blocked_count_line, group_by_file, render_markdown
+from .markdown import BLOCKED_TITLE, blocked_count_line, fix_mode_of, group_by_file, render_markdown
 
 log = logging.getLogger("sbmig.report")
 
@@ -142,15 +144,18 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
         console.print(line, markup=False, highlight=False)
     entries = entries_of(report)
     rows = case_rows(entries)
+    mode = fix_mode_of(report)
     if rows:
         t = Table(title=f"fixes by case ({len(rows)})", show_lines=False)
-        for col in ("case", "errors", "tries", "changes", "script"):
+        for col in ("case", "errors", "tries", "changes", "fix try" if mode == EDITS_FIX_MODE else "script"):
             t.add_column(col, overflow="fold")
         for row in rows[:CONSOLE_CASES]:
-            script = (f"v{row.script_version} {row.script}" if row.script_version else row.script) or \
+            # v2.1i edits 모드에는 저장 스크립트가 없다 — 결정적 시도의 꼬리표(edits:<case>#<n>)를 보인다
+            script = (deciding_label(row, mode) or "-") if mode == EDITS_FIX_MODE else \
+                (f"v{row.script_version} {row.script}" if row.script_version else row.script) or \
                 ("no script" if row.no_script_reason else "-")
             t.add_row(row.case_id, f"{row.resolved}/{row.entries} resolved",
-                      tries_text(row.tries).replace(" · ", "; ")[:120] or "-",
+                      tries_text(row.tries, row.case_id, mode).replace(" · ", "; ")[:120] or "-",
                       stats_text(row.changes, limit=3, code=False, minus="-") or "-", script)
         if len(rows) > CONSOLE_CASES:
             t.caption = f"... {len(rows) - CONSOLE_CASES} more (report.md, Fixes by case)"
@@ -178,6 +183,7 @@ def console_summary(report: RunReport, console: Optional[Any] = None) -> None:
         console.print(rl, markup=False, highlight=False)
     u = report.llm_usage
     console.print(f"LLM: {u.calls} call(s), {u.input_tokens}/{u.output_tokens} tokens"
+                  + (f"   fix mode: {mode} (no fix scripts)" if mode == EDITS_FIX_MODE else "")
                   + (f"   flags: {', '.join(report.flags)}" if report.flags else ""))
     if report.llm_cost is not None and (report.llm_cost.by_model or u.calls):
         from .cost import fmt_money

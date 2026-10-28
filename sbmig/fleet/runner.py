@@ -166,8 +166,11 @@ class FleetRunner:
     copies the project into ``<out>/<run_id>/project`` and runs the full
     :class:`sbmig.loop.Orchestrator` with the shared KB.
     ``analyze(project, cfg) -> CaseType`` is used by ``fleet.order: simple-first`` (cached in the state).
-    
-    
+
+    v2.1i: ``no_kb=True`` (``sbmig fleet run --no-kb``) runs every project with a ``NullKnowledgeBase`` (nothing is
+    reused from or recorded into the KB, like ``sbmig run --no-kb``); the fix mode comes from ``cfg.fix.mode``. Both
+    are recorded in the state as a ``settings: fix_mode=<m> kb=<on|off>`` note and shown in the ``summary.md``
+    header, so a token-comparison fleet can be told apart from the default one.
     """
 
     def __init__(
@@ -184,6 +187,7 @@ class FleetRunner:
         preflight: Optional[Callable[[], list]] = None,
         disk_check: Optional[Callable[[], Any]] = None,
         sleep: Callable[[float], None] = time.sleep,
+        no_kb: bool = False,
     ):
         self.cfg = cfg
         self.manifest_path = Path(manifest_path)
@@ -191,6 +195,12 @@ class FleetRunner:
         self.fleet_dir = self.out_dir / "fleet"
         self.state_path = self.fleet_dir / "state.json"
         self._run_project = run_project
+        # v2.1i --no-kb: 주입된 KB 보다 우선한다 — 끈 KB 로 도는 일괄 실행이 KB 파일을 읽거나 쓰면 비교가 틀어진다
+        self.no_kb = bool(no_kb)
+        if self.no_kb:
+            from sbmig.loop import NullKnowledgeBase
+
+            kb = NullKnowledgeBase()
         self._kb = kb
         self._analyze = analyze
         self.echo = echo or (lambda msg: log.info("%s", msg))
@@ -224,6 +234,34 @@ class FleetRunner:
 
             self._kb = FileKnowledgeBase(self.cfg)
         return self._kb
+
+    # ------------------------------------------------------------------ settings (v2.1i)
+    def settings_note(self) -> str:
+        """이번 일괄 실행의 수정 방식·KB 사용 여부 메모(``settings: fix_mode=<m> kb=<on|off>``).
+
+        The `settings: fix_mode=<m> kb=<on|off>` note of this fleet run (state.notes, summary.md header)."""
+        from .summary import settings_note
+
+        return settings_note(self.cfg.fix.mode, not self.no_kb)
+
+    def settings_label(self) -> str:
+        """화면용 짧은 표기(``fix_mode=script kb=on`` — 요약 머리와 같은 모양)."""
+        from .summary import SETTINGS_NOTE_PREFIX
+
+        return self.settings_note()[len(SETTINGS_NOTE_PREFIX):]
+
+    def _record_settings(self, state: FleetState) -> None:
+        """상태 메모에 이번 설정을 남긴다. 직전 설정 메모와 같으면 그대로, 다르면(재개 때 바꿈) 하나 더 붙인다 —
+        두 설정으로 돈 프로젝트가 섞였다는 것이 요약 머리에 보이게.
+
+        Append the settings note unless the last one recorded is the same (a resume with other settings adds a
+        second one, so the summary shows that the projects ran under different settings)."""
+        from .summary import settings_notes
+
+        note = self.settings_note()
+        recorded = settings_notes(state)
+        if not recorded or recorded[-1] != note:
+            state.notes.append(note)
 
     # ------------------------------------------------------------------ state
     def load_state(self, projects: list[FleetProject]) -> FleetState:
@@ -581,6 +619,9 @@ class FleetRunner:
         self.planned = [(index_of[id(p)], self.result_for(p), self._action(self.result_for(p))) for p in ordered]
         if self.dry_run:
             return state
+        # v2.1i: 수정 방식·KB 사용 여부를 상태에 남기고 첫 줄로 알린다(두 실험의 출력을 구별)
+        self._record_settings(state)
+        self._say(f"fleet {state.fleet_id}: {self.settings_label()}")
         self.fleet_dir.mkdir(parents=True, exist_ok=True)
         self.save_state()
         self._write_summaries()
@@ -677,7 +718,8 @@ class FleetRunner:
             # SBMIG-RESULT 의 llm= 은 이 실행의 호출 수(crash 면 보고서가 없어 0), 상태 행은 모든 시도의 합계
             self._say(result_line(run_id, r.exit_code, build_ok, unresolved=r.unresolved, blocked=r.blocked,
                                   llm_calls=run_llm, attention=result_attention(r),
-                                  open_errors=o_err if reported else None, resolved_errors=r_err if reported else None))
+                                  open_errors=o_err if reported else None, resolved_errors=r_err if reported else None,
+                                  fix_mode=getattr(getattr(self.cfg, "fix", None), "mode", None)))
             llm_all = f" (all attempts {r.llm_calls})" if r.llm_calls != run_llm else ""
             self._say(
                 f"[{pos}/{total}] {proj.name}: {r.status} (exit {r.exit_code}, {r.duration_s:.0f}s, "

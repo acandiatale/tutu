@@ -4,9 +4,12 @@
 일) → Error list(단계별 표) → Fixes by case → Structure review → Blocked → javax API jar →
 Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 인수인계가 맨 앞인 이유: 담당팀은 그 섹션만 읽는다. 모든 문장은 ``tr`` / ``tr_line`` 을 거쳐
-``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께).
+``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께). v2.1i: ``fix.mode:
+edits`` 실행이면 시도 칸·Fixes by case 가 ``edits:<case>#<n>`` 로, LLM 사용량 섹션에 수정 방식 한 줄(script 모드는 그대로).
 
-report.md rendering — written for the as-is owners who pick up whatever the agent could not fix."""
+report.md rendering — written for the as-is owners who pick up whatever the agent could not fix. v2.1i: an edits-mode
+run (`RunReport.fix_mode == "edits"`) labels its tries `edits:<case>#<n>` and names the mode in "LLM usage and cost";
+a script-mode report is unchanged."""
 from __future__ import annotations
 
 import re
@@ -18,8 +21,10 @@ from sbmig.core.models import AdvisoryFinding, BlockedItem, BuildError, RunRepor
 from sbmig.errors.entries import resolved_text
 
 from .errors import (
+    EDITS_FIX_MODE,
     case_rows,
     counts_text,
+    deciding_label,
     entries_of,
     entry_text,
     notes_text,
@@ -472,6 +477,7 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
     last build log. Without entries: the unresolved errors of the last build grouped by file (runs that stopped
     before the error list was kept), else one line."""
     entries = entries_of(r)
+    mode = fix_mode_of(r)
     L = [f"## {tr(lang, ERROR_LIST_TITLE)}", ""]
     if entries:
         L += [tr(lang, "{n} error(s) in this run, one line each (all of them with every try and diff: `errors.md` / "
@@ -485,7 +491,8 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
                 loc = where(e)
                 L.append(f"| {i} | {('`' + e.case_id[:12] + '`') if e.case_id else '-'} | "
                          f"{('`' + _cell(loc, 140) + '`') if loc else '-'} | {_cell(entry_text(e), 200)} | "
-                         f"{e.status} | {_cell(tries_text(e.tries) or '-', 300)} | {_cell(resolved_text(e) or '-', 60)} |")
+                         f"{e.status} | {_cell(tries_text(e.tries, e.case_id, mode) or '-', 300)} | "
+                         f"{_cell(resolved_text(e) or '-', 60)} |")
             if len(rows) > ERROR_LIST_MAX_ROWS:
                 L += ["", tr(lang, "… {n} more in this group — see `errors.md`", n=len(rows) - ERROR_LIST_MAX_ROWS)]
             L.append("")
@@ -508,8 +515,19 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
-def _case_script_cell(row: Any, lang: str = "en") -> str:
-    """Fixes by case 의 script 칸: 저장된 스크립트(버전 + 경로), 없으면 스크립트로 못 만든 이유."""
+def fix_mode_of(r: Any) -> str:
+    """보고서의 수정 방식(v2.1i ``RunReport.fix_mode``, 없으면 script).
+
+    The run's `fix.mode` as the report recorded it (`RunReport.fix_mode`; `script` when absent)."""
+    return str(getattr(r, "fix_mode", "") or "script")
+
+
+def _case_script_cell(row: Any, lang: str = "en", fix_mode: str = "script") -> str:
+    """Fixes by case 의 script 칸: 저장된 스크립트(버전 + 경로), 없으면 스크립트로 못 만든 이유. v2.1i edits 모드는
+    결정적 시도의 꼬리표 ``edits:<case>#<n>``(스크립트가 없다)."""
+    if fix_mode == EDITS_FIX_MODE:
+        label = deciding_label(row, fix_mode)
+        return f"`{label}`" if label else "-"
     if row.script:
         return f"v{row.script_version} `{_cell(row.script, 120)}`" if row.script_version else f"`{_cell(row.script, 120)}`"
     if row.no_script_reason:
@@ -528,9 +546,11 @@ def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
     rows = case_rows(entries_of(r))
     if not rows:
         return []
-    L = [f"## {tr(lang, FIXES_TITLE)}", "",
-         tr(lang, "| case | errors | cause | solution | changes (files, +/−) | edits | script |"),
-         "|---|---|---|---|---|---|---|"]
+    mode = fix_mode_of(r)
+    head = (tr(lang, "| case | errors | cause | solution | changes (files, +/−) | edits | fix try |")
+            if mode == EDITS_FIX_MODE else
+            tr(lang, "| case | errors | cause | solution | changes (files, +/−) | edits | script |"))
+    L = [f"## {tr(lang, FIXES_TITLE)}", "", head, "|---|---|---|---|---|---|---|"]
     for row in rows[:FIXES_MAX_ROWS]:
         solution = row.solution or (tr(lang, "(no solution text) {reason}", reason=row.no_script_reason)
                                     if row.no_script_reason else "")
@@ -540,9 +560,13 @@ def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
                  f"{tr(lang, '{resolved}/{n} resolved', resolved=row.resolved, n=row.entries)} | "
                  f"{_cell(row.analysis or '-', 400)} | {_cell(solution or '-', 400)} | "
                  f"{_cell(stats_text(row.changes) or '-', 300)} | {_cell(notes_text(row.edits) or '-', 700)} | "
-                 f"{_case_script_cell(row, lang)} |")
+                 f"{_case_script_cell(row, lang, mode)} |")
     if len(rows) > FIXES_MAX_ROWS:
         L += ["", tr(lang, "… {n} more case(s) — see `errors.md`", n=len(rows) - FIXES_MAX_ROWS)]
+    if mode == EDITS_FIX_MODE:     # v2.1i: no fix scripts in this run — the try label points into errors.md
+        L += ["", "_" + tr(lang, "fix.mode edits: no fix scripts; `edits:<case>#<n>` is try n of the case in "
+                                 "`errors.md` (with its diff), the whole change set is in `changes.patch`.") + "_", ""]
+        return L
     L += ["", "_" + tr(lang, "Stored scripts live in the KB (`<kb>/cases/<case>/fix_vN.py`); every try with its diff "
                              "is in `errors.md`, the whole change set in `changes.patch`.") + "_", ""]
     return L
@@ -632,7 +656,9 @@ def _review_answer_lines(r: RunReport, rv: StructureReview, lang: str = "en") ->
             L.append(tr(lang, "- solution: {solution}", solution=_cell(a.solution, 600)))
         if a.edits:
             L.append(tr(lang, "- direct edits in the answer: {n}", n=len(a.edits)))
-        if a.code:
+        if a.code and fix_mode_of(r) == EDITS_FIX_MODE:      # v2.1i: the orchestrator did not store it
+            L.append(tr(lang, "- script in the answer: not stored (fix.mode edits)"))
+        elif a.code:
             L.append(tr(lang, "- script for the KB: yes"))
         elif a.no_script_reason:
             L.append(tr(lang, "- script for the KB: none — {reason}", reason=_cell(a.no_script_reason, 300)))
@@ -699,6 +725,8 @@ def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
     if c is None or not (c.by_model or r.llm_usage.calls):
         return []
     L = [tr(lang, "## LLM usage and cost"), ""]
+    if fix_mode_of(r) == EDITS_FIX_MODE:      # v2.1i: the two experiments of the token comparison told apart
+        L += [tr(lang, "fix mode: edits — no fix scripts generated, stored or reused"), ""]
     L.append(tr(lang, "| Model | Calls | Input tokens | Output tokens | Price in / out (per 1M) | Cost |"))
     L.append("|---|---|---|---|---|---|")
     for m in c.by_model:

@@ -4,12 +4,12 @@
 줄), ``result_line``(조립), ``attention_codes``(중요한 것 먼저), ``report_exit_code``(0 성공 · 2 빌드 실패 · 3
 거부 / 중단). 지킬 것: 반드시 한 줄, ASCII 만(비ASCII 는 ``?``), 필드 순서·이름을 바꾸지 말 것 — 운영자 보고
 양식과 플릿 집계가 이 형식을 그대로 읽는다. 새 필드는 끝에,
-값이 있을 때만 붙인다(``review=`` v2, ``major=`` v2.1d).
+값이 있을 때만 붙인다(``review=`` v2, ``major=`` v2.1d, ``fix=`` v2.1i — 기본 script 모드에서는 붙이지 않는다).
 
 One-line results and attention codes (round 10, operators retype them from a cp949 console).
 
     SBMIG-RESULT run=<id> exit=<n> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<calls>
-                 attn=<codes>[ review=<v>][ major=<n>]
+                 attn=<codes>[ review=<v>][ major=<n>][ fix=<mode>]
 
 v2: ` review=<ok|issues|skipped|failed>` is appended when the run has a structure review (`report.structure_review`;
 fleet lines and runs without a review keep the round-10 format).
@@ -18,6 +18,8 @@ v2.1: `open=` / `resolved=` count the run's error list (`report.error_entries`):
 items are `blocked=`). Present whenever the line is made from a report or a fleet result, absent on a crash line.
 v2.1d: ` major=<n>` is appended when the run made n > 0 major upgrades / library replacements that are still in the
 final tree (`report.operator_checks`, Handover "운영자 확인 필요"); the build passed, the runtime needs a look.
+v2.1i: ` fix=<mode>` is appended when the run's `fix.mode` is not the default `script` (`report.fix_mode`, e.g.
+` fix=edits` for the token comparison); a default run's line is byte-identical to v2.1d.
 
 `sbmig run` prints (and logs) it at the end, the fleet prints one per project. `attn` is a comma list of short codes
 that say why a human has to look (`-` = nothing): the same codes fill the fleet's `summary.csv` `attention` column
@@ -136,10 +138,13 @@ def result_attention(r: Any) -> list[str]:
 
 def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int = 0, blocked: int = 0,
                 llm_calls: int = 0, attention: Iterable[str] = (), review: Optional[str] = None,
-                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0) -> str:
+                open_errors: Optional[int] = None, resolved_errors: Optional[int] = None, major: int = 0,
+                fix_mode: str | None = None) -> str:
     """``SBMIG-RESULT`` 한 줄을 조립한다. ``open=`` / ``resolved=`` 는 오류 목록이 있을 때만(충돌 줄에는
-    없음), ``review=`` 는 구조 검토가 있었을 때만, ``major=`` 는 1 이상일 때만
-    붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게."""
+    없음), ``review=`` 는 구조 검토가 있었을 때만, ``major=`` 는 1 이상일 때만, ``fix=`` 는 수정 방식이 기본
+    script 가 아닐 때만(v2.1i) 붙인다 — 예전 형식을 읽는 쪽이 깨지지 않게."""
+    # 운영자가 손으로 옮겨 적는 줄이라 기본(script) 실행의 줄은 한 글자도 바뀌면 안 된다 → 기본값이면 생략
+    fix = f" fix={_ascii_token(fix_mode)}" if fix_mode and fix_mode != "script" else ""
     codes = ",".join(attention) or "-"
     errs = ""
     if open_errors is not None or resolved_errors is not None:
@@ -147,7 +152,7 @@ def result_line(run_id: Any, exit_code: Any, build_ok: bool, *, unresolved: int 
     return (f"SBMIG-RESULT run={_ascii_token(run_id or '-')} exit={'-' if exit_code is None else exit_code} "
             f"build={'ok' if build_ok else 'FAIL'} unresolved={unresolved} blocked={blocked}{errs} llm={llm_calls} "
             f"attn={_ascii_token(codes)}" + (f" review={_ascii_token(review)}" if review else "")
-            + (f" major={int(major)}" if major and int(major) > 0 else ""))
+            + (f" major={int(major)}" if major and int(major) > 0 else "") + fix)
 
 
 OPEN_STATUSES = ("open", "unresolved")
@@ -201,4 +206,5 @@ def report_result_line(report: Any, exit_code: Optional[int] = None, run_id: Opt
                        llm_calls=getattr(getattr(report, "llm_usage", None), "calls", 0) or 0,
                        attention=report_attention(report, code),
                        review=getattr(getattr(report, "structure_review", None), "verdict", None),
-                       open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []))
+                       open_errors=o, resolved_errors=r, major=len(getattr(report, "operator_checks", None) or []),
+                       fix_mode=getattr(report, "fix_mode", None))

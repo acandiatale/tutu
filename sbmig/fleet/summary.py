@@ -16,7 +16,11 @@ a ``summary.csv`` locked by Excel is skipped with a warning and the others are s
 
 v2.1: per project the error-list counts ``open`` / ``resolved`` / ``blocked`` (``FleetProjectResult.error_counts``,
 the statuses of ``RunReport.error_entries``; a state written before v2.1 falls back to ``unresolved`` / ``blocked``);
-``learning.md`` lists the cases of ``<kb>/cases/*/case.json`` (CaseInfo) with their script versions."""
+``learning.md`` lists the cases of ``<kb>/cases/*/case.json`` (CaseInfo) with their script versions.
+
+v2.1i: the fleet's fix mode and KB switch live in the state as a ``settings: fix_mode=<m> kb=<on|off>`` note
+(:func:`settings_note`; ``FleetState`` has no field for them) and are shown in the ``summary.md`` header and the
+``fleet status`` first line instead of the "Notes" section; with ``kb=off`` ``learning.md`` says so."""
 
 from __future__ import annotations
 
@@ -56,6 +60,38 @@ COLUMNS = [
 # 화면·summary.md 표는 짧게: attempt / run_id / error / input 은 빼고 attention 만 붙인다
 TABLE_COLUMNS = COLUMNS[:13] + ["attention"]     # summary.md / `fleet status` (error and input are listed apart)
 ATTENTION_GROUP_LIMIT = 50                       # `fleet status --attention`: projects printed per code
+# v2.1i: 상태 메모 중 이 접두어로 시작하는 것이 일괄 실행 설정(수정 방식·KB) — FleetState 에 따로 칸이 없어서
+SETTINGS_NOTE_PREFIX = "settings: "
+
+
+def settings_note(fix_mode: str, kb_on: bool) -> str:
+    """일괄 실행 설정 메모 한 줄: ``settings: fix_mode=<m> kb=<on|off>``.
+
+    The settings note of a fleet run (v2.1i): `settings: fix_mode=<m> kb=<on|off>`."""
+    return f"{SETTINGS_NOTE_PREFIX}fix_mode={fix_mode} kb={'on' if kb_on else 'off'}"
+
+
+def settings_notes(state: FleetState) -> list[str]:
+    """상태 메모 중 설정 메모들(기록된 순서). v2.1i 이전 상태면 빈 목록."""
+    return [n for n in state.notes if n.startswith(SETTINGS_NOTE_PREFIX)]
+
+
+def other_notes(state: FleetState) -> list[str]:
+    """설정 메모를 뺀 나머지 메모(요약의 "Notes" 절과 ``fleet status`` 의 ``note:`` 줄)."""
+    return [n for n in state.notes if not n.startswith(SETTINGS_NOTE_PREFIX)]
+
+
+def settings_label(state: FleetState) -> str:
+    """설정 메모를 짧은 표기로(``fix_mode=edits kb=off``; 재개 때 바뀌었으면 ``A → B``). 기록이 없으면 빈 문자열.
+
+    `fix_mode=edits kb=off` (`A → B` when a resume changed them); "" for a state without the note."""
+    return " → ".join(n[len(SETTINGS_NOTE_PREFIX):] for n in settings_notes(state))
+
+
+def kb_off(state: FleetState) -> bool:
+    """마지막 설정이 KB 끔(``kb=off``)인가."""
+    notes = settings_notes(state)
+    return bool(notes) and notes[-1].endswith(" kb=off")
 
 
 def error_columns(p: FleetProjectResult) -> tuple[int, int, int]:
@@ -186,6 +222,12 @@ def render_summary_md(state: FleetState) -> str:
         f"# Fleet {state.fleet_id}",
         "",
         f"* manifest: `{Path(state.manifest).name}`",
+    ]
+    label = settings_label(state)
+    if label:            # v2.1i: the two token-comparison fleets (default / edits + KB off) told apart at a glance
+        head.append(f"* settings: {label}"
+                    + (" (changed on resume: the projects ran under different settings)" if " → " in label else ""))
+    head += [
         f"* started: {state.started_at.isoformat(timespec='seconds')}, updated: "
         f"{state.updated_at.isoformat(timespec='seconds')}"
         + (f", finished: {state.finished_at.isoformat(timespec='seconds')}" if state.finished_at else ""),
@@ -217,8 +259,9 @@ def render_summary_md(state: FleetState) -> str:
             ["## Blocked", ""] + [f"* **{p.name}**: {', '.join(p.blocked_reasons)}" for p in blocked] + [""]
         )
     head += advisory_section(state)
-    if state.notes:
-        head += ["## Notes", ""] + [f"* {n}" for n in state.notes] + [""]
+    notes = other_notes(state)                    # the settings notes are in the header
+    if notes:
+        head += ["## Notes", ""] + [f"* {n}" for n in notes] + [""]
     head.append("See `learning.md` for the KB cases these projects met and their stored fix scripts; each project's "
                 "error list is `errors.md` in its run directory.")
     return "\n".join(head) + "\n"
@@ -384,6 +427,11 @@ def render_learning(state: FleetState, kb: Any = None, kb_dir: Optional[Path] = 
              f"* LLM calls: {t['llm_calls']}",
              f"* error list: open {t['errors_open']}, resolved {t['errors_resolved']}, blocked {t['errors_blocked']}",
              ""]
+    # v2.1i --no-kb: 이번 일괄 실행은 KB 를 읽지도 쓰지도 않았다 — KB 의 케이스 표는 이 실행과 무관하다
+    if kb_off(state):
+        note = ("_KB off (`--no-kb`): no stored fix script was reused and nothing was recorded in the KB; each "
+                "project's error list is `errors.md` in its run directory._")
+        return "\n".join([*lines, note, ""]) + "\n"
     cases = read_cases(kb, kb_dir)
     lines += ["## Cases across projects (`sbmig kb cases show <case>`)", ""]
     if not cases:

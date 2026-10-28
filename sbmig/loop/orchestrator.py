@@ -420,6 +420,8 @@ class Orchestrator:
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
+        # v2.1i: 수정 방식(script | edits)을 보고서에 — SBMIG-RESULT `fix=` 와 "LLM usage and cost" 가 이것을 본다
+        report.fix_mode = str(getattr(getattr(self.cfg, "fix", None), "mode", "script") or "script")
         self.report = report
         if dry_run:
             report.flags.append("dry-run")
@@ -1478,7 +1480,11 @@ class Orchestrator:
                     self.errors.add_note(issue.file or "", f"warning: {text}", "review")
             code = ((getattr(ans, "code", "") if ans is not None else "") or rv.script or "").strip("\n")
             store = CaseScripts.of(self.kb)
-            if code.strip() and rv.critical and store.active:
+            # v2.1i: `fix.mode: edits` 실행은 수정 스크립트를 KB 에 저장하지 않는다(검토의 스크립트도) — 토큰 비교의 조건
+            edits_only = str(getattr(getattr(self.cfg, "fix", None), "mode", "script") or "script") == "edits"
+            if code.strip() and rv.critical and store.active and edits_only:
+                log.debug("review script not stored (fix.mode edits)")
+            elif code.strip() and rv.critical and store.active:
                 from sbmig.triage.cluster import l2_case_id
                 cs = store.add_script(l2_case_id(REVIEW_L2), REVIEW_L2, code, source="review", run_id=self.ws.run_id,
                                       project=(self.profile.name if self.profile is not None else "") or

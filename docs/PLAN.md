@@ -469,3 +469,16 @@ Contract: `docs/INTERFACES.md` "v2.1h".
 | A4 — user: "C로 가자" → documented shape `fn(ws, edits, *, cfg, errors=None)` + `fixloop.call_edit_applier` passes `errors` only when the signature takes it | `sbmig/loop/fixloop.py`, `docs/ADAPTERS.md`, `tests/loop/test_v21h_edit_applier.py` | done |
 | Pending (the user) | — | §B dead code / unread keys; `fixloop.py` `try_notes` / `verify_guide` still use the old TypeError-retry pattern (same shape as A22, not in scope) |
 
+## Status — 2026-10-28, v2.1i (`fix.mode: script | edits` — the script ladder as a switch, for the token comparison)
+
+User: the business team wants "현행 버전별 토큰 사용량 vs 스크립트 없이 LLM 한테 전체 수정을 맡겼을 때" for a report; runs go through the
+web UI; "이걸 껐다 켰다 하는 기능이 필요할 거 같은데, 그래야 공정한 비교가 될 테니까". Contract: `docs/INTERFACES.md` "v2.1i".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Contracts: `fix.mode` (`FixConfig`, `config/default.yml`), `FixContext.fix_mode` + `previous_edits`, `RunReport.fix_mode` | `sbmig/core/` | done |
+| Fixer: `edits_system_v1.md` / `edits_user_v1.md.j2` (35.6% shorter than the script prompt; no helper API, no `<script>` / `<changes>` / `<no_script>`), `effective_fix_mode(cfg, ctx)`, mode always `new`, previous tries' edits in the ask (via `prompt_hash`), `parse_script_response(…, expect_script=False)` drops a stray script (`SCRIPT_IGNORED`), metadata `fix_mode`, records `edits-<cluster>-<hash>.json` | `sbmig/fix/`, `tests/fix/test_v21i_edits_mode.py` | done |
+| Loop / triage / report: no reuse / augment / store / credit, `source = llm-edit`, label `edits:<case>#<n>`, commit `fix(edits:<case>#<n>)`, budget = `script.max_augments_per_case` asks (equal to script mode's LLM asks for a case without a stored script — the PM equalised it), the review's script not stored in edits mode, `SBMIG-RESULT … fix=edits` (default line byte-identical), usage block line `fix mode: edits …` | `sbmig/loop/`, `sbmig/triage/`, `sbmig/report/`, `tests/{loop,triage,report}/test_v21i_*` | done |
+| Switches: `sbmig run --fix-mode`, `sbmig fleet run --fix-mode / --no-kb` (`fleet-config.json`, `summary.md` header `settings: fix_mode=… kb=…`, result line `fix=`), web `POST /api/runs?fix_mode=&no_kb=`, run rows `fix_mode` / `kb`, UI checkboxes "LLM 직접 수정만 (스크립트 생성·재사용 없음)" / "KB 사용 안 함 (저장 스크립트 재사용·기록 없음)" + badge `edits · KB off` | `sbmig/cli.py`, `sbmig/fleet/`, `sbmig/web/`, `docs/FLEET.md`, `docs/RUNBOOK.md`, `tests/{core,fleet,web}/test_v21i_*` | done |
+| Not done (small): `errors.md` tries column still says `llm-edit edits …` instead of the label; `FleetState` has no `fix_mode` field (a `settings:` note instead); the structure-review prompt still asks for a script in edits mode (its script is just not stored) | — | follow-up |
+

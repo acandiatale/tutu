@@ -271,8 +271,20 @@ your team" list for the owners.
 | `kb.auto_promote_after_projects` | `2` | candidate → active after success in N distinct projects |
 
 CLI flags of `fleet run`: `--order`, `--max-projects`, `--retry-failed`, `--stop-on-abort`,
-`--max-llm-calls-total`, `--llm-provider`, `--dry-run`, `--config` (repeatable), `--out`. `fleet status` takes
-`--attention`.
+`--max-llm-calls-total`, `--llm-provider`, `--fix-mode script|edits`, `--no-kb`, `--dry-run`, `--config`
+(repeatable), `--out`. `fleet status` takes `--attention`.
+
+| flag (v2.1i) | default | effect |
+|---|---|---|
+| `--fix-mode script\|edits` | the config's `fix.mode` (`script`) | override `fix.mode` for every project: `script` = fix scripts written, stored per case and reused; `edits` = the LLM answers with edits only (no script generation / storage / reuse). Anything else exits 2 |
+| `--no-kb` | off | every project runs with a `NullKnowledgeBase` (like `sbmig run --no-kb`): no stored script is reused, nothing is recorded in the KB (`learning.md` says "KB off"); each run's own `errors.md` / `errors.jsonl` stay |
+
+Both are written to `fleet/fleet-config.json` (`overrides.fix.mode`, `no_kb`), so `fleet resume` continues under the
+same switches. The fleet's first line (`fleet <id>: fix_mode=edits kb=off`), the `summary.md` header
+(`* settings: fix_mode=edits kb=off`), the `fleet status` first line and `state.json` (a `settings: …` note — a resume
+with other switches adds a second one and the header shows `A → B`) name them, so the two fleets of a token comparison
+(default, then `--fix-mode edits --no-kb` on the same manifest with another `--out`) are told apart; compare their
+`summary.md` "LLM calls" / `llm_cost` and each report's "LLM usage and cost".
 
 Offline demo: `scripts/fleet-demo.sh` (pure-java, boot2, boot3, spring5-xml, boot3-again with a fresh KB and the
 replayed LLM of `scripts/demo-kb`): boot3 is fixed by the LLM once, the candidate is compiled from the labels,

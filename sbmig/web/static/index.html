@@ -18,6 +18,7 @@
   label { display:block; margin:8px 0 4px; font-weight:600; }
   input[type=file], select { width:100%; padding:6px; border:1px solid var(--line); border-radius:6px; background:#fff; }
   .cfgs label { font-weight:normal; margin:2px 0; } .cfgs input { margin-right:6px; }
+  .switches { margin-top:10px; } .switches label { font-weight:normal; margin:2px 0; } .switches input { margin-right:6px; }
   button { padding:8px 14px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:6px; cursor:pointer; font-weight:600; }
   button.secondary { background:#fff; color:var(--accent); } button:disabled { opacity:.5; cursor:default; }
   .runs { list-style:none; margin:0; padding:0; max-height:260px; overflow:auto; }
@@ -25,6 +26,8 @@
   .runs li:hover, .runs li.active { background:#eef3ff; }
   .badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:600; color:#fff; background:var(--muted); }
   .badge.running { background:var(--accent); } .badge.ok { background:var(--ok); } .badge.bad { background:var(--bad); } .badge.warn { background:var(--warn); }
+  .badge.mode { background:#fff; color:var(--accent); border:1px solid var(--accent); margin-right:4px; }
+  .runs li .badges { text-align:right; }
   .live { display:grid; grid-template-rows:auto auto auto 1fr auto; gap:12px; min-height:70vh; }
   .graph { display:flex; flex-wrap:wrap; align-items:center; gap:4px; font-size:12px; }
   .graph .node { padding:3px 10px; border:1px solid var(--line); border-radius:12px; background:#fafbfc; color:var(--muted);
@@ -74,6 +77,11 @@
         <option value="analyze">analyze</option><option value="plan">plan</option>
         <option value="transform">transform (레시피 적용)</option><option value="restructure">restructure (구조화 + 구조 점검)</option>
       </select>
+      <div class="switches">
+        <label><input type="checkbox" id="fixedits">LLM 직접 수정만 (스크립트 생성·재사용 없음)</label>
+        <label><input type="checkbox" id="nokb">KB 사용 안 함 (저장 스크립트 재사용·기록 없음)</label>
+        <span class="hint">토큰 비교: 같은 zip을 기본으로 한 번, 두 칸을 켜고 한 번 돌린 뒤 두 report.md의 "LLM usage and cost"를 비교</span>
+      </div>
       <div style="margin-top:12px; display:flex; gap:8px;">
         <button id="start">실행</button>
         <button id="stopbtn" class="secondary" disabled>중단</button>
@@ -90,6 +98,7 @@
     <div class="statusbar">
       <span class="badge" id="state">대기</span>
       <span class="id" id="runid">—</span>
+      <span id="mode"></span>
       <span id="summary" class="hint"></span>
     </div>
     <div>
@@ -154,10 +163,18 @@
     for (const run of d.runs) {
       const li = document.createElement('li');
       li.className = (run.run_id === current) ? 'active' : '';
-      li.innerHTML = `<span class="id">${esc(run.run_id)}</span>${badgeHtml(run)}`;
+      li.innerHTML = `<span class="id">${esc(run.run_id)}</span><span class="badges">${modeHtml(run)}${badgeHtml(run)}</span>`;
       li.onclick = () => attach(run.run_id);
       ul.appendChild(li);
     }
+  }
+
+  // v2.1i 스위치: 기본(script · KB 켬)이 아닐 때만 짧은 배지 — "edits · KB off"
+  function modeHtml(st) {
+    const parts = [];
+    if (st.fix_mode && st.fix_mode !== 'script') parts.push(st.fix_mode);
+    if (st.kb === 'off') parts.push('KB off');
+    return parts.length ? `<span class="badge mode" title="수정 방식 / KB">${esc(parts.join(' · '))}</span>` : '';
   }
 
   function badgeHtml(st) {
@@ -177,6 +194,7 @@
     const html = badgeHtml(st); const tmp = document.createElement('div'); tmp.innerHTML = html;
     b.className = tmp.firstChild.className; b.textContent = tmp.firstChild.textContent;
     $('summary').textContent = st.llm_calls != null ? `LLM 호출 ${st.llm_calls}회` : '';
+    $('mode').innerHTML = modeHtml(st);
     $('stopbtn').disabled = !(st.state === 'running' || st.state === 'queued') || !!st.stop_requested;
     if (st.state === 'finished') setCurrent(null);
     else if (st.state === 'running' && !graphNodes().some((n) => n.classList.contains('done'))) setCurrent(graphNodes()[0]);
@@ -284,7 +302,7 @@
   function attach(runId) {
     if (es) { es.close(); es = null; }
     current = runId; logLines = 0;
-    $('runid').textContent = runId; $('timeline').innerHTML = ''; $('log').innerHTML = ''; $('report').textContent = '실행 중…'; $('files').innerHTML = ''; $('phase').textContent = ''; resetGraph();
+    $('runid').textContent = runId; $('mode').innerHTML = ''; $('timeline').innerHTML = ''; $('log').innerHTML = ''; $('report').textContent = '실행 중…'; $('files').innerHTML = ''; $('phase').textContent = ''; resetGraph();
     try { history.replaceState(null, '', '#' + encodeURIComponent(runId)); } catch (e) {}
     es = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
     es.addEventListener('status', (e) => setStatus(JSON.parse(e.data)));
@@ -312,6 +330,8 @@
     }
     const configs = [...document.querySelectorAll('#cfgs input:checked')].map((i) => i.value).join(',');
     const q = new URLSearchParams({ name: f.name, configs, stop_after: $('stop').value, llm_provider: $('llm').value });
+    if ($('fixedits').checked) q.set('fix_mode', 'edits');     // 꺼져 있으면 보내지 않는다 = 설정대로 (기본 script)
+    if ($('nokb').checked) q.set('no_kb', '1');
     $('start').disabled = true;
     try {
       const r = await fetch('/api/runs?' + q.toString(), { method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: f });

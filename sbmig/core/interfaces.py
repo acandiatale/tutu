@@ -301,9 +301,16 @@ class FixContext(BaseModel):
     reference_files: dict[str, str] = Field(default_factory=dict)   # label/path → content (read-only, never patched)
     # v2 fix scripts (ScriptFixerLike.propose_script): what is asked for and, for augment, the script to extend
     script_mode: Optional[Literal["new", "augment"]] = None
+    # v2.1i: `edits` = ask for edits only (no script section, no helper API); plugins read it the same way
+    fix_mode: Literal["script", "edits"] = "script"
     case_id: str = ""                             # the cluster's case (L2 signature id)
     signature_generic: str = ""
     script_base: Optional[ScriptBase] = None      # augment: the previous version and what it did in this project
+    # v2.1i edits 모드: 이 실행에서 같은 케이스의 앞 시도(previous_attempts 의 id → 결과·실패 이유·트리에 남았는지·적용한
+    # diff 또는 적용 못 한 edits). script 모드에서는 비어 있다. / edits mode: attempt id (of `previous_attempts`) → what
+    # that try did — result and why it failed, whether it is still in the tree, the applied diff or the edits that did
+    # not apply (capped); {} in script mode (augment carries `script_base` instead)
+    previous_edits: dict[str, str] = Field(default_factory=dict)
     # v2.1d dependency version policy: facts for the prompt section "Dependency versions" — the people's table entry
     # (libraries.yml) and what the repository has for the libraries behind this case (same-major releases, which are
     # jakarta builds, the higher majors), one line each; [] when nothing is known

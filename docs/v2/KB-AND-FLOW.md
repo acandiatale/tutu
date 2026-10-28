@@ -299,6 +299,11 @@ KB 탐색 (L2 → cases/<id>/case.json)
 | 개입 지점 | 무엇을 주고 받나 | 호출 수 |
 |---|---|---|
 | 구조 점검 (`restructure.review`) | 모든 pom(60,000자까지, 40개까지) + 모듈 구조 + 인코딩 + sbmig 가 계산한 사실 → 판정 JSON + critical 수정(`<edits>`) | 프로젝트당 **1회**, 답변 형식이 깨지면 **1회 재시도**, 고친 편집이 적용되지 않으면(되돌린 뒤) 실패 이유를 주고 **1회 더** — 최대 **3회**(`_ask` 2 + `_apply_retry` 1) |
+> **`fix.mode: edits` (v2.1i, 토큰 비교용 스위치)**: LLM 에게 수정 내용(`<edits>`)만 요청한다 — 프롬프트에서 스크립트 규칙·도우미 API 가
+> 빠지고(약 36% 짧음), 스크립트 저장·재사용·보강이 없다. 케이스당 LLM 요청 횟수는 script 모드와 같게(`script.max_augments_per_case`)
+> 맞췄다. 웹 UI 의 "LLM 직접 수정만" 체크박스, `sbmig run --fix-mode edits`, `sbmig fleet run --fix-mode edits`. "KB 사용 안 함"
+> (`--no-kb`)까지 켜면 "전부 LLM" 실험이 된다. 결과 구분: `SBMIG-RESULT … fix=edits`, 보고서 "LLM usage and cost" 의 `fix mode` 줄.
+
 | 수정 루프 — 새 수정 (`llm-new`) | 케이스의 오류들, 오류 파일(창 단위), pom 발췌, "Dependency versions"(저장소 버전 사실), KB 힌트, 이전 시도 → 원인 / 해결 / `<edits>` / `<script>` | 케이스당 **1회**; LLM 이 파일을 더 달라면(`<need_files>`) 최대 **2회** 추가(`llm.max_context_rounds`); 스크립트가 못 쓰는 형식이면 **1회** 피드백 |
 | 수정 루프 — 보강 (`llm-augment`) | 위 + 저장 스크립트 코드와 실행 결과 | 케이스당 최대 **3회**(새 수정 포함 총 3) |
 | 운영자 가이드 (`verify_guide`) | 메이저 업그레이드가 읽혀 나왔는데 답변에 `<verify>` 가 없을 때. 요청 role 은 `verify_guide`(v2.1h 부터 정식 `LLMRole`; 재생 파일은 `replay_role: verify_guide`) | 그 시도당 **1회**(저장본 재사용 시도는 0회, sbmig 가 생성) |

@@ -1900,6 +1900,7 @@ class RunReport(BaseModel):
     """실행 한 번의 최종 보고서(report.json, report.md 의 원본). 오케스트레이터가 단계마다 채우고
     마무리에서 인수인계·운영자 확인·오류 목록을 붙인다. `success` = 최종 검증 빌드 성공(불변조건 1: 최종
     빌드 없이 끝나는 실행은 없다)."""
+    fix_mode: str = "script"                         # v2.1i: `fix.mode` of the run (script | edits) — report / SBMIG-RESULT show it
     run_id: str
     project_name: str
     case_type: CaseType

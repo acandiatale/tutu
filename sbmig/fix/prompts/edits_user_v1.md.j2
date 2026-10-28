@@ -1,0 +1,16 @@
+{% if retry -%}
+Fix this case now with `<edits>` — a fresh answer. Earlier tries of this run did not resolve it: "Previous tries" below
+says what each one edited and why it failed; do something different. The source shown is the current tree.
+{%- else -%}
+Fix this case now with `<edits>`: the exact changes for this project, applied at once. They must fix every error of the
+case, in every file listed — ask with `<need_files>` for a file marked "not shown" before you edit it.
+{%- endif %}
+{% for title, body in sections %}
+## {{ title }}
+{{ body }}
+{% endfor %}
+{% if truncated %}
+(Context was shortened to fit the budget: {{ truncated | join(", ") }}. Ask with <need_files> / <need_grep> if you need more.)
+{% endif %}
+The business team reads the record of every modification: give each edit its "desc" — one sentence per modification in the form "<파일> 의 <위치> 에서 <무엇을> <어떻게> 수정합니다", written in {{ desc_language | default("Korean (한국어)") }}.
+Answer now using only the output format: <analysis>, <solution>, <verify> (only after a major upgrade), <edits> (each with its "desc") — or <need_files> / <need_grep>.

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import typer
 
@@ -32,9 +32,12 @@ def _overrides(
     stop_on_abort: Optional[bool],
     llm_provider: Optional[str],
     max_llm_calls_total: Optional[int],
+    fix_mode: str | None = None,
 ) -> dict:
-    """준 CLI 옵션만 설정 오버라이드 dict 로 만든다(``fleet.*``, ``llm.provider``).
+    """준 CLI 옵션만 설정 오버라이드 dict 로 만든다(``fleet.*``, ``llm.provider``, v2.1i ``fix.mode``).
     안 준 옵션은 설정 파일 값이 그대로 남는다."""
+    from sbmig.cli import check_fix_mode
+
     ov: dict = {}
     fleet: dict = {}
     if order:
@@ -53,12 +56,16 @@ def _overrides(
         ov["fleet"] = fleet
     if llm_provider:
         ov["llm"] = {"provider": llm_provider}
+    mode = check_fix_mode(fix_mode)            # BadParameter (exit 2) on anything but script | edits
+    if mode:
+        ov["fix"] = {"mode": mode}
     return ov
 
 
-def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_run: bool) -> int:
+def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_run: bool, no_kb: bool = False) -> int:
     """설정을 읽어 :class:`FleetRunner` 를 만들고 돌린다(종료 코드를 돌려줌). 설정이 틀리면 1.
-    실제 실행이면 ``fleet/sbmig.log`` (INFO) 를 붙였다가 끝나면 반드시 뗀다."""
+    실제 실행이면 ``fleet/sbmig.log`` (INFO) 를 붙였다가 끝나면 반드시 뗀다. ``no_kb`` (v2.1i ``--no-kb``):
+    모든 프로젝트가 ``NullKnowledgeBase`` 로 돈다(저장 스크립트 재사용·기록 없음)."""
     from pydantic import ValidationError
 
     from sbmig.core.config import load_config
@@ -71,7 +78,7 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
     except ValidationError as e:
         typer.secho(f"invalid configuration: {e}", fg=typer.colors.RED, err=True)
         return 1
-    runner = FleetRunner(cfg, manifest, out, echo=typer.echo, dry_run=dry_run)
+    runner = FleetRunner(cfg, manifest, out, echo=typer.echo, dry_run=dry_run, no_kb=no_kb)
     fleet_log: Optional[Path] = None
     if not dry_run:
         try:
@@ -87,7 +94,7 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
             # 로그 파일을 못 붙여도(권한·잠긴 파일) 일괄 실행은 멈추지 않는다
             pass
     try:
-        return _run_fleet(runner, saved, manifest, configs, overrides, dry_run, cfg)
+        return _run_fleet(runner, saved, manifest, configs, overrides, dry_run, cfg, no_kb)
     finally:
         if fleet_log is not None:
             from sbmig.cli import detach_file_log
@@ -95,10 +102,11 @@ def _run(manifest: Path, out: Path, configs: list[Path], overrides: dict, dry_ru
             detach_file_log(fleet_log)
 
 
-def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrides: dict, dry_run: bool, cfg) -> int:
+def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrides: dict, dry_run: bool, cfg,
+               no_kb: bool = False) -> int:
     """재개용 ``fleet-config.json`` 을 먼저 적고 러너를 돌린 뒤, 진행 표와 요약 파일 경로를 찍는다.
     ``--dry-run`` 은 순서와 프로젝트별 결정(run / retry / keep / skip / done)만 찍고
-    아무것도 실행하지 않는다."""
+    아무것도 실행하지 않는다. ``no_kb`` 도 ``fleet-config.json`` 에 남긴다(``fleet resume`` 이 같은 조건으로)."""
     from sbmig.kb.store import atomic_write
 
     from .summary import render_table
@@ -112,6 +120,8 @@ def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrid
                     "manifest": str(manifest.resolve()),
                     "configs": [str(Path(c).resolve()) for c in configs],
                     "overrides": overrides,
+                    # v2.1i: --no-kb 는 설정 키가 아니라(NullKnowledgeBase) 오버라이드에 없다 — 따로 남긴다
+                    "no_kb": bool(no_kb),
                 },
                 indent=2,
             )
@@ -123,7 +133,8 @@ def _run_fleet(runner, saved: Path, manifest: Path, configs: list[Path], overrid
         typer.secho(f"fleet failed: {type(e).__name__}: {e}", fg=typer.colors.RED, err=True)
         return 1
     if dry_run:
-        typer.echo(f"fleet {state.fleet_id} (dry run, order: {cfg.fleet.order}) - nothing executed:")
+        typer.echo(f"fleet {state.fleet_id} (dry run, order: {cfg.fleet.order}, {runner.settings_label()}) "
+                   "- nothing executed:")
         for idx, r, action in runner.planned:
             typer.echo(
                 f"  {idx:3d}. {r.name:<30} {r.status:<10} -> {action}" + (f"  ({r.error})" if r.error else "")
@@ -157,6 +168,11 @@ def run_cmd(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="print the order / resume decisions, run nothing"),
     llm_provider: Optional[str] = typer.Option(None, "--llm-provider"),
+    fix_mode: Annotated[str | None, typer.Option("--fix-mode", help="수정 방식(fix.mode): script = 수정 스크립트 "
+                                                 "생성·저장·재사용(기본), edits = LLM 직접 수정만(토큰 비교용) / "
+                                                 "script (default) | edits")] = None,
+    no_kb: Annotated[bool, typer.Option("--no-kb", help="KB 사용 안 함: 모든 프로젝트가 저장 스크립트 재사용·"
+                                         "기록 없이 돈다 / do not use or feed the knowledge base")] = False,
 ) -> None:
     """매니페스트의 모든 프로젝트를 KB 하나를 공유하며 하나씩 차례로 이관한다(기본은 이어서 실행).
 
@@ -171,8 +187,8 @@ def run_cmd(
     --retry-failed, the incomplete/aborted ones). Exit 0 = all projects succeeded, 2 = some incomplete /
     skipped / not run yet, 3 = stopped on an aborted project (--stop-on-abort) or by the infrastructure guard
     ("fleet stopped: infrastructure <kind> unavailable since <project> …": fix it and run the same command again)."""
-    ov = _overrides(order, max_projects, retry_failed, stop_on_abort, llm_provider, max_llm_calls_total)
-    raise typer.Exit(_run(manifest, out, list(config or []), ov, dry_run))
+    ov = _overrides(order, max_projects, retry_failed, stop_on_abort, llm_provider, max_llm_calls_total, fix_mode)
+    raise typer.Exit(_run(manifest, out, list(config or []), ov, dry_run, no_kb))
 
 
 @fleet_cli.command("resume")
@@ -189,8 +205,8 @@ def resume_cmd(
 ) -> None:
     """앞선 fleet run 을 같은 매니페스트·설정으로 멈춘 곳부터 이어서 돌린다.
 
-    fleet/fleet-config.json 에 남은 매니페스트·설정·오버라이드를 다시 쓰고, 여기서 준 옵션만 그 위에 덮는다
-    (-c 를 주면 이전 설정 대신 그것을 쓴다). 강제 종료·재부팅·인프라 정지 뒤에 쓴다.
+    fleet/fleet-config.json 에 남은 매니페스트·설정·오버라이드(--fix-mode, --no-kb 포함)를 다시 쓰고, 여기서
+    준 옵션만 그 위에 덮는다(-c 를 주면 이전 설정 대신 그것을 쓴다). 강제 종료·재부팅·인프라 정지 뒤에 쓴다.
 
     Continue a fleet (= `fleet run <same manifest> --out <out>` with the same configs)."""
     saved = out / "fleet" / RUN_CONFIG
@@ -206,7 +222,7 @@ def resume_cmd(
     ov = deep_merge(
         prev.get("overrides") or {}, _overrides(None, max_projects, retry_failed, stop_on_abort, None, None)
     )
-    raise typer.Exit(_run(manifest, out, configs, ov, False))
+    raise typer.Exit(_run(manifest, out, configs, ov, False, bool(prev.get("no_kb"))))
 
 
 @fleet_cli.command("status")
@@ -224,7 +240,7 @@ def status_cmd(
     Print the fleet's progress table from <out>/fleet/state.json."""
     from sbmig.core.models import FleetState
 
-    from .summary import render_attention, render_table, totals
+    from .summary import other_notes, render_attention, render_table, settings_label, totals
 
     p = out / "fleet" / "state.json"
     if not p.exists():
@@ -239,13 +255,14 @@ def status_cmd(
             typer.echo(line)
         return
     t = totals(state)
+    label = settings_label(state)
     typer.echo(
-        f"fleet {state.fleet_id}: {t['done']} of {t['projects']} done "
+        f"fleet {state.fleet_id}{f' ({label})' if label else ''}: {t['done']} of {t['projects']} done "
         f"({', '.join(f'{k} {v}' for k, v in sorted(t['by_status'].items()))}); "
         f"llm calls {t['llm_calls']} (cost {t['llm_cost']:.4f}); errors open {t['errors_open']}, resolved "
         f"{t['errors_resolved']}, blocked {t['errors_blocked']}; blocked items {t['blocked']}"
         + (f"; still running: {t['running']}" if t["running"] else "")
     )
     typer.echo(render_table(state))
-    for n in state.notes:
+    for n in other_notes(state):            # the settings notes are in the first line already
         typer.echo(f"note: {n}")

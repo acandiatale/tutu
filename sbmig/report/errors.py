@@ -2,14 +2,16 @@
 흐름상 위치: 보고서 단계에서 markdown.py(report.md 의 Error list · Fixes by case · Structure review)와
 writer.py(콘솔 요약), result_line.py(``SBMIG-RESULT`` 의 open / resolved 개수)가 부른다. 핵심 진입점:
 ``status_counts`` / ``seen_groups``(단계별 묶음) / ``tries_text``(시도 칸) / ``diff_stats``(파일별 +/-) /
-``case_rows``(케이스별 한 줄 — 결정적 시도의 원인·해결·수정 기록) / ``review_entries``(구조 검토 몫).
+``case_rows``(케이스별 한 줄 — 결정적 시도의 원인·해결·수정 기록) / ``review_entries``(구조 검토 몫) /
+``edits_label``(v2.1i ``fix.mode: edits`` 시도의 꼬리표 ``edits:<case>#<n>``).
 렌더링·번역은 여기서 하지 않는다. 빈 목록과 필드가 빠진
 항목도 예외 없이 받아야 한다(옛 KB 레코드, 플러그인 결과).
 
 The run's error list (`RunReport.error_entries`, v2.1) as the report needs it: counts, `seen` groups, the tries cell,
 diff +/- per file and one row per case ("Fixes by case", with the kept tries' 수정 notes — v2.1b `FixTry.edits`).
 Pure data — rendering (and translation) is in markdown.py / writer.py; everything here tolerates an empty list and
-entries with missing fields."""
+entries with missing fields. v2.1i: in an edits-mode run (`RunReport.fix_mode == "edits"`) an `llm-edit` try reads
+`edits:<case>#<n> <result>` (`edits_label`) instead of `<n> llm-edit edits <result>`; script-mode text is unchanged."""
 from __future__ import annotations
 
 import re
@@ -26,6 +28,24 @@ KEPT_RESULTS_EXCLUDED = ("regressed", "reverted", "apply_failed")   # rolled bac
 _FIX_ROUND_RE = re.compile(r"^fix r(\d+)\b")
 _RESOLVED_TRY_RE = re.compile(r"^r(\d+) try (\d+)$")
 _GIT_HEADER_RE = re.compile(r"^diff --git a/(.+?) b/(.+)$")
+EDITS_FIX_MODE = "edits"                       # v2.1i `fix.mode` without fix scripts (RunReport.fix_mode)
+EDITS_SOURCE = "llm-edit"                      # the source of every fix-loop try in that mode
+
+
+def edits_label(case_id: str, n: Any) -> str:
+    """v2.1i edits 모드 시도의 꼬리표 ``edits:<case>#<n>``(n = 이 실행에서 케이스의 시도 번호). script 모드의
+    ``script:<case>:v<N>`` 자리에 쓴다 — 저장 버전이 없으니 시도 번호로 가리킨다(errors.md 의 그 시도).
+
+    `edits:<case>#<n>` — an edits-mode try (n = the case's try number in this run, `FixTry.n`); where script mode
+    names a stored version (`script:<case>:v<N>`), edits mode names the try (errors.md has it with its diff)."""
+    return f"edits:{case_id or '?'}#{n or '?'}"
+
+
+def is_edits_try(t: Any, fix_mode: str = "script") -> bool:
+    """edits 모드 실행의 수정 루프 시도인가(출처 ``llm-edit``) — 구조 검토 시도(``review``)는 아니다.
+
+    A fix-loop try of an edits-mode run (source `llm-edit`); a structure-review try (`review`) is not one."""
+    return fix_mode == EDITS_FIX_MODE and str(getattr(t, "source", "") or "") == EDITS_SOURCE
 
 
 def entries_of(report: Any) -> list[Any]:
@@ -95,10 +115,14 @@ def seen_groups(entries: Iterable[Any]) -> "OrderedDict[str, list[tuple[int, Any
     return groups
 
 
-def try_text(t: Any) -> str:
-    """시도 하나를 한 칸 문장으로: ``번호 출처 [v버전] [edits] 결과`` (예 ``2 kb-script v2 build_ok``).
+def try_text(t: Any, case_id: str = "", fix_mode: str = "script") -> str:
+    """시도 하나를 한 칸 문장으로: ``번호 출처 [v버전] [edits] 결과`` (예 ``2 kb-script v2 build_ok``). v2.1i edits
+    모드의 ``llm-edit`` 시도는 ``edits:<case>#<n> 결과``.
 
-    `1 llm-new edits improved`, `2 kb-script v2 build_ok`."""
+    `1 llm-new edits improved`, `2 kb-script v2 build_ok`; an edits-mode run's `llm-edit` try (v2.1i, `fix_mode`
+    "edits", `case_id` = the entry's case) → `edits:<case>#1 improved`."""
+    if is_edits_try(t, fix_mode):
+        return f"{edits_label(case_id, getattr(t, 'n', 0))} {getattr(t, 'result', '') or 'pending'}"
     parts = [str(getattr(t, "n", "") or "?"), str(getattr(t, "source", "") or "?")]
     if getattr(t, "script_version", 0):
         parts.append(f"v{t.script_version}")
@@ -108,9 +132,18 @@ def try_text(t: Any) -> str:
     return " ".join(parts)
 
 
-def tries_text(tries: Iterable[Any]) -> str:
-    """오류 하나의 시도들을 `` · `` 로 이은 문장(오류 표의 tries 칸)."""
-    return " · ".join(try_text(t) for t in tries)
+def tries_text(tries: Iterable[Any], case_id: str = "", fix_mode: str = "script") -> str:
+    """오류 하나의 시도들을 `` · `` 로 이은 문장(오류 표의 tries 칸). edits 모드면 시도마다 ``edits:<case>#<n>``."""
+    return " · ".join(try_text(t, case_id, fix_mode) for t in tries)
+
+
+def deciding_label(row: Any, fix_mode: str = "script") -> str:
+    """v2.1i edits 모드의 "Fixes by case" 스크립트 칸 대신: 케이스의 결정적 시도 꼬리표 ``edits:<case>#<n>``
+    (그 시도가 ``llm-edit`` 일 때만, 아니면 "").
+
+    The deciding try of a case row as `edits:<case>#<n>` (edits mode, an `llm-edit` try), else ""."""
+    d = getattr(row, "deciding", None)
+    return edits_label(row.case_id, getattr(d, "n", 0)) if d is not None and is_edits_try(d, fix_mode) else ""
 
 
 def where(e: Any) -> str:
@@ -235,6 +268,7 @@ class CaseRow:
     script_version: int = 0
     seen: str = ""
     major_upgrades: int = 0                        # v2.1d: major upgrades / replacements of the deciding try
+    deciding: Any = None                           # v2.1i: the deciding try (an edits-mode row names it edits:<case>#<n>)
 
 
 def _try_key(t: Any) -> tuple:
@@ -288,6 +322,7 @@ def case_rows(entries: Iterable[Any]) -> list[CaseRow]:
     for cid, row in rows.items():
         row.tries.sort(key=lambda t: (getattr(t, "round", 0), getattr(t, "n", 0)))
         d = _deciding_try(row.tries, marks.get(cid, []))
+        row.deciding = d
         if d is not None:
             row.analysis = getattr(d, "analysis", "") or ""
             row.solution = getattr(d, "solution", "") or ""

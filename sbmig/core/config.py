@@ -542,6 +542,12 @@ class FixConfig(BaseModel):
     `fn(options: dict, cfg: Config, llm: LLMClientLike | None) -> FixerLike`."""
     plugin: Optional[str] = None
     plugin_options: dict[str, Any] = Field(default_factory=dict)
+    # v2.1i (2026-10-28, user: "스크립트 만드는 부분을 껐다 켰다 하는 기능" — a fair token comparison for the business
+    # team): `script` = the v2 ladder (the LLM answers with edits AND a reusable fix script, stored per case and reused on
+    # later projects); `edits` = the LLM answers with edits only — no script rules, no helper API in the prompt, no
+    # script storage / reuse / augment; every try is a fresh ask (same per-case LLM asks as script mode: script.max_augments_per_case).
+    # 수정 방식: script = 스크립트 사다리(기본), edits = LLM 이 수정 내용만(스크립트 생성·저장·재사용 없음) — 토큰 비교용.
+    mode: Literal["script", "edits"] = "script"
 
 
 class KBConfig(BaseModel):

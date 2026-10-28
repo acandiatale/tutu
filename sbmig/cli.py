@@ -17,7 +17,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Annotated, Any, List, Optional
 
 import typer
 
@@ -254,6 +254,37 @@ def _fail(msg: str, code: int = 1) -> None:
     raise typer.Exit(code)
 
 
+# v2.1i: 수정 방식 스위치(``fix.mode``)의 허용 값. 설정 모델(FixConfig.mode 의 Literal)에서 읽어 CLI·일괄 실행·웹이
+# 같은 목록을 쓴다 — 값이 늘면 config.py 한 곳만 고친다
+FIX_MODE_HELP = ("수정 방식(fix.mode): script = 수정 스크립트 생성·저장·재사용(기본), edits = LLM 직접 수정만"
+                 "(스크립트 생성·저장·재사용 없음, 토큰 비교용) / script (default) | edits")
+
+
+def fix_modes() -> tuple[str, ...]:
+    """``fix.mode`` 가 받는 값들(``FixConfig.mode`` 의 Literal: ``script``, ``edits``).
+
+    The values `fix.mode` accepts, read from the config model so the CLI, the fleet and the web app never drift."""
+    from typing import get_args
+
+    from sbmig.core.config import FixConfig
+
+    return tuple(get_args(FixConfig.model_fields["mode"].annotation))
+
+
+def check_fix_mode(value: str | None, option: str = "--fix-mode") -> str | None:
+    """수정 방식 값 검사: None / 빈 값은 None(설정대로), 허용 값이면 그대로, 아니면 ``typer.BadParameter``
+    (사용법 오류, exit 2). 일괄 실행 CLI 도 같은 함수를 쓴다.
+
+    None / "" → None (as configured); an accepted value → itself; anything else → `typer.BadParameter` (exit 2)."""
+    if value is None or not str(value).strip():
+        return None
+    v = str(value).strip().lower()
+    allowed = fix_modes()
+    if v not in allowed:
+        raise typer.BadParameter(f"must be one of {' | '.join(allowed)} (got {value!r})", param_hint=option)
+    return v
+
+
 # --------------------------------------------------------------------------- run
 @app.command()
 def run(
@@ -265,6 +296,7 @@ def run(
                                              help="intake|analyze|plan|transform|restructure|verify (v2; jdk21|spring are v1 phases)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="compute and journal decisions, apply nothing"),
     no_kb: bool = typer.Option(False, "--no-kb", help="do not use or feed the knowledge base"),
+    fix_mode: Annotated[str | None, typer.Option("--fix-mode", help=FIX_MODE_HELP)] = None,
     llm_provider: Optional[str] = typer.Option(None, "--llm-provider",
                                                help="openai_compatible|anthropic|fake|plugin|<entry-point name>"),
     llm_plugin: Optional[str] = typer.Option(None, "--llm-plugin",
@@ -306,6 +338,10 @@ def run(
         from sbmig.api import NO_KB_OVERRIDES
 
         overrides["kb"] = dict(NO_KB_OVERRIDES)
+    # v2.1i: 수정 방식 스위치 — 주지 않으면 설정 파일의 fix.mode(기본 script)
+    mode = check_fix_mode(fix_mode)
+    if mode:
+        overrides.setdefault("fix", {})["mode"] = mode
     try:
         phase = parse_stop_after(stop_after)
     except ValueError as e:
@@ -318,6 +354,8 @@ def run(
 
     ws = Workspace.from_input(input, out, run_id=run_id)
     log_path = attach_file_log(ws.run_dir / "sbmig.log")
+    # 두 실험(기본 / edits + KB off)의 로그를 첫 줄에서 구별하려고
+    log.info("run %s: fix_mode=%s kb=%s", ws.run_id, cfg.fix.mode, "off" if no_kb else "on")
     orch = Orchestrator(cfg, ws, kb=NullKnowledgeBase() if no_kb else None)
     try:
         report = orch.run(stop_after=phase, dry_run=dry_run)

@@ -181,6 +181,21 @@ at a time** (learning order; since round 10 the KB writes themselves are seriali
 a fleet and `sbmig kb …` can share one KB without corrupting it): further uploads wait as `queued` and start in order.
 Every call is recorded under `llm.record_dir` without secrets; the advisor's tokens are included in the report's LLM usage.
 
+Two switches under the upload form (v2.1i, the token comparison the business team asked for): "LLM 직접 수정만
+(스크립트 생성·재사용 없음)" sends `fix_mode=edits` (the LLM answers with edits only — no fix script is written, stored
+or reused; same per-case LLM budget) and "KB 사용 안 함 (저장 스크립트 재사용·기록 없음)" sends `no_kb=1` (the run gets a
+`NullKnowledgeBase`, like `sbmig run --no-kb`). Unticked, nothing is sent and the run follows the config (`fix.mode:
+script`, KB on). API clients pass the same query fields (`POST /api/runs?…&fix_mode=script|edits&no_kb=0|1`; another
+value → 400). The run list and the run header show a badge `edits · KB off` when either is set; `GET /api/runs` rows
+carry `fix_mode` and `kb` (`on` | `off`), and the run's `sbmig.log` (`run <id>: fix_mode=edits kb=off …`) and
+`journal.jsonl` (event `web_run`) name them at the start. Comparison recipe: upload the same zips twice — first with
+both boxes unticked (default: scripts + KB), then with both ticked (`edits · KB off`) — and compare "LLM usage and
+cost" (calls, input / output tokens, cost) in the two `report.md` files. For many projects the same comparison runs
+as two fleets: `sbmig fleet run <manifest> --out out/cmp-default` and `sbmig fleet run <manifest> --fix-mode edits
+--no-kb --out out/cmp-edits` (`docs/FLEET.md`). The default run reuses the scripts earlier runs stored in the KB
+(that is the saving of the current version); to compare a first contact with a case, run the default against an empty
+`kb.dir`.
+
 ## 0.6 Plugging in the in-house LLM gateway or agent (adapter pattern)
 Two seams, both configured without code changes in sbmig (details and templates: `docs/ADAPTERS.md`,
 `examples/adapters/`, `config/llm-plugin.example.yml`):

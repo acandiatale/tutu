@@ -215,6 +215,10 @@ review:                            # v2 structure review: the LLM checks poms / 
   max_poms: 40
   record: true                     # <kb>/reviews.jsonl
 
+fix:
+  mode: script                     # v2.1i: script = fix scripts stored per case and reused (default) | edits = the LLM answers
+                                   # with edits only (no script generation / storage / reuse) — for the token comparison
+
 kb:
   dir: kb-v2                       # v2.1: errors.jsonl (every run's error list), cases.md, cases/<case_id>/ (case.json + fix_v<N>.py)
   redact_file: knowledge/kb/redact.yml   # secret masking rules added to the built-ins (company patterns go here)

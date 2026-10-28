@@ -1736,3 +1736,53 @@ Docs: `docs/v2/KB-AND-FLOW.md` review call limit 2 → 3 (A3).
   `$SBMIG_ENV_FILE`, then every `.env` from `PACKAGE_ROOT` up to the folder holding `.git` (`dotenv_chain`), then the same
   from the cwd; nearest first, so a nearer file wins a key and shell variables still win everything.
 
+
+## v2.1i — `fix.mode: script | edits` (the script ladder on / off, for the token comparison, 2026-10-28)
+
+User: the business team wants "현행 버전(스크립트 저장·재사용) vs 스크립트 없이 LLM 한테 전체 수정을 맡겼을 때" token usage side by
+side; runs go through the web UI (uvicorn, zip upload); "스크립트 만드는 부분을 껐다 켰다 하는 기능" so the comparison is fair.
+
+### Config (`sbmig/core/config.py`, `config/default.yml`)
+- `fix.mode: "script" | "edits"` (default `script`).
+  - `script` = unchanged v2 ladder: the LLM answers with `<edits>` AND a reusable `<script>` (+ `<changes>`), scripts are
+    stored per case, reused (`kb-script`) and augmented on later projects.
+  - `edits` = the LLM answers with `<edits>` only: the system prompt is `sbmig/fix/prompts/edits_system_v1.md` (the same
+    rules minus everything about scripts: no helper API table, no `<script>` / `<changes>` / `<no_script>`, no "Script or
+    no script"; `<analysis>`, `<solution>`, `<verify>` (rule 14 unchanged), `<edits>`, `<need_files>` / `<need_grep>` stay);
+    no stored script is consulted, stored, credited or augmented; every try of a case is a fresh ask that carries the
+    previous tries of this run (what was edited, why it failed) — the same per-case LLM asks as `script` mode gives a
+    case without a stored script (`script.max_augments_per_case`, the first ask counted; then BLOCKED `repeated_failure`); `verify_guide` unchanged; KB error
+    records (`errors.jsonl`, `resolved_by`) unchanged, `kb.match` hints are still injected unless the KB is off.
+- `FixContext.fix_mode` (interfaces.py) carries it to the fixer and to tier-2 plugins.
+- `RunReport.fix_mode` (models.py).
+
+### Loop / triage / report (`sbmig/loop/`, `sbmig/triage/`, `sbmig/report/`)
+- Triage in `edits` mode never decides `reuse` / `augment` (`DecisionKind` stays; the decision is `new` with the try
+  count); `BuildFixLoop` skips `_store_script` / `_credit_script`; `FixAttempt.source = "llm-edit"` (the existing
+  `TrySource` value); the report's fix-attempt label is `edits:<case>#<n>` instead of `script:<case>:v<N>`.
+- `SBMIG-RESULT … fix=edits` is appended when `report.fix_mode != "script"` (the default line is unchanged).
+- Report header "LLM usage and cost" names the mode (`fix mode: edits`) so the two experiments can be told apart.
+
+### CLI / web / fleet
+- `sbmig run --fix-mode script|edits` (overrides `fix.mode`); `sbmig fleet run --fix-mode …` and `--no-kb` (the fleet
+  builds `Orchestrator(cfg, ws, kb=NullKnowledgeBase())` per project, like `sbmig run --no-kb`).
+- Web `POST /api/runs` takes `fix_mode` (`script` | `edits`, default `script`) and `no_kb` (`0` | `1`, default `0`)
+  as query / form fields next to `configs`, `stop_after`, `llm_provider`; `RunManager.start_file(..., fix_mode=,
+  no_kb=)`; `GET /api/runs` rows carry `fix_mode` and `kb` (`on` | `off`). `sbmig/web/static/index.html` shows two
+  checkboxes under the upload form: "LLM 직접 수정만 (스크립트 생성·재사용 없음)" → `fix_mode=edits`, "KB 사용 안 함
+  (저장 스크립트 재사용·기록 없음)" → `no_kb=1`; the run list shows the mode.
+
+### As built (v2.1i, 2026-10-28)
+- `FixContext.previous_edits: dict[str, str]` (attempt id → the try's label, result, why it failed, whether its changes are
+  still in the tree, the applied diff ≤ 4000 chars or the edits it asked for) — filled by the loop in edits mode for tier-2
+  plugins; the built-in fixer rebuilds previous edits from its own proposals through `att.prompt_hash` (one `LLMFixer`
+  per run). `effective_fix_mode(cfg, ctx)` (`sbmig/fix/context.py`): edits when either says so.
+- Budget: `edits_llm_limit(cfg) = max(1, script.max_augments_per_case)` — script mode counts the first ask inside that
+  limit too, so both modes ask the LLM the same number of times for a case without a stored script (with one, script mode
+  adds a reuse that costs no call). The contract text above was corrected accordingly.
+- The structure review (`restructure.review`) still asks with its own prompt; in edits mode its script is applied but not
+  stored ("not stored (fix.mode edits)"). `errors.md` keeps the `llm-edit` source wording in the tries column.
+- Web: `fix_mode` / `no_kb` are query fields next to `name` / `configs`; bad values → 400 before the upload is read; rows
+  for runs no longer in memory read `web-status.json` → `report.json` → defaults. Fleet: `fleet-config.json` keeps
+  `overrides.fix.mode` and `no_kb` for `fleet resume`; a resume with other switches adds a second `settings:` note.
+
