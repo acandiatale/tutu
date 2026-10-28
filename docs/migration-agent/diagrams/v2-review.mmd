@@ -1,0 +1,8 @@
+flowchart LR
+  IN["입력<br/>모든 pom(≤ 40개, 60,000자) · 모듈 구조<br/>소스 인코딩 · 필터링되는 바이너리 리소스<br/>sbmig 가 계산한 사실"] --> ASK["LLM 1회<br/>회사 규칙으로 검토"]
+  ASK --> J["판정 JSON<br/>critical · warning"]
+  J -->|warning| RPT["보고서 'Structure review'"]
+  J -->|critical| ED["&lt;edits&gt; 적용 · 커밋 review:"]
+  ED -->|적용 실패| RT["실패 이유 주고 1회 더<br/>(형식 깨짐 1회 포함 최대 3회)"]
+  ED --> RB["읽기 되돌림: 메이저 업그레이드면<br/>운영자 확인 사항 생성"]
+  style ASK fill:#3D5A80,color:#fff

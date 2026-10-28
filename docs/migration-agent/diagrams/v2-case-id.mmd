@@ -1,0 +1,9 @@
+flowchart LR
+  L["빌드 로그 한 줄<br/>Foo.java:[12,8] cannot find symbol<br/>class HttpServletRequest"] --> P["log_parser<br/>BuildError(file, line, message)"]
+  P --> L1["L1 서명<br/>경로·숫자 정규화"]
+  P --> L2["L2 서명 (더 거침)<br/>이름까지 지움<br/>'cannot find symbol: class'"]
+  L2 --> H["case_id = sha1(L2)[:10]<br/>예: 7a52b1cea8"]
+  H --> C["kb-v2/cases/7a52b1cea8/<br/>case.json · fix_v1.py · fix_v2.py …"]
+  C --> R["다음 프로젝트의 같은 오류<br/>→ 같은 폴더 → 저장본 재사용 (LLM 0회)"]
+  style H fill:#F2CC8F
+  style R fill:#2C5F2D,color:#fff

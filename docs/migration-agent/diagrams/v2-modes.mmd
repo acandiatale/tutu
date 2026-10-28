@@ -1,0 +1,8 @@
+flowchart LR
+  S1["script 모드 (현행)<br/>프롬프트: 규칙 + 도우미 API p"] --> S2["답: edits + 재사용용 script"] --> S3["fix_v&lt;N&gt;.py 저장<br/>다음 프로젝트에서 LLM 0회 재사용"]
+  E1["edits 모드 (비교 실험)<br/>프롬프트: 규칙만 (36% 짧음)"] --> E2["답: edits 만"] --> E3["저장 · 재사용 · 보강 없음<br/>매번 LLM"]
+  S3 --> X["같은 것<br/>케이스당 LLM 요청 3회<br/>재빌드 채점 · 되돌리기 · 운영자 확인"]
+  E3 --> X
+  X --> C["비교<br/>report.md 'LLM usage and cost'<br/>SBMIG-RESULT fix=edits · 배지 edits · KB off"]
+  style S3 fill:#2C5F2D,color:#fff
+  style E3 fill:#E07A5F,color:#fff

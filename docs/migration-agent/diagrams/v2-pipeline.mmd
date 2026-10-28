@@ -1,0 +1,15 @@
+flowchart TB
+  subgraph p1["① 준비 (LLM 없음)"]
+    direction LR
+    IN["intake<br/>Maven 만 · pom 없는 트리 거부<br/>git 스냅샷"] --> AN["analyze<br/>프로필 · 케이스 종류<br/>권고(advisory)"] --> PL["plan<br/>step 목록 (결정적)"] --> RW["transform.rewrite<br/>OpenRewrite 1회<br/>Java 21 · jakarta · Boot 4"] --> CP["transform.compile<br/>mvn clean compile 1회<br/>오류 → 오류 목록"]
+  end
+  subgraph p2["② 구조와 빌드"]
+    direction LR
+    RS["restructure.*<br/>회사 레이아웃<br/>boot / back / front · JSP jakarta"] --> RV["restructure.review<br/>LLM 구조 검토 (≤ 3회)<br/>critical → edits"] --> VB["verify.build<br/>mvn clean package<br/>-Dmaven.test.skip=true"]
+    VB -->|실패| LP["수정 루프<br/>라운드 ≤ 50 · 케이스별 스크립트<br/>재빌드가 채점"] --> FB["최종 빌드"]
+    VB -->|BUILD SUCCESS| FN["finalize<br/>보고서 · KB 기록<br/>SBMIG-RESULT"]
+    FB --> FN
+  end
+  p1 ~~~ p2
+  style LP fill:#E07A5F,color:#fff
+  style FN fill:#2C5F2D,color:#fff

@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph entry["진입"]
+    direction LR
+    CLI["sbmig run / fleet (cli.py)"] ~~~ WEB["웹 UI (FastAPI + SSE)<br/>zip 업로드 · 스위치"]
+  end
+  entry --> GR["graph/engine.py<br/>LangGraph: intake → analyze → plan → phase×N → finalize"]
+  GR --> OR["loop/orchestrator.py<br/>step 실행 순서 · 빌드 게이트"]
+  OR --> AN["analyze/<br/>접수 · 프로필 · 권고"]
+  OR --> RW["rewrite/<br/>OpenRewrite 1회"]
+  OR --> BD["build/<br/>Maven 실행 · 로그 파서<br/>저장소 버전 조회"]
+  OR --> RS["restructure/<br/>회사 레이아웃 · JSP jakarta"]
+  OR --> RV["review/<br/>LLM 구조 검토"]
+  OR --> FL["loop/fixloop.py<br/>수정 루프 · 사다리 · 채점 · 되돌리기"]
+  FL --> TR["triage/<br/>케이스 묶기 · 순서 · 차단 정책"]
+  FL --> FX["fix/<br/>프롬프트 · 응답 프로토콜<br/>company.py → LLM 게이트웨이"]
+  FL --> SC["script/<br/>스크립트 런타임 (python -I, 도우미 p)"]
+  FL --> ER["errors/ + kb/<br/>오류 목록 · 케이스 저장소 (파일)"]
+  OR --> RP["report/<br/>Handover 먼저 · SBMIG-RESULT"]
+  style FX fill:#3D5A80,color:#fff
+  style ER fill:#97BC62

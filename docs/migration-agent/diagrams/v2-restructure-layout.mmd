@@ -1,0 +1,9 @@
+flowchart LR
+  ROOT["루트 pom.xml (aggregator)<br/>parent = base-parent<br/>필수 아티팩트 2개 선언<br/>선택 8개는 쓰던 것만 4.0.0"]
+  ROOT --> BOOT["{name}-boot · parent boot-jar<br/>JSP 있으면 WAR(외장 Tomcat), 아니면 실행 jar<br/>Application · web.xml 등록 Bean · application.properties<br/>asis-webinf/ (web.xml · Spring XML · properties 보관)"]
+  ROOT --> BACK["{name}-back · parent comp-jar<br/>모든 as-is 소스(컨트롤러 포함) · 의존성<br/>web root 안 &lt;resource&gt; 파일은 classpath 에 그대로"]
+  ROOT --> FRONT["{name}-front · parent comp-jar (웹 리소스 있을 때)<br/>static → src/main/resources/static<br/>(+ &lt;resource&gt; 파일 복사, 웹 경로 유지)<br/>JSP → META-INF/resources/WEB-INF/jsp · javax → jakarta<br/>WEB-INF 의 설정 아닌 파일 → META-INF/resources/WEB-INF/"]
+  BOOT -.->|의존| BACK
+  BOOT -.->|의존| FRONT
+  ROOT ~~~ AS["Boot as-is · MSA (pom 만)<br/>root → base-parent · *-boot → boot-jar<br/>그 외 모듈 → comp-jar · 디렉토리 유지"]
+  style AS fill:#EEF3EA
