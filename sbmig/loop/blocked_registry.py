@@ -1,4 +1,13 @@
-"""Run-wide registry of blocked clusters (docs/ERROR-HANDLING.md: "never loop on what we cannot fix, never hide it").
+"""실행 전체의 차단(BLOCKED) 등록부 — "고칠 수 없는 것에 매달리지 않고, 숨기지도
+않는다"(docs/ERROR-HANDLING.md). 오케스트레이터가 실행마다 하나 만들어 모든 ``BuildFixLoop`` 에 넘긴다: 한 번
+차단된 오류는 다시 시도하지 않고, 보고서 "Blocked" 와 인수인계 섹션에 사람이 할 일(제안 문구)과 함께 남는다.
+차단 사유: 반복 실패(케이스당 저장본 1 + LLM 3회 소진), 차단 정책(``loop.blocked_policy``), LLM 불가·예산
+소진, 사내 parent 해석 불가(실행 중단), 진동(A↔B↔A). 키 = (L1 서명, 프로젝트 기준 전체 경로) — MSA 서비스끼리
+같은 상대경로 파일을 섞지 않으려고(round 10). 재구성이 파일을 옮기면 오케스트레이터가 git rename 을
+``note_moves`` 로 알려 키가 새 경로를 따라간다. ``compose_suggestion`` 이 제안 문구를 만들고, 최종 빌드 뒤
+``fill_via`` 가 javax API jar 를 끌고 오는 라이브러리(via)를 채워 문구를 다시 쓴다.
+
+Run-wide registry of blocked clusters (docs/ERROR-HANDLING.md: "never loop on what we cannot fix, never hide it").
 
 The orchestrator owns one registry per run and hands it to every BuildFixLoop, so a cluster blocked in the spring
 phase is skipped in restructure/verify too. Keys are (L1 signature, file) — the file as the full project-relative
@@ -12,6 +21,8 @@ file blocked before the move stays blocked after it (:meth:`canonical_file` maps
 (``sbmig.build.classpath`` — optional, lazily imported) and ``cfg.artifacts.optional``. After the final build,
 :func:`fill_via` adds the library that drags a javax API jar in (``BlockedItem.via`` / ``via_direct``, from the
 ``sbmig.build.deptree`` inventory) and recomposes the suggestion (ladder (1)–(5), docs/ERROR-HANDLING.md X1).
+
+
 """
 from __future__ import annotations
 
@@ -32,7 +43,9 @@ MAX_MOVE_HOPS = 8                    # a file moved by several restructure steps
 
 
 def normalize_file(path: Optional[str]) -> Optional[str]:
-    """'module/comp-jar/src/main/java/a/B.java' → 'src/main/java/a/B.java' (the `src/…` suffix). No longer the
+    """경로의 ``src/…`` 꼬리만 남긴다. 등록부 키로는 더 이상 안 쓴다(round 10: 전체 경로 + note_moves).
+
+    'module/comp-jar/src/main/java/a/B.java' → 'src/main/java/a/B.java' (the `src/…` suffix). No longer the
     registry key (round 10: full paths + `note_moves`); kept for callers that want the suffix."""
     if not path:
         return path
@@ -42,7 +55,9 @@ def normalize_file(path: Optional[str]) -> Optional[str]:
 
 
 def posix_path(path: Optional[str]) -> str:
-    """Project-relative posix form of a path ('' for none): backslashes → '/', no leading './'."""
+    """프로젝트 기준 posix 경로(Windows 역슬래시 → '/', 앞의 './' 제거, 없으면 '').
+
+    Project-relative posix form of a path ('' for none): backslashes → '/', no leading './'."""
     p = (path or "").replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
@@ -50,7 +65,9 @@ def posix_path(path: Optional[str]) -> str:
 
 
 def error_key(e: BuildError) -> str:
-    """String form of an error's registry key (signature, plus `@<file>` for compile errors) — full path, no move
+    """오류의 등록부 키를 문자열로(서명, 컴파일 오류면 ``@<파일>``). 이동 추적은 없다(그건 key 메서드).
+
+    String form of an error's registry key (signature, plus `@<file>` for compile errors) — full path, no move
     mapping; `BlockedRegistry.key` is the move-aware tuple the registry itself uses."""
     sig = e.signature or f"{e.kind.value}|{e.message}"
     if e.kind in FILE_KINDS and e.file:
@@ -59,6 +76,7 @@ def error_key(e: BuildError) -> str:
 
 
 def sanitize_errors(errors: Iterable[BuildError], limit: int = MAX_ERRORS) -> list[BuildError]:
+    """보고서·저널에 남길 오류 사본: 최대 ``limit`` 개, Maven 원문(raw)은 ``MAX_RAW`` 자에서 자른다."""
     out: list[BuildError] = []
     for e in list(errors)[:limit]:
         raw = e.raw if len(e.raw or "") <= MAX_RAW else e.raw[:MAX_RAW] + " …"
@@ -70,6 +88,8 @@ Key = tuple[str, str]                # (L1 signature, file or '')
 
 
 class BlockedRegistry:
+    """차단된 오류의 실행 전체 목록: 항목(BlockedItem, id ``blk-<해시>``)과 (L1 서명, 파일) 키 → 항목 id.
+    같은 사유의 같은 오류는 한 항목으로 합쳐 단계가 바뀌어도 id 가 그대로다."""
     def __init__(self) -> None:
         self._items: dict[str, BlockedItem] = {}
         self._by_key: dict[Key, str] = {}
@@ -77,7 +97,9 @@ class BlockedRegistry:
 
     # -- keys / moves --------------------------------------------------------
     def canonical_file(self, path: Optional[str]) -> str:
-        """The current path of a file the run may have moved: posix form, then the restructure renames (chained)."""
+        """재구성이 옮겼을 수 있는 파일의 현재 경로(이름 바꾸기를 연쇄로 따라감, 최대 ``MAX_MOVE_HOPS``).
+
+        The current path of a file the run may have moved: posix form, then the restructure renames (chained)."""
         p = posix_path(path)
         for _ in range(MAX_MOVE_HOPS):
             nxt = self._moves.get(p)
@@ -87,13 +109,18 @@ class BlockedRegistry:
         return p
 
     def key(self, e: BuildError) -> Key:
+        """오류의 등록부 키(L1 서명, 현재 파일 경로). 모듈·아티팩트 오류는 파일 자리가 ''."""
         sig = e.signature or f"{e.kind.value}|{e.message}"
         if e.kind in FILE_KINDS and e.file:
             return sig, self.canonical_file(e.file)
         return sig, ""
 
     def note_moves(self, moves: dict[str, str]) -> int:
-        """Files moved by a restructure step (`old → new`, project-relative): blocked keys follow them. Returns how
+        """재구성 단계가 옮긴 파일들(옛 경로 → 새 경로): 차단 키가 새 경로를 따라가게 다시 건다. 옮기기 전에
+        차단된 파일은 옮긴 뒤에도 차단된 채로 남는다. MSA /
+        boot_pom 실행은 디렉토리를 그대로 두므로 할 일이 없다.
+
+        Files moved by a restructure step (`old → new`, project-relative): blocked keys follow them. Returns how
         many keys were re-keyed. MSA / boot_pom runs keep their directories → nothing to note."""
         clean = {posix_path(a): posix_path(b) for a, b in (moves or {}).items() if a and b and a != b}
         if not clean:
@@ -118,27 +145,35 @@ class BlockedRegistry:
         return iter(self._items.values())
 
     def items(self) -> list[BlockedItem]:
+        """등록된 모든 차단 항목."""
         return list(self._items.values())
 
     def get(self, item_id: str) -> Optional[BlockedItem]:
+        """id 로 항목 찾기."""
         return self._items.get(item_id)
 
     def item_for_error(self, e: BuildError) -> Optional[BlockedItem]:
+        """이 오류를 막고 있는 항목(없으면 None)."""
         iid = self._by_key.get(self.key(e))
         return self._items.get(iid) if iid else None
 
     def is_blocked_error(self, e: BuildError) -> bool:
+        """이 오류가 이미 차단돼 있는가 — 마무리에서 미해결 목록과 차단 목록이 겹치지 않게 하는 데도 쓴다."""
         return self.key(e) in self._by_key
 
     def partition(self, cluster: ErrorCluster) -> tuple[list[BuildError], list[BuildError]]:
-        """(errors already blocked, errors still to work on)."""
+        """(이미 차단된 오류들, 아직 손댈 오류들) — 일부만 차단된 케이스는 나머지만 계속 고친다.
+
+        (errors already blocked, errors still to work on)."""
         blocked, rest = [], []
         for e in cluster.errors:
             (blocked if self.is_blocked_error(e) else rest).append(e)
         return blocked, rest
 
     def covering(self, cluster: ErrorCluster) -> Optional[BlockedItem]:
-        """The (first) item blocking this cluster when *every* error of it is blocked, else None."""
+        """클러스터의 오류가 *전부* 차단돼 있을 때 그 (첫) 항목, 하나라도 아니면 None.
+
+        The (first) item blocking this cluster when *every* error of it is blocked, else None."""
         if not cluster.errors:
             return None
         items = [self.item_for_error(e) for e in cluster.errors]
@@ -152,7 +187,11 @@ class BlockedRegistry:
               required_type: Optional[str] = None, found_type: Optional[str] = None,
               owner_class: Optional[str] = None, artifact: Optional[GAV] = None, suggestion: str = "",
               notes: Optional[list[str]] = None) -> tuple[BlockedItem, bool]:
-        """Register (part of) a cluster as blocked. Returns (item, created). Errors already known to an item of the
+        """클러스터(또는 그 일부 오류)를 차단으로 등록한다 → (항목, 새로 만들었나). 같은 사유의 항목이 이미
+        아는 오류가 있으면 그 항목에 합친다(라이브러리 문제 하나 = 한
+        줄, 단계가 바뀌어도 id 유지). id = 사유 + 키들의 sha1 앞 10자리.
+
+        Register (part of) a cluster as blocked. Returns (item, created). Errors already known to an item of the
         same reason are merged into it (one row per library problem, stable id across phases)."""
         errs = list(errors if errors is not None else cluster.errors) or list(cluster.errors)
         keys = [self.key(e) for e in errs]
@@ -195,6 +234,7 @@ class BlockedRegistry:
                 item.errors += sanitize_errors([e], 1)
 
     def remove(self, item_id: str) -> Optional[BlockedItem]:
+        """항목과 그 키들을 지운다."""
         item = self._items.pop(item_id, None)
         if item is not None:
             for k in [k for k, v in self._by_key.items() if v == item_id]:
@@ -206,6 +246,7 @@ class BlockedRegistry:
 # attribution (owner class → jar → GAV) — sbmig.build.classpath is optional (workstream G1)
 # ---------------------------------------------------------------------------------------------------------------------
 def default_locator() -> Any:
+    """클래스 → jar → GAV 귀속 모듈(``sbmig.build.classpath``). 없거나 깨졌으면 None(귀속 없이 진행)."""
     try:
         return importlib.import_module("sbmig.build.classpath")
     except Exception as e:  # not there yet / broken → attribution simply stays empty
@@ -215,7 +256,10 @@ def default_locator() -> Any:
 
 def attribute(locator: Any, ws, cfg, owner_class: Optional[str], errors: list[BuildError],
               module: Optional[str] = None) -> tuple[Optional[GAV], Optional[str], list[str]]:
-    """Return (artifact, owner_class, notes) using `locator.locate_class` / `locator.locate_type_owner`."""
+    """오류 뒤의 라이브러리를 classpath 에서 찾는다 → (아티팩트, 소유 클래스, 메모). 소유 클래스가 프로젝트
+    안에 있으면 아티팩트 없음(외부 라이브러리 탓이 아니다). 실패해도 예외 대신 메모 한 줄.
+
+    Return (artifact, owner_class, notes) using `locator.locate_class` / `locator.locate_type_owner`."""
     notes: list[str] = []
     if locator is None:
         return None, owner_class, notes
@@ -246,6 +290,8 @@ def attribute(locator: Any, ws, cfg, owner_class: Optional[str], errors: list[Bu
 # ---------------------------------------------------------------------------------------------------------------------
 # via: the library that drags a javax API jar in (sbmig.build.deptree inventory, 2026-10-22)
 # ---------------------------------------------------------------------------------------------------------------------
+# javax 패키지 → 그것을 담은 API 아티팩트. 귀속이 jar 를
+# 못 찾아도 오류가 요구하는 타입이 어느 API 인지 말해 준다.
 # javax package → the API artifact that ships it (when the attribution found no jar, the required type still says
 # which API the library expects); the other groups of the same API family count as the same jar
 JAVAX_PACKAGE_ARTIFACTS: dict[str, str] = {
@@ -278,7 +324,10 @@ _VIA_REASONS = (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPA
 
 
 def is_javax_api_artifact(gav: Optional[GAV]) -> bool:
-    """A javax EE API jar: group `javax.*` / `org.hibernate.javax.persistence` / `com.sun.mail`, or a Jakarta EE 8
+    """javax EE API jar 인가: ``javax.*`` 등 그룹, 또는 이름만 jakarta 인 Jakarta EE 8
+    재배포본(``jakarta.*:*-api`` 1.x / 2.x, servlet 4.x, el 3.x — 패키지는 여전히 javax).
+
+    A javax EE API jar: group `javax.*` / `org.hibernate.javax.persistence` / `com.sun.mail`, or a Jakarta EE 8
     re-publication (`jakarta.*:*-api` 1.x / 2.x — servlet 4.x, el 3.x — still the javax namespace)."""
     if gav is None:
         return False
@@ -335,7 +384,10 @@ def _jar_rank(jar: Any) -> int:
 
 
 def match_javax_jar(item: BlockedItem, inventory: Iterable[Any]) -> Any:
-    """The inventory entry (`JavaxApiJar`) for a blocked X1 / X2 item, or None. The item's artifact first (same
+    """차단된 X1 / X2 항목(javax API · 호환 안 되는 외부 API)에 맞는 javax jar 목록 항목. 항목의 아티팩트가
+    먼저, 아니면 오류가 말하는 javax 패키지의 API 아티팩트; 같은 모듈의 것을 우선한다.
+
+    The inventory entry (`JavaxApiJar`) for a blocked X1 / X2 item, or None. The item's artifact first (same
     key), else the API artifact of the javax package the error names; the item's module preferred."""
     jars = list(inventory or [])
     if not jars:
@@ -365,7 +417,11 @@ def match_javax_jar(item: BlockedItem, inventory: Iterable[Any]) -> Any:
 
 
 def fill_via(items: Iterable[BlockedItem], inventory: Iterable[Any], cfg=None) -> int:
-    """Set `via` / `via_direct` on X1 / X2 items whose artifact is None or a javax API jar (the library that drags
+    """최종 빌드 뒤(``mvn dependency:tree`` 목록): X1 / X2 항목에 javax jar 를 끌고 오는 직접
+    의존성(``via``)을 채우고 제안 문구를 다시 쓴다. "javax API jar 를 올리세요" 대신 "이 라이브러리를 jakarta
+    판으로" 라고 말하게 하려는 것.
+
+    Set `via` / `via_direct` on X1 / X2 items whose artifact is None or a javax API jar (the library that drags
     the jar in, from the `dependency:tree` inventory) and recompose their suggestion. Returns the items changed."""
     inv = list(inventory or [])
     changed = 0
@@ -406,7 +462,9 @@ def _in_house_groups(cfg) -> list[str]:
 
 
 def is_in_house(gav: Optional[GAV], cfg) -> bool:
-    """Group equal to / under the configured parent's group, or any mandatory / optional / role-parent group."""
+    """사내 아티팩트인가(설정된 parent·필수·선택·역할 parent 의 group 이거나 그 아래).
+
+    Group equal to / under the configured parent's group, or any mandatory / optional / role-parent group."""
     if gav is None:
         return False
     g = gav.group_id
@@ -433,7 +491,11 @@ def _api_jar_text(item: BlockedItem, jar: Any) -> str:
 
 
 def _via_suggestion(item: BlockedItem, cfg, jar: Any = None) -> str:
-    """Suggestion ladder (1)–(4) for an item whose javax API jar was traced in the dependency tree; "" otherwise."""
+    """의존성 트리에서 javax jar 경로를 찾은 항목의 제안 사다리: (1) 표가 아는 라이브러리 → 그 jakarta
+    버전으로(좌표가 옮겨졌으면 옮기기), (2) 사내 아티팩트 → 사내 jakarta 빌드 필요, (3) 그 밖의 라이브러리 →
+    업그레이드·교체(일부러 손대지 않음), (4) pom 에 직접 선언된 javax jar → 삭제. 해당 없으면 "".
+
+    Suggestion ladder (1)–(4) for an item whose javax API jar was traced in the dependency tree; "" otherwise."""
     via = item.via_direct
     declared = bool(getattr(jar, "declared", False)) if jar is not None else (
         via is None and len(item.via) == 2)
@@ -488,6 +550,9 @@ def _optional_spec(cfg, artifact: Optional[GAV]):
 
 def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[str] = None,
                        repositories: Optional[list[str]] = None, extra: str = "", javax_jar: Any = None) -> str:
+    """차단 항목의 제안 문구(보고서 "Blocked"·인수인계에 사람이 읽는 다음 행동). 사유별로 다르다: javax /
+    호환 안 되는 API → 어느 라이브러리를 어떻게, 없는 아티팩트 → Nexus 프록시·좌표 수정(LLM 에게 버전을
+    지어내게 하지 않는다), parent → settings·미러, 플러그인, 인코딩, 예산, LLM 불가, 반복 실패, 진동."""
     r = item.reason
     a = item.artifact
     if r in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):

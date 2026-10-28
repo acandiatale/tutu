@@ -1,4 +1,12 @@
-"""JSP / tag-file code regions (pure, dependency-free) — used by the source scanner (`SourceStats.jsp_javax_files`),
+"""JSP / 태그 파일에서 자바 타입 이름이 나올 수 있는 영역만 골라내는 순수 함수들 — 소스 스캐너가 "아직 javax
+EE 타입을 쓰는 JSP" 를 세는 데 쓴다(``SourceStats.jsp_javax_files``, 표는 옆의 ``jakarta_packages.yml``). 왜
+따로 보나: JSP 는 Maven 빌드가 아니라 서블릿 컨테이너가 실행 시에 컴파일하고 OpenRewrite 도 JSP 를 건너뛴다
+(``openrewrite.exclusions``) — 그래서 빌드는 통과해도 Tomcat 10+ 에서 실행 시 실패한다. v2 는 JSP 안의 javax
+를 바꾸지 않는다(알려진 후속 과제, 현재는 프로필에 개수만 남음). 핵심 진입점: :func:`jsp_code_spans` (import /
+code / bean 영역), :func:`jsp_javax_refs` (영역 안의 표에 있는 javax 이름), :func:`javax_ee_token`. HTML·EL
+``${…}``·taglib uri·JSP 주석·include 는 자바 참조가 아니므로 절대 영역에 넣지 않는다.
+
+JSP / tag-file code regions (pure, dependency-free) — used by the source scanner (`SourceStats.jsp_javax_files`),
 with the javax → jakarta package table `jakarta_packages.yml` next to this module.
 
 JSPs are compiled by the servlet container at runtime, never by the Maven build, and OpenRewrite does not parse them
@@ -12,6 +20,8 @@ JSPs are compiled by the servlet container at runtime, never by the Maven build,
 
 Everything else (HTML, EL `${…}`, taglib `uri` values, `<%-- … --%>` comments, include directives) is never a Java
 reference. `jsp_code_spans` returns exactly these regions as `(start, end, kind)` with kind `import` | `code` | `bean`.
+
+
 """
 from __future__ import annotations
 
@@ -42,6 +52,8 @@ _JAVAX_TOKEN_RE = re.compile(r"(?<![\w$.])javax(?:\.[A-Za-z_$][\w$]*)+(?:\.\*)?"
 
 
 def _attr_spans(attrs: str, base: int, rx: re.Pattern, kind: str) -> list[tuple[int, int, str]]:
+    """속성 문자열에서 ``rx`` 가 잡은 따옴표 안 값의 (시작,
+    끝, kind) — 위치는 파일 전체 기준(``base`` 더함)."""
     out = []
     for m in rx.finditer(attrs):
         g = 1 if m.group(1) is not None else 2
@@ -50,7 +62,11 @@ def _attr_spans(attrs: str, base: int, rx: re.Pattern, kind: str) -> list[tuple[
 
 
 def jsp_code_spans(text: str) -> list[tuple[int, int, str]]:
-    """Regions of a JSP / tag file that name Java types, in file order: `(start, end, kind)`."""
+    """JSP / 태그 파일에서 자바 타입을 이름으로 쓰는 영역들(파일 순서):
+    ``(시작, 끝, kind)``, kind = ``import`` (page / tag 지시자의 import 속성) | ``code`` (스크립틀릿·식·선언)
+    | ``bean`` (useBean class / type).
+
+    Regions of a JSP / tag file that name Java types, in file order: `(start, end, kind)`."""
     spans: list[tuple[int, int, str]] = []
     for m in _JSP_RE.finditer(text):
         if m.group("dir") is not None:
@@ -68,6 +84,7 @@ def jsp_code_spans(text: str) -> list[tuple[int, int, str]]:
 
 
 def is_jsp_path(rel: str) -> bool:
+    """JSP 류 파일(.jsp / .jspf / .jspx / .tag / .tagx, 대소문자 무시)이면 True."""
     return rel.lower().endswith(JSP_SUFFIXES)
 
 
@@ -79,7 +96,10 @@ _JAKARTA_TABLE = Path(__file__).resolve().with_name("jakarta_packages.yml")
 
 @lru_cache(maxsize=1)
 def jakarta_rules() -> tuple[tuple[str, bool], ...]:
-    """(from-package, recursive) of the javax → jakarta package table (`jakarta_packages.yml` next to this module)."""
+    """javax → jakarta 패키지 표(이 모듈 옆 ``jakarta_packages.yml``)의 (원래 패키지, 하위 포함 여부) 목록.
+    한 번만 읽어 캐시한다. 파일이 없으면 빈 표(= 아무것도 javax EE 로 보지 않음).
+
+    (from-package, recursive) of the javax → jakarta package table (`jakarta_packages.yml` next to this module)."""
     try:
         doc = yaml.safe_load(_JAKARTA_TABLE.read_text(encoding="utf-8")) or {}
     except OSError:
@@ -88,7 +108,11 @@ def jakarta_rules() -> tuple[tuple[str, bool], ...]:
 
 
 def javax_ee_token(token: str, rules: Iterable[tuple[str, bool]]) -> bool:
-    """`token` (e.g. `javax.servlet.http.Cookie`) is a javax EE name of the table: the longest prefix decides,
+    """``token`` (예: ``javax.servlet.http.Cookie``)이 표에 있는 javax EE 이름인지.
+    가장 긴 접두어 규칙이 정하고, 하위 미포함 규칙은 ``*`` 나 대문자로 시작하는 클래스 이름만
+    받는다(``javax.annotation.PostConstruct`` 는 대상, JDK 의 ``javax.annotation.processing`` 은 아님).
+
+    `token` (e.g. `javax.servlet.http.Cookie`) is a javax EE name of the table: the longest prefix decides,
     non-recursive rules take only `*` / an upper-case class name."""
     by_from = dict(rules)
     parts = token.split(".")
@@ -102,11 +126,14 @@ def javax_ee_token(token: str, rules: Iterable[tuple[str, bool]]) -> bool:
 
 
 def jsp_javax_refs(text: str, rules: Optional[Iterable[tuple[str, bool]]] = None) -> list[str]:
-    """Table javax.* names inside the code regions of a JSP (Java literals / comments in scriptlets excluded)."""
+    """JSP 의 코드 영역 안에서 표에 있는 javax.* 이름들(스크립틀릿 안의 자바 문자열·주석은 제외).
+
+    Table javax.* names inside the code regions of a JSP (Java literals / comments in scriptlets excluded)."""
     rules = tuple(rules) if rules is not None else jakarta_rules()
     out: list[str] = []
     for s, e, kind in jsp_code_spans(text):
         chunk = text[s:e]
+        # 문자열·주석을 같은 길이의 공백으로 가린다 — "javax.servlet" 이라는 문자열은 참조가 아니다
         if kind == "code":
             chunk = _JAVA_LIT_RE.sub(lambda m: " " * len(m.group(0)), chunk)
         out += [m.group(0) for m in _JAVAX_TOKEN_RE.finditer(chunk) if javax_ee_token(m.group(0), rules)]

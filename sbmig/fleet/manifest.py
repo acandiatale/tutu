@@ -1,4 +1,13 @@
-"""Fleet manifests: which projects to migrate, in which order, with which per-project config.
+"""일괄 실행 매니페스트 — 어떤 프로젝트를, 어떤 순서로, 프로젝트별로 어떤 설정으로 이관할지 읽는다.
+흐름상 위치: ``FleetRunner.run`` 이 맨 먼저 ``load_manifest`` 를 부른다(재개할 때도 매번 다시 읽는다). 형식:
+디렉토리(``*.zip`` 과 ``pom.xml`` 이 있는 하위 폴더), ``.txt`` (한 줄에 경로 하나), ``.yml`` (configs /
+overrides / tags), ``.csv`` (``name,input,tags``). 상대 경로는 매니페스트 파일 위치 기준. 입력이 없거나 쓸 수
+없어도 예외를 내지 않고 ``error`` 를 채워 돌려준다 → 러너가 ``skipped`` 로 둔다. 윈도우 운영자 대비(round 10):
+인코딩은 UTF-8(BOM 유무)·UTF-16·cp949 무엇이든 읽는다. 이름은 실행 ID·폴더명이 되므로 ASCII 로 만든다(한글
+이름은 slug + 입력 경로 해시). 일괄 실행 상태는 이름이 아니라 입력 경로(:func:`input_key`)로 프로젝트를 찾는다
+— 이름이 바뀌어도 남의 성공을 물려받지 않게.
+
+Fleet manifests: which projects to migrate, in which order, with which per-project config.
 
 Accepted forms (``load_manifest(path)``):
 
@@ -15,6 +24,8 @@ Round 10 (Windows operators): manifest files are read whatever the editor saved 
 with non-ASCII characters (``주문관리-v2``) becomes its ASCII slug plus a short hash of the input path
 (``v2-1a2b3c``, ``project-4d5e6f``), and a name that collides with an earlier one gets the hash too, so two Korean
 folder names never share a name. The fleet state is keyed by the input path (:func:`input_key`), not by the name.
+
+
 """
 
 from __future__ import annotations
@@ -33,6 +44,8 @@ import yaml
 
 @dataclass
 class FleetProject:
+    """매니페스트 한 줄 = 프로젝트 하나: 이름(ASCII), 입력 경로(절대), 프로젝트별 설정·오버라이드·태그,
+    쓸 수 없는 입력이면 ``error`` (그때 러너는 실행하지 않고 ``skipped``)."""
     name: str
     input: str  # resolved path (absolute) of the project dir / zip
     configs: list[str] = field(default_factory=list)
@@ -42,11 +55,13 @@ class FleetProject:
 
     @property
     def ok(self) -> bool:
+        """입력이 쓸 만한가(``error`` 없음)."""
         return self.error is None
 
 
 class ManifestError(ValueError):
-    pass
+    """매니페스트 자체가 틀림(형식·필수 키 누락).
+    입력 하나가 없는 것은 이 예외가 아니라 ``FleetProject.error`` 다."""
 
 
 _NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -54,13 +69,18 @@ HASH_CHARS = 6
 
 
 def safe_name(name: str) -> str:
-    """A name usable in run ids / directory names (ASCII letters, digits, `._-`)."""
+    """실행 ID·폴더명에 쓸 수 있는 이름(ASCII 영문·숫자·``._-``). 남는 것이 없으면 ``project``.
+
+    A name usable in run ids / directory names (ASCII letters, digits, `._-`)."""
     n = _NAME_RE.sub("-", name).strip("-.")
     return n or "project"
 
 
 def input_key(path: str | Path) -> str:
-    """The identity of a project in the fleet state: its input path, absolute and normalized (case-folded where the
+    """일괄 실행 상태에서 프로젝트를 가리키는 열쇠: 입력 경로를 절대·정규화한 것(윈도우는 대소문자도 접는다).
+    예전 상태 파일도 같은 절대 경로를 적었으므로 그대로 맞는다.
+
+    The identity of a project in the fleet state: its input path, absolute and normalized (case-folded where the
     file system is, i.e. on Windows). Older state files stored the same resolved path, so they match unchanged."""
     p = str(path or "").strip()
     if not p:
@@ -73,17 +93,24 @@ def input_key(path: str | Path) -> str:
 
 
 def path_hash(path: str | Path, n: int = HASH_CHARS) -> str:
+    """입력 경로(:func:`input_key`)의 sha1 앞 ``n`` 자리 — 매니페스트 순서가 바뀌어도 같은 값."""
     return hashlib.sha1(input_key(path).encode("utf-8")).hexdigest()[:n]
 
 
 def name_with_hash(name: str, path: str | Path) -> str:
+    """``<slug>-<경로 해시>``: 한글 이름이나 겹치는 이름을 서로 다르게 만든다."""
     return f"{safe_name(name)}-{path_hash(path)}"
 
 
 def read_text_any(path: str | Path) -> str:
-    """A text file whatever the editor saved: UTF-8 (with or without BOM), UTF-16 (BOM, or the NUL pattern of BOM-less
+    """편집기가 무엇으로 저장했든 읽는다: UTF-8(BOM 유무), UTF-16(BOM, 또는 BOM 없는 UTF-16LE 의 NUL 패턴),
+    그 밖은 cp949(한국어 윈도우). 매니페스트 때문에 UnicodeDecodeError 가 나는 일은 없다.
+
+    A text file whatever the editor saved: UTF-8 (with or without BOM), UTF-16 (BOM, or the NUL pattern of BOM-less
     UTF-16LE), else cp949 (Korean Windows) — never a UnicodeDecodeError for a manifest."""
     data = Path(path).read_bytes()
+    # PowerShell 5.1 의 ``>`` 는 UTF-16LE 로 저장한다: BOM 이 있으면 그대로, 없으면 둘째·넷째 바이트가 NUL(첫
+    # 바이트는 아님)인 것으로 알아본다
     if data.startswith((b"\xff\xfe", b"\xfe\xff")):
         return data.decode("utf-16")
     if len(data) >= 4 and data[1:2] == b"\x00" and data[3:4] == b"\x00" and data[0:1] != b"\x00":
@@ -92,6 +119,7 @@ def read_text_any(path: str | Path) -> str:
         except UnicodeDecodeError:
             pass
     try:
+        # utf-8-sig: 엑셀 "CSV UTF-8" 의 BOM 을 떼어 첫 열 이름(``name``)이 깨지지 않게
         return data.decode("utf-8-sig")
     except UnicodeDecodeError:
         return data.decode("cp949", errors="replace")
@@ -107,6 +135,8 @@ def _resolve(base: Path, p: str) -> Path:
 
 
 def _validate(proj: FleetProject) -> FleetProject:
+    """입력이 쓸 만한지 보고 아니면 ``error`` 를 채운다(예외 없음): 입력 없음,
+    pom.xml 이 맨 위에도 한 단계 아래에도 없음, 디렉토리도 zip 도 아님, 프로젝트별 설정 파일 없음."""
     p = Path(proj.input)
     if not p.exists():
         proj.error = f"input not found: {proj.input}"
@@ -122,7 +152,10 @@ def _validate(proj: FleetProject) -> FleetProject:
 
 
 def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
-    """ASCII names, unique: a name that loses characters to the slug (non-ASCII) or collides with an earlier one gets
+    """이름을 ASCII 로, 겹치지 않게: slug 로 글자를 잃는 이름(한글 등)이나 앞 이름과 겹치는 이름에는
+    입력 경로 해시를 붙인다(순서가 바뀌거나 폴더가 늘어도 같은 이름). 같은 입력이 두 번이면 번호 접미사.
+
+    ASCII names, unique: a name that loses characters to the slug (non-ASCII) or collides with an earlier one gets
     the hash of its input path (stable when the manifest is reordered or a folder is added); the same input listed
     twice keeps a numbered suffix."""
     taken: set[str] = set()
@@ -143,6 +176,8 @@ def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
 
 
 def _from_dir(d: Path) -> list[FleetProject]:
+    """디렉토리 매니페스트: 이름순으로 ``*.zip`` 과 ``pom.xml`` 이 바로 아래 있는 하위 폴더
+    (점으로 시작하는 것 제외)."""
     out = []
     for p in sorted(d.iterdir(), key=lambda x: x.name):
         if p.name.startswith("."):
@@ -219,6 +254,8 @@ def _from_csv(f: Path) -> list[FleetProject]:
 
 
 def load_manifest(path: str | Path) -> list[FleetProject]:
+    """매니페스트(디렉토리 / .txt / .yml / .csv)를 읽어 프로젝트 목록을 돌려준다(이름 정리 + 입력 검사까지).
+    매니페스트가 없거나 형식이 틀리면 :class:`ManifestError`, 입력 하나가 없으면 그 프로젝트의 ``error``."""
     path = Path(path)
     if not path.exists():
         raise ManifestError(f"manifest not found: {path}")

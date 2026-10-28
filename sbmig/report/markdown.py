@@ -1,4 +1,12 @@
-"""report.md rendering — written for the as-is owners who pick up whatever the agent could not fix."""
+"""report.md 그리기 — 에이전트가 못 고친 것을 이어받는 as-is 담당팀을 위해 쓴다.
+흐름상 위치: 보고서 단계에서 writer.py 의 ``write_report`` 가 ``render_markdown`` 을 부른다. 섹션 순서(v2.1):
+머리 표(``SBMIG-RESULT`` 줄 포함) → 인수인계(운영자 확인 필요 → 교체된 버전 → 주의 라이브러리 → 이제부터 할
+일) → Error list(단계별 표) → Fixes by case → Structure review → Blocked → javax API jar →
+Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
+인수인계가 맨 앞인 이유: 담당팀은 그 섹션만 읽는다. 모든 문장은 ``tr`` / ``tr_line`` 을 거쳐
+``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께).
+
+report.md rendering — written for the as-is owners who pick up whatever the agent could not fix."""
 from __future__ import annotations
 
 import re
@@ -25,6 +33,7 @@ from .errors import (
 from .i18n import normalize, tr, tr_line
 from .result_line import report_result_line
 
+# 플래그 → 보고서 "Flags" 섹션의 설명. 값은 i18n.py STRINGS 의 키이기도 하다(바꾸면 번역도 함께)
 FLAG_HELP = {
     "test-compile-skipped": "main code builds, but test sources only compile with `-Dmaven.test.skip=true` "
                             "(see follow-ups) — fix the tests before relying on CI",
@@ -78,6 +87,7 @@ REVIEW_FILES_SHOWN = 8
 
 
 def flag_help(flag: str, lang: str = "en") -> Optional[str]:
+    """플래그 하나의 설명(정확한 이름 먼저, 없으면 ``infra:`` 같은 접두어 설명). 모르는 플래그는 None."""
     if flag in FLAG_HELP:
         return tr(lang, FLAG_HELP[flag])
     h = next((h for p, h in FLAG_PREFIX_HELP.items() if flag.startswith(p)), None)
@@ -85,11 +95,13 @@ def flag_help(flag: str, lang: str = "en") -> Optional[str]:
 
 
 def blocked_count_line(items: list[BlockedItem], lang: str = "en") -> str:
+    """차단 항목 요약 한 줄: ``N item(s) — <차단 이유> <개수>, …`` (많은 이유 먼저)."""
     reasons = Counter(b.reason.value for b in items)
     return tr(lang, "{n} item(s) — ", n=len(items)) + ", ".join(f"{k} {v}" for k, v in reasons.most_common())
 
 
 def _blocked_who(b: BlockedItem, lang: str = "en") -> str:
+    """차단 표의 "artifact / owner class" 칸: 아티팩트(끌어오는 직접 의존성은 ← 로), 없으면 소유 클래스."""
     if b.artifact is not None:
         who = f"`{b.artifact.coordinates}`"
         if b.via_direct is not None:            # the library that drags the javax API jar in (dependency:tree)
@@ -109,6 +121,8 @@ def _blocked_types(b: BlockedItem) -> str:
 
 
 def blocked_rows(items: list[BlockedItem], lang: str = "en") -> list[str]:
+    """"Blocked" 섹션의 표(이유 · 아티팩트 / 클래스 · 필요 → 실제 타입 · 파일 · 시도 수 · 제안). 사람이나
+    라이브러리 담당이 무엇을 해야 하는지가 한 줄에 보이게 한다."""
     rows = [tr(lang, "| reason | artifact / owner class | required → found | files | attempts | suggestion |"),
             "|---|---|---|---|---|---|"]
     for b in items:
@@ -120,7 +134,11 @@ def blocked_rows(items: list[BlockedItem], lang: str = "en") -> list[str]:
 
 
 def _in_house_groups(r: RunReport, cfg: Any = None) -> list[str]:
-    """Company groups for "in-house → Jakarta build": the configured parent / mandatory / optional groups when the
+    """"in-house → Jakarta build" 판정에 쓰는 사내 groupId 들: 설정이 있으면 parent / 필수 / 선택 아티팩트의
+    그룹, 없으면 인수인계의 최종 parent 그룹. Spring 자신의
+    그룹은 절대 넣지 않는다(회사 좌표는 코드에 두지 않는다).
+
+    Company groups for "in-house → Jakarta build": the configured parent / mandatory / optional groups when the
     config is at hand, else the group(s) of the final parent(s) in the Handover (never Spring's own groups)."""
     out: list[str] = []
     arts = getattr(cfg, "artifacts", None) if cfg is not None else None
@@ -136,6 +154,9 @@ def _in_house_groups(r: RunReport, cfg: Any = None) -> list[str]:
 
 
 def _javax_what_to_do(j: Any, groups: list[str], lang: str = "en") -> str:
+    """javax jar 한 줄의 "what to do" 칸: 끌어오는 라이브러리가 jakarta 라이브러리 표에 있으면 그 버전(좌표가
+    바뀐 것은 이전 안내), 사내 그룹이면 "in-house → Jakarta build",
+    pom 에 직접 선언됐으면 삭제, 그 밖은 업그레이드 / 교체."""
     via = j.via
     if via is not None:
         try:
@@ -162,7 +183,10 @@ def _javax_what_to_do(j: Any, groups: list[str], lang: str = "en") -> str:
 
 
 def javax_api_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
-    """`## javax API jars still on the classpath` (report.javax_api_inventory, 2026-10-22); [] when none."""
+    """``## javax API jars still on the classpath`` 섹션(X1b, 2026-10-22). 빌드는 됐어도 javax 기준
+    라이브러리가 남아 있으면 jakarta 타입을 넘기는 코드는 런타임에 깨진다 — 그래서 따로 보여 준다. 없으면 [].
+
+    `## javax API jars still on the classpath` (report.javax_api_inventory, 2026-10-22); [] when none."""
     jars = list(r.javax_api_jars or [])
     if not jars:
         return []
@@ -183,6 +207,7 @@ def javax_api_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str
 
 
 def _cell(text: object, limit: int = 160) -> str:
+    """markdown 표 칸: 공백 정리, ``limit`` 자 자르기(…), ``|`` 이스케이프, 빈 값은 ``-``."""
     s = " ".join(str(text if text is not None else "").split())
     if len(s) > limit:
         s = s[: limit - 1] + "…"
@@ -205,6 +230,8 @@ def _duration(r: RunReport, lang: str = "en") -> str:
 
 
 def group_by_file(errors: Iterable[BuildError], lang: str = "en") -> "OrderedDict[str, list[BuildError]]":
+    """빌드 오류를 파일별로 묶는다(파일이 없으면 모듈, 그것도 없으면 아티팩트).
+    오류 목록이 없는 실행의 fallback 표에 쓴다."""
     groups: "OrderedDict[str, list[BuildError]]" = OrderedDict()
     for e in errors:
         key = e.file or (tr(lang, "module {module}", module=e.module) if e.module else
@@ -219,7 +246,10 @@ def _v(v: Optional[str]) -> str:
 
 
 def _what_we_did(f: AdvisoryFinding, lang: str = "en") -> str:
-    """Advisories are guide-only: the library was replaced during the run (the plan's recipes / fix scripts) or the
+    """권고 표의 "what we did" 칸. 권고는 안내만 한다(차단 정책 없음): 실행 중 레시피·수정 스크립트가
+    교체했거나, as-is 버전 그대로 빌드했거나 둘 중 하나다.
+
+    Advisories are guide-only: the library was replaced during the run (the plan's recipes / fix scripts) or the
     build kept the as-is version."""
     if f.outcome == "replaced":
         return tr(lang, "replaced during the run")
@@ -227,7 +257,10 @@ def _what_we_did(f: AdvisoryFinding, lang: str = "en") -> str:
 
 
 def properties_lines(h: Any, r: RunReport, lang: str = "en") -> list[str]:
-    """Handover block "Properties to set before running" (round 8): table of external keys, guide, placeholder file."""
+    """인수인계의 "Properties to set before running" 블록(round 8):
+    외부 설정 키 표, 넣는 방법 안내, 자리표시 파일.
+
+    Handover block "Properties to set before running" (round 8): table of external keys, guide, placeholder file."""
     from .handover import PROPERTY_COLUMNS, split_property_row
 
     L = [f"### {tr(lang, PROPERTIES_TITLE)}", "",
@@ -256,11 +289,17 @@ OPERATOR_GUIDE_LINES = 20                    # guide lines per check in report.m
 
 
 def _guide_items(guide: str) -> list[str]:
+    """운영자 가이드 글을 항목 목록으로(줄머리의 ``-`` / ``*`` / ``•`` 를 떼고 빈 줄 제외)."""
     return [x for x in (re.sub(r"^\s*[-*•]\s+", "", ln).strip() for ln in (guide or "").splitlines()) if x]
 
 
 def operator_check_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """v2.1d Handover block "Operator checks (N major upgrades)" (`report.operator_checks`): one item per major
+    """인수인계 맨 위의 "운영자 확인 필요 (메이저 업그레이드 N건)" 블록(v2.1d). 최종 트리에 남은 메이저
+    업그레이드 / 라이브러리 교체마다 좌표·pom·케이스·커밋·승인 여부와 운영자 가이드(작성자: LLM 또는 sbmig)를
+    적는다. 메이저는 막지 않는 대신(빌드는 통과해야 함) 사람이
+    런타임 동작을 꼭 확인하게 하려는 것. 확인할 것이 없으면 [].
+
+    v2.1d Handover block "Operator checks (N major upgrades)" (`report.operator_checks`): one item per major
     upgrade / library replacement still in the final tree — coordinates, pom, case, the try, the commit, approved —
     with the 운영자 확인 guide and who wrote it. [] without checks."""
     checks = list(getattr(r, "operator_checks", None) or [])
@@ -296,7 +335,10 @@ def operator_check_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 
 def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """The first section of report.md: operator checks (v2.1d), versions replaced, libraries needing attention,
+    """report.md 의 첫 섹션 = 인수인계: 운영자 확인 필요(v2.1d) → 교체된 버전 → 주의 라이브러리(권고) →
+    merge 충돌 → 외부 설정 → 이제부터 할 일. 데이터 줄은 영어로 저장돼 있고 ``tr_line`` 으로 번역한다.
+
+    The first section of report.md: operator checks (v2.1d), versions replaced, libraries needing attention,
     'from here on'."""
     lang = normalize(lang)
     L = [f"## {tr(lang, HANDOVER_TITLE)}", ""]
@@ -403,12 +445,15 @@ SEEN_FIX_TITLE = "{seen} — new errors of round {n}'s build"
 
 
 def _short(text: object, limit: int) -> str:
-    """Whitespace-collapsed and capped like `_cell`, without the pipe escaping (the caller `_cell`s the whole cell)."""
+    """``_cell`` 처럼 공백 정리 + 자르기, 단 ``|`` 이스케이프는 안 한다(호출한 쪽이 칸 전체를 ``_cell`` 한다).
+
+    Whitespace-collapsed and capped like `_cell`, without the pipe escaping (the caller `_cell`s the whole cell)."""
     s = " ".join(str(text if text is not None else "").split())
     return s[: limit - 1] + "…" if len(s) > limit else s
 
 
 def _seen_title(seen: str, n: int, lang: str = "en") -> str:
+    """Error list 의 단계별 소제목(``fix rN`` 은 "N 라운드 빌드의 새 오류") + 개수."""
     if seen in SEEN_TITLES:
         title = tr(lang, SEEN_TITLES[seen])
     else:
@@ -418,7 +463,11 @@ def _seen_title(seen: str, n: int, lang: str = "en") -> str:
 
 
 def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """`## Error list`: counts, one table per `seen` group (compile → restructure → review → build → fix rN), the
+    """``## Error list``: 개수 → ``seen`` 단계별 표(compile → restructure → review → build → fix rN, 묶음당
+    ``ERROR_LIST_MAX_ROWS`` 줄, 전부는 실행 디렉토리의 errors.md) → 마지막 빌드 로그 경로. 오류 목록이
+    없으면(목록을 남기기 전에 멈춘 실행) 마지막 빌드의 미해결 오류를 파일별로.
+
+    `## Error list`: counts, one table per `seen` group (compile → restructure → review → build → fix rN), the
     last build log. Without entries: the unresolved errors of the last build grouped by file (runs that stopped
     before the error list was kept), else one line."""
     entries = entries_of(r)
@@ -459,6 +508,7 @@ def error_list_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 
 def _case_script_cell(row: Any, lang: str = "en") -> str:
+    """Fixes by case 의 script 칸: 저장된 스크립트(버전 + 경로), 없으면 스크립트로 못 만든 이유."""
     if row.script:
         return f"v{row.script_version} `{_cell(row.script, 120)}`" if row.script_version else f"`{_cell(row.script, 120)}`"
     if row.no_script_reason:
@@ -467,7 +517,11 @@ def _case_script_cell(row: Any, lang: str = "en") -> str:
 
 
 def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """`## Fixes by case`: one row per case that was worked on — cause / solution of the deciding try, the files the
+    """``## Fixes by case``: 손댄 케이스마다 한 줄 — 결정적 시도의 원인 / 해결 방법, 남은 시도가 바꾼
+    파일(+/−), 수정 기록(v2.1b ``경로 줄 — 내용``), 저장된
+    스크립트. 메이저 업그레이드가 있으면 ⚠ 표시. 시도가 없으면 [].
+
+    `## Fixes by case`: one row per case that was worked on — cause / solution of the deciding try, the files the
     kept tries changed (+/−), what each change did (수정, v2.1b: `path lines — change` per note) and the stored
     script; [] when no case had a try."""
     rows = case_rows(entries_of(r))
@@ -495,13 +549,18 @@ def fixes_by_case_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 # ---- v2 structure review (sbmig.review): LLM check of poms / dependencies / modules before the first build
 def _review_fix_pending(rv: StructureReview) -> bool:
-    """The review proposed a fix (edits or a script) that did not run."""
+    """구조 검토가 수정(edits 또는 스크립트)을 내놓았는데 실행되지 않았는가.
+
+    The review proposed a fix (edits or a script) that did not run."""
     a = getattr(rv, "answer", None)
     return bool(rv.script) or (a is not None and bool(a.edits or a.code))
 
 
 def _review_script_state(rv: StructureReview, lang: str = "en") -> str:
-    """What the review's fix (v2.1: direct edits and / or a script; `script_result` either way) did."""
+    """구조 검토 수정이 한 일 한 구절(v2.1: 직접 수정 edits 와
+    / 또는 스크립트 — 결과는 어느 쪽이든 ``script_result``).
+
+    What the review's fix (v2.1: direct edits and / or a script; `script_result` either way) did."""
     r = rv.script_result
     if r is not None:
         if rv.reverted:
@@ -518,7 +577,10 @@ def _review_script_state(rv: StructureReview, lang: str = "en") -> str:
 
 
 def review_summary(rv: StructureReview, lang: str = "en") -> str:
-    """One line for the header table / console: verdict, counts, what the fix (edits / script) did."""
+    """머리 표 / 콘솔용 구조 검토 한 줄: 판정, critical / warning 개수, 수정이 한 일.
+    판정이 failed 여도 빌드는 그대로 진행했다는 점을 밝힌다(검토는 빌드 게이트가 아니다).
+
+    One line for the header table / console: verdict, counts, what the fix (edits / script) did."""
     if rv.verdict == "skipped":
         return tr(lang, "skipped ({note})", note=_short(rv.note or "-", 160))
     if rv.verdict == "failed":
@@ -532,6 +594,7 @@ def review_summary(rv: StructureReview, lang: str = "en") -> str:
 
 
 def _review_script_lines(rv: StructureReview, lang: str = "en") -> list[str]:
+    """구조 검토 섹션의 수정 결과 줄들: 상태·바뀐 파일, 커밋(되돌리면 검토 변경 취소), 되돌림, 오류, 로그."""
     r = rv.script_result
     L: list[str] = []
     if r is not None:
@@ -558,7 +621,9 @@ def _review_script_lines(rv: StructureReview, lang: str = "en") -> list[str]:
 
 
 def _review_answer_lines(r: RunReport, rv: StructureReview, lang: str = "en") -> list[str]:
-    """v2.1: the review's answer (solution, direct edits, script for the KB) and what its kept tries changed."""
+    """v2.1: 구조 검토 답변(해결 방법, 직접 수정 개수, KB 용 스크립트 유무)과 남은 검토 시도가 바꾼 파일.
+
+    v2.1: the review's answer (solution, direct edits, script for the KB) and what its kept tries changed."""
     L: list[str] = []
     a = getattr(rv, "answer", None)
     if a is not None:
@@ -577,7 +642,10 @@ def _review_answer_lines(r: RunReport, rv: StructureReview, lang: str = "en") ->
 
 
 def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """`## Structure review`: verdict, issues table, what the review changed (edits / script) or why not; []
+    """``## Structure review``: 판정, 이슈 표(critical 먼저), 검토가 바꾼 것(edits / 스크립트) 또는 못 바꾼
+    이유, LLM 분석. 검토가 없었으면 [].
+
+    `## Structure review`: verdict, issues table, what the review changed (edits / script) or why not; []
     without a review."""
     rv = r.structure_review
     if rv is None:
@@ -610,6 +678,7 @@ def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 
 def _cost_summary(c: Any, lang: str = "en") -> str:
+    """머리 표의 LLM 비용 칸: 합계 + 단가 없는 모델 + 토큰 수 누락 표시."""
     from .cost import fmt_money
     txt = fmt_money(c.total, c.currency)
     if c.unpriced_models:
@@ -620,7 +689,10 @@ def _cost_summary(c: Any, lang: str = "en") -> str:
 
 
 def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """`## LLM usage and cost`: one row per model (fix / escalation / recipe), list prices from `llm.pricing`."""
+    """``## LLM usage and cost``: 모델마다 한 줄(수정 / 에스컬레이션 모델 등), 단가는 ``llm.pricing`` 의 정가.
+    회사가 프로젝트당 API 비용을 보고 싶어 해서 생긴 섹션이다(2026-10-22).
+
+    `## LLM usage and cost`: one row per model (fix / escalation / recipe), list prices from `llm.pricing`."""
     from .cost import fmt_money
     c = r.llm_cost
     if c is None or not (c.by_model or r.llm_usage.calls):
@@ -655,6 +727,7 @@ def cost_lines(r: RunReport, lang: str = "en") -> list[str]:
 
 
 def _to_be(r: RunReport) -> Optional[str]:
+    """머리 표의 To-be 칸(java / spring boot / parent 의 이후 값). 인수인계 데이터가 없으면 None."""
     h = r.handover
     if h is None or not (h.java_after or h.spring_boot_after or h.parent_after):
         return None
@@ -669,7 +742,10 @@ def _to_be(r: RunReport) -> Optional[str]:
 
 
 def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) -> str:
-    """report.md for `language` (`report.language`: "en" | "ko"; anything else renders English). `cfg` (optional)
+    """report.md 전체를 ``language``("en" | "ko", 그 밖은 영어)로 그린다. ``cfg`` 는 javax 섹션의 사내 그룹
+    판정만 정확하게 해 준다(없어도 된다). 섹션 순서는 모듈 docstring 참고.
+
+    report.md for `language` (`report.language`: "en" | "ko"; anything else renders English). `cfg` (optional)
     only sharpens the javax API section's in-house detection.
 
     v2.1 (slim): header → Handover → Error list → Fixes by case → Structure review → Blocked → javax API jars →
@@ -684,6 +760,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     L.append("| | |")
     L.append("|---|---|")
     L.append(tr(lang, "| **Result** | {ok} (final `mvn clean package`) |", ok=ok))
+    # 콘솔 마지막 줄과 같은 형식의 SBMIG-RESULT 줄을 보고서 머리에도 둔다(운영자가 보고서만 보고도 옮겨 적게)
     L.append(f"| SBMIG-RESULT | `{report_result_line(r)}` |")
     entries = entries_of(r)
     if entries:
@@ -719,6 +796,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
                                                                           300)))
     L.append("")
 
+    # 인수인계가 맨 앞: 담당팀은 보고서에서 이 섹션만 읽는다(무엇을 바꿨고 이제 무엇이 그들 몫인지)
     # ---- handover first: what we replaced, what the owning team does from here on
     L += handover_lines(r, lang)
 
@@ -729,6 +807,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     # ---- the structure review (ran before the first build; its own entries are in the error list too)
     L += structure_review_lines(r, lang)
 
+    # 차단 = 프로젝트 밖(라이브러리·저장소·환경)이라 일부러 손대지 않은 것. 나머지 마이그레이션은 계속했다
     # ---- blocked: deliberately skipped, each row says what a human / the library owner must do
     if r.blocked:
         L.append(f"## {tr(lang, BLOCKED_TITLE)}")

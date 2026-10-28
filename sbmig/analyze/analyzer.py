@@ -1,4 +1,12 @@
-"""`analyze_project(ws, cfg) -> ProjectProfile`: pom graph + source scan + libraries + classification.
+"""분석(analyze) 단계의 본체 — ``analyze_project(ws, cfg)`` 가 pom 그래프·소스 스캔·라이브러리·
+케이스 분류를 합쳐 ProjectProfile(프로필)을 만든다. 흐름상 위치: 접수 다음 오케스트레이터 ``step_analyze`` 가
+부르고, 결과 ``profile.json`` 을 계획(plan)·재구성(restructure)·구조 검토·보고서가 모두 읽는다. 핵심 진입점:
+:func:`analyze_project` (실행 작업공간), :func:`analyze_path` + :class:`PathView` (복사 없이 폴더 그대로 — CLI
+``sbmig analyze`` / 플릿). 특이 사항(system scope jar, Kotlin/Groovy, 레거시 인코딩, Java ≤ 1.7, pom 만 있는
+프로젝트)은 실행을 막지 않고 ``profile.warnings`` + ``LibraryUsage`` 로만 남긴다(차단 정책 없음). MSA 는
+``profile.services`` 에 배포 서비스 다음에 공유 라이브러리 루트(``main_classes == []``)를 붙인다.
+
+`analyze_project(ws, cfg) -> ProjectProfile`: pom graph + source scan + libraries + classification.
 
 Edge cases (docs/ERROR-HANDLING.md) surface as `profile.warnings` plus `LibraryUsage` entries:
 `system-scope-jars` (E7), `kotlin` / `groovy` / `scala` / `codegen:<plugin artifactId>` (X6), `legacy-encoding` (E1),
@@ -9,6 +17,8 @@ MSA library-root convention (S1): `profile.services` lists the deployables **and
 A library root is a `ServiceInfo` with `main_classes == []` and `spring_boot_version is None`, `name` = its
 directory name, `case_type` PURE_JAVA or SPRING_LEGACY (never SPRING_BOOT). Library entries come after the
 deployables; use `sbmig.analyze.is_library_root(svc, profile)` / `library_services(profile)` to tell them apart.
+
+
 """
 from __future__ import annotations
 
@@ -35,16 +45,20 @@ log = logging.getLogger("sbmig.analyze")
 
 
 class PathView:
-    """Read-only Workspace-like view over a directory (no copy, no git, no run dir)."""
+    """폴더를 복사하지 않고 읽기만 하는 Workspace 흉내 객체(git·실행 디렉토리 없음). ``analyze_path`` 가 쓴다.
+
+    Read-only Workspace-like view over a directory (no copy, no git, no run dir)."""
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
 
     def abs(self, rel: str | Path) -> Path:
+        """상대 경로 → 루트 기준 절대 경로(이미 절대면 그대로)."""
         p = Path(rel)
         return p if p.is_absolute() else self.root / p
 
     def rel(self, path: str | Path) -> str:
+        """경로 → 루트 기준 posix 상대 경로(루트 밖이면 원래 문자열)."""
         p = Path(path)
         try:
             return p.resolve().relative_to(self.root).as_posix() if p.is_absolute() else p.as_posix()
@@ -52,24 +66,32 @@ class PathView:
             return str(p)
 
     def exists(self, rel: str | Path) -> bool:
+        """파일 / 디렉토리가 있는지."""
         return self.abs(rel).exists()
 
     def read(self, rel: str | Path, encoding: str = "utf-8") -> str:
+        """텍스트로 읽는다(디코딩 못 하는 바이트는 대체 문자 — 분석은 깨진 인코딩에도 멈추지 않는다)."""
         return self.abs(rel).read_text(encoding=encoding, errors="replace")
 
     def glob(self, pattern: str) -> list[str]:
+        """``.git`` 과 Maven 빌드 출력(pom 옆 ``target/``)을 뺀 상대 경로 목록.
+        ``target`` 이라는 이름의 자바 패키지는 남긴다."""
         return sorted(self.rel(p) for p in self.root.rglob(pattern)
                       if ".git" not in p.relative_to(self.root).parts
                       and not is_build_output_path(p.relative_to(self.root), self.root))   # a `target` package stays
 
     def java_files(self) -> list[str]:
+        """모든 ``*.java`` (빌드 출력 제외)."""
         return self.glob("*.java")
 
     def pom_files(self) -> list[str]:
+        """모든 ``pom.xml`` (빌드 출력 제외)."""
         return self.glob("pom.xml")
 
 
 def _artifact_hits(poms: list[PomInfo], keys: dict[str, ArtifactSpec]) -> list[GAV]:
+    """pom 들의 dependencies / dependencyManagement 에서 ``keys`` (사내 아티팩트) 에 해당하는 것을 모은다.
+    같은 키가 여러 번 나오면 버전이 적힌 쪽을 남긴다(선택 아티팩트는 "이미 쓰는 것만 올린다" 의 근거)."""
     out: dict[str, GAV] = {}
     for p in poms:
         for d in [*p.dependencies, *p.dependency_management]:
@@ -80,6 +102,7 @@ def _artifact_hits(poms: list[PomInfo], keys: dict[str, ArtifactSpec]) -> list[G
 
 
 def _mandatory_keys(cfg: Config) -> dict[str, ArtifactSpec]:
+    """필수 사내 아티팩트의 키 + 별칭(aliases) → 스펙. 옛 좌표로 이미 선언된 것도 "이미 있음" 으로 본다."""
     out: dict[str, ArtifactSpec] = {}
     for spec in cfg.artifacts.mandatory:
         out[spec.key] = spec
@@ -89,6 +112,7 @@ def _mandatory_keys(cfg: Config) -> dict[str, ArtifactSpec]:
 
 
 def _pick(values: list[Optional[str]]) -> Optional[str]:
+    """빈 값을 뺀 가장 흔한 값(없으면 None)."""
     vals = [v for v in values if v]
     if not vals:
         return None
@@ -96,6 +120,9 @@ def _pick(values: list[Optional[str]]) -> Optional[str]:
 
 
 def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
+    """분석 단계 본체: pom 파싱 → 모듈 순서 → 소스 스캔 → 라이브러리 → 특이 사항 경고 → 케이스 분류
+    → 프로필. 프로젝트를 바꾸지 않는다. 비-Maven 이면 ``warnings[0]`` 에 이유를 넣고 그대로 돌려준다
+    (오케스트레이터가 ``build_tool`` 을 보고 중단)."""
     root = Path(ws.root)
     poms, warnings = parse_poms(ws)
     order = module_order(poms)
@@ -130,6 +157,8 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
 
     case, confidence, reasons = classify(poms, source, libraries, scan)
     services = []
+    # MSA: 배포 서비스마다 ServiceInfo, 그 뒤에 어느 서비스에도 속하지 않는 공유 라이브러리 루트 (예:
+    # common/)를 붙인다 — 계획이 라이브러리 루트를 서비스보다 먼저 변환하므로 구분 필요(is_library_root)
     if case == CaseType.MSA:
         deployables, _ = msa_deployables(poms, scan)
         roots = service_roots(deployables, poms)
@@ -142,6 +171,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         services += libs
 
     root_pom = by_path.get("pom.xml")
+    # 루트에 pom.xml 이 없으면 is_root 인 pom 이 정확히 하나일 때만 루트로 본다(여럿이면 이름 = 폴더명)
     if root_pom is None:
         roots = [p for p in poms if p.is_root]
         root_pom = roots[0] if len(roots) == 1 else None
@@ -154,6 +184,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
     warnings += bm_warn
     reasons += bm_reasons
 
+    # 루트 pom 의 값이 우선, 없으면 모듈들 중 가장 흔한 Java 수준 / 처음 보이는 Boot·Spring 버전
     java_version = normalize_java_version(
         (root_pom.java_version if root_pom else None) or _pick([p.java_version for p in poms]))
     boot_version = (root_pom.spring_boot_version if root_pom else None) or next(
@@ -197,5 +228,7 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
 
 
 def analyze_path(path: str | Path, cfg: Config) -> ProjectProfile:
-    """Analyze a directory in place (no copy into a run workspace)."""
+    """폴더를 실행 작업공간으로 복사하지 않고 그 자리에서 분석한다(읽기 전용).
+
+    Analyze a directory in place (no copy into a run workspace)."""
     return analyze_project(PathView(path), cfg)

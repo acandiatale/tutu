@@ -1,4 +1,14 @@
-"""Direct edits (v2.1, docs/v2/PLAN-v2.1.md §3.6): the LLM's `<edits>` JSON list applied by sbmig — "LLM 이 직접 수정".
+"""스크립트 없는 직접 수정(v2.1): LLM 의 ``<edits>`` JSON 목록을 sbmig 가 적용한다 — "LLM 이 직접 수정". 회사
+게이트웨이에는 tool calling 이 없어서 LLM 은 변경을 데이터(``Edit``: replace / write / create / delete / move
+/ pom)로 말하고, sbmig 는 그것을 수정 스크립트와 같은 도우미 API·가드로 적용한다. 방법: ``edits_script`` 가
+모든 텍스트를 리터럴(``repr``)로 박은 ``def fix(p)`` 를 합성하고 ``apply_edits`` 가 ``ScriptRunner.run`` 으로
+돌린다(정적 검사, 별도 ``python -I`` 프로세스, 경로 가드, 인코딩·줄끝 유지). 누가 부르나: 수정 루프(LLM 답변의
+``<edits>``)와 구조 검토의 critical 수정(``apply_edits``), 답변 파서(``edits_from_json``). 실패 규칙: 잘못된
+편집은 실행 전에 ``rejected``; 찾는 텍스트가 없는 replace 등은 실행 실패. 적용은 원자적이지 않다 — ``ok`` 가
+아니면 호출자가 git 으로 트리를 되돌린다. pom 편집은 ``POM_CALLS`` 화이트리스트의 편집기 호출만 받는다(인자
+이름은 Maven·snake·편집기 표기 모두 허용).
+
+Direct edits (v2.1, docs/v2/PLAN-v2.1.md §3.6): the LLM's `<edits>` JSON list applied by sbmig — "LLM 이 직접 수정".
 
 The gateway has no tool calling, so the LLM states its changes as data (`Edit`: replace / write / create / delete /
 move / pom) and sbmig applies them through the SAME helper API and guard as a fix script: `edits_script(edits)`
@@ -35,6 +45,8 @@ log = logging.getLogger("sbmig.script.edits")
 
 EDIT_OPS: tuple[str, ...] = ("replace", "write", "create", "delete", "move", "pom")
 
+# 편집이 부를 수 있는 p.pom(path) 변경 메서드 화이트리스트(이름
+# → (편집기 인자, 필수 여부)…). 밖의 이름은 거부한다
 # p.pom(path) mutators an edit may call: name → ((editor parameter, required), …). Read-only calls (text,
 # dependencies, has_dependency, get_property) and save() (implicit) are not edits.
 POM_CALLS: dict[str, tuple[tuple[str, bool], ...]] = {
@@ -86,7 +98,10 @@ MAX_PROBLEMS = 20
 # validation
 # ---------------------------------------------------------------------------
 def _norm_path(raw: Any) -> tuple[str, str]:
-    """(posix path relative to the project, problem)."""
+    """편집 경로 검사 → (프로젝트 기준 posix 경로, 문제). 절대 경로·``~``·드라이브 문자·제어 문자·폴더
+    탈출·``.git/`` 은 문제로 돌려준다(실행 전에 거부).
+
+    (posix path relative to the project, problem)."""
     if not isinstance(raw, str):
         return "", f"path must be a string, got {type(raw).__name__}"
     s = raw.strip().strip("`'\"").strip().replace("\\", "/")
@@ -111,7 +126,9 @@ def _arg_key(name: str) -> str:
 
 
 def _scalar(v: Any) -> tuple[Optional[str], bool]:
-    """(value as the editor takes it, ok). None stays None (null = managed by the parent / no value)."""
+    """편집기가 받는 값으로 → (값, ok). None 은 None(null = 부모가 관리 / 값 없음), bool 은 "true" / "false".
+
+    (value as the editor takes it, ok). None stays None (null = managed by the parent / no value)."""
     if v is None:
         return None, True
     if isinstance(v, bool):
@@ -122,7 +139,10 @@ def _scalar(v: Any) -> tuple[Optional[str], bool]:
 
 
 def pom_call_args(call: str, spec: Any) -> tuple[list[dict[str, Optional[str]]], list[str]]:
-    """The keyword arguments of one (or several) `p.pom(...)` calls of `call` from the LLM's spec: an object
+    """LLM 이 적은 인자 → ``call`` 호출 하나(또는 여럿)의 키워드 인자: 객체, 객체 목록(여러 번 호출), 위치
+    목록, ``"g:a[:v]"`` 문자열을 모두 받는다. ([kwargs …], 문제들).
+
+    The keyword arguments of one (or several) `p.pom(...)` calls of `call` from the LLM's spec: an object
     (`{"group_id": …}`), a list of objects (several calls), a positional list (`["g", "a", "1.0"]`) or a
     `"g:a[:v]"` string. Returns ([kwargs …], problems)."""
     params = POM_CALLS.get(call)
@@ -187,7 +207,10 @@ def pom_call_args(call: str, spec: Any) -> tuple[list[dict[str, Optional[str]]],
 
 
 def pom_calls(spec: dict[str, Any]) -> tuple[list[tuple[str, dict[str, Optional[str]]]], list[str]]:
-    """Ordered (call, kwargs) of a pom edit's `pom` dict (`{"add_dependency": {…}, "set_property": {…}}`; also
+    """pom 편집의 ``pom`` dict → 순서대로 (호출, kwargs). ``{"call": …, "args": …}`` 형식도 받고, 화이트리스트
+    밖의 호출 이름은 거부한다(``save`` 는 암묵적이라 무시).
+
+    Ordered (call, kwargs) of a pom edit's `pom` dict (`{"add_dependency": {…}, "set_property": {…}}`; also
     `{"call": "add_dependency", "args": {…}}`). Unknown call names are refused (whitelist `POM_CALLS`)."""
     if not isinstance(spec, dict):
         return [], ["pom: the editor calls must be an object"]
@@ -210,7 +233,9 @@ def pom_calls(spec: dict[str, Any]) -> tuple[list[tuple[str, dict[str, Optional[
 
 
 def edit_problems(edits: Sequence[Edit]) -> list[str]:
-    """Why these edits cannot be applied, one line each ("edit 2: unknown pom call 'add_plugin' …"). [] = fine."""
+    """이 편집들을 적용할 수 없는 이유를 한 줄씩(``edit 2: …``). 빈 목록 = 괜찮음.
+
+    Why these edits cannot be applied, one line each ("edit 2: unknown pom call 'add_plugin' …"). [] = fine."""
     problems: list[str] = []
     for n, e in enumerate(edits, 1):
         for p in _one_edit_problems(e):
@@ -221,6 +246,7 @@ def edit_problems(edits: Sequence[Edit]) -> list[str]:
 
 
 def _one_edit_problems(e: Edit) -> list[str]:
+    """편집 하나의 문제: 모르는 op, 경로, replace 의 빈 old / old == new, move 의 목적지, pom 경로·호출."""
     if e.op not in EDIT_OPS:                              # a model_construct()ed Edit can carry anything
         return [f"unknown op {e.op!r} (allowed: {', '.join(EDIT_OPS)})"]
     _, why = _norm_path(e.path)
@@ -257,7 +283,10 @@ def _one_line(v: Any, limit: int = DESC_CHARS) -> str:
 
 
 def edit_desc(item: dict[str, Any]) -> str:
-    """The LLM's one-line description of an edit object (`desc`; also `description` / `summary` / `change` /
+    """편집 객체에 LLM 이 쓴 한 줄 설명(``desc``, 또는 ``description`` / ``summary`` / ``change`` …); 따로
+    적은 ``where`` 는 문장에 없을 때 앞에 붙인다. 현업이 읽는 수정 기록의 내용이 된다.
+
+    The LLM's one-line description of an edit object (`desc`; also `description` / `summary` / `change` /
     `comment` …), with a separate `where` folded in front when the sentence does not already name it."""
     desc = next((t for t in (_one_line(item.get(k)) for k in _DESC_KEYS) if t), "")
     where = next((t for t in (_one_line(item.get(k), 200) for k in _WHERE_KEYS) if t), "")
@@ -267,7 +296,10 @@ def edit_desc(item: dict[str, Any]) -> str:
 
 
 def edit_from_item(item: Any) -> tuple[Optional[Edit], list[str]]:
-    """One edit object of the LLM's JSON → (`Edit`, problems). Lenient about key spellings (`file` for `path`,
+    """LLM JSON 의 편집 객체 하나 → (``Edit``, 문제들). 키 철자에 너그럽다(``path`` 대신 ``file``, ``old`` /
+    ``new`` 대신 ``search`` / ``replace``, ``to`` 대신 ``dst``); pom 편집의 나머지 키는 편집기 호출이다.
+
+    One edit object of the LLM's JSON → (`Edit`, problems). Lenient about key spellings (`file` for `path`,
     `search` / `replace` for `old` / `new`, `dst` for `to`); a pom edit's extra keys are its editor calls."""
     if not isinstance(item, dict):
         return None, [f"an edit must be an object, got {type(item).__name__}"]
@@ -335,7 +367,10 @@ def edit_from_item(item: Any) -> tuple[Optional[Edit], list[str]]:
 
 
 def edits_from_json(obj: Any) -> tuple[list[Edit], list[str]]:
-    """The parsed `<edits>` JSON (a list; also `{"edits": [...]}` or one edit object) → ([Edit …], problems).
+    """파싱한 ``<edits>`` JSON(목록, ``{"edits": [...]}``, 편집 객체 하나) → ([Edit …], 문제들). 문제가
+    하나라도 있으면 목록 전체를 거부한다(편집은 전부 함께 적용하거나 하나도 안 한다).
+
+    The parsed `<edits>` JSON (a list; also `{"edits": [...]}` or one edit object) → ([Edit …], problems).
     Any problem refuses the whole list (edits are applied all together or not at all)."""
     if isinstance(obj, dict):
         obj = obj["edits"] if isinstance(obj.get("edits"), list) else [obj]
@@ -358,6 +393,7 @@ def edits_from_json(obj: Any) -> tuple[list[Edit], list[str]]:
 # ---------------------------------------------------------------------------
 # synthesis
 # ---------------------------------------------------------------------------
+# 합성 스크립트의 머리: EditFailed 로 "edit N: …" 실패를 내고, 모든 편집은 fix(p) 안에서 순서대로 돈다
 _PREAMBLE = '''\
 # sbmig v2.1: the LLM's <edits> applied directly (generated by sbmig.script.edits — {n} edit(s))
 
@@ -382,10 +418,13 @@ _GUARD = '''\
 
 
 def _lit(s: str) -> str:
+    """텍스트를 파이썬 리터럴로(``repr``, CRLF → LF) — LLM 이 준 텍스트가 코드로 해석될 일이 없다."""
     return repr(s.replace("\r\n", "\n"))
 
 
 def _edit_body(n: int, e: Edit) -> list[str]:
+    """편집 하나의 코드 줄들(``try:`` 안). 이미 적용된 상태(새 텍스트가 이미 있음, 이미 지워짐·옮겨짐)는
+    실패가 아니라 로그로 넘어간다 — 같은 편집을 다시 돌려도 안전하게."""
     path = _norm_path(e.path)[0]
     L = [f"        path = {_lit(path)}"]
     if e.op == "replace":
@@ -457,7 +496,10 @@ def _edit_body(n: int, e: Edit) -> list[str]:
 
 
 def desc_comment(desc: str, indent: str = "    ", width: int = 116) -> list[str]:
-    """The edit's description as comment line(s) of the synthesized script (one sentence, wrapped at `width`; every
+    """편집 설명을 합성 스크립트의 주석 줄로(``width`` 에서 줄바꿈). 모든 공백·줄바꿈을 한 칸으로 바꾸므로
+    설명 텍스트가 주석을 끝내고 코드가 될 수 없다.
+
+    The edit's description as comment line(s) of the synthesized script (one sentence, wrapped at `width`; every
     whitespace run incl. line breaks is one space, so the text can never end the comment)."""
     text = _one_line(desc or "")
     if not text:
@@ -467,7 +509,11 @@ def desc_comment(desc: str, indent: str = "    ", width: int = 116) -> list[str]
 
 
 def edits_script(edits: Sequence[Edit]) -> str:
-    """The `def fix(p)` that applies `edits` in order through the helper API (texts embedded with `repr`; each edit's
+    """``edits`` 를 도우미 API 로 순서대로 적용하는 ``def fix(p)`` 코드(텍스트는
+    ``repr`` 로, 편집마다 설명 주석). 편집이 잘못됐으면 ValueError. 생성된 코드는 ``check_script`` 를
+    통과하고, ``apply_edits`` 가 돌리는 그 코드다.
+
+    The `def fix(p)` that applies `edits` in order through the helper API (texts embedded with `repr`; each edit's
     `desc` as a comment above its block, so the stored script reads like the record). Raises
     ValueError with the problems when an edit is invalid (`edit_problems`). The code passes `check_script`; it is
     what `apply_edits` runs and what the loop may keep with the try for traceability."""
@@ -489,7 +535,10 @@ def edits_script(edits: Sequence[Edit]) -> str:
 
 
 def edit_error(error: str) -> str:
-    """The runner's error of a failed edits run → its first line without the exception name / script traceback:
+    """실패한 편집 실행의 오류 → 예외 이름·스크립트 traceback 을 뺀 첫
+    줄(``edit 2: text not found in pom.xml``). 시간 초과 등 다른 오류는 그대로.
+
+    The runner's error of a failed edits run → its first line without the exception name / script traceback:
     "EditFailed: edit 2: text not found in pom.xml (line 23)\\nscript traceback: …" → "edit 2: text not found in
     pom.xml". Other errors (timeout, the process failed) are kept as they are."""
     first = (error or "").strip().splitlines()[0] if (error or "").strip() else ""
@@ -498,7 +547,10 @@ def edit_error(error: str) -> str:
 
 
 def summarize_edits(edits: Sequence[Edit]) -> str:
-    """One part per edit for logs and notes: "replace pom.xml", "pom a/pom.xml add_dependency", … followed by the
+    """로그·기록용으로 편집마다 한 부분: ``replace pom.xml``,
+    ``pom a/pom.xml add_dependency`` … 설명이 있으면 `` — 설명`` 을 붙인다.
+
+    One part per edit for logs and notes: "replace pom.xml", "pom a/pom.xml add_dependency", … followed by the
     LLM's description when the edit has one ("pom a/pom.xml add_dependency — a/pom.xml 의 <dependencies> 에 …")."""
     out = []
     for e in edits:
@@ -516,7 +568,12 @@ def summarize_edits(edits: Sequence[Edit]) -> str:
 
 def apply_edits(ws: Any, edits: Sequence[Edit], *, cfg: Any, errors: Iterable[Any] = (), runner: Any = None,
                 timeout_s: Optional[int] = None) -> ScriptRunResult:
-    """Apply the LLM's edits to the workspace: validate (`edit_problems` → status `rejected`), synthesize the script
+    """LLM 의 편집을 작업 공간에 적용한다: 검사(``edit_problems`` → rejected), 스크립트
+    합성(``edits_script``), ``runner`` 로 실행(기본 ``ScriptRunner(cfg)``, 코드 길이 제한 없음 — sbmig 가 만든
+    코드이고 write 는 파일 전체를 담을 수 있다). 결과는 수정 스크립트와 같은 ``ScriptRunResult``. 커밋하지
+    않고 원자적이지도 않다 — ``ok`` 가 아니면 호출자가 트리를 되돌린다. 예외를 내지 않는다.
+
+    Apply the LLM's edits to the workspace: validate (`edit_problems` → status `rejected`), synthesize the script
     (`edits_script`) and run it through `runner` (default: `ScriptRunner(cfg)` without the `script.max_code_chars`
     cap — the code is sbmig's own, a `write` may carry a whole file). Same `ScriptRunResult` as a fix script;
     `error` of a failed edit is "edit N: …" (`edit_error`). Changes stay uncommitted; NOT atomic — on any status but

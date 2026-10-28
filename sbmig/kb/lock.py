@@ -1,4 +1,12 @@
-"""Cross-process KB lock ``<kb>/.lock`` (round 10, 2026-10-26).
+"""프로세스 간 KB 잠금 ``<kb>/.lock``(round 10) — :func:`kb_lock`.
+웹 서버·플릿·``sbmig kb`` 명령이 한 KB 를 같이 쓸 수 있으므로 모든 KB 쓰기(``errors.jsonl``, case.json,
+``fix_v<N>.py``, cases.md, 에러별 JSON)는 ``kb_lock`` 안에서 한다. 방식: ``O_CREAT | O_EXCL`` 로 만든
+파일(Windows·POSIX·공유 폴더 모두 동작)에 {pid, host, at, token, cmd} 를 적는다; 프로세스 안에서는 재진입
+가능(KB 디렉토리마다 RLock, 가장 바깥 holder 만 파일을 만들고 지움). 오래됐거나(``kb.lock_timeout_seconds``)
+같은 호스트에서 pid 가 죽은 잠금은 경고와 함께 깬다; 아니면 기다리다가 시간이 다 되면 경고만 남기고 잠금 없이
+진행한다 — 잠금 때문에 실행을 실패시키지 않는다. 잠긴 구간은 짧게: 그 안에서 LLM 이나 Maven 을 부르지 않는다.
+
+Cross-process KB lock ``<kb>/.lock`` (round 10, 2026-10-26).
 
 The web server, a fleet and ``sbmig kb …`` commands may share one KB. Every KB write (append, index save, case /
 recipe / catalog file, views, audit) runs inside :func:`kb_lock`:
@@ -13,6 +21,8 @@ recipe / catalog file, views, audit) runs inside :func:`kb_lock`:
 * release removes the file only when it still holds our token.
 
 Keep the locked sections short: never call the LLM or Maven inside one.
+
+
 """
 from __future__ import annotations
 
@@ -38,6 +48,8 @@ _MAX_DELAY = 1.0
 
 
 class _State:
+    """KB 디렉토리 하나의 프로세스 안 상태: RLock, 중첩 깊이, 우리가 파일에 쓴 토큰."""
+
     def __init__(self) -> None:
         self.rlock = threading.RLock()
         self.depth = 0
@@ -49,6 +61,7 @@ _GUARD = threading.Lock()
 
 
 def _state(root: Path) -> _State:
+    # 같은 KB 를 다른 경로 표기(상대 경로, 심볼릭 링크)로 불러도 같은 상태를 쓰도록 realpath 로 키를 만든다
     key = os.path.realpath(str(root))
     with _GUARD:
         st = _STATES.get(key)
@@ -58,6 +71,7 @@ def _state(root: Path) -> _State:
 
 
 def lock_path(root: Path) -> Path:
+    """잠금 파일 경로 ``<root>/.lock``."""
     return Path(root) / LOCK_NAME
 
 
@@ -70,7 +84,9 @@ def _read(path: Path) -> Optional[dict[str, Any]]:
 
 
 def pid_alive(pid: int) -> bool:
-    """Is process ``pid`` running on this host? Unknown → True (only the age breaks such a lock)."""
+    """이 호스트에서 ``pid`` 가 살아 있나? 모르면 True(그런 잠금은 나이로만 깬다).
+
+    Is process ``pid`` running on this host? Unknown → True (only the age breaks such a lock)."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
@@ -80,6 +96,8 @@ def pid_alive(pid: int) -> bool:
     if pid == os.getpid():
         return True
     try:
+        # Windows 에서 os.kill(pid, 0) 은 존재 확인이 아니라 CTRL_C_EVENT 를 보낸다 — 그래서 OpenProcess /
+        # GetExitCodeProcess 로 묻는다(접근 거부 = 살아 있음)
         if os.name == "nt":
             import ctypes
 
@@ -112,6 +130,8 @@ def _owner_text(info: Optional[dict[str, Any]]) -> str:
 
 
 def _stale(path: Path, info: Optional[dict[str, Any]], timeout: float) -> bool:
+    """깨도 되는 잠금인가: 내용이 비었거나 깨진 잠금은 max(timeout, 5초)보다 오래됐을 때, 아니면 timeout 보다
+    오래됐거나 같은 호스트에서 pid 가 죽었을 때."""
     try:
         age = time.time() - path.stat().st_mtime
     except OSError:
@@ -124,6 +144,8 @@ def _stale(path: Path, info: Optional[dict[str, Any]], timeout: float) -> bool:
 
 
 def _break(path: Path, info: Optional[dict[str, Any]]) -> None:
+    """낡은 잠금을 옆 이름으로 옮긴 뒤 지운다. 옮기는 사이 다른 프로세스가 새 잠금을 잡았으면(토큰이 다름)
+    되돌려 놓는다 — 남의 새 잠금을 지우지 않으려고."""
     aside = path.with_name(f"{LOCK_NAME}.stale-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     try:
         os.replace(path, aside)
@@ -144,6 +166,8 @@ def _break(path: Path, info: Optional[dict[str, Any]]) -> None:
 
 
 def _acquire(root: Path, timeout: float) -> Optional[str]:
+    """잠금 파일을 O_EXCL 로 만들 때까지 백오프하며 기다린다(낡은 잠금은 깬다). 우리 토큰을 돌려주고, 시간
+    초과나 디렉토리 문제면 None(잠금 없이 진행)."""
     path = lock_path(root)
     try:
         Path(root).mkdir(parents=True, exist_ok=True)
@@ -161,6 +185,8 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
         try:
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         except (FileExistsError, PermissionError):        # Windows: a lock being deleted reads as PermissionError
+            # Windows: 지워지는 중인 잠금 파일은 PermissionError
+            # 로 보인다 — 잡혀 있는 것으로 보고 다시 시도한다
             info = _read(path)
             if _stale(path, info, timeout):
                 _break(path, info)
@@ -188,6 +214,7 @@ def _acquire(root: Path, timeout: float) -> Optional[str]:
 
 
 def _release(root: Path, token: str) -> None:
+    """파일이 아직 우리 토큰을 갖고 있을 때만 지운다(우리 잠금이 깨지고 남이 잡았으면 건드리지 않음)."""
     path = lock_path(root)
     info = _read(path)
     if info is not None and info.get("token") != token:
@@ -201,7 +228,10 @@ def _release(root: Path, token: str) -> None:
 
 @contextmanager
 def kb_lock(root: Path | str, timeout: Optional[float] = None) -> Iterator[bool]:
-    """Hold ``<root>/.lock`` for a KB write. Yields True when the lock is held (False: going on without it)."""
+    """KB 쓰기 동안 ``<root>/.lock`` 을 잡는다. 잡았으면 True, 못 잡고 그냥 진행하면 False 를 내준다. 같은
+    프로세스 안에서는 재진입 가능하다(바깥 holder 만 파일을 만들고 지움).
+
+    Hold ``<root>/.lock`` for a KB write. Yields True when the lock is held (False: going on without it)."""
     root = Path(root)
     t = DEFAULT_TIMEOUT if timeout is None else max(0.0, float(timeout))
     st = _state(root)
@@ -227,6 +257,8 @@ def kb_lock(root: Path | str, timeout: Optional[float] = None) -> Iterator[bool]
 
 
 def holding(root: Path | str) -> bool:
-    """This thread holds the lock of ``root`` (tests / assertions)."""
+    """이 스레드가 ``root`` 의 잠금을 잡고 있나(테스트·단언용).
+
+    This thread holds the lock of ``root`` (tests / assertions)."""
     st = _state(Path(root))
     return st.depth > 0 and st.token is not None

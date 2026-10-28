@@ -1,10 +1,21 @@
-"""Shared Maven invocation helpers (used by MavenRunner and OpenRewriteRunner).
+"""Maven 을 띄우는 공용 도우미 — 빌드(MavenRunner)와 변환(OpenRewriteRunner)이 같은
+명령·환경·로그 방식을 쓰게 한다. 흐름상 위치: 변환 후 컴파일·검증 빌드·수정 루프 재빌드·변환(OpenRewrite 1회),
+그리고 classpath / dependency:tree / effective-pom 조회까지 sbmig 가 띄우는 모든 mvn 이 여기를 지난다. 핵심
+진입점: ``base_command``(mvn + settings + 로컬 저장소 + offline), ``mvn_env``(JAVA_HOME / MAVEN_OPTS),
+``run_logged``(출력을 로그 파일로 흘리며 실행, 타임아웃이면 프로세스 트리째 종료), ``maven_available``(전제
+점검). 지킬 것: Maven 출력은 UTF-8 로 받는다(한국어 Windows 의 MS949 콘솔 때문에 javac 오류의 한글 경로가
+깨졌다, round 10); ``mvn.cmd`` 의 자식 ``java.exe`` 가
+남지 않게 항상 트리째 죽인다(Windows ``taskkill /T /F``).
+
+Shared Maven invocation helpers (used by MavenRunner and OpenRewriteRunner).
 
 * ``base_command(cfg)``  → ``[mvn, *extra_args, -s settings, -Dmaven.repo.local=…, -o]``
 * ``mvn_env(cfg)``       → inherited env + ``cfg.build.env`` + ``JAVA_HOME`` / ``PATH`` when ``java_home`` is set,
   ``MAVEN_OPTS`` += ``-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8`` (unless already set there)
 * ``run_logged(...)``    → runs a command in its own process group, streams merged stdout/stderr (ANSI stripped)
   to a log file as it arrives, enforces a timeout by killing the whole group.
+
+
 """
 from __future__ import annotations
 
@@ -35,6 +46,9 @@ def _blank(v: str | None) -> bool:
     return v is None or str(v).strip() == ""
 
 
+# 파이프로 받으면 Maven JVM 은 콘솔 코드 페이지(한국어 Windows 는 MS949)로 쓰는데 sbmig 는 UTF-8 로 읽으므로
+# javac 오류의 한글 경로가 깨져 오류 파일을 못 찾았다(round
+# 10). JDK 18+ 는 아래 속성을 따르고, 옛 JDK 는 무시한다.
 # The Maven JVM writes its console output in the console code page when stdout is a pipe (MS949 on a Korean
 # Windows PC); sbmig decodes UTF-8, so Korean paths in javac errors came back garbled and the error's file was never
 # found (round 10). JDK 18+ honours these properties for System.out / System.err; older JDKs ignore them.
@@ -42,7 +56,10 @@ UTF8_OUTPUT_PROPS: tuple[str, ...] = ("stdout.encoding", "stderr.encoding")
 
 
 def with_utf8_output(maven_opts: str | None) -> str:
-    """MAVEN_OPTS with `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` appended; a property the value already sets
+    """MAVEN_OPTS 끝에 `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` 을 붙인다. 이미 지정된
+    속성(예: `build.env`)은 그대로 둔다.
+
+    MAVEN_OPTS with `-Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8` appended; a property the value already sets
     (e.g. from `build.env`) is left alone."""
     opts = (maven_opts or "").strip()
     for prop in UTF8_OUTPUT_PROPS:
@@ -52,6 +69,8 @@ def with_utf8_output(maven_opts: str | None) -> str:
 
 
 def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Maven 을 띄울 환경: 현재 환경 + ``build.env`` + (``build.java_home`` 이 있으면) JAVA_HOME / PATH 앞자리
+    + ``extra``, 마지막에 MAVEN_OPTS 에 UTF-8 출력 속성(``with_utf8_output``)."""
     env = dict(os.environ)
     env.update({k: str(v) for k, v in (cfg.build.env or {}).items()})
     if not _blank(cfg.build.java_home):
@@ -65,7 +84,12 @@ def mvn_env(cfg: Config, extra: Mapping[str, str] | None = None) -> dict[str, st
 
 
 def mvn_executable(cfg: Config) -> str:
-    """`build.mvn` resolved to something `subprocess` can start without a shell.
+    """`build.mvn` 을 셸 없이 `subprocess` 로 띄울 수 있는 경로로 바꾼다. Windows 의 Maven 은 `mvn.cmd` 라서
+    `Popen(["mvn", ...])` 이 PATHEXT 를 보지 않고 `WinError 2` 로 실패했다 → `shutil.which` 로 PATH(+
+    MAVEN_HOME / M2_HOME 의 bin, `.cmd` / `.bat`)에서 찾는다. 디렉토리가 붙은 경로는 그대로 쓰고, 못 찾으면
+    설정값을 그대로 돌려준다(오류 메시지가 설정한 이름을 말하게).
+
+    `build.mvn` resolved to something `subprocess` can start without a shell.
 
     Windows installs Maven as `mvn.cmd`; `Popen(["mvn", ...])` does not look at PATHEXT and fails with
     `WinError 2`. `shutil.which` does, so a bare name is resolved through PATH (plus `MAVEN_HOME`/`M2_HOME`/bin and
@@ -91,8 +115,12 @@ def mvn_executable(cfg: Config) -> str:
 
 
 def base_command(cfg: Config) -> list[str]:
+    """모든 mvn 명령의 앞부분: ``[mvn, *build.extra_args, -s <settings 절대경로>, -Dmaven.repo.local=…, -o]``.
+    테스트 건너뛰기(``-Dmaven.test.skip=true``)는 여기가 아니라 ``MavenRunner.command`` 가 붙인다."""
     b = cfg.build
     cmd = [mvn_executable(cfg), *b.extra_args]
+    # settings 는 절대경로로 넘긴다: Maven 은 프로젝트(모듈) 디렉토리에서 돌기 때문에 상대경로면 거기서 찾다가
+    # 조용히 ~/.m2/settings.xml 로 넘어간다(사내 Nexus 미러가 빠진 채 빌드된다).
     # absolute (symlinks untouched — `/tmp` must stay `/tmp`): Maven runs with cwd = the project (module) directory,
     # so a relative `config/settings.nexus.xml` would be looked up there and silently fall back to ~/.m2/settings.xml
     if not _blank(b.settings_file):
@@ -108,7 +136,11 @@ _CATCH_ALL_MIRROR_RE = re.compile(r"<mirrorOf>\s*(\*|external:\*|external:http:\
 
 
 def settings_catch_all_mirror(cfg: Config) -> Optional[bool]:
-    """Does `build.settings_file` route every repository through a mirror (`<mirrorOf>*</mirrorOf>` or
+    """``build.settings_file`` 이 모든 저장소를 미러 하나로 돌리는가(``<mirrorOf>*</mirrorOf>`` /
+    ``external:*``)? None = settings 파일 없음 / 못 읽음. 이런 미러가 있어야 프로젝트 pom 에 적힌 옛
+    Nexus·Central 저장소가 폐쇄망에서도 풀린다(없으면 Maven 이 그 URL 로 직접 나간다, RUNBOOK §0.1).
+
+    Does `build.settings_file` route every repository through a mirror (`<mirrorOf>*</mirrorOf>` or
     `external:*`)? None = no settings file configured / not readable. Such a mirror is what makes the
     `<repositories>` declared inside the project poms (old Nexus URLs, Central, Spring milestones) resolve on an
     air-gapped host; without it Maven contacts them directly (RUNBOOK §0.1)."""
@@ -124,7 +156,11 @@ def settings_catch_all_mirror(cfg: Config) -> Optional[bool]:
 
 
 def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
-    """Operator notes about repositories the project poms declare (`PomInfo.repositories`): empty when the poms
+    """프로젝트 pom 이 선언한 저장소(``<repositories>``)에 대한 운영자 메모. 선언이 없으면 [], 있으면
+    settings 미러가 그것들을 받아 주는지 한 줄. Maven 이 그 URL 로 직접 나가게 되는 경우는 ``followup:`` 으로
+    시작한다(인수인계 후속 작업).
+
+    Operator notes about repositories the project poms declare (`PomInfo.repositories`): empty when the poms
     declare none; otherwise one note saying whether the settings file mirrors them. The note starts with
     `followup:` when Maven would contact the declared URLs directly."""
     urls: list[str] = []
@@ -147,7 +183,10 @@ def repository_notes(poms: Iterable[Any], cfg: Config) -> list[str]:
 
 
 def local_repo_path(cfg: Config) -> Path:
-    """cfg.build.local_repo → <localRepository> of the configured / user settings.xml → ~/.m2/repository."""
+    """로컬 Maven 저장소 경로: ``build.local_repo`` → (설정된 / 사용자) settings.xml 의
+    ``<localRepository>`` → ``~/.m2/repository`` 순서.
+
+    cfg.build.local_repo → <localRepository> of the configured / user settings.xml → ~/.m2/repository."""
     if not _blank(cfg.build.local_repo):
         return Path(cfg.build.local_repo).expanduser()
     for settings in ([cfg.build.settings_file] if not _blank(cfg.build.settings_file) else []) + \
@@ -163,6 +202,8 @@ def local_repo_path(cfg: Config) -> Path:
 
 @dataclass
 class ProcessResult:
+    """``run_logged`` 의 결과: 종료 코드, 전체 출력(ANSI 제거), 걸린 시간, 타임아웃 여부, 시작
+    실패 이유(실행 파일 없음 등)."""
     exit_code: int
     text: str
     duration_s: float
@@ -180,7 +221,11 @@ _CREATE_NO_WINDOW = 0x08000000
 
 
 def _popen_kwargs() -> dict[str, Any]:
-    """Windows: Maven / OpenRewrite get their own hidden console (`CREATE_NO_WINDOW`). The operator's Ctrl+Break
+    """Windows: Maven / OpenRewrite 에 숨은 콘솔(`CREATE_NO_WINDOW`)을 따로 준다. 운영자의 Ctrl+Break(스레드
+    덤프)·Ctrl+C 가 cmd.exe / java.exe 에 바로 가서 `mvn.cmd` 가 "Terminate batch job (Y/N)?" 에서 멈추던 일을
+    막는다. 죽이는 것은 sbmig 가 직접 한다.
+
+    Windows: Maven / OpenRewrite get their own hidden console (`CREATE_NO_WINDOW`). The operator's Ctrl+Break
     (thread dump, `sbmig.core.diag`) and Ctrl+C then never reach cmd.exe / java.exe directly — a Ctrl+Break used to
     leave `mvn.cmd` at "Terminate batch job (Y/N)?"; sbmig still kills the whole tree itself (`taskkill /T /F`)."""
     if not IS_WINDOWS:
@@ -189,7 +234,10 @@ def _popen_kwargs() -> dict[str, Any]:
 
 
 def _kill_tree_windows(pid: int) -> None:
-    """Windows has no process groups to signal: `mvn.cmd` is a cmd.exe whose child `java.exe` would survive a plain
+    """Windows 에는 신호를 보낼 프로세스 그룹이 없다: `mvn.cmd`(cmd.exe)만 끝내면 자식 `java.exe` 가 살아남아
+    `target/` 과 소스 파일을 잠근다(round 9c) → `taskkill /T /F` 로 트리 전체를 죽인다.
+
+    Windows has no process groups to signal: `mvn.cmd` is a cmd.exe whose child `java.exe` would survive a plain
     terminate() and keep `target/` / source files locked (round 9c) — `taskkill /T /F` kills the whole tree."""
     try:
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=30,
@@ -199,6 +247,8 @@ def _kill_tree_windows(pid: int) -> None:
 
 
 def _kill_group(proc: subprocess.Popen) -> None:
+    """프로세스 트리 종료: SIGTERM(Windows 는 taskkill /T /F) → 5초 대기 →
+    SIGKILL → 5초 대기. 오류는 삼킨다."""
     try:
         if IS_WINDOWS:
             _kill_tree_windows(proc.pid)
@@ -229,6 +279,9 @@ def _kill_group(proc: subprocess.Popen) -> None:
 # ---------------------------------------------------------------------------
 # live Maven / OpenRewrite processes (web shutdown, Ctrl+C, interpreter exit)
 # ---------------------------------------------------------------------------
+# 살아 있는 자식 프로세스 목록: 웹 서버 종료·인터프리터 종료 때 아직 도는 mvn 을 죽이려고 둔다. 이게 없을 때
+# Windows 에서 uvicorn 을 내려도 mvn.cmd 의 java.exe 가 살아남아
+# target/ 을 잠그고 CPU 를 먹었다(회사 실행, 2026-10-21).
 # Every long-running child goes through `run_logged`; the registry lets a server shutdown or an interpreter exit
 # kill what is still running. Without it a `java.exe` started by `mvn.cmd` survived the uvicorn shutdown on
 # Windows (holding `target/` and source files, burning CPU) and the shutdown itself hung on the open SSE
@@ -248,13 +301,18 @@ def _unregister(proc: subprocess.Popen) -> None:
 
 
 def live_processes() -> list[subprocess.Popen]:
-    """Children started by `run_logged` that have not exited yet."""
+    """``run_logged`` 로 띄운 자식 중 아직 끝나지 않은 것.
+
+    Children started by `run_logged` that have not exited yet."""
     with _LIVE_LOCK:
         return [p for p in _LIVE if p.poll() is None]
 
 
 def kill_live_processes(reason: str = "shutdown") -> int:
-    """Kill every live child (whole process tree: `taskkill /T /F` on Windows, the process group elsewhere).
+    """살아 있는 자식 전부를 트리째 죽이고 그 수를 돌려준다. ``atexit`` 에 등록돼 있고, 웹 앱
+    종료(lifespan)도 이것을 부른다.
+
+    Kill every live child (whole process tree: `taskkill /T /F` on Windows, the process group elsewhere).
     Returns how many were killed. Registered with `atexit`, called by the web app's lifespan shutdown."""
     procs = live_processes()
     for proc in procs:
@@ -269,7 +327,12 @@ atexit.register(lambda: kill_live_processes("interpreter exit"))
 
 def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_path: Path,
                timeout_s: float | None) -> ProcessResult:
-    """Run ``cmd``; stream output (ANSI stripped) to ``log_path`` line by line. Never raises for process failures."""
+    """``cmd`` 를 자기 프로세스 그룹에서 실행하고 출력(stdout + stderr, ANSI 제거)을 줄 단위로
+    ``log_path`` 에 바로 쓴다. ``HEARTBEAT_S`` 마다 "still running" INFO 줄(운영자에게: 느린 것 ≠ 멈춘 것),
+    타임아웃이면 트리째 죽이고 로그 끝에 그 사실을 적는다. 프로세스가
+    실패해도 예외 없이 ProcessResult(실행 파일 없음 = exit 127).
+
+    Run ``cmd``; stream output (ANSI stripped) to ``log_path`` line by line. Never raises for process failures."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     chunks: list[str] = []
     t0 = time.monotonic()
@@ -289,6 +352,8 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
         def pump() -> None:
             assert proc.stdout is not None
             for raw in iter(proc.stdout.readline, b""):
+                # JVM 에 UTF-8 출력을 요구했으니 UTF-8 로 읽는다. 옛 코드 페이지 바이트는 U+FFFD 로 바꾼다 —
+                # 읽기 스레드가 디코딩 오류로 죽으면 파이프가 차서 Maven 이 멈춘다.
                 # UTF-8 (MAVEN_OPTS asks the JVM for it); a stray legacy byte becomes U+FFFD, never a dead reader
                 line = strip_ansi(raw.decode("utf-8", errors="replace"))
                 chunks.append(line)
@@ -317,6 +382,7 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
                     log.info("%s still running: %.0fs elapsed%s — %d output line(s) so far, log: %s",
                              Path(cmd[0]).name, elapsed, f" (timeout {timeout_s:.0f}s)" if timeout_s else "",
                              len(chunks), log_path)
+        # 기다리는 스레드에서 Ctrl+C / SystemExit 가 나도 JVM 을 남기지 않는다(먼저 죽이고 나서 다시 올린다).
         except BaseException:             # Ctrl+C / SystemExit in the waiting thread: never leave the JVM behind
             _kill_group(proc)
             raise
@@ -334,7 +400,11 @@ def run_logged(cmd: Sequence[str], *, cwd: Path, env: Mapping[str, str], log_pat
 
 
 def maven_available(cfg: Config) -> tuple[bool, str]:
-    """Preflight: run ``mvn -v`` with the configured env. Returns (ok, 'Apache Maven x.y.z; Java version: …')."""
+    """전제 점검(preflight): 설정된 환경으로 ``mvn -v`` 를 돌려 (성공 여부, 'Apache Maven x.y.z; Java
+    version: …, runtime: …')를 돌려준다. runtime(JDK 경로)을 남기는 것은 "JDK 21 아님" 중단 메시지가 Maven 이
+    실제로 쓴 JDK 를 말하게 하려는 것.
+
+    Preflight: run ``mvn -v`` with the configured env. Returns (ok, 'Apache Maven x.y.z; Java version: …')."""
     cmd = [mvn_executable(cfg), "-v"]
     try:
         cp = subprocess.run(cmd, env=mvn_env(cfg), capture_output=True, timeout=120,

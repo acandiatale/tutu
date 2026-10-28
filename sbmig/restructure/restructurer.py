@@ -1,4 +1,16 @@
-"""Company-layout restructuring (ARCHITECTURE §8).
+"""재구성(restructure) 본체 — 회사 레이아웃으로 디렉토리를 옮기고 pom 을 다시 쓴다(ARCHITECTURE §8, 라운드
+9c). LLM 없이 결정적으로 동작한다. 흐름상 위치: 변환(OpenRewrite 1회) 다음 ``restructure.*`` 단계에서
+오케스트레이터가 ``Restructurer().apply(ws, profile, cfg, mode=..., params=...)`` 를 부르고, 그 뒤가 구조
+검토와 검증 빌드다. 모드: ``layout`` = 비 Boot 프로젝트(Spring 4/5, servlet, 순수 Java)를 ``{name}-boot`` /
+``{name}-back`` / ``{name}-front`` 로 나눔, ``boot_pom`` = Spring Boot as-is 는 디렉토리를 두고 pom 만,
+``msa_pom`` = MSA 서비스 루트마다 pom 만, ``optional_bump`` = 선택 사내 아티팩트 버전만. 회사 규칙(CLAUDE.md):
+루트 → 사내 부모 pom ``artifacts.parent`` (aggregator), boot 모듈 → ``boot_parent``, 나머지 모듈 →
+``comp_parent``; 필수 사내 아티팩트 2개는 루트 pom 에(``mandatory_target: root``), 선택 사내 아티팩트 8개는
+이미 쓰던 것만 올린다. 좌표는 전부 config 에서 읽는다(불변조건 2). 지킬 것: wrap / merge 는 모든 검사·결정을
+첫 이동 전에 끝낸다(실패 = ``RestructureError`` → ok=False); 다시 돌려도 결과가 같다(이미 재구성된 프로젝트는
+pom 정리만); 프로젝트 밖 경로는 읽지도 바꾸지도 않는다.
+
+Company-layout restructuring (ARCHITECTURE §8).
 
 Module paths come from `layout.module_path(which, name)` (round 9c; `{name}` = `layout.project_name` or the root
 artifactId): by default `{name}-boot` / `{name}-back` / `{name}-front` directly under the root, pre-9c
@@ -29,6 +41,8 @@ Edge cases (docs/ERROR-HANDLING.md): system-scoped jars are copied next to the m
 (note + follow-up) by `merge` (S5); nested
 `<modules>` / `<parent><relativePath>` are recomputed after a wrap; WAR modules are wrapped unchanged (S7); an
 already restructured project is left alone apart from the idempotent pom pass (S2).
+
+
 """
 from __future__ import annotations
 
@@ -150,14 +164,19 @@ _TEMPLATES = jinja2.Environment(
 
 
 class RestructureError(Exception):
-    pass
+    """재구성을 멈춰야 하는 오류(루트 pom 없음, 프로젝트 밖 모듈의 wrap, ``merge_collision: fail`` 충돌,
+    덮어쓰기가 필요한 이동 ...). ``apply`` 가 잡아 ok=False + error 로 돌려준다."""
 
 
 def render(template: str, **kw: Any) -> str:
+    """``templates/`` 의 Jinja2 템플릿 렌더링(boot / comp / front pom, Application, WebXmlRegistrations).
+    StrictUndefined 라 빠진 변수는 바로 오류가 난다."""
     return _TEMPLATES.get_template(template).render(**kw)
 
 
 def sanitize_identifier(name: str, fallback: str = "x") -> str:
+    """임의 문자열 → Java 식별자(허용 밖 문자는 _, 숫자로 시작하면 앞에 _, 예약어면 뒤에 _).
+    생성 클래스 이름에 쓴다."""
     out = re.sub(r"[^A-Za-z0-9_$]", "_", name or "")
     if not out:
         out = fallback
@@ -169,6 +188,7 @@ def sanitize_identifier(name: str, fallback: str = "x") -> str:
 
 
 def sanitize_package(pkg: str | None) -> str | None:
+    """패키지 이름의 마디마다 Java 식별자로 정리(``com.my-co.app`` → ``com.my_co.app``); 비면 None."""
     if not pkg:
         return None
     parts = [sanitize_identifier(p) for p in pkg.strip().strip(".").split(".") if p]
@@ -177,6 +197,9 @@ def sanitize_package(pkg: str | None) -> str | None:
 
 @dataclass
 class _Ctx:
+    """``apply`` 한 번 동안 들고 다니는 작업 상태: 워크스페이스·프로필·설정·결과, 바뀐 파일(``changed``),
+    이동 기록(``moves``), 모듈 경로(``boot_rel`` / ``comp_rel`` / ``front_rel``), front / WAR / JSP /
+    overlay 판단, 이름 변경. 메서드는 이동·복사·쓰기·노트·커밋을 한곳에서 기록한다."""
     ws: Workspace
     profile: ProjectProfile
     cfg: Config
@@ -208,11 +231,15 @@ class _Ctx:
     module_mains: set[str] = field(default_factory=set)    # main classes reported per merged jar module
 
     def p(self, *parts: str) -> str:
+        """프로젝트 루트(``base``) 기준 경로 → 워크스페이스 기준 정규화 경로(루트 자신은 ``.``)."""
         j = posixpath.normpath(posixpath.join(self.base, *parts)) if (self.base or parts) else "."
         return "." if j in ("", ".") else j
 
     def new_location(self, old: str) -> str:
-        """Where an as-is path is now: the moves applied in order (a file moved twice — into comp, then into the
+        """as-is 경로가 지금 어디 있는지: 이동 기록을 순서대로 적용한다(comp 로 갔다가 front / boot 로
+        다시 간 파일은 마지막 위치).
+
+        Where an as-is path is now: the moves applied in order (a file moved twice — into comp, then into the
         front / boot module — resolves to its last location)."""
         cur = old
         for o, n in self.moves:
@@ -221,6 +248,9 @@ class _Ctx:
         return cur
 
     def move(self, src: str, dst: str) -> int:
+        """파일 / 디렉토리 이동 + 기록(moves, changed, moved_files). 대상 디렉토리가 이미 있으면
+        파일 단위로 합치되 절대 덮어쓰지 않는다(같은 파일이 있으면 RestructureError) — 사람
+        파일을 조용히 잃지 않게."""
         absrc = self.ws.abs(src)
         if not absrc.exists():
             return 0
@@ -245,7 +275,10 @@ class _Ctx:
         return len(rels)
 
     def copy(self, src: str, dst: str) -> int:
-        """Copy ONE file byte for byte (2026-10-28: a <resource> dir file inside the web root reaches the front
+        """파일 하나를 바이트 그대로 복사(v2.1g: web root 안 <resource> 디렉토리 파일을 front static 에도 두고
+        classpath 원본은 남긴다). 원본이 파일이 아니면 0, 대상이 있으면 덮어쓰지 않고 RestructureError.
+
+        Copy ONE file byte for byte (2026-10-28: a <resource> dir file inside the web root reaches the front
         module's static dir while its classpath copy stays). 0 when `src` is not a file; never overwrites."""
         absrc, abdst = self.ws.abs(src), self.ws.abs(dst)
         if not absrc.is_file():
@@ -259,12 +292,15 @@ class _Ctx:
         return 1
 
     def write(self, rel: str, text: str, generated: bool = True) -> None:
+        """파일 쓰기 + 변경 기록. ``generated`` 면 결과의 generated_files 에도 올린다(보고서 / 구조 검토가
+        '새로 만든 파일' 로 본다)."""
         self.ws.write(rel, text)
         self.changed.add(rel)
         if generated and rel not in self.result.generated_files:
             self.result.generated_files.append(rel)
 
     def save(self, ed: PomEditor) -> bool:
+        """pom 이 실제로 바뀌었을 때만 저장하고 기록한다 — 바뀌지 않은 pom 은 diff 에 나오지 않는다."""
         if not ed.changed:
             return False
         ed.save()
@@ -272,14 +308,18 @@ class _Ctx:
         return True
 
     def note(self, text: str) -> None:
+        """노트 한 줄(보고서에 남는 사실, 중복은 한 번만)."""
         if text not in self.result.notes:
             self.result.notes.append(text)
 
     def followup(self, text: str) -> None:
+        """후속 작업 한 줄(as-is 담당자가 할 일, 보고서 Handover; 중복은 한 번만)."""
         if text not in self.result.manual_followups:
             self.result.manual_followups.append(text)
 
     def commit(self, message: str) -> None:
+        """중간 git 커밋(``restructure: ...``). ``commit=False`` 이거나 git 이 없으면 건너뛴다 — 커밋
+        실패로 재구성을 멈추지 않는다."""
         if not self.commit_enabled:
             return
         try:
@@ -289,7 +329,10 @@ class _Ctx:
 
 
 class Restructurer:
-    """Implements RestructurerLike. `Restructurer(commit=False)` skips intermediate git commits."""
+    """RestructurerLike 구현. 상태를 갖지 않고 ``apply`` 마다 ``_Ctx`` 를 새로 만든다.
+    ``Restructurer(commit=False)`` 는 중간 git 커밋을 하지 않는다.
+
+    Implements RestructurerLike. `Restructurer(commit=False)` skips intermediate git commits."""
 
     def __init__(self, commit: bool = True):
         self.commit_enabled = commit
@@ -298,7 +341,12 @@ class Restructurer:
     def apply(self, ws: Workspace, profile: ProjectProfile, cfg: Config, *,
               mode: Literal["layout", "msa_pom", "optional_bump", "boot_pom"] = "layout",
               params: dict[str, Any] | None = None) -> RestructureResult:
-        """params (optional, from the PlanStep): starter, split_policy, multi_module_policy, merge_collision (layout);
+        """재구성 진입점: ``mode`` 에 따라 ``_layout`` / ``_msa`` / ``_optional_bump`` / ``_boot_pom`` 을
+        부르고 RestructureResult(노트, 후속 작업, 바뀐 파일, 부모 변경, 올린 버전 ...)를 돌려준다.
+        RestructureError / PomEditError / OSError 는 예외 대신 ok=False + error. ``params`` = 계획
+        단계(PlanStep)의 값 + 오케스트레이터가 넣는 ``effective_pom``.
+
+        params (optional, from the PlanStep): starter, split_policy, multi_module_policy, merge_collision (layout);
         library_roots (msa_pom); target (optional_bump: restrict to the poms below this directory)."""
         result = RestructureResult(ok=True)
         c = _Ctx(ws, profile, cfg, result, dict(params or {}), self.commit_enabled)
@@ -322,6 +370,11 @@ class Restructurer:
 
     # ================================================================== layout
     def _layout(self, c: _Ctx) -> None:
+        """mode ``layout`` (비 Boot 프로젝트의 회사 레이아웃). 이미 재구성된 프로젝트면 사내 부모
+        버전 맞춤과 pom 정리만 하고 끝. 아니면 프로젝트 밖 모듈 검사 → 단일 모듈 ``_single`` / 다중 모듈
+        ``_merge`` (기본) 또는 ``_wrap`` → 루트 이름 변경 반영, 외부 설정 placeholder, 역할 부모 정렬, WEB-INF
+        stash 중복 제거, 남은 웹 콘텐츠 후속 작업, 모든 pom 정리(선택 사내 아티팩트,
+        부모가 관리하는 버전 삭제)."""
         L = c.cfg.layout
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
         c.base = posixpath.dirname(root_rel)
@@ -334,6 +387,8 @@ class Restructurer:
         mods = [m.strip().rstrip("/") for m in root.modules()]
         policy = c.params.get("multi_module_policy", L.multi_module_policy)
         norm_mods = [posixpath.normpath(m) for m in mods]
+        # 이미 재구성됐는가: merge 는 boot / comp(back) 모듈이
+        # 둘 다 루트 <modules> 에 있어야 회사 레이아웃이다
         if policy == "merge":     # the company layout is exactly comp-jar + boot-jar
             done = boot_mod in norm_mods and comp_mod in norm_mods
         else:
@@ -349,6 +404,8 @@ class Restructurer:
                        "parent left unchanged")
             else:
                 want = c.cfg.artifacts.parent.version
+                # 더 낮은 사내 부모 버전으로 이미 옮긴 프로젝트:
+                # 설정된 버전으로만 올린다(구조는 건드리지 않음)
                 if want and parent.version != want:   # migrated on an older in-house parent → the configured one
                     root.set_parent(c.cfg.artifacts.parent.gav(), root.parent_relative_path())
                     c.save(root)
@@ -374,6 +431,7 @@ class Restructurer:
                     self._skip_outside(c, root_rel, m, tgt)
                     continue
             inside.append(m)
+        # wrap 은 프로젝트 밖 모듈을 옮길 수 없다: 아무것도 옮기기 전에 멈춘다(반쯤 옮긴 상태를 남기지 않음)
         if outside and policy != "merge":
             msg = (f"module(s) declared in {root_rel} resolve outside the project root: {', '.join(outside)}; the "
                    "layout restructure cannot move them — nothing was changed (move the module into the project or "
@@ -391,6 +449,7 @@ class Restructurer:
         else:
             self._single(c, root, coords)
         self._repoint_renamed_root(c)
+        # 외부 설정 placeholder 는 boot 모듈에: 런타임 설정(application.properties)은 boot jar 가 읽는다
         # single / merge (generated or kept boot module) / wrap: the boot-jar holds the runtime configuration
         self._write_placeholders(c, f"{c.p(c.boot_rel)}/src/main/resources")
         self._placeholder_followup(c)
@@ -415,7 +474,12 @@ class Restructurer:
 
     # ------------------------------------------------------------------ project name (2026-10-23)
     def _project_name_coords(self, c: _Ctx, root: PomEditor, coords: GAV) -> GAV:
-        """The intake aggregator's `sbmig.project-name` (it took `<name>-aggregator` because a member, typically the
+        """intake aggregator 가 붙인 ``sbmig.project-name`` (멤버, 보통 EAR 이 이미 ``<group>:<name>`` 을 써서
+        aggregator 는 ``<name>-aggregator`` 가 됨)을 merge 뒤 루트 artifactId 로 쓴다 — 멤버가 합쳐지거나 빠져
+        reactor 충돌이 없어지므로. 생성 모듈 이름(``<name>-back`` ...)도 따라간다. 남길 boot 모듈이 그
+        artifactId 면 적용하지 않는다.
+
+        The intake aggregator's `sbmig.project-name` (it took `<name>-aggregator` because a member, typically the
         EAR, had the g:a `<group>:<name>`) becomes the root artifactId once the members are merged / dropped (no reactor
         collision left), and the generated module artifactIds follow it (`<name>-back`, …). Not applied when a kept
         boot module has that artifactId."""
@@ -439,7 +503,10 @@ class Restructurer:
         return GAV(group_id=coords.group_id, artifact_id=name, version=coords.version)
 
     def _repoint_renamed_root(self, c: _Ctx) -> None:
-        """After the root rename (`_rewrite_root`): every project pom whose `<parent>` still names the old root
+        """루트 이름을 바꾼 뒤(``_rewrite_root``), 옛 루트 artifactId 를 <parent> 로 가리키던 프로젝트
+        pom(남겨 둔 as-is 모듈)을 새 이름으로 고친다. relativePath / version 은 그대로.
+
+        After the root rename (`_rewrite_root`): every project pom whose `<parent>` still names the old root
         artifactId (a kept as-is module) points at the new one; relativePath / version untouched."""
         if not c.rename_root or not c.root_aid_old:
             return
@@ -468,7 +535,11 @@ class Restructurer:
 
     # ------------------------------------------------------------------ web content no pom references (2026-10-23)
     def _web_content_left(self, c: _Ctx) -> None:
-        """JSPs of the analysis that did not move and lie in no generated module (e.g. `STATIC/index.jsp` next to the
+        """어느 pom 도 참조하지 않아 옮겨지지 않은 JSP(예: 모듈 디렉토리 옆 ``STATIC/index.jsp``)는 그 자리에
+        둔다: 최상위 디렉토리마다 후속 작업 하나 + 플래그 ``web-content-left``. 어디서 서비스되는지 모르는
+        파일을 추측으로 옮기지 않는다.
+
+        JSPs of the analysis that did not move and lie in no generated module (e.g. `STATIC/index.jsp` next to the
         module directories, referenced by no pom) stay where they are: one follow-up per top directory, flag
         `web-content-left`. Nothing is moved."""
         src = c.profile.source
@@ -504,7 +575,11 @@ class Restructurer:
             c.result.flags.append("web-content-left")
 
     def _dedupe_webinf_stash(self, c: _Ctx) -> None:
-        """An XML bean config that reached the boot module twice — `legacy-config/` (copied + `@ImportResource`) and
+        """같은 XML 빈 설정이 boot 모듈에 두 번 들어간 경우(``legacy-config/`` 복사 + @ImportResource, 그리고
+        front 이동의 ``asis-webinf/`` stash): import 되는 사본만 남긴다 — 같은 빈 정의 파일이 두 곳에 있으면
+        어느 쪽이 쓰이는지 헷갈린다.
+
+        An XML bean config that reached the boot module twice — `legacy-config/` (copied + `@ImportResource`) and
         the `asis-webinf/` stash of the front move — keeps the imported copy only."""
         boot = getattr(c, "boot_rel", None)
         if not boot:
@@ -526,6 +601,8 @@ class Restructurer:
 
     @staticmethod
     def _root_coords(root: PomEditor, profile: ProjectProfile) -> GAV:
+        """루트 pom 의 groupId / artifactId / version(부모에서 물려받은 값, 분석 프로필 값으로 보충).
+        groupId / version 을 못 정하면 RestructureError — 생성 모듈의 좌표를 만들 수 없다."""
         g = root.effective_group_id() or (profile.root_pom.group_id if profile.root_pom else None)
         v = root.effective_version() or (profile.root_pom.version if profile.root_pom else None)
         a = root.artifact_id() or (profile.root_pom.artifact_id if profile.root_pom else None) or profile.name
@@ -535,6 +612,9 @@ class Restructurer:
 
     # ------------------------------------------------------------------ single module
     def _single(self, c: _Ctx, root: PomEditor, coords: GAV) -> None:
+        """단일 모듈 프로젝트: as-is 소스 루트를 전부 comp(back) 모듈로 옮기고 → front 모듈(웹 리소스) →
+        WAR overlay 계획 → comp pom → boot 모듈(boot 리소스, Application, repackage) → 루트를 aggregator
+        로. 순서가 중요하다: front 가 JSP 여부를 정해야 boot 가 WAR 인지 정해진다."""
         L = c.cfg.layout
         comp = c.p(c.comp_rel)
         boot = c.p(c.boot_rel)
@@ -548,6 +628,7 @@ class Restructurer:
             c.note(f"directory {raw} of the root pom resolves outside the project root; not moved (nothing outside "
                    "the project is read or changed)")
         c.commit("restructure: move as-is sources to comp-jar")
+        # front 를 boot 보다 먼저: JSP 가 옮겨졌는지(c.jsp_moved)가 boot 모듈의 WAR / jar 를 정한다
         self._populate_front(c, comp, boot, coords, [root])
         self._plan_overlays(c, [root], set())
         self._write_comp_pom(c, [root], coords, comp, asis_packaging)
@@ -562,6 +643,9 @@ class Restructurer:
         c.commit("restructure: comp-jar / boot-jar layout")
 
     def _source_roots(self, c: _Ctx, ed: PomEditor) -> list[str]:
+        """pom 이 쓰는 최상위 소스 디렉토리들(``src`` + build 의 source / resource 디렉토리 +
+        maven-war-plugin 의 web root) = 옮길 대상. ``${...}``, 프로젝트 밖(``../``), 절대 경로, target,
+        회사 모듈 디렉토리는 뺀다."""
         roots = ["src"]
         build = ed.find("build")
         paths: list[str] = []
@@ -589,7 +673,12 @@ class Restructurer:
 
     # ------------------------------------------------------------------ multi-module: wrap
     def _wrap(self, c: _Ctx, root: PomEditor, mods: list[str], coords: GAV) -> None:
-        """Move every as-is module under module/ unchanged and add boot-jar depending on the **jar** modules.
+        """``multi_module_policy: wrap``: as-is 모듈을 그대로 두고(``layout.module_dir`` 가 설정돼 있으면 그
+        아래로 옮기고) jar 모듈에 의존하는 boot 모듈을 하나 더한다(N+1 모듈). WAR 모듈은 WAR 그대로 두고 boot
+        는 의존하지 않는다(S7). 옮긴 pom 의 <modules> / <parent><relativePath> 는 다시 계산한다(S5). 루트의
+        의존성 / build 플러그인은 모듈이 상속하므로 남긴다.
+
+        Move every as-is module under module/ unchanged and add boot-jar depending on the **jar** modules.
 
         WAR modules keep building as WARs (S7): no class is taken out of them and boot-jar does not depend on them.
         Nested `<modules>` and `<parent><relativePath>` of moved poms are recomputed (S5)."""
@@ -601,6 +690,8 @@ class Restructurer:
             mn = posixpath.normpath(m)
             if mn.endswith(".xml"):
                 mn = posixpath.dirname(mn) or "."
+            # module_dir 가 "" (9c 기본)면 as-is 모듈은 제자리에
+            # 둔다; 9c 이전 설정(module)일 때만 그 아래로 옮긴다
             if not md or mn.startswith(md + "/") or not c.ws.exists(c.p(mn)):
                 if not c.ws.exists(c.p(mn)):
                     c.note(f"module directory {m} not found; left as declared")
@@ -628,6 +719,8 @@ class Restructurer:
                 c.followup(f"WAR module {new} kept as-is (still packaged as a WAR, not a dependency of "
                            f"{c.boot_rel}); embedded deployment needs conversion (move its web layer to a jar "
                            "module or convert it to the boot-jar)")
+            # repackage 는 boot 모듈에서만: 다른 jar 모듈이
+            # repackage 되면 comp 의존성으로 쓸 수 없는 jar 가 된다
             elif ed.remove_plugin(*BOOT_PLUGIN):
                 c.note(f"spring-boot-maven-plugin removed from {new} (repackage happens in {posixpath.basename(c.boot_rel)})")
             self._fix_java(c, ed, top=False)
@@ -670,7 +763,11 @@ class Restructurer:
         c.commit("restructure: boot-jar added to wrapped multi-module project")
 
     def _fix_child_parents(self, c: _Ctx, old2new: dict[str, str]) -> None:
-        """Re-point `<parent><relativePath>` and nested `<modules>` of every pom below moved directories."""
+        """디렉토리를 옮긴 뒤, 그 아래 모든 pom 의 <parent><relativePath> 와 중첩 <modules> 를 새 위치
+        기준으로 다시 계산한다 — 같은 부모 / 같은 모듈을 계속
+        가리키게. 부모가 프로젝트 밖이면 relativePath 만 다시 계산한다.
+
+        Re-point `<parent><relativePath>` and nested `<modules>` of every pom below moved directories."""
         if not old2new:
             return
 
@@ -730,11 +827,23 @@ class Restructurer:
     # ------------------------------------------------------------------ multi-module: merge
     @staticmethod
     def _module_dir(m: str) -> str:
+        """<module> 값 → 모듈 디렉토리(``x/pom.xml`` 처럼 pom 파일을 가리키면 그 디렉토리)."""
         mn = posixpath.normpath(m)
         return (posixpath.dirname(mn) or ".") if mn.endswith(".xml") else mn
 
     def _merge(self, c: _Ctx, root: PomEditor, mods: list[str], coords: GAV) -> None:
-        """Fold every as-is module (and the root `src/`) into comp-jar; an as-is module named like
+        """``multi_module_policy: merge`` (기본, 회사 레이아웃 = comp + boot (+ front)): 모든 as-is 모듈과
+        루트 ``src/`` 를 comp(back) 모듈 하나로 합친다. 디렉토리 이름이 boot 모듈
+        이름(``layout.boot_module``)인 모듈은 boot 모듈로 남긴다(소스 그대로, pom 만 조정). 단계: 0 pom 패키징
+        모듈(aggregator / BOM)은 자식만 내놓음 → 1 남길 boot 모듈 → 2 이동 계획과 충돌 결정(아직 아무것도
+        옮기지 않음) → 3 boot 모듈 이동 → 4 나머지를 comp 로, EAR 은 소스 없이 빼기(``_drop_ear``), front,
+        comp pom → 5 boot pom(남긴 것 조정 또는 생성), 관리 항목 접기, 루트 pom. 충돌(두 모듈의 같은 경로):
+        ``layout.merge_collision`` first-wins = ``<modules>`` 순서상 먼저 것이 이기고 다른 사본은 ``<run
+        dir>/merge-conflicts/`` 에 저장(같은 FQCN 이 다르면 버려진 사본이 수정 스크립트 프롬프트의 참고 자료가
+        된다), fail = RestructureError. META-INF/services,
+        spring.factories, *.imports 는 충돌이 아니라 줄 합집합.
+
+        Fold every as-is module (and the root `src/`) into comp-jar; an as-is module named like
         `layout.boot_module` is kept as boot-jar (moved to module/boot-jar, pom adjusted, sources untouched).
 
         `<packaging>pom</packaging>` sub-modules (BOM / nested aggregator) move nothing: their `<modules>` children
@@ -769,6 +878,8 @@ class Restructurer:
                                        "<modules>")
             return ed
 
+        # 0. pom 패키징 모듈(aggregator / BOM)은 자식 모듈만 내놓는다. 깊이 우선 + 선언 순서 — 이 순서가
+        # first-wins 의 '먼저' 를 정한다
         # 0. flatten: pom-packaging modules (aggregator / BOM) contribute their children, depth-first in order
         flat: list[tuple[str, str, PomEditor]] = []          # (label, module dir, editor)
         pom_mods: list[tuple[str, str, PomEditor]] = []
@@ -797,6 +908,8 @@ class Restructurer:
         for m in mods:
             visit(m, self._module_dir(m), 0)
 
+        # 1. 디렉토리 이름이 boot 모듈 이름인 첫 jar / war 모듈만 남긴다(이미 *-boot 로 나뉜 프로젝트를 다시
+        # 쪼개지 않게); 같은 이름이 또 있으면 comp 로 합친다
         # 1. kept boot module (first jar/war module whose directory basename is the boot module name)
         kept: tuple[str, str, PomEditor] | None = None
         for entry in flat:
@@ -811,6 +924,7 @@ class Restructurer:
         kept_ed = kept[2] if kept is not None else None
         eds = [ed for _, _, ed in merged_jar]
         all_merged = [e for e in order if e is not kept]
+        # EAR 모듈은 소스를 합치지 않는다: Spring Boot 는 EAR 을 만들지 않는다(_drop_ear)
         ears = [e for e in merged_jar if e[2].packaging() == "ear"]          # no sources merged (2026-10-23)
         merged_src = [e for e in merged_jar if e[2].packaging() != "ear"]
         module_dirs = {d.split("/")[0] for _, d, _ in [*flat, *pom_mods]}
@@ -818,6 +932,7 @@ class Restructurer:
         root_tops = [t for t in self._source_roots(c, root) if t == "src" or t not in module_dirs]
         if any(c.ws.exists(c.p(t)) for t in root_tops):
             sources_of.append((".", "<root>", root_tops))
+        # 루트 <build> 의 리소스 디렉토리는 모든 모듈이 상속하므로 모듈마다 그 디렉토리도 찾아본다
         inherited = self._source_roots(c, root)            # root <build> resource dirs apply to every module
         for label, mdir, ed in merged_src:
             sources_of.append((mdir, label, list(dict.fromkeys([*self._source_roots(c, ed), *inherited]))))
@@ -826,6 +941,7 @@ class Restructurer:
                  for found in [self._module_mains(c, mdir, ed)] if found]
         c.module_mains.update(f for _, found in mains for f in found)
 
+        # 2. 이동 계획과 충돌 결정을 전부 먼저 한다 — fail 정책이면 아무것도 옮기기 전에 멈추도록
         # 2. plan the moves and decide every collision (nothing is moved yet)
         plan: list[tuple[str, str]] = []
         seen: dict[str, tuple[str, str]] = {}           # comp dst → (label, as-is src)
@@ -847,6 +963,8 @@ class Restructurer:
                     src = c.p(mdir, rel)
                     if dst in seen:
                         first_label, first_src = seen[dst]
+                        # 줄 목록 레지스트리(META-INF/services, spring.factories, *.imports): 한쪽만 남기면
+                        # 다른 모듈의 등록이 사라지므로 합집합
                         if UNION_RE.search(rel):
                             unions.setdefault(dst, [(first_label, first_src)]).append((label, src))
                             continue
@@ -854,6 +972,8 @@ class Restructurer:
                             raise RestructureError(f"merge collision: {rel} exists in both {first_label} and {label}")
                         mc = conflicts.setdefault(dst, MergeConflict(path=rel, kept_from=first_label, identical=True))
                         mc.dropped_from.append(label)
+                        # 같은 내용이면 하나만 남기고, 다르면 버려지는 사본을 merge-conflicts/ 에
+                        # 저장한다(사람과 수정 스크립트 프롬프트가 볼 수 있게)
                         if c.ws.abs(first_src).read_bytes() != f.read_bytes():
                             mc.identical = False
                             mc.saved_copies.append(saved_path(label, rel))
@@ -876,6 +996,8 @@ class Restructurer:
                     to_save.append((s_, saved_path(lb, rel)))
                 union_texts[dst] = self._union_registry(rel, [t_.decode("utf-8", "replace") for t_ in texts])
             conflicts[dst] = mc
+        # pom 패키징 모듈의 src/ 는 Maven 이 한 번도 컴파일하지
+        # 않았다: 합치면 새 컴파일 오류만 생기므로 저장만 한다
         for _label, mdir, ed in pom_mods:            # sources Maven never compiled (pom packaging): saved, not merged
             if c.ws.abs(c.p(mdir, "src")).is_dir():
                 for f in sorted(x for x in c.ws.abs(c.p(mdir, "src")).rglob("*") if x.is_file()):
@@ -905,6 +1027,7 @@ class Restructurer:
                            f"saved under {c.ws.run_dir}/merge-conflicts/ — review: {', '.join(diff[:5])}"
                            f"{' …' if len(diff) > 5 else ''}")
 
+        # 3. 남길 boot 모듈을 boot 모듈 경로(c.boot_rel, 기본 {name}-boot)로 옮긴다
         # 3. kept boot module → module/boot-jar
         kept_dir = kept[1] if kept is not None else None
         if kept is not None and kept_dir is not None and c.p(kept_dir) != boot:
@@ -919,6 +1042,8 @@ class Restructurer:
             c.write(dst, text, generated=False)
         for mdir, _label, tops in sources_of:
             for top in tops:
+                # 파일 단위 이동과 별도로 디렉토리 단위 이동도 기록: 분석의 as-is 경로(web.xml, XML 설정
+                # ...)를 new_location 으로 풀 수 있게
                 c.moves.append((c.p(mdir, top), f"{comp}/{top}"))
         for tgt, rel in c.relocated.items():              # folded-in directories outside every module: now empty
             if tgt == rel and c.ws.abs(c.p(tgt)).is_dir():
@@ -932,6 +1057,8 @@ class Restructurer:
                                         [d for _, d, _ in order if d != mdir])
         packaging = "war" if any(ed.packaging() == "war" for ed in [*eds, *([kept_ed] if kept_ed else [])]) \
             else root.packaging()
+        # front 는 comp pom 보다 먼저: comp pom 이 웹 리소스가 빠진
+        # 뒤를 기준으로 쓰이고, JSP 여부(boot WAR)도 여기서 정해진다
         self._populate_front(c, comp, boot, coords, [root, *(ed for _, _, ed in all_merged)])
         self._plan_overlays(c, [root, *(ed for _, _, ed in all_merged if ed.packaging() != "ear"),
                                 *([kept_ed] if kept_ed is not None else [])], internal)
@@ -943,6 +1070,8 @@ class Restructurer:
             mdir = c.p(mdir_)
             if mdir != comp and c.ws.exists(mdir):
                 if any(x == mdir or x.startswith(mdir + "/") for x in (comp, boot)):
+                    # as-is 모듈 디렉토리가 곧 회사 모듈 디렉토리면 pom 만
+                    # 지운다(디렉토리를 지우면 방금 합친 파일까지 사라짐)
                     c.ws.delete(f"{mdir}/pom.xml")          # the as-is module dir is the company module dir
                 else:
                     c.ws.delete(mdir)
@@ -952,11 +1081,14 @@ class Restructurer:
         c.result.merged_modules = [label for label, _, ed in all_merged if ed.packaging() != "ear"]
         c.commit("restructure: merge as-is modules into comp-jar")
 
+        # 5. boot 모듈 pom: 남긴 as-is 모듈이면 _keep_boot 로 조정, 아니면 새로 생성(_write_boot)
         # 5. boot-jar: the kept as-is module, or a generated one
         lib = GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + L.comp_artifact_suffix,
                   version="${project.version}")
         if kept_ed is not None and kept is not None and kept_dir is not None:
             parent = kept_ed.get_parent()
+            # 역할 부모가 아닐 때, 남긴 boot 모듈의 부모가 합쳐져 없어진 pom 모듈이면 루트 pom 으로 다시
+            # 잡는다(없는 부모 = 빌드 실패)
             if not self._role(c) and parent is not None and any(parent.artifact_id == ed.artifact_id()
                                                                  for _, _, ed in pom_mods):
                 kept_ed.set_parent(GAV(group_id=coords.group_id, artifact_id=coords.artifact_id,
@@ -993,7 +1125,12 @@ class Restructurer:
     @staticmethod
     def _internal_keys(c: _Ctx, root: PomEditor, coords: GAV, merged: list[PomEditor],
                        kept: PomEditor | None) -> tuple[set[str], set[str]]:
-        """(merged_internal, internal): the g:a keys that name a merged module (merged_internal) or the kept boot
+        """(merged_internal, internal): 합쳐진 모듈(internal 은 남긴 boot 모듈까지)을 가리키는 g:a 키 집합. 이
+        의존성들은 comp 안으로 들어왔으므로 의존성 목록에서 빠져야 한다 — 남으면 저장소에 없는 아티팩트를 찾다
+        빌드가 실패한다. groupId 철자(모듈 / 부모 groupId, ``${...}``, 빈 값)와 상관없이 artifactId 로도
+        잡는다(2026-10-23 회사 EAR 사례).
+
+        (merged_internal, internal): the g:a keys that name a merged module (merged_internal) or the kept boot
         module too (internal). groupIds: the root's, `${project.groupId}`, every module's own and its parent's (a
         module without `<groupId>` inherits it). On top, every dependency of the root / module poms (managed or not)
         whose artifactId is a module artifactId and whose groupId is empty or a `${…}` expression (2026-10-23: the
@@ -1012,6 +1149,8 @@ class Restructurer:
             for managed in (False, True):
                 for el in ed.dependency_elements(managed):
                     g = ed.gav_of(el)
+                    # 리터럴 groupId 는 위의 groups 조합으로 판단 끝: 빈 값 / ${...} groupId 만 artifactId 로
+                    # 더 판정한다(회사 EAR 이 WAR 모듈을 속성 groupId 로 불렀던 사례)
                     if g.group_id and "${" not in g.group_id:
                         continue
                     if g.artifact_id in merged_aids:
@@ -1024,7 +1163,13 @@ class Restructurer:
     # ------------------------------------------------------------------ EAR modules (2026-10-23)
     def _drop_ear(self, c: _Ctx, label: str, mdir: str, ed: PomEditor, boot: str, internal: set[str],
                   other_dirs: list[str]) -> list[tuple[str, str, str, bool]]:
-        """An `ear` module is not merged: Spring Boot builds no EAR. Its files other than pom.xml / target/ (the
+        """EAR 모듈은 합치지 않는다(Spring Boot 는 EAR 을 만들지 않음): pom / target 을 뺀 파일(애플리케이션
+        서버 descriptor)은 ``<boot>/src/main/resources/asis-ear/<dir>/`` 에 참고용으로(Boot 는 읽지 않음), 이
+        프로젝트 모듈에 대한 의존성은 버리고, 나머지(EAR 의 lib/ = 공유 런타임 classpath)는 comp
+        모듈로(``_write_comp_pom``), 다른 곳의 WAR 의존성은 가져가지 않는다(후속 작업). 웹 모듈 context root
+        목록을 돌려준다(``_ear_followups``).
+
+        An `ear` module is not merged: Spring Boot builds no EAR. Its files other than pom.xml / target/ (the
         application-server descriptors under src/main/application) → `<boot>/src/main/resources/asis-ear/<dir>/…`;
         its dependencies on modules of this project are dropped (internal), the others go to the comp module with the
         merged dependencies (`_write_comp_pom`; the EAR's lib/ was the shared runtime classpath), external WAR
@@ -1036,6 +1181,7 @@ class Restructurer:
         if c.ws.exists(stash):
             stash = f"{boot}/src/main/resources/{EAR_STASH}/{mdir.replace('/', '_')}"
         base = c.ws.abs(c.p(mdir))
+        # EAR 디렉토리 안에 다른 모듈이 있으면 그 파일은 stash 로 옮기지 않는다(그 모듈이 따로 합쳐짐)
         nested = [d for d in other_dirs if d.startswith(mdir + "/") or mdir in (".", "")]
         moved: list[str] = []
         if base.is_dir():
@@ -1077,7 +1223,11 @@ class Restructurer:
 
     def _ear_context_roots(self, c: _Ctx, label: str, mdir: str,
                            ed: PomEditor) -> list[tuple[str, str, str, bool]]:
-        """(EAR label, web module, context root, explicit) of an EAR: maven-ear-plugin `<webModule><contextRoot>`
+        """EAR 웹 모듈별 context root: maven-ear-plugin <webModule><contextRoot> → application.xml 의
+        <web-uri> / <context-root> → 둘 다 없는 WAR 의존성은 maven-ear-plugin 기본값 ``/<artifactId>``
+        (explicit=False). as-is URL 을 지키라는 후속 작업의 재료.
+
+        (EAR label, web module, context root, explicit) of an EAR: maven-ear-plugin `<webModule><contextRoot>`
         (build plugins, then pluginManagement), then `<web><web-uri>/<context-root>` of
         src/main/application/META-INF/application.xml; a WAR dependency with neither gets the maven-ear-plugin
         default `/<artifactId>` (explicit=False)."""
@@ -1107,6 +1257,8 @@ class Restructurer:
         return out
 
     def _ear_followups(self, c: _Ctx, roots: list[tuple[str, str, str, bool]]) -> None:
+        """context root 마다 후속 작업: boot WAR 면 외부 Tomcat 에 ``<root>.war`` 이름으로 배포하거나
+        context-path 설정, 실행 jar 면 ``server.servlet.context-path`` — as-is URL 이 바뀌지 않게."""
         for label, web, root_, explicit in roots:
             cr = "/" + root_.strip().strip("/") if root_.strip().strip("/") else "/"
             how = "" if explicit else " (the maven-ear-plugin default)"
@@ -1120,13 +1272,21 @@ class Restructurer:
                            "same")
 
     def _strip_ear_plugin(self, c: _Ctx, ed: PomEditor) -> None:
-        """maven-ear-plugin never reaches a generated pom (there is no EAR module any more)."""
+        """maven-ear-plugin 은 생성 pom 에 들어가지 않는다(EAR 모듈이 없어졌으므로).
+
+        maven-ear-plugin never reaches a generated pom (there is no EAR module any more)."""
         if ed.find_plugins(*EAR_PLUGIN, where="all") and ed.remove_plugin(*EAR_PLUGIN):
             c.note(f"maven-ear-plugin dropped from {c.ws.rel(ed.path)} (the EAR module was not carried)")
 
     # ------------------------------------------------------------------ WAR overlays (2026-10-23)
     def _plan_overlays(self, c: _Ctx, sources: list[PomEditor], exclude: set[str]) -> None:
-        """External `<type>war</type>` dependencies left after the internal exclusion are maven-war-plugin overlays:
+        """``<type>war</type>`` 외부 의존성 = maven-war-plugin overlay: jar 모듈의 의존성이 될 수
+        없다(``_write_comp_pom`` 이 건너뜀). 웹 콘텐츠를 가져오므로 boot 가 WAR 이거나
+        ``layout.jsp_boot_packaging: war`` 면 boot 를 WAR 로 만들고 overlay 와 as-is <overlays> 설정을
+        그쪽으로 옮긴다(플래그 ``war-overlay-moved``), 아니면 후속 작업. overlay WAR 는 Maven Central 에
+        없으므로 언제나 '사내 Nexus 에 올려야 함' 후속 작업.
+
+        External `<type>war</type>` dependencies left after the internal exclusion are maven-war-plugin overlays:
         never a dependency of a jar module (`_write_comp_pom` skips them). They carry web content, so with a boot
         WAR — or `layout.jsp_boot_packaging: war` — they make the boot module a WAR (like JSPs) and go there with the
         as-is `<overlays>` configuration (`_apply_overlays`, flag `war-overlay-moved`); otherwise follow-up. Always a
@@ -1154,6 +1314,8 @@ class Restructurer:
                         break
         if not c.war_overlays:
             return
+        # overlay 는 웹 콘텐츠: boot 가 WAR 일 때만 실을 수
+        # 있다 — 그래서 overlay 가 있으면 boot 를 WAR 로 만든다
         c.overlay_carry = c.boot_war or c.cfg.layout.jsp_boot_packaging == "war"
         c.boot_war = c.boot_war or c.overlay_carry
         for pom, g in c.war_overlays:
@@ -1171,7 +1333,10 @@ class Restructurer:
             c.result.flags.append("war-overlay-moved")
 
     def _apply_overlays(self, c: _Ctx, ed: PomEditor) -> None:
-        """The boot WAR's pom: the overlay dependencies (type war, scope as declared) and the as-is
+        """boot WAR pom 에 overlay 의존성(type war, scope 그대로)과 as-is <overlays> 블록을
+        넣는다(maven-war-plugin 버전은 부모 / Maven 기본에 맡김).
+
+        The boot WAR's pom: the overlay dependencies (type war, scope as declared) and the as-is
         maven-war-plugin `<overlays>` block in its maven-war-plugin (no version: the parent / Maven default manages
         it; `_strip_war_web_config` keeps `<overlays>`)."""
         if not c.overlay_carry:
@@ -1199,7 +1364,10 @@ class Restructurer:
     # ------------------------------------------------------------------ directories outside a module (2026-10-23)
     @staticmethod
     def _climbing_dirs(ed: PomEditor) -> list[str]:
-        """Directories of one pom that climb out of its directory (`../…`, normalized): maven-war-plugin
+        """pom 하나가 자기 디렉토리 밖(``../``)을 가리키는 디렉토리들: web root(warSourceDirectory /
+        webResources), source / script / test source, resources / testResources.
+
+        Directories of one pom that climb out of its directory (`../…`, normalized): maven-war-plugin
         warSourceDirectory / webResources, source / script / test source directories, resources / testResources."""
         text = ed.to_string()
         out = [w.dir for w in pom_web_dirs(text, allow_parent=True)] + pom_build_dirs(text, allow_parent=True)
@@ -1216,14 +1384,19 @@ class Restructurer:
 
     @staticmethod
     def _ed_dir(c: _Ctx, ed: PomEditor) -> str:
-        """The as-is pom's directory relative to the project root (c.base)."""
+        """as-is pom 디렉토리의 프로젝트 루트(c.base) 기준 상대 경로.
+
+        The as-is pom's directory relative to the project root (c.base)."""
         d = posixpath.dirname(c.ws.rel(ed.path)) or "."
         if c.base:
             d = posixpath.relpath(d, c.base)
         return d
 
     def _comp_dir(self, c: _Ctx, ed: PomEditor, d: str | None) -> str | None:
-        """A module-relative pom directory → comp-module-relative: unchanged for paths inside the module (the files
+        """모듈 기준 pom 디렉토리 → comp 모듈 기준: 모듈 안 경로는 그대로(파일이 같은 상대 경로로
+        옮겨졌으므로), ``../`` 경로는 ``c.relocated`` 로 바꾸고, 옮겨지지 않은 ``../`` 는 None.
+
+        A module-relative pom directory → comp-module-relative: unchanged for paths inside the module (the files
         moved with the same relative path), mapped through `c.relocated` for `../` paths, None when not relocated."""
         if not d or not d.startswith("../"):
             return d
@@ -1236,7 +1409,13 @@ class Restructurer:
     def _plan_outside_dirs(self, c: _Ctx, root: PomEditor, merged_src: list[tuple[str, str, PomEditor]],
                            sources_of: list[tuple[str, str, list[str]]],
                            modules: list[tuple[str, str, PomEditor]]) -> None:
-        """A merged module's directory that resolves outside the module but inside the project (`APP/WEB` →
+        """합쳐질 모듈이 자기 밖이지만 프로젝트 안을 가리키는 디렉토리(``APP/WEB`` 의
+        ``${basedir}/../../STATIC`` = ``STATIC``)는 comp 모듈의 같은 프로젝트 상대
+        경로(``<comp>/STATIC/...``)로 한 번만 옮기고 거기서 쓴다(``c.relocated``: front 의 web root, comp pom
+        의 <resources> / 소스 디렉토리 재작성). 다른 합쳐질 모듈 안이면 그 모듈과 함께 움직인다. 프로젝트 밖,
+        루트 자체, 남길 / EAR / pom 모듈을 품거나 그 안인 디렉토리는 옮기지 않는다(노트).
+
+        A merged module's directory that resolves outside the module but inside the project (`APP/WEB` →
         `${basedir}/../../STATIC` = `STATIC`) is folded into the comp module once, at its project-relative path
         (`<comp>/STATIC/…`), and used from there (`c.relocated`: web root for `_populate_front`, rewritten
         `<resources>` / source directories in the comp pom). Inside another merged module it is mapped to that
@@ -1292,7 +1471,10 @@ class Restructurer:
                    f"moved to {comp}/{tgt} and used from there")
 
     def _module_mains(self, c: _Ctx, mdir: str, ed: PomEditor) -> list[str]:
-        """FQCNs with `public static void main(String…)` in a non-Boot class below the module's main source dirs."""
+        """모듈의 main 소스 아래 ``public static void main(String...)`` 이 있는 비 Boot 클래스 FQCN 들 — 합친
+        뒤에는 따로 실행되지 않으므로(배치일 수 있음) 모듈별 후속 작업으로 알린다.
+
+        FQCNs with `public static void main(String…)` in a non-Boot class below the module's main source dirs."""
         roots = ["src/main/java"]
         build = ed.find("build")
         sd = clean_pom_dir(ed.text_of(build, "sourceDirectory")) if build is not None else None
@@ -1314,7 +1496,9 @@ class Restructurer:
         return out
 
     def _prune_empty_parents(self, c: _Ctx, rel: str) -> None:
-        """After a module directory was removed: drop its now-empty parent directories inside the project."""
+        """모듈 디렉토리를 지운 뒤 비게 된 상위 디렉토리를 프로젝트 루트 직전까지 지운다.
+
+        After a module directory was removed: drop its now-empty parent directories inside the project."""
         cur = posixpath.dirname(rel)
         stop = c.base or ""
         while cur and cur not in (".", stop) and (not stop or cur.startswith(stop + "/")):
@@ -1326,10 +1510,13 @@ class Restructurer:
 
     @staticmethod
     def _outside(c: _Ctx, mdir: str) -> bool:
+        """디렉토리가 프로젝트 루트 밖(``..``)으로 나가는가."""
         tgt = c.p(mdir)
         return tgt == ".." or tgt.startswith("../")
 
     def _skip_outside(self, c: _Ctx, declared_in: str, module: str, target: str) -> None:
+        """프로젝트 밖 모듈은 합치지 않는다: 노트 + 후속 작업(따로 마이그레이션해 Nexus 에 올리거나
+        프로젝트 안으로 옮기기). 그 모듈에 대한 의존성은 이제 저장소에서 찾는다."""
         c.note(f"module '{module}' declared in {declared_in} resolves outside the project root ({target}); "
                "not merged (nothing outside the workspace is read or changed)")
         c.followup(f"module {module} ({declared_in}) lives outside the project root and was not merged into "
@@ -1338,7 +1525,12 @@ class Restructurer:
 
     def _fold_management(self, c: _Ctx, root: PomEditor, merged: list[tuple[str, str, PomEditor]],
                          internal: set[str], target: PomEditor | None = None) -> None:
-        """Keep the merged modules' management: root `<dependencyManagement>` entries of merged modules (an internal
+        """합쳐진 모듈의 관리 항목을 살린다: 대상 pom 의 dependencyManagement 중 합쳐진 모듈 항목(내부 BOM
+        import, 내부 모듈 버전)은 지우고, 각 모듈의 dependencyManagement 는 대상 pom 으로 접는다(g:a 마다 먼저
+        것이 이김, 대상 자신의 것이 우선) — 버전이 쓰는 ``${props}`` 도 함께. pom 패키징 모듈의 <properties>
+        도 접는다. 대상 = 루트, 역할 부모(라운드 9b)면 ``target`` = comp pom(모듈이 루트를 상속하지 않으므로).
+
+        Keep the merged modules' management: root `<dependencyManagement>` entries of merged modules (an internal
         BOM import, versions of internal modules) are removed; every merged module's dependencyManagement entry
         is folded into the root pom (first wins per g:a, the root's own entries first), with the `${props}` its
         version references; pom-packaging modules' `<properties>` are folded too (first wins per key).
@@ -1384,7 +1576,10 @@ class Restructurer:
                        "(first wins)")
 
     def _shadowed_boot_resources(self, c: _Ctx, comp: str, boot: str) -> None:
-        """Kept boot module: comp-jar copies of boot resources with the same name as boot-jar's own are shadowed at
+        """남긴 boot 모듈: boot 리소스와 같은 이름의 comp 사본은 런타임에 가려진다(BOOT-INF/classes 가
+        BOOT-INF/lib 보다 먼저, Boot 는 위치마다 파일 하나만 읽음) → 합치라는 후속 작업.
+
+        Kept boot module: comp-jar copies of boot resources with the same name as boot-jar's own are shadowed at
         runtime (BOOT-INF/classes precede BOOT-INF/lib; Boot reads one file per location)."""
         res = f"{comp}/src/main/resources"
         shadowed = [f[len(res) + 1:] for f in self._boot_resource_files(c, res)
@@ -1396,7 +1591,10 @@ class Restructurer:
 
     @staticmethod
     def _union_registry(rel: str, texts: list[str]) -> str:
-        """Union of line-list registries: `*.factories` (key=comma list, `\\` continuations) merged per key with
+        """줄 목록 레지스트리의 합집합: ``*.factories`` 는 키마다 쉼표 값을 합치고(중복 제거, 줄 이음 처리),
+        그 밖(META-INF/services, *.imports)은 첫 사본의 줄을 그대로 두고 다른 사본의 새 줄만 덧붙인다.
+
+        Union of line-list registries: `*.factories` (key=comma list, `\\` continuations) merged per key with
         deduped values; other registries keep the first copy's lines in order, then new lines of the others."""
         if rel.endswith(".factories"):
             merged: dict[str, list[str]] = {}
@@ -1442,7 +1640,13 @@ class Restructurer:
 
     def _keep_boot(self, c: _Ctx, ed: PomEditor, declared: str, asis_dir: str, boot: str, comp: str, coords: GAV,
                    lib: GAV, merged_internal: set[str], root: PomEditor | None = None) -> None:
-        """Adjust the kept as-is boot module's pom: dependencies on merged modules → one comp-jar dependency,
+        """남긴 as-is boot 모듈의 pom 조정(소스는 그대로): 합쳐진 모듈에 대한 의존성 → comp(back) 의존성
+        하나(첫 compile 선언 자리를 재사용), front 의존성, test-jar, spring-boot-maven-plugin(repackage) 보장,
+        WAR / jar 패키징, java 버전, system jar. 역할 부모(라운드 9b)면 부모를 무엇이었든
+        ``artifacts.boot_parent`` 로 바꾸고(<relativePath/>, groupId / version 명시) 루트를
+        상속했었다면(``root``) 그 속성·관리 항목을 복사하며 필수 사내 아티팩트·BOM·java 버전도 이 pom 에.
+
+        Adjust the kept as-is boot module's pom: dependencies on merged modules → one comp-jar dependency,
         spring-boot-maven-plugin ensured, java level, system jars. Its src/ stays untouched.
 
         Role parents (round 9b): the parent is replaced by `artifacts.boot_parent` whatever it was (an older
@@ -1474,9 +1678,11 @@ class Restructurer:
             if g.key not in merged_internal:
                 continue
             removed.append(g.key)
+            # 합쳐진 모듈의 test-jar 의존성은 지우고, 아래에서 comp 의 test-jar 하나로 다시 건다
             if g.type == "test-jar" or g.classifier == "tests":
                 test_jar = True
                 ed.remove_node(el)
+            # 첫 compile 의존성 자리를 comp(back) 의존성으로 바꿔 쓴다: 선언 순서가 유지된다
             elif not placed and (g.scope or "compile") == "compile" and not g.classifier and not g.type:
                 ed.set_child_text(el, "groupId", lib.group_id)
                 ed.set_child_text(el, "artifactId", lib.artifact_id)
@@ -1505,6 +1711,8 @@ class Restructurer:
             for g in self._war_deps(c, {d.key for d in ed.dependencies()}):
                 ed.add_dependency(g)
             self._apply_overlays(c, ed)
+        # JSP 도 overlay 도 없는데 as-is boot 모듈이 WAR 였으면
+        # 실행 jar 로 바꾼다(회사 규칙: JSP 가 있을 때만 WAR)
         elif ed.packaging() == "war":
             ed.set_packaging("jar")
             for p in ed.find_plugins(*WAR_PLUGIN, where="build"):
@@ -1539,6 +1747,10 @@ class Restructurer:
     # ------------------------------------------------------------------ comp pom
     def _write_comp_pom(self, c: _Ctx, sources: list[PomEditor], coords: GAV, comp: str, asis_packaging: str,
                         exclude: set[str] | None = None, copy_props_from: list[PomEditor] | None = None) -> None:
+        """comp(back) 모듈 pom 생성: 역할 부모면 ``comp_parent`` + 자기 좌표(루트에서 아무것도 상속하지
+        않음), 아니면 루트 pom 이 부모. as-is pom 들의 의존성(필수 사내 아티팩트, remove_when_present, 내부
+        모듈, WAR overlay 제외)과 build 디렉토리 / 플러그인(boot / war / ear 플러그인 제외)을 복사한다.
+        여러 모듈을 합쳤으면 리소스 디렉토리는 합집합(``_union_resources``), 모듈 속성도 복사."""
         L = c.cfg.layout
         A = c.cfg.artifacts
         path = f"{comp}/pom.xml"
@@ -1566,8 +1778,12 @@ class Restructurer:
                 ident = f"{g.key}:{g.type or 'jar'}:{g.classifier or ''}"
                 if g.key in drop or ident in seen_deps:
                     continue
+                # war 타입 의존성은 jar 모듈의 classpath 에 쓸모가 없다(overlay 는 war 패키징에서만 동작):
+                # overlay 는 _plan_overlays 가 boot 로
                 if (g.type or "") == "war":            # a WAR overlay / web module is never a jar module dependency
                     continue
+                # 컨테이너 의존성은 boot 모듈이 정한다(WAR 면 거기서
+                # provided, jar 면 내장 Tomcat): comp 에서는 뺀다
                 if asis_packaging == "war" and g.key == f"{BOOT_GROUP}:spring-boot-starter-tomcat" \
                         and g.scope == "provided":
                     c.note(f"provided spring-boot-starter-tomcat dropped from {comp} (declared provided in the boot "
@@ -1577,6 +1793,7 @@ class Restructurer:
                 new_el = ed.copy_into(ed.ensure_path("dependencies"), d)
                 self._relocate_system_dep(c, ed, new_el, asis_dir, comp, src.properties())
             build = src.find("build")
+            # EAR 의 build 설정(maven-ear-plugin 등)은 Boot jar 에 의미가 없어 가져오지 않는다
             if build is None or src.packaging() == "ear":      # an EAR's build (maven-ear-plugin …) is not carried
                 continue
             for name in BUILD_TO_COMP:
@@ -1607,7 +1824,10 @@ class Restructurer:
         ed.save()
 
     def _remap_dirs(self, c: _Ctx, ed: PomEditor, el: Any, src: PomEditor) -> None:
-        """A `<build>` directory element copied from `src` into the comp pom (source directories, `<resources>` /
+        """comp pom 에 복사한 <build> 디렉토리 요소(소스 디렉토리, <resources> / <testResources>, <resource>
+        하나)의 ``../`` 경로를 comp 안으로 옮겨진 위치(``c.relocated``)로 고친다.
+
+        A `<build>` directory element copied from `src` into the comp pom (source directories, `<resources>` /
         `<testResources>` or one `<resource>`): `../` directories that were folded into the comp module
         (`c.relocated`) point at the moved location."""
         name = PomEditor.local_name(el)
@@ -1631,7 +1851,12 @@ class Restructurer:
                        f"{c.comp_rel})")
 
     def _union_resources(self, c: _Ctx, ed: PomEditor, sources: list[PomEditor]) -> None:
-        """Merged modules (sources[0] = the root pom, its `<build>` inherited by every module): comp-jar's
+        """여러 모듈을 합친 comp pom 의 <resources> / <testResources> = 모든 모듈의 실제 리소스 디렉토리
+        합집합(디렉토리 + targetPath 로 중복 제거, 먼저 것이 이김). 어떤 jar 모듈이 Maven 기본 디렉토리에
+        기댔으면 기본 디렉토리도 넣는다 — 한 모듈의 ``src/main/config``
+        가 다른 모듈의 ``src/main/resources`` 를 가리지 않게.
+
+        Merged modules (sources[0] = the root pom, its `<build>` inherited by every module): comp-jar's
         `<resources>` / `<testResources>` = the union of every module's effective resource directories (deduped by
         directory + targetPath, first wins). The Maven default directory is added when some jar module relied on it
         (declared none and inherits none), so a custom `src/main/config` of one module does not hide the others'
@@ -1646,6 +1871,8 @@ class Restructurer:
             relies_default = False
             for i, src in enumerate(sources):
                 own = items_of(src)
+                # 리소스 디렉토리를 선언하지 않은 jar 모듈은 Maven
+                # 기본(src/main/resources)을 썼다 — 루트도 선언이 없을 때만
                 if i > 0 and not own and src.packaging() not in ("pom", "ear"):
                     relies_default = relies_default or not root_items
                 for r in own:
@@ -1675,7 +1902,11 @@ class Restructurer:
     # ------------------------------------------------------------------ system-scoped jars (E7)
     def _relocate_system_dep(self, c: _Ctx, ed: PomEditor, el: Any, asis_dir: str, module_dir: str,
                              props: dict[str, str] | None = None) -> None:
-        """Keep a `system`-scoped dependency's jar reachable from the module that now declares it: copy the jar to
+        """``system`` scope 의존성의 jar 를 지금 선언한 모듈에서 찾을 수 있게(E7): jar 를
+        ``<module>/lib/<name>`` 로 복사하고 systemPath 를 ``${project.basedir}/lib/<name>`` 로. 없거나
+        프로젝트 밖 jar 는 선언을 그대로 두고 후속 작업. 언제나 'Nexus 에 설치해 일반 의존성으로' 후속 작업.
+
+        Keep a `system`-scoped dependency's jar reachable from the module that now declares it: copy the jar to
         `<module>/lib/<name>` and point `systemPath` at `${project.basedir}/lib/<name>`. Missing / external jars keep
         their declaration and get a follow-up."""
         from sbmig.analyze.edges import resolve_system_path
@@ -1700,6 +1931,7 @@ class Restructurer:
             return
         dst = f"{module_dir}/lib/{name}"
         if dst != cur:
+            # 같은 이름의 다른 jar 가 이미 lib/ 에 있으면 artifactId 를 앞에 붙여 둘 다 살린다
             if c.ws.abs(dst).exists() and c.ws.abs(dst).read_bytes() != c.ws.abs(cur).read_bytes():
                 name = f"{g.artifact_id}-{name}"
                 dst = f"{module_dir}/lib/{name}"
@@ -1716,12 +1948,18 @@ class Restructurer:
                    f"({install.replace('<jar>', dst)}) and declared as a normal dependency")
 
     def _relocate_module_system_deps(self, c: _Ctx, ed: PomEditor, asis_dir: str, module_dir: str) -> None:
+        """pom 하나의 모든 system scope 의존성(직접 + 관리)에 ``_relocate_system_dep`` 적용."""
         for el in [*ed.dependency_elements(False), *ed.dependency_elements(True)]:
             self._relocate_system_dep(c, ed, el, asis_dir, module_dir)
 
     # ------------------------------------------------------------------ boot-jar content
     def _populate_boot(self, c: _Ctx, src_dirs: list[str], boot: str) -> tuple[list[str], list[str]]:
-        """Move boot resources, @SpringBootApplication / @SpringBootTest classes (+ web layer) into boot-jar."""
+        """boot 모듈로 옮길 것: boot 리소스(``layout.boot_resources_glob``, resources 루트와 config/),
+        @SpringBootApplication 클래스, @SpringBootTest 테스트, SpringBootServletInitializer 하위 클래스,
+        ``split_policy: web-layer`` 면 웹 계층(@Controller / @Configuration ...)까지. 기본 ``minimal`` 은
+        나머지를 전부 comp 에 둔다(회사 규칙: back 에 컨트롤러를 포함한 모든 소스).
+
+        Move boot resources, @SpringBootApplication / @SpringBootTest classes (+ web layer) into boot-jar."""
         L = c.cfg.layout
         src = c.profile.source
         split = c.params.get("split_policy", L.split_policy)
@@ -1768,6 +2006,8 @@ class Restructurer:
             for f in sorted(rabs.rglob("*.java")):
                 text = f.read_text(encoding="utf-8", errors="replace")
                 is_init = bool(SERVLET_INIT_RE.search(text))
+                # SpringBootServletInitializer 하위 클래스는 정책과 상관없이
+                # boot 로: 외부 Tomcat 이 WAR 를 기동하는 진입점이다
                 is_web = split == "web-layer" and bool(WEB_LAYER_RE.search(text))
                 if is_init or is_web:
                     rel = f.relative_to(rabs).as_posix()
@@ -1777,6 +2017,8 @@ class Restructurer:
         return moved_main, moved_tests
 
     def _boot_resource_files(self, c: _Ctx, res_dir: str) -> list[str]:
+        """boot 리소스 파일 목록: resources 루트와 ``config/`` 바로 아래에서 ``layout.boot_resources_glob``
+        (application*.yml / properties, bootstrap*, logback*.xml, banner.txt ...)에 맞는 파일."""
         out: list[str] = []
         for sub in ("", "config"):
             d = c.ws.abs(f"{res_dir}/{sub}" if sub else res_dir)
@@ -1790,7 +2032,12 @@ class Restructurer:
     # ------------------------------------------------------------------ externalized-config placeholders (round 8)
     def _placeholder_entries(self, c: _Ctx, under: str | None = None, others: tuple[str, ...] = (),
                              service: tuple[str, ...] | None = None) -> list[tuple[str, str, str]]:
-        """(boot_key, value, comment) for every `external` finding, deduped by key (first finding wins), sorted.
+        """외부 설정 placeholder 목록 (boot 키, 값, 주석): 분석이 ``external`` 로 판정한 속성(코드가 읽지만
+        패키지된 리소스 어디에도 정의가 없는 키 — as-is 에서는 컨테이너의 JNDI / context-param / -D 가
+        줬다)마다, 키별 첫 발견이 이김, 정렬. MSA 는 서비스별 인벤토리가 있으면 ``service`` 이름으로, 없으면
+        ``under`` 디렉토리 아래에서 참조된 것 + 어느 서비스에도 속하지 않는 공유 코드의 것.
+
+        (boot_key, value, comment) for every `external` finding, deduped by key (first finding wins), sorted.
         MSA: `service` (the names a service root answers to: `ServiceInfo.name`, its directory, the directory's
         basename) selects by `PropertyFinding.service` when the inventory is per service (round 9: findings of that
         service + `service is None` shared ones). With a project-wide inventory (no finding carries a service)
@@ -1806,6 +2053,8 @@ class Restructurer:
             if f.status != "external" or not f.boot_keys:
                 continue
             refs = list(f.refs)
+            # 테스트만 읽는 키도 기본적으로 placeholder 를
+            # 쓴다(include_test_refs): 테스트 컨텍스트가 뜨려면 값이 있어야 함
             if not X.include_test_refs and refs and all(r.scope == "test" for r in refs):
                 continue
             if per_service:
@@ -1819,6 +2068,7 @@ class Restructurer:
                     continue
             ref = refs[0] if refs else None
             value = X.sentinel
+            # web.xml context-param 은 as-is 값이 있으니 sentinel 대신 그 값을 그대로 쓴다
             if ref is not None and ref.source == "context-param" and ref.default not in (None, ""):
                 value = str(ref.default)
             comment = "# from " + (self._ref_origin(ref) if ref is not None else f.key)
@@ -1832,6 +2082,7 @@ class Restructurer:
 
     @staticmethod
     def _ref_origin(ref: Any) -> str:
+        """placeholder 주석의 출처 표기(``@Value Foo.java:12``, ``JNDI jdbc/ds`` ...)."""
         label = PLACEHOLDER_SOURCE_LABELS.get(ref.source, ref.source)
         if ref.source == "jndi":
             return f"{label} {ref.key}"
@@ -1842,7 +2093,11 @@ class Restructurer:
 
     def _write_placeholders(self, c: _Ctx, resources_dir: str, *, under: str | None = None,
                             others: tuple[str, ...] = (), service: tuple[str, ...] | None = None) -> list[str]:
-        """Append (or replace) the sbmig externalized-config block in `<resources_dir>/<placeholder_file>`.
+        """``<resources_dir>/<placeholder_file>`` (기본 application.properties)에 sbmig 외부 설정 블록을
+        덧붙이거나 바꾼다. 값은 sentinel(``__SET_ME__``): 운영자가 환경 변수 / 외부 파일 / -D 로 채운다. 표식
+        밖의 내용과 줄 끝은 바이트 그대로, 두 번 돌려도 같은 바이트(멱등). 쓴 키 목록을 돌려준다.
+
+        Append (or replace) the sbmig externalized-config block in `<resources_dir>/<placeholder_file>`.
         Returns the keys written ([] when disabled / nothing to write). Idempotent: a second run yields the same bytes;
         everything outside the markers is kept byte-for-byte, the file's line endings are kept."""
         X = c.cfg.externalized
@@ -1856,6 +2111,7 @@ class Restructurer:
         text = c.ws.read(rel) if existed else ""
         nl = "\r\n" if "\r\n" in text else "\n"
         lines = list(PLACEHOLDER_HEADER)
+        # application.yml 만 있던 프로젝트: yml 을 고치지 않고 properties 를 새로 만든다(Boot 는 둘 다 읽음)
         if not existed and X.placeholder_file == "application.properties" and \
                 c.ws.exists(posixpath.join(resources_dir, "application.yml")):
             lines.append("# --- application.yml exists; placeholders go to application.properties (Boot loads both)")
@@ -1865,6 +2121,7 @@ class Restructurer:
         block = nl.join(lines) + nl
         start = text.find(PLACEHOLDER_BEGIN)
         end = text.find(PLACEHOLDER_END, start) if start >= 0 else -1
+        # 이전 실행의 블록이 있으면 그 자리만 바꾼다: 표식 밖은 그대로라 재실행해도 같은 바이트(멱등)
         if start >= 0 and end >= 0:
             tail = end + len(PLACEHOLDER_END)
             if text.startswith("\r\n", tail):
@@ -1887,6 +2144,8 @@ class Restructurer:
         return keys
 
     def _placeholder_followup(self, c: _Ctx) -> None:
+        """placeholder 를 쓴 파일이 있으면 '실행 전에 값을 채워야 함' 후속 작업
+        하나(Handover 'Properties to set')."""
         files = c.result.placeholder_files
         if not files:
             return
@@ -1895,6 +2154,8 @@ class Restructurer:
                    f"{', '.join(files)} — set them before running (see Handover 'Properties to set')")
 
     def _locate_class(self, c: _Ctx, fqcn: str, roots: list[str]) -> str | None:
+        """FQCN 의 소스 파일 찾기: 먼저 패키지 경로 그대로(중첩 클래스는 바깥 클래스 파일), 없으면 같은
+        이름 파일 중 package 선언이 맞는 것 — 디렉토리가 패키지와 다른 레거시 소스 때문."""
         parts = fqcn.split(".")
         for root in roots:
             for i in range(len(parts), 0, -1):       # Outer.Inner → Outer.java
@@ -1917,7 +2178,14 @@ class Restructurer:
                     moved_main: list[str], moved_tests: list[str], final_name: str | None,
                     comp_dirs: list[str], *, root: PomEditor | None = None,
                     exclude: set[str] | None = None) -> None:
-        """Generated boot-jar pom. Role parents (round 9b): parent = `artifacts.boot_parent` (`<relativePath/>`),
+        """생성 boot 모듈 pom + 내용: starter(``layout.starter_by_case``; spring_boot 는 auto = as-is 에
+        starter 가 없을 때만), boot WAR 면 컨테이너 의존성(``_war_deps``), JSP + 실행 jar 면 jasper(+ JSP 를
+        서비스하지 못한다는 후속 작업), 옮긴 @SpringBootTest 의 테스트 classpath, repackage 플러그인. 역할
+        부모(라운드 9b)면 부모 = ``boot_parent`` (<relativePath/>, groupId / version 명시)에 ``root`` 의
+        속성·관리 항목, 필수 사내 아티팩트, BOM, java 버전. 이어서 Application 생성(옮긴
+        @SpringBootApplication 이 없을 때), JSP 뷰 설정, web.xml 등록 클래스, web.xml 후속 작업.
+
+        Generated boot-jar pom. Role parents (round 9b): parent = `artifacts.boot_parent` (`<relativePath/>`),
         explicit groupId / version, `root`'s properties / management copied in, mandatory dependencies, BOM and
         java level in this pom."""
         L = c.cfg.layout
@@ -1926,6 +2194,7 @@ class Restructurer:
         case_key = case.value if isinstance(case, CaseType) else str(case)
         deps = list(lib_deps)
         starter = c.params.get("starter") or L.starter_by_case.get(case_key, "spring-boot-starter")
+        # Boot as-is(auto): as-is 에 이미 starter 가 있으면 더하지 않는다 — 원래 고른 starter 를 존중
         if starter == "auto":
             has_starter = any(d.group_id == BOOT_GROUP and d.artifact_id.startswith("spring-boot-starter")
                               and d.scope != "test" for d in asis_deps)
@@ -1936,6 +2205,8 @@ class Restructurer:
         src = c.profile.source
         if c.boot_war:
             deps.extend(self._war_deps(c, {d.key for d in deps}))
+        # JSP 가 있는데 jar 로 두라는 설정(jsp_boot_packaging: jar): 실행 jar 는 JSP 를 서비스하지 못하므로
+        # jasper 를 넣되 후속 작업으로 경고
         elif c.jsp_moved:
             deps.append(GAV(group_id="org.apache.tomcat.embed", artifact_id="tomcat-embed-jasper"))
             deps.extend(JSTL_DEPS if c.jstl else [])
@@ -1972,6 +2243,8 @@ class Restructurer:
                        f"{' …' if len(refs) > 5 else ''}) → {lib.artifact_id} test-jar dependency added to "
                        f"{posixpath.basename(c.boot_rel)} and maven-jar-plugin test-jar goal added to {comp_dir}")
         plugin_version = None if A.parent_manages_spring_boot else c.cfg.target.spring_boot_version
+        # @SpringBootApplication 이 여럿이면 repackage 가 main
+        # 클래스를 고르지 못해 빌드가 실패한다: 첫 번째로 고정
         main_class = moved_main[0] if len(moved_main) > 1 else None
         if main_class:
             c.note(f"several @SpringBootApplication classes; repackage mainClass set to {main_class}")
@@ -1985,6 +2258,7 @@ class Restructurer:
             artifact_id=coords.artifact_id + L.boot_artifact_suffix, name=None, dependencies=deps,
             plugin_version=plugin_version, main_class=main_class, final_name=final_name,
             packaging="war" if c.boot_war else "jar"))
+        # overlay 를 역할 부모 처리보다 먼저 넣는다: overlay 버전이 쓰는 속성이 루트에서 함께 복사되도록
         if c.overlay_carry:                 # before _role_module: the overlay versions' properties come along
             ov_ed = PomEditor(c.ws.abs(f"{boot}/pom.xml"))
             self._apply_overlays(c, ov_ed)
@@ -2009,7 +2283,10 @@ class Restructurer:
         self._web_followups(c)
 
     def _test_helper_refs(self, c: _Ctx, comp_dir: str, boot: str) -> list[str]:
-        """Simple names of test classes left in `comp_dir/src/test/java` referenced by boot-jar's test sources."""
+        """boot 모듈로 옮긴 테스트가 참조하는, comp 의 src/test/java 에 남은 테스트 클래스 이름들(주석을 뺀 뒤
+        단어 일치) — 있으면 comp test-jar 의존성을 건다.
+
+        Simple names of test classes left in `comp_dir/src/test/java` referenced by boot-jar's test sources."""
         helpers_root = c.ws.abs(f"{comp_dir}/src/test/java")
         boot_tests = c.ws.abs(f"{boot}/src/test/java")
         if not helpers_root.is_dir() or not boot_tests.is_dir():
@@ -2023,6 +2300,8 @@ class Restructurer:
         return [n for n in names if re.search(rf"\b{re.escape(n)}\b", text)]
 
     def _add_test_jar_goal(self, c: _Ctx, comp_dir: str) -> None:
+        """comp pom 의 maven-jar-plugin 에 test-jar goal 을 보장한다(없으면 플러그인 추가, 있으면 execution
+        추가) — boot 테스트가 comp 테스트 클래스를 쓰려면 필요."""
         pom = f"{comp_dir}/pom.xml"
         if not c.ws.exists(pom):
             return
@@ -2044,6 +2323,11 @@ class Restructurer:
         c.save(ed)
 
     def _generate_application(self, c: _Ctx, boot: str, comp_dirs: list[str]) -> None:
+        """boot 모듈에 Application 클래스 생성(``templates/Application.java.j2``): 패키지 = 분석의
+        base package(모르면 ``com.company.app`` + 경고), comp 에 같은 FQCN 이 있으면 ``Boot`` 접두사, servlet
+        케이스면 @ServletComponentScan, boot WAR 면 SpringBootServletInitializer 상속, XML 빈 설정은 boot 의
+        ``legacy-config/`` 에 사본을 만들어 @ImportResource. 기존 main
+        클래스는 comp 에 남는다(후속 작업)."""
         L = c.cfg.layout
         src = c.profile.source
         pkg = sanitize_package(src.base_package)
@@ -2053,6 +2337,7 @@ class Restructurer:
             c.profile.warnings.append(f"restructure: base package unknown, used {FALLBACK_PACKAGE}")
         cls = sanitize_identifier(L.application_class_name, "Application")
         pkg_path = pkg.replace(".", "/")
+        # comp 에 같은 FQCN 이 있으면 boot jar 와 comp jar 에 같은 클래스가 생긴다: 생성 클래스 이름을 바꾼다
         if any(c.ws.exists(f"{d}/src/main/java/{pkg_path}/{cls}.java") for d in comp_dirs):
             cls = "Boot" + cls
             c.note(f"class {pkg}.{L.application_class_name} already exists in comp-jar; generated {cls}")
@@ -2069,6 +2354,8 @@ class Restructurer:
                 if name in used:
                     name = f"{posixpath.basename(posixpath.dirname(cur))}-{name}"
                 used.add(name)
+                # 원본은 그 자리에 두고 boot 에 사본을 만든다(@ImportResource
+                # 가 boot classpath 의 legacy-config/ 를 읽음)
                 c.write(f"{boot}/src/main/resources/legacy-config/{name}", c.ws.read(cur))
                 imports.append(f"classpath:legacy-config/{name}")
             if imports:
@@ -2087,6 +2374,9 @@ class Restructurer:
                        "not invoked by the generated Spring Boot Application")
 
     def _web_followups(self, c: _Ctx) -> None:
+        """web.xml 마다 후속 작업: WebXmlRegistrations 를 만들었으면 '매핑 확인', boot WAR 면
+        '참고용으로만 남음(WAR 의 WEB-INF/web.xml 로 패키지되지 않음)', 실행 jar 면 '내장 Tomcat
+        은 web.xml 을 읽지 않음'."""
         src = c.profile.source
         scan = c.cfg.layout.add_servlet_component_scan
         for i, p in enumerate(src.web_xml_paths or ([] if not src.has_web_xml else ["src/main/webapp/WEB-INF/web.xml"])):
@@ -2111,7 +2401,12 @@ class Restructurer:
 
     # ------------------------------------------------------------------ web.xml → WebXmlRegistrations (2026-10-23)
     def _web_xml_registrations(self, c: _Ctx, boot: str, comp_dirs: list[str], moved_main: list[str]) -> None:
-        """`layout.web_xml_registrations: generate`: the first web.xml's servlets / filters / listeners / error pages
+        """``layout.web_xml_registrations: generate``: 첫 web.xml 의 servlet / filter / listener / error page
+        → boot 모듈의 ``<pkg>.WebXmlRegistrations`` (sbmig.restructure.webxml_registrations), session-timeout
+        → boot application.properties 의 ``server.servlet.session.timeout``. 빈이 없는 것은 후속 작업, 전부
+        Boot / 스캔에 맡겨지면 만들지 않는다.
+
+        `layout.web_xml_registrations: generate`: the first web.xml's servlets / filters / listeners / error pages
         → `<pkg>.WebXmlRegistrations` in the boot module (`sbmig.restructure.webxml_registrations`), its
         session-timeout → `server.servlet.session.timeout` in the boot `application.properties`; what has no bean
         becomes a follow-up. Nothing is generated when every declaration is skipped / annotated."""
@@ -2153,6 +2448,8 @@ class Restructurer:
                 c.note(f"web.xml {asis}: every servlet / filter / listener is provided by Spring Boot or "
                        "@ServletComponentScan; no WebXmlRegistrations generated")
             return
+        # Application 과 같은 패키지에 만든다: @SpringBootApplication
+        # 의 컴포넌트 스캔 범위 안이어야 이 @Configuration 이 읽힌다
         pkg = sanitize_package(moved_main[0].rsplit(".", 1)[0]) if moved_main and "." in moved_main[0] else None
         pkg = pkg or sanitize_package(src.base_package) or FALLBACK_PACKAGE
         pkg_path = pkg.replace(".", "/")
@@ -2192,7 +2489,10 @@ class Restructurer:
             log.debug("journal web_xml_registrations skipped: %s", e)
 
     def _class_info(self, c: _Ctx, fqcn: str, dirs: list[str]) -> ClassInfo | None:
-        """The project source of `fqcn` below `dirs` (any source root; `target/` skipped), annotated / HttpServlet."""
+        """web.xml 의 클래스 FQCN → 프로젝트 소스(``dirs`` 아래, target/ 제외)의 ClassInfo(@Web* 어노테이션,
+        HttpServlet 직접 상속); 없으면 None(라이브러리 클래스).
+
+        The project source of `fqcn` below `dirs` (any source root; `target/` skipped), annotated / HttpServlet."""
         outer = fqcn.split("$", 1)[0]
         pkg, _, simple = outer.rpartition(".")
         for d in dirs:
@@ -2213,6 +2513,8 @@ class Restructurer:
         return None
 
     def _session_timeout_prop(self, c: _Ctx, boot: str, minutes: int, asis: str) -> None:
+        """web.xml session-timeout(분) → boot application.properties 의
+        ``server.servlet.session.timeout=<n>m``. boot 리소스에 이미 설정돼 있으면 그대로 둔다."""
         res = f"{boot}/src/main/resources"
         key = "server.servlet.session.timeout"
         for f in self._boot_resource_files(c, res):
@@ -2224,6 +2526,8 @@ class Restructurer:
         c.note(f"{key}={minutes}m written to {res}/application.properties (web.xml session-timeout)")
 
     def _append_props(self, c: _Ctx, rel: str, lines: list[str]) -> None:
+        """properties 파일 끝에 줄들을 덧붙인다(줄 끝 유지, 기존 내용과 빈 줄로 구분; 새
+        파일이면 generated 로 기록)."""
         existed = c.ws.exists(rel)
         text = c.ws.read(rel) if existed else ""
         nl = "\r\n" if "\r\n" in text else "\n"
@@ -2231,6 +2535,8 @@ class Restructurer:
         c.write(rel, text + sep + (nl if text.strip() else "") + nl.join(lines) + nl, generated=not existed)
 
     def _packaging_followups(self, c: _Ctx, asis_packaging: str) -> None:
+        """패키징 후속 작업: boot 가 외부 Tomcat 용 WAR 인 이유(overlay / JSP), 또는 as-is WAR
+        를 실행 jar 로 바꾼 사실."""
         if c.boot_war and not c.jsp_moved and c.overlay_carry:
             c.followup(f"boot module {c.boot_rel} packaged as WAR for external Tomcat: the WAR overlay(s) "
                        f"{', '.join(g.coordinates for _, g in c.war_overlays)} carry web content")
@@ -2243,7 +2549,11 @@ class Restructurer:
     # ------------------------------------------------------------------ module names (round 9c)
     @staticmethod
     def _resolve_names(c: _Ctx, root: PomEditor | None) -> None:
-        """`{name}` = `layout.project_name`, else the root pom property `sbmig.project-name` (the intake aggregator's
+        """모듈 이름의 ``{name}``: ``layout.project_name`` → 루트 pom 속성 ``sbmig.project-name`` (intake
+        aggregator 의 프로젝트 이름) → 루트 artifactId. 모듈 경로는 ``layout.module_path`` (기본 루트 바로
+        아래 ``{name}-boot`` / ``{name}-back`` / ``{name}-front``).
+
+        `{name}` = `layout.project_name`, else the root pom property `sbmig.project-name` (the intake aggregator's
         project name, 2026-10-23), else the root pom's artifactId; module paths via `layout.module_path`."""
         L = c.cfg.layout
         aid = (root.artifact_id() if root is not None else None) or \
@@ -2256,14 +2566,18 @@ class Restructurer:
 
     @staticmethod
     def _module_tops(c: _Ctx) -> list[str]:
+        """회사 모듈 경로의 최상위 디렉토리들(소스 루트로 착각해 옮기지 않게)."""
         return [p.split("/")[0] for p in (c.boot_rel, c.comp_rel, c.front_rel) if p]
 
     @staticmethod
     def _layout_modules(c: _Ctx) -> list[str]:
+        """루트 <modules> 목록: back, front(만들었을 때), boot 순 — boot 가 앞의 둘에
+        의존하는 방향과 같은 순서."""
         return [c.comp_rel, *([c.front_rel] if c.front_made and c.front_rel else []), c.boot_rel]
 
     @staticmethod
     def _front_lib(c: _Ctx, coords: GAV) -> list[GAV]:
+        """front 모듈을 만들었으면 boot 가 의존할 front jar(``<root>-front``) GAV, 아니면 빈 목록."""
         if not c.front_made:
             return []
         return [GAV(group_id="${project.groupId}", artifact_id=coords.artifact_id + FRONT_ARTIFACT_SUFFIX,
@@ -2271,10 +2585,15 @@ class Restructurer:
 
     @staticmethod
     def _mandatory_in_root(c: _Ctx) -> bool:
+        """필수 사내 아티팩트를 루트 pom 에 둘지(``artifacts.mandatory_target: root``, 회사
+        기본) 각 모듈 pom 에 둘지."""
         return getattr(c.cfg.artifacts, "mandatory_target", "root") == "root"
 
     def _record_modules(self, c: _Ctx, existing: bool = False) -> None:
-        """RestructureResult.boot_module / comp_module / front_module (the module dirs that exist) + boot_packaging."""
+        """결과에 실제로 있는 boot / comp / front 모듈 경로와 boot 패키징(jar / war)을 적는다(보고서, 구조
+        검토 입력). 이미 재구성된 프로젝트면 front 파일 수도 센다.
+
+        RestructureResult.boot_module / comp_module / front_module (the module dirs that exist) + boot_packaging."""
         r = c.result
         for attr, rel in (("boot_module", c.boot_rel), ("comp_module", c.comp_rel), ("front_module", c.front_rel)):
             if rel and c.ws.exists(f"{c.p(rel)}/pom.xml"):
@@ -2290,7 +2609,12 @@ class Restructurer:
 
     # ------------------------------------------------------------------ front module (round 9c)
     def _web_layout(self, c: _Ctx, eds: list[PomEditor]) -> tuple[list[tuple[str, str]], list[str]]:
-        """(web roots as (module-relative dir, web-path prefix), classpath dirs) of the as-is poms: the default
+        """as-is pom 들의 (web root 목록, classpath 디렉토리 목록). web root = 기본 ``src/main/webapp`` +
+        maven-war-plugin warSourceDirectory(접두사 없음) + <webResources> 디렉토리(targetPath 가 웹 경로
+        접두사); classpath = source / script source / <resources> 디렉토리. 소스가 comp 로 같은 상대 경로로
+        옮겨졌으므로 모듈 기준 = comp 기준이고, ``../`` 디렉토리는 ``_comp_dir`` 로 바꾼다(못 하면 뺀다).
+
+        (web roots as (module-relative dir, web-path prefix), classpath dirs) of the as-is poms: the default
         `src/main/webapp`, then every maven-war-plugin `warSourceDirectory` (prefix "") and `<webResources>` directory
         (prefix = its `targetPath`); the classpath dirs are `sourceDirectory` / `scriptSourceDirectory` / `<resources>`
         directories (`source_scanner.pom_build_dirs`). The sources were folded into the comp module at the same
@@ -2312,7 +2636,27 @@ class Restructurer:
 
     def _populate_front(self, c: _Ctx, comp: str, boot: str, coords: GAV,
                         eds: list[PomEditor] | None = None) -> None:
-        """Move the web resources out of the comp module into `{name}-front` (only when there are any):
+        """웹 리소스를 comp 에서 front 모듈(``{name}-front``)로 — 웹 리소스가 하나도 없으면 front 모듈을
+        만들지 않는다. web root 안 파일마다 첫 규칙이 이긴다:
+        (1) ``WEB-INF/`` 아래: JSP → ``<front_jsp_dir>/<WEB-INF/jsp 아래 경로>`` (WEB-INF 의 다른 곳이면
+        WEB-INF 아래 경로 유지: ``WEB-INF/views/a.jsp`` → ``jsp/views/a.jsp``), tags/ 와 *.tld → front jar 의
+        ``META-INF/resources/WEB-INF/...``, lib/ 와 classes/ → comp 에 남김(후속 작업), 설정
+        파일(``WEBINF_CONFIG_EXTS``: xml, properties, yml ...) → boot 의 ``asis-webinf/`` stash(Boot 는 읽지
+        않음, 참고용), 그 밖(뷰, html / js / css 조각, 템플릿, 다운로드) → front jar 의
+        ``META-INF/resources/WEB-INF/`` 같은 경로(v2.1g: include / forward 로는 닿고 브라우저에는 직접 안
+        보임). (2) web root 의 ``META-INF/`` → comp 에 남김(후속 작업). (3) WEB-INF 밖의 JSP → front jar 의
+        ``META-INF/resources/`` 루트(같은 URL). (4) web root 안에 있는 pom 의 <resource> / sourceDirectory
+        아래 파일 → classpath 콘텐츠라 확장자와 상관없이 comp 에 남긴다(복사된 <resources> 가 계속 가리킴).
+        ``layout.front_copy_resource_dirs`` (기본 true, v2.1g)면 front 의 ``<front_static_dir>/<웹 경로>``
+        에도 바이트 그대로 복사해 as-is WAR 와 같은 URL 로 서비스된다. (5) 나머지 전부(html, js, css, 이미지,
+        mp4, exe ... 확장자 무관) → ``<front_static_dir>/<웹 경로>``. 그리고 comp 의
+        ``src/main/resources/{static,public,templates}/**`` → front 의 같은 경로.
+        web root = ``src/main/webapp`` + maven-war-plugin warSourceDirectory / <webResources>
+        (``_web_layout``). 대상이 이미 있으면 옮기지 않고 후속 작업. 끝에 ``c.front_made`` / ``c.jsp_moved`` /
+        ``c.jstl`` / ``c.boot_war`` 를 정하고 front pom 을 쓴다 — JSP 가 옮겨졌고 ``jsp_boot_packaging: war``
+        면 boot 모듈은 외부 Tomcat 용 WAR.
+
+        Move the web resources out of the comp module into `{name}-front` (only when there are any):
         `src/main/webapp/**` minus WEB-INF / META-INF → `<front>/<front_static_dir>/…` (same relative path);
         `src/main/resources/{static,public,templates}/**` → `<front>/src/main/resources/<dir>/…` (same path);
         JSPs (`*.jsp|jspf|jspx`) under `WEB-INF/` → `<front>/<front_jsp_dir>/<path under WEB-INF/jsp>` (a JSP
@@ -2339,6 +2683,8 @@ class Restructurer:
         jsp_dir = L.front_jsp_dir.strip("/")
         jsp_dst = f"{front}/{jsp_dir}"
         i = jsp_dir.find("META-INF/resources")
+        # front jar 의 META-INF/resources (Servlet 3: jar 안 이 경로는 웹 루트처럼 서비스됨) — JSP 디렉토리
+        # 설정에서 그 위치를 뽑는다
         meta_dst = f"{front}/{jsp_dir[:i + len('META-INF/resources')]}" if i >= 0 else static_dst
         stash = f"{boot}/src/main/resources/{WEBINF_STASH}"
         plan: list[tuple[str, str, str, str]] = []      # (src, dst, kind: static | jsp | webinf, web path)
@@ -2361,14 +2707,21 @@ class Restructurer:
                 web = posixpath.normpath(f"{target}/{rel}") if target else rel
                 top, _, sub = web.partition("/")
                 src = f"{webapp}/{rel}"
+                # WEB-INF 아래(웹 경로 기준)는 브라우저가 직접 못 여는 곳: JSP 는 jsp 디렉토리, 설정은 boot
+                # stash, 나머지는 front jar 의 WEB-INF 그대로
                 if top == "WEB-INF" and sub:
                     if sub.lower().endswith(JSP_EXTS):
                         under = sub.removeprefix("jsp/")
                         plan.append((src, f"{jsp_dst}/{under}", "jsp", web))
                     elif sub.startswith("tags/") or sub.lower().endswith(".tld"):
                         plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "jsp", web))
+                    # WEB-INF/lib 의 jar 와 classes 는 Maven 의존성
+                    # / 소스로 바꿔야 할 대상: 옮기지 않고 후속 작업
                     elif sub.startswith(("lib/", "classes/")):
                         left.append(src)
+                    # v2.1g: 설정이 아닌 WEB-INF 파일은 front jar 의 META-INF/resources/WEB-INF/ 같은 경로 —
+                    # include / forward 경로가 그대로 맞는다.
+                    # 설정(web.xml, Spring XML, properties)만 boot stash
                     elif posixpath.splitext(sub)[1].lower() not in WEBINF_CONFIG_EXTS:
                         plan.append((src, f"{meta_dst}/WEB-INF/{sub}", "static", web))   # a view / fragment / file
                     else:
@@ -2377,10 +2730,14 @@ class Restructurer:
                     left.append(src)
                 elif web.lower().endswith(JSP_EXTS):
                     plan.append((src, f"{meta_dst}/{web}", "jsp", web))
+                # web root 안의 <resource> 디렉토리(예: STATIC/resources): classpath 로 읽는 코드가 있을 수
+                # 있어 확장자와 상관없이 comp 에 남긴다
                 elif any(f"{wdir}/{rel}".startswith(k + "/") for k in inner):
                     kept_res += 1
                     if posixpath.splitext(rel)[1].lstrip(".").lower() in WEB_STATIC_EXTENSIONS:
                         kept_web.append(src)
+                    # v2.1g: 이동이 아니라 복사 — 페이지가 링크할 수도 있어 front static 에도 같은 웹 경로로
+                    # 둔다(현업: '어디다 쓸지 모르니 디렉토리까지 똑같이')
                     if copy_res:                       # 2026-10-28: also served as before, from the front jar
                         plan.append((src, f"{static_dst}/{web}", "copy", web))
                 else:
@@ -2393,6 +2750,8 @@ class Restructurer:
                 rel = f.relative_to(rabs).as_posix()
                 plan.append((f"{comp}/src/main/resources/{d}/{rel}", f"{front}/src/main/resources/{d}/{rel}",
                              "static", rel))
+        # front 로 갈 웹 리소스가 없으면(WEB-INF 설정 파일뿐이어도)
+        # front 모듈을 만들지 않고 아무것도 옮기지 않는다
         if not any(k in ("static", "jsp", "copy") for _, _, k, _ in plan):
             return                                     # no web resources: no front module
         taken: set[str] = set()
@@ -2400,6 +2759,7 @@ class Restructurer:
         clash: list[str] = []
         jsp_relocated: list[str] = []
         for src, dst, kind, web in plan:
+            # 같은 대상 경로가 두 번 나오거나 이미 있으면 덮어쓰지 않는다: 사람이 합치도록 후속 작업(clash)
             if dst in taken or c.ws.exists(dst):
                 clash.append(src)
                 continue
@@ -2408,6 +2768,7 @@ class Restructurer:
                 text = c.ws.abs(src).read_text(encoding="utf-8", errors="replace")
                 c.jstl = c.jstl or bool(JSTL_URI_RE.search(text))
                 web_old = "/" + web
+                # WEB-INF/jsp 밖에 있던 JSP 는 웹 경로가 바뀐다: include / forward 경로를 고치라는 후속 작업용
                 if not web_old.startswith("/WEB-INF/jsp/"):
                     jsp_relocated.append(web_old)
             elif kind == "jsp" and src.lower().endswith(JSP_EXTS):
@@ -2423,6 +2784,8 @@ class Restructurer:
         c.front_made = True
         c.jsp_moved = sum(1 for s_, d, k, _ in plan if k == "jsp" and s_.lower().endswith(JSP_EXTS) and d in taken)
         c.result.front_files = moved["static"] + moved["jsp"] + moved["copy"]
+        # JSP 가 있으면 boot 모듈은 외부 Tomcat 용 WAR(회사 규칙):
+        # Spring Boot 는 실행 jar 에서 JSP 를 지원하지 않는다
         c.boot_war = c.boot_war or (c.jsp_moved > 0 and L.jsp_boot_packaging == "war")   # a WAR overlay may set it
         self._write_front_pom(c, coords, front)
         custom = [d for d, _ in roots
@@ -2457,7 +2820,11 @@ class Restructurer:
                        f"({', '.join(clash[:3])}{' …' if len(clash) > 3 else ''}) — merge them by hand")
 
     def _strip_war_web_config(self, c: _Ctx, ed: PomEditor) -> None:
-        """A generated / rewritten pom must not carry the as-is maven-war-plugin `warSourceDirectory` /
+        """생성 / 재작성 pom 에서 maven-war-plugin 의 warSourceDirectory / webResources 를 뺀다: web root 는
+        front 모듈로 갔고 boot WAR 에는 webapp 디렉토리가 없다(JSP 는 front jar 에서). 루트 pluginManagement
+        를 통해(상속, 역할 부모면 복사) boot pom 에도 닿으므로 모든 생성 pom 에서 지운다.
+
+        A generated / rewritten pom must not carry the as-is maven-war-plugin `warSourceDirectory` /
         `webResources` (2026-10-23): the web root moved to the front module, the boot WAR has no webapp directory
         (its JSPs come from the front jar). Reaches the boot pom through the root pluginManagement (inherited, or
         copied for role parents)."""
@@ -2475,6 +2842,7 @@ class Restructurer:
                    "root moved to the front module; the boot WAR has no webapp directory)")
 
     def _large_media_note(self, c: _Ctx) -> None:
+        """분석이 찾은 큰 미디어 파일이 front / comp jar 에 들어간다는 노트(파일 서버로 옮기는 것을 권함)."""
         src = c.profile.source
         if not src.large_media_files:
             return
@@ -2485,6 +2853,7 @@ class Restructurer:
 
     @staticmethod
     def _prune_empty_dirs(c: _Ctx, rel: str) -> None:
+        """디렉토리 아래의 빈 디렉토리를 깊은 것부터 지운다(자기 자신도 비면 지움)."""
         top = c.ws.abs(rel)
         if not top.is_dir():
             return
@@ -2495,6 +2864,8 @@ class Restructurer:
             top.rmdir()
 
     def _write_front_pom(self, c: _Ctx, coords: GAV, front: str) -> None:
+        """front 모듈 pom 생성(``<root>-front``): 역할 부모면 ``comp_parent`` + 명시 좌표 + 필수 사내
+        아티팩트 / BOM / java 버전, 아니면 루트 pom 이 부모."""
         A = c.cfg.artifacts
         path = f"{front}/pom.xml"
         aid = coords.artifact_id + FRONT_ARTIFACT_SUFFIX
@@ -2515,7 +2886,12 @@ class Restructurer:
                                  version=None, artifact_id=aid, name=None))
 
     def _war_deps(self, c: _Ctx, have: set[str]) -> list[GAV]:
-        """The boot WAR's container dependencies: Tomcat + Jasper `provided` (external Tomcat), JSTL when a JSP uses
+        """boot WAR 의 컨테이너 의존성: spring-boot-starter-tomcat / tomcat-embed-jasper 는 provided(외부
+        Tomcat 이 제공), @ServletComponentScan 을 쓰면 spring-boot-web-server 는 compile(Boot 4.1 은 Tomcat
+        starter 로만 끌어오므로 provided 면 WEB-INF/lib 에서 빠짐),
+        JSP 가 JSTL 을 쓰면 JSTL. 버전은 Spring Boot 4.1 BOM 이 관리.
+
+        The boot WAR's container dependencies: Tomcat + Jasper `provided` (external Tomcat), JSTL when a JSP uses
         it (managed by the Spring Boot 4.1 BOM, so no versions)."""
         out = [GAV(group_id=BOOT_GROUP, artifact_id="spring-boot-starter-tomcat", scope="provided"),
                GAV(group_id="org.apache.tomcat.embed", artifact_id="tomcat-embed-jasper", scope="provided")]
@@ -2533,13 +2909,18 @@ class Restructurer:
 
     @staticmethod
     def _servlet_scan(c: _Ctx) -> bool:
-        """The generated Application carries @ServletComponentScan (servlet case or @WebServlet / filter classes)."""
+        """생성 Application 에 @ServletComponentScan 을 붙이는가: 설정(``add_servlet_component_scan``)이 켜져
+        있고 servlet 케이스이거나 @WebServlet / filter / listener 클래스가 있을 때.
+
+        The generated Application carries @ServletComponentScan (servlet case or @WebServlet / filter classes)."""
         src = c.profile.source
         return c.cfg.layout.add_servlet_component_scan and (
             c.profile.case_type == CaseType.SERVLET_TOMCAT or bool(src.servlet_classes)
             or bool(src.filter_listener_classes))
 
     def _initializer_followup(self, c: _Ctx, boot: str, mains: list[str]) -> None:
+        """boot 가 WAR 인데 SpringBootServletInitializer 를 상속한 클래스가 없으면 후속 작업 — 외부 Tomcat
+        에서 앱이 기동되지 않는다."""
         root = c.ws.abs(f"{boot}/src/main/java")
         if root.is_dir() and any(SERVLET_INIT_RE.search(f.read_text(encoding="utf-8", errors="replace"))
                                  for f in root.rglob("*.java")):
@@ -2548,7 +2929,11 @@ class Restructurer:
                    "SpringBootServletInitializer — extend it and override configure(SpringApplicationBuilder)")
 
     def _view_resolver(self, c: _Ctx) -> tuple[str | None, str | None, str | None]:
-        """(prefix, suffix, file) of an as-is InternalResourceViewResolver / `<mvc:jsp>` / `registry.jsp(…)`."""
+        """as-is 설정에서 JSP 뷰 prefix / suffix 찾기: XML 의 InternalResourceViewResolver 빈 / ``<mvc:jsp>``,
+        Java 의 ``new InternalResourceViewResolver(...)`` / ``registry.jsp(...)`` / setPrefix·setSuffix. 처음
+        찾은 파일의 (prefix, suffix, 파일).
+
+        (prefix, suffix, file) of an as-is InternalResourceViewResolver / `<mvc:jsp>` / `registry.jsp(…)`."""
         base = c.ws.abs(c.p("."))
         for f in sorted(base.rglob("*")):
             if (not f.is_file() or f.suffix not in (".xml", ".java") or ".git" in f.parts
@@ -2585,7 +2970,11 @@ class Restructurer:
         return None, None, None
 
     def _jsp_web_path(self, c: _Ctx, web: str) -> str:
-        """As-is web path of a JSP location → its path after the move (see `_populate_front`)."""
+        """JSP 의 as-is 웹 경로 → 이동 뒤 경로(``_populate_front`` 규칙): ``/WEB-INF/jsp/...`` 는 jsp 디렉토리
+        마운트 아래 그대로, WEB-INF 의 다른 곳은 마운트 아래에 WEB-INF 뒤 경로, WEB-INF 밖은
+        그대로(META-INF/resources 루트).
+
+        As-is web path of a JSP location → its path after the move (see `_populate_front`)."""
         jsp_dir = c.cfg.layout.front_jsp_dir.strip("/")
         i = jsp_dir.find("META-INF/resources")
         if i < 0:
@@ -2598,7 +2987,11 @@ class Restructurer:
         return web                                      # outside WEB-INF: META-INF/resources root, same path
 
     def _jsp_view_props(self, c: _Ctx, boot: str) -> None:
-        """`spring.mvc.view.prefix/suffix` into the boot `application.properties` when the as-is configuration names
+        """as-is 뷰 리졸버의 prefix / suffix → boot application.properties 의 ``spring.mvc.view.prefix`` /
+        ``spring.mvc.view.suffix`` (옮긴 JSP 위치로 변환). 이미 설정돼 있으면 그대로, 못 찾으면 후속 작업.
+        prefix 가 바뀌면 as-is 리졸버 빈도 고치라는 후속 작업(그 빈이 Boot 의 리졸버보다 우선).
+
+        `spring.mvc.view.prefix/suffix` into the boot `application.properties` when the as-is configuration names
         an InternalResourceViewResolver prefix / suffix (mapped to the moved JSP location), else a follow-up."""
         res = f"{boot}/src/main/resources"
         for f in self._boot_resource_files(c, res):
@@ -2628,7 +3021,13 @@ class Restructurer:
     # ------------------------------------------------------------------ root pom
     def _rewrite_root(self, c: _Ctx, root: PomEditor, modules: list[str], *, keep_deps: bool,
                       keep_build_plugins: bool, aggregator: bool = False) -> None:
-        """`aggregator` (role parents, round 9b): the modules do not inherit the root pom — no mandatory
+        """루트 pom 을 aggregator 로: 좌표 명시, 이름 변경(``sbmig.project-name``, merge / single), 부모 →
+        사내 부모 pom(``artifacts.parent``, <relativePath/>), packaging pom, <modules> = 회사 모듈, 의존성 /
+        build 정리(wrap 은 유지). ``aggregator`` (역할 부모)면 모듈이 루트를 상속하지 않으므로 필수 사내
+        아티팩트(``mandatory_target: root``)만 두고 관리 항목, BOM, 루트가 안 쓰는 속성은 지운다(이미 모듈 pom
+        에 복사됨); 아니면 필수 사내 아티팩트, BOM, java 버전을 루트에.
+
+        `aggregator` (role parents, round 9b): the modules do not inherit the root pom — no mandatory
         dependencies, BOM or java level here, and the root's properties / dependencyManagement / pluginManagement
         (already copied into the module poms) are removed, except properties the root itself still references."""
         A = c.cfg.artifacts
@@ -2646,6 +3045,7 @@ class Restructurer:
                 root.remove_property(NAME_PROP)
                 root.remove_if_empty(root.find("properties"))
         old_parent = root.get_parent()
+        # 루트는 언제나 사내 부모 pom(base-parent) + 빈 <relativePath/>: 부모는 저장소(Nexus)에서 받는다
         root.set_parent(A.parent.gav(), None)
         self._record_parent(c, c.ws.rel(root.path), old_parent, A.parent.gav())
         root.set_packaging("pom")
@@ -2685,7 +3085,10 @@ class Restructurer:
 
     @staticmethod
     def _prune_root_properties(root: PomEditor) -> None:
-        """Aggregator root: drop the properties nothing left in the root pom references (they were copied into the
+        """aggregator 루트: 루트 pom 에 남은 내용이 (속성끼리 이어지는 것까지) 참조하지 않는 속성을 지운다 —
+        모듈 pom 으로 복사됐고 모듈은 더 이상 루트를 상속하지 않는다.
+
+        Aggregator root: drop the properties nothing left in the root pom references (they were copied into the
         module poms, which no longer inherit the root)."""
         props = root.properties()
         if not props:
@@ -2708,14 +3111,20 @@ class Restructurer:
     # ------------------------------------------------------------------ role parents (round 9b)
     @staticmethod
     def _role(c: _Ctx) -> bool:
+        """역할 부모 방식인가(``artifacts.role_parents`` = boot_parent 와 comp_parent 가 둘 다 설정됨, 회사
+        설정): 모듈이 루트 대신 사내 부모 pom(boot-jar / comp-jar)을 직접 상속한다."""
         return bool(c.cfg.artifacts.role_parents)
 
     @staticmethod
     def _gav_str(g: GAV | None) -> str:
+        """GAV → ``g:a:v`` 문자열(없으면 ``-``), parents_set 기록용."""
         return "-" if g is None else f"{g.group_id}:{g.artifact_id}:{g.version or '?'}"
 
     def _record_parent(self, c: _Ctx, pom: str, old: GAV | None, new: GAV) -> None:
-        """`RestructureResult.parents_set`: one entry per parent set or replaced (unchanged parents are skipped)."""
+        """``RestructureResult.parents_set`` 에 부모 변경 한 줄(``pom: 옛 → 새``). 바뀌지
+        않은 부모는 적지 않는다.
+
+        `RestructureResult.parents_set`: one entry per parent set or replaced (unchanged parents are skipped)."""
         if old is not None and old.key == new.key and (old.version or None) == (new.version or None):
             return
         entry = f"{pom}: {self._gav_str(old)} → {self._gav_str(new)}"
@@ -2724,7 +3133,12 @@ class Restructurer:
 
     def _role_module(self, c: _Ctx, ed: PomEditor, root: PomEditor | None, *, exclude: set[str],
                      all_props: bool = False) -> None:
-        """A module pom on an external role parent gets what it used to inherit from the root pom: the root's
+        """역할 부모를 받는 모듈 pom 에, 예전에 루트에서 물려받던 것을 넣는다(``_inherit_root_content``;
+        ``root`` None = 원래 루트를 상속하지 않던 모듈). 그다음 필수 사내 아티팩트 (``mandatory_target:
+        modules`` 일 때만), remove_when_present, Spring Boot BOM. java 버전은
+        호출부가(``_fix_java(top=True)``).
+
+        A module pom on an external role parent gets what it used to inherit from the root pom: the root's
         dependencyManagement (minus `exclude`, the merged modules), pluginManagement, repositories and properties
         (`all_props`: every root property — the comp pom, which holds the root's dependencies; else the ones this
         pom references plus `project.*` / `maven.*` build settings), `root` None = the module never inherited the
@@ -2741,7 +3155,12 @@ class Restructurer:
     @staticmethod
     def _inherit_root_content(c: _Ctx, ed: PomEditor, root: PomEditor, *, exclude: set[str],
                               all_props: bool = False) -> None:
-        """Copy the management `ed` inherited from `root` into `ed` (see `_role_module`): dependencyManagement
+        """``root`` 에서 물려받던 관리 항목을 ``ed`` 로 복사: dependencyManagement(``exclude`` =
+        합쳐진 모듈 제외), pluginManagement, repositories / pluginRepositories, 속성(``all_props`` = 전부:
+        루트 의존성을 받은 comp pom; 아니면 이 pom 이 참조하는 것 +
+        project.* / maven.*). ``ed`` 에 이미 있는 것은 덮어쓰지 않는다.
+
+        Copy the management `ed` inherited from `root` into `ed` (see `_role_module`): dependencyManagement
         (minus `exclude`), pluginManagement, repositories / pluginRepositories and properties (`all_props`, else the
         referenced ones plus `project.*` / `maven.*`). Nothing already present in `ed` is overwritten."""
         for el in root.dependency_elements(True):
@@ -2774,7 +3193,12 @@ class Restructurer:
 
     @staticmethod
     def _inherit_build(c: _Ctx, ed: PomEditor, anc: PomEditor, *, boot: bool) -> list[str]:
-        """Boot as-is / MSA pom-only (round 9c): a module that stops inheriting an in-repo pom gets that pom's
+        """Boot as-is / MSA pom 전용(라운드 9c): 저장소 안 pom 의 상속을 끊는 모듈이 그 pom 의 <dependencies>
+        와 <build><plugins> 를 받는다(이미 선언된 것, <inherited>false</inherited> 플러그인, boot 가 아닌
+        모듈의 spring-boot-maven-plugin 제외) — 부모만 바꾸면 물려받던 의존성이 사라져 컴파일이 깨지므로.
+        복사한 g:a 키를 돌려준다.
+
+        Boot as-is / MSA pom-only (round 9c): a module that stops inheriting an in-repo pom gets that pom's
         `<dependencies>` and `<build><plugins>` (not already declared; `<inherited>false</inherited>` plugins and,
         for non-boot modules, spring-boot-maven-plugin skipped). Returns the g:a keys copied."""
         copied: list[str] = []
@@ -2799,7 +3223,10 @@ class Restructurer:
         return copied
 
     def _role_for(self, c: _Ctx, pom: str, parent: GAV) -> Any:
-        """The configured role parent an as-is `<parent>` with the same groupId:artifactId maps to (None if none).
+        """as-is <parent> 와 같은 groupId:artifactId 인 역할 부모 설정(boot_parent / comp_parent, 없으면
+        None). 두 키가 같으면 모듈 위치(boot 모듈 디렉토리인가)로 정한다.
+
+        The configured role parent an as-is `<parent>` with the same groupId:artifactId maps to (None if none).
         When boot_parent and comp_parent share the key, the module location decides."""
         A = c.cfg.artifacts
         hits = [r for r in (A.boot_parent, A.comp_parent) if r is not None and r.key == parent.key]
@@ -2811,7 +3238,12 @@ class Restructurer:
         return A.boot_parent if posixpath.dirname(pom) == boot_dir else A.comp_parent
 
     def _align_role_parents(self, c: _Ctx, *, report_modules: bool = False, skip: set[str] | None = None) -> None:
-        """R2: every project pom (root excluded) whose `<parent>` has the groupId:artifactId of `boot_parent` /
+        """R2: 루트를 뺀 모든 프로젝트 pom 중 <parent> 가 boot_parent / comp_parent 의
+        groupId:artifactId 인 것(버전 무관, 예: 이전 마이그레이션의 1.0.0)을 설정된 GAV + <relativePath/> 로
+        맞춘다. ``report_modules`` (이미 재구성된 경우): 회사 모듈(boot / back / front) pom 이 다른 부모를
+        가지면 노트만 남기고 둔다.
+
+        R2: every project pom (root excluded) whose `<parent>` has the groupId:artifactId of `boot_parent` /
         `comp_parent` (any version, e.g. an earlier migration's 1.0.0) moves to the configured GAV with
         `<relativePath/>`. `report_modules`: a module/boot-jar or module/comp-jar pom on a different parent is noted
         and left (already-restructured pass)."""
@@ -2853,12 +3285,19 @@ class Restructurer:
 
     @staticmethod
     def _mandatory_managed(spec) -> bool:
-        """`scope: import` (+ `type: pom`) = a BOM-style mandatory artifact: it belongs in <dependencyManagement>,
+        """필수 사내 아티팩트가 BOM 형(``scope: import`` + ``type: pom``)인가 — 그러면 <dependencyManagement>
+        에만 둔다(Maven 은 <dependencies> 의 import scope 를 거부).
+
+        `scope: import` (+ `type: pom`) = a BOM-style mandatory artifact: it belongs in <dependencyManagement>,
         never in <dependencies> (Maven rejects import scope there)."""
         return (getattr(spec, "scope", None) or "").strip().lower() == "import"
 
     def _mandatory_align_existing(self, c: _Ctx, ed: PomEditor, spec, managed: bool, where: str) -> None:
-        """An existing declaration of a mandatory artifact takes the configured version (None → managed by the
+        """이미 선언된 필수 사내 아티팩트를 설정에 맞춘다: 버전(None → 부모가 관리), 설정에 있으면
+        <type> / <scope>. pom 패키징 사내 아티팩트를 <type>pom</type>
+        없이 선언하면 없는 jar 를 찾아 빌드가 실패하기 때문.
+
+        An existing declaration of a mandatory artifact takes the configured version (None → managed by the
         parent) and, when the spec says so, the configured `<type>` / `<scope>` — a pom-packaged in-house artifact
         declared without `<type>pom</type>` would otherwise be resolved as a jar that does not exist."""
         for e in ed.dependency_elements(managed):
@@ -2879,6 +3318,8 @@ class Restructurer:
                 c.note(f"mandatory {spec.key} {where} {c.ws.rel(ed.path)}; {', '.join(aligned)} aligned")
 
     def _add_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
+        """필수 사내 아티팩트를 이 pom 에 추가(BOM 형이면 dependencyManagement); 이미 있으면 설정 버전 /
+        type / scope 로 맞춘다. 새로 넣은 것은 결과의 mandatory_added 에 기록."""
         for spec in c.cfg.artifacts.mandatory:
             managed = self._mandatory_managed(spec)
             added = (ed.add_managed_dependency(spec.gav(), if_absent=True) if managed
@@ -2890,12 +3331,17 @@ class Restructurer:
                 self._mandatory_align_existing(c, ed, spec, managed, "already present in")
 
     def _align_mandatory(self, c: _Ctx, ed: PomEditor) -> None:
-        """A pom that keeps its own declaration of a mandatory artifact (declared in the root, `mandatory_target:
+        """필수 사내 아티팩트를 루트에 두는 설정(``mandatory_target: root``)에서, 모듈 pom 에 따로 남은 선언은
+        추가 대신 설정 버전 / type / scope 로만 맞춘다.
+
+        A pom that keeps its own declaration of a mandatory artifact (declared in the root, `mandatory_target:
         root`) gets the configured version (None → managed by the parent) and type / scope."""
         for spec in c.cfg.artifacts.mandatory:
             self._mandatory_align_existing(c, ed, spec, self._mandatory_managed(spec), "declared in")
 
     def _remove_unwanted(self, c: _Ctx, ed: PomEditor) -> None:
+        """``artifacts.remove_when_present`` 에 적힌 g:a 를 의존성·관리 의존성·플러그인에서
+        지운다(있을 때만, 노트)."""
         for key in c.cfg.artifacts.remove_when_present:
             if ":" not in key:
                 continue
@@ -2907,8 +3353,12 @@ class Restructurer:
                 c.note(f"removed {key} from {c.ws.rel(ed.path)} (remove_when_present)")
 
     def _boot_bom(self, c: _Ctx, ed: PomEditor) -> None:
+        """Spring Boot BOM: 사내 부모가 Boot 를 관리하면(``parent_manages_spring_boot``) as-is
+        ``spring-boot-dependencies`` import 를 지우고(두 관리가 다투지 않게), 아니면 BOM 을 대상 버전으로
+        맞추거나 dependencyManagement 맨 앞에 넣는다."""
         A = c.cfg.artifacts
         bom_aid = "spring-boot-dependencies"
+        # 사내 부모가 Boot 버전을 관리: as-is BOM import 가 남으면 두 관리가 다투므로 지운다
         if A.parent_manages_spring_boot:
             if ed.remove_managed_dependency(BOOT_GROUP, bom_aid):
                 c.note(f"as-is {BOOT_GROUP}:{bom_aid} import removed from {c.ws.rel(ed.path)} "
@@ -2925,6 +3375,10 @@ class Restructurer:
             c.note(f"{BOOT_GROUP}:{bom_aid}:{target} BOM imported in {c.ws.rel(ed.path)}")
 
     def _fix_java(self, c: _Ctx, ed: PomEditor, *, top: bool) -> None:
+        """Java 버전 설정 정리: 사내 부모가 java 버전을 관리하면(``parent_manages_java_version``) java
+        속성과 compiler 플러그인의 source / target / release 를 지운다. 아니면 source / target 을 빼고
+        ``maven.compiler.release`` = 대상(21)(``top`` 이거나 이미 있을 때), ``java.version`` 도 대상으로;
+        compiler 플러그인의 source / target 은 release 로 바꾼다."""
         target = c.cfg.target.java_version
         manages = c.cfg.artifacts.parent_manages_java_version
         props = ed.properties()
@@ -2936,6 +3390,8 @@ class Restructurer:
             for k in ("maven.compiler.source", "maven.compiler.target"):
                 if k in props:
                     ed.remove_property(k)
+            # release 는 java 수준을 정하는 pom(top: 외부 부모를 받는 pom)이나 이미 적혀 있던 pom 에만: 루트를
+            # 상속하는 모듈은 물려받는다
             if top or "maven.compiler.release" in props:
                 ed.set_property("maven.compiler.release", target)
             if "java.version" in props:
@@ -2960,7 +3416,9 @@ class Restructurer:
 
     # ================================================================== optional bumps / cleanup (all poms)
     def _project_poms(self, c: _Ctx) -> list[str]:
-        """Root pom first, then every other pom of the project (poms under src/ are test data, skipped)."""
+        """루트 pom 먼저, 그다음 프로젝트의 다른 pom 전부(src/ 아래 pom 은 테스트 데이터라 뺀다).
+
+        Root pom first, then every other pom of the project (poms under src/ are test data, skipped)."""
         root_rel = c.p("pom.xml")
         poms = [p for p in c.ws.pom_files()
                 if "/src/" not in f"/{p}" and (not c.base or p.startswith(c.base + "/")) and p != root_rel]
@@ -2968,7 +3426,10 @@ class Restructurer:
 
     def _all_poms_pass(self, c: _Ctx, *, java_fix: bool, boot_plugin_fix: bool = False,
                        only: set[str] | None = None) -> None:
-        """remove_when_present (+ java / boot plugin fixes) and optional bumps on every project pom, or only on the
+        """모든 프로젝트 pom(또는 ``only``)에: remove_when_present, (옵션) java 버전 / boot 플러그인 버전
+        정리, 선택 사내 아티팩트 버전 올림. 속성 주인은 어느 프로젝트 pom 이든 될 수 있어 전부 읽는다.
+
+        remove_when_present (+ java / boot plugin fixes) and optional bumps on every project pom, or only on the
         poms in `only` (property owners may still be any project pom)."""
         paths = self._project_poms(c)
         eds: dict[str, PomEditor] = {}
@@ -2991,6 +3452,9 @@ class Restructurer:
 
     # ================================================================== optional bump only (spring phase)
     def _optional_bump(self, c: _Ctx) -> None:
+        """mode ``optional_bump``: 선택 사내 아티팩트 버전 올림과 remove_when_present 만(이동·부모 변경
+        없음). ``params['target']`` 이 있으면 그 디렉토리 아래 pom 과 그 저장소 안 부모들만. v2 계획은 이
+        모드를 쓰지 않는다(다른 모드 안에서 함께 올림)."""
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
         c.base = posixpath.dirname(root_rel) if c.ws.exists(root_rel) else ""
         target = c.params.get("target")
@@ -3016,6 +3480,8 @@ class Restructurer:
         c.commit("spring: optional artifact bumps" + (f" ({target})" if only is not None else ""))
 
     def _fix_boot_plugin(self, c: _Ctx, ed: PomEditor) -> None:
+        """spring-boot-maven-plugin 버전: 사내 부모가 Boot 를 관리하면 버전을 지우고, 아니면 리터럴 버전을
+        대상 Boot 버전으로(``${...}`` 참조는 그대로)."""
         manages = c.cfg.artifacts.parent_manages_spring_boot
         for p in ed.find_plugins(*BOOT_PLUGIN, where="all"):
             v = ed.text_of(p, "version")
@@ -3025,7 +3491,13 @@ class Restructurer:
                 ed.set_child_text(p, "version", c.cfg.target.spring_boot_version)
 
     def _bump_optionals(self, c: _Ctx, eds: dict[str, PomEditor], editable: set[str] | None = None) -> None:
-        """Shared by every mode. `editable` restricts which poms' references are touched (None = all); property
+        """선택 사내 아티팩트 버전 올림(모든 모드 공통). 이미 선언된 참조만(의존성, dependencyManagement,
+        플러그인 의존성, annotationProcessorPaths) — 전이로만 들어오는 것은 추가하지 않는다(S6, 회사 규칙:
+        쓰는 것만 올린다). 1) 별칭 → 정식 좌표, 2) 버전: ``${prop}`` 이면 그 속성의 주인 pom 에서, 리터럴이면
+        그 자리(설정된 property_name 이 있으면 속성으로), 버전 없는 선언이면 ``<artifactId>.version`` 같은
+        관례 속성이 있을 때 그 속성. ``editable`` 은 고칠 pom 범위(None = 전부). 멱등.
+
+        Shared by every mode. `editable` restricts which poms' references are touched (None = all); property
         owners may be any pom in `eds`. Idempotent: an already bumped project produces no `optional_bumped` entry.
         Only declared references are bumped (dependencies, dependencyManagement, plugin dependencies,
         annotationProcessorPaths); an optional artifact that arrives only transitively is never added (S6)."""
@@ -3049,6 +3521,7 @@ class Restructurer:
                     return cand, eds[cand]
             return None
 
+        # floor(기본): as-is 가 더 새 버전이면 내리지 않는다 / pin: 설정 버전으로 정확히 맞춘다
         policy = getattr(c.cfg.artifacts, "optional_version_policy", "floor")
 
         def needs(cur: str | None, target: str) -> bool:
@@ -3079,6 +3552,7 @@ class Restructurer:
                 if prop:
                     own = owner_of(prop, p)
                     if own is not None:
+                        # 같은 속성을 여러 참조가 공유하면 한 번만 올리고 한 번만 기록한다
                         if (own[0], prop) in done_props:
                             continue
                         done_props.add((own[0], prop))
@@ -3102,6 +3576,8 @@ class Restructurer:
                         ed.set_ref_version(ref.element, spec.version)
                         record(spec.key, old, spec.version)
                 else:
+                    # 버전 없는 직접 의존성인데 프로젝트 안에서 관리되는 것: 관리하는
+                    # 쪽(dependencyManagement)에서 올린다
                     if ref.section == "dependencies" and ref.key in managed:
                         continue                       # bumped where it is managed
                     if ref.section == "dependencyManagement":
@@ -3125,7 +3601,13 @@ class Restructurer:
 
     # ================================================================== managed-version cleanup (round 9)
     def _drop_managed_versions(self, c: _Ctx) -> None:
-        """`layout.drop_managed_versions`: drop explicit `<dependencies>` versions the new parent chain manages.
+        """``layout.drop_managed_versions``: 새 부모 체인이 관리하는 버전을 <dependencies> 에서 지운다(gte =
+        관리 버전이 같거나 더 새 것일 때만, 비교 불가면 유지; any = 항상; off). ``params['effective_pom']``
+        (오케스트레이터가 넘기는 인자 없는 함수)가 지금 트리의 effective dependencyManagement 를 준다 — Maven
+        이 없어 None 이면 건너뛴다. 사내 부모·필수·선택·remove_when_present 아티팩트, 자기 모듈, system scope,
+        jar 가 아닌 type / classifier, dependencyManagement, 플러그인은 건드리지 않는다.
+
+        `layout.drop_managed_versions`: drop explicit `<dependencies>` versions the new parent chain manages.
 
         `params["effective_pom"]` is a zero-arg callable returning the effective dependency management of the tree
         *as it is now* (shape of `sbmig.build.effective.load_effective`) or None (Maven unavailable). The managed
@@ -3174,6 +3656,8 @@ class Restructurer:
                 mod = next((v for k, v in by_module.items() if aid and k.split(":")[-1] == aid), None)
             managed = (mod.get("managed") or {}) if isinstance(mod, dict) else merged_managed
             props: dict[str, str] = {}
+            # 버전 속성을 풀 때 조상 pom 의 속성부터 쌓고 자기
+            # pom 이 마지막에 덮는다(Maven 상속과 같은 우선순위)
             for q in reversed(self._chain(c, p)):          # top-most ancestor first, the pom itself wins
                 q_ed = eds.get(q)
                 if q_ed is None:
@@ -3192,6 +3676,7 @@ class Restructurer:
                 m = managed.get(g.key)
                 if explicit is None or not m:
                     continue
+                # gte: 관리 버전이 더 낮으면 지우지 않는다 — 지우면 버전이 내려가 쓰던 API 가 사라질 수 있다
                 if mode == "gte":
                     cmp = compare_versions(m, explicit)
                     if cmp is None:
@@ -3214,7 +3699,10 @@ class Restructurer:
 
     @staticmethod
     def _resolve_version(ed: PomEditor, version: str, props: dict[str, str]) -> str | None:
-        """Literal version, or `${prop}` resolved from the pom chain's properties (nested up to 5 levels); None when
+        """리터럴 버전, 또는 pom 체인 속성으로 푼 ``${prop}`` (5 단계 중첩까지); 못 풀면
+        None(그 의존성은 그대로 둔다).
+
+        Literal version, or `${prop}` resolved from the pom chain's properties (nested up to 5 levels); None when
         something stays unresolved."""
         builtins = {"project.version": ed.effective_version() or "", "project.groupId": ed.effective_group_id() or "",
                     "project.artifactId": ed.artifact_id() or ""}
@@ -3228,7 +3716,13 @@ class Restructurer:
 
     # ================================================================== Spring Boot as-is in place (round 9c)
     def _boot_pom(self, c: _Ctx) -> None:
-        """`boot_pom`: a Spring Boot as-is project keeps its directories; only the poms change. Root with
+        """mode ``boot_pom`` (라운드 9c, ``layout.boot_as_is: in-place``): Spring Boot as-is 프로젝트(이전
+        사내 도구로 옮긴 것 포함)는 회사 결정대로 디렉토리를 그대로 두고 pom 만 바꾼다. 루트 →
+        ``artifacts.parent`` (aggregator), boot 모듈(``profile.boot_modules``, 없으면 spring-boot-maven-plugin
+        이나 @SpringBootApplication 이 있는 모듈) → ``boot_parent``, 나머지 → ``comp_parent`` (역할 부모가
+        아니면 모듈은 루트를 계속 상속). 모듈 없는 단일 Boot 앱은 먼저 ``{name}-boot`` 로 감싼다. 멱등.
+
+        `boot_pom`: a Spring Boot as-is project keeps its directories; only the poms change. Root with
         `<modules>`: root → `artifacts.parent` (aggregator), the boot modules (`profile.boot_modules`, else modules
         whose pom has spring-boot-maven-plugin or that hold a @SpringBootApplication class) → `boot_parent`, every
         other module → `comp_parent` (without role parents the modules keep inheriting the root). A root that is the
@@ -3276,7 +3770,10 @@ class Restructurer:
         c.commit("restructure: boot_pom parents / mandatory / optional (directories kept)")
 
     def _boot_dirs(self, c: _Ctx, root: PomEditor) -> list[str]:
-        """Root-relative dirs of the boot modules: `profile.boot_modules` (analyzer: naming rule + pom), else
+        """boot 모듈 디렉토리: 분석의 ``profile.boot_modules`` (이름 규칙 + pom), 없으면 <build><plugins> 에
+        spring-boot-maven-plugin 이 있거나 src/main/java 에 @SpringBootApplication 이 있는 모듈.
+
+        Root-relative dirs of the boot modules: `profile.boot_modules` (analyzer: naming rule + pom), else
         every module pom with spring-boot-maven-plugin in `<build><plugins>` or a @SpringBootApplication class
         under its `src/main/java`."""
         if c.profile.boot_modules:
@@ -3301,7 +3798,12 @@ class Restructurer:
         return out
 
     def _boot_wrap(self, c: _Ctx, root: PomEditor, coords: GAV) -> None:
-        """Single-module Boot app: `src/**` (+ custom source roots, `lib/`) → `{name}-boot/`, whose pom is the as-is
+        """모듈 없는 단일 Boot 앱: ``src/**`` (+ 별도 소스 루트, ``lib/``)를 ``{name}-boot/`` 로 옮기고, 그
+        pom = as-is 루트 pom(의존성, build, profiles; artifactId ``<root>-boot``, groupId / version 명시,
+        패키징 유지)이 루트를 상속한다. 루트는 관리 항목(properties, dependencyManagement, pluginManagement,
+        repositories)만 남긴 aggregator. 부모 지정은 ``_boot_in_place`` 가 한다.
+
+        Single-module Boot app: `src/**` (+ custom source roots, `lib/`) → `{name}-boot/`, whose pom is the as-is
         root pom (dependencies, build, profiles; artifactId `<root>-boot`, explicit groupId / version, packaging
         kept) inheriting the root; the root keeps only its management (properties, dependencyManagement,
         pluginManagement, repositories) and becomes the aggregator. `_boot_in_place` then sets the parents."""
@@ -3348,7 +3850,11 @@ class Restructurer:
 
     def _boot_in_place(self, c: _Ctx, root: PomEditor, coords: GAV,
                        boot_dirs: list[str]) -> tuple[list[str], list[str]]:
-        """Parents / coordinates / mandatory / BOM / java of every module pom and the root (see `_boot_pom`).
+        """모든 모듈 pom 과 루트의 부모 / 좌표 / 필수 사내 아티팩트 / BOM / java 버전(``_boot_pom`` 참고).
+        저장소 안 pom 의 상속을 끊는 모듈(역할 부모)은 그 pom 들의 의존성·build 플러그인·관리 항목을
+        복사받는다. 처리한 (boot 모듈들, 나머지 모듈들)을 돌려준다.
+
+        Parents / coordinates / mandatory / BOM / java of every module pom and the root (see `_boot_pom`).
         A module that stops inheriting in-repo poms (role parents) gets their dependencies, build plugins and
         management. Returns (boot module dirs, other module dirs) that were processed."""
         A = c.cfg.artifacts
@@ -3375,6 +3881,8 @@ class Restructurer:
                 continue
             chain = self._chain(c, pom)
             is_boot = d in boot_dirs
+            # 루트가 아닌 저장소 안 중간 pom 을 상속하는 모듈은
+            # 건너뛴다: 그 중간 pom 자신이 처리되며 부모가 바뀐다
             if len(chain) > 1 and chain[1] != root_rel and not is_boot:
                 continue                     # inherits an in-repo intermediate pom, which is re-pointed itself
             if not role:
@@ -3424,6 +3932,8 @@ class Restructurer:
         if root.modules():
             root.set_packaging("pom")
         if role:
+            # 역할 부모: 모듈이 루트를 상속하지 않으므로 루트 의존성·관리 항목은 의미가 없다 — 필수 사내
+            # 아티팩트(루트에 두는 설정)만 남긴다
             keep = {s.key for s in A.mandatory} if in_root else set()
             for el in root.dependency_elements(False):
                 if root.gav_of(el).key not in keep:
@@ -3451,6 +3961,13 @@ class Restructurer:
 
     # ================================================================== MSA (pom only)
     def _msa(self, c: _Ctx) -> None:
+        """mode ``msa_pom``: MSA 는 디렉토리를 건드리지 않고 서비스 루트마다 pom 만(사내 부모, 필수 / 선택
+        사내 아티팩트, BOM, java 버전). 서비스 루트 → 역할 부모면 ``boot_parent`` (아니면
+        ``artifacts.parent``), 공유 라이브러리 루트(``params['library_roots']``, 분석의 library 서비스) →
+        ``comp_parent`` 이고 필수 사내 아티팩트는 넣지 않는다. 서비스가 저장소 안 pom 을 상속하면 그
+        꼭대기에서 부모를 바꾼다. ``msa_parent_policy: per-service-root`` + 역할 부모면 최상위 aggregator 가
+        ``artifacts.parent`` 를 받고, 그 아래 서비스 / 라이브러리 루트는 aggregator 에서 물려받던 것을
+        복사받는다. 끝으로 서비스마다 외부 설정 placeholder."""
         L = c.cfg.layout
         A = c.cfg.artifacts
         root_rel = c.profile.root_pom.path if c.profile.root_pom else "pom.xml"
@@ -3488,6 +4005,8 @@ class Restructurer:
                 agg = None
         below_agg: set[str] = set()
 
+        # 서비스 pom 에서 저장소 안 부모를 따라 올라가 부모를 바꿀 pom 을 고른다: aggregator 가 있으면 그 바로
+        # 아래에서 멈춘다(aggregator 는 따로 처리)
         def climb(t: str) -> str:
             chain = self._chain(c, t)
             if agg is not None and agg in chain and chain[0] != agg:
@@ -3572,7 +4091,10 @@ class Restructurer:
         c.commit("restructure: msa pom-only parent/mandatory/optional")
 
     def _msa_aggregator(self, c: _Ctx, agg: str) -> None:
-        """Round 9c (role parents): the MSA top aggregator → `artifacts.parent` (explicit coordinates,
+        """라운드 9c (역할 부모): MSA 최상위 aggregator → ``artifacts.parent`` (좌표 명시, <relativePath/>),
+        ``mandatory_target: root`` 면 필수 사내 아티팩트도 여기에.
+
+        Round 9c (role parents): the MSA top aggregator → `artifacts.parent` (explicit coordinates,
         `<relativePath/>`), the mandatory dependencies there too with `mandatory_target: root`."""
         A = c.cfg.artifacts
         ed = PomEditor(c.ws.abs(agg))
@@ -3593,7 +4115,11 @@ class Restructurer:
         c.save(ed)
 
     def _msa_placeholders(self, c: _Ctx, svc_entries: list[Any]) -> None:
-        """Each service root's src/main/resources gets the keys its own code reads (plus keys read only by shared
+        """서비스 루트마다 그 서비스 코드가 읽는 키(+ 어느 서비스에도 속하지 않는 공유 코드의 키)를
+        src/main/resources 에 placeholder 로; src/main/java 가 있는 서비스만. 서비스별 인벤토리가 있으면
+        서비스 이름으로, 없으면 참조 위치로 고른다.
+
+        Each service root's src/main/resources gets the keys its own code reads (plus keys read only by shared
         code outside every service); directories are created only for services with src/main/java. A per-service
         inventory (round 9, `PropertyFinding.service`) selects by service name, else by reference location."""
         dirs: list[str] = []
@@ -3617,11 +4143,16 @@ class Restructurer:
         self._placeholder_followup(c)
 
     def _climb(self, c: _Ctx, pom: str) -> str:
-        """Follow in-repo <parent> links upwards; returns the top-most in-repo pom of the chain."""
+        """저장소 안 <parent> 링크를 따라 올라간 최상위 pom.
+
+        Follow in-repo <parent> links upwards; returns the top-most in-repo pom of the chain."""
         return self._chain(c, pom)[-1]
 
     def _chain(self, c: _Ctx, pom: str) -> list[str]:
-        """[pom, its in-repo parent, …, top-most in-repo ancestor]."""
+        """[pom, 저장소 안 부모, ..., 최상위 저장소 안 조상]. 빈 <relativePath/>, 대상 pom 없음 / 프로젝트 밖,
+        artifactId 불일치면 멈춘다(20 단계까지, 순환 방지).
+
+        [pom, its in-repo parent, …, top-most in-repo ancestor]."""
         out = [pom]
         cur = pom
         for _ in range(20):

@@ -1,10 +1,19 @@
-"""report.md languages (`report.language: en | ko`). Dependency-free string table + helpers.
+"""report.md 의 언어(``report.language: en | ko``) — 의존성 없는 번역 문자열 표와 도우미 함수.
+흐름상 위치: markdown.py 가 report.md 를 그릴 때 ``tr`` / ``tr_line`` 으로 문장을 옮긴다(report.json 은 영어
+그대로). 핵심 진입점: ``tr``(영어 원문 = 표의 키, 없으면 영어로 fallback), ``tr_line``(인수인계 데이터 줄을
+``PATTERNS`` 정규식으로 통째 매칭해 번역), ``normalize``(언어 코드 정리). 주의: 키가 영어 원문이므로
+markdown.py / handover.py 의 영어 문장을 바꾸면 그 번역은 조용히 영어로 돌아간다 — 문장을 바꿀 때는 이 표의
+키도 같이 바꿔야 한다. 식별자·경로·Maven / javac 메시지·루프의 자유 문장은 번역하지 않는다.
+
+report.md languages (`report.language: en | ko`). Dependency-free string table + helpers.
 
 `tr(lang, text, **fmt)` — `text` is the English source string (it is also the table key, `{name}` placeholders
 filled by `str.format`); a missing translation falls back to the English text, so `en` output never changes.
 `tr_line(lang, line)` — lines the Handover builder stores in report.json (from-here items, merge-conflict lines,
 handover notes) stay English in the data; for `ko` the renderer maps the known templates through `PATTERNS`.
 Identifiers, paths, Maven / javac messages and free-text notes from the loop are never translated.
+
+
 """
 from __future__ import annotations
 
@@ -12,6 +21,7 @@ import re
 
 LANGUAGES = ("en", "ko")
 
+# 영어 원문 → 한국어. 키는 markdown.py 의 tr(...) 호출에 쓰인 영어 문자열과 글자 하나까지 같아야 한다
 STRINGS: dict[str, dict[str, str]] = {"ko": {
     # ---- section titles
     "Blocked — needs human / library action": "차단됨 — 사람 / 라이브러리 조치 필요",
@@ -366,6 +376,8 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "3. 2차: `sbmig synthesize-pom`이 `inventory.json`으로 pom을 작성한다(아직 없음).",
 }}
 
+# 인수인계 데이터 줄(report.json 에는 영어로 저장)을 한국어로. 정규식은 handover.py 가 만드는 영어 줄 전체와
+# 맞아야 한다 — handover.py 의 문장을 바꾸면 여기 패턴도 함께 바꿀 것(안 맞으면 영어 그대로 나간다)
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
@@ -424,13 +436,18 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
 
 
 def normalize(lang: object) -> str:
-    """A supported language code; anything else (None, typo) → "en"."""
+    """지원하는 언어 코드로 정리한다. 그 밖의 값(None, 오타)은 "en".
+
+    A supported language code; anything else (None, typo) → "en"."""
     s = str(lang or "en").strip().lower()
     return s if s in LANGUAGES else "en"
 
 
 def tr(lang: str, text: str, **fmt: object) -> str:
-    """Translation of `text` for `lang` (English fallback), formatted with `fmt` when given."""
+    """``text``(영어 원문)를 ``lang`` 으로 옮기고 ``fmt`` 가 있으면 ``str.format`` 으로 채운다.
+    번역이 없으면 영어 그대로 — 그래서 ``en`` 출력은 절대 바뀌지 않는다.
+
+    Translation of `text` for `lang` (English fallback), formatted with `fmt` when given."""
     s = text
     if lang != "en":
         s = STRINGS.get(lang, {}).get(text) or text
@@ -438,7 +455,10 @@ def tr(lang: str, text: str, **fmt: object) -> str:
 
 
 def tr_line(lang: str, line: str) -> str:
-    """A Handover data line (see `PATTERNS`) in `lang`; unchanged for `en` and for lines no pattern knows."""
+    """인수인계 데이터 줄 하나를 ``lang`` 으로(``PATTERNS`` 의
+    첫 매칭). ``en`` 이거나 아는 패턴이 없으면 그대로.
+
+    A Handover data line (see `PATTERNS`) in `lang`; unchanged for `en` and for lines no pattern knows."""
     if lang == "en":
         return line
     for rx, tmpl in PATTERNS.get(lang, []):

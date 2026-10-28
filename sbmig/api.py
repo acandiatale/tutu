@@ -1,10 +1,17 @@
-"""Programmatic entry point: run sbmig from your own code / agent framework (docs/ADAPTERS.md).
+"""프로그램용 진입점 — 사내 코드·에이전트 프레임워크에서 sbmig 를 부르는 migrate(...)(docs/ADAPTERS.md).
+`sbmig run` 과 같은 파이프라인(접수 → 분석 → 계획 → 변환 → 재구성 → 구조 검토 → 검증 빌드 → 수정 루프 →
+보고서)을 돈다. 불변조건 4: `sbmig.api.migrate(...)` 의 모양은 바꾸지 않는다(회사 쪽 통합이 이것에 의존).
+import 는 CLI 처럼 함수 안에서 늦게 하므로 `import sbmig.api` 는 가볍다.
+
+Programmatic entry point: run sbmig from your own code / agent framework (docs/ADAPTERS.md).
 
     from sbmig.api import migrate, exit_code
     report = migrate("path/to/project", configs=["config/artifacts.yml"], llm=MyGatewayAdapter())
     print(report.success, exit_code(report))
 
 Imports are lazy (like the CLI) so `import sbmig.api` is cheap.
+
+
 """
 from __future__ import annotations
 
@@ -15,6 +22,9 @@ if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.interfaces import KnowledgeBaseLike, LLMAdapterLike, LLMClientLike, ScriptFixerLike
     from sbmig.core.models import RunReport
 
+# `kb=False` / `--no-kb`: KB 를 읽지도 쓰지도 않는다(NullKnowledgeBase — 저장된 스크립트 재사용 없음, 기록
+# 없음). 실행 디렉토리의 errors.jsonl / errors.md 는 그래도
+# 쓴다. v2.1 설정에는 KB 스위치가 없어 덮어쓸 키도 없다.
 # `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed — the KB object is a
 # NullKnowledgeBase (no stored fix script is reused, nothing is recorded); the run's own errors.jsonl / errors.md are
 # still written to the run dir. v2.1 has no KB switches left in the config, so nothing is overridden.
@@ -23,6 +33,7 @@ _NO_KB_OVERRIDES = NO_KB_OVERRIDES          # the pre-round-10 name
 
 
 def _merge(base: dict, extra: Mapping) -> dict:
+    """dict 를 깊게 합친다(overrides 에 kb 덮어쓰기를 더할 때)."""
     out = dict(base)
     for k, v in extra.items():
         if isinstance(v, Mapping) and isinstance(out.get(k), dict):
@@ -47,7 +58,11 @@ def migrate(
     repo_root: Optional[Union[str, Path]] = None,
     components: Optional[Mapping[str, Any]] = None,
 ) -> "RunReport":
-    """Migrate one project (directory or zip) end to end — same pipeline as `sbmig run`.
+    """프로젝트 하나(디렉토리 또는 zip)를 끝까지 이관한다 — `sbmig run` 과 같은 파이프라인. llm 에 회사
+    게이트웨이 어댑터(LLMAdapterLike)나 클라이언트를, fixer 에 사내 수정기(propose_script)를 줄 수 있다.
+    RunReport 를 돌려주고 exit_code(report) 가 CLI 종료 코드(0 / 2 / 3)로 바꾼다.
+
+    Migrate one project (directory or zip) end to end — same pipeline as `sbmig run`.
 
     llm        an LLMClientLike (message-based) or an LLMAdapterLike (`complete(request)`, wrapped in
                AdapterClient automatically). None → built from config (`llm.provider`, incl. plugins).
@@ -89,7 +104,9 @@ def migrate(
 
 
 def exit_code(report: "RunReport") -> int:
-    """0 = final build green and nothing blocked, 2 = finished with blocked/unresolved errors, 3 = aborted."""
+    """RunReport → CLI 종료 코드: 0 = 최종 빌드 성공·차단 없음, 2 = 차단·미해결 오류가 남은 채 끝남, 3 = 중단.
+
+    0 = final build green and nothing blocked, 2 = finished with blocked/unresolved errors, 3 = aborted."""
     from sbmig.cli import run_exit_code
 
     return run_exit_code(report)

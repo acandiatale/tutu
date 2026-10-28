@@ -1,4 +1,13 @@
-"""Library advisories: EOL / no-longer-managed libraries (springfox, hystrix, sleuth, old Spring Cloud trains …).
+"""라이브러리 권고 — EOL / 더는 관리되지 않는 라이브러리 안내(springfox, hystrix, sleuth, 옛 Spring Cloud …).
+흐름상 위치: 분석 뒤 ``evaluate_advisories`` 가 이 프로젝트에 맞는 권고를 찾고, 수정 루프는 ``hints_for`` 로
+오류에 맞는 권고를 스크립트 프롬프트 힌트로 넣고, 마무리의 ``verify_advisories`` 가 최종 트리를 다시 훑어
+결과(replaced / still-present / unknown)를 정한다. 보고서 인수인계 섹션이 그 결과를 담당팀에 보여 준다.
+결정(사용자): 권고는 안내만 한다 — 레시피를 더하지 않고, 차단 정책("block")은 절대 없다. 500개 프로젝트가 모두
+완벽할 수는 없으므로 권고가 실행을 실패시키거나 종료 코드를 바꾸지 않는다. 권고 파일이 없거나 비어도 안전해야
+한다. 아래의 import 실패 대비(fallback) 정의는 패키지가
+반쯤 빠져도 오케스트레이터가 깨지지 않게 하려는 것이다.
+
+Library advisories: EOL / no-longer-managed libraries (springfox, hystrix, sleuth, old Spring Cloud trains …).
 
 Contract (PM, round 4; v2: guide-only) — the orchestrator, the planner, the report and the fleet depend on exactly
 these names:
@@ -23,6 +32,8 @@ missing advisories file (→ no findings).
 
 Implementation: sbmig/advisory/{catalog,evaluate,verify,cli}.py (agent A). This module re-exports them and keeps
 the import-safe fallbacks below so the orchestrator never breaks when the package is half-built.
+
+
 """
 from __future__ import annotations
 
@@ -40,6 +51,7 @@ try:
     from .evaluate import evaluate_advisories, followups_for
     from .verify import verify_advisories
 except ImportError as _e:  # pragma: no cover - until agent A lands the modules
+    # 하위 모듈을 못 읽으면 "권고 없음" 으로 동작하는 대체 정의 — 권고 때문에 실행이 멈추면 안 된다
     log.debug("sbmig.advisory not fully available yet: %s", _e)
 
     class AdvisoryCatalog:  # type: ignore[no-redef]

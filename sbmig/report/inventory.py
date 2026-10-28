@@ -1,7 +1,15 @@
-"""`sbmig inventory` outputs: inventory.md (en | ko via `report.language`) + inventory.json (language independent).
+"""``sbmig inventory`` 의 산출물 — inventory.md(``report.language`` 로 en | ko)와 inventory.json(언어 무관).
+흐름상 위치: 마이그레이션 실행과 무관한 읽기 전용 명령이다. pom 이 없는 트리(Tomcat 에 풀린 JSP + Java)는
+접수에서 거부되므로(회사 결정 2026-10-23), 담당팀에 보낼 거부 안내용으로 그 트리를 설명만 한다 — 아무것도
+바꾸지 않는다. 핵심 진입점: ``render_inventory``(markdown 본문), ``write_inventory``(두 파일 쓰기). 문장은
+모두 ``tr(lang, "…")`` 을 거친다(한국어 표는 i18n.py, 테스트가 누락을 잡는다).
+
+`sbmig inventory` outputs: inventory.md (en | ko via `report.language`) + inventory.json (language independent).
 
 Every text literal goes through `tr(lang, "…")` (Korean table in `i18n.py`, drift-tested); identifiers, paths,
 jar names, coordinates and the analyzer's notes / warnings stay as they are.
+
+
 """
 from __future__ import annotations
 
@@ -15,6 +23,7 @@ from .i18n import normalize, tr
 
 
 def _cell(s: object) -> str:
+    # markdown 표 칸 안의 "|" 와 줄바꿈은 표를 깨뜨리므로 이스케이프 / 공백으로 바꾼다
     return str(s).replace("|", "\\|").replace("\n", " ")
 
 
@@ -27,12 +36,15 @@ def _all_jars(inv: WebappInventory) -> list[JarInfo]:
 
 
 def _java_levels(inv: WebappInventory) -> str:
+    """WEB-INF/classes 의 class 파일에서 읽은 Java 수준들. "1.6" 과 "11" 이 섞여도 숫자 순으로 정렬한다."""
     levels = sorted({wr.java_version_from_classes for wr in inv.webapp_roots if wr.java_version_from_classes},
                     key=lambda v: int(v[2:]) if v.startswith("1.") else int(v))
     return ", ".join(levels) or "-"
 
 
 def render_inventory(inv: WebappInventory, language: str = "en") -> str:
+    """inventory.md 본문: 요약 표 → 경고 → 웹앱 루트별 표 → jar
+    목록 → 소스 루트 → Maven 모듈 제안 → 다음 할 일."""
     lang = normalize(language)
     jars = _all_jars(inv)
     active = [j for j in jars if not j.ignored]
@@ -153,7 +165,9 @@ def render_inventory(inv: WebappInventory, language: str = "en") -> str:
 
 def write_inventory(inv: WebappInventory, out_dir: str | Path, cfg=None, *,
                     language: Optional[str] = None) -> dict[str, str]:
-    """Write inventory.md + inventory.json into `out_dir`; returns (and stores in `inv.outputs`) their paths."""
+    """``out_dir`` 에 inventory.md 와 inventory.json 을 쓰고 두 경로를 돌려준다(``inv.outputs`` 에도 저장).
+
+    Write inventory.md + inventory.json into `out_dir`; returns (and stores in `inv.outputs`) their paths."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     lang = normalize(language if language is not None else getattr(getattr(cfg, "report", None), "language", "en"))

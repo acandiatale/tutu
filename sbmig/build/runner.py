@@ -1,4 +1,14 @@
-"""MavenRunner — implements ``BuildRunnerLike``: one real ``mvn`` run, full log captured, errors parsed."""
+"""Maven 빌드 한 번을 실제로 돌리고(전체 로그 저장) 실패면 로그를 파싱해 ``BuildResult`` 로
+돌려주는 실행기(``BuildRunnerLike``). 흐름상 위치: 변환 후 컴파일, 검증 빌드(``mvn clean package
+-Dmaven.test.skip=true``), 수정 루프의 매 라운드 재빌드, 마지막 최종 빌드가 모두 ``MavenRunner.run`` 이다.
+결과의 ``errors`` 가 오류 목록과 케이스(L2 서명)의 재료가
+된다. 핵심 진입점: ``MavenRunner.run`` / ``command``,
+``build_summary``(``BuildResult.summary``), ``negative_cache_hits``.
+지킬 것: 테스트는 항상 건너뛴다(``build.skip_test_compile: true`` → ``-Dmaven.test.skip=true``, 사용자 결정
+2026-10-22). 실패한 빌드도 예외가 아니라 결과다 — 빌드
+게이트(실행은 늘 마지막 빌드 결과로 끝난다)가 이것을 전제로 한다.
+
+MavenRunner — implements ``BuildRunnerLike``: one real ``mvn`` run, full log captured, errors parsed."""
 from __future__ import annotations
 
 import logging
@@ -28,6 +38,9 @@ SUMMARY_TAIL = 25
 
 __all__ = ["MavenRunner", "build_summary", "maven_available", "negative_cache_hits"]
 
+# Maven 은 실패한 다운로드를 로컬 저장소에 기억하고(``*.lastUpdated``) 갱신 주기(기본 하루)가 지나기 전에는
+# 다시 묻지 않는다 → Nexus 관리자가 아티팩트를 올린 뒤에도 같은 실패가 하루 동안 이어졌다(round 10). 그래서 이
+# 문구가 보이면 ``-U`` 로 한 번 더 돌린다(``MavenRunner.run``).
 # Maven remembers a failed download in the local repository (`*.lastUpdated` / `_remote.repositories`) and does not
 # ask the repository again until the update interval (default: daily) has passed. After a Nexus admin uploaded the
 # missing artifact, every re-run still failed the same way for a day (round 10). Maven 3.6–3.8 and 3.9 wordings:
@@ -42,7 +55,10 @@ _NEGATIVE_GAV_RE = re.compile(r"Failure to (?:find|transfer) (?P<a>" + _COORDS +
 
 
 def negative_cache_hits(text: str) -> list[str]:
-    """Coordinates (g:a[:type]:v as Maven printed them) whose resolution failed only because the failure was cached
+    """로컬 저장소에 '실패가 캐시돼서' 해결되지 않은 좌표들(Maven 이 찍은 g:a[:type]:v 그대로). 캐시 문구는
+    있는데 좌표를 못 읽으면 ["?"], 그런 줄이 없으면 [].
+
+    Coordinates (g:a[:type]:v as Maven printed them) whose resolution failed only because the failure was cached
     in the local repository. Empty when the log has no such line."""
     out: list[str] = []
     cached = False
@@ -58,7 +74,10 @@ def negative_cache_hits(text: str) -> list[str]:
 
 
 def build_summary(text: str, project_root: Path | str | None = None) -> str:
-    """All distinct meaningful ``[ERROR]`` lines (max 60) + the last 25 lines; project root stripped from paths."""
+    """빌드 로그 요약(``BuildResult.summary``): 서로 다른 의미 있는 ``[ERROR]`` 줄(최대 60) + 마지막 25줄.
+    프로젝트 루트 경로는 지운다(PC 마다 다른 절대경로를 남기지 않게).
+
+    All distinct meaningful ``[ERROR]`` lines (max 60) + the last 25 lines; project root stripped from paths."""
     seen: set[str] = set()
     errs: list[str] = []
     for line in text.splitlines():
@@ -77,7 +96,11 @@ def build_summary(text: str, project_root: Path | str | None = None) -> str:
 
 
 class MavenRunner:
-    """``MavenRunner(ws, cfg).run("test-compile")`` → ``BuildResult``. Never raises for a failed build."""
+    """``MavenRunner(ws, cfg).run(goal)`` → ``BuildResult``. 빌드가 실패해도 예외를 내지 않는다. 만들
+    때 사내 아티팩트의 groupId 를 '라이브러리 패키지' 로 등록해(``register_external_prefixes``) L1 서명에서
+    ``*`` 로 가려지지 않게 한다.
+
+    ``MavenRunner(ws, cfg).run("test-compile")`` → ``BuildResult``. Never raises for a failed build."""
 
     def __init__(self, ws: Workspace, cfg: Config, *, timeout_s: float | None = None):
         self.ws = ws
@@ -88,7 +111,11 @@ class MavenRunner:
     # ------------------------------------------------------------------ command
     def command(self, goal: str, *, extra_args: Iterable[str] = (), skip_test_compile: bool = False,
                 skip_tests: bool = False) -> list[str]:
-        """`skip_tests` (round 8 tests-skipped fallback) → `-DskipTests` even when `build.skip_tests` is off;
+        """mvn 명령 조립. ``build.skip_test_compile``(v2 기본 true) 또는 인자 →
+        ``-Dmaven.test.skip=true``(테스트 컴파일·실행 모두 안 함). 그렇지 않을 때만 ``build.skip_tests`` /
+        ``skip_tests`` → ``-DskipTests``. 두 플래그를 같이 붙이지 않는다.
+
+        `skip_tests` (round 8 tests-skipped fallback) → `-DskipTests` even when `build.skip_tests` is off;
         `skip_test_compile` wins (`-Dmaven.test.skip=true` already implies no test run), never both flags."""
         cmd = base_command(self.cfg) + goal.split() + list(extra_args)
         skip_test_compile = skip_test_compile or bool(getattr(self.cfg.build, "skip_test_compile", False))
@@ -109,13 +136,17 @@ class MavenRunner:
     # ------------------------------------------------------------------ run
     def run(self, goal: str, *, module: str | None = None, extra_args: Iterable[str] = (), label: str = "",
             skip_test_compile: bool = False, skip_tests: bool = False) -> BuildResult:
-        """One build. With `build.retry_negative_cache` (default on) a build that failed on a *cached* resolution
+        """빌드 한 번. ``build.retry_negative_cache``(기본 켬)이면 '캐시된 해결 실패' 때문에 실패한 빌드를
+        ``-U`` 로 한 번 더 돌려 두 번째 결과를 돌려준다.
+
+        One build. With `build.retry_negative_cache` (default on) a build that failed on a *cached* resolution
         failure is run once more with `-U` and the second result is returned."""
         extra_args = list(extra_args)
         result, text = self._run_once(goal, module=module, extra_args=extra_args, label=label,
                                       skip_test_compile=skip_test_compile, skip_tests=skip_tests)
         if result.ok or not self._may_force_update(result.command):
             return result
+        # 아티팩트마다 실행당 한 번만 -U: 정말 없는 아티팩트라면 이후 모든 빌드가 두 번씩 돌게 된다.
         # once per artifact and run: an artifact that is really missing would otherwise double every later build
         retried: set[str] = self.ws.__dict__.setdefault("_negative_cache_retried", set())
         hits = [h for h in negative_cache_hits(text) if h not in retried]
@@ -132,13 +163,18 @@ class MavenRunner:
         return retry
 
     def _may_force_update(self, cmd: list[str]) -> bool:
-        """-U only makes sense online and once: not offline (`-o`), not when the command already forces updates."""
+        """-U 는 온라인에서, 한 번만 의미가 있다: offline(-o)이거나 명령에 이미 -U 가 있으면 하지 않는다.
+
+        -U only makes sense online and once: not offline (`-o`), not when the command already forces updates."""
         if not getattr(self.cfg.build, "retry_negative_cache", True):
             return False
         return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd)
 
     def _run_once(self, goal: str, *, module: str | None, extra_args: list[str], label: str,
                   skip_test_compile: bool, skip_tests: bool) -> tuple[BuildResult, str]:
+        """실제 실행 한 번: 명령 조립 → ``run_logged`` → 성공 판정(exit 0 + 타임아웃 아님 + 로그에
+        'BUILD SUCCESS') → 실패면 로그 파싱. 타임아웃·시작 실패·'오류 없는 실패' 도 오류 하나로 만든다(실패한
+        빌드의 오류 목록은 비지 않는다). (결과, 로그 전문) 을 돌려준다."""
         cwd, file_args = self._cwd(module)
         cmd = self.command(goal, extra_args=[*file_args, *extra_args], skip_test_compile=skip_test_compile,
                            skip_tests=skip_tests)
@@ -146,6 +182,8 @@ class MavenRunner:
         log.info("mvn %s (cwd=%s)", " ".join(cmd[1:]), self.ws.rel(cwd) if cwd != self.ws.root else ".")
         pr = run_logged(cmd, cwd=cwd, env=mvn_env(self.cfg), log_path=log_path, timeout_s=self.timeout_s)
         text = pr.text
+        # exit 0 만으로는 성공이 아니다: 'BUILD SUCCESS' 문구까지 있어야
+        # 한다(JVM 이 죽거나 출력이 잘린 경우를 성공으로 오인하지 않게).
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in text
         errors: list[BuildError] = [] if ok else parse_maven_log(text, self.ws.root)
         if pr.timed_out:
@@ -155,6 +193,8 @@ class MavenRunner:
                 raw="\n".join(text.splitlines()[-40:]))))
         elif pr.error:
             errors = [fill_signatures(BuildError(kind=ErrorKind.UNKNOWN, message=pr.error, raw=pr.error))]
+        # 실패인데 파싱된 오류가 없으면 하나를 만든다: 오류 목록이
+        # 비면 수정 루프가 고칠 케이스가 없어 그냥 끝나 버린다.
         if not ok and not errors:                         # e.g. exit≠0 after "BUILD SUCCESS", or a crashed JVM
             errors = [fill_signatures(BuildError(
                 kind=ErrorKind.UNKNOWN, module=module,

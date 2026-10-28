@@ -1,4 +1,12 @@
-"""Reading the structure-review answer (v2.1): `<review>{json}</review>` with the verdict and the issues, plus the
+"""구조 검토 LLM 답변 읽기(v2.1): `<review>{json}</review>` 의 판정(verdict)·이슈 목록, 그리고 수정 답변 —
+`<analysis>` 원인, `<solution>` 해결 방법, `<edits>` 편집 목록(각 `desc` 포함), `<changes>` 변경 설명, 선택
+`<script>` / `<no_script>`, v2.1d `<verify>` 운영자 확인 사항. 흐름상 위치: StructureReviewer 가 LLM 답을 받을
+때마다(`_ask`, `_apply_retry`) 부른다. 핵심: parse_review_answer → ParsedReview, to_issue, extract_script,
+changes_note. 지킬 것: 일부러 관대하게 읽는다(코드 펜스, 뒤따르는 설명, 끝 쉼표, 태그 없는 JSON, 객체 하나뿐인
+issues, 모르는 severity → warning). 수정 블록은 `sbmig.fix.script_protocol` 이 수정 루프와 같은 규칙으로
+읽는다. 읽을 리뷰 JSON 이 없으면 `ok=False` → 검토기가 한 번 더 묻는다.
+
+Reading the structure-review answer (v2.1): `<review>{json}</review>` with the verdict and the issues, plus the
 fix answer of docs/v2/PLAN-v2.1.md §3.6 — `<analysis>` 원인, `<solution>` 해결 방법, `<edits>` (JSON list of `Edit`, the
 reviewer applies them; each with its `desc`), `<changes>` (what the fix modifies where, v2.1b) and an optional
 `<script>` (or `<no_script>`). A v2 answer (`<review>` + `<script>`) parses as before (edits [], changes []).
@@ -9,6 +17,8 @@ the `<review>` tags; `issues` may be a single object instead of a list; unknown 
 blocks are read by `sbmig.fix.script_protocol` (same repair of the edits JSON, same script extraction). Nothing
 readable → `ParsedReview(ok=False, error=…)` and the reviewer asks once more (then verdict `failed`); readable review
 JSON with unreadable edits → `ok=True`, `edits_problem` set.
+
+
 """
 from __future__ import annotations
 
@@ -41,6 +51,8 @@ _HINT_KEYS = ("fix_hint", "fix", "hint", "suggestion", "recommendation")
 
 @dataclass
 class ParsedReview:
+    """구조 검토 답변 하나를 읽은 결과: 판정·이슈·요약 + 수정 답변(원인·해결·편집·변경 설명·스크립트·운영자
+    확인)과 읽다가 생긴 문제(`edits_problem` 등). `ok` 가 False 면 읽을 수 있는 리뷰 JSON 이 없었다."""
     ok: bool = False
     verdict: str = "ok"                         # ok | issues (only meaningful when ok)
     issues: list[ReviewIssue] = field(default_factory=list)
@@ -61,6 +73,7 @@ class ParsedReview:
 
     @property
     def critical(self) -> list[ReviewIssue]:
+        """severity 가 critical 인 이슈만(검토는 이것만 고친다)."""
         return [i for i in self.issues if i.severity == "critical"]
 
 
@@ -70,7 +83,9 @@ def _cap(text: Any, limit: int) -> str:
 
 
 def strip_fences(code: str) -> str:
-    """The body of a ```python … ``` fence (or the text as it is)."""
+    """```python … ``` 펜스 안의 본문(펜스가 없으면 텍스트 그대로).
+
+    The body of a ```python … ``` fence (or the text as it is)."""
     s = code.strip("\n")
     m = _FENCE_RE.search(s)
     if m and s.lstrip().startswith("```"):
@@ -79,7 +94,9 @@ def strip_fences(code: str) -> str:
 
 
 def extract_script(text: str) -> tuple[str, str]:
-    """(script, text without the script block). A script is kept only when it defines `fix`."""
+    """(스크립트, 스크립트 블록을 뺀 나머지 텍스트). `def fix` 가 정의된 스크립트만 남긴다.
+
+    (script, text without the script block). A script is kept only when it defines `fix`."""
     m = _SCRIPT_RE.search(text or "")
     if not m:
         return "", text or ""
@@ -95,7 +112,10 @@ def _json_candidates(text: str) -> list[str]:
 
 
 def _decode(s: str) -> Optional[Any]:
-    """The first JSON object (or array) in `s` that looks like a review; trailing text / commas tolerated."""
+    """리뷰처럼 보이는 첫 JSON: 통째로 → 끝 쉼표 제거 → 글자 위치마다 raw_decode 해서 verdict / issues 키가
+    있는 객체를 먼저, 없으면 이슈처럼 생긴 첫 객체나 객체 배열.
+
+    The first JSON object (or array) in `s` that looks like a review; trailing text / commas tolerated."""
     s = s.strip()
     if not s:
         return None
@@ -134,6 +154,8 @@ def _pick(d: dict, keys: tuple[str, ...]) -> str:
 
 
 def to_issue(item: Any, warnings: list[str]) -> Optional[ReviewIssue]:
+    """이슈 한 항목(dict 또는 문자열)을 ReviewIssue 로. severity 는 critical 이 아니면 모두 warning(모르는
+    값은 `warnings` 에 기록), 문제 문장이 없으면 버린다(None). 파일 경로의 역슬래시는 `/` 로."""
     if isinstance(item, str):
         return ReviewIssue(severity="warning", problem=_cap(item, PROBLEM_CHARS)) if item.strip() else None
     if not isinstance(item, dict):
@@ -150,7 +172,10 @@ def to_issue(item: Any, warnings: list[str]) -> Optional[ReviewIssue]:
 
 
 def _fix_blocks(text: str, out: ParsedReview) -> None:
-    """The four-part fix answer outside the <review> block (sbmig.fix.script_protocol)."""
+    """`<review>` 밖의 수정 답변을 `sbmig.fix.script_protocol.parse_script_response` 로 읽어 `out` 에 옮긴다.
+    태그된 블록이 하나도 없으면 아무것도 가져오지 않는다(`<verify>` 만은 보관).
+
+    The four-part fix answer outside the <review> block (sbmig.fix.script_protocol)."""
     from sbmig.fix.script_protocol import PROTOCOL_WARNING, parse_script_response
 
     fx = parse_script_response(text)
@@ -171,7 +196,11 @@ def _fix_blocks(text: str, out: ParsedReview) -> None:
 
 
 def parse_review_answer(text: str) -> ParsedReview:
-    """`ParsedReview` of one LLM answer (see the module docstring)."""
+    """LLM 답변 하나 → ParsedReview. `<review>` 블록(없으면 수정 블록을 지운 나머지)에서 JSON 을 찾고, 수정
+    블록은 따로 읽는다. 이슈가 MAX_ISSUES 를 넘으면 critical 을
+    남기고 자른다. JSON 안에 든 script / edits / changes 도 받아 준다.
+
+    `ParsedReview` of one LLM answer (see the module docstring)."""
     text = text or ""
     out = ParsedReview(raw=text)
     m = _REVIEW_RE.search(text)
@@ -210,6 +239,7 @@ def parse_review_answer(text: str) -> ParsedReview:
     verdict = str(obj.get("verdict") or "").strip().lower()
     if verdict not in ("ok", "issues", ""):
         out.warnings.append(f"unknown verdict {verdict!r}")
+    # 판정은 이슈 목록이 정한다: LLM 이 ok 라고 해도 이슈가 하나라도 있으면 issues
     if verdict == "ok" and out.issues:
         out.warnings.append("verdict ok with issues listed → issues")
     out.verdict = "issues" if out.issues else "ok"
@@ -241,7 +271,10 @@ def parse_review_answer(text: str) -> ParsedReview:
 
 
 def changes_note(parsed: ParsedReview) -> str:
-    """The `[sbmig]` note for a review answer with a script but no `<changes>` list ("" = described / no script)."""
+    """스크립트는 있는데 `<changes>` 목록이 없는 리뷰 답변에
+    붙일 `[sbmig]` 메모(설명이 있거나 스크립트가 없으면 "").
+
+    The `[sbmig]` note for a review answer with a script but no `<changes>` list ("" = described / no script)."""
     from sbmig.fix.script_protocol import CHANGES_MISSING
 
     if not parsed.script or parsed.changes_described:

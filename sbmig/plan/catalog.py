@@ -1,9 +1,20 @@
-"""Recipe catalog (`knowledge/recipes/catalog.yml`) — the single managed list of known recipe ids.
+"""레시피 카탈로그(``knowledge/recipes/catalog.yml``) — 알려진
+레시피 id 의 유일한 관리 목록(CLAUDE.md 불변조건 5). 흐름상 위치: 계획기가 레시피 jar(artifact)와 LLM 계획
+조언자의 화이트리스트·포함 관계·게이트를 여기서 얻고, ``sbmig recipes …`` 가 읽는다. ``check()`` 는 설정의
+레시피 세트(``openrewrite.recipes.*``)·레시피 아티팩트와 어긋남을 찾는다 — 회사 설정이 빈 세트를 다시 채우면
+카탈로그 항목의 ``sets:`` 에도 그 id 를 적어야 통과한다. v2 는 OpenRewrite 레시피만
+돌린다(프로젝트·라이브러리·KB 레시피 없음). 레시피 BOM 은 3.37.0 고정 (3.38.0 은 Maven Central 에서 어긋남,
+``openrewrite.recipe_bom_version``) → rewrite-spring 6.37.0. 카탈로그 파일이 없거나 깨지면 내장 최소
+카탈로그(``_BUILTIN``)로 대신한다(경고 로그).
+
+Recipe catalog (`knowledge/recipes/catalog.yml`) — the single managed list of known recipe ids.
 
 The planner derives the LLM advisor whitelist / coverage / gates from it and `sbmig recipes …` reads it. It
 describes (and `check()` cross-validates) the config recipe sets (`openrewrite.recipes.*`) and the configured recipe
 artifacts. v2 runs OpenRewrite recipes only: no project recipes, no library recipes, no KB recipes. See
 docs/RECIPES.md.
+
+
 """
 from __future__ import annotations
 
@@ -34,12 +45,15 @@ PREFIX_ARTIFACTS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # named gates (profile facts an advisor suggestion must be backed by)
 # ---------------------------------------------------------------------------
+# 게이트 = 조언자가 레시피를 더하려면 프로필이 뒷받침해야 하는
+# 사실(작은 모델이 "혹시 몰라" 레시피를 권하는 것을 막는다)
 _ADVISOR_EE = ("javax.servlet", "javax.persistence", "javax.validation", "javax.annotation", "javax.inject",
                "javax.transaction", "javax.ws", "javax.jms", "javax.mail", "javax.websocket", "javax.el",
                "javax.xml.bind")
 
 
 def _has_javax_ee(profile: ProjectProfile) -> bool:
+    """소스가 Java EE javax 패키지를 import 하는가(게이트 ``has_javax_ee``)."""
     return any(k.startswith(_ADVISOR_EE) for k in profile.source.javax_imports)
 
 
@@ -73,6 +87,8 @@ GATES: dict[str, Callable[[ProjectProfile], bool]] = {
 # model
 # ---------------------------------------------------------------------------
 class CatalogEntry(BaseModel):
+    """카탈로그 항목 하나: 레시피 id, 출처(v2 는 openrewrite 만), jar(artifact / provided_by), 단계, 설명,
+    포함하는 레시피(covers), 게이트, 조언자 허용 여부, 속한 설정 세트(sets), 검증 메모."""
     id: str
     origin: str = "openrewrite"                # v2 knows OpenRewrite recipes only (`check` flags anything else)
     artifact: Optional[str] = None
@@ -92,7 +108,9 @@ _RECIPE_SET_NAMES = ("jdk21", "jakarta", "spring_boot_4", "spring_framework_7", 
 
 
 def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:
-    """set name → ids, as configured (`extra.<case>` sets appear as `extra.<case>`)."""
+    """설정에 적힌 레시피 세트 이름 → id 목록(``extra.<case>`` 도 그 이름으로).
+
+    set name → ids, as configured (`extra.<case>` sets appear as `extra.<case>`)."""
     rs = cfg.openrewrite.recipes
     out = {name: list(getattr(rs, name)) for name in _RECIPE_SET_NAMES}
     for case, ids in (rs.extra or {}).items():
@@ -101,7 +119,9 @@ def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:
 
 
 class RecipeCatalog:
-    """In-memory view of the catalog file (entries in file order)."""
+    """카탈로그 파일의 메모리 보기(파일 순서 유지). 같은 경로·수정 시각이면 캐시를 쓴다.
+
+    In-memory view of the catalog file (entries in file order)."""
 
     def __init__(self, entries: list[CatalogEntry], path: Optional[Path] = None, version: int = 1):
         self.entries = list(entries)
@@ -114,6 +134,7 @@ class RecipeCatalog:
 
     @classmethod
     def from_dict(cls, data: dict, path: Optional[Path] = None) -> "RecipeCatalog":
+        """dict 에서 카탈로그를 만든다. 중복 id 는 ValueError — id 가 둘이면 어느 쪽을 믿을지 알 수 없다."""
         entries = [CatalogEntry.model_validate(r) for r in (data.get("recipes") or [])]
         seen: set[str] = set()
         for e in entries:
@@ -124,6 +145,7 @@ class RecipeCatalog:
 
     @classmethod
     def load(cls, path: str | Path) -> "RecipeCatalog":
+        """파일을 읽는다((경로, 수정 시각) 캐시 — 파일이 바뀌면 다시 읽고 예전 캐시는 버린다)."""
         p = Path(path).resolve()
         key = (str(p), p.stat().st_mtime)
         hit = cls._cache.get(key)
@@ -137,9 +159,11 @@ class RecipeCatalog:
 
     # ---- lookups -------------------------------------------------------
     def get(self, recipe_id: str) -> Optional[CatalogEntry]:
+        """id 로 항목 하나(없으면 None)."""
         return self._by_id.get(recipe_id)
 
     def ids(self) -> list[str]:
+        """id 목록(파일 순서)."""
         return [e.id for e in self.entries]
 
     def __contains__(self, recipe_id: object) -> bool:
@@ -149,12 +173,15 @@ class RecipeCatalog:
         return len(self.entries)
 
     def advisor_catalog(self) -> dict[str, str]:
+        """LLM 계획 조언자가 더할 수 있는 레시피(id → 설명)."""
         return {e.id: e.description for e in self.entries if e.advisor}
 
     def coverage(self) -> dict[str, list[str]]:
+        """묶음 레시피 → 그것이 이미 포함하는 레시피들(조언자가 중복을 권하지 않게)."""
         return {e.id: list(e.covers) for e in self.entries if e.covers}
 
     def gates(self) -> dict[str, Callable[[ProjectProfile], bool]]:
+        """레시피 id → 게이트 함수. 모르는 게이트 이름은 경고 후 "항상 허용" 으로 친다."""
         out: dict[str, Callable[[ProjectProfile], bool]] = {}
         for e in self.entries:
             if e.gate is None:
@@ -167,14 +194,18 @@ class RecipeCatalog:
         return out
 
     def artifact_for(self, recipe_id: str) -> Optional[str]:
-        """Catalog first, then the prefix fallback (None for core / unknown recipes)."""
+        """레시피의 jar: 카탈로그 먼저, 없으면 id 접두어로 추정(core / 모르는 레시피는 None).
+
+        Catalog first, then the prefix fallback (None for core / unknown recipes)."""
         e = self._by_id.get(recipe_id)
         if e is not None:
             return e.artifact
         return prefix_artifact(recipe_id)
 
     def covered_by(self, planned_ids: set[str] | list[str]) -> dict[str, str]:
-        """recipe id → the planned composite that already includes it."""
+        """레시피 id → 그것을 이미 포함하는 계획된 묶음 레시피.
+
+        recipe id → the planned composite that already includes it."""
         planned = set(planned_ids)
         out: dict[str, str] = {}
         for comp, inner in self.coverage().items():
@@ -185,7 +216,11 @@ class RecipeCatalog:
 
     # ---- validation ----------------------------------------------------
     def check(self, cfg: Config) -> list[str]:
-        """Problems between the catalog, the config recipe sets and the recipe artifacts ([] = consistent)."""
+        """``sbmig recipes check`` 의 오프라인 검사: 카탈로그 ↔ 설정 레시피 세트 ↔ 레시피 아티팩트의 어긋남.
+        세트의 id 가 카탈로그에 없음 / 카탈로그 ``sets:`` 와 설정이 다름 / 모르는 게이트·covers / openrewrite
+        가 아닌 출처 / 설정에 없는 jar. [] 이면 일관됨. 실제 jar 확인은 ``--jars``(jarcheck.py).
+
+        Problems between the catalog, the config recipe sets and the recipe artifacts ([] = consistent)."""
         problems: list[str] = []
         sets = config_recipe_sets(cfg)
         artifacts = set(cfg.openrewrite.recipe_artifacts)
@@ -216,10 +251,12 @@ class RecipeCatalog:
 
     # ---- listing -------------------------------------------------------
     def rows(self) -> list[dict[str, Any]]:
+        """출력용 dict 목록(``sbmig recipes list``)."""
         return [e.model_dump() for e in self.entries]
 
 
 def prefix_artifact(recipe_id: str) -> Optional[str]:
+    """카탈로그에 없는 id 의 jar 를 접두어로 추정(가장 긴 접두어가 이김). 못 찾으면 None."""
     best, best_len = None, -1
     for prefix, art in PREFIX_ARTIFACTS.items():
         if recipe_id.startswith(prefix) and len(prefix) > best_len:
@@ -228,6 +265,8 @@ def prefix_artifact(recipe_id: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# 내장 대체 카탈로그: 파일이 없거나 못 읽을 때만 쓴다. 정식
+# 목록은 catalog.yml 이다(여기를 고쳐 id 를 늘리지 말 것)
 # built-in fallback (used only when the catalog file is missing / unreadable)
 # ---------------------------------------------------------------------------
 _MIGRATE = "org.openrewrite.recipe:rewrite-migrate-java"
@@ -289,11 +328,15 @@ _BUILTIN: list[dict[str, Any]] = [
 
 
 def builtin_catalog() -> RecipeCatalog:
+    """내장 최소 카탈로그."""
     return RecipeCatalog.from_dict({"version": 1, "recipes": _BUILTIN})
 
 
 def default_catalog(cfg: Optional[Config] = None) -> RecipeCatalog:
-    """`cfg.recipe_catalog_file` (or the repo's catalog); built-in fallback + warning if missing. Never raises."""
+    """설정의 카탈로그 파일(없으면 레포의 catalog.yml)을 읽는다. 없거나 깨지면 경고 후 내장 카탈로그.
+    예외를 내지 않는다 — 카탈로그 문제로 계획 단계가 멈추면 안 된다.
+
+    `cfg.recipe_catalog_file` (or the repo's catalog); built-in fallback + warning if missing. Never raises."""
     path = cfg.recipe_catalog_file if cfg is not None else DEFAULT_CATALOG_PATH
     try:
         return RecipeCatalog.load(path)

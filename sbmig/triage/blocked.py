@@ -1,4 +1,13 @@
-"""Blocked-cluster classification (docs/ERROR-HANDLING.md §1, X1–X6).
+"""차단 판정 — 이 빌드 오류가 프로젝트 안에서는 고칠 수 없는 것인지 분류한다(ERROR-HANDLING §1, X1–X6).
+흐름상 위치: ``DecisionEngine.decide`` 의 2단계에서 ``classify_blocked`` 를 부른다. 분류만 하고, 그 이유에 LLM
+시도를 몇 번 줄지는 ``cfg.loop.blocked_policy`` 가 정한다. 차단된 케이스는 인수인계의 Blocked 로 간다. X1
+의존성 API 가 아직 javax 타입 / X2 의존성 API 변경 / X3·X4 아티팩트·parent 가 저장소에 없음 / X5 JDK 21 에서
+깨지는 플러그인 / X6 Java 가 아닌 소스(Kotlin·Groovy·Scala, 코드 생성 플러그인). 일부러 보수적이다: 애매하면
+차단하지 않는다(스크립트에 기회를 준다). javax 패키지 없음 / javax 심볼 없음은 jakarta 레시피나 스크립트
+몫이고, 프로젝트가 아직 그 javax 를 import 하거나 소유 클래스가 프로젝트 것이면 X1 이 아니다. 주의: 이것은
+"빌드 오류" 의 차단이다. EOL 라이브러리 권고에는 차단 정책이 없다(권고는 안내만, CLAUDE.md).
+
+Blocked-cluster classification (docs/ERROR-HANDLING.md §1, X1–X6).
 
 A cluster is *blocked* when the fix is not inside this project: a dependency still exposes ``javax.*`` types in its
 API (X1), a dependency API changed (X2), an artifact / parent is not in any repository (X3/X4), a build plugin is
@@ -9,6 +18,8 @@ The rules are deliberately conservative: when in doubt the cluster is **not** bl
 their chance). In particular a missing ``javax.*`` package or a ``cannot find symbol`` of a ``javax`` class is the
 jakarta recipe's (or a fix script's) job, never a blocker, and an X1 match is discarded when the project itself still imports the javax
 package (the migration did not finish → fixable here) or the owner class is a project class.
+
+
 """
 from __future__ import annotations
 
@@ -58,6 +69,8 @@ GENERATOR_PLUGINS = ("protobuf-maven-plugin", "jaxb2-maven-plugin", "maven-jaxb2
                      "kotlin-maven-plugin", "gmavenplus-plugin", "groovy-maven-plugin", "scala-maven-plugin")
 _FOREIGN_SOURCE_RE = re.compile(r"\.(?:kt|kts|groovy|scala)\b")
 
+# 마이그레이션 "대상" API(JDK, javax/jakarta, Spring, Hibernate, Jackson …): 이들의 API 변경은 레시피·LLM 이
+# 고칠 일이지 외부 라이브러리 탓(X2)이 아니다
 # API owners that are migration *targets*: their API changes are what recipes/LLM are for (never X2)
 MIGRATION_TARGET_PREFIXES = (
     "java.", "javax.", "jakarta.", "jdk.", "sun.", "com.sun.", "org.springframework.", "org.hibernate.",
@@ -70,6 +83,8 @@ MIGRATION_TARGET_PREFIXES = (
 
 @dataclass
 class BlockedCandidate:
+    """차단 판정 결과: 이유, 필요 / 실제 타입, 소유 클래스, 근거, 이 판정이 덮는 오류(클러스터의 일부일 수
+    있음), 저장소 URL(X3/X4), 플러그인(X5/X6), 사람이 고정한 케이스면 그 ID 와 제안 문장."""
     reason: BlockReason
     required_type: Optional[str] = None
     found_type: Optional[str] = None
@@ -84,7 +99,9 @@ class BlockedCandidate:
     suggestion: str = ""
 
     def detail(self) -> str:
-        """One-line 'why' used in decision rationales (`blocked: <reason> — <detail>`)."""
+        """결정 근거에 쓰는 한 줄 "왜" (``blocked: <이유> — <설명>`` 의 설명 부분).
+
+        One-line 'why' used in decision rationales (`blocked: <reason> — <detail>`)."""
         r = self.reason
         if self.case_id:
             return self.evidence[0] if self.evidence else f"pinned by case {self.case_id}"
@@ -110,6 +127,7 @@ class BlockedCandidate:
 # helpers
 # ---------------------------------------------------------------------------------------------------------------------
 def _strip_generics(t: str) -> str:
+    """타입 이름에서 ``<…>`` 제네릭 부분을 뺀다(중첩 포함)."""
     out, depth = [], 0
     for ch in t:
         if ch == "<":
@@ -122,6 +140,7 @@ def _strip_generics(t: str) -> str:
 
 
 def _text(e: BuildError) -> str:
+    """판정에 쓰는 오류 전체 글: 메시지 + 원문 + symbol / location 줄."""
     return "\n".join(x for x in (e.message, e.raw, e.symbol and f"symbol: {e.symbol}",
                                  e.location and f"location: {e.location}") if x)
 
@@ -145,7 +164,10 @@ def _owner_from_member(member: str) -> str:
 
 
 def extract_owner(e: BuildError) -> Optional[str]:
-    """Owner class of the API a javac error is about (``in class X`` / ``location: class X`` / ``… in X``)."""
+    """javac 오류가 말하는 API 의 소유 클래스(``in class X``
+    / ``location: class X`` / ``… in X``). 못 찾으면 None.
+
+    Owner class of the API a javac error is about (``in class X`` / ``location: class X`` / ``… in X``)."""
     text = _text(e)
     m = _APPLIED_RE.search(text)
     if m:
@@ -172,7 +194,10 @@ _CACHE: dict[tuple, object] = {}
 
 
 def _cache_key(ws, what: str) -> Optional[tuple]:
-    """(root, HEAD, what) — the project tree only changes through commits inside the loop; None = do not cache."""
+    """캐시 키 (루트, HEAD, 무엇). 루프 안에서 트리는 커밋으로만 바뀌므로 HEAD 가 같으면 소스 색인을 다시 만들
+    필요가 없다. HEAD 를 못 읽으면 None(캐시 안 함).
+
+    (root, HEAD, what) — the project tree only changes through commits inside the loop; None = do not cache."""
     try:
         return (str(ws.root), ws.head(), what)
     except Exception:
@@ -180,6 +205,7 @@ def _cache_key(ws, what: str) -> Optional[tuple]:
 
 
 def _cached(ws, what: str, fn):
+    """HEAD 기준 캐시(256개 넘으면 통째로 비움)."""
     key = _cache_key(ws, what)
     if key is None:
         return fn()
@@ -195,7 +221,9 @@ def _source_index(ws) -> tuple[set[str], set[str]]:
 
 
 def _build_source_index(ws) -> tuple[set[str], set[str]]:
-    """(class paths 'com/acme/Foo', package dirs 'com/acme') of the project's Java sources."""
+    """프로젝트 Java 소스의 (클래스 경로 ``com/acme/Foo`` 집합, 패키지 디렉토리 ``com/acme`` 집합).
+
+    (class paths 'com/acme/Foo', package dirs 'com/acme') of the project's Java sources."""
     classes: set[str] = set()
     pkgs: set[str] = set()
     try:
@@ -213,7 +241,11 @@ def _build_source_index(ws) -> tuple[set[str], set[str]]:
 
 
 def is_project_class(ws, profile: Optional[ProjectProfile], fqcn: Optional[str]) -> bool:
-    """True when `fqcn` (or its outer class) is declared by this project's sources.
+    """``fqcn``(또는 그 바깥 클래스)이 이 프로젝트 소스에 선언돼 있는가. 작업 공간이 있으면 소스 트리로,
+    없으면 프로필의 패키지 목록 / base_package 로 판단한다.
+    프로젝트 클래스면 고칠 수 있으므로 차단하지 않는다.
+
+    True when `fqcn` (or its outer class) is declared by this project's sources.
 
     With a workspace the source tree decides (``…/java/com/acme/Foo.java``); without one we fall back to the profile:
     the class' package is one of ``profile.source.packages`` or under ``profile.source.base_package``."""
@@ -244,7 +276,9 @@ def is_project_class(ws, profile: Optional[ProjectProfile], fqcn: Optional[str])
 
 
 def _is_own_file(e: BuildError, fqcn: str) -> bool:
-    """The owner is the class declared by the very file the error is in (… /com/acme/Foo.java ↔ com.acme.Foo[.Inner])."""
+    """소유 클래스가 바로 그 오류가 난 파일의 클래스인가(``…/com/acme/Foo.java`` ↔ ``com.acme.Foo[.Inner]``).
+
+    The owner is the class declared by the very file the error is in (… /com/acme/Foo.java ↔ com.acme.Foo[.Inner])."""
     if not e.file:
         return False
     f = e.file.replace("\\", "/")
@@ -256,7 +290,10 @@ def _is_own_file(e: BuildError, fqcn: str) -> bool:
 
 
 def project_imports_package(ws, package: str) -> bool:
-    """True if any project Java file still imports from `package` (e.g. 'javax.servlet')."""
+    """프로젝트 Java 파일 중 아직 ``package``(예 ``javax.servlet``)를 import 하는 것이 있는가 — 있으면
+    마이그레이션이 덜 끝난 것이라 프로젝트 안에서 고칠 수 있다.
+
+    True if any project Java file still imports from `package` (e.g. 'javax.servlet')."""
     if ws is None or not package:
         return False
     return bool(_cached(ws, f"imports:{package}", lambda: _scan_imports(ws, package)))
@@ -282,6 +319,8 @@ def _is_target_api(fqcn: str) -> bool:
 
 
 def repositories_in(text: str) -> list[str]:
+    """오류 글에 나온 저장소들(``id (url)``, 없으면 맨 URL) —
+    어느 Nexus 에서 못 찾았는지 Blocked 표에 보여 준다."""
     out: list[str] = []
     for m in _REPO_RE.finditer(text or ""):
         u = f"{m.group('id')} ({m.group('url')})"
@@ -311,6 +350,8 @@ def _first_ee(v: str) -> Optional[str]:
 
 
 def _javax_hit(e: BuildError) -> Optional[_JavaxHit]:
+    """X1 후보 찾기: (e) 라이브러리 시그니처의 javax 클래스 파일 없음, (a) javax ↔ jakarta 변환 불가, (b)
+    required / found 줄, (c) 후보 메서드가 javax 를 받음, (d) 라이브러리 타입의 javax 추상 메서드 미구현."""
     if e.kind not in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE):
         return None
     text = _text(e)
@@ -356,6 +397,8 @@ def _javax_hit(e: BuildError) -> Optional[_JavaxHit]:
 
 
 def _classify_javax(cluster: ErrorCluster, profile, ws) -> Optional[BlockedCandidate]:
+    """X1 판정: 후보 중 프로젝트 소유 API 이거나 프로젝트가 아직 그 javax 패키지를 import 하는 것은 뺀다
+    (프로젝트 안에서 고칠 수 있음). 남은 것이 있으면 EXTERNAL_JAVAX_API."""
     hits: list[tuple[BuildError, _JavaxHit]] = []
     for e in cluster.errors:
         h = _javax_hit(e)
@@ -386,6 +429,8 @@ def _classify_javax(cluster: ErrorCluster, profile, ws) -> Optional[BlockedCandi
 # X2 — dependency API changed (non-javax)
 # ---------------------------------------------------------------------------------------------------------------------
 def _classify_external_api(cluster: ErrorCluster, profile, ws) -> Optional[BlockedCandidate]:
+    """X2 판정: javax / jakarta 와 무관하고, 소유 클래스가 마이그레이션 대상 API 도 프로젝트 클래스도 아닌
+    외부 라이브러리의 메서드 없음 / 인자 불일치. 없는 "타입" 은 API 변경이 아니므로 제외한다."""
     hits: list[tuple[BuildError, str, str]] = []
     for e in cluster.errors:
         if e.kind not in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE):
@@ -425,6 +470,8 @@ def _classify_external_api(cluster: ErrorCluster, profile, ws) -> Optional[Block
 # X3–X6
 # ---------------------------------------------------------------------------------------------------------------------
 def _classify_infra(cluster: ErrorCluster) -> Optional[BlockedCandidate]:
+    """X3–X5 판정: parent 해결 실패(PARENT_NOT_FOUND), 아티팩트 없음(ARTIFACT_NOT_FOUND), 코드 생성 플러그인
+    실패(UNSUPPORTED_SOURCE), JDK 21 에서 깨지는 플러그인(PLUGIN_INCOMPATIBLE)."""
     errs = cluster.errors
     if cluster.kind == ErrorKind.PARENT_RESOLUTION:
         text = "\n".join(_text(e) for e in errs)
@@ -453,6 +500,7 @@ def _classify_infra(cluster: ErrorCluster) -> Optional[BlockedCandidate]:
 
 
 def _plugin_of(e: BuildError) -> Optional[str]:
+    """오류의 플러그인 좌표 g:a:v(아티팩트, 없으면 ``goal g:a:v:goal`` 에서)."""
     if e.artifact is not None:
         return e.artifact.coordinates
     m = _PLUGIN_GOAL_RE.search(_text(e))
@@ -460,6 +508,7 @@ def _plugin_of(e: BuildError) -> Optional[str]:
 
 
 def _classify_foreign_source(cluster: ErrorCluster) -> Optional[BlockedCandidate]:
+    """X6 판정: Kotlin / Groovy / Scala 소스의 컴파일 오류(파일 확장자, ``e:`` 머리, 플러그인 goal)."""
     hits: list[BuildError] = []
     for e in cluster.errors:
         if e.kind not in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE):
@@ -482,7 +531,11 @@ def _classify_foreign_source(cluster: ErrorCluster) -> Optional[BlockedCandidate
 # ---------------------------------------------------------------------------------------------------------------------
 def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], cfg=None, *,
                      ws=None) -> Optional[BlockedCandidate]:
-    """Return a BlockedCandidate when (part of) the cluster cannot be fixed inside the project, else None.
+    """클러스터(의 일부)가 프로젝트 안에서 고칠 수 없으면 BlockedCandidate, 아니면 None.
+    ``candidate.errors`` 는 일부일 수 있다 — 루프는 그 오류만 차단하고 나머지는 계속 고친다. 순서:
+    인프라(X3–X5) → 외국어 소스(X6) → (컴파일이면) javax API(X1) → 외부 API(X2).
+
+    Return a BlockedCandidate when (part of) the cluster cannot be fixed inside the project, else None.
 
     `candidate.errors` lists the cluster errors the classification covers — it may be a strict subset (e.g. one
     javax constructor mismatch in a file that has other, fixable errors); the loop blocks only those and keeps
@@ -499,4 +552,5 @@ def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], c
 
 
 def errors_text(errors: Iterable[BuildError]) -> str:
+    """오류들의 전체 글을 줄바꿈으로 이은 것."""
     return "\n".join(_text(e) for e in errors)

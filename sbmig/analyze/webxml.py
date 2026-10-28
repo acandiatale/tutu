@@ -1,4 +1,12 @@
-"""web.xml → `WebXmlModel` (2026-10-23).
+"""web.xml 을 ``WebXmlModel`` 로 파싱한다(2026-10-23): 서블릿·매핑, 필터(체인 순서), 리스너, 세션
+타임아웃, welcome-file, error-page, mime, context-param, 보안 제약 수, login-config, resource-ref, taglib.
+흐름상 위치: 소스 스캐너가 부르고(``SourceStats.web_xml_*`` 개수), 재구성이 이 모델로 Boot 등록 코드
+``WebXmlRegistrations`` 를 만든다(``layout.web_xml_registrations``) — 외장 Tomcat 의 web.xml 설정이 Boot
+앱에서 사라지지 않게 하려는 것. 진입점: :func:`parse_web_xml` (예외를 절대 올리지 않음, 문제는 ``warnings``).
+버전 무관(DTD 2.2 / 2.3 … jakarta 6.x, 로컬 이름으로만 매칭). 외부 DTD 는 절대 내려받지 않는다 (폐쇄망 + XXE
+방지: ``load_dtd=False``, ``no_network=True``); 깨진 파일은 lxml 복구 파서로 한 번 더 읽는다.
+
+web.xml → `WebXmlModel` (2026-10-23).
 
 Namespace-agnostic (DTD 2.2 / 2.3 without a namespace, `java.sun.com` 2.4 / 2.5, `xmlns.jcp.org` 3.x / 4.0,
 `jakarta.ee` 5.0 / 6.x): every element is matched by its local name. The external DTD of a 2.2 / 2.3 descriptor is
@@ -8,6 +16,8 @@ lxml's recovering parser and, if even that gives no `<web-app>`, a model with a 
 
 Used by `sbmig.analyze.source_scanner` (counts in `SourceStats.web_xml_*`) and by the restructure, which renders
 `WebXmlRegistrations` from the model (`layout.web_xml_registrations`).
+
+
 """
 from __future__ import annotations
 
@@ -28,6 +38,7 @@ DISPATCHERS = ("REQUEST", "FORWARD", "INCLUDE", "ERROR", "ASYNC")
 
 
 def _local(el: Any) -> str:
+    """요소의 로컬 이름(네임스페이스 제거). 주석·PI 처럼 태그가 문자열이 아니면 ''."""
     tag = el.tag
     if not isinstance(tag, str):
         return ""
@@ -39,6 +50,7 @@ def _kids(el: Any, name: str) -> list[Any]:
 
 
 def _text(el: Any, name: str) -> Optional[str]:
+    """``name`` 인 첫 자식의 전체 텍스트(공백 정리, 비면 None)."""
     for c in el:
         if _local(c) == name:
             t = "".join(c.itertext()).strip()
@@ -47,6 +59,7 @@ def _text(el: Any, name: str) -> Optional[str]:
 
 
 def _texts(el: Any, name: str) -> list[str]:
+    """``name`` 인 모든 자식의 텍스트(빈 것 제외) — url-pattern 처럼 여러 번 나오는 요소용."""
     out = []
     for c in el:
         if _local(c) == name:
@@ -57,6 +70,7 @@ def _texts(el: Any, name: str) -> list[str]:
 
 
 def _int(value: Optional[str], what: str, warnings: list[str]) -> Optional[int]:
+    """정수로 읽는다. 숫자가 아니면 경고를 남기고 None."""
     if value is None:
         return None
     try:
@@ -67,6 +81,7 @@ def _int(value: Optional[str], what: str, warnings: list[str]) -> Optional[int]:
 
 
 def _params(el: Any, warnings: list[str], where: str) -> dict[str, str]:
+    """``<init-param>`` 들을 dict 로(이름 없는 것은 경고 후 건너뜀)."""
     out: dict[str, str] = {}
     for p in _kids(el, "init-param"):
         k = _text(p, "param-name")
@@ -78,6 +93,9 @@ def _params(el: Any, warnings: list[str], where: str) -> dict[str, str]:
 
 
 def _parse_root(text: str, warnings: list[str]) -> Any:
+    """루트 요소를 얻는다: 엄격 파서 → 실패하면 복구(recover)
+    파서 → 그래도 안 되면 None. DTD·네트워크·엔티티 없음."""
+    # 이미 디코딩된 텍스트이므로 XML 선언을 뗀다 — EUC-KR 선언이 UTF-8 바이트와 어긋나 파싱이 깨지지 않게
     # the text is already decoded: drop the XML declaration so its `encoding=` cannot contradict the UTF-8 bytes
     data = _DECL_RE.sub("", text, count=1).encode("utf-8")
     strict = etree.XMLParser(load_dtd=False, no_network=True, resolve_entities=False, remove_comments=True,
@@ -98,6 +116,8 @@ def _parse_root(text: str, warnings: list[str]) -> Any:
 
 
 def _spec(root: Any, text: str) -> Optional[str]:
+    """서블릿 스펙 버전: ``<web-app version=…>`` 속성, 없으면
+    텍스트에서, 그다음 DTD 파일 이름(``web-app_2_3.dtd``)."""
     v = root.get("version") if root is not None else None
     if v:
         return v.strip()
@@ -111,7 +131,10 @@ def _spec(root: Any, text: str) -> Optional[str]:
 
 
 def parse_web_xml(text: str, path: str) -> WebXmlModel:
-    """Parse a web.xml (`path` is only recorded). Never raises; problems land in `WebXmlModel.warnings`."""
+    """web.xml 하나를 파싱한다(``path`` 는 기록용). 예외를 내지 않는다 — 잘못된 서술자 하나로 분석·재구성이
+    멈추면 안 된다. 문제는 ``WebXmlModel.warnings`` 에 남는다.
+
+    Parse a web.xml (`path` is only recorded). Never raises; problems land in `WebXmlModel.warnings`."""
     try:
         return _parse(text or "", path)
     except Exception as e:  # noqa: BLE001 — a bad descriptor must never stop the analysis / restructure
@@ -120,6 +143,7 @@ def parse_web_xml(text: str, path: str) -> WebXmlModel:
 
 
 def _parse(text: str, path: str) -> WebXmlModel:
+    """:func:`parse_web_xml` 의 본체. 서블릿은 이름으로 합치고 같은 이름이 또 나오면 처음 것을 쓴다(경고)."""
     warnings: list[str] = []
     model = WebXmlModel(path=path)
     if not text.strip():
@@ -172,6 +196,8 @@ def _parse(text: str, path: str) -> WebXmlModel:
                 servlets[name].url_patterns.append(p)
     model.servlets = list(servlets.values())
 
+    # 필터 순서가 중요하다: 서블릿 컨테이너는 <filter-mapping> 이 처음 나온 순서로 체인을 만든다 — Boot 등록
+    # (FilterRegistrationBean 의 order)이 같은 순서를 지켜야 인코딩·보안 필터가 뒤바뀌지 않는다
     # filters + mappings; order = index of the filter's first <filter-mapping> (the chain order)
     filters: dict[str, WebXmlFilter] = {}
     for f in _kids(root, "filter"):

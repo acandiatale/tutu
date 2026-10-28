@@ -1,4 +1,13 @@
-"""Handover: "here is what we replaced, from here on it is yours" — the first section of report.md.
+"""인수인계 섹션 데이터 — "여기까지 바꿨고, 이제부터는 담당팀 몫" (report.md 의 맨 앞 섹션).
+흐름상 위치: 보고서 단계에서 writer.py 가 ``build_handover`` 를 부르고 markdown.py 가 그 결과를 맨 앞에
+그린다. as-is pom(``profile.poms`` + 접수 때 잡은 as-is effective dependencyManagement)과 최종 트리의 pom 을
+비교해 parent / Java / Boot 전후, 버전이 바뀐 의존성(⚠ = 새 parent / Boot BOM 이 더는 관리하지 않아 as-is
+버전으로 고정된 것), 추가 / 삭제된 아티팩트, "이제부터 할 일" 목록(``_from_here``: 운영자 확인 필요 → 교체 안
+된 권고 → 교체됐으니 확인 → 고정 버전 → 차단 / 미해결 안내 → 구조 검토 → 외부 설정값 → 수동 후속 작업)을
+만든다. 담당팀은 보고서에서 이 섹션만 읽는다 — 그래서 맨 앞이고 짧게 압축한다. 절대 예외를 내지
+않는다(실패해도 ``notes`` 에 "handover unavailable: …" 한 줄).
+
+Handover: "here is what we replaced, from here on it is yours" — the first section of report.md.
 
 `build_handover(profile, view, report, effective=None, cfg=None)` compares the as-is poms (`profile.poms`, plus
 the as-is effective dependencyManagement captured at intake for versions the old parent managed) with the final
@@ -12,6 +21,8 @@ guide lines of `knowledge/config/externalized.yml`. Round 9: file paths recorded
 moved the sources (`llm_fixed_files`) are mapped to where the file lives now (`resolve_current_path`). v2: the
 structure review (`report.structure_review`) adds what its script changed, unfixed critical issues and warnings
 (`review_followups`). Pure and defensive: never raises (→ `HandoverSummary(notes=["handover unavailable: …"])`).
+
+
 """
 from __future__ import annotations
 
@@ -52,6 +63,7 @@ _Dep = tuple[Optional[str], str]
 
 
 def _clean(v: Optional[str]) -> Optional[str]:
+    # ${...} 속성 참조는 실제 버전이 아니다 — 비교에서 "모름" 으로 취급해야 가짜 버전 변경 줄이 안 생긴다
     if not v or "${" in v:
         return None
     return v.strip() or None
@@ -66,7 +78,9 @@ def _own_keys(poms: list[PomInfo]) -> set[str]:
 
 
 def _roots(poms: list[PomInfo]) -> list[PomInfo]:
-    """Poms whose parent lives outside the repo (or that have none): the ones carrying the parent / BOM."""
+    """parent 가 레포 밖에 있는 pom 들(= 사내 parent / BOM 을 실제로 물고 있는 pom), 얕은 경로 먼저.
+
+    Poms whose parent lives outside the repo (or that have none): the ones carrying the parent / BOM."""
     out = [p for p in poms if p.parent is not None and not p.parent_in_repo]
     return sorted(out, key=lambda p: (p.path.count("/"), p.path))
 
@@ -101,6 +115,9 @@ def _eff_lookup(effective: dict[str, Any], key: str) -> Optional[str]:
 
 def _deps_before(poms: list[PomInfo], effective: dict[str, Any], own: set[str],
                  needs_eff: list[str]) -> dict[str, _Dep]:
+    """as-is 의존성 → (버전, 출처). 선언된 버전(declared)이 우선이고, 버전 없는 것은 as-is effective 에서 찾아
+    managed, 거기도 없으면 absent(그 키는 ``needs_eff`` 에 모아 "as-is 관리 버전 없음" 안내를 남긴다).
+    프로젝트 자신의 모듈(``own``)은 비교 대상이 아니다."""
     out: dict[str, _Dep] = {}
     for p in poms:
         for d in p.dependencies:
@@ -121,6 +138,8 @@ def _deps_before(poms: list[PomInfo], effective: dict[str, Any], own: set[str],
 
 
 def _deps_after(poms: list[PomInfo], own: set[str]) -> tuple[dict[str, _Dep], dict[str, str]]:
+    """최종 의존성 → (버전, declared | managed)와 그 의존성을 선언한 pom 경로. 최종 트리의 managed 버전은 새
+    parent / Boot BOM 이 정하므로 여기서는 버전을 알 수 없다(None)."""
     out: dict[str, _Dep] = {}
     where: dict[str, str] = {}
     for p in poms:
@@ -157,6 +176,7 @@ def _plugins(poms: list[PomInfo]) -> dict[str, tuple[str, str]]:
 
 
 def _notes(report: RunReport) -> list[str]:
+    """모든 단계·시도의 notes 를 한 목록으로(재구성 단계가 남긴 "optional bumped: …" 등을 찾기 위해)."""
     out: list[str] = []
     for pr in report.phases:
         out += list(pr.notes)
@@ -166,7 +186,10 @@ def _notes(report: RunReport) -> list[str]:
 
 
 def _restructure_keys(notes: list[str]) -> tuple[set[str], set[str]]:
-    """(optional bumped keys, mandatory added keys) from the restructure's phase / attempt notes."""
+    """재구성 단계 notes 에서 (버전을 올린 선택 아티팩트 키, 추가한 필수 아티팩트 키)를 뽑는다 —
+    버전 변경 줄의 이유(optional bump / mandatory) 칸에 쓴다.
+
+    (optional bumped keys, mandatory added keys) from the restructure's phase / attempt notes."""
     optional: set[str] = set()
     mandatory: set[str] = set()
     for n in notes:
@@ -193,7 +216,10 @@ def _replacement_key(f: AdvisoryFinding) -> Optional[str]:
 
 
 def _advisory_maps(findings: list[AdvisoryFinding]) -> tuple[dict[str, str], dict[str, str]]:
-    """(as-is artifact key → advisory id, replacement key → advisory id)."""
+    """권고에서 두 표를 만든다: as-is 아티팩트 키 → 권고 id, 대체 아티팩트 키 → 권고 id
+    (버전 변경 줄의 이유 칸 ``advisory:<id>``).
+
+    (as-is artifact key → advisory id, replacement key → advisory id)."""
     arts: dict[str, str] = {}
     repl: dict[str, str] = {}
     for f in findings:
@@ -214,6 +240,8 @@ def _coord(key: str, v: Optional[str]) -> str:
 
 
 def _versions(profile: ProjectProfile, final: list[PomInfo], cfg: Any) -> dict[str, Optional[str]]:
+    """Java / Boot 버전 전후. 이후 값은 메인 pom → 다른 pom → 설정의 ``target`` 순서로 찾는다
+    (사내 parent 가 버전을 관리하면 최종 pom 에는 값이 없다)."""
     main = _main_pom(final)
     target = getattr(cfg, "target", None) if cfg is not None else None
     java_after = main.java_version if main else None
@@ -231,6 +259,8 @@ def _versions(profile: ProjectProfile, final: list[PomInfo], cfg: Any) -> dict[s
 
 
 def _dedupe_add(out: list[str], item: str) -> None:
+    """"이제부터 할 일" 에 한 줄 추가하되, 같은 문장(대소문자·공백 무시, 한쪽이 다른 쪽에 꼬리만 붙은 것
+    포함)이면 넣지 않는다. 권고·수동 후속 작업·재구성 안내가 같은 말을 여러 번 하는 일이 잦아서다."""
     s = " ".join(item.split())
     if not s:
         return
@@ -245,6 +275,7 @@ def _dedupe_add(out: list[str], item: str) -> None:
 
 # ---------------------------------------------------------------------------- externalized config (round 8)
 def _inventory(report: RunReport) -> Any:
+    """외부 설정 조사 결과(round 8): 보고서의 ``properties``, 없으면 프로필의 것."""
     inv = getattr(report, "properties", None)
     if inv is None and getattr(report, "profile", None) is not None:
         inv = getattr(report.profile, "properties", None)
@@ -257,7 +288,10 @@ def _pcell(text: object) -> str:
 
 
 def env_name(key: str) -> str:
-    """Relaxed-binding environment variable name: `spring.datasource.url` → `SPRING_DATASOURCE_URL`."""
+    """Boot relaxed binding 의 환경변수 이름으로 바꾼다(``spring.datasource.url`` →
+    ``SPRING_DATASOURCE_URL``).
+
+    Relaxed-binding environment variable name: `spring.datasource.url` → `SPRING_DATASOURCE_URL`."""
     out = re.sub(r"[.\-\[\]]+", "_", key.strip()).upper()
     return out.strip("_")
 
@@ -277,6 +311,8 @@ def _refs_cell(refs: list[Any], max_refs: int) -> str:
 
 
 def _written_cell(f: Any, written: set[str], sentinel: str) -> str:
+    """"written as" 칸: 재구성이 실제로 써 넣은 Boot 키와 값(``__SET_ME__``
+    자리표시, context-param 기본값이 있으면 그 값)."""
     if not f.boot_keys:
         return f.note or "-"
     ref = f.refs[0] if f.refs else None
@@ -290,6 +326,8 @@ def _written_cell(f: Any, written: set[str], sentinel: str) -> str:
 
 
 def _set_via_cell(f: Any) -> str:
+    """"set via" 칸: 운영에서 값을 넣는 방법(환경변수 / ``-D`` 시스템 속성). 코드가 읽는 방식에 맞춰야 한다 —
+    ``System.getProperty`` 는 환경변수도 application.properties 도 보지 않으므로 ``-D`` 만 안내한다."""
     sources = {r.source for r in f.refs}
     if sources and sources <= {"system-env"}:
         return f"environment variable {f.key}"
@@ -306,7 +344,11 @@ def _set_via_cell(f: Any) -> str:
 
 
 def needs_value(f: Any) -> bool:
-    """An external finding the owners must supply: it has Boot keys, or nothing maps it (system env, unmapped JNDI,
+    """담당팀이 값을 넣어야 하는 외부 설정인가: Boot 키가 있거나, 아무것도 매핑해 주지 않는 것(시스템
+    환경변수, 매핑 안 된 JNDI, ``@ConfigurationProperties`` 접두어,
+    -D). 규칙상 건너뛴 context-param 과 Boot 기본값은 필요 없다.
+
+    An external finding the owners must supply: it has Boot keys, or nothing maps it (system env, unmapped JNDI,
     `@ConfigurationProperties` prefix, -D). Rule-skipped context-params and Boot defaults need nothing."""
     if f.boot_keys:
         return True
@@ -314,14 +356,20 @@ def needs_value(f: Any) -> bool:
 
 
 def external_to_set(inv: Any) -> list[Any]:
-    """External findings that need a value (see `needs_value`)."""
+    """값이 필요한 외부 설정 항목들(``needs_value`` 기준).
+
+    External findings that need a value (see `needs_value`)."""
     if inv is None:
         return []
     return [f for f in (getattr(inv, "findings", None) or []) if f.status == "external" and needs_value(f)]
 
 
 def property_rows(inv: Any, cfg: Any = None) -> list[str]:
-    """One `PROPERTY_SEP`-joined row per `external` finding (columns: `PROPERTY_COLUMNS`); findings that need no
+    """인수인계 "Properties to set" 표: ``external`` 항목마다 `` | `` 로 이은 한 줄(칸은
+    ``PROPERTY_COLUMNS``). 값이 필요 없는 항목도 함께 적지만, 값이 필요한 항목이 하나도 없으면 표 자체가 비어
+    있다. 예외를 내지 않는다.
+
+    One `PROPERTY_SEP`-joined row per `external` finding (columns: `PROPERTY_COLUMNS`); findings that need no
     value (rule-skipped context-param, Boot default) are listed too, but only when at least one finding needs a
     value — otherwise there is nothing to set and the list is empty. Never raises."""
     if inv is None or not external_to_set(inv):
@@ -347,7 +395,10 @@ def property_rows(inv: Any, cfg: Any = None) -> list[str]:
 
 
 def split_property_row(row: str) -> list[str]:
-    """Inverse of `property_rows` for one row (always `len(PROPERTY_COLUMNS)` cells)."""
+    """``property_rows`` 한 줄을 다시 칸으로 나눈다.
+    항상 ``len(PROPERTY_COLUMNS)`` 칸이고, 넘치면 마지막 칸에 합친다.
+
+    Inverse of `property_rows` for one row (always `len(PROPERTY_COLUMNS)` cells)."""
     cells = [c.strip() for c in str(row).split(PROPERTY_SEP)]
     n = len(PROPERTY_COLUMNS)
     if len(cells) > n:
@@ -356,7 +407,10 @@ def split_property_row(row: str) -> list[str]:
 
 
 def property_guide(cfg: Any) -> list[str]:
-    """Guide lines from the externalized-config rules file; [] when cfg is None or the file does not load."""
+    """외부 설정 규칙 파일(``knowledge/config/externalized.yml``)의 안내 줄.
+    설정이 없거나 파일을 못 읽으면 [].
+
+    Guide lines from the externalized-config rules file; [] when cfg is None or the file does not load."""
     if cfg is None:
         return []
     try:
@@ -369,6 +423,7 @@ def property_guide(cfg: Any) -> list[str]:
 
 
 def _properties_item(inv: Any, cfg: Any) -> Optional[str]:
+    """"이제부터 할 일" 의 외부 설정 한 줄: 첫 기동 전에 값을 넣어야 하는 설정 N개와 자리표시를 쓴 파일."""
     ext = external_to_set(inv)
     if not ext:
         return None
@@ -382,6 +437,8 @@ def _properties_item(inv: Any, cfg: Any) -> Optional[str]:
 
 
 def _properties_followup_present(report: RunReport) -> bool:
+    """재구성이 이미 같은 외부 설정 안내를 수동 후속 작업에 남겼는가.
+    남겼으면 그 줄을 쓰고 중복 줄은 만들지 않는다."""
     for m in report.manual_followups or []:
         low = m.lower()
         if "externalized setting(s)" in low and ("placeholder" in low or "properties to set" in low):
@@ -400,7 +457,12 @@ def _view_exists(view: Any, path: str) -> bool:
 
 
 def resolve_current_path(ws: Any, path: str, cfg: Any = None, name: Optional[str] = None) -> str:
-    """Where a file recorded before the restructure step lives now. Unchanged when it still exists (or `ws` is None);
+    """재구성 전에 기록된 파일 경로가 지금 어디 있는지. 그대로 있으면(또는 ``ws`` 가 None) 그대로 두고, 없으면
+    ``src/`` 부터의 뒷부분을 설정된 레이아웃의 comp / boot / front 모듈 아래에서 찾는다 (회사 ``{name}-back``
+    / ``-boot`` / ``-front``, 또는 예전 ``module/comp-jar`` / ``module/boot-jar``). 재구성이 소스를 옮기므로,
+    그 전에 수정 시도가 남긴 경로는 보고서에서 낡은 경로가 된다(round 9).
+
+    Where a file recorded before the restructure step lives now. Unchanged when it still exists (or `ws` is None);
     else the part from the `src/` component on is looked up under the comp, boot and front module directories of
     the configured layout (`cfg.layout.module_path(which, name)` — company `{name}-back` / `-boot` / `-front`, or
     the legacy `module/comp-jar` / `module/boot-jar`; without a config the legacy names); the original path when
@@ -435,20 +497,30 @@ def resolve_current_path(ws: Any, path: str, cfg: Any = None, name: Optional[str
 
 
 def project_name(profile: Any) -> str:
-    """`{name}` of the company layout: the root pom's artifactId (else the profile name)."""
+    """회사 레이아웃의 ``{name}``: 루트 pom 의 artifactId(없으면 프로필 이름).
+
+    `{name}` of the company layout: the root pom's artifactId (else the profile name)."""
     rp = getattr(profile, "root_pom", None)
     return (getattr(rp, "artifact_id", None) or getattr(profile, "name", None) or "") if profile is not None else ""
 
 
 def operator_checks_item(n: int) -> str:
-    """The first "from here on" line when the run made major upgrades (v2.1d, `report.operator_checks`)."""
+    """메이저 업그레이드가 있었던 실행의 "이제부터 할 일" 첫 줄(v2.1d 운영자 확인 필요,
+    ``report.operator_checks``).
+
+    The first "from here on" line when the run made major upgrades (v2.1d, `report.operator_checks`)."""
     return f"operator checks: {n} major upgrade(s) — see \"Operator checks\" above"
 
 
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:
+    """인수인계의 "이제부터 할 일" 목록. 순서가 곧 중요도다: (0) 운영자 확인 필요(메이저 업그레이드) → (a)
+    교체 안 된 권고 → (b) 실행 중 교체됐으니 확인 → (b2) LLM 이 권고에 따라 고친 코드 → (c) as-is 버전으로
+    고정된 의존성 → (d) 차단 / 미해결 / javax jar 안내 → (d1) 구조 검토 → (d2) 외부 설정값 → (e) 나머지 수동
+    후속 작업. ``advisories.max_from_here`` 가 양수면 그 줄 수로 자르고 마지막에 "… and N more" 를 붙인다."""
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
+    # 메이저 업그레이드는 막지 않는 대신(빌드는 통과해야 함) 사람이 꼭 보게 맨 첫 줄에 둔다(v2.1d)
     # (0) v2.1d: major upgrades / library replacements the operator must verify (the block above Versions replaced)
     checks = list(getattr(report, "operator_checks", None) or [])
     if checks:
@@ -461,6 +533,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
         if f.replacement:
             txt += f" (replacement: {f.replacement}{' ' + f.replacement_version if f.replacement_version else ''})"
         _dedupe_add(out, txt)
+    # 권고는 안내만 한다(차단 정책 없음) — 교체는 레시피나 수정 스크립트가 했으니 사람이 동작을 확인해야 한다
     # (b) replaced → verify (advisories are guide-only: the plan's recipes / the fix scripts replaced it)
     for f in findings:
         if f.outcome != "replaced":
@@ -498,6 +571,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     entries = list(getattr(report, "error_entries", None) or [])
     left = sum(1 for e in entries if getattr(e, "status", "") in ("open", "unresolved")) if entries \
         else len(report.unresolved)
+    # v2.1: 미해결 개수는 오류 목록(open + unresolved)에서 센다(목록이 없을 때만 예전 unresolved 섹션)
     if left:                               # v2.1: the error list holds them (the old section is its fallback)
         _dedupe_add(out, f"{left} unresolved error(s) — see Error list")
     jars = list(getattr(report, "javax_api_jars", None) or [])
@@ -517,6 +591,7 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     if "test-compile-skipped" in report.flags:
         _dedupe_add(out, "test sources do not compile yet (main code builds with -Dmaven.test.skip=true) — "
                          "fix the tests before relying on CI")
+    # (e) 권고의 후속 작업 문장은 (a)/(b) 에서 이미 나왔으므로, 수동 후속 작업에서 같은 문장은 건너뛴다
     # (e) manual follow-ups not already listed (advisory follow-ups are covered by (a)/(b))
     adv_fu: set[str] = set()
     if findings:
@@ -537,12 +612,16 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
 
 
 def _short(text: object, limit: int) -> str:
+    """공백을 정리하고 ``limit`` 자로 자른다(넘치면 끝에 …)."""
     s = " ".join(str(text if text is not None else "").split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
 
 
 def review_followups(report: RunReport) -> list[str]:
-    """v2 structure review → compact "from here on" lines: what the review's fix (edits / script) changed (one line),
+    """구조 검토 결과를 "이제부터 할 일" 줄로 압축: 검토의 수정(edits / 스크립트)이 바꾼 것 한 줄, 고치지 못한
+    critical, warning 들. 최대 ``REVIEW_FOLLOWUPS_MAX`` 줄. 이슈가 없으면 [].
+
+    v2 structure review → compact "from here on" lines: what the review's fix (edits / script) changed (one line),
     critical issues it did not fix, warnings; at most REVIEW_FOLLOWUPS_MAX lines. [] without issues."""
     rv = getattr(report, "structure_review", None)
     if rv is None or not rv.issues:
@@ -560,6 +639,8 @@ def review_followups(report: RunReport) -> list[str]:
         files = ", ".join(res.changed_files[:REVIEW_FILES_MAX])
         if len(res.changed_files) > REVIEW_FILES_MAX:
             files += f" (+{len(res.changed_files) - REVIEW_FILES_MAX} more)"
+        # "(sbmig check)" 이슈는 sbmig 가 직접 더한 것이라 검토
+        # 수정이 다루지 않는다 — 고쳐졌다고 세지 않고 아래에 남긴다
         handled = [i for i in critical if not i.problem.startswith(REVIEW_SBMIG_CHECK)]
         out.append(f"structure review fix (edits / script) changed {len(res.changed_files)} file(s) for "
                    f"{len(handled)} critical issue(s): {files} (commit {(rv.commit or '-')[:8]}) — check these pom "
@@ -574,7 +655,10 @@ def review_followups(report: RunReport) -> list[str]:
 
 
 def merge_conflict_lines(report: RunReport) -> list[str]:
-    """`report.merge_conflicts` (layout `merge`) → one line per differing path, identical copies in one line."""
+    """다중 모듈 ``merge`` 레이아웃의 충돌(``report.merge_conflicts``): 내용이 다른 경로는 한 줄씩(어느 모듈
+    것을 남겼고 무엇을 버렸는지), 내용이 같은 중복은 한 줄로 모은다.
+
+    `report.merge_conflicts` (layout `merge`) → one line per differing path, identical copies in one line."""
     out: list[str] = []
     identical: list[str] = []
     for c in list(getattr(report, "merge_conflicts", None) or []):
@@ -593,6 +677,8 @@ def merge_conflict_lines(report: RunReport) -> list[str]:
 
 def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Optional[dict[str, Any]],
            cfg: Any) -> HandoverSummary:
+    """인수인계 본체: 최종 pom 을 다시 파싱해 parent → BOM → 의존성 → 플러그인 순으로 전후를 비교하고,
+    버전 변경 줄(VersionChange)·추가 / 삭제·고정 버전·merge 충돌·외부 설정·"이제부터 할 일" 을 채운다."""
     from sbmig.analyze.pom_parser import parse_poms
 
     effective = effective or {}
@@ -667,10 +753,13 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     for k in sorted(set(db) | set(da)):
         if k in db and k in da:
             (bv, bs), (av, as_) = db[k], da[k]
+            # 전후 모두 parent / BOM 이 관리: parent·BOM 줄이 이미 말해 주므로 의존성 줄은 만들지 않는다
             if bs in ("managed", "absent") and as_ == "managed":
                 continue                              # managed before and after: covered by the parent / BOM row
             if bv == av and bs == as_:
                 continue
+            # ⚠ 고정 버전: as-is 에선 옛 parent 가 관리하던 버전이, 새 parent / Boot BOM 이 관리하지 않아 그
+            # 값 그대로 pom 에 박혔다 — 담당팀이 확인하거나 바꿔야 한다
             carried = (bs == "managed" and as_ == "declared" and av is not None
                        and av == _eff_lookup(effective, k))
             if bv == av and not carried:
@@ -705,6 +794,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
 
 
 def _fill_properties(h: HandoverSummary, report: RunReport, cfg: Any) -> None:
+    """외부 설정 표와 안내 줄을 채운다(표가 비면 안내도 비움). 실패해도 인수인계는 계속."""
     try:
         h.properties_to_set = property_rows(_inventory(report), cfg)
         h.properties_guide = property_guide(cfg) if h.properties_to_set else []
@@ -714,7 +804,10 @@ def _fill_properties(h: HandoverSummary, report: RunReport, cfg: Any) -> None:
 
 def build_handover(profile: Optional[ProjectProfile], view: Any, report: RunReport,
                    effective: Optional[dict[str, Any]] = None, cfg: Any = None) -> HandoverSummary:
-    """As-is vs final poms + advisories → HandoverSummary. Never raises."""
+    """인수인계 섹션 데이터를 만든다(as-is pom vs 최종 pom + 권고 → HandoverSummary). 절대 예외를 내지 않는다
+    — 비교가 실패해도 merge 충돌·외부 설정·"이제부터 할 일" 은 따로 채워 담당팀이 읽을 것이 남게 한다.
+
+    As-is vs final poms + advisories → HandoverSummary. Never raises."""
     if profile is None:
         return HandoverSummary(notes=["handover unavailable: no project profile (the run stopped before analyze)"])
     try:

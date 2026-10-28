@@ -1,4 +1,13 @@
-"""ScriptRunner (ScriptRunnerLike): static check, then one `python -I` process per fix script.
+"""``ScriptRunner``(ScriptRunnerLike): 정적 검사 후 수정 스크립트마다 ``python -I`` 프로세스 하나.
+누가 부르나: 수정 루프(저장 스크립트 재사용·LLM 스크립트), ``apply_edits``(직접 수정), 구조 검토. ``run`` 은
+코드와 payload 를 새 임시 디렉토리(절대 프로젝트 안이 아님)에 쓰고, 그 디렉토리를 cwd 로 자기 프로세스
+그룹에서 하네스를 띄워 ``script.timeout_seconds`` 까지 기다린 뒤, 넘으면 프로세스 트리 전체를 죽인다(Windows
+``taskkill /T /F``, 그 밖은 프로세스 그룹 — Maven 과 같은 kill). 죽거나 깨진 자식도 줄마다 flush 한 저널로
+바꾼 파일과 로그를 보고한다. 변경은 커밋하지 않고 작업 트리에 남긴다 — 커밋·되돌리기는 호출자 몫. 자식
+환경에서는 KEY / TOKEN / SECRET / ``LLM_*`` 같은 변수를
+뺀다(LLM 키가 스크립트 손에 닿지 않게). 예외를 내지 않는다.
+
+ScriptRunner (ScriptRunnerLike): static check, then one `python -I` process per fix script.
 
 `run` writes the code and a JSON payload into a fresh temp directory (never inside the project), starts
 `<python> -I -X utf8 sbmig/script/harness.py <payload>` with that directory as cwd in its own process group, waits at
@@ -6,6 +15,8 @@ most `timeout_s` (default `script.timeout_seconds`) and kills the whole tree aft
 the process group elsewhere — the same kill as Maven's, `sbmig.build.mvn`). The child's result JSON becomes a
 `ScriptRunResult`; a killed or crashed child still reports the files it changed and its log from the journal it
 flushes line by line. Changes stay uncommitted in the working tree: the caller commits or restores. Never raises.
+
+
 """
 from __future__ import annotations
 
@@ -36,12 +47,17 @@ SBMIG_ROOT = Path(__file__).resolve().parents[2]          # the directory that h
 STDERR_TAIL_CHARS = 2000
 IS_WINDOWS = os.name == "nt"
 _CREATE_NO_WINDOW = 0x08000000
+# 스크립트 프로세스에 넘기지 않는 환경 변수(LLM_API_KEY
+# 등) — 스크립트는 환경을 못 읽지만 키는 아예 손 밖에 둔다
 # never handed to the script process (it cannot read the environment anyway; this keeps keys out of reach)
 _SECRET_ENV_RE = re.compile(r"(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH)|^LLM_", re.IGNORECASE)
 
 
 def _popen_kwargs() -> dict[str, Any]:
-    """Own process group so the whole tree can be killed: POSIX a new session; Windows a new process group with
+    """트리 전체를 죽일 수 있게 자기 프로세스 그룹으로 띄운다: POSIX 는 새 세션, Windows 는 새 프로세스 그룹 +
+    숨은 콘솔(운영자의 Ctrl+C / Ctrl+Break 가 닿지 않고, ``taskkill /T /F`` 로 죽인다).
+
+    Own process group so the whole tree can be killed: POSIX a new session; Windows a new process group with
     its own hidden console (the operator's Ctrl+C / Ctrl+Break never reach it; `taskkill /T /F` kills it)."""
     if IS_WINDOWS:
         flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200) | getattr(subprocess, "CREATE_NO_WINDOW",
@@ -51,6 +67,7 @@ def _popen_kwargs() -> dict[str, Any]:
 
 
 def _child_env() -> dict[str, str]:
+    """자식 프로세스 환경: 비밀처럼 보이는 변수를 뺀 현재 환경 + UTF-8 강제."""
     env = {k: v for k, v in os.environ.items() if not _SECRET_ENV_RE.search(k)}
     env["PYTHONIOENCODING"] = "utf-8"         # ignored under -I; `-X utf8` and the harness's reconfigure decide
     env["PYTHONUTF8"] = "1"
@@ -58,7 +75,10 @@ def _child_env() -> dict[str, str]:
 
 
 def _error_dict(e: Any) -> dict[str, Any]:
-    """p.errors entry: the contract's keys (+ `artifact` "g:a[:v]" for resolution errors)."""
+    """``p.errors`` 항목 하나: 계약의 키들(해결 오류에는
+    ``artifact`` "g:a[:v]" 추가) — JSON 으로 넘길 수 있는 dict.
+
+    p.errors entry: the contract's keys (+ `artifact` "g:a[:v]" for resolution errors)."""
     if isinstance(e, dict):
         return json.loads(json.dumps(e, default=str))
     if isinstance(e, BuildError):
@@ -80,7 +100,9 @@ def _rel_posix(paths: Iterable[Any]) -> list[str]:
 
 
 def _cap_log(lines: list[str], dropped: int, cap: int) -> list[str]:
-    """At most `cap` lines; when lines were dropped the last kept one says how many."""
+    """로그는 최대 ``cap`` 줄; 버린 줄이 있으면 마지막 줄이 몇 줄 버렸는지 말한다.
+
+    At most `cap` lines; when lines were dropped the last kept one says how many."""
     cap = max(1, cap)
     lines = [str(x) for x in lines]
     extra = max(0, len(lines) - cap) + max(0, dropped)
@@ -91,7 +113,9 @@ def _cap_log(lines: list[str], dropped: int, cap: int) -> list[str]:
 
 
 def _read_journal(path: Path) -> tuple[list[str], list[str]]:
-    """(log lines, changed files) a killed / crashed child flushed before it died."""
+    """죽은(시간 초과) / 깨진 자식이 죽기 전에 저널에 flush 한 (로그 줄, 바뀐 파일).
+
+    (log lines, changed files) a killed / crashed child flushed before it died."""
     logs: list[str] = []
     changed: list[str] = []
     try:
@@ -111,7 +135,10 @@ def _read_journal(path: Path) -> tuple[list[str], list[str]]:
 
 
 class ScriptRunner:
-    """Runs LLM fix scripts against a workspace (docs/INTERFACES.md "Script contract (S)")."""
+    """작업 공간에 LLM 수정 스크립트를 돌린다: ``check``(정적 검사)와
+    ``run``(검사 + 별도 프로세스 실행 → ``ScriptRunResult``).
+
+    Runs LLM fix scripts against a workspace (docs/INTERFACES.md "Script contract (S)")."""
 
     label = "fix script"              # the log line's subject (`apply_edits` runs its synthesized script as "edits")
 
@@ -119,11 +146,15 @@ class ScriptRunner:
         self.cfg = cfg
 
     def check(self, code: str) -> list[str]:
+        """정적 검사만(``script.extra_allowed_imports``, ``script.max_code_chars`` 적용). 빈 목록 = 통과."""
         s = self.cfg.script
         return check_script(code, extra_imports=s.extra_allowed_imports, max_chars=s.max_code_chars)
 
     def run(self, ws: Workspace, code: str, *, errors: Iterable[BuildError] = (),
             timeout_s: Optional[int] = None) -> ScriptRunResult:
+        """정적 검사 → 통과하면 별도 ``python -I`` 프로세스에서 실행 →
+        ``ScriptRunResult``(ok / error / rejected / timeout, 바뀐 파일, 로그).
+        변경은 커밋하지 않는다. 예외를 내지 않는다(내부 실패도 결과로)."""
         t0 = time.monotonic()
         try:
             problems = self.check(code)
@@ -144,6 +175,8 @@ class ScriptRunner:
 
     # ------------------------------------------------------------------ internals
     def _execute(self, ws: Workspace, code: str, errors: list[Any], timeout_s: Optional[int]) -> ScriptRunResult:
+        """코드·payload 를 새 임시 디렉토리에 쓰고 하네스를
+        띄운 뒤 결과를 모은다; 임시 디렉토리는 늘 지운다."""
         s = self.cfg.script
         limit = timeout_s or s.timeout_seconds                # 0 / None → the config value; config 0 = no limit
         timeout = float(limit) if limit else None
@@ -152,6 +185,7 @@ class ScriptRunner:
             return ScriptRunResult(status="error", error="no Python interpreter for the fix script "
                                                          "(set script.python)")
         root = Path(ws.root).resolve()
+        # 임시 디렉토리는 프로젝트 밖: 스크립트 파일·payload 가 커밋되거나 빌드에 섞이지 않게, cwd 로 쓴다
         tmp = Path(tempfile.mkdtemp(prefix="sbmig-script-"))
         try:
             code_path, result_path, journal_path = tmp / "fix_script.py", tmp / "result.json", tmp / "journal.jsonl"
@@ -172,7 +206,10 @@ class ScriptRunner:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def _spawn(self, cmd: list[str], cwd: Path, timeout: Optional[float]) -> tuple[Optional[int], bool, str]:
-        """(exit code, timed out, stderr+stdout tail)."""
+        """자식을 띄우고 기다린다: (종료 코드, 시간 초과 여부, stderr+stdout 끝부분). 시간 초과면 프로세스
+        트리 전체를 죽인다(POSIX 는 프로세스 그룹째, Windows 는 ``taskkill /T /F``).
+
+        (exit code, timed out, stderr+stdout tail)."""
         try:
             proc = subprocess.Popen(cmd, cwd=str(cwd), env=_child_env(), stdin=subprocess.DEVNULL,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_popen_kwargs())
@@ -192,6 +229,7 @@ class ScriptRunner:
                     out, err = proc.communicate(timeout=10)
                 except (subprocess.TimeoutExpired, ValueError, OSError):   # pragma: no cover - pipes held open
                     out, err = b"", b""
+        # 기다리는 동안 Ctrl+C 등으로 끊겨도 자식 프로세스를 남기지 않는다
         except BaseException:                 # Ctrl+C in the waiting thread: never leave the child behind
             _kill_group(proc)
             raise
@@ -202,8 +240,11 @@ class ScriptRunner:
 
     def _collect(self, result_path: Path, journal_path: Path, exit_code: Optional[int], timed_out: bool,
                  stderr: str, timeout: Optional[float]) -> ScriptRunResult:
+        """결과 JSON 이 있으면 그것으로, 없으면(시간 초과·크래시·시작 실패)
+        저널과 stderr 로 ``ScriptRunResult`` 를 만든다."""
         cap = int(self.cfg.script.log_lines)
         data: Optional[dict[str, Any]] = None
+        # 시간 초과로 죽였으면 결과 파일이 있어도 쓰지 않고 timeout 으로 보고한다(바뀐 파일·로그는 저널에서)
         if not timed_out and result_path.is_file():
             try:
                 data = json.loads(result_path.read_text(encoding="utf-8"))

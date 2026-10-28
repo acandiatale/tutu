@@ -1,4 +1,12 @@
-"""v2.1b (2026-10-27, business request: "edit 란에 어디의 어떤 줄을 어떻게 수정하는지"): the 수정 notes of a try — every
+"""시도의 "수정" 기록(EditNote: 경로·위치·무엇을 어떻게·줄 범위·출처 llm | diff)을 만드는 곳 + v2.1d 의존성
+되읽기 도우미. 현업 요청(v2.1b): "edit 란에 어디의 어떤 줄을 어떻게 수정하는지". v2.1e 부터 각 기록에 as-is /
+to-be 변경 조각(hunks)이 붙는다(``errors.snippet_lines``, 0 = 통째로). 수정 루프(``fixloop``)와
+오케스트레이터(구조 검토 커밋)가 함께 쓴다. 진입점: ``answer_notes``(LLM 이 쓴 설명), ``try_notes``(diff 와
+합친 최종 기록), ``note_line``(로그·errors.md 한 줄); 아래쪽 v2.1d: ``operator_changes``(커밋의 메이저
+업그레이드·라이브러리 교체), ``fallback_guide``, ``log_major_upgrades``. 불변: 절대 예외를 내지 않는다. 메이저
+업그레이드 때문에 되돌리거나 차단하는 일은 없다 — 운영자 확인 안내만 남긴다.
+
+v2.1b (2026-10-27, business request: "edit 란에 어디의 어떤 줄을 어떻게 수정하는지"): the 수정 notes of a try — every
 modification described in words (`EditNote`: path, where, change, lines, source llm | diff).
 
     answer_notes(answer, edits=True)   the LLM's own descriptions: the answer's `<changes>` + each applied edit's
@@ -42,6 +50,8 @@ def _helper(name: str) -> Optional[Callable[..., Any]]:
 
 
 def note_line(n: Any) -> str:
+    """수정 기록 한 줄(``module/comp-jar/pom.xml +42–47 — … 추가합니다``). errors.md · report.md · 로그가
+    같은 형식을 쓰도록 ``sbmig.errors.common.note_text`` 에 맡긴다."""
     try:
         from sbmig.errors.common import note_text
         return note_text(n)
@@ -61,7 +71,11 @@ def _one(text: Any) -> str:
 
 
 def answer_notes(ans: Any, *, edits: bool) -> list[EditNote]:
-    """The LLM's descriptions of the change that was applied. `edits` (the answer's `<edits>` were applied) → the
+    """적용된 변경에 대한 LLM 의 설명들. ``edits=True``(답변의 ``<edits>`` 가 적용됨)면 ``<changes>`` + 각
+    편집의 ``desc``, 아니면(답변의 스크립트가 돌았음) ``<changes>``
+    만 — 적용되지 않은 편집의 설명을 기록에 남기면 거짓이 되므로.
+
+    The LLM's descriptions of the change that was applied. `edits` (the answer's `<edits>` were applied) → the
     `<changes>` notes and every edit's `desc` for a file they do not describe (A's `answer_notes(changes, edits)`;
     the fixer's parser has usually merged them into `answer.changes` already — the call is idempotent); otherwise
     (the answer's script ran) the `<changes>` notes without the edits' own descriptions (those edits were not
@@ -92,7 +106,11 @@ def answer_notes(ans: Any, *, edits: bool) -> list[EditNote]:
 
 
 def try_notes(llm_notes: list[EditNote], diff: str, *, max_lines: int = 0) -> list[EditNote]:
-    """The try's 수정 notes: A's `merge_notes(llm_notes, diff)` — `notes_from_diff(diff)` when the LLM described
+    """시도의 최종 수정 기록: LLM 설명에 diff 의 줄 범위와 as-is / to-be 조각을 붙이고, LLM 이 설명하지 않은
+    파일은 diff 로 기록을 만든다(재사용한 저장 스크립트는 LLM 설명이 없으니 diff 만). diff 가 진실이다.
+    도우미가 없으면 아래 대체 구현.
+
+    The try's 수정 notes: A's `merge_notes(llm_notes, diff)` — `notes_from_diff(diff)` when the LLM described
     nothing (a reused stored script); v2.1e: with the as-is / to-be hunks, `max_lines` lines per side (the callers
     pass `errors.snippet_lines`; 0 = whole). Without them (or when they fail) the fallback below."""
     llm_notes = list(llm_notes or [])
@@ -112,12 +130,16 @@ def try_notes(llm_notes: list[EditNote], diff: str, *, max_lines: int = 0) -> li
 
 
 # ---------------------------------------------------------------------------- fallback (A's helpers missing)
+# 대체 구현: sbmig.script.notes 도우미가 없거나 깨졌을 때도 시도 기록은 잃지 않는다(변경 조각은 없음).
 def _span(nums: list[int], mark: str) -> str:
     return f"{mark}{nums[0]}" + (f"–{nums[-1]}" if nums[-1] != nums[0] else "")
 
 
 def _from_diff(diff: str) -> list[EditNote]:
-    """One note per file of a unified diff: lines per hunk (`+42–47` added, `~12` changed, `-3` removed) and
+    """(대체 구현) unified diff 의 파일마다 기록 하나: 조각별
+    줄 범위와 "N줄 추가, M줄 삭제" / "새 파일" / "파일 삭제".
+
+    One note per file of a unified diff: lines per hunk (`+42–47` added, `~12` changed, `-3` removed) and
     "N줄 추가, M줄 삭제" / "새 파일" / "파일 삭제"."""
     files: list[dict[str, Any]] = []
     cur: Optional[dict[str, Any]] = None
@@ -173,7 +195,10 @@ def _from_diff(diff: str) -> list[EditNote]:
 
 
 def _merge(llm: list[EditNote], diff: str) -> list[EditNote]:
-    """The LLM's notes with the diff's lines of their file (same path, or one path ends with the other), then a diff
+    """(대체 구현) LLM 기록에 그 파일의 diff 줄 범위를 붙이고(경로가 같거나 한쪽이 다른 쪽으로 끝나면 같은
+    파일), LLM 이 설명하지 않은 파일은 diff 기록을 덧붙인다.
+
+    The LLM's notes with the diff's lines of their file (same path, or one path ends with the other), then a diff
     note for every changed file the LLM did not describe."""
     by_file = {n.path: n for n in _from_diff(diff)}
     out: list[EditNote] = []
@@ -191,6 +216,8 @@ def _merge(llm: list[EditNote], diff: str) -> list[EditNote]:
 
 
 # ---------------------------------------------------------------------------- v2.1d dependency read-back
+# v2.1d 의존성 버전 정책: 메이저는 올리지 않는 것이 규칙이지만 빌드는 통과해야 하므로 막지 않는다. 대신 커밋의
+# pom 변경을 되읽어 메이저 업그레이드·라이브러리 교체를 찾고 "운영자 확인 필요" 로 보고서·로그에 남긴다.
 # (docs/INTERFACES.md "v2.1d"): what an applied try / the review commit changed in the poms, the major upgrades /
 # library replacements among it, and the 운영자 확인 guide for them. The fix loop and the orchestrator share these;
 # every call into `sbmig.build.depchanges` / `sbmig.core.jakarta_libraries` is best effort (a failure → DEBUG and the
@@ -200,7 +227,10 @@ _BULLET_RE = re.compile(r"^\s*(?:[-*•]\s+)")
 
 
 def library_table(cfg: Any) -> list:
-    """The shipped table + the people's `<kb>/libraries.yml` (`jakarta_libraries(company_path=…)`); [] on failure."""
+    """라이브러리 표 = 배포본 표 + 사람이 넣는 ``<kb>/libraries.yml``(재배포
+    없이 반영). 실패하면 [] — 표는 힌트일 뿐.
+
+    The shipped table + the people's `<kb>/libraries.yml` (`jakarta_libraries(company_path=…)`); [] on failure."""
     try:
         from sbmig.core.jakarta_libraries import company_libraries_file, jakarta_libraries
         return list(jakarta_libraries(company_path=company_libraries_file(cfg)) or [])
@@ -210,7 +240,9 @@ def library_table(cfg: Any) -> list:
 
 
 def table_entry(key: str | None, cfg: Any) -> Any:
-    """The table entry (`JakartaLibrary`) of `key` with the company file, None when unknown / on failure."""
+    """``key``(g:a)의 표 항목(회사 파일 포함). 모르거나 실패하면 None.
+
+    The table entry (`JakartaLibrary`) of `key` with the company file, None when unknown / on failure."""
     if not key:
         return None
     try:
@@ -222,12 +254,18 @@ def table_entry(key: str | None, cfg: Any) -> Any:
 
 
 def pom_changed(files: Any) -> bool:
-    """Did the commit touch a pom.xml (the read-back only parses poms)?"""
+    """커밋이 pom.xml 을 건드렸는가 — 되읽기는 pom 만 보므로, 아니면 건너뛴다.
+
+    Did the commit touch a pom.xml (the read-back only parses poms)?"""
     return any(_norm(str(f or "")).rsplit("/", 1)[-1] == "pom.xml" for f in (files or []))
 
 
 def operator_changes(ws: Any, pre: str | None, sha: str | None, cfg: Any) -> list:
-    """The `major` / `replaced` DependencyChange items of the commit `pre..sha` (`changes_in_commit`, then
+    """커밋 ``pre..sha`` 의 의존성 변경 중 운영자가 봐야 할 것(메이저 업그레이드 ``major``, 라이브러리 교체
+    ``replaced``). 표가 승인한 것은 ``apply_table`` 이 표시한다(승인돼도
+    목록에는 남는다). git·파서가 말할 수 없으면 []. 예외 없음.
+
+    The `major` / `replaced` DependencyChange items of the commit `pre..sha` (`changes_in_commit`, then
     `apply_table` marks the ones a table entry allows). [] when git / the parser cannot tell; never raises."""
     if not pre or not sha:
         return []
@@ -257,7 +295,10 @@ def operator_changes(ws: Any, pre: str | None, sha: str | None, cfg: Any) -> lis
 
 
 def fallback_guide(changes: list, lang: str = "ko") -> str:
-    """sbmig's guide when the LLM gave none: `synthesized_guide` (sbmig.build.depchanges), else one line per change."""
+    """LLM 이 가이드를 주지 않았을 때 sbmig 가 만드는 운영자 확인 가이드(``synthesized_guide``, 안 되면
+    변경마다 한 줄). ``report.language`` 를 따른다(로그 줄은 한국어 고정).
+
+    sbmig's guide when the LLM gave none: `synthesized_guide` (sbmig.build.depchanges), else one line per change."""
     try:
         from sbmig.build.depchanges import synthesized_guide
         text = str(synthesized_guide(list(changes), lang=lang) or "").strip()
@@ -278,7 +319,9 @@ def fallback_guide(changes: list, lang: str = "ko") -> str:
 
 
 def guide_lines(guide: str | None) -> list[str]:
-    """The guide as lines (bullets stripped, empty lines dropped)."""
+    """가이드를 줄 목록으로(글머리표·빈 줄 제거).
+
+    The guide as lines (bullets stripped, empty lines dropped)."""
     out = []
     for ln in str(guide or "").splitlines():
         t = _BULLET_RE.sub("", ln).strip()
@@ -288,7 +331,10 @@ def guide_lines(guide: str | None) -> list[str]:
 
 
 def approved_by(change: Any, cfg: Any) -> str:
-    """The table file that approves `change` (`libraries.yml` for a company entry, `jakarta_libraries.yml` for a
+    """이 변경을 승인한 표 파일 이름(회사 항목 ``libraries.yml``,
+    배포본 ``jakarta_libraries.yml``). 승인 아님 = "".
+
+    The table file that approves `change` (`libraries.yml` for a company entry, `jakarta_libraries.yml` for a
     shipped one); "" when not approved."""
     if not getattr(change, "approved", False):
         return ""
@@ -305,7 +351,11 @@ def approved_by(change: Any, cfg: Any) -> str:
 
 
 def log_major_upgrades(changes: list, guide: str, cfg: Any, offered: dict[str, str] | None = None) -> None:
-    """One WARNING per change (`메이저 업그레이드: <text> (<pom>) — 운영자 확인 필요 [승인: libraries.yml]` /
+    """변경마다 WARNING 한 줄(승인한 표, 또는 같은 메이저 jakarta 빌드가 있었다는 사실을 꼬리에), 그 다음
+    가이드를 INFO 로 최대 ``GUIDE_LOG_LINES`` 줄. 운영자가 회사 PC 에서 이 줄들만 보고도 무엇을 확인할지 알게
+    하려는 것.
+
+    One WARNING per change (`메이저 업그레이드: <text> (<pom>) — 운영자 확인 필요 [승인: libraries.yml]` /
     `[같은 메이저 jakarta 빌드 있음: 2.6.0]`), then the guide at INFO (`운영자 확인: …`, GUIDE_LOG_LINES lines)."""
     offered = offered or {}
     for c in changes:

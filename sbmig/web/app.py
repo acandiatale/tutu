@@ -1,4 +1,12 @@
-"""FastAPI web app: upload a project zip, run the migration in-process, watch it live over SSE.
+"""FastAPI 웹 앱: 프로젝트 zip 을 올리면 이 프로세스 안에서 이관을 돌리고 진행을 SSE 로 실시간 보여 준다.
+흐름상 위치: ``sbmig serve`` / ``uvicorn sbmig.web.app:app`` → 라우트 → :class:`~sbmig.web.runs.RunManager`
+(실행마다 작업 스레드 하나, LangGraph ``stream_graph``). 핵심: :func:`create_app` (라우트·수명 주기),
+:class:`TokenGuard` (접근 제어), ``_stream`` (SSE). 프로세스 안에서 돌리는 이유: 회사 규칙(uvicorn 아래
+LangGraph)이고, 그래야 그래프 노드가 끝날 때마다 ``node`` 이벤트로 바로 흘릴 수 있다. SSE 생성기는 스레드풀
+스레드에서 막혀 기다린다 — 이벤트 루프는 절대 막지 않는다(스레드 한도 256). 접근(round 10): ``result.zip`` 은
+회사 소스라 토큰이 있으면 모든 요청에 요구, 없으면 이 PC(루프백)만 받는다.
+
+FastAPI web app: upload a project zip, run the migration in-process, watch it live over SSE.
 
     uvicorn sbmig.web.app:app --port 8765          (env SBMIG_WEB_OUT, SBMIG_WEB_REPO_ROOT)
     sbmig serve --port 8765                         (same app, via uvicorn.run)
@@ -24,6 +32,8 @@ Access (round 10): the page hands out company source code (`result.zip`) and run
   reloaded without the token in the address bar; SameSite=Strict, so other sites cannot use it);
 * without a token only loopback clients (127.0.0.1 / ::1) are served — a LAN client gets 403 with the hint, even
   when plain `uvicorn … --host 0.0.0.0` was started without one (`sbmig serve` refuses to start like that).
+
+
 """
 from __future__ import annotations
 
@@ -67,7 +77,10 @@ _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
 
 
 def is_loopback_host(host: str | None) -> bool:
-    """127.0.0.0/8, ::1, `localhost` — an address only this machine can reach. `0.0.0.0` / `::` / a LAN address
+    """이 PC 에서만 닿는 주소인가(127.0.0.0/8, ::1, ``localhost``). ``0.0.0.0`` / ``::`` / 사내망 주소는
+    아니다. ``sbmig serve`` 가 토큰 없이 바깥에 열지 않으려고 쓴다.
+
+    127.0.0.0/8, ::1, `localhost` — an address only this machine can reach. `0.0.0.0` / `::` / a LAN address
     are not."""
     h = (host or "").strip().strip("[]").lower()
     if h in _LOOPBACK_NAMES:
@@ -79,7 +92,10 @@ def is_loopback_host(host: str | None) -> bool:
 
 
 def _remote_client(scope: Scope) -> bool:
-    """A client with a non-loopback IP address (a unix socket / the test client have no IP: local)."""
+    """루프백이 아닌 IP 의 클라이언트인가. IP 가 없는 것(유닉스 소켓, 테스트 클라이언트)은 로컬로 본다.
+    함정: 같은 PC 의 리버스 프록시 뒤에 두면 모든 클라이언트가 루프백으로 보인다(그때는 토큰을 켤 것).
+
+    A client with a non-loopback IP address (a unix socket / the test client have no IP: local)."""
     client = scope.get("client")
     host = client[0] if client else None
     try:
@@ -89,11 +105,15 @@ def _remote_client(scope: Scope) -> bool:
 
 
 def _cookie_value(token: str) -> str:
+    """쿠키 값 = 토큰의 해시: 토큰 자체는 브라우저에 남지 않는다(서버만 안다)."""
     return hashlib.sha256(("sbmig-web:" + token).encode("utf-8")).hexdigest()
 
 
 class TokenGuard:
-    """ASGI middleware (pure ASGI: SSE streams pass through untouched). See the module docstring."""
+    """접근 제어 미들웨어. 순수 ASGI 로 짰다 — 응답 본문을 감싸지 않으므로 SSE 스트림이 그대로 지나간다.
+    토큰이 있으면 모든 요청에 요구, 없으면 루프백 클라이언트만(모듈 docstring 참고).
+
+    ASGI middleware (pure ASGI: SSE streams pass through untouched). See the module docstring."""
 
     def __init__(self, app: ASGIApp, token: str | None = None):
         self.app = app
@@ -101,6 +121,9 @@ class TokenGuard:
         self.cookie = _cookie_value(token) if token else ""
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """요청 하나를 거른다. 토큰 없음: 원격 클라이언트는 403. 토큰 있음: Bearer 헤더나 쿠키가 맞으면 통과,
+        ``?token=`` 이 맞으면 쿠키를 심고(페이지는 토큰을 뺀 주소로 303, API 는 그 응답에 Set-Cookie 를
+        덧붙임), 그 밖은 401. lifespan 등 http / websocket 이 아닌 것은 그대로 넘긴다."""
         if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
@@ -115,6 +138,7 @@ class TokenGuard:
             return
         auth = req.headers.get("authorization", "")
         bearer = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        # compare_digest: 비교 시간 차이로 토큰을 한 글자씩 알아내지 못하게
         if (bearer and secrets.compare_digest(bearer, self.token)) or \
                 secrets.compare_digest(req.cookies.get(TOKEN_COOKIE, ""), self.cookie):
             await self.app(scope, receive, send)
@@ -133,6 +157,7 @@ class TokenGuard:
                 await resp(scope, receive, send)
                 return
 
+            # 순수 ASGI 라 응답 객체가 없다: 첫 메시지(http.response.start)의 헤더에 Set-Cookie 를 끼워 넣는다
             async def send_with_cookie(message):
                 if message["type"] == "http.response.start":
                     tmp = PlainTextResponse("")
@@ -149,6 +174,7 @@ class TokenGuard:
 
     @staticmethod
     async def _deny(scope: Scope, receive: Receive, send: Send, req: Request, status: int, message: str) -> None:
+        """거부 응답: 웹소켓은 1008 로 닫고, 페이지 요청은 안내 HTML, API 는 JSON ``{"error": …}``."""
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 1008})
             return
@@ -162,7 +188,10 @@ class TokenGuard:
 
 
 def resolve_max_upload(max_upload_mb: int | None = None) -> int:
-    """Upload limit in bytes: the argument (`sbmig serve --max-upload-mb`), else `$SBMIG_MAX_UPLOAD_MB`, else 512 MB.
+    """업로드 상한(바이트): 인자(``sbmig serve --max-upload-mb``) → ``$SBMIG_MAX_UPLOAD_MB`` → 512 MB 순.
+    0 = 상한 없음(980 MB zip 한 건 때문에 코드를 고치지 않도록, 2026-10-23). 음수·숫자 아님은 기본값 + 경고.
+
+    Upload limit in bytes: the argument (`sbmig serve --max-upload-mb`), else `$SBMIG_MAX_UPLOAD_MB`, else 512 MB.
     0 = no limit — the operator lifts the cap for one oversized project (a 980 MB zip, 2026-10-23) without touching
     the code; a negative or unreadable value falls back to the default and is logged."""
     source = "--max-upload-mb"
@@ -186,11 +215,15 @@ def resolve_max_upload(max_upload_mb: int | None = None) -> int:
 
 
 def describe_max_upload(max_upload: int) -> str:
+    """상한을 사람이 읽는 글로(``512 MB`` / ``no limit``) — 시작 로그와 413 응답에 쓴다."""
     return f"{max_upload // (1024 * 1024)} MB" if max_upload else "no limit"
 
 
 def _ensure_console_logging() -> None:
-    """Under plain `uvicorn sbmig.web.app:app` nobody configured the sbmig logger: show INFO on the console."""
+    """``uvicorn sbmig.web.app:app`` 으로 바로 띄우면 sbmig 로거를 아무도 설정하지 않는다: 콘솔에 INFO 를
+    보인다. 파일 핸들러(실행별 sbmig.log)만 있을 때도 콘솔 핸들러를 하나 붙인다.
+
+    Under plain `uvicorn sbmig.web.app:app` nobody configured the sbmig logger: show INFO on the console."""
     from sbmig.cli import harden_console_streams
 
     harden_console_streams()                 # a cp949 console must not turn every em dash into "--- Logging error ---"
@@ -207,17 +240,23 @@ def _ensure_console_logging() -> None:
 
 
 def _check_id(run_id: str) -> str:
+    """URL 의 실행 ID 검사(``RUN_ID_RE``): ``..`` 등으로 출력 폴더 밖을 가리키지 못하게. 틀리면 400."""
     if not RUN_ID_RE.match(run_id):
         raise HTTPException(400, "bad run id")
     return run_id
 
 
 def _sse(event: str, data: Any) -> bytes:
+    """SSE 한 덩어리(``event:`` + ``data:`` JSON + 빈 줄). ``ensure_ascii=False``: 한글을 그대로."""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n".encode()
 
 
 async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
-    """Async wrapper over the blocking `RunManager.events` generator: each `next()` runs in a worker thread."""
+    """막히는 ``RunManager.events`` 생성기를 비동기로 감싼다: ``next()`` 를 한 번씩 작업 스레드에서 돌려
+    이벤트 루프를 막지 않는다. 브라우저가 끊으면 finally 에서 생성기를 닫는다 (아직 ``next()`` 가 도는 중이면
+    닫지 못하고, 그 스레드는 다음 이벤트에서 스스로 끝난다).
+
+    Async wrapper over the blocking `RunManager.events` generator: each `next()` runs in a worker thread."""
     try:
         while True:
             item = await anyio.to_thread.run_sync(next, events, _END)
@@ -235,12 +274,18 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
 
 def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None,
                token: str | None = None) -> FastAPI:
-    """`token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served."""
+    """웹 앱을 만든다: 실행 관리자, 업로드 상한, 토큰(인자 → ``$SBMIG_WEB_TOKEN``), 라우트, 정적 파일, 수명
+    주기. 토큰이 있으면 모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다.
+
+    `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served."""
     load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
     mgr = RunManager(Path(out_dir), Path(repo_root))
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
 
+    # 수명 주기 — 시작: 콘솔 로그, 스레드 한도 올림(열린 SSE 스트림마다 스레드를 하나 쥔다). 종료: 실행
+    # 중·대기 중인 이관에 멈춤 요청 + 남은 Maven / OpenRewrite 프로세스 강제 종료 (안 하면 uvicorn 이 SSE
+    # 연결을 기다리고, 윈도우에서는 java.exe 가 서버보다 오래 산다)
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         _ensure_console_logging()
@@ -277,7 +322,9 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
     @app.get("/api/threads", response_class=PlainTextResponse)
     def threads() -> str:
-        """Every thread's stack (round 9c, operators on Windows: no SIGUSR1) — also written to <out>/threads-<ts>.txt."""
+        """모든 스레드의 스택(윈도우에는 SIGUSR1 이 없어 멈춘 곳을 보는 수단). <out>/threads-<ts>.txt 에도.
+
+        Every thread's stack (round 9c, operators on Windows: no SIGUSR1) — also written to <out>/threads-<ts>.txt."""
         from sbmig.core.diag import dump_threads, thread_dump_text
         p = dump_threads(mgr.out_dir)
         return (f"# written to {p}\n" if p else "") + thread_dump_text()
@@ -291,6 +338,9 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         length = request.headers.get("content-length")
         if max_upload and length and length.isdigit() and int(length) > max_upload:
             return too_large()
+        # 본문은 메모리에 올리지 않고 ``_uploads/.incoming-*.part`` 로 흘려 쓰며, 조각마다 상한과 zip
+        # 서명(PK)을 본다: 1 GB 가까운 zip 이 검사 전에 메모리에 두
+        # 번 올라가지 않게. 거부된 업로드 파일은 finally 에서 지운다
         # The body is streamed to <out>/_uploads/.incoming-*.part and checked on the way: a project zip close to a
         # gigabyte must not sit in memory (twice) before it is even validated. The limit and the zip signature are
         # enforced per chunk; the run manager moves the file into place, a rejected upload is deleted below.
@@ -314,6 +364,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
             if head != b"PK":
                 return JSONResponse({"error": "body is not a zip file"}, status_code=400)
             cfgs = [c for c in configs.split(",") if c]
+            # 설정 읽기·zip 풀기·오케스트레이터 만들기는 막히는 작업이라 스레드풀에서. 잘못된 요청은 400
             try:
                 rid = await run_in_threadpool(mgr.start_file, tmp, name, cfgs, stop_after or None,
                                               llm_provider or None)
@@ -332,15 +383,18 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     def events(run_id: str):
         if not mgr.status(_check_id(run_id))["exists"]:
             return JSONResponse({"error": "unknown run"}, status_code=404)
+        # X-Accel-Buffering: no — 앞단 프록시(nginx 등)가 이벤트를 모아 두었다 한꺼번에 보내지 않게
         return StreamingResponse(_stream(mgr.events(run_id)), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
+    # 멈춤은 그래프 노드 사이에서만 먹는다: 진행 중인 Maven 빌드·LLM 호출은 끊지 않는다(RunManager.stop)
     @app.post("/api/runs/{run_id}/stop")
     def stop(run_id: str) -> dict:
         return {"stopped": mgr.stop(_check_id(run_id))}
 
     @app.get("/api/runs/{run_id}/files/{name}")
     def files(run_id: str, name: str, download: str | None = None):
+        # 내려받을 수 있는 것은 SERVED_FILES 의 이름뿐(경로 조작 차단). zip / csv / jsonl 은 첨부로 내려준다
         if name not in SERVED_FILES:
             return JSONResponse({"error": "unknown file"}, status_code=404)
         path = mgr.run_dir(_check_id(run_id)) / name
@@ -358,6 +412,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     return app
 
 
+# 모듈을 읽는 순간 앱을 만든다: ``uvicorn sbmig.web.app:app`` 이 가리키는 객체. 출력 폴더·저장소 루트는 환경
+# 변수(.env 포함)에서, 없으면 ``out/web`` 과 이 패키지 루트
 load_dotenv_files()            # plain `uvicorn sbmig.web.app:app`: SBMIG_WEB_OUT / SBMIG_WEB_REPO_ROOT from .env as well
 app = create_app(Path(os.environ.get("SBMIG_WEB_OUT", "out/web")),
                  Path(os.environ.get("SBMIG_WEB_REPO_ROOT", str(PACKAGE_ROOT))))

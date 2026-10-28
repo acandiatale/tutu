@@ -1,4 +1,16 @@
-"""v2.1d dependency version policy — what the repository has for a library (docs/INTERFACES.md "v2.1d").
+"""v2.1d 의존성 버전 정책 — 저장소(회사 Nexus / Central)에 그 라이브러리의 어떤 릴리스가 있는지
+조회해 프롬프트에 '사실' 로 넣는다. 왜: 수정 프롬프트의 규칙 14 는 "javax 시절 라이브러리는 같은 메이저 중
+jakarta 빌드인 최신 릴리스로" 다. LLM 은 회사 Nexus 에 무엇이 있는지 모르고, 없는 버전을 지어내면 빌드 한
+라운드를 버린다 → sbmig 가 찾아서 "Dependency versions" 절로 넘긴다. 흐름상 위치: 수정 루프가 새 수정 / 보강
+LLM 호출 전에 케이스 뒤의 라이브러리마다 ``candidates`` → ``hint_lines`` (로그 ``의존성 버전 조회: <key>
+<현재> → 같은 메이저 …, 상위 …``). 마지막 줄은 판정(verdict):
+같은 메이저 jakarta 로 올려라 / 그 메이저엔 jakarta 가 없으니 상위 메이저 허용(``<verify>`` 필수) / 사람이
+allow_major 로 승인 / 어디에도 없으니 머물러라. 조회 순서: ``build.repository_url`` → settings 의 catch-all
+미러(자격증명 포함) → Central(offline 이 아니면) → 로컬 저장소. 지킬 것: 같은 메이저 우선; 시간 초과 / 연결
+실패가 2번 연속이면 그 실행에서 더는 묻지 않는다(폐쇄망에서 케이스마다 기다리지 않게); 절대 예외 없음(실패는
+``RepositoryVersions.error``).
+
+v2.1d dependency version policy — what the repository has for a library (docs/INTERFACES.md "v2.1d").
 
 Why: the policy in the fix prompt says "raise a javax-era library to the newest release of the SAME major that is a
 jakarta build". The LLM cannot know which releases the company's Nexus has, and guessing a version that does not
@@ -18,6 +30,8 @@ prereleases only with `libraries.include_prerelease`), the newest release of eve
 one per higher major, newest first; budget left → down the jakarta higher majors to find the first jakarta release)
 whether the release is a jakarta build (its pom declares a `jakarta.*` dependency or a `jakarta` classifier /
 artifact) and the minimum Java it states. `hint_lines(rv, entry)` renders the prompt lines.
+
+
 """
 from __future__ import annotations
 
@@ -44,9 +58,13 @@ Fetch = Callable[[str, Optional[tuple[str, str]], float], Optional[str]]   # (ur
 
 CENTRAL = "https://repo1.maven.org/maven2/"
 MAX_FETCH_BYTES = 8 * 1024 * 1024
+# 연속 2번 시간 초과 / 연결 실패면 이 실행 동안 저장소를 건너뛴다(미러
+# 없는 폐쇄망에서 라이브러리마다 timeout 을 기다리지 않게).
 UNREACHABLE_LIMIT = 2                 # timeouts / connection failures in a row → the repository is skipped (one run)
 _TOKEN_RE = re.compile(r"\d+|[A-Za-z]+")
 _ENV_RE = re.compile(r"\$\{env\.([A-Za-z0-9_.-]+)\}")
+# '아직 릴리스가 아님' 한정어 — 기본은 후보에서 뺀다(``libraries.include_prerelease``). 아래 _RELEASE_* 는
+# 붙어 있어도 릴리스인 한정어.
 # qualifiers that mean "not a release yet" (Maven's order: alpha < beta < milestone < rc < snapshot < release)
 _PRERELEASE_ORDER = {"alpha": 2, "a": 2, "ea": 1, "beta": 3, "b": 3, "milestone": 4, "m": 4, "preview": 4, "pre": 4,
                      "rc": 5, "cr": 5, "snapshot": 6, "dev": 1, "nightly": 1, "incubating": 1}
@@ -55,6 +73,8 @@ _RELEASE_EQUAL = {"release", "final", "ga"}
 _RELEASE_OTHER = {"sp", "jre", "jdk", "java", "android", "v", "r", "jakarta", "javax", "ee", "redhat", "osgi",
                   "bundle", "jdk8", "jdk11", "jdk17"}
 _END = (1, 0, "")
+# javax 로 시작하지만 Java EE 가 아니라 jakarta 로 옮겨지지
+# 않는 API — 이것만 쓰는 pom 을 'javax 빌드' 로 보지 않는다.
 _NON_EE_JAVAX = ("javax.cache", "javax.money", "javax.measure", "javax.jdo", "javax.media", "javax.vecmath",
                  "javax.help", "javax.usb", "javax.time")
 _logged_encrypted: set[str] = set()
@@ -68,7 +88,10 @@ def _tokens(v: str) -> list[str]:
 
 
 def parse_version(v: str) -> tuple:
-    """A sortable key for Maven versions: numeric parts as ints, trailing zeros ignored (1.0 == 1.0.0), a release
+    """Maven 버전 정렬 키: 숫자는 정수, 끝의 0 은 무시(1.0 == 1.0.0), 릴리스가 그 프리릴리스보다 위(3.3.0-RC1
+    < 3.3.0 < 3.3.1), ``sp`` / ``jre`` 등은 같은 릴리스보다 위, 모르는 단어는 가장 아래. 절대 예외 없음.
+
+    A sortable key for Maven versions: numeric parts as ints, trailing zeros ignored (1.0 == 1.0.0), a release
     above its prereleases (3.3.0-RC1 < 3.3.0 < 3.3.1, 2.6.0-M1 < 2.6.0), `sp` / `jre` / … above the plain release,
     unknown words lowest. Never raises; junk sorts low."""
     try:
@@ -107,7 +130,10 @@ def _release_word(t: str) -> bool:
 
 
 def is_prerelease(v: str) -> bool:
-    """milestone / RC / alpha / beta / SNAPSHOT / preview / ea / cr spellings (`2.6.0-M1`, `3.3.0.RC2`,
+    """프리릴리스인가: milestone / RC / alpha / beta / SNAPSHOT / preview / ea / cr, 그리고 숫자 뒤의 '릴리스
+    한정어가 아닌' 모든 단어. 숫자로 시작하지 않는 버전(RELEASE, LATEST, 쓰레기 값)도 릴리스가 아니다.
+
+    milestone / RC / alpha / beta / SNAPSHOT / preview / ea / cr spellings (`2.6.0-M1`, `3.3.0.RC2`,
     `1.0-SNAPSHOT`), and any other word after the numbers that is not a release qualifier (`3.0-alpa-1`);
     `2.6.0`, `2.7.18.RELEASE`, `5.6.15.Final`, `33.0.0-jre`, `1.0-sp1`, `9.4.53.v20231009` are releases. A version
     that does not start with a number (`RELEASE`, `LATEST`, junk) is not a release either."""
@@ -148,7 +174,9 @@ def _txt(el: Any, name: str) -> str:
 
 
 def _resolve_env(value: str) -> Optional[str]:
-    """`${env.NAME}` from the environment; None when a variable is unset or another `${…}` stays."""
+    """``${env.NAME}`` 을 환경 변수로 푼다. 변수가 없거나 다른 ``${…}`` 가 남으면 None(그 값은 쓰지 않는다).
+
+    `${env.NAME}` from the environment; None when a variable is unset or another `${…}` stays."""
     missing = False
 
     def repl(m: re.Match[str]) -> str:
@@ -176,7 +204,11 @@ def _parse_xml(text: str) -> Any:
 
 
 def mirror_from_settings(path: str) -> Optional[tuple[str, Optional[tuple[str, str]]]]:
-    """(url, credentials) of the catch-all mirror (`<mirrorOf>*</mirrorOf>` / `external:*`, else the first mirror) of
+    """settings.xml 의 catch-all 미러(``*`` / ``external:*``, 없으면 첫 미러)의 (url, 자격증명).
+    자격증명은 미러 id 와 같은 ``<server>`` 에서(``${env.X}`` 해석; 암호화된 비밀번호면 인증 없이 읽고 로그 한
+    번). 미러가 없거나 못 읽으면 None.
+
+    (url, credentials) of the catch-all mirror (`<mirrorOf>*</mirrorOf>` / `external:*`, else the first mirror) of
     a settings.xml; credentials from the `<server>` with the mirror's id (`${env.X}` resolved; encrypted → None).
     None when the file has no mirror / cannot be read."""
     try:
@@ -231,7 +263,10 @@ def _pom_root(text: str) -> Any:
 
 
 def pom_is_jakarta(text: str) -> Optional[bool]:
-    """True when the pom declares a `jakarta.*` dependency (or an artifactId / classifier with `jakarta`, its own
+    """pom 이 jakarta 빌드인가: ``jakarta.*`` 의존성(또는 artifactId / classifier 에 jakarta, 자기 artifactId
+    포함)이 있으면 True, javax EE 의존성만 있으면 False, 둘 다 아니면 None(모름).
+
+    True when the pom declares a `jakarta.*` dependency (or an artifactId / classifier with `jakarta`, its own
     artifactId included), False when it declares `javax.*` EE dependencies only, None when neither."""
     root = _pom_root(text)
     if root is None:
@@ -267,7 +302,10 @@ def _java_number(v: str) -> Optional[int]:
 
 
 def pom_java(text: str) -> Optional[int]:
-    """The minimum Java a pom states: `maven.compiler.release` / `.target` / `.source` / `java.version` properties,
+    """pom 이 밝힌 최소 Java: ``maven.compiler.release`` / ``.target`` / ``.source`` / ``java.version``
+    프로퍼티, 없으면 maven-compiler-plugin 의 ``<release>`` / ``<target>``(``1.8`` → 8).
+
+    The minimum Java a pom states: `maven.compiler.release` / `.target` / `.source` / `java.version` properties,
     else `<release>` / `<target>` of maven-compiler-plugin (`1.8` → 8)."""
     root = _pom_root(text)
     if root is None:
@@ -300,6 +338,7 @@ def pom_java(text: str) -> Optional[int]:
 
 
 def _metadata_versions(text: str) -> list[str]:
+    """maven-metadata.xml 의 ``<versions>`` 목록, 없으면 ``<release>`` / ``<latest>``."""
     root = _pom_root(text or "")
     if root is None:
         return []
@@ -329,6 +368,9 @@ def _sorted_unique(vs: list[str]) -> list[str]:
 # the lookup
 # ---------------------------------------------------------------------------------------------------------------------
 class RepositoryLookup:
+    """저장소 한 곳(기본 URL 하나)에서 릴리스 목록(maven-metadata.xml)과 후보 pom 을 읽는 조회기. 한 실행에
+    하나, 결과는 인스턴스 안에 캐시한다. 테스트는 진짜 저장소에 나가지 않는다: ``tests/conftest.py`` 가 이
+    클래스를 오프라인 대역으로 바꾸고, ``tests/build/test_repo_versions.py`` 는 가짜 ``fetch`` 를 주입한다."""
     def __init__(self, cfg: Config, *, fetch: Optional[Fetch] = None) -> None:
         self.cfg = cfg
         build = getattr(cfg, "build", None)
@@ -348,7 +390,10 @@ class RepositoryLookup:
 
     # ------------------------------------------------------------------ http
     def _urllib_fetch(self, url: str, credentials: Optional[tuple[str, str]], timeout: float) -> Optional[str]:
-        """GET with `User-Agent: sbmig`, basic auth when credentials, urllib's proxy handling (environment). The
+        """GET 한 번(User-Agent sbmig, 자격증명이 있으면 basic auth, 프록시는 환경 변수대로). 오류면 None —
+        404 는 경고가 아니다(후보 대부분은 원래 없다).
+
+        GET with `User-Agent: sbmig`, basic auth when credentials, urllib's proxy handling (environment). The
         text, or None on any error (404 is not a warning: most candidates are simply absent)."""
         self._last_error = ""
         headers = {"User-Agent": "sbmig"}
@@ -378,7 +423,11 @@ class RepositoryLookup:
         return None
 
     def _fetch(self, url: str) -> Optional[str]:
-        """One GET through the fetch function. After `UNREACHABLE_LIMIT` timeouts / connection failures in a row the
+        """GET 한 번. 시간 초과 / 연결 실패가 ``UNREACHABLE_LIMIT`` 번 연속이면 이 인스턴스(한 실행)는 다시
+        묻지 않는다 — 미러 없는 폐쇄망이면 모든 케이스의 모든 라이브러리마다 ``repository_timeout_seconds`` 를
+        기다리게 된다. 404 / 401 같은 응답은 '닿는다' 는 뜻이라 연속 횟수를 0 으로 돌린다.
+
+        One GET through the fetch function. After `UNREACHABLE_LIMIT` timeouts / connection failures in a row the
         repository is not contacted again by this instance (one run): an air-gapped host without a mirror would
         otherwise wait `repository_timeout_seconds` for every library of every case."""
         if self._dead:
@@ -406,7 +455,11 @@ class RepositoryLookup:
 
     # ------------------------------------------------------------------ where
     def repository_url(self) -> Optional[str]:
-        """The base URL used (trailing `/`), None when none (offline without a mirror)."""
+        """쓸 기본 URL(끝 ``/``), 없으면 None(offline + 미러 없음). 순서: ``build.repository_url``(미러와 같은
+        URL 이면 그 자격증명을 빌림) → ``build.settings_file``(없으면 Maven 이 실제로 읽는
+        ``~/.m2/settings.xml``)의 미러 → offline 이 아니면 Maven Central.
+
+        The base URL used (trailing `/`), None when none (offline without a mirror)."""
         if self._url_done:
             return self._url
         self._url_done = True
@@ -440,6 +493,7 @@ class RepositoryLookup:
             return None
 
     def _local_versions(self, d: Optional[Path]) -> list[str]:
+        """로컬 저장소 디렉토리가 아는 버전들: maven-metadata*.xml 의 목록 + pom 이 든 하위 디렉토리 이름."""
         if d is None or not d.is_dir():
             return []
         out: list[str] = []
@@ -458,6 +512,8 @@ class RepositoryLookup:
 
     # ------------------------------------------------------------------ what
     def _lookup(self, group_id: str, artifact_id: str) -> tuple[list[str], str, str]:
+        """(버전 목록, 출처, 오류)를 (g, a) 별로 캐시. URL 의 maven-metadata.xml → 없으면 로컬 저장소. 오류
+        문구는 프롬프트 줄에 그대로 나가므로 경우를 나눈다(건너뜀 / 시간 초과 / 못 읽음 / 없음 / offline)."""
         key = (group_id, artifact_id)
         if key in self._versions:
             return self._versions[key]
@@ -494,10 +550,13 @@ class RepositoryLookup:
         return result
 
     def versions(self, group_id: str, artifact_id: str) -> list[str]:
-        """Every release of the artifact the repository / local repository knows, sorted (oldest → newest)."""
+        """저장소 / 로컬 저장소가 아는 그 아티팩트의 모든 릴리스(오래된 것 → 최신).
+
+        Every release of the artifact the repository / local repository knows, sorted (oldest → newest)."""
         return list(self._lookup(group_id, artifact_id)[0])
 
     def pom_text(self, group_id: str, artifact_id: str, version: str) -> Optional[str]:
+        """후보 버전의 pom 텍스트(URL, 없으면 로컬 저장소), 없으면 None. (g, a, v) 별 캐시."""
         key = (group_id, artifact_id, version)
         if key in self._poms:
             return self._poms[key]
@@ -519,7 +578,11 @@ class RepositoryLookup:
         return self._poms[key]
 
     def candidates(self, key: str, current: Optional[str]) -> RepositoryVersions:
-        """See the module docstring. `key` = groupId:artifactId."""
+        """``key``(groupId:artifactId)와 현재 버전으로 RepositoryVersions 를 만든다: 현재보다 새로운 같은
+        메이저 릴리스(오래된 → 최신), 상위 메이저마다 최신 하나, 그리고 ``_check_poms`` 로 jakarta 여부·최소
+        Java. 프리릴리스는 ``libraries.include_prerelease`` 일 때만. 절대 예외 없음.
+
+        See the module docstring. `key` = groupId:artifactId."""
         cur = current if current and "${" not in current else None
         rv = RepositoryVersions(key=key, current=current, major=major_of(cur))
         try:
@@ -556,6 +619,9 @@ class RepositoryLookup:
         return rv
 
     def _check_poms(self, g: str, a: str, rv: RepositoryVersions, by_major: dict[int, list[str]]) -> None:
+        """후보 pom 검사(모두 합쳐 최대 ``libraries.max_pom_checks``개): 같은 메이저는 최신부터 내려가다 javax
+        빌드를 만나면 멈춘다(그보다 오래된 것도 javax 이므로). 다음 상위 메이저마다 최신 하나. 예산이 남으면
+        jakarta 인 상위 메이저를 첫 jakarta 릴리스까지 내려간다(``first_jakarta``)."""
         budget = self.max_pom_checks
         jakarta_seen: dict[str, bool] = {}
 
@@ -603,6 +669,8 @@ class RepositoryLookup:
 # prompt lines
 # ---------------------------------------------------------------------------------------------------------------------
 def _tag(c: VersionCandidate, first_jakarta: Optional[str] = None) -> str:
+    """후보 하나의 표시 '2.6.0 (jakarta ✓, Java 17)'. 같은 메이저의 첫 jakarta
+    릴리스가 따로 있으면 덧붙인다."""
     bits: list[str] = []
     if c.jakarta is True:
         bits.append("jakarta ✓")
@@ -620,6 +688,7 @@ def _tag(c: VersionCandidate, first_jakarta: Optional[str] = None) -> str:
 
 
 def _listing(cands: list[VersionCandidate], first_jakarta: Optional[str], cap: int = 6) -> str:
+    """후보 목록 표시: 최신 ``cap`` 개만, 앞의 나머지는 '… (+n)'."""
     shown = cands[-cap:]
     rest = len(cands) - len(shown)
     if first_jakarta in {c.version for c in shown}:
@@ -629,7 +698,11 @@ def _listing(cands: list[VersionCandidate], first_jakarta: Optional[str], cap: i
 
 
 def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
-    """Prompt lines for one library: the table entry first (`library_hint_line`), then what the repository has
+    """라이브러리 하나의 프롬프트 줄들: 표 항목 줄(``library_hint_line``) 먼저, 다음 저장소 사실(같은 메이저의
+    새 릴리스와 jakarta ✓ / javax, 상위 메이저들), 마지막에 판정 한 줄(``_verdict_line``). 조회 실패면 '같은
+    메이저에 머물라' 한 줄. 절대 예외 없음(프롬프트 줄 때문에 수정이 깨지면 안 된다).
+
+    Prompt lines for one library: the table entry first (`library_hint_line`), then what the repository has
     (`<key> — current 2.4.2; same major (2.x) in the repository, newer than current: 2.5.0 (javax), 2.6.0 (jakarta
     ✓, Java 17)`; `<key> — higher majors: 3.x: 3.3.0 (jakarta ✓; first jakarta release 3.2.0)`), or the lookup
     error in one line. Never raises."""
@@ -671,7 +744,14 @@ def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
 
 
 def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
-    """ONE explicit rule-14 verdict so the model does not have to combine the table line and the repository line
+    """규칙 14 의 판정을 한 줄로 명시한다 — 모델이 표 줄과 저장소 줄을 스스로 조합하지 않게(2026-10-27,
+    "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"). 코드의 검사 순서: 사람의 ``allow_major`` → 같은 메이저
+    jakarta(저장소 ✓, 또는 표가 현재 메이저의 더 새 버전을 앎) → 그 메이저엔 없고 표 / 저장소가 상위 메이저
+    jakarta 를 앎(표 버전, 없으면 jakarta 인 가장 높은 메이저의 최신; 메이저 업그레이드 허용, ``<verify>``
+    필수) → 릴리스는 있는데 jakarta 가 어디에도 없음(머물고
+    ``<analysis>`` 에 적기). 사실이 없으면(조회 오류, 현재 버전 모름) "".
+
+    ONE explicit rule-14 verdict so the model does not have to combine the table line and the repository line
     itself (2026-10-27, "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"):
     * a same-major jakarta build exists (repository ✓, or the table pins one on the current line) → raise to it, no
       `<verify>`;

@@ -1,4 +1,17 @@
-"""The company LLM gateway, the plain way: ``requests.post(url, headers=, json=, timeout=)``.
+"""회사 LLM 게이트웨이 클라이언트 — 평범하게 ``requests.post(url,
+headers=, json=, timeout=)`` 한 번(기본 provider `company`). 흐름상 위치: `make_llm_client(cfg)` 가 만든다.
+수정 루프(LLMFixer)·구조 검토·운영자 가이드(verify_guide)의 LLM 호출이 모두 여기를 지나고, `sbmig llm-probe`
+와 fleet preflight 는 `probe_llm` 으로 작은 호출 하나를 보낸다. 설정은 환경변수 / `.env` 뿐: LLM_BASE_URL(전체
+엔드포인트, 그대로 씀), LLM_API_KEY(bearer 토큰), LLM_MODEL, 선택 LLM_RESPONSE_PATH. 본문은 `{model, messages,
+**llm.payload_extra}`(기본 `need_origin`) — 게이트웨이는 messages 만 받고(tools 없음), max_tokens /
+temperature / stop 은 보내지 않는다(게이트웨이 소관). 왜 이렇게 단순한가: 게이트웨이 503 오류를 겪은 뒤 사용자
+요청 — yml 프로필·LangChain·httpx 설정·세션·커넥션 풀·TLS 설정 없이, 다른 사내 에이전트가 손으로 하는 그대로
+둔다. 새 기능을 붙이고 싶어도 이 모양은 유지할 것. 지킬 것: 키는 헤더에만 넣고 repr·로그·기록에 남기지 않는다.
+실패 문구(round 10)는 운영자가 콘솔에서 옮겨 적고 루프가 분류한다 — 전송 장애는 `cause=<예외 클래스>: <ASCII
+메시지>`, 빈 답 + `finish_reason=length` 는 요청 거절. 재시도는 전송 오류·RETRY_STATUS 만 `max_retries`
+번(Retry-After 우선 최대 120초, 없으면 1·2·4…초), 호출 하나의 벽시계 상한은 기본 `timeout + 30초`.
+
+The company LLM gateway, the plain way: ``requests.post(url, headers=, json=, timeout=)``.
 
 Everything comes from the environment / ``.env`` (read by ``load_config``):
 
@@ -26,6 +39,8 @@ Failure texts (round 10; ``sbmig.loop.fixloop`` classifies them, operators retyp
 
 ``probe_llm(cfg)`` is the one small call shared by ``sbmig llm-probe`` and the fleet preflight (``ProbeResult.line()``
 is the short, retypeable ``LLM-PROBE …`` line).
+
+
 """
 from __future__ import annotations
 
@@ -55,7 +70,9 @@ PostFn = Callable[..., Any]   # requests.post-compatible: post(url, headers=, js
 
 
 class LLMHardDeadline(requests.RequestException):
-    """One call outlived `hard_deadline_s` (the gateway never closed the connection); a transport failure."""
+    """호출 하나가 `hard_deadline_s` 를 넘김(게이트웨이가 연결을 닫지 않음) — 전송 장애로 친다.
+
+    One call outlived `hard_deadline_s` (the gateway never closed the connection); a transport failure."""
 
 
 CAUSE_CHARS = 120
@@ -68,7 +85,10 @@ _OS_ERROR_RE = re.compile(r"\[(?:WinError|Errno) -?\d+\][^'\"()]*")
 
 
 def ascii_safe(text: Any, limit: int = CAUSE_CHARS) -> str:
-    """One line of ASCII an operator can retype: whitespace collapsed, every non-ASCII run (a Korean OS message, an
+    """운영자가 옮겨 적을 수 있는 ASCII 한 줄: 공백 정리, 비ASCII 덩어리(한국어 OS 메시지, 긴 대시)는 `?`,
+    `limit` 자에서 자름. 회사 Windows PC 는 복사·붙여넣기가 안 되어 콘솔 줄을 손으로 다시 친다.
+
+    One line of ASCII an operator can retype: whitespace collapsed, every non-ASCII run (a Korean OS message, an
     em dash) replaced by `?`, cut at `limit` characters."""
     t = _NON_ASCII_RUN_RE.sub("?", " ".join(str(text).split()))
     return t if len(t) <= limit else t[:max(0, limit - 3)] + "..."
@@ -82,7 +102,11 @@ def _exc_text(exc: BaseException) -> str:
 
 
 def transport_cause(exc: BaseException, limit: int = CAUSE_CHARS) -> str:
-    """`<ExceptionClass>: <short message>` for a transport failure: the class is the outer one (`ConnectionError`,
+    """전송 장애의 `<예외 클래스>: <짧은 메시지>`: 클래스는 바깥 것(ConnectionError, ProxyError, SSLError,
+    ConnectTimeout, ReadTimeout, LLMHardDeadline), 메시지는 requests / urllib3 가 감싼 가장 안쪽 이유. 잘려도
+    WinError / Errno 번호는 남긴다.
+
+    `<ExceptionClass>: <short message>` for a transport failure: the class is the outer one (`ConnectionError`,
     `ProxyError`, `SSLError`, `ConnectTimeout`, `ReadTimeout`, `LLMHardDeadline`), the message the innermost
     reason requests / urllib3 wrapped (`Failed to establish a new connection: [WinError 10061] ?`,
     `[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: …`) — what used to be cut off after 300 chars."""
@@ -113,6 +137,7 @@ EMPTY_LENGTH_MESSAGE = ("empty answer with finish_reason=length: request rejecte
 
 
 def finish_reason_of(data: Any) -> Optional[str]:
+    """응답 JSON 의 finish_reason(choices[0] → 최상위 finish_reason → stop_reason 순)."""
     if not isinstance(data, dict):
         return None
     finish = None
@@ -123,6 +148,9 @@ def finish_reason_of(data: Any) -> Optional[str]:
 
 
 class CompanyClient:
+    """회사 LLM 게이트웨이 클라이언트(LLMClientLike). 요청 하나 =
+    `requests.post(url, headers={Authorization: Bearer …}, json={model, messages, **payload_extra}, timeout)`;
+    실패하면 재시도 후 LLMError."""
     provider = "company"
 
     def __init__(self, url: str, api_key: str, model: str, *, payload_extra: Optional[dict] = None,
@@ -141,6 +169,8 @@ class CompanyClient:
         self._post = post or requests.post
         self._sleep = sleep
         self.heartbeat_s = float(heartbeat_s)       # "still in flight" log line every N s while a call blocks (0 = off)
+        # 벽시계 상한: requests 의 timeout 은 바이트 사이 침묵만 센다 — 연결을 붙잡고 조금씩 흘리는
+        # 게이트웨이는 실행을 몇 시간씩 멈출 수 있어, 상한을 넘으면 호출을 버리고 전송 장애로 처리한다
         # wall-clock cap on one call: `requests` timeout only counts silence between bytes, so a gateway that keeps the
         # connection open (keep-alive / trickled chunks) can hang a run for hours; past the deadline the call is
         # abandoned (its thread is left to die) and reported as a transport failure (retry → cool-down → unavailable)
@@ -151,19 +181,28 @@ class CompanyClient:
 
     # ---- the two things that go over the wire
     def headers(self) -> dict[str, str]:
+        """보낼 헤더: `Authorization: Bearer <키>` + `llm.extra_headers`. 이 dict 는 로그·기록·화면에 내보내지
+        말 것(키가 들어 있다)."""
         return {"Authorization": f"Bearer {self._api_key}", **self.extra_headers}
 
     def payload(self, messages: list[ChatMessage], model: Optional[str] = None) -> dict[str, Any]:
+        """보낼 JSON 본문: `{model, messages: [{role, content}], **payload_extra}` — 게이트웨이 계약
+        그대로(messages 만, tools·생성 파라미터 없음)."""
         return {"model": model or self.model,
                 "messages": [{"role": m.role, "content": m.content} for m in messages],
                 **self.payload_extra}
 
     def post_once(self, payload: dict[str, Any]) -> Any:
-        """One ``requests.post`` with the exact call shape; returns the ``requests.Response``."""
+        """정확히 그 호출 모양의 ``requests.post`` 한 번(probe 와 재시도 루프가 함께 쓴다).
+
+        One ``requests.post`` with the exact call shape; returns the ``requests.Response``."""
         return self._post(self.url, headers=self.headers(), json=payload, timeout=self.timeout)
 
     def _post_with_heartbeat(self, payload: dict[str, Any], label: str) -> Any:
-        """post_once + an INFO line every `heartbeat_s` while the gateway has not answered (operators can tell a
+        """post_once 를 작업 스레드에서 돌리고, 답이 없는 동안 `heartbeat_s` 마다 INFO 한 줄(운영자가 느린
+        답과 멈춘 실행을 구별). `hard_deadline_s` 가 지나면 스레드를 버려 두고 LLMHardDeadline 을 던진다.
+
+        post_once + an INFO line every `heartbeat_s` while the gateway has not answered (operators can tell a
         slow answer from a hung run; the lines reach <run dir>/sbmig.log and the web UI log panel)."""
         done = threading.Event()
         t0 = time.monotonic()
@@ -173,6 +212,8 @@ class CompanyClient:
                 log.info("llm call still in flight: %.0fs elapsed (timeout %.0fs) — %s", time.monotonic() - t0,
                          self.timeout, label)
 
+        # 두 스레드 모두 호출한 쪽 contextvars 의 복사본에서 돈다 — 웹 앱의 실행별 로그 필터가 이 값으로 줄을
+        # 나누므로, 이것이 없으면 heartbeat 줄이 sbmig.log 에 남지 않는다
         # both helper threads run in a copy of the caller's context: the web app's per-run log filter attributes
         # records by the contextvar the run thread set, so without this the heartbeat lines never reach sbmig.log
         th = threading.Thread(target=contextvars.copy_context().run, args=(beat,), name="llm-heartbeat", daemon=True)
@@ -203,6 +244,9 @@ class CompanyClient:
     def complete(self, messages: list[ChatMessage], *, model: Optional[str] = None, max_tokens: Optional[int] = None,
                  temperature: Optional[float] = None, stop: Optional[list[str]] = None, role: Optional[str] = None,
                  metadata: Optional[dict] = None, **_ignored: Any) -> LLMResponse:
+        """메시지를 게이트웨이로 보낸다(LLMClientLike). `max_tokens` / `temperature` / `stop` / `role` /
+        `metadata` 는 받기만 하고 보내지 않는다(RecordingClient 가 role / metadata 를 기록). DEBUG 로그에는
+        프롬프트 해시·글자 수만."""
         payload = self.payload(messages, model)
         if log.isEnabledFor(logging.DEBUG):
             log.debug("llm request role=%s model=%s prompt_sha256=%s chars=%d", role or "-", payload["model"],
@@ -211,6 +255,9 @@ class CompanyClient:
             return self._complete(messages, payload, role)
 
     def _complete(self, messages: list[ChatMessage], payload: dict[str, Any], role: Optional[str]) -> LLMResponse:
+        """재시도 루프: 시도마다 INFO 한 줄(URL·프롬프트 글자 수·timeout). 전송 오류(`cause=` 계산)와
+        RETRY_STATUS(503 등)는 다시(Retry-After 우선 최대 120초, 없으면 1·2·4…초, 최대 30초), 그 밖의 HTTP
+        오류는 즉시 LLMError. 포기 문구에는 마지막이 전송 장애면 `cause=`, HTTP 면 본문 앞부분이 들어간다."""
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
@@ -263,6 +310,9 @@ class CompanyClient:
                        f"LLM request failed after {self.max_retries + 1} attempt(s) (status={last_status}): {last_body[:200]}")
 
     def _parse(self, data: Any, model: str) -> LLMResponse:
+        """게이트웨이 JSON → LLMResponse. 콘텐츠 필터에 걸림 → LLMError(이 요청만의 거절, 장애 아님), 빈 답 +
+        finish_reason=length → LLMError(요청 크기 문제), 잘린
+        답은 경고만. 토큰 사용량은 `usage` 가 있을 때만."""
         filtered = content_filter_reason(data)
         if filtered:
             # Azure-style gateways answer HTTP 200 with finish_reason=content_filter and a null message.content when
@@ -298,7 +348,10 @@ class CompanyClient:
 
 
 def content_filter_reason(data: Any) -> Optional[str]:
-    """Why an OpenAI / Azure-style response carries no answer because of the content filter, else None:
+    """OpenAI / Azure 식 응답이 콘텐츠 필터 때문에 답이 없으면
+    그 이유, 아니면 None(HTTP 200 이어도 걸러진 답일 수 있다).
+
+    Why an OpenAI / Azure-style response carries no answer because of the content filter, else None:
     `choices[0].finish_reason == "content_filter"`, a `content_filter_result` entry with `filtered: true` next to an
     empty message, or a `prompt_filter_results[*].content_filter_results` entry with `filtered: true`."""
     if not isinstance(data, dict):
@@ -332,13 +385,16 @@ PROBE_SKIP_PROVIDERS = ("fake",)          # nothing to reach: the preflight skip
 
 
 def probe_messages(prompt: str = PROBE_PROMPT, no_system: bool = False) -> list[dict]:
+    """probe 요청 메시지: system 한 줄 + "pong" 요청(`sbmig llm-probe --no-system` 이면 user 하나만)."""
     msgs = [] if no_system else [{"role": "system", "content": "You are a helpful assistant."}]
     return msgs + [{"role": "user", "content": prompt}]
 
 
 @dataclass
 class ProbeResult:
-    """What one probe call showed. `kind` (when not ok): config | transport | http | reply | rejected."""
+    """probe 호출 하나의 결과. 실패 종류 `kind`: config | transport | http | reply | rejected.
+
+    What one probe call showed. `kind` (when not ok): config | transport | http | reply | rejected."""
     ok: bool
     provider: str = ""
     model: str = ""
@@ -356,7 +412,9 @@ class ProbeResult:
 
     @property
     def transient(self) -> bool:
-        """A failure that may go away by itself (gateway down / overloaded, network) — not a configuration error."""
+        """저절로 나아질 수 있는 실패인가(게이트웨이 다운·과부하, 네트워크) — 설정 오류가 아님.
+
+        A failure that may go away by itself (gateway down / overloaded, network) — not a configuration error."""
         if self.ok:
             return False
         if self.kind == "transport":
@@ -364,7 +422,9 @@ class ProbeResult:
         return self.kind == "http" and self.status is not None and (self.status >= 500 or self.status in (408, 429))
 
     def line(self) -> str:
-        """`LLM-PROBE ok …` / `LLM-PROBE FAIL <kind> …`: short, ASCII, retypeable."""
+        """운영자가 옮겨 적는 한 줄(짧은 ASCII).
+
+        `LLM-PROBE ok …` / `LLM-PROBE FAIL <kind> …`: short, ASCII, retypeable."""
         head = f"provider={self.provider} model={ascii_safe(self.model, 60)}"
         if self.ok:
             return (f"LLM-PROBE ok {head} status={self.status if self.status is not None else '-'} "
@@ -375,7 +435,11 @@ class ProbeResult:
 
 def probe_llm(cfg: Any, prompt: str = PROBE_PROMPT, *, no_system: bool = False,
               on_request: Optional[Callable[[dict], None]] = None) -> ProbeResult:
-    """Send ONE small request with the configured provider (no retries: a probe answers fast or says why not).
+    """설정된 provider 로 작은 요청 하나(재시도 없음 — probe 는 빨리 답하거나 왜 안 되는지 말한다). company 면
+    실제 실행과 똑같은 payload 로 `post_once` 한 번, 다른 provider 는 `complete(…, role="other")`. LLM
+    문제로는 예외를 내지 않고 ProbeResult 로 돌려준다(`sbmig llm-probe`, fleet preflight).
+
+    Send ONE small request with the configured provider (no retries: a probe answers fast or says why not).
 
     company provider: a single `CompanyClient.post_once` with the configured timeout (the exact payload the runs
     send); other providers: `client.complete(…, role="other")`. Never raises for an LLM problem."""

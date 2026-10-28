@@ -142,6 +142,12 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
+- **Korean handover comments (2026-10-28, the business team's request)**: every module under `sbmig/` starts its
+  docstring with a Korean block and every public top-level class / function has Korean first in its docstring, the English
+  original kept unchanged after it; inline Korean comments say *why*. Convention + terminology table:
+  `docs/v2/CODE-COMMENTS-KO.md` (exemplar `sbmig/kb/store.py`, package map `sbmig/__init__.py`);
+  `tests/docs/test_korean_comments.py` fails for a new module or public definition without Korean. Prompt `.md` files,
+  YAML, tests and `coding/` stay English.
 - e2e needs **JDK 21** (`JAVA21_HOME`), Maven and network to Maven Central: `scripts/e2e.sh` → `out/e2e/summary.md`
   (`--only boot2,msa` for a subset; the reuse scenario needs pure-java before java6-legacy — `kb.after` in
   `expected.json`); KB demo `scripts/demo-kb/run.sh` (run 2 reuses run 1's script); fleet `scripts/fleet-demo.sh`.

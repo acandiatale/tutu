@@ -1,4 +1,14 @@
-"""The v2.1 knowledge base (docs/v2/PLAN-v2.1.md §3.4): every run's error list + one folder per case.
+"""v2.1 지식베이스(KB) 저장소 ``CaseStore``: 모든 실행의 오류 목록 + 케이스마다 폴더 하나.
+흐름상 위치: 수정 루프가 라운드마다 저장된 스크립트를 찾고(``best`` / ``latest``) 새 스크립트를
+저장하고(``add_script``) 채점 결과를 적는다(``credit``). 실행 끝에 ``record_run`` 이 오류 목록을 덧붙이고,
+``sbmig kb reindex`` 는 ``recount`` 를 부른다. 바깥 창구는 ``sbmig.kb.FileKnowledgeBase``, 사람 창구는 ``sbmig
+kb`` CLI. 케이스 폴더 이름은 케이스 ID(sha1(L2)[:10]): 매칭은 L2 문자열로 하고 폴더 이름은 키일 뿐이다(사람용
+이름은 case.json 의 ``name`` 과 cases.md). 스크립트 상태: 저장하면 unverified → 만든 프로젝트가 아닌 곳에서
+케이스를 해결하면 proven → 사람이 끄면 retired. 쓰기는 모두 KB 잠금 + 원자적 쓰기, 텍스트는 마스킹; 읽기는
+잠그지 않고 깨진 파일에 예외를 내지 않는다(파일뿐, DB 금지: 불변조건 3). ``errors.jsonl`` 이 원본이고
+case.json·cases.md·에러별 JSON 은 파생이다 — 기록을 손으로 맞추지 말고 ``kb reindex`` 로 다시 만든다.
+
+The v2.1 knowledge base (docs/v2/PLAN-v2.1.md §3.4): every run's error list + one folder per case.
 
 Layout under the KB directory (``kb.dir``, default ``kb-v2/``)::
 
@@ -21,6 +31,8 @@ masked and retired at once (the masked code is not the code that ran; a secret n
 Every write holds the KB lock and is atomic; texts are masked (:mod:`sbmig.kb.redact`). Readers never lock and
 never raise on a damaged file (it is skipped with a warning; ``sbmig kb validate`` lists it). File-based on purpose
 (invariant 3).
+
+
 """
 from __future__ import annotations
 
@@ -52,6 +64,7 @@ REASON_CHARS = 600                # ScriptRun.reason / CaseScript.reason / last_
 RUN_FILES = 50                    # ScriptRun.files kept
 SCRIPT_RUNS = 30                  # errors.script_runs default (0 = no cap)
 RUN_SOURCES = frozenset({"kb-script", "llm-new", "llm-augment"})   # tries whose stored script ran (reindex)
+# 시도 note 중 '실패 이유' 가 아니라 '시도 설명' 인 부분 — 실행 기록의 이유(reason)에서 뺀다
 # parts of a try's note that describe the try rather than why it failed (left out of a run's reason)
 NOISE_NOTES = ("reused stored v", "escalation model requested", "merge-conflict hint:")
 _NOT_RUN = ("stored (unverified), not run", "not run again")        # the try's script never ran
@@ -62,12 +75,17 @@ _SCRIPT_RE = re.compile(r"^fix_v([1-9][0-9]{0,8})\.py$")
 
 
 def valid_case_id(case_id: Optional[str]) -> bool:
-    """A case id usable as one directory name (hex in practice; never a path or ``..``)."""
+    """디렉토리 이름 하나로 쓸 수 있는 케이스 ID 인가(실제로는 16진수; 경로나 ``..`` 는 절대 아님) — 손으로
+    고친 case.json 이나 CLI 인자가 KB 밖을 가리키지 못하게.
+
+    A case id usable as one directory name (hex in practice; never a path or ``..``)."""
     return bool(case_id) and bool(_CASE_ID_RE.match(case_id or "")) and ".." not in (case_id or "")
 
 
 def case_name(message: str, l2: str) -> str:
-    """``package jakarta.xml.bind does not exist``; ``cannot find symbol: WebSecurityConfigurerAdapter`` when the
+    """케이스의 사람용 이름: 오류 메시지 첫 줄, 메시지에 L2 의 핵심어가 없으면 ``메시지: 핵심어``.
+
+    ``package jakarta.xml.bind does not exist``; ``cannot find symbol: WebSecurityConfigurerAdapter`` when the
     message does not name the L2's key."""
     msg = first_line(message, 120)
     key = (l2 or "").split("|")[-1] if (l2 or "").count("|") >= 2 else ""
@@ -82,7 +100,10 @@ def _short(text: Any, limit: int) -> str:
 
 
 def scripts_text(case: CaseInfo, *, failures: bool = False) -> str:
-    """``v1 proven 3/0, v2 unverified 0/1`` (successes / failures); ``failures`` (cases.md, v2.1e) adds each
+    """저장 스크립트 요약: ``v1 proven 3/0, v2 unverified 0/1``(성공/실패).
+    ``failures``(cases.md, v2.1e)면 버전마다 마지막 실패 이유를 붙인다.
+
+    ``v1 proven 3/0, v2 unverified 0/1`` (successes / failures); ``failures`` (cases.md, v2.1e) adds each
     version's last failure: ``v1 proven 3/0; v2 unverified 0/1 — no_change: 3 of 3 targeted error(s) remained``."""
     def one(s: CaseScript) -> str:
         t = f"v{s.version} {s.status} {s.successes}/{s.failures}"
@@ -91,7 +112,11 @@ def scripts_text(case: CaseInfo, *, failures: bool = False) -> str:
 
 
 def run_reason(result: str, note: str = "", head: str = "") -> str:
-    """ScriptRun.reason (v2.1e): why a run of a stored script did not resolve its case, one line — "" for improved /
+    """ScriptRun.reason(v2.1e): 저장 스크립트 실행이 케이스를 못 푼 이유 한
+    줄(improved / build_ok 면 ""). 호출자가 준 ``head`` 다음에, 시도 note 에서 '시도 설명'(재사용 배너,
+    에스컬레이션 요청, 병합 힌트)을 뺀 부분; 남는 게 없으면 결과 이름.
+
+    ScriptRun.reason (v2.1e): why a run of a stored script did not resolve its case, one line — "" for improved /
     build_ok. ``head`` = the caller's own first part (the fix loop: ``no_change: 3 of 3 targeted error(s) remained —
     …``), then the try's note without the parts that describe the try rather than its failure (the reuse banner, an
     escalation request, merge-conflict hints); the bare result when nothing is left."""
@@ -105,7 +130,9 @@ def run_reason(result: str, note: str = "", head: str = "") -> str:
 
 
 def first_reason(reason: str, parent: int | None = None, limit: int = 160) -> str:
-    """The first part of a reason for a log line (``v1: `` of an augment's reason dropped: the line names it)."""
+    """로그 줄용 이유의 첫 부분(보강본 이유 앞의 ``v1: `` 는 로그 줄이 이미 말하므로 뺀다).
+
+    The first part of a reason for a log line (``v1: `` of an augment's reason dropped: the line names it)."""
     t = " ".join((reason or "").split())
     if parent and t.startswith(f"v{parent}: "):
         t = t[len(f"v{parent}: "):]
@@ -116,7 +143,10 @@ def first_reason(reason: str, parent: int | None = None, limit: int = 160) -> st
 
 
 def run_line(r: ScriptRun) -> str:
-    """``run r-1 demo r2 try 1: no_change — no_change: 3 of 3 targeted error(s) remained [errors 5 → 5, new 0;
+    """실행 기록(ScriptRun) 한 줄(``sbmig kb cases show``):
+    실행·프로젝트·라운드·시도·결과 — 이유 [오류 수 전 → 남음, 새로 생김; 바꾼 파일].
+
+    ``run r-1 demo r2 try 1: no_change — no_change: 3 of 3 targeted error(s) remained [errors 5 → 5, new 0;
     files: a/B.java]`` (``sbmig kb cases show``)."""
     s = f"run {r.run_id or '-'} {r.project or '-'} r{r.round} try {r.n}: {r.result or '-'}"
     if r.reason:
@@ -146,12 +176,18 @@ def _ts(at: Any) -> float:
 
 
 def _run_key(r: ScriptRun) -> tuple[str, int, int] | None:
-    """(run_id, round, n) — None for a run credited without a try number (never merged with another)."""
+    """실행 기록의 중복 판정 키 (run_id, round, n) — 시도
+    번호 없이 적힌 기록은 None(다른 기록과 합치지 않는다).
+
+    (run_id, round, n) — None for a run credited without a try number (never merged with another)."""
     return (r.run_id, int(r.round), int(r.n)) if r.n else None
 
 
 class CaseStore:
-    """``<kb>/cases/<case_id>/`` + ``<kb>/errors.jsonl`` + ``<kb>/cases.md``."""
+    """KB 저장소: ``<kb>/cases/<case_id>/``(case.json, fix_v<N>.py, errors/) + ``<kb>/errors.jsonl`` +
+    ``<kb>/cases.md``. ``script_runs``(``errors.script_runs``)는 버전마다 남길 실행 기록 수(0 = 무제한).
+
+    ``<kb>/cases/<case_id>/`` + ``<kb>/errors.jsonl`` + ``<kb>/cases.md``."""
 
     def __init__(self, kb_dir: Union[str, Path], cfg: Any = None, *, lock_timeout: Optional[float] = None,
                  script_runs: int | None = None):
@@ -172,40 +208,49 @@ class CaseStore:
     # ------------------------------------------------------------------ layout
     @property
     def cases_dir(self) -> Path:
+        """``<kb>/cases/``."""
         return self.root / CASES_DIR
 
     @property
     def errors_path(self) -> Path:
+        """``<kb>/errors.jsonl`` — 모든 실행의 모든 오류 레코드(KB 의 원본)."""
         return self.root / KB_ERRORS
 
     @property
     def md_path(self) -> Path:
+        """``<kb>/cases.md`` — 사람용 케이스 표(파생 뷰)."""
         return self.root / CASES_MD
 
     def lock(self):
+        """프로세스 간 KB 잠금(``<kb>/.lock``, 재진입 가능). 모든 쓰기가 이 안에서 일어난다."""
         from sbmig.kb.lock import kb_lock
 
         return kb_lock(self.root, self.lock_timeout)
 
     def case_dir(self, case_id: str) -> Path:
+        """케이스 폴더 경로. 케이스 ID 가 아니면 ValueError — ``..`` 같은 값으로 KB 밖에 쓰지 못하게."""
         if not valid_case_id(case_id):
             raise ValueError(f"not a case id: {case_id!r}")
         return self.cases_dir / case_id
 
     def case_ids(self) -> list[str]:
+        """case.json 이 있는 케이스 폴더 이름들(정렬)."""
         if not self.cases_dir.is_dir():
             return []
         return sorted(p.name for p in self.cases_dir.iterdir() if p.is_dir() and (p / CASE_FILE).is_file())
 
     # ------------------------------------------------------------------ case.json
     def _read(self, case_id: str) -> Optional[tuple[CaseInfo, dict[str, Any]]]:
-        """(case, extra keys of case.json) — None when there is no readable case file."""
+        """(케이스, case.json 의 추가 키) — 없거나 못 읽거나 다른 케이스를 가리키면 경고 후 None(예외 없음).
+
+        (case, extra keys of case.json) — None when there is no readable case file."""
         if not valid_case_id(case_id):
             return None
         path = self.cases_dir / case_id / CASE_FILE
         if not path.is_file():
             return None
         try:
+            # utf-8-sig: 사람이 메모장으로 고쳐 BOM 이 붙은 case.json 도 읽는다
             data = json.loads(path.read_text(encoding="utf-8-sig"))
             case = CaseInfo.model_validate(data)
         except (OSError, ValueError) as e:
@@ -214,25 +259,33 @@ class CaseStore:
         if case.case_id != case_id:
             log.warning("kb: %s names case %s — skipped", path, case.case_id)
             return None
+        # CaseInfo 에 없는 키(pin, last_result, 사람이 넣은 것)는 따로 들고 있다가 저장 때 되돌려 넣는다
         extra = {k: v for k, v in data.items() if k not in CaseInfo.model_fields}
         return case, extra
 
     def _save(self, case: CaseInfo, extra: Optional[dict[str, Any]] = None) -> None:
+        """case.json 을 원자적으로 다시 쓴다; 추가 키는 모델 필드를 덮지 않고 뒤에 붙인다."""
         data = case.model_dump(mode="json")
         data.update({k: v for k, v in (extra or {}).items() if k not in data})
         atomic_write(self.case_dir(case.case_id) / CASE_FILE, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
     def find(self, case_id: str) -> Optional[CaseInfo]:
+        """케이스 정보(CaseInfo), 없거나 읽을 수 없으면 None."""
         hit = self._read(case_id)
         return hit[0] if hit else None
 
     def extra(self, case_id: str) -> dict[str, Any]:
-        """The keys of case.json beyond CaseInfo (``pin``, ``last_result``, anything a person added)."""
+        """case.json 의 CaseInfo 밖 키(``pin``, ``last_result``, 사람이 넣은 것).
+
+        The keys of case.json beyond CaseInfo (``pin``, ``last_result``, anything a person added)."""
         hit = self._read(case_id)
         return dict(hit[1]) if hit else {}
 
     def pin_of(self, case_id: str) -> str:
-        """``block`` / ``block:<reason>`` when a person pinned the case, else "" (anything else in ``pin`` is
+        """사람이 고정했으면 ``block`` / ``block:<이유>``, 아니면
+        ""(``pin`` 의 다른 값은 무시; ``sbmig kb validate`` 가 알려 준다).
+
+        ``block`` / ``block:<reason>`` when a person pinned the case, else "" (anything else in ``pin`` is
         ignored here; ``sbmig kb validate`` names it)."""
         p = self.extra(case_id).get("pin")
         p = p.strip() if isinstance(p, str) else ""
@@ -240,6 +293,7 @@ class CaseStore:
 
     def _case_or_new(self, case_id: str, l2: str = "", name: str = "",
                      kind: Optional[ErrorKind] = None) -> tuple[CaseInfo, dict[str, Any]]:
+        """있는 케이스(비어 있는 l2·이름·종류만 채움) 또는 새 CaseInfo, 그리고 추가 키."""
         hit = self._read(case_id)
         if hit is not None:
             case, extra = hit
@@ -254,7 +308,10 @@ class CaseStore:
                         kind=kind or ErrorKind.UNKNOWN), {}
 
     def set_pin(self, case_id: str, pin: str) -> CaseInfo:
-        """Pin (``block`` / ``block:<reason>``) or unpin (``""``) a case; creates the case file when needed."""
+        """케이스 고정(``block`` / ``block:<이유>``) 또는 해제(""). 필요하면 case.json 을 만든다. 고정된
+        케이스는 스크립트도 LLM 도 시도하지 않고 인수인계 섹션으로 넘어간다.
+
+        Pin (``block`` / ``block:<reason>``) or unpin (``""``) a case; creates the case file when needed."""
         pin = (pin or "").strip()
         if pin and not (pin == "block" or pin.startswith("block:")):
             raise ValueError(f"a pin is `block` or `block:<reason>`, not {pin!r}")
@@ -272,11 +329,14 @@ class CaseStore:
 
     # ------------------------------------------------------------------ scripts
     def scripts(self, case_id: str) -> list[CaseScript]:
-        """The case's scripts, oldest first."""
+        """케이스의 저장된 스크립트들(오래된 것 먼저).
+
+        The case's scripts, oldest first."""
         case = self.find(case_id)
         return sorted(case.scripts, key=lambda s: s.version) if case else []
 
     def code(self, case_id: str, version: int) -> Optional[str]:
+        """``fix_v<N>.py`` 의 코드(파일 바이트 그대로 UTF-8), 없거나 못 읽으면 None."""
         if not valid_case_id(case_id):
             return None
         path = self.cases_dir / case_id / f"fix_v{int(version)}.py"
@@ -286,7 +346,10 @@ class CaseStore:
             return None
 
     def best(self, case_id: str) -> Optional[tuple[CaseScript, str]]:
-        """The script to run first: the newest proven version, else the newest unverified one; retired never (nor
+        """먼저 돌릴 스크립트: 가장 새 proven 버전, 없으면 가장 새 unverified
+        버전. retired 와 파일이 없는 버전은 고르지 않는다. None = 저장된 것 없음.
+
+        The script to run first: the newest proven version, else the newest unverified one; retired never (nor
         a version whose file is missing). None = nothing stored."""
         ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired"),
                         key=lambda s: (s.status == "proven", s.version), reverse=True)
@@ -297,7 +360,9 @@ class CaseStore:
         return None
 
     def latest(self, case_id: str) -> Optional[tuple[CaseScript, str]]:
-        """The newest non-retired version (the base of an augment request)."""
+        """retired 가 아닌 가장 새 버전 — 보강(augment) 요청의 바탕.
+
+        The newest non-retired version (the base of an augment request)."""
         for s in sorted(self.scripts(case_id), key=lambda s: s.version, reverse=True):
             code = self.code(case_id, s.version) if s.status != "retired" else None
             if code:
@@ -307,7 +372,11 @@ class CaseStore:
     def add_script(self, case_id: str, l2: str, code: str, *, source: str = "llm-new", run_id: str = "",
                    project: str = "", analysis: str = "", solution: str = "", name: str = "",
                    kind: Optional[ErrorKind] = None, parent: int | None = None, reason: str = "") -> CaseScript:
-        """Store ``code`` as the case's next version (``unverified``); identical code returns the stored version
+        """``code`` 를 케이스의 다음 버전(unverified)으로 저장한다; 같은 코드(sha1 비교)가 이미 있으면 그
+        버전을 그대로 돌려준다. v2.1e: ``parent`` = 보강이 이은 버전, ``reason`` = 이 버전을 만든 이유(부모의
+        실패 문장). 비밀값이 든 코드는 마스킹해 저장하고 바로 retired.
+
+        Store ``code`` as the case's next version (``unverified``); identical code returns the stored version
         (unchanged). v2.1e: ``parent`` = the version an augment extends, ``reason`` = why this version was made (the
         parent's failure in words, ``v1: no_change: …``)."""
         if not (code or "").strip():
@@ -320,12 +389,16 @@ class CaseStore:
         with stage("kb"), self.lock():
             case, extra = self._case_or_new(case_id, l2, name, kind)
             masked = self.clean.red.redact(code) or ""
+            # 비밀값이 든 코드는 마스킹본만 저장하고 바로 retired:
+            # 마스킹된 코드는 실제로 돈 코드가 아니라 재사용하면 안 된다
             secret = masked != code
             stored = SECRET_HEADER + masked if secret else code
             for s in case.scripts:
                 if _sha(self.code(case_id, s.version) or "") == _sha(stored):
                     log.info("cases/%s/fix_v%d.py: the same script is already stored", case_id, s.version)
                     return s
+            # 번호는 재사용하지 않는다: case.json 에 없는 fix_v*.py
+            # 파일까지 세어 남의 파일을 덮어쓰지 않게 한다
             on_disk = [int(m.group(1)) for p in (self.case_dir(case_id).glob("fix_v*.py")
                                                 if self.case_dir(case_id).is_dir() else [])
                        if (m := _SCRIPT_RE.match(p.name))]
@@ -352,7 +425,9 @@ class CaseStore:
         return s                                          # (cases.md: rewritten by record_run at the end of the run)
 
     def _reason(self, text: str | None) -> str:
-        """A reason as stored: masked, one line, at most REASON_CHARS."""
+        """저장용 이유: 마스킹, 한 줄, 최대 REASON_CHARS 자.
+
+        A reason as stored: masked, one line, at most REASON_CHARS."""
         t = " ".join(self.clean(text or "").split())
         return t if len(t) <= REASON_CHARS else t[: REASON_CHARS - 1] + "…"
 
@@ -364,7 +439,10 @@ class CaseStore:
         return runs[-self.script_runs:] if self.script_runs and len(runs) > self.script_runs else runs
 
     def _add_run(self, s: CaseScript, run: ScriptRun) -> None:
-        """Append ``run`` (newest last); a run with the same (run_id, round, n) is replaced — an inconclusive try
+        """``run`` 을 끝에 덧붙인다; 같은 (run_id, round, n) 기록은 바꾼다 — 판정 불가(inconclusive) 시도는
+        되돌림 재빌드가 채점한 뒤 다시 크레딧되기 때문.
+
+        Append ``run`` (newest last); a run with the same (run_id, round, n) is replaced — an inconclusive try
         is credited again after the revert rebuild scored it."""
         key = _run_key(run)
         runs = [r for r in s.runs if key is None or _run_key(r) != key]
@@ -374,7 +452,12 @@ class CaseStore:
                reason: str = "", round: int = 0, n: int = 0, errors_before: int | None = None,
                errors_left: int | None = None, errors_new: int | None = None, files: Iterable[Any] = ()
                ) -> Optional[CaseScript]:
-        """The scored result of a run of version N: improved / build_ok → successes +1 (project added; ``proven``
+        """버전 N 실행의 채점 결과를 적는다: improved / build_ok → 성공 +1(프로젝트 추가; 만든 프로젝트가 아닌
+        곳이면 proven), no_change / regressed / reverted / apply_failed / blocked → 실패 +1, partial /
+        inconclusive 는 ``last_result`` 만, pending 은 무시. v2.1e: 크레딧마다 ScriptRun(라운드·시도·이유·오류
+        수·파일)을 남기고 실패면 ``last_failure`` 를 쓴다.
+
+        The scored result of a run of version N: improved / build_ok → successes +1 (project added; ``proven``
         once that is a project other than the one that created it); no_change / regressed / reverted /
         apply_failed / blocked → failures +1; anything else (partial, inconclusive) only sets ``last_result``;
         pending is ignored. v2.1e: every credit appends a ``ScriptRun`` (round / try ``n``, the reason in words,
@@ -397,6 +480,8 @@ class CaseStore:
                 s.successes += 1
                 if project and project not in s.projects:
                     s.projects.append(project)
+                # proven = 다른 프로젝트에서도 통함. 만든 프로젝트 이름이
+                # 없는 옛 기록은 실행 ID 가 다르면 다른 곳으로 본다
                 other = (project and s.project and project != s.project) or \
                     (not s.project and run_id and s.created_by and run_id != s.created_by)
                 if s.status == "unverified" and other:
@@ -415,6 +500,8 @@ class CaseStore:
         return s
 
     def _set_status(self, case_id: str, version: int, retire: bool) -> CaseScript:
+        """retire / activate 의 공통 부분: 잠금 안에서 상태를
+        바꾸고 cases.md 를 다시 쓴다(없으면 KeyError)."""
         with stage("kb"), self.lock():
             hit = self._read(case_id)
             if hit is None:
@@ -434,14 +521,20 @@ class CaseStore:
         return s
 
     def retire(self, case_id: str, version: int) -> CaseScript:
+        """버전 N 을 다시는 고르지 않게 한다(사람의 결정, ``sbmig kb cases retire``)."""
         return self._set_status(case_id, version, True)
 
     def activate(self, case_id: str, version: int) -> CaseScript:
-        """Undo a retire: proven when it resolved the case in another project, else unverified."""
+        """retire 되돌리기: 다른 프로젝트에서 케이스를 해결한 적 있으면 proven, 아니면 unverified.
+
+        Undo a retire: proven when it resolved the case in another project, else unverified."""
         return self._set_status(case_id, version, False)
 
     def describe(self, case_id: str) -> str:
-        """The KB lookup result as one log phrase: ``저장된 스크립트 없음 (처음 보는 케이스)``, ``저장된 스크립트 v2 (proven,
+        """KB 조회 결과를 로그 한 구절로: 저장 스크립트 없음 / 저장 스크립트 v2(상태, 성공·실패, 프로젝트 수)
+        / pin / 케이스는 있으나 쓸 스크립트 없음.
+
+        The KB lookup result as one log phrase: ``저장된 스크립트 없음 (처음 보는 케이스)``, ``저장된 스크립트 v2 (proven,
         성공 3 / 실패 0, 프로젝트 2)``, ``pin block: <reason>``, ``케이스는 있으나 쓸 스크립트 없음 (v1 retired)``."""
         case = self.find(case_id)
         if case is None:
@@ -459,6 +552,8 @@ class CaseStore:
 
     # ------------------------------------------------------------------ errors.jsonl + cases
     def _known_ids(self) -> set[str]:
+        """KB errors.jsonl 에 이미 있는 항목 ID 들(찢긴 줄 뒤에 붙은 레코드의
+        ID 포함, ``line_ids``) — 같은 항목을 두 번 적지 않으려고."""
         from sbmig.kb.jsonl import line_ids
 
         out: set[str] = set()
@@ -476,6 +571,8 @@ class CaseStore:
         return n.model_copy(update={"where": c(n.where), "change": c(n.change), "hunks": hunks})
 
     def _clean_entry(self, e: ErrorEntry) -> ErrorEntry:
+        """KB 에 넣기 전 항목의 모든 텍스트(메시지·원문·시도
+        원인/해결·diff·수정 기록·변경 조각)를 한 번 더 마스킹한다."""
         c = self.clean
         tries = [t.model_copy(update={"analysis": c(t.analysis), "solution": c(t.solution),
                                       "no_script_reason": c(t.no_script_reason), "diff": c(t.diff),
@@ -484,7 +581,12 @@ class CaseStore:
         return e.model_copy(update={"message": c(e.message), "raw": c(e.raw), "note": c(e.note), "tries": tries})
 
     def record_run(self, entries: Iterable[ErrorEntry]) -> int:
-        """Append a run's finished entries to ``<kb>/errors.jsonl`` (ids already stored are skipped), update each
+        """실행이 끝난 항목들을 ``<kb>/errors.jsonl`` 에
+        덧붙이고(이미 있는 ID 는 건너뜀), 속한 케이스마다 seen / resolved / 프로젝트 / 마지막 원인·해결 /
+        마지막 결과를 갱신하고(L2 가 있으면 케이스 폴더를 만든다),
+        에러별 JSON 과 ``cases.md`` 를 쓴다. 덧붙인 줄 수를 돌려준다.
+
+        Append a run's finished entries to ``<kb>/errors.jsonl`` (ids already stored are skipped), update each
         case they belong to (seen / resolved / projects / last analysis + solution / last result — a case folder is
         made for entries with an L2), rewrite ``cases.md``. Returns the number of lines appended."""
         from sbmig.kb.jsonl import append_lines
@@ -497,6 +599,8 @@ class CaseStore:
             fresh = [e for e in entries if e.id not in known]
             n = append_lines(self.errors_path, [e.model_dump_json() for e in fresh])
             by_case: dict[str, list[ErrorEntry]] = {}
+            # note / pom-verify 는 케이스 통계에 넣지 않는다; L2 도
+            # case.json 도 없는 케이스(L1 폴백 ID)는 폴더를 만들지 않는다
             for e in fresh:
                 if e.case_id and e.status not in ("note", "pom-verify") and valid_case_id(e.case_id) \
                         and (e.l2 or (self.cases_dir / e.case_id / CASE_FILE).is_file()):
@@ -513,16 +617,23 @@ class CaseStore:
 
     @property
     def json_files(self) -> bool:
+        """``errors.json_files``: 오류마다 읽기 쉬운 JSON 파일을 케이스 폴더에 쓸지(기본 true)."""
         return bool(getattr(getattr(self.cfg, "errors", None), "json_files", True))
 
     def entry_file(self, e: ErrorEntry) -> Path:
-        """``<kb>/cases/<case_id>/errors/<run_id>-<id>.json`` — entries without a case (pom-verify, notes) go under
+        """에러별 JSON 경로 ``<kb>/cases/<case_id>/errors/<run_id>-<id>.json`` — 케이스 없는
+        항목(pom-verify, 메모)은 ``cases/_other/errors/``.
+
+        ``<kb>/cases/<case_id>/errors/<run_id>-<id>.json`` — entries without a case (pom-verify, notes) go under
         ``cases/_other/errors/``."""
         folder = e.case_id if e.case_id and valid_case_id(e.case_id) else OTHER_DIR
         return self.cases_dir / folder / ENTRIES_DIR / f"{e.run_id or 'run'}-{e.id}.json"
 
     def _write_entry_files(self, entries: list[ErrorEntry]) -> int:
-        """v2.1c (2026-10-27, the business team wants to browse the stored errors): one indented JSON file per
+        """v2.1c: 현업이 저장된 오류를 둘러볼 수 있게 오류마다
+        들여쓴 JSON 파일 하나(errors.jsonl 줄과 같은 내용).
+
+        v2.1c (2026-10-27, the business team wants to browse the stored errors): one indented JSON file per
         error beside its case — the same record as the errors.jsonl line, readable in any editor."""
         if not self.json_files:
             return 0
@@ -536,11 +647,15 @@ class CaseStore:
         return n
 
     def entry_files(self, case_id: str) -> list[Path]:
+        """케이스 폴더의 에러별 JSON 파일들(정렬)."""
         return sorted((self.cases_dir / case_id / ENTRIES_DIR).glob("*.json"))
 
     @staticmethod
     def _apply(case: CaseInfo, extra: dict[str, Any], es: list[ErrorEntry]) -> None:
-        """Count one run's entries of the case into it."""
+        """한 실행의 그 케이스 항목들을 케이스에 셈한다(seen /
+        resolved / 프로젝트 / 마지막 원인·해결 / ``last_result``).
+
+        Count one run's entries of the case into it."""
         case.seen += len(es)
         case.resolved += sum(1 for e in es if e.status == "resolved")
         for e in es:
@@ -556,6 +671,7 @@ class CaseStore:
         for e in es:
             status[e.status] = status.get(e.status, 0) + 1
         last = es[-1]
+        # v2.1f: build 로 해결된 오류면 '해결한 시도' 까지 last_result 에 보인다(cases.md 에 그대로 나옴)
         how = next((resolved_text(e) for e in es if e.status == "resolved" and e.resolved), "")
         extra["last_result"] = (", ".join(f"{k} {v}" for k, v in sorted(status.items())) + (f" ({how})" if how else "")
                                 + f" — {last.project or '-'} {last.run_id or ''}".rstrip())
@@ -563,7 +679,10 @@ class CaseStore:
 
     def iter_errors(self, *, run: str = "", case: str = "", status: str = "", project: str = "",
                     entry: str = "") -> Iterator[ErrorEntry]:
-        """``<kb>/errors.jsonl`` entries (file order; unreadable lines skipped), filtered (``entry`` = id prefix,
+        """``<kb>/errors.jsonl`` 항목들(파일 순서, 못 읽는 줄은 건너뜀)을 걸러서: ``entry`` = ID 앞부분,
+        ``case`` = 케이스 ID 앞부분, ``run`` / ``project`` 는 정확히 일치.
+
+        ``<kb>/errors.jsonl`` entries (file order; unreadable lines skipped), filtered (``entry`` = id prefix,
         ``case`` = case id prefix, ``run`` / ``project`` exact)."""
         from sbmig.kb.jsonl import parse_record
 
@@ -581,13 +700,21 @@ class CaseStore:
                 yield e
 
     def count_errors(self) -> int:
+        """errors.jsonl 의 레코드 수(비어 있지 않은 줄)."""
         if not self.errors_path.is_file():
             return 0
         with open(self.errors_path, "rb") as fh:
             return sum(1 for line in fh if line.strip())
 
     def recount(self) -> int:
-        """Rebuild every case's seen / resolved / projects / last texts from ``<kb>/errors.jsonl`` (script counts and
+        """재색인(``sbmig kb reindex``): ``errors.jsonl`` 로부터 케이스마다 seen / resolved /
+        프로젝트 / 마지막 텍스트를 다시 센다(스크립트 성공·실패 수와 사람이 넣은 키는 그대로; errors.jsonl
+        에만 있는 L2 의 케이스는 만든다). 케이스 수를 돌려준다. v2.1e: 저장 버전마다 실행 기록(runs)·보강
+        계보(parent / reason)·마지막 실패를 다시 만들고, 변경 조각 없이 저장된 옛 시도에 수정 전/후 코드를
+        채운다; v2.1f: build 로 해결된 옛 항목에 '해결한 시도'(resolved_by)도 채운다. errors.jsonl 과 그
+        항목들의 에러별 JSON 은 한 번만 다시 쓴다.
+
+        Rebuild every case's seen / resolved / projects / last texts from ``<kb>/errors.jsonl`` (script counts and
         people's keys untouched; cases for L2s that only errors.jsonl knows are made). Returns the cases.
 
         v2.1e: every stored version's ``runs`` are rebuilt from the entries' tries (merged with the runs the store
@@ -596,6 +723,7 @@ class CaseStore:
         a diff whose 수정 notes lack ``hunks`` get them (``sbmig.script.notes.attach_hunks``) — errors.jsonl and those
         entries' JSON files are rewritten once. One INFO line says how many."""
         with stage("kb"), self.lock():
+            # 변경 조각·해결한 시도 채우기는 부가 기능: 실패해도 재색인(카운트)은 계속한다
             try:
                 hunked = self._backfill_hunks()
             except Exception as e:  # noqa: BLE001 - the backfill is extra; the recount goes on
@@ -613,6 +741,8 @@ class CaseStore:
                 case, extra = self._case_or_new(cid, first.l2 if first else "",
                                                 case_name(first.message, first.l2) if first else "",
                                                 first.kind if first else None)
+                # 처음부터 다시 센다: 실행별로 묶어 _apply 하면
+                # record_run 이 실행 끝마다 센 것과 같은 결과가 된다
                 case.seen, case.resolved, case.projects = 0, 0, []
                 runs: dict[str, list[ErrorEntry]] = {}
                 for e in es:
@@ -624,6 +754,7 @@ class CaseStore:
                 except Exception as e:  # noqa: BLE001 - the run history is extra; the counts are saved anyway
                     log.warning("kb reindex: runs of case %s not rebuilt: %s: %s", cid, type(e).__name__, e)
                 self._save(case, extra)
+            # 에러별 JSON 이 생기기 전에 저장된 항목(또는 사람이 지운 파일)을 errors.jsonl 로부터 다시 만든다
             # the readable per-error files for entries stored before they existed (or deleted by hand)
             missing = [e for e in self.iter_errors() if not self.entry_file(e).is_file()]
             if missing:
@@ -639,11 +770,15 @@ class CaseStore:
     # ------------------------------------------------------------------ v2.1e: runs + hunks from errors.jsonl
     @staticmethod
     def _ran(t: FixTry) -> str | None:
-        """The result the try's stored script was credited with when it ran — None when it did not run (stored
+        """그 시도의 저장 스크립트가 실제로 돌았을 때 받은 결과 — 돌지 않았으면
+        None(적용된 수정 옆에 저장만 함, 같은 코드라 다시 안 돌림, 채점 대기).
+
+        The result the try's stored script was credited with when it ran — None when it did not run (stored
         next to applied edits, the same code again, pending)."""
         if not t.script_version or t.source not in RUN_SOURCES or t.result == "pending":
             return None
         note = t.note or ""
+        # 스크립트가 돌다 실패해 답변의 수정 목록이 대신 들어간 경우: 그 스크립트 실행은 apply_failed
         if t.applied == "edits":
             return "apply_failed" if _RAN_THEN_EDITS in note else None
         if any(x in note for x in _NOT_RUN):
@@ -651,7 +786,10 @@ class CaseStore:
         return t.result
 
     def _rebuild_runs(self, case: CaseInfo, es: list[ErrorEntry]) -> int:
-        """The case's tries → each stored version's runs (merged), parent / reason, last_failure. Returns the run
+        """케이스의 시도들 → 저장 버전마다 실행 기록(저장소의 기록과 병합),
+        parent / reason, last_failure. errors.jsonl 에서 만든 기록 수를 돌려준다.
+
+        The case's tries → each stored version's runs (merged), parent / reason, last_failure. Returns the run
         records derived from errors.jsonl for versions the case has."""
         derived: dict[int, dict[tuple[str, int, int], ScriptRun]] = {}
         augments: dict[int, list[tuple[str, int, int]]] = {}
@@ -664,6 +802,7 @@ class CaseStore:
                 per = derived.setdefault(v, {})
                 if key in per:                            # several entries of the case share the try: one run
                     continue
+                # no_change 는 채점이 이유를 따로 적지 않으므로 결과 이름을 이유 앞에 둔다
                 # a no_change note never says why (the scoring adds none): the result leads
                 head = result if result == "no_change" and result not in (t.note or "") else ""
                 per[key] = ScriptRun(run_id=e.run_id, project=e.project, round=int(t.round), n=int(t.n),
@@ -680,6 +819,7 @@ class CaseStore:
             loose = [r for r in s.runs if _run_key(r) is None]
             for key, r in mine.items():
                 have = keyed.get(key)
+                # 저장소가 직접 남긴 기록이 이긴다(오류 수를 가진 건 그쪽) — 재색인 기록은 빈 칸만 채운다
                 if have is None:                          # the store's own record wins (it has the counts)
                     keyed[key] = r
                     continue
@@ -700,7 +840,10 @@ class CaseStore:
 
     def _lineage(self, s: CaseScript, keys: list[tuple[str, int, int]],
                  runs: dict[int, dict[tuple[str, int, int], ScriptRun]]) -> None:
-        """An augment's parent (best effort): the highest lower version that ran in the same run before the try
+        """보강본의 부모 추정(최선): 그 버전을 만든 시도보다 앞서 같은 실행에서 돈 더 낮은 버전 중 가장 높은
+        것(버전을 만든 실행 먼저 봄); 이유 = 그 실행의 이유.
+
+        An augment's parent (best effort): the highest lower version that ran in the same run before the try
         that made it (the run that created the version first); reason = that run's reason."""
         keys = sorted(keys, key=lambda k: (k[0] != s.created_by, k[1], k[2]))
         for run_id, rnd, n in keys:
@@ -716,14 +859,18 @@ class CaseStore:
 
     @property
     def snippet_lines(self) -> int:
-        """``errors.snippet_lines``: lines kept per side of a hunk (0 = the whole hunk)."""
+        """``errors.snippet_lines``: 변경 조각 한쪽(수정 전/후)에 남길 줄 수(0 = 전부).
+
+        ``errors.snippet_lines``: lines kept per side of a hunk (0 = the whole hunk)."""
         try:
             return max(0, int(getattr(getattr(self.cfg, "errors", None), "snippet_lines", 0) or 0))
         except (TypeError, ValueError):
             return 0
 
     def _hunked(self, e: ErrorEntry, attach: Any, max_lines: int = 0) -> ErrorEntry | None:
-        """``e`` with hunks on the tries whose diff notes lack them; None when nothing changed."""
+        """diff 는 있는데 수정 기록에 변경 조각이 없는 시도들에 조각을 채운 ``e``; 바뀐 게 없으면 None.
+
+        ``e`` with hunks on the tries whose diff notes lack them; None when nothing changed."""
         changed, tries = False, []
         for t in e.tries:
             if t.diff and t.edits and any(not n.hunks for n in t.edits):
@@ -742,10 +889,15 @@ class CaseStore:
 
     @staticmethod
     def _fixer_attributed(e: ErrorEntry, tries: list[tuple[str, FixTry]]) -> Optional[ErrorEntry]:
-        """v2.1f: an entry resolved by ``build`` without a try and without ``resolved_by`` → the run's applied tries
+        """v2.1f 재색인 보충: 시도도 ``resolved_by`` 도 없이 ``build`` 로 해결된 항목
+        → 같은 실행에서 그 ``seen`` 라운드 이후 적용된 시도 중 그 파일·위 pom 을 바꾼 것(match ``reindex``).
+        재구성(pom-verify) 항목은 대상이 아니다. 없으면 None.
+
+        v2.1f: an entry resolved by ``build`` without a try and without ``resolved_by`` → the run's applied tries
         from its ``seen`` round on that changed its file / a pom above it (match ``reindex``); None when nothing."""
         if e.resolved != "build" or e.resolved_by or e.tries or not e.case_id or e.seen == "restructure":
             return None
+        # 오류가 처음 보인 라운드보다 앞선 시도는 그 오류를 고쳤을 리 없다
         start = round_of(e.seen)
         later = [(c, t) for c, t in tries if int(t.round) >= start]
         by = probable_fixers(e, later, match="reindex")
@@ -755,9 +907,15 @@ class CaseStore:
         return e.model_copy(update={"resolved_by": by})
 
     def _backfill_hunks(self) -> int:
-        """errors.jsonl entries stored before v2.1e: as-is / to-be hunks from their diffs (``attach_hunks``,
+        """v2.1e 이전에 저장된 errors.jsonl 항목에 diff 로부터 변경 조각(수정 전/후)을
+        채운다(``attach_hunks``, 한쪽 ``errors.snippet_lines`` 줄); 같은 순회에서 v2.1f '해결한
+        시도'(``_fixer_attributed``)도 채운다. errors.jsonl 은 원자적으로 다시 쓰되 안 바뀐 줄·못 읽는 줄은
+        바이트 그대로 둔다. 호출자가 잠금을 잡고 있어야 한다. 바뀐 항목 수를 돌려준다(두 종류 합계).
+
+        errors.jsonl entries stored before v2.1e: as-is / to-be hunks from their diffs (``attach_hunks``,
         ``errors.snippet_lines`` per side; skipped when it is not there). Rewrites errors.jsonl atomically (other lines byte for byte, a line that does not read
         kept as it is) and the changed entries' JSON files. Caller holds the lock. Returns the entries changed."""
+        # 지연 import: sbmig.script 가 없거나 깨져도 채우기만 건너뛰고 재색인은 계속한다
         try:
             from sbmig.script.notes import attach_hunks
         except Exception:  # noqa: BLE001 - ImportError / not there yet: no backfill
@@ -774,6 +932,8 @@ class CaseStore:
         bad, cut = 0, self.snippet_lines
         parsed: list[tuple[bytes, Optional[ErrorEntry]]] = []
         tries_by_run: dict[str, dict[tuple[str, int, int], tuple[str, FixTry]]] = {}
+        # 바이트 단위로 다룬다: 안 바뀐 줄은 다시 직렬화하지 않고 그대로 둬 못 읽는 줄까지 보존한다; 해결한
+        # 시도 추정용으로 실행별 모든 시도를 (케이스, 라운드, n) 당 하나씩 모은다
         for b in raw.split(b"\n"):
             e = None
             if b.strip():
@@ -811,6 +971,7 @@ class CaseStore:
 
     # ------------------------------------------------------------------ cases.md / stats / validate
     def cases(self) -> list[tuple[CaseInfo, dict[str, Any]]]:
+        """모든 케이스 (CaseInfo, 추가 키) — 널리 퍼진 것(프로젝트 수, 그다음 seen) 먼저."""
         out = []
         for cid in self.case_ids():
             hit = self._read(cid)
@@ -820,17 +981,21 @@ class CaseStore:
         return out
 
     def _write_md_locked(self) -> None:
+        """cases.md 를 다시 쓴다(잠금은 호출자가). 실패해도
+        경고만 — 파생 뷰라 ``kb reindex`` 가 다시 만든다."""
         try:
             atomic_write(self.md_path, render_cases_md(self.cases()))
         except Exception as e:  # noqa: BLE001 - the view is derived (`sbmig kb reindex` rewrites it)
             log.warning("kb: could not write %s: %s: %s", self.md_path, type(e).__name__, e)
 
     def write_cases_md(self) -> Path:
+        """잠금을 잡고 cases.md 를 다시 쓴다."""
         with stage("kb"), self.lock():
             self._write_md_locked()
         return self.md_path
 
     def stats(self) -> dict[str, Any]:
+        """``sbmig kb stats`` 의 숫자들: 오류 수, 케이스 수, 스크립트 버전(상태별), 고정된 케이스 수."""
         cases = self.cases()
         scripts = [s for c, _ in cases for s in c.scripts]
         return {
@@ -846,7 +1011,11 @@ class CaseStore:
         }
 
     def validate(self, limit: int = 20) -> list[str]:
-        """Problems of the KB files, one line each: errors.jsonl lines that are no ErrorEntry, case.json files that
+        """``sbmig kb validate``: KB 파일의 문제를 한 줄씩 — ErrorEntry 가 아닌
+        errors.jsonl 줄, 못 읽거나 다른 케이스를 가리키는 case.json, L2 해시와 맞지 않는 폴더, 파일 없는
+        스크립트·목록에 없는 스크립트 파일, 잘못된 pin.
+
+        Problems of the KB files, one line each: errors.jsonl lines that are no ErrorEntry, case.json files that
         do not read / name another case, scripts listed without a file or files no script lists, bad pins."""
         from sbmig.kb.jsonl import parse_record
 
@@ -896,7 +1065,12 @@ class CaseStore:
 
     # ------------------------------------------------------------------ import (merge)
     def merge_from(self, other: "CaseStore") -> dict[str, int]:
-        """Merge another KB (an unpacked export): errors.jsonl lines with new ids, case folders the local KB does
+        """다른 KB(풀어 놓은 내보내기)를 합친다: 새 ID 의 errors.jsonl 줄, 이쪽에
+        없는 케이스(case.json + 스크립트 파일 복사), 아는 케이스의 스크립트는 코드로 비교(같은 코드 → 카운터
+        max·프로젝트 합집합·실행 기록 합침, 다른 코드 → 이쪽의
+        다음 버전), 끝에 :meth:`recount`. 두 번 해도 결과가 같다.
+
+        Merge another KB (an unpacked export): errors.jsonl lines with new ids, case folders the local KB does
         not have (copied whole), scripts of known cases by their code (same code → counters max / projects union;
         other code → the next local version), then :meth:`recount`. Idempotent."""
         from sbmig.kb.jsonl import append_lines
@@ -923,6 +1097,7 @@ class CaseStore:
                     continue
                 case, extra = mine
                 for k, v in t_extra.items():
+                    # 이쪽 사람이 정한 pin 등 추가 키는 덮지 않는다
                     extra.setdefault(k, v)                # a local pin wins
                 by_sha = {_sha(self.code(cid, s.version) or ""): s for s in case.scripts}
                 local: dict[int, int] = {}                # their version → ours (v2.1e: an augment's parent)
@@ -955,7 +1130,10 @@ class CaseStore:
         return counters
 
     def _merge_runs(self, have: CaseScript, theirs: CaseScript, local: dict[int, int]) -> None:
-        """The same script in both KBs: the union of their runs (same record once), lineage / reasons when ours has
+        """두 KB 에 같은 스크립트: 실행 기록의 합집합(같은 기록은 한 번),
+        이쪽에 계보·이유가 없을 때만 저쪽 것을 쓴다.
+
+        The same script in both KBs: the union of their runs (same record once), lineage / reasons when ours has
         none."""
         def ident(r: ScriptRun) -> tuple:
             return _run_key(r) or (r.run_id, r.round, r.n, r.result, _ts(r.at))
@@ -975,7 +1153,10 @@ def _cell(text: Any, limit: int = 120) -> str:
 
 
 def render_cases_md(cases: list[tuple[CaseInfo, dict[str, Any]]]) -> str:
-    """``cases.md``: one row per case — case · name · projects · seen / resolved · scripts (version status
+    """``cases.md``: 케이스마다 한 줄 — 케이스 · 이름 · 프로젝트 수 · seen / resolved ·
+    스크립트(버전 상태 성공/실패 — 마지막 실패) · pin · 마지막 결과 — 널리 퍼진 것 먼저.
+
+    ``cases.md``: one row per case — case · name · projects · seen / resolved · scripts (version status
     successes/failures, v2.1e: ``— <last failure>``) · pin · last result — most widespread first."""
     scripts = [s for c, _ in cases for s in c.scripts]
     by = {k: sum(1 for s in scripts if s.status == k) for k in ("proven", "unverified", "retired")}
@@ -993,7 +1174,10 @@ def render_cases_md(cases: list[tuple[CaseInfo, dict[str, Any]]]) -> str:
 
 
 def note_lines(n: Any) -> list[str]:
-    """One 수정 note with its as-is / to-be code (``sbmig.errors.common.note_block``, v2.1e); the one-line
+    """수정 기록 하나를 수정 전/후 코드와 함께(``note_block``, v2.1e); 그게 없거나 실패하면 한 줄
+    ``note_text``.
+
+    One 수정 note with its as-is / to-be code (``sbmig.errors.common.note_block``, v2.1e); the one-line
     ``note_text`` when that is not there or fails."""
     try:
         from .common import note_block
@@ -1007,7 +1191,10 @@ def note_lines(n: Any) -> list[str]:
 
 
 def entry_lines(e: ErrorEntry, *, diff: bool = True) -> list[str]:
-    """A readable block of one entry and its tries (``sbmig kb errors show``, ``cases show``); each 수정 note with
+    """항목 하나와 그 시도들을 읽기 쉬운 블록으로(``sbmig kb errors show``, ``cases show``): 수정 기록마다
+    수정 전/후 코드(v2.1e), 해결한 시도(v2.1f).
+
+    A readable block of one entry and its tries (``sbmig kb errors show``, ``cases show``); each 수정 note with
     its as-is / to-be code (v2.1e)."""
     loc = (e.file or e.module or "-") + (f":{e.line}" if e.file and e.line else "")
     L = [f"entry {e.id}  [{e.status}]  case {e.case_id or '-'}  seen {e.seen or '-'}"

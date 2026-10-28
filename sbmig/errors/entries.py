@@ -1,4 +1,13 @@
-"""The error list of one run (v2.1, docs/v2/PLAN-v2.1.md §3.3): ``<run dir>/errors.jsonl`` + ``errors.md``.
+"""실행 하나의 오류 목록(``<실행 디렉터리>/errors.jsonl`` + ``errors.md``) — v2.1 기록의 중심.
+흐름상 위치: 오케스트레이터와 수정 루프가 부른다 — 변환 후 컴파일(``add_build(…, "compile")``), 재구성의 pom
+보정(``add_pom_verify``), 구조 검토 메모(``add_note``), 검증·라운드 빌드(``add_build``), 시도(``begin_try`` /
+``finish_try`` / ``resolve``), 차단(``block``), 실행 끝(``end_of_run``). 끝나면 ``CaseStore.record_run`` 이 KB
+로 옮긴다. 핵심 진입점: ``ErrorList``, ``probable_fixers``(v2.1f 해결한 시도 추정), ``render_md``,
+``stage_of``. 결정: 빌드에 안 보인다고 해결이 아니다 — 그 빌드가 그 오류를 보일 수 있었을 때만 해결로
+친다(round 10). 모든 텍스트는 마스킹·경로 제거 후 저장하고, 파일은 바뀔 때마다 통째로 원자적으로 다시
+쓴다(실패해도 실행은 계속).
+
+The error list of one run (v2.1, docs/v2/PLAN-v2.1.md §3.3): ``<run dir>/errors.jsonl`` + ``errors.md``.
 
 One :class:`~sbmig.core.models.ErrorEntry` per build error (or restructure pom correction, or review note), in memory
 and rewritten whole on every change (runs are sequential — no append-only machinery here; the KB's
@@ -35,6 +44,8 @@ Every text is masked (``kb.redact_file`` + built-ins, :mod:`sbmig.kb.redact`) an
 directory are stripped before it is stored; ``raw`` is capped by ``errors.raw_chars``, a try's ``diff`` by
 ``errors.diff_chars`` (the full diff is in ``changes.patch``), a try's 수정 notes (``FixTry.edits``) at
 ``NOTES_MAX`` with their texts capped. Writing never raises (a warning + ``problems``).
+
+
 """
 from __future__ import annotations
 
@@ -76,10 +87,16 @@ MAJOR_MAX = 50                        # v2.1d major upgrades / library replaceme
 MAJOR_MARK = "⚠ 메이저 업그레이드"      # errors.md: the tries cell of a try with major upgrades (운영자 확인)
 SYNTHETIC_PREFIXES = ("mvn exited with code", "build timed out")
 SUCCESS_RESULTS = frozenset({"improved", "build_ok", "partial"})
+# 빌드가 이 종류의 오류에서 멈췄다면 어디까지 갔는가 — 단계 s 의 항목이 안 보일 때 해결로 치려면 빌드가 s 에
+# 도달했어야 한다(플러그인 실행 실패는 goal 로 단계를 정한다, stage_of)
 # how far a build got when it stopped with an error of this kind (an absent entry of stage s is only gone when the
 # build reached s); plugin_execution has no stage — only its module building (or an ok build) proves it gone
 def stage_of(kind: ErrorKind, goal: Optional[str] = None, l2: str = "") -> Optional[int]:
-    """The Maven stage at which an error of this kind is reported (`STAGE`); a plugin execution failure is placed
+    """이 종류의 오류가 보고되는 Maven 단계(``STAGE``). 플러그인 실행 실패는 goal 로 정한다: resources 는
+    compile 전, compiler 는 compile 과 함께, surefire / failsafe 는 테스트 컴파일 뒤, 그 밖은 package.
+    (2026-10-27 회사 실행: 단계가 없어서 맞는 pom 수정이 세 번 되돌려졌다.)
+
+    The Maven stage at which an error of this kind is reported (`STAGE`); a plugin execution failure is placed
     by its goal — `resources:resources` runs BEFORE compile (process-resources), `compiler:*` with it,
     surefire / failsafe after the tests compile, every other plugin at package time. Company run 2026-10-27: a
     resources-filtering failure (kind plugin_execution) had no stage, so the compile errors its fix uncovered
@@ -99,9 +116,12 @@ def stage_of(kind: ErrorKind, goal: Optional[str] = None, l2: str = "") -> Optio
 
 
 def error_stage(e: BuildError) -> Optional[int]:
+    """빌드 오류 하나의 단계(:func:`stage_of` 에 goal·L2 를 넘겨서)."""
     return stage_of(e.kind, getattr(e, "goal", None), getattr(e, "signature_generic", "") or "")
 
 
+# 단계 번호: pom(0) → 의존성 해결(1) → enforcer·rewrite(2)
+# → compile(3) → test-compile(4) → package(5) → 테스트(6)
 STAGE: dict[ErrorKind, int] = {
     ErrorKind.POM_INVALID: 0, ErrorKind.PARENT_RESOLUTION: 0,
     ErrorKind.DEPENDENCY_RESOLUTION: 1, ErrorKind.PLUGIN_RESOLUTION: 1,
@@ -118,12 +138,17 @@ BuildLike = Union[BuildResult, Iterable[BuildError], None]
 
 
 def is_synthetic(e: BuildError) -> bool:
-    """The build runner's stand-in error for a crashed / timed-out Maven (says nothing about the code)."""
+    """Maven 이 죽거나 시간 초과됐을 때 빌드 러너가 넣는 대역
+    오류인가(코드에 대해 아무것도 말하지 않으므로 항목으로 만들지 않는다).
+
+    The build runner's stand-in error for a crashed / timed-out Maven (says nothing about the code)."""
     return e.kind == ErrorKind.UNKNOWN and not e.file and (e.message or "").startswith(SYNTHETIC_PREFIXES)
 
 
 def round_of(seen: str) -> int:
-    """``fix r3`` → 3; anything else → 0."""
+    """``seen`` 값의 라운드 번호: ``fix r3`` → 3, 그 밖은 0.
+
+    ``fix r3`` → 3; anything else → 0."""
     m = _ROUND_RE.search(seen or "")
     return int(m.group(1)) if m else 0
 
@@ -131,12 +156,16 @@ def round_of(seen: str) -> int:
 # ---------------------------------------------------------------------------------------------------------------------
 # v2.1f: an error gone from a build without a try of its own → the applied try that probably fixed it
 # ---------------------------------------------------------------------------------------------------------------------
+# 되돌렸거나 적용되지 않은 시도는 지금 트리에 없으니 '해결한 시도' 일 수 없다
 FIXER_SKIP_RESULTS = ("reverted", "apply_failed", "blocked")   # a try that is not in the tree cannot have fixed it
 FIXERS_MAX = 3
 
 
 def _pom_covers(pom: str, file: str) -> int:
-    """Depth of ``pom`` (a pom.xml) above ``file``: 0 for the root pom, the folder depth for a module pom; -1 when
+    """``pom`` 이 ``file`` 위에 있는 깊이: 루트 pom 0, 모듈
+    pom 은 폴더 깊이, 위에 없으면 -1(깊을수록 가까운 pom).
+
+    Depth of ``pom`` (a pom.xml) above ``file``: 0 for the root pom, the folder depth for a module pom; -1 when
     the pom is not above the file."""
     if posixpath.basename(pom) != "pom.xml":
         return -1
@@ -148,7 +177,12 @@ def _pom_covers(pom: str, file: str) -> int:
 
 def probable_fixers(e: ErrorEntry, tries: Iterable[tuple[str, FixTry]], *, rounds: Optional[Iterable[int]] = None,
                     match: str = "file", limit: int = FIXERS_MAX) -> list[ResolvedBy]:
-    """The applied tries (``(case_id, try)`` pairs, any entry's) that changed the entry's file or a pom above it —
+    """v2.1f: 자기 시도 없이 빌드에서 사라진(``build`` 로 해결된) 오류를 고쳤을 법한
+    시도들. 적용된 시도 중 이 오류의 파일이나 그 위의 pom 을 바꾼 것을 같은 파일 → 가장 깊은 pom 순으로 최대
+    ``limit`` 개. ``rounds`` 는 볼 라운드 (실행 중: 이 빌드가 채점하는 라운드, None = 전부). 되돌린 / 적용 못
+    한 / 차단된 시도는 고친 시도가 아니다.
+
+    The applied tries (``(case_id, try)`` pairs, any entry's) that changed the entry's file or a pom above it —
     the probable fix of an error resolved by ``build`` (no try of its own). ``rounds`` limits the tries (live: the
     round the build scores; None = any). Nearest first: the same file, then the deepest pom; a try that was reverted
     / never applied is never a fixer. ``match`` labels live ("file" / "pom") or "reindex" attribution."""
@@ -165,6 +199,7 @@ def probable_fixers(e: ErrorEntry, tries: Iterable[tuple[str, FixTry]], *, round
         key = (case_id, int(t.round), int(t.n))
         if key in found:
             continue
+        # 같은 파일이면 바로 확정(99 = 어떤 pom 보다 가까움), 아니면 그 파일 위의 가장 깊은 pom 을 고른다
         hit, kind, depth = "", "", -1
         for f in t.files:
             pf = posix(f)
@@ -181,12 +216,17 @@ def probable_fixers(e: ErrorEntry, tries: Iterable[tuple[str, FixTry]], *, round
         rb = ResolvedBy(case_id=case_id, round=int(t.round), n=int(t.n), commit=t.commit or "", files=[hit],
                         match="reindex" if match == "reindex" else kind,
                         text=f"{case_id} r{t.round} try {t.n} — {what}")
+        # 정렬 키: 같은 파일(0) 먼저, 그다음 깊은 pom, 같으면 이른 라운드·시도
         found[key] = ((0 if kind == "file" else 1, -depth, int(t.round), int(t.n)), rb)
     return [rb for _, rb in sorted(found.values(), key=lambda x: x[0])][:limit]
 
 
 def resolved_text(e: ErrorEntry) -> str:
-    """``r3 try 2`` / ``build`` / ``build ← 7a52b1cea8 r1 try 1`` (the probable fixer of an error resolved by build)."""
+    """해결 표시: ``r3 try 2`` / ``build`` /
+    ``build ← 7a52b1cea8 r1 try 1``(build 로 해결된 오류의 해결한
+    시도). errors.md·보고서의 오류 목록·케이스 요약(cases.md)이 쓴다.
+
+    ``r3 try 2`` / ``build`` / ``build ← 7a52b1cea8 r1 try 1`` (the probable fixer of an error resolved by build)."""
     if e.resolved == "build" and e.resolved_by:
         rb = e.resolved_by[0]
         return f"build ← {rb.case_id} r{rb.round} try {rb.n}"
@@ -194,7 +234,9 @@ def resolved_text(e: ErrorEntry) -> str:
 
 
 def fmt_entry(e: ErrorEntry) -> str:
-    """``file:line message`` (module or '-' without a file)."""
+    """``파일:줄 메시지`` 한 줄(파일이 없으면 모듈 또는 '-').
+
+    ``file:line message`` (module or '-' without a file)."""
     loc = e.file or e.module or "-"
     if e.file and e.line:
         loc += f":{e.line}"
@@ -202,7 +244,11 @@ def fmt_entry(e: ErrorEntry) -> str:
 
 
 def tries_text(e: ErrorEntry, with_change: bool = False) -> str:
-    """``1 llm-new edits improved → 2 kb-script v2 script build_ok``; ``with_change`` (errors.md) appends each try's
+    """시도 요약 한 줄: ``1 llm-new edits improved → 2 kb-script v2 script build_ok``.
+    ``with_change``(errors.md)면 각 시도의 첫 수정 기록
+    내용(60자까지)과 메이저 업그레이드 표시(v2.1d)를 붙인다.
+
+    ``1 llm-new edits improved → 2 kb-script v2 script build_ok``; ``with_change`` (errors.md) appends each try's
     first 수정 note's change (≤ 60 characters): ``1 llm-new edits improved (jaxb-runtime 의존성을 추가합니다)``."""
     parts = []
     for t in e.tries:
@@ -218,7 +264,9 @@ def tries_text(e: ErrorEntry, with_change: bool = False) -> str:
 
 
 def change_line(c: Any) -> str:
-    """`org.sitemesh:sitemesh 2.4.2 → 3.2.1 (dependencies, demo-back/pom.xml), approved` — one 메이저 변경 line."""
+    """메이저 변경(v2.1d) 한 줄: ``좌표 이전 → 이후 (섹션, pom 경로)`` + 사람이 승인했으면 ``approved``.
+
+    `org.sitemesh:sitemesh 2.4.2 → 3.2.1 (dependencies, demo-back/pom.xml), approved` — one 메이저 변경 line."""
     text = getattr(c, "text", None) or f"{getattr(c, 'key', '?')}"
     return (f"{text} ({getattr(c, 'section', 'dependencies')}, {getattr(c, 'path', '-')})"
             + (", approved" if getattr(c, "approved", False) else ""))
@@ -232,7 +280,10 @@ def _src_tail(path: str) -> str:
 
 
 def _moved(old: str, new: str) -> bool:
-    """Did the restructure move ``old`` to ``new``? One ends with the other, or both share the ``src/…`` tail."""
+    """재구성이 ``old`` 를 ``new`` 로 옮겼나? 한쪽이 다른
+    쪽으로 끝나거나 ``src/…`` 꼬리가 같으면 같은 파일로 본다.
+
+    Did the restructure move ``old`` to ``new``? One ends with the other, or both share the ``src/…`` tail."""
     old, new = posix(old), posix(new)
     if not old or not new or old == new:
         return False
@@ -249,7 +300,10 @@ def _module_dir(pom: str) -> Optional[str]:
 
 
 class _Build:
-    """One build as the list sees it: its real errors, whether it says anything, how far it got."""
+    """오류 목록이 보는 빌드 하나: 진짜 오류(대역 오류 제외), 아무것도
+    말하지 않는 빌드(void)인지, 어느 단계까지 갔는지(``reached``).
+
+    One build as the list sees it: its real errors, whether it says anything, how far it got."""
 
     def __init__(self, build: BuildLike, void: bool = False):
         self.result = build if isinstance(build, BuildResult) else None
@@ -257,13 +311,17 @@ class _Build:
         self.real = [e for e in errs if not is_synthetic(e)]
         r = self.result
         self.ok = (r.ok if r is not None else not errs) and not void
+        # void = 시간 초과, 또는 실패했는데 파싱된 오류가 없는 빌드: 아무것도 해결로 치지 않는다
         self.void = bool(void) or (r is not None and (bool(r.timed_out) or (not r.ok and not self.real))) or \
             (r is None and bool(errs) and not self.real)
         self.reached = max((error_stage(e) if error_stage(e) is not None else -1
                             for e in self.real if e.kind != ErrorKind.UNKNOWN or e.file), default=-1)
 
     def can_show(self, e: ErrorEntry) -> bool:
-        """Could this build have reported ``e`` (now absent)?"""
+        """지금 안 보이는 ``e`` 를 이 빌드가 보일 수 있었나? — '안 보임 ≠ 해결' 규칙(round 10)의 핵심. void
+        빌드는 아무것도 증명하지 못하고, 다른 모듈이 실패해 건너뛴 모듈의 오류도 증명하지 못한다.
+
+        Could this build have reported ``e`` (now absent)?"""
         if self.void:
             return False
         if self.ok or not self.real:
@@ -280,7 +338,10 @@ class _Build:
 
 
 class ErrorList:
-    """The error list of one run. ``ErrorList.for_workspace(ws, cfg, project)`` in a run; tests build it directly."""
+    """실행 하나의 오류 목록. 실행에서는 ``ErrorList.for_workspace(ws, cfg, project)``, 테스트는 직접 만든다.
+    항목은 메모리에 두고 바뀔 때마다 파일을 통째로 다시 쓴다(실행은 순차라 덧붙이기 장치가 필요 없다).
+
+    The error list of one run. ``ErrorList.for_workspace(ws, cfg, project)`` in a run; tests build it directly."""
 
     def __init__(self, run_dir: Union[str, Path], run_id: str, *, project: str = "", cfg: Any = None,
                  roots: Iterable[Any] = ()):
@@ -303,14 +364,17 @@ class ErrorList:
 
     @classmethod
     def for_workspace(cls, ws: Any, cfg: Any = None, project: str = "") -> "ErrorList":
+        """Workspace 용 생성자: 프로젝트 루트와 실행 디렉터리를 텍스트에서 지울 경로로 넘긴다."""
         return cls(ws.run_dir, ws.run_id, project=project or ws.root.name, cfg=cfg, roots=(ws.root, ws.run_dir))
 
     @property
     def path(self) -> Path:
+        """실행 디렉터리의 ``errors.jsonl``."""
         return self.run_dir / ERRORS_FILE
 
     @property
     def md_path(self) -> Path:
+        """실행 디렉터리의 ``errors.md``(사람용 표)."""
         return self.run_dir / ERRORS_MD
 
     # ------------------------------------------------------------------ building entries
@@ -337,7 +401,11 @@ class ErrorList:
                          raw=self.clean(e.raw or e.message, self.raw_chars), seen=seen, status="open")
 
     def _match(self, errors: list[BuildError]) -> tuple[list[tuple[ErrorEntry, BuildError]], list[BuildError]]:
-        """(matched (entry, error) pairs, unmatched errors) — exact, nearest line, moved file (see the module doc)."""
+        """빌드 오류를 기존 항목에 맞춘다: (1) 케이스·파일·줄·메시지가 같음 → (2) 같은 파일·메시지의 가장
+        가까운 줄 (위쪽 수정으로 줄이 밀림; 항목이 새 줄을 받음) → (3) compile 때 본 항목이면 재구성이 옮긴
+        파일(새 파일·모듈을 받음). (짝, 못 맞춘 오류)를 돌려준다 — 못 맞춘 것만 새 항목이 된다.
+
+        (matched (entry, error) pairs, unmatched errors) — exact, nearest line, moved file (see the module doc)."""
         cands = [e for e in self.entries if e.id in self._from_build]
         keyed = [(case_id_of(x), posix(x.file), x.line or 0, self._message(x), x) for x in errors]
         used: set[str] = set()
@@ -379,7 +447,12 @@ class ErrorList:
 
     def add_build(self, errors: BuildLike, seen: str, *, round: Optional[int] = None, void: bool = False
                   ) -> list[ErrorEntry]:
-        """Merge one build (a BuildResult — preferred: it says whether the build was ok / timed out and which modules
+        """빌드 하나를 목록에 합치고 새 항목을 돌려준다(BuildResult 권장 — 성공·시간
+        초과·빌드된 모듈을 알려 준다). 새 오류만 추가; 사라진 열린 항목은 이 빌드가 보일 수 있었을 때만
+        ``build`` 로 해결하고, 이번 라운드의 채점 대기 시도가 있으면 루프의 ``resolve`` 판정을 기다린다.
+        해결됐던 항목이 다시 보이면 다시 연다.
+
+        Merge one build (a BuildResult — preferred: it says whether the build was ok / timed out and which modules
         built — or its error list) into the list. Returns the NEW entries. ``round`` = the fix round whose tries this
         build scores (default: from ``seen``, ``fix r3`` → 3). ``void`` = the build says nothing (also implied by a
         timed-out BuildResult, or a failed one without parsed errors): nothing is resolved."""
@@ -411,16 +484,21 @@ class ErrorList:
                 if e.status != "open" or e.id in present or e.id not in self._from_build or not b.can_show(e):
                     continue
                 last = e.tries[-1] if e.tries else None
+                # 이 빌드가 채점하는 바로 그 시도: 여기서 build 로
+                # 닫으면 시도의 공이 사라지므로 resolve() 에 맡긴다
                 if last is not None and last.round == rnd and rnd and last.result == "pending":
                     continue                              # this build scores that try: the loop's resolve() decides
                 by = last if last is not None and last.result in SUCCESS_RESULTS else None
                 self._resolve_entry(e, by)
+                # v2.1f: 자기 시도 없이 사라진 오류 → 같은 라운드에
+                # 그 파일·위 pom 을 바꾼 시도를 '해결한 시도' 로 기록
                 if by is None and e.case_id:              # v2.1f: gone without a try → who probably fixed it
                     e.resolved_by = probable_fixers(e, self._all_tries(), rounds=[rnd])
                 resolved += 1
             self._present = present
             self._last = b
         else:
+            # void 빌드: 해결은 판정하지 않고, 이번에 보인 항목만 '보임' 에 더한다
             self._present |= present
         self.write()
         log.debug("error list: build %s → %d new, %d resolved, %d open%s", seen, len(new), resolved,
@@ -428,7 +506,10 @@ class ErrorList:
         return new
 
     def add_pom_verify(self, file: str, note: str) -> ErrorEntry:
-        """A restructure pom correction (status pom-verify, seen restructure) that the next build verifies."""
+        """재구성이 고친 pom 하나(status pom-verify, seen restructure) — 다음 빌드가
+        검증한다(``verify_poms``). 같은 pom·같은 첫 줄이면 기존 항목을 돌려준다.
+
+        A restructure pom correction (status pom-verify, seen restructure) that the next build verifies."""
         f = posix(self.clean(file)) or "pom.xml"
         text = self.clean(note, NOTE_CHARS)
         msg = first_line(text, MESSAGE_CHARS)
@@ -442,7 +523,10 @@ class ErrorList:
 
     def add_note(self, file: Optional[str], text: str, seen: str = "review", *, status: str = "note",
                  l2: str = "", kind: ErrorKind = ErrorKind.UNKNOWN) -> ErrorEntry:
-        """An informational entry (a review warning: status note; ``status`` may be ``open`` for a finding a try
+        """정보성 항목(구조 검토 warning: status note; 시도가 고칠 지적이면 ``status`` 를 ``open`` 으로). 같은
+        파일·같은 첫 줄의 메모는 다시 추가하지 않고 기존 항목을 돌려준다.
+
+        An informational entry (a review warning: status note; ``status`` may be ``open`` for a finding a try
         will fix). An identical note (same file and first line) is returned, not added again."""
         f = posix(self.clean(file or "")) or None
         body = self.clean(text, NOTE_CHARS)
@@ -457,7 +541,11 @@ class ErrorList:
         return e
 
     def verify_poms(self, build: BuildLike) -> list[ErrorEntry]:
-        """pom-verify entries whose pom shows no error in ``build`` → resolved ("build"); the others stay pom-verify
+        """pom-verify 항목 중 ``build`` 에서 그 pom 에 오류가 없는 것 →
+        해결(``build``); 오류가 있으면 pom-verify 로 두고 그 오류를 ``note`` 에 적는다. void 빌드는 아무것도
+        검증하지 않는다. 해결된 항목을 돌려준다.
+
+        pom-verify entries whose pom shows no error in ``build`` → resolved ("build"); the others stay pom-verify
         with the build's error on that pom named in ``note``. A void build verifies nothing. Returns the resolved
         entries."""
         b = _Build(build)
@@ -481,7 +569,11 @@ class ErrorList:
     # ------------------------------------------------------------------ tries
     def begin_try(self, case_id: str, round: int, source: str, script_version: int = 0, *,
                   entry_ids: Optional[Iterable[str]] = None) -> FixTry:
-        """A new try (n = the case's next number in this run) on every open entry of the case — or on the given
+        """새 시도(n = 이 실행에서 케이스의 다음 번호)를 케이스의 열린 항목
+        전부(또는 ``entry_ids`` — 구조 검토 수정의 메모들)에 단다. 항목들이 FixTry 객체 하나를 공유하므로 한
+        시도가 케이스의 모든 오류에 똑같이 기록된다.
+
+        A new try (n = the case's next number in this run) on every open entry of the case — or on the given
         ``entry_ids`` (a review fix on its notes). The entries share the one FixTry object."""
         if entry_ids is not None:
             targets = [self._by_id[i] for i in entry_ids if i in self._by_id]
@@ -496,6 +588,7 @@ class ErrorList:
         return t
 
     def get_try(self, case_id: str, n: int) -> Optional[FixTry]:
+        """케이스의 n 번째 시도(없으면 None)."""
         hit = self._tries.get((case_id, n))
         return hit[0] if hit else None
 
@@ -506,7 +599,11 @@ class ErrorList:
                    seconds: Optional[float] = None, script_version: Optional[int] = None,
                    edits: Optional[Iterable[Any]] = None, major_upgrades: Iterable[Any] | None = None,
                    verify: str | None = None, verify_source: str | None = None) -> Optional[FixTry]:
-        """Fill in what try ``n`` of the case did; a field left None keeps its value (call it after applying and
+        """시도 n 이 한 일을 채운다: 원인 / 해결 / 적용 방식 / 바뀐 파일 / diff / 수정 기록(변경 조각 포함) /
+        메이저 업그레이드·운영자 확인 / 결과. None 인 필드는 그대로(적용 후 한 번, 채점 결과로 또 한 번
+        부른다). 텍스트는 마스킹하고 diff 는 ``errors.diff_chars`` 로 자른다(전체는 ``changes.patch``).
+
+        Fill in what try ``n`` of the case did; a field left None keeps its value (call it after applying and
         again with the scoring ``result``). Texts are masked; the diff is capped by ``errors.diff_chars``.
         ``edits`` = the 수정 notes (``EditNote`` or dicts: where / change by the LLM, lines from the diff);
         ``major_upgrades`` (v2.1d) = the try's major upgrades / library replacements (``DependencyChange`` or dicts),
@@ -551,7 +648,11 @@ class ErrorList:
         return t
 
     def _notes(self, notes: Iterable[Any]) -> list[EditNote]:
-        """The try's 수정 notes, masked and capped (an unreadable item is skipped, never fails the try). v2.1e: each
+        """시도의 수정 기록을 마스킹·길이 제한해 정리한다(읽을 수 없는 것은 건너뜀 — 시도를 실패시키지
+        않는다). v2.1e: 변경 조각(수정 전/후)은 길이 제한 없이 마스킹만 한다(자르기는 ``errors.snippet_lines``
+        가 이미 했다).
+
+        The try's 수정 notes, masked and capped (an unreadable item is skipped, never fails the try). v2.1e: each
         note keeps its as-is / to-be `hunks`, masked WITHOUT a length cap (`errors.snippet_lines` already cut them
         where the notes were made); an unreadable hunk is left out, never the note."""
         out: list[EditNote] = []
@@ -579,7 +680,9 @@ class ErrorList:
         return out
 
     def _changes(self, items: Iterable[Any]) -> list[DependencyChange]:
-        """v2.1d: the try's major upgrades, masked (an unreadable item is skipped, never fails the try)."""
+        """v2.1d: 시도의 메이저 업그레이드 목록을 마스킹해 정리한다(읽을 수 없는 것은 건너뜀).
+
+        v2.1d: the try's major upgrades, masked (an unreadable item is skipped, never fails the try)."""
         out: list[DependencyChange] = []
         for x in items or []:
             try:
@@ -599,7 +702,10 @@ class ErrorList:
         return out
 
     def _all_tries(self) -> list[tuple[str, FixTry]]:
-        """Every try of the run as ``(case_id, try)``, one per (case, round, n)."""
+        """이 실행의 모든 시도를 ``(case_id, try)`` 로,
+        (케이스, 라운드, n) 당 하나 — ``probable_fixers`` 의 후보.
+
+        Every try of the run as ``(case_id, try)``, one per (case, round, n)."""
         out: dict[tuple[str, int, int], tuple[str, FixTry]] = {}
         for x in self.entries:
             for t in x.tries:
@@ -607,6 +713,8 @@ class ErrorList:
         return list(out.values())
 
     def _resolve_entry(self, e: ErrorEntry, t: Optional[FixTry], how: str = "") -> None:
+        """항목을 해결로: ``how`` 가 있으면 그대로, 시도가 없으면 ``build``, 라운드 0 시도는 ``review``; 저장
+        스크립트가 고쳤으면 ``script`` 에 ``cases/<id>/fix_v<N>.py``."""
         e.status = "resolved"
         if how:
             e.resolved = how
@@ -619,7 +727,11 @@ class ErrorList:
 
     def resolve(self, case_id: str, round: int, n: int, *, entry_ids: Optional[Iterable[str]] = None,
                 how: str = "") -> list[ErrorEntry]:
-        """The loop's verdict for try ``n``: its entries that are still open and gone from the last build →
+        """시도 n 에 대한 루프의 판정: 그 시도의 항목 중 아직 열려 있고 마지막
+        빌드에서 사라진 것 → ``r<round> try <n>`` 해결(라운드 0 은 ``review``), 저장 스크립트가 했으면
+        ``script`` 를 채운다. ``entry_ids`` 는 그 항목만.
+
+        The loop's verdict for try ``n``: its entries that are still open and gone from the last build →
         resolved ``r<round> try <n>`` (round 0 → ``review``; ``how`` overrides), ``script`` set when a stored
         script did it. ``entry_ids`` resolves exactly those entries (a review fix). Returns the resolved entries."""
         hit = self._tries.get((case_id, n))
@@ -641,7 +753,9 @@ class ErrorList:
         return out
 
     def block(self, case_id: str, reason: str) -> list[ErrorEntry]:
-        """Every open entry of the case → blocked (the reason in ``note``)."""
+        """케이스의 열린 항목 전부 → 차단(이유는 ``note``).
+
+        Every open entry of the case → blocked (the reason in ``note``)."""
         text = self.clean(reason, NOTE_CHARS)
         out = []
         for e in self.entries:
@@ -653,7 +767,10 @@ class ErrorList:
         return out
 
     def end_of_run(self) -> dict[str, int]:
-        """Open entries absent from the last build that could show them (left for a verdict that never came) →
+        """실행 끝: 마지막 빌드가 보일 수 있었는데 안 보인 열린 항목(오지 않은 판정을 기다리던 것)은 마지막
+        시도 (또는 ``build``)로 해결, 나머지 열린 항목은 미해결(unresolved). 상태별 개수를 돌려준다.
+
+        Open entries absent from the last build that could show them (left for a verdict that never came) →
         resolved by their last try (or ``build``); every other open entry → unresolved. Returns counts by status."""
         for e in self.entries:
             if e.status != "open":
@@ -669,10 +786,13 @@ class ErrorList:
 
     # ------------------------------------------------------------------ queries
     def entries_for(self, case_id: str) -> list[ErrorEntry]:
+        """케이스의 항목들(상태 무관)."""
         return [e for e in self.entries if e.case_id == case_id]
 
     def open_cases(self, present_only: bool = False) -> dict[str, list[ErrorEntry]]:
-        """Open entries by case (first-seen order). ``present_only``: only those the last build reported."""
+        """열린 항목을 케이스별로(처음 본 순서). ``present_only``: 마지막 빌드가 보고한 것만.
+
+        Open entries by case (first-seen order). ``present_only``: only those the last build reported."""
         out: dict[str, list[ErrorEntry]] = {}
         for e in self.entries:
             if e.status == "open" and e.case_id and (not present_only or e.id in self._present):
@@ -680,20 +800,27 @@ class ErrorList:
         return out
 
     def present(self, entry: ErrorEntry) -> bool:
-        """Did the last build report this entry?"""
+        """마지막 빌드가 이 항목을 보고했나?
+
+        Did the last build report this entry?"""
         return entry.id in self._present
 
     def counts(self) -> dict[str, int]:
+        """상태별 항목 수."""
         out: dict[str, int] = {}
         for e in self.entries:
             out[e.status] = out.get(e.status, 0) + 1
         return out
 
     def get(self, entry_id_: str) -> Optional[ErrorEntry]:
+        """ID 로 항목 하나(없으면 None)."""
         return self._by_id.get(entry_id_)
 
     def to_report(self) -> list[ErrorEntry]:
-        """Copies for the RunReport (raw ≤ ``errors.raw_chars``, diffs ≤ ``errors.diff_chars``). v2.1e: the notes'
+        """RunReport 용 복사본(raw·diff 길이 제한). v2.1e: 변경 조각은 보고서에서 뺀다 — report.json 크기를
+        묶어 두려고; 전체 코드는 errors.jsonl·KB·에러별 JSON 에 남는다.
+
+        Copies for the RunReport (raw ≤ ``errors.raw_chars``, diffs ≤ ``errors.diff_chars``). v2.1e: the notes'
         as-is / to-be ``hunks`` stay out of the report (it is size-bounded like the diff; the whole code lives in
         ``errors.jsonl``, the KB and the per-error JSON files)."""
         out = []
@@ -709,7 +836,10 @@ class ErrorList:
 
     # ------------------------------------------------------------------ files
     def write(self) -> None:
-        """Rewrite ``errors.jsonl`` (+ ``errors.md`` with ``errors.md_view``). Never raises."""
+        """``errors.jsonl``(+ ``errors.md_view`` 면 ``errors.md``)을 통째로 원자적으로 다시 쓴다. 디스크
+        문제로 실행을 멈추지 않는다(경고 + ``problems``) — 목록은 기록일 뿐이다.
+
+        Rewrite ``errors.jsonl`` (+ ``errors.md`` with ``errors.md_view``). Never raises."""
         try:
             atomic_write(self.path, "".join(e.model_dump_json() + "\n" for e in self.entries))
             if self.md_view:
@@ -722,7 +852,9 @@ class ErrorList:
 
     @staticmethod
     def load(path: Union[str, Path]) -> list[ErrorEntry]:
-        """The entries of an ``errors.jsonl`` (unreadable lines skipped)."""
+        """``errors.jsonl`` 의 항목들(읽을 수 없는 줄은 건너뜀).
+
+        The entries of an ``errors.jsonl`` (unreadable lines skipped)."""
         out = []
         p = Path(path)
         if not p.is_file():
@@ -738,7 +870,10 @@ class ErrorList:
 
 
 def _hunk_items(raw: Any) -> list[EditHunk]:
-    """The readable hunks of a stored / foreign note (``EditHunk``, dicts, objects with the fields); the rest — and a
+    """저장된 / 외부 노트의 변경 조각 중 읽을 수 있는 것(EditHunk,
+    dict, 같은 필드를 가진 객체); 수정 전·후가 모두 빈 조각은 버린다.
+
+    The readable hunks of a stored / foreign note (``EditHunk``, dicts, objects with the fields); the rest — and a
     hunk with neither as-is nor to-be text — is skipped."""
     out: list[EditHunk] = []
     if not isinstance(raw, (list, tuple)):
@@ -772,7 +907,10 @@ def _join(old: str, new: str) -> str:
 
 
 def _pom_hit(e: ErrorEntry, x: BuildError) -> bool:
-    """Is build error ``x`` about the pom of pom-verify entry ``e``?"""
+    """빌드 오류 ``x`` 가 pom-verify 항목 ``e`` 의 pom 에 관한
+    것인가(파일이 같거나, 파일 없는 pom 계열 오류면 같은 모듈).
+
+    Is build error ``x`` about the pom of pom-verify entry ``e``?"""
     f = posix(x.file)
     if f:
         return f == posix(e.file)
@@ -781,7 +919,9 @@ def _pom_hit(e: ErrorEntry, x: BuildError) -> bool:
 
 # --------------------------------------------------------------------------- errors.md
 def guide_lines(text: str) -> list[str]:
-    """A 운영자 확인 guide as lines (leading bullets stripped, empty lines dropped)."""
+    """운영자 확인 가이드를 줄 목록으로(앞의 글머리표 제거, 빈 줄 버림).
+
+    A 운영자 확인 guide as lines (leading bullets stripped, empty lines dropped)."""
     return [x for x in (re.sub(r"^\s*[-*•]\s+", "", ln).strip() for ln in (text or "").splitlines()) if x]
 
 
@@ -791,7 +931,10 @@ def _cell(text: Any, limit: int = 160) -> str:
 
 
 def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "") -> str:
-    """``errors.md``: the table (``#``, seen, status, case, file:line, message, tries, resolved) and, per case
+    """``errors.md``: 표(#, 처음 본 단계, 상태, 케이스, 파일:줄, 메시지, 시도, 해결)와, 시도가 있는 케이스마다
+    각 시도의 원인 / 해결 / 수정(기록마다 ``경로 줄 — 내용``) / 메이저 변경·운영자 확인 / diff.
+
+    ``errors.md``: the table (``#``, seen, status, case, file:line, message, tries, resolved) and, per case
     with tries, what each try found and did (원인 / 해결 / 수정 — ``path lines — change`` per note — / diff)."""
     counts: dict[str, int] = {}
     for e in entries:
@@ -842,6 +985,7 @@ def render_md(entries: list[ErrorEntry], *, project: str = "", run_id: str = "")
                 L.append(f"- files: {', '.join(t.files)}")
             if t.diff:
                 d = t.diff if len(t.diff) <= MD_DIFF_CHARS else t.diff[:MD_DIFF_CHARS] + "\n… (full diff in errors.jsonl / changes.patch)"
+                # diff 안의 ``` 가 마크다운 코드 블록을 닫지 않게 비슷한 글자로 바꿔 쓴다
                 L += ["", "```diff", d.replace("```", "ʼʼʼ"), "```"]
             L.append("")
     return "\n".join(L).rstrip() + "\n"

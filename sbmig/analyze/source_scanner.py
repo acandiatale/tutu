@@ -1,7 +1,17 @@
-"""Regex-based Java source scanner (no parser dependency) → `SourceStats`.
+"""정규식 기반 자바 소스 스캐너(파서 의존성 없음) → 파일별 정보 ``ScanResult`` → 집계 ``SourceStats``.
+흐름상 위치: 분석기가 pom 파싱 다음에 :func:`scan_sources` 를 부르고, 분류기가 ``ScanResult.subset(dir)`` 로
+모듈 / MSA 서비스별로 잘라 쓴다. 재구성도 여기의 디렉토리 판정(:func:`pom_web_dirs`,
+:func:`pom_build_dirs`, :func:`clean_pom_dir`, ``WEB_STATIC_EXTENSIONS``)을 그대로 써서 front 모듈로 옮길
+웹 파일을 정한다. 모으는 것: package / import / 주요 어노테이션 / main / 서블릿·필터·리스너, javax·jakarta
+import 수, web.xml(파싱), JSP(및 javax 를 쓰는 JSP), 정적 웹 파일, Spring XML 빈 설정, 설정 파일, 웹 루트
+아래의 큰 미디어 파일. 주석·문자열은 먼저 지우고 본다(주석 속 import 를 세지 않게). 읽기 전용.
+
+Regex-based Java source scanner (no parser dependency) → `SourceStats`.
 
 `scan_sources(ws)` returns a `ScanResult` that keeps per-file facts so the classifier can slice it per
 maven module / MSA service (`ScanResult.subset(dir)`); `ScanResult.stats()` folds it into `SourceStats`.
+
+
 """
 from __future__ import annotations
 
@@ -54,6 +64,7 @@ MAX_LARGE_MEDIA = 20
 DEFAULT_WEBAPP = "src/main/webapp"
 _BASEDIR_RE = re.compile(r"^\$\{(?:project\.)?basedir\}/?")
 
+# 문자열을 먼저 잡아야 "http://..." 같은 리터럴 속 // 를 주석으로 오인해 뒷부분을 지우지 않는다
 # strings/chars are matched first so "//" inside a literal is not treated as a comment
 _COMMENT_RE = re.compile(r'("(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\')|//[^\n]*|/\*.*?\*/', re.S)
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.M)
@@ -67,11 +78,14 @@ _SERVLET_IFACES = {"Filter", "ServletContextListener", "HttpSessionListener", "S
 
 
 def strip_comments(src: str) -> str:
+    """자바 주석(// 와 /* */)을 지운다. 문자열·문자 리터럴은 그대로 남긴다."""
     return _COMMENT_RE.sub(lambda m: m.group(1) or "", src)
 
 
 @dataclass
 class JavaFileInfo:
+    """자바 파일 하나에서 뽑은 사실: 경로, FQCN, 패키지, 테스트 여부, import, 추적 어노테이션 수, main 유무,
+    서블릿 / 필터·리스너 여부, lombok 사용."""
     path: str
     fqcn: str
     package: str
@@ -85,14 +99,18 @@ class JavaFileInfo:
 
     @property
     def is_boot_app(self) -> bool:
+        """@SpringBootApplication 이 붙은 클래스인지."""
         return self.annotations.get("SpringBootApplication", 0) > 0
 
     @property
     def is_controller(self) -> bool:
+        """@Controller / @RestController 가 있는지."""
         return bool(self.annotations.get("Controller") or self.annotations.get("RestController"))
 
 
 def scan_java_text(path: str, text: str) -> JavaFileInfo:
+    """자바 소스 텍스트 하나를 정규식으로 훑어 JavaFileInfo 를 만든다(주석 제거 후). 필터·리스너는
+    @WebFilter / @WebListener, 또는 servlet import 가 있을 때 ``implements Filter`` 등으로 판정."""
     src = strip_comments(text)
     pm = _PACKAGE_RE.search(src)
     package = pm.group(1) if pm else ""
@@ -118,6 +136,8 @@ def scan_java_text(path: str, text: str) -> JavaFileInfo:
 
 
 def _ns_key(imp: str, ns: str) -> Optional[str]:
+    """import 를 집계 키로: ``javax.servlet.http.X`` →
+    ``javax.servlet``; ``javax.xml.*`` 는 3단계(JDK 와 EE 구분)."""
     if not imp.startswith(ns + "."):
         return None
     parts = imp.split(".")
@@ -130,7 +150,9 @@ def _ns_key(imp: str, ns: str) -> Optional[str]:
 
 
 def base_package(packages: list[str]) -> Optional[str]:
-    """Longest common package prefix with ≥2 segments; else the most frequent top-2-segment prefix."""
+    """기본 패키지: 2단계 이상인 가장 긴 공통 접두어, 없으면 가장 흔한 상위 2단계 접두어.
+
+    Longest common package prefix with ≥2 segments; else the most frequent top-2-segment prefix."""
     pkgs = [p for p in packages if p]
     if not pkgs:
         return None
@@ -155,10 +177,14 @@ def _under(path: str, prefix: str) -> bool:
 
 @dataclass
 class ScanResult:
+    """스캔 결과(파일 단위 정보를 그대로 보관) — ``subset``
+    으로 모듈 / 서비스별로 자르고 ``stats`` 로 집계한다."""
     files: list[JavaFileInfo] = field(default_factory=list)
     kotlin_files: list[str] = field(default_factory=list)
     web_xml_paths: list[str] = field(default_factory=list)
     jsp_paths: list[str] = field(default_factory=list)
+    # javax EE 타입을 쓰는 JSP 들. 주의: 아래 영어 주석의 jakarta-namespace-sweep 은 v1 핸들러(v2 에는 없음) —
+    # v2 는 이 JSP 들을 바꾸지 않고 개수만 SourceStats 에 남긴다(알려진 후속 과제)
     # JSP / tag files (*.jsp, *.jspf, *.jspx, *.tag, *.tagx) naming a javax EE type of the jakarta table in a page /
     # tag import, a scriptlet or a useBean (sbmig.analyze.jsp) — what jakarta-namespace-sweep renames
     jsp_javax_paths: list[str] = field(default_factory=list)
@@ -174,7 +200,9 @@ class ScanResult:
     large_media: list[tuple[str, int]] = field(default_factory=list)
 
     def subset(self, prefix: str) -> "ScanResult":
-        """Files below directory `prefix` (relative, '' = everything)."""
+        """디렉토리 ``prefix`` 아래의 것만 남긴 ScanResult('' = 전부). MSA 서비스별 분류에 쓴다.
+
+        Files below directory `prefix` (relative, '' = everything)."""
         f = lambda xs: [x for x in xs if _under(x, prefix)]  # noqa: E731
         return ScanResult(files=[j for j in self.files if _under(j.path, prefix)],
                           kotlin_files=f(self.kotlin_files), web_xml_paths=f(self.web_xml_paths),
@@ -187,12 +215,15 @@ class ScanResult:
                           large_media=[m for m in self.large_media if _under(m[0], prefix)])
 
     def import_counts(self) -> Counter:
+        """import 문자열별 등장 횟수(라이브러리 탐지의 import 근거)."""
         c: Counter = Counter()
         for j in self.files:
             c.update(j.imports)
         return c
 
     def stats(self) -> SourceStats:
+        """파일별 정보를 프로필용 ``SourceStats`` 로 접는다. main 클래스·서블릿 등은 테스트 소스를 빼고 센다.
+        web.xml 이 여럿이면 ``web_xml_paths`` 순서로 처음 파싱된 것이 ``web_xml_*`` 칸을 채운다."""
         main = [j for j in self.files if not j.is_test]
         tests = [j for j in self.files if j.is_test]
         packages = sorted({j.package for j in self.files if j.package})
@@ -246,13 +277,20 @@ class ScanResult:
 
 
 def _glob_plain(ws: WorkspaceView, pattern: str) -> list[str]:
+    """``pattern`` 파일들(posix 경로; node_modules / .git / Maven 빌드 출력 제외)."""
     return [p.replace("\\", "/") for p in ws.glob(pattern)
             if not any(x in p.replace("\\", "/").split("/") for x in ("node_modules", ".git"))
             and not is_build_output_path(p)]
 
 
 def web_static_root(rel: str, web_dirs: Iterable[str] = (), resource_dirs: Iterable[str] = ()) -> Optional[str]:
-    """The web root dir holding `rel` when `rel` is a static web file (extension in WEB_STATIC_EXTENSIONS, not under
+    """``rel`` 이 정적 웹 파일이면 그 웹 루트 디렉토리를, 아니면 None (front 모듈로
+    옮길지의 기준, round 9c). 웹 루트 = ``[<모듈>/]src/main/webapp`` (WEB-INF 제외),
+    ``src/main/resources/{static,public,templates}``, 또는 war 플러그인이 선언한 비표준 디렉토리(``web_dirs``,
+    가장 긴 것이 이김, 2026-10-23). 그 루트 안의 ``resource_dirs`` 아래 파일은 클래스패스 리소스라서(재구성이
+    comp 모듈에 남김) 정적 파일로 치지 않는다.
+
+    The web root dir holding `rel` when `rel` is a static web file (extension in WEB_STATIC_EXTENSIONS, not under
     `<root>/WEB-INF`): `[<module>/]src/main/webapp`, `.../src/main/resources/{static,public,templates}` or (2026-10-23)
     one of `web_dirs` — the war plugin's `warSourceDirectory` / `<webResources>` dirs (`webapp_dirs`; the longest
     match wins). A file of a custom root that lies under one of `resource_dirs` inside that root is a classpath resource
@@ -280,7 +318,9 @@ def web_static_root(rel: str, web_dirs: Iterable[str] = (), resource_dirs: Itera
 
 def _scan_web_static(ws: WorkspaceView, web_dirs: Iterable[str] = (),
                      resource_dirs: Iterable[str] = ()) -> list[tuple[str, str]]:
-    """Static web files as (web root, path) — one walk over the workspace (target / node_modules / .git skipped)."""
+    """정적 웹 파일 목록 (웹 루트, 경로) — 작업공간을 한 번만 훑는다.
+
+    Static web files as (web root, path) — one walk over the workspace (target / node_modules / .git skipped)."""
     out: list[tuple[str, str]] = []
     web_dirs, resource_dirs = list(web_dirs), list(resource_dirs)
     custom = tuple(d.strip("/") + "/" for d in web_dirs if d.strip("/"))
@@ -297,14 +337,21 @@ def _scan_web_static(ws: WorkspaceView, web_dirs: Iterable[str] = (),
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class WebDir:
-    """A directory the WAR takes web content from, relative to its pom's directory."""
+    """WAR 가 웹 콘텐츠를 가져오는 디렉토리(pom 디렉토리 기준): ``root`` = warSourceDirectory,
+    ``resources`` = ``<webResources>`` (``target`` = 웹 경로 접두어).
+
+    A directory the WAR takes web content from, relative to its pom's directory."""
     dir: str
     kind: str = "root"          # root = warSourceDirectory (or the default webapp) | resources = <webResources>
     target: str = ""            # <webResources><resource><targetPath> (web-path prefix), "" = the web root itself
 
 
 def clean_pom_dir(raw: Optional[str], allow_parent: bool = False) -> Optional[str]:
-    """A pom directory value as a relative posix path (`${basedir}/` / `${project.basedir}/` stripped); None for
+    """pom 에 적힌 디렉토리 값을 상대 posix 경로로(``${basedir}/`` 제거). 비었거나
+    다른 ``${…}``·절대 경로·``..`` 이면 None. ``allow_parent`` (재구성용)면 ``../../STATIC`` 처럼 pom 밖으로
+    나가는 경로도 정규화해 돌려준다.
+
+    A pom directory value as a relative posix path (`${basedir}/` / `${project.basedir}/` stripped); None for
     empty, other `${…}`, absolute and `..` paths. `allow_parent` (restructure, 2026-10-23): a path that climbs out of
     the pom's directory (`${basedir}/../../STATIC`) is returned normalized (`../../STATIC`) instead of None — the
     caller decides whether it still lies inside the project; a bare `..` stays None."""
@@ -322,6 +369,8 @@ def clean_pom_dir(raw: Optional[str], allow_parent: bool = False) -> Optional[st
 
 
 def _xml_root(text: str) -> Any:
+    """pom 텍스트의 XML 루트(못 읽으면 None). XML 선언을 떼고 파싱한다 — EUC-KR 같은 멀티바이트 선언이
+    있어도 expat 이 거부하지 않게(이미 디코딩된 텍스트다)."""
     import xml.etree.ElementTree as ET
 
     try:
@@ -349,7 +398,10 @@ def _ktext(el: Any, name: str) -> Optional[str]:
 
 
 def pom_web_dirs(text: str, allow_parent: bool = False) -> list[WebDir]:
-    """`maven-war-plugin` `<warSourceDirectory>` and `<webResources><resource><directory>` of one pom (`<build>`
+    """pom 하나의 maven-war-plugin ``<warSourceDirectory>`` 와 ``<webResources>`` 디렉토리들(build plugins,
+    그다음 pluginManagement; profile 은 무시; 중복 제거). 회사의 비표준 웹 루트(예: ``STATIC/``)를 찾는 근거.
+
+    `maven-war-plugin` `<warSourceDirectory>` and `<webResources><resource><directory>` of one pom (`<build>`
     plugins, then pluginManagement; profiles ignored), relative to the pom's directory, deduped. `allow_parent`:
     `../` paths are kept (see `clean_pom_dir`)."""
     root = _xml_root(text)
@@ -372,7 +424,10 @@ def pom_web_dirs(text: str, allow_parent: bool = False) -> list[WebDir]:
 
 
 def pom_build_dirs(text: str, allow_parent: bool = False) -> list[str]:
-    """Directories `<build>` compiles / packages as classpath content: sourceDirectory, scriptSourceDirectory and
+    """``<build>`` 가 클래스패스로 컴파일·패키징하는 디렉토리들: sourceDirectory, scriptSourceDirectory,
+    모든 ``<resources>`` 디렉토리(선언이 없으면 Maven 기본 ``src/main/resources``). 테스트 디렉토리는 제외.
+
+    Directories `<build>` compiles / packages as classpath content: sourceDirectory, scriptSourceDirectory and
     every `<resources>` directory (Maven default `src/main/resources` when no `<resources>` is declared), relative to
     the pom's directory. Test directories are not listed. `allow_parent`: `../` paths are kept (see `clean_pom_dir`)."""
     root = _xml_root(text)
@@ -398,7 +453,10 @@ def _join(base: str, rel: str) -> str:
 
 
 def webapp_dirs(ws: WorkspaceView, poms: Iterable[PomInfo]) -> tuple[list[str], list[str]]:
-    """(web dirs, classpath dirs), root-relative: per pom the default `src/main/webapp` when it exists plus every
+    """루트 기준 (웹 디렉토리, 클래스패스 디렉토리): pom 마다 실제로 있는 기본
+    ``src/main/webapp`` + war 플러그인이 선언한 디렉토리, 그리고 ``pom_build_dirs``.
+
+    (web dirs, classpath dirs), root-relative: per pom the default `src/main/webapp` when it exists plus every
     `warSourceDirectory` / `<webResources>` directory (`pom_web_dirs`), and its `pom_build_dirs`."""
     web: list[str] = []
     res: list[str] = []
@@ -424,7 +482,10 @@ def webapp_dirs(ws: WorkspaceView, poms: Iterable[PomInfo]) -> tuple[list[str], 
 
 
 def _scan_large_media(ws: WorkspaceView, dirs: list[str]) -> list[tuple[str, int]]:
-    """(path, bytes) of every file ≥ LARGE_MEDIA_BYTES with a LARGE_MEDIA_EXTENSIONS extension below `dirs`."""
+    """``dirs`` 아래의 큰 미디어 / 압축 파일(5 MB 이상) 목록
+    (경로, 바이트) — jar 에 통째로 들어가는 것을 알리려고.
+
+    (path, bytes) of every file ≥ LARGE_MEDIA_BYTES with a LARGE_MEDIA_EXTENSIONS extension below `dirs`."""
     roots = tuple(d.strip("/") + "/" for d in dirs if d.strip("/"))
     if not roots:
         return []
@@ -444,7 +505,9 @@ def _scan_large_media(ws: WorkspaceView, dirs: list[str]) -> list[tuple[str, int
 
 
 def _scan_jsp_javax(ws: WorkspaceView) -> list[str]:
-    """JSP / tag files whose imports / scriptlets / useBeans name a javax EE type of the jakarta table."""
+    """javax EE 타입(jakarta 표 기준)을 import / 스크립틀릿 / useBean 에서 쓰는 JSP / 태그 파일들.
+
+    JSP / tag files whose imports / scriptlets / useBeans name a javax EE type of the jakarta table."""
     out: set[str] = set()
     for pattern in JSP_GLOBS:
         for rel in _glob_plain(ws, pattern):
@@ -457,7 +520,10 @@ def _scan_jsp_javax(ws: WorkspaceView) -> list[str]:
 
 
 def scan_sources(ws: WorkspaceView, poms: Optional[Iterable[PomInfo]] = None) -> ScanResult:
-    """`poms` (2026-10-23): the parsed poms — their war plugin web roots count as web roots (`webapp_dirs`) and the
+    """작업공간 전체 스캔 → ScanResult. ``poms`` 를 주면 war 플러그인의 비표준 웹 루트도 웹 루트로 치고,
+    웹 루트·리소스 디렉토리 아래의 큰 미디어 파일도 모은다(None 이면 pom 없이 하던 옛 동작).
+
+    `poms` (2026-10-23): the parsed poms — their war plugin web roots count as web roots (`webapp_dirs`) and the
     large media files below the web roots / resource dirs are listed; None keeps the pom-less behaviour."""
     res = ScanResult()
     web_dirs, res_dirs = webapp_dirs(ws, poms) if poms is not None else ([], [])
@@ -482,6 +548,8 @@ def scan_sources(ws: WorkspaceView, poms: Optional[Iterable[PomInfo]] = None) ->
     res.web_static_files = _scan_web_static(ws, web_dirs, res_dirs)
     if poms is not None:
         res.large_media = _scan_large_media(ws, [*web_dirs, *res_dirs])
+    # Spring XML 빈 설정 = beans 네임스페이스와 <beans 가 둘 다 있는 XML(너무 큰 파일은 건너뜀) —
+    # spring_legacy 판정의 근거가 된다
     for rel in _glob_plain(ws, "*.xml"):
         base = posixpath.basename(rel)
         if base == "pom.xml":
@@ -502,4 +570,5 @@ def scan_sources(ws: WorkspaceView, poms: Optional[Iterable[PomInfo]] = None) ->
 
 
 def scan_source_stats(ws: WorkspaceView) -> SourceStats:
+    """pom 없이 스캔해서 바로 SourceStats 로 접는 편의 함수."""
     return scan_sources(ws).stats()

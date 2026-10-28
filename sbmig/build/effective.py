@@ -1,4 +1,14 @@
-"""Managed versions of the as-is parent chain (catalog E6).
+"""as-is parent 체인이 관리하던 버전(effective dependencyManagement)을 잡아 둔다.
+왜: 재구성이 as-is parent(Boot starter parent, 옛 사내 parent …)를 회사 parent(``base-parent`` 등)로 바꾸면 옛
+체인이 관리하던 버전이 모두 사라진다. 그래서 접수(intake) 때 한 번, 바꾸기 전 트리에 ``mvn
+help:effective-pom`` 을 돌려 ``logs/effective-depmgmt.json`` 에 저장한다(effective pom xml 은 파싱 후 지우고
+Maven 로그만 남긴다). 누가 쓰나(v2.1): 보고서 인수인계 섹션의 as-is 버전(``load_effective`` →
+``build_handover``), 그리고 재구성 뒤 캡처(``depmgmt-after-restructure.json``)는
+``layout.drop_managed_versions`` 가 새 parent 가 관리하는 명시 버전을 지울 때 쓴다. 핵심 진입점:
+``capture_effective_depmgmt``, ``load_effective``, ``parse_effective_pom``, ``effective_version``. 지킬 것:
+절대 예외 없음 — as-is pom 이 해결되지 않으면 None 이고 실행은 계속된다.
+
+Managed versions of the as-is parent chain (catalog E6).
 
 Swapping an as-is parent (Boot starter parent, an old in-house parent …) for the company parent drops every version
 the old chain managed. `capture_effective_depmgmt` runs `mvn help:effective-pom` on the **as-is** project once at
@@ -11,6 +21,8 @@ effective pom xml itself is deleted once parsed, the Maven log stays):
 
 so the `carry-over-managed-version` handler can pin them explicitly when the restructured build reports
 `'dependencies.dependency.version' for g:a:jar is missing`. Never raises; None when the as-is pom does not resolve.
+
+
 """
 from __future__ import annotations
 
@@ -32,6 +44,7 @@ log = logging.getLogger("sbmig.build.effective")
 HELP_PLUGIN = "org.apache.maven.plugins:maven-help-plugin:3.5.1"
 EFFECTIVE_TIMEOUT_S = 10 * 60
 DEPMGMT_FILE = "depmgmt.json"
+# as-is 캡처(depmgmt.json)는 인수인계의 as-is 버전이라 절대 덮어쓰지 않는다 → 재구성 뒤 캡처는 다른 파일에.
 AFTER_RESTRUCTURE_FILE = "depmgmt-after-restructure.json"   # round 9: chain of the restructured tree
 DEFAULT_PLUGIN_GROUP = "org.apache.maven.plugins"
 
@@ -88,7 +101,11 @@ def _plugins_into(container: Any, out: dict[str, str]) -> None:
 
 
 def parse_effective_pom(text: str | bytes) -> dict[str, Any]:
-    """Parse one effective pom (single `<project>` or `<projects>` of a reactor) into the depmgmt dict.
+    """effective pom 하나(단일 ``<project>`` 또는 reactor 의 ``<projects>``) → depmgmt dict. 여러 프로젝트는
+    '먼저 나온 것이 이김' 으로 합치고(reactor 루트가 먼저), 모듈별
+    값은 ``by_module`` 에 따로 둔다. ``${…}`` 가 남은 버전은 버린다.
+
+    Parse one effective pom (single `<project>` or `<projects>` of a reactor) into the depmgmt dict.
     Several projects are merged, first wins (the reactor root comes first)."""
     data = _empty()
     raw = text.encode("utf-8") if isinstance(text, str) else text
@@ -138,13 +155,19 @@ def _effective_dir(ws: Workspace) -> Path:
 
 
 def _effective_path(ws: Workspace, name: str) -> Path:
-    """`<run_dir>/logs/effective-<name>` (depmgmt.json → effective-depmgmt.json)."""
+    """캡처 파일 경로 ``<run_dir>/logs/effective-<name>``(v2.1: effective/ 디렉토리 없음).
+
+    `<run_dir>/logs/effective-<name>` (depmgmt.json → effective-depmgmt.json)."""
     return _effective_dir(ws) / f"effective-{name}"
 
 
 def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] = None,
                               name: str = DEPMGMT_FILE) -> Optional[Path]:
-    """Run `help:effective-pom` (whole reactor, or `-pl module`) on the current tree and write `<name>` (default
+    """지금 트리에 ``help:effective-pom``(reactor 전체 또는 ``-pl module``)을 돌려 ``<name>``(기본
+    depmgmt.json = 접수 때의 as-is 캡처; round 9: 재구성 뒤 캡처는 ``AFTER_RESTRUCTURE_FILE``)에 쓴다. 이미
+    있으면 먼저 것이 이기게 합친다. 경로를 돌려주고, 실패면 None(로그 + 저널).
+
+    Run `help:effective-pom` (whole reactor, or `-pl module`) on the current tree and write `<name>` (default
     depmgmt.json = the as-is capture at intake; round 9: `AFTER_RESTRUCTURE_FILE` for the restructured chain).
     Returns its path; None on failure (logged + journaled). Merges into an existing `<name>` (first wins)."""
     try:
@@ -190,6 +213,7 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
 
 
 def _merge(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """두 캡처 합치기: ``first``(이미 있던 것)가 이긴다."""
     out = _empty()
     for key in ("managed", "direct", "plugins", "properties"):
         merged = dict(second.get(key) or {})
@@ -207,7 +231,10 @@ def _last_error(text: str) -> str:
 
 
 def load_effective(ws: Workspace, name: str = DEPMGMT_FILE) -> dict[str, Any]:
-    """The captured depmgmt dict (`<run_dir>/logs/effective-<name>`), or an empty one
+    """저장된 depmgmt dict(``logs/effective-<name>``). 없거나 못 읽으면 빈 모양(``managed`` /
+    ``direct`` … 가 빈 dict)을 돌려준다.
+
+    The captured depmgmt dict (`<run_dir>/logs/effective-<name>`), or an empty one
     (`{"managed": {}, "direct": {}, …, "parent": None}`)."""
     p = _effective_path(ws, name)
     if not p.is_file():
@@ -224,7 +251,12 @@ def load_effective(ws: Workspace, name: str = DEPMGMT_FILE) -> dict[str, Any]:
 
 def effective_pom_provider(ws: Workspace, cfg: Config, module: Optional[str] = None,
                            name: str = AFTER_RESTRUCTURE_FILE) -> Callable[[], Optional[dict[str, Any]]]:
-    """Round 9: the zero-arg `params["effective_pom"]` callable of the restructurer. Each call drops a previous
+    """round 9: 재구성기의 ``params["effective_pom"]`` 에 넣을 인자 없는 콜러블. 부를 때마다 이전
+    ``<name>`` 을 지우고(낡은 캡처가 '먼저 것이 이김' 합치기에서 이기지 않게) 지금 트리(재구성의 pom 편집
+    뒤)를 캡처해 dict 를 돌려준다. Maven 실패면 None. (v2.1 오케스트레이터는 같은 일을 하는 자체
+    ``_effective_pom_after`` 를 쓴다.)
+
+    Round 9: the zero-arg `params["effective_pom"]` callable of the restructurer. Each call drops a previous
     `<name>` (a stale capture must not win the first-wins merge), captures the effective pom of the tree as it is
     *now* (after the restructure's pom edits) and returns the loaded dict — None when Maven fails / is unavailable."""
     def _provide() -> Optional[dict[str, Any]]:
@@ -240,7 +272,10 @@ def effective_pom_provider(ws: Workspace, cfg: Config, module: Optional[str] = N
 
 def effective_version(ws: Workspace, key: str, module: Optional[str] = None,
                       data: Optional[dict[str, Any]] = None) -> Optional[str]:
-    """Version of g:a managed (else declared) by the as-is effective pom; `module` (artifactId or g:a of the
+    """as-is effective pom 이 관리(없으면 직접 선언)하던 g:a 의 버전. ``module``(artifactId 또는 g:a)을 주면
+    그 모듈의 값을 먼저 본다 — MSA 서비스마다 parent 가 다를 수 있다.
+
+    Version of g:a managed (else declared) by the as-is effective pom; `module` (artifactId or g:a of the
     declaring module) is preferred over the merged (first-wins) view — MSA services may have different parents."""
     data = data if data is not None else load_effective(ws)
     if module:

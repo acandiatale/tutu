@@ -1,4 +1,12 @@
-"""Fleet preflight (round 10): is the infrastructure there before the next ~500 projects start?
+"""일괄 실행 사전 점검(round 10): 프로젝트 ~500 개를 시작하기 전에 인프라가 살아 있는지 본다.
+흐름상 위치: 러너가 첫 프로젝트 전에 한 번(``fleet.preflight``), 그리고 인프라 대기 뒤 재개하기 전마다
+:func:`run_preflight` 를 부른다(:mod:`sbmig.fleet.runner`). 점검 순서: 디스크 → Maven → Java → settings.xml →
+저장소(Nexus 미러) → LLM. 결과는 점검마다 ASCII 한 줄(``preflight: <점검> ok|FAIL|skip …``) — cp949 콘솔에서
+운영자가 그대로 옮겨 적을 수 있게. 실패에는 인프라 종류(``disk | maven | jdk | repository | llm``)와 저절로
+풀릴 수 있는지(``transient``: 장애·디스크 부족)를 단다. 설정 오류(Maven 없음, Java 17, 키 거부 등)는 기다려도
+안 풀리므로 러너가 바로 멈춘다. 저장소 점검은 Maven 처럼 셸의 프록시 환경 변수를 쓰지 않는다.
+
+Fleet preflight (round 10): is the infrastructure there before the next ~500 projects start?
 
 Checked once before the first project (``fleet.preflight``) and again whenever the fleet resumes after an
 infrastructure pause (``fleet.infra_*``, see :mod:`sbmig.fleet.runner`). One short ASCII line per check, so the
@@ -20,6 +28,8 @@ ignores HTTP_PROXY; a ``<proxy>`` of the settings is used), any HTTP answer belo
 included), and a TLS handshake Python cannot verify still means the server is up (Maven trusts the JDK truststore,
 Python does not know the company CA). The LLM check is ``sbmig.fix.company.probe_llm`` — the call `sbmig llm-probe`
 makes — skipped for the fake provider and for ``loop.max_llm_calls: -1`` (v2.1: 0 means no limit, -1 no LLM call).
+
+
 """
 from __future__ import annotations
 
@@ -45,6 +55,8 @@ _JAVA_RE = re.compile(r"Java version:\s*(\d+)(?:\.(\d+))?")
 
 @dataclass
 class Check:
+    """점검 하나의 결과: 이름, 통과 여부, 설명, 실패 시 인프라 종류(``kind``)와 저절로 풀릴 수
+    있는지(``transient``). ``skipped`` 는 점검하지 않음(설정으로 꺼짐 등) — 실패로 치지 않는다."""
     name: str                              # disk | maven | java | settings | repository | llm
     ok: bool
     detail: str = ""
@@ -55,14 +67,17 @@ class Check:
 
     @property
     def failed(self) -> bool:
+        """실패인가(건너뛴 점검은 실패가 아니다)."""
         return not self.ok and not self.skipped
 
     def line(self) -> str:
+        """``preflight: <이름> ok|FAIL|skip <설명>`` 한 줄(ASCII 만, 설명은 160 자까지: cp949 콘솔용)."""
         state = "skip" if self.skipped else ("ok" if self.ok else "FAIL")
         return f"preflight: {self.name:<10} {state:<4} {ascii_safe(self.detail, 160)}"
 
 
 def _existing(path: Path) -> Path:
+    """아직 없는 ``--out`` 이면 존재하는 가장 가까운 상위 폴더(같은 드라이브의 여유 공간을 재기 위해)."""
     p = Path(path).resolve()
     while not p.exists() and p.parent != p:
         p = p.parent
@@ -70,7 +85,10 @@ def _existing(path: Path) -> Path:
 
 
 def check_disk(path: str | Path, min_free_gb: float) -> Check:
-    """Free space on the drive of `path` (the fleet's --out) against `fleet.min_free_gb` (0 = no check)."""
+    """``path`` (일괄 실행의 ``--out``) 드라이브의 여유 공간을 ``fleet.min_free_gb`` 와 비교(0 = 점검 안 함).
+    부족은 ``transient`` (지우면 풀린다), 잴 수 없으면 건너뜀.
+
+    Free space on the drive of `path` (the fleet's --out) against `fleet.min_free_gb` (0 = no check)."""
     if not min_free_gb or min_free_gb <= 0:
         return Check("disk", True, "no check (fleet.min_free_gb: 0)", skipped=True)
     try:
@@ -82,7 +100,9 @@ def check_disk(path: str | Path, min_free_gb: float) -> Check:
 
 
 def java_major(text: str) -> Optional[int]:
-    """21 from `Java version: 21.0.4`, 8 from `Java version: 1.8.0_402`."""
+    """``mvn -v`` 의 ``Java version:`` 에서 메이저 번호(``1.8`` 같은 옛 표기는 8).
+
+    21 from `Java version: 21.0.4`, 8 from `Java version: 1.8.0_402`."""
     m = _JAVA_RE.search(text or "")
     if not m:
         return None
@@ -91,7 +111,10 @@ def java_major(text: str) -> Optional[int]:
 
 
 def check_maven_java(cfg: Config, maven: Optional[Callable[[Config], Any]] = None) -> list[Check]:
-    """`mvn -v` once: Maven runnable (`build.mvn`, `build.java_home`), Java major = `build.require_java_major`."""
+    """``mvn -v`` 한 번으로 두 점검: Maven 이 실행되는가(``build.mvn``, ``build.java_home``), Maven 이 쓰는
+    Java 메이저가 ``build.require_java_major`` 와 같은가. 실패는 둘 다 설정 오류다(``transient`` 아님).
+
+    `mvn -v` once: Maven runnable (`build.mvn`, `build.java_home`), Java major = `build.require_java_major`."""
     if maven is None:
         from sbmig.build.mvn import maven_available as maven
     try:
@@ -132,7 +155,9 @@ def _child(e: ET.Element, name: str) -> str:
 
 
 def read_settings(path: Path) -> dict[str, Any]:
-    """Mirrors (`id`, `mirrorOf`, `url`) and active proxies (`protocol`, `host`, `port`, `nonProxyHosts`)."""
+    """settings.xml 의 미러(``id``, ``mirrorOf``, ``url``)와 켜진 프록시(``active`` 가 false 아닌 것).
+
+    Mirrors (`id`, `mirrorOf`, `url`) and active proxies (`protocol`, `host`, `port`, `nonProxyHosts`)."""
     root = ET.parse(path).getroot()
     mirrors = [{"id": _child(m, "id"), "mirrorOf": _child(m, "mirrorOf"), "url": _child(m, "url")}
                for m in _find_all(root, "mirror")]
@@ -143,6 +168,7 @@ def read_settings(path: Path) -> dict[str, Any]:
 
 
 def _catch_all(mirrors: list[dict]) -> Optional[dict]:
+    """빌드가 실제로 거치는 미러: ``*`` / ``external:*`` 를 받는 것, 없으면 첫 미러."""
     for m in mirrors:
         parts = {x.strip() for x in m["mirrorOf"].split(",")}
         if parts & {"*", "external:*", "external:http:*"}:
@@ -151,7 +177,10 @@ def _catch_all(mirrors: list[dict]) -> Optional[dict]:
 
 
 def check_settings(cfg: Config) -> Check:
-    """`build.settings_file` exists and parses; names the catch-all mirror the builds go through (RUNBOOK §0.1)."""
+    """``build.settings_file`` 이 있고 읽히는지, 빌드가 거치는 미러가 무엇인지(RUNBOOK §0.1).
+    설정 안 됨(또는 치환 안 된 ``${…}``)은 건너뜀, 파일 없음·깨짐은 설정 오류(kind ``repository``).
+
+    `build.settings_file` exists and parses; names the catch-all mirror the builds go through (RUNBOOK §0.1)."""
     sf = (cfg.build.settings_file or "").strip()
     if not sf or (sf.startswith("${") and sf.endswith("}")):
         return Check("settings", True, "build.settings_file not set (Maven's own settings; the poms' repositories "
@@ -172,6 +201,8 @@ def check_settings(cfg: Config) -> Check:
 
 
 def _proxies_for(url: str, proxies: list[dict]) -> dict[str, str]:
+    """settings.xml 의 프록시 중 이 URL 에 쓸 것: ``nonProxyHosts`` 에 걸리면 건너뛴다
+    (Maven 이 프록시를 고르는 규칙 그대로)."""
     host = urlparse(url).hostname or ""
     for p in proxies:
         if any(fnmatch.fnmatch(host, pat.strip()) for pat in (p.get("nonProxyHosts") or "").split("|") if pat.strip()):
@@ -182,6 +213,8 @@ def _proxies_for(url: str, proxies: list[dict]) -> dict[str, str]:
 
 
 def _http_get(url: str, proxies: dict[str, str], timeout: float) -> int:
+    """GET 한 번의 HTTP 상태 코드. 셸의 HTTP_PROXY / NO_PROXY 는 쓰지 않는다(Maven 도 안 쓴다 — 쓰면 Maven 과
+    다른 길로 가서 점검이 거짓으로 통과하거나 실패한다). 본문은 받지 않는다(``stream=True`` 후 바로 닫음)."""
     import requests
 
     with requests.Session() as s:
@@ -195,7 +228,11 @@ def _http_get(url: str, proxies: dict[str, str], timeout: float) -> int:
 
 def check_repository(settings: Check, *, http_get: Optional[Callable[[str, dict, float], int]] = None,
                      timeout: float = REPOSITORY_TIMEOUT_S) -> Check:
-    """One GET to the mirror URL of the settings (a Nexus outage stops the fleet instead of failing 3 builds)."""
+    """settings 미러 URL 에 GET 한 번: Nexus 장애면 빌드 3 개를 실패시키는 대신 일괄 실행을 기다리게 한다.
+    500 미만 응답은 모두 살아 있음(401·404 포함), TLS 인증서를 파이썬이 검증 못 해도 서버가 답했으니 살아 있음
+    (Maven 은 JDK truststore 의 사내 CA 를 믿지만 파이썬은 모른다). 연결 실패·5xx 는 ``transient``.
+
+    One GET to the mirror URL of the settings (a Nexus outage stops the fleet instead of failing 3 builds)."""
     mirror = settings.data.get("mirror") if settings.ok else None
     url = (mirror or {}).get("url", "")
     if not url or not url.lower().startswith(("http://", "https://")):
@@ -217,7 +254,11 @@ def check_repository(settings: Check, *, http_get: Optional[Callable[[str, dict,
 
 
 def check_llm(cfg: Config, probe: Optional[Callable[[Config], Any]] = None) -> Check:
-    """One tiny LLM call (`probe_llm`, the `sbmig llm-probe` request) unless no LLM is used."""
+    """작은 LLM 호출 한 번(``probe_llm`` = ``sbmig llm-probe`` 와 같은 요청). 가짜 LLM(``fake``)이거나
+    ``loop.max_llm_calls: -1`` (LLM 호출 없음)이면 건너뛴다.
+    키·모델 거부는 설정 오류, 게이트웨이 장애는 ``transient``.
+
+    One tiny LLM call (`probe_llm`, the `sbmig llm-probe` request) unless no LLM is used."""
     provider = str(cfg.llm.provider)
     if provider in ("fake",):
         return Check("llm", True, f"not checked (llm.provider {provider})", skipped=True)
@@ -239,7 +280,10 @@ def check_llm(cfg: Config, probe: Optional[Callable[[Config], Any]] = None) -> C
 def run_preflight(cfg: Config, out_dir: str | Path, *, echo: Optional[Echo] = None,
                   maven: Optional[Callable[[Config], Any]] = None, probe: Optional[Callable[[Config], Any]] = None,
                   http_get: Optional[Callable[[str, dict, float], int]] = None) -> list[Check]:
-    """Every check in order (disk, maven, java, settings, repository, llm); `echo` gets each line as it is known."""
+    """모든 점검을 순서대로(disk, maven, java, settings, repository, llm), 하나가 실패해도 끝까지 돈다.
+    ``echo`` 가 있으면 줄이 나오는 대로 넘기고(러너는 화면 + ``fleet/sbmig.log``), 없으면 로그에만 쓴다.
+
+    Every check in order (disk, maven, java, settings, repository, llm); `echo` gets each line as it is known."""
     checks: list[Check] = []
 
     def add(c: Check) -> None:
@@ -260,4 +304,5 @@ def run_preflight(cfg: Config, out_dir: str | Path, *, echo: Optional[Echo] = No
 
 
 def failed(checks: list[Check]) -> list[Check]:
+    """실패한 점검만(건너뛴 것 제외)."""
     return [c for c in checks if c.failed]

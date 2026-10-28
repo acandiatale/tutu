@@ -1,4 +1,12 @@
-"""`sbmig` command line. Every heavy import is lazy so `sbmig --help` works even if a package is broken."""
+"""`sbmig` 명령줄(Typer) — 운영자가 쓰는 모든 명령의 입구.
+명령: run(프로젝트 하나 이관), fleet(일괄 실행), serve(웹 UI), llm-probe(게이트웨이 점검), analyze / plan(변경
+없이 보기), inventory(pom 없는 트리 설명서), build / parse-log / rewrite(디버깅), clean(디스크 정리), kb /
+recipes / advisories(하위 명령), version. 명령 함수 docstring 의 첫 단락이 `sbmig --help` 목록에 나오는
+설명이므로 한국어 첫 줄을 짧게 유지한다(대괄호는 rich 마크업으로 해석될 수 있어 피한다). 무거운 import 는 전부
+함수 안에서 늦게 한다 — 어느 패키지가 깨져도 `sbmig --help` 는 돈다. 모든 run 은 실행 디렉토리의
+sbmig.log(DEBUG)를 쓰고 마지막에 SBMIG-RESULT 한 줄(ASCII)을 찍는다 — 회사 PC 에서 운영자가 옮겨 적는 줄이다.
+
+`sbmig` command line. Every heavy import is lazy so `sbmig --help` works even if a package is broken."""
 from __future__ import annotations
 
 import contextvars
@@ -29,7 +37,11 @@ from sbmig.core.diag import dump_threads, install_thread_dump_signal  # noqa: E4
 
 
 def harden_console_streams() -> None:
-    """Keep the console encoding (cp949 on a Korean Windows console) but never crash on a character it cannot
+    """콘솔 인코딩(한국어 Windows 의 cp949)은 그대로 두되, 못 쓰는 문자에서 죽지 않게 stdout / stderr 를
+    errors="replace" 로 바꾼다. 출력 리다이렉트·작업 스케줄러에서 보고서를 다 쓰고도 UnicodeEncodeError 로
+    exit 1 이 나던 문제(라운드 10).
+
+    Keep the console encoding (cp949 on a Korean Windows console) but never crash on a character it cannot
     encode: `errors="replace"` on stdout / stderr. Without it, stdout redirected to a file, `Tee-Object` or a Task
     Scheduler job made `sbmig run` exit 1 with a UnicodeEncodeError after the report was written (✅ in the console
     summary) and every log line with an em dash printed `--- Logging error ---` (round 10)."""
@@ -55,7 +67,10 @@ def harden_console_streams() -> None:
 
 
 class _ConsoleFilter(logging.Filter):
-    """Records logged with `extra={"sbmig_console": False}` go to the log files only (the console already got the
+    """`extra={"sbmig_console": False}` 로 남긴 로그는 파일에만 간다(콘솔에는 같은 줄을 typer.echo 로 이미
+    찍었다: SBMIG-RESULT, 플릿 진행).
+
+    Records logged with `extra={"sbmig_console": False}` go to the log files only (the console already got the
     same line through typer.echo: SBMIG-RESULT, fleet progress)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -66,6 +81,8 @@ NO_CONSOLE = {"sbmig_console": False}
 
 
 def setup_logging(verbose: bool = False) -> None:
+    """콘솔 로그를 설정한다(rich, INFO — `-v` 면 DEBUG, 줄마다 단계 태그). sbmig 로거 자체는 DEBUG 라서
+    파일 로그는 항상 전부 받는다. 스레드 덤프 시그널도 여기서 건다."""
     from rich.logging import RichHandler
 
     harden_console_streams()
@@ -89,7 +106,10 @@ _LOG_THREAD: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar("sbm
 
 
 class _ThreadFilter(logging.Filter):
-    """Pass only records of one run: emitted by its thread, or by a thread that inherited its context (a graph engine
+    """한 실행의 로그만 통과시킨다: 그 스레드, 또는 그 컨텍스트를 물려받은 스레드(LangGraph 가 노드를 도는
+    실행 스레드). 웹 서버의 동시 실행이 서로의 sbmig.log 에 섞이지 않게 한다.
+
+    Pass only records of one run: emitted by its thread, or by a thread that inherited its context (a graph engine
     running a node in an executor thread copies the context, so `_LOG_THREAD` still names the run's thread)."""
 
     def __init__(self, thread_id: int):
@@ -101,7 +121,11 @@ class _ThreadFilter(logging.Filter):
 
 
 def attach_file_log(path: Path, thread_id: Optional[int] = None, level: int = logging.DEBUG) -> Path:
-    """Append DEBUG-level sbmig logs (LLM calls, builds, decisions; never keys) to `path`. One handler per file.
+    """sbmig 로그(DEBUG: LLM 호출·빌드·결정 — 키는 절대 없음)를 파일에 덧붙인다. thread_id 를 주면(웹 앱의
+    동시 실행) 그 실행의 로그만 그 파일로 간다. 플릿 자신의
+    fleet/sbmig.log 는 INFO(프로젝트마다 DEBUG sbmig.log 가 따로 있음).
+
+    Append DEBUG-level sbmig logs (LLM calls, builds, decisions; never keys) to `path`. One handler per file.
 
     With `thread_id` (in-process runs of the web app) the file only gets records of that thread (and of threads
     running in its context), so concurrent runs keep separate `sbmig.log` files; one handler per (file, thread).
@@ -139,7 +163,9 @@ _ANY_THREAD = object()
 
 
 def detach_file_log(path: Path, thread_id: Any = _ANY_THREAD) -> int:
-    """Remove (and close) the file handler(s) `attach_file_log` added for `path` — all of them, or only the one of
+    """attach_file_log 가 단 파일 핸들러를 떼고 닫는다(전부, 또는 그 스레드 것만). 뗀 개수를 돌려준다.
+
+    Remove (and close) the file handler(s) `attach_file_log` added for `path` — all of them, or only the one of
     `thread_id` (None = the process-wide one). Returns how many were removed."""
     path = Path(path).resolve()
     root = logging.getLogger("sbmig")
@@ -153,6 +179,8 @@ def detach_file_log(path: Path, thread_id: Any = _ANY_THREAD) -> int:
     return n
 
 
+# 모든 명령 앞에 도는 콜백: 콘솔 인코딩 보호, 로그 설정, --log-file.
+# Typer 앱 도움말이 바뀌지 않게 docstring 은 달지 않는다.
 @app.callback()
 def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug logging"),
           log_file: Optional[Path] = typer.Option(None, "--log-file",
@@ -165,6 +193,8 @@ def _main(verbose: bool = typer.Option(False, "--verbose", "-v", help="debug log
 
 
 def _load(configs: Optional[List[Path]], overrides: Optional[dict] = None, repo_root: Optional[Path] = None):
+    """설정을 읽는다. 검증 오류면 무엇이 틀렸는지 찍고 exit 2 — 흔한 원인은 `--config
+    config/artifacts.yml` 을 빠뜨린 것(회사 artifacts 섹션은 기본값이 없다)."""
     from pydantic import ValidationError
 
     from sbmig.core.config import load_config
@@ -190,7 +220,10 @@ _PROBE_ARTIFACTS_STUB = {"artifacts": {"parent": {"group_id": "sbmig.probe", "ar
 
 
 def _view_workspace(input_path: Path, out: Optional[Path] = None, prefix: str = "view"):
-    """Workspace over an existing directory (no copy) — or an extracted zip in a temp dir."""
+    """복사 없이 기존 디렉토리 위에 만드는 작업 공간(analyze
+    / plan / build 용). zip 이면 임시 디렉토리에 푼다.
+
+    Workspace over an existing directory (no copy) — or an extracted zip in a temp dir."""
     from sbmig.core.workspace import Workspace, new_run_id
 
     run_id = new_run_id(prefix)
@@ -200,19 +233,23 @@ def _view_workspace(input_path: Path, out: Optional[Path] = None, prefix: str = 
     return Workspace.from_input(input_path, base, run_id=run_id)
 
 
+# 종료 코드(운영자·플릿·작업 스케줄러가 이것으로 판정): 0 성공, 2 미완(차단·미해결 남음), 3 중단.
 EXIT_SUCCESS = 0          # final `mvn clean package` passed and nothing is blocked
 EXIT_INCOMPLETE = 2       # finished, but with blocked and/or unresolved errors (see report.md)
 EXIT_ABORTED = 3          # aborted: no Maven / not a Maven project / configured parent not resolvable / internal error
 
 
 def run_exit_code(report) -> int:
-    """0 / 2 / 3 (see `run`); the same mapping prints the SBMIG-RESULT row of report.md."""
+    """RunReport → 종료 코드 0 / 2 / 3. report.md 의 SBMIG-RESULT 줄도 같은 규칙을 쓴다.
+
+    0 / 2 / 3 (see `run`); the same mapping prints the SBMIG-RESULT row of report.md."""
     from sbmig.report.result_line import report_exit_code
 
     return report_exit_code(report)
 
 
 def _fail(msg: str, code: int = 1) -> None:
+    """빨간 글씨로 메시지를 stderr 에 찍고 그 코드로 끝낸다."""
     typer.secho(msg, fg=typer.colors.RED, err=True)
     raise typer.Exit(code)
 
@@ -239,7 +276,13 @@ def run(
     repo_root: Optional[Path] = typer.Option(None, "--repo-root", help="sbmig repo root (kb/, knowledge/)"),
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
-    """Migrate a project end to end.
+    """프로젝트 하나를 끝까지 이관한다(변환 → 재구성 → 구조 검토 → 빌드·수정 루프 → 보고서).
+
+    종료 코드 0 = 최종 `mvn clean package` 성공·차단 없음, 2 = 차단·미해결 오류가 남은 채 끝남(report.md 의
+    오류 목록), 3 = 중단(Maven 없음, Maven 프로젝트 아님, 사내 부모 pom 해석 불가, 내부 오류). 마지막
+    SBMIG-RESULT 줄이 운영자가 옮겨 적는 줄이다.
+
+    Migrate a project end to end.
 
     Exit code 0 = final `mvn clean package` passed and nothing is blocked; 2 = finished with blocked and/or
     unresolved errors (see report.md "Error list" / "Blocked"); 3 = aborted (no Maven, not a Maven project,
@@ -294,6 +337,7 @@ def run(
 
 
 def _mask_headers(headers) -> dict:
+    """출력용 헤더 사본: Authorization / API 키 값은 앞 10자와 길이만 남긴다(키를 화면·로그에 내지 않는다)."""
     out = {}
     for k, v in dict(headers or {}).items():
         v = str(v)
@@ -304,7 +348,10 @@ def _mask_headers(headers) -> dict:
 
 
 def _echo_wire(resp, timeout) -> None:
-    """What actually went over the wire (token masked) and what came back, for comparing with a working client."""
+    """실제로 보낸 요청(토큰 가림)과 받은 응답 헤더·프록시·시간
+    제한을 찍는다 — 잘 되는 클라이언트와 비교하려고.
+
+    What actually went over the wire (token masked) and what came back, for comparing with a working client."""
     req = getattr(resp, "request", None)
     if req is not None:
         body = getattr(req, "body", None) or getattr(req, "content", b"")
@@ -325,13 +372,17 @@ def _echo_wire(resp, timeout) -> None:
 
 
 def _probe_messages(prompt: str, no_system: bool = False) -> list[dict]:
+    """점검용 메시지 목록(sbmig.fix.company.probe_messages)."""
     from sbmig.fix.company import probe_messages
 
     return probe_messages(prompt, no_system)
 
 
 def _probe_bare(cfg, prompt: str, no_system: bool = False) -> None:
-    """The company snippet, verbatim: requests.post(url, headers=..., json=payload, timeout=...)."""
+    """회사가 준 코드 그대로: requests.post(url, headers=..., json=payload, timeout=...) 한 번. sbmig
+    클라이언트를 거치지 않는다.
+
+    The company snippet, verbatim: requests.post(url, headers=..., json=payload, timeout=...)."""
     import requests
 
     llm = cfg.llm
@@ -369,7 +420,13 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
                                                   help="access token (default: $SBMIG_WEB_TOKEN, also read from "
                                                        ".env); required when --host is not a loopback address")
               ) -> None:
-    """One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
+    """웹 UI 를 띄운다(FastAPI + uvicorn): 프로젝트 zip 업로드 → 이관 실행 → 진행 실시간 보기 → 결과 내려받기.
+
+    이관은 프로세스 안에서 한 번에 하나(나머지는 대기열), LangGraph 엔진으로 돈다. 127.0.0.1 이 아닌 주소로
+    열려면 토큰(SBMIG_WEB_TOKEN 또는 --token)이 필요하다 — 없으면 네트워크의 누구나 result.zip(회사 소스)을
+    받을 수 있어 시작을 거부한다.
+
+    One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
     one worker thread per run), watch graph nodes / journal / log live (SSE), download report.md / result.zip.
     Same app without the CLI: `SBMIG_WEB_OUT=out/web uvicorn sbmig.web.app:app --port 8765`.
 
@@ -429,7 +486,12 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
                                                               "headers={Authorization}, json=payload, timeout=) "
                                                               "with the same payload — compare with the normal probe")
               ) -> None:
-    """Send one small request with the configured LLM provider and print what came back (raw JSON for HTTP
+    """LLM 게이트웨이에 작은 요청 하나를 보내 응답을 그대로 보여 준다(새 게이트웨이에서 가장 먼저 돌린다).
+
+    응답 본문을 못 꺼내면 원시 JSON 에 보이는 경로를 `llm.response_path` 로 준다. `--bare` 는 같은 payload 를
+    맨 requests.post 로 보내 게이트웨이 문제와 클라이언트 문제를 가른다. 키는 출력에서 가려진다.
+
+    Send one small request with the configured LLM provider and print what came back (raw JSON for HTTP
     providers, then the extracted reply). Run this first on a new gateway; if the reply cannot be extracted, set
     `llm.response_path` to the dot path shown in the raw JSON. `--bare` sends the identical payload with a bare
     `requests.post` (no session, no extra headers) so a gateway problem can be told apart from a client problem."""
@@ -487,7 +549,9 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
 @app.command()
 def analyze(input: Path = typer.Argument(..., exists=True), config: Optional[List[Path]] = ConfigOpt,
             as_json: bool = typer.Option(False, "--json", help="print the full profile as JSON")) -> None:
-    """Analyze a project (no changes) and print its profile."""
+    """프로젝트를 분석만 하고(변경 없음) 프로필을 출력한다(종류, Java·Boot 버전, 라이브러리, 권고).
+
+    Analyze a project (no changes) and print its profile."""
     from sbmig.analyze import analyze_project
 
     cfg = _load(config)
@@ -522,7 +586,9 @@ def analyze(input: Path = typer.Argument(..., exists=True), config: Optional[Lis
 @app.command()
 def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[Path]] = ConfigOpt,
          as_json: bool = typer.Option(False, "--json")) -> None:
-    """Analyze + plan (no changes) and print the migration plan."""
+    """분석 + 계획만 하고(변경 없음) 이관 계획의 단계 목록을 출력한다.
+
+    Analyze + plan (no changes) and print the migration plan."""
     from sbmig.analyze import analyze_project
     from sbmig.plan import build_plan
 
@@ -545,7 +611,10 @@ def plan(input: Path = typer.Argument(..., exists=True), config: Optional[List[P
 
 # --------------------------------------------------------------------------- inventory (pom-less webapps)
 def inventory_console_lines(inv) -> list[str]:
-    """≤ 12 lines an operator can retype from the screen (no paths longer than needed)."""
+    """inventory 결과를 운영자가 화면에서 옮겨 적을 수 있는
+    12줄 이하로 줄인다(회사 PC 는 복사·붙여넣기가 안 된다).
+
+    ≤ 12 lines an operator can retype from the screen (no paths longer than needed)."""
     jars = [j for wr in inv.webapp_roots for j in wr.lib_jars]
     active = [j for j in jars if not j.ignored]
     unknown = sorted(j.name for j in active if not j.artifact_guess)
@@ -579,7 +648,12 @@ def inventory(input: Path = typer.Argument(..., help="webapp directory without a
               out: Path = typer.Option(Path("out/inventory"), "--out", "-o", help="where inventory.md / .json go"),
               config: Optional[List[Path]] = ConfigOpt,
               as_json: bool = typer.Option(False, "--json", help="print inventory.json to stdout instead")) -> None:
-    """Read-only inventory of a Tomcat webapp tree WITHOUT a pom (JSPs, sources, WEB-INF/lib jars,
+    """pom 없는 Tomcat 웹앱 트리를 읽기만 하고 설명서(inventory.md / .json)를 만든다.
+
+    회사 결정(2026-10-23)으로 그런 트리는 `sbmig run` 이 거부하므로(exit 3), 이것은 소유 팀에 보낼 거부
+    안내용이다. 아무것도 바꾸지 않는다.
+
+    Read-only inventory of a Tomcat webapp tree WITHOUT a pom (JSPs, sources, WEB-INF/lib jars,
     WEB-INF/classes): webapp roots, source roots, jar coordinates guessed from the file names
     (knowledge/libraries/jar_names.yml), Java level of the class files, one Maven module proposal per webapp.
     Writes inventory.md (report.language) + inventory.json. Changes nothing; exit 0 (3 when the path is missing)."""
@@ -620,6 +694,7 @@ def inventory(input: Path = typer.Argument(..., help="webapp directory without a
 
 # --------------------------------------------------------------------------- build / logs / rewrite
 def _print_errors(errors) -> None:
+    """파싱된 빌드 오류를 표(종류, 위치, 메시지, L1 서명)로 찍는다."""
     from rich.console import Console
     from rich.table import Table
 
@@ -636,7 +711,9 @@ def _print_errors(errors) -> None:
 def build(project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
           goal: str = typer.Option("compile", "--goal", "-g"), config: Optional[List[Path]] = ConfigOpt,
           out: Optional[Path] = typer.Option(None, "--out", help="where logs go (default: temp dir)")) -> None:
-    """Run Maven on an existing directory and print the parsed errors + signatures (debugging aid)."""
+    """기존 디렉토리에서 Maven 을 돌려 파싱된 오류와 L1 서명을 출력한다(디버깅용).
+
+    Run Maven on an existing directory and print the parsed errors + signatures (debugging aid)."""
     from sbmig.build import MavenRunner
 
     cfg = _load(config)
@@ -652,7 +729,9 @@ def build(project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
 def parse_log(logfile: Path = typer.Argument(..., exists=True, dir_okay=False),
               root: Path = typer.Option(Path("."), "--root", help="project root used to relativize paths"),
               as_json: bool = typer.Option(False, "--json")) -> None:
-    """Parse an existing Maven log into structured errors."""
+    """이미 있는 Maven 로그를 구조화된 오류 목록으로 파싱한다.
+
+    Parse an existing Maven log into structured errors."""
     from sbmig.build import parse_maven_log
 
     errors = parse_maven_log(logfile.read_text(encoding="utf-8", errors="replace"), root.resolve())
@@ -670,7 +749,9 @@ def rewrite(project_dir: Path = typer.Argument(..., exists=True, file_okay=False
             recipe: List[str] = typer.Option(..., "--recipe", "-r", help="recipe id (repeatable)"),
             dry_run: bool = typer.Option(False, "--dry-run"), config: Optional[List[Path]] = ConfigOpt,
             out: Optional[Path] = typer.Option(None, "--out")) -> None:
-    """Run OpenRewrite recipes on an existing directory (in place unless --dry-run)."""
+    """기존 디렉토리에 OpenRewrite 레시피를 돌린다(--dry-run 이 아니면 제자리에서 바꾼다).
+
+    Run OpenRewrite recipes on an existing directory (in place unless --dry-run)."""
     from sbmig.core.models import RecipeRef
     from sbmig.rewrite import OpenRewriteRunner
 
@@ -703,7 +784,12 @@ def clean_cmd(out: Path = typer.Option(Path("out"), "--out", "-o",
               records: Optional[List[Path]] = typer.Option(
                   None, "--records", help="LLM record directory (repeatable; default: llm.record_dir / LLM_RECORD_DIR)"),
               config: Optional[List[Path]] = ConfigOpt) -> None:
-    """Free disk space: the project copies of FINISHED runs (`<run dir>/project`: working tree + git history;
+    """디스크를 비운다: 끝난 실행의 프로젝트 복사본, 웹 UI 업로드 zip, LLM 기록 파일.
+
+    result.zip·report·changes.patch·logs 는 남기고, 실행 중·대기
+    중인 실행은 건드리지 않는다. --dry-run 은 지울 것만 보여 준다.
+
+    Free disk space: the project copies of FINISHED runs (`<run dir>/project`: working tree + git history;
     result.zip, report.md / .json, changes.patch, logs stay), the web UI's uploaded zips (`<out>/_uploads/`) of
     finished runs and stale partial uploads, and the LLM records (`llm-NNNN.json`). Running / queued runs are never
     touched. Prints what it frees (or would free with --dry-run)."""
@@ -739,7 +825,9 @@ def clean_cmd(out: Path = typer.Option(Path("out"), "--out", "-o",
 
 @app.command()
 def version() -> None:
-    """Print the sbmig version."""
+    """sbmig 버전을 출력한다.
+
+    Print the sbmig version."""
     from sbmig import __version__
 
     typer.echo(f"sbmig {__version__}")
@@ -747,7 +835,10 @@ def version() -> None:
 
 # --------------------------------------------------------------------------- sub-apps (kb, recipes, fleet)
 def _mount(module: str, attr: str, name: str, help_text: str) -> None:
-    """Mount a typer sub-app; if its package fails to import, keep `sbmig --help` working and explain on use."""
+    """하위 명령(kb, recipes, fleet, advisories)을 붙인다. 그 패키지 import 가 실패해도 `sbmig --help` 는
+    돌고, 쓰려 할 때 이유를 알려 준다.
+
+    Mount a typer sub-app; if its package fails to import, keep `sbmig --help` working and explain on use."""
     try:
         import importlib
         sub = getattr(importlib.import_module(module), attr)
@@ -774,6 +865,7 @@ _mount("sbmig.advisory.cli", "advisories_cli", "advisories",
 
 
 def main() -> None:  # pragma: no cover
+    """콘솔 스크립트 진입점(`sbmig`)."""
     app()
 
 

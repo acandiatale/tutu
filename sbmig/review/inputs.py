@@ -1,4 +1,15 @@
-"""What the structure review shows the LLM (v2, docs/v2/PLAN-v2.md §3.3).
+"""구조 검토가 LLM 에 보여 주는 사실을 모은다(읽기 전용 — 워크스페이스를 바꾸지 않는다).
+흐름상 위치: `restructure.review` 에서 StructureReviewer 가
+`collect_review_input(ws, profile, cfg, notes=…, results=…)`
+를 부르고, `ReviewInput.render()` 가 user 프롬프트가 된다. 담는 것: 모든 pom(≤ `review.max_poms`, 합계 ≤
+`review.max_pom_chars`, 긴 pom 은 앞 + 뒤만), 모듈 트리(packaging·parent·누락 / 미등록 모듈), 재구성이 한 일,
+config 의 회사 규칙(`artifacts.*`, `layout.*`), 프로필의 케이스 종류·버전, Maven 없이 보이는 사실(필수 / 선택
+사내 아티팩트, javax / jakarta API 선언, 중복 선언, 필터링되는 바이너리 리소스), 모듈별 소스 인코딩(.java 표본
+vs 선언된 `project.build.sourceEncoding`). 지킬 것: 회사 규칙은 config 에서만 읽는다(코드에 박지 않음,
+불변조건 2). 인코딩 불일치는 빌드 오류로 절대 드러나지 않으므로(JDK 21 javac 는 경고만 내고 한글 리터럴이
+깨진다) 여기서 사실로 계산해 준다.
+
+What the structure review shows the LLM (v2, docs/v2/PLAN-v2.md §3.3).
 
 `collect_review_input(ws, profile, cfg, notes=…, results=…)` gathers, after the restructure and before the first
 build: every pom of the workspace (≤ `review.max_poms`, all text ≤ `review.max_pom_chars`, long poms cut head + tail),
@@ -8,6 +19,8 @@ invariant 2), the case type and versions from the profile, a few facts sbmig can
 optional artifacts, javax / jakarta API declarations, duplicate declarations) and the source encodings per module
 (sampled `.java` files vs the declared `project.build.sourceEncoding`). `ReviewInput.render()` is the user prompt.
 Read-only: nothing here changes the workspace.
+
+
 """
 from __future__ import annotations
 
@@ -47,7 +60,10 @@ _JAVAX_API_ARTIFACTS = {"servlet-api", "jsp-api", "jstl", "jaxb-api", "activatio
 
 
 def codec_name(enc: Optional[str]) -> str:
-    """Normalized python codec name of an encoding as Python or Java spell it ("" when unknown)."""
+    """Python / Java 식으로 쓴 인코딩 이름을 Python 코덱 이름으로
+    정규화(MS949 → cp949 등; 비어 있으면 "", 모르면 소문자 그대로).
+
+    Normalized python codec name of an encoding as Python or Java spell it ("" when unknown)."""
     if not enc:
         return ""
     s = str(enc).strip().lower()
@@ -59,18 +75,24 @@ def codec_name(enc: Optional[str]) -> str:
 
 
 def java_charset(enc: str) -> str:
-    """Java charset name for a detected (python) encoding: cp949 → MS949, euc_kr → EUC-KR, …"""
+    """감지된(Python) 인코딩의 Java charset 이름 — pom 의 `project.build.sourceEncoding` 에 적을 값.
+
+    Java charset name for a detected (python) encoding: cp949 → MS949, euc_kr → EUC-KR, …"""
     c = codec_name(enc)
     return JAVA_CHARSETS.get(c, JAVA_CHARSETS.get(enc.lower(), enc.upper()))
 
 
 def is_utf8(enc: Optional[str]) -> bool:
+    """UTF-8 계열(ascii / utf-8 / utf-8-sig)인가."""
     c = codec_name(enc)
     return c in _UTF8_FAMILY or c.replace("_", "-") in _UTF8_FAMILY or c in ("utf_8", "utf_8_sig")
 
 
 def compatible(detected: str, declared: Optional[str]) -> bool:
-    """Does a module declared as `declared` (None = UTF-8, the JDK 21 / parent default) read `detected` sources?"""
+    """`declared` 로 선언된 모듈(None = UTF-8, JDK 21·부모 기본값)이 `detected` 인코딩 소스를 제대로 읽는가.
+    EUC-KR 과 MS949 는 같은 한국어 계열로 본다(cp949 가 상위 집합).
+
+    Does a module declared as `declared` (None = UTF-8, the JDK 21 / parent default) read `detected` sources?"""
     if is_utf8(detected):
         return True
     if not declared or is_utf8(declared):
@@ -87,6 +109,7 @@ def _cap(text: object, limit: int = LINE_CHARS_MAX) -> str:
 # ---------------------------------------------------------------------------- poms
 @dataclass
 class PomText:
+    """프롬프트에 보여 줄 pom 하나(잘렸으면 `cut`, 원래 길이 `chars`)."""
     path: str
     text: str                 # as shown in the prompt (cut when `cut`)
     chars: int                # original length
@@ -94,7 +117,9 @@ class PomText:
 
 
 def allot(lengths: list[int], total: int) -> list[int]:
-    """Characters per pom so that the sum stays ≤ `total`: short poms whole, the rest share what is left equally."""
+    """pom 별 글자 수 배분: 합이 `total` 을 넘지 않게 짧은 pom 은 통째로, 나머지는 남은 몫을 똑같이 나눈다.
+
+    Characters per pom so that the sum stays ≤ `total`: short poms whole, the rest share what is left equally."""
     caps = [0] * len(lengths)
     remaining = max(0, int(total))
     order = sorted(range(len(lengths)), key=lambda i: lengths[i])
@@ -106,7 +131,10 @@ def allot(lengths: list[int], total: int) -> list[int]:
 
 
 def cut_text(text: str, cap: int) -> tuple[str, bool]:
-    """`text` when it fits in `cap` characters, else head (≈ 2/3) + a marker line + tail, cut at line breaks; the
+    """`cap` 안에 들어가면 그대로, 아니면 앞(약 2/3) + 표시 줄 + 뒤를 줄 경계에서 자른다(표시 포함 `cap`
+    이하). 남는 자리가 MIN_CUT_CHARS 보다 작으면 "보여 주지 않음" 표시만 남긴다.
+
+    `text` when it fits in `cap` characters, else head (≈ 2/3) + a marker line + tail, cut at line breaks; the
     result (marker included) is never longer than `cap`. Below MIN_CUT_CHARS only the marker is left."""
     if len(text) <= cap:
         return text, False
@@ -127,6 +155,8 @@ def cut_text(text: str, cap: int) -> tuple[str, bool]:
 
 
 def module_pom_path(aggregator: str, module: str) -> str:
+    """집계 pom 의 `<module>` 값 → 그 모듈 pom 의 경로(프로젝트
+    루트 기준 posix, `.xml` 로 끝나지 않으면 `/pom.xml`)."""
     base = posixpath.dirname(aggregator)
     target = posixpath.normpath(posixpath.join(base or ".", module.strip()))
     if not target.endswith(".xml"):
@@ -149,6 +179,8 @@ def _spec(s: Any) -> str:
 # ---------------------------------------------------------------------------- encodings
 @dataclass
 class ModuleEncoding:
+    """모듈 하나의 소스 인코딩 사실: .java 파일 수·표본 수·인코딩별 개수·예시 파일, 그리고 프로젝트 pom 안에서
+    실제로 적용되는 소스 인코딩과 그 위치."""
     module: str                                 # pom directory ("" = project root)
     pom: str
     files: int = 0                              # .java files of the module
@@ -160,19 +192,25 @@ class ModuleEncoding:
 
     @property
     def legacy(self) -> list[str]:
-        """Detected non-UTF-8 encodings, most files first."""
+        """감지된 UTF-8 아닌 인코딩(파일이 많은 순).
+
+        Detected non-UTF-8 encodings, most files first."""
         return [e for e, _ in Counter({k: v for k, v in self.counts.items() if not is_utf8(k)}).most_common()]
 
     @property
     def mismatch(self) -> list[str]:
-        """Non-UTF-8 encodings the declared one does not read (critical: javac only warns, literals garble)."""
+        """선언된 인코딩이 읽지 못하는 UTF-8 아닌 인코딩 — critical(javac 는 경고만 내고 리터럴이 깨진다).
+
+        Non-UTF-8 encodings the declared one does not read (critical: javac only warns, literals garble)."""
         return [e for e in self.legacy if not compatible(e, self.declared)]
 
     @property
     def mixed(self) -> bool:
+        """UTF-8 아닌 파일과 비ASCII UTF-8 파일이 한 모듈에 섞여 있는가(한쪽을 변환해야 한다)."""
         return bool(self.legacy) and any(is_utf8(k) and k != "ascii" for k in self.counts)
 
     def line(self, external_parent: str) -> str:
+        """프롬프트 "# Source encodings" 의 한 항목(불일치면 **ENCODING MISMATCH** 표시와 예시 파일)."""
         where = f"`{self.module or '(root)'}` (`{self.pom}`)"
         if not self.files:
             return f"- {where}: no .java files"
@@ -193,7 +231,10 @@ class ModuleEncoding:
 
 
 def _chain(pom: PomInfo, poms: list[PomInfo]) -> list[PomInfo]:
-    """`pom` and its parents inside the project, nearest first."""
+    """`pom` 과 프로젝트 안의 부모들(가까운 순): relativePath 로 찾고,
+    좌표가 다르면 groupId:artifactId 로 찾는다. 순환은 끊는다.
+
+    `pom` and its parents inside the project, nearest first."""
     by_key = {f"{p.group_id}:{p.artifact_id}": p for p in poms if p.group_id}
     by_path = {p.path: p for p in poms}
     out, cur, seen = [pom], pom, {pom.path}
@@ -214,7 +255,10 @@ def _chain(pom: PomInfo, poms: list[PomInfo]) -> list[PomInfo]:
 
 
 def declared_encoding(pom: PomInfo, poms: list[PomInfo]) -> tuple[Optional[str], str]:
-    """Effective source encoding of a module inside the project poms: the nearest maven-compiler-plugin `<encoding>`,
+    """모듈에 실제로 적용되는 소스 인코딩: 가장 가까운 maven-compiler-plugin `<encoding>`, 없으면 가장 가까운
+    `project.build.sourceEncoding`(`${prop}` 은 부모 사슬의 property 로 푼다). 선언이 없으면 (None, "").
+
+    Effective source encoding of a module inside the project poms: the nearest maven-compiler-plugin `<encoding>`,
     else the nearest `project.build.sourceEncoding` (`${prop}` resolved along the chain). (None, "") = not declared."""
     chain = _chain(pom, poms)
     props: dict[str, str] = {}
@@ -228,6 +272,7 @@ def declared_encoding(pom: PomInfo, poms: list[PomInfo]) -> tuple[Optional[str],
             v = (props.get(m.group(1)) or "").strip()
         return v or None
 
+    # compiler 플러그인의 <encoding> 이 property 보다 먼저다 — javac 가 실제로 받는 값이기 때문
     for p in chain:
         for pl in p.plugins:
             if pl.artifact_id == COMPILER_PLUGIN:
@@ -261,7 +306,11 @@ def _spread(items: list[str], n: int) -> list[str]:
 
 def source_encodings(ws: Any, poms: list[PomInfo], candidates: Optional[Iterable[str]] = None, *,
                      skip_tests: bool = True) -> list[ModuleEncoding]:
-    """Encodings of the `.java` files per module (pure ASCII counted as `ascii`, others by `detect_encoding` with
+    """모듈별 .java 인코딩(순수 ASCII 는 `ascii`, 나머지는 `build.encoding_candidates` 로 `detect_encoding`)과
+    각 모듈이 프로젝트 안에서 선언한 인코딩. 표본은 모듈당 ENCODING_SAMPLE_PER_MODULE, 전체
+    ENCODING_SAMPLE_TOTAL 개까지 고르게 뽑고, 테스트 소스는 기본으로 뺀다(테스트는 빌드에서 건너뛴다).
+
+    Encodings of the `.java` files per module (pure ASCII counted as `ascii`, others by `detect_encoding` with
     `build.encoding_candidates`) and the encoding each module declares inside the project."""
     cands = tuple(candidates) if candidates else None
     try:
@@ -306,6 +355,8 @@ def source_encodings(ws: Any, poms: list[PomInfo], candidates: Optional[Iterable
 # ---------------------------------------------------------------------------- the input
 @dataclass
 class ReviewInput:
+    """구조 검토 user 프롬프트의 재료 전부(섹션별 줄 목록 + pom
+    본문 + 인코딩 사실). `render()` 가 프롬프트 문자열."""
     project: list[str] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
     restructure: list[str] = field(default_factory=list)
@@ -321,13 +372,18 @@ class ReviewInput:
 
     @property
     def pom_chars(self) -> int:
+        """프롬프트에 실린 pom 글자 수 합."""
         return sum(len(p.text) for p in self.poms)
 
     @property
     def encoding_mismatches(self) -> list[ModuleEncoding]:
+        """인코딩 불일치가 있는 모듈들(LLM 이 놓치면 검토기가 critical 로 더한다)."""
         return [m for m in self.encodings if m.mismatch]
 
     def render(self) -> str:
+        """user 프롬프트. 섹션 순서: Project → Company rules → What the restructure did → Module tree → Facts
+        → Source encodings → Poms → Your task. `report.language`
+        가 ko 면 이슈 문장을 한국어로 쓰라는 줄을 더한다."""
         L: list[str] = ["# Project", ""]
         L += self.project
         L += ["", "# Company rules (sbmig configuration)", ""]
@@ -367,6 +423,8 @@ def _project_name(cfg: Any, poms: list[PomInfo], profile: Optional[ProjectProfil
 
 
 def project_lines(profile: Optional[ProjectProfile], cfg: Any, name: str) -> list[str]:
+    """프롬프트 "# Project" 의 줄들: 이름·케이스, as-is 버전, 목표(JDK·Boot·Framework 는 `cfg.target`),
+    소스·웹 리소스 수, MSA 서비스, as-is boot 모듈, 테스트 건너뜀 안내."""
     t = cfg.target
     if profile is None:
         return [f"- name `{name}`, case unknown", f"- target: JDK {t.java_version}, Spring Boot "
@@ -395,7 +453,11 @@ def project_lines(profile: Optional[ProjectProfile], cfg: Any, name: str) -> lis
 
 
 def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str) -> tuple[list[str], str]:
-    """The company rules from `cfg.artifacts` / `cfg.layout` for this case, and how to name the external parent."""
+    """이 케이스에 맞는 회사 규칙 줄들(`cfg.artifacts` / `cfg.layout` 에서 읽음)과 외부 부모를 부르는 이름.
+    레이아웃은 케이스별: MSA(디렉토리 그대로, pom 만), 분리 대상(spring_legacy / servlet_tomcat / pure_java →
+    `{name}-boot` / `-back` / `-front`), Boot as-is(pom 만, 단일 모듈은 `{name}-boot` 로 감쌈).
+
+    The company rules from `cfg.artifacts` / `cfg.layout` for this case, and how to name the external parent."""
     a, lay = cfg.artifacts, cfg.layout
     case = profile.case_type if profile is not None else CaseType.UNKNOWN
     L = [f"- root pom parent (`artifacts.parent`): {_spec(a.parent)}"]
@@ -463,7 +525,10 @@ def _field(r: Any, key: str, default: Any = None) -> Any:
 
 
 def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]:
-    """What the restructure did: one block per `RestructureResult` (or dict of its fields) + the run notes."""
+    """재구성이 한 일: RestructureResult(또는 그 필드의 dict)마다
+    한 블록 + 실행 메모. 목록은 SECTION_LINES_MAX 줄까지.
+
+    What the restructure did: one block per `RestructureResult` (or dict of its fields) + the run notes."""
     out: list[str] = []
     for r in results or ():
         if r is None:
@@ -500,6 +565,8 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
 
 
 def module_lines(poms: list[PomInfo], ws: Any) -> list[str]:
+    """모듈 트리 표(pom · groupId:artifactId · packaging · parent · 등록된 모듈), pom 이 없는
+    `<module>`(**MISSING**), 어느 집계 pom 에도 등록되지 않은 pom 목록."""
     paths = {p.path for p in poms}
     referenced: set[str] = set()
     L = ["| pom | groupId:artifactId | packaging | parent | modules listed |", "|---|---|---|---|---|"]
@@ -536,6 +603,9 @@ def _is_javax_api(g: GAV) -> bool:
 
 
 def fact_lines(poms: list[PomInfo], cfg: Any) -> list[str]:
+    """Maven 없이 sbmig 가 모은 사실(LLM 이 pom 과 대조한다): 필수 아티팩트가 선언된 곳(없으면 **not
+    declared**), 쓰고 있는 선택 아티팩트, 아직 남은 `artifacts.remove_when_present`, javax.* / jakarta.* API
+    의존성, 한 pom 안의 중복 선언."""
     a = cfg.artifacts
     L: list[str] = []
 
@@ -593,7 +663,10 @@ MAX_BINARY_FACTS = 12
 
 
 def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
-    """Binary files a `<filtering>true</filtering>` resource runs through Maven's filter (the analyzer's scan,
+    """`<filtering>true</filtering>` 리소스 아래의 바이너리 파일: 빌드는 통과하지만 Maven 필터가 패키지 안의
+    바이트를 바꿔 버린다(v1 은 선처리 핸들러 E12 로 고쳤고, v2 는 구조 검토에 맡긴다). 예외를 내지 않는다.
+
+    Binary files a `<filtering>true</filtering>` resource runs through Maven's filter (the analyzer's scan,
     `sbmig.analyze.properties.filtered_binary_resources`, on the restructured tree): the build passes, but the packaged
     bytes are rewritten — v1 fixed this with a pre-emptive handler (E12), v2 leaves it to the review (2026-10-26).
     Never raises."""
@@ -614,6 +687,8 @@ def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
 
 
 def select_poms(ws: Any, poms: list[PomInfo], max_poms: int, max_chars: int) -> tuple[list[PomText], list[str]]:
+    """보여 줄 pom 고르기: 모듈 순서대로 `max_poms` 개까지(나머지는
+    이름만), 글자 예산은 allot 으로 나누고 cut_text 로 자른다."""
     from sbmig.analyze.pom_parser import module_order
 
     order = module_order(poms) if poms else []
@@ -635,7 +710,9 @@ def select_poms(ws: Any, poms: list[PomInfo], max_poms: int, max_chars: int) -> 
 
 def collect_review_input(ws: Any, profile: Optional[ProjectProfile], cfg: Any, *, notes: Iterable[str] = (),
                          results: Iterable[Any] = ()) -> ReviewInput:
-    """Everything the review prompt shows, read from the workspace after the restructure (see module docstring)."""
+    """재구성 뒤 워크스페이스에서 검토 프롬프트에 들어갈 것을 전부 읽어 ReviewInput 으로 만든다(읽기만 한다).
+
+    Everything the review prompt shows, read from the workspace after the restructure (see module docstring)."""
     from sbmig.analyze.pom_parser import parse_poms
 
     poms, warnings = parse_poms(ws)

@@ -433,3 +433,22 @@ whole, not capped ("사람이 보는 거면 40줄 고정 안 해도"). Contract:
 | PM — adapter `**optional` pass-through, package exports, blocked-flow test (v2.1d call order) | this commit | done |
 | v2.1f (2026-10-28) — an error resolved by `build` without a try names the same-round try that changed its file / its module's pom (`ErrorEntry.resolved_by`, `build ← <case> r<round> try <n>` in errors.md / report / cases.md / `kb cases show`); `kb reindex` backfills old records | this commit | done |
 | v2.1g (2026-10-28) — static resources all reach the front module: files of a `<resource>` dir inside the web root stay on the comp classpath AND are copied to `front_static_dir` at their web path (`layout.front_copy_resource_dirs`); non-config WEB-INF files keep their path under the front jar's `META-INF/resources/WEB-INF/` | this commit | done |
+
+## Status — 2026-10-28, 한국어 주석 (handover comments for the business team)
+
+User (2026-10-28): "현업이 코드에다가 한국어 주석들을 좀 달아달래 — 인수인계 받으면 다음 사람도 보면서 해야 하니까". Every
+module under `sbmig/` (121 files) now opens with a Korean block (summary, place in the flow, entry points, invariants),
+every public class / function and the public methods carry Korean first in their docstring, and inline Korean comments
+say *why*; the English originals are kept verbatim (checked per docstring against the previous commit). Convention +
+terminology: `docs/v2/CODE-COMMENTS-KO.md`; package map: `sbmig/__init__.py`; findings from reading every file:
+`docs/v2/HANDOVER-FINDINGS-2026-10-28.md` (26 suspected bugs / policy questions, dead config keys, stale English text).
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Convention (Korean first, English kept, "why" comments, terminology table) + exemplar | `docs/v2/CODE-COMMENTS-KO.md`, `sbmig/kb/store.py` | done |
+| Korean comments in all 121 modules (+5,547 Korean lines; code identical by AST, only four redundant `pass` lines dropped) | `sbmig/**` | done |
+| `--help` of every Typer command shows the Korean summary (`sbmig`, `kb`, `fleet`, `advisories`, `recipes`) | `sbmig/cli.py`, `*/cli.py`, `plan/catalog_cli.py` | done |
+| Drift test: module docstring starts in Korean, every public top-level definition has Korean | `tests/docs/test_korean_comments.py` | done |
+| Findings for the user to decide (A1 EUC-KR pom skipped — reproduced; A2 highest-major verdict; A3 review call limit 2 vs 3; …) | `docs/v2/HANDOVER-FINDINGS-2026-10-28.md` | pending (the user) |
+| Not covered: prompt `.md` files, YAML (`config/`, `knowledge/`), tests, `coding/`, `web/static/index.html` | — | by request |
+

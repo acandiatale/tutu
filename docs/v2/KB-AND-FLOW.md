@@ -1,5 +1,9 @@
 # sbmig v2.1 — 실행 흐름, 케이스, KB 적재물, LLM 개입 지점과 한도 (사내 설명용)
 
+> 코드를 직접 읽을 때: 모든 모듈·공개 함수에 한국어 docstring 이 먼저 온다(규약 `docs/v2/CODE-COMMENTS-KO.md`).
+> 패키지 지도는 `sbmig/__init__.py`, 코드를 읽으며 발견한 의심 버그·정책 질문은 `docs/v2/HANDOVER-FINDINGS-2026-10-28.md`.
+
+
 2026-10-28, 브랜치 `flow-v2` (v2.1f 포함). 아래 샘플은 전부 로컬 e2e 실행(`pure-java` → `java6-legacy`, KB `out/e2e/kb-jaxb`)의
 실물을 줄여서 옮긴 것이다. 자세한 계약은 `docs/INTERFACES.md`(v2 · v2.1 · v2.1d · v2.1e 절), 결정 이력은 `docs/v2/PLAN-v2.1.md`.
 

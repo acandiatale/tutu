@@ -1,7 +1,18 @@
-"""Adapter tier: wrap an in-house `LLMAdapterLike` (one LLMRequest in, one LLMResponse out) as an LLMClientLike.
+"""1단(tier 1) 어댑터 감싸개: 사내 `LLMAdapterLike`(LLMRequest 하나 → LLMResponse 하나)를 sbmig 안에서 쓰는
+메시지 기반 `LLMClientLike` 로 바꿔 준다. 흐름상 위치: 플러그인을 불러온 `sbmig.llm.registry.wrap_llm` 이 여기
+클래스로 감싸고, 그 뒤로는 수정 루프·구조 검토가 내장 클라이언트와 똑같이 쓴다. 핵심: AdapterClient(요청 객체
+생성 + 응답 검증 + 예외 → LLMError), KwargFilterClient(`role` / `metadata` 를 못 받는 클라이언트의 키워드
+걸러내기), LLMAdapter(플러그인 작성자용 선택 베이스 클래스), coerce_response, is_request_adapter. 지킬 것:
+어댑터가 던진 예외는 모두 `status=… cause=<예외 클래스>` 문구가 든 `LLMError` 로 바꾼다 — 수정 루프는 이
+명시적 표식으로만 전송 장애를 가려낸다(round 10). 이상한
+반환값은 오류 문장을 답변(content)으로 넘기지 않고 예외로 만든다.
+
+Adapter tier: wrap an in-house `LLMAdapterLike` (one LLMRequest in, one LLMResponse out) as an LLMClientLike.
 
     AdapterClient(adapter, default_model=None, base_metadata=None)   -> LLMClientLike used everywhere in sbmig
     LLMAdapter                                                        optional ABC for plugin authors
+
+
 """
 from __future__ import annotations
 
@@ -24,7 +35,11 @@ def _llm_error(message: str, body: str = "") -> Exception:
 
 
 class LLMAdapter(abc.ABC):
-    """Convenience base class for in-house gateway adapters.
+    """사내 게이트웨이 어댑터용 편의 베이스 클래스: `complete(request)` 만 구현하면 된다.
+    실패하면 예외를 던질 것 — sbmig 가 LLMError 로 바꾸므로 수정
+    루프는 멈추지 않고, 반복되면 "LLM 사용 불가" 로 처리한다.
+
+    Convenience base class for in-house gateway adapters.
 
     Subclass it, implement `complete(request)` and point `llm.plugin` at the class (or at a factory returning an
     instance). Raise an exception on failure — sbmig converts it to `LLMError` so the build-fix loop can mark the
@@ -34,10 +49,13 @@ class LLMAdapter(abc.ABC):
 
     @property
     def name(self) -> str:
+        """로그·오류 문구에 쓰는 어댑터 이름(기본은 클래스 이름)."""
         return type(self).__name__
 
     @abc.abstractmethod
     def complete(self, request: LLMRequest) -> LLMResponse:  # pragma: no cover - abstract
+        """요청 하나를 게이트웨이로 보내고 LLMResponse 를 돌려준다(재시도·인증·타임아웃은 플러그인 몫). 오류
+        문장을 content 로 돌려주지 말고 예외를 던질 것."""
         ...
 
     def close(self) -> None:
@@ -45,7 +63,11 @@ class LLMAdapter(abc.ABC):
 
 
 def is_request_adapter(obj: Any) -> bool:
-    """True when `obj.complete` takes one LLMRequest (adapter tier), False when it is message-based (client tier).
+    """`obj.complete` 가 LLMRequest 하나를 받는 어댑터(1단)면 True, 메시지 목록을 받는 클라이언트면 False.
+    판별 순서: LLMAdapter 하위 클래스 → `adapter_kind` 속성 → `complete` 첫 인자(이름 `request` / 타입
+    LLMRequest) → 그 밖은 클라이언트.
+
+    True when `obj.complete` takes one LLMRequest (adapter tier), False when it is message-based (client tier).
 
     Order: LLMAdapter subclass → explicit `adapter_kind` attribute ("request" | "client") → signature of
     `complete` (first positional parameter named `request` or annotated `LLMRequest`) → client."""
@@ -77,7 +99,10 @@ def is_request_adapter(obj: Any) -> bool:
 
 
 def coerce_response(raw: Any, fallback_model: str, source: str = "adapter") -> LLMResponse:
-    """LLMResponse | dict | str | object with `.content` → LLMResponse; anything else → LLMError."""
+    """플러그인이 돌려준 값(LLMResponse / dict / str / `.content` 를 가진 객체)을 LLMResponse 로 맞춘다.
+    그 밖의 값은 LLMError(오류 문장이 답변처럼 흘러가지 않게). 빈 `model` 은 요청한 모델로 채운다.
+
+    LLMResponse | dict | str | object with `.content` → LLMResponse; anything else → LLMError."""
     if isinstance(raw, LLMResponse):
         resp = raw
     elif isinstance(raw, str):
@@ -109,7 +134,10 @@ def coerce_response(raw: Any, fallback_model: str, source: str = "adapter") -> L
 
 
 class AdapterClient:
-    """LLMClientLike over an LLMAdapterLike. Builds one LLMRequest per call and validates the answer."""
+    """LLMAdapterLike 위의 LLMClientLike: 호출마다 LLMRequest
+    하나를 만들고 답을 검증한다(sbmig 전체가 이 객체를 쓴다).
+
+    LLMClientLike over an LLMAdapterLike. Builds one LLMRequest per call and validates the answer."""
 
     def __init__(self, adapter: Any, *, default_model: Optional[str] = None, base_metadata: Optional[dict] = None):
         if not callable(getattr(adapter, "complete", None)):
@@ -121,6 +149,7 @@ class AdapterClient:
 
     @property
     def name(self) -> str:
+        """어댑터의 `name`(문자열일 때), 아니면 어댑터 클래스 이름."""
         n = getattr(self.adapter, "name", None)
         return n if isinstance(n, str) and n else type(self.adapter).__name__
 
@@ -131,6 +160,9 @@ class AdapterClient:
                       max_tokens: Optional[int] = None, temperature: Optional[float] = None,
                       stop: Optional[list[str]] = None, role: Optional[str] = None,
                       metadata: Optional[dict] = None) -> LLMRequest:
+        """sbmig 의 메시지 호출 인자를 LLMRequest 하나로. 모르는 role(예: `verify_guide`)은 `other` 로 바꾸고
+        원래 값은 `metadata["role_detail"]` 에 남긴다. metadata
+        에는 run_id·project 같은 문맥만 담는다(비밀 금지)."""
         meta = {**self.base_metadata, **(metadata or {})}
         r = role or "other"
         if r not in KNOWN_ROLES:
@@ -143,6 +175,8 @@ class AdapterClient:
                  max_tokens: Optional[int] = None, temperature: Optional[float] = None,
                  stop: Optional[list[str]] = None, role: Optional[str] = None,
                  metadata: Optional[dict] = None, **_ignored: Any) -> LLMResponse:
+        """어댑터를 한 번 부른다. LLMError 는 그대로, 다른 예외는 `status=` / `cause=` 표식이 든 LLMError 로
+        바꿔 던진다(수정 루프가 이 표식으로 전송 장애 → 쿨다운 → `llm_unavailable` 을 판정한다)."""
         from sbmig.fix.client import LLMError
 
         request = self.build_request(messages, model=model, max_tokens=max_tokens, temperature=temperature,
@@ -154,6 +188,7 @@ class AdapterClient:
         except Exception as exc:     # surface as LLMError so callers treat it as a transport failure
             status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
             status = status if isinstance(status, int) else None
+            # 수정 루프는 문구 속 `status=` / `cause=` 표식만 보고 장애를 가른다 — 이 문구 형식을 바꾸지 말 것
             # round 10: the fix loop classifies by explicit markers — `status=<code>` and `cause=<ExceptionClass>`
             raise LLMError(status, str(exc)[:500],
                            f"LLM adapter {self.name} failed (status={status}, cause={type(exc).__name__}): "
@@ -161,13 +196,17 @@ class AdapterClient:
         return coerce_response(raw, request.model or self.model or self.name, source=f"adapter {self.name}")
 
     def close(self) -> None:
+        """어댑터에 `close()` 가 있으면 부른다."""
         fn = getattr(self.adapter, "close", None)
         if callable(fn):
             fn()
 
 
 class KwargFilterClient:
-    """Wraps a message-based plugin client whose `complete` does not accept every keyword sbmig passes
+    """sbmig 가 넘기는 키워드를 다 받지 못하는(예: `role` / `metadata` 없음) 메시지 기반 플러그인 클라이언트를
+    감싼다: 모르는 키워드는 TypeError 를 내는 대신 버린다.
+
+    Wraps a message-based plugin client whose `complete` does not accept every keyword sbmig passes
     (e.g. no `role` / `metadata`): unknown keywords are dropped instead of raising TypeError."""
 
     def __init__(self, inner: Any):
@@ -183,6 +222,8 @@ class KwargFilterClient:
 
     @staticmethod
     def needed(inner: Any) -> bool:
+        """이 감싸개가 필요한가: `complete` 에 `**kwargs` 가
+        없고 `role`·`metadata` 를 둘 다 받지는 못하면 True."""
         try:
             params = inspect.signature(inner.complete).parameters.values()
         except (TypeError, ValueError):
@@ -192,6 +233,7 @@ class KwargFilterClient:
         return not has_var_kw and not {"role", "metadata"} <= names
 
     def complete(self, messages: list[ChatMessage], **kw: Any) -> LLMResponse:
+        """받을 수 있는 키워드만 넘겨 호출하고, 반환값을 LLMResponse 로 맞춘다(coerce_response)."""
         if self._accepted is not None:
             kw = {k: v for k, v in kw.items() if k in self._accepted}
         raw = self.inner.complete(messages, **kw)
@@ -199,6 +241,7 @@ class KwargFilterClient:
                                source=f"client {type(self.inner).__name__}")
 
     def close(self) -> None:
+        """안쪽 클라이언트에 `close()` 가 있으면 부른다."""
         fn = getattr(self.inner, "close", None)
         if callable(fn):
             fn()

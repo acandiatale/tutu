@@ -1,4 +1,15 @@
-"""Case classification (pure_java / servlet_tomcat / spring_legacy / spring_boot / msa) + MSA service discovery."""
+"""케이스 분류 — 회사의 네 가지 프로젝트 유형(pure_java / servlet_tomcat / spring_legacy /
+spring_boot)과 MSA (배포 서비스 여럿)를 pom·소스 신호로 판정하고, MSA 면 서비스 루트와 공유 라이브러리 루트를
+찾는다. 흐름상 위치: 분석기(``analyze_project``)가 부르고, 결과 ``case_type`` 이 계획(레시피 세트: Boot 만
+``UpgradeSpringBoot_4_0``, jakarta 는 Boot 가 아닐 때)과 재구성(boot / back / front 분리냐 pom 만이냐)을
+정한다. 핵심 진입점: :func:`classify` (전체), :func:`classify_single`
+(비-MSA, 우선순위 Boot > Spring > servlet > 순수
+Java), :func:`msa_deployables` / :func:`service_roots` / :func:`library_roots`, :func:`is_library_root`,
+:func:`boot_module_findings` (회사 이름 규칙 ``layout.boot_module_pattern``
+의 boot 모듈, round 9c). 불변조건: 라이브러리 루트는 절대 SPRING_BOOT 가 되지 않는다(``LIBRARY_CASE_MAP``) —
+Boot 레시피를 받으면 안 된다.
+
+Case classification (pure_java / servlet_tomcat / spring_legacy / spring_boot / msa) + MSA service discovery."""
 from __future__ import annotations
 
 import fnmatch
@@ -20,12 +31,16 @@ SPRING_STEREOTYPES = ("Controller", "RestController", "Configuration", "Service"
 
 
 def _all_deps(poms: Iterable[PomInfo]):
+    """모든 pom 의 ``<dependencies>`` (관리 의존성 제외)."""
     for p in poms:
         yield from p.dependencies
 
 
 def _signals(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUsage],
              scan: Optional[ScanResult] = None) -> dict[str, list[str]]:
+    """분류 근거를 boot / spring / servlet 세 갈래로 모은다(각 항목 = 보고서 ``reasons`` 에 실리는
+    한 줄). Boot: Boot 부모·BOM·플러그인·의존성·@SpringBootApplication. Spring: spring-* 의존성·XML
+    빈 설정·스테레오타입. servlet: war 패키징·servlet import·서블릿 클래스·web.xml·JSP."""
     boot: list[str] = []
     spring: list[str] = []
     servlet: list[str] = []
@@ -50,6 +65,8 @@ def _signals(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUs
     if source.xml_bean_configs:
         spring.append("xml bean configs: " + ", ".join(source.xml_bean_configs[:3]))
     spring_imports = False
+    # 스테레오타입(@Service 등)은 이름만 같은 다른 어노테이션일 수 있어서, 파일별 스캔이 있으면
+    # org.springframework import 가 실제로 있을 때만 Spring 신호로 센다
     if scan is not None:
         spring_imports = any(i.startswith("org.springframework.") for j in scan.files for i in j.imports)
     stereo = {a: source.spring_annotations.get(a, 0) for a in SPRING_STEREOTYPES if source.spring_annotations.get(a)}
@@ -70,12 +87,16 @@ def _signals(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUs
 
 
 def _conf(n: int, base: float) -> float:
+    """신뢰도: 기본값 + 근거 하나 늘 때마다 0.1, 최대 0.99."""
     return round(min(0.99, base + 0.1 * max(0, n - 1)), 2)
 
 
 def classify_single(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUsage],
                     scan: Optional[ScanResult] = None) -> tuple[CaseType, float, list[str]]:
-    """Non-MSA classification. Precedence: Boot > legacy Spring > servlet > pure Java."""
+    """비-MSA 분류. 우선순위 Boot > 레거시 Spring > servlet > 순수 Java (앞의 신호가 하나라도
+    있으면 그 케이스). 소스 없이 pom 만 있으면 낮은 신뢰도의 pure_java, 아무것도 없으면 UNKNOWN.
+
+    Non-MSA classification. Precedence: Boot > legacy Spring > servlet > pure Java."""
     s = _signals(poms, source, libraries, scan)
     if s["boot"]:
         return CaseType.SPRING_BOOT, _conf(len(s["boot"]), 0.7), ["spring_boot: " + r for r in s["boot"]]
@@ -100,10 +121,12 @@ def classify_single(poms: list[PomInfo], source: SourceStats, libraries: list[Li
 # MSA
 # ---------------------------------------------------------------------------
 def _contains(dir_: str, path: str) -> bool:
+    """``path`` 가 디렉토리 ``dir_`` 안(또는 같은 곳)인지. ``dir_ == ""`` (루트)는 모든 것을 포함한다."""
     return dir_ == "" or path == dir_ or path.startswith(dir_ + "/")
 
 
 def _boot_app_modules(poms: list[PomInfo], scan: Optional[ScanResult]) -> dict[str, list[str]]:
+    """@SpringBootApplication 클래스(테스트 제외)를 가진 모듈 pom 경로 → 그 클래스 FQCN 목록."""
     out: dict[str, list[str]] = {}
     if scan is None:
         return out
@@ -117,6 +140,8 @@ def _boot_app_modules(poms: list[PomInfo], scan: Optional[ScanResult]) -> dict[s
 
 
 def _looks_deployable(p: PomInfo, poms: list[PomInfo], app_modules: dict[str, list[str]]) -> bool:
+    """배포 단위로 보이는지: war, Boot 플러그인, Boot 앱 클래스,
+    또는 (pom 패키징이 아니면서) 하위에 Boot 플러그인 pom."""
     if p.packaging == "war" or p.has_spring_boot_plugin or p.path in app_modules:
         return True
     d = pom_dir(p.path)
@@ -126,7 +151,11 @@ def _looks_deployable(p: PomInfo, poms: list[PomInfo], app_modules: dict[str, li
 
 
 def msa_deployables(poms: list[PomInfo], scan: Optional[ScanResult]) -> tuple[list[PomInfo], list[str]]:
-    """Return (deployable poms, reasons) when the repo looks like several deployable services, else ([], [])."""
+    """저장소가 배포 서비스 여럿(MSA)으로 보이면 (배포 pom 목록, 근거), 아니면 ([], []).
+    판정 순서: Boot 플러그인 pom 2개 이상 → 서로 다른 모듈의 @SpringBootApplication 2개 이상 → 각자 배포
+    가능해 보이는 독립 루트 pom 2개 이상.
+
+    Return (deployable poms, reasons) when the repo looks like several deployable services, else ([], [])."""
     plugin_poms = [p for p in poms if p.has_spring_boot_plugin]
     if len(plugin_poms) >= 2:
         return plugin_poms, [f"msa: {len(plugin_poms)} poms with spring-boot-maven-plugin: "
@@ -144,7 +173,9 @@ def msa_deployables(poms: list[PomInfo], scan: Optional[ScanResult]) -> tuple[li
 
 
 def service_roots(deployables: list[PomInfo], poms: list[PomInfo]) -> list[PomInfo]:
-    """Walk up from each deployable pom while the ancestor directory pom contains no other deployable."""
+    """각 배포 pom 에서 위로 올라가며, 다른 배포 단위를 품지 않는 가장 높은 조상 pom 을 서비스 루트로 삼는다.
+
+    Walk up from each deployable pom while the ancestor directory pom contains no other deployable."""
     dep_dirs = [pom_dir(d.path) for d in deployables]
     by_dir = {pom_dir(p.path): p for p in poms}
     out: list[PomInfo] = []
@@ -165,6 +196,9 @@ def service_roots(deployables: list[PomInfo], poms: list[PomInfo]) -> list[PomIn
 
 
 def build_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult) -> list[ServiceInfo]:
+    """서비스 루트마다 ServiceInfo 를 만든다: 하위 pom·소스만으로 다시
+    ``classify_single`` 해서 서비스별 케이스를 정하고, 이름은 디렉토리명(같은 이름이
+    또 있으면 ``-2``, ``-3`` …). MSA 는 서비스마다 같은 회사 규칙이 적용된다."""
     services: list[ServiceInfo] = []
     for r in roots:
         d = pom_dir(r.path)
@@ -195,12 +229,18 @@ def build_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult) 
 # ---------------------------------------------------------------------------
 # MSA shared library roots (S1)
 # ---------------------------------------------------------------------------
+# 공유 라이브러리 루트의 케이스 바꿔치기: 라이브러리는 배포 단위가 아니므로 Boot(→ spring_legacy)나 servlet(→
+# pure_java)으로 두지 않는다 — Boot 레시피·웹 모듈 분리가 라이브러리에 적용되면 안 된다
 LIBRARY_CASE_MAP = {CaseType.SPRING_BOOT: CaseType.SPRING_LEGACY, CaseType.SERVLET_TOMCAT: CaseType.PURE_JAVA,
                     CaseType.UNKNOWN: CaseType.PURE_JAVA, CaseType.MSA: CaseType.SPRING_LEGACY}
 
 
 def library_roots(poms: list[PomInfo], service_root_poms: list[str], scan: Optional[ScanResult]) -> list[PomInfo]:
-    """Top-most in-repo poms of shared, non-deployable modules (e.g. `common/`) that live outside every service.
+    """어느 서비스에도 속하지 않는 공유 비배포 모듈(예: ``common/``)의 최상위 pom 들
+    (MSA 의 라이브러리 루트, S1). 후보는 jar 패키징·Boot 플러그인 없음·Boot 앱 클래스 없음·서비스 밖인 pom
+    이고, 서비스를 품지 않는 가장 높은 조상 pom 까지 끌어올린다.
+
+    Top-most in-repo poms of shared, non-deployable modules (e.g. `common/`) that live outside every service.
 
     A candidate is a jar-packaged pom without spring-boot-maven-plugin and without @SpringBootApplication, not inside
     a service directory; it is lifted to the highest ancestor directory pom that contains no service."""
@@ -236,7 +276,11 @@ def library_roots(poms: list[PomInfo], service_root_poms: list[str], scan: Optio
 
 def build_library_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult,
                            taken: Iterable[str] = ()) -> list[ServiceInfo]:
-    """Library roots as `ServiceInfo` entries (convention: `main_classes == []`, `spring_boot_version is None`,
+    """라이브러리 루트를 ServiceInfo(``kind="library"``, ``main_classes == []``,
+    ``spring_boot_version None``)로 만든다. 케이스는 ``LIBRARY_CASE_MAP`` 으로 바꿔 Boot 가 되지 않게 하고,
+    이름은 서비스 이름과 겹치지 않게 한다.
+
+    Library roots as `ServiceInfo` entries (convention: `main_classes == []`, `spring_boot_version is None`,
     case mapped so a library never gets the Boot umbrella)."""
     out: list[ServiceInfo] = []
     names = set(taken)
@@ -260,7 +304,11 @@ def build_library_services(roots: list[PomInfo], poms: list[PomInfo], scan: Scan
 
 
 def is_library_root(svc: ServiceInfo, profile: Optional["ProjectProfile"] = None) -> bool:
-    """True for MSA `services` entries that are shared library roots (not deployables).
+    """MSA ``services`` 항목이 배포 서비스가 아니라 공유 라이브러리 루트이면 True. ``kind == "library"``
+    가 우선이고, 옛 기록은 관례(main_classes 없음 + Boot 버전 없음 + WAR / Boot 플러그인 없음)로 판정한다.
+    프로필을 알면 꼭 넘길 것 — 그래야 Boot 없는 WAR 서비스를 라이브러리로 오인하지 않는다.
+
+    True for MSA `services` entries that are shared library roots (not deployables).
 
     Convention (no dedicated model field): `main_classes == []` and `spring_boot_version is None`; with `profile`
     given, additionally its poms must be known to `profile.poms` and none of them is a WAR or carries spring-boot-maven-plugin (so a plain WAR service
@@ -279,19 +327,26 @@ def is_library_root(svc: ServiceInfo, profile: Optional["ProjectProfile"] = None
 
 
 def library_services(profile: "ProjectProfile") -> list[ServiceInfo]:
+    """프로필의 ``services`` 중 공유 라이브러리 루트만."""
     return [s for s in profile.services if is_library_root(s, profile)]
 
 
 def deployable_services(profile: "ProjectProfile") -> list[ServiceInfo]:
+    """프로필의 ``services`` 중 배포 서비스만(라이브러리 루트 제외)."""
     return [s for s in profile.services if not is_library_root(s, profile)]
 
 
 def classify(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUsage],
              scan: Optional[ScanResult] = None) -> tuple[CaseType, float, list[str]]:
-    """Classify the whole repo. `scan` (per-file facts) enables the module-aware MSA rule."""
+    """저장소 전체 분류: 배포 단위가 둘 이상이고 서비스 루트도 둘
+    이상으로 갈리면 MSA, 아니면 :func:`classify_single`. ``scan`` (파일별 정보)이 있어야 모듈 단위
+    @SpringBootApplication 규칙이 동작한다.
+
+    Classify the whole repo. `scan` (per-file facts) enables the module-aware MSA rule."""
     deployables, reasons = msa_deployables(poms, scan)
     if deployables:
         roots = service_roots(deployables, poms)
+        # 서비스 루트로 끌어올린 결과가 둘 이상일 때만 MSA — 아니면 아래의 단일 프로젝트 분류로 넘어간다
         if len(roots) >= 2:
             conf = 0.9 if "spring-boot-maven-plugin" in reasons[0] else 0.75
             return CaseType.MSA, conf, reasons + [f"msa: services rooted at {', '.join(r.path for r in roots)}"]
@@ -302,6 +357,7 @@ def classify(poms: list[PomInfo], source: SourceStats, libraries: list[LibraryUs
 # Boot modules by the company naming rule (round 9c)
 # ---------------------------------------------------------------------------
 def _pom_module_path(p: PomInfo, m: str) -> str:
+    """``<module>`` 값을 루트 기준 pom 경로로(디렉토리면 ``/pom.xml`` 을 붙인다)."""
     target = posixpath.normpath(posixpath.join(pom_dir(p.path) or ".", m))
     if not target.endswith(".xml"):
         target = posixpath.join(target, "pom.xml")
@@ -309,7 +365,9 @@ def _pom_module_path(p: PomInfo, m: str) -> str:
 
 
 def _module_dirs(start: PomInfo, by_path: dict[str, PomInfo]) -> list[str]:
-    """Dirs of every pom reachable from `start` through <modules> (recursively), `start` itself excluded."""
+    """``start`` 에서 ``<modules>`` 를 따라(재귀) 닿는 모든 pom 의 디렉토리. ``start`` 자신은 뺀다.
+
+    Dirs of every pom reachable from `start` through <modules> (recursively), `start` itself excluded."""
     out: list[str] = []
     seen = {start.path}
     stack = [start]
@@ -327,7 +385,12 @@ def _module_dirs(start: PomInfo, by_path: dict[str, PomInfo]) -> list[str]:
 
 def boot_module_findings(poms: list[PomInfo], root_pom: Optional[PomInfo], scan: Optional[ScanResult],
                          pattern: str, services: Iterable[ServiceInfo] = ()) -> tuple[list[str], list[str], list[str]]:
-    """`(boot_modules, warnings, reasons)` for `ProjectProfile.boot_modules`.
+    """``ProjectProfile.boot_modules`` 용 ``(boot 모듈, 경고, 근거)`` (회사 레이아웃 round 9c).
+    boot 모듈 = 이름이 ``pattern`` (예: ``*-boot``)에 맞고 **그리고** pom 이 Boot 앱(플러그인 또는
+    ``src/main/java`` 아래 @SpringBootApplication)인 모듈. 둘 중 하나만 맞으면 경고만 남긴다(차단 없음).
+    프로젝트 루트는 후보가 아니다 — 단일 모듈 Boot 앱은 재구성이 ``{name}-boot`` 로 감싼다.
+
+    `(boot_modules, warnings, reasons)` for `ProjectProfile.boot_modules`.
 
     Candidates are the module dirs reachable from the root pom's `<modules>` (recursively); for MSA also every
     service root dir and its modules. A candidate is a boot module when its basename matches `pattern` (fnmatch,

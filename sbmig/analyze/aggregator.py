@@ -1,4 +1,13 @@
-"""Sibling poms without an aggregator (2026-10-23).
+"""루트 pom 없이 형제 pom 만 있는 프로젝트 처리(2026-10-23, 회사 사례 ``APP/BATCH`` · ``APP/WEB`` ·
+``APP/EAR``). 흐름상 위치: 접수(intake)의 ``_intake_layout`` 이 부른다 — 먼저
+:func:`ear_without_modules` 로 EAR 단독 실행을 거부(exit 3)하고, ``layout.generate_aggregator`` 가
+켜져 있으면 :func:`plan_aggregator` → :func:`write_aggregator` 로 루트 집계(aggregator) pom 을 만들어
+``intake: generated root aggregator pom`` 으로 커밋한다. 왜: 루트 pom 이 없으면 재구성(restructure)이 트리를
+회사 레이아웃으로 바꿀 수 없고, EAR 만 따로 돌리면 EAR 의 WAR 의존성이 back 모듈로 새어 들어간다. 서로
+의존하는 형제 pom 만 묶는다(연결 안 된 것은 제외 목록, 서로 무관한 그룹이 둘 이상이면 None = 독립 앱, MSA
+경로가 판단). 파일 읽기만 하고 예외를 올리지 않는다.
+
+Sibling poms without an aggregator (2026-10-23).
 
 A company project had no pom.xml at its root: `APP/BATCH` (jar), `APP/WEB` (war) and `APP/EAR` (ear, packages WEB
 and BATCH) each had their own pom and were built one after the other. Without a root pom sbmig could not restructure
@@ -15,6 +24,8 @@ the tree, and a run on `APP/EAR` alone copied the EAR's dependency on the web WA
   run on `APP/EAR` alone): the reason to reject the run at intake, else None.
 
 Pure file reads; never raises (problems → None).
+
+
 """
 from __future__ import annotations
 
@@ -39,6 +50,8 @@ MODULE_TYPES = ("war", "ejb", "ear")          # dependency types that only make 
 
 @dataclass
 class AggregatorPlan:
+    """생성할 루트 집계 pom 의 내용: 모듈 디렉토리(의존 순서),
+    좌표, 회사 레이아웃의 ``{name}``, 이유, 제외 목록."""
     modules: list[str]                        # module directories relative to the project root, dependency order
     group_id: str
     artifact_id: str
@@ -53,6 +66,7 @@ def _dir(p: PomInfo) -> str:
 
 
 def _module_path(p: PomInfo, m: str) -> str:
+    """``<module>`` 값을 루트 기준 pom 경로로 — 디렉토리면 ``/pom.xml`` 을 붙이고, ``x.xml`` 이면 그대로."""
     target = posixpath.normpath(posixpath.join(_dir(p) or ".", m.strip().rstrip("/")))
     if not target.endswith(".xml"):
         target = posixpath.join(target, "pom.xml")
@@ -60,6 +74,7 @@ def _module_path(p: PomInfo, m: str) -> str:
 
 
 def _subtree(top: PomInfo, by_path: dict[str, PomInfo]) -> list[PomInfo]:
+    """``top`` 과 그 ``<modules>`` 를 따라 닿는 모든 pom(순환 안전)."""
     out: list[PomInfo] = []
     stack = [top]
     while stack:
@@ -75,6 +90,8 @@ def _subtree(top: PomInfo, by_path: dict[str, PomInfo]) -> list[PomInfo]:
 
 
 def _links_to(dep: GAV, target: PomInfo) -> bool:
+    """의존성 ``dep`` 이 ``target`` pom 을 가리키는지: artifactId
+    같고, groupId 가 없거나 ``${...}`` 이거나 같으면 연결."""
     if not dep.artifact_id or dep.artifact_id != target.artifact_id:
         return False
     g = dep.group_id or ""
@@ -82,16 +99,20 @@ def _links_to(dep: GAV, target: PomInfo) -> bool:
 
 
 def _most_common(values: list[Optional[str]]) -> Optional[str]:
+    """풀리지 않은 ``${...}`` 와 빈 값을 뺀 가장 흔한 값."""
     vals = [v for v in values if v and "${" not in v]
     return Counter(vals).most_common(1)[0][0] if vals else None
 
 
 def _top_poms(poms: list[PomInfo]) -> list[PomInfo]:
+    """다른 pom 의 ``<modules>`` 에 올라 있지 않은 pom = 각자 따로 빌드되던 최상위 pom."""
     referenced = {_module_path(p, m) for p in poms for m in p.modules}
     return [p for p in poms if p.path not in referenced]
 
 
 def _name_from(members: list[PomInfo]) -> str:
+    """프로젝트 이름(``{name}``): EAR 이 하나면 그 artifactId, 아니면
+    WAR 하나의 것, 아니면 공통 접두어(3자 이상), 끝으로 app."""
     ears = [p for p in members if p.packaging == "ear"]
     wars = [p for p in members if p.packaging == "war"]
     if len(ears) == 1 and ears[0].artifact_id:
@@ -104,6 +125,8 @@ def _name_from(members: list[PomInfo]) -> str:
 
 
 def plan_aggregator(ws: Any) -> Optional[AggregatorPlan]:
+    """루트 pom 이 없고 서로 의존하는 최상위 pom 이 한 그룹일 때 집계 pom 계획을, 아니면 None 을 돌려준다.
+    접수가 여기서 실패하면 안 되므로 예외는 경고 + None."""
     try:
         return _plan(ws)
     except Exception as e:  # pragma: no cover - defensive: intake must never fail here
@@ -112,6 +135,8 @@ def plan_aggregator(ws: Any) -> Optional[AggregatorPlan]:
 
 
 def _plan(ws: Any) -> Optional[AggregatorPlan]:
+    """:func:`plan_aggregator` 의 본체: 최상위 pom 간 의존 간선 → 연결 요소 → 의존 순서 → 좌표·이름 결정."""
+    # 루트 pom 이 이미 있으면 할 일 없음(집계 pom 은 루트가 없을 때만 만든다)
     if ws.exists("pom.xml"):
         return None
     poms, _ = parse_poms(ws)
@@ -144,6 +169,7 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
     for t in tops:
         groups.setdefault(find(t.path), []).append(t)
     linked = [g for g in groups.values() if len(g) >= 2]
+    # 연결된 그룹이 정확히 하나일 때만 만든다 — 둘 이상이면 서로 무관한 앱들이라 하나로 묶지 않는다
     if len(linked) != 1:
         if len(linked) > 1:
             log.info("aggregator not generated: %d separate groups of linked poms (independent applications)",
@@ -166,6 +192,7 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
     group = (src.group_id if src is not None else None) or _most_common([p.group_id for p in members]) \
         or "com.example"
     version = (src.version if src is not None else None) or _most_common([p.version for p in members]) or "1.0.0"
+    # 구성원이 이미 같은 좌표를 쓰면 ``<name>-aggregator`` — EAR 이 합쳐진 뒤 재구성이 루트 이름을 되돌린다
     artifact = name if not any(p.artifact_id == name and (p.group_id or group) == group for p in poms) \
         else f"{name}-aggregator"
     modules = [_dir(p) for p in order]
@@ -182,6 +209,8 @@ def _xml(text: str) -> str:
 
 
 def aggregator_pom_text(plan: AggregatorPlan) -> str:
+    """집계 pom 의 XML 본문(packaging pom, ``<modules>``, 프로젝트
+    이름 속성 ``sbmig.project-name``, 생성 표시 주석)."""
     mods = "\n".join(f"        <module>{_xml(m)}</module>" for m in plan.modules)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!-- {AGGREGATOR_MARK}: the project had no aggregator pom; these sibling poms depend on each other and are built
@@ -207,7 +236,10 @@ def aggregator_pom_text(plan: AggregatorPlan) -> str:
 
 
 def write_aggregator(ws: Any, plan: AggregatorPlan) -> str:
-    """Write the aggregator as `<root>/pom.xml` (a Workspace, or a read-only PathView's directory)."""
+    """집계 pom 을 ``<root>/pom.xml`` 로 쓴다(Workspace 면
+    ``ws.write``, PathView 면 폴더에 직접). 커밋은 호출자 몫.
+
+    Write the aggregator as `<root>/pom.xml` (a Workspace, or a read-only PathView's directory)."""
     text = aggregator_pom_text(plan)
     if callable(getattr(ws, "write", None)):
         ws.write("pom.xml", text, encoding="utf-8")
@@ -220,12 +252,17 @@ _EAR_RE = re.compile(r"<packaging>\s*ear\s*</packaging>")
 
 
 def ear_without_modules(ws: Any) -> Optional[str]:
-    """The reason to reject a run whose root pom is an EAR that packages modules missing from the tree."""
+    """루트 pom 이 EAR 인데 그 EAR 이 묶는 WAR / EJB / 같은 그룹 모듈이 트리에
+    없으면 거부 사유를, 아니면 None. EAR 자체에는 코드가 없으므로 ``APP/EAR`` 만 돌리는 실행은 접수에서
+    중단시킨다(상위 폴더에서 다시 실행하도록 안내).
+
+    The reason to reject a run whose root pom is an EAR that packages modules missing from the tree."""
     try:
         if not ws.exists("pom.xml") or not _EAR_RE.search(ws.read("pom.xml")):
             return None
         poms, _ = parse_poms(ws)
         root = next((p for p in poms if p.path == "pom.xml"), None)
+        # 모듈을 직접 거느린 EAR 루트(``<modules>`` 있음)는 정상 — 모듈이 트리 안에 있으니 거부하지 않는다
         if root is None or root.packaging != "ear" or root.modules:
             return None
         present = {p.artifact_id for p in poms}

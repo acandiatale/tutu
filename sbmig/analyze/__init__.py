@@ -1,4 +1,12 @@
-"""sbmig.analyze — pom graph, source scan, library detection and case classification → ProjectProfile."""
+"""분석(analyze) 패키지 — pom 그래프·소스 스캔·라이브러리 탐지·케이스 분류로
+ProjectProfile(프로필)을 만든다. 흐름상 위치: 접수(intake) 직후 오케스트레이터의 ``step_analyze`` 가
+:func:`analyze_project` 를 부르고, 접수 단계도 여기의 :func:`detect_build_tool` (Maven 만 받음)과
+``aggregator`` (형제 pom 묶기 / EAR 단독 거부)를 쓴다. 핵심 진입점: ``analyze_project`` / ``analyze_path``
+(프로필), ``classify`` (케이스 타입), ``detect_libraries`` (권고 근거), ``scan_properties`` (외부 설정),
+``scan_webapp_tree`` (``sbmig inventory``: pom 없는 트리를 설명만 함 — 아무것도 바꾸지 않음). 분석은 읽기
+전용이다(예외: 접수 단계에서 부르는 aggregator 의 ``write_aggregator``).
+
+sbmig.analyze — pom graph, source scan, library detection and case classification → ProjectProfile."""
 from .analyzer import PathView, analyze_path, analyze_project
 from .build_tool import BuildToolDetection, detect_build_tool
 from .classifier import (classify, classify_single, deployable_services, is_library_root, library_roots,

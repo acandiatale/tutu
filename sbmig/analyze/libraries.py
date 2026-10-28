@@ -1,4 +1,13 @@
-"""Table-driven library detection → `LibraryUsage` list.
+"""표(``LIBRARY_RULES``) 기반 라이브러리 탐지 → ``LibraryUsage`` 목록(이름 + 버전 + 근거). 흐름상
+위치: 분석기가 프로필의 ``libraries`` 를 만들 때 부르고, MSA 는 서비스마다 다시 부른다. 계획(planner),
+권고(``knowledge/libraries/advisories.yml`` 의 ``library`` 키 — EOL 라이브러리 안내, 차단 없음), 수정 스크립트
+프롬프트가 이 이름을 읽는다 — 그래서 규칙 이름은 계약이다(바꾸면 권고 항목이 조용히 안 걸린다). 규칙 하나 =
+의존성 좌표 glob(``deps``) · import 접두어(``imports``, 패키지 경계에서만 일치) · JSP · 설정 파일 ·
+dependencyManagement(``managed``)
+· 부모(``parents``). 근거 문자열 형식은 ``pom:`` / ``pom-managed:`` / ``pom-parent:`` /
+``import:`` / ``file:``. 규칙을 더할 때는 advisories.yml 의 ``library`` 와 이름을 맞춘다.
+
+Table-driven library detection → `LibraryUsage` list.
 
 The library *names* are a contract (planner, triage handlers, notes selection and KB tags rely on them):
 lombok, mapstruct, querydsl, spring-security, spring-data-jpa, spring-data-redis, spring-kafka, spring-batch,
@@ -25,6 +34,8 @@ maven-jaxb2-plugin, querydsl-maven-plugin), legacy-encoding (evidence = detected
 
 Evidence strings: `pom:<g>:<a>[:<v>]`, `pom-managed:<g>:<a>[:<v>]` (dependencyManagement entry, rules with
 `managed`), `pom-parent:<g>:<a>[:<v>]` (parent coordinates, rules with `parents`), `import:<prefix>`, `file:<what>`.
+
+
 """
 from __future__ import annotations
 
@@ -43,6 +54,7 @@ _SC = "org.springframework.cloud"
 
 @dataclass(frozen=True)
 class LibraryRule:
+    """라이브러리 탐지 규칙 하나: 이름(계약)과 근거로 셀 의존성·import·JSP·설정 파일·관리 의존성·부모 패턴."""
     name: str
     deps: tuple[str, ...] = ()        # "group:artifact-glob" (fnmatch on both parts)
     imports: tuple[str, ...] = ()     # import prefixes (matched on segment boundary)
@@ -52,6 +64,8 @@ class LibraryRule:
     parents: tuple[str, ...] = ()     # parent "group:artifact-glob" patterns
 
 
+# 규칙 표. 순서 = 결과 순서. import 접두어는 패키지 경계에서만
+# 맞으므로(``_import_matches``) 짧은 접두어도 안전하다
 LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("lombok", ("org.projectlombok:lombok",), ("lombok",)),
     LibraryRule("mapstruct", ("org.mapstruct:mapstruct", "org.mapstruct:mapstruct-*"), ("org.mapstruct",)),
@@ -125,6 +139,8 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     LibraryRule("mongodb", ("org.mongodb:*", "org.springframework.data:spring-data-mongodb",
                             f"{_B}:spring-boot-starter-data-mongodb*"),
                 ("com.mongodb", "org.springframework.data.mongodb")),
+    # 여기부터는 권고(advisory)용 규칙: Boot 4 BOM 이 더 이상
+    # 관리하지 않거나 EOL 인 라이브러리 — 안내만, 차단 없음
     # ---- library advisories (EOL / no longer managed by the Boot 4 BOM; knowledge/libraries/advisories.yml)
     LibraryRule("sleuth", (f"{_SC}:spring-cloud-starter-sleuth", f"{_SC}:spring-cloud-sleuth-*"),
                 ("org.springframework.cloud.sleuth",)),
@@ -157,6 +173,8 @@ LIBRARY_RULES: tuple[LibraryRule, ...] = (
     # stops compiling on javac 21 with "inference variable T has incompatible equality constraints" (advisory
     # jdk-generified-apis, round 9c). Import-only.
     LibraryRule("jdk-generified-apis", (), ("javax.swing.tree",)),
+    # iBATIS 2 는 코드로 고칠 수 없는 경우가 많다(legacy-ibatis 픽스처는 의도된 BLOCKED) — 감지해서
+    # 인수인계(Handover)에 올린다
     # iBATIS 2 (round 9; advisory ibatis2): Spring 4.0 removed org.springframework.orm.ibatis. Distinct from `mybatis`
     # (MyBatis 3 = org.mybatis:* artifacts, org.apache.ibatis.* imports); iBATIS 2 = com.ibatis.* imports and the
     # org.apache.ibatis:ibatis-* artifacts. Pom + imports only: Spring XML bean classes (SqlMapClientFactoryBean)
@@ -209,20 +227,28 @@ LIBRARY_NAMES: tuple[str, ...] = tuple(r.name for r in LIBRARY_RULES)
 
 
 def _dep_matches(pattern: str, g: GAV) -> bool:
+    """``"group:artifact-glob"`` 패턴이 좌표에 맞는지(양쪽 모두 대소문자 구분 fnmatch)."""
     pg, _, pa = pattern.partition(":")
     return fnmatch.fnmatchcase(g.group_id, pg) and fnmatch.fnmatchcase(g.artifact_id, pa)
 
 
 def _import_matches(prefix: str, imp: str) -> bool:
+    """import 가 접두어와 같거나 ``접두어.`` 로 시작하는지 —
+    ``collections`` 가 ``collections4`` 에 맞지 않게 하는 경계 규칙."""
     return imp == prefix or imp.startswith(prefix + ".")
 
 
 def _concrete(v: Optional[str]) -> Optional[str]:
+    """풀리지 않은 ``${...}`` 가 남은 버전은 버전으로 치지 않는다(None)."""
     return v if v and "${" not in v else None
 
 
 def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
                      imports: Optional[Counter] = None) -> list[LibraryUsage]:
+    """규칙마다 pom 의존성·dependencyManagement·부모·import·JSP·설정 파일에서 근거를 모아, 근거가 있는
+    규칙만 ``LibraryUsage`` 로 돌려준다(규칙 순서). 버전은 처음 맞은 의존성의 구체적 버전, 없으면 관리
+    의존성의 것. ``imports`` 를 주면 ``scan`` 대신 그 import 집계를 쓴다. ``scan`` 없이 부르면(계획의 MSA
+    서비스별 판정) pom 근거만 본다. 재구성 뒤 권고 검증(``advisory.verify``)도 다시 부른다."""
     poms = list(poms)
     deps = [d for p in poms for d in p.dependencies]
     managed = [d for p in poms for d in p.dependency_management]
@@ -242,6 +268,7 @@ def detect_libraries(poms: Iterable[PomInfo], scan: Optional[ScanResult] = None,
                         evidence.append(ev)
                     if version is None:
                         version = _concrete(d.version)
+        # 의존성에 버전이 없으면(부모 / BOM 이 관리) dependencyManagement 에 적힌 버전을 쓴다
         if evidence and version is None:
             for pattern in rule.deps:
                 for d in managed:
