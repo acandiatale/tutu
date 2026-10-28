@@ -1728,6 +1728,8 @@ Docs: `docs/v2/KB-AND-FLOW.md` review call limit 2 → 3 (A3).
   ` | target: …` tail from `cfg.target` because the loop builds the summary without `cfg`; `LLMRole` includes
   `verify_guide` (plugin adapters receive it as is; `docs/ADAPTERS.md` lists it with `structure_review`).
 - Orchestrator (A23): the review's LLM calls sit on the first fixed critical issue's try; the others carry 0 and a note.
+- A4 (user: "C로 가자"): edit applier shape `fn(ws, edits, *, cfg, errors=None)`; `fixloop.call_edit_applier` passes
+  `errors` only when the signature takes it (`_accepted`, A22); docs/ADAPTERS.md "Edit applier (tier 2b)".
 - Still the old shape: `fixloop.py` `try_notes` / `verify_guide` TypeError-retry (A22 fixed `_Guarded` only); the
   `examples/adapters/company_gateway_adapter.py` models table has no `verify_guide` row.
 

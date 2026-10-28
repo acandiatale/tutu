@@ -84,11 +84,11 @@ pom 합성) 시절 설명인 곳이다.
 | A1 | 고친다 | `analyze/pom_parser.py` (`pom_encoding` / `xml_codec` / `xml_without_declaration`, `read_pom_text`), `edges.py`, `source_scanner.py`, `webxml.py` 가 같은 헬퍼를 쓴다. 실제로는 `x-windows-949` 선언이면 `LookupError` 로 분석 전체가 죽던 문제도 포함. 같은 약점이 있던 `restructure/pom_editor.py` 도 같은 방식으로 고침(선언은 그대로 두고 cp949 로 저장). |
 | A2 | 이대로 간다 | 변경 없음(판정 줄은 상위 메이저 중 가장 높은 것). |
 | A3 | 3회로 맞춘다 | 문서(`docs/v2/KB-AND-FLOW.md`)를 코드대로 3회(검토 1 + 형식 재시도 1 + 적용 실패 재시도 1)로. 코드 변경 없음. |
-| A4 | 설명 후 결정 | 변경 없음. 아래 "A4 가 무엇인가" 참고. |
+| A4 | (c) 둘 다 ("C로 가자") | 문서화된 모양을 `fn(ws, edits, *, cfg, errors=None)` 로 적고(`docs/ADAPTERS.md`), 루프는 `fixloop.call_edit_applier` 가 시그니처를 보고 `errors` 를 받을 때만 넘긴다. 아래 "A4 가 무엇인가" 참고. |
 | A5 | JSP 도 javax → jakarta | `restructure/jsp_jakarta.py` + `layout.jsp_jakarta_rename`(기본 true): 모든 모드에서 재구성 끝에 JSP / JSPF / JSPX / tag 파일의 코드 영역(page import, useBean, 스크립틀릿)만 분석기의 표대로 바꾼다. 문자열·주석·taglib URI 는 그대로. 파일은 제 인코딩(UTF-8 / cp949)으로 다시 쓴다. 보고서 "What we changed" 에 한 줄, 끄면 Handover 항목. |
 | A6–A26 | 버그는 고친다 | A6, A7, A8(실행될 행만 skipped — 성공한 행은 그대로), A9(상태의 LLM 호출·비용은 모든 시도 합산), A10, A11, A12, A13, A14, A15, A16, A17, A18, A19(`cases pin` 은 아는 id 또는 `--create`), A20, A21, A22, A23, A24, A25, A26 처리. §B(죽은 코드·안 읽는 설정)는 손대지 않음. |
 
-### A4 가 무엇인가 (결정 대기)
+### A4 가 무엇인가 (결정: (c))
 
 수정 루프는 LLM 이 돌려준 `<edits>` 를 파일에 적용할 때 **edit applier** 라는 함수를 부른다. 기본 구현은 `sbmig.script.edits.apply_edits` 이고,
 회사가 자기 것으로 바꿔 끼울 수 있는 플러그인 자리다(`docs/INTERFACES.md`·`orchestrator.py` 의 문서화된 모양: `fn(ws, edits, *, cfg)`).

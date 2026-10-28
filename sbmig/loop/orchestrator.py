@@ -210,7 +210,7 @@ class Orchestrator:
         v2 collaborators: `script_runner` (ScriptRunnerLike; None = `sbmig.script.ScriptRunner(cfg)` on first use)
         and `reviewer` (a StructureReviewerLike object, or a factory `fn(cfg, llm, runner, kb)`; None =
         `sbmig.review.StructureReviewer`). v2.1: `error_list` = `fn(ws, cfg, project)` → the run's error list (None =
-        `sbmig.errors.entries.ErrorList.for_workspace`), `edit_applier` = `fn(ws, edits, *, cfg) -> ScriptRunResult`
+        `sbmig.errors.entries.ErrorList.for_workspace`), `edit_applier` = `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult` (`errors` only when the signature takes it)
         for the LLM's direct edits (None = `sbmig.script.apply_edits`)."""
         self.cfg = cfg
         self.ws = ws

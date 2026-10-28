@@ -220,3 +220,12 @@ print(report.success, exit_code(report))         # 0 ok / 2 incomplete / 3 abort
 | Run reports `llm-config-error` | The gateway answered the same HTTP 400 body to two different prompts (model name, a payload field). The follow-up quotes the body; fix the setting in `.env` / `llm.*` and rerun. |
 | Gateway gets `role: other` | The call site predates role tagging. Route on `metadata` instead, or default to your general model. |
 | Fixer plugin is never called | Every cluster was resolved by handlers, recipes or KB patch replay first. That is expected. Look for `fixer` / `llm_fix` events in `journal.jsonl`. |
+
+## Edit applier (tier 2b, v2.1h / A4)
+
+The fix loop applies the LLM's `<edits>` through one function: `sbmig.script.apply_edits` by default, or the
+`edit_applier` passed to `Orchestrator` / `BuildFixLoop`. Its shape is `fn(ws, edits, *, cfg, errors=None) ->
+ScriptRunResult`. `errors` (the case's `BuildError`s, for context) is optional: the loop inspects the signature
+(`sbmig.loop.fixloop.call_edit_applier`) and passes it only when the function takes `errors` or `**kwargs`, so an
+applier written as `fn(ws, edits, *, cfg)` keeps working. A callable whose signature cannot be inspected receives it.
+

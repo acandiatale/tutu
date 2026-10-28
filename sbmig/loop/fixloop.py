@@ -387,6 +387,19 @@ def _same_cluster(cluster: ErrorCluster, attempts: list[FixAttempt],
     return same_cluster_attempts(cluster, attempts, canon)
 
 
+def call_edit_applier(fn: Callable[..., Any], ws: Any, edits: list, cfg: Any, errors: list) -> Any:
+    """플러그인 edit applier 호출(A4, 2026-10-28): 문서화된 모양은 ``fn(ws, edits, *, cfg, errors=None)`` 이고,
+    ``errors``(이번 케이스의 오류 목록)는 시그니처가 받을 때만 넘긴다(``**kwargs`` 면 넘김). 시그니처를 볼 수 없는
+    callable 이면 예전처럼 넘긴다. 문서대로 ``errors`` 없이 만든 회사 플러그인도 TypeError 없이 돈다.
+
+    Call a plugin edit applier `fn(ws, edits, *, cfg, errors=None)`: `errors` (the case's errors) only when the
+    signature takes it (or `**kwargs`); a callable whose signature does not inspect gets it as before (A4)."""
+    from sbmig.loop.entries import _accepted
+    opt = _accepted(fn, (ws, edits), {"cfg": cfg}, {"errors": errors})
+    kw = {"errors": errors} if opt is None else opt
+    return fn(ws, edits, cfg=cfg, **kw)
+
+
 class BuildFixLoop:
     """v2.1 수정 루프. 오케스트레이터가 실행마다 하나 만들고(``budget`` / ``blocked`` / ``errors`` 공유),
     최종 빌드 실패 시 ``run`` 을 부른다. 케이스의 다음 사다리 단계는 트리아지(``sbmig.triage.scripts``)가,
@@ -394,7 +407,8 @@ class BuildFixLoop:
     없으면 LLM 스크립트는 저장 없이 v0 로 돌고 재사용은 없다.
 
     v2.1 fix loop. `script_runner` = ScriptRunnerLike (the orchestrator passes a lazy `sbmig.script.ScriptRunner
-    (cfg)`); `edit_applier` = `fn(ws, edits, *, cfg) -> ScriptRunResult` (None = `sbmig.script.apply_edits`); the KB's
+    (cfg)`); `edit_applier` = `fn(ws, edits, *, cfg, errors=None) -> ScriptRunResult` (None = `sbmig.script.apply_edits`;
+    `errors` = the case's errors, passed only when the signature takes it — A4, 2026-10-28); the KB's
     case store is `kb.cases` (None = no KB: LLM scripts run unstored as v0, nothing is reused); `errors` = the run's
     error list (`RunErrors`, set by the orchestrator; inactive by default)."""
 
@@ -2067,7 +2081,7 @@ class BuildFixLoop:
         with self._busy_with(f"edits for {att.script_case_id}"):
             try:
                 if self.edit_applier is not None:
-                    res = self.edit_applier(self.ws, edits, cfg=self.cfg, errors=list(c.errors))
+                    res = call_edit_applier(self.edit_applier, self.ws, edits, self.cfg, list(c.errors))
                 else:                              # its own runner (no script.max_code_chars cap for a `write`)
                     from sbmig.script import apply_edits
                     res = apply_edits(self.ws, edits, cfg=self.cfg, errors=list(c.errors))
