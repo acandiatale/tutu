@@ -67,6 +67,21 @@ def test_cases_pin_unpin(seeded):
     assert seeded.cases.pin_of(CASE) == "block:handled by the owners"
     assert run(seeded, "cases", "pin", CASE, "script:1")[0] == 1
     assert run(seeded, "cases", "unpin", CASE)[0] == 0 and seeded.cases.pin_of(CASE) == ""
+    assert run(seeded, "cases", "pin", CASE[:6], "block")[1].strip().splitlines()[-1] == f"case {CASE} pinned: block"
+
+
+def test_cases_pin_refuses_an_unknown_case_unless_create(seeded):
+    """v2.1h (A19): a typo never makes a new pinned case folder; `--create` pins a case the KB has not seen yet."""
+    typo = "0123456789"
+    code, out = run(seeded, "cases", "pin", typo, "block:typo")
+    assert code == 1 and f"unknown case {typo}; use --create to pin a case the KB has not seen" in out
+    assert not (seeded.cases.cases_dir / typo).exists() and typo not in seeded.cases.case_ids()
+    assert run(seeded, "cases", "pin", "zz", "block")[0] == 1                      # too short for a prefix
+    code, out = run(seeded, "cases", "pin", typo, "block:pre-pinned", "--create")
+    assert code == 0 and f"case {typo} pinned: block:pre-pinned" in out and seeded.cases.pin_of(typo) == "block:pre-pinned"
+    code, out = run(seeded, "cases", "pin", "abc", "block", "--create")           # not a case id: no folder
+    assert code == 1 and "abc is no case id" in out and not (seeded.cases.cases_dir / "abc").exists()
+    assert run(seeded, "cases", "pin", "../../evil", "block", "--create")[0] == 1
 
 
 def test_stats_validate_reindex_export_import(seeded, tmp_path):
@@ -76,7 +91,9 @@ def test_stats_validate_reindex_export_import(seeded, tmp_path):
     assert "errors" in run(seeded, "stats")[1]
     code, out = run(seeded, "validate")
     assert code == 0 and out.startswith("OK: 2 error entr(ies), 1 case(s)")
-    assert "1 case(s), 1 script version(s)" in run(seeded, "reindex")[1]
+    out = run(seeded, "reindex")[1]
+    assert "1 case(s), 1 script version(s)" in out
+    assert "entr(ies) given as-is/to-be hunks, 0 build-resolved entr(ies) given a probable fixer — " in out   # A15
     zp = tmp_path / "kb.zip"
     assert run(seeded, "export", str(zp))[0] == 0 and zp.is_file()
     code, out = run(seeded, "import", str(zp))

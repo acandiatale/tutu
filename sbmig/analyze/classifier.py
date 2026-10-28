@@ -216,13 +216,18 @@ def build_services(roots: list[PomInfo], poms: list[PomInfo], scan: ScanResult) 
             java_version=r.java_version or next((p.java_version for p in sub_poms if p.java_version), None),
         ))
     # disambiguate duplicate names
-    seen: dict[str, int] = {}
+    # 같은 이름의 두 번째부터 ``-2``, ``-3`` … 을 붙이되, 원래부터 그 이름인 서비스(예: 디렉토리 ``a-2``)나 앞에서 만든
+    # 이름과 겹치지 않을 때까지 번호를 올린다(A25 — 예전에는 ``a``, ``a``, ``a-2`` 가 ``a-2`` 두 개가 됐다). 순서는 그대로
+    taken = {s.name for s in services}
+    seen: set[str] = set()
     for s in services:
         if s.name in seen:
-            seen[s.name] += 1
-            s.name = f"{s.name}-{seen[s.name]}"
-        else:
-            seen[s.name] = 1
+            n = 2
+            while f"{s.name}-{n}" in taken:
+                n += 1
+            s.name = f"{s.name}-{n}"
+            taken.add(s.name)
+        seen.add(s.name)
     return services
 
 

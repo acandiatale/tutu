@@ -19,7 +19,7 @@ import typer
 from pydantic import ValidationError
 
 from sbmig.core.config import Config, load_config
-from sbmig.errors.cases import CaseStore, entry_lines, run_line, scripts_text
+from sbmig.errors.cases import CaseStore, entry_lines, run_line, scripts_text, valid_case_id
 from sbmig.errors.entries import fmt_entry, tries_text
 
 from .store import FileKnowledgeBase
@@ -89,8 +89,10 @@ def reindex_cmd(ctx: typer.Context) -> None:
     n = kb.reindex()
     st = kb.stats()
     done = getattr(kb.cases, "last_reindex", None) or {}
+    # 변경 조각 수와 해결한 시도 수는 따로 센 숫자(A15) — INFO 줄과 같은 말로 둘 다 보인다
     typer.echo(f"{n} case(s), {st['script_versions']} script version(s); {done.get('runs', 0)} script run "
-               f"record(s) rebuilt, {done.get('hunks', 0)} entr(ies) given as-is/to-be hunks — {kb.cases.md_path}")
+               f"record(s) rebuilt, {done.get('hunks', 0)} entr(ies) given as-is/to-be hunks, "
+               f"{done.get('resolved_by', 0)} build-resolved entr(ies) given a probable fixer — {kb.cases.md_path}")
 
 
 @kb_cli.command("stats")
@@ -295,15 +297,41 @@ def cases_activate_cmd(ctx: typer.Context, key: str = typer.Argument(..., metava
     _status(ctx, key, version, False)
 
 
+def _pin_target(store: CaseStore, key: str, create: bool) -> str:
+    """``cases pin`` 이 고정할 케이스 ID: 아는 케이스(정확한 ID 또는 하나로 정해지는 앞부분), ``--create`` 면
+    KB 가 아직 못 본 10자리 ID 도 그대로. 모르는 ID 는 exit 1 — 오타가 새 케이스 폴더를 만들지 않게(A19).
+
+    The case ``cases pin`` pins: a known case (exact id or a unique prefix of 4+ characters); with ``create`` a
+    10-character id the KB has not seen yet (set_pin makes its case.json). Anything else exits 1."""
+    ids = store.case_ids()
+    if key in ids:
+        return key
+    hits = [c for c in ids if c.startswith(key)] if len(key) >= 4 else []
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        _fail(f"{key} matches {len(hits)} cases: " + ", ".join(hits[:10]))
+    if not create:
+        _fail(f"unknown case {key}; use --create to pin a case the KB has not seen")
+    # 미리 고정: 케이스 ID 는 L2 서명 sha1 의 앞 10자리 — 그 모양이 아니면 폴더를 만들지 않는다
+    if len(key) != 10 or not valid_case_id(key):
+        _fail(f"{key} is no case id (10 characters, as `sbmig kb cases list` shows them)")
+    return key
+
+
 @cases_cli.command("pin")
 def cases_pin_cmd(ctx: typer.Context, key: str = typer.Argument(..., metavar="CASE_ID"),
-                  spec: str = typer.Argument(..., metavar="block[:REASON]")) -> None:
+                  spec: str = typer.Argument(..., metavar="block[:REASON]"),
+                  create: bool = typer.Option(False, "--create",
+                                              help="Pin a case id the KB has not seen yet (makes its case.json).")
+                  ) -> None:
     """케이스를 `block` 으로 고정한다(스크립트·LLM 시도 없음, 인수인계 섹션이 이유를 보여 줌).
 
-    Pin a case to `block` (never tried: no script, no LLM; Handover names the reason)."""
+    Pin a case to `block` (never tried: no script, no LLM; Handover names the reason). An unknown id is refused
+    unless --create is given."""
     store = _kb(ctx).cases
-    # 아직 폴더가 없는 케이스도 미리 고정할 수 있게 10자리 ID 는 그대로 쓴다(set_pin 이 case.json 을 만든다)
-    cid = key if key in store.case_ids() or len(key) == 10 else _case_id(store, key)
+    # 모르는 ID 는 거부한다; 아직 폴더가 없는 케이스를 미리 고정할 때만 --create(set_pin 이 case.json 을 만든다)
+    cid = _pin_target(store, key, create)
     try:
         store.set_pin(cid, spec)
     except ValueError as e:

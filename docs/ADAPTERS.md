@@ -150,8 +150,15 @@ Then `pip install` your package into the sbmig environment and set `llm.provider
 | `fix` | `LLMFixer` (build-fix loop) | `llm.model` |
 | `fix_escalation` | `LLMFixer` after a stall (`ctx.use_escalation_model`) | `llm.escalation_model` (else `llm.model`) |
 | `plan_advisor` | plan advisor (`plan.advisor: llm`) | `llm.recipe_model` (else `llm.model`) |
-| `recipe_candidate` | KB harvest: recipe candidate generation | `llm.recipe_model` (else `llm.model`) |
-| `other` | anything else | as passed |
+| `structure_review` | structure review (`restructure.review`, `sbmig.review`): the review, at most one format retry and at most one apply-failure retry — up to 3 calls per run | `llm.model` |
+| `verify_guide` | `LLMFixer.verify_guide` (v2.1d): ONE call after an applied fix raised a dependency's major version / replaced a library without a `<verify>` in its answer — the 운영자 확인 사항; `metadata["purpose"] = "verify_guide"` (+ `case_id`) | `llm.model` (`llm.escalation_model` when the try used it) |
+| `other` | anything else (`sbmig llm-probe`, …) | as passed |
+
+v2.1h (A21): `verify_guide` is a member of `LLMRole`, so plugin adapters receive `request.role == "verify_guide"`
+(before, it arrived as `other` with `metadata["role_detail"] = "verify_guide"`). `recipe_candidate` (v1 KB harvest) is
+not sent in v2. Replay files (`provider: fake`, `base_url: replay:<dir>`) answer this call with an entry that has
+`replay_role: verify_guide` or no `replay_role` at all; a `replay_role: fix` entry never answers it (it answers `fix`
+and `fix_escalation` only), so recorded fix answers are not mistaken for an operator guide.
 
 Unknown roles become `other`, with the original value kept in `metadata["role_detail"]`. Fixer calls carry
 `metadata = {"run_id", "project", "phase", "iteration", "cluster_id"}` (`run_id` / `project` since round 10;

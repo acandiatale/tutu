@@ -144,6 +144,13 @@ class LayoutConfig(BaseModel):
     # 웹 루트 안의 <resource> 디렉토리 파일은 comp classpath 에 남기면서 front 의 static 에도 웹 경로 그대로
     # 복사한다(as-is WAR 가 그 경로로 서빙했으므로).
     front_copy_resource_dirs: bool = True
+    # v2.1h (2026-10-28, user: "JSP 도 javax → jakarta 로 변경해 줘야 할 것 같아"): OpenRewrite never parses JSPs, so the
+    # restructure renames the javax EE names of the analyzer's table (sbmig/analyze/jakarta_packages.yml) inside the
+    # code regions of every JSP / JSPF / JSPX / tag file (page imports, useBean class / type, scriptlets; Java
+    # literals and comments untouched) in every mode, after the files reached their final place.
+    # False = the pre-10-28 behaviour (Handover follow-up only).
+    # JSP 의 javax EE 이름을 jakarta 로 바꾼다(레시피가 JSP 를 못 보므로 재구성이 직접). 끄면 인수인계 항목만.
+    jsp_jakarta_rename: bool = True
     # Boot as-is 프로젝트: in-place = 디렉토리 유지·pom 만
     # 수정(회사 규칙), layout = 다른 경우처럼 모듈로 나눔.
     boot_as_is: Literal["in-place", "layout"] = "in-place"   # Spring Boot as-is: keep directories (poms only) | split
@@ -393,7 +400,7 @@ class LLMConfig(BaseModel):
     `provider` is one of BUILTIN_LLM_PROVIDERS, `plugin` (→ `plugin` = "pkg.module:factory"), or the name of an
     adapter registered under the `sbmig.llm_adapters` entry-point group (in-house gateway / agent platform)."""
     # 클래스 기본값은 openai_compatible 이지만 config/default.yml 이 company 로 덮어쓴다.
-    provider: str = "openai_compatible"
+    provider: str = "company"                            # the class default now matches config/default.yml (2026-10-28)
     plugin: Optional[str] = None             # "pkg.module:attr" — attr is an LLMAdapterLike/LLMClientLike class or a
                                              # factory `fn(options: dict, cfg: Config) -> adapter | client`
     plugin_options: dict[str, Any] = Field(default_factory=dict)   # passed verbatim to the plugin factory

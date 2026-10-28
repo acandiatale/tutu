@@ -2,10 +2,11 @@
 흐름상 위치: app.py 라우트 → :meth:`RunManager.start_file` (검사·설정·워크스페이스·오케스트레이터를 동기로
 만들어 잘못된 요청은 400) → 작업 스레드 ``_worker`` → ``stream_graph`` 노드마다 기록 →
 :meth:`RunManager.events` 가 그 기록과 ``journal.jsonl`` / ``sbmig.log`` 의 새 줄을 SSE 이벤트로 바꾼다.
-지켜야 할 것: (1) 이관은 한 번에 하나 — KB 파일을 모두 함께 쓰므로 ``_run_lock`` 에서 줄을 서고, 기다리는
-실행은 ``queued``. (2) 멈춤은 그래프 노드 사이에서만 — LangGraph 는 진행 중인 동기 노드(Maven, OpenRewrite,
-LLM 호출)를 끊지 못한다. (3) 실행 로그는 스레드 필터로 나눈다 — 각 ``sbmig.log`` 에는 그 실행 스레드의 줄만.
-(4) 메모리에는 끝난 실행을 ``max_finished_runs`` 개만 두고, 나머지는 실행 폴더의 파일로 답한다.
+지켜야 할 것: (1) 이관은 한 번에 하나 — KB 파일을 모두 함께 쓰므로 ``_turns`` (올린 순서대로의 FIFO
+줄)에서 줄을 서고, 기다리는 실행은 ``queued``. (2) 멈춤은 그래프 노드 사이에서만 — LangGraph 는 진행 중인
+동기 노드(Maven, OpenRewrite, LLM 호출)를 끊지 못한다. (3) 실행 로그는 스레드 필터로 나눈다 — 각
+``sbmig.log`` 에는 그 실행 스레드의 줄만. (4) 메모리에는 끝난 실행을 ``max_finished_runs`` 개만 두고,
+나머지는 실행 폴더의 파일로 답한다.
 
 In-process run manager for the web app: one worker thread per migration, events for the SSE stream.
 
@@ -32,8 +33,11 @@ after the current node and is then finalized as aborted ("stopped by user"; exit
 finishes normally. With the inline fallback engine there are no intermediate updates and the flag has no effect.
 
 One migration at a time: the knowledge base under `kb/` is file-based and shared by every run (CLAUDE.md: one agent
-migrates projects strictly sequentially), so worker threads queue on `RunManager._run_lock`; a run waiting for its
-turn reports state ``queued``.
+migrates projects strictly sequentially), so worker threads queue on `RunManager._turns`; a run waiting for
+its turn reports state ``queued``. The queue is FIFO in upload order (2026-10-28, A10): a run takes its place
+in the line when `start_file` accepts it (before its thread starts) and starts when it is first in line — a
+plain `threading.Lock` (the earlier `_run_lock`) does not hand itself over in arrival order, so with two or
+more uploads waiting the later one could start first.
 
 Memory (round 9): `runs` keeps at most `max_finished_runs` finished runs; when a worker finishes, the oldest finished
 ones are dropped from memory (running / queued runs never are). An evicted run is still answered from its run
@@ -50,7 +54,9 @@ import shutil
 import threading
 import time
 import uuid
+from collections import deque
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -105,6 +111,50 @@ class Run:
     started: float = field(default_factory=time.time)
 
 
+class _FifoTurns:
+    """이관 차례 줄(FIFO): 한 번에 하나, 올린 순서대로. ``join`` 으로 줄 끝에 서고(업로드를 받을 때, 작업
+    스레드 시작 전), ``turn`` 이 줄 맨 앞이 될 때까지 기다렸다가 끝나면(예외여도) 줄에서 빠지며 다음을 깨운다.
+    ``threading.Lock`` 은 기다리는 스레드 중 누구에게 넘어갈지 정하지 않아 순서가 뒤바뀔 수 있었다(A10).
+
+    One migration at a time, in upload order: `join` takes a place at the end of the line (when the upload
+    is accepted, before the worker thread starts); `turn(key)` waits until `key` is first, and leaving it
+    (even by an exception) removes `key` and wakes the next one. A plain `threading.Lock` does not grant
+    waiters in order."""
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._line: deque[str] = deque()
+
+    def join(self, key: str) -> None:
+        """줄 끝에 선다(같은 키가 이미 있으면 그대로)."""
+        with self._cond:
+            if key not in self._line:
+                self._line.append(key)
+
+    def leave(self, key: str) -> None:
+        """줄에서 빠지고(어디에 있든) 기다리는 스레드를 깨운다. 없는 키면 아무 일도 없다."""
+        with self._cond:
+            try:
+                self._line.remove(key)
+            except ValueError:
+                pass
+            self._cond.notify_all()
+
+    @contextmanager
+    def turn(self, key: str) -> Iterator[None]:
+        """``key`` 차례가 올 때까지 기다린 뒤 블록을 돌리고, 끝나면 줄에서 뺀다. ``join`` 없이 불렀으면 지금
+        줄 끝에 선다(늦게 온 만큼 뒤에서 기다린다)."""
+        with self._cond:
+            if key not in self._line:
+                self._line.append(key)
+            while self._line[0] != key:       # `key` stays in line until this block leaves: never empty
+                self._cond.wait()
+        try:
+            yield
+        finally:
+            self.leave(key)
+
+
 _LOG_TS_RE = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:[,.](\d{3}))?\b")
 
 
@@ -128,7 +178,7 @@ def _event_time(kind: str, data: Any) -> float | None:
 
 class RunManager:
     """이관을 작업 스레드로 시작하고, 상태·이벤트 질문에 메모리 + 실행 폴더로 답한다.
-    ``_lock`` 은 ``runs`` dict 를, ``_run_lock`` 은 이관 자체를 직렬화한다(파일 KB 공유).
+    ``_lock`` 은 ``runs`` dict 를, ``_turns`` 는 이관 자체를 올린 순서대로 직렬화한다(파일 KB 공유).
 
     Starts migrations in worker threads and answers status / event questions from memory + the run directory."""
 
@@ -139,7 +189,7 @@ class RunManager:
         self.max_finished_runs = max(0, int(max_finished_runs))
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
-        self._run_lock = threading.Lock()      # serializes the migrations (shared file-based KB)
+        self._turns = _FifoTurns()             # one migration at a time, in upload order (shared file KB)
         self.closing = threading.Event()       # server shutdown: open SSE streams end, running runs are asked to stop
 
     # ---- paths
@@ -216,22 +266,33 @@ class RunManager:
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-run-{run_id}", daemon=True)
         with self._lock:
             self.runs[run_id] = run
-        run.thread.start()
+            # 줄은 업로드를 받은 지금 선다 — 스레드가 실제로 뜨는 순서는 정해져 있지 않으므로
+            # 작업 스레드 안에서 서면 순서가 다시 뒤바뀔 수 있다
+            self._turns.join(run_id)           # the place in line is taken here, in upload order (A10)
+        try:
+            run.thread.start()
+        except RuntimeError:                   # no thread started: leave the line, or every later run waits
+            self._turns.leave(run_id)
+            with self._lock:
+                self.runs.pop(run_id, None)
+            raise
         log.info("run %s started: %s configs=%s stop_after=%s llm_provider=%s", run_id, zip_path.name,
                  ",".join(configs) or "-", stop_after or "-", llm_provider or "-")
         return run_id
 
     def _worker(self, run: Run) -> None:
-        """작업 스레드 본체. ``_run_lock`` 을 잡을 때까지 ``queued``, 잡으면 ``active`` → 이 스레드 전용
-        ``sbmig.log`` 를 붙이고 이관을 돌린 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 무슨 일이 있어도 finally 에서
-        로그를 떼고 ``finished`` 이벤트·web-status.json 을 쓰고 ``done`` 을 세워 기다리는 SSE 를 깨운다."""
-        from sbmig.cli import attach_file_log, run_exit_code
-
+        """작업 스레드 본체. ``_turns`` 줄 맨 앞이 될 때까지 ``queued``, 차례가 오면 ``active`` → 이
+        스레드 전용 ``sbmig.log`` 를 붙이고 이관을 돌린 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 무슨 일이
+        있어도 finally 에서 로그를 떼고 ``finished`` 이벤트·web-status.json 을 쓰고 ``done`` 을 세워
+        기다리는 SSE 를 깨운다."""
         log_path: Path | None = None
         try:
-            # 한 번에 하나: 파일 KB 를 모든 실행이 함께 쓴다. threading.Lock 은 순서를 보장하지 않으므로 여러
-            # 실행이 기다리면 올린 순서대로 시작한다는 보장은 없다
-            with self._run_lock:                       # one migration at a time (see the module docstring)
+            # import 도 try 안에서: 여기서 죽어도 finally 가 줄에서 빼야 뒤의 실행이 영원히 기다리지 않는다
+            from sbmig.cli import attach_file_log, run_exit_code
+
+            # 한 번에 하나: 파일 KB 를 모든 실행이 함께 쓴다. 차례는 올린 순서(FIFO 줄, start_file 에서 섬) —
+            # 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
+            with self._turns.turn(run.run_id):         # one migration at a time, in upload order (docstring)
                 run.active.set()
                 # thread_id: 이 스레드(와 그 컨텍스트를 물려받은 LangGraph 실행기 스레드)의 로그만 이 파일로 —
                 # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
@@ -248,6 +309,7 @@ class RunManager:
             run.exit_code = EXIT_ABORTED
             self._push(run, "error", {"message": run.error})
         finally:
+            self._turns.leave(run.run_id)      # already left after a turn; this covers a failure before it
             run.active.set()
             log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
             if log_path is not None:

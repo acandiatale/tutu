@@ -1,7 +1,8 @@
 """v2.1 수정 사다리 — 이 실행에서 케이스가 다음에 받을 단계: 재사용 → 보강 → 신규 → (한도) 차단.
 흐름상 위치: ``DecisionEngine.decide`` 가 ``plan_script_step`` 을 불러 SCRIPT / BLOCKED 를 정하고, 수정 루프가
 돌려받은 ``ScriptStep`` 을 실행한다(재사용 = 저장된 스크립트 실행, LLM 0회). 한도: 케이스당 한 실행에서 저장본
-``script.reuse_versions``(1) + LLM ``script.max_augments_per_case``(3) — "케이스당 저장본 1 + LLM 3회". 다
+``script.reuse_versions``(1) + LLM ``script.max_augments_per_case``(3) — "케이스당 저장본 1 + LLM 3회". 2 이상이면
+이번 실행에서 실패한 저장본 다음 버전(proven 최신 → unverified 최신 순)을 LLM 전에 더 돌린다(A14). 다
 쓰면 ``repeated_failure`` 로 차단되어 인수인계로 간다. ``kb_line`` 은 KB 탐색 "결과" 로그 줄이다: 처음 보는
 프로젝트가 KB 적중처럼 읽히면 안 된다(회사 피드백 7). KB 저장소
 문제는 로그만 남기고 "저장본 없음" 으로 다룬다 — 루프를 멈추지 않는다.
@@ -12,7 +13,11 @@ Per case and run, in this order:
 
 1. **KB search → stored script** (`reuse`, source `kb-script`) — the store's best version (`kb.cases.best(case_id)`:
    proven newest, else unverified newest) that did not run in this run yet: its code runs again, no LLM call. At most
-   `script.reuse_versions` stored versions per case and run (default 1).
+   `script.reuse_versions` stored versions per case and run (default 1). With more than 1, a stored version that
+   FAILED here (every reuse of this run failed: no_change / regressed / reverted / apply_failed / inconclusive) is
+   followed by the next one in the same order — proven newest first, then unverified newest; retired never
+   (`stored_next`, over `find(case_id).scripts` + `code(case_id, v)`). A reuse that helped (improved / partial) goes
+   to the LLM augment instead: extending what worked beats starting over from an older version.
 2. **LLM augment** (`augment`) — there is a script to extend: this run's last try of the case that had code (a stored
    version that failed here, or an LLM script), else — reuse switched off — the stored version. The prompt gets the
    script and what it did; the answer is a new version (source `llm-augment`) or, when the LLM says the fix cannot be
@@ -43,6 +48,8 @@ from sbmig.core.models import DecisionKind, ErrorCluster, FixAttempt
 log = logging.getLogger("sbmig.triage")
 
 LLM_MODES = ("new", "augment")              # script modes that ask the LLM (reuse runs a stored version)
+# 실패로 보는 채점 결과(차단 정책의 LLM 실패 횟수, 다음 저장본으로 넘어갈지) — decide.py 도 이것을 쓴다
+FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "inconclusive"})
 
 
 @dataclass
@@ -117,6 +124,53 @@ def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
     return meta, code
 
 
+def _stored_scripts(store: Any, case_id: str) -> list[Any]:
+    """케이스의 저장된 스크립트 메타 목록: ``find(case_id).scripts``(CaseStore · 루프의 CaseScripts 어댑터
+    공통), 없으면 ``scripts(case_id)``. 못 읽으면 [].
+
+    The case's stored CaseScripts: `find(case_id).scripts` (CaseStore and the loop's CaseScripts adapter alike),
+    else `scripts(case_id)`; [] when the store cannot say (logged)."""
+    try:
+        find = getattr(store, "find", None)
+        if callable(find):
+            info = find(case_id)
+            if info is not None:
+                return list(getattr(info, "scripts", None) or [])
+        fn = getattr(store, "scripts", None)
+        return list(fn(case_id) or []) if callable(fn) else []
+    except Exception as e:  # noqa: BLE001 - the KB never stops the loop
+        log.warning("kb.cases scripts of %s unavailable: %s: %s", case_id, type(e).__name__, e)
+        return []
+
+
+def stored_next(store: Any, case_id: str, skip: Iterable[int]) -> tuple[Any, str] | None:
+    """``skip`` (이번 실행에서 이미 돈 버전)을 뺀 다음 저장본 (CaseScript, 코드): ``best`` 와 같은 순서 —
+    proven 최신 → unverified 최신, retired·빈 코드는 건너뜀. 없으면 None(A14, ``script.reuse_versions`` > 1).
+
+    The next stored version not in `skip` (the versions this run already ran), in `best`'s order: proven newest,
+    then unverified newest; retired ones and versions without code never. None = nothing left (A14)."""
+    if store is None or not case_id:
+        return None
+    done = {int(v) for v in skip}
+    ranked = sorted((s for s in _stored_scripts(store, case_id)
+                     if getattr(s, "status", "") != "retired" and int(getattr(s, "version", 0) or 0) not in done),
+                    key=lambda s: (getattr(s, "status", "") == "proven", int(getattr(s, "version", 0) or 0)),
+                    reverse=True)
+    code_of = getattr(store, "code", None)
+    if not callable(code_of):
+        return None
+    for s in ranked:
+        try:
+            code = code_of(case_id, int(getattr(s, "version", 0) or 0))
+        except Exception as e:  # noqa: BLE001 - the KB never stops the loop
+            log.warning("kb.cases.code(%s, v%s) failed: %s: %s", case_id, getattr(s, "version", "?"),
+                        type(e).__name__, e)
+            continue
+        if (code or "").strip():
+            return s, str(code)
+    return None
+
+
 NOTHING_STORED = "저장된 스크립트 없음 (처음 보는 케이스)"
 
 
@@ -148,7 +202,8 @@ def kb_found(store: Any, case_id: str, best: Optional[tuple[Any, str]]) -> str:
 def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], store: Any, cfg: Any) -> ScriptStep:
     """케이스의 다음 단계를 정한다(모듈 docstring 의 순서). ``previous`` = 이 실행에서 같은 케이스에 대해
     채점된 시도들(pending 과 쉬는 중인 전송 실패는 루프가 이미
-    뺐다). 저장본은 이 실행에서 아직 안 돌린 버전만 재사용한다.
+    뺐다). 저장본은 이 실행에서 아직 안 돌린 버전만 재사용한다 — best 가 이미 실패했으면
+    ``script.reuse_versions`` 개까지 다음 저장본(``stored_next``).
 
     The case's next step (see the module doc). `previous` = this run's scored tries on the same case (the loop
     passes `_previous(cluster)`: no pending ones, no cooled-down transport failures)."""
@@ -167,6 +222,9 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     stored_text = kb_found(store, case_id, best)
     step.kb_found = stored_text
 
+    failed_here = [a for a in tried if a.script_mode == "reuse"]
+    stored_part = stored_text + (f" — 이번 실행에서 v{failed_here[-1].script_version} 실패" if failed_here else "")
+
     # 1. the stored script: a version not run in this run yet (no LLM call)
     if reuse_on and best is not None and stored_used < reuse_n:
         meta, code = best
@@ -178,9 +236,21 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
                         f"project(s), {getattr(meta, 'failures', 0)} failure(s)) — no LLM call")
             step.kb_line = f"KB 탐색: {stored_text} → 실행"
             return step
-
-    failed_here = [a for a in tried if a.script_mode == "reuse"]
-    stored_part = stored_text + (f" — 이번 실행에서 v{failed_here[-1].script_version} 실패" if failed_here else "")
+        # A14: best 가 이번 실행에서 실패했고 저장본을 더 돌려도 되면(reuse_versions > 1) 다음 저장본 — 도움이 된
+        # 재사용(improved / partial)이 있었으면 그것을 LLM 이 보강하는 편이 낫다
+        if reuse_n > 1 and failed_here and all(a.outcome in FAILED_OUTCOMES for a in failed_here):
+            nxt = stored_next(store, case_id, tried_versions)
+            if nxt is not None:
+                meta, code = nxt
+                v = int(getattr(meta, "version", 0) or 0)
+                step.mode, step.version, step.code, step.meta = "reuse", v, code, meta
+                step.why = (f"reuse: next stored script v{v} of case {case_id} ({getattr(meta, 'status', '?')}, "
+                            f"{getattr(meta, 'successes', 0)} success(es), {getattr(meta, 'failures', 0)} "
+                            f"failure(s)) after v{failed_here[-1].script_version} failed in this run "
+                            f"(stored version {stored_used + 1}/{reuse_n}) — no LLM call")
+                step.kb_line = (f"KB 탐색: {stored_part} → 다음 저장본 {describe_stored(meta)} 실행 "
+                                f"({stored_used + 1}/{reuse_n})")
+                return step
 
     # 2./3. the LLM: limit first
     if llm_used >= max_llm:

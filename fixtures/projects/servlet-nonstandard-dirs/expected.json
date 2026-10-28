@@ -230,6 +230,13 @@
           "path": "ndirs-back/pom.xml",
           "contains": "<nonFilteredFileExtension>xlsx</nonFilteredFileExtension>"
         }
+      },
+      {
+        "file_contains": {
+          "path": "**/report.jsp",
+          "contains": "jakarta.servlet.http.HttpSession",
+          "not_contains": "javax.servlet"
+        }
       }
     ]
   }

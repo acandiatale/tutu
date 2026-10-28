@@ -217,6 +217,14 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
                         effective=EFFECTIVE, cfg=cfg).from_here
     assert h4[0] == handover_mod.operator_checks_item(1)
     lines += h4
+    # v2.1h: JSPs left with javax references — the rename on (files it could not rewrite) and off
+    jsp_prof = as_is_profile()
+    jsp_prof.source.jsp_javax_files = 2
+    off = cfg.model_copy(deep=True)
+    off.layout.jsp_jakarta_rename = False
+    for c in (cfg, off):
+        lines += build_handover(as_is_profile(), final_tree(tmp_path / f"jsp{len(lines)}"),
+                                make_report(profile=jsp_prof), effective=EFFECTIVE, cfg=c).from_here
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

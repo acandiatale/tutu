@@ -136,3 +136,59 @@ def test_bad_stop_after_is_rejected(tmp_path, repo):
     with pytest.raises(ValueError, match="stop_after must be one of"):
         mgr.start(_zip_bytes(), "p.zip", ["artifacts.local-e2e.yml"], stop_after="report")
     assert mgr.runs == {}
+
+
+def test_queued_runs_start_in_upload_order(tmp_path, repo, monkeypatch):
+    """2026-10-28, A10: runs start in upload order — the place in line is taken when the upload is accepted,
+    so a worker thread that reaches the queue late (here: the second upload's, delayed) still starts before
+    later ones. One migration at a time stays: nothing starts while the first one runs."""
+    import time
+
+    release = threading.Event()
+    started: list[str] = []
+
+    def body(self, run):
+        started.append(run.run_id)
+        if len(started) == 1:
+            release.wait(10)
+        return SimpleNamespace(success=True, blocked=[], flags=[])
+    monkeypatch.setattr(RunManager, "_run_thread_body", body)
+    orig_worker = RunManager._worker
+    delay = {"b.zip": 0.4, "c.zip": 0.2}                 # arrival at the queue: a, d, c, b
+
+    def worker(self, run):
+        time.sleep(next((v for k, v in delay.items() if run.zip_path.name.endswith(k)), 0.0))
+        orig_worker(self, run)
+    monkeypatch.setattr(RunManager, "_worker", worker)
+    mgr = RunManager(tmp_path / "out", repo)
+    names = ("a.zip", "b.zip", "c.zip", "d.zip")
+    ids = [mgr.start(_zip_bytes(), n, ["artifacts.local-e2e.yml"]) for n in names]
+    assert mgr.runs[ids[0]].active.wait(10)
+    time.sleep(0.8)                                      # every worker is waiting for its turn by now
+    assert started == [ids[0]]
+    assert [mgr.status(i)["state"] for i in ids] == ["running", "queued", "queued", "queued"]
+    release.set()
+    for i in ids:
+        mgr.runs[i].thread.join(10)
+    assert started == ids
+    assert [mgr.status(i)["exit_code"] for i in ids] == [0, 0, 0, 0]
+
+
+def test_fifo_turns_hand_over_in_order_even_after_an_exception():
+    """The turn line behind the web queue: leaving a turn by an exception still hands it to the next one."""
+    turns = runs_mod._FifoTurns()
+    for k in ("x", "y"):
+        turns.join(k)
+    got: list[str] = []
+
+    def take(k: str) -> None:
+        with turns.turn(k):
+            got.append(k)
+    t = threading.Thread(target=take, args=("y",))
+    t.start()
+    with pytest.raises(RuntimeError), turns.turn("x"):
+        got.append("x")
+        raise RuntimeError("worker crashed")
+    t.join(5)
+    assert got == ["x", "y"] and not t.is_alive()
+    turns.leave("unknown")                               # leaving a key that is not in line is harmless

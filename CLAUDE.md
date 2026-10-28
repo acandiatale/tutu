@@ -114,9 +114,10 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
 - Step 5 (company trial vs `company-v1`) is the user's: real projects, LLM calls / time / success rate.
 
 ## Known follow-ups (the user decides)
-- **JSP `javax.servlet` references are not renamed in v2** (no handler; OpenRewrite excludes JSP): the build passes
-  but Tomcat 10+ fails at runtime. Pending decision: a text rename inside the restructure's front-module step, or
-  Handover only (today: Handover).
+- **JSP `javax` → `jakarta` (decided 2026-10-28, v2.1h)**: OpenRewrite never parses JSPs, so the restructure renames
+  the javax EE names of the analyzer's table inside every JSP / tag file's code regions after the files reached their
+  final place, in every mode (`layout.jsp_jakarta_rename`, default true; `sbmig/restructure/jsp_jakarta.py`). Off →
+  Handover follow-up only. Taglib URIs stay (JSTL 3 serves the `java.sun.com` URIs).
 - Guide advisories (hystrix, ribbon, zuul, …) leave compiling code as it is; the Handover lists them.
 - A case that cannot be fixed by code (legacy-ibatis) costs up to 4 LLM calls (new + 3 augments) before BLOCKED;
   `script.max_augments_per_case` is the knob. `loop.blocked_policy` gives javax libraries / missing artifacts /

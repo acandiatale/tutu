@@ -15,7 +15,7 @@
   직접 수정 → 처음 보는 케이스는 LLM 이 직접 수정 + 스크립트 저장**. 모든 시도는 git 커밋 → 재빌드로 채점 → 나아지지 않으면 되돌린다.
 - KB 는 파일뿐이다(DB 없음): `errors.jsonl`(모든 오류 레코드), `cases/<case_id>/`(케이스별 스크립트·오류 JSON), `cases.md`(사람용 표),
   `libraries.yml`(사람이 넣는 라이브러리 표).
-- LLM 이 개입하는 곳은 두 군데뿐: **구조 점검**(프로젝트당 1~2회)과 **수정 루프**(케이스당 최대 3회 + 보조 호출). 나머지 단계는 전부 결정적이다.
+- LLM 이 개입하는 곳은 두 군데뿐: **구조 점검**(프로젝트당 1~3회: 점검 1 + 형식 재시도 1 + 편집 적용 실패 재시도 1)과 **수정 루프**(케이스당 최대 3회 + 보조 호출). 나머지 단계는 전부 결정적이다.
 - 운영자가 읽는 줄: `SBMIG-RESULT run=… exit=0 build=ok … llm=3 attn=- review=ok major=0`.
 
 ## 1. 실행 흐름 — 단계별로 무엇이 일어나는가
@@ -33,8 +33,8 @@
 | `plan` | 아래 단계들을 결정적으로 나열한다(어떤 레시피, 어떤 재구조화 모드). | `plan.json` | 없음 (`plan.advisor: llm` 은 꺼져 있음) |
 | `transform.rewrite` | OpenRewrite 한 번: `UpgradeToJava21`, (필요 시) `JavaxMigrationToJakarta`, Boot 프로젝트는 `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`. 빌드 없음. | 커밋 `rewrite: …`, `logs/002-rewrite-*.log` | 없음 |
 | `transform.compile` | `mvn clean compile` 한 번. 나온 오류 전부를 **오류 목록**에 넣는다(`seen=compile`). 고치지 않는다. | `errors.jsonl` 첫 레코드들 | 없음 |
-| `restructure.*` | 회사 구조: 루트 pom → `base-parent`, `{name}-boot` / `{name}-back` / `{name}-front` 모듈, 필수 2개 의존성, 선택 8개 버전 올림(쓰는 것만). web root 의 JSP 는 front 의 `META-INF/resources/WEB-INF/jsp`, 그 밖의 모든 파일(html·js·css·이미지·mp4·exe …)은 front 의 `static/<web 경로>` 로; web root 안의 `<resource>` 디렉토리 파일은 comp classpath 에 남기고 front static 에도 **복사**; WEB-INF 의 설정 아닌 파일은 front jar 의 `META-INF/resources/WEB-INF/` 아래 같은 경로, 설정(xml/properties)은 boot 의 `asis-webinf/`. pom 을 고친 항목 하나하나를 **`pom-verify` 레코드**로 남긴다(다음 빌드가 검증). | 커밋 `restructure: …`, `pom-verify` 레코드 | 없음 |
-| `restructure.review` | **구조 점검**: LLM 에 모든 pom·모듈 구조·소스 인코딩·필터링 대상 바이너리를 주고 회사 규칙 위반을 찾게 한다. critical 은 LLM 이 **직접 수정**(pom 만, 소스 금지) → 커밋 `review: …`; warning 은 보고서에. | `report.md` "Structure review", 오류 목록의 `review` 레코드 | **1회 (+형식 오류 시 1회 재시도)** |
+| `restructure.*` | 회사 구조: 루트 pom → `base-parent`, `{name}-boot` / `{name}-back` / `{name}-front` 모듈, 필수 2개 의존성, 선택 8개 버전 올림(쓰는 것만). web root 의 JSP 는 front 의 `META-INF/resources/WEB-INF/jsp`, 그 밖의 모든 파일(html·js·css·이미지·mp4·exe …)은 front 의 `static/<web 경로>` 로; web root 안의 `<resource>` 디렉토리 파일은 comp classpath 에 남기고 front static 에도 **복사**; WEB-INF 의 설정 아닌 파일은 front jar 의 `META-INF/resources/WEB-INF/` 아래 같은 경로, 설정(xml/properties)은 boot 의 `asis-webinf/`. 파일이 제자리에 간 뒤 모든 JSP / 태그 파일의 javax EE 이름(page import, useBean, 스크립틀릿)을 jakarta 로 바꾼다(`layout.jsp_jakarta_rename`, v2.1h — OpenRewrite 는 JSP 를 읽지 않음; 보고서 "What we changed" 에 `JSP javax → jakarta: N files, M references`, 남은 것은 Handover). pom 을 고친 항목 하나하나를 **`pom-verify` 레코드**로 남긴다(다음 빌드가 검증). | 커밋 `restructure: …`, `pom-verify` 레코드 | 없음 |
+| `restructure.review` | **구조 점검**: LLM 에 모든 pom·모듈 구조·소스 인코딩·필터링 대상 바이너리를 주고 회사 규칙 위반을 찾게 한다. critical 은 LLM 이 **직접 수정**(pom 만, 소스 금지) → 커밋 `review: …`; warning 은 보고서에. | `report.md` "Structure review", 오류 목록의 `review` 레코드 | **1회 (+형식 오류 시 1회, 편집 적용 실패 시 1회 재시도 — 최대 3회)** |
 | `verify.build` | `mvn clean package -Dmaven.test.skip=true`. 성공이면 끝. 실패면 **새 오류만** 목록에 추가하고(`pom-verify` 중 오류 없는 pom 은 resolved) 수정 루프로. | `logs/006-build-verify.log` | 없음 |
 | 수정 루프 `fix r1 … r50` | 라운드마다: 빌드 → 직전 시도 채점(되돌림·크레딧) → 새 오류 추가 → 케이스로 묶기(근본 원인 먼저, 한 라운드 최대 8케이스) → 케이스마다 사다리(§5) → 커밋. | 시도 레코드(원인·해결·수정·diff·결과), `cases/<id>/fix_vN.py` | **케이스당 최대 3회** (+보조 호출, §6) |
 | 최종 빌드 | 루프가 끝난 뒤 무조건 한 번 더 `mvn clean package`. | `SBMIG-RESULT` 줄 | 없음 |
@@ -231,7 +231,7 @@ def fix(p):
 | `tries[].major_upgrades[]` / `verify` / `verify_source` | 이 시도가 의존성 **메이저를 올렸거나 라이브러리를 바꿨으면** 그 목록과 운영자 확인 가이드(LLM `<verify>` 또는 sbmig 생성) — §7 |
 | `tries[].diff` | 적용된 unified diff(6000자 캡) |
 | `tries[].result` / `note` | 채점: `improved`(이 케이스 오류 전부 사라짐) · `build_ok` · `partial` · `no_change` · `regressed`(새 오류 → 되돌림 `reverted`) · `inconclusive`(빌드가 판단 못 함) · `apply_failed` · `blocked`; `note` 는 실패·되돌림 설명 |
-| `tries[].llm_calls` / `seconds` | 이 시도의 LLM 호출 수와 소요 시간 |
+| `tries[].llm_calls` / `seconds` | 이 시도의 LLM 호출 수와 소요 시간 (구조 점검이 한 번에 고친 critical 여러 건은 점검의 호출 수를 첫 항목에만 싣고 나머지는 0) |
 | `resolved` | 무엇이 해결했나: `r3 try 1`(3라운드 1번째 시도) · `build`(시도 없이 다른 수정으로 사라짐) · `review` |
 | `resolved_by[]` | `build` 로 닫힌 오류가 **누구 덕에 사라졌는지**: 같은 라운드에 이 파일(또는 이 모듈의 pom)을 바꾼 시도 — `case_id` · `round` · `n` · `commit` · 맞은 파일 · `match`(file / pom / reindex) · 한 줄 설명(`7a52b1cea8 r1 try 1 — module/comp-jar/pom.xml +28–36 — jakarta.xml.bind-api 추가`). 표와 `cases.md` 에는 `build ← 7a52b1cea8 r1 try 1` 로 보인다 |
 | `script` | 해결한 저장 스크립트 경로 |
@@ -288,6 +288,7 @@ KB 탐색 (L2 → cases/<id>/case.json)
 ```
 
 - 케이스당 한 실행에서 **저장본 1회 + LLM 3회**(`script.max_augments_per_case`)까지. 그 뒤 `BLOCKED (repeated_failure)` → Handover.
+  `script.reuse_versions` 를 2 이상으로 올리면, 이번 실행에서 실패한 저장본 다음에 **다음 저장본**을 LLM 전에 더 돌린다(같은 순서: proven 최신 → unverified 최신, retired 제외; 도움이 된 재사용 — improved / partial — 이 있었으면 다음 저장본 대신 그것을 보강).
 - 특정 이유는 더 짧다(`loop.blocked_policy`): javax 라이브러리·호환 안 되는 외부 API·없는 아티팩트·플러그인 2회, 사내 parent 미해결·인코딩·지원 안 하는 소스 0회(바로 Handover).
 - 채점은 **재빌드**로만 한다. `improved` = 이 케이스의 오류가 모두 사라졌고 빌드가 그 단계까지 갔음. 나아지지 않으면 다음 시도 전에 되돌린다(HEAD 면 reset, 아니면 `git revert`). 새 오류가 생기면 `regressed → reverted`.
 - 한 라운드에 근본 원인 케이스부터(의존성 해결 → 컴파일 → 플러그인), 같은 파일을 이미 건드린 케이스는 다음 라운드로 미룬다.
@@ -297,10 +298,10 @@ KB 탐색 (L2 → cases/<id>/case.json)
 
 | 개입 지점 | 무엇을 주고 받나 | 호출 수 |
 |---|---|---|
-| 구조 점검 (`restructure.review`) | 모든 pom(60,000자까지, 40개까지) + 모듈 구조 + 인코딩 + sbmig 가 계산한 사실 → 판정 JSON + critical 수정(`<edits>`) | 프로젝트당 **1회**, 답변 형식이 깨지면 **1회 재시도** (최대 2) |
+| 구조 점검 (`restructure.review`) | 모든 pom(60,000자까지, 40개까지) + 모듈 구조 + 인코딩 + sbmig 가 계산한 사실 → 판정 JSON + critical 수정(`<edits>`) | 프로젝트당 **1회**, 답변 형식이 깨지면 **1회 재시도**, 고친 편집이 적용되지 않으면(되돌린 뒤) 실패 이유를 주고 **1회 더** — 최대 **3회**(`_ask` 2 + `_apply_retry` 1) |
 | 수정 루프 — 새 수정 (`llm-new`) | 케이스의 오류들, 오류 파일(창 단위), pom 발췌, "Dependency versions"(저장소 버전 사실), KB 힌트, 이전 시도 → 원인 / 해결 / `<edits>` / `<script>` | 케이스당 **1회**; LLM 이 파일을 더 달라면(`<need_files>`) 최대 **2회** 추가(`llm.max_context_rounds`); 스크립트가 못 쓰는 형식이면 **1회** 피드백 |
 | 수정 루프 — 보강 (`llm-augment`) | 위 + 저장 스크립트 코드와 실행 결과 | 케이스당 최대 **3회**(새 수정 포함 총 3) |
-| 운영자 가이드 (`verify_guide`) | 메이저 업그레이드가 읽혀 나왔는데 답변에 `<verify>` 가 없을 때 | 그 시도당 **1회**(저장본 재사용 시도는 0회, sbmig 가 생성) |
+| 운영자 가이드 (`verify_guide`) | 메이저 업그레이드가 읽혀 나왔는데 답변에 `<verify>` 가 없을 때. 요청 role 은 `verify_guide`(v2.1h 부터 정식 `LLMRole`; 재생 파일은 `replay_role: verify_guide`) | 그 시도당 **1회**(저장본 재사용 시도는 0회, sbmig 가 생성) |
 | 에스컬레이션 모델 | 같은 오류 집합이 2번 반복(`loop.stall_limit`)되거나 케이스의 2번째 보강부터 | 호출 수는 같고 모델만 `llm.escalation_model` 로 |
 
 LLM 이 **개입하지 않는** 곳: intake · analyze · plan · OpenRewrite · compile · restructure(회사 구조) · 빌드 · 채점/되돌림 · 저장본 재사용 · 보고서 · KB 적재.
@@ -315,7 +316,7 @@ LLM 이 **개입하지 않는** 곳: intake · analyze · plan · OpenRewrite ·
 | 실행 시간 | 240분 | `loop.max_total_minutes` |
 | 한 라운드에 다루는 케이스 | 8 | `loop.max_clusters_per_iteration` |
 | 케이스당 LLM 시도 | 3 | `script.max_augments_per_case` |
-| 케이스당 저장본 재사용 | 1 버전 | `script.reuse_versions` |
+| 케이스당 저장본 재사용 | 1 버전 (2 이상이면 실패한 저장본 다음 버전도) | `script.reuse_versions` |
 | 스크립트 실행 | 60초, 바뀐 파일 40개 넘으면 경고 | `script.timeout_seconds`, `script.max_files_changed_warn` |
 | Maven 빌드 / OpenRewrite | 30분 / 40분 | `build.timeout_minutes`, `openrewrite.timeout_minutes` |
 | LLM 요청 | 180초, 재시도 3, 출력 8,000 토큰, 프롬프트 60,000자, 전송 실패 2연속이면 60초 쉬고 재시도(한 번) | `llm.*` |

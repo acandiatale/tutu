@@ -59,7 +59,17 @@ from sbmig.core.models import (
 from sbmig.core.workspace import Workspace
 
 from .client import LLMError, RecordingClient, llm_call_in_flight, messages_hash, usage_from
-from .context import ContextPacker, PackedContext, dedupe_errors, fence_for, format_error_line, lang_for
+from .context import (
+    TARGET_MARK,
+    ContextPacker,
+    PackedContext,
+    dedupe_errors,
+    fence_for,
+    format_error_line,
+    lang_for,
+    target_text,
+    with_target,
+)
 from .script_protocol import NO_SCRIPT, PROTOCOL_WARNING, ParsedScript, normalize_path, parse_script_response
 
 log = logging.getLogger("sbmig.fix.fixer")
@@ -186,11 +196,13 @@ def default_script_checker(cfg: Config) -> Optional[Callable[[str], list[str]]]:
     return _check
 
 
-def profile_summary(profile: ProjectProfile) -> str:
+def profile_summary(profile: ProjectProfile, cfg: Config | None = None) -> str:
     """프롬프트용 프로젝트 한 줄 설명(FixContext.profile_summary): `case=… java=… boot=… libs=… | target: …`.
-    ContextPacker 는 여기의 `case=` 로 노트를 고른다.
+    ContextPacker 는 여기의 `case=` 로 노트를 고른다. 목표는 ``cfg.target``(없으면 기본값 JDK 21 / Boot 4.1.0);
+    설정 없이 만든 요약도 프롬프트를 꾸릴 때 ``with_target`` 이 설정의 목표로 바꾼다(A20).
 
-    One-line project description for prompts (and for FixContext.profile_summary)."""
+    One-line project description for prompts (and for FixContext.profile_summary). The target comes from
+    `cfg.target` (TargetConfig defaults without a config); the packer retargets a summary built without one."""
     parts = [f"case={profile.case_type.value}"]
     parts.append(f"java={profile.java_version or '?'}")
     if profile.spring_boot_version:
@@ -212,7 +224,7 @@ def profile_summary(profile: ProjectProfile) -> str:
         parts.append(f"jsp={src.jsp_count}")
     if any(k.startswith("javax.") for k in src.javax_imports):
         parts.append("javax-imports=" + ",".join(sorted(src.javax_imports)[:8]))
-    return " ".join(parts) + " | target: JDK 21, Spring Boot 4.1"
+    return " ".join(parts) + TARGET_MARK + target_text(cfg)
 
 
 def _unset(v: Optional[str]) -> bool:
@@ -578,7 +590,7 @@ class LLMFixer:
         parts = [("A fix applied to this project raised a dependency's major version or replaced a library. The "
                   "build passes; the runtime is unverified. Write the 운영자 확인 사항 for the operator.")]
         if ctx is not None and ctx.profile_summary:
-            parts.append(f"## Project\n{ctx.profile_summary}")
+            parts.append(f"## Project\n{with_target(ctx.profile_summary, self.cfg)}")
         if cluster is not None:
             errors = dedupe_errors(cluster.errors)
             case_id = (ctx.case_id if ctx is not None else "") or cluster.case_id or cluster.id

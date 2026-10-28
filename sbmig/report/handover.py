@@ -3,7 +3,8 @@
 그린다. as-is pom(``profile.poms`` + 접수 때 잡은 as-is effective dependencyManagement)과 최종 트리의 pom 을
 비교해 parent / Java / Boot 전후, 버전이 바뀐 의존성(⚠ = 새 parent / Boot BOM 이 더는 관리하지 않아 as-is
 버전으로 고정된 것), 추가 / 삭제된 아티팩트, "이제부터 할 일" 목록(``_from_here``: 운영자 확인 필요 → 교체 안
-된 권고 → 교체됐으니 확인 → 고정 버전 → 차단 / 미해결 안내 → 구조 검토 → 외부 설정값 → 수동 후속 작업)을
+된 권고 → 교체됐으니 확인 → 고정 버전 → 차단 / 미해결 안내 → 구조 검토 → 외부 설정값 → 남은 JSP javax(v2.1h)
+→ 수동 후속 작업)을
 만든다. 담당팀은 보고서에서 이 섹션만 읽는다 — 그래서 맨 앞이고 짧게 압축한다. 절대 예외를 내지
 않는다(실패해도 ``notes`` 에 "handover unavailable: …" 한 줄).
 
@@ -54,6 +55,18 @@ PROPERTY_SEP = " | "             # cell separator of a properties_to_set row (ce
 PROPERTY_COLUMNS = ("key", "before migration", "referenced at", "written as", "set via")
 DEFAULT_SENTINEL = "__SET_ME__"
 DEFAULT_MAX_REFS = 3
+
+# v2.1h (A5) JSP javax → jakarta: RunReport 에 따로 필드가 없으므로 오케스트레이터가 재구성 단계 메모(PhaseResult.notes)에
+# 이 형식으로 남기고 보고서가 같은 형식을 읽는다 — 쓰는 쪽(jsp_jakarta_note)과 읽는 쪽(jsp_jakarta_counts)이 여기 한 곳
+JSP_JAKARTA_LABEL = "JSP javax → jakarta"
+_JSP_JAKARTA_NOTE_RE = re.compile(r"^(?P<step>[\w.\-]+): JSP javax → jakarta: (?P<files>\d+) files?, "
+                                  r"(?P<refs>\d+) references?$")
+# 재구성 자신의 노트(단계 접두어 없음)도 같은 문장이다: 수는 접두어 있는 오케스트레이터 메모로만 세고(위 정규식),
+# 보고서 Notes 에서는 둘 다 뺀다 — "What we changed" 에 한 번만 보이게
+_JSP_JAKARTA_ANY_RE = re.compile(r"^(?:[\w.\-]+: )?JSP javax → jakarta: \d+ files?, \d+ references?$")
+JSP_JAVAX_LEFT = ("JSP javax references remain ({files}) — rename the javax EE names in page imports / scriptlets / "
+                  "useBean to jakarta.* (the build passes, Tomcat 10+ fails at runtime)")
+JSP_RENAME_OFF = "; `layout.jsp_jakarta_rename` is off"
 
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
 _MANDATORY_RE = re.compile(r"mandatory added: ([^;]*)")
@@ -512,11 +525,84 @@ def operator_checks_item(n: int) -> str:
     return f"operator checks: {n} major upgrade(s) — see \"Operator checks\" above"
 
 
+def plural(n: int, word: str) -> str:
+    """``1 file`` / ``3 files`` — 영어 데이터 줄의 단·복수."""
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def jsp_jakarta_text(files: int, refs: int) -> str:
+    """``JSP javax → jakarta: 3 files, 12 references`` — 재구성이 JSP 안의 javax EE 이름을 바꾼 결과 한 구절(A5).
+
+    The JSP rename in one phrase (`RestructureResult.jsp_jakarta_files` / `jsp_jakarta_refs`)."""
+    return f"{JSP_JAKARTA_LABEL}: {plural(files, 'file')}, {plural(refs, 'reference')}"
+
+
+def jsp_jakarta_note(step_id: str, files: int, refs: int) -> str:
+    """재구성 단계 메모 ``<step id>: JSP javax → jakarta: N files, M references`` — 오케스트레이터가 남기고
+    ``jsp_jakarta_counts`` 가 다시 읽는다(report.json 에 남는 유일한 자리).
+
+    The restructure step's note the orchestrator writes; `jsp_jakarta_counts` reads it back."""
+    return f"{step_id}: {jsp_jakarta_text(files, refs)}"
+
+
+def is_jsp_jakarta_note(note: Any) -> bool:
+    """``jsp_jakarta_note`` 가 만든 메모이거나 재구성 자신의 같은 문장인가(보고서 Notes 에서 "What we changed" 와
+    겹치지 않게 뺀다)."""
+    return bool(_JSP_JAKARTA_ANY_RE.match(str(note or "")))
+
+
+def jsp_jakarta_counts(report: Any) -> tuple[int, int]:
+    """이번 실행이 JSP 에서 바꾼 (파일 수, 참조 수): 모든 단계 메모의 ``jsp_jakarta_note`` 를 더한다. 없으면 (0, 0).
+
+    (files, references) the run renamed in JSPs: the sum of every phase's `jsp_jakarta_note`; (0, 0) without one."""
+    files = refs = 0
+    for pr in list(getattr(report, "phases", None) or []):
+        for n in list(getattr(pr, "notes", None) or []):
+            m = _JSP_JAKARTA_NOTE_RE.match(str(n))
+            if m:
+                files += int(m.group("files"))
+                refs += int(m.group("refs"))
+    return files, refs
+
+
+def jsp_javax_left(report: Any) -> int:
+    """아직 javax EE 이름이 남았을 JSP 파일 수: 분석이 센 ``SourceStats.jsp_javax_files`` − 재구성이 바꾼 파일 수
+    (0 아래로는 안 내려감). 이름 바꾸기가 꺼졌거나 돌지 않았으면 분석 수 그대로.
+
+    JSP / tag files that still name javax EE types: the analyzer's `jsp_javax_files` minus the files renamed."""
+    src = getattr(getattr(report, "profile", None), "source", None)
+    found = int(getattr(src, "jsp_javax_files", 0) or 0)
+    return max(0, found - jsp_jakarta_counts(report)[0]) if found else 0
+
+
+def _jsp_followup_present(report: RunReport) -> bool:
+    """재구성이 이미 JSP javax 후속 작업 줄을 남겼는가(남겼으면 그 줄을 쓰고 인수인계 줄은 만들지 않는다)."""
+    for m in report.manual_followups or []:
+        low = m.lower()
+        if "jsp" in low and "javax" in low:
+            return True
+    return False
+
+
+def jsp_javax_item(report: RunReport, cfg: Any = None) -> str | None:
+    """인수인계 "이제부터 할 일" 의 JSP 한 줄 ``JSP javax references remain (N files) — …``(A5): 분석이 찾은 javax
+    JSP 중 재구성이 바꾸지 않은 것이 있고, 재구성이 같은 내용의 후속 작업 줄을 남기지 않았을 때만. 없으면 None.
+
+    `JSP javax references remain (N files) — …` when JSPs naming javax EE types were left unrenamed (rename off,
+    or files it could not rewrite) and the restructure did not leave its own follow-up line; None otherwise."""
+    left = jsp_javax_left(report)
+    if not left or _jsp_followup_present(report):
+        return None
+    layout = getattr(cfg, "layout", None) if cfg is not None else None
+    off = layout is not None and not getattr(layout, "jsp_jakarta_rename", True)
+    return JSP_JAVAX_LEFT.format(files=plural(left, "file")) + (JSP_RENAME_OFF if off else "")
+
+
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:
     """인수인계의 "이제부터 할 일" 목록. 순서가 곧 중요도다: (0) 운영자 확인 필요(메이저 업그레이드) → (a)
     교체 안 된 권고 → (b) 실행 중 교체됐으니 확인 → (b2) LLM 이 권고에 따라 고친 코드 → (c) as-is 버전으로
-    고정된 의존성 → (d) 차단 / 미해결 / javax jar 안내 → (d1) 구조 검토 → (d2) 외부 설정값 → (e) 나머지 수동
-    후속 작업. ``advisories.max_from_here`` 가 양수면 그 줄 수로 자르고 마지막에 "… and N more" 를 붙인다."""
+    고정된 의존성 → (d) 차단 / 미해결 / javax jar 안내 → (d1) 구조 검토 → (d2) 외부 설정값 → (d3) 남은 JSP javax
+    → (e) 나머지 수동 후속 작업. ``advisories.max_from_here`` 가 양수면 그 줄 수로 자르고 마지막에 "… and N more" 를 붙인다."""
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
@@ -588,6 +674,14 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
             _dedupe_add(out, item)
     except Exception as e:  # pragma: no cover
         log.debug("properties item skipped: %s", e)
+    # (d3) v2.1h: OpenRewrite 는 JSP 를 읽지 않는다 — 재구성이 못 바꾼 JSP 의 javax 는 빌드는 통과해도 Tomcat 10+ 에서
+    # 실행 시 깨진다. 재구성이 같은 내용의 후속 작업 줄을 남겼으면 그 줄((e) 에 나옴)을 쓴다
+    try:
+        jsp = jsp_javax_item(report, cfg)
+        if jsp:
+            _dedupe_add(out, jsp)
+    except Exception as e:  # noqa: BLE001  # pragma: no cover - the Handover never fails over one line
+        log.debug("JSP javax item skipped: %s", e)
     if "test-compile-skipped" in report.flags:
         _dedupe_add(out, "test sources do not compile yet (main code builds with -Dmaven.test.skip=true) — "
                          "fix the tests before relying on CI")

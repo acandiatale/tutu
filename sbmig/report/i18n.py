@@ -180,6 +180,15 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "Plan steps executed:": "실행한 계획 단계:",
     "OpenRewrite runs:": "OpenRewrite 실행:",
     "| phase | recipes | changed files | ok |": "| 단계 | 레시피 | 변경 파일 | 성공 |",
+    # v2.1h (A5): the JSP javax → jakarta rename of the restructure
+    "JSP javax → jakarta: {files}, {refs}": "JSP javax → jakarta: {files}, {refs}",
+    "{n} file": "파일 {n}개",
+    "{n} files": "파일 {n}개",
+    "{n} reference": "참조 {n}곳",
+    "{n} references": "참조 {n}곳",
+    " — renamed by the restructure in JSP / tag files (page imports, useBean, scriptlets); OpenRewrite does not parse "
+    "JSPs":
+        " — 재구성이 JSP / 태그 파일(page import, useBean, 스크립틀릿)에서 바꿨다. OpenRewrite 는 JSP 를 읽지 않는다",
     "yes": "예",
     "no: {error}": "아니오: {error}",
     # ---- notes
@@ -426,6 +435,16 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     (r"^structure review warning — (?P<rest>.+)$", r"구조 점검 경고 — \g<rest>"),
     (r"^… and (?P<n>\d+) more structure review issue\(s\) — see Structure review$",
      r"… 외 구조 점검 문제 \g<n>건 — '구조 점검' 참조"),
+    # v2.1h (A5): JSPs whose javax EE names were not renamed (handover.jsp_javax_item)
+    ((r"^JSP javax references remain \((?P<n>\d+) files?\) — rename the javax EE names in page imports / scriptlets "
+      r"/ useBean to jakarta\.\* \(the build passes, Tomcat 10\+ fails at runtime\); `layout\.jsp_jakarta_rename` is "
+      r"off$"),
+     (r"JSP 에 javax 참조가 남아 있다(파일 \g<n>개) — page import / 스크립틀릿 / useBean 의 javax EE 이름을 jakarta.* 로 "
+      r"바꿀 것(빌드는 통과하지만 Tomcat 10+ 에서 실행 시 실패한다); `layout.jsp_jakarta_rename` 이 꺼져 있다")),
+    ((r"^JSP javax references remain \((?P<n>\d+) files?\) — rename the javax EE names in page imports / scriptlets "
+      r"/ useBean to jakarta\.\* \(the build passes, Tomcat 10\+ fails at runtime\)$"),
+     (r"JSP 에 javax 참조가 남아 있다(파일 \g<n>개) — page import / 스크립틀릿 / useBean 의 javax EE 이름을 jakarta.* 로 "
+      r"바꿀 것(빌드는 통과하지만 Tomcat 10+ 에서 실행 시 실패한다)")),
     (r"^(?P<n>\d+) javax API jar\(s\) still on the classpath — see that section$",
      r"클래스패스에 남은 javax API jar \g<n>개 — '클래스패스에 남은 javax API jar' 절 참조"),
     ((r"^(?P<n>\d+) javax API jar\(s\) still on the classpath after the migration \(see the report section\) — "

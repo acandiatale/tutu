@@ -160,9 +160,12 @@ class AdapterClient:
                       max_tokens: Optional[int] = None, temperature: Optional[float] = None,
                       stop: Optional[list[str]] = None, role: Optional[str] = None,
                       metadata: Optional[dict] = None) -> LLMRequest:
-        """sbmig 의 메시지 호출 인자를 LLMRequest 하나로. 모르는 role(예: `verify_guide`)은 `other` 로 바꾸고
-        원래 값은 `metadata["role_detail"]` 에 남긴다. metadata
-        에는 run_id·project 같은 문맥만 담는다(비밀 금지)."""
+        """sbmig 의 메시지 호출 인자를 LLMRequest 하나로. ``LLMRole`` 에 없는 role 은 `other` 로 바꾸고
+        원래 값은 `metadata["role_detail"]` 에 남긴다(v2.1h 부터 `verify_guide` 는 정식 role 이라 그대로 간다, A21).
+        metadata 에는 run_id·project 같은 문맥만 담는다(비밀 금지).
+
+        One LLMRequest from sbmig's call arguments. A role outside `LLMRole` becomes `other` with the original in
+        `metadata["role_detail"]` (`verify_guide` is a role of its own since v2.1h)."""
         meta = {**self.base_metadata, **(metadata or {})}
         r = role or "other"
         if r not in KNOWN_ROLES:

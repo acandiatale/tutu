@@ -5,8 +5,16 @@ from pathlib import Path
 import pytest
 
 from sbmig.analyze import PathView, module_order, parse_poms
-from sbmig.analyze.pom_parser import interpolate, owning_pom, parse_pom_text
-from tests.analyze.helpers import dep, plugin, pom, write
+from sbmig.analyze.pom_parser import (
+    interpolate,
+    owning_pom,
+    parse_pom_text,
+    pom_encoding,
+    read_pom_text,
+    xml_codec,
+    xml_without_declaration,
+)
+from tests.analyze.helpers import NS, dep, plugin, pom, write
 
 
 def _multi(root: Path) -> None:
@@ -148,3 +156,80 @@ def test_repository_urls_declared_in_poms(tmp_path: Path) -> None:
                                     "https://nexus.example.com/repository/plugins"]      # interpolated
     write(tmp_path, "pom.xml", pom("plain"))
     assert parse_poms(PathView(tmp_path))[0][0].repositories == []
+
+
+# ---------------------------------------------------------------------------
+# A1 (2026-10-28): poms whose XML declaration names a multi-byte / Java-only encoding
+# ---------------------------------------------------------------------------
+def _korean_pom(decl: str, name: str = "주문 서비스") -> str:
+    return (f'<?xml version="1.0" encoding="{decl}"?>\n'
+            "<!-- 주문 서비스 모듈: 한글 주석 -->\n"
+            f'<project {NS}>\n  <modelVersion>4.0.0</modelVersion>\n'
+            "  <groupId>com.acme</groupId><artifactId>order</artifactId><version>1.0.0</version>\n"
+            f"  <name>{name}</name>\n"
+            "  <properties><app.title>주문 관리</app.title></properties>\n"
+            f"  <dependencies>{dep('org.apache.commons', 'commons-lang3', '3.12.0')}</dependencies>\n"
+            "</project>\n")
+
+
+@pytest.mark.parametrize("decl", ["EUC-KR", "MS949", "x-windows-949", "KSC5601", "CP949", "euc-kr"])
+def test_cp949_pom_with_multibyte_declaration_is_parsed(tmp_path: Path, decl: str) -> None:
+    (tmp_path / "pom.xml").write_bytes(_korean_pom(decl).encode("cp949"))
+    poms, warnings = parse_poms(PathView(tmp_path))
+    assert warnings == []
+    assert [p.artifact_id for p in poms] == ["order"]
+    assert poms[0].properties["app.title"] == "주문 관리"                      # decoded as cp949, not U+FFFD
+    assert [d.coordinates for d in poms[0].dependencies] == ["org.apache.commons:commons-lang3:3.12.0"]
+    assert "<name>주문 서비스</name>" in read_pom_text(PathView(tmp_path), "pom.xml")
+
+
+def test_euc_kr_declaration_with_cp949_only_hangul(tmp_path: Path) -> None:
+    # 똠 / 햏 are outside KS X 1001: strict EUC-KR fails, the cp949 superset decodes them
+    (tmp_path / "pom.xml").write_bytes(_korean_pom("EUC-KR", name="똠햏 서비스").encode("cp949"))
+    assert pom_encoding((tmp_path / "pom.xml").read_bytes()) == "cp949"
+    poms, warnings = parse_poms(PathView(tmp_path))
+    assert warnings == [] and poms[0].artifact_id == "order"
+    assert "<name>똠햏 서비스</name>" in read_pom_text(PathView(tmp_path), "pom.xml")
+
+
+def test_utf8_declaration_but_cp949_bytes_is_detected(tmp_path: Path) -> None:
+    (tmp_path / "pom.xml").write_bytes(_korean_pom("UTF-8").encode("cp949"))
+    poms, warnings = parse_poms(PathView(tmp_path))
+    assert warnings == [] and poms[0].properties["app.title"] == "주문 관리"
+
+
+def test_utf8_pom_with_bom_still_parses(tmp_path: Path) -> None:
+    (tmp_path / "pom.xml").write_bytes(b"\xef\xbb\xbf" + _korean_pom("UTF-8").encode("utf-8"))
+    assert pom_encoding((tmp_path / "pom.xml").read_bytes()) == "utf-8-sig"
+    poms, warnings = parse_poms(PathView(tmp_path))
+    assert warnings == [] and poms[0].artifact_id == "order"
+    assert poms[0].properties["app.title"] == "주문 관리"
+
+
+def test_parse_pom_text_accepts_bytes_and_declared_text() -> None:
+    raw = parse_pom_text(_korean_pom("EUC-KR").encode("euc-kr"), "pom.xml")
+    assert raw.artifact_id == "order" and raw.properties["app.title"] == "주문 관리"
+    raw = parse_pom_text(_korean_pom("ISO-8859-1"), "pom.xml")          # decoded text: the declaration is ignored
+    assert raw.properties["app.title"] == "주문 관리"
+
+
+def test_xml_codec_and_declaration_helpers() -> None:
+    assert [xml_codec(n) for n in ("EUC-KR", "MS949", "x-windows-949", "KSC5601", "UTF-8", "nope", None)] == \
+        ["cp949", "cp949", "cp949", "cp949", "utf-8", None, None]
+    assert xml_without_declaration('﻿ <?xml version="1.0" encoding="EUC-KR"?>\n<project/>') == "\n<project/>"
+    assert xml_without_declaration("<project/>") == "<project/>"
+
+
+def test_workspace_read_keeps_cp949_for_write_back(tmp_path: Path) -> None:
+    from sbmig.core.workspace import Workspace
+
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "pom.xml").write_bytes(_korean_pom("EUC-KR").encode("cp949"))
+    ws = Workspace(root, tmp_path / "run", "t")
+    poms, warnings = parse_poms(ws)
+    assert warnings == [] and poms[0].properties["app.title"] == "주문 관리"
+    text = ws.read("pom.xml").replace("주문 관리", "주문 관리 v2")
+    ws.write("pom.xml", text)
+    data = (root / "pom.xml").read_bytes()
+    assert data.decode("cp949") == text                       # still the declared (EUC-KR family) encoding

@@ -402,3 +402,88 @@ def test_learning_md_lists_the_cases_met_and_their_scripts(fleet_cfg, tmp_path):
     assert f"`{cid}`" in lone and f"`{other}`" in lone
     empty = render_learning(FleetState(fleet_id="f0", manifest="m.yml"), None)
     assert "_No cases in the KB yet._" in empty
+
+
+def test_missing_input_is_skipped_whatever_the_row_status(fleet_cfg, tmp_path):
+    """2026-10-28, A8: a row whose input vanished is skipped with the reason whenever this run would
+    start it — a `running` row left by a dead fleet, an incomplete row under --retry-failed — instead of
+    crashing into `aborted`; a success / an incomplete row that is only kept (no --retry-failed) keeps its
+    result."""
+    import shutil
+
+    for n in ("done", "dead", "failed", "kept"):
+        make_project(tmp_path / "src", n)
+    m = tmp_path / "list.txt"
+    m.write_text("src/done\nsrc/dead\nsrc/failed\nsrc/kept\n")
+    out = tmp_path / "out"
+    first = FakeRun(failed={"success": False}, kept={"success": False})
+    FleetRunner(fleet_cfg, m, out, run_project=first).run()
+    st = _state(out)
+    st.projects[1].status = "running"                    # the fleet process died during "dead"
+    (out / "fleet" / "state.json").write_text(st.model_dump_json())
+    for n in ("done", "dead", "failed"):
+        shutil.rmtree(tmp_path / "src" / n)
+    fake = FakeRun()
+    s = FleetRunner(fleet_cfg, m, out, run_project=fake).run()
+    assert fake.calls == []
+    assert [p.status for p in s.projects] == ["success", "skipped", "incomplete", "incomplete"]
+    assert "input not found" in s.projects[1].error and s.projects[0].error is None
+    retry = fleet_cfg.model_copy(update={"fleet": fleet_cfg.fleet.model_copy(update={"retry_failed": True})})
+    s = FleetRunner(retry, m, out, run_project=fake).run()
+    assert [c[0] for c in fake.calls] == ["kept"]        # only the retry whose input is still there runs
+    assert [p.status for p in s.projects] == ["success", "skipped", "skipped", "success"]
+    assert "input not found" in s.projects[2].error and not any(p.status == "aborted" for p in s.projects)
+    make_project(tmp_path / "src", "dead")              # the input is back: the row runs on the next resume
+    FleetRunner(fleet_cfg, m, out, run_project=fake).run()
+    assert fake.calls[-1][0] == "dead"
+
+
+def test_crashed_retry_does_not_show_the_previous_attempts_counts(fleet_cfg, projects_dir, tmp_path):
+    """2026-10-28, A9: a retry that crashes starts from empty per-run counts (no report → 0 / empty) instead
+    of keeping the previous attempt's unresolved / blocked / error list in the row, the summary and
+    SBMIG-RESULT."""
+    out = tmp_path / "out"
+    FleetRunner(fleet_cfg, projects_dir, out,
+                run_project=FakeRun(beta={"success": False, "blocked": 1, "llm": 4})).run()
+    b = _state(out).projects[1]
+    assert (b.status, b.unresolved, b.blocked, b.llm_calls) == ("incomplete", 1, 1, 4) and b.error_counts
+    retry = fleet_cfg.model_copy(update={"fleet": fleet_cfg.fleet.model_copy(update={"retry_failed": True})})
+    lines: list[str] = []
+    s = FleetRunner(retry, projects_dir, out, run_project=FakeRun(beta="crash"), echo=lines.append).run()
+    b = s.projects[1]
+    assert b.status == "aborted" and b.attempt == 2 and "RuntimeError: boom" in b.error
+    assert (b.unresolved, b.blocked, b.blocked_reasons, b.error_counts, b.flags) == (0, 0, [], {}, [])
+    assert b.llm_calls == 4                              # the first attempt's calls stay counted
+    res = [ln for ln in lines if ln.startswith("SBMIG-RESULT")]
+    assert len(res) == 1 and "exit=3 build=FAIL unresolved=0 blocked=0 llm=0 attn=crash" in res[0], res
+    assert "open=" not in res[0]                         # a crash line has no error list
+    assert any("beta: aborted" in ln and "llm 0 (all attempts 4)" in ln for ln in lines), lines
+    row = (out / "fleet" / "summary.csv").read_bytes().decode("utf-8-sig").splitlines()[2].split(",")
+    assert row[1] == "beta" and row[8:11] == ["0", "0", "0"]          # open / resolved / blocked of the crash
+
+
+def test_llm_budget_counts_every_attempt(fleet_cfg, projects_dir, tmp_path):
+    """2026-10-28, A9: a successful retry adds its LLM calls to the earlier attempts' instead of overwriting
+    them, so `fleet.max_llm_calls_total` (and llm_calls_total / tokens) count both attempts."""
+    out = tmp_path / "out"
+    loop = fleet_cfg.loop.model_copy(update={"max_llm_calls": 10})
+    cfg = fleet_cfg.model_copy(
+        update={"loop": loop, "fleet": fleet_cfg.fleet.model_copy(update={"max_llm_calls_total": 10})})
+    s1 = FleetRunner(cfg, projects_dir, out, run_project=FakeRun(
+        alpha={"success": False, "llm": 4}, beta={"llm": 2}, gamma={"llm": 1})).run()
+    assert s1.llm_calls_total == 7 and s1.projects[0].status == "incomplete"
+    retry = cfg.model_copy(update={"fleet": cfg.fleet.model_copy(update={"retry_failed": True})})
+    fake = FakeRun(alpha={"llm": 3})
+    lines: list[str] = []
+    s2 = FleetRunner(retry, projects_dir, out, run_project=fake, echo=lines.append).run()
+    assert [(c[0], c[1]) for c in fake.calls] == [("alpha", 3)]       # 10 - (4 + 2 + 1) left for the retry
+    a = s2.projects[0]
+    assert (a.status, a.attempt, a.llm_calls, a.llm_input_tokens) == ("success", 2, 7, 70)
+    assert s2.llm_calls_total == 10 and _state(out).llm_calls_total == 10
+    assert any(ln.startswith("SBMIG-RESULT") and " llm=3 " in ln for ln in lines), lines
+    assert any("alpha: success" in ln and "llm 3 (all attempts 7)" in ln for ln in lines), lines
+    make_project(projects_dir, "delta")
+    fake3 = FakeRun()
+    s3 = FleetRunner(retry, projects_dir, out, run_project=fake3).run()
+    assert [(c[0], c[1]) for c in fake3.calls] == [("delta", -1)]     # budget spent: no LLM call at all
+    assert "llm-budget-exhausted:delta" in s3.notes

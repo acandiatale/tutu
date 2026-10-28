@@ -30,8 +30,10 @@ Access (round 10): the page hands out company source code (`result.zip`) and run
 * with a token (`create_app(token=…)`, `$SBMIG_WEB_TOKEN`, `sbmig serve --token`) every request needs it:
   `Authorization: Bearer <token>`, or the HttpOnly cookie a `?token=<token>` request sets once (the page is then
   reloaded without the token in the address bar; SameSite=Strict, so other sites cannot use it);
-* without a token only loopback clients (127.0.0.1 / ::1) are served — a LAN client gets 403 with the hint, even
+* without a token only loopback clients (127.0.0.1 / ::1, and since 2026-10-28 the IPv4-mapped
+  ::ffff:127.0.0.1 a socket bound to `::` reports, A11) are served — a LAN client gets 403 with the hint, even
   when plain `uvicorn … --host 0.0.0.0` was started without one (`sbmig serve` refuses to start like that).
+  Trap: behind a reverse proxy on this machine every client looks like loopback — set a token there.
 
 
 """
@@ -76,9 +78,23 @@ COOKIE_MAX_AGE_S = 7 * 24 * 3600   # the browser keeps access for a week (the to
 _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
 
 
+def _ip_is_loopback(addr: str) -> bool:
+    """IP 주소 문자열이 루프백인가(127.0.0.0/8, ::1, 그리고 IPv4 를 담은 IPv6 ``::ffff:127.x.x.x``).
+    ``::`` 로 바인딩하면 같은 PC 의 IPv4 브라우저가 ``::ffff:127.0.0.1`` 로 보이는데, Python 3.13 전의
+    ``ipaddress`` 는 이것을 루프백으로 보지 않아 토큰 없는 로컬 브라우저가 403 을 받았다(A11) — 그래서
+    ``ipv4_mapped`` 로 풀어서 본다. 주소가 아니면 ValueError.
+
+    Loopback including the IPv4-mapped form (`::ffff:127.0.0.0/8`): a dual-stack socket bound to `::`
+    reports an IPv4 browser on this machine as `::ffff:127.0.0.1`, which `ipaddress` before Python 3.13 does
+    not call loopback (A11). ValueError when `addr` is not an IP address."""
+    ip = ipaddress.ip_address(addr)
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return (mapped if mapped is not None else ip).is_loopback
+
+
 def is_loopback_host(host: str | None) -> bool:
-    """이 PC 에서만 닿는 주소인가(127.0.0.0/8, ::1, ``localhost``). ``0.0.0.0`` / ``::`` / 사내망 주소는
-    아니다. ``sbmig serve`` 가 토큰 없이 바깥에 열지 않으려고 쓴다.
+    """이 PC 에서만 닿는 주소인가(127.0.0.0/8, ::1, ``::ffff:127.0.0.0/8``, ``localhost``). ``0.0.0.0`` /
+    ``::`` / 사내망 주소는 아니다. ``sbmig serve`` 가 토큰 없이 바깥에 열지 않으려고 쓴다.
 
     127.0.0.0/8, ::1, `localhost` — an address only this machine can reach. `0.0.0.0` / `::` / a LAN address
     are not."""
@@ -86,20 +102,22 @@ def is_loopback_host(host: str | None) -> bool:
     if h in _LOOPBACK_NAMES:
         return True
     try:
-        return ipaddress.ip_address(h).is_loopback
+        return _ip_is_loopback(h)
     except ValueError:
         return False
 
 
 def _remote_client(scope: Scope) -> bool:
     """루프백이 아닌 IP 의 클라이언트인가. IP 가 없는 것(유닉스 소켓, 테스트 클라이언트)은 로컬로 본다.
+    ``::ffff:127.0.0.1`` (``::`` 바인딩의 IPv4 로컬 브라우저)도 로컬이다(:func:`_ip_is_loopback`, A11).
     함정: 같은 PC 의 리버스 프록시 뒤에 두면 모든 클라이언트가 루프백으로 보인다(그때는 토큰을 켤 것).
 
-    A client with a non-loopback IP address (a unix socket / the test client have no IP: local)."""
+    A client with a non-loopback IP address (a unix socket / the test client have no IP: local). Behind a
+    reverse proxy on this machine every client looks like loopback — set a token there."""
     client = scope.get("client")
     host = client[0] if client else None
     try:
-        return not ipaddress.ip_address(str(host)).is_loopback
+        return not _ip_is_loopback(str(host))
     except ValueError:
         return False
 

@@ -171,5 +171,6 @@ def test_cases_show_prints_lineage_reasons_and_runs(kb: FileKnowledgeBase):
         "      run r1 demo r2 try 2: build_ok [errors 3 → 0, new 0; files: A.java]"]
     code, out = _cli(kb, "reindex")
     assert code == 0 and out.strip().splitlines()[-1].startswith(
-        "1 case(s), 2 script version(s); 2 script run record(s) rebuilt, 0 entr(ies) given as-is/to-be hunks — ")
+        "1 case(s), 2 script version(s); 2 script run record(s) rebuilt, 0 entr(ies) given as-is/to-be hunks, "
+        "0 build-resolved entr(ies) given a probable fixer — ")
     assert [len(s.runs) for s in kb.cases.find(CASE).scripts] == [1, 1]          # merged with the store's records

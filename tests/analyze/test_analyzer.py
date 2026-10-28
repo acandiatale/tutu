@@ -174,3 +174,37 @@ def test_classify_without_scan() -> None:
     src = SourceStats(java_files=1, spring_annotations={"Service": 1})
     assert classify([], src, [])[0] == CaseType.SPRING_LEGACY
     assert classify_single([], SourceStats(), [])[0] == CaseType.UNKNOWN
+
+
+def test_euc_kr_pom_reaches_the_profile_and_system_scope_scan(tmp_path: Path, cfg) -> None:
+    # A1: the module used to vanish ("pom skipped"); once parsed, system_dependencies must not trip over the
+    # EUC-KR declaration either (it re-reads every pom)
+    text = ('<?xml version="1.0" encoding="EUC-KR"?>\n<!-- 레거시 유틸 -->\n'
+            + pom("legacy-util", props={"maven.compiler.source": "1.8", "app.title": "레거시 유틸"},
+                  deps=(('<dependency><groupId>com.acme</groupId><artifactId>native</artifactId><version>1</version>'
+                         '<scope>system</scope><systemPath>${project.basedir}/lib/native.jar</systemPath></dependency>'),))
+            + "\n")
+    (tmp_path / "pom.xml").write_bytes(text.encode("cp949"))
+    write_java(tmp_path, "", "com.acme.util", "Main", body=PSVM)
+    p = analyze_path(tmp_path, cfg)
+    assert p.root_pom.artifact_id == "legacy-util" and p.root_pom.properties["app.title"] == "레거시 유틸"
+    assert not any("pom skipped" in w for w in p.warnings)
+    assert p.has_library("system-scope-jars")
+
+
+def test_build_services_unique_names_against_existing_suffixes() -> None:
+    # A25: "a", "a", "a-2" used to become "a", "a-2", "a-2"
+    from sbmig.analyze.classifier import build_services
+    from sbmig.analyze.source_scanner import ScanResult
+    from sbmig.core.models import PomInfo
+
+    def names(*dirs: str) -> list[str]:
+        roots = [PomInfo(path=f"{d}/pom.xml", artifact_id=f"s{i}") for i, d in enumerate(dirs)]
+        return [s.name for s in build_services(roots, roots, ScanResult())]
+
+    assert names("a", "x/a", "a-2") == ["a", "a-3", "a-2"]
+    assert names("a", "x/a", "y/a", "a-2") == ["a", "a-3", "a-4", "a-2"]
+    assert names("a", "a-2", "x/a") == ["a", "a-2", "a-3"]
+    assert names("a", "x/a", "y/a") == ["a", "a-2", "a-3"]                 # unchanged when nothing collides
+    for case in (("a", "x/a", "a-2"), ("a", "a-2", "x/a", "y/a-2", "z/a")):
+        assert len(set(names(*case))) == len(case)

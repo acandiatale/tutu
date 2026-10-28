@@ -34,7 +34,7 @@ from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttemp
 
 from .blocked import BlockedCandidate, classify_blocked
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
-from .scripts import LLM_MODES, ScriptStep, plan_script_step, script_attempts
+from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, plan_script_step, script_attempts
 
 log = logging.getLogger("sbmig.triage")
 
@@ -42,8 +42,8 @@ log = logging.getLogger("sbmig.triage")
 # 재빌드 전)은 아무것도 증명하지 않으므로 어디에도 세지 않는다
 SUCCESS_OUTCOMES = frozenset({"improved", "build_ok"})
 # scored failures: what the per-cluster limits count (round 10: no "pending" — an attempt applied this round and not
-# built yet proves nothing; "inconclusive" = the scoring build could not show the cluster's errors, counts as tried)
-FAILED_OUTCOMES = frozenset({"no_change", "regressed", "reverted", "apply_failed", "inconclusive"})
+# built yet proves nothing; "inconclusive" = the scoring build could not show the cluster's errors, counts as tried).
+# FAILED_OUTCOMES lives in .scripts since A14 (the ladder's "next stored version" reads it too); re-exported here.
 # some targeted errors gone, the rest remain: progress, not a failure (v2: the next script attempt of the case is an
 # augment of it — the per-case limit is script.max_augments_per_case)
 PROGRESS_OUTCOMES = frozenset({"partial"})

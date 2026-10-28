@@ -24,6 +24,8 @@ layout:
   # Spring Boot as-is projects (incl. MSA): in-place = keep the directories, change the poms only (root →
   # artifacts.parent, modules matching boot_module_pattern whose pom is a boot app → boot_parent, the rest →
   # comp_parent; a single-module Boot app is wrapped into {name}-boot) | layout = split like the other cases
+  jsp_jakarta_rename: true               # v2.1h: rename the javax EE names (analyzer table) inside JSP / tag files to jakarta —
+                                         # OpenRewrite never parses JSPs; false = Handover follow-up only
   boot_as_is: in-place
   boot_module_pattern: "*-boot"
   jsp_boot_packaging: war                # JSPs present → the boot module is a WAR for external Tomcat (front jar holds the JSPs)

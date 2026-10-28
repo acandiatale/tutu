@@ -664,7 +664,7 @@ stateDiagram-v2
         <tr><td>script_result</td><td>그 스크립트의 실행 결과: <code>status</code>, <code>changed_files[]</code>, <code>log[]</code>, <code>error</code>, <code>problems[]</code>, <code>duration_s</code></td><td class="ex">{"status":"ok","changed_files":["pom.xml"], …}</td></tr>
         <tr><td>commit</td><td>스크립트 변경을 담은 커밋 (<code>review: fix critical structure issues (n)</code>). 되돌릴 수 있게 따로 커밋</td><td class="ex">3f1c9a0…</td></tr>
         <tr><td>reverted</td><td>스크립트 변경을 되돌렸나 (스크립트 실패, 소스(<code>.java</code>, <code>.jsp</code> 등)를 건드림, pom을 깨뜨림)</td><td class="ex">false</td></tr>
-        <tr><td>llm_usage</td><td>점검의 LLM 사용량: <code>model</code>, <code>calls</code>(최대 2), <code>input_tokens</code>, <code>output_tokens</code></td><td class="ex">{"calls":1, …}</td></tr>
+        <tr><td>llm_usage</td><td>점검의 LLM 사용량: <code>model</code>, <code>calls</code>(최대 3: 점검 1 + 형식 재시도 1 + 편집 적용 실패 재시도 1), <code>input_tokens</code>, <code>output_tokens</code></td><td class="ex">{"calls":1, …}</td></tr>
         <tr><td>note</td><td>왜 실패했나 / 스크립트가 어떻게 됐나</td><td class="ex"></td></tr>
       </tbody>
     </table></div>

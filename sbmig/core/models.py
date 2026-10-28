@@ -366,11 +366,13 @@ class GAV(BaseModel):
 
     @classmethod
     def parse(cls, coords: str) -> "GAV":
-        """`"g:a[:v]"` 문자열을 GAV 로(두 조각 미만이면 ValueError)."""
+        """`"g:a[:v]"` 문자열을 GAV 로(두 조각 미만이면 ValueError). Maven 의 긴 꼴 `g:a:packaging[:classifier]:v`
+        (네 조각 이상)는 마지막 조각을 버전으로 본다(2026-10-28, A26)."""
         parts = coords.split(":")
         if len(parts) < 2:
             raise ValueError(f"bad coordinates: {coords}")
-        return cls(group_id=parts[0], artifact_id=parts[1], version=parts[2] if len(parts) > 2 and parts[2] else None)
+        version = parts[-1] if len(parts) >= 4 else (parts[2] if len(parts) > 2 else "")
+        return cls(group_id=parts[0], artifact_id=parts[1], version=version or None)
 
 
 class PluginInfo(BaseModel):
@@ -1720,7 +1722,7 @@ class FleetProjectResult(BaseModel):
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     duration_s: float = 0.0
-    llm_calls: int = 0
+    llm_calls: int = 0                              # v2.1h: every attempt of the project added up (A9)
     llm_input_tokens: int = 0
     llm_output_tokens: int = 0
     llm_cost: Optional[float] = None               # RunReport.llm_cost.total (llm.pricing currency), None = unpriced

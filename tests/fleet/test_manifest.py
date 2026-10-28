@@ -83,3 +83,32 @@ def test_unsupported_and_missing_manifest(tmp_path):
     t = tmp_path / "l.txt"
     t.write_text(str(f) + "\n")
     assert "directory or a .zip" in load_manifest(t)[0].error
+
+
+def test_directory_manifest_takes_a_pom_one_level_down_and_names_what_it_leaves_out(tmp_path):
+    """2026-10-28, A7: a directory manifest lists a folder whose pom sits one level down (the rule `_validate`
+    applies to any input); a folder with no pom at either level is left out with a warning naming it."""
+    import logging
+
+    d = tmp_path / "p"
+    make_project(d, "a-svc")
+    make_project(d / "wrapped", "inner")                 # p/wrapped/inner/pom.xml (a wrapper folder)
+    (d / "no-pom" / "src").mkdir(parents=True)          # an exploded tree without any pom
+    (d / ".git").mkdir()
+    seen: list[str] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            seen.append(record.getMessage())
+
+    handler = _Collect(level=logging.WARNING)
+    logger = logging.getLogger("sbmig.fleet")
+    logger.addHandler(handler)
+    try:
+        ps = load_manifest(d)
+    finally:
+        logger.removeHandler(handler)
+    assert [p.name for p in ps] == ["a-svc", "wrapped"] and all(p.ok for p in ps)
+    assert ps[1].input == str((d / "wrapped").resolve())
+    assert any("no-pom" in m and "left out" in m for m in seen), seen
+    assert not any(".git" in m for m in seen)

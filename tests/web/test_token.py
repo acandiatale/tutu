@@ -101,3 +101,20 @@ def test_serve_refuses_a_lan_address_without_a_token(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["serve", "--out", str(tmp_path / "web")])          # 127.0.0.1: no token needed
     assert r.exit_code == 0, r.output
     assert "access token required" not in r.output
+
+
+def test_ipv4_mapped_loopback_is_local(tmp_path, repo, monkeypatch):
+    """2026-10-28, A11: bound to `::`, a browser on this machine arrives as `::ffff:127.0.0.1`; Python < 3.13
+    does not call that loopback, so it got 403 without a token. Simulate the old `ipaddress` and check
+    both directions."""
+    import ipaddress
+
+    monkeypatch.setattr(ipaddress.IPv6Address, "is_loopback",
+                        property(lambda self: self == ipaddress.IPv6Address("::1")))      # pre-3.13 behaviour
+    assert is_loopback_host("::ffff:127.0.0.1") and is_loopback_host("[::ffff:127.1.2.3]")
+    assert not is_loopback_host("::ffff:10.0.0.1") and is_loopback_host("::1") and not is_loopback_host("::")
+    app = create_app(tmp_path / "out", repo)
+    assert TestClient(app, client=("::ffff:127.0.0.1", 5000)).get("/api/configs").status_code == 200
+    assert TestClient(app, client=("::1", 5000)).get("/api/configs").status_code == 200
+    lan = TestClient(app, client=("::ffff:10.0.0.1", 5000)).get("/api/runs")
+    assert lan.status_code == 403 and TOKEN_ENV in lan.json()["error"]

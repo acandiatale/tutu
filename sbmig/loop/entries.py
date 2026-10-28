@@ -28,6 +28,7 @@ changes what the loop does: an exception is logged (WARNING) and the call return
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Callable, Optional
 
@@ -47,6 +48,29 @@ def _count(x: Any) -> int:
     return 0
 
 
+def _accepted(fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any],
+              opt: dict[str, Any]) -> dict[str, Any] | None:
+    """``fn`` 의 시그니처가 받는 선택 키워드만 남긴 ``opt``; 시그니처를 볼 수 없는 callable 이면 None(A22).
+    ``**kwargs`` 를 받으면 전부, 위치 인자로 이미 채운 이름과 위치 전용 인자는 뺀다.
+
+    ``opt`` reduced to the keywords ``fn``'s signature takes (all of them when it takes ``**kwargs``; never a name
+    the positional ``args`` already fill, never a positional-only one); None when the signature does not
+    inspect (some builtins / C callables) — the caller then falls back to the TypeError retry."""
+    try:
+        sig = inspect.signature(fn)
+    except Exception:  # noqa: BLE001 - TypeError / ValueError (builtins), or a broken __signature__: old way
+        return None
+    params = list(sig.parameters.values())
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params):
+        return dict(opt)
+    positional = [p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                                                  inspect.Parameter.POSITIONAL_OR_KEYWORD)]
+    filled = {p.name for p in positional[:len(args)]}
+    names = {p.name for p in params if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                                                  inspect.Parameter.KEYWORD_ONLY)}
+    return {k: v for k, v in opt.items() if k in names and k not in filled and k not in kwargs}
+
+
 class _Guarded:
     """어댑터 공통 바탕: ``_target``(반대편 객체)이 없으면 비활성, 있으면 ``_call`` 로 안전하게 부른다."""
     _target: Any = None
@@ -59,17 +83,25 @@ class _Guarded:
 
     def _call(self, name: str, *args: Any, optional: Optional[dict[str, Any]] = None, default: Any = None,
               **kwargs: Any) -> Any:
-        """``target.name(...)`` 을 부른다. ``optional`` 키워드를 받지 않는 옛 반대편이면(TypeError 메시지에
-        그 이름) 그 키워드만 빼고 다시 부른다. 어떤 예외도 올리지 않는다(WARNING + ``default``).
+        """``target.name(...)`` 을 부른다. ``optional`` 키워드는 부르기 **전에** 시그니처를 보고 받지 않는 것을
+        뺀다(A22: callee 안에서 난 TypeError 로 두 번 부르지 않게 — 그 TypeError 는 WARNING 으로 끝난다).
+        시그니처를 볼 수 없는 callable 만 예전처럼 TypeError 메시지에 그 이름이 있으면 빼고 다시 부른다.
+        어떤 예외도 올리지 않는다(WARNING + ``default``).
 
-        `target.name(*args, **kwargs, **optional)`; `optional` kwargs are dropped once when the callee does not
-        take them (TypeError naming the keyword). Never raises."""
+        `target.name(*args, **kwargs, **optional)`; the `optional` kwargs the callee's signature does not take are
+        dropped BEFORE the one call (a TypeError raised inside the callee is never retried: it is the call's
+        failure, logged). Only a callable whose signature does not inspect keeps the old way: dropped once when
+        the TypeError names the keyword. Never raises."""
         t = self._target
         fn = getattr(t, name, None) if t is not None else None
         if not callable(fn):
             return default
         opt = dict(optional or {})
         try:
+            ok = _accepted(fn, args, kwargs, opt)
+            if ok is not None:
+                return fn(*args, **kwargs, **ok)
+            # 시그니처를 볼 수 없는 callable: 예전 방식(TypeError 메시지로 판단해 그 키워드만 빼고 재시도)
             while True:
                 try:
                     return fn(*args, **kwargs, **opt)

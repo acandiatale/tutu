@@ -1,6 +1,7 @@
 """일괄 실행 매니페스트 — 어떤 프로젝트를, 어떤 순서로, 프로젝트별로 어떤 설정으로 이관할지 읽는다.
 흐름상 위치: ``FleetRunner.run`` 이 맨 먼저 ``load_manifest`` 를 부른다(재개할 때도 매번 다시 읽는다). 형식:
-디렉토리(``*.zip`` 과 ``pom.xml`` 이 있는 하위 폴더), ``.txt`` (한 줄에 경로 하나), ``.yml`` (configs /
+디렉토리(``*.zip`` 과 ``pom.xml`` 이 맨 위나 한 단계 아래에 있는 하위 폴더 — ``_validate`` 와 같은 규칙,
+pom 이 없는 폴더는 경고 한 줄을 남기고 뺀다), ``.txt`` (한 줄에 경로 하나), ``.yml`` (configs /
 overrides / tags), ``.csv`` (``name,input,tags``). 상대 경로는 매니페스트 파일 위치 기준. 입력이 없거나 쓸 수
 없어도 예외를 내지 않고 ``error`` 를 채워 돌려준다 → 러너가 ``skipped`` 로 둔다. 윈도우 운영자 대비(round 10):
 인코딩은 UTF-8(BOM 유무)·UTF-16·cp949 무엇이든 읽는다. 이름은 실행 ID·폴더명이 되므로 ASCII 로 만든다(한글
@@ -11,7 +12,10 @@ Fleet manifests: which projects to migrate, in which order, with which per-proje
 
 Accepted forms (``load_manifest(path)``):
 
-* a **directory**: every ``*.zip`` and every subdirectory containing a ``pom.xml`` (sorted by name)
+* a **directory**: every ``*.zip`` and every subdirectory with a ``pom.xml`` at its top or one level down
+  (sorted by name) — the rule :func:`_validate` applies to any input (2026-10-28, A7: a folder whose only pom
+  sat one level down was dropped without a word); a subdirectory with no pom at either level is not a project
+  and is left out with a warning naming it, so nothing disappears silently
 * a ``.txt`` file: one path per line, ``#`` comments, blank lines ignored
 * a ``.yml``/``.yaml`` file: ``projects: [{name, input, configs: [...], overrides: {...}, tags: [...]}]``
 * a ``.csv`` file: header ``name,input,tags`` (tags separated by ``;`` or spaces)
@@ -33,6 +37,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -40,6 +45,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+
+log = logging.getLogger("sbmig.fleet")
 
 
 @dataclass
@@ -134,14 +141,25 @@ def _resolve(base: Path, p: str) -> Path:
     return q if q.is_absolute() else (base / q)
 
 
+def has_pom(d: Path) -> bool:
+    """폴더가 Maven 프로젝트로 보이는가: ``pom.xml`` 이 맨 위나 한 단계 아래(``*/pom.xml``)에 있다.
+    디렉토리 매니페스트(:func:`_from_dir`)와 입력 검사(:func:`_validate`)가 같은 이 규칙을 쓴다
+    — 둘이 어긋나면 한 단계 아래에만 pom 이 있는 프로젝트가 아무 말 없이 빠졌다(A7).
+
+    A pom.xml at the top of ``d`` or one level down — the one rule the directory manifest and
+    :func:`_validate` share (intake turns sibling poms into an aggregator)."""
+    return (d / "pom.xml").is_file() or any(q.is_file() for q in d.glob("*/pom.xml"))
+
+
 def _validate(proj: FleetProject) -> FleetProject:
     """입력이 쓸 만한지 보고 아니면 ``error`` 를 채운다(예외 없음): 입력 없음,
-    pom.xml 이 맨 위에도 한 단계 아래에도 없음, 디렉토리도 zip 도 아님, 프로젝트별 설정 파일 없음."""
+    pom.xml 이 맨 위에도 한 단계 아래에도 없음(:func:`has_pom`), 디렉토리도 zip 도 아님,
+    프로젝트별 설정 파일 없음."""
     p = Path(proj.input)
     if not p.exists():
         proj.error = f"input not found: {proj.input}"
     elif p.is_dir():
-        if not (p / "pom.xml").exists() and not any(p.glob("*/pom.xml")):
+        if not has_pom(p):
             proj.error = f"no pom.xml in {proj.input}"
     elif p.suffix.lower() != ".zip":
         proj.error = f"input must be a directory or a .zip: {proj.input}"
@@ -176,14 +194,19 @@ def _dedupe_names(projects: list[FleetProject]) -> list[FleetProject]:
 
 
 def _from_dir(d: Path) -> list[FleetProject]:
-    """디렉토리 매니페스트: 이름순으로 ``*.zip`` 과 ``pom.xml`` 이 바로 아래 있는 하위 폴더
-    (점으로 시작하는 것 제외)."""
+    """디렉토리 매니페스트: 이름순으로 ``*.zip`` 과 pom 이 맨 위나 한 단계 아래 있는 하위 폴더
+    (:func:`has_pom`, 점으로 시작하는 것 제외). pom 이 어디에도 없는 폴더는 프로젝트가 아니므로 빼되,
+    조용히 사라지지 않게 폴더 이름을 경고로 남긴다(A7)."""
     out = []
     for p in sorted(d.iterdir(), key=lambda x: x.name):
         if p.name.startswith("."):
             continue
-        if (p.is_file() and p.suffix.lower() == ".zip") or (p.is_dir() and (p / "pom.xml").exists()):
+        if (p.is_file() and p.suffix.lower() == ".zip") or (p.is_dir() and has_pom(p)):
             out.append(FleetProject(name=_name_for(p), input=str(p.resolve())))
+        elif p.is_dir():
+            # pom 없는 트리(톰캣 exploded 등)는 회사 결정상 이관하지 않는다
+            # — 운영자가 볼 수 있게 이름만 남긴다
+            log.warning("fleet manifest: %s left out - no pom.xml at its top or one level down", p)
     return out
 
 

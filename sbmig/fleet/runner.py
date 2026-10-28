@@ -6,6 +6,10 @@
 프로젝트는 이름이 아니라 입력 경로(``input_key``)로 찾는다 — 이름이 바뀐 폴더가 남의 성공을 물려받지 않게.
 인프라 가드(``fleet.*``): 인프라 원인으로 끝난 프로젝트는 실패가 아니라 ``pending`` 으로 되돌리고, 연달아
 ``infra_failure_limit`` 개면 기다렸다 재점검 후 재개, 안 되면 ``fleet stopped: …`` 한 줄로 멈춘다(exit 3).
+상태 행의 숫자(A9, 2026-10-28): ``llm_calls`` / 토큰 / ``llm_cost`` 는 그 프로젝트의 *모든 시도*
+합계(예산 ``max_llm_calls_total`` 과 비용 합계가 재시도를 빠뜨리지 않게), 나머지(종료 코드·차단·미해결·
+오류 목록·플래그)는 마지막 시도 것 — 시도를 시작할 때 비우므로 crash 한 재시도는 0 / 빈 값.
+``SBMIG-RESULT`` 줄의 ``llm=`` 은 그 실행 것.
 
 Sequential fleet runner: ONE agent migrates N projects one after the other, feeding one shared KB.
 
@@ -18,6 +22,16 @@ State lives in ``<out>/fleet/state.json`` (:class:`FleetState`), rewritten atomi
 so a killed fleet resumes where it stopped (``sbmig fleet run`` is resumable by default). Projects are identified by
 their input path (``manifest.input_key``), not by their name: a renamed or added folder never inherits another
 project's result (round 10).
+
+The numbers of a state row (2026-10-28, A9): ``llm_calls``, ``llm_input_tokens``, ``llm_output_tokens``
+and ``llm_cost`` sum EVERY attempt of the project (a retry adds to them, so ``fleet.max_llm_calls_total`` and
+the fleet's ``llm_calls_total`` / ``llm_cost_total`` count the calls of earlier attempts too); every other
+count (``exit_code``, ``blocked`` / ``blocked_reasons``, ``unresolved``, ``error_counts``, ``flags``,
+``advisories``, ``carried_over``) belongs to the last attempt and is cleared when an attempt starts, so a
+retry that crashes shows 0 / empty, not the previous attempt's numbers. The ``SBMIG-RESULT`` line's ``llm=``
+is the calls of that run (0 for a crash: no report). A row whose input disappeared is ``skipped`` with the
+reason whenever this fleet run would start it (pending, ``running``, infra-deferred, incomplete / aborted
+under ``--retry-failed``, A8).
 
 Infrastructure guard (round 10, ``fleet.*``): with ``fleet.preflight`` the Java / Maven / settings / repository / LLM
 / disk checks of :mod:`sbmig.fleet.preflight` run once before the first project. A project whose run ended for an
@@ -214,8 +228,11 @@ class FleetRunner:
     # ------------------------------------------------------------------ state
     def load_state(self, projects: list[FleetProject]) -> FleetState:
         """재개의 핵심: ``state.json`` 을 읽고(없거나 깨졌으면 새 일괄 실행) 매니페스트 항목마다 결과 행을
-        짝짓는다. 짝은 이름이 아니라 입력 경로로 짓는다. 입력이 사라진 아직 안 돈 행은 ``skipped``, 입력이
-        다시 생기면 ``pending`` 으로 되돌린다(단 Maven 이 아니라 거부된 것은 계속 ``skipped``)."""
+        짝짓는다. 짝은 이름이 아니라 입력 경로로 짓는다. 입력이 사라진 행 중 이번에 돌 행(pending, 죽어 남은
+        ``running``, 인프라로 미룬 것, ``--retry-failed`` 의 incomplete / aborted)은 모두 ``skipped`` + 이유
+        (A8: 예전에는 pending / skipped 만 바꿔서 나머지는 돌다가 crash → aborted). 돌지 않을 행(``success``,
+        재시도 없이 남겨 두는 실패)은 결과가 여전히 맞으므로 그대로 둔다. 입력이 다시 생기면 ``pending`` 으로
+        되돌린다(단 Maven 이 아니라 거부된 것은 계속 ``skipped``)."""
         state: Optional[FleetState] = None
         if self.state_path.exists():
             try:
@@ -243,9 +260,13 @@ class FleetRunner:
             self._results[id(proj)] = r
             r.name = proj.name
             r.input = proj.input
-            # 입력이 없어짐: 아직 안 돈 행만 건너뜀으로 바꾼다(이미 결과가 있는 행은 그대로 둔다)
+            # 입력이 없어짐: 이번에 돌 행은 상태가 무엇이든 건너뜀 + 이유(돌리면 입력이 없어 crash → aborted).
+            # success 와 재시도 없이 남겨 두는 실패는 돌지 않으므로 결과를 그대로 둔다
+            # input missing (A8): every row this run would start — pending, a `running` left by a dead
+            # fleet, an infra deferral, incomplete / aborted under --retry-failed — is skipped with the
+            # reason instead of crashing into `aborted`; a success / a kept failure never runs (result stays)
             if not proj.ok:
-                if r.status in ("pending", "skipped"):
+                if self._action(r) not in ("done", "keep"):
                     r.status, r.error = "skipped", proj.error
             elif r.status == "skipped" and not (r.error or "").startswith("unsupported build tool"):
                 r.status, r.error = "pending", None      # the input is back; an intake rejection stays skipped
@@ -255,7 +276,8 @@ class FleetRunner:
 
     def save_state(self) -> None:
         """상태를 원자적으로 다시 쓴다(임시 파일 + 교체): 도중에 죽어도 ``state.json`` 이 반쯤 쓰인 채 남지
-        않는다. 일괄 실행 LLM 호출·비용 합계도 여기서 다시 센다."""
+        않는다. 일괄 실행 LLM 호출·비용 합계도 여기서 다시 센다(행마다 이미 모든 시도의 합계라
+        재시도도 들어간다)."""
         from sbmig.kb.store import atomic_write
 
         assert self.state is not None
@@ -337,7 +359,9 @@ class FleetRunner:
         return Config.model_validate(data)
 
     def _remaining_llm(self) -> Optional[int]:
-        """``fleet.max_llm_calls_total`` 에서 지금까지 쓴 호출을 뺀 나머지. 예산이 0 이하(무제한)면 None."""
+        """``fleet.max_llm_calls_total`` 에서 지금까지 쓴 호출을 뺀 나머지. 예산이 0 이하(무제한)면 None.
+        행의 ``llm_calls`` 는 그 프로젝트의 모든 시도 합계라 재시도한 프로젝트의 앞선 시도도
+        예산에서 빠진다(A9)."""
         total = self.cfg.fleet.max_llm_calls_total
         if total <= 0:
             return None
@@ -366,7 +390,12 @@ class FleetRunner:
 
     def fill_result(self, r: FleetProjectResult, report: RunReport, code: int) -> None:
         """끝난 실행의 보고서를 상태 행에 옮긴다: 종료 코드 0 → success, 3 → aborted, 그 밖 → incomplete
-        (Maven 이 아니라 거부된 것은 ``skipped``). LLM 사용량, 차단·미해결, 오류 목록 개수도 옮긴다."""
+        (Maven 이 아니라 거부된 것은 ``skipped``). 차단·미해결, 오류 목록 개수는 이 실행 것으로 덮고, LLM
+        사용량(호출·토큰·비용)은 앞선 시도 위에 *더한다* — 시도마다 한 번만 부를 것(A9).
+
+        Copy a finished run's report into its state row. The per-run counts (blocked, unresolved, error list,
+        flags) are this run's; the LLM usage (calls, tokens, cost) is ADDED to the attempts before it (A9, see
+        the module docstring) — call it once per attempt."""
         r.exit_code = code
         r.status = _status_for(code)  # type: ignore[assignment]
         tool = unsupported_build_tool(report)
@@ -374,10 +403,13 @@ class FleetRunner:
             r.status = "skipped"
             r.error = f"unsupported build tool: {tool} (only Maven projects are migrated)"
         r.case_type = report.case_type
-        r.llm_calls = report.llm_usage.calls
-        r.llm_input_tokens = report.llm_usage.input_tokens
-        r.llm_output_tokens = report.llm_usage.output_tokens
-        r.llm_cost = report.llm_cost.total if getattr(report, "llm_cost", None) is not None else None
+        # 덮어쓰면 재시도가 앞선 시도의 호출을 지워 ``max_llm_calls_total`` 예산·비용 합계가 줄어든다
+        r.llm_calls += report.llm_usage.calls
+        r.llm_input_tokens += report.llm_usage.input_tokens
+        r.llm_output_tokens += report.llm_usage.output_tokens
+        cost = report.llm_cost.total if getattr(report, "llm_cost", None) is not None else None
+        if cost is not None:                          # an unpriced run (None) keeps the earlier cost
+            r.llm_cost = (r.llm_cost or 0.0) + cost
         r.blocked = len(report.blocked)
         r.blocked_reasons = [
             f"{b.reason.value}:{b.artifact.key if b.artifact else (b.owner_class or '-')}"
@@ -391,6 +423,22 @@ class FleetRunner:
         r.out_dir = report.outputs.get("run_dir") or r.out_dir
         if code == 3 and not r.error:
             r.error = next((m for m in report.manual_followups if m.startswith("run aborted")), None)
+
+    @staticmethod
+    def _reset_run_counters(r: FleetProjectResult) -> None:
+        """새 시도를 시작할 때 앞선 시도의 실행별 숫자(종료 코드, 차단·미해결, 오류 목록, 플래그,
+        권고, 이월)를 비운다. 이 시도가 crash 하거나 Ctrl-C 로 끊기면 보고서가 없으므로 그 숫자는
+        0 / 빈 값으로 남는다 — 예전 시도의 숫자가 ``SBMIG-RESULT`` 줄과 요약에 새 결과처럼 보이지
+        않게(A9). LLM 사용량(``llm_calls`` / 토큰 / 비용)은 모든 시도의 합계이므로 건드리지 않는다.
+
+        A new attempt starts from empty per-run counts: a crash / interrupt produces no report, so it shows
+        0 / empty instead of the previous attempt's numbers (A9). The LLM usage is cumulative and stays."""
+        r.exit_code = None
+        r.blocked, r.blocked_reasons = 0, []
+        r.unresolved = 0
+        r.error_counts = {}
+        r.flags, r.advisories = [], []
+        r.carried_over = 0
 
     # ------------------------------------------------------------------ output helpers
     def _say(self, msg: str) -> None:
@@ -579,7 +627,7 @@ class FleetRunner:
                 r.attempt += 1
             r.status, r.error = "running", None
             r.started_at, r.finished_at = utcnow(), None
-            r.error_counts = {}
+            self._reset_run_counters(r)          # A9: a crash must not show the last attempt's numbers
             run_id = self._run_id(index_of[id(proj)], proj, r.attempt)
             r.run_id = run_id
             r.out_dir = str(self.out_dir / run_id)
@@ -590,6 +638,7 @@ class FleetRunner:
             kind: Optional[str] = None
             build_ok = False
             reported = False                     # a report came back: the result line carries open= / resolved=
+            run_llm = 0                          # this attempt's LLM calls (r.llm_calls: every attempt, A9)
             run_log = self._attach_run_log(self.out_dir / run_id)
             try:
                 pcfg = self.project_config(proj, remaining)
@@ -598,6 +647,7 @@ class FleetRunner:
                 code = exit_code_for(report)
                 self.fill_result(r, report, code)
                 build_ok, reported = bool(report.success), True
+                run_llm = report.llm_usage.calls
                 kind = report_infra_kind(report, code) if r.status != "skipped" else None
             except KeyboardInterrupt:
                 # Ctrl-C: 이 프로젝트를 pending(interrupted)으로
@@ -624,12 +674,14 @@ class FleetRunner:
             ran += 1
             self.save_state()
             o_err, r_err = counts_open_resolved(r.error_counts)
+            # SBMIG-RESULT 의 llm= 은 이 실행의 호출 수(crash 면 보고서가 없어 0), 상태 행은 모든 시도의 합계
             self._say(result_line(run_id, r.exit_code, build_ok, unresolved=r.unresolved, blocked=r.blocked,
-                                  llm_calls=r.llm_calls, attention=result_attention(r),
+                                  llm_calls=run_llm, attention=result_attention(r),
                                   open_errors=o_err if reported else None, resolved_errors=r_err if reported else None))
+            llm_all = f" (all attempts {r.llm_calls})" if r.llm_calls != run_llm else ""
             self._say(
                 f"[{pos}/{total}] {proj.name}: {r.status} (exit {r.exit_code}, {r.duration_s:.0f}s, "
-                f"llm {r.llm_calls}, errors open {o_err} / resolved {r_err}, blocked {r.blocked}, "
+                f"llm {run_llm}{llm_all}, errors open {o_err} / resolved {r_err}, blocked {r.blocked}, "
                 f"unresolved {r.unresolved})"
                 + (f" - {r.error}" if kind else "")
             )

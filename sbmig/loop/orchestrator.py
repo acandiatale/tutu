@@ -1245,6 +1245,7 @@ class Orchestrator:
         for flag in list(getattr(res, "flags", None) or []):      # 2026-10-23: e.g. web-xml-registered
             self._flag(flag)
         pr.notes += res.notes
+        self._jsp_jakarta_note(pr, step, res)
         self._restructure_results.append(res)            # v2: the structure review's input
         self._restructure_notes += [f"{step.id}: {n}" for n in res.notes]
         merged = list(getattr(res, "merged_modules", None) or [])
@@ -1415,14 +1416,16 @@ class Orchestrator:
         """v2.1: 검토 결과를 오류 목록과 KB 에 남긴다(예외 없음, skipped·드라이런이면 없음). warning 마다,
         그리고 커밋된 수정이 다루지 못한 critical 마다 ``note`` 항목; 커밋된 수정이 다룬 critical 마다
         ``review`` 로 해결된 항목(시도 1개: 원인 / 해결 / 수정 기록 / diff / 커밋); 답변의 스크립트는 KB
-        케이스 ``review|structure`` 에 저장. 수정 기록은 ``수정: …`` 로그로.
+        케이스 ``review|structure`` 에 저장. 수정 기록은 ``수정: …`` 로그로. 검토의 LLM 호출 수는 첫 해결 항목의
+        시도에만 싣는다(나머지 0, A23).
 
         v2.1: the review on the error list and in the KB (never raises, nothing for a skipped review / dry run):
         a `note` entry per warning — and per critical issue no committed fix addressed —, an entry resolved by
         `review` per critical issue the committed fix addressed (one try: source review, 원인 / 해결 / edits /
         diff / commit), and the answer's script stored in the KB case `review|structure` (source review). v2.1b:
         the committed fix's 수정 notes (the edits' `desc` / the answer's `<changes>` + the diff's lines,
-        `sbmig.loop.notes`) go on every such try and are logged once, one `수정: …` INFO line per note."""
+        `sbmig.loop.notes`) go on every such try and are logged once, one `수정: …` INFO line per note. v2.1h (A23):
+        the review's LLM calls go on the first such try only (the others carry 0 and say so in their note)."""
         if self._dry_run or rv is None or rv.verdict == "skipped":
             return
         try:
@@ -1444,17 +1447,26 @@ class Orchestrator:
                     log.info("수정: %s", note_line(nt))
                 if len(notes) > NOTES_LOGGED:
                     log.info("수정: … %d more (errors.md)", len(notes) - NOTES_LOGGED)
+            # A23: 검토의 LLM 호출은 한 번에 여러 critical 을 고친다 — 첫 항목의 시도에만 호출 수를 싣고 나머지는
+            # 0 으로 둔다(FixTry.llm_calls 를 합산하는 KB · errors.md 가 검토 호출을 항목 수만큼 세지 않게).
+            # 보고서의 LLM 사용량은 이와 무관하게 예산 / 사용량 집계(_review_llm_usage)에서 온다
+            review_calls = int(rv.llm_usage.calls or 0)
+            first_fixed = True
             for issue in rv.issues:
                 text = " ".join((issue.problem or "").split()) + (f" — {issue.fix_hint}" if issue.fix_hint else "")
                 if issue.severity == "critical" and sha:
+                    calls = review_calls if first_fixed else 0
+                    shared = "" if first_fixed or not review_calls else \
+                        f"; the review's {review_calls} LLM call(s) are counted on its first fixed issue"
+                    first_fixed = False
                     self.errors.review_fixed(
                         issue.file or "", f"critical: {text}",
                         analysis=(getattr(ans, "analysis", "") if ans is not None else "") or rv.analysis,
                         solution=getattr(ans, "solution", "") if ans is not None else "",
                         no_script_reason=getattr(ans, "no_script_reason", "") if ans is not None else "",
                         applied=applied, files=files, edits=list(notes), diff=diff, commit=sha, result="improved",
-                        note=f"fixed by the structure review ({n_edits} edit(s), commit {sha[:10]})",
-                        llm_calls=int(rv.llm_usage.calls or 0), seconds=0.0,
+                        note=f"fixed by the structure review ({n_edits} edit(s), commit {sha[:10]}){shared}",
+                        llm_calls=calls, seconds=0.0,
                         major_upgrades=list(getattr(rv, "major_upgrades", None) or []),
                         verify=(getattr(ans, "verify", "") if ans is not None else "") or "",
                         verify_source=(self._review_guide_source or ("llm" if ans is not None and ans.verify
@@ -1598,6 +1610,25 @@ class Orchestrator:
         for pom, note in items:
             self.errors.add_pom_verify(pom, note)
             log.info("%s: %s (pom-verify #%d)", pom, note, self.errors.size())
+
+    def _jsp_jakarta_note(self, pr: PhaseResult, step: PlanStep, res: Any) -> None:
+        """v2.1h (A5): 재구성이 JSP 의 javax EE 이름을 바꿨으면 그 수를 단계 메모(``<step>: JSP javax → jakarta:
+        N files, M references``)로 남기고 저널에 파일 목록을 쓴다. RunReport 에 따로 필드가 없어 보고서의 "What we
+        changed" 와 인수인계의 남은 JSP 수는 이 메모를 읽는다(``sbmig.report.handover.jsp_jakarta_counts``).
+
+        v2.1h (A5): the restructure's JSP rename (`RestructureResult.jsp_jakarta_files` / `_refs` / `_renamed`) as a
+        step note the report reads back, plus a `jsp_jakarta` journal event with the files. Never raises."""
+        try:
+            files = int(getattr(res, "jsp_jakarta_files", 0) or 0)
+            refs = int(getattr(res, "jsp_jakarta_refs", 0) or 0)
+            if files <= 0:
+                return
+            from sbmig.report.handover import jsp_jakarta_note
+            pr.notes.append(jsp_jakarta_note(step.id, files, refs))
+            self.ws.journal({"event": "jsp_jakarta", "step": step.id, "files": files, "refs": refs,
+                             "renamed": list(getattr(res, "jsp_jakarta_renamed", None) or [])[:500]})
+        except Exception as e:  # noqa: BLE001 - a report aid, never a reason to fail the restructure
+            log.debug("JSP rename note skipped: %s: %s", type(e).__name__, e)
 
     def _merge_placeholders(self, files: list[str], keys: list[str]) -> None:
         """보고서의 properties = 프로필의 설정 목록 + 재구성이 쓴 placeholder 들(중복 제거, 순서 유지).

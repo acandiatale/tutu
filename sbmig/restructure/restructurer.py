@@ -71,6 +71,7 @@ from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectP
 from sbmig.core.workspace import GitError, Workspace, is_build_output_path
 from sbmig.plan.versions import compare_versions, version_lt
 
+from .jsp_jakarta import rename_jsp_files
 from .pom_editor import PomEditError, PomEditor, property_ref
 from .webxml_registrations import CLASS_NAME as WEB_XML_CLASS
 from .webxml_registrations import RULES_FILE as WEB_XML_RULES
@@ -365,8 +366,51 @@ class Restructurer:
             log.error("restructure failed: %s", e)
             result.ok = False
             result.error = str(e)
+        # v2.1h: 모든 모드 공통 — 파일이 최종 위치에 간 뒤 JSP 의 javax 이름을 jakarta 로(레시피는 JSP 를 못 본다).
+        # 실패한 재구성(ok=False)에는 손대지 않는다: "아무것도 바꾸지 않았다" 는 오류 메시지가 사실로 남게
+        self._jsp_jakarta(c)
         result.changed_files = sorted(c.changed)
         return result
+
+    # ================================================================== v2.1h: JSP javax → jakarta
+    def _jsp_jakarta(self, c: _Ctx) -> None:
+        """``layout.jsp_jakarta_rename`` 이면 워크스페이스의 모든 JSP / 태그 파일 코드 영역에서 javax EE 이름을
+        jakarta 로 바꾸고(``jsp_jakarta.rename_jsp_files``) 결과의 ``jsp_jakarta_*``, 바뀐 파일, 노트 한 줄을
+        채운 뒤 따로 커밋한다. 꺼져 있으면 분석기가 센 javax JSP 수로 후속 작업 한 줄만. 파일 하나의 실패는
+        경고 + 노트로 남기고 재구성을 멈추지 않는다.
+
+        Every mode, after the mode's work put the files in place (v2.1h, A5): rename the javax EE names inside the
+        JSP / tag files' code regions (`layout.jsp_jakarta_rename`), fill `result.jsp_jakarta_*`, add the changed
+        files and one note, commit. Off → a follow-up when the analyzer counted javax JSPs. Skipped when the mode
+        failed (ok=False)."""
+        res = c.result
+        if not getattr(c.cfg.layout, "jsp_jakarta_rename", True):
+            src = getattr(c.profile, "source", None)
+            n = int(getattr(src, "jsp_javax_files", 0) or 0)
+            if n:
+                c.followup(f"JSP javax references not renamed (layout.jsp_jakarta_rename: false): {n} files")
+            return
+        if not res.ok:
+            return
+        try:
+            out = rename_jsp_files(c.ws)
+        except Exception as e:  # noqa: BLE001 - the rename is an add-on: a walk failure never fails the restructure
+            log.warning("JSP javax → jakarta skipped: %s: %s", type(e).__name__, e)
+            c.note(f"JSP javax → jakarta skipped: {type(e).__name__}: {e}")
+            return
+        if out.renamed:
+            res.jsp_jakarta_files += out.files
+            res.jsp_jakarta_refs += out.refs
+            res.jsp_jakarta_renamed += [f"{rel}: {n}" for rel, n in out.renamed.items()]
+            c.changed.update(out.renamed)
+            c.note(f"JSP javax → jakarta: {out.files} files, {out.refs} references")
+            log.info("JSP javax → jakarta: %d file(s), %d reference(s) of %d JSP / tag file(s)",
+                     out.files, out.refs, out.scanned)
+            c.commit("restructure: JSP javax -> jakarta")
+        if out.failed:
+            names = sorted(out.failed)
+            c.note(f"JSP javax → jakarta: {len(names)} file(s) not renamed ({', '.join(names[:3])}"
+                   f"{' …' if len(names) > 3 else ''}; see sbmig.log)")
 
     # ================================================================== layout
     def _layout(self, c: _Ctx) -> None:
@@ -2756,6 +2800,7 @@ class Restructurer:
             return                                     # no web resources: no front module
         taken: set[str] = set()
         moved = {"static": 0, "jsp": 0, "webinf": 0, "copy": 0}
+        jsp_files = 0                                  # JSP pages actually moved (A24: a clashing one is not)
         clash: list[str] = []
         jsp_relocated: list[str] = []
         for src, dst, kind, web in plan:
@@ -2779,10 +2824,13 @@ class Restructurer:
             else:
                 c.move(src, dst)
             moved[kind] += 1
+            if kind == "jsp" and src.lower().endswith(JSP_EXTS):
+                jsp_files += 1
         for d in (*web_dirs, *(f"{comp}/src/main/resources/{x}" for x in WEB_RESOURCE_DIRS)):
             self._prune_empty_dirs(c, d)
         c.front_made = True
-        c.jsp_moved = sum(1 for s_, d, k, _ in plan if k == "jsp" and s_.lower().endswith(JSP_EXTS) and d in taken)
+        # A24: 같은 대상으로 가는 JSP 두 개는 하나만 옮겨진다(나머지는 clash) — 옮겨진 것만 센다
+        c.jsp_moved = jsp_files
         c.result.front_files = moved["static"] + moved["jsp"] + moved["copy"]
         # JSP 가 있으면 boot 모듈은 외부 Tomcat 용 WAR(회사 규칙):
         # Spring Boot 는 실행 jar 에서 JSP 를 지원하지 않는다

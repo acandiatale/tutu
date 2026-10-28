@@ -32,7 +32,7 @@ from typing import Optional
 
 import yaml
 
-from sbmig.core.config import Config
+from sbmig.core.config import Config, TargetConfig
 from sbmig.core.interfaces import FixContext
 from sbmig.core.models import BuildError, ErrorCluster, ErrorKind, FixAttempt, ScriptBase
 from sbmig.core.workspace import Workspace
@@ -155,6 +155,30 @@ def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+TARGET_MARK = " | target: "           # the tail of `sbmig.fix.profile_summary` (the migration target)
+
+
+def target_text(cfg: Config | None = None) -> str:
+    """프롬프트의 목표 버전 구절 ``JDK 21, Spring Boot 4.1.0`` — ``cfg.target``(설정이 없으면 TargetConfig 기본값).
+    하드코딩하지 않는다(A20: 회사가 목표를 바꾸면 프롬프트도 따라간다).
+
+    The migration target for prompts, from `cfg.target` (TargetConfig defaults without a config)."""
+    t = getattr(cfg, "target", None) if cfg is not None else None
+    t = t if t is not None else TargetConfig()
+    return f"JDK {t.java_version}, Spring Boot {t.spring_boot_version}"
+
+
+def with_target(summary: str, cfg: Config | None = None) -> str:
+    """프로젝트 요약의 `` | target: …`` 꼬리를 설정의 목표로 바꾼다(꼬리가 없거나 요약이 비면 그대로).
+    루프는 설정 없이 요약을 만들므로(``sbmig.loop.components.profile_summary``) 프롬프트를 꾸릴 때 고친다.
+
+    `summary` with its ` | target: …` tail set from `cfg.target` (unchanged without a tail). The loop builds the
+    summary without the config, so the packer and the verify prompt retarget it."""
+    if not summary or TARGET_MARK not in summary:
+        return summary
+    return summary.rsplit(TARGET_MARK, 1)[0] + TARGET_MARK + target_text(cfg)
+
+
 def fence_for(text: str) -> str:
     """본문에 ``` 가 있으면 ```` 로 감싼다(프롬프트 속 코드 펜스가 중간에 닫히지 않게)."""
     return "````" if "```" in text else "```"
@@ -503,7 +527,7 @@ class ContextPacker:
         small files first, their surplus goes to the big ones); files beyond the budget are listed by name only.
         Poms of the modules involved when the case is a resolution / pom error. Deterministic for the same input."""
         budget = budget or self.cfg.llm.max_context_chars
-        summary = profile_summary or ctx.profile_summary
+        summary = with_target(profile_summary or ctx.profile_summary, self.cfg)     # A20: cfg.target, not a constant
         if case_type is None:
             m = re.search(r"case=(\w+)", summary or "")
             case_type = m.group(1) if m else None

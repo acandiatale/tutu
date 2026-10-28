@@ -579,13 +579,15 @@ def load_replay_responses(record_dir: str | Path) -> list[str]:
 
 
 class ReplayEntry:
-    """기록된 답 하나(`llm-NNNN.json`): `response` 텍스트, 선택 `replay_role`(fix | structure_review …; fix 는
-    fix_escalation 호출에도 답한다), 선택 `match` 정규식(요청의 system 이 아닌 메시지에서 찾음). 기록기가 쓴
-    `role` 키는 참고용일 뿐 선택에 쓰지 않는다.
+    """기록된 답 하나(`llm-NNNN.json`): `response` 텍스트, 선택 `replay_role`(fix | structure_review |
+    verify_guide …; fix 는 fix_escalation 호출에도 답하지만 verify_guide 에는 답하지 않는다 — 운영자 가이드는
+    `replay_role: verify_guide` 항목이나 role 없는 항목만 답한다), 선택 `match` 정규식(요청의 system 이 아닌
+    메시지에서 찾음). 기록기가 쓴 `role` 키는 참고용일 뿐 선택에 쓰지 않는다.
 
-    One recorded answer (`llm-NNNN.json`): `response` text, optional `replay_role` (fix | structure_review | …;
-    "fix" also answers fix_escalation calls) and optional `match` regex searched in the request's non-system
-    messages. (The recorder's own `role` key is informational and never selects.)"""
+    One recorded answer (`llm-NNNN.json`): `response` text, optional `replay_role` (fix | structure_review |
+    verify_guide | …; "fix" also answers fix_escalation calls, never verify_guide ones — the operator guide call is
+    answered by a `replay_role: verify_guide` entry or an entry without a role) and optional `match` regex searched
+    in the request's non-system messages. (The recorder's own `role` key is informational and never selects.)"""
 
     def __init__(self, response: str, *, role: Optional[str] = None, match: Optional[str] = None, name: str = ""):
         self.response = response

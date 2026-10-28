@@ -540,7 +540,7 @@ v2 새로. 실행마다, 구조화 뒤 첫 빌드 전에 LLM이 pom · 의존성
 | script_result | 그 스크립트의 실행 결과: `status`, `changed_files[]`, `log[]`, `error`, `problems[]`, `duration_s` | `{"status":"ok","changed_files":["pom.xml"], …}` |
 | commit | 스크립트 변경을 담은 커밋 (`review: fix critical structure issues (n)`). 되돌릴 수 있게 따로 커밋 | `3f1c9a0…` |
 | reverted | 스크립트 변경을 되돌렸나 (스크립트 실패, 소스(`.java`, `.jsp` 등)를 건드림, pom을 깨뜨림) | `false` |
-| llm_usage | 점검의 LLM 사용량: `model`, `calls`(최대 2), `input_tokens`, `output_tokens` | `{"calls":1, …}` |
+| llm_usage | 점검의 LLM 사용량: `model`, `calls`(최대 3: 점검 1 + 형식 재시도 1 + 편집 적용 실패 재시도 1), `input_tokens`, `output_tokens` | `{"calls":1, …}` |
 | note | 왜 실패했나 / 스크립트가 어떻게 됐나 | |
 
 문장(지적, 분석, 메모, 스크립트, 로그)은 비밀값을 가리고 홈 폴더를 `~`로 바꿔 저장합니다. 리포트의 "구조 점검" 절과 Handover, 마지막 결과 줄(`SBMIG-RESULT … review=issues`)에도 같은 판정이 나옵니다.

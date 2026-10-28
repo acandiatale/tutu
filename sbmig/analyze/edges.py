@@ -29,7 +29,17 @@ from typing import Iterable, Optional
 
 from sbmig.core.models import LibraryUsage, PomInfo
 
-from .pom_parser import WorkspaceView, _child, _children, _text, interpolate, is_skipped_path, pom_dir
+from .pom_parser import (
+    WorkspaceView,
+    _child,
+    _children,
+    _text,
+    interpolate,
+    is_skipped_path,
+    pom_dir,
+    read_pom_text,
+    xml_without_declaration,
+)
 
 CODEGEN_PLUGINS = ("protobuf-maven-plugin", "jaxb2-maven-plugin", "openapi-generator-maven-plugin",
                    "maven-jaxb2-plugin", "querydsl-maven-plugin",
@@ -136,9 +146,11 @@ def system_dependencies(ws: WorkspaceView, poms: list[PomInfo]) -> list[SystemDe
     root = Path(ws.root)
     out: list[SystemDep] = []
     for p in poms:
+        # pom_parser 와 같은 길로 읽는다(A1): EUC-KR / MS949 선언 pom 이 이제 프로필에 들어오므로 여기서도 선언을 떼야
+        # expat 의 ValueError("multi-byte encodings are not supported")로 분석 전체가 죽지 않는다
         try:
-            tree = ET.fromstring(ws.read(p.path).encode("utf-8"))
-        except (ET.ParseError, OSError, UnicodeError):
+            tree = ET.fromstring(xml_without_declaration(read_pom_text(ws, p.path)).encode("utf-8"))
+        except (ET.ParseError, OSError, ValueError, LookupError):
             continue
         props: dict[str, str] = {}
         chain: list[PomInfo] = []

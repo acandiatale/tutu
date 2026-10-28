@@ -1614,7 +1614,8 @@ Snippets are whole by default (user: "사람이 보는 거면 40줄 고정 안 �
   fills blanks); a try counts as a run only when its script really ran (a script stored next to applied edits, a
   "not run again" duplicate and pending tries are skipped; a failure before the edits applied counts `apply_failed`).
   `errors.jsonl` is rewritten atomically under the lock, only changed lines re-serialized, unreadable lines kept.
-  INFO `reindex: N script run record(s) rebuilt, M entr(ies) given as-is/to-be hunks`. `kb cases show` prints
+  INFO `reindex: N script run record(s) rebuilt, M entr(ies) given as-is/to-be hunks, F build-resolved entr(ies)
+  given a probable fixer` (v2.1h: hunks and fixer attribution counted apart, A15). `kb cases show` prints
   `parent`, `reason`, `last failure` and `runs (N, newest last)` per script; `cases.md` shows `v2 unverified 0/1 —
   <last_failure>`. `_clean_entry` masks note `where` / `change` and hunk text; `merge_from` (KB import) maps an
   imported script's `parent` to the local numbering and merges runs.
@@ -1660,3 +1661,73 @@ user saw left behind.
 * Unchanged: everything else under a web root already moved to the front module whatever its extension; web
   content in a directory no pom references (`_web_content_left`) is still only a follow-up (`web-content-left`); the
   Boot as-is mode (`boot_as_is: in-place`) moves nothing.
+
+## v2.1h — JSP javax → jakarta rename + fixes from the handover read (2026-10-28)
+
+User decisions on `docs/v2/HANDOVER-FINDINGS-2026-10-28.md`: A1 fix (EUC-KR pom), A2 keep (highest higher major), A3 "3회로
+맞추자" (docs follow the code), A4 pending (explained), A5 "JSP 도 javax → jakarta 로" (OpenRewrite never parses JSPs), every
+other suspected bug fixed. Dead code / unread keys (§B) untouched.
+
+### Config (`sbmig/core/config.py`, `config/default.yml`)
+- `layout.jsp_jakarta_rename: bool = True` — after the restructure put every file in its final place (all modes: layout,
+  boot_pom / in-place, msa_pom, optional_bump), the javax EE names of the analyzer's table
+  (`sbmig/analyze/jakarta_packages.yml`, `jakarta_rules()` / `javax_ee_token()`) are renamed to `jakarta.` inside the
+  code regions of every JSP / JSPF / JSPX / tag file (`sbmig.analyze.jsp.jsp_code_spans`: page / tag `import`, useBean
+  `class` / `type`, scriptlets; Java string literals and comments untouched, taglib URIs untouched — JSTL 3 still serves
+  the `java.sun.com` URIs). Files are written back in their own encoding (UTF-8 / MS949 / EUC-KR) with their line ends.
+  False = the pre-10-28 behaviour (Handover follow-up only).
+- `llm.provider` class default is now `company` (A6; `config/default.yml` already said so).
+
+### Models
+- `RestructureResult.jsp_jakarta_files: int`, `jsp_jakarta_refs: int`, `jsp_jakarta_renamed: list[str]` ("<rel path>: N").
+- `GAV.parse` (A26): `g:a:packaging[:classifier]:v` (four or more parts) takes the last part as the version.
+- `LLMRole` gains `"verify_guide"` (A21): the one call `LLMFixer.verify_guide` makes; replay files answer it with
+  `replay_role: verify_guide`.
+
+### Report
+- "What we changed": `JSP javax → jakarta: N files, M references` when the rename ran; Handover follow-up
+  `JSP javax references remain (N files)` when `layout.jsp_jakarta_rename` is off or files were left untouched
+  (`SourceStats.jsp_javax_files`, A5 — the count existed since round 9 but nothing read it).
+
+### Fixes (file → finding id in `docs/v2/HANDOVER-FINDINGS-2026-10-28.md`)
+`analyze/pom_parser.py` A1 (an XML declaration naming a multi-byte encoding is replaced before expat parses the UTF-8
+text — same as `source_scanner._xml_root`), `analyze/classifier.py` A25; `fleet/manifest.py` A7, `fleet/runner.py` A8 / A9;
+`web/runs.py` A10 (FIFO queue), `web/app.py` A11; `report/writer.py` A12 / A13; `triage/scripts.py` A14
+(`script.reuse_versions` honoured: the next stored version when the best one failed this run); `fix/fixer.py` A20 (target
+from `cfg.target`), A21; `loop/orchestrator.py` A23; `loop/entries.py` A22; `errors/cases.py` A15 / A16 / A17 / A18;
+`kb/cli.py` A19 (`cases pin` refuses an unknown case id unless `--create`); `restructure/restructurer.py` A24.
+Docs: `docs/v2/KB-AND-FLOW.md` review call limit 2 → 3 (A3).
+
+### As built (v2.1h, 2026-10-28)
+- Restructure: `jsp_jakarta.rename_jsp_files` runs for `.jsp / .jspf / .jspx / .tag / .tagx` (the analyzer's
+  `JSP_SUFFIXES`), skips `.git / .svn / .hg / node_modules` anywhere, `target/` (via `Workspace.walk`) and `out/` at the
+  root; encoding = UTF-8 BOM → `pageEncoding` / `contentType` charset / XML declaration → UTF-8 → cp949 → EUC-KR, accepted
+  only when decode + encode reproduces the bytes (else the file is left and counted as "not renamed" when it names javax);
+  target names come from the table's `to` (`javax.security.cert` → `java.security.cert`). Its own commit
+  `restructure: JSP javax -> jakarta`; the orchestrator adds the step note `<step>: JSP javax → jakarta: N files, M
+  references` (`sbmig.report.handover.jsp_jakarta_note`, parsed back by `jsp_jakarta_counts`) and a `jsp_jakarta` journal
+  event (files, refs, renamed ≤ 500). Not covered: `<%@ attribute type=… %>` / `<%@ variable variable-class=… %>` in tag
+  files (the analyzer's code regions do not include them either).
+- `PomEditor`: `ed.encoding` = the declared name (unchanged), `ed.codec` = the codec it saves with; an ISO-8859-1-declared
+  pom whose bytes happen to be valid UTF-8 is decoded as UTF-8 and re-saved as latin-1 (rare).
+- Fleet (A7–A9): `manifest.has_pom()` (top or one level down) is the one rule for listing and `_validate`; a row with a
+  missing input is `skipped` only when this run would start it (pending / running / infra-deferred / retried) — success
+  rows and failed rows kept without `--retry-failed` stay; `FleetProjectResult.llm_calls`, token counts and `llm_cost`
+  add up every attempt, the other per-run numbers are cleared when an attempt starts, `SBMIG-RESULT llm=` is that run's
+  own calls, the progress line adds `(all attempts N)` when they differ.
+- Web (A10): `_FifoTurns` (deque + condition) — a run takes its turn when `start_file` accepts it; the worker leaves the
+  queue in `finally`.
+- KB (A15–A19): `kb reindex` → `N case(s), V script version(s); R script run record(s) rebuilt, H entr(ies) given
+  as-is/to-be hunks, F build-resolved entr(ies) given a probable fixer — <cases.md>`; WARNING wording `hunk / resolved_by
+  backfill`; `cases pin` refusals `unknown case <id>; use --create to pin a case the KB has not seen` and `<id> is no case
+  id (10 characters, …)`; `merge_from` also skips unlisted `fix_v*.py` of a case folder without `case.json`.
+- Triage (A14): `stored_next(store, case_id, tried)` (proven newest first, then unverified; retired / codeless skipped)
+  is consulted only when every reuse of this run failed (`FAILED_OUTCOMES` now lives in `triage/scripts.py`); an
+  improved / partial reuse goes to augment.
+- Fix (A20 / A21): `profile_summary(profile, cfg=None)`; `ContextPacker.pack_script` and the verify prompt rewrite the
+  ` | target: …` tail from `cfg.target` because the loop builds the summary without `cfg`; `LLMRole` includes
+  `verify_guide` (plugin adapters receive it as is; `docs/ADAPTERS.md` lists it with `structure_review`).
+- Orchestrator (A23): the review's LLM calls sit on the first fixed critical issue's try; the others carry 0 and a note.
+- Still the old shape: `fixloop.py` `try_notes` / `verify_guide` TypeError-retry (A22 fixed `_Guarded` only); the
+  `examples/adapters/company_gateway_adapter.py` models table has no `verify_guide` row.
+

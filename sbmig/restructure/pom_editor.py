@@ -34,6 +34,7 @@ from typing import Any, TypeVar
 
 from lxml import etree
 
+from sbmig.analyze.pom_parser import pom_encoding, xml_codec, xml_without_declaration
 from sbmig.core.models import GAV, PluginInfo
 
 log = logging.getLogger("sbmig.restructure.pom")
@@ -140,7 +141,8 @@ class PomEditor:
             # 문자열로 받은 pom 은 XML 선언의 encoding 으로 다시 바이트로
             # 만든다: 파일에서 읽은 것과 같은 길(_load)로 파싱하려고
             m = _ENC_RE.match(text.encode("ascii", "replace"))
-            raw = text.encode(m.group(1).decode() if m else "utf-8", "xmlcharrefreplace")
+            # v2.1h: Java 이름(x-windows-949)·한글 계열(EUC-KR / MS949 → cp949)도 파이썬 코덱으로
+            raw = text.encode((xml_codec(m.group(1).decode()) if m else None) or "utf-8", "xmlcharrefreplace")
         else:
             try:
                 raw = self.path.read_bytes()
@@ -163,11 +165,19 @@ class PomEditor:
         if self._bom:
             raw = raw[3:]
         m = _ENC_RE.match(raw)
-        self.encoding = m.group(1).decode() if m else "utf-8"
+        self.encoding = m.group(1).decode() if m else "utf-8"       # the declared name, as written
+        # v2.1h (A1 의 재구성 쪽): 선언 이름으로 바로 풀지 않는다 — MS949 / x-windows-949 는 lxml·파이썬이 모르고,
+        # EUC-KR 선언 + cp949 확장 한글("똠"), UTF-8 선언 + cp949 바이트는 엄격히 풀리지 않아 재구성이 ok=False 가
+        # 됐다. 분석기와 같은 규칙(pom_encoding: BOM → UTF-8 → 선언(한글 계열 cp949) → 후보)으로 풀고, 저장은 선언이
+        # 가리키는 계열(xml_codec, EUC-KR 계열은 cp949)로 — 선언이 없거나 모르는 이름이면 푼 코덱 그대로.
+        # Decode like the analyzer (`pom_encoding`), save in the declared family (`xml_codec`; the codec read with when
+        # there is no / an unknown declaration; UTF-8 when the file has a UTF-8 BOM).
+        codec = pom_encoding(raw)
         try:
-            text = raw.decode(self.encoding)
+            text = raw.decode(codec)
         except (LookupError, UnicodeDecodeError) as e:
-            raise PomEditError(f"{self.path}: cannot decode as {self.encoding}: {e}") from e
+            raise PomEditError(f"{self.path}: cannot decode as {codec} (declared {self.encoding}): {e}") from e
+        self.codec = "utf-8" if self._bom else (xml_codec(m.group(1).decode()) if m else None) or codec
         # CRLF 파일은 안에서 LF 로 다루고 저장할 때 CRLF 로 되돌린다:
         # 줄 끝 때문에 git diff 가 파일 전체 변경이 되지 않게
         self.newline = "\r\n" if "\r\n" in text else "\n"
@@ -177,7 +187,9 @@ class PomEditor:
         parser = etree.XMLParser(remove_blank_text=False, strip_cdata=False, resolve_entities=False,
                                  remove_comments=False, remove_pis=False, huge_tree=True, no_network=True)
         try:
-            root = etree.fromstring(text.encode(self.encoding, "xmlcharrefreplace"), parser)
+            # 선언을 뗀 텍스트를 UTF-8 바이트로: 선언의 encoding(EUC-KR / MS949 / x-windows-949)이 바이트와 어긋나거나
+            # lxml 이 모르는 이름이어도 파싱된다. 원래 선언 줄은 prolog(아래)에 그대로 남아 저장된다
+            root = etree.fromstring(xml_without_declaration(text).encode("utf-8"), parser)
         except etree.XMLSyntaxError as e:
             raise PomEditError(f"{self.path}: malformed XML: {e}") from e
         if root is None or _local(root) != "project":
@@ -237,11 +249,12 @@ class PomEditor:
         return out
 
     def save(self, path: str | Path | None = None) -> None:
-        """원래 인코딩(+ BOM)으로 저장한다. ``path`` 를 주면 그 위치에 쓰고, 자기 파일에 쓴 경우에만
+        """원래 인코딩(+ BOM)으로 저장한다 — XML 선언이 가리키는 계열(``self.codec``: EUC-KR / MS949 / x-windows-949 는
+        cp949), 선언 줄은 그대로. ``path`` 를 주면 그 위치에 쓰고, 자기 파일에 쓴 경우에만
         '변경 없음' 기준을 갱신한다."""
         target = Path(path) if path else self.path
         target.parent.mkdir(parents=True, exist_ok=True)
-        data = self.to_string().encode(self.encoding, "xmlcharrefreplace")
+        data = self.to_string().encode(self.codec, "xmlcharrefreplace")
         target.write_bytes((b"\xef\xbb\xbf" if self._bom else b"") + data)
         if path is None or target == self.path:
             self._original = self.to_string()

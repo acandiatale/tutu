@@ -29,11 +29,12 @@ from lxml import etree
 
 from sbmig.core.models import WebXmlErrorPage, WebXmlFilter, WebXmlModel, WebXmlServlet
 
+from .pom_parser import xml_without_declaration
+
 log = logging.getLogger("sbmig.analyze")
 
 _DTD_RE = re.compile(r"web-app_(\d+)_(\d+)\.dtd", re.I)
 _VERSION_RE = re.compile(r"<web-app\b[^>]*?\bversion\s*=\s*[\"']([\d.]+)[\"']", re.S)
-_DECL_RE = re.compile(r"^\ufeff?\s*<\?xml[^>]*\?>")
 DISPATCHERS = ("REQUEST", "FORWARD", "INCLUDE", "ERROR", "ASYNC")
 
 
@@ -97,7 +98,7 @@ def _parse_root(text: str, warnings: list[str]) -> Any:
     파서 → 그래도 안 되면 None. DTD·네트워크·엔티티 없음."""
     # 이미 디코딩된 텍스트이므로 XML 선언을 뗀다 — EUC-KR 선언이 UTF-8 바이트와 어긋나 파싱이 깨지지 않게
     # the text is already decoded: drop the XML declaration so its `encoding=` cannot contradict the UTF-8 bytes
-    data = _DECL_RE.sub("", text, count=1).encode("utf-8")
+    data = xml_without_declaration(text).encode("utf-8")
     strict = etree.XMLParser(load_dtd=False, no_network=True, resolve_entities=False, remove_comments=True,
                              huge_tree=False)
     try:

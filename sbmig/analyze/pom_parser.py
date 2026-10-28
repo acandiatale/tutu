@@ -19,15 +19,17 @@ Two passes:
 """
 from __future__ import annotations
 
+import codecs
 import logging
 import posixpath
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Optional, Protocol
 
 from sbmig.core.models import GAV, PluginInfo, PomInfo
-from sbmig.core.workspace import is_build_output_path
+from sbmig.core.workspace import DEFAULT_ENCODING_CANDIDATES, is_build_output_path
 
 log = logging.getLogger("sbmig.analyze")
 
@@ -240,14 +242,102 @@ def repository_urls(text: str) -> list[str]:
     return out
 
 
-def parse_pom_text(text: str, path: str) -> _RawPom:
+# ---------------------------------------------------------------------------
+# encoding / XML declaration (A1)
+# ---------------------------------------------------------------------------
+_XML_DECL_RE = re.compile(r"^\s*<\?xml\b[^>]*\?>")
+_DECL_ENCODING_RE = re.compile(rb"^\s*<\?xml\b[^>]*?\bencoding\s*=\s*[\"']([A-Za-z0-9._:-]+)[\"']")
+# 파이썬 코덱 목록에 없는 Java 쪽 이름(회사 pom 선언에 실제로 적히는 것) → 파이썬 코덱
+# Java charset names Python's codec registry does not know
+_JAVA_ENCODING_ALIASES = {"x-windows-949": "cp949", "windows-949": "cp949", "x-euc-kr": "euc_kr"}
+# 한글 계열은 모두 cp949 로 푼다: cp949 는 EUC-KR(KS X 1001)의 상위 집합이라 EUC-KR 바이트가 똑같이 풀리고,
+# 선언은 EUC-KR 인데 Windows 편집기가 확장 한글(예: "똠")까지 cp949 로 저장한 pom 도 깨지지 않는다
+_KOREAN_CODECS = {"euc_kr", "cp949"}
+
+
+def xml_without_declaration(text: str) -> str:
+    """이미 디코딩된 XML 텍스트에서 BOM 과 맨 앞 XML 선언(``<?xml … encoding="EUC-KR"?>``)을 뗀다. 텍스트를 UTF-8
+    바이트로 파서에 넘길 때 선언의 encoding 이 그 바이트와 어긋나지 않게 — expat 은 멀티바이트 선언(EUC-KR / MS949)을
+    거부하고 모르는 이름(x-windows-949)에는 LookupError 를 낸다(A1). pom·web.xml·pom 의 war 설정 파서가 같이 쓴다.
+
+    Drop a leading BOM and the XML declaration from already-decoded XML text, so that its `encoding=` cannot
+    contradict the UTF-8 bytes handed to the parser (expat rejects multi-byte declarations such as EUC-KR / MS949
+    and raises LookupError on names it does not know, e.g. x-windows-949)."""
+    return _XML_DECL_RE.sub("", text.lstrip("\ufeff"), count=1)
+
+
+def xml_codec(name: str | None) -> str | None:
+    """XML 선언의 encoding 이름 → 파이썬 코덱 이름(모르는 이름·빈 값은 None). Java 이름(``x-windows-949``)도 받고,
+    한글 계열(EUC-KR / KSC5601 / MS949 / CP949)은 상위 집합인 ``cp949`` 로 돌려준다.
+
+    Python codec for an XML `encoding=` name (None when unknown). Java names such as x-windows-949 are accepted;
+    the Korean family (EUC-KR, KSC5601, MS949, CP949) maps to its superset cp949."""
+    if not name:
+        return None
+    n = name.strip().lower()
+    try:
+        codec = codecs.lookup(_JAVA_ENCODING_ALIASES.get(n, n)).name
+    except LookupError:
+        return None
+    return "cp949" if codec in _KOREAN_CODECS else codec
+
+
+def pom_encoding(data: bytes, candidates: Iterable[str] = DEFAULT_ENCODING_CANDIDATES) -> str:
+    """pom 바이트를 풀 인코딩: BOM(UTF-8 → ``utf-8-sig``, UTF-16) → UTF-8 로 엄격히 풀리면 ``utf-8`` → XML 선언의
+    인코딩(한글 계열은 cp949) → ``candidates`` 순서(기본 cp949 → euc-kr → shift_jis → latin-1) 중 파일 전체를 엄격히
+    푸는 첫 것 → 다 안 되면 ``utf-8`` (대체 문자로 읽힘). UTF-8 을 선언보다 먼저 보는 이유: ``Workspace.read`` 의
+    감지 순서와 같아야 분석이 읽은 인코딩과 재구성이 다시 쓰는 인코딩이 어긋나지 않는다.
+
+    Encoding to decode pom bytes with: BOM (UTF-8 → "utf-8-sig", UTF-16); strict UTF-8 → "utf-8"; else the
+    declared encoding (Korean family → cp949) when it decodes the whole file strictly; else the first of
+    `candidates` that does; "utf-8" as the last resort (read with replacement characters)."""
+    if data.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return "utf-16"
+    m = _DECL_ENCODING_RE.match(data)
+    declared = xml_codec(m.group(1).decode("ascii")) if m else None
+    order: list[str] = []
+    for enc in ("utf-8", declared, *candidates):
+        if enc and enc not in order:
+            order.append(enc)
+    for enc in order:
+        try:
+            data.decode(enc)                 # strict
+        except (UnicodeDecodeError, LookupError):
+            continue
+        return enc
+    return "utf-8"
+
+
+def read_pom_text(ws: WorkspaceView, rel: str) -> str:
+    """pom 텍스트를 바른 인코딩으로 읽는다: 파일 바이트로 :func:`pom_encoding` 을 정한 뒤 ``ws.read(rel, encoding=…)``
+    (실행 작업공간은 그 인코딩을 기억해 다시 쓸 때 쓴다). ``PathView`` 의 기본 utf-8 읽기는 cp949 pom 의 한글을
+    대체 문자로 바꾸므로 그대로 두지 않는다. 바이트를 못 읽으면 ``ws.read(rel)``.
+
+    Text of a pom, decoded with `pom_encoding` of its bytes (the workspace's candidate order when it has one);
+    falls back to `ws.read(rel)` when the bytes cannot be read."""
+    try:
+        data = (Path(ws.root) / rel).read_bytes()
+    except (OSError, TypeError, ValueError):
+        return ws.read(rel)
+    cands = tuple(getattr(ws, "encoding_candidates", None) or DEFAULT_ENCODING_CANDIDATES)
+    return ws.read(rel, encoding=pom_encoding(data, cands))
+
+
+def parse_pom_text(text: str | bytes, path: str) -> _RawPom:
     """pom 하나를 원시 파싱한다. XML 이 깨졌거나 ``<project>`` 가 아니거나 artifactId 가 없으면 ValueError.
+    바이트는 :func:`pom_encoding` 으로 먼저 풀고, XML 선언은 떼고 파싱한다(EUC-KR / MS949 선언 pom, A1).
 
     Parse one pom; raises ValueError on malformed XML or a missing artifactId."""
-    # 주의: 텍스트를 UTF-8 바이트로 다시 넘기므로 ``encoding="EUC-KR"`` 같은 멀티바이트 선언이 있는 pom 은
-    # expat 이 ValueError("multi-byte encodings are not supported")를 내고 parse_poms 가 그 pom 을 건너뛴다
+    # 문자열은 이미 디코딩된 텍스트다: 선언을 떼고 UTF-8 로 넘긴다 — 예전에는 ``encoding="EUC-KR"`` 선언이 UTF-8
+    # 바이트와 어긋나 expat 이 ValueError("multi-byte encodings are not supported")를, ``x-windows-949`` 에는
+    # LookupError 를 내서 그 모듈이 프로필에서 통째로 빠지거나(앞) 분석 전체가 죽었다(뒤)
+    if isinstance(text, (bytes, bytearray)):
+        data = bytes(text)
+        text = data.decode(pom_encoding(data), errors="replace")
     try:
-        root = ET.fromstring(text.encode("utf-8") if isinstance(text, str) else text)
+        root = ET.fromstring(xml_without_declaration(text).encode("utf-8"))
     except ET.ParseError as e:
         raise ValueError(f"{path}: not well-formed XML ({e})") from e
     if _local(root.tag) != "project":
@@ -537,11 +627,12 @@ def parse_poms(ws: WorkspaceView) -> tuple[list[PomInfo], list[str]]:
     raws: list[_RawPom] = []
     for rel in find_pom_files(ws):
         try:
-            text = ws.read(rel)
+            # 선언·감지한 인코딩으로 읽는다(A1): cp949 pom 의 한글 속성 값이 대체 문자로 깨지지 않게
+            text = read_pom_text(ws, rel)
             raw = parse_pom_text(text, rel)
             raw.repositories = repository_urls(text)
             raws.append(raw)
-        except (ValueError, OSError) as e:
+        except (ValueError, OSError, LookupError) as e:
             msg = f"pom skipped (parse failure): {e}"
             log.warning(msg)
             warnings.append(msg)

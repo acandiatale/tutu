@@ -183,6 +183,21 @@ def _run_key(r: ScriptRun) -> tuple[str, int, int] | None:
     return (r.run_id, int(r.round), int(r.n)) if r.n else None
 
 
+def _resolved_elsewhere(s: CaseScript) -> bool:
+    """버전이 만든 프로젝트가 아닌 곳에서 케이스를 해결한 적이 있는가(``activate`` 의 proven 판정, A18).
+    만든 프로젝트 이름이 없는 옛 기록은 ``credit`` 처럼 실행 ID 로 본다.
+
+    Did the version resolve the case in a project other than the one that made it (``activate``'s proven rule)?
+    A record without ``project`` (older KBs) falls back to the run id, as ``credit`` does: a successful run of
+    another run than ``created_by``, or two or more distinct projects (one of them is not the maker's)."""
+    if s.project:
+        return any(p and p != s.project for p in s.projects)
+    # 옛 기록: 빈 project 와 비교하면 자기 프로젝트도 "다른 곳" 이 되므로 실행 ID·프로젝트 수로만 판단한다
+    if s.created_by and any(r.result in SUCCESS_RESULTS and r.run_id and r.run_id != s.created_by for r in s.runs):
+        return True
+    return len({p for p in s.projects if p}) > 1
+
+
 class CaseStore:
     """KB 저장소: ``<kb>/cases/<case_id>/``(case.json, fix_v<N>.py, errors/) + ``<kb>/errors.jsonl`` +
     ``<kb>/cases.md``. ``script_runs``(``errors.script_runs``)는 버전마다 남길 실행 기록 수(0 = 무제한).
@@ -397,12 +412,7 @@ class CaseStore:
                 if _sha(self.code(case_id, s.version) or "") == _sha(stored):
                     log.info("cases/%s/fix_v%d.py: the same script is already stored", case_id, s.version)
                     return s
-            # 번호는 재사용하지 않는다: case.json 에 없는 fix_v*.py
-            # 파일까지 세어 남의 파일을 덮어쓰지 않게 한다
-            on_disk = [int(m.group(1)) for p in (self.case_dir(case_id).glob("fix_v*.py")
-                                                if self.case_dir(case_id).is_dir() else [])
-                       if (m := _SCRIPT_RE.match(p.name))]
-            v = 1 + max([s.version for s in case.scripts] + on_disk, default=0)
+            v = self._next_version(case)
             atomic_write_bytes(self.case_dir(case_id) / f"fix_v{v}.py", stored.encode("utf-8"))
             s = CaseScript(version=v, file=f"fix_v{v}.py", status="retired" if secret else "unverified",
                            source=source, created_by=run_id, project=project, parent=parent, reason=why)
@@ -423,6 +433,22 @@ class CaseStore:
                     lineage = f" (v{parent} 보강: {first})" if first else f" (v{parent} 보강)"
                 log.info("스크립트 v%d 저장 (unverified, %s) → cases/%s/fix_v%d.py%s", v, source, case_id, v, lineage)
         return s                                          # (cases.md: rewritten by record_run at the end of the run)
+
+    def _disk_versions(self, case_id: str) -> list[int]:
+        """케이스 폴더에 실제로 있는 ``fix_v<N>.py`` 의 번호들(case.json 목록과 무관)."""
+        d = self.case_dir(case_id)
+        return [int(m.group(1)) for p in (d.glob("fix_v*.py") if d.is_dir() else [])
+                if (m := _SCRIPT_RE.match(p.name))]
+
+    def _next_version(self, case: CaseInfo) -> int:
+        """다음 스크립트 번호: case.json 의 버전과 폴더의 ``fix_v*.py`` 중 가장 큰 것 + 1(``add_script`` ·
+        ``merge_from`` 공통). 번호를 재사용하지 않아 목록에 없는 파일을 덮어쓰지 않는다.
+
+        The next script number: 1 + the highest of case.json's versions and the folder's ``fix_v*.py`` files
+        (``add_script`` and ``merge_from``) — a number is never reused, so an unlisted file is never overwritten."""
+        # 번호는 재사용하지 않는다: case.json 에 없는 fix_v*.py
+        # 파일까지 세어 남의 파일을 덮어쓰지 않게 한다
+        return 1 + max([s.version for s in case.scripts] + self._disk_versions(case.case_id), default=0)
 
     def _reason(self, text: str | None) -> str:
         """저장용 이유: 마스킹, 한 줄, 최대 REASON_CHARS 자.
@@ -513,7 +539,7 @@ class CaseStore:
             if retire:
                 s.status = "retired"
             else:
-                s.status = "proven" if any(p != s.project for p in s.projects) else "unverified"
+                s.status = "proven" if _resolved_elsewhere(s) else "unverified"
             case.updated_at = utcnow()
             self._save(case, extra)
             log.info("cases/%s/fix_v%d.py: %s", case_id, s.version, s.status)
@@ -721,14 +747,17 @@ class CaseStore:
         already has: those keep their error counts; deduplicated by run_id + round + try n), ``parent`` / ``reason``
         filled where an ``llm-augment`` try shows them, ``last_failure`` = the newest failed run's reason; tries with
         a diff whose 수정 notes lack ``hunks`` get them (``sbmig.script.notes.attach_hunks``) — errors.jsonl and those
-        entries' JSON files are rewritten once. One INFO line says how many."""
+        entries' JSON files are rewritten once. v2.1f: build-resolved entries without ``resolved_by`` get the
+        probable fixer (also when ``attach_hunks`` is not importable). One INFO line says how many of each
+        (``last_reindex["hunks"]`` / ``["resolved_by"]``, counted separately, fresh every call)."""
         with stage("kb"), self.lock():
-            # 변경 조각·해결한 시도 채우기는 부가 기능: 실패해도 재색인(카운트)은 계속한다
+            # 변경 조각·해결한 시도 채우기는 부가 기능: 실패해도 재색인(카운트)은 계속한다. 두 숫자는 따로 세고
+            # 매 recount 마다 0 에서 시작한다(A15 / A16: 같은 store 로 다시 불러도 지난 숫자를 보고하지 않게)
+            hunked, fixers = 0, 0
             try:
-                hunked = self._backfill_hunks()
+                hunked, fixers = self._backfill_entries()
             except Exception as e:  # noqa: BLE001 - the backfill is extra; the recount goes on
-                log.warning("kb reindex: hunk backfill failed: %s: %s", type(e).__name__, e)
-                hunked = 0
+                log.warning("kb reindex: hunk / resolved_by backfill failed: %s: %s", type(e).__name__, e)
             groups: dict[str, list[ErrorEntry]] = {}
             for e in self.iter_errors():
                 if e.case_id and e.status not in ("note", "pom-verify") and valid_case_id(e.case_id):
@@ -761,7 +790,6 @@ class CaseStore:
                 log.info("writing %d per-error JSON file(s) missing under cases/*/errors/", len(missing))
                 self._write_entry_files(missing)
             self._write_md_locked()
-            fixers = int(getattr(self, "_fixers_backfilled", 0) or 0)
             self.last_reindex = {"cases": len(ids), "runs": rebuilt, "hunks": hunked, "resolved_by": fixers}
             log.info("reindex: %d script run record(s) rebuilt, %d entr(ies) given as-is/to-be hunks, %d build-resolved "
                      "entr(ies) given a probable fixer", rebuilt, hunked, fixers)
@@ -906,27 +934,33 @@ class CaseStore:
         by.sort(key=lambda rb: (rb.round, rb.n, rb.match))          # the earliest round after `seen` first
         return e.model_copy(update={"resolved_by": by})
 
-    def _backfill_hunks(self) -> int:
+    def _backfill_entries(self) -> tuple[int, int]:
         """v2.1e 이전에 저장된 errors.jsonl 항목에 diff 로부터 변경 조각(수정 전/후)을
         채운다(``attach_hunks``, 한쪽 ``errors.snippet_lines`` 줄); 같은 순회에서 v2.1f '해결한
-        시도'(``_fixer_attributed``)도 채운다. errors.jsonl 은 원자적으로 다시 쓰되 안 바뀐 줄·못 읽는 줄은
-        바이트 그대로 둔다. 호출자가 잠금을 잡고 있어야 한다. 바뀐 항목 수를 돌려준다(두 종류 합계).
+        시도'(``_fixer_attributed``)도 채운다 — ``attach_hunks`` 를 못 불러와도 이쪽은 돈다(A16). errors.jsonl 은
+        원자적으로 다시 쓰되 안 바뀐 줄·못 읽는 줄은 바이트 그대로 둔다. 호출자가 잠금을 잡고 있어야 한다.
+        (변경 조각을 받은 항목 수, 해결한 시도를 받은 항목 수)를 따로 돌려준다(A15).
 
         errors.jsonl entries stored before v2.1e: as-is / to-be hunks from their diffs (``attach_hunks``,
-        ``errors.snippet_lines`` per side; skipped when it is not there). Rewrites errors.jsonl atomically (other lines byte for byte, a line that does not read
-        kept as it is) and the changed entries' JSON files. Caller holds the lock. Returns the entries changed."""
-        # 지연 import: sbmig.script 가 없거나 깨져도 채우기만 건너뛰고 재색인은 계속한다
+        ``errors.snippet_lines`` per side; skipped when it is not there); build-resolved entries of v2.1f: the
+        probable fixer (``_fixer_attributed``, done also without ``attach_hunks``). Rewrites errors.jsonl
+        atomically (other lines byte for byte, a line that does not read kept as it is) and the changed entries'
+        JSON files. Caller holds the lock. Returns (entries given hunks, entries given ``resolved_by``)."""
+        # 지연 import: sbmig.script 가 없거나 깨져도 변경 조각만 건너뛰고 해결한 시도 채우기·재색인은 계속한다
         try:
             from sbmig.script.notes import attach_hunks
-        except Exception:  # noqa: BLE001 - ImportError / not there yet: no backfill
-            return 0
-        if not callable(attach_hunks) or not self.errors_path.is_file():
-            return 0
+        except Exception as ex:  # noqa: BLE001 - ImportError / not there yet: no hunks, the attribution goes on
+            log.debug("kb reindex: attach_hunks not importable (%s: %s) — no hunk backfill", type(ex).__name__, ex)
+            attach_hunks = None
+        if not callable(attach_hunks):
+            attach_hunks = None
+        if not self.errors_path.is_file():
+            return 0, 0
         try:
             raw = self.errors_path.read_bytes()
         except OSError as ex:
-            log.warning("kb reindex: %s does not read (%s) — no hunk backfill", self.errors_path, ex)
-            return 0
+            log.warning("kb reindex: %s does not read (%s) — no hunk / resolved_by backfill", self.errors_path, ex)
+            return 0, 0
         out: list[bytes] = []
         changed: list[ErrorEntry] = []
         bad, cut = 0, self.snippet_lines
@@ -946,16 +980,23 @@ class CaseStore:
                 per = tries_by_run.setdefault(e.run_id, {})
                 for t in e.tries:
                     per.setdefault((e.case_id, int(t.round), int(t.n)), (e.case_id, t))
-        self._fixers_backfilled = 0
+        hunks, fixers = 0, 0
         for b, e in parsed:
             if e is None:
                 out.append(b)
                 continue
-            new = self._hunked(e, attach_hunks, cut)
-            fixed = self._fixer_attributed(new or e, list(tries_by_run.get(e.run_id, {}).values()))
+            new = self._hunked(e, attach_hunks, cut) if attach_hunks is not None else None
+            if new is not None:
+                hunks += 1
+            # 한 항목의 해결한 시도 추정이 깨져도 그 항목만 건너뛴다(변경 조각과 서로 독립)
+            try:
+                fixed = self._fixer_attributed(new or e, list(tries_by_run.get(e.run_id, {}).values()))
+            except Exception as ex:  # noqa: BLE001 - one entry's attribution never stops the backfill
+                log.debug("kb reindex: no fixer for %s: %s: %s", e.id, type(ex).__name__, ex)
+                fixed = None
             if fixed is not None:
                 new = fixed
-                self._fixers_backfilled += 1
+                fixers += 1
             if new is None:
                 out.append(b)
                 continue
@@ -967,7 +1008,7 @@ class CaseStore:
         if changed:
             atomic_write_bytes(self.errors_path, b"\n".join(out))
             self._write_entry_files(changed)
-        return len(changed)
+        return hunks, fixers
 
     # ------------------------------------------------------------------ cases.md / stats / validate
     def cases(self) -> list[tuple[CaseInfo, dict[str, Any]]]:
@@ -1068,7 +1109,7 @@ class CaseStore:
         """다른 KB(풀어 놓은 내보내기)를 합친다: 새 ID 의 errors.jsonl 줄, 이쪽에
         없는 케이스(case.json + 스크립트 파일 복사), 아는 케이스의 스크립트는 코드로 비교(같은 코드 → 카운터
         max·프로젝트 합집합·실행 기록 합침, 다른 코드 → 이쪽의
-        다음 버전), 끝에 :meth:`recount`. 두 번 해도 결과가 같다.
+        다음 빈 번호 — 목록에 없는 ``fix_v*.py`` 도 피한다), 끝에 :meth:`recount`. 두 번 해도 결과가 같다.
 
         Merge another KB (an unpacked export): errors.jsonl lines with new ids, case folders the local KB does
         not have (copied whole), scripts of known cases by their code (same code → counters max / projects union;
@@ -1087,7 +1128,7 @@ class CaseStore:
                     continue
                 t_case, t_extra = theirs
                 mine = self._read(cid)
-                if mine is None:
+                if mine is None and not self._disk_versions(cid):
                     for s in t_case.scripts:
                         code = other.code(cid, s.version)
                         if code is not None:
@@ -1095,10 +1136,16 @@ class CaseStore:
                     self._save(t_case, t_extra)
                     counters["cases_added"] += 1
                     continue
-                case, extra = mine
-                for k, v in t_extra.items():
-                    # 이쪽 사람이 정한 pin 등 추가 키는 덮지 않는다
-                    extra.setdefault(k, v)                # a local pin wins
+                if mine is None:
+                    # 이쪽 폴더에 case.json 은 없는데 fix_v*.py 가 남아 있다(case.json 저장 전에 멈춘 실행 등):
+                    # 그 파일을 덮지 않게 저쪽 스크립트를 아래에서 다음 빈 번호로 넣는다
+                    case, extra = t_case.model_copy(update={"scripts": []}, deep=True), dict(t_extra)
+                    counters["cases_added"] += 1
+                else:
+                    case, extra = mine
+                    for k, v in t_extra.items():
+                        # 이쪽 사람이 정한 pin 등 추가 키는 덮지 않는다
+                        extra.setdefault(k, v)            # a local pin wins
                 by_sha = {_sha(self.code(cid, s.version) or ""): s for s in case.scripts}
                 local: dict[int, int] = {}                # their version → ours (v2.1e: an augment's parent)
                 for s in sorted(t_case.scripts, key=lambda x: x.version):
@@ -1115,7 +1162,8 @@ class CaseStore:
                         self._merge_runs(have, s, local)
                         counters["scripts_merged"] += 1
                         continue
-                    v = 1 + max((x.version for x in case.scripts), default=0)
+                    # add_script 와 같은 규칙: 목록에 없는 fix_v*.py 도 피한다(A17)
+                    v = self._next_version(case)
                     atomic_write_bytes(self.case_dir(cid) / f"fix_v{v}.py", code.encode("utf-8"))
                     local[s.version] = v
                     new = s.model_copy(update={"version": v, "file": f"fix_v{v}.py",

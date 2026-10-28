@@ -30,6 +30,7 @@ from .errors import (
     tries_text,
     where,
 )
+from .handover import is_jsp_jakarta_note, jsp_jakarta_counts
 from .i18n import normalize, tr, tr_line
 from .result_line import report_result_line
 
@@ -741,6 +742,23 @@ def _to_be(r: RunReport) -> Optional[str]:
     return ", ".join(parts)
 
 
+def jsp_jakarta_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """"What we changed" 의 JSP 한 줄 ``JSP javax → jakarta: N files, M references — …``(v2.1h, A5). 재구성이 JSP 의
+    javax EE 이름을 하나도 안 바꿨으면 [] (남은 것은 인수인계의 후속 작업 줄이 말한다).
+
+    "What we changed": `JSP javax → jakarta: N files, M references — …` when the restructure renamed any; []
+    otherwise (what is left is a Handover follow-up)."""
+    files, refs = jsp_jakarta_counts(r)
+    if not files:
+        return []
+    # tr 의 원문은 리터럴이어야 한다(tests/report/test_report_i18n.py 가 번역 표와 맞춰 본다)
+    fw = tr(lang, "{n} file", n=files) if files == 1 else tr(lang, "{n} files", n=files)
+    rw = tr(lang, "{n} reference", n=refs) if refs == 1 else tr(lang, "{n} references", n=refs)
+    what = tr(lang, "JSP javax → jakarta: {files}, {refs}", files=fw, refs=rw)
+    return [what + tr(lang, " — renamed by the restructure in JSP / tag files (page imports, useBean, scriptlets); "
+                            "OpenRewrite does not parse JSPs"), ""]
+
+
 def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) -> str:
     """report.md 전체를 ``language``("en" | "ko", 그 밖은 영어)로 그린다. ``cfg`` 는 javax 섹션의 사내 그룹
     판정만 정확하게 해 준다(없어도 된다). 섹션 순서는 모듈 docstring 참고.
@@ -749,8 +767,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     only sharpens the javax API section's in-house detection.
 
     v2.1 (slim): header → Handover → Error list → Fixes by case → Structure review → Blocked → javax API jars →
-    Manual follow-ups → Flags → What we changed (plan steps, OpenRewrite runs) → LLM usage and cost → Notes →
-    Outputs."""
+    Manual follow-ups → Flags → What we changed (plan steps, OpenRewrite runs, v2.1h the JSP javax → jakarta rename)
+    → LLM usage and cost → Notes → Outputs."""
     lang = normalize(language)
     r = report
     L: list[str] = []
@@ -853,7 +871,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     titles = {s.id: s.title for s in (r.plan.steps if r.plan else [])}
     executed = [sid for pr in r.phases for sid in pr.step_ids]
     rw = [(pr.phase.value, x) for pr in r.phases for x in pr.rewrite_results]
-    if executed or rw:
+    jsp = jsp_jakarta_lines(r, lang)
+    if executed or rw or jsp:
         L.append(tr(lang, "## What we changed"))
         L.append("")
     if executed:
@@ -869,11 +888,13 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
             L.append(f"| {ph} | {_cell(', '.join(x.recipes), 200)} | {len(x.changed_files)} | "
                      f"{tr(lang, 'yes') if x.ok else tr(lang, 'no: {error}', error=_cell(x.error, 80))} |")
         L.append("")
+    L += jsp
 
     # ---- LLM usage and cost (2026-10-22: the company wants the API cost per project)
     L += cost_lines(r, lang)
 
-    notes = [(pr.phase.value, n) for pr in r.phases for n in pr.notes]
+    # the JSP rename note is shown in "What we changed" (jsp_jakarta_lines), not again here
+    notes = [(pr.phase.value, n) for pr in r.phases for n in pr.notes if not is_jsp_jakarta_note(n)]
     if notes or (r.plan and r.plan.notes):
         L.append(tr(lang, "## Notes"))
         L.append("")

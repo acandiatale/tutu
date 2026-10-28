@@ -84,7 +84,7 @@ class LLMResponse(BaseModel):
 
 # Who is asking — lets an in-house gateway / agent platform route or budget by purpose.
 # 호출 목적 — 사내 게이트웨이가 목적별로 라우팅·예산을 나눌 수 있게 요청에 실어 보낸다.
-LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "structure_review", "other"]
+LLMRole = Literal["fix", "fix_escalation", "plan_advisor", "structure_review", "verify_guide", "other"]
 # fix scripts use fix / fix_escalation; the structure review asks with structure_review; the plan advisor plan_advisor
 
 
@@ -197,6 +197,11 @@ class RestructureResult(BaseModel):
     managed_versions_dropped: list[str] = Field(default_factory=list)
     # round 9b: every parent the restructure set or replaced — "<pom>: <old g:a:v or '-'> → <new g:a:v>"
     parents_set: list[str] = Field(default_factory=list)
+    # v2.1h: JSP / tag files whose javax EE names were renamed to jakarta (`layout.jsp_jakarta_rename`), and the number
+    # of renamed references; "<rel path>: N" per file in `jsp_jakarta_renamed`
+    jsp_jakarta_files: int = 0
+    jsp_jakarta_refs: int = 0
+    jsp_jakarta_renamed: list[str] = Field(default_factory=list)
     # round 9c: the company layout — module paths actually used (None = not created), the boot module's packaging
     # (`jar`, or `war` when JSPs made it a WAR for external Tomcat) and the files moved into the front module
     boot_module: Optional[str] = None

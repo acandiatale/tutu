@@ -29,7 +29,7 @@ Manifest forms:
 
 | form | content |
 |---|---|
-| directory | every `*.zip` and every subdirectory containing a `pom.xml`, sorted by name |
+| directory | every `*.zip` and every subdirectory with a `pom.xml` at its top or one level down (v2.1h, A7; a folder with neither is logged `left out`), sorted by name |
 | `.txt` | one path per line, `#` comments |
 | `.yml` | `projects: [{name, input, configs: [...], overrides: {...}, tags: [...]}]` |
 | `.csv` | header `name,input,tags` |
@@ -52,7 +52,7 @@ resumes). `--dry-run` prints the order and the resume decision per project witho
 
 | path | content |
 |---|---|
-| `<out>/fleet/state.json` | `FleetState`: one `FleetProjectResult` per project (status, exit code, run id, LLM calls, blocked reasons, KB cases/candidates/promotions/used). Rewritten atomically after every project. Projects are identified by their normalized input path (`manifest.input_key`: absolute, case-folded on Windows), not by the name — a renamed or added folder never inherits another project's success; older state files match unchanged. |
+| `<out>/fleet/state.json` | `FleetState`: one `FleetProjectResult` per project (status, exit code, run id, LLM calls, blocked reasons, KB cases/candidates/promotions/used; since v2.1h `llm_calls`, the token counts and `llm_cost` add up every attempt of the project, so `max_llm_calls_total` sees retries — the other per-run numbers are cleared when an attempt starts, A9). Rewritten atomically after every project. Projects are identified by their normalized input path (`manifest.input_key`: absolute, case-folded on Windows), not by the name — a renamed or added folder never inherits another project's success; older state files match unchanged. |
 | `<out>/fleet/summary.md` / `.csv` / `.json` | the progress table (+ totals, "still running: X"), rewritten after every project. Round 10: `summary.csv` is UTF-8 with BOM and has the columns `attention` (`;`-separated codes, below) and `input`; `summary.md` starts with "Needs attention" (projects grouped by their first code); each file is written on its own, so a `summary.csv` Excel keeps open is skipped with a log line and the others are still written |
 | `<out>/fleet/sbmig.log` | the fleet's INFO log (preflight, one `SBMIG-RESULT` line per project, infrastructure waits) |
 | `<out>/fleet/learning.md` | what the KB learned during this fleet (see below) |

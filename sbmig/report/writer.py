@@ -40,11 +40,12 @@ def report_language(cfg: Any = None) -> str:
 
 def write_report(report: RunReport, ws: Any, cfg: Any = None, *, language: Optional[str] = None) -> dict[str, str]:
     """실행 디렉토리에 report.json 과 report.md 를 쓰고 두 경로를 돌려준다.
-    report.md 는 ``language``(없으면 설정의 언어)로 그리고, report.json 은 언어와 무관하다.
+    report.md 는 ``language``(없으면 설정의 언어)로 그리고, report.json 은 언어와 무관하다. ``cfg`` 는
+    ``render_markdown`` 에도 넘긴다 — javax jar 섹션의 "사내 → Jakarta 빌드" 판정이 설정된 회사 그룹을 본다(A12).
 
     Write report.json and report.md into the run dir; returns {"report_json": path, "report_md": path}.
     report.md is rendered in `language`, else `cfg.report.language` (see `report_language`); report.json is the
-    same whatever the language."""
+    same whatever the language. `cfg` also reaches `render_markdown` (the javax API section's in-house groups)."""
     run_dir = ws.run_dir
     run_dir.mkdir(parents=True, exist_ok=True)
     out: dict[str, str] = {}
@@ -54,8 +55,8 @@ def write_report(report: RunReport, ws: Any, cfg: Any = None, *, language: Optio
     out["report_md"] = str(mp)
     report.outputs.update({k: v for k, v in out.items() if k not in report.outputs})
     jp.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-    mp.write_text(render_markdown(report, language=normalize(language) if language else report_language(cfg)),
-                  encoding="utf-8")
+    mp.write_text(render_markdown(report, language=normalize(language) if language else report_language(cfg),
+                                  cfg=cfg), encoding="utf-8")
     log.info("report written: %s", mp)
     return out
 
@@ -76,8 +77,10 @@ def advisory_lines(report: RunReport) -> list[str]:
 
 def properties_console_line(report: RunReport) -> Optional[str]:
     """인수인계에 외부 설정 키가 있으면 콘솔 한 줄 ``properties to set: N (placeholders in <파일>)``(round 8).
+    키 목록과 자리표시 파일은 같은 인벤토리(``report.properties``, 없으면 ``profile.properties``)에서 읽는다(A13).
 
-    `properties to set: N (placeholders in <file>)` when the Handover lists external keys (round 8)."""
+    `properties to set: N (placeholders in <file>)` when the Handover lists external keys (round 8). The keys and
+    the placeholder files come from the same inventory (`report.properties`, else `profile.properties`)."""
     from .handover import external_to_set
 
     h = report.handover
@@ -85,7 +88,7 @@ def properties_console_line(report: RunReport) -> Optional[str]:
         return None
     inv = report.properties if report.properties is not None else getattr(report.profile, "properties", None)
     n = len(external_to_set(inv)) or len(h.properties_to_set)
-    files = list(report.properties.placeholder_files) if report.properties is not None else []
+    files = list(getattr(inv, "placeholder_files", None) or [])
     return f"properties to set: {n}" + (f" (placeholders in {', '.join(files)})" if files else "")
 
 

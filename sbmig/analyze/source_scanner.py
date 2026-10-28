@@ -28,7 +28,7 @@ from sbmig.core.models import PomInfo, SourceStats, WebXmlModel
 from sbmig.core.workspace import is_build_output_path
 
 from .jsp import JSP_GLOBS, jsp_javax_refs
-from .pom_parser import WorkspaceView
+from .pom_parser import WorkspaceView, read_pom_text, xml_without_declaration
 from .webxml import parse_web_xml
 
 log = logging.getLogger("sbmig.analyze")
@@ -374,7 +374,7 @@ def _xml_root(text: str) -> Any:
     import xml.etree.ElementTree as ET
 
     try:
-        return ET.fromstring(re.sub(r"^\s*<\?xml[^>]*\?>", "", text.lstrip("\ufeff")))
+        return ET.fromstring(xml_without_declaration(text))
     except Exception:  # noqa: BLE001 - unparsable pom: nothing declared
         return None
 
@@ -464,7 +464,7 @@ def webapp_dirs(ws: WorkspaceView, poms: Iterable[PomInfo]) -> tuple[list[str], 
     for p in poms:
         base = posixpath.dirname(p.path.replace("\\", "/"))
         try:
-            text = ws.read(p.path)
+            text = read_pom_text(ws, p.path)        # 선언·감지한 인코딩으로(A1)
         except OSError:  # pragma: no cover - unreadable pom
             continue
         default = _join(base, DEFAULT_WEBAPP)
