@@ -49,6 +49,9 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   any Maven project. Gradle is still rejected (exit 3), and so are trees **without pom.xml or build.xml** (company
   decision 2026-10-23: no pom synthesis for exploded Tomcat JSP + Java directories); `sbmig inventory <dir>` (read-only)
   stays as the tool that describes such a tree for the rejection note to the owners; it changes nothing.
+  A Maven tree **without a root pom** (sibling poms, or one `APP/pom.xml` aggregating `../DEV` — the company shape) gets a
+  generated root aggregator at intake (v2.1k: also for a single top); a module reached twice in the reactor is de-duplicated
+  there (`reactor-duplicate-removed`), and `duplicated in the reactor` never goes to the LLM (`reactor_duplicate`, 0 tries).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
   Tests are out of scope entirely (user, 2026-10-22: "테스트는 다 스킵"): every build runs with

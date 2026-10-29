@@ -655,14 +655,17 @@ class Orchestrator:
     def _intake_layout(self, report: RunReport) -> bool:
         """루트 pom 없이 서로 의존하는 형제 pom 들(회사 사례 APP/BATCH, APP/WEB)에는 루트 aggregator pom 을
         만들어 한 reactor 로 빌드하게 한다. 모듈이 트리에 없는 EAR 루트는 거부한다 — EAR 은 코드가 없고, 그
-        WAR 의존성이 back 모듈로 가면 안 된다.
+        WAR 의존성이 back 모듈로 가면 안 된다. v2.1k: 끝으로(aggregator 를 만들었으면 그 뒤에) reactor 에 두 번
+        닿는 모듈의 중복 ``<module>`` 을 지운다(``_intake_reactor_dedupe``) — effective-pom 캡처 앞, Maven 호출 전.
 
         2026-10-23 (company case: APP/BATCH, APP/WEB, APP/EAR with no root pom): sibling poms that depend on each
         other get a generated root aggregator pom (`layout.generate_aggregator`), so they build in one reactor and the
         restructure merges them; a root pom that is an EAR packaging modules missing from the tree (a run on APP/EAR
-        alone) is rejected — an EAR holds no code, and its WAR dependency must never reach the back module."""
+        alone) is rejected — an EAR holds no code, and its WAR dependency must never reach the back module. v2.1k
+        (2026-10-29): then a module listed twice in the reactor loses its duplicate listing (`_intake_reactor_dedupe`),
+        before the effective-pom capture and any other Maven call."""
         try:
-            from sbmig.analyze.aggregator import ear_without_modules, plan_aggregator, write_aggregator
+            from sbmig.analyze.aggregator import ear_without_modules
         except ImportError:  # pragma: no cover
             return True
         why = ear_without_modules(self.ws)
@@ -671,18 +674,25 @@ class Orchestrator:
             self._abort(report, why)
             self.ws.journal({"event": "ear_without_modules", "reason": why})
             return False
-        if not getattr(self.cfg.layout, "generate_aggregator", True):
-            return True
+        if getattr(self.cfg.layout, "generate_aggregator", True):
+            self._intake_aggregator(report)
+        self._intake_reactor_dedupe(report)
+        return True
+
+    def _intake_aggregator(self, report: RunReport) -> None:
+        """루트 pom 이 없고 형제 pom 들이 서로 의존하면 루트 aggregator pom 을 쓰고 커밋한다(``plan_aggregator``).
+        쓰기에 실패해도 실행은 계속한다(후속 조치 한 줄)."""
+        from sbmig.analyze.aggregator import plan_aggregator, write_aggregator
         plan = plan_aggregator(self.ws)
         if plan is None:
-            return True
+            return
         try:
             path = write_aggregator(self.ws, plan)
             self.ws.commit(f"intake: generated root aggregator pom ({', '.join(plan.modules)})")
         except Exception as e:  # never lose the run over this: the analysis then sees no root pom as before
             log.warning("could not write the aggregator pom: %s", e)
             report.manual_followups.append(f"sibling poms without a root pom: the aggregator pom could not be written ({type(e).__name__}: {e}) — add a root pom.xml listing {', '.join(plan.modules)}")
-            return True
+            return
         if "aggregator-generated" not in report.flags:
             report.flags.append("aggregator-generated")
         msg = (f"no aggregator pom: sbmig generated {path} ({plan.artifact_id}, modules {', '.join(plan.modules)}) — "
@@ -693,7 +703,42 @@ class Orchestrator:
         log.info("%s", msg)
         self.ws.journal({"event": "aggregator_generated", "path": path, "artifact_id": plan.artifact_id,
                          "name": plan.name, "modules": plan.modules, "excluded": plan.excluded})
-        return True
+
+    def _intake_reactor_dedupe(self, report: RunReport) -> None:
+        """v2.1k 회사 사례: 루트 pom 이 ``APP, DEV`` 를, ``APP/pom.xml`` 이 ``../DEV, ./EAR, ./BATCH`` 를 나열해 DEV 가
+        reactor 에 두 번 닿았다 → Maven 이 "is duplicated in the reactor" 로 reactor 전체를 거부해 effective-pom 캡처,
+        OpenRewrite(레시피가 하나도 안 돌았다), 컴파일, 빌드가 모두 실패했고 수정 루프는 LLM 만 불렀다. pom 구조
+        문제이므로 Maven 을 부르기 전에 여기서 결정적으로 고친다: 루트가 아닌 집계 pom 의 중복 줄을 지우고(루트 목록은
+        그대로) ``intake: reactor duplicate removed (…)`` 로 커밋, 플래그 ``reactor-duplicate-removed``, 저널
+        ``reactor_dedupe``, 쉬운 말 후속 조치. 꺼진 프로필의 중복은 후속 조치 메모만. 예외로 실행을 멈추지 않는다.
+
+        v2.1k: remove the duplicate `<module>` listings of the non-root aggregators (`dedupe_reactor`), commit them,
+        flag `reactor-duplicate-removed`, journal `reactor_dedupe`, plain-words follow-ups; noted-only findings (a
+        profile not active by default) become follow-ups without a commit. Never raises."""
+        try:
+            from sbmig.analyze import aggregator as agg
+        except ImportError:  # pragma: no cover
+            return
+        try:
+            dups = agg.reactor_duplicates(self.ws)
+            if not dups:
+                return
+            notes = agg.dedupe_reactor(self.ws, duplicates=dups)
+            removed = [(d, pom, text) for d in dups for pom, text in d.removed]
+            message = agg.reactor_commit_message(dups)
+            if message:
+                self.ws.commit(message)
+                self._flag("reactor-duplicate-removed")
+            report.manual_followups.extend(f for f in agg.reactor_followups(dups) if f not in report.manual_followups)
+            # 운영자가 화면에서 옮겨 적는 한 줄(한국어)
+            log.info("접수: reactor 중복 모듈 %d개 정리 (지운 줄 %d · 메모 %d)", len(dups), len(removed),
+                     len(notes) - len(removed))
+            self.ws.journal({"event": "reactor_dedupe", "duplicates": [d.dir for d in dups],
+                             "removed": [f"{pom}: {text}" for _, pom, text in removed],
+                             "kept": [f"{d.keep[0]}: {d.keep[1]}" for d in dups if d.keep],
+                             "notes": notes})
+        except Exception as e:  # noqa: BLE001 - never lose the run over this: Maven then reports it as before
+            log.warning("reactor duplicate check failed: %s: %s", type(e).__name__, e)
 
     def step_analyze(self, report: RunReport, stop_after: Phase | None) -> bool:
         """2. 분석: 프로필(케이스 타입·Java·Spring/Boot 버전·라이브러리) + 라이브러리 권고(EOL, 안내만).
@@ -724,7 +769,28 @@ class Orchestrator:
         if not profile.poms:
             self._abort(report, "no pom.xml found in the project")
             return False
+        if not self._root_pom_present(report, profile):
+            return False
         return not self._stop(stop_after, Phase.ANALYZE)
+
+    def _root_pom_present(self, report: RunReport, profile: ProjectProfile) -> bool:
+        """v2.1k: 루트 pom.xml 이 없으면(접수가 집계 pom 을 만들지 못함) MSA 가 아닌 한 여기서 멈춘다(exit 3, 플래그
+        ``no-root-pom``) — Maven 을 pom 없는 폴더에서 부르면 OpenRewrite·컴파일·빌드가 "there is no POM in this
+        directory" 로, 재구성이 "root pom not found: pom.xml" 로 실패하고 LLM 만 쓴다. MSA 는 서비스마다 따로 돈다.
+
+        v2.1k: without a root pom.xml (no aggregator generated) a non-MSA run stops here (exit 3, flag `no-root-pom`)
+        instead of failing in every Maven call; MSA services are migrated one by one and need no root pom."""
+        if self.ws.exists("pom.xml") or profile.case_type == CaseType.MSA:
+            return True
+        try:
+            from sbmig.analyze.aggregator import no_root_pom_reason
+            why = no_root_pom_reason(self.ws, getattr(self.cfg.layout, "generate_aggregator", True))
+        except ImportError:  # pragma: no cover
+            why = "no pom.xml at the project root and none was generated"
+        report.flags.append("no-root-pom")
+        self._abort(report, why)
+        self.ws.journal({"event": "no_root_pom", "reason": why})
+        return False
 
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:

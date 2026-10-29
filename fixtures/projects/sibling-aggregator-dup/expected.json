@@ -1,0 +1,192 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "pom",
+  "is_multi_module": true,
+  "libraries": [
+    "javax-servlet",
+    "jsp"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "aggregator-generated",
+      "ear-module-dropped",
+      "web-xml-registered"
+    ],
+    "forbidden_flags": [
+      "reactor-duplicate-removed",
+      "no-root-pom",
+      "restructure-failed"
+    ],
+    "journal_events": [
+      {
+        "event": "aggregator_generated",
+        "name": "dup",
+        "artifact_id": "dup-aggregator",
+        "modules": ["APP"]
+      },
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite",
+        "ok": true
+      },
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-sibling-aggregator-dup"
+    },
+    "followups_contains": [
+      "regex:^no aggregator pom: sbmig generated pom\\.xml \\(dup-aggregator, modules APP\\) — .*APP/pom\\.xml aggregates the project .*incl\\. DEV beside it.*",
+      "regex:(?is).*context.root.*/dup.*"
+    ],
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "dup-back",
+            "dup-front",
+            "dup-boot"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "<artifactId>dup</artifactId>",
+          "not_contains": "<module>APP</module>"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "dup-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "dup-back/pom.xml",
+          "artifacts": [
+            "com.example.dup:dup",
+            "com.example.dup:dup-batch",
+            "com.example.dup:dup-ear"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "dup-boot/pom.xml",
+          "artifacts": [
+            "com.example.dup:dup",
+            "com.example.dup:dup-batch",
+            "com.example.dup:dup-ear"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "dup-back/pom.xml",
+          "not_contains": "warSourceDirectory"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "dup-boot/pom.xml",
+          "not_contains": "maven-ear-plugin"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "dup-back/src/main/java/com/example/dup/web/HelloServlet.java",
+          "contains": "jakarta.servlet.http.HttpServlet",
+          "not_contains": "javax.servlet"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "dup-back/src/main/java/com/example/dup/batch/Job.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "dup-front/src/main/resources/META-INF/resources/index.jsp"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "dup-boot/src/main/resources/asis-webinf/web.xml"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "dup-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new com.example.dup.web.HelloServlet(), \"/hello\""
+        }
+      },
+      {
+        "file_exists": {
+          "path": "dup-boot/target/*.war"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "DB/schema.sql"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "APP"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "DEV"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "STATIC"
+        }
+      }
+    ]
+  }
+}

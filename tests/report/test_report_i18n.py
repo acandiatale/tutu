@@ -166,6 +166,46 @@ def test_korean_values_non_empty_and_same_placeholders():
     assert tr("ko", "not in the table") == "not in the table"
 
 
+def _reactor_lines(root: Path) -> list[str]:
+    """v2.1k lines from the real code: every `reactor_followups` sentence and the blocked suggestion."""
+    from sbmig.analyze.aggregator import dedupe_reactor, reactor_duplicates, reactor_followups
+    from sbmig.analyze.analyzer import PathView
+    from sbmig.loop.blocked_registry import reactor_duplicate_suggestion
+
+    def pom(aid: str, mods: tuple[str, ...] = (), profiles: str = "") -> str:
+        m = "<modules>" + "".join(f"<module>{x}</module>" for x in mods) + "</modules>" if mods else ""
+        return (f'<project xmlns="http://maven.apache.org/POM/4.0.0"><artifactId>{aid}</artifactId>'
+                f"<packaging>pom</packaging>{m}{profiles}</project>")
+
+    def prof(pid: str, mod: str, default: bool) -> str:
+        act = "<activation><activeByDefault>true</activeByDefault></activation>" if default else ""
+        return f"<profiles><profile><id>{pid}</id>{act}<modules><module>{mod}</module></modules></profile></profiles>"
+
+    trees = {
+        "company": {"pom.xml": pom("r", ("APP", "DEV")), "APP/pom.xml": pom("app", ("../DEV",)), "DEV/pom.xml": pom("d")},
+        "nested": {"pom.xml": pom("r", ("A", "B")), "A/pom.xml": pom("a", ("../LIB",)),
+                   "B/pom.xml": pom("b", ("../LIB",)), "LIB/pom.xml": pom("l")},
+        "repeat": {"pom.xml": pom("r", ("APP",)), "APP/pom.xml": pom("app", ("./X", "./X")), "APP/X/pom.xml": pom("x")},
+        "left": {"pom.xml": pom("r", ("DEV",), prof("all", "./DEV", True)), "DEV/pom.xml": pom("d")},
+        "inactive": {"pom.xml": pom("r", ("APP", "DEV")), "APP/pom.xml": pom("app", profiles=prof("full", "../DEV", False)),
+                     "DEV/pom.xml": pom("d")},
+    }
+    out: list[str] = []
+    for name, files in trees.items():
+        for rel, text in files.items():
+            (root / name / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / name / rel).write_text(text, encoding="utf-8")
+        ws = PathView(root / name)
+        dups = reactor_duplicates(ws)
+        dedupe_reactor(ws, duplicates=dups)
+        out += reactor_followups(dups)
+    assert len(out) == 5, out
+    err = BuildError(kind=ErrorKind.UNKNOWN, message="Project 'g:a:1.0' is duplicated in the reactor @")
+    out.append(reactor_duplicate_suggestion(BlockedItem(id="b", reason=BlockReason.REACTOR_DUPLICATE,
+                                                        phase=Phase.VERIFY, cluster_id="c", errors=[err])))
+    return out
+
+
 def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     """Lines produced by handover.py → each `PATTERNS` entry is exercised and every templated line is translated."""
     lines: list[str] = []
@@ -225,6 +265,9 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     for c in (cfg, off):
         lines += build_handover(as_is_profile(), final_tree(tmp_path / f"jsp{len(lines)}"),
                                 make_report(profile=jsp_prof), effective=EFFECTIVE, cfg=c).from_here
+
+    # v2.1k: reactor duplicate follow-ups (orchestrator → manual_followups) and the reactor_duplicate suggestion
+    lines += _reactor_lines(tmp_path / "rx")
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

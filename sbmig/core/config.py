@@ -371,6 +371,7 @@ class LoopConfig(BaseModel):
     blocked_policy: dict[str, int] = Field(default_factory=lambda: {
         "external_javax_api": 2, "external_api_incompatible": 2, "artifact_not_found": 2, "parent_not_found": 0,
         "plugin_incompatible": 2, "unsupported_source": 0, "encoding": 0,
+        "reactor_duplicate": 0,                      # v2.1k: a pom structure problem — handed over, never asked of the LLM
     })
     # pom 수정 뒤 이 종류의 오류가 나타나면 개수와 상관없이 되돌린다(LLM
     # 이 지어낸 의존성 하나가 모든 컴파일 오류를 가린 사례).

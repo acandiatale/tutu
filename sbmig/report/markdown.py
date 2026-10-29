@@ -71,7 +71,7 @@ FLAG_HELP = {
     "web-xml-registered": "web.xml servlets / filters / listeners / error pages were turned into a generated "
                           "WebXmlRegistrations @Configuration in the boot module (web.xml itself is not read by "
                           "Spring Boot) — verify the mappings in the Handover",
-    "aggregator-generated": "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)",
+    "aggregator-generated": "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR) or one aggregator below the root (e.g. APP/pom.xml listing ../DEV): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)",
     "ear-without-modules": "the input was an EAR pom whose modules are not in the directory (e.g. APP/EAR alone): run sbmig on the directory that contains every module",
     "ear-module-dropped": "an EAR module (application-server packaging) was dropped: its modules were merged and the boot module is deployed instead; descriptors are kept under asis-ear/ and the context root is a follow-up",
     "war-overlay-moved": "a WAR dependency (maven-war-plugin overlay) was moved from the jar modules to the boot WAR — the overlay WAR must be resolvable from your repositories",
@@ -90,6 +90,14 @@ FLAG_HELP = {
                                "jar_names.yml, not found by sha1 in the repository): declared with `system` scope "
                                "(intake.unknown_jar) the build passes, but they are not packaged into the WAR — "
                                "install them into Nexus and replace the pom entries (commands in the Handover)",
+    # v2.1k: reactor 에 두 번 닿던 모듈의 중복 <module> 줄을 접수에서 지움(정보 — 후속 조치에 되돌리는 법)
+    "reactor-duplicate-removed": "a module was listed twice in the reactor (e.g. by the root pom and as `../DEV` by a "
+                                 "nested aggregator), which Maven refuses (\"is duplicated in the reactor\"): the "
+                                 "nested aggregator's listing was removed at intake so the build runs — see Manual "
+                                 "follow-ups",
+    "no-root-pom": "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are "
+                   "not one application and not MSA services): the run stopped before any Maven call — add a root "
+                   "pom.xml or run sbmig on each application's directory",
 }
 FLAG_PREFIX_HELP = {
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
@@ -149,7 +157,7 @@ def blocked_rows(items: list[BlockedItem], lang: str = "en") -> list[str]:
         files = ", ".join(f"`{f}`" for f in b.files[:5]) + (f" (+{len(b.files) - 5})" if len(b.files) > 5 else "")
         rows.append(f"| `{b.reason.value}` ({b.phase.value}) | {_cell(_blocked_who(b, lang), 160)} | "
                     f"{_cell(_blocked_types(b), 200)} | {_cell(files or '-', 400)} | {b.attempts} | "
-                    f"{_cell(b.suggestion, 500)} |")
+                    f"{_cell(tr_line(lang, b.suggestion), 500)} |")
     return rows
 
 

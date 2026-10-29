@@ -1,0 +1,5 @@
+{
+  "note": "structure review of sibling-aggregator-dup (one call): verdict ok — the generated root aggregator (APP only) became the company-layout root",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"No root pom in the as-is tree: sbmig generated one listing APP (APP aggregated ../DEV, ./EAR, ./BATCH). After the restructure the root is on the base parent with the mandatory starters, dup-back / dup-front on the comp parent, dup-boot a war on the boot parent (JSP in dup-front); the EAR module is gone. Nothing to fix.\"\n}\n</review>\n"
+}

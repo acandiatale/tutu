@@ -56,7 +56,9 @@ def test_fixture_gets_an_aggregator_in_dependency_order(tmp_path):
 
 def test_no_aggregator_for_a_single_pom_or_an_existing_root(tmp_path):
     assert plan_aggregator(_tree(tmp_path / "a", {"pom.xml": _pom("g", "a")})) is None
-    assert plan_aggregator(_tree(tmp_path / "b", {"x/pom.xml": _pom("g", "x")})) is None
+    # v2.1k: a single top pom below the root gets an aggregator listing it (Maven / the restructure need a root pom)
+    single = plan_aggregator(_tree(tmp_path / "b", {"x/pom.xml": _pom("g", "x")}))
+    assert single is not None and single.modules == ["x"] and "x/pom.xml is the only top-level pom" in single.reason
     two = {"pom.xml": _pom("g", "root", "pom", modules="<module>x</module>"), "x/pom.xml": _pom("g", "x"),
            "y/pom.xml": _pom("g", "y", deps=_dep("g", "x"))}
     assert plan_aggregator(_tree(tmp_path / "c", two)) is None
@@ -105,3 +107,65 @@ def test_ear_without_its_modules_is_rejected(tmp_path):
                                                                  deps=_dep("commons-io", "commons-io"))})
     assert ear_without_modules(third_party) is None                       # only library jars for lib/
     assert ear_without_modules(_tree(tmp_path / "jar", {"pom.xml": _pom("g", "x")})) is None
+
+
+# ---------------------------------------------------------------- v2.1k: a single top pom (company case APP + ../DEV)
+SIBLING = REPO / "fixtures" / "projects" / "sibling-aggregator-dup"
+
+
+def test_single_top_aggregating_a_sibling_gets_a_root_listing_only_it(tmp_path):
+    shutil.copytree(SIBLING, tmp_path / "p")
+    ws = PathView(tmp_path / "p")
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["APP"]          # DEV is reached through APP's ../DEV: never listed
+    assert (plan.name, plan.artifact_id) == ("dup", "dup-aggregator")   # EAR dup-ear without -ear; the WAR is dup
+    assert (plan.group_id, plan.version) == ("com.example.dup", "1.0.0-SNAPSHOT")
+    assert "APP/pom.xml aggregates the project (4 poms, incl. DEV beside it)" in plan.reason
+    write_aggregator(ws, plan)
+    from sbmig.analyze.aggregator import reactor_duplicates
+    assert reactor_duplicates(ws) == []                          # root → APP → ../DEV, ./EAR, ./BATCH: once each
+    assert "<module>APP</module>" in (tmp_path / "p" / "pom.xml").read_text(encoding="utf-8")
+
+
+def test_windows_module_paths_count_as_references(tmp_path):
+    ws = _tree(tmp_path, {"APP/pom.xml": _pom("g", "app", "pom", modules="<module>..\\DEV</module>"),
+                          "DEV/pom.xml": _pom("g", "dev", "war")})
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["APP"]          # ..\DEV is DEV: not a second top
+
+
+def test_a_module_only_in_a_profile_is_listed_and_the_profile_duplicate_deduped(tmp_path):
+    """The restructure follows only the main <modules>, so the planner lists a module that only a profile reaches;
+    the profile's duplicate listing is then removed by dedupe_reactor (the company's older run: root APP + DEV)."""
+    from sbmig.analyze.aggregator import dedupe_reactor, reactor_duplicates
+    prof = ("<profiles><profile><id>all</id><activation><activeByDefault>true</activeByDefault></activation>"
+            "<modules><module>../DEV</module></modules></profile></profiles>")
+    app = _pom("g", "app", "pom", modules="<module>./EAR</module>").replace("</project>", prof + "</project>")
+    ws = _tree(tmp_path, {"APP/pom.xml": app, "APP/EAR/pom.xml": _pom("g", "app-ear", "ear", deps=_dep("g", "dev", "war")),
+                          "DEV/pom.xml": _pom("g", "dev", "war")})
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["DEV", "APP"]
+    write_aggregator(ws, plan)
+    dups = reactor_duplicates(ws)
+    assert [(d.dir, d.keep, d.remove) for d in dups] == [("DEV", ("pom.xml", "DEV"), [("APP/pom.xml", "../DEV")])]
+    dedupe_reactor(ws, duplicates=dups)
+    assert reactor_duplicates(ws) == [] and "../DEV" not in (tmp_path / "APP/pom.xml").read_text(encoding="utf-8")
+
+
+def test_ear_suffix_is_dropped_from_the_name(tmp_path):
+    for aid, want in (("shopEAR", "shop"), ("shop-ear", "shop"), ("shop_ear", "shop"), ("portal", "portal"),
+                      ("ab-ear", "ab-ear")):                       # a stem shorter than 3 keeps the artifactId
+        ws = _tree(tmp_path / aid, {"ear/pom.xml": _pom("g", aid, "ear", deps=_dep("g", "web", "war")),
+                                    "web/pom.xml": _pom("g", "web", "war")})
+        plan = plan_aggregator(ws)
+        assert plan is not None and plan.name == want, aid
+
+
+def test_no_root_pom_reason_names_the_unrelated_tops(tmp_path):
+    from sbmig.analyze.aggregator import no_root_pom_reason
+    ws = _tree(tmp_path, {"a/pom.xml": _pom("g", "a", "war"), "b/pom.xml": _pom("g", "b", "war")})
+    assert plan_aggregator(ws) is None
+    why = no_root_pom_reason(ws)
+    assert why.startswith("no pom.xml at the project root and none was generated: the top-level poms (a/pom.xml, "
+                          "b/pom.xml) do not form one application")
+    assert "layout.generate_aggregator is off" in no_root_pom_reason(ws, generate=False)

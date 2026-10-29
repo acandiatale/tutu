@@ -2,7 +2,8 @@
 흐름상 위치: ``DecisionEngine.decide`` 의 2단계에서 ``classify_blocked`` 를 부른다. 분류만 하고, 그 이유에 LLM
 시도를 몇 번 줄지는 ``cfg.loop.blocked_policy`` 가 정한다. 차단된 케이스는 인수인계의 Blocked 로 간다. X1
 의존성 API 가 아직 javax 타입 / X2 의존성 API 변경 / X3·X4 아티팩트·parent 가 저장소에 없음 / X5 JDK 21 에서
-깨지는 플러그인 / X6 Java 가 아닌 소스(Kotlin·Groovy·Scala, 코드 생성 플러그인). 일부러 보수적이다: 애매하면
+깨지는 플러그인 / X6 Java 가 아닌 소스(Kotlin·Groovy·Scala, 코드 생성 플러그인) / v2.1k reactor 중복(같은 프로젝트가
+reactor 에 두 번 — pom 구조 문제라 스크립트로 못 고침, 접수가 먼저 지우고 남은 것만 여기 온다). 일부러 보수적이다: 애매하면
 차단하지 않는다(스크립트에 기회를 준다). javax 패키지 없음 / javax 심볼 없음은 jakarta 레시피나 스크립트
 몫이고, 프로젝트가 아직 그 javax 를 import 하거나 소유 클래스가 프로젝트 것이면 X1 이 아니다. 주의: 이것은
 "빌드 오류" 의 차단이다. EOL 라이브러리 권고에는 차단 정책이 없다(권고는 안내만, CLAUDE.md).
@@ -11,7 +12,9 @@ Blocked-cluster classification (docs/ERROR-HANDLING.md §1, X1–X6).
 
 A cluster is *blocked* when the fix is not inside this project: a dependency still exposes ``javax.*`` types in its
 API (X1), a dependency API changed (X2), an artifact / parent is not in any repository (X3/X4), a build plugin is
-broken on JDK 21 (X5) or the sources are not Java (X6). ``classify_blocked`` only *classifies*; how many LLM attempts
+broken on JDK 21 (X5), the sources are not Java (X6) or a project is reached twice through the reactor's `<module>`
+lists (v2.1k, ``reactor_duplicate``: the intake removes such listings; what still reaches the build is a pom structure
+problem no script fixes). ``classify_blocked`` only *classifies*; how many LLM attempts
 a reason gets before the cluster is blocked is ``cfg.loop.blocked_policy`` (see ``decide.py``).
 
 The rules are deliberately conservative: when in doubt the cluster is **not** blocked (the recipes / fix scripts get
@@ -68,6 +71,12 @@ _PLUGIN_GOAL_RE = re.compile(r"\bgoal\s+(?P<g>[\w.\-]+):(?P<a>[\w.\-]+):(?P<v>[\
 GENERATOR_PLUGINS = ("protobuf-maven-plugin", "jaxb2-maven-plugin", "maven-jaxb2-plugin", "openapi-generator-maven-plugin",
                      "kotlin-maven-plugin", "gmavenplus-plugin", "groovy-maven-plugin", "scala-maven-plugin")
 _FOREIGN_SOURCE_RE = re.compile(r"\.(?:kt|kts|groovy|scala)\b")
+# v2.1k: Maven 3 "Project 'g:a:v' is duplicated in the reactor" / older wording "The projects in the reactor contain a
+# duplicate …" (DuplicateProjectException) — the whole reactor is refused before anything compiles
+_REACTOR_DUP_RE = re.compile(r"is duplicated in the reactor|The projects in the reactor contain a duplicate",
+                             re.IGNORECASE)
+_REACTOR_DUP_COORD_RE = re.compile(r"Project '(?P<c>[^'\s]+)' is duplicated in the reactor|"
+                                   r"duplicate (?:project|module)[^']*'(?P<c2>[^'\s]+)'", re.IGNORECASE)
 
 # 마이그레이션 "대상" API(JDK, javax/jakarta, Spring, Hibernate, Jackson …): 이들의 API 변경은 레시피·LLM 이
 # 고칠 일이지 외부 라이브러리 탓(X2)이 아니다
@@ -120,6 +129,8 @@ class BlockedCandidate:
             return f"build plugin {self.plugin or '?'} fails on JDK 21" + (f": {self.evidence[0]}" if self.evidence else "")
         if r == BlockReason.UNSUPPORTED_SOURCE:
             return self.evidence[0] if self.evidence else "non-Java / generated sources"
+        if r == BlockReason.REACTOR_DUPLICATE:
+            return self.evidence[0] if self.evidence else "a project is listed twice in the reactor"
         return self.evidence[0] if self.evidence else r.value
 
 
@@ -499,6 +510,32 @@ def _classify_infra(cluster: ErrorCluster) -> Optional[BlockedCandidate]:
     return None
 
 
+def reactor_duplicate_coordinates(text: str) -> str | None:
+    """Maven 의 reactor 중복 메시지에서 중복된 프로젝트 좌표(``g:a:v``)를, 없으면 None.
+
+    The coordinates Maven names in a "duplicated in the reactor" message, else None."""
+    m = _REACTOR_DUP_COORD_RE.search(text or "")
+    return (m.group("c") or m.group("c2")) if m else None
+
+
+def _classify_reactor(cluster: ErrorCluster) -> BlockedCandidate | None:
+    """v2.1k 판정: "Project 'g:a:v' is duplicated in the reactor" — 한 모듈이 reactor 에 두 번 닿아 Maven 이 reactor
+    전체를 거부한다(종류와 상관없이 메시지로 본다: 파서는 이것을 unknown 으로 분류한다). pom 구조 문제라 스크립트로
+    고치지 않는다: ``blocked_policy.reactor_duplicate`` 0 이면 LLM 없이 바로 인수인계로 간다. 접수의
+    ``dedupe_reactor`` 가 지우지 못한 것(루트 pom 의 두 블록, 같은 좌표의 두 디렉토리, 프로필)만 여기 온다.
+
+    v2.1k: a project reached twice through the reactor's `<module>` lists (message based — the parser files it as
+    `unknown`); the evidence names the duplicated coordinates."""
+    hits = [e for e in cluster.errors if _REACTOR_DUP_RE.search(_text(e))]
+    if not hits:
+        return None
+    coords = reactor_duplicate_coordinates("\n".join(_text(e) for e in hits))
+    what = f"project {coords}" if coords else "a project"
+    return BlockedCandidate(reason=BlockReason.REACTOR_DUPLICATE, errors=hits,
+                            evidence=[(f"{what} is duplicated in the reactor: it is reached through more than one "
+                                       f"<module> listing (a pom structure problem — no code change fixes it)")])
+
+
 def _plugin_of(e: BuildError) -> Optional[str]:
     """오류의 플러그인 좌표 g:a:v(아티팩트, 없으면 ``goal g:a:v:goal`` 에서)."""
     if e.artifact is not None:
@@ -533,7 +570,7 @@ def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], c
                      ws=None) -> Optional[BlockedCandidate]:
     """클러스터(의 일부)가 프로젝트 안에서 고칠 수 없으면 BlockedCandidate, 아니면 None.
     ``candidate.errors`` 는 일부일 수 있다 — 루프는 그 오류만 차단하고 나머지는 계속 고친다. 순서:
-    인프라(X3–X5) → 외국어 소스(X6) → (컴파일이면) javax API(X1) → 외부 API(X2).
+    reactor 중복(v2.1k) → 인프라(X3–X5) → 외국어 소스(X6) → (컴파일이면) javax API(X1) → 외부 API(X2).
 
     Return a BlockedCandidate when (part of) the cluster cannot be fixed inside the project, else None.
 
@@ -542,7 +579,7 @@ def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], c
     working on the rest."""
     if not cluster.errors:
         return None
-    for fn in (_classify_infra, _classify_foreign_source):
+    for fn in (_classify_reactor, _classify_infra, _classify_foreign_source):
         c = fn(cluster)
         if c is not None:
             return c

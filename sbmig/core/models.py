@@ -135,6 +135,9 @@ class BlockReason(str, Enum):
     LLM_UNAVAILABLE = "llm_unavailable"
     REPEATED_FAILURE = "repeated_failure"                # escalated after the allowed attempts
     OSCILLATION = "oscillation"                          # fixes keep toggling between the same error sets
+    # v2.1k (2026-10-29): a module reached twice in the reactor ("Project … is duplicated in the reactor") — a pom structure
+    # problem the intake de-duplicates; when it still reaches the build it is handed over, never given to the LLM
+    REACTOR_DUPLICATE = "reactor_duplicate"
 
 
 class BlockedItem(BaseModel):

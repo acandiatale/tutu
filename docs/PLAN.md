@@ -497,3 +497,17 @@ User: "우리 ant 프로젝트도 maven 으로 변경 후 마이그레이션이 
 | Docs: CLAUDE.md company constraints, KB-AND-FLOW §1 note, RUNBOOK "Ant 프로젝트", deck ① 접수 wording | — | done |
 | e2e fixture `ant-webapp` (build.xml + WebContent + stub jars + a real compiled unknown jar) through the whole flow | `fixtures/projects/ant-webapp/` | see the row below |
 
+## Status — 2026-10-29, v2.1k (rootless trees: single-top aggregator, reactor de-duplication)
+
+User: a company project (no root pom; `APP/pom.xml` aggregating `../DEV`, `./EAR`, `./BATCH`; `DEV` WAR on `../STATIC`; `DB/`)
+ended with `Project … is duplicated in the reactor` after 3 LLM script augments; "루트 디렉토리 아래에 APP 디렉토리 하나만 있는
+경우도 성공 못했어 — 루트에 pom 생성조차 안 되었고". Contract: `docs/INTERFACES.md` "v2.1k".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Planner: aggregator also for a single top, `..\DEV` normalised, `{name}` from the listed poms + modules, unrelated groups → exit 3 `no-root-pom` at analyze (MSA excepted) | `sbmig/analyze/aggregator.py`, `sbmig/loop/orchestrator.py`, `tests/analyze/test_aggregator.py` | done |
+| Reactor de-duplication at intake (`reactor_duplicates` / `dedupe_reactor`, non-root listings removed, commit + flag `reactor-duplicate-removed` + follow-up) | `sbmig/analyze/aggregator.py`, `sbmig/loop/orchestrator.py`, `tests/analyze/test_reactor_duplicates.py`, `tests/loop/test_v21k_reactor_dedupe.py` | done |
+| Safety net: `BlockReason.REACTOR_DUPLICATE`, policy 0 → BLOCKED without an LLM call, suggestion in Korean | `sbmig/core/models.py`, `config/default.yml`, `sbmig/triage/blocked.py`, `sbmig/loop/blocked_registry.py`, `tests/triage/test_v21k_reactor_duplicate.py` | done |
+| e2e `sibling-aggregator-dup` (company shape) + `servlet-nonstandard-dirs` PASS on real Maven; full offline suite 2,464 | `fixtures/projects/sibling-aggregator-dup/` | done |
+| Pending (the user) | — | the company PC's commit (the APP+DEV aggregator seen there does not reproduce on HEAD — an older build or a path difference); delete the useless stored case for the reactor error in the company KB + `sbmig kb reindex` |
+

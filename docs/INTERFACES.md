@@ -1895,3 +1895,43 @@ Maven project (case type from the analyzer: servlet_tomcat / pure_java / spring_
   "files under WEB-INF/lib stay … declare the jars as Maven dependencies" still appears for an Ant project although the
   synthesized pom already declares them (wording only).
 
+## v2.1k — rootless trees: the aggregator for a single top, reactor de-duplication, `reactor_duplicate` (2026-10-29)
+
+Company failure: a tree with no root pom.xml, `APP/pom.xml` (aggregator: `../DEV`, `./EAR`, `./BATCH`), `DEV/pom.xml` (WAR,
+`warSourceDirectory ../STATIC`), `STATIC/`, `DB/`. The intake's generated aggregator listed `APP` AND `DEV` → Maven refused the
+reactor (`Project 'g:a:v' is duplicated in the reactor`) → effective-pom, OpenRewrite (no Java 21 / jakarta recipe ran) and
+`transform.compile` all failed with that one error, the fix loop augmented a stored script 3 times, exit 2; a tree with only
+`APP/` under the root got no aggregator at all (one top → None) and every Maven call ran in a root without a pom.
+
+### Intake (`sbmig/analyze/aggregator.py`, `sbmig/loop/orchestrator.py`)
+- `plan_aggregator`: with no root pom.xml, ONE top pom also gets the root aggregator (`<module>APP</module>`); several linked
+  tops are grouped as before; module paths are normalised (`..\DEV` → `../DEV`); `{name}` from all listed poms and their
+  modules (EAR → WAR → common prefix, trailing `-ear` dropped); a pom reachable through another top's main `<modules>` is
+  never listed. Two or more unrelated groups → still no aggregator; the run then stops at analyze (non-MSA only) with exit 3,
+  flag `no-root-pom`, journal `no_root_pom`, the reason in the Handover — an MSA tree without a root pom keeps working.
+- `reactor_duplicates(ws, root_pom="pom.xml") -> list[ReactorDuplicate(dir, listings)]` walks the reactor in Maven order
+  through the main `<modules>` plus activeByDefault profiles; `dedupe_reactor(ws, root_pom)` removes a repeat inside one
+  `<modules>` block (the only root-pom edit) and otherwise the listings in NON-root poms (the root's stays; else the first
+  in reactor order) through `PomEditor` (encoding / CRLF / comments kept, an emptied `<modules>` removed); noted, never
+  removed: a second listing in another block of the root pom, profiles not active by default. Called at the end of
+  `_intake_layout` before the effective-pom capture; a removal → commit `intake: reactor duplicate removed (DEV listed by
+  pom.xml and APP/pom.xml)` (one body line per removal), flag `reactor-duplicate-removed`, journal `reactor_dedupe`,
+  Handover follow-up `DEV was listed twice in the reactor (pom.xml and APP/pom.xml); the APP listing was removed so Maven
+  can build — if APP is meant to be built on its own, add DEV back there and remove it from the root`.
+- Profile-aware reachability in the planner was tried and reverted: the restructure / analyzer follow the main `<modules>`
+  only, so a module listed only in a profile must stay a top (it is merged) and the dedupe removes the profile listing.
+
+### Loop (`sbmig/triage/blocked.py`, `sbmig/loop/blocked_registry.py`)
+- `BlockReason.REACTOR_DUPLICATE` (`reactor_duplicate`), `loop.blocked_policy.reactor_duplicate: 0`: a build error saying
+  `is duplicated in the reactor` / `The projects in the reactor contain a duplicate` is BLOCKED at once (no LLM call); the
+  evidence and the Blocked table's artifact column carry the coordinate; `compose_suggestion` explains it (Korean via
+  `tr_line`).
+
+### Report
+`FLAG_HELP`: `reactor-duplicate-removed`, `no-root-pom`; `aggregator-generated` now covers the single-top case.
+
+### e2e
+`fixtures/projects/sibling-aggregator-dup` (the company shape, plain `<modules>`): aggregator lists only `APP`, OpenRewrite
+runs from the root (5 files), company layout at the root (`dup-back / -front / -boot`, root renamed `dup` after the EAR is
+merged), DEV sources in back, `STATIC` in front, `DB/` untouched, BUILD SUCCESS.
+

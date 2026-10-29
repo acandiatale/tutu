@@ -1,0 +1,24 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — v2.1k: no root pom, one top pom
+# (APP/pom.xml aggregating ../DEV, ./EAR, ./BATCH) on the round 9c company layout: the local e2e config pins the
+# pre-9c layout for the older fixtures, so this fixture sets the company layout back (the defaults of
+# config/default.yml) and adds the role parents. Local stand-ins: every in-house parent is spring-boot-starter-parent
+# 4.1.0 (base-parent = artifacts.parent in the local e2e config).
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review), the other entries answer fix-script requests by `match` on `case: <case_id>`
+# (case_id = sha1(L2)[:10]; first unused match, the last match repeats, no match = "no fix").
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/sibling-aggregator-dup/replay"
+# Own KB (v2: stored fix scripts per case, reviews.jsonl, error cases): a shared KB would let one fixture
+# reuse another's scripts. scripts/e2e.py clears it before the run (expect.kb.dir).
+kb:
+  dir: out/e2e/kb-sibling-aggregator-dup

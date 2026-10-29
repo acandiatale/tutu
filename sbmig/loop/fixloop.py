@@ -917,6 +917,14 @@ class BuildFixLoop:
             artifact, owner, notes = attribute(self.locator, self.ws, self.cfg, owner, errs, c.module or target)
         elif reason in (BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PARENT_NOT_FOUND):
             artifact = next((e.artifact for e in errs if e.artifact is not None), None)
+        elif reason == BlockReason.REACTOR_DUPLICATE:
+            # v2.1k: 차단 표의 아티팩트 칸에 중복된 프로젝트 좌표(Maven 메시지에서)
+            from sbmig.triage.blocked import errors_text, reactor_duplicate_coordinates
+            coords = reactor_duplicate_coordinates(errors_text(errs))
+            try:
+                artifact = GAV.parse(coords) if coords else None
+            except ValueError:
+                artifact = None
         elif getattr(cand, "plugin", None):
             try:
                 artifact = GAV.parse(cand.plugin)

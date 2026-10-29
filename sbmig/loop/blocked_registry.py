@@ -548,11 +548,32 @@ def _optional_spec(cfg, artifact: Optional[GAV]):
         return None
 
 
+_REACTOR_COORDS_RE = re.compile(r"Project '(?P<c>[^'\s]+)' is duplicated in the reactor")
+
+
+def reactor_duplicate_suggestion(item: BlockedItem) -> str:
+    """v2.1k ``reactor_duplicate`` 의 제안 문구: 중복된 프로젝트 좌표(아티팩트, 없으면 오류 메시지에서)와 할 일 —
+    ``<module>`` 목록을 하나로 정리. 접수가 안쪽 집계 pom 의 중복은 이미 지우므로 여기 오는 것은 그것이 못 지운 경우다.
+    한국어는 report/i18n.py ``PATTERNS`` 가 이 문장을 맞춘다(바꾸면 함께).
+
+    Suggestion for a project reached twice through the reactor's `<module>` lists (Korean: i18n `PATTERNS`)."""
+    coords = item.artifact.coordinates if item.artifact is not None else None
+    if coords is None:
+        m = next((m for m in (_REACTOR_COORDS_RE.search(f"{e.message}\n{e.raw or ''}") for e in item.errors) if m),
+                 None)
+        coords = m.group("c") if m else "the project"
+    return (f"`{coords}` is reached more than once through the reactor's <module> lists (e.g. the root pom lists DEV "
+            f"and a nested aggregator lists ../DEV): keep one listing per module — the intake removes the duplicate "
+            f"listings of nested aggregators, this one it could not (two listings in the root pom, two directories "
+            f"with the same coordinates, or a profile); fix the poms by hand, the LLM is not asked")
+
+
 def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[str] = None,
                        repositories: Optional[list[str]] = None, extra: str = "", javax_jar: Any = None) -> str:
     """차단 항목의 제안 문구(보고서 "Blocked"·인수인계에 사람이 읽는 다음 행동). 사유별로 다르다: javax /
     호환 안 되는 API → 어느 라이브러리를 어떻게, 없는 아티팩트 → Nexus 프록시·좌표 수정(LLM 에게 버전을
-    지어내게 하지 않는다), parent → settings·미러, 플러그인, 인코딩, 예산, LLM 불가, 반복 실패, 진동."""
+    지어내게 하지 않는다), parent → settings·미러, 플러그인, 인코딩, v2.1k reactor 중복(pom 의 ``<module>`` 목록을
+    손으로 정리, LLM 에게 묻지 않음), 예산, LLM 불가, 반복 실패, 진동."""
     r = item.reason
     a = item.artifact
     if r in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
@@ -607,6 +628,8 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
                 "migrated by sbmig: migrate this module or generator configuration by hand")
     if r == BlockReason.ENCODING:
         return "the source encoding could not be determined: set project.build.sourceEncoding or convert to UTF-8"
+    if r == BlockReason.REACTOR_DUPLICATE:
+        return reactor_duplicate_suggestion(item)
     if r == BlockReason.BUDGET_EXHAUSTED:
         return ("the run's LLM/time budget was used up before this cluster could be fixed: rerun with a higher "
                 "loop.max_llm_calls / loop.max_total_minutes or fix it by hand")

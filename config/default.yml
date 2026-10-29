@@ -144,6 +144,7 @@ loop:
   always_final_verify: true
   oscillation_window: 4
   blocked_policy:                # LLM script attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
+    reactor_duplicate: 0           # v2.1k: a module listed twice in the reactor is handed over, never asked of the LLM
     # v2: no handler swaps a javax library / bumps a missing version / a plugin any more → the LLM script gets 2 tries
     external_javax_api: 2        # dependency still exposes javax.* → the script may swap it for its jakarta release
     external_api_incompatible: 2

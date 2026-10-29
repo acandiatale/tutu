@@ -306,12 +306,23 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "Ant 프로젝트의 jar 중 Maven 좌표를 찾지 못한 것이 있다(jar 안에 pom.properties 없음, jar_names.yml 에 없음, "
         "저장소 sha1 조회 실패): `system` scope 로 선언하면(intake.unknown_jar) 빌드는 통과하지만 WAR 에 들어가지 "
         "않는다 — Nexus 에 설치하고 pom 항목을 바꿀 것(명령은 인수인계에)",
+    "a module was listed twice in the reactor (e.g. by the root pom and as `../DEV` by a nested aggregator), which "
+    "Maven refuses (\"is duplicated in the reactor\"): the nested aggregator's listing was removed at intake so the "
+    "build runs — see Manual follow-ups":
+        "한 모듈이 reactor 에 두 번 올라 있었다(예: 루트 pom 과, 안쪽 집계 pom 의 `../DEV`) — Maven 은 이런 reactor 를 "
+        "거부한다(\"is duplicated in the reactor\"). 빌드가 돌도록 접수에서 안쪽 집계 pom 의 줄을 지웠다 — '수동 후속 "
+        "조치' 참조",
+    "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are not one "
+    "application and not MSA services): the run stopped before any Maven call — add a root pom.xml or run sbmig on "
+    "each application's directory":
+        "프로젝트 루트에 pom.xml 이 없고 sbmig 가 만들 수도 없었다(최상위 pom 들이 한 애플리케이션도, MSA 서비스도 아님) — "
+        "Maven 을 부르기 전에 실행을 멈췄다: 루트 pom.xml 을 추가하거나 애플리케이션 폴더마다 따로 sbmig 를 돌릴 것",
     "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not because of "
     "the project: fix the environment and run it again (a fleet re-queues the project)":
         "프로젝트가 아니라 인프라(LLM 게이트웨이, Maven, JDK, 저장소 / Nexus, 디스크) 문제로 실행이 끝났다 — 환경을 "
         "고치고 다시 실행할 것(플릿은 이 프로젝트를 다시 대기열에 넣는다)",
-    "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)":
-        "프로젝트 루트에 pom.xml이 없고 서로 의존하는 pom들(예: APP/BATCH, APP/WEB, APP/EAR)만 있어 sbmig가 루트 집합 pom을 생성했다 — 한 reactor로 함께 빌드하고 회사 레이아웃으로 병합한다(layout.generate_aggregator)",
+    "the project had no pom.xml at its root but sibling poms that depend on each other (e.g. APP/BATCH, APP/WEB, APP/EAR) or one aggregator below the root (e.g. APP/pom.xml listing ../DEV): sbmig generated a root aggregator pom so they build in one reactor and are merged into the company layout (layout.generate_aggregator)":
+        "프로젝트 루트에 pom.xml이 없고 서로 의존하는 pom들(예: APP/BATCH, APP/WEB, APP/EAR)이나 루트 아래 집합 pom 하나(예: ../DEV 를 나열한 APP/pom.xml)만 있어 sbmig가 루트 집합 pom을 생성했다 — 한 reactor로 함께 빌드하고 회사 레이아웃으로 병합한다(layout.generate_aggregator)",
     "the input was an EAR pom whose modules are not in the directory (e.g. APP/EAR alone): run sbmig on the directory that contains every module":
         "입력이 EAR pom이고 그 EAR이 묶는 모듈이 디렉터리에 없다(예: APP/EAR만 넣음) — 모든 모듈이 들어 있는 상위 디렉터리로 다시 실행할 것",
     "an EAR module (application-server packaging) was dropped: its modules were merged and the boot module is deployed instead; descriptors are kept under asis-ear/ and the context root is a follow-up":
@@ -499,6 +510,36 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"/ useBean to jakarta\.\* \(the build passes, Tomcat 10\+ fails at runtime\)$"),
      (r"JSP 에 javax 참조가 남아 있다(파일 \g<n>개) — page import / 스크립틀릿 / useBean 의 javax EE 이름을 jakarta.* 로 "
       r"바꿀 것(빌드는 통과하지만 Tomcat 10+ 에서 실행 시 실패한다)")),
+    # v2.1k: reactor 중복 모듈 정리(sbmig/analyze/aggregator.py reactor_followups — 문장을 바꾸면 함께)
+    ((r"^(?P<d>.+?) was listed (?:twice|\d+ times) in the reactor \((?P<poms>[^)]+)\); the (?P<a>.+?) listings? "
+      r"(?:was|were) removed so Maven can build — if (?P<b>.+?) is meant to be built on its own, add (?P=d) back "
+      r"there and remove it from the root$"),
+     (r"\g<d> 모듈이 reactor 에 중복으로 올라 있었다(\g<poms>) — Maven 이 빌드할 수 있도록 \g<a> 쪽 목록에서 지웠다. "
+      r"\g<b> 를 따로 빌드해야 한다면 그쪽에 \g<d> 를 다시 넣고 루트 pom 에서 뺄 것")),
+    ((r"^(?P<d>.+?) was listed (?:twice|\d+ times) in the reactor \((?P<poms>[^)]+)\); the (?P<a>.+?) listings? "
+      r"(?:was|were) removed so Maven can build — if (?P<b>.+?) is meant to be built on its own, add (?P=d) back "
+      r"there and remove it from (?P<k>.+)$"),
+     (r"\g<d> 모듈이 reactor 에 중복으로 올라 있었다(\g<poms>) — Maven 이 빌드할 수 있도록 \g<a> 쪽 목록에서 지웠다. "
+      r"\g<b> 를 따로 빌드해야 한다면 그쪽에 \g<d> 를 다시 넣고 \g<k> 에서 뺄 것")),
+    ((r"^(?P<d>.+?) was listed more than once in the same <modules> of (?P<p>.+?); the repeated listing was removed "
+      r"so Maven can build$"),
+     r"\g<d> 모듈이 \g<p> 의 같은 <modules> 에 두 번 이상 올라 있었다 — Maven 이 빌드할 수 있도록 반복된 줄을 지웠다"),
+    ((r"^(?P<d>.+?) is listed more than once by the root pom \((?P<p>[^)]+)\): left as it is — remove the extra "
+      r"<module> by hand so Maven can build$"),
+     (r"\g<d> 모듈이 루트 pom(\g<p>)에 두 번 이상 올라 있다 — 그대로 두었다: Maven 이 빌드할 수 있도록 남는 <module> 을 "
+      r"손으로 지울 것")),
+    ((r"^(?P<d>.+?) is also listed by profile '(?P<id>[^']+)' of (?P<p>.+?) \(not active by default\): building with "
+      r"-P(?P=id) lists (?P=d) twice in the reactor — remove it from one of them if that profile is still used$"),
+     (r"\g<d> 모듈은 \g<p> 의 프로필 '\g<id>'(기본으로 꺼짐)에도 올라 있다 — -P\g<id> 로 빌드하면 reactor 에 두 번 "
+      r"들어간다: 그 프로필을 아직 쓴다면 둘 중 한 곳에서 뺄 것")),
+    # v2.1k: 차단 표의 reactor_duplicate 제안 문구(sbmig/loop/blocked_registry.py reactor_duplicate_suggestion)
+    ((r"^`(?P<c>[^`]+)` is reached more than once through the reactor's <module> lists \(e\.g\. the root pom lists DEV "
+      r"and a nested aggregator lists \.\./DEV\): keep one listing per module — the intake removes the duplicate "
+      r"listings of nested aggregators, this one it could not \(two listings in the root pom, two directories with "
+      r"the same coordinates, or a profile\); fix the poms by hand, the LLM is not asked$"),
+     (r"`\g<c>` 가 reactor 의 <module> 목록으로 두 번 이상 닿는다(예: 루트 pom 의 DEV 와 안쪽 집계 pom 의 ../DEV) — "
+      r"모듈마다 한 줄만 남길 것. 접수가 안쪽 집계 pom 의 중복 줄은 지우지만 이것은 지우지 못했다(루트 pom 안의 두 줄, "
+      r"같은 좌표의 두 디렉토리, 또는 프로필): pom 을 손으로 고칠 것, LLM 에게는 묻지 않는다")),
     (r"^(?P<n>\d+) javax API jar\(s\) still on the classpath — see that section$",
      r"클래스패스에 남은 javax API jar \g<n>개 — '클래스패스에 남은 javax API jar' 절 참조"),
     ((r"^(?P<n>\d+) javax API jar\(s\) still on the classpath after the migration \(see the report section\) — "
