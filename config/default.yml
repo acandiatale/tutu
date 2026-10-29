@@ -218,6 +218,8 @@ review:                            # v2 structure review: the LLM checks poms / 
 fix:
   mode: script                     # v2.1i: script = fix scripts stored per case and reused (default) | edits = the LLM answers
                                    # with edits only (no script generation / storage / reuse) — for the token comparison
+  edits_max_asks_per_case: 0       # edits mode: LLM asks per case; 0 = no cap (the whole fix is left to the LLM — rounds, time
+                                   # and loop.max_llm_calls still stop it), > 0 = BLOCKED after that many (3 = like script mode)
 
 kb:
   dir: kb-v2                       # v2.1: errors.jsonl (every run's error list), cases.md, cases/<case_id>/ (case.json + fix_v<N>.py)

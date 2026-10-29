@@ -26,8 +26,8 @@ id — a case's id is stable across rounds —, or same file, also after the res
 signature); `pending` never counts. A case pinned to `block` by a person (`CaseHit.pinned`) is obeyed first.
 
 v2.1i `fix.mode: edits`: the ladder step is always `new` (`plan_edits_step`: no stored script, no augment) until the
-case's `1 + script.max_augments_per_case` LLM tries are used (→ repeated_failure); every other check is unchanged —
-`loop.blocked_policy` counts the same failed LLM tries."""
+case's `fix.edits_max_asks_per_case` LLM tries are used (→ repeated_failure; 0 = no cap, the default); with no cap the
+positive `loop.blocked_policy` counts are lifted as well (the 0 ones still block at once)."""
 from __future__ import annotations
 
 import logging
@@ -39,7 +39,7 @@ from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttemp
 
 from .blocked import BlockedCandidate, classify_blocked
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
-from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, plan_script_step, script_attempts
+from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, edits_unlimited, plan_script_step, script_attempts
 
 log = logging.getLogger("sbmig.triage")
 
@@ -272,11 +272,16 @@ class DecisionEngine:
             cand = None
         if cand is not None:
             allowed = int(self.cfg.loop.blocked_policy.get(cand.reason.value, 0))
-            if len(llm_failed) >= allowed:
+            # edits 모드 무제한(fix.edits_max_asks_per_case 0)이면 양수 횟수는 적용하지 않는다 — "전부 LLM" 측정;
+            # 0 인 사유(사내 parent 미해결·인코딩 등)는 그대로 바로 차단
+            lifted = allowed > 0 and edits_unlimited(self.cfg)
+            if not lifted and len(llm_failed) >= allowed:
                 extra = (f" (after {len(llm_failed)} LLM script attempt(s))" if llm_failed else
                          " (policy: no LLM script for this reason)")
                 return self._blocked(cluster, cand, extra)
-            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM script attempt "
+            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM edits attempt "
+                           f"{len(llm_failed) + 1}, no cap (fix.mode edits)" if lifted else
+                           f"; looks like {cand.reason.value} ({cand.detail()}) — LLM script attempt "
                            f"{len(llm_failed) + 1}/{allowed} before blocking")
 
         # 3. the LLM steps (augment / new) → BLOCKED when the LLM cannot be asked

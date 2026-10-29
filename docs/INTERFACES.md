@@ -1785,4 +1785,11 @@ side; runs go through the web UI (uvicorn, zip upload); "스크립트 만드는 
 - Web: `fix_mode` / `no_kb` are query fields next to `name` / `configs`; bad values → 400 before the upload is read; rows
   for runs no longer in memory read `web-status.json` → `report.json` → defaults. Fleet: `fleet-config.json` keeps
   `overrides.fix.mode` and `no_kb` for `fleet resume`; a resume with other switches adds a second `settings:` note.
+- 2026-10-29 (user: "한도 도달(LLM 3회) 가 나와서 실패 — 제한 없이 수정하도록, LLM 한테 다 맡겨서 수정했을 때의 토큰량을
+  보여 줄 수 있게"): `fix.edits_max_asks_per_case: int = 0` — edits mode asks per case, **0 = no cap (default)**: the case
+  is never BLOCKED `repeated_failure`, every round asks again until the rounds (`loop.phases.verify.max_iterations`), the
+  time budget or `loop.max_llm_calls` stop the run, and the positive `loop.blocked_policy` counts are lifted too
+  (`edits_unlimited(cfg)`; the 0 ones — company parent unresolved, encoding, unsupported source — still block at once);
+  `> 0` = BLOCKED after that many asks (3 = what script mode asks a case without a stored script). Log line
+  `KB 탐색: fix.mode edits — 저장 스크립트 사용 안 함 → LLM 에 다시 수정 요청 (N번째, 한도 없음, 앞 시도 M건 포함)`.
 

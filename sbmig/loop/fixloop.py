@@ -65,7 +65,7 @@ reused, credited or augmented. Every try of a case is a fresh LLM ask (`script_m
 edits, no `script_base`) that carries the case's earlier tries of this run (`previous_attempts` + `previous_edits`:
 result, why it failed, whether it is still in the tree, the applied diff / the edits that did not apply); the answer's
 edits are applied (`llm-edit`, commit `fix(edits:<case>#<n>): <cluster>`), a script in the answer is ignored. The
-budget is `1 + script.max_augments_per_case` asks per case and run (`sbmig.triage.scripts.edits_llm_limit`), then
+budget is `fix.edits_max_asks_per_case` asks per case and run (0 = no cap, `sbmig.triage.scripts.edits_llm_limit`), then
 BLOCKED `repeated_failure`; scoring, rollback, the blocked policy and the error list are unchanged.
 
 

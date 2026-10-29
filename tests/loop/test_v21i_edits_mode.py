@@ -80,6 +80,7 @@ def lines(caplog) -> list[tuple[str, str]]:
 @pytest.fixture()
 def edits_cfg(cfg):
     cfg.fix.mode = "edits"
+    cfg.fix.edits_max_asks_per_case = 3                      # the capped behaviour; the default (0) is tested apart
     return cfg
 
 
@@ -123,7 +124,7 @@ def test_failed_tries_are_carried_into_the_next_ask_then_the_case_is_blocked(edi
                       analysis=f"cause {n['i']}.")
     fixer = FakeFixer(script_fn=useless)
     pr = make_loop(edits_cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 50)
-    limit = edits_cfg.script.max_augments_per_case
+    limit = edits_cfg.fix.edits_max_asks_per_case
     assert not pr.ok and n["i"] == limit == 3
     assert [a.source for a in pr.attempts] == ["llm-edit"] * limit
     assert [a.outcome for a in pr.attempts] == ["no_change"] * limit
@@ -156,7 +157,7 @@ def test_failed_tries_are_carried_into_the_next_ask_then_the_case_is_blocked(edi
 
 
 def test_edits_that_did_not_apply_reach_the_next_ask_as_the_edits_it_asked_for(edits_cfg, ws):
-    edits_cfg.script.max_augments_per_case = 2                              # two asks
+    edits_cfg.fix.edits_max_asks_per_case = 2                               # two asks
     fixer = FakeFixer(scripts=[answer(edits=[{"op": "replace", "path": FOO, "old": "no such text", "new": "ok",
                                               "desc": "rename the call"}]),
                                answer(edits=[write_edit(FOO, FIXED)])])
@@ -170,8 +171,24 @@ def test_edits_that_did_not_apply_reach_the_next_ask_as_the_edits_it_asked_for(e
     assert f"- replace {FOO} — rename the call: old 'no such text' → new 'ok'" in text
 
 
+def test_no_cap_keeps_asking_until_the_rounds_run_out(edits_cfg, ws, logs):
+    """fix.edits_max_asks_per_case 0 (the default): the case is never BLOCKED repeated_failure — every round asks again
+    until the rounds (max_iterations) run out; the log line says 한도 없음."""
+    edits_cfg.fix.edits_max_asks_per_case = 0
+    n = {"i": 0}
+
+    def useless(w, c, ctx):
+        n["i"] += 1
+        return answer(edits=[write_edit(FOO, f"class Foo {{ still broken {n['i']} }}\n", desc=f"try {n['i']}")])
+    fixer = FakeFixer(script_fn=useless)
+    pr = make_loop(edits_cfg, ws, broken_build(FOO), fixer).run(Phase.VERIFY, "package", 5)
+    assert not pr.ok and n["i"] == 5 and pr.blocked == []
+    assert [a.source for a in pr.attempts] == ["llm-edit"] * 5
+    assert any("한도 없음" in m for _st, m in lines(logs))
+
+
 def test_an_answer_without_edits_is_a_failed_try(edits_cfg, ws):
-    edits_cfg.script.max_augments_per_case = 0                              # one ask only
+    edits_cfg.fix.edits_max_asks_per_case = 1                               # one ask only
     el = FakeErrorList()
     fixer = FakeFixer(scripts=[answer(error="no <edits> block")])
     pr = make_loop(edits_cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 5)

@@ -1,11 +1,11 @@
 """v2.1i `fix.mode: edits`: the ladder never reuses or augments — `new` while the case's LLM tries of this run are
-below script.max_augments_per_case (= script mode's LLM asks), then BLOCKED repeated_failure; the store is not consulted; the blocked
+below fix.edits_max_asks_per_case (0 = no cap), then BLOCKED repeated_failure; the store is not consulted; the blocked
 policy keeps counting the same LLM tries. Script mode is unchanged."""
 from __future__ import annotations
 
 from sbmig.core.models import DecisionKind
 from sbmig.triage import Triager, cluster_cases, plan_script_step
-from sbmig.triage.scripts import EDITS_MODE_FOUND, edits_llm_limit, edits_mode, fix_mode
+from sbmig.triage.scripts import EDITS_MODE_FOUND, edits_llm_limit, edits_mode, edits_unlimited, fix_mode
 
 from .test_blocked import LIB_SYMBOL, cases, script_attempt
 from .test_v2_cases import Store, ctx, err, meta, script_att
@@ -29,15 +29,17 @@ class Spy(Store):
 
 def test_mode_helpers(cfg):
     assert (fix_mode(cfg), edits_mode(cfg)) == ("script", False)
-    assert fix_mode(object()) == "script" and edits_llm_limit(object()) == 3      # a config without the sections
+    assert fix_mode(object()) == "script" and edits_llm_limit(object()) == 0      # a config without the sections
+    assert not edits_unlimited(cfg)                                              # script mode: never "unlimited"
     cfg.fix.mode = "edits"
-    assert (fix_mode(cfg), edits_mode(cfg), edits_llm_limit(cfg)) == ("edits", True, 3)
-    cfg.script.max_augments_per_case = 1
-    assert edits_llm_limit(cfg) == 1
+    assert (fix_mode(cfg), edits_mode(cfg), edits_llm_limit(cfg)) == ("edits", True, 0) and edits_unlimited(cfg)
+    cfg.fix.edits_max_asks_per_case = 1
+    assert edits_llm_limit(cfg) == 1 and not edits_unlimited(cfg)
 
 
 def test_edits_ladder_is_new_until_the_budget_then_none_and_never_reads_the_store(cfg):
     cfg.fix.mode = "edits"
+    cfg.fix.edits_max_asks_per_case = 3
     [c] = cluster_cases([err()], None)
     store = Spy(best=(meta(1, successes=5), "def fix(p):\n    pass\n"), describe="저장된 스크립트 v1 (proven)")
     st = plan_script_step(c, [], store, cfg)
@@ -56,7 +58,7 @@ def test_edits_ladder_is_new_until_the_budget_then_none_and_never_reads_the_stor
     assert st.llm_used == 2
     four = tried + [script_att("new", 0, "regressed", c.id, code=""), script_att("new", 0, "inconclusive", c.id)]
     st = plan_script_step(c, four, store, cfg)
-    assert st.mode is None and "fix.mode edits: script.max_augments_per_case = 3" in st.why
+    assert st.mode is None and "fix.mode edits: fix.edits_max_asks_per_case = 3" in st.why
     assert st.kb_line == f"KB 탐색: {EDITS_MODE_FOUND} → 한도 도달 (LLM 4회) → blocked"
     assert store.asked == 0
 
@@ -71,6 +73,7 @@ def test_script_mode_ladder_is_unchanged(cfg):
 
 def test_decide_in_edits_mode_never_reuses_and_blocks_repeated_failure(cfg, profile):
     cfg.fix.mode = "edits"
+    cfg.fix.edits_max_asks_per_case = 3
     t = Triager(cfg)
     [c] = cluster_cases([err()], None)
     t.attach_run(cases=Store(best=(meta(1, successes=9), "def fix(p):\n    pass\n")))
@@ -85,6 +88,7 @@ def test_decide_in_edits_mode_never_reuses_and_blocks_repeated_failure(cfg, prof
 
 def test_the_blocked_policy_counts_edits_tries_like_llm_script_tries(cfg, profile):
     cfg.fix.mode = "edits"
+    cfg.fix.edits_max_asks_per_case = 3                  # capped: the blocked policy applies as in script mode
     cfg.loop.blocked_policy["external_api_incompatible"] = 1
     t = Triager(cfg)
     c = cases(LIB_SYMBOL)
@@ -94,3 +98,15 @@ def test_the_blocked_policy_counts_edits_tries_like_llm_script_tries(cfg, profil
                                                                   "source": "llm-edit"})
     d = t.decide(c, None, ctx(previous_attempts=[edits_try]), profile)
     assert d.kind == DecisionKind.BLOCKED and "after 1 LLM script attempt" in d.rationale
+
+
+def test_no_cap_by_default_keeps_asking_and_lifts_the_blocked_policy(cfg):
+    """fix.edits_max_asks_per_case 0 (the default): the step stays `new` however many tries failed, the line says so."""
+    cfg.fix.mode = "edits"
+    [c] = cluster_cases([err()], None)
+    store = Spy(best=None, describe="")
+    tried = [script_att("new", 0, "no_change", c.id, code="") for _ in range(5)]
+    st = plan_script_step(c, tried, store, cfg)
+    assert st.mode == "new" and st.llm_used == 5 and st.llm_limit == 0
+    assert "(6번째, 한도 없음, 앞 시도 5건 포함)" in st.kb_line and "request 6번째, 한도 없음" in st.why
+

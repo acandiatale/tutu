@@ -6,7 +6,7 @@
 쓰면 ``repeated_failure`` 로 차단되어 인수인계로 간다. ``kb_line`` 은 KB 탐색 "결과" 로그 줄이다: 처음 보는
 프로젝트가 KB 적중처럼 읽히면 안 된다(회사 피드백 7). KB 저장소
 문제는 로그만 남기고 "저장본 없음" 으로 다룬다 — 루프를 멈추지 않는다. v2.1i ``fix.mode: edits`` 면 저장소를
-보지 않고 신규(LLM)만 — 케이스당 ``script.max_augments_per_case`` 회 뒤 차단(``edits_llm_limit``).
+보지 않고 신규(LLM)만 — 케이스당 ``fix.edits_max_asks_per_case`` 회 뒤 차단, 0 이면 무제한(``edits_llm_limit``).
 
 v2.1 fix ladder (docs/v2/PLAN-v2.1.md §3.1): what a case gets next in this run.
 
@@ -37,7 +37,7 @@ None = no KB): the decision engine calls it to decide SCRIPT vs BLOCKED, the fix
 store problem is logged and treated as "nothing stored" — it never stops the loop.
 
 v2.1i `fix.mode: edits` (the token comparison, 2026-10-28): no rung but `new` — the store is not consulted (no reuse,
-no augment); a case gets `new` while its LLM tries in this run are below `script.max_augments_per_case`
+no augment); a case gets `new` while its LLM tries in this run are below `fix.edits_max_asks_per_case` (0 = always)
 (`edits_llm_limit`), then `mode` None (BLOCKED `repeated_failure`). `loop.blocked_policy` and the LLM budget apply as
 in `script` mode (the decision engine's checks are unchanged).
 
@@ -197,15 +197,25 @@ def edits_mode(cfg: Any) -> bool:
 
 
 def edits_llm_limit(cfg: Any) -> int:
-    """v2.1i edits 모드의 케이스당 LLM 요청 한도 = ``script.max_augments_per_case`` — script 모드가 저장 스크립트
-    없는 케이스에 LLM 을 묻는 횟수와 같다(첫 질문도 그 한도 안에서 셈). 두 모드의 LLM 호출 수가 같아야 토큰 비교가
-    공정하다(2026-10-28). 다 쓰면 ``repeated_failure`` 로 차단.
+    """v2.1i edits 모드의 케이스당 LLM 요청 한도 = ``fix.edits_max_asks_per_case``. 0 = 무제한(기본, 2026-10-29 사용자:
+    "제한 없이 수정하도록 — LLM 한테 다 맡겼을 때의 토큰량을 보여 줄 수 있게"), 양수 = 그만큼 묻고 ``repeated_failure``
+    로 차단(3 이면 script 모드가 저장본 없는 케이스에 묻는 횟수와 같다).
 
-    The per-case LLM asks of an edits-mode run = `script.max_augments_per_case`, exactly what `script` mode asks for a
-    case without a stored script (the first ask counts inside that limit) — equal LLM calls keep the token comparison
-    fair; then BLOCKED `repeated_failure`."""
-    sc = getattr(cfg, "script", None)
-    return max(1, int(getattr(sc, "max_augments_per_case", 3)))
+    The per-case LLM asks of an edits-mode run = `fix.edits_max_asks_per_case`: 0 = no cap (default; the whole fix is
+    left to the LLM — the rounds, the time budget and `loop.max_llm_calls` still stop a run), > 0 = BLOCKED
+    `repeated_failure` after that many (3 = what `script` mode asks for a case without a stored script)."""
+    fx = getattr(cfg, "fix", None)
+    try:
+        return max(0, int(getattr(fx, "edits_max_asks_per_case", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def edits_unlimited(cfg: Any) -> bool:
+    """edits 모드이고 케이스당 한도가 0(무제한)인가 — 차단 정책의 양수 횟수도 적용하지 않는다.
+
+    True when the run is in edits mode with no per-case cap (then the positive `loop.blocked_policy` counts are lifted too)."""
+    return edits_mode(cfg) and edits_llm_limit(cfg) == 0
 
 
 def plan_edits_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], cfg: Any) -> ScriptStep:
@@ -220,13 +230,13 @@ def plan_edits_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], cfg: 
     tried = [a for a in script_attempts(previous) if a.outcome != "pending"]
     llm_used = sum(1 for a in tried if a.script_mode in LLM_MODES)
     step = ScriptStep(case_id=case_id, llm_used=llm_used, llm_limit=limit, kb_found=EDITS_MODE_FOUND)
-    if llm_used >= limit:
+    if limit and llm_used >= limit:
         step.why = (f"{llm_used} LLM tr{'y' if llm_used == 1 else 'ies'} did not resolve case {case_id} "
-                    f"(fix.mode edits: script.max_augments_per_case = {limit})")
+                    f"(fix.mode edits: fix.edits_max_asks_per_case = {limit})")
         step.kb_line = f"KB 탐색: {EDITS_MODE_FOUND} → 한도 도달 (LLM {llm_used}회) → blocked"
         return step
     step.mode = "new"
-    nth = f"{llm_used + 1}/{limit}"
+    nth = f"{llm_used + 1}/{limit}" if limit else f"{llm_used + 1}번째, 한도 없음"
     if llm_used:
         step.why = f"new edits for case {case_id} (fix.mode edits, request {nth}: the earlier tries did not resolve it)"
         step.kb_line = f"KB 탐색: {EDITS_MODE_FOUND} → LLM 에 다시 수정 요청 ({nth}, 앞 시도 {llm_used}건 포함)"

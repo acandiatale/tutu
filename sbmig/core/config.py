@@ -548,6 +548,12 @@ class FixConfig(BaseModel):
     # script storage / reuse / augment; every try is a fresh ask (same per-case LLM asks as script mode: script.max_augments_per_case).
     # 수정 방식: script = 스크립트 사다리(기본), edits = LLM 이 수정 내용만(스크립트 생성·저장·재사용 없음) — 토큰 비교용.
     mode: Literal["script", "edits"] = "script"
+    # edits 모드에서 케이스당 LLM 요청 상한. 0 = 무제한(기본; 라운드 50·실행 시간·loop.max_llm_calls 만 남는다 — "전부 LLM 에게
+    # 맡겼을 때" 의 토큰을 재는 용도, 2026-10-29), 양수 = 그 횟수 뒤 repeated_failure 로 차단(script 모드와 같게 하려면 3).
+    # 무제한이면 loop.blocked_policy 의 양수 횟수도 적용하지 않는다(0 인 사유는 그대로 바로 Handover).
+    # edits mode: LLM asks per case; 0 = no cap (only the rounds, the time budget and loop.max_llm_calls stop it;
+    # the positive loop.blocked_policy counts are lifted too, the 0 ones still block at once), > 0 = BLOCKED after that many.
+    edits_max_asks_per_case: int = 0
 
 
 class KBConfig(BaseModel):

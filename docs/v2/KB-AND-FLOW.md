@@ -300,7 +300,9 @@ KB 탐색 (L2 → cases/<id>/case.json)
 |---|---|---|
 | 구조 점검 (`restructure.review`) | 모든 pom(60,000자까지, 40개까지) + 모듈 구조 + 인코딩 + sbmig 가 계산한 사실 → 판정 JSON + critical 수정(`<edits>`) | 프로젝트당 **1회**, 답변 형식이 깨지면 **1회 재시도**, 고친 편집이 적용되지 않으면(되돌린 뒤) 실패 이유를 주고 **1회 더** — 최대 **3회**(`_ask` 2 + `_apply_retry` 1) |
 > **`fix.mode: edits` (v2.1i, 토큰 비교용 스위치)**: LLM 에게 수정 내용(`<edits>`)만 요청한다 — 프롬프트에서 스크립트 규칙·도우미 API 가
-> 빠지고(약 36% 짧음), 스크립트 저장·재사용·보강이 없다. 케이스당 LLM 요청 횟수는 script 모드와 같게(`script.max_augments_per_case`)
+> 빠지고(약 36% 짧음), 스크립트 저장·재사용·보강이 없다. 케이스당 LLM 요청 횟수는 기본 **무제한**(`fix.edits_max_asks_per_case: 0` —
+> "전부 LLM 에게 맡겼을 때" 를 재는 용도; 라운드 50·실행 시간·`loop.max_llm_calls` 만 남고 `loop.blocked_policy` 의 양수 횟수도 풀린다.
+> 3 으로 두면 script 모드와 같은 횟수)
 > 맞췄다. 웹 UI 의 "LLM 직접 수정만" 체크박스, `sbmig run --fix-mode edits`, `sbmig fleet run --fix-mode edits`. "KB 사용 안 함"
 > (`--no-kb`)까지 켜면 "전부 LLM" 실험이 된다. 결과 구분: `SBMIG-RESULT … fix=edits`, 보고서 "LLM usage and cost" 의 `fix mode` 줄.
 
