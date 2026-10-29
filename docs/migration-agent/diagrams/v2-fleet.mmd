@@ -1,9 +1,0 @@
-flowchart LR
-  MF["manifest<br/>폴더(pom 바로 아래 또는 한 단계) · zip 목록"] --> P1["프로젝트 1<br/>sbmig run"] --> P2["프로젝트 2"] --> P3["… 프로젝트 N<br/>(엄격히 순차)"]
-  P1 --> KB["공유 파일 KB<br/>kb-v2/ · .lock"]
-  P2 --> KB
-  P3 --> KB
-  KB -.->|"저장본 재사용 → LLM 호출 감소"| P2
-  KB -.-> P3
-  P3 --> ST["fleet/state.json · summary.md · learning.md<br/>settings: fix_mode=… kb=on|off<br/>llm_calls 는 모든 시도 합산"]
-  style KB fill:#97BC62

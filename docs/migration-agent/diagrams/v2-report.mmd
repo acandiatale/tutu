@@ -1,6 +1,0 @@
-flowchart LR
-  R["report.md<br/>(report.language: ko)"]
-  R --> H["1. Handover (맨 앞)<br/>운영자 확인 필요(메이저 N건)<br/>남은 JSP javax · 차단 케이스와 제안<br/>EOL 권고"] --> F["2. Flags<br/>tests-not-compiled<br/>major-upgrade<br/>web-xml-registered …"] --> W["3. What we changed<br/>레이아웃 · pom · 선택 아티팩트<br/>JSP javax → jakarta N files"]
-  R --> S["4. Structure review<br/>판정 · 고친 critical · warning"] --> X["5. Fixes by case<br/>script:&lt;case&gt;:v&lt;N&gt; · edits:&lt;case&gt;#n<br/>resolved by: build ← &lt;case&gt; r1 try 1"] --> U["6. LLM usage and cost<br/>모델별 호출 · 토큰 · 비용<br/>fix mode"]
-  U --> L["SBMIG-RESULT run=… exit=0 build=ok<br/>unresolved=0 blocked=0 llm=3 review=ok<br/>[major=1] [fix=edits] ← 운영자가 받아 적는 한 줄"]
-  style L fill:#F2CC8F

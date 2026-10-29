@@ -21,15 +21,13 @@ cd scripts/handbook && npm install pptxgenjs && node build_deck.js ../../docs/ha
 
 ## 흐름 안내 덱 (`docs/migration-agent/migration-agent.pptx`, 2026-10-29)
 
-담당자에게 "이렇게 흘러갑니다" 만 보여 주는 10장짜리 덱입니다. `build_migration_agent_deck.js` 가 만들고, 그림은
-`docs/migration-agent/diagrams/flow-*.mmd`(네모칸마다 굵은 제목 + 작은 설명)를 mermaid-cli 로 렌더링한 PNG 입니다.
-설정 키·파일 이름 같은 세부 사항은 일부러 뺐습니다. 세부 설계까지 담은 37장짜리 버전은 커밋 `a4c3827` 에 있습니다
-(그 그림 `diagrams/v2-*.mmd` 는 그대로 남겨 두었습니다).
+담당자에게 "이렇게 흘러갑니다" 만 보여 주는 10장짜리 덱입니다. `build_migration_agent_deck.js` 가 만들고, 흐름도 네 장은
+**파워포인트 도형**(둥근 네모 + 선 + 글)으로 그리므로 파워포인트에서 글자와 칸을 바로 고칠 수 있습니다(그림 파일 없음;
+선은 칸에 붙어 있지 않아 칸을 옮기면 선도 옮겨야 합니다). 설정 키·파일 이름 같은 세부 사항은 일부러 뺐습니다.
+세부 설계까지 담은 37장짜리 버전(Mermaid 그림)은 커밋 `a4c3827` 에 있습니다.
 
 ```bash
-cd docs/migration-agent/diagrams && for f in flow-*.mmd; do npx -y -p @mermaid-js/mermaid-cli mmdc -i "$f" -o "${f%.mmd}.png" -b white -s 3 -c flow-config.json; done
 cd scripts/handbook && NODE_PATH=$PWD/node_modules APPLY_THEME_JS=<pptx 스킬>/scripts/apply_theme.js node build_migration_agent_deck.js ../../docs/migration-agent/migration-agent.pptx
 ```
 
-mermaid-cli 는 SVG 를 뷰포트 폭에 맞춰 줄이므로, 그림이 가로로 길수록 슬라이드에서 글씨가 작아집니다. 네모칸 설명은 한 줄로,
-한 줄에 네 칸 이하로 두고 줄이 길어지면 `subgraph` 로 줄을 나눕니다(줄 사이 링크는 `~~~`, 줄을 가로지르는 화살표는 방향을 깨뜨림).
+흐름도 함수(`drawOverview` / `drawLoop` / `drawLadder` / `drawKB`)는 `node(제목, 설명, 종류)` 로 칸을 놓고 `seg` / `route` 로 선을 긋습니다.
