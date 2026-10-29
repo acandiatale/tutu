@@ -1896,11 +1896,72 @@ class HandoverSummary(BaseModel):
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
+class JarCoordinate(BaseModel):
+    """Ant 프로젝트 lib 의 jar 하나 → Maven 좌표(v2.1j). 접수의 pom 합성이 만들고 보고서 Handover 가 읽는다.
+    ``source`` 는 좌표를 어디서 찾았나: pom_properties(jar 안 META-INF/maven) · name_table(jar_names.yml) ·
+    sha1_lookup(저장소) · manifest · unknown. ``used`` 는 소스가 이 jar 의 패키지를 import 하는지(None = 안 봄).
+
+    One jar of an Ant project's lib directory and the Maven coordinates found for it (v2.1j)."""
+    path: str                                      # repo-relative jar path (e.g. WebContent/WEB-INF/lib/commons-lang-2.6.jar)
+    sha1: str = ""
+    group_id: str = ""
+    artifact_id: str = ""
+    version: str = ""
+    source: Literal["pom_properties", "name_table", "sha1_lookup", "manifest", "unknown"] = "unknown"
+    scope: str = "compile"                         # provided for servlet / jsp / el APIs the container supplies
+    used: Optional[bool] = None                    # a source file imports a package of this jar (None = not checked)
+    packages: list[str] = Field(default_factory=list)   # top-level packages inside the jar (handover, the `used` check)
+    note: str = ""
+
+    @property
+    def key(self) -> str:
+        """``g:a`` (좌표가 없으면 "")."""
+        return f"{self.group_id}:{self.artifact_id}" if self.group_id and self.artifact_id else ""
+
+
+class PomSynthesis(BaseModel):
+    """접수에서 Ant 프로젝트에 합성한 pom.xml 의 기록(v2.1j): 좌표·packaging, build.xml 에서 읽은 소스·웹 루트·리소스·
+    lib 디렉토리, Java 수준·인코딩, jar 좌표 표, 좌표 미상 jar(쓰이는 것만), 선언하지 않은 jar(안 쓰여서 뺌), 번역하지
+    못한 build.xml 타깃. 오케스트레이터가 ``RunReport.pom_synthesis`` 에 두고 보고서 Handover 와 "What we changed" 가 읽는다.
+
+    What the intake synthesized for an Ant project (v2.1j): the pom's coordinates and packaging, the layout read from
+    build.xml, the jar table, the unknown jars that sources use, the jars left out as unused, the build.xml targets
+    that could not be translated."""
+    ok: bool
+    pom_path: str = "pom.xml"
+    build_file: str = "build.xml"
+    group_id: str = ""
+    artifact_id: str = ""
+    version: str = ""
+    packaging: str = "jar"                         # war when a web root with WEB-INF (or a <war> task) exists
+    source_dirs: list[str] = Field(default_factory=list)
+    web_root: Optional[str] = None                 # directory holding WEB-INF (WebContent, web, WebRoot, …)
+    resource_dirs: list[str] = Field(default_factory=list)
+    lib_dirs: list[str] = Field(default_factory=list)
+    java_source: str = "1.8"
+    encoding: str = "UTF-8"
+    jars: list[JarCoordinate] = Field(default_factory=list)
+    unknown_jars: list[str] = Field(default_factory=list)      # source unknown AND used (or not checked) → system / skip
+    dropped_jars: list[str] = Field(default_factory=list)      # unknown and unused → not declared
+    build_xml_notes: list[str] = Field(default_factory=list)   # targets / tasks not translated (code generation, copies, …)
+    warnings: list[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """좌표 출처별 jar 수(보고서 한 줄용)."""
+        out: dict[str, int] = {}
+        for j in self.jars:
+            out[j.source] = out.get(j.source, 0) + 1
+        return out
+
+
 class RunReport(BaseModel):
     """실행 한 번의 최종 보고서(report.json, report.md 의 원본). 오케스트레이터가 단계마다 채우고
     마무리에서 인수인계·운영자 확인·오류 목록을 붙인다. `success` = 최종 검증 빌드 성공(불변조건 1: 최종
     빌드 없이 끝나는 실행은 없다)."""
     fix_mode: str = "script"                         # v2.1i: `fix.mode` of the run (script | edits) — report / SBMIG-RESULT show it
+    pom_synthesis: Optional["PomSynthesis"] = None   # v2.1j: set when the intake synthesized a pom.xml for an Ant project
     run_id: str
     project_name: str
     case_type: CaseType

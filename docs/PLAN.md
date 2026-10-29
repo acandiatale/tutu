@@ -484,3 +484,16 @@ web UI; "이걸 껐다 켰다 하는 기능이 필요할 거 같은데, 그래�
 | Not done (small): `errors.md` tries column still says `llm-edit edits …` instead of the label; `FleetState` has no `fix_mode` field (a `settings:` note instead); the structure-review prompt still asks for a script in edits mode (its script is just not stored) | — | follow-up |
 | 2026-10-29 — `fix.edits_max_asks_per_case` (0 = no cap, default): the user's first edits + KB-off run hit "한도 도달 (LLM 3회)"; for the "전부 LLM" measurement the case now keeps asking every round until the rounds / time / `loop.max_llm_calls` stop it, and the positive `loop.blocked_policy` counts are lifted in that mode; `> 0` restores a cap (3 = script mode's) | `sbmig/core/config.py`, `config/default.yml`, `sbmig/triage/scripts.py` (`edits_llm_limit`, `edits_unlimited`), `sbmig/triage/decide.py`, tests | done |
 
+## Status — 2026-10-29, v2.1j (Ant projects: pom.xml synthesized at intake)
+
+User: "우리 ant 프로젝트도 maven 으로 변경 후 마이그레이션이 되도록 요청하시는데 … 앤트도 메이븐으로 변경하고 진행 할 수 있도록
+수정하자". Contract: `docs/INTERFACES.md` "v2.1j". Trees with neither pom.xml nor build.xml stay rejected (2026-10-23).
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Contracts: `IntakeConfig` (`intake.*`), `JarCoordinate`, `PomSynthesis`, `RunReport.pom_synthesis` | `sbmig/core/`, `config/default.yml` | done |
+| Analyzer: `describe_ant` (build.xml with properties, javac / war / jar tasks, classpaths, notes for untranslatable tasks), `resolve_jar` ladder (pom.properties → name table + `<kb>/jar_names.yml` → sha1 Nexus 3 / Central), `mark_used`, `synthesize_pom` (war / jar pom, source roots + build-helper, resources, war plugin 3.4.0 + `warSourceExcludes`, provided container APIs, system-scope unknown jars copied to `<root>/lib/` with `${maven.multiModuleProjectDirectory}`), `BuildToolDetection.ant_build_file`; a real `mvn clean package` of the synthesized pom passes | `sbmig/analyze/ant.py`, `jar_coords.py`, `build_tool.py`, `edges.py`, `tests/analyze/test_ant_synthesis.py` (19), `test_jar_coords.py` (27) | done |
+| Intake wiring + report: `_synthesize_ant_pom` after the snapshot commit, commit `intake: pom.xml synthesized from build.xml`, journal, flags `pom-synthesized` / `jar-coordinates-unknown` (attention), INFO line, Handover block with `install-file` commands, "What we changed" line, i18n, `inventory --help` wording | `sbmig/loop/orchestrator.py`, `sbmig/report/{handover,markdown,i18n,result_line}.py`, `sbmig/cli.py`, `tests/loop/test_v21j_ant_intake.py`, `tests/report/test_v21j_ant_report.py` | done |
+| Docs: CLAUDE.md company constraints, KB-AND-FLOW §1 note, RUNBOOK "Ant 프로젝트", deck ① 접수 wording | — | done |
+| e2e fixture `ant-webapp` (build.xml + WebContent + stub jars + a real compiled unknown jar) through the whole flow | `fixtures/projects/ant-webapp/` | see the row below |
+

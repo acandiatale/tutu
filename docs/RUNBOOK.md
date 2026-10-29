@@ -510,3 +510,13 @@ markers = ["integration: needs mvn/java/network (deselect with -m 'not integrati
 그리고 루트에서 `pip install -e .`, `python -m pytest -m "not integration"`, `sbmig run …`. `readme = "src/migration-agent/README.md"`
 로 바꾸고, `[tool.ruff]` 는 그대로 둔다. e2e 는 `python src/migration-agent/scripts/e2e.py …` (스크립트가 자기 위치로 루트를 찾는다).
 
+## Ant 프로젝트 (v2.1j, 2026-10-29)
+
+`build.xml` 만 있는 프로젝트는 그대로 넣으면 됩니다. 접수가 pom.xml 을 합성해 커밋하고 나머지는 같습니다. 실행 전에 두 가지만:
+- 회사 설정 yml 에 `intake: {synth_group_id: <사내 groupId>}` 를 넣습니다(기본값은 자리표시자).
+- 사내 공용 jar 가 `lib/` 에 많으면 `<kb>/jar_names.yml` 에 `{stem, artifact}` 행을 적어 두면 좌표를 바로 찾습니다(형식은
+  `knowledge/libraries/jar_names.yml` 과 같고, 재배포 없이 다음 실행부터 반영).
+실행 뒤 보고서 맨 앞 "Ant 프로젝트: pom.xml 합성" 블록에 좌표를 못 찾은 jar 와 `mvn install:install-file …` 명령이 있으면 Nexus 에
+올리고 pom 의 `system` 항목을 보통 의존성으로 바꿔 주십시오(빌드는 통과하지만 system 범위 jar 는 WAR 에 포장되지 않습니다).
+`build.xml` 의 코드 생성·복사 규칙·여러 WAR 타깃은 번역하지 않고 같은 블록에 "번역하지 않은 타깃" 으로 적습니다.
+

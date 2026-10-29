@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Classic Ant web application (no pom.xml): Eclipse "Dynamic Web Project" layout, sources in src/, the web root in
+     WebContent/, every library in WebContent/WEB-INF/lib. sbmig v2.1j synthesizes pom.xml from this file at intake. -->
+<project name="ant-webapp" default="war" basedir=".">
+  <property name="src.dir" value="src"/>
+  <property name="web.dir" value="WebContent"/>
+  <property name="build.dir" value="build"/>
+  <property name="app.version" value="1.2.0"/>
+  <property name="deploy.host" value="was01.example.com"/>
+
+  <path id="cp">
+    <fileset dir="${web.dir}/WEB-INF/lib" includes="*.jar"/>
+  </path>
+
+  <target name="clean">
+    <delete dir="${build.dir}"/>
+  </target>
+
+  <target name="compile">
+    <mkdir dir="${build.dir}/classes"/>
+    <javac srcdir="${src.dir}" destdir="${build.dir}/classes" source="1.6" target="1.6" encoding="UTF-8"
+           classpathref="cp" includeantruntime="false" debug="true"/>
+    <copy todir="${build.dir}/classes">
+      <fileset dir="${src.dir}" excludes="**/*.java"/>
+    </copy>
+  </target>
+
+  <target name="war" depends="compile">
+    <war destfile="${build.dir}/ant-webapp.war" webxml="${web.dir}/WEB-INF/web.xml">
+      <classes dir="${build.dir}/classes"/>
+      <fileset dir="${web.dir}"/>
+    </war>
+  </target>
+
+  <target name="deploy" depends="war">
+    <exec executable="scp" failonerror="true">
+      <arg value="${build.dir}/ant-webapp.war"/>
+      <arg value="${deploy.host}:/opt/tomcat/webapps/"/>
+    </exec>
+  </target>
+</project>

@@ -198,6 +198,40 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     " — renamed by the restructure in JSP / tag files (page imports, useBean, scriptlets); OpenRewrite does not parse "
     "JSPs":
         " — 재구성이 JSP / 태그 파일(page import, useBean, 스크립틀릿)에서 바꿨다. OpenRewrite 는 JSP 를 읽지 않는다",
+    # v2.1j: the intake's pom synthesis for an Ant project ("What we changed" + the Handover block)
+    "pom.xml synthesized from build.xml ({n} jars: {a} pom.properties, {b} table, {c} lookup, {d} unknown)":
+        "build.xml 에서 pom.xml 합성 (jar {n}개: pom.properties {a} · 이름표 {b} · 조회 {c} · 미상 {d})",
+    "### Ant project: pom.xml synthesized": "### Ant 프로젝트: pom.xml 합성",
+    "The project had an Ant `{build}` and no pom.xml: sbmig wrote `{pom}` at intake from build.xml and the "
+    "directories (commit `intake: pom.xml synthesized from build.xml`); build.xml itself is left as it was.":
+        "Ant `{build}` 만 있고 pom.xml 이 없는 프로젝트라 sbmig 가 접수에서 build.xml 과 폴더 구조로 `{pom}` 을 "
+        "만들었다(커밋 `intake: pom.xml synthesized from build.xml`). build.xml 은 그대로 두었다.",
+    "- pom: `{gav}` ({packaging}), Java {java}, encoding {enc}": "- pom: `{gav}` ({packaging}), Java {java}, 인코딩 {enc}",
+    "- layout: sources {src}, web root {web}, resources {res}, lib {lib}":
+        "- 구조: 소스 {src}, 웹 루트 {web}, 리소스 {res}, lib {lib}",
+    "- jars: {n} — {a} pom.properties, {b} name table, {c} repository lookup, {d} unknown":
+        "- jar: {n}개 — pom.properties {a} · 이름표 {b} · 저장소 조회 {c} · 미상 {d}",
+    "**{n} jar(s) without Maven coordinates** — declared with `system` scope (`<systemPath>`): the build passes, but "
+    "system-scope jars are not packaged into the WAR / boot jar, so the application fails at runtime until each one "
+    "is installed into Nexus and its pom entry is replaced by a normal dependency (drop `<scope>system</scope>` and "
+    "`<systemPath>`):":
+        "**Maven 좌표를 찾지 못한 jar {n}개** — `system` scope(`<systemPath>`)로 선언했다: 빌드는 통과하지만 system "
+        "scope jar 는 WAR / boot jar 에 들어가지 않아 실행 시 실패한다 — 각각 Nexus 에 설치하고 pom 항목을 일반 "
+        "의존성으로 바꿀 것(`<scope>system</scope>` 과 `<systemPath>` 삭제):",
+    "**{n} jar(s) without Maven coordinates** — not declared (`intake.unknown_jar: skip`): the build shows which "
+    "ones the code needs; install each into Nexus and add it to the pom as a dependency:":
+        "**Maven 좌표를 찾지 못한 jar {n}개** — 선언하지 않았다(`intake.unknown_jar: skip`): 코드가 필요로 하는 것은 "
+        "빌드가 보여 준다. 각각 Nexus 에 설치하고 pom 에 의존성으로 추가할 것:",
+    "(`-Dfile` paths are those of the as-is tree; publishing to Nexus is `mvn deploy:deploy-file` with the same "
+    "coordinates plus `-Durl` / `-DrepositoryId`.)":
+        "(`-Dfile` 경로는 as-is 트리 기준이다. Nexus 에 올릴 때는 같은 좌표로 `mvn deploy:deploy-file` 에 `-Durl` / "
+        "`-DrepositoryId` 를 더한다.)",
+    "Left out (no coordinates and no source imports their packages): {jars} — add one back if the build or the "
+    "runtime needs it.":
+        "뺀 jar(좌표도 없고 어떤 소스도 그 패키지를 import 하지 않음): {jars} — 빌드나 실행에 필요하면 다시 추가할 것.",
+    "build.xml steps not translated to Maven — check whether the build still needs them:":
+        "Maven 으로 옮기지 못한 build.xml 단계 — 빌드에 아직 필요한지 확인할 것:",
+    "Synthesis warnings:": "합성 경고:",
     "yes": "예",
     "no: {error}": "아니오: {error}",
     # ---- notes
@@ -261,6 +295,17 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "verifies the runtime behaviour — see \"Operator checks\" in the Handover":
         "수정이 의존성을 메이저 버전 너머로 올렸거나 라이브러리를 바꿨다(빌드는 통과): 운영자가 실행 시 동작을 확인할 것 — "
         "인수인계의 \"운영자 확인 필요\" 참조",
+    "the project had an Ant build.xml and no pom.xml: sbmig synthesized a pom.xml from build.xml and the directories "
+    "at intake (intake.ant_to_maven) and migrated it as a Maven project — see \"Ant project: pom.xml synthesized\" "
+    "in the Handover":
+        "Ant build.xml 만 있고 pom.xml 이 없는 프로젝트라 sbmig 가 접수에서 build.xml 과 폴더 구조로 pom.xml 을 "
+        "합성하고(intake.ant_to_maven) Maven 프로젝트로 이관했다 — 인수인계의 \"Ant 프로젝트: pom.xml 합성\" 참조",
+    "jars of the Ant project have no Maven coordinates (no pom.properties inside, not in jar_names.yml, not found by "
+    "sha1 in the repository): declared with `system` scope (intake.unknown_jar) the build passes, but they are not "
+    "packaged into the WAR — install them into Nexus and replace the pom entries (commands in the Handover)":
+        "Ant 프로젝트의 jar 중 Maven 좌표를 찾지 못한 것이 있다(jar 안에 pom.properties 없음, jar_names.yml 에 없음, "
+        "저장소 sha1 조회 실패): `system` scope 로 선언하면(intake.unknown_jar) 빌드는 통과하지만 WAR 에 들어가지 "
+        "않는다 — Nexus 에 설치하고 pom 항목을 바꿀 것(명령은 인수인계에)",
     "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not because of "
     "the project: fix the environment and run it again (a fleet re-queues the project)":
         "프로젝트가 아니라 인프라(LLM 게이트웨이, Maven, JDK, 저장소 / Nexus, 디스크) 문제로 실행이 끝났다 — 환경을 "

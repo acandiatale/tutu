@@ -7,6 +7,17 @@ target:
   spring_boot_version: "4.1.0"
   spring_framework_version: "7.0.x"
 
+intake:                            # v2.1j (2026-10-29): Ant projects (build.xml, no pom.xml) get a synthesized pom.xml at intake
+  ant_to_maven: true               # false = reject Ant projects as before (exit 3); a tree with neither pom nor build.xml is always rejected
+  synth_group_id: com.company.migrated   # placeholder groupId of the synthesized pom — put the real one in the company config
+  synth_version: 1.0.0-SNAPSHOT    # when build.xml names no version
+  unknown_jar: system              # jar without coordinates: system = <systemPath> dependency (build passes, Handover lists
+                                   # mvn install:install-file commands) | skip = not declared (the build will show what it needs)
+  jar_lookup: true                 # sha1 lookup in the repository for jars without pom.properties / name-table match
+  jar_names_file: knowledge/libraries/jar_names.yml
+  company_jar_names_file: jar_names.yml   # same format, under kb.dir, merged over the shipped table (no redeploy)
+  min_java_source: "1.8"           # build.xml source/target below this is raised (JDK 21 compiles 8+ only)
+
 layout:
   # Company layout (2026-10-21): modules directly under the root — {name}-boot (Boot configuration only, parent
   # artifacts.boot_parent), {name}-back (every source incl. controllers, parent comp_parent) and, only when the as-is

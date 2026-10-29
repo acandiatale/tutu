@@ -1,5 +1,6 @@
 """Round 7b: Gradle / Ant / no-build projects are rejected at intake (before the effective-pom capture, before
-analyze); `_step_restructure` carries the layout step's merge conflicts into the report."""
+analyze); `_step_restructure` carries the layout step's merge conflicts into the report. v2.1j: Ant is rejected only
+with `intake.ant_to_maven: false` (the pom synthesis is tests/loop/test_v21j_ant_intake.py)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -48,6 +49,7 @@ CASES = [
 def test_non_maven_aborts_at_intake(cfg, tmp_path, engine, tool, files, why):
     cfg = cfg.model_copy(deep=True)
     cfg.loop.engine = engine
+    cfg.intake.ant_to_maven = False            # v2.1j: on by default (pom synthesis); off = the old rejection
     ws = _ws_from(_project(tmp_path, files), tmp_path)
     build = FakeBuildRunner(ws, fn=files_build)
     captured: list[bool] = []

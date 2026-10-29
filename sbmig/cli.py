@@ -689,12 +689,15 @@ def inventory(input: Path = typer.Argument(..., help="webapp directory without a
     """pom 없는 Tomcat 웹앱 트리를 읽기만 하고 설명서(inventory.md / .json)를 만든다.
 
     회사 결정(2026-10-23)으로 그런 트리는 `sbmig run` 이 거부하므로(exit 3), 이것은 소유 팀에 보낼 거부
-    안내용이다. 아무것도 바꾸지 않는다.
+    안내용이다. 아무것도 바꾸지 않는다. v2.1j: build.xml 이 있는 Ant 프로젝트는 거부하지 않는다 — `sbmig run` 이
+    접수에서 pom.xml 을 합성해 받는다(pom.xml 도 build.xml 도 없는 트리만 거부).
 
     Read-only inventory of a Tomcat webapp tree WITHOUT a pom (JSPs, sources, WEB-INF/lib jars,
     WEB-INF/classes): webapp roots, source roots, jar coordinates guessed from the file names
     (knowledge/libraries/jar_names.yml), Java level of the class files, one Maven module proposal per webapp.
-    Writes inventory.md (report.language) + inventory.json. Changes nothing; exit 0 (3 when the path is missing)."""
+    Writes inventory.md (report.language) + inventory.json. Changes nothing; exit 0 (3 when the path is missing).
+    v2.1j: Ant projects (build.xml) are accepted by `sbmig run` (pom synthesized at intake); only trees with
+    neither pom.xml nor build.xml are rejected."""
     import shutil
     import zipfile
 

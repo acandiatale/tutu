@@ -36,7 +36,8 @@ Codes, most important first:
     blocked:<reason>      one per distinct BlockReason (`blocked:external_javax_api`)
     unresolved:<n>        errors left after the final build
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
-    test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요)      the flags of the same name
+    test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요),
+    jar-coordinates-unknown (v2.1j: Ant 합성 pom 의 좌표 미상 jar)      the flags of the same name
     incomplete            exit 2 with none of the above
 
 
@@ -49,7 +50,8 @@ from typing import Any, Iterable, Optional
 LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-not-found": "maven",
                       "jdk-not-21": "jdk"}
 ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
-                   "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade")
+                   "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
+                   "jar-coordinates-unknown")
 INFRA_PREFIX = "infra:"
 _NON_ASCII_RE = re.compile(r"[^\x21-\x7e]+")
 

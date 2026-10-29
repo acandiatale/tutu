@@ -5,7 +5,7 @@
 버전으로 고정된 것), 추가 / 삭제된 아티팩트, "이제부터 할 일" 목록(``_from_here``: 운영자 확인 필요 → 교체 안
 된 권고 → 교체됐으니 확인 → 고정 버전 → 차단 / 미해결 안내 → 구조 검토 → 외부 설정값 → 남은 JSP javax(v2.1h)
 → 수동 후속 작업)을
-만든다. 담당팀은 보고서에서 이 섹션만 읽는다 — 그래서 맨 앞이고 짧게 압축한다. 절대 예외를 내지
+만든다. v2.1j: Ant 프로젝트의 합성 pom 에서 좌표 미상 jar 의 ``mvn install:install-file`` 명령(``unknown_jar_commands``). 담당팀은 보고서에서 이 섹션만 읽는다 — 그래서 맨 앞이고 짧게 압축한다. 절대 예외를 내지
 않는다(실패해도 ``notes`` 에 "handover unavailable: …" 한 줄).
 
 Handover: "here is what we replaced, from here on it is yours" — the first section of report.md.
@@ -67,6 +67,9 @@ _JSP_JAKARTA_ANY_RE = re.compile(r"^(?:[\w.\-]+: )?JSP javax → jakarta: \d+ fi
 JSP_JAVAX_LEFT = ("JSP javax references remain ({files}) — rename the javax EE names in page imports / scriptlets / "
                   "useBean to jakarta.* (the build passes, Tomcat 10+ fails at runtime)")
 JSP_RENAME_OFF = "; `layout.jsp_jakarta_rename` is off"
+# v2.1j Ant → pom.xml 합성: 좌표를 못 찾은 jar 마다 install-file 명령 한 줄. 파일 이름을 이름-버전으로 가르는 규칙은
+# sbmig/analyze/webapp_inventory.py 의 _VERSION_RE 와 같다(분석기가 JarCoordinate.artifact_id / version 을 채웠으면 그것이 이긴다)
+_JAR_NAME_VERSION_RE = re.compile(r"^(?P<stem>.+?)[-_](?P<ver>\d[\w.\-]*?)\.jar$", re.IGNORECASE)
 
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
 _MANDATORY_RE = re.compile(r"mandatory added: ([^;]*)")
@@ -596,6 +599,69 @@ def jsp_javax_item(report: RunReport, cfg: Any = None) -> str | None:
     layout = getattr(cfg, "layout", None) if cfg is not None else None
     off = layout is not None and not getattr(layout, "jsp_jakarta_rename", True)
     return JSP_JAVAX_LEFT.format(files=plural(left, "file")) + (JSP_RENAME_OFF if off else "")
+
+
+def jar_stem_version(path: str) -> tuple[str, str]:
+    """jar 파일 이름 → (stem, 버전). ``acme-util-1.2.jar`` → (acme-util, 1.2), ``ojdbc6.jar`` → (ojdbc6, "").
+
+    (stem, version) of a jar file name — the analyzer's split (`acme-util-1.2.jar` → acme-util / 1.2)."""
+    name = str(path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    m = _JAR_NAME_VERSION_RE.match(name)
+    if m:
+        return m.group("stem"), m.group("ver")
+    return (name[:-4] if name.lower().endswith(".jar") else name), ""
+
+
+def install_file_command(path: str, group_id: str, jar: Any = None) -> str:
+    """좌표 미상 jar 하나를 저장소에 넣는 ``mvn install:install-file …`` 한 줄(v2.1j). artifactId / 버전은
+    ``JarCoordinate`` 에 있으면 그것, 없으면 파일 이름에서(버전도 없으면 0). groupId 는 jar 에 있으면 그것, 없으면
+    ``group_id``(``intake.synth_group_id``) — 합성 pom 의 system 항목과 같은 좌표라야 바꿔 끼울 수 있다.
+
+    `mvn install:install-file -Dfile=<jar> -DgroupId=… -DartifactId=<stem> -Dversion=<version or 0> -Dpackaging=jar`
+    for one jar without coordinates; the coordinates match the synthesized pom's system-scope entry."""
+    stem, ver = jar_stem_version(path)
+    artifact = getattr(jar, "artifact_id", "") or stem
+    version = getattr(jar, "version", "") or ver or "0"
+    group = getattr(jar, "group_id", "") or group_id
+    f = str(path).replace("\\", "/")
+    f = f'"{f}"' if " " in f else f            # a path with a space must stay one argument
+    return (f"mvn install:install-file -Dfile={f} -DgroupId={group} -DartifactId={artifact} -Dversion={version} "
+            "-Dpackaging=jar")
+
+
+def pom_synthesis_counts(ps: Any) -> dict[str, int]:
+    """합성 pom 의 jar 수와 좌표 출처별 수(``jars`` · ``pom_properties`` · ``name_table`` · ``sha1_lookup`` ·
+    ``unknown``). manifest 는 메모일 뿐 좌표가 아니므로 미상으로 센다 — 접수 로그 줄과 같은 셈.
+
+    Jar count and coordinates per source of a `PomSynthesis` (manifest counts as unknown, as in the intake log)."""
+    c = dict(getattr(ps, "counts", None) or {})
+    return {"jars": len(getattr(ps, "jars", None) or []), "pom_properties": c.get("pom_properties", 0),
+            "name_table": c.get("name_table", 0), "sha1_lookup": c.get("sha1_lookup", 0),
+            "unknown": c.get("unknown", 0) + c.get("manifest", 0)}
+
+
+def unknown_jars_system(ps: Any, cfg: Any = None) -> bool:
+    """좌표 미상 jar 를 ``system`` scope 로 선언했나(아니면 ``skip`` = 선언 안 함). jar 표의 scope 가 먼저,
+    없으면 ``intake.unknown_jar``, 그것도 없으면 기본값(system).
+
+    True when the unknown jars were declared with `system` scope (`intake.unknown_jar: system`, the default)."""
+    by_path = {j.path: j for j in getattr(ps, "jars", None) or []}
+    scopes = {getattr(by_path.get(p), "scope", "") for p in getattr(ps, "unknown_jars", None) or []}
+    if "system" in scopes:
+        return True
+    intake = getattr(cfg, "intake", None) if cfg is not None else None
+    return str(getattr(intake, "unknown_jar", "system") or "system") == "system"
+
+
+def unknown_jar_commands(ps: Any, cfg: Any = None) -> list[str]:
+    """``PomSynthesis.unknown_jars`` 마다 install-file 명령 한 줄(인수인계 "Ant 프로젝트: pom.xml 합성" 블록).
+
+    One `install_file_command` per unknown jar of a `PomSynthesis` (Handover block "Ant project: pom.xml
+    synthesized"); groupId = `intake.synth_group_id` (cfg) or the synthesized pom's groupId."""
+    by_path = {j.path: j for j in getattr(ps, "jars", None) or []}
+    intake = getattr(cfg, "intake", None) if cfg is not None else None
+    group = getattr(intake, "synth_group_id", "") or getattr(ps, "group_id", "") or "com.company.migrated"
+    return [install_file_command(p, group, by_path.get(p)) for p in getattr(ps, "unknown_jars", None) or []]
 
 
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:

@@ -42,9 +42,12 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   a single-module Boot app is wrapped into `{name}-boot`. The pre-9c layout (`module/boot-jar` + `module/comp-jar`,
   Boot projects split) stays available through `layout.*` and is pinned by `config/artifacts.local-e2e.yml` for
   the older fixtures.
-- Only Maven projects: Gradle / Ant builds are rejected at intake (exit 3) — the user's decision (2026-10-20).
-  Company decision 2026-10-23: trees **without any pom.xml** (exploded Tomcat JSP + Java directories, "quite many")
-  are rejected outright as well — no pom synthesis, no JSP sweep. `sbmig inventory <dir>` (read-only, 2026-10-23)
+- Maven projects, plus **Ant projects since 2026-10-29 (v2.1j)**: a tree with `build.xml` and no pom.xml gets a pom.xml
+  synthesized at intake (`sbmig/analyze/ant.py`: layout from build.xml, jar coordinates from the jar's pom.properties →
+  `knowledge/libraries/jar_names.yml` + `<kb>/jar_names.yml` → sha1 repository lookup; unknown-but-used jars as `system`
+  scope at their as-is path, listed in the Handover with `install-file` commands; `intake.*` keys) and then runs like
+  any Maven project. Gradle is still rejected (exit 3), and so are trees **without pom.xml or build.xml** (company
+  decision 2026-10-23: no pom synthesis for exploded Tomcat JSP + Java directories); `sbmig inventory <dir>` (read-only)
   stays as the tool that describes such a tree for the rejection note to the owners; it changes nothing.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.

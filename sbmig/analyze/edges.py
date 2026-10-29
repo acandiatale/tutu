@@ -69,6 +69,9 @@ LANGUAGE_PLUGINS = {"kotlin": ("kotlin-maven-plugin",), "groovy": ("gmavenplus-p
 # 만 있는 파일도 utf-8), 다음이 한국 레거시 코드의 cp949
 ENCODING_CANDIDATES = ("utf-8", "cp949", "euc-kr")
 _BASEDIR_RE = re.compile(r"\$\{(?:project\.)?basedir\}")
+# v2.1j: 최상위 pom 디렉토리(Maven 3.3.1+). sbmig 는 언제나 프로젝트 루트에서 mvn 을 돌리므로 = 프로젝트 루트.
+# Ant pom 합성이 system scope jar 를 ${maven.multiModuleProjectDirectory}/lib/<jar> 로 가리킨다(모듈 분리 뒤에도 맞음)
+_TOPDIR_RE = re.compile(r"\$\{maven\.multiModuleProjectDirectory\}")
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +101,7 @@ def resolve_system_path(raw: str, declaring_dir: str, props: Optional[dict[str, 
     """``declaring_dir`` 의 pom 이 선언한 ``<systemPath>`` 를 푼다. 반환 (경로, 프로젝트 안인지):
     프로젝트 안이면 루트 기준 posix 상대 경로, 밖이면 절대 경로(False), 속성을 못 풀면 (None, False).
     ``${basedir}`` / ``${project.basedir}`` 는 선언한 pom 의 디렉토리다(루트가 아니다).
+    ``${maven.multiModuleProjectDirectory}`` 는 프로젝트 루트다(v2.1j: sbmig 는 루트에서 mvn 을 돌린다).
 
     Resolve a `<systemPath>` declared by a pom in `declaring_dir` (project-relative, '' = root).
 
@@ -108,10 +112,14 @@ def resolve_system_path(raw: str, declaring_dir: str, props: Optional[dict[str, 
     # basedir 는 "선언한 pom 의 디렉토리" 여야 하므로 먼저 표식으로 바꿔 둔다 — 다른 속성을 푸는 interpolate
     # 가 basedir 를 엉뚱한 값(루트 등)으로 풀지 않게
     value = _BASEDIR_RE.sub(lambda _m: "\0BASEDIR\0", value)
+    value = _TOPDIR_RE.sub(lambda _m: "\0TOPDIR\0", value)
     value = interpolate(value, dict(props or {})) or ""
     if "${" in value or not value:
         return None, False
-    if value.startswith("\0BASEDIR\0"):
+    if value.startswith("\0TOPDIR\0"):
+        rest = value[len("\0TOPDIR\0"):].lstrip("/\\").replace("\0BASEDIR\0", rel_base)
+        p = posixpath.normpath(rest.replace("\\", "/")) if rest else "."
+    elif value.startswith("\0BASEDIR\0"):
         rest = value[len("\0BASEDIR\0"):].lstrip("/\\")
         p = posixpath.normpath(posixpath.join(rel_base, rest.replace("\\", "/")))
     else:

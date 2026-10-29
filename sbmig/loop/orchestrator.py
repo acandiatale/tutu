@@ -7,6 +7,7 @@
 inline) 둘 다 같은 ``step_*`` 메서드를 같은 ``_run_guard`` 안에서 돌린다(보고서가 같다). 불변(빌드 게이트):
 실패·차단·예산 소진·내부 오류 뒤에도 최종 ``mvn clean package`` 시도와 보고서는 반드시 남는다. 일찍 멈추는
 것(``aborted:*``, exit 3)은 아예 빌드할 수 없을 때뿐(Maven 없음, Maven 프로젝트 아님, 사내 parent 해석 불가).
+v2.1j: Ant 프로젝트(build.xml, pom.xml 없음)는 접수에서 pom.xml 을 합성·커밋한 뒤 Maven 프로젝트처럼 계속한다.
 
 Orchestrator: intake → analyze → plan → phases → verify → report.
 
@@ -33,6 +34,7 @@ configured in-house parent is not resolvable).
 """
 from __future__ import annotations
 
+import importlib
 import logging
 import re
 import time
@@ -534,10 +536,11 @@ class Orchestrator:
 
     # ------------------------------------------------------------------ steps (shared by both engines)
     def step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
-        """1. 접수: git 스냅샷, 사전 점검(Maven·JDK 21·parent 설정), Maven 프로젝트인지, aggregator 생성,
-        as-is effective dependencyManagement 캡처. False = 멈춤 또는 중단.
+        """1. 접수: git 스냅샷, 사전 점검(Maven·JDK 21·parent 설정), Maven 프로젝트인지(v2.1j: Ant 면 pom.xml 합성),
+        aggregator 생성, as-is effective dependencyManagement 캡처. False = 멈춤 또는 중단.
 
-        1. intake: git snapshot, preflight, effective dependencyManagement. False = stop or abort."""
+        1. intake: git snapshot, preflight, build tool (v2.1j: an Ant project gets a synthesized pom.xml), effective
+        dependencyManagement. False = stop or abort."""
         with stage("intake"):
             return self._step_intake(report, stop_after)
 
@@ -569,15 +572,22 @@ class Orchestrator:
         return not self._stop(stop_after, Phase.INTAKE)
 
     def _check_build_tool(self, report: RunReport) -> bool:
-        """회사 결정: Maven 프로젝트만 받는다. Gradle / Ant / 빌드 없음은 Maven 을 부르기 전에 중단(exit 3).
+        """회사 결정: Maven 프로젝트만 받는다. Gradle / 빌드 없음은 Maven 을 부르기 전에 중단(exit 3). v2.1j: Ant
+        (build.xml 만 있고 pom.xml 없음)는 ``intake.ant_to_maven`` 이면 pom.xml 을 합성·커밋하고 Maven 처럼 계속한다
+        (``_synthesize_ant_pom``); 꺼져 있거나 합성이 실패하면 예전처럼 거부.
 
-        Catalog S4 at intake: only Maven projects; Gradle / Ant / no build abort before any Maven call.
-        `step_analyze` keeps the same check (on `profile.build_tool`) as a fallback."""
+        Catalog S4 at intake: only Maven projects; Gradle / no build abort before any Maven call. v2.1j: an Ant
+        project gets a synthesized pom.xml when `intake.ant_to_maven` is on and then runs as a Maven project; off or
+        a failed synthesis → the old rejection. `step_analyze` keeps the same check (on `profile.build_tool`) as a
+        fallback — it passes once the synthesized pom exists."""
         try:
             from sbmig.analyze import detect_build_tool
         except ImportError:  # pragma: no cover - analyze component missing; step_analyze still checks
             return True
         det = detect_build_tool(self.ws)
+        intake = getattr(self.cfg, "intake", None)
+        if det.tool == "ant" and intake is not None and getattr(intake, "ant_to_maven", False):
+            return self._synthesize_ant_pom(report, det)
         if det.tool != "maven":
             report.flags.append(f"unsupported-build-tool:{det.tool}")
             self._abort(report, det.reason)
@@ -585,6 +595,62 @@ class Orchestrator:
             return False
         self.ws.journal({"event": "build_tool", "tool": "maven", "ok": True})
         return True
+
+    def _synthesize_ant_pom(self, report: RunReport, det: Any) -> bool:
+        """v2.1j 현업 요청("Ant 프로젝트도 Maven 으로 변경 후 마이그레이션"): build.xml + 폴더 구조로 pom.xml 을 쓰고
+        (``sbmig.analyze.ant.synthesize_pom``, 파일만 씀) 여기서 ``intake: pom.xml synthesized from build.xml`` 로
+        커밋한다. 순서가 중요하다: as-is 스냅샷(``git_init``) 뒤라서 changes.patch 에 pom.xml 이 "추가" 로 보이고,
+        effective-pom 캡처(``_capture_effective``, pom 필요) 앞이다. 실패(모듈 없음·예외·``ok=False``)는 예전 거부와
+        같다: ``unsupported-build-tool:ant`` + 중단(exit 3) — 플릿은 그것을 건너뜀으로 센다.
+
+        v2.1j: write pom.xml from build.xml (`synthesize_pom` writes the file only), commit it, flag `pom-synthesized`
+        (+ `jar-coordinates-unknown` when unknown jars were declared / left out), keep the result on
+        `report.pom_synthesis` and continue as a Maven project. Runs after the as-is snapshot (changes.patch shows
+        the pom as an addition) and before the effective-pom capture (which needs a pom). Any failure — the analyzer
+        module missing, an exception, `ok=False` — is the old rejection: `unsupported-build-tool:ant`, exit 3."""
+        build_file = getattr(det, "ant_build_file", None) or "build.xml"
+        try:
+            # importlib (not `from sbmig.analyze import ant`): the module is looked up in sys.modules on every call,
+            # so a test can inject a fake analyzer without the real one being imported first
+            synthesize = importlib.import_module("sbmig.analyze.ant").synthesize_pom
+        except (ImportError, AttributeError) as e:
+            return self._reject_ant(report, f"Ant build.xml detected and no pom.xml: the pom synthesis "
+                                            f"(sbmig.analyze.ant) is not available in this installation "
+                                            f"({type(e).__name__}: {e}) — convert the build to Maven first")
+        try:
+            res = synthesize(self.ws, self.cfg)
+        except Exception as e:  # an analyzer bug must end as a rejection, not lose the report
+            log.exception("pom synthesis failed")
+            return self._reject_ant(report, f"pom.xml could not be synthesized from {build_file}: "
+                                            f"{type(e).__name__}: {e} (Ant project rejected: convert the build to "
+                                            f"Maven first)")
+        if not getattr(res, "ok", False):
+            why = getattr(res, "error", None) or "unknown reason"
+            return self._reject_ant(report, f"pom.xml could not be synthesized from "
+                                            f"{getattr(res, 'build_file', None) or build_file}: {why} (Ant project "
+                                            f"rejected: convert the build to Maven first)")
+        self.ws.commit("intake: pom.xml synthesized from build.xml")
+        report.pom_synthesis = res
+        self._flag("pom-synthesized")
+        if res.unknown_jars:
+            self._flag("jar-coordinates-unknown")
+        counts = res.counts
+        # 운영자가 화면에서 옮겨 적는 한 줄(한국어) — jar 출처별 수. manifest 는 메모일 뿐이라 미상으로 센다
+        log.info("접수: Ant build.xml → pom.xml 합성 (jar %d개: pom.properties %d · 이름표 %d · 조회 %d · 미상 %d)",
+                 len(res.jars), counts.get("pom_properties", 0), counts.get("name_table", 0),
+                 counts.get("sha1_lookup", 0), counts.get("unknown", 0) + counts.get("manifest", 0))
+        self.ws.journal({"event": "pom_synthesized", "pom": res.pom_path, "build_file": res.build_file,
+                         "packaging": res.packaging, "jars": len(res.jars), "unknown": len(res.unknown_jars),
+                         "dropped": len(res.dropped_jars), "warnings": len(res.warnings)})
+        self.ws.journal({"event": "build_tool", "tool": "ant→maven", "ok": True, "build_file": res.build_file})
+        return True
+
+    def _reject_ant(self, report: RunReport, why: str) -> bool:
+        """Ant 프로젝트를 예전처럼 거부: ``unsupported-build-tool:ant`` + 중단 사유 + 저널 ``build_tool`` (ok False)."""
+        report.flags.append("unsupported-build-tool:ant")
+        self._abort(report, why)
+        self.ws.journal({"event": "build_tool", "tool": "ant", "ok": False, "reason": why})
+        return False
 
     def _intake_layout(self, report: RunReport) -> bool:
         """루트 pom 없이 서로 의존하는 형제 pom 들(회사 사례 APP/BATCH, APP/WEB)에는 루트 aggregator pom 을

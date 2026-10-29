@@ -1793,3 +1793,105 @@ side; runs go through the web UI (uvicorn, zip upload); "스크립트 만드는 
   `> 0` = BLOCKED after that many asks (3 = what script mode asks a case without a stored script). Log line
   `KB 탐색: fix.mode edits — 저장 스크립트 사용 안 함 → LLM 에 다시 수정 요청 (N번째, 한도 없음, 앞 시도 M건 포함)`.
 
+
+## v2.1j — Ant projects: pom.xml synthesized at intake, then the normal flow (2026-10-29)
+
+User (business team): "Ant 프로젝트도 Maven 으로 변경 후 마이그레이션이 되도록". The 2026-10-23 decision stays for trees with
+neither pom.xml nor build.xml (rejected, `sbmig inventory` describes them); a tree with `build.xml` and no pom.xml is now
+accepted: the intake writes a pom.xml from build.xml + the directories, commits it, and every later step runs as for any
+Maven project (case type from the analyzer: servlet_tomcat / pure_java / spring_legacy).
+
+### Config (`sbmig/core/config.py` `IntakeConfig`, `config/default.yml` `intake:`)
+`ant_to_maven` (true), `synth_group_id` (`com.company.migrated` — placeholder, company config overrides), `synth_version`
+(`1.0.0-SNAPSHOT`), `unknown_jar` (`system` | `skip`), `jar_lookup` (true), `jar_names_file`, `company_jar_names_file`
+(`<kb>/jar_names.yml`, merged over the shipped table, no redeploy — like `libraries.yml`), `min_java_source` (`1.8`),
+`max_jar_bytes_scan`.
+
+### Models (`sbmig/core/models.py`)
+- `JarCoordinate(path, sha1, group_id, artifact_id, version, source: pom_properties | name_table | sha1_lookup | manifest |
+  unknown, scope, used, packages, note)`; `.key` = `g:a`.
+- `PomSynthesis(ok, pom_path, build_file, group_id, artifact_id, version, packaging, source_dirs, web_root, resource_dirs,
+  lib_dirs, java_source, encoding, jars, unknown_jars, dropped_jars, build_xml_notes, warnings, error)`; `.counts` per source.
+- `RunReport.pom_synthesis: Optional[PomSynthesis]`.
+
+### Functions (`sbmig/analyze/ant.py`, `sbmig/analyze/jar_coords.py`)
+- `describe_ant(ws) -> AntProject` (dataclass inside ant.py): build.xml parsed with properties resolved (`<property name/value
+  | file>`, `build.properties`, `${…}` in attributes, `basedir`): the `<javac>` tasks (`srcdir`, nested `<src path>`,
+  `destdir`, `source`, `target`, `encoding`, `classpath` / `<classpath refid>` → `<path>` / `<fileset dir includes>`),
+  `<war>` / `<jar>` tasks (`webxml`, `destfile`, `<lib>`, `<classes>`), `<property name="version">`-like version hints, the
+  project `name`; plus directory facts: a web root = the directory holding `WEB-INF/web.xml` (WebContent, web, WebRoot,
+  src/main/webapp, …), lib dirs = every directory with `*.jar` that a classpath names or `WEB-INF/lib`, source roots
+  confirmed by `package a.b;` matching the path (reuse `sbmig/analyze/webapp_inventory.py` helpers where they fit).
+- `resolve_jar(path, data_or_file, cfg, lookup=None) -> JarCoordinate`: ① `META-INF/maven/<g>/<a>/pom.properties` inside
+  the jar (groupId / artifactId / version) ② the stem table (`jar_names.yml` shipped + company file; version from the file
+  name) ③ when `intake.jar_lookup`: sha1 lookup through the repository chain of `sbmig/build/repo_versions.py`
+  (`build.repository_url` Nexus 3 `/service/rest/v1/search/assets?sha1=` → settings mirror → Central
+  `https://search.maven.org/solrsearch/select?q=1:"<sha1>"&rows=1&wt=json`; offline / failure → unknown, never raises;
+  the root `tests/conftest.py` offline guard must keep tests off the network) ④ MANIFEST `Implementation-Title` /
+  `Bundle-SymbolicName` only as a note. `packages` = top-level packages of the jar's classes (for the `used` check);
+  servlet / jsp / el / jstl APIs → scope `provided`.
+- `synthesize_pom(ws, cfg, *, lookup=None) -> PomSynthesis`: writes `<root>/pom.xml` ONLY (no commit — the orchestrator
+  commits `intake: pom.xml synthesized from build.xml`): coordinates (`synth_group_id`, artifactId = build.xml project
+  name or the folder name, version from build.xml or `synth_version`), packaging war / jar, `<properties>`
+  (`maven.compiler.source/target` = build.xml source/target raised to `min_java_source`, `project.build.sourceEncoding`
+  = javac encoding or the detected source encoding), `<build><sourceDirectory>` (first source root; more roots → the
+  build-helper plugin `add-source`), `<resources>` for non-java files under the source roots, `maven-war-plugin`
+  `warSourceDirectory` = web root (+ `failOnMissingWebXml` false only when no web.xml), `<dependencies>` from the jar
+  table (dedupe by `g:a`, provided scope for container APIs, `system` scope + `<systemPath>${project.basedir}/<jar>`
+  for unknown-but-used jars when `unknown_jar: system`), unused unknown jars left out (`dropped_jars`), test source dirs
+  ignored (tests are skipped anyway). Never deletes build.xml or any file. `ok=False` + `error` when build.xml cannot be
+  read or no source root is found.
+- `detect_build_tool` (build_tool.py) unchanged in shape; add `ant_build_file` (path) to `BuildToolDetection` when tool
+  is ant.
+
+### Orchestrator / report
+- `_check_build_tool`: tool `ant` and `intake.ant_to_maven` → `synthesize_pom`; ok → commit, journal
+  `{"event": "pom_synthesized", "pom": …, "jars": N, "unknown": M}`, flags `pom-synthesized` (informational) and
+  `jar-coordinates-unknown` (attention, only when `unknown_jars`), `report.pom_synthesis = res`, then continue exactly as a
+  Maven project; not ok → abort exit 3 with `res.error` (as before). `--no-kb` does not matter here.
+- Handover block "Ant 프로젝트: pom.xml 합성" (right after the operator checks): the pom's coordinates and packaging,
+  jar counts per source, the unknown jars with one `mvn install:install-file -Dfile=<jar> -DgroupId=<synth_group_id>
+  -DartifactId=<stem> -Dversion=<version or 0> -Dpackaging=jar` line each (the operator installs them into Nexus and
+  replaces the system-scope entries), the dropped jars, the untranslated build.xml targets; "What we changed" one line
+  `pom.xml synthesized from build.xml (N jars: a pom.properties, b table, c lookup, d unknown)`; `FLAG_HELP` entries.
+- `SBMIG-RESULT` unchanged (the flags carry it).
+
+### As built (v2.1j, 2026-10-29)
+- Analyzer (`sbmig/analyze/ant.py`, `jar_coords.py`): `describe_ant(ws) -> AntProject` (never raises; `.error` /
+  `.warnings` / `.notes`), `synthesize_pom(ws, cfg, *, lookup=None)` (`lookup=None` → one `Sha1Lookup` per run when
+  `intake.jar_lookup`; `False` → none), `resolve_jar`, `jar_packages`, `stem_and_version`, `mark_used`, `Sha1Lookup(cfg,
+  fetch=, repo=).find(sha1)`, `find_ant_build_file(ws)`. Provided scope: servlet / JSP / EL / WebSocket APIs (javax and
+  jakarta forms) and `org.apache.tomcat:*`; JSTL stays compile. Container APIs the sources use but no jar provides are
+  added as provided (`javax.servlet-api:3.1.0`, `javax.servlet.jsp-api:2.3.3`, `javax.el-api:3.0.0`) with a warning.
+  Source roots from the main `<javac>` srcdirs confirmed by `package a.b;` (test-like roots ignored, nested roots folded);
+  extra roots through `build-helper-maven-plugin` 3.6.1 `add-source`. `used` = qualified names in Java sources, JSP page
+  imports, class names in XML / properties / TLD under the web root and resources; jars with `META-INF/services`,
+  `spring.handlers`, `web-fragment.xml` or taglibs (when JSPs exist) count as used; unsure → declared. War plugin pinned
+  3.4.0 (an unparented pom on Maven ≤ 3.8 gets 2.2, which fails on JDK 16+); no compiler plugin / `<release>`.
+  Unknown-but-used jars are NOT copied (2026-10-29 fix of the first cut): they are declared at their as-is path as
+  `<systemPath>${maven.multiModuleProjectDirectory}/<as-is path>` (sbmig always runs `mvn` at the root), and the restructure
+  copies them into the module's `lib/` when it moves the dependency; `JarCoordinate.path` keeps the as-is path, the
+  declared `g:a:v` + `scope="system"` are filled in.
+  `edges.resolve_system_path` reads `${maven.multiModuleProjectDirectory}` as the project root, so the restructure's
+  normal system-path handling applies (copied into the module's `lib/`, Nexus follow-up). `warSourceExcludes` lists the
+  WEB-INF/lib jars that became Maven dependencies. `ok=False`: no / broken build.xml, a pom.xml already at the root, no
+  source root, any unexpected exception. sha1 lookup: `<base>/repository/<name>/` → Nexus 3 assets search, Central →
+  search.maven.org; 2 failures in a row → no more lookups this run.
+- Orchestrator (`_step_intake`): snapshot commit → preflight (`mvn -v`, JDK) → `_check_build_tool` → `_synthesize_ant_pom`
+  (`importlib.import_module("sbmig.analyze.ant")` each call — patchable in tests) → commit `intake: pom.xml synthesized
+  from build.xml` (so `changes.patch` shows pom.xml as an addition) → `_intake_layout` → effective-pom capture. Failure
+  (module missing / exception / `ok=False`) → flag `unsupported-build-tool:ant`, exit 3 with the reason; `ant_to_maven:
+  false` → the old rejection. INFO `접수: Ant build.xml → pom.xml 합성 (jar N개: pom.properties a · 이름표 b · 조회 c ·
+  미상 d)` (manifest-only jars count as 미상); journal `pom_synthesized` and `build_tool` with `tool: "ant→maven"`.
+- Report: Handover `### Ant project: pom.xml synthesized` / `### Ant 프로젝트: pom.xml 합성` right after the operator
+  checks (pom g:a:v + packaging + Java + encoding, layout line, jar counts, the unknown jars with one `mvn
+  install:install-file -Dfile=<as-is path> -DgroupId=<declared or synth_group_id> -DartifactId=<stem> -Dversion=<v or 0>
+  -Dpackaging=jar` each and the sentence that system-scope jars are not packaged into the WAR / boot jar, dropped jars,
+  `build_xml_notes`, warnings; lists cut at 50 → "… N more (report.json)"); "What we changed" first line `pom.xml
+  synthesized from build.xml (N jars: …)`; `FLAG_HELP` for both flags; `jar-coordinates-unknown` is an attention flag
+  (`SBMIG-RESULT attn=`, fleet attention column).
+- Known gaps: a `<jar>` Main-Class and `<javac>` includes / excludes are noted, not translated; a second top-level source
+  root only exists in the build-helper config, so the layout split may not move it (`gen-src`); the restructure's follow-up
+  "files under WEB-INF/lib stay … declare the jars as Maven dependencies" still appears for an Ant project although the
+  synthesized pom already declares them (wording only).
+

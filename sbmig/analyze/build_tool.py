@@ -36,9 +36,11 @@ NONE_REASON = ("no pom.xml found (no supported build tool): only Maven projects 
 
 @dataclass(frozen=True)
 class BuildToolDetection:
-    """빌드 도구 판별 결과: ``tool`` (maven / gradle / ant / none) 과 사람에게 보여 줄 설명 ``reason``."""
+    """빌드 도구 판별 결과: ``tool`` (maven / gradle / ant / none) 과 사람에게 보여 줄 설명 ``reason``.
+    v2.1j: ant 이면 ``ant_build_file`` = 쓸 build.xml 의 저장소 상대 경로(루트의 것, 없으면 가장 얕은 것)."""
     tool: BuildTool
     reason: str = ""
+    ant_build_file: str = ""                 # v2.1j: repo-relative build.xml when tool is ant (else "")
 
     @property
     def ok(self) -> bool:
@@ -52,6 +54,18 @@ def _has_any(ws: Any, names: tuple[str, ...]) -> bool:
     if callable(exists) and any(exists(n) for n in names):
         return True
     return any(not is_skipped_path(p) for n in names for p in ws.glob(n))
+
+
+def find_ant_build_file(ws: Any) -> str:
+    """Ant 빌드 파일: 루트의 ``build.xml``, 없으면 가장 얕은 ``build.xml`` (건너뛸 경로 제외, 같은 깊이면 이름순).
+    없으면 "".
+
+    The Ant build file: the root `build.xml`, else the shallowest one outside skipped paths; "" when none."""
+    exists = getattr(ws, "exists", None)
+    if callable(exists) and exists("build.xml"):
+        return "build.xml"
+    cands = sorted((p for p in ws.glob("build.xml") if not is_skipped_path(p)), key=lambda p: (p.count("/"), p))
+    return cands[0] if cands else ""
 
 
 def detect_build_tool(ws: Any) -> BuildToolDetection:
@@ -74,5 +88,6 @@ def detect_build_tool(ws: Any) -> BuildToolDetection:
     if gradle:
         return BuildToolDetection("gradle", GRADLE_REASON)
     if ant:
-        return BuildToolDetection("ant", ANT_REASON)
+        # v2.1j: 접수가 이 파일로 pom 을 합성한다(intake.ant_to_maven); ANT_REASON 은 거부할 때의 문구로 남는다
+        return BuildToolDetection("ant", ANT_REASON, ant_build_file=find_ant_build_file(ws))
     return BuildToolDetection("none", NONE_REASON)

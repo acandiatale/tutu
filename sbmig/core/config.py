@@ -625,6 +625,28 @@ class AdvisoryConfig(BaseModel):
     max_from_here: int = 40                               # cap of the handover's "from here on" list
 
 
+class IntakeConfig(BaseModel):
+    """접수 설정(v2.1j, 2026-10-29 현업: "Ant 프로젝트도 Maven 으로 바꾼 뒤 이관"). ``build.xml`` 만 있고 pom.xml 이 없는
+    프로젝트는 접수에서 pom.xml 을 합성해 받는다(``sbmig.analyze.ant.synthesize_pom``): build.xml 의 javac / war 설정과
+    폴더 구조로 소스·웹 루트·리소스·Java 수준·인코딩·packaging 을 정하고, lib 의 jar 는 ① jar 안의 pom.properties
+    ② 이름 표(jar_names.yml + <kb>/jar_names.yml) ③ sha1 저장소 조회 순으로 Maven 좌표를 찾는다. 못 찾은 jar 는
+    ``unknown_jar`` 정책대로(system = systemPath 의존성으로 선언해 빌드는 통과, 인수인계에 install-file 명령 안내).
+    pom.xml 도 build.xml 도 없는 트리는 여전히 거부한다(2026-10-23 결정).
+
+    Intake (v2.1j): an Ant project (build.xml, no pom.xml) gets a synthesized pom.xml at intake — layout from build.xml
+    and the directories, jar coordinates from the jar's pom.properties, the name table, then a sha1 repository lookup;
+    unknown jars follow `unknown_jar`. A tree with neither pom.xml nor build.xml is still rejected."""
+    ant_to_maven: bool = True                               # false = reject Ant projects as before (exit 3)
+    synth_group_id: str = "com.company.migrated"           # placeholder groupId of a synthesized pom (company config overrides)
+    synth_version: str = "1.0.0-SNAPSHOT"                   # version of a synthesized pom when build.xml names none
+    unknown_jar: Literal["system", "skip"] = "system"       # system = <systemPath> dependency (build passes) | skip = not declared
+    jar_lookup: bool = True                                 # sha1 lookup (build.repository_url / settings mirror / Central) for jars still unknown
+    jar_names_file: str = "knowledge/libraries/jar_names.yml"   # shipped stem → coordinates table
+    company_jar_names_file: str = "jar_names.yml"           # company rows under kb.dir (same format), merged over the shipped table
+    min_java_source: str = "1.8"                            # build.xml source / target below this is raised (JDK 21 compiles 8+ only)
+    max_jar_bytes_scan: int = 64 * 1024 * 1024              # a jar bigger than this is not opened for pom.properties / packages
+
+
 class ExternalizedConfig(BaseModel):
     """외부 설정 키 처리: 코드는 읽지만 패키지된 리소스에는 없는 설정(예전에는 컨테이너가 줌: JNDI,
     context-param, -D). 목록을 만들고 __SET_ME__ placeholder
@@ -648,6 +670,7 @@ class Config(BaseModel):
     target: TargetConfig = Field(default_factory=TargetConfig)
     artifacts: ArtifactsConfig
     layout: LayoutConfig = Field(default_factory=LayoutConfig)
+    intake: IntakeConfig = Field(default_factory=IntakeConfig)       # v2.1j: Ant → pom synthesis at intake
     openrewrite: OpenRewriteConfig = Field(default_factory=OpenRewriteConfig)
     build: BuildConfig = Field(default_factory=BuildConfig)
     loop: LoopConfig = Field(default_factory=LoopConfig)

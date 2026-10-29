@@ -1,7 +1,7 @@
 """report.md 그리기 — 에이전트가 못 고친 것을 이어받는 as-is 담당팀을 위해 쓴다.
 흐름상 위치: 보고서 단계에서 writer.py 의 ``write_report`` 가 ``render_markdown`` 을 부른다. 섹션 순서(v2.1):
-머리 표(``SBMIG-RESULT`` 줄 포함) → 인수인계(운영자 확인 필요 → 교체된 버전 → 주의 라이브러리 → 이제부터 할
-일) → Error list(단계별 표) → Fixes by case → Structure review → Blocked → javax API jar →
+머리 표(``SBMIG-RESULT`` 줄 포함) → 인수인계(운영자 확인 필요 → Ant pom.xml 합성(v2.1j) → 교체된 버전 → 주의
+라이브러리 → 이제부터 할 일) → Error list(단계별 표) → Fixes by case → Structure review → Blocked → javax API jar →
 Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 인수인계가 맨 앞인 이유: 담당팀은 그 섹션만 읽는다. 모든 문장은 ``tr`` / ``tr_line`` 을 거쳐
 ``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께). v2.1i: ``fix.mode:
@@ -35,7 +35,13 @@ from .errors import (
     tries_text,
     where,
 )
-from .handover import is_jsp_jakarta_note, jsp_jakarta_counts
+from .handover import (
+    is_jsp_jakarta_note,
+    jsp_jakarta_counts,
+    pom_synthesis_counts,
+    unknown_jar_commands,
+    unknown_jars_system,
+)
 from .i18n import normalize, tr, tr_line
 from .result_line import report_result_line
 
@@ -76,6 +82,14 @@ FLAG_HELP = {
                         "gateway rejected the key / model): LLM fixes were skipped — check with `sbmig llm-probe`",
     "major-upgrade": "a fix raised a dependency across its major version or replaced a library (the build passes): "
                      "the operator verifies the runtime behaviour — see \"Operator checks\" in the Handover",
+    # v2.1j: Ant 프로젝트의 pom.xml 합성(정보) / 좌표 미상 jar(주의 — SBMIG-RESULT attn= 에도 나온다)
+    "pom-synthesized": "the project had an Ant build.xml and no pom.xml: sbmig synthesized a pom.xml from build.xml "
+                       "and the directories at intake (intake.ant_to_maven) and migrated it as a Maven project — see "
+                       "\"Ant project: pom.xml synthesized\" in the Handover",
+    "jar-coordinates-unknown": "jars of the Ant project have no Maven coordinates (no pom.properties inside, not in "
+                               "jar_names.yml, not found by sha1 in the repository): declared with `system` scope "
+                               "(intake.unknown_jar) the build passes, but they are not packaged into the WAR — "
+                               "install them into Nexus and replace the pom entries (commands in the Handover)",
 }
 FLAG_PREFIX_HELP = {
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
@@ -340,15 +354,101 @@ def operator_check_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
-def handover_lines(r: RunReport, lang: str = "en") -> list[str]:
-    """report.md 의 첫 섹션 = 인수인계: 운영자 확인 필요(v2.1d) → 교체된 버전 → 주의 라이브러리(권고) →
-    merge 충돌 → 외부 설정 → 이제부터 할 일. 데이터 줄은 영어로 저장돼 있고 ``tr_line`` 으로 번역한다.
+POM_SYNTH_LIST_MAX = 50                 # install-file commands / dropped jars / build.xml notes shown (report.json has all)
 
-    The first section of report.md: operator checks (v2.1d), versions replaced, libraries needing attention,
-    'from here on'."""
+
+def _code_list(items: Iterable[str], limit: int, lang: str) -> str:
+    """``a`` , ``b`` … 목록(넘치면 "… N more (report.json)")."""
+    items = list(items)
+    out = ", ".join(f"`{_cell(x, 200)}`" for x in items[:limit]) or "-"
+    if len(items) > limit:
+        out += " " + tr(lang, "… {n} more (report.json)", n=len(items) - limit)
+    return out
+
+
+def pom_synthesis_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
+    """인수인계의 "Ant 프로젝트: pom.xml 합성" 블록(v2.1j, 운영자 확인 블록 바로 다음): 합성 pom 의 좌표·packaging·
+    소스 / 웹 루트, jar 좌표 출처별 수, 좌표 미상 jar 마다 ``mvn install:install-file`` 한 줄(system scope 는 빌드는
+    통과해도 WAR 에 안 들어가 실행 시 실패한다 — Nexus 에 설치하고 pom 항목을 바꿀 것), 뺀 jar, 옮기지 못한 build.xml
+    단계. 합성하지 않은 실행은 [].
+
+    v2.1j Handover block "Ant project: pom.xml synthesized" (`report.pom_synthesis`): coordinates, packaging, layout,
+    jar counts per source, one install-file command per unknown jar (system scope builds but is not packaged:
+    runtime!), the jars left out, the build.xml steps not translated. [] when the intake synthesized nothing."""
+    ps = getattr(r, "pom_synthesis", None)
+    if ps is None or not getattr(ps, "ok", False):
+        return []
+    gav = ":".join(x for x in (ps.group_id, ps.artifact_id, ps.version) if x) or "-"
+    n = pom_synthesis_counts(ps)
+    L = [tr(lang, "### Ant project: pom.xml synthesized"), "",
+         tr(lang, "The project had an Ant `{build}` and no pom.xml: sbmig wrote `{pom}` at intake from build.xml and "
+                  "the directories (commit `intake: pom.xml synthesized from build.xml`); build.xml itself is left as "
+                  "it was.", build=ps.build_file, pom=ps.pom_path), "",
+         tr(lang, "- pom: `{gav}` ({packaging}), Java {java}, encoding {enc}", gav=gav, packaging=ps.packaging,
+            java=ps.java_source or "-", enc=ps.encoding or "-"),
+         tr(lang, "- layout: sources {src}, web root {web}, resources {res}, lib {lib}",
+            src=_code_list(ps.source_dirs, 10, lang), web=f"`{ps.web_root}`" if ps.web_root else "-",
+            res=_code_list(ps.resource_dirs, 10, lang), lib=_code_list(ps.lib_dirs, 10, lang)),
+         tr(lang, "- jars: {n} — {a} pom.properties, {b} name table, {c} repository lookup, {d} unknown",
+            n=n["jars"], a=n["pom_properties"], b=n["name_table"], c=n["sha1_lookup"], d=n["unknown"]), ""]
+    cmds = unknown_jar_commands(ps, cfg)
+    if cmds:
+        if unknown_jars_system(ps, cfg):
+            L.append(tr(lang, "**{n} jar(s) without Maven coordinates** — declared with `system` scope "
+                              "(`<systemPath>`): the build passes, but system-scope jars are not packaged into the "
+                              "WAR / boot jar, so the application fails at runtime until each one is installed into "
+                              "Nexus and its pom entry is replaced by a normal dependency (drop `<scope>system</scope>` "
+                              "and `<systemPath>`):", n=len(cmds)))
+        else:
+            L.append(tr(lang, "**{n} jar(s) without Maven coordinates** — not declared (`intake.unknown_jar: skip`): "
+                              "the build shows which ones the code needs; install each into Nexus and add it to the "
+                              "pom as a dependency:", n=len(cmds)))
+        L += ["", "```", *cmds[:POM_SYNTH_LIST_MAX], "```"]
+        if len(cmds) > POM_SYNTH_LIST_MAX:
+            L.append(tr(lang, "… {n} more (report.json)", n=len(cmds) - POM_SYNTH_LIST_MAX))
+        L += [tr(lang, "(`-Dfile` paths are those of the as-is tree; publishing to Nexus is `mvn deploy:deploy-file` "
+                       "with the same coordinates plus `-Durl` / `-DrepositoryId`.)"), ""]
+    if ps.dropped_jars:
+        L += [tr(lang, "Left out (no coordinates and no source imports their packages): {jars} — add one back if the "
+                       "build or the runtime needs it.", jars=_code_list(ps.dropped_jars, POM_SYNTH_LIST_MAX, lang)),
+              ""]
+    if ps.build_xml_notes:
+        L += [tr(lang, "build.xml steps not translated to Maven — check whether the build still needs them:")]
+        L += [f"- {_cell(x, 300)}" for x in ps.build_xml_notes[:POM_SYNTH_LIST_MAX]]
+        if len(ps.build_xml_notes) > POM_SYNTH_LIST_MAX:
+            L.append("- " + tr(lang, "… {n} more (report.json)", n=len(ps.build_xml_notes) - POM_SYNTH_LIST_MAX))
+        L.append("")
+    if ps.warnings:
+        L += [tr(lang, "Synthesis warnings:")]
+        L += [f"- {_cell(x, 300)}" for x in ps.warnings[:POM_SYNTH_LIST_MAX]]
+        L.append("")
+    return L
+
+
+def pom_synthesis_changed_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """"What we changed" 의 한 줄 ``pom.xml synthesized from build.xml (N jars: a pom.properties, b table, c lookup,
+    d unknown)``(v2.1j). 합성하지 않은 실행은 [].
+
+    "What we changed": the intake's pom synthesis in one line; [] without one."""
+    ps = getattr(r, "pom_synthesis", None)
+    if ps is None or not getattr(ps, "ok", False):
+        return []
+    n = pom_synthesis_counts(ps)
+    return [tr(lang, "pom.xml synthesized from build.xml ({n} jars: {a} pom.properties, {b} table, {c} lookup, "
+                     "{d} unknown)", n=n["jars"], a=n["pom_properties"], b=n["name_table"], c=n["sha1_lookup"],
+               d=n["unknown"]), ""]
+
+
+def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]:
+    """report.md 의 첫 섹션 = 인수인계: 운영자 확인 필요(v2.1d) → Ant pom.xml 합성(v2.1j) → 교체된 버전 → 주의
+    라이브러리(권고) → merge 충돌 → 외부 설정 → 이제부터 할 일. 데이터 줄은 영어로 저장돼 있고 ``tr_line`` 으로 번역한다.
+
+    The first section of report.md: operator checks (v2.1d), the Ant pom synthesis (v2.1j, `cfg` gives the
+    `intake.*` policy of its install-file lines), versions replaced, libraries needing attention, 'from here on'."""
     lang = normalize(lang)
     L = [f"## {tr(lang, HANDOVER_TITLE)}", ""]
     L += operator_check_lines(r, lang)
+    L += pom_synthesis_lines(r, lang, cfg)
     h = r.handover
     findings = list(r.advisories or [])
     has_versions = h is not None and bool(h.changes or h.added or h.removed or h.parent_before or h.parent_after)
@@ -795,8 +895,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     only sharpens the javax API section's in-house detection.
 
     v2.1 (slim): header → Handover → Error list → Fixes by case → Structure review → Blocked → javax API jars →
-    Manual follow-ups → Flags → What we changed (plan steps, OpenRewrite runs, v2.1h the JSP javax → jakarta rename)
-    → LLM usage and cost → Notes → Outputs."""
+    Manual follow-ups → Flags → What we changed (v2.1j the intake's pom synthesis, plan steps, OpenRewrite runs,
+    v2.1h the JSP javax → jakarta rename) → LLM usage and cost → Notes → Outputs."""
     lang = normalize(language)
     r = report
     L: list[str] = []
@@ -844,7 +944,7 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
 
     # 인수인계가 맨 앞: 담당팀은 보고서에서 이 섹션만 읽는다(무엇을 바꿨고 이제 무엇이 그들 몫인지)
     # ---- handover first: what we replaced, what the owning team does from here on
-    L += handover_lines(r, lang)
+    L += handover_lines(r, lang, cfg)
 
     # ---- the centre: every error of the run, then how each case was fixed
     L += error_list_lines(r, lang)
@@ -900,9 +1000,11 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     executed = [sid for pr in r.phases for sid in pr.step_ids]
     rw = [(pr.phase.value, x) for pr in r.phases for x in pr.rewrite_results]
     jsp = jsp_jakarta_lines(r, lang)
-    if executed or rw or jsp:
+    ant = pom_synthesis_changed_lines(r, lang)          # v2.1j: first, it happened at intake
+    if executed or rw or jsp or ant:
         L.append(tr(lang, "## What we changed"))
         L.append("")
+    L += ant
     if executed:
         L.append(tr(lang, "Plan steps executed:"))
         L += [f"1. `{sid}` — {titles.get(sid, '')}" for sid in executed]

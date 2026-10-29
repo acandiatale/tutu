@@ -1,5 +1,6 @@
 # sbmig v2.1 — 실행 흐름, 케이스, KB 적재물, LLM 개입 지점과 한도 (사내 설명용)
 
+> 2026-10-29: Ant 프로젝트(`build.xml` 만 있고 pom.xml 없음)는 접수에서 pom.xml 을 합성해 받는다(`intake.*`, 아래 §1 접수 참고).
 > 코드를 직접 읽을 때: 모든 모듈·공개 함수에 한국어 docstring 이 먼저 온다(규약 `docs/v2/CODE-COMMENTS-KO.md`).
 > 패키지 지도는 `sbmig/__init__.py`, 코드를 읽으며 발견한 의심 버그·정책 질문은 `docs/v2/HANDOVER-FINDINGS-2026-10-28.md`.
 
@@ -19,6 +20,13 @@
 - 운영자가 읽는 줄: `SBMIG-RESULT run=… exit=0 build=ok … llm=3 attn=- review=ok major=0`.
 
 ## 1. 실행 흐름 — 단계별로 무엇이 일어나는가
+
+> **Ant 프로젝트 접수(v2.1j)**: `build.xml` 이 있고 pom.xml 이 없으면 접수가 pom.xml 을 만들어 `intake: pom.xml synthesized from
+> build.xml` 로 커밋한 뒤 보통 Maven 프로젝트처럼 진행한다. 소스·웹 루트·리소스·Java 수준·인코딩은 build.xml 의 javac / war 와 폴더
+> 구조에서, lib 의 jar 좌표는 ① jar 안 `pom.properties` ② 이름 표(`knowledge/libraries/jar_names.yml` + 사람이 적는 `<kb>/jar_names.yml`)
+> ③ sha1 저장소 조회 순으로 찾는다. 못 찾은 jar 중 소스가 쓰는 것만 `system` 범위로 선언해(as-is 위치 그대로) 빌드는 통과시키고,
+> 보고서 맨 앞 "Ant 프로젝트: pom.xml 합성" 에 Nexus 에 올리는 `install-file` 명령과 함께 적는다(플래그 `pom-synthesized`,
+> `jar-coordinates-unknown`). 합성 pom 의 groupId 는 자리표시자 `com.company.migrated` — 회사 설정 `intake.synth_group_id` 로 바꾼다.
 
 로그의 모든 줄에는 단계 태그가 붙는다. 실제 한 실행의 태그 순서:
 

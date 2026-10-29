@@ -1,0 +1,347 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "is_multi_module": false,
+  "build_tool": "ant",
+  "libraries": [
+    "javax-servlet",
+    "jsp",
+    "commons-lang2",
+    "system-scope-jars"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "pom_synthesis": {
+    "coordinates": "com.company.migrated:ant-webapp:1.2.0",
+    "packaging": "war",
+    "java_source": "1.8",
+    "source_dirs": [
+      "src"
+    ],
+    "web_root": "WebContent",
+    "jars": {
+      "pom_properties": [
+        "WebContent/WEB-INF/lib/commons-lang-2.6.jar"
+      ],
+      "name_table": [
+        "WebContent/WEB-INF/lib/servlet-api-2.5.jar"
+      ],
+      "unknown": [
+        "WebContent/WEB-INF/lib/example-util-1.0.jar",
+        "WebContent/WEB-INF/lib/old-report.jar"
+      ]
+    },
+    "unknown_jars": [
+      "WebContent/WEB-INF/lib/example-util-1.0.jar"
+    ],
+    "dropped_jars": [
+      "WebContent/WEB-INF/lib/old-report.jar"
+    ],
+    "build_xml_notes": 1
+  },
+  "web_resources": {
+    "jsp": [
+      "WebContent/index.jsp"
+    ],
+    "static_dirs": [
+      "WebContent"
+    ],
+    "static_count": 1
+  },
+  "web_xml": {
+    "spec": "2.5",
+    "servlets": 1,
+    "filters": 0,
+    "listeners": 0
+  },
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "pom-synthesized",
+      "jar-coordinates-unknown",
+      "web-xml-registered",
+      "tests-not-compiled"
+    ],
+    "journal_events": [
+      {
+        "event": "pom_synthesized",
+        "pom": "pom.xml",
+        "build_file": "build.xml",
+        "packaging": "war",
+        "jars": 4,
+        "unknown": 1,
+        "dropped": 1
+      },
+      {
+        "event": "build_tool",
+        "tool": "ant→maven",
+        "ok": true
+      },
+      {
+        "event": "web_xml_registrations",
+        "servlets": 1,
+        "filters": 0,
+        "listeners": 0,
+        "error_pages": 0
+      },
+      {
+        "event": "jsp_jakarta",
+        "files": 1,
+        "refs": 1
+      },
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "handover": {
+      "java_before": "1.8",
+      "java_after": "21",
+      "spring_boot_after": "4.1.0",
+      "parent_after": "org.springframework.boot:spring-boot-starter-parent",
+      "removed_contains": [
+        "javax.servlet:servlet-api"
+      ],
+      "added_contains": [
+        "jakarta.servlet:jakarta.servlet-api"
+      ]
+    },
+    "advisories": [
+      {
+        "id": "commons-lang2",
+        "policy": "guide",
+        "outcome": "still-present"
+      }
+    ],
+    "followups_contains": [
+      "regex:(?i)system-scoped jar `example-util-1\\.0\\.jar` .*install:install-file .*-DartifactId=example-util -Dversion=1\\.0.*",
+      "regex:(?i)web\\.xml \\(5\\.0\\) .*WebXmlRegistrations: 1 servlet\\(s\\).*"
+    ],
+    "structure_review": {
+      "verdict": "issues",
+      "critical": 0,
+      "warnings_min": 1,
+      "script_status": "none",
+      "llm_calls_max": 1,
+      "issues_contain": [
+        "regex:warning ant-webapp-back/pom\\.xml: com\\.company\\.migrated:example-util:1\\.0 is declared with scope system.*"
+      ]
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-ant-webapp"
+    },
+    "post_checks": [
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "synthesized by sbmig (v2.1j) from build.xml"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "pom"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "ant-webapp-back",
+            "ant-webapp-boot",
+            "ant-webapp-front"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "<artifactId>ant-webapp</artifactId>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "contains": "<version>1.2.0</version>"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-validation",
+            "org.springframework.boot:spring-boot-starter-actuator"
+          ]
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "build.xml",
+          "source": "build.xml"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "ant-webapp-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ant-webapp-boot/pom.xml",
+          "contains": "<finalName>ant-webapp</finalName>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ant-webapp-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new ServletRegistrationBean<>(new com.example.antweb.HelloServlet(), \"/hello\")"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ant-webapp-boot/target/ant-webapp.war"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "ant-webapp-back/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "ant-webapp-back/pom.xml",
+          "artifacts": [
+            "commons-lang:commons-lang",
+            "jakarta.servlet:jakarta.servlet-api",
+            "com.company.migrated:example-util"
+          ]
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "ant-webapp-back/pom.xml",
+          "artifacts": [
+            "javax.servlet:servlet-api"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ant-webapp-back/pom.xml",
+          "contains": "<scope>system</scope>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ant-webapp-back/pom.xml",
+          "contains": "<systemPath>${project.basedir}/lib/example-util-1.0.jar</systemPath>"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "ant-webapp-back/lib/example-util-1.0.jar",
+          "source": "WebContent/WEB-INF/lib/example-util-1.0.jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ant-webapp-back/src/com/example/antweb/HelloServlet.java",
+          "contains": "import jakarta.servlet.http.HttpServlet;"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "ant-webapp-back/src/com/example/antweb/messages.properties"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "ant-webapp-front/src/main/resources/META-INF/resources/index.jsp",
+          "contains": "jakarta.servlet.http.HttpSession",
+          "not_contains": "javax.servlet"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "ant-webapp-front/src/main/resources/static/css/site.css",
+          "source": "WebContent/css/site.css"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "src"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "WebContent"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "ant-webapp-front/src/main/java"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "### Ant project: pom.xml synthesized"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "mvn install:install-file -Dfile=WebContent/WEB-INF/lib/example-util-1.0.jar -DgroupId=com.company.migrated -DartifactId=example-util -Dversion=1.0 -Dpackaging=jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "`WebContent/WEB-INF/lib/old-report.jar`"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "build.xml target `deploy`: <exec executable=\"scp\">"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "../report.md",
+          "contains": "pom.xml synthesized from build.xml (4 jars: 1 pom.properties, 1 table, 0 lookup, 2 unknown)"
+        }
+      }
+    ]
+  }
+}

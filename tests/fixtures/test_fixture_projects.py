@@ -38,9 +38,10 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "multi-module-merge", "legacy-external-config", "java6-legacy", "multi-module-conflict", "legacy-ibatis",
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
              "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
-             "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay", "spring5-security-batch"]
+             "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay", "spring5-security-batch", "ant-webapp"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
+ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
 
 # (fixture, sub-directory to build, JDK, needs) — mirrors the README of each fixture.
 # needs: "libs" = legacy-web-lib installed (tail repo), "ghost" = ghost-lib tail repo, "ms949" = platform encoding
@@ -78,6 +79,7 @@ BUILD_MATRIX = [
     ("servlet-webxml-legacy", ".", "8", ""),
     ("servlet-nonstandard-dirs", ".", "8", ""),
     ("spring5-security-batch", ".", "8", ""),          # round 10: Security 5.7 + Batch 4 + sun.misc Base64, 0 LLM
+    ("ant-webapp", ".", "8", "ant"),                   # v2.1j: Ant, no pom.xml; stub jars → no as-is build here
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -85,6 +87,7 @@ REQUIRED_KEYS = {
     "optional_artifacts_in_use": list, "main_classes": list,
 }
 README_BUILD = re.compile(r"mvn -q -DskipTests( -D\S+)* package")
+ANT_README_BUILD = re.compile(r"ant( -\S+)* \w+")
 
 
 # ------------------------------------------------------------------------------------- expected.json schema
@@ -460,13 +463,15 @@ def test_expected_json_schema(name: str):
 @pytest.mark.parametrize("name", NAMES)
 def test_poms_parse_and_readme(name: str):
     poms = _poms(name)
-    assert poms
+    assert poms or name in ANT_FIXTURES
+    assert not (name in ANT_FIXTURES and poms), f"{name}: an Ant fixture has no pom.xml (the intake writes it)"
     for pom in poms:
         root = etree.parse(str(pom)).getroot()
         assert root.tag == "{http://maven.apache.org/POM/4.0.0}project"
         assert root.findtext("m:artifactId", namespaces=NS)
     readme = (FIXTURES / name / "README.md").read_text(encoding="utf-8")
-    assert README_BUILD.search(readme) and "JAVA_HOME=" in readme, f"{name}: README lacks the as-is build command"
+    assert (ANT_README_BUILD if name in ANT_FIXTURES else README_BUILD).search(readme) and "JAVA_HOME=" in readme, \
+        f"{name}: README lacks the as-is build command"
     java_files = list((FIXTURES / name).rglob("*.java"))
     limit = 10 if name in SCENARIOS else 12       # scenario fixtures: ≤ 10 Java files
     assert 0 < len(java_files) <= limit, f"{name}: {len(java_files)} java files"
@@ -497,9 +502,13 @@ def test_post_check_paths_exist_in_fixture(name: str):
                 if base not in ("pom.xml", "*Application.java", "WebXmlRegistrations.java", "application.properties"):
                     assert list((FIXTURES / name).rglob(base)), f"{name}: {kind} {spec['path']}: no as-is {base}"
                 continue
-            if spec["path"] == "pom.xml" and "aggregator-generated" in Expected.model_validate(
-                    _expected(name)).expect.flags:
-                continue                  # 2026-10-23: the root pom is generated at intake (sibling poms, no root)
+            if spec["path"] == "pom.xml" and {"aggregator-generated", "pom-synthesized"} & set(Expected.model_validate(
+                    _expected(name)).expect.flags):
+                continue                  # 2026-10-23: the root pom is generated at intake (sibling poms, no root);
+                                          # v2.1j: synthesized from build.xml (Ant)
+            if spec["path"].startswith("../"):
+                assert spec["path"] == "../report.md", spec["path"]
+                continue                  # the run directory's report.md (beside the migrated project/)
             if re.fullmatch(r"module/(comp|boot)-jar/pom\.xml", spec["path"]):
                 assert (FIXTURES / name / "pom.xml").exists()
                 continue
@@ -555,10 +564,12 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                             "artifacts": {"boot_parent", "comp_parent"}}
                      for name in ("legacy-role-parents", "company-boot-single", "company-spring5-web",
                                   "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
-                                  "ear-sibling-poms", "servlet-war-overlay")}
+                                  "ear-sibling-poms", "servlet-war-overlay", "ant-webapp")}
+COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 
 COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
-                 "servlet-war-overlay": "board"}   # root artifactId (= `{name}`) when it is not `shop`
+                 "servlet-war-overlay": "board", "ant-webapp": "ant-webapp"}   # root artifactId (= `{name}`) when
+                                                                                   # it is not `shop`
 # v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
 SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
 LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB
@@ -582,6 +593,9 @@ def test_fixture_config_override_keeps_8_optionals():
         assert cfg.artifacts.boot_parent.key == cfg.artifacts.parent.key          # local stand-in: the same parent
         assert cfg.artifacts.comp_parent.key == cfg.artifacts.parent.key
         named = FIXTURES / name / "pom.xml"
+        if name in ANT_FIXTURES:                   # v2.1j: `{name}` = the build.xml project name (synthesized pom)
+            assert etree.parse(str(FIXTURES / name / "build.xml")).getroot().get("name") == COMPANY_NAMES[name]
+            continue
         if not named.exists():                     # ear-sibling-poms: no root pom, `{name}` comes from the EAR
             named = FIXTURES / name / "APP" / "EAR" / "pom.xml"
         assert etree.parse(str(named)).getroot().findtext("m:artifactId", namespaces=NS) == \
@@ -904,6 +918,8 @@ def _ghost_cleanup():
 @pytest.mark.parametrize("name,subdir,jdk,needs", BUILD_MATRIX,
                          ids=[f"{n}-{d}-jdk{j}".replace("-.-", "-") for n, d, j, _ in BUILD_MATRIX])
 def test_fixture_builds_as_is(name: str, subdir: str, jdk: str, needs: str, tmp_path: Path, request):
+    if needs == "ant":
+        pytest.skip(f"{name}: Ant project without pom.xml and with stub jars — no as-is Maven build")
     _mvn()
     _java_home(jdk)
     src = tmp_path / name
