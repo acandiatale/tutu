@@ -1,0 +1,21 @@
+flowchart LR
+  Q["<font size='4'><b>저장된 방법이 있나?</b></font><br/><font size='2'>지식베이스에서 같은 케이스를 찾습니다</font>"]
+  Q -->|있음| R["<font size='4'><b>저장된 방법 적용</b></font><br/><font size='2'>앞 프로젝트의 스크립트 그대로, LLM 없이</font>"]
+  R -->|고쳐짐| OK["<font size='4'><b>해결</b></font><br/><font size='2'>성공 횟수 +1</font>"]
+  R -->|안 통함| L["<font size='4'><b>LLM 에게 요청</b></font><br/><font size='2'>오류·파일·pom·버전 정보, 실패 이유까지 줍니다</font>"]
+  Q -->|없음| L
+  L --> C["<font size='4'><b>빌드로 확인</b></font><br/><font size='2'>고쳐졌나? 한 케이스에 최대 3번</font>"]
+  C -->|다시| L
+  C -->|고쳐짐| ST["<font size='4'><b>해결하고 저장</b></font><br/><font size='2'>새 스크립트를 케이스 폴더에 저장</font>"]
+  C -->|3번 실패| HO["<font size='4'><b>사람에게 인계</b></font><br/><font size='2'>보고서 맨 앞에 적어 넘깁니다</font>"]
+  classDef auto fill:#EEF3EA,stroke:#2C5F2D,color:#1C2A1E
+  classDef build fill:#F2CC8F,stroke:#C9A24C,color:#1C2A1E
+  classDef llm fill:#3D5A80,stroke:#3D5A80,color:#FFFFFF
+  classDef loop fill:#E07A5F,stroke:#E07A5F,color:#FFFFFF
+  classDef done fill:#2C5F2D,stroke:#2C5F2D,color:#FFFFFF
+  classDef ask fill:#FFFFFF,stroke:#8A8F8A,color:#1C2A1E
+  class R auto
+  class Q,C ask
+  class L llm
+  class OK,ST done
+  class HO loop

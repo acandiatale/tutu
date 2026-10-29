@@ -19,15 +19,17 @@ cd scripts/handbook && npm install pptxgenjs && node build_deck.js ../../docs/ha
 시트 구성과 추출 출처는 엑셀의 `목차` 시트와 각 시트 2행에 적혀 있습니다. 마크다운 핸드북과 코드의 불일치는
 `tests/docs/test_handbook.py`가 검사합니다.
 
-## 상세 설계 덱 (`docs/migration-agent/migration-agent.pptx`, v2.1i 기준 2026-10-28)
+## 흐름 안내 덱 (`docs/migration-agent/migration-agent.pptx`, 2026-10-29)
 
-`build_migration_agent_deck.js` 가 만듭니다. 다이어그램은 `docs/migration-agent/diagrams/v2-*.mmd` 를 mermaid-cli 로 렌더링한 PNG 입니다
-(v1 시절의 `.mmd` / `.png` 는 상세 설계 README 가 아직 참조하므로 그대로 둡니다).
+담당자에게 "이렇게 흘러갑니다" 만 보여 주는 10장짜리 덱입니다. `build_migration_agent_deck.js` 가 만들고, 그림은
+`docs/migration-agent/diagrams/flow-*.mmd`(네모칸마다 굵은 제목 + 작은 설명)를 mermaid-cli 로 렌더링한 PNG 입니다.
+설정 키·파일 이름 같은 세부 사항은 일부러 뺐습니다. 세부 설계까지 담은 37장짜리 버전은 커밋 `a4c3827` 에 있습니다
+(그 그림 `diagrams/v2-*.mmd` 는 그대로 남겨 두었습니다).
 
 ```bash
-cd docs/migration-agent/diagrams && for f in v2-*.mmd; do npx -y -p @mermaid-js/mermaid-cli mmdc -i "$f" -o "${f%.mmd}.png" -b white -s 3; done
+cd docs/migration-agent/diagrams && for f in flow-*.mmd; do npx -y -p @mermaid-js/mermaid-cli mmdc -i "$f" -o "${f%.mmd}.png" -b white -s 3 -c flow-config.json; done
 cd scripts/handbook && NODE_PATH=$PWD/node_modules APPLY_THEME_JS=<pptx 스킬>/scripts/apply_theme.js node build_migration_agent_deck.js ../../docs/migration-agent/migration-agent.pptx
 ```
 
-덱의 숫자(테스트 수 2,355 · e2e 픽스처 32 · 카탈로그 id 43 · 모듈 122 · 한국어 줄 +5,547)는 스크립트에 직접 적혀 있으니 라운드마다 고칩니다.
-
+mermaid-cli 는 SVG 를 뷰포트 폭에 맞춰 줄이므로, 그림이 가로로 길수록 슬라이드에서 글씨가 작아집니다. 네모칸 설명은 한 줄로,
+한 줄에 네 칸 이하로 두고 줄이 길어지면 `subgraph` 로 줄을 나눕니다(줄 사이 링크는 `~~~`, 줄을 가로지르는 화살표는 방향을 깨뜨림).
