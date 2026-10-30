@@ -199,12 +199,19 @@ class RestructureResult(BaseModel):
     # round 9: explicit dependency versions dropped because the new parent chain manages the artifact
     # (`layout.drop_managed_versions`); "g:a: <explicit> → managed <version> (<pom>)"
     managed_versions_dropped: list[str] = Field(default_factory=list)
+    # v2.1o: 관리 버전보다 새 명시 버전인데 as-is 빌드는 관리 버전 이하(또는 없음)였던 것 — 레시피가 올린 버전이라
+    # 지웠다. "g:a <explicit> (as-is <v | ->, managed <m>, <pom>)"
+    recipe_versions_dropped: list[str] = Field(default_factory=list)
     # v2.1l: 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적은 것(새 부모 체인이
     # 관리하면 다시 비움), as-is 빌드도 몰라 비어 남은 것. Version-less dependencies given the as-is build's
     # version (the new chain does not manage them): "g:a: <version> ← as-is <managed by g:a:v | declared>
     # (<pom>)"; the ones the as-is build did not resolve either (left empty, a follow-up each): "g:a (<pom>)"
     versions_pinned: list[str] = Field(default_factory=list)
     versions_unknown: list[str] = Field(default_factory=list)
+    # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 버전 속성 중 지운 것 — "<pom>: name=value"
+    bom_properties_removed: list[str] = Field(default_factory=list)
+    # v2.1o: 관리 버전 정리가 지운 명시 버전만 참조하던 버전 속성(spring.version=5.3.31 …) — "<pom>: name=value"
+    version_properties_removed: list[str] = Field(default_factory=list)
     # v2.1m: 필터링되는 리소스 아래 바이너리 파일 때문에 maven-resources-plugin(/ maven-war-plugin)
     # <nonFilteredFileExtensions> 에 적은 확장자. "<pom>: ext1, ext2 → maven-resources-plugin[, maven-war-plugin]"
     non_filtered_extensions: list[str] = Field(default_factory=list)

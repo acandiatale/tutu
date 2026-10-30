@@ -70,7 +70,8 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
 - v2 decisions (user, 2026-10-26, `docs/v2/PLAN-v2.md` §2): recipes = `UpgradeToJava21`, `JavaxMigrationToJakarta`
   (when the case needs it), Boot projects `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1` (that umbrella already runs
   Spring Cloud 2025.1 / Security 7 / Framework 7), and since v2.1l (2026-10-30, "security 는 쓰는 경우만") the Spring Security
-  chain `UpgradeSpringSecurity_6_0 … 6_5, 7_0` for a `spring_legacy` project whose analyzer found `spring-security`; no intermediate
+  chain `UpgradeSpringSecurity_6_0 … 6_5, 7_0` for a `spring_legacy` project whose analyzer found `spring-security`, and since
+  v2.1o `UpgradeSpringFramework_7_0` for every `spring_legacy` project (the Boot 4.1 BOM brings Spring 7 / Jackson 3 anyway); no intermediate
   builds; the 32 deterministic handlers are out; the structure review fixes only critical findings by script; fix
   scripts get a restricted API in a separate process; advisories = hints + Handover; KB in `kb-v2/`.
 - LLM keys come only from the environment (`LLM_API_KEY`). Never write a key into the repo, a config file, or a log.
@@ -92,8 +93,8 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
 
 ## The v2 flow (what the code does; details in `docs/v2/PLAN-v2.md` and `docs/INTERFACES.md`)
 intake (Maven only, aggregator for sibling poms, preflight) → analyze (profile, advisories as findings) → plan
-(`transform.rewrite`, `restructure.*`, `restructure.review`, `verify.build`) → **transform** (one OpenRewrite run,
-no build) → **restructure** (company layout exactly as v1, optional bump inside) → **structure review** (LLM checks
+(`transform.rewrite`, `restructure.*`, `restructure.review`, `verify.build`) → **transform** (one OpenRewrite run, no build; v2.1's `transform.compile` only with
+`plan.compile_after_rewrite: true`, off since v2.1o) → **restructure** (company layout exactly as v1, optional bump inside) → **structure review** (LLM checks
 poms / dependencies / modules / source encodings / binary resources under filtering against the company rules;
 critical → one fix script, committed `review: …`; warnings → report + `kb-v2/reviews.jsonl`) → **verify**
 (`mvn clean package -Dmaven.test.skip=true`); on failure the **script fix loop** (`loop.phases.verify`, 12 rounds):

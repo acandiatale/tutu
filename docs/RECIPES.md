@@ -203,6 +203,11 @@ the whole chain, in order. v2 (2026-10-26) emptied the set with the other non-Bo
 default again** ("security 는 쓰는 경우만": a project without Spring Security never gets it — the planner's gate is the
 analyzer's `spring-security` library, so nothing is added to a project that did not use it):
 
+**Spring Framework 7 (v2.1o, 2026-10-30).** `openrewrite.recipes.spring_framework_7` = `UpgradeSpringFramework_7_0` is a default
+set for `spring_legacy` too (user: "넣는 게 좋을 것 같아"): a non-Boot project is made Boot by the restructure, and the Boot 4.1 BOM
+brings Spring 7.0.8 / Jackson 3 — the Framework 6.x removals, Jackson 2 → 3 and the other code changes of that recipe were
+left to the LLM before; Boot projects already ran the same recipe inside the umbrella.
+
 | # | recipe | what it adds |
 |---|---|---|
 | 1 | `org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0` | chains 5_8 → 5_7: `WebSecurityConfigurerAdapter` → `SecurityFilterChain` bean, lambda DSL, `authorizeRequests` / `antMatchers` → `authorizeHttpRequests` / `requestMatchers`, `@EnableGlobalMethodSecurity` → `@EnableMethodSecurity` |

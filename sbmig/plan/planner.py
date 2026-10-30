@@ -242,8 +242,9 @@ def _transform_step(facts: _Facts, cfg: Config, notes: list[str], *, svc: Option
         return None
     recipes = [recipe_ref(i, cfg) for i in ids]
     parts = [lbl for key, lbl in _BUCKETS if buckets.get(key)]
-    notes.append(f"transform{where}: one OpenRewrite run ({_shorts(ids)}) — then one compile, no fixing until the "
-                 "restructure is done (v2.1)")
+    notes.append(f"transform{where}: one OpenRewrite run ({_shorts(ids)}) — "
+                 + ("then one compile, no fixing until the restructure is done (v2.1)" if cfg.plan.compile_after_rewrite
+                    else "no build before the restructure (plan.compile_after_rewrite=false, v2.1o)"))
     return PlanStep(
         id=TRANSFORM + _sfx(svc), kind=StepKind.OPENREWRITE, phase=Phase.TRANSFORM,
         title="OpenRewrite in one run: " + " + ".join(parts) + (f" ({svc})" if svc else ""),
@@ -270,6 +271,18 @@ def _review_step(restructure_step: str, cfg: Config, notes: list[str]) -> Option
 
 
 COMPILE = "transform.compile"
+
+
+def _no_compile_note(notes: list[str]) -> None:
+    """v2.1o 기본: 재구성 전에는 빌드하지 않는다 — 계획 노트 한 줄(``plan.compile_after_rewrite: true`` 면 v2.1 의
+    ``transform.compile`` 이 대신 들어간다).
+
+    v2.1o default: no build before the restructure — one plan note (`plan.compile_after_rewrite: true` plans the
+    v2.1 `transform.compile` step instead)."""
+    note = ("compile: no build before the restructure (plan.compile_after_rewrite=false, v2.1o) — the error list starts "
+            "with the restructure's pom corrections and the first verify build")
+    if note not in notes:
+        notes.append(note)
 
 
 def _compile(notes: list[str], target: Optional[str] = None, svc: Optional[str] = None,
@@ -410,12 +423,14 @@ def _msa_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> list[P
             steps += [st] if st else []
     rp = profile.root_pom
     aggregated = rp is not None and rp.is_aggregator
-    if not no_sources:
+    if not no_sources and cfg.plan.compile_after_rewrite:
         if aggregated:
             steps.append(_compile(notes))
         else:
             for i, t in enumerate(targets):
                 steps.append(_compile(notes, target=_service_dir(t), svc=t.name, note=i == 0))
+    elif not no_sources:
+        _no_compile_note(notes)
     params: dict[str, Any] = {"mode": "msa_pom", "services": [s.name for s in svcs],
                               "parent_policy": cfg.layout.msa_parent_policy,
                               "boot_modules": list(profile.boot_modules)}
@@ -470,7 +485,10 @@ def _single_steps(profile: ProjectProfile, cfg: Config, notes: list[str]) -> lis
         return steps
     st = _transform_step(facts, cfg, notes)
     steps += [st] if st else []
-    steps.append(_compile(notes))
+    if cfg.plan.compile_after_rewrite:
+        steps.append(_compile(notes))
+    else:
+        _no_compile_note(notes)
     if case == CaseType.SPRING_BOOT and cfg.layout.boot_as_is == "in-place":
         # round 9c company rule: a Boot as-is project keeps its directories; only the poms change
         steps.append(PlanStep(

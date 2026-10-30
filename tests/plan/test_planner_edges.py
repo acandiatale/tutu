@@ -38,7 +38,7 @@ def test_msa_library_root_planned_first(tmp_path: Path, cfg) -> None:
     lib = _step(plan, "transform.rewrite@common")
     assert lib.kind == StepKind.OPENREWRITE and lib.phase == Phase.TRANSFORM
     assert lib.target == "common" and lib.params == {"service": "common"}
-    assert _recipes(plan, "transform.rewrite@common") == [J21, JAKARTA]     # never the Boot set
+    assert _recipes(plan, "transform.rewrite@common") == [J21, JAKARTA, FW7]   # never the Boot set; FW7 default (v2.1o)
     assert _recipes(plan, "transform.rewrite@shop") == [J21, BOOT_UMBRELLA, PROPS41]
     msa = _step(plan, "restructure.msa_pom")
     assert msa.params["library_roots"] == ["common/pom.xml"]
@@ -85,7 +85,7 @@ def test_msa_top_aggregator_single_root_rewrite(tmp_path: Path, cfg) -> None:
     rw = _step(plan, "transform.rewrite")
     assert rw.target is None and rw.params == {} and rw.phase == Phase.TRANSFORM
     ids = [r.id for r in rw.recipes]
-    assert ids == [J21, JAKARTA, BOOT_UMBRELLA, PROPS41]               # union, in set order (jdk21, jakarta, boot)
+    assert ids == [J21, JAKARTA, FW7, BOOT_UMBRELLA, PROPS41]          # union, in set order (jdk21, jakarta, framework, boot)
     assert any("one transform.rewrite at the repo root" in n for n in plan.notes)
     assert "msa (all services)" in rw.reason
 

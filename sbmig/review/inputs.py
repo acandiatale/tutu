@@ -547,9 +547,17 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
                            ("optional_replaced", "trigger dependencies replaced by optional artifacts"),
                            ("merged_modules", "merged modules"),
                            ("managed_versions_dropped", "explicit versions dropped (managed by the new parents)"),
+                           # v2.1o: 레시피가 관리 버전보다 높여 놓은 명시 버전도 지웠다(as-is 는 관리 버전 이하)
+                           ("recipe_versions_dropped",
+                            "recipe-raised versions dropped (the as-is build was at or below the managed version)"),
                            # v2.1l: 검토도 재구성이 적은 as-is 버전을 다른 pom 교정처럼 본다
                            ("versions_pinned", "versions carried over from the as-is build"),
                            ("versions_unknown", "version-less dependencies the as-is build did not resolve"),
+                           # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 속성을 재구성이 이미 지웠다
+                           ("bom_properties_removed",
+                            "as-is version properties removed (they overrode the parent's Spring Boot BOM properties)"),
+                           ("version_properties_removed",
+                            "version properties removed (only the dropped explicit versions used them)"),
                            ("generated_files", "generated files"), ("flags", "flags"),
                            ("manual_followups", "follow-ups"), ("notes", "notes")):
             items = [x for x in (g(key) or []) if x]

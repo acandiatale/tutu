@@ -86,7 +86,7 @@ def test_spring_boot_without_junit4_has_no_junit_note(tmp_path: Path, cfg) -> No
 def test_spring_legacy_plan(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_spring_legacy(tmp_path), cfg), cfg)
     assert _ids(plan) == ORDER
-    assert _recipes(plan) == [J21, JAKARTA, *SEC]                     # v2.1l: Security chain (spring-security detected); no Framework 7 / JUnit 5
+    assert _recipes(plan) == [J21, JAKARTA, FW7, *SEC]                # v2.1o: Framework 7 + Security chain (spring-security detected); no JUnit 5
     assert _step(plan, "restructure.apply").params["starter"] == "spring-boot-starter-webmvc"
     assert any("@ImportResource" in n for n in plan.notes)
     assert any("Spring Security set UpgradeSpringSecurity_6_0 … UpgradeSpringSecurity_7_0 (spring-security detected)"
@@ -321,3 +321,12 @@ def test_warnings_become_notes_and_advisor(cfg) -> None:
     cfg.plan.advisor = "llm"
     out = advise_plan(plan, profile, llm=object(), cfg=cfg)
     assert any(n.startswith('advisor') for n in out.notes)
+
+
+def test_default_plans_no_compile_before_restructure(tmp_path: Path, cfg) -> None:
+    """v2.1o 기본값: 재구성 전에는 빌드하지 않는다 — transform.compile 없이 변환 → 재구성 → 검토 → 검증, 노트 한 줄."""
+    cfg.plan.compile_after_rewrite = False                                  # the shipped default (config/default.yml)
+    plan = build_plan(analyze_path(make_spring_legacy(tmp_path), cfg), cfg)
+    assert _ids(plan) == ["transform.rewrite", "restructure.apply", "restructure.review", "verify.build"]
+    assert any("no build before the restructure (plan.compile_after_rewrite=false, v2.1o)" in n for n in plan.notes)
+    assert not any("then one compile" in n for n in plan.notes)

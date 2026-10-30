@@ -27,3 +27,7 @@ Success, exit 0, **3 LLM calls**: the structure review (2 warnings) and two new 
 `implements WebMvcConfigurer` (case `compile|cannot_find_symbol|WebMvcConfigurerAdapter`, `f3aceea80f`) and
 `AuditInterceptor` → `implements HandlerInterceptor` (`43323914ef`); the override / type errors of the same files are
 deferred in that round and vanish with the rebuild. slf4j-api → 2.0.17.
+
+v2.1o (2026-10-30): `UpgradeSpringFramework_7_0` is a default set for `spring_legacy`, so the recipe itself turns
+`WebMvcConfigurerAdapter` / `HandlerInterceptorAdapter` into the interfaces — no fix script any more, ONE LLM call (the review);
+the replayed scripts stay unused.

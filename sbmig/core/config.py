@@ -211,6 +211,18 @@ class LayoutConfig(BaseModel):
     # 새 부모 체인이 관리하는 명시 <version> 을 지운다. gte = 관리 버전이 같거나 높을 때만(일부러 올린 고정은
     # 유지). 사내 아티팩트와 system scope 의존성은 건드리지 않는다.
     drop_managed_versions: Literal["gte", "any", "off"] = "gte"
+    # v2.1o: 부모가 Spring Boot 를 관리할 때(artifacts.parent_manages_spring_boot) 프로젝트 pom 의 <properties> 중 이름이
+    # Boot BOM 의 속성과 같은 것(spring-boot.version / spring-security.version / hibernate.version …)을 지운다 — Maven
+    # 속성 상속으로 as-is 값(2.5.15 등)이 부모의 4.1.0 을 이기지 않게. 아직 `${이름}` 으로 참조되면 남긴다.
+    # v2.1o: remove project <properties> named like a Spring Boot BOM property (they override the parent chain's
+    # values through property inheritance) unless still referenced; false keeps them (the review may flag them)
+    drop_bom_property_overrides: bool = True
+    # v2.1o: 사내 부모 체인이 정의하는, 프로젝트 pom 이 덮어쓰면 안 되는 속성 이름 — Boot BOM 의 속성이 아니라 회사
+    # 관례다(base-parent 의 spring-boot.version 등). 회사가 자기 목록을 적는다(base-parent 가 쓰면 spring.version 도).
+    # 위 단계가 BOM 이름과 함께 지운다(아직 ${이름} 으로 참조되면 남김), Boot BOM 사실이 없어도.
+    # v2.1o: property names the in-house parent chain defines (a convention, not Boot BOM properties) that project
+    # poms must not override; removed by the step above with the BOM names (unless referenced), facts or not
+    parent_property_names: list[str] = Field(default_factory=lambda: ["spring-boot.version"])
     application_class_name: str = "Application"
     boot_resources_glob: list[str] = Field(default_factory=lambda: [
         "application*.yml", "application*.yaml", "application*.properties",
@@ -267,7 +279,12 @@ class RecipeSetConfig(BaseModel):
         "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
     ])
-    spring_framework_7: list[str] = Field(default_factory=list)
+    # v2.1o (2026-10-30, 현업 "넣는 게 좋을 것 같아"): spring_legacy 프로젝트도 Framework 7 레시피를 받는다 — 재구성이 Boot 로
+    # 만들면 Boot 4.1 BOM 이 Spring 7 / Jackson 3 를 가져오는데, 그 코드 변경을 LLM 에 남기지 않는다(Boot 프로젝트는
+    # 우산 레시피 안에서 이미 같은 레시피가 돈다).
+    spring_framework_7: list[str] = Field(default_factory=lambda: [
+        "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0",
+    ])
     # v2.1l (2026-10-30, 현업: "security 는 쓰는 경우만"): Spring Security 를 쓰는 spring_legacy 프로젝트에만 계획기가 넣는
     # 묶음. rewrite-spring 6.37.0 에서 6_0 은 5_8 → 5_7 을 품지만 6_1 … 6_5 와 7_0 은 앞 단계를 품지 않아 전부 나열한다.
     # Boot 프로젝트는 UpgradeSpringBoot_4_0 umbrella 가 같은 단계를 이미 돈다.
@@ -629,6 +646,10 @@ class PlanConfig(BaseModel):
     advisor: Literal["none", "llm"] = "none"   # optional LLM review of the rule-based plan
     catalog_file: str = "knowledge/recipes/catalog.yml"   # single source of truth for known recipes (advisor
                                              # whitelist, coverage, gates, descriptions); relative to repo root
+    # v2.1o (2026-10-30, 현업: "레시피 돌리고 구조화를 다 한 뒤에 빌드"): OpenRewrite 뒤 재구성 전의 `mvn clean compile`
+    # (v2.1 의 transform.compile) 은 기본으로 돌지 않는다 — 반쯤 옮겨진 트리(Boot 4.0.x 부모, 사내 부모 미적용)의 오류만
+    # 목록에 쌓인다. true = v2.1 처럼 한 번 컴파일해 오류 목록을 미리 채운다(고치지는 않음).
+    compile_after_rewrite: bool = False     # v2.1o: no build before the restructure; true = the v2.1 compile step
 
 
 class FleetConfig(BaseModel):

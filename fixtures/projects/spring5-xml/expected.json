@@ -21,7 +21,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 3,
+    "max_llm_calls": 1,
     "blocked": [],
     "unresolved_max": 0,
     "optional_bumped": [
@@ -36,30 +36,10 @@
     },
     "scripts": {
       "attempts": {
-        "new": 2,
+        "new": 0,
         "augment": 0,
         "reuse": 0
-      },
-      "cases": [
-        {
-          "l2": "compile|cannot_find_symbol|WebMvcConfigurerAdapter",
-          "modes": [
-            "new"
-          ],
-          "outcomes": [
-            "build_ok"
-          ]
-        },
-        {
-          "l2": "compile|cannot_find_symbol|HandlerInterceptorAdapter",
-          "modes": [
-            "new"
-          ],
-          "outcomes": [
-            "build_ok"
-          ]
-        }
-      ]
+      }
     },
     "kb": {
       "dir": "out/e2e/kb-spring5-xml"

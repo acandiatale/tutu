@@ -14,24 +14,23 @@
   ],
   "optional_artifacts_in_use": [],
   "main_classes": [],
-  "catalog": ["E15", "E17"],
+  "catalog": [
+    "E15",
+    "E17"
+  ],
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 11,
+    "max_llm_calls": 9,
     "blocked": [],
     "unresolved_max": 0,
     "structure_review": {
       "verdict": "issues",
-      "critical": 3,
-      "script_status": "ok",
-      "committed": true,
-      "changed_files": [
-        "pom.xml",
-        "module/comp-jar/pom.xml"
-      ],
+      "critical": 0,
+      "warnings_min": 1,
+      "script_status": "none",
       "issues_contain": [
-        "regex:critical pom.xml: spring-batch.version=4\\.3\\.10 .*"
+        "regex:warning module/comp-jar/pom.xml: jakarta\\.servlet-api.*"
       ],
       "llm_calls_max": 1
     },
@@ -175,6 +174,11 @@
             "javax.servlet:javax.servlet-api"
           ]
         }
+      }
+    ],
+    "journal_events": [
+      {
+        "event": "bom_property_overrides"
       }
     ]
   }

@@ -30,3 +30,7 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 Success, exit 0, **11 LLM calls** (review + 10 new fix scripts over 3 rounds), nothing blocked; advisory
 `jdk-removed-apis` = `guide`; `module/comp-jar/pom.xml` declares `spring-security-access`, `spring-context` /
 `spring-batch-core` unversioned, no `<spring-batch.version>` left; `post_checks` on every migrated file.
+
+v2.1o (2026-10-30): the restructure itself removes `spring-security.version` / `spring-batch.version` (they override the
+Boot 4.1 BOM's properties through parent inheritance) and the dead `spring.version`, and drops the parent-managed explicit
+versions — the structure review no longer finds a critical issue and runs no script (one warning: the pinned jakarta.servlet-api).

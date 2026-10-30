@@ -82,3 +82,18 @@ class OfflineRepositoryLookup:
 def _offline_repository_lookup(monkeypatch):
     monkeypatch.setattr("sbmig.build.repo_versions.RepositoryLookup", OfflineRepositoryLookup)
     return OfflineRepositoryLookup
+
+
+@pytest.fixture(autouse=True)
+def _no_boot_bom_facts(monkeypatch):
+    """v2.1o: no test reads the Spring Boot BOM from the developer's local repository (`~/.m2`) — the restructure's
+    managed-version fallback and the BOM property-override step see "no facts" unless a test monkeypatches
+    `sbmig.build.boot_bom.load_boot_bom_facts` itself. `tests/build/test_boot_bom.py` imports the real function at
+    module import time and points it at a tmp repository, so this patch does not reach it."""
+    from sbmig.build import boot_bom
+
+    def _none(cfg, version=None):
+        return boot_bom.BootBomFacts(version=version or "", sources=["tests: no Boot BOM facts"])
+
+    monkeypatch.setattr(boot_bom, "load_boot_bom_facts", _none)
+    return _none

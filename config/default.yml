@@ -61,6 +61,15 @@ layout:
   # (gte = only when the managed version is the same or newer; any = always; off = keep). Mandatory / optional /
   # parent artifacts and system-scope dependencies are never touched.
   drop_managed_versions: gte
+  # v2.1o: with artifacts.parent_manages_spring_boot, project <properties> named like a Spring Boot BOM property
+  # (spring-boot.version, spring-security.version, hibernate.version, …) are removed after the version cleanup —
+  # an as-is value would override the parent's through Maven property inheritance; a property still referenced
+  # (${name}) stays and is noted. false = keep them
+  drop_bom_property_overrides: true
+  # v2.1o: property names the in-house parent chain defines (a company convention, not a Boot BOM property) that
+  # project poms must not override — removed by the step above like the BOM names (kept while ${name} is referenced),
+  # even without the Boot BOM's facts; the company lists its own (e.g. add spring.version when base-parent uses it)
+  parent_property_names: [spring-boot.version]
   application_class_name: Application
   starter_by_case:
     pure_java: spring-boot-starter
@@ -97,7 +106,10 @@ openrewrite:
     spring_boot_4:
       - org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0
       - org.openrewrite.java.spring.boot4.SpringBootProperties_4_1
-    spring_framework_7: []
+    # v2.1o: spring_legacy projects run the Framework 7 recipe too (the Boot 4.1 BOM brings Spring 7 / Jackson 3; Boot
+    # projects already run it inside the Boot 4 umbrella) — "넣는 게 좋을 것 같아" (2026-10-30)
+    spring_framework_7:
+      - org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0
     # v2.1l: only planned for a spring_legacy project that USES Spring Security (the analyzer's `spring-security` library);
     # Boot projects get the same steps from the Boot 4 umbrella. 6_0 chains to 5_8 → 5_7; 6_1 … 6_5 and 7_0 do not
     # include their predecessor (rewrite-spring 6.37.0), hence the full list.
@@ -261,6 +273,9 @@ fleet:                             # `sbmig fleet`: ~500 projects one after anot
 
 plan:
   advisor: none                    # llm = the LLM may add OpenRewrite recipes of the catalog to the transform step
+  # v2.1o: no build between OpenRewrite and the restructure (the user: "레시피 돌리고 구조화 다 한 뒤에 빌드") — a compile on the
+  # half-migrated tree (Boot 4.0.x parent, company parent not yet applied) only adds noise; true = the v2.1 compile step
+  compile_after_rewrite: false
 
 report:
   formats: [md, json]

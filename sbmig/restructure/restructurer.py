@@ -255,6 +255,14 @@ class _Ctx:
     # the restructure's RepositoryLookup, made on first use (None after a failed construction)
     repo_lookup: Any = None
     repo_lookup_made: bool = False
+    # v2.1o: Boot BOM 의 사실(재구성 한 번에 한 번 읽음)과 관리 버전을 정한 출처
+    # ("effective pom" | "Boot BOM facts" | "none")
+    bom_facts: Any = None
+    bom_facts_loaded: bool = False
+    managed_source: str = ""
+    # v2.1o: the as-is intake capture (`params["asis_effective"]()`), read once per restructure; None = unusable
+    asis_data: Any = None
+    asis_data_loaded: bool = False
 
     def p(self, *parts: str) -> str:
         """프로젝트 루트(``base``) 기준 경로 → 워크스페이스 기준 정규화 경로(루트 자신은 ``.``)."""
@@ -487,6 +495,7 @@ class Restructurer:
             self._non_filtered_extensions(c)
             self._pin_asis_versions(c)
             self._drop_managed_versions(c)
+            self._drop_bom_property_overrides(c)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
             self._placeholder_followup(c)
             c.commit("restructure: optional artifact versions / cleanup (already restructured)")
@@ -545,6 +554,7 @@ class Restructurer:
         self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
+        self._drop_bom_property_overrides(c)
         c.commit("restructure: optional artifact versions / cleanup")
 
     # ------------------------------------------------------------------ project name (2026-10-23)
@@ -3665,12 +3675,17 @@ class Restructurer:
             out |= {g.key for g in ed.dependencies()}
         return out
 
+    @staticmethod
+    def _referencing_poms(eds: dict[str, PomEditor], prop: str) -> list[str]:
+        """``${prop}`` 를 아직 참조하는 프로젝트 pom 들(의존성·플러그인·다른 속성 어디든) — 그 속성은 지우지 않는다."""
+        ref = f"${{{prop}}}"
+        return [q for q, ed in eds.items() if ref in ed.to_string()]
+
     def _drop_unused_properties(self, c: _Ctx, eds: dict[str, PomEditor], props: list[tuple[str, str]]) -> None:
         """지운 트리거가 쓰던 버전 속성(``${prop}``)을, 어느 프로젝트 pom 에서도 더는 참조하지 않으면 정의한
         pom(그 pom, 아니면 저장소 안 조상)에서 지운다 — 남은 참조가 있으면 그대로 둔다."""
         for p, prop in dict.fromkeys(props):
-            ref = f"${{{prop}}}"
-            if any(ref in ed.to_string() for ed in eds.values()):
+            if self._referencing_poms(eds, prop):
                 continue                                     # another dependency / plugin still uses it
             # 그 선언이 볼 수 있던 정의만: 자기 pom, 그다음 저장소 안 조상(형제 pom 의 속성은 손대지 않는다)
             for q in self._chain(c, p):
@@ -3951,17 +3966,8 @@ class Restructurer:
         purpose. The pins and the unknown ones are kept on the context; `_drop_managed_versions` (always
         called right after) settles them through `_settle_asis_versions`."""
         c.asis_pins, c.asis_unknown, c.asis_before = {}, [], {}
-        fn = c.params.get("asis_effective")
-        data: Any = None
-        if callable(fn):
-            try:
-                data = fn()
-            except Exception as e:  # noqa: BLE001 - a broken capture must never fail the restructure
-                log.warning("as-is effective pom for the version carry-over failed: %s: %s",
-                            type(e).__name__, e)
-                data = None
-        if not isinstance(data, dict) or not (data.get("direct") or data.get("managed")
-                                              or data.get("by_module")):
+        data = self._asis_capture(c)
+        if data is None:
             c.note("as-is version carry-over skipped: no as-is effective pom")
             return
         protected = self._protected_keys(c)
@@ -4025,6 +4031,27 @@ class Restructurer:
         for _v, entry, _kind in c.asis_pins.values():
             if entry not in c.result.versions_pinned:
                 c.result.versions_pinned.append(entry)
+
+    @staticmethod
+    def _asis_capture(c: _Ctx) -> dict[str, Any] | None:
+        """as-is 접수 캡처(``params['asis_effective']()``)를 재구성 한 번에 한 번만 읽는다. 쓸 수 없으면(없음 / 실패 /
+        빈 모양) None — 이어 쓰기와 레시피가 올린 버전 판정(v2.1o)이 같은 값을 본다."""
+        if c.asis_data_loaded:
+            return c.asis_data
+        c.asis_data_loaded = True
+        fn = c.params.get("asis_effective")
+        data: Any = None
+        if callable(fn):
+            try:
+                data = fn()
+            except Exception as e:  # noqa: BLE001 - a broken capture must never fail the restructure
+                log.warning("as-is effective pom for the version carry-over failed: %s: %s",
+                            type(e).__name__, e)
+                data = None
+        if not isinstance(data, dict) or not (data.get("direct") or data.get("managed") or data.get("by_module")):
+            data = None
+        c.asis_data = data
+        return data
 
     def _repository_release(self, c: _Ctx, group_id: str, artifact_id: str) -> str | None:
         """해결 순서 3단계: 저장소(``build.repository_url`` → settings 미러 → Central)가 가진 g:a 의 최신
@@ -4140,8 +4167,8 @@ class Restructurer:
                    f"({few([f'{k} {m}' for _p, k, m in unpinned_asis])})")
         if undone:
             c.note(f"as-is version carry-over undone for {len(undone)} dependency(ies): no effective pom of "
-                   "the new parent chain to tell which of them it manages — the build reports the missing "
-                   f"ones ({few([k for _p, k in undone])})")
+                   "the new parent chain (and no Boot BOM facts) to tell which of them it manages — the build "
+                   f"reports the missing ones ({few([k for _p, k in undone])})")
         if still:
             c.note(f"{len(still)} version-less dependency(ies) the as-is build did not resolve either: "
                    f"{few(still)}")
@@ -4181,7 +4208,11 @@ class Restructurer:
         step 1: the new chain manages it); a repository pin is emptied whenever the new chain manages the
         artifact. An emptied pin is not an "explicit version dropped" (the as-is pom never declared it), and a
         pin kept because it is newer is reported as a carried-over version, not as an explicit one;
-        `_settle_asis_versions` reports the outcome. With `off` and nothing pinned, nothing is captured."""
+        `_settle_asis_versions` reports the outcome. With `off` and nothing pinned, nothing is captured.
+
+        v2.1o: without that capture, `_bom_capture` (the Spring Boot BOM's facts, when the parent manages Boot or a
+        project pom imports the BOM) decides instead — the pins it manages are emptied, the others stay (no undo); a
+        note names the source (`effective pom` / `Boot BOM facts`; neither → the skip note and the undo)."""
         mode = c.cfg.layout.drop_managed_versions
         pins = c.asis_pins
         # v2.1l: off 여도 이번 패스가 적은 버전은 새 체인이 관리하는지 확인해야 한다(1단계). 적은 것이 없으면
@@ -4197,11 +4228,27 @@ class Restructurer:
             except Exception as e:  # noqa: BLE001 - a broken capture must never fail the restructure
                 log.warning("effective pom for the managed-version cleanup failed: %s: %s", type(e).__name__, e)
                 data = None
+        bom_scope: set[str] | None = None
         if not isinstance(data, dict) or not (data.get("managed") or data.get("by_module")):
-            if mode != "off":
-                c.note("managed-version cleanup skipped: no effective pom")
-            self._settle_asis_versions(c, None, [])
-            return
+            # v2.1o: 캡처가 없으면 Boot BOM 의 사실로 — 부모가 Boot 를 관리하거나 프로젝트가 BOM 을 import 할 때만.
+            # 그것도 없으면 예전처럼 건너뛰고 이어 쓴 버전은 되돌린다
+            fallback = self._bom_capture(c)
+            if fallback is None:
+                if mode != "off":
+                    c.note("managed-version cleanup skipped: no effective pom")
+                c.managed_source = "none"
+                self._settle_asis_versions(c, None, [])
+                return
+            data, bom_scope = fallback
+            c.managed_source = "Boot BOM facts"
+            facts = c.bom_facts
+            where = "" if bom_scope is None else f"; only the {len(bom_scope)} pom(s) importing it"
+            c.note(f"managed-version source: Boot BOM facts — spring-boot-dependencies {facts.version} "
+                   f"({len(facts.managed)} managed artifacts{where}); the effective pom of the new parent chain "
+                   "is unavailable")
+        else:
+            c.managed_source = "effective pom"
+            c.note("managed-version source: effective pom of the new parent chain")
         protected = self._protected_keys(c)
         merged_managed: dict[str, str] = data.get("managed") or {}
         by_module: dict[str, Any] = data.get("by_module") or {}
@@ -4217,12 +4264,18 @@ class Restructurer:
         kept_pin_newer: list[str] = []
         unpinned: list[tuple[str, str, str]] = []
         managed_of: dict[str, dict[str, str]] = {}
+        dropped_refs: list[tuple[str, str]] = []      # v2.1o: (pom, property) a dropped explicit version referenced
+        recipe_dropped: list[str] = []                # v2.1o: newer than managed, but only because a recipe raised it
+        asis = self._asis_capture(c) if mode == "gte" else None
         for p, ed in eds.items():
+            amkey, amod = self._capture_module(asis.get("by_module") or {}, ed) if asis else (None, None)
             aid = ed.artifact_id() or ""
             mod = by_module.get(f"{ed.effective_group_id()}:{aid}")
             if mod is None:
                 mod = next((v for k, v in by_module.items() if aid and k.split(":")[-1] == aid), None)
             managed = (mod.get("managed") or {}) if isinstance(mod, dict) else merged_managed
+            if bom_scope is not None and p not in bom_scope:
+                managed = {}                     # v2.1o: this pom does not import the BOM (no parent manages Boot)
             managed_of[p] = managed
             props: dict[str, str] = {}
             # 버전 속성을 풀 때 조상 pom 의 속성부터 쌓고 자기
@@ -4257,6 +4310,14 @@ class Restructurer:
                     if cmp is None and not is_pin:
                         continue
                     if cmp is not None and cmp < 0:
+                        # v2.1o: 관리 버전보다 새 명시 버전이라도 as-is 빌드는 관리 버전 이하(또는 없었다)였다면 레시피가
+                        # 올린 것(Framework 7 레시피의 7.0.x = 저장소 최신)이지 담당자의 고정이 아니다 → 지운다
+                        asis_v = self._recipe_raised(asis, amkey, amod, g.key, m) if not is_pin else False
+                        if asis_v is not False:
+                            ed.remove_version(el)
+                            recipe_dropped.append(f"{g.key} {explicit} (as-is {asis_v or '-'}, managed {m}, {p})")
+                            dropped_refs += [(p, name) for name in re.findall(r"\$\{([^}]+)\}", g.version)]
+                            continue
                         # sbmig 가 적은 as-is 버전은 as-is pom 의 명시 버전이 아니다 → 따로 보고
                         kept_as = kept_pin_newer if is_pin else kept_newer
                         kept_as.append(f"{g.key} {explicit} (managed {m}, {p})")
@@ -4266,9 +4327,15 @@ class Restructurer:
                     unpinned.append((p, g.key, m))
                 else:
                     dropped.append(f"{g.key}: {explicit} → managed {m} ({p})")
+                    dropped_refs += [(p, name) for name in re.findall(r"\$\{([^}]+)\}", g.version)]
+        # v2.1o: 지운 명시 버전만 쓰던 버전 속성(spring.version=5.3.31 …)은 이제 아무도 안 쓴다 → 함께 지운다
+        self._drop_dead_version_properties(c, eds, dropped_refs)
         for ed in eds.values():
             c.save(ed)
         c.result.managed_versions_dropped.extend(d for d in dropped if d not in c.result.managed_versions_dropped)
+        c.result.recipe_versions_dropped.extend(d for d in recipe_dropped if d not in c.result.recipe_versions_dropped)
+        for d in recipe_dropped:
+            c.note(f"recipe-raised version dropped: {d}")
         if dropped:
             c.note(f"{len(dropped)} explicit dependency version(s) dropped: managed by the new parent chain "
                    f"(layout.drop_managed_versions={mode}): {', '.join(d.split(': ')[0] for d in dropped[:5])}"
@@ -4280,6 +4347,204 @@ class Restructurer:
             c.note("carried-over version newer than the parent-managed one kept: "
                    f"{', '.join(kept_pin_newer[:5])}{' …' if len(kept_pin_newer) > 5 else ''}")
         self._settle_asis_versions(c, managed_of, unpinned)
+
+    # ================================================================== v2.1o: Boot BOM facts
+    def _boot_bom_facts(self, c: _Ctx) -> Any:
+        """``sbmig.build.boot_bom`` 의 사실을 재구성 한 번에 한 번만 읽는다(못 읽으면 빈 사실). 모듈 속성으로 불러
+        테스트가 바꿔 끼울 수 있다(tests/conftest.py)."""
+        if not c.bom_facts_loaded:
+            c.bom_facts_loaded = True
+            try:
+                from sbmig.build import boot_bom
+                c.bom_facts = boot_bom.load_boot_bom_facts(c.cfg)
+            except Exception as e:  # noqa: BLE001 - facts are an aid, never a failed restructure
+                log.debug("Boot BOM facts unavailable: %s: %s", type(e).__name__, e)
+                c.bom_facts = None
+        return c.bom_facts
+
+    def _bom_importers(self, c: _Ctx) -> set[str]:
+        """``spring-boot-dependencies`` 를 ``<scope>import</scope>`` 하는 프로젝트 pom 과, 그 pom 을 저장소 안에서
+        상속하는 pom 들(부모가 Boot 를 관리하지 않는 설정에서 재구성이 BOM 을 적은 곳)."""
+        importing: set[str] = set()
+        poms = self._project_poms(c)
+        for p in poms:
+            try:
+                ed = PomEditor(c.ws.abs(p))
+            except PomEditError:
+                continue
+            if any(g.key == f"{BOOT_GROUP}:spring-boot-dependencies" and (g.scope or "") == "import"
+                   for g in ed.managed_dependencies()):
+                importing.add(p)
+        return {p for p in poms if importing & set(self._chain(c, p))} if importing else set()
+
+    def _bom_capture(self, c: _Ctx) -> tuple[dict[str, Any], set[str] | None] | None:
+        """재구성 뒤 캡처가 없을 때 쓸 관리 버전(v2.1o): Boot BOM 의 사실이 있고 (부모가 Boot 를 관리하면 모든 pom,
+        아니면 BOM 을 import 하는 pom 만) 적용될 때 ``(캡처 모양, 범위)`` — 범위 None = 모든 pom. 아니면 None.
+
+        The managed-version source when the post-restructure capture is None: `BootBomFacts.as_capture()` when the
+        facts could be read AND either `artifacts.parent_manages_spring_boot` (every pom: the parent chain is promised
+        to carry the BOM; scope None) or some project poms import `spring-boot-dependencies` themselves (scope = those
+        poms and their in-repo children). None otherwise."""
+        facts = self._boot_bom_facts(c)
+        if facts is None or getattr(facts, "empty", True):
+            return None
+        if c.cfg.artifacts.parent_manages_spring_boot:
+            return facts.as_capture(), None
+        scope = self._bom_importers(c)
+        return (facts.as_capture(), scope) if scope else None
+
+    def _override_name_sets(self, c: _Ctx) -> tuple[set[str], set[str]]:
+        """``_drop_bom_property_overrides`` 가 맡을 속성 이름: (Boot BOM 의 속성 — 부모가 Boot 를 관리하고 사실을 읽었을
+        때만, ``layout.parent_property_names`` — 사실 없이도). 단계가 꺼져 있으면 둘 다 빈 집합.
+
+        (Boot BOM property names — only when the parent manages Boot and the facts could be read; the configured
+        in-house parent names — no facts needed). Both empty when `layout.drop_bom_property_overrides` is off."""
+        L = c.cfg.layout
+        if not getattr(L, "drop_bom_property_overrides", True):
+            return set(), set()
+        parent_names = {str(n).strip() for n in (getattr(L, "parent_property_names", None) or []) if str(n).strip()}
+        bom_names: set[str] = set()
+        if c.cfg.artifacts.parent_manages_spring_boot:
+            facts = self._boot_bom_facts(c)
+            bom_names = set(getattr(facts, "properties", None) or {}) if facts is not None else set()
+        return bom_names, parent_names
+
+    def _override_names(self, c: _Ctx) -> set[str]:
+        """``_drop_bom_property_overrides`` 가 맡을 속성 이름 전부(Boot BOM 의 것 + 사내 부모의 것)."""
+        bom_names, parent_names = self._override_name_sets(c)
+        return bom_names | parent_names
+
+    def _drop_dead_version_properties(self, c: _Ctx, eds: dict[str, PomEditor],
+                                      refs: list[tuple[str, str]]) -> None:
+        """v2.1o: 이번 관리 버전 정리가 지운 명시 버전이 참조하던 속성(``${spring.version}``) 중 이제 어느 프로젝트 pom
+        도 참조하지 않는 것을 정의한 pom(그 pom 또는 저장소 안 조상)에서 지운다 — 남겨 두면 옛 버전 값이 남아 사람과
+        검토를 헷갈리게 한다. 새 부모 체인이 관리하는 버전을 지운 경우에만(그 버전들만 쓰던 속성만); Boot BOM 의 속성
+        이름은 ``_drop_bom_property_overrides`` 가 따로 맡는다.
+
+        Properties whose last references were explicit versions this pass dropped (`refs` = (pom, name) of every
+        `${name}` in a dropped version) are removed from the pom that defines them (the pom itself, else an in-repo
+        ancestor) when no project pom references `${name}` any more. Names the BOM property-override step will
+        handle are left to it. Fills `result.version_properties_removed` ("<pom>: name=value"), one note."""
+        if not refs:
+            return
+        skip = self._override_names(c)
+        removed: list[str] = []
+        for p, prop in dict.fromkeys(refs):
+            if prop in skip or self._referencing_poms(eds, prop):
+                continue                     # the override step decides / another dependency still uses it
+            for q in self._chain(c, p):
+                ed = eds.get(q)
+                if ed is not None and ed.has_property(prop):
+                    value = ed.get_property(prop)
+                    ed.remove_property(prop)
+                    ed.remove_if_empty(ed.child(ed.root, "properties"))
+                    removed.append(f"{q}: {prop}={value}")
+                    break
+        if not removed:
+            return
+        res = c.result
+        res.version_properties_removed += [x for x in removed if x not in res.version_properties_removed]
+        shown = ", ".join(x.split(": ", 1)[1] for x in removed[:6]) + (" …" if len(removed) > 6 else "")
+        c.note(f"{len(removed)} version propert(ies) removed: no dependency references them after the "
+               f"parent-managed versions were dropped: {shown}")
+        log.info("version properties removed after the version drop: %s", "; ".join(removed))
+
+    def _drop_bom_property_overrides(self, c: _Ctx) -> None:
+        """v2.1o: 부모가 Spring Boot 를 관리하면(``parent_manages_spring_boot``) 프로젝트 pom 의 ``<properties>`` 중 이름이
+        Boot BOM 의 속성과 같은 것을 지운다 — Maven 속성 상속으로 as-is 값(``spring-security.version=5.7.11``)이 부모
+        체인의 값을 이겨 옛 BOM 을 끌어오지 않게. 관리 버전 정리 뒤라 명시 버전은 이미 빠졌다; 그래도 어느 프로젝트
+        pom 이 ``${이름}`` 을 참조하면 남기고 노트. ``layout.drop_bom_property_overrides`` 로 끈다.
+
+        Every project pom's `<properties>` entry whose name is a property of the Spring Boot BOM (`BootBomFacts`) is
+        removed when the parent chain manages Boot (property inheritance: the as-is value would win over the
+        parent's) and no project pom references `${name}` any more (repeated until nothing changes: a removed
+        property may have been the last reference of another). Fills `result.bom_properties_removed`
+        ("<pom>: name=value"), one note, `property X kept: still referenced by <pom>` notes, journal
+        `bom_property_overrides`. The name set is the BOM facts' (the post-restructure capture's `properties`
+        contain the project's own properties too, so they cannot tell an override apart) plus
+        `layout.parent_property_names` (the company parent chain's own conventions such as `spring-boot.version`,
+        applied even without BOM facts and whatever `parent_manages_spring_boot` says). Never raises."""
+        bom_names, parent_names = self._override_name_sets(c)
+        names = bom_names | parent_names
+        if not names:
+            return
+        facts = c.bom_facts
+        eds: dict[str, PomEditor] = {}
+        for p in self._project_poms(c):
+            try:
+                eds[p] = PomEditor(c.ws.abs(p))
+            except PomEditError:
+                continue
+        removed: list[str] = []
+        for _ in range(10):                                    # a removed property may free another one
+            progress = False
+            for p, ed in eds.items():
+                for name, value in list(ed.properties().items()):
+                    if name not in names or self._referencing_poms(eds, name):
+                        continue
+                    ed.remove_property(name)
+                    ed.remove_if_empty(ed.child(ed.root, "properties"))
+                    removed.append(f"{p}: {name}={value}")
+                    progress = True
+            if not progress:
+                break
+        kept: list[str] = []
+        for p, ed in eds.items():
+            for name in ed.properties():
+                if name in names:
+                    refs = self._referencing_poms(eds, name)
+                    kept.append(f"{p}: {name} (referenced by {', '.join(refs)})")
+                    c.note(f"property {name} kept: still referenced by {', '.join(refs)}")
+        for ed in eds.values():
+            c.save(ed)
+        res = c.result
+        res.bom_properties_removed += [x for x in removed if x not in res.bom_properties_removed]
+        # 이름이 어디서 왔는지로 문구를 나눈다: 설정의 사내 부모 이름이 먼저(BOM 에도 있으면 그쪽 설명이 더 맞다)
+        def from_parent(entry: str) -> bool:
+            return entry.split(": ", 1)[1].split("=", 1)[0] in parent_names
+
+        by_bom = [x for x in removed if not from_parent(x)]
+        by_parent = [x for x in removed if from_parent(x)]
+
+        def shown(items: list[str]) -> str:
+            return ", ".join(x.split(": ", 1)[1] for x in items[:6]) + (" …" if len(items) > 6 else "")
+        if by_bom:
+            c.note(f"{len(by_bom)} as-is version propert(ies) removed: they override the Spring Boot "
+                   f"{getattr(facts, 'version', '')} BOM's properties of the same name (the parent chain manages "
+                   f"them): {shown(by_bom)}")
+        if by_parent:
+            c.note(f"{len(by_parent)} as-is propert(ies) removed: they override the in-house parent's properties of "
+                   f"the same name (layout.parent_property_names): {shown(by_parent)}")
+        if removed:
+            log.info("BOM / parent property overrides removed: %s", "; ".join(removed))
+        if not removed and not kept:
+            return
+        # 실제로 맞은 이름의 출처만(기본 목록이 있다고 늘 두 출처를 적지 않게)
+        matched = {x.split(": ", 1)[1].split("=", 1)[0].split(" ", 1)[0] for x in removed + kept}
+        source = " + ".join(x for x, on in (("Boot BOM facts", bool(matched - parent_names)),
+                                             ("layout.parent_property_names", bool(matched & parent_names))) if on)
+        try:
+            c.ws.journal({"event": "bom_property_overrides", "removed": removed, "kept": kept, "source": source})
+        except OSError as e:  # pragma: no cover - the journal is bookkeeping, never a reason to fail
+            log.debug("bom_property_overrides journal skipped: %s", e)
+
+    def _recipe_raised(self, asis: dict[str, Any] | None, mkey: str | None, mod: dict[str, Any] | None, key: str,
+                       managed: str) -> str | None | bool:
+        """v2.1o: 관리 버전보다 새 명시 버전이 레시피가 올린 것인가 — as-is 빌드의 그 아티팩트 버전(``_asis_version``)이
+        관리 버전 이하면 그 버전, as-is 에 없었으면 None(둘 다 '지운다'), as-is 가 관리 버전보다 새것이었거나(담당자의
+        고정) as-is 캡처가 없거나 비교할 수 없으면 False(남긴다).
+
+        Whether an explicit version newer than the managed one was raised by a recipe: the as-is version when the
+        as-is build had it at or below `managed`, None when the as-is build did not have the artifact (both mean
+        "drop"), False when the as-is project itself was above `managed`, there is no as-is capture, or the versions
+        do not compare (keep)."""
+        if asis is None:
+            return False
+        found = self._asis_version(asis, mkey, mod, key)
+        if found is None:
+            return None
+        cmp = compare_versions(managed, found[0])
+        return found[0] if cmp is not None and cmp >= 0 else False
 
     @staticmethod
     def _resolve_version(ed: PomEditor, version: str, props: dict[str, str]) -> str | None:
@@ -4337,6 +4602,7 @@ class Restructurer:
         self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
+        self._drop_bom_property_overrides(c)
         r = c.result
         if boots:
             r.boot_module = boots[0]
@@ -4675,6 +4941,7 @@ class Restructurer:
         self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
+        self._drop_bom_property_overrides(c)
         self._msa_placeholders(c, svc_entries)
         c.commit("restructure: msa pom-only parent/mandatory/optional")
 

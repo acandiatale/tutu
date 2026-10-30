@@ -76,7 +76,9 @@ def test_gte_drops_managed_versions_and_keeps_the_rest(tmp_path: Path, cfg: Conf
     assert v["com.oracle:ojdbc"] == "11"                                       # system scope never
     assert v["org.apache.commons:commons-text"] == "1.9"                       # classifier: managed per type
     assert v["org.weird:odd"] == "release-x"                                   # unknown comparison → keep
-    assert "<jaxb.version>3.0.2</jaxb.version>" in (ws.root / "pom.xml").read_text()   # properties left alone
+    # v2.1o: a property only the dropped versions referenced is removed with them (round 9 left it alone)
+    assert "jaxb.version" not in (ws.root / "pom.xml").read_text()
+    assert res.version_properties_removed == ["pom.xml: jaxb.version=3.0.2"]
     assert sorted(res.managed_versions_dropped) == sorted([
         f"{JAXB_API}: 3.0.1 → managed 4.0.2 (module/comp-jar/pom.xml)",
         f"{JAXB_RT}: 3.0.2 → managed 4.0.5 (module/comp-jar/pom.xml)",

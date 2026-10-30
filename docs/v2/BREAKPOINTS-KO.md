@@ -40,7 +40,7 @@ python -m sbmig.cli run fixtures/projects/servlet-nonstandard-dirs --config conf
 ## 3. 1차 컴파일 → 오류 목록의 첫 레코드
 | 위치 | 설명 |
 |---|---|
-| `orchestrator.py:1211` `_step_compile()` | `mvn clean compile` 1회 |
+| `orchestrator.py` `_step_compile()` | `mvn clean compile` 1회 — v2.1o 부터 `plan.compile_after_rewrite: true` 일 때만 계획에 들어간다(기본 false: 재구성 전 빌드 없음) |
 | `orchestrator.py:1245` | `self.errors.add_build(res, "compile", …)` — 오류 목록이 처음 채워지는 줄 |
 | `sbmig/build/runner.py:137` `MavenRunner.run()` → `sbmig/build/mvn.py:216` | Maven 자식 프로세스 기동(Popen) |
 | `sbmig/build/log_parser.py:944` `parse_maven_log()` | 로그 → BuildError(L1/L2 서명) |

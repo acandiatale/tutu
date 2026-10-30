@@ -168,7 +168,7 @@ recipes:
       - org.openrewrite.java.jackson.CodehausToFasterXML
     gate: is_spring
     advisor: true
-    sets: []   # v1: [spring_framework_7] — not in the v2 sets (flow-v2)
+    sets: [spring_framework_7]   # v2.1o: spring_legacy projects (Boot projects run it inside the umbrella)
     verified: "2026-10"
     notes: knowledge/notes/spring-framework-7.md
 

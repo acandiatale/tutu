@@ -1413,6 +1413,9 @@ class Orchestrator:
                          "mandatory_added": res.mandatory_added, "optional_bumped": res.optional_bumped,
                          "optional_added": list(getattr(res, "optional_added", None) or []),
                          "optional_replaced": list(getattr(res, "optional_replaced", None) or []),
+                         "bom_properties_removed": list(getattr(res, "bom_properties_removed", None) or []),
+                         "version_properties_removed": list(getattr(res, "version_properties_removed", None) or []),
+                         "recipe_versions_dropped": list(getattr(res, "recipe_versions_dropped", None) or []),
                          "merged_modules": merged, "kept_boot_module": kept_boot,
                          "merge_conflicts": len(conflicts), "error": res.error})
         if not res.ok:
@@ -1723,6 +1726,8 @@ class Orchestrator:
             "the final build ran on it, so BUILD SUCCESS here does not mean the migration is complete")
 
     _MANAGED_POM_RE = re.compile(r"\(([^()]*pom\.xml)\)\s*$")
+    _RECIPE_DROPPED_RE = re.compile(r"^(?P<key>\S+) (?P<explicit>\S+) \(as-is (?P<asis>[^,]+), managed "
+                                    r"(?P<managed>[^,]+), (?P<pom>[^()]+)\)\s*$")
     _OPTIONAL_ADDED_RE = re.compile(r"^(?P<key>\S+) → (?P<pom>.+?) \(for (?P<matched>[^()]*)\)\s*$")
 
     def _pom_verify_entries(self, res: Any) -> None:
@@ -1736,7 +1741,8 @@ class Orchestrator:
         root pom), explicit versions dropped for the managed ones (`… (<pom>)`), versions carried over from
         the as-is build (v2.1l, `versions_pinned`), binary extensions written to `<nonFilteredFileExtensions>`
         (v2.1m, `non_filtered_extensions`), optional artifacts their triggers introduced (v2.1n, `optional_added`),
-        generated poms."""
+        as-is properties removed because they override the Boot BOM's (v2.1o, `bom_properties_removed`), generated
+        poms."""
         root = "pom.xml"
         items: list[tuple[str, str]] = []
         for e in list(getattr(res, "parents_set", None) or []):
@@ -1755,6 +1761,17 @@ class Orchestrator:
         for d in list(getattr(res, "managed_versions_dropped", None) or []):
             m = self._MANAGED_POM_RE.search(str(d))
             items.append((m.group(1) if m else root, f"explicit version dropped: {str(d)[:m.start()].strip() if m else d}"))
+        # v2.1o: "g:a <explicit> (as-is <v | ->, managed <m>, <pom>)" → 'explicit version dropped: g:a <explicit> →
+        # managed <m> (raised by a recipe from the as-is <v>)'
+        for d in list(getattr(res, "recipe_versions_dropped", None) or []):
+            m = self._RECIPE_DROPPED_RE.match(str(d))
+            if not m:
+                continue
+            asis = m.group("asis").strip()
+            how = (f"raised by a recipe from the as-is {asis}" if asis != "-"
+                   else "added by a recipe: not in the as-is build")
+            what = f"{m.group('key')} {m.group('explicit')} → managed {m.group('managed').strip()} ({how})"
+            items.append((m.group("pom").strip(), f"explicit version dropped: {what}"))
         # v2.1l: "g:a: <v> ← as-is <source> (<pom>)" → 'version carried over from the as-is build: g:a <v>';
         # "g:a: <v> ← repository newest release (…) (<pom>)" → 'version chosen from the repository: g:a <v>'
         for d in list(getattr(res, "versions_pinned", None) or []):
@@ -1773,6 +1790,20 @@ class Orchestrator:
             pom = pom if sep else root
             plugin_names = plugins.strip() or "maven-resources-plugin"
             items.append((pom, f"nonFilteredFileExtensions added to {plugin_names} in {pom}: {exts.strip()}"))
+        # v2.1o: "<pom>: name=value" → 'property name=value removed: it overrides the Spring Boot <v> BOM's name'
+        boot = str(getattr(getattr(self.cfg, "target", None), "spring_boot_version", "") or "")
+        parent_names = set(getattr(getattr(self.cfg, "layout", None), "parent_property_names", None) or [])
+        for d in list(getattr(res, "bom_properties_removed", None) or []):
+            pom, sep, nv = str(d).partition(": ")
+            name = nv.split("=", 1)[0]
+            # layout.parent_property_names 의 이름은 사내 부모의 관례(BOM 속성이 아님) → 문구를 나눈다
+            whose = "the in-house parent's" if name in parent_names else f"the Spring Boot {boot} BOM's"
+            items.append((pom if sep else root, f"property {nv} removed: it overrides {whose} {name}"))
+        for d in list(getattr(res, "version_properties_removed", None) or []):
+            pom, sep, nv = str(d).partition(": ")
+            why = f"version property {nv} removed: no dependency references it after the parent-managed versions " \
+                  "were dropped"
+            items.append((pom if sep else root, why))
         for g in list(getattr(res, "generated_files", None) or []):
             if PurePosixPath(str(g).replace("\\", "/")).name == "pom.xml":
                 items.append((str(g).replace("\\", "/"), "generated by the restructure"))

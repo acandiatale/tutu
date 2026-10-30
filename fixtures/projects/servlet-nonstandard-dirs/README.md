@@ -39,3 +39,7 @@ As-is build (JDK 8):
 ```bash
 JAVA_HOME=$JAVA8_HOME mvn -q -DskipTests package
 ```
+
+v2.1m (2026-10-30): the restructure writes maven-resources-plugin `nonFilteredFileExtensions` `mp4, xlsx` into
+`ndirs-back/pom.xml` before the first build, so the structure review no longer reports the filtered binaries as critical and runs no
+script (one warning: the pinned plugin version).

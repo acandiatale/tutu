@@ -2203,3 +2203,108 @@ company artifacts yml; a `replaces: true` unit test covers the removal.)
 - `legacy-external-parent` stop-after-restructure: `extparent-back/pom.xml` = spring-context (managed), commons-text 1.10.0,
   commons-csv 1.10.0, commons-lang3 3.17.0 (added, trigger commons-text); journal `optional_triggers`; Handover "Added …
   (optional (trigger: org.apache.commons:commons-text))".
+
+## v2.1o — no build before the restructure, and the Boot BOM's facts without Maven (2026-10-30)
+
+User (company runs, 2026-10-30): migrated poms still showed Boot `4.0.9` (what the OpenRewrite umbrella writes: `4.0.x` = the
+newest 4.0 patch in Nexus) or the as-is `2.5.15`, although the company root parent carries `spring-boot.version=4.1.0` /
+`spring-framework.version=7.0.8`; and "Boot 레시피 실행 다 하고 구조화를 다 한 후에 빌드를 시작해야 맞을 거 같다". Two causes, two changes:
+(1) the one `mvn clean compile` between the rewrite and the restructure (v2.1) runs on a half-migrated tree (Boot 4.0.9 parent /
+starters, company parent not yet applied) and only adds noise to the error list; (2) the cleanup that removes explicit Boot / Spring
+versions and the as-is version PROPERTIES that override the parent's (`spring-boot.version=2.5.15` in a module pom beats
+`base-parent`'s 4.1.0 — Maven property inheritance) depends on the post-restructure `help:effective-pom` capture; when that capture
+fails at the company nothing is cleaned and the old versions win.
+
+### (1) `plan.compile_after_rewrite: bool = false` (`sbmig/core/config.py: PlanConfig`, `config/default.yml`, `sbmig/plan/planner.py`)
+- `false` (new default): no `transform.compile` step — the flow is rewrite → restructure → review → `verify.build`; the error list
+  starts with the restructure's pom-verify rows and the first build. `true`: the v2.1 compile step as before (single, MSA root, per
+  service). Plan note either way. Nothing else changes (the error list, moved-file matching and the KB handle an empty compile stage).
+
+### (2) Boot BOM facts (`sbmig/build/boot_bom.py`, new) and their use in the restructure
+- `BootBomFacts(version, managed: dict[g:a, version], properties: dict[name, value], sources: list[str])` from
+  `org.springframework.boot:spring-boot-dependencies:<cfg.target.spring_boot_version>` — the pom from the local repository
+  (`<local repo>/org/springframework/boot/spring-boot-dependencies/<v>/*.pom`), else `RepositoryLookup(cfg).pom_text(...)`;
+  `${…}` resolved from the BOM's own properties; its `<scope>import</scope>` BOMs (spring-framework-bom, spring-security-bom,
+  spring-data-bom, jackson-bom, hibernate … ~45) fetched the same way ONE level deep so their managed keys count too. Cached per
+  process (one dict per version); never raises; `BootBomFacts.empty` when nothing could be read; `as_capture()` returns the
+  `load_effective` shape (`managed`, `properties`, `by_module` = {}) so the existing code can take it in place of a capture.
+- Fallback for the managed-version steps: when the post-restructure capture is None (Maven missing / failed) and
+  `artifacts.parent_manages_spring_boot` (the parent chain is promised to carry this BOM) OR the project imports the BOM itself
+  (`parent_manages_spring_boot: false` — the restructure wrote it), `_drop_managed_versions` and the v2.1l pin step use
+  `BootBomFacts.as_capture()` instead of giving up: pins the BOM manages are emptied, the others stay (no undo); explicit
+  versions the BOM manages are dropped (gte as before). A note says which source decided (`effective pom` / `Boot BOM facts` /
+  `none → undone`). With a real capture nothing changes.
+- New `_drop_bom_property_overrides(c)` (all three modes, right after `_drop_managed_versions`): when
+  `parent_manages_spring_boot` (parent inheritance — an imported BOM is not affected by the importer's properties), every
+  `<properties>` entry of a project pom whose NAME is a property of the Boot BOM (`spring-boot.version`, `spring-framework.version`,
+  `spring-security.version`, `hibernate.version`, `jackson-bom.version`, `tomcat.version`, …) is removed, unless a project pom still
+  references `${name}` after the version drops (then it stays and is noted: `property X kept: still referenced by <pom>`).
+  `RestructureResult.bom_properties_removed: list[str]` ("<pom>: name=value"), one pom-verify row each
+  (`property <name>=<value> removed: it overrides the Spring Boot <ver> BOM's <name>`), one note, journal
+  `{"event": "bom_property_overrides", "removed": [...], "kept": [...], "source": "effective pom|Boot BOM facts"}`. The source of the
+  property-name set is the post-restructure capture's `properties` when present (it already contains the parent chain's), else the
+  BOM facts. `layout.drop_bom_property_overrides: bool = true` switches it off.
+- The structure review's "property of the same name as the parent's" critical finding stays as the last line of defence.
+
+### Fixture
+`spring5-security-batch` (as-is `spring-batch.version`, `spring-security.version`, `spring.version` overriding the Boot parent's): the
+restructure now removes them (`bom_properties_removed` 3) → the review finds no critical issue (expected: `critical: 0`,
+`script_status: none`, one LLM call fewer); the rest of the subset unchanged.
+
+### As built (2026-10-30)
+- (1) `PlanConfig.compile_after_rewrite = False`, `config/default.yml` `plan.compile_after_rewrite: false`; the planner skips
+  `_compile` at its three call sites and adds `compile: no build before the restructure (plan.compile_after_rewrite=false, v2.1o) —
+  the error list starts with the restructure's pom corrections and the first verify build`; `tests/plan/conftest.py` keeps the v2.1
+  order under test (autouse `compile_after_rewrite = True`), `test_default_plans_no_compile_before_restructure` covers the default.
+- Also in this increment (user, 2026-10-30, "넣는 게 좋을 것 같아"): `openrewrite.recipes.spring_framework_7` default =
+  `UpgradeSpringFramework_7_0` for `spring_legacy` (MSA library roots too); catalog `sets: [spring_framework_7]`; a non-Boot project
+  is made Boot by the restructure and the Boot 4.1 BOM brings Spring 7.0.8 / Jackson 3, so the Framework 6.x removals, Jackson 2 → 3
+  and the recipe's other code changes no longer fall to the LLM (Boot projects already ran it inside the umbrella). `junit5` stays
+  empty. Reminder of the order argument: OpenRewrite's type-attributed recipes only recognise the OLD types on the as-is classpath,
+  so recipes run BEFORE the restructure; the restructure then removes what they leave in the poms.
+- (2) `sbmig/build/boot_bom.py`: `BootBomFacts(version, managed, properties, sources)`, `.empty`, `as_capture()`,
+  `load_boot_bom_facts(cfg, version=None)`, `clear_cache()`; local repo (`build.local_repo_path`) then `RepositoryLookup.pom_text`;
+  the 46 imported BOMs one level deep (Boot's own entries win, then the imports in order); ≤ `MAX_POMS` = 60 poms; the real 4.1.0 BOM
+  gives 1,872 managed keys and 196 properties in ~40 ms; only successful loads are cached (per version + local repo). Restructurer:
+  `_boot_bom_facts(c)`, `_bom_importers(c)`, `_bom_capture(c)`, `_drop_bom_property_overrides(c)` (after `_drop_managed_versions`
+  at the four call sites), shared `_referencing_poms` (also used by `_drop_unused_properties`); `_drop_managed_versions` and the pin
+  settlement fall back to the facts when the capture is None — with `parent_manages_spring_boot: false` only for poms that import
+  `spring-boot-dependencies` (or inherit from one in the repo); a run with a real capture gets the note `managed-version source:
+  effective pom of the new parent chain`, the undo note ends "(and no Boot BOM facts)". `LayoutConfig.drop_bom_property_overrides`,
+  `RestructureResult.bom_properties_removed`, pom-verify row, the `restructure` journal event carries the list.
+- Deviations: the property NAMES always come from the BOM facts, never from the capture's `properties` (those include each project
+  pom's own properties, so everything would count as an override), hence journal `source` is always `Boot BOM facts` and the step
+  also runs with a real capture; `spring.version` is not a Boot BOM property (`spring-framework.version` is) — it is handled by the
+  "unused after the version drop" rule (`RestructureResult.version_properties_removed`, see below once built); `tests/conftest.py`
+  gained an autouse `_no_boot_bom_facts` so the undo / snapshot tests do not silently read this machine's `~/.m2` BOM.
+- Dead version properties (built after the review of the fixture shape): `_drop_dead_version_properties(c, eds, refs)` runs inside
+  `_drop_managed_versions` (every mode): every `${prop}` that an explicit version the drop step removed had referenced is removed
+  from the pom that defines it (itself or an in-repo ancestor) when `_referencing_poms` finds no remaining `${prop}` in any project
+  pom; names the override step owns (Boot BOM property names, when that step is active) are left to it.
+  `RestructureResult.version_properties_removed` ("<pom>: name=value"), pom-verify row `version property <name>=<value> removed: no
+  dependency references it after the parent-managed versions were dropped`, one note, in the `restructure` journal event and the
+  review's restructure lines. This reverses the round-9 "properties stay" rule (`tests/restructure/test_managed_versions.py` updated:
+  `jaxb.version` is now removed with its only user). In the `spring5-security-batch` shape all three as-is properties go:
+  `spring-security.version` / `spring-batch.version` through the BOM override step, `spring.version` through this rule; a
+  `junit.version` used by a test-scoped, unmanaged junit stays. The Handover's "Spring / Boot after" read the final poms' own
+  properties, so nothing else changed there.
+- `layout.parent_property_names` (default `["spring-boot.version"]`): names the company parent chain defines by convention (not Boot
+  BOM properties) that project poms must not override; `_override_name_sets(c)` returns the BOM names (need
+  `parent_manages_spring_boot` + readable facts) and the parent names (need neither — they apply with
+  `parent_manages_spring_boot: false` too, harmless because a still-referenced property is never removed); both behind
+  `layout.drop_bom_property_overrides`; one note per origin, the journal `source` names only the origins that matched; pom-verify
+  wording `property <name>=<value> removed: it overrides the in-house parent's <name>` for parent names (a name in both lists counts
+  as a parent name). The company lists its own names (e.g. `spring.version` when base-parent uses it).
+- Recipe-raised versions (found by the full e2e, `legacy-external-parent`: the Framework 7 recipe bumped `spring.version` to 7.0.10 while
+  the Boot 4.1 BOM manages 7.0.8 and gte kept it): in gte mode an explicit version newer than the managed one is dropped when the
+  as-is build's version of the artifact (`_asis_version`, through the shared `_asis_capture(c)`) was at or below the managed one or the
+  artifact was absent as-is — the newer value came from a recipe, not from the owners; kept (with the "kept newer" note) when the
+  as-is project itself was above the managed version, when there is no as-is capture or when the versions cannot be compared.
+  `RestructureResult.recipe_versions_dropped` ("g:a <explicit> (as-is <v | ->, managed <m>, <pom>)"), note `recipe-raised version
+  dropped: …`, pom-verify row `explicit version dropped: g:a <explicit> → managed <m> (raised by a recipe from the as-is <v>)` /
+  `(added by a recipe: not in the as-is build)`, in the `restructure` journal event and the review lines; the dead-property rule then
+  removes the unreferenced property.
+- Fixture expectations changed by v2.1m / v2.1o: `spring5-xml` (the Framework 7 recipe converts `WebMvcConfigurerAdapter` /
+  `HandlerInterceptorAdapter` itself → 0 scripts, 1 LLM call), `servlet-nonstandard-dirs` (the restructure writes `nonFilteredFileExtensions`
+  → the review replay no longer reports a critical issue, no script), `boot2-qlrm-javax` (the replayed fix answer now carries the
+  `<verify>` block rule 14 requires for a library replacement; without it the v2.1d guide call made 3 LLM calls).

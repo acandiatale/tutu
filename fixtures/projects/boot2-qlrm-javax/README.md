@@ -23,3 +23,7 @@ Success, exit 0, **2 LLM calls**: the structure review (one warning on QLRM 1.7.
 `compile|cannot_access|Query` (`854a1d9f13`) that relocates `ch.simas.qlrm:qlrm:1.7.1` → `org.qlrm:qlrm:4.2.1` (v1 did
 this with the handler `jakarta-library-floor`, gone in v2). `post_checks`: `org.qlrm:qlrm` declared with a version,
 `ch.simas.qlrm:qlrm` gone, `MemberSummaryQuery.java` on jakarta.
+
+2026-10-30: the replayed fix answer now carries the `<verify>` operator guide that rule 14 requires for a library
+replacement (QLRM 1.7.1 → org.qlrm 4.2.1); without it the loop spends one more LLM call on `verify_guide` (v2.1d), which had
+made the run exceed `max_llm_calls: 2`.
