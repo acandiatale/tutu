@@ -130,14 +130,21 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   `null`. v1's `carry-over-managed-version` handler had been deleted with the other handlers in v2 step 4 — that gap was the
   company's "정책상 버전을 추정하여 추가할 수 없습니다" loops. Contract: `docs/INTERFACES.md` "v2.1l".
 - **Binary files under Maven resource filtering (v2.1m, 2026-10-30)**: the restructure writes maven-resources-plugin
-  `nonFilteredFileExtensions` (the extensions of the binary files the analyzer's scan finds under filtered resources +
-  `build.non_filtered_extensions`, e.g. the company's `dmdb`) into the pom that declares the filtering, before the first
+  `nonFilteredFileExtensions` (the extensions of the binary files the analyzer's scan finds under filtered resources — known
+  table OR binary content, so a company `.dmdb` needs no configuration; `build.non_filtered_extensions` is only for formats that
+  decode as text) into the pom that declares the filtering, before the first
   build (`sbmig/restructure/resources_filtering.py`; v1 handler E12 restored as a rule); the loop tries a
   `MalformedInputException` / `Input length = 1` case first without the LLM (`sbmig-resources`). Contract: `docs/INTERFACES.md` "v2.1m".
 - **Optional artifacts by trigger (v2.1n, 2026-10-30)**: an optional in-house artifact with `when_present` (g:a keys / globs) is
   ADDED to a pom that declares one of those dependencies (`replaces: true` removes the matched declarations — the curated
   company artifact stands in for the raw library, e.g. `hibernate-core` → the company JPA starter); without `when_present` an
   optional is still only aligned when already used (S6). Contract: `docs/INTERFACES.md` "v2.1n".
+- **No build before the restructure; parent-chain facts (v2.1o / v2.1p, 2026-10-30)**: `plan.compile_after_rewrite: false` is the
+  default (recipes run on the as-is classpath, the restructure cleans what they leave in the poms); when the post-restructure
+  `help:effective-pom` capture fails, the managed versions and the property names come from the configured company parents' own
+  poms read from the repository (`sbmig/build/parent_chain.py`, their `<parent>` chain and BOM imports — the Boot BOM included); as-is
+  version properties that override the chain's (`spring-boot.version=2.5.15` …) are removed, dead properties and recipe-raised
+  versions dropped. `layout.parent_property_names` is an escape hatch only (default empty). Contract: `docs/INTERFACES.md` "v2.1o" / "v2.1p".
 - **MSA with non-Boot WAR services** (2026-10-30): `restructure.msa_pom` gives such a service the boot parent but no Boot app /
   layout split; the user checks the real projects first ("비-boot war는 일단 그대로 두자").
 - **JSP `javax` → `jakarta` (decided 2026-10-28, v2.1h)**: OpenRewrite never parses JSPs, so the restructure renames

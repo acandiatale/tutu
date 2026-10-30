@@ -61,15 +61,15 @@ layout:
   # (gte = only when the managed version is the same or newer; any = always; off = keep). Mandatory / optional /
   # parent artifacts and system-scope dependencies are never touched.
   drop_managed_versions: gte
-  # v2.1o: with artifacts.parent_manages_spring_boot, project <properties> named like a Spring Boot BOM property
-  # (spring-boot.version, spring-security.version, hibernate.version, …) are removed after the version cleanup —
-  # an as-is value would override the parent's through Maven property inheritance; a property still referenced
-  # (${name}) stays and is noted. false = keep them
+  # v2.1o / v2.1p: project <properties> named like a version property the in-house parent chain defines (read from
+  # its poms: spring-boot.version, spring-security.version, hibernate.version, …) are removed after the version
+  # cleanup — an as-is value would override the parent's through Maven property inheritance; a property still
+  # referenced (${name}) stays and is noted. false = keep them
   drop_bom_property_overrides: true
-  # v2.1o: property names the in-house parent chain defines (a company convention, not a Boot BOM property) that
-  # project poms must not override — removed by the step above like the BOM names (kept while ${name} is referenced),
-  # even without the Boot BOM's facts; the company lists its own (e.g. add spring.version when base-parent uses it)
-  parent_property_names: [spring-boot.version]
+  # v2.1p: escape hatch only — the names the in-house parent chain defines are read from its poms (base-parent /
+  # boot-jar / comp-jar and their parents, sbmig.build.parent_chain); list here a name to remove although no pom of
+  # the chain defines it (kept while ${name} is still referenced)
+  parent_property_names: []
   application_class_name: Application
   starter_by_case:
     pure_java: spring-boot-starter

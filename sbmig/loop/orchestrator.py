@@ -1793,12 +1793,21 @@ class Orchestrator:
         # v2.1o: "<pom>: name=value" → 'property name=value removed: it overrides the Spring Boot <v> BOM's name'
         boot = str(getattr(getattr(self.cfg, "target", None), "spring_boot_version", "") or "")
         parent_names = set(getattr(getattr(self.cfg, "layout", None), "parent_property_names", None) or [])
+        defined_by: dict[str, str] = dict(getattr(res, "bom_property_sources", None) or {})
         for d in list(getattr(res, "bom_properties_removed", None) or []):
             pom, sep, nv = str(d).partition(": ")
             name = nv.split("=", 1)[0]
-            # layout.parent_property_names 의 이름은 사내 부모의 관례(BOM 속성이 아님) → 문구를 나눈다
-            whose = "the in-house parent's" if name in parent_names else f"the Spring Boot {boot} BOM's"
-            items.append((pom if sep else root, f"property {nv} removed: it overrides {whose} {name}"))
+            # v2.1p: 정의한 pom 을 알면 그것으로(Boot BOM 이면 BOM 문구), 설정 목록의 이름이면 사내 부모 문구
+            src = defined_by.get(name, "")
+            if src.startswith("org.springframework.boot:spring-boot-dependencies:"):
+                whose = f"the Spring Boot {src.rsplit(':', 1)[1]} BOM's {name}"
+            elif src:
+                whose = f"the in-house parent chain's {name} ({src})"
+            elif name in parent_names:
+                whose = f"the in-house parent's {name}"
+            else:
+                whose = f"the Spring Boot {boot} BOM's {name}"
+            items.append((pom if sep else root, f"property {nv} removed: it overrides {whose}"))
         for d in list(getattr(res, "version_properties_removed", None) or []):
             pom, sep, nv = str(d).partition(": ")
             why = f"version property {nv} removed: no dependency references it after the parent-managed versions " \

@@ -2308,3 +2308,49 @@ restructure now removes them (`bom_properties_removed` 3) → the review finds n
   `HandlerInterceptorAdapter` itself → 0 scripts, 1 LLM call), `servlet-nonstandard-dirs` (the restructure writes `nonFilteredFileExtensions`
   → the review replay no longer reports a critical issue, no script), `boot2-qlrm-javax` (the replayed fix answer now carries the
   `<verify>` block rule 14 requires for a library replacement; without it the v2.1d guide call made 3 LLM calls).
+
+## v2.1p — the company parent chain's facts come from its poms, not from a fixed list (2026-10-30)
+
+User: "layout 을 parent pom 파일에서 읽어 와서 세팅해야 하는 거 아냐? parent 버전이 올라가면서 프로퍼티에 뭐가 추가될지 모르는데 고정으로
+박으면 이상하지 않아?" — right. v2.1o read the Boot BOM's facts dynamically but took the in-house parent's own property names from
+`layout.parent_property_names`. The configured company parents are poms in the same repository, so they are read the same way.
+
+### `sbmig/build/parent_chain.py` (new; `boot_bom.py` becomes its Boot-only special case or is folded in)
+- `ParentChainFacts(roots: list[str], managed: dict[g:a, version], properties: dict[name, value], sources: list[str])` and
+  `load_parent_chain_facts(cfg) -> ParentChainFacts`: for each configured parent (`artifacts.parent`, `boot_parent`, `comp_parent`,
+  de-duplicated) read its pom (local repository → `RepositoryLookup.pom_text`), then follow `<parent>` upwards and every
+  `<scope>import</scope>` BOM (the BOM's own imports one level deep, as in `boot_bom.py`); `${…}` resolved from the poms' own properties
+  (child-most pom wins for a name defined twice); bounded (≤ 80 poms), cached per process per (parent GAVs, local repo), never raises,
+  `.empty`, `as_capture()` in the `load_effective` shape. When `parent_manages_spring_boot` and the chain does not reach
+  `spring-boot-dependencies` (an unusual company parent), the Boot BOM of `target.spring_boot_version` is added so nothing is lost
+  against v2.1o. `sources` names every pom read and every pom that could not be read.
+- The restructure uses it everywhere v2.1o used `load_boot_bom_facts`: the fallback managed source when the post-restructure
+  capture is missing, and the property-override names (= every property name the chain defines). `layout.parent_property_names`
+  stays as an escape hatch, default `[]` (a name the company wants removed even though no pom of the chain defines it).
+- Journal `parent_chain_facts` once per restructure (`roots`, `poms`, `managed`, `properties` counts, `unreadable`); the
+  override step's `source` says `parent chain` (or `parent chain + parent_property_names`).
+- Local e2e: the configured parents are `spring-boot-starter-parent:4.1.0` → the chain reaches `spring-boot-dependencies` → the same
+  facts as v2.1o; no fixture change expected.
+
+### As built (2026-10-30)
+- `sbmig/build/parent_chain.py`: `ParentChainFacts(roots, managed, properties, property_sources (name → defining pom), sources,
+  unreadable, poms, boot_bom_added)`, `.empty`, `as_capture()`, `load_parent_chain_facts(cfg)`, `clear_cache()`; `boot_bom.py`'s helpers
+  are shared and public (`PomSummary` with the `<parent>` coordinates, `parse_pom`, `make_resolver`, `pom_builtins`, `PomReader`,
+  `local_repository`, `read_import_boms`), `load_boot_bom_facts` unchanged. Local e2e parent `spring-boot-starter-parent:4.1.0`: 48 poms,
+  1,872 managed keys, 202 properties.
+- Merge rules: roots = parent, boot_parent, comp_parent (duplicates / versionless skipped); `<parent>` followed by repository
+  coordinates only, ≤ 12 hops per root, ≤ 80 poms; properties: the child-most definition wins (its pom recorded), an imported BOM's
+  properties are NOT inherited (Maven), with several roots the first wins; managed: the declaration nearest the root parent wins and
+  every declared entry beats imported BOMs (which only add missing keys); the Boot BOM is added at the lowest priority only when
+  `parent_manages_spring_boot` and no chain pom is / imports `spring-boot-dependencies`; unreadable poms listed, never raised; only
+  successful loads cached (roots, local repo, the Boot switch and version).
+- Restructurer: `_chain_facts(c)` (once per restructure, journal `parent_chain_facts` with roots, counts, `boot_bom_added`, unreadable),
+  `_fallback_capture(c)` replaces `_bom_capture` (with `parent_manages_spring_boot: false` the BOM-importing poms get the Boot BOM plus
+  the chain, declared chain entries winning), `_override_name_sets` = chain names ∪ `parent_property_names`;
+  `RestructureResult.bom_property_sources`; pom-verify wording by defining pom: `the Spring Boot <v> BOM's <name>` / `the in-house
+  parent chain's <name> (<g:a:v>)` / `the in-house parent's <name>` (escape hatch). `layout.parent_property_names` default `[]`.
+- Deviations: chain-derived override names are limited to `*.version` properties and exclude `java.version` / `maven.compiler.*`
+  (`spring-boot-starter-parent` defines `java.version=17` and `maven.compiler.release` — without the filter the step would delete the
+  `maven.compiler.release=21` the restructure writes; escape-hatch names are not filtered); chain names apply whatever
+  `parent_manages_spring_boot` says (modules inherit the chain's properties either way); `tests/conftest.py` autouse
+  `_no_parent_chain_facts` keeps this machine's `~/.m2` out of the tests.

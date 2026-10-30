@@ -211,18 +211,17 @@ class LayoutConfig(BaseModel):
     # 새 부모 체인이 관리하는 명시 <version> 을 지운다. gte = 관리 버전이 같거나 높을 때만(일부러 올린 고정은
     # 유지). 사내 아티팩트와 system scope 의존성은 건드리지 않는다.
     drop_managed_versions: Literal["gte", "any", "off"] = "gte"
-    # v2.1o: 부모가 Spring Boot 를 관리할 때(artifacts.parent_manages_spring_boot) 프로젝트 pom 의 <properties> 중 이름이
-    # Boot BOM 의 속성과 같은 것(spring-boot.version / spring-security.version / hibernate.version …)을 지운다 — Maven
-    # 속성 상속으로 as-is 값(2.5.15 등)이 부모의 4.1.0 을 이기지 않게. 아직 `${이름}` 으로 참조되면 남긴다.
-    # v2.1o: remove project <properties> named like a Spring Boot BOM property (they override the parent chain's
-    # values through property inheritance) unless still referenced; false keeps them (the review may flag them)
+    # v2.1o / v2.1p: 프로젝트 pom 의 <properties> 중 이름이 사내 부모 체인(그 pom 들을 읽음, Boot 부모를 상속하면 Boot
+    # BOM 까지)이 정의한 버전 속성과 같은 것(spring-boot.version / spring-security.version / hibernate.version …)을
+    # 지운다 — Maven 속성 상속으로 as-is 값(2.5.15 등)이 부모의 4.1.0 을 이기지 않게. 아직 `${이름}` 으로 참조되면 남긴다.
+    # v2.1o / v2.1p: remove project <properties> named like a version property the in-house parent chain defines
+    # (read from its poms) unless still referenced; false keeps them (the review may flag them)
     drop_bom_property_overrides: bool = True
-    # v2.1o: 사내 부모 체인이 정의하는, 프로젝트 pom 이 덮어쓰면 안 되는 속성 이름 — Boot BOM 의 속성이 아니라 회사
-    # 관례다(base-parent 의 spring-boot.version 등). 회사가 자기 목록을 적는다(base-parent 가 쓰면 spring.version 도).
-    # 위 단계가 BOM 이름과 함께 지운다(아직 ${이름} 으로 참조되면 남김), Boot BOM 사실이 없어도.
-    # v2.1o: property names the in-house parent chain defines (a convention, not Boot BOM properties) that project
-    # poms must not override; removed by the step above with the BOM names (unless referenced), facts or not
-    parent_property_names: list[str] = Field(default_factory=lambda: ["spring-boot.version"])
+    # v2.1p: 비상구 — 사내 부모 체인의 pom 을 읽어도 나오지 않는데 회사가 지우고 싶은 속성 이름. 부모가 정의한 이름은
+    # 이제 부모 pom 들에서 직접 읽으므로(sbmig.build.parent_chain) 기본은 비어 있다. 아직 ${이름} 으로 참조되면 남긴다.
+    # v2.1p: escape hatch — names to remove although no pom of the parent chain defines them (the chain's own names
+    # are read from its poms now, sbmig.build.parent_chain); kept while still referenced
+    parent_property_names: list[str] = Field(default_factory=list)
     application_class_name: str = "Application"
     boot_resources_glob: list[str] = Field(default_factory=lambda: [
         "application*.yml", "application*.yaml", "application*.properties",

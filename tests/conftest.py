@@ -97,3 +97,17 @@ def _no_boot_bom_facts(monkeypatch):
 
     monkeypatch.setattr(boot_bom, "load_boot_bom_facts", _none)
     return _none
+
+
+@pytest.fixture(autouse=True)
+def _no_parent_chain_facts(monkeypatch):
+    """v2.1p: same for the in-house parent chain's facts (`sbmig.build.parent_chain.load_parent_chain_facts`) — no
+    test reads the parent poms from `~/.m2`; `tests/build/test_parent_chain.py` imports the real function at module
+    import time and points it at a tmp repository."""
+    from sbmig.build import parent_chain
+
+    def _none(cfg):
+        return parent_chain.ParentChainFacts(sources=["tests: no parent chain facts"])
+
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", _none)
+    return _none

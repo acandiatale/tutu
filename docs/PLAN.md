@@ -575,3 +575,16 @@ Spring 7.0.8 — "Boot 레시피 실행 다 하고 구조화를 다 한 후에 �
 | `openrewrite.recipes.spring_framework_7` = `UpgradeSpringFramework_7_0` as a default set for `spring_legacy` (user: "넣는 게 좋을 것 같아"); catalog `sets`; plan / advisor / contract tests updated | `sbmig/core/config.py`, `config/default.yml`, `knowledge/recipes/catalog.yml`, `docs/RECIPES.md`, `tests/plan/*`, `tests/core/test_v2_contracts.py` | done |
 | e2e: full fixture set on the new default (no compile step) + `spring5-security-batch` expectations (the property overrides now removed by the restructure, review critical 0) | `out/e2e/summary.md` | full e2e (36 fixtures) on the new defaults: 32 PASS at once, 4 expectations updated to the new behaviour (`spring5-xml` 0 scripts / 1 LLM — the Framework 7 recipe converts the adapters; `servlet-nonstandard-dirs` and `spring5-security-batch` no review critical / no script — the restructure writes the extensions and removes the overriding properties; `boot2-qlrm-javax` replay gained the `<verify>` block) and the `legacy-external-parent` recipe-raised 7.0.10 fixed in code; rerun of the 10 affected fixtures all PASS |
 | Offline suite after v2.1o | `python -m pytest -m "not integration"` | **2,596 passed**, 46 deselected (was 2,578 after v2.1n) |
+
+## Status — 2026-10-30, v2.1p (the company parent chain's facts come from its poms)
+
+User: "layout 을 parent pom 파일에서 읽어 와서 세팅해야 하는 거 아냐? … 고정으로 박으면 이상하지 않아?" / "dmdb 도 하드코딩은 꼼수잖아?"
+Contract + as-built: `docs/INTERFACES.md` "v2.1p". The `.dmdb` detection is content-based already (NUL bytes / not decodable), so the
+config list stays empty; `optional_version_policy` is moot when the optionals carry `version: null` (the parent manages them).
+
+| Deliverable | Where | Status |
+|---|---|---|
+| `sbmig/build/parent_chain.py`: facts of the configured parents (`artifacts.parent`, `boot_parent`, `comp_parent`) through their `<parent>` chain and BOM imports — property names (child wins) + managed keys (first definition wins); the Boot BOM added when the chain misses it; `as_capture()` | `sbmig/build/parent_chain.py`, `sbmig/build/boot_bom.py` (shared helpers), `tests/build/test_parent_chain.py` | done (agent; 4 + 16 tests) |
+| Restructure uses the chain facts for the fallback managed source and the override names; `layout.parent_property_names` default `[]` (escape hatch); journal `parent_chain_facts`; pom-verify row names the defining pom | `sbmig/restructure/restructurer.py`, `sbmig/core/config.py`, `config/default.yml`, `sbmig/loop/orchestrator.py`, `tests/restructure/test_v21o_bom_facts.py` | done (agent; 4 + 16 tests) |
+| Docs: CLAUDE.md, INTERFACES | — | done |
+| Verification | offline suite + e2e subset | e2e 8 fixtures (legacy-external-parent, spring5-security-batch, boot2, legacy-role-parents, msa, filtered-binary-resources, company-boot-single, boot2-qlrm-javax) all PASS; offline suite **2,598 passed**, 46 deselected |

@@ -1,7 +1,8 @@
-"""v2.1o (2): without the post-restructure effective pom the managed-version cleanup and the v2.1l pin settlement use
-the Spring Boot BOM's facts (`sbmig.build.boot_bom`, monkeypatched here — never the network, never `~/.m2`), and the
-as-is version properties that override the Boot BOM's (`spring-security.version=5.7.11` …) are removed in every
-mode."""
+"""v2.1o (2) / v2.1p: without the post-restructure effective pom the managed-version cleanup and the v2.1l pin
+settlement use the in-house parent chain's facts (`sbmig.build.parent_chain`, monkeypatched here — never the network,
+never `~/.m2`; the Boot BOM loader only for poms importing the BOM when no parent manages Boot), and the as-is version
+properties that override the chain's (`spring-security.version=5.7.11`, `spring-boot.version=2.5.15` …) are removed in
+every mode."""
 from __future__ import annotations
 
 import json
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from sbmig.build import boot_bom
+from sbmig.build import boot_bom, parent_chain
 from sbmig.core.config import Config
 from sbmig.core.models import PomInfo
 from sbmig.restructure import PomEditor, Restructurer
@@ -25,12 +26,18 @@ TEXT = "org.apache.commons:commons-text"
 CSV = "org.apache.commons:commons-csv"
 HIBFOO = "org.hibernate:hibernate-foo"
 BACK = "shop-back/pom.xml"
-FACTS = boot_bom.BootBomFacts(
-    version="4.1.0", managed={CTX: "7.0.8", SEC: "7.1.0", TEXT: "1.12.0"},
-    properties={"spring-security.version": "7.1.0", "spring-batch.version": "6.0.4", "hibernate.version": "7.4.1.Final"},
-    sources=["test facts"])
+BOOT = "org.springframework.boot:spring-boot-dependencies:4.1.0"
+BASE = "com.company.platform:base-parent:4.0.0"
+FACTS = parent_chain.ParentChainFacts(
+    roots=[BASE], managed={CTX: "7.0.8", SEC: "7.1.0", TEXT: "1.12.0"},
+    properties={"spring-security.version": "7.1.0", "spring-batch.version": "6.0.4", "hibernate.version": "7.4.1.Final",
+                "java.version": "17", "maven.compiler.release": "17", "spring-boot.version": "4.1.0"},
+    property_sources={"spring-security.version": BOOT, "spring-batch.version": BOOT, "hibernate.version": BOOT,
+                      "java.version": BASE, "maven.compiler.release": BASE, "spring-boot.version": BASE},
+    sources=["test facts"], poms=3)
+BOOT_FACTS = boot_bom.BootBomFacts(version="4.1.0", managed=dict(FACTS.managed), sources=["test Boot BOM"])
 ASIS = {"managed": {TEXT: "1.10.0", CSV: "1.10.0"}, "direct": {}, "by_module": {}}
-SOURCE_BOM = "managed-version source: Boot BOM facts — spring-boot-dependencies 4.1.0 (3 managed artifacts)"
+SOURCE_BOM = f"managed-version source: parent chain facts — {BASE} (3 managed artifacts)"
 
 
 @pytest.fixture()
@@ -48,11 +55,11 @@ def ccfg(cfg: Config) -> Config:
 def facts(monkeypatch):
     calls: list[object] = []
 
-    def _load(cfg, version=None):
-        calls.append(version)
+    def _load(cfg):
+        calls.append(cfg)
         return FACTS
 
-    monkeypatch.setattr(boot_bom, "load_boot_bom_facts", _load)
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", _load)
     return calls
 
 
@@ -136,10 +143,13 @@ def test_a_real_capture_still_wins(tmp_path: Path, ccfg: Config, facts) -> None:
 
 
 def test_no_parent_managing_boot_uses_the_facts_only_where_the_bom_is_imported(tmp_path: Path, ccfg: Config,
-                                                                               facts) -> None:
-    ccfg.artifacts.parent_manages_spring_boot = False           # the restructure imports the BOM into the modules
+                                                                               monkeypatch) -> None:
+    # a parent chain that carries no Boot (empty facts) + the restructure imports the BOM into the modules
+    monkeypatch.setattr(boot_bom, "load_boot_bom_facts", lambda cfg, version=None: BOOT_FACTS)
+    ccfg.artifacts.parent_manages_spring_boot = False
     ws, res, _p, _pa = _layout(tmp_path, ccfg)
-    assert any(n.startswith(SOURCE_BOM[:-1] + "; only the 2 pom(s) importing it)") for n in res.notes)
+    assert any(n.startswith("managed-version source: Boot BOM 4.1.0 (3 managed) for the 2 pom(s) importing it")
+               for n in res.notes)
     assert _versions(ws)[CTX] is None
     # an imported BOM ignores the importer's properties: the override step does not run …
     assert res.bom_properties_removed == [] and _events(ws, "bom_property_overrides") == []
@@ -160,10 +170,14 @@ def test_bom_named_properties_are_removed_unless_referenced(tmp_path: Path, ccfg
     assert res.bom_properties_removed == [f"{BACK}: spring-security.version=5.7.11",
                                           f"{BACK}: spring-batch.version=4.3.10"]
     assert "property hibernate.version kept: still referenced by shop-back/pom.xml" in res.notes
-    assert any(n.startswith("2 as-is version propert(ies) removed: they override the Spring Boot 4.1.0 BOM's")
-               for n in res.notes)
+    assert any(n.startswith("2 as-is version propert(ies) removed: they override the in-house parent chain's "
+                            f"properties of the same name ({BASE})") for n in res.notes)
+    assert res.bom_property_sources == {"spring-security.version": BOOT, "spring-batch.version": BOOT}
+    assert _props(ws)["maven.compiler.release"] == "21"          # the chain defines it too, but Java is ours
     ev = _events(ws, "bom_property_overrides")
-    assert ev and ev[0]["removed"] == res.bom_properties_removed and ev[0]["source"] == "Boot BOM facts"
+    assert ev and ev[0]["removed"] == res.bom_properties_removed and ev[0]["source"] == "parent chain"
+    chain_ev = _events(ws, "parent_chain_facts")
+    assert len(chain_ev) == 1 and chain_ev[0]["roots"] == [BASE] and chain_ev[0]["managed"] == 3
     assert ev[0]["kept"] == [f"{BACK}: hibernate.version (referenced by {BACK})"]
     text = "\n".join(restructure_lines([], [res]))
     assert "as-is version properties removed (they overrode the parent's Spring Boot BOM properties)" in text
@@ -255,20 +269,26 @@ def _boot_with(props: str, extra_dep: str = "") -> dict[str, str]:
     return files
 
 
-def test_an_unreferenced_spring_boot_version_is_removed_without_facts(tmp_path: Path, ccfg: Config) -> None:
-    assert ccfg.layout.parent_property_names == ["spring-boot.version"]          # the default
+def test_a_name_only_the_in_house_parent_defines_is_removed(tmp_path: Path, ccfg: Config, facts) -> None:
+    """`spring-boot.version` is no Boot BOM property: base-parent defines it — read from its pom, no config list."""
+    assert ccfg.layout.parent_property_names == []                               # the default
     ws = make_ws(tmp_path, _boot_with("        <spring-boot.version>2.5.15</spring-boot.version>\n"), "pp-rm")
-    res = Restructurer().apply(ws, _boot_multi_profile(ws), ccfg, mode="boot_pom")   # conftest: no Boot BOM facts
+    res = Restructurer().apply(ws, _boot_multi_profile(ws), ccfg, mode="boot_pom")
     assert res.ok, res.error
     assert "spring-boot.version" not in _props(ws, "shop-core/pom.xml")
     assert res.bom_properties_removed == ["shop-core/pom.xml: spring-boot.version=2.5.15"]
-    assert any(n.startswith("1 as-is propert(ies) removed: they override the in-house parent's properties")
-               for n in res.notes)
-    ev = _events(ws, "bom_property_overrides")
-    assert ev and ev[0]["source"] == "layout.parent_property_names"
+    assert res.bom_property_sources == {"spring-boot.version": BASE}
+    assert _events(ws, "bom_property_overrides")[0]["source"] == "parent chain"
 
 
-def test_a_referenced_spring_boot_version_is_kept(tmp_path: Path, ccfg: Config) -> None:
+def test_without_chain_facts_nothing_is_removed(tmp_path: Path, ccfg: Config) -> None:
+    ws = make_ws(tmp_path, _boot_with("        <spring-boot.version>2.5.15</spring-boot.version>\n"), "pp-none")
+    res = Restructurer().apply(ws, _boot_multi_profile(ws), ccfg, mode="boot_pom")   # conftest: no chain facts
+    assert res.ok and res.bom_properties_removed == []
+    assert _props(ws, "shop-core/pom.xml")["spring-boot.version"] == "2.5.15"
+
+
+def test_a_referenced_spring_boot_version_is_kept(tmp_path: Path, ccfg: Config, facts) -> None:
     # org.example:boot-addon is not managed by anything → its ${spring-boot.version} version is never dropped
     files = _boot_with("        <spring-boot.version>2.5.15</spring-boot.version>\n",
                        dep("org.example", "boot-addon", "${spring-boot.version}"))
@@ -280,15 +300,19 @@ def test_a_referenced_spring_boot_version_is_kept(tmp_path: Path, ccfg: Config) 
     assert "property spring-boot.version kept: still referenced by shop-core/pom.xml" in res.notes
 
 
-def test_a_name_added_through_config_is_removed(tmp_path: Path, ccfg: Config) -> None:
-    ccfg.layout.parent_property_names = ["spring-boot.version", "spring.version"]
+def test_the_escape_hatch_needs_no_facts(tmp_path: Path, ccfg: Config) -> None:
+    ccfg.layout.parent_property_names = ["spring.version"]
     ws = make_ws(tmp_path, _boot_with("        <spring.version>5.3.31</spring.version>\n"
                                       "        <other.version>1.0</other.version>\n"), "pp-cfg")
-    res = Restructurer().apply(ws, _boot_multi_profile(ws), ccfg, mode="boot_pom")
+    res = Restructurer().apply(ws, _boot_multi_profile(ws), ccfg, mode="boot_pom")   # conftest: no chain facts
     assert res.ok, res.error
     props = _props(ws, "shop-core/pom.xml")
     assert "spring.version" not in props and props["other.version"] == "1.0"
     assert res.bom_properties_removed == ["shop-core/pom.xml: spring.version=5.3.31"]
+    assert res.bom_property_sources == {}
+    assert any(n.startswith("1 as-is propert(ies) removed: they override the in-house parent's properties")
+               for n in res.notes)
+    assert _events(ws, "bom_property_overrides")[0]["source"] == "parent_property_names"
     ccfg.layout.drop_bom_property_overrides = False                    # the switch covers these names too
     ws2 = make_ws(tmp_path / "off", _boot_with("        <spring.version>5.3.31</spring.version>\n"), "pp-off")
     res2 = Restructurer().apply(ws2, _boot_multi_profile(ws2), ccfg, mode="boot_pom")

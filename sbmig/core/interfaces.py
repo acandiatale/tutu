@@ -210,6 +210,8 @@ class RestructureResult(BaseModel):
     versions_unknown: list[str] = Field(default_factory=list)
     # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 버전 속성 중 지운 것 — "<pom>: name=value"
     bom_properties_removed: list[str] = Field(default_factory=list)
+    # v2.1p: 지운 속성 이름 → 그 이름을 정의한 사내 부모 체인의 pom g:a:v (pom-verify 문구용)
+    bom_property_sources: dict[str, str] = Field(default_factory=dict)
     # v2.1o: 관리 버전 정리가 지운 명시 버전만 참조하던 버전 속성(spring.version=5.3.31 …) — "<pom>: name=value"
     version_properties_removed: list[str] = Field(default_factory=list)
     # v2.1m: 필터링되는 리소스 아래 바이너리 파일 때문에 maven-resources-plugin(/ maven-war-plugin)
