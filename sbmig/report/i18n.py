@@ -541,6 +541,12 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"`\g<c>` 가 reactor 의 <module> 목록으로 두 번 이상 닿는다(예: 루트 pom 의 DEV 와 안쪽 집계 pom 의 ../DEV) — "
       r"모듈마다 한 줄만 남길 것. 접수가 안쪽 집계 pom 의 중복 줄은 지우지만 이것은 지우지 못했다(루트 pom 안의 두 줄, "
       r"같은 좌표의 두 디렉토리, 또는 프로필): pom 을 손으로 고칠 것, LLM 에게는 묻지 않는다")),
+    # v2.1r: 차단 표의 file_lock 제안 문구(sbmig/loop/blocked_registry.py FILE_LOCK_SUGGESTION)
+    ((r"^the build output \(target/\) was locked by another process: exclude the project's target/ from the antivirus "
+      r"real-time scan, close any IDE / Explorer window / leftover java process holding it, then run again; the LLM "
+      r"is not asked$"),
+     (r"빌드 산출물(target/)을 다른 프로세스가 잠갔습니다 — 백신 실시간 검사에서 프로젝트의 target/ 를 예외 처리하고, 열려 "
+      r"있는 IDE/탐색기/이전 java 프로세스를 닫은 뒤 다시 실행하세요")),
     (r"^(?P<n>\d+) javax API jar\(s\) still on the classpath — see that section$",
      r"클래스패스에 남은 javax API jar \g<n>개 — '클래스패스에 남은 javax API jar' 절 참조"),
     ((r"^(?P<n>\d+) javax API jar\(s\) still on the classpath after the migration \(see the report section\) — "

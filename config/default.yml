@@ -148,6 +148,9 @@ build:
   repository_url: null          # v2.1d: where maven-metadata.xml / poms are read to list releases for the LLM;
                                 # null → the catch-all mirror of settings_file, else Maven Central (unless offline)
   repository_timeout_seconds: 10
+  file_lock_retries: 3           # v2.1r: a build failing on a Windows file lock under target/ (antivirus / IDE / a leftover
+  file_lock_retry_wait_s: 5      # java holding a jar; patterns: knowledge/config/build_env_errors.yml) runs again after
+                                 # the wait, up to this many times (0 = off)
   non_filtered_extensions: []   # v2.1m: company binary extensions (lower-case, no dot), e.g. [dmdb]; the restructure
                                 # writes them, next to the binary extensions its scan finds, into maven-resources-plugin
                                 # <nonFilteredFileExtensions> of every pom that filters a resource (no MalformedInputException)
@@ -170,6 +173,7 @@ loop:
   oscillation_window: 4
   blocked_policy:                # LLM script attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
     reactor_duplicate: 0           # v2.1k: a module listed twice in the reactor is handed over, never asked of the LLM
+    file_lock: 0                   # v2.1r: target/ locked by another process (Windows) — an environment error, never the LLM
     # v2: no handler swaps a javax library / bumps a missing version / a plugin any more → the LLM script gets 2 tries
     external_javax_api: 2        # dependency still exposes javax.* → the script may swap it for its jakarta release
     external_api_incompatible: 2

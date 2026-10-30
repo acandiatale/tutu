@@ -298,7 +298,8 @@ def test_jsp_project_boot_war(tmp_path: Path, ccfg: Config) -> None:
     assert any("kept once in shop-boot/src/main/resources/legacy-config/" in n for n in res.notes)
     props = (root / "shop-boot/src/main/resources/application.properties").read_text()
     assert "spring.mvc.view.prefix=/WEB-INF/jsp/\nspring.mvc.view.suffix=.jsp\n" in props
-    assert "boot module packaged as WAR for external Tomcat; JSPs are served from the front jar " \
+    assert "boot module packaged as an executable WAR (java -jar runs the embedded Tomcat; an external Tomcat works too); " \
+           "JSPs are served from the front jar " \
            "(META-INF/resources) — shop-boot, shop-front" in res.manual_followups
     assert not any("executable jar" in fu for fu in res.manual_followups)
     # the comp pom has no tomcat; the root keeps only the mandatory dependencies

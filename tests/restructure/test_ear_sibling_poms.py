@@ -122,8 +122,8 @@ def test_ear_sibling_poms_end_to_end(tmp_path: Path, ccfg: Config, roles: bool) 
     assert {"ear-module-dropped", "web-content-left", "web-xml-registered"} <= set(res.flags)
     assert "war-overlay-moved" not in res.flags
     fu = res.manual_followups
-    assert ("EAR APP/EAR deployed portalWEB at context root /portal: deploy portal-boot as portal.war on the external "
-            "Tomcat, or set server.servlet.context-path=/portal (embedded Tomcat)") in fu
+    assert ("EAR APP/EAR deployed portalWEB at context root /portal: run portal-boot as an executable WAR (java -jar, "
+            "embedded Tomcat) with server.servlet.context-path=/portal, or deploy it as portal.war on an external Tomcat") in fu
     assert ("web content not referenced by any pom left in place: STATIC/ (1 JSP, 2 other files) — serve it as before "
             "(web server) or move it into portal-front") in fu
     assert ("module APP/BATCH had main class com.example.portal.batch.NoticeCleaner (a standalone batch?): merged into "
@@ -227,8 +227,8 @@ def test_ear_application_xml_default_context_root_and_external_web_module(tmp_pa
     res = Restructurer().apply(ws, _small_profile(ws), ccfg, mode="layout")
     assert res.ok, res.error
     root = ws.root
-    assert ("EAR EAR deployed shopWEB at context root /shop: deploy shop-boot as shop.war on the external Tomcat, or "
-            "set server.servlet.context-path=/shop (embedded Tomcat)") in res.manual_followups
+    assert ("EAR EAR deployed shopWEB at context root /shop: run shop-boot as an executable WAR (java -jar, embedded "
+            "Tomcat) with server.servlet.context-path=/shop, or deploy it as shop.war on an external Tomcat") in res.manual_followups
     assert any(f.startswith("EAR EAR deployed partner-portal at context root /partner-portal (the maven-ear-plugin "
                             "default)") for f in res.manual_followups)
     assert any(f.startswith("EAR module EAR also packaged the web module com.partner:partner-portal:1.4")

@@ -3,7 +3,8 @@
 시도를 몇 번 줄지는 ``cfg.loop.blocked_policy`` 가 정한다. 차단된 케이스는 인수인계의 Blocked 로 간다. X1
 의존성 API 가 아직 javax 타입 / X2 의존성 API 변경 / X3·X4 아티팩트·parent 가 저장소에 없음 / X5 JDK 21 에서
 깨지는 플러그인 / X6 Java 가 아닌 소스(Kotlin·Groovy·Scala, 코드 생성 플러그인) / v2.1k reactor 중복(같은 프로젝트가
-reactor 에 두 번 — pom 구조 문제라 스크립트로 못 고침, 접수가 먼저 지우고 남은 것만 여기 온다). 일부러 보수적이다: 애매하면
+reactor 에 두 번 — pom 구조 문제라 스크립트로 못 고침, 접수가 먼저 지우고 남은 것만 여기 온다) / v2.1r 파일 잠금(Windows 에서
+target/ 의 파일을 다른 프로세스가 잡음 — 빌드 PC 환경 문제). 일부러 보수적이다: 애매하면
 차단하지 않는다(스크립트에 기회를 준다). javax 패키지 없음 / javax 심볼 없음은 jakarta 레시피나 스크립트
 몫이고, 프로젝트가 아직 그 javax 를 import 하거나 소유 클래스가 프로젝트 것이면 X1 이 아니다. 주의: 이것은
 "빌드 오류" 의 차단이다. EOL 라이브러리 권고에는 차단 정책이 없다(권고는 안내만, CLAUDE.md).
@@ -14,7 +15,8 @@ A cluster is *blocked* when the fix is not inside this project: a dependency sti
 API (X1), a dependency API changed (X2), an artifact / parent is not in any repository (X3/X4), a build plugin is
 broken on JDK 21 (X5), the sources are not Java (X6) or a project is reached twice through the reactor's `<module>`
 lists (v2.1k, ``reactor_duplicate``: the intake removes such listings; what still reaches the build is a pom structure
-problem no script fixes). ``classify_blocked`` only *classifies*; how many LLM attempts
+problem no script fixes) or, v2.1r, a file under ``target/`` is locked by another process on Windows (``file_lock``:
+an environment error the Maven runner already retried). ``classify_blocked`` only *classifies*; how many LLM attempts
 a reason gets before the cluster is blocked is ``cfg.loop.blocked_policy`` (see ``decide.py``).
 
 The rules are deliberately conservative: when in doubt the cluster is **not** blocked (the recipes / fix scripts get
@@ -131,6 +133,8 @@ class BlockedCandidate:
             return self.evidence[0] if self.evidence else "non-Java / generated sources"
         if r == BlockReason.REACTOR_DUPLICATE:
             return self.evidence[0] if self.evidence else "a project is listed twice in the reactor"
+        if r == BlockReason.FILE_LOCK:
+            return self.evidence[0] if self.evidence else "the build output (target/) is locked by another process"
         return self.evidence[0] if self.evidence else r.value
 
 
@@ -536,6 +540,30 @@ def _classify_reactor(cluster: ErrorCluster) -> BlockedCandidate | None:
                                        f"<module> listing (a pom structure problem — no code change fixes it)")])
 
 
+def _classify_file_lock(cluster: ErrorCluster, cfg=None) -> BlockedCandidate | None:
+    """v2.1r 판정: Windows 에서 ``target/`` 의 파일을 다른 프로세스(백신·인덱서·IDE·남은 java)가 잡아 Maven 이 복사·삭제에
+    실패한 것(``sbmig.build.env_errors.file_lock_hit`` — ``knowledge/config/build_env_errors.yml`` 의 패턴). 빌드 PC 의
+    환경 문제라 코드로 못 고친다: ``blocked_policy.file_lock`` 0 이면 LLM 없이 바로 인수인계(러너가 이미 몇 번 다시
+    돌렸다).
+
+    v2.1r: a file under target/ locked by another process (the runner's retries did not help) — an environment error,
+    message based whatever the kind; the evidence names the locked path."""
+    from sbmig.build.env_errors import file_lock_hit
+
+    hits: list[tuple[BuildError, str]] = []
+    for e in cluster.errors:
+        path = file_lock_hit(_text(e), cfg)
+        if path is not None:
+            hits.append((e, path))
+    if not hits:
+        return None
+    path = next((p for _e, p in hits if p != "?"), "?")
+    where = f" ({path})" if path != "?" else ""
+    why = (f"the build output{where} is locked by another process (Windows file lock: an antivirus / IDE / a leftover "
+           "java process) — an environment error, not the code")
+    return BlockedCandidate(reason=BlockReason.FILE_LOCK, errors=[e for e, _p in hits], evidence=[why])
+
+
 def _plugin_of(e: BuildError) -> Optional[str]:
     """오류의 플러그인 좌표 g:a:v(아티팩트, 없으면 ``goal g:a:v:goal`` 에서)."""
     if e.artifact is not None:
@@ -569,7 +597,7 @@ def _classify_foreign_source(cluster: ErrorCluster) -> Optional[BlockedCandidate
 def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], cfg=None, *,
                      ws=None) -> Optional[BlockedCandidate]:
     """클러스터(의 일부)가 프로젝트 안에서 고칠 수 없으면 BlockedCandidate, 아니면 None.
-    ``candidate.errors`` 는 일부일 수 있다 — 루프는 그 오류만 차단하고 나머지는 계속 고친다. 순서:
+    ``candidate.errors`` 는 일부일 수 있다 — 루프는 그 오류만 차단하고 나머지는 계속 고친다. 순서: 파일 잠금(v2.1r) →
     reactor 중복(v2.1k) → 인프라(X3–X5) → 외국어 소스(X6) → (컴파일이면) javax API(X1) → 외부 API(X2).
 
     Return a BlockedCandidate when (part of) the cluster cannot be fixed inside the project, else None.
@@ -579,6 +607,10 @@ def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], c
     working on the rest."""
     if not cluster.errors:
         return None
+    # v2.1r: 파일 잠금이 먼저 — 그 빌드는 다른 오류의 단계까지 가지 못했을 수 있다(무엇이든 가린다)
+    lock = _classify_file_lock(cluster, cfg)
+    if lock is not None:
+        return lock
     for fn in (_classify_reactor, _classify_infra, _classify_foreign_source):
         c = fn(cluster)
         if c is not None:

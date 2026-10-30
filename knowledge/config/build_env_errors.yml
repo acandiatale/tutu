@@ -1,0 +1,17 @@
+# v2.1r: build failures caused by the build machine, not by the project (sbmig.build.env_errors).
+#
+# file_lock: Windows file locks on the build output (target/) — an antivirus / indexer / IDE / a lingering JVM holds a
+# freshly written jar while Maven copies or deletes it. A failed build whose log matches one of these regexes is run
+# again (build.file_lock_retries, build.file_lock_retry_wait_s); a case whose errors match is BLOCKED `file_lock` at once
+# (loop.blocked_policy.file_lock: 0), never given to the LLM. Python regexes, matched anywhere in the log text; add your
+# antivirus' wording here (no redeploy). When this file is missing or empty, the built-in list (the same entries) is used.
+file_lock:
+  # java.nio exceptions naming a path under target/ (Windows `\target\` or `/target/`)
+  - 'java\.nio\.file\.(?:FileSystemException|AccessDeniedException|FileAlreadyExistsException)\b[^\n]*[\\/]target[\\/]'
+  # the Windows message itself (Korean / English console)
+  - '다른 프로세스가 파일을 사용 중'
+  - 'being used by another process'
+  - 'The process cannot access the file'
+  # maven-clean-plugin / the war plugin failing to delete something under target/
+  - 'Unable to delete[^\n]*target'
+  - 'Failed to delete[^\n]*[\\/]target[\\/]'

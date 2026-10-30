@@ -268,6 +268,9 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
 
     # v2.1k: reactor duplicate follow-ups (orchestrator → manual_followups) and the reactor_duplicate suggestion
     lines += _reactor_lines(tmp_path / "rx")
+    # v2.1r: the file_lock suggestion
+    from sbmig.loop.blocked_registry import FILE_LOCK_SUGGESTION
+    lines.append(FILE_LOCK_SUGGESTION)
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

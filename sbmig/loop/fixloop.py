@@ -481,19 +481,29 @@ class VersionResolver:
     `repository` a zero-arg callable returning the run's `RepositoryLookup` (or None). Never raises."""
 
     def __init__(self, asis: dict | None = None, after: dict | None = None,
-                 repository: Callable[[], Any] | None = None):
-        """두 캡처(dict, 없으면 빈 것)와 저장소 조회기를 주는 콜러블을 받는다."""
+                 repository: Callable[[], Any] | None = None, chain: Any = None):
+        """두 캡처(dict, 없으면 빈 것), 저장소 조회기를 주는 콜러블, 재구성 뒤 캡처가 없을 때 쓸 사내 부모 체인의 사실
+        (``load_effective`` 모양의 dict, 또는 그것을 돌려주는 콜러블 — 처음 필요할 때 한 번 부른다)을 받는다.
+
+        `chain`: the parent-chain facts used when the post-restructure capture is missing (a capture-shaped dict, or a
+        zero-arg callable returning one, called once when first needed)."""
         self.asis: dict = asis if isinstance(asis, dict) else {}
         self.after: dict = after if isinstance(after, dict) else {}
         self._repository = repository
         self._repo_cache: dict[str, str | None] = {}
+        self._chain_src = chain
+        self._chain: dict | None = None
 
     @classmethod
-    def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None) -> VersionResolver:
+    def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None,
+                      cfg: Any = None) -> VersionResolver:
         """실행 디렉토리의 두 캡처(as-is ``depmgmt.json``, 재구성 뒤 ``depmgmt-after-restructure.json``)로 만든다.
-        못 읽으면 빈 캡처 — 규칙은 저장소 단계만 남는다.
+        못 읽으면 빈 캡처 — 규칙은 저장소 단계만 남는다. ``cfg`` 를 주면 재구성 뒤 캡처가 없을 때 사내 부모 체인의
+        사실(``sbmig.build.parent_chain``, 재구성이 쓰는 대체 출처)로 1단계를 본다.
 
-        Built from the run directory's two captures (missing / unreadable → empty)."""
+        Built from the run directory's two captures (missing / unreadable → empty); with `cfg`, step 1 falls back on
+        the parent-chain facts (`load_parent_chain_facts(cfg).as_capture()`, the restructure's fallback) when the
+        post-restructure capture is missing."""
         asis: dict | None = None
         after: dict | None = None
         try:
@@ -502,7 +512,13 @@ class VersionResolver:
             after = load_effective(ws, name=AFTER_RESTRUCTURE_FILE)
         except Exception as e:  # noqa: BLE001 - no captures: only the repository step is left
             log.debug("dependency version captures unavailable: %s: %s", type(e).__name__, e)
-        return cls(asis, after, repository)
+
+        def chain() -> dict | None:
+            # 모듈 속성으로 불러 테스트의 대역(tests/conftest.py)이 걸린다
+            from sbmig.build import parent_chain
+            return parent_chain.load_parent_chain_facts(cfg).as_capture()
+
+        return cls(asis, after, repository, chain=chain if cfg is not None else None)
 
     @staticmethod
     def _has(data: dict) -> bool:
@@ -515,8 +531,26 @@ class VersionResolver:
 
     @property
     def has_after(self) -> bool:
-        """재구성 뒤 캡처(새 부모 체인)가 있는가. 없으면 '관리되는가' 를 알 수 없다."""
+        """재구성 뒤 캡처(새 부모 체인)가 있는가."""
         return self._has(self.after)
+
+    @property
+    def chain(self) -> dict:
+        """재구성 뒤 캡처 대신 쓸 사내 부모 체인의 사실(처음 쓸 때 한 번 읽음; 없거나 실패하면 빈 dict)."""
+        if self._chain is None:
+            data: Any = None
+            try:
+                data = self._chain_src() if callable(self._chain_src) else self._chain_src
+            except Exception as e:  # noqa: BLE001 - no facts: step 1 knows nothing
+                log.debug("parent chain facts unavailable: %s: %s", type(e).__name__, e)
+            self._chain = data if isinstance(data, dict) else {}
+        return self._chain
+
+    @property
+    def has_chain(self) -> bool:
+        """새 부모 체인이 무엇을 관리하는지 아는가(재구성 뒤 캡처, 없으면 부모 체인의 사실). 모르면 1단계는 아무것도
+        관리된다고 말하지 못한다."""
+        return self.has_after or self._has(self.chain)
 
     @staticmethod
     def _module(data: dict, module: str | None) -> dict | None:
@@ -533,10 +567,14 @@ class VersionResolver:
     def managed_version(self, key: str, module: str | None = None) -> str | None:
         """새 부모 체인이 g:a 를 관리하는 버전(없으면 None). 선언한 모듈의 항목이 캡처에 있으면 그 모듈의
         effective dependencyManagement 가 정답이다 — 다른 모듈(예: boot 모듈의 Boot BOM)이 관리한다고 이
-        모듈도 관리되는 것은 아니다. 모듈 항목이 없을 때만 합친 ``managed``.
+        모듈도 관리되는 것은 아니다. 모듈 항목이 없을 때만 합친 ``managed``. 재구성 뒤 캡처가 없으면 사내 부모
+        체인의 사실(``chain``)의 관리 버전.
 
         The version the new chain manages g:a at: the declaring module's effective dependencyManagement when the
-        capture has the module (another module's chain does not manage this one), else the merged `managed`."""
+        capture has the module (another module's chain does not manage this one), else the merged `managed`; without
+        the post-restructure capture, the parent-chain facts' `managed`."""
+        if not self.has_after:
+            return (self.chain.get("managed") or {}).get(key) or None
         own = self._module(self.after, module)
         if own is not None:
             return (own.get("managed") or {}).get(key) or None
@@ -2773,7 +2811,8 @@ class BuildFixLoop:
 
         The loop's `VersionResolver` (built once, lazily; the repository step reuses `_repository()`)."""
         if self._version_resolver is None:
-            self._version_resolver = VersionResolver.for_workspace(self.ws, repository=self._repository)
+            self._version_resolver = VersionResolver.for_workspace(self.ws, repository=self._repository,
+                                                                   cfg=self.cfg)
         return self._version_resolver
 
     def _protected_version_keys(self) -> set[str]:
@@ -2881,8 +2920,10 @@ class BuildFixLoop:
         원래 있던 것은 빌드가 '버전 없음' 이라고 보고한 경우만 규칙 2(as-is), 시도가 버전을 지운 것은 재구성 뒤
         캡처가 있을 때만 규칙 1–2(없으면 "부모가 관리" 라는 LLM 판단을 둔다). 규칙 1 은 프로젝트 안의
         dependencyManagement(그 pom·프로젝트 안 부모)도 본다 — 재구성 뒤 캡처가 없으면 그것뿐이다(비워 두면 다음
-        빌드의 pom_invalid 로 시도 전체가 되돌려진다). 시도가 부모·BOM import 를 바꾼 pom(과 그 아래)은 건드리지
-        않는다.
+        빌드의 pom_invalid 로 시도 전체가 되돌려진다). 시도가 *버전을 적어* 추가한 의존성을 새 부모 체인이
+        관리하면(규칙 1: 캡처, 없으면 부모 체인의 사실) 그 ``<version>`` 을 지운다 — 관리가 이긴다(as-is 빌드에 없던
+        의존성이라 주인의 고정 버전이 아니다); 그것만을 위해 시도가 추가한 속성도. 원래 있던 명시 버전은 손대지
+        않는다(재구성 규칙의 몫). 시도가 부모·BOM import 를 바꾼 pom(과 그 아래)은 건드리지 않는다.
         사내·필수·선택·제거 대상·자기 모듈·system scope 는 제외. 예외 없음, 채운 것이 없으면 조용하다.
 
         Fill the versions of the `<dependencies>` entries without `<version>` in the poms the applied script / edits
@@ -2892,8 +2933,13 @@ class BuildFixLoop:
         (without it the LLM's "the parent manages it" stands — an as-is version could be an old one). Step 1 also counts a `<dependencyManagement>` entry of the pom or an in-project parent (the tree
         as the attempt left it); without the post-restructure capture that is all step 1 sees — an added dependency
         left empty would come back as pom_invalid and the structural-regression rule would revert the whole try.
-        A pom whose parent or BOM imports the attempt changed (or one below such a pom) is left alone. Protected
-        keys, own modules and `system` scope are skipped. Returns [(pom, key, version, source)]. Never raises."""
+        A dependency the attempt ADDED with an explicit version the new chain manages (step 1: the capture, else the
+        parent-chain facts) loses that `<version>` — managed wins (the as-is build never had it, no owner's pin to
+        respect), with the `${prop}` the attempt added only for it; journal `version_filled` source `managed`,
+        `removed` = the explicit text. Explicit versions that were already there are never touched (the
+        restructure's rules own those). A pom whose parent or BOM imports the attempt changed (or one below such a
+        pom) is left alone. Protected keys, own modules and `system` scope are skipped. Returns
+        [(pom, key, version, source)] of the versions written. Never raises."""
         try:
             return self._fill_versions_unsafe(att, c, res, pre, st)
         except Exception as e:  # noqa: BLE001 - a version fill never fails an attempt
@@ -2920,6 +2966,7 @@ class BuildFixLoop:
         protected = self._protected_version_keys()
         own: set[str] | None = None
         filled: list[tuple[str, str, str, str]] = []
+        removed: list[tuple[str, str, str, str, Any, Any]] = []   # (pom, key, explicit, managed, pom at pre, editor)
         case = att.script_case_id or c.case_id or c.id
         for p in poms:
             if p in reshaped:
@@ -2941,11 +2988,22 @@ class BuildFixLoop:
             for el in ed.dependency_elements(False):
                 g = ed.gav_of(el)
                 key = g.key
-                if g.version or not g.group_id or not g.artifact_id or "${" in key:
+                if not g.group_id or not g.artifact_id or "${" in key:
+                    continue
+                if g.version and key in pre_versions:   # an explicit version that was there: the restructure's
                     continue
                 if own is None:
                     own = self._own_module_keys()
-                if key in protected or key in own or (g.scope or "") == "system" or key in local:
+                if key in protected or key in own or (g.scope or "") == "system":
+                    continue
+                if g.version:                        # added WITH a version: the new chain's management wins
+                    if (g.type or "jar") == "jar" and not g.classifier:   # managed per type:classifier
+                        mv = r.managed_version(key, module)
+                        if mv:
+                            ed.remove_version(el)
+                            removed.append((p, key, g.version, mv, before[p], ed))
+                    continue
+                if key in local:
                     continue
                 if key not in pre_versions:          # added by this attempt: steps 1–3
                     # 재구성 뒤 캡처가 없으면 1단계는 프로젝트 안 관리(위 local)만 본다 — 비워 두면 다음 빌드의
@@ -2953,7 +3011,7 @@ class BuildFixLoop:
                     v, src = r.resolve(key, module, allow_repository=True)
                 elif pre_versions[key]:              # the attempt dropped its version ("the parent manages it")
                     # 새 체인을 모르면 LLM 의 판단을 둔다 — as-is 버전(예: 옛 Boot 2 버전)을 되살리면 더 나쁘다
-                    if not r.has_after:
+                    if not r.has_chain:
                         continue
                     v, src = r.resolve(key, module)              # steps 1–2
                 elif self._reported_missing(st, p, aid, key):   # already there, the build says missing: step 2
@@ -2964,8 +3022,16 @@ class BuildFixLoop:
                     continue
                 ed.set_ref_version(el, v)
                 filled.append((p, key, v, src))
+            for _p, _k, explicit, _mv, ed0, _ed in [x for x in removed if x[0] == p]:
+                self._drop_added_property(ed, ed0, explicit, p)
             if ed.changed:
                 ed.save()
+        for p, key, explicit, mv, _ed0, _ed in removed:
+            att.notes.append(f"version removed by sbmig: {key} {explicit} in {p} (the new parent chain manages it at "
+                             f"{mv})")
+            log.info("버전 제거: %s %s → 부모 체인이 관리 (%s) — %s", key, explicit, mv, p)
+            self.ws.journal({"event": "version_filled", "case": case, "attempt": att.id, "key": key, "version": mv,
+                             "source": "managed", "removed": explicit, "pom": p})
         for p, key, v, src in filled:
             how = VERSION_SOURCE_TEXT.get(src, src)
             att.notes.append(f"version filled by sbmig: {key} {v} in {p} ({VERSION_SOURCE_NOTE.get(src, src)})")
@@ -2973,6 +3039,28 @@ class BuildFixLoop:
             self.ws.journal({"event": "version_filled", "case": case, "attempt": att.id, "key": key, "version": v,
                              "source": src, "pom": p})
         return filled
+
+    def _drop_added_property(self, ed: Any, ed0: Any, version: str, rel: str) -> None:
+        """지운 ``<version>`` 이 ``${속성}`` 이고 그 속성을 이 시도가 이 pom 에 *추가했으며* 이제 아무 pom 도 그것을
+        참조하지 않으면 속성도 지운다(주인의 속성·다른 곳이 쓰는 속성은 그대로).
+
+        Drop the property a removed `${prop}` version used when this attempt added it to this pom and no project pom
+        references it any more (an owner's property, or one still used, stays)."""
+        from sbmig.restructure.pom_editor import property_ref
+        prop = property_ref(version)
+        if not prop or not ed.has_property(prop) or prop in ed0.properties():
+            return
+        ref = "${" + prop + "}"
+        if ref in ed.to_string():
+            return
+        for q in self.ws.pom_files():
+            if _norm_path(q) != rel:
+                try:
+                    if ref in self.ws.read(q):
+                        return
+                except Exception:  # noqa: BLE001 - an unreadable pom: keep the property
+                    return
+        ed.remove_property(prop)
 
     def _declaring_pom(self, e: BuildError) -> str | None:
         """'버전 없음' 오류의 g:a 가 버전 없이 선언된 pom(오류의 pom → 같은 artifactId 의 모듈 pom, 각각의 프로젝트
@@ -3286,14 +3374,14 @@ class BuildFixLoop:
             if not mods:
                 return []
             r = self._versions()
-            if not (r.has_asis or r.has_after):
+            if not (r.has_asis or r.has_chain):
                 return []
             out: list[str] = []
             for key, module in list(mods.items())[:VERSION_FACTS_MAX]:
                 if r.has_asis:
                     v, how = r.asis_fact(key, module)
                     out.append(f"as-is build: {key} {v} ({how})" if v else f"as-is build: {key} not declared")
-                if r.has_after:
+                if r.has_chain:
                     mv = r.managed_version(key, module)
                     if mv:
                         out.append(f"new parent chain: manages {key} at {mv}")

@@ -568,12 +568,19 @@ def reactor_duplicate_suggestion(item: BlockedItem) -> str:
             f"with the same coordinates, or a profile); fix the poms by hand, the LLM is not asked")
 
 
+# v2.1r: 한국어는 report/i18n.py ``PATTERNS`` 가 이 문장을 맞춘다(바꾸면 함께)
+FILE_LOCK_SUGGESTION = ("the build output (target/) was locked by another process: exclude the project's target/ "
+                        "from the antivirus real-time scan, close any IDE / Explorer window / leftover java process "
+                        "holding it, then run again; the LLM is not asked")
+
+
 def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[str] = None,
                        repositories: Optional[list[str]] = None, extra: str = "", javax_jar: Any = None) -> str:
     """차단 항목의 제안 문구(보고서 "Blocked"·인수인계에 사람이 읽는 다음 행동). 사유별로 다르다: javax /
     호환 안 되는 API → 어느 라이브러리를 어떻게, 없는 아티팩트 → Nexus 프록시·좌표 수정(LLM 에게 버전을
     지어내게 하지 않는다), parent → settings·미러, 플러그인, 인코딩, v2.1k reactor 중복(pom 의 ``<module>`` 목록을
-    손으로 정리, LLM 에게 묻지 않음), 예산, LLM 불가, 반복 실패, 진동."""
+    손으로 정리, LLM 에게 묻지 않음), v2.1r 파일 잠금(백신 예외·프로세스 정리 뒤 다시 실행), 예산, LLM 불가, 반복 실패,
+    진동."""
     r = item.reason
     a = item.artifact
     if r in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
@@ -630,6 +637,8 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
         return "the source encoding could not be determined: set project.build.sourceEncoding or convert to UTF-8"
     if r == BlockReason.REACTOR_DUPLICATE:
         return reactor_duplicate_suggestion(item)
+    if r == BlockReason.FILE_LOCK:
+        return FILE_LOCK_SUGGESTION
     if r == BlockReason.BUDGET_EXHAUSTED:
         return ("the run's LLM/time budget was used up before this cluster could be fixed: rerun with a higher "
                 "loop.max_llm_calls / loop.max_total_minutes or fix it by hand")

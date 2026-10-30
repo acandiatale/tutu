@@ -3,7 +3,8 @@
 -Dmaven.test.skip=true``), 수정 루프의 매 라운드 재빌드, 마지막 최종 빌드가 모두 ``MavenRunner.run`` 이다.
 결과의 ``errors`` 가 오류 목록과 케이스(L2 서명)의 재료가
 된다. 핵심 진입점: ``MavenRunner.run`` / ``command``,
-``build_summary``(``BuildResult.summary``), ``negative_cache_hits``.
+``build_summary``(``BuildResult.summary``), ``negative_cache_hits``. v2.1r: Windows 파일 잠금(target/)으로 실패한
+빌드는 기다렸다 같은 빌드를 다시 돌린다(``_retry_file_lock``).
 지킬 것: 테스트는 항상 건너뛴다(``build.skip_test_compile: true`` → ``-Dmaven.test.skip=true``, 사용자 결정
 2026-10-22). 실패한 빌드도 예외가 아니라 결과다 — 빌드
 게이트(실행은 늘 마지막 빌드 결과로 끝난다)가 이것을 전제로 한다.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from sbmig.core.config import Config
 from sbmig.core.models import BuildError, BuildResult, ErrorKind
 from sbmig.core.workspace import Workspace
 
+from .env_errors import file_lock_hit
 from .log_parser import (
     _is_boilerplate,
     _root_prefixes,
@@ -35,6 +38,8 @@ log = logging.getLogger("sbmig.build")
 
 MAX_SUMMARY_ERRORS = 60
 SUMMARY_TAIL = 25
+# 테스트가 바꿔 끼우는 대기 함수(파일 잠금 재시도 사이) — the wait between file-lock retries (tests patch it)
+sleep_seconds = time.sleep
 
 __all__ = ["MavenRunner", "build_summary", "maven_available", "negative_cache_hits"]
 
@@ -144,6 +149,10 @@ class MavenRunner:
         extra_args = list(extra_args)
         result, text = self._run_once(goal, module=module, extra_args=extra_args, label=label,
                                       skip_test_compile=skip_test_compile, skip_tests=skip_tests)
+        # v2.1r: Windows 파일 잠금(target/)은 환경 문제 — 기다렸다 같은 빌드를 다시(수정 루프·LLM 까지 가지 않게)
+        result, text = self._retry_file_lock(goal, module=module, extra_args=extra_args, label=label,
+                                             skip_test_compile=skip_test_compile, skip_tests=skip_tests,
+                                             result=result, text=text)
         if result.ok or not self._may_force_update(result.command):
             return result
         # 아티팩트마다 실행당 한 번만 -U: 정말 없는 아티팩트라면 이후 모든 빌드가 두 번씩 돌게 된다.
@@ -161,6 +170,39 @@ class MavenRunner:
                                       label=f"{label or goal}-U", skip_test_compile=skip_test_compile,
                                       skip_tests=skip_tests)
         return retry
+
+    def _retry_file_lock(self, goal: str, *, module: str | None, extra_args: list[str], label: str,
+                         skip_test_compile: bool, skip_tests: bool, result: BuildResult,
+                         text: str) -> tuple[BuildResult, str]:
+        """v2.1r: 실패한 빌드의 로그에 Windows 파일 잠금(``target/`` 의 파일을 다른 프로세스가 잡음, 패턴은
+        ``knowledge/config/build_env_errors.yml``)이 보이면 ``build.file_lock_retry_wait_s`` 초 기다렸다 같은 명령을
+        다시 돌린다(최대 ``build.file_lock_retries`` 번). 시간 초과·시작 실패는 다시 돌리지 않는다. 마지막 결과를 돌려준다.
+
+        v2.1r: while the failed build's log shows a Windows file lock (`sbmig.build.env_errors.file_lock_hit`), wait
+        `build.file_lock_retry_wait_s` and run the same command again, up to `build.file_lock_retries` times; each
+        retry is logged (`maven: Windows file lock on <path> → retrying in Ns (k/N)`) and journaled
+        (`build_file_lock_retry`). A timed-out build is not retried. Returns the last run's (result, text)."""
+        retries = max(0, int(getattr(self.cfg.build, "file_lock_retries", 3) or 0))
+        wait = max(0.0, float(getattr(self.cfg.build, "file_lock_retry_wait_s", 5.0) or 0.0))
+        attempt = 0
+        while not result.ok and not result.timed_out and attempt < retries:
+            path = file_lock_hit(text, self.cfg)
+            if path is None:
+                break
+            attempt += 1
+            log.info("maven: 파일 잠김(다른 프로세스가 사용 중) %s → %gs 뒤 같은 빌드를 다시 (%d/%d) — Windows file lock on "
+                     "%s → retrying in %gs (%d/%d)", path, wait, attempt, retries, path, wait, attempt, retries)
+            self.ws.journal({"event": "build_file_lock_retry", "goal": goal, "module": module, "path": path,
+                             "attempt": attempt, "wait_s": wait, "first_log": result.log_path})
+            if wait:
+                sleep_seconds(wait)
+            result, text = self._run_once(goal, module=module, extra_args=extra_args,
+                                          label=f"{label or goal}-lock{attempt}", skip_test_compile=skip_test_compile,
+                                          skip_tests=skip_tests)
+        if attempt and not result.ok and file_lock_hit(text, self.cfg) is not None:
+            log.warning("maven: target/ 가 %d번 다시 돌려도 잠겨 있다 — 백신 실시간 검사 예외 / IDE·탐색기·java 프로세스를 "
+                        "확인할 것 (still locked after %d retries)", attempt, attempt)
+        return result, text
 
     def _may_force_update(self, cmd: list[str]) -> bool:
         """-U 는 온라인에서, 한 번만 의미가 있다: offline(-o)이거나 명령에 이미 -U 가 있으면 하지 않는다.

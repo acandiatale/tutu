@@ -2354,3 +2354,68 @@ User: "layout 을 parent pom 파일에서 읽어 와서 세팅해야 하는 거 
   `maven.compiler.release=21` the restructure writes; escape-hatch names are not filtered); chain names apply whatever
   `parent_manages_spring_boot` says (modules inherit the chain's properties either way); `tests/conftest.py` autouse
   `_no_parent_chain_facts` keeps this machine's `~/.m2` out of the tests.
+
+## v2.1q — embedded Tomcat is the target: wording, and LLM-pinned versions the chain manages (2026-10-30)
+- User: "외장 톰캣을 내장 톰캣으로 변환하는 게 목적 중 하나". Verified on the `sibling-aggregator-dup` e2e output: `java -jar dup-boot-1.0.0-SNAPSHOT.war`
+  starts the embedded Tomcat 11.0.22 (`spring-boot-starter-tomcat` / `tomcat-embed-jasper` are `provided` → the Boot repackage puts
+  them in `WEB-INF/lib-provided`), `/hello` (servlet registered from web.xml) and `/index.jsp` (front jar, `META-INF/resources`)
+  answer 200. So the JSP case is an executable WAR, not an external-Tomcat WAR (Spring Boot cannot serve JSPs from an executable
+  jar); nothing structural changed. Follow-up wording in `sbmig/restructure/restructurer.py` (EAR context root, overlay WAR, JSP WAR,
+  container dependencies note, `SpringBootServletInitializer`) now presents `java -jar` + `server.servlet.context-path` first and the
+  external deployment as the alternative; three restructure tests updated; CLAUDE.md company-layout sentence updated.
+- Loop (`_fill_versions`): a dependency the attempt ADDED with an explicit literal version that the new chain manages (capture, else
+  the parent-chain facts) loses its `<version>` (the company LLM had written `org.springframework:spring-webmvc:7.0.0`, the chain
+  manages 7.0.8); pre-existing versions are the restructure's business; journal `version_filled` with `source: managed`, `removed`.
+- As built (loop): `VersionResolver` falls back to `parent_chain.load_parent_chain_facts(cfg).as_capture()` when the post-restructure
+  capture is missing (through the module attribute, so the test stand-in applies); the removal covers only dependencies the attempt
+  added (absent at `pre`), with a literal or `${…}` version, jar type, no classifier, not protected / own-module / `system`; note
+  `version removed by sbmig: g:a <explicit> in <pom> (the new parent chain manages it at <v>)`; a version property the attempt added
+  only for that dependency is dropped when nothing references it (`_drop_added_property`); pre-existing explicit versions, poms whose
+  parent / BOM imports the attempt changed, and unmanaged artifacts are left alone. Side effect: without a capture the chain facts
+  also decide whether an added version-less dependency stays empty, whether a dropped version is restored, and the `new parent
+  chain: manages …` prompt facts. No version or coordinate is hard-coded anywhere (user: "7.0.0 이 틀렸다고 프롬프트에 하드코딩 안 된다").
+
+## v2.1r — Windows file locks on `target/` are an environment error: retry the build, never ask the LLM (2026-10-30)
+
+Company run (Windows): `Error assembling WAR: Problem creating war: … java.nio.file.FileSystemException: …\target\…\WEB-INF\lib\
+wagon-http-shared-1.0-beta-2.jar: 다른 프로세스가 파일을 사용 중이기 때문에 프로세스가 파일에 액세스할 수 없습니다` several builds in a row
+(an antivirus / indexer or a lingering JVM holding a freshly written jar); the loop treated it as a case, asked the LLM 15 times,
+BLOCKED it (한도 도달), and the final build — lock gone — passed. Two layers:
+
+### Maven runner (`sbmig/build/runner.py: MavenRunner.run`)
+- After a failed `_run_once`, when the log matches a file-lock pattern — `java.nio.file.FileSystemException` /
+  `AccessDeniedException` / `FileAlreadyExistsException` naming a path under `target` (or `\\target\\`), or the messages
+  `다른 프로세스가 파일을 사용 중`, `being used by another process`, `The process cannot access the file`, `Unable to delete`
+  with `target` — wait `build.file_lock_retry_wait_s` (default 5) and run the same command again, up to
+  `build.file_lock_retries` (default 3) times; log `maven: Windows file lock on <path> → retrying in Ns (k/N)` (Korean first line
+  like the other operator lines), journal `{"event": "build_file_lock_retry", "goal", "module", "path", "attempt", "wait_s"}`;
+  the result returned is the last run's. Patterns live in `knowledge/config/build_env_errors.yml` (`file_lock:` list of regexes)
+  so the company can add its antivirus' wording without a redeploy; the parser falls back to the built-in list when the file is
+  missing.
+### Triage (`sbmig/triage/blocked.py: _classify_infra`, `sbmig/core/models.py`, `config/default.yml`)
+- `BlockReason.FILE_LOCK = "file_lock"`, `loop.blocked_policy.file_lock: 0` → a cluster whose errors match the same patterns is
+  BLOCKED at once (no LLM, no script), suggestion (Korean, `sbmig/report/i18n.py` / the triage suggestion text):
+  "빌드 산출물(target/)을 다른 프로세스가 잠갔습니다 — 백신 실시간 검사에서 프로젝트의 target/ 를 예외 처리하고, 열려 있는 IDE/탐색기/이전
+  java 프로세스를 닫은 뒤 다시 실행하세요"; the final build still runs (build gate) and, as in the company run, usually passes.
+- `SBMIG-RESULT … attn=…` gets `infra:file-lock` the way repository failures get `infra:repository` (`sbmig/report/result_line.py`).
+### Tests
+`tests/build/test_runner_file_lock.py` (a stub `run_logged` failing twice with the Korean / English messages then succeeding →
+3 runs, journal rows, result ok; exhausted retries → last failure returned), `tests/triage/test_v21r_file_lock.py` (cluster →
+BLOCKED `file_lock`, policy 0, the suggestion), result-line test for `infra:file-lock`.
+### As built (2026-10-30)
+- `knowledge/config/build_env_errors.yml` (`file_lock:` regexes; built-in fallback `BUILTIN_FILE_LOCK` in the new
+  `sbmig/build/env_errors.py`: `file_lock_patterns(cfg)`, `file_lock_hit(text, cfg)` → the locked path / `?` / None, `clear_cache()`;
+  bad regexes logged and skipped). Patterns: `java.nio.file.(FileSystemException|AccessDeniedException|FileAlreadyExistsException)`
+  naming a `target` path, `다른 프로세스가 파일을 사용 중`, `being used by another process`, `The process cannot access the file`,
+  `Unable to delete…target`, `Failed to delete…\target\` (maven-clean-plugin); a lock outside `target/` (e.g. `.m2`) is not one.
+- `MavenRunner._retry_file_lock` runs after the first `_run_once` and before the negative-cache retry; a timed-out build is not
+  retried; log line Korean first then `maven: Windows file lock on <path> → retrying in Ns (k/N)`; journal `build_file_lock_retry`
+  (goal, module, path, attempt, wait_s, log); `sleep_seconds` is a module-level hook for tests. `build.file_lock_retries: 3`,
+  `build.file_lock_retry_wait_s: 5`.
+- `BlockReason.FILE_LOCK`, `loop.blocked_policy.file_lock: 0`, `_classify_file_lock` checked FIRST in `classify_blocked` (a lock
+  hides everything else), evidence = the locked path, `FILE_LOCK_SUGGESTION` in `blocked_registry.compose_suggestion` with the Korean
+  text in `i18n.PATTERNS`; `attention_codes` → `infra:file-lock` on a non-green run, and `orchestrator._file_lock_trouble()` flags it
+  like `infra:repository` (the fleet re-runs such a project later).
+- Regression guard without touching the loop: `errors/entries.py: error_stage()` returns None for a file-lock error, so the loop's
+  "new earlier-stage error hides the targeted ones" rule never reverts a good attempt over a lock; a build that failed only on a
+  lock scores inconclusive, not regressed.

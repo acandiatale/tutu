@@ -588,3 +588,22 @@ config list stays empty; `optional_version_policy` is moot when the optionals ca
 | Restructure uses the chain facts for the fallback managed source and the override names; `layout.parent_property_names` default `[]` (escape hatch); journal `parent_chain_facts`; pom-verify row names the defining pom | `sbmig/restructure/restructurer.py`, `sbmig/core/config.py`, `config/default.yml`, `sbmig/loop/orchestrator.py`, `tests/restructure/test_v21o_bom_facts.py` | done (agent; 4 + 16 tests) |
 | Docs: CLAUDE.md, INTERFACES | — | done |
 | Verification | offline suite + e2e subset | e2e 8 fixtures (legacy-external-parent, spring5-security-batch, boot2, legacy-role-parents, msa, filtered-binary-resources, company-boot-single, boot2-qlrm-javax) all PASS; offline suite **2,598 passed**, 46 deselected |
+
+## Status — 2026-10-30, v2.1q (embedded Tomcat wording; LLM-pinned managed versions removed)
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Executable-WAR wording (embedded Tomcat first, external as the alternative) in the restructure follow-ups + CLAUDE.md; verified by running the e2e WAR with `java -jar` (servlet + JSP 200) | `sbmig/restructure/restructurer.py`, `tests/restructure/test_{ear_sibling_poms,merge_internal_overlays,company_layout}.py`, `CLAUDE.md` | done |
+| `_fill_versions` removes an explicit version the LLM wrote on an ADDED dependency the chain manages (spring-webmvc 7.0.0 → managed) | `sbmig/loop/fixloop.py`, `tests/loop/test_v21l_versions.py` | done (agent, 4 tests; the parent-chain facts are also the loop's step-1 fallback when the post-restructure capture is missing) |
+| Verification | offline suite + e2e subset | e2e 7 fixtures (sibling-aggregator-dup, ear-sibling-poms, servlet-war-overlay, company-servlet-jsp, boot2-qlrm-javax, legacy-external-parent, boot2-fix-failures) all PASS; offline suite **2,608 passed**, 46 deselected |
+
+## Status — 2026-10-30, v2.1r (Windows file locks on `target/`: retry the build, never ask the LLM)
+
+User: a company run showed `Error assembling WAR … FileSystemException … 다른 프로세스가 파일을 사용 중` build after build, the loop asked the
+LLM 15 times (한도 도달 → BLOCKED), and the final build passed once the lock was gone. Contract + as-built: `docs/INTERFACES.md` "v2.1r".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Maven runner: file-lock patterns (`knowledge/config/build_env_errors.yml` + built-in) → wait `build.file_lock_retry_wait_s`, rerun up to `build.file_lock_retries`, journal `build_file_lock_retry` | `sbmig/build/runner.py`, `sbmig/core/config.py`, `config/default.yml`, `tests/build/test_runner_file_lock.py` | done (agent; 4 + 4 + 1 tests; `error_stage()` None for a lock so no false regression) |
+| Triage: `BlockReason.FILE_LOCK`, `loop.blocked_policy.file_lock: 0`, Korean suggestion, `attn=infra:file-lock` | `sbmig/triage/blocked.py`, `sbmig/core/models.py`, `sbmig/report/{result_line,i18n}.py`, `tests/triage/test_v21r_file_lock.py` | done (agent; 4 + 4 + 1 tests; `error_stage()` None for a lock so no false regression) |
+| Verification | offline suite + e2e subset | same run as v2.1q: e2e 7 fixtures PASS; offline suite **2,608 passed**, 46 deselected |

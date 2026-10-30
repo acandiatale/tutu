@@ -384,6 +384,12 @@ class BuildConfig(BaseModel):
     # v2.1m: company extensions always written to `<nonFilteredFileExtensions>` of every pom that filters a resource,
     # next to the ones the scan finds (lower-case, no dot; `SBMIG_BUILD__NON_FILTERED_EXTENSIONS='[dmdb, xyz]'`)
     non_filtered_extensions: list[str] = Field(default_factory=list)
+    # v2.1r: Windows 에서 target/ 의 파일을 다른 프로세스(백신·IDE·남은 java)가 잡아 빌드가 실패하면 기다렸다 같은 빌드를
+    # 다시 돌린다(최대 file_lock_retries 번, file_lock_retry_wait_s 초 간격) — 환경 문제를 LLM 에게 묻지 않게. 패턴은
+    # knowledge/config/build_env_errors.yml 의 file_lock.
+    # v2.1r: a build failing on a Windows file lock under target/ is run again after a wait (0 retries = off)
+    file_lock_retries: int = 3
+    file_lock_retry_wait_s: float = 5.0
 
     @field_validator("non_filtered_extensions", mode="before")
     @classmethod
@@ -445,6 +451,7 @@ class LoopConfig(BaseModel):
         "external_javax_api": 2, "external_api_incompatible": 2, "artifact_not_found": 2, "parent_not_found": 0,
         "plugin_incompatible": 2, "unsupported_source": 0, "encoding": 0,
         "reactor_duplicate": 0,                      # v2.1k: a pom structure problem — handed over, never asked of the LLM
+        "file_lock": 0,                              # v2.1r: target/ locked by another process — environment, not code
     })
     # pom 수정 뒤 이 종류의 오류가 나타나면 개수와 상관없이 되돌린다(LLM
     # 이 지어낸 의존성 하나가 모든 컴파일 오류를 가린 사례).

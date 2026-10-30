@@ -27,9 +27,10 @@ and `sbmig fleet status --attention` groups the projects by the first (most impo
 
 Codes, most important first:
 
-    infra:<kind>          the run ended for an infrastructure reason (llm | maven | jdk | repository | disk | …):
-                          flags `infra:<kind>` (+ the older `llm-unavailable`, `llm-config-error`, `mvn-not-found`,
-                          `jdk-not-21`); a green run (exit 0) never gets it
+    infra:<kind>          the run ended for an infrastructure reason (llm | maven | jdk | repository | disk |
+                          file-lock | …): flags `infra:<kind>` (+ the older `llm-unavailable`, `llm-config-error`,
+                          `mvn-not-found`, `jdk-not-21`; v2.1r: a `file_lock` BLOCKED item → `infra:file-lock`, a
+                          Windows file lock on target/); a green run (exit 0) never gets it
     skipped:<why>         fleet only: not migrated (`skipped:gradle`, `skipped:input`)
     crash                 the run raised (fleet `error: crash: …`, CLI traceback)
     aborted[:<reason>]    exit 3 (`aborted:parent-not-found`, stopped by the user, …)
@@ -53,6 +54,8 @@ ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-ex
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
                    "jar-coordinates-unknown")
 INFRA_PREFIX = "infra:"
+FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
+FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`
 _NON_ASCII_RE = re.compile(r"[^\x21-\x7e]+")
 
 
@@ -89,6 +92,10 @@ def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = Non
     # 초록 실행(exit 0)에는 infra 코드를 붙이지 않는다 — 중간에 LLM 이 한 번 끊겼어도 결과는 정상이다
     kind = err[len(INFRA_PREFIX):].split()[0] if err.startswith(INFRA_PREFIX) and len(err) > len(INFRA_PREFIX) \
         else (infra_kind(flags) if exit_code not in (0, None) or status == "pending" else None)
+    # v2.1r: target/ 파일 잠금으로 차단된 실행은 빌드 PC 환경 탓 — infra:repository 처럼 infra:file-lock
+    if not kind and exit_code not in (0, None) and any(str(r).split(":", 1)[0] == FILE_LOCK_REASON
+                                                       for r in blocked_reasons or ()):
+        kind = FILE_LOCK_KIND
     if kind:
         codes.append(INFRA_PREFIX + kind)
     if status == "skipped":

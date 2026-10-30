@@ -142,6 +142,10 @@ class BlockReason(str, Enum):
     # v2.1k (2026-10-29): a module reached twice in the reactor ("Project … is duplicated in the reactor") — a pom structure
     # problem the intake de-duplicates; when it still reaches the build it is handed over, never given to the LLM
     REACTOR_DUPLICATE = "reactor_duplicate"
+    # v2.1r: Windows 에서 target/ 의 파일을 다른 프로세스가 잠가 빌드가 실패 — 빌드 PC 환경 문제라 LLM 에게 묻지 않는다
+    # v2.1r (2026-10-30): a file under target/ locked by another process (antivirus / IDE / a leftover JVM) — an
+    # environment error the runner already retried; handed over at once, never given to the LLM
+    FILE_LOCK = "file_lock"
 
 
 class BlockedItem(BaseModel):

@@ -171,11 +171,11 @@ def test_war_overlay_moves_to_the_boot_war(tmp_path: Path, ccfg: Config, jsp: bo
             "the company Nexus (build.settings_file mirror) — it is not on Maven Central") in res.manual_followups
     pack = [f for f in res.manual_followups if f.startswith("boot module")]
     if jsp:
-        assert pack == [("boot module packaged as WAR for external Tomcat; JSPs are served from the front jar "
-                         "(META-INF/resources) — board-boot, board-front")]
+        assert pack == [("boot module packaged as an executable WAR (java -jar runs the embedded Tomcat; an external Tomcat works "
+                         "too); JSPs are served from the front jar (META-INF/resources) — board-boot, board-front")]
     else:
-        assert pack == [(f"boot module board-boot packaged as WAR for external Tomcat: the WAR overlay(s) "
-                         f"{OVERLAY_GA}:1.0.0 carry web content")]
+        assert pack == [(f"boot module board-boot packaged as an executable WAR (java -jar runs the embedded Tomcat; an external "
+                         f"Tomcat works too): the WAR overlay(s) {OVERLAY_GA}:1.0.0 carry web content")]
         assert any("SpringBootServletInitializer" in t_ for t_ in [
             (root / "board-boot/src/main/java/com/example/board/Application.java").read_text()])
 

@@ -2469,7 +2469,8 @@ class Orchestrator:
         configured parent is not resolvable, or every remaining error of the failed final build(s) is a dependency /
         parent / plugin resolution error whose text points at the repository or the network: could not / failed to
         transfer, connection refused / reset, timed out, unknown host, no route to host, PKIX, status / return code
-        401 / 403 / 5xx, "was cached in the local repository")."""
+        401 / 403 / 5xx, "was cached in the local repository"); v2.1r: `infra:file-lock` (a failed final build ended
+        on a Windows file lock under target/ — the runner's retries did not clear it)."""
         flags = report.flags
         add: list[str] = []
         if ("llm-unavailable" in flags or "llm-config-error" in flags) and not report.success:
@@ -2482,9 +2483,19 @@ class Orchestrator:
             add.append("infra:repository")
         if not report.success and self._disk_full():
             add.append("infra:disk")                # the fleet pauses instead of failing the next projects too
+        # v2.1r: 최종 빌드가 target/ 파일 잠금으로 실패(러너가 다시 돌려도) — 빌드 PC 환경 문제, 플릿은 나중에 다시 돈다
+        if not report.success and self._file_lock_trouble():
+            add.append("infra:file-lock")
         for f in add:
             if f not in flags:
                 flags.append(f)
+
+    def _file_lock_trouble(self) -> bool:
+        """v2.1r: 실패한 최종 빌드 중 하나라도 Windows 파일 잠금(``sbmig.build.env_errors.file_lock_hit``)으로 끝났는가."""
+        from sbmig.build.env_errors import file_lock_hit
+
+        return any(file_lock_hit(f"{e.message}\n{e.raw}", self.cfg) is not None for r in self._verify_results
+                   if not r.ok for e in r.errors)
 
     def _disk_full(self) -> bool:
         return any(_INFRA_DISK_RE.search(f"{e.message}\n{e.raw}") for r in self._verify_results if not r.ok

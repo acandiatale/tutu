@@ -116,8 +116,23 @@ def stage_of(kind: ErrorKind, goal: Optional[str] = None, l2: str = "") -> Optio
 
 
 def error_stage(e: BuildError) -> Optional[int]:
-    """빌드 오류 하나의 단계(:func:`stage_of` 에 goal·L2 를 넘겨서)."""
+    """빌드 오류 하나의 단계(:func:`stage_of` 에 goal·L2 를 넘겨서). v2.1r: Windows 파일 잠금(target/) 오류는 None —
+    빌드 PC 환경 탓이라 빌드가 어느 단계까지 갔는지도, 다른 오류를 가렸는지도 말해 주지 않는다(그래서 수정 루프가 그것을
+    '더 이른 단계의 새 오류' 로 보고 좋은 시도를 되돌리지 않는다).
+
+    The stage of one build error; None for a Windows file lock under target/ (v2.1r): an environment failure proves no
+    stage and hides nothing, so the loop never scores it as "a new earlier-stage error" and reverts a good attempt."""
+    if _is_file_lock(e):            # also javac's "error while writing …\target\classes\X.class (… another process)"
+        return None
     return stage_of(e.kind, getattr(e, "goal", None), getattr(e, "signature_generic", "") or "")
+
+
+def _is_file_lock(e: BuildError) -> bool:
+    try:
+        from sbmig.build.env_errors import file_lock_hit
+        return file_lock_hit(f"{e.message or ''}\n{getattr(e, 'raw', '') or ''}") is not None
+    except Exception:  # noqa: BLE001 - a stage is never worth a crash
+        return False
 
 
 # 단계 번호: pom(0) → 의존성 해결(1) → enforcer·rewrite(2)

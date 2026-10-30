@@ -620,3 +620,84 @@ def test_nothing_found_is_remembered_so_the_ladder_is_not_delayed_twice(cfg, tmp
     pr = make_loop(cfg, ws, FakeFixer(), pom_build()).run(Phase.VERIFY, "package", 3)
     assert not pr.ok and all(a.source != SBMIG_VERSION_SOURCE for a in pr.attempts)
     assert len([e for e in journal_events(ws) if e["event"] == "version_try"]) == 1
+
+
+# ------------------------------------------- an added explicit version the new chain manages (company run 2026-10-30)
+WEBMVC = "org.springframework:spring-webmvc"
+CHAIN_AFTER = {"managed": {WEBMVC: "7.0.8"}, "direct": {}, "parent": "com.company:comp-jar:4.0.0",
+               "by_module": {"com.x:demo": {"managed": {WEBMVC: "7.0.8"}, "direct": {}}}}
+
+
+def _add_with_version(key: str, version: str) -> dict:
+    g, a = key.split(":")
+    return {"op": "pom", "path": "pom.xml", "pom": {"add_dependency": {"group_id": g, "artifact_id": a,
+                                                                      "version": version}}}
+
+
+def _fix_foo() -> dict:
+    return {"op": "write", "path": FOO, "content": "class Foo { ok }\n"}
+
+
+def test_an_added_explicit_version_the_chain_manages_is_removed(cfg, tmp_path):
+    ws = _ws(tmp_path, {"pom.xml": _pom([]), FOO: "class Foo { broken }\n"})
+    _captures(ws, ASIS, CHAIN_AFTER)
+    fixer = FakeFixer(scripts=[answer(edits=[_fix_foo(), _add_with_version(WEBMVC, "7.0.0")])])
+    pr = make_loop(cfg, ws, fixer, pom_build(managed=frozenset({WEBMVC}), broken_file=FOO)).run(
+        Phase.VERIFY, "package", 3)
+    assert pr.ok
+    [att] = pr.attempts
+    assert _versions(ws) == {WEBMVC: None}                                    # managed wins
+    assert "<version>7.0.0</version>" not in ws.read("pom.xml") and not ws.is_dirty()
+    assert "<version>7.0.0</version>" not in (ws.file_at(att.commit, "pom.xml") or "")   # committed without it
+    assert f"version removed by sbmig: {WEBMVC} 7.0.0 in pom.xml (the new parent chain manages it at 7.0.8)" \
+        in att.notes
+    [ev] = [e for e in journal_events(ws) if e["event"] == "version_filled"]
+    assert (ev["key"], ev["source"], ev["removed"], ev["version"]) == (WEBMVC, "managed", "7.0.0", "7.0.8")
+
+
+def test_without_the_capture_the_parent_chain_facts_decide(cfg, tmp_path, monkeypatch):
+    from sbmig.build import parent_chain
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts",
+                        lambda cfg: parent_chain.ParentChainFacts(roots=["com.company:base-parent:4.0.0"],
+                                                                  managed={WEBMVC: "7.0.8"}))
+    ws = _ws(tmp_path, {"pom.xml": _pom([]), FOO: "class Foo { broken }\n"})
+    _captures(ws, ASIS)                                   # no post-restructure capture
+    fixer = FakeFixer(scripts=[answer(edits=[_fix_foo(), _add_with_version(WEBMVC, "7.0.0"),
+                                             _add_with_version(YAML, "2.2")])])
+    pr = make_loop(cfg, ws, fixer, pom_build(managed=frozenset({WEBMVC}), broken_file=FOO)).run(
+        Phase.VERIFY, "package", 3)
+    assert pr.ok
+    assert _versions(ws) == {WEBMVC: None, YAML: "2.2"}   # the chain does not manage snakeyaml: its version stays
+
+
+def test_pre_existing_explicit_versions_are_untouched_and_an_unmanaged_added_one_stays(cfg, tmp_path):
+    ws = _ws(tmp_path, {"pom.xml": _pom([(WEBMVC, "6.2.12")]), FOO: "class Foo { broken }\n"})
+    _captures(ws, ASIS, CHAIN_AFTER)
+    fixer = FakeFixer(scripts=[answer(edits=[_fix_foo(), _add_with_version(YAML, "2.2")])])
+    pr = make_loop(cfg, ws, fixer, pom_build(broken_file=FOO)).run(Phase.VERIFY, "package", 3)
+    assert pr.ok
+    assert _versions(ws) == {WEBMVC: "6.2.12", YAML: "2.2"}   # the restructure's rules own the pre-existing pin
+    assert not [e for e in journal_events(ws) if e["event"] == "version_filled"]
+
+
+def test_a_version_property_the_attempt_added_only_for_it_goes_too(cfg, tmp_path):
+    base = _pom([(YAML, "${snakeyaml.version}")]).replace(
+        "  <dependencies>", "  <properties>\n    <snakeyaml.version>2.2</snakeyaml.version>\n  </properties>\n"
+        "  <dependencies>")
+    ws = _ws(tmp_path, {"pom.xml": base, FOO: "class Foo { broken }\n"})
+    new = _pom([(YAML, "${snakeyaml.version}"), (WEBMVC, "${webmvc.version}"), (CORE, "${core.version}"),
+                (TEXT, "${core.version}")]).replace(
+        "  <dependencies>", "  <properties>\n    <snakeyaml.version>2.2</snakeyaml.version>\n"
+        "    <webmvc.version>7.0.0</webmvc.version>\n    <core.version>7.0.0</core.version>\n  </properties>\n"
+        "  <dependencies>")
+    after = {"managed": {WEBMVC: "7.0.8", CORE: "7.0.8"}, "by_module": {"com.x:demo": {"managed": {
+        WEBMVC: "7.0.8", CORE: "7.0.8"}}}}
+    _captures(ws, ASIS, after)
+    fixer = FakeFixer(scripts=[answer(edits=[_fix_foo(), {"op": "write", "path": "pom.xml", "content": new}])])
+    pr = make_loop(cfg, ws, fixer, pom_build(managed=frozenset({WEBMVC, CORE}), broken_file=FOO)).run(
+        Phase.VERIFY, "package", 3)
+    assert pr.ok
+    ed = PomEditor(ws.abs("pom.xml"))
+    assert _versions(ws) == {YAML: "${snakeyaml.version}", WEBMVC: None, CORE: None, TEXT: "${core.version}"}
+    # webmvc.version: added for webmvc only → gone; core.version: commons-text still uses it; snakeyaml's: the owner's
+    assert ed.properties() == {"snakeyaml.version": "2.2", "core.version": "7.0.0"}

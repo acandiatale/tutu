@@ -36,7 +36,8 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   `{name}-back` (every source incl. controllers; parent **`comp-jar`** = `artifacts.comp_parent`) and, only when
   web resources exist, `{name}-front` (static files under `src/main/resources/static`, JSPs under
   `src/main/resources/META-INF/resources/WEB-INF/jsp` per Servlet 3; parent `comp-jar`); JSPs make the boot
-  module a WAR for external Tomcat, otherwise it is an executable jar. `{name}` = the root artifactId. Spring Boot
+  module an executable WAR (`java -jar` runs the embedded Tomcat — the migration's target; the same file also deploys to an
+  external Tomcat; JSPs cannot be served from an executable jar), otherwise it is an executable jar. `{name}` = the root artifactId. Spring Boot
   as-is projects (incl. MSA, incl. projects migrated by the earlier in-house tool) keep their directories: poms
   only — root → base-parent, `*-boot` modules whose pom is a Boot app → boot-jar, every other module → comp-jar;
   a single-module Boot app is wrapped into `{name}-boot`. The pre-9c layout (`module/boot-jar` + `module/comp-jar`,

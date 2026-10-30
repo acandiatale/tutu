@@ -230,7 +230,7 @@ class _Ctx:
     comp_rel: str = ""
     front_rel: str | None = None
     front_made: bool = False            # a front module was created (web resources found)
-    boot_war: bool = False              # JSPs in the front module → the boot module is a WAR for external Tomcat
+    boot_war: bool = False              # JSPs in the front module → the boot module is an executable WAR (embedded Tomcat via java -jar; an external Tomcat works too)
     jstl: bool = False                  # a JSP declares a JSTL taglib
     jsp_moved: int = 0
     web_xml_class: str | None = None    # FQCN of the generated WebXmlRegistrations (2026-10-23)
@@ -1345,15 +1345,16 @@ class Restructurer:
         return out
 
     def _ear_followups(self, c: _Ctx, roots: list[tuple[str, str, str, bool]]) -> None:
-        """context root 마다 후속 작업: boot WAR 면 외부 Tomcat 에 ``<root>.war`` 이름으로 배포하거나
-        context-path 설정, 실행 jar 면 ``server.servlet.context-path`` — as-is URL 이 바뀌지 않게."""
+        """context root 마다 후속 작업: boot WAR 면 실행 WAR(``java -jar``, 내장 Tomcat)로 ``server.servlet.context-path`` 를
+        맞추거나 외부 Tomcat 에 ``<root>.war`` 이름으로 배포, 실행 jar 면 ``server.servlet.context-path`` — as-is URL 이 바뀌지 않게."""
         for label, web, root_, explicit in roots:
             cr = "/" + root_.strip().strip("/") if root_.strip().strip("/") else "/"
             how = "" if explicit else " (the maven-ear-plugin default)"
             if c.boot_war:
                 war = cr.strip("/").replace("/", "#") or "ROOT"
-                c.followup(f"EAR {label} deployed {web} at context root {cr}{how}: deploy {c.boot_rel} as {war}.war "
-                           f"on the external Tomcat, or set server.servlet.context-path={cr} (embedded Tomcat)")
+                c.followup(f"EAR {label} deployed {web} at context root {cr}{how}: run {c.boot_rel} as an executable WAR "
+                           f"(java -jar, embedded Tomcat) with server.servlet.context-path={cr}, or deploy it as {war}.war on an "
+                           "external Tomcat")
             else:
                 c.followup(f"EAR {label} deployed {web} at context root {cr}{how}: set "
                            f"server.servlet.context-path={cr} for {c.boot_rel} (embedded Tomcat) so the URLs stay the "
@@ -2623,14 +2624,14 @@ class Restructurer:
         c.write(rel, text + sep + (nl if text.strip() else "") + nl.join(lines) + nl, generated=not existed)
 
     def _packaging_followups(self, c: _Ctx, asis_packaging: str) -> None:
-        """패키징 후속 작업: boot 가 외부 Tomcat 용 WAR 인 이유(overlay / JSP), 또는 as-is WAR
-        를 실행 jar 로 바꾼 사실."""
+        """패키징 후속 작업: boot 가 WAR 인 이유(overlay / JSP — 실행 WAR: ``java -jar`` 로 내장 Tomcat, 외부 Tomcat 배포도
+        가능), 또는 as-is WAR 를 실행 jar 로 바꾼 사실."""
         if c.boot_war and not c.jsp_moved and c.overlay_carry:
-            c.followup(f"boot module {c.boot_rel} packaged as WAR for external Tomcat: the WAR overlay(s) "
-                       f"{', '.join(g.coordinates for _, g in c.war_overlays)} carry web content")
+            c.followup(f"boot module {c.boot_rel} packaged as an executable WAR (java -jar runs the embedded Tomcat; an external "
+                       f"Tomcat works too): the WAR overlay(s) {', '.join(g.coordinates for _, g in c.war_overlays)} carry web content")
         elif c.boot_war:
-            c.followup("boot module packaged as WAR for external Tomcat; JSPs are served from the front jar "
-                       f"(META-INF/resources) — {c.boot_rel}, {c.front_rel}")
+            c.followup("boot module packaged as an executable WAR (java -jar runs the embedded Tomcat; an external Tomcat works "
+                       f"too); JSPs are served from the front jar (META-INF/resources) — {c.boot_rel}, {c.front_rel}")
         elif asis_packaging == "war":
             c.followup(f"WAR packaging converted to executable jar ({c.boot_rel})")
 
@@ -2995,8 +2996,8 @@ class Restructurer:
             out += JSTL_DEPS
         out = [g for g in out if g.key not in have]
         if out:
-            c.note(f"boot WAR for external Tomcat: {', '.join(g.artifact_id + (' (provided)' if g.scope else '') for g in out)}"
-                   f" added to {c.boot_rel}")
+            c.note(f"boot WAR container dependencies (provided: packaged in WEB-INF/lib-provided for java -jar, left to an external "
+                   f"Tomcat otherwise): {', '.join(g.artifact_id + (' (provided)' if g.scope else '') for g in out)} added to {c.boot_rel}")
         return out
 
     @staticmethod
@@ -3017,8 +3018,9 @@ class Restructurer:
         if root.is_dir() and any(SERVLET_INIT_RE.search(f.read_text(encoding="utf-8", errors="replace"))
                                  for f in root.rglob("*.java")):
             return
-        c.followup(f"{c.boot_rel} is a WAR for external Tomcat but {', '.join(mains)} does not extend "
-                   "SpringBootServletInitializer — extend it and override configure(SpringApplicationBuilder)")
+        c.followup(f"{c.boot_rel} is a WAR but {', '.join(mains)} does not extend SpringBootServletInitializer — needed only "
+                   "when the WAR is deployed to an external Tomcat (java -jar does not need it): extend it and override "
+                   "configure(SpringApplicationBuilder)")
 
     def _view_resolver(self, c: _Ctx) -> tuple[str | None, str | None, str | None]:
         """as-is 설정에서 JSP 뷰 prefix / suffix 찾기: XML 의 InternalResourceViewResolver 빈 / ``<mvc:jsp>``,
