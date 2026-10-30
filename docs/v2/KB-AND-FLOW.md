@@ -41,7 +41,7 @@
 | `plan` | 아래 단계들을 결정적으로 나열한다(어떤 레시피, 어떤 재구조화 모드). | `plan.json` | 없음 (`plan.advisor: llm` 은 꺼져 있음) |
 | `transform.rewrite` | OpenRewrite 한 번: `UpgradeToJava21`, (필요 시) `JavaxMigrationToJakarta`, Boot 프로젝트는 `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`. 빌드 없음. | 커밋 `rewrite: …`, `logs/002-rewrite-*.log` | 없음 |
 | `transform.compile` | `mvn clean compile` 한 번. 나온 오류 전부를 **오류 목록**에 넣는다(`seen=compile`). 고치지 않는다. | `errors.jsonl` 첫 레코드들 | 없음 |
-| `restructure.*` | 회사 구조: 루트 pom → `base-parent`, `{name}-boot` / `{name}-back` / `{name}-front` 모듈, 필수 2개 의존성, 선택 8개 버전 올림(쓰는 것만). web root 의 JSP 는 front 의 `META-INF/resources/WEB-INF/jsp`, 그 밖의 모든 파일(html·js·css·이미지·mp4·exe …)은 front 의 `static/<web 경로>` 로; web root 안의 `<resource>` 디렉토리 파일은 comp classpath 에 남기고 front static 에도 **복사**; WEB-INF 의 설정 아닌 파일은 front jar 의 `META-INF/resources/WEB-INF/` 아래 같은 경로, 설정(xml/properties)은 boot 의 `asis-webinf/`. 파일이 제자리에 간 뒤 모든 JSP / 태그 파일의 javax EE 이름(page import, useBean, 스크립틀릿)을 jakarta 로 바꾼다(`layout.jsp_jakarta_rename`, v2.1h — OpenRewrite 는 JSP 를 읽지 않음; 보고서 "What we changed" 에 `JSP javax → jakarta: N files, M references`, 남은 것은 Handover). pom 을 고친 항목 하나하나를 **`pom-verify` 레코드**로 남긴다(다음 빌드가 검증). | 커밋 `restructure: …`, `pom-verify` 레코드 | 없음 |
+| `restructure.*` | 회사 구조: 루트 pom → `base-parent`, `{name}-boot` / `{name}-back` / `{name}-front` 모듈, 필수 2개 의존성, 선택 8개 버전 올림(쓰는 것만). web root 의 JSP 는 front 의 `META-INF/resources/WEB-INF/jsp`, 그 밖의 모든 파일(html·js·css·이미지·mp4·exe …)은 front 의 `static/<web 경로>` 로; web root 안의 `<resource>` 디렉토리 파일은 comp classpath 에 남기고 front static 에도 **복사**; WEB-INF 의 설정 아닌 파일은 front jar 의 `META-INF/resources/WEB-INF/` 아래 같은 경로, 설정(xml/properties)은 boot 의 `asis-webinf/`. 파일이 제자리에 간 뒤 모든 JSP / 태그 파일의 javax EE 이름(page import, useBean, 스크립틀릿)을 jakarta 로 바꾼다(`layout.jsp_jakarta_rename`, v2.1h — OpenRewrite 는 JSP 를 읽지 않음; 보고서 "What we changed" 에 `JSP javax → jakarta: N files, M references`, 남은 것은 Handover). 부모를 바꾸면서 사라진 의존성 버전(옛 사내 부모가 관리하던 것)은 as-is effective pom 에서 가져와 그대로 적는다(v2.1l, `version carried over from the as-is build`, Handover ⚠ carried over). pom 을 고친 항목 하나하나를 **`pom-verify` 레코드**로 남긴다(다음 빌드가 검증). | 커밋 `restructure: …`, `pom-verify` 레코드 | 없음 |
 | `restructure.review` | **구조 점검**: LLM 에 모든 pom·모듈 구조·소스 인코딩·필터링 대상 바이너리를 주고 회사 규칙 위반을 찾게 한다. critical 은 LLM 이 **직접 수정**(pom 만, 소스 금지) → 커밋 `review: …`; warning 은 보고서에. | `report.md` "Structure review", 오류 목록의 `review` 레코드 | **1회 (+형식 오류 시 1회, 편집 적용 실패 시 1회 재시도 — 최대 3회)** |
 | `verify.build` | `mvn clean package -Dmaven.test.skip=true`. 성공이면 끝. 실패면 **새 오류만** 목록에 추가하고(`pom-verify` 중 오류 없는 pom 은 resolved) 수정 루프로. | `logs/006-build-verify.log` | 없음 |
 | 수정 루프 `fix r1 … r50` | 라운드마다: 빌드 → 직전 시도 채점(되돌림·크레딧) → 새 오류 추가 → 케이스로 묶기(근본 원인 먼저, 한 라운드 최대 8케이스) → 케이스마다 사다리(§5) → 커밋. | 시도 레코드(원인·해결·수정·diff·결과), `cases/<id>/fix_vN.py` | **케이스당 최대 3회** (+보조 호출, §6) |
@@ -348,6 +348,23 @@ LLM 이 **개입하지 않는** 곳: intake · analyze · plan · OpenRewrite ·
 - 그래도 메이저가 바뀌면 **막지 않는다**(빌드는 통과해야 하니까). 대신 pom diff 를 읽어 내서 운영자 가이드를 남긴다:
   `errors.jsonl` 의 `major_upgrades` / `verify`, `report.md` Handover 맨 위 **"운영자 확인 필요 (메이저 업그레이드 N건)"**, `SBMIG-RESULT … major=N`.
 - 사람이 미리 정해 둘 수 있다: `kb-v2/libraries.yml` 에 "이 좌표는 이 버전으로" 또는 `allow_major: true`. 코드 재배포 없음.
+
+### 7.1 버전은 잃지도, 추측하지도 않는다 (v2.1l, 2026-10-30)
+
+현업에서 "의존성만 추가하다가 끝나고, 마지막엔 LLM 이 '정책상 버전을 추정하여 추가할 수 없습니다' 라고 답한다" 는 실행이 여럿 나왔다.
+원인은 두 가지가 겹친 것: ① 재구성이 pom 의 부모를 `comp-jar` / `boot-jar` 로 바꾸면 **옛 사내 부모가 관리하던 버전이 사라지는데**
+v1 의 이어받기 핸들러가 v2 4단계에서 같이 지워졌고, ② 규칙 14 가 버전 추측을 금지하니 LLM 도 채울 수 없었다. 이제 한 가지 순서로 푼다.
+
+1. 새 부모 체인이 관리한다(재구성 뒤 effective pom) → 버전 없이 둔다.
+2. as-is 빌드가 쓰던 버전이 있다(`logs/depmgmt.json`, 접수 때 캡처) → 그 버전을 적는다(이어받기, Handover ⚠ carried over).
+3. LLM 이 **새로 추가한** 의존성만: 저장소(사내 Nexus → settings 미러 → Central)에서 정식 릴리스 중 최신.
+4. 어디에도 없다 → 비워 두고, 빌드의 `version … is missing` 이 케이스가 되어 루프가 다시 2–3 을 시도한다; 끝내 못 찾으면 Handover 가 좌표를 적는다.
+
+어디서 도는가: 재구성 안(첫 빌드 전, `versions_pinned`; 새 부모 체인의 effective pom 을 못 얻으면 되돌림 — Boot 2.7 스타터를 2.7 로
+박아 두는 사고를 막기 위해), 수정 루프의 **LLM 0회 1차 시도 `sbmig-version`**(`missing_version` 케이스, 사다리 앞), 그리고 모든 수정
+시도가 적용된 직후(`version_filled` 저널). 프롬프트의 "Dependency versions" 절은 이제 `as-is build: g:a <v> (managed by …)` /
+`new parent chain: manages g:a at <v>` 줄로 시작하고, 규칙 14 는 "모르는 버전은 `null` 로 두어라, sbmig 가 채운다 — 버전을 몰라서 수정을
+거부하지 말라" 로 바뀌었다. 구조 검토는 박아 넣은 목록을 재료로 받는다.
 
 ## 8. 운영자가 보는 것, 사람이 KB 를 고치는 법
 

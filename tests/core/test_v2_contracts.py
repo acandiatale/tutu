@@ -77,7 +77,11 @@ def test_v2_defaults_in_yml_and_code(repo_root):
         assert rs.jakarta == ["org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta"]
         assert rs.spring_boot_4 == ["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0",
                                     "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1"]
-        assert rs.spring_framework_7 == rs.spring_security_7 == rs.junit5 == []
+        assert rs.spring_framework_7 == rs.junit5 == []
+        # v2.1l: the Security chain is planned only for projects that use Spring Security (planner gate)
+        assert rs.spring_security_7 == [
+            *(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" for v in range(6)),
+            "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0"]
         assert not any(cfg.loop.phases[k].enabled for k in ("jdk21", "spring", "restructure"))
         assert cfg.loop.phases["verify"].enabled and cfg.loop.phases["verify"].max_iterations >= 10
         assert cfg.build.skip_test_compile is True

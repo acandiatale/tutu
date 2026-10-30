@@ -199,7 +199,9 @@ All ids verified in the pinned jars (BOM 3.37.0, `sbmig recipes check --jars` OK
 
 **Spring Security chain.** `openrewrite.recipes.spring_security_7` (planned for `spring_legacy` — MSA library roots
 included — when `spring-security` is detected; the Boot umbrella runs the same steps through 3_0 … 3_5 and 4_0) is
-the whole chain, in order:
+the whole chain, in order. v2 (2026-10-26) emptied the set with the other non-Boot sets; **v2.1l (2026-10-30) makes it the
+default again** ("security 는 쓰는 경우만": a project without Spring Security never gets it — the planner's gate is the
+analyzer's `spring-security` library, so nothing is added to a project that did not use it):
 
 | # | recipe | what it adds |
 |---|---|---|

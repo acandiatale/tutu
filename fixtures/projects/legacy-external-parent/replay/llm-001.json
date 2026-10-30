@@ -1,0 +1,5 @@
+{
+  "note": "structure review of legacy-external-parent (one call): verdict ok — the carried-over commons-text / commons-csv pins are the as-is versions",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root on the in-house parent with the mandatory starters, extparent-back on the comp parent with commons-text 1.10.0 and commons-csv 1.10.0 pinned as in the as-is build (the Boot 4.1 BOM manages neither), extparent-boot on the boot parent. Nothing to fix.\"\n}\n</review>\n"
+}

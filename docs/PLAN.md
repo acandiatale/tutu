@@ -511,3 +511,25 @@ ended with `Project … is duplicated in the reactor` after 3 LLM script augment
 | e2e `sibling-aggregator-dup` (company shape) + `servlet-nonstandard-dirs` PASS on real Maven; full offline suite 2,464 | `fixtures/projects/sibling-aggregator-dup/` | done |
 | Pending (the user) | — | the company PC's commit (the APP+DEV aggregator seen there does not reproduce on HEAD — an older build or a path difference); delete the useless stored case for the reactor error in the company KB + `sbmig kb reindex` |
 
+
+## Status — 2026-10-30, v2.1l (dependency versions: carried over from the as-is build, never guessed; gated Security chain)
+
+User: Boot / MSA company runs and a Spring Framework 6.2.12 run ended after rounds of "add a dependency" answers, the last ones
+"정책상 버전을 추정하여 추가할 수 없습니다"; "기존 pom.xml 에 쓰고 있는 것들은 전부 가져와서 넣어 주고 버전을 맞춰야 할 텐데".
+Root cause: v1's `carry-over-managed-version` / `missing-dependency-version` handlers (infrastructure, not error fixes) were deleted with
+the 32 handlers in v2 step 4 (`748fd0f`) and nothing took their job; rule 14 forbade the LLM to guess. Decisions (user): fix it; the LLM
+structure review keeps checking the result against the company rules; Security recipes only for projects that use Spring Security
+("쓰는 경우만"); Spring Cloud needs nothing (inside the Boot umbrella); MSA non-Boot WAR services stay pom-only until real projects are
+checked. Contract + as-built: `docs/INTERFACES.md` "v2.1l".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Restructure pins the as-is versions (`_pin_asis_versions` before `_drop_managed_versions`, four call sites; kept only when the new chain's effective pom could be captured; `versions_pinned` / `versions_unknown`, Error-list row, journal `versions_pinned`, review material) | `sbmig/restructure/restructurer.py`, `sbmig/loop/orchestrator.py` (`asis_effective` param, pom-verify row), `sbmig/core/interfaces.py`, `sbmig/review/inputs.py`, `tests/restructure/test_v21l_pin_versions.py`, `tests/loop/test_v21l_restructure_versions.py` | done (agent, 22 tests) |
+| Fix loop: `VersionResolver` (managed → as-is → repository → unknown), `_fill_versions` after every applied try, zero-LLM `sbmig-version` try for `missing_version` cases, prompt facts `as-is build:` / `new parent chain:`, rule 14 "leave unknown versions null" | `sbmig/loop/fixloop.py`, `sbmig/core/models.py` (`TrySource`), `sbmig/fix/prompts/{script,edits}_system_v1.md`, `tests/loop/test_v21l_versions.py`, `tests/fix/test_v21i_edits_mode.py` | done (agent, 20 tests) |
+| Spring Security chain `6_0 … 6_5, 7_0` as the default `spring_security_7` set (planner gate: analyzer library `spring-security`, `spring_legacy` only) | `sbmig/core/config.py`, `config/default.yml`, `knowledge/recipes/catalog.yml` (`sets:` of the 7 existing entries), `docs/RECIPES.md`, tests `test_v2_contracts` / `test_planner` / `test_advisor` | done |
+| e2e fixture `legacy-external-parent` (as-is parent = local stand-in `fixtures/libs/legacy-parent` managing commons-text / commons-csv) | `fixtures/projects/legacy-external-parent/`, `fixtures/libs/legacy-parent/`, `fixtures/libs/install.sh`, `tests/fixtures/test_fixture_projects.py` | PASS on real Maven: both versions pinned, BUILD SUCCESS, 1 LLM call (review), Handover ⚠ carried over |
+| e2e regression: `spring5-security-batch` (the Security chain now converts `WebSecurityConfig` itself → 8 scripts instead of 9, 9 LLM calls; expected.json / README updated), `sibling-aggregator-dup`, `legacy-role-parents` (boot_pom), `boot2`, `msa` | `out/e2e/summary.md` | all PASS |
+| Docs: CLAUDE.md, ERROR-HANDLING X8, KB-AND-FLOW §7.1 (Korean), RECIPES, INTERFACES as-built | — | done |
+| `/code-review medium` on the diff: 10 findings → 7 fixed (unknown entries resolved from the repository before the AFTER capture so one unknown no longer undoes every pin; managed-before-direct as-is lookup; no capture when nothing pinned; kept-newer pins reported as pins; zero-LLM try after the deferral + `_version_deferral`; `_version_tried` only after a successful apply, cap 3 failed applies; planner docstring), 3 recorded as follow-ups (newest-any-major for added deps = policy, duplicated helpers, raw-byte idempotency check) | `docs/INTERFACES.md` "v2.1l" → As built | done |
+| Offline suite | `python -m pytest -m "not integration"` | **2,525 passed**, 45 deselected (after the review fixes; was 2,464 before v2.1l) |
+| Open (the user) | — | company data for the Boot / MSA failures and for the Spring Framework 6.2.12 project that kept `DEV/pom.xml` (report.md `\| Case \|` + `plan: restructure:` note); retest from an empty KB; MSA non-Boot WAR services; the known limit of `_fill_versions` without the post-restructure capture (INTERFACES "As built") |

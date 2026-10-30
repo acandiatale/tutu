@@ -11,6 +11,9 @@ LLM 3회(``script.max_augments_per_case``) 뒤 BLOCKED. 채점은 재빌드로�
 업그레이드 → 운영자 확인; 되돌리거나 차단하지 않음). v2.1i ``fix.mode: edits``: 스크립트를 만들지도 저장·재사용·
 보강하지도 않는다 — 케이스마다 LLM 에 edits 만 묻고(앞 시도들은 ``FixContext.previous_attempts`` +
 ``previous_edits``), 출처 ``llm-edit``, 꼬리표 ``edits:<case>#<n>``, ``1 + script.max_augments_per_case`` 회 뒤 차단.
+v2.1l: 의존성 버전은 LLM 이 추측하지 않는다 — 적용된 시도의 pom 에서 버전 없는 의존성은 커밋 전에
+``_fill_versions`` 가 채우고(``VersionResolver``: 새 부모 체인 관리 → as-is 빌드 → 방금 추가된 것만 저장소),
+``pom_invalid|missing_version`` 케이스는 LLM 전에 sbmig 가 한 번 고친다(출처 ``sbmig-version``, LLM 0회).
 
 The build-fix loop (ARCHITECTURE §3) — v2.1 (2026-10-27, docs/v2/PLAN-v2.1.md §3 / §3.1 / §3.2).
 
@@ -68,12 +71,21 @@ edits are applied (`llm-edit`, commit `fix(edits:<case>#<n>): <cluster>`), a scr
 budget is `fix.edits_max_asks_per_case` asks per case and run (0 = no cap, `sbmig.triage.scripts.edits_llm_limit`), then
 BLOCKED `repeated_failure`; scoring, rollback, the blocked policy and the error list are unchanged.
 
+v2.1l (docs/INTERFACES.md "v2.1l", dependency versions carried over from the as-is build, never guessed by the LLM):
+`VersionResolver` is the one resolution order (the new parent chain manages it → empty; the as-is build's version;
+for a dependency the LLM just added, the repository's newest release; else unknown). `_fill_versions` runs after an
+applied script / edits and before the commit, on the poms the try changed; a `pom_invalid|missing_version` case is
+first tried without the LLM (`_version_attempt`: source `sbmig-version`, commit `fix(sbmig-version): <case>`, no
+stored script, not a ladder step — `_previous(ladder=True)` leaves it out; a partial one is not rolled back); the
+"Dependency versions" prompt section starts with the `as-is build:` / `new parent chain:` facts (`_version_facts`).
+
 
 """
 from __future__ import annotations
 
 import contextvars
 import logging
+import posixpath
 import re
 import threading
 import time
@@ -413,6 +425,164 @@ def call_edit_applier(fn: Callable[..., Any], ws: Any, edits: list, cfg: Any, er
     return fn(ws, edits, cfg=cfg, **kw)
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1l dependency versions (docs/INTERFACES.md "v2.1l"): carried over from the as-is build, never guessed by the LLM
+# ---------------------------------------------------------------------------------------------------------------------
+MISSING_VERSION_SIG = "pom_invalid|missing_version"   # the generic signature of "'…version' for g:a is missing"
+SBMIG_VERSION_SOURCE = "sbmig-version"               # FixAttempt.source of the deterministic missing-version try
+VERSION_FACTS_MAX = 12                                # artifacts per case in the "as-is build: …" prompt facts
+VERSION_TRY_APPLY_FAILURES = 3                        # zero-LLM tries of a (pom, g:a) that may fail to apply
+VERSION_SOURCE_TEXT = {"asis": "as-is 빌드의 버전", "repository": "저장소의 최신 릴리스"}      # log lines / edit desc
+VERSION_SOURCE_NOTE = {"asis": "the as-is build", "repository": "newest release in the repository"}   # att.notes
+
+
+class VersionResolver:
+    """v2.1l 버전 결정 규칙 하나(재구성·수정 루프 공통, INTERFACES "Resolution order"): 버전 없는 의존성 g:a 에
+    대해 (1) 새 부모 체인(재구성 뒤 effective pom, ``depmgmt-after-restructure.json``)이 관리하면 그대로 둔다
+    → ``(None, "managed")``, (2) as-is 빌드가 쓴 버전(``logs/depmgmt.json``: 그 모듈의 direct → managed → 합친
+    managed → 합친 direct) → ``(v, "asis")``, (3) 호출자가 허락할 때만(LLM 이 방금 추가한 의존성, 누락 버전
+    케이스) 저장소의 최신 정식 릴리스(프리릴리스 제외) → ``(v, "repository")``, (4) 못 찾음 → ``(None,
+    "unknown")``. LLM 에게 버전을 추측시키지 않으려는 것 — 사실(as-is·저장소)만 쓴다. 예외를 내지 않는다
+    (저장소 실패 = 못 찾음). 실행마다 수정 루프가 하나 만들어 캐시한다.
+
+    The v2.1l resolution order for a `<dependencies>` entry without `<version>` (one rule for the restructure and
+    the fix loop): (1) the new parent chain manages it (the post-restructure capture; the declaring module's
+    `by_module` entry decides when the capture has one, else the merged `managed`) → `(None, "managed")`; (2) the
+    as-is build resolved it (`by_module[...].direct` → `.managed` → merged `managed` → merged `direct`) →
+    `(v, "asis")`; (3) only with `allow_repository` (a dependency the LLM just added, a missing-version case): the
+    newest release `RepositoryLookup.versions` lists that `is_prerelease` does not reject → `(v, "repository")`;
+    (4) `(None, "unknown")`. `asis` / `after` are depmgmt dicts (`sbmig.build.effective.load_effective`);
+    `repository` a zero-arg callable returning the run's `RepositoryLookup` (or None). Never raises."""
+
+    def __init__(self, asis: dict | None = None, after: dict | None = None,
+                 repository: Callable[[], Any] | None = None):
+        """두 캡처(dict, 없으면 빈 것)와 저장소 조회기를 주는 콜러블을 받는다."""
+        self.asis: dict = asis if isinstance(asis, dict) else {}
+        self.after: dict = after if isinstance(after, dict) else {}
+        self._repository = repository
+        self._repo_cache: dict[str, str | None] = {}
+
+    @classmethod
+    def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None) -> VersionResolver:
+        """실행 디렉토리의 두 캡처(as-is ``depmgmt.json``, 재구성 뒤 ``depmgmt-after-restructure.json``)로 만든다.
+        못 읽으면 빈 캡처 — 규칙은 저장소 단계만 남는다.
+
+        Built from the run directory's two captures (missing / unreadable → empty)."""
+        asis: dict | None = None
+        after: dict | None = None
+        try:
+            from sbmig.build.effective import AFTER_RESTRUCTURE_FILE, load_effective
+            asis = load_effective(ws)
+            after = load_effective(ws, name=AFTER_RESTRUCTURE_FILE)
+        except Exception as e:  # noqa: BLE001 - no captures: only the repository step is left
+            log.debug("dependency version captures unavailable: %s: %s", type(e).__name__, e)
+        return cls(asis, after, repository)
+
+    @staticmethod
+    def _has(data: dict) -> bool:
+        return bool(data.get("managed") or data.get("direct") or data.get("by_module"))
+
+    @property
+    def has_asis(self) -> bool:
+        """as-is 캡처가 있는가(비어 있지 않은가)."""
+        return self._has(self.asis)
+
+    @property
+    def has_after(self) -> bool:
+        """재구성 뒤 캡처(새 부모 체인)가 있는가. 없으면 '관리되는가' 를 알 수 없다."""
+        return self._has(self.after)
+
+    @staticmethod
+    def _module(data: dict, module: str | None) -> dict | None:
+        """캡처의 ``by_module`` 에서 모듈 항목(g:a 로, 없으면 artifactId 로). 없으면 None."""
+        if not module:
+            return None
+        by = data.get("by_module") or {}
+        own = by.get(module)
+        if own is None:
+            aid = module.split(":")[-1]
+            own = next((v for k, v in by.items() if aid and str(k).split(":")[-1] == aid), None)
+        return own if isinstance(own, dict) else None
+
+    def managed_version(self, key: str, module: str | None = None) -> str | None:
+        """새 부모 체인이 g:a 를 관리하는 버전(없으면 None). 선언한 모듈의 항목이 캡처에 있으면 그 모듈의
+        effective dependencyManagement 가 정답이다 — 다른 모듈(예: boot 모듈의 Boot BOM)이 관리한다고 이
+        모듈도 관리되는 것은 아니다. 모듈 항목이 없을 때만 합친 ``managed``.
+
+        The version the new chain manages g:a at: the declaring module's effective dependencyManagement when the
+        capture has the module (another module's chain does not manage this one), else the merged `managed`."""
+        own = self._module(self.after, module)
+        if own is not None:
+            return (own.get("managed") or {}).get(key) or None
+        return (self.after.get("managed") or {}).get(key) or None
+
+    def asis_fact(self, key: str, module: str | None = None) -> tuple[str | None, str]:
+        """as-is 빌드가 g:a 에 쓴 버전과 출처 문구: ``(v, "declared")`` / ``(v, "managed by g:a:v")`` /
+        ``(None, "")``. 순서: 모듈 direct → 모듈 managed → 합친 managed → 합친 direct — 버전 없는 선언은 관리로
+        풀렸으므로, 모듈 밖에서는 다른 모듈이 명시한 버전보다 부모가 관리한 버전이 맞다. 문구는 찾은 표를 그대로
+        말한다(direct = declared, managed = managed by 부모; 섞지 않는다).
+
+        (version, how) of the as-is build in the order: the module's `direct` → its `managed` → merged `managed` →
+        merged `direct` (a version-less declaration was resolved by management: outside the module, the managed
+        version beats another module's explicit one). `how` names the map the hit came from: "declared" for a
+        `direct` map, "managed by <parent g:a:v>" for a `managed` one — never crossed."""
+        own = self._module(self.asis, module)
+        parent_of_module = (own.get("parent") if own else None) or self.asis.get("parent")
+        maps: list[tuple[dict, str | None]] = []       # (map, the managing parent; None = a direct map)
+        if own is not None:
+            maps += [(own.get("direct") or {}, None), (own.get("managed") or {}, parent_of_module or "")]
+        maps += [(self.asis.get("managed") or {}, self.asis.get("parent") or ""), (self.asis.get("direct") or {}, None)]
+        for table, parent in maps:
+            v = table.get(key)
+            if v:
+                if parent is None:
+                    return v, "declared"
+                return v, f"managed by {parent}" if parent else "managed"
+        return None, ""
+
+    def repository_version(self, key: str) -> str | None:
+        """저장소가 가진 g:a 의 최신 정식 릴리스(프리릴리스 제외). 조회기 없음·실패 → None. 키별 캐시.
+
+        The newest release of g:a the repository lists (`RepositoryLookup.versions`, oldest → newest) that is not a
+        prerelease; None without a lookup or on any failure. Cached per key."""
+        if key in self._repo_cache:
+            return self._repo_cache[key]
+        found: str | None = None
+        try:
+            lookup = self._repository() if callable(self._repository) else None
+            g, _, a = key.partition(":")
+            if lookup is not None and g and a:
+                from sbmig.build.repo_versions import is_prerelease
+                found = next((v for v in reversed(list(lookup.versions(g, a) or [])) if v and not is_prerelease(v)),
+                             None)
+        except Exception as e:  # noqa: BLE001 - a repository failure counts as "unknown"
+            log.debug("repository versions of %s unavailable: %s: %s", key, type(e).__name__, e)
+            found = None
+        self._repo_cache[key] = found
+        return found
+
+    def resolve(self, key: str, module: str | None = None, *, allow_repository: bool = False,
+                check_managed: bool = True) -> tuple[str | None, str]:
+        """규칙대로 ``(버전 | None, 출처)``: managed / asis / repository / unknown. ``check_managed=False`` 는
+        빌드가 이미 '버전 없음' 이라고 말한 의존성(1단계를 건너뜀). 예외 없음.
+
+        `(version | None, source)` by the resolution order; `check_managed=False` skips step 1 (the build already
+        said the version is missing). Never raises."""
+        try:
+            if check_managed and self.managed_version(key, module):
+                return None, "managed"
+            v, _how = self.asis_fact(key, module)
+            if v:
+                return v, "asis"
+            if allow_repository:
+                v = self.repository_version(key)
+                if v:
+                    return v, "repository"
+        except Exception as e:  # noqa: BLE001 - never raises: unknown
+            log.debug("version of %s not resolved: %s: %s", key, type(e).__name__, e)
+        return None, "unknown"
+
+
 class BuildFixLoop:
     """v2.1 수정 루프. 오케스트레이터가 실행마다 하나 만들고(``budget`` / ``blocked`` / ``errors`` 공유),
     최종 빌드 실패 시 ``run`` 을 부른다. 케이스의 다음 사다리 단계는 트리아지(``sbmig.triage.scripts``)가,
@@ -506,6 +676,11 @@ class BuildFixLoop:
         self._repo_lookup: Any = None
         self._repo_lookup_off = False
         self._repo_facts: dict[str, Any] = {}    # g:a → RepositoryVersions (the read-back's "same major offered")
+        # v2.1l: 버전 결정기(처음 쓸 때 한 번), 누락 버전 케이스의 결정적 시도가 이미 본 (pom, g:a) 쌍(실행당 한 번)
+        # the version resolver (lazy, one per loop); the (pom, g:a) pairs the zero-LLM missing-version try looked at
+        self._version_resolver: VersionResolver | None = None
+        self._version_tried: set[tuple[str, str]] = set()
+        self._version_failures: Counter = Counter()   # (pom, g:a) → zero-LLM tries that did not apply
         self._cases = CaseScripts.of(kb)
         # v2.1i: `fix.mode: edits` — LLM 직접 수정만(스크립트 생성·저장·재사용·실적 없음); script 모드는 그대로
         # (the same test as sbmig.triage.scripts.edits_mode — the loop imports triage lazily)
@@ -1275,16 +1450,20 @@ class BuildFixLoop:
             return TriageDecision(cluster_id=cluster.id, kind=DecisionKind.ESCALATE,
                                   rationale=f"triage failed: {type(e).__name__}: {e}")
 
-    def _previous(self, cluster: ErrorCluster) -> list[FixAttempt]:
+    def _previous(self, cluster: ErrorCluster, *, ladder: bool = True) -> list[FixAttempt]:
         """이 클러스터에 대한 앞서 *채점된* 시도들 — 사다리와 한도의 근거. 같은 L1 서명의 다른 파일, 이번
         라운드의 대기 중 시도, LLM 쿨다운을 일으킨 전송 실패
-        시도는 뺀다(쿨다운 라운드가 케이스 한도를 깎으면 안 된다).
+        시도는 뺀다(쿨다운 라운드가 케이스 한도를 깎으면 안 된다). v2.1l: sbmig 의 버전 채움 시도
+        (``sbmig-version``, LLM 0회)는 사다리(``ladder``)에서 빠진다 — LLM 시도 한도를 깎으면 안 된다. 프롬프트의
+        "앞 시도" 에는 들어간다(``ladder=False``).
 
         Earlier SCORED attempts on THIS cluster (round 10: not other files that share an L1 signature, not this
         round's pending ones), without the transport failures that triggered the LLM cool-down (L5): the cool-down
-        round must not count against the case's limits."""
+        round must not count against the case's limits. v2.1l: the zero-LLM `sbmig-version` tries are not ladder
+        steps (`ladder=True`: left out, they never use up an LLM try); the prompt's history keeps them."""
         return [a for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
-                if a.id not in self._cooled_attempts and a.outcome != "pending"]
+                if a.id not in self._cooled_attempts and a.outcome != "pending"
+                and not (ladder and a.source == SBMIG_VERSION_SOURCE)]
 
     def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
         """이 실행의 *다른* 파일·범위에서 같은 오류가 어떻게
@@ -1511,6 +1690,10 @@ class BuildFixLoop:
             elif step is not None and step.needs_llm and not self.budget.llm_allowed():
                 forced = BlockedCandidate(reason=BlockReason.BUDGET_EXHAUSTED, errors=list(c.errors),
                                           evidence=[f"LLM budget exhausted ({self.budget.llm_text()})"])
+            # v2.1l: 누락 버전 케이스는 LLM 전에(사다리·한도·LLM 장애와 무관하게) sbmig 가 as-is 빌드 / 저장소의
+            # 버전을 적어 본다 — 단, 아래 미루기 검사 뒤에(같은 라운드에 다른 케이스가 바꾼 pom 이면 기다린다)
+            # the zero-LLM missing-version try (decided on the triage decision, run after the deferral check below)
+            version_try = self._version_try_wanted(c, d)
             if forced is not None:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                                    rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
@@ -1518,6 +1701,8 @@ class BuildFixLoop:
             # 같은 라운드에 앞 케이스가 이미 그 파일·모듈 pom
             # 을 고쳤으면 미룬다(대개 재빌드에서 함께 사라진다)
             by, why = self._deferral(st, c, step) if d.kind == DecisionKind.SCRIPT else ([], "")
+            if not by and version_try:                  # the version try edits poms: one changed this round waits
+                by, why = self._version_deferral(st, c)
             if by:
                 # not an attempt: no FixAttempt, so neither the ladder, the limits, the blocked policy nor the stall
                 # detection (error multisets) see it; the next round looks at the case again if it is still there
@@ -1529,6 +1714,9 @@ class BuildFixLoop:
                 self._journal_decision(st, d)
                 log.info("deferred: %s %s → 다음 빌드까지 대기 (시도로 세지 않음)", what, names)
                 return "deferred"
+            # 적용되면 이것이 이번 라운드의 시도, 아니면 같은 라운드에 평소 사다리
+            if version_try and self._version_attempt(pr, st, c):
+                return "attempted"
             st.decisions.append(d)
             self._journal_decision(st, d)
             kb_line = self._kb_line(c, d, seen_step)
@@ -1928,7 +2116,7 @@ class BuildFixLoop:
         if not prev:
             return None
         a = prev[-1]
-        if a.outcome in NO_ROLLBACK or id(a) in self._rolled_back:
+        if a.outcome in NO_ROLLBACK or id(a) in self._rolled_back or _kept_partial(a):
             return None
         how = ""
         what = self._edits_label(a) if self.edits_mode else \
@@ -2015,7 +2203,7 @@ class BuildFixLoop:
         sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
         self._mark(f"library hints for {c.id}")
         lib_hints = self._library_hints(c)
-        previous = self._previous(c)
+        previous = self._previous(c, ladder=False)
         ctx = FixContext(phase=st.phase, iteration=st.iteration, stall_level=st.stall_level,
                          profile_summary=self._summary(), plan_notes=self.plan_notes, kb_hints=hints,
                          advisory_hints=adv_hints, previous_attempts=previous, other_errors_summary=other,
@@ -2082,7 +2270,7 @@ class BuildFixLoop:
             lines = [f"{self._edits_label(a)} (attempt {a.id}) → {why}"]
             if diff:
                 failed_rollback = any(x.startswith("rollback before the next attempt failed") for x in a.notes)
-                kept = a.outcome in SCRIPT_KEEP or failed_rollback
+                kept = a.outcome in SCRIPT_KEEP or failed_rollback or _kept_partial(a)
                 lines.append("its changes are still in the tree" if kept else
                              "its changes were rolled back before this request (not in the tree now)")
                 text = diff if len(diff) <= PREVIOUS_EDIT_CHARS else diff[:PREVIOUS_EDIT_CHARS] + _TRUNCATED_MARK
@@ -2177,6 +2365,7 @@ class BuildFixLoop:
             log.info("적용 실패 (%s %s): %s — 변경 없음", name, res.status, _first_sentence(res.error or "-", 240))
             return
         self._drop_reference_writes(att, pre)
+        self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         self._mark(f"git commit for {c.id}")
         sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre, paths=res.changed_files)
         if sha is None:
@@ -2186,13 +2375,15 @@ class BuildFixLoop:
             return
         self._applied(att, c, st, pre, sha, name, list(res.changed_files))
 
-    def _apply_edits(self, att: FixAttempt, c: ErrorCluster, edits: list, st: "_Round") -> None:
+    def _apply_edits(self, att: FixAttempt, c: ErrorCluster, edits: list, st: "_Round",
+                     subject: str | None = None) -> None:
         """답의 ``<edits>`` 를 ``sbmig.script.apply_edits`` 로 적용(스크립트와 같은 가드: 프로젝트 폴더
         안만, 같은 거부 규칙). 실패 → 아무것도 적용 안 됨(작업 트리 복원), 변경 → 커밋
-        ``fix(edits:<case> <source>)``.
+        ``fix(edits:<case> <source>)``(v2.1l 의 sbmig 버전 채움은 ``subject`` 로 ``fix(sbmig-version): …``).
 
         The answer's `<edits>` through `sbmig.script.apply_edits` (the helper API's guards: project folder only,
-        same refusals as a script); failure → nothing applied (working tree restored); changes → commit."""
+        same refusals as a script); failure → nothing applied (working tree restored); changes → commit (`subject`
+        overrides the commit subject: v2.1l's `fix(sbmig-version): <case>`)."""
         pre = self.ws.head()
         self._mark(f"applying {len(edits)} edit(s) for {c.id}")
         try:                                       # traceability only: the record of what changed is the diff
@@ -2219,9 +2410,11 @@ class BuildFixLoop:
             log.info("적용 실패 (edits %s): %s — 변경 없음", res.status, _first_sentence(res.error or "-", 240))
             return
         self._drop_reference_writes(att, pre)
+        self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         self._mark(f"git commit for {c.id}")
-        subject = (f"fix({self._edits_label(att)}): {c.id}" if self.edits_mode else
-                   f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}")
+        if subject is None:
+            subject = (f"fix({self._edits_label(att)}): {c.id}" if self.edits_mode else
+                       f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}")
         sha = self._commit(subject, pre, paths=res.changed_files)
         if sha is None:
             att.outcome = "apply_failed"
@@ -2400,16 +2593,17 @@ class BuildFixLoop:
         """v2.1d 프롬프트의 "Dependency versions" 절: 케이스 뒤의 라이브러리마다 표 항목과 저장소가 가진
         것(같은 메이저 jakarta ✓ / javax, 상위 메이저)과 마지막 줄의 판정(같은 메이저로 올려라 / 이 경우는
         메이저 허용). 규칙은 "메이저 금지, 같은 메이저의 jakarta 빌드로만" — LLM 이 추측하지 않고 사실을 보고
-        고르게 한다. 라이브러리별로 실행 동안 캐시, 예외 없음.
+        고르게 한다. 라이브러리별로 실행 동안 캐시, 예외 없음. v2.1l: 맨 앞에 케이스 오류의 아티팩트마다 as-is
+        빌드의 버전·새 부모 체인의 관리 버전 줄(``_version_facts``).
 
         FixContext.library_hints (the prompt's "Dependency versions" section): for the libraries behind the case
         (`_case_libraries`) the table entry and what the repository has (`RepositoryLookup.candidates` →
-        `hint_lines`), cached per library for the run. Never raises ([] on any problem)."""
+        `hint_lines`), cached per library for the run. v2.1l: the as-is / new-chain facts of every artifact of the
+        case's errors come first (`_version_facts`). Never raises ([] / the facts on any problem)."""
+        facts = self._version_facts(c)                 # v2.1l: the as-is / new-chain lines come first
         try:
             libs = self._case_libraries(c)
-            if not libs:
-                return []
-            out: list[str] = []
+            out: list[str] = list(facts)
             for gav in libs:
                 lines = self._library_hint_cache.get(gav.key)
                 if lines is None:
@@ -2423,7 +2617,7 @@ class BuildFixLoop:
             return out
         except Exception as e:  # noqa: BLE001 - hints never break a fix attempt
             log.debug("library hints for %s unavailable: %s: %s", c.id, type(e).__name__, e)
-            return []
+            return list(facts)
 
     def _case_libraries(self, c: ErrorCluster) -> list[GAV]:
         """케이스 뒤의 외부 라이브러리들(최대 ``libraries.max_artifacts_per_case``, g:a 당 하나): 오류의
@@ -2539,6 +2733,425 @@ class BuildFixLoop:
             except Exception as e:  # noqa: BLE001
                 log.debug("library_hint_line for %s failed: %s: %s", key, type(e).__name__, e)
         return []
+
+    # ------------------------------------------------------------------ v2.1l dependency versions
+    def _versions(self) -> VersionResolver:
+        """이 루프의 버전 결정기(처음 쓸 때 두 캡처를 읽어 한 번 만든다; 저장소 조회기는 v2.1d 의 것을 같이 쓴다).
+
+        The loop's `VersionResolver` (built once, lazily; the repository step reuses `_repository()`)."""
+        if self._version_resolver is None:
+            self._version_resolver = VersionResolver.for_workspace(self.ws, repository=self._repository)
+        return self._version_resolver
+
+    def _protected_version_keys(self) -> set[str]:
+        """버전을 sbmig 가 채우지 않는 g:a: 사내 부모·역할 부모·필수·선택(별칭 포함)·``remove_when_present`` —
+        재구성기가 건드리지 않는 것과 같은 목록(회사가 관리하는 좌표).
+
+        The keys sbmig never fills a version for (the restructurer's protected set: in-house parent / role parents /
+        mandatory / optional incl. aliases / `remove_when_present`)."""
+        A = getattr(self.cfg, "artifacts", None)
+        if A is None:
+            return set()
+        keys: set[str] = set()
+        for spec in (getattr(A, "parent", None), getattr(A, "boot_parent", None), getattr(A, "comp_parent", None),
+                     *(getattr(A, "mandatory", None) or [])):
+            if spec is not None:
+                keys.add(spec.key)
+        try:
+            keys |= set(self.cfg.optional_keys())
+        except Exception:  # noqa: BLE001 - a foreign config: the optional artifacts by their own keys
+            keys |= {s.key for s in getattr(A, "optional", None) or []}
+        keys |= {k for k in getattr(A, "remove_when_present", None) or [] if ":" in k}
+        return keys
+
+    def _pom_editor(self, rel: str) -> Any:
+        """현재 트리의 pom 편집기(못 읽으면 None)."""
+        try:
+            from sbmig.restructure.pom_editor import PomEditor
+            return PomEditor(self.ws.abs(rel))
+        except Exception as e:  # noqa: BLE001 - an unparsable pom: nothing to fill there
+            log.debug("pom %s not readable: %s: %s", rel, type(e).__name__, e)
+            return None
+
+    def _own_module_keys(self) -> set[str]:
+        """프로젝트 자신의 모듈 좌표(g:a, ``${project.groupId}:a``) — 형제 모듈 의존성의 버전은 채우지 않는다."""
+        own: set[str] = set()
+        for p in self.ws.pom_files():
+            ed = self._pom_editor(p)
+            a = ed.artifact_id() if ed is not None else None
+            if a:
+                own |= {f"{ed.effective_group_id()}:{a}", f"${{project.groupId}}:{a}"}
+        return own
+
+    @staticmethod
+    def _coords(ed: Any) -> str | None:
+        a = ed.artifact_id() if ed is not None else None
+        return f"{ed.effective_group_id() or ''}:{a}" if a else None
+
+    def _pom_chain(self, rel: str) -> list[str]:
+        """[pom, 프로젝트 안의 부모 pom, …] — ``<relativePath>``(없으면 ``../pom.xml``)를 따라 artifactId 가 맞는
+        동안(10 단계까지). 빈 ``<relativePath/>``·프로젝트 밖·불일치에서 멈춘다.
+
+        [pom, its in-project parent, …] following `<relativePath>` (default `../pom.xml`) while the parent's
+        artifactId matches (≤ 10 levels)."""
+        out = [rel]
+        cur = rel
+        for _ in range(10):
+            ed = self._pom_editor(cur)
+            parent = ed.get_parent() if ed is not None else None
+            rp = ed.parent_relative_path() if ed is not None else None
+            if parent is None or rp == "":
+                break
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(cur), rp or "../pom.xml"))
+            if not target.endswith(".xml"):
+                target = posixpath.join(target, "pom.xml")
+            if target.startswith("..") or target in out or not self.ws.exists(target):
+                break                                # outside the project / a cycle / not here
+            ped = self._pom_editor(target)
+            if ped is None or ped.artifact_id() != parent.artifact_id:
+                break
+            out.append(target)
+            cur = target
+        return out
+
+    @staticmethod
+    def _managed_shape(ed: Any) -> tuple[str, tuple[str, ...]]:
+        """pom 의 부모 좌표와 BOM import 들 — 시도가 sbmig 가 볼 수 없는 방식으로 버전 관리를 바꿨는지 비교하는
+        데 쓴다(일반 dependencyManagement 항목은 직접 보이므로 여기 넣지 않는다).
+
+        The pom's parent coordinates and BOM imports: what changes version management in a way sbmig cannot see
+        (plain dependencyManagement entries are read directly by the local-chain check)."""
+        p = ed.get_parent()
+        parent = f"{p.group_id}:{p.artifact_id}:{p.version or ''}" if p is not None else ""
+        boms = tuple(sorted(f"{g.key}:{g.version or ''}" for g in ed.managed_dependencies()
+                            if (g.scope or "") == "import"))
+        return parent, boms
+
+    def _reported_missing(self, st: _Round | None, rel: str, aid: str | None, key: str) -> bool:
+        """이 라운드의 빌드(또는 롤백으로 돌아온 오류)가 이 pom 의 g:a 를 '버전 없음' 으로 보고했는가.
+
+        Did this round's build (or an error a rollback brought back) report g:a's version missing in this pom?"""
+        if st is None:
+            return False
+        for e in [*st.build.errors, *st.restored]:
+            if e.signature_generic != MISSING_VERSION_SIG or e.artifact is None or e.artifact.key != key:
+                continue
+            f = _norm_path(e.file or "")
+            if (f and f == rel) or (not f and aid and e.module == aid):
+                return True
+        return False
+
+    def _fill_versions(self, att: FixAttempt, c: ErrorCluster, res: ScriptRunResult, pre: str,
+                       st: _Round | None = None) -> list[tuple[str, str, str, str]]:
+        """v2.1l: 적용된 스크립트 / edits 가 바꾼 pom 들의 버전 없는 ``<dependencies>`` 항목에 버전을 채운다
+        (커밋 전, 그 시도의 커밋에 함께 들어간다). 시도가 *추가한* 의존성은 규칙 1–3(관리됨 → as-is → 저장소),
+        원래 있던 것은 빌드가 '버전 없음' 이라고 보고한 경우만 규칙 2(as-is), 시도가 버전을 지운 것은 재구성 뒤
+        캡처가 있을 때만 규칙 1–2(없으면 "부모가 관리" 라는 LLM 판단을 둔다). 규칙 1 은 프로젝트 안의
+        dependencyManagement(그 pom·프로젝트 안 부모)도 본다 — 재구성 뒤 캡처가 없으면 그것뿐이다(비워 두면 다음
+        빌드의 pom_invalid 로 시도 전체가 되돌려진다). 시도가 부모·BOM import 를 바꾼 pom(과 그 아래)은 건드리지
+        않는다.
+        사내·필수·선택·제거 대상·자기 모듈·system scope 는 제외. 예외 없음, 채운 것이 없으면 조용하다.
+
+        Fill the versions of the `<dependencies>` entries without `<version>` in the poms the applied script / edits
+        changed (before the commit; the pom joins the attempt's commit): a dependency the attempt ADDED (absent from
+        the pom at `pre`) by steps 1–3; one that was already there only when the build reported its version missing,
+        by step 2; one whose version the attempt dropped by steps 1–2, and only with the post-restructure capture
+        (without it the LLM's "the parent manages it" stands — an as-is version could be an old one). Step 1 also counts a `<dependencyManagement>` entry of the pom or an in-project parent (the tree
+        as the attempt left it); without the post-restructure capture that is all step 1 sees — an added dependency
+        left empty would come back as pom_invalid and the structural-regression rule would revert the whole try.
+        A pom whose parent or BOM imports the attempt changed (or one below such a pom) is left alone. Protected
+        keys, own modules and `system` scope are skipped. Returns [(pom, key, version, source)]. Never raises."""
+        try:
+            return self._fill_versions_unsafe(att, c, res, pre, st)
+        except Exception as e:  # noqa: BLE001 - a version fill never fails an attempt
+            log.debug("version fill for %s failed: %s: %s", att.id, type(e).__name__, e)
+            return []
+
+    def _fill_versions_unsafe(self, att: FixAttempt, c: ErrorCluster, res: ScriptRunResult, pre: str,
+                              st: _Round | None) -> list[tuple[str, str, str, str]]:
+        poms = [p for p in dict.fromkeys(_norm_path(f) for f in (res.changed_files or []) if f)
+                if PurePosixPath(p).name == "pom.xml" and self.ws.exists(p)]
+        if not poms:
+            return []
+        from sbmig.restructure.pom_editor import PomEditor
+        before: dict[str, Any] = {}
+        reshaped: set[str] = set()
+        for p in poms:
+            text = self.ws.file_at(pre, p) if pre else None
+            ed0 = PomEditor.from_string(text, p) if text is not None else None
+            before[p] = ed0
+            cur = self._pom_editor(p)
+            if ed0 is None or cur is None or self._managed_shape(ed0) != self._managed_shape(cur):
+                reshaped.add(p)          # a new pom, or the attempt changed how its versions are managed
+        r = self._versions()
+        protected = self._protected_version_keys()
+        own: set[str] | None = None
+        filled: list[tuple[str, str, str, str]] = []
+        case = att.script_case_id or c.case_id or c.id
+        for p in poms:
+            if p in reshaped:
+                continue
+            chain = self._pom_chain(p)
+            if any(q in reshaped for q in chain[1:]):
+                continue
+            ed = self._pom_editor(p)
+            if ed is None:
+                continue
+            module = self._coords(ed)
+            aid = ed.artifact_id()
+            pre_versions = {g.key: g.version for g in before[p].dependencies()}
+            local: set[str] = set()                  # managed inside the project (this pom or an in-project parent)
+            for q in chain:
+                qed = ed if q == p else self._pom_editor(q)
+                if qed is not None:
+                    local |= {g.key for g in qed.managed_dependencies()}
+            for el in ed.dependency_elements(False):
+                g = ed.gav_of(el)
+                key = g.key
+                if g.version or not g.group_id or not g.artifact_id or "${" in key:
+                    continue
+                if own is None:
+                    own = self._own_module_keys()
+                if key in protected or key in own or (g.scope or "") == "system" or key in local:
+                    continue
+                if key not in pre_versions:          # added by this attempt: steps 1–3
+                    # 재구성 뒤 캡처가 없으면 1단계는 프로젝트 안 관리(위 local)만 본다 — 비워 두면 다음 빌드의
+                    # pom_invalid 가 구조적 악화로 시도 전체를 되돌리므로 as-is / 저장소 버전을 적는다
+                    v, src = r.resolve(key, module, allow_repository=True)
+                elif pre_versions[key]:              # the attempt dropped its version ("the parent manages it")
+                    # 새 체인을 모르면 LLM 의 판단을 둔다 — as-is 버전(예: 옛 Boot 2 버전)을 되살리면 더 나쁘다
+                    if not r.has_after:
+                        continue
+                    v, src = r.resolve(key, module)              # steps 1–2
+                elif self._reported_missing(st, p, aid, key):   # already there, the build says missing: step 2
+                    v, src = r.resolve(key, module, check_managed=False)
+                else:                                # already there and resolved by the last build: managed
+                    continue
+                if not v:
+                    continue
+                ed.set_ref_version(el, v)
+                filled.append((p, key, v, src))
+            if ed.changed:
+                ed.save()
+        for p, key, v, src in filled:
+            how = VERSION_SOURCE_TEXT.get(src, src)
+            att.notes.append(f"version filled by sbmig: {key} {v} in {p} ({VERSION_SOURCE_NOTE.get(src, src)})")
+            log.info("버전 채움: %s → %s (%s) — %s", key, v, how, p)
+            self.ws.journal({"event": "version_filled", "case": case, "attempt": att.id, "key": key, "version": v,
+                             "source": src, "pom": p})
+        return filled
+
+    def _declaring_pom(self, e: BuildError) -> str | None:
+        """'버전 없음' 오류의 g:a 가 버전 없이 선언된 pom(오류의 pom → 같은 artifactId 의 모듈 pom, 각각의 프로젝트
+        안 부모까지). 못 찾으면 None.
+
+        The pom that declares the error's g:a without a version (the error's pom, else the module pom with that
+        artifactId; each with its in-project parents); None when not found."""
+        key = e.artifact.key if e.artifact is not None else ""
+        cands: list[str] = []
+        f = _norm_path(e.file or "")
+        if f and PurePosixPath(f).name == "pom.xml" and self.ws.exists(f):
+            cands.append(f)
+        if e.module:
+            for p in self.ws.pom_files():
+                if p not in cands:
+                    ed = self._pom_editor(p)
+                    if ed is not None and ed.artifact_id() == e.module:
+                        cands.append(p)
+        for p in cands:
+            for q in self._pom_chain(p):
+                ed = self._pom_editor(q)
+                if ed is None:
+                    continue
+                for g in [*ed.dependencies(), *ed.managed_dependencies()]:
+                    if g.key == key and not g.version:
+                        return q
+        return None
+
+    def _version_plan(self, c: ErrorCluster
+                      ) -> tuple[list[tuple[str, str, str, str, str]], list[str], bool, list[tuple[str, str]]]:
+        """누락 버전 케이스의 결정적 시도 계획: 오류마다 (pom, g:a) 쌍을 as-is 빌드 → 저장소 순으로 푼다(규칙 2–3;
+        빌드가 '없음' 이라 했으니 규칙 1 은 건너뜀). 못 찾은 쌍은 바로 '본 것' 으로 기억하고(사다리를 두 번 늦추지
+        않게), 찾은 쌍은 돌려주기만 한다 — 적용된 뒤에야 기억한다(``_version_attempt``). 돌려주는 것: ([(pom, g,
+        a, 버전, 출처)], 못 찾은 것들, 새로 본 쌍이 있었나, 찾은 쌍들).
+
+        The deterministic try's plan for a missing-version case: each (pom, g:a) of its errors not tried yet,
+        resolved by steps 2–3. A pair nothing was found for is remembered at once (the ladder is not delayed twice);
+        a resolved pair is only returned — `_version_attempt` remembers it once the edit applied. Returns
+        ([(pom, g, a, version, source)], what stayed unknown, whether any pair was new, the resolved pairs)."""
+        errs = [e for e in c.errors if e.signature_generic == MISSING_VERSION_SIG and e.artifact is not None
+                and e.artifact.group_id and e.artifact.artifact_id]
+        if not errs:
+            return [], [], False, []
+        # 쌍 = 오류가 가리키는 (pom 또는 모듈, g:a) — 이미 본 쌍은 다시 풀지 않는다(같은 답이 나올 뿐)
+        new = [e for e in errs if (_norm_path(e.file or "") or (e.module or ""), e.artifact.key)
+               not in self._version_tried]
+        if not new:
+            return [], [], False, []
+        r = self._versions()
+        protected = self._protected_version_keys()
+        own = self._own_module_keys()
+        plan: list[tuple[str, str, str, str, str]] = []
+        unknown: list[str] = []
+        pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for e in new:
+            key = e.artifact.key
+            pair = (_norm_path(e.file or "") or (e.module or ""), key)
+            if pair in seen:                         # the same pair twice in the case
+                continue
+            seen.add(pair)
+            pom = self._declaring_pom(e)
+            if key in protected or key in own:
+                self._version_tried.add(pair)        # nothing to do for it: remembered
+                unknown.append(f"{key} (company / own module: not filled by sbmig)")
+                continue
+            if pom is None:
+                self._version_tried.add(pair)
+                unknown.append(f"{key} (no pom declares it without a version)")
+                continue
+            v, src = r.resolve(key, self._coords(self._pom_editor(pom)), allow_repository=True, check_managed=False)
+            if not v:
+                self._version_tried.add(pair)        # nothing found: the ladder goes on, once
+                unknown.append(key)
+                continue
+            pairs.append(pair)
+            if not any(x[0] == pom and f"{x[1]}:{x[2]}" == key for x in plan):
+                plan.append((pom, e.artifact.group_id, e.artifact.artifact_id, v, src))
+        return plan, unknown, bool(seen), pairs
+
+    def _version_try_wanted(self, c: ErrorCluster, d: TriageDecision) -> bool:
+        """이 케이스에 LLM 0회의 ``sbmig-version`` 시도를 먼저 해 볼까: 누락 버전 케이스이고, 트리아지가 SCRIPT 를
+        정했거나 LLM 이 없어서(불가·예산 소진) 막혔을 때. 사람이 고정한 차단·이미 차단된 오류는 존중한다.
+
+        Whether to try the zero-LLM `sbmig-version` fix first: a missing-version case the triager gave a SCRIPT
+        decision, or blocked only for the LLM (unavailable / budget exhausted)."""
+        if self.dry_run or not any(e.signature_generic == MISSING_VERSION_SIG for e in c.errors):
+            return False
+        if d.kind == DecisionKind.SCRIPT:
+            return True
+        m = _BLOCKED_RAT_RE.search(d.rationale or "") if d.kind == DecisionKind.BLOCKED else None
+        return m is not None and m.group("r") in (BlockReason.LLM_UNAVAILABLE.value,
+                                                  BlockReason.BUDGET_EXHAUSTED.value)
+
+    def _version_deferral(self, st: _Round, c: ErrorCluster) -> tuple[list[str], str]:
+        """sbmig 버전 채움을 다음 빌드까지 미루게 하는 (케이스들, "pom" | "files"): 이번 라운드에 다른 케이스의
+        수정이 그 오류의 pom(또는 루트 pom — 모든 모듈의 부모 체인)을 바꿨거나 그 pom 위에서 돌았으면 기다린다.
+        한 트리에 두 시도가 겹쳐 채점되거나, 앞 시도의 되돌리기(git revert)가 이 시도의 줄과 충돌하지 않게.
+
+        (case ids, "pom" | "files") that make the version try wait for the rebuild: a fix of another case changed the
+        error's pom (or the root pom — every module's chain) in this round, or ran on it. Two tries are never scored on
+        one pom, and an earlier try's `git revert` never conflicts with this one's hunk."""
+        files = list(dict.fromkeys(_norm_path(e.file) for e in c.errors
+                                   if e.signature_generic == MISSING_VERSION_SIG and e.file))
+        by = [st.poms[f] for f in files if f in st.poms]
+        if "pom.xml" in st.poms and st.poms["pom.xml"] not in by:
+            by.append(st.poms["pom.xml"])
+        if by:
+            return list(dict.fromkeys(by)), "pom"
+        by = [st.covered[f] for f in files if f in st.covered]
+        return (list(dict.fromkeys(by)), "files") if by else ([], "")
+
+    def _version_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
+        """v2.1l 누락 버전 케이스의 결정적 시도(LLM 0회, 예산 그대로): 계획한 버전을 ``set_dependency_version``
+        편집으로 ``_apply_edits`` 와 같은 길(가드·커밋·채점·롤백)로 적용한다. 출처 ``sbmig-version``, 모드 new,
+        저장 스크립트 없음, 커밋 ``fix(sbmig-version): <case>``. 적용됐으면 True(이번 라운드의 케이스 시도는 이것),
+        아니면 False — 같은 라운드에서 평소 사다리가 이어진다.
+
+        The deterministic try of a missing-version case (no LLM call, the budget untouched): the planned versions as
+        `set_dependency_version` edits through `_apply_edits` (same guards, commit, scoring, rollback); source
+        `sbmig-version`, script_mode `new`, no stored script, commit `fix(sbmig-version): <case>`. True when it
+        applied (the case's try of this round), False → the normal ladder goes on in the same round."""
+        plan, unknown, fresh, pairs = self._version_plan(c)
+        if not fresh:
+            return False
+        case_id = c.case_id or c.id
+        self.ws.journal({"event": "version_try", "phase": st.phase.value, "iteration": st.iteration, "case": case_id,
+                         "resolved": [{"pom": p, "key": f"{g}:{a}", "version": v, "source": src}
+                                      for p, g, a, v, src in plan], "unknown": unknown})
+        if not plan:
+            log.info("sbmig 버전 채움: %s — as-is 빌드·저장소에 버전 없음 → LLM 사다리 (사실은 프롬프트에)",
+                     ", ".join(unknown[:5]) + (f", … (+{len(unknown) - 5})" if len(unknown) > 5 else ""))
+            return False
+        t0 = time.monotonic()
+        what = ", ".join(f"{g}:{a} {v}" for _p, g, a, v, _s in plan)
+        d = TriageDecision(cluster_id=c.id, kind=DecisionKind.SCRIPT,
+                           rationale=f"sbmig-version: the missing version(s) from the as-is build / the repository "
+                                     f"({what}) — no LLM call")
+        st.decisions.append(d)
+        self._journal_decision(st, d)
+        st.n += 1
+        att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
+        att.errors_before = st.build.error_count + len(st.restored)
+        att.script_mode, att.script_case_id, att.source = "new", case_id, SBMIG_VERSION_SOURCE
+        att.analysis = ("the build reports dependency versions missing: the new parent chain does not manage "
+                        + ", ".join(f"{g}:{a}" for _p, g, a, _v, _s in plan))
+        att.solution = ("sbmig writes the versions the as-is build used (else the newest release in the "
+                        "repository) — no LLM call")
+        edits: list[Any] = []
+        from sbmig.core.models import Edit
+        for p, g, a, v, src in plan:
+            how = VERSION_SOURCE_TEXT.get(src, src)
+            att.notes.append(f"version {g}:{a} {v} in {p} ({VERSION_SOURCE_NOTE.get(src, src)})")
+            edits.append(Edit(op="pom", path=p, desc=f"{p} 의 {g}:{a} 의존성에 버전 {v} 을(를) 적습니다 ({how})",
+                              pom={"set_dependency_version": {"group_id": g, "artifact_id": a, "version": v}}))
+        if unknown:
+            att.notes.append("no version found (as-is build, repository): " + ", ".join(unknown[:10]))
+        log.info("sbmig 버전 채움 (LLM 0회): %s", ", ".join(
+            f"{g}:{a} → {v} ({VERSION_SOURCE_TEXT.get(src, src)})" for _p, g, a, v, src in plan))
+        self._begin_try(att, st)
+        self._apply_edits(att, c, edits, st, subject=f"fix(sbmig-version): {c.id}")
+        # 적용된 쌍만 '본 것' — 적용 실패(applier 예외, 커밋 실패, Windows 의 일시적 파일 잠금)는 다음 라운드에
+        # 다시 해 본다(쌍마다 VERSION_TRY_APPLY_FAILURES 번까지)
+        for pair in pairs:
+            if att.applied:
+                self._version_tried.add(pair)
+            else:
+                self._version_failures[pair] += 1
+                if self._version_failures[pair] >= VERSION_TRY_APPLY_FAILURES:
+                    self._version_tried.add(pair)
+        if att.applied:                                 # its poms: the module's compile cases wait (deferral)
+            for ch in att.changes:
+                for path in (ch.path, ch.new_path):
+                    if path and PurePosixPath(_norm_path(path)).name == "pom.xml":
+                        st.poms.setdefault(_norm_path(path), c.id)
+        self._seconds[id(att)] = time.monotonic() - t0
+        self._record(pr, att)
+        self._sync_try(att)
+        return att.applied
+
+    def _version_facts(self, c: ErrorCluster) -> list[str]:
+        """v2.1l 프롬프트 사실("Dependency versions" 절의 앞부분): 케이스 오류의 아티팩트마다(사내 것도) as-is
+        빌드가 쓴 버전(``as-is build: g:a <v> (managed by …)`` / ``… not declared``)과 새 부모 체인이 관리하는
+        버전(``new parent chain: manages g:a at <v>``). 캡처가 없으면 그 줄은 없다(모르는 것을 '없음' 이라고 하지
+        않는다). 예외 없음.
+
+        The as-is / new-chain facts for every artifact of the case's errors (in-house ones too); a capture that is
+        missing gives no line (unknown is not "not declared"). Never raises."""
+        try:
+            mods: dict[str, str | None] = {}
+            for e in c.errors:
+                a = e.artifact
+                if a is not None and a.group_id and a.artifact_id and a.key not in mods:
+                    mods[a.key] = e.module
+            if not mods:
+                return []
+            r = self._versions()
+            if not (r.has_asis or r.has_after):
+                return []
+            out: list[str] = []
+            for key, module in list(mods.items())[:VERSION_FACTS_MAX]:
+                if r.has_asis:
+                    v, how = r.asis_fact(key, module)
+                    out.append(f"as-is build: {key} {v} ({how})" if v else f"as-is build: {key} not declared")
+                if r.has_after:
+                    mv = r.managed_version(key, module)
+                    if mv:
+                        out.append(f"new parent chain: manages {key} at {mv}")
+            return out
+        except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
+            log.debug("version facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return []
 
     def _numstat(self, a: str, b: str) -> list[tuple[str, int, int]]:
         """두 커밋 사이 파일별 (경로, 추가 줄, 삭제 줄). 바이너리는 0 / 0, 이름 바꾸기는 새 경로.
@@ -3054,6 +3667,15 @@ def _try_note(att: FixAttempt) -> str:
     parts = list(dict.fromkeys([*att.apply_errors, *att.notes]))
     text = "; ".join(" ".join(p.split()) for p in parts if p)
     return text if len(text) <= TRY_NOTE_CHARS else text[:TRY_NOTE_CHARS - 1] + "…"
+
+
+def _kept_partial(a: FixAttempt) -> bool:
+    """v2.1l: 부분 해결된 sbmig 버전 채움(``sbmig-version``)은 다음 시도 전에 되돌리지 않는다 — 적은 버전은
+    추측이 아니라 사실(as-is 빌드·저장소)이고, 남은 오류는 못 찾은 버전뿐이다.
+
+    A partial `sbmig-version` try stays in the tree (no rollback before the case's next try): its versions are facts
+    (the as-is build / the repository), what is left are the versions it could not find."""
+    return a.source == SBMIG_VERSION_SOURCE and a.outcome == "partial"
 
 
 def _synthetic(e: BuildError) -> bool:

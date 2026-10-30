@@ -1,0 +1,21 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — v2.1l: the as-is <parent> is the OLD
+# in-house parent (fixtures/libs/legacy-parent, local repository) that manages commons-text / commons-csv. The company
+# layout (round 9c defaults) with the role parents stood in by spring-boot-starter-parent 4.1.0, whose BOM manages
+# neither library: the restructure must pin both from the as-is effective pom.
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
+# structure_review); no fix-script request is expected (no match = "no fix").
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/legacy-external-parent/replay"
+# Own KB (v2: stored fix scripts per case, reviews.jsonl, error cases). scripts/e2e.py clears it before the run.
+kb:
+  dir: out/e2e/kb-legacy-external-parent

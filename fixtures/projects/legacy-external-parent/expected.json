@@ -1,0 +1,109 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": null,
+  "spring_boot_version": null,
+  "spring_version": "6.2.12",
+  "packaging": "jar",
+  "is_multi_module": false,
+  "libraries": [
+    "spring-context"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [],
+    "forbidden_flags": [
+      "restructure-failed"
+    ],
+    "journal_events": [
+      {
+        "event": "rewrite",
+        "step": "transform.rewrite",
+        "ok": true
+      },
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-legacy-external-parent"
+    },
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "extparent-back",
+            "extparent-boot"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_dependency_versioned": {
+          "path": "extparent-back/pom.xml",
+          "artifacts": [
+            "org.apache.commons:commons-text",
+            "org.apache.commons:commons-csv"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "extparent-back/pom.xml",
+          "contains": "<version>1.10.0</version>"
+        }
+      },
+      {
+        "pom_dependency_unversioned": {
+          "path": "extparent-back/pom.xml",
+          "artifacts": [
+            "org.springframework:spring-context"
+          ]
+        }
+      },
+      {
+        "file_exists": {
+          "path": "extparent-back/src/main/java/com/example/extparent/service/ReportService.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "extparent-boot/target/*.jar"
+        }
+      }
+    ]
+  }
+}

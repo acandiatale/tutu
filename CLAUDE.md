@@ -68,7 +68,9 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   (user: "정책상 빌드로 보지 않는건 없을거야" — 500 projects cannot all be perfect). Advisories are guide-only in v2:
   hints in the script prompt + the report **Handover** section first.
 - v2 decisions (user, 2026-10-26, `docs/v2/PLAN-v2.md` §2): recipes = `UpgradeToJava21`, `JavaxMigrationToJakarta`
-  (when the case needs it), Boot projects `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1`; no intermediate
+  (when the case needs it), Boot projects `UpgradeSpringBoot_4_0` + `SpringBootProperties_4_1` (that umbrella already runs
+  Spring Cloud 2025.1 / Security 7 / Framework 7), and since v2.1l (2026-10-30, "security 는 쓰는 경우만") the Spring Security
+  chain `UpgradeSpringSecurity_6_0 … 6_5, 7_0` for a `spring_legacy` project whose analyzer found `spring-security`; no intermediate
   builds; the 32 deterministic handlers are out; the structure review fixes only critical findings by script; fix
   scripts get a restricted API in a separate process; advisories = hints + Handover; KB in `kb-v2/`.
 - LLM keys come only from the environment (`LLM_API_KEY`). Never write a key into the repo, a config file, or a log.
@@ -120,6 +122,14 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
 - Step 5 (company trial vs `company-v1`) is the user's: real projects, LLM calls / time / success rate.
 
 ## Known follow-ups (the user decides)
+- **Dependency versions (v2.1l, 2026-10-30)**: the versions an as-is parent managed are pinned from the as-is effective pom
+  (`logs/depmgmt.json`) inside the restructure, before the first build (`RestructureResult.versions_pinned`, Handover ⚠
+  "carried over"); the fix loop fills a version-less dependency the LLM added (as-is build → newest repository release) and
+  tries a `missing_version` case first without the LLM (`sbmig-version`); rule 14 tells the LLM to leave unknown versions
+  `null`. v1's `carry-over-managed-version` handler had been deleted with the other handlers in v2 step 4 — that gap was the
+  company's "정책상 버전을 추정하여 추가할 수 없습니다" loops. Contract: `docs/INTERFACES.md` "v2.1l".
+- **MSA with non-Boot WAR services** (2026-10-30): `restructure.msa_pom` gives such a service the boot parent but no Boot app /
+  layout split; the user checks the real projects first ("비-boot war는 일단 그대로 두자").
 - **JSP `javax` → `jakarta` (decided 2026-10-28, v2.1h)**: OpenRewrite never parses JSPs, so the restructure renames
   the javax EE names of the analyzer's table inside every JSP / tag file's code regions after the files reached their
   final place, in every mode (`layout.jsp_jakarta_rename`, default true; `sbmig/restructure/jsp_jakarta.py`). Off →

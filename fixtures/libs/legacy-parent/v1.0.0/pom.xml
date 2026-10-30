@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Simulated OLD in-house parent (NOT on Maven Central): installed into the local repo by fixtures/libs/install.sh.
+         It manages the versions of third-party libraries the company projects declare WITHOUT a version (v2.1l):
+         after the restructure moves a pom to the role parents those versions must be carried over, because the
+         Spring Boot 4.1 BOM manages neither commons-text nor commons-csv. -->
+    <groupId>com.company.legacy</groupId>
+    <artifactId>legacy-parent</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>legacy-parent</name>
+    <description>Old in-house parent: Java 17, UTF-8, managed third-party versions</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>17</maven.compiler.release>
+        <commons-text.version>1.10.0</commons-text.version>
+        <commons-csv.version>1.10.0</commons-csv.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-text</artifactId>
+                <version>${commons-text.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-csv</artifactId>
+                <version>${commons-csv.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

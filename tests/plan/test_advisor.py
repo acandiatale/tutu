@@ -47,7 +47,8 @@ def test_whitelist_is_the_v2_scope(cfg):
     wl = advisor_whitelist(cfg)
     assert set(wl) <= set(ADVISOR_CATALOG) and set(wl) <= v2_recipe_scope(cfg)
     assert JAKARTA in wl and BOOT4 in wl
-    assert JUNIT5 not in wl and SEC7 not in wl and FW7 not in wl            # sets empty by default
+    assert JUNIT5 not in wl and FW7 not in wl                               # sets empty by default
+    assert SEC7 in wl                                                       # v2.1l: the Security chain is a default set
     cfg.openrewrite.recipes.junit5 = [JUNIT5]
     cfg.openrewrite.recipes.extra = {"spring_legacy": [FW7]}
     wl = advisor_whitelist(cfg)

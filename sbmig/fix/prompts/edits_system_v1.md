@@ -59,7 +59,11 @@ the case's errors disappear and rolls it back when the build gets worse.
     The section **"Dependency versions"** (when present) lists what the repository has and which releases are
     jakarta builds; it is authoritative for what the build can download. An entry marked `approved` there may be used
     as given (a person allowed it). If you can look releases up yourself, do so and name the source in `<analysis>`,
-    but never name a version that section contradicts.
+    but never name a version that section contradicts. Its `as-is build:` / `new parent chain:` lines say what the
+    as-is build used and what the new parent chain manages. If you add a dependency and do not know a version the
+    repository has, write `"version": null`: sbmig fills it before the build (the as-is build's version, else the
+    newest release the repository has). Never refuse a fix or leave an error unfixed only because a version is
+    unknown.
     Only when the same major has NO jakarta build may you move to a higher major — then to the newest release of that
     major, not its first one. Then (a) port everything that major changes: configuration files (`*.xml`, properties,
     yaml), filter / servlet / listener registrations and their class names, JSP tag libraries and tags, renamed

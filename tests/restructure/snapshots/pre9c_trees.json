@@ -13,6 +13,7 @@
   ],
   "notes": [
    "role parents: 3 parent(s) set \u2014 root com.company.platform:base-parent, module/boot-jar com.company.platform:boot-jar, module/comp-jar com.company.platform:comp-jar (the modules do not inherit the root pom; mandatory dependencies / BOM / java level / root management are in each module pom)",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -54,6 +55,7 @@
   ],
   "notes": [
    "pom.xml already inherits the in-house parent org.springframework.boot:spring-boot-starter-parent; splitting into the company layout",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -92,6 +94,7 @@
    "merged module core into module/comp-jar (module directory removed)",
    "merged module web into module/comp-jar (module directory removed)",
    "as-is boot module boot-jar kept as module/boot-jar (moved from boot-jar): sources untouched, dependencies on merged modules (${project.groupId}:suite-web, com.acme:suite-core) replaced by suite-comp",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -125,6 +128,7 @@
    "as-is boot module boot-jar kept as module/boot-jar (moved from boot-jar): sources untouched, dependencies on merged modules (com.acme:catalog-service, com.acme:order-service) replaced by shop-comp",
    "module order-service: 1 dependencyManagement entry (org.mybatis:mybatis) and 0 properties folded into module/comp-jar/pom.xml (first wins)",
    "role parents: 3 parent(s) set \u2014 root com.company.platform:base-parent, module/boot-jar com.company.platform:boot-jar, module/comp-jar com.company.platform:comp-jar (the modules do not inherit the root pom; mandatory dependencies / BOM / java level / root management are in each module pom)",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -153,6 +157,7 @@
   "notes": [
    "msa_pom: patched order-service/pom.xml",
    "msa_pom: patched user-service/pom.xml",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -182,6 +187,7 @@
   "notes": [
    "merged module core into module/comp-jar (module directory removed)",
    "merged module web into module/comp-jar (module directory removed)",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -215,6 +221,7 @@
    "no @SpringBootApplication class found in jar modules; boot-jar depends on all jar modules",
    "@SpringBootApplication class com.acme.suite.SuiteApplication not found in module/core/src/main/java",
    "multi-module wrap: as-is root dependencies/build plugins kept (inherited by the wrapped modules)",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [
@@ -251,6 +258,7 @@
   "notes": [
    "provided spring-boot-starter-tomcat dropped (WAR \u2192 executable jar)",
    "tomcat-embed-jasper added to boot-jar for JSP support",
+   "as-is version carry-over skipped: no as-is effective pom",
    "managed-version cleanup skipped: no effective pom"
   ],
   "parents_set": [

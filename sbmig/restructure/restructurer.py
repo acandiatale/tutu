@@ -9,6 +9,8 @@
 이미 쓰던 것만 올린다. 좌표는 전부 config 에서 읽는다(불변조건 2). 지킬 것: wrap / merge 는 모든 검사·결정을
 첫 이동 전에 끝낸다(실패 = ``RestructureError`` → ok=False); 다시 돌려도 결과가 같다(이미 재구성된 프로젝트는
 pom 정리만); 프로젝트 밖 경로는 읽지도 바꾸지도 않는다.
+v2.1l: 새 부모로 옮기며 버전을 잃은 의존성에는 as-is 빌드의 버전을 적고(``_pin_asis_versions``), 새 부모
+체인이 관리하는 것은 관리 버전 정리가 다시 비운다 — LLM 이 버전을 추측하지 않게.
 
 Company-layout restructuring (ARCHITECTURE §8).
 
@@ -35,6 +37,10 @@ mode="optional_bump"
                 `msa_pom` run finds nothing left to bump and reports nothing.
 
 Optional artifact bumps and `remove_when_present` are applied to every project pom in all modes.
+
+v2.1l (`layout`, `boot_pom`, `msa_pom`): right before the managed-version cleanup, every version-less
+`<dependencies>` entry gets the version the as-is build resolved (`params["asis_effective"]`, the intake
+capture); the cleanup then empties the pins the new parent chain manages (docs/INTERFACES.md "v2.1l").
 
 Edge cases (docs/ERROR-HANDLING.md): system-scoped jars are copied next to the module that declares them (E7);
 `<module>` entries outside the project root abort a `wrap` layout with ok=False before anything moves and are skipped
@@ -78,6 +84,8 @@ from .webxml_registrations import RULES_FILE as WEB_XML_RULES
 from .webxml_registrations import ClassInfo, load_skip_rules, plan_registrations
 
 log = logging.getLogger("sbmig.restructure")
+# v2.1l: versions_pinned 의 저장소 출처 표시(as-is 빌드가 버전을 주지 못한 의존성)
+REPO_PIN_SOURCE = "repository newest release (the as-is build did not resolve it)"
 
 BOOT_GROUP = "org.springframework.boot"
 BOOT_PLUGIN = (BOOT_GROUP, "spring-boot-maven-plugin")
@@ -230,6 +238,17 @@ class _Ctx:
     overlay_conf: Any = None            # the as-is maven-war-plugin <configuration><overlays> element
     overlay_carry: bool = False         # the overlays go into the boot WAR
     module_mains: set[str] = field(default_factory=set)    # main classes reported per merged jar module
+    # v2.1l: 이번 패스에서 버전을 적은 의존성 (pom, g:a) → (버전, versions_pinned 줄, 출처 "asis" |
+    # "repository"). 바로 뒤의 _drop_managed_versions 가 새 부모 체인이 관리하는 것은 다시 비우고, 새 체인을
+    # 모르면 전부 되돌린다. asis_unknown = (pom, g:a) neither the as-is build nor the repository resolved;
+    # asis_keys = what the as-is project declared; asis_before = pom → (bytes before the pins, changed before)
+    asis_pins: dict[tuple[str, str], tuple[str, str, str]] = field(default_factory=dict)
+    asis_unknown: list[tuple[str, str]] = field(default_factory=list)
+    asis_keys: set[str] = field(default_factory=set)
+    asis_before: dict[str, tuple[bytes, bool]] = field(default_factory=dict)
+    # the restructure's RepositoryLookup, made on first use (None after a failed construction)
+    repo_lookup: Any = None
+    repo_lookup_made: bool = False
 
     def p(self, *parts: str) -> str:
         """프로젝트 루트(``base``) 기준 경로 → 워크스페이스 기준 정규화 경로(루트 자신은 ``.``)."""
@@ -345,10 +364,12 @@ class Restructurer:
         """재구성 진입점: ``mode`` 에 따라 ``_layout`` / ``_msa`` / ``_optional_bump`` / ``_boot_pom`` 을
         부르고 RestructureResult(노트, 후속 작업, 바뀐 파일, 부모 변경, 올린 버전 ...)를 돌려준다.
         RestructureError / PomEditError / OSError 는 예외 대신 ok=False + error. ``params`` = 계획
-        단계(PlanStep)의 값 + 오케스트레이터가 넣는 ``effective_pom``.
+        단계(PlanStep)의 값 + 오케스트레이터가 넣는 ``effective_pom`` / ``asis_effective`` (v2.1l).
 
         params (optional, from the PlanStep): starter, split_policy, multi_module_policy, merge_collision (layout);
-        library_roots (msa_pom); target (optional_bump: restrict to the poms below this directory)."""
+        library_roots (msa_pom); target (optional_bump: restrict to the poms below this directory); from the
+        orchestrator: effective_pom (the tree after the pom edits) and asis_effective (v2.1l: the as-is intake
+        capture), zero-arg callables."""
         result = RestructureResult(ok=True)
         c = _Ctx(ws, profile, cfg, result, dict(params or {}), self.commit_enabled)
         try:
@@ -457,6 +478,7 @@ class Restructurer:
                     c.note(f"in-house parent {parent.key} {parent.version or '?'} → {want} (artifacts.parent)")
             self._align_role_parents(c, report_modules=True)
             self._all_poms_pass(c, java_fix=False)
+            self._pin_asis_versions(c)
             self._drop_managed_versions(c)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
             self._placeholder_followup(c)
@@ -513,6 +535,7 @@ class Restructurer:
         self._large_media_note(c)
         self._web_content_left(c)
         self._all_poms_pass(c, java_fix=False)
+        self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         c.commit("restructure: optional artifact versions / cleanup")
 
@@ -3647,6 +3670,328 @@ class Restructurer:
                     ed.set_ref_version(ref.element, spec.version)
                     record(spec.key, None, spec.version)
 
+    # ================================================================== v2.1l: as-is version carry-over
+    @staticmethod
+    def _protected_keys(c: _Ctx) -> set[str]:
+        """버전을 config 가 정하는 g:a: 사내 부모·역할 부모·필수·선택·remove_when_present
+        아티팩트 — as-is 버전 이어 쓰기도 관리 버전 정리도 건드리지 않는다.
+
+        g:a keys whose versions the config owns (parent / role parents / mandatory / optional /
+        remove_when_present)."""
+        A = c.cfg.artifacts
+        return ({A.parent.key} | {r.key for r in (A.boot_parent, A.comp_parent) if r is not None}
+                | {s.key for s in A.mandatory} | set(c.cfg.optional_keys())
+                | {k for k in A.remove_when_present if ":" in k})
+
+    @staticmethod
+    def _own_keys(eds: dict[str, PomEditor]) -> set[str]:
+        """프로젝트 자신의 모듈 g:a (``${project.groupId}:a`` 표기 포함) — 모듈끼리의 버전은
+        reactor 가 정한다."""
+        own: set[str] = set()
+        for ed in eds.values():
+            a = ed.artifact_id()
+            if a:
+                own |= {f"{ed.effective_group_id()}:{a}", f"${{project.groupId}}:{a}"}
+        return own
+
+    @staticmethod
+    def _capture_module(by_module: dict[str, Any], ed: PomEditor) -> tuple[str | None, dict[str, Any] | None]:
+        """캡처의 ``by_module`` 에서 이 pom 의 항목(키, 값): effective g:a 로, 없으면 같은
+        artifactId 로 찾는다(관리 버전 정리와 같은 규칙). 재구성이 새로 만든 모듈
+        (``{name}-back``)은 as-is 캡처에 없다 → (None, None).
+
+        The pom's `by_module` entry of a capture, by effective g:a then by artifactId; (None, None) when
+        absent."""
+        aid = ed.artifact_id() or ""
+        key = f"{ed.effective_group_id()}:{aid}"
+        mod = by_module.get(key)
+        if isinstance(mod, dict):
+            return key, mod
+        for k, v in by_module.items():
+            if aid and k.split(":")[-1] == aid and isinstance(v, dict):
+                return k, v
+        return None, None
+
+    @staticmethod
+    def _asis_parent(by_module: dict[str, Any], key: str | None, default: Any) -> str | None:
+        """as-is 모듈이 버전을 물려받은 부모(g:a:v): 저장소 안 부모(캡처에 모듈로 있는 것)를
+        따라 올라가 처음 만나는 바깥 부모. 모르면 캡처 전체의 ``parent``.
+
+        The parent (g:a:v) an as-is module's managed versions came from: in-repo parents (modules of the
+        capture) are followed up to the first one outside it; the capture's top-level `parent` when
+        unknown."""
+        par: str | None = None
+        cur = key
+        for _ in range(20):
+            mod = by_module.get(cur) if cur else None
+            p = mod.get("parent") if isinstance(mod, dict) else None
+            if not p:
+                break
+            par = str(p)
+            ga = ":".join(par.split(":")[:2])
+            if ga not in by_module or ga == cur:
+                break
+            cur = ga
+        return par or (str(default) if default else None)
+
+    def _asis_version(self, data: dict[str, Any], mkey: str | None, mod: dict[str, Any] | None,
+                      key: str) -> tuple[str, str] | None:
+        """해결 순서 2단계: 모듈의 direct → 모듈의 managed → 합친 managed → 합친 direct 에서
+        g:a 의 as-is 버전. 합친 범위는 managed 가 먼저다 — 버전 없는 선언은 관리 버전으로
+        풀렸고, 합친 direct 는 '먼저 나온 모듈이 이김' 이라 다른 모듈이 직접 적은 버전일 수
+        있다. (버전, 출처) — 그 범위의 managed 와 같은 버전이면 ``managed by <as-is 부모>``,
+        아니면 ``declared`` (as-is pom 이 직접 적었는데 그 뒤 빠졌다: OpenRewrite / 병합).
+        못 찾으면 None.
+
+        Resolution order step 2: the module's `direct`, its `managed`, then the merged `managed`, `direct`
+        (a version-less declaration was resolved by management; the merged `direct` is first-wins and may hold
+        another module's explicit version). (version, source) — `managed by <as-is parent>` when the scope's
+        managed map has that version, else `declared`; None when the as-is build did not resolve g:a."""
+        by_module: dict[str, Any] = data.get("by_module") or {}
+        scopes: list[tuple[dict[str, str], dict[str, str], str | None]] = []
+        if mod is not None:
+            scopes.append((mod.get("direct") or {}, mod.get("managed") or {},
+                           self._asis_parent(by_module, mkey, data.get("parent"))))
+        scopes.append((data.get("direct") or {}, data.get("managed") or {},
+                       str(data["parent"]) if data.get("parent") else None))
+        for i, (direct, managed, parent) in enumerate(scopes):
+            # by_module: direct → managed; merged (the last scope): managed → direct
+            last = i == len(scopes) - 1
+            v = (managed.get(key) or direct.get(key)) if last else (direct.get(key) or managed.get(key))
+            if not v or "${" in str(v):
+                continue
+            v = str(v)
+            src = (f"managed by {parent or 'the as-is dependencyManagement'}" if managed.get(key) == v
+                   else "declared")
+            return v, src
+        return None
+
+    def _pin_asis_versions(self, c: _Ctx) -> None:
+        """v2.1l: 새 부모(comp-jar / boot-jar / base-parent)로 옮기며 버전을 잃은 의존성에 as-is
+        빌드가 쓰던 버전을 적는다(해결 순서 2단계). ``params['asis_effective']`` = 오케스트레이터가
+        넘기는 인자 없는 함수(접수 때 캡처한 ``logs/effective-depmgmt.json``); 없거나 비면 노트
+        한 줄만. 바로 뒤 ``_drop_managed_versions`` 가 재구성 뒤 effective pom 으로 새 부모 체인이
+        관리하는 것은 다시 비운다(1단계) — 그래서 순서가 pin → 캡처 → drop: 버전이 빠진 pom
+        으로는 Maven 이 effective pom 을 만들지 못한다.
+
+        v2.1l (resolution order step 2, docs/INTERFACES.md "v2.1l"): every project pom's `<dependencies>`
+        entry without `<version>` gets the version the as-is build resolved (`_asis_version` on
+        `params["asis_effective"]()`, the intake capture in the shape of `sbmig.build.effective`). Not
+        touched: parent / role parents / mandatory / optional / remove_when_present artifacts, the project's
+        own modules, system scope, non-jar types and classifiers (the captures key g:a only, so the
+        managed-version step could not verify such a pin; the build reports them if they are missing),
+        entries managed inside the project's pom chain, entries that have a version (`${…}` included). No
+        capture → one note, nothing pinned. An entry the as-is capture does not resolve gets the repository's
+        newest release (`_repository_release`, step 3) — one version left empty makes `help:effective-pom`
+        fail model validation, and without that capture every pin would be undone; `_drop_managed_versions`
+        empties such a pin whenever the new chain manages the artifact. What the repository cannot answer
+        either is "unknown" only when the as-is project declared it (`profile.poms`): a starter the
+        restructure generated or a coordinate OpenRewrite renamed was left version-less for the new chain on
+        purpose. The pins and the unknown ones are kept on the context; `_drop_managed_versions` (always
+        called right after) settles them through `_settle_asis_versions`."""
+        c.asis_pins, c.asis_unknown, c.asis_before = {}, [], {}
+        fn = c.params.get("asis_effective")
+        data: Any = None
+        if callable(fn):
+            try:
+                data = fn()
+            except Exception as e:  # noqa: BLE001 - a broken capture must never fail the restructure
+                log.warning("as-is effective pom for the version carry-over failed: %s: %s",
+                            type(e).__name__, e)
+                data = None
+        if not isinstance(data, dict) or not (data.get("direct") or data.get("managed")
+                                              or data.get("by_module")):
+            c.note("as-is version carry-over skipped: no as-is effective pom")
+            return
+        protected = self._protected_keys(c)
+        by_module: dict[str, Any] = data.get("by_module") or {}
+        eds: dict[str, PomEditor] = {}
+        for p in self._project_poms(c):
+            try:
+                eds[p] = PomEditor(c.ws.abs(p))
+            except PomEditError as e:
+                c.note(f"as-is version carry-over: skipped unparsable pom {p}: {e}")
+        own = self._own_keys(eds)
+        # '버전을 모른다' 는 as-is 프로젝트가 선언했던 의존성에만 — 재구성이 만든 boot 모듈의
+        # starter, OpenRewrite 가 바꾼 jakarta 좌표는 as-is 빌드에 없던 것이고 새 부모 체인이
+        # 관리하도록 일부러 버전 없이 둔 것이다
+        inventory = [*c.profile.poms, c.profile.root_pom] if c.profile.root_pom else list(c.profile.poms)
+        asis_keys = {d.key for pi in inventory for d in (pi.dependencies or [])
+                     if d.group_id and d.artifact_id}
+        c.asis_keys = asis_keys
+        for p, ed in eds.items():
+            mkey, mod = self._capture_module(by_module, ed)
+            # 프로젝트 pom 체인(자기 / 저장소 안 조상)의 dependencyManagement 가 관리하는 것은
+            # 그쪽이 버전을 준다
+            local: set[str] = set()
+            for q in self._chain(c, p):
+                q_ed = eds.get(q)
+                if q_ed is None:
+                    try:
+                        q_ed = PomEditor(c.ws.abs(q))
+                    except PomEditError:
+                        continue
+                local |= {d.key for d in q_ed.managed_dependencies() if d.version}
+            for el in ed.dependency_elements(False):
+                g = ed.gav_of(el)
+                if g.version or not g.group_id or not g.artifact_id or "${" in g.key:
+                    continue
+                if g.key in protected or g.key in own or (g.scope or "") == "system" or g.key in local:
+                    continue
+                if (g.type or "jar") != "jar" or g.classifier:
+                    continue
+                found = self._asis_version(data, mkey, mod, g.key)
+                kind = "asis"
+                if found is None:
+                    # 3단계(저장소): 버전이 하나라도 비면 재구성 뒤 effective pom 캡처가 모델 검증에서 실패해
+                    # 맞게 적은 버전까지 모두 되돌려진다 → 캡처 전에 채우고, 새 체인이 관리하면 drop 이 비운다
+                    rel = self._repository_release(c, g.group_id, g.artifact_id)
+                    if rel is None:
+                        if g.key in asis_keys and (p, g.key) not in c.asis_unknown:
+                            c.asis_unknown.append((p, g.key))
+                        continue
+                    found, kind = (rel, REPO_PIN_SOURCE), "repository"
+                v, src = found
+                if p not in c.asis_before:
+                    # 새 체인이 관리해 다시 비우면 pom 이 바이트 그대로 돌아온다 → 바뀐 파일
+                    # 목록에서 뺄 수 있게
+                    c.asis_before[p] = (c.ws.abs(p).read_bytes(), p in c.changed)
+                ed.set_ref_version(el, v)
+                how = f"as-is {src}" if kind == "asis" else src
+                c.asis_pins[(p, g.key)] = (v, f"{g.key}: {v} ← {how} ({p})", kind)
+        for ed in eds.values():
+            c.save(ed)
+        for _v, entry, _kind in c.asis_pins.values():
+            if entry not in c.result.versions_pinned:
+                c.result.versions_pinned.append(entry)
+
+    def _repository_release(self, c: _Ctx, group_id: str, artifact_id: str) -> str | None:
+        """해결 순서 3단계: 저장소(``build.repository_url`` → settings 미러 → Central)가 가진 g:a 의 최신
+        정식 릴리스(프리릴리스 제외). 조회기는 재구성 한 번에 하나, 처음 쓸 때 만든다. 실패 → None, 예외
+        없음.
+
+        Resolution order step 3: the newest release `RepositoryLookup.versions` lists for g:a that
+        `is_prerelease` does not reject; the lookup is made once per restructure call, on first use. None on
+        any failure (never raises)."""
+        try:
+            if not c.repo_lookup_made:
+                c.repo_lookup_made = True
+                from sbmig.build import repo_versions
+                c.repo_lookup = repo_versions.RepositoryLookup(c.cfg)
+            if c.repo_lookup is None:
+                return None
+            from sbmig.build.repo_versions import is_prerelease
+            versions = list(c.repo_lookup.versions(group_id, artifact_id) or [])
+            return next((str(v) for v in reversed(versions) if v and not is_prerelease(str(v))), None)
+        except Exception as e:  # noqa: BLE001 - no repository answer = unknown, never a failed restructure
+            log.debug("repository releases of %s:%s unavailable: %s: %s", group_id, artifact_id,
+                      type(e).__name__, e)
+            return None
+
+    def _undo_asis_pins(self, c: _Ctx) -> list[tuple[str, str]]:
+        """이번 패스가 적은 as-is 버전을 지운다(아직 그 값 그대로인 것만). 지운 (pom, g:a) 목록."""
+        by_pom: dict[str, dict[str, str]] = {}
+        for (p, k), (v, _e, _kind) in c.asis_pins.items():
+            by_pom.setdefault(p, {})[k] = v
+        undone: list[tuple[str, str]] = []
+        for p, keys in by_pom.items():
+            try:
+                ed = PomEditor(c.ws.abs(p))
+            except PomEditError:
+                continue
+            for el in ed.dependency_elements(False):
+                g = ed.gav_of(el)
+                if keys.get(g.key) is not None and g.version == keys[g.key]:
+                    ed.remove_version(el)
+                    if (p, g.key) not in undone:
+                        undone.append((p, g.key))
+            c.save(ed)
+        return undone
+
+    def _settle_asis_versions(self, c: _Ctx, managed_of: dict[str, dict[str, str]] | None,
+                              unpinned: list[tuple[str, str, str]]) -> None:
+        """as-is 버전 이어 쓰기 마무리(``_drop_managed_versions`` 끝에서): 새 부모 체인이 관리해
+        다시 비운 것(``unpinned``)과 남은 것을 결과·노트·저널에 반영하고, 버전을 모르는 것은 새
+        체인도 관리하지 않으면 후속 작업으로 남긴다. 새 체인의 effective pom 이 없으면
+        (``managed_of`` None) 적은 버전을 모두 되돌린다 — 새 체인이 관리하는지 모르는 채 남기면
+        Boot starter 가 옛 Boot 버전으로 고정될 수 있다; 정말 빠진 것은 빌드가 'version is
+        missing' 으로 알려 주고 수정 루프가 재빌드로 검증하며 채운다.
+
+        Settle this pass's carry-over: pins the new chain manages (`unpinned`, emptied again — step 1) leave
+        `versions_pinned`; a kept repository pin gets a follow-up asking the owners to confirm the version;
+        version-less entries neither the as-is build nor the repository resolved become `versions_unknown` +
+        a follow-up unless the new chain manages them; one summary note per outcome; journal
+        `versions_pinned`. Without the new chain's effective pom (`managed_of` None: Maven unavailable or
+        failed, e.g. on a version still missing) every pin of this pass is undone: whether the new chain
+        manages it is unknown, and a kept pin could fix a Boot starter at the as-is Boot version — the build
+        reports what is really missing."""
+        pins, unknown = c.asis_pins, list(c.asis_unknown)
+        if not pins and not unknown:
+            return
+        undone: list[tuple[str, str]] = self._undo_asis_pins(c) if managed_of is None and pins else []
+        removed = {(p, k) for p, k, _m in unpinned} | set(undone)
+        for pk in removed:
+            entry = pins[pk][1] if pk in pins else None
+            if entry in c.result.versions_pinned:
+                c.result.versions_pinned.remove(entry)  # type: ignore[arg-type]
+        for p, (raw, was_changed) in c.asis_before.items():
+            try:
+                if not was_changed and c.ws.abs(p).read_bytes() == raw:
+                    c.changed.discard(p)
+            except OSError:
+                pass
+        kept_pk = [pk for pk in pins if pk not in removed]
+        kept = [pins[pk][1] for pk in kept_pk]
+        kept_asis = [pins[pk][1] for pk in kept_pk if pins[pk][2] == "asis"]
+        kept_repo = [pk for pk in kept_pk if pins[pk][2] == "repository"]
+        # 되돌린 저장소 버전은 as-is 가 선언했던 의존성이면 다시 '모름' 이다
+        for pk in undone:
+            if pins[pk][2] == "repository" and pk[1] in c.asis_keys and pk not in unknown:
+                unknown.append(pk)
+        still: list[str] = []
+        for p, k in unknown:
+            if managed_of is not None and (managed_of.get(p) or {}).get(k):
+                continue                                    # step 1: the new chain manages it → stays empty
+            item = f"{k} ({p})"
+            still.append(item)
+            if item not in c.result.versions_unknown:
+                c.result.versions_unknown.append(item)
+            c.followup(f"declare a version for {k} in {p} or manage it in the parent — the as-is build did "
+                       "not resolve one")
+        for p, k in kept_repo:
+            c.followup(f"confirm {k} {pins[(p, k)][0]} in {p}: the as-is build did not resolve a version, so "
+                       "sbmig took the newest release the repository has")
+        unpinned_asis = [(p, k, m) for p, k, m in unpinned if pins.get((p, k), ("", "", "asis"))[2] == "asis"]
+
+        def few(items: list[str]) -> str:
+            uniq = list(dict.fromkeys(items))               # the same g:a in several poms is named once
+            return ", ".join(uniq[:5]) + (" …" if len(uniq) > 5 else "")
+        if kept_asis:
+            c.note(f"{len(kept_asis)} dependency version(s) carried over from the as-is build (not managed "
+                   f"by the new parent chain): {few([e.split(': ')[0] for e in kept_asis])}")
+        if kept_repo:
+            named = [f"{k} {pins[(p, k)][0]}" for p, k in kept_repo]
+            c.note(f"{len(kept_repo)} dependency version(s) taken from the repository (newest release; the "
+                   f"as-is build did not resolve them): {few(named)}")
+        if unpinned_asis:
+            # 저장소 버전을 새 체인이 관리해 다시 비운 것은 캡처를 위한 임시 값이었다 → 저널에만
+            c.note(f"{len(unpinned_asis)} as-is version(s) not carried over: managed by the new parent chain "
+                   f"({few([f'{k} {m}' for _p, k, m in unpinned_asis])})")
+        if undone:
+            c.note(f"as-is version carry-over undone for {len(undone)} dependency(ies): no effective pom of "
+                   "the new parent chain to tell which of them it manages — the build reports the missing "
+                   f"ones ({few([k for _p, k in undone])})")
+        if still:
+            c.note(f"{len(still)} version-less dependency(ies) the as-is build did not resolve either: "
+                   f"{few(still)}")
+        try:
+            c.ws.journal({"event": "versions_pinned", "pinned": kept, "unknown": still,
+                          "from_repository": [pins[pk][1] for pk in kept_repo],
+                          "managed_by_new_chain": [f"{k} {m} ({p})" for p, k, m in unpinned],
+                          "undone": [f"{k} ({p})" for p, k in undone]})
+        except OSError as e:  # pragma: no cover - the journal is bookkeeping, never a reason to fail
+            log.debug("versions_pinned journal skipped: %s", e)
+
     # ================================================================== managed-version cleanup (round 9)
     def _drop_managed_versions(self, c: _Ctx) -> None:
         """``layout.drop_managed_versions``: 새 부모 체인이 관리하는 버전을 <dependencies> 에서 지운다(gte =
@@ -3654,6 +3999,11 @@ class Restructurer:
         (오케스트레이터가 넘기는 인자 없는 함수)가 지금 트리의 effective dependencyManagement 를 준다 — Maven
         이 없어 None 이면 건너뛴다. 사내 부모·필수·선택·remove_when_present 아티팩트, 자기 모듈, system scope,
         jar 가 아닌 type / classifier, dependencyManagement, 플러그인은 건드리지 않는다.
+        v2.1l: 바로 앞 ``_pin_asis_versions`` 가 적은 as-is 버전도 같은 규칙으로 확인한다(off 여도
+        gte; 비교 불가면 비움), 저장소 버전은 새 체인이 관리하기만 하면 비운다 — 다시 비운 것은
+        ``managed_versions_dropped`` 에 넣지 않고(as-is pom 이 적은 버전이 아니므로), 더 새것이라 남긴
+        것은 '이어 쓴 버전' 으로 따로 알린다. off 이고 적은 것이 없으면 캡처하지 않는다. 끝에
+        ``_settle_asis_versions``.
 
         `layout.drop_managed_versions`: drop explicit `<dependencies>` versions the new parent chain manages.
 
@@ -3663,9 +4013,20 @@ class Restructurer:
         the capture, else the merged `managed` map. gte: drop only when managed ≥ explicit (unknown comparison →
         keep); any: always. Never touched: parent / mandatory / optional / remove_when_present artifacts, the
         project's own modules, system scope, non-jar types or classifiers (managed per type:classifier),
-        dependencyManagement entries, plugins. Unresolvable `${…}` versions are kept; properties stay."""
+        dependencyManagement entries, plugins. Unresolvable `${…}` versions are kept; properties stay.
+
+        v2.1l: the as-is versions `_pin_asis_versions` wrote just before (`c.asis_pins`) are checked by the
+        same rule — gte when the mode is `off`, and an unknown comparison empties the pin (resolution order
+        step 1: the new chain manages it); a repository pin is emptied whenever the new chain manages the
+        artifact. An emptied pin is not an "explicit version dropped" (the as-is pom never declared it), and a
+        pin kept because it is newer is reported as a carried-over version, not as an explicit one;
+        `_settle_asis_versions` reports the outcome. With `off` and nothing pinned, nothing is captured."""
         mode = c.cfg.layout.drop_managed_versions
-        if mode == "off":
+        pins = c.asis_pins
+        # v2.1l: off 여도 이번 패스가 적은 버전은 새 체인이 관리하는지 확인해야 한다(1단계). 적은 것이 없으면
+        # 캡처하지 않는다 — '모름' 만 남았다면 그 빈 버전 때문에 Maven 캡처는 어차피 실패한다
+        if mode == "off" and not pins:
+            self._settle_asis_versions(c, None, [])
             return
         fn = c.params.get("effective_pom")
         data: Any = None
@@ -3676,12 +4037,11 @@ class Restructurer:
                 log.warning("effective pom for the managed-version cleanup failed: %s: %s", type(e).__name__, e)
                 data = None
         if not isinstance(data, dict) or not (data.get("managed") or data.get("by_module")):
-            c.note("managed-version cleanup skipped: no effective pom")
+            if mode != "off":
+                c.note("managed-version cleanup skipped: no effective pom")
+            self._settle_asis_versions(c, None, [])
             return
-        A = c.cfg.artifacts
-        protected = ({A.parent.key} | {r.key for r in (A.boot_parent, A.comp_parent) if r is not None}
-                     | {s.key for s in A.mandatory} | set(c.cfg.optional_keys())
-                     | {k for k in A.remove_when_present if ":" in k})
+        protected = self._protected_keys(c)
         merged_managed: dict[str, str] = data.get("managed") or {}
         by_module: dict[str, Any] = data.get("by_module") or {}
         eds: dict[str, PomEditor] = {}
@@ -3690,19 +4050,19 @@ class Restructurer:
                 eds[p] = PomEditor(c.ws.abs(p))
             except PomEditError as e:
                 c.note(f"managed-version cleanup: skipped unparsable pom {p}: {e}")
-        own: set[str] = set()
-        for ed in eds.values():
-            a = ed.artifact_id()
-            if a:
-                own |= {f"{ed.effective_group_id()}:{a}", f"${{project.groupId}}:{a}"}
+        own = self._own_keys(eds)
         dropped: list[str] = []
         kept_newer: list[str] = []
+        kept_pin_newer: list[str] = []
+        unpinned: list[tuple[str, str, str]] = []
+        managed_of: dict[str, dict[str, str]] = {}
         for p, ed in eds.items():
             aid = ed.artifact_id() or ""
             mod = by_module.get(f"{ed.effective_group_id()}:{aid}")
             if mod is None:
                 mod = next((v for k, v in by_module.items() if aid and k.split(":")[-1] == aid), None)
             managed = (mod.get("managed") or {}) if isinstance(mod, dict) else merged_managed
+            managed_of[p] = managed
             props: dict[str, str] = {}
             # 버전 속성을 풀 때 조상 pom 의 속성부터 쌓고 자기
             # pom 이 마지막에 덮는다(Maven 상속과 같은 우선순위)
@@ -3720,20 +4080,31 @@ class Restructurer:
                     continue
                 if (g.type or "jar") != "jar" or g.classifier:
                     continue
+                pin = pins.get((p, g.key))
+                is_pin = pin is not None and pin[0] == g.version
+                if mode == "off" and not is_pin:
+                    continue
                 explicit = self._resolve_version(ed, g.version, props)
                 m = managed.get(g.key)
                 if explicit is None or not m:
                     continue
+                if is_pin and pin is not None and pin[2] == "repository":
+                    pass        # step 1 before step 3: the new chain manages it → empty, whatever the version
                 # gte: 관리 버전이 더 낮으면 지우지 않는다 — 지우면 버전이 내려가 쓰던 API 가 사라질 수 있다
-                if mode == "gte":
+                elif mode in ("gte", "off"):
                     cmp = compare_versions(m, explicit)
-                    if cmp is None:
+                    if cmp is None and not is_pin:
                         continue
-                    if cmp < 0:
-                        kept_newer.append(f"{g.key} {explicit} (managed {m}, {p})")
+                    if cmp is not None and cmp < 0:
+                        # sbmig 가 적은 as-is 버전은 as-is pom 의 명시 버전이 아니다 → 따로 보고
+                        kept_as = kept_pin_newer if is_pin else kept_newer
+                        kept_as.append(f"{g.key} {explicit} (managed {m}, {p})")
                         continue
                 ed.remove_version(el)
-                dropped.append(f"{g.key}: {explicit} → managed {m} ({p})")
+                if is_pin:
+                    unpinned.append((p, g.key, m))
+                else:
+                    dropped.append(f"{g.key}: {explicit} → managed {m} ({p})")
         for ed in eds.values():
             c.save(ed)
         c.result.managed_versions_dropped.extend(d for d in dropped if d not in c.result.managed_versions_dropped)
@@ -3744,6 +4115,10 @@ class Restructurer:
         if kept_newer:
             c.note(f"explicit version(s) newer than the parent-managed one kept: {', '.join(kept_newer[:5])}"
                    f"{' …' if len(kept_newer) > 5 else ''}")
+        if kept_pin_newer:
+            c.note("carried-over version newer than the parent-managed one kept: "
+                   f"{', '.join(kept_pin_newer[:5])}{' …' if len(kept_pin_newer) > 5 else ''}")
+        self._settle_asis_versions(c, managed_of, unpinned)
 
     @staticmethod
     def _resolve_version(ed: PomEditor, version: str, props: dict[str, str]) -> str | None:
@@ -3798,6 +4173,7 @@ class Restructurer:
             self._write_placeholders(c, f"{bd}/src/main/resources", under=bd if others else None, others=others)
         self._placeholder_followup(c)
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
+        self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         r = c.result
         if boots:
@@ -4134,6 +4510,7 @@ class Restructurer:
                    + ("; mandatory dependencies in the service roots and the top aggregator"
                       if agg is not None and self._mandatory_in_root(c) else ""))
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
+        self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._msa_placeholders(c, svc_entries)
         c.commit("restructure: msa pom-only parent/mandatory/optional")

@@ -195,6 +195,12 @@ class RestructureResult(BaseModel):
     # round 9: explicit dependency versions dropped because the new parent chain manages the artifact
     # (`layout.drop_managed_versions`); "g:a: <explicit> → managed <version> (<pom>)"
     managed_versions_dropped: list[str] = Field(default_factory=list)
+    # v2.1l: 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적은 것(새 부모 체인이
+    # 관리하면 다시 비움), as-is 빌드도 몰라 비어 남은 것. Version-less dependencies given the as-is build's
+    # version (the new chain does not manage them): "g:a: <version> ← as-is <managed by g:a:v | declared>
+    # (<pom>)"; the ones the as-is build did not resolve either (left empty, a follow-up each): "g:a (<pom>)"
+    versions_pinned: list[str] = Field(default_factory=list)
+    versions_unknown: list[str] = Field(default_factory=list)
     # round 9b: every parent the restructure set or replaced — "<pom>: <old g:a:v or '-'> → <new g:a:v>"
     parents_set: list[str] = Field(default_factory=list)
     # v2.1h: JSP / tag files whose javax EE names were renamed to jakarta (`layout.jsp_jakarta_rename`), and the number

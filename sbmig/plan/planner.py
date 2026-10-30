@@ -16,7 +16,9 @@ restructure.pom_only, restructure.review, verify.build. The only build before ve
 * `transform.rewrite` (StepKind.OPENREWRITE, Phase.TRANSFORM): ONE OpenRewrite run on the as-is classpath. Recipes,
   in this order: `openrewrite.recipes.jdk21`; `jakarta` (spring_legacy and servlet_tomcat always, pure_java only with
   Java EE javax imports, never spring_boot — the Boot umbrella migrates jakarta itself); `spring_framework_7` /
-  `spring_security_7` (spring_legacy; security only with spring-security) — both empty by default; `spring_boot_4`
+  `spring_security_7` (spring_legacy; security only with spring-security) — the framework set is empty by default, the
+  security set is the 6_0 … 6_5 → 7_0 chain since v2.1l (2026-10-30, planned only when the analyzer found
+  `spring-security`); `spring_boot_4`
   (spring_boot); `junit5` (junit4 detected) — empty by default; `extra.<case>` + `extra.all`. OpenRewrite recipes
   only: no project, library or KB recipes (business decision, PLAN-v2 §2).
 * `transform.compile` (StepKind.BUILD, Phase.TRANSFORM, `mvn clean compile`, v2.1 — "OpenRewrite 를 다 돌린 뒤

@@ -543,6 +543,9 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
         for key, title in (("parents_set", "parents set"), ("mandatory_added", "mandatory added"),
                            ("optional_bumped", "optional bumped"), ("merged_modules", "merged modules"),
                            ("managed_versions_dropped", "explicit versions dropped (managed by the new parents)"),
+                           # v2.1l: 검토도 재구성이 적은 as-is 버전을 다른 pom 교정처럼 본다
+                           ("versions_pinned", "versions carried over from the as-is build"),
+                           ("versions_unknown", "version-less dependencies the as-is build did not resolve"),
                            ("generated_files", "generated files"), ("flags", "flags"),
                            ("manual_followups", "follow-ups"), ("notes", "notes")):
             items = [x for x in (g(key) or []) if x]

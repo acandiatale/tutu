@@ -37,7 +37,7 @@
     },
     "scripts": {
       "attempts_min": {
-        "new": 9
+        "new": 8
       },
       "attempts": {
         "augment": 0,
@@ -86,7 +86,7 @@
       {
         "file_contains": {
           "path": "**/com/example/ops/config/WebSecurityConfig.java",
-          "contains": "SecurityFilterChain securityFilterChain(HttpSecurity http)",
+          "contains": "SecurityFilterChain filterChain(HttpSecurity http)",
           "not_contains": "extends WebSecurityConfigurerAdapter"
         }
       },

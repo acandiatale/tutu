@@ -181,7 +181,7 @@ recipes:
     covers: []
     gate: has_spring_security
     advisor: true
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -222,7 +222,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -235,7 +235,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -248,7 +248,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -261,7 +261,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -274,7 +274,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 
@@ -287,7 +287,7 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [spring_security_7] — not in the v2 sets (flow-v2)
+    sets: [spring_security_7]   # v2.1l: spring_legacy projects that use Spring Security (planner gate: library `spring-security`)
     verified: "2026-10"
     notes: knowledge/notes/spring-security-7.md
 

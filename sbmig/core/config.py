@@ -235,7 +235,13 @@ class RecipeSetConfig(BaseModel):
         "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1",
     ])
     spring_framework_7: list[str] = Field(default_factory=list)
-    spring_security_7: list[str] = Field(default_factory=list)
+    # v2.1l (2026-10-30, 현업: "security 는 쓰는 경우만"): Spring Security 를 쓰는 spring_legacy 프로젝트에만 계획기가 넣는
+    # 묶음. rewrite-spring 6.37.0 에서 6_0 은 5_8 → 5_7 을 품지만 6_1 … 6_5 와 7_0 은 앞 단계를 품지 않아 전부 나열한다.
+    # Boot 프로젝트는 UpgradeSpringBoot_4_0 umbrella 가 같은 단계를 이미 돈다.
+    spring_security_7: list[str] = Field(default_factory=lambda: [
+        *(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" for v in range(6)),
+        "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
+    ])
     junit5: list[str] = Field(default_factory=list)
     extra: dict[str, list[str]] = Field(default_factory=dict)
 

@@ -1935,3 +1935,126 @@ reactor (`Project 'g:a:v' is duplicated in the reactor`) → effective-pom, Open
 runs from the root (5 files), company layout at the root (`dup-back / -front / -boot`, root renamed `dup` after the EAR is
 merged), DEV sources in back, `STATIC` in front, `DB/` untouched, BUILD SUCCESS.
 
+
+## v2.1l — dependency versions: carried over from the as-is build, never guessed by the LLM (2026-10-30)
+
+Company failures (user, 2026-10-30): Boot / MSA runs and a Spring Framework 6.2.12 run ended after rounds of "add a dependency"
+answers, the last ones saying "정책상 버전을 추정하여 추가할 수 없습니다". Cause: the versions an as-is parent (the old in-house
+parent, or any external parent) managed are lost when the restructure moves a pom to `comp-jar` / `boot-jar` / `base-parent`;
+v1's `carry-over-managed-version` handler pinned them from the as-is effective pom, v2 step 4 deleted it with the other handlers,
+and the fix prompt's rule 14 (no invented versions) left the LLM with nothing to say. The as-is effective capture
+(`logs/depmgmt.json`, `sbmig.build.effective`) still exists and is now used again; the LLM is told to leave unknown versions
+empty and sbmig fills them. Decisions (user): the pins are reviewed by the LLM structure review like every other pom change
+and verified by the build; the non-Boot WAR services of an MSA tree stay pom-only for now; Spring Security recipes run only
+for projects that use Spring Security; Spring Cloud needs nothing new (the Boot 4 umbrella already runs
+`UpgradeSpringCloud_2025_1`, a non-Boot project cannot use Spring Cloud).
+
+### Resolution order (one rule, used by the restructure and by the fix loop)
+For a `<dependencies>` entry without `<version>` (and not: the in-house parent / role parents / mandatory / optional /
+`remove_when_present` artifacts, the project's own modules, `system` scope):
+1. the new parent chain manages it (post-restructure effective pom, `depmgmt-after-restructure.json`) → stays empty;
+2. the as-is build resolved it (`logs/depmgmt.json`: the module's `by_module[...].direct`, then merged `direct`, then merged
+   `managed`) → that version is written (`carried over`; the Handover already marks such pins ⚠ "carried over (no longer
+   managed)" — `sbmig/report/handover.py`);
+3. only for a dependency the LLM has just added: the repository (`RepositoryLookup.versions`, `build.repository_url` →
+   settings mirror → Central) → the newest release that is not a prerelease (noted "chosen from the repository");
+4. nothing found → left empty; the build's `'dependencies.dependency.version' for g:a is missing` becomes a case the loop
+   resolves (below) and, when it cannot, a Handover follow-up names the coordinate for the owners.
+Explicit versions are never changed here (rule 14 stays: no major upgrades by sbmig); `layout.drop_managed_versions` still
+removes a pin the new chain manages at the same or a newer version, so the order inside the restructure is: pin (step 2) →
+effective-after capture → drop managed (gte).
+
+### Restructure (`sbmig/restructure/restructurer.py`, `sbmig/loop/orchestrator.py`, `sbmig/core/interfaces.py`)
+- `params["asis_effective"]`: zero-arg callable → the as-is capture (`load_effective(ws)`) or None; set by
+  `_call_restructurer` for `layout` / `boot_pom` / `msa_pom` (independent of `drop_managed_versions`).
+- `_pin_asis_versions(c)` runs in `_layout` (both passes), `_boot_pom` and `_msa` right before `_drop_managed_versions(c)`:
+  every project pom's version-less dependency gets the as-is version (step 2); no as-is capture → one note and nothing pinned.
+- `RestructureResult.versions_pinned: list[str]` ("g:a: <version> ← as-is <managed by g:a:v | declared> (<pom>)") and
+  `versions_unknown: list[str]` ("g:a (<pom>)"); each pin is a "pom correction, verified by the next build" row like the
+  dropped versions; each unknown one a manual follow-up (`declare a version for g:a in <pom> or manage it in the parent — the
+  as-is build did not resolve one`); journal `{"event": "versions_pinned", "pinned": [...], "unknown": [...]}`; the
+  structure review sees the pins wherever it sees `managed_versions_dropped` / the restructure notes.
+
+### Fix loop (`sbmig/loop/fixloop.py`, `sbmig/fix/prompts/*.md`, `sbmig/fix/context.py`)
+- After an attempt's edits or script applied (`_apply_edits` / `_run_script`, status ok, before the commit): `_fill_versions`
+  walks the changed poms; a version-less dependency the attempt ADDED is resolved by steps 1–3, one that was already there by
+  steps 1–2; the pom change joins the attempt's commit; `att.notes` + journal `{"event": "version_filled", "case", "key",
+  "version", "source": "asis" | "repository"}`. Never raises; nothing filled = nothing noted.
+- A case whose generic signature is `pom_invalid|missing_version` is tried first WITHOUT the LLM: the versions of its
+  artifacts by steps 2–3 applied as edits (`set_dependency_version`, or `add` the version where it is declared) → an attempt
+  with `source = "sbmig-version"`, `script_mode = "new"`, no stored script, committed `fix(sbmig-version): <case>` and scored
+  by the rebuild like every attempt (improved / partial / …, rolled back when regressed). Nothing resolvable → the normal
+  ladder (the LLM gets the facts below); after the ladder the usual BLOCKED `repeated_failure`.
+- Prompt facts: the "Dependency versions" section now starts, for every artifact of the case's errors (in-house ones too),
+  with `as-is build: g:a <version> (managed by <parent g:a:v>)` / `new parent chain: manages g:a at <version>` /
+  `as-is build: g:a not declared` lines, then the repository lines as before.
+- Rule 14 (both prompts): "If you add a dependency and do not know a version the repository has, write `\"version\": null`:
+  sbmig fills it before the build (the as-is build's version, else the newest release the repository has). Never refuse a fix,
+  answer `<no_script>` or leave an error unfixed only because a version is unknown." The no-guessing sentence stays.
+
+### Recipes (`sbmig/core/config.py`, `config/default.yml`, `knowledge/recipes/catalog.yml`)
+- `openrewrite.recipes.spring_security_7` default = `UpgradeSpringSecurity_6_0`, `_6_1`, `_6_2`, `_6_3`, `_6_4`, `_6_5`
+  (`org.openrewrite.java.spring.security6`), `UpgradeSpringSecurity_7_0` (`security7`) — in rewrite-spring 6.37.0 `6_0`
+  chains down to `5_8` → `5_7`, `6_1` … `6_5` and `7_0` do NOT include their predecessor, hence the list. The planner already
+  adds the set only when the analyzer found `spring-security` (`spring_legacy` only; Boot projects get it through the
+  umbrella). Catalog: entries for the six `security6` ids (gate `has_spring_security`, `sets: [spring_security_7]`), `7_0`
+  listed in that set. `spring_framework_7` stays empty (not asked).
+
+### Fixture
+`fixtures/projects/legacy-external-parent/` (e2e): a Spring Framework 6 jar app whose as-is `<parent>` is the local stand-in
+`com.company.legacy:legacy-parent:1.0.0` (`fixtures/libs/legacy-parent`, installed by `fixtures/libs/install.sh`) managing
+`org.apache.commons:commons-text:1.10.0` and `com.company.legacy:legacy-web-lib:2.0.0`; the project declares both without a
+version and uses them. Expected: `restructure` ok, both pinned in `<name>-back/pom.xml` (the Boot 4.1 BOM manages neither),
+BUILD SUCCESS, ≤ 1 LLM call (the review), Handover "carried over".
+
+### As built (2026-10-30)
+- Restructure: `_pin_asis_versions` runs before `_drop_managed_versions` at its four call sites (both `_layout` passes,
+  `_boot_pom`, `_msa`); the new pom text comes from `PomEditor.set_ref_version`. **A pin is kept only when the new chain's
+  effective pom could be captured after pinning** (`_settle_asis_versions`): no capture (Maven missing / failing) → every pin
+  of this pass is undone and noted — otherwise a `boot_pom` / `msa_pom` run would keep Boot 2.7 starters at the old version;
+  the loop then fills what Maven itself reports missing. A pin the new chain manages (gte) is emptied again (a note, not a
+  `managed_versions_dropped` row); `${…}` versions, non-jar types / classifiers and artifacts managed by the project's own
+  pom chain are left alone; "unknown" counts only dependencies the as-is poms declared (the generated boot module's starter
+  and OpenRewrite-renamed coordinates are not unknowns). Second runs are idempotent (a pinned-then-emptied pom is byte-identical
+  and leaves `changed_files`). Journal `versions_pinned` also carries `managed_by_new_chain` and `undone`. The orchestrator passes
+  `effective_pom` for the three modes whatever `drop_managed_versions` says (with `off` nothing explicit is dropped, pins are
+  still checked). Error-list row: `version carried over from the as-is build: g:a <v>`; `sbmig/review/inputs.py:restructure_lines`
+  shows both lists to the structure review; the Handover marks a pin ⚠ carried over when it equals the merged as-is effective
+  version (per-module differences show as plain version changes).
+- Fix loop: `VersionResolver` (both captures from the run dir, the loop's repository lookup, cached per key) and
+  `_fill_versions` before the commit in `_apply_edits` / `_run_script`; "added by the attempt" = `g:a` absent from
+  `ws.file_at(pre, path)`'s `<dependencies>`. Extra safety rules: step 1 also counts `<dependencyManagement>` of the pom and its
+  in-project parents, and the declaring module's managed list wins over the merged one; a pre-existing version-less dependency is
+  filled only when this round's build reported its version missing (otherwise the build already resolved it); a version the
+  attempt removed comes back from the as-is build only when the capture exists; new poms and poms whose parent / BOM imports the
+  attempt changed are left alone. The zero-LLM try (`TrySource` gained `"sbmig-version"`) hooks into `_handle_case` right after
+  the triage decision, before the forced-block check and the deferral; it runs when the decision is SCRIPT or when triage
+  blocked only for "LLM unavailable / budget used up" (a person's pinned block is respected), once per (pom or module, `g:a`)
+  per run; it is NOT a ladder step (`_previous(ladder=True)` leaves it out of the LLM-try counts and the blocked policy, the LLM
+  still sees it under "Previous attempts"); a partial try is not rolled back before the case's next try (the pins it found
+  stay); commit `fix(sbmig-version): <cluster id>`; also in `fix.mode: edits`. Prompt facts: no capture → no lines (never
+  "not declared"); a version found only among the as-is direct dependencies is labelled `(declared)`; ≤ 12 artifacts per case;
+  the edits prompt omits "answer `<no_script>`" (that token is banned there) and both prompts explain the `as-is build:` /
+  `new parent chain:` lines in one sentence.
+- Known limit: without the post-restructure capture (it fails while any version is still missing) an LLM-added dependency is
+  filled from the as-is build or the repository even if the new parent manages it — the structural-regression rule would
+  otherwise revert the whole try on the next build. A re-capture after the first zero-LLM try would close this; not done.
+- Recipes / fixture as in the contract; the catalog already had entries for `security6.UpgradeSpringSecurity_6_0 … 6_5`
+  (round 10), only their `sets:` changed.
+- After the review (2026-10-30, built): in the restructure an entry the as-is capture does not resolve is pinned from the
+  repository BEFORE the after-capture (`_repository_release`, one `RepositoryLookup` per call, newest non-prerelease release;
+  row `version chosen from the repository: g:a <v>`, marker `← repository newest release (the as-is build did not resolve it)`,
+  a follow-up asking the owners to confirm it; such a pin is emptied whenever the new chain manages the artifact at ANY version,
+  and goes back to "unknown" when undone); the merged as-is view is read managed → direct for version-less entries (per-module
+  entries direct → managed); no Maven capture when nothing was pinned; a carried-over pin newer than the managed version is
+  reported as `carried-over version newer than the parent-managed one kept: …`. In the loop the zero-LLM try runs after the
+  round's deferral and a `_version_deferral` (another case's fix changed or ran on that pom / the root pom this round → wait);
+  `asis_fact` labels a `direct` hit "(declared)" and a `managed` hit "(managed by <parent>)" and reads module direct → module
+  managed → merged managed → merged direct; a (pom, g:a) pair is remembered only once its edit applied (a pair where nothing
+  was found is remembered at once), with at most `VERSION_TRY_APPLY_FAILURES` = 3 failed applies per pair.
+- Review follow-ups (2026-10-30, not changed): for a dependency the attempt ADDED, `_fill_versions` takes the repository's
+  newest non-prerelease release of any major (no as-is major exists to stay on; the Boot BOM covers the common libraries first) —
+  the policy for new dependencies; the restructure and the loop keep their own chain / protected-key / as-is lookup helpers
+  (`Restructurer._chain` / `_protected_keys` / `_asis_version` vs `VersionResolver`), so the parent named in "managed by …" can
+  differ between the Handover and the prompt facts; the pinned-then-emptied idempotency check compares raw bytes, so a
+  whitespace-only re-serialisation can still list a pom as changed.

@@ -9,6 +9,7 @@
 #   legacy-web-lib 2.0.0 → JDK 21 (JAVA21_HOME)  jakarta.servlet, release 17
 #   legacy-web-lib 3.0.0 → JDK 21 (JAVA21_HOME)  jakarta.servlet, release 17, clientIp(..) renamed to remoteClientIp(..)
 #   legacy-base-web 1.0.0 → JDK 21 (JAVA21_HOME)  a WAR (JSP fragment + css, no classes) that servlet-war-overlay overlays
+#   legacy-parent   1.0.0 → JDK 21 (JAVA21_HOME)  the OLD in-house parent pom (manages commons-text / commons-csv), v2.1l
 set -euo pipefail
 LIBS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JVM_DIR=/Users/acandiatale/Library/Java/JavaVirtualMachines
@@ -42,4 +43,5 @@ install_lib "$LIBS/legacy-web-lib/v1.0.0" "$JAVA8_HOME"
 install_lib "$LIBS/legacy-web-lib/v2.0.0" "$JAVA21_HOME"
 install_lib "$LIBS/legacy-web-lib/v3.0.0" "$JAVA21_HOME"
 install_lib "$LIBS/legacy-base-web/v1.0.0" "$JAVA21_HOME"
+install_lib "$LIBS/legacy-parent/v1.0.0" "$JAVA21_HOME"      # v2.1l: old in-house parent (pom packaging)
 echo "fixtures/libs installed${1:+ into $1}"

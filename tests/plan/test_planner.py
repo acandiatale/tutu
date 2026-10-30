@@ -86,11 +86,11 @@ def test_spring_boot_without_junit4_has_no_junit_note(tmp_path: Path, cfg) -> No
 def test_spring_legacy_plan(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_spring_legacy(tmp_path), cfg), cfg)
     assert _ids(plan) == ORDER
-    assert _recipes(plan) == [J21, JAKARTA]                           # no Framework 7 / Security / JUnit 5 by default
+    assert _recipes(plan) == [J21, JAKARTA, *SEC]                     # v2.1l: Security chain (spring-security detected); no Framework 7 / JUnit 5
     assert _step(plan, "restructure.apply").params["starter"] == "spring-boot-starter-webmvc"
     assert any("@ImportResource" in n for n in plan.notes)
-    assert "transform: spring_legacy → jakarta set; spring-security detected, the Spring Security set is empty " \
-           "(v2)" in plan.notes
+    assert any("Spring Security set UpgradeSpringSecurity_6_0 … UpgradeSpringSecurity_7_0 (spring-security detected)"
+               in n for n in plan.notes)
     assert any("junit4 detected, the JUnit 5 set is empty (v2)" in n for n in plan.notes)
     assert _no_project_recipes(plan)
 

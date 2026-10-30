@@ -121,9 +121,25 @@ def test_edits_system_prompt_has_no_script_wording_and_is_shorter():
     assert not SCRIPT_WORDS.search(rendered) and "case: x" in rendered
 
 
-# the script prompts as of v2.1i (2026-10-28); update a hash only when that prompt is changed on purpose
-SCRIPT_PROMPT_SHA256 = {"script_system_v1.md": "4621dac0c6f3d13ea12855b20e2cfd2daacd6e26d749d2bd9daea5e52cac2a43",
+# the script prompts as of v2.1l (2026-10-30: rule 14 — unknown versions are left null, sbmig fills them); update a
+# hash only when that prompt is changed on purpose
+SCRIPT_PROMPT_SHA256 = {"script_system_v1.md": "5128eef06f55964420529cb7585508d9a07f72d0e7ab1bd6b7435f35f2f4171b",
                         "script_user_v1.md.j2": "797fec4e1c84a9b220501759e312e9489f4cf788799d00280afc787992d34d86"}
+
+
+@pytest.mark.parametrize("name", ["script_system_v1.md", "edits_system_v1.md"])
+def test_rule_14_leaves_unknown_versions_to_sbmig(name):
+    """v2.1l: an unknown version is written null and sbmig fills it; never a reason to refuse a fix. Both prompts."""
+    text = " ".join((PROMPTS_DIR / name).read_text(encoding="utf-8").split())
+    assert ('If you add a dependency and do not know a version the repository has, write `"version": null`: sbmig '
+            "fills it before the build (the as-is build's version, else the newest release the repository has).") in text
+    assert "leave an error unfixed only because a version is unknown." in text
+    assert "never name a version that section contradicts" in text            # the no-guessing sentence stays
+    assert "what the as-is build used and what the new parent chain manages" in text
+    if name.startswith("script"):
+        assert "Never refuse a fix, answer `<no_script>` or leave an error unfixed" in text
+    else:
+        assert "Never refuse a fix or leave an error unfixed" in text
 
 
 def test_script_prompts_unchanged():

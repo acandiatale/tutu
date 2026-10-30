@@ -112,11 +112,13 @@ EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved",
 # open = still in the last build; pom-verify = a restructure pom correction the next build verifies; note = a review
 # warning / informational entry (never fixed)
 # 시도의 출처 = 사다리 단계. kb-script = 저장된 스크립트 재사용(LLM 호출 없음), llm-new = 신규, llm-augment =
-# 보강, llm-edit = 스크립트 없는 직접 수정(LLM 이 편집 목록을 줌), review = 구조 검토의 수정.
-TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review"]
+# 보강, llm-edit = 스크립트 없는 직접 수정(LLM 이 편집 목록을 줌), review = 구조 검토의 수정, sbmig-version =
+# v2.1l 누락된 의존성 버전을 sbmig 가 as-is 빌드·저장소에서 채운 시도(LLM 호출 없음).
+TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review", "sbmig-version"]
 # kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
 # extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
-# structure review's own fix
+# structure review's own fix; sbmig-version = v2.1l: sbmig wrote the missing dependency versions itself (the as-is
+# build's version, else the repository's newest release) — no LLM call, no stored script
 TryApplied = Literal["script", "edits", "none"]  # 실제로 적용된 것: 스크립트 / 편집 목록 / 없음
 
 
@@ -1290,7 +1292,7 @@ class FixAttempt(BaseModel):
     script_code: str = ""
     script_result: Optional[ScriptRunResult] = None
     # v2.1: the try as the error list records it
-    source: Optional[TrySource] = None             # kb-script | llm-new | llm-augment | llm-edit
+    source: Optional[TrySource] = None             # kb-script | llm-new | llm-augment | llm-edit | sbmig-version
     solution: str = ""                             # 해결 방법 (the LLM's <solution>)
     no_script_reason: str = ""
     edits_applied: int = 0                         # direct edits applied (0 = a script ran)
