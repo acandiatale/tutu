@@ -621,3 +621,15 @@ line (Boot 4.1, Servlet 6.1) should win ("as-is 를 보면 안 되고 to-be 를 
 | Warning `parent-chain-no-boot-bom` (flag, note, journal, Handover's first follow-up in Korean, `attn=`) when `parent_manages_spring_boot` is true but the chain carries no Boot BOM | `sbmig/restructure/restructurer.py`, `sbmig/report/{handover,result_line,i18n}.py` | done (agents; 7 restructure/report tests + 3 loop tests) |
 | Company decision (the user / the parent's owners): add `spring-boot-dependencies:${spring-boot.version}` (import) to base-parent, or set `parent_manages_spring_boot: false` until then | company artifacts yml / base-parent | open |
 | Verification | offline suite + e2e subset | e2e 8 fixtures (legacy-external-parent, spring5-security-batch, boot2, legacy-role-parents, msa, company-boot-single, boot2-qlrm-javax, filtered-binary-resources) all PASS; offline suite **2,617 passed**, 46 deselected (the one failure was the loop's `chain_own_managed` field-name test, fixed right after — `tests/loop` rerun green) |
+
+## Status — 2026-10-30, v2.1t (BOM imports and in-house versions reference the parent chain's own properties)
+
+User (no rights on base-parent; property names confirmed: `spring-boot.version`, `spring-framework.version`, `spring-cloud.version`,
+`spring-data.version`): "어차피 에이전트 기동할 때 pom.xml 리드 가능하잖아? 그걸 불러와서 세팅하면 더 유연하지 않을까 … 사내 라이브러리 버전은 네이밍이랑
+변할 수 있으니까 … 안 되면 spring 쪽만". Contract: `docs/INTERFACES.md` "v2.1t".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| `artifacts.parent_manages_spring_boot: auto` (chain facts decide), Boot BOM import with `${spring-boot.version}` (chain property, literal only as the last resort), Spring Cloud BOM import when used (`${spring-cloud.version}` / `knowledge/config/spring_cloud_bom.yml` pairing), in-house mandatory / optional versions as `${<artifact>.version}` when the chain defines it | `sbmig/restructure/restructurer.py`, `sbmig/core/config.py`, `config/{default,artifacts.example}.yml`, `knowledge/config/spring_cloud_bom.yml`, `fixtures/libs/legacy-parent`, `tests/restructure/test_v21t_bom_imports.py` | done (agent, 13 tests; Cloud pairing verified 4.1 → 2025.1.4) |
+| Loop: chain `*.version` properties as prompt facts, rule 14 "`${property}` instead of a literal", `_fill_versions` writes `${prop}` for added in-house dependencies | `sbmig/loop/fixloop.py`, `sbmig/fix/prompts/*.md`, tests | done (agent, 4 tests) |
+| Verification | offline suite + e2e subset | e2e: first run caught `boot2` writing `${lombok.version}` from the Boot BOM's properties → rule narrowed to company-defined properties; rerun of boot2, legacy-external-parent, msa-shared-lib, company-boot-single, boot2-cloud-legacy, spring5-security-batch all PASS; offline suite **2,640 passed**, 46 deselected |

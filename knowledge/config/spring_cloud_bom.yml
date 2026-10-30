@@ -1,0 +1,17 @@
+# v2.1t: the Spring Cloud release train the restructure imports (`org.springframework.cloud:spring-cloud-dependencies`)
+# when the project uses Spring Cloud, neither the parent chain nor the project manages it, and the chain defines no
+# `spring-cloud.version`-style property (layout.bom_version_properties.spring_cloud). Matched by the first two segments
+# of target.spring_boot_version. The single place to update when a train is released (sbmig.build.cloud_bom).
+#
+# Checked against Maven Central's maven-metadata.xml on 2026-10-30: newest GA per train 2025.1.4 (built on Boot 4.0.9),
+# 2025.0.3, 2024.0.3, 2023.0.6, 2022.0.5; 2026.0.0 is still RC1 (built on Boot 4.2.0-RC1). No GA train is built on Boot
+# 4.1 yet: 4.1 uses the 2025.1 train (Oakwood, the Boot 4 line) until 2026.0 is released — re-check then.
+pairs:
+  - { boot: "4.1", cloud: "2025.1.4" }
+  - { boot: "4.0", cloud: "2025.1.4" }
+  - { boot: "3.5", cloud: "2025.0.3" }
+  - { boot: "3.4", cloud: "2024.0.3" }
+  - { boot: "3.3", cloud: "2023.0.6" }
+  - { boot: "3.2", cloud: "2023.0.6" }
+  - { boot: "3.1", cloud: "2022.0.5" }
+  - { boot: "3.0", cloud: "2022.0.5" }

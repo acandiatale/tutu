@@ -64,6 +64,14 @@ class ParentChainFacts(BaseModel):
     boot_bom_added: bool = False
     # v2.1s: the chain's OWN managed entries when the Boot BOM was added (None = no add-on: the same as `managed`)
     chain_managed: dict[str, str] | None = None
+    # v2.1t: did the chain itself reach spring-boot-dependencies (inherited or imported)? None = unknown (nothing read)
+    reaches_boot_bom: bool | None = None
+    # v2.1t: root parent g:a:v → the property names ITS chain defines (a module on comp-jar sees only comp-jar's chain)
+    root_properties: dict[str, list[str]] = Field(default_factory=dict)
+    # v2.1t: the properties a COMPANY pom of the chain defines (groupId of a root / an in-house group, never
+    # org.springframework.*) — the only ones the restructure may reference as ${…}; `properties` stays complete
+    company_properties: dict[str, str] = Field(default_factory=dict)
+    company_property_sources: dict[str, str] = Field(default_factory=dict)
 
     @property
     def own_managed(self) -> dict[str, str]:
@@ -137,7 +145,30 @@ def _walk(reader: PomReader, root: tuple[str, str, str], facts: ParentChainFacts
     return chain
 
 
-def _merge_root(reader: PomReader, chain: list[PomSummary], facts: ParentChainFacts) -> bool:
+def _company_groups(cfg: Any, roots: list[tuple[str, str, str]]) -> list[str]:
+    """v2.1t: 회사 pom 으로 볼 groupId 들 — 설정한 사내 부모(루트)·필수·선택 아티팩트의 group (그 아래 group 포함)."""
+    out: list[str] = [g for g, _a, _v in roots]
+    a = getattr(cfg, "artifacts", None)
+    for spec in [*(getattr(a, "mandatory", None) or []), *(getattr(a, "optional", None) or [])]:
+        g = str(getattr(spec, "group_id", "") or "")
+        if g and g not in out:
+            out.append(g)
+    return out
+
+
+def is_company_group(group: str, groups: list[str]) -> bool:
+    """v2.1t: 이 groupId 의 pom 이 회사 것인가 — 회사 group 이거나 그 아래, 단 ``org.springframework`` 계열은 절대 아님
+    (로컬 대역처럼 spring-boot-starter-parent 가 사내 부모 자리에 있어도 Boot 의 속성은 회사 속성이 아니다).
+
+    A pom of `group` is a company pom: equal to / under one of `groups`, never `org.springframework` or below."""
+    g = (group or "").strip()
+    if not g or g == "org.springframework" or g.startswith("org.springframework."):
+        return False
+    return any(g == x or g.startswith(x + ".") for x in groups)
+
+
+def _merge_root(reader: PomReader, chain: list[PomSummary], facts: ParentChainFacts, root: str = "",
+                company: list[str] | None = None) -> bool:
     """루트 하나의 체인(자식 먼저)을 사실에 합친다. 체인이 Boot BOM 에 닿았는지(상속 또는 import) 돌려준다."""
     if not chain:
         return False
@@ -147,12 +178,18 @@ def _merge_root(reader: PomReader, chain: list[PomSummary], facts: ParentChainFa
         for k, v in pom.properties.items():
             raw[k] = v
             defined_by[k] = pom.coord
+    if root:
+        facts.root_properties[root] = sorted(raw)
     resolve = make_resolver(raw, pom_builtins(chain[0]))
     resolved = {k: (resolve(v) or v) for k, v in raw.items()}
     for k, v in resolved.items():
         if k not in facts.properties:                           # several roots: the first one wins
             facts.properties[k] = v
             facts.property_sources[k] = defined_by[k]
+        # v2.1t: 회사 pom 이 정의한 것만 ${…} 로 참조할 수 있다(Boot BOM 의 lombok.version 같은 것은 아님)
+        if k not in facts.company_properties and is_company_group(defined_by[k].split(":", 1)[0], company or []):
+            facts.company_properties[k] = v
+            facts.company_property_sources[k] = defined_by[k]
     reached = any(f"{p.group_id}:{p.artifact_id}" in BOOT_CHAIN_KEYS for p in chain)
     imports: list[tuple[str, str, str]] = []
     managed: dict[str, str] = {}
@@ -190,8 +227,13 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
                              "comp_parent)")
     reader = PomReader(cfg, local, limit=MAX_POMS)
     reached = False
+    read_any = False
+    company = _company_groups(cfg, roots)
     for root in roots:
-        reached = _merge_root(reader, _walk(reader, root, facts), facts) or reached
+        chain = _walk(reader, root, facts)
+        read_any = read_any or bool(chain)
+        reached = _merge_root(reader, chain, facts, ":".join(root), company) or reached
+    facts.reaches_boot_bom = reached if read_any else None
     manages_boot = bool(getattr(getattr(cfg, "artifacts", None), "parent_manages_spring_boot", False))
     if manages_boot and not reached:
         # 부모가 Boot 를 관리한다고 했는데 체인이 Boot BOM 에 닿지 않는다(드문 사내 부모): v2.1o 처럼 Boot BOM 을 가장
@@ -201,13 +243,9 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
         if not bb.empty:
             facts.boot_bom_added = True
             facts.chain_managed = dict(facts.managed)          # v2.1s: what the chain itself manages
-            src = f"{BOOT_GROUP}:{BOOT_BOM}:{bb.version}"
             for k, v in bb.managed.items():
                 facts.managed.setdefault(k, v)
-            for k, v in bb.properties.items():
-                if k not in facts.properties:
-                    facts.properties[k] = v
-                    facts.property_sources[k] = src
+            # v2.1t: 보탬은 import 와 같다 — import 한 BOM 의 속성은 상속되지 않으므로 properties 에 넣지 않는다
         facts.sources += [f"Boot BOM add-on (the chain does not reach {BOOT_BOM}): {s}" for s in bb.sources]
     return facts
 
@@ -243,4 +281,5 @@ def load_parent_chain_facts(cfg: Any) -> ParentChainFacts:
         return ParentChainFacts(sources=[f"failed: {type(e).__name__}: {e}"[:200]])
 
 
-__all__ = ["BOOT_CHAIN_KEYS", "MAX_POMS", "ParentChainFacts", "clear_cache", "load_parent_chain_facts"]
+__all__ = ["BOOT_CHAIN_KEYS", "MAX_POMS", "ParentChainFacts", "clear_cache", "is_company_group",
+           "load_parent_chain_facts"]

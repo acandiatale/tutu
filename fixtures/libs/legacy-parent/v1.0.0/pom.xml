@@ -20,6 +20,11 @@
         <maven.compiler.release>17</maven.compiler.release>
         <commons-text.version>1.10.0</commons-text.version>
         <commons-csv.version>1.10.0</commons-csv.version>
+        <!-- v2.1t: version properties an in-house parent chain carries (the company's base-parent defines
+             spring-boot.version / spring-cloud.version; legacy-parent-test.version stands for an in-house line) -->
+        <spring-boot.version>4.1.0</spring-boot.version>
+        <spring-cloud.version>2025.1.4</spring-cloud.version>
+        <legacy-parent-test.version>9.9.9</legacy-parent-test.version>
     </properties>
 
     <dependencyManagement>

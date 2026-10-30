@@ -100,6 +100,7 @@ import re
 import threading
 import time
 from collections import Counter
+from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -115,7 +116,7 @@ from sbmig.core.workspace import Workspace
 
 from sbmig.core.stage import stage
 
-from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, sanitize_errors
+from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, is_in_house, sanitize_errors
 from .budget import LoopBudget
 from .components import LazyFixer, ScriptFixerMissing, profile_summary
 from .entries import CaseScripts, RunErrors, script_path
@@ -459,9 +460,109 @@ class _PreTry:
     targets: Callable[[ErrorCluster], list[str] | None]
     run: Callable[..., bool]
 VERSION_SOURCE_TEXT = {"asis": "as-is 빌드의 버전", "repository": "저장소의 최신 릴리스",          # log / edit desc
-                       "boot-bom": "목표 Boot BOM 의 버전 (부모 체인이 관리하지 않음)"}
+                       "boot-bom": "목표 Boot BOM 의 버전 (부모 체인이 관리하지 않음)",
+                       "chain-property": "부모 체인의 버전 속성"}
 VERSION_SOURCE_NOTE = {"asis": "the as-is build", "repository": "newest release in the repository",   # att.notes
-                       "boot-bom": "the target Spring Boot BOM, not managed by the parent chain"}
+                       "boot-bom": "the target Spring Boot BOM, not managed by the parent chain",
+                       "chain-property": "a version property of the parent chain"}
+
+
+# v2.1t: 그룹 → 버전 속성 가족 키워드(하위 그룹 포함 여부). org.springframework 는 정확히 그 그룹만 — security 등은
+# 다른 버전 줄이다
+VERSION_PROPERTY_FAMILIES: tuple[tuple[str, str, bool], ...] = (
+    ("org.springframework.boot", "spring-boot", True),
+    ("org.springframework.cloud", "spring-cloud", True),
+    ("org.springframework.data", "spring-data", True),
+    ("org.springframework", "spring-framework", False),
+)
+CHAIN_PROPERTY_FACTS_MAX = 20                         # "parent chain property: …" lines per prompt
+_STEM_SUFFIXES = ("-starter", "-bom", "-parent")
+
+
+def artifact_stem(artifact_id: str) -> str:
+    """artifactId 의 줄기: 끝의 ``-starter`` / ``-bom`` / ``-parent`` 를 뗀 것(없으면 그대로).
+
+    The artifactId without a trailing `-starter` / `-bom` / `-parent`."""
+    for suf in _STEM_SUFFIXES:
+        if artifact_id.endswith(suf) and len(artifact_id) > len(suf):
+            return artifact_id[: -len(suf)]
+    return artifact_id
+
+
+def _property_base(name: str) -> str | None:
+    for suf in (".version", "-version"):
+        if name.endswith(suf) and len(name) > len(suf):
+            return name[: -len(suf)]
+    return None
+
+
+def version_property_matches(gav: Any, properties: Iterable[str], *, in_house: bool = False) -> list[str]:
+    """v2.1t: 부모 체인의 ``*.version`` / ``*-version`` 속성 중 이 아티팩트의 것(가장 구체적인 것 먼저): 이름이
+    artifactId 나 그 줄기로 시작(``jackson-databind.version``, ``spring-boot-starter`` → ``spring-boot.version``), 그룹의
+    가족 키워드(``spring-boot`` / ``spring-cloud`` / ``spring-data`` / ``spring-framework``; 점 표기도), 사내 아티팩트면
+    줄기가 속성 이름의 바탕 + ``-`` 로 시작하는 가족(``xxx-reuse-web`` → ``xxx-reuse.version``).
+
+    The chain's version properties (`*.version` / `*-version`) that belong to this artifact, most specific first: the
+    name starts with the artifactId or its stem, or is the group's family keyword (`spring-boot`, `spring-cloud`,
+    `spring-data`, `spring-framework` for `org.springframework` itself; dotted spellings too), or — in-house only —
+    the stem starts with the property's base + `-` (the family: `xxx-reuse-web` → `xxx-reuse.version`)."""
+    a = str(getattr(gav, "artifact_id", "") or "")
+    g = str(getattr(gav, "group_id", "") or "")
+    if not a:
+        return []
+    stem = artifact_stem(a)
+    fams = [kw for grp, kw, sub in VERSION_PROPERTY_FAMILIES if g == grp or (sub and g.startswith(grp + "."))][:1]
+    kws = [x for kw in fams for x in (kw, kw.replace("-", "."))]
+    scored: list[tuple[int, str]] = []
+    for name in properties:
+        base = _property_base(str(name))
+        if not base:
+            continue
+        score = 0
+        for pfx in dict.fromkeys((a, stem)):
+            if base == pfx:
+                score = max(score, 400 + len(pfx))
+            elif base.startswith((pfx + ".", pfx + "-")):
+                score = max(score, 300 + len(pfx))
+        for kw in kws:
+            if base == kw or base.startswith((kw + ".", kw + "-")):
+                score = max(score, 200)
+        if in_house and stem.startswith(base + "-"):
+            score = max(score, 100 + len(base))
+        if score:
+            scored.append((score, str(name)))
+    return [n for _sc, n in sorted(scored, key=lambda x: (-x[0], x[1]))]
+
+
+def chain_company_properties(facts: Any, cfg: Any) -> tuple[dict[str, str], dict[str, str]]:
+    """v2.1t: 회사 자신의 체인 pom 이 정의한 속성과 그 정의 pom — 정의한 pom 의 groupId 가 루트(설정한 사내 부모)의
+    그룹(또는 그 아래)이거나 ``is_in_house`` 인 것만. Spring / Spring Boot pom(``org.springframework*``)과 Boot BOM
+    보탬의 속성은 절대 아니다 — ``spring-boot-starter-parent`` 체인의 ``lombok.version`` 같은 것은 회사 체인에서 풀리지
+    않는다. 사실에 ``company_properties`` / ``company_property_sources`` 가 채워져 있으면 그것, 아니면 여기서 같은 규칙.
+
+    The properties DEFINED BY THE COMPANY'S OWN chain poms and their defining pom: the defining pom's groupId is a
+    root's group (or under it) or in-house (`is_in_house`); never a Spring / Spring Boot pom (`org.springframework*`)
+    nor the Boot add-on — a `${lombok.version}` taken from the Boot BOM of a `spring-boot-starter-parent` chain would
+    not resolve on the company chain. `facts.company_properties` / `company_property_sources` when the facts carry
+    them (non-empty); else the same rule applied to `properties` / `property_sources` here."""
+    own = getattr(facts, "company_properties", None)
+    if isinstance(own, dict) and own:                 # the loader's own split (v2.1t); empty → the same rule here
+        return dict(own), dict(getattr(facts, "company_property_sources", None) or {})
+    props = dict(getattr(facts, "properties", None) or {})
+    sources = dict(getattr(facts, "property_sources", None) or {})
+    roots = {str(r).split(":")[0] for r in getattr(facts, "roots", None) or [] if r}
+    keep: dict[str, str] = {}
+    keep_src: dict[str, str] = {}
+    for name, value in props.items():
+        src = sources.get(name) or ""
+        parts = src.split(":")
+        g = parts[0] if len(parts) >= 2 else ""
+        if not g or g == "org.springframework" or g.startswith("org.springframework."):
+            continue                                  # unknown origin, or a Spring / Boot pom (the add-on too)
+        if any(g == x or g.startswith(x + ".") for x in roots) or \
+                is_in_house(GAV(group_id=g, artifact_id=parts[1]), cfg):
+            keep[name], keep_src[name] = value, src
+    return keep, keep_src
 
 
 def chain_own_managed(facts: Any, boot: Callable[[], dict] | dict | None = None) -> dict[str, str]:
@@ -560,6 +661,8 @@ class VersionResolver:
             facts = parent_chain.load_parent_chain_facts(cfg)
             data = facts.as_capture()
             data["managed"] = chain_own_managed(facts, boot)
+            # v2.1t: 회사 체인 pom 이 정의한 속성만(Spring / Boot pom·Boot 보탬의 속성은 회사에서 풀리지 않는다)
+            data["company_properties"], data["company_property_sources"] = chain_company_properties(facts, cfg)
             return data
 
         return cls(asis, after, repository, chain=chain if cfg is not None else None,
@@ -2744,7 +2847,7 @@ class BuildFixLoop:
         (`_case_libraries`) the table entry and what the repository has (`RepositoryLookup.candidates` →
         `hint_lines`), cached per library for the run. v2.1l: the as-is / new-chain facts of every artifact of the
         case's errors come first (`_version_facts`). Never raises ([] / the facts on any problem)."""
-        facts = self._version_facts(c) + self._resources_facts(c)   # v2.1l / v2.1m facts come first
+        facts = self._version_facts(c) + self._chain_property_facts(c) + self._resources_facts(c)   # facts first
         try:
             libs = self._case_libraries(c)
             out: list[str] = list(facts)
@@ -2995,7 +3098,8 @@ class BuildFixLoop:
         dependencyManagement(그 pom·프로젝트 안 부모)도 본다 — 재구성 뒤 캡처가 없으면 그것뿐이다(비워 두면 다음
         빌드의 pom_invalid 로 시도 전체가 되돌려진다). 시도가 *버전을 적어* 추가한 의존성을 새 부모 체인이
         관리하면(규칙 1: 캡처, 없으면 부모 체인의 사실) 그 ``<version>`` 을 지운다 — 관리가 이긴다(as-is 빌드에 없던
-        의존성이라 주인의 고정 버전이 아니다); 그것만을 위해 시도가 추가한 속성도. 원래 있던 명시 버전은 손대지
+        의존성이라 주인의 고정 버전이 아니다); 그것만을 위해 시도가 추가한 속성도. v2.1t: 시도가 추가한 사내
+        의존성은 체인이 관리하지 않으면 체인의 가족 버전 속성 ``${prop}`` 을 적는다(리터럴·저장소 버전 대신). 원래 있던 명시 버전은 손대지
         않는다(재구성 규칙의 몫). 시도가 부모·BOM import 를 바꾼 pom(과 그 아래)은 건드리지 않는다.
         사내·필수·선택·제거 대상·자기 모듈·system scope 는 제외. 예외 없음, 채운 것이 없으면 조용하다.
 
@@ -3009,7 +3113,9 @@ class BuildFixLoop:
         A dependency the attempt ADDED with an explicit version the new chain manages (step 1: the capture, else the
         parent-chain facts) loses that `<version>` — managed wins (the as-is build never had it, no owner's pin to
         respect), with the `${prop}` the attempt added only for it; journal `version_filled` source `managed`,
-        `removed` = the explicit text. Explicit versions that were already there are never touched (the
+        `removed` = the explicit text. v2.1t: an added IN-HOUSE dependency (version-less or literal) the chain does not
+        manage gets the chain's family version property `${prop}` (`_chain_property_for`; source `chain-property`,
+        `property`), protected in-house coordinates included. Explicit versions that were already there are never touched (the
         restructure's rules own those). A pom whose parent or BOM imports the attempt changed (or one below such a
         pom) is left alone. Protected keys, own modules and `system` scope are skipped. Returns
         [(pom, key, version, source)] of the versions written. Never raises."""
@@ -3040,6 +3146,7 @@ class BuildFixLoop:
         own: set[str] | None = None
         filled: list[tuple[str, str, str, str]] = []
         removed: list[tuple[str, str, str, str, Any, Any]] = []   # (pom, key, explicit, managed, pom at pre, editor)
+        replaced: dict[tuple[str, str], str] = {}     # v2.1t: (pom, key) → the literal a chain property replaced
         case = att.script_case_id or c.case_id or c.id
         for p in poms:
             if p in reshaped:
@@ -3067,7 +3174,27 @@ class BuildFixLoop:
                     continue
                 if own is None:
                     own = self._own_module_keys()
-                if key in protected or key in own or (g.scope or "") == "system":
+                if key in own or (g.scope or "") == "system":
+                    continue
+                # v2.1t: 시도가 추가한 사내 의존성 — 체인이 관리하면 버전 없이(관리가 이긴다), 아니면 체인의 가족 버전
+                # 속성 ``${prop}`` (값이 아니라 참조 — 부모가 올리면 따라간다); 사내 필수·선택 좌표도 같다
+                if key not in pre_versions and (not g.version or "${" not in g.version) and is_in_house(g, self.cfg):
+                    jar = (g.type or "jar") == "jar" and not g.classifier
+                    mv = r.managed_version(key, module) if jar else None
+                    if mv:
+                        if g.version:
+                            ed.remove_version(el)
+                            removed.append((p, key, g.version, mv, before[p], ed))
+                        continue
+                    prop = self._chain_property_for(g, r)
+                    if prop:
+                        ref = "${" + prop + "}"
+                        ed.set_ref_version(el, ref)
+                        filled.append((p, key, ref, "chain-property"))
+                        if g.version:
+                            replaced[(p, key)] = g.version
+                        continue
+                if key in protected:
                     continue
                 if g.version:                        # added WITH a version: the new chain's management wins
                     if (g.type or "jar") == "jar" and not g.classifier:   # managed per type:classifier
@@ -3109,9 +3236,61 @@ class BuildFixLoop:
             how = VERSION_SOURCE_TEXT.get(src, src)
             att.notes.append(f"version filled by sbmig: {key} {v} in {p} ({VERSION_SOURCE_NOTE.get(src, src)})")
             log.info("버전 채움: %s → %s (%s) — %s", key, v, how, p)
+            extra: dict[str, Any] = {}
+            if src == "chain-property":
+                extra["property"] = v[2:-1]
+                if (p, key) in replaced:
+                    extra["replaced"] = replaced[(p, key)]
             self.ws.journal({"event": "version_filled", "case": case, "attempt": att.id, "key": key, "version": v,
-                             "source": src, "pom": p})
+                             "source": src, "pom": p, **extra})
         return filled
+
+    def _chain_property_for(self, g: GAV, r: VersionResolver) -> str | None:
+        """v2.1t: 사내 의존성 g 에 쓸 회사 체인의 버전 속성 이름(``chain_company_properties`` 만): 필수·선택 스펙의
+        ``property_name`` 이 체인에 있으면 그것(재구성과 같은 순서), 아니면 ``version_property_matches`` 의 가장
+        구체적인 것. 없으면 None.
+
+        The company chain's version property for in-house `g` (company-defined properties only): the mandatory /
+        optional spec's `property_name` when the chain defines it (the restructure's order), else the most specific
+        `version_property_matches`; None when none."""
+        props = r.chain.get("company_properties") or {}
+        if not props:
+            return None
+        A = getattr(self.cfg, "artifacts", None)
+        for spec in [*(getattr(A, "mandatory", None) or []), *(getattr(A, "optional", None) or [])]:
+            if (spec.key == g.key or g.key in (spec.aliases or [])) and spec.property_name in props:
+                return spec.property_name
+        names = version_property_matches(g, props, in_house=True)
+        return names[0] if names else None
+
+    def _chain_property_facts(self, c: ErrorCluster) -> list[str]:
+        """v2.1t 프롬프트 사실: 케이스 오류의 아티팩트마다 관련된 회사 체인의 버전 속성(회사 pom 이 정의한 것만,
+        ``chain_company_properties``) — ``parent chain property:
+        <name>=<value> (<정의한 pom>)``, 중복 없이 ``CHAIN_PROPERTY_FACTS_MAX`` 줄까지. 예외 없음.
+
+        The parent chain's version properties relevant to the case's artifacts (`version_property_matches`; in-house
+        per `is_in_house`), one `parent chain property: <name>=<value> (<defining pom>)` line each, ≤
+        `CHAIN_PROPERTY_FACTS_MAX`. Never raises."""
+        try:
+            gavs = list({e.artifact.key: e.artifact for e in c.errors
+                         if e.artifact is not None and e.artifact.group_id and e.artifact.artifact_id}.values())
+            if not gavs:
+                return []
+            r = self._versions()
+            props = r.chain.get("company_properties") or {}
+            if not props:
+                return []
+            sources = r.chain.get("company_property_sources") or {}
+            out: list[str] = []
+            for gav in gavs:
+                for name in version_property_matches(gav, props, in_house=is_in_house(gav, self.cfg)):
+                    line = f"parent chain property: {name}={props[name]} ({sources.get(name) or 'parent chain'})"
+                    if line not in out:
+                        out.append(line)
+            return out[:CHAIN_PROPERTY_FACTS_MAX]
+        except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
+            log.debug("chain property facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return []
 
     def _drop_added_property(self, ed: Any, ed0: Any, version: str, rel: str) -> None:
         """지운 ``<version>`` 이 ``${속성}`` 이고 그 속성을 이 시도가 이 pom 에 *추가했으며* 이제 아무 pom 도 그것을

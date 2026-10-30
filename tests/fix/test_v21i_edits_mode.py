@@ -121,9 +121,9 @@ def test_edits_system_prompt_has_no_script_wording_and_is_shorter():
     assert not SCRIPT_WORDS.search(rendered) and "case: x" in rendered
 
 
-# the script prompts as of v2.1l (2026-10-30: rule 14 — unknown versions are left null, sbmig fills them); update a
-# hash only when that prompt is changed on purpose
-SCRIPT_PROMPT_SHA256 = {"script_system_v1.md": "5128eef06f55964420529cb7585508d9a07f72d0e7ab1bd6b7435f35f2f4171b",
+# the script prompts as of v2.1t (2026-10-30: rule 14 — unknown versions are left null, sbmig fills them; the parent
+# chain's version properties); update a hash only when that prompt is changed on purpose
+SCRIPT_PROMPT_SHA256 = {"script_system_v1.md": "da6707a0eec932b8ef4d2fc0c43bc445b1b3756a066f0a3ae0fa74f5ee19fc3e",
                         "script_user_v1.md.j2": "797fec4e1c84a9b220501759e312e9489f4cf788799d00280afc787992d34d86"}
 
 
@@ -136,6 +136,8 @@ def test_rule_14_leaves_unknown_versions_to_sbmig(name):
     assert "leave an error unfixed only because a version is unknown." in text
     assert "never name a version that section contradicts" in text            # the no-guessing sentence stays
     assert "what the as-is build used and what the new parent chain manages" in text
+    assert ("When the parent chain defines a version property for the library's family (the facts list them as "
+            "`parent chain property:`), write `${that property}` instead of a literal version.") in text   # v2.1t
     if name.startswith("script"):
         assert "Never refuse a fix, answer `<no_script>` or leave an error unfixed" in text
     else:

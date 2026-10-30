@@ -1416,6 +1416,9 @@ class Orchestrator:
                          "bom_properties_removed": list(getattr(res, "bom_properties_removed", None) or []),
                          "version_properties_removed": list(getattr(res, "version_properties_removed", None) or []),
                          "recipe_versions_dropped": list(getattr(res, "recipe_versions_dropped", None) or []),
+                         "bom_imports": list(getattr(res, "bom_imports", None) or []),
+                         "parent_manages_spring_boot_effective": getattr(res, "parent_manages_spring_boot_effective",
+                                                                         None),
                          "merged_modules": merged, "kept_boot_module": kept_boot,
                          "merge_conflicts": len(conflicts), "error": res.error})
         if not res.ok:
@@ -1815,6 +1818,10 @@ class Orchestrator:
             else:
                 whose = f"the Spring Boot {boot} BOM's {name}"
             items.append((pom if sep else root, f"property {nv} removed: it overrides {whose}"))
+        # v2.1t: "<pom>: g:a ${prop} (property of <pom>)" → 'BOM imported: g:a ${prop} (property of <pom>)'
+        for d in list(getattr(res, "bom_imports", None) or []):
+            pom, sep, what = str(d).partition(": ")
+            items.append((pom if sep else root, f"BOM imported: {what if sep else d}"))
         for d in list(getattr(res, "version_properties_removed", None) or []):
             pom, sep, nv = str(d).partition(": ")
             why = f"version property {nv} removed: no dependency references it after the parent-managed versions " \

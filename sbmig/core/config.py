@@ -107,7 +107,11 @@ class ArtifactsConfig(BaseModel):
     # 둘 다 None 이면 모듈이 루트 pom 을 상속한다(9b 이전 방식).
     boot_parent: Optional[ArtifactSpec] = None
     comp_parent: Optional[ArtifactSpec] = None
-    parent_manages_spring_boot: bool = True   # if False we import spring-boot-dependencies BOM ourselves
+    # v2.1t: auto(기본) = 사내 부모 체인의 pom 을 읽어 정한다 — 체인이 spring-boot-dependencies 를 상속 / import 하면 true,
+    # 아니면 false(재구성이 그 BOM 을 체인의 버전 속성 `${spring-boot.version}` 으로 직접 import). true / false 는 그대로.
+    # v2.1t: auto (default) = decided from the parent chain's poms (it reaches spring-boot-dependencies → true, else
+    # false: the restructure imports the BOM itself, through the chain's version property); true / false as before
+    parent_manages_spring_boot: bool | Literal["auto"] = "auto"
     parent_manages_java_version: bool = True  # if False we set maven.compiler.release
     # 필수 사내 아티팩트(운영 설정은 정확히 2개): mandatory_target 에 따라 모든 루트 pom 에 선언한다.
     mandatory: list[ArtifactSpec] = Field(default_factory=list)   # exactly 2 in production config
@@ -222,6 +226,13 @@ class LayoutConfig(BaseModel):
     # v2.1p: escape hatch — names to remove although no pom of the parent chain defines them (the chain's own names
     # are read from its poms now, sbmig.build.parent_chain); kept while still referenced
     parent_property_names: list[str] = Field(default_factory=list)
+    # v2.1t: 재구성이 BOM 을 import 할 때 버전으로 쓸 부모 체인의 속성 이름(앞에서부터, 체인이 정의한 첫 이름 → `${이름}`)
+    # v2.1t: the parent-chain property names a BOM import written by the restructure references (first one defined wins;
+    # none → the literal target version / the spring_cloud_bom.yml pairing)
+    bom_version_properties: dict[str, list[str]] = Field(default_factory=lambda: {
+        "spring_boot": ["spring-boot.version", "spring.boot.version", "springboot.version", "spring-boot-version"],
+        "spring_cloud": ["spring-cloud.version", "spring.cloud.version", "spring-cloud-version"],
+    })
     application_class_name: str = "Application"
     boot_resources_glob: list[str] = Field(default_factory=lambda: [
         "application*.yml", "application*.yaml", "application*.properties",

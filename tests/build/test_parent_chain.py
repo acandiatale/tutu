@@ -93,6 +93,11 @@ def test_the_chain_merge_rules(repo: Path, cfg) -> None:
     assert f.properties["lib.version"] == "3.5" and f.property_sources["lib.version"] == DEPS
     assert f.properties["spring-boot.version"] == BOOT_V                         # ${…} resolved
     assert "x-only.version" not in f.properties
+    # v2.1t: only what a COMPANY pom defines may be referenced — never the Boot poms' properties
+    assert f.company_properties == {"java.version": "21", "spring-boot.version": BOOT_V, "boot.line": BOOT_V,
+                                    "company.version": "4.0.0"}
+    assert set(f.company_property_sources.values()) == {BASE}
+    assert "lib.version" in f.properties and "lib.version" not in f.company_properties
     # managed: the nearest declaration wins; every declared entry wins over the imported BOMs
     assert f.managed["org.example:shared"] == "3.0.0"                            # base-parent over the Boot BOM
     assert f.managed["org.example:lib"] == "3.5"                                 # declared (Boot BOM) over y-bom's 9.0
@@ -120,7 +125,8 @@ def test_the_boot_bom_is_added_when_the_chain_misses_it(tmp_path: Path, cfg, mon
     assert f.boot_bom_added
     assert f.managed == {"org.example:shared": "3.0.0", "org.example:other": "2.0"}   # lowest priority
     assert f.properties["spring-boot.version"] == "4.1.0" and f.property_sources["spring-boot.version"] == BASE
-    assert f.property_sources["hibernate.version"] == "org.springframework.boot:spring-boot-dependencies:4.1.0"
+    # v2.1t: the add-on is an import — its properties are not inherited, so they never enter `properties`
+    assert "hibernate.version" not in f.properties and f.company_properties == {"spring-boot.version": "4.1.0"}
     assert any(s.startswith("Boot BOM add-on") for s in f.sources)
     clear_cache()
     cfg.artifacts.parent_manages_spring_boot = False                    # no promise → no add-on

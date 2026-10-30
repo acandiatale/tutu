@@ -24,7 +24,11 @@ artifacts:
     group_id: com.company.platform
     artifact_id: comp-jar
     version: 4.0.0
-  parent_manages_spring_boot: true      # parent imports/extends spring-boot 4.1.0 → we never pin boot versions ourselves
+  # v2.1t: auto (default) = read from the parent chain's poms: the chain inherits / imports spring-boot-dependencies → true
+  # (we never pin Boot versions ourselves), it does not → false (the restructure imports the BOM with the chain's
+  # ${spring-boot.version}, layout.bom_version_properties); true / false force it (true without a BOM in the chain → the
+  # parent-chain-no-boot-bom warning)
+  parent_manages_spring_boot: auto
   parent_manages_java_version: true
   mandatory:
     - { group_id: com.company.platform, artifact_id: company-core,    version: null }   # null = managed by parent

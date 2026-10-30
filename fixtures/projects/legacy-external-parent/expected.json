@@ -120,6 +120,12 @@
         "file_exists": {
           "path": "extparent-boot/target/*.jar"
         }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "<artifactId>spring-boot-dependencies</artifactId>"
+        }
       }
     ]
   }

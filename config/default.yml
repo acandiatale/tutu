@@ -1,5 +1,7 @@
 # sbmig default configuration. Company-specific coordinates go in a separate file (see artifacts.example.yml)
 # and are passed with:  sbmig run <zip|dir> --config config/artifacts.yml
+# (v2.1t: artifacts.parent_manages_spring_boot defaults to `auto` — decided from the parent chain's poms; see
+# artifacts.example.yml)
 # Any value can be overridden by env:  SBMIG_LLM__MODEL=... (double underscore = nesting)
 
 target:
@@ -70,6 +72,11 @@ layout:
   # boot-jar / comp-jar and their parents, sbmig.build.parent_chain); list here a name to remove although no pom of
   # the chain defines it (kept while ${name} is still referenced)
   parent_property_names: []
+  # v2.1t: when the restructure imports a BOM itself (parent_manages_spring_boot resolved to false, or Spring Cloud the
+  # chain does not manage), the version is ${<the first of these names the parent chain defines>}, else a literal
+  bom_version_properties:
+    spring_boot: [spring-boot.version, spring.boot.version, springboot.version, spring-boot-version]
+    spring_cloud: [spring-cloud.version, spring.cloud.version, spring-cloud-version]
   application_class_name: Application
   starter_by_case:
     pure_java: spring-boot-starter

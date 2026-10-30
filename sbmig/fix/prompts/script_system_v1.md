@@ -73,6 +73,8 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
     repository has, write `"version": null`: sbmig fills it before the build (the as-is build's version, else the
     newest release the repository has). Never refuse a fix, answer `<no_script>` or leave an error unfixed only
     because a version is unknown.
+    When the parent chain defines a version property for the library's family (the facts list them as
+    `parent chain property:`), write `${that property}` instead of a literal version.
     Only when the same major has NO jakarta build may you move to a higher major — then to the newest release of that
     major, not its first one. Then (a) port everything that major changes: configuration files (`*.xml`, properties,
     yaml), filter / servlet / listener registrations and their class names, JSP tag libraries and tags, renamed

@@ -279,6 +279,8 @@ class _Ctx:
     chain_facts: Any = None
     chain_facts_loaded: bool = False
     managed_source: str = ""
+    # v2.1t: artifacts.parent_manages_spring_boot resolved once per restructure (auto → from the chain facts)
+    manages_boot: bool | None = None
     # v2.1o: the as-is intake capture (`params["asis_effective"]()`), read once per restructure; None = unusable
     asis_data: Any = None
     asis_data_loaded: bool = False
@@ -423,6 +425,10 @@ class Restructurer:
         # v2.1h: 모든 모드 공통 — 파일이 최종 위치에 간 뒤 JSP 의 javax 이름을 jakarta 로(레시피는 JSP 를 못 본다).
         # 실패한 재구성(ok=False)에는 손대지 않는다: "아무것도 바꾸지 않았다" 는 오류 메시지가 사실로 남게
         self._jsp_jakarta(c)
+        try:
+            result.parent_manages_spring_boot_effective = self._manages_boot(c)
+        except Exception as e:  # noqa: BLE001 - bookkeeping only
+            log.debug("parent_manages_spring_boot not resolved: %s", e)
         result.changed_files = sorted(c.changed)
         return result
 
@@ -1805,7 +1811,7 @@ class Restructurer:
                                   type="test-jar", scope="test"))
             self._add_test_jar_goal(c, comp)
         if not ed.has_plugin(*BOOT_PLUGIN, where="build"):
-            plugin_version = None if A.parent_manages_spring_boot else c.cfg.target.spring_boot_version
+            plugin_version = None if self._manages_boot(c) else self._boot_version_value(c, ed)
             ed.add_plugin(PluginInfo(group_id=BOOT_PLUGIN[0], artifact_id=BOOT_PLUGIN[1], version=plugin_version),
                           executions=[{"goals": ["repackage"]}])
             c.note(f"spring-boot-maven-plugin (repackage) added to {c.boot_rel}")
@@ -2347,7 +2353,6 @@ class Restructurer:
                 c.note(f"moved @SpringBootTest classes use test classes of {comp_dir} ({', '.join(refs[:5])}"
                        f"{' …' if len(refs) > 5 else ''}) → {lib.artifact_id} test-jar dependency added to "
                        f"{posixpath.basename(c.boot_rel)} and maven-jar-plugin test-jar goal added to {comp_dir}")
-        plugin_version = None if A.parent_manages_spring_boot else c.cfg.target.spring_boot_version
         # @SpringBootApplication 이 여럿이면 repackage 가 main
         # 클래스를 고르지 못해 빌드가 실패한다: 첫 번째로 고정
         main_class = moved_main[0] if len(moved_main) > 1 else None
@@ -2358,6 +2363,9 @@ class Restructurer:
             parent, rel_parent, gid, ver = A.boot_parent.gav(), "", coords.group_id, coords.version  # type: ignore
         else:
             parent, rel_parent, gid, ver = coords, posixpath.relpath(c.p("pom.xml"), boot), None, None
+        # v2.1t: 부모가 Boot 를 관리하지 않으면 플러그인 버전도 그 pom 이 볼 체인의 ${spring-boot.version} 류(없으면 대상 버전)
+        chain_parent = A.boot_parent.gav() if role else A.parent.gav()          # type: ignore[union-attr]
+        plugin_version = None if self._manages_boot(c) else self._boot_version_value(c, None, parent=chain_parent)
         c.write(f"{boot}/pom.xml", render(
             "boot-pom.xml.j2", parent=parent, relative_path=rel_parent, group_id=gid, version=ver,
             artifact_id=coords.artifact_id + L.boot_artifact_suffix, name=None, dependencies=deps,
@@ -3415,8 +3423,9 @@ class Restructurer:
             if g.key != spec.key:
                 continue
             aligned: list[str] = []
-            if g.version != spec.version:
-                ed.set_ref_version(e, spec.version)
+            want = self._spec_version(c, spec, ed, "mandatory")
+            if g.version != want:
+                ed.set_ref_version(e, want)
                 aligned.append("version")
             if spec.type and (g.type or "jar") != spec.type:
                 ed.set_child_text(e, "type", spec.type)
@@ -3432,8 +3441,9 @@ class Restructurer:
         type / scope 로 맞춘다. 새로 넣은 것은 결과의 mandatory_added 에 기록."""
         for spec in c.cfg.artifacts.mandatory:
             managed = self._mandatory_managed(spec)
-            added = (ed.add_managed_dependency(spec.gav(), if_absent=True) if managed
-                     else ed.add_dependency(spec.gav(), if_absent=True))
+            gav = spec.gav().model_copy(update={"version": self._spec_version(c, spec, ed, "mandatory")})
+            added = (ed.add_managed_dependency(gav, if_absent=True) if managed
+                     else ed.add_dependency(gav, if_absent=True))
             if added:
                 if spec.key not in c.result.mandatory_added:
                     c.result.mandatory_added.append(spec.key)
@@ -3463,26 +3473,97 @@ class Restructurer:
                 c.note(f"removed {key} from {c.ws.rel(ed.path)} (remove_when_present)")
 
     def _boot_bom(self, c: _Ctx, ed: PomEditor) -> None:
-        """Spring Boot BOM: 사내 부모가 Boot 를 관리하면(``parent_manages_spring_boot``) as-is
-        ``spring-boot-dependencies`` import 를 지우고(두 관리가 다투지 않게), 아니면 BOM 을 대상 버전으로
-        맞추거나 dependencyManagement 맨 앞에 넣는다."""
-        A = c.cfg.artifacts
+        """Spring Boot BOM: 사내 부모가 Boot 를 관리하면(``parent_manages_spring_boot`` 의 실효값, v2.1t auto = 체인 pom 으로
+        판단) as-is ``spring-boot-dependencies`` import 를 지우고(두 관리가 다투지 않게), 아니면 BOM 을 dependencyManagement
+        맨 앞에 넣거나 다시 가리킨다 — 버전은 부모 체인이 정의한 ``${spring-boot.version}`` 류 속성(v2.1t), 없으면 대상 버전.
+        이어서 Spring Cloud BOM(``_cloud_bom``).
+
+        The Spring Boot BOM of this pom: removed when the parent chain manages Boot (the effective
+        `parent_manages_spring_boot`); else imported first in `<dependencyManagement>` (or an existing import
+        re-pointed) with `${<prop>}` when the pom's parent chain defines one of `layout.bom_version_properties.spring_boot`,
+        else the literal `target.spring_boot_version` (v2.1t: row / note / journal `bom_imports`). Then the Spring Cloud
+        BOM (`_cloud_bom`)."""
         bom_aid = "spring-boot-dependencies"
+        key = f"{BOOT_GROUP}:{bom_aid}"
+        rel = c.ws.rel(ed.path)
         # 사내 부모가 Boot 버전을 관리: as-is BOM import 가 남으면 두 관리가 다투므로 지운다
-        if A.parent_manages_spring_boot:
+        if self._manages_boot(c):
             if ed.remove_managed_dependency(BOOT_GROUP, bom_aid):
-                c.note(f"as-is {BOOT_GROUP}:{bom_aid} import removed from {c.ws.rel(ed.path)} "
-                       "(the in-house parent manages Spring Boot)")
-            return
-        target = c.cfg.target.spring_boot_version
-        if ed.has_managed_dependency(BOOT_GROUP, bom_aid):
-            for e in ed.dependency_elements(True):
-                if ed.gav_of(e).key == f"{BOOT_GROUP}:{bom_aid}":
-                    ed.set_ref_version(e, target)
+                c.note(f"as-is {key} import removed from {rel} (the in-house parent manages Spring Boot)")
         else:
-            ed.add_managed_dependency(GAV(group_id=BOOT_GROUP, artifact_id=bom_aid, version=target, type="pom",
-                                          scope="import"), first=True)
-            c.note(f"{BOOT_GROUP}:{bom_aid}:{target} BOM imported in {c.ws.rel(ed.path)}")
+            value, prop, src = self._bom_version(c, ed, "spring_boot", c.cfg.target.spring_boot_version)
+            changed = False
+            if ed.has_managed_dependency(BOOT_GROUP, bom_aid):
+                for e in ed.dependency_elements(True):
+                    if ed.gav_of(e).key == key and ed.gav_of(e).version != value:
+                        ed.set_ref_version(e, value)
+                        changed = True
+            else:
+                ed.add_managed_dependency(GAV(group_id=BOOT_GROUP, artifact_id=bom_aid, version=value, type="pom",
+                                              scope="import"), first=True)
+                changed = True
+            if changed:
+                c.note(f"{key}:{value} BOM imported in {rel}")
+                self._record_bom_import(c, rel, key, value, prop, src)
+        self._cloud_bom(c, ed, rel)
+
+    def _cloud_bom(self, c: _Ctx, ed: PomEditor, rel: str) -> None:
+        """v2.1t: 프로젝트가 Spring Cloud 를 쓰는데(분석기 라이브러리 ``spring-cloud``) 부모 체인도 프로젝트도 관리하지 않으면
+        ``spring-cloud-dependencies`` 를 import — 버전은 체인의 ``${spring-cloud.version}`` 류 속성, 없으면
+        ``knowledge/config/spring_cloud_bom.yml`` 의 대상 Boot 짝, 그것도 없으면 후속 작업만.
+
+        v2.1t: Spring Cloud BOM when the analyzer found library `spring-cloud`, the chain manages no
+        `org.springframework.cloud:*` (its own managed entries) and no project pom manages
+        `spring-cloud-dependencies`: `${<prop>}` of `layout.bom_version_properties.spring_cloud` when the pom's chain
+        defines one, else the `spring_cloud_bom.yml` pairing of the target Boot line, else a follow-up only."""
+        from sbmig.build.cloud_bom import CLOUD_BOM, CLOUD_GROUP, cloud_release_for
+
+        libs = {getattr(lib, "name", "") for lib in (getattr(c.profile, "libraries", None) or [])}
+        if "spring-cloud" not in libs:
+            return
+        key = f"{CLOUD_GROUP}:{CLOUD_BOM}"
+        chain = self._chain_facts(c)
+        own = getattr(chain, "own_managed", None) or {} if chain is not None else {}
+        if any(k.startswith(CLOUD_GROUP + ":") for k in own):
+            return                                            # the parent chain manages Spring Cloud
+        if ed.has_managed_dependency(CLOUD_GROUP, CLOUD_BOM) or self._project_manages(c, key):
+            return                                            # the project manages it already
+        value, prop, src = self._bom_version(c, ed, "spring_cloud", None)
+        if value is None:
+            value = cloud_release_for(c.cfg)
+            if value is None:
+                c.followup(f"Spring Cloud is used but neither the parent chain nor the project manages "
+                           f"{key}, and knowledge/config/spring_cloud_bom.yml pairs no train with Spring Boot "
+                           f"{c.cfg.target.spring_boot_version}: import the matching train in {rel}")
+                return
+        ed.add_managed_dependency(GAV(group_id=CLOUD_GROUP, artifact_id=CLOUD_BOM, version=value, type="pom",
+                                      scope="import"), first=True)
+        c.note(f"{key}:{value} BOM imported in {rel}")
+        self._record_bom_import(c, rel, key, value, prop, src)
+
+    def _project_manages(self, c: _Ctx, key: str) -> bool:
+        """프로젝트 pom 중 하나라도 ``<dependencyManagement>`` 에 이 g:a 를 선언했는가(디스크의 pom 기준)."""
+        g, _sep, a = key.partition(":")
+        for p in self._project_poms(c):
+            try:
+                if PomEditor(c.ws.abs(p)).has_managed_dependency(g, a):
+                    return True
+            except PomEditError:
+                continue
+        return False
+
+    def _record_bom_import(self, c: _Ctx, rel: str, key: str, value: str, prop: str | None, src: str | None) -> None:
+        """v2.1t: 재구성이 적은 BOM import 한 줄 — 결과의 ``bom_imports`` (pom-verify 행), 저널 ``bom_imports``."""
+        what = f"{key} {value} " + (f"(property of {src or 'the parent chain'})" if prop else
+                                    "(no property in the parent chain)")
+        line = f"{rel}: {what}"
+        if line not in c.result.bom_imports:
+            c.result.bom_imports.append(line)
+        try:
+            c.ws.journal({"event": "bom_imports", "pom": rel, "bom": key, "version": value, "property": prop,
+                          "defined_by": src})
+        except OSError as e:  # pragma: no cover - bookkeeping only
+            log.debug("bom_imports journal skipped: %s", e)
 
     def _fix_java(self, c: _Ctx, ed: PomEditor, *, top: bool) -> None:
         """Java 버전 설정 정리: 사내 부모가 java 버전을 관리하면(``parent_manages_java_version``) java
@@ -3597,13 +3678,14 @@ class Restructurer:
     def _fix_boot_plugin(self, c: _Ctx, ed: PomEditor) -> None:
         """spring-boot-maven-plugin 버전: 사내 부모가 Boot 를 관리하면 버전을 지우고, 아니면 리터럴 버전을
         대상 Boot 버전으로(``${...}`` 참조는 그대로)."""
-        manages = c.cfg.artifacts.parent_manages_spring_boot
+        manages = self._manages_boot(c)
+        want = None if manages else self._boot_version_value(c, ed)
         for p in ed.find_plugins(*BOOT_PLUGIN, where="all"):
             v = ed.text_of(p, "version")
             if manages and v:
                 ed.set_child_text(p, "version", None)
-            elif not manages and v and v != c.cfg.target.spring_boot_version and not property_ref(v):
-                ed.set_child_text(p, "version", c.cfg.target.spring_boot_version)
+            elif not manages and v and v != want and not property_ref(v):
+                ed.set_child_text(p, "version", want)
 
     def _apply_optional_triggers(self, c: _Ctx, eds: dict[str, PomEditor],
                                  editable: set[str] | None = None) -> None:
@@ -3769,10 +3851,44 @@ class Restructurer:
             if entry not in c.result.optional_bumped:
                 c.result.optional_bumped.append(entry)
 
+        def to_property(p: str, ed: PomEditor, ref: Any, spec: Any, prop: str, src: str) -> None:
+            """v2.1t: 부모 체인의 버전 속성으로 — ``${prop}`` (값이 아니라 참조: 부모에서 이름·번호가 바뀌어도 따라간다).
+            프로젝트가 같은 이름을 정의하면 그 값이 체인 값을 덮으므로 지운다; floor 정책이면 리터럴이 더 새것일 때 남긴다."""
+            want = f"${{{prop}}}"
+            old = ref.version
+            for q in self._chain(c, p):                # the project's own definition would shadow the chain's
+                q_ed = eds.get(q)
+                if q_ed is not None and q_ed.has_property(prop):
+                    q_ed.remove_property(prop)
+                    q_ed.remove_if_empty(q_ed.child(q_ed.root, "properties"))
+                    c.note(f"property {prop} removed from {q}: the parent chain defines it for {spec.key}")
+            if old == want:
+                return
+            if ref.section == "dependencies" and old is None and ref.key in managed:
+                return                                 # versioned where it is managed in the project
+            if ref.section == "dependencyManagement" and old is None:
+                return
+            chain_value = (getattr(self._chain_facts(c), "company_properties", None) or {}).get(prop)
+            if old and not property_ref(old) and policy == "floor" and chain_value and \
+                    version_lt(chain_value, old) is True:
+                c.note(f"{spec.key}: kept newer as-is version {old} over ${{{prop}}}={chain_value} "
+                       "(optional_version_policy=floor)")
+                return
+            ed.set_ref_version(ref.element, want)
+            record(spec.key, old, want)
+            c.note(f"optional {spec.key}: version {want} (property of {src or 'the parent chain'})")
+
         for p, ed in targets.items():                  # 2. versions
             for ref in ed.artifact_refs():
                 spec = keys.get(ref.key)
-                if not spec or not spec.version:
+                if not spec:
+                    continue
+                # v2.1t: 부모 체인의 속성이 먼저(spec 의 property_name → artifactId 이름 규칙), 그다음 spec 의 리터럴
+                hit = self._spec_property(c, spec, ed, p)
+                if hit is not None:
+                    to_property(p, ed, ref, spec, *hit)
+                    continue
+                if not spec.version:
                     continue
                 old = ref.version
                 prop = property_ref(old)
@@ -4388,6 +4504,109 @@ class Restructurer:
                    f"{', '.join(kept_pin_newer[:5])}{' …' if len(kept_pin_newer) > 5 else ''}")
         self._settle_asis_versions(c, managed_of, unpinned)
 
+    # ================================================================== v2.1t: the parent chain decides / names
+    def _manages_boot(self, c: _Ctx) -> bool:
+        """v2.1t: ``artifacts.parent_manages_spring_boot`` 의 실효값(재구성 한 번에 한 번): true / false 는 그대로, auto 는
+        부모 체인의 pom 이 정한다 — 체인이 spring-boot-dependencies 에 닿으면(상속 / import) true, 아니면 false; 체인을 읽지
+        못했으면 예전 기본값 true.
+
+        The effective value of `artifacts.parent_manages_spring_boot`: an explicit bool as is; `auto` → whether the
+        parent chain reaches `spring-boot-dependencies` (`ParentChainFacts.reaches_boot_bom`, else `not
+        boot_bom_added`); no chain facts → true (the pre-v2.1t default). One note when auto decided."""
+        if c.manages_boot is None:
+            v = c.cfg.artifacts.parent_manages_spring_boot
+            if isinstance(v, bool):
+                c.manages_boot = v
+            else:
+                f = self._chain_facts(c)
+                reach: bool | None = None
+                if f is not None and not getattr(f, "empty", True):
+                    r = getattr(f, "reaches_boot_bom", None)
+                    reach = bool(r) if r is not None else not getattr(f, "boot_bom_added", False)
+                c.manages_boot = True if reach is None else reach
+                why = ("no parent chain facts — the pre-v2.1t default" if reach is None else
+                       "the parent chain reaches spring-boot-dependencies" if reach else
+                       "the parent chain does not import / inherit spring-boot-dependencies — sbmig imports it")
+                c.note(f"artifacts.parent_manages_spring_boot: auto → {str(c.manages_boot).lower()} ({why})")
+        return bool(c.manages_boot)
+
+    def _chain_names_for(self, c: _Ctx, ed: PomEditor | None, rel: str | None = None, *,
+                         parent: GAV | None = None) -> dict[str, str]:
+        """v2.1t: 이 pom 이 상속으로 볼 수 있는 부모 체인의 '회사' 속성 {이름: 정의한 pom} — 이 pom(또는 저장소 안 최상위
+        조상)의 ``<parent>`` 가 설정한 사내 부모 중 어느 것인지로 그 체인의 이름만(역할 부모 comp-jar 의 모듈은 comp-jar 의
+        체인만), 그중 회사 pom 이 정의한 것만(``company_property_sources``). 루트별 정보가 없으면 회사 속성 전체, 루트를
+        모르면 {}.
+
+        The parent-chain properties `${…}` in this pom can resolve: the names of the chain of its root parent (the pom's
+        own `<parent>`, else its top-most in-repo ancestor's), each with its defining pom."""
+        chain = self._chain_facts(c)
+        if chain is None or getattr(chain, "empty", True):
+            return {}
+        # v2.1t: 회사 pom 이 정의한 속성만 — Boot BOM(org.springframework.*)의 lombok.version 등은 참조하지 않는다
+        sources: dict[str, str] = dict(getattr(chain, "company_property_sources", None) or {})
+        by_root: dict[str, list[str]] = dict(getattr(chain, "root_properties", None) or {})
+        if not by_root:
+            return dict(sources)
+        coords: list[str] = []
+        par = parent if parent is not None else (ed.get_parent() if ed is not None else None)
+        if par is not None and par.version:
+            coords.append(f"{par.group_id}:{par.artifact_id}:{par.version}")
+        if rel and c.ws.exists(rel):
+            top = self._chain(c, rel)[-1]
+            try:
+                tpar = PomEditor(c.ws.abs(top)).get_parent()
+                if tpar is not None and tpar.version:
+                    coords.append(f"{tpar.group_id}:{tpar.artifact_id}:{tpar.version}")
+            except PomEditError:
+                pass
+        root = next((x for x in coords if x in by_root), None)
+        return {n: sources[n] for n in by_root.get(root, []) if n in sources} if root else {}
+
+    def _bom_version(self, c: _Ctx, ed: PomEditor | None, family: str, literal: str | None, *,
+                     parent: GAV | None = None) -> tuple[str | None, str | None, str | None]:
+        """v2.1t: BOM import 의 버전 — ``layout.bom_version_properties[family]`` 중 이 pom 의 부모 체인이 정의한 첫 이름의
+        ``${이름}`` (이름, 정의한 pom 과 함께), 없으면 ``literal``."""
+        names = self._chain_names_for(c, ed, c.ws.rel(ed.path) if ed is not None else None, parent=parent)
+        for n in (getattr(c.cfg.layout, "bom_version_properties", None) or {}).get(family, []) or []:
+            if n in names:
+                return f"${{{n}}}", n, names[n] or None
+        return literal, None, None
+
+    def _boot_version_value(self, c: _Ctx, ed: PomEditor | None, *, parent: GAV | None = None) -> str:
+        """v2.1t: 부모가 Boot 를 관리하지 않을 때 spring-boot-maven-plugin 등에 적을 Boot 버전(체인 속성 또는 대상 버전)."""
+        value, _prop, _src = self._bom_version(c, ed, "spring_boot", c.cfg.target.spring_boot_version, parent=parent)
+        return value or c.cfg.target.spring_boot_version
+
+    def _spec_property(self, c: _Ctx, spec: Any, ed: PomEditor, rel: str | None) -> tuple[str, str] | None:
+        """v2.1t: 사내 아티팩트(필수 / 선택) 버전에 쓸 부모 체인의 속성 (이름, 정의한 pom): spec 의 ``property_name`` →
+        ``<artifactId>.version`` / ``<artifactId>-version`` / ``<stem>.version`` (stem = 끝의 -starter / -bom / -parent 를
+        뗀 artifactId) 중 이 pom 의 체인이 정의한 첫 것, 없으면 None.
+
+        The parent-chain property an in-house artifact's version follows: the spec's `property_name`, else the first of
+        `<artifactId>.version`, `<artifactId>-version`, `<stem>.version` the pom's chain defines; None when none."""
+        names = self._chain_names_for(c, ed, rel)
+        if not names:
+            return None
+        a = spec.artifact_id
+        stem = re.sub(r"-(?:starter|bom|parent)$", "", a)
+        for n in [spec.property_name] if spec.property_name else []:
+            if n in names:
+                return n, names[n]
+        for n in dict.fromkeys((f"{a}.version", f"{a}-version", f"{stem}.version")):
+            if n in names:
+                return n, names[n]
+        return None
+
+    def _spec_version(self, c: _Ctx, spec: Any, ed: PomEditor, what: str) -> str | None:
+        """v2.1t: 사내 아티팩트에 적을 버전 — 체인 속성이 있으면 ``${속성}`` (노트 한 줄), 없으면 spec 의 버전(None = 관리)."""
+        rel = c.ws.rel(ed.path)
+        hit = self._spec_property(c, spec, ed, rel)
+        if hit is None:
+            return spec.version
+        prop, src = hit
+        c.note(f"{what} {spec.key}: version ${{{prop}}} (property of {src or 'the parent chain'})")
+        return f"${{{prop}}}"
+
     # ================================================================== v2.1o: Boot BOM facts
     def _boot_bom_facts(self, c: _Ctx) -> Any:
         """``sbmig.build.boot_bom`` 의 사실을 재구성 한 번에 한 번만 읽는다(못 읽으면 빈 사실). 모듈 속성으로 불러
@@ -4445,7 +4664,8 @@ class Restructurer:
 
         v2.1s: the configured chain carries no Spring Boot BOM although `parent_manages_spring_boot` says it does: flag,
         note, journal `parent_chain_no_boot_bom`, and the Handover's first follow-up (`PARENT_NO_BOOT_BOM_PREFIX`)."""
-        if not c.cfg.artifacts.parent_manages_spring_boot or not getattr(facts, "boot_bom_added", False):
+        # v2.1t: 명시한 true 일 때만 — auto 는 체인을 보고 스스로 false 가 되어 BOM 을 직접 import 한다
+        if c.cfg.artifacts.parent_manages_spring_boot is not True or not getattr(facts, "boot_bom_added", False):
             return
         roots = ", ".join(getattr(facts, "roots", None) or []) or "-"
         target = c.cfg.target.spring_boot_version
@@ -4474,7 +4694,7 @@ class Restructurer:
         chain_managed: dict[str, str] = dict(chain.own_managed) if chain is not None and not chain.empty else {}
         per_pom: dict[str, dict[str, str]] | None = None
         extra = ""
-        if not c.cfg.artifacts.parent_manages_spring_boot:
+        if not self._manages_boot(c):
             importers = self._bom_importers(c)
             boot = self._boot_bom_facts(c) if importers else None
             if boot is not None and not getattr(boot, "empty", True):
@@ -4508,6 +4728,11 @@ class Restructurer:
         parent_names = {str(n).strip() for n in (getattr(L, "parent_property_names", None) or []) if str(n).strip()}
         chain = self._chain_facts(c)
         names = set(getattr(chain, "properties", None) or {}) if chain is not None else set()
+        # v2.1t: 체인이 Boot BOM 을 상속하지 않아 재구성이 직접 import 하면(실효 false) 그 BOM 의 속성은 상속되지 않는다 —
+        # 보탬으로 들어온 Boot BOM 속성 이름은 덮어쓰기가 아니다
+        if chain is not None and getattr(chain, "boot_bom_added", False) and not self._manages_boot(c):
+            boot_src = f"{BOOT_GROUP}:spring-boot-dependencies:"
+            names = {n for n in names if not str((chain.property_sources or {}).get(n, "")).startswith(boot_src)}
         # 버전 속성만, 재구성이 소유한 Java 수준 속성은 빼고
         chain_names = {n for n in names if n.endswith(".version") and n not in JAVA_PROPS}
         return chain_names, parent_names

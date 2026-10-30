@@ -482,8 +482,14 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str) -> tuple[
     if a.remove_when_present:
         L.append("- must not be declared any more (`artifacts.remove_when_present`): "
                  + ", ".join(f"`{k}`" for k in a.remove_when_present))
-    boot_v = ("managed by the parent chain" if a.parent_manages_spring_boot
-              else f"spring-boot-dependencies {cfg.target.spring_boot_version} imported in the poms")
+    # v2.1t: auto 는 재구성이 부모 체인의 pom 으로 정한다(실효값은 재구성 결과에)
+    if a.parent_manages_spring_boot == "auto":
+        boot_v = ("decided from the parent chain's poms (auto): managed by the chain when it reaches "
+                  f"spring-boot-dependencies, else spring-boot-dependencies {cfg.target.spring_boot_version} imported "
+                  "in the poms (see the restructure's BOM imports)")
+    else:
+        boot_v = ("managed by the parent chain" if a.parent_manages_spring_boot
+                  else f"spring-boot-dependencies {cfg.target.spring_boot_version} imported in the poms")
     java_v = ("managed by the parent chain" if a.parent_manages_java_version
               else f"maven.compiler.release {cfg.target.java_version} in the poms")
     L.append(f"- Spring Boot versions: {boot_v}; Java level: {java_v}")
@@ -556,6 +562,8 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
                            # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 속성을 재구성이 이미 지웠다
                            ("bom_properties_removed",
                             "as-is version properties removed (they overrode the parent's Spring Boot BOM properties)"),
+                           # v2.1t: 재구성이 적은 BOM import(부모 체인 속성 참조 또는 리터럴)
+                           ("bom_imports", "BOM imports written by the restructure"),
                            ("version_properties_removed",
                             "version properties removed (only the dropped explicit versions used them)"),
                            ("generated_files", "generated files"), ("flags", "flags"),

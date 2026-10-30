@@ -2511,3 +2511,46 @@ The parent-chain facts (v2.1p) already hold every property the chain defines; v2
 `legacy-parent-test.version`; with the local e2e stand-ins the chain already carries the Boot BOM (auto → true), so the Boot import
 is not written there — a unit test with a chain lacking the BOM covers `${spring-boot.version}`; the Cloud import is covered by a
 unit test (the analyzer's `spring-cloud` library + a chain property).
+
+### As built (2026-10-30)
+- `artifacts.parent_manages_spring_boot: bool | "auto"` (default `auto`; `default.yml` header note, `artifacts.example.yml` documented);
+  `Restructurer._manages_boot(c)` resolves it once: explicit bool as is; `auto` → `ParentChainFacts.reaches_boot_bom` (inherited or
+  imported `spring-boot-dependencies`; `boot_bom_added` as the fallback signal), no chain facts at all → the old default `true`; one
+  note; every former read (`_boot_bom`, `_fix_boot_plugin`, both plugin-version sites, `_fallback_capture`, the v2.1s name exclusion)
+  uses the effective value, exposed as `RestructureResult.parent_manages_spring_boot_effective` and in the `restructure` journal; the
+  v2.1s warning fires only for an explicit `true`.
+- Boot import (effective false): in the pom `_boot_bom` already handles (each role-module pom, or the root when it is not an
+  aggregator — with role parents the modules do not inherit the root), `${<prop>}` = the first `layout.bom_version_properties.spring_boot`
+  name the pom's OWN root chain defines (`ParentChainFacts.root_properties`, per root — a module on comp-jar cannot resolve a property only
+  base-parent's chain defines), else the literal target; an existing import is re-pointed, idempotent; the spring-boot-maven-plugin
+  version follows the same property. Spring Cloud (`_cloud_bom`): analyzer library `spring-cloud`, no `org.springframework.cloud:*` in the
+  chain's own managed entries and no project pom managing it → `${spring-cloud.version}`-style when the chain defines it, else the
+  pairing of `knowledge/config/spring_cloud_bom.yml` (`sbmig/build/cloud_bom.py`), else a follow-up only. Verified pairing: Boot 4.1 →
+  2025.1.4 (Central lists 2025.1.0 … 2025.1.4; no GA train on Boot 4.1 yet — 2026.0.0 is RC1 on Boot 4.2 — re-check when 2026.0 ships),
+  4.0 → 2025.1.4, 3.5 → 2025.0.3, 3.4 → 2024.0.3, 3.3 / 3.2 → 2023.0.6, 3.1 / 3.0 → 2022.0.5. `RestructureResult.bom_imports`, row
+  `BOM imported: g:a ${prop} (property of <pom>)` / `… <literal> (no property in the parent chain)`, note, journal `bom_imports`.
+- In-house versions: `_spec_property` / `_spec_version` — `property_name` → `<artifactId>.version` / `-version` / `<stem>.version` →
+  literal → null; a hit is written `${prop}` (floor: a newer literal is kept); a project-defined property of the same name is removed
+  (it would shadow the chain's); in `_bump_optionals` (trigger-added optionals too) and the mandatory add / align.
+- Loop: `artifact_stem`, `version_property_matches` (name ends in `.version` / `-version`; starts with the artifactId / stem, or the
+  group's family keyword — `spring-boot` / `spring-cloud` / `spring-data` incl. sub-groups, `spring-framework` only for
+  `org.springframework`; in-house: the artifact stem starts with the property base + `-`, so `xxx-reuse-web` ↔ `xxx-reuse.version`);
+  `_chain_property_facts` lines `parent chain property: <name>=<value> (<pom>)` (≤ 20, after the version facts); rule 14 sentence +
+  pointer in both prompts; `_fill_versions` writes `${prop}` for an added in-house dependency (version-less or literal; chain-managed →
+  version removed first), journal `source: "chain-property"`, `property`, `replaced` — this rule also reaches the configured mandatory /
+  optional coordinates. Known limit: the loop's chain facts merge all roots (the restructure scopes per root).
+- Fixture `legacy-parent` 1.0.0: `spring-boot.version=4.1.0`, `spring-cloud.version=2025.1.4`, `legacy-parent-test.version=9.9.9`
+  (reinstalled); `legacy-external-parent` post-check: no `spring-boot-dependencies` import (auto → true with the local stand-ins).
+  Note: with `plan.compile_after_rewrite: false` a `--stop-after restructure` run shows `attn=incomplete` instead of `tests-not-compiled`.
+- Correction after the e2e (`boot2`, local chain = `spring-boot-starter-parent`): the Boot BOM's own `lombok.version` /
+  `commons-lang3.version` had counted as "chain-defined" and the optionals came out as `${lombok.version}` — at the company such a
+  reference would not resolve. Rule: a property is referenced (restructure `_spec_property`, the BOM-import property, the shadow removal;
+  loop facts and `_fill_versions`) only when its DEFINING pom is one of the company's own chain poms (defining pom's groupId = a root's
+  groupId or `is_in_house`), never an `org.springframework*` pom nor the Boot add-on — `ParentChainFacts.company_properties` /
+  `company_property_sources`; `properties` stays complete for the override-name step. With the local stand-ins no company property
+  exists, so the optionals keep their literal (3.17.0) as before v2.1t.
+- Built: `parent_chain.is_company_group()` (a root's group or under it, or a mandatory / optional spec's group; anything under
+  `org.springframework` excluded even in the root slot), `company_properties` / `company_property_sources`; the Boot add-on's
+  properties never enter `properties`; the restructure's `_chain_names_for` (per root) and the loop's `chain_company_properties(facts,
+  cfg)` (fallback filter when the field is empty) read only those. Follow-up not done: the loop could use `root_properties` to write
+  `${prop}` only when the module's own root chain defines it (the restructure already scopes per root).
