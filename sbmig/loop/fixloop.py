@@ -13,7 +13,9 @@ LLM 3회(``script.max_augments_per_case``) 뒤 BLOCKED. 채점은 재빌드로�
 ``previous_edits``), 출처 ``llm-edit``, 꼬리표 ``edits:<case>#<n>``, ``1 + script.max_augments_per_case`` 회 뒤 차단.
 v2.1l: 의존성 버전은 LLM 이 추측하지 않는다 — 적용된 시도의 pom 에서 버전 없는 의존성은 커밋 전에
 ``_fill_versions`` 가 채우고(``VersionResolver``: 새 부모 체인 관리 → as-is 빌드 → 방금 추가된 것만 저장소),
-``pom_invalid|missing_version`` 케이스는 LLM 전에 sbmig 가 한 번 고친다(출처 ``sbmig-version``, LLM 0회).
+``pom_invalid|missing_version`` 케이스는 LLM 전에 sbmig 가 한 번 고친다(출처 ``sbmig-version``, LLM 0회). v2.1m:
+리소스 / war 플러그인이 필터링되는 바이너리 파일에서 실패한 케이스도 같은 자리에서 LLM 없이
+``nonFilteredFileExtensions`` 를 적는다(출처 ``sbmig-resources``, ``sbmig.restructure.resources_filtering``).
 
 The build-fix loop (ARCHITECTURE §3) — v2.1 (2026-10-27, docs/v2/PLAN-v2.1.md §3 / §3.1 / §3.2).
 
@@ -78,6 +80,14 @@ applied script / edits and before the commit, on the poms the try changed; a `po
 first tried without the LLM (`_version_attempt`: source `sbmig-version`, commit `fix(sbmig-version): <case>`, no
 stored script, not a ladder step — `_previous(ladder=True)` leaves it out; a partial one is not rolled back); the
 "Dependency versions" prompt section starts with the `as-is build:` / `new parent chain:` facts (`_version_facts`).
+
+v2.1m (docs/INTERFACES.md "v2.1m", binary files under resource filtering): a second zero-LLM pre-try beside
+`sbmig-version` (`_pre_tries`: (source, targets, run) — `_pre_try_for` picks one on the triage decision, it runs after
+the round's deferral + `_pre_try_deferral`, `_pre_attempt` is the shared attempt / commit / key sequence): a
+maven-resources-plugin / maven-war-plugin filtering failure (`reactive_targets`) gets the extensions of
+`binary_resource_plan(errors=…)` written by `apply_non_filtered_extensions` (source `sbmig-resources`, commit
+`fix(sbmig-resources): <cluster id>`, once per (pom, extension set) per run); the plan's lines and files lead the
+prompt facts when it could not apply (`_resources_facts`).
 
 
 """
@@ -430,8 +440,24 @@ def call_edit_applier(fn: Callable[..., Any], ws: Any, edits: list, cfg: Any, er
 # ---------------------------------------------------------------------------------------------------------------------
 MISSING_VERSION_SIG = "pom_invalid|missing_version"   # the generic signature of "'…version' for g:a is missing"
 SBMIG_VERSION_SOURCE = "sbmig-version"               # FixAttempt.source of the deterministic missing-version try
+SBMIG_RESOURCES_SOURCE = "sbmig-resources"           # v2.1m: … of the nonFilteredFileExtensions try
+RESOURCE_FACTS_FILES = 10                             # binary files named in the v2.1m prompt facts
+PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE})   # zero-LLM pre-tries: not ladder steps
 VERSION_FACTS_MAX = 12                                # artifacts per case in the "as-is build: …" prompt facts
 VERSION_TRY_APPLY_FAILURES = 3                        # zero-LLM tries of a (pom, g:a) that may fail to apply
+PRE_TRY_APPLY_FAILURES = VERSION_TRY_APPLY_FAILURES   # … the same cap for every zero-LLM pre-try (v2.1m)
+
+
+@dataclass(frozen=True)
+class _PreTry:
+    """LLM 0회 사전 시도 한 종류(v2.1l ``sbmig-version``, v2.1m ``sbmig-resources``): 이 케이스가 해당하는지와 손댈
+    pom(미루기 판단용; None = 해당 없음), 그리고 실행(적용되면 True).
+
+    One zero-LLM pre-try kind: `targets(c)` → the poms it would edit (the deferral check; None = not this kind),
+    `run(pr, st, c)` → True when it applied (the case's try of the round)."""
+    source: str
+    targets: Callable[[ErrorCluster], list[str] | None]
+    run: Callable[..., bool]
 VERSION_SOURCE_TEXT = {"asis": "as-is 빌드의 버전", "repository": "저장소의 최신 릴리스"}      # log lines / edit desc
 VERSION_SOURCE_NOTE = {"asis": "the as-is build", "repository": "newest release in the repository"}   # att.notes
 
@@ -679,8 +705,10 @@ class BuildFixLoop:
         # v2.1l: 버전 결정기(처음 쓸 때 한 번), 누락 버전 케이스의 결정적 시도가 이미 본 (pom, g:a) 쌍(실행당 한 번)
         # the version resolver (lazy, one per loop); the (pom, g:a) pairs the zero-LLM missing-version try looked at
         self._version_resolver: VersionResolver | None = None
-        self._version_tried: set[tuple[str, str]] = set()
-        self._version_failures: Counter = Counter()   # (pom, g:a) → zero-LLM tries that did not apply
+        # v2.1l / v2.1m: LLM 0회 사전 시도가 이미 본 키(출처, pom 또는 모듈, g:a | 확장자들)와 적용 실패 횟수
+        # the zero-LLM pre-tries' keys already looked at — (source, pom or module, g:a | extensions) — and apply failures
+        self._pre_tried: set[tuple[str, str, str]] = set()
+        self._pre_failures: Counter = Counter()
         self._cases = CaseScripts.of(kb)
         # v2.1i: `fix.mode: edits` — LLM 직접 수정만(스크립트 생성·저장·재사용·실적 없음); script 모드는 그대로
         # (the same test as sbmig.triage.scripts.edits_mode — the loop imports triage lazily)
@@ -1453,17 +1481,17 @@ class BuildFixLoop:
     def _previous(self, cluster: ErrorCluster, *, ladder: bool = True) -> list[FixAttempt]:
         """이 클러스터에 대한 앞서 *채점된* 시도들 — 사다리와 한도의 근거. 같은 L1 서명의 다른 파일, 이번
         라운드의 대기 중 시도, LLM 쿨다운을 일으킨 전송 실패
-        시도는 뺀다(쿨다운 라운드가 케이스 한도를 깎으면 안 된다). v2.1l: sbmig 의 버전 채움 시도
-        (``sbmig-version``, LLM 0회)는 사다리(``ladder``)에서 빠진다 — LLM 시도 한도를 깎으면 안 된다. 프롬프트의
+        시도는 뺀다(쿨다운 라운드가 케이스 한도를 깎으면 안 된다). v2.1l / v2.1m: sbmig 의 사전 시도
+        (``sbmig-version`` / ``sbmig-resources``, LLM 0회)는 사다리(``ladder``)에서 빠진다 — LLM 시도 한도를 깎으면 안 된다. 프롬프트의
         "앞 시도" 에는 들어간다(``ladder=False``).
 
         Earlier SCORED attempts on THIS cluster (round 10: not other files that share an L1 signature, not this
         round's pending ones), without the transport failures that triggered the LLM cool-down (L5): the cool-down
-        round must not count against the case's limits. v2.1l: the zero-LLM `sbmig-version` tries are not ladder
-        steps (`ladder=True`: left out, they never use up an LLM try); the prompt's history keeps them."""
+        round must not count against the case's limits. v2.1l / v2.1m: the zero-LLM pre-tries (`PRE_TRY_SOURCES`) are not
+        ladder steps (`ladder=True`: left out, they never use up an LLM try); the prompt's history keeps them."""
         return [a for a in _same_cluster(cluster, self.history, self.blocked.canonical_file)
                 if a.id not in self._cooled_attempts and a.outcome != "pending"
-                and not (ladder and a.source == SBMIG_VERSION_SOURCE)]
+                and not (ladder and a.source in PRE_TRY_SOURCES)]
 
     def _sibling_hints(self, cluster: ErrorCluster, limit: int = 3) -> list[str]:
         """이 실행의 *다른* 파일·범위에서 같은 오류가 어떻게
@@ -1690,10 +1718,10 @@ class BuildFixLoop:
             elif step is not None and step.needs_llm and not self.budget.llm_allowed():
                 forced = BlockedCandidate(reason=BlockReason.BUDGET_EXHAUSTED, errors=list(c.errors),
                                           evidence=[f"LLM budget exhausted ({self.budget.llm_text()})"])
-            # v2.1l: 누락 버전 케이스는 LLM 전에(사다리·한도·LLM 장애와 무관하게) sbmig 가 as-is 빌드 / 저장소의
-            # 버전을 적어 본다 — 단, 아래 미루기 검사 뒤에(같은 라운드에 다른 케이스가 바꾼 pom 이면 기다린다)
-            # the zero-LLM missing-version try (decided on the triage decision, run after the deferral check below)
-            version_try = self._version_try_wanted(c, d)
+            # v2.1l / v2.1m: 누락 버전·바이너리 리소스 필터링 케이스는 LLM 전에(사다리·한도·LLM 장애와 무관하게)
+            # sbmig 가 한 번 고쳐 본다 — 단, 아래 미루기 검사 뒤에(같은 라운드에 다른 케이스가 바꾼 pom 이면 기다린다)
+            # the zero-LLM pre-try (decided on the triage decision, run after the deferral check below)
+            pre, pre_poms = self._pre_try_for(c, d)
             if forced is not None:
                 d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
                                    rationale=prefix + f"blocked: {forced.reason.value} — {forced.evidence[0]}")
@@ -1701,8 +1729,8 @@ class BuildFixLoop:
             # 같은 라운드에 앞 케이스가 이미 그 파일·모듈 pom
             # 을 고쳤으면 미룬다(대개 재빌드에서 함께 사라진다)
             by, why = self._deferral(st, c, step) if d.kind == DecisionKind.SCRIPT else ([], "")
-            if not by and version_try:                  # the version try edits poms: one changed this round waits
-                by, why = self._version_deferral(st, c)
+            if not by and pre is not None:              # the pre-try edits poms: one changed this round waits
+                by, why = self._pre_try_deferral(st, pre_poms)
             if by:
                 # not an attempt: no FixAttempt, so neither the ladder, the limits, the blocked policy nor the stall
                 # detection (error multisets) see it; the next round looks at the case again if it is still there
@@ -1715,7 +1743,7 @@ class BuildFixLoop:
                 log.info("deferred: %s %s → 다음 빌드까지 대기 (시도로 세지 않음)", what, names)
                 return "deferred"
             # 적용되면 이것이 이번 라운드의 시도, 아니면 같은 라운드에 평소 사다리
-            if version_try and self._version_attempt(pr, st, c):
+            if pre is not None and pre.run(pr, st, c):
                 return "attempted"
             st.decisions.append(d)
             self._journal_decision(st, d)
@@ -2376,24 +2404,29 @@ class BuildFixLoop:
         self._applied(att, c, st, pre, sha, name, list(res.changed_files))
 
     def _apply_edits(self, att: FixAttempt, c: ErrorCluster, edits: list, st: "_Round",
-                     subject: str | None = None) -> None:
+                     subject: str | None = None, apply_fn: Callable[[], ScriptRunResult] | None = None) -> None:
         """답의 ``<edits>`` 를 ``sbmig.script.apply_edits`` 로 적용(스크립트와 같은 가드: 프로젝트 폴더
         안만, 같은 거부 규칙). 실패 → 아무것도 적용 안 됨(작업 트리 복원), 변경 → 커밋
         ``fix(edits:<case> <source>)``(v2.1l 의 sbmig 버전 채움은 ``subject`` 로 ``fix(sbmig-version): …``).
 
         The answer's `<edits>` through `sbmig.script.apply_edits` (the helper API's guards: project folder only,
         same refusals as a script); failure → nothing applied (working tree restored); changes → commit (`subject`
-        overrides the commit subject: v2.1l's `fix(sbmig-version): <case>`)."""
+        overrides the commit subject: v2.1l's `fix(sbmig-version): <case>`). v2.1m: `apply_fn` (sbmig's own pom change
+        that edits the files itself, e.g. `apply_non_filtered_extensions`) replaces the edit applier; the rest —
+        failure handling, commit of the files it reports, `_applied` — is the same."""
         pre = self.ws.head()
         self._mark(f"applying {len(edits)} edit(s) for {c.id}")
-        try:                                       # traceability only: the record of what changed is the diff
-            from sbmig.script import edits_script
-            log.debug("edits as a script:\n%s", edits_script(edits))
-        except Exception:  # noqa: BLE001 - the sbmig.script package may not offer it
-            pass
+        if apply_fn is None:
+            try:                                   # traceability only: the record of what changed is the diff
+                from sbmig.script import edits_script
+                log.debug("edits as a script:\n%s", edits_script(edits))
+            except Exception:  # noqa: BLE001 - the sbmig.script package may not offer it
+                pass
         with self._busy_with(f"edits for {att.script_case_id}"):
             try:
-                if self.edit_applier is not None:
+                if apply_fn is not None:           # sbmig's own pom change (v2.1m): it edits the files itself
+                    res = apply_fn()
+                elif self.edit_applier is not None:
                     res = call_edit_applier(self.edit_applier, self.ws, edits, self.cfg, list(c.errors))
                 else:                              # its own runner (no script.max_code_chars cap for a `write`)
                     from sbmig.script import apply_edits
@@ -2421,7 +2454,7 @@ class BuildFixLoop:
             att.apply_errors.append("the edits changed no file")
             log.info("적용 실패 (edits): 바뀐 파일 없음")
             return
-        att.edits_applied = len(edits)
+        att.edits_applied = len(edits) or len(res.changed_files or [])
         self._applied(att, c, st, pre, sha, "edits", list(res.changed_files))
 
     def _applied(self, att: FixAttempt, c: ErrorCluster, st: "_Round", pre: str, sha: str, how: str,
@@ -2600,7 +2633,7 @@ class BuildFixLoop:
         (`_case_libraries`) the table entry and what the repository has (`RepositoryLookup.candidates` →
         `hint_lines`), cached per library for the run. v2.1l: the as-is / new-chain facts of every artifact of the
         case's errors come first (`_version_facts`). Never raises ([] / the facts on any problem)."""
-        facts = self._version_facts(c)                 # v2.1l: the as-is / new-chain lines come first
+        facts = self._version_facts(c) + self._resources_facts(c)   # v2.1l / v2.1m facts come first
         try:
             libs = self._case_libraries(c)
             out: list[str] = list(facts)
@@ -2969,7 +3002,7 @@ class BuildFixLoop:
         return None
 
     def _version_plan(self, c: ErrorCluster
-                      ) -> tuple[list[tuple[str, str, str, str, str]], list[str], bool, list[tuple[str, str]]]:
+                      ) -> tuple[list[tuple[str, str, str, str, str]], list[str], bool, list[tuple[str, str, str]]]:
         """누락 버전 케이스의 결정적 시도 계획: 오류마다 (pom, g:a) 쌍을 as-is 빌드 → 저장소 순으로 푼다(규칙 2–3;
         빌드가 '없음' 이라 했으니 규칙 1 은 건너뜀). 못 찾은 쌍은 바로 '본 것' 으로 기억하고(사다리를 두 번 늦추지
         않게), 찾은 쌍은 돌려주기만 한다 — 적용된 뒤에야 기억한다(``_version_attempt``). 돌려주는 것: ([(pom, g,
@@ -2984,8 +3017,8 @@ class BuildFixLoop:
         if not errs:
             return [], [], False, []
         # 쌍 = 오류가 가리키는 (pom 또는 모듈, g:a) — 이미 본 쌍은 다시 풀지 않는다(같은 답이 나올 뿐)
-        new = [e for e in errs if (_norm_path(e.file or "") or (e.module or ""), e.artifact.key)
-               not in self._version_tried]
+        new = [e for e in errs if (SBMIG_VERSION_SOURCE, _norm_path(e.file or "") or (e.module or ""), e.artifact.key)
+               not in self._pre_tried]
         if not new:
             return [], [], False, []
         r = self._versions()
@@ -2993,26 +3026,26 @@ class BuildFixLoop:
         own = self._own_module_keys()
         plan: list[tuple[str, str, str, str, str]] = []
         unknown: list[str] = []
-        pairs: list[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
+        pairs: list[tuple[str, str, str]] = []
+        seen: set[tuple[str, str, str]] = set()
         for e in new:
             key = e.artifact.key
-            pair = (_norm_path(e.file or "") or (e.module or ""), key)
+            pair = (SBMIG_VERSION_SOURCE, _norm_path(e.file or "") or (e.module or ""), key)
             if pair in seen:                         # the same pair twice in the case
                 continue
             seen.add(pair)
             pom = self._declaring_pom(e)
             if key in protected or key in own:
-                self._version_tried.add(pair)        # nothing to do for it: remembered
+                self._pre_tried.add(pair)            # nothing to do for it: remembered
                 unknown.append(f"{key} (company / own module: not filled by sbmig)")
                 continue
             if pom is None:
-                self._version_tried.add(pair)
+                self._pre_tried.add(pair)
                 unknown.append(f"{key} (no pom declares it without a version)")
                 continue
             v, src = r.resolve(key, self._coords(self._pom_editor(pom)), allow_repository=True, check_managed=False)
             if not v:
-                self._version_tried.add(pair)        # nothing found: the ladder goes on, once
+                self._pre_tried.add(pair)            # nothing found: the ladder goes on, once
                 unknown.append(key)
                 continue
             pairs.append(pair)
@@ -3020,30 +3053,64 @@ class BuildFixLoop:
                 plan.append((pom, e.artifact.group_id, e.artifact.artifact_id, v, src))
         return plan, unknown, bool(seen), pairs
 
-    def _version_try_wanted(self, c: ErrorCluster, d: TriageDecision) -> bool:
-        """이 케이스에 LLM 0회의 ``sbmig-version`` 시도를 먼저 해 볼까: 누락 버전 케이스이고, 트리아지가 SCRIPT 를
-        정했거나 LLM 이 없어서(불가·예산 소진) 막혔을 때. 사람이 고정한 차단·이미 차단된 오류는 존중한다.
+    def _pre_tries(self) -> tuple[_PreTry, ...]:
+        """LLM 0회 사전 시도 목록(순서대로 첫 번째로 해당하는 것 하나): v2.1l 누락 버전, v2.1m 리소스 필터링.
 
-        Whether to try the zero-LLM `sbmig-version` fix first: a missing-version case the triager gave a SCRIPT
-        decision, or blocked only for the LLM (unavailable / budget exhausted)."""
-        if self.dry_run or not any(e.signature_generic == MISSING_VERSION_SIG for e in c.errors):
-            return False
-        if d.kind == DecisionKind.SCRIPT:
-            return True
-        m = _BLOCKED_RAT_RE.search(d.rationale or "") if d.kind == DecisionKind.BLOCKED else None
-        return m is not None and m.group("r") in (BlockReason.LLM_UNAVAILABLE.value,
-                                                  BlockReason.BUDGET_EXHAUSTED.value)
+        The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources."""
+        return (_PreTry(SBMIG_VERSION_SOURCE, self._version_targets, self._version_attempt),
+                _PreTry(SBMIG_RESOURCES_SOURCE, self._resources_targets, self._resources_attempt))
 
-    def _version_deferral(self, st: _Round, c: ErrorCluster) -> tuple[list[str], str]:
-        """sbmig 버전 채움을 다음 빌드까지 미루게 하는 (케이스들, "pom" | "files"): 이번 라운드에 다른 케이스의
-        수정이 그 오류의 pom(또는 루트 pom — 모든 모듈의 부모 체인)을 바꿨거나 그 pom 위에서 돌았으면 기다린다.
-        한 트리에 두 시도가 겹쳐 채점되거나, 앞 시도의 되돌리기(git revert)가 이 시도의 줄과 충돌하지 않게.
+    def _pre_try_for(self, c: ErrorCluster, d: TriageDecision) -> tuple[_PreTry | None, list[str]]:
+        """이 케이스에 LLM 0회 사전 시도를 먼저 해 볼까: 트리아지가 SCRIPT 를 정했거나 LLM 이 없어서(불가·예산
+        소진) 막혔고, 사전 시도 하나가 해당할 때 → (그 시도, 손댈 pom). 사람이 고정한 차단·이미 차단된 오류는
+        존중한다. 아니면 (None, []).
 
-        (case ids, "pom" | "files") that make the version try wait for the rebuild: a fix of another case changed the
-        error's pom (or the root pom — every module's chain) in this round, or ran on it. Two tries are never scored on
-        one pom, and an earlier try's `git revert` never conflicts with this one's hunk."""
-        files = list(dict.fromkeys(_norm_path(e.file) for e in c.errors
-                                   if e.signature_generic == MISSING_VERSION_SIG and e.file))
+        The pre-try for this case and the poms it would edit, when the triager gave a SCRIPT decision or blocked it
+        only for the LLM (unavailable / budget exhausted); else (None, [])."""
+        if self.dry_run:
+            return None, []
+        if d.kind != DecisionKind.SCRIPT:
+            m = _BLOCKED_RAT_RE.search(d.rationale or "") if d.kind == DecisionKind.BLOCKED else None
+            if m is None or m.group("r") not in (BlockReason.LLM_UNAVAILABLE.value, BlockReason.BUDGET_EXHAUSTED.value):
+                return None, []
+        for pre in self._pre_tries():
+            try:
+                poms = pre.targets(c)
+            except Exception as e:  # noqa: BLE001 - a broken matcher only means "no pre-try"
+                log.debug("pre-try %s for %s: %s: %s", pre.source, c.id, type(e).__name__, e)
+                poms = None
+            if poms is not None:
+                return pre, poms
+        return None, []
+
+    def _version_targets(self, c: ErrorCluster) -> list[str] | None:
+        """누락 버전 케이스면 오류의 pom 들(없으면 빈 목록), 아니면 None."""
+        if not any(e.signature_generic == MISSING_VERSION_SIG for e in c.errors):
+            return None
+        return list(dict.fromkeys(_norm_path(e.file) for e in c.errors
+                                  if e.signature_generic == MISSING_VERSION_SIG and e.file))
+
+    def _resources_targets(self, c: ErrorCluster) -> list[str] | None:
+        """v2.1m: 리소스 / war 플러그인의 필터링 복사 실패 케이스면 고칠 pom 들(``reactive_targets``), 아니면 None.
+        정규식으로 먼저 걸러 pom 을 읽는 일은 해당 케이스에서만 한다.
+
+        The poms `reactive_targets` picks for a resources / war plugin filtering failure; None when it is not one
+        (a regex pre-check keeps the pom parsing to such cases)."""
+        from sbmig.restructure.resources_filtering import REACTIVE_RE, reactive_targets
+        errs = list(c.errors)
+        if not any(REACTIVE_RE.search(f"{e.message or ''}\n{e.raw or ''}") for e in errs):
+            return None
+        return list(reactive_targets(self.ws, errs)) or None
+
+    def _pre_try_deferral(self, st: _Round, poms: list[str]) -> tuple[list[str], str]:
+        """사전 시도를 다음 빌드까지 미루게 하는 (케이스들, "pom" | "files"): 이번 라운드에 다른 케이스의 수정이 손댈
+        pom(또는 루트 pom — 모든 모듈의 부모 체인)을 바꿨거나 그 pom 위에서 돌았으면 기다린다. 한 트리에 두 시도가
+        겹쳐 채점되거나, 앞 시도의 되돌리기(git revert)가 이 시도의 줄과 충돌하지 않게.
+
+        (case ids, "pom" | "files") that make a pre-try wait for the rebuild: a fix of another case changed one of the
+        poms it would edit (or the root pom — every module's chain) in this round, or ran on it. Two tries are never
+        scored on one pom, and an earlier try's `git revert` never conflicts with this one's hunk."""
+        files = list(dict.fromkeys(_norm_path(f) for f in poms if f))
         by = [st.poms[f] for f in files if f in st.poms]
         if "pom.xml" in st.poms and st.poms["pom.xml"] not in by:
             by.append(st.poms["pom.xml"])
@@ -3051,6 +3118,48 @@ class BuildFixLoop:
             return list(dict.fromkeys(by)), "pom"
         by = [st.covered[f] for f in files if f in st.covered]
         return (list(dict.fromkeys(by)), "files") if by else ([], "")
+
+    def _pre_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster, *, source: str, rationale: str,
+                     analysis: str, solution: str, notes: list[str], keys: list[tuple[str, str, str]],
+                     edits: list | None = None, apply_fn: Callable[[], ScriptRunResult] | None = None) -> bool:
+        """LLM 0회 사전 시도 한 번의 공통 순서: 결정·시도 기록 → ``_begin_try`` → ``_apply_edits``(edits, 또는 파일을
+        직접 고치는 ``apply_fn`` — 같은 커밋·채점·롤백 길) → 키 정리(적용된 것만 '본 것', 적용 실패는
+        ``PRE_TRY_APPLY_FAILURES`` 번까지 다시) → 미루기 기록 → 기록. 적용됐으면 True.
+
+        The common sequence of one zero-LLM pre-try: decision + attempt (source, script_mode new, no stored script),
+        `_begin_try`, `_apply_edits` (edits, or `apply_fn` that edits the files itself — same commit / scoring /
+        rollback path, commit `fix(<source>): <cluster id>`), the keys settled (remembered once applied; an apply
+        failure is retried up to `PRE_TRY_APPLY_FAILURES` times), the deferral bookkeeping, the record."""
+        t0 = time.monotonic()
+        d = TriageDecision(cluster_id=c.id, kind=DecisionKind.SCRIPT, rationale=rationale)
+        st.decisions.append(d)
+        self._journal_decision(st, d)
+        st.n += 1
+        att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
+        att.errors_before = st.build.error_count + len(st.restored)
+        att.script_mode, att.script_case_id, att.source = "new", c.case_id or c.id, source
+        att.analysis, att.solution = analysis, solution
+        att.notes += notes
+        self._begin_try(att, st)
+        self._apply_edits(att, c, list(edits or []), st, subject=f"fix({source}): {c.id}", apply_fn=apply_fn)
+        # 적용된 키만 '본 것' — 적용 실패(applier 예외, 커밋 실패, Windows 의 일시적 파일 잠금)는 다음 라운드에
+        # 다시 해 본다(키마다 PRE_TRY_APPLY_FAILURES 번까지)
+        for key in keys:
+            if att.applied:
+                self._pre_tried.add(key)
+            else:
+                self._pre_failures[key] += 1
+                if self._pre_failures[key] >= PRE_TRY_APPLY_FAILURES:
+                    self._pre_tried.add(key)
+        if att.applied:                                 # its poms: the module's compile cases wait (deferral)
+            for ch in att.changes:
+                for path in (ch.path, ch.new_path):
+                    if path and PurePosixPath(_norm_path(path)).name == "pom.xml":
+                        st.poms.setdefault(_norm_path(path), c.id)
+        self._seconds[id(att)] = time.monotonic() - t0
+        self._record(pr, att)
+        self._sync_try(att)
+        return att.applied
 
     def _version_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
         """v2.1l 누락 버전 케이스의 결정적 시도(LLM 0회, 예산 그대로): 계획한 버전을 ``set_dependency_version``
@@ -3073,52 +3182,92 @@ class BuildFixLoop:
             log.info("sbmig 버전 채움: %s — as-is 빌드·저장소에 버전 없음 → LLM 사다리 (사실은 프롬프트에)",
                      ", ".join(unknown[:5]) + (f", … (+{len(unknown) - 5})" if len(unknown) > 5 else ""))
             return False
-        t0 = time.monotonic()
         what = ", ".join(f"{g}:{a} {v}" for _p, g, a, v, _s in plan)
-        d = TriageDecision(cluster_id=c.id, kind=DecisionKind.SCRIPT,
-                           rationale=f"sbmig-version: the missing version(s) from the as-is build / the repository "
-                                     f"({what}) — no LLM call")
-        st.decisions.append(d)
-        self._journal_decision(st, d)
-        st.n += 1
-        att = self._new_attempt(st.phase, st.iteration, st.n, c, d, st.build)
-        att.errors_before = st.build.error_count + len(st.restored)
-        att.script_mode, att.script_case_id, att.source = "new", case_id, SBMIG_VERSION_SOURCE
-        att.analysis = ("the build reports dependency versions missing: the new parent chain does not manage "
-                        + ", ".join(f"{g}:{a}" for _p, g, a, _v, _s in plan))
-        att.solution = ("sbmig writes the versions the as-is build used (else the newest release in the "
-                        "repository) — no LLM call")
         edits: list[Any] = []
+        notes: list[str] = []
         from sbmig.core.models import Edit
         for p, g, a, v, src in plan:
             how = VERSION_SOURCE_TEXT.get(src, src)
-            att.notes.append(f"version {g}:{a} {v} in {p} ({VERSION_SOURCE_NOTE.get(src, src)})")
+            notes.append(f"version {g}:{a} {v} in {p} ({VERSION_SOURCE_NOTE.get(src, src)})")
             edits.append(Edit(op="pom", path=p, desc=f"{p} 의 {g}:{a} 의존성에 버전 {v} 을(를) 적습니다 ({how})",
                               pom={"set_dependency_version": {"group_id": g, "artifact_id": a, "version": v}}))
         if unknown:
-            att.notes.append("no version found (as-is build, repository): " + ", ".join(unknown[:10]))
+            notes.append("no version found (as-is build, repository): " + ", ".join(unknown[:10]))
         log.info("sbmig 버전 채움 (LLM 0회): %s", ", ".join(
             f"{g}:{a} → {v} ({VERSION_SOURCE_TEXT.get(src, src)})" for _p, g, a, v, src in plan))
-        self._begin_try(att, st)
-        self._apply_edits(att, c, edits, st, subject=f"fix(sbmig-version): {c.id}")
-        # 적용된 쌍만 '본 것' — 적용 실패(applier 예외, 커밋 실패, Windows 의 일시적 파일 잠금)는 다음 라운드에
-        # 다시 해 본다(쌍마다 VERSION_TRY_APPLY_FAILURES 번까지)
-        for pair in pairs:
-            if att.applied:
-                self._version_tried.add(pair)
-            else:
-                self._version_failures[pair] += 1
-                if self._version_failures[pair] >= VERSION_TRY_APPLY_FAILURES:
-                    self._version_tried.add(pair)
-        if att.applied:                                 # its poms: the module's compile cases wait (deferral)
-            for ch in att.changes:
-                for path in (ch.path, ch.new_path):
-                    if path and PurePosixPath(_norm_path(path)).name == "pom.xml":
-                        st.poms.setdefault(_norm_path(path), c.id)
-        self._seconds[id(att)] = time.monotonic() - t0
-        self._record(pr, att)
-        self._sync_try(att)
-        return att.applied
+        return self._pre_attempt(
+            pr, st, c, source=SBMIG_VERSION_SOURCE, edits=edits, notes=notes, keys=pairs,
+            rationale=f"sbmig-version: the missing version(s) from the as-is build / the repository ({what}) — "
+                      "no LLM call",
+            analysis=("the build reports dependency versions missing: the new parent chain does not manage "
+                      + ", ".join(f"{g}:{a}" for _p, g, a, _v, _s in plan)),
+            solution="sbmig writes the versions the as-is build used (else the newest release in the repository) — "
+                     "no LLM call")
+
+    def _resources_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
+        """v2.1m 리소스 필터링 케이스의 결정적 시도(LLM 0회): ``binary_resource_plan(errors=…)`` 의 확장자를
+        ``apply_non_filtered_extensions`` 로 maven-resources-plugin(필요하면 maven-war-plugin)의
+        ``nonFilteredFileExtensions`` 에 적는다 — ``_apply_edits`` 와 같은 커밋·채점·롤백 길, 출처
+        ``sbmig-resources``, 커밋 ``fix(sbmig-resources): <cluster id>``. (pom, 확장자 묶음)마다 실행당 한 번.
+        추가할 것이 없거나 이미 해 본 것뿐이면 False(평소 사다리). 확장자 없는 바이너리 파일은 시도 메모와
+        인수인계 후속 조치로.
+
+        The deterministic try of a resources / war plugin filtering case (no LLM call): the extensions of
+        `binary_resource_plan(ws, cfg, errors=…)` written by `apply_non_filtered_extensions` through the
+        `_apply_edits` path (commit `fix(sbmig-resources): <cluster id>`, scoring, rollback), once per (pom, extension
+        set) per run. Nothing to add / only tried ones → False (the normal ladder). `plan.followups` (binaries without
+        an extension) → the attempt's notes and the run's Handover follow-ups."""
+        from sbmig.restructure.resources_filtering import apply_non_filtered_extensions, binary_resource_plan
+        plan = binary_resource_plan(self.ws, self.cfg, errors=list(c.errors))
+        for fu in plan.followups:
+            self._followup(fu)
+        keys = {pom: (SBMIG_RESOURCES_SOURCE, pom, ",".join(exts))
+                for pom, exts in plan.extensions_by_pom.items() if exts}
+        fresh = [pom for pom, k in keys.items() if k not in self._pre_tried]
+        seen = (SBMIG_RESOURCES_SOURCE, c.case_id or c.id, "")          # "nothing to add", journaled once
+        if not fresh:
+            if seen not in self._pre_tried:
+                self._pre_tried.add(seen)
+                self.ws.journal({"event": "resources_try", "phase": st.phase.value, "iteration": st.iteration,
+                                 "case": c.case_id or c.id, "lines": [], "files": list(plan.files),
+                                 "followups": list(plan.followups)})
+                log.info("sbmig 리소스 필터링: 추가할 nonFilteredFileExtensions 없음 → LLM 사다리 (사실은 프롬프트에)")
+            return False
+        lines = plan.lines(only=fresh)
+        self.ws.journal({"event": "resources_try", "phase": st.phase.value, "iteration": st.iteration,
+                         "case": c.case_id or c.id, "lines": lines, "files": list(plan.files),
+                         "followups": list(plan.followups)})
+        log.info("sbmig 리소스 필터링 (LLM 0회): %s", "; ".join(lines))
+        notes = [f"nonFilteredFileExtensions: {ln}" for ln in lines] + list(plan.followups)
+
+        def apply() -> ScriptRunResult:
+            return ScriptRunResult(status="ok", changed_files=apply_non_filtered_extensions(self.ws, plan, poms=fresh))
+
+        return self._pre_attempt(
+            pr, st, c, source=SBMIG_RESOURCES_SOURCE, apply_fn=apply, notes=notes, keys=[keys[p] for p in fresh],
+            rationale=f"sbmig-resources: binary files under resource filtering ({'; '.join(lines)}) — no LLM call",
+            analysis=("maven-resources-plugin / maven-war-plugin read binary files of a filtered resource as text: "
+                      + ", ".join(plan.files[:RESOURCE_FACTS_FILES] or ["(the file the error names)"])),
+            solution="sbmig adds their extensions to nonFilteredFileExtensions (filtering stays on) — no LLM call")
+
+    def _resources_facts(self, c: ErrorCluster) -> list[str]:
+        """v2.1m 프롬프트 사실: 리소스 필터링 케이스면 계획이 찾은 것 — pom 마다 적을 확장자(``plan.lines()``)와
+        필터링되는 바이너리 파일들(``RESOURCE_FACTS_FILES`` 개까지). 사전 시도가 적용되지 못했을 때 LLM 이 본다.
+        예외 없음.
+
+        The facts of a resources / war plugin filtering case: the plan's lines (extensions per pom) and the filtered
+        binary files it found. Never raises."""
+        try:
+            if self._resources_targets(c) is None:
+                return []
+            from sbmig.restructure.resources_filtering import binary_resource_plan
+            plan = binary_resource_plan(self.ws, self.cfg, errors=list(c.errors))
+            out = [f"binary resources under filtering: {ln} (nonFilteredFileExtensions)" for ln in plan.lines()]
+            out += [f"binary file under resource filtering: {f}" for f in plan.files[:RESOURCE_FACTS_FILES]]
+            return out
+        except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
+            log.debug("resource facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return []
 
     def _version_facts(self, c: ErrorCluster) -> list[str]:
         """v2.1l 프롬프트 사실("Dependency versions" 절의 앞부분): 케이스 오류의 아티팩트마다(사내 것도) as-is
@@ -3670,12 +3819,13 @@ def _try_note(att: FixAttempt) -> str:
 
 
 def _kept_partial(a: FixAttempt) -> bool:
-    """v2.1l: 부분 해결된 sbmig 버전 채움(``sbmig-version``)은 다음 시도 전에 되돌리지 않는다 — 적은 버전은
-    추측이 아니라 사실(as-is 빌드·저장소)이고, 남은 오류는 못 찾은 버전뿐이다.
+    """v2.1l / v2.1m: 부분 해결된 sbmig 사전 시도(``sbmig-version`` / ``sbmig-resources``)는 다음 시도 전에
+    되돌리지 않는다 — 적은 것은 추측이 아니라 사실(as-is 빌드·저장소, 파일 스캔)이고, 남은 오류는 sbmig 가 못 찾은
+    것뿐이다.
 
-    A partial `sbmig-version` try stays in the tree (no rollback before the case's next try): its versions are facts
-    (the as-is build / the repository), what is left are the versions it could not find."""
-    return a.source == SBMIG_VERSION_SOURCE and a.outcome == "partial"
+    A partial zero-LLM pre-try stays in the tree (no rollback before the case's next try): what it wrote are facts
+    (the as-is build / the repository / the file scan), what is left is what it could not find."""
+    return a.source in PRE_TRY_SOURCES and a.outcome == "partial"
 
 
 def _synthetic(e: BuildError) -> bool:

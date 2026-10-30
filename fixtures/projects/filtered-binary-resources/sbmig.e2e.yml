@@ -1,0 +1,18 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — v2.1m: filtered resources holding binary
+# files (a webfont + an unknown .dmdb) on the company layout with the role parents stood in by spring-boot-starter-parent
+# 4.1.0; the restructure must write maven-resources-plugin nonFilteredFileExtensions before the first build.
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review; no fix request is expected.
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/filtered-binary-resources/replay"
+kb:
+  dir: out/e2e/kb-filtered-binary-resources

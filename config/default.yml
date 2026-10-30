@@ -136,6 +136,9 @@ build:
   repository_url: null          # v2.1d: where maven-metadata.xml / poms are read to list releases for the LLM;
                                 # null → the catch-all mirror of settings_file, else Maven Central (unless offline)
   repository_timeout_seconds: 10
+  non_filtered_extensions: []   # v2.1m: company binary extensions (lower-case, no dot), e.g. [dmdb]; the restructure
+                                # writes them, next to the binary extensions its scan finds, into maven-resources-plugin
+                                # <nonFilteredFileExtensions> of every pom that filters a resource (no MalformedInputException)
 
 loop:
   # v2: no intermediate builds. transform (all recipes) → restructure → structure review → the first build is the final

@@ -39,7 +39,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
              "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
              "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay", "spring5-security-batch", "ant-webapp",
-             "sibling-aggregator-dup", "legacy-external-parent"]
+             "sibling-aggregator-dup", "legacy-external-parent", "filtered-binary-resources"]
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
@@ -83,6 +83,7 @@ BUILD_MATRIX = [
     ("ant-webapp", ".", "8", "ant"),                   # v2.1j: Ant, no pom.xml; stub jars → no as-is build here
     ("sibling-aggregator-dup", "APP", "8", ""),        # v2.1k: no root pom; APP aggregates ../DEV, ./EAR, ./BATCH
     ("legacy-external-parent", ".", "21", "libs"),    # v2.1l: as-is parent = fixtures/libs/legacy-parent (install.sh first)
+    ("filtered-binary-resources", ".", "21", ""),     # v2.1m: filtered resources with a webfont + an unknown .dmdb binary
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -568,12 +569,14 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                      for name in ("legacy-role-parents", "company-boot-single", "company-spring5-web",
                                   "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
-                                  "legacy-external-parent")}
+                                  "legacy-external-parent", "filtered-binary-resources")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
+COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
 COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
                  "servlet-war-overlay": "board", "ant-webapp": "ant-webapp",   # root artifactId (= `{name}`) when
-                 "sibling-aggregator-dup": "dup", "legacy-external-parent": "extparent"}   # it is not `shop`
+                 "sibling-aggregator-dup": "dup", "legacy-external-parent": "extparent",      # it is not `shop`
+                 "filtered-binary-resources": "binres"}
 # v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
 SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
 LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB

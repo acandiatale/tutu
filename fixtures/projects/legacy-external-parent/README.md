@@ -20,3 +20,8 @@ As-is build (needs the stand-in parent installed):
 
     fixtures/libs/install.sh
     JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-21.0.1/Contents/Home mvn -q -DskipTests package
+
+v2.1n (optional triggers): the fixture's `sbmig.e2e.yml` gives the local optional `commons-lang3` a `when_present` trigger on
+`commons-text` (`replaces: false`), so the restructure also ADDS `org.apache.commons:commons-lang3:3.17.0` to
+`extparent-back/pom.xml` (journal `optional_triggers`); the company mapping (`hibernate-core` → the in-house JPA starter) uses
+the default `replaces: true`, covered by unit tests.

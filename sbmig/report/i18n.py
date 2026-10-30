@@ -267,6 +267,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "carried over (no longer managed)": "as-is 버전 유지 (더 이상 관리되지 않음)",
     "parent swap": "parent 교체",
     "optional bump": "선택 아티팩트 버전 상향",
+    "optional (trigger: {matched})": "선택 아티팩트 도입 (트리거: {matched})",
     "mandatory": "필수 아티팩트",
     "spring boot 4 upgrade": "spring boot 4 업그레이드",
     "recipe / fix script": "레시피 / 수정 스크립트",

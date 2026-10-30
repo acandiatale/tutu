@@ -40,6 +40,8 @@ log = logging.getLogger("sbmig.report")
 REASON_CARRIED = "carried over (no longer managed)"
 REASON_PARENT = "parent swap"
 REASON_OPTIONAL = "optional bump"
+# v2.1n: 트리거 의존성(when_present) 때문에 넣은 선택 아티팩트와, 그때 지운 트리거가 다는 이유 칸
+REASON_OPTIONAL_TRIGGER = "optional (trigger: {matched})"
 REASON_MANDATORY = "mandatory"
 REASON_BOOT = "spring boot 4 upgrade"
 REASON_OTHER = "recipe / fix script"
@@ -73,6 +75,11 @@ _JAR_NAME_VERSION_RE = re.compile(r"^(?P<stem>.+?)[-_](?P<ver>\d[\w.\-]*?)\.jar$
 
 _OPTIONAL_RE = re.compile(r"optional bumped: (.*)$")
 _MANDATORY_RE = re.compile(r"mandatory added: ([^;]*)")
+# v2.1n: the restructure's note "optional artifacts added for trigger dependencies: g:a → <pom> (for m1, m2); … —
+# replaced: m1 removed from <pom> → g:a; …"
+TRIGGER_NOTE_PREFIX = "optional artifacts added for trigger dependencies:"
+_TRIGGER_ADDED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) → \S+ \(for ([^()]*)\)")
+_TRIGGER_REPLACED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) removed from \S+ → ([^\s;:]+:[^\s;:]+)")
 
 # key -> (version, source)
 _Dep = tuple[Optional[str], str]
@@ -222,6 +229,51 @@ def _restructure_keys(notes: list[str]) -> tuple[set[str], set[str]]:
                 if tok and tok != "-" and ":" in tok:
                     mandatory.add(":".join(tok.split(":")[:2]))
     return optional, mandatory
+
+
+def _trigger_keys(notes: list[str]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """v2.1n: 재구성 노트에서 (트리거로 넣은 선택 아티팩트 → 맞은 트리거들, 지운 트리거 → 맞은 트리거) 를
+    뽑는다 — 인수인계의 추가 / 삭제 줄에 ``optional (trigger: …)`` 이유를 달기 위해.
+
+    ({added optional key: matched trigger keys}, {removed trigger key: [itself]}) from the restructure's
+    `optional artifacts added for trigger dependencies: …` note."""
+    added: dict[str, list[str]] = {}
+    removed: dict[str, list[str]] = {}
+    for n in notes:
+        i = n.find(TRIGGER_NOTE_PREFIX)
+        if i < 0:
+            continue
+        text = n[i + len(TRIGGER_NOTE_PREFIX):]
+        head, _, tail = text.partition(" — replaced: ")
+        for m in _TRIGGER_ADDED_RE.finditer(head):
+            keys = added.setdefault(m.group(1), [])
+            keys += [k.strip() for k in m.group(2).split(",") if k.strip() and k.strip() not in keys]
+        for m in _TRIGGER_REPLACED_RE.finditer(tail):
+            removed.setdefault(m.group(1), [m.group(1)])
+    return added, removed
+
+
+def optional_trigger_reason(matched: list[str]) -> str:
+    """v2.1n: 이유 칸 ``optional (trigger: <맞은 g:a>[, …])``.
+
+    The Handover reason of an optional artifact a trigger introduced, and of the trigger it replaced."""
+    return REASON_OPTIONAL_TRIGGER.format(matched=", ".join(matched))
+
+
+_TRIGGER_REASON_RE = re.compile(r"^optional \(trigger: (?P<matched>.*)\)$")
+
+
+def tr_reason(lang: str, reason: str) -> str:
+    """버전 변경 줄의 이유 칸을 ``lang`` 으로 — 값이 채워진 ``optional (trigger: …)`` 도 번역표의 틀로 옮긴다.
+
+    `VersionChange.reason` in `lang`: the constants through `tr`, a filled-in `REASON_OPTIONAL_TRIGGER` through its
+    template."""
+    from .i18n import tr
+
+    m = _TRIGGER_REASON_RE.match(reason or "")
+    if m:
+        return tr(lang, REASON_OPTIONAL_TRIGGER, matched=m.group("matched"))
+    return tr(lang, reason)
 
 
 def _replacement_key(f: AdvisoryFinding) -> Optional[str]:
@@ -856,6 +908,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
 
     notes = _notes(report)
     optional, mandatory = _restructure_keys(notes)
+    trig_added, trig_removed = _trigger_keys(notes)
     adv_arts, adv_repl = _advisory_maps(list(report.advisories or []))
     changes: list[VersionChange] = []
     main = _main_pom(final)
@@ -902,6 +955,11 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
             return f"advisory:{adv_arts[key]}"
         if key in adv_repl:
             return f"advisory:{adv_repl[key]}"
+        # v2.1n: 트리거로 들어온 선택 아티팩트 / 그때 지운 트리거 — 단순 버전 올림보다 먼저
+        if key in trig_added:
+            return optional_trigger_reason(trig_added[key])
+        if key in trig_removed:
+            return optional_trigger_reason(trig_removed[key])
         if key in optional:
             return REASON_OPTIONAL
         if key in mandatory:
@@ -930,10 +988,11 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
                                          pom=where.get(k, main_path)))
         elif k in db:
             r = reason_for(k)
-            h.removed.append(_coord(k, db[k][0]) + (f" ({r})" if r.startswith("advisory:") else ""))
+            tagged = r.startswith("advisory:") or k in trig_removed
+            h.removed.append(_coord(k, db[k][0]) + (f" ({r})" if tagged else ""))
         else:
             r = reason_for(k)
-            tag = r if r.startswith("advisory:") or r in (REASON_MANDATORY, REASON_OPTIONAL) else ""
+            tag = r if r.startswith("advisory:") or r in (REASON_MANDATORY, REASON_OPTIONAL) or k in trig_added else ""
             h.added.append(_coord(k, da[k][0]) + (f" ({tag})" if tag else ""))
 
     # ---- plugins (version changes only; added / removed plugins are restructure noise)

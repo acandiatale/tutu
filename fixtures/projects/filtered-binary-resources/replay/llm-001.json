@@ -1,0 +1,5 @@
+{
+  "note": "structure review of filtered-binary-resources (one call): verdict ok — binres-back lists dmdb / woff2 in maven-resources-plugin nonFilteredFileExtensions (written by the restructure, v2.1m)",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root on the in-house parent with the mandatory starters, binres-back on the comp parent with the filtered resources and maven-resources-plugin nonFilteredFileExtensions dmdb, woff2, binres-boot on the boot parent. Nothing to fix.\"\n}\n</review>\n"
+}

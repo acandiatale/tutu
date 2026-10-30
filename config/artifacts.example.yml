@@ -43,6 +43,11 @@ artifacts:
     - { group_id: com.company.lib, artifact_id: lib-file,      version: 3.0.0 }
     - { group_id: com.company.lib, artifact_id: lib-messaging, version: 3.0.0 }
     - { group_id: com.company.lib, artifact_id: lib-web,       version: 3.0.0 }
+    # v2.1n: an optional can also be INTRODUCED when the project declares one of its triggers (`when_present`, g:a keys or
+    # globs): the curated company artifact replaces the raw library (`replaces: true`, default — the matched declarations are
+    # removed) or sits next to it (`replaces: false`). Without `when_present` an optional is only aligned when already used.
+    #   - { group_id: com.company.lib, artifact_id: lib-jpa, version: 4.0.0,
+    #       when_present: ["org.hibernate:hibernate-core", "org.hibernate.orm:hibernate-core", "org.hibernate:hibernate-entitymanager"] }
   remove_when_present: []               # e.g. ["com.company.legacy:legacy-bom"]
   mandatory_target: root                # the 2 mandatory dependencies go into every root pom (project root; MSA: each
                                         # service root + the top aggregator) — the company rule; `modules` = role module poms

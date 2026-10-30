@@ -11,6 +11,19 @@ layout:
 artifacts:
   boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
   comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  # v2.1n trigger scenario: the 8 local stand-in optionals again (a list override replaces the list), commons-lang3 with a
+  # `when_present` trigger on commons-text, which this project declares → commons-lang3 3.17.0 is ADDED next to it
+  # (`replaces: false`; the company mapping hibernate-core → its JPA starter uses the default `replaces: true`).
+  optional:
+    - { group_id: org.apache.commons, artifact_id: commons-lang3,  version: 3.17.0,
+        when_present: ["org.apache.commons:commons-text"], replaces: false }
+    - { group_id: com.google.guava,   artifact_id: guava,          version: 33.4.8-jre }
+    - { group_id: org.projectlombok,  artifact_id: lombok,         version: 1.18.38 }
+    - { group_id: org.mapstruct,      artifact_id: mapstruct,      version: 1.6.3 }
+    - { group_id: com.fasterxml.jackson.core, artifact_id: jackson-databind, version: 2.19.2 }
+    - { group_id: org.apache.commons, artifact_id: commons-collections4, version: 4.5.0 }
+    - { group_id: commons-io,         artifact_id: commons-io,     version: 2.19.0 }
+    - { group_id: org.slf4j,          artifact_id: slf4j-api,      version: 2.0.17 }
 # v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role
 # structure_review); no fix-script request is expected (no match = "no fix").
 llm:

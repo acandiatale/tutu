@@ -533,3 +533,30 @@ checked. Contract + as-built: `docs/INTERFACES.md` "v2.1l".
 | `/code-review medium` on the diff: 10 findings → 7 fixed (unknown entries resolved from the repository before the AFTER capture so one unknown no longer undoes every pin; managed-before-direct as-is lookup; no capture when nothing pinned; kept-newer pins reported as pins; zero-LLM try after the deferral + `_version_deferral`; `_version_tried` only after a successful apply, cap 3 failed applies; planner docstring), 3 recorded as follow-ups (newest-any-major for added deps = policy, duplicated helpers, raw-byte idempotency check) | `docs/INTERFACES.md` "v2.1l" → As built | done |
 | Offline suite | `python -m pytest -m "not integration"` | **2,525 passed**, 45 deselected (after the review fixes; was 2,464 before v2.1l) |
 | Open (the user) | — | company data for the Boot / MSA failures and for the Spring Framework 6.2.12 project that kept `DEV/pom.xml` (report.md `\| Case \|` + `plan: restructure:` note); retest from an empty KB; MSA non-Boot WAR services; the known limit of `_fill_versions` without the post-restructure capture (INTERFACES "As built") |
+
+## Status — 2026-10-30, v2.1m (binary files under resource filtering: `nonFilteredFileExtensions` written by sbmig)
+
+User: with an empty KB a project whose filtered resources hold `.dmdb` files (and webfonts etc.) failed in maven-resources-plugin's
+copy; the LLM wrote three different scripts for the same error and hit the cap ("3회로는 너무 부족", now 15 at the company). v1's
+handler E12 had fixed this pre-emptively; v2 step 4 deleted it. Contract + as-built: `docs/INTERFACES.md` "v2.1m".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Shared rule: plan (analyzer scan: known extensions + binary content, includes / excludes) + apply through `PomEditor` + reactive targets | `sbmig/restructure/resources_filtering.py`, `tests/restructure/test_v21m_resources_filtering.py` | done (agent, 19 tests) |
+| Restructure: `_non_filtered_extensions` before `_pin_asis_versions` in layout / boot_pom / msa, `RestructureResult.non_filtered_extensions`, pom-verify row, journal `non_filtered_extensions`, `build.non_filtered_extensions` | `sbmig/restructure/restructurer.py`, `sbmig/core/{config,interfaces}.py`, `config/default.yml`, `sbmig/loop/orchestrator.py` | done (agent, 19 tests) |
+| Fix loop: zero-LLM try `sbmig-resources` for the plugin error (after the deferral, like `sbmig-version`) | `sbmig/loop/fixloop.py`, `sbmig/core/models.py` | done (agent, 6 tests; `_pre_tries()` registry shared with `sbmig-version`) |
+| e2e fixture `filtered-binary-resources` (filtered `src/main/resources` with `fonts/app.woff2` + `data/items.dmdb`; as-is pins resources plugin 3.1.0, which copies the binaries silently corrupted) | `fixtures/projects/filtered-binary-resources/` | PASS on real Maven: `dmdb, woff2` written into `binres-back/pom.xml`, both binaries byte-identical, `catalog.version` filtered, BUILD SUCCESS, 1 LLM call |
+| Docs: CLAUDE.md, ERROR-HANDLING E12, KB-AND-FLOW restructure row, INTERFACES contract | — | done |
+
+## Status — 2026-10-30, v2.1n (optional in-house artifacts applied when a trigger dependency is present)
+
+User: "옵셔널 artifacts.yml 의 의존성에 해당하는 의존성이 pom.xml 에 있으면 그 옵셔널을 적용하는 완화책" (e.g. `hibernate-core` → the
+company's JPA starter), next to the existing "used → aligned to the 4.0.0 line". Contract + as-built: `docs/INTERFACES.md` "v2.1n".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| `ArtifactSpec.when_present` (g:a keys / globs) + `replaces` (default true); `_apply_optional_triggers` before `_bump_optionals` in `_all_poms_pass` (every mode, MSA library roots too); `RestructureResult.optional_added` / `optional_replaced`, pom-verify row, journal `optional_triggers`, Handover reason `optional (trigger: …)`, review lines | `sbmig/core/config.py`, `sbmig/restructure/restructurer.py`, `sbmig/core/interfaces.py`, `sbmig/loop/orchestrator.py`, `sbmig/report/handover.py`, `sbmig/review/inputs.py`, `tests/restructure/test_v21n_optional_triggers.py` | done (agent, 21 tests) |
+| Company example (`when_present` / `replaces` documented) | `config/artifacts.example.yml` | done |
+| e2e: `legacy-external-parent` gains the trigger scenario (commons-lang3 added next to commons-text, `replaces: false`) | `fixtures/projects/legacy-external-parent/{sbmig.e2e.yml,expected.json}` | PASS on real Maven (commons-lang3 3.17.0 added to `extparent-back/pom.xml`, journal `optional_triggers`, Handover "optional (trigger: commons-text)"); 10-fixture e2e subset all PASS |
+| Note | — | `optional_version_policy: floor` keeps an as-is version newer than the configured one; `pin` forces the configured version (the user decides per company yml) |
+| Offline suite after v2.1m + v2.1n | `python -m pytest -m "not integration"` | **2,578 passed**, 45 deselected (was 2,525 after v2.1l) |

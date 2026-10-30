@@ -541,7 +541,11 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
                                                       "kept_boot_module") if g(k))
         out.append(f"- restructure result: {state}" + (f"; {layout}" if layout else ""))
         for key, title in (("parents_set", "parents set"), ("mandatory_added", "mandatory added"),
-                           ("optional_bumped", "optional bumped"), ("merged_modules", "merged modules"),
+                           ("optional_bumped", "optional bumped"),
+                           # v2.1n: 트리거 의존성 때문에 새로 넣은 선택 아티팩트와 그때 지운 트리거
+                           ("optional_added", "optional artifacts added for trigger dependencies"),
+                           ("optional_replaced", "trigger dependencies replaced by optional artifacts"),
+                           ("merged_modules", "merged modules"),
                            ("managed_versions_dropped", "explicit versions dropped (managed by the new parents)"),
                            # v2.1l: 검토도 재구성이 적은 as-is 버전을 다른 pom 교정처럼 본다
                            ("versions_pinned", "versions carried over from the as-is build"),
@@ -668,14 +672,18 @@ MAX_BINARY_FACTS = 12
 def filtered_binary_lines(ws: Any, poms: list[PomInfo]) -> list[str]:
     """`<filtering>true</filtering>` 리소스 아래의 바이너리 파일: 빌드는 통과하지만 Maven 필터가 패키지 안의
     바이트를 바꿔 버린다(v1 은 선처리 핸들러 E12 로 고쳤고, v2 는 구조 검토에 맡긴다). 예외를 내지 않는다.
+    v2.1m: 재구성이 ``<nonFilteredFileExtensions>`` 를 이미 적으므로 아직 덮이지 않은 것(보통 없음 — 확장자 없는 파일
+    정도)만 보인다.
 
     Binary files a `<filtering>true</filtering>` resource runs through Maven's filter (the analyzer's scan,
     `sbmig.analyze.properties.filtered_binary_resources`, on the restructured tree): the build passes, but the packaged
     bytes are rewritten — v1 fixed this with a pre-emptive handler (E12), v2 leaves it to the review (2026-10-26).
+    v2.1m: the restructure writes `<nonFilteredFileExtensions>` itself, so only what is left is listed
+    (`resources_filtering.binary_resource_plan(...).files`: the files no plugin entry covers yet, normally none).
     Never raises."""
     try:
-        from sbmig.analyze.properties import filtered_binary_resources
-        files = filtered_binary_resources(ws, poms)
+        from sbmig.restructure.resources_filtering import binary_resource_plan
+        files = binary_resource_plan(ws, None, poms).files
     except Exception:  # a fact line is never worth a failed review
         log.debug("filtered binary resource scan for the review failed", exc_info=True)
         return []

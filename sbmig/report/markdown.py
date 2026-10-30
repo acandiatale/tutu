@@ -39,6 +39,7 @@ from .handover import (
     is_jsp_jakarta_note,
     jsp_jakarta_counts,
     pom_synthesis_counts,
+    tr_reason,
     unknown_jar_commands,
     unknown_jars_system,
 )
@@ -485,7 +486,7 @@ def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]
                     before += tr(lang, " (managed)")
                 after = c.after or (managed if c.after_source == "managed" else "-")
                 L.append(f"| {warn}{c.kind} `{_cell(c.key, 120)}` | {_cell(before, 120)} | {_cell(after, 80)} | "
-                         f"{_cell(tr(lang, c.reason), 80)} |")
+                         f"{_cell(tr_reason(lang, c.reason), 80)} |")
             L.append("")
             if h.carried_over:
                 if len(h.carried_over) == 1:

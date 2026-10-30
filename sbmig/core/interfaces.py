@@ -181,6 +181,10 @@ class RestructureResult(BaseModel):
     moved_files: int = 0
     generated_files: list[str] = Field(default_factory=list)
     optional_bumped: list[str] = Field(default_factory=list)      # "g:a old→new"
+    # v2.1n: 트리거 의존성(ArtifactSpec.when_present)이 있어 새로 선언한 선택 사내 아티팩트, 그리고 replaces: true
+    # 로 지운 트리거 선언. "g:a → <pom> (for <matched g:a>[, …])" / "<matched g:a> removed from <pom> → g:a"
+    optional_added: list[str] = Field(default_factory=list)
+    optional_replaced: list[str] = Field(default_factory=list)
     mandatory_added: list[str] = Field(default_factory=list)
     manual_followups: list[str] = Field(default_factory=list)      # e.g. "web.xml not migrated; servlets registered via @ServletComponentScan"
     notes: list[str] = Field(default_factory=list)
@@ -201,6 +205,9 @@ class RestructureResult(BaseModel):
     # (<pom>)"; the ones the as-is build did not resolve either (left empty, a follow-up each): "g:a (<pom>)"
     versions_pinned: list[str] = Field(default_factory=list)
     versions_unknown: list[str] = Field(default_factory=list)
+    # v2.1m: 필터링되는 리소스 아래 바이너리 파일 때문에 maven-resources-plugin(/ maven-war-plugin)
+    # <nonFilteredFileExtensions> 에 적은 확장자. "<pom>: ext1, ext2 → maven-resources-plugin[, maven-war-plugin]"
+    non_filtered_extensions: list[str] = Field(default_factory=list)
     # round 9b: every parent the restructure set or replaced — "<pom>: <old g:a:v or '-'> → <new g:a:v>"
     parents_set: list[str] = Field(default_factory=list)
     # v2.1h: JSP / tag files whose javax EE names were renamed to jakarta (`layout.jsp_jakarta_rename`), and the number

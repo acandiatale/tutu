@@ -1,0 +1,102 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "17",
+  "spring_boot_version": null,
+  "spring_version": "6.2.12",
+  "packaging": "jar",
+  "is_multi_module": false,
+  "libraries": [
+    "spring-context"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [],
+    "forbidden_flags": [
+      "restructure-failed"
+    ],
+    "journal_events": [
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      },
+      {
+        "event": "non_filtered_extensions"
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-filtered-binary-resources"
+    },
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "binres-back",
+            "binres-boot"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "file_contains": {
+          "path": "binres-back/pom.xml",
+          "contains": "<nonFilteredFileExtension>dmdb</nonFilteredFileExtension>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "binres-back/pom.xml",
+          "contains": "<nonFilteredFileExtension>woff2</nonFilteredFileExtension>",
+          "not_contains": "<nonFilteredFileExtension>png</nonFilteredFileExtension>"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "binres-back/target/classes/data/items.dmdb",
+          "source": "src/main/resources/data/items.dmdb"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "binres-back/target/classes/fonts/app.woff2",
+          "source": "src/main/resources/fonts/app.woff2"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "binres-back/target/classes/data/catalog.properties",
+          "contains": "catalog.version=1.0.0-SNAPSHOT"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "binres-boot/target/*.jar"
+        }
+      }
+    ]
+  }
+}

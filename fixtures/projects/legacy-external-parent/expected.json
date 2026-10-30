@@ -31,6 +31,9 @@
         "event": "restructure",
         "mode": "layout",
         "ok": true
+      },
+      {
+        "event": "optional_triggers"
       }
     ],
     "phases": {
@@ -78,6 +81,20 @@
             "org.apache.commons:commons-text",
             "org.apache.commons:commons-csv"
           ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "extparent-back/pom.xml",
+          "artifacts": [
+            "org.apache.commons:commons-lang3"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "extparent-back/pom.xml",
+          "contains": "<artifactId>commons-lang3</artifactId>"
         }
       },
       {

@@ -2058,3 +2058,148 @@ BUILD SUCCESS, ≤ 1 LLM call (the review), Handover "carried over".
   (`Restructurer._chain` / `_protected_keys` / `_asis_version` vs `VersionResolver`), so the parent named in "managed by …" can
   differ between the Handover and the prompt facts; the pinned-then-emptied idempotency check compares raw bytes, so a
   whitespace-only re-serialisation can still list a pom as changed.
+
+## v2.1m — binary files under Maven resource filtering: `nonFilteredFileExtensions` written by sbmig, not by the LLM (2026-10-30)
+
+Company failure (user, 2026-10-30): with an empty KB a project whose filtered resources hold binary files (`.dmdb` and other
+company extensions, webfonts, archives) failed in maven-resources-plugin's copy (`MalformedInputException: Input length = 1`,
+`filtering <f> to <t> failed with …`); the LLM wrote three different scripts for the same error and the case hit the cap. The
+accumulated KB had masked it (a stored script from an earlier project). v1 fixed this pre-emptively with handler E12
+`resources-binary-filtering` (its docstring already names `.dm/.items.dmdb`), deleted in v2 step 4; v2 only showed the review a
+fact line. v2.1m puts the deterministic rule back, inside the restructure, and keeps a reactive zero-LLM try in the loop.
+
+### Shared rule (`sbmig/restructure/resources_filtering.py`, new)
+- `binary_resource_plan(ws, cfg, poms) -> ResourcePlan`: uses the analyzer's scan
+  (`sbmig.analyze.properties.filtered_binary_resources` — known extensions of `BINARY_RESOURCE_EXTENSIONS` plus files of an
+  unknown extension whose CONTENT is binary, includes / excludes honoured) on the CURRENT tree. For every pom that declares a
+  `<filtering>true</filtering>` resource (`<build><resources>` / `<testResources>`; `<webResources>` of maven-war-plugin → the war
+  plugin too) the plan lists the extensions to write: the extensions of the binary files found under that pom's filtered
+  directories + `build.non_filtered_extensions` (company additions, always written when the pom filters anything) — never the
+  plugin's own defaults (`jpg jpeg gif bmp png`), never `TEXT_RESOURCE_EXTENSIONS`. A filtered binary file WITHOUT an
+  extension → `plan.followups` ("exclude it from filtering or rename it"). A module whose filtering comes only from a parent
+  outside the tree is not in the plan (nothing declares it) — the reactive try covers it.
+- `apply_non_filtered_extensions(ws, plan, *, poms=None) -> list[str]` (changed poms): through `PomEditor` (never text
+  surgery): the `<build><plugins>` declaration of `org.apache.maven.plugins:maven-resources-plugin` (created without a version
+  when absent — the parent manages it; an existing `<pluginManagement>` entry is extended instead when the pom has no
+  `<build><plugins>` one and is not a module of a role parent) gets `<configuration><nonFilteredFileExtensions>` with the missing
+  `<nonFilteredFileExtension>` entries appended (existing ones kept, plugin-level configuration only — an execution's own
+  `<configuration>` is left alone); same for maven-war-plugin when `<webResources>` filter. Idempotent.
+- `reactive_targets(ws, errors) -> list[str]`: for a build error of maven-resources-plugin / maven-war-plugin (message matching
+  `MalformedInputException|UnmappableCharacterException|Input length = \d+|filtering \S.* to \S.* failed with`) the pom of the
+  module the error names (`on project <artifactId>` / the file path), else every pom declaring filtering; the plan for those
+  poms also takes the extension of the file the message names, even when the scan did not flag it.
+
+### Restructure (`sbmig/restructure/restructurer.py`)
+- `_non_filtered_extensions(c)` runs in `_layout` (both passes), `_boot_pom` and `_msa` right before `_pin_asis_versions`,
+  i.e. after the module poms are final; `RestructureResult.non_filtered_extensions: list[str]`
+  ("<pom>: ext1, ext2 → maven-resources-plugin[, maven-war-plugin]"); a pom-verify row per pom
+  (`nonFilteredFileExtensions added to maven-resources-plugin in <pom>: ext1, ext2`), one note, journal
+  `{"event": "non_filtered_extensions", "poms": {...}, "followups": [...]}`; the structure review's fact line stays (it now
+  reports what is left, normally nothing).
+- Config: `build.non_filtered_extensions: list[str] = []` (company additions such as `dmdb`; lower-case, no dot; also accepted
+  as `SBMIG_BUILD__NON_FILTERED_EXTENSIONS='[dmdb, xyz]'`).
+
+### Fix loop (`sbmig/loop/fixloop.py`)
+- A case whose errors match `reactive_targets` is tried first WITHOUT the LLM, like `sbmig-version`: `TrySource`
+  `"sbmig-resources"`, edits = the plan's pom changes applied through the same path as `_apply_edits` (guards, commit
+  `fix(sbmig-resources): <cluster id>`, scoring, rollback), after the round's deferral, once per (pom, extension set) per run,
+  zero LLM calls; nothing to add → the normal ladder. The prompt's facts for such a case name the files the scan found.
+
+### Fixture
+`fixtures/projects/filtered-binary-resources/` (e2e): a Spring Framework 6 jar app, `src/main/resources` filtered
+(`application.properties` with `@project.version@`), holding `fonts/app.woff2` (known extension), `data/items.dmdb` (unknown
+extension, binary content with NUL bytes) and `data/README.txt`. Expected: `<name>-back/pom.xml` gets maven-resources-plugin
+`nonFilteredFileExtensions` `dmdb, woff2`, BUILD SUCCESS with 1 LLM call, `file_same_as` on both binaries in `target/classes`,
+the properties file still filtered (`file_contains` the version).
+
+### As built (2026-10-30, restructure part)
+- `sbmig/restructure/resources_filtering.py`: `ResourcePlan` (pydantic; `.empty`, `.lines(only=)`), `binary_resource_plan(ws, cfg,
+  poms=None, *, errors=None)` — with `errors=` it is the reactive plan (only `reactive_targets` poms, the named file's extension
+  added unless it is a text extension, only the plugin that failed extended; a module whose filtering comes from a parent outside
+  the tree is scanned on `src/main/resources` as if filtered), `apply_non_filtered_extensions(ws, plan, *, poms=None)`,
+  `reactive_targets(ws, errors, poms=None)`; none of them raises.
+- Plugin element: (1) an existing `<build><plugins>` declaration, else (2) an existing `<pluginManagement>` declaration when the pom
+  has no parent or an in-tree parent (any outside parent counts as a role parent, base-parent on the root included), else (3) a new
+  `<build><plugins><plugin>` without a version whose `<nonFilteredFileExtensions>` carries `combine.children="append"` so a list an
+  outside parent already has is kept (existing lists do not get the attribute). Plugin-level configuration only; existing entries
+  kept (case-insensitive), missing ones appended. maven-resources-plugin for `<resources>` / `<testResources>` filtering (profiles
+  and copy-resources included), maven-war-plugin for `<webResources>`.
+- Which pom: the one declaring the filtering; the plan moves up to an in-tree parent while that parent filters, the child has no
+  plugin-level list of its own and the parent's plugin is not `<inherited>false`; a module on a role parent gets its own entry; a
+  child without `<resources>` of its own is scanned with the parent's `<resources>` against its own directory.
+- `BuildConfig.non_filtered_extensions` lower-cases, strips the dot and accepts a plain string; `_non_filtered_extensions(c)` runs
+  before `_pin_asis_versions(c)` at the four call sites; follow-ups for extension-less files are capped at 10 + a summary line;
+  `sbmig/review/inputs.py:filtered_binary_lines` now lists only what is still uncovered (`binary_resource_plan(...).files`).
+- Fixture note: in layout mode `application.properties` moves to the boot module (the boot parent filters it); the filtered text
+  that proves filtering stays on is `data/catalog.properties` in the back module.
+
+### As built (2026-10-30, fix-loop part)
+- The two zero-LLM pre-tries share one path: `_pre_tries()` (a registry of source → "which poms" → run), `_pre_try_for`,
+  `_pre_try_deferral(st, poms)` (was `_version_deferral`), `_pre_attempt` (decision, attempt, `_begin_try`, `_apply_edits`,
+  tried-key settlement, deferral bookkeeping, recording); `_apply_edits` takes an optional `apply_fn` — `apply_non_filtered_extensions`
+  writes the poms itself and runs in place of the edit applier with the same failure handling, commit, scoring and rollback. Tried
+  keys and the 3-failed-applies cap are shared, keyed per source; `_previous(ladder=True)` and the keep-a-partial-try rule cover both
+  sources. Hook: the `_handle_case` slot of `sbmig-version` (after the round's deferral and the pre-try deferral).
+- Resources: a cheap regex on the error text, then `reactive_targets(ws, errors)` non-empty; plan `binary_resource_plan(ws, cfg,
+  errors=…)`; only (pom, extension set) pairs not tried yet are applied; `plan.followups` → `att.notes` + the loop's follow-ups
+  (Handover); a plan with nothing to add is journaled once per case, not remembered, and the ladder continues at once; an unwritable
+  pom shows as "no file changed" (`apply_failed`, counts toward the cap). Prompt facts when the pre-try could not apply: one
+  `binary resources under filtering: <plan line> (nonFilteredFileExtensions)` line per pom, then `binary file under resource
+  filtering: <file>` for up to 10 files. `TrySource` gained `"sbmig-resources"`.
+
+## v2.1n — optional in-house artifacts applied when a trigger dependency is present (2026-10-30)
+
+User: "옵셔널로 넣는 artifacts.yml 의 의존성에 대해, pom.xml 에 그에 해당하는 의존성이 있으면 그 옵셔널을 적용하는 완화책" — the 8
+optional artifacts are the company's curated replacements (e.g. `hibernate-core` → the company's JPA starter); today an optional
+is only version-aligned when the project already declares it (S6: nothing arrives transitively), so a project that still declares
+the raw library never gets the curated one and the LLM has to discover the swap. Both stay: alignment of what is used (to the 4.0.0
+line, `optional_version_policy` floor | pin) AND, new, introduction of the optional when one of its triggers is declared.
+
+### Config (`sbmig/core/config.py: ArtifactSpec`, `config/artifacts.example.yml`)
+- `when_present: list[str] = []` — `g:a` keys or globs (`org.hibernate*:hibernate-core`) of as-is dependencies that call for this
+  optional artifact. Matched against the project's own poms' `<dependencies>` (any scope; `dependencyManagement`-only entries do
+  not count — nothing is used).
+- `replaces: bool = True` — the matched declarations are removed when the optional is added (the optional / its BOM brings the
+  library); `false` keeps them (the optional is added next to them).
+- `aliases` keep their meaning (an old key of the SAME artifact → renamed, not a trigger).
+
+### Restructure (`sbmig/restructure/restructurer.py`, all modes through `_all_poms_pass`)
+- New `_apply_optional_triggers(c, eds, editable)` runs right before `_bump_optionals(c, eds, editable)`: for every optional spec with
+  `when_present`, for every editable project pom whose `<dependencies>` match a trigger: if the optional's key is not declared in
+  that pom (its own `<dependencies>`; a declaration in an in-repo ancestor counts too), declare it there — version per the spec
+  (`version: null` → no `<version>`, the parent manages it; else the configured version), `scope` / `type` per the spec, else the
+  matched declaration's scope; with `replaces: true` remove the matched `<dependencies>` entries of that pom (their `<exclusions>` go
+  with them) and, when nothing else references it, the version property they used. Idempotent (a second run changes nothing).
+  `_bump_optionals` then aligns the version like any declared optional.
+- `RestructureResult.optional_added: list[str]` ("g:a → <pom> (for <matched g:a>[, …])") and `optional_replaced: list[str]`
+  ("<matched g:a> removed from <pom> → g:a"); a pom-verify row per pom (`optional <g:a> added for <matched> in <pom>`), one note,
+  journal `{"event": "optional_triggers", "added": [...], "replaced": [...]}`; the Handover's "added" / "removed" lists carry the
+  reason `optional (trigger: <matched g:a>)` (`sbmig/report/handover.py`: a new `REASON_OPTIONAL_TRIGGER`); the structure review sees
+  the lines next to `optional_bumped`.
+- MSA library roots: triggers apply there too (they are pom-only passes), mandatory artifacts still do not.
+- Never on the generated front / boot poms unless they themselves declare a trigger (they normally do not).
+
+### Fixture
+`legacy-external-parent` gains a trigger scenario in its `sbmig.e2e.yml` only (no new fixture): `artifacts.optional` adds
+`{ group_id: org.apache.commons, artifact_id: commons-lang3, version: 3.17.0, when_present: ["org.apache.commons:commons-text"],
+replaces: false }` — a public stand-in: the project declares commons-text, so commons-lang3 3.17.0 is added next to it;
+expected `pom_dependency_present` commons-lang3 in `extparent-back/pom.xml`, `optional_added` in the journal, BUILD SUCCESS.
+(The real company mapping — e.g. `org.hibernate*:hibernate-core` → the company JPA starter with `replaces: true` — goes into the
+company artifacts yml; a `replaces: true` unit test covers the removal.)
+
+### As built (2026-10-30)
+- `ArtifactSpec.when_present` / `replaces` (a single string is accepted; `aliases` too), `ArtifactSpec.triggered_by(key)` (exact
+  key or `fnmatchcase` glob, never the optional's own key or an alias). `_apply_optional_triggers(c, eds, editable)` runs inside
+  `_all_poms_pass` right before `_bump_optionals` (every mode, MSA library roots included; `_all_poms_pass` precedes
+  `_pin_asis_versions` / `_drop_managed_versions` in all three modes, and an added optional is a protected key for both).
+- Decisions: an optional already declared in an in-repo ancestor → the pom is skipped entirely (with `replaces: true` the child's
+  trigger then stays); scope = the spec's, else the first trigger's (`system` / `import` dropped → no scope); a version property is
+  removed only from the trigger's own pom or its in-repo ancestors and only when no project pom still references it; own reactor
+  modules and `${…}` coordinates never match; the optional is appended at the end of `<dependencies>`.
+- Reporting: `RestructureResult.optional_added` / `optional_replaced`; pom-verify row `optional <g:a> added for <matched> in <pom>`;
+  the `restructure` journal event carries both lists; `restructure_lines` shows them after "optional bumped"; Handover
+  `REASON_OPTIONAL_TRIGGER = "optional (trigger: {matched})"` (Korean entry in `sbmig/report/i18n.py`, filled reasons translated
+  through `handover.tr_reason`) on the added optional and the removed trigger, parsed from the restructure note like the bumps.
+- `legacy-external-parent` stop-after-restructure: `extparent-back/pom.xml` = spring-context (managed), commons-text 1.10.0,
+  commons-csv 1.10.0, commons-lang3 3.17.0 (added, trigger commons-text); journal `optional_triggers`; Handover "Added …
+  (optional (trigger: org.apache.commons:commons-text))".

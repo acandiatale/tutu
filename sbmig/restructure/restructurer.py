@@ -11,6 +11,8 @@
 pom 정리만); 프로젝트 밖 경로는 읽지도 바꾸지도 않는다.
 v2.1l: 새 부모로 옮기며 버전을 잃은 의존성에는 as-is 빌드의 버전을 적고(``_pin_asis_versions``), 새 부모
 체인이 관리하는 것은 관리 버전 정리가 다시 비운다 — LLM 이 버전을 추측하지 않게.
+v2.1m: 그 직전에 필터링되는 리소스 아래 바이너리 파일의 확장자를 ``<nonFilteredFileExtensions>`` 에 적는다
+(``_non_filtered_extensions`` → resources_filtering.py) — MalformedInputException 을 LLM 에 넘기지 않게.
 
 Company-layout restructuring (ARCHITECTURE §8).
 
@@ -41,6 +43,10 @@ Optional artifact bumps and `remove_when_present` are applied to every project p
 v2.1l (`layout`, `boot_pom`, `msa_pom`): right before the managed-version cleanup, every version-less
 `<dependencies>` entry gets the version the as-is build resolved (`params["asis_effective"]`, the intake
 capture); the cleanup then empties the pins the new parent chain manages (docs/INTERFACES.md "v2.1l").
+
+v2.1m (`layout`, `boot_pom`, `msa_pom`): right before the as-is version carry-over, the binary files under a
+filtered resource get their extensions into maven-resources-plugin (maven-war-plugin for filtered
+`<webResources>`) `<nonFilteredFileExtensions>` (`resources_filtering.py`, docs/INTERFACES.md "v2.1m").
 
 Edge cases (docs/ERROR-HANDLING.md): system-scoped jars are copied next to the module that declares them (E7);
 `<module>` entries outside the project root abort a `wrap` layout with ok=False before anything moves and are skipped
@@ -478,6 +484,7 @@ class Restructurer:
                     c.note(f"in-house parent {parent.key} {parent.version or '?'} → {want} (artifacts.parent)")
             self._align_role_parents(c, report_modules=True)
             self._all_poms_pass(c, java_fix=False)
+            self._non_filtered_extensions(c)
             self._pin_asis_versions(c)
             self._drop_managed_versions(c)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
@@ -535,6 +542,7 @@ class Restructurer:
         self._large_media_note(c)
         self._web_content_left(c)
         self._all_poms_pass(c, java_fix=False)
+        self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         c.commit("restructure: optional artifact versions / cleanup")
@@ -3498,10 +3506,13 @@ class Restructurer:
     def _all_poms_pass(self, c: _Ctx, *, java_fix: bool, boot_plugin_fix: bool = False,
                        only: set[str] | None = None) -> None:
         """모든 프로젝트 pom(또는 ``only``)에: remove_when_present, (옵션) java 버전 / boot 플러그인 버전
-        정리, 선택 사내 아티팩트 버전 올림. 속성 주인은 어느 프로젝트 pom 이든 될 수 있어 전부 읽는다.
+        정리, 트리거가 있는 선택 사내 아티팩트 도입(v2.1n), 선택 사내 아티팩트 버전 올림. 속성 주인은 어느
+        프로젝트 pom 이든 될 수 있어 전부 읽는다.
 
-        remove_when_present (+ java / boot plugin fixes) and optional bumps on every project pom, or only on the
-        poms in `only` (property owners may still be any project pom)."""
+        remove_when_present (+ java / boot plugin fixes), the optional artifacts their triggers call for (v2.1n,
+        `_apply_optional_triggers`) and optional bumps on every project pom, or only on the poms in `only` (property
+        owners may still be any project pom). Every mode runs this before `_pin_asis_versions` (v2.1l), so an
+        optional added here is a protected key there."""
         paths = self._project_poms(c)
         eds: dict[str, PomEditor] = {}
         for p in paths:
@@ -3517,6 +3528,8 @@ class Restructurer:
                 self._fix_java(c, ed, top=False)
             if boot_plugin_fix:
                 self._fix_boot_plugin(c, ed)
+        # v2.1n: 트리거 의존성이 있으면 선택 사내 아티팩트를 먼저 선언하고, 그다음 버전 맞춤이 다른 선언과 똑같이 본다
+        self._apply_optional_triggers(c, eds, editable=only)
         self._bump_optionals(c, eds, editable=only)
         for ed in eds.values():
             c.save(ed)
@@ -3560,6 +3573,113 @@ class Restructurer:
                 ed.set_child_text(p, "version", None)
             elif not manages and v and v != c.cfg.target.spring_boot_version and not property_ref(v):
                 ed.set_child_text(p, "version", c.cfg.target.spring_boot_version)
+
+    def _apply_optional_triggers(self, c: _Ctx, eds: dict[str, PomEditor],
+                                 editable: set[str] | None = None) -> None:
+        """v2.1n: ``when_present`` 트리거가 있는 선택 사내 아티팩트 도입(모든 모드, ``_bump_optionals`` 직전). 고칠 수
+        있는 프로젝트 pom 의 ``<dependencies>`` 에 트리거가 있고(scope 무관; dependencyManagement 만 있는 것은 쓰는
+        것이 아니므로 아님) 그 pom 이나 저장소 안 조상이 이 아티팩트(별칭 포함)를 아직 선언하지 않았으면 그 pom 에
+        선언한다 — 버전·scope·type 은 설정대로(버전 None = <version> 없음, 부모가 관리), scope 가 없으면 처음 맞은
+        트리거의 scope(test 는 test 로). ``replaces: true`` 면 맞은 트리거 선언(그 exclusions 포함)과, 더는 아무도
+        쓰지 않는 그 버전 속성을 지운다. 멱등. 생성한 boot / front pom 은 스스로 트리거를 선언했을 때만 해당.
+
+        For every optional spec with `when_present` and every editable project pom whose `<dependencies>` declare a
+        trigger (`ArtifactSpec.triggered_by`; own modules and `${…}` coordinates never match): unless the optional's
+        key or an alias is already declared there or in an in-repo ancestor, declare it (spec version / scope / type;
+        no scope → the first matched declaration's, `system` / `import` dropped); `replaces: true` removes the matched
+        `<dependencies>` entries (exclusions included) and a version property nothing references any more. Fills
+        `optional_added` / `optional_replaced`, one note (the Handover reads it), journal `optional_triggers`.
+        Idempotent: once added (and the triggers removed), a second run finds the optional declared."""
+        specs = [s for s in c.cfg.artifacts.optional if s.when_present]
+        if not specs or not eds:
+            return
+        own = self._own_keys(eds)
+        added: list[str] = []
+        replaced: list[str] = []
+        dropped_props: list[tuple[str, str]] = []           # (pom, property) the removed triggers used
+        for p, ed in eds.items():
+            if editable is not None and p not in editable:
+                continue
+            above: set[str] | None = None
+            drop: list[Any] = []
+            for spec in specs:
+                hits: list[tuple[Any, GAV]] = []
+                for el in ed.dependency_elements(False):
+                    g = ed.gav_of(el)
+                    if not g.group_id or not g.artifact_id or "${" in g.key or g.key in own:
+                        continue
+                    if el not in drop and spec.triggered_by(g.key):
+                        hits.append((el, g))
+                if not hits:
+                    continue
+                names = {spec.key, *spec.aliases}
+                here = {g.key for g in ed.dependencies()}
+                if above is None:
+                    above = self._ancestor_dependency_keys(c, p, eds)
+                # 이미 선언(이 pom 또는 물려주는 저장소 안 조상): 버전 맞춤(_bump_optionals)만 — 다시 넣지 않는다
+                if names & (here | above):
+                    continue
+                scope = spec.scope or (hits[0][1].scope if hits[0][1].scope not in ("system", "import") else None)
+                ed.add_dependency(GAV(group_id=spec.group_id, artifact_id=spec.artifact_id, version=spec.version,
+                                      scope=scope, type=spec.type))
+                matched = list(dict.fromkeys(g.key for _el, g in hits))
+                added.append(f"{spec.key} → {p} (for {', '.join(matched)})")
+                if not spec.replaces:
+                    continue
+                for el, g in hits:
+                    drop.append(el)
+                    replaced.append(f"{g.key} removed from {p} → {spec.key}")
+                    prop = property_ref(g.version)
+                    if prop:
+                        dropped_props.append((p, prop))
+            for el in drop:
+                ed.remove_node(el)
+            if drop:
+                ed.remove_if_empty(ed.child(ed.root, "dependencies"))
+        self._drop_unused_properties(c, eds, dropped_props)
+        if not added and not replaced:
+            return
+        res = c.result
+        res.optional_added += [x for x in added if x not in res.optional_added]
+        res.optional_replaced += [x for x in replaced if x not in res.optional_replaced]
+        c.note("optional artifacts added for trigger dependencies: " + "; ".join(added)
+               + (" — replaced: " + "; ".join(replaced) if replaced else ""))
+        log.info("optional triggers: added %s%s", "; ".join(added),
+                 f"; replaced {'; '.join(replaced)}" if replaced else "")
+        try:
+            c.ws.journal({"event": "optional_triggers", "added": added, "replaced": replaced})
+        except OSError as e:  # pragma: no cover - the journal is bookkeeping, never a reason to fail
+            log.debug("optional_triggers journal skipped: %s", e)
+
+    def _ancestor_dependency_keys(self, c: _Ctx, pom: str, eds: dict[str, PomEditor]) -> set[str]:
+        """저장소 안 조상 pom 들의 ``<dependencies>`` g:a (자식이 물려받는 선언). 이번 패스에서 바뀐 것을 보도록
+        ``eds`` 의 편집기를 먼저 쓴다."""
+        out: set[str] = set()
+        for q in self._chain(c, pom)[1:]:
+            ed = eds.get(q)
+            if ed is None:
+                try:
+                    ed = PomEditor(c.ws.abs(q))
+                except PomEditError:
+                    continue
+            out |= {g.key for g in ed.dependencies()}
+        return out
+
+    def _drop_unused_properties(self, c: _Ctx, eds: dict[str, PomEditor], props: list[tuple[str, str]]) -> None:
+        """지운 트리거가 쓰던 버전 속성(``${prop}``)을, 어느 프로젝트 pom 에서도 더는 참조하지 않으면 정의한
+        pom(그 pom, 아니면 저장소 안 조상)에서 지운다 — 남은 참조가 있으면 그대로 둔다."""
+        for p, prop in dict.fromkeys(props):
+            ref = f"${{{prop}}}"
+            if any(ref in ed.to_string() for ed in eds.values()):
+                continue                                     # another dependency / plugin still uses it
+            # 그 선언이 볼 수 있던 정의만: 자기 pom, 그다음 저장소 안 조상(형제 pom 의 속성은 손대지 않는다)
+            for q in self._chain(c, p):
+                ed = eds.get(q)
+                if ed is not None and ed.has_property(prop):
+                    ed.remove_property(prop)
+                    ed.remove_if_empty(ed.child(ed.root, "properties"))
+                    c.note(f"property {prop} removed from {q} (only the replaced trigger used it)")
+                    break
 
     def _bump_optionals(self, c: _Ctx, eds: dict[str, PomEditor], editable: set[str] | None = None) -> None:
         """선택 사내 아티팩트 버전 올림(모든 모드 공통). 이미 선언된 참조만(의존성, dependencyManagement,
@@ -3765,6 +3885,47 @@ class Restructurer:
                    else "declared")
             return v, src
         return None
+
+    def _non_filtered_extensions(self, c: _Ctx) -> None:
+        """v2.1m: 모듈 pom 이 확정된 뒤(as-is 버전 이어 쓰기 직전) 필터링되는 리소스 아래 바이너리 파일의 확장자를
+        maven-resources-plugin(/ webResources 면 maven-war-plugin) ``<nonFilteredFileExtensions>`` 에 적는다
+        (``resources_filtering``: 스캔 + ``build.non_filtered_extensions``). 결과의 ``non_filtered_extensions``,
+        노트 한 줄, 확장자 없는 파일은 후속 작업, 저널 ``non_filtered_extensions``. 실패해도 재구성을 멈추지 않는다.
+
+        v2.1m (docs/INTERFACES.md "v2.1m"): binary files under a `<filtering>true</filtering>` resource fail
+        maven-resources-plugin's copy (`MalformedInputException: Input length = 1`); `binary_resource_plan` on the
+        current tree (the module poms are final here) + `apply_non_filtered_extensions` write the missing
+        `<nonFilteredFileExtension>` entries. Fills `result.non_filtered_extensions` ("<pom>: ext1, ext2 →
+        maven-resources-plugin[, maven-war-plugin]"), one note, a follow-up per extension-less binary, journal
+        `non_filtered_extensions`. Never fails the restructure."""
+        from .resources_filtering import apply_non_filtered_extensions, binary_resource_plan
+
+        try:
+            plan = binary_resource_plan(c.ws, c.cfg, self._project_poms(c))
+            changed = apply_non_filtered_extensions(c.ws, plan)
+        except Exception as e:  # noqa: BLE001 - an add-on: the first build reports what is left
+            log.warning("nonFilteredFileExtensions skipped: %s: %s", type(e).__name__, e)
+            return
+        lines = plan.lines(only=changed)
+        c.changed.update(changed)
+        for line in lines:
+            if line not in c.result.non_filtered_extensions:
+                c.result.non_filtered_extensions.append(line)
+        for f in plan.followups:
+            c.followup(f)
+        if lines:
+            c.note("nonFilteredFileExtensions written for binary files under filtered resources (filtering stays "
+                   "on): " + "; ".join(lines))
+            log.info("nonFilteredFileExtensions: %s", "; ".join(lines))
+        if not changed and not plan.followups:
+            return
+        try:
+            c.ws.journal({"event": "non_filtered_extensions",
+                          "poms": {p: plan.extensions_by_pom.get(p, []) for p in changed},
+                          "plugins": {p: plan.plugins_by_pom.get(p, []) for p in changed},
+                          "followups": list(plan.followups)})
+        except OSError as e:  # pragma: no cover - the journal is bookkeeping, never a reason to fail
+            log.debug("non_filtered_extensions journal skipped: %s", e)
 
     def _pin_asis_versions(self, c: _Ctx) -> None:
         """v2.1l: 새 부모(comp-jar / boot-jar / base-parent)로 옮기며 버전을 잃은 의존성에 as-is
@@ -4173,6 +4334,7 @@ class Restructurer:
             self._write_placeholders(c, f"{bd}/src/main/resources", under=bd if others else None, others=others)
         self._placeholder_followup(c)
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
+        self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         r = c.result
@@ -4510,6 +4672,7 @@ class Restructurer:
                    + ("; mandatory dependencies in the service roots and the top aggregator"
                       if agg is not None and self._mandatory_in_root(c) else ""))
         self._all_poms_pass(c, java_fix=True, boot_plugin_fix=True)
+        self._non_filtered_extensions(c)
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._msa_placeholders(c, svc_entries)

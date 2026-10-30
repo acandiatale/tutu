@@ -13,6 +13,7 @@ Company-specific coordinates live in a separate artifacts yml so the code base s
 """
 from __future__ import annotations
 
+import fnmatch
 import logging
 import os
 import re
@@ -48,6 +49,28 @@ class ArtifactSpec(BaseModel):
     # optional artifacts: how to find the as-is usage (defaults to same group/artifact)
     aliases: list[str] = Field(default_factory=list)   # old "g:a" keys that should be treated as this artifact
     property_name: Optional[str] = None       # if the version is conventionally kept in a property
+    # v2.1n: 선택 사내 아티팩트를 '도입' 하게 하는 as-is 의존성(g:a 키 또는 glob, fnmatch 로 `group:artifact` 에 대조).
+    # 프로젝트 pom 의 <dependencies> 에 이것이 있으면(scope 무관, dependencyManagement 만 있는 것은 아님) 재구성이 이
+    # 선택 아티팩트를 그 pom 에 선언한다. 자기 키·별칭은 트리거가 아니다(별칭은 같은 것의 옛 이름 → 이름 변경).
+    # v2.1n: as-is dependencies (g:a keys or globs such as `org.hibernate*:hibernate-core`) whose presence in a project
+    # pom's <dependencies> introduces this optional artifact there; the artifact's own key and aliases never match
+    when_present: list[str] = Field(default_factory=list)
+    # v2.1n: true(기본) = 도입할 때 맞은 트리거 선언을 지운다(이 아티팩트 / 그 BOM 이 라이브러리를 가져온다),
+    # false = 트리거를 남기고 옆에 추가한다.
+    # true (default): the matched trigger declarations are removed when the optional is added; false keeps them
+    replaces: bool = True
+
+    @field_validator("when_present", "aliases", mode="before")
+    @classmethod
+    def _key_list(cls, v: Any) -> Any:
+        """g:a 목록: 문자열 하나도 목록으로, 공백은 뗀다(yml 에 한 줄로 적어도 되게)."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [x for x in re.split(r"[,\s]+", v) if x]
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return v
 
     def gav(self) -> GAV:
         """이 설정을 GAV 모델로."""
@@ -58,6 +81,16 @@ class ArtifactSpec(BaseModel):
     def key(self) -> str:
         """`groupId:artifactId` 키(버전 없음)."""
         return f"{self.group_id}:{self.artifact_id}"
+
+    def triggered_by(self, key: str) -> bool:
+        """v2.1n: ``key`` (as-is 의존성의 g:a)가 이 선택 아티팩트의 트리거인가 — ``when_present`` 의 키 / glob 에
+        맞고, 자기 키나 별칭이 아닐 때만.
+
+        True when `key` matches one of `when_present` (exact or `fnmatch` glob on `group:artifact`) and is neither
+        this artifact's own key nor one of its aliases."""
+        if not self.when_present or not key or key == self.key or key in self.aliases:
+            return False
+        return any(key == pat or fnmatch.fnmatchcase(key, pat) for pat in self.when_present)
 
 
 class ArtifactsConfig(BaseModel):
@@ -329,6 +362,24 @@ class BuildConfig(BaseModel):
     # settings_file 의 catch-all 미러, 그것도 없으면 Maven Central(offline 이 아닐 때).
     repository_url: Optional[str] = None
     repository_timeout_seconds: int = 10
+    # v2.1m: 필터링되는 리소스(<filtering>true</filtering>) 아래 바이너리로 늘 취급할 회사 확장자(예: dmdb). 재구성이
+    # 필터링을 선언한 pom 마다 maven-resources-plugin <nonFilteredFileExtensions> 에 스캔이 찾은 확장자와 함께 적는다
+    # — 필터링이 이 파일들을 텍스트로 읽어 MalformedInputException 으로 실패하지 않게. 소문자, 점 없이.
+    # v2.1m: company extensions always written to `<nonFilteredFileExtensions>` of every pom that filters a resource,
+    # next to the ones the scan finds (lower-case, no dot; `SBMIG_BUILD__NON_FILTERED_EXTENSIONS='[dmdb, xyz]'`)
+    non_filtered_extensions: list[str] = Field(default_factory=list)
+
+    @field_validator("non_filtered_extensions", mode="before")
+    @classmethod
+    def _non_filtered_list(cls, v: Any) -> Any:
+        """문자열 하나(``dmdb`` / ``dmdb, xyz``)도 목록으로; 소문자, 앞의 점은 뗀다."""
+        if v is None:
+            return []
+        if isinstance(v, str):
+            v = [x for x in re.split(r"[,\s]+", v) if x]
+        if isinstance(v, (list, tuple)):
+            return [str(x).strip().lower().lstrip(".") for x in v if str(x).strip().lstrip(".")]
+        return v
 
 
 class PhaseLoopConfig(BaseModel):
