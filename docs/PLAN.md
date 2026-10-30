@@ -607,3 +607,17 @@ LLM 15 times (한도 도달 → BLOCKED), and the final build passed once the lo
 | Maven runner: file-lock patterns (`knowledge/config/build_env_errors.yml` + built-in) → wait `build.file_lock_retry_wait_s`, rerun up to `build.file_lock_retries`, journal `build_file_lock_retry` | `sbmig/build/runner.py`, `sbmig/core/config.py`, `config/default.yml`, `tests/build/test_runner_file_lock.py` | done (agent; 4 + 4 + 1 tests; `error_stage()` None for a lock so no false regression) |
 | Triage: `BlockReason.FILE_LOCK`, `loop.blocked_policy.file_lock: 0`, Korean suggestion, `attn=infra:file-lock` | `sbmig/triage/blocked.py`, `sbmig/core/models.py`, `sbmig/report/{result_line,i18n}.py`, `tests/triage/test_v21r_file_lock.py` | done (agent; 4 + 4 + 1 tests; `error_stage()` None for a lock so no false regression) |
 | Verification | offline suite + e2e subset | same run as v2.1q: e2e 7 fixtures PASS; offline suite **2,608 passed**, 46 deselected |
+
+## Status — 2026-10-30, v2.1s (a version the new chain does not manage follows the TARGET Boot BOM; warning when the parent chain has no Boot BOM)
+
+Company journal (78c2f2c): `parent_chain_facts … poms: 5, managed: 1872, properties: 206, boot_bom_added: true, unreadable: []` — the
+company parent chain (xxx-parent → boot-jar / comp-jar) imports no Spring Boot BOM, so `spring-boot.version` is a property without effect
+and the migrated poms keep mixed explicit Boot versions; a pin row read `jakarta.servlet-api 4.0.3 ← as-is managed by …` where the to-be
+line (Boot 4.1, Servlet 6.1) should win ("as-is 를 보면 안 되고 to-be 를 봐야 해"). Contract + as-built: `docs/INTERFACES.md` "v2.1s".
+
+| Deliverable | Where | Status |
+|---|---|---|
+| Resolution order: chain-managed → target Boot BOM (`boot-bom`, as-is kept when newer) → as-is → repository → unknown, in the restructure pins and in the loop's `VersionResolver`; rows / journal name the BOM | `sbmig/restructure/restructurer.py`, `sbmig/build/parent_chain.py` (`managed_by_chain`), `sbmig/loop/fixloop.py`, tests | done (agents; 7 restructure/report tests + 3 loop tests) |
+| Warning `parent-chain-no-boot-bom` (flag, note, journal, Handover's first follow-up in Korean, `attn=`) when `parent_manages_spring_boot` is true but the chain carries no Boot BOM | `sbmig/restructure/restructurer.py`, `sbmig/report/{handover,result_line,i18n}.py` | done (agents; 7 restructure/report tests + 3 loop tests) |
+| Company decision (the user / the parent's owners): add `spring-boot-dependencies:${spring-boot.version}` (import) to base-parent, or set `parent_manages_spring_boot: false` until then | company artifacts yml / base-parent | open |
+| Verification | offline suite + e2e subset | e2e 8 fixtures (legacy-external-parent, spring5-security-batch, boot2, legacy-role-parents, msa, company-boot-single, boot2-qlrm-javax, filtered-binary-resources) all PASS; offline suite **2,617 passed**, 46 deselected (the one failure was the loop's `chain_own_managed` field-name test, fixed right after — `tests/loop` rerun green) |

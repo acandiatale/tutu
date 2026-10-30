@@ -1874,6 +1874,8 @@ class VersionChange(BaseModel):
     carried_over: bool = False                     # pinned at the as-is effective version because the new parent /
                                                    # Boot BOM does not manage it — the owners must confirm or replace
     pom: str = "pom.xml"                           # final pom that declares it (relative)
+    # v2.1s: 대상 Boot BOM 에서 고정한 버전이 as-is 와 다름(⚠ — 소유 팀이 알아야 할 건너뜀)
+    boot_bom_pin: bool = False                     # pinned from the target Boot BOM and different from the as-is one
 
 
 class HandoverSummary(BaseModel):

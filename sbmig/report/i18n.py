@@ -268,6 +268,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "parent swap": "parent 교체",
     "optional bump": "선택 아티팩트 버전 상향",
     "optional (trigger: {matched})": "선택 아티팩트 도입 (트리거: {matched})",
+    "pinned from the target Boot BOM (not managed by the parent chain)": "대상 Boot BOM 버전으로 고정 (부모 체인이 관리하지 않음)",
     "mandatory": "필수 아티팩트",
     "spring boot 4 upgrade": "spring boot 4 업그레이드",
     "recipe / fix script": "레시피 / 수정 스크립트",
@@ -318,6 +319,12 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "each application's directory":
         "프로젝트 루트에 pom.xml 이 없고 sbmig 가 만들 수도 없었다(최상위 pom 들이 한 애플리케이션도, MSA 서비스도 아님) — "
         "Maven 을 부르기 전에 실행을 멈췄다: 루트 pom.xml 을 추가하거나 애플리케이션 폴더마다 따로 sbmig 를 돌릴 것",
+    "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not import the Spring Boot "
+    "BOM: the versions it does not manage were pinned from the target Boot BOM — import spring-boot-dependencies in "
+    "base-parent (see the Handover's first line)":
+        "artifacts.parent_manages_spring_boot 가 true 인데 사내 부모 체인이 Spring Boot BOM 을 import 하지 않는다 — 체인이 "
+        "관리하지 않는 버전은 대상 Boot BOM 버전으로 고정했다: base-parent 에 spring-boot-dependencies 를 import 할 것 "
+        "(인수인계 첫 줄 참조)",
     "the run ended for an infrastructure reason (LLM gateway, Maven, JDK, repository / Nexus, disk), not because of "
     "the project: fix the environment and run it again (a fleet re-queues the project)":
         "프로젝트가 아니라 인프라(LLM 게이트웨이, Maven, JDK, 저장소 / Nexus, 디스크) 문제로 실행이 끝났다 — 환경을 "

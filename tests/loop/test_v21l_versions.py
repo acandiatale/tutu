@@ -701,3 +701,68 @@ def test_a_version_property_the_attempt_added_only_for_it_goes_too(cfg, tmp_path
     assert _versions(ws) == {YAML: "${snakeyaml.version}", WEBMVC: None, CORE: None, TEXT: "${core.version}"}
     # webmvc.version: added for webmvc only → gone; core.version: commons-text still uses it; snakeyaml's: the owner's
     assert ed.properties() == {"snakeyaml.version": "2.2", "core.version": "7.0.0"}
+
+
+# ------------------------------------------- v2.1s: the TARGET Boot BOM before the as-is value (company run 78c2f2c)
+SERVLET = "jakarta.servlet:jakarta.servlet-api"
+
+
+def test_the_target_boot_bom_comes_before_the_asis_version():
+    chain = {"managed": {CORE: "7.0.8"}}
+    boot = {SERVLET: "6.1.0", CORE: "7.0.1"}
+    r = VersionResolver({"managed": {SERVLET: "4.0.3"}}, {}, chain=chain, boot=boot)
+    assert r.resolve(SERVLET, "com.x:demo") == ("6.1.0", "boot-bom")       # the to-be line wins over as-is 4.0.3
+    assert r.resolve(CORE, "com.x:demo") == (None, "managed")               # the chain manages it: no version
+    assert r.boot_version(CORE) is None and r.boot_version(SERVLET) == "6.1.0"
+    newer = VersionResolver({"direct": {SERVLET: "7.0.0"}}, {}, chain=chain, boot=boot)
+    assert newer.resolve(SERVLET) == ("7.0.0", "asis")                     # never a downgrade
+    assert VersionResolver({}, {}, boot=boot).resolve(SERVLET, check_managed=False) == ("6.1.0", "boot-bom")
+    assert VersionResolver({"direct": {YAML: "2.2"}}, {}, boot=boot).resolve(YAML) == ("2.2", "asis")   # not in the BOM
+
+
+def test_the_chains_boot_add_on_is_not_the_chain_managing_it(cfg, tmp_path, monkeypatch):
+    from sbmig.build import boot_bom, parent_chain
+    from sbmig.loop.fixloop import chain_own_managed
+    bom = {SERVLET: "6.1.0", CORE: "7.0.1"}
+    facts = parent_chain.ParentChainFacts(roots=["xxx:xxx-boot-jar:1.0.0-SNAPSHOT"], boot_bom_added=True,
+                                          managed={**bom, "com.company:util": "4.0.0", CORE: "7.0.8"})
+    # the add-on's entries go; the chain's own (another value for spring-core) stays
+    assert chain_own_managed(facts, bom) == {"com.company:util": "4.0.0", CORE: "7.0.8"}
+    assert chain_own_managed(facts.model_copy(update={"boot_bom_added": False}), bom) == facts.managed
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", lambda cfg: facts)
+    monkeypatch.setattr(boot_bom, "load_boot_bom_facts",
+                        lambda cfg, version=None: boot_bom.BootBomFacts(version="4.1.0", managed=bom))
+    ws = _ws(tmp_path, {"pom.xml": _pom([])})
+    _captures(ws, {"managed": {SERVLET: "4.0.3"}})        # as-is managed by the old in-house boot-jar
+    r = VersionResolver.for_workspace(ws, cfg=cfg)
+    assert r.resolve(SERVLET, "com.x:demo") == ("6.1.0", "boot-bom")
+    assert r.resolve(CORE, "com.x:demo") == (None, "managed")
+
+
+def test_fills_and_pre_tries_journal_the_boot_bom_source_and_the_prompt_says_so(cfg, tmp_path, monkeypatch):
+    from sbmig.build import boot_bom
+    monkeypatch.setattr(boot_bom, "load_boot_bom_facts",
+                        lambda cfg, version=None: boot_bom.BootBomFacts(version="4.1.0", managed={SERVLET: "6.1.0"}))
+    # the sbmig-version pre-try: the build says the version is missing → the target BOM's, not the as-is 4.0.3
+    ws = _ws(tmp_path / "pre", {"pom.xml": _pom([(SERVLET, None)])})
+    _captures(ws, {"managed": {SERVLET: "4.0.3"}})
+    pr = make_loop(cfg, ws, FakeFixer(), pom_build()).run(Phase.VERIFY, "package", 2)
+    assert pr.ok and _versions(ws) == {SERVLET: "6.1.0"}
+    [ev] = [e for e in journal_events(ws) if e["event"] == "version_try"]
+    assert [(x["key"], x["version"], x["source"]) for x in ev["resolved"]] == [(SERVLET, "6.1.0", "boot-bom")]
+    assert "version jakarta.servlet:jakarta.servlet-api 6.1.0 in pom.xml (the target Spring Boot BOM, not managed by " \
+           "the parent chain)" in pr.attempts[0].notes
+    # _fill_versions: an LLM try adds it without a version
+    ws = _ws(tmp_path / "fill", {"pom.xml": _pom([]), FOO: "class Foo { broken }\n"})
+    _captures(ws, {"managed": {SERVLET: "4.0.3"}}, CHAIN_AFTER)
+    fixer = FakeFixer(scripts=[answer(edits=[_fix_foo(), {"op": "pom", "path": "pom.xml", "pom": {"add_dependency": {
+        "group_id": "jakarta.servlet", "artifact_id": "jakarta.servlet-api", "version": None}}}])])
+    pr = make_loop(cfg, ws, fixer, pom_build(broken_file=FOO)).run(Phase.VERIFY, "package", 3)
+    assert pr.ok and _versions(ws) == {SERVLET: "6.1.0"}
+    [ev] = [e for e in journal_events(ws) if e["event"] == "version_filled"]
+    assert (ev["key"], ev["version"], ev["source"]) == (SERVLET, "6.1.0", "boot-bom")
+    # the prompt facts
+    loop = make_loop(cfg, ws, FakeFixer(), pom_build())
+    c = ErrorCluster(id="case:x", kind=ErrorKind.POM_INVALID, errors=[missing(SERVLET)])
+    assert loop._version_facts(c) == [f"as-is build: {SERVLET} 4.0.3 (managed)",
+                                      f"target Boot BOM: manages {SERVLET} at 6.1.0"]

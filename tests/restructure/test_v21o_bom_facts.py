@@ -365,3 +365,126 @@ def test_without_an_as_is_capture_the_newer_version_is_kept(tmp_path: Path, ccfg
     ws, res = _recipe_raised(tmp_path, ccfg, lambda: None, "noasis")
     assert _versions(ws)[CTX] == "${spring.version}" and res.recipe_versions_dropped == []
     assert any("newer than the parent-managed one kept" in n for n in res.notes)
+
+
+# ------------------------------------------------------------------------------------------ v2.1s: target Boot BOM
+SERVLET = "jakarta.servlet:jakarta.servlet-api"
+NO_BOM_CHAIN = parent_chain.ParentChainFacts(
+    roots=[BASE], managed={TEXT: "1.12.0", SERVLET: "6.1.0"}, chain_managed={TEXT: "1.12.0"}, boot_bom_added=True,
+    sources=["test chain without the Boot BOM"], poms=1)
+TARGET_BOM = boot_bom.BootBomFacts(version="4.1.0", managed={SERVLET: "6.1.0", TEXT: "1.12.0"}, sources=["test"])
+BOM_MARK = "Boot 4.1.0 BOM (not managed by the parent chain)"
+
+
+def _servlet_run(tmp_path: Path, cfg: Config, monkeypatch, *, asis_v: str, chain=NO_BOM_CHAIN, boot=TARGET_BOM,
+                 capture=None, name: str = "s21"):
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", lambda c: chain)
+    monkeypatch.setattr(boot_bom, "load_boot_bom_facts", lambda c, version=None: boot)
+    pom = (HEAD + "    <groupId>com.acme</groupId>\n    <artifactId>shop</artifactId>\n    <version>1.0.0</version>\n"
+           "    <dependencies>\n" + dep("jakarta.servlet", "jakarta.servlet-api", scope="provided")
+           + "    </dependencies>\n</project>\n")
+    ws = make_ws(tmp_path, {"pom.xml": pom, "src/main/java/com/acme/shop/Main.java": java("com.acme.shop", "Main")},
+                 name)
+    prof = profile(ws, CaseType.SPRING_LEGACY, artifact_id="shop", version="1.0.0", base_package="com.acme.shop")
+    prof.poms = [PomInfo(path="pom.xml", artifact_id="shop", group_id="com.acme",
+                         dependencies=PomEditor(ws.root / "pom.xml").dependencies())]
+    asis = {"managed": {SERVLET: asis_v}, "direct": {}, "parent": "xxx:xxx-boot-jar:1.0.0-SNAPSHOT", "by_module": {}}
+    res = Restructurer().apply(ws, prof, cfg, mode="layout",
+                               params={"asis_effective": lambda: asis, "effective_pom": lambda: capture})
+    assert res.ok, res.error
+    return ws, res
+
+
+def test_the_target_boot_bom_wins_over_the_as_is_version(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    ws, res = _servlet_run(tmp_path, ccfg, monkeypatch, asis_v="4.0.3")
+    assert _versions(ws)[SERVLET] == "6.1.0"
+    assert res.versions_pinned == [f"{SERVLET}: 6.1.0 ← {BOM_MARK} ({BACK})"]
+    assert any(n.startswith("dependency versions pinned from the target Spring Boot BOM (not managed by the parent "
+                            f"chain): {SERVLET} 6.1.0") for n in res.notes)
+    ev = _events(ws, "versions_pinned")
+    assert ev and ev[-1]["from_boot_bom"] == res.versions_pinned
+    assert not any("carry-over undone" in n for n in res.notes)              # the facts fallback never undoes it
+
+
+def test_a_real_capture_without_it_keeps_the_boot_pin(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    capture = {"managed": {TEXT: "1.12.0"}, "properties": {}, "by_module": {}}
+    ws, res = _servlet_run(tmp_path, ccfg, monkeypatch, asis_v="4.0.3", capture=capture, name="s21cap")
+    assert _versions(ws)[SERVLET] == "6.1.0" and res.versions_pinned == [f"{SERVLET}: 6.1.0 ← {BOM_MARK} ({BACK})"]
+
+
+def test_an_as_is_version_newer_than_the_bom_is_kept(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    ws, res = _servlet_run(tmp_path, ccfg, monkeypatch, asis_v="6.2.0", name="s21new")
+    assert _versions(ws)[SERVLET] == "6.2.0"
+    assert res.versions_pinned == [f"{SERVLET}: 6.2.0 ← as-is managed by xxx:xxx-boot-jar:1.0.0-SNAPSHOT ({BACK})"]
+
+
+def test_the_chain_managing_it_empties_the_pin(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    chain = NO_BOM_CHAIN.model_copy(update={"chain_managed": {SERVLET: "6.1.0"}, "boot_bom_added": False})
+    ws, res = _servlet_run(tmp_path, ccfg, monkeypatch, asis_v="4.0.3", chain=chain, name="s21chain")
+    assert _versions(ws)[SERVLET] is None and res.versions_pinned == []          # pinned as-is, then emptied (v2.1l)
+    assert "parent-chain-no-boot-bom" not in res.flags
+
+
+def test_without_boot_bom_facts_the_as_is_version_as_before(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    empty = boot_bom.BootBomFacts(version="4.1.0")
+    ws, res = _servlet_run(tmp_path, ccfg, monkeypatch, asis_v="4.0.3", boot=empty, name="s21none")
+    assert _versions(ws)[SERVLET] == "4.0.3"
+    assert res.versions_pinned == [f"{SERVLET}: 4.0.3 ← as-is managed by xxx:xxx-boot-jar:1.0.0-SNAPSHOT ({BACK})"]
+
+
+def test_a_parent_chain_without_the_boot_bom_is_flagged_first(tmp_path: Path, ccfg: Config, monkeypatch) -> None:
+    from datetime import datetime, timezone
+
+    from sbmig.core.models import HandoverSummary, Phase, PhaseResult, RunReport
+    from sbmig.report.handover import _from_here
+    from sbmig.report.result_line import attention_codes
+
+    ws, res = _servlet_run(tmp_path, ccfg, monkeypatch, asis_v="4.0.3", name="s21warn")
+    assert "parent-chain-no-boot-bom" in res.flags
+    first = next(f for f in res.manual_followups if f.startswith("사내 부모 체인("))
+    assert first.startswith(f"사내 부모 체인({BASE})이 Spring Boot BOM 을 import 하지 않습니다")
+    assert first.endswith("이 실행의 버전 고정은 Boot 4.1.0 BOM 을 따랐습니다.")
+    ev = _events(ws, "parent_chain_no_boot_bom")
+    assert len(ev) == 1 and ev[0]["roots"] == [BASE] and ev[0]["target"] == "4.1.0"
+    # the Handover's "From here on, your team" puts it first; SBMIG-RESULT attn= carries the flag
+    t0 = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    report = RunReport(run_id="r", project_name="shop", case_type=CaseType.SPRING_LEGACY, started_at=t0,
+                       finished_at=t0, success=False, phases=[PhaseResult(phase=Phase.RESTRUCTURE)],
+                       flags=list(res.flags), manual_followups=["web.xml not migrated", *res.manual_followups])
+    lines = _from_here(HandoverSummary(), report, ccfg)
+    assert lines[0] == first and lines.count(first) == 1
+    assert "parent-chain-no-boot-bom" in attention_codes(flags=report.flags, exit_code=2)
+
+
+def test_the_handover_marks_a_boot_pin_that_jumps(tmp_path: Path, cfg: Config) -> None:
+    from datetime import datetime, timezone
+
+    from sbmig.analyze.analyzer import PathView
+    from sbmig.core.models import GAV, Phase, PhaseResult, ProjectProfile, RunReport
+    from sbmig.report import build_handover
+    from sbmig.report.handover import REASON_BOOT_BOM_PIN
+
+    final = tmp_path / "final"
+    final.mkdir()
+    (final / "pom.xml").write_text(
+        '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>com.acme'
+        "</groupId><artifactId>shop</artifactId><version>1.0.0</version><dependencies><dependency><groupId>"
+        "jakarta.servlet</groupId><artifactId>jakarta.servlet-api</artifactId><version>6.1.0</version></dependency>"
+        "<dependency><groupId>org.example</groupId><artifactId>same</artifactId><version>2.0</version></dependency>"
+        "</dependencies></project>\n")
+    pom = PomInfo(path="pom.xml", group_id="com.acme", artifact_id="shop", version="1.0.0", is_root=True,
+                  dependencies=[GAV.parse(SERVLET), GAV.parse("org.example:same")])
+    prof = ProjectProfile(root="/as-is", name="shop", case_type=CaseType.SPRING_LEGACY, poms=[pom], root_pom=pom)
+    note = ("dependency versions pinned from the target Spring Boot BOM (not managed by the parent chain): "
+            f"{SERVLET} 6.1.0, org.example:same 2.0")
+    t0 = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    report = RunReport(run_id="r", project_name="shop", case_type=CaseType.SPRING_LEGACY, started_at=t0,
+                       finished_at=t0, success=True, phases=[PhaseResult(phase=Phase.RESTRUCTURE, notes=[note])])
+    eff = {"managed": {SERVLET: "4.0.3", "org.example:same": "2.0"}, "direct": {}}
+    h = build_handover(prof, PathView(final), report, effective=eff, cfg=cfg)
+    by = {c.key: c for c in h.changes}
+    assert by[SERVLET].reason == REASON_BOOT_BOM_PIN and by[SERVLET].boot_bom_pin and not by[SERVLET].carried_over
+    assert (by[SERVLET].before, by[SERVLET].after) == ("4.0.3", "6.1.0")
+    same = by["org.example:same"]
+    assert same.reason == REASON_BOOT_BOM_PIN and not same.boot_bom_pin and not same.carried_over   # no jump → no ⚠
+    assert h.carried_over == []

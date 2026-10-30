@@ -1779,6 +1779,13 @@ class Orchestrator:
             head = str(d)[:m.start()].strip() if m else str(d)
             key, _, rest = head.partition(": ")
             ver, _, how = rest.partition(" ← ")
+            if how.startswith("Boot "):
+                # v2.1s: "g:a: <v> ← Boot <bv> BOM (not managed by the parent chain) (<pom>)"
+                bom = how.split(" ", 2)[1] if how.count(" ") >= 1 else "?"
+                row = f"version pinned from the Spring Boot {bom} BOM: {key} {ver.strip()} (the parent chain does not " \
+                      "manage it)"
+                items.append((m.group(1) if m else root, row))
+                continue
             what = ("version chosen from the repository" if how.startswith("repository")
                     else "version carried over from the as-is build")
             items.append((m.group(1) if m else root, f"{what}: {key} {ver.strip()}".rstrip()))

@@ -458,14 +458,46 @@ class _PreTry:
     source: str
     targets: Callable[[ErrorCluster], list[str] | None]
     run: Callable[..., bool]
-VERSION_SOURCE_TEXT = {"asis": "as-is 빌드의 버전", "repository": "저장소의 최신 릴리스"}      # log lines / edit desc
-VERSION_SOURCE_NOTE = {"asis": "the as-is build", "repository": "newest release in the repository"}   # att.notes
+VERSION_SOURCE_TEXT = {"asis": "as-is 빌드의 버전", "repository": "저장소의 최신 릴리스",          # log / edit desc
+                       "boot-bom": "목표 Boot BOM 의 버전 (부모 체인이 관리하지 않음)"}
+VERSION_SOURCE_NOTE = {"asis": "the as-is build", "repository": "newest release in the repository",   # att.notes
+                       "boot-bom": "the target Spring Boot BOM, not managed by the parent chain"}
+
+
+def chain_own_managed(facts: Any, boot: Callable[[], dict] | dict | None = None) -> dict[str, str]:
+    """v2.1s: 사내 부모 체인 *자신이* 관리하는 버전 — Boot 덧붙임(``boot_bom_added``: 체인이 Boot BOM 을 import 하지
+    않아 sbmig 가 보탠 것)은 뺀다. 그 덧붙임은 실제 빌드에서 관리되지 않으므로 '관리됨' 이라고 하면 버전 없음 오류가
+    난다. ``managed_by_chain`` 이 사실에 있으면 그것, 없으면 ``managed`` 에서 Boot BOM 과 같은 값의 항목을 뺀다(체인이
+    다른 값으로 직접 선언한 것은 남는다).
+
+    The parent chain's OWN managed versions, without the Boot add-on (`boot_bom_added`: sbmig added the Boot BOM
+    because the chain does not import it — the real build does not manage those). `facts.managed_by_chain` when the
+    facts have it, else `managed` minus the entries equal to the target Boot BOM's (an entry the chain declares itself
+    at another version stays)."""
+    # v2.1s: 로더가 Boot 보강분을 얹었을 때만 채우는 `ParentChainFacts.chain_managed` (체인 고유 관리 목록) 가 있으면 그것;
+    # 이름이 다른 옛 사실 객체(`managed_by_chain`)도 받는다. 둘 다 없으면 아래에서 Boot BOM 과 같은 값의 항목을 뺀다
+    own = getattr(facts, "chain_managed", None)
+    if own is None:
+        own = getattr(facts, "managed_by_chain", None)
+    if isinstance(own, dict):
+        return dict(own)
+    managed = dict(getattr(facts, "managed", None) or {})
+    if not getattr(facts, "boot_bom_added", False):
+        return managed
+    try:
+        bom = boot() if callable(boot) else (boot or {})
+    except Exception as e:  # noqa: BLE001 - no BOM facts: nothing to take out
+        log.debug("Boot BOM facts for the chain's own keys unavailable: %s: %s", type(e).__name__, e)
+        bom = {}
+    return {k: v for k, v in managed.items() if not (k in bom and bom[k] == v)}
 
 
 class VersionResolver:
-    """v2.1l 버전 결정 규칙 하나(재구성·수정 루프 공통, INTERFACES "Resolution order"): 버전 없는 의존성 g:a 에
-    대해 (1) 새 부모 체인(재구성 뒤 effective pom, ``depmgmt-after-restructure.json``)이 관리하면 그대로 둔다
-    → ``(None, "managed")``, (2) as-is 빌드가 쓴 버전(``logs/depmgmt.json``: 그 모듈의 direct → managed → 합친
+    """v2.1l / v2.1s 버전 결정 규칙 하나(재구성·수정 루프 공통, INTERFACES "Resolution order"): 버전 없는 의존성
+    g:a 에 대해 (1) 새 부모 체인(재구성 뒤 effective pom ``depmgmt-after-restructure.json``, 없으면 Boot 덧붙임을 뺀
+    사내 부모 체인의 사실)이 관리하면 그대로 둔다 → ``(None, "managed")``, (1b, v2.1s) 체인이 관리하지 않고 목표 Boot
+    BOM(``spring-boot-dependencies:<target>``)이 관리하면 그 버전 → ``(v, "boot-bom")`` — 단 as-is 버전이 더 새것이면
+    as-is(내리지 않는다), (2) as-is 빌드가 쓴 버전(``logs/depmgmt.json``: 그 모듈의 direct → managed → 합친
     managed → 합친 direct) → ``(v, "asis")``, (3) 호출자가 허락할 때만(LLM 이 방금 추가한 의존성, 누락 버전
     케이스) 저장소의 최신 정식 릴리스(프리릴리스 제외) → ``(v, "repository")``, (4) 못 찾음 → ``(None,
     "unknown")``. LLM 에게 버전을 추측시키지 않으려는 것 — 사실(as-is·저장소)만 쓴다. 예외를 내지 않는다
@@ -473,7 +505,9 @@ class VersionResolver:
 
     The v2.1l resolution order for a `<dependencies>` entry without `<version>` (one rule for the restructure and
     the fix loop): (1) the new parent chain manages it (the post-restructure capture; the declaring module's
-    `by_module` entry decides when the capture has one, else the merged `managed`) → `(None, "managed")`; (2) the
+    `by_module` entry decides when the capture has one, else the merged `managed`; without the capture the parent-chain
+    facts WITHOUT their Boot add-on) → `(None, "managed")`; (1b, v2.1s) the TARGET Boot BOM manages it → that version,
+    `(v, "boot-bom")`, unless the as-is version is newer (then `(as-is, "asis")` — never a downgrade); (2) the
     as-is build resolved it (`by_module[...].direct` → `.managed` → merged `managed` → merged `direct`) →
     `(v, "asis")`; (3) only with `allow_repository` (a dependency the LLM just added, a missing-version case): the
     newest release `RepositoryLookup.versions` lists that `is_prerelease` does not reject → `(v, "repository")`;
@@ -481,18 +515,21 @@ class VersionResolver:
     `repository` a zero-arg callable returning the run's `RepositoryLookup` (or None). Never raises."""
 
     def __init__(self, asis: dict | None = None, after: dict | None = None,
-                 repository: Callable[[], Any] | None = None, chain: Any = None):
+                 repository: Callable[[], Any] | None = None, chain: Any = None, boot: Any = None):
         """두 캡처(dict, 없으면 빈 것), 저장소 조회기를 주는 콜러블, 재구성 뒤 캡처가 없을 때 쓸 사내 부모 체인의 사실
         (``load_effective`` 모양의 dict, 또는 그것을 돌려주는 콜러블 — 처음 필요할 때 한 번 부른다)을 받는다.
 
         `chain`: the parent-chain facts used when the post-restructure capture is missing (a capture-shaped dict, or a
-        zero-arg callable returning one, called once when first needed)."""
+        zero-arg callable returning one, called once when first needed). `boot` (v2.1s): the target Boot BOM's
+        managed versions (g:a → version, or a zero-arg callable returning them, called once)."""
         self.asis: dict = asis if isinstance(asis, dict) else {}
         self.after: dict = after if isinstance(after, dict) else {}
         self._repository = repository
         self._repo_cache: dict[str, str | None] = {}
         self._chain_src = chain
         self._chain: dict | None = None
+        self._boot_src = boot
+        self._boot: dict | None = None
 
     @classmethod
     def for_workspace(cls, ws: Any, repository: Callable[[], Any] | None = None,
@@ -513,12 +550,20 @@ class VersionResolver:
         except Exception as e:  # noqa: BLE001 - no captures: only the repository step is left
             log.debug("dependency version captures unavailable: %s: %s", type(e).__name__, e)
 
-        def chain() -> dict | None:
+        def boot() -> dict:
             # 모듈 속성으로 불러 테스트의 대역(tests/conftest.py)이 걸린다
-            from sbmig.build import parent_chain
-            return parent_chain.load_parent_chain_facts(cfg).as_capture()
+            from sbmig.build import boot_bom
+            return dict(boot_bom.load_boot_bom_facts(cfg).managed)
 
-        return cls(asis, after, repository, chain=chain if cfg is not None else None)
+        def chain() -> dict | None:
+            from sbmig.build import parent_chain
+            facts = parent_chain.load_parent_chain_facts(cfg)
+            data = facts.as_capture()
+            data["managed"] = chain_own_managed(facts, boot)
+            return data
+
+        return cls(asis, after, repository, chain=chain if cfg is not None else None,
+                   boot=boot if cfg is not None else None)
 
     @staticmethod
     def _has(data: dict) -> bool:
@@ -545,6 +590,27 @@ class VersionResolver:
                 log.debug("parent chain facts unavailable: %s: %s", type(e).__name__, e)
             self._chain = data if isinstance(data, dict) else {}
         return self._chain
+
+    @property
+    def boot(self) -> dict:
+        """v2.1s: 목표 Boot BOM 이 관리하는 버전(g:a → 버전; 처음 쓸 때 한 번 읽음, 없거나 실패하면 빈 dict)."""
+        if self._boot is None:
+            data: Any = None
+            try:
+                data = self._boot_src() if callable(self._boot_src) else self._boot_src
+            except Exception as e:  # noqa: BLE001 - no BOM facts: the step is skipped
+                log.debug("target Boot BOM facts unavailable: %s: %s", type(e).__name__, e)
+            self._boot = dict(data) if isinstance(data, dict) else {}
+        return self._boot
+
+    def boot_version(self, key: str, module: str | None = None) -> str | None:
+        """v2.1s: 새 부모 체인이 관리하지 *않는* g:a 를 목표 Boot BOM 이 관리하는 버전(체인이 관리하거나 BOM 에
+        없으면 None).
+
+        The target Boot BOM's version of g:a when the new chain does not manage it (else None)."""
+        if self.managed_version(key, module):
+            return None
+        return self.boot.get(key) or None
 
     @property
     def has_chain(self) -> bool:
@@ -627,15 +693,22 @@ class VersionResolver:
 
     def resolve(self, key: str, module: str | None = None, *, allow_repository: bool = False,
                 check_managed: bool = True) -> tuple[str | None, str]:
-        """규칙대로 ``(버전 | None, 출처)``: managed / asis / repository / unknown. ``check_managed=False`` 는
+        """규칙대로 ``(버전 | None, 출처)``: managed / boot-bom / asis / repository / unknown. ``check_managed=False`` 는
         빌드가 이미 '버전 없음' 이라고 말한 의존성(1단계를 건너뜀). 예외 없음.
 
-        `(version | None, source)` by the resolution order; `check_managed=False` skips step 1 (the build already
-        said the version is missing). Never raises."""
+        `(version | None, source)` by the resolution order (managed / boot-bom / asis / repository / unknown);
+        `check_managed=False` skips step 1 (the build already said the version is missing). Never raises."""
         try:
             if check_managed and self.managed_version(key, module):
                 return None, "managed"
             v, _how = self.asis_fact(key, module)
+            # v2.1s: 목표 Boot BOM 이 as-is 보다 먼저 — to-be 줄을 따른다(as-is 가 더 새것이면 내리지 않는다)
+            bv = self.boot.get(key) or None          # not the chain's (step 1, or the build said missing)
+            if bv:
+                from sbmig.plan.versions import compare_versions
+                if v and compare_versions(v, bv) == 1:
+                    return v, "asis"
+                return bv, "boot-bom"
             if v:
                 return v, "asis"
             if allow_repository:
@@ -3374,7 +3447,7 @@ class BuildFixLoop:
             if not mods:
                 return []
             r = self._versions()
-            if not (r.has_asis or r.has_chain):
+            if not (r.has_asis or r.has_chain or r.boot):
                 return []
             out: list[str] = []
             for key, module in list(mods.items())[:VERSION_FACTS_MAX]:
@@ -3385,6 +3458,9 @@ class BuildFixLoop:
                     mv = r.managed_version(key, module)
                     if mv:
                         out.append(f"new parent chain: manages {key} at {mv}")
+                bv = r.boot_version(key, module)
+                if bv:                               # v2.1s: the to-be line when the chain does not manage it
+                    out.append(f"target Boot BOM: manages {key} at {bv}")
             return out
         except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
             log.debug("version facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)

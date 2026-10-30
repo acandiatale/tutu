@@ -43,6 +43,8 @@ REASON_OPTIONAL = "optional bump"
 # v2.1n: 트리거 의존성(when_present) 때문에 넣은 선택 아티팩트와, 그때 지운 트리거가 다는 이유 칸
 REASON_OPTIONAL_TRIGGER = "optional (trigger: {matched})"
 REASON_MANDATORY = "mandatory"
+# v2.1s: 새 부모 체인이 관리하지 않아 대상 Spring Boot BOM 의 버전으로 고정한 것
+REASON_BOOT_BOM_PIN = "pinned from the target Boot BOM (not managed by the parent chain)"
 REASON_BOOT = "spring boot 4 upgrade"
 REASON_OTHER = "recipe / fix script"
 CARRIED_LIST_MAX = 5
@@ -78,6 +80,12 @@ _MANDATORY_RE = re.compile(r"mandatory added: ([^;]*)")
 # v2.1n: the restructure's note "optional artifacts added for trigger dependencies: g:a → <pom> (for m1, m2); … —
 # replaced: m1 removed from <pom> → g:a; …"
 TRIGGER_NOTE_PREFIX = "optional artifacts added for trigger dependencies:"
+# v2.1s: the restructure's note "dependency versions pinned from the target Spring Boot BOM (…): g:a v, g:a v" and the
+# Handover's first follow-up when the parent chain carries no Boot BOM — the same strings as
+# sbmig.restructure.restructurer (BOOT_PIN_NOTE_PREFIX / PARENT_NO_BOOT_BOM_*); the report does not import it
+BOOT_PIN_NOTE_PREFIX = "dependency versions pinned from the target Spring Boot BOM (not managed by the parent chain):"
+PARENT_NO_BOOT_BOM_PREFIX = "사내 부모 체인("
+PARENT_NO_BOOT_BOM_FLAG = "parent-chain-no-boot-bom"
 _TRIGGER_ADDED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) → \S+ \(for ([^()]*)\)")
 _TRIGGER_REPLACED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) removed from \S+ → ([^\s;:]+:[^\s;:]+)")
 
@@ -251,6 +259,20 @@ def _trigger_keys(notes: list[str]) -> tuple[dict[str, list[str]], dict[str, lis
         for m in _TRIGGER_REPLACED_RE.finditer(tail):
             removed.setdefault(m.group(1), [m.group(1)])
     return added, removed
+
+
+def _boot_pins(notes: list[str]) -> dict[str, str]:
+    """v2.1s: 재구성 노트에서 대상 Boot BOM 으로 고정한 버전 {g:a: 버전}."""
+    out: dict[str, str] = {}
+    for n in notes:
+        i = n.find(BOOT_PIN_NOTE_PREFIX)
+        if i < 0:
+            continue
+        for item in n[i + len(BOOT_PIN_NOTE_PREFIX):].split(","):
+            parts = item.strip().split(" ")
+            if len(parts) == 2 and ":" in parts[0]:
+                out.setdefault(parts[0], parts[1])
+    return out
 
 
 def optional_trigger_reason(matched: list[str]) -> str:
@@ -717,13 +739,20 @@ def unknown_jar_commands(ps: Any, cfg: Any = None) -> list[str]:
 
 
 def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None) -> list[str]:
-    """인수인계의 "이제부터 할 일" 목록. 순서가 곧 중요도다: (0) 운영자 확인 필요(메이저 업그레이드) → (a)
+    """인수인계의 "이제부터 할 일" 목록. 순서가 곧 중요도다: (-1) 사내 부모 체인에 Boot BOM 없음(v2.1s) → (0) 운영자
+    확인 필요(메이저 업그레이드) → (a)
     교체 안 된 권고 → (b) 실행 중 교체됐으니 확인 → (b2) LLM 이 권고에 따라 고친 코드 → (c) as-is 버전으로
     고정된 의존성 → (d) 차단 / 미해결 / javax jar 안내 → (d1) 구조 검토 → (d2) 외부 설정값 → (d3) 남은 JSP javax
     → (e) 나머지 수동 후속 작업. ``advisories.max_from_here`` 가 양수면 그 줄 수로 자르고 마지막에 "… and N more" 를 붙인다."""
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
+    # v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음 — 모든 프로젝트에 걸리는 구조 문제라 맨 첫 줄
+    # (-1) v2.1s: the in-house parent chain carries no Spring Boot BOM — a structural issue of every project: first
+    if PARENT_NO_BOOT_BOM_FLAG in (report.flags or []):
+        first = next((m for m in report.manual_followups if m.startswith(PARENT_NO_BOOT_BOM_PREFIX)), None)
+        if first:
+            _dedupe_add(out, first)
     # 메이저 업그레이드는 막지 않는 대신(빌드는 통과해야 함) 사람이 꼭 보게 맨 첫 줄에 둔다(v2.1d)
     # (0) v2.1d: major upgrades / library replacements the operator must verify (the block above Versions replaced)
     checks = list(getattr(report, "operator_checks", None) or [])
@@ -909,6 +938,7 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
     notes = _notes(report)
     optional, mandatory = _restructure_keys(notes)
     trig_added, trig_removed = _trigger_keys(notes)
+    boot_pins = _boot_pins(notes)
     adv_arts, adv_repl = _advisory_maps(list(report.advisories or []))
     changes: list[VersionChange] = []
     main = _main_pom(final)
@@ -980,11 +1010,16 @@ def _build(profile: ProjectProfile, view: Any, report: RunReport, effective: Opt
             # 값 그대로 pom 에 박혔다 — 담당팀이 확인하거나 바꿔야 한다
             carried = (bs == "managed" and as_ == "declared" and av is not None
                        and av == _eff_lookup(effective, k))
-            if bv == av and not carried:
+            # v2.1s: 대상 Boot BOM 에서 고정한 버전 — as-is 와 다를 때만 ⚠(소유 팀이 알아야 할 건너뜀)
+            boot_pin = as_ == "declared" and av is not None and boot_pins.get(k) == av
+            if boot_pin:
+                carried = False
+            if bv == av and not carried and not boot_pin:
                 continue                              # same version, only the declaring place changed
             changes.append(VersionChange(kind="dependency", key=k, before=bv, after=av, before_source=bs,
-                                         after_source=as_, carried_over=carried,
-                                         reason=REASON_CARRIED if carried else reason_for(k),
+                                         after_source=as_, carried_over=carried, boot_bom_pin=boot_pin and bv != av,
+                                         reason=(REASON_BOOT_BOM_PIN if boot_pin else
+                                                 REASON_CARRIED if carried else reason_for(k)),
                                          pom=where.get(k, main_path)))
         elif k in db:
             r = reason_for(k)

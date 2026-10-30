@@ -11,6 +11,7 @@ from .fakes import FakeErrorList
 from .test_v2_orchestrator import make_v2
 
 BACK = "shop-back/pom.xml"
+PIN = f"jakarta.servlet:jakarta.servlet-api: 6.1.0 ← Boot 4.1.0 BOM (not managed by the parent chain) ({BACK})"
 
 
 class _BomRestructurer:
@@ -25,6 +26,7 @@ class _BomRestructurer:
                                      "spring-security.version": "org.springframework.boot:spring-boot-dependencies:4.1.0",
                                      "spring-boot.version": "com.company.platform:base-parent:4.0.0"},
                                  version_properties_removed=[f"{BACK}: spring.version=5.3.31"],
+                                 versions_pinned=[PIN],
                                  recipe_versions_dropped=[
                                      f"org.springframework:spring-context 7.0.10 (as-is 6.2.12, managed 7.0.8, {BACK})",
                                      f"org.example:x 2.0.0 (as-is -, managed 1.5.0, {BACK})"])
@@ -59,3 +61,6 @@ def test_each_removed_property_is_a_pom_verify_row(cfg, ws):
     added_row = "explicit version dropped: org.example:x 2.0.0 → managed 1.5.0 (added by a recipe: not in the as-is build)"
     assert (BACK, added_row) in added
     assert rs[0]["recipe_versions_dropped"][0].startswith("org.springframework:spring-context 7.0.10")
+    boot_pin = ("version pinned from the Spring Boot 4.1.0 BOM: jakarta.servlet:jakarta.servlet-api 6.1.0 (the parent "
+                "chain does not manage it)")
+    assert (BACK, boot_pin) in added

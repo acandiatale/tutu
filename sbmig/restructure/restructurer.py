@@ -92,6 +92,22 @@ from .webxml_registrations import ClassInfo, load_skip_rules, plan_registrations
 log = logging.getLogger("sbmig.restructure")
 # v2.1l: versions_pinned 의 저장소 출처 표시(as-is 빌드가 버전을 주지 못한 의존성)
 REPO_PIN_SOURCE = "repository newest release (the as-is build did not resolve it)"
+# v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않을 때의 플래그와 인수인계 맨 앞 줄(보고서가 이 접두어로 찾는다)
+PARENT_NO_BOOT_BOM_FLAG = "parent-chain-no-boot-bom"
+# v2.1s: the note listing the versions pinned from the target Boot BOM ("g:a v, g:a v"; sbmig.report.handover reads it)
+BOOT_PIN_NOTE_PREFIX = "dependency versions pinned from the target Spring Boot BOM (not managed by the parent chain):"
+PARENT_NO_BOOT_BOM_PREFIX = "사내 부모 체인("
+
+
+def parent_no_boot_bom_followup(roots: str, target: str) -> str:
+    """v2.1s: 사내 부모 체인이 Spring Boot BOM 을 import 하지 않을 때 인수인계 맨 앞에 둘 할 일(한국어, 계약 문구).
+
+    The Handover's first follow-up when the in-house parent chain carries no Spring Boot BOM (docs/INTERFACES.md
+    "v2.1s"); `sbmig.report.handover` finds it by `PARENT_NO_BOOT_BOM_PREFIX`."""
+    return (f"{PARENT_NO_BOOT_BOM_PREFIX}{roots})이 Spring Boot BOM 을 import 하지 않습니다 — `spring-boot.version` 속성만으로는 "
+            "버전이 통일되지 않습니다. base-parent 의 dependencyManagement 에 `spring-boot-dependencies:${spring-boot.version}` "
+            "(type pom, scope import) 를 넣거나, 그때까지 회사 설정에 `parent_manages_spring_boot: false` 를 두세요 (sbmig 이 "
+            f"BOM 을 직접 import 합니다). 이 실행의 버전 고정은 Boot {target} BOM 을 따랐습니다.")
 
 BOOT_GROUP = "org.springframework.boot"
 BOOT_PLUGIN = (BOOT_GROUP, "spring-boot-maven-plugin")
@@ -3984,6 +4000,12 @@ class Restructurer:
             except PomEditError as e:
                 c.note(f"as-is version carry-over: skipped unparsable pom {p}: {e}")
         own = self._own_keys(eds)
+        # v2.1s: 체인이 스스로 관리하는 것(Boot 보탬 제외)과 대상 Boot BOM 의 관리 버전
+        chain = self._chain_facts(c)
+        chain_own: set[str] = set(getattr(chain, "own_managed", None) or {}) if chain is not None else set()
+        boot = self._boot_bom_facts(c)
+        boot_managed: dict[str, str] = dict(getattr(boot, "managed", None) or {}) if boot is not None else {}
+        boot_source = f"Boot {getattr(boot, 'version', '') or '?'} BOM (not managed by the parent chain)"
         # '버전을 모른다' 는 as-is 프로젝트가 선언했던 의존성에만 — 재구성이 만든 boot 모듈의
         # starter, OpenRewrite 가 바꾼 jakarta 좌표는 as-is 빌드에 없던 것이고 새 부모 체인이
         # 관리하도록 일부러 버전 없이 둔 것이다
@@ -4014,6 +4036,13 @@ class Restructurer:
                     continue
                 found = self._asis_version(data, mkey, mod, g.key)
                 kind = "asis"
+                # v2.1s 2단계: 새 부모 체인이 관리하지 않으면 to-be(대상 Boot BOM)의 버전이 as-is 보다 먼저 — 단 as-is 가
+                # 더 새것이면 내리지 않는다. 체인이 관리하는 것은 v2.1l 대로(as-is 를 적고 drop 이 비운다)
+                bv = boot_managed.get(g.key) if g.key not in chain_own else None
+                if bv:
+                    newer = found is not None and (compare_versions(found[0], bv) or 0) > 0
+                    if not newer:
+                        found, kind = (bv, boot_source), "boot-bom"
                 if found is None:
                     # 3단계(저장소): 버전이 하나라도 비면 재구성 뒤 effective pom 캡처가 모델 검증에서 실패해
                     # 맞게 적은 버전까지 모두 되돌려진다 → 캡처 전에 채우고, 새 체인이 관리하면 drop 이 비운다
@@ -4084,7 +4113,9 @@ class Restructurer:
     def _undo_asis_pins(self, c: _Ctx) -> list[tuple[str, str]]:
         """이번 패스가 적은 as-is 버전을 지운다(아직 그 값 그대로인 것만). 지운 (pom, g:a) 목록."""
         by_pom: dict[str, dict[str, str]] = {}
-        for (p, k), (v, _e, _kind) in c.asis_pins.items():
+        for (p, k), (v, _e, kind) in c.asis_pins.items():
+            if kind == "boot-bom":
+                continue                     # v2.1s: a to-be version from the target Boot BOM, not a guess to undo
             by_pom.setdefault(p, {})[k] = v
         undone: list[tuple[str, str]] = []
         for p, keys in by_pom.items():
@@ -4137,6 +4168,7 @@ class Restructurer:
         kept = [pins[pk][1] for pk in kept_pk]
         kept_asis = [pins[pk][1] for pk in kept_pk if pins[pk][2] == "asis"]
         kept_repo = [pk for pk in kept_pk if pins[pk][2] == "repository"]
+        kept_boot = [pins[pk][1] for pk in kept_pk if pins[pk][2] == "boot-bom"]
         # 되돌린 저장소 버전은 as-is 가 선언했던 의존성이면 다시 '모름' 이다
         for pk in undone:
             if pins[pk][2] == "repository" and pk[1] in c.asis_keys and pk not in unknown:
@@ -4162,6 +4194,10 @@ class Restructurer:
         if kept_asis:
             c.note(f"{len(kept_asis)} dependency version(s) carried over from the as-is build (not managed "
                    f"by the new parent chain): {few([e.split(': ')[0] for e in kept_asis])}")
+        if kept_boot:
+            # 전부 적는다: 인수인계가 이 노트에서 Boot BOM 으로 고정한 버전을 찾는다(⚠ = as-is 와 다른 버전)
+            listed = list(dict.fromkeys(e.split(" ← ")[0].replace(": ", " ", 1) for e in kept_boot))
+            c.note(f"{BOOT_PIN_NOTE_PREFIX} {', '.join(listed)}")
         if kept_repo:
             named = [f"{k} {pins[(p, k)][0]}" for p, k in kept_repo]
             c.note(f"{len(kept_repo)} dependency version(s) taken from the repository (newest release; the "
@@ -4179,7 +4215,7 @@ class Restructurer:
                    f"{few(still)}")
         try:
             c.ws.journal({"event": "versions_pinned", "pinned": kept, "unknown": still,
-                          "from_repository": [pins[pk][1] for pk in kept_repo],
+                          "from_repository": [pins[pk][1] for pk in kept_repo], "from_boot_bom": kept_boot,
                           "managed_by_new_chain": [f"{k} {m} ({p})" for p, k, m in unpinned],
                           "undone": [f"{k} ({p})" for p, k in undone]})
         except OSError as e:  # pragma: no cover - the journal is bookkeeping, never a reason to fail
@@ -4304,8 +4340,10 @@ class Restructurer:
                 m = managed.get(g.key)
                 if explicit is None or not m:
                     continue
-                if is_pin and pin is not None and pin[2] == "repository":
-                    pass        # step 1 before step 3: the new chain manages it → empty, whatever the version
+                if is_pin and pin is not None and pin[2] == "boot-bom" and c.managed_source != "effective pom":
+                    continue    # v2.1s: facts said the chain does not manage it — only a real capture can say otherwise
+                if is_pin and pin is not None and pin[2] in ("repository", "boot-bom"):
+                    pass        # step 1 before steps 2 / 4: the new chain manages it → empty, whatever the version
                 # gte: 관리 버전이 더 낮으면 지우지 않는다 — 지우면 버전이 내려가 쓰던 API 가 사라질 수 있다
                 elif mode in ("gte", "off"):
                     cmp = compare_versions(m, explicit)
@@ -4398,7 +4436,29 @@ class Restructurer:
                                   "boot_bom_added": bool(f.boot_bom_added), "unreadable": list(f.unreadable)})
                 except (OSError, AttributeError) as e:  # pragma: no cover - bookkeeping only
                     log.debug("parent_chain_facts journal skipped: %s", e)
+                self._warn_no_boot_bom(c, f)
         return c.chain_facts
+
+    def _warn_no_boot_bom(self, c: _Ctx, facts: Any) -> None:
+        """v2.1s: 부모가 Boot 를 관리한다고 설정했는데(``parent_manages_spring_boot``) 사내 부모 체인이 Boot BOM 에 닿지
+        않는다(``boot_bom_added``) — 플래그 ``parent-chain-no-boot-bom``, 노트, 저널, 인수인계 맨 앞 줄(한국어).
+
+        v2.1s: the configured chain carries no Spring Boot BOM although `parent_manages_spring_boot` says it does: flag,
+        note, journal `parent_chain_no_boot_bom`, and the Handover's first follow-up (`PARENT_NO_BOOT_BOM_PREFIX`)."""
+        if not c.cfg.artifacts.parent_manages_spring_boot or not getattr(facts, "boot_bom_added", False):
+            return
+        roots = ", ".join(getattr(facts, "roots", None) or []) or "-"
+        target = c.cfg.target.spring_boot_version
+        if PARENT_NO_BOOT_BOM_FLAG not in c.result.flags:
+            c.result.flags.append(PARENT_NO_BOOT_BOM_FLAG)
+        c.note(f"the in-house parent chain ({roots}) does not import the Spring Boot BOM although "
+               f"artifacts.parent_manages_spring_boot is true — this run's pins followed the Boot {target} BOM")
+        c.followup(parent_no_boot_bom_followup(roots, target))
+        try:
+            c.ws.journal({"event": "parent_chain_no_boot_bom", "roots": list(getattr(facts, "roots", None) or []),
+                          "target": target})
+        except OSError as e:  # pragma: no cover - bookkeeping only
+            log.debug("parent_chain_no_boot_bom journal skipped: %s", e)
 
     def _fallback_capture(self, c: _Ctx) -> tuple[dict[str, Any], dict[str, dict[str, str]] | None, str] | None:
         """재구성 뒤 캡처가 없을 때 쓸 관리 버전(v2.1p): 사내 부모 체인의 사실(모든 pom 에) + 부모가 Boot 를 관리하지
@@ -4410,7 +4470,8 @@ class Restructurer:
         BOM's facts for the poms importing `spring-boot-dependencies` (the chain's declared entries win, as in Maven).
         None when neither could be read."""
         chain = self._chain_facts(c)
-        chain_managed: dict[str, str] = dict(chain.managed) if chain is not None and not chain.empty else {}
+        # v2.1s: 체인이 스스로 관리하는 것만 — Boot BOM 보탬으로 명시 버전을 지우면 버전 없는 의존성이 남는다
+        chain_managed: dict[str, str] = dict(chain.own_managed) if chain is not None and not chain.empty else {}
         per_pom: dict[str, dict[str, str]] | None = None
         extra = ""
         if not c.cfg.artifacts.parent_manages_spring_boot:

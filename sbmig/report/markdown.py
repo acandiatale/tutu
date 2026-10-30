@@ -99,6 +99,11 @@ FLAG_HELP = {
     "no-root-pom": "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are "
                    "not one application and not MSA services): the run stopped before any Maven call — add a root "
                    "pom.xml or run sbmig on each application's directory",
+    # v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않는데 parent_manages_spring_boot 가 true
+    "parent-chain-no-boot-bom": "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not "
+                                "import the Spring Boot BOM: the versions it does not manage were pinned from the "
+                                "target Boot BOM — import spring-boot-dependencies in base-parent (see the Handover's "
+                                "first line)",
 }
 FLAG_PREFIX_HELP = {
     "stopped-after-": "the run was stopped on purpose after this phase (--stop-after)",
@@ -480,7 +485,7 @@ def handover_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str]
             L += [tr(lang, "| what | before | after | why |"), "|---|---|---|---|"]
             managed = tr(lang, "managed")
             for c in h.changes:
-                warn = "⚠ " if c.carried_over else ""
+                warn = "⚠ " if c.carried_over or c.boot_bom_pin else ""
                 before = c.before or (managed if c.before_source == "managed" else "-")
                 if c.before_source == "managed" and c.before:
                     before += tr(lang, " (managed)")

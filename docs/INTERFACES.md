@@ -2419,3 +2419,95 @@ BLOCKED `file_lock`, policy 0, the suggestion), result-line test for `infra:file
 - Regression guard without touching the loop: `errors/entries.py: error_stage()` returns None for a file-lock error, so the loop's
   "new earlier-stage error hides the targeted ones" rule never reverts a good attempt over a lock; a build that failed only on a
   lock scores inconclusive, not regressed.
+
+## v2.1s — a version the new chain does not manage follows the TARGET Boot BOM before the as-is value (2026-10-30)
+
+Company run (78c2f2c): `jakarta.servlet:jakarta.servlet-api: 4.0.3 ← as-is managed by xxx:xxx-boot-jar:1.0.0-SNAPSHOT` — the pin
+rule worked, but it pinned the as-is value because the company parent chain does not import the Spring Boot BOM
+(`parent_chain_facts … boot_bom_added: true`); the project is moving to Boot 4.1 (Servlet 6.1), so the to-be line must win ("as-is 를
+보면 안 되고 to-be 를 봐야 해"). Same journal line showed the structural issue: `parent_manages_spring_boot: true` while the chain
+manages no Boot artifact.
+
+### Resolution order (restructure pins and the loop's `VersionResolver`, replacing v2.1l's)
+1. the new parent chain manages it (post-restructure capture, else the chain facts WITHOUT the Boot add-on) → no version;
+2. the TARGET Boot BOM (`spring-boot-dependencies:<target.spring_boot_version>`, `load_boot_bom_facts`) manages it → that version,
+   unless the as-is build's version is newer (then the as-is one — never a downgrade); source `boot-bom`, marker
+   `← Boot <v> BOM (not managed by the parent chain)`;
+3. the as-is build's version (`← as-is managed by … | declared`);
+4. repository (loop-added dependencies and restructure unknowns, as before);
+5. unknown.
+- Rows / Handover: a `boot-bom` pin is reported like a carried-over pin but with the BOM wording; the Handover marks it ⚠ only when it
+  differs from the as-is version (a jump the owners should know about).
+### Warning when the configured parent chain carries no Boot BOM
+- Restructure: when `parent_manages_spring_boot` is true and `ParentChainFacts.boot_bom_added` is true → flag
+  `parent-chain-no-boot-bom`, note, journal, and the Handover's first "From here on, your team" line: "사내 부모 체인(<roots>)이 Spring
+  Boot BOM 을 import 하지 않습니다 — `spring-boot.version` 속성만으로는 버전이 통일되지 않습니다. base-parent 의 dependencyManagement 에
+  `spring-boot-dependencies:${spring-boot.version}` (type pom, scope import) 를 넣거나, 그때까지 회사 설정에 `parent_manages_spring_boot:
+  false` 를 두세요 (sbmig 이 BOM 을 직접 import 합니다). 이 실행의 버전 고정은 Boot <target> BOM 을 따랐습니다." `SBMIG-RESULT attn=` gets
+  `parent-chain-no-boot-bom`.
+
+### As built (2026-10-30)
+- `ParentChainFacts.chain_managed` (filled only when the Boot add-on happened) and the property `own_managed` (= `managed` otherwise);
+  the loop's `chain_own_managed(facts, boot)` reads `own_managed` (or an older `managed_by_chain`), else drops the entries equal to
+  the target BOM's from `managed`.
+- Restructure: `_pin_asis_versions` — chain-managed (`own_managed`) → pinned as-is then emptied by the drop step as in v2.1l; else the
+  target Boot BOM's version (marker `← Boot <v> BOM (not managed by the parent chain)`, as-is kept when newer by `compare_versions`);
+  else as-is / repository / unknown. A `boot-bom` pin is never emptied by the facts fallback and never undone; only a REAL
+  post-restructure capture that manages the artifact empties it (the effective pom is the truth) — a small deviation from the
+  contract's "never emptied"; it gets no gte comparison and no carried-over note. `_fallback_capture` uses the chain's own entries
+  (the add-on would otherwise drop explicit versions nothing manages afterwards). No as-is capture → the whole pin step still skips.
+  Journal `versions_pinned.from_boot_bom`; pom-verify row `version pinned from the Spring Boot <v> BOM: g:a <version> (the parent
+  chain does not manage it)`; Handover reason `REASON_BOOT_BOM_PIN` (Korean), ⚠ (`VersionChange.boot_bom_pin`) only when the version
+  differs from the as-is one, never in the "pinned at as-is versions" follow-up.
+- Warning: `_warn_no_boot_bom` once per restructure when `parent_manages_spring_boot` and `boot_bom_added` → flag
+  `parent-chain-no-boot-bom`, note, journal `parent_chain_no_boot_bom` (roots, target), follow-up `parent_no_boot_bom_followup` (Korean,
+  roots + target filled in) placed FIRST in the Handover's "From here on" (prefix `사내 부모 체인(`, de-duplicated), `attention_codes` +
+  `FLAG_HELP` entry.
+- Loop: `VersionResolver.resolve` order managed → `boot-bom` (as-is kept when newer, `sbmig.plan.versions.compare_versions`) → as-is →
+  repository → unknown; the step applies even when step 1 is skipped because the build reported the version missing; prompt line
+  `target Boot BOM: manages g:a at <v>`; journal `source: "boot-bom"`.
+- Decision pending at the company (the user has no rights on base-parent): v2.1t will import the Boot (and, when used, Spring Cloud)
+  BOM into the generated root pom with `${<property the chain defines>}` (conventional names looked up in the chain facts, literal
+  target version only as the last resort), `parent_manages_spring_boot: auto`, and give the LLM the chain's `*.version` properties
+  with the rule "reference `${property}` instead of a literal" (in-house families such as `xxx-reuse`).
+
+## v2.1t — BOM imports and in-house versions reference the parent chain's own properties (2026-10-30)
+
+User (no rights on base-parent; its properties are `spring-boot.version`, `spring-framework.version`, `spring-cloud.version`,
+`spring-data.version` — confirmed names — and the in-house `*-reuse` version lives in artifacts.yml): "어차피 에이전트 기동할 때
+pom.xml 리드 가능하잖아? 그걸 불러와서 세팅하면 더 유연하지 않을까 … 사내 라이브러리 버전은 네이밍이랑 변할 수 있으니까 … 안 되면 spring 쪽만".
+The parent-chain facts (v2.1p) already hold every property the chain defines; v2.1t uses them to WRITE, not only to clean.
+
+### `artifacts.parent_manages_spring_boot: true | false | auto` (default **auto**)
+- `auto`: the chain facts decide — the chain imports / inherits `spring-boot-dependencies` → behave as `true`; it does not
+  (`boot_bom_added`) → behave as `false` with the property-referencing import below. Explicit `true` / `false` keep their meaning
+  (`true` with a chain that has no BOM still gets the v2.1s warning).
+### BOM imports written by the restructure (`_boot_bom`, root pom's `<dependencyManagement>`, first entry; every module inherits)
+- Spring Boot: `org.springframework.boot:spring-boot-dependencies:${<prop>}` (type pom, scope import) where `<prop>` is the first
+  name of `layout.bom_version_properties.spring_boot` (default `[spring-boot.version, spring.boot.version, springboot.version,
+  spring-boot-version]`) that the chain defines; none → the literal `target.spring_boot_version` as today. Idempotent: an existing
+  import of the same artifact is re-pointed to the property (or left when it already references it).
+- Spring Cloud: when the project uses `org.springframework.cloud:*` (analyzer library `spring-cloud`) and neither the chain nor the
+  project manages it (chain facts / project dependencyManagement), `org.springframework.cloud:spring-cloud-dependencies:${<prop>}`
+  with `layout.bom_version_properties.spring_cloud` (default `[spring-cloud.version, spring.cloud.version, spring-cloud-version]`);
+  no such property → the release of `knowledge/config/spring_cloud_bom.yml` matching `target.spring_boot_version` (Boot 4.1 →
+  2025.1.x; the file names the pairing and is the single place to update), else a Handover follow-up and nothing written.
+- Each import → pom-verify row (`BOM imported: <g:a> ${<prop>} (property of <defining pom>)` / `… <literal> (no property in the
+  parent chain)`), note, journal `bom_imports`.
+### In-house artifact versions (`_bump_optionals`, mandatory / optional specs)
+- For a mandatory / optional spec, the version written is, in order: the spec's `property_name` when the chain defines it →
+  the first chain property named `<artifactId>.version` / `<artifactId>-version` / `<artifactId stem>.version` (stem = artifactId
+  without a trailing `-starter` / `-bom` / `-parent`) → the spec's `version` (literal) → `null` (managed). A property hit is written as
+  `<version>${<prop>}</version>` (never the value), so a renamed or re-numbered property on the parent follows automatically; note
+  `optional <g:a>: version ${<prop>} (property of <defining pom>)`. Journal `optional_bumped` entries show `${prop}`.
+### Prompt facts and rule (fix loop)
+- "Dependency versions" gains, once per case, the chain's `*.version` properties relevant to the case's artifacts (name = value,
+  defining pom; ≤ 20 lines, families matched by artifactId stem or group suffix: `spring-boot`, `spring-framework`, `spring-cloud`,
+  `spring-data`, in-house groups), and rule 14 gets: "When the parent chain defines a version property for the library's family,
+  write `${that property}` instead of a literal version." `_fill_versions`: an added in-house dependency (in-house groups per
+  `is_in_house`) whose family property the chain defines gets `${prop}` instead of the resolver's literal.
+### Fixture
+`legacy-external-parent`'s stand-in parent gains the properties `spring-boot.version` (= the Boot target), `spring-cloud.version` and
+`legacy-parent-test.version`; with the local e2e stand-ins the chain already carries the Boot BOM (auto → true), so the Boot import
+is not written there — a unit test with a chain lacking the BOM covers `${spring-boot.version}`; the Cloud import is covered by a
+unit test (the analyzer's `spring-cloud` library + a chain property).

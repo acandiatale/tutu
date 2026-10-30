@@ -38,7 +38,8 @@ Codes, most important first:
     unresolved:<n>        errors left after the final build
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
     test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요),
-    jar-coordinates-unknown (v2.1j: Ant 합성 pom 의 좌표 미상 jar)      the flags of the same name
+    jar-coordinates-unknown (v2.1j: Ant 합성 pom 의 좌표 미상 jar),
+    parent-chain-no-boot-bom (v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음)      the flags of the same name
     incomplete            exit 2 with none of the above
 
 
@@ -52,7 +53,7 @@ LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-
                       "jdk-not-21": "jdk"}
 ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
-                   "jar-coordinates-unknown")
+                   "jar-coordinates-unknown", "parent-chain-no-boot-bom")
 INFRA_PREFIX = "infra:"
 FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
 FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`

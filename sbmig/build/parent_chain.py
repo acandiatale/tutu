@@ -62,6 +62,15 @@ class ParentChainFacts(BaseModel):
     unreadable: list[str] = Field(default_factory=list)
     poms: int = 0
     boot_bom_added: bool = False
+    # v2.1s: the chain's OWN managed entries when the Boot BOM was added (None = no add-on: the same as `managed`)
+    chain_managed: dict[str, str] | None = None
+
+    @property
+    def own_managed(self) -> dict[str, str]:
+        """v2.1s: 체인이 스스로 관리하는 버전(Boot BOM 보탬 제외) — 보탬이 없으면 ``managed`` 그대로.
+
+        The chain's own managed versions, without the Boot BOM add-on."""
+        return self.managed if self.chain_managed is None else self.chain_managed
 
     @property
     def empty(self) -> bool:
@@ -191,6 +200,7 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
         bb = boot_bom.load_boot_bom_facts(cfg)
         if not bb.empty:
             facts.boot_bom_added = True
+            facts.chain_managed = dict(facts.managed)          # v2.1s: what the chain itself manages
             src = f"{BOOT_GROUP}:{BOOT_BOM}:{bb.version}"
             for k, v in bb.managed.items():
                 facts.managed.setdefault(k, v)
