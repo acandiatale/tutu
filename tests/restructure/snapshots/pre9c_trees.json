@@ -174,7 +174,8 @@
  },
  "multi-merge": {
   "followups": [
-   "WAR packaging converted to executable jar (module/boot-jar)"
+   "WAR packaging converted to executable jar (module/boot-jar)",
+   "the as-is WAR suite-web-5.0.war was served under the context path /suite-web-5.0 on Tomcat (unless deployed as ROOT); java -jar serves it at / \u2014 set server.servlet.context-path=/suite-web-5.0 in module/boot-jar/src/main/resources/application.properties if the URLs must stay"
   ],
   "generated": [
    "module/comp-jar/pom.xml",
@@ -243,8 +244,9 @@
  "servlet-web": {
   "followups": [
    "JSPs under src/main/webapp require tomcat-embed-jasper and may need relocation to src/main/resources/META-INF/resources to be served from an executable jar",
-   "web.xml at module/comp-jar/src/main/webapp/WEB-INF/web.xml is not read by embedded Tomcat; servlets/filters are registered via @ServletComponentScan \u2014 verify mappings",
-   "WAR packaging converted to executable jar (module/boot-jar)"
+   "web.xml at module/comp-jar/src/main/webapp/WEB-INF/web.xml is not read by the embedded Tomcat; its declarations are provided by Spring Boot (DispatcherServlet, CharacterEncodingFilter, ContextLoaderListener: the XML contexts are imported into one Boot context) or listed in the other follow-ups",
+   "WAR packaging converted to executable jar (module/boot-jar)",
+   "the as-is WAR legacyweb-2.0.war was served under the context path /legacyweb-2.0 on Tomcat (unless deployed as ROOT); java -jar serves it at / \u2014 set server.servlet.context-path=/legacyweb-2.0 in module/boot-jar/src/main/resources/application.properties if the URLs must stay"
   ],
   "generated": [
    "module/comp-jar/pom.xml",

@@ -30,9 +30,12 @@ followed by `illegal character: '\ufffd'` in `notice/NoticeFormatter.java`.
 
 ## Expected sbmig outcome (v2, asserted by `scripts/e2e.py`, see `expected.json` → `expect`)
 
-Success, exit 0, **1 LLM call**, no fix script: the **structure review** fixes it before the build. Its input lists the
-MS949 sources of `module/comp-jar` next to the parent's UTF-8, the replayed review reports a **critical** issue and its
-script sets `<project.build.sourceEncoding>MS949</project.build.sourceEncoding>` in `module/comp-jar/pom.xml` (committed
-`review: fix critical structure issues (1)`; v1 did this with the handler `source-encoding`). Post-checks: the migrated
+Success, exit 0, **1 LLM call**, no fix script: since v2.1x (2026-10-31, D-M7) the **restructure** fixes it before the
+review and the build — it samples the `.java` files of every module, finds `module/comp-jar` MS949 with nothing in the
+project declaring that encoding (the parent says UTF-8) and writes
+`<project.build.sourceEncoding>MS949</project.build.sourceEncoding>` into `module/comp-jar/pom.xml`
+(`RestructureResult.source_encodings_written`, journal `legacy_context` `source_encodings_written: 1`). The replayed
+structure review then answers `ok` (before v2.1x it reported a **critical** issue and its script set the property; v1
+did this with the handler `source-encoding`). Post-checks: the migrated
 `Greeting.java` and `NoticeFormatter.java` (anywhere under the run's `project/`) still decode as **cp949** and contain
 `안녕하세요` / `공지사항` — no step (rewrite, restructure, review script) re-encoded or corrupted the Korean text.

@@ -19,9 +19,9 @@ def with_verify(text: str, verify: str = VERIFY) -> str:
 def test_review_prompt_states_the_policy(cfg):
     text = system_prompt(cfg)
     for part in ("never raise a dependency's major version or replace a library in the review",
-                 "prefer the\n  parent-managed release (omit `version`) or a release of the same major",
-                 ("can only be fixed by a\n  major upgrade, say so in `<analysis>` / `fix_hint` and leave it to the "
-                  "fix loop"), "`<verify>` — only if your edits nevertheless raise a dependency's major version",
+                 "prefer the\n  parent-managed release (omit `version`); never re-pin what \"What the restructure did\"",
+                 ("If a critical issue\n  can only be fixed by a major upgrade, say so in `<analysis>` / `fix_hint` "
+                  "and leave it to the fix loop"), "`<verify>` — only if your edits nevertheless raise a dependency's major version",
                  "<verify>운영자 확인: …</verify>"):
         assert part in text, part
     assert "{{" not in text

@@ -294,7 +294,9 @@ def test_layout_servlet_war(tmp_path: Path, cfg: Config) -> None:
     assert t(r, "packaging") == "pom" and t(r, "build/sourceDirectory") is None
     assert t(r, "properties/maven.compiler.release") == "21" and t(r, "properties/maven.compiler.source") is None
     fu = "\n".join(res.manual_followups)
-    assert "web.xml at module/comp-jar/src/main/webapp/WEB-INF/web.xml is not read by embedded Tomcat" in fu
+    assert "web.xml at module/comp-jar/src/main/webapp/WEB-INF/web.xml is not read by the embedded Tomcat" in fu
+    # v2.1x D12: the as-is WAR's deployment context path
+    assert "the as-is WAR legacyweb-2.0.war was served under the context path /legacyweb-2.0" in fu
     assert "WAR packaging converted to executable jar" in fu
     assert "tomcat-embed-jasper" in fu
 

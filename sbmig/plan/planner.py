@@ -4,7 +4,9 @@
 적기만, 고치지 않음) → ``restructure.apply`` | ``restructure.boot_pom`` | ``restructure.pom_only`` (재구성) →
 ``restructure.review``(구조 검토) → ``verify.build``(검증 빌드, 실패하면 수정 루프). 레시피는 Java 21 /
 jakarta / Boot 4 세트만 계획한다 — 현업 결정(2026-10-26) "레시피가 무엇을 바꿀지 모르니 넣지 않는다". 그 밖의
-문제는 빌드 오류로 두고 수정 루프의 스크립트가 고쳐 KB 에 남긴다. 중간 빌드도 없다. MSA 는 서비스·공유
+문제는 빌드 오류로 두고 수정 루프의 스크립트가 고쳐 KB 에 남긴다. spring_legacy 의 Framework 7(v2.1o)과, 쓰는 경우만
+넣는 Security 체인(v2.1l) · Batch 6 · Hibernate 7.1, servlet_tomcat 의 Servlet 6 제거 API 세트(v2.1w)가 예외다 —
+Boot 프로젝트는 같은 단계를 Boot 4 우산 레시피 안에서 돈다. 중간 빌드도 없다. MSA 는 서비스·공유
 라이브러리 루트별 단계(라이브러리 먼저). 권고는 계획 노트 한 줄씩이다(안내만, 레시피가 되지 않는다).
 
 Rule-based migration planner (no LLM), v2 (flow-v2): ProjectProfile + Config → MigrationPlan.
@@ -15,12 +17,15 @@ restructure.pom_only, restructure.review, verify.build. The only build before ve
 
 * `transform.rewrite` (StepKind.OPENREWRITE, Phase.TRANSFORM): ONE OpenRewrite run on the as-is classpath. Recipes,
   in this order: `openrewrite.recipes.jdk21`; `jakarta` (spring_legacy and servlet_tomcat always, pure_java only with
-  Java EE javax imports, never spring_boot — the Boot umbrella migrates jakarta itself); `spring_framework_7` /
-  `spring_security_7` (spring_legacy; security only with spring-security) — the framework set is empty by default, the
-  security set is the 6_0 … 6_5 → 7_0 chain since v2.1l (2026-10-30, planned only when the analyzer found
-  `spring-security`); `spring_boot_4`
-  (spring_boot); `junit5` (junit4 detected) — empty by default; `extra.<case>` + `extra.all`. OpenRewrite recipes
-  only: no project, library or KB recipes (business decision, PLAN-v2 §2).
+  Java EE javax imports, never spring_boot — the Boot umbrella migrates jakarta itself) followed in the same bucket by
+  `servlet_jakarta_10` (v2.1w: every servlet_tomcat project, pure_java with `javax.servlet` imports, spring_legacy only
+  when the framework set is empty — UpgradeSpringFramework_7_0 already includes it); `spring_framework_7` (every
+  spring_legacy project since v2.1o) / `spring_security_7` (spring_legacy; the 6_0 … 6_5 → 7_0 chain since v2.1l,
+  planned only when the analyzer found `spring-security`) / `spring_batch_6` and `hibernate_7` (v2.1w, spring_legacy
+  with the analyzer's `spring-batch` / `hibernate` library — `hibernate` is the native ORM rule, a JPA-only project
+  has `jpa` only); `spring_boot_4` (spring_boot; the umbrella covers Batch, Hibernate and the Servlet removals);
+  `junit5` (junit4 detected) — empty by default; `extra.<case>` + `extra.all`. OpenRewrite recipes only: no project,
+  library or KB recipes (business decision, PLAN-v2 §2).
 * `transform.compile` (StepKind.BUILD, Phase.TRANSFORM, `mvn clean compile`, v2.1 — "OpenRewrite 를 다 돌린 뒤
   compile 을 한 번"): every error goes on the run's error list (seen `compile`), nothing is fixed. Planned whenever the
   project has java sources (also when no recipe applied). MSA: one at the root aggregator, else
@@ -76,10 +81,16 @@ TRANSFORM = "transform.rewrite"
 REVIEW = "restructure.review"
 V1_LOOP_PHASES = ("jdk21", "spring", "restructure")
 
-# recipe buckets of one transform run, in run order (labels for the step title)
+# 변환 1회의 레시피 묶음과 실행 순서(단계 제목의 이름표). Servlet 6 제거 API 레시피는 jakarta.servlet 타입에 걸리므로
+# javax → jakarta 다음에 돈다. Batch / Hibernate 는 Security 다음(v2.1w), Boot 세트는 Boot 프로젝트에만 있다.
+# recipe buckets of one transform run, in run order (labels for the step title). v2.1w: Java 21 → jakarta (+ the
+# Servlet 6 removals, which match jakarta.servlet types and so run after the javax → jakarta rename) → Framework 7 →
+# Security chain → Batch 6 → Hibernate 7.1 → Boot 4 (Boot projects only; never together with the legacy sets) →
+# JUnit 5 → extra
 _BUCKETS: tuple[tuple[str, str], ...] = (
     ("jdk21", "Java 21"), ("jakarta", "jakarta"), ("framework", "Spring Framework 7"),
-    ("security", "Spring Security 7"), ("boot", "Spring Boot 4.1"), ("junit5", "JUnit 5"), ("extra", "extra recipes"),
+    ("security", "Spring Security 7"), ("batch", "Spring Batch 6"), ("hibernate", "Hibernate 7.1"),
+    ("boot", "Spring Boot 4.1"), ("junit5", "JUnit 5"), ("extra", "extra recipes"),
 )
 
 
@@ -130,44 +141,86 @@ class _Facts:
         self.javax = javax
 
 
+def _chain(ids: list[str]) -> str:
+    """세트 id 들의 짧은 이름: 하나면 그 이름, 여럿이면 ``첫 … 끝`` (계획 노트용)."""
+    first, last = _short(ids[0]), _short(ids[-1])
+    return f"{first} … {last}" if len(ids) > 1 else first
+
+
+# v2.1w (결정 7, "쓰는 경우만"): 분석기 라이브러리 이름 → spring_legacy 에 더할 조건부 세트(묶음, 설정 세트 이름, 노트 이름표).
+# ``hibernate`` 는 네이티브 Hibernate ORM 규칙(hibernate-core / hibernate-entitymanager / org.hibernate.orm 의존성, 또는
+# org.hibernate.Session · SessionFactory · query · type · cfg · annotations import)이다 — JPA API 만 쓰는 프로젝트는 ``jpa``
+# 규칙만 걸리므로 이 세트를 받지 않는다. Boot 프로젝트는 UpgradeSpringBoot_4_0 우산 레시피가 같은 단계를 돈다(catalog covers).
+# v2.1w (decision 7, like the Security chain): analyzer library → conditional set for spring_legacy.
+_LEGACY_LIBRARY_SETS: tuple[tuple[str, str, str, str], ...] = (
+    ("spring-security", "security", "spring_security_7", "Spring Security"),
+    ("spring-batch", "batch", "spring_batch_6", "Spring Batch 6"),
+    ("hibernate", "hibernate", "hibernate_7", "Hibernate 7.1"),
+)
+
+
 def _case_buckets(facts: _Facts, cfg: Config, notes: list[str], label: str = "") -> dict[str, list[str]]:
     """변환 1회의 묶음별 레시피 id. 케이스별 규칙:
     - jdk21 세트는 항상.
     - jakarta 세트는 spring_legacy·servlet_tomcat 항상, pure_java 는 EE javax import 가 있을 때만,
       spring_boot 는 넣지 않는다(Boot 4 umbrella 가 javax → jakarta 를 직접 한다).
-    - Framework 7 / Security 7 / JUnit 5 세트는 v2 기본값이 비어 있다. ``extra.<case>`` + ``extra.all`` 은
-    그대로. 판단 근거는 ``notes`` 에 남긴다(보고서 Notes, plan.json).
+    - Servlet 6 제거 API 세트(``servlet_jakarta_10``, v2.1w)는 jakarta 묶음 안, javax → jakarta 다음: servlet_tomcat
+      항상, pure_java 는 ``javax.servlet`` import 가 있을 때, spring_legacy 는 Framework 7 세트가 비었을 때만
+      (UpgradeSpringFramework_7_0 이 JakartaEE10 → RemovalsServletJakarta10 을 이미 품는다).
+    - spring_legacy: Framework 7 세트 항상(v2.1o), 분석기가 라이브러리를 찾았을 때만 Security 체인(``spring-security``,
+      v2.1l) · Batch 6(``spring-batch``) · Hibernate 7.1(``hibernate`` = 네이티브 ORM, JPA 만이면 아님) 세트(v2.1w).
+    - JUnit 5 세트는 v2 기본값이 비어 있다. ``extra.<case>`` + ``extra.all`` 은
+    그대로. 판단 근거는 ``notes`` 에 남긴다(보고서 Notes, plan.json — ``transform`` 노트는 수정 프롬프트에도 간다).
+    실행 순서는 ``_BUCKETS``: Java 21 → jakarta(+ Servlet 6 제거) → Framework 7 → Security → Batch → Hibernate →
+    (Boot) → JUnit 5 → extra.
 
-    Recipe ids per bucket for one transform run."""
+    Recipe ids per bucket for one transform run. Run order (``_BUCKETS``): Java 21 → jakarta (+ the Servlet 6
+    removals) → framework → security → batch → hibernate → boot → junit5 → extra. v2.1w: ``servlet_jakarta_10`` for
+    every servlet_tomcat project, for pure_java with ``javax.servlet`` imports, and for spring_legacy only when the
+    Framework 7 set (which already includes it) is empty; ``spring_batch_6`` / ``hibernate_7`` for spring_legacy when
+    the analyzer found ``spring-batch`` / ``hibernate`` (native Hibernate ORM — a JPA-only project has ``jpa`` only).
+    Boot projects get none of them: the Boot 4 umbrella runs all three."""
     rs = cfg.openrewrite.recipes
     out: dict[str, list[str]] = {k: [] for k, _ in _BUCKETS}
     where = f" [{label}]" if label else ""
     case = facts.case
     out["jdk21"] = list(rs.jdk21)
+    servlet10 = list(rs.servlet_jakarta_10)
+    servlet10_note = f" + Servlet 6 removals {_chain(servlet10)}" if servlet10 else ""
     if case == CaseType.PURE_JAVA:
         ee = ee_javax_packages(facts.javax, "javax-annotation" in facts.libs)
         if ee:
             out["jakarta"] = list(rs.jakarta)
-            notes.append(f"transform{where}: pure_java with Java EE javax imports ({', '.join(ee)}) → jakarta set")
+            msg = f"transform{where}: pure_java with Java EE javax imports ({', '.join(ee)}) → jakarta set"
+            # 분류기는 javax.servlet import 가 있으면 보통 servlet_tomcat 으로 본다 — 여기는 그렇지 않은 드문 경우
+            if servlet10 and any(k == "javax.servlet" or k.startswith("javax.servlet.") for k in ee):
+                out["jakarta"] += [i for i in servlet10 if i not in out["jakarta"]]
+                msg += servlet10_note + " (javax.servlet imports)"
+            notes.append(msg)
         else:
             notes.append(f"transform{where}: pure_java without Java EE javax imports → no jakarta migration")
     elif case == CaseType.SERVLET_TOMCAT:
-        out["jakarta"] = list(rs.jakarta)
-        notes.append(f"transform{where}: servlet_tomcat → jakarta set (javax → jakarta)")
+        out["jakarta"] = list(rs.jakarta) + [i for i in servlet10 if i not in rs.jakarta]
+        notes.append(f"transform{where}: servlet_tomcat → jakarta set (javax → jakarta){servlet10_note}")
     elif case == CaseType.SPRING_LEGACY:
         out["jakarta"] = list(rs.jakarta)
         msg = f"transform{where}: spring_legacy → jakarta set"
         if rs.spring_framework_7:
             out["framework"] = list(rs.spring_framework_7)
             msg += " + Spring Framework 7 set"
-        if "spring-security" in facts.libs:
-            if rs.spring_security_7:
-                out["security"] = list(rs.spring_security_7)
-                first, last = _short(rs.spring_security_7[0]), _short(rs.spring_security_7[-1])
-                chain = f"{first} … {last}" if len(rs.spring_security_7) > 1 else first
-                msg += f" + Spring Security set {chain} (spring-security detected)"
+        elif servlet10:
+            # Framework 7 세트가 꺼진 회사 설정: 그 안에 있던 Servlet 6 제거 레시피를 따로 넣는다
+            out["jakarta"] += [i for i in servlet10 if i not in out["jakarta"]]
+            msg += servlet10_note + " (the Spring Framework 7 set is empty)"
+        for lib, bucket, set_name, title in _LEGACY_LIBRARY_SETS:
+            if lib not in facts.libs:
+                continue
+            ids = list(getattr(rs, set_name))
+            if ids:
+                out[bucket] = ids
+                msg += f" + {title} set {_chain(ids)} ({lib} detected)"
             else:
-                msg += "; spring-security detected, the Spring Security set is empty (v2)"
+                msg += f"; {lib} detected, the {title} set is empty"
         notes.append(msg)
     elif case == CaseType.SPRING_BOOT:
         out["boot"] = list(rs.spring_boot_4)
@@ -622,13 +675,14 @@ _has_javax_ee = GATES["has_javax_ee"]          # backwards-compatible alias
 
 
 def v2_recipe_scope(cfg: Optional[Config] = None) -> set[str]:
-    """v2 가 돌릴 수 있는 레시피 id 전부: 설정 세트(jdk21, jakarta, spring_boot_4 와 비어 있는 선택 세트들) +
-    extra. 조언자의 화이트리스트를 이 범위로 좁힌다.
+    """v2 가 돌릴 수 있는 레시피 id 전부: 설정 세트(jdk21, jakarta, Servlet 6 제거, spring_boot_4, Framework 7,
+    조건부 Security / Batch / Hibernate, junit5) + extra. 조언자의 화이트리스트를 이 범위로 좁힌다.
 
-    Every recipe id v2 may run: the configured sets (jdk21, jakarta, spring_boot_4 and the opt-in framework /
-    security / junit5 sets) plus every `extra` list."""
+    Every recipe id v2 may run: the configured sets (jdk21, jakarta, servlet_jakarta_10, spring_boot_4, framework,
+    the conditional security / batch / hibernate sets and junit5) plus every `extra` list."""
     rs = cfg.openrewrite.recipes if cfg is not None else RecipeSetConfig()
-    ids = {*rs.jdk21, *rs.jakarta, *rs.spring_boot_4, *rs.spring_framework_7, *rs.spring_security_7, *rs.junit5}
+    ids = {*rs.jdk21, *rs.jakarta, *rs.servlet_jakarta_10, *rs.spring_boot_4, *rs.spring_framework_7,
+           *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.junit5}
     for extra in (rs.extra or {}).values():
         ids.update(extra)
     return ids

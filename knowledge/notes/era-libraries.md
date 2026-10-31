@@ -16,15 +16,17 @@ keywords:
   - "org\\.apache\\.commons\\.dbcp(?!2)"
   - "com\\.lowagie|openpdf"
   - "StaticLoggerBinder|jcl-over-slf4j|slf4j-log4j12"
+  - "org\\.apache\\.commons\\.lang(?!3)\\b|commons-lang:commons-lang"
+  - "org\\.apache\\.log4j\\b|log4j:log4j"
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [spring, restructure]
 ---
 # Era libraries on Spring 7 / Boot 4
 
-Libraries that 2013–2020 Spring 3/4 / Boot 1–2 projects use and that Spring 7 / Boot 4.1 no longer carry. Each
-`## fix-loop: <library>` section is the guidance the build-fix loop gets when the matching advisory fired
-(knowledge/libraries/advisories.yml, docs/ADVISORIES.md "2026-10-22 era libraries"). Where no direct mapping is
-known: keep the public signatures, port only what the error names, mark the rest `// MIGRATION-TODO <advisory id>`.
+Libraries of 2013–2020 Spring 3/4 / Boot 1–2 projects that Spring 7 / Boot 4.1 no longer carry. A `## fix-loop:
+<library>` section is what the build-fix loop gets when that advisory fired (knowledge/libraries/advisories.yml).
+Without a direct mapping: keep the public signatures, port only what the error names, mark the rest
+`// MIGRATION-TODO <advisory id>`. A version-less declaration (`version: null`) gets the as-is version from sbmig.
 
 ## fix-loop: hibernate-template
 `package org.springframework.orm.hibernate5 does not exist` / `cannot find symbol HibernateTemplate`: Spring 7 moved
@@ -43,9 +45,10 @@ package renames are misspelled), and Spring 6 removed `CommonsMultipartResolver`
 - Direct FileUpload code: `ServletFileUpload` → `org.apache.commons.fileupload2.jakarta.servlet6.JakartaServletFileUpload`,
   `org.apache.commons.fileupload.disk.DiskFileItemFactory` → `org.apache.commons.fileupload2.core.DiskFileItemFactory`
   (`DiskFileItemFactory.builder().get()`), `FileItem` → `org.apache.commons.fileupload2.core.FileItem` (artifact
-  commons-fileupload2-jakarta-servlet6 2.0.0-M5) — or port to `MultipartFile` / `Part`.
-- `CommonsMultipartResolver` bean → delete it (Boot multipart / `StandardServletMultipartResolver`); limits go to
-  `spring.servlet.multipart.max-file-size` / `max-request-size` / `file-size-threshold`. Controllers taking
+  `org.apache.commons:commons-fileupload2-jakarta-servlet6`, version from the Dependency versions section) — or port
+  to `MultipartFile` / `Part`.
+- `CommonsMultipartResolver` bean → delete it; `maxUploadSize` → `spring.servlet.multipart.max-request-size` and
+  `max-file-size`, `maxInMemorySize` → `file-size-threshold` (servlet-to-boot.md). Controllers taking
   `MultipartHttpServletRequest` / `MultipartFile` need no change.
 
 ## fix-loop: jackson1
@@ -66,7 +69,7 @@ Spring 6 removed `org.springframework.web.servlet.view.tiles3` (TilesConfigurer,
 Spring 5 removed VelocityConfigurer / VelocityViewResolver / `org.springframework.ui.velocity.VelocityEngineUtils`.
 - Mail / text templates: `VelocityEngineUtils.mergeTemplateIntoString(engine, name, enc, model)` →
   `StringWriter w = new StringWriter(); engine.getTemplate(name, enc).merge(new VelocityContext(model), w);`
-  with org.apache.velocity:velocity-engine-core 2.4.1.
+  (`org.apache.velocity:velocity-engine-core` 2.x line; version from the Dependency versions section).
 - Web views: remove the Velocity view beans and mark `// MIGRATION-TODO velocity` (port .vm to Thymeleaf / FreeMarker).
 
 ## fix-loop: ehcache2
@@ -79,21 +82,22 @@ EhCacheManagerFactoryBean.
   schema (`// MIGRATION-TODO ehcache2` for the XML).
 
 ## fix-loop: commons-collections3
-After UpgradeApacheCommonsCollections_3_4 the imports are `org.apache.commons.collections4.*`.
-- `package org.apache.commons.collections4 does not exist` → add org.apache.commons:commons-collections4 4.5.0.
-- Generics errors left by the recipe → add the type arguments the collections4 signatures ask for; keep behaviour.
-- Remaining `org.apache.commons.collections.*` imports → the collections4 class of the same name.
+commons-collections 3.2.2 compiles on JDK 21 and sbmig runs no collections recipe.
+- `package org.apache.commons.collections does not exist` → the jar lost its declaration (it often came
+  transitively): declare `commons-collections:commons-collections` with `version: null`; keep the imports.
+- The move to `org.apache.commons:commons-collections4` is a library replacement for the owners (Handover), not a
+  build fix; only code already on collections4 gets `org.apache.commons:commons-collections4` (`version: null`).
 
 ## fix-loop: json-lib
 json-lib 2.4 resolves only with `<classifier>jdk15</classifier>`; keep that while it is used.
 - `package net.sf.json does not exist` → the dependency lost its classifier or version: restore
-  net.sf.json-lib:json-lib 2.4 classifier jdk15; do not port JSON code inside the build fix.
+  `net.sf.json-lib:json-lib` with classifier `jdk15` (2.4 is the last release); do not port JSON code in the build fix.
 - Code it pulled in transitively (`org.apache.commons.lang.*`, collections 3) needs those jars declared.
 
 ## fix-loop: jjwt
 jjwt 0.9.1 needs `javax.xml.bind.DatatypeConverter` at runtime and its API changed in 0.12.
-- Build fix: keep `io.jsonwebtoken:jjwt` 0.9.1 and add `javax.xml.bind:jaxb-api` 2.3.1 (scope runtime); do not
-  rename its javax import (it is inside the jar).
+- Build fix: keep `io.jsonwebtoken:jjwt` as it is and add `javax.xml.bind:jaxb-api` (scope runtime, `version: null`);
+  do not rename its javax import (it is inside the jar).
 - Code already on 0.12+/0.13.0 (jjwt-api + jjwt-impl + jjwt-jackson): `Jwts.parserBuilder()` → `Jwts.parser()`,
   `setSigningKey(k).build().parseClaimsJws(t)` → `verifyWith(k).build().parseSignedClaims(t)`,
   `signWith(SignatureAlgorithm, secret)` → `signWith(Keys.hmacShaKeyFor(bytes))`.
@@ -104,19 +108,19 @@ POI 5 removed the int / short constants deprecated in 3.15–3.17.
   `HorizontalAlignment.*`, `VERTICAL_*` → `VerticalAlignment.*`; `BORDER_*` → `BorderStyle.*`; fill patterns →
   `FillPatternType.*`; `Hyperlink.LINK_*` → `HyperlinkType.*`; `font.setBoldweight(BOLDWEIGHT_BOLD)` →
   `font.setBold(true)`; `setCellType(int)` → `setCellType(CellType)`.
-- Artifacts: poi-ooxml-schemas → poi-ooxml-lite, ooxml-schemas → poi-ooxml-full (5.5.1).
+- Artifacts (POI 5): poi-ooxml-schemas → poi-ooxml-lite, ooxml-schemas → poi-ooxml-full.
 - `HSSFColor.<NAME>` inner classes → `HSSFColor.HSSFColorPredefined.<NAME>` / `IndexedColors.<NAME>`.
 
 ## fix-loop: commons-httpclient3
 commons-httpclient 3.1 (the last release) still compiles on Java 21.
 - `package org.apache.commons.httpclient does not exist` (the jar lost its version / declaration) → declare
-  commons-httpclient:commons-httpclient 3.1 explicitly; do not port GetMethod / PostMethod code inside the build fix.
+  `commons-httpclient:commons-httpclient` (`version: null`); do not port GetMethod / PostMethod code in the build fix.
 - New code: httpclient5 (`org.apache.hc.client5.http.*`) or RestClient; mark ports `// MIGRATION-TODO commons-httpclient3`.
 
 ## fix-loop: axis1
 Axis 1 stubs are javax.xml.rpc / javax.xml.soap and have no Jakarta build.
 - Keep `javax.xml.rpc.*` / `javax.xml.soap.*` imports in Axis stub and client code (never rename them to jakarta);
-  declare org.apache.axis:axis-jaxrpc and axis-saaj 1.4 explicitly when they are missing.
+  declare `org.apache.axis:axis-jaxrpc` and `axis-saaj` (`version: null`) when they are missing.
 - AxisServlet / server-side deployment cannot run on Tomcat 11: mark `// MIGRATION-TODO axis1` (JAX-WS / CXF).
 
 ## fix-loop: dbcp1
@@ -126,12 +130,24 @@ Runtime, not build: dbcp1 compiles. When the code was already moved to `org.apac
   `<property name="maxActive">` on `org.apache.commons.dbcp2.BasicDataSource`.
 
 ## fix-loop: itext
-`com.lowagie:itext` 2.1.7 → `com.github.librepdf:openpdf` 2.4.0 keeps the `com.lowagie.text` packages (never jump to
-OpenPDF 3.x: it renamed them to org.openpdf.text). Missing in OpenPDF: `com.lowagie.tools.*`, some pdf.codec image
+`com.lowagie:itext` 2.1.7 → `com.github.librepdf:openpdf` below 3.x keeps the `com.lowagie.text` packages (OpenPDF
+3.x renamed them to org.openpdf.text: never jump to 3.x; version from the Dependency versions section). Missing in OpenPDF: `com.lowagie.tools.*`, some pdf.codec image
 readers (Bmp / Gif / Png / Tiff / JBIG2), pdf.parser content-stream classes — mark `// MIGRATION-TODO itext`. OpenPDF
 bundles the Korean CJK fonts (HYGoThic-Medium, HYSMyeongJo-Medium); drop itext-asian.
 
 ## fix-loop: slf4j-1-pin
-No compile errors; logging goes silent (NOP) or duplicated. Remove explicit `org.slf4j:*` / logback versions (Boot
-4.1 manages SLF4J 2.0.18), remove slf4j-log4j12 / slf4j-jdk14 / slf4j-simple and jcl-over-slf4j; keep
+No compile errors; logging goes silent (NOP) or duplicated. Remove explicit `org.slf4j:*` / logback versions (the
+Boot BOM manages SLF4J 2), remove slf4j-log4j12 / slf4j-jdk14 / slf4j-simple and jcl-over-slf4j; keep
 log4j-over-slf4j only for leftover Log4j 1 calls.
+
+## fix-loop: commons-lang2
+`package org.apache.commons.lang does not exist` (commons-lang 2.6 often arrived transitively — json-lib,
+commons-configuration 1, an old in-house jar — and no longer does): declare `commons-lang:commons-lang` in that
+module with `version: null`; keep the `org.apache.commons.lang.*` imports. The move to `commons-lang3` (and
+`StringEscapeUtils` → commons-text) is the owners' replacement (Handover), not a build fix.
+
+## fix-loop: log4j1
+`package org.apache.log4j does not exist` (the jar lost its declaration or version): re-declare the as-is coordinate
+`log4j:log4j` with `version: null`; keep the logging calls. `log4j.properties` / `log4j.xml` are not read by Boot
+(Logback) — a startup matter; the move to SLF4J / Log4j 2 is the owners' (Handover). Spring's `Log4jConfigurer` /
+`Log4jConfigListener` are gone: delete the call / registration (spring-framework-7.md).

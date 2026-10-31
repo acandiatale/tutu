@@ -41,7 +41,8 @@ layout:
                                          # OpenRewrite never parses JSPs; false = Handover follow-up only
   boot_as_is: in-place
   boot_module_pattern: "*-boot"
-  jsp_boot_packaging: war                # JSPs present → the boot module is a WAR for external Tomcat (front jar holds the JSPs)
+  jsp_boot_packaging: war                # JSPs present → the boot module is an executable WAR (java -jar runs the embedded Tomcat;
+                                         # the same file deploys to an external Tomcat; JSPs cannot be served from an executable jar)
   boot_artifact_suffix: "-boot"
   comp_artifact_suffix: "-back"          # artifactIds: <root>-boot / <root>-back / <root>-front
   # minimal  : every as-is source goes to comp-jar; boot-jar holds only the Application class (+ boot resources, @SpringBootTest tests)
@@ -88,6 +89,25 @@ layout:
                                    # WebXmlRegistrations @Configuration in the boot module (followup = notes only)
   import_xml_bean_configs: true
   msa_parent_policy: per-service-root
+  # v2.1x (2026-10-31, prompt review §4): the legacy Spring context at conversion time — startup-time items the build gate and
+  # the LLM never see, handled by the restructure itself; every switch off = Handover sentence only. Class → property mappings
+  # live in knowledge/config/web_xml_rules.yml.
+  legacy_context:
+    entry_xml_only: true                 # @ImportResource lists only the XMLs web.xml's contextConfigLocation names (root +
+                                         # DispatcherServlet); XMLs reached by <import> are left to Spring; no web.xml → all
+    exclude_test_xml: true               # XML under src/test/ is never imported into the Boot context
+    allow_bean_overriding: true          # as-is Spring Framework behaviour (Boot 4 default false): spring.main.allow-bean-definition-overriding
+    allow_circular_references: true      # idem: spring.main.allow-circular-references; duplicate bean ids are listed in the Handover
+    filter_properties: true              # init-params of skipped web.xml filters → Boot properties (CharacterEncodingFilter → spring.servlet.encoding.*)
+    default_servlet: true                # <mvc:default-servlet-handler/> → server.servlet.register-default-servlet=true
+    multipart_resolver: true             # XML CommonsMultipartResolver → removed from the legacy-config copy + spring.servlet.multipart.* limits
+    detect_enable_web_mvc: true          # @EnableWebMvc / WebMvcConfigurationSupport → no spring.mvc.view.* written, Handover instead
+    rewrite_webinf_locations: true       # /WEB-INF/… property locations in the copies → classpath:asis-webinf/…
+    profile_globs: true                  # ${…} segments inside classpath locations → * globs
+    restore_asis_scopes: true            # a dependency declared `provided` as-is keeps that scope after the recipes (jakarta.servlet-api …)
+    web_starter_by_evidence: true        # spring_legacy: the webmvc starter only with web evidence, else spring-boot-starter
+    write_source_encoding: true          # project.build.sourceEncoding written for a module whose sources are MS949 / EUC-KR
+    handover_sentences: true             # JNDI / DelegatingFilterProxy / *.do / <jsp-config> / log4j 1 / Security XML → Handover + MIGRATION-TODO comments
 
 openrewrite:
   # verified on Maven Central 2026-10-18: rewrite-maven-plugin 6.46.1.
@@ -129,6 +149,16 @@ openrewrite:
       - org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_5
       - org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0
     junit5: []
+    # v2.1w (2026-10-31, user decision 7 — PM default, same rule as the Security chain "쓰는 경우만"): planned only when the
+    # analyzer found the library — spring_legacy + spring-batch → Batch 5→6; spring_legacy + hibernate (native ORM) → Hibernate 7.1;
+    # every servlet_tomcat project → the Servlet 6 removals (spring_legacy gets that one inside UpgradeSpringFramework_7_0). Boot
+    # projects already run all three inside the Boot 4 umbrella. Empty list = off.
+    spring_batch_6:
+      - org.openrewrite.java.spring.batch.SpringBatch5To6Migration
+    hibernate_7:
+      - org.openrewrite.hibernate.MigrateToHibernate71
+    servlet_jakarta_10:
+      - org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10
   timeout_minutes: 40
   jvm_args: ["-Xmx4g"]
   plugin_goal: run
@@ -181,6 +211,7 @@ loop:
   blocked_policy:                # LLM script attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
     reactor_duplicate: 0           # v2.1k: a module listed twice in the reactor is handed over, never asked of the LLM
     file_lock: 0                   # v2.1r: target/ locked by another process (Windows) — an environment error, never the LLM
+    needs_owner: 0                 # v2.1y: the LLM declined with a blocker outside the project (no jakarta build, owners' decision)
     # v2: no handler swaps a javax library / bumps a missing version / a plugin any more → the LLM script gets 2 tries
     external_javax_api: 2        # dependency still exposes javax.* → the script may swap it for its jakarta release
     external_api_incompatible: 2
@@ -237,6 +268,9 @@ script:                            # v2 fix scripts (docs/v2/PLAN-v2.md §3.2): 
   reuse: true                      # case seen before → its best stored version runs first, without an LLM call
   reuse_versions: 1
   max_augments_per_case: 3         # LLM extensions per case and run, then BLOCKED (repeated_failure) → Handover
+  max_declines_per_case: 1         # v2.1y: answers with neither edits nor a script (a blocker outside the project) before BLOCKED
+                                   # needs_owner; sibling cases with the same cause are blocked without another LLM call
+  idempotency_check: true          # v2.1y: the script runs once more right after `ok`; a second change marks it non_idempotent (not reused)
 
 errors:                            # v2.1 error list: <run dir>/errors.jsonl + errors.md, appended to <kb>/errors.jsonl
   diff_chars: 6000                 # cap of a try's stored diff (the full diff is in changes.patch)
@@ -258,10 +292,13 @@ libraries:                         # v2.1d dependency version policy: never a ma
 
 review:                            # v2 structure review: the LLM checks poms / dependencies / modules after the restructure
   enabled: true
-  fix_critical: true               # critical findings → one fix script (committed, revertible); warnings → report + kb
+  fix_critical: true               # critical findings → the answer's edits (committed `review: …`, revertible); warnings → report + kb
   max_pom_chars: 60000
   max_poms: 40
   record: true                     # <kb>/reviews.jsonl
+  ask_script: false                # v2.1y: edits-only review (no script section / helper table in the prompt); true = ask for <script> too
+  invariant_check: true            # v2.1y: the restructure's invariants are re-checked after the review's edits (restore + one retry)
+  save_input: true                 # v2.1v: the review's user prompt is kept as <run dir>/logs/review-input.md
 
 fix:
   mode: script                     # v2.1i: script = fix scripts stored per case and reused (default) | edits = the LLM answers

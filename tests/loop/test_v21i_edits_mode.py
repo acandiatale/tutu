@@ -190,13 +190,31 @@ def test_no_cap_keeps_asking_until_the_rounds_run_out(edits_cfg, ws, logs):
 def test_an_answer_without_edits_is_a_failed_try(edits_cfg, ws):
     edits_cfg.fix.edits_max_asks_per_case = 1                               # one ask only
     el = FakeErrorList()
-    fixer = FakeFixer(scripts=[answer(error="no <edits> block")])
+    fixer = FakeFixer(scripts=[answer(analysis="", error="no <edits> block")])     # unusable (no analysis)
     pr = make_loop(edits_cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 5)
     [a] = pr.attempts
     assert a.outcome == "apply_failed" and a.apply_errors == ["LLM answered with no edits: no <edits> block"]
     assert [b.reason.value for b in pr.blocked] == ["repeated_failure"] and len(fixer.contexts) == 1
     [t] = el.tries_of(CASE)
     assert (t.source, t.applied, t.result) == ("llm-edit", "none", "apply_failed")
+
+
+def test_an_analysis_only_or_blocked_answer_is_declined_in_edits_mode_too(edits_cfg, ws):
+    """v2.1y (E-M1): the same classification as script mode — `<blocked>` (even beside edits, which are not applied)
+    or analysis only → declined, BLOCKED needs_owner without a second ask."""
+    el = FakeErrorList()
+    ans = answer(edits=[write_edit(FOO, FIXED)])
+    ans.blocked_reason = "no jakarta build of opensymphony:sitemesh exists; the owners must pick SiteMesh 3"
+    fixer = FakeFixer(scripts=[ans])
+    pr = make_loop(edits_cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 5)
+    [a] = pr.attempts
+    assert a.outcome == "blocked" and not a.applied and len(fixer.contexts) == 1
+    assert "the answer named a blocker (<blocked>): its edits / script were not applied" in a.notes
+    [b] = pr.blocked
+    assert b.reason.value == "needs_owner" and b.suggestion.endswith("— 소유팀 결정 필요")
+    assert b.suggestion.startswith("no jakarta build of opensymphony:sitemesh exists")
+    [t] = el.tries_of(CASE)
+    assert (t.source, t.applied, t.result) == ("llm-edit", "none", "blocked")
 
 
 # ------------------------------------------------------------------------------------------ the KB is not consulted
@@ -297,7 +315,7 @@ def test_the_texts_an_edits_mode_prompt_gets_say_nothing_about_scripts(edits_cfg
         errs = [compile_error(f, sig=sig, l2=l2) for f, l2 in ((FOO, L2), (BAR, "compile|other|x"))
                 if "broken" in w.read(f)]
         return bad_build(*errs) if errs else ok_build()
-    answers = {FOO: [answer(error="no <edits> block"),
+    answers = {FOO: [answer(analysis="", error="no <edits> block"),     # unusable, not a v2.1y decline
                      answer(code=write_script({FOO: "x"}).code, edits=[write_edit(FOO, "class Foo { broken 2 }\n")]),
                      answer(edits=[write_edit(FOO, FIXED)])],
                BAR: [answer(edits=[write_edit(BAR, FIXED)])]}

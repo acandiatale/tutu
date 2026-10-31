@@ -10,14 +10,14 @@ keywords:
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [spring, restructure]
 ---
-# Externalized configuration on an executable boot-jar
+# Externalized configuration on the embedded Tomcat (executable jar / WAR)
 
 ## Why keys vanish
-On an external Tomcat many values never lived in the source: `catalina.properties` / `setenv.sh` `-D` flags,
+On the as-is external Tomcat many values never lived in the source: `catalina.properties` / `setenv.sh` `-D` flags,
 JNDI `<Resource>` / `<Environment>` in `server.xml` or `META-INF/context.xml`, web.xml `<context-param>`,
 `file:${catalina.base}/conf/*.properties` placeholder locations, jars in `tomcat/lib`. An embedded Tomcat reads
 none of them: no JNDI, no web.xml, no `catalina.*` system properties. The code still reads the keys, so startup
-(and every `@SpringBootTest`) fails with `Could not resolve placeholder` or a JNDI `NameNotFoundException`.
+fails with `Could not resolve placeholder` or a JNDI `NameNotFoundException` — at runtime, not in the build.
 
 ## What sbmig does
 - The analyzer (`sbmig.analyze.properties`) lists every key read by `@Value` / other annotations `${…}`,
@@ -36,16 +36,11 @@ none of them: no JNDI, no web.xml, no `catalina.*` system properties. The code s
 - `__SET_ME__` is a deliberate marker, not a value: the owners replace it before deployment.
 
 ## fix-loop: externalized-config
-When a test fails with `Could not resolve placeholder '<key>'` (or `Failed to bind properties under '<prefix>'`):
-- Supply the key for the TEST only: add it to the failing test's `@SpringBootTest(properties = "<key>=<test value>")`
-  (or `@TestPropertySource(properties = …)`), or to `src/test/resources/application.properties` when several tests
-  need it. Use an obviously fake test value (`test`, `0`, `jdbc:h2:mem:test`), never a real host, URL or password.
-- Never invent production values and never edit or remove the sbmig placeholder block in `src/main/resources`;
-  do not replace `__SET_ME__` with a guessed value.
-- Do not add `ignoreUnresolvablePlaceholders` / `ignore-unresolvable="true"` to hide the error, and do not delete the
+A missing key is a startup error, never a build error: sbmig's build runs `-Dmaven.test.skip=true`, so
+`Could not resolve placeholder` / JNDI `NameNotFoundException` reach the loop only when a project runs its tests.
+- Never replace `__SET_ME__` with a guessed value, never edit or remove the sbmig placeholder block in
+  `src/main/resources`, never add `ignoreUnresolvablePlaceholders` / `ignore-unresolvable="true"`, never delete the
   `@Value` field or the XML bean that reads the key.
-- A JNDI lookup failing in a test (`NameNotFoundException`, `NoInitialContextException`): give the test a
-  `spring.datasource.url=jdbc:h2:mem:test` (when H2 is on the test classpath) or mock the bean; do not add a JNDI
-  provider dependency.
-- If the value is a number/boolean, the test value must parse (`0`, `false`), otherwise the next error is a
-  conversion failure.
+- When tests do run: give the failing test the key (`@SpringBootTest(properties = "<key>=<value>")`, or
+  `src/test/resources/application.properties`) with an obviously fake value that parses (`test`, `0`, `false`,
+  `jdbc:h2:mem:test`); a JNDI lookup in a test → `spring.datasource.url=jdbc:h2:mem:test` or a mock, never a JNDI provider.

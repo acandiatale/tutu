@@ -270,6 +270,81 @@ def parse_review_answer(text: str) -> ParsedReview:
     return out
 
 
+# ---------------------------------------------------------------------------- unsupported issues (v2.1y, E-M5)
+UNSUPPORTED_MARK = "(sbmig check) not in the material: "
+_ART = r"[A-Za-z][\w]*(?:[.\-][A-Za-z0-9_]+)+"
+_VER = r"\d+\.\d+(?:\.\d+)*(?:[.\-][A-Za-z][\w]*)?"
+# a version string attached to an artifact-like word (`g:a:v`, `jakarta.servlet-api 6.1.0`, `slf4j-api is pinned at
+# 2.0.17`, `spring.version=5.3.31`) or to the word "version" — "Spring Boot 4.1" / "Java [1.8,9)" are not checked
+_ATTACHED_VERSION = re.compile(
+    rf"(?:{_ART}|\bversions?\b|버전|<version>)[`'\"]?"
+    r"(?:\s*[:=]\s*|\s+(?:(?:is|are|was)\s+)?(?:(?:still\s+)?(?:pinned|kept|set|declared|left|raised|downgraded)\s+)?"
+    r"(?:(?:at|to|on|of)\s+)?)"
+    rf"[`'\"]?(?P<v>{_VER})\b", re.I)
+_PROPERTY_NAMES = re.compile(r"\$\{([^}\s]+)\}|(?<![\w.$-])([A-Za-z][\w-]*(?:\.[\w-]+)*\.version)\b")
+_BUILTIN_PREFIXES = ("project.", "java.", "env.", "settings.", "maven.", "os.", "user.", "basedir", "pom.")
+
+
+def issue_tokens(issue: ReviewIssue) -> tuple[list[str], list[str]]:
+    """이슈 문장(problem + fix_hint)이 말하는 (버전 문자열, 속성 이름) — 버전은 아티팩트 / version 낱말에 붙은 것만, 속성은
+    `${…}` 와 `<이름>.version` (Maven 내장 `project.*` / `java.*` … 제외).
+
+    (version strings, property names) an issue's text names: versions attached to an artifact-like word or the word
+    "version"; properties as `${…}` or `<name>.version` (Maven built-ins skipped)."""
+    text = f"{issue.problem} {issue.fix_hint}"
+    versions = list(dict.fromkeys(m.group("v") for m in _ATTACHED_VERSION.finditer(text)))
+    props: list[str] = []
+    for m in _PROPERTY_NAMES.finditer(text):
+        name = (m.group(1) or m.group(2) or "").strip()
+        if name and not name.startswith(_BUILTIN_PREFIXES) and name not in props:
+            props.append(name)
+    return versions, props
+
+
+def _version_in(version: str, material: str) -> bool:
+    core = re.match(r"\d+(?:\.\d+)+", version)
+    core_s = core.group(0) if core else version
+    return re.search(rf"(?<![\d.]){re.escape(core_s)}(?!\d)", material) is not None
+
+
+def _property_in(name: str, material: str) -> bool:
+    return re.search(rf"(?<![\w.-]){re.escape(name)}(?![\w-])", material) is not None
+
+
+def unsupported_tokens(issue: ReviewIssue, material: str, state: Optional[str] = None) -> list[str]:
+    """이슈가 말하는데 재료 어디에도 없는 버전·속성. 버전은 프롬프트 전체(`material`), 속성은 지금 상태를 보여 주는 부분
+    (`state`, "What the restructure did" 를 뺀 것 — 재구성이 지운 속성이 '남아 있다' 는 말을 잡는다)에서 찾는다.
+
+    The versions / properties an issue names that the material does not contain: versions are looked up in the whole
+    prompt, property names in `state` (the prompt without "What the restructure did") — a property the restructure
+    removed is in no pom, so "property X is left" is caught."""
+    versions, props = issue_tokens(issue)
+    state = material if state is None else state
+    return [v for v in versions if not _version_in(v, material)] + [p for p in props if not _property_in(p, state)]
+
+
+def mark_unsupported(issues: list[ReviewIssue], material: str, state: Optional[str] = None
+                     ) -> tuple[list[ReviewIssue], list[str]]:
+    """v2.1y (E-M5): 재료에 없는 버전·속성을 말한 이슈에 `unsupported=True` 와 문장 앞 표시 "(sbmig check) not in the
+    material: " 를 붙인다(심각도는 그대로 — 보고서에는 남고, 적용·인수인계에서는 빠진다). (표시한 목록, 없던 토큰들).
+
+    Mark the issues that name a version / property found nowhere in the material: `unsupported=True` and the problem
+    prefixed with UNSUPPORTED_MARK (severity kept). Returns (issues, the missing tokens of all marked issues)."""
+    out: list[ReviewIssue] = []
+    missing: list[str] = []
+    for i in issues:
+        if i.unsupported or i.problem.startswith("(sbmig check)"):
+            out.append(i)
+            continue
+        miss = unsupported_tokens(i, material, state)
+        if not miss:
+            out.append(i)
+            continue
+        missing += [m for m in miss if m not in missing]
+        out.append(i.model_copy(update={"unsupported": True, "problem": UNSUPPORTED_MARK + i.problem}))
+    return out, missing
+
+
 def changes_note(parsed: ParsedReview) -> str:
     """스크립트는 있는데 `<changes>` 목록이 없는 리뷰 답변에
     붙일 `[sbmig]` 메모(설명이 있거나 스크립트가 없으면 "").

@@ -1,5 +1,5 @@
 {
-  "note": "structure review of legacy-external-config (one call): verdict issues",
+  "note": "structure review of legacy-external-config (one call, v2.1y: regenerated so that it names only what the review material shows): verdict ok",
   "replay_role": "structure_review",
-  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"pom.xml\",\n      \"problem\": \"property spring.version=5.3.31 is left although the Spring artifacts are managed by the parent now\",\n      \"fix_hint\": \"remove the unused property\"\n    }\n  ],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only; Java level 21 via maven.compiler.release. jackson-databind and slf4j-api are on the configured versions.\"\n}\n</review>\n"
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root pom inherits the configured parent and aggregates module/comp-jar and module/boot-jar; both modules inherit the root, packaging jar, the boot module depends on the comp module; the mandatory starters sit in the root only. The Spring artifacts are version-less (managed by the parent chain) and the restructure removed the version property the recipe-raised versions used.\"\n}\n</review>\n"
 }

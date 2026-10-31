@@ -117,7 +117,8 @@ def test_failed_edits_fall_back_to_the_answers_script(cfg, ws):
                                       edits=[{"op": "replace", "path": FOO, "old": "no such text", "new": "x"}])])
     runner = FakeScriptRunner()
     pr = make_loop(cfg, ws, broken_build(FOO), fixer, runner=runner, errors=el).run(Phase.VERIFY, "package", 3)
-    assert pr.ok and len(runner.runs) == 1
+    # the script ran, then once more for the v2.1y idempotency check (same code, same tree, nothing changed again)
+    assert pr.ok and len(runner.runs) == 2 and runner.runs[1]["code"] == runner.runs[0]["code"]
     [a] = pr.attempts
     assert a.edits_applied == 0 and a.script_result.status == "ok" and a.outcome == "build_ok"
     assert any("first choice failed: edits error: edit 1: text not found" in n for n in a.notes)
@@ -133,18 +134,35 @@ def test_only_a_script_runs_it_and_stores_it_first(cfg, ws):
     assert kb.cases.credits == [(CASE, 1, "build_ok", "demo")]
 
 
-def test_no_script_and_no_edits_is_a_failed_try_with_its_reason(cfg, ws):
-    cfg.script.max_augments_per_case = 1
+def test_no_script_and_no_edits_is_a_declined_try_with_its_reason(cfg, ws):
+    """v2.1y (E-M1): an answer with neither a script nor edits is "declined" — outcome blocked, the case BLOCKED
+    needs_owner at once (script.max_declines_per_case 1) with the reason as the Korean suggestion; no second ask."""
+    cfg.script.max_augments_per_case = 3
     el = FakeErrorList()
     fixer = FakeFixer(scripts=[answer(no_script_reason="the fix depends on business rules", error="no script and no "
                                                                                                   "edits")])
     pr = make_loop(cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 3)
     [a] = pr.attempts
-    assert a.outcome == "apply_failed" and "no script: the fix depends on business rules" in a.apply_errors[0]
+    assert a.outcome == "blocked" and "declined: the fix depends on business rules" in a.notes
+    assert len(fixer.script_calls) == 1                                 # not asked again
     [t] = el.tries_of(CASE)
-    assert (t.source, t.applied, t.result) == ("llm-new", "none", "apply_failed")
-    assert t.no_script_reason == "the fix depends on business rules" and "neither a script nor edits" in t.note
+    assert (t.source, t.applied, t.result) == ("llm-new", "none", "blocked")
+    assert t.no_script_reason == "the fix depends on business rules" and "declined:" in t.note
     assert [args for args, _ in el.of("block")][0][0] == CASE          # the case's entries → blocked
+    [b] = pr.blocked
+    assert b.reason.value == "needs_owner" and b.suggestion == "the fix depends on business rules — 소유팀 결정 필요"
+
+
+def test_an_unusable_answer_is_still_a_failed_try(cfg, ws):
+    """Not declined: an answer still asking for files (or unparsable / with broken edits) stays apply_failed and the
+    ladder asks again."""
+    cfg.script.max_augments_per_case = 1
+    el = FakeErrorList()
+    fixer = FakeFixer(scripts=[answer(analysis="need the pom", error="still requesting context after 2 round(s)")])
+    pr = make_loop(cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 3)
+    [a] = pr.attempts
+    assert a.outcome == "apply_failed" and "neither a script nor edits" in a.apply_errors[0]
+    assert {b.reason.value for b in pr.blocked} == {"repeated_failure"}
 
 
 # ------------------------------------------------------------------------------------------ the ladder (§3.1)

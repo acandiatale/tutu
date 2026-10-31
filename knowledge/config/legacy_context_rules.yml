@@ -1,0 +1,116 @@
+# v2.1x (2026-10-31, prompt review §4 / report A §2b–§2c): what the restructure does with the legacy Spring context when a
+# Spring Framework / servlet project becomes a Spring Boot application (sbmig.restructure.legacy_context). Startup-time
+# items that neither the build gate nor the LLM ever see. Knowledge, not code (invariant 2): class names, element names,
+# Boot property names and the javax → jakarta successors live here; the switches are `layout.legacy_context.*`.
+# Boot 4.1 property names verified in the spring-configuration-metadata.json of spring-boot 4.1.0 / spring-boot-servlet /
+# spring-boot-webmvc / spring-boot-web-server 4.1.0 (2026-10-31).
+version: 1
+
+# D2: web.xml declarations whose `contextConfigLocation` names the XML the Boot context imports. The default location is
+# used when the declaration has none (Spring's XmlWebApplicationContext defaults; `{servlet}` = the servlet-name).
+context_loaders:
+  listeners: [org.springframework.web.context.ContextLoaderListener]
+  root_default: /WEB-INF/applicationContext.xml
+  dispatcher_servlets: [org.springframework.web.servlet.DispatcherServlet]
+  servlet_default: "/WEB-INF/{servlet}-servlet.xml"
+  # a contextClass naming one of these reads Java classes, not XML files (nothing to resolve)
+  annotation_context_classes: [AnnotationConfigWebApplicationContext]
+
+# D1 (user decision 1, PM default): the as-is Spring Framework context allowed both; Spring Boot defaults both to false.
+legacy_properties:
+  - switch: allow_bean_overriding
+    key: spring.main.allow-bean-definition-overriding
+    value: "true"
+    why: "the as-is Spring Framework context let a later bean definition with the same id replace an earlier one"
+  - switch: allow_circular_references
+    key: spring.main.allow-circular-references
+    value: "true"
+    why: "the as-is Spring Framework context resolved circular references between beans"
+
+# D5: JNDI lookups in the legacy-config copies (embedded Tomcat runs with JNDI naming disabled)
+jndi:
+  elements: [jndi-lookup]                                   # <jee:jndi-lookup …>
+  classes: [org.springframework.jndi.JndiObjectFactoryBean]
+  todo: "MIGRATION-TODO (sbmig): no JNDI in embedded Tomcat — remove this bean and set spring.datasource.* (see application.properties)"
+  # boot-module artifacts that bring spring-boot-jdbc (DataSourceAutoConfiguration binds spring.datasource.*)
+  jdbc_artifacts: [org.springframework.boot:spring-boot-starter-jdbc, org.springframework.boot:spring-boot-jdbc,
+                   org.springframework.boot:spring-boot-starter-data-jpa]
+
+# D6 / D7: property-file locations of these elements / beans are rewritten in the copies
+placeholder_config:
+  elements: [property-placeholder, property-override, properties]   # <context:…>, <util:properties>
+  classes: [org.springframework.beans.factory.config.PropertyPlaceholderConfigurer,
+            org.springframework.context.support.PropertySourcesPlaceholderConfigurer,
+            org.springframework.beans.factory.config.PreferencesPlaceholderConfigurer,
+            org.springframework.beans.factory.config.PropertiesFactoryBean]
+
+# D8: Spring Boot does not register Tomcat's default servlet
+default_servlet:
+  elements: [default-servlet-handler]                       # <mvc:default-servlet-handler/>
+  java: ['configureDefaultServletHandling\s*\(']            # a WebMvcConfigurer in the sources
+  property: server.servlet.register-default-servlet
+  value: "true"
+
+# D9: an XML CommonsMultipartResolver is removed from the copy; its limits become Boot properties
+multipart_resolver:
+  classes: [org.springframework.web.multipart.commons.CommonsMultipartResolver]
+  properties:                                                # bean property → Boot key(s) (byte values → KB / MB)
+    maxUploadSize: [spring.servlet.multipart.max-request-size, spring.servlet.multipart.max-file-size]
+    maxUploadSizePerFile: [spring.servlet.multipart.max-file-size]
+    maxInMemorySize: [spring.servlet.multipart.file-size-threshold]
+  # a web.xml <multipart-config> of a servlet Spring Boot replaces (the skipped DispatcherServlet)
+  servlet_config:
+    location: spring.servlet.multipart.location
+    max_file_size: spring.servlet.multipart.max-file-size
+    max_request_size: spring.servlet.multipart.max-request-size
+    file_size_threshold: spring.servlet.multipart.file-size-threshold
+
+# D10: these switch Spring Boot's MVC auto-configuration off
+enable_web_mvc:
+  java: ['@(?:org\.springframework\.web\.servlet\.config\.annotation\.)?EnableWebMvc\b',
+         '\bextends\s+(?:[\w.]+\.)?(?:WebMvcConfigurationSupport|DelegatingWebMvcConfiguration)\b']
+view_resolvers:
+  classes: [org.springframework.web.servlet.view.InternalResourceViewResolver]
+  elements: [jsp]                                            # <mvc:view-resolvers><mvc:jsp prefix=…/>
+resources:
+  elements: [resources]                                      # <mvc:resources mapping=… location=…>
+
+# D12: Handover-only detections
+web_initializers:
+  java: ['\bimplements\s+(?:[\w.]+\.)?WebApplicationInitializer\b',
+         '\bextends\s+(?:[\w.]+\.)?Abstract\w*(?:DispatcherServlet|SecurityWebApplication|ContextLoader)Initializer\b']
+log4j1_files: [log4j.properties, log4j.xml]
+security_xml: ["springframework.org/schema/security"]        # an imported XML configuring Spring Security
+security_elements: [http, authentication-manager]
+profile_params: [spring.profiles.active, spring.profiles.default]
+
+# E-M9: web evidence (analyzer library names, sbmig.analyze.libraries)
+web_libraries:
+  spring-webmvc: spring-webmvc
+  javax-servlet: servlet-api
+  jakarta-servlet: servlet-api
+  jsp: JSP library
+web_artifacts:                                                # … and as-is dependencies (the analyzer may miss them)
+  "org.springframework:spring-webmvc": spring-webmvc
+  "javax.servlet:javax.servlet-api": servlet-api
+  "javax.servlet:servlet-api": servlet-api
+  "jakarta.servlet:jakarta.servlet-api": servlet-api
+
+# E-M6: OpenRewrite's JavaxMigrationToJakarta replaces these coordinates (rewrite-migrate-java ChangeDependency rules)
+# and may drop / change the scope; an as-is `provided` declaration keeps `provided` on its successor
+scope_successors:
+  "javax.servlet:javax.servlet-api": jakarta.servlet:jakarta.servlet-api
+  "javax.servlet:servlet-api": jakarta.servlet:jakarta.servlet-api
+  "javax.servlet.jsp:javax.servlet.jsp-api": jakarta.servlet.jsp:jakarta.servlet.jsp-api
+  "javax.servlet.jsp:jsp-api": jakarta.servlet.jsp:jakarta.servlet.jsp-api
+  "javax.servlet:jstl": jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api
+  "javax.el:javax.el-api": jakarta.el:jakarta.el-api
+  "javax.el:el-api": jakarta.el:jakarta.el-api
+  "javax.websocket:javax.websocket-api": jakarta.websocket:jakarta.websocket-api
+  "javax.annotation:javax.annotation-api": jakarta.annotation:jakarta.annotation-api
+  "javax.persistence:javax.persistence-api": jakarta.persistence:jakarta.persistence-api
+  "javax.validation:validation-api": jakarta.validation:jakarta.validation-api
+  "javax.ws.rs:javax.ws.rs-api": jakarta.ws.rs:jakarta.ws.rs-api
+  "javax.transaction:javax.transaction-api": jakarta.transaction:jakarta.transaction-api
+  "javax.ejb:javax.ejb-api": jakarta.ejb:jakarta.ejb-api
+  "javax.mail:javax.mail-api": jakarta.mail:jakarta.mail-api

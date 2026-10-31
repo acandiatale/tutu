@@ -18,24 +18,20 @@
     "journal_events": [
       {
         "event": "structure_review",
-        "verdict": "issues",
-        "critical": 1,
-        "script_status": "ok"
+        "verdict": "ok",
+        "critical": 0
+      },
+      {
+        "event": "legacy_context",
+        "mode": "layout",
+        "source_encodings_written": 1
       }
     ],
     "structure_review": {
-      "verdict": "issues",
-      "critical": 1,
+      "verdict": "ok",
+      "critical": 0,
       "sbmig_check": false,
-      "script_status": "ok",
-      "committed": true,
-      "reverted": false,
-      "changed_files": [
-        "module/comp-jar/pom.xml"
-      ],
-      "issues_contain": [
-        "regex:critical module/comp-jar/pom.xml: .*MS949.*"
-      ],
+      "script_status": "none",
       "llm_calls_max": 1
     },
     "scripts": {

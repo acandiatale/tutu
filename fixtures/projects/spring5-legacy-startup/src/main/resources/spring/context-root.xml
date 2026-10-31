@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="EUC-KR"?>
+<!-- 루트 컨텍스트: 서비스 빈과 설정 파일 (EUC-KR 로 저장된 파일) -->
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns:context="http://www.springframework.org/schema/context"
+       xsi:schemaLocation="
+         http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans.xsd
+         http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context.xsd">
+
+    <!-- 서비스 / DAO 만 스캔 (컨트롤러는 서블릿 컨텍스트) -->
+    <context:component-scan base-package="com.example.shop">
+        <context:exclude-filter type="annotation" expression="org.springframework.stereotype.Controller"/>
+    </context:component-scan>
+
+    <!-- 공통 설정은 WEB-INF, 환경별 설정은 -Denv=dev 로 고른다 -->
+    <context:property-placeholder location="/WEB-INF/config/app.properties, classpath:config-${env}.properties"/>
+
+    <import resource="include/context-datasource.xml"/>
+
+    <bean id="messageSource" class="org.springframework.context.support.ResourceBundleMessageSource">
+        <property name="basename" value="messages"/>
+        <property name="defaultEncoding" value="EUC-KR"/>
+    </bean>
+
+    <!-- XSS 필터 (web.xml 의 DelegatingFilterProxy 가 위임) -->
+    <bean id="xssEscapeFilter" class="com.example.shop.web.XssEscapeFilter">
+        <property name="replacement" value="안전"/>
+    </bean>
+</beans>

@@ -10,7 +10,9 @@ clean_code, script_problem, normalize_path.
 `sbmig.script.check_script`, 편집 항목의 op / pom 호출 / 경로 검증은 `sbmig.script.edits.edits_from_json`
 몫이다. `<verify>` 만 있는 답은 답으로 치지 않는다. v2.1i `fix.mode: edits`: `parse_script_response(text,
 expect_script=False)` 는 스크립트를 기대하지 않는다 — `<script>` 가 없어도 문제·경고가 없고, 있으면 꺼내지 않고
-`script_ignored` 로만 알린다(편집이 수정 전부).
+`script_ignored` 로만 알린다(편집이 수정 전부). v2.1y `<blocked>한 문장</blocked>`: 프로젝트 안에서 못 고치는
+이유(소유팀 결정) → `blocked_reason`(공백을 한 칸으로, 최대 BLOCKED_MAX_CHARS 자; 빈 태그는 "(no reason given)").
+편집과 함께 와도 편집은 그대로 읽는다 — 거절로 분류하는 것은 루프 몫이다.
 
 Fix answer protocol (v2.1, docs/v2/PLAN-v2.1.md §3.6; v2 script contract docs/INTERFACES.md "Script contract (S)").
 
@@ -35,6 +37,11 @@ changes []).
 v2.1d: `<verify>운영자 확인 사항</verify>` (after `<solution>`, only after a major version upgrade / a library replaced)
 → `ParsedScript.verify` → `ScriptProposal.verify`; outer fence stripped, trimmed, masked like the other prose blocks.
 A `<verify>` alone is not an answer.
+
+v2.1y: `<blocked>one sentence naming the blocker and who decides</blocked>` (the case cannot be fixed inside the
+project) → `ParsedScript.blocked_reason` → `ScriptProposal.blocked_reason`: outer fence stripped, whitespace runs
+collapsed to one space, at most BLOCKED_MAX_CHARS characters ("…" when cut), "(no reason given)" for an empty tag;
+masked like the other prose blocks. Edits next to it are still read (the loop decides what a blocked answer means).
 
 v2.1i (`fix.mode: edits`): `parse_script_response(text, expect_script=False)` reads an edits-only answer — no script is
 expected, so a missing `<script>` is neither a problem nor a warning (`problem` stays ""); a `<script>` block that is
@@ -79,14 +86,15 @@ PROTOCOL_WARNING = "response did not follow the protocol"
 PATCHES_WARNING = "answered with v1 <patches> instead of a <script>"
 CHANGES_UNREADABLE = "changes unreadable"
 CHANGES_MISSING = "the answer did not describe its changes"   # a script without a <changes> list ([sbmig] note)
+BLOCKED_MAX_CHARS = 400                                        # v2.1y: the <blocked> sentence kept
 
-_TAG_NAMES = ("analysis", "solution", "verify", "edits", "changes", "no_script", "script", "need_files?", "need_grep",
-              "confidence", "patches")
+_TAG_NAMES = ("analysis", "solution", "verify", "edits", "changes", "no_script", "blocked", "script", "need_files?",
+              "need_grep", "confidence", "patches")
 _OPEN_SCRIPT_RE = re.compile(r"<\s*script\s*>", re.IGNORECASE)
 _CLOSE_SCRIPT_LINE_RE = re.compile(r"^[ \t]*<\s*/\s*script\s*>", re.IGNORECASE | re.MULTILINE)
 _CLOSE_SCRIPT_RE = re.compile(r"<\s*/\s*script\s*>", re.IGNORECASE)
 _NEXT_TAG_LINE_RE = re.compile(
-    r"^[ \t]*<\s*(?:analysis|solution|verify|edits|changes|no_script|need_files?|need_grep)\s*>",
+    r"^[ \t]*<\s*(?:analysis|solution|verify|edits|changes|no_script|blocked|need_files?|need_grep)\s*>",
     re.IGNORECASE | re.MULTILINE)
 _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})[\w+.-]*\s*$")
 _FENCED_BLOCK_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[ \t]*(?:python3?|py)?[ \t]*\n(.*?)^[ \t]*\1[ \t]*$",
@@ -113,6 +121,7 @@ class ParsedScript:
     changes_block: bool = False                    # a <changes> block was there
     changes_problem: str = ""                      # "changes unreadable: …" / skipped items ("" = fine)
     no_script_reason: str = ""                     # <no_script>
+    blocked_reason: str = ""                       # v2.1y <blocked>: why the case cannot be fixed inside the project
     need_files: list[str] = field(default_factory=list)
     need_grep: list[str] = field(default_factory=list)
     problem: str = ""                              # why `code` is empty: NO_SCRIPT, NO_FIX_DEF, "script does not parse…"
@@ -456,6 +465,18 @@ def parse_changes(text: str) -> tuple[list[EditNote], str]:
     return notes, ("; ".join(problems[:5]) if problems else "")
 
 
+def blocked_text(body: str) -> str:
+    """`<blocked>` 블록 → 한 문장: 바깥 펜스를 지우고 공백을 한 칸으로, BLOCKED_MAX_CHARS 자에서 자른다("…"). 빈
+    태그는 "(no reason given)" — 이유가 없어도 거절은 거절이다.
+
+    The `<blocked>` block as one sentence: outer fence stripped, whitespace collapsed, capped at BLOCKED_MAX_CHARS
+    ("…" when cut); "(no reason given)" for an empty tag."""
+    text = " ".join(_strip_outer_fence(body.replace("\r\n", "\n")).split())
+    if not text:
+        return "(no reason given)"
+    return text if len(text) <= BLOCKED_MAX_CHARS else text[:BLOCKED_MAX_CHARS - 1].rstrip() + "…"
+
+
 def _mask(t: str, start: int, end: int) -> str:
     """`t` with [start, end) blanked (newlines kept, offsets unchanged)."""
     return t[:start] + re.sub(r"[^\n]", " ", t[start:end]) + t[end:]
@@ -517,6 +538,9 @@ def parse_script_response(text: str, *, expect_script: bool = True) -> ParsedScr
     body, masked = _take_block(t, masked, "no_script")
     if body is not None:
         res.no_script_reason = _strip_outer_fence(body).strip() or "(no reason given)"
+    body, masked = _take_block(t, masked, "blocked")
+    if body is not None:
+        res.blocked_reason = blocked_text(body)
 
     nf = _find_simple(masked, "need_files?")
     if nf is not None:
@@ -557,7 +581,7 @@ def parse_script_response(text: str, *, expect_script: bool = True) -> ParsedScr
 
     # <verify> 만 있는 답은 답으로 치지 않는다(아래 목록에 verify 가 없는 이유)
     answered = (res.code or res.candidate or res.wants_context or res.analysis or res.solution or res.edits_block
-                or res.no_script_reason or res.changes_block or res.script_ignored)
+                or res.no_script_reason or res.blocked_reason or res.changes_block or res.script_ignored)
     if not answered and raw.strip():
         res.warnings.append(PROTOCOL_WARNING)
         res.analysis = raw.strip()[:500]
@@ -570,6 +594,7 @@ def parse_script_response(text: str, *, expect_script: bool = True) -> ParsedScr
 
 
 __all__ = [
+    "BLOCKED_MAX_CHARS",
     "CHANGES_MISSING",
     "CHANGES_UNREADABLE",
     "EDITS_INVALID",
@@ -581,6 +606,7 @@ __all__ = [
     "PROTOCOL_WARNING",
     "SCRIPT_IGNORED",
     "ParsedScript",
+    "blocked_text",
     "clean_code",
     "load_edits_json",
     "normalize_path",

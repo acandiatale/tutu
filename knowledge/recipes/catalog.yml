@@ -5,8 +5,8 @@
 # and `sbmig recipes list|show|check|sets` reads it. See docs/RECIPES.md.
 #
 # The catalog does NOT decide what the rule-based planner runs — that is config/default.yml
-# `openrewrite.recipes.*` (plan sets; a company config may opt into the framework / security / junit5 sets or add
-# `extra` ids). The catalog describes every id those may reference, and `sbmig recipes check` fails when they drift
+# `openrewrite.recipes.*` (plan sets; the planner decides per case and per detected library which sets run — see
+# docs/RECIPES.md; a company config may empty a set, fill the junit5 set or add `extra` ids). The catalog describes every id those may reference, and `sbmig recipes check` fails when they drift
 # apart. v2 runs OpenRewrite recipes only: no project recipes, no library recipes, no KB recipes.
 #
 # Schema (version 1), one entry per recipe id:
@@ -301,11 +301,15 @@ recipes:
     covers: []
     gate: null
     advisor: false
-    sets: []   # v1: [jakarta] — not in the v2 sets (flow-v2)
+    # v2.1w (decision 7): planned in the jakarta bucket after JavaxMigrationToJakarta for every servlet_tomcat project and
+    # for pure_java with javax.servlet imports; spring_legacy runs it inside UpgradeSpringFramework_7_0 (covers), Boot
+    # projects inside the umbrella — planned for spring_legacy only when the spring_framework_7 set is empty
+    sets: [servlet_jakarta_10]
     verified: "2026-10"
     notes: knowledge/notes/servlet-to-boot.md
 
-  # reached through the Boot 4 umbrella (covers); a company config may list them in `openrewrite.recipes.extra`
+  # v2.1w (decision 7, "쓰는 경우만" like the Security chain): planned for a spring_legacy project whose analyzer found the
+  # library (planner gate: `spring-batch` / `hibernate`); Boot projects reach both through the Boot 4 umbrella (covers)
   - id: org.openrewrite.java.spring.batch.SpringBatch5To6Migration
     origin: openrewrite
     artifact: org.openrewrite.recipe:rewrite-spring
@@ -313,11 +317,11 @@ recipes:
     description: Spring Batch 4 → 5 → 6 (chains SpringBatch4To5Migration; JobBuilderFactory → JobBuilder, ItemWriter.write(Chunk), org.springframework.batch.item → …infrastructure.item)
     docs: https://docs.openrewrite.org/recipes/java/spring/batch/springbatch5to6migration
     covers: []
-    gate: null
+    gate: has_spring_batch
     advisor: false
-    sets: []
+    sets: [spring_batch_6]   # v2.1w: spring_legacy projects that use Spring Batch (planner gate: library `spring-batch`)
     verified: "2026-10"
-    notes: knowledge/notes/spring-framework-7.md
+    notes: knowledge/notes/spring-batch-6.md
 
   - id: org.openrewrite.hibernate.MigrateToHibernate71
     origin: openrewrite
@@ -327,9 +331,11 @@ recipes:
     description: Hibernate 5 → 6.0 … 7.1 (chains MigrateToHibernate70 … 60; org.hibernate → org.hibernate.orm, Session.save/delete/get/load renames)
     docs: https://docs.openrewrite.org/recipes/hibernate/migratetohibernate71
     covers: []
-    gate: null
+    gate: has_hibernate
     advisor: false
-    sets: []
+    # v2.1w: spring_legacy projects that use native Hibernate ORM (planner gate: library `hibernate` = hibernate-core /
+    # hibernate-entitymanager / org.hibernate.orm dependency or org.hibernate.Session … imports; JPA-only = `jpa`, not planned)
+    sets: [hibernate_7]
     verified: "2026-10"
     notes: knowledge/notes/hibernate-7.md
 

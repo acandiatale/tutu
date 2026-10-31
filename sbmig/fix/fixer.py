@@ -72,9 +72,11 @@ from sbmig.core.workspace import Workspace
 
 from .client import LLMError, RecordingClient, llm_call_in_flight, messages_hash, usage_from
 from .context import (
+    ASIS_LABEL,
     TARGET_MARK,
     ContextPacker,
     PackedContext,
+    asis_line,
     dedupe_errors,
     effective_fix_mode,
     fence_for,
@@ -117,8 +119,8 @@ VERIFY_MAX_CHARS = 4000           # the guide returned
 _VERIFY_OPEN_RE = re.compile(r"<\s*verify\s*>", re.IGNORECASE)
 _VERIFY_CLOSE_RE = re.compile(r"<\s*/\s*verify\s*>", re.IGNORECASE)
 # a fix / review answer (a replayed fix answer, the "no fix" answer) is not a guide
-_FIX_TAG_RE = re.compile(r"<\s*(?:analysis|solution|edits|changes|no_script|script|need_files?|need_grep|review)\s*>",
-                         re.IGNORECASE)
+_FIX_TAG_RE = re.compile(r"<\s*(?:analysis|solution|edits|changes|no_script|blocked|script|need_files?|need_grep|review)"
+                         r"\s*>", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.MULTILINE)
 EDITS_MEMORY = 256                # v2.1i: edits this fixer proposed, kept by prompt hash for the retry history
 
@@ -170,14 +172,16 @@ def script_helper_api_doc(extra_imports: tuple[str, ...] = (), timeout_s: Option
 
 @lru_cache(maxsize=8)
 def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = (),
-                        timeout_s: Optional[int] = None) -> tuple[str, jinja2.Template]:
+                        timeout_s: Optional[int] = None, target: str = "") -> tuple[str, jinja2.Template]:
     """수정 스크립트 요청의 (system 프롬프트, user 템플릿): `prompts/script_system_<version>.md` +
     `script_user_<version>.md.j2`. 헬퍼 API 표와 허용 import 를
-    채운다(둘 다 INTERFACES.md "Script contract (S)" 표를 따른다).
+    채운다(둘 다 INTERFACES.md "Script contract (S)" 표를 따른다). v2.1u: 목표(`{{ target }}`)는 프롬프트 파일에
+    쓰지 않고 `target`(호출한 쪽이 `target_text(cfg)` 로 넘김; 비면 TargetConfig 기본값)으로 채운다.
 
     (system prompt, user template) of a fix-script request. The helper API block comes from `sbmig.script`
     (`helper_api_doc`) when that module provides it, else from the table kept in `script_system_<version>.md` (both
-    mirror the INTERFACES.md "Script contract (S)" table)."""
+    mirror the INTERFACES.md "Script contract (S)" table). v2.1u: `{{ target }}` is filled from `target`
+    (`target_text(cfg)` from the caller; "" = the TargetConfig defaults) — no version is written in the prompt file."""
     sys_path = PROMPTS_DIR / f"script_system_{version}.md"
     user_path = PROMPTS_DIR / f"script_user_{version}.md.j2"
     if not sys_path.exists() or not user_path.exists():
@@ -185,25 +189,27 @@ def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = ()
     env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True, autoescape=False)
     system = env.from_string(sys_path.read_text(encoding="utf-8")).render(
         helper_api=script_helper_api_doc(extra_imports, timeout_s),
-        allowed_imports=", ".join(f"`{m}`" for m in script_allowed_imports(extra_imports)))
+        allowed_imports=", ".join(f"`{m}`" for m in script_allowed_imports(extra_imports)),
+        target=target or target_text(None))
     user_t = env.from_string(user_path.read_text(encoding="utf-8"))
     return system.strip() + "\n", user_t
 
 
 @lru_cache(maxsize=4)
-def load_edits_prompts(version: str = "v1") -> tuple[str, jinja2.Template]:
+def load_edits_prompts(version: str = "v1", target: str = "") -> tuple[str, jinja2.Template]:
     """edits 모드(v2.1i) 요청의 (system 프롬프트, user 템플릿): `prompts/edits_system_<version>.md` +
     `edits_user_<version>.md.j2`. 스크립트 프롬프트와 같은 규칙에서 스크립트에 관한 것만 뺐다 — 헬퍼 API 표가
-    없으니 채울 것도 없다.
+    없으니 채울 것은 목표(`{{ target }}`, v2.1u: `target`, 비면 TargetConfig 기본값)뿐이다.
 
     (system prompt, user template) of an edits-only request (`fix.mode: edits`): the script prompt's rules without
-    anything about scripts — no helper API block to fill."""
+    anything about scripts — no helper API block; only `{{ target }}` is filled (v2.1u, from `target`)."""
     sys_path = PROMPTS_DIR / f"edits_system_{version}.md"
     user_path = PROMPTS_DIR / f"edits_user_{version}.md.j2"
     if not sys_path.exists() or not user_path.exists():
         raise FileNotFoundError(f"edits prompt version {version!r} not found in {PROMPTS_DIR}")
     env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True, autoescape=False)
-    return sys_path.read_text(encoding="utf-8").strip() + "\n", env.from_string(user_path.read_text(encoding="utf-8"))
+    system = env.from_string(sys_path.read_text(encoding="utf-8")).render(target=target or target_text(None))
+    return system.strip() + "\n", env.from_string(user_path.read_text(encoding="utf-8"))
 
 
 def default_script_checker(cfg: Config) -> Optional[Callable[[str], list[str]]]:
@@ -241,13 +247,33 @@ def default_script_checker(cfg: Config) -> Optional[Callable[[str], list[str]]]:
     return _check
 
 
-def profile_summary(profile: ProjectProfile, cfg: Config | None = None) -> str:
-    """프롬프트용 프로젝트 한 줄 설명(FixContext.profile_summary): `case=… java=… boot=… libs=… | target: …`.
-    ContextPacker 는 여기의 `case=` 로 노트를 고른다. 목표는 ``cfg.target``(없으면 기본값 JDK 21 / Boot 4.1.0);
-    설정 없이 만든 요약도 프롬프트를 꾸릴 때 ``with_target`` 이 설정의 목표로 바꾼다(A20).
+@lru_cache(maxsize=1)
+def advisory_markers() -> frozenset[str]:
+    """라이브러리가 아니라 권고 표지인 탐지 이름들: `sbmig.analyze.libraries.LIBRARY_RULES` 에서 좌표 패턴(deps /
+    managed / parents)이 하나도 없는 규칙(import 만 보는 `jdk-removed-apis` 같은 것). 프롬프트의 `libs=` 에서
+    뺀다(B-H2 — 권고는 힌트로 따로 간다). 이름을 코드에 적지 않고 규칙 표에서 읽는다; 못 읽으면 빈 집합.
 
-    One-line project description for prompts (and for FixContext.profile_summary). The target comes from
-    `cfg.target` (TargetConfig defaults without a config); the packer retargets a summary built without one."""
+    Detection names that are advisory markers, not libraries: the `LIBRARY_RULES` entries without any coordinate
+    pattern (import-only, e.g. the JDK-internal APIs marker). Kept out of `libs=` (the advisories reach the prompt as
+    hints); read from the rules table, never listed here; empty when the table cannot be read."""
+    try:
+        from sbmig.analyze.libraries import LIBRARY_RULES
+    except Exception:  # noqa: BLE001 - analyzer missing / half-built: show every library
+        return frozenset()
+    return frozenset(r.name for r in LIBRARY_RULES if not (r.deps or r.managed or r.parents))
+
+
+def profile_summary(profile: ProjectProfile, cfg: Config | None = None) -> str:
+    """프롬프트용 프로젝트 한 줄 설명(FixContext.profile_summary): `as-is (before sbmig): case=… java=… boot=…
+    libs=… | target: …`. 분석 시점(sbmig 이전)의 프로젝트라 그렇다고 이름 붙인다(B-H2: 헤더가 as-is 를 현재처럼
+    보여 줬다); jakarta 재작성이 이미 끝났으므로 `javax-imports=` 는 없고, 권고 표지는 `libs=` 에서 뺀다.
+    ContextPacker 는 여기의 `case=`(항상 첫 항목)로 노트를 고른다. 목표는 ``cfg.target``(없으면 TargetConfig
+    기본값); 설정 없이 만든 요약도 프롬프트를 꾸릴 때 ``with_target`` 이 설정의 목표로 바꾼다(A20).
+
+    One-line project description for prompts (and for FixContext.profile_summary), labelled as the AS-IS project
+    (`as-is (before sbmig): …`, v2.1u): `case=` first (the packer selects notes by it), no `javax-imports=` (the jakarta
+    rewrite already ran), advisory markers kept out of `libs=`; the ` | target: …` tail from `cfg.target`
+    (TargetConfig defaults without a config) — the packer retargets a summary built without one."""
     parts = [f"case={profile.case_type.value}"]
     parts.append(f"java={profile.java_version or '?'}")
     if profile.spring_boot_version:
@@ -259,17 +285,17 @@ def profile_summary(profile: ProjectProfile, cfg: Config | None = None) -> str:
     parts.append(f"modules={len(profile.poms)}")
     if profile.services:
         parts.append(f"services={len(profile.services)}")
-    if profile.libraries:
-        libs = [f"{l.name}:{l.version}" if l.version else l.name for l in profile.libraries[:20]]
+    markers = advisory_markers()
+    shown = [l for l in profile.libraries if l.name not in markers]
+    if shown:
+        libs = [f"{l.name}:{l.version}" if l.version else l.name for l in shown[:20]]
         parts.append("libs=" + ",".join(libs))
     src = profile.source
     if src.has_web_xml:
         parts.append("web.xml")
     if src.jsp_count:
         parts.append(f"jsp={src.jsp_count}")
-    if any(k.startswith("javax.") for k in src.javax_imports):
-        parts.append("javax-imports=" + ",".join(sorted(src.javax_imports)[:8]))
-    return " ".join(parts) + TARGET_MARK + target_text(cfg)
+    return ASIS_LABEL + " ".join(parts) + TARGET_MARK + target_text(cfg)
 
 
 def _unset(v: Optional[str]) -> bool:
@@ -289,16 +315,17 @@ def describe_language(cfg: Optional[Config]) -> str:
 
 
 @lru_cache(maxsize=4)
-def load_verify_prompt(version: str = "v1") -> str:
+def load_verify_prompt(version: str = "v1", target: str = "") -> str:
     """verify_guide 요청의 system 프롬프트(`verify_system_<version>.md`,
-    없으면 v1). `{{ language }}` 는 호출한 쪽이 채운다.
+    없으면 v1). 목표(`{{ target }}`)는 `target`(비면 TargetConfig 기본값)으로 채우고, `{{ language }}` 는 호출한
+    쪽이 채운다.
 
     The system prompt of a `verify_guide` request (`verify_system_<version>.md`, v1 when the version has none);
-    `{{ language }}` is filled by the caller."""
+    `{{ target }}` is filled from `target` (v2.1u; "" = the TargetConfig defaults), `{{ language }}` by the caller."""
     path = PROMPTS_DIR / f"verify_system_{version}.md"
     if not path.exists():
         path = PROMPTS_DIR / "verify_system_v1.md"
-    return path.read_text(encoding="utf-8").strip() + "\n"
+    return path.read_text(encoding="utf-8").replace("{{ target }}", target or target_text(None)).strip() + "\n"
 
 
 @dataclass
@@ -492,7 +519,8 @@ class LLMFixer:
 
             # 1) 문맥 라운드: LLM 이 파일·grep 을 더 달라면 내준다(쓸 수 있는 답이 오거나 한도에 닿으면 멈춤)
             # 1) context rounds
-            while parsed.wants_context and not parsed.usable and rounds < self.cfg.llm.max_context_rounds:
+            while parsed.wants_context and not parsed.usable and not parsed.blocked_reason \
+                    and rounds < self.cfg.llm.max_context_rounds:
                 rounds += 1
                 requested.extend(p for p in parsed.need_files if p not in requested)
                 remaining = self.cfg.llm.max_context_rounds - rounds
@@ -504,7 +532,7 @@ class LLMFixer:
                                        ChatMessage(role="user", content=served)]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
                 verify = parsed.verify or verify
-            if parsed.wants_context and not parsed.usable:
+            if parsed.wants_context and not parsed.usable and not parsed.blocked_reason:
                 requested.extend(p for p in parsed.need_files if p not in requested)
 
             # 2) 정적 검사 + 피드백 1회: 스크립트를 못 쓰거나 v1 patches 형식이거나 편집 JSON 이 안 읽힐 때
@@ -543,7 +571,7 @@ class LLMFixer:
                 error = self._edits_answer_error(parsed) if edits_mode else self._answer_error(parsed, problems)
                 if not parsed.candidate and not parsed.wants_context and PROTOCOL_WARNING in parsed.warnings:
                     analysis = "llm-error: response did not follow the protocol: " + parsed.raw.strip()[:300]
-                elif parsed.wants_context and not parsed.candidate:
+                elif parsed.wants_context and not parsed.candidate and not parsed.blocked_reason:
                     analysis = (analysis + "\n" if analysis else "") + \
                         f"(still requesting context after {self.cfg.llm.max_context_rounds} round(s): " + \
                         ", ".join(parsed.need_files + parsed.need_grep) + ")"
@@ -575,6 +603,8 @@ class LLMFixer:
                 requested_files=requested,
                 raw_response=last.content if last else "",
                 error=error,
+                # v2.1y: <blocked> 은 편집이 있어도 그대로 넘긴다 — 분류(declined / needs_owner)는 루프 몫
+                blocked_reason=parsed.blocked_reason,
             )
             log.debug("answer for %s: %d edit(s), %d change note(s), script %s, solution %d chars%s%s", cluster.id,
                       len(proposal.edits), len(proposal.changes),
@@ -582,6 +612,8 @@ class LLMFixer:
                                                    ("no: " + (proposal.no_script_reason or proposal.error or "-"))[:120]),
                       len(proposal.solution), f", 운영자 확인 {len(proposal.verify)} chars" if proposal.verify else "",
                       f", error {proposal.error[:120]}" if proposal.error else "")
+            if proposal.blocked_reason:
+                log.info("answer for %s: blocked — %s", cluster.id, proposal.blocked_reason[:200])
             if edits_mode and proposal.edits and proposal.prompt_hash:
                 self._remember_edits(proposal.prompt_hash, proposal.edits)
         except LLMError as exc:
@@ -671,11 +703,13 @@ class LLMFixer:
 
         (system, user) of a `verify_guide` request."""
         lang = describe_language(self.cfg)
-        system = load_verify_prompt(self.cfg.llm.prompt_version).replace("{{ language }}", lang)
+        system = load_verify_prompt(self.cfg.llm.prompt_version, target_text(self.cfg)).replace("{{ language }}", lang)
+        # 이 안내는 적용 직후·재빌드 전에 쓰인다 — "빌드가 통과했다" 고 말하면 틀린다(B-L3)
         parts = [("A fix applied to this project raised a dependency's major version or replaced a library. The "
-                  "build passes; the runtime is unverified. Write the 운영자 확인 사항 for the operator.")]
+                  "build has not been re-run yet; the runtime is unverified. Write the 운영자 확인 사항 for the "
+                  "operator.")]
         if ctx is not None and ctx.profile_summary:
-            parts.append(f"## Project\n{with_target(ctx.profile_summary, self.cfg)}")
+            parts.append(f"## Project\n{asis_line(with_target(ctx.profile_summary, self.cfg))}")
         if cluster is not None:
             errors = dedupe_errors(cluster.errors)
             case_id = (ctx.case_id if ctx is not None else "") or cluster.case_id or cluster.id
@@ -712,10 +746,11 @@ class LLMFixer:
             extra = tuple(self.cfg.script.extra_allowed_imports)
             timeout = self.cfg.script.timeout_seconds
             try:
-                self._script_prompts = load_script_prompts(self.cfg.llm.prompt_version, extra, timeout)
+                self._script_prompts = load_script_prompts(self.cfg.llm.prompt_version, extra, timeout,
+                                                           target_text(self.cfg))
             except FileNotFoundError:
                 log.warning("no script prompts for llm.prompt_version=%s; using v1", self.cfg.llm.prompt_version)
-                self._script_prompts = load_script_prompts("v1", extra, timeout)
+                self._script_prompts = load_script_prompts("v1", extra, timeout, target_text(self.cfg))
         return self._script_prompts
 
     def build_script_messages(self, packed: PackedContext, mode: str = "new", base: Optional[ScriptBase] = None,
@@ -740,10 +775,10 @@ class LLMFixer:
         (system, user template) of the edits-only requests (`fix.mode: edits`), loaded on first use."""
         if self._edits_prompts is None:
             try:
-                self._edits_prompts = load_edits_prompts(self.cfg.llm.prompt_version)
+                self._edits_prompts = load_edits_prompts(self.cfg.llm.prompt_version, target_text(self.cfg))
             except FileNotFoundError:
                 log.warning("no edits prompts for llm.prompt_version=%s; using v1", self.cfg.llm.prompt_version)
-                self._edits_prompts = load_edits_prompts("v1")
+                self._edits_prompts = load_edits_prompts("v1", target_text(self.cfg))
         return self._edits_prompts
 
     def build_edits_messages(self, packed: PackedContext, *, retry: bool = False, system: str | None = None,
@@ -825,6 +860,8 @@ class LLMFixer:
         """쓸 스크립트도 유효한 편집도 없는 답의 짧은 이유(ScriptProposal.error).
 
         The short reason of an answer with neither a usable script nor valid edits (ScriptProposal.error)."""
+        if parsed.blocked_reason and not parsed.candidate and not parsed.edits_problem:
+            return f"blocked: {parsed.blocked_reason[:200]}"
         err = self._script_error(parsed, problems)
         if parsed.edits_problem:
             return parsed.edits_problem if err == NO_SCRIPT and not parsed.candidate else \
@@ -904,6 +941,8 @@ class LLMFixer:
         The short reason of an edits-mode answer without usable edits (ScriptProposal.error)."""
         if parsed.edits_problem:
             return parsed.edits_problem
+        if parsed.blocked_reason:
+            return f"blocked: {parsed.blocked_reason[:200]}"
         if parsed.wants_context:
             return f"still requesting context after {self.cfg.llm.max_context_rounds} round(s)"
         if parsed.used_patches:
@@ -956,6 +995,7 @@ class LLMFixer:
                         "files_shown": len(packed.files_included) if packed else 0,
                         "files_listed": len(packed.files_listed) if packed else 0,
                         "error": p.error or None,
+                        "blocked_reason": p.blocked_reason[:300] or None,
                         "llm_error": p.analysis if p.analysis.startswith("llm-error") else None,
                         "advisory_hints": advisory_hints})
         except Exception:  # pragma: no cover
@@ -1095,14 +1135,14 @@ class LLMFixer:
             parts.append(self.grep(ws, need_grep))
         if edits_only and remaining_rounds <= 0:
             parts.append("This was the LAST context round. Answer now with <analysis>, <solution> and <edits> (or "
-                         "explain in <analysis> why this case cannot be fixed safely).")
+                         "<analysis> and <blocked> when the blocker is outside the project).")
         elif edits_only:
             parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering now "
                          "(<analysis>, <solution>, <edits>).")
         elif remaining_rounds <= 0:
             parts.append("This was the LAST context round. Answer now with <analysis>, <solution>, <edits>, <changes> "
-                         "and <script> (or <no_script> with the reason and <edits>; or explain in <analysis> why this "
-                         "case cannot be fixed safely).")
+                         "and <script> (or <no_script> with the reason and <edits>; or <analysis> and <blocked> when "
+                         "the blocker is outside the project).")
         else:
             parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering now "
                          "(<analysis>, <solution>, <edits>, <changes>, <script>).")

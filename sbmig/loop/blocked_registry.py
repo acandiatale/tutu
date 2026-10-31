@@ -580,7 +580,7 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
     호환 안 되는 API → 어느 라이브러리를 어떻게, 없는 아티팩트 → Nexus 프록시·좌표 수정(LLM 에게 버전을
     지어내게 하지 않는다), parent → settings·미러, 플러그인, 인코딩, v2.1k reactor 중복(pom 의 ``<module>`` 목록을
     손으로 정리, LLM 에게 묻지 않음), v2.1r 파일 잠금(백신 예외·프로세스 정리 뒤 다시 실행), 예산, LLM 불가, 반복 실패,
-    진동."""
+    진동, v2.1y 소유팀 결정(LLM 이 프로젝트 밖의 차단 사유를 말함; 보통은 그 문장이 제안이 된다)."""
     r = item.reason
     a = item.artifact
     if r in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
@@ -650,4 +650,8 @@ def compose_suggestion(item: BlockedItem, cfg=None, *, settings_file: Optional[s
                 "journal for what was tried)")
     if r == BlockReason.OSCILLATION:
         return "fixes kept toggling between the same error sets; needs a human (see the fix attempts)"
+    if r == BlockReason.NEEDS_OWNER:
+        # v2.1y: 보통은 수정 루프가 LLM 의 차단 사유 문장을 넣는다(BlockedCandidate.suggestion) — 없을 때의 문구
+        return ("the LLM named a blocker outside the project (a library without a jakarta build, a framework to "
+                "replace, an artifact the repository lacks) — 소유팀 결정 필요")
     return "needs a human"

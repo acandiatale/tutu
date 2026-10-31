@@ -23,8 +23,8 @@ artifactId): by default `{name}-boot` / `{name}-back` / `{name}-front` directly 
 mode="layout"   non-MSA: root becomes an aggregator (parent = in-house parent, packaging pom, mandatory deps per
                 `artifacts.mandatory_target`) with the back module (all as-is sources + deps), the boot module
                 (Application, boot resources, spring-boot-maven-plugin repackage) and — when the as-is project has web
-                resources — the front module (static files, JSPs; JSPs make the boot module a WAR for external
-                Tomcat). As-is multi-module projects are merged into the back module (default; an as-is module named
+                resources — the front module (static files, JSPs; JSPs make the boot module an executable WAR:
+                java -jar runs the embedded Tomcat, an external Tomcat works too). As-is multi-module projects are merged into the back module (default; an as-is module named
                 like the boot module is kept, first-wins collisions) or wrapped (`wrap`).
 mode="boot_pom" Spring Boot as-is (round 9c): directories kept, poms only — root → in-house parent, boot modules →
                 `boot_parent`, other modules → `comp_parent`; a single-module Boot app is wrapped into `{name}-boot`.
@@ -84,10 +84,11 @@ from sbmig.core.workspace import GitError, Workspace, is_build_output_path
 from sbmig.plan.versions import compare_versions, version_lt
 
 from .jsp_jakarta import rename_jsp_files
+from .legacy_apply import LegacyContextMixin
 from .pom_editor import PomEditError, PomEditor, property_ref
 from .webxml_registrations import CLASS_NAME as WEB_XML_CLASS
 from .webxml_registrations import RULES_FILE as WEB_XML_RULES
-from .webxml_registrations import ClassInfo, load_skip_rules, plan_registrations
+from .webxml_registrations import ClassInfo, RegistrationFacts, load_skip_rules, plan_registrations
 
 log = logging.getLogger("sbmig.restructure")
 # v2.1l: versions_pinned 의 저장소 출처 표시(as-is 빌드가 버전을 주지 못한 의존성)
@@ -284,6 +285,22 @@ class _Ctx:
     # v2.1o: the as-is intake capture (`params["asis_effective"]()`), read once per restructure; None = unusable
     asis_data: Any = None
     asis_data_loaded: bool = False
+    # v2.1x: legacy Spring context (legacy_apply.py) — rules table, Boot properties written this run, the first
+    # web.xml's model / text, the comp source scan, copied legacy-config sources, the web.xml plan outcome
+    legacy_rules: Any = None
+    props_written: dict[str, str] = field(default_factory=dict)
+    web_model: Any = None
+    web_model_loaded: bool = False
+    web_xml_text: str | None = None
+    lc_sources: dict[str, list[str]] | None = None
+    legacy_copied_from: set[str] = field(default_factory=set)
+    web_plan_done: bool = False         # plan_registrations ran for the first web.xml
+    web_plan_annotated: bool = False    # … and left @WebServlet / @WebFilter classes to @ServletComponentScan
+    asis_final_name: str | None = None
+    asis_war_name: str | None = None    # merge: the deployed name of the as-is WAR module
+    lc_default_servlet_xml: list[str] = field(default_factory=list)   # v2.1x D8: copies with <mvc:default-servlet-handler/>
+    lc_glob_keys: set[str] = field(default_factory=set)   # v2.1x D7: placeholders only a rewritten location used
+    ear_roots: bool = False             # EAR context-root follow-ups were written (the WAR context-root sentence is not)
 
     def p(self, *parts: str) -> str:
         """프로젝트 루트(``base``) 기준 경로 → 워크스페이스 기준 정규화 경로(루트 자신은 ``.``)."""
@@ -383,7 +400,7 @@ class _Ctx:
             log.warning("restructure commit skipped: %s", e)
 
 
-class Restructurer:
+class Restructurer(LegacyContextMixin):
     """RestructurerLike 구현. 상태를 갖지 않고 ``apply`` 마다 ``_Ctx`` 를 새로 만든다.
     ``Restructurer(commit=False)`` 는 중간 git 커밋을 하지 않는다.
 
@@ -422,6 +439,9 @@ class Restructurer:
             log.error("restructure failed: %s", e)
             result.ok = False
             result.error = str(e)
+        # v2.1x: as-is provided scope 복원(E-M6), 소스 인코딩(D-M7) — pom 을 다루는 모드가 성공했을 때만
+        if result.ok and mode in ("layout", "boot_pom", "msa_pom"):
+            self._lc_after_mode(c, mode)
         # v2.1h: 모든 모드 공통 — 파일이 최종 위치에 간 뒤 JSP 의 javax 이름을 jakarta 로(레시피는 JSP 를 못 본다).
         # 실패한 재구성(ok=False)에는 손대지 않는다: "아무것도 바꾸지 않았다" 는 오류 메시지가 사실로 남게
         self._jsp_jakarta(c)
@@ -700,8 +720,8 @@ class Restructurer:
             return
         removed: list[str] = []
         for f in sorted(x for x in stash.rglob("*.xml") if x.is_file()):
-            if (legacy / f.name).is_file() and "springframework.org/schema/beans" in f.read_text(encoding="utf-8",
-                                                                                                errors="replace"):
+            if c.ws.rel(f) in c.legacy_copied_from or (legacy / f.name).is_file() and \
+                    "springframework.org/schema/beans" in f.read_text(encoding="utf-8", errors="replace"):
                 c.ws.delete(c.ws.rel(f))
                 removed.append(f.name)
         if removed:
@@ -1167,6 +1187,12 @@ class Restructurer:
                                         [d for _, d, _ in order if d != mdir])
         packaging = "war" if any(ed.packaging() == "war" for ed in [*eds, *([kept_ed] if kept_ed else [])]) \
             else root.packaging()
+        # v2.1x D12: the deployed name of the as-is WAR module (its finalName, else artifactId-version)
+        war_ed = next((ed for ed in [*eds, *([kept_ed] if kept_ed else [])] if ed.packaging() == "war"), None)
+        if war_ed is not None:
+            fn = war_ed.text_of(war_ed.find("build"), "finalName") if war_ed.find("build") is not None else None
+            ver = war_ed.effective_version()
+            c.asis_war_name = fn or (f"{war_ed.artifact_id()}-{ver}" if ver else war_ed.artifact_id())
         # front 는 comp pom 보다 먼저: comp pom 이 웹 리소스가 빠진
         # 뒤를 기준으로 쓰이고, JSP 여부(boot WAR)도 여기서 정해진다
         self._populate_front(c, comp, boot, coords, [root, *(ed for _, _, ed in all_merged)])
@@ -1223,6 +1249,7 @@ class Restructurer:
             c.save(comp_ed)
         self._rewrite_root(c, root, self._layout_modules(c), keep_deps=False, keep_build_plugins=False,
                            aggregator=role)
+        c.ear_roots = bool(ear_roots)
         self._packaging_followups(c, packaging)
         self._ear_followups(c, ear_roots)
         kind = "WAR" if c.boot_war else "jar"
@@ -1431,8 +1458,8 @@ class Restructurer:
         c.boot_war = c.boot_war or c.overlay_carry
         for pom, g in c.war_overlays:
             if c.overlay_carry:
-                c.note(f"WAR overlay {g.coordinates} ({pom}) moved to {c.boot_rel} (a WAR for external Tomcat: the "
-                       "overlay carries web content)"
+                c.note(f"WAR overlay {g.coordinates} ({pom}) moved to {c.boot_rel} (an executable WAR — java -jar, an "
+                       "external Tomcat works too: the overlay carries web content)"
                        + ("; maven-war-plugin <overlays> copied" if c.overlay_conf is not None else ""))
             else:
                 c.followup(f"WAR overlay {g.coordinates} ({pom}) not carried: {c.boot_rel} is an executable jar "
@@ -1842,6 +1869,9 @@ class Restructurer:
         c.save(ed)
         kept_rel = c.boot_rel
         c.result.kept_boot_module = kept_rel
+        # v2.1x: the kept as-is boot module keeps its own starters (named as text, like Boot as-is)
+        c.result.starter = c.result.starter or self._lc_asis_starters(c)
+        c.result.web_evidence = c.result.web_evidence or self._lc_web_evidence(c)
         where = "" if posixpath.normpath(declared) == kept_rel else f" (moved from {declared})"
         c.note(f"as-is boot module {declared} kept as {kept_rel}{where}: sources untouched, dependencies on merged "
                f"modules ({', '.join(sorted(set(removed))) or 'none'}) replaced by {lib.artifact_id}")
@@ -2118,7 +2148,7 @@ class Restructurer:
                 text = f.read_text(encoding="utf-8", errors="replace")
                 is_init = bool(SERVLET_INIT_RE.search(text))
                 # SpringBootServletInitializer 하위 클래스는 정책과 상관없이
-                # boot 로: 외부 Tomcat 이 WAR 를 기동하는 진입점이다
+                # boot 로: WAR 를 외부 Tomcat 에 배포할 때의 진입점이다(java -jar 는 필요 없음)
                 is_web = split == "web-layer" and bool(WEB_LAYER_RE.search(text))
                 if is_init or is_web:
                     rel = f.relative_to(rabs).as_posix()
@@ -2164,6 +2194,10 @@ class Restructurer:
             if f.status != "external" or not f.boot_keys:
                 continue
             refs = list(f.refs)
+            # v2.1x D7: only a profile location used the key, and the legacy-config copy reads a glob now
+            if f.key in c.lc_glob_keys and refs and all(r.source == "xml-placeholder" and "${" + f.key in (r.raw or "")
+                                                        for r in refs):
+                continue
             # 테스트만 읽는 키도 기본적으로 placeholder 를
             # 쓴다(include_test_refs): 테스트 컨텍스트가 뜨려면 값이 있어야 함
             if not X.include_test_refs and refs and all(r.scope == "test" for r in refs):
@@ -2310,6 +2344,9 @@ class Restructurer:
             has_starter = any(d.group_id == BOOT_GROUP and d.artifact_id.startswith("spring-boot-starter")
                               and d.scope != "test" for d in asis_deps)
             starter = None if has_starter else "spring-boot-starter"
+        # v2.1x E-M9: spring_legacy 의 웹 starter 는 웹 근거가 있을 때만(CLI / batch 에 Tomcat 이 뜨지 않게)
+        starter = self._lc_starter(c, starter, asis_deps)
+        c.asis_final_name = final_name
         if starter:
             sg = GAV.parse(starter) if ":" in starter else GAV(group_id=BOOT_GROUP, artifact_id=starter)
             deps.append(GAV(group_id=sg.group_id, artifact_id=sg.artifact_id, version=sg.version))
@@ -2438,8 +2475,9 @@ class Restructurer:
     def _generate_application(self, c: _Ctx, boot: str, comp_dirs: list[str]) -> None:
         """boot 모듈에 Application 클래스 생성(``templates/Application.java.j2``): 패키지 = 분석의
         base package(모르면 ``com.company.app`` + 경고), comp 에 같은 FQCN 이 있으면 ``Boot`` 접두사, servlet
-        케이스면 @ServletComponentScan, boot WAR 면 SpringBootServletInitializer 상속, XML 빈 설정은 boot 의
-        ``legacy-config/`` 에 사본을 만들어 @ImportResource. 기존 main
+        케이스면 @ServletComponentScan, boot WAR 면 SpringBootServletInitializer 상속(실행 WAR — 외부 Tomcat 배포용),
+        XML 빈 설정은 boot 의 ``legacy-config/`` 에 바이트 사본을 만들어 @ImportResource (v2.1x: web.xml
+        contextConfigLocation 의 진입 XML 만, ``legacy_apply._lc_xml_imports``). 기존 main
         클래스는 comp 에 남는다(후속 작업)."""
         L = c.cfg.layout
         src = c.profile.source
@@ -2457,24 +2495,9 @@ class Restructurer:
         servlet = self._servlet_scan(c)
         imports: list[str] = []
         if L.import_xml_bean_configs and src.xml_bean_configs:
-            used: set[str] = set()
-            for old in src.xml_bean_configs:
-                cur = c.new_location(old)
-                if not c.ws.exists(cur):
-                    c.note(f"xml bean config {old} not found at {cur}; not imported")
-                    continue
-                name = posixpath.basename(cur)
-                if name in used:
-                    name = f"{posixpath.basename(posixpath.dirname(cur))}-{name}"
-                used.add(name)
-                # 원본은 그 자리에 두고 boot 에 사본을 만든다(@ImportResource
-                # 가 boot classpath 의 legacy-config/ 를 읽음)
-                c.write(f"{boot}/src/main/resources/legacy-config/{name}", c.ws.read(cur))
-                imports.append(f"classpath:legacy-config/{name}")
-            if imports:
-                c.note(f"{len(imports)} XML bean config(s) copied to boot-jar legacy-config/ and imported")
-                c.followup("XML bean configs imported via @ImportResource (" + ", ".join(imports) + ") — verify "
-                           "bean overlaps with Boot auto-configuration and relative <import> paths")
+            # v2.1x D2 / D3: web.xml contextConfigLocation 의 진입 XML 만, 바이트 복사(EUC-KR 선언 유지), 사본만 고친다
+            imports = self._lc_xml_imports(c, boot, comp_dirs)
+        self._lc_project_sentences(c, boot, comp_dirs)
         text = render("Application.java.j2", package=pkg, class_name=cls, servlet_component_scan=servlet,
                       servlet_initializer=c.boot_war,
                       servlet_component_scan_fqcn=SERVLET_COMPONENT_SCAN_FQCN, import_resources=imports,
@@ -2489,28 +2512,32 @@ class Restructurer:
     def _web_followups(self, c: _Ctx) -> None:
         """web.xml 마다 후속 작업: WebXmlRegistrations 를 만들었으면 '매핑 확인', boot WAR 면
         '참고용으로만 남음(WAR 의 WEB-INF/web.xml 로 패키지되지 않음)', 실행 jar 면 '내장 Tomcat
-        은 web.xml 을 읽지 않음'."""
+        은 web.xml 을 읽지 않음'. v2.1x: "@ServletComponentScan 이 등록" 은 생성 파일(그리고 실제로 스캔에 맡긴 클래스)을
+        따른다 — 스캔은 web.xml 을 읽지 않는다(E-M8).
+
+        One follow-up per web.xml; the text follows what was generated (v2.1x: the scan only registers annotated
+        classes, never web.xml declarations)."""
         src = c.profile.source
-        scan = c.cfg.layout.add_servlet_component_scan
+        scan_note = ("; its @WebServlet / @WebFilter / @WebListener classes are registered by @ServletComponentScan on "
+                     "the generated Application" if self._servlet_scan(c) and c.web_plan_annotated else "")
+        mode = c.cfg.layout.web_xml_registrations
         for i, p in enumerate(src.web_xml_paths or ([] if not src.has_web_xml else ["src/main/webapp/WEB-INF/web.xml"])):
             loc = c.new_location(p)
+            where = ("is kept for reference only (not packaged as the WAR's WEB-INF/web.xml)" if c.boot_war
+                     else "is not read by the embedded Tomcat")
             if c.web_xml_class and i == 0:
-                where = ("is kept for reference only (not packaged as the WAR's WEB-INF/web.xml)" if c.boot_war
-                         else "is not read by embedded Tomcat")
                 c.followup(f"web.xml at {loc} {where}; its servlets / filters / listeners / error pages are "
                            f"registered by the generated {c.web_xml_class} — verify the mappings")
                 if c.web_xml_summary:
                     c.followup(c.web_xml_summary)
                 continue
-            if c.boot_war:
-                c.followup(f"web.xml at {loc} is kept for reference only (not packaged as the WAR's WEB-INF/web.xml); "
-                           + ("servlets/filters are registered via @ServletComponentScan — verify mappings" if scan
-                              else "register servlets/filters as beans"))
-            elif scan:
-                c.followup(f"web.xml at {loc} is not read by embedded Tomcat; servlets/filters are registered via "
-                           "@ServletComponentScan — verify mappings")
+            if i == 0 and c.web_plan_done:
+                c.followup(f"web.xml at {loc} {where}; its declarations are provided by Spring Boot (DispatcherServlet, "
+                           "CharacterEncodingFilter, ContextLoaderListener: the XML contexts are imported into one Boot "
+                           f"context) or listed in the other follow-ups{scan_note}")
             else:
-                c.followup(f"web.xml at {loc} is not read by embedded Tomcat — register servlets/filters as beans")
+                c.followup(f"web.xml at {loc} {where} — register its servlets / filters / listeners as beans"
+                           + (" (layout.web_xml_registrations: followup)" if mode != "generate" else "") + scan_note)
 
     # ------------------------------------------------------------------ web.xml → WebXmlRegistrations (2026-10-23)
     def _web_xml_registrations(self, c: _Ctx, boot: str, comp_dirs: list[str], moved_main: list[str]) -> None:
@@ -2528,6 +2555,8 @@ class Restructurer:
         L = c.cfg.layout
         src = c.profile.source
         if L.web_xml_registrations != "generate" or not src.web_xml_paths:
+            if src.web_xml_paths:                      # followup policy: the D12 sentences still apply
+                self._lc_web_xml_sentences(c, boot, src.web_xml_paths[0], None)
             return
         asis = src.web_xml_paths[0]
         loc = c.new_location(asis)
@@ -2537,6 +2566,8 @@ class Restructurer:
         model = parse_web_xml(c.ws.read(loc), asis)
         if not (model.servlets or model.filters or model.listeners or model.error_pages
                 or model.session_timeout_minutes is not None):
+            c.web_plan_done = True                     # nothing declared: nothing left to register
+            self._lc_web_xml_sentences(c, boot, asis, None)
             return
         rules = load_skip_rules(c.cfg.resolve_path(WEB_XML_RULES))
         search = [d for d in [*comp_dirs, boot] if d]
@@ -2548,12 +2579,25 @@ class Restructurer:
             return cache[fqcn]
 
         web_path = (lambda p: self._jsp_web_path(c, p)) if c.jsp_moved else (lambda p: p)
+        # v2.1x D4 / D11: requires: 판정용 사실(분석기 라이브러리, as-is pom 의 g:a)과 스위치
+        LC = self._lc_switches(c)
+        poms = [*c.profile.poms, *([c.profile.root_pom] if c.profile.root_pom else [])]
+        facts = RegistrationFacts(libraries={lib.name for lib in c.profile.libraries},
+                                  artifacts={d.key for pi in poms for d in (pi.dependencies or [])},
+                                  filter_properties=bool(LC.filter_properties),
+                                  multipart_keys=dict(self._lc_rules(c).multipart_servlet_config))
         plan = plan_registrations(model, rules=rules, lookup=lookup, component_scan=self._servlet_scan(c),
-                                  web_path=web_path, war=c.boot_war)
+                                  web_path=web_path, war=c.boot_war, facts=facts)
+        c.web_plan_done = True
+        c.web_plan_annotated = bool(plan.annotated)
         for n in plan.notes:
             c.note(f"web.xml: {n}")
         for f in plan.followups:
             c.followup(f)
+        if plan.properties:
+            self._lc_write_props(c, boot, f"web.xml declarations Spring Boot replaces ({asis})",
+                                 [(k, v, why) for k, v, why in plan.properties])
+        self._lc_web_xml_sentences(c, boot, asis, plan)
         if plan.session_timeout is not None:
             self._session_timeout_prop(c, boot, plan.session_timeout, asis)
         if not plan.has_beans:
@@ -2585,11 +2629,11 @@ class Restructurer:
         if "web-xml-registered" not in c.result.flags:
             c.result.flags.append("web-xml-registered")
         skipped = [f"{s['cls'].rsplit('.', 1)[-1]} ({s['reason']})" for s in plan.skipped]
+        # v2.1x: jsp-file servlet 은 각자 후속 작업이 있으니 요약에서 되풀이하지 않는다(E-M8 중복)
         c.web_xml_summary = (
             f"web.xml ({model.spec or 'spec unknown'}) → {cls}: {len(plan.servlets)} servlet(s), "
             f"{len(plan.filters)} filter(s), {len(plan.listeners)} listener(s), {len(plan.error_pages)} error page(s)"
-            + (f"; skipped: {', '.join(skipped)}" if skipped else "")
-            + (f"; jsp-file servlets: {', '.join(plan.jsp_file_servlets)}" if plan.jsp_file_servlets else ""))
+            + (f"; skipped: {', '.join(skipped)}" if skipped else ""))
         c.note(f"web.xml {asis} → {rel} ({len(plan.servlets)} servlet(s), {len(plan.filters)} filter(s), "
                f"{len(plan.listeners)} listener(s), {len(plan.error_pages)} error page(s))")
         try:
@@ -2658,6 +2702,15 @@ class Restructurer:
                        f"too); JSPs are served from the front jar (META-INF/resources) — {c.boot_rel}, {c.front_rel}")
         elif asis_packaging == "war":
             c.followup(f"WAR packaging converted to executable jar ({c.boot_rel})")
+        # v2.1x D12: as-is WAR 의 배포 context path(/파일 이름)는 java -jar 에서 / 가 된다
+        if asis_packaging == "war" and not c.ear_roots and self._lc_switches(c).handover_sentences:
+            name = c.asis_war_name or c.asis_final_name or (
+                f"{c.profile.root_pom.artifact_id}-{c.profile.root_pom.version}"
+                if c.profile.root_pom and c.profile.root_pom.version else c.name)
+            if "${" not in name:
+                c.followup(f"the as-is WAR {name}.war was served under the context path /{name} on Tomcat (unless "
+                           f"deployed as ROOT); java -jar serves it at / — set server.servlet.context-path=/{name} in "
+                           f"{c.boot_rel}/src/main/resources/application.properties if the URLs must stay")
 
     # ------------------------------------------------------------------ module names (round 9c)
     @staticmethod
@@ -2767,7 +2820,7 @@ class Restructurer:
         web root = ``src/main/webapp`` + maven-war-plugin warSourceDirectory / <webResources>
         (``_web_layout``). 대상이 이미 있으면 옮기지 않고 후속 작업. 끝에 ``c.front_made`` / ``c.jsp_moved`` /
         ``c.jstl`` / ``c.boot_war`` 를 정하고 front pom 을 쓴다 — JSP 가 옮겨졌고 ``jsp_boot_packaging: war``
-        면 boot 모듈은 외부 Tomcat 용 WAR.
+        면 boot 모듈은 실행 WAR(java -jar 로 내장 Tomcat, 외부 Tomcat 배포도 가능).
 
         Move the web resources out of the comp module into `{name}-front` (only when there are any):
         `src/main/webapp/**` minus WEB-INF / META-INF → `<front>/<front_static_dir>/…` (same relative path);
@@ -2901,7 +2954,7 @@ class Restructurer:
         # A24: 같은 대상으로 가는 JSP 두 개는 하나만 옮겨진다(나머지는 clash) — 옮겨진 것만 센다
         c.jsp_moved = jsp_files
         c.result.front_files = moved["static"] + moved["jsp"] + moved["copy"]
-        # JSP 가 있으면 boot 모듈은 외부 Tomcat 용 WAR(회사 규칙):
+        # JSP 가 있으면 boot 모듈은 실행 WAR(회사 규칙; java -jar 로 내장 Tomcat, 외부 Tomcat 배포도 가능):
         # Spring Boot 는 실행 jar 에서 JSP 를 지원하지 않는다
         c.boot_war = c.boot_war or (c.jsp_moved > 0 and L.jsp_boot_packaging == "war")   # a WAR overlay may set it
         self._write_front_pom(c, coords, front)
@@ -2928,6 +2981,12 @@ class Restructurer:
             c.followup(f"{len(jsp_relocated)} JSP(s) outside /WEB-INF/jsp/ now live under /WEB-INF/jsp/ in "
                        f"{front} ({', '.join(jsp_relocated[:3])}{' …' if len(jsp_relocated) > 3 else ''}): update "
                        "jsp:include / forward paths and view-resolver prefixes that name the old location")
+        # v2.1x: META-INF/context.xml 은 Tomcat 설정 — "jar 를 의존성으로" 조언은 맞지 않는다(보고서 A #25)
+        ctx_xml = [x for x in left if x.endswith("/META-INF/context.xml")]
+        left = [x for x in left if x not in ctx_xml]
+        for x in ctx_xml:
+            c.followup(f"META-INF/context.xml ({x}) is Tomcat configuration and is not read by the embedded Tomcat "
+                       "(java -jar) — its <Resource> / <Environment> entries are listed under 'Properties to set'")
         if left:
             where = ", ".join(sorted({d for d in web_dirs if any(x.startswith(d + "/") for x in left)}))
             c.followup(f"{len(left)} file(s) under WEB-INF/lib, WEB-INF/classes or META-INF stay in {where} (not "
@@ -3003,12 +3062,13 @@ class Restructurer:
                                  version=None, artifact_id=aid, name=None))
 
     def _war_deps(self, c: _Ctx, have: set[str]) -> list[GAV]:
-        """boot WAR 의 컨테이너 의존성: spring-boot-starter-tomcat / tomcat-embed-jasper 는 provided(외부
-        Tomcat 이 제공), @ServletComponentScan 을 쓰면 spring-boot-web-server 는 compile(Boot 4.1 은 Tomcat
+        """boot WAR 의 컨테이너 의존성: spring-boot-starter-tomcat / tomcat-embed-jasper 는 provided(java -jar 면
+        WEB-INF/lib-provided 에서 내장 Tomcat 이 쓰고, 외부 Tomcat 에 배포하면 그 Tomcat 이 제공), @ServletComponentScan 을 쓰면 spring-boot-web-server 는 compile(Boot 4.1 은 Tomcat
         starter 로만 끌어오므로 provided 면 WEB-INF/lib 에서 빠짐),
         JSP 가 JSTL 을 쓰면 JSTL. 버전은 Spring Boot 4.1 BOM 이 관리.
 
-        The boot WAR's container dependencies: Tomcat + Jasper `provided` (external Tomcat), JSTL when a JSP uses
+        The boot WAR's container dependencies: Tomcat + Jasper `provided` (WEB-INF/lib-provided for java -jar, left to
+        an external Tomcat otherwise), JSTL when a JSP uses
         it (managed by the Spring Boot 4.1 BOM, so no versions)."""
         out = [GAV(group_id=BOOT_GROUP, artifact_id="spring-boot-starter-tomcat", scope="provided"),
                GAV(group_id="org.apache.tomcat.embed", artifact_id="tomcat-embed-jasper", scope="provided")]
@@ -3036,8 +3096,8 @@ class Restructurer:
             or bool(src.filter_listener_classes))
 
     def _initializer_followup(self, c: _Ctx, boot: str, mains: list[str]) -> None:
-        """boot 가 WAR 인데 SpringBootServletInitializer 를 상속한 클래스가 없으면 후속 작업 — 외부 Tomcat
-        에서 앱이 기동되지 않는다."""
+        """boot 가 WAR 인데 SpringBootServletInitializer 를 상속한 클래스가 없으면 후속 작업 — WAR 를 외부 Tomcat 에 배포할 때
+        앱이 기동되지 않는다(java -jar 에는 필요 없음)."""
         root = c.ws.abs(f"{boot}/src/main/java")
         if root.is_dir() and any(SERVLET_INIT_RE.search(f.read_text(encoding="utf-8", errors="replace"))
                                  for f in root.rglob("*.java")):
@@ -3056,6 +3116,10 @@ class Restructurer:
         for f in sorted(base.rglob("*")):
             if (not f.is_file() or f.suffix not in (".xml", ".java") or ".git" in f.parts
                     or is_build_output_path(c.ws.rel(f), c.ws.root)):
+                continue
+            # v2.1x: the boot stash holds reference-only copies (Boot never reads them; `_dedupe_webinf_stash` drops
+            # the imported ones) — the legacy-config copy / the comp source is the resolver that runs
+            if f"/{WEBINF_STASH}/" in "/" + c.ws.rel(f) and c.ws.rel(f) in c.legacy_copied_from:
                 continue
             text = f.read_text(encoding="utf-8", errors="replace")
             if VIEW_RESOLVER not in text and "mvc:jsp" not in text and ".jsp(" not in text:
@@ -3106,30 +3170,57 @@ class Restructurer:
 
     def _jsp_view_props(self, c: _Ctx, boot: str) -> None:
         """as-is 뷰 리졸버의 prefix / suffix → boot application.properties 의 ``spring.mvc.view.prefix`` /
-        ``spring.mvc.view.suffix`` (옮긴 JSP 위치로 변환). 이미 설정돼 있으면 그대로, 못 찾으면 후속 작업.
-        prefix 가 바뀌면 as-is 리졸버 빈도 고치라는 후속 작업(그 빈이 Boot 의 리졸버보다 우선).
+        ``spring.mvc.view.suffix`` (옮긴 JSP 위치로 변환). 이미 설정돼 있으면 그대로, 못 찾으면 후속 작업(컨트롤러나
+        spring-webmvc 가 있는 프로젝트만 — 순수 서블릿 앱에는 소음). v2.1x D10: @EnableWebMvc / WebMvcConfigurationSupport
+        가 Boot MVC 자동 설정을 끄면 ``spring.mvc.view.*`` 는 무시되므로 쓰지 않고 인수인계; XML 리졸버 빈은 사본에서 prefix
+        를 이미 고쳤다(``_lc_edit_copies``), Java 리졸버만 후속 작업.
 
         `spring.mvc.view.prefix/suffix` into the boot `application.properties` when the as-is configuration names
-        an InternalResourceViewResolver prefix / suffix (mapped to the moved JSP location), else a follow-up."""
+        an InternalResourceViewResolver prefix / suffix (mapped to the moved JSP location), else a follow-up (only for a
+        project with controllers / spring-webmvc). v2.1x D10: not written when @EnableWebMvc switches Boot's MVC
+        auto-configuration off (Handover instead); an XML resolver's prefix was rewritten in its legacy-config copy."""
         res = f"{boot}/src/main/resources"
+        mvc = bool(c.profile.source.controllers) or c.profile.has_library("spring-webmvc")
+        LC = self._lc_switches(c)
+        mvc_off = self._lc_sources(c, [c.p(c.comp_rel)]).get("enable_web_mvc", []) if c.comp_rel else []
+        mount = self._jsp_web_path(c, "/WEB-INF/jsp/")
+        if mvc_off:
+            self._lc_fact(c, "enable_web_mvc", list(mvc_off))
+            c.followup(f"{', '.join(mvc_off)} carries @EnableWebMvc (or extends WebMvcConfigurationSupport): Spring "
+                       "Boot's MVC auto-configuration is off, so spring.mvc.* "
+                       + ("(no spring.mvc.view.* was written)" if LC.detect_enable_web_mvc else
+                          "(the spring.mvc.view.* sbmig writes, layout.legacy_context.detect_enable_web_mvc: false)")
+                       + ", the front module's classpath:/static files and the index.html welcome page are ignored — "
+                       f"point its own view resolver / resource handlers at the moved locations (JSPs under {mount} in "
+                       f"{c.front_rel}, static files at classpath:/static/), or remove @EnableWebMvc")
+            if LC.detect_enable_web_mvc:
+                return
         for f in self._boot_resource_files(c, res):
             if "spring.mvc.view.prefix" in c.ws.read(f) or re.search(r"(?ms)^\s*view:\s*$.*?prefix:", c.ws.read(f)):
                 c.note(f"spring.mvc.view.* already configured in {f}; left unchanged")
                 return
         pre, suf, where = self._view_resolver(c)
         if pre is None and suf is None:
-            c.followup(f"no InternalResourceViewResolver prefix / suffix found in the as-is configuration: set "
-                       f"spring.mvc.view.prefix (JSPs are under /WEB-INF/jsp/ in {c.front_rel}) and "
-                       f"spring.mvc.view.suffix=.jsp in {res}/application.properties")
+            if mvc:
+                c.followup(f"no InternalResourceViewResolver prefix / suffix found in the as-is configuration: set "
+                           f"spring.mvc.view.prefix (JSPs are under {mount} in {c.front_rel}) and "
+                           f"spring.mvc.view.suffix=.jsp in {res}/application.properties")
             return
         lines = [f"# sbmig: JSP views (as-is {VIEW_RESOLVER} in {where}; JSPs are served from {c.front_rel})"]
         if pre is not None:
             new_pre = self._jsp_web_path(c, pre)
             lines.append(f"spring.mvc.view.prefix={new_pre}")
-            if new_pre != pre:
-                c.followup(f"view prefix {pre} ({where}) maps to {new_pre} after the JSP move: "
-                           f"spring.mvc.view.prefix is set to it — update or remove the as-is {VIEW_RESOLVER} bean "
-                           "(it takes precedence over Boot's view resolver)")
+            if new_pre != pre and where and where.endswith(".java"):
+                c.followup(f"view prefix {pre} ({where}) maps to {new_pre} after the JSP move: change it in that class "
+                           f"— an {VIEW_RESOLVER} bean replaces Spring Boot's own view resolver, so spring.mvc.view.prefix "
+                           "does not apply to it")
+            elif new_pre != pre:
+                copied = any(x.endswith(f" {pre} → {new_pre}") for x in c.result.conversion_facts.get(
+                    "view_prefix_rewritten", []) or [])
+                if not copied:
+                    c.followup(f"view prefix {pre} ({where}) maps to {new_pre} after the JSP move: "
+                               f"spring.mvc.view.prefix is set to it — update the as-is {VIEW_RESOLVER} bean if it is "
+                               "loaded (an XML / Java resolver bean replaces Spring Boot's own view resolver)")
         if suf is not None:
             lines.append(f"spring.mvc.view.suffix={suf}")
         rel = f"{res}/application.properties"

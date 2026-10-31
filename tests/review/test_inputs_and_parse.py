@@ -157,7 +157,8 @@ def test_company_rules_come_from_the_config(tmp_path):
     assert f"`{a.parent.key}:{a.parent.version}`" in text and f"`{a.boot_parent.key}:{a.boot_parent.version}`" in text
     assert f"`{a.comp_parent.key}:{a.comp_parent.version}`" in text
     assert all(s.key in text for s in a.mandatory) and all(s.key in text for s in a.optional)
-    assert "`demo-boot`: Boot configuration only" in text and "packaging war (JSPs" in text
+    assert "`demo-boot`: Boot configuration only" in text and "packaging war (executable WAR: `java -jar`" in text
+    assert "external Tomcat)" not in text and "stay `provided`" in text            # v2.1u (D-H4)
     assert "`demo-back`: every source" in text and "`demo-front`: web resources only" in text
     assert "case `servlet_tomcat`" in text and "web: web.xml 2.5, 2 JSP(s)" in text
 
@@ -171,10 +172,16 @@ def test_encoding_helpers():
 
 # ---------------------------------------------------------------------------- prompt
 def test_system_prompt(cfg):
-    extra = cfg.model_copy(update={"script": cfg.script.model_copy(update={"extra_allowed_imports": ["xml.dom"]})})
+    extra = cfg.model_copy(update={"script": cfg.script.model_copy(update={"extra_allowed_imports": ["xml.dom"]}),
+                                   "review": cfg.review.model_copy(update={"ask_script": True})})
     text = system_prompt(extra)
     assert "math, xml.dom." in text and "## Answer format" in text and "critical" in text
-    assert "p.pom(" in text and "{{" not in text
+    assert "p.pom(" in text and "{{" not in text and "<!--" not in text
+    assert "`<changes>` is\nREQUIRED" in text and "No critical issue → no `<edits>` and no `<script>`." in text
+    # v2.1y (decision 2): the default is edits-only — the marked script parts leave the prompt
+    plain = system_prompt(cfg)
+    assert "p.pom(" not in plain and "<script>" not in plain and "Script rules" not in plain and "<!--" not in plain
+    assert "No critical issue → no `<edits>`." in plain and "{{" not in plain and len(plain) < len(text) - 3000
     doc = helper_api_doc()
     assert doc.lstrip().startswith("|") and "p.pom(" in doc            # the table, without the fix-loop answer format
     assert FALLBACK_HELPER_API.startswith("| API |")

@@ -12,7 +12,7 @@ import org.springframework.stereotype.Repository;
 /**
  * QLRM 1.7.1 (ch.simas.qlrm, 2017) maps native-query rows to constructors — and takes the javax JPA Query type.
  * After the javax → jakarta migration this call only compiles with QLRM 4.0.1+ (org.qlrm, Jakarta Persistence):
- * handler jakarta-library-floor relocates / raises it (knowledge/libraries/jakarta_libraries.yml).
+ * the fix loop raises it to its jakarta release (knowledge/libraries/jakarta_libraries.yml, rule 14).
  */
 @Repository
 public class MemberSummaryQuery {

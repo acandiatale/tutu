@@ -9,7 +9,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * Suffix / trailing-slash matching and path-extension content negotiation are removed in Spring Framework 7, and
- * HttpHeaders is no longer a Map (project recipe com.company.migrate.Spring7RemovedApis).
+ * HttpHeaders is no longer a Map (Spring Framework 7; the fix loop ports the call sites).
  */
 @Configuration
 @EnableWebMvc

@@ -93,7 +93,8 @@ def test_reround_keeps_attempt_ids_unique(cfg, ws):
     def fx(w, c, ctx):
         calls["n"] += 1
         if calls["n"] == 1:
-            return FixProposal(changes=[], analysis="need more", model="fake", llm_usage=LLMUsage(model="fake", calls=1))
+            # an unusable answer (no analysis: not a v2.1y decline, which would block the case at once)
+            return FixProposal(changes=[], analysis="", model="fake", llm_usage=LLMUsage(model="fake", calls=1))
         return write_fix(None, "class X { ok }\n")
     report = make_orch(cfg, ws, fixer=FakeFixer(fn=fx)).run()
     ids = [a.id for a in report.phases[-1].attempts]

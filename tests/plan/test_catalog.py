@@ -52,6 +52,19 @@ OLD_GATES = {
     "org.openrewrite.java.spring.boot4.SpringBootProperties_4_1": "is_boot",
     "org.openrewrite.java.spring.boot4.ReplaceMockBeanAndSpyBean": "has_tests",
 }
+# v2.1w (decision 7): the Batch / Hibernate entries carry the planner's library gates (not advisor-eligible; the built-in
+# fallback catalog has no such entries)
+NEW_GATES = {
+    **OLD_GATES,
+    "org.openrewrite.java.spring.batch.SpringBatch5To6Migration": "has_spring_batch",
+    "org.openrewrite.hibernate.MigrateToHibernate71": "has_hibernate",
+}
+# v2.1w: every config set the catalog's `sets:` must mirror (invariant 5) — the three conditional sets included
+V21W_SETS = {
+    "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10": ["servlet_jakarta_10"],
+    "org.openrewrite.java.spring.batch.SpringBatch5To6Migration": ["spring_batch_6"],
+    "org.openrewrite.hibernate.MigrateToHibernate71": ["hibernate_7"],
+}
 
 
 def _profile(**kw):
@@ -79,7 +92,8 @@ def test_repo_catalog_is_consistent_with_every_source(cfg):
     assert cat.path == CATALOG.resolve()
     assert cat.check(cfg) == []
     rs = cfg.openrewrite.recipes
-    for rid in [*rs.jdk21, *rs.jakarta, *rs.spring_boot_4, *rs.spring_framework_7, *rs.spring_security_7, *rs.junit5]:
+    for rid in [*rs.jdk21, *rs.jakarta, *rs.servlet_jakarta_10, *rs.spring_boot_4, *rs.spring_framework_7,
+                *rs.spring_security_7, *rs.spring_batch_6, *rs.hibernate_7, *rs.junit5]:
         assert rid in cat, rid
 
 
@@ -129,8 +143,8 @@ def test_derived_advisor_constants_match_the_old_literals():
     assert ADVISOR_CATALOG == NEW_ADVISOR_CATALOG
     assert list(ADVISOR_CATALOG) == list(OLD_ADVISOR_CATALOG)       # prompt order unchanged
     assert ADVISOR_COVERAGE == NEW_ADVISOR_COVERAGE
-    assert set(ADVISOR_GATES) == set(OLD_GATES)
-    assert all(ADVISOR_GATES[rid] is GATES[g] for rid, g in OLD_GATES.items())
+    assert set(ADVISOR_GATES) == set(NEW_GATES)
+    assert all(ADVISOR_GATES[rid] is GATES[g] for rid, g in NEW_GATES.items())
     # the built-in fallback (catalog file missing) is the same advisor view
     b = builtin_catalog()
     assert b.advisor_catalog() == NEW_ADVISOR_CATALOG and b.coverage() == NEW_ADVISOR_COVERAGE
@@ -259,3 +273,39 @@ def test_library_migrations_are_not_advisor_eligible_and_covered_by_the_umbrella
         e = cat.get(rid)
         assert e is not None and not e.advisor and rid not in ADVISOR_CATALOG
         assert cov[rid] == "org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"
+
+
+def test_v21w_sets_and_gates(cfg):
+    """v2.1w: the three conditional sets are listed in the catalog's `sets:` (drift check) and gated on the analyzer's
+    library names; the config sets and the catalog agree."""
+    from sbmig.plan.catalog import config_recipe_sets
+
+    cat = default_catalog(cfg)
+    sets = config_recipe_sets(cfg)
+    for rid, names in V21W_SETS.items():
+        e = cat.get(rid)
+        assert e is not None and e.sets == names and not e.advisor, rid
+        assert all(rid in sets[n] for n in names)
+        # still reached through the Boot 4 umbrella for Boot projects
+        assert rid in cat.coverage()["org.openrewrite.java.spring.boot4.UpgradeSpringBoot_4_0"]
+    assert "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10" in \
+        cat.coverage()["org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0"]
+    assert cat.get("org.openrewrite.java.spring.batch.SpringBatch5To6Migration").gate == "has_spring_batch"
+    assert cat.get("org.openrewrite.hibernate.MigrateToHibernate71").gate == "has_hibernate"
+    assert cat.check(cfg) == []
+    # emptying a set in a company config is consistent only when the catalog drops the set name too
+    cfg.openrewrite.recipes.spring_batch_6 = []
+    assert any("lists set 'spring_batch_6' but openrewrite.recipes.spring_batch_6 does not contain it" in x
+               for x in cat.check(cfg))
+
+
+def test_v21w_gates_behave():
+    batch = _profile(case_type=CaseType.SPRING_LEGACY, spring_boot_version=None,
+                     libraries=[LibraryUsage(name="spring-batch", version="4.3.10")])
+    hib = _profile(case_type=CaseType.SPRING_LEGACY, spring_boot_version=None,
+                   libraries=[LibraryUsage(name="hibernate", version="5.6.15.Final")])
+    jpa_only = _profile(case_type=CaseType.SPRING_LEGACY, spring_boot_version=None,
+                        libraries=[LibraryUsage(name="jpa"), LibraryUsage(name="spring-data-jpa")])
+    assert GATES["has_spring_batch"](batch) and not GATES["has_spring_batch"](hib)
+    assert GATES["has_hibernate"](hib) and not GATES["has_hibernate"](batch)
+    assert not GATES["has_hibernate"](jpa_only)                          # JPA API only → no native Hibernate recipe

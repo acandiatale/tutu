@@ -266,6 +266,30 @@ def _first_sentence(text: str, limit: int = 160) -> str:
     return t if len(t) <= limit else t[:limit - 1] + "…"
 
 
+def cut_lines(text: str, limit: int) -> str:
+    """``limit`` 자 안에서 줄 경계로 자르고 ``(… N more lines)`` 를 붙인다(줄 중간에서 표시 없이 잘리던 것, E-L9).
+
+    `text` cut at a line boundary within `limit` characters, with `(… N more lines)` naming what was left out
+    (v2.1v E-L9: the other cases' summary used to be cut mid-line without a marker). A first line longer than
+    `limit` is cut itself (with "…")."""
+    if len(text) <= limit:
+        return text
+    lines = text.split("\n")
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + (1 if out else 0)
+        if used + cost > limit:
+            break
+        out.append(line)
+        used += cost
+    if not out:
+        out, rest = [lines[0][: max(0, limit - 1)] + "…"], len(lines) - 1
+    else:
+        rest = len(lines) - len(out)
+    return "\n".join(out) + (f"\n(… {rest} more line{'s' if rest != 1 else ''})" if rest else "")
+
+
 def case_stage(round_no: int, c: ErrorCluster) -> str:
     """한 라운드 안에서 한 케이스를 다루는 로그 단계 태그(``fix r3 7a52b1cea8``).
 
@@ -476,6 +500,24 @@ VERSION_PROPERTY_FAMILIES: tuple[tuple[str, str, bool], ...] = (
     ("org.springframework", "spring-framework", False),
 )
 CHAIN_PROPERTY_FACTS_MAX = 20                         # "parent chain property: …" lines per prompt
+# v2.1v (B-M4): "package <p> does not exist" → the managed artifactIds of the longest groupId prefixing <p>
+PACKAGE_FACTS_ARTIFACTS = 25                          # artifactIds per `managed artifacts under <group>` line
+PACKAGE_FACTS_LINES = 5                               # such lines per prompt (one per missing package)
+_PACKAGE_MISSING_RE = re.compile(r"package\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+)\s+does not exist")
+# v2.1v (B-H1): the line for a library the new chain / the target Boot BOM manages — no repository list, no verdict
+API_CHANGED_TAIL = " — the API changed, fix the code and leave the version"
+OTHER_ERRORS_CHARS = 4000                             # FixContext.other_errors_summary, cut at a line boundary (E-L9)
+# v2.1y (E-M1): an answer with neither edits nor a script (or with <blocked>) is "declined" — a blocker outside the
+# project; after script.max_declines_per_case of them the case is BLOCKED needs_owner, its same-cause siblings too
+DECLINED_NOTE = "declined: "                          # FixAttempt.notes prefix of a declined answer
+NEEDS_OWNER_KO = "소유팀 결정 필요"                    # the Korean suggestion's tail (BlockedItem.suggestion)
+# ScriptProposal.error values that mean "the answer simply had no script / no edits" (not an unparsable answer)
+_DECLINE_ERRORS = ("no <script> block", "no <edits> block", "no script and no edits", "no edits:")
+NON_IDEMPOTENT_NOTE = "non-idempotent: "              # FixAttempt.notes prefix (v2.1y E-H3)
+# PM 2026-10-31: a declined case keeps the triage classifier's specific reason (operators, the handbook and the attn
+# codes key on them); needs_owner only for a cluster without one
+DECLINE_KEEPS_REASONS = frozenset({BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE,
+                                   BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PLUGIN_INCOMPATIBLE})
 _STEM_SUFFIXES = ("-starter", "-bom", "-parent")
 
 
@@ -889,6 +931,17 @@ class BuildFixLoop:
         self._sleep: Optional[Callable[[float], None]] = None   # injectable (tests); None = module `sleep_seconds`
         # round 9: first-wins merge conflicts of the restructure step (set by the orchestrator) → fix-prompt hints
         self.merge_conflicts: list[MergeConflict] = []
+        # v2.1v (B-H2): 재구성 결과와 그 모드(오케스트레이터가 넣는다) → 프롬프트의 "Project after the restructure" 절
+        # the run's RestructureResults and their modes (set by the orchestrator) → FixContext.layout_facts
+        self.restructure_results: list[Any] = []
+        self.restructure_modes: list[Optional[str]] = []
+        self._layout_cache: Optional[tuple[int, list[str]]] = None
+        # v2.1v (E-L9): (file, signature) of an error that first appeared in the files of an applied try → that try
+        self._introduced: dict[tuple[str, str], FixAttempt] = {}
+        # v2.1y (E-M1): attempt → the blocker sentence of its declined answer; the cases BLOCKED needs_owner
+        # (case id, files, artifact keys, sentence) — their same-cause siblings are blocked without an LLM call
+        self._declines: dict[int, str] = {}
+        self._owner_blocked: list[tuple[str, frozenset[str], frozenset[str], str]] = []
         self._phase_items: list[str] = []
         self._cur_phase: Phase = Phase.JDK21
         # v2 fix scripts: scripts credited (attempt → outcome credited), attempts rolled back before the next try, the
@@ -1334,6 +1387,12 @@ class BuildFixLoop:
             artifact, owner, notes = attribute(self.locator, self.ws, self.cfg, owner, errs, c.module or target)
         elif reason in (BlockReason.ARTIFACT_NOT_FOUND, BlockReason.PARENT_NOT_FOUND):
             artifact = next((e.artifact for e in errs if e.artifact is not None), None)
+        elif reason == BlockReason.NEEDS_OWNER:
+            # v2.1y: 거절된 javax 라이브러리·없는 아티팩트 케이스도 인수인계 표에 그 라이브러리가 남게(예전 사유의 귀속과 같게)
+            artifact = next((e.artifact for e in errs if e.artifact is not None), None)
+            if artifact is None and _mentions_javax(errs):
+                owner, required, found = self._classpath_hints(errs, owner, required, found)
+                artifact, owner, notes = attribute(self.locator, self.ws, self.cfg, owner, errs, c.module or target)
         elif reason == BlockReason.REACTOR_DUPLICATE:
             # v2.1k: 차단 표의 아티팩트 칸에 중복된 프로젝트 좌표(Maven 메시지에서)
             from sbmig.triage.blocked import errors_text, reactor_duplicate_coordinates
@@ -1653,6 +1712,15 @@ class BuildFixLoop:
             for p in pending:
                 if p.attempt.outcome == "regressed":
                     p.attempt.notes.append("not reverted: later commits that improved things depend on it")
+        # v2.1v (E-L9): 남은(되돌리지 않은) 시도가 손댄 파일에 새로 생긴 오류 → 그 시도. 그 오류의 케이스 프롬프트가
+        # "introduced by script:<case>:v<N>" 라고 말한다(TokenCodec: 스크립트가 남긴 catch IOException)
+        if not build.ok:
+            for p in pending:
+                a = p.attempt
+                if a.outcome == "reverted" or not a.applied:
+                    continue
+                for e in _new_in_files(build.errors, _touched(a), prev_count):
+                    self._introduced.setdefault(_pair(e), a)
         for p in pending:
             self.ws.journal({"event": "attempt_scored", "phase": pr.phase.value, "attempt": p.attempt.id,
                              "cluster": p.attempt.cluster_id, "outcome": p.attempt.outcome,
@@ -1920,6 +1988,12 @@ class BuildFixLoop:
                 d.rationale = prefix + d.rationale
             step = self._script_step(c) if d.kind == DecisionKind.SCRIPT else None
             seen_step = step
+            # v2.1y (E-M1): 소유팀 결정이 필요하다고 차단된 케이스와 같은 파일·같은 아티팩트의 케이스는 LLM 에 묻지 않고
+            # 같은 이유로 차단한다(legacy-ibatis: CatalogDao.java 의 3 케이스 × 3 회 = 9 회 → 1 회)
+            if step is not None and step.needs_llm:
+                owner = self._owner_cause(c)
+                if owner is not None:
+                    return self._block_same_cause(st, c, owner, prefix)
             forced = None
             # 강제 차단: 사다리 끝(저장본 1 + LLM 3회 소진 → 반복 실패), LLM 이 필요한데 LLM 불가 또는 예산
             # 소진. 저장본 재사용(LLM 0회)은 LLM 이 없어도 막지 않는다
@@ -2103,6 +2177,7 @@ class BuildFixLoop:
         if att.outcome == "apply_failed":
             self._credit_script(att)
         self._sync_try(att)
+        self._after_decline(st, c, att)                 # v2.1y: the declined case's BLOCKED needs_owner (recorded first)
 
     def _llm_try(self, att: FixAttempt, c: ErrorCluster, st: "_Round", step: Any, base: Optional[ScriptBase]) -> None:
         """신규 / 보강: LLM 에 묻고(원인·해결·edits·스크립트) 적용한다. 보강 + 스크립트 → 새 버전
@@ -2137,6 +2212,12 @@ class BuildFixLoop:
         att.solution = getattr(ans, "solution", "") or ""
         att.no_script_reason = getattr(ans, "no_script_reason", "") or ""
         self._log_answer(secs, att, code, edits)
+        # v2.1y (E-M1): <blocked> 또는 분석만 있는 답 = 거절(프로젝트 밖의 일) — 같은 질문을 되풀이하지 않는다
+        declined = self._declined_reason(ans, code, edits)
+        if declined:
+            att.source = requested
+            self._begin_try(att, st)
+            return self._decline(att, c, ans, declined, ignored=bool(code.strip() or edits))
         # 보강했다는 스크립트가 기준 버전과 똑같으면 다시 돌리지
         # 않는다(같은 결과가 나올 뿐) — edits 가 있으면 그것으로
         if code.strip() and base is not None and att.script_mode == "augment" \
@@ -2206,6 +2287,10 @@ class BuildFixLoop:
         att.analysis = ans.analysis or ""
         att.solution = getattr(ans, "solution", "") or ""
         self._log_answer(secs, att, "", edits)
+        declined = self._declined_reason(ans, "", edits)      # v2.1y: the same classification as script mode
+        if declined:
+            self._begin_try(att, st)
+            return self._decline(att, c, ans, declined, ignored=bool(edits))
         if (ans.code or "").strip():
             att.notes.append(EDITS_SCRIPT_IGNORED)
             log.info("%s", EDITS_SCRIPT_IGNORED)
@@ -2219,6 +2304,158 @@ class BuildFixLoop:
                 why += f" (asked for: {', '.join(ans.requested_files[:5])})"
             return self._fail(att, why)
         self._apply_edits(att, c, edits, st)
+
+    def _declines_allowed(self) -> int:
+        """``script.max_declines_per_case`` (0 이하 = 거절 분류를 끔: 예전처럼 적용 실패)."""
+        try:
+            return int(getattr(getattr(self.cfg, "script", None), "max_declines_per_case", 1))
+        except (TypeError, ValueError):
+            return 1
+
+    def _declined_reason(self, ans: Any, code: str, edits: list) -> str:
+        """v2.1y (E-M1): 답이 "거절" 이면 그 차단 사유 문장, 아니면 "". 거절 = ``<blocked>`` (``blocked_reason``), 또는
+        편집도 스크립트도 없이 분석만 있는 답(예전의 "no script" 적용 실패). 전송 실패·형식을 어긴 답·아직 파일을 더 달라는
+        답·쓸 수 없는 편집은 거절이 아니다(그대로 적용 실패). ``script.max_declines_per_case`` 가 0 이하면 끈다.
+
+        The blocker sentence of a declined answer, "" otherwise: `ScriptProposal.blocked_reason`, or an answer with
+        neither edits nor a script and only `<analysis>`. Transport failures (`llm-error:`), protocol garbage, an
+        answer still asking for context or with unusable edits are not declined. Off when
+        `script.max_declines_per_case` ≤ 0."""
+        if self._declines_allowed() <= 0 or ans is None:
+            return ""
+        blocked = " ".join(str(getattr(ans, "blocked_reason", "") or "").split())
+        if blocked:
+            return blocked
+        if (code or "").strip() or edits:
+            return ""
+        analysis = "\n".join(x for x in str(getattr(ans, "analysis", "") or "").splitlines()
+                             if not x.strip().startswith("[sbmig]")).strip()
+        if not analysis or analysis.startswith("llm-error"):
+            return ""
+        err = " ".join(str(getattr(ans, "error", "") or "").split())
+        if err and not err.startswith(_DECLINE_ERRORS):
+            return ""                                   # unparsable / unusable edits / still asking for files
+        why = str(getattr(ans, "no_script_reason", "") or "").strip()
+        if why and why != "(no reason given)":
+            return " ".join(why.split())
+        return _first_sentence(analysis, 300)
+
+    def _decline_count(self, case_id: str) -> int:
+        """이 실행에서 케이스가 거절된 횟수(실행 이력의 시도 메모 ``declined: …``)."""
+        if not case_id:
+            return 0
+        return sum(1 for a in self.history if a.script_case_id == case_id
+                   and any(n.startswith(DECLINED_NOTE) for n in a.notes))
+
+    def _decline(self, att: FixAttempt, c: ErrorCluster, ans: Any, reason: str, *, ignored: bool = False) -> None:
+        """v2.1y: 거절된 답 — 시도 결과 ``blocked``, 메모 ``declined: <사유>``, 저널 ``declined``. 차단(needs_owner)은
+        시도가 이력에 들어간 뒤 ``_after_decline`` 이 한다. 적용한 것은 없다(작업 트리를 깨끗이).
+
+        A declined answer (`<blocked>` or analysis only): outcome `blocked`, note `declined: <reason>`, journal
+        `declined`; BLOCKED needs_owner follows in `_after_decline` once the attempt is recorded. Nothing applied."""
+        case = att.script_case_id or c.case_id or c.id
+        n = self._decline_count(case) + 1
+        limit = max(1, self._declines_allowed())
+        att.outcome = "blocked"
+        att.notes.append(DECLINED_NOTE + _first_sentence(reason, 400))
+        if ignored:
+            att.notes.append("the answer named a blocker (<blocked>): its edits / script were not applied")
+        self._declines[id(att)] = reason
+        try:
+            if self.ws.is_dirty():
+                self.ws.discard_uncommitted()
+        except Exception:  # pragma: no cover - nothing was applied; stay defensive
+            pass
+        log.info("LLM 이 거절함 (declined %d/%d): %s — 프로젝트 밖의 일, 다시 묻지 않음", n, limit,
+                 _first_sentence(reason, 240))
+        self.ws.journal({"event": "declined", "case": case, "attempt": att.id, "reason": reason[:500],
+                         "explicit": bool(str(getattr(ans, "blocked_reason", "") or "").strip()),
+                         "declines": n, "limit": limit, "mode": att.script_mode, "ignored": ignored})
+
+    def _after_decline(self, st: "_Round", c: ErrorCluster, att: FixAttempt) -> None:
+        """거절이 ``script.max_declines_per_case`` 에 닿았으면 케이스를 BLOCKED needs_owner 로(LLM 을 더 부르지 않음).
+
+        After a declined attempt is recorded: BLOCKED needs_owner once the case reached
+        `script.max_declines_per_case` declined answers (no further LLM call)."""
+        reason = self._declines.pop(id(att), None)
+        if reason is None:
+            return
+        case = att.script_case_id or c.case_id or c.id
+        if self._decline_count(case) < max(1, self._declines_allowed()):
+            return
+        self._block_needs_owner(st, c, reason)
+
+    def _block_needs_owner(self, st: "_Round", c: ErrorCluster, reason: str, same_as: str = "") -> None:
+        """거절된(또는 같은 원인의) 케이스를 차단한다. 트리아지 분류기가 구체적인 사유를 주면(``DECLINE_KEEPS_REASONS``:
+        javax 라이브러리·호환 안 되는 외부 API·없는 아티팩트·플러그인) 그 사유와 그 제안 문구로 — 운영자·핸드북·attn 코드가
+        그 사유를 본다(PM 결정 2026-10-31); 분류가 없는 오류만(legacy-ibatis 같은 컴파일 오류) needs_owner, 제안 =
+        "<차단 사유 문장> — 소유팀 결정 필요" (형제는 "same cause as <case>: …"). 분류가 일부 오류만 덮으면 나머지는
+        needs_owner. 원래 거절한 케이스는 형제 판정을 위해 (파일, 아티팩트) 를 기억한다.
+
+        Block a declined case (or a same-cause sibling) without another LLM call. When the triage classifier has a
+        specific reason for it (`DECLINE_KEEPS_REASONS`: external_javax_api, external_api_incompatible,
+        artifact_not_found, plugin_incompatible) that reason and its composed suggestion are kept (PM, 2026-10-31:
+        operators, the handbook and the attn codes key on them; the LLM's sentence goes into the rationale); only an
+        unclassified cluster — or the errors the classification leaves out — is BLOCKED `needs_owner` with the
+        suggestion "<blocker sentence> — 소유팀 결정 필요" ("same cause as <case>: …" for a sibling)."""
+        from sbmig.triage.blocked import BlockedCandidate, classify_blocked
+        sentence = _first_sentence(reason, 300)
+        text = f"same cause as {same_as}: {sentence}" if same_as else sentence
+        rest_c: Optional[ErrorCluster] = c
+        try:
+            pol = classify_blocked(c, self.profile, self.cfg, ws=self.ws)
+        except Exception as e:  # noqa: BLE001 - a classifier bug: the plain needs_owner block below
+            log.debug("classification of the declined %s failed: %s: %s", c.id, type(e).__name__, e)
+            pol = None
+        if pol is not None and pol.reason in DECLINE_KEEPS_REASONS:
+            pol.evidence = [*pol.evidence, f"the LLM declined: {text}"]
+            rest = self._register_blocked(st.phase, st.iteration, c, pol,
+                                          f"blocked: {pol.reason.value} — {pol.detail()}; the LLM declined: {text}",
+                                          st.target)
+            rest_c = _reduced(c, rest) if rest else None
+        if rest_c is not None:
+            cand = BlockedCandidate(reason=BlockReason.NEEDS_OWNER, errors=list(rest_c.errors), evidence=[text],
+                                    suggestion=f"{text} — {NEEDS_OWNER_KO}")
+            self._register_blocked(st.phase, st.iteration, rest_c, cand,
+                                   f"blocked: {BlockReason.NEEDS_OWNER.value} — {text}", st.target)
+        st.hopeless.add(c.id)
+        if not same_as:
+            files = frozenset(_norm_path(e.file) for e in c.errors if e.file)
+            arts = frozenset(e.artifact.key for e in c.errors
+                             if e.artifact is not None and e.artifact.group_id and e.artifact.artifact_id)
+            self._owner_blocked.append((c.case_id or c.id, files, arts, sentence))
+
+    def _owner_cause(self, c: ErrorCluster) -> Optional[tuple[str, str]]:
+        """v2.1y: ``c`` 가 소유팀 결정으로 차단된 케이스와 같은 원인인가 → (그 케이스, 사유 문장). 같은 원인 = ``c`` 의
+        오류 파일이 전부 그 케이스의 오류 파일 안에 있음, 또는 같은 아티팩트(``e.artifact``)를 말함.
+
+        (case, sentence) of the needs_owner case `c` shares its cause with: every error file of `c` is among that
+        case's error files, or an error names the same artifact. None otherwise."""
+        if not self._owner_blocked:
+            return None
+        me = c.case_id or c.id
+        files = {_norm_path(e.file) for e in c.errors if e.file}
+        arts = {e.artifact.key for e in c.errors if e.artifact is not None and e.artifact.group_id
+                and e.artifact.artifact_id}
+        for case, ofiles, oarts, sentence in self._owner_blocked:
+            if case == me:
+                continue
+            if (files and ofiles and files <= ofiles) or (arts and oarts and arts & oarts):
+                return case, sentence
+        return None
+
+    def _block_same_cause(self, st: "_Round", c: ErrorCluster, owner: tuple[str, str], prefix: str) -> str:
+        """형제 케이스를 LLM 호출 없이 BLOCKED needs_owner 로(결정 기록 + 저널 ``same_cause_blocked``)."""
+        case, sentence = owner
+        d = TriageDecision(cluster_id=c.id, kind=DecisionKind.BLOCKED,
+                           rationale=prefix + f"blocked: {BlockReason.NEEDS_OWNER.value} — same cause as {case} "
+                                              f"(declined: {sentence}); no LLM call")
+        st.decisions.append(d)
+        self._journal_decision(st, d)
+        log.info("blocked (needs_owner): same cause as %s — LLM 에 묻지 않음", case)
+        self.ws.journal({"event": "same_cause_blocked", "case": c.case_id or c.id, "as": case})
+        self._block_needs_owner(st, c, sentence, same_as=case)
+        return "blocked"
 
     def _switch(self, att: FixAttempt, note: str) -> None:
         """답의 첫 선택이 적용되지 않았다: 그 실패는 메모로 바꾸고, 같은 시도에서 나머지 반쪽으로 계속한다.
@@ -2423,8 +2660,9 @@ class BuildFixLoop:
         new / augment: the LLM's answer (FixAnswer: 원인 · 해결 · edits · script / no_script_reason), or None when
         there is none (transport failure, configuration error, a fixer without propose_script — the reason is on the
         attempt)."""
-        hints = [*self._match_hints.get(c.id, []), *self._sibling_hints(c)]
-        other = "\n".join(v for k, v in st.others.items() if k != c.id)[:4000]
+        # v2.1v (E-L9): 앞 시도가 만든 오류면 그 스크립트를 먼저 말한다(새 스크립트보다 그 스크립트의 보강이 낫다)
+        hints = [*self._match_hints.get(c.id, []), *self._introduced_hints(c), *self._sibling_hints(c)]
+        other = cut_lines("\n".join(v for k, v in st.others.items() if k != c.id), OTHER_ERRORS_CHARS)
         self._mark(f"advisory hints for {c.id}")
         adv_hints, att.advisory_ids = self._advisory_hints(c)
         self._mark(f"merge-conflict hints for {c.id}")
@@ -2434,6 +2672,10 @@ class BuildFixLoop:
         mode = step.mode if base is not None or step.mode == "new" else "new"
         if step.mode == "augment" and base is None:
             att.notes.append("augment without a usable base → asking for a new fix")
+        elif mode == "augment" and self._decline_count(step.case_id):
+            # v2.1y: 거절한 케이스에는 보강을 청하지 않는다(script.max_declines_per_case > 1 일 때만 여기 온다)
+            mode, base = "new", None
+            att.notes.append("the case was declined before → asking for a new fix, not an augment")
         att.script_mode = mode
         if mode == "augment":
             att.script_parent = int(base.version) or None
@@ -2451,7 +2693,8 @@ class BuildFixLoop:
                          advisory_hints=adv_hints, previous_attempts=previous, other_errors_summary=other,
                          use_escalation_model=escalate, reference_notes=ref_notes, reference_files=ref_files,
                          script_mode=mode, case_id=step.case_id, signature_generic=sig,
-                         script_base=base if mode == "augment" else None, library_hints=lib_hints)
+                         script_base=base if mode == "augment" else None, library_hints=lib_hints,
+                         layout_facts=self._layout_facts())
         if self.edits_mode:                             # v2.1i: what the earlier tries edited instead of a base script
             ctx.fix_mode = "edits"
             ctx.previous_edits = self._previous_edits(previous)
@@ -2522,6 +2765,63 @@ class BuildFixLoop:
                 lines += [_edit_line(e) for e in edits]
             body = "\n".join(lines)
             out[a.id] = body if len(body) <= 2 * PREVIOUS_EDIT_CHARS else body[:2 * PREVIOUS_EDIT_CHARS] + _TRUNCATED_MARK
+        return out
+
+    def _layout_facts(self) -> list[str]:
+        """v2.1v (B-H2): 프롬프트의 "Project after the restructure" 절 — 오케스트레이터가 넘긴 재구성 결과와 설정으로
+        만든 줄(``sbmig.loop.layout_facts``). 결과 수가 바뀔 때만 다시 만든다. 재구성이 없었으면 []. 예외 없음.
+
+        `FixContext.layout_facts` from the restructure results the orchestrator handed over (`restructure_results` /
+        `restructure_modes`) and `cfg.artifacts` / `cfg.layout`; rebuilt only when the number of results changes."""
+        results = list(self.restructure_results or [])
+        if not results:
+            return []
+        if self._layout_cache is not None and self._layout_cache[0] == len(results):
+            return list(self._layout_cache[1])
+        try:
+            from .layout_facts import layout_fact_lines
+            case = getattr(getattr(self.profile, "case_type", None), "value", None) or \
+                str(getattr(self.profile, "case_type", "") or "")
+            lines = layout_fact_lines(results, self.cfg, modes=list(self.restructure_modes or []), case=case,
+                                      read_artifact_id=self._artifact_id_of)
+        except Exception as e:  # noqa: BLE001 - a fact section never breaks a fix attempt
+            log.debug("layout facts unavailable: %s: %s", type(e).__name__, e)
+            lines = []
+        self._layout_cache = (len(results), list(lines))
+        if lines:
+            self.ws.journal({"event": "layout_facts", "lines": lines})
+        return list(lines)
+
+    def _artifact_id_of(self, rel: str) -> str:
+        """모듈 pom 의 artifactId(읽을 수 없으면 "") — 레이아웃 사실 줄용.
+
+        The artifactId of a project pom ("" when it does not read)."""
+        ed = self._pom_editor(rel)
+        try:
+            return str(ed.artifact_id() or "") if ed is not None else ""
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _introduced_hints(self, c: ErrorCluster) -> list[str]:
+        """v2.1v (E-L9): 이 케이스의 오류가 앞 라운드의 적용된 시도가 손댄 파일에서 처음 나타났으면 그 시도를 말하는
+        KB 힌트 한 줄 — ``introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script``. 스크립트가
+        아니면(edits) 그 꼬리표만. 없으면 [].
+
+        The kb hint naming the earlier applied try whose touched files first showed this case's errors (`_score`
+        records them): `introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script`."""
+        seen: list[FixAttempt] = []
+        for e in c.errors:
+            a = self._introduced.get(_pair(e))
+            if a is not None and a not in seen and (a.script_case_id or a.cluster_id) != (c.case_id or c.id):
+                seen.append(a)
+        out: list[str] = []
+        for a in seen[:2]:
+            if a.script_version and a.script_case_id and not self.edits_mode and not a.edits_applied:
+                out.append(f"introduced by script:{a.script_case_id}:v{a.script_version} (attempt {a.id}) — prefer "
+                           "augmenting that script")
+            else:
+                out.append(f"introduced by {self._attempt_name(a) if not self.edits_mode else self._edits_label(a)} "
+                           f"(attempt {a.id}) — its change is in the tree; fix what it left, do not undo it")
         return out
 
     def _store_script(self, att: FixAttempt, c: ErrorCluster, step: Any, ans: Any, code: str, *,
@@ -2607,6 +2907,8 @@ class BuildFixLoop:
             log.info("적용 실패 (%s %s): %s — 변경 없음", name, res.status, _first_sentence(res.error or "-", 240))
             return
         self._drop_reference_writes(att, pre)
+        # v2.1y (E-H3): sbmig 의 버전 채움 *전에* — 채움을 스크립트의 두 번째 변경으로 오인하지 않게
+        self._idempotency_check(att, c, code, res)
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         self._mark(f"git commit for {c.id}")
         sha = self._commit(f"fix(script:{case_id}:v{v} {att.script_mode}): {c.id}", pre, paths=res.changed_files)
@@ -2616,6 +2918,78 @@ class BuildFixLoop:
             log.info("적용 실패 (%s): 실행은 ok, 바뀐 파일 없음", name)
             return
         self._applied(att, c, st, pre, sha, name, list(res.changed_files))
+
+    def _idempotency_check(self, att: FixAttempt, c: ErrorCluster, code: str, res: ScriptRunResult) -> None:
+        """v2.1y (E-H3, ``script.idempotency_check``): ok 로 파일을 바꾼 스크립트를 같은 오류로 한 번 더 돌린다(첫 실행의
+        결과 위에서). 또 바꾸면 비멱등 — 두 번째 변경만 되돌리고(첫 실행의 결과는 그대로 커밋된다), 저장된 버전을
+        ``non_idempotent`` 로 표시해 다시는 재사용하지 않으며, 시도에 메모, 저널 ``script_non_idempotent``. 시도 자신의 결과는
+        재빌드가 정한다. edits 모드와 sbmig 의 사전 시도(``sbmig-version`` / ``sbmig-resources``)는 스크립트를 돌리지 않으니
+        해당 없음. 첫 실행 상태는 바뀐 파일의 바이트로 기억했다가 되돌린다 — 커밋 전이라 sbmig 의 버전 채움은 아직 없다.
+
+        Run an `ok` script that changed files once more on its own result (same errors). A second change = not
+        idempotent (rule 2): only the second run's changes are undone (the first run's result is committed as
+        usual), the stored version is marked `non_idempotent` (never reused), a note goes on the attempt and the
+        journal gets `script_non_idempotent`; the attempt's outcome stays whatever the rebuild scores. Runs before the
+        version fill so sbmig's own pom edits are never mistaken for the script's. Never raises."""
+        try:
+            if self.edits_mode or att.source in PRE_TRY_SOURCES or self.script_runner is None \
+                    or not getattr(getattr(self.cfg, "script", None), "idempotency_check", True) \
+                    or not res.changed_files or not self.ws.is_dirty():
+                return
+            snap: dict[str, Optional[bytes]] = {}
+            for f in dict.fromkeys(_norm_path(x) for x in res.changed_files if x):
+                full = self.ws.abs(f)
+                snap[f] = full.read_bytes() if full.is_file() else None
+        except Exception as e:  # noqa: BLE001 - the check is a guard, never a reason to fail the attempt
+            log.debug("idempotency check of %s skipped: %s: %s", att.id, type(e).__name__, e)
+            return
+        v = int(att.script_version or 0)
+        self._mark(f"idempotency check of {att.script_case_id}:v{v}")
+        with self._busy_with(f"fix script {att.script_case_id}:v{v} (second run)"):
+            try:
+                res2 = self.script_runner.run(self.ws, code, errors=list(c.errors))
+            except Exception as e:  # noqa: BLE001 - the runner says it never raises; stay defensive
+                res2 = ScriptRunResult(status="error", error=f"script runner failed: {type(e).__name__}: {e}")
+        changed2 = list(dict.fromkeys(_norm_path(x) for x in (res2.changed_files or []) if x))
+        self._restore_first_run(snap, changed2)
+        if not changed2:
+            log.debug("idempotency check of %s: the second run changed nothing (%s)", att.id, res2.status)
+            return
+        shown = ", ".join(changed2[:3]) + (f" (+{len(changed2) - 3})" if len(changed2) > 3 else "")
+        name = f"script v{v}" if v else "the unstored script"
+        note = (f"{NON_IDEMPOTENT_NOTE}a second run of {name} changed {shown} again — those second changes were "
+                "undone" + ("; the stored version is marked non_idempotent (never reused)" if v else ""))
+        att.notes.append(note)
+        marked = bool(v and att.script_case_id and self.cases.active
+                      and self.cases.mark_non_idempotent(att.script_case_id, v, note))
+        log.warning("비멱등 스크립트: %s 를 한 번 더 돌렸더니 %s 을(를) 또 바꿈 — 두 번째 변경은 되돌림%s", name, shown,
+                    ", 재사용 안 함 (non_idempotent)" if marked else "")
+        self.ws.journal({"event": "script_non_idempotent", "case": att.script_case_id, "version": v,
+                         "attempt": att.id, "files": changed2[:20], "second_status": res2.status, "marked": marked})
+
+    def _restore_first_run(self, snap: dict[str, Optional[bytes]], changed2: list[str]) -> None:
+        """두 번째 실행이 바꾼 파일을 첫 실행 직후 상태로: 첫 실행이 바꾼 파일은 기억한 바이트로(없던 파일은 지움),
+        그 밖은 HEAD(시도 전 커밋)의 내용으로(HEAD 에 없으면 지움).
+
+        Put every file the second run changed back as the first run left it: the remembered bytes (None = the file did
+        not exist), else HEAD's content (the attempt has not committed yet), else delete it."""
+        for f in changed2:
+            try:
+                full = self.ws.abs(f)
+                if f in snap:
+                    data = snap[f]
+                    if data is None:
+                        if full.is_file():
+                            full.unlink()
+                    else:
+                        full.parent.mkdir(parents=True, exist_ok=True)
+                        full.write_bytes(data)
+                elif self.ws._git("cat-file", "-e", f"HEAD:{f}", check=False).returncode == 0:   # noqa: SLF001
+                    self.ws._git("checkout", "HEAD", "--", f, check=False)                     # noqa: SLF001
+                elif full.is_file():
+                    full.unlink()
+            except Exception as e:  # noqa: BLE001 - best effort; the commit takes only the first run's files
+                log.warning("could not undo the second run's change of %s: %s: %s", f, type(e).__name__, e)
 
     def _apply_edits(self, att: FixAttempt, c: ErrorCluster, edits: list, st: "_Round",
                      subject: str | None = None, apply_fn: Callable[[], ScriptRunResult] | None = None) -> None:
@@ -2837,34 +3211,71 @@ class BuildFixLoop:
         return ""
 
     def _library_hints(self, c: ErrorCluster) -> list[str]:
-        """v2.1d 프롬프트의 "Dependency versions" 절: 케이스 뒤의 라이브러리마다 표 항목과 저장소가 가진
-        것(같은 메이저 jakarta ✓ / javax, 상위 메이저)과 마지막 줄의 판정(같은 메이저로 올려라 / 이 경우는
-        메이저 허용). 규칙은 "메이저 금지, 같은 메이저의 jakarta 빌드로만" — LLM 이 추측하지 않고 사실을 보고
-        고르게 한다. 라이브러리별로 실행 동안 캐시, 예외 없음. v2.1l: 맨 앞에 케이스 오류의 아티팩트마다 as-is
-        빌드의 버전·새 부모 체인의 관리 버전 줄(``_version_facts``).
+        """v2.1d 프롬프트의 "Dependency versions" 절: 맨 앞에 사실 줄(v2.1l ``_version_facts`` — 케이스 오류의 아티팩트와
+        v2.1v 부터 classpath 에서 찾은 라이브러리의 as-is 버전·새 부모 체인 / 목표 Boot BOM 의 관리 버전, v2.1t 체인 속성,
+        v2.1v ``_package_facts``, v2.1m 리소스 사실), 그다음 라이브러리마다 저장소 사실(같은 메이저 jakarta ✓ / javax, 상위
+        메이저)과 판정. v2.1v (B-H1 / E-H1): 저장소 목록과 판정은 javax 케이스에만 — 오류가 ``javax.`` 를 말하거나
+        라이브러리가 javax 표(``jakarta_libraries``)에 있을 때. 새 체인 / Boot BOM 이 관리하는 라이브러리는 사실 줄 하나
+        ("… — the API changed, fix the code and leave the version")뿐(Spring 7 의 API 제거 케이스에 "7.0.10 으로 올려라 /
+        <no_script>" 가 붙던 것). 라이브러리별로 실행 동안 캐시, 예외 없음.
 
-        FixContext.library_hints (the prompt's "Dependency versions" section): for the libraries behind the case
-        (`_case_libraries`) the table entry and what the repository has (`RepositoryLookup.candidates` →
-        `hint_lines`), cached per library for the run. v2.1l: the as-is / new-chain facts of every artifact of the
-        case's errors come first (`_version_facts`). Never raises ([] / the facts on any problem)."""
-        facts = self._version_facts(c) + self._chain_property_facts(c) + self._resources_facts(c)   # facts first
+        FixContext.library_hints (the prompt's "Dependency versions" section): the facts first — `_version_facts` (the
+        errors' artifacts and, since v2.1v, the libraries `_case_libraries` locates on the classpath), the chain's
+        version properties, `_package_facts`, the resource facts — then, per library, the repository facts and the
+        verdict (`RepositoryLookup.candidates` → `hint_lines`, cached per library). v2.1v: the repository lines only
+        for a javax case (an error names `javax.` or the library is in the javax table); a library the new chain /
+        the target Boot BOM manages gets its one fact line and nothing else. Never raises."""
+        libs: list[GAV] = []
         try:
             libs = self._case_libraries(c)
+        except Exception as e:  # noqa: BLE001 - hints never break a fix attempt
+            log.debug("case libraries for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+        facts = self._version_facts(c, libs) + self._chain_property_facts(c, libs) + self._package_facts(c) + \
+            self._resources_facts(c)                                                    # facts first
+        try:
             out: list[str] = list(facts)
+            javax_case = _mentions_javax(c.errors)
+            listed: list[str] = []
             for gav in libs:
+                if self._known_version(gav.key, self._lib_module(c)):
+                    continue                            # its fact line says it all: no listing, no verdict (v2.1v)
+                if not (javax_case or table_entry(gav.key, self.cfg) is not None):
+                    continue                            # v2.1d's scope: javax libraries only
                 lines = self._library_hint_cache.get(gav.key)
                 if lines is None:
                     lines = self._library_lines(gav.key, gav.version)
                     self._library_hint_cache[gav.key] = lines
                 out += lines
+                listed.append(gav.key)
             out = list(dict.fromkeys(x for x in out if x))
             if out:
                 self.ws.journal({"event": "library_hints", "case": c.case_id or c.id,
-                                 "keys": [g.key for g in libs], "lines": out})
+                                 "keys": [g.key for g in libs], "listed": listed, "lines": out})
             return out
         except Exception as e:  # noqa: BLE001 - hints never break a fix attempt
             log.debug("library hints for %s unavailable: %s: %s", c.id, type(e).__name__, e)
             return list(facts)
+
+    def _lib_module(self, c: ErrorCluster) -> Optional[str]:
+        """classpath 에서 찾은 라이브러리의 모듈(케이스의 첫 컴파일 오류의 모듈, 없으면 클러스터의 모듈)."""
+        return next((e.module for e in c.errors if e.module and e.kind in (ErrorKind.COMPILE, ErrorKind.TEST_COMPILE)),
+                    None) or c.module
+
+    def _known_version(self, key: str, module: Optional[str]) -> Optional[tuple[str, str]]:
+        """새 부모 체인 또는 목표 Boot BOM 이 이 g:a 를 관리하는가 → ("new parent chain" | "target Boot BOM", 버전).
+
+        (who, version) when the new parent chain or the target Boot BOM manages `key`; None otherwise."""
+        try:
+            r = self._versions()
+            mv = r.managed_version(key, module) if r.has_chain else None
+            if mv:
+                return "new parent chain", mv
+            bv = r.boot_version(key, module)
+            if bv:
+                return "target Boot BOM", bv
+        except Exception as e:  # noqa: BLE001
+            log.debug("managed version of %s unavailable: %s: %s", key, type(e).__name__, e)
+        return None
 
     def _case_libraries(self, c: ErrorCluster) -> list[GAV]:
         """케이스 뒤의 외부 라이브러리들(최대 ``libraries.max_artifacts_per_case``, g:a 당 하나): 오류의
@@ -3263,17 +3674,21 @@ class BuildFixLoop:
         names = version_property_matches(g, props, in_house=True)
         return names[0] if names else None
 
-    def _chain_property_facts(self, c: ErrorCluster) -> list[str]:
-        """v2.1t 프롬프트 사실: 케이스 오류의 아티팩트마다 관련된 회사 체인의 버전 속성(회사 pom 이 정의한 것만,
-        ``chain_company_properties``) — ``parent chain property:
+    def _chain_property_facts(self, c: ErrorCluster, libs: Optional[list[GAV]] = None) -> list[str]:
+        """v2.1t 프롬프트 사실: 케이스 오류의 아티팩트마다(v2.1v: classpath 에서 찾은 라이브러리 ``libs`` 도) 관련된 회사
+        체인의 버전 속성(회사 pom 이 정의한 것만, ``chain_company_properties``) — ``parent chain property:
         <name>=<value> (<정의한 pom>)``, 중복 없이 ``CHAIN_PROPERTY_FACTS_MAX`` 줄까지. 예외 없음.
 
-        The parent chain's version properties relevant to the case's artifacts (`version_property_matches`; in-house
-        per `is_in_house`), one `parent chain property: <name>=<value> (<defining pom>)` line each, ≤
-        `CHAIN_PROPERTY_FACTS_MAX`. Never raises."""
+        The parent chain's version properties relevant to the case's artifacts and (v2.1v) the libraries located on
+        the classpath (`libs`; compile errors carry no `e.artifact`), one `parent chain property: <name>=<value>
+        (<defining pom>)` line each, ≤ `CHAIN_PROPERTY_FACTS_MAX`. Never raises."""
         try:
-            gavs = list({e.artifact.key: e.artifact for e in c.errors
-                         if e.artifact is not None and e.artifact.group_id and e.artifact.artifact_id}.values())
+            found = {e.artifact.key: e.artifact for e in c.errors
+                     if e.artifact is not None and e.artifact.group_id and e.artifact.artifact_id}
+            for g in libs or []:
+                if g.group_id and g.artifact_id:
+                    found.setdefault(g.key, g)
+            gavs = list(found.values())
             if not gavs:
                 return []
             r = self._versions()
@@ -3609,20 +4024,30 @@ class BuildFixLoop:
             log.debug("resource facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
             return []
 
-    def _version_facts(self, c: ErrorCluster) -> list[str]:
+    def _version_facts(self, c: ErrorCluster, libs: Optional[list[GAV]] = None) -> list[str]:
         """v2.1l 프롬프트 사실("Dependency versions" 절의 앞부분): 케이스 오류의 아티팩트마다(사내 것도) as-is
         빌드가 쓴 버전(``as-is build: g:a <v> (managed by …)`` / ``… not declared``)과 새 부모 체인이 관리하는
-        버전(``new parent chain: manages g:a at <v>``). 캡처가 없으면 그 줄은 없다(모르는 것을 '없음' 이라고 하지
-        않는다). 예외 없음.
+        버전(``new parent chain: manages g:a at <v>``) / 목표 Boot BOM 의 버전. v2.1v (B-M3 / E-H2): 컴파일 오류에는
+        ``e.artifact`` 가 없어 e2e 전체에서 이 줄이 두 번밖에 안 나갔다 → classpath 에서 찾은 라이브러리(``libs``,
+        ``_case_libraries``)도 같은 줄을 받고, 메이저가 다르면 ``(major 4 → 6)``, classpath 라이브러리의 관리 줄은
+        "— the API changed, fix the code and leave the version" 으로 끝난다. 캡처가 없으면 그 줄은 없다(모르는 것을
+        '없음' 이라고 하지 않는다). ``VERSION_FACTS_MAX`` 개까지, 예외 없음.
 
-        The as-is / new-chain facts for every artifact of the case's errors (in-house ones too); a capture that is
-        missing gives no line (unknown is not "not declared"). Never raises."""
+        The as-is / new-chain / target Boot BOM facts for every artifact of the case's errors (in-house ones too) and,
+        since v2.1v, for the libraries located on the module classpath (`libs`, de-duplicated, ≤ `VERSION_FACTS_MAX`);
+        `(major X → Y)` when the as-is and the managed majors differ; a located library's managed line ends with
+        `API_CHANGED_TAIL`. A capture that is missing gives no line (unknown is not "not declared"). Never raises."""
         try:
             mods: dict[str, str | None] = {}
+            located: set[str] = set()
             for e in c.errors:
                 a = e.artifact
                 if a is not None and a.group_id and a.artifact_id and a.key not in mods:
                     mods[a.key] = e.module
+            for g in libs or []:
+                if g.group_id and g.artifact_id and g.key not in mods:
+                    mods[g.key] = self._lib_module(c)
+                    located.add(g.key)
             if not mods:
                 return []
             r = self._versions()
@@ -3630,20 +4055,84 @@ class BuildFixLoop:
                 return []
             out: list[str] = []
             for key, module in list(mods.items())[:VERSION_FACTS_MAX]:
+                asis_v: str | None = None
                 if r.has_asis:
-                    v, how = r.asis_fact(key, module)
-                    out.append(f"as-is build: {key} {v} ({how})" if v else f"as-is build: {key} not declared")
-                if r.has_chain:
-                    mv = r.managed_version(key, module)
-                    if mv:
-                        out.append(f"new parent chain: manages {key} at {mv}")
+                    asis_v, how = r.asis_fact(key, module)
+                    out.append(f"as-is build: {key} {asis_v} ({how})" if asis_v else f"as-is build: {key} not declared")
+                tail = API_CHANGED_TAIL if key in located else ""
+                mv = r.managed_version(key, module) if r.has_chain else None
+                if mv:
+                    out.append(f"new parent chain: manages {key} at {mv}{_major_delta(asis_v, mv)}{tail}")
                 bv = r.boot_version(key, module)
                 if bv:                               # v2.1s: the to-be line when the chain does not manage it
-                    out.append(f"target Boot BOM: manages {key} at {bv}")
+                    out.append(f"target Boot BOM: manages {key} at {bv}{_major_delta(asis_v, bv)}{tail}")
             return out
         except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
             log.debug("version facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
             return []
+
+    def _package_facts(self, c: ErrorCluster) -> list[str]:
+        """v2.1v (B-M4): ``package <p> does not exist`` (javax 아님) 케이스 — 새 부모 체인 / 목표 Boot BOM 이 관리하는
+        키 중 ``<p>`` 의 가장 긴 groupId 접두(``org.springframework.batch.item`` → ``org.springframework.batch``)의
+        artifactId 들(정렬, ``PACKAGE_FACTS_ARTIFACTS`` 개까지): ``managed artifacts under <group> (add the one that holds
+        <p>, version-less): a, b, …``. 의존성을 *추가* 해야 하는 케이스에서 LLM 이 좌표를 짐작하지 않게. 맞는 그룹이
+        없으면 없다. 좌표 리터럴 없음(관리 목록에서만). 예외 없음.
+
+        For `package <p> does not exist` errors (not `javax.*`): the artifactIds managed under the longest groupId that
+        prefixes `<p>` (the new chain's capture / parent-chain facts and the target Boot BOM): one `managed artifacts
+        under <group> (add the one that holds <p>, version-less): …` line per package (≤ `PACKAGE_FACTS_LINES`).
+        Nothing when no managed group matches. Never raises."""
+        try:
+            pkgs: list[str] = []
+            for e in c.errors:
+                for text in (e.message, e.raw):
+                    m = _PACKAGE_MISSING_RE.search(text or "")
+                    if m and not m.group(1).startswith("javax.") and m.group(1) not in pkgs:
+                        pkgs.append(m.group(1))
+                        break
+            if not pkgs:
+                return []
+            keys = self._managed_keys()
+            if not keys:
+                return []
+            by_group: dict[str, set[str]] = {}
+            for k in keys:
+                g, _, a = k.partition(":")
+                if g and a:
+                    by_group.setdefault(g, set()).add(a)
+            out: list[str] = []
+            for pkg in pkgs[:PACKAGE_FACTS_LINES]:
+                hits = [g for g in by_group if pkg == g or pkg.startswith(g + ".")]
+                if not hits:
+                    continue
+                group = max(hits, key=len)
+                arts = sorted(by_group[group])
+                shown = ", ".join(arts[:PACKAGE_FACTS_ARTIFACTS]) + \
+                    (f", … (+{len(arts) - PACKAGE_FACTS_ARTIFACTS})" if len(arts) > PACKAGE_FACTS_ARTIFACTS else "")
+                line = f"managed artifacts under {group} (add the one that holds {pkg}, version-less): {shown}"
+                if line not in out:
+                    out.append(line)
+            return out
+        except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
+            log.debug("package facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+            return []
+
+    def _managed_keys(self) -> set[str]:
+        """새 부모 체인(재구성 뒤 캡처 — 합친 것과 모듈별, 없으면 부모 체인의 사실)과 목표 Boot BOM 이 관리하는 g:a 들.
+
+        Every g:a the new parent chain (the post-restructure capture, merged and per module; else the parent-chain
+        facts) or the target Boot BOM manages."""
+        r = self._versions()
+        keys: set[str] = set()
+        if r.has_after:
+            keys |= set((r.after.get("managed") or {}).keys())
+            for mod in (r.after.get("by_module") or {}).values():
+                if isinstance(mod, dict):
+                    keys |= set((mod.get("managed") or {}).keys())
+        else:
+            keys |= set((r.chain.get("managed") or {}).keys())
+        keys |= set(r.boot.keys())
+        return {str(k) for k in keys if k}
 
     def _numstat(self, a: str, b: str) -> list[tuple[str, int, int]]:
         """두 커밋 사이 파일별 (경로, 추가 줄, 삭제 줄). 바이너리는 0 / 0, 이름 바꾸기는 새 경로.
@@ -4169,6 +4658,23 @@ def _kept_partial(a: FixAttempt) -> bool:
     A partial zero-LLM pre-try stays in the tree (no rollback before the case's next try): what it wrote are facts
     (the as-is build / the repository / the file scan), what is left is what it could not find."""
     return a.source in PRE_TRY_SOURCES and a.outcome == "partial"
+
+
+def _major_delta(before: Optional[str], after: Optional[str]) -> str:
+    """``(major 4 → 6)`` — as-is 와 관리 버전의 메이저가 다를 때만(둘 중 하나를 모르면 "").
+
+    `" (major X → Y)"` when both majors are known and differ, else ""."""
+    from sbmig.build.depchanges import major_of
+    a, b = (major_of(before) if before else None), (major_of(after) if after else None)
+    return f" (major {a} → {b})" if a is not None and b is not None and a != b else ""
+
+
+def _mentions_javax(errors: Iterable[BuildError]) -> bool:
+    """v2.1v: 케이스 오류가 ``javax.`` 를 말하는가(메시지·심볼·위치·원문) — v2.1d 저장소 목록·판정의 원래 범위.
+
+    Does any error of the case name `javax.` (message / symbol / location / raw)? v2.1d's repository listing and
+    verdict exist for those cases only."""
+    return any("javax." in (t or "") for e in errors for t in (e.message, e.symbol, e.location, e.raw))
 
 
 def _synthetic(e: BuildError) -> bool:

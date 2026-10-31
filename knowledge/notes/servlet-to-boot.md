@@ -2,65 +2,91 @@
 title: Raw servlet / JSP (Tomcat WAR) apps inside Spring Boot 4
 keywords:
   - "HttpServlet|@WebServlet|@WebFilter|@WebListener|ServletComponentScan|ServletRegistrationBean|FilterRegistrationBean|ServletListenerRegistrationBean"
+  - "WebXmlRegistrations|cannot be converted to jakarta\\.servlet\\."
   - "javax\\.servlet|jakarta\\.servlet"
   - "web\\.xml|WEB-INF|webapp"
-  - "jsp|JSP|jasper|jstl|taglib|InternalResourceViewResolver"
+  - "\\bjsp\\b|JSP|jasper|jstl|taglib|InternalResourceViewResolver"
+  - "tagext|\\b(TagSupport|SimpleTagSupport|BodyTagSupport)\\b"
   - "SpringBootServletInitializer|WebApplicationInitializer|ServletContainerInitializer"
   - "javax\\.servlet-api|servlet-api|tomcat-embed|spring-boot-starter-tomcat"
   - "<packaging>war</packaging>|maven-war-plugin|failOnMissingWebXml"
-cases: [servlet_tomcat, spring_legacy]
+  - "method (getValue|putValue|removeValue)\\(java\\.lang\\.String|getValueNames\\(|getRealPath\\("
+  - "UnavailableException|encodeRedirectUrl|encodeUrl\\(|isRequestedSessionIdFromUrl|SingleThreadModel|HttpUtils|HttpSessionContext"
+  - "CommonsMultipartResolver|setMaxUploadSize|maxUploadSize|setMaxInMemorySize"
+cases: [servlet_tomcat, spring_legacy, spring_boot, msa]
 phases: [spring, restructure]
 ---
 # Servlet / JSP application → Spring Boot 4.1 (embedded Tomcat 11, Jakarta Servlet 6.1)
 
+## What sbmig already did (never undo it)
+- Converted projects (`servlet_tomcat` / `spring_legacy`): JSPs are in the front module under
+  `src/main/resources/META-INF/resources/WEB-INF/jsp`, static files under `src/main/resources/static`. With JSPs the
+  boot module is an executable WAR (`java -jar` runs the embedded Tomcat; the same file also deploys to an external
+  Tomcat as the alternative), without JSPs an executable jar.
+- `spring-boot-starter-tomcat` / `tomcat-embed-jasper` are `provided` on purpose (packaged under `WEB-INF/lib-provided`:
+  used by `java -jar`, skipped by an external container). Never change the packaging, the JSP location or these
+  scopes, and never remove them. JSPs are not compiled by the build: never move or edit one to fix a compile error.
+- Boot as-is / MSA projects keep their directories and packaging (a `war` stays a `war`).
+- `web.xml` is not read by the embedded Tomcat: the restructure generated `<pkg>.WebXmlRegistrations` from it (below);
+  `@ServletComponentScan` only registers classes annotated `@WebServlet` / `@WebFilter` / `@WebListener`.
+
 ## Compile-level changes
-- All `javax.servlet.*` imports → `jakarta.servlet.*` (`HttpServlet`, `HttpServletRequest/Response`, `Filter`, `FilterChain`,
-  `ServletContextListener`, `HttpSessionListener`, `@WebServlet`, `@WebFilter`, `@WebListener`, `@WebInitParam`, `@MultipartConfig`).
-- Remove `javax.servlet:javax.servlet-api` / `javax.servlet:servlet-api` (provided). Embedded Tomcat via
-  `spring-boot-starter-webmvc` (or `spring-boot-starter-tomcat` for a non-MVC servlet app) provides `jakarta.servlet-api`.
-- `javax.servlet.jsp.*` → `jakarta.servlet.jsp.*`; JSTL taglib URI `http://java.sun.com/jsp/jstl/core` → `jakarta.tags.core`
-  (old URI still works with the jakarta JSTL impl's compatibility TLDs — leave JSP files unless they break the build).
-- Servlet 6 removals: `HttpServletRequest.isRequestedSessionIdFromUrl()` → `isRequestedSessionIdFromURL()`,
-  `HttpServletResponse.encodeUrl/encodeRedirectUrl` → `encodeURL/encodeRedirectURL`, `setStatus(int, String)` → `setStatus(int)`
-  (+ `sendError(int,String)` if the message matters), `HttpSessionContext`/`getSessionContext()` removed,
-  `HttpUtils` removed, `SingleThreadModel` removed (delete `implements SingleThreadModel` + MIGRATION-TODO),
-  `ServletContext.getServlet/getServlets/getServletNames/log(Exception,String)` removed.
-- `jakarta.servlet.http.Cookie` setters `setComment`/`setVersion` deprecated (no-ops) — warnings only.
+- `javax.servlet.*` → `jakarta.servlet.*` (also `jsp`, `jsp.tagext` and `@WebServlet` … `@MultipartConfig`).
+- Java code on `jakarta.servlet.jsp(.tagext)` (`TagSupport`, `SimpleTagSupport`, `PageContext`, `JspWriter`):
+  `org.apache.tomcat.embed:tomcat-embed-jasper` carries those classes (`provided`, `version: null`, Boot-managed);
+  `jakarta.servlet.jsp-api` is not Boot-managed. JSTL: `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api` +
+  `org.glassfish.web:jakarta.servlet.jsp.jstl` (both Boot-managed). Taglib URIs stay (JSTL 3 serves `java.sun.com` URIs).
+- Remove `javax.servlet:javax.servlet-api` / `javax.servlet:servlet-api`; the embedded Tomcat provides
+  `jakarta.servlet:jakarta.servlet-api` (declare it `provided`, `version: null`, only where a module needs it to compile).
+- Servlet 6 removed these (javac: `cannot find symbol`):
+  - `HttpSession.getValue/putValue/removeValue/getValueNames` → `getAttribute/setAttribute/removeAttribute/getAttributeNames`
+  - `ServletRequest.getRealPath(p)` → `request.getServletContext().getRealPath(p)`
+  - `HttpServletRequest.isRequestedSessionIdFromUrl()` → `isRequestedSessionIdFromURL()`
+  - `HttpServletResponse.encodeUrl/encodeRedirectUrl` → `encodeURL/encodeRedirectURL`; `setStatus(int, String)` →
+    `setStatus(int)` (`sendError(int, String)` if the message matters)
+  - `UnavailableException(Servlet, String)` / `(int, Servlet, String)` → `UnavailableException(String)` / `(String, int)`
+  - `ServletContext.getServlet/getServlets/getServletNames` removed; `log(Exception, String)` → `log(String, Throwable)`
+  - `HttpSessionContext` / `getSessionContext()`, `HttpUtils`, `SingleThreadModel` removed (delete
+    `implements SingleThreadModel` + `// MIGRATION-TODO: was SingleThreadModel`)
+- `Cookie.setComment` / `setVersion` are deprecated no-ops — warnings only.
 
-## Registration (web.xml is IGNORED by embedded Tomcat and not packaged by the Boot WAR)
-- sbmig generates the registrations (2026-10-23, `layout.web_xml_registrations: generate`): the restructure parses
-  the first web.xml (DTD 2.2 / 2.3, XSD 2.4 … 6.0) and writes `<pkg>.WebXmlRegistrations` into the boot module —
-  `ServletRegistrationBean` (url patterns, `setName`, `setLoadOnStartup`, init params, async, multipart; a servlet
-  without a mapping gets `alwaysMapUrl=false`), `FilterRegistrationBean` (url patterns / servlet names, dispatcher
-  types, `setOrder(n)` = web.xml `<filter-mapping>` order), `ServletListenerRegistrationBean`, one
-  `ErrorPageRegistrar` for `<error-page>`; `<session-timeout>` → `server.servlet.session.timeout=<N>m` in the boot
-  `application.properties`. Every bean uses the FQCN (`new com.x.MyServlet()`), so a compile error in that file
-  means the class is missing or still on `javax.servlet`: fix the class (or its library), not the generated file.
-- Not generated (skip table `knowledge/config/web_xml_rules.yml`): `DispatcherServlet`, `ContextLoaderListener`,
-  `CharacterEncodingFilter`, `DelegatingFilterProxy`, `HiddenHttpMethodFilter`, Jasper / Default servlet, … — Boot
-  provides them (see the property hints there). Classes annotated `@WebServlet` / `@WebFilter` / `@WebListener` are
-  left to `@ServletComponentScan` on the Application, so both coexist without double registration.
-- Follow-ups only: `jsp-file` servlets (map in a controller or link the JSP), `<welcome-file-list>` (Boot serves a
-  static `index.html` only), `<mime-mapping>` (`WebServerFactoryCustomizer` + `MimeMappings`), `<security-constraint>`
-  / `<login-config>` (Spring Security), `<distributable/>`; `<context-param>` goes through the properties inventory
-  (`server.servlet.context-parameters.*`). With the boot module as a WAR on an external Tomcat,
-  `server.servlet.session.timeout` is not applied (embedded only) — the container's `conf/web.xml` decides.
-- Manual form, for anything the generator could not do:
-  `@Bean ServletRegistrationBean<MyServlet> myServlet() { var b = new ServletRegistrationBean<>(new MyServlet(), "/my/*"); b.setLoadOnStartup(1); return b; }`
-  (`FilterRegistrationBean` / `ServletListenerRegistrationBean` likewise; all in `org.springframework.boot.web.servlet`,
-  `ErrorPage` / `ErrorPageRegistrar` in `org.springframework.boot.web.error` since Boot 4).
-- `WebApplicationInitializer` implementations are not invoked by embedded containers → convert to beans + MIGRATION-TODO.
+## fix-loop: generated WebXmlRegistrations
+- `incompatible types: <X> cannot be converted to jakarta.servlet.Filter|Servlet|EventListener` (or `cannot infer type
+  arguments for FilterRegistrationBean<>`) in `WebXmlRegistrations.java`: `<X>` comes from a library still built on
+  `javax.servlet`. Fix the pom first: the library's jakarta build or `jakarta` classifier that the Dependency versions
+  section / Library migration guidance names (`version: null` when managed). Never guess a version.
+- No jakarta build is named: `WebXmlRegistrations.java` is generated by sbmig from web.xml (not the owners' code), so
+  comment out only that one `@Bean` method and put above it
+  `// MIGRATION-TODO web.xml <filter|servlet|listener> <name> (<class>, <url patterns>): javax-only library`.
+  Leave every other bean, the library declaration and the owners' classes untouched — never comment out an owners' class.
+- `<X>` is a project class still on `javax.servlet`: fix that class's imports, not the generated file.
+- Every bean uses the FQCN (`new com.x.MyFilter()`): `cannot find symbol` there means the class is not on the boot
+  module's classpath (module dependency / library declaration) — never delete the bean.
 
-## JSP
-- Needs `org.apache.tomcat.embed:tomcat-embed-jasper` (+ JSTL: `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api`
-  and `org.glassfish.web:jakarta.servlet.jsp.jstl`) and only works with WAR packaging or with JSPs moved to
-  `src/main/resources/META-INF/resources/WEB-INF/...` in an executable jar. Files under `src/main/webapp` are not
-  packaged into a jar → report as MIGRATION-TODO, do not move JSPs to fix compilation (they do not compile at build time).
-- `spring.mvc.view.prefix=/WEB-INF/jsp/` + `spring.mvc.view.suffix=.jsp` replace an `InternalResourceViewResolver` XML bean.
+## Registration (what the generator wrote)
+- `ServletRegistrationBean` (url patterns, name, load-on-startup, init params, async, multipart), `FilterRegistrationBean`
+  (url patterns / servlet names, dispatcher types, `setOrder(n)` = `<filter-mapping>` order),
+  `ServletListenerRegistrationBean`, one `ErrorPageRegistrar` for `<error-page>`; `<session-timeout>` →
+  `server.servlet.session.timeout` in the boot `application.properties`. Registration beans live in
+  `org.springframework.boot.web.servlet`; `ErrorPage` / `ErrorPageRegistrar` in `org.springframework.boot.web.error`.
+- Skipped because Boot provides them (`knowledge/config/web_xml_rules.yml`): `DispatcherServlet`, `ContextLoaderListener`,
+  `CharacterEncodingFilter` (→ `spring.servlet.encoding.charset` / `force`), `HiddenHttpMethodFilter`, Jasper / default
+  servlet, a `DelegatingFilterProxy` named `springSecurityFilterChain` when Spring Security is used. `jsp-file`
+  servlets, `<welcome-file-list>`, `<mime-mapping>`, `<security-constraint>`, `<login-config>` are Handover items.
+- `WebApplicationInitializer` implementations are not invoked by the embedded Tomcat → beans + MIGRATION-TODO.
+- Manual form: `@Bean ServletRegistrationBean<MyServlet> myServlet() { var b = new ServletRegistrationBean<>(new MyServlet(), "/my/*"); b.setLoadOnStartup(1); return b; }`.
 
-## Packaging
-- `war` → executable jar (`spring-boot-maven-plugin` repackage) in the company layout; remove `maven-war-plugin` config
-  (`failOnMissingWebXml`) from jar modules. If WAR must stay: `SpringBootServletInitializer` + `spring-boot-starter-tomcat-runtime`
-  as provided (Boot 4 name) and `server.forward-headers-strategy` is ignored for WAR.
-- `context.xml` / JNDI `DataSource` lookups (`java:comp/env/jdbc/x`) do not exist in embedded Tomcat →
-  `spring.datasource.*` + MIGRATION-TODO.
+## Multipart (`CommonsMultipartResolver` was removed in Spring 6)
+- XML or Java `CommonsMultipartResolver` bean → delete it (Boot registers `StandardServletMultipartResolver`, which
+  has no size setters) and carry the limits into the boot module's `src/main/resources/application.properties`:
+  `maxUploadSize` → `spring.servlet.multipart.max-request-size` AND `spring.servlet.multipart.max-file-size` (Boot's
+  default is 1MB per file); `maxUploadSizePerFile` → `max-file-size`; `maxInMemorySize` →
+  `spring.servlet.multipart.file-size-threshold`; `defaultEncoding` → `spring.servlet.encoding.charset`. Values are
+  bytes (`-1` = unlimited). Controllers taking `MultipartFile` / `MultipartHttpServletRequest` need no change.
+
+## Views and container resources
+- `spring.mvc.view.prefix` / `suffix` or the legacy `InternalResourceViewResolver` prefix were set by the restructure
+  for the JSPs it moved — leave them.
+- `context.xml` / JNDI `DataSource` lookups (`java:comp/env/jdbc/x`): no JNDI in the embedded Tomcat →
+  `spring.datasource.*` (startup, never a build fix). With the external-Tomcat alternative,
+  `server.servlet.session.timeout` is not applied — the container's `conf/web.xml` decides.

@@ -19,7 +19,7 @@ keywords:
   - "add-opens|InaccessibleObjectException|IllegalAccessError"
   - "restricted identifier|'(var|record|yield|sealed|permits)'"
   - "jacoco|maven-compiler-plugin"
-  - "is deprecated and marked for removal|has been deprecated"
+  - "-Werror|failOnWarning|warnings found and -Werror specified"
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [jdk21]
 ---
@@ -35,7 +35,8 @@ phases: [jdk21]
 | `javax.annotation.Generated` | `javax.annotation.processing.Generated` (JDK 9+, no dep) or `jakarta.annotation.Generated` |
 | `org.omg.*`, `javax.rmi.CORBA` | CORBA removed; no drop-in (glassfish-corba). Escalate unless trivially unused import |
 | `javax.transaction.xa` | still in JDK (`java.transaction.xa` module) — keep |
-Old pre-jakarta `javax.xml.bind:jaxb-api` 2.3 still works on JDK 21 but conflicts with Boot 4 (Jakarta EE 11): replace.
+Old pre-jakarta `javax.xml.bind:jaxb-api` 2.3 still works on JDK 21: replace it with the jakarta pair for project code,
+but keep it where a javax-only library needs it at runtime (jjwt 0.9.x, era-libraries.md) — both packages coexist.
 
 ## Encapsulated / removed internals (JEP 403 strong encapsulation since JDK 17)
 - `sun.misc.BASE64Encoder/BASE64Decoder` (removed) → `java.util.Base64.getEncoder().encodeToString(b)` /
@@ -53,8 +54,11 @@ Old pre-jakarta `javax.xml.bind:jaxb-api` 2.3 still works on JDK 21 but conflict
 
 ## fix-loop: jdk-removed-apis
 Pre-Java-8 code on JDK 21 (`--release 21` hides `sun.*`): port the call, never re-add a flag or an old JDK.
-- `sun.misc.BASE64Encoder().encode(b)` → `java.util.Base64.getMimeEncoder().encodeToString(b)` only when callers
-  depend on the 76-char line breaks, otherwise `Base64.getEncoder().encodeToString(b)`;
+`UseJavaUtilBase64` is part of `UpgradeToJava21`, but OpenRewrite parses on JDK 21, where `sun.misc.BASE64Encoder`
+no longer exists, so those calls usually reach you unchanged. sbmig ships no compatibility shim classes.
+- `sun.misc.BASE64Encoder().encode(b)` → `java.util.Base64.getMimeEncoder().encodeToString(b)` when the output is
+  stored or compared (the JDK 8 encoder wrapped lines at 76 chars; the MIME encoder wraps the same way with `\r\n`),
+  otherwise `Base64.getEncoder().encodeToString(b)` (no line breaks) + `// MIGRATION-TODO: BASE64Encoder line breaks dropped`;
   `new BASE64Decoder().decodeBuffer(s)` → `Base64.getMimeDecoder().decode(s)` (tolerates line breaks; drop the
   `IOException` from `throws`/catch only if nothing else throws it — keep public signatures).
 - `sun.misc.Unsafe` compiles (jdk.unsupported): leave it, add `// MIGRATION-TODO: Unsafe → VarHandle`.
@@ -78,7 +82,7 @@ constraints" or "Enumeration<TreeNode> cannot be converted to Enumeration<Defaul
 
 ## Removed / changed APIs
 - Nashorn (`jdk.nashorn.*`, `ScriptEngineManager().getEngineByName("nashorn")` returns null) removed in 15 →
-  `org.openjdk.nashorn:nashorn-core:15.4` (same engine name) or GraalJS.
+  `org.openjdk.nashorn:nashorn-core` (same engine name; not Boot-managed: `version: null`) or GraalJS.
 - `Thread.stop()`, `suspend()`, `resume()` throw `UnsupportedOperationException` (19–21) → interrupt-based cancel.
 - `Object.finalize` deprecated for removal (JEP 421) → `java.lang.ref.Cleaner` / try-with-resources (warning only).
 - `SecurityManager`/`AccessController` deprecated for removal (JEP 411) — compile warning only; `System.setSecurityManager` throws at runtime.
@@ -91,15 +95,18 @@ constraints" or "Enumeration<TreeNode> cannot be converted to Enumeration<Defaul
 - `String.formatted(...)`, text blocks, records, sealed classes, switch patterns are fine on 21.
 
 ## Build tooling floors for JDK 21
-- `maven-compiler-plugin` ≥ 3.13 (3.14.0 / Boot-managed) with `<release>21</release>` (or `maven.compiler.release=21`);
+- `maven-compiler-plugin` ≥ 3.13 (the parent chain's version when it manages the plugin) with `<release>21</release>`
+  (or `maven.compiler.release=21`);
   remove `<source>/<target>` 1.8 and `<compilerArguments><bootclasspath>`; `--release` also hides internal
   `sun.*` APIs that `-source/-target` exposed (`package sun.misc does not exist`) → fix the code, not the flag.
 - `invalid target release: 21` → the build runs on an older JDK (environment problem, not code).
 - Lombok ≥ 1.18.30 (JDK 21 support; older fails with `java.lang.NoSuchFieldError: ... JCTree` / `TypeTag :: UNKNOWN`).
-- MapStruct ≥ 1.6 (1.6.3); with Lombok add `org.projectlombok:lombok-mapstruct-binding:0.2.0` to
-  `<annotationProcessorPaths>` (order: lombok, binding, mapstruct-processor).
+- MapStruct: keep the as-is version line; with Lombok, `org.projectlombok:lombok-mapstruct-binding` belongs in
+  `<annotationProcessorPaths>` (order: lombok, binding, mapstruct-processor; its version from the Dependency versions
+  section — never invent one).
 - When `<annotationProcessorPaths>` is declared, every processor (lombok, mapstruct, hibernate-processor,
   querydsl-apt, spring-boot-configuration-processor) must be listed there.
-- Surefire/failsafe ≥ 3.2 (3.5.3); JaCoCo ≥ 0.8.11; SpotBugs ≥ 4.8; maven-shade ≥ 3.5; Byte Buddy ≥ 1.14.
+- Surefire/failsafe ≥ 3.2; JaCoCo ≥ 0.8.11; SpotBugs ≥ 4.8; maven-shade ≥ 3.5.1; Byte Buddy ≥ 1.14 (floors, not
+  versions to write: maven-plugins.md).
   "Unsupported class file major version 65" = an ASM-based tool is too old → bump it.
 - Mockito 5 (inline mock maker default); PowerMock does not work on 17+ → Mockito `mockStatic`.

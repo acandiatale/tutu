@@ -1,5 +1,5 @@
 {
-  "note": "missing-artifact: com.company.nonexistent:ghost-lib:1.2.3 is in no reachable repository — a script cannot make it exist → BLOCKED artifact_not_found after the policy's 2 LLM requests — L2 `dependency_resolution|com.company.nonexistent:ghost-lib` (8fdf43256d)",
+  "note": "missing-artifact: com.company.nonexistent:ghost-lib:1.2.3 is in no reachable repository — a script cannot make it exist → v2.1y: the analysis-only answer is a decline → BLOCKED artifact_not_found (the classifier's reason kept) after ONE LLM request (was the policy's 2) — L2 `dependency_resolution|com.company.nonexistent:ghost-lib` (8fdf43256d)",
   "replay_role": "fix",
   "match": "case: 8fdf43256d",
   "response": "<analysis>Maven cannot resolve com.company.nonexistent:ghost-lib:1.2.3 from any configured repository. The code imports its classes, so removing the dependency only moves the failure to the compiler, and no other coordinates are known. The artifact has to be deployed to the company repository (or its settings.xml mirror fixed). No script.</analysis>\n"

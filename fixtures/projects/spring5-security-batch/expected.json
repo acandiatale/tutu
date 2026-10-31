@@ -21,7 +21,7 @@
   "expect": {
     "success": true,
     "exit_code": 0,
-    "max_llm_calls": 9,
+    "max_llm_calls": 7,
     "blocked": [],
     "unresolved_max": 0,
     "structure_review": {
@@ -30,13 +30,17 @@
       "warnings_min": 1,
       "script_status": "none",
       "issues_contain": [
-        "regex:warning module/comp-jar/pom.xml: jakarta\\.servlet-api.*"
+        "regex:warning module/comp-jar/pom.xml: spring-batch-core .*"
+      ],
+      "issues_not_contain": [
+        "5.0.0",
+        "regex:.*jakarta\\.servlet-api:\\d.*"
       ],
       "llm_calls_max": 1
     },
     "scripts": {
       "attempts_min": {
-        "new": 8
+        "new": 6
       },
       "attempts": {
         "augment": 0,

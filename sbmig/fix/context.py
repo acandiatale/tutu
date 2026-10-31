@@ -11,7 +11,10 @@ v2.1d `library_hints` → "Dependency versions" 섹션(사람이 넣은 `librari
 정책은 스크립트 프롬프트 규칙 14), pom 바로 뒤에 두고 늦게 버린다. v2.1i edits 모드(ctx.fix_mode 나
 cfg.fix.mode): 같은 문맥을 스크립트 말 없이 꾸린다(`p.errors` 안내 대신 `<need_files>`, 보강 base 무시) — 이전
 시도는 "Previous tries"(무엇을 고쳤고 왜 실패했는지, `summarize_edit_attempt`)로 오류 목록 바로 뒤에 두고 가장
-늦게 줄인다.
+늦게 줄인다. v2.1u/v(2026-10-31 프롬프트 검토): 머리말의 프로젝트 줄은 `as-is (before sbmig): …`(분석 시점), 그
+바로 뒤에 재구성 뒤의 사실 "Project after the restructure"(`ctx.layout_facts`, 순서 0.5, 자르지 않음), Plan notes 는
+`PROMPT_PLAN_NOTE_PREFIXES` 로 시작하는 줄만, 노트는 오류 본문에 맞은 키워드 ×3 + import / pom 에 맞은 키워드 ×1
+(오류 본문에 맞은 노트가 하나라도 있으면 그것들만), 줄이는 순서는 다른 케이스 → Plan notes → 노트 → ….
 
 Context packing for the LLM fixer: errors, file windows, pom excerpts, library migration guidance (advisories),
 migration notes, history — within a budget.
@@ -30,11 +33,20 @@ v2.1i (edits mode — `effective_fix_mode`: `FixContext.fix_mode` or `cfg.fix.mo
 wording (no `p.errors` / `p.files`, files not shown are asked for with `<need_files>`, an augment base is ignored);
 `ctx.previous_attempts` become "Previous tries"
 (`summarize_edit_attempt`: what each try edited — the edits themselves when `pack_script(attempt_edits=…)` knows them by
-the attempt's `prompt_hash` — and why it failed), placed right after the errors and shrunk last (EDITS_TRUNCATE_ORDER)."""
+the attempt's `prompt_hash` — and why it failed), placed right after the errors and shrunk last (EDITS_TRUNCATE_ORDER).
+
+v2.1u / v2.1v (prompt review 2026-10-31, docs/INTERFACES.md "v2.1u … v2.1y"): the header's project line is labelled
+`as-is (before sbmig): …` (`asis_line`); `ctx.layout_facts` → the section "Project after the restructure" (order 0.5,
+never truncated, script and edits mode); plan notes reach the prompt only when their first word starts with one of
+`PROMPT_PLAN_NOTE_PREFIXES` (`prompt_plan_notes`); a note scores 3 per keyword found in the error text (messages /
+symbols / locations / raw / artifacts) and 1 per keyword found only in the imports / pom text
+(`NoteEntry.score_parts`), and a note without an error-text hit is taken only when no note has one; the truncation
+orders start with `other_errors, plan_notes, notes`."""
 from __future__ import annotations
 
 import logging
 import re
+import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -90,6 +102,20 @@ class NoteEntry:
     def score(self, text: str) -> int:
         """`text` 에서 맞는 키워드 수."""
         return sum(1 for rx in self.compiled() if rx.search(text))
+
+    def score_parts(self, error_text: str, context_text: str = "") -> tuple[int, int]:
+        """(오류 본문에 맞은 키워드 수, 오류 본문에는 없고 import / pom 에만 맞은 키워드 수) — 패커가
+        3 × 앞 + 1 × 뒤 로 점수를 매긴다(B-H3: import 줄에만 맞은 9K 노트가 오류를 이름으로 맞춘 노트를 밀어냈다).
+
+        (keywords found in the error text, keywords found only in the imports / pom text); the packer scores
+        3 × the first + 1 × the second (v2.1v)."""
+        err = ctx = 0
+        for rx in self.compiled():
+            if rx.search(error_text):
+                err += 1
+            elif context_text and rx.search(context_text):
+                ctx += 1
+        return err, ctx
 
     def applies(self, case: Optional[str], phase: Optional[str]) -> bool:
         """이 케이스 종류·단계에 쓸 수 있는가. `cases` 는 제한이고 `phases` 는 참고일 뿐이다: v2 는 모든
@@ -166,6 +192,41 @@ def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
 # helpers
 # ---------------------------------------------------------------------------
 TARGET_MARK = " | target: "           # the tail of `sbmig.fix.profile_summary` (the migration target)
+ASIS_LABEL = "as-is (before sbmig): "  # v2.1u: the head of `sbmig.fix.profile_summary` (the analyze-time project)
+# v2.1u (B-L1): Plan notes 중 프롬프트에 가는 줄 — 첫 단어(`:` / 공백 / `[` 앞)가 이것으로 시작하는 것만. 빠지는 것:
+# `case … (confidence …)`, `optional artifacts: bumped …`, `compile: no build …`, `review: …`, `advisory: … → guide`,
+# `verify: …`, `advisor…` (실제 plan.json 의 접두어를 세어 정했다: transform / restructure / warning / msa / followup 만
+# 답을 바꾼다). The plan notes that reach the fix prompt: first word starts with one of these.
+PROMPT_PLAN_NOTE_PREFIXES = ("transform", "restructure", "warning", "msa", "followup")
+LAYOUT_FACTS_TITLE = "Project after the restructure"   # v2.1v: FixContext.layout_facts (order 0.5, never truncated)
+_FIRST_WORD_RE = re.compile(r"^\s*([^\s:\[]+)")
+
+
+def asis_line(summary: str) -> str:
+    """프로젝트 요약을 `as-is (before sbmig): …` 로 이름 붙인 한 줄(이미 붙어 있으면 그대로, 비면 "").
+    `profile_summary` 는 이름을 붙여 만들지만, 플러그인·테스트가 넘긴 맨 요약(`case=… java=…`)도 같은 모양이
+    되게 한다 — LLM 이 분석 시점의 as-is(`java=1.8 spring=5.3.31`)를 현재 상태로 읽지 않게(B-H2).
+
+    The project summary labelled as the as-is project: `as-is (before sbmig): …` (unchanged when it already carries
+    the label, "" when empty) — a bare summary from a plugin / test gets the same shape (v2.1u)."""
+    s = (summary or "").strip()
+    if not s:
+        return ""
+    return s if s.startswith(ASIS_LABEL.strip()) else ASIS_LABEL + s
+
+
+def prompt_plan_notes(notes: Sequence[str]) -> list[str]:
+    """프롬프트에 실을 Plan notes: 첫 단어가 PROMPT_PLAN_NOTE_PREFIXES 로 시작하는 줄만, 순서 그대로(B-L1: 절반이
+    답을 바꾸지 않는 소음이었다 — 케이스 판정, 선택 아티팩트 bump, 검토·권고 안내).
+
+    The plan notes worth a fix prompt: those whose first word (before `:`, a space or `[`) starts with one of
+    `PROMPT_PLAN_NOTE_PREFIXES`, in their order (v2.1u)."""
+    out: list[str] = []
+    for n in notes or ():
+        m = _FIRST_WORD_RE.match(str(n))
+        if m and m.group(1).lower().startswith(PROMPT_PLAN_NOTE_PREFIXES):
+            out.append(str(n))
+    return out
 
 
 def effective_fix_mode(cfg: Config | None, ctx: FixContext | None = None) -> str:
@@ -264,12 +325,15 @@ SCRIPT_WINDOW_RADII = (60, 25, 10, 3, 0)   # windows around the error lines, wid
 SCRIPT_OPTIONAL_RESERVE = 0.35       # share of the budget kept for hints / notes / poms before the files take the rest
 SCRIPT_MAX_POMS = 4
 SCRIPT_BASE_MAX_LINES = 60           # log / remaining / introduced lines of an augment base
-SCRIPT_TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "previous_attempts", "kb_hints", "reference_files",
+# v2.1v (B-H3): 다른 케이스·Plan notes 가 노트보다 먼저 줄어든다 — 오류를 이름으로 맞춘 노트가 먼저 잘렸었다
+# v2.1v: the other cases and the plan notes go before the notes (the note that names the error symbol survives)
+SCRIPT_TRUNCATE_ORDER = ("other_errors", "plan_notes", "notes", "previous_attempts", "kb_hints", "reference_files",
                          "advisory_hints", "reference_notes", "library_hints", "related_files", "files", "pom",
                          "base_result")
 # v2.1i edits mode: the earlier tries are what the retry knows about the case — shrunk last (like an augment base)
-EDITS_TRUNCATE_ORDER = ("notes", "plan_notes", "other_errors", "kb_hints", "reference_files", "advisory_hints",
+EDITS_TRUNCATE_ORDER = ("other_errors", "plan_notes", "notes", "kb_hints", "reference_files", "advisory_hints",
                         "reference_notes", "library_hints", "related_files", "files", "pom", "previous_attempts")
+ATTEMPT_ANALYSIS_CHARS = 300         # an earlier attempt's analysis in the script prompt (shortened at a word, "…")
 EDITS_HISTORY_TITLE = "Previous tries on this case in this run (they did NOT resolve it — do not repeat them)"
 EDITS_MAX_SHOWN = 12                 # edits listed per earlier try
 
@@ -329,10 +393,25 @@ def summarize_script_attempt(a: FixAttempt) -> str:
         lines.append(f"    run: {r.status}" + (f", {len(r.changed_files)} file(s) changed" if r.changed_files else "")
                      + (f" — {r.error.strip()[:300]}" if r.error else ""))
     if a.analysis:
-        lines.append(f"    analysis: {a.analysis.strip()[:300]}")
+        lines.append(f"    analysis: {shorten(a.analysis, ATTEMPT_ANALYSIS_CHARS)}")
     for ie in a.introduced_errors[:5]:
         lines.append(f"    introduced: {format_error_line(ie, 200)[2:]}")
     return "\n".join(lines)
+
+
+def shorten(text: str, width: int) -> str:
+    """`text` 를 한 줄로 `width` 자 이하에(`textwrap.shorten`, 단어 경계, "…") — 표시 없이 문장 중간에서 잘리던
+    것(E-M1)을 고친다. 띄어쓰기 없는 긴 덩어리(경로·스택)는 shorten 이 "…" 만 남기므로 그때는 글자에서 자른다.
+
+    `text` on one line within `width` characters (`textwrap.shorten` at a word boundary, placeholder "…"); a long
+    run without spaces (a path, a stack line) is cut at the character instead of collapsing to "…"."""
+    flat = " ".join((text or "").split())
+    if len(flat) <= width:
+        return flat
+    out = textwrap.shorten(flat, width, placeholder="…")
+    if len(out) < width // 2:
+        out = flat[:width - 1].rstrip() + "…"
+    return out
 
 
 def _first_line(text: str, limit: int = 100) -> str:
@@ -585,9 +664,16 @@ class ContextPacker:
         return self._notes
 
     # ------------------------------------------------------------------ public
-    def select_notes(self, text: str, case: Optional[str], phase: Optional[str]) -> list[NoteEntry]:
-        """`text`(오류 문장·import 줄)로 점수를 매긴 노트 상위 `max_notes` 개, always 노트는 앞에(pack_script
-        는 always 노트를 뺀다)."""
+    def select_notes(self, text: str, case: Optional[str], phase: Optional[str], *,
+                     context: str = "") -> list[NoteEntry]:
+        """점수 상위 `max_notes` 개의 노트, always 노트는 앞에(pack_script 는 always 노트를 뺀다). v2.1v: `text` 는
+        오류 본문(메시지·심볼·위치·raw·아티팩트), `context` 는 import 줄·pom 발췌 — 점수 = 3 × 오류 본문에 맞은
+        키워드 + 1 × context 에만 맞은 키워드. 오류 본문에 맞은 노트가 하나라도 있으면 그런 노트만 고른다(import 에만
+        맞은 노트는 다른 후보가 없을 때만). `context` 없이 부르면 예전처럼 `text` 하나로 센다(×3 이라 순위는 같다).
+
+        The top `max_notes` notes (always-notes first; `pack_script` leaves those out). v2.1v: `text` = the error text,
+        `context` = the imports / pom text; score = 3 × keywords in the error text + 1 × keywords only in the context;
+        when any note hits the error text, only such notes are taken."""
         scored = []
         always = []
         for idx, n in enumerate(self.notes):
@@ -596,11 +682,14 @@ class ContextPacker:
                 continue
             if not n.applies(case, phase):
                 continue
-            s = n.score(text)
+            err, ctx_hits = n.score_parts(text, context)
+            s = 3 * err + ctx_hits
             if s > 0:
-                scored.append((-s, idx, n))
+                scored.append((-s, idx, n, err))
+        if any(err for *_, err in scored):
+            scored = [x for x in scored if x[3]]
         scored.sort(key=lambda t: (t[0], t[1]))
-        top = [n for _, _, n in scored[: self.max_notes]]
+        top = [n for _, _, n, _ in scored[: self.max_notes]]
         return always + top            # always-notes first (rendered first, dropped last)
 
     # ------------------------------------------------------------------ v2 fix scripts
@@ -620,9 +709,10 @@ class ContextPacker:
                     *, case_type: Optional[str] = None, budget: Optional[int] = None,
                     attempt_edits: Mapping[str, Sequence[Edit]] | None = None) -> PackedContext:
         """수정 스크립트 요청의 문맥: 여러 파일에 걸칠 수 있는 케이스(L2) 하나. 섹션(순서 값): Case 머리말(0)
-        → 오류 목록(1) → 보강이면 보강할 스크립트(1.5)와 그 결과(1.6) → 오류 파일 색인(1.8) → 소스 발췌(2) →
-        관련 타입 파일(2.2) → 참고 파일(2.5) → POM(3.x) → Dependency versions(3.5) → 권고(4) → 병합 메모(4.5)
-        → KB 힌트(5) → 이전 시도(6) → 다른 케이스(7) → 계획 메모(8) → 노트(10+). 같은 입력이면 같은 결과.
+        → 재구성 뒤의 프로젝트(0.5, v2.1v `ctx.layout_facts`, 자르지 않음) → 오류 목록(1) → 보강이면 보강할
+        스크립트(1.5)와 그 결과(1.6) → 오류 파일 색인(1.8) → 소스 발췌(2) → 관련 타입 파일(2.2) → 참고 파일(2.5) →
+        POM(3.x) → Dependency versions(3.5) → 권고(4) → 병합 메모(4.5) → KB 힌트(5) → 이전 시도(6) → 다른 케이스(7)
+        → 계획 메모(8, PROMPT_PLAN_NOTE_PREFIXES 줄만) → 노트(10+). 같은 입력이면 같은 결과.
 
         Context for a fix-script request: ONE case (L2) that may span many files. `llm.max_context_chars` is
         spread over the erroring files (import block + windows around the error lines, the whole file when small;
@@ -630,7 +720,11 @@ class ContextPacker:
         Poms of the modules involved when the case is a resolution / pom error. Deterministic for the same input.
 
         v2.1i edits mode (`effective_fix_mode`): no script wording, no augment base; `ctx.previous_attempts` → "Previous tries"
-        (order 1.7, shrunk last), each with its edits when `attempt_edits` (attempt `prompt_hash` → edits) has them."""
+        (order 1.7, shrunk last), each with its edits when `attempt_edits` (attempt `prompt_hash` → edits) has them.
+
+        v2.1u / v2.1v: the header's project line is `asis_line(summary)`; `ctx.layout_facts` → "Project after the
+        restructure" (order 0.5, never truncated, both modes; no section when empty); plan notes filtered by
+        `prompt_plan_notes`; notes selected by `select_notes(error_text, …, context=imports + pom text)`."""
         budget = budget or self.cfg.llm.max_context_chars
         summary = with_target(profile_summary or ctx.profile_summary, self.cfg)     # A20: cfg.target, not a constant
         if case_type is None:
@@ -678,10 +772,15 @@ class ContextPacker:
                   f"errors: {len(errors)} in {len(by_file)} file(s)" + ("" if edits_only else
                                                                        " — every one of them is in p.errors")]
         if summary:
-            header.append(f"project: {summary}")
+            header.append(asis_line(summary))
         header.append(f"phase: {ctx.phase.value}, iteration {ctx.iteration}"
                       + (f", stall level {ctx.stall_level}" if ctx.stall_level else ""))
         secs.append(_Section("header", "Case", "\n".join(header), 0, truncatable=False))
+        # v2.1v (B-H2): 재구성 뒤의 프로젝트(전환·모듈 역할·생성 파일·사내 규칙) — 머리말 바로 뒤, 자르지 않는다
+        if ctx.layout_facts:
+            secs.append(_Section("layout_facts", LAYOUT_FACTS_TITLE, "\n".join(
+                ln if ln.lstrip().startswith("- ") else f"- {ln}" for ln in ctx.layout_facts if str(ln).strip()),
+                0.5, truncatable=False))
         err_cap = max(2000, int(budget * SCRIPT_ERRORS_SHARE))
         err_lines: list[str] = []
         used = 0
@@ -758,18 +857,21 @@ class ContextPacker:
         if ctx.other_errors_summary:
             secs.append(_Section("other_errors", "Other error cases in this build (for awareness; fix only this case)",
                                  ctx.other_errors_summary.strip(), 7))
-        if ctx.plan_notes:
-            secs.append(_Section("plan_notes", "Plan notes", "\n".join(f"- {n}" for n in ctx.plan_notes), 8))
+        plan_lines = prompt_plan_notes(ctx.plan_notes)      # v2.1u: only the lines that change an answer
+        if plan_lines:
+            secs.append(_Section("plan_notes", "Plan notes", "\n".join(f"- {n}" for n in plan_lines), 8))
 
         # the erroring files, sized to what the other sections leave
         renderings, import_text = self._script_renderings(ws, by_file)
-        match_text = "\n".join(
+        # v2.1v: 오류 본문(×3)과 import / pom(×1)을 따로 본다
+        error_text = "\n".join(
             [e.message for e in errors] + [e.symbol or "" for e in errors] + [e.location or "" for e in errors]
-            + [e.raw[:2000] for e in errors[:40]] + [e.artifact.coordinates for e in errors if e.artifact]
-            + [import_text])
+            + [e.raw[:2000] for e in errors[:40]] + [e.artifact.coordinates for e in errors if e.artifact])
+        context_text = "\n".join([import_text] + [s.text for s in secs if s.key == "pom"])
         # always-notes (the old fix policy note: "fix tests so they compile" …) are left out — the script system
         # prompt carries the fix policy; keyword-selected technical notes stay
-        notes = [n for n in self.select_notes(match_text, case_type, ctx.phase.value) if not n.always]
+        notes = [n for n in self.select_notes(error_text, case_type, ctx.phase.value, context=context_text)
+                 if not n.always]
         for i, n in enumerate(notes):
             body = n.body()
             if body:

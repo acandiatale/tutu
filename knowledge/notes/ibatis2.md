@@ -29,8 +29,8 @@ SqlMapClientTemplate | SqlMapClientFactoryBean`: port the DAO to MyBatis 3, neve
   `<iterate>` → `<foreach>`, `<dynamic prepend="WHERE">` → `<where>`.
 - Spring XML: `SqlMapClientFactoryBean` → `org.mybatis.spring.SqlSessionFactoryBean` (`configLocation` →
   `mapperLocations`), plus a `SqlSessionTemplate` bean; `<sqlMapConfig>` → `<configuration>`.
-- pom: add `org.mybatis:mybatis` (3.5.x line) + `org.mybatis:mybatis-spring` (3.0.x line or later), or
-  `org.mybatis.spring.boot:mybatis-spring-boot-starter`, which manages both (the starter itself is not in the
-  Spring Boot BOM: give it an explicit version); remove `ibatis-sqlmap` / `ibatis-core`.
+- pom: add `org.mybatis:mybatis` (3.5.x line) + `org.mybatis:mybatis-spring` (4.x line = Spring 7 / Batch 6; 3.0 is
+  for Spring 6), or `org.mybatis.spring.boot:mybatis-spring-boot-starter` (4.x line, brings both); none is
+  Boot-managed: `version: null` unless the Dependency versions section names one. Remove `ibatis-sqlmap` / `ibatis-core`.
 - If a statement cannot be translated with confidence, keep the DAO compiling and add
   `// MIGRATION-TODO: iBATIS statement <id> not ported` — the Handover lists the files for the owning team.

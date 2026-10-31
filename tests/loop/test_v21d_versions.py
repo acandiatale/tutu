@@ -60,7 +60,9 @@ ENTRY = JakartaLibrary(key="opensymphony:sitemesh", jakarta_since="3.0.0", versi
 
 
 def sitemesh_error(file: str = FOO, artifact: GAV | None = SITEMESH2) -> BuildError:
+    # a javax-era library: the javac block names the javax type (v2.1v: the repository facts are for such cases only)
     return BuildError(kind=ErrorKind.COMPILE, message="cannot find symbol", file=file, module="demo",
+                      raw="cannot find symbol\n  class file for javax.servlet.Filter not found",
                       signature=f"compile|PageFilter|{file}", signature_generic=L2, artifact=artifact)
 
 

@@ -12,7 +12,7 @@
   "expect": {
     "success": false,
     "exit_code": 2,
-    "max_llm_calls": 5,
+    "max_llm_calls": 3,
     "blocked": [
       {
         "reason": "external_javax_api",
@@ -24,6 +24,21 @@
       {
         "event": "restructure",
         "ok": true
+      },
+      {
+        "event": "declined",
+        "case": "f2b133edd9",
+        "declines": 1
+      },
+      {
+        "event": "declined",
+        "case": "61d819f63f",
+        "declines": 1
+      },
+      {
+        "event": "blocked",
+        "cluster": "case:f2b133edd9",
+        "reason": "external_javax_api"
       }
     ],
     "structure_review": {
@@ -38,7 +53,7 @@
     },
     "scripts": {
       "attempts": {
-        "new": 4,
+        "new": 2,
         "augment": 0,
         "reuse": 0
       },
@@ -46,26 +61,25 @@
         {
           "l2": "compile|cannot_access|HttpServletRequest",
           "modes": [
-            "new",
             "new"
           ],
           "outcomes": [
-            "apply_failed",
-            "apply_failed"
+            "blocked"
           ],
           "versions": [
-            0,
             0
           ],
-          "llm_calls": 2
+          "llm_calls": 1
         },
         {
           "l2": "compile|incompatible_types|HttpServletRequest->HttpServletRequest",
           "modes": [
-            "new",
             "new"
           ],
-          "llm_calls": 2
+          "outcomes": [
+            "blocked"
+          ],
+          "llm_calls": 1
         }
       ]
     },

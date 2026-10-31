@@ -124,7 +124,10 @@ def test_ok_answer(tmp_path, cfg):
     assert call["metadata"] == {"run_id": "run-7", "project": "demo", "phase": "restructure",
                                 "step": "restructure.review"}
     system, user = call["messages"][0].content, call["messages"][1].content
-    assert "<review>" in system and "def fix(p)" in system and "p.pom(" in system and "{{" not in system
+    assert "<review>" in system and "{{" not in system
+    # v2.1y (decision 2): edits-only by default — no script paragraph, no helper table, no <script> example
+    assert "def fix(p)" not in system and "p.pom(" not in system and "<script>" not in system
+    assert user.rstrip().endswith("`<analysis>`, `<solution>` and `<edits>`.")
     for part in ("# Company rules", "`org.springframework.boot:spring-boot-starter-parent:4.1.0`",
                  "spring-boot-starter-validation", "# Module tree after the restructure", "`module/comp-jar/pom.xml`",
                  "restructure.apply (layout): 3 changed", "# Source encodings", "```xml", "<artifactId>demo-comp"):

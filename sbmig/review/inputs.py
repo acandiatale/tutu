@@ -176,6 +176,11 @@ def _spec(s: Any) -> str:
     return out + (f" [{', '.join(extra)}]" if extra else "")
 
 
+def _is_import(s: Any) -> bool:
+    # 재구성의 `_mandatory_managed` 와 같은 규칙: scope import 만 <dependencyManagement> 에 둔다
+    return str(getattr(s, "scope", None) or "").strip().lower() == "import"
+
+
 # ---------------------------------------------------------------------------- encodings
 @dataclass
 class ModuleEncoding:
@@ -369,6 +374,11 @@ class ReviewInput:
     pom_infos: list[PomInfo] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     language: str = "en"
+    ask_script: bool = False                    # v2.1y: review.ask_script (the last line asks for <script> too)
+    # v2.1y: what the reviewer's checks after the answer need (unsupported issues, invariants) — not rendered
+    chain: Any = None                           # ParentChainFacts (None = not readable)
+    raw: dict[str, Any] = field(default_factory=dict)        # pom path → RawPom before the review's edits
+    results: list[Any] = field(default_factory=list)         # the RestructureResults
 
     @property
     def pom_chars(self) -> int:
@@ -379,6 +389,33 @@ class ReviewInput:
     def encoding_mismatches(self) -> list[ModuleEncoding]:
         """인코딩 불일치가 있는 모듈들(LLM 이 놓치면 검토기가 critical 로 더한다)."""
         return [m for m in self.encodings if m.mismatch]
+
+    @property
+    def complete(self) -> bool:
+        """모든 pom 이 잘리지 않고 다 실렸는가(아니면 '재료에 없음' 판정을 pom 본문에 기대지 않는다)."""
+        return not self.omitted_poms and not any(p.cut for p in self.poms)
+
+    def full_poms(self) -> str:
+        """잘리지 않은 모든 pom 본문(프롬프트에서 잘렸거나 빠진 부분 포함) — '재료에 없음' 판정이 예산 때문에 틀리지 않게."""
+        return "\n".join(getattr(rp, "text", "") or "" for rp in (self.raw or {}).values())
+
+    def material_text(self) -> str:
+        """v2.1y (E-M5): 이슈를 대조할 재료 — 프롬프트 전체 + 잘리지 않은 pom 본문.
+
+        The material an issue is checked against: the whole prompt + every pom in full (cut / omitted parts too)."""
+        return self.render() + "\n" + self.full_poms()
+
+    def state_text(self) -> str:
+        """v2.1y (E-M5): 지금 상태를 보여 주는 재료 — "What the restructure did"(지운 것·바꾼 것의 기록)를 뺀 프롬프트 + 잘리지
+        않은 pom 본문. 속성 이름이 여기 없으면 그 속성은 어느 pom 에도 없다.
+
+        The prompt without "What the restructure did" (a record of what was removed / changed) + every pom in full: a
+        property named nowhere here is in no pom."""
+        saved, self.restructure = self.restructure, []
+        try:
+            return self.render() + "\n" + self.full_poms()
+        finally:
+            self.restructure = saved
 
     def render(self) -> str:
         """user 프롬프트. 섹션 순서: Project → Company rules → What the restructure did → Module tree → Facts
@@ -402,10 +439,12 @@ class ReviewInput:
         for p in self.poms:
             L.append(f"## `{p.path}`" + (f" ({p.chars} characters, cut)" if p.cut else ""))
             L += ["", "```xml", p.text.rstrip("\n"), "```", ""]
+        # v2.1y (D-M1): 마지막 줄이 시스템 프롬프트의 답 형식과 같아야 한다(예전엔 `<script>` 만 요구해 edits 가 빠졌다)
+        ask = ("`<analysis>`, `<solution>` and `<edits>`" + (", optionally `<script>` with `<changes>`"
+                                                               if self.ask_script else ""))
         L += ["# Your task", "",
               "Review the build structure above against the company rules and answer in the format of the system "
-              "prompt: one `<review>` JSON block and — only for critical issues you can fix in the build files — "
-              "one `<script>`."]
+              f"prompt: one `<review>` JSON block and — only for critical issues you can fix in the build files — {ask}."]
         if self.language == "ko":
             L += ["Write `problem`, `fix_hint` and `analysis` in Korean (identifiers, coordinates and paths as "
                   "they are)."]
@@ -452,14 +491,132 @@ def project_lines(profile: Optional[ProjectProfile], cfg: Any, name: str) -> lis
     return out
 
 
-def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str) -> tuple[list[str], str]:
+def _first_effective(results: Iterable[Any]) -> Optional[bool]:
+    for r in results or ():
+        v = _field(r, "parent_manages_spring_boot_effective") if r is not None else None
+        if v is not None:
+            return bool(v)
+    return None
+
+
+_BOM_IMPORT_RE = re.compile(r"^(?P<pom>.+?): (?P<ga>[^\s:]+:[^\s:]+) (?P<v>\S+)(?: \((?P<rest>.*)\))?$")
+
+
+def bom_import_groups(results: Iterable[Any]) -> list[tuple[str, str, str, list[str]]]:
+    """재구성 결과의 `bom_imports` 줄("<pom>: g:a <값> (property of <pom> | no property …)")을 (g:a, 값, 괄호 안, pom
+    목록)으로 묶는다(같은 import 를 여러 pom 에 적었으면 한 묶음).
+
+    `RestructureResult.bom_imports` lines grouped as (g:a, value, remark, poms)."""
+    groups: dict[tuple[str, str, str], list[str]] = {}
+    for r in results or ():
+        for line in (_field(r, "bom_imports") or []) if r is not None else []:
+            m = _BOM_IMPORT_RE.match(str(line).strip())
+            if not m:
+                continue
+            key = (m.group("ga"), m.group("v"), m.group("rest") or "")
+            if m.group("pom") not in groups.setdefault(key, []):
+                groups[key].append(m.group("pom"))
+    return [(ga, v, rest, poms) for (ga, v, rest), poms in groups.items()]
+
+
+def boot_version_lines(cfg: Any, results: Iterable[Any], facts: Any = None) -> list[str]:
+    """v2.1v (D-H2): Spring Boot 버전 규칙 줄 — 설정 문구가 아니라 재구성이 정한 실효값(`parent_manages_spring_boot_effective`)과
+    재구성이 적은 BOM import 로 쓴다. 목표 버전 리터럴은 규칙으로 쓰지 않는다(Project 절의 target 만).
+
+    The "Spring Boot versions" rule from the restructure's effective decision and its BOM imports — never the target
+    literal as a rule (the target appears in the Project section only)."""
+    a = cfg.artifacts
+    results = [r for r in (results or ()) if r is not None]
+    eff = _first_effective(results)
+    props = dict(getattr(facts, "properties", None) or {}) if facts is not None else {}
+    imports = bom_import_groups(results)
+    L: list[str] = []
+    for ga, v, rest, poms in imports:
+        where = ", ".join(f"`{p}`" for p in poms[:8]) + (f" (+{len(poms) - 8})" if len(poms) > 8 else "")
+        m = _PROP_REF.match(v)
+        if m:
+            prop = m.group(1)
+            value = props.get(prop)
+            src = rest[len("property of "):] if rest.startswith("property of ") else "the parent chain"
+            L.append(f"- BOM import by the restructure: `{ga}` `{v}`" + (f" (= {value}, defined by {src})" if value
+                                                                     else f" (defined by {src})")
+                     + f" in {where} — the property resolves through Maven inheritance: never define `{prop}` in a "
+                       "project pom")
+        else:
+            L.append(f"- BOM import by the restructure: `{ga}` {v} in {where} (the parent chain defines no property "
+                     "for it)")
+    boot_import = any(ga.endswith(":spring-boot-dependencies") for ga, _v, _r, _p in imports)
+    if eff is True and not boot_import:
+        boot_v = ("the parent chain reaches the Boot BOM: no Boot BOM import and no Boot version property belongs in "
+                  "the project poms")
+    elif boot_import:
+        boot_v = "the parent chain does not reach the Boot BOM: the restructure imported it (BOM import above)"
+    elif eff is False:
+        boot_v = ("the parent chain does not reach the Boot BOM and the restructure recorded no Boot BOM import — check "
+                  "the poms' `spring-boot-dependencies` import")
+    elif a.parent_manages_spring_boot == "auto":
+        boot_v = "decided by the restructure from the parent chain's poms (see \"What the restructure did\")"
+    else:
+        boot_v = ("managed by the parent chain" if a.parent_manages_spring_boot
+                  else "a `spring-boot-dependencies` import in the poms (see the restructure's BOM imports)")
+    java_v = ("managed by the parent chain" if a.parent_manages_java_version
+              else f"maven.compiler.release {cfg.target.java_version} in the poms")
+    return [f"- Spring Boot versions: {boot_v}; Java level: {java_v}"] + L
+
+
+def _starter(cfg: Any, case: CaseType, results: Iterable[Any]) -> str:
+    for r in results or ():
+        v = _field(r, "starter") if r is not None else None
+        if v:
+            return str(v)
+    v = (getattr(cfg.layout, "starter_by_case", None) or {}).get(case.value)
+    return "" if not v or v == "auto" else str(v)
+
+
+def _msa_line(cfg: Any, profile: Optional[ProjectProfile]) -> str:
+    """v2.1v (D-H3): MSA 규칙 — 코드(`restructurer._msa`)가 하는 그대로: 서비스 루트 → boot 부모(역할 부모가 없으면 루트
+    부모) + 필수, 라이브러리 루트 → comp 부모(또는 루트 부모), 필수 없음, 최상위 aggregator → 루트 부모(+ 필수). 이름은
+    `profile.services` 에서."""
+    a, lay = cfg.artifacts, cfg.layout
+    try:
+        from sbmig.analyze.classifier import is_library_root
+    except Exception:  # noqa: BLE001 - the analyzer is always there; a fact line is never worth a failed review
+        def is_library_root(svc: Any, prof: Any = None) -> bool:
+            return getattr(svc, "kind", "service") == "library"
+    services = list(getattr(profile, "services", None) or []) if profile is not None else []
+    libs = [x for x in services if is_library_root(x, profile)]
+    svcs = [x for x in services if x not in libs]
+
+    def names(xs: list[Any]) -> str:
+        shown = ", ".join(f"`{x.name}`" for x in xs[:12]) + (f" (+{len(xs) - 12})" if len(xs) > 12 else "")
+        return shown or "none"
+    head = "- layout (MSA): directories untouched, poms only; module names are not checked; a `war` service keeps its packaging. "
+    if lay.msa_parent_policy == "top-aggregator":
+        return (head + f"`layout.msa_parent_policy: top-aggregator`: only the top aggregator gets the root parent and "
+                f"the mandatory dependencies; service roots ({names(svcs)}) and library roots ({names(libs)}) inherit "
+                "them")
+    role = bool(a.role_parents)
+    svc_parent = "the boot parent" if role else "the root parent"
+    lib_parent = "the comp parent" if role else "the root parent"
+    agg = ("the top aggregator → the root parent" + (" + the mandatory dependencies" if a.mandatory_target == "root"
+                                                     else "")
+           if role else "the top aggregator keeps its own parent (not changed)")
+    return (head + f"Service roots ({names(svcs)}) → {svc_parent} + the mandatory dependencies; library roots "
+            f"({names(libs)}) → {lib_parent}, no mandatory dependencies; {agg}")
+
+
+def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str, results: Iterable[Any] = (),
+               facts: Any = None) -> tuple[list[str], str]:
     """이 케이스에 맞는 회사 규칙 줄들(`cfg.artifacts` / `cfg.layout` 에서 읽음)과 외부 부모를 부르는 이름.
     레이아웃은 케이스별: MSA(디렉토리 그대로, pom 만), 분리 대상(spring_legacy / servlet_tomcat / pure_java →
-    `{name}-boot` / `-back` / `-front`), Boot as-is(pom 만, 단일 모듈은 `{name}-boot` 로 감쌈).
+    `{name}-boot` / `-back` / `-front`), Boot as-is(pom 만, 단일 모듈은 `{name}-boot` 로 감쌈). v2.1v: Spring Boot 버전 줄은
+    재구성의 실효값·BOM import 로(`results`, `facts` = 부모 체인 사실), 필수 줄은 스펙마다 `→ <dependencies>` /
+    `→ <dependencyManagement>`, 선택 줄은 v2.1n / v2.1t 규칙, 패키징은 실행 가능한 WAR, boot 모듈의 starter.
 
     The company rules from `cfg.artifacts` / `cfg.layout` for this case, and how to name the external parent."""
     a, lay = cfg.artifacts, cfg.layout
     case = profile.case_type if profile is not None else CaseType.UNKNOWN
+    results = [r for r in (results or ()) if r is not None]
     L = [f"- root pom parent (`artifacts.parent`): {_spec(a.parent)}"]
     if a.role_parents:
         L.append(f"- boot module parent (`artifacts.boot_parent`): {_spec(a.boot_parent)}")
@@ -467,32 +624,40 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str) -> tuple[
                  "then an aggregator the modules do not inherit from")
         external = f"the role parents `{a.boot_parent.key}` / `{a.comp_parent.key}`"
     else:
-        L.append("- no role parents configured: the modules inherit the root pom")
+        L.append("- no role parents configured: " + ("every service / library root gets the root parent"
+                                                      if case == CaseType.MSA else "the modules inherit the root pom"))
         external = f"the parent `{a.parent.key}`"
     if a.mandatory:
-        where = ("every root pom (the project root; in MSA each service root and the top aggregator)"
-                 if a.mandatory_target == "root" else "every module pom (boot / comp role modules)")
-        L.append(f"- mandatory dependencies, declared in {where} (`artifacts.mandatory_target: {a.mandatory_target}`; "
-                 "type pom + scope import → in dependencyManagement):")
-        L += [f"  - {_spec(s)}" for s in a.mandatory]
+        where = ("the service roots (see the layout line)" if case == CaseType.MSA else
+                 "the root pom" if a.mandatory_target == "root" else "every module pom (boot / comp role modules)")
+        L.append(f"- mandatory dependencies, declared in {where} (`artifacts.mandatory_target: {a.mandatory_target}`)"
+                 + ("; with role parents a module does not inherit the root pom's declarations (company rule — never "
+                    "copy them into the modules)" if a.role_parents and a.mandatory_target == "root" else "") + ":")
+        L += [f"  - {_spec(s)} → " + ("`<dependencyManagement>` (BOM import)" if _is_import(s) else "`<dependencies>`")
+              for s in a.mandatory]
     if a.optional:
-        L.append(f"- optional in-house artifacts — only where already used, version policy "
-                 f"`{a.optional_version_policy}`:")
-        L += [f"  - {_spec(s)}" + (f" (aliases {', '.join(s.aliases)})" if s.aliases else "") for s in a.optional]
+        L.append("- optional in-house artifacts — declared only where already used, or added where one of their trigger "
+                 "dependencies (`when_present`) is declared (`replaces` removes the trigger); version "
+                 "`${<artifact>.version}` when the parent chain defines that property, else the configured one — a "
+                 f"newer as-is version is kept (`optional_version_policy: {a.optional_version_policy}`):")
+        for s in a.optional:
+            extra = []
+            if s.aliases:
+                extra.append(f"aliases {', '.join(s.aliases)}")
+            if getattr(s, "when_present", None):
+                extra.append(f"added for {', '.join(s.when_present)}" + ("; replaces them" if s.replaces
+                                                                          else "; next to them"))
+            if getattr(s, "property_name", None):
+                extra.append(f"property `{s.property_name}`")
+            L.append(f"  - {_spec(s)}" + (f" ({'; '.join(extra)})" if extra else ""))
     if a.remove_when_present:
         L.append("- must not be declared any more (`artifacts.remove_when_present`): "
                  + ", ".join(f"`{k}`" for k in a.remove_when_present))
-    # v2.1t: auto 는 재구성이 부모 체인의 pom 으로 정한다(실효값은 재구성 결과에)
-    if a.parent_manages_spring_boot == "auto":
-        boot_v = ("decided from the parent chain's poms (auto): managed by the chain when it reaches "
-                  f"spring-boot-dependencies, else spring-boot-dependencies {cfg.target.spring_boot_version} imported "
-                  "in the poms (see the restructure's BOM imports)")
-    else:
-        boot_v = ("managed by the parent chain" if a.parent_manages_spring_boot
-                  else f"spring-boot-dependencies {cfg.target.spring_boot_version} imported in the poms")
-    java_v = ("managed by the parent chain" if a.parent_manages_java_version
-              else f"maven.compiler.release {cfg.target.java_version} in the poms")
-    L.append(f"- Spring Boot versions: {boot_v}; Java level: {java_v}")
+    L += boot_version_lines(cfg, results, facts)
+    # v2.1v (D-M6): 재구성의 버전 결정은 최종 — 검토가 "같은 메이저로" 다시 고정하지 않게
+    L.append("- the version decisions under \"What the restructure did\" (dropped / pinned / carried-over versions, "
+             "removed properties, BOM imports, added in-house artifacts) are final: never re-add, re-pin or "
+             "re-literalize them")
     boot = lay.module_path("boot", name)
     comp = lay.module_path("comp", name)
     front = lay.module_path("front", name)
@@ -501,28 +666,38 @@ def rule_lines(cfg: Any, profile: Optional[ProjectProfile], name: str) -> tuple[
     split = case in (CaseType.SPRING_LEGACY, CaseType.SERVLET_TOMCAT, CaseType.PURE_JAVA, CaseType.UNKNOWN) or (
         case == CaseType.SPRING_BOOT and lay.boot_as_is == "layout")
     if case == CaseType.MSA:
-        L.append(f"- layout (MSA): directories untouched, poms only; every service gets the same parent / mandatory / "
-                 f"optional rules (`layout.msa_parent_policy: {lay.msa_parent_policy}`); service modules named like "
-                 f"`{lay.boot_module_pattern}` whose pom is a Boot app → boot parent, other modules → comp parent")
+        L.append(_msa_line(cfg, profile))
     elif split:
-        pkg = "war (JSPs served by an external Tomcat)" if jsp and lay.jsp_boot_packaging == "war" else "jar"
+        # v2.1q / v2.1u (D-H4): JSP 가 있으면 실행 가능한 WAR(java -jar 로 내장 Tomcat) — 외부 Tomcat 은 대안일 뿐
+        pkg = ("war (executable WAR: `java -jar` runs the embedded Tomcat, the same file deploys to an external Tomcat "
+               "too; `spring-boot-starter-tomcat` / `tomcat-embed-jasper` stay `provided`, packaged under "
+               "WEB-INF/lib-provided)" if jsp and lay.jsp_boot_packaging == "war" else "jar (executable jar)")
+        # 재구성이 실제로 만든 모듈 경로가 있으면 그것(설정의 이름 규칙보다 정확하다)
+        r_boot = next((_field(r, "boot_module") for r in results if _field(r, "boot_module")), None)
+        comp = next((_field(r, "comp_module") for r in results if _field(r, "comp_module")), None) or comp
+        front = next((_field(r, "front_module") for r in results if _field(r, "front_module")), None) or front
         L.append(f"- layout (case `{case.value}`): the root is a `pom` aggregator; modules directly under it:")
-        L.append(f"  - `{boot}`: Boot configuration only (application class, application.* resources), packaging "
-                 f"{pkg}, parent = boot parent")
-        L.append(f"  - `{comp}`: every source incl. controllers, packaging jar, parent = comp parent")
+        L.append(f"  - `{r_boot or boot}`: Boot configuration only (application class, application.* resources), "
+                 f"packaging {pkg}, parent = " + ("boot parent" if a.role_parents else "root pom"))
+        L.append(f"  - `{comp}`: every source incl. controllers, packaging jar, parent = "
+                 + ("comp parent" if a.role_parents else "root pom"))
         if front and web:
             L.append(f"  - `{front}`: web resources only (static under `{lay.front_static_dir}`, JSPs under "
-                     f"`{lay.front_jsp_dir}`), packaging jar, parent = comp parent")
+                     f"`{lay.front_jsp_dir}`), packaging jar, parent = " + ("comp parent" if a.role_parents
+                                                                             else "root pom"))
         elif front:
             L.append(f"  - `{front}`: only when the project has web resources (none detected)")
-        L.append(f"  - the boot module depends on `{comp}`" + (f" and `{front}`" if front and web else ""))
+        starter = _starter(cfg, case, results)
+        L.append(f"  - the boot module depends on `{comp}`" + (f" and `{front}`" if front and web else "")
+                 + (f" and the starter `{starter}`" if starter else "")
+                 + "; do not add Security / Batch / JPA starters (their auto-configuration changes the runtime)")
+        if lay.module_dir:
+            L.append(f"- modules live under `{lay.module_dir}/`")
     else:
         L.append(f"- layout (Spring Boot as-is, `layout.boot_as_is: {lay.boot_as_is}`): directories are kept, only the "
                  f"poms change — root → root parent; module dirs named like `{lay.boot_module_pattern}` whose pom is a "
                  "Boot app → boot parent; every other module → comp parent; a single-module Boot app is wrapped "
-                 f"into `{boot}` under an aggregator root")
-    if lay.module_dir:
-        L.append(f"- modules live under `{lay.module_dir}/`")
+                 f"into `{boot}` under an aggregator root; a `war` module keeps its packaging")
     return L, external
 
 
@@ -530,12 +705,71 @@ def _field(r: Any, key: str, default: Any = None) -> Any:
     return r.get(key, default) if isinstance(r, dict) else getattr(r, key, default)
 
 
-def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]:
-    """재구성이 한 일: RestructureResult(또는 그 필드의 dict)마다
-    한 블록 + 실행 메모. 목록은 SECTION_LINES_MAX 줄까지.
+# (field, title) of the list fields of RestructureResult rendered under "What the restructure did", in this order
+_RESULT_LISTS: tuple[tuple[str, str], ...] = (
+    ("parents_set", "parents set"), ("mandatory_added", "mandatory added"),
+    ("optional_bumped", "optional bumped"),
+    # v2.1n: 트리거 의존성 때문에 새로 넣은 선택 아티팩트와 그때 지운 트리거
+    ("optional_added", "optional artifacts added for trigger dependencies"),
+    ("optional_replaced", "trigger dependencies replaced by optional artifacts"),
+    ("merged_modules", "merged modules"),
+    ("managed_versions_dropped", "explicit versions dropped (managed by the new parents)"),
+    # v2.1o: 레시피가 관리 버전보다 높여 놓은 명시 버전도 지웠다(as-is 는 관리 버전 이하)
+    ("recipe_versions_dropped", "recipe-raised versions dropped (the as-is build was at or below the managed version)"),
+    # v2.1l: 검토도 재구성이 적은 as-is 버전을 다른 pom 교정처럼 본다
+    ("versions_pinned", "versions carried over from the as-is build"),
+    ("versions_unknown", "version-less dependencies the as-is build did not resolve"),
+    # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 속성을 재구성이 이미 지웠다
+    ("bom_properties_removed",
+     "as-is version properties removed (they overrode the parent's Spring Boot BOM properties)"),
+    # v2.1t: 재구성이 적은 BOM import(부모 체인 속성 참조 또는 리터럴)
+    ("bom_imports", "BOM imports written by the restructure"),
+    ("version_properties_removed", "version properties removed (only the dropped explicit versions used them)"),
+    # v2.1x (E-M6 / D-M7 / D2 / D1 / D6 / D9): 전환 시점에 재구성이 직접 한 일 — 검토가 되돌리지 않게
+    ("scope_restored", "scopes restored from the as-is build"),
+    ("source_encodings_written", "source encodings written"),
+    ("non_filtered_extensions", "maven-resources-plugin nonFilteredFileExtensions written"),
+    ("xml_imports", "XML bean configs imported via @ImportResource"),
+    ("xml_skipped", "XML bean configs not imported"),
+    ("legacy_properties_written", "legacy context properties written (boot application.properties)"),
+    ("webinf_locations_rewritten", "/WEB-INF/ locations rewritten in the legacy-config copies"),
+    ("beans_removed", "beans removed from the legacy-config copies"),
+    ("duplicate_bean_ids", "duplicate bean ids across the imported XML"),
+    ("generated_files", "generated files"), ("flags", "flags"),
+    ("manual_followups", "follow-ups"),
+)
+_STEP_PREFIX_RE = re.compile(r"^[\w.-]+(?: \([\w-]+\))?: ")
+_COVER_MIN = 16                    # a structured item at least this long …
+_COVER_SHARE = 0.5                 # … that makes up at least half of a note makes the note redundant
 
-    What the restructure did: one block per `RestructureResult` (or dict of its fields) + the run notes."""
+
+def _norm(text: object) -> str:
+    return " ".join(str(text if text is not None else "").split())
+
+
+def _covered(note: str, items: list[str]) -> bool:
+    # 메모가 구조화된 항목 하나를 거의 그대로 되풀이할 때만 뺀다 — 더 많은 것을 말하는 메모는 남긴다
+    n = _norm(note)
+    return any(n == i or (len(i) >= _COVER_MIN and len(i) >= _COVER_SHARE * len(n) and i in n) for i in items)
+
+
+def _list_block(out: list[str], title: str, items: list[str], indent: str = "  ") -> None:
+    out.append(f"{indent}- {title}:")
+    out += [f"{indent}  - {_cap(x)}" for x in items[:SECTION_LINES_MAX]]
+    if len(items) > SECTION_LINES_MAX:
+        out.append(f"{indent}  - … {len(items) - SECTION_LINES_MAX} more")
+
+
+def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]:
+    """재구성이 한 일: RestructureResult(또는 그 필드의 dict)마다 한 블록 + 실행 메모. 목록은 SECTION_LINES_MAX 줄까지.
+    v2.1v (D-M3 / E-L1): v2.1x 의 새 필드(starter, web_evidence, xml_imports, … conversion_facts 는 `- key: value`)와
+    `parent_manages_spring_boot_effective`, `non_filtered_extensions`, `jsp_jakarta_*` 도 보이고, 결과의 notes·실행 메모는
+    이미 구조화된 항목(또는 앞의 메모)이 같은 내용을 말하면 다시 싣지 않는다(14/14 실행에서 1.1K 자가 반복되던 것).
+
+    What the restructure did: one block per `RestructureResult` (or dict of its fields) + the run notes that no result
+    already covers (de-duplicated by text)."""
     out: list[str] = []
+    seen: list[str] = []                         # every structured item / note rendered (normalized), for de-duplication
     for r in results or ():
         if r is None:
             continue
@@ -546,39 +780,47 @@ def restructure_lines(notes: Iterable[str], results: Iterable[Any]) -> list[str]
         layout = ", ".join(f"{k} `{g(k)}`" for k in ("boot_module", "comp_module", "front_module", "boot_packaging",
                                                       "kept_boot_module") if g(k))
         out.append(f"- restructure result: {state}" + (f"; {layout}" if layout else ""))
-        for key, title in (("parents_set", "parents set"), ("mandatory_added", "mandatory added"),
-                           ("optional_bumped", "optional bumped"),
-                           # v2.1n: 트리거 의존성 때문에 새로 넣은 선택 아티팩트와 그때 지운 트리거
-                           ("optional_added", "optional artifacts added for trigger dependencies"),
-                           ("optional_replaced", "trigger dependencies replaced by optional artifacts"),
-                           ("merged_modules", "merged modules"),
-                           ("managed_versions_dropped", "explicit versions dropped (managed by the new parents)"),
-                           # v2.1o: 레시피가 관리 버전보다 높여 놓은 명시 버전도 지웠다(as-is 는 관리 버전 이하)
-                           ("recipe_versions_dropped",
-                            "recipe-raised versions dropped (the as-is build was at or below the managed version)"),
-                           # v2.1l: 검토도 재구성이 적은 as-is 버전을 다른 pom 교정처럼 본다
-                           ("versions_pinned", "versions carried over from the as-is build"),
-                           ("versions_unknown", "version-less dependencies the as-is build did not resolve"),
-                           # v2.1o: 부모의 Boot BOM 속성을 덮어쓰던 as-is 속성을 재구성이 이미 지웠다
-                           ("bom_properties_removed",
-                            "as-is version properties removed (they overrode the parent's Spring Boot BOM properties)"),
-                           # v2.1t: 재구성이 적은 BOM import(부모 체인 속성 참조 또는 리터럴)
-                           ("bom_imports", "BOM imports written by the restructure"),
-                           ("version_properties_removed",
-                            "version properties removed (only the dropped explicit versions used them)"),
-                           ("generated_files", "generated files"), ("flags", "flags"),
-                           ("manual_followups", "follow-ups"), ("notes", "notes")):
+        if g("starter"):
+            out.append(f"  - boot starter: `{g('starter')}`")
+        if g("web_evidence"):
+            out.append(f"  - web evidence: {_cap(', '.join(str(x) for x in g('web_evidence')))}")
+        eff = g("parent_manages_spring_boot_effective")
+        if eff is not None:
+            out.append(f"  - parent chain manages Spring Boot (effective): {'yes' if eff else 'no'}")
+        if int(g("jsp_jakarta_files", 0) or 0):
+            out.append(f"  - JSP / tag files with javax → jakarta names renamed: {int(g('jsp_jakarta_files') or 0)} "
+                       f"file(s), {int(g('jsp_jakarta_refs', 0) or 0)} reference(s)")
+        for key, title in _RESULT_LISTS:
             items = [x for x in (g(key) or []) if x]
             if not items:
                 continue
-            out.append(f"  - {title}:")
-            out += [f"    - {_cap(x)}" for x in items[:SECTION_LINES_MAX]]
-            if len(items) > SECTION_LINES_MAX:
-                out.append(f"    - … {len(items) - SECTION_LINES_MAX} more")
+            _list_block(out, title, items)
+            seen += [_norm(x) for x in items]
+        facts = g("conversion_facts") or {}
+        if isinstance(facts, dict) and facts:
+            out.append("  - conversion facts:")
+            for k, v in list(facts.items())[:SECTION_LINES_MAX]:
+                val = ", ".join(str(x) for x in v) if isinstance(v, (list, tuple, set)) else str(v)
+                out.append(f"    - {k}: {_cap(val)}")
+                seen.append(_norm(val))
+        kept = []
+        for n in (g("notes") or []):
+            if n and not _covered(n, seen) and _norm(n) not in kept:
+                kept.append(_norm(n))
+        if kept:
+            _list_block(out, "notes", kept)
+        seen += kept
         conflicts = g("merge_conflicts") or []
         if conflicts:
             out.append(f"  - merge conflicts (first-wins): {len(conflicts)}")
-    extra = [n for n in (notes or ()) if n]
+    extra: list[str] = []
+    for n in (notes or ()):
+        if not n:
+            continue
+        body = _STEP_PREFIX_RE.sub("", str(n), count=1)
+        if _covered(body, seen) or _covered(n, seen) or _norm(n) in extra:
+            continue
+        extra.append(_norm(n))
     if extra:
         out.append("- run notes:")
         out += [f"  - {_cap(n)}" for n in extra[:SECTION_LINES_MAX]]
@@ -682,6 +924,407 @@ def fact_lines(poms: list[PomInfo], cfg: Any) -> list[str]:
     return L
 
 
+# ---------------------------------------------------------------------------- version facts (v2.1v)
+BOOT_GROUP = "org.springframework.boot"
+BOOT_BOM_KEY = f"{BOOT_GROUP}:spring-boot-dependencies"
+MAX_CHAIN_PROPERTY_LINES = 20
+MAX_VERSION_FACTS = 30
+_PROP_ANY = re.compile(r"\$\{([^}]+)\}")
+# 서블릿 / JSP / EL / websocket API — 컨테이너(내장 Tomcat)가 주므로 provided 가 맞다(D-M9)
+_CONTAINER_APIS = {"servlet-api", "javax.servlet-api", "jakarta.servlet-api", "jsp-api", "javax.servlet.jsp-api",
+                   "jakarta.servlet.jsp-api", "el-api", "javax.el-api", "jakarta.el-api", "websocket-api",
+                   "javax.websocket-api", "jakarta.websocket-api", "jakarta.websocket-client-api"}
+
+
+def chain_facts(cfg: Any) -> Any:
+    """사내 부모 체인의 사실(`sbmig.build.parent_chain.load_parent_chain_facts`, 프로세스 캐시) — 못 읽으면 None. 예외 없음.
+
+    The parent-chain facts of the configured company parents (module attribute call, so the tests' stand-in applies);
+    None when nothing could be read. Never raises."""
+    try:
+        from sbmig.build import parent_chain
+        facts = parent_chain.load_parent_chain_facts(cfg)
+    except Exception:  # facts are an aid
+        log.debug("parent chain facts for the review unavailable", exc_info=True)
+        return None
+    return None if facts is None or getattr(facts, "empty", True) else facts
+
+
+def is_version_property(name: str) -> bool:
+    """버전 속성 이름인가(`*.version`, `java.version` 은 아님) — 재구성의 덮어쓰기 이름 규칙(v2.1p)과 같다. 인코딩 같은
+    다른 회사 속성(`project.build.sourceEncoding`)은 모듈 pom 에 써도 되므로 이 검사에 넣지 않는다.
+
+    `*.version` but never `java.version` (the restructure's override-name rule); other company properties such as
+    `project.build.sourceEncoding` may be set in a module pom."""
+    n = (name or "").strip()
+    return n.endswith(".version") and n != "java.version" and not n.startswith(("project.", "maven."))
+
+
+def company_properties(facts: Any, cfg: Any) -> tuple[dict[str, str], dict[str, str]]:
+    """회사 체인 pom 이 정의한 속성(이름 → 값)과 정의한 pom — 로더의 `company_properties` 가 있으면 그것, 없으면 같은
+    규칙(루트·필수·선택 아티팩트의 group, `org.springframework*` 제외)으로 `properties` 에서 고른다.
+
+    The properties the COMPANY's own chain poms define and their defining pom (the loader's split, else the same rule)."""
+    if facts is None:
+        return {}, {}
+    own = dict(getattr(facts, "company_properties", None) or {})
+    if own:
+        return own, dict(getattr(facts, "company_property_sources", None) or {})
+    try:
+        from sbmig.build.parent_chain import is_company_group
+    except Exception:  # noqa: BLE001
+        return {}, {}
+    a = getattr(cfg, "artifacts", None)
+    groups = [str(r).split(":")[0] for r in getattr(facts, "roots", None) or [] if r]
+    groups += [str(getattr(s, "group_id", "") or "") for s in [*(getattr(a, "mandatory", None) or []),
+                                                               *(getattr(a, "optional", None) or [])]]
+    groups = [g for g in dict.fromkeys(groups) if g]
+    props, srcs = dict(getattr(facts, "properties", None) or {}), dict(getattr(facts, "property_sources", None) or {})
+    keep = {k: v for k, v in props.items() if is_company_group(srcs.get(k, "").split(":")[0], groups)}
+    return keep, {k: srcs.get(k, "") for k in keep}
+
+
+def _newer(a: str, b: str) -> Optional[bool]:
+    """`a` 가 `b` 보다 새 버전인가(못 읽으면 None)."""
+    try:
+        from sbmig.plan.versions import compare_versions
+        c = compare_versions(a, b)
+    except Exception:  # an unreadable version is no decision
+        return None
+    return None if c is None else c > 0
+
+
+def _major_minor(v: Optional[str]) -> Optional[tuple[str, str]]:
+    m = re.match(r"\s*(\d+)\.(\d+)", v or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+@dataclass
+class RawPom:
+    """검토가 쓰는 pom 하나의 원시 값(치환 전 `<version>` / `<scope>` 그대로 — PomInfo 는 저장소 안 관리 버전으로 채운다)."""
+    path: str
+    raw: Any                       # sbmig.analyze.pom_parser._RawPom
+    text: str = ""
+
+
+def raw_poms(ws: Any, poms: list[PomInfo]) -> dict[str, RawPom]:
+    """프로젝트 pom 들의 원시 파싱(읽지 못하거나 깨진 pom 은 빠진다). 예외 없음."""
+    from sbmig.analyze.pom_parser import parse_pom_text
+
+    out: dict[str, RawPom] = {}
+    for p in poms:
+        try:
+            text = ws.read(p.path)
+            out[p.path] = RawPom(path=p.path, raw=parse_pom_text(text, p.path), text=text)
+        except Exception:  # noqa: BLE001 - the parse warnings already name it
+            continue
+    return out
+
+
+def _resolver(pom: PomInfo, poms: list[PomInfo], base: dict[str, str]):
+    """`${x}` 풀이: 그 pom 의 프로젝트 안 부모 사슬 속성(자식이 이김) → 회사 체인 속성(`base`)."""
+    props = dict(base)
+    for q in reversed(_chain(pom, poms)):
+        props.update(q.properties or {})
+    builtins = {"project.version": pom.version or "", "project.groupId": pom.group_id or ""}
+
+    def resolve(v: Optional[str]) -> str:
+        s = (v or "").strip()
+        for _ in range(4):                       # nested ${…} a few levels deep; an unknown one stays as it is
+            nxt = _PROP_ANY.sub(lambda m: props.get(m.group(1)) or builtins.get(m.group(1)) or m.group(0), s)
+            if nxt == s:
+                break
+            s = nxt
+        return s
+    return resolve
+
+
+def _skip_keys(cfg: Any, poms: list[PomInfo], results: Iterable[Any]) -> set[str]:
+    """명시 버전 사실에서 뺄 g:a: 프로젝트 자신의 모듈, 필수·선택 사내 아티팩트(설정 버전이 규칙), 재구성이 as-is 에서 옮겨
+    적은 버전(최종 결정, D-M6)."""
+    a = cfg.artifacts
+    keys = {f"{p.group_id}:{p.artifact_id}" for p in poms if p.group_id}
+    for s in [*(a.mandatory or []), *(a.optional or []), *a.parent_specs()]:
+        keys.add(s.key)
+        keys.update(getattr(s, "aliases", None) or [])
+    for r in results or ():
+        for line in (_field(r, "versions_pinned") or []) if r is not None else []:
+            keys.add(str(line).split(" ", 1)[0].rstrip(":"))
+    return keys
+
+
+def managed_versions(cfg: Any, results: Iterable[Any], facts: Any) -> tuple[dict[str, str], dict[str, str]]:
+    """(g:a → 관리 버전, g:a → 누가 관리하는지): 사내 체인 자신의 관리 목록(`own_managed`, Boot 보탬 제외) + 재구성이
+    Boot BOM 을 import 했으면 그 BOM(`sbmig.build.boot_bom.load_boot_bom_facts`, 읽기 전용). 예외 없음.
+
+    The managed versions a project pom inherits: the chain's own entries (without the Boot add-on) + the Boot BOM the
+    restructure imported (when it did). Never raises."""
+    managed: dict[str, str] = {}
+    by: dict[str, str] = {}
+    if facts is None:
+        return managed, by
+    roots = list(getattr(facts, "roots", None) or [])
+    chain_label = f"the parent chain (`{roots[0]}`)" if roots else "the parent chain"
+    try:
+        own = getattr(facts, "own_managed", None)
+        own = own if isinstance(own, dict) else dict(getattr(facts, "managed", None) or {})
+    except Exception:  # noqa: BLE001
+        own = {}
+    for k, v in own.items():
+        managed[k], by[k] = v, chain_label
+    boot = [(ga, v) for ga, v, _r, _p in bom_import_groups(results) if ga == BOOT_BOM_KEY]
+    if boot:
+        ga, v = boot[0]
+        m = _PROP_REF.match(v)
+        version = (getattr(facts, "properties", None) or {}).get(m.group(1)) if m else v
+        try:
+            from sbmig.build import boot_bom
+            bb = boot_bom.load_boot_bom_facts(cfg, version or None)
+            for k, mv in (getattr(bb, "managed", None) or {}).items():
+                if k not in managed:
+                    managed[k], by[k] = mv, f"the imported Boot BOM (`{ga}:{version or v}`)"
+        except Exception:  # facts are an aid
+            log.debug("Boot BOM facts for the review unavailable", exc_info=True)
+    return managed, by
+
+
+def version_fact_lines(poms: list[PomInfo], cfg: Any, results: Iterable[Any] = (), *, facts: Any = None,
+                       raw: Optional[dict[str, RawPom]] = None, ws: Any = None) -> list[str]:
+    """v2.1v (D-H1): 부모 체인의 pom 에서 읽은 버전 사실 — 프롬프트에 리터럴 없이 사실의 값만:
+    `parent chain property: <name>=<value> (<정의 pom>)` (회사 체인의 `*.version`, ≤ 20),
+    `explicit version on a managed artifact: <pom> g:a <v> — managed <m> by <누구>`,
+    `Spring Boot artifact on another line: <pom> g:a <v> (chain <m> | target <t>)` (major.minor 가 다름),
+    `property shadows the parent chain: <pom> <name>=<value> (chain: <value> by <pom>)`. 뒤의 둘은 시스템 프롬프트에서
+    critical. 보통은 재구성이 다 정리해서 뒤 세 종류는 0 줄. 사실을 못 읽으면(저장소 없음) 0 줄. 예외 없음.
+
+    The version facts read from the parent chain's poms (see the Korean summary): the company chain's `*.version`
+    properties, explicit versions on managed artifacts, Spring Boot artifacts / plugins / imports on another line than
+    the managed (or target) one, and project properties that shadow a company chain property. Never raises."""
+    try:
+        return _version_fact_lines(poms, cfg, list(results or ()), facts if facts is not None else chain_facts(cfg),
+                                   raw, ws)
+    except Exception:  # a fact line is never worth a failed review
+        log.debug("version facts for the review failed", exc_info=True)
+        return []
+
+
+def _version_fact_lines(poms: list[PomInfo], cfg: Any, results: list[Any], facts: Any,
+                        raw: Optional[dict[str, RawPom]], ws: Any) -> list[str]:
+    if facts is None:
+        return []
+    if raw is None:
+        raw = raw_poms(ws, poms) if ws is not None else {}
+    cprops, csrc = company_properties(facts, cfg)
+    vprops = {k: v for k, v in cprops.items() if is_version_property(k)}
+    L = [f"- parent chain property: {k}={v} ({csrc.get(k) or 'the parent chain'})"
+         for k, v in sorted(vprops.items())[:MAX_CHAIN_PROPERTY_LINES]]
+    if len(vprops) > MAX_CHAIN_PROPERTY_LINES:
+        L.append(f"- parent chain property: … {len(vprops) - MAX_CHAIN_PROPERTY_LINES} more")
+    managed, by = managed_versions(cfg, results, facts)
+    skip = _skip_keys(cfg, poms, results)
+    target = str(getattr(cfg.target, "spring_boot_version", "") or "")
+    parents = {s.key for s in cfg.artifacts.parent_specs()}
+    base = dict(getattr(facts, "properties", None) or {})
+    problems: list[str] = []
+    for p in poms:
+        rp = raw.get(p.path)
+        if rp is None:
+            continue
+        resolve = _resolver(p, poms, base)
+        entries = [(d, "") for d in rp.raw.deps] + [(d, " (dependencyManagement)") for d in rp.raw.managed]
+        for d, where in entries:
+            key = f"{resolve(d.group_id) or d.group_id}:{d.artifact_id}"
+            if not d.version:
+                continue
+            ref = _PROP_REF.match(d.version.strip())
+            if ref and ref.group(1) in cprops:
+                continue                                  # ${<company property>} — the v2.1t form, decided by the chain
+            v = resolve(d.version)
+            if "${" in v:
+                continue
+            scope = (d.scope or "").lower()
+            if key.startswith(BOOT_GROUP + ":") and key not in parents:
+                m = managed.get(key)
+                ref_v, label = (m, f"chain {m}") if m else (target, f"target {target}")
+                if _major_minor(v) and _major_minor(ref_v) and _major_minor(v) != _major_minor(ref_v):
+                    problems.append(f"- Spring Boot artifact on another line: `{p.path}` {key} {v}{where} ({label})")
+                    continue
+            if scope == "import" or key in skip:
+                continue
+            # 관리 버전보다 새 명시 버전은 재구성이 일부러 남긴 것(drop_managed_versions: gte, as-is 가 더 새것) — 최종 결정
+            if key in managed and (_newer(v, managed[key]) is not True):
+                problems.append(f"- explicit version on a managed artifact: `{p.path}` {key} {v}{where} — managed "
+                                f"{managed[key]} by {by.get(key, 'the parent chain')}")
+        for pl in rp.raw.plugins:
+            if pl.group_id != BOOT_GROUP or not pl.version:
+                continue
+            v = resolve(pl.version)
+            ref = _PROP_REF.match(pl.version.strip())
+            if "${" in v or (ref and ref.group(1) in cprops):
+                continue
+            if _major_minor(v) and _major_minor(target) and _major_minor(v) != _major_minor(target):
+                problems.append(f"- Spring Boot artifact on another line: `{p.path}` plugin {pl.group_id}:"
+                                f"{pl.artifact_id} {v} (target {target})")
+        par = rp.raw.parent
+        if par is not None and par.group_id == BOOT_GROUP and par.key not in parents and par.version:
+            v = resolve(par.version)
+            if _major_minor(v) and _major_minor(target) and _major_minor(v) != _major_minor(target):
+                problems.append(f"- Spring Boot artifact on another line: `{p.path}` parent {par.key} {v} "
+                                f"(target {target})")
+        for name, value in (rp.raw.properties or {}).items():
+            if name in vprops:
+                problems.append(f"- property shadows the parent chain: `{p.path}` {name}={value} (chain: "
+                                f"{vprops[name]} by {csrc.get(name) or 'the parent chain'})")
+    if len(problems) > MAX_VERSION_FACTS:
+        problems = problems[:MAX_VERSION_FACTS] + [f"- … {len(problems) - MAX_VERSION_FACTS} more version facts"]
+    return L + problems
+
+
+def container_scope_lines(raw: dict[str, RawPom]) -> list[str]:
+    """v2.1v (D-M9): `compile`(또는 scope 없음)로 선언된 컨테이너 API(servlet / JSP / EL / websocket) — warning 사실.
+    재구성이 as-is 의 provided 를 되돌리므로(E-M6) 보통 0 줄.
+
+    Container APIs declared `compile` (explicitly or by default) — a warning fact; normally none (the restructure
+    restores the as-is `provided`)."""
+    found: list[str] = []
+    for path, rp in raw.items():
+        for d in rp.raw.deps:
+            if d.artifact_id in _CONTAINER_APIS and (d.scope or "compile").lower() == "compile":
+                found.append(f"`{d.group_id}:{d.artifact_id}` in `{path}`"
+                             + (" (scope compile)" if d.scope else " (no scope = compile)"))
+    if not found:
+        return []
+    return ["- container API declared `compile` (the embedded Tomcat provides it; `provided` is right): "
+            + "; ".join(found[:12]) + (f" (+{len(found) - 12})" if len(found) > 12 else "")]
+
+
+def _boot_plugin_blocks(text: str) -> list[str]:
+    """pom 텍스트의 `<build><plugins>` 안 spring-boot-maven-plugin `<plugin>` 블록들(pluginManagement 제외)."""
+    body = re.sub(r"<!--.*?-->", "", text or "", flags=re.S)
+    body = re.sub(r"<pluginManagement>.*?</pluginManagement>", "", body, flags=re.S)
+    body = re.sub(r"<profiles>.*?</profiles>", "", body, flags=re.S)
+    return [b for b in re.findall(r"<plugin>(?:(?!</plugin>).)*</plugin>", body, flags=re.S)
+            if re.search(r"<artifactId>\s*spring-boot-maven-plugin\s*</artifactId>", b)]
+
+
+def repackaged_dependency_lines(poms: list[PomInfo], raw: dict[str, RawPom]) -> list[str]:
+    """v2.1v (D-M10): 다른 모듈이 의존하는 jar 모듈이 spring-boot-maven-plugin repackage 를 분류자 없이 돈다 — 클래스가
+    `BOOT-INF/` 아래로 가서 의존하는 모듈이 "package does not exist" 로 깨진다(critical). `<classifier>` / `<skip>` 이 있으면
+    괜찮다.
+
+    A jar module other modules depend on runs spring-boot-maven-plugin repackage without a classifier (critical)."""
+    by_key = {f"{p.group_id}:{p.artifact_id}": p for p in poms if p.group_id}
+    dependents: dict[str, list[str]] = {}
+    for p in poms:
+        for d in (raw[p.path].raw.deps if p.path in raw else []):
+            g = d.group_id
+            if g in ("${project.groupId}", "${groupId}", ""):
+                g = p.group_id or ""
+            q = by_key.get(f"{g}:{d.artifact_id}")
+            if q is not None and q.path != p.path and (d.type or "jar") == "jar":
+                dependents.setdefault(q.path, []).append(p.path)
+    out: list[str] = []
+    for path, deps in dependents.items():
+        q = next((p for p in poms if p.path == path), None)
+        rp = raw.get(path)
+        if q is None or rp is None or q.packaging not in ("jar", "") or not q.has_spring_boot_plugin:
+            continue
+        blocks = _boot_plugin_blocks(rp.text)
+        if not blocks or any(re.search(r"<classifier>\s*\S", b) or re.search(r"<skip>\s*true\s*</skip>", b)
+                             for b in blocks):
+            continue
+        out.append(f"- repackaged module used as a dependency: `{path}` (`{q.group_id}:{q.artifact_id}`) runs "
+                   "spring-boot-maven-plugin repackage without a classifier and "
+                   + ", ".join(f"`{x}`" for x in sorted(set(deps))[:8])
+                   + " depend on it — its classes move under BOOT-INF/ (dependents: \"package does not exist\")")
+    return out
+
+
+# ---------------------------------------------------------------------------- invariants after the review's edits (v2.1y)
+def _declared_versions(rp: Any) -> dict[tuple[str, str], Optional[str]]:
+    """(구역, g:a) → 원시 `<version>` (import BOM 제외) — 구역은 dependencies / dependencyManagement."""
+    out: dict[tuple[str, str], Optional[str]] = {}
+    for section, deps in (("dependencies", rp.deps), ("dependencyManagement", rp.managed)):
+        for d in deps:
+            if (d.scope or "").lower() == "import":
+                continue
+            key = (section, f"{d.group_id}:{d.artifact_id}")
+            out[key] = d.version or out.get(key)
+    return out
+
+
+def _declared_keys(rp: Any) -> set[str]:
+    return {f"{d.group_id}:{d.artifact_id}" for d in [*rp.deps, *rp.managed]}
+
+
+def invariant_violations(cfg: Any, changed: Iterable[str], before_poms: list[PomInfo], before: dict[str, Any],
+                         after_poms: list[PomInfo], after: dict[str, Any], facts: Any = None,
+                         results: Iterable[Any] = ()) -> list[str]:
+    """v2.1y (D-M4): 검토의 편집이 재구성의 결정을 거꾸로 되돌렸는가 — 바뀐 pom 마다 (a) 회사 체인이 정의한 버전 속성을
+    `<properties>` 에 새로 / 다른 값으로 적음, (b) 체인(또는 재구성이 import 한 Boot BOM)이 관리하는 아티팩트에 전에 없던
+    명시 `<version>`, (c) 설정한 사내 부모도 프로젝트 안 pom 도 아닌 `<parent>`, (d) 필수 사내 아티팩트 선언을 지움. 위반마다
+    한 문장(없으면 []). `before` / `after` = 경로 → RawPom. 예외 없음(검사 실패 = 위반 없음).
+
+    Did the review's edits undo the restructure's decisions? One sentence per violation in the changed poms: (a) a
+    `<properties>` entry the company chain defines (a `*.version` name) added or changed, (b) an explicit `<version>`
+    on a chain- / Boot-BOM-managed artifact that had none, (c) a `<parent>` that is neither a configured company parent
+    nor a pom of the project, (d) a mandatory dependency removed. Never raises."""
+    try:
+        return _invariant_violations(cfg, list(changed), before_poms, before, after_poms, after, facts,
+                                     list(results or ()))
+    except Exception:  # the check is a guard, never a failed review
+        log.debug("review invariant check failed", exc_info=True)
+        return []
+
+
+def _invariant_violations(cfg: Any, changed: list[str], before_poms: list[PomInfo], before: dict[str, Any],
+                          after_poms: list[PomInfo], after: dict[str, Any], facts: Any,
+                          results: list[Any]) -> list[str]:
+    a = cfg.artifacts
+    cprops, csrc = company_properties(facts, cfg)
+    vprops = {k: v for k, v in cprops.items() if is_version_property(k)}
+    managed, by = managed_versions(cfg, results, facts)
+    skip = _skip_keys(cfg, before_poms, results)
+    project_keys = {f"{p.group_id}:{p.artifact_id}" for p in [*before_poms, *after_poms] if p.group_id}
+    parents = {s.key: s.version for s in a.parent_specs()}
+    aliases = set(a.parent_keys()) if hasattr(a, "parent_keys") else set(parents)
+    mandatory = [s.key for s in a.mandatory or []]
+    out: list[str] = []
+    for path in [c for c in changed if posixpath.basename(c) == "pom.xml"]:
+        b = before.get(path)
+        f = after.get(path)
+        braw = b.raw if b is not None else None
+        fraw = f.raw if f is not None else None
+        if fraw is not None:
+            bprops = dict(braw.properties) if braw is not None else {}
+            for name, value in (fraw.properties or {}).items():
+                if name in vprops and bprops.get(name) != value:
+                    out.append(f"`{path}`: property {name}={value} written — the parent chain defines {name} "
+                               f"({vprops[name]}, {csrc.get(name) or 'the parent chain'}); reference it as ${{{name}}} "
+                               "instead of defining it")
+            bver = _declared_versions(braw) if braw is not None else {}
+            for (section, key), v in _declared_versions(fraw).items():
+                if not v or bver.get((section, key)) or key in skip or key in project_keys or key not in managed:
+                    continue
+                ref = _PROP_REF.match(v.strip())
+                if ref and ref.group(1) in cprops:
+                    continue
+                out.append(f"`{path}`: explicit version {v} on {key} ({section}) — {by.get(key, 'the parent chain')} "
+                           f"manages it at {managed[key]}; leave the version out")
+            par, bpar = fraw.parent, braw.parent if braw is not None else None
+            if par is not None and (bpar is None or (par.key, par.version) != (bpar.key, bpar.version)):
+                ok = (par.key in project_keys
+                      or (par.key in aliases and (parents.get(par.key) in (None, par.version))))
+                if not ok:
+                    out.append(f"`{path}`: parent {par.key}:{par.version or '?'} is neither a configured company "
+                               "parent nor a pom of the project")
+        if braw is not None:
+            gone = [k for k in mandatory if k in _declared_keys(braw)
+                    and (fraw is None or k not in _declared_keys(fraw))]
+            out += [f"`{path}`: mandatory dependency {k} removed" for k in gone]
+    return out
+
+
 MAX_BINARY_FACTS = 12
 
 
@@ -737,22 +1380,29 @@ def select_poms(ws: Any, poms: list[PomInfo], max_poms: int, max_chars: int) -> 
 
 def collect_review_input(ws: Any, profile: Optional[ProjectProfile], cfg: Any, *, notes: Iterable[str] = (),
                          results: Iterable[Any] = ()) -> ReviewInput:
-    """재구성 뒤 워크스페이스에서 검토 프롬프트에 들어갈 것을 전부 읽어 ReviewInput 으로 만든다(읽기만 한다).
+    """재구성 뒤 워크스페이스에서 검토 프롬프트에 들어갈 것을 전부 읽어 ReviewInput 으로 만든다(읽기만 한다). v2.1v:
+    부모 체인의 버전 사실(`version_fact_lines`), 컨테이너 API 의 compile 스코프, 다른 모듈이 의존하는 repackage 모듈.
 
     Everything the review prompt shows, read from the workspace after the restructure (see module docstring)."""
     from sbmig.analyze.pom_parser import parse_poms
 
+    results = [r for r in (results or ()) if r is not None]
     poms, warnings = parse_poms(ws)
     name = _project_name(cfg, poms, profile)
     inp = ReviewInput(pom_infos=poms, warnings=list(warnings),
-                      language=str(getattr(getattr(cfg, "report", None), "language", "en") or "en").lower())
+                      language=str(getattr(getattr(cfg, "report", None), "language", "en") or "en").lower(),
+                      ask_script=bool(getattr(getattr(cfg, "review", None), "ask_script", False)))
+    facts = chain_facts(cfg)
+    raw = raw_poms(ws, poms)
     inp.project = project_lines(profile, cfg, name)
-    inp.rules, inp.external_parent = rule_lines(cfg, profile, name)
+    inp.rules, inp.external_parent = rule_lines(cfg, profile, name, results, facts)
     inp.restructure = restructure_lines(notes, results)
     inp.modules = module_lines(poms, ws)
-    inp.facts = fact_lines(poms, cfg) + filtered_binary_lines(ws, poms) \
+    inp.facts = fact_lines(poms, cfg) + version_fact_lines(poms, cfg, results, facts=facts, raw=raw) \
+        + container_scope_lines(raw) + repackaged_dependency_lines(poms, raw) + filtered_binary_lines(ws, poms) \
         + [f"- pom parse warning: {_cap(w)}" for w in warnings[:10]]
     inp.encodings = source_encodings(ws, poms, getattr(cfg.build, "encoding_candidates", None),
                                      skip_tests=bool(getattr(cfg.build, "skip_test_compile", True)))
     inp.poms, inp.omitted_poms = select_poms(ws, poms, int(cfg.review.max_poms), int(cfg.review.max_pom_chars))
+    inp.chain, inp.raw, inp.results = facts, raw, results
     return inp

@@ -39,7 +39,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "legacy-role-parents", "company-boot-single", "company-spring5-web", "company-servlet-jsp",
              "boot2-rewrite-excluded", "boot2-qlrm-javax", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
              "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay", "spring5-security-batch", "ant-webapp",
-             "sibling-aggregator-dup", "legacy-external-parent", "filtered-binary-resources"]
+             "sibling-aggregator-dup", "legacy-external-parent", "filtered-binary-resources",
+             "spring5-legacy-startup"]                   # v2.1x: the legacy Spring context at conversion time
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
@@ -84,6 +85,7 @@ BUILD_MATRIX = [
     ("sibling-aggregator-dup", "APP", "8", ""),        # v2.1k: no root pom; APP aggregates ../DEV, ./EAR, ./BATCH
     ("legacy-external-parent", ".", "21", "libs"),    # v2.1l: as-is parent = fixtures/libs/legacy-parent (install.sh first)
     ("filtered-binary-resources", ".", "21", ""),     # v2.1m: filtered resources with a webfont + an unknown .dmdb binary
+    ("spring5-legacy-startup", ".", "8", "ms949"),    # v2.1x: Spring 5 XML web app — contextConfigLocation, EUC-KR XML, JNDI, *.do, MS949 sources
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -339,6 +341,7 @@ class StructureReviewExpect(BaseModel):
     warnings_min: int | None = Field(default=None, ge=0)
     warnings_max: int | None = Field(default=None, ge=0)
     issues_contain: list[str] = Field(default_factory=list)
+    issues_not_contain: list[str] = Field(default_factory=list)      # v2.1y (E-M5): none may match (same syntax)
     sbmig_check: bool | None = None
     script_status: Literal["ok", "error", "timeout", "rejected", "none"] | None = None
     committed: bool | None = None
@@ -346,7 +349,7 @@ class StructureReviewExpect(BaseModel):
     changed_files: list[str] = Field(default_factory=list)
     llm_calls_max: int | None = Field(default=None, ge=0)
 
-    @field_validator("issues_contain")
+    @field_validator("issues_contain", "issues_not_contain")
     @classmethod
     def _patterns(cls, v: list[str]) -> list[str]:
         for pat in v:
@@ -543,9 +546,18 @@ def test_cp949_sources_are_not_utf8(name: str):
         .decode("cp949")
 
 
+# v2.1x: spring5-legacy-startup keeps ONE package in MS949 (com/example/shop/notice/*.java) next to UTF-8 sources — the
+# restructure must write project.build.sourceEncoding for it (D-M7); every other source of the corpus is UTF-8
+MIXED_ENCODING_FILES = {"spring5-legacy-startup": "com/example/shop/notice/"}
+
+
 @pytest.mark.parametrize("name", [n for n in NAMES if n not in CP949_FIXTURES])
 def test_other_sources_are_utf8(name: str):
+    skip = MIXED_ENCODING_FILES.get(name, "")
     for f in (FIXTURES / name).rglob("*.java"):
+        if skip and skip in f.as_posix():
+            f.read_bytes().decode("cp949")
+            continue
         f.read_bytes().decode("utf-8")
 
 
@@ -569,7 +581,7 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                      for name in ("legacy-role-parents", "company-boot-single", "company-spring5-web",
                                   "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
-                                  "legacy-external-parent", "filtered-binary-resources")}
+                                  "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 

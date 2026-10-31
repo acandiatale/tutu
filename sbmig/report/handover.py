@@ -865,7 +865,9 @@ def review_followups(report: RunReport) -> list[str]:
     v2 structure review → compact "from here on" lines: what the review's fix (edits / script) changed (one line),
     critical issues it did not fix, warnings; at most REVIEW_FOLLOWUPS_MAX lines. [] without issues."""
     rv = getattr(report, "structure_review", None)
-    if rv is None or not rv.issues:
+    # v2.1y (E-M5): 재료에 없는 버전·속성을 말한 이슈(`unsupported`)는 보고서에만 남고 인수인계에는 오지 않는다
+    issues = [i for i in (rv.issues if rv is not None else []) if not getattr(i, "unsupported", False)]
+    if rv is None or not issues:
         return []
     res = rv.script_result
     fixed = res is not None and res.status == "ok" and not rv.reverted and bool(res.changed_files)
@@ -875,7 +877,7 @@ def review_followups(report: RunReport) -> list[str]:
         return f"{i.file or '(project)'}: {_short(i.problem, 220)}{hint}"
 
     out: list[str] = []
-    critical = [i for i in rv.issues if i.severity == "critical"]
+    critical = [i for i in issues if i.severity == "critical"]
     if fixed:
         files = ", ".join(res.changed_files[:REVIEW_FILES_MAX])
         if len(res.changed_files) > REVIEW_FILES_MAX:
@@ -888,7 +890,7 @@ def review_followups(report: RunReport) -> list[str]:
                    "changes")
         critical = [i for i in critical if i.problem.startswith(REVIEW_SBMIG_CHECK)]
     out += [f"structure review: critical issue not fixed — {where(i)}" for i in critical]
-    out += [f"structure review warning — {where(i)}" for i in rv.issues if i.severity != "critical"]
+    out += [f"structure review warning — {where(i)}" for i in issues if i.severity != "critical"]
     if len(out) > REVIEW_FOLLOWUPS_MAX:
         rest = len(out) - (REVIEW_FOLLOWUPS_MAX - 1)
         out = out[: REVIEW_FOLLOWUPS_MAX - 1] + [f"… and {rest} more structure review issue(s) — see Structure review"]

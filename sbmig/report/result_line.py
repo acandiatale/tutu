@@ -34,6 +34,9 @@ Codes, most important first:
     skipped:<why>         fleet only: not migrated (`skipped:gradle`, `skipped:input`)
     crash                 the run raised (fleet `error: crash: …`, CLI traceback)
     aborted[:<reason>]    exit 3 (`aborted:parent-not-found`, stopped by the user, …)
+    owner-decision        v2.1y: a `needs_owner` BLOCKED item — the LLM named a blocker outside the project (a library
+                          without a jakarta build, a framework to replace, a missing artifact); the owning team
+                          decides (소유팀 결정 필요). Followed by `blocked:needs_owner`
     blocked:<reason>      one per distinct BlockReason (`blocked:external_javax_api`)
     unresolved:<n>        errors left after the final build
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
@@ -57,6 +60,8 @@ ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-ex
 INFRA_PREFIX = "infra:"
 FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
 FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`
+NEEDS_OWNER_REASON = "needs_owner"      # BlockReason.NEEDS_OWNER (v2.1y)
+OWNER_DECISION = "owner-decision"       # its code: the owning team decides (소유팀 결정 필요)
 _NON_ASCII_RE = re.compile(r"[^\x21-\x7e]+")
 
 
@@ -112,8 +117,12 @@ def attention_codes(*, flags: Iterable[str] = (), exit_code: Optional[int] = Non
         reason = next((f[len("aborted:"):] for f in flags if f.startswith("aborted:")), "")
         if not kind or reason:
             codes.append("aborted:" + reason if reason else "aborted")
-    for r in blocked_reasons or ():
-        codes.append("blocked:" + str(r).split(":", 1)[0])
+    reasons = [str(r).split(":", 1)[0] for r in blocked_reasons or ()]
+    # v2.1y: LLM 이 프로젝트 밖의 차단 사유를 말해 소유팀 결정을 기다리는 실행 — 차단 코드들 앞에 한 번(fleet 이 첫 코드로 묶는다)
+    if NEEDS_OWNER_REASON in reasons:
+        codes.append(OWNER_DECISION)
+    for r in reasons:
+        codes.append("blocked:" + r)
     if unresolved:
         codes.append(f"unresolved:{unresolved}")
     codes += [f for f in ATTENTION_FLAGS if f in flags]

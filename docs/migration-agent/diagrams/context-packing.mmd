@@ -13,7 +13,7 @@ flowchart TB
   end
   subgraph body3["참고 섹션"]
     direction LR
-    S7["7 Other error clusters"] --> S8["8 Plan notes"] --> S10["10+ Migration note ×≤4<br/>(fix-policy 항상)"]
+    S7["7 Other error clusters"] --> S8["8 Plan notes"] --> S10["10+ Migration note ×≤4<br/>(always 노트 없음)"]
   end
   keep --> body1 --> body2 --> body3
   body3 --> T["예산(llm.max_context_chars) 초과 시 먼저 줄이는 순서<br/>notes → plan_notes → other_errors → previous_attempts → kb_hints<br/>→ reference_files → advisory_hints → reference_notes → pom → related_files → files"]

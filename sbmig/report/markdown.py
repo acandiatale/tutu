@@ -116,6 +116,7 @@ HANDOVER_TITLE = "Handover — what we replaced, what is yours"
 PROPERTIES_TITLE = "Properties to set before running"
 JAVAX_JARS_TITLE = "javax API jars still on the classpath"
 REVIEW_TITLE = "Structure review"
+UNSUPPORTED_MARK = "(sbmig check) not in the material: "   # v2.1y: sbmig.review.parse.UNSUPPORTED_MARK
 REVIEW_MAX_ROWS = 30
 REVIEW_FILES_SHOWN = 8
 
@@ -804,7 +805,11 @@ def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
         for i in issues[:REVIEW_MAX_ROWS]:
             sev = f"**{tr(lang, 'critical')}**" if i.severity == "critical" else tr(lang, "warning")
             where = f"`{_cell(i.file, 120)}`" if i.file else tr(lang, "(project)")
-            L.append(f"| {sev} | {where} | {_cell(i.problem, 400)} | {_cell(i.fix_hint or '-', 300)} |")
+            problem = i.problem
+            # v2.1y (E-M5): 재료에 없는 것을 말한 이슈 — 표시해서 남긴다(적용·인수인계 안 함)
+            if getattr(i, "unsupported", False) and not problem.startswith(UNSUPPORTED_MARK):
+                problem = UNSUPPORTED_MARK + problem
+            L.append(f"| {sev} | {where} | {_cell(problem, 400)} | {_cell(i.fix_hint or '-', 300)} |")
         if len(issues) > REVIEW_MAX_ROWS:
             L += ["", tr(lang, "… {n} more issue(s) — see `structure_review` in report.json",
                          n=len(issues) - REVIEW_MAX_ROWS)]

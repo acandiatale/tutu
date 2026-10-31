@@ -1,0 +1,5 @@
+{
+  "note": "structure review of spring5-legacy-startup (one call): verdict ok — the restructure already restored the provided scope and wrote the MS949 source encoding (v2.1x), the review names nothing else",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Company layout: root aggregator with shop-back, shop-front and shop-boot; shop-boot is an executable WAR on the boot parent (JSPs in shop-front, spring-boot-starter-tomcat / tomcat-embed-jasper provided) and depends on shop-back and shop-front; back / front on the comp parent; the mandatory starters in the root only. jakarta.servlet-api is provided again (as-is scope) and shop-back declares project.build.sourceEncoding MS949 for its MS949 sources, so nothing is left to fix in the build files.\"\n}\n</review>\n"
+}

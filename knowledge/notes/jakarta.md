@@ -8,32 +8,36 @@ keywords:
   - "querydsl|JPAQueryFactory|com\\.querydsl"
   - "EntityManager|@Entity|@Column|@Table|@Id"
   - "ConstraintValidator|@NotNull|@NotBlank|@Valid"
-  - "HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|Filter"
+  - "HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|\\b(Filter|FilterChain|FilterConfig)\\b"
   - "PagingAndSortingRepository|ListCrudRepository|no suitable method found for findAll"
   - "org\\.hibernate\\.(Query|SQLQuery|Criteria)|createSQLQuery|createCriteria|Restrictions|uniqueResult|setResultTransformer"
+  - "org\\.hibernate\\.annotations\\.(Where|WhereJoinTable|LazyCollection|LazyToOne|IndexColumn|ForeignKey|Table|Loader|OrderBy|Sort|Proxy|Polymorphism|SelectBeforeUpdate|Persister|Tuplizer)\\b"
+  - "org\\.hibernate\\.validator\\.constraints\\.(NotBlank|NotEmpty|Email|SafeHtml)"
+  - "\\bfindOne\\(|method exists\\(|save\\(java\\.lang\\.Iterable|QueryDslPredicateExecutor|has protected access in org\\.springframework\\.data|new PageRequest|new Sort\\("
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [spring, jdk21]
 ---
 # javax → jakarta (Spring 6/7, Boot 3/4 = Jakarta EE 10/11)
 
-## Package mapping (rename the import prefix `javax.X` → `jakarta.X`)
-| javax package | jakarta package | Artifact (Boot 4 / EE 11 version) |
+## Package mapping (rename the import prefix `javax.X` → `jakarta.X`; artifacts take `version: null` — Boot-managed unless noted)
+| javax package | jakarta package | Artifact |
 |---|---|---|
-| `javax.servlet[.http]` | `jakarta.servlet[.http]` | `jakarta.servlet:jakarta.servlet-api:6.1.0` (provided; embedded Tomcat 11 ships it) |
-| `javax.servlet.jsp[.jstl]` | `jakarta.servlet.jsp[.jstl]` | `jakarta.servlet.jsp:jakarta.servlet.jsp-api:4.0`, JSTL `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api:3.0` + `org.glassfish.web:jakarta.servlet.jsp.jstl` |
-| `javax.persistence` | `jakarta.persistence` | `jakarta.persistence:jakarta.persistence-api:3.2.0` |
-| `javax.validation` | `jakarta.validation` | `jakarta.validation:jakarta.validation-api:3.1.x` + Hibernate Validator 9 (`spring-boot-starter-validation`) |
-| `javax.annotation` (PostConstruct, PreDestroy, Resource, Priority, security.RolesAllowed) | `jakarta.annotation` | `jakarta.annotation:jakarta.annotation-api:3.0.0` |
-| `javax.inject` | `jakarta.inject` | `jakarta.inject:jakarta.inject-api:2.0.1` |
-| `javax.transaction` (Transactional, UserTransaction) | `jakarta.transaction` | `jakarta.transaction:jakarta.transaction-api:2.0.1` (note: `javax.transaction.xa` stays javax — it is JDK) |
-| `javax.ws.rs` | `jakarta.ws.rs` | `jakarta.ws.rs:jakarta.ws.rs-api:4.0.0` (Jersey 4 / RESTEasy 7) |
-| `javax.xml.bind` | `jakarta.xml.bind` | `jakarta.xml.bind:jakarta.xml.bind-api:4.0.x` + `org.glassfish.jaxb:jaxb-runtime:4.0.x` |
-| `javax.mail` | `jakarta.mail` | `jakarta.mail:jakarta.mail-api:2.1.x` + `org.eclipse.angus:angus-mail` (`spring-boot-starter-mail`) |
-| `javax.jms` | `jakarta.jms` | `jakarta.jms:jakarta.jms-api:3.1.0` |
-| `javax.websocket` | `jakarta.websocket` | `jakarta.websocket:jakarta.websocket-api:2.2.0` (+ `-client-api`) |
-| `javax.el` | `jakarta.el` | `jakarta.el:jakarta.el-api:6.0` |
-| `javax.faces` | `jakarta.faces` | `jakarta.faces:jakarta.faces-api:4.1` |
+| `javax.servlet[.http]` | `jakarta.servlet[.http]` | `jakarta.servlet:jakarta.servlet-api` (`provided`; embedded Tomcat 11 ships it) |
+| `javax.servlet.jsp[.tagext]` | `jakarta.servlet.jsp[.tagext]` | `org.apache.tomcat.embed:tomcat-embed-jasper` (`provided`; `jakarta.servlet.jsp-api` is not Boot-managed); JSTL `jakarta.servlet.jsp.jstl:jakarta.servlet.jsp.jstl-api` + `org.glassfish.web:jakarta.servlet.jsp.jstl` |
+| `javax.persistence` | `jakarta.persistence` | `jakarta.persistence:jakarta.persistence-api` |
+| `javax.validation` | `jakarta.validation` | `jakarta.validation:jakarta.validation-api` + Hibernate Validator 9 (`spring-boot-starter-validation`) |
+| `javax.annotation` (PostConstruct, PreDestroy, Resource, Priority, security.RolesAllowed) | `jakarta.annotation` | `jakarta.annotation:jakarta.annotation-api` |
+| `javax.inject` | `jakarta.inject` | `jakarta.inject:jakarta.inject-api` |
+| `javax.transaction` (Transactional, UserTransaction) | `jakarta.transaction` | `jakarta.transaction:jakarta.transaction-api` (`javax.transaction.xa` stays javax — it is JDK) |
+| `javax.ws.rs` | `jakarta.ws.rs` | `jakarta.ws.rs:jakarta.ws.rs-api` (Jersey / RESTEasy jakarta lines) |
+| `javax.xml.bind` | `jakarta.xml.bind` | `jakarta.xml.bind:jakarta.xml.bind-api` + `org.glassfish.jaxb:jaxb-runtime` |
+| `javax.mail` | `jakarta.mail` | `jakarta.mail:jakarta.mail-api` + `org.eclipse.angus:angus-mail` (`spring-boot-starter-mail`) |
+| `javax.jms` | `jakarta.jms` | `jakarta.jms:jakarta.jms-api` |
+| `javax.websocket` | `jakarta.websocket` | `jakarta.websocket:jakarta.websocket-api` (+ `-client-api`) |
+| `javax.el` | `jakarta.el` | `org.apache.tomcat.embed:tomcat-embed-el` (`jakarta.el:jakarta.el-api` is not Boot-managed) |
+| `javax.faces` | `jakarta.faces` | `jakarta.faces:jakarta.faces-api` (not Boot-managed) |
 | `javax.ejb`, `javax.enterprise` (CDI), `javax.json`, `javax.batch`, `javax.security.enterprise` | `jakarta.*` same suffix | matching `jakarta.*-api` |
+Spring 7 ignores `javax.annotation` / `javax.inject` annotations: rename them, never add `javax.annotation-api` back.
 
 JSP / tag files are not compiled by the build (Tomcat compiles them at runtime) and OpenRewrite skips them: the
 same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %>`, `<%! %>`) and
@@ -58,7 +62,7 @@ same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %
 - `com.sun.mail:javax.mail` → `org.eclipse.angus:angus-mail`
 - `org.ehcache:ehcache` 3 → add `<classifier>jakarta</classifier>`; Ehcache 2 (`net.sf.ehcache`) unsupported.
 - QueryDSL: `com.querydsl:querydsl-jpa` and `com.querydsl:querydsl-apt` need `<classifier>jakarta</classifier>`
-  (5.1.0); apt processor in `<annotationProcessorPaths>` also with classifier `jakarta`, plus
+  (Boot-managed through `querydsl-bom`); apt processor in `<annotationProcessorPaths>` also with classifier `jakarta`, plus
   `jakarta.persistence:jakarta.persistence-api`. Generated `Q*` classes import `jakarta.annotation.Generated`.
   Maintained fork: `io.github.openfeign.querydsl:querydsl-jpa` (6.x/7.x, jakarta by default).
 
@@ -71,7 +75,15 @@ same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %
   no longer resolves → see `hibernate-7.md` (jboss-logging `Logger.getLogger`, plain reflection).
 - `hibernate.dialect` is auto-detected; remove `MySQL5Dialect`/`MySQL57Dialect`/`MySQL8Dialect`/`PostgreSQL95Dialect`/
   `Oracle12cDialect` (removed classes) → delete the property or use `MySQLDialect`/`PostgreSQLDialect`/`OracleDialect`.
-- `@GenericGenerator(strategy="uuid2")` → `@UuidGenerator`; `@org.hibernate.annotations.Where` → `@SQLRestriction`.
+- `@GenericGenerator(strategy="uuid2")` → `@UuidGenerator` (`@GenericGenerator` itself still compiles, deprecated).
+- Annotations removed in Hibernate 7.4 (`org.hibernate.annotations.*`): `@Where` → `@SQLRestriction`,
+  `@WhereJoinTable` → `@SQLJoinTableRestriction`, `@Loader` → `@SQLSelect`, `@OrderBy` → `@SQLOrder` (or JPA
+  `@jakarta.persistence.OrderBy`), `@IndexColumn` → `@jakarta.persistence.OrderColumn`, `@ForeignKey` →
+  `@JoinColumn(foreignKey = @jakarta.persistence.ForeignKey(name = "…"))`, `@Table` → JPA `@Table` (+ `@Comment` /
+  `@Check`), `@Sort` → `@SortNatural` / `@SortComparator`, `@LazyCollection` / `@LazyToOne` → the JPA `fetch` attribute;
+  `@Proxy`, `@Polymorphism`, `@SelectBeforeUpdate`, `@Persister`, `@Tuplizer` → delete + `// MIGRATION-TODO`.
+- Hibernate Validator 9.1 removed `org.hibernate.validator.constraints.NotBlank` / `NotEmpty` / `Email` →
+  `jakarta.validation.constraints.*`; `SafeHtml` has no replacement (delete + MIGRATION-TODO).
 - `@TypeDef` / `@TypeDefs` and the query-API removals: see "Hibernate 6+ removed query API" below.
 
 ## Hibernate 6+ removed query API (Hibernate 6.0 migration guide)
@@ -79,10 +91,11 @@ same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %
   `org.hibernate.criterion.*` → JPA `CriteriaBuilder` / `CriteriaQuery` (`session.getCriteriaBuilder()`). There is no
   mechanical mapping: port the query, keep the public method signatures, add `// MIGRATION-TODO` when the semantics
   are unclear (e.g. `Restrictions.sqlRestriction`, `DetachedCriteria` subqueries).
-- `org.hibernate.Query` / `org.hibernate.SQLQuery` (deprecated since 5.2) are gone → `org.hibernate.query.Query<R>` /
-  `org.hibernate.query.NativeQuery<R>`; `session.createQuery(hql)` → `session.createQuery(hql, Result.class)`;
-  `session.createSQLQuery(sql)` → `session.createNativeQuery(sql, Result.class)` (or `createNativeQuery(sql)` for
-  `Object[]` rows).
+- `org.hibernate.Query` / `org.hibernate.SQLQuery` (deprecated since 5.2) are gone → `org.hibernate.query.Query` /
+  `org.hibernate.query.NativeQuery`. Raw `session.createQuery(hql)` still exists in 7.4 (deprecated, returns
+  `org.hibernate.query.Query`): when only the import fails, change the import and keep the call; add the result class
+  (`createQuery(hql, Result.class)`) only where javac asks. `session.createSQLQuery(sql)` → `session.createNativeQuery(sql)`
+  (`Object[]` rows) or `createNativeQuery(sql, Result.class)`.
 - Typed setters `setString` / `setInteger` / `setLong` / `setDate` / `setTimestamp` / `setBoolean` … removed →
   `setParameter(name, value)` (`setParameter(name, value, StandardBasicTypes.X)` when the type must be explicit).
 - `Query#iterate()` removed → `stream()` / `getResultStream()` (close the stream) or `list()`.
@@ -104,3 +117,10 @@ same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %
 - `getOne(id)` / `getById(id)` deprecated → `getReferenceById(id)`; `deleteInBatch(..)` → `deleteAllInBatch(..)`
   (both still present in Spring Data JPA 4.1, so the build compiles — change them only when you touch the file).
 - `PageRequest.of(..)`, `Sort.by(..)`, `Pageable`, derived query methods: unchanged.
+
+## Spring Data 1.x → 2+ repositories (Spring 4 projects; no recipe covers 1.x → 2.0)
+- `findOne(id)` → `findById(id).orElse(null)`; `exists(id)` → `existsById(id)`; `delete(id)` → `deleteById(id)`;
+  `save(Iterable)` → `saveAll(..)`; `findAll(Iterable<ID>)` → `findAllById(..)`; `delete(Iterable)` → `deleteAll(..)`.
+- `new PageRequest(page, size[, sort])` (protected now) → `PageRequest.of(..)`; `new Sort(..)` → `Sort.by(..)`;
+  `QueryDslPredicateExecutor` → `org.springframework.data.querydsl.QuerydslPredicateExecutor`.
+- Change the repository's callers only where javac reports them; keep the service signatures.

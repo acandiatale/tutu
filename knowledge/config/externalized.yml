@@ -50,5 +50,5 @@ guide:
   - "값 공급 순서(높은 것이 이김): 커맨드라인 -D / 환경변수 / 실행 디렉터리의 application.properties·config/ / --spring.config.additional-location / 패키지 안 application.properties(placeholder)."
   - "환경변수 표기: 점은 밑줄, 대문자 — db.url → DB_URL, spring.datasource.url → SPRING_DATASOURCE_URL."
   - "프로파일: 외장 Tomcat의 -Dspring.profiles.active 는 SPRING_PROFILES_ACTIVE 환경변수로."
-  - "JNDI DataSource 는 사라집니다: spring.datasource.url/username/password/driver-class-name 을 설정하세요."
+  - "JNDI DataSource 는 사라집니다(내장 Tomcat 에는 JNDI 가 없음): legacy-config/ 사본의 <jee:jndi-lookup> / JndiObjectFactoryBean 빈(MIGRATION-TODO 주석)을 지우고, boot 모듈에 spring-boot-starter-jdbc 를 두고(spring.datasource.* 는 spring-boot-jdbc 가 있어야 바인딩됨) spring.datasource.url/username/password/driver-class-name 을 설정하세요."
   - "placeholder 값 __SET_ME__ 가 남아 있으면 기동 시 그 값으로 동작합니다 — 배포 전 grep __SET_ME__ 로 확인하세요."

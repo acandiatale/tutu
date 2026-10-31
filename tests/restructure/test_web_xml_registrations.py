@@ -121,12 +121,14 @@ def test_plan_servlets_filters_listeners() -> None:
     fu = "\n".join(plan.followups)
     assert "jsp-file servlet help → /WEB-INF/jsp/help.jsp (/help): map it in a controller" in fu
     assert "DispatcherServlet dispatcher was mapped to *.htm" in fu and "spring.mvc.servlet.path" in fu
-    assert "CharacterEncodingFilter) not registered in WebXmlRegistrations" in fu
-    assert "server.servlet.encoding.charset" in fu                                   # property hint of the table
+    assert "request mappings that end in .htm keep working" in fu                    # v2.1x D12: *.ext is not a prefix
+    # v2.1x D4: a CharacterEncodingFilter without init-params changes nothing → a note, no (deprecated) property hint
+    assert "CharacterEncodingFilter) not registered in WebXmlRegistrations" in "\n".join(plan.notes)
+    assert "server.servlet.encoding" not in fu and plan.properties == []
     assert "welcome-file-list (index.jsp)" in fu and "mime-mapping (hwp → application/x-hwp)" in fu
     assert "1 security-constraint(s) and login-config auth-method FORM" in fu
     assert "error-page 599" in fu                                                    # unknown status → follow-up
-    assert plan.session_timeout == 30 and "only the embedded Tomcat" not in fu       # war=False
+    assert plan.session_timeout == 30 and "applies when the WAR runs" not in fu      # war=False
 
 
 def test_plan_error_pages_and_war_session_note() -> None:
@@ -136,7 +138,7 @@ def test_plan_error_pages_and_war_session_note() -> None:
         'new ErrorPage(jakarta.servlet.ServletException.class, "/e.jsp")',
         'new ErrorPage("/default.jsp")']
     assert plan.jsp_file_servlets == ["help → /views/help.jsp"]
-    assert any("only the embedded Tomcat applies" in f for f in plan.followups)
+    assert any("applies when the WAR runs with java -jar" in f for f in plan.followups)
 
 
 def test_annotated_classes_registered_without_component_scan() -> None:
@@ -243,7 +245,7 @@ def test_restructure_generates_registrations(tmp_path: Path, ccfg: Config) -> No
     assert "web.xml (spec unknown) → WebXmlRegistrations: 1 servlet(s), 0 filter(s), 0 listener(s), " \
            "1 error page(s)" in fu
     assert not any("register servlets/filters as beans" in f or "via @ServletComponentScan" in f for f in fu)
-    assert any("only the embedded Tomcat applies" in f for f in fu)                      # WAR boot module
+    assert any("applies when the WAR runs with java -jar" in f for f in fu)              # WAR boot module
     events = [json.loads(x) for x in ws.journal_path.read_text().splitlines()]
     ev = next(e for e in events if e["event"] == "web_xml_registrations")
     assert (ev["servlets"], ev["filters"], ev["listeners"], ev["error_pages"]) == (1, 0, 0, 1)
@@ -258,7 +260,10 @@ def test_followup_policy_generates_nothing(tmp_path: Path, ccfg: Config) -> None
     assert not list(ws.root.rglob("WebXmlRegistrations.java")) and res.flags == []
     props = ws.root / "legacy-boot/src/main/resources/application.properties"
     assert not props.exists() or "session.timeout" not in props.read_text()
-    assert any("servlets/filters are registered via @ServletComponentScan" in f for f in res.manual_followups)
+    # v2.1x (E-M8): the scan never reads web.xml — the follow-up names what the scan does register
+    assert any("register its servlets / filters / listeners as beans (layout.web_xml_registrations: followup)" in f
+               for f in res.manual_followups)
+    assert not any("registered via @ServletComponentScan" in f for f in res.manual_followups)
 
 
 def test_only_skipped_declarations_generate_nothing(tmp_path: Path, ccfg: Config) -> None:
@@ -272,7 +277,10 @@ def test_only_skipped_declarations_generate_nothing(tmp_path: Path, ccfg: Config
     res = Restructurer(commit=False).apply(ws, _profile(ws), ccfg, mode="layout")
     assert res.ok, res.error
     assert not list(ws.root.rglob("WebXmlRegistrations.java")) and res.flags == []
-    assert any("DispatcherServlet) not registered" in f for f in res.manual_followups)      # has a property hint
+    # v2.1x: mapped to / like Boot's own — the property hint is noise, a note only
+    assert not any("DispatcherServlet) not registered" in f for f in res.manual_followups)
+    assert any("DispatcherServlet) not registered" in n for n in res.notes)
+    assert any("its declarations are provided by Spring Boot" in f for f in res.manual_followups)
     assert not any("ContextLoaderListener) not registered" in f for f in res.manual_followups)
     assert any("ContextLoaderListener) not registered" in n for n in res.notes)           # Boot provides it: a note
     assert not any("was mapped to" in f for f in res.manual_followups)                 # mapped to / already

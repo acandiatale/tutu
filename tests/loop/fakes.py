@@ -110,7 +110,8 @@ class FakeFixer:
                                   model=fp.model, llm_usage=fp.llm_usage, prompt_hash=fp.prompt_hash,
                                   requested_files=list(fp.requested_files),
                                   error="" if fp.changes else "no <script> block")
-        return ScriptProposal(code="", analysis="nothing", model="fake", error="no <script> block",
+        # the fixer ran out of answers: an unusable answer (no analysis → not a v2.1y "declined" one)
+        return ScriptProposal(code="", analysis="", model="fake", error="no <script> block",
                               llm_usage=LLMUsage(model="fake", calls=1))
 
 
@@ -189,6 +190,9 @@ class _FakeHelper:
         return self._ws.read(path)
 
     def write(self, path: str, text: str) -> bool:
+        # like sbmig.script.api: the same text again is no change (v2.1y's idempotency check relies on it)
+        if self._ws.exists(path) and self._ws.read(path) == text:
+            return False
         self._ws.write(path, text)
         self.changed.append(path)
         return True
@@ -262,6 +266,7 @@ class FakeCaseStore:
         self.credits: list[tuple[str, int, str, str]] = []      # (case, version, result, project)
         self.credit_runs: list[dict] = []                        # v2.1e: every credit's keywords (reason, round, n, …)
         self.added: list[tuple[str, CaseScript, dict]] = []      # (case, script, kwargs)
+        self.marked: list[tuple[str, int, str]] = []             # v2.1y: mark_non_idempotent calls
 
     def find(self, case_id):
         return self.data.get(case_id)
@@ -274,7 +279,7 @@ class FakeCaseStore:
         return self.codes.get((case_id, version))
 
     def best(self, case_id):
-        ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired"),
+        ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired" and not s.non_idempotent),
                         key=lambda s: (s.status == "proven", s.version), reverse=True)
         for s in ranked:
             code = self.code(case_id, s.version)
@@ -344,6 +349,17 @@ class FakeCaseStore:
 
     def case_ids(self):
         return sorted(self.data)
+
+    def mark_non_idempotent(self, case_id, version, note=""):
+        """v2.1y: like CaseStore.mark_non_idempotent (records the call in `marked`)."""
+        sc = next((x for x in self.scripts(case_id) if x.version == version), None)
+        if sc is None:
+            return None
+        sc.non_idempotent = True
+        if note:
+            sc.last_failure = note
+        self.marked.append((case_id, version, note))
+        return sc
 
 
 class FakeKB:

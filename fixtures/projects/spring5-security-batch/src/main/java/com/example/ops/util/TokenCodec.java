@@ -8,7 +8,7 @@ import sun.misc.BASE64Encoder;
 
 /**
  * Base64 for the download tokens (written before java.util.Base64 was allowed here). sun.misc.BASE64* no longer
- * compile on JDK 21: the handler jdk-base64-shim points them at generated sbmig.compat classes.
+ * compile on JDK 21: the fix loop ports them to java.util.Base64 (MIME line breaks differ).
  */
 public final class TokenCodec {
 

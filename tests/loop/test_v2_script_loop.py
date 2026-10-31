@@ -303,7 +303,7 @@ def test_identical_augment_is_not_run_again(cfg, ws):
     fixer = FakeFixer(scripts=[same, same.model_copy()])
     runner = FakeScriptRunner()
     pr = make_loop(cfg, ws, broken_build(FOO), fixer, runner=runner).run(Phase.VERIFY, "package", 4)
-    assert len(runner.runs) == 1
+    assert len(runner.runs) == 2                          # v1 + its v2.1y idempotency check; the identical v2 never
     assert "identical to its base v1" in pr.attempts[1].apply_errors[0]
 
 

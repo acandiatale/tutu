@@ -3,18 +3,52 @@
 # ServletRegistrationBean / FilterRegistrationBean / ServletListenerRegistrationBean beans in the generated class.
 # Company additions: add rows (class = FQCN as written in web.xml, reason = one line for the report, property = the
 # Boot property that replaces it, when one exists).
+#
+# v2.1x (2026-10-31, prompt review §4 D4 / D11; Boot 4.1 names verified in the 4.1.0 configuration metadata):
+#   properties: init-param name → Boot key; the as-is value is written to the boot application.properties when the
+#               declaration is skipped (layout.legacy_context.filter_properties)
+#   set:        Boot key → value written whenever the declaration is skipped (same switch)
+#   requires:   the skip applies only when every condition holds — filter_name: the web.xml filter-name or its
+#               `targetBeanName` init-param is one of these; libraries: the analyzer found one of these libraries;
+#               artifacts: one of these g:a is declared by the as-is poms
+#   otherwise:  what happens when `requires` does not hold — register (a FilterRegistrationBean of the class itself),
+#               proxy (a DelegatingFilterProxyRegistrationBean for the target bean), followup (not registered; the
+#               `followup` text is a Handover sentence, `{name}` = filter-name, `{cls}` = class); default register
+#   register_requires: `otherwise: register` only when these hold, else the followup
 version: 1
 skip:
-  - { class: org.springframework.web.servlet.DispatcherServlet,           reason: "Spring Boot registers its own DispatcherServlet on /", property: "spring.mvc.servlet.path (when the web.xml mapping was not /)" }
+  - { class: org.springframework.web.servlet.DispatcherServlet,           reason: "Spring Boot registers its own DispatcherServlet on /", property: "spring.mvc.servlet.path (a path prefix such as /app; a *.do suffix mapping has no property)" }
   - { class: org.springframework.web.context.ContextLoaderListener,        reason: "Spring Boot creates the application context" }
   - { class: org.springframework.web.context.request.RequestContextListener, reason: "Spring Boot registers it when needed" }
   - { class: org.springframework.web.util.IntrospectorCleanupListener,     reason: "not needed on Spring 6+" }
   - { class: org.springframework.web.util.Log4jConfigListener,             reason: "Log4j 1 is gone (advisory log4j1); Boot configures logging" }
-  - { class: org.springframework.web.filter.CharacterEncodingFilter,       reason: "Boot's HttpEncoding auto-configuration", property: "server.servlet.encoding.charset / force" }
-  - { class: org.springframework.web.filter.DelegatingFilterProxy,         reason: "springSecurityFilterChain is registered by Spring Security auto-configuration" }
-  - { class: org.springframework.web.filter.HiddenHttpMethodFilter,        reason: "Boot registers it", property: "spring.mvc.hiddenmethod.filter.enabled=true" }
-  - { class: org.springframework.web.filter.FormContentFilter,             reason: "Boot registers it", property: "spring.mvc.formcontent.filter.enabled" }
-  - { class: org.springframework.orm.jpa.support.OpenEntityManagerInViewFilter, reason: "Boot's OpenEntityManagerInViewInterceptor", property: "spring.jpa.open-in-view" }
+  - class: org.springframework.web.filter.CharacterEncodingFilter
+    reason: "Spring Boot's HttpEncodingAutoConfiguration registers its own CharacterEncodingFilter (spring.servlet.encoding.*)"
+    property: "spring.servlet.encoding.charset / spring.servlet.encoding.force"
+    properties:
+      encoding: spring.servlet.encoding.charset
+      forceEncoding: spring.servlet.encoding.force
+      forceRequestEncoding: spring.servlet.encoding.force-request
+      forceResponseEncoding: spring.servlet.encoding.force-response
+  - class: org.springframework.web.filter.DelegatingFilterProxy
+    reason: "springSecurityFilterChain is registered by Spring Security (the security filter chain bean)"
+    requires: { filter_name: [springSecurityFilterChain], libraries: [spring-security] }
+    otherwise: proxy
+  - class: org.springframework.web.filter.HiddenHttpMethodFilter
+    reason: "Spring Boot registers it with spring.mvc.hiddenmethod.filter.enabled=true"
+    property: "spring.mvc.hiddenmethod.filter.enabled=true"
+    set: { spring.mvc.hiddenmethod.filter.enabled: "true" }
+  - class: org.springframework.web.filter.FormContentFilter
+    reason: "Spring Boot registers it (spring.mvc.formcontent.filter.enabled)"
+    property: "spring.mvc.formcontent.filter.enabled=true"
+    set: { spring.mvc.formcontent.filter.enabled: "true" }
+  - class: org.springframework.orm.jpa.support.OpenEntityManagerInViewFilter
+    reason: "Spring Boot's OpenEntityManagerInViewInterceptor (spring-boot-jpa, spring.jpa.open-in-view) keeps the EntityManager open"
+    property: "spring.jpa.open-in-view"
+    requires: { artifacts: [org.springframework.boot:spring-boot-starter-data-jpa, org.springframework.boot:spring-boot-jpa] }
+    otherwise: register
+    register_requires: { libraries: [spring-data-jpa, jpa, hibernate] }
+    followup: "web.xml filter {name} ({cls}) not registered: the project uses no JPA, and Spring Boot's open-in-view support exists only with spring-boot-starter-data-jpa (module spring-boot-jpa) — add it or drop the filter"
   - { class: org.springframework.orm.hibernate5.support.OpenSessionInViewFilter, reason: "HibernateTemplate era (advisory hibernate-template): use spring.jpa.open-in-view" }
   - { class: org.apache.jasper.servlet.JspServlet,                         reason: "embedded Tomcat / the WAR container registers the JSP servlet" }
   - { class: org.apache.catalina.servlets.DefaultServlet,                  reason: "static resources are served by Spring Boot" }

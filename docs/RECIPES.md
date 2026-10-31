@@ -9,7 +9,7 @@ every recipe id the other sources use must have an entry there, and `sbmig recip
 | # | Source | Authoritative for | Read by |
 |---|--------|-------------------|---------|
 | 1 | `knowledge/recipes/catalog.yml` | **What a recipe id is**: origin, artifact or file, default phase, description, docs link, what a composite `covers`, the profile `gate`, whether the LLM advisor may add it (`advisor`), and when it was verified | `sbmig/plan/catalog.py` (`RecipeCatalog`), the planner's `ADVISOR_CATALOG` / `ADVISOR_COVERAGE` / `ADVISOR_GATES`, `sbmig recipes …` |
-| 2 | `config/default.yml` → `openrewrite.recipes.{jdk21, jakarta, spring_boot_4, spring_framework_7, spring_security_7, junit5, extra}` | **What the rule-based plan runs** for each case, and in what order (company configs may override these; `RecipeSetConfig` defaults mirror the yml) | `sbmig/plan/planner.py::spring_recipes` |
+| 2 | `config/default.yml` → `openrewrite.recipes.{jdk21, jakarta, servlet_jakarta_10, spring_boot_4, spring_framework_7, spring_security_7, spring_batch_6, hibernate_7, junit5, extra}` | **What the rule-based plan runs** for each case, and in what order (company configs may override these; `RecipeSetConfig` defaults mirror the yml) | `sbmig/plan/planner.py::spring_recipes` |
 | 2b | `knowledge/recipes/library_recipes.yml` (round 10) | **Library-conditional plan recipes** for plans without the Boot umbrella: detected library → recipes appended to the case's `spring.rewrite`; checked as sets `library.<library>` | `sbmig/plan/library_recipes.py`, `planner._library_refs` |
 | 3 | `knowledge/recipes/base/*.yml` | **The body of project-owned composites** (`com.company.migrate.*`), always composed into the run's `rewrite.yml` | `sbmig/rewrite/compose.py`, `planner.recipe_ref` |
 | 4 | `sbmig/triage/recipe_rules.yml` | **Reactive recipes**: error pattern → builtin recipe, tried by the fix loop before the LLM | `sbmig/triage/rules.py` |
@@ -154,8 +154,8 @@ With `plan.advisor: llm`, `advise_plan` asks `llm.recipe_model` to review the ru
 * An id that is already planned, or that a planned composite already includes (its `covers` list), is not added.
   The model is told about these covered ids in advance.
 * A `gate` must hold on the `ProjectProfile`, otherwise the suggestion is dropped as "not warranted". Gates:
-  `has_junit4`, `has_javax_ee`, `has_javax_xml_bind`, `has_xml_bind_any`, `has_spring_security`, `is_spring`,
-  `is_boot`, `has_tests`, `always`.
+  `has_junit4`, `has_javax_ee`, `has_javax_xml_bind`, `has_xml_bind_any`, `has_spring_security`, `has_spring_batch`,
+  `has_hibernate` (v2.1w), `is_spring`, `is_boot`, `has_tests`, `always`.
 * Each added recipe is attached to `jdk21.rewrite` or `spring.rewrite` (or their `@service` variants). The artifact
   comes from the catalog.
 
@@ -222,6 +222,24 @@ runs the chain on the as-is classpath instead. What the recipes cannot see is le
 `add-known-dependency` (the `spring-security-access` split: `AccessDecisionManager`, `ConfigAttribute`,
 `FilterSecurityInterceptor`, `WebExpressionVoter`, vote / intercept / method packages; managed by
 spring-security-bom 7.1.0, the project's `${spring-security.version}` reused).
+
+**Conditional sets (v2.1w, 2026-10-31, decision 7 — "쓰는 경우만", the Security rule).** Before, a `spring_legacy` project
+got no Batch / Hibernate recipe and a `servlet_tomcat` project no Servlet 6 removals, so those API removals reached the
+LLM with no help (docs/v2/PROMPT-REVIEW-2026-10-31.md §3). The planner (`_case_buckets`) now adds:
+
+| set | recipe | planned for | gate (analyzer library / catalog gate) |
+|---|---|---|---|
+| `servlet_jakarta_10` | `org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10` | every `servlet_tomcat` project; `pure_java` with `javax.servlet` imports; `spring_legacy` only when `spring_framework_7` is empty (`UpgradeSpringFramework_7_0` already includes it) | — (in the `jakarta` bucket, right after `JavaxMigrationToJakarta`: it matches `jakarta.servlet` types) |
+| `spring_batch_6` | `org.openrewrite.java.spring.batch.SpringBatch5To6Migration` (chains 4 → 5) | `spring_legacy` | `spring-batch` / `has_spring_batch` |
+| `hibernate_7` | `org.openrewrite.hibernate.MigrateToHibernate71` (rewrite-hibernate 2.25.0, `provided_by` rewrite-spring) | `spring_legacy` | `hibernate` / `has_hibernate` — the analyzer's native-ORM rule (`hibernate-core` / `hibernate-entitymanager` / `org.hibernate.orm:*`, or `org.hibernate.Session` / `SessionFactory` / `query` / `type` / `cfg` / `annotations` imports); a JPA-only project has `jpa` only and gets nothing |
+
+Run order of the one transform run (`_BUCKETS`): Java 21 → jakarta (+ Servlet 6 removals) → Framework 7 → Security chain →
+Batch 6 → Hibernate 7.1 → (Boot 4, Boot projects only) → JUnit 5 → extra. Boot projects get none of the three (the umbrella's
+`covers`); MSA: per service with its own sub-case (top-aggregator: the union). The plan note names the reason
+(`+ Spring Batch 6 set SpringBatch5To6Migration (spring-batch detected)`); an empty set is noted, not planned. A company config
+that empties a set must drop the set name from the catalog entry's `sets:` (invariant 5, `sbmig recipes check`).
+The round-10 library table below (`library_recipes.yml`) was deleted with the v1 code (v2 step 4); these sets are its
+v2 successor for Batch and Hibernate (Thymeleaf has none).
 
 **Library recipes** (`knowledge/recipes/library_recipes.yml`, loader `sbmig/plan/library_recipes.py`). Boot projects get
 these through `UpgradeSpringBoot_4_0`; plans without the umbrella got none of them, so e.g. Spring Batch 4 code met

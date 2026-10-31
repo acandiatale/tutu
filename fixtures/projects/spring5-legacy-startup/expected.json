@@ -1,0 +1,302 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": "5.3.31",
+  "packaging": "war",
+  "is_multi_module": false,
+  "libraries": [
+    "javax-servlet",
+    "jsp",
+    "spring-webmvc",
+    "commons-fileupload",
+    "legacy-encoding"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "source_encoding": "cp949 (com.example.shop.notice only)",
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "web-xml-registered"
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "journal_events": [
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      },
+      {
+        "event": "legacy_context",
+        "mode": "layout",
+        "starter": "spring-boot-starter-webmvc",
+        "xml_imports": 3,
+        "xml_skipped": 2,
+        "scope_restored": 1,
+        "source_encodings_written": 1,
+        "webinf_locations_rewritten": 1,
+        "beans_removed": 1,
+        "duplicate_bean_ids": 1
+      },
+      {
+        "event": "legacy_xml_imports",
+        "by_entry": true,
+        "imports": [
+          "classpath:legacy-config/context-common.xml",
+          "classpath:legacy-config/context-root.xml",
+          "classpath:legacy-config/action-servlet.xml"
+        ],
+        "skipped": [
+          "src/test/resources/spring/test-context.xml (test)",
+          "src/main/resources/spring/include/context-datasource.xml (reached by <import> from context-root.xml)"
+        ],
+        "duplicate_bean_ids": [
+          "messageSource: legacy-config/context-root.xml, legacy-config/action-servlet.xml"
+        ]
+      },
+      {
+        "event": "web_xml_registrations",
+        "servlets": 0,
+        "filters": 1,
+        "listeners": 0,
+        "error_pages": 0
+      }
+    ],
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-spring5-legacy-startup"
+    },
+    "followups_contains": [
+      "regex:^Spring Boot refuses duplicate bean names and circular references .*spring\\.main\\.allow-bean-definition-overriding=true and spring\\.main\\.allow-circular-references=true .*Duplicate bean ids across the imported XML: messageSource: .*",
+      "regex:^JNDI DataSource dataSource \\(legacy-config/include/context-datasource\\.xml\\) has no JNDI in embedded Tomcat: remove the bean and set spring\\.datasource\\.\\* .*spring-boot-starter-jdbc present: no.*",
+      "regex:^legacy-config/context-root\\.xml: classpath:config-\\$\\{env\\}\\.properties chose its file by \\$\\{env\\}.*classpath\\*:config-\\*\\.properties.*",
+      "regex:^CommonsMultipartResolver bean\\(s\\) multipartResolver removed .*spring\\.servlet\\.multipart\\.max-request-size=10MB.*spring\\.servlet\\.multipart\\.file-size-threshold=1MB.*",
+      "regex:^<mvc:resources mapping=\"/resources/\\*\\*\" location=\"/resources/\"> .*classpath:/static/resources/.*",
+      "regex:^Spring Boot does not register Tomcat's default servlet; sbmig set server\\.servlet\\.register-default-servlet=true .*",
+      "regex:^web\\.xml DispatcherServlet action was mapped to \\*\\.do; .*request mappings that end in \\.do keep working.*spring\\.mvc\\.servlet\\.path takes a path prefix only.*",
+      "regex:^web\\.xml <jsp-config> \\(1 jsp-property-group\\(s\\): page-encoding EUC-KR\\) is not applied.*",
+      "regex:^web\\.xml context-param spring\\.profiles\\.active=dev is written to .*",
+      "regex:^log4j 1 configuration shop-back/src/main/resources/log4j\\.properties is not read.*",
+      "regex:^the as-is WAR shop\\.war was served under the context path /shop .*server\\.servlet\\.context-path=/shop.*",
+      "regex:^the root \\(ContextLoaderListener\\) and DispatcherServlet contexts are one Spring Boot context now.*"
+    ],
+    "properties": {
+      "absent": [
+        "app.title",
+        "app.admin-mail",
+        "notice.page-size"
+      ],
+      "written": [
+        "spring.datasource.url",
+        "spring.profiles.active"
+      ],
+      "placeholder_file_contains": [
+        "spring.datasource.url=__SET_ME__",
+        "spring.profiles.active=dev"
+      ]
+    },
+    "post_checks": [
+      {
+        "pom_packaging": {
+          "path": "shop-boot/pom.xml",
+          "packaging": "war"
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "shop-boot/pom.xml",
+          "artifacts": [
+            "org.springframework.boot:spring-boot-starter-webmvc"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "contains": "<project.build.sourceEncoding>MS949</project.build.sourceEncoding>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-back/pom.xml",
+          "contains": "<artifactId>jakarta.servlet-api</artifactId>\n            <scope>provided</scope>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/java/**/*Application.java",
+          "contains": "\"classpath:legacy-config/context-root.xml\","
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/java/**/*Application.java",
+          "contains": "\"classpath:legacy-config/action-servlet.xml\"",
+          "not_contains": "test-context.xml"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/java/**/*Application.java",
+          "contains": "extends SpringBootServletInitializer",
+          "not_contains": "context-datasource.xml"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-boot/src/main/resources/legacy-config/test-context.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/resources/legacy-config/include/context-datasource.xml"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "shop-boot/src/main/resources/legacy-config/context-root.xml",
+          "encoding": "euc-kr",
+          "contains": "<!-- 루트 컨텍스트: 서비스 빈과 설정 파일 (EUC-KR 로 저장된 파일) -->"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "shop-boot/src/main/resources/legacy-config/context-root.xml",
+          "encoding": "euc-kr",
+          "contains": "location=\"classpath:asis-webinf/config/app.properties, classpath*:config-*.properties\""
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "shop-boot/src/main/resources/legacy-config/context-root.xml",
+          "encoding": "euc-kr",
+          "contains": "<property name=\"replacement\" value=\"안전\"/>"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/src/main/resources/asis-webinf/config/app.properties"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/legacy-config/include/context-datasource.xml",
+          "contains": "<!-- MIGRATION-TODO (sbmig): no JNDI in embedded Tomcat — remove this bean and set spring.datasource.* (see application.properties) -->\n    <jee:jndi-lookup id=\"dataSource\""
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/legacy-config/action-servlet.xml",
+          "contains": "<property name=\"prefix\" value=\"/WEB-INF/jsp/views/\"/>",
+          "not_contains": "CommonsMultipartResolver\">"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/legacy-config/action-servlet.xml",
+          "contains": "location=\"/resources/, classpath:/static/resources/\""
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "spring.main.allow-bean-definition-overriding=true\n",
+          "not_contains": "env=__SET_ME__"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "spring.main.allow-circular-references=true\n"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "spring.servlet.encoding.charset=EUC-KR\n"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "spring.servlet.encoding.force=true\n",
+          "not_contains": "server.servlet.encoding"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "server.servlet.register-default-servlet=true\n"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "spring.servlet.multipart.max-file-size=10MB\n"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/resources/application.properties",
+          "contains": "spring.mvc.view.prefix=/WEB-INF/jsp/views/\n"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "new DelegatingFilterProxyRegistrationBean(\"xssEscapeFilter\");"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "shop-boot/src/main/java/**/WebXmlRegistrations.java",
+          "contains": "bean.addUrlPatterns(\"*.do\");"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "shop-back/src/main/java/com/example/shop/notice/NoticeMessages.java",
+          "encoding": "cp949",
+          "contains": "[공지사항]"
+        }
+      },
+      {
+        "file_decodes_as": {
+          "path": "shop-back/src/main/resources/spring/context-root.xml",
+          "encoding": "euc-kr",
+          "contains": "classpath:config-${env}.properties"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-front/src/main/resources/static/resources/css/notice.css"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-front/src/main/resources/META-INF/resources/WEB-INF/jsp/views/notice/list.jsp"
+        }
+      }
+    ]
+  }
+}

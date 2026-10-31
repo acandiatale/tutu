@@ -76,6 +76,10 @@ GATES: dict[str, Callable[[ProjectProfile], bool]] = {
     "has_javax_xml_bind": _has_javax_xml_bind,
     "has_xml_bind_any": _has_xml_bind_any,
     "has_spring_security": lambda p: p.has_library("spring-security"),
+    # v2.1w: the analyzer's library names — `hibernate` is the native ORM rule (hibernate-core / org.hibernate.Session …
+    # imports); a JPA-only project has `jpa` only
+    "has_spring_batch": lambda p: p.has_library("spring-batch"),
+    "has_hibernate": lambda p: p.has_library("hibernate"),
     "is_spring": _is_spring,
     "is_boot": lambda p: p.spring_boot_version is not None,
     "has_tests": lambda p: p.source.test_files > 0,
@@ -104,7 +108,9 @@ class CatalogEntry(BaseModel):
     notes: Optional[str] = None
 
 
-_RECIPE_SET_NAMES = ("jdk21", "jakarta", "spring_boot_4", "spring_framework_7", "spring_security_7", "junit5")
+# 설정 레시피 세트 이름(``openrewrite.recipes.*``, extra 제외) — catalog.yml ``sets:`` 와 대조된다(불변조건 5). v2.1w 세 개 추가.
+_RECIPE_SET_NAMES = ("jdk21", "jakarta", "servlet_jakarta_10", "spring_boot_4", "spring_framework_7", "spring_security_7",
+                     "spring_batch_6", "hibernate_7", "junit5")
 
 
 def config_recipe_sets(cfg: Config) -> dict[str, list[str]]:

@@ -390,6 +390,17 @@ class CaseScripts(_Guarded):
         return True
 
 
+    def mark_non_idempotent(self, case_id: str, version: int, note: str = "") -> bool:
+        """v2.1y: 저장된 버전을 비멱등으로 표시한다(두 번째 실행이 트리를 또 바꿈 → 재사용 대상에서 빠짐). KB 가
+        없거나 저장소가 이 기능을 모르면 False.
+
+        v2.1y: mark a stored version `non_idempotent` (`CaseStore.mark_non_idempotent`: never selected for reuse
+        again); False without a KB or when the store has no such call."""
+        if not self.active or not callable(getattr(self._target, "mark_non_idempotent", None)):
+            return False
+        return self._call("mark_non_idempotent", case_id, version, optional={"note": note}) is not None
+
+
 def script_path(case_id: str, cs: Any) -> str:
     """저장된 스크립트의 KB 안 경로(로그 줄, 항목에 쓰임).
 

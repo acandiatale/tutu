@@ -24,13 +24,13 @@ smallest change; do NOT start a library migration the advisory says the team own
   bumps `spring-cloud-dependencies` / `spring-cloud.version` and org.springframework.cloud:* to 5.0.x).
 - Trains older than 2020.0 (Hoxton, Greenwich …) still managed Netflix modules; 2020.0+ do not. A Netflix
   starter without an explicit version then fails with "dependencies.dependency.version is missing".
-  Minimal fix: keep the as-is version explicitly on that dependency (carried over → handover).
+  Minimal fix: `version: null` on that dependency (sbmig fills the as-is version; the Handover lists it).
 
 ## Hystrix → Resilience4j
 - `hystrix` is a guide advisory: no recipe runs for it; its errors reach the fix loop with this note and the
   advisory's "Library migration guidance", and the Handover lists every file the fix scripts rewrote for it.
 - Target: `spring-cloud-starter-netflix-hystrix` / `-starter-hystrix` → `spring-cloud-starter-circuitbreaker-resilience4j`
-  (BOM-managed, no explicit version; 5.0.3 when no Spring Cloud BOM), `hystrix-javanica` / `hystrix-core` /
+  (`version: null`: the Spring Cloud BOM manages it, else sbmig resolves it), `hystrix-javanica` / `hystrix-core` /
   the dashboard starter removed, `@HystrixCommand` → `@CircuitBreaker` (io.github.resilience4j.circuitbreaker.annotation),
   `commandKey` → `name`, otherwise `name = "default"`, `fallbackMethod` kept, Hystrix-only attributes and nested
   `@HystrixProperty` removed, `@EnableHystrix` / `@EnableCircuitBreaker` / `@EnableHystrixDashboard` deleted.
@@ -64,7 +64,7 @@ Rewrite, do not re-add: the Hystrix starter and `hystrix-core` were removed on p
 
 ## Ribbon / Zuul
 - `org.springframework.cloud.netflix.ribbon.*` / `.zuul.*` are gone from every current train. If code does not
-  compile, keep the as-is starter version pinned; the team moves to Spring Cloud LoadBalancer
+  compile, keep the as-is starter (`version: null` → sbmig fills the as-is version); the team moves to Spring Cloud LoadBalancer
   (`@LoadBalanced` stays valid) / Spring Cloud Gateway server-webmvc.
 
 ## Feign

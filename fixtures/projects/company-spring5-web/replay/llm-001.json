@@ -1,5 +1,5 @@
 {
-  "note": "structure review of company-spring5-web (one call): verdict issues",
+  "note": "structure review of company-spring5-web (one call, v2.1y: regenerated so that it names only what the review material shows): verdict ok",
   "replay_role": "structure_review",
-  "response": "<review>\n{\n  \"verdict\": \"issues\",\n  \"issues\": [\n    {\n      \"severity\": \"warning\",\n      \"file\": \"shop-back/pom.xml\",\n      \"problem\": \"property spring.version=5.3.31 is left in shop-back although Spring is managed by the comp parent\",\n      \"fix_hint\": \"remove the unused property\"\n    }\n  ],\n  \"analysis\": \"Company layout: root aggregator (base parent) with shop-back, shop-front and shop-boot; shop-boot jar on the boot parent depends on shop-back and shop-front; back / front on the comp parent; the mandatory starters in the root only; no JSPs, so jar packaging is right.\"\n}\n</review>\n"
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Company layout: root aggregator with shop-back, shop-front and shop-boot; shop-boot jar on the boot parent depends on shop-back and shop-front; back / front on the comp parent; the mandatory starters in the root only; no JSPs, so jar packaging is right. The Spring artifacts are version-less (managed by the parent chain) and the restructure removed the version property the recipe-raised versions used.\"\n}\n</review>\n"
 }

@@ -100,6 +100,7 @@ captures the exit code + output, finds the run directory the CLI created under -
                                     "warnings_min": 0, "warnings_max": 2,
                                     "issues_contain": ["regex:critical module/comp-jar/pom.xml: .*MS949.*"],
                                                                    # over "<severity> <file>: <problem> -> <fix_hint>"
+                                    "issues_not_contain": ["5.0.0"],   # v2.1y: none may match (same syntax)
                                     "sbmig_check": false,          # an issue sbmig added itself ("(sbmig check) …")
                                     "script_status": "ok",         # script_result.status ("none" = no script ran)
                                     "committed": true, "reverted": false,
@@ -852,6 +853,10 @@ def evaluate_structure_review(want: dict, report: dict) -> list[str]:
     for pat in _list(want.get("issues_contain")):
         if not _contains_match(pat, texts):
             mm.append(f"structure_review issues lack {pat!r} (got: {_short(texts)})")
+    # v2.1y (E-M5): a stale / invented statement must not come back (same syntax as issues_contain)
+    for pat in _list(want.get("issues_not_contain")):
+        if _contains_match(pat, texts):
+            mm.append(f"structure_review issues contain {pat!r} (got: {_short(texts)})")
     if want.get("sbmig_check") is not None:
         has = any(str(i.get("problem") or "").startswith("(sbmig check)") for i in issues)
         if has != bool(want["sbmig_check"]):

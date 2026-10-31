@@ -123,10 +123,11 @@ def test_system_prompt_teaches_the_four_parts():
                  "해결 방법 / solution", "수정 / edits", "스크립트 / script", "## Edits (`<edits>`)",
                  "`old` = the EXACT current text", "object per change, applied in order", "relative to the project root",
                  "Change poms only through `op: pom`", '"add_dependency"', '"set_property"', '`"version": null`',
-                 "## Script or no script", "fixes the same case in OTHER", "idempotent",
+                 "fixes the same case in OTHER", "idempotent", "<blocked>", "Any other case: fix it.",
                  "this project's own code", "whole step fails and is rolled back"):
         assert part in system, part
     assert "{{" not in system and "{%" not in system
+    assert "## Script or no script" not in system           # v2.1u (B-L2): folded into rule 12
 
 
 def test_user_prompt_mode_texts(cfg, ws, put):

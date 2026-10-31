@@ -168,11 +168,11 @@ advisories:
     replacement: ch.qos.logback:logback-classic (Boot default; or log4j-core 2.x)
     replacement_version: managed by the Boot 4 BOM
     followup: >-
-      Remove log4j:log4j, log through SLF4J (org.slf4j.Logger), convert log4j.properties/xml to logback-spring.xml
-      (or add log4j-1.2-api only as a temporary bridge).
+      Owning team: remove log4j:log4j, log through SLF4J (org.slf4j.Logger), convert log4j.properties/xml to
+      logback-spring.xml (or add log4j-1.2-api only as a temporary bridge); the build keeps the as-is jar meanwhile.
     docs:
       - https://logging.apache.org/log4j/2.x/migrate-from-log4j1.html
-    notes: knowledge/notes/boot2-to-3.md
+    notes: knowledge/notes/era-libraries.md
 
   - id: commons-lang2
     library: commons-lang2
@@ -182,10 +182,11 @@ advisories:
     replacement: org.apache.commons:commons-lang3
     replacement_version: "3.x"
     followup: >-
-      Replace org.apache.commons.lang.* imports with org.apache.commons.lang3.* (StringEscapeUtils moved to
-      commons-text) and drop commons-lang:commons-lang.
+      Owning team: replace org.apache.commons.lang.* imports with org.apache.commons.lang3.* (StringEscapeUtils moved
+      to commons-text) and drop commons-lang:commons-lang; the build keeps commons-lang 2 meanwhile.
     docs:
       - https://commons.apache.org/proper/commons-lang/article3_0.html
+    notes: knowledge/notes/era-libraries.md
 
   # round 10: the Boot umbrella (and an opted-in Framework 7 set) runs UpgradeApacheHttpClient_5 (UpgradeSpringFramework_6_0;
   # rewrite-apache 2.30.0). Plain Java / servlet projects keep the 4.5.x client (it still compiles, carried-over
@@ -255,17 +256,18 @@ advisories:
     summary: >-
       The as-is code imports JDK-internal packages or Java EE modules that JDK 11 removed (JEP 320) or JDK 17
       encapsulated (JEP 403). javac 21 with --release 21 does not see them. UpgradeToJava21 (Java8toJava11) adds the
-      JAXB / JAX-WS / common-annotations dependencies and rewrites what it can resolve (UseJavaUtilBase64,
-      RenameUnderscoreIdentifier, Thread.stop/destroy); code whose types no longer resolve on JDK 21 is ported by the
-      LLM in the build-fix loop with this guidance — except sun.misc.BASE64Encoder / BASE64Decoder and
-      com.sun.org.apache.xerces.internal.impl.dv.util.Base64, which the handler jdk-base64-shim (round 10) points at
-      generated drop-in classes (sbmig.compat.*, same output as the JDK 8 originals, call sites unchanged).
+      JAXB / JAX-WS / common-annotations dependencies and rewrites what it can resolve (RenameUnderscoreIdentifier,
+      Thread.stop/destroy; UseJavaUtilBase64 too, but OpenRewrite parses on JDK 21 where sun.misc.BASE64Encoder /
+      BASE64Decoder no longer resolve, so those calls usually stay); code whose types no longer resolve on JDK 21 is
+      ported to java.util.Base64 & co. by the LLM in the build-fix loop with this guidance, marked MIGRATION-TODO where
+      the result may differ.
     replacement: java.util.Base64 / javax.imageio / java.security, jakarta.* API jars (JDK replacements)
     replacement_version: JDK 21 (jakarta.xml.bind-api, jakarta.annotation-api, jakarta.activation-api are Boot-managed)
     followup: >-
-      Review the ported JDK API calls: sun.misc.BASE64Encoder/Decoder (now the generated sbmig.compat shims, which
-      keep the 76-character line breaks) → java.util.Base64 when convenient (MIME line breaks:
-      Base64.getMimeEncoder()); sun.misc.Unsafe still compiles (jdk.unsupported) — keep it, but plan VarHandle / FFM;
+      Review the ported JDK API calls: sun.misc.BASE64Encoder → java.util.Base64.getEncoder() drops the 76-character
+      line breaks the JDK 8 encoder inserted — use Base64.getMimeEncoder() where stored or compared output must keep
+      them (BASE64Decoder → Base64.getMimeDecoder() tolerates line breaks); sun.misc.Unsafe still compiles
+      (jdk.unsupported) — keep it, but plan VarHandle / FFM;
       JAXB needs jakarta.xml.bind:jakarta.xml.bind-api plus runtime org.glassfish.jaxb:jaxb-runtime (Boot 4 manages
       both); javax.annotation.* → jakarta.annotation:jakarta.annotation-api; javax.activation →
       jakarta.activation-api; `_` is no longer an identifier (renamed); Thread.stop/suspend/resume throw
@@ -289,7 +291,9 @@ advisories:
     replacement: org.mybatis:mybatis + org.mybatis:mybatis-spring
     replacement_version: mybatis 3.5.19 + mybatis-spring 4.1.0 (Spring 7 line; mybatis-spring-boot-starter 4.1.0 on Boot)
     followup: >-
-      Review every ported DAO: SqlMapClient / SqlMapClientTemplate → SqlSessionTemplate or mapper interfaces;
+      Where the build-fix loop could not port the DAOs they still use iBATIS 2 and the build stays red until the
+      owning team ports them to MyBatis (DAOs a fix script did port carry MIGRATION-TODO lines — re-test those):
+      SqlMapClient / SqlMapClientTemplate → SqlSessionTemplate or mapper interfaces;
       sqlmap XML → MyBatis mapper XML (#name# → #{name}, $name$ → ${name}, queryForList / queryForObject / insert /
       update / delete → selectList / selectOne / insert / update / delete, <sqlMapConfig> → <configuration>);
       result maps and dynamic SQL tags (<isNotEmpty>, <iterate>, <dynamic> → <if>, <foreach>, <where>) differ —
@@ -347,7 +351,7 @@ advisories:
   # ==================================================================================================================
   # 2026-10-22 era libraries (2013–2020 Korean enterprise Maven projects; web-verified research: Maven Central
   # listings, jar bytecode, the Spring Boot 4.1.0 BOM, the pinned recipe jars). Same-coordinate jakarta releases live in
-  # knowledge/libraries/jakarta_libraries.yml, plain coordinate moves in sbmig/triage/handlers/relocations.yml; these
+  # knowledge/libraries/jakarta_libraries.yml (plain coordinate moves are the recipes' / the fix loop's); these
   # are the ones that need source / configuration work by the owning team. Fix-loop guidance:
   # knowledge/notes/era-libraries.md (`## fix-loop: <library>`). docs/ADVISORIES.md "2026-10-22 era libraries".
   # ==================================================================================================================
@@ -539,7 +543,6 @@ advisories:
     docs:
       - https://cwiki.apache.org/confluence/display/WW/Struts+6.x.x+to+7.x.x+migration
       - https://repo1.maven.org/maven2/org/apache/struts/struts2-core/
-    notes: knowledge/notes/era-libraries.md
 
   - id: struts1
     artifacts: ["struts:struts", "org.apache.struts:struts-core", "org.apache.struts:struts-taglib",
@@ -594,7 +597,6 @@ advisories:
       - https://github.com/eGovFramework/egovframe-runtime/releases
       - https://raw.githubusercontent.com/eGovFramework/egovframe-runtime/v5.0.2-Final/pom.xml
       - https://www.egovframe.go.kr/home/sub.do?menuNo=12
-    notes: knowledge/notes/era-libraries.md
 
   - id: webjars-locator-core
     artifacts: ["org.webjars:webjars-locator-core", "org.webjars:webjars-locator"]
@@ -736,7 +738,7 @@ advisories:
     status: incompatible
     title: QueryDSL's Hibernate-native API (com.querydsl.jpa.hibernate.*) does not link against Hibernate 6 / 7
     summary: >-
-      The Boot-managed com.querydsl 5.1.0 (classifier jakarta, handler querydsl-jakarta-classifier) is fine for
+      The Boot-managed com.querydsl 5.1.0 (classifier jakarta, as jakarta.md names it) is fine for
       JPAQuery / JPAQueryFactory, but com.querydsl.jpa.hibernate.* (HibernateQueryFactory, HibernateQuery,
       HibernateUtil) and the com.querydsl.jpa.support Q*Dialect classes reference org.hibernate.Query /
       org.hibernate.type.*Type / old dialects that Hibernate 7.4 removed. The OpenFeign fork keeps the com.querydsl.*

@@ -144,10 +144,10 @@ BLOCKED_REPORT = {
                {"phase": "restructure", "ok": True,
                 "notes": [("restructure.apply (layout): 3 file(s) changed; mandatory added: -; "
                            "optional bumped: org.apache.commons:commons-lang3 managed→3.17.0")]},
+               # v2.1y: each javax case is asked once; the analysis-only answer is `declined` → outcome blocked
                {"phase": "verify", "ok": False,
-                "attempts": [_att(1, "f2b133edd9"), _att(2, "61d819f63f"), _att(3, "f2b133edd9"),
-                             _att(4, "61d819f63f")]}],
-    "final_build": {"ok": False}, "llm_usage": {"calls": 5}, "unresolved": [],
+                "attempts": [_att(1, "f2b133edd9", "blocked"), _att(2, "61d819f63f", "blocked")]}],
+    "final_build": {"ok": False}, "llm_usage": {"calls": 3}, "unresolved": [],
     "blocked": [{"id": "b1", "reason": "external_javax_api", "phase": "verify", "cluster_id": "case:f2b133edd9",
                  "artifact": JAVAX_LIB_GA, "owner_class": "com.company.legacy.web.LegacyRequestHelper"},
                 {"id": "b2", "reason": "external_javax_api", "phase": "verify", "cluster_id": "case:61d819f63f",
@@ -177,13 +177,16 @@ def _kb_spec(e2e, tmp_path, monkeypatch, fixture, spec):
 
 def test_blocked_scenario_passes(e2e, tmp_path, monkeypatch):
     spec = {"report": BLOCKED_REPORT, "exit": 2,
-            "journal": [{"event": "restructure", "ok": True, "optional_bumped": []}]}
+            "journal": [{"event": "restructure", "ok": True, "optional_bumped": []},
+                        {"event": "declined", "case": "f2b133edd9", "declines": 1},
+                        {"event": "declined", "case": "61d819f63f", "declines": 1},
+                        {"event": "blocked", "cluster": "case:f2b133edd9", "reason": "external_javax_api"}]}
     r = _run_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib", _kb_spec(e2e, tmp_path, monkeypatch,
                                                                            "boot2-javax-lib", spec))
     assert r.expect_ok is True, r.mismatches
     assert r.blocked == ["external_javax_api com.company.legacy:legacy-web-lib"] * 2
     assert r.optional_bumped == ["org.apache.commons:commons-lang3 managed→3.17.0"]
-    assert r.review == "issues" and r.scripts == "new 4"
+    assert r.review == "issues" and r.scripts == "new 2"
     assert e2e.fixture_passed(r)
 
 
@@ -195,12 +198,12 @@ def test_blocked_scenario_mismatches_are_reported(e2e, tmp_path, monkeypatch):
                   _kb_spec(e2e, tmp_path, monkeypatch, "boot2-javax-lib", {"report": rep, "exit": 2}))
     assert r.expect_ok is False
     text = "\n".join(r.mismatches)
-    assert "llm_calls=9 > max 5" in text
+    assert "llm_calls=9 > max 3" in text
     assert "blocked external_javax_api com.company.legacy:legacy-web-lib missing" in text
     assert "unexpected blocked repeated_failure com.company.legacy:legacy-web-lib" in text
     assert 'no journal event matching {"event": "restructure", "ok": true}' in text
     assert "no structure_review in report.json" in text
-    assert "script attempts new=0 expected == 4" in text
+    assert "script attempts new=0 expected == 2" in text
     assert "case f2b133edd9: no script attempt (cases with attempts: none)" in text
 
 
@@ -219,13 +222,13 @@ def test_encoding_post_checks(e2e, tmp_path, monkeypatch):
     rel = "module/comp-jar/src/main/java/com/example/greeting/Greeting.java"
     rel2 = "module/comp-jar/src/main/java/com/example/greeting/notice/NoticeFormatter.java"
     pom = "module/comp-jar/pom.xml"
-    review = {"verdict": "issues", "commit": "abc", "reverted": False, "llm_usage": {"calls": 1},
-              "issues": [{"severity": "critical", "file": pom, "problem": "MS949 sources build with UTF-8",
-                          "fix_hint": "set project.build.sourceEncoding to MS949"}],
-              "script_result": {"status": "ok", "changed_files": [pom]}}
+    # v2.1x (D-M7): the restructure writes project.build.sourceEncoding itself; the review then answers "ok"
+    review = {"verdict": "ok", "commit": None, "reverted": False, "llm_usage": {"calls": 1}, "issues": [],
+              "script_result": None}
     rep = {"run_id": "run-x", "project_name": "greeting-core", "case_type": "pure_java", "success": True,
            "llm_usage": {"calls": 1}, "flags": [], "blocked": [], "unresolved": [], "structure_review": review}
-    journal = [{"event": "structure_review", "verdict": "issues", "critical": 1, "script_status": "ok"}]
+    journal = [{"event": "structure_review", "verdict": "ok", "critical": 0},
+               {"event": "legacy_context", "mode": "layout", "source_encodings_written": 1}]
     files = {rel: ["cp949", "// 인사말\nString s = \"안녕하세요\";"], rel2: ["cp949", "/** 공지사항 */"],
              pom: ["utf-8", "<project><properties><project.build.sourceEncoding>MS949</project.build.sourceEncoding>"
                             "</properties></project>"]}
@@ -235,13 +238,13 @@ def test_encoding_post_checks(e2e, tmp_path, monkeypatch):
     bad = dict(ok, files=dict(files, **{rel: ["utf-8", "String s = \"안녕하세요\";"]}))
     r = _run_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", bad)
     assert r.expect_ok is False and "does not decode as cp949" in r.mismatches[0]
-    # the LLM missed the encoding: sbmig's own `(sbmig check)` issue, no script ran
-    missed = dict(review, issues=[dict(review["issues"][0], problem="(sbmig check) MS949 Java sources ...")],
-                  script_result=None, commit=None)
+    # the restructure missed the encoding and the review's own `(sbmig check)` issue appeared: the expectation fails
+    missed = dict(review, verdict="issues",
+                  issues=[{"severity": "critical", "file": pom, "problem": "(sbmig check) MS949 Java sources ...",
+                           "fix_hint": "set project.build.sourceEncoding to MS949"}])
     r = _run_spec(e2e, tmp_path, monkeypatch, "euckr-legacy", dict(ok, report=dict(rep, structure_review=missed)))
     text = "\n".join(r.mismatches)
     assert "structure_review sbmig_check=True expected False" in text
-    assert "structure_review script_status=none expected ok" in text and "expected committed=True" in text
 
 
 def test_pom_post_checks(e2e, tmp_path):

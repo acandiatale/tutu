@@ -242,6 +242,7 @@ class Orchestrator:
         self._review_commit_pre: str | None = None          # v2.1d: HEAD before the review commit (read-back)
         self._review_guide_source = ""                     # v2.1d: "llm" | "sbmig" — who wrote the review's guide
         self._restructure_results: list[Any] = []          # v2: this run's RestructureResults (structure review input)
+        self._restructure_modes: list[Optional[str]] = []  # v2.1v: each result's mode (layout / boot_pom / msa_pom)
         self._restructure_notes: list[str] = []
         self._phase_failed = False
         self._dry_run = False
@@ -412,6 +413,7 @@ class Orchestrator:
         self._run_steps = []
         self._review_usage = {}
         self._restructure_results = []
+        self._restructure_modes = []
         self._restructure_notes = []
         self._mvn_java_problem = self._jdk_problem = ""
         self._after_abort = False
@@ -837,6 +839,7 @@ class Orchestrator:
                                  locator=self._resolve_locator(), advisories=list(report.advisories or []),
                                  script_runner=self.script_runner, edit_applier=self._edit_applier,
                                  errors=self.errors)
+        self._handoff_restructure()        # v2.1v: a loop made after a restructure gets its results too
         steps = list(plan.steps)
         # 빌드 게이트: 계획에 최종 빌드가 없어도 always_final_verify 면 verify.build 를 덧붙인다
         if self.cfg.loop.always_final_verify and not any(s.kind == StepKind.BUILD and s.phase == Phase.VERIFY
@@ -1348,6 +1351,16 @@ class Orchestrator:
         self._merge_blocked(pr, res.blocked)
         return res.ok
 
+    def _handoff_restructure(self) -> None:
+        """v2.1v (B-H2): 이 실행의 재구성 결과와 모드를 수정 루프에 넘긴다 — 루프가 LLM 요청마다 "Project after the
+        restructure" 절(``FixContext.layout_facts``)을 만든다. 그래프 엔진도 같은 단계 함수를 부르므로 같은 자리에서.
+
+        Hand the run's RestructureResults and their modes to the fix loop (`BuildFixLoop.restructure_results` /
+        `restructure_modes`) — the source of `FixContext.layout_facts`; the graph engine runs the same step method."""
+        if self.loop is not None:
+            self.loop.restructure_results = list(self._restructure_results)
+            self.loop.restructure_modes = list(self._restructure_modes)
+
     def _step_restructure(self, pr: PhaseResult, step: PlanStep) -> bool:
         """재구성(회사 레이아웃: base-parent, ``{name}-boot`` / ``-back`` / ``-front``, 필수 2개, 쓰는 선택
         8개 올리기)을 돌리고 ``restructure: <step>`` 로 커밋. 옮긴 파일은 차단 등록부가 따라가게 하고, pom
@@ -1381,6 +1394,7 @@ class Orchestrator:
         pr.notes += res.notes
         self._jsp_jakarta_note(pr, step, res)
         self._restructure_results.append(res)            # v2: the structure review's input
+        self._restructure_modes.append(mode)
         self._restructure_notes += [f"{step.id}: {n}" for n in res.notes]
         merged = list(getattr(res, "merged_modules", None) or [])
         kept_boot = getattr(res, "kept_boot_module", None)
@@ -1393,6 +1407,7 @@ class Orchestrator:
         # 모듈 병합에서 먼저 온 것이 이긴(first-wins) 충돌: 버려진 사본을 LLM 에 읽기 전용 참고로 보여 준다
         if self.loop is not None:          # round 9: the restructure-phase fix loop shows dropped copies to the LLM
             self.loop.merge_conflicts = list(self.report.merge_conflicts)
+        self._handoff_restructure()        # v2.1v: the fix prompt's "Project after the restructure"
         ph_files = list(getattr(res, "placeholder_files", None) or [])
         ph_keys = list(dict.fromkeys(getattr(res, "placeholders_written", None) or []))
         self._merge_placeholders(ph_files, ph_keys)
@@ -1596,6 +1611,12 @@ class Orchestrator:
             first_fixed = True
             for issue in rv.issues:
                 text = " ".join((issue.problem or "").split()) + (f" — {issue.fix_hint}" if issue.fix_hint else "")
+                # v2.1y (E-M5): 재료에 없는 버전·속성을 말한 이슈는 적용되지 않았으므로 "검토가 고침" 으로 적지 않는다
+                # v2.1y: an issue the reviewer marked `unsupported` was never applied — a note, never "fixed by the review"
+                if getattr(issue, "unsupported", False):
+                    self.errors.add_note(issue.file or "",
+                                         f"{issue.severity} (not in the review material, not applied): {text}", "review")
+                    continue
                 if issue.severity == "critical" and sha:
                     calls = review_calls if first_fixed else 0
                     shared = "" if first_fixed or not review_calls else \
@@ -1792,6 +1813,17 @@ class Orchestrator:
             what = ("version chosen from the repository" if how.startswith("repository")
                     else "version carried over from the as-is build")
             items.append((m.group(1) if m else root, f"{what}: {key} {ver.strip()}".rstrip()))
+        # v2.1x (E-M6): "g:a: compile → provided (as-is scope, <pom>)" → 'scope restored: provided (as-is): g:a (was compile)'
+        # v2.1x: 레시피가 compile 로 바꾼 as-is provided 스코프를 재구성이 되돌린 행
+        for d in list(getattr(res, "scope_restored", None) or []):
+            m = re.match(r"^(?P<key>\S+): (?P<old>\S+) → provided \(as-is scope, (?P<pom>[^()]+)\)\s*$", str(d))
+            if m:
+                items.append((m.group("pom").strip(),
+                              f"scope restored: provided (as-is): {m.group('key')} (was {m.group('old')})"))
+        # v2.1x (D-M7): "<pom>: project.build.sourceEncoding=MS949 (N files)" → 'source encoding written: …'
+        for d in list(getattr(res, "source_encodings_written", None) or []):
+            pom, sep, what = str(d).partition(": ")
+            items.append((pom if sep else root, f"source encoding written: {what.split(' (')[0]}"))
         # v2.1m: "<pom>: ext1, ext2 → maven-resources-plugin[, maven-war-plugin]" →
         # 'nonFilteredFileExtensions added to maven-resources-plugin in <pom>: ext1, ext2'
         for d in list(getattr(res, "non_filtered_extensions", None) or []):

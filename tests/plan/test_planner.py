@@ -20,6 +20,7 @@ FW7 = "org.openrewrite.java.spring.framework.UpgradeSpringFramework_7_0"
 SEC = [*(f"org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_{v}" for v in range(6)),
        "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0"]
 JUNIT5 = "org.openrewrite.java.testing.junit5.JUnit4to5Migration"
+SERVLET10 = "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10"     # v2.1w: servlet_tomcat, in the jakarta bucket
 V1_IDS = ("jdk21.rewrite", "jdk21.loop", "spring.rewrite", "spring.optional_bump", "spring.loop", "restructure.loop")
 
 
@@ -98,10 +99,11 @@ def test_spring_legacy_plan(tmp_path: Path, cfg) -> None:
 def test_servlet_plan(tmp_path: Path, cfg) -> None:
     plan = build_plan(analyze_path(make_servlet(tmp_path), cfg), cfg)
     assert _ids(plan) == ORDER
-    assert _recipes(plan) == [J21, JAKARTA]                           # not com.company.migrate.ServletToJakartaAndBoot
+    assert _recipes(plan) == [J21, JAKARTA, SERVLET10]                # not com.company.migrate.ServletToJakartaAndBoot
     assert _step(plan, "restructure.apply").params["starter"] == "spring-boot-starter-webmvc"
     assert any("web.xml" in n for n in plan.notes)
-    assert "transform: servlet_tomcat → jakarta set (javax → jakarta)" in plan.notes
+    assert "transform: servlet_tomcat → jakarta set (javax → jakarta) + Servlet 6 removals RemovalsServletJakarta10" \
+        in plan.notes
     assert _no_project_recipes(plan)
 
 
@@ -188,7 +190,8 @@ def test_transform_recipes_helper_and_v1_alias(cfg) -> None:
     assert spring_recipes is transform_recipes
     notes: list[str] = []
     ids = [r.id for r in transform_recipes(_Facts(CaseType.SERVLET_TOMCAT, set(), {}), cfg, notes, "web")]
-    assert ids == [J21, JAKARTA] and notes == ["transform [web]: servlet_tomcat → jakarta set (javax → jakarta)"]
+    assert ids == [J21, JAKARTA, SERVLET10] and notes == [
+        "transform [web]: servlet_tomcat → jakarta set (javax → jakarta) + Servlet 6 removals RemovalsServletJakarta10"]
 
 
 # ------------------------------------------------------------------------------------------------- v1 knobs ignored
@@ -299,7 +302,7 @@ def test_msa_plan_without_aggregator(tmp_path: Path, cfg) -> None:
     assert sorted(s.id for s in comp) == ["transform.compile@shop", "transform.compile@web"]   # per target, like verify
     assert {s.target for s in comp} == {"shop", "web"}
     assert {s.target for s in verify} == {"shop", "web"}
-    assert _recipes(plan, "transform.rewrite@web") == [J21, JAKARTA]
+    assert _recipes(plan, "transform.rewrite@web") == [J21, JAKARTA, SERVLET10]    # per service: its own sub-case
     ids = _ids(plan)
     assert ids.index("restructure.msa_pom") < ids.index("restructure.review") < ids.index(verify[0].id)
 

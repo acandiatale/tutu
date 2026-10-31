@@ -20,7 +20,7 @@ from sbmig.core.models import (
 )
 from sbmig.fix import ContextPacker, FakeLLMClient, LLMFixer
 from sbmig.fix.client import NO_FIX_RESPONSE, LLMError
-from sbmig.fix.context import SCRIPT_TRUNCATE_ORDER
+from sbmig.fix.context import SCRIPT_TRUNCATE_ORDER, target_text
 from sbmig.fix.fixer import (
     VERIFY_MAX_CHARS,
     VERIFY_MAX_DIFF_CHARS,
@@ -218,19 +218,21 @@ def test_dependency_versions_reach_the_prompt(cfg, proj):
 # ---------------------------------------------------------------------------
 def test_system_prompt_states_the_policy_and_the_verify_part():
     system, _ = load_script_prompts("v1")
-    for part in ("14. Dependency versions", "MAJOR version", "on your own initiative", "SAME major line",
-                 'The section **"Dependency versions"**', "authoritative for what the build can download",
-                 "marked `approved`", "name the source in `<analysis>`", "NO jakarta build",
-                 "newest release of that\n    major, not its first one", "JSP tag libraries", "MIGRATION-TODO",
-                 "`<verify>` is REQUIRED whenever a major version changed or a library was replaced",
+    flat = " ".join(system.split())
+    for part in ("14. Dependency versions", "MAJOR version", "never swap a library for another on your own",
+                 "the newest jakarta release of the SAME major", 'The "Dependency versions" facts are authoritative',
+                 "`verdict:` / `approved` lines decide a javax library's version", "only when that major has none",
+                 "the newest release of a higher major that has one", "JSP tags", "MIGRATION-TODO",
+                 "`<verify>` is REQUIRED whenever a major changed or a library was replaced",
                  "replace a library on your own (rule 14)", "Rules 3, 4, 8, 9, 10 and 14 apply to the edits",
-                 "운영자 확인 사항"):
-        assert part in system, part
+                 "운영자 확인"):
+        assert part in flat, part
     out = system[system.index("## Output format (mandatory)"):]
     assert out.index("<solution>해결 방법") < out.index("<verify>운영자 확인: xxx-back/src/main/resources/sitemesh3.xml "
                                                        "의 매핑이 decorators.xml 의 패턴과 같은 화면을 장식하는지 확인") \
         < out.index("<edits>\n[")
-    assert "`<verify>` (운영자 확인 사항) is left out when no dependency's major version changed" in out
+    # v2.1u (B-L2): the repeated <verify> paragraph is gone — rule 14 and the example line carry it
+    assert "`<verify>` (운영자 확인 사항) is left out when no dependency's major version changed" not in out
     assert "{{" not in system and "{%" not in system
 
 
@@ -270,9 +272,11 @@ def test_verify_guide_returns_the_answer_and_charges_usage(cfg, proj):
     assert call["role"] == VERIFY_ROLE == "verify_guide"
     assert call["metadata"]["purpose"] == "verify_guide" and call["metadata"]["case_id"] == "abc123"
     system, user = call["messages"][0].content, call["messages"][1].content
-    assert "The build passes; the runtime is unverified" in system and "{{" not in system
+    # v2.1u (B-L3): the guide is written right after the apply, before the rebuild
+    assert "The build has\nnot been re-run yet; the runtime is unverified" in system and "{{" not in system
+    assert "build passes" not in system and "build passes" not in user
     assert "Korean" in system or "한국어" in system
-    assert "## Project\ncase=spring_legacy java=1.8 jsp=4" in user
+    assert "## Project\nas-is (before sbmig): case=spring_legacy java=1.8 jsp=4" in user
     assert "## Case abc123 (compile, 8 error(s))" in user and user.count("does not exist") == 5
     assert "… 3 more error(s)" in user
     assert "- [major] org.sitemesh:sitemesh 2.4.2 → 3.2.1 — dependencies in demo-back/pom.xml" in user
@@ -334,3 +338,6 @@ def test_verify_prompt_file():
     text = load_verify_prompt("v1")
     assert "{{ language }}" in text and "운영자 확인 사항" in text and "No code, no apologies." in text
     assert load_verify_prompt("v9") == text                                        # unknown version → v1
+    # v2.1u: the target is rendered from the caller's target_text(cfg), never written in the file
+    assert "{{ target }}" not in text and target_text(None) in text
+    assert "JDK 25, Spring Boot 4.2.0" in load_verify_prompt("v1", "JDK 25, Spring Boot 4.2.0")

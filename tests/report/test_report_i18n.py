@@ -269,8 +269,14 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     # v2.1k: reactor duplicate follow-ups (orchestrator → manual_followups) and the reactor_duplicate suggestion
     lines += _reactor_lines(tmp_path / "rx")
     # v2.1r: the file_lock suggestion
-    from sbmig.loop.blocked_registry import FILE_LOCK_SUGGESTION
+    from sbmig.loop.blocked_registry import FILE_LOCK_SUGGESTION, compose_suggestion
     lines.append(FILE_LOCK_SUGGESTION)
+    # v2.1y: the needs_owner suggestions — a sibling of a declined case, and the fallback without the LLM's sentence
+    from sbmig.core.models import BlockedItem, BlockReason, Phase
+    from sbmig.loop.fixloop import NEEDS_OWNER_KO
+    lines.append(f"same cause as 70cf5d17c7: iBATIS 2 has no Spring 7 support — {NEEDS_OWNER_KO}")
+    lines.append(compose_suggestion(BlockedItem(id="b", reason=BlockReason.NEEDS_OWNER, phase=Phase.VERIFY,
+                                                cluster_id="c")))
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

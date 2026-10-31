@@ -4,6 +4,7 @@ keywords:
   - "org\\.hibernate\\.annotations\\.common"
   - "hibernate-commons-annotations"
   - "XClass|XProperty|XMethod|ReflectionManager|JavaReflectionManager|JavaXMember"
+  - "org\\.jboss\\.logging|jboss-logging"
 cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
 phases: [spring, restructure]
 ---
@@ -22,7 +23,9 @@ ReflectionManager`: remove the HCANN usage; never downgrade Hibernate or Boot to
 - `org.hibernate.annotations.common.util.impl.LoggerFactory` / `Log` (usually an IDE auto-import that meant SLF4J):
   `LoggerFactory.make(Foo.class)` / `.make(Foo.class, "category")` → `org.jboss.logging.Logger.getLogger(Foo.class)`
   with the field typed `org.jboss.logging.Logger` (`Log extends BasicLogger`, so `info / debug / warn / error /
-  infof / debugf / tracev` calls keep compiling; jboss-logging stays on the classpath through hibernate-core 7).
+  infof / debugf / tracev` calls keep compiling). hibernate-core 6.5+ / 7 declares jboss-logging with `runtime` scope:
+  add `org.jboss.logging:jboss-logging` (Boot-managed, `version: null`) to the module unless `hibernate-validator` /
+  `spring-boot-starter-validation` is already a compile dependency there (`package org.jboss.logging does not exist`).
   Switch to `org.slf4j.LoggerFactory.getLogger(Foo.class)` only when every call is `info/debug/warn/error/trace(String …)`
   (SLF4J has no `infof` / `debugv`).
 - `org.hibernate.annotations.common.AssertionFailure` → `org.hibernate.AssertionFailure`.
@@ -32,7 +35,7 @@ ReflectionManager`: remove the HCANN usage; never downgrade Hibernate or Boot to
   class; if a usage cannot be ported with confidence, keep the class compiling and add
   `// MIGRATION-TODO: hibernate-commons-annotations reflection not ported` so the Handover lists the file.
 - Fallback only when the source cannot be changed (generated / vendor code): declare
-  `org.hibernate.common:hibernate-commons-annotations:7.0.3.Final` explicitly in that module's pom (compile scope;
-  it still resolves and compiles against jboss-logging) and say so in the analysis — it is EOL and the owners
+  `org.hibernate.common:hibernate-commons-annotations` in that module's pom (compile scope, `version: null` — not
+  Boot-managed; sbmig fills the as-is / repository version) and say so in the analysis — it is EOL and the owners
   must plan its removal.
 - Never add `hibernate-core` 5.x / 6.x back and never pin `hibernate.version` to an older line.

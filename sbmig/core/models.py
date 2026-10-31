@@ -146,6 +146,11 @@ class BlockReason(str, Enum):
     # v2.1r (2026-10-30): a file under target/ locked by another process (antivirus / IDE / a leftover JVM) — an
     # environment error the runner already retried; handed over at once, never given to the LLM
     FILE_LOCK = "file_lock"
+    # v2.1y (2026-10-31, prompt review E-M1): the LLM answered with neither edits nor a script and named a blocker outside the
+    # project (a library with no jakarta build, a framework the owners must replace, an artifact the repository lacks) — the
+    # owning team decides; sibling cases with the same cause are blocked without another LLM call
+    # v2.1y: LLM 이 수정 없이 "프로젝트 밖의 일" 이라고 답함(소유팀 결정) — 같은 원인의 형제 케이스는 호출 없이 차단
+    NEEDS_OWNER = "needs_owner"
 
 
 class BlockedItem(BaseModel):
@@ -865,6 +870,10 @@ class ScriptMeta(BaseModel):
     status: Literal["active", "retired", "quarantined"] = "active"   # retired = by a person; quarantined = the code
                                                    # matched a secret pattern (stored masked, never selected)
     notes: list[str] = Field(default_factory=list)
+    # v2.1y (2026-10-31, prompt review E-H3): the loop ran the script a second time right after `ok` and it changed the
+    # tree again (`new JobBuilder(.., jobRepository, jobRepository)`) — kept for the record, never selected for reuse
+    # v2.1y: ok 직후 한 번 더 돌렸더니 또 바뀜(비멱등) — 기록은 남기되 재사용 대상에서 뺀다
+    non_idempotent: bool = False
 
 
 class ScriptBase(BaseModel):
@@ -958,6 +967,11 @@ class ScriptProposal(BaseModel):
     requested_files: list[str] = Field(default_factory=list)
     raw_response: str = ""
     error: str = ""                                # why there is no script (unparsable answer, transport, refusal)
+    # v2.1y (2026-10-31, prompt review B-M5 / E-M1): the LLM's `<blocked>why</blocked>` — the case cannot be fixed inside the
+    # project (a library without a jakarta build, a framework the owners must replace, an artifact the repository lacks); no edits,
+    # no script. The loop classifies such an answer as `declined` → BLOCKED needs_owner (script.max_declines_per_case).
+    # v2.1y: LLM 의 <blocked> — 프로젝트 안에서 못 고치는 이유(소유팀 결정) → 루프가 declined 로 분류
+    blocked_reason: str = ""
 
 
 FixAnswer = ScriptProposal                      # the v2.1 name
@@ -1194,6 +1208,10 @@ class CaseScript(BaseModel):
                                                    # ("v1: no_change — 3 error(s) remained: …"), "" for a new script
     last_failure: str = ""                         # the most recent failed run's reason (quick view; runs[] has all)
     runs: list[ScriptRun] = Field(default_factory=list)   # newest last, capped by errors.script_runs
+    # v2.1y (2026-10-31, prompt review E-H3): the loop ran the script a second time right after `ok` and it changed the tree
+    # again (`new JobBuilder(.., jobRepository, jobRepository)`) — kept for the record, never selected for reuse
+    # v2.1y: ok 직후 한 번 더 돌렸더니 또 바뀜(비멱등) — 기록은 남기되 재사용 대상에서 뺀다
+    non_idempotent: bool = False
 
 
 class CaseInfo(BaseModel):
@@ -1223,6 +1241,10 @@ class ReviewIssue(BaseModel):
     file: str = ""                                 # relative pom / module path ("" = project-wide)
     problem: str = ""
     fix_hint: str = ""
+    # v2.1y (2026-10-31, prompt review E-M5): the issue names a version / property / coordinate that is nowhere in the review
+    # material (a stale replay, a hallucination) — kept in the report's "Structure review" with the mark "(sbmig check) not in the
+    # material", never applied, never in the Handover. v2.1y: 검토 재료에 없는 버전·속성을 말한 이슈 — 보고서에만, 인수인계 제외
+    unsupported: bool = False
 
 
 class StructureReview(BaseModel):

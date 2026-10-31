@@ -25,7 +25,8 @@ Layout under the KB directory (``kb.dir``, default ``kb-v2/``)::
 
 Scripts: ``unverified`` when stored → ``proven`` once a reuse resolved the case in a project other than the one
 that created it → ``retired`` by a person (``sbmig kb cases retire``; never selected). :meth:`CaseStore.best` =
-the newest proven version, else the newest unverified one. A script whose code holds a secret value is stored
+the newest proven version, else the newest unverified one; v2.1y: a version the loop found ``non_idempotent``
+(:meth:`CaseStore.mark_non_idempotent`: a second run right after ``ok`` changed the tree again) is never selected. A script whose code holds a secret value is stored
 masked and retired at once (the masked code is not the code that ran; a secret never lands in the KB).
 
 Every write holds the KB lock and is atomic; texts are masked (:mod:`sbmig.kb.redact`). Readers never lock and
@@ -106,7 +107,7 @@ def scripts_text(case: CaseInfo, *, failures: bool = False) -> str:
     ``v1 proven 3/0, v2 unverified 0/1`` (successes / failures); ``failures`` (cases.md, v2.1e) adds each
     version's last failure: ``v1 proven 3/0; v2 unverified 0/1 — no_change: 3 of 3 targeted error(s) remained``."""
     def one(s: CaseScript) -> str:
-        t = f"v{s.version} {s.status} {s.successes}/{s.failures}"
+        t = f"v{s.version} {s.status}{' non-idempotent' if s.non_idempotent else ''} {s.successes}/{s.failures}"
         return t + (f" — {_short(s.last_failure, 80)}" if failures and s.last_failure else "")
     return ("; " if failures else ", ").join(one(s) for s in case.scripts) or "-"
 
@@ -362,11 +363,13 @@ class CaseStore:
 
     def best(self, case_id: str) -> Optional[tuple[CaseScript, str]]:
         """먼저 돌릴 스크립트: 가장 새 proven 버전, 없으면 가장 새 unverified
-        버전. retired 와 파일이 없는 버전은 고르지 않는다. None = 저장된 것 없음.
+        버전. retired·비멱등(v2.1y ``non_idempotent``)·파일이 없는 버전은 고르지 않는다. None = 저장된 것 없음.
 
-        The script to run first: the newest proven version, else the newest unverified one; retired never (nor
-        a version whose file is missing). None = nothing stored."""
-        ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired"),
+        The script to run first: the newest proven version, else the newest unverified one; retired never, nor a
+        version marked ``non_idempotent`` (v2.1y: a second run changed the tree again), nor one whose file is
+        missing. None = nothing stored."""
+        # v2.1y (E-H3): 두 번째 실행에서 또 바꾸는 스크립트는 반쯤 고친 다음 프로젝트를 망가뜨린다 — 기록만 남기고 재사용 안 함
+        ranked = sorted((s for s in self.scripts(case_id) if s.status != "retired" and not s.non_idempotent),
                         key=lambda s: (s.status == "proven", s.version), reverse=True)
         for s in ranked:
             code = self.code(case_id, s.version)
@@ -524,6 +527,39 @@ class CaseStore:
             log.info("cases/%s/fix_v%d.py: %s (성공 %d / 실패 %d)%s", case_id, s.version, result, s.successes,
                      s.failures, f" — {_short(why, 300)}" if why else "")
         return s
+
+    def mark_non_idempotent(self, case_id: str, version: int, note: str = "") -> Optional[CaseScript]:
+        """v2.1y: 버전 N 을 비멱등으로 표시한다(수정 루프가 ok 직후 같은 스크립트를 한 번 더 돌렸더니 트리를 또 바꿈).
+        기록은 남기되 ``best`` 가 다시는 고르지 않는다(보강의 바탕 ``latest`` 로는 남는다 — LLM 이 고칠 수 있게).
+        ``note`` 는 ``last_failure`` 에(사람이 case.json 만 보고 알게). 케이스·버전이 없으면 None(예외 없음).
+
+        v2.1y (prompt review E-H3): mark version N ``non_idempotent`` — the loop ran it once more right after an
+        ``ok`` run and it changed the tree again (``new JobBuilder(.., jobRepository, jobRepository)``). Kept for the
+        record and as an augment base (``latest``), never selected by ``best``; ``note`` goes to ``last_failure``.
+        None when the case / version is not stored. Never raises."""
+        try:
+            with stage("kb"), self.lock():
+                hit = self._read(case_id)
+                if hit is None:
+                    return None
+                case, extra = hit
+                s = next((x for x in case.scripts if x.version == int(version)), None)
+                if s is None:
+                    log.warning("cases/%s: no script v%s to mark non-idempotent", case_id, version)
+                    return None
+                if s.non_idempotent and not note:
+                    return s
+                s.non_idempotent = True
+                if note:
+                    s.last_failure = self._reason(note)
+                case.updated_at = utcnow()
+                self._save(case, extra)
+                log.warning("cases/%s/fix_v%d.py: non-idempotent (a second run changed the tree again) — kept, "
+                            "never reused", case_id, s.version)
+            return s
+        except Exception as e:  # noqa: BLE001 - the loop only records it; the KB never stops a run
+            log.warning("cases/%s: marking v%s non-idempotent failed: %s: %s", case_id, version, type(e).__name__, e)
+            return None
 
     def _set_status(self, case_id: str, version: int, retire: bool) -> CaseScript:
         """retire / activate 의 공통 부분: 잠금 안에서 상태를
@@ -1192,6 +1228,8 @@ class CaseStore:
             have.parent = local[theirs.parent]
         have.reason = have.reason or theirs.reason
         have.last_failure = have.last_failure or theirs.last_failure
+        # v2.1y: 어느 한쪽이라도 비멱등을 봤으면 합친 KB 에서도 재사용하지 않는다
+        have.non_idempotent = bool(have.non_idempotent or theirs.non_idempotent)
 
 
 # --------------------------------------------------------------------------- cases.md

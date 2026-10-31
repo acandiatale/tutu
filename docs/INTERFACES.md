@@ -2554,3 +2554,332 @@ unit test (the analyzer's `spring-cloud` library + a chain property).
   properties never enter `properties`; the restructure's `_chain_names_for` (per root) and the loop's `chain_company_properties(facts,
   cfg)` (fallback filter when the field is empty) read only those. Follow-up not done: the loop could use `root_properties` to write
   `${prop}` only when the module's own root chain defines it (the restructure already scopes per root).
+
+## v2.1u … v2.1y — follow-through of the prompt review (2026-10-31)
+
+Source: `docs/v2/PROMPT-REVIEW-2026-10-31.md` (Korean consolidation; §6 increments, §7 decisions) and the raw reports
+`docs/v2/reviews/2026-10-31/review-{A..E}-*.md`. The user (2026-10-31): "쭉 일자로 진행하자! 주말에 해서 월요일에 가서 돌려보면
+되니까!" — every increment, in one go. The seven §7 decisions were taken by the PM as defaults (each is a config switch or a
+documented rule, so the company can turn it back):
+
+| # | decision | PM default | where |
+|---|---|---|---|
+| 1 | `spring.main.allow-bean-definition-overriding` / `allow-circular-references` for converted legacy projects | **true, written by the restructure** (as-is Framework behaviour); duplicate bean ids in the Handover | `layout.legacy_context.allow_bean_overriding` / `allow_circular_references` |
+| 2 | review `<script>` | **edits-only** (the script section and helper table leave the prompt; the parser still accepts `<script>`) | `review.ask_script: false` |
+| 3 | `fix-policy.md` | **deleted** (never reached the LLM; `always:` notes are gone; the design README's "always included" sentence corrected) | `knowledge/notes/`, `tests/fix/test_fix_notes.py` |
+| 4 | a javax-only filter / servlet in the generated `WebXmlRegistrations` | **allowed to be commented out with `MIGRATION-TODO`** — the file is sbmig's own, not the owners' code; the pom fix (jakarta build / classifier) comes first | note `servlet-to-boot.md` |
+| 5 | JSPs collected under `WEB-INF/jsp/` | **kept** (company rule 9c); the legacy-config copies get their view-resolver prefix rewritten like `spring.mvc.view.prefix` | restructure D10 |
+| 6 | webmvc starter for `spring_legacy` | **only with web evidence** (web.xml / spring-webmvc / servlet-api / @Controller / JSP), else `spring-boot-starter` | `layout.legacy_context.web_starter_by_evidence` |
+| 7 | recipe sets | **conditional, like the Security chain** ("쓰는 경우만"): `spring_batch_6` with `spring-batch`, `hibernate_7` with native `hibernate`, `servlet_jakarta_10` for every `servlet_tomcat` | `openrewrite.recipes.*`, planner, catalog `sets:` |
+
+Shared contracts written by the PM before the fan-out (already in the tree): `FixContext.layout_facts`, `RestructureResult.{starter,
+web_evidence, xml_imports, xml_skipped, legacy_properties_written, scope_restored, source_encodings_written, webinf_locations_rewritten,
+beans_removed, duplicate_bean_ids, conversion_facts}`, `ScriptProposal.blocked_reason`, `ReviewIssue.unsupported`, `BlockReason.NEEDS_OWNER`,
+`StoredScript.non_idempotent`, `LegacyContextConfig` (`layout.legacy_context.*`), `ScriptConfig.max_declines_per_case` /
+`idempotency_check`, `ReviewConfig.ask_script` / `invariant_check` / `save_input`, `RecipeSetConfig.spring_batch_6` / `hibernate_7` /
+`servlet_jakarta_10`, `loop.blocked_policy.needs_owner: 0` — all mirrored in `config/default.yml`.
+
+### v2.1u — prompt and note text (no new plumbing)
+
+**Fix prompts (`sbmig/fix/prompts/*.md`, `sbmig/fix/fixer.py` loaders, `sbmig/fix/context.py`)**
+- The target is rendered, never written: `{{ target }}` in `script_system_v1.md` / `edits_system_v1.md` / `verify_system_v1.md` is filled
+  from `target_text(cfg)` (JDK / Boot from `cfg.target`); the intro no longer names "Framework 7, Security 7, Hibernate 7" nor "the Boot
+  4.0/4.1 recipes" — it says "the recipes this run executed are listed under Plan notes". Rule 8: "the target Boot line's relocated
+  packages (see the Migration notes)"; its Jackson sentence becomes two lines pointing at the note `jackson-2-3.md` (rule A/B/C/D there).
+- Rule 10 adds: "… or a Migration note's `fix-loop:` section" (a note may ask for a port rule 14 would otherwise forbid).
+- Rule 14 replaced by the ~1.35K-character text of report B (resolution order chain-managed → target Boot BOM → as-is → repository →
+  `null`; the `target Boot BOM:` line explained; no "look releases up yourself").
+- Output format, last line: "If the case cannot be fixed inside the project — a library with no jakarta build, a framework the owning
+  team must replace, an artifact the repository does not have — answer `<analysis>` and `<blocked>one sentence naming the blocker and who
+  decides</blocked>`; no `<edits>`, no `<script>`." The parser fills `ScriptProposal.blocked_reason`. Rule 9's wording stays.
+- Deleted: the repeated `<verify>` explanation, the restated intro items and the "Script or no script" paragraph (B-L2, ~1.4K chars);
+  `verify_system_v1.md` "The build passes" → "The build has not been re-run yet".
+- `profile_summary`: the header line is labelled `as-is (before sbmig): …`; `javax-imports=` and advisory ids are dropped (the
+  jakarta rewrite already happened; advisories arrive as hints). `summarize_script_attempt` shortens the analysis with
+  `textwrap.shorten` (300 chars, "…").
+- Plan notes in the prompt: only lines starting with `transform`, `restructure`, `warning`, `msa`, `followup` (B-L1); `case …
+  (confidence …)`, `optional artifacts: bumped`, `review:`, `advisory: … → guide` stay out.
+
+**Structure review prompt (`sbmig/review/prompts/review_v1.md`, `sbmig/review/inputs.py` rule lines)** — see v2.1v for the fact lines;
+the text fixes are: packaging rule 3 / the layout line "war (JSPs served by an external Tomcat)" → "executable WAR (java -jar runs the
+embedded Tomcat; deploys to an external Tomcat too); `spring-boot-starter-tomcat` / `tomcat-embed-jasper` stay `provided` (packaged
+under WEB-INF/lib-provided), a Boot as-is / MSA `war` keeps its packaging; report packaging only when it deviates from these"; the
+MSA line states the code's rule (every service root → boot parent + mandatory; library roots → comp parent, no mandatory; names from
+`profile.services`); each mandatory spec line ends `→ <dependencyManagement>` only for `scope: import`, else `→ <dependencies>`, plus
+"with role parents a module does not inherit the root pom's declarations"; the optional line says v2.1n / v2.1t (`${<artifact>.version}`
+when the chain defines it, as-is newer literal kept, `when_present` adds / `replaces` removes); the "What the restructure did" version
+decisions are final (no re-pinning to "same major"); the boot module's starter is named and "do not add Security / Batch / JPA starters";
+the user prompt's last line asks for `<analysis>`, `<solution>`, `<edits>`.
+
+**Notes (`knowledge/notes/`, `index.yml`, `knowledge/libraries/advisories.yml`)**
+- W1–W12 of the review corrected (HttpComponents `setConnectTimeout` removed / `setReadTimeout` kept; JSP = executable WAR; jboss-logging
+  runtime scope → add `org.jboss.logging:jboss-logging` version null; leading `**` accepted by 7.0.8; Boot 4.1 "removed" list; `ant_path_matcher`
+  exists; versioned XSDs resolve; commons-collections recipe does not run; mybatis-spring 4.x line; JUnit vintage paragraph deleted;
+  raw `createQuery(String)` exists; `spring-boot-starter-batch-data-mongodb`).
+- `servlet-to-boot.md` rewritten (B-M9): sbmig already moved the JSPs to the front module's `META-INF/resources/WEB-INF/jsp` and made
+  the boot module an executable WAR; do not change packaging, JSP location or the provided scopes; A-B1 (javax-only filter in the
+  generated `WebXmlRegistrations`: pom fix first, else comment that one `@Bean` out with `MIGRATION-TODO` — decision 4) and A-B2
+  (`CommonsMultipartResolver` → delete + `spring.servlet.multipart.max-file-size` / `max-request-size` from the as-is limits).
+- Boot 4 package / starter relocations split out of `boot3-to-4.md` / `boot40-to-41.md` into `boot4-packages.md` with `cases: []` (every
+  case) keyed on `org\.springframework\.boot\.` / `spring-boot-starter-` / the moved class names, so `spring_legacy` / `servlet_tomcat`
+  receive them.
+- `fix-policy.md` deleted (decision 3): index entry, `always:` expectations in `tests/fix/test_fix_notes.py`, the design README
+  sentence; `ContextPacker` keeps its "always-notes are left out" line (harmless, no always-note exists).
+- v1 handler wording gone (B-M7): `advisories.yml` jdk-removed-apis (no `sbmig.compat` shim exists; `UseJavaUtilBase64` does NOT
+  reach `sun.misc.BASE64Encoder` — OpenRewrite parses on JDK 21 where the class is gone, `docs/ADVISORIES.md` says so — the LLM ports
+  it to `java.util.Base64` in the fix loop; MIME output needs `Base64.getMimeEncoder()`), querydsl ("handler querydsl-jakarta-classifier"), `spring-security-7.md`
+  "`add-known-dependency` adds it", `jakarta_libraries.yml` header "handler"; a test asserts that none of `sbmig.compat`,
+  `add-known-dependency`, `jdk-base64-shim`, `querydsl-jakarta-classifier`, `jakarta-library-floor`, `carry-over-managed-version` appears
+  under `knowledge/notes/` or in `knowledge/libraries/*.yml`.
+- Literal versions as instructions (maven-plugins.md table, jdk21.md, jakarta.md table, era-libraries.md, ibatis2.md two lines) →
+  compatibility facts stay, "use X" becomes "`version: null` / the Dependency versions section / the parent chain property".
+- Keywords: the 17 gaps and 5 false positives of report C §4 (`release` → `maven-releases` URL, `layout` → `com.x.layout`, `Optional<`,
+  `is deprecated` javac warnings, `Matchers` → `antMatchers`); `jakarta.md` `Filter` → `\b(Filter|FilterChain|FilterConfig)\b`.
+
+### v2.1v — the facts reach the LLM
+
+**Fix loop (`sbmig/loop/fixloop.py`, `sbmig/loop/orchestrator.py`, `sbmig/build/repo_versions.py`)**
+- `FixContext.layout_facts` (rendered by the packer as section "Project after the restructure", order 0.5, never truncated, ≤ ~1,200
+  chars): built by the loop from the orchestrator's `RestructureResult`s (`self.loop.restructure_results = list(self._restructure_results)`
+  next to the merge-conflict handoff) and `cfg.artifacts` / `cfg.layout`. Lines (each only when the value exists):
+  `converted by sbmig: <case> → Spring Boot application (company layout)`;
+  `boot module <dir>: artifactId <a>, packaging <jar|war (executable, java -jar)>, parent <g:a:v>, starter <starter>`;
+  `back module <dir>: every source incl. controllers, parent <g:a:v>`; `front module <dir>: static under <dir>, JSPs under <dir>`;
+  `generated: <Application FQCN>, legacy-config/ (N XML imported via @ImportResource: …), <WebXmlRegistrations FQCN>`;
+  `XML not imported: …` (xml_skipped); `legacy properties written: …`; `scopes restored: …`; `source encodings written: …`;
+  `company artifacts: root parent <g:a:v>; mandatory <keys> declared in <root|modules>; optional in-house artifacts only where already
+  used; versions managed by the parent chain — never write a literal for them`; `BOM imported: …` (bom_imports);
+  `parents set: …` (≤ 6); Boot as-is / MSA pom-only mode: the parents / mandatory / BOM lines only. Values come from the result and the
+  config, never from literals in code.
+- `_version_facts` / `_chain_property_facts` also cover the GAVs `_case_libraries` locates on the classpath (compile errors carry no
+  `e.artifact`): `as-is build: spring-batch-core 4.3.10 (…)`, `new parent chain: manages spring-batch-core at 6.0.4 (major 4 → 6)`.
+- `_package_facts` for `package <p> does not exist` (no javax): the longest-prefix groupId among the chain's / Boot BOM's managed keys →
+  `managed artifacts under <group> (add the one that holds <pkg>, version-less): a, b, c` (≤ 25 artifactIds).
+- `_verdict_line` (`repo_versions.py`) last branch: "no jakarta build is known on any line — the API changed inside the same major:
+  fix the code against the version the parent chain / Boot BOM manages and leave the version" (no `<no_script>`). `_library_hints`: the
+  repository candidates + verdict only when the case's errors mention `javax.` (the v2.1d scope) or the artifact is in the javax table;
+  for an artifact the `VersionResolver` knows (chain-managed / Boot BOM) one line: `new parent chain: manages g:a at v — the API changed,
+  fix the code and leave the version`.
+- `other_errors_summary` is cut at a line boundary with `(… N more lines)`; a case that appeared after a script's commit gets the kb hint
+  `introduced by script:<case>:v<N> (attempt <id>) — prefer augmenting that script` (E-L9).
+
+**Packer (`sbmig/fix/context.py`)**
+- Note selection: a keyword hit in the error text (messages / symbols / locations / raw) counts 3, in the imports / pom text 1; a note
+  with 0 error-text hits is taken only when no note has one; `SCRIPT_TRUNCATE_ORDER` / `EDITS_TRUNCATE_ORDER` start with
+  `other_errors, plan_notes, notes, …` (notes were cut first).
+
+**Structure review (`sbmig/review/inputs.py`, `reviewer.py`)**
+- `version_fact_lines(poms, cfg, results)` from `sbmig.build.parent_chain.load_parent_chain_facts(cfg)` / `boot_bom.load_boot_bom_facts`
+  (read-only): `parent chain property: <name>=<value> (<defining pom>)` (company properties), `explicit version on a managed artifact:
+  <pom> g:a <v> — managed <m> by <pom>`, `Spring Boot artifact on another line: <pom> g:a <v> (chain / target <t>)`, `property shadows the
+  parent chain: <pom> <name>=<value> (chain: <value> by <pom>)`; the system prompt says the last two are critical. Normally the restructure
+  leaves nothing → zero lines.
+- The auto line uses the effective value (`results[].parent_manages_spring_boot_effective`, `bom_imports`): "the parent chain reaches the
+  Boot BOM: no Boot BOM import and no Boot version property belongs in the project poms" | "the restructure imported `<g:a> ${prop}`
+  (= <value>, defined by <pom>) in <poms> — do not define that property in a project pom".
+- "What the restructure did" renders every new `RestructureResult` field (v2.1x list above, `conversion_facts` as `- key: value`) and
+  the run notes only when not already in a result (D-M3); `parent_manages_spring_boot_effective`, `non_filtered_extensions`,
+  `jsp_jakarta_*` included.
+- `review.save_input: true` → the user prompt is written to `<run dir>/logs/review-input.md` (`sbmig.core.workspace.logs_dir(ws)`); an
+  offline test renders a `spring_legacy` + role-parents input and asserts the H1–H5 lines.
+
+### v2.1w — new notes, recipe sets
+
+- `knowledge/notes/jackson-2-3.md` (rule A: the module is on Jackson 3 → finish the file's move — `JsonProcessingException` →
+  `tools.jackson.core.JacksonException`, converters → `JacksonJsonHttpMessageConverter(JsonMapper)`, `Jackson2ObjectMapperBuilder` →
+  `JsonMapper.builder()`, never undo the recipe; rule B: a library needs Jackson 2 types → that file stays on 2 + `jackson-databind`
+  version null (the Boot 4.1 BOM manages both lines); rule C: no Jackson 3 in the module and `package com.fasterxml.jackson.databind does
+  not exist` → add Jackson 2; rule D: never add `spring-boot-jackson2` to a `spring_legacy` project; XML `MappingJackson2JsonView` → Handover).
+- `knowledge/notes/spring-batch-6.md` (package moves `item.*` → `infrastructure.item.*`, `core.Job/Step` → `core.job/step`, listeners,
+  explorer, repeat; `JobBuilderFactory` → `new JobBuilder(name, jobRepository)`; `.chunk(n).transactionManager(tm)`;
+  `ItemWriter.write(Chunk)`; `DefaultBatchConfigurer` gone; runtime items → `fix-loop:` says Handover).
+- `spring-framework-7.md` additions (C-M3: `APPLICATION_JSON_UTF8`, removed `HttpStatus` constants, `getStatusCodeValue()`,
+  `org.springframework.remoting.*` → TODO / Handover, `OkHttp3ClientHttpRequestFactory`, `@Required`, Theme support, `Assert.notNull(x)`,
+  `Log4jConfigurer`, `CommonsMultipartFile`, `NestedIOException`, `OpenSessionInViewFilter`; Spring 4 → 5: `AbstractExcelView`,
+  `queryForInt/Long`, `SimpleJdbcTemplate`); Spring Data 1.x → 2+ (`findOne` → `findById(..).orElse(null)`, `PageRequest.of`), Security 3/4
+  `authentication.encoding.*` (no hash-compatible replacement → `<verify>`), commons-lang 2 / log4j 1 ("re-declare the as-is coordinate
+  with version null; the replacement is the owners' — Handover") in `era-libraries.md`; keywords for all of them.
+- Recipe sets (decision 7): planner `_case_buckets` — `spring_legacy` + library `spring-batch` → `rs.spring_batch_6` (bucket
+  `framework`, after the Framework set); `spring_legacy` + library `hibernate` (native ORM, not JPA-only) → `rs.hibernate_7`;
+  `servlet_tomcat` → `rs.servlet_jakarta_10` in the jakarta bucket; catalog `sets:` + `_RECIPE_SET_NAMES` + gates `has_spring_batch` /
+  `has_hibernate`; `sbmig recipes check --jars` green; plan notes name the reason ("spring-batch detected"). Fixture expectations that
+  change because the recipe now does the work (fewer LLM calls / attempts) are updated with hand-written replays.
+
+### v2.1x — the legacy Spring context at conversion time (`sbmig/restructure/`, `sbmig/analyze/`, `knowledge/config/`)
+
+All behind `layout.legacy_context.*` (default on); every switch off = the Handover sentence only. Facts go into the new
+`RestructureResult` fields; wording follows v2.1q (executable WAR, `java -jar`).
+
+| # | what | how |
+|---|---|---|
+| D2 | which XML the Boot context imports | web.xml `contextConfigLocation` (context-param = root, DispatcherServlet init-param = servlet) resolved to files (`classpath*:`, `/WEB-INF/…`, comma / whitespace lists, `*` globs) → only those go into `legacy-config/` + `@ImportResource`; files reached by `<import resource>` are copied next to them (relative paths kept) but not listed; `src/test/**` never; no web.xml / nothing resolved → every `xml_bean_configs` file as before. `xml_imports` / `xml_skipped` filled; duplicate `id=` across imported files → `duplicate_bean_ids` + Handover |
+| D1 | overriding / circular | boot `application.properties`: `spring.main.allow-bean-definition-overriding=true`, `spring.main.allow-circular-references=true` with a `# sbmig:` comment naming the as-is behaviour (decision 1); `legacy_properties_written` |
+| D3 | EUC-KR / MS949 XML | the copy into `legacy-config/` is a byte copy (`_Ctx.copy`, not `c.write(c.ws.read())`); the XML declaration's encoding stays true |
+| D4 | skipped web.xml filters with init-params | `web_xml_rules.yml` rows get `properties:` (init-param → Boot key: `CharacterEncodingFilter` `encoding` → `spring.servlet.encoding.charset`, `forceEncoding` → `spring.servlet.encoding.force` — the `server.servlet.encoding.*` names are deprecated=error in Boot 4.1; `HiddenHttpMethodFilter` → `spring.mvc.hiddenmethod.filter.enabled=true`; `FormContentFilter` → `spring.mvc.formcontent.filter.enabled=true`; `<multipart-config>` → `spring.servlet.multipart.max-file-size` / `max-request-size` / `file-size-threshold`) and `requires:` (D11: `DelegatingFilterProxy` is skipped only when its filter-name is `springSecurityFilterChain` AND the project uses spring-security; otherwise a `DelegatingFilterProxyRegistrationBean("<name>")` is generated; `OpenEntityManagerInViewFilter` skipped only when JPA is used, else Handover) |
+| D5 | JNDI DataSource | `<jee:jndi-lookup>` / `JndiObjectFactoryBean` beans in the copies: a `<!-- MIGRATION-TODO (sbmig): … -->` comment right above the bean, the Handover sentence "JNDI DataSource `<id>` has no JNDI in embedded Tomcat: remove the bean and set spring.datasource.* (spring-boot-starter-jdbc present: yes/no)"; the bean itself is left (the owners decide) |
+| D6 | `/WEB-INF/…` property locations | in the copies: `PropertyPlaceholderConfigurer` / `<context:property-placeholder location>` / `@PropertySource` values `/WEB-INF/x` → `classpath:asis-webinf/x` (the stash already lands there); the analyzer counts such files as definitions (no `__SET_ME__` for keys they define); `webinf_locations_rewritten` |
+| D7 | `${profile}` locations | `classpath:config-${env}.properties` → `classpath*:config-*.properties` glob in the copies (`profile_globs`) + Handover line naming the as-is placeholder |
+| D8 | `<mvc:default-servlet-handler/>` | `server.servlet.register-default-servlet=true` + a sentence |
+| D9 | XML `CommonsMultipartResolver` | removed from the copy, `spring.servlet.multipart.*` from `maxUploadSize` / `maxInMemorySize`; `beans_removed` |
+| D10 | `@EnableWebMvc` / `WebMvcConfigurationSupport`, `<mvc:resources>` | analyzer flag (`SourceStats` via `conversion_facts["enable_web_mvc"]` — `SourceStats` has no field; the restructure scans `comp` sources) → no `spring.mvc.view.*` written, Handover instead; the copy's `InternalResourceViewResolver` prefix rewritten like `spring.mvc.view.prefix` (decision 5 keeps the JSP move); `<mvc:resources mapping=… location="/resources/">` → sentence naming the front `static/` path |
+| D12 | `*.do` mappings, `<jsp-config>`, `WebApplicationInitializer`, WAR context root, log4j 1, Security XML, `spring.profiles.active` context-param | Handover sentences (report A §2b wording); `*.do` → "`spring.mvc.servlet.path` is a prefix only; the as-is `*.do` suffix mapping needs `DispatcherServlet` registration on `*.do` — WebXmlRegistrations does it when generated, else …" |
+| E-M6 | `provided` scopes | after the recipes a dependency whose as-is declaration (`logs/depmgmt.json` capture, else the as-is pom text before the rewrite commit) had `scope provided` (javax.servlet-api → jakarta.servlet-api …) gets `provided` back; `scope_restored`; pom-verify row `scope restored: provided (as-is)` |
+| E-M9 | starter | `web_evidence` from web.xml / `spring-webmvc` / servlet-api / `@Controller` / JSP; `spring_legacy` without evidence → `spring-boot-starter` (note + Handover "no web evidence: no embedded Tomcat"); `starter` filled in every layout run |
+| D-M7 | source encoding | a module whose sampled `.java` files are MS949 / EUC-KR and whose in-project pom chain declares no matching `project.build.sourceEncoding` → the restructure writes it into the module pom (`source_encodings_written`); the review's encoding check then sees nothing |
+
+Stale wording fixed in the same increment: `Application.java.j2` ("Packaged as a WAR for an external Tomcat" → executable WAR,
+`SpringBootServletInitializer` for the external deployment), `web_xml_rules.yml` rows 13 / 14 / 17, `webxml_registrations.py:252-255 /
+374 / 387`, `restructurer.py:2507` (the `@ServletComponentScan` claim must follow the generated file, not the flag), `:2933`
+(context.xml advice), `:3131`, `externalized.yml:53`; the Handover no longer says "registered via @ServletComponentScan" for web.xml
+declarations; the view-prefix follow-up is written only when the project has `@Controller`s or `spring-webmvc`; duplicate follow-ups
+de-duplicated.
+
+Fixture `fixtures/projects/spring5-legacy-startup` (new): a Spring 5 XML web app (JDK 8, javax) with root + servlet XML named by
+`contextConfigLocation`, an `<import>`ed XML, a `src/test` XML, an EUC-KR XML, `CharacterEncodingFilter` (EUC-KR, forceEncoding), a
+`<jee:jndi-lookup>` DataSource, `/WEB-INF/config/app.properties` + `classpath:config-${env}.properties` placeholders,
+`<mvc:default-servlet-handler/>`, `<mvc:resources>`, XML `CommonsMultipartResolver`, a non-security `DelegatingFilterProxy` (xss filter
+bean), `*.do` mapping, `spring.profiles.active` context-param, a log4j 1 `log4j.properties`, `javax.servlet-api` provided, two JSPs,
+MS949 Java sources in one package. `expected.json` asserts the build, the `RestructureResult` facts (journal / report rows), the Handover
+sentences and `scope restored`; `replay/` answers the review (and any fix case) by hand.
+
+### v2.1y — loop and review policy
+
+- **Declined answers (E-M1)**: an answer with `blocked_reason`, or with neither edits nor a script and only `<analysis>`, is classified
+  `declined` (journal event `declined`, attempt outcome `blocked`, `FixAttempt.notes`); after `script.max_declines_per_case` such answers
+  the case is BLOCKED `needs_owner` (Korean suggestion = the blocker sentence + "소유팀 결정 필요"); cases whose errors are in the same files
+  or name the same artifact are blocked in the same round as "same cause as <case>" without an LLM call. legacy-ibatis: 9 calls → 1.
+  `loop.blocked_policy.needs_owner: 0`.
+- **Idempotency (E-H3)**: `script.idempotency_check: true` — after the first run's commit the same script runs once more; a second change
+  → `discard_uncommitted()`, the stored version gets `non_idempotent: true` (+ a note on the attempt, journal `script_non_idempotent`),
+  `CaseStore.best(...)` never selects such a version; the attempt's own result stays as scored.
+- **Review invariant check (D-M4)**: after the edits apply (before the commit): no `<properties>` entry whose name the company chain defines
+  (`ParentChainFacts.company_properties`), no explicit `<version>` on a chain-managed artifact that had none before the edits, no `<parent>`
+  that is neither a configured parent nor an in-project pom, no removal of a mandatory dependency; a violation restores the tree and asks
+  once more with the reason (the second answer is checked the same way; a second violation → handed over as a critical issue).
+- **Review encoding check (D-M7)**: an issue counts as resolved only through an in-project chain pom (role parents: a module does not
+  inherit the root); recomputed after the edits.
+- **Unsupported review issues (E-M5)**: `parse` post-processing marks an issue whose text names a version / property / coordinate that
+  appears nowhere in the review material (`ReviewIssue.unsupported`); such issues stay in the report with "(sbmig check) not in the
+  material", are never applied and never reach the Handover; the four stale replays are regenerated by hand and `expected.json` gains
+  `issues_not_contain` (`scripts/e2e.py`).
+- **Edits-only review (decision 2)**: `review.ask_script: false` removes the script paragraph, the `<script>` example and the helper table
+  from the system prompt (`system_prompt(cfg)`); `ReviewInput.render()`'s last line matches; `parse_review_answer` still reads `<script>`
+  (older replays).
+
+### As built (2026-10-31, agents N / P1 / P2 / K; R and X below)
+- **Notes (N)**: 15 notes corrected, `index.yml` rebuilt from the front-matter, `fix-policy.md` deleted (no `always:` note remains — the
+  packer's filter stays as dead code), new `boot4-packages.md` (every case; the relocation parts moved out of `boot3-to-4.md`, which keeps
+  `cases: [spring_boot, msa]`), `jackson-2-3.md` ("Jackson 2 → 3 under the target Boot BOM (decision rules A-D)" — rule 8 cites that
+  title), `spring-batch-6.md` (with a `fix-loop:` section). Verified against the local jars: `setConnectTimeout` removed in 7.0 (javap
+  spring-web 7.0.8), jboss-logging `runtime` in hibernate-core 7.4.1, `PathPatternParser` 7.0.8 accepts `/**/*.do`, Boot 4.1.0 BOM still
+  has `spring-boot-jackson2` / `HttpMessageConverters` / `-starter-web` (deprecated), `DaoAuthenticationProvider` no-arg ctor gone in Security
+  7.1, Spring 7 ignores `javax.annotation` / `javax.inject`. **Correction of the contract text above**: `UseJavaUtilBase64` never reaches
+  `sun.misc.BASE64Encoder` (OpenRewrite parses on JDK 21 where the class is gone) — the LLM ports it in the fix loop; `advisories.yml`,
+  `jdk21.md`, `docs/ADVISORIES.md` and the fixture comments say so now. Advisory `notes:` pointers: log4j1 → era-libraries.md, commons-lang2
+  added, struts2 / egovframe dropped (no content). `tests/fix/test_v21u_knowledge.py` guards the deleted-handler strings and the
+  "external Tomcat as target" wording. Not verified locally: `OAuth2ClientHttpRequestInterceptor`, Batch 6 `BATCH_JOB_SEQ`, the
+  Security 3/4 `password{salt}` format, what `spring.jackson.use-jackson2-defaults` does.
+- **Fix prompts (P1)**: `load_script_prompts(version, extra_imports, timeout_s, target="")` / `load_edits_prompts(version, target="")` /
+  `load_verify_prompt(version, target="")` render `{{ target }}` (empty = `TargetConfig` defaults; `LLMFixer` passes `target_text(cfg)`);
+  `tests/fix/test_v21u_prompts.py` asserts no prompt file matches `\b4\.[01]\b|\b21\b|\b7\.0\b` outside the placeholder and that a
+  retargeted config renders through. Sizes: `script_system_v1.md` 16,978 → 15,918 chars (rendered 17,768 → 16,721), `edits_system_v1.md`
+  11,648 → 11,239, rule 14 2,130 → 1,397 (facts authoritative in the order `new parent chain:` → `target Boot BOM:` → `as-is build:`;
+  `parent chain property:` → `${name}`; `managed artifacts under <group>` → add the one holding the package, version-less; otherwise
+  `"version": null`); rule 3 allows `p.replace` on exact plugin XML; rule 10 names the note `fix-loop:` sections; rule 12 absorbs "Script or
+  no script". `<blocked>`: `ScriptProposal.blocked_reason` non-empty exactly when the tag is present (fence-stripped, ≤ 400 chars,
+  `BLOCKED_MAX_CHARS`; the tag is masked so a `<script>` inside it never opens a script); blocked-only answers return `code == ""`,
+  `edits == []`, `error == "blocked: <reason[:200]>"` after ONE call (no feedback / context round); an answer with `<blocked>` AND edits
+  keeps both (`error == ""`); analysis-only without the tag keeps `error == "no <script> block"` / `"no <edits> block"`; journal
+  `llm_script` carries `blocked_reason`. Layout facts: section "Project after the restructure" (`LAYOUT_FACTS_TITLE`), order 0.5 (after
+  "Case", before the errors), never truncated, counts as fixed text, lines rendered `- <line>`. Header `as-is (before sbmig): case=…`;
+  only the import-only advisory markers (rules without coordinate patterns, e.g. `jdk-removed-apis`) are dropped from `libs=` — real
+  libraries with advisories (`hystrix:2.2.10`) stay. `PROMPT_PLAN_NOTE_PREFIXES = ("transform", "restructure", "warning", "msa",
+  "followup")` (also drops `compile:` / `verify:` / `advisor…`). `NoteEntry.score_parts(error_text, context_text)` (3 / 1); notes with an
+  error-text hit win when any has one; `score(text)` unchanged for the index tests. The user templates' closing line deliberately does
+  not mention `<blocked>` (the system prompt's output format does).
+- **Fix loop (P2)**: new `sbmig/loop/layout_facts.py` (budget **1,500** chars — the company-artifacts line plus the front paths already take
+  ~1,170; Boot as-is / MSA get the artifacts / BOM / parents lines only); the orchestrator hands `restructure_results` + modes to the loop
+  in `_step_restructure` and after the loop is created (both engines), journal `layout_facts`. `_verdict_line` last branch reworded; the
+  repository list + verdict only when an error mentions `javax.` or the library is in the javax table; a chain- / BOM-managed library gets
+  one line `new parent chain: manages g:a at v (major X → Y) — the API changed, fix the code and leave the version`; `_version_facts` /
+  `_chain_property_facts` also cover the located classpath GAVs; `managed artifacts under <group> (add the one that holds <pkg>,
+  version-less): …`; `other_errors` cut at a line with `(… N more lines)`; kb hint `introduced by script:<case>:v<N> (attempt <id>) —
+  prefer augmenting that script`. **Declined**: `blocked_reason`, or no code + no edits + analysis only (transport errors, protocol
+  garbage, context requests and broken edits exempt) → outcome `blocked`, note `declined: …`, journal `declined`; an answer with
+  `<blocked>` beside edits is declined too (edits not applied, noted); after `script.max_declines_per_case` (≤ 0 = off) the case is
+  BLOCKED — **the triage classifier's specific reason wins when it has one** (`external_javax_api`, `external_api_incompatible`,
+  `artifact_not_found`, `plugin_incompatible`; the artifact attribution and the composed suggestion stay, the LLM's sentence goes into
+  the item's rationale as `the LLM declined: …`; errors the classifier does not cover are blocked `needs_owner`), `needs_owner`
+  otherwise — suggestion `<sentence> — 소유팀 결정 필요`; never an augment for a declined case; later cases whose error files all lie inside the declined case's files, or that name
+  the same artifact, are blocked as `same cause as <case>: …` without a call (journal `same_cause_blocked`). **Idempotency**: the second
+  run happens right after the first `ok` run, BEFORE `_fill_versions` and the commit (sbmig's own version fill must not look like a
+  second change); a second change is undone from a byte snapshot, `CaseStore.mark_non_idempotent` (field `CaseScript.non_idempotent`;
+  `ScriptMeta` got the same field but v2.1 does not use that model), journal `script_non_idempotent`; `best()` / `stored_best` /
+  `stored_next` skip such versions, `latest()` still offers them as an augment base; edits mode and `sbmig-version` / `sbmig-resources`
+  never run it; every successful script run now logs `fix script ok …` twice. Fixtures: legacy-ibatis 10 → 2 LLM calls, 3 × BLOCKED
+  (`needs_owner` ×1 declined + 2 "same cause"); boot2-javax-lib 5 → 3 calls (each javax case asked once, reason `external_javax_api`
+  kept); missing-artifact 3 → 2 (`artifact_not_found` kept); spring5-security-batch's old `1b37194675` replay would be marked non-idempotent (moot:
+  v2.1w's recipe removes the case).
+- **Recipe sets (K)**: buckets jdk21 → jakarta (`RemovalsServletJakarta10` right after `JavaxMigrationToJakarta` for every
+  `servlet_tomcat`, `pure_java` with `javax.servlet` imports, and `spring_legacy` only when the Framework 7 set is empty — the Framework
+  recipe already includes it) → framework → security → **batch** (`spring_legacy` + library `spring-batch`) → **hibernate** (`spring_legacy`
+  + library `hibernate`: `hibernate-core` / `hibernate-entitymanager` / `org.hibernate.orm:*` or `org.hibernate.{Session,SessionFactory,
+  query,type,cfg,annotations}` imports; JPA-only projects — `jpa` / `spring-data-jpa` only — get nothing) → boot → junit5 → extra; Boot
+  projects unchanged (the umbrella covers all three); plan notes `+ Spring Batch 6 set … (spring-batch detected)` etc.; catalog `sets:` +
+  gates `has_spring_batch` / `has_hibernate`; `v2_recipe_scope` lists the sets; `recipes check --jars` OK (43 recipes in 10 jars:
+  rewrite-spring 6.37.0, rewrite-hibernate 2.25.0, rewrite-migrate-java 3.42.0). e2e: spring5-security-batch 9 → 7 LLM calls (the two
+  Batch cases are now the recipe's work; replays `llm-003/004` kept as "unused since v2.1w"); the 8 servlet fixtures unchanged (none calls
+  a removed Servlet 6 API; no fixture uses native Hibernate — unit tests only). `docs/RECIPES.md` has the rule.
+- **Structure review (R)**: `review_v1.md` rewritten (checks 3–8, "the restructure's version decisions are final", the new critical items);
+  the script parts sit between `<!-- script:begin -->` … `<!-- script:end -->` and leave the prompt unless `review.ask_script: true`
+  (en system prompt 12,403 → 11,431 chars edits-only, 15,371 with the script parts; ko 12,290 → 11,318); `ReviewInput.render()` and the
+  retry texts ask for `<analysis>`, `<solution>`, `<edits>`; `parse_review_answer` still reads `<script>`. Fact lines
+  (`version_fact_lines`): `parent chain property: <name>=<value> (<pom>)` (company `*.version` properties, ≤ 20), `explicit version on a
+  managed artifact: <pom> g:a <v> — managed <m> by …` (a pin NEWER than the managed version is left out — that is the restructure's
+  `gte` decision — as are in-house specs and the versions the restructure pinned), `Spring Boot artifact on another line: …` (critical),
+  `property shadows the parent chain: …` (critical; `project.build.sourceEncoding` never), `container API declared compile …` (warning),
+  `repackaged module used as a dependency: … spring-boot-maven-plugin repackage without a classifier` (critical); the Boot rule line comes
+  from the effective value ("the parent chain reaches the Boot BOM: no Boot BOM import and no Boot version property belongs in the
+  project poms" | "BOM import by the restructure: `g:a` `${prop}` (= value, defined by …) — never define `prop` in a project pom"); the
+  rules section never contains the target literal; the MSA line follows `_msa` (with / without role parents); mandatory specs end `→
+  <dependencies>` or `→ <dependencyManagement> (BOM import)`; optional wording v2.1n/t; the boot starter line; every new `RestructureResult`
+  field in "What the restructure did"; run notes only when no result already says it (company-spring5-web lost 12 repeated notes).
+  `review.save_input` → `<run dir>/logs/review-input.md`. **Invariant check** (after the edits apply, on the changed poms): (a) a company
+  chain property named `*.version` (not `java.version`) added or changed — limited to `*.version` because the chain may define
+  `project.build.sourceEncoding`, which the review must be able to set; (b) an explicit `<version>` on a chain-managed / imported-BOM
+  artifact that had none (in-house specs and `${company prop}` exempt); (c) a `<parent>` that is neither a configured parent (with its
+  version) nor a project pom; (d) a mandatory dependency removed → restore + one retry naming the violation, a second violation hands the
+  critical issues over. **Unsupported issues** (`parse.mark_unsupported`): versions checked against the whole prompt plus every pom in
+  full (a pom cut for the budget never causes a false mark), property names against everything except "What the restructure did"
+  (so "property X is left" is caught when the restructure removed X); a marked issue keeps its severity with the prefix "(sbmig check) not
+  in the material: ", is never applied (edits carrying the missing token are dropped), never reaches the Handover (`sbmig/report/handover.py`
+  / `markdown.py`), and the orchestrator's `_review_entries` records it as a note instead of "fixed by the review". **Encoding check** counts
+  only an in-project chain pom and is recomputed after the edits. Replays rewritten (stale, confirmed by re-rendering): spring5-security-batch
+  (`5.0.0`), company-spring5-web / legacy-external-config / legacy-ibatis (`spring.version`), boot2 (`lombok.version`); after X's scope
+  restore: spring5-xml (also its slf4j floor warning), servlet-tomcat, company-servlet-jsp, msa-shared-lib ("scope compile" gone); each
+  `structure_review` block gained `issues_not_contain` (`scripts/e2e.py`, `tests/fixtures/test_fixture_projects.py` schema). `needs_owner`:
+  attention code `owner-decision` (before the `blocked:*` codes, `sbmig/report/result_line.py`), two Korean i18n rows (the "same cause as …"
+  sibling text and `compose_suggestion`'s fallback in `sbmig/loop/blocked_registry.py`).
+- **Restructure (X)**: new `sbmig/restructure/legacy_context.py` (pure XML / location helpers), `sbmig/restructure/legacy_apply.py` (a
+  mixin `Restructurer` inherits), `knowledge/config/legacy_context_rules.yml` (class, element and Boot-property tables, the javax →
+  jakarta scope successors), `web_xml_rules.yml` rows with `properties` / `set` / `requires` / `otherwise` / `register_requires` /
+  `followup`; journal events `legacy_context` (counts) and `legacy_xml_imports`; `conversion_facts` keys: contexts, jndi_beans,
+  profile_locations, resources_locations, view_prefix_rewritten, default_servlet, delegating_filter_proxies, dispatcher_mappings,
+  jsp_config, log4j1_files, enable_web_mvc, web_initializers, security_xml. D2: root `contextConfigLocation` + each DispatcherServlet's own
+  entry (or the Spring default `<servlet-name>-servlet.xml`); `<import>`ed files copied next to their importer, an absolute / escaping
+  import rewritten to the copy; D3 byte copy (post-checked byte-equal); D6 copies the WEB-INF file to `asis-webinf/` itself when the front
+  move did not, the analyzer (`sbmig/analyze/properties.py`) counts those files as definitions and the placeholder only that location used
+  is no longer written; **D7 departure**: a `${…}` location becomes a `classpath*:` glob only when exactly ONE packaged file matches —
+  with several (config-dev / config-prod) a glob would merge the environments, so the location stays and the sentence names the key;
+  placeholders Boot can resolve (a default value, or a key Boot gets a value for) are left alone; D9 limits `10MB` / `1MB` from the bean,
+  a Java `new CommonsMultipartResolver` gets a sentence only; D10 the copy's view prefix rewritten, `<mvc:resources>` location gains
+  `classpath:/static/<dir>/`; **D11 departure**: `OpenEntityManagerInViewFilter` is skipped only when the as-is poms already carry the Boot
+  JPA starter — JPA without it keeps the filter registered as-is (lazy loading in JSPs keeps working), no JPA → sentence; **`*.do`
+  departure**: the generated `WebXmlRegistrations` does not register on `*.do` — Boot's DispatcherServlet on `/` receives those requests
+  and the sentence says exactly that; E-M6 restores `provided` unless another as-is pom declared the artifact compile; E-M9 a `spring_legacy`
+  without web evidence gets `starter_by_case.pure_java`; D-M7 samples with `review.inputs.source_encodings`, a module mixing MS949 and
+  UTF-8 gets a sentence only; pom-verify rows `scope restored: provided (as-is): g:a (was compile)` and `source encoding written: …`
+  (orchestrator). Fixture `spring5-legacy-startup`: as-is build JDK 8 + `-Dfile.encoding=MS949`; e2e `exit=0 build=ok … llm=1 review=ok`,
+  no fix script, 29 post-checks, 12 Handover sentences, journal counts asserted; euckr-legacy: the restructure writes the encoding, the
+  review answers `ok` (`replay/llm-001.json` rewritten, `sbmig_check: false`); `snapshots/pre9c_trees.json` regenerated (new / corrected
+  follow-ups only). Tests: `tests/restructure/test_v21x_legacy_context.py` (23), `tests/analyze/test_v21x_properties.py` (4).

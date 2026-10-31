@@ -765,4 +765,4 @@ def test_fills_and_pre_tries_journal_the_boot_bom_source_and_the_prompt_says_so(
     loop = make_loop(cfg, ws, FakeFixer(), pom_build())
     c = ErrorCluster(id="case:x", kind=ErrorKind.POM_INVALID, errors=[missing(SERVLET)])
     assert loop._version_facts(c) == [f"as-is build: {SERVLET} 4.0.3 (managed)",
-                                      f"target Boot BOM: manages {SERVLET} at 6.1.0"]
+                                      f"target Boot BOM: manages {SERVLET} at 6.1.0 (major 4 → 6)"]   # v2.1v

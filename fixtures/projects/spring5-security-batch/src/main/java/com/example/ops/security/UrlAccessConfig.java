@@ -14,7 +14,7 @@ import org.springframework.security.web.access.intercept.FilterInvocationSecurit
 
 /**
  * eGovFrame-style URL authorization read from the database: the legacy access-decision API that Spring Security 7
- * moved into spring-security-access (add-known-dependency adds it).
+ * moved into spring-security-access (the fix loop adds that dependency, version managed).
  */
 @Configuration
 public class UrlAccessConfig {

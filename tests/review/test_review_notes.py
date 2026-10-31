@@ -73,9 +73,10 @@ def test_script_without_changes_gets_the_note(tmp_path, cfg):
 
 def test_review_prompt_teaches_the_description_rule(cfg):
     cfg.report.language = "ko"
+    cfg.review.ask_script = True                       # v2.1y: the script parts only with review.ask_script
     text = system_prompt(cfg)
     for part in ("business team", "<파일> 의 <위치> 에서 <무엇을> <어떻게>", 'Every edit object also takes `"desc"`',
-                 "`<changes>` is REQUIRED", "Write the sentences in Korean (한국어);", '"desc": "shop-back/pom.xml 의'):
+                 "`<changes>` is\nREQUIRED", "Write the sentences in Korean (한국어);", '"desc": "shop-back/pom.xml 의'):
         assert part in text, part
     assert "{{" not in text
     cfg.report.language = "en"
@@ -85,3 +86,11 @@ def test_review_prompt_teaches_the_description_rule(cfg):
     p = parse_review_answer('<review>{"verdict": "issues", "issues": [{"severity": "critical", "problem": "x"}]}'
                             "</review>\n" + text[start:text.index("</script>", start) + len("</script>")])
     assert p.ok and len(p.edits) == 2 and all(e.desc for e in p.edits) and p.changes_described
+    # edits-only (the default): the example is <analysis> / <solution> / <edits> with a desc per edit
+    cfg.review.ask_script = False
+    plain = system_prompt(cfg)
+    assert "`<changes>` is" not in plain and "<script>" not in plain and 'Every edit object also takes `"desc"`' in plain
+    start = plain.index("<analysis>원인")
+    p = parse_review_answer('<review>{"verdict": "issues", "issues": [{"severity": "critical", "problem": "x"}]}'
+                            "</review>\n" + plain[start:plain.index("</edits>", start) + len("</edits>")])
+    assert p.ok and len(p.edits) == 2 and all(e.desc for e in p.edits) and not p.script

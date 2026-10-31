@@ -268,7 +268,7 @@ Fixture `boot2-cloud-legacy` (now with `@EnableCircuitBreaker` and a `commandKey
 | httpclient4 | superseded | recipe (round 10; Spring cases only) | org.apache.httpcomponents.client5:httpclient5 | `UpgradeApacheHttpClient_5` (inside the Framework 7 chain and the Boot umbrella → `recipe_source: plan`) |
 | httpclient4-direct | superseded | guide (round 10; pure Java / servlet) | org.apache.httpcomponents.client5:httpclient5 | manual (4.5.x stays at its carried-over version) |
 | undertow | incompatible | guide (round 10) | spring-boot-starter-tomcat (or spring-boot-starter-jetty) | `dependency-relocation` swaps the starter; Undertow customizers / `server.undertow.*` are manual |
-| jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; `sun.misc.BASE64Encoder` / `BASE64Decoder` and the xerces `Base64` → handler `jdk-base64-shim` (round 10, no LLM); the LLM ports the rest of the `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
+| jdk-removed-apis | incompatible | guide | java.util.Base64 / javax.imageio / jakarta.* API jars | `UpgradeToJava21` adds the JAXB / JAX-WS / common-annotations jars; `sun.misc.BASE64Encoder` / `BASE64Decoder` and the xerces `Base64` → `java.util.Base64` by an LLM fix script (stored per case, reused later); the LLM ports the rest of the `sun.misc` code with the `## fix-loop: jdk-removed-apis` hint (`knowledge/notes/jdk21.md`) |
 | ibatis2 | incompatible | guide | org.mybatis:mybatis + org.mybatis:mybatis-spring | no recipe exists; the LLM ports `SqlMapClientDaoSupport` DAOs with the `## fix-loop: ibatis2` hint (`knowledge/notes/ibatis2.md`) |
 | jdk-generified-apis | incompatible | guide | JDK API: `Enumeration<TreeNode>` + cast / `asIterator()` | no recipe (not a dependency); the LLM ports `javax.swing.tree` code with the `## fix-loop: jdk-generified-apis` hint (`knowledge/notes/jdk21.md`) |
 | hibernate-commons-annotations | incompatible | guide | `org.jboss.logging.Logger` (LoggerFactory / Log), `java.lang.reflect` (XClass / ReflectionManager) | no recipe; HCANN came transitively with hibernate-core ≤ 6.x and Hibernate ORM 7 (Boot 4) dropped it — the LLM ports the imports with the `## fix-loop: hibernate-commons-annotations` hint (`knowledge/notes/hibernate-7.md`) |
@@ -395,23 +395,19 @@ preconditions). `Java8toJava11` already runs these recipes, so the jdk21 recipe 
 `DeprecatedLogRecordThreadID`. `UpgradeToJava21` adds `UpgradeBuildToJava21` and `lang.ThreadStopUnsupported`.
 
 What the recipes cannot do: OpenRewrite parses with JDK 21, so `sun.misc.BASE64Encoder` does not resolve and
-`UseJavaUtilBase64` leaves the code alone. Since round 10 the pre-emptive handler `jdk-base64-shim` (JDK21 group,
-selected when this advisory matched; docs/ERROR-HANDLING.md E15) generates `sbmig.compat.BASE64Encoder` /
-`BASE64Decoder` / `Base64` per source root (byte-for-byte the JDK 8 output, `decodeBuffer` still `throws
-IOException`) and repoints the imports, so those call sites compile unchanged without an LLM call (flag
-`jdk-base64-shimmed`; the follow-up says to move to `java.util.Base64` when convenient). Everything else the JDK 21
-compile reports (`cannot find symbol … location: package sun.misc`, …) is matched by the advisory `jdk-removed-apis`
-(guide), because `sun.misc` is an import package of its rule. The fix prompt gets the follow-up plus the
-`## fix-loop: jdk-removed-apis` section of `knowledge/notes/jdk21.md`. The verify step reports `replaced` once no
-source imports those packages any more. The Handover then lists the LLM-rewritten files.
+`UseJavaUtilBase64` leaves the code alone. In v2 there is no shim handler (the v1 `jdk-base64-shim` / `sbmig.compat` classes
+went with the other handlers in step 4): the JDK 21 compile reports `cannot find symbol … location: package sun.misc`, the
+advisory `jdk-removed-apis` (guide) matches because `sun.misc` is an import package of its rule, and the fix prompt gets its
+follow-up plus the `## fix-loop: jdk-removed-apis` section of `knowledge/notes/jdk21.md`; the LLM's script ports the call
+sites to `java.util.Base64` (MIME output → `Base64.getMimeEncoder()`, `decodeBuffer` → `getMimeDecoder().decode`) and the
+script is stored per case for the next project. The verify step reports `replaced` once no source imports those packages
+any more. The Handover then lists the rewritten files.
 
-Fixture `java6-legacy` (replayed LLM configured, none needed since round 10):
+Fixture `java6-legacy` (v2, replayed LLM):
 
-* The pre-emptive `jaxb-runtime-add` adds `jaxb-api` 2.3.1 + `jaxb-runtime` 2.3.9.
-* `UpgradeToJava21` turns the API into `jakarta.xml.bind-api` 2.3.3. The spring-phase `JavaxMigrationToJakarta`
-  moves `Dates` to `jakarta.xml.bind` (3.0.1 / runtime 3.0.2).
-* `jdk-base64-shim` points `Codec` at the generated `sbmig.compat` shims (0 LLM calls; before round 10 one LLM fix
-  ported it to `java.util.Base64`).
+* `UpgradeToJava21` (`AddJaxbDependenciesWithRuntime` is gated off in v2) and the fix loop's JAXB script add
+  `jakarta.xml.bind-api` + `jaxb-runtime` version-less (reused from `pure-java`'s stored script without an LLM call).
+* The `sun.misc.BASE64*` case is ported to `java.util.Base64` by a new LLM script (replay `llm-003`).
 * Result: BUILD SUCCESS, exit 0.
 
 ### Round 10: undertow, and httpclient4 / jackson1 split by case type (2026-10-26)
@@ -447,7 +443,7 @@ jars) over ~180 libraries of the web / data / utility groups. Each library lands
 
 | group | lands in | examples |
 |---|---|---|
-| same coordinates, a later release is jakarta | `knowledge/libraries/jakarta_libraries.yml` (handler `jakarta-library-floor`, 44 entries) | SiteMesh 2/3, DisplayTag (old `displaytag:displaytag`), Jersey 2 → 4.0.2, CXF → 4.2.4, Spring Web Flow → 4.0.1, Tomcat API jars → 11.0.22, jOOQ → 3.21.5, MyBatis-Spring / Boot starter → 4.1.0, Quartz → 2.5.2, EclipseLink → 5.0.2, Ehcache 3 → 3.12.0 **classifier `jakarta`**, P6Spy starter → 2.0.1, Guice → 7.0.0, Axis2 → 2.0.1 |
+| same coordinates, a later release is jakarta | `knowledge/libraries/jakarta_libraries.yml` (read by the loop's version resolver / rule 14 facts, 44 entries) | SiteMesh 2/3, DisplayTag (old `displaytag:displaytag`), Jersey 2 → 4.0.2, CXF → 4.2.4, Spring Web Flow → 4.0.1, Tomcat API jars → 11.0.22, jOOQ → 3.21.5, MyBatis-Spring / Boot starter → 4.1.0, Quartz → 2.5.2, EclipseLink → 5.0.2, Ehcache 3 → 3.12.0 **classifier `jakarta`**, P6Spy starter → 2.0.1, Guice → 7.0.0, Axis2 → 2.0.1 |
 | new coordinates, same packages | `sbmig/triage/handlers/relocations.yml` (reactive rows, no `packages`) | spring-session → spring-session-core, hibernate-envers / -jpamodelgen → org.hibernate.orm, HikariCP-java6/7, c3p0, old Oracle / MSSQL / CUBRID / DB2 driver coordinates, dom4j, iText 2.1.7 → OpenPDF 2.4.0, Bouncy Castle jdk15on → jdk18on, hamcrest-all |
 | a package an old library pulled in transitively / a recipe introduces | `sbmig/triage/handlers/known_packages.yml` | fileupload2, thymeleaf-spring6, hateoas, spring-session, jakarta.ws.rs, JSP / JSTL APIs, dom4j, javassist, guava, commons-email2, collections4, dbcp2 / pool2, javax.cache, hypersistence-utils |
 | source / configuration work by the owning team | advisories (49, all `guide` except `commons-collections3`) + `knowledge/notes/era-libraries.md` | table above |

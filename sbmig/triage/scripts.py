@@ -110,7 +110,8 @@ def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
     저장본 없음 · 빈 코드 · retired(사람이 끔) · 저장소 오류면 None.
 
     (CaseScript, code) from `store.best(case_id)` (a `CaseScripts` adapter or E1's `CaseStore`); None = nothing
-    stored or the store failed (logged)."""
+    stored or the store failed (logged). v2.1y: a `non_idempotent` best (a store that does not skip it) → the next
+    stored version (`stored_next`)."""
     fn = getattr(store, "best", None) if store is not None else None
     if not callable(fn) or not case_id:
         return None
@@ -127,6 +128,9 @@ def stored_best(store: Any, case_id: str) -> Optional[tuple[Any, str]]:
         return None
     if meta is None or not (code or "").strip() or getattr(meta, "status", "") == "retired":
         return None
+    # v2.1y: 비멱등으로 표시된 버전은 재사용하지 않는다(CaseStore.best 가 이미 건너뛴다; 다른 저장소 대역에 대비) — 다음 저장본
+    if getattr(meta, "non_idempotent", False):
+        return stored_next(store, case_id, ())
     return meta, code
 
 
@@ -151,15 +155,17 @@ def _stored_scripts(store: Any, case_id: str) -> list[Any]:
 
 def stored_next(store: Any, case_id: str, skip: Iterable[int]) -> tuple[Any, str] | None:
     """``skip`` (이번 실행에서 이미 돈 버전)을 뺀 다음 저장본 (CaseScript, 코드): ``best`` 와 같은 순서 —
-    proven 최신 → unverified 최신, retired·빈 코드는 건너뜀. 없으면 None(A14, ``script.reuse_versions`` > 1).
+    proven 최신 → unverified 최신, retired·비멱등(v2.1y)·빈 코드는 건너뜀. 없으면 None(A14, ``script.reuse_versions`` > 1).
 
     The next stored version not in `skip` (the versions this run already ran), in `best`'s order: proven newest,
-    then unverified newest; retired ones and versions without code never. None = nothing left (A14)."""
+    then unverified newest; retired ones, `non_idempotent` ones (v2.1y) and versions without code never. None =
+    nothing left (A14)."""
     if store is None or not case_id:
         return None
     done = {int(v) for v in skip}
     ranked = sorted((s for s in _stored_scripts(store, case_id)
-                     if getattr(s, "status", "") != "retired" and int(getattr(s, "version", 0) or 0) not in done),
+                     if getattr(s, "status", "") != "retired" and not getattr(s, "non_idempotent", False)
+                     and int(getattr(s, "version", 0) or 0) not in done),
                     key=lambda s: (getattr(s, "status", "") == "proven", int(getattr(s, "version", 0) or 0)),
                     reverse=True)
     code_of = getattr(store, "code", None)

@@ -105,7 +105,8 @@ def test_edits_system_prompt_has_no_script_wording_and_is_shorter():
     for banned in ("<script>", "def fix(p)", "Helper API", "p.errors", "p.replace", "<changes>", "<no_script>",
                    "Script or no script", "{{", "{%"):
         assert banned not in system, banned
-    assert len(system) <= 0.7 * len(script_system) and len(system) <= 0.7 * len(raw_script)
+    # v2.1u (B-L2) took ~1.4K of repeated text out of the script prompt only, hence 0.72 (was 0.7)
+    assert len(system) <= 0.7 * len(script_system) and len(system) <= 0.72 * len(raw_script)
     assert "NO script" in system                                              # said explicitly
     for kept in ("<analysis>", "<solution>", "<verify>", "<edits>", "<need_files>", "<need_grep>", '"desc"',
                  "## Edits (`<edits>`)", "## Describing every change", "## Output format (mandatory)",
@@ -121,34 +122,42 @@ def test_edits_system_prompt_has_no_script_wording_and_is_shorter():
     assert not SCRIPT_WORDS.search(rendered) and "case: x" in rendered
 
 
-# the script prompts as of v2.1t (2026-10-30: rule 14 — unknown versions are left null, sbmig fills them; the parent
-# chain's version properties); update a hash only when that prompt is changed on purpose
-SCRIPT_PROMPT_SHA256 = {"script_system_v1.md": "da6707a0eec932b8ef4d2fc0c43bc445b1b3756a066f0a3ae0fa74f5ee19fc3e",
+# the script prompts as of v2.1u (2026-10-31: the target rendered from cfg.target, rule 8 Jackson / rule 10 fix-loop /
+# rule 14 resolution order, the <blocked> answer, B-L2 deletions); update a hash only when that prompt is changed on
+# purpose
+SCRIPT_PROMPT_SHA256 = {"script_system_v1.md": "bd977136978beef2af97a5c28b4b3d038e30678962d2fa866b3a79881e18f128",
                         "script_user_v1.md.j2": "797fec4e1c84a9b220501759e312e9489f4cf788799d00280afc787992d34d86"}
 
 
 @pytest.mark.parametrize("name", ["script_system_v1.md", "edits_system_v1.md"])
 def test_rule_14_leaves_unknown_versions_to_sbmig(name):
-    """v2.1l: an unknown version is written null and sbmig fills it; never a reason to refuse a fix. Both prompts."""
-    text = " ".join((PROMPTS_DIR / name).read_text(encoding="utf-8").split())
-    assert ('If you add a dependency and do not know a version the repository has, write `"version": null`: sbmig '
-            "fills it before the build (the as-is build's version, else the newest release the repository has).") in text
-    assert "leave an error unfixed only because a version is unknown." in text
-    assert "never name a version that section contradicts" in text            # the no-guessing sentence stays
-    assert "what the as-is build used and what the new parent chain manages" in text
-    assert ("When the parent chain defines a version property for the library's family (the facts list them as "
-            "`parent chain property:`), write `${that property}` instead of a literal version.") in text   # v2.1t
+    """v2.1l / v2.1s / v2.1t / v2.1u: the facts decide in the resolution order (new parent chain → target Boot BOM →
+    as-is → repository → null); an unknown version is written null and sbmig fills it, never a reason to refuse;
+    the parent chain's properties as `${name}`; no "look releases up yourself". Both prompts, ≤ 1.4K chars."""
+    raw = (PROMPTS_DIR / name).read_text(encoding="utf-8")
+    rule = raw[raw.index("14. Dependency versions"):raw.index("## Edits (`<edits>`)")].strip()
+    text = " ".join(rule.split())
+    assert len(text) <= 1400, len(text)
+    order = [text.index(x) for x in ("`new parent chain: manages g:a at v`", "`target Boot BOM: manages g:a at v`",
+                                     "`as-is build: g:a v`")]
+    assert order == sorted(order) and "in this order" in text
+    assert ('Without a fact write `"version": null` (sbmig fills it: none when managed, else the as-is version, else '
+            "the newest release in the repository)") in text
+    assert "`parent chain property: name=value` → `${name}`, never the literal (in-house artifacts too)" in text
+    assert "`managed artifacts under <group> …` → add the one holding the missing package, version-less" in text
+    assert "look releases up" not in text and "If you can look" not in text
     if name.startswith("script"):
-        assert "Never refuse a fix, answer `<no_script>` or leave an error unfixed" in text
+        assert "never refuse, answer `<no_script>` or leave an error unfixed because a version is unknown" in text
     else:
-        assert "Never refuse a fix or leave an error unfixed" in text
+        assert "never refuse or leave an error unfixed because a version is unknown" in text
+        assert "<no_script>" not in text
 
 
 def test_script_prompts_unchanged():
     """Script mode keeps its prompts byte for byte: v2.1i adds the edits prompts beside them."""
     system, _ = load_script_prompts("v1")
     assert "## Helper API `p`" in system and "def fix(p)" in system and "<script>" in system
-    assert "p.pom(" in system and "## Script or no script" in system
+    assert "p.pom(" in system and "## Script or no script" not in system         # v2.1u: folded into rule 12
     for name, sha in SCRIPT_PROMPT_SHA256.items():
         assert hashlib.sha256((PROMPTS_DIR / name).read_bytes()).hexdigest() == sha, name
 

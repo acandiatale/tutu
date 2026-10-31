@@ -4,15 +4,10 @@
 #   cases: restrict the note to these case types (empty = any).
 #   phases: advisory — the v1 phase the note was written for. v2 fixes every error in the `verify` script loop, so
 #           `verify` always selects the note (keywords + cases decide); other phases are still narrowed by it.
-#   always: include regardless of score (budget permitting, dropped last).
-# Keep in sync with each note's front-matter (tests/fix/test_notes.py checks it).
+#   always: kept for the schema; no note is always included (v2.1u: fix-policy.md was deleted — it never reached
+#           the script prompt), so every entry says false.
+# Keep in sync with each note's front-matter (tests/fix/test_fix_notes.py checks it).
 notes:
-- file: fix-policy.md
-  title: Fix policy for the build-fix loop
-  keywords: []
-  cases: []
-  phases: []
-  always: true
 - file: jdk21.md
   title: JDK 8/11/17 -> JDK 21 compile issues
   keywords:
@@ -34,7 +29,7 @@ notes:
   - add-opens|InaccessibleObjectException|IllegalAccessError
   - restricted identifier|'(var|record|yield|sealed|permits)'
   - jacoco|maven-compiler-plugin
-  - is deprecated and marked for removal|has been deprecated
+  - -Werror|failOnWarning|warnings found and -Werror specified
   cases:
   - pure_java
   - spring_legacy
@@ -54,9 +49,12 @@ notes:
   - querydsl|JPAQueryFactory|com\.querydsl
   - EntityManager|@Entity|@Column|@Table|@Id
   - ConstraintValidator|@NotNull|@NotBlank|@Valid
-  - HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|Filter
+  - HttpServletRequest|HttpServletResponse|HttpSession|ServletContext|\b(Filter|FilterChain|FilterConfig)\b
   - PagingAndSortingRepository|ListCrudRepository|no suitable method found for findAll
   - org\.hibernate\.(Query|SQLQuery|Criteria)|createSQLQuery|createCriteria|Restrictions|uniqueResult|setResultTransformer
+  - org\.hibernate\.annotations\.(Where|WhereJoinTable|LazyCollection|LazyToOne|IndexColumn|ForeignKey|Table|Loader|OrderBy|Sort|Proxy|Polymorphism|SelectBeforeUpdate|Persister|Tuplizer)\b
+  - org\.hibernate\.validator\.constraints\.(NotBlank|NotEmpty|Email|SafeHtml)
+  - \bfindOne\(|method exists\(|save\(java\.lang\.Iterable|QueryDslPredicateExecutor|has protected access in org\.springframework\.data|new PageRequest|new Sort\(
   cases:
   - pure_java
   - spring_legacy
@@ -92,26 +90,35 @@ notes:
 - file: boot3-to-4.md
   title: Spring Boot 3.x -> 4.0 changes (verified from the official 4.0 migration guide)
   keywords:
-  - tools\.jackson|com\.fasterxml\.jackson|ObjectMapper|JsonMapper|Jackson2ObjectMapperBuilder
-  - JsonComponent|JsonMixin|JsonObjectSerializer|JsonObjectDeserializer|JsonValueDeserializer|JsonSerializer|JsonDeserializer
   - spring\.jackson
-  - spring-boot-starter-(web|web-services|aop|oauth2|tomcat|batch|classic|flyway|liquibase)
-  - MockBean|SpyBean|MockitoBean|MockitoSpyBean|MockitoTestExecutionListener
-  - TestRestTemplate|AutoConfigureMockMvc|AutoConfigureWebTestClient|MockMvc|WebTestClient|RestTestClient
-  - EntityScan|EnvironmentPostProcessor|BootstrapRegistry|HttpMessageConverters|PropertyMapping|PropertyMapper
-  - org\.springframework\.boot\.autoconfigure\.(orm|jdbc|data|web|jackson|flyway|liquibase|security|http)
-  - org\.springframework\.boot\.(test\.web|web\.servlet|web\.client|orm|jdbc)
   - Undertow|undertow
   - spring\.dao|spring\.data\.mongodb|spring\.session\.redis|management\.health\.mongo|spring\.kafka\.retry
   - Elasticsearch|RestClientBuilder|Rest5Client|elasticsearch-java
   - org\.springframework\.lang\.(Nullable|NonNull)|jspecify
   - spring-retry|org\.springframework\.retry|@Retryable|@EnableRetry|RetryTemplate
-  - loaderImplementation|CLASSIC|executable|layertools|includeOptional
-  - hibernate-jpamodelgen|hibernate-processor
+  - loaderImplementation|<executable>|layertools|includeOptional
+  - PropertyMapper|alwaysApplyingWhenNonNull|PropertyMapping
   - spock|hazelcast|Pulsar
   cases:
   - spring_boot
   - msa
+  phases:
+  - spring
+  - restructure
+  always: false
+- file: boot4-packages.md
+  title: Spring Boot 4 package and starter relocations (every case; the generated boot module is Boot 4.1)
+  keywords:
+  - org\.springframework\.boot\.
+  - spring-boot-starter-
+  - ErrorPage|ErrorPageRegistrar|ErrorController|ErrorAttributes
+  - ServletComponentScan|ServletWebServerFactory|WebServerFactoryCustomizer|MultipartConfigFactory|ServerProperties
+  - TomcatServletWebServerFactory|TomcatConnectorCustomizer|TomcatContextCustomizer|org\.springframework\.boot\.web\.embedded
+  - JsonComponent|JsonMixin|JsonObjectSerializer|JsonObjectDeserializer|JsonValueDeserializer|Jackson2ObjectMapperBuilderCustomizer|JsonMapperBuilderCustomizer
+  - RestTemplateBuilder|RestTemplateCustomizer|RestClientCustomizer
+  - EntityScan|EnvironmentPostProcessor|BootstrapRegistry|HttpMessageConverters|DataSourceProperties|DataSourceBuilder
+  - MockBean|SpyBean
+  cases: []
   phases:
   - spring
   - restructure
@@ -124,13 +131,12 @@ notes:
   - dynatrace|Dynatrace
   - LiveReload|livereload|devtools
   - skipTests|maven\.test\.skip|process-test-aot|AOT
-  - deferred|bootstrap-mode|AsyncTaskExecutor
+  - bootstrap-mode|AsyncTaskExecutor
   - build-info
   - batch-data-mongo
   - spring-messaging
-  - Optional<
   - jooq|jOOQ
-  - is deprecated|has been deprecated|deprecated and marked for removal
+  - -Werror|failOnWarning|warnings found and -Werror specified
   cases:
   - spring_boot
   - spring_legacy
@@ -142,17 +148,26 @@ notes:
   - restructure
   always: false
 - file: spring-framework-7.md
-  title: Spring Framework 5 -> 6 -> 7 API removals
+  title: Spring Framework 4/5 -> 6 -> 7 API removals
   keywords:
   - WebMvcConfigurerAdapter|HandlerInterceptorAdapter|InstantiationAwareBeanPostProcessorAdapter
-  - Base64Utils|SocketUtils|ListenableFuture|AsyncRestTemplate|CommonsMultipartResolver|NestedServletException
-  - ResponseStatusException|getStatus\(|HttpStatusCode|ResponseEntityExceptionHandler|handleExceptionInternal|handleMethodArgumentNotValid
-  - JdbcTemplate|queryForObject|queryForList|NamedParameterJdbcTemplate
-  - RestTemplate|RestClient|HttpComponentsClientHttpRequestFactory|setConnectTimeout|setReadTimeout|SimpleClientHttpRequestFactory
+  - Base64Utils|SocketUtils|AsyncRestTemplate|CommonsMultipartResolver|NestedServletException
+  - org\.springframework\.util\.concurrent|ListenableFuture|ListenableFutureCallback
+  - ResponseStatusException|getStatus\(|ResponseEntityExceptionHandler|handleExceptionInternal|handleMethodArgumentNotValid
+  - \b(MOVED_TEMPORARILY|REQUEST_ENTITY_TOO_LARGE|REQUEST_URI_TOO_LONG|METHOD_FAILURE|USE_PROXY|INSUFFICIENT_SPACE_ON_RESOURCE|DESTINATION_LOCKED|CHECKPOINT)\b
+  - getStatusCodeValue|getRawStatusCode|HttpStatusCode cannot be converted to|HttpStatusCode
+  - APPLICATION_(PROBLEM_)?JSON_UTF8
+  - JdbcTemplate|queryForObject|queryForList|NamedParameterJdbcTemplate|queryForInt|queryForLong|SimpleJdbcTemplate
+  - RestTemplate|RestClient|HttpComponentsClientHttpRequestFactory|setConnectTimeout|setReadTimeout|SimpleClientHttpRequestFactory|OkHttp3ClientHttpRequestFactory
+  - org\.springframework\.remoting|HttpInvoker\w*|RmiProxyFactoryBean|RmiServiceExporter|Hessian(Proxy|Service)\w*|JaxWsPortProxyFactoryBean
+  - annotation\.Required\b|class Required\b|RequiredAnnotationBeanPostProcessor
+  - no suitable method found for (notNull|isTrue|state|hasText|hasLength|notEmpty|isNull|noNullElements|isInstanceOf)\(
+  - ThemeResolver|ThemeSource|ThemeChangeInterceptor|WebJarsResourceResolver|CommonsMultipartFile|multipart\.commons|NestedIOException|Log4jConfigurer|OpenSessionInView
+  - AbstractExcelView|AbstractJExcelView|DefaultAnnotationHandlerMapping|AnnotationMethodHandlerAdapter|SimpleFormController|MultiActionController|AbstractCommandController
   - acceptsProfiles|Profiles
   - HttpHeaders|MultiValueMap|containsKey|keySet|entrySet
-  - MappingJackson2HttpMessageConverter|MappingJackson2JsonView|JacksonJsonHttpMessageConverter|JacksonJsonView|JsonMapper
-  - PathMatchConfigurer|AntPathMatcher|PathPatternParser|setUseSuffixPatternMatch|setUseTrailingSlashMatch|favorPathExtension
+  - MappingJackson2HttpMessageConverter|MappingJackson2JsonView|JacksonJsonHttpMessageConverter|JacksonJsonView|Jackson2ObjectMapperBuilder|Jackson2ObjectMapperFactoryBean
+  - PathMatchConfigurer|AntPathMatcher|PathPatternParser|setUseSuffixPatternMatch|setUseTrailingSlashMatch|favorPathExtension|placed at the start or end of the pattern
   - org\.springframework\.lang\.(Nullable|NonNull|NonNullApi)|jspecify
   - spring-retry|org\.springframework\.retry|RetryTemplate|@Retryable
   - ImportResource|spring-beans.*\.xsd|schema/beans
@@ -164,6 +179,20 @@ notes:
   - spring_boot
   - msa
   - servlet_tomcat
+  phases:
+  - spring
+  always: false
+- file: jackson-2-3.md
+  title: Jackson 2 → 3 under the target Boot BOM (decision rules A-D)
+  keywords:
+  - com\.fasterxml\.jackson\.(databind|core|datatype|module|dataformat)
+  - tools\.jackson\.
+  - cannot access ObjectMapper|class file for com\.fasterxml\.jackson
+  - MappingJackson2\w*|Jackson2ObjectMapper\w*|MappingJackson\w*View
+  - JsonProcessingException|JsonMappingException|JacksonException
+  - ObjectMapper|JsonMapper
+  - spring-boot-jackson2|jackson-databind
+  cases: []
   phases:
   - spring
   always: false
@@ -181,6 +210,8 @@ notes:
   - org\.springframework\.security
   - EnableWebSecurity
   - access\("|WebExpressionAuthorizationManager
+  - authentication\.encoding|ShaPasswordEncoder|Md5PasswordEncoder|SaltSource|EnableWebMvcSecurity
+  - org\.springframework\.security\.oauth2\.(config|provider)|EnableResourceServer|EnableAuthorizationServer|EnableOAuth2Sso|OAuth2RestTemplate|ResourceServerConfigurerAdapter
   cases:
   - spring_boot
   - spring_legacy
@@ -188,19 +219,39 @@ notes:
   phases:
   - spring
   always: false
+- file: spring-batch-6.md
+  title: Spring Batch 4/5 -> 6 (Boot 4.1 manages Batch 6.0)
+  keywords:
+  - org\.springframework\.batch
+  - JobBuilderFactory|StepBuilderFactory|\bJobBuilder\b|\bStepBuilder\b
+  - \b(ItemReader|ItemWriter|ItemProcessor|ItemStream|Tasklet|Chunk|StepContribution|ChunkContext|RepeatStatus)\b
+  - EnableBatchProcessing|DefaultBatchConfigurer|BatchConfigurer|DefaultBatchConfiguration|EnableJdbcJobRepository
+  - SimpleJobLauncher|TaskExecutorJobLauncher|JobExplorer|MapJobRepositoryFactoryBean|JobParametersInvalidException|JobExecutionListenerSupport
+  - spring-batch-(core|infrastructure)|spring-boot-starter-batch
+  cases: []
+  phases:
+  - spring
+  always: false
 - file: servlet-to-boot.md
   title: Raw servlet / JSP (Tomcat WAR) apps inside Spring Boot 4
   keywords:
   - HttpServlet|@WebServlet|@WebFilter|@WebListener|ServletComponentScan|ServletRegistrationBean|FilterRegistrationBean|ServletListenerRegistrationBean
+  - WebXmlRegistrations|cannot be converted to jakarta\.servlet\.
   - javax\.servlet|jakarta\.servlet
   - web\.xml|WEB-INF|webapp
-  - jsp|JSP|jasper|jstl|taglib|InternalResourceViewResolver
+  - \bjsp\b|JSP|jasper|jstl|taglib|InternalResourceViewResolver
+  - tagext|\b(TagSupport|SimpleTagSupport|BodyTagSupport)\b
   - SpringBootServletInitializer|WebApplicationInitializer|ServletContainerInitializer
   - javax\.servlet-api|servlet-api|tomcat-embed|spring-boot-starter-tomcat
   - <packaging>war</packaging>|maven-war-plugin|failOnMissingWebXml
+  - method (getValue|putValue|removeValue)\(java\.lang\.String|getValueNames\(|getRealPath\(
+  - UnavailableException|encodeRedirectUrl|encodeUrl\(|isRequestedSessionIdFromUrl|SingleThreadModel|HttpUtils|HttpSessionContext
+  - CommonsMultipartResolver|setMaxUploadSize|maxUploadSize|setMaxInMemorySize
   cases:
   - servlet_tomcat
   - spring_legacy
+  - spring_boot
+  - msa
   phases:
   - spring
   - restructure
@@ -209,11 +260,11 @@ notes:
   title: JUnit 4 -> JUnit 5/Jupiter (Boot 4 ships JUnit Jupiter 6)
   keywords:
   - org\.junit\.(Test|Before|After|BeforeClass|AfterClass|Ignore|Rule|ClassRule|Assert|runner|Assume|experimental)
-  - RunWith|SpringRunner|SpringJUnit4ClassRunner|MockitoJUnitRunner|Parameterized
+  - RunWith|SpringRunner|SpringJUnit4ClassRunner|MockitoJUnitRunner|\bParameterized\b
   - junit:junit|junit-vintage|vintage
   - ExpectedException|TemporaryFolder|@Rule
   - org\.junit\.jupiter
-  - assertThat|Matchers|hamcrest
+  - org\.hamcrest|\bMatchers\.
   - PowerMock|powermock
   cases:
   - pure_java
@@ -230,11 +281,11 @@ notes:
   keywords:
   - maven-(compiler|surefire|failsafe|jar|war|resources|source|javadoc|enforcer|shade|assembly|dependency|antrun)-plugin
   - Plugin .* could not be resolved|Failed to execute goal|PluginResolutionException|Unsupported class file major version
-  - release|<source>|<target>|maven\.compiler|invalid flag|--release|bootclasspath
+  - --release|<release>|release version|invalid target release|maven\.compiler\.release|<source>|<target>|invalid flag|bootclasspath
   - annotationProcessorPaths|maven\.compiler\.proc|-proc
   - enforcer|RequireJavaVersion|requireJavaVersion|requireMavenVersion
   - jacoco|spotbugs|checkstyle|pmd|errorprone|animal-sniffer
-  - spring-boot-maven-plugin|repackage|loaderImplementation|layout
+  - spring-boot-maven-plugin|repackage|loaderImplementation|<layout>|PropertiesLauncher
   - argLine|add-opens
   - MalformedInputException|Input length = 1|nonFilteredFileExtensions|<filtering>
   cases:
@@ -308,6 +359,7 @@ notes:
   - org\.hibernate\.annotations\.common
   - hibernate-commons-annotations
   - XClass|XProperty|XMethod|ReflectionManager|JavaReflectionManager|JavaXMember
+  - org\.jboss\.logging|jboss-logging
   cases:
   - pure_java
   - spring_legacy
@@ -336,6 +388,8 @@ notes:
   - org\.apache\.commons\.dbcp(?!2)
   - com\.lowagie|openpdf
   - StaticLoggerBinder|jcl-over-slf4j|slf4j-log4j12
+  - org\.apache\.commons\.lang(?!3)\b|commons-lang:commons-lang
+  - org\.apache\.log4j\b|log4j:log4j
   cases:
   - pure_java
   - spring_legacy

@@ -452,3 +452,27 @@ def test_merge_from_keeps_lineage_and_runs(tmp_path: Path, cfg):
     assert a.code(CID, 2) == CODE1 and a.code(CID, 3) == CODE1 + "# v3\n"
     assert (s[1].parent, s[1].reason, [r.reason for r in s[1].runs]) == (2, "v1: no_change", ["no_change: 1 left"])
     assert (s[3].parent, s[3].reason) == (1, "v2: regressed")                      # their v2 is our v1
+
+
+def test_a_non_idempotent_version_is_kept_but_never_selected(store: CaseStore, tmp_path: Path):
+    """v2.1y (E-H3): the loop marks a version whose second run changed the tree again; `best` skips it (the next
+    proven / unverified one wins), `latest` still offers it as an augment base, the mark survives a re-read and a KB
+    merge, and cases.md says so."""
+    store.add_script(CID, L2, CODE1, run_id="r1", project="p1")
+    store.add_script(CID, L2, CODE2, run_id="r1", project="p1")
+    s = store.mark_non_idempotent(CID, 2, "non-idempotent: a second run changed src/A.java again")
+    assert s is not None and s.non_idempotent and s.last_failure.startswith("non-idempotent:")
+    assert store.find(CID).scripts[1].non_idempotent                       # persisted in case.json
+    assert store.best(CID)[0].version == 1                                 # v2 skipped
+    assert store.latest(CID)[0].version == 2                               # still an augment base
+    assert store.describe(CID).startswith("저장된 스크립트 v1")
+    from sbmig.errors.cases import scripts_text
+    assert scripts_text(store.find(CID)) == "v1 unverified 0/0, v2 unverified non-idempotent 0/0"
+    store.mark_non_idempotent(CID, 1)
+    assert store.best(CID) is None
+    assert store.mark_non_idempotent(CID, 9) is None and store.mark_non_idempotent("0000000000", 1) is None
+    # a KB merge keeps the mark (the same code in both KBs)
+    other = CaseStore(tmp_path / "kb2", None)
+    other.add_script(CID, L2, CODE2, run_id="r9", project="p9")
+    other.merge_from(store)
+    assert [x.non_idempotent for x in other.find(CID).scripts if other.code(CID, x.version) == CODE2] == [True]

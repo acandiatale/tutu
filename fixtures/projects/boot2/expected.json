@@ -36,7 +36,10 @@
       "script_status": "none",
       "llm_calls_max": 1,
       "issues_contain": [
-        "regex:warning pom.xml: .*lombok.*"
+        "regex:warning module/comp-jar/pom.xml: .*annotationProcessorPaths.*"
+      ],
+      "issues_not_contain": [
+        "lombok.version"
       ]
     },
     "scripts": {

@@ -181,17 +181,19 @@ def test_deterministic_and_hints(cfg, ws, put, tmp_path):
                          script_mode="new", script_version=1, errors_before=16, errors_after=16,
                          script_result=ScriptRunResult(status="error", error="KeyError: 'file'"))
     ctx = sctx(advisory_hints=["legacy-web-lib 3: clientIp → remoteClientIp"], kb_hints=["seen in 2 projects"],
-               plan_notes=["boot module: app-boot"], other_errors_summary="case:k2 compile 3 error(s)",
+               plan_notes=["restructure: boot module app-boot"], other_errors_summary="case:k2 compile 3 error(s)",
                reference_files={"asis-merge/A.java": "class A {}"}, previous_attempts=[attempt])
     packer = ContextPacker(cfg)
     a = packer.pack_script(ws, case(errors), ctx, budget=20000)
     b = packer.pack_script(ws, case(list(reversed(errors))), ctx, budget=20000)
     assert a.sections == b.sections and a.files_included == b.files_included
-    body = text_of(a)
+    # v2.1v: over the budget the other cases and the plan notes go first (before the notes)
+    assert a.truncated[:2] == ["other_errors (dropped)", "plan_notes (dropped)"]
+    body = text_of(packer.pack_script(ws, case(errors), ctx, budget=60000))
     assert "Library migration guidance (what to migrate TO)" in body and "remoteClientIp" in body
     assert "Reference files (read-only, NOT in the build — the script must never write these paths)" in body
     assert "script new v1 → outcome: no_change, errors 16→16" in body and "run: error — KeyError: 'file'" in body
-    assert "seen in 2 projects" in body and "boot module: app-boot" in body and "case:k2 compile" in body
+    assert "seen in 2 projects" in body and "restructure: boot module app-boot" in body and "case:k2 compile" in body
     assert summarize_script_attempt(attempt).startswith("- attempt r:verify-1-1 (iteration 1): script new v1")
 
 

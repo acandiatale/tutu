@@ -151,6 +151,56 @@ class ArtifactsConfig(BaseModel):
         return out
 
 
+class LegacyContextConfig(BaseModel):
+    """v2.1x (2026-10-31, 프롬프트 검토 §4): Spring Framework / servlet 프로젝트를 Boot 로 바꿀 때 재구성이 결정론적으로
+    처리하는 "기동 시점" 항목들. 빌드 게이트도 LLM 도 볼 수 없는 영역이라 재구성이 직접 한다. 클래스 → Boot 속성 같은
+    매핑은 `knowledge/config/web_xml_rules.yml` 에(불변조건 2), 여기는 켜고 끄는 스위치만. 끄면 인수인계 문장만 남는다.
+
+    v2.1x: deterministic handling of the legacy Spring context at conversion time (prompt review 2026-10-31 §4). The
+    build gate and the LLM never see startup failures, so the restructure handles the known ones itself; every switch
+    off = Handover sentence only. Mappings (filter class → Boot property, context-param …) live in
+    `knowledge/config/web_xml_rules.yml`, not here."""
+    # D2: @ImportResource 에는 web.xml 의 contextConfigLocation(root + DispatcherServlet init-param) 이 가리키는 진입 XML 만
+    # 넣고(그 XML 이 <import> 로 닿는 파일은 Spring 이 읽는다), 못 찾으면 전과 같이 전부. D2: only the entry XMLs named by
+    # web.xml's contextConfigLocation (root + DispatcherServlet) are imported; XMLs reached by <import> are left to Spring;
+    # no web.xml / no match → every XML as before
+    entry_xml_only: bool = True
+    exclude_test_xml: bool = True            # D2: XML under src/test/ is never imported into the Boot context
+    # D1 (사용자 결정 1, PM 기본값 2026-10-31): as-is Framework 는 같은 id 의 빈 정의를 덮어쓰고 순환 참조를 허용했다 — Boot 4 의
+    # 기본(둘 다 false) 그대로면 기동이 깨지므로 legacy 전환에서는 두 속성을 true 로 쓰고 중복 id 를 인수인계에 적는다.
+    # D1: as-is Spring Framework allowed bean overriding and circular references; Boot 4 defaults both to false → the
+    # restructure writes both `spring.main.*` properties as true for a converted legacy project and lists duplicate ids
+    allow_bean_overriding: bool = True
+    allow_circular_references: bool = True
+    # D4: 건너뛴 web.xml 필터의 init-param 을 Boot 속성으로(web_xml_rules.yml 의 `properties:` 매핑: CharacterEncodingFilter →
+    # spring.servlet.encoding.charset / force …). D4: init-params of skipped web.xml filters → Boot properties per the rules table
+    filter_properties: bool = True
+    # D8 / D9 / D10: <mvc:default-servlet-handler/> → server.servlet.register-default-servlet=true; XML CommonsMultipartResolver →
+    # removed from the legacy-config COPY + spring.servlet.multipart.* limits; @EnableWebMvc / WebMvcConfigurationSupport detected →
+    # no spring.mvc.view.* written, Handover instead
+    default_servlet: bool = True
+    multipart_resolver: bool = True
+    detect_enable_web_mvc: bool = True
+    # D6 / D7: /WEB-INF/… 설정 파일을 읽던 위치 문자열(PropertyPlaceholderConfigurer, <context:property-placeholder>, @PropertySource)
+    # 을 사본에서 `classpath:asis-webinf/…` 로 고치고, `${profile}` 이 든 위치는 `*` glob 으로.
+    # D6 / D7: `/WEB-INF/…` locations rewritten to `classpath:asis-webinf/…` in the copies; `${…}` segments → `*` globs
+    rewrite_webinf_locations: bool = True
+    profile_globs: bool = True
+    # E-M6: OpenRewrite 가 javax.servlet-api provided → jakarta.servlet-api compile 로 바꾼 것을 as-is 스코프로 되돌린다
+    # E-M6: a dependency whose as-is declaration had scope `provided` keeps it after the recipes (jakarta.servlet-api …)
+    restore_asis_scopes: bool = True
+    # E-M9 (사용자 결정 6, PM 기본값): spring_legacy 의 webmvc starter 는 웹 증거(web.xml / spring-webmvc / servlet-api /
+    # @Controller / JSP) 가 있을 때만; 없으면 `spring-boot-starter` (CLI / batch 프로젝트에 Tomcat 이 뜨지 않게)
+    # E-M9: the webmvc starter of `starter_by_case` only with web evidence; a CLI / batch spring_legacy gets `spring-boot-starter`
+    web_starter_by_evidence: bool = True
+    # D-M7: UTF-8 이 아닌 소스(MS949 / EUC-KR)의 모듈 pom 에 project.build.sourceEncoding 을 재구성이 직접 쓴다(검토 전,
+    # v2.1m 방식). D-M7: the restructure writes `project.build.sourceEncoding` for a module whose sources are not UTF-8
+    write_source_encoding: bool = True
+    # D5 / D11 / D12: JNDI 빈, DelegatingFilterProxy(보안 외), OpenEntityManagerInViewFilter, *.do 매핑, <jsp-config>,
+    # WebApplicationInitializer, log4j 1, Security XML — 문장(Handover) 과 XML 사본 옆 `<!-- MIGRATION-TODO -->` 주석
+    handover_sentences: bool = True
+
+
 class LayoutConfig(BaseModel):
     """회사 레이아웃(라운드 9c): 루트 바로 아래 `{name}-boot`(Boot 설정만, boot-jar) / `{name}-back`(모든
     소스, comp-jar) / 웹 리소스가 있을 때만 `{name}-front`. Boot as-is 프로젝트는 디렉토리를 두고 pom 만
@@ -192,7 +242,8 @@ class LayoutConfig(BaseModel):
     # 수정(회사 규칙), layout = 다른 경우처럼 모듈로 나눔.
     boot_as_is: Literal["in-place", "layout"] = "in-place"   # Spring Boot as-is: keep directories (poms only) | split
     boot_module_pattern: str = "*-boot"                 # module dirs that are boot apps in Boot as-is / MSA (pom confirms)
-    jsp_boot_packaging: Literal["war", "jar"] = "war"   # JSPs present → the boot module is a WAR for external Tomcat
+    jsp_boot_packaging: Literal["war", "jar"] = "war"   # JSPs present → the boot module is an executable WAR (java -jar runs
+                                                        # the embedded Tomcat; JSPs cannot be served from an executable jar)
     boot_artifact_suffix: str = "-boot"
     comp_artifact_suffix: str = "-back"                 # artifactId = <root artifactId> + suffix (front: "-front")
     split_policy: Literal["minimal", "web-layer"] = "minimal"
@@ -253,6 +304,8 @@ class LayoutConfig(BaseModel):
     web_xml_registrations: Literal["generate", "followup"] = "generate"
     import_xml_bean_configs: bool = True   # @ImportResource for detected <beans> xml files
     msa_parent_policy: Literal["per-service-root", "top-aggregator"] = "per-service-root"
+    # v2.1x: 전환 시점의 legacy Spring 컨텍스트 처리 스위치(위 LegacyContextConfig)
+    legacy_context: LegacyContextConfig = Field(default_factory=LegacyContextConfig)
 
     def module_name(self, which: Literal["boot", "comp", "front"], name: str) -> Optional[str]:
         """역할(boot / comp / front)의 모듈 디렉토리 이름(`{name}` 펼침). front 가 꺼져 있으면 None.
@@ -303,6 +356,20 @@ class RecipeSetConfig(BaseModel):
         "org.openrewrite.java.spring.security7.UpgradeSpringSecurity_7_0",
     ])
     junit5: list[str] = Field(default_factory=list)
+    # v2.1w (2026-10-31, 사용자 결정 7, PM 기본값 — v2.1l 의 "쓰는 경우만" 과 같은 규칙): spring_legacy 가 spring-batch 를 쓰면
+    # Batch 5→6, hibernate(네이티브 Hibernate ORM) 를 쓰면 Hibernate 7.1 묶음; servlet_tomcat 은 Servlet 6 제거 API 레시피.
+    # Boot 프로젝트는 우산 레시피가 같은 단계를 이미 돈다(catalog covers). 빈 목록 = 끔.
+    # v2.1w: planned only when the analyzer found the library (`spring-batch` / `hibernate`), like the Security chain;
+    # `servlet_jakarta_10` for every servlet_tomcat project (spring_legacy gets it inside UpgradeSpringFramework_7_0)
+    spring_batch_6: list[str] = Field(default_factory=lambda: [
+        "org.openrewrite.java.spring.batch.SpringBatch5To6Migration",
+    ])
+    hibernate_7: list[str] = Field(default_factory=lambda: [
+        "org.openrewrite.hibernate.MigrateToHibernate71",
+    ])
+    servlet_jakarta_10: list[str] = Field(default_factory=lambda: [
+        "org.openrewrite.java.migrate.jakarta.RemovalsServletJakarta10",
+    ])
     extra: dict[str, list[str]] = Field(default_factory=dict)
 
 
@@ -463,6 +530,7 @@ class LoopConfig(BaseModel):
         "plugin_incompatible": 2, "unsupported_source": 0, "encoding": 0,
         "reactor_duplicate": 0,                      # v2.1k: a pom structure problem — handed over, never asked of the LLM
         "file_lock": 0,                              # v2.1r: target/ locked by another process — environment, not code
+        "needs_owner": 0,                            # v2.1y: the LLM declined (blocker outside the project) — handed over
     })
     # pom 수정 뒤 이 종류의 오류가 나타나면 개수와 상관없이 되돌린다(LLM
     # 이 지어낸 의존성 하나가 모든 컴파일 오류를 가린 사례).
@@ -572,6 +640,14 @@ class ScriptConfig(BaseModel):
     reuse_versions: int = 1                  # stored versions tried per case and run before the LLM is asked
     max_augments_per_case: int = 3           # LLM extensions per case and run; then the case is BLOCKED
                                              # (repeated_failure) and handed over
+    # v2.1y (2026-10-31, 프롬프트 검토 E-M1): 편집도 스크립트도 없이 "프로젝트 밖의 일" 이라고 답한 케이스는 이 횟수 뒤 BLOCKED
+    # needs_owner (legacy-ibatis: 같은 원인 3 케이스 × 3 회 = 9 회 호출이 1 회로). 같은 파일의 형제 케이스는 호출 없이 같은 차단.
+    # v2.1y: declined answers (no edits, no script, a blocker outside the project) allowed per case before BLOCKED needs_owner;
+    # sibling cases in the same files are blocked without another call
+    max_declines_per_case: int = 1
+    # v2.1y (E-H3): ok 직후 같은 스크립트를 한 번 더 돌려 또 바뀌면 non_idempotent 로 표시(저장은 하되 재사용 안 함)
+    # v2.1y: run the script once more right after `ok`; a second change marks the stored version non_idempotent (never reused)
+    idempotency_check: bool = True
 
 
 class ErrorsConfig(BaseModel):
@@ -623,6 +699,15 @@ class ReviewConfig(BaseModel):
     max_poms: int = 40
     # (v2.1 에서는 읽지 않는 키 — 검토는 오류 목록에 기록되고 KB reviews.jsonl 은 쓰지 않는다)
     record: bool = True                      # one line per run in <kb>/reviews.jsonl
+    # v2.1y (2026-10-31, 사용자 결정 2, PM 기본값 — D-M2): 검토는 edits 만 요구한다(시스템 프롬프트의 스크립트 절·헬퍼 API 표
+    # ~30% 가 빠짐; 저장만 되고 재사용된 적 없음). true = 예전처럼 <script> 도 요구.
+    # v2.1y: edits-only review by default (the script section and helper table leave the prompt); true = ask for <script> too
+    ask_script: bool = False
+    # v2.1y (D-M4): 검토 편집을 적용한 뒤 재구성 불변식을 다시 검사(체인이 정의한 속성 추가, 관리 아티팩트에 버전, 보호 키,
+    # 낯선 <parent>) — 위반이면 복원하고 이유를 주며 1 회 재질의. v2.1y: re-check the restructure's invariants after the edits
+    invariant_check: bool = True
+    # v2.1v (D-L5): 검토 입력(user 프롬프트)을 <run dir>/logs/review-input.md 로 남긴다(회사에서 줄을 물어볼 수 있게)
+    save_input: bool = True
 
 
 class FixConfig(BaseModel):

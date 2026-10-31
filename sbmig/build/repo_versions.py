@@ -5,7 +5,7 @@ jakarta 빌드인 최신 릴리스로" 다. LLM 은 회사 Nexus 에 무엇이 �
 LLM 호출 전에 케이스 뒤의 라이브러리마다 ``candidates`` → ``hint_lines`` (로그 ``의존성 버전 조회: <key>
 <현재> → 같은 메이저 …, 상위 …``). 마지막 줄은 판정(verdict):
 같은 메이저 jakarta 로 올려라 / 그 메이저엔 jakarta 가 없으니 상위 메이저 허용(``<verify>`` 필수) / 사람이
-allow_major 로 승인 / 어디에도 없으니 머물러라. 조회 순서: ``build.repository_url`` → settings 의 catch-all
+allow_major 로 승인 / 어디에도 jakarta 가 안 보이면 같은 메이저 안의 API 변경으로 보고 코드를 고쳐라(v2.1v). 조회 순서: ``build.repository_url`` → settings 의 catch-all
 미러(자격증명 포함) → Central(offline 이 아니면) → 로컬 저장소. 지킬 것: 같은 메이저 우선; 시간 초과 / 연결
 실패가 2번 연속이면 그 실행에서 더는 묻지 않는다(폐쇄망에서 케이스마다 기다리지 않게); 절대 예외 없음(실패는
 ``RepositoryVersions.error``).
@@ -748,8 +748,8 @@ def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
     "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"). 코드의 검사 순서: 사람의 ``allow_major`` → 같은 메이저
     jakarta(저장소 ✓, 또는 표가 현재 메이저의 더 새 버전을 앎) → 그 메이저엔 없고 표 / 저장소가 상위 메이저
     jakarta 를 앎(표 버전, 없으면 jakarta 인 가장 높은 메이저의 최신; 메이저 업그레이드 허용, ``<verify>``
-    필수) → 릴리스는 있는데 jakarta 가 어디에도 없음(머물고
-    ``<analysis>`` 에 적기). 사실이 없으면(조회 오류, 현재 버전 모름) "".
+    필수) → 릴리스는 있는데 jakarta 가 어디에도 없음(v2.1v: 같은 메이저 안의 API 변경 — 관리 버전에 맞춰 코드를
+    고치고 버전은 그대로; ``<no_script>`` 거절을 시키지 않는다). 사실이 없으면(조회 오류, 현재 버전 모름) "".
 
     ONE explicit rule-14 verdict so the model does not have to combine the table line and the repository line
     itself (2026-10-27, "qlrm 같은 경우는 메이저로 올라가야 하지 않아?"):
@@ -758,7 +758,9 @@ def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
     * none on the current line but the table / the repository knows a jakarta release of a higher major → the major
       upgrade is allowed here: newest release of that major, port what changes, `<verify>` required;
     * a person's `allow_major` → approved as given;
-    * nothing known → stay on the major and say so in `<analysis>` (BLOCKED / Handover is better than a guess).
+    * releases but no jakarta build known on any line (v2.1v: usually a jakarta-native library whose pom declares no
+      `jakarta.*` dependency, e.g. Spring itself) → the API changed inside the same major: fix the code against the
+      managed version and leave the version (never a `<no_script>` refusal).
     "" when the facts are not there (lookup error, unknown current version)."""
     try:
         current = rv.current
@@ -789,8 +791,11 @@ def _verdict_line(rv: RepositoryVersions, entry: Any = None) -> str:
                     f"changes (coordinates, removed packages, API) and write <verify>; the change will be listed "
                     f"for the operator")
         if rv.same_major or rv.higher:
-            return (f"{rv.key} → verdict: no jakarta build is known on any line — stay on {cm}.x, say so in "
-                    f"<analysis> and answer <no_script> if the case cannot be fixed without it")
+            # v2.1v (B-H1 / E-H1): "jakarta 여부 미상"(Spring 처럼 pom 이 jakarta.* 를 선언하지 않는 jakarta 네이티브
+            # 라이브러리)을 "jakarta 빌드 없음 → <no_script>" 로 읽어 거짓 거절을 시켰다 — 같은 메이저 안의 API 변경으로 본다
+            return (f"{rv.key} → verdict: no jakarta build is known on any line — the API changed inside the same "
+                    f"major: fix the code against the version the parent chain / Boot BOM manages and leave the "
+                    f"version")
         return ""
     except Exception as e:  # noqa: BLE001
         log.debug("_verdict_line(%s): %s", getattr(rv, "key", "?"), e)

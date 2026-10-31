@@ -176,7 +176,7 @@ def test_no_script_and_propose_exception_are_apply_failed(cfg, ws, profile):
     def fn(w, c, ctx):
         if c.errors[0].file == FOO:
             raise RuntimeError("llm down")
-        return ScriptProposal(code="", analysis="I cannot", error="no <script> block", model="m")
+        return ScriptProposal(code="", analysis="", error="no <script> block", model="m")
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=two_case_build), fixer=FakeFixer(script_fn=fn))
     pr = loop.run(Phase.VERIFY, "package", 3)
     assert {a.outcome for a in pr.attempts} == {"apply_failed"}
@@ -187,6 +187,28 @@ def test_no_script_and_propose_exception_are_apply_failed(cfg, ws, profile):
     assert loop.budget.llm_calls == 4 and pr.iterations == 1
     assert {b.reason.value for b in pr.blocked} == {"repeated_failure"} and len(pr.blocked) == 2
     assert not ws.is_dirty() and loop.llm_unavailable is None     # failures were not consecutive transport errors
+
+
+def test_an_analysis_only_answer_is_declined_once_and_blocked_needs_owner(cfg, ws, profile):
+    """v2.1y (E-M1): "I cannot" with neither a script nor edits is a decline — one LLM call for that case, BLOCKED
+    needs_owner; the transport failures of the other case still go up the ladder (repeated_failure)."""
+    cfg.script.max_augments_per_case = 2
+
+    def fn(w, c, ctx):
+        if c.errors[0].file == FOO:
+            raise RuntimeError("llm down")
+        return ScriptProposal(code="", analysis="I cannot. The owners must pick a replacement.",
+                              error="no <script> block", model="m")
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=two_case_build), fixer=FakeFixer(script_fn=fn))
+    pr = loop.run(Phase.VERIFY, "package", 3)
+    assert sorted(a.outcome for a in pr.attempts) == ["apply_failed", "apply_failed", "blocked"]
+    assert loop.budget.llm_calls == 3 and pr.iterations == 1
+    assert sorted(b.reason.value for b in pr.blocked) == ["needs_owner", "repeated_failure"]
+    owner = next(b for b in pr.blocked if b.reason.value == "needs_owner")
+    assert owner.suggestion == "I cannot. — 소유팀 결정 필요"
+    ev = [e for e in journal_events(ws) if e["event"] == "declined"]
+    assert len(ev) == 1 and ev[0]["declines"] == 1 and ev[0]["limit"] == 1 and not ev[0]["explicit"]
+    assert not ws.is_dirty()
 
 
 def test_test_compile_fallback(cfg, ws, profile):

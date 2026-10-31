@@ -23,13 +23,13 @@
       "regex:^commons-io:commons-io \\S+→2\\.19\\.0$"
     ],
     "structure_review": {
-      "verdict": "issues",
+      "verdict": "ok",
       "critical": 0,
-      "warnings_min": 1,
+      "warnings_max": 0,
       "script_status": "none",
       "llm_calls_max": 1,
-      "issues_contain": [
-        "regex:warning module/comp-jar/pom.xml: .*servlet-api.*"
+      "issues_not_contain": [
+        "scope compile"
       ]
     },
     "scripts": {

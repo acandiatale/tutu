@@ -303,6 +303,9 @@ class _Collector:
         self.notes: list[str] = list(rules.notes)
         self.file_locations: list[str] = []          # file: / ${…} property locations (external supply routes)
         self.classpath_locations: list[str] = []     # classpath: files named by @PropertySource / placeholders
+        # v2.1x D6: `/WEB-INF/x.properties` locations (servlet-context files) — the part after WEB-INF/; the restructure
+        # moves such files to the boot stash and points the copies there, so their keys are definitions
+        self.webinf_locations: list[str] = []
         self.profiles: set[str] = set()
         self.inline_defs: list[tuple[str, str]] = []   # @SpringBootTest(properties=…) / DynamicPropertyRegistry
         self.container_props: dict[str, set[str]] = defaultdict(set)
@@ -432,10 +435,26 @@ def _location(col: _Collector, loc: str, file: str, line: int, raw: str, source:
         return
     for key, default, _ in iter_placeholders(loc):
         col.placeholder(key, default, source, file, line, raw)
-    if loc.startswith(("classpath:", "classpath*:")) and "${" not in loc:
-        col.classpath_locations.append(loc.split(":", 1)[1].lstrip("/"))
+    if loc.startswith(("classpath:", "classpath*:")):
+        # v2.1x D7: `${…}` (a profile / environment segment) → `*` glob: the packaged files it may name are definitions
+        col.classpath_locations.append(profile_glob(loc.split(":", 1)[1].lstrip("/")))
+    elif _webinf_sub(loc) is not None:
+        col.webinf_locations.append(_webinf_sub(loc) or "")
     elif loc.startswith("file:") or "${" in loc:
         col.file_locations.append(f"{file}:{line}: {loc}")
+
+
+def profile_glob(path: str) -> str:
+    """위치 안의 ``${…}`` 를 ``*`` 로(v2.1x D7): ``config/${env}/app.properties`` → ``config/*/app.properties``.
+
+    `${…}` segments of a location → `*` (v2.1x D7)."""
+    return re.sub(r"\$\{[^}]*\}", "*", path)
+
+
+def _webinf_sub(loc: str) -> Optional[str]:
+    """``/WEB-INF/x`` · ``WEB-INF/x`` 위치 → ``x`` (``${…}`` 가 있으면 glob), 아니면 None."""
+    m = re.match(r"^/?WEB-INF/(.+)$", loc.strip())
+    return profile_glob(m.group(1)) if m else None
 
 
 def scan_java(col: _Collector, rel: str, text: str) -> None:
@@ -578,6 +597,7 @@ _JNDI_XML_LIT_RE = re.compile(r"(java:comp/env/[\w./-]+)")
 _PLACEHOLDER_CFG = ("property-placeholder", "PlaceholderConfigurer", "PropertiesFactoryBean", "util:properties",
                     "property-override")
 _LOCATION_RE = re.compile(r"((?:classpath\*?|file):[^\s\"'<>,;]+\.(?:properties|ya?ml))(?![\w.])")
+_WEBINF_LOC_RE = re.compile(r"(?<![\w:/.\-])(/?WEB-INF/[^\s\"'<>,;]+\.(?:properties|ya?ml))(?![\w.])")
 
 
 def _jndi_name(name: str) -> str:
@@ -630,10 +650,15 @@ def scan_xml(col: _Collector, rel: str, text: str, *, web_xml: bool = False, con
             loc = m.group(1)
             ln = lines.line(m.start())
             if loc.startswith("classpath"):
-                if "${" not in loc:
-                    col.classpath_locations.append(loc.split(":", 1)[1].lstrip("/"))
+                # v2.1x D7: `${…}` segments → `*` glob (the packaged profile files count as definitions)
+                col.classpath_locations.append(profile_glob(loc.split(":", 1)[1].lstrip("/")))
             else:
                 col.file_locations.append(f"{rel}:{ln}: {loc}")
+        # v2.1x D6: servlet-context locations (`/WEB-INF/config/app.properties`) — packaged with the web app
+        for m in _WEBINF_LOC_RE.finditer(src):
+            sub = _webinf_sub(m.group(1))
+            if sub and sub not in col.webinf_locations:
+                col.webinf_locations.append(sub)
         # ${catalina.base}/conf/x.properties style locations (no file: prefix)
         for m in re.finditer(r"\"(\$\{[^}]+\}[^\"]*\.(?:properties|ya?ml))\"", src):
             col.file_locations.append(f"{rel}:{lines.line(m.start())}: {m.group(1)}")
@@ -769,6 +794,18 @@ def _definition_files(ws: Any, col: _Collector) -> tuple[list[str], list[str]]:
             if not _skipped(rel) and ("src/main/resources/" in rel or "src/test/resources/" in rel):
                 all_res.append(rel)
     located = set(col.classpath_locations)
+    # v2.1x D6: WEB-INF property files named by a location are packaged with the web app (the restructure points the
+    # legacy-config copies at their boot stash copy) — their keys are definitions, never `__SET_ME__`
+    if col.webinf_locations:
+        for ext in ("*.properties", "*.yml", "*.yaml"):
+            for rel in ws.glob(ext):
+                rel = rel.replace("\\", "/")
+                i = ("/" + rel).find("/WEB-INF/")
+                if i < 0 or _skipped(rel) or "/src/test/" in "/" + rel:
+                    continue
+                sub = ("/" + rel)[i + len("/WEB-INF/"):]
+                if any(fnmatch.fnmatchcase(sub, w) for w in col.webinf_locations) and rel not in main:
+                    main.append(rel)
     for rel in sorted(set(all_res)):
         root = "src/test/resources/" if "src/test/resources/" in rel else "src/main/resources/"
         sub = rel.split(root, 1)[1]

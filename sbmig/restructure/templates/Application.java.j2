@@ -23,7 +23,8 @@ import org.springframework.context.annotation.ImportResource;
  * Legacy XML bean definitions are imported with {@code @ImportResource} (copied to legacy-config/).
 {%- endif %}
 {%- if servlet_initializer %}
- * Packaged as a WAR for an external Tomcat: {@link SpringBootServletInitializer} boots the application there.
+ * Packaged as an executable WAR: {@code java -jar} runs the embedded Tomcat; {@link SpringBootServletInitializer}
+ * boots the same WAR when it is deployed to an external Tomcat instead.
 {%- endif %}
  */
 @SpringBootApplication

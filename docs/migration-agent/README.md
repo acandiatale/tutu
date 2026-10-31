@@ -1149,7 +1149,7 @@ flowchart TB
   end
   subgraph body3["참고 섹션"]
     direction LR
-    S7["7 Other error clusters"] --> S8["8 Plan notes"] --> S10["10+ Migration note ×≤4<br/>(fix-policy 항상)"]
+    S7["7 Other error clusters"] --> S8["8 Plan notes"] --> S10["10+ Migration note ×≤4<br/>(always 노트 없음)"]
   end
   keep --> body1 --> body2 --> body3
   body3 --> T["예산(llm.max_context_chars) 초과 시 먼저 줄이는 순서<br/>notes → plan_notes → other_errors → previous_attempts → kb_hints<br/>→ reference_files → advisory_hints → reference_notes → pom → related_files → files"]
@@ -1175,7 +1175,7 @@ flowchart TB
 | 6 | Previous attempts | 이 클러스터의 이전 시도(반복하지 말 것) |
 | 7 | Other error clusters | 다른 클러스터 한 줄씩 |
 | 8 | Plan notes | 계획 노트 |
-| 10+ | Migration note | `knowledge/notes/index.yml`의 키워드 점수 상위 4개. `fix-policy.md`는 항상 포함 |
+| 10+ | Migration note | `knowledge/notes/index.yml`의 키워드 점수 상위 4개. 항상 들어가는 노트는 없음 (v2.1u: `fix-policy.md` 삭제 — 스크립트 프롬프트에 들어간 적이 없었음) |
 
 예산을 넘으면 `TRUNCATE_ORDER` 순서로 줄이거나 뺍니다.
 `notes → plan_notes → other_errors → previous_attempts → kb_hints → reference_files → advisory_hints → reference_notes → pom → related_files → files` 순서입니다.
@@ -1585,7 +1585,7 @@ flowchart LR
 | `knowledge/config/web_xml_rules.yml` | skip 14 | `WebXmlRegistrations` |
 | `knowledge/config/externalized.yml` | JNDI / context-param / system property 규칙 | 외부화 설정 자리표시자 |
 | `knowledge/libraries/jar_names.yml` | jar 91 | `sbmig inventory` |
-| `knowledge/notes/*.md` + `index.yml` | 노트 16 | 컨텍스트 패커(키워드 점수 상위 4개, `fix-policy.md`는 항상). `## fix-loop: <library>` 절은 advisory 힌트로 들어감 |
+| `knowledge/notes/*.md` + `index.yml` | 노트 18 | 컨텍스트 패커(키워드 점수 상위 4개; always 노트 없음). `## fix-loop: <library>` 절은 advisory 힌트로 들어감 |
 
 ### 10.2 KB 학습 루프
 

@@ -238,6 +238,24 @@ class RestructureResult(BaseModel):
     # 2026-10-23: report flags the restructure raises (e.g. `web-xml-registered`); the orchestrator adds them to
     # RunReport.flags
     flags: list[str] = Field(default_factory=list)
+    # v2.1x (2026-10-31, prompt review §4 — the legacy Spring context after the conversion; read by the fix loop's
+    # layout facts, the structure review's "What the restructure did" and the Handover). All optional, [] / None when
+    # the mode did not do it.
+    # v2.1x: 전환 사실 — 수정 루프의 layout facts, 구조 검토의 "What the restructure did", 인수인계가 읽는다.
+    starter: Optional[str] = None                                  # the Boot starter written into the boot pom
+    web_evidence: list[str] = Field(default_factory=list)          # why the project counts as a web app ("web.xml",
+                                                                   # "spring-webmvc", "servlet-api", "@Controller ×N", "JSP ×N")
+    xml_imports: list[str] = Field(default_factory=list)           # `classpath:legacy-config/…` entries of @ImportResource
+    xml_skipped: list[str] = Field(default_factory=list)           # as-is XML files NOT imported and why ("src/test/… (test)",
+                                                                   # "… (reached by <import> from …)", "… (not in contextConfigLocation)")
+    legacy_properties_written: list[str] = Field(default_factory=list)   # "spring.main.allow-bean-definition-overriding=true (…why)"
+    scope_restored: list[str] = Field(default_factory=list)        # "g:a: compile → provided (as-is scope, <pom>)"
+    source_encodings_written: list[str] = Field(default_factory=list)   # "<pom>: project.build.sourceEncoding=MS949 (N files)"
+    webinf_locations_rewritten: list[str] = Field(default_factory=list) # "<copy>: /WEB-INF/config/x.properties → classpath:asis-webinf/…"
+    beans_removed: list[str] = Field(default_factory=list)         # "<copy>: <bean id> (CommonsMultipartResolver → spring.servlet.multipart.*)"
+    duplicate_bean_ids: list[str] = Field(default_factory=list)    # "<id>: a.xml, b.xml"
+    conversion_facts: dict[str, Any] = Field(default_factory=dict) # anything else worth a line (key → str | list[str]);
+                                                                   # rendered as "- <key>: <value>" by the loop and the review
 
 
 @runtime_checkable
@@ -341,6 +359,15 @@ class FixContext(BaseModel):
     # (libraries.yml) and what the repository has for the libraries behind this case (same-major releases, which are
     # jakarta builds, the higher majors), one line each; [] when nothing is known
     library_hints: list[str] = Field(default_factory=list)
+    # v2.1v (2026-10-31 prompt review B-H2): 재구성 뒤의 프로젝트 사실 — "sbmig 가 Boot 로 전환했다, boot / back / front
+    # 모듈과 그 pom 의 부모·패키징, 생성 파일(Application, legacy-config/, WebXmlRegistrations), boot pom 의 starter, 사내
+    # 아티팩트 규칙(루트 부모, 필수 위치, 선택은 쓰는 곳만), BOM import" — 한 줄씩. 값은 전부 RestructureResult / cfg 에서,
+    # 리터럴 없음. 프롬프트 섹션 "Project after the restructure" (순서 0.5, 자르지 않음). 재구성이 없었으면 [].
+    # v2.1v: facts about the project AFTER the restructure (converted to Boot by sbmig, module roles and parents, generated
+    # files, boot starter, company artifact rules, BOM imports) — one line each, rendered as the section "Project after the
+    # restructure" right after the header and never truncated; [] when no restructure ran (Boot as-is pom-only mode still
+    # lists the parents / mandatory facts).
+    layout_facts: list[str] = Field(default_factory=list)
 
 
 @runtime_checkable

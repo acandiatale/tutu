@@ -554,6 +554,14 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"is not asked$"),
      (r"빌드 산출물(target/)을 다른 프로세스가 잠갔습니다 — 백신 실시간 검사에서 프로젝트의 target/ 를 예외 처리하고, 열려 "
       r"있는 IDE/탐색기/이전 java 프로세스를 닫은 뒤 다시 실행하세요")),
+    # v2.1y: 차단 표의 needs_owner 제안 — 형제 케이스(sbmig/loop/fixloop.py _block_needs_owner)와 사유 문장이 없을 때의
+    # 문구(sbmig/loop/blocked_registry.py compose_suggestion). LLM 의 사유 문장 자체는 옮기지 않는다
+    (r"^same cause as (?P<c>\w+): (?P<s>.+) — 소유팀 결정 필요$",
+     r"\g<c> 와 같은 원인: \g<s> — 소유팀 결정 필요"),
+    ((r"^the LLM named a blocker outside the project \(a library without a jakarta build, a framework to replace, an "
+      r"artifact the repository lacks\) — 소유팀 결정 필요$"),
+     (r"LLM 이 프로젝트 밖의 차단 사유를 말했다(jakarta 빌드가 없는 라이브러리, 바꿔야 할 프레임워크, 저장소에 없는 "
+      r"아티팩트) — 소유팀 결정 필요")),
     (r"^(?P<n>\d+) javax API jar\(s\) still on the classpath — see that section$",
      r"클래스패스에 남은 javax API jar \g<n>개 — '클래스패스에 남은 javax API jar' 절 참조"),
     ((r"^(?P<n>\d+) javax API jar\(s\) still on the classpath after the migration \(see the report section\) — "

@@ -4,7 +4,8 @@ import pytest
 
 from sbmig.core.models import (CaseType, LibraryUsage, PomInfo, ProjectProfile, ServiceInfo, SourceStats)
 from sbmig.fix import FakeLLMClient, LLMFixer
-from sbmig.fix.fixer import profile_summary
+from sbmig.fix.context import target_text
+from sbmig.fix.fixer import advisory_markers, profile_summary
 
 A = "src/main/java/a/A.java"
 SRC = "package a;\n\nimport javax.servlet.Filter;\n\npublic class A {\n    Filter f;\n}\n"
@@ -51,13 +52,25 @@ def test_profile_summary():
         root="/x", name="demo", case_type=CaseType.SPRING_BOOT, java_version="1.8", spring_boot_version="2.7.18",
         spring_version="5.3.31", packaging="war", poms=[PomInfo(path="pom.xml", artifact_id="demo")],
         services=[ServiceInfo(name="s", root_pom="s/pom.xml", case_type=CaseType.SPRING_BOOT)],
-        libraries=[LibraryUsage(name="lombok", version="1.18.20"), LibraryUsage(name="jpa")],
+        libraries=[LibraryUsage(name="lombok", version="1.18.20"), LibraryUsage(name="jpa"),
+                   LibraryUsage(name=next(iter(advisory_markers())), evidence=["import:x"])],
         source=SourceStats(has_web_xml=True, jsp_count=3, javax_imports={"javax.servlet": 4}))
     s = profile_summary(prof)
     for part in ("case=spring_boot", "java=1.8", "boot=2.7.18", "spring=5.3.31", "packaging=war", "modules=1",
-                 "services=1", "libs=lombok:1.18.20,jpa", "web.xml", "jsp=3", "javax-imports=javax.servlet",
-                 "target: JDK 21, Spring Boot 4.1"):
+                 "services=1", "libs=lombok:1.18.20,jpa web.xml", "jsp=3", "target: " + target_text(None)):
         assert part in s
+    # v2.1u (B-H2): labelled as the as-is project, `case=` first; the jakarta rewrite already ran, so no
+    # javax-imports=; an import-only advisory marker is not a library
+    assert s.startswith("as-is (before sbmig): case=spring_boot java=1.8 ")
+    assert "javax-imports" not in s and not any(m in s for m in advisory_markers())
+
+
+def test_advisory_markers_come_from_the_rules_table():
+    """The markers are the analyzer rules without any coordinate pattern — read from the table, never listed."""
+    from sbmig.analyze.libraries import LIBRARY_RULES
+    markers = advisory_markers()
+    assert markers and all(r.name in markers for r in LIBRARY_RULES if not (r.deps or r.managed or r.parents))
+    assert not any(r.name in markers for r in LIBRARY_RULES if r.deps)
 
 
 def test_grep_reads_each_file_once_and_respects_the_budget(setup, cfg, monkeypatch):

@@ -50,7 +50,9 @@ phases: [spring]
 - `@ConfigurationProperties` + `@ConstructorBinding` on type level → remove annotation.
 - Properties: `spring.redis.*` → `spring.data.redis.*`; `spring.data.cassandra.*` → `spring.cassandra.*`;
   `server.max-http-header-size` → `server.max-http-request-header-size`; `management.trace.http.*` → `management.httpexchanges.*`;
-  `spring.jpa.hibernate.use-new-id-generator-mappings` removed; `spring.mvc.pathmatch.matching-strategy=ant_path_matcher` removed in Boot 4.
+  `spring.jpa.hibernate.use-new-id-generator-mappings` removed. `spring.mvc.pathmatch.matching-strategy=ant_path_matcher`
+  still exists in Boot 4.1 (Framework 7 deprecates `AntPathMatcher` for MVC) and applies only with Boot's MVC
+  auto-configuration (not with the app's own `@EnableWebMvc`) — a runtime matter.
 - Actuator: `HttpTraceRepository`/`InMemoryHttpTraceRepository` → `HttpExchangeRepository`/`InMemoryHttpExchangeRepository`.
 
 ## Libraries
@@ -61,5 +63,5 @@ phases: [spring]
   `@ApiIgnore`→`@Hidden`. `Docket` beans → `@Bean GroupedOpenApi` or delete + MIGRATION-TODO.
 - Sleuth (`org.springframework.cloud.sleuth.*`) → Micrometer Tracing (`io.micrometer.tracing.Tracer`) + bridge
   (`micrometer-tracing-bridge-brave` / `-otel`).
-- Ehcache 2, Hazelcast 3, Apache Solr client, JUnit 4 vintage engine no longer managed by Boot → explicit version or migrate.
-- `MockBean`/`SpyBean` still exist in Boot 3 (deprecated 3.4) but are REMOVED in Boot 4 → see boot3-to-4.
+- Ehcache 2, Hazelcast 3 and the Apache Solr client are not Boot-managed: keep the as-is coordinate with `version: null`
+  (sbmig fills the as-is version); their migration is the owners'.

@@ -375,9 +375,26 @@ def test_verdict_allow_major_nothing_known_and_no_facts():
         "org.sitemesh:sitemesh → verdict: a person approved the move to 3.3.0 (allow_major) — use it as given and "
         "write <verify>")
     rv = _rv("g:a", "1.2", same=[("1.3", False)], higher=[("2.0", False)])
-    assert hint_lines(rv)[-1] == ("g:a → verdict: no jakarta build is known on any line — stay on 1.x, say so in "
-                                  "<analysis> and answer <no_script> if the case cannot be fixed without it")
+    assert hint_lines(rv)[-1] == ("g:a → verdict: no jakarta build is known on any line — the API changed inside the "
+                                  "same major: fix the code against the version the parent chain / Boot BOM manages "
+                                  "and leave the version")
     from sbmig.core.models import RepositoryVersions
     assert not any("verdict" in ln for ln in hint_lines(RepositoryVersions(key="g:a", current=None, higher=[])))
     err = RepositoryVersions(key="g:a", current="1.2", major=1, error="timeout")
     assert not any("verdict" in ln for ln in hint_lines(err))
+
+
+def test_verdict_unknown_jakarta_status_is_never_a_refusal():
+    """v2.1v (B-H1 / E-H1): a jakarta-native library whose poms declare no `jakarta.*` dependency (Spring itself —
+    `pom_is_jakarta` says unknown) used to get "answer <no_script>" in 22 API-removal prompts of one e2e run; the last
+    branch now says the API changed inside the major and the managed version stays."""
+    from sbmig.build.repo_versions import _verdict_line
+    rv = _rv("org.springframework:spring-webmvc", "7.0.8", same=[("7.0.9", None), ("7.0.10", None)])
+    line = _verdict_line(rv)
+    assert line == ("org.springframework:spring-webmvc → verdict: no jakarta build is known on any line — the API "
+                    "changed inside the same major: fix the code against the version the parent chain / Boot BOM "
+                    "manages and leave the version")
+    assert "<no_script>" not in line and "<analysis>" not in line
+    # the other branches are unchanged: a same-major jakarta build still raises, nothing listed still says nothing
+    assert "raise to 7.0.10" in _verdict_line(_rv("g:a", "7.0.8", same=[("7.0.10", True)]))
+    assert _verdict_line(_rv("g:a", "7.0.8")) == ""

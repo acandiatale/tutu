@@ -4,7 +4,8 @@ from sbmig.core.interfaces import FixContext
 from sbmig.core.models import (BuildError, DecisionKind, ErrorCluster, ErrorKind, FileChange, FixAttempt, Phase,
                                TriageDecision)
 from sbmig.fix import ContextPacker
-from sbmig.fix.context import SCRIPT_TRUNCATE_ORDER, merge_windows, nearest_pom, pom_excerpt, summarize_attempt
+from sbmig.fix.context import (EDITS_TRUNCATE_ORDER, SCRIPT_TRUNCATE_ORDER, merge_windows, nearest_pom,
+                               pom_excerpt, summarize_attempt)
 from sbmig.fix.context import summarize_script_attempt
 
 A = "src/main/java/a/A.java"
@@ -108,17 +109,45 @@ def test_notes_selection_by_keywords_case_phase(cfg, ws, put, tmp_path):
     packer = ContextPacker(cfg, notes_dir(tmp_path))
     cl = case(message="package javax.persistence does not exist", symbol=None)
     # the always-note (old fix policy) never reaches a script prompt; boot-only filtered by case; sec no match;
-    # phases are advisory: in verify the restructure note and the jdk21-only note are both selected by keyword
-    assert packer.pack_script(ws, cl, ctx(), "case=spring_legacy").notes_included == ["Jakarta", "JDK only"]
-    assert packer.pack_script(ws, cl, ctx(), "case=spring_boot").notes_included == ["Jakarta", "Boot only",
-                                                                                   "JDK only"]
-    # another phase is still narrowed by the list
+    # v2.1v: the error text names javax.persistence, so only notes with an error-text hit are taken — the boot-only
+    # and jdk-only notes match the file's `Entity` import alone
+    assert packer.pack_script(ws, cl, ctx(), "case=spring_legacy").notes_included == ["Jakarta"]
+    assert packer.pack_script(ws, cl, ctx(), "case=spring_boot").notes_included == ["Jakarta"]
+    # another phase is still narrowed by the list; with no error-text hit left, the import hit selects
     assert packer.pack_script(ws, cl, ctx(phase=Phase.JDK21), "case=spring_legacy").notes_included == ["JDK only"]
-    # the imports of the erroring file are matched too
+    # the imports of the erroring file are matched too (no note hits the error text here): ranked by import hits
     plain = case(message="cannot find symbol", symbol="class X")
-    assert "Jakarta" in packer.pack_script(ws, plain, ctx(), "case=spring_legacy").notes_included
+    assert packer.pack_script(ws, plain, ctx(), "case=spring_legacy").notes_included == ["Jakarta", "JDK only"]
+    assert packer.pack_script(ws, plain, ctx(), "case=spring_boot").notes_included == ["Jakarta", "Boot only",
+                                                                                      "JDK only"]
     one = ContextPacker(cfg, notes_dir(tmp_path), max_notes=1).pack_script(ws, cl, ctx(), "case=spring_boot")
     assert one.notes_included == ["Jakarta"]
+
+
+def test_note_scores_error_text_three_times_the_imports(cfg, tmp_path):
+    """v2.1v (B-H3): a keyword in the error text counts 3, one only in the imports / pom text 1; a note with no
+    error-text hit is taken only when no note has one; `score(text)` (one string) still counts keywords."""
+    from sbmig.fix.context import NoteEntry
+    n = NoteEntry(file="x.md", title="X", keywords=["Filter", "javax[.]servlet", "Absent"])
+    assert n.score("javax.servlet.Filter") == 2 and n.score("nothing") == 0
+    assert n.score_parts("cannot find symbol Filter", "import javax.servlet.Filter;") == (1, 1)
+    assert n.score_parts("javax.servlet.Filter", "import javax.servlet.Filter;") == (2, 0)
+    assert n.score_parts("", "import javax.servlet.Filter;") == (0, 2)
+    d = tmp_path / "scored"
+    d.mkdir()
+    for name in ("imp", "err", "pom"):
+        (d / f"{name}.md").write_text(f"---\ntitle: {name}\n---\n{name.upper()} NOTE\n")
+    (d / "index.yml").write_text(
+        "notes:\n"
+        "- {file: imp.md, title: imp, keywords: ['org[.]a', 'org[.]b', 'org[.]c', 'org[.]d']}\n"
+        "- {file: err.md, title: err, keywords: ['Frobnicator']}\n"
+        "- {file: pom.md, title: pom, keywords: ['<artifactId>widget</artifactId>']}\n")
+    packer = ContextPacker(cfg, d)
+    imports = "import org.a.X;\nimport org.b.X;\nimport org.c.X;\nimport org.d.X;\n"
+    assert [x.title for x in packer.select_notes("cannot find symbol Frobnicator", None, "verify",
+                                                 context=imports)] == ["err"]
+    assert [x.title for x in packer.select_notes("cannot find symbol", None, "verify",
+                                                 context=imports + "<artifactId>widget</artifactId>")] == ["imp", "pom"]
 
 
 def test_jdk21_tagged_repo_note_reaches_a_verify_phase_script_prompt(cfg, ws, put):
@@ -154,7 +183,9 @@ def test_default_notes_dir_is_repo_knowledge(cfg, ws, put):
 # ---------------------------------------------------------------- pack_script: truncation order
 def test_script_truncation_order():
     order = SCRIPT_TRUNCATE_ORDER
-    assert order.index("notes") == 0
+    # v2.1v (B-H3): the other cases and the plan notes go before the notes
+    assert order[:3] == ("other_errors", "plan_notes", "notes") and EDITS_TRUNCATE_ORDER[:3] == order[:3]
+    assert EDITS_TRUNCATE_ORDER[-1] == "previous_attempts" and "layout_facts" not in order + EDITS_TRUNCATE_ORDER
     assert order.index("kb_hints") < order.index("reference_files") < order.index("advisory_hints") \
         < order.index("files")
     assert order.index("reference_notes") < order.index("files") and "errors" not in order and "header" not in order
