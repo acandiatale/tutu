@@ -3,6 +3,8 @@
 > 2026-10-29: Ant 프로젝트(`build.xml` 만 있고 pom.xml 없음)는 접수에서 pom.xml 을 합성해 받는다(`intake.*`, 아래 §1 접수 참고).
 > 코드를 직접 읽을 때: 모든 모듈·공개 함수에 한국어 docstring 이 먼저 온다(규약 `docs/v2/CODE-COMMENTS-KO.md`).
 > 패키지 지도는 `sbmig/__init__.py`, 코드를 읽으며 발견한 의심 버그·정책 질문은 `docs/v2/HANDOVER-FINDINGS-2026-10-28.md`.
+> 2026-11-02: 케이스에 남는 **속성 하나하나**(case.json · scripts[] · runs[] · 오류 레코드 · 시도 · 차단)와 LangGraph **노드별 state**
+> 는 `docs/v2/CASE-AND-STATE-KO.md`(속성 사전)에 있다 — 이 문서의 §4 는 실물 샘플 위주다.
 
 
 2026-10-28, 브랜치 `flow-v2` (v2.1f 포함). 아래 샘플은 전부 로컬 e2e 실행(`pure-java` → `java6-legacy`, KB `out/e2e/kb-jaxb`)의
