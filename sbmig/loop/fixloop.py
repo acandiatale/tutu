@@ -456,8 +456,15 @@ def call_edit_applier(fn: Callable[..., Any], ws: Any, edits: list, cfg: Any, er
 MISSING_VERSION_SIG = "pom_invalid|missing_version"   # the generic signature of "'…version' for g:a is missing"
 SBMIG_VERSION_SOURCE = "sbmig-version"               # FixAttempt.source of the deterministic missing-version try
 SBMIG_RESOURCES_SOURCE = "sbmig-resources"           # v2.1m: … of the nonFilteredFileExtensions try
+SBMIG_JAKARTA_SOURCE = "sbmig-jakarta"               # v2.1z-e: … of the jakarta-build swap of a javax-era dependency
 RESOURCE_FACTS_FILES = 10                             # binary files named in the v2.1m prompt facts
-PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE})   # zero-LLM pre-tries: not ladder steps
+PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE, SBMIG_JAKARTA_SOURCE})   # zero-LLM pre-tries
+JAKARTA_SEARCH_PREFIX = "repository search for a jakarta build of"   # BlockedItem.suggestion / notes evidence (v2.1z-e)
+UNMAPPED_PREFIX = "the library behind"                                # … "<owner class> could not be matched to a dependency"
+# 소유 클래스의 패키지 토큰을 선언된 의존성과 맞출 때 뜻이 없는 조각 / tokens that identify nothing when matching a class
+# package against declared dependencies
+_GENERIC_TOKENS = frozenset({"com", "org", "net", "io", "kr", "co", "java", "javax", "jakarta", "api", "core", "lib",
+                             "libs", "common", "commons", "util", "utils", "web", "app", "impl", "internal", "base"})
 VERSION_FACTS_MAX = 12                                # artifacts per case in the "as-is build: …" prompt facts
 VERSION_TRY_APPLY_FAILURES = 3                        # zero-LLM tries of a (pom, g:a) that may fail to apply
 PRE_TRY_APPLY_FAILURES = VERSION_TRY_APPLY_FAILURES   # … the same cap for every zero-LLM pre-try (v2.1m)
@@ -966,6 +973,9 @@ class BuildFixLoop:
         # the zero-LLM pre-tries' keys already looked at — (source, pom or module, g:a | extensions) — and apply failures
         self._pre_tried: set[tuple[str, str, str]] = set()
         self._pre_failures: Counter = Counter()
+        self._jakarta_plans: dict[str, Any] = {}     # v2.1z-e: cluster id → the sbmig-jakarta plan (computed once a round)
+        self._javax_owner_libs: dict[str, list[GAV]] = {}   # v2.1z-e: cluster id → libraries mapped without the classpath
+        self._javax_owner: dict[str, Optional[str]] = {}    # v2.1z-e: cluster id → the owner class the fallback worked from
         self._cases = CaseScripts.of(kb)
         attach = getattr(triager, "attach_run", None)
         if callable(attach):
@@ -1407,6 +1417,15 @@ class BuildFixLoop:
             item.suggestion = compose_suggestion(item, self.cfg, settings_file=self.cfg.build.settings_file,
                                                  repositories=list(getattr(cand, "repositories", []) or []),
                                                  extra=extra)
+        if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.NEEDS_OWNER) and _mentions_javax(errs):
+            # v2.1z-e: 사람이 "어디를 찾아봤나" 를 보게 — 탐색 기록을 제안 뒤에 붙이고 메모에도 남긴다; 의존성을 못 맞춘
+            # 소유 클래스는 그렇다고 말한다 / what sbmig searched (and an owner class it could not match) on the item
+            evidence = self._jakarta_evidence(c, owner, artifact)
+            if evidence:
+                if evidence not in item.suggestion:
+                    item.suggestion = f"{item.suggestion}; {evidence}" if item.suggestion else evidence
+                if evidence not in item.notes:
+                    item.notes.append(evidence)
         self._touch_item(item.id)
         case_id = c.case_id or _case_of_errors(errs)
         if case_id:
@@ -2191,6 +2210,18 @@ class BuildFixLoop:
         if declined:
             att.source = requested
             self._begin_try(att, st)
+            fact = self._decline_contradiction(c, declined)
+            if fact:
+                # v2.1z-e: "jakarta 빌드가 없다" 는 거절은 sbmig 가 저장소에서 찾은 사실과 모순이면 받지 않는다 — 거절 횟수에
+                # 세지 않고 보통의 실패 시도로 기록해 다음 라운드에 그 사실과 함께 다시 묻는다
+                # a decline claiming "no jakarta build" is rejected when discovery found one: not a decline (no count),
+                # an ordinary failed try — the case is asked again with the fact
+                att.notes.append(f"decline rejected: {fact}")
+                log.info("LLM 의 거절을 받지 않음: %s — %s", _first_sentence(declined, 160), fact)
+                self.ws.journal({"event": "decline_rejected", "case": att.script_case_id or c.case_id or c.id,
+                                 "attempt": att.id, "reason": declined[:300], "fact": fact})
+                return self._fail(att, f"the answer declined ({_first_sentence(declined, 200)}) but {fact} — asked "
+                                       "again with the fact")
             return self._decline(att, c, ans, declined, ignored=bool(code.strip() or edits))
         # 보강했다는 스크립트가 기준 버전과 똑같으면 다시 돌리지
         # 않는다(같은 결과가 나올 뿐) — edits 가 있으면 그것으로
@@ -3029,7 +3060,7 @@ class BuildFixLoop:
         if text:
             return text, "llm"
         fx = self._verify_fixer()
-        if fx is not None and att.source != "kb-script" \
+        if fx is not None and att.source != "kb-script" and att.source not in PRE_TRY_SOURCES \
                 and getattr(getattr(self.cfg, "libraries", None), "verify_guide_llm", True) \
                 and not self.dry_run and not self.llm_unavailable and self.budget.llm_allowed():
             ctx = FixContext(phase=st.phase, iteration=st.iteration, profile_summary=self._summary(),
@@ -3121,7 +3152,7 @@ class BuildFixLoop:
         the target Boot BOM manages gets its one fact line and nothing else. Never raises."""
         libs: list[GAV] = []
         try:
-            libs = self._case_libraries(c)
+            libs = self._case_libraries(c) or self._javax_libraries(c)   # v2.1z-e: the owner-class fallback
         except Exception as e:  # noqa: BLE001 - hints never break a fix attempt
             log.debug("case libraries for %s unavailable: %s: %s", c.id, type(e).__name__, e)
         facts = self._version_facts(c, libs) + self._chain_property_facts(c, libs) + self._package_facts(c) + \
@@ -3135,10 +3166,11 @@ class BuildFixLoop:
                     continue                            # its fact line says it all: no listing, no verdict (v2.1v)
                 if not (javax_case or table_entry(gav.key, self.cfg) is not None):
                     continue                            # v2.1d's scope: javax libraries only
-                lines = self._library_hint_cache.get(gav.key)
+                ck = f"{gav.key}#javax" if javax_case else gav.key
+                lines = self._library_hint_cache.get(ck)
                 if lines is None:
-                    lines = self._library_lines(gav.key, gav.version)
-                    self._library_hint_cache[gav.key] = lines
+                    lines = self._library_lines(gav.key, gav.version, javax_case)
+                    self._library_hint_cache[ck] = lines
                 out += lines
                 listed.append(gav.key)
             out = list(dict.fromkeys(x for x in out if x))
@@ -3242,18 +3274,22 @@ class BuildFixLoop:
             return None
         try:
             from sbmig.build.repo_versions import RepositoryLookup
-            self._repo_lookup = RepositoryLookup(self.cfg)
+            try:
+                self._repo_lookup = RepositoryLookup(self.cfg, project_root=self.ws.root)   # v2.1z-e: the poms' repositories too
+            except TypeError:                           # a lookup double without the keyword (tests, plugins)
+                self._repo_lookup = RepositoryLookup(self.cfg)
         except Exception as e:  # noqa: BLE001 - no lookups: the prompt carries the table + the policy only
             self._repo_lookup_off = True
             log.warning("의존성 버전 조회 끔: 저장소 조회를 시작할 수 없음 (%s: %s) — 이 실행은 표만 사용",
                         type(e).__name__, str(e)[:200])
         return self._repo_lookup
 
-    def _library_lines(self, key: str, current: str | None) -> list[str]:
-        """라이브러리 하나의 프롬프트 줄들(표 항목 + 저장소 사실).
+    def _library_lines(self, key: str, current: str | None, javax: bool = False) -> list[str]:
+        """라이브러리 하나의 프롬프트 줄들(표 항목 + 저장소 사실 + v2.1z-e 탐색 줄; ``javax`` = javax 케이스라 형제 탐색 결과도).
         찾은 것은 ``의존성 버전 조회: …`` INFO 줄로 남긴다.
 
-        The prompt lines of one library (table entry + repository facts); logs what was found."""
+        The prompt lines of one library (table entry + repository facts + the v2.1z-e discovery lines; `javax` = a
+        javax case, so the sibling search's outcome is said too); logs what was found."""
         entry = table_entry(key, self.cfg)
         if entry is not None:
             log.info("표 항목: %s → %s (approved%s)", key, getattr(entry, "version", "?"),
@@ -3273,10 +3309,14 @@ class BuildFixLoop:
             try:
                 from sbmig.build.repo_versions import hint_lines
                 lines = [str(x) for x in (hint_lines(rv, entry) or []) if x]
-                if lines:
-                    return lines
             except Exception as e:  # noqa: BLE001
                 log.debug("hint_lines for %s failed: %s: %s", key, type(e).__name__, e)
+                lines = []
+            lines += self._discovery_lines(key, current, entry, rv, javax)
+            if lines:
+                return lines
+        else:
+            self._journal_lookup(key, current, None, None)
         if entry is not None:
             try:
                 from sbmig.core.jakarta_libraries import library_hint_line
@@ -3285,6 +3325,406 @@ class BuildFixLoop:
             except Exception as e:  # noqa: BLE001
                 log.debug("library_hint_line for %s failed: %s: %s", key, type(e).__name__, e)
         return []
+
+    # ------------------------------------------------------------------ v2.1z-e jakarta build discovery
+    def _discover(self, key: str, current: Optional[str], rv: Any = None) -> Any:
+        """라이브러리 ``key`` 의 jakarta 빌드 탐색 결과(``sbmig.build.jakarta_discovery``; 조회기에 캐시). 조회기가 없으면 None.
+        ``rv`` = 이미 받은 RepositoryVersions(없으면 ``_repo_facts`` 의 것) — ``candidates`` 는 라이브러리당 한 번만 묻는다.
+
+        The `JakartaDiscovery` of `key` (cached on the lookup); None without a repository lookup."""
+        lookup = self._repository()
+        if lookup is None:
+            return None
+        try:
+            from sbmig.build.jakarta_discovery import discover_jakarta_builds
+            self._mark(f"jakarta discovery {key}")
+            g, _, a = key.partition(":")
+            return discover_jakarta_builds(lookup, g, a, current, table_entry=table_entry(key, self.cfg), cfg=self.cfg,
+                                           rv=rv if rv is not None else self._repo_facts.get(key))
+        except Exception as e:  # noqa: BLE001 - discovery is an aid
+            log.debug("jakarta discovery %s failed: %s: %s", key, type(e).__name__, e)
+            return None
+
+    def _discovery_lines(self, key: str, current: Optional[str], entry: Any, rv: Any, javax: bool) -> list[str]:
+        """프롬프트에 붙는 탐색 줄들 + 저널 ``library_lookup``. ``hint_lines`` 가 이미 말한 것(같은 좌표의 pom 으로 확인된 jakarta ✓)은
+        되풀이하지 않는다: 같은 좌표라도 sbmig 의 확인(버전 한정어·jar 스캔)이 새로 보탠 것, 다른 좌표의 빌드, 그리고 javax
+        케이스에서 형제까지 찾아봤는데 없었다는 한 줄만.
+
+        The discovery lines that ADD to `hint_lines`: same-coordinate builds only when sbmig's verification (qualifier /
+        jar scan) said more than the pom check, sibling builds, and — for a javax case whose sibling search ran — the
+        one "none found (searched: …)" line. Nothing when the repository could not be read."""
+        if rv is None or (rv.error and not rv.same_major and not rv.higher):
+            self._journal_lookup(key, current, rv, None)
+            return []
+        d = self._discover(key, current, rv)
+        self._journal_lookup(key, current, rv, d)
+        if d is None:
+            return []
+        try:
+            known = {c.version for c in [*rv.same_major, *rv.higher] if c.jakarta is True}
+            out: list[str] = []
+            for b in d.builds:
+                if b.javax or (b.source == "same" and (not b.verified or b.version in known)):
+                    continue
+                if b.source != "same" and not b.verified:
+                    out.append(f"repository also lists {b.text()} — not verified as a jakarta build, not applied "
+                               f"automatically")
+                    continue
+                out.append(f"repository also has {b.text()} — a jakarta build of {key}: switch the declaration to it "
+                           f"instead of working around the javax API")
+            searched_siblings = bool(d.probed) or any(x.startswith("Nexus search") and "no Nexus" not in x
+                                                       for x in d.searched)
+            if javax and not out and not d.verified and not known and searched_siblings:
+                out.append(f"no jakarta build of {key} was found in the repository ({d.searched_text()})")
+            return out
+        except Exception as e:  # noqa: BLE001
+            log.debug("discovery lines for %s failed: %s: %s", key, type(e).__name__, e)
+            return []
+
+    def _journal_lookup(self, key: str, current: Optional[str], rv: Any, d: Any) -> None:
+        """저널 ``library_lookup``: journal.jsonl 만으로 "그 라이브러리를 저장소에서 찾아봤나, 무엇이 나왔나" 를 알 수 있게."""
+        try:
+            self.ws.journal({"event": "library_lookup", "key": key, "current": current,
+                             "source": getattr(rv, "source", "") if rv is not None else "no lookup",
+                             "versions_found": (len(getattr(rv, "same_major", [])) + len(getattr(rv, "higher", [])))
+                             if rv is not None else 0,
+                             "jakarta_builds": [b.coordinates for b in getattr(d, "verified", [])] if d is not None else [],
+                             "unverified": [b.coordinates for b in getattr(d, "builds", []) if not b.verified]
+                             if d is not None else [],
+                             "searched": d.searched_text() if d is not None else "",
+                             "urls_tried": list(getattr(rv, "urls_tried", []) or []) if rv is not None else [],
+                             "settings_files": list(getattr(self._repo_lookup, "settings_files", []) or []),
+                             "repositories": [f"{u} ({o})" for u, _c, o in getattr(self._repo_lookup, "repository_urls",
+                                                                                      lambda: [])()],
+                             "error": (getattr(rv, "error", "") if rv is not None else "") or getattr(d, "error", "")})
+        except Exception as e:  # noqa: BLE001
+            log.debug("library_lookup journal for %s failed: %s: %s", key, type(e).__name__, e)
+
+    def _javax_cluster(self, c: ErrorCluster) -> Any:
+        """``external_javax_api`` 로 분류되는 케이스면 그 BlockedCandidate(소유 클래스 포함), 아니면 None."""
+        if not _mentions_javax(c.errors):
+            return None
+        try:
+            from sbmig.triage.blocked import classify_blocked
+            cand = classify_blocked(c, self.profile, self.cfg, ws=self.ws)
+        except Exception as e:  # noqa: BLE001
+            log.debug("javax classification of %s failed: %s: %s", c.id, type(e).__name__, e)
+            return None
+        return cand if cand is not None and cand.reason == BlockReason.EXTERNAL_JAVAX_API else None
+
+    def _declared_dependencies(self) -> list[tuple[str, GAV]]:
+        """프로젝트 pom 들이 선언한 (pom, 의존성) 쌍(직접 + 관리; 자기 모듈 제외)."""
+        own = self._own_module_keys()
+        out: list[tuple[str, GAV]] = []
+        for p in self.ws.pom_files():
+            ed = self._pom_editor(p)
+            if ed is None:
+                continue
+            try:
+                deps = [*ed.dependencies(), *ed.managed_dependencies()]
+            except Exception:  # noqa: BLE001
+                continue
+            for g in deps:
+                if g.group_id and g.artifact_id and g.key not in own:
+                    out.append((_norm_path(p), g))
+        return out
+
+    def _owner_dependency(self, owner_class: Optional[str], deps: list[tuple[str, GAV]]) -> Optional[GAV]:
+        """classpath 귀속이 없을 때의 폴백: 소유 클래스의 패키지 토큰(``com.vendor8.grid.GridExporter`` → vendor8, vendor, grid)을
+        선언된 의존성의 groupId · artifactId 토큰과 맞춘다(끝자리 숫자를 뗀 줄기도 같은 토큰으로). 가장 많이 겹치는 의존성,
+        동점이면 groupId 가 패키지 접두어인 것. 그래도 없으면 로컬 저장소의 그 의존성 jar 안에 클래스 파일이 있는지 본다.
+
+        The fallback when the classpath cannot attribute the owner class: the class package's tokens against the
+        declared dependencies' groupId / artifactId tokens (stems without trailing digits count too), best overlap
+        wins (a groupId that prefixes the package breaks ties); then the local repository's jars of the declared
+        dependencies for the class file. None when nothing matches."""
+        if not owner_class or not deps:
+            return None
+        from sbmig.build.jakarta_discovery import stem
+        pkg = owner_class.rsplit(".", 1)[0] if "." in owner_class else ""
+        tokens = {t.lower() for t in re.split(r"[.$]", pkg) if t}
+        tokens |= {stem(t) for t in list(tokens)}
+        tokens = {t for t in tokens if len(t) >= 3 and t not in _GENERIC_TOKENS}
+        best: Optional[GAV] = None
+        best_score = 0
+        for _p, g in deps:
+            own = {t.lower() for t in re.split(r"[.\-_]", f"{g.group_id}.{g.artifact_id}") if t}
+            own |= {stem(t) for t in list(own)}
+            own = {t for t in own if len(t) >= 3 and t not in _GENERIC_TOKENS}
+            score = len(tokens & own) * 2 + (1 if pkg and (pkg + ".").startswith(g.group_id + ".") else 0)
+            if score > best_score:
+                best, best_score = g, score
+        if best is not None:
+            return best
+        # the local repository's jars (bounded): the class file inside one of the declared dependencies' jars
+        try:
+            from sbmig.build.mvn import local_repo_path
+            root = local_repo_path(self.cfg)
+        except Exception:  # noqa: BLE001
+            return None
+        entry = owner_class.replace(".", "/").split("$", 1)[0] + ".class"
+        for _p, g in deps[:40]:
+            d = root.joinpath(*g.group_id.split("."), g.artifact_id)
+            if not d.is_dir():
+                continue
+            versions = [g.version] if g.version and "${" not in g.version else []
+            if not versions:
+                try:
+                    versions = sorted(x.name for x in d.iterdir() if x.is_dir())[-2:]
+                except OSError:
+                    versions = []
+            for v in versions:
+                jar = d / v / f"{g.artifact_id}-{v}.jar"
+                if not jar.is_file() or jar.stat().st_size > 50 * 1024 * 1024:
+                    continue
+                try:
+                    import zipfile
+                    with zipfile.ZipFile(jar) as zf:
+                        if entry in zf.namelist():
+                            return g.model_copy(update={"version": v}) if not g.version or "${" in g.version else g
+                except Exception:  # noqa: BLE001 - a broken jar: not this one
+                    continue
+        return None
+
+    def _javax_libraries(self, c: ErrorCluster) -> list[GAV]:
+        """v2.1z-e: javax 케이스 뒤의 라이브러리를 classpath 없이도 찾는다(``_owner_dependency`` 폴백). 못 찾으면 저널
+        ``library_unmapped``(소유 클래스와 함께) — 회사 실행에서 LLM 기록에 저장소 줄이 하나도 없던 이유를 journal.jsonl 만으로
+        알 수 있게. 클러스터별 캐시.
+
+        The libraries behind a javax case when the classpath attribution found none: the owner class → declared
+        dependency fallback (`_owner_dependency`); journal `library_unmapped` when even that fails."""
+        if c.id in self._javax_owner_libs:
+            return self._javax_owner_libs[c.id]
+        out: list[GAV] = []
+        cand = self._javax_cluster(c)
+        if cand is not None:
+            owner = cand.owner_class
+            try:
+                owner = self._classpath_hints(list(c.errors), owner, cand.required_type, cand.found_type)[0] or owner
+            except Exception:  # noqa: BLE001
+                pass
+            if not owner:
+                owner = self._owner_from_source(c)      # `incompatible types` names no owner: the error line's import
+            self._javax_owner[c.id] = owner
+            deps = self._declared_dependencies()
+            g = self._owner_dependency(owner, deps)
+            if g is not None:
+                out.append(g)
+                self.ws.journal({"event": "library_mapped", "case": c.case_id or c.id, "owner_class": owner,
+                                 "key": g.key, "version": g.version, "how": "package tokens / local jar"})
+                log.info("javax 라이브러리 귀속(폴백): %s → %s", owner, g.coordinates)
+            else:
+                self.ws.journal({"event": "library_unmapped", "case": c.case_id or c.id, "owner_class": owner,
+                                 "declared": len(deps)})
+                log.info("javax 라이브러리 귀속 실패: %s 를 선언된 의존성 %d개와 맞추지 못함 (classpath · 패키지 토큰 · 로컬 jar)",
+                         owner or "?", len(deps))
+        self._javax_owner_libs[c.id] = out
+        return out
+
+    def _owner_from_source(self, c: ErrorCluster) -> Optional[str]:
+        """소유 클래스를 메시지가 말하지 않을 때(``incompatible types``): 오류 줄에 쓰인 식별자 중 그 파일의 import 가 가리키는
+        외부 클래스(JDK · javax · jakarta · 프로젝트 클래스 제외)의 FQCN. 못 찾으면 None. 파일 읽기만.
+
+        The library class on the error line when the message names none: an identifier of that line whose import in the
+        file is neither JDK / javax / jakarta nor a project class; None otherwise."""
+        try:
+            from sbmig.triage.blocked import is_project_class
+        except Exception:  # noqa: BLE001
+            is_project_class = None  # type: ignore[assignment]
+        for e in c.errors:
+            if not e.file or not e.line:
+                continue
+            try:
+                lines = self.ws.read(_norm_path(e.file)).splitlines()
+            except Exception:  # noqa: BLE001
+                continue
+            if e.line > len(lines):
+                continue
+            imports = re.findall(r"^\s*import\s+(?:static\s+)?([\w.]+)\s*;", "\n".join(lines[:400]), re.M)
+            by_simple = {imp.rsplit(".", 1)[-1]: imp for imp in imports}
+            window = " ".join(lines[max(0, e.line - 2): e.line + 1])
+
+            def external(fq: str) -> bool:
+                if not fq or fq.startswith(("java.", "javax.", "jakarta.")):
+                    return False
+                try:
+                    return not (is_project_class is not None and is_project_class(self.ws, self.profile, fq))
+                except Exception:  # noqa: BLE001
+                    return True
+
+            # the error line's own identifiers first (`new GridExporter().export(…)`), then — the call goes through a
+            # field or a local (`exporter.export(req, resp)`) — the file's first external import
+            for ident in re.findall(r"\b([A-Z]\w*)\b", window):
+                fq = by_simple.get(ident)
+                if fq and external(fq):
+                    return fq
+            for fq in imports:
+                if external(fq):
+                    return fq
+        return None
+
+    def _jakarta_evidence(self, c: ErrorCluster, owner: Optional[str], artifact: Optional[GAV]) -> str:
+        """차단 항목에 붙는 한 문장: 탐색 기록(``JAKARTA_SEARCH_PREFIX`` …) 또는 의존성을 못 맞춘 소유 클래스(``UNMAPPED_PREFIX`` …)."""
+        try:
+            libs = [artifact] if artifact is not None else []
+            if not libs:
+                libs = self._case_libraries(c) or self._javax_libraries(c)
+            if not libs:
+                who = owner or self._javax_owner.get(c.id) or self._owner_from_source(c)
+                if not who:
+                    return ""                      # 소유 클래스조차 모르면 덧붙일 사실이 없다(v2.1v 의 거절 문장 그대로)
+                return (f"{UNMAPPED_PREFIX} {who} could not be matched to a dependency (classpath, package tokens, local "
+                        f"jars) — run mvn dependency:tree in the module and look the library's jakarta build up in Nexus")
+            lib = libs[0]
+            d = self._discover(lib.key, lib.version)
+            if d is None:
+                return f"{JAKARTA_SEARCH_PREFIX} {lib.key}: no repository lookup (libraries.lookup off or unreachable)"
+            found = ", ".join(b.coordinates for b in d.verified)
+            return (f"{JAKARTA_SEARCH_PREFIX} {lib.key}: {d.searched_text()}"
+                    + (f" — verified build(s): {found}" if found else " — none verified"))
+        except Exception as e:  # noqa: BLE001
+            log.debug("jakarta evidence for %s failed: %s: %s", c.id, type(e).__name__, e)
+            return ""
+
+    def _decline_contradiction(self, c: ErrorCluster, reason: str) -> str:
+        """거절 사유가 jakarta / javax 빌드 얘기인데 sbmig 의 탐색이 적용 가능한(확인된) jakarta 빌드를 찾았으면 그 사실, 아니면 "".
+
+        The fact that contradicts a "no jakarta build" decline — a verified build discovery found for a library of the
+        case — or ""."""
+        if not self._jakarta_enabled() or not re.search(r"(?i)jakarta|javax", reason or ""):
+            return ""
+        try:
+            libs = self._case_libraries(c) or self._javax_libraries(c)
+            for lib in libs:
+                d = self._discover(lib.key, lib.version)
+                b = d.best() if d is not None else None
+                if b is not None:
+                    return f"the repository has {b.coordinates} ({b.how}; found by {b.source}) — a jakarta build of {lib.key}"
+        except Exception as e:  # noqa: BLE001
+            log.debug("decline contradiction for %s failed: %s: %s", c.id, type(e).__name__, e)
+        return ""
+
+    def _jakarta_plan(self, c: ErrorCluster) -> dict[str, Any]:
+        """사전 시도 ``sbmig-jakarta`` 의 계획(클러스터별로 라운드마다 한 번): javax 케이스의 라이브러리마다 탐색 → 확인된 최선의
+        빌드 → 그것을 선언한 pom 들 → (pom, 옛 g:a, 새 빌드, 쓸 버전 | None). 새 좌표를 새 부모 체인 / Boot BOM 이 관리하면
+        버전 없이(그 관리 버전이 jakarta 인지는 체인이 보장). 보호 좌표(사내 parent·필수·선택)는 바꾸지 않는다.
+
+        The `sbmig-jakarta` plan: per javax library of the case, the best verified build, the poms declaring the old
+        coordinates, the version to write (None when the new chain / Boot BOM manages the new key)."""
+        if c.id in self._jakarta_plans:
+            return self._jakarta_plans[c.id]
+        plan: dict[str, Any] = {"items": [], "notes": [], "keys": [], "libs": []}
+        self._jakarta_plans[c.id] = plan
+        if self.dry_run or self._javax_cluster(c) is None:
+            return plan
+        libs = self._case_libraries(c) or self._javax_libraries(c)
+        plan["libs"] = [g.key for g in libs]
+        if not libs:
+            return plan
+        protected = self._protected_version_keys()
+        deps = self._declared_dependencies()
+        for lib in libs:
+            d = self._discover(lib.key, lib.version)
+            if d is None:
+                plan["notes"].append(f"{lib.key}: no repository lookup")
+                continue
+            plan["notes"].append(f"{JAKARTA_SEARCH_PREFIX} {lib.key}: {d.searched_text()}")
+            b = d.best()
+            if b is None:
+                continue
+            if lib.key in protected:
+                plan["notes"].append(f"{lib.key} is a configured in-house artifact: not swapped by sbmig ({b.coordinates} found)")
+                continue
+            poms = list(dict.fromkeys(p for p, g in deps if g.key == lib.key))
+            if not poms:
+                plan["notes"].append(f"{lib.key}: no project pom declares it (transitive?) — not swapped")
+                continue
+            for pom in poms:
+                module = self._coords(self._pom_editor(pom))
+                try:
+                    managed = self._versions().managed_version(b.key, module) or self._versions().boot_version(b.key, module)
+                except Exception:  # noqa: BLE001
+                    managed = None
+                version = None if managed else b.version
+                key = (SBMIG_JAKARTA_SOURCE, pom, f"{lib.key}->{b.coordinates}")
+                if key in self._pre_tried:
+                    continue
+                plan["items"].append({"pom": pom, "old": lib.key, "build": b, "version": version,
+                                      "managed": managed or ""})
+                plan["keys"].append(key)
+        return plan
+
+    def _jakarta_enabled(self) -> bool:
+        """``libraries.discover_jakarta_builds`` — 꺼지면 v2.1d 동작(사전 시도·거절 반박·탐색 없음, 릴리스 나열만)."""
+        return bool(getattr(getattr(self.cfg, "libraries", None), "discover_jakarta_builds", True))
+
+    def _jakarta_targets(self, c: ErrorCluster) -> list[str] | None:
+        """javax 라이브러리 케이스이고 적용할 jakarta 빌드가 있으면 손댈 pom 들, 아니면 None."""
+        if not self._jakarta_enabled() or not _mentions_javax(c.errors):
+            return None
+        plan = self._jakarta_plan(c)
+        return list(dict.fromkeys(i["pom"] for i in plan["items"])) or None
+
+    def _jakarta_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
+        """v2.1z-e 사전 시도(LLM 0회): 확인된 jakarta 빌드로 의존성 선언을 바꾼다 — 좌표가 다르면 ``replace_dependency``, 같으면
+        버전(관리되면 버전 삭제)과 classifier. 같은 좌표의 상위 메이저면 메이저 업그레이드지만 javax → jakarta 는 v2.1d 가 허용한
+        유일한 메이저 변경이라 적용하고, 되읽기가 ⚠ 운영자 확인 줄을 남긴다(가이드는 sbmig 가 만든다, LLM 호출 없음). 커밋
+        ``fix(sbmig-jakarta): <cluster id>``; (pom, 옛 → 새) 마다 실행당 한 번.
+
+        The deterministic swap of a javax-era dependency for the verified jakarta build (`replace_dependency` for other
+        coordinates, version / classifier for the same): commit `fix(sbmig-jakarta): <cluster id>`, scored and rolled
+        back like any try; a higher major is the one major change v2.1d allows (javax → jakarta) and the read-back
+        lists it for the operator with sbmig's synthesized guide."""
+        plan = self._jakarta_plan(c)
+        items = list(plan["items"])
+        case_id = c.case_id or c.id
+        self.ws.journal({"event": "jakarta_try", "phase": st.phase.value, "iteration": st.iteration, "case": case_id,
+                         "libraries": plan["libs"],
+                         "plan": [{"pom": i["pom"], "from": i["old"], "to": i["build"].coordinates, "version": i["version"],
+                                   "managed_by": i["managed"], "source": i["build"].source, "how": i["build"].how,
+                                   "major": i["build"].major_change} for i in items],
+                         "notes": plan["notes"]})
+        if not items:
+            return False
+        from sbmig.restructure.pom_editor import PomEditor
+        what = "; ".join(f"{i['old']} → {i['build'].coordinates} in {i['pom']}" + (" (version managed)" if i["managed"] else "")
+                         for i in items)
+        log.info("sbmig jakarta 빌드 교체 (LLM 0회): %s", what)
+        notes = [f"jakarta build: {i['old']} → {i['build'].coordinates} in {i['pom']} ({i['build'].how}; found by "
+                 f"{i['build'].source}" + (f"; version managed by {i['managed']}" if i["managed"] else "")
+                 + ("; a higher major — operator check" if i["build"].major_change else "") + ")" for i in items]
+        notes += plan["notes"]
+
+        def apply() -> ScriptRunResult:
+            changed: list[str] = []
+            for i in items:
+                b = i["build"]
+                og, _, oa = i["old"].partition(":")
+                ed = PomEditor(self.ws.abs(i["pom"]))
+                if (og, oa) != (b.group, b.artifact):
+                    ed.replace_dependency(og, oa, GAV(group_id=b.group, artifact_id=b.artifact, version=i["version"],
+                                                      classifier=b.classifier))
+                    if i["version"] is None:
+                        ed.set_dependency_version(b.group, b.artifact, None)
+                else:
+                    if b.classifier:
+                        ed.replace_dependency(og, oa, GAV(group_id=b.group, artifact_id=b.artifact,
+                                                          version=i["version"], classifier=b.classifier))
+                    ed.set_dependency_version(b.group, b.artifact, i["version"])
+                ed.save()
+                if i["pom"] not in changed:
+                    changed.append(i["pom"])
+            return ScriptRunResult(status="ok", changed_files=changed)
+
+        applied = self._pre_attempt(
+            pr, st, c, source=SBMIG_JAKARTA_SOURCE, apply_fn=apply, notes=notes, keys=list(plan["keys"]),
+            rationale=f"sbmig-jakarta: the repository has a jakarta build of the javax-era dependency ({what}) — swapped "
+                      "without an LLM call",
+            analysis=("a dependency still compiled against javax.* is called with jakarta types: "
+                      + ", ".join(i["old"] for i in items)),
+            solution="sbmig switches the declaration to the jakarta build it verified in the repository — no LLM call")
+        self._jakarta_plans.pop(c.id, None)             # the next round plans again (the applied keys are remembered)
+        return applied
 
     # ------------------------------------------------------------------ v2.1l dependency versions
     def _versions(self) -> VersionResolver:
@@ -3707,7 +4147,8 @@ class BuildFixLoop:
 
         The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources."""
         return (_PreTry(SBMIG_VERSION_SOURCE, self._version_targets, self._version_attempt),
-                _PreTry(SBMIG_RESOURCES_SOURCE, self._resources_targets, self._resources_attempt))
+                _PreTry(SBMIG_RESOURCES_SOURCE, self._resources_targets, self._resources_attempt),
+                _PreTry(SBMIG_JAKARTA_SOURCE, self._jakarta_targets, self._jakarta_attempt))
 
     def _pre_try_for(self, c: ErrorCluster, d: TriageDecision) -> tuple[_PreTry | None, list[str]]:
         """이 케이스에 LLM 0회 사전 시도를 먼저 해 볼까: 트리아지가 SCRIPT 를 정했거나 LLM 이 없어서(불가·예산

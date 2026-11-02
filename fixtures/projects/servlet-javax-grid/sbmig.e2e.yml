@@ -1,0 +1,19 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — v2.1z-e: the company layout
+# (defaults of config/default.yml) with the local stand-in role parents, like servlet-webxml-legacy.
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review; no fix answer is needed —
+# the javax grid case is fixed by the zero-LLM pre-try `sbmig-jakarta` (the discovery finds grid8 2.0.5-jakarta in the
+# local repository: same coordinates, a higher major, verified by its `-jakarta` version qualifier).
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/servlet-javax-grid/replay"
+kb:
+  dir: out/e2e/kb-servlet-javax-grid

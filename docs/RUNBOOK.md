@@ -36,6 +36,7 @@ cp config/artifacts.example.yml config/artifacts.yml      # fill in parent / man
 cp .env.example .env                                     # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (git-ignored)
 sbmig llm-probe --prompt "안녕"                            # exact request, raw response, extracted reply (needs .env only)
 sbmig llm-probe --prompt "안녕" --payload-extra '{}' --no-system --model <postman model>   # compare with Postman
+sbmig repo-probe com.example.grid8:grid8:1.0.6 --project <project>   # v2.1z-e: which repositories answer, versions, jakarta verdicts, sibling builds
 sbmig run <project> --config config/artifacts.yml
 ```
 ```powershell
@@ -46,6 +47,7 @@ Set-ExecutionPolicy -Scope Process Bypass        # only if "Activate.ps1 cannot 
 .venv\Scripts\Activate.ps1
 uv pip install -e ".[dev]"
 sbmig llm-probe --prompt "안녕"                   # last line: LLM-PROBE ok … / LLM-PROBE FAIL <kind> …
+sbmig repo-probe com.example.grid8:grid8:1.0.6 --project D:\asis\order-api   # last line: REPO-PROBE ok|none … (URLs tried, versions, jakarta ✓ how)
 sbmig run D:\asis\order-api.zip --config config\artifacts.yml --out out
 Get-Content out\<run id>\sbmig.log -Encoding UTF8 -Tail 30   # Windows PowerShell 5.1 needs -Encoding UTF8 (else "—" and Korean are garbled)
 ```
@@ -53,6 +55,12 @@ Get-Content out\<run id>\sbmig.log -Encoding UTF8 -Tail 30   # Windows PowerShel
 The gateway URL is used verbatim (no scheme change, no path appended): `LLM_BASE_URL=http://...` exactly as the
 working in-house agents call it. If `requests.post` works by hand but sbmig gets an error, run `sbmig llm-probe`
 (and `--bare`): it prints the exact request, the proxies in effect and the response headers/body.
+When a run blocks a javax-era library with "no jakarta build" (or the Handover says `remote repositories unreadable: …`), run
+`sbmig repo-probe <groupId:artifactId:version> --project <dir>` on that PC: it lists every repository URL sbmig asks (the
+settings mirrors and active-profile repositories, the project poms' `<repositories>`, Central), what each answered for the
+library's `maven-metadata.xml` (ok / 404 / 401 / timeout), the versions found, the jakarta verdict of each candidate (version
+qualifier `-jakarta`, the pom, a jar scan) and the sibling builds the discovery probed — the same facts the fix loop writes
+to `journal.jsonl` as `library_lookup` / `library_unmapped` events.
 Response shape: an OpenAI / Azure chat-completions answer (`choices[0].message.content`, `usage.prompt_tokens`,
 `finish_reason`, Azure's `prompt_filter_results` / `content_filter_result`, a gateway `routing` field) is read without
 any setting — `LLM_RESPONSE_PATH` is only for gateways that wrap the text elsewhere (`data.result.content`). A

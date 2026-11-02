@@ -495,6 +495,18 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
+    # v2.1z-e: jakarta build discovery — the search record / the unmatched owner class on a blocked item
+    # (sbmig.loop.fixloop JAKARTA_SEARCH_PREFIX / UNMAPPED_PREFIX; the dynamic record inside stays as written)
+    ((r"^repository search for a jakarta build of (?P<key>\S+): (?P<rest>.*?) — verified build\(s\): (?P<found>.+)$"),
+     r"\g<key> 의 jakarta 빌드 저장소 조회: \g<rest> — 확인된 빌드: \g<found>"),
+    ((r"^repository search for a jakarta build of (?P<key>\S+): (?P<rest>.*?) — none verified$"),
+     r"\g<key> 의 jakarta 빌드 저장소 조회: \g<rest> — 확인된 빌드 없음"),
+    ((r"^repository search for a jakarta build of (?P<key>\S+): no repository lookup \(libraries\.lookup off or unreachable\)$"),
+     r"\g<key> 의 jakarta 빌드 저장소 조회: 저장소 조회 없음 (libraries.lookup 꺼짐 또는 접속 불가)"),
+    ((r"^the library behind (?P<who>.+?) could not be matched to a dependency \(classpath, package tokens, local jars\) — "
+      r"run mvn dependency:tree in the module and look the library's jakarta build up in Nexus$"),
+     r"\g<who> 뒤의 라이브러리를 의존성과 맞추지 못함(classpath · 패키지 토큰 · 로컬 jar) — 모듈에서 mvn dependency:tree 를 돌리고 "
+     r"Nexus 에서 그 라이브러리의 jakarta 빌드를 찾을 것"),
     # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 (sbmig.analyze.hollow.hollow_followup / outside_followup)
     # v2.1z-d: the ADF first line (rejected; policy stop / continue) and the traces note
     ((r"^ADF project \(Oracle JDeveloper / ADF\): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다 "
@@ -670,4 +682,14 @@ def tr_line(lang: str, line: str) -> str:
         m = rx.match(line)
         if m:
             return m.expand(tmpl)
+    # v2.1z-e: a blocked item's suggestion may carry the search record / the unmatched owner class as a tail ("…; repository
+    # search for a jakarta build of g:a: …") — translate head and tail on their own, so neither blocks the other
+    for sep in _TAIL_SEPARATORS:
+        if sep in line:
+            head, tail = line.split(sep, 1)
+            tail = sep[2:] + tail
+            return f"{tr_line(lang, head)}; {tr_line(lang, tail)}"
     return line
+
+
+_TAIL_SEPARATORS = ("; repository search for a jakarta build of ", "; the library behind ")

@@ -278,6 +278,21 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     lines.append(compose_suggestion(BlockedItem(id="b", reason=BlockReason.NEEDS_OWNER, phase=Phase.VERIFY,
                                                 cluster_id="c")))
 
+    # v2.1z-e: the jakarta build search record / the unmatched owner class on a blocked item (fixloop._jakarta_evidence)
+    from sbmig.build.jakarta_discovery import JakartaBuild, JakartaDiscovery
+    from sbmig.loop.fixloop import JAKARTA_SEARCH_PREFIX, UNMAPPED_PREFIX
+    jd = JakartaDiscovery(key="com.example.grid8:grid8", current="1.0.6",
+                          searched=["same coordinates: 3 release(s) newer than 1.0.6 checked, none jakarta",
+                                    "Nexus search name=*grid*: no other artifact with that stem"],
+                          probed=["grid8-jakarta", "com.example.grid9:grid9"])
+    lines.append(f"{JAKARTA_SEARCH_PREFIX} {jd.key}: {jd.searched_text()} — none verified")
+    jd.builds.append(JakartaBuild("com.example.grid8", "grid8", "2.0.5-jakarta", source="same", verified=True,
+                                  how="version qualifier", major_change=True))
+    lines.append(f"{JAKARTA_SEARCH_PREFIX} {jd.key}: {jd.searched_text()} — verified build(s): "
+                 + ", ".join(b.coordinates for b in jd.verified))
+    lines.append(f"{JAKARTA_SEARCH_PREFIX} {jd.key}: no repository lookup (libraries.lookup off or unreachable)")
+    lines.append(f"{UNMAPPED_PREFIX} com.vendor.grid.GridExporter could not be matched to a dependency (classpath, package "
+                 f"tokens, local jars) — run mvn dependency:tree in the module and look the library's jakarta build up in Nexus")
     # v2.1z-c: the hollow-reactor first line (with / without unresolved ${…} directories) and the soft line
     from sbmig.analyze.hollow import HollowResult, hollow_followup, outside_followup
     hr = HollowResult(outside={"java": 120, "jsp": 35, "web": 25},

@@ -61,6 +61,13 @@ same packages inside `<%@ page|tag import="…" %>`, scriptlets (`<% %>`, `<%= %
 - `javax.xml.bind:jaxb-api` + `com.sun.xml.bind:jaxb-impl` → `jakarta.xml.bind:jakarta.xml.bind-api` + `org.glassfish.jaxb:jaxb-runtime`
 - `com.sun.mail:javax.mail` → `org.eclipse.angus:angus-mail`
 - `org.ehcache:ehcache` 3 → add `<classifier>jakarta</classifier>`; Ehcache 2 (`net.sf.ehcache`) unsupported.
+- A third-party / vendor library whose API still takes `javax.*` types: when the "Dependency versions" section lists
+  `repository also has <g:a> <version> (jakarta ✓ …)` — the same coordinates on a higher line (a `-jakarta` version
+  qualifier, e.g. `2.0.5-jakarta`), a sibling artifactId (`<a>-jakarta`) or the next version-line coordinates — switch
+  the declaration to THAT build (coordinates, version, classifier as listed; `version: null` when the parent chain
+  manages it) instead of wrapping or shimming the call, and never answer that "no jakarta build exists" while such a
+  line is present. Only when the section says `no jakarta build of <g:a> was found in the repository (…)` is the
+  library a `<blocked>` case for its owners.
 - QueryDSL: `com.querydsl:querydsl-jpa` and `com.querydsl:querydsl-apt` need `<classifier>jakarta</classifier>`
   (Boot-managed through `querydsl-bom`); apt processor in `<annotationProcessorPaths>` also with classifier `jakarta`, plus
   `jakarta.persistence:jakarta.persistence-api`. Generated `Q*` classes import `jakarta.annotation.Generated`.

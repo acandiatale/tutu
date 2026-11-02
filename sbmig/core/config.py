@@ -455,6 +455,13 @@ class BuildConfig(BaseModel):
     # v2.1d: 어떤 릴리스가 있는지 LLM 에 알려 주려고 maven-metadata.xml 을 읽을 저장소. None 이면
     # settings_file 의 catch-all 미러, 그것도 없으면 Maven Central(offline 이 아닐 때).
     repository_url: Optional[str] = None
+    # v2.1z-e (2026-11-02): 명시적 repository_url 은 운영자의 결정이라 맨 앞에서 묻고, 그 뒤에 settings 가 가리키는 저장소들(모든
+    # 미러를 Maven 의 mirrorOf 규칙으로, 활성 프로필 repositories, 미러가 덮지 않는 pom 의 repositories, 전역 settings, Central)이
+    # 이어진다. settings 의 주 URL 과 다르면 WARNING 한 번(묵은 yml 이 보이게). 자격증명은 같은 URL 의 <server>, 아니면 아래 id 로.
+    # v2.1z-e: an explicit repository_url is asked first (the operator's decision), then the settings-derived set; a
+    # WARNING names both when they differ. Credentials: the <server> of the mirror / repository with the same URL, else
+    # this server id (for a URL that appears nowhere in the settings).
+    repository_server_id: Optional[str] = None
     repository_timeout_seconds: int = 10
     # v2.1m: 필터링되는 리소스(<filtering>true</filtering>) 아래 바이너리로 늘 취급할 회사 확장자(예: dmdb). 재구성이
     # 필터링을 선언한 pom 마다 maven-resources-plugin <nonFilteredFileExtensions> 에 스캔이 찾은 확장자와 함께 적는다
@@ -690,6 +697,20 @@ class LibrariesConfig(BaseModel):
     company_file: str = "libraries.yml"      # the people's table, relative to kb.dir (same schema; its entry wins)
     verify_guide_llm: bool = True            # a major upgrade whose answer has no <verify> → ONE more LLM call for
                                              # the guide; off (or no LLM) → sbmig synthesizes it from the diff
+    # v2.1z-e (2026-11-02) jakarta 빌드 탐색: javax 를 아직 쓰는 라이브러리의 jakarta 빌드를 sbmig 가 저장소에서 직접 찾아(같은 좌표의
+    # 상위 릴리스 → Nexus 검색 → 이름 규칙 탐침) 확인되면 LLM 전에 바꿔 넣는다(사전 시도 sbmig-jakarta). 확인 = 버전 한정어 /
+    # classifier `jakarta`, pom 의 jakarta.* 선언, 아니면 jar 를 내려받아 class 참조를 센다(상한 MB·횟수).
+    # v2.1z-e jakarta build discovery: sbmig itself looks for a jakarta build of a javax-era library (same coordinates'
+    # newer releases → Nexus 3 search by name / group stem → sibling-name probes) and the `sbmig-jakarta` pre-try swaps the
+    # declaration before any LLM call; verification = a `jakarta` version qualifier / classifier, the pom's jakarta.*
+    # declarations, else a bounded jar scan of the class files' references
+    discover_jakarta_builds: bool = True     # the kill switch: off → v2.1d behaviour (the same coordinates' releases are still
+                                             # listed in the hints; no verification, no siblings, no `sbmig-jakarta` pre-try,
+                                             # no decline rejection)
+    nexus_search: bool = True                # Nexus 3 `service/rest/v1/search` when the repository URL is `…/repository/<name>/`
+    max_jakarta_probes: int = 12             # sibling names probed per library (`-jakarta` variants, raised trailing digits)
+    max_jar_scans: int = 2                   # candidate jars downloaded per library when the pom says nothing
+    max_jar_scan_mb: int = 20                # a bigger jar is not downloaded (the candidate stays "unverified")
 
 
 class ReviewConfig(BaseModel):

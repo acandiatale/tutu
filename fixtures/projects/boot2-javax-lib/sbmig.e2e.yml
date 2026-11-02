@@ -10,3 +10,9 @@ llm:
 # reuse another's scripts. scripts/e2e.py clears it before the run (expect.kb.dir).
 kb:
   dir: out/e2e/kb-boot2-javax-lib
+# v2.1z-e (2026-11-02): the jakarta build discovery is OFF here on purpose. `fixtures/libs` also installs
+# legacy-web-lib 2.0.0 / 3.0.0 (jakarta builds, for boot2-javax-lib-optional), and the zero-LLM pre-try
+# `sbmig-jakarta` would find 2.0.0 in the local repository and fix the two cases without the LLM — this fixture exists
+# to keep the "LLM declines → BLOCKED external_javax_api" path under test; servlet-javax-grid covers the discovery.
+libraries:
+  discover_jakarta_builds: false

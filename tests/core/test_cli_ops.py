@@ -218,3 +218,15 @@ def test_clean_dry_run_then_delete(tmp_path):
     assert (failed / "project").exists() and (running / "project").exists() and not (rec / "llm-0001.json").exists()
     r = CliRunner().invoke(app, ["clean", "--out", str(tmp_path / "nope")])
     assert r.exit_code == 2
+
+
+# ------------------------------------------------------------------ sbmig repo-probe (v2.1z-e)
+def test_repo_probe_prints_the_summary_line_and_rejects_bad_coordinates(tmp_path, monkeypatch):
+    monkeypatch.setenv("SBMIG_ENV_FILE", str(tmp_path / "none.env"))
+    r = CliRunner().invoke(app, ["repo-probe", "com.example.grid8:grid8:1.0.6"])
+    assert r.exit_code == 0, r.output
+    lines = r.output.splitlines()
+    assert "REPO-PROBE com.example.grid8:grid8 (current 1.0.6)" in lines           # log lines may precede it
+    assert lines[-1].startswith("REPO-PROBE none com.example.grid8:grid8 versions=0 jakarta=-")
+    r = CliRunner().invoke(app, ["repo-probe", "no-colon"])
+    assert r.exit_code == 2 and "groupId:artifactId" in r.output

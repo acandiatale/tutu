@@ -115,12 +115,15 @@ EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved",
 # 보강, llm-edit = 스크립트 없는 직접 수정(LLM 이 편집 목록을 줌), review = 구조 검토의 수정, sbmig-version =
 # v2.1l 누락된 의존성 버전을 sbmig 가 as-is 빌드·저장소에서 채운 시도(LLM 호출 없음), sbmig-resources = v2.1m
 # 필터링되는 바이너리 리소스의 확장자를 sbmig 가 nonFilteredFileExtensions 에 적은 시도(LLM 호출 없음).
-TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review", "sbmig-version", "sbmig-resources"]
+TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review", "sbmig-version", "sbmig-resources",
+                    "sbmig-jakarta"]
 # kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
 # extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
 # structure review's own fix; sbmig-version = v2.1l: sbmig wrote the missing dependency versions itself (the as-is
 # build's version, else the repository's newest release) — no LLM call, no stored script; sbmig-resources = v2.1m:
-# sbmig added the filtered binary files' extensions to nonFilteredFileExtensions — no LLM call, no stored script
+# sbmig added the filtered binary files' extensions to nonFilteredFileExtensions — no LLM call, no stored script;
+# sbmig-jakarta = v2.1z-e: sbmig swapped a javax-era dependency for the jakarta build it found in the repository — no LLM
+# call, no stored script
 TryApplied = Literal["script", "edits", "none"]  # 실제로 적용된 것: 스크립트 / 편집 목록 / 없음
 
 
@@ -1091,6 +1094,10 @@ class RepositoryVersions(BaseModel):
     first_jakarta: Optional[str] = None            # lowest checked release whose pom is a jakarta build (any major)
     source: str = ""                               # metadata URL / local repository path / "" (nothing found)
     error: str = ""                                # why the lookup gave nothing (timeout, 404, offline, no url)
+    # v2.1z-e: every repository URL asked for the maven-metadata.xml and what it answered ("<url> → ok (5 release(s))",
+    # "<url> → HTTP 401 (credentials?)", "<url> → timeout …"), the local repository last — a run is diagnosable from the
+    # journal / the prompt facts alone, and "no newer release" is never mistaken for a fact about an unreachable Nexus
+    urls_tried: list[str] = Field(default_factory=list)
     checked_at: datetime = Field(default_factory=utcnow)
 
 

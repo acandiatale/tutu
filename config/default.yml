@@ -185,8 +185,13 @@ build:
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
   require_java_major: 21        # preflight: `mvn -v` must report this Java major, else abort (jdk-not-21); 0 = no check
   retry_negative_cache: true    # "…was cached in the local repository…" → the same build once more with -U
-  repository_url: null          # v2.1d: where maven-metadata.xml / poms are read to list releases for the LLM;
-                                # null → the catch-all mirror of settings_file, else Maven Central (unless offline)
+  repository_url: null          # v2.1d: where maven-metadata.xml / poms are read to list releases for the LLM. Set → asked
+                                # FIRST (the operator's decision; a WARNING names both when it differs from the settings
+                                # mirror). v2.1z-e: then — or alone when null — the settings-derived set: every mirror by
+                                # its mirrorOf rules, the active profiles' repositories, the poms' repositories unless a
+                                # mirror covers them, the global $MAVEN_HOME/conf/settings.xml, Central when online
+  repository_server_id: null    # v2.1z-e: <server> id whose credentials sbmig uses for repository_url when that URL
+                                # appears nowhere in the settings (same-URL mirror / repository credentials are automatic)
   repository_timeout_seconds: 10
   file_lock_retries: 3           # v2.1r: a build failing on a Windows file lock under target/ (antivirus / IDE / a leftover
   file_lock_retry_wait_s: 5      # java holding a jar; patterns: knowledge/config/build_env_errors.yml) runs again after
@@ -295,6 +300,15 @@ libraries:                         # v2.1d dependency version policy: never a ma
   company_file: libraries.yml      # people's additions / approvals, relative to kb.dir (no redeploy): same schema as
                                    # knowledge/libraries/jakarta_libraries.yml + allow_major: true
   verify_guide_llm: true           # answer without <verify> after a major upgrade → one more LLM call for the guide
+  discover_jakarta_builds: true    # v2.1z-e: sbmig looks for a jakarta build of a javax-era library itself (same coordinates'
+                                   # newer releases → Nexus search by stem → sibling-name probes) and swaps it in before the
+                                   # LLM (`sbmig-jakarta`); verified by version qualifier / classifier, the pom, or a jar scan.
+                                   # false = the kill switch: v2.1d behaviour (releases listed, nothing verified, no pre-try,
+                                   # a "no jakarta build" decline accepted as before)
+  nexus_search: true               # Nexus 3 search API when the repository URL is …/repository/<name>/
+  max_jakarta_probes: 12           # sibling names probed per library (`grid8-jakarta`, `grid9`, `com.example.grid9:grid9`, …)
+  max_jar_scans: 2                 # jars downloaded per library to tell a silent pom's build apart
+  max_jar_scan_mb: 20              # a bigger jar is not downloaded (the candidate stays "unverified", never applied)
 
 review:                            # v2 structure review: the LLM checks poms / dependencies / modules after the restructure
   enabled: true

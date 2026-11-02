@@ -26,3 +26,12 @@ libraries:
     note: Approved by the web team for projects that already planned the SiteMesh 3 port; check sitemesh3.xml and the filter.
     docs:
       - https://repo1.maven.org/maven2/org/sitemesh/sitemesh/
+
+  # v2.1z-e: a commercial UI library whose jakarta build is published under the next version-line coordinates — once a
+  # person confirmed them in Nexus, this entry lets the zero-LLM pre-try `sbmig-jakarta` swap the declaration on every
+  # project (placeholder coordinates; replace with the vendor's real ones)
+  - key: com.example.grid8:grid8
+    jakarta_key: com.example.grid9:grid9
+    jakarta_since: "1.0.0"
+    version: "1.0.0"
+    note: "vendor grid: the 8.x line is javax.servlet; the 9.x line (other coordinates) is the jakarta build"

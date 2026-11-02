@@ -31,6 +31,9 @@ def _no_user_settings(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.delenv("MAVEN_HOME", raising=False)
+    monkeypatch.delenv("M2_HOME", raising=False)
+    monkeypatch.setattr("sbmig.build.repo_versions.global_settings_file", lambda: None)   # v2.1z-e: no global settings
 
 
 def _cfg(tmp_path: Path, **build) -> Config:
@@ -217,7 +220,9 @@ def test_metadata_404_falls_back_to_the_local_repository(tmp_path):
     # nothing anywhere → the reason
     rv = look.candidates("org.nothing:here", "1.0")
     assert rv.same_major == [] and rv.higher == []
-    assert rv.error == f"maven-metadata.xml not found at {REPO}org/nothing/here/maven-metadata.xml"
+    # v2.1z-e: every URL of the repository set is named (the configured one first, then Central)
+    assert rv.error.startswith(f"maven-metadata.xml not found at {REPO}org/nothing/here/maven-metadata.xml, ")
+    assert rv.urls_tried[0] == f"{REPO} → not found" and rv.urls_tried[1].startswith(f"{CENTRAL} → not found")
 
 
 def test_a_failing_fetch_never_raises_and_a_dead_repository_is_skipped(tmp_path):
@@ -227,14 +232,18 @@ def test_a_failing_fetch_never_raises_and_a_dead_repository_is_skipped(tmp_path)
         calls.append(url)
         raise TimeoutError("timed out")
 
-    look = RepositoryLookup(_cfg(tmp_path, repository_url=REPO), fetch=boom)
+    # v2.1z-e: the lookup asks a repository SET; `offline` keeps Central out so the set is the configured URL alone
+    look = RepositoryLookup(_cfg(tmp_path, repository_url=REPO, offline=True), fetch=boom)
+    assert [u for u, _c, _o in look.repository_urls()] == [REPO]
     rv = look.candidates("a:b", "1.0")
-    assert rv.error == f"timeout reading {REPO}a/b/maven-metadata.xml" and rv.same_major == []
+    assert rv.error == f"remote repositories unreadable: {REPO} timeout" and rv.same_major == []
+    assert rv.urls_tried[0] == f"{REPO} → timeout" and rv.urls_tried[-1].endswith("→ nothing")
     look.candidates("c:d", "1.0")
     assert len(calls) == 2
     rv = look.candidates("e:f", "1.0")                                # two timeouts in a row: not asked again
-    assert len(calls) == 2 and rv.error == f"{REPO} did not answer (timeout); skipped for the rest of the run"
-    assert hint_lines(rv)[0].startswith(f"e:f — the repository could not be read ({REPO} did not answer (timeout)")
+    assert len(calls) == 2 and rv.error == f"remote repositories unreadable: {REPO} skipped: did not answer earlier in this run"
+    assert look.lookup_trace("e", "f")[0] == (REPO, "skipped: did not answer earlier in this run")
+    assert hint_lines(rv)[0].startswith(f"e:f — the repository could not be read (remote repositories unreadable: {REPO} skipped")
     assert RepositoryLookup(_cfg(tmp_path), fetch=FakeFetch({})).candidates("not-a-key", "1").error
 
 
@@ -250,17 +259,25 @@ def test_repository_url_precedence(tmp_path, monkeypatch):
     settings.write_text(SETTINGS % "nexus", encoding="utf-8")
     monkeypatch.setenv("NEXUS_USER", "svc")
     monkeypatch.setenv("NEXUS_PASSWORD", "pw")
-    # configured URL wins (and borrows the mirror's credentials when it is the same URL)
+    # an explicit configured URL wins (the operator's decision), the settings-derived set follows; one WARNING names both
     fetch = FakeFetch(REPO_FILES)
     look = RepositoryLookup(_cfg(tmp_path, repository_url="https://other.example/m2",
                                  settings_file=str(settings)), fetch=fetch)
     assert look.repository_url() == "https://other.example/m2/"
+    assert [u for u, _c, _o in look.repository_urls()] == ["https://other.example/m2/", REPO]   # external:* covers Central
+    assert any(n.startswith(f"Maven itself resolves from {REPO} (settings); sbmig's lookups use build.repository_url "
+                            "https://other.example/m2/") for n in look.url_notes)
+    assert look.settings_files == [f"{settings} (build.settings_file)"]
+    # the same URL as the mirror borrows the mirror's credentials; a URL nowhere in the settings takes repository_server_id
     same = RepositoryLookup(_cfg(tmp_path, repository_url=REPO, settings_file=str(settings)), fetch=fetch)
     same.versions("opensymphony", "sitemesh")
-    assert fetch.calls[-1][1] == ("svc", "pw")
-    # then the settings mirror (with its credentials)
+    assert fetch.calls[-1][1] == ("svc", "pw") and same.url_notes == []
+    by_id = RepositoryLookup(_cfg(tmp_path, repository_url="https://other.example/m2", settings_file=str(settings),
+                                  repository_server_id="nexus"), fetch=fetch)
+    assert by_id.repository_urls()[0][1] == ("svc", "pw") and "credentials from server nexus" in by_id.repository_urls()[0][2]
+    # the settings mirror alone (with its credentials)
     look = RepositoryLookup(_cfg(tmp_path, settings_file=str(settings)), fetch=fetch)
-    assert look.repository_url() == REPO
+    assert look.repository_url() == REPO and look.repository_urls()[0][1] == ("svc", "pw")
     # then Central, unless offline
     assert RepositoryLookup(_cfg(tmp_path), fetch=fetch).repository_url() == CENTRAL
     assert RepositoryLookup(_cfg(tmp_path, offline=True), fetch=fetch).repository_url() is None
@@ -398,3 +415,80 @@ def test_verdict_unknown_jakarta_status_is_never_a_refusal():
     # the other branches are unchanged: a same-major jakarta build still raises, nothing listed still says nothing
     assert "raise to 7.0.10" in _verdict_line(_rv("g:a", "7.0.8", same=[("7.0.10", True)]))
     assert _verdict_line(_rv("g:a", "7.0.8")) == ""
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1z-e: the repository set by Maven's rules
+# ---------------------------------------------------------------------------------------------------------------------
+POM_WITH_REPO = """<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>
+<groupId>g</groupId><artifactId>app</artifactId><version>1</version>
+<properties><vendor.repo>https://vendor.example/maven</vendor.repo></properties>
+<repositories><repository><id>vendor</id><url>${vendor.repo}</url></repository>
+<repository><id>broken</id><url>${nope}</url></repository></repositories></project>
+"""
+
+
+def test_a_catch_all_mirror_hides_the_pom_repositories(tmp_path):
+    settings = tmp_path / "settings.xml"
+    settings.write_text(SETTINGS % "nexus", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pom.xml").write_text(POM_WITH_REPO, encoding="utf-8")
+    look = RepositoryLookup(_cfg(tmp_path, settings_file=str(settings)), fetch=FakeFetch({}), project_root=proj)
+    # external:* covers the vendor repository and Central: only the mirror is asked, in Maven's way
+    assert [u for u, _c, _o in look.repository_urls()] == [REPO]
+    assert "covering vendor" in look.repository_urls()[0][2] or "covering central" in look.repository_urls()[0][2]
+    # without a mirror the pom repository is asked after the settings' own, then Central; the unresolved one is skipped
+    plain = RepositoryLookup(_cfg(tmp_path), fetch=FakeFetch({}), project_root=proj)
+    assert [u for u, _c, _o in plain.repository_urls()] == ["https://vendor.example/maven/", CENTRAL]
+    assert plain.repository_urls()[0][2] == "pom pom.xml repository vendor"
+
+
+def test_explicit_mirror_ids_and_exclusions(tmp_path):
+    settings = tmp_path / "settings.xml"
+    settings.write_text(SETTINGS % "nexus", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pom.xml").write_text(POM_WITH_REPO.replace("<id>vendor</id>", "<id>local</id>")
+                                  .replace("https://vendor.example/maven", "http://localhost:8081/m"), encoding="utf-8")
+    look = RepositoryLookup(_cfg(tmp_path, settings_file=str(settings)), fetch=FakeFetch({}), project_root=proj)
+    # `external:*,!local`: the localhost repository is neither external nor allowed by id → asked directly
+    assert [u for u, _c, _o in look.repository_urls()] == ["http://localhost:8081/m/", REPO]
+    from sbmig.build.repo_versions import mirror_covers
+    assert mirror_covers("*", "x", "https://x") and mirror_covers("central", "central", CENTRAL)
+    assert not mirror_covers("external:*", "local", "file:///tmp/repo") and mirror_covers("external:*", "v", "https://v")
+    assert not mirror_covers("external:*,!vendor", "vendor", "https://v") and mirror_covers("external:http:*", "h", "http://h")
+    assert not mirror_covers("external:http:*", "h", "https://h")
+
+
+def test_the_global_settings_are_read_when_the_user_has_none(tmp_path, monkeypatch):
+    # no user settings, no mirror anywhere: build.repository_url first, then Central
+    look = RepositoryLookup(_cfg(tmp_path, repository_url=REPO), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in look.repository_urls()] == [REPO, CENTRAL]
+    assert look.repository_urls()[0][2].startswith("build.repository_url (explicit")
+    # a global $MAVEN_HOME/conf/settings.xml with a mirror is read when the user has none; a differing yml URL is warned about
+    home = tmp_path / "maven-home"
+    (home / "conf").mkdir(parents=True)
+    (home / "conf" / "settings.xml").write_text(SETTINGS % "global-nexus", encoding="utf-8")
+    monkeypatch.setenv("MAVEN_HOME", str(home))
+    from sbmig.build import repo_versions as rv_mod
+    monkeypatch.setattr(rv_mod, "global_settings_file", rv_mod.global_settings_file.__wrapped__
+                        if hasattr(rv_mod.global_settings_file, "__wrapped__") else _real_global_settings_file)
+    look = RepositoryLookup(_cfg(tmp_path, repository_url="https://stale.example/m2"), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in look.repository_urls()] == ["https://stale.example/m2/", REPO]
+    assert look.settings_files == [f"{home / 'conf' / 'settings.xml'} (global settings)"]
+    assert any(n.startswith(f"Maven itself resolves from {REPO} (settings); sbmig's lookups use build.repository_url "
+                            "https://stale.example/m2/") for n in look.url_notes)
+    assert [u for u, _c, _o in RepositoryLookup(_cfg(tmp_path), fetch=FakeFetch({})).repository_urls()] == [REPO]
+
+
+def _real_global_settings_file():
+    """The module's real `global_settings_file` (the autouse fixture replaces it with a no-op)."""
+    import importlib
+    import sbmig.build.repo_versions as rv_mod
+    src = importlib.reload  # noqa: F841 - keep a reference to the real function below without reloading the module
+    return _GLOBAL_SETTINGS_REAL()
+
+
+import sbmig.build.repo_versions as _rv_module  # noqa: E402
+_GLOBAL_SETTINGS_REAL = _rv_module.global_settings_file

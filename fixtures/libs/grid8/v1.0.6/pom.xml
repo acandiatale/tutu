@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Simulated commercial grid library (NOT on Maven Central): installed into the local repo by fixtures/libs/install.sh.
+         Shape of a company case (2026-11-02): version-line digits in groupId and artifactId, the 1.x releases on javax.servlet,
+         the 2.0.5-jakarta release on jakarta.servlet with a SILENT pom (no dependencies) — only the version qualifier / a jar
+         scan tells it apart. -->
+    <groupId>com.example.grid8</groupId>
+    <artifactId>grid8</artifactId>
+    <version>1.0.6</version>
+    <packaging>jar</packaging>
+    <name>grid8</name>
+    <description>Vendor grid component 1.0.6 (javax.servlet build)</description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>1.8</maven.compiler.source>
+        <maven.compiler.target>1.8</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>javax.servlet</groupId>
+            <artifactId>javax.servlet-api</artifactId>
+            <version>3.1.0</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

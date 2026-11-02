@@ -14,6 +14,12 @@ jakarta build to bump to. After the javax → jakarta rewrite the call sites fai
 and `cannot access HttpServletRequest … class file for javax.servlet.http.HttpServletRequest not found`
 (the servlet API is `provided` in the library, i.e. not transitive).
 
+Since v2.1z-e (2026-11-02) sbmig searches the repository for a jakarta build before it asks the LLM (`sbmig-jakarta`
+pre-try, `libraries.discover_jakarta_builds`). `fixtures/libs` also installs `legacy-web-lib` 2.0.0 / 3.0.0 (jakarta
+builds, used by `boot2-javax-lib-optional`), so with the discovery on this fixture would build after a `1.0.0 → 2.0.0`
+major bump instead of ending BLOCKED; its `sbmig.e2e.yml` turns the discovery off to keep the decline → BLOCKED path
+under test (`servlet-javax-grid` is the discovery fixture).
+
 ## Build as-is
 
 Install the in-house library first (`fixtures/libs/install.sh`, idempotent), then:

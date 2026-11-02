@@ -1,0 +1,5 @@
+{
+  "note": "structure review of servlet-javax-grid (one call): verdict ok — the company layout (gridapp-boot WAR / gridapp-back / gridapp-front) is as the rules say; the vendor grid dependency is the fix loop's business, not the review's",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Root on the base parent with the mandatory starters, gridapp-back and gridapp-front on the comp parent, gridapp-boot a war on the boot parent with the JSP in gridapp-front and the web.xml registrations generated. The vendor grid com.example.grid8:grid8 is a compile dependency of gridapp-back; whether it is a jakarta build is decided by the build, not here. Nothing to fix.\"\n}\n</review>"
+}

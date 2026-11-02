@@ -16,6 +16,10 @@
 #                   through rule 14 or a person's `allow_major`
 #   classifier    : optional — the jakarta build is a classifier jar of the same coordinates (Ehcache 3: `jakarta`);
 #                   a declaration without it counts as below the floor (the prompt says to add it)
+#   jakarta_key   : optional (v2.1z-e) — the jakarta build lives under OTHER coordinates (a vendor's next version line
+#                   `com.example.grid9:grid9`, or `com.example.grid8:grid8-jakarta`); sbmig looks that key up in the
+#                   repository and the zero-LLM pre-try `sbmig-jakarta` swaps the declaration to its newest verified
+#                   release (the people's table is the place for a commercial library's confirmed jakarta coordinates)
 #   requires_java : minimum JDK of that release (information for the Handover)
 #   note          : one line for the report
 #   docs          : links

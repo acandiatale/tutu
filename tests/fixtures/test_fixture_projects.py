@@ -43,6 +43,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "spring5-legacy-startup",                   # v2.1x: the legacy Spring context at conversion time
              "rootless-unlisted-module",                 # 2026-11-02: a lone aggregator beside an unlisted, unlinked pom
              "hollow-reactor",                          # v2.1z-c: the poms' roots hold no sources (DEV/ + STATIC/ do)
+             "servlet-javax-grid",                      # v2.1z-e: a vendor javax library whose -jakarta build is found and applied
              "adf-jdev"]                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
@@ -91,6 +92,7 @@ BUILD_MATRIX = [
     ("spring5-legacy-startup", ".", "8", "ms949"),    # v2.1x: Spring 5 XML web app — contextConfigLocation, EUC-KR XML, JNDI, *.do, MS949 sources
     ("rootless-unlisted-module", "APP", "8", ""),      # 2026-11-02: sibling-aggregator-dup + an unlisted APP/TOOLS pom (left out)
     ("hollow-reactor", ".", "8", ""),                  # v2.1z-c: a WAR pom with nothing to compile — the sources sit in DEV/
+    ("servlet-javax-grid", ".", "8", "libs"),          # v2.1z-e: grid8 1.0.6 (javax) from fixtures/libs; 2.0.5-jakarta is applied by sbmig
     ("adf-jdev", "APP", "8", ""),                      # v2.1z-d: APP packages the JDeveloper / ADF workspace in DEV/s10 (nothing to compile)
 ]
 REQUIRED_KEYS = {
@@ -365,6 +367,56 @@ class StructureReviewExpect(BaseModel):
         return v
 
 
+EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved", "note"]
+
+
+class ErrorEntryCaseExpect(BaseModel):
+    """v2.1: one case of the run's error list (scripts/e2e.py `evaluate_error_entries` → `cases`)."""
+    model_config = ConfigDict(extra="forbid")
+    case: str | None = Field(default=None, pattern=r"^[0-9a-f]{10}$")
+    l2: str | None = None
+    entries_min: int | None = Field(default=None, ge=0)
+    status: EntryStatus | None = None
+    sources: list[str] | None = None                 # exact sequence of the case's tries (llm-new, kb-script, sbmig-jakarta …)
+    sources_contain: list[str] = Field(default_factory=list)
+    results: list[str] = Field(default_factory=list)
+    versions: list[int] | None = None
+    applied: str | None = None
+    llm_calls: int | None = Field(default=None, ge=0)
+    resolved: str | None = None
+    script: str | None = None
+
+
+class ErrorEntryRecordExpect(BaseModel):
+    """v2.1: one wanted ErrorEntry (`records`)."""
+    model_config = ConfigDict(extra="forbid")
+    file: str | None = None
+    status: EntryStatus | None = None
+    seen: str | None = None
+    tries_min: int | None = Field(default=None, ge=0)
+    sources: list[str] | None = None
+    results: list[str] = Field(default_factory=list)
+
+
+class ErrorEntriesExpect(BaseModel):
+    """v2.1 (2026-10-27): the run's error list, report.error_entries (scripts/e2e.py `evaluate_error_entries`)."""
+    model_config = ConfigDict(extra="forbid")
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+    status: dict[EntryStatus, int] = Field(default_factory=dict)
+    status_min: dict[EntryStatus, int] = Field(default_factory=dict)
+    status_max: dict[EntryStatus, int] = Field(default_factory=dict)
+    open_max: int | None = Field(default=None, ge=0)
+    seen: dict[str, int] = Field(default_factory=dict)
+    seen_min: dict[str, int] = Field(default_factory=dict)
+    cases: list[ErrorEntryCaseExpect] = Field(default_factory=list)
+    records: list[ErrorEntryRecordExpect] = Field(default_factory=list)
+    run_files: list[Literal["errors.jsonl", "errors.md"]] = Field(default_factory=list)
+    kb_errors_min: int | None = Field(default=None, ge=0)
+    kb_tries_min: int | None = Field(default=None, ge=0)
+    kb_cases_min: int | None = Field(default=None, ge=0)
+
+
 class Expect(BaseModel):
     model_config = ConfigDict(extra="forbid")
     success: bool
@@ -387,6 +439,7 @@ class Expect(BaseModel):
     kb: KBExpect | None = None
     properties: PropertiesExpect | None = None
     error_cases: ErrorCasesExpect | None = None
+    error_entries: ErrorEntriesExpect | None = None             # v2.1 (servlet-javax-grid: the `sbmig-jakarta` try)
     structure_review: StructureReviewExpect | None = None       # v2 (flow-v2)
     scripts: ScriptsExpect | None = None                         # v2 (flow-v2)
 
@@ -589,7 +642,8 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
-                                  "rootless-unlisted-module", "hollow-reactor", "adf-jdev")}
+                                  "rootless-unlisted-module", "hollow-reactor", "adf-jdev",
+                                  "servlet-javax-grid")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
@@ -597,10 +651,14 @@ COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": 
                  "servlet-war-overlay": "board", "ant-webapp": "ant-webapp",   # root artifactId (= `{name}`) when
                  "sibling-aggregator-dup": "dup", "legacy-external-parent": "extparent",      # it is not `shop`
                  "filtered-binary-resources": "binres", "rootless-unlisted-module": "dup", "hollow-reactor": "hollow",
-                 "adf-jdev": "adf-web"}       # the generated aggregator takes the WAR's artifactId
+                 "adf-jdev": "adf-web",       # the generated aggregator takes the WAR's artifactId
+                 "servlet-javax-grid": "gridapp"}
 # v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
 SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
 LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB
+# v2.1z-e: fixtures that switch the jakarta build discovery off (their local libs hold jakarta builds the `sbmig-jakarta`
+# pre-try would apply; they keep the "LLM declines → BLOCKED external_javax_api" path under test)
+DISCOVERY_OFF_OVERRIDES = {"boot2-javax-lib"}
 
 
 def test_fixture_config_override_keeps_8_optionals():
@@ -657,7 +715,12 @@ def test_fixture_config_override_keeps_8_optionals():
                     for n in OVERRIDES)
     for other in rest:                                                               # same list, other version
         assert [dict(x, version=None) for x in first] == [dict(x, version=None) for x in other]
-    plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES)
+    for name in DISCOVERY_OFF_OVERRIDES:
+        raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
+        assert set(raw) - LLM_KB == {"libraries"} and raw["libraries"] == {"discover_jakarta_builds": False}, name
+        cfg = _effective_cfg(name)
+        assert cfg.libraries.discover_jakarta_builds is False and len(cfg.artifacts.optional) == 8, name
+    plain = set(NAMES) - set(OVERRIDES) - set(COMPANY_OVERRIDES) - set(REWRITE_ONLY_OVERRIDES) - DISCOVERY_OFF_OVERRIDES
     for name in plain:                                              # nothing but the replayed LLM and the own KB
         raw = yaml.safe_load((FIXTURES / name / "sbmig.e2e.yml").read_text(encoding="utf-8"))
         assert set(raw) == LLM_KB, name

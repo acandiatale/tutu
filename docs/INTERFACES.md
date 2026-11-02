@@ -3173,3 +3173,136 @@ exit 3, result line, first follow-up, abort line, journal with evidence, Handove
 untouched), `tests/report/test_result_line.py`, `tests/report/test_report_i18n.py`. Fixture `fixtures/projects/adf-jdev`
 (rootless `APP` aggregator + `APP/WEB` packaging WAR, `DEV/s10` JDeveloper project with all four families, `STATIC`, `DB`):
 aggregator generated, `adf-project`, exit 3, `max_llm_calls: 0`, nothing moved (`expect.kb.may_be_empty` since the run writes no KB).
+
+## v2.1z-e — jakarta build discovery: sbmig finds the jakarta build of a javax-era library itself (2026-11-02)
+
+**Why.** A company run blocked a commercial UI library compiled against `javax.*`: the LLM declined with "no jakarta
+build exists" and the report told a person to find one — while the vendor's Nexus held the SAME coordinates with
+`1.1.x` (javax) and **`2.0.5-jakarta`** (jakarta). Three gaps, all closed here: (1) the run's repository lookup had
+silently fallen back to `~/.m2` (its first URL did not answer) and even then only asked the first mirror of one
+settings file; (2) nothing verified a release whose pom says nothing (vendor poms declare no dependencies); (3) a
+verified jakarta build was handed to the LLM as a fact at best, never applied, and a "no jakarta build" decline was
+taken at its word. The user (2026-11-02): "어차피 nexus 에 올라와 있을 거란 말이지 … 있으면 그 버전 적용하는 게 좋지 않을까".
+
+**Repository set (`sbmig/build/repo_versions.py`).** `RepositoryLookup.repository_urls()` → `[(url, credentials,
+reason)]`, computed once per run, logged at INFO (`repository lookup: <url> (<reason>)`):
+1. an explicit `build.repository_url` FIRST (the operator's decision — the company PC is configured this way);
+   credentials from the `<server>` of the mirror / repository with the same URL, else `build.repository_server_id`
+   (new, optional); when it differs from the settings-derived primary URL one WARNING names both: `Maven itself
+   resolves from <settings url> (settings); sbmig's lookups use build.repository_url <url>`;
+2. the settings-derived set by Maven's rules: the repositories (the settings' active-profile `<repositories>`, the
+   project poms' `<repositories>` incl. the in-repo parent chain with `${…}` interpolated, Maven Central as
+   `central`) each replaced by the FIRST `<mirror>` whose `mirrorOf` covers it (`*`, `external:*`, `external:http:*`,
+   explicit ids, `!id` exclusions — `mirror_covers`); with `mirrorOf *` a pom repository is never contacted, exactly
+   as Maven behaves; unmirrored Central dropped when `build.offline`;
+3. settings files: `build.settings_file`, else `~/.m2/settings.xml`, plus Maven's global
+   `$MAVEN_HOME|M2_HOME/conf/settings.xml` (or the installation behind `mvn` on PATH) — user entries first
+   (`read_settings`, `global_settings_file`; `lookup.settings_files` says which were read).
+`_lookup(g, a)` asks every URL in order until a `maven-metadata.xml` lists versions, records the outcome per URL
+(`lookup_trace(g, a)`: `ok (N release(s))`, `not found (HTTP 404)`, `HTTP 401 (credentials?)`, `timeout`,
+`unreachable`, `skipped: did not answer earlier in this run` — unreachability is counted per URL), then the local
+repository. `RepositoryVersions.urls_tried` carries the trace; `remote_failures(g, a)` → `remote repositories unreadable:
+<url> <outcome>, …` when no remote URL answered and some failed for a reason other than "not found". The hint line
+says so instead of "no newer release": `… (remote repositories unreadable: <url1> HTTP 401, <url2> timeout; local
+repository only)`. `pom_text` / `jar_bytes` (new: a bounded jar download, `fetch_bytes` injectable) try the URL that
+answered first.
+
+**Discovery (`sbmig/build/jakarta_discovery.py`, `discover_jakarta_builds(lookup, g, a, current, table_entry, cfg,
+rv)` → `JakartaDiscovery`).** Sources in order, every candidate verified, cached per (g, a, current) on the lookup,
+never raising: (a) `table` — the people's / shipped table entry's **`jakarta_key`** (new `JakartaLibrary` field: the
+jakarta build under OTHER coordinates) or `classifier` → verified by the table itself; (b) `same` — the same
+coordinates' newer releases from `candidates` (same major, then the higher majors: the vendor line `1.0.6 → 1.1.15
+(javax) → 2.0.5-jakarta`); (c) `nexus-search` — every repository URL that looks like Nexus 3 (`…/repository/<name>/`,
+deduplicated by host): `service/rest/v1/search?repository=<name>&name=*<stem>*` and `group=*<stem>*` (stem = the
+name without trailing digits; ≤ 3 pages each; results filtered to names sharing the stem); (d) `name-probe` —
+`maven-metadata.xml` of ≤ `libraries.max_jakarta_probes` (12) sibling names: `{a}-jakarta`, the trailing digits of the
+artifactId AND the group's last segment raised together (`com.example.grid8:grid8` → `com.example.grid9:grid9`), the
+artifactId alone (`grid9`), `{a}_jakarta`, `{a}.jakarta`, `jakarta-{a}`, `{a}-jakarta-ee`, `{a}-ee10`, `{a}-ee9` (the
+group alone, `com.vendor9:vendor8`, is skipped). **Verification** per candidate: a `jakarta` version qualifier
+(`2.0.5-jakarta`) or classifier → verified ("version qualifier" / "jakarta classifier"); else the pom (`pom_is_jakarta`:
+"pom declares jakarta.*" / "pom declares javax.*"); else a **jar scan** (≤ `libraries.max_jar_scans` (2) downloads of
+≤ `libraries.max_jar_scan_mb` (20) MB: the class files' bytes referencing `jakarta/<ee root>/` vs `javax/<ee root>/`,
+`javax/annotation/processing/` not counted) → "jar scan ✓" / "jar scan: javax" / "pom silent, jar inconclusive".
+Unverified candidates are reported, never applied; javax-verified ones are never shown as candidates. `best()`: the
+table's → the same coordinates on the same major (newest) → the same coordinates on the LOWEST higher major (newest of
+it) → a Nexus-search / name-probe sibling. `searched` / `probed` keep a human-readable record of every query;
+`libraries.discover_jakarta_builds: false` is the kill switch — the v2.1d behaviour (the same coordinates' releases are
+still listed by `hint_lines`; no verification, no table / sibling search, no `sbmig-jakarta` pre-try, no decline
+rejection; the search record reads `discovery off (libraries.discover_jakarta_builds: false)`); `libraries.nexus_search:
+false` skips the API. Hint lines: `repository also has <g:a> <v> (jakarta ✓ — version qualifier; found by same coordinates, a higher
+major) — a jakarta build of <g:a>: switch the declaration to it …`, `repository also lists … (jakarta unverified — pom
+silent, jar inconclusive …) — not applied automatically`, `no jakarta build of <g:a> was found in the repository (<searched>)`.
+
+**Fix loop (`sbmig/loop/fixloop.py`).**
+- **Library attribution fallbacks** (the real run had no repository line at all because the owner class could not be
+  mapped): `_case_libraries` (classpath) → `_javax_libraries`: for a cluster the triage classifies `external_javax_api`,
+  the owner class's package tokens against the declared dependencies' groupId / artifactId tokens (stems without
+  trailing digits count: `com.example.grid.GridExporter` → `com.example.grid8:grid8`), then the local repository's jars
+  of the declared dependencies for the class file (`_owner_dependency`); journal `library_mapped` / `library_unmapped`
+  (with the owner class). Journal `library_lookup` per library: `{key, current, source, versions_found, jakarta_builds,
+  unverified, searched, urls_tried, settings_files, repositories, error}` — a run is diagnosable from `journal.jsonl`.
+- **Zero-LLM pre-try `sbmig-jakarta`** (`PRE_TRY_SOURCES`, after `sbmig-version` / `sbmig-resources`, commit
+  `fix(sbmig-jakarta): <cluster id>`, once per (pom, old → new) per run): for an `external_javax_api` case whose
+  library has a verified build, every pom declaring the old coordinates is rewritten — `replace_dependency` for other
+  coordinates, version / classifier for the same; version-less when the new parent chain / Boot BOM manages the new
+  key; configured in-house artifacts (`_protected_version_keys`) are never swapped. **A higher major of the same
+  coordinates is applied**: javax → jakarta is the one major change v2.1d allows, and the read-back lists it for the
+  operator (`major_upgrades`, ⚠ Handover line) with sbmig's synthesized guide — a pre-try never costs an LLM call for
+  the guide (`_verify_guide` skips the LLM for `PRE_TRY_SOURCES`). Journal `jakarta_try` with the plan and the
+  searched record. The decline check: an LLM answer declining with a jakarta / javax reason while discovery has a
+  verified build is **not a decline** — note `decline rejected: the repository has <g:a:v> (…)`, journal
+  `decline_rejected`, an ordinary failed try, the case is asked again with the fact (the decline counter untouched).
+- **Blocked / Handover evidence**: an `external_javax_api` or javax `needs_owner` item's suggestion (and notes) ends
+  with `; repository search for a jakarta build of <g:a>: <searched> — verified build(s): … | none verified`, or `; the
+  library behind <owner class> could not be matched to a dependency (classpath, package tokens, local jars) — run mvn
+  dependency:tree …` (Korean via `PATTERNS`; `tr_line` translates such a tail on its own).
+- `knowledge/notes/jakarta.md`: the LLM switches to a listed build and never claims "no jakarta build" while a line
+  lists one.
+
+**Diagnostics.** `sbmig repo-probe <groupId:artifactId[:version]> [--project <dir>] [--config …]` prints the settings
+files read, the repository set in order with the reason for each URL (and the both-URLs note), the per-URL outcome of
+the metadata lookup, the versions (prereleases marked), the candidates' jakarta verdicts, the discovery's builds and
+searched record; last line `REPO-PROBE ok|none <g:a> versions=N jakarta=<coordinates|-> repositories=N` — for the
+air-gapped PC where nobody can show us `settings.xml` (`docs/RUNBOOK.md`).
+
+**Config.** `libraries.discover_jakarta_builds` (true), `libraries.nexus_search` (true), `libraries.max_jakarta_probes`
+(12), `libraries.max_jar_scans` (2), `libraries.max_jar_scan_mb` (20), `build.repository_server_id` (null);
+`JakartaLibrary.jakarta_key`; `TrySource` += `sbmig-jakarta`; `RepositoryVersions.urls_tried`.
+
+**Fixture / libs.** `fixtures/libs/grid8`: `com.example.grid8:grid8` `1.0.6` and `1.1.15` (javax.servlet, JDK 8) and
+`2.0.5-jakarta` (jakarta.servlet, JDK 21, a silent pom — the jakarta API comes from a build-time profile consumers
+never see); fixture `servlet-javax-grid` (a servlet WAR calling `GridExporter.export(request, response)`): after the
+recipes → `external_javax_api` → `sbmig-jakarta` swaps `gridapp-back/pom.xml` to `2.0.5-jakarta` (⚠ major) → build
+ok, 1 LLM call (the review). The digit-variant (`grid9`) and `-jakarta` artifactId variants are unit tests only.
+
+### As built (v2.1z-e)
+`sbmig/build/jakarta_discovery.py` (new: `JakartaBuild` / `JakartaDiscovery` (`best`, `hint_lines`, `searched_text`), `stem`,
+`digit_variants`, `sibling_names`, `qualifier_is_jakarta`, `scan_jar`, `discover_jakarta_builds`, `probe_report`; the `_Verifier`
+qualifier → pom → jar-scan ladder; Nexus search over every Nexus-looking base deduplicated by host), `sbmig/build/repo_versions.py`
+(`read_settings` / `SettingsData`, `global_settings_file`, `mirror_covers`, `pom_repositories`, `RepositoryLookup(cfg, fetch=…,
+fetch_bytes=…, project_root=…)`: `repository_urls` (explicit URL first, then the settings-derived set), `repository_url` = its first
+entry, per-URL `_fetch` reachability, `_lookup` over the set with `lookup_trace` / `remote_failures`, `pom_text` / `jar_bytes` asking
+the answering URL first, `settings_files`, `url_notes`; `hint_lines` says "remote repositories unreadable: …"),
+`sbmig/core/models.py` (`TrySource` += `sbmig-jakarta`, `RepositoryVersions.urls_tried`), `sbmig/core/config.py` +
+`config/default.yml` (`libraries.discover_jakarta_builds` / `nexus_search` / `max_jakarta_probes` / `max_jar_scans` /
+`max_jar_scan_mb`, `build.repository_server_id`; the `repository_url` comment), `sbmig/core/jakarta_libraries.py` +
+`knowledge/libraries/jakarta_libraries.yml` + `libraries.company.example.yml` (`jakarta_key`), `sbmig/loop/fixloop.py`
+(`SBMIG_JAKARTA_SOURCE`, `JAKARTA_SEARCH_PREFIX`, `UNMAPPED_PREFIX`, `_GENERIC_TOKENS`; `_discover`, `_discovery_lines`,
+`_journal_lookup`, `_javax_cluster`, `_declared_dependencies`, `_owner_dependency`, `_owner_from_source`, `_javax_libraries`,
+`_jakarta_evidence`, `_decline_contradiction`, `_jakarta_plan` / `_jakarta_targets` / `_jakarta_attempt`; `_library_lines(key,
+current, javax)` + the discovery lines; the decline check in `_llm_try`; the evidence on the blocked item in `_register_blocked`;
+`_verify_guide` never calls the LLM for a pre-try; the lookup gets `project_root`), `sbmig/report/i18n.py` (four PATTERNS + the
+tail split in `tr_line`), `sbmig/cli.py` (`repo-probe`), `knowledge/notes/jakarta.md`, `docs/RUNBOOK.md`.
+Tests: `tests/build/test_jakarta_discovery.py` (names / qualifier / jar scan; the vendor line `1.0.6 … 2.0.5-jakarta`; a silent pom
+verified by the jar scan or left unverified; the digit-variant and `-jakarta` artifactId siblings; Nexus search with pages; the table's
+`jakarta_key` and classifier; nothing found → the searched record; unreadable remotes; `best()` order; `probe_report`),
+`tests/build/test_repo_versions.py` (the repository set: explicit URL first with the both-URLs note and `repository_server_id`,
+`mirrorOf *` hiding pom repositories, explicit ids and `!id` exclusions, the global settings fallback, per-URL outcomes / a dead URL),
+`tests/loop/test_v21z_jakarta.py` (the pre-try applies the higher major with the ⚠ read-back and sbmig's guide, no LLM call; version-less
+when managed; the owner class mapped without a classpath; `_owner_dependency` by tokens and by a local jar; the rejected decline;
+the blocked item's searched record; the unmatched owner class), `tests/core/test_cli_ops.py` (`repo-probe`),
+`tests/report/test_report_i18n.py` (the four lines). Fixture `servlet-javax-grid` + `fixtures/libs/grid8` (install.sh builds the
+three versions; the jakarta one with `-Dsbmig.standin=1`); `boot2-javax-lib`'s `sbmig.e2e.yml` sets
+`libraries.discover_jakarta_builds: false` so the fixture still ends BLOCKED `external_javax_api` (the local libs hold
+`legacy-web-lib` 2.0.0 / 3.0.0, jakarta builds the pre-try would otherwise apply as a `1.0.0 → 2.0.0` major). e2e: see
+`docs/PLAN.md` (v2.1z-e row).

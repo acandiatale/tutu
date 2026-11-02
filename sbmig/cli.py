@@ -1,5 +1,5 @@
 """`sbmig` 명령줄(Typer) — 운영자가 쓰는 모든 명령의 입구.
-명령: run(프로젝트 하나 이관), fleet(일괄 실행), serve(웹 UI), llm-probe(게이트웨이 점검), analyze / plan(변경
+명령: run(프로젝트 하나 이관), fleet(일괄 실행), serve(웹 UI), llm-probe(게이트웨이 점검), repo-probe(저장소 조회 진단), analyze / plan(변경
 없이 보기), inventory(pom 없는 트리 설명서), build / parse-log / rewrite(디버깅), clean(디스크 정리), kb /
 recipes / advisories(하위 명령), version. 명령 함수 docstring 의 첫 단락이 `sbmig --help` 목록에 나오는
 설명이므로 한국어 첫 줄을 짧게 유지한다(대괄호는 rich 마크업으로 해석될 수 있어 피한다). 무거운 import 는 전부
@@ -725,6 +725,36 @@ def build(project_dir: Path = typer.Argument(..., exists=True, file_okay=False),
     if res.errors:
         _print_errors(res.errors)
     raise typer.Exit(0 if res.ok else 2)
+
+
+@app.command("repo-probe")
+def repo_probe(coordinates: str = typer.Argument(..., help="groupId:artifactId[:version] of the library to look up"),
+               config: Optional[List[Path]] = ConfigOpt,
+               project: Optional[Path] = typer.Option(None, "--project", exists=True, file_okay=False,
+                                                      help="project dir whose poms' <repositories> join the repository set")
+               ) -> None:
+    """저장소 조회 진단(v2.1z-e): 어느 저장소 URL 들을 어떤 순서로 묻는지(settings 의 미러·프로필, pom 의 repositories, Central),
+    그 g:a 의 maven-metadata.xml 에 URL 마다 무엇이 돌아왔는지(ok / 404 / 401 / timeout), 찾은 버전과 프리릴리스 필터, 후보의
+    jakarta 판정(버전 한정어 · pom · jar 스캔), 형제 빌드 탐색 결과를 한 화면에 찍는다 — 폐쇄망 PC 에서 settings.xml 을 보여 줄
+    수 없을 때 "왜 그 라이브러리의 jakarta 빌드를 못 찾았나" 를 이 출력만으로 가린다. 마지막 줄 ``REPO-PROBE ok|none …``.
+
+    Repository lookup diagnostics: the repository set in query order, the per-URL outcome of the metadata lookup, the
+    versions (prereleases marked), the candidates' jakarta verdicts (version qualifier / pom / jar scan) and the
+    sibling-build discovery — run it on the air-gapped PC when a javax library's jakarta build was not found."""
+    parts = [x.strip() for x in coordinates.split(":")]
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        typer.echo("repo-probe needs groupId:artifactId[:version]", err=True)
+        raise typer.Exit(2)
+    group, artifact = parts[0], parts[1]
+    current = parts[2] if len(parts) > 2 and parts[2] else None
+    cfg = _load(config, dict(_PROBE_ARTIFACTS_STUB))
+    from sbmig.build.jakarta_discovery import probe_report
+    from sbmig.build.repo_versions import RepositoryLookup
+    from sbmig.loop.notes import table_entry
+    lookup = RepositoryLookup(cfg, project_root=project.resolve()) if project else RepositoryLookup(cfg)
+    for line in probe_report(lookup, group, artifact, current, table_entry=table_entry(f"{group}:{artifact}", cfg),
+                             cfg=cfg):
+        typer.echo(line)
 
 
 @app.command("parse-log")

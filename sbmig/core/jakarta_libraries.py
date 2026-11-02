@@ -47,6 +47,11 @@ class JakartaLibrary(BaseModel):
     version: str                              # release the handler sets (>= jakarta_since)
     classifier: Optional[str] = None          # jakarta flavour published as a classifier jar (Ehcache 3: `jakarta`);
                                               # the handler sets it on the bumped / relocated declaration
+    # v2.1z-e (2026-11-02): jakarta 빌드가 다른 좌표로 올라온 라이브러리(상용 그리드 `com.example.grid8:grid8` → `com.example.grid9:grid9`,
+    # 또는 `…:grid8-jakarta`): 그 좌표. 사전 시도 `sbmig-jakarta` 가 저장소에서 그 좌표의 최신 릴리스를 확인해 바꿔 넣는다.
+    # v2.1z-e: the coordinates of the jakarta build when they differ from `key` (a vendor's `grid8` → `grid9` line or a
+    # `-jakarta` artifactId); the `sbmig-jakarta` pre-try verifies the newest release there and swaps the declaration
+    jakarta_key: Optional[str] = None
     requires_java: Optional[int] = None
     note: str = ""
     docs: list[str] = Field(default_factory=list)
@@ -129,6 +134,10 @@ def _load_company(path: str, mtime_ns: int, size: int) -> tuple[JakartaLibrary, 
             log.warning("company library table %s: entry %d key %r is not groupId:artifactId — skipped", path, i + 1,
                         lib.key)
             continue
+        if lib.jakarta_key and (lib.jakarta_key.count(":") != 1 or not all(lib.jakarta_key.split(":"))):
+            log.warning("company library table %s: entry %d jakarta_key %r is not groupId:artifactId — ignored", path,
+                        i + 1, lib.jakarta_key)
+            lib = lib.model_copy(update={"jakarta_key": None})
         out.append(lib)
     return tuple(out)
 

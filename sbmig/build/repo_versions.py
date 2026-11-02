@@ -55,6 +55,8 @@ from .depchanges import major_of
 log = logging.getLogger("sbmig.build.repo_versions")
 
 Fetch = Callable[[str, Optional[tuple[str, str]], float], Optional[str]]   # (url, (user, password) | None, timeout) → text
+# v2.1z-e: (url, credentials, timeout, max_bytes) → raw bytes (a candidate jar for the jakarta jar scan), None on any error
+FetchBytes = Callable[[str, Optional[tuple[str, str]], float, int], Optional[bytes]]
 
 CENTRAL = "https://repo1.maven.org/maven2/"
 MAX_FETCH_BYTES = 8 * 1024 * 1024
@@ -201,6 +203,223 @@ def _normalize_url(url: str) -> str:
 def _parse_xml(text: str) -> Any:
     data = text.encode("utf-8") if isinstance(text, str) else text
     return ET.fromstring(data)
+
+
+def _server_credentials(root: Any, server_id: str, path: Any) -> Optional[tuple[str, str]]:
+    """``<server id=…>`` 의 (user, password) — ``${env.X}`` 를 풀고, 암호화된 비밀번호면 None(로그 한 번)."""
+    if not server_id:
+        return None
+    server = next((x for x in _kids(_kid(root, "servers"), "server") if _txt(x, "id") == server_id), None)
+    if server is None:
+        return None
+    user, pw = _txt(server, "username"), _txt(server, "password")
+    if pw.startswith("{") and pw.endswith("}") and len(pw) > 2:
+        if str(path) not in _logged_encrypted:
+            _logged_encrypted.add(str(path))
+            log.info("settings %s: the password of server %s is encrypted (settings-security.xml) — the "
+                     "release lookup reads the repository without credentials", path, server_id)
+        return None
+    if not user:
+        return None
+    ru, rp = _resolve_env(user), _resolve_env(pw)
+    return (ru, rp) if ru is not None and rp is not None else None
+
+
+class SettingsData:
+    """settings.xml 하나에서 읽은 것: 미러들(id, url, mirrorOf, 자격증명), 활성 프로필의 저장소들(id, url, 자격증명), 파일 경로.
+
+    What one settings.xml says: its mirrors (id, url, mirrorOf, credentials), the active profiles' repositories
+    (id, url, credentials) and the path."""
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        self.mirrors: list[tuple[str, str, str, Optional[tuple[str, str]]]] = []   # (id, url, mirrorOf, creds)
+        self.repos: list[tuple[str, str, Optional[tuple[str, str]]]] = []           # (id, url, creds) of active profiles
+        self.servers: dict[str, Optional[tuple[str, str]]] = {}
+
+
+def read_settings(path: Optional[str]) -> Optional[SettingsData]:
+    """v2.1z-e: settings.xml 을 Maven 의미대로 읽는다 — 모든 ``<mirror>`` (파일 순서, mirrorOf 패턴 그대로), ``<servers>`` 의
+    자격증명(``${env.X}`` 해석, 암호화면 None), 활성 프로필(``<activeProfiles>`` + ``activeByDefault``)의 ``<repositories>``.
+    왜: 회사 PC 의 조회가 settings 의 미러가 아닌 다른 URL 을 쓰고 있었다 — 사용자: "무조건 여기서 받고 안 받아지면 사고".
+    없거나 못 읽는 파일 → None.
+
+    A settings.xml by Maven's rules: every `<mirror>` in file order with its `mirrorOf` pattern, the `<servers>`
+    credentials, the active profiles' `<repositories>`. None when the file is missing / unreadable."""
+    try:
+        if not path:
+            return None
+        p = Path(str(path)).expanduser()
+        if not p.is_file():
+            return None
+        root = _parse_xml(p.read_text(encoding="utf-8", errors="replace"))
+        data = SettingsData(str(p))
+        for sv in _kids(_kid(root, "servers"), "server"):
+            sid = _txt(sv, "id")
+            if sid:
+                data.servers[sid] = _server_credentials(root, sid, p)
+        for m in _kids(_kid(root, "mirrors"), "mirror"):
+            raw = _txt(m, "url")
+            if not raw:
+                continue
+            url = _resolve_env(raw)
+            mid = _txt(m, "id")
+            if not url:
+                log.info("settings %s: mirror %s url %r has an unresolved variable — not used", p, mid, raw)
+                continue
+            data.mirrors.append((mid, _normalize_url(url), _txt(m, "mirrorOf") or "*", data.servers.get(mid)))
+        active = {(x.text or "").strip() for x in _kids(_kid(root, "activeProfiles"), "activeProfile")}
+        for prof in _kids(_kid(root, "profiles"), "profile"):
+            pid = _txt(prof, "id")
+            act = _kid(prof, "activation")
+            by_default = act is not None and _txt(act, "activeByDefault").lower() == "true"
+            if pid not in active and not by_default:
+                continue
+            for r in _kids(_kid(prof, "repositories"), "repository"):
+                url = _resolve_env(_txt(r, "url"))
+                rid = _txt(r, "id")
+                if url:
+                    data.repos.append((rid or "?", _normalize_url(url), data.servers.get(rid)))
+        return data
+    except Exception as e:  # noqa: BLE001 - a broken settings file: nothing from it
+        log.debug("read_settings(%s): %s", path, e)
+        return None
+
+
+def global_settings_file() -> Optional[Path]:
+    """Maven 의 전역 settings(``$MAVEN_HOME/conf/settings.xml`` / ``M2_HOME`` / PATH 의 ``mvn`` 에서 되짚은 설치 폴더), 없으면 None.
+
+    Maven's global settings file (`MAVEN_HOME` / `M2_HOME` / the installation behind `mvn` on PATH), else None."""
+    try:
+        import shutil
+        homes: list[Path] = []
+        for var in ("MAVEN_HOME", "M2_HOME"):
+            v = os.environ.get(var)
+            if v:
+                homes.append(Path(v))
+        exe = shutil.which("mvn") or shutil.which("mvn.cmd")
+        if exe:
+            real = Path(exe).resolve()
+            homes += [real.parent.parent, real.parent.parent / "libexec"]
+        for h in homes:
+            f = h / "conf" / "settings.xml"
+            if f.is_file():
+                return f
+    except Exception as e:  # noqa: BLE001
+        log.debug("global_settings_file: %s", e)
+    return None
+
+
+def mirror_covers(mirror_of: str, repo_id: str, repo_url: str) -> bool:
+    """Maven 의 ``mirrorOf`` 규칙: ``*`` 전부, ``external:*`` 로컬호스트·file 제외 전부, ``external:http:*`` 비-https 외부,
+    ``central`` / 명시 id, ``!id`` 제외(먼저 본다). 쉼표로 여럿.
+
+    Maven's `mirrorOf` matching: `*`, `external:*` (not localhost / file), `external:http:*`, explicit ids, `!id`
+    exclusions (checked first), comma-separated."""
+    pats = [x.strip() for x in (mirror_of or "").split(",") if x.strip()]
+    if any(x == f"!{repo_id}" for x in pats):
+        return False
+    low = (repo_url or "").lower()
+    external = not (low.startswith("file:") or "://localhost" in low or "://127.0.0.1" in low)
+    for x in pats:
+        if x == "*" or x == repo_id:
+            return True
+        if x == "external:*" and external:
+            return True
+        if x == "external:http:*" and external and low.startswith("http://"):
+            return True
+    return False
+
+
+_POM_SKIP = frozenset({"target", ".git", ".svn", ".hg", ".idea", ".settings", "node_modules", "out", "build"})
+
+
+def pom_repositories(root: Optional[Path], limit: int = 400) -> list[tuple[str, str, str]]:
+    """v2.1z-e: 프로젝트 pom 들(과 저장소 안 부모 체인)이 선언한 ``<repositories><repository><url>`` — (url, 출처). ``${…}`` 는
+    그 pom 과 부모 pom 들의 ``<properties>`` 로 풀고 못 풀면 뺀다. 중복 없이, 트리 순서.
+
+    The `<repository>` URLs the project's poms declare (`${…}` interpolated from the pom's and its in-repo parents'
+    properties; unresolved ones skipped), deduplicated, as (id, url, origin)."""
+    out: list[tuple[str, str, str]] = []
+    if root is None:
+        return out
+    base = Path(root)
+    if not base.is_dir():
+        return out
+    poms: list[Path] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in _POM_SKIP and not d.startswith(".")]
+            if "pom.xml" in filenames:
+                poms.append(Path(dirpath) / "pom.xml")
+                if len(poms) >= limit:
+                    break
+    except OSError:
+        return out
+    cache: dict[Path, Any] = {}
+
+    def parsed(path: Path) -> Any:
+        if path not in cache:
+            try:
+                cache[path] = _parse_xml(path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:  # noqa: BLE001
+                cache[path] = None
+        return cache[path]
+
+    def props_of(path: Path) -> dict[str, str]:
+        props: dict[str, str] = {}
+        cur: Optional[Path] = path
+        for _ in range(10):
+            r = parsed(cur) if cur is not None else None
+            if r is None:
+                break
+            pel = _kid(r, "properties")
+            for el in (list(pel) if pel is not None else []):
+                name = _local(el.tag)
+                if name and name not in props:
+                    props[name] = (el.text or "").strip()
+            parent = _kid(r, "parent")
+            if parent is None:
+                break
+            rel = _txt(parent, "relativePath") or "../pom.xml"
+            nxt = (cur.parent / rel).resolve()
+            if nxt.is_dir():
+                nxt = nxt / "pom.xml"
+            if not nxt.is_file() or nxt == cur:
+                break
+            try:
+                nxt.relative_to(base.resolve())
+            except ValueError:
+                break
+            cur = nxt
+        return props
+
+    seen: set[str] = set()
+    for pom in poms:
+        r = parsed(pom)
+        if r is None:
+            continue
+        repos = _kids(_kid(r, "repositories"), "repository")
+        if not repos:
+            continue
+        props = props_of(pom)
+        for rep_el in repos:
+            url = _txt(rep_el, "url")
+            for _ in range(5):
+                if "${" not in url:
+                    break
+                url = re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), url)
+            if not url or "${" in url:
+                continue
+            u = _normalize_url(url)
+            if u not in seen:
+                seen.add(u)
+                try:
+                    where = str(pom.relative_to(base))
+                except ValueError:
+                    where = str(pom)
+                out.append((_txt(rep_el, "id") or "?", u, f"pom {where} repository {_txt(rep_el, 'id') or '?'}"))
+    return out
 
 
 def mirror_from_settings(path: str) -> Optional[tuple[str, Optional[tuple[str, str]]]]:
@@ -371,22 +590,34 @@ class RepositoryLookup:
     """저장소 한 곳(기본 URL 하나)에서 릴리스 목록(maven-metadata.xml)과 후보 pom 을 읽는 조회기. 한 실행에
     하나, 결과는 인스턴스 안에 캐시한다. 테스트는 진짜 저장소에 나가지 않는다: ``tests/conftest.py`` 가 이
     클래스를 오프라인 대역으로 바꾸고, ``tests/build/test_repo_versions.py`` 는 가짜 ``fetch`` 를 주입한다."""
-    def __init__(self, cfg: Config, *, fetch: Optional[Fetch] = None) -> None:
+    def __init__(self, cfg: Config, *, fetch: Optional[Fetch] = None, fetch_bytes: Optional[FetchBytes] = None,
+                 project_root: Optional[Path] = None) -> None:
         self.cfg = cfg
+        self.project_root = Path(project_root) if project_root else None   # v2.1z-e: the poms' <repositories> join the set
         build = getattr(cfg, "build", None)
         libs = getattr(cfg, "libraries", None)
         self.timeout = float(getattr(build, "repository_timeout_seconds", 10) or 10)
         self.include_prerelease = bool(getattr(libs, "include_prerelease", False))
         self.max_pom_checks = max(0, int(getattr(libs, "max_pom_checks", 6) or 0))
         self._fetch_fn: Fetch = fetch or self._urllib_fetch
+        self._fetch_bytes_fn: FetchBytes = fetch_bytes or self._urllib_fetch_bytes   # v2.1z-e: jar downloads
+        self._jars: dict[tuple[str, str, str, Optional[str]], Optional[bytes]] = {}
         self._url_done = False
         self._url: Optional[str] = None
         self._creds: Optional[tuple[str, str]] = None
         self._last_error = ""
         self._versions: dict[tuple[str, str], tuple[list[str], str, str]] = {}   # → (versions, source, error)
         self._poms: dict[tuple[str, str, str], Optional[str]] = {}
-        self._failures = 0                                        # timeouts / connection failures in a row
-        self._dead = ""                                           # set → the repository is not asked again
+        self._failures = 0                                        # timeouts / connection failures in a row (primary URL)
+        self._dead = ""                                           # set → the primary repository is not asked again
+        # v2.1z-e: the repository SET — (url, credentials, origin) in query order — and what each URL answered per g:a
+        self._sources: Optional[list[tuple[str, Optional[tuple[str, str]], str]]] = None
+        self._url_failures: dict[str, int] = {}                   # per URL: timeouts / connection failures in a row
+        self._url_dead: dict[str, str] = {}                       # per URL: why it is not asked again this run
+        self._trace: dict[tuple[str, str], list[tuple[str, str]]] = {}   # (g, a) → [(url, outcome), …]
+        self._answered: dict[tuple[str, str], str] = {}           # (g, a) → the URL that listed its versions
+        self.settings_files: list[str] = []                       # the settings.xml files read (user / global / configured)
+        self.url_notes: list[str] = []                            # why each URL is in the set / why one was not used
 
     # ------------------------------------------------------------------ http
     def _urllib_fetch(self, url: str, credentials: Optional[tuple[str, str]], timeout: float) -> Optional[str]:
@@ -422,67 +653,250 @@ class RepositoryLookup:
             log.debug("release lookup %s → %s", url, e)
         return None
 
-    def _fetch(self, url: str) -> Optional[str]:
-        """GET 한 번. 시간 초과 / 연결 실패가 ``UNREACHABLE_LIMIT`` 번 연속이면 이 인스턴스(한 실행)는 다시
-        묻지 않는다 — 미러 없는 폐쇄망이면 모든 케이스의 모든 라이브러리마다 ``repository_timeout_seconds`` 를
-        기다리게 된다. 404 / 401 같은 응답은 '닿는다' 는 뜻이라 연속 횟수를 0 으로 돌린다.
+    def _urllib_fetch_bytes(self, url: str, credentials: Optional[tuple[str, str]], timeout: float,
+                            max_bytes: int) -> Optional[bytes]:
+        """v2.1z-e: jar 한 번 내려받기(``max_bytes`` 까지, 더 크면 None — 스캔하지 않는다). 그 밖은 ``_urllib_fetch`` 와 같다.
 
-        One GET through the fetch function. After `UNREACHABLE_LIMIT` timeouts / connection failures in a row the
-        repository is not contacted again by this instance (one run): an air-gapped host without a mirror would
+        One GET for a jar, at most `max_bytes` (a bigger file → None: not scanned); otherwise like `_urllib_fetch`."""
+        self._last_error = ""
+        headers = {"User-Agent": "sbmig"}
+        if credentials:
+            token = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode()).decode("ascii")
+            headers["Authorization"] = f"Basic {token}"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                length = r.headers.get("Content-Length")
+                if length and length.isdigit() and int(length) > max_bytes:
+                    self._last_error = f"jar larger than {max_bytes // (1024 * 1024)} MB"
+                    return None
+                data = r.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                self._last_error = f"jar larger than {max_bytes // (1024 * 1024)} MB"
+                return None
+            return data
+        except urllib.error.HTTPError as e:
+            self._last_error = f"HTTP {e.code}"
+        except Exception as e:  # noqa: BLE001 - timeout / unreachable / bad URL: no jar
+            self._last_error = f"{type(e).__name__}: {e}"[:120]
+        log.debug("jar download %s → %s", url, self._last_error)
+        return None
+
+    def jar_bytes(self, group_id: str, artifact_id: str, version: str, classifier: Optional[str] = None, *,
+                  max_bytes: int = 20 * 1024 * 1024) -> Optional[bytes]:
+        """v2.1z-e: 후보 jar 의 바이트(저장소 URL, 없으면 로컬 저장소; ``max_bytes`` 초과·오류면 None). (g, a, v, classifier)
+        별 캐시. 저장소가 ``_dead`` 면 로컬만 본다.
+
+        The candidate jar's bytes (the repository URL, else the local repository; None when bigger than `max_bytes` or
+        on any error). Cached per (g, a, v, classifier)."""
+        key = (group_id, artifact_id, version, classifier or None)
+        if key in self._jars:
+            return self._jars[key]
+        name = f"{artifact_id}-{version}" + (f"-{classifier}" if classifier else "") + ".jar"
+        data: Optional[bytes] = None
+        try:
+            rel = f"{group_id.replace('.', '/')}/{artifact_id}/{version}/{name}"
+            for url, creds, _o in self._ordered_sources(group_id, artifact_id):
+                if self._url_dead.get(url):
+                    continue
+                data = self._fetch_bytes_fn(f"{url}{rel}", creds, self.timeout, max_bytes)
+                if data:
+                    break
+            if not data:
+                d = self._local_dir(group_id, artifact_id)
+                f = d / version / name if d is not None else None
+                if f is not None and f.is_file() and f.stat().st_size <= max_bytes:
+                    data = f.read_bytes()
+        except Exception as e:  # noqa: BLE001
+            log.debug("jar_bytes(%s:%s:%s): %s", group_id, artifact_id, version, e)
+            data = None
+        self._jars[key] = data or None
+        return self._jars[key]
+
+    def _ordered_sources(self, group_id: str, artifact_id: str) -> list[tuple[str, Optional[tuple[str, str]], str]]:
+        """(g, a) 의 버전 목록을 준 URL 을 앞에 둔 저장소 순서(그 저장소에 pom / jar 도 있을 가능성이 가장 크다)."""
+        srcs = list(self.repository_urls())
+        hit = self._answered.get((group_id, artifact_id))
+        if hit:
+            srcs.sort(key=lambda t: 0 if t[0] == hit else 1)
+        return srcs
+
+    def _fetch(self, url: str, credentials: Optional[tuple[str, str]] = None, base: Optional[str] = None
+               ) -> Optional[str]:
+        """GET 한 번. 시간 초과 / 연결 실패가 ``UNREACHABLE_LIMIT`` 번 연속이면 그 저장소 URL 은 이 인스턴스(한 실행)에서 다시
+        묻지 않는다 — 미러 없는 폐쇄망이면 모든 케이스의 모든 라이브러리마다 ``repository_timeout_seconds`` 를 기다리게
+        된다. 404 / 401 같은 응답은 '닿는다' 는 뜻이라 연속 횟수를 0 으로 돌린다. v2.1z-e: URL 마다 따로 센다(``base`` = 그
+        저장소 URL; 없으면 ``url`` 의 저장소를 ``_sources`` 에서 찾는다).
+
+        One GET through the fetch function. After `UNREACHABLE_LIMIT` timeouts / connection failures in a row THAT
+        repository URL is not contacted again by this instance (one run): an air-gapped host without a mirror would
         otherwise wait `repository_timeout_seconds` for every library of every case."""
-        if self._dead:
-            self._last_error = self._dead
+        base = base or next((u for u, _c, _o in self.repository_urls() if url.startswith(u)), None) or self._url or ""
+        if credentials is None and base:
+            credentials = next((c for u, c, _o in self.repository_urls() if u == base), None)
+        dead = self._url_dead.get(base) or (self._dead if base == self._url else "")
+        if dead:
+            self._last_error = dead
             return None
         self._last_error = ""
         try:
-            text = self._fetch_fn(url, self._creds, self.timeout)
+            text = self._fetch_fn(url, credentials, self.timeout)
         except Exception as e:  # noqa: BLE001 - an injected fetch never breaks the lookup
             self._last_error = ("timeout" if isinstance(e, TimeoutError) else f"{type(e).__name__}: {e}")[:120]
             log.debug("release lookup %s → %s", url, e)
             text = None
         if text:
-            self._failures = 0
+            self._url_failures[base] = 0
+            if base == self._url:
+                self._failures = 0
             return text
         if self._last_error.startswith(("timeout", "unreachable")):
-            self._failures += 1
-            if self._failures >= UNREACHABLE_LIMIT:
-                self._dead = f"{self._url} did not answer ({self._last_error}); skipped for the rest of the run"
+            n = self._url_failures.get(base, 0) + 1
+            self._url_failures[base] = n
+            if base == self._url:
+                self._failures = n
+            if n >= UNREACHABLE_LIMIT:
+                why = f"{base} did not answer ({self._last_error}); skipped for the rest of the run"
+                self._url_dead[base] = why
+                if base == self._url:
+                    self._dead = why
                 log.info("release lookup: %s did not answer %d times in a row (%s) — not asked again in this run",
-                         self._url, self._failures, self._last_error)
+                         base, n, self._last_error)
         else:
-            self._failures = 0                                    # an answer (404 / 401) means it is reachable
+            self._url_failures[base] = 0                          # an answer (404 / 401) means it is reachable
+            if base == self._url:
+                self._failures = 0
         return None
 
     # ------------------------------------------------------------------ where
     def repository_url(self) -> Optional[str]:
-        """쓸 기본 URL(끝 ``/``), 없으면 None(offline + 미러 없음). 순서: ``build.repository_url``(미러와 같은
-        URL 이면 그 자격증명을 빌림) → ``build.settings_file``(없으면 Maven 이 실제로 읽는
-        ``~/.m2/settings.xml``)의 미러 → offline 이 아니면 Maven Central.
+        """첫 번째(주) 저장소 URL(끝 ``/``), 없으면 None — v2.1z-e 부터 ``repository_urls`` 의 첫 항목(settings 의 미러가 먼저).
 
-        The base URL used (trailing `/`), None when none (offline without a mirror)."""
+        The primary base URL (trailing `/`), None when there is none: the first entry of `repository_urls()`."""
         if self._url_done:
             return self._url
         self._url_done = True
+        srcs = self.repository_urls()
+        self._url, self._creds = (srcs[0][0], srcs[0][1]) if srcs else (None, None)
+        return self._url
+
+    def repository_urls(self) -> list[tuple[str, Optional[tuple[str, str]], str]]:
+        """v2.1z-e: 묻는 저장소 전부, Maven 의 의미대로 (url, 자격증명, 이유) 순서로 — settings 가 기준이다(사용자: "무조건 여기서 받고
+        안 받아지면 사고"). 저장소 목록 = settings 활성 프로필의 repositories → 프로젝트 pom(과 부모 체인)의 repositories →
+        Maven Central(``central``); 각각 그 id/URL 을 덮는 **첫 미러**(``mirrorOf`` 규칙)가 있으면 미러 URL 로 바뀐다(``mirrorOf *``
+        면 pom 의 저장소는 절대 직접 묻지 않는다). offline 이면 미러 없는 Central 은 뺀다. 명시적 ``build.repository_url`` 은 운영자의
+        결정이라 **맨 앞**(회사 PC 가 그렇게 설정돼 있다) — 자격증명은 같은 URL 의 미러 / 저장소의 ``<server>``, 아니면
+        ``build.repository_server_id`` 로; settings 가 가리키는 주 URL 과 다르면 WARNING 한 번("Maven 은 <settings url> 에서 받고
+        sbmig 의 조회는 build.repository_url 을 쓴다")으로 묵은 yml 이 보이게 한다. settings 파일: ``build.settings_file``, 없으면
+        ``~/.m2/settings.xml``, 그리고 전역 ``$MAVEN_HOME/conf/settings.xml``(사용자 파일 항목이 먼저). 한 실행에 한 번 계산,
+        INFO 로 어떤 URL 을 왜 쓰는지 남긴다.
+
+        Every repository the lookup asks, by Maven's rules, as (url, credentials, reason): an explicit
+        `build.repository_url` FIRST (the operator's decision; credentials from the `<server>` of the mirror / repository
+        with the same URL, else `build.repository_server_id`; one WARNING naming both when it differs from the
+        settings-derived primary), then the repositories (settings active-profile repositories, the project poms'
+        repositories, Maven Central) each replaced by the FIRST settings mirror whose `mirrorOf` covers it; unmirrored
+        Central dropped when offline. Settings files: `build.settings_file`, else `~/.m2/settings.xml`, plus the global
+        `$MAVEN_HOME/conf/settings.xml`. Computed once; INFO lines say which URL is used and why."""
+        if self._sources is not None:
+            return self._sources
+        out: list[tuple[str, Optional[tuple[str, str]], str]] = []
+        notes: list[str] = []
         try:
             build = getattr(self.cfg, "build", None)
-            settings = getattr(build, "settings_file", None)
-            if not settings or not str(settings).strip():
+            offline = bool(getattr(build, "offline", False))
+            # the settings files, user before global (Maven merges them with the user's entries first)
+            files: list[tuple[Path, str]] = []
+            configured_settings = getattr(build, "settings_file", None)
+            if configured_settings and str(configured_settings).strip():
+                files.append((Path(str(configured_settings)).expanduser(), "build.settings_file"))
+            else:
                 user = Path.home() / ".m2" / "settings.xml"
-                settings = str(user) if user.is_file() else None
-            mirror = mirror_from_settings(settings) if settings else None
+                if user.is_file():
+                    files.append((user, "~/.m2/settings.xml"))
+            g = global_settings_file()
+            if g is not None and all(g.resolve() != f.resolve() for f, _o in files if f.exists()):
+                files.append((g, "global settings"))
+            datas: list[tuple[SettingsData, str]] = []
+            for f, origin in files:
+                d = read_settings(str(f))
+                if d is not None:
+                    datas.append((d, origin))
+                    self.settings_files.append(f"{d.path} ({origin})")
+            mirrors = [(mid, url, mo, creds, origin) for d, origin in datas for mid, url, mo, creds in d.mirrors]
+            servers: dict[str, Optional[tuple[str, str]]] = {}
+            for d, _o in reversed(datas):             # user entries win over global ones
+                servers.update(d.servers)
+            # the repositories to resolve, in lookup order
+            repos: list[tuple[str, str, Optional[tuple[str, str]], str]] = []
+            for d, origin in datas:
+                for rid, url, creds in d.repos:
+                    repos.append((rid, url, creds, f"{origin} active-profile repository '{rid}'"))
+            for rid, url, origin in pom_repositories(self.project_root):
+                repos.append((rid, url, servers.get(rid), origin))
+            repos.append(("central", CENTRAL, None, "Maven Central"))
+            settings_gave_url = False
+            for rid, url, creds, origin in repos:
+                hit = next(((mid, murl, mo, mcreds, morigin) for mid, murl, mo, mcreds, morigin in mirrors
+                            if mirror_covers(mo, rid, url)), None)
+                if hit is not None:
+                    mid, murl, mo, mcreds, morigin = hit
+                    settings_gave_url = True
+                    out.append((murl, mcreds, f"settings mirror '{mid or '?'}' (mirrorOf {mo}) covering {rid} — {morigin}"))
+                elif rid == "central" and offline:
+                    notes.append("Maven Central skipped (build.offline)")
+                else:
+                    if origin.startswith("build.settings_file") or origin.startswith("~/.m2") or origin.startswith("global"):
+                        settings_gave_url = True
+                    out.append((url, creds, origin))
             configured = getattr(build, "repository_url", None)
             if configured and str(configured).strip():
-                self._url = _normalize_url(str(configured))
-                if mirror and mirror[0] == self._url:
-                    self._creds = mirror[1]
-            elif mirror:
-                self._url, self._creds = mirror
-            elif not getattr(build, "offline", False):
-                self._url = CENTRAL
+                u = _normalize_url(str(configured))
+                # credentials: the <server> of the mirror / repository with the same URL, else build.repository_server_id
+                creds = next((c for cu, c, _o in out if cu == u and c), None) or next(
+                    (mc for _i, mu, _mo, mc, _mo2 in mirrors if mu == u and mc), None)
+                sid = getattr(build, "repository_server_id", None)
+                if creds is None and sid:
+                    creds = servers.get(str(sid))
+                    if creds is None:
+                        notes.append(f"build.repository_server_id {sid}: no usable <server> credentials in the settings")
+                derived = next((x[0] for x in out if x[0] != CENTRAL), None)
+                if derived and derived != u:
+                    notes.append(f"Maven itself resolves from {derived} (settings); sbmig's lookups use build.repository_url {u} "
+                                 "— a stale yml value would show up here")
+                out.insert(0, (u, creds, "build.repository_url (explicit: first)" + (f"; credentials from server {sid}"
+                                                                                   if sid and creds else "")))
         except Exception as e:  # noqa: BLE001
-            log.debug("repository_url: %s", e)
-            self._url = None
-        return self._url
+            log.debug("repository_urls: %s", e)
+        seen: set[str] = set()
+        uniq: list[tuple[str, Optional[tuple[str, str]], str]] = []
+        for u, c, o in out:
+            if u and u not in seen:
+                seen.add(u)
+                uniq.append((u, c, o))
+        self._sources = uniq
+        self.url_notes = notes
+        for u, _c, o in uniq:
+            log.info("repository lookup: %s (%s)", u, o)
+        for n in notes:
+            (log.warning if n.startswith(("Maven itself resolves", "build.repository_server_id")) else log.info)(
+                "repository lookup: %s", n)
+        if not uniq:
+            log.info("repository lookup: no repository URL (offline, no mirror / repository / build.repository_url)")
+        return uniq
+
+    def lookup_trace(self, group_id: str, artifact_id: str) -> list[tuple[str, str]]:
+        """v2.1z-e: (g, a) 의 maven-metadata.xml 을 어느 URL 에 물어 무엇이 돌아왔는지 — [(url, 결과)] (조회 뒤에 있다)."""
+        return list(self._trace.get((group_id, artifact_id), []))
+
+    def remote_failures(self, group_id: str, artifact_id: str) -> str:
+        """v2.1z-e: 원격 저장소가 하나도 답하지 못했으면 "remote repositories unreadable: <url> HTTP 401, …" 한 문장, 아니면 ""."""
+        trace = self.lookup_trace(group_id, artifact_id)
+        remote = [(u, o) for u, o in trace if u.startswith(("http://", "https://"))]
+        if not remote or any(o.startswith("ok") for _u, o in remote):
+            return ""
+        bad = [(u, o) for u, o in remote if not o.startswith(("not found", "empty"))]
+        return ("remote repositories unreadable: " + ", ".join(f"{u} {o}" for u, o in bad)) if bad else ""
 
     def _local_dir(self, group_id: str, artifact_id: str) -> Optional[Path]:
         try:
@@ -519,32 +933,56 @@ class RepositoryLookup:
             return self._versions[key]
         versions: list[str] = []
         source = error = ""
+        trace: list[tuple[str, str]] = []
         try:
-            url = self.repository_url()
-            if url:
-                meta = f"{url}{group_id.replace('.', '/')}/{artifact_id}/maven-metadata.xml"
-                text = self._fetch(meta)
-                versions = _metadata_versions(text) if text else []
-                if versions:
-                    source = meta
-                elif self._dead and self._last_error == self._dead:
-                    error = self._dead
-                elif self._last_error.startswith("timeout"):
-                    error = f"{self._last_error} reading {meta}"
-                elif self._last_error and not self._last_error.startswith("HTTP 404"):
-                    error = f"maven-metadata.xml not readable at {meta} ({self._last_error})"
+            sources = self.repository_urls()
+            rel = f"{group_id.replace('.', '/')}/{artifact_id}/maven-metadata.xml"
+            for url, creds, _origin in sources:
+                if self._url_dead.get(url):
+                    trace.append((url, "skipped: did not answer earlier in this run"))
+                    continue
+                meta = f"{url}{rel}"
+                text = self._fetch(meta, creds, url)
+                got = _metadata_versions(text) if text else []
+                if got:
+                    versions, source = got, meta
+                    trace.append((url, f"ok ({len(got)} release(s))"))
+                    self._answered[key] = url
+                    break
+                # 결과 분류: 'not found'(404, 또는 오류 없이 빈 답) 는 "그 저장소에 없다" 는 사실, 나머지(timeout·연결 실패·401/403·
+                # 5xx) 는 "못 읽었다" — 둘을 가른다. 못 읽은 저장소가 있으면 "없음" 이 Nexus 에 대한 사실로 읽히지 않게 말한다.
+                if text:
+                    outcome = "empty maven-metadata.xml"
+                elif not self._last_error or self._last_error.startswith("HTTP 404"):
+                    outcome = "not found (HTTP 404)" if self._last_error else "not found"
+                elif self._last_error.startswith(("HTTP 401", "HTTP 403")):
+                    outcome = f"{self._last_error.split()[0]} {self._last_error.split()[1]} (credentials?)"
                 else:
-                    error = f"maven-metadata.xml not found at {meta}"
-            else:
-                error = "no repository URL (offline)"
+                    outcome = self._last_error
+                trace.append((url, outcome))
             if not versions:
+                remote = [(u, o) for u, o in trace if u.startswith(("http://", "https://"))]
+                unreadable = [(u, o) for u, o in remote if not o.startswith(("ok", "not found", "empty"))]
+                if not sources:
+                    error = "no repository URL (offline)"
+                elif unreadable:
+                    error = "remote repositories unreadable: " + ", ".join(f"{u} {o}" for u, o in unreadable)
+                else:
+                    error = "maven-metadata.xml not found at " + ", ".join(u + rel for u, _o in trace[:3]) \
+                        + (f" (+{len(trace) - 3} more)" if len(trace) > 3 else "")
                 d = self._local_dir(group_id, artifact_id)
                 local = self._local_versions(d)
                 if local:
-                    versions, source, error = local, str(d), ""
+                    versions, source = local, str(d)
+                    trace.append((str(d), f"ok ({len(local)} release(s), local repository)"))
+                    error = ("remote repositories unreadable: " + ", ".join(f"{u} {o}" for u, o in unreadable)
+                             + "; local repository only") if unreadable else ""
+                else:
+                    trace.append((str(d) if d is not None else "local repository", "nothing"))
         except Exception as e:  # noqa: BLE001
             log.debug("versions(%s:%s): %s", group_id, artifact_id, e)
             error = error or f"{type(e).__name__}: {e}"[:120]
+        self._trace[key] = trace
         result = (_sorted_unique(versions), source, error)
         self._versions[key] = result
         return result
@@ -562,10 +1000,11 @@ class RepositoryLookup:
             return self._poms[key]
         text: Optional[str] = None
         try:
-            url = self.repository_url()
-            if url:
-                text = self._fetch(f"{url}{group_id.replace('.', '/')}/{artifact_id}/{version}/"
-                                   f"{artifact_id}-{version}.pom")
+            rel = f"{group_id.replace('.', '/')}/{artifact_id}/{version}/{artifact_id}-{version}.pom"
+            for url, creds, _o in self._ordered_sources(group_id, artifact_id):
+                text = self._fetch(f"{url}{rel}", creds, url)
+                if text:
+                    break
             if not text:
                 d = self._local_dir(group_id, artifact_id)
                 f = d / version / f"{artifact_id}-{version}.pom" if d is not None else None
@@ -592,6 +1031,7 @@ class RepositoryLookup:
                 return rv
             g, a = parts[0], parts[1]
             versions, rv.source, rv.error = self._lookup(g, a)
+            rv.urls_tried = [f"{u} → {o}" for u, o in self.lookup_trace(g, a)]
             if not versions:
                 rv.error = rv.error or "no release found"
                 return rv
@@ -717,6 +1157,12 @@ def hint_lines(rv: RepositoryVersions, entry: Any = None) -> list[str]:
                          "if unsure")
             return lines
         where = "" if not rv.source or rv.source.startswith(("http://", "https://")) else " (local repository only)"
+        if where:
+            # v2.1z-e: 원격이 못 읽혔으면 그렇다고 말한다 — "newer release 없음" 이 Nexus 에 대한 사실로 읽히지 않게
+            failed = [t.split(" → ", 1) for t in (rv.urls_tried or []) if t.startswith(("http://", "https://"))]
+            bad = [f"{u} {o}" for u, o in failed if not o.startswith(("ok", "not found", "empty"))]
+            if bad:
+                where = f" (remote repositories unreadable: {', '.join(bad)}; local repository only)"
         fj = rv.first_jakarta
         if rv.current and rv.major is not None:
             if rv.same_major:

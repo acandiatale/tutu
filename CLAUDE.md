@@ -163,6 +163,13 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   final place, in every mode (`layout.jsp_jakarta_rename`, default true; `sbmig/restructure/jsp_jakarta.py`). Off →
   Handover follow-up only. Taglib URIs stay (JSTL 3 serves the `java.sun.com` URIs).
 - Guide advisories (hystrix, ribbon, zuul, …) leave compiling code as it is; the Handover lists them.
+- javax-era libraries (v2.1z-e, 2026-11-02): sbmig looks for the jakarta build itself — the repository SET (explicit
+  `build.repository_url` first, then every settings mirror by Maven's `mirrorOf` rules, pom repositories unless mirrored,
+  the global settings, Central), the same coordinates' higher line (`2.0.5-jakarta`, verified by the version qualifier /
+  pom / a bounded jar scan), the table's `jakarta_key`, Nexus search by stem, sibling-name probes — and the zero-LLM
+  pre-try `sbmig-jakarta` swaps the declaration before any LLM call (a higher major is the one justified major change,
+  ⚠ for the operator). `sbmig repo-probe g:a:v` shows the URLs asked and what each answered; `journal.jsonl` has
+  `library_lookup` / `library_unmapped`. Unreadable remotes are said so (`remote repositories unreadable: …`).
 - Ladder caps (v2.1z, 2026-11-02, "여유롭게 잡고 … 점차 줄여가는 방식"): ≤ 20 LLM asks per case and run
   (`script.max_llm_tries_per_case`), of which ≤ 15 augments (`script.max_augments_per_case`); to be lowered once the
   company runs show what a case needs. A case the LLM declines (legacy-ibatis) blocks after `script.max_declines_per_case`
