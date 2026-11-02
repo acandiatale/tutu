@@ -3044,6 +3044,15 @@ to load. Fixed after the review:
   the empty "LLM usage and cost" section (`tests/report/test_usage_section.py`), plus new ones for the compat properties, the config
   warnings, the fleet-resume notice, the masking rules and the escalation rung (R1).
 - Stale "저장본 1 + LLM 3회" comments (`blocked_registry.py`, `fixloop.py`) and the legacy-ibatis fixture README corrected (R1, R2).
+- **Rootless tree with a lone aggregator (user's company run, 2026-11-02):** root holds only `.gitignore`, `APP/pom.xml` aggregates
+  `./WEB` / `./EAR`, and another pom (`APP/BATCH/pom.xml`, or one under `DEV/`) is listed by nobody and depended on by nobody → the
+  planner saw "two unlinked top poms" and the run aborted `no-root-pom` before any Maven call. Rule now (`sbmig/analyze/aggregator.py`
+  `_plan`): among several top poms, **exactly one aggregator** (a top whose `<modules>` reach other poms) is the application root —
+  the generated root lists it plus every top linked to it by dependency (dependency order), and names the rest as left out
+  (`AggregatorPlan.excluded`; the Handover gets a dedicated line: add them to that aggregator's `<modules>` and run again — they were
+  not migrated). Two or more unlinked aggregators still give None (`no_root_pom_reason` now names them: independent applications).
+  Unit tests in `tests/analyze/test_aggregator.py`; e2e fixture `rootless-unlisted-module` (the `sibling-aggregator-dup` tree plus an
+  unlisted `APP/TOOLS` jar).
 - Accepted as is: `max_llm_tries_per_case` 20 with an `llm.escalation_model` configured sends up to 18 asks per case to the stronger
   model (cost is the company's call; the model is empty by default); the pre-existing `이번 실행에서 v1 실패` wording for a `partial`
   reuse.

@@ -169,3 +169,57 @@ def test_no_root_pom_reason_names_the_unrelated_tops(tmp_path):
     assert why.startswith("no pom.xml at the project root and none was generated: the top-level poms (a/pom.xml, "
                           "b/pom.xml) do not form one application")
     assert "layout.generate_aggregator is off" in no_root_pom_reason(ws, generate=False)
+
+
+# ---------------------------------------------------------------- 2026-11-02: a lone aggregator beside unlinked top poms
+def _rootless(tmp_path: Path, extra: dict[str, str]) -> PathView:
+    """The company shape of 2026-11-02: root with .gitignore only, APP/pom.xml aggregating ./WEB and ./EAR, DB / DEV / STATIC
+    folders without poms — plus `extra` files."""
+    files = {".gitignore": "target/\n", "DB/schema.sql": "-- sql\n", "STATIC/index.html": "<html/>", "DEV/README.txt": "dev\n",
+             "APP/pom.xml": _pom("com.acme.portal", "portal-app", "pom", modules="<module>./WEB</module><module>./EAR</module>"),
+             "APP/WEB/pom.xml": _pom("com.acme.portal", "portal-web", "war"),
+             "APP/EAR/pom.xml": _pom("com.acme.portal", "portal-ear", "ear", deps=_dep("com.acme.portal", "portal-web", "war"))}
+    files.update(extra)
+    return _tree(tmp_path, files)
+
+
+def test_lone_aggregator_is_the_root_and_an_unlisted_pom_is_left_out(tmp_path):
+    """Before: APP/pom.xml and APP/BATCH/pom.xml were "two unlinked top poms" → None → the run aborted no-root-pom."""
+    ws = _rootless(tmp_path, {"APP/BATCH/pom.xml": _pom("com.acme.portal", "portal-batch")})
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["APP"] and plan.excluded == ["APP/BATCH/pom.xml"]
+    assert plan.name == "portal" and "APP/pom.xml is the only aggregator pom (3 poms)" in plan.reason
+    assert "not listed by it and not linked: APP/BATCH/pom.xml (left out" in plan.reason
+    assert write_aggregator(ws, plan) == "pom.xml" and plan_aggregator(ws) is None
+
+
+def test_several_unlisted_poms_are_all_left_out(tmp_path):
+    ws = _rootless(tmp_path, {"APP/BATCH/pom.xml": _pom("com.acme.portal", "portal-batch"),
+                              "DEV/pom.xml": _pom("com.acme.portal", "portal-dev")})
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["APP"] and plan.excluded == ["APP/BATCH/pom.xml", "DEV/pom.xml"]
+
+
+def test_a_top_linked_to_the_aggregator_joins_it_in_dependency_order(tmp_path):
+    ws = _rootless(tmp_path, {"APP/BATCH/pom.xml": _pom("com.acme.portal", "portal-batch",
+                                                         deps=_dep("com.acme.portal", "portal-web"))})
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["APP", "APP/BATCH"] and plan.excluded == []
+    assert "APP/BATCH depend on it (APP/BATCH → APP)" in plan.reason
+
+
+def test_a_linked_pair_elsewhere_does_not_displace_the_aggregator(tmp_path):
+    ws = _rootless(tmp_path, {"X/a/pom.xml": _pom("org.other", "xa"),
+                              "X/b/pom.xml": _pom("org.other", "xb", deps=_dep("org.other", "xa"))})
+    plan = plan_aggregator(ws)
+    assert plan is not None and plan.modules == ["APP"] and plan.excluded == ["X/a/pom.xml", "X/b/pom.xml"]
+
+
+def test_two_unlinked_aggregators_still_give_none_with_a_reason_naming_them(tmp_path):
+    from sbmig.analyze.aggregator import no_root_pom_reason
+
+    ws = _rootless(tmp_path, {"DEV/pom.xml": _pom("com.acme.dev", "dev-app", "pom", modules="<module>./core</module>"),
+                              "DEV/core/pom.xml": _pom("com.acme.dev", "dev-core")})
+    assert plan_aggregator(ws) is None
+    why = no_root_pom_reason(ws)
+    assert "2 aggregator poms (APP/pom.xml, DEV/pom.xml) that are not linked" in why and "independent applications" in why

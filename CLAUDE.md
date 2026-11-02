@@ -51,7 +51,8 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   decision 2026-10-23: no pom synthesis for exploded Tomcat JSP + Java directories); `sbmig inventory <dir>` (read-only)
   stays as the tool that describes such a tree for the rejection note to the owners; it changes nothing.
   A Maven tree **without a root pom** (sibling poms, or one `APP/pom.xml` aggregating `../DEV` — the company shape) gets a
-  generated root aggregator at intake (v2.1k: also for a single top); a module reached twice in the reactor is de-duplicated
+  generated root aggregator at intake (v2.1k: also for a single top; 2026-11-02: a lone aggregator pom is the root even when other,
+  unlinked poms sit beside it — those are left out and named in the Handover); a module reached twice in the reactor is de-duplicated
   there (`reactor-duplicate-removed`), and `duplicated in the reactor` never goes to the LLM (`reactor_duplicate`, 0 tries).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.

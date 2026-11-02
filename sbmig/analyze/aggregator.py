@@ -202,13 +202,26 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
     for t in tops:
         groups.setdefault(find(t.path), []).append(t)
     linked = [g for g in groups.values() if len(g) >= 2]
-    # 연결된 그룹이 정확히 하나일 때만 만든다 — 둘 이상이면 서로 무관한 앱들이라 하나로 묶지 않는다
-    if len(linked) != 1:
+    # v2.1z-a (2026-11-02, 회사 사례: 루트에 .gitignore 뿐, APP/pom.xml 이 ./WEB · ./EAR 를 묶고 APP/BATCH 에는 아무도 안 쓰는
+    # pom 이 하나 더): 최상위 pom 중 <modules> 로 다른 pom 을 묶는 "집계 pom" 이 딱 하나면 그것이 애플리케이션의 루트다 —
+    # 의존으로 이어진 다른 최상위 pom 은 함께 나열하고, 이어지지 않은 것은 빼고 보고한다(예전에는 "서로 안 이어진 최상위
+    # pom 들" 로 보고 중단해 Maven 호출 한 번 없이 끝났다). 집계 pom 이 둘 이상 서로 무관하면 그대로 None(독립 앱).
+    # one aggregator among several tops is the application root: linked tops join it, unlinked ones are left out
+    # (reported) instead of aborting the run; two or more unlinked aggregators stay None (independent applications)
+    aggregators = [t for t in tops if len(trees[t.path]) > 1]
+    if len(aggregators) == 1 and len(linked) <= 1:
+        agg = aggregators[0]
+        members = next((g for g in groups.values() if agg in g), [agg])
+        if len(linked) == 1 and agg not in linked[0]:
+            members = [agg]                      # the linked pair is not the aggregator's: it stays out, reported below
+    elif len(linked) != 1:
+        # 연결된 그룹이 정확히 하나일 때만 만든다 — 둘 이상이면 서로 무관한 앱들이라 하나로 묶지 않는다
         if len(linked) > 1:
             log.info("aggregator not generated: %d separate groups of linked poms (independent applications)",
                      len(linked))
         return None
-    members = linked[0]
+    else:
+        members = linked[0]
     excluded = sorted(t.path for t in tops if t not in members)
     # dependency order: a module after the modules it depends on (ties by path)
     order: list[PomInfo] = []
@@ -221,8 +234,19 @@ def _plan(ws: Any) -> Optional[AggregatorPlan]:
         pending.remove(nxt)
     edges = "; ".join(f"{_dir(a)} → {', '.join(posixpath.dirname(b) for b in sorted(deps[a.path]))}"
                       for a in order if deps[a.path])
-    reason = (f"no pom.xml at the project root; {len(members)} poms depend on each other ({edges}) and were built "
-              "one by one — a root aggregator pom builds them in one reactor")
+    agg_only = len(aggregators) == 1 and aggregators[0] in members
+    if agg_only:
+        agg = aggregators[0]
+        others = [_dir(p) for p in order if p is not agg]
+        reason = (f"no pom.xml at the project root; {agg.path} is the only aggregator pom ({len(trees[agg.path])} poms)"
+                  + (f" and {', '.join(others)} depend on it ({edges})" if others else "")
+                  + " — a root aggregator pom listing " + ", ".join(_dir(p) for p in order)
+                  + " lets Maven and the restructure run from the project root"
+                  + (f"; not listed by it and not linked: {', '.join(excluded)} (left out — add them to its <modules> "
+                     "if they belong to the application)" if excluded else ""))
+    else:
+        reason = (f"no pom.xml at the project root; {len(members)} poms depend on each other ({edges}) and were built "
+                  "one by one — a root aggregator pom builds them in one reactor")
     every: list[PomInfo] = []                            # the listed poms and their module poms (PomInfo: no hash)
     for q in (q for m in members for q in trees[m.path]):
         if not any(q is e for e in every):
@@ -318,8 +342,13 @@ def no_root_pom_reason(ws: Any, generate: bool = True) -> str:
     if not generate:
         why = "layout.generate_aggregator is off"
     elif len(tops) >= 2:
-        why = (f"the top-level poms ({listed}) do not form one application: they are not linked to each other "
-               "(no <module> or dependency between them) and are not separate deployable services (MSA)")
+        aggs = sorted(p.path for p in _top_poms(poms) if p.modules) if poms else []
+        if len(aggs) >= 2:
+            why = (f"the top-level poms ({listed}) hold {len(aggs)} aggregator poms ({', '.join(aggs[:6])}) that are not "
+                   "linked to each other — independent applications, not separate deployable services (MSA)")
+        else:
+            why = (f"the top-level poms ({listed}) do not form one application: they are not linked to each other "
+                   "(no <module> or dependency between them) and are not separate deployable services (MSA)")
     else:
         why = f"no aggregator pom could be planned (top-level poms: {listed})"
     return (f"no pom.xml at the project root and none was generated: {why} — Maven cannot build a directory without "

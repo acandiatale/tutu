@@ -697,9 +697,15 @@ class Orchestrator:
             report.flags.append("aggregator-generated")
         msg = (f"no aggregator pom: sbmig generated {path} ({plan.artifact_id}, modules {', '.join(plan.modules)}) — "
                f"{plan.reason}; the as-is build of each module stays as it was")
-        if plan.excluded:
+        if plan.excluded and "left out" not in plan.reason:
             msg += f"; not linked to them and left out: {', '.join(plan.excluded)}"
         report.manual_followups.append(msg)
+        if plan.excluded:
+            # v2.1z-a: 빠진 pom 은 인수인계에 따로 한 줄 — 집계 pom 의 <modules> 에 넣고 다시 돌리면 함께 전환된다
+            report.manual_followups.append(
+                f"poms left out of the generated root ({', '.join(plan.excluded)}): no aggregator lists them and no module "
+                f"depends on them — if they belong to the application, add them to the <modules> of "
+                f"{plan.modules[0]}/pom.xml (or the generated root pom.xml) and run sbmig again; they were not migrated")
         log.info("%s", msg)
         self.ws.journal({"event": "aggregator_generated", "path": path, "artifact_id": plan.artifact_id,
                          "name": plan.name, "modules": plan.modules, "excluded": plan.excluded})
