@@ -192,7 +192,7 @@ def test_sibling_probes_find_the_digit_variant_and_the_jakarta_artifact_id(tmp_p
     d2 = discover_jakarta_builds(look2, "com.example.grid8", "grid8", "1.0.6", cfg=look2.cfg)
     b = d2.best()
     assert b is not None and b.coordinates == "com.example.grid8:grid8-jakarta:1.2.0"
-    assert b.how == "pom declares jakarta.*"          # `jakarta` in its own artifactId counts (pom_is_jakarta)
+    assert b.how == "artifactId names jakarta"        # v2.1z-g: the vendor's own `-jakarta` artifactId verifies it
     # the probe bound
     look3, f3 = _lookup(tmp_path, files_j, max_jakarta_probes=1)
     d3 = discover_jakarta_builds(look3, "com.example.grid8", "grid8", "1.0.6", cfg=look3.cfg)
