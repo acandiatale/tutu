@@ -3056,3 +3056,49 @@ to load. Fixed after the review:
 - Accepted as is: `max_llm_tries_per_case` 20 with an `llm.escalation_model` configured sends up to 18 asks per case to the stronger
   model (cost is the company's call; the model is empty by default); the pre-existing `이번 실행에서 v1 실패` wording for a `partial`
   reuse.
+
+## v2.1z-c — hollow reactor: sources outside the modules are not "migrated" (2026-11-02)
+
+User's company run (2026-11-02, the APP / DB / DEV / STATIC project after `3647b52`): the build passed and the report said
+success, but `STATIC/`'s html / css / js and `DEV/`'s java / jsp were nowhere — only pom.xml and web.xml had reached
+`back` / `boot` / `front`. `APP/WEB/pom.xml` is a packaging pom over a JDeveloper workspace: its `<build>` only names
+`${DIR_xxxJAR}` / `${DIR_xxxWEB}` output directories (environment properties), the java lives in `DEV/s10/src`, the web root
+is `DEV/s10/public_html`. To Maven that module has no sources, so `clean package` has nothing to compile and "succeeds".
+
+**Contract**
+- `sbmig/analyze/hollow.py` — `detect_hollow(ws, poms) -> HollowResult`, pure file reads, never raises, no directory NAME
+  interpreted. Per pom the roots it compiles / packages: `src/main/java` or `<sourceDirectory>`, `<scriptSourceDirectory>`,
+  `src/main/resources` or every `<resources><resource><directory>`, `src/main/webapp`, maven-war-plugin `warSourceDirectory`
+  and `<webResources>` directories; `${…}` interpolated from the pom's own `<properties>` plus its in-repo parent chain
+  (`basedir` / `project.basedir` = `.`), an expression that stays unresolved is recorded (`HollowResult.unresolved`) and not
+  used; absolute paths and paths that leave the project are skipped; `src/test` / `<testSourceDirectory>` are ignored roots.
+  Counts `*.java`, JSP / tag files and html / htm / css / js inside vs outside the roots (walk prunes `.git` / `.svn` /
+  `.idea` / `.settings` / `node_modules` and `target` beside a pom). `outside_by_dir` = counts per top-level directory.
+- Verdicts: `hollow` = inside java 0 ∧ outside java > 0, or (a WAR module exists ∧ inside jsp + web 0 ∧ outside jsp > 0);
+  `sources_outside` = not hollow ∧ outside java > inside java > 0 (soft). No poms → nothing.
+- Orchestrator (`_check_hollow`, right after the analyze journal): `hollow` → flag **`hollow-reactor`**, journal event
+  `hollow_reactor` `{inside, outside, outside_by_dir, roots, unresolved, war}`, Handover follow-up inserted FIRST:
+  `the Maven reactor compiles no sources: <n java, n jsp, n web files> lie outside its modules (<dir: kind n, …; …>) and were
+  NOT migrated — the as-is build only packaged files produced elsewhere[ (unresolved directories: ${…}, …)]; the sources must
+  be mapped into the modules first (sbmig: tree profile, next increment)` (Korean through `i18n.PATTERNS`:
+  `Maven 리액터가 컴파일하는 소스가 없다: 모듈 밖에 … 이관되지 않았다 — …`). The run goes on (review, builds, loop) but
+  **`success` requires `hollow-reactor` ∉ flags** (beside `restructure-failed`, not aborted, every final build ok) → exit 2,
+  `SBMIG-RESULT … exit=2 build=FAIL … attn=hollow-reactor` (`build=` mirrors `success`, as for `restructure-failed`:
+  mvn passed, the deliverable did not; `ATTENTION_FLAGS`), flag help in the report. `sources_outside` → flag
+  `sources-outside-reactor` + follow-up `sources outside the Maven reactor: … check whether they belong to the application`,
+  success untouched. The Handover's "from here on" list opens with the hollow line (before the Boot-BOM line).
+- Not done here (next increment, the tree profile): mapping those sources into `{name}-back` / `-front` / `-boot`.
+
+### As built (v2.1z-c)
+`sbmig/analyze/hollow.py` (`HollowResult`, `module_roots`, `detect_hollow`, `hollow_followup`, `outside_followup`, the
+constants `HOLLOW_FLAG` / `OUTSIDE_FLAG` / `HOLLOW_PREFIX`), `sbmig/loop/orchestrator.py` (`_check_hollow`, the success rule),
+`sbmig/report/result_line.py` (`hollow-reactor` attention code), `sbmig/report/markdown.py` (flag help for both flags),
+`sbmig/report/handover.py` (`HOLLOW_PREFIX` / `HOLLOW_FLAG`, the (-2) rung of `_from_here`), `sbmig/report/i18n.py` (two
+PATTERNS for the hollow line — with / without the unresolved parenthetical — and one for the soft line). Tests:
+`tests/analyze/test_hollow.py` (hollow WAR, healthy tree with ignored test roots, custom `../../DEV/s10/src` root counts
+as inside, unresolved `${DIR_…}` recorded, parent-chain property resolves a root, soft verdict, multi-module + pruned
+`target`, `module_roots`), `tests/loop/test_hollow_reactor.py` (real analyzer on a tmp tree through the fake pipeline: flag,
+first follow-up, journal, success False, exit 2, result line, Handover order; healthy; soft), `tests/report/test_result_line.py`.
+Fixture `fixtures/projects/hollow-reactor` (root WAR pom with `src/main/webapp/WEB-INF/web.xml` only, `DEV/s10/src` servlet,
+`DEV/s10/public_html` web root, `STATIC/css`, `DB/schema.sql`): builds, review ok, `hollow-reactor`, success false, exit 2.
+

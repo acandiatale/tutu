@@ -1,0 +1,18 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — v2.1z-c (2026-11-02): a hollow reactor
+# on the round 9c company layout (the local e2e config pins the pre-9c layout for the older fixtures, so this fixture
+# sets the company layout back and adds the role parents; local stand-ins: spring-boot-starter-parent 4.1.0).
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): replay/llm-001.json answers the structure review (replay_role structure_review).
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/hollow-reactor/replay"
+kb:
+  dir: out/e2e/kb-hollow-reactor

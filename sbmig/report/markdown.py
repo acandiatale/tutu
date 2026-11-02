@@ -94,6 +94,12 @@ FLAG_HELP = {
     "no-root-pom": "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are "
                    "not one application and not MSA services): the run stopped before any Maven call — add a root "
                    "pom.xml or run sbmig on each application's directory",
+    # v2.1z-c: 속 빈 리액터 — 모듈의 소스 루트에는 소스가 없고 트리의 다른 곳에 있다(이관 안 됨, 성공 아님)
+    "hollow-reactor": "the Maven reactor compiles no sources: the java / JSP files lie outside its modules' source and "
+                      "web roots and were not migrated (the as-is build only packaged files produced elsewhere) — the "
+                      "run is not a success; map the sources into the modules first (see the Handover's first line)",
+    "sources-outside-reactor": "more java files lie outside the modules' source roots than inside them: they are "
+                               "neither built nor migrated — check whether they belong to the application",
     # v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않는데 parent_manages_spring_boot 가 true
     "parent-chain-no-boot-bom": "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not "
                                 "import the Spring Boot BOM: the versions it does not manage were pinned from the "

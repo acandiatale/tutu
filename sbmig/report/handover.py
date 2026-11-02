@@ -86,6 +86,9 @@ TRIGGER_NOTE_PREFIX = "optional artifacts added for trigger dependencies:"
 BOOT_PIN_NOTE_PREFIX = "dependency versions pinned from the target Spring Boot BOM (not managed by the parent chain):"
 PARENT_NO_BOOT_BOM_PREFIX = "사내 부모 체인("
 PARENT_NO_BOOT_BOM_FLAG = "parent-chain-no-boot-bom"
+# v2.1z-c: 속 빈 리액터 — sbmig.analyze.hollow 의 HOLLOW_PREFIX / HOLLOW_FLAG 와 같은 문자열(보고서는 analyze 를 import 하지 않음)
+HOLLOW_PREFIX = "the Maven reactor compiles no sources:"
+HOLLOW_FLAG = "hollow-reactor"
 _TRIGGER_ADDED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) → \S+ \(for ([^()]*)\)")
 _TRIGGER_REPLACED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) removed from \S+ → ([^\s;:]+:[^\s;:]+)")
 
@@ -747,6 +750,11 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
+    # (-2) v2.1z-c: 속 빈 리액터 — 소스가 이관되지 않았다는 사실이 다른 무엇보다 먼저 / the sources were NOT migrated
+    if HOLLOW_FLAG in (report.flags or []):
+        first = next((m for m in report.manual_followups if m.startswith(HOLLOW_PREFIX)), None)
+        if first:
+            _dedupe_add(out, first)
     # v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음 — 모든 프로젝트에 걸리는 구조 문제라 맨 첫 줄
     # (-1) v2.1s: the in-house parent chain carries no Spring Boot BOM — a structural issue of every project: first
     if PARENT_NO_BOOT_BOM_FLAG in (report.flags or []):

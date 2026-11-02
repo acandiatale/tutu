@@ -25,9 +25,13 @@ from .test_orchestrator import make_orch
 
 UNKNOWN = "WebContent/WEB-INF/lib/acme-util-1.2.jar"
 KNOWN = "lib/commons-lang-2.6.jar"
+# the stub the fake synthesizer writes: like the real one it declares the Ant layout's source root and web root (v2.1z-c:
+# the hollow-reactor check reads them — a pom without them would make src/ look like sources outside the reactor)
 POM = ("<project xmlns=\"http://maven.apache.org/POM/4.0.0\"><modelVersion>4.0.0</modelVersion>"
        "<groupId>com.company.migrated</groupId><artifactId>legacy-web</artifactId><version>1.0.0-SNAPSHOT</version>"
-       "<packaging>war</packaging></project>\n")
+       "<packaging>war</packaging><build><sourceDirectory>src</sourceDirectory><plugins><plugin>"
+       "<artifactId>maven-war-plugin</artifactId><configuration><warSourceDirectory>WebContent</warSourceDirectory>"
+       "</configuration></plugin></plugins></build></project>\n")
 INFO_LINE = "접수: Ant build.xml → pom.xml 합성 (jar 2개: pom.properties 1 · 이름표 0 · 조회 0 · 미상 1)"
 
 

@@ -40,7 +40,8 @@ Codes, most important first:
     restructure-failed, llm-budget-exhausted, time-budget-exhausted, javax-api-on-classpath, tests-skipped,
     test-compile-skipped, tests-not-compiled, major-upgrade (v2.1d: 운영자 확인 필요),
     jar-coordinates-unknown (v2.1j: Ant 합성 pom 의 좌표 미상 jar),
-    parent-chain-no-boot-bom (v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음)      the flags of the same name
+    parent-chain-no-boot-bom (v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않음),
+    hollow-reactor (v2.1z-c: 리액터가 컴파일하는 소스가 없음 — 소스는 모듈 밖, 이관 안 됨)   the flags of the same name
     incomplete            exit 2 with none of the above
 
 
@@ -54,7 +55,8 @@ LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-
                       "jdk-not-21": "jdk"}
 ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
-                   "jar-coordinates-unknown", "parent-chain-no-boot-bom")
+                   "jar-coordinates-unknown", "parent-chain-no-boot-bom",
+                   "hollow-reactor")                 # v2.1z-c: the reactor compiles nothing — sources were not migrated
 INFRA_PREFIX = "infra:"
 FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
 FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`

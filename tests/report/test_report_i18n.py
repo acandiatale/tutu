@@ -278,6 +278,17 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     lines.append(compose_suggestion(BlockedItem(id="b", reason=BlockReason.NEEDS_OWNER, phase=Phase.VERIFY,
                                                 cluster_id="c")))
 
+    # v2.1z-c: the hollow-reactor first line (with / without unresolved ${…} directories) and the soft line
+    from sbmig.analyze.hollow import HollowResult, hollow_followup, outside_followup
+    hr = HollowResult(outside={"java": 120, "jsp": 35, "web": 25},
+                      outside_by_dir={"DEV": {"java": 120, "jsp": 35}, "STATIC": {"web": 25}}, war=True)
+    lines.append(hollow_followup(hr))
+    hr.unresolved = ["${DIR_xxxWEB}", "${DIR_xxxJAR}"]
+    lines.append(hollow_followup(hr))
+    lines.append(outside_followup(HollowResult(inside={"java": 1, "jsp": 0, "web": 0},
+                                               outside={"java": 3, "jsp": 0, "web": 0},
+                                               outside_by_dir={"old": {"java": 3}})))
+
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"

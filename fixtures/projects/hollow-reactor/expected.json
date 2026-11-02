@@ -1,0 +1,74 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "war",
+  "libraries": [
+    "javax-servlet",
+    "jsp"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": false,
+    "exit_code": 2,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "hollow-reactor"
+    ],
+    "forbidden_flags": [
+      "sources-outside-reactor",
+      "restructure-failed",
+      "no-root-pom",
+      "aborted"
+    ],
+    "journal_events": [
+      {
+        "event": "hollow_reactor",
+        "war": true
+      },
+      {
+        "event": "restructure",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-hollow-reactor"
+    },
+    "followups_contains": [
+      "regex:^the Maven reactor compiles no sources: 1 java, 1 jsp, 1 web files lie outside its modules \\(DEV: java 1, jsp 1; STATIC: web 1\\) and were NOT migrated — the as-is build only packaged files produced elsewhere; the sources must be mapped into the modules first \\(sbmig: tree profile, next increment\\)$"
+    ],
+    "post_checks": [
+      {
+        "file_exists": {
+          "path": "DEV/s10/src/com/example/hollow/HelloServlet.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "STATIC/css/app.css"
+        }
+      }
+    ]
+  }
+}

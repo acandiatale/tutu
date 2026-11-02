@@ -119,3 +119,11 @@ def test_no_fix_token_and_no_fix_mode_parameter():
     old = SimpleNamespace(**{k: getattr(r, k) for k in type(r).model_fields}, fix_mode="edits")
     assert report_result_line(old, 0) == base
     assert "fix_mode" not in inspect.signature(result_line).parameters
+
+
+def test_hollow_reactor_is_an_attention_code():
+    """v2.1z-c: a hollow reactor (sources outside the modules, nothing migrated) fails the run and is retyped as attn."""
+    r = _report(success=False, flags=["hollow-reactor", "tests-not-compiled"])
+    line = report_result_line(r, 2)
+    assert line.endswith("attn=tests-not-compiled,hollow-reactor") or "hollow-reactor" in line.split("attn=")[1]
+    assert flag_help("hollow-reactor") and "not a success" in flag_help("hollow-reactor")

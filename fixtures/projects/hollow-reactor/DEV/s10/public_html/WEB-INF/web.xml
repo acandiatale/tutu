@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- the IDE project's descriptor: no registrations here on purpose — a servlet mapped here would reach the generated
+     WebXmlRegistrations although its class is never compiled (the real company tree has that too; the tree-profile
+     increment decides which web.xml is the application's) -->
+<web-app xmlns="http://java.sun.com/xml/ns/javaee" version="2.5">
+    <display-name>hollow (IDE workspace)</display-name>
+    <welcome-file-list><welcome-file>index.jsp</welcome-file></welcome-file-list>
+</web-app>

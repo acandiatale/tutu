@@ -767,6 +767,7 @@ class Orchestrator:
                          "spring_boot": profile.spring_boot_version,
                          "properties_external": len(getattr(getattr(profile, "properties", None), "external", None)
                                                     or [])})
+        self._check_hollow(report, profile)
         report.advisories = self._evaluate_advisories(profile)
         self._timed("analyze", t)
         if profile.build_tool != "maven":
@@ -797,6 +798,38 @@ class Orchestrator:
         self._abort(report, why)
         self.ws.journal({"event": "no_root_pom", "reason": why})
         return False
+
+    def _check_hollow(self, report: RunReport, profile: ProjectProfile) -> None:
+        """v2.1z-c (2026-11-02): 속 빈 리액터 판정 — pom 들이 선언한 소스·웹 루트 안에는 소스가 없고 트리의 다른 곳에 있으면
+        플래그 ``hollow-reactor``(성공 아님, exit 2, 인수인계 첫 줄, 저널 ``hollow_reactor``); 안쪽보다 바깥에 java 가 더
+        많기만 하면 ``sources-outside-reactor``(알림만). 실행은 계속된다(빌드·검토는 그대로) — 회사 사례: ``APP/WEB/pom.xml``
+        이 ``DEV/`` 의 산출물을 포장만 해서 pom · web.xml 만 옮기고 "성공" 으로 끝났다.
+
+        v2.1z-c: hollow-reactor detection right after the profile (`sbmig.analyze.hollow`). `hollow` → flag
+        `hollow-reactor` (the run goes on but is not a success: exit 2, Handover first line, journal `hollow_reactor`);
+        `sources_outside` → flag `sources-outside-reactor` and a follow-up only. Never stops the run."""
+        try:
+            from sbmig.analyze.hollow import (HOLLOW_FLAG, OUTSIDE_FLAG, detect_hollow, hollow_followup,
+                                              outside_followup)
+            res = detect_hollow(self.ws, getattr(profile, "poms", None) or [])
+        except Exception as e:  # noqa: BLE001 - analysis must never stop the run
+            log.warning("hollow-reactor check skipped: %s: %s", type(e).__name__, e)
+            return
+        if res.hollow:
+            self._flag(HOLLOW_FLAG)
+            line = hollow_followup(res)
+            if line not in report.manual_followups:
+                report.manual_followups.insert(0, line)
+            log.warning("hollow reactor: %s outside the modules (%s)%s — the run will not count as a success",
+                        res.counts_text(), res.by_dir_text(), res.unresolved_text())
+            self.ws.journal({"event": "hollow_reactor", **res.as_journal()})
+        elif res.sources_outside:
+            self._flag(OUTSIDE_FLAG)
+            line = outside_followup(res)
+            if line not in report.manual_followups:
+                report.manual_followups.append(line)
+            log.info("sources outside the reactor: %s (%s)", res.counts_text(), res.by_dir_text())
+            self.ws.journal({"event": "sources_outside_reactor", **res.as_journal()})
 
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:
@@ -2599,8 +2632,10 @@ class Orchestrator:
         # 에서 svc-a 만 통과하고 svc-b 가 죽은 실행은 성공이 아니다
         # round 10 (invariant 1, A7): an aborted run is never a success, and every planned final build must have
         # run — an MSA run whose svc-a verify passed before svc-b's step crashed used to say BUILD SUCCESS
+        # v2.1z-c: 속 빈 리액터(소스가 모듈 밖에 있어 이관되지 않음)는 빌드가 통과해도 성공이 아니다
         report.success = bool(self._verify_results) and all(r.ok for r in self._verify_results) \
-            and "restructure-failed" not in report.flags and not _aborted(report.flags) and not self._verify_missing()
+            and "restructure-failed" not in report.flags and "hollow-reactor" not in report.flags \
+            and not _aborted(report.flags) and not self._verify_missing()
         # unresolved: what the as-is owner must look at
         unresolved: list[BuildError] = []
         for r in self._verify_results:

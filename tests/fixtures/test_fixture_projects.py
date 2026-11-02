@@ -41,7 +41,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "boot2-fix-failures", "ear-sibling-poms", "servlet-war-overlay", "spring5-security-batch", "ant-webapp",
              "sibling-aggregator-dup", "legacy-external-parent", "filtered-binary-resources",
              "spring5-legacy-startup",                   # v2.1x: the legacy Spring context at conversion time
-             "rootless-unlisted-module"]                 # 2026-11-02: a lone aggregator beside an unlisted, unlinked pom
+             "rootless-unlisted-module",                 # 2026-11-02: a lone aggregator beside an unlisted, unlinked pom
+             "hollow-reactor"]                          # v2.1z-c: the poms' roots hold no sources (DEV/ + STATIC/ do)
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
@@ -88,6 +89,7 @@ BUILD_MATRIX = [
     ("filtered-binary-resources", ".", "21", ""),     # v2.1m: filtered resources with a webfont + an unknown .dmdb binary
     ("spring5-legacy-startup", ".", "8", "ms949"),    # v2.1x: Spring 5 XML web app — contextConfigLocation, EUC-KR XML, JNDI, *.do, MS949 sources
     ("rootless-unlisted-module", "APP", "8", ""),      # 2026-11-02: sibling-aggregator-dup + an unlisted APP/TOOLS pom (left out)
+    ("hollow-reactor", ".", "8", ""),                  # v2.1z-c: a WAR pom with nothing to compile — the sources sit in DEV/
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -584,14 +586,14 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
-                                  "rootless-unlisted-module")}
+                                  "rootless-unlisted-module", "hollow-reactor")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
 COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
                  "servlet-war-overlay": "board", "ant-webapp": "ant-webapp",   # root artifactId (= `{name}`) when
                  "sibling-aggregator-dup": "dup", "legacy-external-parent": "extparent",      # it is not `shop`
-                 "filtered-binary-resources": "binres", "rootless-unlisted-module": "dup"}
+                 "filtered-binary-resources": "binres", "rootless-unlisted-module": "dup", "hollow-reactor": "hollow"}
 # v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
 SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
 LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB

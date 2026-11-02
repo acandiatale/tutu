@@ -310,6 +310,15 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "each application's directory":
         "프로젝트 루트에 pom.xml 이 없고 sbmig 가 만들 수도 없었다(최상위 pom 들이 한 애플리케이션도, MSA 서비스도 아님) — "
         "Maven 을 부르기 전에 실행을 멈췄다: 루트 pom.xml 을 추가하거나 애플리케이션 폴더마다 따로 sbmig 를 돌릴 것",
+    # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 플래그 설명(markdown.FLAG_HELP)
+    "the Maven reactor compiles no sources: the java / JSP files lie outside its modules' source and web roots and were "
+    "not migrated (the as-is build only packaged files produced elsewhere) — the run is not a success; map the sources "
+    "into the modules first (see the Handover's first line)":
+        "Maven 리액터가 컴파일하는 소스가 없다: java / JSP 파일이 모듈의 소스·웹 루트 밖에 있어 이관되지 않았다(as-is 빌드는 다른 곳에서 "
+        "만든 파일을 포장만 했다) — 이 실행은 성공이 아니다; 소스를 먼저 모듈에 매핑할 것(인수인계 첫 줄 참조)",
+    "more java files lie outside the modules' source roots than inside them: they are neither built nor migrated — "
+    "check whether they belong to the application":
+        "모듈의 소스 루트 안보다 밖에 java 파일이 더 많다: 빌드도 이관도 되지 않는다 — 애플리케이션의 일부인지 확인할 것",
     "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not import the Spring Boot "
     "BOM: the versions it does not manage were pinned from the target Boot BOM — import spring-boot-dependencies in "
     "base-parent (see the Handover's first line)":
@@ -454,6 +463,22 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # Handover data lines (English in report.json) → Korean, matched against the whole line. Unknown lines (manual
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
+    # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 (sbmig.analyze.hollow.hollow_followup / outside_followup)
+    ((r"^the Maven reactor compiles no sources: (?P<counts>.+?) lie outside its modules \((?P<dirs>.+?)\) and were NOT "
+      r"migrated — the as-is build only packaged files produced elsewhere \(unresolved directories: (?P<unres>.+?)\); "
+      r"the sources must be mapped into the modules first \(sbmig: tree profile, next increment\)$"),
+     (r"Maven 리액터가 컴파일하는 소스가 없다: 모듈 밖에 \g<counts>이(가) 있고(\g<dirs>) 이관되지 않았다 — as-is 빌드는 다른 곳에서 "
+      r"만든 파일을 포장만 했다(못 푼 디렉토리 식: \g<unres>); 소스를 먼저 모듈에 매핑해야 한다(sbmig: 트리 프로필, 다음 증분)")),
+    ((r"^the Maven reactor compiles no sources: (?P<counts>.+?) lie outside its modules \((?P<dirs>.+?)\) and were NOT "
+      r"migrated — the as-is build only packaged files produced elsewhere; "
+      r"the sources must be mapped into the modules first \(sbmig: tree profile, next increment\)$"),
+     (r"Maven 리액터가 컴파일하는 소스가 없다: 모듈 밖에 \g<counts>이(가) 있고(\g<dirs>) 이관되지 않았다 — as-is 빌드는 다른 곳에서 "
+      r"만든 파일을 포장만 했다; 소스를 먼저 모듈에 매핑해야 한다(sbmig: 트리 프로필, 다음 증분)")),
+    ((r"^sources outside the Maven reactor: (?P<counts>.+?) lie outside the modules' source roots \((?P<dirs>.+?)\) and "
+      r"are not built or migrated — check whether they belong to the application \(a stale copy, a tool, or sources the "
+      r"as-is build reached in another way\)$"),
+     (r"Maven 리액터 밖의 소스: 모듈의 소스 루트 밖에 \g<counts>이(가) 있고(\g<dirs>) 빌드도 이관도 되지 않는다 — 애플리케이션의 "
+      r"일부인지 확인할 것(오래된 복사본인지, 도구인지, as-is 빌드가 다른 방법으로 쓰던 소스인지)")),
     (r'^operator checks: (?P<n>\d+) major upgrade\(s\) — see "Operator checks" above$',
      r'운영자 확인 필요: 메이저 업그레이드 \g<n>건 — 위 "운영자 확인 필요" 참조'),
     (r"^(?P<n>\d+) cluster\(s\) blocked — see Blocked$", r"클러스터 \g<n>개 차단됨 — '차단됨' 참조"),
