@@ -526,6 +526,11 @@ class LoopConfig(BaseModel):
     engine: Literal["graph", "inline"] = "graph"   # graph: LangGraph StateGraph drives the phases (company
                                              # convention, sbmig.graph); inline: the original in-process loop
     oscillation_window: int = 4              # error-set history compared for A↔B toggling (≥ stall detection window)
+    # v2.1z-f (2026-11-02, 회사 실행: FilterConfig 케이스가 핑퐁 2번 만에 oscillation 차단): 같은 오류 집합 사이를 오가는
+    # 진동이 몇 번 되풀이되면 관련 케이스를 차단할지. 한도 15/20 과 어울리게 넉넉히 두고 줄여 간다(사용자 6). 창(window)은
+    # 비교 범위라 넓히면 더 빨리 잡힌다 — 느슨하게 하려면 이 값을 올릴 것.
+    # v2.1z-f: how many repeated A↔B toggles block the involved cases (was hard-coded 2); raise it to persist longer
+    oscillation_limit: int = 2
     # 차단 사유별로 LLM 스크립트 시도를 몇 번 허용할지(0 = 바로 차단). 사내 부모를 못 찾는 것은 settings /
     # Nexus 문제라 코드로 못 고치므로 0 이다. 저장된 스크립트는 이 값과 상관없이 재사용한다.
     # how many LLM attempts a cluster of this BlockReason may get before it is blocked (0 = block immediately).

@@ -3019,6 +3019,10 @@ deleted, `config/default.yml` mirrored), then integrated.
   successful build (a success is not parsed, so nothing lingers into a fleet's next project) and `tests/conftest.py` resets it around
   every test. New tests `tests/build/test_reactor_module_masking.py` (9).
 - **Verification:** offline suite and real-Maven e2e — numbers in `docs/PLAN.md` (v2.1z status table).
+- **v2.1z-f `loop.oscillation_limit`** (2026-11-02, company run: a `FilterConfig` case was BLOCKED `oscillation` after two A↔B toggles
+  although the ladder allows 20 asks): the number of repeated toggles that blocks the involved cases is a config key (default 2, the old
+  hard-coded value); `loop.oscillation_window` stays the comparison range (a wider window detects toggles sooner — it does not loosen
+  the guard). The blocked reason text names both keys.
 
 ### Review follow-ups (v2.1z, 2026-11-02, same day — two read-only opus reviewers over `7674d61`, lenses "state / records /
 compatibility" and "surviving loop logic / masking")

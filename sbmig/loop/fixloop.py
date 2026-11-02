@@ -1196,7 +1196,7 @@ class BuildFixLoop:
                     log.info("build %d: %d error(s) in %d case(s) — max fix rounds (%d) used up; the loop ends here "
                              "and the final build carries the rest (reported as unresolved)", build_no,
                              build.error_count, len(clusters), max_iterations)
-                if oscillating and oscillations >= 2:
+                if oscillating and oscillations >= max(1, int(getattr(self.cfg.loop, "oscillation_limit", 2) or 2)):
                     self._block_oscillation(pr, phase, build_no, clusters)
                 if self._only_blocked(pr, clusters, build_no):
                     break
@@ -1481,7 +1481,8 @@ class BuildFixLoop:
         """진동이 되풀이됨: 이 단계가 실제로 손댄 클러스터만 OSCILLATION 으로 차단한다(사람이 봐야 함)."""
         # round 10: the clusters this phase actually worked on — not every cluster that shares an L1 signature with one
         involved = [c for c in clusters if _same_cluster(c, pr.attempts, self.blocked.canonical_file)] or clusters
-        why = "fixes keep toggling between the same error sets (A↔B↔A) within loop.oscillation_window"
+        why = (f"fixes kept toggling between the same error sets (A↔B↔A) {int(getattr(self.cfg.loop, 'oscillation_limit', 2) or 2)} "
+               "time(s) within loop.oscillation_window (loop.oscillation_limit)")
         pr.notes.append(f"build {iteration}: oscillation repeated → blocking {len(involved)} cluster(s)")
         self._block_remaining(pr, phase, iteration, involved, BlockReason.OSCILLATION, why)
 

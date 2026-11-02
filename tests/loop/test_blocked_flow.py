@@ -518,3 +518,29 @@ def test_msa_targets_build_from_the_aggregator_with_pl_am(cfg, ws):
     assert [c["extra_args"] for c in build.calls if c["label"].startswith("verify")] == [
         ["-pl", "svc-a", "-am"], ["-pl", "svc-b", "-am"]]
     assert [r["module"] for r in rw.runs] == ["svc-a", "svc-b"]         # OpenRewrite stays per target
+
+
+def test_oscillation_limit_is_configurable(cfg, ws, profile):
+    """v2.1z-f: `loop.oscillation_limit` (default 2) — a higher value lets the ladder keep trying through more A↔B
+    toggles before the involved cases are BLOCKED oscillation; a value above the rounds never blocks for it."""
+    def build_fn(w, call):
+        msg = "cannot find symbol A" if "A" in w.read(FOO) else "cannot find symbol B"
+        return bad_build(compile_error(FOO, msg, sig=f"sig-{msg[-1]}"))
+
+    n = {"i": 0}
+
+    def fix(w, c, ctx):
+        n["i"] += 1
+        return write_fix(FOO, f"class Foo {{ {'B' if 'A' in w.read(FOO) else 'A'} {n['i']} }}\n")
+
+    ws.write(FOO, "class Foo { A }\n")
+    ws.commit("A")
+    cfg.loop.oscillation_limit = 4
+    cfg.script.max_llm_tries_per_case = 20
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(fn=fix))
+    pr = loop.run(Phase.VERIFY, "package", 10)
+    assert pr.iterations == 6 and n["i"] == 5                      # toggles at builds 3..6 → the 4th blocks
+    assert [b.reason for b in pr.blocked] == [BlockReason.OSCILLATION]
+    assert sum(e["event"] == "oscillation" for e in journal_events(ws)) == 4
+    assert any("4 time(s)" in note and "loop.oscillation_limit" in note for b in pr.blocked for note in b.notes) or \
+        any("loop.oscillation_limit" in (b.suggestion or "") for b in pr.blocked)

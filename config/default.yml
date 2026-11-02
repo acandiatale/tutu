@@ -215,7 +215,8 @@ loop:
   revert_on_regression: true
   regression_ratio: 1.5
   always_final_verify: true
-  oscillation_window: 4
+  oscillation_window: 4            # error-set history compared for A↔B toggling (a wider window catches toggles sooner)
+  oscillation_limit: 2             # v2.1z-f: repeated toggles before the involved cases are BLOCKED oscillation (raise to persist)
   blocked_policy:                # LLM script attempts allowed before a cluster is BLOCKED and reported (0 = never ask the LLM)
     reactor_duplicate: 0           # v2.1k: a module listed twice in the reactor is handed over, never asked of the LLM
     file_lock: 0                   # v2.1r: target/ locked by another process (Windows) — an environment error, never the LLM
