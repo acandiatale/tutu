@@ -3509,6 +3509,14 @@ class BuildFixLoop:
             self._javax_owner[c.id] = owner
             deps = self._declared_dependencies()
             g = self._owner_dependency(owner, deps)
+            # v2.1z-g: 첫 소유자(중립 타입일 수 있음)가 안 맞으면 순위대로 다음 소유 클래스로 매핑을 시도한다
+            for other in [o for o in (getattr(cand, "owner_classes", None) or []) if o and o != owner]:
+                if g is not None:
+                    break
+                g = self._owner_dependency(other, deps)
+                if g is not None:
+                    owner = other
+                    self._javax_owner[c.id] = owner
             if g is not None:
                 out.append(g)
                 self.ws.journal({"event": "library_mapped", "case": c.case_id or c.id, "owner_class": owner,

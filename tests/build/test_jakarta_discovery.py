@@ -323,3 +323,22 @@ def test_the_switch_off_is_the_v21d_behaviour(tmp_path):
     assert d.builds == [] and d.best() is None and d.hint_lines() == []
     assert d.searched == ["discovery off (libraries.discover_jakarta_builds: false)"] and d.probed == []
     assert fetch.urls == [] and fetch.jar_urls == []                        # no request at all
+
+
+def test_artifact_id_naming_jakarta_verifies_the_build_by_itself():
+    """v2.1z-g (company Nexus: `dext5-jakarta:21.1` beside `dext5:1.0.1`): the vendor's own `-jakarta` artifactId is the
+    verification — no pom declaration, no jar scan needed (the pom is silent and the jar may be large)."""
+    from types import SimpleNamespace
+
+    from sbmig.build.jakarta_discovery import _Verifier, artifact_names_jakarta
+
+    assert artifact_names_jakarta("dext5-jakarta") and artifact_names_jakarta("grid_jakarta") and artifact_names_jakarta("x.jakarta")
+    assert not artifact_names_jakarta("dext5") and not artifact_names_jakarta("jakartax") and not artifact_names_jakarta("")
+
+    class NoLookup:                      # must never be consulted for a name-verified artifact
+        def pom_text(self, *a, **k):
+            raise AssertionError("pom_text called")
+
+    cfg = SimpleNamespace(libraries=SimpleNamespace(max_jar_scans=2, max_jar_scan_mb=20))
+    ok, how = _Verifier(NoLookup(), cfg).verify("com.example.up", "dext5-jakarta", "21.1", None)
+    assert ok and how == "artifactId names jakarta"

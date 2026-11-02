@@ -3019,6 +3019,12 @@ deleted, `config/default.yml` mirrored), then integrated.
   successful build (a success is not parsed, so nothing lingers into a fleet's next project) and `tests/conftest.py` resets it around
   every test. New tests `tests/build/test_reactor_module_masking.py` (9).
 - **Verification:** offline suite and real-Maven e2e — numbers in `docs/PLAN.md` (v2.1z status table).
+- **v2.1z-g ranked javax owners** (2026-11-02, the first in-house diagnosis card: the blocked suggestion named `org.slf4j.Logger`
+  while the javax-requiring vendor class — the only one worth mapping to a dependency — was another hit of the same cluster):
+  `_classify_javax` ranks the cluster's hits — the owner whose API REQUIRES javax first, neutral types a javax value merely passes
+  through (`java.`, `jakarta.`, `org.slf4j.`, `ch.qos.`, `org.apache.logging.`, `org.springframework.`, `lombok.`, …) last —, sets
+  `owner_class` to the first and carries all of them in the new `BlockedCandidate.owner_classes`; the fix loop's dependency mapping
+  (`_javax_libraries`) tries them in that order, so the discovery / Handover name the real library.
 - **v2.1z-f `loop.oscillation_limit`** (2026-11-02, company run: a `FilterConfig` case was BLOCKED `oscillation` after two A↔B toggles
   although the ladder allows 20 asks): the number of repeated toggles that blocks the involved cases is a config key (default 2, the old
   hard-coded value); `loop.oscillation_window` stays the comparison range (a wider window detects toggles sooner — it does not loosen

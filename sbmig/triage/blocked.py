@@ -100,6 +100,12 @@ class BlockedCandidate:
     required_type: Optional[str] = None
     found_type: Optional[str] = None
     owner_class: Optional[str] = None
+    # v2.1z-g (2026-11-02, 회사 실행 카드: 차단 안내가 `org.slf4j.Logger` 를 지목하고 진짜 javax 라이브러리는 못 찾음): 클러스터의
+    # javax 판정들이 가리키는 소유 클래스 전부, 순위대로 — javax 를 '요구하는' 쪽이 먼저, 로깅·JDK·Spring 같은 중립 타입은 뒤.
+    # 의존성 매핑(fixloop._javax_libraries)은 첫 번째가 안 맞으면 다음 것을 쓴다.
+    # v2.1z-g: every owner the cluster's javax hits name, ranked (javax-requiring first, neutral logging / JDK / Spring
+    # types last); `owner_class` is the first one, the dependency mapping falls back to the others
+    owner_classes: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     errors: list[BuildError] = field(default_factory=list)     # the cluster errors this classification covers
     repositories: list[str] = field(default_factory=list)       # X3/X4: repository URLs named in the error
@@ -411,6 +417,12 @@ def _javax_hit(e: BuildError) -> Optional[_JavaxHit]:
     return None
 
 
+# javax 값이 '지나가기만' 하는 중립 소유자(로깅·JDK·jakarta 자체·Spring·Lombok): javax 를 요구하는 라이브러리가 아니므로 차단
+# 안내·의존성 매핑의 1순위가 되면 안 된다 / neutral owners a javax value merely flows through — never the primary owner
+_NEUTRAL_OWNER_PREFIXES = ("java.", "javax.", "jakarta.", "org.slf4j.", "ch.qos.", "org.apache.logging.",
+                           "org.apache.commons.logging.", "org.springframework.", "lombok.", "kotlin.")
+
+
 def _classify_javax(cluster: ErrorCluster, profile, ws) -> Optional[BlockedCandidate]:
     """X1 판정: 후보 중 프로젝트 소유 API 이거나 프로젝트가 아직 그 javax 패키지를 import 하는 것은 뺀다
     (프로젝트 안에서 고칠 수 있음). 남은 것이 있으면 EXTERNAL_JAVAX_API."""
@@ -433,11 +445,22 @@ def _classify_javax(cluster: ErrorCluster, profile, ws) -> Optional[BlockedCandi
         hits.append((e, h))
     if not hits:
         return None
-    first = hits[0][1]
-    owner = next((h.owner for _, h in hits if h.owner), None)
+    # v2.1z-g: 소유 클래스 순위 — javax 를 요구하는 API(required 가 javax.*)가 먼저, `org.slf4j.Logger` 처럼 javax 값이 '지나가기만'
+    # 하는 중립 타입(로깅·JDK·jakarta·Spring)은 뒤로. 예전에는 첫 오류의 소유자가 그대로 차단 안내와 의존성 매핑에 쓰여 진짜
+    # 라이브러리(DEXT5Handler 류)가 가려졌다.
+    # the owner that REQUIRES javax ranks first; a neutral type the javax value merely passes through ranks last
+    def rank(item: tuple[BuildError, _JavaxHit]) -> tuple[int, int]:
+        h = item[1]
+        req_javax = 0 if (h.required or "").split(".", 1)[0] == "javax" else 1
+        neutral = 1 if h.owner and h.owner.startswith(_NEUTRAL_OWNER_PREFIXES) else 0
+        return (req_javax + neutral, neutral)
+
+    ranked = sorted(hits, key=rank)
+    first = ranked[0][1]
+    owners = list(dict.fromkeys(h.owner for _, h in ranked if h.owner))
     return BlockedCandidate(reason=BlockReason.EXTERNAL_JAVAX_API, required_type=first.required,
-                            found_type=first.found, owner_class=owner,
-                            evidence=[h.evidence for _, h in hits][:5], errors=[e for e, _ in hits])
+                            found_type=first.found, owner_class=owners[0] if owners else None, owner_classes=owners,
+                            evidence=[h.evidence for _, h in ranked][:5], errors=[e for e, _ in hits])
 
 
 # ---------------------------------------------------------------------------------------------------------------------

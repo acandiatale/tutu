@@ -241,6 +241,14 @@ def sibling_names(group: str, artifact: str, limit: int = DEFAULT_MAX_PROBES) ->
     return out[: max(0, int(limit))]
 
 
+def artifact_names_jakarta(artifact_id: str) -> bool:
+    """artifactId 의 토큰에 ``jakarta`` 가 있는가(``dext5-jakarta``, ``grid_jakarta``, ``x.jakarta``) — 공급사가 이름으로 표시한
+    jakarta 빌드라 그 자체로 확인으로 본다(groupId 는 보지 않는다).
+
+    True when a token of the artifactId is `jakarta` (`dext5-jakarta`): the vendor's own label verifies the build."""
+    return any(t.lower() == "jakarta" for t in re.split(r"[-_.]", artifact_id or "") if t)
+
+
 def qualifier_is_jakarta(version: str) -> bool:
     """버전 한정어에 ``jakarta`` 토큰이 있는가(``2.0.5-jakarta``, ``3.1.jakarta``) — 그 자체로 jakarta 빌드의 확인.
 
@@ -323,6 +331,10 @@ class _Verifier:
             return True, "jakarta classifier"
         if qualifier_is_jakarta(v):
             return True, "version qualifier"
+        if artifact_names_jakarta(a):
+            # v2.1z-g (회사 Nexus: `dext5-jakarta:21.1` 처럼 artifactId 에 붙은 jakarta — 공급사가 이름으로 표시한 빌드; pom 은
+            # 침묵하고 jar 는 클 수 있다) / the vendor labelled the artifact itself: that alone verifies it
+            return True, "artifactId names jakarta"
         pj = pom_hint
         if pj is None:
             try:

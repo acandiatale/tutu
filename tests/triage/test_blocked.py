@@ -331,3 +331,33 @@ def test_registry_llm_unavailable_and_garbage(cfg, profile):
     n = cfg.script.max_llm_tries_per_case
     d = t3.decide(plain, None, ctx(previous_attempts=garbage * n), profile)
     assert d.kind == DecisionKind.BLOCKED and "repeated_failure" in d.rationale and "3 LLM tries" in d.rationale
+
+
+# --------------------------------------------------------------------------- v2.1z-g: ranked owners (first diagnosis card)
+LOGGER_APPLIED = ("[ERROR] /work/proj/src/main/java/com/acme/web/Up.java:[30,12] method info in interface org.slf4j.Logger "
+                  "cannot be applied to given types;\n  required: javax.servlet.http.HttpServletRequest\n"
+                  "  found:    jakarta.servlet.http.HttpServletRequest\n  reason: argument mismatch\n")
+VENDOR_APPLIED = ("[ERROR] /work/proj/src/main/java/com/acme/web/Up.java:[31,12] method process in class com.vendor.up.UpHandler "
+                  "cannot be applied to given types;\n  required: javax.servlet.http.HttpServletRequest,"
+                  "javax.servlet.http.HttpServletResponse\n  found:    jakarta.servlet.http.HttpServletRequest,"
+                  "jakarta.servlet.http.HttpServletResponse\n  reason: argument mismatch\n")
+
+
+def _cluster_of(*blocks: str):
+    from sbmig.core.models import ErrorCluster
+    errs = parse(*blocks)
+    return ErrorCluster(id="case:x", kind=errs[0].kind, file=None, module=None, errors=errs,
+                        signatures=[e.signature for e in errs], priority=1, case_id="x")
+
+
+def test_x1_owner_ranking_prefers_the_javax_requiring_library_over_a_neutral_type(proj):
+    """The company card: the suggestion named `org.slf4j.Logger` (the first hit) although the vendor handler that requires
+    javax was another hit of the same cluster — the vendor class must come first, every owner stays available."""
+    b = classify_blocked(_cluster_of(LOGGER_APPLIED, VENDOR_APPLIED), make_profile(), None, ws=proj)
+    assert b is not None and b.reason == BlockReason.EXTERNAL_JAVAX_API
+    assert b.owner_class == "com.vendor.up.UpHandler"
+    assert b.owner_classes == ["com.vendor.up.UpHandler", "org.slf4j.Logger"]
+    assert b.detail().startswith("com.vendor.up.UpHandler requires javax.servlet.http.HttpServletRequest")
+    # a single non-neutral owner is unchanged; a lone neutral owner is still reported (nothing better to say)
+    assert classify_blocked(_cluster_of(VENDOR_APPLIED), make_profile(), None, ws=proj).owner_classes == ["com.vendor.up.UpHandler"]
+    assert classify_blocked(_cluster_of(LOGGER_APPLIED), make_profile(), None, ws=proj).owner_class == "org.slf4j.Logger"
