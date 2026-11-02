@@ -236,3 +236,22 @@ def test_report_json_carries_the_entries(tmp_path: Path):
     assert [e["id"] for e in data["error_entries"]][:3] == ["f1", "b1", "c1"]
     assert data["error_entries"][2]["tries"][0]["source"] == "llm-new"
     assert "| **Error list** |" in Path(paths["report_md"]).read_text(encoding="utf-8")
+
+
+# ------------------------------------------------------------------ llm-edit tries (kept from the v2.1i tests)
+def test_llm_edit_tries_render_as_plain_tries():
+    """An `llm-edit` try (in script mode the LLM's edits are applied when its answer has no script) reads like any
+    other try — `<n> llm-edit edits <result>` — in the error list, Fixes by case and the console; nothing in the
+    report keys off a run fix mode any more (v2.1z: no `fix try` column, no `edits:<case>#<n>`, no `fix mode` line)."""
+    t = FixTry(n=3, round=2, source="llm-edit", result="partial", applied="edits")
+    assert try_text(t) == "3 llm-edit edits partial"
+    es = [ErrorEntry(id="e9", case_id="8bb4fd4a4a", file="src/Foo.java", line=1, message="cannot find symbol",
+                     seen="build", status="open", tries=[t])]
+    md = render_markdown(report_with(es))
+    assert "3 llm-edit edits partial" in md
+    assert "fix try" not in md and "edits:" not in md and "fix mode" not in md and " fix=" not in md
+    assert "| case | errors | cause | solution | changes (files, +/−) | edits | script |" in md
+    console = Console(record=True, width=220)
+    console_summary(report_with(es), console)
+    out = console.export_text()
+    assert "3 llm-edit edits partial" in out and "fix mode" not in out and "fix try" not in out

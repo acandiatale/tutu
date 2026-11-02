@@ -1,5 +1,5 @@
 """v2 / v2.1 script fix loop (docs/v2/PLAN-v2.1.md §3.1): cases across files, the ladder stored script → augment →
-new → BLOCKED (1 stored + `script.max_augments_per_case` LLM tries), scripts stored before they run and credited after
+new → BLOCKED (1 stored + `script.max_llm_tries_per_case` LLM tries), scripts stored before they run and credited after
 scoring, rollback before the next try, no partial application of a failed script. The answers with edits and the
 error list: test_v21_loop.py."""
 from __future__ import annotations
@@ -100,7 +100,8 @@ def test_targeted_loop_scopes_the_case_id(cfg, ws):
 
 # ------------------------------------------------------------------------------------------ the ladder
 def test_ladder_new_then_augment_then_blocked_repeated_failure(cfg, ws):
-    assert cfg.script.max_augments_per_case == 3                   # 3 LLM tries per case and run
+    assert (cfg.script.max_augments_per_case, cfg.script.max_llm_tries_per_case) == (15, 20)   # v2.1z defaults
+    cfg.script.max_llm_tries_per_case = 3                          # 3 LLM tries per case and run
     kb = FakeKB()
     n = {"i": 0}
 
@@ -126,7 +127,7 @@ def test_ladder_new_then_augment_then_blocked_repeated_failure(cfg, ws):
     assert not any(n.startswith("rolled back") for n in atts[2].notes)
     assert ws.read("notes.txt") == "try 3\n"
     [blk] = pr.blocked
-    assert blk.reason == BlockReason.REPEATED_FAILURE and "max_augments_per_case" in " ".join(blk.notes)
+    assert blk.reason == BlockReason.REPEATED_FAILURE and "max_llm_tries_per_case 3" in " ".join(blk.notes)
     assert [(sc.version, kw["source"]) for _c, sc, kw in kb.cases.added] == [
         (1, "llm-new"), (2, "llm-augment"), (3, "llm-augment")]
     assert kb.cases.credits == [(CASE, 1, "no_change", "demo"), (CASE, 2, "no_change", "demo"),
@@ -226,7 +227,7 @@ def test_partial_attempt_is_rolled_back_and_its_errors_come_back(cfg, ws):
 def test_rolled_back_errors_are_baseline_not_regressions(cfg, ws):
     """Partial v1, then an augment that fixes nothing in Foo / Bar but touches Foo: the error brought back by the
     rollback is part of the baseline, so the augment is no_change — not regressed by 'new errors in a touched file'."""
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_llm_tries_per_case = 2
     n = {"i": 0}
 
     def fn(w, c, ctx):
@@ -261,7 +262,7 @@ def test_improved_attempt_is_kept_when_the_case_shows_up_again(cfg, ws):
 
 # ------------------------------------------------------------------------------------------ failed runs
 def test_rejected_error_and_timeout_apply_nothing_and_leave_a_clean_tree(cfg, ws):
-    cfg.script.max_augments_per_case = 4
+    cfg.script.max_llm_tries_per_case = 4
     answers = [script("pass  # reject"),                                         # static check refuses it
                script(f"p.write({FOO!r}, 'half')\nraise KeyError('clientIp')"),    # raises after a write
                script(f"p.write({FOO!r}, 'half')  # timeout"),                     # killed after a write
@@ -288,7 +289,7 @@ def test_rejected_error_and_timeout_apply_nothing_and_leave_a_clean_tree(cfg, ws
 
 
 def test_ok_script_that_changes_nothing_is_apply_failed(cfg, ws):
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 1
     fixer = FakeFixer(scripts=[script("p.log('looked, nothing to do')")])
     pr = make_loop(cfg, ws, broken_build(FOO), fixer).run(Phase.VERIFY, "package", 3)
     [a] = pr.attempts
@@ -298,7 +299,7 @@ def test_ok_script_that_changes_nothing_is_apply_failed(cfg, ws):
 
 
 def test_identical_augment_is_not_run_again(cfg, ws):
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_llm_tries_per_case = 2
     same = write_script({"n.txt": "1\n"})
     fixer = FakeFixer(scripts=[same, same.model_copy()])
     runner = FakeScriptRunner()
@@ -382,7 +383,7 @@ def test_transport_failures_cool_down_then_block(cfg, ws, no_llm_cooldown_sleep)
 
 
 def test_escalation_model_from_the_second_augment(cfg, ws):
-    cfg.script.max_augments_per_case = 3
+    cfg.script.max_llm_tries_per_case = 3
     n = {"i": 0}
 
     def fn(w, c, ctx):

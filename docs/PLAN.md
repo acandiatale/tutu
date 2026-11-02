@@ -659,3 +659,31 @@ schema, the orchestrator's unsupported-issue note and the two new pom-verify row
 blocked-scenario report of `tests/fixtures/test_e2e_script.py` aligned with the declined flow). Known limits: no fixture calls a removed
 Servlet 6 API or native Hibernate (the two new recipe sets are covered by unit tests only); the e2e corpus still lacks Sitemesh / Tiles and
 a `WebApplicationInitializer` fixture beyond the sentences `spring5-legacy-startup` asserts.
+
+## Status — 2026-11-02, v2.1z (the v2.1i switches removed, generous ladder caps, reactor artifactIds masked in case keys)
+
+User (2026-11-02): the token-comparison switches go (`fix.mode: edits`, `--no-kb`); the ladder caps are set generously and lowered
+later ("여유롭게 잡고 진행하다가 점차 줄여가는 방식"); a case key must not carry a project's module name. Four parallel agents on disjoint
+directories (A ladder, B switches, C docs, D case keys); the PM integrates. Contract + "As built": `docs/INTERFACES.md` "v2.1z".
+
+| Increment | Deliverable | Where | Status |
+|---|---|---|---|
+| Switches removed | `fix.mode` / `fix.edits_max_asks_per_case` deleted (`fix:` keeps `plugin` / `plugin_options`), `FixContext.fix_mode` / `RunReport.fix_mode` deleted, edits-mode ladder (`plan_edits_step`, `edits_llm_limit`, `edits:<case>#<n>` labels) gone; `migrate(kb=False)` and `NullKnowledgeBase` stay, the script ladder's `llm-edit` (answer without a script) stays | `sbmig/core/`, `sbmig/triage/`, `sbmig/loop/fixloop.py`, `sbmig/fix/`, `sbmig/report/` | done |
+| Switches removed (operators) | `sbmig run --fix-mode` / `--no-kb`, `sbmig fleet run --fix-mode` / `--no-kb`, `fleet-config.json` `overrides.fix.mode` / `no_kb`, the fleet `settings:` note / summary header, web `POST /api/runs?fix_mode=&no_kb=` + the two checkboxes + the run-row fields, the report's `fix mode` line, ` fix=<mode>` in `SBMIG-RESULT` | `sbmig/cli.py`, `sbmig/fleet/`, `sbmig/web/`, `sbmig/report/result_line.py` | done |
+| Ladder caps | `script.max_augments_per_case` 3 → **15** and augment steps only; new `script.max_llm_tries_per_case` **20** (new + augment, then BLOCKED `repeated_failure`); used-up augments → a fresh `new`; both plain caps (0 = never); `ScriptStep.augment_limit`; log lines `(3/20, 보강 2/15, v2 기준)` / `보강 한도(15) 소진 → … (17/20)` / `한도 도달 (저장본 1 + LLM 20회)` | `sbmig/core/config.py`, `config/default.yml`, `sbmig/triage/{scripts,decide}.py`, `sbmig/loop/fixloop.py` | done |
+| Reactor masking | every reactor artifactId of the log (`< g:a >` headers, `@ <artifactId>` mojo markers, `on project <a>`) masked as `<module>` in L1 / L2 (`set_reactor_modules`, replaced per parse; ≥ 3 chars, stoplist of ordinary words, longest first); `enforcer\|requirejavaversion: pricing-core must be built with` → `… <module> must be built with` | `sbmig/build/signatures.py`, `sbmig/build/log_parser.py` | done |
+| Docs | INTERFACES "v2.1z" (+ "removed in v2.1z" note on v2.1i, v2 ladder rows annotated), this table, CLAUDE.md ladder / follow-ups, README, CASE-AND-STATE-KO §A.4 / A.8 / A.9 / A.11 / A.12 / A.14 / B, KB-AND-FLOW §2 (KB matching findings) / §5 / §6, RUNBOOK §0.5, FLEET, PLAN-v2.1 limits row; handbook / design README minimal reference fixes only (xlsx / pptx not regenerated) | `docs/**`, `CLAUDE.md`, `README.md` | done (agent C) |
+| Verification | offline suite + real-Maven e2e | `scripts/e2e.sh`, `out/e2e/summary.md` | offline **2,729 passed**, 47 deselected (the v2.1i tests are gone; 2,786 before); e2e **37/37 PASS** (34 build, 3 intended BLOCKED: boot2-javax-lib, missing-artifact, legacy-ibatis) — the only expectation that moved: `enforcer-java8-werror`'s replay / `expected.json` re-keyed from case `630b997bc5` to `8b30df5c0c` (`pricing-core` → `<module>`), exactly the id change the masking contract predicts |
+
+Open items (the PM's KB-matching review, 2026-11-02 — proposed, not built):
+(a) **Rule changes orphan stored cases.** The case id is a hash of the L2 string, so every change of `sbmig/build/signatures.py` /
+`sbmig/triage/cluster.py` (6 commits since `company-v1`, last 2026-10-27; v2.1z is the 7th) orphans the stored cases of the old rule;
+`sbmig kb reindex` only recounts the stored `l2` and never re-derives it. Proposed: `sbmig kb reindex --resign` — re-derive the L2 from
+each record's stored `raw`, move the case folder to the new id, keep an alias of the old id.
+(b) **The opposite risk — one key, different problems.** `compile|cannot_find_symbol|<simple name>` merges different problems that share a
+common method name (`save`, `keySet`, `findAll` seen in the e2e KB). Changing that key needs (a) first, or every such case is orphaned.
+(c) **Verified fine.** The id formula is identical in `sbmig.errors.common` / `sbmig.triage.cluster` / the store; coarse keys are refined
+once per build (`refine_build`) before the error list, the clusters, the scoring and the blocked registry; e2e evidence: 59 case
+folders, 455 KB entries, 450 run reports, zero id inconsistencies. javac messages stay English on Korean Windows (OpenJDK localises
+javac only for ja / zh); OS-text differences (Windows `\` paths masked from one backslash, posix from two) only matter when a KB from
+macOS is merged into the company's.

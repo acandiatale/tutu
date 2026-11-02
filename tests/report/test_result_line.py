@@ -104,3 +104,18 @@ def test_flag_help_for_infra_flags():
     assert "infrastructure" in flag_help("infra:llm") and "infrastructure" in flag_help("infra:repository")
     assert "JDK 21" in flag_help("jdk-not-21") and "llm-probe" in flag_help("llm-config-error")
     assert "인프라" in flag_help("infra:disk", "ko")
+
+
+def test_no_fix_token_and_no_fix_mode_parameter():
+    """v2.1z: the v2.1i ` fix=<mode>` token is gone — an object that still carries a `fix_mode` attribute (a
+    duck-typed old report) gives the default line, and `result_line` has no `fix_mode` parameter."""
+    import inspect
+    from types import SimpleNamespace
+
+    base = report_result_line(_report(llm=3, flags=["tests-not-compiled"]), 0)
+    assert base == ("SBMIG-RESULT run=run-1 exit=0 build=ok unresolved=0 blocked=0 open=0 resolved=0 llm=3 "
+                    "attn=tests-not-compiled")
+    r = _report(llm=3, flags=["tests-not-compiled"])
+    old = SimpleNamespace(**{k: getattr(r, k) for k in type(r).model_fields}, fix_mode="edits")
+    assert report_result_line(old, 0) == base
+    assert "fix_mode" not in inspect.signature(result_line).parameters

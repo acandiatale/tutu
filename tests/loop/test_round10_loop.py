@@ -109,6 +109,7 @@ def test_non_transport_exception_from_the_fixer_is_a_failed_attempt(cfg, ws, pro
         raise PermissionError("[WinError 32] another process uses C:\\sbmig\\config\\settings.xml")
 
     cfg.llm.cooldown_seconds = 0
+    cfg.script.max_llm_tries_per_case = 3              # v2.1z: the old per-case total, inside the 8 rounds
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=files_build), fixer=FakeFixer(fn=fix))
     pr = loop.run(Phase.VERIFY, "package", 8)          # no script ever → `new` again, then repeated_failure
     assert loop.llm_unavailable is None and "llm-unavailable" not in loop.flags

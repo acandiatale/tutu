@@ -1227,7 +1227,7 @@ that step 1 proved wrong are corrected in place; what it added is under "As buil
 | `script.max_code_chars` / `script.log_lines` | 30000 / 200 | |
 | `script.max_files_changed_warn` | 40 | a run changing more files gets a warning note |
 | `script.reuse` / `script.reuse_versions` | true / 1 | stored versions tried before the LLM is asked |
-| `script.max_augments_per_case` | 3 | LLM extensions per case and run, then BLOCKED (repeated_failure) |
+| `script.max_augments_per_case` | 3 (v2.1z: **15**, augment steps only) | LLM extensions per case and run, then BLOCKED (repeated_failure) — v2.1z: the BLOCKED cap is `script.max_llm_tries_per_case` (20, new + augment), see "v2.1z" |
 | `review.enabled` / `fix_critical` / `record` | true / true / true | structure review, its script, `<kb>/reviews.jsonl` |
 | `review.max_pom_chars` / `max_poms` | 60000 / 40 | prompt size |
 
@@ -1251,6 +1251,8 @@ advisory recipes; `plan.parent_phase` is ignored.
   case (code, result, remaining / introduced errors) or else `kb.scripts.latest(case_id)`; ask `propose_script(mode
   augment)`, `add(parent=base.version)`, run; at most `script.max_augments_per_case`; (3) **new** — nothing stored and
   nothing tried: `propose_script(mode new)`, `add(parent=None)`, run; (4) limits reached → BLOCKED repeated_failure.
+  (v2.1z: augments ≤ `script.max_augments_per_case` 15, then a fresh `new`; all LLM asks ≤ `script.max_llm_tries_per_case`
+  20 → BLOCKED — section "v2.1z".)
 * A script attempt: `base_commit = ws.head()`; `ScriptRunner.run(ws, code, errors=cluster.errors)`; status rejected /
   error / timeout → `apply_failed` with the working tree restored (no partial application); ok without a change →
   `apply_failed` "no file changed"; ok with changes → commit `fix(script:<case_id>:v<N> <mode>): <cluster id>`.
@@ -1332,7 +1334,8 @@ corrected in place. The v1 code paths stay in the tree until PLAN-v2 step 4 (v1 
   this run's last attempt of the case that had code, else `latest(case_id)` (a stored but unproven version is
   augmented, not re-run); **new** only when neither exists. LLM requests per case and run ≤
   `script.max_augments_per_case` augments + the first `new`; a `new` answer without a script does not open an augment
-  (the next request is `new` again, inside that total). Escalation model on a stall (`loop.stall_limit`) or from a
+  (the next request is `new` again, inside that total). v2.1z: the total is `script.max_llm_tries_per_case` (20) and
+  `max_augments_per_case` (15) caps the augments alone. Escalation model on a stall (`loop.stall_limit`) or from a
   case's second augment on. `loop.max_llm_attempts_per_cluster` / `loop.verify_extra_llm_attempts` are v1-only.
 * `loop.blocked_policy` v2 (LLM script attempts before BLOCKED): `external_javax_api`, `external_api_incompatible`,
   `artifact_not_found`, `plugin_incompatible` 2; `parent_not_found`, `unsupported_source`, `encoding` 0.
@@ -1739,6 +1742,10 @@ Docs: `docs/v2/KB-AND-FLOW.md` review call limit 2 → 3 (A3).
 
 ## v2.1i — `fix.mode: script | edits` (the script ladder on / off, for the token comparison, 2026-10-28)
 
+> **Removed in v2.1z (2026-11-02)**: `fix.mode`, `fix.edits_max_asks_per_case`, `sbmig run --fix-mode`, `sbmig fleet run
+> --fix-mode / --no-kb`, the web `fix_mode` / `no_kb` fields and checkboxes, `RunReport.fix_mode`, `FixContext.fix_mode` and the
+> `SBMIG-RESULT … fix=<mode>` token are gone (section "v2.1z" below). The text of this section is kept as history.
+
 User: the business team wants "현행 버전(스크립트 저장·재사용) vs 스크립트 없이 LLM 한테 전체 수정을 맡겼을 때" token usage side by
 side; runs go through the web UI (uvicorn, zip upload); "스크립트 만드는 부분을 껐다 켰다 하는 기능" so the comparison is fair.
 
@@ -1773,6 +1780,7 @@ side; runs go through the web UI (uvicorn, zip upload); "스크립트 만드는 
   (저장 스크립트 재사용·기록 없음)" → `no_kb=1`; the run list shows the mode.
 
 ### As built (v2.1i, 2026-10-28)
+- *(v2.1z, 2026-11-02: `previous_edits` was removed with the edits mode — nothing filled it in script mode; `previous_attempts` stays.)*
 - `FixContext.previous_edits: dict[str, str]` (attempt id → the try's label, result, why it failed, whether its changes are
   still in the tree, the applied diff ≤ 4000 chars or the edits it asked for) — filled by the loop in edits mode for tier-2
   plugins; the built-in fixer rebuilds previous edits from its own proposals through `att.prompt_hash` (one `LLMFixer`
@@ -2883,3 +2891,128 @@ sentences and `scope restored`; `replay/` answers the review (and any fix case) 
   no fix script, 29 post-checks, 12 Handover sentences, journal counts asserted; euckr-legacy: the restructure writes the encoding, the
   review answers `ok` (`replay/llm-001.json` rewritten, `sbmig_check: false`); `snapshots/pre9c_trees.json` regenerated (new / corrected
   follow-ups only). Tests: `tests/restructure/test_v21x_legacy_context.py` (23), `tests/analyze/test_v21x_properties.py` (4).
+
+
+## v2.1z — the v2.1i switches removed, generous ladder caps, reactor artifactIds masked in case keys (2026-11-02)
+
+### User decisions (2026-11-02, in this order)
+1. **The token-comparison switches go** (v2.1i / 2026-10-29): `fix.mode: edits` ("LLM 직접 수정만" — the LLM answers with edits
+   only, no script storage / reuse / augment) and `--no-kb` ("저장 스크립트 안 씀" — a `NullKnowledgeBase` for the run). The fix is
+   always the script ladder with the KB.
+2. **Generous ladder caps, lowered later** ("여유롭게 잡고 진행하다가 점차 줄여가는 방식"): 15 augments and 20 LLM asks per case and
+   run. The company already ran with `script.max_augments_per_case: 15`; the new default matches it.
+3. **No project token in a case key**: every reactor module artifactId the Maven log shows is masked as `<module>` in the L1 / L2
+   message text — the KB exists for cross-project script reuse, and an artifactId in the L2 makes the case per-project.
+
+### Config keys (`sbmig/core/config.py`, `config/default.yml`)
+
+| key | before | v2.1z | meaning |
+|---|---|---|---|
+| `fix.mode` | `script` | **deleted** | (v2.1i) `script` \| `edits` |
+| `fix.edits_max_asks_per_case` | 0 | **deleted** | (2026-10-29) edits-mode asks per case, 0 = no cap |
+| `fix.plugin` / `fix.plugin_options` | null / {} | unchanged | adapter tier 2 (`docs/ADAPTERS.md`); the `fix:` block keeps only these |
+| `script.max_augments_per_case` | 3 (counted new + augment) | **15, augment steps only** | LLM extensions of this run's last code-bearing try, per case and run; used up → the next ask is a fresh `new`. `0` = never augment |
+| `script.max_llm_tries_per_case` | — | **new, 20** | every LLM ask for a case in one run (new + augment); at the cap → BLOCKED `repeated_failure` → Handover. `0` = never ask the LLM for the case |
+| `script.reuse` / `reuse_versions` | true / 1 | unchanged | stored versions run before the LLM (no call) |
+| `script.max_declines_per_case` | 1 | unchanged | v2.1y: declined answers before BLOCKED `needs_owner` (or the classifier's reason) |
+| `loop.phases.verify.max_iterations` / `loop.max_total_minutes` | 50 / 240 | unchanged | rounds / minutes of a run |
+| `loop.blocked_policy` | javax / api / artifact / plugin 2; parent / encoding / file_lock / reactor_duplicate / needs_owner 0 | unchanged | reason-specific script attempts (a stored script is reused regardless) |
+
+Both new caps are plain caps (no `max(1, …)`, no "first ask not counted"). A config that still carries `fix.mode` /
+`fix.edits_max_asks_per_case` is a config of an older version; the keys mean nothing now.
+
+### The ladder per case and run (`sbmig/triage/scripts.py plan_script_step`, `sbmig/triage/decide.py`)
+1. **reuse** — the best stored version(s) not yet run here (`script.reuse`, `script.reuse_versions`); no LLM call, before
+   `loop.blocked_policy`, works with the LLM down or the budget used.
+2. LLM asks so far ≥ `script.max_llm_tries_per_case` → **BLOCKED `repeated_failure`** (Handover).
+3. **augment** — while augments used < `script.max_augments_per_case`: extend this run's last try of the case that had code (a stored
+   version that failed here, or an LLM script); with `script.reuse: false` and no such try, the stored best version.
+4. **new** — nothing to extend, or the augments are used up (a fresh script from scratch, not a 16th extension).
+
+Unchanged around it: declined answers (`script.max_declines_per_case` 1 → BLOCKED, siblings "same cause as …" without a call), the
+escalation model from a case's second augment or on a stall, `sbmig-version` / `sbmig-resources` pre-tries (no LLM), the run-wide
+`loop.max_llm_calls`. A case without a stored script therefore costs at most 20 LLM asks (1 new + 15 augments + 4 new, when every
+answer carries code); a case the LLM declines costs 1 (legacy-ibatis).
+
+Log lines (`ScriptStep.kb_line`; the loop's agent finalises the wording — shape):
+- `KB 탐색: … → LLM 보강 요청 (3/20, 보강 2/15, v2 기준)` — the 3rd LLM ask of 20, the 2nd augment of 15, base v2;
+- `KB 탐색: … → 보강 한도(15) 소진 → LLM 에 새 수정 요청 (17/20)`;
+- `KB 탐색: … → 한도 도달 (저장본 1 + LLM 20회) → blocked`.
+`ScriptStep.llm_limit` is now `script.max_llm_tries_per_case`; new `ScriptStep.augment_limit` = `script.max_augments_per_case`.
+
+### What stays (only the switches go)
+- `sbmig.api.migrate(kb=False)` (programmatic; `NO_KB_OVERRIDES`) and the class `NullKnowledgeBase` (the fallback when `sbmig.kb`
+  cannot be loaded).
+- Script-mode features that merely say "edits": an answer without a script still has its edits applied (`TrySource "llm-edit"`,
+  `FixAttempt.edits_applied`, commit `fix(edits:<case> <source>): <cluster>`), the structure review's edits, `script.max_declines_per_case`.
+
+### Operator-visible changes
+- CLI: `sbmig run --fix-mode` / `--no-kb` and `sbmig fleet run --fix-mode` / `--no-kb` are gone (typer rejects them, exit 2).
+- Web: `POST /api/runs` no longer takes `fix_mode` / `no_kb`; `GET /api/runs` rows no longer carry `fix_mode` / `kb`; the upload form's
+  two checkboxes ("LLM 직접 수정만", "KB 사용 안 함") and the `edits · KB off` badge are gone; the `run <id>: …` log line and the
+  `web_run` journal event no longer name them.
+- Fleet: `fleet-config.json` no longer writes `overrides.fix.mode` / `no_kb`; the `settings: fix_mode=… kb=…` note, the `summary.md`
+  header line `* settings: …` and the label on the fleet / `fleet status` first line are gone.
+- Report: `RunReport.fix_mode` deleted (models.py), the `fix mode` line of "LLM usage and cost" gone; edits-mode labels
+  `edits:<case>#<n>` are gone (fix attempts are `script:<case>:v<N>` again, an edits-only answer of the script ladder keeps its
+  `llm-edit` source).
+- `SBMIG-RESULT … attn=<codes>[ review=<v>][ major=<n>]` — the optional ` fix=<mode>` token is gone (a default line never had it, so the
+  operators' line is unchanged).
+- `FixContext.fix_mode` deleted (interfaces.py; tier-2 plugins that read it see no field).
+
+### Case keys: reactor artifactIds masked (`sbmig/build/signatures.py`, `sbmig/build/log_parser.py`)
+- The log parser registers, at the start of every parse, every reactor artifactId the Maven log shows (`-----< g:a >-----` headers,
+  `--- plugin:ver:goal (id) @ <artifactId> ---` mojo markers, `Failed to execute goal … on project <artifactId>`; never the `Building
+  <name>` display name) — `set_reactor_modules(names)`, a process-wide set **replaced** per parse (a fleet's next project never sees the
+  previous project's names).
+- `normalize_message` masks these names AND the error's own module as `<module>` in the L1 / L2 message text: case-sensitive, word
+  boundaries (`(?<![\w.-])name(?![\w-])`), longest name first (`pricing-core-comp` before `pricing-core`). Not masked: names shorter
+  than 3 characters (`MIN_MODULE_NAME_CHARS`) and a stoplist of ordinary Maven / javac words (`MODULE_NAME_STOPLIST`: `web`, `app`,
+  `api`, `core`, `common`, `test`, `main`, `build`, `parent`, `jar`, `war`, `plugin`, `boot`, `back`, `front`, `service`, `util`, … —
+  masking them would merge or split cases on wording, not on project identity).
+- Real example (e2e KB): `enforcer|requirejavaversion: pricing-core must be built with` — the root artifactId leaked, the error's
+  module was `pricing-core-comp` — becomes `enforcer|requirejavaversion: <module> must be built with`.
+- Effect on stored KBs: only L2s that contained another module's artifactId change id; those never matched across projects anyway.
+  Every other case id is unchanged — except (as the code reads at writing time) an error whose OWN module has a stoplisted or
+  < 3-character artifactId (`web`, `app`, …): before v2.1z the own module was masked whatever its name, now the stoplist applies to it
+  too (confirmed at integration: `MODULE_NAME_STOPLIST` / `MIN_MODULE_NAME_CHARS` apply to the `module=` argument as well).
+
+### As built (v2.1z, 2026-11-02)
+Four opus agents on disjoint directories (A core ladder + edits-mode removal, B web / fleet / report switches, C docs, D reactor
+masking); the PM wrote the shared contracts first (`ScriptConfig.max_augments_per_case` 15 = augment steps only,
+`ScriptConfig.max_llm_tries_per_case` 20, `FixConfig.mode` / `edits_max_asks_per_case` / `RunReport.fix_mode` / `FixContext.fix_mode`
+deleted, `config/default.yml` mirrored), then integrated.
+
+- **Ladder** (`sbmig/triage/scripts.py` `plan_script_step`, `ScriptStep.augment_limit` beside `llm_limit` = `max_llm_tries_per_case`):
+  reuse rungs unchanged → `augment {n}/{L} (augment {a}/{A})` while this run has a code-bearing try and `a < A` (kb_line
+  `KB 탐색: … → LLM 보강 요청 ({n}/{L}, 보강 {a}/{A}, v2 기준)`) → augments used up: `new fix for case X (augments used up:
+  script.max_augments_per_case 15; request {n}/{L})` (kb_line `… → 보강 한도(15) 소진 → LLM 에 새 수정 요청 ({n}/{L})`) → at the total
+  cap `mode None`, why `… did not resolve case X (script.max_llm_tries_per_case 20)`, kb_line `… → 한도 도달 (저장본 N + LLM M회) →
+  blocked`, BlockedItem notes name `max_llm_tries_per_case`. `max_llm_tries_per_case = 0` blocks at once (a stored script still runs
+  first); `max_augments_per_case = 0` never augments. The escalation rule (stall, or from the case's second augment) is unchanged.
+- **Removed (A):** triage `EDITS_MODE_FOUND`, `fix_mode()`, `edits_mode()`, `edits_llm_limit()`, `edits_unlimited()`, `plan_edits_step()`
+  and the lifted blocked-policy branch of `decide.py`; loop `edits_mode` / `_edits_label` / `_edits_answer` / `_previous_edits` /
+  `_edit_line` and the edits-only constants; `sbmig/fix/context.py` `effective_fix_mode` and the edits history sections;
+  `sbmig/fix/fixer.py` `parse_edits_answer`, `load_edits_prompts`, `edits_prompts()`, `build_edits_messages`, the edits feedback helpers
+  and the `fix_mode` journal extra; `script_protocol.parse_script_response(expect_script=…)`, `ParsedScript.script_ignored`;
+  `sbmig/fix/prompts/edits_system_v1.md` + `edits_user_v1.md.j2`; `sbmig run --fix-mode` / `--no-kb`, `cli.FIX_MODE_HELP` /
+  `fix_modes()` / `check_fix_mode()`; `FixContext.previous_edits` (`previous_attempts` stays: script mode fills it for the prompt's
+  "Previous attempts on this case"). Kept: `NullKnowledgeBase` (sbmig.kb unavailable, `sbmig.api.migrate(kb=False)`, test stubs),
+  `api.NO_KB_OVERRIDES`, the `llm-edit` try source and `edits_applied` (the LLM's edits are still applied when its answer has no
+  script), the review's edits, `script.max_declines_per_case`.
+- **Removed (B):** `POST /api/runs` `fix_mode` / `no_kb` (now ignored, no 400), `parse_fix_mode`, the run record / `web-status.json` /
+  `web_run` journal keys `fix_mode` / `kb` (old files with those keys still load), the web form's two checkboxes and the
+  "edits · KB off" badge; `sbmig fleet run --fix-mode` / `--no-kb` (usage error, exit 2), `fleet-config.json` `no_kb`, the fleet
+  `settings:` note / `summary.md` header / `learning.md` "KB off" note; report "fix mode" lines, the `fix try` column and the
+  `edits:<case>#<n>` label, their `i18n` entries; `SBMIG-RESULT` ` fix=<mode>` token and the `fix_mode` parameter of `result_line()`
+  (a default run's line is byte-identical). Tests moved, not lost: an `llm-edit` try still renders `3 llm-edit edits partial`.
+- **Reactor masking (D):** `log_parser.reactor_artifact_ids(text)` (`-----< g:a >-----` headers, `@ <artifactId>` mojo markers,
+  `on project <a>` lines; `Building <name>` lines are not used) → `parse_maven_log` calls `signatures.set_reactor_modules(...)` once
+  before parsing (replaced per parse, cleared by a log without markers); `normalize_message` masks the error's own `module` plus the
+  registry as `<module>` (boundary `(?<![\w.-])name(?![\w-])`, case-sensitive, longest first, `MIN_MODULE_NAME_CHARS = 3`,
+  `MODULE_NAME_STOPLIST` = web app api core common test tests main build parent module project resources compile jar war pom plugin
+  source target class error file java lib util utils base root server client service services batch boot back front). The refined
+  keys of `sbmig/triage/cluster.py` inherit it through `normalize_message`. PM additions: `MavenRunner.run` clears the registry on a
+  successful build (a success is not parsed, so nothing lingers into a fleet's next project) and `tests/conftest.py` resets it around
+  every test. New tests `tests/build/test_reactor_module_masking.py` (9).
+- **Verification:** offline suite and real-Maven e2e — numbers in `docs/PLAN.md` (v2.1z status table).

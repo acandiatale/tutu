@@ -414,7 +414,7 @@ def test_a_sibling_naming_the_same_artifact_is_blocked_without_a_call(cfg, ws):
 
 def test_declines_off_restores_the_old_failed_try(cfg, ws):
     cfg.script.max_declines_per_case = 0
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_llm_tries_per_case = 2
     fixer = FakeFixer(script_fn=lambda w, c, ctx: ScriptProposal(code="", analysis="I cannot.",
                                                                  error="no <script> block", model="m"))
     pr = make_loop(cfg, ws, fixer, build=lambda w, call: bad_build(compile_error(FOO))).run(Phase.VERIFY, "package", 3)

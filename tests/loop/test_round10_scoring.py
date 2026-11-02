@@ -84,9 +84,10 @@ def test_repeated_failure_of_the_same_case_still_blocks(cfg, ws, profile):
         n["i"] += 1
         return llm([create(FOO, f"class Foo {{ broken {n['i']} }}\n")])
 
+    cfg.script.max_llm_tries_per_case = 3
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix))
     pr = loop.run(Phase.VERIFY, "package", 8)
-    assert n["i"] == cfg.script.max_augments_per_case           # v2.1: new + augments = 3 LLM tries, then BLOCKED
+    assert n["i"] == cfg.script.max_llm_tries_per_case          # v2.1z: new + augments = 3 LLM tries, then BLOCKED
     assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE]
     assert {a.outcome for a in pr.attempts} == {"no_change"}
 
@@ -110,7 +111,7 @@ def test_the_same_case_in_another_service_is_hint_material(cfg, ws, profile):
     def fix(w, c, ctx):
         seen.append((c.id, list(ctx.kb_hints), [a.id for a in ctx.previous_attempts]))
         return write_script({e.file: "class X { broken still }\n" for e in c.errors})
-    cfg.script.max_augments_per_case = 2                       # v2.1: LLM tries per case (new + 1 augment)
+    cfg.script.max_llm_tries_per_case = 2                       # v2.1: LLM tries per case (new + 1 augment)
     cfg.script.reuse = False      # (v2.1: svc-a's stored unverified v1 would otherwise run first for svc-b)
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(script_fn=fix))
     loop.run(Phase.VERIFY, "package", 3, target="svc-a")
@@ -141,7 +142,7 @@ def test_made_up_dependency_is_reverted_not_improved(cfg, ws, profile):
                                            "</dependency></dependencies>")])
         return llm([create(BAR, "class Bar { ok }\n")])
 
-    cfg.script.max_augments_per_case = 1                       # v2.1: one LLM try per case
+    cfg.script.max_llm_tries_per_case = 1                       # v2.1: one LLM try per case
     loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build), fixer=FakeFixer(fn=fix), kb=kb)
     pr = loop.run(Phase.VERIFY, "package", 2)
     first = next(a for a in pr.attempts if a.cluster_errors[0].file == FOO)
@@ -266,9 +267,9 @@ SIGS = [f"compile|cannot_find_symbol|class Gone{i}" for i in range(4)]
 
 def test_partial_progress_is_not_a_failure(cfg, ws, profile):
     """Four targeted errors of one case; each attempt (rolled back before the next: a complete script every time)
-    fixes one more: partial, partial, partial, then build_ok — 4 LLM tries (script.max_augments_per_case 4), never
+    fixes one more: partial, partial, partial, then build_ok — 4 LLM tries (script.max_llm_tries_per_case 4), never
     blocked, each version credited as it scored."""
-    cfg.script.max_augments_per_case = 4
+    cfg.script.max_llm_tries_per_case = 4
     ws.write(FOO, "class Foo { " + " ".join(f"e{i}" for i in range(4)) + " }\n")
     ws.commit("four errors")
     kb = FakeKB()
@@ -295,7 +296,7 @@ def test_partial_progress_is_not_a_failure(cfg, ws, profile):
     assert [a.outcome for a in pr.attempts] == ["partial", "partial", "partial", "build_ok"]
     assert "partial: 1 of 4 targeted error(s) gone, 3 remain" in pr.attempts[0].notes
     assert "partial: 2 of 4 targeted error(s) gone, 2 remain" in pr.attempts[1].notes
-    assert len(pr.attempts) == cfg.script.max_augments_per_case
+    assert len(pr.attempts) == cfg.script.max_llm_tries_per_case
     assert [c[2] for c in kb.cases.credits] == ["partial", "partial", "partial", "build_ok"]
 
 

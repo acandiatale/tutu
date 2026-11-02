@@ -2,15 +2,14 @@
 채점(악화는 되돌림, 저장 스크립트 실적 기록, 오류 목록의 시도 마감) → 새 오류 추가 → 케이스(L2)로 묶기 →
 케이스마다 사다리 → 커밋. 사다리(케이스당·실행당): KB 탐색 → 저장된 스크립트 재사용(LLM 0회) → 실패하면
 되돌리고 LLM 보강 → 저장본이 없으면 LLM 신규(edits 는 바로 적용, 스크립트는 unverified 로 저장). 저장본 1 +
-LLM 3회(``script.max_augments_per_case``) 뒤 BLOCKED. 채점은 재빌드로만(``_score``): 개선 = 대상 오류가 전부
+LLM 요청 ``script.max_llm_tries_per_case``(20, 그중 보강 ``script.max_augments_per_case`` 15 — 다 쓰면 새로 작성)
+뒤 BLOCKED. 채점은 재빌드로만(``_score``): 개선 = 대상 오류가 전부
 사라지고 빌드가 그 단계까지 갔을 때뿐("안 보임 ≠ 해결"), 판정 불가 = KB 실적 없음. 개선되지 않은 시도는 그
 케이스의 다음 시도 전에 되돌린다. 근본 원인 케이스 먼저, 이번 라운드에 이미 손댄 파일·모듈 pom 의 케이스는
 다음 빌드까지 미룬다(시도로 세지 않음). 끝 = 언제나 빌드 뒤: BUILD SUCCESS · 라운드
 소진(``loop.phases.verify.max_iterations``, 50) · 손댈 케이스 없음 · 차단만 남음 · 시간 초과. v2.1d: LLM 호출
 전 ``_library_hints``(저장소 버전 사실), 적용 뒤 ``_read_back``(메이저
-업그레이드 → 운영자 확인; 되돌리거나 차단하지 않음). v2.1i ``fix.mode: edits``: 스크립트를 만들지도 저장·재사용·
-보강하지도 않는다 — 케이스마다 LLM 에 edits 만 묻고(앞 시도들은 ``FixContext.previous_attempts`` +
-``previous_edits``), 출처 ``llm-edit``, 꼬리표 ``edits:<case>#<n>``, ``1 + script.max_augments_per_case`` 회 뒤 차단.
+업그레이드 → 운영자 확인; 되돌리거나 차단하지 않음).
 v2.1l: 의존성 버전은 LLM 이 추측하지 않는다 — 적용된 시도의 pom 에서 버전 없는 의존성은 커밋 전에
 ``_fill_versions`` 가 채우고(``VersionResolver``: 새 부모 체인 관리 → as-is 빌드 → 방금 추가된 것만 저장소),
 ``pom_invalid|missing_version`` 케이스는 LLM 전에 sbmig 가 한 번 고친다(출처 ``sbmig-version``, LLM 0회). v2.1m:
@@ -33,7 +32,9 @@ stored script runs (source `kb-script`, no LLM call) → when it fails: rollback
 the script and what it did; an answer with a script → the new version runs and is stored, `llm-augment`; an answer
 with `no_script_reason` + edits → the edits are applied directly, `llm-edit`) → no stored script: **LLM new**
 (`llm-new`: edits applied directly and the script stored as `unverified`; only a script → it runs and is stored). Per
-case and run: 1 stored + `script.max_augments_per_case` (3) LLM tries, then BLOCKED (repeated_failure). When an
+case and run (v2.1z): 1 stored + `script.max_llm_tries_per_case` (20) LLM asks, of them at most
+`script.max_augments_per_case` (15) augments (used up → the next ask is a fresh `new`), then BLOCKED
+(repeated_failure). When an
 answer's first choice does not apply (the edits fail / change nothing, or its script fails), the other half of the
 same answer is applied instead. Edits go through `sbmig.script.apply_edits` (the script helper API's guards); changes
 are committed `fix(script:<case>:v<N> <mode>)` / `fix(edits:<case> <source>)`.
@@ -64,14 +65,6 @@ after every applied try whose commit touched a pom, `_read_back` lists its major
 (`FixAttempt.major_upgrades`, `FixTry.major_upgrades`) with the 운영자 확인 guide (`<verify>` → one `verify_guide` LLM
 call → sbmig's synthesized one; WARNING `메이저 업그레이드: … — 운영자 확인 필요`). Nothing is reverted or blocked for
 it; every call into `sbmig.build.depchanges` / `repo_versions` / `jakarta_libraries` is best effort.
-
-v2.1i `fix.mode: edits` (docs/INTERFACES.md "v2.1i", the token comparison): no fix script is generated, stored,
-reused, credited or augmented. Every try of a case is a fresh LLM ask (`script_mode` new, `FixContext.fix_mode`
-edits, no `script_base`) that carries the case's earlier tries of this run (`previous_attempts` + `previous_edits`:
-result, why it failed, whether it is still in the tree, the applied diff / the edits that did not apply); the answer's
-edits are applied (`llm-edit`, commit `fix(edits:<case>#<n>): <cluster>`), a script in the answer is ignored. The
-budget is `fix.edits_max_asks_per_case` asks per case and run (0 = no cap, `sbmig.triage.scripts.edits_llm_limit`), then
-BLOCKED `repeated_failure`; scoring, rollback, the blocked policy and the error list are unchanged.
 
 v2.1l (docs/INTERFACES.md "v2.1l", dependency versions carried over from the as-is build, never guessed by the LLM):
 `VersionResolver` is the one resolution order (the new parent chain manages it → empty; the as-is build's version;
@@ -197,9 +190,6 @@ except ImportError:  # pragma: no cover - the error list package is part of sbmi
         return STAGE.get(e.kind)
 TRY_NOTE_CHARS = 600                 # FixTry.note: the try's failure / rollback / scoring notes, joined
 NOTES_LOGGED = 20                    # `수정:` INFO lines per applied change (the rest: errors.md / errors.jsonl)
-PREVIOUS_EDIT_CHARS = 4000           # v2.1i edits mode: one earlier try in FixContext.previous_edits (diff / edits)
-PREVIOUS_EDIT_TEXT = 300             # … one old / new / content text of an edit that did not apply
-EDITS_SCRIPT_IGNORED = "the answer's script was ignored (fix.mode edits: no fix scripts)"
 
 
 def fmt_error(e: BuildError) -> str:
@@ -977,9 +967,6 @@ class BuildFixLoop:
         self._pre_tried: set[tuple[str, str, str]] = set()
         self._pre_failures: Counter = Counter()
         self._cases = CaseScripts.of(kb)
-        # v2.1i: `fix.mode: edits` — LLM 직접 수정만(스크립트 생성·저장·재사용·실적 없음); script 모드는 그대로
-        # (the same test as sbmig.triage.scripts.edits_mode — the loop imports triage lazily)
-        self.edits_mode = str(getattr(getattr(cfg, "fix", None), "mode", "script") or "script") == "edits"
         attach = getattr(triager, "attach_run", None)
         if callable(attach):
             try:
@@ -1236,7 +1223,7 @@ class BuildFixLoop:
                 # 재라운드: 트리가 그대로라 재빌드해도 같은 오류 →
                 # 같은 빌드로 다음 단계를 묻는다(라운드 수는 센다)
                 # nothing changed the tree, so a rebuild would show the same errors — the next rung of each case's
-                # ladder on the same build (bounded by script.max_augments_per_case)
+                # ladder on the same build (bounded by script.max_llm_tries_per_case)
                 self.ws.journal({"event": "reround", "phase": phase.value, "iteration": build_no,
                                  "fix_round": fix_rounds + 1})
             pending = new_pending
@@ -2086,22 +2073,11 @@ class BuildFixLoop:
         return f"KB 탐색: {step.kb_found or '-'} → {what}"
 
     # ------------------------------------------------------------------ v2.1 tries
-    def _edits_label(self, att: FixAttempt) -> str:
-        """v2.1i edits 모드 시도의 꼬리표 ``edits:<case>#<n>``(n = 이 실행에서 케이스의 시도 번호, 오류 목록의 FixTry.n).
-
-        The label of an edits-mode try, `edits:<case>#<n>` (n = the case's try number in this run, `FixTry.n`)."""
-        case_id, n, _rnd = self._tries.get(id(att), (att.script_case_id, 0, 0))
-        case_id = case_id or att.script_case_id or att.cluster_id
-        if not n:                                # a try of another loop of the run (MSA service): number unknown
-            return f"edits:{case_id}"
-        from sbmig.report.errors import edits_label
-        return edits_label(case_id, n)
-
     def _attempt_name(self, a: FixAttempt) -> str:
-        """시도를 부르는 이름(힌트·로그): script 모드 ``script <case>:v<N> (<mode>)``, edits 모드 ``edits:<case>#<n>``.
+        """시도를 부르는 이름(힌트·로그): ``script <case>:v<N> (<mode>)``.
 
-        Who made an attempt (hints, logs): `_script_name` in script mode, `edits:<case>#<n>` in edits mode."""
-        return self._edits_label(a) if self.edits_mode else _script_name(a)
+        Who made an attempt (hints, logs): `_script_name`."""
+        return _script_name(a)
 
     def _project(self) -> str:
         """KB 기록에 쓰는 프로젝트 이름(``sbmig.kb.common.project_name`` 이 있으면 그것, 없으면 프로필 이름).
@@ -2197,8 +2173,6 @@ class BuildFixLoop:
         t0 = time.monotonic()
         ans = self._ask_llm(att, c, st, step, base)
         secs = time.monotonic() - t0
-        if self.edits_mode:                             # v2.1i: edits only — nothing stored, nothing run
-            return self._edits_answer(att, c, st, ans, secs)
         requested = "llm-augment" if att.script_mode == "augment" else "llm-new"
         if ans is None:                                 # no usable answer: the failure is on the attempt
             att.source = requested
@@ -2270,40 +2244,6 @@ class BuildFixLoop:
                 self._script_ran[id(att)] = False
             self._switch(att, f"script v{att.script_version} did not apply → applying the answer's edits instead")
             self._apply_edits(att, c, edits, st)
-
-    def _edits_answer(self, att: FixAttempt, c: ErrorCluster, st: _Round, ans: Any, secs: float) -> None:
-        """v2.1i edits 모드의 답 처리: 답의 edits 만 적용한다(출처 ``llm-edit``). 답에 스크립트가 있어도 저장·실행하지
-        않고 메모만 남긴다. edits 가 없으면 실패한 시도(이유와 함께) — LLM 요청 한 번으로 센다.
-
-        An edits-mode answer: only its edits are applied (source `llm-edit`); a script in it is neither stored nor
-        run (a note says so); no edits → a failed try with the reason (it still counts as one LLM try)."""
-        att.source = "llm-edit"
-        if ans is None:                                 # no usable answer: the failure is on the attempt
-            log.info("LLM 답변 없음 (%.0fs): %s", secs, _first_sentence("; ".join(att.apply_errors) or "-", 240))
-            self._begin_try(att, st)
-            return
-        self._answers[id(att)] = ans
-        edits = list(ans.edits or [])
-        att.analysis = ans.analysis or ""
-        att.solution = getattr(ans, "solution", "") or ""
-        self._log_answer(secs, att, "", edits)
-        declined = self._declined_reason(ans, "", edits)      # v2.1y: the same classification as script mode
-        if declined:
-            self._begin_try(att, st)
-            return self._decline(att, c, ans, declined, ignored=bool(edits))
-        if (ans.code or "").strip():
-            att.notes.append(EDITS_SCRIPT_IGNORED)
-            log.info("%s", EDITS_SCRIPT_IGNORED)
-        self._begin_try(att, st)
-        if not edits:
-            # 다음 요청의 "앞 시도" 에 그대로 보이는 문장 — edits 모드 프롬프트에 script 라는 말이 새지 않게
-            why = "LLM answered with no edits"
-            if ans.error:
-                why += f": {ans.error}"
-            if ans.requested_files:
-                why += f" (asked for: {', '.join(ans.requested_files[:5])})"
-            return self._fail(att, why)
-        self._apply_edits(att, c, edits, st)
 
     def _declines_allowed(self) -> int:
         """``script.max_declines_per_case`` (0 이하 = 거절 분류를 끔: 예전처럼 적용 실패)."""
@@ -2473,9 +2413,7 @@ class BuildFixLoop:
         `LLM 답변 (21s): 원인 … / 해결 … / edits 1 / script 있음` (§3.2)."""
         parts = [f"원인 {_first_sentence(att.analysis, 140) or '-'}", f"해결 {_first_sentence(att.solution, 140) or '-'}",
                  f"edits {len(edits)}"]
-        if self.edits_mode:                            # v2.1i: no script asked for — nothing to say about one
-            pass
-        elif code.strip():
+        if code.strip():
             parts.append("script 있음")
         elif att.no_script_reason:
             parts.append(f"script 없음 (이유: {_first_sentence(att.no_script_reason, 140)})")
@@ -2598,8 +2536,7 @@ class BuildFixLoop:
         if a.outcome in NO_ROLLBACK or id(a) in self._rolled_back or _kept_partial(a):
             return None
         how = ""
-        what = self._edits_label(a) if self.edits_mode else \
-            f"v{a.script_version}" if a.script_version and not a.edits_applied else (a.source or "edits")
+        what = f"v{a.script_version}" if a.script_version and not a.edits_applied else (a.source or "edits")
         try:
             if self.ws.head() == a.commit and a.base_commit:
                 self.ws.revert_to(a.base_commit)
@@ -2679,11 +2616,8 @@ class BuildFixLoop:
         att.script_mode = mode
         if mode == "augment":
             att.script_parent = int(base.version) or None
-        # the stronger model on a stall, and from the second augment of a case on (v2.1i edits mode: from the third
-        # ask on — the same rung as script mode's second augment)
-        # edits 모드에는 보강이 없으므로 같은 자리(케이스의 세 번째 LLM 요청)부터 더 센 모델을 청한다
-        escalate = st.stall_level >= self.cfg.loop.stall_limit or (mode == "augment" and step.augments_used >= 1) \
-            or (self.edits_mode and int(getattr(step, "llm_used", 0) or 0) >= 2)
+        # the stronger model on a stall, and from the second augment of a case on
+        escalate = st.stall_level >= self.cfg.loop.stall_limit or (mode == "augment" and step.augments_used >= 1)
         sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
         self._mark(f"library hints for {c.id}")
         lib_hints = self._library_hints(c)
@@ -2695,9 +2629,6 @@ class BuildFixLoop:
                          script_mode=mode, case_id=step.case_id, signature_generic=sig,
                          script_base=base if mode == "augment" else None, library_hints=lib_hints,
                          layout_facts=self._layout_facts())
-        if self.edits_mode:                             # v2.1i: what the earlier tries edited instead of a base script
-            ctx.fix_mode = "edits"
-            ctx.previous_edits = self._previous_edits(previous)
         self._mark(f"fixer.propose_script for {c.id} ({mode}: prompt packing + LLM call)")
         try:
             proposal = self.fixer.propose_script(self.ws, c, ctx)
@@ -2727,45 +2658,8 @@ class BuildFixLoop:
         if escalate:
             att.notes.append(f"escalation model requested (stall level {st.stall_level})"
                              if st.stall_level >= self.cfg.loop.stall_limit else
-                             f"escalation model requested (ask {int(step.llm_used) + 1} of the case)" if self.edits_mode
-                             else f"escalation model requested (augment {step.augments_used + 1} of the case)")
+                             f"escalation model requested (augment {step.augments_used + 1} of the case)")
         return proposal
-
-    def _previous_edits(self, previous: list[FixAttempt]) -> dict[str, str]:
-        """v2.1i edits 모드: 앞 시도마다(id → 글) 결과·실패 이유, 지금 트리에 남았는지(개선·성공이 아니면 다음
-        시도 전에 되돌렸다), 적용한 diff 또는 적용 못 한 edits. 답이 없던 시도(전송 실패)는 뺀다. 보강의
-        script_base 가 하던 일을 스크립트 없이 한다.
-
-        v2.1i edits mode: one text per earlier try (attempt id → text) — its result and why it did not resolve the
-        case, whether its changes are still in the tree (a try that was not improved / build_ok was rolled back
-        before this ask — the loop's rule), the applied diff or, when nothing applied, the edits it asked for (both
-        capped). Tries without an answer (a transport failure) are left out."""
-        out: dict[str, str] = {}
-        for a in previous:
-            ans = self._answers.get(id(a))
-            edits = list(getattr(ans, "edits", None) or []) if ans is not None else []
-            diff = self._diffs.get(id(a), "") if a.applied else ""
-            if not edits and not diff:
-                continue
-            # 이유 한 줄: 채점 결과 + 적용 오류·롤백·채점 메모(_run_reason; 개선·성공이면 결과 이름만)
-            # (the loop's own "script ignored" note stays out: no script wording in an edits-mode prompt)
-            why = "; ".join(x for x in self._run_reason(a).split("; ") if x != EDITS_SCRIPT_IGNORED)
-            if not why.startswith(a.outcome):
-                why = f"{a.outcome}: {why}" if why else a.outcome
-            lines = [f"{self._edits_label(a)} (attempt {a.id}) → {why}"]
-            if diff:
-                failed_rollback = any(x.startswith("rollback before the next attempt failed") for x in a.notes)
-                kept = a.outcome in SCRIPT_KEEP or failed_rollback or _kept_partial(a)
-                lines.append("its changes are still in the tree" if kept else
-                             "its changes were rolled back before this request (not in the tree now)")
-                text = diff if len(diff) <= PREVIOUS_EDIT_CHARS else diff[:PREVIOUS_EDIT_CHARS] + _TRUNCATED_MARK
-                lines += ["applied diff:", text]
-            else:
-                lines.append("edits it asked for (not applied):")
-                lines += [_edit_line(e) for e in edits]
-            body = "\n".join(lines)
-            out[a.id] = body if len(body) <= 2 * PREVIOUS_EDIT_CHARS else body[:2 * PREVIOUS_EDIT_CHARS] + _TRUNCATED_MARK
-        return out
 
     def _layout_facts(self) -> list[str]:
         """v2.1v (B-H2): 프롬프트의 "Project after the restructure" 절 — 오케스트레이터가 넘긴 재구성 결과와 설정으로
@@ -2816,11 +2710,11 @@ class BuildFixLoop:
                 seen.append(a)
         out: list[str] = []
         for a in seen[:2]:
-            if a.script_version and a.script_case_id and not self.edits_mode and not a.edits_applied:
+            if a.script_version and a.script_case_id and not a.edits_applied:
                 out.append(f"introduced by script:{a.script_case_id}:v{a.script_version} (attempt {a.id}) — prefer "
                            "augmenting that script")
             else:
-                out.append(f"introduced by {self._attempt_name(a) if not self.edits_mode else self._edits_label(a)} "
+                out.append(f"introduced by {self._attempt_name(a)} "
                            f"(attempt {a.id}) — its change is in the tree; fix what it left, do not undo it")
         return out
 
@@ -2835,8 +2729,6 @@ class BuildFixLoop:
         BEFORE it runs (failures keep their lineage), an edits answer stores it `unverified` next to the fix. No KB →
         unstored (v0). False = do not run it (the same version already ran in this run). v2.1e: an augment's version
         records its `parent` and the `reason` it was made (`v1: <the parent's failure in words>`)."""
-        if self.edits_mode:                             # v2.1i: no script is stored (nor run) in edits mode
-            return False
         store = self.cases
         if not store.active:
             att.notes.append("fix script not stored (no knowledge base): v0")
@@ -2923,7 +2815,7 @@ class BuildFixLoop:
         """v2.1y (E-H3, ``script.idempotency_check``): ok 로 파일을 바꾼 스크립트를 같은 오류로 한 번 더 돌린다(첫 실행의
         결과 위에서). 또 바꾸면 비멱등 — 두 번째 변경만 되돌리고(첫 실행의 결과는 그대로 커밋된다), 저장된 버전을
         ``non_idempotent`` 로 표시해 다시는 재사용하지 않으며, 시도에 메모, 저널 ``script_non_idempotent``. 시도 자신의 결과는
-        재빌드가 정한다. edits 모드와 sbmig 의 사전 시도(``sbmig-version`` / ``sbmig-resources``)는 스크립트를 돌리지 않으니
+        재빌드가 정한다. sbmig 의 사전 시도(``sbmig-version`` / ``sbmig-resources``)는 스크립트를 돌리지 않으니
         해당 없음. 첫 실행 상태는 바뀐 파일의 바이트로 기억했다가 되돌린다 — 커밋 전이라 sbmig 의 버전 채움은 아직 없다.
 
         Run an `ok` script that changed files once more on its own result (same errors). A second change = not
@@ -2932,7 +2824,7 @@ class BuildFixLoop:
         journal gets `script_non_idempotent`; the attempt's outcome stays whatever the rebuild scores. Runs before the
         version fill so sbmig's own pom edits are never mistaken for the script's. Never raises."""
         try:
-            if self.edits_mode or att.source in PRE_TRY_SOURCES or self.script_runner is None \
+            if att.source in PRE_TRY_SOURCES or self.script_runner is None \
                     or not getattr(getattr(self.cfg, "script", None), "idempotency_check", True) \
                     or not res.changed_files or not self.ws.is_dirty():
                 return
@@ -3034,8 +2926,7 @@ class BuildFixLoop:
         self._fill_versions(att, c, res, pre, st)      # v2.1l: version-less dependencies get theirs (same commit)
         self._mark(f"git commit for {c.id}")
         if subject is None:
-            subject = (f"fix({self._edits_label(att)}): {c.id}" if self.edits_mode else
-                       f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}")
+            subject = f"fix(edits:{att.script_case_id} {att.source or 'llm'}): {c.id}"
         sha = self._commit(subject, pre, paths=res.changed_files)
         if sha is None:
             att.outcome = "apply_failed"
@@ -4197,7 +4088,7 @@ class BuildFixLoop:
         `kb.cases.credit(case, version, result)` once per try and final outcome (an inconclusive one is credited
         again when a revert rebuild scores it) — only for a stored script whose RUN decided the outcome (a script
         stored next to applied edits never ran: no credit). Unstored (v0) scripts / dry run / no KB → nothing."""
-        if self.dry_run or self.edits_mode or att.decision.kind != DecisionKind.SCRIPT or not att.script_version \
+        if self.dry_run or att.decision.kind != DecisionKind.SCRIPT or not att.script_version \
                 or not att.script_case_id or att.outcome == "pending" or not self._script_ran.get(id(att)):
             return
         done = self._credited.get(id(att))
@@ -4621,24 +4512,6 @@ def _versions_line(rv: Any, key: str, current: str | None) -> str:
     return line
 
 
-def _edit_line(e: Any) -> str:
-    """v2.1i: 적용 못 한 edit 한 줄(앞 시도 글): ``- replace <path> — <desc>: old '…' → new '…'``(텍스트는 잘라서).
-
-    One edit that did not apply, for `FixContext.previous_edits`: op, path, desc and its texts (capped)."""
-    def cut(text: Any) -> str:
-        t = str(text or "")
-        return repr(t if len(t) <= PREVIOUS_EDIT_TEXT else t[:PREVIOUS_EDIT_TEXT] + "…")
-    op, path = str(getattr(e, "op", "") or "?"), str(getattr(e, "path", "") or "?")
-    line = f"- {op} {path}" + (f" — {getattr(e, 'desc', '')}" if getattr(e, "desc", "") else "")
-    if op == "replace":
-        line += f": old {cut(getattr(e, 'old', ''))} → new {cut(getattr(e, 'new', ''))}"
-    elif op in ("write", "create"):
-        line += f": content {cut(getattr(e, 'content', ''))}"
-    elif op == "move":
-        line += f" → {getattr(e, 'to', '')}"
-    elif getattr(e, "pom", None):
-        line += f": pom {cut(e.pom)}"
-    return line
 
 
 def _try_note(att: FixAttempt) -> str:

@@ -137,7 +137,7 @@ def test_only_a_script_runs_it_and_stores_it_first(cfg, ws):
 def test_no_script_and_no_edits_is_a_declined_try_with_its_reason(cfg, ws):
     """v2.1y (E-M1): an answer with neither a script nor edits is "declined" — outcome blocked, the case BLOCKED
     needs_owner at once (script.max_declines_per_case 1) with the reason as the Korean suggestion; no second ask."""
-    cfg.script.max_augments_per_case = 3
+    cfg.script.max_llm_tries_per_case = 3
     el = FakeErrorList()
     fixer = FakeFixer(scripts=[answer(no_script_reason="the fix depends on business rules", error="no script and no "
                                                                                                   "edits")])
@@ -156,7 +156,7 @@ def test_no_script_and_no_edits_is_a_declined_try_with_its_reason(cfg, ws):
 def test_an_unusable_answer_is_still_a_failed_try(cfg, ws):
     """Not declined: an answer still asking for files (or unparsable / with broken edits) stays apply_failed and the
     ladder asks again."""
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 1
     el = FakeErrorList()
     fixer = FakeFixer(scripts=[answer(analysis="need the pom", error="still requesting context after 2 round(s)")])
     pr = make_loop(cfg, ws, broken_build(FOO), fixer, errors=el).run(Phase.VERIFY, "package", 3)
@@ -196,7 +196,7 @@ def test_stored_script_fails_then_augment_says_no_script_and_gives_edits(cfg, ws
     assert (t2.source, t2.applied, t2.result, t2.round) == ("llm-edit", "edits", "build_ok", 2)
     out = lines(logs)
     assert (f"fix r1 {CASE}", "KB 탐색: 저장된 스크립트 v1 (proven, 성공 3 / 실패 0, 프로젝트 2) → 실행") in out
-    assert any(st == f"fix r2 {CASE}" and "이번 실행에서 v1 실패 → LLM 보강 요청 (1/3, v1 기준)" in m for st, m in out)
+    assert any(st == f"fix r2 {CASE}" and "이번 실행에서 v1 실패 → LLM 보강 요청 (1/20, 보강 1/15, v1 기준)" in m for st, m in out)
     assert any(st == f"fix r2 {CASE}" and m.startswith("롤백: v1 (verify-1-1, no_change) 되돌림") for st, m in out)
     assert any(st == f"fix r2 {CASE}" and "script 없음 (이유: each project names the getter differently)" in m
                for st, m in out)
@@ -226,6 +226,7 @@ def test_one_stored_plus_three_llm_tries_then_blocked(cfg, ws, logs):
     def useless(w, c, ctx):
         n["i"] += 1
         return answer(code=write_script({"notes.txt": f"llm {n['i']}\n"}).code)
+    cfg.script.max_llm_tries_per_case = 3                     # v2.1z: the old per-case total (default 20)
     loop = make_loop(cfg, ws, broken_build(FOO), FakeFixer(script_fn=useless), kb=kb, errors=el)
     pr = loop.run(Phase.VERIFY, "package", 50)
     assert not pr.ok and n["i"] == 3
@@ -287,7 +288,7 @@ def test_stage_tags_for_the_watchdog_milestones(cfg, ws, logs):
 
 
 def test_the_edit_applier_gets_the_case_errors_and_a_failure_restores_the_tree(cfg, ws):
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 1
     seen = {}
 
     class Applier(FakeEditApplier):

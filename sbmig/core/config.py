@@ -634,12 +634,19 @@ class ScriptConfig(BaseModel):
     max_code_chars: int = 30000              # a longer script is refused (status rejected)
     log_lines: int = 200                     # p.log lines kept per run
     max_files_changed_warn: int = 40         # a run that changes more files gets a warning note (the diff is kept)
-    # 사다리 한도: 저장된 스크립트 재사용(reuse_versions 개, LLM 없음) → 보강(max_augments_per_case 번) →
-    # 그래도 안 되면 BLOCKED(repeated_failure)로 인수인계.
+    # 사다리 한도(v2.1z, 2026-11-02, 사용자: "여유롭게 잡고 진행하다가 점차 줄여가는 방식"): 저장된 스크립트 재사용
+    # (reuse_versions 개, LLM 없음) → 보강(max_augments_per_case 번: 이 실행에서 코드가 있었던 마지막 시도를 늘림) → 보강을 다
+    # 쓰면 새로 작성 → 케이스당 LLM 요청(신규 + 보강)이 max_llm_tries_per_case 에 닿으면 BLOCKED(repeated_failure)로 인수인계.
+    # v2.1z 전에는 max_augments_per_case(3) 하나가 신규까지 합쳐 셌다; 회사가 올려 쓰던 15 가 이제 기본이다.
     reuse: bool = True                       # same case seen before → run its best stored version first (no LLM)
     reuse_versions: int = 1                  # stored versions tried per case and run before the LLM is asked
-    max_augments_per_case: int = 3           # LLM extensions per case and run; then the case is BLOCKED
-                                             # (repeated_failure) and handed over
+    # v2.1z (2026-11-02): generous defaults, to be lowered once the company runs show what a case really needs. augments =
+    # LLM extensions of this run's last code-bearing try (augment steps only; used up → the next ask is a fresh `new`);
+    # llm tries = every LLM ask for the case in this run (new + augment) — at the cap the case is BLOCKED (repeated_failure)
+    # and handed over. Both are plain caps (0 augments = never augment; 0 tries = never ask the LLM for the case). Before
+    # v2.1z one counter (3) counted new + augment together.
+    max_augments_per_case: int = 15          # augment steps per case and run
+    max_llm_tries_per_case: int = 20         # LLM asks per case and run (new + augment); then BLOCKED repeated_failure
     # v2.1y (2026-10-31, 프롬프트 검토 E-M1): 편집도 스크립트도 없이 "프로젝트 밖의 일" 이라고 답한 케이스는 이 횟수 뒤 BLOCKED
     # needs_owner (legacy-ibatis: 같은 원인 3 케이스 × 3 회 = 9 회 호출이 1 회로). 같은 파일의 형제 케이스는 호출 없이 같은 차단.
     # v2.1y: declined answers (no edits, no script, a blocker outside the project) allowed per case before BLOCKED needs_owner;
@@ -719,18 +726,9 @@ class FixConfig(BaseModel):
     `fn(options: dict, cfg: Config, llm: LLMClientLike | None) -> FixerLike`."""
     plugin: Optional[str] = None
     plugin_options: dict[str, Any] = Field(default_factory=dict)
-    # v2.1i (2026-10-28, user: "스크립트 만드는 부분을 껐다 켰다 하는 기능" — a fair token comparison for the business
-    # team): `script` = the v2 ladder (the LLM answers with edits AND a reusable fix script, stored per case and reused on
-    # later projects); `edits` = the LLM answers with edits only — no script rules, no helper API in the prompt, no
-    # script storage / reuse / augment; every try is a fresh ask (same per-case LLM asks as script mode: script.max_augments_per_case).
-    # 수정 방식: script = 스크립트 사다리(기본), edits = LLM 이 수정 내용만(스크립트 생성·저장·재사용 없음) — 토큰 비교용.
-    mode: Literal["script", "edits"] = "script"
-    # edits 모드에서 케이스당 LLM 요청 상한. 0 = 무제한(기본; 라운드 50·실행 시간·loop.max_llm_calls 만 남는다 — "전부 LLM 에게
-    # 맡겼을 때" 의 토큰을 재는 용도, 2026-10-29), 양수 = 그 횟수 뒤 repeated_failure 로 차단(script 모드와 같게 하려면 3).
-    # 무제한이면 loop.blocked_policy 의 양수 횟수도 적용하지 않는다(0 인 사유는 그대로 바로 Handover).
-    # edits mode: LLM asks per case; 0 = no cap (only the rounds, the time budget and loop.max_llm_calls stop it;
-    # the positive loop.blocked_policy counts are lifted too, the 0 ones still block at once), > 0 = BLOCKED after that many.
-    edits_max_asks_per_case: int = 0
+    # v2.1i 의 `mode: script | edits` 와 `edits_max_asks_per_case`(토큰 비교용 스위치)는 v2.1z(2026-11-02) 에서 제거됐다 —
+    # 수정은 언제나 스크립트 사다리다. / The v2.1i `mode` / `edits_max_asks_per_case` switches (the token comparison) were
+    # removed in v2.1z: the fix is always the script ladder.
 
 
 class KBConfig(BaseModel):

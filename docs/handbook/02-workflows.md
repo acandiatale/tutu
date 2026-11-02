@@ -68,7 +68,6 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 | `--run-id` | run id 직접 지정. 같은 id의 `project/`가 이미 있으면 실패합니다. |
 | `--stop-after` | `intake`, `analyze`, `plan`, `jdk21`, `spring`, `restructure`, `verify` 중 하나에서 멈춤([01 §8.1](01-pipeline.md)) |
 | `--dry-run` | 결정만 계산하고 아무것도 적용하지 않음([01 §8.2](01-pipeline.md)) |
-| `--no-kb` | KB를 쓰지도 채우지도 않음(harvest, 활성 레시피, patch replay, 힌트, 후보 생성 모두 끔) |
 | `--llm-provider` | `llm.provider` 덮어쓰기(예: `fake`로 LLM 없이) |
 | `--llm-plugin` / `--fix-plugin` | 사내 어댑터 `pkg.module:attr`([03. 아키텍처](03-architecture.md), `docs/ADAPTERS.md`) |
 | `--java-home` | `build.java_home` 덮어쓰기(JDK 21 경로) |
@@ -84,7 +83,7 @@ sbmig run path/to/project.zip --config config/artifacts.yml --out out/
 1. `.env` 파일을 환경 변수로 읽기: `SBMIG_ENV_FILE`, sbmig 저장소 루트의 `.env`, 현재 디렉터리의 `.env`. **이미 셸에 있는 변수는 덮어쓰지 않습니다.**
 2. `config/default.yml`
 3. `--config`로 준 파일들, 준 순서대로
-4. CLI 옵션이 만든 덮어쓰기(`--java-home`, `--settings`, `--llm-provider`, `--no-kb` …)
+4. CLI 옵션이 만든 덮어쓰기(`--java-home`, `--settings`, `--llm-provider` …)
 5. `SBMIG_` 환경 변수: `SBMIG_LLM__MODEL=foo` → `llm.model = foo`(밑줄 두 개가 중첩)
 6. `${VAR}` / `${VAR:-기본값}` 치환(예: `llm.base_url: "${LLM_BASE_URL}"`)
 
@@ -210,7 +209,7 @@ sequenceDiagram
 ```
 
 1. **요청 검증**: 본문이 비었거나 zip이 아니거나(`PK` 서명) 업로드 한도(기본 512 MB, `--max-upload-mb` / `SBMIG_MAX_UPLOAD_MB`, `0` = 없음)를 넘으면 400 / 413. 본문은 메모리에 모으지 않고 `<out>/_uploads/.incoming-*.part`로 받으면서 한도와 서명을 검사합니다(거절되면 그 파일은 지웁니다). 설정 이름은 `<repo root>/config/` 안의 파일만 허용합니다. `stop_after`는 CLI와 같은 `parse_stop_after`로 검사합니다. 설정이 잘못되면(예: artifacts 누락) 이 단계에서 400으로 돌아옵니다.
-2. **저장과 준비**: 받아 둔 파일을 `<out>/_uploads/<run id>-<파일명>`으로 옮기고, `Workspace.from_input`으로 `<out>/web-YYYYMMDD-HHMMSS-<hex>/project`에 풉니다. 웹 실행은 항상 KB를 씁니다(`--no-kb`에 해당하는 옵션이 없습니다).
+2. **저장과 준비**: 받아 둔 파일을 `<out>/_uploads/<run id>-<파일명>`으로 옮기고, `Workspace.from_input`으로 `<out>/web-YYYYMMDD-HHMMSS-<hex>/project`에 풉니다. 웹 실행은 항상 KB를 씁니다.
 3. **직렬 실행**: KB가 파일 기반이고 모든 실행이 공유하므로 `RunManager._run_lock`으로 **한 번에 한 마이그레이션만** 돌립니다. 기다리는 실행은 `queued`입니다.
 4. **스트리밍**: 작업 스레드가 `sbmig.graph.stream_graph`로 노드 업데이트를 받아 기록합니다. SSE 생성기는 그 기록과 `journal.jsonl`, `sbmig.log`의 새 줄을 0.5초마다 읽어 **시각 순으로 섞어** 보냅니다(journal과 로그가 순서가 뒤바뀌어 보이던 문제, round 9).
 5. LangGraph를 가져올 수 없으면 `Orchestrator.run()`(inline)으로 대신 돌립니다. 보고서와 종료 코드는 같지만 `node` 이벤트가 없고 그래프 줄이 어둡게 남습니다.
@@ -590,7 +589,7 @@ sbmig kb validate some-recipe.yml                                  # 레시피 Y
 
 ### 6.5 KB를 끄거나 따로 쓰기
 
-- `sbmig run --no-kb`: 이번 실행은 KB를 읽지도 쓰지도 않습니다.
+- KB 없이 돌리기: 프로그램에서 `sbmig.api.migrate(kb=False)`(CLI `--no-kb` 는 v2.1z 에서 삭제).
 - `kb.dir`: 저장소 루트 기준 상대 경로(기본 `kb`). 로컬 e2e / 시연은 `out/e2e/kb`처럼 `out/` 아래를 씁니다(불변식 6: 시험 실행은 저장소의 `kb/`에 쓰지 않음).
 - 오프라인 시연: `scripts/demo-kb/run.sh`(같은 오류를 두 번 마이그레이션). 1회차는 재생 LLM이 `@JsonComponent`를 고쳐 사례와 후보를 남기고, 2회차는 후보 레시피로 LLM 없이 고치면서 승격시킵니다.
 
@@ -615,7 +614,7 @@ sbmig kb validate some-recipe.yml                                  # 레시피 Y
 
 - 후보를 무조건 승격: 거짓 양성 레시피는 **모든** 다음 프로젝트의 OpenRewrite 실행에 들어갑니다. 서명과 레시피 범위를 보고 승격하십시오.
 - 손으로 KB 파일을 고치고 `reindex`를 안 함: 매칭 색인이 옛 상태로 남습니다.
-- 시험 실행으로 운영 KB를 오염: 시험은 `kb.dir`을 `out/` 아래로 두거나 `--no-kb`를 쓰십시오.
+- 시험 실행으로 운영 KB를 오염: 시험은 `kb.dir`을 `out/` 아래로 두십시오.
 
 ---
 

@@ -8,9 +8,7 @@ clean_code, script_problem, normalize_path.
 읽힌다. 산문·데이터 블록을 먼저 꺼내 지우므로(masking) 분석이나 JSP 편집 속의 `<script>` 가 수정 스크립트로
 오인되지 않는다. 여기서는 "파싱되고 모듈 수준 `def fix` 가 있는가" 만 보고, 진짜 정적 검사는
 `sbmig.script.check_script`, 편집 항목의 op / pom 호출 / 경로 검증은 `sbmig.script.edits.edits_from_json`
-몫이다. `<verify>` 만 있는 답은 답으로 치지 않는다. v2.1i `fix.mode: edits`: `parse_script_response(text,
-expect_script=False)` 는 스크립트를 기대하지 않는다 — `<script>` 가 없어도 문제·경고가 없고, 있으면 꺼내지 않고
-`script_ignored` 로만 알린다(편집이 수정 전부). v2.1y `<blocked>한 문장</blocked>`: 프로젝트 안에서 못 고치는
+몫이다. `<verify>` 만 있는 답은 답으로 치지 않는다. v2.1y `<blocked>한 문장</blocked>`: 프로젝트 안에서 못 고치는
 이유(소유팀 결정) → `blocked_reason`(공백을 한 칸으로, 최대 BLOCKED_MAX_CHARS 자; 빈 태그는 "(no reason given)").
 편집과 함께 와도 편집은 그대로 읽는다 — 거절로 분류하는 것은 루프 몫이다.
 
@@ -43,11 +41,6 @@ project) → `ParsedScript.blocked_reason` → `ScriptProposal.blocked_reason`: 
 collapsed to one space, at most BLOCKED_MAX_CHARS characters ("…" when cut), "(no reason given)" for an empty tag;
 masked like the other prose blocks. Edits next to it are still read (the loop decides what a blocked answer means).
 
-v2.1i (`fix.mode: edits`): `parse_script_response(text, expect_script=False)` reads an edits-only answer — no script is
-expected, so a missing `<script>` is neither a problem nor a warning (`problem` stays ""); a `<script>` block that is
-there anyway is located (and masked) but never taken: `code` / `candidate` stay "", `script_ignored` is True and a
-warning says so. A bare python fence is not looked for. The default (`expect_script=True`) is unchanged.
-
 Change notes (v2.1b, `ParsedScript.changes` → `FixAnswer.changes`): the `<changes>` list (`{"path", "where",
 "change"}`, required with a script, allowed with edits) first, then each edit's `desc` for a path the list did not
 describe (`sbmig.script.notes.answer_notes`). Same tolerant JSON as the edits; a bullet list ("path: what") is read
@@ -77,8 +70,6 @@ from typing import Any, Optional
 from sbmig.core.models import Edit, EditNote
 
 NO_SCRIPT = "no <script> block"
-NO_EDITS = "no <edits> block"                                  # v2.1i edits mode: an answer without edits
-SCRIPT_IGNORED = "<script> ignored (fix.mode: edits — the edits are the fix)"
 EDITS_UNREADABLE = "edits JSON unreadable"
 EDITS_INVALID = "edits invalid"
 NO_FIX_DEF = "script has no def fix(p)"
@@ -125,7 +116,6 @@ class ParsedScript:
     need_files: list[str] = field(default_factory=list)
     need_grep: list[str] = field(default_factory=list)
     problem: str = ""                              # why `code` is empty: NO_SCRIPT, NO_FIX_DEF, "script does not parse…"
-    script_ignored: bool = False                   # v2.1i expect_script=False: a <script> block was there and dropped
     raw: str = ""
     warnings: list[str] = field(default_factory=list)
 
@@ -502,15 +492,12 @@ def _take_block(t: str, masked: str, name: str) -> tuple[Optional[str], str]:
 # ---------------------------------------------------------------------------
 # entry point
 # ---------------------------------------------------------------------------
-def parse_script_response(text: str, *, expect_script: bool = True) -> ParsedScript:
+def parse_script_response(text: str) -> ParsedScript:
     """LLM 답 하나 → ParsedScript(절대 예외 없음). 순서가 중요하다: 산문·데이터 블록(analysis → solution →
     verify → edits → changes → no_script)을 먼저 꺼내 지우고, 다음 문맥 요청, 마지막에 스크립트(태그, 없으면
-    펜스). 태그된 것이 하나도 없으면 PROTOCOL_WARNING 과 함께 답 앞 500자를 analysis 로. v2.1i
-    `expect_script=False`(edits 모드): 스크립트를 찾지 않는다 — 없어도 문제가 아니고, `<script>` 블록이 있으면
-    버리고 `script_ignored` 를 켠다.
+    펜스). 태그된 것이 하나도 없으면 PROTOCOL_WARNING 과 함께 답 앞 500자를 analysis 로.
 
-    One LLM answer → ParsedScript (never raises). `expect_script=False` (v2.1i `fix.mode: edits`): an edits-only
-    answer — no NO_SCRIPT problem, a `<script>` block is dropped (`script_ignored`), no fence fallback."""
+    One LLM answer → ParsedScript (never raises)."""
     raw = text or ""
     res = ParsedScript(raw=raw)
     t = raw.replace("\r\n", "\n").replace("\r", "\n")
@@ -557,31 +544,22 @@ def parse_script_response(text: str, *, expect_script: bool = True) -> ParsedScr
             if item and item not in res.need_grep:
                 res.need_grep.append(item)
 
-    if not expect_script:
-        # edits 모드: 스크립트 블록은 찾아서 버리기만 한다(코드로 쓰지 않음) — 없다고 문제 삼지 않는다
-        # edits mode: a <script> block is dropped, never used; its absence is no problem
-        if _script_from_tag(masked, 0, []) is not None:
-            res.script_ignored = True
-            res.warnings.append(SCRIPT_IGNORED)
-        elif _PATCHES_RE.search(masked):
-            res.warnings.append(PATCHES_WARNING)
+    body = _script_from_tag(masked, 0, res.warnings)
+    if body is None:
+        body = _script_from_fence(masked, res.warnings)
+    if body is not None:
+        res.candidate = clean_code(body)
+        res.problem = script_problem(res.candidate)
+        if not res.code and not res.problem:
+            res.code = res.candidate
     else:
-        body = _script_from_tag(masked, 0, res.warnings)
-        if body is None:
-            body = _script_from_fence(masked, res.warnings)
-        if body is not None:
-            res.candidate = clean_code(body)
-            res.problem = script_problem(res.candidate)
-            if not res.code and not res.problem:
-                res.code = res.candidate
-        else:
-            res.problem = NO_SCRIPT
-            if _PATCHES_RE.search(masked):
-                res.warnings.append(PATCHES_WARNING)
+        res.problem = NO_SCRIPT
+        if _PATCHES_RE.search(masked):
+            res.warnings.append(PATCHES_WARNING)
 
     # <verify> 만 있는 답은 답으로 치지 않는다(아래 목록에 verify 가 없는 이유)
     answered = (res.code or res.candidate or res.wants_context or res.analysis or res.solution or res.edits_block
-                or res.no_script_reason or res.blocked_reason or res.changes_block or res.script_ignored)
+                or res.no_script_reason or res.blocked_reason or res.changes_block)
     if not answered and raw.strip():
         res.warnings.append(PROTOCOL_WARNING)
         res.analysis = raw.strip()[:500]
@@ -599,12 +577,10 @@ __all__ = [
     "CHANGES_UNREADABLE",
     "EDITS_INVALID",
     "EDITS_UNREADABLE",
-    "NO_EDITS",
     "NO_FIX_DEF",
     "NO_SCRIPT",
     "PATCHES_WARNING",
     "PROTOCOL_WARNING",
-    "SCRIPT_IGNORED",
     "ParsedScript",
     "blocked_text",
     "clean_code",

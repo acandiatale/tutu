@@ -22,10 +22,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from sbmig.core.interfaces import KnowledgeBaseLike, LLMAdapterLike, LLMClientLike, ScriptFixerLike
     from sbmig.core.models import RunReport
 
-# `kb=False` / `--no-kb`: KB 를 읽지도 쓰지도 않는다(NullKnowledgeBase — 저장된 스크립트 재사용 없음, 기록
+# `kb=False`: KB 를 읽지도 쓰지도 않는다(NullKnowledgeBase — 저장된 스크립트 재사용 없음, 기록
 # 없음). 실행 디렉토리의 errors.jsonl / errors.md 는 그래도
 # 쓴다. v2.1 설정에는 KB 스위치가 없어 덮어쓸 키도 없다.
-# `kb=False` here and `sbmig run --no-kb`: the knowledge base is neither read nor fed — the KB object is a
+# `kb=False` here: the knowledge base is neither read nor fed — the KB object is a
 # NullKnowledgeBase (no stored fix script is reused, nothing is recorded); the run's own errors.jsonl / errors.md are
 # still written to the run dir. v2.1 has no KB switches left in the config, so nothing is overridden.
 NO_KB_OVERRIDES: dict = {}
@@ -69,7 +69,7 @@ def migrate(
                Recorded to `llm.record_dir` when that is set.
     fixer      a fixer with `propose_script(ws, cluster, ctx) -> ScriptProposal` (ScriptFixerLike) replacing
                LLMFixer (takes precedence over `fix.plugin`).
-    kb         None/True → the file knowledge base; False → no KB (like --no-kb); an object → used as is.
+    kb         None/True → the file knowledge base; False → no KB (a NullKnowledgeBase); an object → used as is.
     stop_after intake|analyze|plan|transform|restructure (v2; jdk21|spring are v1 phases).
     components advanced: extra Orchestrator collaborators (build_runner, rewrite_runner, restructurer, …).
     Returns the RunReport; `exit_code(report)` maps it to the CLI exit code (0 / 2 / 3)."""

@@ -1706,7 +1706,7 @@ round 10(2026-10-26)에서 기록 형식이 바뀌었습니다. 이전 KB는 옮
 | 실패 문구 | `partial` / `inconclusive` 시도의 실패 이유는 루프의 노트("partial: 1 of 2 targeted error(s) gone, 1 remain", "inconclusive: the build timed out …") |
 | CSV | `error_cases.csv`에 16열 추가(`diff_excerpt` 앞): `signature`(L1), `location`, `module`, `case_type`, `asis_java`, `asis_spring_boot`, `asis_spring`, `packaging`, `targeted`, `resolved_by`, `fix_labels`, `at`, `introduced_by`, `notes`, `schema_version`, `raw`. 수식 방지 `'`는 `=` / `@` / 탭 / CR로 시작하거나, `+` / `-`로 시작하면서 괄호, 세로 막대, `!`, `=`, `@` 중 하나를 담은 칸에만(`-source 8`, `-Xmx512m`은 그대로) |
 | 파일 안전 | 모든 KB 쓰기는 `kb/.lock` 안에서(pid / host / 시각 / 토큰, `kb.lock_timeout_seconds`(300)이 지나거나 pid가 없으면 stale, 기다리다 안 되면 로그를 남기고 진행). append-only jsonl은 찢어진 마지막 줄을 `<file>.corrupt`로 옮긴 뒤 덧붙이고 묶음마다 fsync. 검증할 수 없는 줄은 경고 + `kb/quarantine.jsonl`. `index.json`은 디스크에서 바뀌면 다시 읽음(웹 + 플릿 + `sbmig kb …`가 한 KB를 같이 써도 됨) |
-| 기타 | `summary()` / `stats()`는 스트리밍(3만 건: +342 MB → +11 MB). `kb import --replace`는 숨은 형제 디렉터리에 만든 뒤 이름 바꾸기로 교체하고 `kb.bak-<ts>`를 남김. `replace-candidates`는 `***`가 든 쌍을 내지 않음. `--no-kb`는 카탈로그, 학습한 치환, 에러 힌트, 계획 안의 후보 레시피, ledger, 심볼 색인, 결정적 후보도 끔(`error_cases`는 켜 둠) |
+| 기타 | `summary()` / `stats()`는 스트리밍(3만 건: +342 MB → +11 MB). `kb import --replace`는 숨은 형제 디렉터리에 만든 뒤 이름 바꾸기로 교체하고 `kb.bak-<ts>`를 남김. `replace-candidates`는 `***`가 든 쌍을 내지 않음. `--no-kb`(v2.1z 에서 CLI 삭제, `migrate(kb=False)` 로 남음)는 카탈로그, 학습한 치환, 에러 힌트, 계획 안의 후보 레시피, ledger, 심볼 색인, 결정적 후보도 끔(`error_cases`는 켜 둠) |
 
 ### 10.4 케이스 카탈로그 (2026-10-23)
 

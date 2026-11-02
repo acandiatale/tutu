@@ -27,7 +27,7 @@
 | 0 | `.env` 읽기 | `load_dotenv_files()`가 `$SBMIG_ENV_FILE` → `<sbmig 저장소 루트>/.env` → `<현재 디렉터리>/.env` 순으로 `KEY=VALUE` 줄을 `os.environ`에 넣습니다. **이미 설정된 환경 변수는 덮어쓰지 않습니다**(셸 변수가 이김, 여러 `.env` 사이에서는 먼저 읽은 파일이 이김). `export KEY=…`, 따옴표, ` #` 주석을 허용합니다. |
 | 1 | `config/default.yml` | 항상 먼저 읽힙니다(`DEFAULT_CONFIG_PATH`). |
 | 2 | `--config` 파일들 | 지정한 순서대로 깊은 병합(`deep_merge`)합니다. 나중 파일이 이깁니다. |
-| 3 | overrides | CLI 플래그(`--java-home`, `--settings`, `--llm-provider`, `--llm-plugin`, `--fix-plugin`, `--no-kb`), 웹의 `llm_provider` 파라미터, `sbmig.api.migrate(overrides=…)`. |
+| 3 | overrides | CLI 플래그(`--java-home`, `--settings`, `--llm-provider`, `--llm-plugin`, `--fix-plugin`), 웹의 `llm_provider` 파라미터, `sbmig.api.migrate(overrides=…)`. |
 | 4 | `SBMIG_*` 환경 변수 | `SBMIG_LLM__MODEL=foo` → `llm.model = foo`(밑줄 두 개 = 한 단계 중첩, 값은 YAML로 해석). **CLI 플래그보다도 나중에 적용되므로 CLI보다 우선합니다.** |
 | 5 | `${VAR}` 치환 | 병합이 끝난 모든 문자열 값에서 `${VAR}` / `${VAR:-기본값}`을 환경 변수로 치환합니다. 변수가 없고 기본값도 없으면 `${VAR}` 글자가 그대로 남습니다. |
 | 6 | `--repo-root` | 지정하면 `repo_root`를 덮어씁니다. |
@@ -241,10 +241,10 @@ SBMIG_LLM__MODEL=x             ← 4단계라 CLI보다도 우선
 | `kb.ledger` | bool | `true` | `<kb.dir>/ledger.jsonl`에 해결 기록 추가. | 끄지 않습니다. | [05](05-directories-and-storage.md) |
 | `kb.symbol_index` | bool | `true` | `<kb.dir>/symbols.json` 유지 + 심볼 힌트. | 끄지 않습니다. | [05](05-directories-and-storage.md) |
 | `kb.deterministic_candidates` | bool | `true` | 라벨에서 LLM 없이 레시피 후보 생성. | 끄지 않습니다. | [04](04-triage-and-loop.md) |
-| `kb.use_active_recipes` | bool | `true` | 승격된 KB 레시피를 매 실행에 포함. | 문제 레시피를 의심할 때 일시적으로 false(또는 `--no-kb`). | [05](05-directories-and-storage.md) |
+| `kb.use_active_recipes` | bool | `true` | 승격된 KB 레시피를 매 실행에 포함. | 문제 레시피를 의심할 때 일시적으로 false. | [05](05-directories-and-storage.md) |
 | `kb.use_patch_replay` | bool | `true` | 이전 성공 패치 재적용(LLM 없이). | 위와 같음. | [04](04-triage-and-loop.md) |
 | `kb.use_hints` | bool | `true` | KB 힌트를 프롬프트에 포함. | 위와 같음. | — |
-| `kb.harvest` | bool | `true` | 실행 결과를 KB에 수확. | 시험 실행에서 KB를 오염시키지 않으려면 false(또는 `--no-kb`). | [05](05-directories-and-storage.md) |
+| `kb.harvest` | bool | `true` | 실행 결과를 KB에 수확. | 시험 실행에서 KB를 오염시키지 않으려면 false. | [05](05-directories-and-storage.md) |
 | `kb.generate_recipe_candidates` | bool | `true` | 수확 시 LLM(recipe 모델)으로 레시피 후보 생성. | LLM 예산 절약 시 false. | [05](05-directories-and-storage.md) |
 | `kb.auto_promote_after_projects` | int | `2` | 서로 다른 N개 프로젝트에서 실패 없이 성공하면 후보 → active. 레시피와 케이스 카탈로그의 `replace` 동작에 같은 값을 씁니다. 0 = 자동 승격 안 함. | 수동 검토만 허용할 때 0. | [05](05-directories-and-storage.md) |
 | `kb.try_candidates_in_plan` | bool | `true` | 후보 레시피를 plan의 OpenRewrite 단계에서 함께 실행하고 단계 빌드 결과로 평가. | 후보가 빌드를 자주 깨뜨릴 때 false. | [05](05-directories-and-storage.md) |

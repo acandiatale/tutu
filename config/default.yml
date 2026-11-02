@@ -267,7 +267,10 @@ script:                            # v2 fix scripts (docs/v2/PLAN-v2.md §3.2): 
   max_files_changed_warn: 40       # a run that changes more files gets a warning note
   reuse: true                      # case seen before → its best stored version runs first, without an LLM call
   reuse_versions: 1
-  max_augments_per_case: 3         # LLM extensions per case and run, then BLOCKED (repeated_failure) → Handover
+  max_augments_per_case: 15        # v2.1z: augment steps per case and run (the LLM extends this run's last script); used up →
+                                   # a fresh script is asked for instead. 0 = never augment
+  max_llm_tries_per_case: 20       # v2.1z: every LLM ask for a case in one run (new + augment), then BLOCKED (repeated_failure)
+                                   # → Handover. Generous on purpose (2026-11-02) — lower it once the company runs show the need
   max_declines_per_case: 1         # v2.1y: answers with neither edits nor a script (a blocker outside the project) before BLOCKED
                                    # needs_owner; sibling cases with the same cause are blocked without another LLM call
   idempotency_check: true          # v2.1y: the script runs once more right after `ok`; a second change marks it non_idempotent (not reused)
@@ -300,11 +303,11 @@ review:                            # v2 structure review: the LLM checks poms / 
   invariant_check: true            # v2.1y: the restructure's invariants are re-checked after the review's edits (restore + one retry)
   save_input: true                 # v2.1v: the review's user prompt is kept as <run dir>/logs/review-input.md
 
-fix:
-  mode: script                     # v2.1i: script = fix scripts stored per case and reused (default) | edits = the LLM answers
-                                   # with edits only (no script generation / storage / reuse) — for the token comparison
-  edits_max_asks_per_case: 0       # edits mode: LLM asks per case; 0 = no cap (the whole fix is left to the LLM — rounds, time
-                                   # and loop.max_llm_calls still stop it), > 0 = BLOCKED after that many (3 = like script mode)
+fix:                               # adapter tier 2 (docs/ADAPTERS.md): the whole fixer replaced by an in-house coding agent
+  plugin: null                     # "pkg.module:attr" — a FixerLike class or factory that honours propose_script (invariant 4)
+  plugin_options: {}
+                                   # v2.1z (2026-11-02): the v2.1i switches `fix.mode: edits` / `edits_max_asks_per_case` and
+                                   # `--no-kb` (the token comparison) are gone — the fix is always the script ladder with the KB
 
 kb:
   dir: kb-v2                       # v2.1: errors.jsonl (every run's error list), cases.md, cases/<case_id>/ (case.json + fix_v<N>.py)

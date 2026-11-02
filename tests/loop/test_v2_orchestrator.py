@@ -137,7 +137,7 @@ def test_the_error_list_reaches_the_report_and_the_kb(cfg, ws):
 
 
 def test_final_build_is_always_attempted_when_the_scripts_fail(cfg, ws):
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 1
     n = {"i": 0}
 
     def useless(w, c, ctx):

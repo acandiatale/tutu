@@ -91,7 +91,7 @@ def test_a_script_run_takes_the_changes_list_not_the_unapplied_edits(cfg, ws):
 
 
 def test_a_try_that_applied_nothing_has_no_notes(cfg, ws):
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 1
     el = FakeErrorList()
     ans = answer(edits=[{"op": "replace", "path": FOO, "old": "no such text", "new": "x", "desc": "never applied"}])
     make_loop(cfg, ws, broken_build(FOO), FakeFixer(scripts=[ans]), errors=el).run(Phase.VERIFY, "package", 3)

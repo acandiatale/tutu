@@ -422,7 +422,7 @@ def test_nothing_resolvable_falls_through_to_the_llm_in_the_same_round_with_the_
 def test_the_sbmig_version_try_does_not_use_up_an_llm_try_and_runs_once_per_pom_and_artifact(cfg, tmp_path,
                                                                                               monkeypatch):
     cfg = cfg.model_copy(deep=True)
-    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 1
     use_lookup(monkeypatch, Lookup())
     ws = _ws(tmp_path, {"pom.xml": _pom([(TEXT, None), (YAML, None)])})
     _captures(ws, ASIS)
@@ -504,18 +504,6 @@ def test_the_sbmig_version_try_runs_when_the_llm_budget_is_used_up(cfg, tmp_path
     fixer = FakeFixer()
     pr = make_loop(cfg, ws, fixer, pom_build()).run(Phase.VERIFY, "package", 2)
     assert pr.ok and fixer.contexts == [] and [a.source for a in pr.attempts] == [SBMIG_VERSION_SOURCE]
-
-
-def test_edits_mode_gets_the_same_zero_llm_try(cfg, tmp_path):
-    cfg = cfg.model_copy(deep=True)
-    cfg.fix.mode = "edits"
-    ws = _ws(tmp_path, {"pom.xml": _pom([(TEXT, None)])})
-    _captures(ws, ASIS)
-    fixer = FakeFixer()
-    pr = make_loop(cfg, ws, fixer, pom_build()).run(Phase.VERIFY, "package", 2)
-    assert pr.ok and fixer.contexts == []
-    [att] = pr.attempts
-    assert att.source == SBMIG_VERSION_SOURCE and subjects(ws)[0] == f"fix(sbmig-version): {att.cluster_id}"
 
 
 # --------------------------------------------------------------------------- review fixes: ordering and retries
@@ -604,7 +592,7 @@ def test_an_apply_failure_does_not_use_up_the_zero_llm_try(cfg, tmp_path):
 def test_a_pair_whose_try_keeps_failing_to_apply_is_given_up_after_three(cfg, tmp_path):
     from sbmig.loop.fixloop import VERSION_TRY_APPLY_FAILURES
     cfg = cfg.model_copy(deep=True)
-    cfg.script.max_augments_per_case = 5
+    cfg.script.max_llm_tries_per_case = 5
     ws = _ws(tmp_path, {"pom.xml": _pom([(TEXT, None)])})
     _captures(ws, ASIS)
     pr = make_loop(cfg, ws, FakeFixer(), pom_build(), applier=FlakyApplier(99)).run(Phase.VERIFY, "package", 6)

@@ -15,7 +15,7 @@ def test_null_kb_is_what_the_v2_flow_calls():
     m = kb.match(c, None, None)
     assert isinstance(m, KBMatch) and m.case_hits == [] and m.hints == []
     assert kb.cases is None                                # no store: nothing reused, LLM scripts run unstored (v0)
-    assert kb.record_run([object()]) == 0                  # --no-kb: errors.jsonl stays in the run dir
+    assert kb.record_run([object()]) == 0                  # no KB: errors.jsonl stays in the run dir
     assert not hasattr(kb, "scripts") and not hasattr(kb, "record_review")    # v2.1: gone from the facade
 
 

@@ -430,11 +430,11 @@ git status --short kb                                                           
 
 운영 습관:
 1. **후보 검토**: `sbmig kb list --status candidate` → `sbmig kb show <id>`로 YAML 확인 → `sbmig kb promote <id>` 또는 `sbmig kb reject <id> --reason "…"`. 자동 승격은 서로 다른 `kb.auto_promote_after_projects`(기본 2)개 프로젝트에서 실패 없이 성공했을 때. 수동 검토만 원하면 0.
-2. **문제 레시피 의심 시**: 해당 레시피를 `reject`하거나, 시험 실행만 `--no-kb`로 돌려 비교합니다(round 10부터 `--no-kb`는 케이스 카탈로그, 학습된 치환, 에러 힌트, 계획의 후보 레시피, ledger, 심볼 색인, 결정적 후보까지 끕니다. 실행 디렉터리의 `error_cases.*`는 그대로 씀). 케이스가 의심스러우면 `sbmig kb cases reject <id> --reason "…"` — round 10부터 그 L2의 KB 패치 재생, KB 레시피, 심볼 힌트도 멈춥니다. 사람이 고정한 동작(`sbmig kb cases pin <id> --action handler:<id>|block[:<사유>]|recipe:<id>`)은 이제 트리아지가 그대로 따릅니다([04](04-triage-and-loop.md) 4.7).
+2. **문제 레시피 의심 시**: 해당 레시피를 `reject`하거나, 시험 실행만 빈 `kb.dir`(별도 `--config`)로 돌려 비교합니다(CLI `--no-kb` 는 v2.1z 에서 삭제). 케이스가 의심스러우면 `sbmig kb cases reject <id> --reason "…"` — round 10부터 그 L2의 KB 패치 재생, KB 레시피, 심볼 힌트도 멈춥니다. 사람이 고정한 동작(`sbmig kb cases pin <id> --action handler:<id>|block[:<사유>]|recipe:<id>`)은 이제 트리아지가 그대로 따릅니다([04](04-triage-and-loop.md) 4.7).
 3. **손으로 고친 뒤**: `sbmig kb reindex`(index.json + symbols.json 재생성). 플릿은 `fleet.reindex_every`마다 자동.
 4. **정리(prune)**: 자동 삭제 명령은 없습니다. ledger는 추가 전용이 원칙입니다. 커지면 `sbmig kb export`로 보관한 뒤 정리 여부를 개발자와 정합니다(코드 기준: `sbmig/kb/store.py`).
 5. **백업/이동**: `sbmig kb export kb-YYYYMMDD.zip` → 다른 PC에서 `sbmig kb import kb-YYYYMMDD.zip`(기본 병합, `--replace`는 교체: 숨은 옆 디렉터리에서 새 KB를 다 만든 뒤 이름 바꾸기로 교체하고 예전 KB는 `kb.bak-<시각>`으로 남김). round 10부터 저장소 `.gitignore`가 KB 데이터 파일(`<kb.dir>/errors.jsonl`, `<kb.dir>/ledger.jsonl`, `<kb.dir>/catalog/` 등 — 저장소 `kb/` 기준, `.gitkeep`만 추적)을 무시하므로 git 커밋이 아니라 export zip으로 백업합니다. 플릿 시작 전과 매일 끝에 export를 권장합니다.
-6. **오염 방지**: 테스트·데모 실행은 `out/` 아래 KB를 씁니다(`config/artifacts.local-e2e.yml`의 `kb.dir: out/e2e/kb`). 회사 실험 실행도 `--no-kb` 또는 별도 `--config`로 `kb.dir`을 바꾸십시오.
+6. **오염 방지**: 테스트·데모 실행은 `out/` 아래 KB를 씁니다(`config/artifacts.local-e2e.yml`의 `kb.dir: out/e2e/kb`). 회사 실험 실행도 별도 `--config`로 `kb.dir`을 바꾸십시오.
 7. **배운 것 보기**: `sbmig kb learning --md`, `sbmig kb ledger --resolution blocked`, `sbmig kb symbols`, `sbmig kb errors list --case <id 앞부분>`, `sbmig kb errors list --resolver "case-replace"`(한 케이스 / 한 해결 수단의 기록만, round 10).
 8. **비밀값(round 10)**: KB에 들어가는 모든 것(diff, 원문, 메시지)은 값만 가립니다(`password=***`, `<password>`, JDBC `user/pass@`, `Authorization: Bearer`, PEM 키 …, `${…}` / `__SET_ME__`는 그대로). 회사 고유 패턴(사내 토큰 형식, OTP 키 이름 등)은 `knowledge/kb/redact.yml`(`kb.redact_file`)의 `key_words` / `key_patterns` / `patterns` / `allow_keys`에 **이름과 패턴만** 추가합니다. 가린 값이 걸린 치환 쌍은 버리고, 그런 해결은 규칙 후보가 되지 않으며(노트 `redacted: …`), 그런 KB 패치 케이스는 재생하지 않고 힌트로만 씁니다(태그 `no-replay:redacted`).
 

@@ -267,9 +267,10 @@ def test_garbage_llm_is_blocked_as_repeated_failure_within_budget(cfg, ws, profi
                         model="m", llm_usage=LLMUsage(calls=1))
     fixer = FakeFixer(fn=lambda w, c, ctx: prose)
     build = FakeBuildRunner(ws, script=[bad_build(compile_error(FOO))])
+    cfg.script.max_llm_tries_per_case = 3
     loop = make_loop(cfg, ws, profile, build=build, fixer=fixer)
     pr = loop.run(Phase.VERIFY, "package", 6)
-    n = cfg.script.max_augments_per_case                               # no script ever: `new` again, same total
+    n = cfg.script.max_llm_tries_per_case                              # no script ever: `new` again, same total
     assert len(fixer.contexts) == n and {c.script_mode for c in fixer.contexts} == {"new"}
     assert len(build.calls) == 1                                       # re-asked on the same build, no rebuild
     assert [b.reason for b in pr.blocked] == [BlockReason.REPEATED_FAILURE] and pr.blocked[0].attempts == n

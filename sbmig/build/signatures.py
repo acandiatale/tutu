@@ -29,6 +29,7 @@ function of the ``BuildError`` so the same error always yields the same signatur
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from sbmig.core.models import BuildError, ErrorKind
 
@@ -125,9 +126,9 @@ def normalize_message(msg: str, *, module: str | None = None, lower: bool = True
     s = _PATH_RE.sub(lambda m: "<path>" if "/" in m.group(0) else m.group(0), s)
     s = _HEX_RE.sub("<hex>", s)
     # 모듈 이름(artifactId)도 프로젝트마다 다르므로 <module>
-    # 로 바꾼다(같은 문제가 다른 모듈에서 나도 같은 서명).
-    if module:
-        s = re.sub(r"(?<![\w.-])" + re.escape(module) + r"(?![\w-])", "<module>", s)
+    # 로 바꾼다(같은 문제가 다른 모듈에서 나도 같은 서명). 오류 자신의 모듈만이 아니라 이번 로그의 reactor
+    # 에 나온 모든 artifactId 를 가린다(v2.1z: 루트 artifactId 가 L2 에 남아 케이스가 프로젝트 전용이 됐다).
+    s = _mask_modules(s, module)
     s = re.sub(r"\bon project [\w.\-]+", "on project <module>", s)
     s = re.sub(r"\(JAVA_HOME=[^)]*\)", "", s)
     s = _RANGE_RE.sub("<range>", s)
@@ -137,6 +138,63 @@ def normalize_message(msg: str, *, module: str | None = None, lower: bool = True
     if lower:
         s = s.lower()
     return s[:max_chars].rstrip()
+
+
+# 가리지 않는 모듈 이름: 평범한 Maven / javac 문장에도 나오는 단어다. 'web' 모듈을 가리면 'webxml attribute
+# is required' 는 무사해도 'web' 이 들어간 원인 문구가 <module> 로 바뀌어, 프로젝트마다 다른 L2 가 생기는 대신
+# 서로 다른 문제가 한 케이스로 합쳐질 수 있다. 3자 미만 이름도 같은 이유로 건너뛴다.
+# Module names never masked: they are ordinary words of Maven / javac text, so masking them would merge or
+# split cases on wording rather than on project identity. Names shorter than MIN_MODULE_NAME_CHARS are skipped too.
+MODULE_NAME_STOPLIST: frozenset[str] = frozenset({
+    "web", "app", "api", "core", "common", "test", "tests", "main", "build", "parent", "module", "project",
+    "resources", "compile", "jar", "war", "pom", "plugin", "source", "target", "class", "error", "file", "java",
+    "lib", "util", "utils", "base", "root", "server", "client", "service", "services", "batch", "boot", "back",
+    "front",
+})
+MIN_MODULE_NAME_CHARS = 3
+
+# 이번 파싱의 reactor artifactId 들(프로세스 전역). 파싱마다 통째로 바뀐다(누적하지 않는다) — 플릿의 다음
+# 프로젝트가 앞 프로젝트의 이름을 가리면 안 된다.
+_REACTOR_MODULES: frozenset[str] = frozenset()
+_MASK_CACHE: dict[tuple[str, ...], re.Pattern[str] | None] = {}
+
+
+def set_reactor_modules(names: Iterable[str]) -> None:
+    """이번 빌드 로그의 reactor artifactId 목록을 등록한다 — ``normalize_message`` 가 오류 자신의 모듈과 함께
+    ``<module>`` 로 가린다. 누적이 아니라 교체다(로그 파서가 파싱을 시작할 때마다 부른다; 빈 목록 = 해제).
+
+    Replace (never accumulate) the process-wide set of reactor artifactIds masked as ``<module>``; the log parser
+    calls it at the start of every parse, so a fleet's next project never sees the previous project's names."""
+    global _REACTOR_MODULES
+    _REACTOR_MODULES = frozenset(n.strip() for n in (names or ()) if n and n.strip())
+
+
+def reactor_modules() -> frozenset[str]:
+    """지금 등록된 reactor artifactId 들(``set_reactor_modules`` 가 마지막으로 넣은 것).
+
+    The reactor artifactIds registered by the last ``set_reactor_modules`` call."""
+    return _REACTOR_MODULES
+
+
+def _maskable(name: str) -> bool:
+    return len(name) >= MIN_MODULE_NAME_CHARS and name not in MODULE_NAME_STOPLIST
+
+
+def _mask_modules(s: str, module: str | None) -> str:
+    names = {n for n in _REACTOR_MODULES if _maskable(n)}
+    if module and _maskable(module):
+        names.add(module)
+    if not names:
+        return s
+    # 긴 이름부터: 'pricing-core-comp' 가 'pricing-core' 보다 먼저 맞아야 '<module>-comp' 가 안 된다.
+    key = tuple(sorted(names, key=lambda n: (-len(n), n)))
+    rx = _MASK_CACHE.get(key)
+    if rx is None:
+        if len(_MASK_CACHE) > 256:
+            _MASK_CACHE.clear()
+        rx = re.compile(r"(?<![\w.-])(?:" + "|".join(re.escape(n) for n in key) + r")(?![\w-])")
+        _MASK_CACHE[key] = rx
+    return rx.sub("<module>", s)
 
 
 def classify_javac(msg: str) -> str:

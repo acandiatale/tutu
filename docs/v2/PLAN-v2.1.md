@@ -21,7 +21,7 @@
 | KB | `kb-v2/errors.jsonl` 하나(에러 내용 + LLM 답변 + 어떻게 고쳤는지 + 결과) + `kb-v2/cases/<case_id>/`(스크립트 파일, `case.json`). 카탈로그·뷰·audit·quarantine·reviews·fix_attempts·meta.json 삭제. 연관 키는 `case_id`(L2) · `run_id` · 에러 id · 스크립트 버전만 |
 | 답변 형식 | `<analysis>`(원인) `<solution>`(해결 방법) `<edits>`(수정, JSON) `<script>`(스크립트) [`<no_script>`(코드로 안 되는 이유)] |
 | 순서 | KB 탐색 → 저장 스크립트 실행 → 실패하면 보강 요청 → 코드로 안 되면 이유 + 직접 수정 → 처음 보는 케이스는 직접 수정 + 스크립트 저장 |
-| 한도 | 빌드 라운드 50회. LLM 호출 수 제한 없음(`loop.max_llm_calls: 0`). 케이스당 저장본 1 + LLM 3회는 유지 |
+| 한도 | 빌드 라운드 50회. LLM 호출 수 제한 없음(`loop.max_llm_calls: 0`). 케이스당 저장본 1 + LLM 3회는 유지 (v2.1z, 2026-11-02: 저장본 1 + LLM 20회, 그중 보강 15회 — `docs/INTERFACES.md` "v2.1z") |
 | 게이트웨이 | tool calling 없음(messages만) → 수정은 답변 형식으로 받아 sbmig가 적용 |
 
 ## 3. 흐름

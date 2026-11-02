@@ -59,7 +59,7 @@ CLI(`--stop-after`), 웹(`stop_after` 쿼리), Python API(`stop_after=`)가 공�
 목적: 입력(디렉터리 또는 zip)을 `<out>/<run id>/project`로 복사해 전체 파이프라인을 돌리고 보고서를 씁니다. 입력 원본은 절대 수정하지 않습니다.
 
 ```text
-sbmig run INPUT [--config FILE]... [--out DIR] [--run-id ID] [--stop-after PHASE] [--dry-run] [--no-kb]
+sbmig run INPUT [--config FILE]... [--out DIR] [--run-id ID] [--stop-after PHASE] [--dry-run]
           [--llm-provider NAME] [--llm-plugin SPEC] [--fix-plugin SPEC] [--java-home DIR] [--settings FILE]
           [--repo-root DIR] [-v]
 ```
@@ -72,7 +72,6 @@ sbmig run INPUT [--config FILE]... [--out DIR] [--run-id ID] [--stop-after PHASE
 | `--run-id` | 문자열 | 자동 `run-YYYYMMDD-HHMMSS-xxxxxx` | 실행 id(디렉터리 이름). 이미 있으면 오류. |
 | `--stop-after` | 문자열 | 없음 | 1.2의 값. |
 | `--dry-run` | 플래그 | 꺼짐 | 분석·계획·결정만 계산해 저널에 남기고 아무것도 적용하지 않음(플래그 `dry-run`). |
-| `--no-kb` | 플래그 | 꺼짐 | KB를 쓰지도 채우지도 않음(`kb.harvest`, `kb.use_active_recipes`, `kb.use_patch_replay`, `kb.use_hints`, `kb.generate_recipe_candidates`를 모두 false). round 10부터 `kb.catalog`, `kb.case_replace`, `kb.error_hints`, `kb.try_candidates_in_plan`, `kb.ledger`, `kb.symbol_index`, `kb.deterministic_candidates`도 끕니다(`sbmig.api`의 `NO_KB_OVERRIDES`, `migrate(kb=False)`와 같음). `kb.error_cases`는 켠 채라 실행 디렉터리의 `error_cases.*`는 그대로 생깁니다. |
 | `--llm-provider` | 문자열 | 설정값 | `company`, `openai_compatible`, `anthropic`, `fake`, `plugin` 또는 진입점 이름 → `llm.provider`. |
 | `--llm-plugin` | `pkg.module:attr` | 없음 | tier 1 어댑터. `--llm-provider plugin`을 함께 의미합니다 → `llm.plugin`. |
 | `--fix-plugin` | `pkg.module:attr` | 없음 | tier 2 fixer → `fix.plugin`. |
@@ -388,7 +387,7 @@ sbmig clean [--out DIR] [--fleet DIR] [--older-than DAYS] [--keep-failed] [--dry
 | 모르는 설정 파일, 잘못된 `stop_after`, 설정 검증 실패(artifacts 누락 등), 깨진 zip | 400 `{"error": "<원인>"}` |
 | 정상 | 202 `{"run_id": "web-…", "status": {"state": "queued" 또는 "running", …}}` |
 
-설정·Workspace·Orchestrator 생성까지는 요청 안에서 동기적으로 하므로 잘못된 요청은 400으로 바로 돌아오고, 실제 마이그레이션은 워커 스레드(`sbmig-run-<run id>`)에서 진행됩니다. 웹 실행은 KB를 항상 켭니다(`--no-kb` 없음).
+설정·Workspace·Orchestrator 생성까지는 요청 안에서 동기적으로 하므로 잘못된 요청은 400으로 바로 돌아오고, 실제 마이그레이션은 워커 스레드(`sbmig-run-<run id>`)에서 진행됩니다. 웹 실행은 KB를 항상 켭니다.
 
 ### 2.5 실행 상태(`GET /api/runs/{run_id}`의 `state`)
 | state | 의미 |
@@ -495,7 +494,7 @@ def migrate(
     overrides: dict | None = None,           # CLI 플래그와 같은 단계의 덮어쓰기 ({"llm": {"record_dir": "out/rec"}})
     llm: LLMClientLike | LLMAdapterLike | None = None,   # None = 설정(llm.provider, 플러그인 포함)으로 생성
     fixer: FixerLike | None = None,          # LLMFixer 대체(fix.plugin보다 우선)
-    kb: KnowledgeBaseLike | None | bool = None,  # None/True = 파일 KB, False = KB 없음(--no-kb), 객체 = 그대로 사용
+    kb: KnowledgeBaseLike | None | bool = None,  # None/True = 파일 KB, False = KB 없음, 객체 = 그대로 사용
     stop_after: str | None = None,           # 1.2의 값
     dry_run: bool = False,
     repo_root: str | Path | None = None,

@@ -32,7 +32,7 @@ from .log_parser import (
     parse_reactor_summary,
 )
 from .mvn import base_command, maven_available, mvn_env, run_logged
-from .signatures import external_prefixes_from_config, fill_signatures, register_external_prefixes
+from .signatures import external_prefixes_from_config, fill_signatures, register_external_prefixes, set_reactor_modules
 
 log = logging.getLogger("sbmig.build")
 
@@ -227,6 +227,11 @@ class MavenRunner:
         # exit 0 만으로는 성공이 아니다: 'BUILD SUCCESS' 문구까지 있어야
         # 한다(JVM 이 죽거나 출력이 잘린 경우를 성공으로 오인하지 않게).
         ok = pr.exit_code == 0 and not pr.timed_out and "BUILD SUCCESS" in text
+        if ok:
+            # v2.1z: 성공한 빌드는 로그를 파싱하지 않으므로 리액터 모듈 이름 레지스트리(케이스 키의 <module> 마스킹)를 여기서
+            # 비운다 — 이전 파싱의 이름이 다음 프로젝트(플릿)까지 남지 않게. / a successful build is not parsed, so the
+            # reactor-module registry behind the <module> masking is cleared here instead of lingering into the next project
+            set_reactor_modules(())
         errors: list[BuildError] = [] if ok else parse_maven_log(text, self.ws.root)
         if pr.timed_out:
             errors.append(fill_signatures(BuildError(

@@ -1,5 +1,5 @@
-"""Round 10 (operations): cp949 consoles, the SBMIG-RESULT line, --no-kb really off, the shared LLM probe line,
-`sbmig clean`."""
+"""Round 10 (operations): cp949 consoles, the SBMIG-RESULT line, the KB always on for `sbmig run` (v2.1z: no
+`--no-kb` / `--fix-mode`), the shared LLM probe line, `sbmig clean`."""
 from __future__ import annotations
 
 import json
@@ -95,7 +95,7 @@ def test_cp949_run_finishes_with_its_exit_code_and_result_line(tmp_path):
     assert "SBMIG-RESULT run=r-1 exit=2" in (tmp_path / "out" / "r-1" / "sbmig.log").read_text(encoding="utf-8")
 
 
-# ------------------------------------------------------------------ in-process: result line, --no-kb
+# ------------------------------------------------------------------ in-process: result line, the KB
 class _FakeOrch:
     seen: list = []
 
@@ -144,24 +144,22 @@ def test_run_prints_the_result_line(tmp_path, fake_orch):
     assert r.output.splitlines()[-1] == "SBMIG-RESULT run=rid-7 exit=0 build=ok unresolved=0 blocked=0 open=0 resolved=0 llm=1 attn=-"
 
 
-def test_no_kb_switches_off_everything_that_reads_the_kb(tmp_path, fake_orch):
-    """--no-kb left kb.catalog / kb.case_replace on: learned text replaces still edited sources in a 'no KB'
-    comparison run. CLI and sbmig.api share one override set."""
-    from sbmig.api import NO_KB_OVERRIDES
+@pytest.mark.parametrize("opt", [["--no-kb"], ["--fix-mode", "edits"]])
+def test_v21i_switches_are_gone_and_the_run_uses_the_kb(tmp_path, fake_orch, opt):
+    """v2.1z (user, 2026-11-02): `--no-kb` and `--fix-mode` were testing switches — `sbmig run` rejects them (usage
+    error, exit 2, nothing runs) and a normal run never gets a NullKnowledgeBase."""
     from sbmig.loop import NullKnowledgeBase
 
-    out = tmp_path / "out"
+    out, proj = tmp_path / "out", _project(tmp_path)
     try:
-        r = CliRunner().invoke(app, ["run", str(_project(tmp_path)), "--config", str(E2E), "--out", str(out),
-                                     "--no-kb"])
+        r = CliRunner().invoke(app, ["run", str(proj), "--config", str(E2E), "--out", str(out), *opt])
+        assert r.exit_code == 2 and not fake_orch.seen
+        r = CliRunner().invoke(app, ["run", str(proj), "--config", str(E2E), "--out", str(out)])
     finally:
         _detach_run_logs(out)
     assert r.exit_code == 0, r.output
-    orch = fake_orch.seen[-1]
-    kb = orch.cfg.kb
-    assert isinstance(orch.kb, NullKnowledgeBase)
-    # v2.1: no KB switch is left in the config — the NullKnowledgeBase alone makes a run KB-less
-    assert NO_KB_OVERRIDES == {} and not hasattr(kb, "catalog")
+    assert not isinstance(fake_orch.seen[-1].kb, NullKnowledgeBase)
+    assert " fix=" not in r.output.splitlines()[-1]
 
 
 def test_api_no_kb_uses_the_same_overrides(tmp_path, monkeypatch):

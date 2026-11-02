@@ -4,7 +4,7 @@ from sbmig.core.interfaces import FixContext
 from sbmig.core.models import (BuildError, DecisionKind, ErrorCluster, ErrorKind, FileChange, FixAttempt, Phase,
                                TriageDecision)
 from sbmig.fix import ContextPacker
-from sbmig.fix.context import (EDITS_TRUNCATE_ORDER, SCRIPT_TRUNCATE_ORDER, merge_windows, nearest_pom,
+from sbmig.fix.context import (SCRIPT_TRUNCATE_ORDER, merge_windows, nearest_pom,
                                pom_excerpt, summarize_attempt)
 from sbmig.fix.context import summarize_script_attempt
 
@@ -184,8 +184,8 @@ def test_default_notes_dir_is_repo_knowledge(cfg, ws, put):
 def test_script_truncation_order():
     order = SCRIPT_TRUNCATE_ORDER
     # v2.1v (B-H3): the other cases and the plan notes go before the notes
-    assert order[:3] == ("other_errors", "plan_notes", "notes") and EDITS_TRUNCATE_ORDER[:3] == order[:3]
-    assert EDITS_TRUNCATE_ORDER[-1] == "previous_attempts" and "layout_facts" not in order + EDITS_TRUNCATE_ORDER
+    assert order[:3] == ("other_errors", "plan_notes", "notes")
+    assert "layout_facts" not in order
     assert order.index("kb_hints") < order.index("reference_files") < order.index("advisory_hints") \
         < order.index("files")
     assert order.index("reference_notes") < order.index("files") and "errors" not in order and "header" not in order

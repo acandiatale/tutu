@@ -23,7 +23,6 @@ from sbmig.fix.context import (
 )
 from sbmig.fix.fixer import (
     PROMPTS_DIR,
-    load_edits_prompts,
     load_script_prompts,
     load_verify_prompt,
     parse_verify_answer,
@@ -35,7 +34,7 @@ from .test_v21d_verify import FILES, cluster, ctx, proj  # noqa: F401 - proj is 
 
 # a Boot / JDK / Framework version written into a prompt file (the target comes from cfg.target)
 VERSION_LITERAL = re.compile(r"\b4\.[01]\b|\b21\b|\b7\.0\b")
-SYSTEM_FILES = ("script_system_v1.md", "edits_system_v1.md", "verify_system_v1.md")
+SYSTEM_FILES = ("script_system_v1.md", "verify_system_v1.md")
 BLOCKER = "iBATIS 2 has no jakarta build on any line — the owning team decides the MyBatis 3 port"
 EDIT = {"op": "replace", "path": FILES[0], "desc": f"{FILES[0]} 의 import 줄을 바꿉니다",
         "old": "import com.opensymphony.module.sitemesh.Page;", "new": "import org.sitemesh.Page;"}
@@ -67,22 +66,22 @@ def test_the_rendered_system_prompts_carry_cfg_target(cfg):
     want = target_text(c)
     assert want == "JDK 25, Spring Boot 4.2.0"
     fx = LLMFixer(c, FakeLLMClient())
-    script_system, edits_system = fx.script_prompts()[0], fx.edits_prompts()[0]
+    script_system = fx.script_prompts()[0]
     verify_system = fx.build_verify_messages(cluster(), ctx(), [], "")[0].content
-    for system in (script_system, edits_system, verify_system):
+    for system in (script_system, verify_system):
         assert want in system and "{{" not in system and target_text(None) not in system
-    for system in (script_system, edits_system):
+    for system in (script_system,):
         flat = " ".join(system.split())
         assert f"migrated automatically to **{want}**" in flat
         assert 'the recipes this run executed are listed under "Plan notes"' in flat
         assert 'a non-Boot project became a Spring Boot application (see "Project after the restructure")' in flat
     # the module-level loaders keep their defaults (TargetConfig) for callers that pass no target
-    assert target_text(None) in load_script_prompts("v1")[0] and target_text(None) in load_edits_prompts("v1")[0]
+    assert target_text(None) in load_script_prompts("v1")[0]
     assert target_text(None) in load_verify_prompt("v1")
 
 
 # ---------------------------------------------------------------------------------------------- rules
-@pytest.mark.parametrize("name", ["script_system_v1.md", "edits_system_v1.md"])
+@pytest.mark.parametrize("name", ["script_system_v1.md"])
 def test_rules_8_10_and_the_blocked_line(name):
     raw = (PROMPTS_DIR / name).read_text(encoding="utf-8")
     flat = " ".join(raw.split())
@@ -100,19 +99,15 @@ def test_rules_8_10_and_the_blocked_line(name):
     assert "If nothing can fix this case safely" not in flat
     assert ('`"version": null` = sbmig decides (no version when the parent chain or the target Boot BOM manages it, '
             "else it fills one)") in flat
-    if name.startswith("script"):
-        assert "no `<edits>`, no `<script>`" in tail
-    else:
-        assert "no `<edits>`." in tail and "<script>" not in raw
+    assert "no `<edits>`, no `<script>`" in tail
 
 
 def test_b_l2_deletions():
     script = (PROMPTS_DIR / "script_system_v1.md").read_text(encoding="utf-8")
-    edits = (PROMPTS_DIR / "edits_system_v1.md").read_text(encoding="utf-8")
     verify = (PROMPTS_DIR / "verify_system_v1.md").read_text(encoding="utf-8")
     assert "## Script or no script" not in script
     assert "`<no_script>` only\n    when the fix depends on this project's own code" in script      # folded into 12
-    for text in (script, edits):
+    for text in (script,):
         assert "is left out when no dependency's major version changed" not in text
         assert text.count("`<verify>` is REQUIRED") == 1                       # rule 14 only
     assert "Instead of `<script>`,\nwrite `<no_script>" not in script
@@ -145,8 +140,6 @@ def test_blocked_with_edits_keeps_both_and_never_opens_a_script():
     r = parse_script_response(text)
     assert r.blocked_reason.startswith("iBATIS 2") and "<script>" in r.blocked_reason
     assert len(r.edits) == 1 and r.candidate == "" and r.code == ""
-    e = parse_script_response(text, expect_script=False)                       # edits mode
-    assert e.blocked_reason == r.blocked_reason and len(e.edits) == 1 and not e.script_ignored
 
 
 def test_a_blocked_answer_is_not_a_verify_guide():
@@ -171,14 +164,6 @@ def test_fixer_keeps_edits_next_to_a_blocked_reason(cfg, proj):  # noqa: F811
     client = FakeLLMClient([answer])
     p = LLMFixer(cfg, client).propose_script(proj, cluster(), ctx())
     assert len(client.calls) == 1 and p.blocked_reason == BLOCKER and len(p.edits) == 1 and p.error == ""
-
-
-def test_fixer_blocked_in_edits_mode(cfg, proj):  # noqa: F811
-    client = FakeLLMClient([f"<analysis>a</analysis>\n<blocked>{BLOCKER}</blocked>\n"])
-    p = LLMFixer(cfg, client).propose_script(proj, cluster(), ctx(fix_mode="edits"))
-    assert len(client.calls) == 1 and p.blocked_reason == BLOCKER and p.error == f"blocked: {BLOCKER}"
-    ok = LLMFixer(cfg, FakeLLMClient([f"<analysis>a</analysis><edits>{json.dumps([EDIT])}</edits>"]))
-    assert ok.propose_script(proj, cluster(), ctx(fix_mode="edits")).blocked_reason == ""
 
 
 def test_a_blocked_answer_asks_for_no_more_context(cfg, proj):  # noqa: F811
@@ -218,7 +203,7 @@ def test_layout_facts_section_order_and_bullets(cfg, ws, put):
     assert LAYOUT_FACTS_TITLE not in [t for t, _ in none.sections]
 
 
-def test_layout_facts_are_never_truncated_and_reach_edits_mode(cfg, ws, put):
+def test_layout_facts_are_never_truncated(cfg, ws, put):
     files = [f"app/src/main/java/a/D{i}.java" for i in range(6)]
     errors = []
     for i, f in enumerate(files):
@@ -226,7 +211,7 @@ def test_layout_facts_are_never_truncated_and_reach_edits_mode(cfg, ws, put):
         errors += errs_for(f, [12, 200])
     big = sctx(layout_facts=FACTS, kb_hints=["k" * 3000], other_errors_summary="o" * 3000,
                plan_notes=["restructure: " + "p" * 2000])
-    for c in (big, big.model_copy(update={"fix_mode": "edits"})):
+    for c in (big,):
         packed = ContextPacker(cfg).pack_script(ws, case(errors), c, budget=3000)
         assert packed.truncated and not any(t.startswith("layout_facts") for t in packed.truncated)
         assert dict(packed.sections)[LAYOUT_FACTS_TITLE].startswith("- converted by sbmig")

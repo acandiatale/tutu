@@ -111,7 +111,7 @@ def test_a_case_in_a_module_with_a_pom_problem_is_masked():
 def test_ladder_new_when_nothing_is_stored_or_tried(cfg):
     [c] = cluster_cases([err()], None)
     st = plan_script_step(c, [], None, cfg)
-    assert st.mode == "new" and st.needs_llm and st.llm_limit == 3
+    assert st.mode == "new" and st.needs_llm and st.llm_limit == 20 and st.augment_limit == 15
     assert st.kb_line == "KB 탐색: 저장된 스크립트 없음 (처음 보는 케이스) → LLM 에 새 수정 요청"
 
 
@@ -124,7 +124,7 @@ def test_ladder_runs_the_stored_script_once_then_augments_it(cfg):
     ran = script_att("reuse", 3, "no_change", c.id, code="code3")
     st = plan_script_step(c, [ran], store, cfg)        # v3 failed here → the LLM extends it (the prompt gets v3)
     assert st.mode == "augment" and st.base_attempt is ran and st.base_version == 3
-    assert "이번 실행에서 v3 실패" in st.kb_line and "LLM 보강 요청 (1/3" in st.kb_line
+    assert "이번 실행에서 v3 실패" in st.kb_line and "LLM 보강 요청 (1/20, 보강 1/15" in st.kb_line
     cfg.script.reuse = False                           # reuse off: the stored version is the augment base
     st = plan_script_step(c, [], store, cfg)
     assert st.mode == "augment" and st.base_attempt is None and st.base_version == 3 and st.code == "code3"
@@ -146,18 +146,91 @@ def test_ladder_augments_this_runs_last_attempt_with_code(cfg):
 
 
 def test_ladder_limits_one_stored_plus_three_llm_tries(cfg):
-    assert cfg.script.max_augments_per_case == 3
+    assert (cfg.script.max_augments_per_case, cfg.script.max_llm_tries_per_case) == (15, 20)    # v2.1z defaults
+    cfg.script.max_llm_tries_per_case = 3
     [c] = cluster_cases([err()], None)
     tried = [script_att("reuse", 1, "no_change", c.id), script_att("augment", 2, "no_change", c.id),
              script_att("augment", 3, "no_change", c.id), script_att("augment", 4, "no_change", c.id)]
     st = plan_script_step(c, tried, Store(best=(meta(1), "c")), cfg)
-    assert st.mode is None and "max_augments_per_case 3" in st.why
+    assert st.mode is None and "max_llm_tries_per_case 3" in st.why
     assert "한도 도달 (저장본 1 + LLM 3회) → blocked" in st.kb_line
     # answers without a script open no augment: new again, inside the same 3
     empty = [script_att("new", 0, "apply_failed", c.id, code="") for _ in range(2)]
     st = plan_script_step(c, empty, None, cfg)
     assert st.mode == "new" and "(3/3)" in st.kb_line
     assert plan_script_step(c, empty + [script_att("new", 0, "apply_failed", c.id, code="")], None, cfg).mode is None
+
+
+# v2.1z (2026-11-02): two caps — augment steps (script.max_augments_per_case) and every LLM ask (max_llm_tries_per_case)
+def test_ladder_defaults_are_15_augments_and_20_llm_tries(cfg):
+    assert cfg.script.max_augments_per_case == 15 and cfg.script.max_llm_tries_per_case == 20
+    [c] = cluster_cases([err()], None)
+    tried = [script_att("new", 1, "no_change", c.id)] + [script_att("augment", v, "no_change", c.id)
+                                                         for v in range(2, 9)]
+    st = plan_script_step(c, tried, None, cfg)
+    assert st.mode == "augment" and (st.llm_used, st.augments_used) == (8, 7)
+    assert (st.llm_limit, st.augment_limit) == (20, 15)
+    assert "LLM 보강 요청 (9/20, 보강 8/15, v8 기준)" in st.kb_line and "augment 9/20 (augment 8/15)" in st.why
+
+
+def test_ladder_augments_used_up_asks_for_a_new_fix(cfg):
+    cfg.script.max_augments_per_case = 2
+    [c] = cluster_cases([err()], None)
+    tried = [script_att("new", 1, "no_change", c.id), script_att("augment", 2, "no_change", c.id),
+             script_att("augment", 3, "no_change", c.id)]
+    st = plan_script_step(c, tried, None, cfg)
+    assert st.mode == "new" and st.base_attempt is None and st.needs_llm
+    assert st.why == ("new fix for case " + st.case_id + " (augments used up: script.max_augments_per_case 2; "
+                      "request 4/20)")
+    assert st.kb_line.endswith("→ 보강 한도(2) 소진 → LLM 에 새 수정 요청 (4/20)")
+    # the fresh new does not reopen augments: still new until the total cap
+    st = plan_script_step(c, tried + [script_att("new", 4, "no_change", c.id)], None, cfg)
+    assert st.mode == "new" and "augments used up" in st.why
+    # reuse off with a stored best and no augments left → new as well
+    cfg.script.reuse = False
+    st = plan_script_step(c, tried, Store(best=(meta(9), "code9")), cfg)
+    assert st.mode == "new" and "보강 한도(2) 소진" in st.kb_line
+
+
+def test_ladder_total_llm_cap_blocks_repeated_failure(cfg):
+    cfg.script.max_llm_tries_per_case = 4
+    t = engine(cfg)
+    [c] = t.cluster([err()], None)
+    prev = [script_att("new", 1, "no_change", c.id)] + [script_att("augment", v, "no_change", c.id)
+                                                        for v in (2, 3, 4)]
+    st = plan_script_step(c, prev, None, cfg)
+    assert st.mode is None and "(script.max_llm_tries_per_case 4)" in st.why
+    assert st.kb_line.endswith("→ 한도 도달 (저장본 0 + LLM 4회) → blocked")
+    d = t.decide(c, None, ctx(previous_attempts=prev), make_profile())
+    assert d.kind == DecisionKind.BLOCKED and t.blocked_candidate(c.id).reason == BlockReason.REPEATED_FAILURE
+    assert "max_llm_tries_per_case 4" in d.rationale
+
+
+def test_ladder_zero_augments_never_augments(cfg):
+    cfg.script.max_augments_per_case = 0
+    [c] = cluster_cases([err()], None)
+    store = Store(best=(meta(3), "code3"))
+    ran = script_att("reuse", 3, "no_change", c.id, code="code3")
+    st = plan_script_step(c, [ran], store, cfg)
+    assert st.mode == "new" and "max_augments_per_case 0" in st.why
+    tries = [ran] + [script_att("new", v, "no_change", c.id) for v in (4, 5, 6)]
+    assert all(plan_script_step(c, tries[:i], store, cfg).mode != "augment" for i in range(1, len(tries) + 1))
+    cfg.script.reuse = False
+    assert plan_script_step(c, [], store, cfg).mode == "new"
+
+
+def test_ladder_zero_llm_tries_never_asks_the_llm(cfg):
+    cfg.script.max_llm_tries_per_case = 0
+    t = engine(cfg)
+    [c] = t.cluster([err()], None)
+    st = plan_script_step(c, [], None, cfg)
+    assert st.mode is None and not st.needs_llm and "max_llm_tries_per_case 0" in st.why
+    d = t.decide(c, None, ctx(), make_profile())
+    assert d.kind == DecisionKind.BLOCKED and t.blocked_candidate(c.id).reason == BlockReason.REPEATED_FAILURE
+    # a stored script still runs (no LLM), then BLOCKED
+    store = Store(best=(meta(2), "code2"))
+    assert plan_script_step(c, [], store, cfg).mode == "reuse"
+    assert plan_script_step(c, [script_att("reuse", 2, "no_change", c.id, code="code2")], store, cfg).mode is None
 
 
 # ----------------------------------------------------------------------------------------- decisions
@@ -219,7 +292,7 @@ def test_llm_unavailable_budget_and_exhausted_ladder_block(cfg):
     t.attach_run(cases=Store(best=(meta(2), "stored")))       # a stored script still runs without the LLM
     assert t.decide(c, None, ctx(llm_calls_budget=-1), make_profile()).kind == DecisionKind.SCRIPT
     t.engine.cases = None
-    cfg.script.max_augments_per_case = 0
+    cfg.script.max_llm_tries_per_case = 0
     d = t.decide(c, None, ctx(previous_attempts=[script_att("new", 1, "no_change", c.id)]), make_profile())
     assert d.kind == DecisionKind.BLOCKED and t.blocked_candidate(c.id).reason == BlockReason.REPEATED_FAILURE
     t.set_llm_unavailable("gateway down")

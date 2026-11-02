@@ -5,6 +5,8 @@
 > 패키지 지도는 `sbmig/__init__.py`, 코드를 읽으며 발견한 의심 버그·정책 질문은 `docs/v2/HANDOVER-FINDINGS-2026-10-28.md`.
 > 2026-11-02: 케이스에 남는 **속성 하나하나**(case.json · scripts[] · runs[] · 오류 레코드 · 시도 · 차단)와 LangGraph **노드별 state**
 > 는 `docs/v2/CASE-AND-STATE-KO.md`(속성 사전)에 있다 — 이 문서의 §4 는 실물 샘플 위주다.
+> 2026-11-02 (v2.1z): 토큰 비교용 스위치 `fix.mode: edits` / `--no-kb` 는 없어졌다. 케이스당 한도는 LLM 요청 **20회**
+> (`script.max_llm_tries_per_case`) 중 보강 **15회**(`script.max_augments_per_case`). L2 에서 reactor 모듈 이름은 전부 `<module>`(§2).
 
 
 2026-10-28, 브랜치 `flow-v2` (v2.1f 포함). 아래 샘플은 전부 로컬 e2e 실행(`pure-java` → `java6-legacy`, KB `out/e2e/kb-jaxb`)의
@@ -18,7 +20,7 @@
   직접 수정 → 처음 보는 케이스는 LLM 이 직접 수정 + 스크립트 저장**. 모든 시도는 git 커밋 → 재빌드로 채점 → 나아지지 않으면 되돌린다.
 - KB 는 파일뿐이다(DB 없음): `errors.jsonl`(모든 오류 레코드), `cases/<case_id>/`(케이스별 스크립트·오류 JSON), `cases.md`(사람용 표),
   `libraries.yml`(사람이 넣는 라이브러리 표).
-- LLM 이 개입하는 곳은 두 군데뿐: **구조 점검**(프로젝트당 1~3회: 점검 1 + 형식 재시도 1 + 편집 적용 실패 재시도 1)과 **수정 루프**(케이스당 최대 3회 + 보조 호출). 나머지 단계는 전부 결정적이다.
+- LLM 이 개입하는 곳은 두 군데뿐: **구조 점검**(프로젝트당 1~3회: 점검 1 + 형식 재시도 1 + 편집 적용 실패 재시도 1)과 **수정 루프**(케이스당 최대 20회, 그중 보강 15회 + 보조 호출). 나머지 단계는 전부 결정적이다.
 - 운영자가 읽는 줄: `SBMIG-RESULT run=… exit=0 build=ok … llm=3 attn=- review=ok major=0`.
 
 ## 1. 실행 흐름 — 단계별로 무엇이 일어나는가
@@ -65,6 +67,26 @@
   3. 같은 L2 면 어느 PC, 어느 프로젝트에서도 같은 폴더 → 500개 프로젝트가 한 KB 를 공유해도 충돌이 없다.
   4. 사람이 읽을 이름은 `case.json` 의 `name` / `l2` 와 `cases.md` 표에 있다. `sbmig kb cases show 7a52b1cea8` 이 한 번에 보여 준다.
 - 케이스가 없는 레코드(재구조화의 `pom-verify`, 점검 warning 메모)는 `cases/_other/errors/` 에 들어간다.
+- **모듈 이름 가리기(v2.1z, 2026-11-02)**: 빌드 로그에 나온 reactor 모듈 artifactId 전부(`--- plugin:ver:goal @ <artifactId> ---` 표시,
+  `< g:a >` 머리줄, `on project <a>`; 오류 자신의 모듈 포함)를 L1 / L2 메시지에서 `<module>` 로 바꾼다(대소문자 구분, 단어 경계; 3자 미만과
+  `web` · `core` · `common` · `api` · `test` · `main` · `build` · `parent` · `jar` · `war` · `plugin` · `boot` · `back` · `front` 같은 평범한
+  낱말은 그대로). KB 의 목적은 프로젝트를 넘는 스크립트 재사용인데, L2 에 프로젝트 이름이 남으면 케이스가 그 프로젝트 전용이 된다. 실물 예:
+  `enforcer|requirejavaversion: pricing-core must be built with`(루트 artifactId 가 샜다; 오류의 모듈은 `pricing-core-comp`) →
+  `enforcer|requirejavaversion: <module> must be built with`. id 가 바뀌는 것은 다른 모듈 이름이 들어 있던 L2 뿐이고, 그것들은 원래 다른
+  프로젝트와 맞은 적이 없다.
+
+### 2.1 KB 매칭 점검 (2026-11-02, PM 검토 — 제안만, 아직 만들지 않음)
+
+- **규칙이 바뀌면 저장 케이스가 고아가 된다.** case_id 는 L2 문자열의 해시라서 `sbmig/build/signatures.py` / `sbmig/triage/cluster.py`
+  를 바꿀 때마다(`company-v1` 이후 6번, 마지막 2026-10-27; v2.1z 가 7번째) 옛 규칙으로 저장된 케이스와 매칭이 끊긴다. `sbmig kb reindex` 는
+  저장된 `l2` 로 다시 셀 뿐 L2 를 다시 만들지 않는다. 제안: `sbmig kb reindex --resign` — 저장된 `raw` 로 L2 를 다시 만들고, 케이스 폴더를
+  새 id 로 옮기고, 옛 id 는 별칭으로 남긴다.
+- **반대 위험 — 한 키에 다른 문제.** `compile|cannot_find_symbol|<단순 이름>` 은 흔한 메서드 이름(`save`, `keySet`, `findAll` — e2e KB 에서 봄)
+  을 공유하는 서로 다른 문제를 한 케이스로 합친다. 이 키를 바꾸려면 위 `--resign` 이 먼저다(아니면 그런 케이스가 전부 고아가 된다).
+- **문제없음을 확인한 것.** id 공식은 `sbmig.errors.common` / `sbmig.triage.cluster` / 저장소에서 같다; 뭉뚱그려진 키는 빌드마다 한 번
+  (`refine_build`) 오류 목록·클러스터·채점·차단 등록부보다 먼저 세분된다; e2e 증거 케이스 폴더 59개, KB 항목 455건, 실행 보고서 450개에서 id
+  불일치 0. javac 메시지는 한국어 Windows 에서도 영어다(OpenJDK 는 javac 를 ja / zh 로만 번역). OS 차이(Windows `\` 경로는 역슬래시 하나부터,
+  posix 는 둘부터 가림)는 macOS 에서 만든 KB 를 회사 KB 에 합칠 때만 문제가 된다.
 
 ## 3. KB 디렉토리와 파일
 
@@ -297,9 +319,12 @@ KB 탐색 (L2 → cases/<id>/case.json)
        → <edits> 바로 적용 + <script> 저장(unverified); 스크립트만 왔으면 실행
 ```
 
-- 케이스당 한 실행에서 **저장본 1회 + LLM 3회**(`script.max_augments_per_case`)까지. 그 뒤 `BLOCKED (repeated_failure)` → Handover.
+- 케이스당 한 실행에서 **저장본 1회 + LLM 20회**(`script.max_llm_tries_per_case`, 신규 + 보강)까지, 그중 보강은 **15회**(`script.max_augments_per_case`)까지 —
+  보강을 다 쓰면 처음부터 새로 작성(`llm-new`)을 요청한다. 20회 뒤 `BLOCKED (repeated_failure)` → Handover. (v2.1z, 2026-11-02: "여유롭게 잡고 진행하다가 점차
+  줄여가는 방식" — 회사가 쓰던 15 가 기본이 됐다. v2.1z 전에는 `max_augments_per_case`(3) 하나가 신규 + 보강을 함께 셌다.)
+  LLM 이 "프로젝트 밖의 일" 이라고 거절하면 `script.max_declines_per_case`(1) 뒤 바로 차단된다.
   `script.reuse_versions` 를 2 이상으로 올리면, 이번 실행에서 실패한 저장본 다음에 **다음 저장본**을 LLM 전에 더 돌린다(같은 순서: proven 최신 → unverified 최신, retired 제외; 도움이 된 재사용 — improved / partial — 이 있었으면 다음 저장본 대신 그것을 보강).
-- 특정 이유는 더 짧다(`loop.blocked_policy`): javax 라이브러리·호환 안 되는 외부 API·없는 아티팩트·플러그인 2회, 사내 parent 미해결·인코딩·지원 안 하는 소스 0회(바로 Handover).
+- 특정 이유는 더 짧다(`loop.blocked_policy`): javax 라이브러리·호환 안 되는 외부 API·없는 아티팩트·플러그인 2회, 사내 parent 미해결·인코딩·Windows 파일 잠금·reactor 중복·소유팀 결정(`needs_owner`) 0회(바로 Handover).
 - 채점은 **재빌드**로만 한다. `improved` = 이 케이스의 오류가 모두 사라졌고 빌드가 그 단계까지 갔음. 나아지지 않으면 다음 시도 전에 되돌린다(HEAD 면 reset, 아니면 `git revert`). 새 오류가 생기면 `regressed → reverted`.
 - 한 라운드에 근본 원인 케이스부터(의존성 해결 → 컴파일 → 플러그인), 같은 파일을 이미 건드린 케이스는 다음 라운드로 미룬다.
 - 저장 스크립트의 `runs[]` 에 매 실행의 결과와 **이유**가 남으므로, 사람이 "왜 v2 가 생겼나 / v1 은 어디서 깨졌나" 를 JSON 만 보고 알 수 있다.
@@ -309,17 +334,12 @@ KB 탐색 (L2 → cases/<id>/case.json)
 | 개입 지점 | 무엇을 주고 받나 | 호출 수 |
 |---|---|---|
 | 구조 점검 (`restructure.review`) | 모든 pom(60,000자까지, 40개까지) + 모듈 구조 + 인코딩 + sbmig 가 계산한 사실 → 판정 JSON + critical 수정(`<edits>`) | 프로젝트당 **1회**, 답변 형식이 깨지면 **1회 재시도**, 고친 편집이 적용되지 않으면(되돌린 뒤) 실패 이유를 주고 **1회 더** — 최대 **3회**(`_ask` 2 + `_apply_retry` 1) |
-> **`fix.mode: edits` (v2.1i, 토큰 비교용 스위치)**: LLM 에게 수정 내용(`<edits>`)만 요청한다 — 프롬프트에서 스크립트 규칙·도우미 API 가
-> 빠지고(약 36% 짧음), 스크립트 저장·재사용·보강이 없다. 케이스당 LLM 요청 횟수는 기본 **무제한**(`fix.edits_max_asks_per_case: 0` —
-> "전부 LLM 에게 맡겼을 때" 를 재는 용도; 라운드 50·실행 시간·`loop.max_llm_calls` 만 남고 `loop.blocked_policy` 의 양수 횟수도 풀린다.
-> 3 으로 두면 script 모드와 같은 횟수)
-> 맞췄다. 웹 UI 의 "LLM 직접 수정만" 체크박스, `sbmig run --fix-mode edits`, `sbmig fleet run --fix-mode edits`. "KB 사용 안 함"
-> (`--no-kb`)까지 켜면 "전부 LLM" 실험이 된다. 결과 구분: `SBMIG-RESULT … fix=edits`, 보고서 "LLM usage and cost" 의 `fix mode` 줄.
-
-| 수정 루프 — 새 수정 (`llm-new`) | 케이스의 오류들, 오류 파일(창 단위), pom 발췌, "Dependency versions"(저장소 버전 사실), KB 힌트, 이전 시도 → 원인 / 해결 / `<edits>` / `<script>` | 케이스당 **1회**; LLM 이 파일을 더 달라면(`<need_files>`) 최대 **2회** 추가(`llm.max_context_rounds`); 스크립트가 못 쓰는 형식이면 **1회** 피드백 |
-| 수정 루프 — 보강 (`llm-augment`) | 위 + 저장 스크립트 코드와 실행 결과 | 케이스당 최대 **3회**(새 수정 포함 총 3) |
+| 수정 루프 — 새 수정 (`llm-new`) | 케이스의 오류들, 오류 파일(창 단위), pom 발췌, "Dependency versions"(저장소 버전 사실), KB 힌트, 이전 시도 → 원인 / 해결 / `<edits>` / `<script>` | 요청마다 **1회**(처음, 그리고 보강 15회를 다 쓴 뒤 다시 처음부터; 신규 + 보강 합계 ≤ 20); LLM 이 파일을 더 달라면(`<need_files>`) 최대 **2회** 추가(`llm.max_context_rounds`); 스크립트가 못 쓰는 형식이면 **1회** 피드백 |
+| 수정 루프 — 보강 (`llm-augment`) | 위 + 저장 스크립트 코드와 실행 결과 | 케이스당 최대 **15회**(`script.max_augments_per_case`); 새 수정 포함 LLM 요청은 케이스당 총 **20회**(`script.max_llm_tries_per_case`) |
 | 운영자 가이드 (`verify_guide`) | 메이저 업그레이드가 읽혀 나왔는데 답변에 `<verify>` 가 없을 때. 요청 role 은 `verify_guide`(v2.1h 부터 정식 `LLMRole`; 재생 파일은 `replay_role: verify_guide`) | 그 시도당 **1회**(저장본 재사용 시도는 0회, sbmig 가 생성) |
 | 에스컬레이션 모델 | 같은 오류 집합이 2번 반복(`loop.stall_limit`)되거나 케이스의 2번째 보강부터 | 호출 수는 같고 모델만 `llm.escalation_model` 로 |
+
+> v2.1i 의 `fix.mode: edits` / `--no-kb`(토큰 비교용 스위치)는 v2.1z(2026-11-02)에서 없어졌다 — 수정은 언제나 스크립트 사다리와 KB 로 한다.
 
 LLM 이 **개입하지 않는** 곳: intake · analyze · plan · OpenRewrite · compile · restructure(회사 구조) · 빌드 · 채점/되돌림 · 저장본 재사용 · 보고서 · KB 적재.
 
@@ -332,7 +352,8 @@ LLM 이 **개입하지 않는** 곳: intake · analyze · plan · OpenRewrite ·
 | 플릿 전체 LLM 호출 | 무제한(0) | `fleet.max_llm_calls_total` |
 | 실행 시간 | 240분 | `loop.max_total_minutes` |
 | 한 라운드에 다루는 케이스 | 8 | `loop.max_clusters_per_iteration` |
-| 케이스당 LLM 시도 | 3 | `script.max_augments_per_case` |
+| 케이스당 LLM 요청(신규 + 보강) | 20 | `script.max_llm_tries_per_case` |
+| 케이스당 보강 | 15 (다 쓰면 새로 작성) | `script.max_augments_per_case` |
 | 케이스당 저장본 재사용 | 1 버전 (2 이상이면 실패한 저장본 다음 버전도) | `script.reuse_versions` |
 | 스크립트 실행 | 60초, 바뀐 파일 40개 넘으면 경고 | `script.timeout_seconds`, `script.max_files_changed_warn` |
 | Maven 빌드 / OpenRewrite | 30분 / 40분 | `build.timeout_minutes`, `openrewrite.timeout_minutes` |

@@ -39,7 +39,7 @@ from urllib.parse import unquote
 
 from sbmig.core.models import GAV, BuildError, ErrorKind
 
-from .signatures import classify_javac, fill_signatures
+from .signatures import classify_javac, fill_signatures, set_reactor_modules
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]")
 # 줄 앞의 타임스탬프(로그 설정에 따라 붙음)를 떼고 [INFO] / [ERROR] 레벨을 읽는다.
@@ -945,9 +945,36 @@ def parse_maven_log(text: str, project_root: Path | str | None = None) -> list[B
     """Maven 로그 전체 → 구조화된 오류 목록(L1 / L2 서명까지 채움). 이상한 입력에도 예외를 내지 않는다.
 
     Parse a full Maven log into structured errors (signatures filled). Never raises on odd input."""
+    # 서명을 채우기 전에 이 로그의 reactor artifactId 를 전부 등록한다(교체): 오류가 자기 모듈보다 먼저 찍힌
+    # 다른 모듈의 이름(예: 루트 artifactId)을 담아도 L2 에서 <module> 로 가려져 다른 프로젝트와 같은 케이스가 된다.
+    set_reactor_modules(reactor_artifact_ids(text))
     parser = _Parser(project_root)
     parser.feed(text.splitlines())
     return parser.finish(text)
+
+
+def reactor_artifact_ids(text: str) -> list[str]:
+    """로그에 나온 reactor 모듈 artifactId 전부(나온 순서, 중복 없음): ``-----< g:a >-----`` 머리줄,
+    ``--- plugin:ver:goal (id) @ <a> ---`` 표시, ``Failed to execute goal … on project <a>``. 'Building <name>'
+    의 이름은 표시 이름(<name>)일 수 있어 쓰지 않는다 — artifactId 가 확실한 것만.
+
+    Every reactor artifactId the log shows, in order of appearance: ``< g:a >`` headers, ``@ <artifactId>`` mojo
+    markers and ``on project <artifactId>`` failure lines (the ``Building <name>`` display name is not certain)."""
+    seen: dict[str, None] = {}
+    for raw in (text or "").splitlines():
+        level, body = _split_level(strip_ansi(raw))
+        b = body.strip()
+        if not b:
+            continue
+        m = _HEADER_RE.match(b) or _MOJO_RE.match(b)
+        if m:
+            seen.setdefault(m.group("a"), None)
+            continue
+        if level in ("ERROR", "FATAL"):
+            m = _FAILED_GOAL_RE.match(b)
+            if m:
+                seen.setdefault(m.group("proj"), None)
+    return list(seen)
 
 
 _REACTOR_LINE_RE = re.compile(r"^(?P<name>\S.*?)\s+(?:\.+\s*)?(?P<status>SUCCESS|FAILURE|SKIPPED)\b")

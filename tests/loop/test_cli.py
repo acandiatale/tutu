@@ -61,7 +61,7 @@ def test_run_dry_run_with_patched_orchestrator(tmp_path, monkeypatch, repo_root)
     (src / "pom.xml").write_text("<project/>")
     cfg_file = repo_root / "config" / "artifacts.local-e2e.yml"
     res = runner.invoke(app, ["run", str(src), "--config", str(cfg_file), "--out", str(tmp_path / "out"),
-                              "--run-id", "cli-1", "--dry-run", "--no-kb", "--llm-provider", "fake",
+                              "--run-id", "cli-1", "--dry-run", "--llm-provider", "fake",
                               "--java-home", "/jdk21", "--settings", "/s.xml", "--stop-after", "spring", "-v"])
     assert res.exit_code == 0, res.output
     s = FakeOrch.seen
@@ -69,7 +69,7 @@ def test_run_dry_run_with_patched_orchestrator(tmp_path, monkeypatch, repo_root)
     cfg = s["cfg"]
     assert cfg.llm.provider == "fake" and cfg.build.java_home == "/jdk21" and cfg.build.settings_file == "/s.xml"
     from sbmig.loop import NullKnowledgeBase
-    assert isinstance(s["kw"]["kb"], NullKnowledgeBase)                  # --no-kb
+    assert not isinstance(s["kw"].get("kb"), NullKnowledgeBase)          # v2.1z: no --no-kb, the KB is always on
     assert (tmp_path / "out" / "cli-1" / "project" / "pom.xml").exists()
     # failure exit code + bad phase
     res = runner.invoke(app, ["run", str(src), "--config", str(cfg_file), "--out", str(tmp_path / "out"),

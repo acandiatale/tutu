@@ -284,7 +284,7 @@ KB 루트는 `kb.dir`(기본 `kb`, 저장소 루트 기준) 입니다. 파일 �
 | 웹 UI | 체크한 `config/*.yml` 로 만든 설정의 `kb.dir`(local-e2e 를 고르면 `out/e2e/kb`, 회사 설정이면 `kb/`) |
 | `sbmig fleet run` | 플릿 설정의 `kb.dir` 하나를 모든 프로젝트가 공유(프로젝트별 오버레이가 `kb.dir` 을 바꿔도 플릿 값으로 되돌림, `sbmig/fleet/runner.py` 의 `project_config`) |
 | `sbmig kb ...` | `--config` 의 `kb.dir`, 또는 `--kb-dir` 로 직접 지정 |
-| `sbmig run --no-kb` | KB 를 읽지도 쓰지도 않음(조회·수확·원장 모두 생략). round 10 부터 케이스 카탈로그, 학습된 치환, 에러 힌트, 계획의 후보 레시피, 심볼 색인, 결정적 후보도 끕니다(CLI 와 `migrate(kb=False)` 가 같은 설정 `NO_KB_OVERRIDES` 사용). 실행 디렉터리의 `error_cases.*` 는 그대로 씁니다 |
+| `sbmig.api.migrate(kb=False)` (프로그램용; CLI `--no-kb` 는 v2.1z 에서 삭제) | KB 를 읽지도 쓰지도 않음(조회·수확·원장 모두 생략). round 10 부터 케이스 카탈로그, 학습된 치환, 에러 힌트, 계획의 후보 레시피, 심볼 색인, 결정적 후보도 끕니다(설정 `NO_KB_OVERRIDES` 사용). 실행 디렉터리의 `error_cases.*` 는 그대로 씁니다 |
 
 ### 4.2 디렉터리 구조
 

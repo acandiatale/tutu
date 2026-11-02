@@ -424,8 +424,6 @@ class Orchestrator:
         t0 = self.clock()
         report = RunReport(run_id=self.ws.run_id, project_name=self.ws.root.name, case_type=CaseType.UNKNOWN,
                            started_at=utcnow())
-        # v2.1i: 수정 방식(script | edits)을 보고서에 — SBMIG-RESULT `fix=` 와 "LLM usage and cost" 가 이것을 본다
-        report.fix_mode = str(getattr(getattr(self.cfg, "fix", None), "mode", "script") or "script")
         self.report = report
         if dry_run:
             report.flags.append("dry-run")
@@ -1641,11 +1639,7 @@ class Orchestrator:
                     self.errors.add_note(issue.file or "", f"warning: {text}", "review")
             code = ((getattr(ans, "code", "") if ans is not None else "") or rv.script or "").strip("\n")
             store = CaseScripts.of(self.kb)
-            # v2.1i: `fix.mode: edits` 실행은 수정 스크립트를 KB 에 저장하지 않는다(검토의 스크립트도) — 토큰 비교의 조건
-            edits_only = str(getattr(getattr(self.cfg, "fix", None), "mode", "script") or "script") == "edits"
-            if code.strip() and rv.critical and store.active and edits_only:
-                log.debug("review script not stored (fix.mode edits)")
-            elif code.strip() and rv.critical and store.active:
+            if code.strip() and rv.critical and store.active:
                 from sbmig.triage.cluster import l2_case_id
                 cs = store.add_script(l2_case_id(REVIEW_L2), REVIEW_L2, code, source="review", run_id=self.ws.run_id,
                                       project=(self.profile.name if self.profile is not None else "") or
@@ -2088,13 +2082,13 @@ class Orchestrator:
     def _verify_fix_loop(self, pr: PhaseResult, step: PlanStep, first: BuildResult) -> bool:
         """최종 ``mvn clean package`` 가 실패했다 → ``loop.phases.verify`` 의 스크립트 수정 루프(최대 50
         라운드). v2 에서는 이것이 유일한 수정 루프다. 남은 클러스터가 전부 이미 차단된 것이면 돌리지
-        않는다(같은 실행에서 케이스당 한도는 ``script.max_augments_per_case``). 루프를 돌렸으면 True — 호출한
+        않는다(같은 실행에서 케이스당 한도는 ``script.max_llm_tries_per_case``). 루프를 돌렸으면 True — 호출한
         쪽이 최종 빌드를 다시 한다(불변조건 1).
 
         The final `mvn clean package` failed → the script fix loop on `loop.phases.verify` (goal `package`), after
         which the caller repeats the final build (invariant 1: the run still ends on a `clean package`). v2: this is
         THE fix loop (no intermediate loops); its build 1 is the failed final build itself (not built again). A case
-        blocked earlier stays blocked: its limit is script.max_augments_per_case per run. Returns True when the loop
+        blocked earlier stays blocked: its limit is script.max_llm_tries_per_case per run. Returns True when the loop
         ran."""
         pc = self.cfg.loop.phases.get(Phase.VERIFY.value)
         if pc is None or not pc.enabled or pc.max_iterations <= 0 or self.loop is None or self._dry_run \
@@ -2191,11 +2185,11 @@ class Orchestrator:
 
     def _finalize_errors(self, report: RunReport) -> None:
         """v2.1 마무리: 열린 항목 → unresolved, 실행 디렉터리에 errors.jsonl + errors.md, 보고서의 오류
-        항목, KB 에 이 실행의 항목을 덧붙임(``kb.record_run``, ``--no-kb`` 면 없음). 실행을 실패시키지 않는다
+        항목, KB 에 이 실행의 항목을 덧붙임(``kb.record_run``, KB 가 없으면(``NullKnowledgeBase``) 없음). 실행을 실패시키지 않는다
         — 문제는 ``errors-failed: …`` 플래그.
 
         v2.1 finalize: the open entries → unresolved (`end_of_run`), `<run dir>/errors.jsonl` + `errors.md`,
-        `report.error_entries` (diffs capped), the KB gets the run's entries (`kb.record_run`; not with `--no-kb`).
+        `report.error_entries` (diffs capped), the KB gets the run's entries (`kb.record_run`; not with a `NullKnowledgeBase`).
         Never fails the run: a problem becomes the flag `errors-failed: <msg>`."""
         el = self.errors
         if not el.active or self._dry_run:

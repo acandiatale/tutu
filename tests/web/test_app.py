@@ -432,3 +432,47 @@ def test_rejected_upload_leaves_no_partial_file(client, tmp_path):
         assert r.status_code == status and msg in r.json()["error"], (query, r.text)
         assert _part_files(tmp_path) == [], query
     assert client.get("/api/runs").json()["runs"] == []
+
+
+# ------------------------------------------------------------------ v2.1z: the v2.1i switches are gone
+def test_a_run_gets_the_normal_kb_and_records_no_switches(client, tmp_path):
+    """v2.1z: no fix_mode / no_kb any more — a run gets the file KB (never a NullKnowledgeBase), the old query
+    parameters are ignored (not a 400), and neither the record, web-status.json nor the web_run journal line
+    carries fix_mode / kb."""
+    from sbmig.loop import NullKnowledgeBase
+
+    rid = _start(client, "name=p.zip&configs=artifacts.local-e2e.yml&llm_provider=fake&fix_mode=edits&no_kb=1")
+    run = _manager(client).runs[rid]
+    assert not isinstance(run.orch.kb, NullKnowledgeBase)
+    assert not hasattr(run, "fix_mode") and not hasattr(run, "no_kb")
+    final = _sse(client, rid)[-2][1]
+    assert final["state"] == "finished" and "fix_mode" not in final and "kb" not in final
+    rd = tmp_path / "out" / rid
+    saved = json.loads((rd / "web-status.json").read_text(encoding="utf-8"))
+    assert "fix_mode" not in saved and "kb" not in saved
+    journal = [json.loads(ln) for ln in (rd / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    (web,) = [j for j in journal if j["event"] == "web_run"]
+    assert web["configs"] == ["artifacts.local-e2e.yml"] and "fix_mode" not in web and "kb" not in web
+    assert "fix_mode=" not in (rd / "sbmig.log").read_text(encoding="utf-8")
+
+
+def test_old_status_files_with_the_v21i_switches_still_load(tmp_path, repo):
+    """A web-status.json / report.json written by a v2.1i server (fix_mode / kb keys) is read without error;
+    the keys are ignored."""
+    mgr = RunManager(tmp_path / "out", repo)
+    rd = tmp_path / "out" / "web-a"
+    rd.mkdir(parents=True)
+    (rd / "web-status.json").write_text(json.dumps({"run_id": "web-a", "exit_code": 2, "fix_mode": "edits",
+                                                    "kb": "off", "stop_requested": False}))
+    (rd / "report.json").write_text(json.dumps({"success": False, "fix_mode": "edits", "blocked": [{}]}))
+    st = mgr.status("web-a")
+    assert st["state"] == "finished" and st["exit_code"] == 2 and st["success"] is False and st["blocked"] == 1
+    assert "fix_mode" not in st and "kb" not in st
+    (row,) = mgr.list_runs()
+    assert row["run_id"] == "web-a" and "fix_mode" not in row
+
+
+def test_page_has_no_v21i_switches(client):
+    html = client.get("/").text
+    assert 'id="fixedits"' not in html and 'id="nokb"' not in html and "fix_mode" not in html
+    assert "no_kb" not in html and "KB off" not in html and 'id="start"' in html and 'id="stop"' in html

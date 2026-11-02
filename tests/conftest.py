@@ -46,6 +46,16 @@ def fixture_project(tmp_path: Path):
 
 
 @pytest.fixture(autouse=True)
+def reset_reactor_modules():
+    """v2.1z: the process-wide reactor-module registry (`sbmig.build.signatures.set_reactor_modules`, the `<module>`
+    masking of case keys) starts empty in every test, so a parsed log in one test never changes another test's L2."""
+    from sbmig.build.signatures import set_reactor_modules
+    set_reactor_modules(())
+    yield
+    set_reactor_modules(())
+
+
+@pytest.fixture(autouse=True)
 def no_llm_cooldown_sleep(monkeypatch):
     """Round 9: the LLM cool-down (`llm.cooldown_seconds`, default 60 s) never really sleeps in any test; the pauses
     asked for are recorded in the returned list (loop tests assert on it)."""

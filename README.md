@@ -25,7 +25,9 @@ finalize    report.md / report.json (Handover first), KB records (errors, attemp
 ```
 
 Script fix loop, per error case (case = L2 signature, one script for every file that has it): **reuse** the best stored
-version (no LLM) → **augment** the previous version (LLM, up to 3) → **new** (LLM) → BLOCKED → Handover. An attempt that
+version (no LLM) → **augment** the previous version (LLM, up to 15 per case: `script.max_augments_per_case`) → when
+the augments are used up a fresh **new** script (LLM) → BLOCKED → Handover after 20 LLM asks per case
+(`script.max_llm_tries_per_case`). An attempt that
 makes things worse is rolled back (git); every script version and its outcome is recorded.
 
 ## Business decisions (kept in config / knowledge, not in code)

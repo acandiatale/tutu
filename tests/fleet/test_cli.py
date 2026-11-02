@@ -106,3 +106,50 @@ def test_mounted_on_main_cli():
 
     r = cli.invoke(app, ["fleet", "--help"])
     assert r.exit_code == 0 and "status" in r.output
+
+
+# ------------------------------------------------------------------ v2.1z: --fix-mode / --no-kb are gone
+@pytest.mark.parametrize("opt", [["--fix-mode", "edits"], ["--no-kb"]])
+def test_v21i_switches_are_gone(env, opt):
+    r = cli.invoke(fleet_cli, ["run", str(env["projects"]), *_args(env), *opt])
+    assert r.exit_code == 2 and not env["calls"]                      # typer: no such option
+
+
+def test_fleet_runs_with_the_kb_and_an_old_fleet_config_still_resumes(env):
+    """The fleet always uses the shared file KB; fleet-config.json has no `no_kb` key, and a v2.1i fleet-config.json
+    (`no_kb`, a `fix.mode` override) still resumes — both keys are ignored."""
+    from sbmig.loop import NullKnowledgeBase
+
+    r = cli.invoke(fleet_cli, ["run", str(env["projects"]), *_args(env), "--llm-provider", "fake"],
+                   catch_exceptions=False)
+    assert r.exit_code == 2 and "fix_mode=" not in r.output and "kb=off" not in r.output
+    path = env["out"] / "fleet" / "fleet-config.json"
+    saved = json.loads(path.read_text())
+    assert "no_kb" not in saved
+    saved["no_kb"] = True
+    saved["overrides"]["fix"] = {"mode": "edits"}
+    path.write_text(json.dumps(saved))
+    seen = []
+    orig = runner_mod.FleetRunner._default_run_project
+
+    def spy(self, project, cfg, out_dir, run_id):
+        seen.append(self.kb)
+        return orig(self, project, cfg, out_dir, run_id)
+
+    runner_mod.FleetRunner._default_run_project = spy
+    try:
+        r = cli.invoke(fleet_cli, ["resume", str(env["out"]), "--retry-failed"], catch_exceptions=False)
+    finally:
+        runner_mod.FleetRunner._default_run_project = orig
+    assert r.exit_code == 2 and [c[0] for c in env["calls"]][3:] == ["beta"]
+    assert seen and not any(isinstance(kb, NullKnowledgeBase) for kb in seen)
+
+
+def test_an_old_state_settings_note_is_just_a_note(tmp_path):
+    from sbmig.core.models import FleetState
+    from sbmig.fleet.summary import render_learning, render_summary_md
+
+    state = FleetState(fleet_id="fleet-x", manifest="m.txt", notes=["settings: fix_mode=edits kb=off"])
+    md = render_summary_md(state)
+    assert "* settings: fix_mode=edits kb=off" in md and "## Notes" in md
+    assert "KB off" not in render_learning(state)

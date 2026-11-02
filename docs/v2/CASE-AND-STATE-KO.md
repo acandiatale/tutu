@@ -1,5 +1,10 @@
 # sbmig v2.1 — 케이스에 남는 속성과 노드별 state (사내 설명용)
 
+> 2026-11-02 (v2.1z): 토큰 비교용 스위치(`fix.mode: edits`, `fix.edits_max_asks_per_case`, `--no-kb`, 웹 `fix_mode` / `no_kb`,
+> `RunReport.fix_mode`, `SBMIG-RESULT … fix=`)는 없어졌다. 사다리 한도는 케이스당 실행당 **LLM 요청 20회**(`script.max_llm_tries_per_case`,
+> 신규 + 보강) 중 **보강 15회**(`script.max_augments_per_case`, 보강만 센다). L1 / L2 에서 reactor 모듈 artifactId 는 전부 `<module>`.
+> 계약은 `docs/INTERFACES.md` "v2.1z".
+
 > 2026-11-02, 브랜치 `flow-v2`(`3f0a250`, v2.1u…y 포함). `docs/v2/KB-AND-FLOW.md` 가 "흐름과 사다리" 를 설명한다면 이 문서는
 > **속성 사전**이다. A부: 케이스 하나에 무엇이 어디에 남는가(실행 메모리 → 실행 디렉터리 → KB → 다음 프로젝트). B부: LangGraph
 > 노드가 주고받는 state 와 노드마다 오케스트레이터·보고서·파일에 남기는 것. 샘플은 전부 로컬 e2e 실물이다
@@ -33,7 +38,10 @@
 
 - `<kind>` = `ErrorKind`: `compile`, `test_compile`, `dependency_resolution`, `plugin_resolution`, `parent_resolution`, `plugin_execution`, `enforcer`, `pom_invalid`, `rewrite`, `test_failure`, `unknown`.
 - `<class>` 는 javac 메시지 첫 줄의 분류(`package_does_not_exist`, `cannot_find_symbol`, `cannot_access`, `incompatible_types`, `method_does_not_override`, `illegal_start` …); `plugin_execution` 은 `플러그인:목표` + 정규화한 원인 10단어.
-- 규칙: **절대경로·줄 번호·모듈 이름·프로젝트 소유 위치는 넣지 않는다.** 뭉뚱그려진 컴파일 키(`build` / `other`)는 묶기 전에 `sbmig.triage.cluster.refine_signature` 가 오류 원문 줄로 세분한다.
+- 규칙: **절대경로·줄 번호·모듈 이름·프로젝트 소유 위치는 넣지 않는다.** v2.1z: 오류 자신의 모듈뿐 아니라 이번 빌드 로그에 나온 reactor artifactId
+  전부(`< g:a >` 머리줄, `--- … @ <artifactId> ---`, `on project <a>`)를 `<module>` 로 가린다(대소문자 구분, 단어 경계, 긴 이름부터; 3자 미만과
+  `web` / `core` / `common` / `api` / `test` / `main` / `build` / `parent` / `jar` / `war` / `plugin` / `boot` / `back` / `front` 같은 평범한 낱말은
+  가리지 않음). 예: `enforcer|requirejavaversion: pricing-core must be built with` → `enforcer|requirejavaversion: <module> must be built with`. 뭉뚱그려진 컴파일 키(`build` / `other`)는 묶기 전에 `sbmig.triage.cluster.refine_signature` 가 오류 원문 줄로 세분한다.
 - 왜 해시인가: L2 에 `|` `<` `>` `:` 한글·공백이 들어가고, 매칭은 L2 문자열로 하므로 폴더 이름은 키일 뿐이다(KB-AND-FLOW §2). **`signatures.py` 를 바꾸면 기존 KB 케이스와 매칭이 끊긴다.**
 - 케이스가 없는 레코드도 있다: 재구성의 `pom-verify`, 구조 점검 warning 메모 → `case_id` / `l2` 가 `""` 이고 KB 에서는 `cases/_other/errors/` 에 들어간다. 구조 점검이 **직접 고친** critical 은 고정 L2 `review|structure`(`sbmig/loop/entries.py REVIEW_L2`)의 케이스다.
 
@@ -116,6 +124,11 @@
 | `non_idempotent` | v2.1y: `ok` 직후 같은 스크립트를 한 번 더 돌렸더니 트리를 또 바꿈(`script.idempotency_check`). 기록은 남지만 `best` 가 다시 고르지 않는다(보강의 바탕 `latest` 로는 남는다) |
 
 선택 규칙(`CaseStore`): **`best`** = 가장 새 `proven`, 없으면 가장 새 `unverified`; `retired`·`non_idempotent`·파일 없는 버전은 제외 → 재사용(`kb-script`)에 쓰인다. **`latest`** = retired 가 아닌 가장 새 버전 → 보강 요청의 바탕.
+
+사다리(v2.1z, 케이스당 실행당): 저장본 재사용(`script.reuse_versions` 1, LLM 0회) → 이 실행에서 코드가 있었던 마지막 시도를 **보강**(보강이
+`script.max_augments_per_case` **15** 회 남아 있는 동안; 재사용이 꺼져 있으면 저장본 `best`) → 보강을 다 쓰면 처음부터 **새로 작성**(`new`) →
+LLM 요청(신규 + 보강)이 `script.max_llm_tries_per_case` **20** 회에 닿으면 `repeated_failure` 차단. 두 값 모두 그대로의 상한(0 = 보강 안 함 /
+LLM 에 묻지 않음). v2.1z 전에는 `max_augments_per_case`(3) 하나가 신규 + 보강을 함께 셌다.
 
 ### A.5 `scripts[].runs[]` — `ScriptRun`
 
@@ -225,7 +238,7 @@
 | `reactor_duplicate` | reactor 에 두 번 닿는 모듈(접수가 보통 지움) | 0 |
 | `file_lock` | Windows `target/` 파일 잠금(환경 오류) | 0 |
 | `needs_owner` | v2.1y: LLM 이 `<blocked>` 로 "프로젝트 밖의 일" 이라 답함 → 소유팀 결정 | 0 (거절 `script.max_declines_per_case` 1회 뒤) |
-| `repeated_failure` | 저장본 1 + LLM `script.max_augments_per_case`(3)회를 다 씀 | — |
+| `repeated_failure` | 저장본 1 + LLM `script.max_llm_tries_per_case`(20)회(그중 보강 ≤ `script.max_augments_per_case` 15)를 다 씀 | — |
 | `budget_exhausted` / `llm_unavailable` / `oscillation` | LLM 한도 소진 / LLM 장애 / 수정이 같은 오류 집합 사이를 오감 | — |
 
 거절(`<blocked>why</blocked>`, 또는 수정도 스크립트도 없이 원인만 쓴 답)은 `FixTry.result = blocked`, `note = declined: …` 로 남고, 트리아지가 이미 분류한 사유(`external_javax_api` 등)가 있으면 그 사유로, 없으면 `needs_owner` 로 차단된다. 같은 원인의 형제 케이스는 LLM 호출 없이 "same cause as <case>" 로 함께 차단된다(저널 `same_cause_blocked`). 운영자 줄에는 `attn=blocked:<reason>`(needs_owner 는 `owner-decision`)로 보인다.
@@ -239,7 +252,7 @@
 | `id` | `<phase>-<iteration>-<n>` 예 `verify-1-1`(저널 `attempt` 이벤트의 `attempt`) |
 | `phase` / `iteration` / `cluster_id` | 단계 / 라운드 / `case:<case_id>` |
 | `decision` | 트리아지 결정 `TriageDecision`: `kind`(`script` / `blocked` / `skip` / `escalate`) + `rationale`(`new fix for case … (nothing stored); looks like external_javax_api …`) |
-| `source` / `script_mode` | `TrySource` / `new` · `reuse` · `augment` |
+| `source` / `script_mode` | `TrySource` / `new` · `reuse` · `augment` (v2.1z: 한도 계산은 `script_mode` 로 — `new` + `augment` = LLM 요청 수, `augment` = 보강 수). 시도 이름은 언제나 `script:<case>:v<N>`(v2.1i 의 `edits:<case>#<n>` 는 없어짐); 스크립트 없는 답은 `source = llm-edit` |
 | `script_case_id` / `script_version` / `script_parent` / `script_code` / `script_result` | 케이스, 돌린·만든 버전(0 = 저장 안 됨), 보강의 부모, 스크립트 원문, 실행 결과(`ScriptRunResult`: `status` ok/error/timeout/rejected, `changed_files`, `log`, `error`, `problems`, `duration_s`) |
 | `edits_applied` | 직접 적용한 편집 수(0 = 스크립트가 돌았음) |
 | `analysis` / `solution` / `no_script_reason` / `verify` / `verify_source` / `major_upgrades[]` | §A.7 과 같은 값 |
@@ -267,7 +280,7 @@
 5. 시도 시작: `FixAttempt` 생성 + 오류 목록 `begin_try(case, round, source, version)` → 케이스의 모든 열린 레코드에 `FixTry n`. sbmig 가 LLM 없이 먼저 해 보는 케이스(`sbmig-version`, `sbmig-resources`)도 같은 길.
 6. 적용: 저장본 실행 / LLM 답변의 edits 적용 / 새 스크립트 실행(`sbmig.script`, 별도 프로세스) → 버전 없는 의존성 채우기(`_fill_versions`) → **멱등성 2회 실행**(ok 면 같은 스크립트를 한 번 더; 또 바꾸면 `mark_non_idempotent`) → 커밋. 새 스크립트는 `add_script` 로 `unverified` 저장(`script_stored`). 거절이면 적용 없이 §A.8.
 7. 다음 라운드 빌드가 채점(`_score`): `attempt_scored` → `FixAttempt.outcome`, 오류 목록 `finish_try(…, result)` + `resolve(case, round, n)`, KB `credit(case, version, result, …)` → `ScriptRun` 추가·`successes/failures`·`proven` 승격. 개선이 아니면 `revert`(되돌림, `reverted`).
-8. 한도(저장본 1 + LLM 3, 거절 1)에 닿으면 `block(case, reason)` → 열린 레코드 `blocked` + `note`, `BlockedItem` 등록. 저널 `blocked`.
+8. 한도(저장본 1 + LLM 20 그중 보강 15, 거절 1)에 닿으면 `block(case, reason)` → 열린 레코드 `blocked` + `note`, `BlockedItem` 등록. 저널 `blocked`.
 9. 루프 끝 → 최종 빌드 → `_finalize`: `end_of_run`(남은 `open` → `unresolved`) → `errors.jsonl` / `errors.md` → `report.error_entries` → `kb.record_run(entries)`: KB `errors.jsonl` 덧붙임(이미 있는 id 는 건너뜀), 케이스마다 `seen` / `resolved` / `projects` / `last_analysis` / `last_solution` / `last_result` 갱신(`note` / `pom-verify` 제외), 에러별 JSON, `cases.md` 재작성. 저널 `error_list`.
 
 ### A.12 다음 프로젝트에 전달되는 것
@@ -275,10 +288,10 @@
 | 객체 | 만드는 곳 | 케이스 관련 속성 |
 |---|---|---|
 | `KBMatch` | `FileKnowledgeBase.match(cluster)` 라운드마다 | `case_hits[]` = `CaseHit`(`case_id`, `name`, `status` active=proven / candidate=unverified / observed, `action` = `CaseAction(kind=script, script_version)` 또는 `(kind=block, block_reason)` + `pinned`, `errors`, `hints`), `hints[]` = `case <id> (<name>; seen in N project(s)): last solution — …` |
-| `ScriptStep` | `sbmig.triage.scripts.plan_script_step` | `case_id`, `mode`(`reuse` / `augment` / `new` / None), `version` + `code` + `meta`(저장 `CaseScript`), `base_attempt`(이 실행의 보강 바탕), `llm_used` / `llm_limit`(`script.max_augments_per_case`), `stored_used`(`script.reuse_versions` 1), `augments_used`(2번째부터 에스컬레이션 모델), `why`, `kb_line` / `kb_found`("저장된 스크립트 없음 (처음 보는 케이스)" — 처음 보는 프로젝트가 KB 적중처럼 읽히면 안 된다) |
-| `FixContext` | `BuildFixLoop` → `Fixer.propose_script` | `case_id`, `signature_generic`, `script_mode`(`new` / `augment`), `script_base` = `ScriptBase`(`case_id`, `version`, `code`, `outcome`, `status`, `error`, `log`, `changed_files`, `remaining_errors`, `introduced_errors`, `history` "v1: 2 ok / 1 failed — …"), `kb_hints`(위 힌트), `previous_attempts` / `previous_edits`(이 실행의 앞 시도), `library_hints`(저장소 버전 사실), `advisory_hints`, `reference_files`(병합에서 버려진 사본, 읽기 전용), `layout_facts`(v2.1v "Project after the restructure" — 재구성 결과에서 만든 사실 줄, 자르지 않음), `other_errors_summary`, `fix_mode`(`script` / `edits`) |
+| `ScriptStep` | `sbmig.triage.scripts.plan_script_step` | `case_id`, `mode`(`reuse` / `augment` / `new` / None), `version` + `code` + `meta`(저장 `CaseScript`), `base_attempt`(이 실행의 보강 바탕), `llm_used` / `llm_limit`(신규 + 보강 / `script.max_llm_tries_per_case` 20), `stored_used`(`script.reuse_versions` 1), `augments_used` / `augment_limit`(보강 / `script.max_augments_per_case` 15; 2번째 보강부터 에스컬레이션 모델), `why`, `kb_line` / `kb_found`("저장된 스크립트 없음 (처음 보는 케이스)" — 처음 보는 프로젝트가 KB 적중처럼 읽히면 안 된다) |
+| `FixContext` | `BuildFixLoop` → `Fixer.propose_script` | `case_id`, `signature_generic`, `script_mode`(`new` / `augment`), `script_base` = `ScriptBase`(`case_id`, `version`, `code`, `outcome`, `status`, `error`, `log`, `changed_files`, `remaining_errors`, `introduced_errors`, `history` "v1: 2 ok / 1 failed — …"), `kb_hints`(위 힌트), `previous_attempts` / `previous_edits`(이 실행의 앞 시도), `library_hints`(저장소 버전 사실), `advisory_hints`, `reference_files`(병합에서 버려진 사본, 읽기 전용), `layout_facts`(v2.1v "Project after the restructure" — 재구성 결과에서 만든 사실 줄, 자르지 않음), `other_errors_summary` (v2.1z: `fix_mode` 필드 삭제) |
 
-한도 한 줄: 케이스당 실행당 **저장본 1회 + LLM 3회**, 거절은 **1회** 뒤 차단; 멱등성 검사는 `script.idempotency_check`.
+한도 한 줄: 케이스당 실행당 **저장본 1회 + LLM 20회(그중 보강 15회)**, 거절은 **1회** 뒤 차단; 멱등성 검사는 `script.idempotency_check`.
 
 ### A.13 사람이 보는 파생 뷰와 손대도 되는 것
 
@@ -294,10 +307,10 @@
 | `errors.diff_chars` / `raw_chars` / `snippet_lines` | 6000 / 600 / 0 | `FixTry.diff`, `ErrorEntry.raw`, `EditHunk` 길이 |
 | `errors.md_view` / `json_files` / `script_runs` | true / true / 30 | `errors.md` + `cases.md`, 에러별 JSON, `runs[]` 개수 |
 | `kb.dir` / `redact_file` / `lock_timeout_seconds` | `kb-v2` / `knowledge/kb/redact.yml` / 300 | KB 위치, 마스킹 규칙, 잠금 대기 |
-| `script.reuse` / `reuse_versions` / `max_augments_per_case` / `max_declines_per_case` / `idempotency_check` | true / 1 / 3 / 1 / true | 사다리 한도, 거절 → `needs_owner`, 비멱등 표시 |
+| `script.reuse` / `reuse_versions` / `max_augments_per_case` / `max_llm_tries_per_case` / `max_declines_per_case` / `idempotency_check` | true / 1 / 15 / 20 / 1 / true | 사다리 한도(보강 전용 15, 신규 + 보강 20 → `repeated_failure`), 거절 → `needs_owner`, 비멱등 표시 |
 | `script.timeout_seconds` / `max_code_chars` / `log_lines` / `extra_allowed_imports` | 60 / 30000 / 200 / [] | 스크립트 실행 `ScriptRunResult` |
 | `loop.blocked_policy.<reason>` | §A.8 표 | 사유별 LLM 시도 허용 수 |
-| `fix.mode` | `script` | `edits` 면 저장·재사용·보강 없이 `llm-edit` 만(`fix.edits_max_asks_per_case`) |
+| `fix.plugin` / `plugin_options` | null / {} | 어댑터 2층(`docs/ADAPTERS.md`). v2.1z 에서 `fix.mode` / `fix.edits_max_asks_per_case` 삭제 |
 
 ---
 
@@ -399,7 +412,7 @@ START → intake ─┬→ analyze ─┬→ plan ─┬→ phase ⟲ (holder.gr
 6. `_finalize_operator_checks`(메이저 변경 → "운영자 확인 필요"), `_finalize_advisories`(권고 검증 + `report.handover` = `HandoverSummary`: `parent_before/after`, `java_*`, `spring_boot_*`, `changes[]`, `added[]`, `removed[]`, `carried_over[]`, `from_here[]`, `properties_to_set`, `notes`, `merge_conflicts`).
 7. `_finalize_errors`: `end_of_run`(open → unresolved) → `errors.jsonl` / `errors.md` → `report.error_entries`(diff 캡) → **KB `record_run`**(§A.11 9) → 저널 `error_list`.
 8. 보고서 작성(`report.md` / `report.json`; 섹션: Handover → Error list → Fixes by case → Structure review → Blocked → Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs) → 느린 `changes.patch` / `result.zip` 은 **맨 끝**(zip 도중 죽어도 중요한 것은 이미 남아 있다).
-9. 콘솔·로그에 `SBMIG-RESULT run=… exit=<0|2|3> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<n> attn=<codes>[ review=<v>][ major=<n>][ fix=<mode>]`. 종료 코드: 3 = `aborted` / `mvn-not-found`, 0 = 성공이고 차단 없음, 그 밖은 2. 실물: `SBMIG-RESULT run=run-20261031-193430-30da3d exit=2 build=FAIL unresolved=0 blocked=2 open=0 resolved=7 llm=3 attn=blocked:external_javax_api,tests-not-compiled review=issues`.
+9. 콘솔·로그에 `SBMIG-RESULT run=… exit=<0|2|3> build=<ok|FAIL> unresolved=<n> blocked=<n> open=<n> resolved=<n> llm=<n> attn=<codes>[ review=<v>][ major=<n>]` (v2.1i 의 ` fix=<mode>` 는 v2.1z 에서 없어짐). 종료 코드: 3 = `aborted` / `mvn-not-found`, 0 = 성공이고 차단 없음, 그 밖은 2. 실물: `SBMIG-RESULT run=run-20261031-193430-30da3d exit=2 build=FAIL unresolved=0 blocked=2 open=0 resolved=7 llm=3 attn=blocked:external_javax_api,tests-not-compiled review=issues`.
 
 `report.error_cases` / `error_case_counts` 는 v1 시절 레코드라 v2.1 에서는 비어 있다(`0` / `{}`); 오류 기록은 `error_entries` 다.
 
@@ -407,7 +420,7 @@ START → intake ─┬→ analyze ─┬→ plan ─┬→ phase ⟲ (holder.gr
 
 `PhaseResult`(묶음 하나, `report.phases[]`): `phase`, `step_ids[]`, `ok`, `build_ok`, `iterations`, `rewrite_results[]`, `attempts[]`(`FixAttempt`), `iteration_records[]`(`IterationRecord`: `iteration`, `build_ok`, `error_count`, `signatures`, `cluster_count`, `decisions`, `attempt_ids`, `stalled`, `stall_level`, `build_log`), `remaining_errors[]`(`BuildError`), `blocked[]`(`BlockedItem`), `notes[]`, `skipped`, `started_at` / `finished_at`.
 
-`RunReport`(`report.json`): `run_id`, `project_name`, `case_type`, `fix_mode`, `started_at` / `finished_at`, `success`, `profile`, `plan`, `phases[]`, `final_build`, `llm_usage` / `llm_usage_by_model` / `llm_cost`, `unresolved[]`, `blocked[]`, `manual_followups[]`, `advisories[]`, `handover`, `merge_conflicts[]`, `properties`, `flags[]`, `javax_api_jars[]`, `structure_review`, `error_entries[]`, `operator_checks[]`, `pom_synthesis`, `outputs{}`, `timings_s{}`(실물: `intake 1.949, analyze 0.083, plan 0.001, transform 19.359, review 0.07, restructure 2.389, verify 7.296, total 31.487`).
+`RunReport`(`report.json`): `run_id`, `project_name`, `case_type`, `started_at` / `finished_at`, `success`, `profile`, `plan`, `phases[]`, `final_build`, `llm_usage` / `llm_usage_by_model` / `llm_cost`, `unresolved[]`, `blocked[]`, `manual_followups[]`, `advisories[]`, `handover`, `merge_conflicts[]`, `properties`, `flags[]`, `javax_api_jars[]`, `structure_review`, `error_entries[]`, `operator_checks[]`, `pom_synthesis`, `outputs{}`, `timings_s{}`(실물: `intake 1.949, analyze 0.083, plan 0.001, transform 19.359, review 0.07, restructure 2.389, verify 7.296, total 31.487`).
 
 ### B.8 멈춤 · 중단 · 드라이런이 state 에 보이는 모양
 

@@ -32,7 +32,7 @@
       },
       "cases": [
         {
-          "l2": "enforcer|requirejavaversion: pricing-core must be built with",
+          "l2": "enforcer|requirejavaversion: <module> must be built with",
           "modes": [
             "new"
           ],

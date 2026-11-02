@@ -5,8 +5,7 @@
 정책·LLM 예산·LLM 장애가 막지 않는다) → 차단 판정(``loop.blocked_policy`` 횟수만큼 LLM 시도 후 차단) → LLM
 장애 → 사다리 소진(``repeated_failure``) → LLM 예산 → SCRIPT(보강 | 신규). BLOCKED 는 LLM 을 부르지 않고,
 루프는 차단 항목을 남긴 채 나머지 케이스를 계속 고친다. ``plan_iteration`` 은 같은 모듈에 해결형 오류(parent /
-pom / 의존성 / 플러그인)가 있으면 컴파일 케이스를 이번 라운드에서 가린다. v2.1i ``fix.mode: edits`` 면 사다리는
-신규뿐이고(저장본 재사용·보강 없음, ``plan_edits_step``) 나머지 판단 순서는 같다.
+pom / 의존성 / 플러그인)가 있으면 컴파일 케이스를 이번 라운드에서 가린다.
 
 Decision engine (ARCHITECTURE §4, ERROR-HANDLING §1/§3; v2: docs/INTERFACES.md "Script fix loop (L)").
 
@@ -14,7 +13,8 @@ v2 (flow-v2) / v2.1 — one decision per case (L2) and round, the ladder of `sbm
 
     run-wide blocked registry → pinned `block` case action → KB search: the stored script (no LLM)
     → blocked check (cfg.loop.blocked_policy, counted in LLM tries) → LLM unavailable
-    → ladder exhausted (repeated_failure: stored 1 + LLM 3) → LLM budget (`loop.max_llm_calls`, 0 = no limit)
+    → ladder exhausted (repeated_failure: stored 1 + script.max_llm_tries_per_case LLM asks)
+    → LLM budget (`loop.max_llm_calls`, 0 = no limit)
     → SCRIPT augment | new
 
 plus masking (`plan_iteration`). A BLOCKED decision never calls the LLM; the fix loop records a BlockedItem for it and
@@ -23,11 +23,7 @@ its budget is spent — only the steps that need the LLM are blocked.
 
 Round 10 rules kept: the per-case limits count only SCORED attempts of the SAME cluster (`same_cluster`: same cluster
 id — a case's id is stable across rounds —, or same file, also after the restructure move, with an overlapping
-signature); `pending` never counts. A case pinned to `block` by a person (`CaseHit.pinned`) is obeyed first.
-
-v2.1i `fix.mode: edits`: the ladder step is always `new` (`plan_edits_step`: no stored script, no augment) until the
-case's `fix.edits_max_asks_per_case` LLM tries are used (→ repeated_failure; 0 = no cap, the default); with no cap the
-positive `loop.blocked_policy` counts are lifted as well (the 0 ones still block at once)."""
+signature); `pending` never counts. A case pinned to `block` by a person (`CaseHit.pinned`) is obeyed first."""
 from __future__ import annotations
 
 import logging
@@ -39,7 +35,7 @@ from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttemp
 
 from .blocked import BlockedCandidate, classify_blocked
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
-from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, edits_unlimited, plan_script_step, script_attempts
+from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, plan_script_step, script_attempts
 
 log = logging.getLogger("sbmig.triage")
 
@@ -50,7 +46,7 @@ SUCCESS_OUTCOMES = frozenset({"improved", "build_ok"})
 # built yet proves nothing; "inconclusive" = the scoring build could not show the cluster's errors, counts as tried).
 # FAILED_OUTCOMES lives in .scripts since A14 (the ladder's "next stored version" reads it too); re-exported here.
 # some targeted errors gone, the rest remain: progress, not a failure (v2: the next script attempt of the case is an
-# augment of it — the per-case limit is script.max_augments_per_case)
+# augment of it — the per-case limits are script.max_augments_per_case / script.max_llm_tries_per_case)
 PROGRESS_OUTCOMES = frozenset({"partial"})
 # attempts that produced nothing usable (no script / it did not run / nothing applied / llm-error)
 GARBAGE_OUTCOMES = frozenset({"apply_failed"})
@@ -93,7 +89,7 @@ def same_cluster(cluster: ErrorCluster, attempt: FixAttempt,
 
 def same_cluster_attempts(cluster: ErrorCluster, attempts: Iterable[FixAttempt],
                           canon: Optional[Callable[[Optional[str]], str]] = None) -> list[FixAttempt]:
-    """``same_cluster`` 인 시도들만 — 케이스별 한도(재사용 1 + LLM 3)를 셀 때 쓴다."""
+    """``same_cluster`` 인 시도들만 — 케이스별 한도(재사용 1 + 보강 15 · LLM 20)를 셀 때 쓴다."""
     return [a for a in attempts if same_cluster(cluster, a, canon)]
 
 
@@ -272,16 +268,11 @@ class DecisionEngine:
             cand = None
         if cand is not None:
             allowed = int(self.cfg.loop.blocked_policy.get(cand.reason.value, 0))
-            # edits 모드 무제한(fix.edits_max_asks_per_case 0)이면 양수 횟수는 적용하지 않는다 — "전부 LLM" 측정;
-            # 0 인 사유(사내 parent 미해결·인코딩 등)는 그대로 바로 차단
-            lifted = allowed > 0 and edits_unlimited(self.cfg)
-            if not lifted and len(llm_failed) >= allowed:
+            if len(llm_failed) >= allowed:
                 extra = (f" (after {len(llm_failed)} LLM script attempt(s))" if llm_failed else
                          " (policy: no LLM script for this reason)")
                 return self._blocked(cluster, cand, extra)
-            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM edits attempt "
-                           f"{len(llm_failed) + 1}, no cap (fix.mode edits)" if lifted else
-                           f"; looks like {cand.reason.value} ({cand.detail()}) — LLM script attempt "
+            policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) — LLM script attempt "
                            f"{len(llm_failed) + 1}/{allowed} before blocking")
 
         # 3. the LLM steps (augment / new) → BLOCKED when the LLM cannot be asked

@@ -218,7 +218,7 @@ def test_deferral_counts_in_no_limit_and_does_not_use_the_round_cap(cfg, ws):
     """The cause never gets fixed: its consequence (same file) is deferred every round until the cause is blocked,
     then gets a fresh ladder (`new`, no previous attempts). A deferred case does not use a slot of
     max_clusters_per_iteration: the case in another file is attempted in round 1."""
-    cfg.script.max_augments_per_case = 2           # v2.1: LLM tries per case (new + 1 augment)
+    cfg.script.max_llm_tries_per_case = 2           # v2.1: LLM tries per case (new + 1 augment)
     cfg.loop.max_clusters_per_iteration = 2
     BAZ = "src/main/java/com/x/Baz.java"
     ws.write(BAZ, "class Baz { broken }\n")

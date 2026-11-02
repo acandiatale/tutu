@@ -8,12 +8,10 @@
 스크립트(또는 no_script + 편집)를 요청한다. LLM 호출 한도: propose_script 한 번 = 첫 질문 1회 + LLM 이
 파일·grep 을 더 달라면(`<need_files>` / `<need_grep>`) 최대 `llm.max_context_rounds`(기본 2)회 + 쓸 수 없는
 스크립트·못 읽는 편집이면 피드백 1회. 케이스당 몇 번 부르는지는 루프가 정한다(한 실행에서 저장본 1회 + LLM
-시도 3회, `script.max_augments_per_case`). verify_guide 는 그 시도당 1회. 지킬 것: fixer 는 작업 트리를 고치지
+요청 `script.max_llm_tries_per_case` 회, 그중 보강 `script.max_augments_per_case` 회). verify_guide 는 그 시도당 1회. 지킬 것: fixer 는 작업 트리를 고치지
 않는다 — 적용·커밋·재빌드 채점·되돌리기는 루프 몫이다(예전 사내 에이전트가 빌드를 돌리지 않고 "끝" 이라고 한
 실패 때문에 모든 판정은 재빌드로 한다). 절대 예외를 내지
-않는다(전송 오류는 루프가 분류하는 `llm-error: …` 분석 문구가 된다). v2.1i `fix.mode: edits`(ctx.fix_mode 나
-cfg.fix.mode 가 edits): 스크립트 없는 프롬프트(`edits_system_v1.md` / `edits_user_v1.md.j2`, 헬퍼 API 없음)로 편집만
-묻고, 언제나 신규(보강 base 무시) — 재시도는 이번 실행의 이전 시도(무엇을 고쳤고 왜 실패했는지)를 싣는다.
+않는다(전송 오류는 루프가 분류하는 `llm-error: …` 분석 문구가 된다).
 
 LLMFixer: the default fixer seam (`propose_script`, ScriptFixerLike): context packing → LLM → answer parsing →
 static pre-check / one feedback round → FixAnswer (= ScriptProposal).
@@ -33,15 +31,7 @@ changes" and the loop builds the notes from the diff (`sbmig.script.notes.merge_
 
 v2.1d (2026-10-27, dependency version policy): the answer may carry `<verify>` 운영자 확인 사항 (REQUIRED after a major
 version upgrade / a library replaced, rule 14 of the script prompt) → `ScriptProposal.verify`. `verify_guide`
-(`VerifyGuideLike`) is the ONE extra call the loop makes when such a change was applied without a `<verify>`.
-
-v2.1i (2026-10-28, `fix.mode: edits`, for the token comparison): when `ctx.fix_mode` or `cfg.fix.mode` is "edits"
-(`effective_fix_mode`), `propose_script` asks for edits only — the system prompt `edits_system_v1.md` (no helper API, no
-script rules), the user template `edits_user_v1.md.j2`, metadata `fix_mode: "edits"`, mode always `new` (a
-`ctx.script_base` is ignored); a retry carries the case's earlier tries of this run (`ctx.previous_attempts`, with the
-edits this fixer proposed for them, kept by prompt hash) as "Previous tries". The answer is parsed with
-`parse_script_response(…, expect_script=False)`; a `<script>` in it is dropped with an `[sbmig]` note; unreadable /
-invalid edits get the one feedback round. `code == ""`, `no_script_reason == ""` (not an error), `edits` filled."""
+(`VerifyGuideLike`) is the ONE extra call the loop makes when such a change was applied without a `<verify>`."""
 from __future__ import annotations
 
 import inspect
@@ -49,7 +39,6 @@ import json
 import logging
 import re
 import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -61,7 +50,6 @@ from sbmig.core.config import Config
 from sbmig.core.interfaces import ChatMessage, FixContext, LLMClientLike, LLMResponse
 from sbmig.core.models import (
     DependencyChange,
-    Edit,
     ErrorCluster,
     LLMUsage,
     ProjectProfile,
@@ -78,7 +66,6 @@ from .context import (
     PackedContext,
     asis_line,
     dedupe_errors,
-    effective_fix_mode,
     fence_for,
     format_error_line,
     lang_for,
@@ -86,10 +73,8 @@ from .context import (
     with_target,
 )
 from .script_protocol import (
-    NO_EDITS,
     NO_SCRIPT,
     PROTOCOL_WARNING,
-    SCRIPT_IGNORED,
     ParsedScript,
     normalize_path,
     parse_script_response,
@@ -122,14 +107,6 @@ _VERIFY_CLOSE_RE = re.compile(r"<\s*/\s*verify\s*>", re.IGNORECASE)
 _FIX_TAG_RE = re.compile(r"<\s*(?:analysis|solution|edits|changes|no_script|blocked|script|need_files?|need_grep|review)"
                          r"\s*>", re.IGNORECASE)
 _HEADING_RE = re.compile(r"^[ \t]*#{1,6}[ \t]+", re.MULTILINE)
-EDITS_MEMORY = 256                # v2.1i: edits this fixer proposed, kept by prompt hash for the retry history
-
-
-def parse_edits_answer(text: str) -> ParsedScript:
-    """edits 모드 답 읽기: 스크립트를 기대하지 않는 `parse_script_response(text, expect_script=False)`.
-
-    An edits-mode answer: `parse_script_response(text, expect_script=False)`."""
-    return parse_script_response(text, expect_script=False)
 
 
 def _script_module_attr(name: str) -> Any:
@@ -193,23 +170,6 @@ def load_script_prompts(version: str = "v1", extra_imports: tuple[str, ...] = ()
         target=target or target_text(None))
     user_t = env.from_string(user_path.read_text(encoding="utf-8"))
     return system.strip() + "\n", user_t
-
-
-@lru_cache(maxsize=4)
-def load_edits_prompts(version: str = "v1", target: str = "") -> tuple[str, jinja2.Template]:
-    """edits 모드(v2.1i) 요청의 (system 프롬프트, user 템플릿): `prompts/edits_system_<version>.md` +
-    `edits_user_<version>.md.j2`. 스크립트 프롬프트와 같은 규칙에서 스크립트에 관한 것만 뺐다 — 헬퍼 API 표가
-    없으니 채울 것은 목표(`{{ target }}`, v2.1u: `target`, 비면 TargetConfig 기본값)뿐이다.
-
-    (system prompt, user template) of an edits-only request (`fix.mode: edits`): the script prompt's rules without
-    anything about scripts — no helper API block; only `{{ target }}` is filled (v2.1u, from `target`)."""
-    sys_path = PROMPTS_DIR / f"edits_system_{version}.md"
-    user_path = PROMPTS_DIR / f"edits_user_{version}.md.j2"
-    if not sys_path.exists() or not user_path.exists():
-        raise FileNotFoundError(f"edits prompt version {version!r} not found in {PROMPTS_DIR}")
-    env = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True, autoescape=False)
-    system = env.from_string(sys_path.read_text(encoding="utf-8")).render(target=target or target_text(None))
-    return system.strip() + "\n", env.from_string(user_path.read_text(encoding="utf-8"))
 
 
 def default_script_checker(cfg: Config) -> Optional[Callable[[str], list[str]]]:
@@ -427,11 +387,6 @@ class LLMFixer:
         # ScriptRunnerLike's `check` fits as well)
         self.script_checker = script_checker
         self._script_prompts: Optional[tuple[str, jinja2.Template]] = None
-        self._edits_prompts: tuple[str, jinja2.Template] | None = None
-        # v2.1i edits 모드: 내가 낸 편집을 프롬프트 해시로 기억한다 — 루프의 시도(FixAttempt.prompt_hash)에는 편집이
-        # 없으므로, 재시도의 "Previous tries" 가 무엇을 고쳤는지 보여 주려면 여기서 찾는다
-        # v2.1i edits mode: the edits this fixer proposed, by prompt hash (FixAttempt.prompt_hash) — the retry history
-        self._edits_by_hash: OrderedDict[str, list[Edit]] = OrderedDict()
         # verify_guide 는 텍스트만 돌려주므로 사용량은 여기 남기고, 루프가 예산에 청구한다
         # v2.1d verify_guide: usage of the last call (the loop charges it: the method returns only the text) and of
         # every call of this fixer
@@ -454,17 +409,8 @@ class LLMFixer:
         feedback round next to valid edits → `no_script_reason` "[sbmig] the script could not be used: …"; edits
         dropped next to a valid script → an "[sbmig] edits dropped: …" line in `analysis`. Never raises; transport and
         configuration failures carry the analysis texts the loop classifies with `is_llm_transport_error` /
-        `llm_400_body` (`llm-error: …`, `llm-error: response did not follow the protocol: …`).
-
-        v2.1i `fix.mode: edits` (`effective_fix_mode`): the edits prompt, mode `new` (the base is ignored), metadata
-        `fix_mode: "edits"`, the parse without a script (`parse_edits_answer`); `code` and `no_script_reason` stay "",
-        a `<script>` in the answer is dropped with an `[sbmig]` note, `error` only when there are no usable edits."""
-        # v2.1i: cfg 나 ctx 중 하나라도 edits 면 edits — 문맥 꾸리기도 같은 모드를 보도록 ctx 사본에 적는다
-        edits_mode = effective_fix_mode(self.cfg, ctx) == "edits"
-        if edits_mode and ctx.fix_mode != "edits":
-            ctx = ctx.model_copy(update={"fix_mode": "edits"})
-        parse = parse_edits_answer if edits_mode else parse_script_response
-        kind = "edits" if edits_mode else "script"
+        `llm_400_body` (`llm-error: …`, `llm-error: response did not follow the protocol: …`)."""
+        parse = parse_script_response
         model = self._model(ctx)
         usage = LLMUsage()
         requested: list[str] = []
@@ -472,18 +418,14 @@ class LLMFixer:
         rounds = 0
         messages: list[ChatMessage] = []
         last: Optional[LLMResponse] = None
-        # edits 모드는 보강이 없다: 모든 시도가 새 질문(이전 시도는 문맥의 "Previous tries" 로 간다)
-        base = ctx.script_base if not edits_mode else None
+        base = ctx.script_base
         # base 가 없으면 신규로 묻는다 — 보강 답은 base 를 대체하는 완전한 스크립트라 base 없이는 뜻이 없다
         mode = "augment" if base is not None and ctx.script_mode in ("augment", None) else "new"
-        if ctx.script_mode == "augment" and base is None and not edits_mode:
+        if ctx.script_mode == "augment" and base is None:
             log.warning("script request for %s: augment without a script base — asking for a new script", cluster.id)
         role, meta = self.call_tags(ctx, cluster.id, ws)
         case_id = ctx.case_id or cluster.case_id or ""
-        if edits_mode:
-            meta["fix_mode"] = "edits"           # replay / gateway records tell the two experiments apart
-        else:
-            meta["script_mode"] = mode
+        meta["script_mode"] = mode
         if case_id:
             meta["case_id"] = case_id
         if mode == "augment" and base is not None:
@@ -491,29 +433,20 @@ class LLMFixer:
         adv_in_prompt = 0
         packed: Optional[PackedContext] = None
         try:
-            system, user_t = self.edits_prompts() if edits_mode else self.script_prompts()
-            log.info("%s prompt for %s (%s%s): packing %d error(s) (%d advisory hint(s), %d KB hint(s), %d reference "
-                     "file(s)%s)", kind, cluster.id, mode, f" of v{base.version}" if mode == "augment" and base else
-                     (f", {len(ctx.previous_attempts)} earlier tr(ies)" if edits_mode and ctx.previous_attempts else ""),
-                     len(cluster.errors), len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files),
+            system, user_t = self.script_prompts()
+            log.info("script prompt for %s (%s%s): packing %d error(s) (%d advisory hint(s), %d KB hint(s), %d "
+                     "reference file(s)%s)", cluster.id, mode, f" of v{base.version}" if mode == "augment" and base
+                     else "", len(cluster.errors), len(ctx.advisory_hints), len(ctx.kb_hints), len(ctx.reference_files),
                      f", {len(ctx.library_hints)} dependency version line(s)" if ctx.library_hints else "")
-            if edits_mode:      # the edits of the earlier tries, by the attempts' prompt hash (the retry history)
-                packed = self.packer.pack_script(ws, cluster, ctx, ctx.profile_summary,
-                                                 attempt_edits=dict(self._edits_by_hash))
-            else:
-                packed = self.packer.pack_script(ws, cluster, ctx, ctx.profile_summary)
-            log.info("%s prompt for %s packed: %d chars, %d file(s) shown, %d listed by name, sections [%s]%s → "
-                     "calling the LLM", kind, cluster.id, packed.chars, len(packed.files_included),
+            packed = self.packer.pack_script(ws, cluster, ctx, ctx.profile_summary)
+            log.info("script prompt for %s packed: %d chars, %d file(s) shown, %d listed by name, sections [%s]%s → "
+                     "calling the LLM", cluster.id, packed.chars, len(packed.files_included),
                      len(packed.files_listed), ", ".join(t[:28] for t, _ in packed.sections),
                      f", truncated {', '.join(packed.truncated)}" if packed.truncated else "")
             guidance = next((b for t, b in packed.sections if t == ContextPacker.ADVISORY_TITLE), "")
             if guidance:
                 adv_in_prompt = sum(1 for ln in guidance.splitlines() if ln.startswith("- "))
-            if edits_mode:
-                messages = self.build_edits_messages(packed, retry=bool(ctx.previous_attempts), system=system,
-                                                     user_template=user_t)
-            else:
-                messages = self.build_script_messages(packed, mode, base, system=system, user_template=user_t)
+            messages = self.build_script_messages(packed, mode, base, system=system, user_template=user_t)
             last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
             verify = parsed.verify                  # v2.1d: the latest <verify> of any round
 
@@ -524,10 +457,10 @@ class LLMFixer:
                 rounds += 1
                 requested.extend(p for p in parsed.need_files if p not in requested)
                 remaining = self.cfg.llm.max_context_rounds - rounds
-                log.info("%s prompt for %s: the LLM asked for more context (round %d/%d): %d file(s) %s, %d grep(s) "
-                         "%s", kind, cluster.id, rounds, self.cfg.llm.max_context_rounds, len(parsed.need_files),
+                log.info("script prompt for %s: the LLM asked for more context (round %d/%d): %d file(s) %s, %d "
+                         "grep(s) %s", cluster.id, rounds, self.cfg.llm.max_context_rounds, len(parsed.need_files),
                          parsed.need_files[:4], len(parsed.need_grep), parsed.need_grep[:3])
-                served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining, edits_only=edits_mode)
+                served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining)
                 messages = messages + [ChatMessage(role="assistant", content=last.content),
                                        ChatMessage(role="user", content=served)]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
@@ -538,37 +471,30 @@ class LLMFixer:
             # 2) 정적 검사 + 피드백 1회: 스크립트를 못 쓰거나 v1 patches 형식이거나 편집 JSON 이 안 읽힐 때
             # 2) static pre-check + one feedback round for a script that cannot be used as written / edits that
             #    cannot be read
-            #    (v2.1i edits mode: only for edits that cannot be read / an answer in the wrong format — no script check)
             notes: list[str] = []
             sbase = base if mode == "augment" else None
-            problems = [] if edits_mode else self._script_problems(parsed, sbase)
-            if self._edits_want_feedback(parsed) if edits_mode else self._wants_feedback(parsed, problems):
+            problems = self._script_problems(parsed, sbase)
+            if self._wants_feedback(parsed, problems):
                 rounds += 1
-                fb = self._edits_feedback_problems(parsed) if edits_mode else self._feedback_problems(parsed, problems)
+                fb = self._feedback_problems(parsed, problems)
                 log.info("answer for %s cannot be used (%s) → one feedback round", cluster.id, fb[0][:160])
-                fb_text = self.edits_feedback_message(parsed, fb) if edits_mode else \
-                    self.script_feedback_message(parsed, fb, mode)
+                fb_text = self.script_feedback_message(parsed, fb, mode)
                 messages = messages + [ChatMessage(role="assistant", content=last.content),
                                        ChatMessage(role="user", content=fb_text)]
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
                 verify = parsed.verify or verify
-                if edits_mode:
-                    if not (parsed.edits and not parsed.edits_problem):
-                        notes.append(f"feedback round did not give usable edits (first answer: {fb[0][:200]})")
-                else:
-                    problems = self._script_problems(parsed, sbase)
-                    if not (parsed.code and not problems) and not (parsed.edits and not parsed.edits_problem):
-                        notes.append("feedback round did not give a usable script or edits (first answer: "
-                                     f"{fb[0][:200]})")
+                problems = self._script_problems(parsed, sbase)
+                if not (parsed.code and not problems) and not (parsed.edits and not parsed.edits_problem):
+                    notes.append("feedback round did not give a usable script or edits (first answer: "
+                                 f"{fb[0][:200]})")
 
-            code = parsed.code if not problems and not edits_mode else ""
+            code = parsed.code if not problems else ""
             edits = list(parsed.edits) if not parsed.edits_problem else []
             analysis = parsed.analysis
-            # edits 모드에서 스크립트가 없는 것은 오류가 아니다(이유 칸은 비워 둔다)
-            no_script = parsed.no_script_reason if not edits_mode else ""
+            no_script = parsed.no_script_reason
             error = ""
             if not code and not edits:
-                error = self._edits_answer_error(parsed) if edits_mode else self._answer_error(parsed, problems)
+                error = self._answer_error(parsed, problems)
                 if not parsed.candidate and not parsed.wants_context and PROTOCOL_WARNING in parsed.warnings:
                     analysis = "llm-error: response did not follow the protocol: " + parsed.raw.strip()[:300]
                 elif parsed.wants_context and not parsed.candidate and not parsed.blocked_reason:
@@ -583,8 +509,6 @@ class LLMFixer:
                     notes.append(f"edits dropped: {parsed.edits_problem[:200]}")
             if code and not parsed.described:                       # not an error: the loop describes it from the diff
                 notes.append(parsed.changes_note())
-            if edits_mode and parsed.script_ignored:                # v2.1i: the script half of a habit answer
-                notes.append(SCRIPT_IGNORED)
             if last and last.finish_reason in ("length", "max_tokens"):
                 notes.append(f"output truncated (finish_reason={last.finish_reason})")
             if notes:
@@ -608,14 +532,11 @@ class LLMFixer:
             )
             log.debug("answer for %s: %d edit(s), %d change note(s), script %s, solution %d chars%s%s", cluster.id,
                       len(proposal.edits), len(proposal.changes),
-                      "yes" if proposal.code else ("off (fix.mode: edits)" if edits_mode else
-                                                   ("no: " + (proposal.no_script_reason or proposal.error or "-"))[:120]),
+                      "yes" if proposal.code else ("no: " + (proposal.no_script_reason or proposal.error or "-"))[:120],
                       len(proposal.solution), f", 운영자 확인 {len(proposal.verify)} chars" if proposal.verify else "",
                       f", error {proposal.error[:120]}" if proposal.error else "")
             if proposal.blocked_reason:
                 log.info("answer for %s: blocked — %s", cluster.id, proposal.blocked_reason[:200])
-            if edits_mode and proposal.edits and proposal.prompt_hash:
-                self._remember_edits(proposal.prompt_hash, proposal.edits)
         except LLMError as exc:
             proposal = self._error_script(f"llm-error: {exc}", f"LLM call failed (status={exc.status})", model,
                                           messages, usage, requested)
@@ -624,9 +545,8 @@ class LLMFixer:
             proposal = self._error_script(f"llm-error: {type(exc).__name__}: {exc}",
                                           f"LLM call failed ({type(exc).__name__})", model, messages, usage, requested)
 
-        self._journal_script(ws, cluster, ctx, mode, proposal, rounds, adv_in_prompt, packed,
-                             fix_mode="edits" if edits_mode else "script")
-        self._record(cluster, transcript, proposal, prefix=kind)
+        self._journal_script(ws, cluster, ctx, mode, proposal, rounds, adv_in_prompt, packed)
+        self._record(cluster, transcript, proposal, prefix="script")
         return proposal
 
     # ------------------------------------------------------------------ VerifyGuideLike (v2.1d)
@@ -768,40 +688,6 @@ class LLMFixer:
                                     base_kept=kept, desc_language=describe_language(self.cfg))
         return [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user.strip() + "\n")]
 
-    def edits_prompts(self) -> tuple[str, jinja2.Template]:
-        """edits 모드(v2.1i) 요청의 (system, user 템플릿) — 처음 쓸 때 로드(`llm.prompt_version`, 그 버전에 edits
-        프롬프트가 없으면 v1).
-
-        (system, user template) of the edits-only requests (`fix.mode: edits`), loaded on first use."""
-        if self._edits_prompts is None:
-            try:
-                self._edits_prompts = load_edits_prompts(self.cfg.llm.prompt_version, target_text(self.cfg))
-            except FileNotFoundError:
-                log.warning("no edits prompts for llm.prompt_version=%s; using v1", self.cfg.llm.prompt_version)
-                self._edits_prompts = load_edits_prompts("v1", target_text(self.cfg))
-        return self._edits_prompts
-
-    def build_edits_messages(self, packed: PackedContext, *, retry: bool = False, system: str | None = None,
-                             user_template: jinja2.Template | None = None) -> list[ChatMessage]:
-        """edits 모드 요청 메시지 (system, user): 꾸린 섹션·줄인 섹션·재시도 여부·설명 언어로 edits user
-        템플릿을 채운다. 스크립트·헬퍼 API 는 어디에도 없다.
-
-        (system, user) of an edits-only request; `retry` = the case has earlier tries in this run (the user message
-        then points at "Previous tries")."""
-        if system is None or user_template is None:
-            system, user_template = self.edits_prompts()
-        user = user_template.render(sections=packed.sections, truncated=packed.truncated, retry=retry,
-                                    desc_language=describe_language(self.cfg))
-        return [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user.strip() + "\n")]
-
-    def _remember_edits(self, prompt_hash: str, edits: list[Edit]) -> None:
-        """edits 모드 답의 편집을 프롬프트 해시로 기억한다(최근 EDITS_MEMORY 개) — 같은 케이스의 재시도가 그 시도의
-        `prompt_hash` 로 찾아 "Previous tries" 에 보여 준다."""
-        self._edits_by_hash[prompt_hash] = list(edits)
-        self._edits_by_hash.move_to_end(prompt_hash)
-        while len(self._edits_by_hash) > EDITS_MEMORY:
-            self._edits_by_hash.popitem(last=False)
-
     def _static_problems(self, code: str) -> list[str]:
         """정적 검사(script_checker 또는 기본 check_script)가 찾은 문제들. 검사기가 깨져도 수정은 막지 않는다
         — 러너가 실행 전에 다시 검사한다."""
@@ -911,64 +797,6 @@ class LLMFixer:
                      "subprocess / eval / exec / __dunder__ access).")
         return "\n\n".join(parts) + "\n"
 
-    @staticmethod
-    def _edits_want_feedback(parsed: ParsedScript) -> bool:
-        """edits 모드의 피드백 1회: 편집 블록을 못 읽거나 잘못됐을 때, 또는 편집 없이 다른 형식(스크립트·v1 patches)
-        으로 답했을 때. 편집 없는 답(분석만)은 모델의 판단이라 묻지 않는다.
-
-        Edits mode: one feedback round when the edits cannot be read / are invalid, or the answer has no edits but a
-        script / v1 patches instead. An answer without any fix (analysis only) is the model's decision."""
-        if parsed.edits_problem:
-            return True
-        return not parsed.edits and (parsed.script_ignored or parsed.used_patches)
-
-    @staticmethod
-    def _edits_feedback_problems(parsed: ParsedScript) -> list[str]:
-        """edits 모드 피드백에 적을 문제들(스크립트라는 말 없이).
-
-        What the edits-mode feedback round names."""
-        out = [parsed.edits_problem] if parsed.edits_problem else []
-        if not parsed.edits and parsed.script_ignored:
-            out.append("the answer has no <edits>: this run applies only the <edits> JSON list — code to run is not "
-                       "taken")
-        if not parsed.edits and parsed.used_patches:
-            out.append("the answer used SEARCH/REPLACE <patches>; this run takes <edits> (a JSON list)")
-        return out or [NO_EDITS]
-
-    def _edits_answer_error(self, parsed: ParsedScript) -> str:
-        """edits 모드에서 쓸 편집이 없는 답의 짧은 이유(ScriptProposal.error).
-
-        The short reason of an edits-mode answer without usable edits (ScriptProposal.error)."""
-        if parsed.edits_problem:
-            return parsed.edits_problem
-        if parsed.blocked_reason:
-            return f"blocked: {parsed.blocked_reason[:200]}"
-        if parsed.wants_context:
-            return f"still requesting context after {self.cfg.llm.max_context_rounds} round(s)"
-        if parsed.used_patches:
-            return NO_EDITS + " (the answer used the v1 <patches> format)"
-        if parsed.script_ignored:
-            return NO_EDITS + " (the answer gave code to run instead of edits; fix.mode: edits takes edits only)"
-        if parsed.no_script_reason:
-            return f"no edits: {parsed.no_script_reason[:200]}"
-        return NO_EDITS
-
-    def edits_feedback_message(self, parsed: ParsedScript, problems: list[str]) -> str:
-        """edits 모드 피드백 user 메시지: "편집을 적용할 수 없었다" + 문제 목록(최대 10개) + JSON 규칙 + 완전한 답을
-        다시 보내라는 요청. 스크립트라는 말을 쓰지 않는다.
-
-        The edits-mode feedback message: the edits could not be applied (unreadable / invalid JSON, or no edits)."""
-        parts = ["Your edits could not be applied. Problems:"]
-        parts += [f"- {p}" for p in problems[:10]]
-        if len(problems) > 10:
-            parts.append(f"- … and {len(problems) - 10} more problem(s)")
-        parts.append("<edits> must be ONE valid JSON list: double-quoted keys and strings, `\\n` and `\\\"` escaped "
-                     "inside strings, no comments, no trailing commas; `op` one of replace / write / create / delete / "
-                     "move / pom; paths relative to the project root; every `old` copied exactly from the source shown.")
-        parts.append("Re-send the COMPLETE corrected answer: <analysis>, <solution>, <edits> (each with its \"desc\"), "
-                     "plus <verify> after a major version upgrade (rule 14) — only these tagged parts.")
-        return "\n\n".join(parts) + "\n"
-
     def _error_script(self, analysis: str, error: str, model: Optional[str], messages: list[ChatMessage],
                       usage: LLMUsage, requested: list[str]) -> ScriptProposal:
         """실패한 요청의 빈 제안(analysis 가 `llm-error: …` 로 시작 — 루프가 전송 장애로 분류한다)."""
@@ -978,13 +806,11 @@ class LLMFixer:
                               requested_files=requested, error=error[:300])
 
     def _journal_script(self, ws: Workspace, cluster: ErrorCluster, ctx: FixContext, mode: str, p: ScriptProposal,
-                        rounds: int, advisory_hints: int, packed: Optional[PackedContext], *,
-                        fix_mode: str = "script") -> None:
+                        rounds: int, advisory_hints: int, packed: Optional[PackedContext]) -> None:
         """`llm_script` 저널 이벤트(모드·라운드·호출·토큰·프롬프트
-        해시·코드 / 편집 크기·오류; v2.1i edits 모드면 `fix_mode: "edits"`). 저널 실패는 무시한다."""
+        해시·코드 / 편집 크기·오류). 저널 실패는 무시한다."""
         try:
-            extra = {"fix_mode": fix_mode} if fix_mode != "script" else {}
-            ws.journal({"event": "llm_script", **extra, "cluster_id": cluster.id,
+            ws.journal({"event": "llm_script", "cluster_id": cluster.id,
                         "case_id": ctx.case_id or cluster.case_id or None, "mode": mode,
                         "base_version": ctx.script_base.version if mode == "augment" and ctx.script_base else None,
                         "model": p.model, "rounds": rounds, "calls": p.llm_usage.calls,
@@ -1096,11 +922,10 @@ class LLMFixer:
                         out.append(f)
         return sorted(set(out))
 
-    def serve_context(self, ws: Workspace, need_files: list[str], need_grep: list[str], remaining_rounds: int,
-                      *, edits_only: bool = False) -> str:
+    def serve_context(self, ws: Workspace, need_files: list[str], need_grep: list[str], remaining_rounds: int) -> str:
         """`<need_files>` / `<need_grep>` 에 답하는 user 메시지: 파일은 라운드당 MAX_SERVED_FILES
         개(MAX_SERVED_LINES 줄을 넘으면 앞 SERVED_HEAD_LINES + 뒤 SERVED_TAIL_LINES 줄), grep 결과, 남은
-        라운드 안내(마지막이면 "지금 답하라"). v2.1i `edits_only`: 안내가 편집만 요구한다(스크립트라는 말 없음)."""
+        라운드 안내(마지막이면 "지금 답하라")."""
         parts: list[str] = ["Here is the requested context."]
         for want in need_files[:MAX_SERVED_FILES]:
             path, cands = self.resolve_path(ws, want)
@@ -1133,13 +958,7 @@ class LLMFixer:
                          + ", ".join(need_files[MAX_SERVED_FILES:]) + ")")
         if need_grep:
             parts.append(self.grep(ws, need_grep))
-        if edits_only and remaining_rounds <= 0:
-            parts.append("This was the LAST context round. Answer now with <analysis>, <solution> and <edits> (or "
-                         "<analysis> and <blocked> when the blocker is outside the project).")
-        elif edits_only:
-            parts.append(f"You may ask for more context {remaining_rounds} more time(s), but prefer answering now "
-                         "(<analysis>, <solution>, <edits>).")
-        elif remaining_rounds <= 0:
+        if remaining_rounds <= 0:
             parts.append("This was the LAST context round. Answer now with <analysis>, <solution>, <edits>, <changes> "
                          "and <script> (or <no_script> with the reason and <edits>; or <analysis> and <blocked> when "
                          "the blocker is outside the project).")
@@ -1234,5 +1053,4 @@ class LLMFixer:
 
 __all__ = ["LLMFixer", "profile_summary", "load_script_prompts", "default_script_checker", "describe_language",
            "script_allowed_imports", "script_helper_api_doc", "normalize_path", "load_verify_prompt",
-           "parse_verify_answer", "VerifyAnswer", "VERIFY_ROLE", "load_edits_prompts", "effective_fix_mode",
-           "parse_edits_answer"]
+           "parse_verify_answer", "VerifyAnswer", "VERIFY_ROLE"]

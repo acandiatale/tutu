@@ -101,8 +101,8 @@ critical → one fix script, committed `review: …`; warnings → report + `kb-
 (`mvn clean package -Dmaven.test.skip=true`); on failure the **script fix loop** (`loop.phases.verify`, 12 rounds):
 errors grouped per **case** (L2 signature; coarse `build` / `other` keys refined from the javac line), root causes
 first, cases whose files / module pom a script already touched this round wait for the rebuild; per case
-**reuse** the best stored script (no LLM) → **augment** it (LLM, ≤ `script.max_augments_per_case`) → **new** (LLM)
-→ BLOCKED `repeated_failure`; every attempt is committed, scored by the rebuild (round-10 rules: improved / partial
+**reuse** the best stored script (no LLM) → **augment** this run's last script (LLM, ≤ `script.max_augments_per_case` 15)
+→ augments used up: a fresh **new** (LLM) → BLOCKED `repeated_failure` at `script.max_llm_tries_per_case` 20 asks (v2.1z); every attempt is committed, scored by the rebuild (round-10 rules: improved / partial
 / no_change / regressed → reverted / inconclusive), rolled back before the case's next try unless it improved, and
 credited to the stored version (`kb-v2/scripts/<case_id>/v<N>.py` + meta: lineage, successes / failures / projects).
 Then the final build again, the report (Handover first, "Structure review", fix attempts as `script:<case>:v<N>`),
@@ -153,9 +153,15 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   final place, in every mode (`layout.jsp_jakarta_rename`, default true; `sbmig/restructure/jsp_jakarta.py`). Off →
   Handover follow-up only. Taglib URIs stay (JSTL 3 serves the `java.sun.com` URIs).
 - Guide advisories (hystrix, ribbon, zuul, …) leave compiling code as it is; the Handover lists them.
-- A case that cannot be fixed by code (legacy-ibatis) costs up to 4 LLM calls (new + 3 augments) before BLOCKED;
-  `script.max_augments_per_case` is the knob. `loop.blocked_policy` gives javax libraries / missing artifacts /
-  plugins 2 script attempts (a stored script is reused regardless).
+- Ladder caps (v2.1z, 2026-11-02, "여유롭게 잡고 … 점차 줄여가는 방식"): ≤ 20 LLM asks per case and run
+  (`script.max_llm_tries_per_case`), of which ≤ 15 augments (`script.max_augments_per_case`); to be lowered once the
+  company runs show what a case needs. A case the LLM declines (legacy-ibatis) blocks after `script.max_declines_per_case`
+  (1 call). `loop.blocked_policy` gives javax libraries / missing artifacts / plugins 2 script attempts (a stored
+  script is reused regardless). The v2.1i switches (`fix.mode: edits`, `--no-kb`) were removed in v2.1z.
+- KB matching (review 2026-11-02, not built): case id = hash of the L2, so a `signatures.py` / `triage/cluster.py` rule
+  change orphans stored cases (`kb reindex` never re-derives the L2; proposed `kb reindex --resign` from the stored `raw`
+  + old-id alias); `compile|cannot_find_symbol|<simple name>` merges problems sharing a method name — fix only after
+  `--resign`. Reactor artifactIds are masked as `<module>` in L1 / L2 since v2.1z.
 - `script.python` must have pydantic and lxml installed (else the run reports `ModuleNotFoundError`); Windows paths
   over 260 characters are not handled specially.
 - Items to validate in the company environment: `docs/RUNBOOK.md` §0; the first v2 runs should be compared with

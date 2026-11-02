@@ -1,12 +1,12 @@
 """v2.1 수정 사다리 — 이 실행에서 케이스가 다음에 받을 단계: 재사용 → 보강 → 신규 → (한도) 차단.
 흐름상 위치: ``DecisionEngine.decide`` 가 ``plan_script_step`` 을 불러 SCRIPT / BLOCKED 를 정하고, 수정 루프가
-돌려받은 ``ScriptStep`` 을 실행한다(재사용 = 저장된 스크립트 실행, LLM 0회). 한도: 케이스당 한 실행에서 저장본
-``script.reuse_versions``(1) + LLM ``script.max_augments_per_case``(3) — "케이스당 저장본 1 + LLM 3회". 2 이상이면
-이번 실행에서 실패한 저장본 다음 버전(proven 최신 → unverified 최신 순)을 LLM 전에 더 돌린다(A14). 다
+돌려받은 ``ScriptStep`` 을 실행한다(재사용 = 저장된 스크립트 실행, LLM 0회). 한도(v2.1z): 케이스당 한 실행에서 저장본
+``script.reuse_versions``(1) + LLM 요청 ``script.max_llm_tries_per_case``(20, 신규 + 보강), 그중 보강은
+``script.max_augments_per_case``(15) 번까지 — 보강을 다 쓰면 새로 작성(신규)을 요청한다. reuse_versions 가 2 이상이면
+이번 실행에서 실패한 저장본 다음 버전(proven 최신 → unverified 최신 순)을 LLM 전에 더 돌린다(A14). LLM 요청을 다
 쓰면 ``repeated_failure`` 로 차단되어 인수인계로 간다. ``kb_line`` 은 KB 탐색 "결과" 로그 줄이다: 처음 보는
 프로젝트가 KB 적중처럼 읽히면 안 된다(회사 피드백 7). KB 저장소
-문제는 로그만 남기고 "저장본 없음" 으로 다룬다 — 루프를 멈추지 않는다. v2.1i ``fix.mode: edits`` 면 저장소를
-보지 않고 신규(LLM)만 — 케이스당 ``fix.edits_max_asks_per_case`` 회 뒤 차단, 0 이면 무제한(``edits_llm_limit``).
+문제는 로그만 남기고 "저장본 없음" 으로 다룬다 — 루프를 멈추지 않는다.
 
 v2.1 fix ladder (docs/v2/PLAN-v2.1.md §3.1): what a case gets next in this run.
 
@@ -19,14 +19,18 @@ Per case and run, in this order:
    followed by the next one in the same order — proven newest first, then unverified newest; retired never
    (`stored_next`, over `find(case_id).scripts` + `code(case_id, v)`). A reuse that helped (improved / partial) goes
    to the LLM augment instead: extending what worked beats starting over from an older version.
-2. **LLM augment** (`augment`) — there is a script to extend: this run's last try of the case that had code (a stored
-   version that failed here, or an LLM script), else — reuse switched off — the stored version. The prompt gets the
+2. **LLM augment** (`augment`) — there is a script to extend and `script.max_augments_per_case` (15) augment steps
+   are not used up: this run's last try of the case that had code (a stored version that failed here, or an LLM
+   script), else — reuse switched off — the stored version. The prompt gets the
    script and what it did; the answer is a new version (source `llm-augment`) or, when the LLM says the fix cannot be
    a script (`no_script_reason`), edits applied directly (`llm-edit`).
-3. **LLM new** (`new`) — nothing to extend: the LLM answers with 원인 · 해결 · edits · script (source `llm-new`, or
+3. **LLM new** (`new`) — nothing to extend, or the augments are used up (a fresh start): the LLM answers with
+   원인 · 해결 · edits · script (source `llm-new`, or
    `llm-edit` without a script).
-4. `script.max_augments_per_case` (3) LLM tries used → nothing left: the decision engine BLOCKS the case
-   (`repeated_failure`) — "케이스당 저장본 1 + LLM 3회".
+4. `script.max_llm_tries_per_case` (20) LLM asks (new + augment) used → nothing left: the decision engine BLOCKS the
+   case (`repeated_failure`). Both caps are plain: `max_augments_per_case: 0` never augments, `max_llm_tries_per_case:
+   0` never asks the LLM for the case (v2.1z, 2026-11-02; before, one counter `max_augments_per_case` (3) counted new
+   + augment together).
 
 `ScriptStep.kb_line` is the KB search RESULT the loop logs for the case ("KB 탐색: 저장된 스크립트 없음 (처음 보는
 케이스) → LLM 에 새 수정 요청", "KB 탐색: 저장된 스크립트 v2 (proven, 성공 3 / 실패 0, 프로젝트 2) → 실행"; the phrase
@@ -35,13 +39,6 @@ is the store's `describe`): a first project must never read as a KB hit (company
 Pure bookkeeping over the case's earlier attempts in this run (`FixAttempt.script_*`) and the case store (`kb.cases`,
 None = no KB): the decision engine calls it to decide SCRIPT vs BLOCKED, the fix loop executes the step it returns. A
 store problem is logged and treated as "nothing stored" — it never stops the loop.
-
-v2.1i `fix.mode: edits` (the token comparison, 2026-10-28): no rung but `new` — the store is not consulted (no reuse,
-no augment); a case gets `new` while its LLM tries in this run are below `fix.edits_max_asks_per_case` (0 = always)
-(`edits_llm_limit`), then `mode` None (BLOCKED `repeated_failure`). `loop.blocked_policy` and the LLM budget apply as
-in `script` mode (the decision engine's checks are unchanged).
-
-
 """
 from __future__ import annotations
 
@@ -69,10 +66,11 @@ class ScriptStep:
     code: str = ""                                  # reuse: its code; augment from the store: the base code
     meta: Any = None                                # reuse / augment from the store: the stored CaseScript
     base_attempt: Optional[FixAttempt] = None       # augment: this run's try it extends
-    llm_used: int = 0                               # LLM tries already made for the case in this run
-    llm_limit: int = 0                              # the case's LLM try limit (script.max_augments_per_case)
+    llm_used: int = 0                               # LLM asks already made for the case in this run (new + augment)
+    llm_limit: int = 0                              # the case's LLM ask cap (script.max_llm_tries_per_case)
     stored_used: int = 0                            # stored versions already run for the case in this run
     augments_used: int = 0                          # augment requests already made (escalation model from the 2nd)
+    augment_limit: int = 0                          # the case's augment cap (script.max_augments_per_case)
     why: str = ""                                   # rationale (decision text, English)
     kb_line: str = ""                               # "KB 탐색: …" — the KB search result for the log
     kb_found: str = ""                              # what the KB search found ("저장된 스크립트 없음", "저장본 v2 (…)")
@@ -184,72 +182,6 @@ def stored_next(store: Any, case_id: str, skip: Iterable[int]) -> tuple[Any, str
 
 
 NOTHING_STORED = "저장된 스크립트 없음 (처음 보는 케이스)"
-EDITS_MODE_FOUND = "fix.mode edits — 저장 스크립트 사용 안 함"   # v2.1i: the KB search phrase of an edits-mode run
-
-
-def fix_mode(cfg: Any) -> str:
-    """설정의 수정 방식(``fix.mode``: script | edits, 없거나 비면 script).
-
-    `fix.mode` of the config (`script` | `edits`); `script` when the config has none (older configs, test doubles)."""
-    mode = getattr(getattr(cfg, "fix", None), "mode", "script")
-    return str(mode or "script")
-
-
-def edits_mode(cfg: Any) -> bool:
-    """v2.1i: ``fix.mode`` 가 edits 인가(스크립트 생성·저장·재사용 없이 LLM 직접 수정만).
-
-    v2.1i: is `fix.mode` `edits` (LLM edits only — no script generated, stored, reused or augmented)?"""
-    return fix_mode(cfg) == "edits"
-
-
-def edits_llm_limit(cfg: Any) -> int:
-    """v2.1i edits 모드의 케이스당 LLM 요청 한도 = ``fix.edits_max_asks_per_case``. 0 = 무제한(기본, 2026-10-29 사용자:
-    "제한 없이 수정하도록 — LLM 한테 다 맡겼을 때의 토큰량을 보여 줄 수 있게"), 양수 = 그만큼 묻고 ``repeated_failure``
-    로 차단(3 이면 script 모드가 저장본 없는 케이스에 묻는 횟수와 같다).
-
-    The per-case LLM asks of an edits-mode run = `fix.edits_max_asks_per_case`: 0 = no cap (default; the whole fix is
-    left to the LLM — the rounds, the time budget and `loop.max_llm_calls` still stop a run), > 0 = BLOCKED
-    `repeated_failure` after that many (3 = what `script` mode asks for a case without a stored script)."""
-    fx = getattr(cfg, "fix", None)
-    try:
-        return max(0, int(getattr(fx, "edits_max_asks_per_case", 0) or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def edits_unlimited(cfg: Any) -> bool:
-    """edits 모드이고 케이스당 한도가 0(무제한)인가 — 차단 정책의 양수 횟수도 적용하지 않는다.
-
-    True when the run is in edits mode with no per-case cap (then the positive `loop.blocked_policy` counts are lifted too)."""
-    return edits_mode(cfg) and edits_llm_limit(cfg) == 0
-
-
-def plan_edits_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], cfg: Any) -> ScriptStep:
-    """v2.1i edits 모드의 다음 단계: 저장소는 보지 않는다(재사용·보강 없음). 이 실행에서 케이스의 LLM 요청이
-    ``edits_llm_limit`` 보다 적으면 신규(앞 시도들은 수정 루프가 FixContext 에 싣는다), 아니면 mode None(→ 차단).
-
-    The next step of a case in an edits-mode run: the store is never consulted (no reuse, no augment). `new` while
-    the case's LLM tries in this run are below `edits_llm_limit(cfg)` (the loop passes the earlier tries in the
-    FixContext), else `mode` None (→ BLOCKED repeated_failure). `previous` = this run's scored tries on the case."""
-    limit = edits_llm_limit(cfg)
-    case_id = cluster_case_id(cluster)
-    tried = [a for a in script_attempts(previous) if a.outcome != "pending"]
-    llm_used = sum(1 for a in tried if a.script_mode in LLM_MODES)
-    step = ScriptStep(case_id=case_id, llm_used=llm_used, llm_limit=limit, kb_found=EDITS_MODE_FOUND)
-    if limit and llm_used >= limit:
-        step.why = (f"{llm_used} LLM tr{'y' if llm_used == 1 else 'ies'} did not resolve case {case_id} "
-                    f"(fix.mode edits: fix.edits_max_asks_per_case = {limit})")
-        step.kb_line = f"KB 탐색: {EDITS_MODE_FOUND} → 한도 도달 (LLM {llm_used}회) → blocked"
-        return step
-    step.mode = "new"
-    nth = f"{llm_used + 1}/{limit}" if limit else f"{llm_used + 1}번째, 한도 없음"
-    if llm_used:
-        step.why = f"new edits for case {case_id} (fix.mode edits, request {nth}: the earlier tries did not resolve it)"
-        step.kb_line = f"KB 탐색: {EDITS_MODE_FOUND} → LLM 에 다시 수정 요청 ({nth}, 앞 시도 {llm_used}건 포함)"
-    else:
-        step.why = f"new edits for case {case_id} (fix.mode edits, request {nth})"
-        step.kb_line = f"KB 탐색: {EDITS_MODE_FOUND} → LLM 에 수정 요청 ({nth})"
-    return step
 
 
 def describe_stored(meta: Any) -> str:
@@ -284,21 +216,21 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
     ``script.reuse_versions`` 개까지 다음 저장본(``stored_next``).
 
     The case's next step (see the module doc). `previous` = this run's scored tries on the same case (the loop
-    passes `_previous(cluster)`: no pending ones, no cooled-down transport failures). v2.1i: `fix.mode: edits` →
-    `plan_edits_step` (the store is not consulted)."""
-    if edits_mode(cfg):
-        return plan_edits_step(cluster, previous, cfg)
+    passes `_previous(cluster)`: no pending ones, no cooled-down transport failures). v2.1z: `llm_used` counts new +
+    augment against `script.max_llm_tries_per_case`, `augments_used` the augments against `script.max_augments_per_case`."""
     sc = getattr(cfg, "script", None)
     reuse_on = bool(getattr(sc, "reuse", True))
     reuse_n = max(1, int(getattr(sc, "reuse_versions", 1) or 1))
-    max_llm = max(0, int(getattr(sc, "max_augments_per_case", 3)))
+    max_llm = max(0, int(getattr(sc, "max_llm_tries_per_case", 20)))
+    max_aug = max(0, int(getattr(sc, "max_augments_per_case", 15)))
     case_id = cluster_case_id(cluster)
     tried = [a for a in script_attempts(previous) if a.outcome != "pending"]     # pending proves nothing yet
     tried_versions = {int(a.script_version) for a in tried if a.script_version}
     llm_used = sum(1 for a in tried if a.script_mode in LLM_MODES)
     stored_used = sum(1 for a in tried if a.script_mode == "reuse")
+    augments_used = sum(1 for a in tried if a.script_mode == "augment")
     step = ScriptStep(case_id=case_id, llm_used=llm_used, llm_limit=max_llm, stored_used=stored_used,
-                      augments_used=sum(1 for a in tried if a.script_mode == "augment"))
+                      augments_used=augments_used, augment_limit=max_aug)
     best = stored_best(store, case_id)
     stored_text = kb_found(store, case_id, best)
     step.kb_found = stored_text
@@ -333,33 +265,41 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
                                 f"({stored_used + 1}/{reuse_n})")
                 return step
 
-    # 2./3. the LLM: limit first
+    # 2./3. the LLM: the total cap first (new + augment)
     if llm_used >= max_llm:
         step.why = (f"{len(failed_here)} stored script run(s) and {llm_used} LLM tr{'y' if llm_used == 1 else 'ies'} "
-                    f"did not resolve case {case_id} (script.max_augments_per_case {max_llm})")
+                    f"did not resolve case {case_id} (script.max_llm_tries_per_case {max_llm})")
         step.kb_line = (f"KB 탐색: {stored_part} → 한도 도달 (저장본 {len(failed_here)} + LLM {llm_used}회) → "
                         "blocked")
         return step
     nth = f"{llm_used + 1}/{max_llm}"
+    can_augment = augments_used < max_aug
+    aug_nth = f"보강 {augments_used + 1}/{max_aug}"
     # 보강의 기준: 이 실행에서 코드가 있었던 마지막 시도(실패한 저장본 또는 LLM 스크립트) — 무엇을 했고 무엇이
     # 남았는지를 LLM 에 함께 준다. 코드 없는 답(no_script)만 있었으면 다시 신규 요청
     base_att = next((a for a in reversed(tried) if (a.script_code or "").strip()), None)
-    if base_att is not None:
+    if base_att is not None and can_augment:
         step.mode, step.base_attempt = "augment", base_att
         what = (f"this run's v{base_att.script_version} ({base_att.script_mode}, {base_att.outcome})"
                 if base_att.script_version else f"this run's unstored script ({base_att.outcome})")
-        step.why = f"augment {nth} of case {case_id}: extend {what}"
+        step.why = f"augment {nth} (augment {augments_used + 1}/{max_aug}) of case {case_id}: extend {what}"
         base = (f"v{base_att.script_version}" if base_att.script_version else "이번 실행의 스크립트")
-        step.kb_line = f"KB 탐색: {stored_part} → LLM 보강 요청 ({nth}, {base} 기준)"
+        step.kb_line = f"KB 탐색: {stored_part} → LLM 보강 요청 ({nth}, {aug_nth}, {base} 기준)"
         return step
-    if best is not None:                            # reuse switched off: extend the stored version
+    if base_att is None and best is not None and can_augment:   # reuse switched off: extend the stored version
         step.mode, step.meta, step.code = "augment", best[0], best[1]
         step.version = int(getattr(best[0], "version", 0) or 0)
-        step.why = f"augment {nth} of case {case_id}: extend stored v{step.version} (script.reuse is off)"
-        step.kb_line = f"KB 탐색: {stored_text} (재사용 꺼짐) → LLM 보강 요청 ({nth})"
+        step.why = (f"augment {nth} (augment {augments_used + 1}/{max_aug}) of case {case_id}: extend stored "
+                    f"v{step.version} (script.reuse is off)")
+        step.kb_line = f"KB 탐색: {stored_text} (재사용 꺼짐) → LLM 보강 요청 ({nth}, {aug_nth})"
         return step
     step.mode = "new"
-    if llm_used:
+    if base_att is not None or best is not None:
+        # 확장할 것이 있지만 보강 한도를 다 썼다 — 이어 붙이기보다 처음부터 다시 쓰게 한다
+        step.why = (f"new fix for case {case_id} (augments used up: script.max_augments_per_case {max_aug}; "
+                    f"request {nth})")
+        step.kb_line = f"KB 탐색: {stored_part} → 보강 한도({max_aug}) 소진 → LLM 에 새 수정 요청 ({nth})"
+    elif llm_used:
         step.why = (f"new fix for case {case_id} (request {nth}: the earlier answer(s) had no script)")
         step.kb_line = f"KB 탐색: {stored_part} → LLM 에 새 수정 요청 ({nth})"
     else:

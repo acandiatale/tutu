@@ -82,7 +82,7 @@ def test_stall_escalation_model_and_repeated_failure(cfg, ws, profile):
         return write_script({"notes.txt": f"v{n['i']}\n"})
 
     cfg.loop.stall_limit = 1
-    cfg.script.max_augments_per_case = 3
+    cfg.script.max_llm_tries_per_case = 3
     fixer = FakeFixer(script_fn=fix)
     loop = make_loop(cfg, ws, profile, fixer=fixer)
     pr = loop.run(Phase.VERIFY, "package", 10)
@@ -171,7 +171,7 @@ def test_llm_budget_exhaustion(cfg, ws, profile):
 
 
 def test_no_script_and_propose_exception_are_apply_failed(cfg, ws, profile):
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_llm_tries_per_case = 2
 
     def fn(w, c, ctx):
         if c.errors[0].file == FOO:
@@ -192,7 +192,7 @@ def test_no_script_and_propose_exception_are_apply_failed(cfg, ws, profile):
 def test_an_analysis_only_answer_is_declined_once_and_blocked_needs_owner(cfg, ws, profile):
     """v2.1y (E-M1): "I cannot" with neither a script nor edits is a decline — one LLM call for that case, BLOCKED
     needs_owner; the transport failures of the other case still go up the ladder (repeated_failure)."""
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_llm_tries_per_case = 2
 
     def fn(w, c, ctx):
         if c.errors[0].file == FOO:

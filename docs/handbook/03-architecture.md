@@ -237,7 +237,7 @@ flowchart LR
 | 0 | `.env` 파일들 → `os.environ` | `load_dotenv_files()`가 가장 먼저 실행됩니다. 후보는 `$SBMIG_ENV_FILE`, `<sbmig 저장소 루트>/.env`, `<현재 디렉터리>/.env` 순입니다. **이미 설정된 쉘 환경 변수가 이깁니다**(`if k and k not in os.environ`). `.env` 내용은 설정 dict로 들어가지 않고 환경 변수로만 전달됩니다. |
 | 1 | `config/default.yml` | 기본값 |
 | 2 | `--config` 파일들(순서대로) | 예: 회사 좌표 파일(`config/artifacts.example.yml`을 복사해 실제 좌표를 채운 것, 저장소에는 없음). 나중에 준 파일이 이깁니다. `deep_merge`로 합치므로 dict는 키 단위로, 리스트는 통째로 바뀝니다. |
-| 3 | `overrides` dict | CLI 플래그(`--llm-provider`, `--llm-plugin`, `--fix-plugin`, `--java-home`, `--settings`, `--no-kb`)와 웹 UI의 `llm_provider`가 여기로 들어옵니다. |
+| 3 | `overrides` dict | CLI 플래그(`--llm-provider`, `--llm-plugin`, `--fix-plugin`, `--java-home`, `--settings`)와 웹 UI의 `llm_provider`가 여기로 들어옵니다. |
 | 4 | `SBMIG_*` 환경 변수 | `SBMIG_LLM__MODEL=foo` → `llm.model = foo`. 밑줄 두 개(`__`)가 중첩을 뜻하고, 값은 YAML로 해석합니다. **코드상 CLI 플래그보다 나중에 적용되므로 같은 키라면 `SBMIG_*`가 이깁니다.** |
 | 5 | `${VAR}` / `${VAR:-기본값}` 확장 | 모든 문자열 값에서 환경 변수를 확장합니다. 예: `llm.base_url: "${LLM_BASE_URL}"`, `llm.model: "${LLM_MODEL:-gpt-6-luna}"`. 변수가 없고 기본값도 없으면 `${...}` 그대로 남고, 클라이언트가 "not set" 오류를 냅니다. |
 | 6 | `repo_root` | `--repo-root`를 주면 KB, knowledge 등 상대 경로의 기준이 바뀝니다. |

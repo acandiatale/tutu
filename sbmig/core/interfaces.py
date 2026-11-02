@@ -345,16 +345,9 @@ class FixContext(BaseModel):
     reference_files: dict[str, str] = Field(default_factory=dict)   # label/path → content (read-only, never patched)
     # v2 fix scripts (ScriptFixerLike.propose_script): what is asked for and, for augment, the script to extend
     script_mode: Optional[Literal["new", "augment"]] = None
-    # v2.1i: `edits` = ask for edits only (no script section, no helper API); plugins read it the same way
-    fix_mode: Literal["script", "edits"] = "script"
     case_id: str = ""                             # the cluster's case (L2 signature id)
     signature_generic: str = ""
     script_base: Optional[ScriptBase] = None      # augment: the previous version and what it did in this project
-    # v2.1i edits 모드: 이 실행에서 같은 케이스의 앞 시도(previous_attempts 의 id → 결과·실패 이유·트리에 남았는지·적용한
-    # diff 또는 적용 못 한 edits). script 모드에서는 비어 있다. / edits mode: attempt id (of `previous_attempts`) → what
-    # that try did — result and why it failed, whether it is still in the tree, the applied diff or the edits that did
-    # not apply (capped); {} in script mode (augment carries `script_base` instead)
-    previous_edits: dict[str, str] = Field(default_factory=dict)
     # v2.1d dependency version policy: facts for the prompt section "Dependency versions" — the people's table entry
     # (libraries.yml) and what the repository has for the libraries behind this case (same-major releases, which are
     # jakarta builds, the higher majors), one line each; [] when nothing is known
@@ -459,13 +452,14 @@ class StructureReviewerLike(Protocol):
 @runtime_checkable
 class KnowledgeBaseLike(Protocol):
     """v2.1 파일 KB 이음새(sbmig.kb.FileKnowledgeBase = CaseStore 위의 창구): 케이스 저장소(cases), 클러스터
-    조회(match), 실행 끝 기록(record_run), cases.md 재생성(reindex). `--no-kb` 이면 아무것도 답하지 않는
-    NullKnowledgeBase 를 쓴다.
+    조회(match), 실행 끝 기록(record_run), cases.md 재생성(reindex). `sbmig.api.migrate(kb=False)` 나 sbmig.kb 를
+    못 불러올 때는 아무것도 답하지 않는 NullKnowledgeBase 를 쓴다(v2.1z: 운영 스위치 `--no-kb` 는 없어졌다).
 
     The v2.1 file KB (sbmig.kb.FileKnowledgeBase, a facade over sbmig.errors.cases.CaseStore): the case store
     (`cases`: find / best / code / add_script / credit / describe / pin), catalog hits for a cluster's case
     (`match`: a CaseHit for a stored script or a pinned block), the end-of-run append (`record_run`) and the
-    `cases.md` rebuild (`reindex`). `NullKnowledgeBase` (`--no-kb`, sbmig.loop) answers with nothing."""
+    `cases.md` rebuild (`reindex`). `NullKnowledgeBase` (sbmig.loop: `sbmig.api.migrate(kb=False)`, or sbmig.kb
+    unavailable; the `--no-kb` switch went in v2.1z) answers with nothing."""
     cases: Any
 
     def match(self, cluster: ErrorCluster, ws: Workspace, profile: ProjectProfile) -> KBMatch: ...

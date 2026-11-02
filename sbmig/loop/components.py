@@ -2,8 +2,8 @@
 오케스트레이터가 쓴다: ``lazy_attr`` 로 analyze / plan / rewrite / build / fix / kb 를 늦게 import 하고(없으면
 ``MissingComponentError`` 로 무엇이 빠졌는지 말한다), ``LazyFixer`` 는 첫 수정 스크립트를 요청할 때에야 fixer
 와 LLM 클라이언트를 만들고, ``LazyScriptRunner`` 는 ``sbmig.script.ScriptRunner`` 를 만들 수 없으면 매번
-``error`` 결과를 돌려주며(예외 없음 → 루프는 실패한 시도로 기록), ``NullKnowledgeBase`` 는 ``--no-kb`` 일 때의
-빈 지식베이스다. 결정: v2 는 모든 오류를 수정 스크립트로 고친다 → ``propose_script`` 가 없는 fixer(v1 용
+``error`` 결과를 돌려주며(예외 없음 → 루프는 실패한 시도로 기록), ``NullKnowledgeBase`` 는 sbmig.kb 를 불러올 수
+없을 때(또는 ``sbmig.api.migrate(kb=False)``)의 빈 지식베이스다. 결정: v2 는 모든 오류를 수정 스크립트로 고친다 → ``propose_script`` 가 없는 fixer(v1 용
 tier-2 플러그인)는 ``ScriptFixerMissing``.
 
 Lazy resolution of collaborators from other workstreams + null/lazy stand-ins."""
@@ -49,11 +49,11 @@ class ScriptFixerMissing(RuntimeError):
 
 
 class NullKnowledgeBase:
-    """아무것도 모르는 지식베이스(``--no-kb``, 또는 sbmig.kb 를 못 불러올 때): 조회는 빈 결과, 재사용할
+    """아무것도 모르는 지식베이스(sbmig.kb 를 못 불러올 때, ``sbmig.api.migrate(kb=False)``, 테스트 대역): 조회는 빈 결과, 재사용할
     스크립트 없음(LLM 스크립트는 저장 없이 v0 로 실행), 기록하지
     않음(오류 목록은 실행 디렉터리의 errors.jsonl 에만 남는다).
 
-    The knowledge base that knows nothing (``--no-kb``, or sbmig.kb unavailable) — what the v2.1 flow calls on a KB:
+    The knowledge base that knows nothing (sbmig.kb unavailable, `sbmig.api.migrate(kb=False)`, test stubs) — what the v2.1 flow calls on a KB:
     `match` (an empty KBMatch: no pinned case actions, no hints), `cases` None (nothing is reused, LLM scripts run
     unstored as v0) and `record_run` (nothing recorded: the run's errors.jsonl stays in the run directory)."""
 

@@ -49,7 +49,7 @@ def test_a_case_is_one_cluster_across_files_and_moves():
 
 
 def test_pending_never_counts_partial_counts_as_an_llm_request(cfg, profile):
-    cfg.script.max_augments_per_case = 2
+    cfg.script.max_llm_tries_per_case = 2
     t = Triager(cfg)
     c = one()
     pend = [attempt(c, "pending", aid=f"p{i}", version=i + 1) for i in range(5)]
