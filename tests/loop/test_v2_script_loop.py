@@ -420,3 +420,20 @@ def test_the_case_errors_reach_the_runner(cfg, ws):
     errs = runner.runs[0]["errors"]
     assert all(isinstance(e, BuildError) and e.kind == ErrorKind.COMPILE for e in errs)
     assert sorted(e.file for e in errs) == [BAR, FOO]
+
+
+def test_escalation_model_from_the_third_ask_also_for_fresh_news_after_the_augments(cfg, ws):
+    """v2.1z review R2: with the augments used up (1 here) the later asks are fresh `new`s — they get the stronger model
+    too (from the case's third LLM ask on, whatever the rung), not only the second augment."""
+    cfg.script.max_augments_per_case = 1
+    cfg.script.max_llm_tries_per_case = 4
+    n = {"i": 0}
+
+    def fn(w, c, ctx):
+        n["i"] += 1
+        return write_script({"n.txt": str(n["i"])})
+    fixer = FakeFixer(script_fn=fn)
+    make_loop(cfg, ws, broken_build(FOO), fixer).run(Phase.VERIFY, "package", 8)
+    modes = [ctx.script_mode for _c, ctx in fixer.script_calls]
+    assert modes == ["new", "augment", "new", "new"]
+    assert [ctx.use_escalation_model for _c, ctx in fixer.script_calls] == [False, False, True, True]

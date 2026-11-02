@@ -143,6 +143,10 @@ def test_fleet_runs_with_the_kb_and_an_old_fleet_config_still_resumes(env):
         runner_mod.FleetRunner._default_run_project = orig
     assert r.exit_code == 2 and [c[0] for c in env["calls"]][3:] == ["beta"]
     assert seen and not any(isinstance(kb, NullKnowledgeBase) for kb in seen)
+    # v2.1z review follow-up: the dropped switches are named once (stderr), never silently
+    assert "v2.1z: no_kb, overrides.fix.mode in fleet-config.json ignored" in r.output
+    saved2 = json.loads(path.read_text())                       # the rewritten fleet-config carries neither key
+    assert "no_kb" not in saved2 and "mode" not in (saved2.get("overrides") or {}).get("fix", {})
 
 
 def test_an_old_state_settings_note_is_just_a_note(tmp_path):

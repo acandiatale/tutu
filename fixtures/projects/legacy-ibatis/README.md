@@ -27,8 +27,10 @@ JAVA_HOME=/Users/acandiatale/Library/Java/JavaVirtualMachines/corretto-1.8.0_362
 
 Spring 3.2.18 → 7.0.x drops `org.springframework.orm.ibatis`, so the first (final) build fails in `CatalogDao.java` with
 three cases (`package_does_not_exist org.springframework.orm.ibatis.support`, `cannot_find_symbol SqlMapClientDaoSupport`,
-`cannot_find_symbol getSqlMapClientTemplate`). Each case gets 4 fix-script requests (all `new`: without a stored
-version there is nothing to augment; `script.max_augments_per_case` 3), every one answered without a script → **BLOCKED
-`repeated_failure` ×3**; the final build runs again and fails (invariant 1) → `success: false`, exit **2**, 13 LLM calls.
+`cannot_find_symbol getSqlMapClientTemplate`). Since v2.1y the first request is declined (`<blocked>`: the fix is not
+possible inside the project) → **BLOCKED `needs_owner`** after `script.max_declines_per_case` 1, and the two sibling cases in
+the same files are blocked "same cause" without another call → `blocked ×3`; the final build runs again and fails
+(invariant 1) → `success: false`, exit **2**, 2 LLM calls (the structure review + one fix request). Before v2.1y every
+case cost 4 requests (`new` ×4) and the run 13 calls.
 Advisory `ibatis2` (`guide`, `still-present`: `ibatis-sqlmap` kept with its version, `CatalogDao` still
 `extends SqlMapClientDaoSupport`) and its MyBatis follow-up in the Handover.

@@ -1,7 +1,7 @@
 """실행 전체의 차단(BLOCKED) 등록부 — "고칠 수 없는 것에 매달리지 않고, 숨기지도
 않는다"(docs/ERROR-HANDLING.md). 오케스트레이터가 실행마다 하나 만들어 모든 ``BuildFixLoop`` 에 넘긴다: 한 번
 차단된 오류는 다시 시도하지 않고, 보고서 "Blocked" 와 인수인계 섹션에 사람이 할 일(제안 문구)과 함께 남는다.
-차단 사유: 반복 실패(케이스당 저장본 1 + LLM 3회 소진), 차단 정책(``loop.blocked_policy``), LLM 불가·예산
+차단 사유: 반복 실패(케이스당 저장본 재사용 뒤 LLM 요청 한도 ``script.max_llm_tries_per_case`` 소진), 차단 정책(``loop.blocked_policy``), LLM 불가·예산
 소진, 사내 parent 해석 불가(실행 중단), 진동(A↔B↔A). 키 = (L1 서명, 프로젝트 기준 전체 경로) — MSA 서비스끼리
 같은 상대경로 파일을 섞지 않으려고(round 10). 재구성이 파일을 옮기면 오케스트레이터가 git rename 을
 ``note_moves`` 로 알려 키가 새 경로를 따라간다. ``compose_suggestion`` 이 제안 문구를 만들고, 최종 빌드 뒤

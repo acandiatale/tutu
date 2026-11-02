@@ -267,6 +267,12 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
 
     # 2./3. the LLM: the total cap first (new + augment)
     if llm_used >= max_llm:
+        if max_llm == 0:
+            # 한도 0 = 이 케이스에는 LLM 을 아예 묻지 않는 설정 — "0회가 해결 못 했다" 로 읽히지 않게 따로 쓴다
+            step.why = (f"LLM asks are switched off for case {case_id} (script.max_llm_tries_per_case 0)"
+                        + (f"; {len(failed_here)} stored script run(s) did not resolve it" if failed_here else ""))
+            step.kb_line = f"KB 탐색: {stored_part} → LLM 요청 없음 (script.max_llm_tries_per_case 0) → blocked"
+            return step
         step.why = (f"{len(failed_here)} stored script run(s) and {llm_used} LLM tr{'y' if llm_used == 1 else 'ies'} "
                     f"did not resolve case {case_id} (script.max_llm_tries_per_case {max_llm})")
         step.kb_line = (f"KB 탐색: {stored_part} → 한도 도달 (저장본 {len(failed_here)} + LLM {llm_used}회) → "

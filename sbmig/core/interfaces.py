@@ -362,6 +362,24 @@ class FixContext(BaseModel):
     # lists the parents / mandatory facts).
     layout_facts: list[str] = Field(default_factory=list)
 
+    # v2.1z 호환: v2.1i 가 더했던 `fix_mode` / `previous_edits` 는 edits 모드와 함께 사라졌지만, 그 닷새 사이에 쓰인 2단계
+    # 플러그인이 `ctx.fix_mode` 를 읽어도 깨지지 않게 읽기 전용 값으로 남긴다(언제나 "script" / 빈 dict). 필드가 아니라
+    # 직렬화·프롬프트에는 나오지 않는다. / v2.1z compatibility for tier-2 plugins written against v2.1i: read-only, never
+    # serialized, never rendered.
+    @property
+    def fix_mode(self) -> str:
+        """항상 "script" — edits 모드는 v2.1z 에서 없어졌다(플러그인 호환용 읽기 전용 값).
+
+        Always "script": the edits mode went in v2.1z (read-only, for plugins written against v2.1i)."""
+        return "script"
+
+    @property
+    def previous_edits(self) -> dict[str, str]:
+        """항상 빈 dict — edits 모드의 이전 편집 이력은 v2.1z 에서 없어졌다(플러그인 호환용).
+
+        Always {}: the edits-mode history went in v2.1z (read-only, for plugins written against v2.1i)."""
+        return {}
+
 
 @runtime_checkable
 class FixerLike(Protocol):

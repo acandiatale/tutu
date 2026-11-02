@@ -2961,21 +2961,24 @@ Log lines (`ScriptStep.kb_line`; the loop's agent finalises the wording — shap
 - `FixContext.fix_mode` deleted (interfaces.py; tier-2 plugins that read it see no field).
 
 ### Case keys: reactor artifactIds masked (`sbmig/build/signatures.py`, `sbmig/build/log_parser.py`)
-- The log parser registers, at the start of every parse, every reactor artifactId the Maven log shows (`-----< g:a >-----` headers,
+- The log parser registers, at the start of every parse, the reactor artifactIds: the caller's `known_modules` (the build runner, the
+  rewrite runner and the CLI log tool pass `reactor_artifact_ids_from_poms(root)` = every artifactId the project's pom tree declares,
+  so the set does not depend on how far a fail-fast reactor got) plus every artifactId the Maven log shows (`-----< g:a >-----` headers,
   `--- plugin:ver:goal (id) @ <artifactId> ---` mojo markers, `Failed to execute goal … on project <artifactId>`; never the `Building
-  <name>` display name) — `set_reactor_modules(names)`, a process-wide set **replaced** per parse (a fleet's next project never sees the
-  previous project's names).
-- `normalize_message` masks these names AND the error's own module as `<module>` in the L1 / L2 message text: case-sensitive, word
-  boundaries (`(?<![\w.-])name(?![\w-])`), longest name first (`pricing-core-comp` before `pricing-core`). Not masked: names shorter
-  than 3 characters (`MIN_MODULE_NAME_CHARS`) and a stoplist of ordinary Maven / javac words (`MODULE_NAME_STOPLIST`: `web`, `app`,
-  `api`, `core`, `common`, `test`, `main`, `build`, `parent`, `jar`, `war`, `plugin`, `boot`, `back`, `front`, `service`, `util`, … —
-  masking them would merge or split cases on wording, not on project identity).
+  <name>` display name) — `set_reactor_modules(names)`, a process-wide set **replaced** per parse, emptied when a `MavenRunner` is made
+  and after a successful build (a fleet's next project never sees the previous project's names).
+- `normalize_message` masks the error's OWN module **always** (the pre-v2.1z rule, whatever its name) and a registry name only when it
+  looks like an artifactId — a separator (`-`, `_`, `.`), a digit or an uppercase letter (`pricing-core`, `app_web`, `svc2`, `DEV`) —
+  is at least 3 characters (`MIN_MODULE_NAME_CHARS`) and is not in `MODULE_NAME_STOPLIST` (`web`, `app`, `api`, `core`, `common`,
+  `test`, `main`, `build`, `parent`, `jar`, `war`, `plugin`, `boot`, `back`, `front`, `service`, `util`, …). A plain lowercase module
+  name (`user`, `config`, `model`) is never masked from the registry: it would eat ordinary message words (`package user.model does not
+  exist`) and merge or split cases on wording, not on project identity (review R2). Case-sensitive, word boundaries
+  (`(?<![\w.-])name(?![\w-])`), longest name first (`pricing-core-comp` before `pricing-core`).
 - Real example (e2e KB): `enforcer|requirejavaversion: pricing-core must be built with` — the root artifactId leaked, the error's
   module was `pricing-core-comp` — becomes `enforcer|requirejavaversion: <module> must be built with`.
 - Effect on stored KBs: only L2s that contained another module's artifactId change id; those never matched across projects anyway.
-  Every other case id is unchanged — except (as the code reads at writing time) an error whose OWN module has a stoplisted or
-  < 3-character artifactId (`web`, `app`, …): before v2.1z the own module was masked whatever its name, now the stoplist applies to it
-  too (confirmed at integration: `MODULE_NAME_STOPLIST` / `MIN_MODULE_NAME_CHARS` apply to the `module=` argument as well).
+  Every other case id is unchanged: the error's own module is masked exactly as before v2.1z (the first cut had applied the stoplist to
+  it too — review R2 caught it before the company pulled).
 
 ### As built (v2.1z, 2026-11-02)
 Four opus agents on disjoint directories (A core ladder + edits-mode removal, B web / fleet / report switches, C docs, D reactor
@@ -3016,3 +3019,31 @@ deleted, `config/default.yml` mirrored), then integrated.
   successful build (a success is not parsed, so nothing lingers into a fleet's next project) and `tests/conftest.py` resets it around
   every test. New tests `tests/build/test_reactor_module_masking.py` (9).
 - **Verification:** offline suite and real-Maven e2e — numbers in `docs/PLAN.md` (v2.1z status table).
+
+### Review follow-ups (v2.1z, 2026-11-02, same day — two read-only opus reviewers over `7674d61`, lenses "state / records /
+compatibility" and "surviving loop logic / masking")
+No script-mode path was cut by accident and no old run file (`report.json`, `web-status.json`, `fleet-config.json`, `state.json`) fails
+to load. Fixed after the review:
+- `FixContext.fix_mode` / `previous_edits` are back as **read-only properties** (`"script"` / `{}`; not fields, never serialized or
+  rendered) so a tier-2 plugin written against v2.1i does not raise — such a raise would have been swallowed per try and burnt the 20
+  asks of every case (R1).
+- `load_config` logs a WARNING for `fix.mode` / `fix.edits_max_asks_per_case` left in a yml ("ignored since v2.1z") and for a
+  `script.max_augments_per_case` without `script.max_llm_tries_per_case` (augments only now; the per-case total is the new key, default
+  20) — `_warn_removed_keys` (R1, R2).
+- `sbmig fleet resume` names the dropped switches of an older `fleet-config.json` once (`v2.1z: no_kb, overrides.fix.mode in
+  fleet-config.json ignored — …`, stderr) and drops them from the rewritten overrides instead of silently changing the fleet's settings
+  mid-way (R1).
+- Masking (R2): the error's own module is masked **always** again; registry names only when artifactId-like (see above); the registry
+  is seeded from the pom tree (`reactor_artifact_ids_from_poms`) so masking no longer depends on reactor order; emptied per
+  `MavenRunner` and after a success.
+- Escalation (R2): the stronger model from the case's **third LLM ask** on, whatever the rung — the fresh `new` asks after the 15
+  augments were going to the base model.
+- `script.max_llm_tries_per_case: 0` reads `LLM asks are switched off for case … (script.max_llm_tries_per_case 0)` / `KB 탐색: … → LLM
+  요청 없음 … → blocked` instead of "0 tries did not resolve" (R2).
+- Test guards that had left with the deleted v2.1i files are back: rule 14 of the script prompt (`tests/fix/test_rule14_prompt.py`),
+  the empty "LLM usage and cost" section (`tests/report/test_usage_section.py`), plus new ones for the compat properties, the config
+  warnings, the fleet-resume notice, the masking rules and the escalation rung (R1).
+- Stale "저장본 1 + LLM 3회" comments (`blocked_registry.py`, `fixloop.py`) and the legacy-ibatis fixture README corrected (R1, R2).
+- Accepted as is: `max_llm_tries_per_case` 20 with an `llm.escalation_model` configured sends up to 18 asks per case to the stronger
+  model (cost is the company's call; the model is empty by default); the pre-existing `이번 실행에서 v1 실패` wording for a `partial`
+  reuse.

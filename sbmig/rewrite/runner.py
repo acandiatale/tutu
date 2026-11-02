@@ -322,7 +322,8 @@ class OpenRewriteRunner:
             parts.append("recipe validation: " + "; ".join(other[:8]))
         if parts:
             return " | ".join(parts)
-        errors = parse_maven_log(text, self.ws.root)
+        from sbmig.build.log_parser import reactor_artifact_ids_from_poms
+        errors = parse_maven_log(text, self.ws.root, known_modules=reactor_artifact_ids_from_poms(self.ws.root))
         msgs = list(dict.fromkeys(f"{e.kind.value}: {e.message}" for e in errors))
         return "; ".join(msgs[:10]) if msgs else "rewrite run failed (see log)"
 

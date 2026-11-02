@@ -1982,7 +1982,7 @@ class BuildFixLoop:
                 if owner is not None:
                     return self._block_same_cause(st, c, owner, prefix)
             forced = None
-            # 강제 차단: 사다리 끝(저장본 1 + LLM 3회 소진 → 반복 실패), LLM 이 필요한데 LLM 불가 또는 예산
+            # 강제 차단: 사다리 끝(저장본 재사용 뒤 LLM 요청 한도 script.max_llm_tries_per_case 소진 → 반복 실패), LLM 이 필요한데 LLM 불가 또는 예산
             # 소진. 저장본 재사용(LLM 0회)은 LLM 이 없어도 막지 않는다
             if step is not None and step.mode is None:
                 forced = BlockedCandidate(reason=BlockReason.REPEATED_FAILURE, errors=list(c.errors),
@@ -2616,8 +2616,11 @@ class BuildFixLoop:
         att.script_mode = mode
         if mode == "augment":
             att.script_parent = int(base.version) or None
-        # the stronger model on a stall, and from the second augment of a case on
-        escalate = st.stall_level >= self.cfg.loop.stall_limit or (mode == "augment" and step.augments_used >= 1)
+        # 더 센 모델: 정체(stall)일 때, 그리고 케이스의 세 번째 LLM 요청부터(보강이든, 보강 소진 뒤의 새 작성이든 — v2.1z 리뷰
+        # R2: 15회 보강 뒤의 신규 요청이 약한 모델로 가던 구멍). 두 번째 보강 = 세 번째 요청이라 전과 같은 자리다.
+        # the stronger model on a stall, and from the case's THIRD LLM ask on, whatever the rung (the fresh `new` asks after
+        # the augments are used up included) — the same rung as "from the second augment" before v2.1z
+        escalate = st.stall_level >= self.cfg.loop.stall_limit or int(getattr(step, "llm_used", 0) or 0) >= 2
         sig = next((e.signature_generic for e in c.errors if e.signature_generic), "") or ""
         self._mark(f"library hints for {c.id}")
         lib_hints = self._library_hints(c)

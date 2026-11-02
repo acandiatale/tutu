@@ -176,14 +176,26 @@ def reactor_modules() -> frozenset[str]:
     return _REACTOR_MODULES
 
 
+_ARTIFACT_LIKE_RE = re.compile(r"[-_.\d]|[A-Z]")
+
+
 def _maskable(name: str) -> bool:
-    return len(name) >= MIN_MODULE_NAME_CHARS and name not in MODULE_NAME_STOPLIST
+    """레지스트리의 이름을 가려도 되는가: 3자 이상, stoplist 에 없고, 평범한 소문자 단어가 아니라 artifactId 처럼 생겼을 때
+    (하이픈·밑줄·점·숫자·대문자 중 하나라도 있음 — `pricing-core`, `app_web`, `svc2`, `DEV`). `user` / `config` / `model` 같은
+    소문자 한 단어 모듈명은 javac·Maven 메시지의 보통 단어와 겹쳐 다른 프로젝트와 L2 가 갈리므로 가리지 않는다(v2.1z 리뷰 R2).
+    오류 자신의 모듈(``module=``)은 이 규칙과 무관하게 v2.1z 전처럼 언제나 가린다.
+
+    A registry name is masked only when it looks like an artifactId (a separator, a digit or an uppercase letter) and
+    is neither short nor stoplisted; a plain lowercase word (`user`, `config`) would mask ordinary message words. The
+    error's OWN module is always masked, as before v2.1z."""
+    return (len(name) >= MIN_MODULE_NAME_CHARS and name not in MODULE_NAME_STOPLIST
+            and bool(_ARTIFACT_LIKE_RE.search(name)))
 
 
 def _mask_modules(s: str, module: str | None) -> str:
     names = {n for n in _REACTOR_MODULES if _maskable(n)}
-    if module and _maskable(module):
-        names.add(module)
+    if module and module.strip():
+        names.add(module.strip())                 # the error's own module: always, whatever its name (pre-v2.1z rule)
     if not names:
         return s
     # 긴 이름부터: 'pricing-core-comp' 가 'pricing-core' 보다 먼저 맞아야 '<module>-comp' 가 안 된다.

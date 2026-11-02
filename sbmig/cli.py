@@ -733,7 +733,9 @@ def parse_log(logfile: Path = typer.Argument(..., exists=True, dir_okay=False),
     Parse an existing Maven log into structured errors."""
     from sbmig.build import parse_maven_log
 
-    errors = parse_maven_log(logfile.read_text(encoding="utf-8", errors="replace"), root.resolve())
+    from sbmig.build.log_parser import reactor_artifact_ids_from_poms
+    errors = parse_maven_log(logfile.read_text(encoding="utf-8", errors="replace"), root.resolve(),
+                             known_modules=reactor_artifact_ids_from_poms(root))
     if as_json:
         typer.echo(json.dumps([e.model_dump(mode="json") for e in errors], indent=2))
         return

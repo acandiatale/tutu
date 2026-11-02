@@ -199,6 +199,17 @@ def resume_cmd(
         typer.secho(f"no fleet state in {out}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
     prev = json.loads(saved.read_text(encoding="utf-8")) if saved.exists() else {}
+    # v2.1z: 지난주의 fleet-config.json 에 남은 토큰 비교 스위치(no_kb, overrides.fix.mode …)는 더 이상 없다 — 조용히 무시하면
+    # 남은 프로젝트가 다른 설정으로 도는 줄 모르니 한 줄 알리고 오버라이드에서 뺀다 / the removed v2.1i switches in an older
+    # fleet-config.json are dropped with one visible line (the remaining projects run with the KB and the script ladder)
+    dropped = ["no_kb"] if prev.get("no_kb") else []
+    fix_ov = (prev.get("overrides") or {}).get("fix") or {}
+    dropped += [f"overrides.fix.{k}" for k in ("mode", "edits_max_asks_per_case") if k in fix_ov]
+    if dropped:
+        for k in ("mode", "edits_max_asks_per_case"):
+            fix_ov.pop(k, None)
+        typer.secho("v2.1z: " + ", ".join(dropped) + " in fleet-config.json ignored — the remaining projects run with the KB "
+                    "and the script ladder (no edits mode, no KB-off)", fg=typer.colors.YELLOW, err=True)
     manifest = Path(prev.get("manifest") or json.loads(state_path.read_text(encoding="utf-8"))["manifest"])
     configs = list(config) if config else [Path(c) for c in prev.get("configs") or []]
     from sbmig.core.config import deep_merge

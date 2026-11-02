@@ -95,8 +95,19 @@ def test_stoplisted_and_short_names_are_not_masked():
     assert normalize_message("the web module needs app core") == "the web module needs app core"
     assert normalize_message("ab failed") == "ab failed"
     assert {"web", "core", "boot", "front", "back"} <= MODULE_NAME_STOPLIST
-    # the per-error module argument follows the same stoplist
-    assert normalize_message("the web module", module="web") == "the web module"
+    # the error's OWN module is always masked, stoplist or not (the pre-v2.1z rule; review R2)
+    assert normalize_message("the web module", module="web") == "the <module> module"
+
+
+def test_plain_lowercase_registry_names_are_not_masked_but_artifact_like_ones_are():
+    """Review R2: reactor names that are ordinary words (`user`, `config`) must not eat message tokens; names that look
+    like artifactIds (a separator, a digit or an uppercase letter) are masked; the own module always is."""
+    set_reactor_modules(["user", "config", "pricing-core", "app_web", "svc2", "DEV"])
+    assert normalize_message("package user.model does not exist") == "package user.model does not exist"
+    assert normalize_message("cannot find symbol: variable config") == "cannot find symbol: variable config"
+    assert normalize_message("pricing-core must be built with JDK 8") == "<module> must be built with jdk #"
+    assert normalize_message("app_web and svc2 and DEV failed") == "<module> and <module> and <module> failed"
+    assert normalize_message("cannot find symbol: variable config", module="config") == "cannot find symbol: variable <module>"
 
 
 def test_masking_is_case_sensitive():

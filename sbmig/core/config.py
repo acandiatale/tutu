@@ -1043,6 +1043,30 @@ def load_dotenv_files(*extra: str | Path) -> list[Path]:
     return found
 
 
+def _warn_removed_keys(data: dict) -> list[str]:
+    """v2.1z: 합쳐진 설정에 남은 옛 키를 경고 로그로 알린다 — `fix.mode` / `fix.edits_max_asks_per_case`(토큰 비교용 스위치, 무시됨)와,
+    `script.max_augments_per_case` 만 있고 `script.max_llm_tries_per_case` 가 없는 회사 yml(이제 보강 횟수만 세고 케이스당 LLM 총
+    요청은 20 이 기본). 조용히 지나가면 회사 설정이 뜻이 바뀐 줄 모른다. 돌려주는 값 = 로그에 쓴 문장들(테스트용).
+
+    v2.1z: log the keys a company yml may still carry — the removed `fix.mode` / `fix.edits_max_asks_per_case` (ignored) and
+    `script.max_augments_per_case` without `script.max_llm_tries_per_case` (augments only now; the per-case LLM total is the new
+    key, default 20). Returns the sentences logged (for tests)."""
+    out: list[str] = []
+    fix = data.get("fix") if isinstance(data.get("fix"), dict) else {}
+    for key in ("mode", "edits_max_asks_per_case"):
+        if key in fix:
+            out.append(f"config: fix.{key}={fix[key]!r} is ignored since v2.1z (the edits mode is gone; the fix is always the "
+                       "script ladder) — remove it from the yml")
+    script = data.get("script") if isinstance(data.get("script"), dict) else {}
+    if "max_augments_per_case" in script and "max_llm_tries_per_case" not in script:
+        out.append(f"config: script.max_augments_per_case={script['max_augments_per_case']!r} counts augment steps only since "
+                   "v2.1z; the LLM asks per case are capped by script.max_llm_tries_per_case (not set → default "
+                   f"{ScriptConfig.model_fields['max_llm_tries_per_case'].default})")
+    for line in out:
+        log.warning("%s", line)
+    return out
+
+
 def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root: Optional[Path] = None) -> Config:
     """설정을 읽어 합친다: default.yml → 주어진 yml 들 → overrides → SBMIG_* 환경 변수 → `${VAR}` 펼침. 모든
     명령과 sbmig.api.migrate 가 이것으로 시작한다(.env 는 먼저 환경 변수로 읽힌다).
@@ -1063,4 +1087,5 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     data = _expand_env(data)
     if repo_root:
         data["repo_root"] = str(repo_root)
+    _warn_removed_keys(data)
     return Config.model_validate(data)

@@ -39,9 +39,10 @@
 - `<kind>` = `ErrorKind`: `compile`, `test_compile`, `dependency_resolution`, `plugin_resolution`, `parent_resolution`, `plugin_execution`, `enforcer`, `pom_invalid`, `rewrite`, `test_failure`, `unknown`.
 - `<class>` 는 javac 메시지 첫 줄의 분류(`package_does_not_exist`, `cannot_find_symbol`, `cannot_access`, `incompatible_types`, `method_does_not_override`, `illegal_start` …); `plugin_execution` 은 `플러그인:목표` + 정규화한 원인 10단어.
 - 규칙: **절대경로·줄 번호·모듈 이름·프로젝트 소유 위치는 넣지 않는다.** v2.1z: 오류 자신의 모듈뿐 아니라 이번 빌드 로그에 나온 reactor artifactId
-  전부(`< g:a >` 머리줄, `--- … @ <artifactId> ---`, `on project <a>`)를 `<module>` 로 가린다(대소문자 구분, 단어 경계, 긴 이름부터; 3자 미만과
-  `web` / `core` / `common` / `api` / `test` / `main` / `build` / `parent` / `jar` / `war` / `plugin` / `boot` / `back` / `front` 같은 평범한 낱말은
-  가리지 않음). 예: `enforcer|requirejavaversion: pricing-core must be built with` → `enforcer|requirejavaversion: <module> must be built with`. 뭉뚱그려진 컴파일 키(`build` / `other`)는 묶기 전에 `sbmig.triage.cluster.refine_signature` 가 오류 원문 줄로 세분한다.
+  전부(pom 트리의 artifactId + `< g:a >` 머리줄, `--- … @ <artifactId> ---`, `on project <a>`)를 `<module>` 로 가린다. 오류 자신의 모듈은 이름이
+  무엇이든 언제나 가리고, 다른 모듈 이름은 artifactId 처럼 생긴 것(하이픈·밑줄·점·숫자·대문자 중 하나라도 있는 `pricing-core`, `app_web`, `svc2`,
+  `DEV`)만 — `user` / `config` / `model` 같은 소문자 한 단어와 `web` / `core` / `common` 같은 평범한 낱말(stoplist), 3자 미만은 메시지의 보통 단어를
+  먹기 때문에 가리지 않는다(대소문자 구분, 단어 경계, 긴 이름부터). 예: `enforcer|requirejavaversion: pricing-core must be built with` → `enforcer|requirejavaversion: <module> must be built with`. 뭉뚱그려진 컴파일 키(`build` / `other`)는 묶기 전에 `sbmig.triage.cluster.refine_signature` 가 오류 원문 줄로 세분한다.
 - 왜 해시인가: L2 에 `|` `<` `>` `:` 한글·공백이 들어가고, 매칭은 L2 문자열로 하므로 폴더 이름은 키일 뿐이다(KB-AND-FLOW §2). **`signatures.py` 를 바꾸면 기존 KB 케이스와 매칭이 끊긴다.**
 - 케이스가 없는 레코드도 있다: 재구성의 `pom-verify`, 구조 점검 warning 메모 → `case_id` / `l2` 가 `""` 이고 KB 에서는 `cases/_other/errors/` 에 들어간다. 구조 점검이 **직접 고친** critical 은 고정 L2 `review|structure`(`sbmig/loop/entries.py REVIEW_L2`)의 케이스다.
 

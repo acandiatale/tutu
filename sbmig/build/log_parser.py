@@ -30,6 +30,7 @@ gets an empty list for a failed build.
 """
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -941,13 +942,61 @@ def _artifacts_in(msg: str) -> list[GAV]:
 # ---------------------------------------------------------------------------
 # public API
 # ---------------------------------------------------------------------------
-def parse_maven_log(text: str, project_root: Path | str | None = None) -> list[BuildError]:
+_POM_SKIP_DIRS = frozenset({"target", ".git", ".svn", ".hg", "node_modules", ".idea", ".sbmig", "out", "build"})
+_POM_WALK_LIMIT = 2000
+
+
+def reactor_artifact_ids_from_poms(root: Path | str | None) -> list[str]:
+    """프로젝트 트리의 모든 pom.xml 이 선언하는 artifactId(부모 좌표 제외) — 케이스 키의 ``<module>`` 마스킹 레지스트리에
+    로그보다 먼저 넣는 이름들. 로그는 fail-fast 리액터가 도달한 모듈만 보여 주므로, 트리에서 읽어야 빌드마다 같다. target/
+    등은 건너뛰고, 깨진 pom 은 조용히 넘기며, 절대 예외를 내지 않는다(없는 루트 → []).
+
+    Every artifactId the project's pom.xml files declare (the pom's own, not its `<parent>`), for the `<module>` masking
+    registry; read from the tree because a fail-fast reactor log names only the modules it reached. Never raises."""
+    if not root:
+        return []
+    base = Path(root)
+    if not base.is_dir():
+        return []
+    out: list[str] = []
+    seen = 0
+    try:
+        import xml.etree.ElementTree as ET
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in _POM_SKIP_DIRS and not d.startswith(".")]
+            if "pom.xml" not in filenames:
+                continue
+            seen += 1
+            if seen > _POM_WALK_LIMIT:
+                break
+            try:
+                tree = ET.parse(os.path.join(dirpath, "pom.xml"))
+                proj = tree.getroot()
+                if proj.tag.rsplit("}", 1)[-1] != "project":
+                    continue
+                for child in proj:
+                    if child.tag.rsplit("}", 1)[-1] == "artifactId" and (child.text or "").strip():
+                        out.append(child.text.strip())
+                        break
+            except Exception:  # noqa: BLE001 - a broken pom is the build's problem, not the parser's
+                continue
+    except Exception:  # noqa: BLE001
+        return sorted(set(out))
+    return sorted(set(out))
+
+
+def parse_maven_log(text: str, project_root: Path | str | None = None, *,
+                    known_modules: Iterable[str] = ()) -> list[BuildError]:
     """Maven 로그 전체 → 구조화된 오류 목록(L1 / L2 서명까지 채움). 이상한 입력에도 예외를 내지 않는다.
 
     Parse a full Maven log into structured errors (signatures filled). Never raises on odd input."""
     # 서명을 채우기 전에 이 로그의 reactor artifactId 를 전부 등록한다(교체): 오류가 자기 모듈보다 먼저 찍힌
     # 다른 모듈의 이름(예: 루트 artifactId)을 담아도 L2 에서 <module> 로 가려져 다른 프로젝트와 같은 케이스가 된다.
-    set_reactor_modules(reactor_artifact_ids(text))
+    # v2.1z 리뷰 R3: 로그에 찍힌 모듈(실패 지점까지만 도달)에 더해 호출자가 아는 리액터 artifactId(pom 트리 전체)도 넣어, 리액터
+    # 순서가 바뀌어도(수정이 모듈 의존성을 추가, -T 병렬 빌드) 빌드마다 같은 이름이 가려지게 한다 — 교체 의미는 그대로
+    # the caller's reactor artifactIds (the whole pom tree) join the log's own, so the masking does not depend on how
+    # far a fail-fast reactor got; still replaced per parse
+    set_reactor_modules([*known_modules, *reactor_artifact_ids(text)])
     parser = _Parser(project_root)
     parser.feed(text.splitlines())
     return parser.finish(text)

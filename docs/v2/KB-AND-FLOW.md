@@ -68,9 +68,10 @@
   4. 사람이 읽을 이름은 `case.json` 의 `name` / `l2` 와 `cases.md` 표에 있다. `sbmig kb cases show 7a52b1cea8` 이 한 번에 보여 준다.
 - 케이스가 없는 레코드(재구조화의 `pom-verify`, 점검 warning 메모)는 `cases/_other/errors/` 에 들어간다.
 - **모듈 이름 가리기(v2.1z, 2026-11-02)**: 빌드 로그에 나온 reactor 모듈 artifactId 전부(`--- plugin:ver:goal @ <artifactId> ---` 표시,
-  `< g:a >` 머리줄, `on project <a>`; 오류 자신의 모듈 포함)를 L1 / L2 메시지에서 `<module>` 로 바꾼다(대소문자 구분, 단어 경계; 3자 미만과
+  `< g:a >` 머리줄, `on project <a>`, 그리고 pom 트리의 artifactId 전부)를 L1 / L2 메시지에서 `<module>` 로 바꾼다. 오류 자신의 모듈은 언제나,
+  다른 모듈 이름은 artifactId 처럼 생긴 것(하이픈·밑줄·점·숫자·대문자가 있는 `pricing-core` 류)만 — `user` · `config` 같은 소문자 한 단어와
   `web` · `core` · `common` · `api` · `test` · `main` · `build` · `parent` · `jar` · `war` · `plugin` · `boot` · `back` · `front` 같은 평범한
-  낱말은 그대로). KB 의 목적은 프로젝트를 넘는 스크립트 재사용인데, L2 에 프로젝트 이름이 남으면 케이스가 그 프로젝트 전용이 된다. 실물 예:
+  낱말, 3자 미만은 메시지의 보통 단어를 먹으니 그대로 둔다(대소문자 구분, 단어 경계). KB 의 목적은 프로젝트를 넘는 스크립트 재사용인데, L2 에 프로젝트 이름이 남으면 케이스가 그 프로젝트 전용이 된다. 실물 예:
   `enforcer|requirejavaversion: pricing-core must be built with`(루트 artifactId 가 샜다; 오류의 모듈은 `pricing-core-comp`) →
   `enforcer|requirejavaversion: <module> must be built with`. id 가 바뀌는 것은 다른 모듈 이름이 들어 있던 L2 뿐이고, 그것들은 원래 다른
   프로젝트와 맞은 적이 없다.

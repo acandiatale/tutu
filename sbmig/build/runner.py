@@ -29,6 +29,7 @@ from .log_parser import (
     _scrub,
     _split_level,
     parse_maven_log,
+    reactor_artifact_ids_from_poms,
     parse_reactor_summary,
 )
 from .mvn import base_command, maven_available, mvn_env, run_logged
@@ -113,6 +114,9 @@ class MavenRunner:
         self.timeout_s = timeout_s if timeout_s is not None else float(cfg.build.timeout_minutes) * 60.0
         register_external_prefixes(external_prefixes_from_config(cfg))
 
+        # v2.1z: 리액터 모듈 이름 레지스트리(케이스 키의 <module> 마스킹)는 실행마다 비운 채 시작한다 — 같은 프로세스에서
+        # 앞 프로젝트(플릿)의 이름이 첫 파싱 전의 오류(preflight·타임아웃)에 남지 않게 / per run: start with an empty registry
+        set_reactor_modules(())
     # ------------------------------------------------------------------ command
     def command(self, goal: str, *, extra_args: Iterable[str] = (), skip_test_compile: bool = False,
                 skip_tests: bool = False) -> list[str]:
@@ -232,7 +236,8 @@ class MavenRunner:
             # 비운다 — 이전 파싱의 이름이 다음 프로젝트(플릿)까지 남지 않게. / a successful build is not parsed, so the
             # reactor-module registry behind the <module> masking is cleared here instead of lingering into the next project
             set_reactor_modules(())
-        errors: list[BuildError] = [] if ok else parse_maven_log(text, self.ws.root)
+        errors: list[BuildError] = [] if ok else parse_maven_log(
+            text, self.ws.root, known_modules=reactor_artifact_ids_from_poms(self.ws.root))
         if pr.timed_out:
             errors.append(fill_signatures(BuildError(
                 kind=ErrorKind.UNKNOWN, module=module,

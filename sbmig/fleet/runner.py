@@ -166,8 +166,8 @@ class FleetRunner:
     copies the project into ``<out>/<run_id>/project`` and runs the full
     :class:`sbmig.loop.Orchestrator` with the shared KB.
     ``analyze(project, cfg) -> CaseType`` is used by ``fleet.order: simple-first`` (cached in the state).
-    
-    
+
+
     """
 
     def __init__(
