@@ -56,7 +56,8 @@ LEGACY_INFRA_FLAGS = {"llm-unavailable": "llm", "llm-config-error": "llm", "mvn-
 ATTENTION_FLAGS = ("restructure-failed", "llm-budget-exhausted", "time-budget-exhausted", "javax-api-on-classpath",
                    "tests-skipped", "test-compile-skipped", "tests-not-compiled", "major-upgrade",
                    "jar-coordinates-unknown", "parent-chain-no-boot-bom",
-                   "hollow-reactor")                 # v2.1z-c: the reactor compiles nothing — sources were not migrated
+                   "hollow-reactor",                 # v2.1z-c: the reactor compiles nothing — sources were not migrated
+                   "adf-project")                    # v2.1z-d: Oracle ADF application — not a target of this flow
 INFRA_PREFIX = "infra:"
 FILE_LOCK_REASON = "file_lock"          # BlockReason.FILE_LOCK (v2.1r)
 FILE_LOCK_KIND = "file-lock"            # its infra kind: `infra:file-lock`

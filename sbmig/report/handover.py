@@ -89,6 +89,9 @@ PARENT_NO_BOOT_BOM_FLAG = "parent-chain-no-boot-bom"
 # v2.1z-c: 속 빈 리액터 — sbmig.analyze.hollow 의 HOLLOW_PREFIX / HOLLOW_FLAG 와 같은 문자열(보고서는 analyze 를 import 하지 않음)
 HOLLOW_PREFIX = "the Maven reactor compiles no sources:"
 HOLLOW_FLAG = "hollow-reactor"
+# v2.1z-d: Oracle ADF(변환 불가) — sbmig.analyze.adf 의 ADF_PREFIX / ADF_FLAG 와 같은 문자열
+ADF_PREFIX = "ADF project (Oracle JDeveloper / ADF): conversion is not possible —"
+ADF_FLAG = "adf-project"
 _TRIGGER_ADDED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) → \S+ \(for ([^()]*)\)")
 _TRIGGER_REPLACED_RE = re.compile(r"([^\s;:]+:[^\s;:]+) removed from \S+ → ([^\s;:]+:[^\s;:]+)")
 
@@ -750,6 +753,11 @@ def _from_here(h: HandoverSummary, report: RunReport, cfg: Any, view: Any = None
     adv_cfg = getattr(cfg, "advisories", None) if cfg is not None else None
     out: list[str] = []
     findings = list(report.advisories or [])
+    # (-3) v2.1z-d: ADF 프로젝트(변환 불가) — 그 사실과 규모가 맨 앞 / a rejected ADF project: the message and the sizing first
+    if ADF_FLAG in (report.flags or []):
+        first = next((m for m in report.manual_followups if m.startswith(ADF_PREFIX)), None)
+        if first:
+            _dedupe_add(out, first)
     # (-2) v2.1z-c: 속 빈 리액터 — 소스가 이관되지 않았다는 사실이 다른 무엇보다 먼저 / the sources were NOT migrated
     if HOLLOW_FLAG in (report.flags or []):
         first = next((m for m in report.manual_followups if m.startswith(HOLLOW_PREFIX)), None)

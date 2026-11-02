@@ -824,6 +824,11 @@ class IntakeConfig(BaseModel):
     company_jar_names_file: str = "jar_names.yml"           # company rows under kb.dir (same format), merged over the shipped table
     min_java_source: str = "1.8"                            # build.xml source / target below this is raised (JDK 21 compiles 8+ only)
     max_jar_bytes_scan: int = 64 * 1024 * 1024              # a jar bigger than this is not opened for pom.properties / packages
+    # v2.1z-d (2026-11-02, 현업 결정): Oracle ADF(JDeveloper) 프로젝트는 변환하지 않는다 — 근거 계열이 둘 이상이면 "ADF 프로젝트라 변환이
+    # 불가능합니다" 로 끝낸다. stop = 분석 직후 멈춤(exit 3, 플래그 adf-project, 보고서 "ADF 규모" 섹션 + 인수인계 첫 줄; LLM · Maven 호출
+    # 없음), continue = 보고만 하고 계속(권장하지 않음). / stop (default) = end the run at analyze with the message and the sizing;
+    # continue = report only, the run goes on (not recommended)
+    adf_policy: Literal["stop", "continue"] = "stop"
 
 
 class ExternalizedConfig(BaseModel):

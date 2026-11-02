@@ -56,7 +56,12 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   there (`reactor-duplicate-removed`). A reactor whose modules compile nothing while the tree holds the sources elsewhere (company shape:
   `APP/WEB/pom.xml` packaging a JDeveloper workspace in `DEV/`, static files in `STATIC/`) is flagged **`hollow-reactor`** at analyze
   (2026-11-02, `sbmig/analyze/hollow.py`): the run goes on but is not a success (exit 2, `attn=hollow-reactor`, Handover first line) —
-  mapping those sources into the modules is the tree-profile increment; a module reached twice in the reactor is de-duplicated
+  mapping those sources into the modules is the tree-profile increment. **Oracle ADF (JDeveloper) projects are not converted**
+  (business decision 2026-11-02): `sbmig/analyze/adf.py` looks for four evidence families (BC4J XML, `oracle.jbo|adf|binding` imports,
+  ADF Model bindings, ADF Faces / task flows) and the run stops at analyze with "ADF 프로젝트라 변환이 불가능합니다" only when **two or
+  more** are present (`intake.adf_policy: stop`: exit 3, flag `adf-project`, "ADF sizing" + evidence in the report, no Maven / LLM
+  call; one family = flag `adf-traces` + a note, the run goes on; `.jpr` names / `adf-config.xml` alone mean nothing).
+  A module reached twice in the reactor is de-duplicated
   there (`reactor-duplicate-removed`), and `duplicated in the reactor` never goes to the LLM (`reactor_duplicate`, 0 tries).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.

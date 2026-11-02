@@ -274,6 +274,7 @@ class WebappInventory(BaseModel):
     proposals: list[ModuleProposal] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     outputs: dict[str, str] = Field(default_factory=dict)  # inventory_md, inventory_json
+    adf: Optional[AdfSummary] = None            # v2.1z-d: the ADF verdict + sizing when the tree shows ADF evidence
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +570,40 @@ class ServiceInfo(BaseModel):
     java_version: Optional[str] = None
 
 
+class AdfSummary(BaseModel):
+    """Oracle ADF(JDeveloper) 판정 · 규모 요약(v2.1z-d): 분석이 ``sbmig.analyze.adf.detect_adf`` 로 모아 프로필(``ProjectProfile.adf``)과
+    inventory 에 남긴다. 근거 네 계열(``bc4j`` BC4J XML · ``java`` oracle.jbo/adf/binding import · ``model`` adfm.xml/DataBindings.cpx/
+    pageDef · ``faces`` ADF Faces 페이지/adfc-config/bounded flow) 중 **둘 이상**이면 ``is_adf``(변환 불가로 멈춤), 하나면 ``traces``
+    (흔적, 변환 계속). 계열별 근거 경로(상한)는 사람이 판정을 검토하는 "판정 근거 / evidence" 다. 규모: 엔티티(+테이블), 뷰 오브젝트, 앱
+    모듈, pageDef, 태스크플로와 뷰, ADF 페이지, java 전체 / ADF import 수, 최상위 폴더별 개수. 현업 결정(2026-11-02): ADF 는 변환하지
+    않는다 — 이 요약은 센서스용 정보다.
+
+    The ADF verdict and sizing (v2.1z-d): four evidence families (`bc4j`, `java`, `model`, `faces`), `is_adf` = two or more
+    present (rejected: "ADF 프로젝트라 변환이 불가능합니다"), `traces` = exactly one (soft flag, the run goes on); capped evidence
+    paths per family for the audit; counts for the census. ADF projects are not converted (business decision)."""
+    is_adf: bool = False
+    traces: bool = False
+    families: list[str] = Field(default_factory=list)                 # present families, A→D order: bc4j / java / model / faces
+    evidence: dict[str, list[str]] = Field(default_factory=dict)      # family → evidence paths (capped per family)
+    evidence_counts: dict[str, int] = Field(default_factory=dict)     # family → number of evidence files (uncapped)
+    evidence_total: int = 0
+    hints: list[str] = Field(default_factory=list)                    # .jpr naming ADF, adf-config.xml — information, never evidence
+    entities: int = 0
+    view_objects: int = 0
+    app_modules: int = 0
+    associations: int = 0
+    view_links: int = 0
+    page_defs: int = 0
+    task_flows: int = 0
+    flow_views: int = 0
+    pages: int = 0
+    java_total: int = 0
+    java_adf: int = 0
+    tables: list[str] = Field(default_factory=list)            # distinct DBObjectName (capped)
+    tables_total: int = 0
+    by_dir: dict[str, dict[str, int]] = Field(default_factory=dict)   # top-level dir → java / java_adf / bc4j / pages / page_defs
+
+
 class ProjectProfile(BaseModel):
     """분석 단계의 결과 전체(profile.json): 프로젝트 종류, pom 들, 소스 통계, 라이브러리, 버전, MSA 서비스,
     외부 설정. 계획·재구성·구조 검토·수정 프롬프트·보고서가 모두 이것을 읽는다. build_tool 이 maven 이
@@ -598,6 +633,8 @@ class ProjectProfile(BaseModel):
     fingerprint: str = ""
     properties: PropertyInventory = Field(default_factory=PropertyInventory)   # externalized-config inventory (round 8)
     boot_modules: list[str] = Field(default_factory=list)      # round 9c, see the class note
+    # v2.1z-d: Oracle ADF 판정·규모(근거가 한 계열이라도 있을 때; 두 계열 이상이면 변환 불가로 멈춤) / the ADF verdict + sizing, None without evidence
+    adf: Optional[AdfSummary] = None
 
     def has_library(self, name: str) -> bool:
         """정규화된 라이브러리 이름(LibraryUsage.name)이 쓰이는지."""

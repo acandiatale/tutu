@@ -100,6 +100,13 @@ FLAG_HELP = {
                       "run is not a success; map the sources into the modules first (see the Handover's first line)",
     "sources-outside-reactor": "more java files lie outside the modules' source roots than inside them: they are "
                                "neither built nor migrated — check whether they belong to the application",
+    # v2.1z-d: Oracle ADF — 변환하지 않는다(현업 결정): 두 계열 이상의 근거면 분석에서 멈춤, 한 계열이면 흔적만
+    "adf-project": "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf "
+                   "imports, ADF Model bindings, ADF Faces / task flows): conversion is not possible — ADF 프로젝트라 변환이 "
+                   "불가능합니다; the run stopped at analyze (intake.adf_policy: stop) — see \"ADF sizing\" and the Handover's "
+                   "first line",
+    "adf-traces": "ADF evidence of one family only (not rejected): the conversion went on — check whether this is an ADF "
+                  "project (ADF 흔적: 변환은 계속하되 확인 필요; see \"ADF sizing\")",
     # v2.1s: 사내 부모 체인이 Boot BOM 을 import 하지 않는데 parent_manages_spring_boot 가 true
     "parent-chain-no-boot-bom": "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not "
                                 "import the Spring Boot BOM: the versions it does not manage were pinned from the "
@@ -116,6 +123,7 @@ BLOCKED_TITLE = "Blocked — needs human / library action"
 HANDOVER_TITLE = "Handover — what we replaced, what is yours"
 PROPERTIES_TITLE = "Properties to set before running"
 JAVAX_JARS_TITLE = "javax API jars still on the classpath"
+ADF_TITLE = "ADF sizing"                       # v2.1z-d: Oracle ADF application — the numbers for the rewrite decision
 REVIEW_TITLE = "Structure review"
 UNSUPPORTED_MARK = "(sbmig check) not in the material: "   # v2.1y: sbmig.review.parse.UNSUPPORTED_MARK
 REVIEW_MAX_ROWS = 30
@@ -238,6 +246,44 @@ def javax_api_lines(r: RunReport, lang: str = "en", cfg: Any = None) -> list[str
         L.append(f"| `{_cell(j.artifact.coordinates, 120)}` | {_cell(j.module or tr(lang, '(root)'), 60)} | "
                  f"{j.scope or '-'} | {_cell(via, 120)} | {tr(lang, 'yes') if j.declared else tr(lang, 'no')} | "
                  f"{_cell(_javax_what_to_do(j, groups, lang), 400)} |")
+    L.append("")
+    return L
+
+
+def adf_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """``## ADF sizing`` 섹션(v2.1z-d): 프로필에 ADF 근거(``profile.adf``)가 있을 때만 — 판정 한 줄, 개수 표 하나, "판정 근거 / evidence"
+    (계열별 근거 경로, 사람이 판정을 검토하는 자료), 참고 파일. 센서스 정보다(ADF 프로젝트는 변환하지 않는다). 없으면 [].
+
+    `## ADF sizing` (v2.1z-d): the verdict, one counts table, the evidence per family for the audit; [] unless `profile.adf`."""
+    s = getattr(getattr(r, "profile", None), "adf", None)
+    if s is None or not getattr(s, "families", None):
+        return []
+    if s.is_adf:
+        verdict = tr(lang, "Verdict: **ADF project — conversion is not possible** ({n} evidence families: {fams}). "
+                           "ADF 프로젝트라 변환이 불가능합니다.", n=len(s.families), fams=", ".join(s.families))
+    else:
+        verdict = tr(lang, "Verdict: **ADF traces only** (one evidence family: {fams}) — not rejected; the conversion went on, "
+                           "check whether this is an ADF project.", fams=", ".join(s.families))
+    L = [f"## {tr(lang, ADF_TITLE)}", "", verdict, "",
+         tr(lang, "| Item | Count |"), "|---|---|",
+         f"| {tr(lang, 'entities (BC4J) / tables')} | {s.entities} / {s.tables_total} |",
+         f"| {tr(lang, 'view objects')} | {s.view_objects} |",
+         f"| {tr(lang, 'application modules')} | {s.app_modules} |",
+         f"| {tr(lang, 'page definitions (bindings)')} | {s.page_defs} |",
+         f"| {tr(lang, 'task flows / views')} | {s.task_flows} / {s.flow_views} |",
+         f"| {tr(lang, 'ADF pages (jspx / jsff)')} | {s.pages} |",
+         f"| {tr(lang, 'java files / using oracle.adf, oracle.jbo, oracle.binding')} | {s.java_total} / {s.java_adf} |", ""]
+    if s.tables:
+        more = tr(lang, " … and {n} more", n=s.tables_total - len(s.tables)) if s.tables_total > len(s.tables) else ""
+        L += [tr(lang, "Tables: {tables}", tables=", ".join(f"`{t}`" for t in s.tables) + more), ""]
+    L += [f"### {tr(lang, 'Evidence')}", ""]
+    for fam in s.families:
+        paths = (s.evidence or {}).get(fam) or []
+        total = (s.evidence_counts or {}).get(fam, len(paths))
+        shown = ", ".join(f"`{_cell(p, 120)}`" for p in paths)
+        L.append(f"- **{fam}** ({total}): {shown}" + (tr(lang, " … and {n} more", n=total - len(paths)) if total > len(paths) else ""))
+    if s.hints:
+        L.append("- " + tr(lang, "hints (not evidence): {files}", files=", ".join(f"`{_cell(h, 120)}`" for h in s.hints)))
     L.append("")
     return L
 
@@ -942,6 +988,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     # 인수인계가 맨 앞: 담당팀은 보고서에서 이 섹션만 읽는다(무엇을 바꿨고 이제 무엇이 그들 몫인지)
     # ---- handover first: what we replaced, what the owning team does from here on
     L += handover_lines(r, lang, cfg)
+    # v2.1z-d: ADF 규모 — 인수인계 바로 뒤(재작성 판단의 입력) / the ADF sizing right after the Handover
+    L += adf_lines(r, lang)
 
     # ---- the centre: every error of the run, then how each case was fixed
     L += error_list_lines(r, lang)

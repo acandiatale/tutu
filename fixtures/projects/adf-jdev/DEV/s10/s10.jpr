@@ -1,0 +1,18 @@
+<?xml version = '1.0' encoding = 'UTF-8'?>
+<jpr:project xmlns:jpr="http://xmlns.oracle.com/ide/project" xmlns="http://xmlns.oracle.com/ide/hash">
+   <hash n="oracle.ide.model.TechnologyScopeConfiguration">
+      <list n="technologyScope">
+         <string v="ADF_FACES"/>
+         <string v="ADF_PAGE_FLOW"/>
+         <string v="ADFbc"/>
+         <string v="ADFm"/>
+         <string v="Java"/>
+      </list>
+   </hash>
+   <hash n="oracle.jdeveloper.model.PathsConfiguration">
+      <hash n="javaContentSet">
+         <list n="url-path"><url path="src/"/></list>
+      </hash>
+      <url n="htmlSourceRoot" path="public_html/"/>
+   </hash>
+</jpr:project>

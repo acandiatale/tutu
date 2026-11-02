@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<adfc-config xmlns="http://xmlns.oracle.com/adf/controller" version="1.2">
+  <view id="main"><page>/main.jspx</page></view>
+  <view id="detail"><page>/detail.jspx</page></view>
+  <control-flow-rule id="__1">
+    <from-activity-id>main</from-activity-id>
+    <control-flow-case id="__2"><from-outcome>detail</from-outcome><to-activity-id>detail</to-activity-id></control-flow-case>
+  </control-flow-rule>
+</adfc-config>

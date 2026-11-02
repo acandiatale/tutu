@@ -216,6 +216,15 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
         fingerprint=ProjectProfile.make_fingerprint([p.path for p in poms],
                                                     root_pom.artifact_id if root_pom else root.name),
     )
+    # v2.1z-d: Oracle ADF 판정 — 근거 계열이 하나라도 있으면 요약을 프로필에 남긴다(두 계열 이상 = 변환 불가, 오케스트레이터가 멈춤)
+    # v2.1z-d: ADF detection; the verdict + sizing go on the profile whenever an evidence family is present
+    try:
+        from .adf import detect_adf
+        adf = detect_adf(ws)
+        if adf.present:
+            profile.adf = adf.summary()
+    except Exception as e:  # noqa: BLE001 - the analyzer must never fail on a sizing
+        log.warning("ADF detection skipped: %s: %s", type(e).__name__, e)
     if cfg.externalized.enabled:
         # round 8: settings the code reads that only the external container supplied (JNDI, context-param, -D …)
         rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))

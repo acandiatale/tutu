@@ -289,6 +289,17 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
                                                outside={"java": 3, "jsp": 0, "web": 0},
                                                outside_by_dir={"old": {"java": 3}})))
 
+    # v2.1z-d: the ADF first line under both policies and the traces note
+    from sbmig.analyze.adf import AdfInventory, adf_followup, traces_followup
+    adf_inv = AdfInventory(entities=12, view_objects=20, app_modules=2, pages=34, task_flows=5, java_total=1546, java_adf=900,
+                           tables=[f"T{i}" for i in range(11)])
+    adf_inv.families = {"bc4j": ["m/Emp.xml"], "java": ["m/EmpImpl.java"], "model": [], "faces": []}
+    adf = adf_inv.summary()
+    lines.append(adf_followup(adf))
+    lines.append(adf_followup(adf, "continue"))
+    adf_inv.families = {"bc4j": [], "java": [], "model": [], "faces": ["p/main.jspx"]}
+    lines.append(traces_followup(adf_inv.summary()))
+
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"

@@ -1047,7 +1047,8 @@ def evaluate_kb(want: dict, report: dict, repo: Path | None = None) -> list[str]
     mm: list[str] = []
     kb_dir = (repo or REPO) / str(want.get("dir") or "")
     if not want.get("dir") or not kb_dir.is_dir():
-        mm.append(f"kb dir {want.get('dir')!r} missing")
+        if not (want.get("may_be_empty") and want.get("dir")):      # v2.1z-d: an exit-3 run (adf-jdev) records nothing
+            mm.append(f"kb dir {want.get('dir')!r} missing")
         docs: list[tuple[str, dict]] = []
     else:
         docs = kb_recipe_docs(kb_dir)

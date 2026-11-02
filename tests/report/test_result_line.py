@@ -127,3 +127,11 @@ def test_hollow_reactor_is_an_attention_code():
     line = report_result_line(r, 2)
     assert line.endswith("attn=tests-not-compiled,hollow-reactor") or "hollow-reactor" in line.split("attn=")[1]
     assert flag_help("hollow-reactor") and "not a success" in flag_help("hollow-reactor")
+
+
+def test_adf_project_is_an_attention_code():
+    """v2.1z-d: an Oracle ADF application stops at analyze (exit 3) and is retyped as attn=adf-project."""
+    r = _report(success=False, flags=["adf-project", "aborted"])
+    line = report_result_line(r, 3)
+    assert "exit=3" in line and "adf-project" in line.split("attn=")[1]
+    assert flag_help("adf-project") and "ADF" in flag_help("adf-project")

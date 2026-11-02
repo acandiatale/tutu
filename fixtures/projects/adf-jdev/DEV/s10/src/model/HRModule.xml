@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE AppModule SYSTEM "jbo_03_01.dtd">
+<AppModule xmlns="http://xmlns.oracle.com/bc4j" Name="HRModule" Version="12.2.1.4.0" ComponentClass="model.HRModuleImpl">
+  <ViewUsage Name="EmpView1" ViewObjectName="model.EmpView"/>
+  <ClientInterface><Method Name="raiseSalary"/></ClientInterface>
+</AppModule>

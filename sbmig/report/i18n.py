@@ -319,6 +319,38 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "more java files lie outside the modules' source roots than inside them: they are neither built nor migrated — "
     "check whether they belong to the application":
         "모듈의 소스 루트 안보다 밖에 java 파일이 더 많다: 빌드도 이관도 되지 않는다 — 애플리케이션의 일부인지 확인할 것",
+    # v2.1z-d: Oracle ADF — 플래그 설명과 "ADF 규모" 섹션(ADF 프로젝트는 변환하지 않는다 — 현업 결정 2026-11-02)
+    "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf imports, ADF Model "
+    "bindings, ADF Faces / task flows): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다; the run stopped at "
+    "analyze (intake.adf_policy: stop) — see \"ADF sizing\" and the Handover's first line":
+        "Oracle ADF(JDeveloper) 프로젝트(근거 계열 둘 이상: BC4J XML, oracle.jbo / oracle.adf import, ADF Model 바인딩, ADF Faces / "
+        "태스크플로): ADF 프로젝트라 변환이 불가능합니다 — 실행은 분석에서 멈췄다(intake.adf_policy: stop); \"ADF 규모\" 섹션과 인수인계 "
+        "첫 줄 참조",
+    "ADF evidence of one family only (not rejected): the conversion went on — check whether this is an ADF project (ADF 흔적: "
+    "변환은 계속하되 확인 필요; see \"ADF sizing\")":
+        "ADF 근거가 한 계열뿐(거부 아님): 변환은 계속했다 — ADF 프로젝트인지 확인할 것(ADF 흔적: 변환은 계속하되 확인 필요; \"ADF 규모\" 참조)",
+    "ADF sizing": "ADF 규모",
+    "Verdict: **ADF project — conversion is not possible** ({n} evidence families: {fams}). ADF 프로젝트라 변환이 불가능합니다.":
+        "판정: **ADF 프로젝트라 변환이 불가능합니다** (근거 계열 {n}개: {fams}).",
+    "Verdict: **ADF traces only** (one evidence family: {fams}) — not rejected; the conversion went on, check whether this is "
+    "an ADF project.":
+        "판정: **ADF 흔적만** (근거 계열 하나: {fams}) — 거부 아님; 변환은 계속했으니 ADF 프로젝트인지 확인할 것.",
+    "Oracle ADF (JDeveloper) evidence. An ADF project is not converted (business decision, 2026-11-02): two or more evidence "
+    "families end a run with \"ADF 프로젝트라 변환이 불가능합니다\"; one family is only a trace. The numbers are census information.":
+        "Oracle ADF(JDeveloper) 근거. ADF 프로젝트는 변환하지 않는다(현업 결정 2026-11-02): 근거 계열이 둘 이상이면 \"ADF 프로젝트라 변환이 "
+        "불가능합니다\" 로 끝나고, 하나면 흔적일 뿐이다. 숫자는 센서스용 정보다.",
+    "| Item | Count |": "| 항목 | 개수 |",
+    "entities (BC4J) / tables": "엔티티(BC4J) / 테이블",
+    "view objects": "뷰 오브젝트",
+    "application modules": "애플리케이션 모듈",
+    "page definitions (bindings)": "pageDef(바인딩)",
+    "task flows / views": "태스크플로 / 뷰",
+    "ADF pages (jspx / jsff)": "ADF 페이지(jspx / jsff)",
+    "java files / using oracle.adf, oracle.jbo, oracle.binding": "java 파일 / oracle.adf · oracle.jbo · oracle.binding 사용",
+    "Tables: {tables}": "테이블: {tables}",
+    " … and {n} more": " … 외 {n}개",
+    "Evidence": "판정 근거 / evidence",
+    "hints (not evidence): {files}": "참고(근거 아님): {files}",
     "artifacts.parent_manages_spring_boot is true but the in-house parent chain does not import the Spring Boot "
     "BOM: the versions it does not manage were pinned from the target Boot BOM — import spring-boot-dependencies in "
     "base-parent (see the Handover's first line)":
@@ -464,6 +496,27 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
 # follow-ups from other modules, advisory text from the knowledge YAML) stay as they are.
 PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p), t) for p, t in (
     # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 (sbmig.analyze.hollow.hollow_followup / outside_followup)
+    # v2.1z-d: the ADF first line (rejected; policy stop / continue) and the traces note
+    ((r"^ADF project \(Oracle JDeveloper / ADF\): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다 "
+      r"\(evidence: (?P<fams>[^;]+); (?P<e>\d+) entities / (?P<t>\d+) tables, (?P<v>\d+) view objects, "
+      r"(?P<a>\d+) application modules, (?P<pd>\d+) page definitions, (?P<f>\d+) task flows, (?P<p>\d+) pages, "
+      r"(?P<j>\d+) of (?P<x>\d+) java files on ADF\)$"),
+     (r"ADF 프로젝트라 변환이 불가능합니다 (근거: \g<fams>; 엔티티 \g<e>개 / 테이블 \g<t>개, 뷰 오브젝트 \g<v>개, 애플리케이션 모듈 \g<a>개, "
+      r"pageDef \g<pd>개, 태스크플로 \g<f>개, 페이지 \g<p>개, java \g<x>개 중 \g<j>개가 ADF)")),
+    ((r"^ADF project \(Oracle JDeveloper / ADF\): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다 "
+      r"\(evidence: (?P<fams>[^;]+); (?P<e>\d+) entities / (?P<t>\d+) tables, (?P<v>\d+) view objects, "
+      r"(?P<a>\d+) application modules, (?P<pd>\d+) page definitions, (?P<f>\d+) task flows, (?P<p>\d+) pages, "
+      r"(?P<j>\d+) of (?P<x>\d+) java files on ADF\) — intake\.adf_policy: continue \(report only, the run goes on; "
+      r"not recommended\)$"),
+     (r"ADF 프로젝트라 변환이 불가능합니다 (근거: \g<fams>; 엔티티 \g<e>개 / 테이블 \g<t>개, 뷰 오브젝트 \g<v>개, 애플리케이션 모듈 \g<a>개, "
+      r"pageDef \g<pd>개, 태스크플로 \g<f>개, 페이지 \g<p>개, java \g<x>개 중 \g<j>개가 ADF) — intake.adf_policy: continue"
+      r"(보고만 하고 계속; 권장하지 않음)")),
+    ((r"^ADF traces \(one evidence family only — (?P<fam>\w+): (?P<paths>.*?)\) — the conversion goes on but needs a check: "
+      r"ADF 흔적: 변환은 계속하되 확인 필요 \((?P<e>\d+) entities / (?P<t>\d+) tables, (?P<v>\d+) view objects, "
+      r"(?P<a>\d+) application modules, (?P<pd>\d+) page definitions, (?P<f>\d+) task flows, (?P<p>\d+) pages, "
+      r"(?P<j>\d+) of (?P<x>\d+) java files on ADF\)$"),
+     (r"ADF 흔적(근거 계열 하나 — \g<fam>: \g<paths>) — 변환은 계속하되 확인 필요 (엔티티 \g<e>개 / 테이블 \g<t>개, 뷰 오브젝트 \g<v>개, "
+      r"애플리케이션 모듈 \g<a>개, pageDef \g<pd>개, 태스크플로 \g<f>개, 페이지 \g<p>개, java \g<x>개 중 \g<j>개가 ADF)")),
     ((r"^the Maven reactor compiles no sources: (?P<counts>.+?) lie outside its modules \((?P<dirs>.+?)\) and were NOT "
       r"migrated — the as-is build only packaged files produced elsewhere \(unresolved directories: (?P<unres>.+?)\); "
       r"the sources must be mapped into the modules first \(sbmig: tree profile, next increment\)$"),

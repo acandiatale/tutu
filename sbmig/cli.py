@@ -633,6 +633,9 @@ def inventory_console_lines(inv) -> list[str]:
         lines.append("  build files: " + ", ".join(inv.build_files[:5]) + (" …" if len(inv.build_files) > 5 else ""))
     if inv.warnings:
         lines.append(f"  warnings: {len(inv.warnings)} (first: {inv.warnings[0][:100]})")
+    if getattr(inv, "adf", None) is not None and getattr(inv.adf, "families", None):   # v2.1z-d: ADF is not converted
+        from sbmig.analyze.adf import adf_sizing_lines
+        lines.append("  " + adf_sizing_lines(inv.adf)[0])
     for key in ("inventory_md", "inventory_json"):
         if key in inv.outputs:
             lines.append(f"  {key.split('_')[1]}: {inv.outputs[key]}")

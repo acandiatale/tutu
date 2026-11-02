@@ -42,7 +42,8 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "sibling-aggregator-dup", "legacy-external-parent", "filtered-binary-resources",
              "spring5-legacy-startup",                   # v2.1x: the legacy Spring context at conversion time
              "rootless-unlisted-module",                 # 2026-11-02: a lone aggregator beside an unlisted, unlinked pom
-             "hollow-reactor"]                          # v2.1z-c: the poms' roots hold no sources (DEV/ + STATIC/ do)
+             "hollow-reactor",                          # v2.1z-c: the poms' roots hold no sources (DEV/ + STATIC/ do)
+             "adf-jdev"]                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
@@ -90,6 +91,7 @@ BUILD_MATRIX = [
     ("spring5-legacy-startup", ".", "8", "ms949"),    # v2.1x: Spring 5 XML web app — contextConfigLocation, EUC-KR XML, JNDI, *.do, MS949 sources
     ("rootless-unlisted-module", "APP", "8", ""),      # 2026-11-02: sibling-aggregator-dup + an unlisted APP/TOOLS pom (left out)
     ("hollow-reactor", ".", "8", ""),                  # v2.1z-c: a WAR pom with nothing to compile — the sources sit in DEV/
+    ("adf-jdev", "APP", "8", ""),                      # v2.1z-d: APP packages the JDeveloper / ADF workspace in DEV/s10 (nothing to compile)
 ]
 REQUIRED_KEYS = {
     "case_type": str, "java_version": (str, type(None)), "spring_boot_version": (str, type(None)),
@@ -238,6 +240,7 @@ class KBExpect(BaseModel):
     candidates_min: int | None = Field(default=None, ge=0)
     harvest_candidates_min: int | None = Field(default=None, ge=0)
     recipes: list[KBRecipeExpect] = Field(default_factory=list)
+    may_be_empty: bool = False                     # v2.1z-d: a run that stops at analyze (exit 3) writes no KB — the dir may be missing
 
 
 class PropertiesExpect(BaseModel):
@@ -586,14 +589,15 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "company-servlet-jsp", "servlet-webxml-legacy", "servlet-nonstandard-dirs",
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
-                                  "rootless-unlisted-module", "hollow-reactor")}
+                                  "rootless-unlisted-module", "hollow-reactor", "adf-jdev")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
 COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": "ndirs", "ear-sibling-poms": "portal",
                  "servlet-war-overlay": "board", "ant-webapp": "ant-webapp",   # root artifactId (= `{name}`) when
                  "sibling-aggregator-dup": "dup", "legacy-external-parent": "extparent",      # it is not `shop`
-                 "filtered-binary-resources": "binres", "rootless-unlisted-module": "dup", "hollow-reactor": "hollow"}
+                 "filtered-binary-resources": "binres", "rootless-unlisted-module": "dup", "hollow-reactor": "hollow",
+                 "adf-jdev": "adf-web"}       # the generated aggregator takes the WAR's artifactId
 # v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
 SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
 LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB
@@ -673,7 +677,8 @@ def test_v2_replayed_llm_into_its_own_kb(name: str):
     assert exp.kb is not None and cfg.kb.dir == exp.kb.dir == SHARED_KB.get(name, f"out/e2e/kb-{name}")
     assert cfg.kb_dir.resolve() not in ((REPO / "kb").resolve(), (REPO / "kb-v2").resolve())
     assert (exp.kb.after is not None) == (name == "java6-legacy")
-    assert exp.structure_review is not None and exp.scripts is not None
+    # v2.1z-d: a fixture that stops at analyze (exit 3: adf-jdev) never reaches the structure review — no block to assert
+    assert exp.scripts is not None and (exp.structure_review is not None or exp.exit_code == 3)
 
 
 def _replay(name: str) -> list[dict]:

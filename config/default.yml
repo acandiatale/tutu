@@ -19,6 +19,9 @@ intake:                            # v2.1j (2026-10-29): Ant projects (build.xml
   jar_names_file: knowledge/libraries/jar_names.yml
   company_jar_names_file: jar_names.yml   # same format, under kb.dir, merged over the shipped table (no redeploy)
   min_java_source: "1.8"           # build.xml source/target below this is raised (JDK 21 compiles 8+ only)
+  adf_policy: stop                 # v2.1z-d: an Oracle ADF (JDeveloper) project is not converted ("ADF 프로젝트라 변환이 불가능합니다"):
+                                   # stop = end the run at analyze (exit 3, flag adf-project, "ADF sizing" in the report, no Maven /
+                                   # LLM call) | continue = report only, the run goes on (not recommended)
 
 layout:
   # Company layout (2026-10-21): modules directly under the root — {name}-boot (Boot configuration only, parent

@@ -1,0 +1,5 @@
+{
+  "note": "structure review of adf-jdev — never used: the run stops at analyze (intake.adf_policy: stop). Kept for a run under intake.adf_policy: continue.",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Nothing to report on the poms; the ADF code outside the reactor is the adf-project flag's business.\"\n}\n</review>\n"
+}

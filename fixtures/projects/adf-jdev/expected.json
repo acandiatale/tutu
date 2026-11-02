@@ -1,0 +1,90 @@
+{
+  "case_type": "servlet_tomcat",
+  "java_version": "1.8",
+  "spring_boot_version": null,
+  "spring_version": null,
+  "packaging": "pom",
+  "is_multi_module": true,
+  "libraries": [
+    "javax-servlet"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "expect": {
+    "success": false,
+    "exit_code": 3,
+    "max_llm_calls": 0,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "adf-project",
+      "aborted",
+      "aggregator-generated"
+    ],
+    "forbidden_flags": [
+      "no-root-pom",
+      "hollow-reactor",
+      "adf-traces",
+      "restructure-failed"
+    ],
+    "journal_events": [
+      {
+        "event": "aggregator_generated",
+        "artifact_id": "adf-web-aggregator",
+        "modules": [
+          "APP"
+        ]
+      },
+      {
+        "event": "adf_project",
+        "policy": "stop",
+        "families": [
+          "bc4j",
+          "java",
+          "model",
+          "faces"
+        ],
+        "entities": 1,
+        "tables": 1,
+        "view_objects": 1,
+        "app_modules": 1,
+        "page_defs": 1,
+        "task_flows": 1,
+        "pages": 2,
+        "java_total": 3,
+        "java_adf": 2
+      },
+      {
+        "event": "abort"
+      }
+    ],
+    "kb": {
+      "dir": "out/e2e/kb-adf-jdev",
+      "may_be_empty": true
+    },
+    "followups_contains": [
+      "regex:^ADF project \\(Oracle JDeveloper / ADF\\): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다 \\(evidence: bc4j, java, model, faces; 1 entities / 1 tables, 1 view objects, 1 application modules, 1 page definitions, 1 task flows, 2 pages, 2 of 3 java files on ADF\\)$",
+      "regex:^run aborted: ADF project — conversion is not possible \\(ADF 프로젝트라 변환이 불가능합니다; intake\\.adf_policy: stop\\)$"
+    ],
+    "post_checks": [
+      {
+        "file_exists": {
+          "path": "DEV/s10/src/model/EmpImpl.java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "adf-web-back"
+        }
+      }
+    ],
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# Per-fixture config override (appended after config/artifacts.local-e2e.yml) — v2.1z-d (2026-11-02): an Oracle ADF
+# (JDeveloper) workspace behind a packaging pom, on the round 9c company layout like the other company-shape fixtures
+# (the local e2e config pins the pre-9c layout for the older fixtures; local stand-ins: spring-boot-starter-parent 4.1.0).
+layout:
+  module_dir: ""
+  boot_module: "{name}-boot"
+  comp_module: "{name}-back"
+  front_module: "{name}-front"
+  boot_as_is: in-place
+artifacts:
+  boot_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+  comp_parent: { group_id: org.springframework.boot, artifact_id: spring-boot-starter-parent, version: 4.1.0 }
+# v2 replayed LLM (llm.provider fake): the run stops at analyze (intake.adf_policy: stop), so no answer is ever used —
+# replay/llm-001.json is the structure-review answer the fixture would need under intake.adf_policy: continue.
+llm:
+  provider: fake
+  base_url: "replay:fixtures/projects/adf-jdev/replay"
+kb:
+  dir: out/e2e/kb-adf-jdev

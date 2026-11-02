@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE ViewObject SYSTEM "jbo_03_01.dtd">
+<ViewObject xmlns="http://xmlns.oracle.com/bc4j" Name="EmpView" Version="12.2.1.4.0" BindingStyle="OracleName"
+            CustomQuery="true" ComponentClass="model.EmpViewImpl" FetchMode="FETCH_AS_NEEDED">
+  <SQLQuery><![CDATA[SELECT Emp.EMPNO, Emp.ENAME FROM EMP Emp WHERE Emp.EMPNO = :bindEmpno]]></SQLQuery>
+  <Variable Name="bindEmpno" Kind="where" Type="java.lang.Integer"/>
+  <ViewAttribute Name="Empno" EntityAttrName="Empno" EntityUsage="Emp" AliasName="EMPNO"/>
+</ViewObject>

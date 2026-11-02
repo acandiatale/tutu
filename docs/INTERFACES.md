@@ -3102,3 +3102,74 @@ first follow-up, journal, success False, exit 2, result line, Handover order; he
 Fixture `fixtures/projects/hollow-reactor` (root WAR pom with `src/main/webapp/WEB-INF/web.xml` only, `DEV/s10/src` servlet,
 `DEV/s10/public_html` web root, `STATIC/css`, `DB/schema.sql`): builds, review ok, `hollow-reactor`, success false, exit 2.
 
+
+## v2.1z-d — ADF projects are not converted: strict detection, the message, the sizing (2026-11-02)
+
+The user's first batch (2026-11-02): about ten of the fifty projects are Oracle JDeveloper 12c / ADF 11 applications
+(`DEV/s10`: 1,546 java, `s10.jpr`, `adfm.xml`, `public_html`; `DEV/p0600`: 32 java with `adfm.xml`) behind a packaging pom
+(`APP/WEB/pom.xml`). ADF Faces / ADF Business Components / ADF Model / task flows run only on the ADF runtime (WebLogic); Spring Boot
+has none. **Business decision (2026-11-02): ADF projects are not converted** — the run must end with the message
+**"ADF 프로젝트라 변환이 불가능합니다"**, nothing else is planned. Second refinement: reject **only** projects that are clearly ADF — no
+false positives; the decision must be auditable.
+
+**Contract**
+- Four independent evidence families (`sbmig/analyze/adf.py`, `FAMILIES = ("bc4j", "java", "model", "faces")`), read from Oracle's own
+  file names, namespaces and imports — never a directory name:
+  **A `bc4j`** — XML whose root element is `Entity` / `ViewObject` / `AppModule` / `Association` / `ViewLink` in the
+  `http://xmlns.oracle.com/bc4j` namespace (file head read, declaration / DOCTYPE / comments skipped);
+  **B `java`** — java files whose first 120 lines import `oracle.jbo.` / `oracle.adf.` / `oracle.binding.`;
+  **C `model`** — `adfm.xml`, `DataBindings.cpx`, `*PageDef.xml` with root `pageDefinition`;
+  **D `faces`** — `*.jspx` / `*.jsff` whose head carries the `http://xmlns.oracle.com/adf/faces` namespace (`/adf/faces/rich`
+  included; a plain JSPX is not evidence), `adfc-config.xml`, bounded `*-flow.xml` in the `http://xmlns.oracle.com/adf/controller`
+  namespace with a `task-flow-definition`.
+  `.jpr` technology names and `adf-config.xml` are **hints** only (listed, never counted). The walk prunes `.git` / `.svn` / `.hg` /
+  `.idea` / `.settings` / `node_modules` / `target`; archives are never opened; ≤ 200,000 files; pure reads, never raises.
+- `AdfInventory` → **`is_adf` = at least two different families present** (A+B, C+D, A+C … → "ADF 프로젝트라 변환이 불가능합니다");
+  exactly one family → `traces`; none → nothing. Counts for the census: entities + distinct `DBObjectName` tables, view objects,
+  application modules, associations / view links, page definitions, task flows (`adfc-config.xml` with views / rules + bounded
+  flows) and their `<view>`s, ADF pages, java total / java on ADF, the same per top-level directory. `AdfInventory.summary()` →
+  **`AdfSummary`** (`sbmig/core/models.py`: `is_adf`, `traces`, `families` (A→D order), `evidence` family → ≤ 8 paths,
+  `evidence_counts`, `evidence_total`, `hints` ≤ 10, the counts, `tables` ≤ 50 + `tables_total`, `by_dir`).
+- `ProjectProfile.adf: Optional[AdfSummary]` — set by `analyze_project` whenever a family is present (`profile.json` carries it);
+  `WebappInventory.adf` the same for `sbmig inventory`.
+- `intake.adf_policy: stop | continue` (`IntakeConfig`, default **`stop`**, mirrored in `config/default.yml`): `continue` = report
+  only, the run goes on (not recommended).
+- Orchestrator `_check_adf` (right after the analyze journal, BEFORE the hollow check). **Two or more families** → flag
+  **`adf-project`**, Handover follow-up inserted first — English stored string `ADF project (Oracle JDeveloper / ADF): conversion is
+  not possible — ADF 프로젝트라 변환이 불가능합니다 (evidence: bc4j, java, model, faces; E entities / T tables, V view objects, A
+  application modules, PD page definitions, F task flows, P pages, J of X java files on ADF)` (Korean through `i18n.PATTERNS`:
+  `ADF 프로젝트라 변환이 불가능합니다 (근거: …; 엔티티 E개 / 테이블 T개, 뷰 오브젝트 V개, 애플리케이션 모듈 A개, pageDef PD개, 태스크플로 F개,
+  페이지 P개, java X개 중 J개가 ADF)`; under `continue` the line ends ` — intake.adf_policy: continue (report only, the run goes on;
+  not recommended)`), journal `adf_project` `{policy, families, evidence (per family, capped), entities, tables, view_objects,
+  app_modules, page_defs, task_flows, pages, java_total, java_adf, by_dir}`, one `log.error` line. `stop` → `_abort(report, "ADF
+  project — conversion is not possible (ADF 프로젝트라 변환이 불가능합니다; intake.adf_policy: stop)")`: flag `aborted`, exit **3**,
+  `SBMIG-RESULT … exit=3 … attn=aborted,adf-project` (`adf-project` in `ATTENTION_FLAGS`), the hollow check does not run, no plan /
+  Maven / LLM. **One family** → flag `adf-traces` (soft, not an attention code), a Handover note appended (not first): `ADF traces
+  (one evidence family only — faces: <paths>) — the conversion goes on but needs a check: ADF 흔적: 변환은 계속하되 확인 필요 (<counts>)`
+  (Korean: `ADF 흔적(근거 계열 하나 — faces: …) — 변환은 계속하되 확인 필요 (…)`), journal `adf_traces` (same keys, no policy); the run
+  goes on unchanged.
+- Report: `## ADF sizing` (`## ADF 규모`) right after the Handover whenever `profile.adf` exists — one verdict line (rejected / traces),
+  **one** counts table, `Tables: …`, then `### Evidence` (`### 판정 근거 / evidence`): per family its count and capped paths, plus the
+  hints marked "not evidence" — a person can audit the decision; flag help for `adf-project` and `adf-traces` (English + Korean).
+  The Handover "from here on" list opens with the rejection line (rung -3, before the hollow line). `sbmig inventory <dir>` prints
+  `ADF: <verdict>; families: …; <counts>` (+ evidence / hints lines) on the console and an `## ADF sizing` block in `inventory.md`.
+
+### As built (v2.1z-d)
+`sbmig/analyze/adf.py` (`AdfInventory`, `detect_adf`, `counts_text`, `adf_followup`, `traces_followup`, `adf_abort_reason`,
+`adf_sizing_lines`, `ADF_FLAG` / `TRACES_FLAG` / `ADF_PREFIX` / `TRACES_PREFIX` / `ADF_MESSAGE_KO` / `TRACES_MESSAGE_KO`; `_root_dir`
+never takes `PurePath.root` for a plain path), `sbmig/core/models.py` (`AdfSummary`, `ProjectProfile.adf`, `WebappInventory.adf`),
+`sbmig/core/config.py` + `config/default.yml` (`intake.adf_policy`), `sbmig/analyze/analyzer.py` (sets `profile.adf` when a family
+is present), `sbmig/analyze/webapp_inventory.py` (`inv.adf`), `sbmig/analyze/__init__.py` (exports), `sbmig/loop/orchestrator.py`
+(`_check_adf` before `_check_hollow`; the hollow line slots after an ADF first line), `sbmig/report/result_line.py` (attention
+code), `sbmig/report/markdown.py` (`ADF_TITLE`, `adf_lines`, flag help), `sbmig/report/handover.py` (`ADF_PREFIX` / `ADF_FLAG`,
+rung -3), `sbmig/report/i18n.py` (STRINGS for the section and the flag help; PATTERNS for the rejection line — stop / continue —
+and the traces note), `sbmig/report/inventory.py` + `sbmig/cli.py` (`sbmig inventory` block / line). Tests:
+`tests/analyze/test_adf.py` (all four families → rejected + sizing with pruned `target/` and `.git/` copies; A alone → trace; D alone
+→ trace; A+B → rejected; C+D → rejected; plain servlet tree with a stray `adf-config.xml` + `.jpr` → nothing; BC4J needs namespace +
+root, a pageDef needs its root, a flow needs the controller namespace; missing root / late import / plain path; the three lines in
+English and Korean), `tests/loop/test_adf_project.py` (real analyzer through the fake pipeline: rejected → flags, no build / LLM,
+exit 3, result line, first follow-up, abort line, journal with evidence, Handover order, report EN / KO incl. the evidence heading;
+`continue` → runs on, hollow fires, exit 2; one family → `adf-traces` + note, runs on; a servlet project with `adf-config.xml`
+untouched), `tests/report/test_result_line.py`, `tests/report/test_report_i18n.py`. Fixture `fixtures/projects/adf-jdev`
+(rootless `APP` aggregator + `APP/WEB` packaging WAR, `DEV/s10` JDeveloper project with all four families, `STATIC`, `DB`):
+aggregator generated, `adf-project`, exit 3, `max_llm_calls: 0`, nothing moved (`expect.kb.may_be_empty` since the run writes no KB).

@@ -767,6 +767,9 @@ class Orchestrator:
                          "spring_boot": profile.spring_boot_version,
                          "properties_external": len(getattr(getattr(profile, "properties", None), "external", None)
                                                     or [])})
+        if self._check_adf(report, profile):
+            self._timed("analyze", t)
+            return False
         self._check_hollow(report, profile)
         report.advisories = self._evaluate_advisories(profile)
         self._timed("analyze", t)
@@ -799,6 +802,48 @@ class Orchestrator:
         self.ws.journal({"event": "no_root_pom", "reason": why})
         return False
 
+    def _check_adf(self, report: RunReport, profile: ProjectProfile) -> bool:
+        """v2.1z-d (2026-11-02, 현업 결정: ADF 프로젝트는 변환하지 않는다): 분석이 프로필에 남긴 ADF 판정(``profile.adf``)을 적용한다.
+        근거 계열이 **둘 이상**(``is_adf``)이면 플래그 ``adf-project``, 저널 ``adf_project``(계열 · 근거 경로 · 개수), 인수인계 첫 줄
+        "ADF 프로젝트라 변환이 불가능합니다 (…규모…)" — ``intake.adf_policy: stop``(기본)이면 여기서 중단(exit 3: Maven · OpenRewrite ·
+        LLM 호출 없음) → True, ``continue`` 면 보고만 하고 계속(권장하지 않음) → False. 한 계열뿐이면(``traces``) 플래그 ``adf-traces`` 와
+        메모("ADF 흔적: 변환은 계속하되 확인 필요")만 남기고 계속 → False. 오탐 금지: ``.jpr`` 기술 이름이나 ``adf-config.xml`` 하나로는
+        멈추지 않는다.
+
+        v2.1z-d: apply the profile's ADF verdict. Two or more evidence families → flag `adf-project`, journal `adf_project`,
+        Handover first line ("ADF 프로젝트라 변환이 불가능합니다 (…)"); `intake.adf_policy: stop` (default) aborts here (exit 3,
+        no Maven / LLM call) → True, `continue` = report only → False. One family → soft flag `adf-traces` + a note → False."""
+        summary = getattr(profile, "adf", None)
+        if summary is None or not getattr(summary, "families", None):
+            return False
+        try:
+            from sbmig.analyze.adf import ADF_FLAG, TRACES_FLAG, adf_abort_reason, adf_followup, traces_followup
+        except ImportError:  # pragma: no cover
+            return False
+        counts = {"families": list(summary.families), "evidence": dict(summary.evidence), "entities": summary.entities,
+                  "tables": summary.tables_total, "view_objects": summary.view_objects, "app_modules": summary.app_modules,
+                  "page_defs": summary.page_defs, "task_flows": summary.task_flows, "pages": summary.pages,
+                  "java_total": summary.java_total, "java_adf": summary.java_adf, "by_dir": dict(summary.by_dir)}
+        if not summary.is_adf:                                   # exactly one family: traces, the conversion goes on
+            self._flag(TRACES_FLAG)
+            note = traces_followup(summary)
+            if note not in report.manual_followups:
+                report.manual_followups.append(note)
+            self.ws.journal({"event": "adf_traces", **counts})
+            log.warning("%s", note)
+            return False
+        policy = str(getattr(getattr(self.cfg, "intake", None), "adf_policy", "stop") or "stop")
+        self._flag(ADF_FLAG)
+        line = adf_followup(summary, policy)
+        if line not in report.manual_followups:
+            report.manual_followups.insert(0, line)
+        self.ws.journal({"event": "adf_project", "policy": policy, **counts})
+        log.error("%s", line)                                    # the one greppable line of a rejected ADF project
+        if policy != "stop":
+            return False
+        self._abort(report, adf_abort_reason(policy))
+        return True
+
     def _check_hollow(self, report: RunReport, profile: ProjectProfile) -> None:
         """v2.1z-c (2026-11-02): 속 빈 리액터 판정 — pom 들이 선언한 소스·웹 루트 안에는 소스가 없고 트리의 다른 곳에 있으면
         플래그 ``hollow-reactor``(성공 아님, exit 2, 인수인계 첫 줄, 저널 ``hollow_reactor``); 안쪽보다 바깥에 java 가 더
@@ -819,7 +864,10 @@ class Orchestrator:
             self._flag(HOLLOW_FLAG)
             line = hollow_followup(res)
             if line not in report.manual_followups:
-                report.manual_followups.insert(0, line)
+                # v2.1z-d: ADF 줄이 이미 맨 앞이면(intake.adf_policy: continue) 그 다음 자리 — 인수인계 순서와 같게
+                from sbmig.analyze.adf import ADF_PREFIX
+                pos = 1 if report.manual_followups and report.manual_followups[0].startswith(ADF_PREFIX) else 0
+                report.manual_followups.insert(pos, line)
             log.warning("hollow reactor: %s outside the modules (%s)%s — the run will not count as a success",
                         res.counts_text(), res.by_dir_text(), res.unresolved_text())
             self.ws.journal({"event": "hollow_reactor", **res.as_journal()})

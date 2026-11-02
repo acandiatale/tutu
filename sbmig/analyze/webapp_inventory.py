@@ -498,6 +498,14 @@ def scan_webapp_tree(root: Path, *, max_sample: int = 8, name: Optional[str] = N
 
     # 4. proposals
     inv.proposals = _proposals(name or root.name, inv, max_sample, jsp_javax_by_dir)
+    # v2.1z-d: ADF 이면 규모 요약도 같이(읽기 전용 센서스 도구가 ADF 를 알아보게) / the ADF sizing for the census helper
+    try:
+        from .adf import detect_adf
+        _adf = detect_adf(root)
+        if _adf.present:
+            inv.adf = _adf.summary()
+    except Exception:  # noqa: BLE001 - a sizing never fails the inventory
+        pass
     return inv
 
 

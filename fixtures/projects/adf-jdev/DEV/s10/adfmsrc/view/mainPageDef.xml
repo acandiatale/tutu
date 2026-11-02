@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<pageDefinition xmlns="http://xmlns.oracle.com/adfm/uimodel" version="12.2.1.4.0" id="mainPageDef" Package="view">
+  <executables>
+    <iterator Binds="EmpView1" RangeSize="25" DataControl="HRModuleDataControl" id="EmpView1Iterator"/>
+  </executables>
+  <bindings>
+    <tree IterBinding="EmpView1Iterator" id="EmpView1">
+      <nodeDefinition DefName="model.EmpView" Name="EmpView10"><AttrNames><Item Value="Empno"/></AttrNames></nodeDefinition>
+    </tree>
+  </bindings>
+</pageDefinition>

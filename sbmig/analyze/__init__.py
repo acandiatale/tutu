@@ -9,6 +9,7 @@ ProjectProfile(프로필)을 만든다. 흐름상 위치: 접수(intake) 직후 
 
 sbmig.analyze — pom graph, source scan, library detection and case classification → ProjectProfile."""
 from .analyzer import PathView, analyze_path, analyze_project
+from .adf import ADF_FLAG, TRACES_FLAG, AdfInventory, adf_followup, adf_sizing_lines, detect_adf, traces_followup
 from .ant import AntProject, describe_ant, synthesize_pom
 from .build_tool import BuildToolDetection, detect_build_tool, find_ant_build_file
 from .classifier import (classify, classify_single, deployable_services, is_library_root, library_roots,

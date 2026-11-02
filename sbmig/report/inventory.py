@@ -154,6 +154,15 @@ def render_inventory(inv: WebappInventory, language: str = "en") -> str:
                 L += [f"- {_cell(n)}" for n in p.notes]
                 L.append("")
 
+    # v2.1z-d: ADF 이면 규모 블록 — 이 트리는 이관이 아니라 재작성 대상이라는 사실이 "다음 할 일" 보다 먼저
+    if getattr(inv, "adf", None) is not None and getattr(inv.adf, "families", None):
+        from sbmig.analyze.adf import adf_sizing_lines
+        L += [f"## {tr(lang, 'ADF sizing')}", "",
+              tr(lang, "Oracle ADF (JDeveloper) evidence. An ADF project is not converted (business decision, 2026-11-02): two "
+                       "or more evidence families end a run with \"ADF 프로젝트라 변환이 불가능합니다\"; one family is only a trace. "
+                       "The numbers are census information."), ""]
+        L += [f"- {line.strip()}" for line in adf_sizing_lines(inv.adf)]
+        L.append("")
     L += [tr(lang, "## What to do next"), "",
           tr(lang, "1. Check the coordinates of the unknown jars and add the company ones to "
                    "`knowledge/libraries/jar_names.yml` (stem → groupId:artifactId), then re-run `sbmig inventory`."),
