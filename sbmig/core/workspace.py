@@ -385,6 +385,9 @@ class Workspace:
         self._git_ready = False
         self.encoding_candidates: tuple[str, ...] = DEFAULT_ENCODING_CANDIDATES
         self._read_encodings: dict[str, str] = {}      # resolved path → encoding it was last read/written with
+        # v2.1z-h: 접수가 정한 '떠도는 pom 복사본' 폴더(boot/bin 류) — walk / glob 이 target/ 처럼 가지치기한다
+        # v2.1z-h: project-relative directories every scan prunes like build output (stray pom copies found at intake)
+        self.ignored_dirs: set[str] = set()
         try:                                           # `dump-threads` file in the run dir → thread dump (diag)
             from sbmig.core.diag import watch_dump_trigger
             watch_dump_trigger(self.run_dir)
@@ -524,20 +527,28 @@ class Workspace:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dst))
 
+    def is_ignored(self, rel: str) -> bool:
+        """v2.1z-h: ``rel`` 이 접수가 무시하기로 한 폴더(``ignored_dirs``) 안인가 — 떠도는 pom 복사본의 폴더.
+
+        Is `rel` inside a directory the intake decided to ignore (`ignored_dirs`: stray pom copies)?"""
+        r = str(rel).replace("\\", "/").strip("/")
+        return any(r == d or r.startswith(d + "/") for d in self.ignored_dirs if d)
+
     def walk(self) -> Iterator[tuple[str, list[str], list[str]]]:
         """프로젝트 os.walk: (상대 디렉토리, 디렉토리 이름, 파일
-        이름). .git 과 Maven 빌드 산출물은 들어가지 않는다.
+        이름). .git 과 Maven 빌드 산출물, 접수가 무시한 폴더(``ignored_dirs``)는 들어가지 않는다.
 
-        os.walk over the project: (rel dir with "/" — "" for the root, dir names, file names). `.git` and Maven
-        build output (`target` beside a pom.xml or with `maven-status/` inside, never below src/) are pruned, so their
-        contents are never listed."""
+        os.walk over the project: (rel dir with "/" — "" for the root, dir names, file names). `.git`, Maven
+        build output (`target` beside a pom.xml or with `maven-status/` inside, never below src/) and the intake's
+        `ignored_dirs` (v2.1z-h) are pruned, so their contents are never listed."""
         root = str(self.root)
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = os.path.relpath(dirpath, root)
             rel_dir = "" if rel_dir == "." else posix_rel(rel_dir)
             parts = rel_dir.split("/") if rel_dir else []
             dirnames[:] = sorted(d for d in dirnames if d != ".git" and not (
-                d == "target" and _is_output_target(Path(dirpath), parts, "pom.xml" in filenames)))
+                d == "target" and _is_output_target(Path(dirpath), parts, "pom.xml" in filenames))
+                and not (self.ignored_dirs and self.is_ignored(f"{rel_dir}/{d}" if rel_dir else d)))
             yield rel_dir, dirnames, filenames
 
     def glob(self, pattern: str) -> list[str]:
@@ -547,7 +558,8 @@ class Workspace:
         `rglob(pattern)`), outside `.git` and build output."""
         if "/" in pattern or "\\" in pattern:
             return sorted(r for r in (self.rel(p) for p in self.root.rglob(pattern))
-                          if ".git" not in r.split("/") and not is_build_output_path(r, self.root))
+                          if ".git" not in r.split("/") and not is_build_output_path(r, self.root)
+                          and not self.is_ignored(r))
         out: list[str] = []
         for rel_dir, dirnames, filenames in self.walk():
             for name in (*dirnames, *filenames):

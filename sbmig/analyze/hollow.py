@@ -266,12 +266,16 @@ def detect_hollow(ws: Any, poms: Iterable[PomInfo]) -> HollowResult:
         res.roots, res.ignored, res.unresolved, res.war = roots, ignored, unresolved, war
         root = Path(ws.root)
         pom_dirs = {posixpath.dirname(p.path.replace("\\", "/")) for p in pom_list}
+        # v2.1z-h: 접수가 무시한 폴더(떠도는 pom 복사본)는 소스로 세지 않는다 — 복사본의 java 가 "리액터 밖 소스" 로 잡히지 않게
+        # v2.1z-h: the intake's ignored dirs (stray pom copies) are not sources (their java would count as "outside")
+        is_ignored = getattr(ws, "is_ignored", None)
         seen = 0
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = _norm(os.path.relpath(dirpath, root))
             # Maven 산출물: pom 옆의 target 만 가지치기(소스 폴더 이름이 target 인 경우는 pom 이 없는 곳이라 남긴다)
             dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE and not (
-                d == "target" and (rel_dir in pom_dirs or "pom.xml" in filenames)))
+                d == "target" and (rel_dir in pom_dirs or "pom.xml" in filenames))
+                and not (callable(is_ignored) and is_ignored(f"{rel_dir}/{d}" if rel_dir else d)))
             if any(_under(rel_dir, ig) for ig in ignored if ig):
                 dirnames[:] = []
                 continue

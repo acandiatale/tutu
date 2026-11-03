@@ -376,12 +376,106 @@ def parse_pom_text(text: str | bytes, path: str) -> _RawPom:
 # graph
 # ---------------------------------------------------------------------------
 def find_pom_files(ws: WorkspaceView) -> list[str]:
-    """작업공간의 pom.xml 경로들(정렬, posix, 건너뛸 경로 제외)."""
+    """작업공간의 pom.xml 경로들(정렬, posix, 건너뛸 경로와 접수가 무시한 폴더(``ws.ignored_dirs``, v2.1z-h) 제외)."""
     try:
         files = ws.pom_files()
     except Exception:  # pragma: no cover - defensive
         files = ws.glob("pom.xml")
-    return sorted(f.replace("\\", "/") for f in files if not is_skipped_path(f))
+    ignored = getattr(ws, "is_ignored", None)
+    return sorted(f.replace("\\", "/") for f in files
+                  if not is_skipped_path(f) and not (callable(ignored) and ignored(f)))
+
+
+def _module_pom_path(pom_path: str, module: str) -> str:
+    """``<module>`` 값 → 그 모듈 pom 의 프로젝트 상대 경로(``a/b`` → ``a/b/pom.xml``, ``../x/pom.xml`` 그대로)."""
+    base = posixpath.dirname(pom_path)
+    target = posixpath.normpath(posixpath.join(base or ".", module.strip().replace("\\", "/").rstrip("/")))
+    if not target.endswith(".xml"):
+        target = posixpath.join(target, "pom.xml")
+    return posixpath.normpath(target)
+
+
+@dataclass
+class StrayPom:
+    """v2.1z-h (회사 실행 2026-11-03): 어느 pom 의 ``<modules>`` 에도 안 올라 있는데 다른 pom 과 groupId:artifactId 가 같은
+    pom — IDE 출력·백업 폴더에 든 모듈의 통째 복사본(``boot/bin/pom.xml``: src, .project, pom.xml). 접수가 분석·검토·
+    재구성에서 빼고 인수인계에 적는다(구조 검토 LLM 이 "등록 안 된 모듈" 로 보고 ``<module>`` 에 넣으면 Maven 이
+    "is duplicated in the reactor" 로 reactor 전체를 거부하던 사례).
+
+    A pom no `<modules>` lists whose coordinates duplicate another pom's: a stray copy of a module (an IDE output or
+    backup folder holding src + .project + pom.xml). Ignored by every scan, named in the Handover."""
+    path: str                 # the ignored pom (e.g. boot/bin/pom.xml)
+    duplicate_of: str         # the pom it copies (e.g. boot/pom.xml)
+    coordinates: str          # "groupId:artifactId" (":artifactId" when neither pom has a group)
+    nested: bool              # its directory lies under duplicate_of's directory
+
+    @property
+    def dir(self) -> str:
+        return posixpath.dirname(self.path)
+
+    def why(self) -> str:
+        """짧은 이유(영문, 경고·저널·인수인계 공용)."""
+        where = "inside the directory of" if self.nested else "beside the module"
+        return (f"`{self.path}` has the same coordinates as `{self.duplicate_of}` (`{self.coordinates}`), lies {where} "
+                f"`{self.duplicate_of}` and no pom lists it as a module")
+
+
+def stray_pom_copies(raws: list[_RawPom]) -> list[StrayPom]:
+    """v2.1z-h: 떠도는 pom 복사본 판정. 규칙: (1) 루트가 아니고 어느 pom 의 ``<modules>`` 도 가리키지 않는 pom 이, (2) 다른
+    pom 과 유효 groupId:artifactId 가 같고, (3) 그 pom 의 폴더 안에 들어 있거나(중첩 복사본) 그 pom 이 reactor 에 닿아 있으면
+    (루트이거나 어딘가에 나열됨) 복사본이다. 둘 다 나열되지 않고 중첩도 아니면(루트 없는 트리의 형제 최상위 pom) 판정하지
+    않는다 — 집계 pom 계획과 Maven 의 중복 검사가 그대로 본다. 나열된 pom 은 좌표가 겹쳐도 여기서 빼지 않는다(그건
+    ``reactor_duplicate`` 의 몫이고, 검토 편집이 복사본을 나열하면 검토의 불변식 검사가 되돌린다).
+
+    Stray copies among the parsed poms: an UNLISTED, non-root pom whose effective groupId:artifactId equals another
+    pom's, when it is nested under that pom's directory or that pom is reactor-reachable (root or listed). Two
+    unlisted siblings with equal coordinates (a rootless tree) are left alone; a LISTED duplicate is never dropped here
+    (that is `reactor_duplicate` / the review's invariant check)."""
+    referenced = {_module_pom_path(r.path, m) for r in raws for m in r.modules}
+    by_key: dict[str, list[_RawPom]] = {}
+    for r in raws:
+        by_key.setdefault(f"{r.eff_group or ''}:{r.artifact_id}", []).append(r)
+    out: list[StrayPom] = []
+    for r in raws:
+        if r.path == "pom.xml" or r.path in referenced or not r.artifact_id:
+            continue
+        key = f"{r.eff_group or ''}:{r.artifact_id}"
+        others = [q for q in by_key[key] if q is not r]
+        if not others:
+            continue
+        nested = [q for q in others if q.path != r.path and (q.dir == "" or r.dir.startswith(q.dir + "/"))]
+        reachable = [q for q in others if q.path == "pom.xml" or q.path in referenced]
+        pick = (sorted(nested, key=lambda q: -len(q.dir)) or sorted(reachable, key=lambda q: q.path) or [None])[0]
+        if pick is None:
+            continue
+        out.append(StrayPom(path=r.path, duplicate_of=pick.path, coordinates=key, nested=bool(nested)))
+    return out
+
+
+def _read_raw_poms(ws: WorkspaceView) -> tuple[list[_RawPom], list[str]]:
+    """작업공간의 pom 들을 원시 파싱한다(``parse_poms`` 1단계): (원시 목록, 경고)."""
+    warnings: list[str] = []
+    raws: list[_RawPom] = []
+    for rel in find_pom_files(ws):
+        try:
+            # 선언·감지한 인코딩으로 읽는다(A1): cp949 pom 의 한글 속성 값이 대체 문자로 깨지지 않게
+            text = read_pom_text(ws, rel)
+            raw = parse_pom_text(text, rel)
+            raw.repositories = repository_urls(text)
+            raws.append(raw)
+        except (ValueError, OSError, LookupError) as e:
+            msg = f"pom skipped (parse failure): {e}"
+            log.warning(msg)
+            warnings.append(msg)
+    return raws, warnings
+
+
+def find_stray_pom_copies(ws: WorkspaceView) -> list[StrayPom]:
+    """v2.1z-h: 작업공간에서 떠도는 pom 복사본을 찾는다(접수가 부른다; 파싱만, 바꾸지 않음).
+
+    The stray pom copies of the workspace (read-only; the intake calls it, see `stray_pom_copies`)."""
+    raws, _warnings = _read_raw_poms(ws)
+    return stray_pom_copies(raws)
 
 
 def _resolve_parent(raw: _RawPom, by_path: dict[str, _RawPom], all_raw: list[_RawPom]) -> Optional[_RawPom]:
@@ -622,19 +716,18 @@ def _spring_version(props: dict[str, str], deps: list[GAV], managed: dict[str, G
 def parse_poms(ws: WorkspaceView) -> tuple[list[PomInfo], list[str]]:
     """작업공간의 모든 pom 을 파싱한다. (PomInfo 목록, 경고) — 파싱 못 한 pom 은 경고를 남기고 건너뛴다.
 
-    Parse every pom in the workspace. Returns (poms, warnings); unparsable poms are skipped with a warning."""
-    warnings: list[str] = []
-    raws: list[_RawPom] = []
-    for rel in find_pom_files(ws):
-        try:
-            # 선언·감지한 인코딩으로 읽는다(A1): cp949 pom 의 한글 속성 값이 대체 문자로 깨지지 않게
-            text = read_pom_text(ws, rel)
-            raw = parse_pom_text(text, rel)
-            raw.repositories = repository_urls(text)
-            raws.append(raw)
-        except (ValueError, OSError, LookupError) as e:
-            msg = f"pom skipped (parse failure): {e}"
-            log.warning(msg)
+    Parse every pom in the workspace. Returns (poms, warnings); unparsable poms are skipped with a warning. v2.1z-h:
+    stray copies (`stray_pom_copies`) are left out with a `pom ignored (stray copy): …` warning — they are not
+    modules, and every consumer (analysis, aggregator, structure review, restructure, Handover) must agree."""
+    raws, warnings = _read_raw_poms(ws)
+    strays = stray_pom_copies(raws)
+    if strays:
+        drop = {st.path for st in strays}
+        raws = [r for r in raws if r.path not in drop]
+        for st in strays:
+            # 접수가 INFO 로 한 번 알린다(parse_poms 는 실행마다 여러 번 불려 여기서는 DEBUG)
+            msg = f"pom ignored (stray copy): {st.why()} — not a module"
+            log.debug(msg)
             warnings.append(msg)
     return build_pom_infos(raws), warnings
 

@@ -91,6 +91,10 @@ FLAG_HELP = {
                                  "nested aggregator), which Maven refuses (\"is duplicated in the reactor\"): the "
                                  "nested aggregator's listing was removed at intake so the build runs — see Manual "
                                  "follow-ups",
+    # v2.1z-h: 떠도는 pom 복사본(boot/bin/pom.xml 류)을 접수에서 무시 — 모듈이 아니다(후속 조치에 한 줄씩)
+    "stray-pom-ignored": "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / "
+                         "backup folder such as `boot/bin/pom.xml`): ignored at intake — not built, not migrated, not shown "
+                         "to the structure review; see Manual follow-ups",
     "no-root-pom": "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are "
                    "not one application and not MSA services): the run stopped before any Maven call — add a root "
                    "pom.xml or run sbmig on each application's directory",

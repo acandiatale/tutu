@@ -192,6 +192,17 @@ class _BudgetedLLM:
         return getattr(self._inner, name)
 
 
+STRAY_POM_TAIL = ("treated as a stray copy (an IDE output / backup folder): not built, not migrated, left where it is; "
+                  "delete it from the source, or give it its own coordinates and list it in <modules> if it is a real module")
+
+
+def stray_pom_followup(st: Any) -> str:
+    """v2.1z-h: 떠도는 pom 복사본의 인수인계 한 줄(영문; 한국어는 report/i18n.py ``PATTERNS`` 가 맞춘다 — 바꾸면 함께).
+
+    The Handover line for one stray pom copy (Korean: i18n `PATTERNS`)."""
+    return f"pom copy ignored: {st.why()} — {STRAY_POM_TAIL}"
+
+
 class Orchestrator:
     """한 실행(프로젝트 하나)의 지휘자: 협력
     객체(분석기·계획기·재구성기·OpenRewrite·Maven·트리아지·fixer·KB·LLM)를 처음 쓸 때 만들고,
@@ -668,6 +679,7 @@ class Orchestrator:
             from sbmig.analyze.aggregator import ear_without_modules
         except ImportError:  # pragma: no cover
             return True
+        self._intake_stray_poms(report)          # v2.1z-h: first — every later step must see the clean pom set
         why = ear_without_modules(self.ws)
         if why:
             report.flags.append("ear-without-modules")
@@ -678,6 +690,39 @@ class Orchestrator:
             self._intake_aggregator(report)
         self._intake_reactor_dedupe(report)
         return True
+
+    def _intake_stray_poms(self, report: RunReport) -> None:
+        """v2.1z-h 회사 사례(2026-11-03): 입력 zip 의 ``boot/bin/`` 에 boot 모듈의 통째 복사본(src, .project, pom.xml — 같은
+        좌표)이 있었고, pom 탐색이 그것을 독립 pom 으로 읽자 구조 검토 LLM 이 "등록 안 된 모듈" 로 보고 루트 ``<modules>`` 에
+        넣었다 → Maven "is duplicated in the reactor" → ``reactor_duplicate`` 로 LLM 없이 차단. 여기서 떠도는 복사본
+        (``find_stray_pom_copies``)을 찾아 ``ws.ignored_dirs`` 에 넣고(모든 스캔이 target/ 처럼 가지치기), 플래그
+        ``stray-pom-ignored``, 저널 ``stray_pom_ignored``, 인수인계 한 줄씩. 파일은 건드리지 않는다(커밋 없음). 예외 없음.
+
+        Stray pom copies (`sbmig.analyze.pom_parser.find_stray_pom_copies`): their directories go into
+        `ws.ignored_dirs` (every scan prunes them like build output), flag `stray-pom-ignored`, journal
+        `stray_pom_ignored`, one Handover follow-up per copy. Nothing is written or committed. Never raises."""
+        try:
+            from sbmig.analyze.pom_parser import find_stray_pom_copies
+            strays = find_stray_pom_copies(self.ws)
+        except Exception as e:  # noqa: BLE001 - a detector never stops the run
+            log.debug("stray pom detection failed: %s: %s", type(e).__name__, e)
+            return
+        if not strays:
+            return
+        ignored = getattr(self.ws, "ignored_dirs", None)
+        if isinstance(ignored, set):
+            ignored.update(st.dir for st in strays if st.dir)
+        self._flag("stray-pom-ignored")
+        for st in strays:
+            line = stray_pom_followup(st)
+            if line not in report.manual_followups:
+                report.manual_followups.append(line)
+        # 운영자가 화면에서 옮겨 적는 한 줄(한국어)
+        log.info("접수: pom 복사본 %d개 무시 — %s", len(strays),
+                 "; ".join(f"{st.path} (= {st.duplicate_of}, {st.coordinates})" for st in strays))
+        self.ws.journal({"event": "stray_pom_ignored", "poms": [st.path for st in strays],
+                         "duplicates_of": [st.duplicate_of for st in strays],
+                         "coordinates": [st.coordinates for st in strays], "dirs": sorted(st.dir for st in strays)})
 
     def _intake_aggregator(self, report: RunReport) -> None:
         """루트 pom 이 없고 형제 pom 들이 서로 의존하면 루트 aggregator pom 을 쓰고 커밋한다(``plan_aggregator``).

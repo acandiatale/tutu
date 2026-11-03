@@ -51,6 +51,12 @@ class PathView:
 
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
+        self.ignored_dirs: set[str] = set()      # v2.1z-h: like Workspace.ignored_dirs (stray pom copies)
+
+    def is_ignored(self, rel: str) -> bool:
+        """v2.1z-h: ``rel`` 이 무시한 폴더(``ignored_dirs``) 안인가."""
+        r = str(rel).replace("\\", "/").strip("/")
+        return any(r == d or r.startswith(d + "/") for d in self.ignored_dirs if d)
 
     def abs(self, rel: str | Path) -> Path:
         """상대 경로 → 루트 기준 절대 경로(이미 절대면 그대로)."""
@@ -76,9 +82,10 @@ class PathView:
     def glob(self, pattern: str) -> list[str]:
         """``.git`` 과 Maven 빌드 출력(pom 옆 ``target/``)을 뺀 상대 경로 목록.
         ``target`` 이라는 이름의 자바 패키지는 남긴다."""
-        return sorted(self.rel(p) for p in self.root.rglob(pattern)
-                      if ".git" not in p.relative_to(self.root).parts
-                      and not is_build_output_path(p.relative_to(self.root), self.root))   # a `target` package stays
+        return sorted(r for r in (self.rel(p) for p in self.root.rglob(pattern)
+                                  if ".git" not in p.relative_to(self.root).parts
+                                  and not is_build_output_path(p.relative_to(self.root), self.root))  # a `target` package stays
+                      if not self.is_ignored(r))
 
     def java_files(self) -> list[str]:
         """모든 ``*.java`` (빌드 출력 제외)."""

@@ -260,10 +260,12 @@ def detect_adf(ws: Any) -> AdfInventory:
         if not root.is_dir():
             return inv
         seen = 0
+        is_ignored = getattr(ws, "is_ignored", None)        # v2.1z-h: stray pom copies are not evidence
         for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE)
             rel_dir = posixpath.normpath(os.path.relpath(dirpath, root).replace("\\", "/"))
             rel_dir = "" if rel_dir == "." else rel_dir
+            dirnames[:] = sorted(d for d in dirnames if d not in _PRUNE
+                                 and not (callable(is_ignored) and is_ignored(f"{rel_dir}/{d}" if rel_dir else d)))
             top = rel_dir.split("/", 1)[0] if rel_dir else "."
             for name in sorted(filenames):
                 seen += 1

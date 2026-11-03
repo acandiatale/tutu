@@ -1322,6 +1322,40 @@ def _invariant_violations(cfg: Any, changed: list[str], before_poms: list[PomInf
             gone = [k for k in mandatory if k in _declared_keys(braw)
                     and (fraw is None or k not in _declared_keys(fraw))]
             out += [f"`{path}`: mandatory dependency {k} removed" for k in gone]
+    # v2.1z-h (회사 실행 2026-11-03): 편집이 떠도는 복사본(`boot/bin`)을 모듈로 나열하면 같은 좌표의 프로젝트가 reactor 에 둘 →
+    # Maven "is duplicated in the reactor". pom 파싱은 나열되지 않은 복사본만 빼므로 편집이 나열한 복사본은 여기서 보인다.
+    # v2.1z-h: an edit that lists a stray copy as a module puts two projects with one g:a into the reactor — the pom
+    # parse drops only UNLISTED copies, so the one the edit listed shows up here and the edit is restored
+    out.extend(reactor_duplicate_lines(before_poms, after_poms, changed))
+    return out
+
+
+def _reactor_duplicate_keys(poms: list[PomInfo]) -> dict[str, list[str]]:
+    """reactor 에 닿는 pom(루트 + 어딘가에 나열된 것) 중 groupId:artifactId 가 겹치는 것: 키 → 경로들."""
+    referenced = {module_pom_path(p.path, m) for p in poms for m in p.modules}
+    groups: dict[str, list[str]] = {}
+    for p in poms:
+        if p.path == "pom.xml" or p.path in referenced:
+            groups.setdefault(f"{p.group_id or ''}:{p.artifact_id}", []).append(p.path)
+    return {k: sorted(v) for k, v in groups.items() if len(v) > 1}
+
+
+def reactor_duplicate_lines(before_poms: list[PomInfo], after_poms: list[PomInfo], changed: list[str]) -> list[str]:
+    """v2.1z-h: 편집 뒤 reactor 에 같은 좌표의 pom 이 둘 이상 생겼으면(전에는 없던 짝) 위반 한 문장씩.
+
+    One sentence per pair of reactor poms sharing one groupId:artifactId that the edits introduced (a pair that
+    already existed before them is not the review's doing)."""
+    was = _reactor_duplicate_keys(before_poms)
+    now = _reactor_duplicate_keys(after_poms)
+    listers = [c for c in changed if posixpath.basename(c) == "pom.xml"]
+    out: list[str] = []
+    for key, paths in sorted(now.items()):
+        if was.get(key) == paths:
+            continue
+        who = f"`{listers[0]}`: " if listers else ""
+        out.append(f"{who}the reactor now holds {len(paths)} projects with the coordinates `{key}` "
+                   f"({', '.join(f'`{p}`' for p in paths)}) — Maven refuses that (\"is duplicated in the reactor\"); "
+                   "a copy of a module (an IDE output / backup folder) is not a module: leave it unlisted")
     return out
 
 

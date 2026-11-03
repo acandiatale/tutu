@@ -1,0 +1,135 @@
+{
+  "case_type": "spring_boot",
+  "java_version": "11",
+  "spring_boot_version": "2.7.18",
+  "spring_version": null,
+  "packaging": "pom",
+  "is_multi_module": true,
+  "libraries": [
+    "tomcat-embed",
+    "spring-webmvc"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [
+    "com.example.shop.ShopApplication"
+  ],
+  "catalog": [],
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "flags": [
+      "stray-pom-ignored"
+    ],
+    "forbidden_flags": [
+      "reactor-duplicate-removed",
+      "aggregator-generated",
+      "sources-outside-reactor",
+      "hollow-reactor",
+      "restructure-failed"
+    ],
+    "journal_events": [
+      {
+        "event": "stray_pom_ignored",
+        "poms": [
+          "shop-boot/bin/pom.xml"
+        ],
+        "duplicates_of": [
+          "shop-boot/pom.xml"
+        ],
+        "coordinates": [
+          "com.example:shop-boot"
+        ],
+        "dirs": [
+          "shop-boot/bin"
+        ]
+      },
+      {
+        "event": "restructure",
+        "mode": "boot_pom",
+        "ok": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts": {
+        "new": 0,
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-boot-stray-pom-copy"
+    },
+    "followups_contains": [
+      "regex:^pom copy ignored: `shop-boot/bin/pom\\.xml` has the same coordinates as `shop-boot/pom\\.xml` \\(`com\\.example:shop-boot`\\), lies inside the directory of `shop-boot/pom\\.xml` and no pom lists it as a module — treated as a stray copy \\(an IDE output / backup folder\\): not built, not migrated, left where it is; delete it from the source, or give it its own coordinates and list it in <modules> if it is a real module$"
+    ],
+    "post_checks": [
+      {
+        "pom_parent": {
+          "path": "pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "pom.xml",
+          "packaging": "pom"
+        }
+      },
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "shop-boot"
+          ]
+        }
+      },
+      {
+        "file_contains": {
+          "path": "pom.xml",
+          "not_contains": "<module>shop-boot/bin</module>"
+        }
+      },
+      {
+        "pom_parent": {
+          "path": "shop-boot/pom.xml",
+          "group_id": "org.springframework.boot",
+          "artifact_id": "spring-boot-starter-parent",
+          "version": "4.1.0"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/bin/pom.xml"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/bin/src/main/java/com/example/shop/ShopApplication.java"
+        }
+      },
+      {
+        "file_absent": {
+          "path": "shop-boot/bin/target"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "shop-boot/target/*.jar"
+        }
+      }
+    ]
+  }
+}

@@ -46,7 +46,7 @@
 | `library_hints`, `library_lookup`, `library_mapped`, `library_unmapped`, `jakarta_try` | 라이브러리 → 의존성 매핑, 저장소 조회(시도한 URL·상태·버전), jakarta 빌드 교체 pre-try |
 | `version_try`, `resources_try` | LLM 없는 pre-try(빠진 버전 채움 / 필터링 바이너리 확장자) |
 | `restructure`, `restructure_moves`, `structure_review` | 재구성 결과·이동 목록, 구조 점검 판정 |
-| `aggregator_generated`, `no_root_pom`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces` | intake / analyze 판정(루트 pom 생성, 속 빈 리액터, ADF) |
+| `aggregator_generated`, `no_root_pom`, `stray_pom_ignored`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces` | intake / analyze 판정(루트 pom 생성, 떠도는 pom 복사본 무시, 속 빈 리액터, ADF) |
 | `run_aborted`, `report` | 중단 사유, 보고서 작성 |
 
 ## 2. 케이스와 사다리 — 진단에 필요한 만큼만

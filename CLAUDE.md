@@ -61,6 +61,12 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   ADF Model bindings, ADF Faces / task flows) and the run stops at analyze with "ADF 프로젝트라 변환이 불가능합니다" only when **two or
   more** are present (`intake.adf_policy: stop`: exit 3, flag `adf-project`, "ADF sizing" + evidence in the report, no Maven / LLM
   call; one family = flag `adf-traces` + a note, the run goes on; `.jpr` names / `adf-config.xml` alone mean nothing).
+  **Stray pom copies** (company run 2026-11-03, v2.1z-h): an IDE output / backup folder holding a whole copy of a module
+  (`boot/bin/`: src, .project, pom.xml with the module's coordinates) is NOT a module — `sbmig/analyze/pom_parser.py
+  stray_pom_copies` drops an unlisted pom whose g:a duplicates another's (nested under it or beside a reactor-reachable one)
+  from every parse, the intake prunes its directory from every scan (`Workspace.ignored_dirs`), flag `stray-pom-ignored` +
+  Handover line, and the structure review's invariant check restores an edit that lists such a copy (the LLM had
+  registered `boot/bin` as an "unlisted module" → Maven `duplicated in the reactor`).
   A module reached twice in the reactor is de-duplicated
   there (`reactor-duplicate-removed`), and `duplicated in the reactor` never goes to the LLM (`reactor_duplicate`, 0 tries).
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).

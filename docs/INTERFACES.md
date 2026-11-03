@@ -3316,3 +3316,62 @@ three versions; the jakarta one with `-Dsbmig.standin=1`); `boot2-javax-lib`'s `
 `libraries.discover_jakarta_builds: false` so the fixture still ends BLOCKED `external_javax_api` (the local libs hold
 `legacy-web-lib` 2.0.0 / 3.0.0, jakarta builds the pre-try would otherwise apply as a `1.0.0 → 2.0.0` major). e2e: see
 `docs/PLAN.md` (v2.1z-e row).
+
+## v2.1z-h — stray pom copies: a module's copy in an IDE output / backup folder is not a module (2026-11-03)
+
+**Company case.** The first error after a good run of company projects: the input zip held `boot/bin/` — a whole copy of the
+`boot` module (`src/`, `.project`, `pom.xml` with the module's coordinates), the folder an IDE or a backup left behind and git
+ignores. The pom scan read it as a project pom; the structure review's material then said "Poms no aggregator lists as a
+module: `boot/bin/pom.xml`", the LLM called that critical and its edit added `<module>boot/bin</module>` (commit `review: fix
+critical structure issue (1)`); Maven refused the reactor (`Project 'xxx-boot:1.0.0-SNAPSHOT' is duplicated in the reactor`)
+→ `reactor_duplicate` (0 LLM tries) → run over. Verified from the run's git history: the copy was in the as-is snapshot, the
+listing came from the review.
+
+**Rule (`sbmig/analyze/pom_parser.py stray_pom_copies`).** A pom is a *stray copy* when (1) it is not the root and no pom's
+`<modules>` points at it, (2) another pom has the same effective `groupId:artifactId`, and (3) it lies inside that pom's
+directory (a nested copy, `boot/bin/pom.xml` ↔ `boot/pom.xml`) or that pom is reactor-reachable (the root, or listed; a copy
+beside the module, `backup/boot/pom.xml`). Two unlisted siblings with equal coordinates in a rootless tree are left alone (the
+aggregator planning and Maven see them as before); a LISTED duplicate is never dropped here — that stays `reactor_duplicate`
+(intake dedupe / blocked, handed over). No folder names in the rule (`bin`, `build`, `backup` … are all caught by content).
+
+**What agrees.** `parse_poms` drops the strays and appends one warning each (`pom ignored (stray copy): <why> — not a module`;
+it reaches the review facts as a `pom parse warning` line), so analysis, the aggregator plan, the hollow / ADF detectors, the
+structure review, the restructure and the Handover all see the same pom set. `find_stray_pom_copies(ws)` gives the intake the
+list (`StrayPom(path, duplicate_of, coordinates, nested)`, `.dir`, `.why()`).
+
+**Intake (`Orchestrator._intake_stray_poms`, first step of `_intake_layout`).** The copies' directories go into
+`Workspace.ignored_dirs` (`is_ignored(rel)`; `walk` / `glob` / `java_files` / `pom_files`, `PathView.glob`, the hollow and ADF
+walks prune them like `target/` — the copy's java is neither "outside the reactor" nor ADF evidence; `find_pom_files` filters
+them too, so a later parse is consistent even without re-detection), flag `stray-pom-ignored`, journal `stray_pom_ignored`
+(`poms`, `duplicates_of`, `coordinates`, `dirs`), one Handover follow-up per copy — `pom copy ignored: \`boot/bin/pom.xml\` has
+the same coordinates as \`boot/pom.xml\` (\`g:a\`), lies inside the directory of \`boot/pom.xml\` and no pom lists it as a module —
+treated as a stray copy (an IDE output / backup folder): not built, not migrated, left where it is; delete it from the source,
+or give it its own coordinates and list it in <modules> if it is a real module` (Korean: i18n `PATTERNS`, two forms: inside /
+beside) — and the operator line `접수: pom 복사본 N개 무시 — …`. Nothing is deleted, moved or committed: the copy stays where it
+is in the result.
+
+**Review guard (`sbmig/review/inputs.py reactor_duplicate_lines`, rule (e) of `invariant_violations`).** After the review's
+edits the poms are re-read; the parse drops only UNLISTED copies, so a copy an edit listed is parsed and shows up as two
+reactor-reachable poms (root + listed, transitively through `<modules>`) with one `groupId:artifactId` that did not exist
+before the edit → one violation sentence (`\`pom.xml\`: the reactor now holds 2 projects with the coordinates \`g:a\` (…) —
+Maven refuses that ("is duplicated in the reactor"); a copy of a module (an IDE output / backup folder) is not a module: leave
+it unlisted`) → the existing D-M4 path restores the tree and asks the LLM once more with the reason. A pair that existed
+before the edits is not the review's doing.
+
+**Not done (on purpose).** No Eclipse `.classpath` output-folder rule (the copy here was a full project copy, not compiler
+output; a `kind="output"` rule can come when a run shows it); the restructure's own `rglob`s over module directories are
+untouched (a copy inside a module directory moves with it and stays unbuilt).
+
+### As built (v2.1z-h)
+`sbmig/analyze/pom_parser.py` (`_module_pom_path`, `StrayPom`, `stray_pom_copies`, `_read_raw_poms`, `find_stray_pom_copies`;
+`find_pom_files` honours `ws.is_ignored`; `parse_poms` drops strays + warnings), `sbmig/core/workspace.py` (`ignored_dirs`,
+`is_ignored`, `walk` / `glob` pruning), `sbmig/analyze/analyzer.py` (`PathView.ignored_dirs` / `is_ignored` / `glob`),
+`sbmig/analyze/hollow.py` + `sbmig/analyze/adf.py` (prune), `sbmig/loop/orchestrator.py` (`STRAY_POM_TAIL`, `stray_pom_followup`,
+`_intake_stray_poms`), `sbmig/review/inputs.py` (`_reactor_duplicate_keys`, `reactor_duplicate_lines`, rule (e)),
+`sbmig/report/markdown.py` (flag text) + `sbmig/report/i18n.py` (flag + two PATTERNS). Tests: `tests/analyze/test_stray_pom_copies.py`
+(the rule: nested / beside / rootless siblings kept / listed duplicate kept / other coordinates kept / no groups; the aggregator
+plan, the review module lines, the invariant violation, `ignored_dirs` on Workspace and PathView, `find_pom_files`),
+`tests/loop/test_stray_pom_copy.py` (the intake end to end: flag, journal, follow-up + Korean, `ignored_dirs`, the copy untouched,
+the profile's java count, a clean tree has nothing). Fixture `boot-stray-pom-copy` (Boot 2.7 aggregator + `shop-boot`, the copy in
+`shop-boot/bin/`; real-Maven e2e: build ok, 1 LLM call, the Handover line, the copy left in place). e2e: see `docs/PLAN.md`
+(v2.1z-h row).

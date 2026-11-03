@@ -315,6 +315,12 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     adf_inv.families = {"bc4j": [], "java": [], "model": [], "faces": ["p/main.jspx"]}
     lines.append(traces_followup(adf_inv.summary()))
 
+    # v2.1z-h: the stray pom copy follow-up, inside the module's directory and beside it (orchestrator.stray_pom_followup)
+    from sbmig.analyze.pom_parser import StrayPom
+    from sbmig.loop.orchestrator import stray_pom_followup
+    lines.append(stray_pom_followup(StrayPom("boot/bin/pom.xml", "boot/pom.xml", "com.x:xxx-boot", True)))
+    lines.append(stray_pom_followup(StrayPom("backup/boot/pom.xml", "boot/pom.xml", "com.x:xxx-boot", False)))
+
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
         assert any(rx.match(x) for x in lines), f"pattern never matched a handover line: {rx.pattern}"

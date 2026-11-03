@@ -1,0 +1,5 @@
+{
+  "note": "structure review of boot-stray-pom-copy (one call): verdict ok — the stray copy shop-boot/bin/pom.xml is not in the material (ignored at intake)",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Boot as-is multi-module kept in place: the root aggregator inherits the configured parent and lists shop-boot, which inherits the boot parent; the mandatory starters are in the root; Java 21.\"\n}\n</review>\n"
+}

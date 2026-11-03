@@ -44,6 +44,7 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "rootless-unlisted-module",                 # 2026-11-02: a lone aggregator beside an unlisted, unlinked pom
              "hollow-reactor",                          # v2.1z-c: the poms' roots hold no sources (DEV/ + STATIC/ do)
              "servlet-javax-grid",                      # v2.1z-e: a vendor javax library whose -jakarta build is found and applied
+             "boot-stray-pom-copy",                     # v2.1z-h: a stray copy of a Boot module in shop-boot/bin (ignored at intake)
              "adf-jdev"]                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
@@ -93,6 +94,7 @@ BUILD_MATRIX = [
     ("rootless-unlisted-module", "APP", "8", ""),      # 2026-11-02: sibling-aggregator-dup + an unlisted APP/TOOLS pom (left out)
     ("hollow-reactor", ".", "8", ""),                  # v2.1z-c: a WAR pom with nothing to compile — the sources sit in DEV/
     ("servlet-javax-grid", ".", "8", "libs"),          # v2.1z-e: grid8 1.0.6 (javax) from fixtures/libs; 2.0.5-jakarta is applied by sbmig
+    ("boot-stray-pom-copy", ".", "11", ""),           # v2.1z-h: Boot 2.7 aggregator + shop-boot; shop-boot/bin is a stray copy
     ("adf-jdev", "APP", "8", ""),                      # v2.1z-d: APP packages the JDeveloper / ADF workspace in DEV/s10 (nothing to compile)
 ]
 REQUIRED_KEYS = {
@@ -643,7 +645,7 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
                                   "rootless-unlisted-module", "hollow-reactor", "adf-jdev",
-                                  "servlet-javax-grid")}
+                                  "servlet-javax-grid", "boot-stray-pom-copy")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 

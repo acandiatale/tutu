@@ -311,6 +311,11 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "프로젝트 루트에 pom.xml 이 없고 sbmig 가 만들 수도 없었다(최상위 pom 들이 한 애플리케이션도, MSA 서비스도 아님) — "
         "Maven 을 부르기 전에 실행을 멈췄다: 루트 pom.xml 을 추가하거나 애플리케이션 폴더마다 따로 sbmig 를 돌릴 것",
     # v2.1z-c: 속 빈 리액터 / 리액터 밖 소스 플래그 설명(markdown.FLAG_HELP)
+    # v2.1z-h: 플래그 stray-pom-ignored 설명(sbmig/report/markdown.py — 바꾸면 함께)
+    "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / backup folder such as "
+    "`boot/bin/pom.xml`): ignored at intake — not built, not migrated, not shown to the structure review; see Manual follow-ups":
+        "어느 pom 도 나열하지 않는데 모듈과 좌표가 같은 pom.xml(IDE 출력·백업 폴더의 떠도는 복사본, 예: `boot/bin/pom.xml`): 접수에서 무시했다 — "
+        "빌드도 이관도 하지 않고 구조 검토에도 보이지 않는다; '수동 후속 조치' 참조",
     "the Maven reactor compiles no sources: the java / JSP files lie outside its modules' source and web roots and were "
     "not migrated (the as-is build only packaged files produced elsewhere) — the run is not a success; map the sources "
     "into the modules first (see the Handover's first line)":
@@ -539,6 +544,21 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
       r"the sources must be mapped into the modules first \(sbmig: tree profile, next increment\)$"),
      (r"Maven 리액터가 컴파일하는 소스가 없다: 모듈 밖에 \g<counts>이(가) 있고(\g<dirs>) 이관되지 않았다 — as-is 빌드는 다른 곳에서 "
       r"만든 파일을 포장만 했다; 소스를 먼저 모듈에 매핑해야 한다(sbmig: 트리 프로필, 다음 증분)")),
+    # v2.1z-h: 떠도는 pom 복사본의 인수인계 줄(sbmig/loop/orchestrator.py stray_pom_followup — 바꾸면 함께)
+    ((r"^pom copy ignored: `(?P<p>[^`]+)` has the same coordinates as `(?P<q>[^`]+)` \(`(?P<c>[^`]+)`\), lies inside the "
+      r"directory of `(?P<q2>[^`]+)` and no pom lists it as a module — treated as a stray copy \(an IDE output / backup "
+      r"folder\): not built, not migrated, left where it is; delete it from the source, or give it its own coordinates and "
+      r"list it in <modules> if it is a real module$"),
+     (r"pom 복사본 무시: `\g<p>` 은(는) `\g<q>` 와 좌표가 같고(`\g<c>`), `\g<q2>` 의 폴더 안에 있으며, 어느 pom 도 모듈로 나열하지 "
+      r"않는다 — 떠도는 복사본(IDE 출력·백업 폴더)으로 보고 빌드도 이관도 하지 않고 그 자리에 둔다; 원본에서 지우거나, 진짜 모듈이면 "
+      r"다른 좌표를 주고 <modules> 에 나열하라")),
+    ((r"^pom copy ignored: `(?P<p>[^`]+)` has the same coordinates as `(?P<q>[^`]+)` \(`(?P<c>[^`]+)`\), lies beside the "
+      r"module `(?P<q2>[^`]+)` and no pom lists it as a module — treated as a stray copy \(an IDE output / backup "
+      r"folder\): not built, not migrated, left where it is; delete it from the source, or give it its own coordinates and "
+      r"list it in <modules> if it is a real module$"),
+     (r"pom 복사본 무시: `\g<p>` 은(는) `\g<q>` 와 좌표가 같고(`\g<c>`), 모듈 `\g<q2>` 옆에 있으며, 어느 pom 도 모듈로 나열하지 "
+      r"않는다 — 떠도는 복사본(IDE 출력·백업 폴더)으로 보고 빌드도 이관도 하지 않고 그 자리에 둔다; 원본에서 지우거나, 진짜 모듈이면 "
+      r"다른 좌표를 주고 <modules> 에 나열하라")),
     ((r"^sources outside the Maven reactor: (?P<counts>.+?) lie outside the modules' source roots \((?P<dirs>.+?)\) and "
       r"are not built or migrated — check whether they belong to the application \(a stale copy, a tool, or sources the "
       r"as-is build reached in another way\)$"),
