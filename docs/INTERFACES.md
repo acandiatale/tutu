@@ -3837,3 +3837,12 @@ every Job — a PVC or a warmed image layer. (3) The Agent role in the guide (su
 serve` does today (it migrates in-process); the CLI model (`submit-job.sh` per project) works now, a "Job dispatch mode" of the
 web UI is a possible later increment. sbmig itself calls no Kubernetes API in this model (the hooks of v2.1z-s are for the
 other layout and stay unset here).
+
+## v2.1z-u — deploy/ trimmed to the two shapes the company runs; Korean comments (2026-11-04)
+
+The infra team's one-Job-per-request model (v2.1z-t) supersedes the exec-into-a-builder layout of v2.1z-r/s: `Dockerfile.builder`,
+`Dockerfile.agent`, `mvn-k8s`, the sidecar / RBAC / per-run builder pod manifests and the `60-job-run` example were removed.
+What stays: one image (`Dockerfile`, now with `curl` for zip downloads and `/workspace`), `run-job.sh`, the storage / config / secret
+manifests (the Secret example gained `sbmig-git`), the web-UI Deployment + Service, the Job template and `submit-job.sh`. Every
+comment in `deploy/` is Korean (the company's reviewers do not want English comments). The `build.setup_command` /
+`teardown_command` hooks (v2.1z-s) remain in sbmig as generic per-run hooks, unset in both shapes.

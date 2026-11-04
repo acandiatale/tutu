@@ -269,12 +269,12 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
 - **Containers / Kubernetes (2026-11-04)**: `deploy/` — one image (`deploy/docker/Dockerfile`: Python + JDK 21 + Maven, code at
   `/app` on `PYTHONPATH`, never `pip install`ed into site-packages because `config/` / `knowledge/` sit beside `sbmig/`), k8s
-  manifests (PVCs, ConfigMap with the company yml using container paths, Secret = `.env`, Deployment with 1 replica),
-  and the optional split (`mvn-k8s` through `build.mvn`; a builder sidecar, or one builder pod per run created / deleted by
-  `build.setup_command` / `build.teardown_command` — v2.1z-s), and the infra team's one-Job-per-request model (v2.1z-t:
-  `deploy/docker/run-job.sh` runs the whole migration in the Job pod on an emptyDir and pushes the project branch, the report
-  and the git-hosted KB out before exiting; `deploy/k8s/80-build-job.template.yaml`, `submit-job.sh`). `deploy/README.md` is the
-  operator text (Korean).
+  manifests for two operating shapes — the web-UI agent (PVCs, ConfigMap with the company yml using container paths, Secret =
+  `.env`, Deployment with 1 replica) and the infra team's one-Job-per-request model (`deploy/docker/run-job.sh` runs the whole
+  migration in the Job pod on an emptyDir and pushes the project branch `sbmig/<run id>`, the report and the git-hosted KB out
+  before exiting; `80-build-job.template.yaml`, `submit-job.sh`). The exec-into-a-builder layout was removed (history: INTERFACES
+  v2.1z-r/s); `build.setup_command` / `teardown_command` remain generic hooks. Comments in `deploy/` are Korean (the company's
+  reviewers asked). `deploy/README.md` is the operator text.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

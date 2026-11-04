@@ -1,10 +1,9 @@
-# The infra team's model (guide of 2026-11-05, "Biz cluster: the Agent creates one build Job per request"): ONE Job per
-# migration request; its pod does the whole run — source in, sbmig run (OpenRewrite + restructure + review + build-fix
-# loop), results out, repository commit — and exits. The workspace is an emptyDir (gone with the pod), so everything that
-# must outlive the pod is pushed out by deploy/docker/run-job.sh before it ends: the migrated project (branch sbmig/<run id>
-# on the source repository), the report / logs (result repository or RESULT_PUSH_CMD) and the file KB (its own repository).
-# Agent side: `kubectl --kubeconfig=/etc/kube/config create -f` (generateName → create, not apply); deploy/k8s/submit-job.sh.
-# CHANGE_ME_*: namespace, nodeSelector label, image, the Secret names. Other values: tune to the project sizes.
+# 인프라팀 모델(가이드 2026-11-05, "Biz 클러스터: Agent 가 요청별 빌드 Job 을 생성"): 이관 요청 하나 = Job 하나. 그 파드가 실행 전체를
+# 한다 — 소스 받기, sbmig run(OpenRewrite + 재구조화 + 구조 리뷰 + 빌드-수정 루프), 결과 내보내기, 저장소 커밋 — 그리고 종료한다.
+# 작업 공간은 emptyDir(파드와 함께 사라짐)이라 파드보다 오래 살아야 하는 것은 deploy/docker/run-job.sh 가 끝나기 전에 밖으로 push 한다:
+# 이관된 프로젝트(소스 저장소의 브랜치 sbmig/<run id>), 보고서 / 로그(결과 저장소 또는 RESULT_PUSH_CMD), 파일 KB(KB 저장소).
+# Agent 쪽: `kubectl --kubeconfig=/etc/kube/config create -f`(generateName 이라 apply 가 아니라 create); deploy/k8s/submit-job.sh.
+# CHANGE_ME_*: namespace, nodeSelector 라벨, image, Secret 이름. 그 밖의 값은 프로젝트 크기에 맞춰 조정한다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -12,16 +11,16 @@ metadata:
   namespace: CHANGE_ME_NAMESPACE
   labels: {app: sbmig, kind: run}
 spec:
-  backoffLimit: 0                       # a migration is not retried blindly (the report of a failed run is the result)
-  activeDeadlineSeconds: 14400          # 4 h: 12 fix rounds × Maven builds on a big project can take 1–3 h
-  ttlSecondsAfterFinished: 86400        # keep the pod's logs a day for `kubectl logs`; the results are already pushed out
+  backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
+  activeDeadlineSeconds: 14400          # 4 시간: 큰 프로젝트는 수정 라운드 12 × Maven 빌드로 1~3 시간
+  ttlSecondsAfterFinished: 86400        # `kubectl logs` 용으로 파드 로그를 하루 보존; 결과는 이미 push 됨
   template:
     metadata:
       labels: {app: sbmig, kind: run}
     spec:
       restartPolicy: Never
       nodeSelector:
-        customer.example.com/build-worker: "true"     # CHANGE_ME: the build workers' label
+        customer.example.com/build-worker: "true"     # CHANGE_ME: 빌드 워커 노드의 라벨
       securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
       # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]
       containers:
@@ -29,22 +28,22 @@ spec:
           image: <image-registry>/CHANGE_ME_PROJECT/sbmig:CHANGE_ME_TAG    # deploy/docker/Dockerfile (Python + JDK 21 + Maven + git)
           command: ["/app/deploy/docker/run-job.sh"]
           env:
-            # --- the request (set by the agent per Job: envsubst / kubectl create -f - with the values filled in) ---
+            # --- 요청 값(Agent 가 Job 마다 채운다: submit-job.sh 가 아래 SBMIG_* 의 value 를 바꿔 넣는다) ---
             - {name: SBMIG_SOURCE_GIT_URL, value: "CHANGE_ME_https://git.company/<group>/<project>.git"}
             - {name: SBMIG_SOURCE_GIT_REF, value: "main"}
-            # - {name: SBMIG_SOURCE_ZIP_URL, value: "https://…/project.zip"}     # instead of git: a zip to download
-            - {name: SBMIG_RESULT_BRANCH_PREFIX, value: "sbmig/"}                 # the migrated project is pushed as <prefix><run id>
-            - {name: SBMIG_RESULT_GIT_URL, value: ""}                              # optional: a repository that collects report.md / logs
-            - {name: SBMIG_KB_GIT_URL, value: "CHANGE_ME_https://git.company/<group>/sbmig-kb.git"}   # the file KB lives in git (pulled / pushed per run)
+            # - {name: SBMIG_SOURCE_ZIP_URL, value: "https://…/project.zip"}     # git 대신 zip 을 내려받을 때
+            - {name: SBMIG_RESULT_BRANCH_PREFIX, value: "sbmig/"}                 # 이관된 프로젝트는 <prefix><run id> 브랜치로 push
+            - {name: SBMIG_RESULT_GIT_URL, value: ""}                              # 선택: report.md / 로그를 모으는 저장소
+            - {name: SBMIG_KB_GIT_URL, value: "CHANGE_ME_https://git.company/<group>/sbmig-kb.git"}   # 파일 KB 는 git 에(실행마다 pull / push)
             - {name: SBMIG_CONFIG, value: "/etc/sbmig/company.yml"}
-            - {name: SBMIG_FAIL_JOB_ON_BUILD_FAIL, value: "0"}                      # 1 → exit non-zero (Job Failed) when the build did not pass
+            - {name: SBMIG_FAIL_JOB_ON_BUILD_FAIL, value: "0"}                      # 1 → 빌드 실패도 0 아닌 종료(Job Failed)
             - {name: GIT_AUTHOR_NAME, value: "sbmig"}
             - {name: GIT_AUTHOR_EMAIL, value: "sbmig@company.example"}
             - {name: GIT_COMMITTER_NAME, value: "sbmig"}
             - {name: GIT_COMMITTER_EMAIL, value: "sbmig@company.example"}
           envFrom:
-            - secretRef: {name: sbmig-llm}        # LLM_* (gateway, asset id, token url, app token, roles)
-            - secretRef: {name: sbmig-git}        # GIT_TOKEN (+ optional GIT_USER): repository credentials, never baked / logged
+            - secretRef: {name: sbmig-llm}        # LLM_* (게이트웨이, 에셋 id, 토큰 URL, 앱 토큰, role 이름)
+            - secretRef: {name: sbmig-git}        # GIT_TOKEN (+ 선택 GIT_USER): 저장소 자격 증명 — 이미지·로그에 넣지 않는다
           volumeMounts:
             - {name: workspace, mountPath: /workspace}
             - {name: m2, mountPath: /home/sbmig/.m2}
@@ -56,7 +55,7 @@ spec:
       volumes:
         - name: workspace
           emptyDir: {sizeLimit: 20Gi}
-        - name: m2                              # emptyDir = every Job downloads Boot 4 / OpenRewrite / plugins again from Nexus
-          emptyDir: {sizeLimit: 10Gi}           # (ask for a PVC here, or a warmed ~/.m2 layer in the image — README §6)
+        - name: m2                              # emptyDir = Job 마다 Boot 4 / OpenRewrite / 플러그인을 Nexus 에서 다시 받는다
+          emptyDir: {sizeLimit: 10Gi}           # (PVC 가 가능하면 persistentVolumeClaim: {claimName: sbmig-m2} 로 — README §3)
         - name: config
           configMap: {name: sbmig-config}

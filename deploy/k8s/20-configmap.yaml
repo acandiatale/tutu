@@ -1,6 +1,6 @@
-# The company configuration the web UI offers per run (it lists <repo root>/config/*.yml) and Maven's settings.xml.
-# Mounted with subPath so the image's own config/default.yml etc. stay in place. Replace every <…> with company values;
-# never put a key or a token here (they go to the Secret).
+# 회사 설정 두 파일. company.yml 은 웹 UI 가 실행마다 고르는 config(<레포 루트>/config/*.yml 을 나열한다) 이자 Job 의 --config 이고,
+# settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이다. subPath 로 마운트해 이미지의 config/default.yml 등은 그대로 둔다.
+# <…> 자리를 회사 값으로 바꾼다. 키·토큰은 여기 두지 않는다(Secret 으로).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,23 +8,23 @@ metadata:
   labels: {app: sbmig}
 data:
   company.yml: |
-    # the company's artifacts.yml (config/artifacts.example.yml is the template) + the container paths
+    # 회사 artifacts.yml(config/artifacts.example.yml 이 틀) + 컨테이너 경로
     artifacts:
-      parent: {group_id: <company group>, artifact_id: base-parent, version: 4.0.0}
-      boot_parent: {group_id: <company group>, artifact_id: boot-jar, version: 4.0.0}
-      comp_parent: {group_id: <company group>, artifact_id: comp-jar, version: 4.0.0}
+      parent: {group_id: <회사 group>, artifact_id: base-parent, version: 4.0.0}
+      boot_parent: {group_id: <회사 group>, artifact_id: boot-jar, version: 4.0.0}
+      comp_parent: {group_id: <회사 group>, artifact_id: comp-jar, version: 4.0.0}
       parent_manages_spring_boot: auto
-      mandatory: []        # the 2 mandatory in-house artifacts
-      optional: []         # the 8 optional in-house artifacts
+      mandatory: []        # 필수 사내 아티팩트 2개
+      optional: []         # 선택 사내 아티팩트 8개
     build:
       settings_file: /etc/sbmig/settings.xml
-      repository_url: <https://nexus.company/repository/maven-public/>
+      repository_url: <https://nexus.company/repository/maven-public/>   # sbmig 가 메타데이터 / pom 을 직접 읽는 주소
       jvm_args: ["-Xmx4g"]
     kb:
-      dir: /data/kb-v2     # the shared file KB on the volume (the image's kb-v2/ is not writable state)
+      dir: /data/kb-v2     # 웹 UI 에이전트: 볼륨의 파일 KB (이미지 안 kb-v2/ 는 쓰기 상태가 아니다). Job 모델은 run-job.sh 가 덮어쓴다
     llm:
       record_dir: /data/llm-records
-      # case_thread: true  # one gateway session per case (deploy after the first measured run)
+      # case_thread: true  # 케이스 스레드(첫 측정 실행 뒤에 켠다)
   settings.xml: |
     <settings>
       <mirrors>
@@ -34,4 +34,5 @@ data:
           <url><https://nexus.company/repository/maven-public/></url>
         </mirror>
       </mirrors>
+      <!-- Nexus 에 인증이 필요하면 <servers> 는 이 ConfigMap 이 아니라 Secret 으로 마운트한다 -->
     </settings>

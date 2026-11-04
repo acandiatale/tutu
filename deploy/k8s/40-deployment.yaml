@@ -1,4 +1,5 @@
-# The agent: ONE replica (one migration at a time — the queue lives in the process), Recreate (the RWO volumes move with it).
+# 웹 UI 에이전트(`sbmig serve`): replica 1(한 번에 한 이관 — 큐가 프로세스 안에 있다), Recreate(RWO 볼륨이 파드와 함께 옮겨간다).
+# 요청별 Job 모델만 쓰면 이 Deployment 는 필요 없다(에이전트 역할은 submit-job.sh).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,7 +18,7 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
-      terminationGracePeriodSeconds: 60      # --graceful-timeout 30 + Maven children (sbmig kills its process tree)
+      terminationGracePeriodSeconds: 60      # --graceful-timeout 30 + Maven 자식 프로세스(sbmig 이 트리를 정리한다)
       containers:
         - name: agent
           image: <registry>/sbmig:<tag>
@@ -28,7 +29,7 @@ spec:
             - secretRef: {name: sbmig-llm}
           env:
             - {name: SBMIG_MAX_UPLOAD_MB, value: "1024"}
-            # - {name: NO_PROXY, value: "<gateway host>,<nexus host>,localhost,127.0.0.1"}   # when a proxy is set cluster-wide
+            # - {name: NO_PROXY, value: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"}   # 클러스터에 프록시가 걸려 있을 때
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: m2, mountPath: /home/sbmig/.m2}
@@ -36,9 +37,9 @@ spec:
             - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
           resources:
             requests: {cpu: "2", memory: 6Gi}
-            limits: {cpu: "4", memory: 8Gi}      # Maven/OpenRewrite run with -Xmx4g (build.jvm_args) + Python
+            limits: {cpu: "4", memory: 8Gi}      # Maven / OpenRewrite 가 -Xmx4g(build.jvm_args) + Python
           readinessProbe:
-            tcpSocket: {port: http}               # no unauthenticated health route: the token guard answers 403
+            tcpSocket: {port: http}               # 인증 없는 health 경로가 없다(토큰 가드가 403) → tcp 프로브
             initialDelaySeconds: 10
             periodSeconds: 10
           livenessProbe:

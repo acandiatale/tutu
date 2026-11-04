@@ -1,3 +1,4 @@
+# 웹 UI 에이전트의 Service. 기본 ClusterIP + 회사 Ingress, 또는 운영자 브라우저용 NodePort / LoadBalancer.
 apiVersion: v1
 kind: Service
 metadata:
@@ -7,4 +8,3 @@ spec:
   selector: {app: sbmig}
   ports:
     - {name: http, port: 8765, targetPort: http}
-  # type: ClusterIP (default) + the company's Ingress, or NodePort / LoadBalancer for the operators' browsers
