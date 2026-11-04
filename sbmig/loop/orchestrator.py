@@ -35,6 +35,7 @@ configured in-house parent is not resolvable).
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import re
 import time
@@ -47,7 +48,7 @@ from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseTy
                                IterationRecord, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile,
                                RunReport, StepKind, utcnow)
 from sbmig.core.stage import stage
-from sbmig.core.workspace import Workspace
+from sbmig.core.workspace import Workspace, logs_dir
 
 from .blocked_registry import BlockedRegistry, default_locator
 from .budget import LoopBudget
@@ -816,6 +817,7 @@ class Orchestrator:
             self._timed("analyze", t)
             return False
         self._check_hollow(report, profile)
+        self._note_bundled_jars(profile)
         report.advisories = self._evaluate_advisories(profile)
         self._timed("analyze", t)
         if profile.build_tool != "maven":
@@ -923,6 +925,32 @@ class Orchestrator:
                 report.manual_followups.append(line)
             log.info("sources outside the reactor: %s (%s)", res.counts_text(), res.by_dir_text())
             self.ws.journal({"event": "sources_outside_reactor", **res.as_journal()})
+
+    def _note_bundled_jars(self, profile: ProjectProfile) -> None:
+        """v2.1z-i: 분석이 찾은 동봉 jar(트리 안에 있지만 어떤 pom 도 선언하지 않은 jar)를 실행 기록에 남긴다 — 플래그
+        ``bundled-jars``, 저널 ``bundled_jars``(경로 · 좌표), 운영자 로그 한 줄, ``logs/bundled-jars.json``(JarCoordinate 목록).
+        연결(의존성 선언)은 빌드 오류가 그 jar 를 필요로 할 때 수정 루프의 ``sbmig-bundled`` 가 한다. 절대 예외를 내지 않는다.
+
+        v2.1z-i: record the profile's bundled jars — flag `bundled-jars`, journal `bundled_jars`, one operator log line,
+        `logs/bundled-jars.json`. Wiring happens in the fix loop (`sbmig-bundled`) on evidence of a build error. Never raises."""
+        try:
+            jars = list(getattr(profile, "bundled_jars", None) or [])
+            if not jars:
+                return
+            self._flag("bundled-jars")
+            paths = [j.path for j in jars]
+            coords = {j.path: (f"{j.group_id}:{j.artifact_id}:{j.version}" if j.group_id and j.artifact_id else None)
+                      for j in jars}
+            self.ws.journal({"event": "bundled_jars", "jars": paths, "coordinates": coords})
+            names = [p.rsplit("/", 1)[-1] for p in paths]
+            log.info("분석: 동봉 jar %d개 (pom 미선언) — %s", len(jars),
+                     ", ".join(names[:5]) + (" …" if len(names) > 5 else ""))
+            out = logs_dir(self.ws)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "bundled-jars.json").write_text(
+                json.dumps([j.model_dump() for j in jars], ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - a record of facts must never stop the run
+            log.warning("bundled-jar record skipped: %s: %s", type(e).__name__, e)
 
     def step_plan(self, report: RunReport, stop_after: Phase | None,
                   dry_run: bool) -> list[tuple[Phase, list[tuple[int, PlanStep]]]] | None:

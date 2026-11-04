@@ -1,0 +1,5 @@
+{
+  "note": "structure review of webapp-bundled-jar (one call, copied from company-spring5-web): verdict ok — the bundled WEB-INF/lib jar is the fix loop's business (sbmig-bundled), not the review's",
+  "replay_role": "structure_review",
+  "response": "<review>\n{\n  \"verdict\": \"ok\",\n  \"issues\": [],\n  \"analysis\": \"Company layout: root aggregator with vault-back, vault-front and vault-boot; vault-boot jar on the boot parent depends on vault-back and vault-front; back / front on the comp parent; the mandatory starters in the root only; no JSPs, so jar packaging is right. The Spring artifacts are version-less (managed by the parent chain) and the restructure removed the version property the recipe-raised versions used.\"\n}\n</review>\n"
+}

@@ -1,0 +1,151 @@
+{
+  "case_type": "spring_legacy",
+  "java_version": "11",
+  "spring_boot_version": null,
+  "spring_version": "5.3.31",
+  "packaging": "war",
+  "is_multi_module": false,
+  "libraries": [
+    "javax-servlet",
+    "spring-webmvc",
+    "spring-context"
+  ],
+  "optional_artifacts_in_use": [],
+  "main_classes": [],
+  "catalog": [],
+  "web_resources": {
+    "jsp": [],
+    "static_dirs": [
+      "src/main/webapp"
+    ],
+    "static_count": 3
+  },
+  "expect": {
+    "success": true,
+    "exit_code": 0,
+    "max_llm_calls": 1,
+    "blocked": [],
+    "unresolved_max": 0,
+    "journal_events": [
+      {
+        "event": "restructure",
+        "mode": "layout",
+        "ok": true
+      },
+      {
+        "event": "bundled_jars",
+        "jars": [
+          "src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar"
+        ]
+      },
+      {
+        "event": "bundled_jar_wired",
+        "scope": "system",
+        "placeholder": true
+      }
+    ],
+    "phases": {
+      "restructure": "ok"
+    },
+    "structure_review": {
+      "verdict": "ok",
+      "critical": 0,
+      "script_status": "none",
+      "llm_calls_max": 1
+    },
+    "scripts": {
+      "attempts_min": {
+        "new": 1
+      },
+      "attempts_max": {
+        "augment": 0,
+        "reuse": 0
+      }
+    },
+    "kb": {
+      "dir": "out/e2e/kb-webapp-bundled-jar"
+    },
+    "post_checks": [
+      {
+        "pom_module_list": {
+          "path": "pom.xml",
+          "modules": [
+            "vault-back",
+            "vault-boot",
+            "vault-front"
+          ],
+          "any_order": true
+        }
+      },
+      {
+        "pom_packaging": {
+          "path": "vault-boot/pom.xml",
+          "packaging": "jar"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "vault-back/src/main/java/com/example/vault/util/CryptoUtil.java"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "vault-back/lib/acme-seed-1.0.jar"
+        }
+      },
+      {
+        "file_same_as": {
+          "path": "vault-back/lib/acme-seed-1.0.jar",
+          "source": "src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "vault-back/pom.xml",
+          "contains": "<systemPath>${project.basedir}/lib/acme-seed-1.0.jar</systemPath>"
+        }
+      },
+      {
+        "file_contains": {
+          "path": "vault-boot/pom.xml",
+          "contains": "<includeSystemScope>true</includeSystemScope>"
+        }
+      },
+      {
+        "file_exists": {
+          "path": "vault-boot/target/*.jar"
+        }
+      }
+    ],
+    "flags": [
+      "bundled-jars"
+    ],
+    "forbidden_flags": [
+      "restructure-failed",
+      "hollow-reactor"
+    ],
+    "error_entries": {
+      "status_max": {
+        "unresolved": 0,
+        "blocked": 0
+      },
+      "cases": [
+        {
+          "l2": "compile|package_does_not_exist|com.acme.seed",
+          "entries_min": 1,
+          "status": "resolved",
+          "sources": [
+            "sbmig-bundled"
+          ],
+          "results": [
+            "build_ok"
+          ],
+          "llm_calls": 0
+        }
+      ]
+    },
+    "followups_contains": [
+      "regex:^bundled jar `acme-seed-1\\.0\\.jar`.*"
+    ]
+  }
+}

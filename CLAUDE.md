@@ -69,6 +69,16 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   registered `boot/bin` as an "unlisted module" → Maven `duplicated in the reactor`).
   A module reached twice in the reactor is de-duplicated
   there (`reactor-duplicate-removed`), and `duplicated in the reactor` never goes to the LLM (`reactor_duplicate`, 0 tries).
+  **Bundled jars** (company run 2026-11-04, v2.1z-i): a jar in the tree that no pom declares (vendor crypto / SSO jars in
+  `WEB-INF/lib`, no pom.properties — the IDE build saw them, Maven never did) is wired, not called missing:
+  `sbmig/analyze/bundled_jars.py` scans every such `*.jar` at analyze (content-based, no folder rule; `intake.bundled_jars`) →
+  flag `bundled-jars`, journal `bundled_jars`, `logs/bundled-jars.json`; when a build error needs one, the zero-LLM pre-try
+  `sbmig-bundled` wires it (`sbmig/restructure/system_jars.py wire_bundled_jar`): a plain dependency when its own pom.properties
+  coordinates are in the repository set, else copied to `<module>/lib/<name>` and declared `system` scope at
+  `${project.basedir}/lib/<name>` (placeholder coordinates, never guessed) + `includeSystemScope` on the boot module's
+  spring-boot-maven-plugin; the Handover asks the owners to publish the jar to Nexus and replace the entry. The LLM is told
+  the fact ("the project bundles `<jar>` which provides package `<p>`") and a coordinates / missing-library decline while a
+  bundled jar provides the package is rejected (the company run had ended BLOCKED `needs_owner`). Fixture `webapp-bundled-jar`.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
 - Scope = packaging + build passing (`mvn clean package` → BUILD SUCCESS). Runtime errors belong to the as-is owners.
   Tests are out of scope entirely (user, 2026-10-22: "테스트는 다 스킵"): every build runs with

@@ -138,7 +138,7 @@ def _used_keys() -> set[str]:
     used |= set(markdown_mod.FLAG_HELP.values()) | set(markdown_mod.FLAG_PREFIX_HELP.values())
     used |= {markdown_mod.BLOCKED_TITLE, markdown_mod.HANDOVER_TITLE, markdown_mod.PROPERTIES_TITLE,
              markdown_mod.JAVAX_JARS_TITLE, markdown_mod.REVIEW_TITLE, markdown_mod.ERROR_LIST_TITLE,
-             markdown_mod.FIXES_TITLE, markdown_mod.SEEN_FIX_TITLE}
+             markdown_mod.FIXES_TITLE, markdown_mod.SEEN_FIX_TITLE, markdown_mod.BUNDLED_TITLE}
     used |= set(markdown_mod.SEEN_TITLES.values())                      # v2.1 error list group headings
     used |= {v for k, v in vars(handover_mod).items() if k.startswith("REASON_")}       # VersionChange.reason
     used |= set(handover_mod.PROPERTY_COLUMNS)
@@ -320,6 +320,24 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     from sbmig.loop.orchestrator import stray_pom_followup
     lines.append(stray_pom_followup(StrayPom("boot/bin/pom.xml", "boot/pom.xml", "com.x:xxx-boot", True)))
     lines.append(stray_pom_followup(StrayPom("backup/boot/pom.xml", "boot/pom.xml", "com.x:xxx-boot", False)))
+
+    # v2.1z-i: the bundled-jar wiring lines (system placeholder / system with pom.properties coordinates / compile, with
+    # the loop's ⚠) and the webapp-move follow-up for files left under WEB-INF (jars + classes, jars only, no jars)
+    from sbmig.core.models import JarCoordinate
+    from sbmig.restructure.system_jars import WiredJar, bundled_jar_followup, webinf_left_followup
+    seed = JarCoordinate(path="src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar", provides=["com.acme.seed"])
+    lines.append("⚠ " + bundled_jar_followup(WiredJar(jar=seed, module_pom="shop-back/pom.xml", group_id="com.example",
+                                                      artifact_id="acme-seed", version="1.0", scope="system",
+                                                      placeholder=True)))
+    real = seed.model_copy(update={"group_id": "com.acme", "artifact_id": "seed", "version": "2.3",
+                                   "source": "pom_properties"})
+    lines.append(bundled_jar_followup(WiredJar(jar=real, module_pom="shop-back/pom.xml", group_id="com.acme",
+                                               artifact_id="seed", version="2.3", scope="system")))
+    lines.append(bundled_jar_followup(WiredJar(jar=real, module_pom="shop-back/pom.xml", group_id="com.acme",
+                                               artifact_id="seed", version="2.3", scope="compile")))
+    lines.append(webinf_left_followup(["w/WEB-INF/lib/a.jar", "w/WEB-INF/classes/A.class"], "shop-back/src/main/webapp"))
+    lines.append(webinf_left_followup(["w/WEB-INF/lib/a.jar"], "shop-back/src/main/webapp"))
+    lines.append(webinf_left_followup(["w/META-INF/x.txt"], "shop-back/src/main/webapp"))
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:

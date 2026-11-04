@@ -116,7 +116,7 @@ EntryStatus = Literal["open", "pom-verify", "resolved", "blocked", "unresolved",
 # v2.1l 누락된 의존성 버전을 sbmig 가 as-is 빌드·저장소에서 채운 시도(LLM 호출 없음), sbmig-resources = v2.1m
 # 필터링되는 바이너리 리소스의 확장자를 sbmig 가 nonFilteredFileExtensions 에 적은 시도(LLM 호출 없음).
 TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review", "sbmig-version", "sbmig-resources",
-                    "sbmig-jakarta"]
+                    "sbmig-jakarta", "sbmig-bundled"]
 # kb-script = a stored version run without an LLM call; llm-new = first answer for the case; llm-augment = the LLM
 # extended a failed script; llm-edit = the LLM said the fix cannot be a script and gave edits; review = the
 # structure review's own fix; sbmig-version = v2.1l: sbmig wrote the missing dependency versions itself (the as-is
@@ -124,6 +124,8 @@ TrySource = Literal["kb-script", "llm-new", "llm-augment", "llm-edit", "review",
 # sbmig added the filtered binary files' extensions to nonFilteredFileExtensions — no LLM call, no stored script;
 # sbmig-jakarta = v2.1z-e: sbmig swapped a javax-era dependency for the jakarta build it found in the repository — no LLM
 # call, no stored script
+# sbmig-bundled = v2.1z-i: sbmig wired a jar bundled in the tree (declared by no pom) that provides the missing package —
+#   real coordinates when the repository has them, else system scope at <module>/lib + includeSystemScope; no LLM
 TryApplied = Literal["script", "edits", "none"]  # 실제로 적용된 것: 스크립트 / 편집 목록 / 없음
 
 
@@ -638,6 +640,9 @@ class ProjectProfile(BaseModel):
     boot_modules: list[str] = Field(default_factory=list)      # round 9c, see the class note
     # v2.1z-d: Oracle ADF 판정·규모(근거가 한 계열이라도 있을 때; 두 계열 이상이면 변환 불가로 멈춤) / the ADF verdict + sizing, None without evidence
     adf: Optional[AdfSummary] = None
+    # v2.1z-i: jars that sit in the tree (WEB-INF/lib, lib/, …) and that NO pom declares — the as-is IDE build saw them,
+    # Maven does not; `sbmig.analyze.bundled_jars.scan_bundled_jars` fills it, the fix loop wires them (`sbmig-bundled`)
+    bundled_jars: list["JarCoordinate"] = Field(default_factory=list)
 
     def has_library(self, name: str) -> bool:
         """정규화된 라이브러리 이름(LibraryUsage.name)이 쓰이는지."""
@@ -1991,6 +1996,9 @@ class JarCoordinate(BaseModel):
     used: Optional[bool] = None                    # a source file imports a package of this jar (None = not checked)
     packages: list[str] = Field(default_factory=list)   # top-level packages inside the jar (handover, the `used` check)
     note: str = ""
+    # v2.1z-i: EVERY package holding a class (uncapped; `packages` above is the capped display list) — the
+    # bundled-jar provider check (`sbmig.analyze.bundled_jars.providers`) answers "which jar holds package p" from it
+    provides: list[str] = Field(default_factory=list)
 
     @property
     def key(self) -> str:

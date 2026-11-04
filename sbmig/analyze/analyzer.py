@@ -232,6 +232,14 @@ def analyze_project(ws: WorkspaceView, cfg: Config) -> ProjectProfile:
             profile.adf = adf.summary()
     except Exception as e:  # noqa: BLE001 - the analyzer must never fail on a sizing
         log.warning("ADF detection skipped: %s: %s", type(e).__name__, e)
+    # v2.1z-i: 동봉 jar — 트리 안에 있지만 어떤 pom 도 선언하지 않은 jar(as-is IDE 빌드만 보던 WEB-INF/lib 등)
+    # v2.1z-i: bundled jars (in the tree, declared by no pom); a profile fact, never fails the analysis
+    if getattr(getattr(cfg, "intake", None), "bundled_jars", True):
+        try:
+            from .bundled_jars import scan_bundled_jars
+            profile.bundled_jars = scan_bundled_jars(ws, cfg, poms)
+        except Exception as e:  # noqa: BLE001 - the analyzer must never fail on the bundled-jar scan
+            log.warning("bundled-jar scan skipped: %s: %s", type(e).__name__, e)
     if cfg.externalized.enabled:
         # round 8: settings the code reads that only the external container supplied (JNDI, context-param, -D …)
         rules = load_rules(cfg.resolve_path(cfg.externalized.rules_file))

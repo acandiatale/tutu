@@ -1,7 +1,8 @@
 """report.md 그리기 — 에이전트가 못 고친 것을 이어받는 as-is 담당팀을 위해 쓴다.
 흐름상 위치: 보고서 단계에서 writer.py 의 ``write_report`` 가 ``render_markdown`` 을 부른다. 섹션 순서(v2.1):
 머리 표(``SBMIG-RESULT`` 줄 포함) → 인수인계(운영자 확인 필요 → Ant pom.xml 합성(v2.1j) → 교체된 버전 → 주의
-라이브러리 → 이제부터 할 일) → Error list(단계별 표) → Fixes by case → Structure review → Blocked → javax API jar →
+라이브러리 → 이제부터 할 일) → Error list(단계별 표) → Fixes by case → Structure review → Bundled jars(v2.1z-i) → Blocked →
+javax API jar →
 Manual follow-ups → Flags → What we changed → LLM usage and cost → Notes → Outputs.
 인수인계가 맨 앞인 이유: 담당팀은 그 섹션만 읽는다. 모든 문장은 ``tr`` / ``tr_line`` 을 거쳐
 ``report.language`` 로 번역된다(영어 원문이 번역 표의 키 — 문장을 바꾸면 i18n.py 도 함께).
@@ -95,6 +96,11 @@ FLAG_HELP = {
     "stray-pom-ignored": "a pom.xml with the same coordinates as a module that no pom lists (a stray copy in an IDE output / "
                          "backup folder such as `boot/bin/pom.xml`): ignored at intake — not built, not migrated, not shown "
                          "to the structure review; see Manual follow-ups",
+    # v2.1z-i: 트리 안 jar 중 어느 pom 도 선언하지 않은 것(as-is IDE 빌드는 봤고 Maven 은 못 본다) — 빌드 오류가 필요로 하면 루프가 연결
+    "bundled-jars": "jars sit in the tree (e.g. WEB-INF/lib) that no pom declares — the as-is IDE build compiled against "
+                    "them, Maven does not: when a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`: "
+                    "a normal dependency when the repository has its coordinates, else system scope + includeSystemScope) — "
+                    "see \"Bundled jars (declared by no pom)\" and the Handover",
     "no-root-pom": "the project has no pom.xml at its root and sbmig could not generate one (the top-level poms are "
                    "not one application and not MSA services): the run stopped before any Maven call — add a root "
                    "pom.xml or run sbmig on each application's directory",
@@ -129,6 +135,7 @@ PROPERTIES_TITLE = "Properties to set before running"
 JAVAX_JARS_TITLE = "javax API jars still on the classpath"
 ADF_TITLE = "ADF sizing"                       # v2.1z-d: Oracle ADF application — the numbers for the rewrite decision
 REVIEW_TITLE = "Structure review"
+BUNDLED_TITLE = "Bundled jars (declared by no pom)"   # v2.1z-i
 UNSUPPORTED_MARK = "(sbmig check) not in the material: "   # v2.1y: sbmig.review.parse.UNSUPPORTED_MARK
 REVIEW_MAX_ROWS = 30
 REVIEW_FILES_SHOWN = 8
@@ -853,6 +860,47 @@ def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
     return L
 
 
+# v2.1z-i: 루프가 남긴 인수인계 줄(system_jars.bundled_jar_followup)에서 jar 별 연결 scope 를 읽는다(앞의 ⚠ 허용)
+_BUNDLED_WIRED_RE = re.compile(r"^(?:⚠\s*)?bundled jar `(?P<name>[^`]+)` .*? as a (?P<scope>system|compile) dependency `")
+
+
+def _bundled_wired(r: RunReport) -> dict[str, str]:
+    """jar 파일 이름 → 연결된 scope("system" / "compile"). 인수인계 후속 조치 줄에서 읽는다."""
+    lines = list(r.manual_followups or [])
+    h = getattr(r, "handover", None)
+    if h is not None:
+        lines += list(getattr(h, "from_here", None) or [])
+    out: dict[str, str] = {}
+    for x in lines:
+        m = _BUNDLED_WIRED_RE.match(str(x))
+        if m:
+            out.setdefault(m.group("name"), m.group("scope"))
+    return out
+
+
+def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
+    """``## Bundled jars (declared by no pom)``(v2.1z-i): ``profile.bundled_jars`` 의 jar 마다 한 줄 — 경로, 좌표
+    (없으면 unknown), 담은 패키지 수, 소스가 쓰는가, 루프가 연결했는가(인수인계 줄에서 scope). 없으면 [].
+
+    One row per bundled jar (path, coordinates or "unknown", `provides` count, used, wired scope); [] without any."""
+    jars = list(getattr(getattr(r, "profile", None), "bundled_jars", None) or [])
+    if not jars:
+        return []
+    wired = _bundled_wired(r)
+    L = [f"## {tr(lang, BUNDLED_TITLE)}", "",
+         tr(lang, "Jars in the tree that no pom declares: the as-is IDE build compiled against them, Maven does not. "
+                  "When a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call)."), "",
+         tr(lang, "| jar | coordinates | packages | used | wired |"), "|---|---|---|---|---|"]
+    for j in jars:
+        coords = (f"`{j.group_id}:{j.artifact_id}:{j.version}`" if j.group_id and j.artifact_id and j.version
+                  else tr(lang, "unknown"))
+        used = "—" if j.used is None else tr(lang, "yes") if j.used else tr(lang, "no")
+        name = j.path.replace("\\", "/").rsplit("/", 1)[-1]
+        L.append(f"| `{_cell(j.path, 200)}` | {coords} | {len(j.provides or [])} | {used} | {wired.get(name, '—')} |")
+    L.append("")
+    return L
+
+
 def _cost_summary(c: Any, lang: str = "en") -> str:
     """머리 표의 LLM 비용 칸: 합계 + 단가 없는 모델 + 토큰 수 누락 표시."""
     from .cost import fmt_money
@@ -941,7 +989,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
     report.md for `language` (`report.language`: "en" | "ko"; anything else renders English). `cfg` (optional)
     only sharpens the javax API section's in-house detection.
 
-    v2.1 (slim): header → Handover → Error list → Fixes by case → Structure review → Blocked → javax API jars →
+    v2.1 (slim): header → Handover → Error list → Fixes by case → Structure review → Bundled jars → Blocked →
+    javax API jars →
     Manual follow-ups → Flags → What we changed (v2.1j the intake's pom synthesis, plan steps, OpenRewrite runs,
     v2.1h the JSP javax → jakarta rename) → LLM usage and cost → Notes → Outputs."""
     lang = normalize(language)
@@ -1001,6 +1050,8 @@ def render_markdown(report: RunReport, language: str = "en", cfg: Any = None) ->
 
     # ---- the structure review (ran before the first build; its own entries are in the error list too)
     L += structure_review_lines(r, lang)
+    # v2.1z-i: 동봉 jar(어느 pom 도 선언하지 않은 트리 안 jar) — 구조 검토 바로 뒤
+    L += bundled_jars_lines(r, lang)
 
     # 차단 = 프로젝트 밖(라이브러리·저장소·환경)이라 일부러 손대지 않은 것. 나머지 마이그레이션은 계속했다
     # ---- blocked: deliberately skipped, each row says what a human / the library owner must do

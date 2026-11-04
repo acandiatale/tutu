@@ -45,13 +45,15 @@ SCENARIOS = ["boot2-javax-lib", "boot2-javax-lib-optional", "euckr-legacy", "enf
              "hollow-reactor",                          # v2.1z-c: the poms' roots hold no sources (DEV/ + STATIC/ do)
              "servlet-javax-grid",                      # v2.1z-e: a vendor javax library whose -jakarta build is found and applied
              "boot-stray-pom-copy",                     # v2.1z-h: a stray copy of a Boot module in shop-boot/bin (ignored at intake)
+             "webapp-bundled-jar",                      # v2.1z-i: an undeclared vendor jar in WEB-INF/lib, wired by sbmig-bundled
              "adf-jdev"]                                # v2.1z-d: an Oracle ADF (JDeveloper) workspace — recognised, sized, stopped
 NAMES = HAPPY + SCENARIOS
 CP949_FIXTURES = {"euckr-legacy"}
 ANT_FIXTURES = {"ant-webapp"}            # v2.1j: build.xml, no pom.xml — the intake synthesizes pom.xml
 
 # (fixture, sub-directory to build, JDK, needs) — mirrors the README of each fixture.
-# needs: "libs" = legacy-web-lib installed (tail repo), "ghost" = ghost-lib tail repo, "ms949" = platform encoding
+# needs: "libs" = legacy-web-lib installed (tail repo), "ghost" = ghost-lib tail repo, "ms949" = platform encoding,
+# "fails" = the as-is Maven build fails by design (v2.1z-i: a jar the IDE build saw, no pom declares) — asserted to fail
 BUILD_MATRIX = [
     ("pure-java", ".", "8", ""),
     ("servlet-tomcat", ".", "8", ""),
@@ -95,6 +97,8 @@ BUILD_MATRIX = [
     ("hollow-reactor", ".", "8", ""),                  # v2.1z-c: a WAR pom with nothing to compile — the sources sit in DEV/
     ("servlet-javax-grid", ".", "8", "libs"),          # v2.1z-e: grid8 1.0.6 (javax) from fixtures/libs; 2.0.5-jakarta is applied by sbmig
     ("boot-stray-pom-copy", ".", "11", ""),           # v2.1z-h: Boot 2.7 aggregator + shop-boot; shop-boot/bin is a stray copy
+    ("webapp-bundled-jar", ".", "11", "fails"),       # v2.1z-i: WEB-INF/lib/acme-seed-1.0.jar is declared by no pom → the
+                                                      # as-is Maven build fails by design (`package com.acme.seed does not exist`)
     ("adf-jdev", "APP", "8", ""),                      # v2.1z-d: APP packages the JDeveloper / ADF workspace in DEV/s10 (nothing to compile)
 ]
 REQUIRED_KEYS = {
@@ -645,7 +649,7 @@ COMPANY_OVERRIDES = {name: {"layout": {"module_dir", "boot_module", "comp_module
                                   "ear-sibling-poms", "servlet-war-overlay", "ant-webapp", "sibling-aggregator-dup",
                                   "legacy-external-parent", "filtered-binary-resources", "spring5-legacy-startup",
                                   "rootless-unlisted-module", "hollow-reactor", "adf-jdev",
-                                  "servlet-javax-grid", "boot-stray-pom-copy")}
+                                  "servlet-javax-grid", "boot-stray-pom-copy", "webapp-bundled-jar")}
 COMPANY_OVERRIDES["ant-webapp"]["intake"] = {"jar_lookup"}      # v2.1j: no sha1 lookup on Maven Central during e2e
 COMPANY_OVERRIDES["legacy-external-parent"]["artifacts"] = {"boot_parent", "comp_parent", "optional"}   # v2.1n trigger
 
@@ -654,7 +658,7 @@ COMPANY_NAMES = {"servlet-webxml-legacy": "legacy", "servlet-nonstandard-dirs": 
                  "sibling-aggregator-dup": "dup", "legacy-external-parent": "extparent",      # it is not `shop`
                  "filtered-binary-resources": "binres", "rootless-unlisted-module": "dup", "hollow-reactor": "hollow",
                  "adf-jdev": "adf-web",       # the generated aggregator takes the WAR's artifactId
-                 "servlet-javax-grid": "gridapp"}
+                 "servlet-javax-grid": "gridapp", "webapp-bundled-jar": "vault"}
 # v2 reuse scenario (2026-10-26): pure-java stores the JAXB fix script, java6-legacy runs it again without an LLM call
 SHARED_KB = {"pure-java": "out/e2e/kb-jaxb", "java6-legacy": "out/e2e/kb-jaxb"}
 LLM_KB = {"llm", "kb"}                              # v2: every fixture replays its LLM answers into its own KB
@@ -1033,6 +1037,11 @@ def test_fixture_builds_as_is(name: str, subdir: str, jdk: str, needs: str, tmp_
         env["JAVA_TOOL_OPTIONS"] = "-Dfile.encoding=MS949"
     t0 = time.monotonic()
     cp = _build(src / subdir, jdk, args, env)
+    if needs == "fails":             # v2.1z-i: the undeclared WEB-INF/lib jar is not on Maven's compile classpath
+        print(f"\nAS-IS {name}/{subdir} JDK {jdk}: FAILS as designed {time.monotonic() - t0:.1f}s")
+        assert cp.returncode != 0, f"{name}: the as-is build must fail (the bundled jar is declared by no pom)"
+        assert "package com.acme.seed does not exist" in cp.stdout + cp.stderr, cp.stdout[-4000:]
+        return
     print(f"\nAS-IS {name}/{subdir} JDK {jdk}: {'PASS' if cp.returncode == 0 else 'FAIL'} "
           f"{time.monotonic() - t0:.1f}s")
     assert cp.returncode == 0, f"{name}/{subdir} failed on JDK {jdk}:\n{cp.stdout[-4000:]}\n{cp.stderr[-2000:]}"

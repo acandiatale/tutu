@@ -86,6 +86,7 @@ from sbmig.plan.versions import compare_versions, version_lt
 from .jsp_jakarta import rename_jsp_files
 from .legacy_apply import LegacyContextMixin
 from .pom_editor import PomEditError, PomEditor, property_ref
+from .system_jars import copy_jar_to_module_lib, webinf_left_followup
 from .webxml_registrations import CLASS_NAME as WEB_XML_CLASS
 from .webxml_registrations import RULES_FILE as WEB_XML_RULES
 from .webxml_registrations import ClassInfo, RegistrationFacts, load_skip_rules, plan_registrations
@@ -2070,17 +2071,11 @@ class Restructurer(LegacyContextMixin):
                        f"declaration kept — install it into Nexus ({install.replace('<jar>', name)}) and use a "
                        "normal dependency")
             return
-        dst = f"{module_dir}/lib/{name}"
-        if dst != cur:
-            # 같은 이름의 다른 jar 가 이미 lib/ 에 있으면 artifactId 를 앞에 붙여 둘 다 살린다
-            if c.ws.abs(dst).exists() and c.ws.abs(dst).read_bytes() != c.ws.abs(cur).read_bytes():
-                name = f"{g.artifact_id}-{name}"
-                dst = f"{module_dir}/lib/{name}"
-            if not c.ws.abs(dst).exists():
-                c.ws.abs(dst).parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(c.ws.abs(cur), c.ws.abs(dst))
-                c.changed.add(dst)
-                c.note(f"system-scoped jar {cur} copied to {dst} ({g.key})")
+        # v2.1z-i: 복사·이름 충돌 규칙은 동봉 jar 연결과 한 helper(system_jars.copy_jar_to_module_lib)
+        dst, name, copied = copy_jar_to_module_lib(c.ws, cur, module_dir, g.artifact_id)
+        if copied:
+            c.changed.add(dst)
+            c.note(f"system-scoped jar {cur} copied to {dst} ({g.key})")
         new_path = f"${{project.basedir}}/lib/{name}"
         if raw.strip() != new_path:
             ed.set_child_text(el, "systemPath", new_path)
@@ -2989,8 +2984,8 @@ class Restructurer(LegacyContextMixin):
                        "(java -jar) — its <Resource> / <Environment> entries are listed under 'Properties to set'")
         if left:
             where = ", ".join(sorted({d for d in web_dirs if any(x.startswith(d + "/") for x in left)}))
-            c.followup(f"{len(left)} file(s) under WEB-INF/lib, WEB-INF/classes or META-INF stay in {where} (not "
-                       "packaged): declare the jars as Maven dependencies / move the classes into src/main/java")
+            # v2.1z-i: jar 이름을 적고, 빌드 오류가 필요로 하면 루프가 연결한다(sbmig-bundled)고 알린다
+            c.followup(webinf_left_followup(left, where))
         if clash:
             c.followup(f"{len(clash)} web file(s) not moved to {front}: the target path was already taken "
                        f"({', '.join(clash[:3])}{' …' if len(clash) > 3 else ''}) — merge them by hand")

@@ -25,8 +25,9 @@
 | `sbmig.log` | DEBUG 로그. 단계 태그 `[fix r3]`. 핵심 줄: `KB 탐색: …`(케이스의 사다리 결정), `llm call provider=… attempt n/m`, `build N: …`, `regressed`/`reverted`, `config: … since v2.1z`(설정 경고) | 시간 순서로 따라갈 때 |
 | `logs/NNN-<라벨>.log` | Maven 호출 로그(번호 순: effective-pom, rewrite, build-verify …). `[ERROR]` 줄과 javac 블록(`symbol:` / `location:`) | **실제 오류 메시지**는 여기서 |
 | `logs/effective-depmgmt.json`, `logs/effective-depmgmt-after-restructure.json` | as-is / 재구성 뒤 관리 버전 캡처 | 버전 관련 케이스 |
+| `logs/bundled-jars.json` | 분석 단계가 찾은 **동봉 jar**(트리 안에 있으나 어느 pom 도 선언하지 않은 `*.jar`, 예 `WEB-INF/lib/`): 경로, pom.properties 좌표(없으면 null), 제공 패키지(`provides`) | `package … does not exist` / 좌표 없음 거절이 보일 때 |
 | `logs/review-input.md` | 구조 점검에 보낸 프롬프트(사실 절 포함) | 점검 판단이 이상할 때 |
-| `project/` | 작업 복사본 = **git 저장소**(브랜치 `sbmig/<run_id>`). 커밋 하나 = 단계 또는 시도 하나: `intake: …`, `rewrite: …`, `restructure: …`, `review: …`, `fix(script:<case>:v<N> new\|augment): case:<id>`, `fix(sbmig-version\|sbmig-resources\|sbmig-jakarta): …`, 되돌림 커밋 | `git log --oneline`, `git show <sha> --stat`, `git show <sha> -- <file>` 로 시도가 실제로 무엇을 바꿨는지 |
+| `project/` | 작업 복사본 = **git 저장소**(브랜치 `sbmig/<run_id>`). 커밋 하나 = 단계 또는 시도 하나: `intake: …`, `rewrite: …`, `restructure: …`, `review: …`, `fix(script:<case>:v<N> new\|augment): case:<id>`, `fix(sbmig-version\|sbmig-resources\|sbmig-jakarta\|sbmig-bundled): …`, 되돌림 커밋 | `git log --oneline`, `git show <sha> --stat`, `git show <sha> -- <file>` 로 시도가 실제로 무엇을 바꿨는지 |
 | `changes.patch`, `result.zip` | 전체 diff, 산출물 | 담당팀 전달용 |
 | LLM 기록 `llm-NNNN.json` | `.env` 의 `LLM_RECORD_DIR`(= `llm.record_dir`) 아래, 호출마다 한 파일: 요청(system/user 프롬프트 전문 — 오류, 파일 발췌, `Dependency versions` 사실 줄, `Previous attempts`)과 응답(analysis / solution / edits / script, 또는 `<blocked>` 거절) | LLM 이 **무엇을 받았고 무엇을 답했는지** |
 | KB `kb.dir`(기본 `kb-v2/`) | `cases/<case_id>/case.json`(케이스 통계, `scripts[]` 버전·상태, `runs[]`), `fix_v<N>.py`, `errors/<run>-<id>.json`, `cases.md`(한눈 표), `errors.jsonl`(모든 실행) | 다른 프로젝트에서 같은 케이스가 어떻게 풀렸는지 |
@@ -47,6 +48,8 @@
 | `version_try`, `resources_try` | LLM 없는 pre-try(빠진 버전 채움 / 필터링 바이너리 확장자) |
 | `restructure`, `restructure_moves`, `structure_review` | 재구성 결과·이동 목록, 구조 점검 판정 |
 | `aggregator_generated`, `no_root_pom`, `stray_pom_ignored`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces` | intake / analyze 판정(루트 pom 생성, 떠도는 pom 복사본 무시, 속 빈 리액터, ADF) |
+| `bundled_jars` | 분석: pom 미선언 동봉 jar 목록(`jars`)과 각 좌표(`coordinates`, 모르면 null) — 플래그 `bundled-jars` |
+| `bundled_jar_wired` | LLM 없는 pre-try `sbmig-bundled` 가 빌드 오류에 필요한 동봉 jar 를 연결함: `case`, `jar`, `pom`, `coordinates`, `scope`(`system` = `<module>/lib/<이름>` 복사 + `${project.basedir}/lib/<이름>`, boot 모듈 `includeSystemScope`), `placeholder` |
 | `run_aborted`, `report` | 중단 사유, 보고서 작성 |
 
 ## 2. 케이스와 사다리 — 진단에 필요한 만큼만
@@ -85,6 +88,7 @@
    - **(b) LLM 반복/능력**: 같은 변경을 되풀이, 사실을 받고도 다른 접근을 못 함 → 한도·노트·프롬프트 규칙.
    - **(c) 프로젝트 밖**: 라이브러리 jakarta 빌드가 정말 없음, 컨테이너 전용 API, 공급업체 결정 → Handover 가 맞는 결말.
    - **(d) sbmig 버그**: 잘못된 분류·차단, 이관 누락(속 빈 리액터), 서명 분리 등.
+     트리 안의 jar 가 제공하는 패키지에 대한 `needs_owner`(LLM 이 좌표 없음으로 거절)는 sbmig 버그다 — 먼저 `logs/bundled-jars.json` 에서 그 패키지를 `provides` 로 가진 jar 가 있는지 본다.
 10. 가능하면 **로컬 검증**: `project/` 의 해당 모듈에서 가설 수정을 넣고 `mvn -q -Dmaven.test.skip=true package` 를 돌려 통하는지 본다. 통하면 그 diff 가 카드의 "검증된 수정" 이다.
 
 ### 3.1 예시: `oscillation` @ `…Filter.java:74` (FilterConfig)

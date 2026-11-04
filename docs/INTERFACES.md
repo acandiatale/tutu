@@ -3375,3 +3375,130 @@ plan, the review module lines, the invariant violation, `ignored_dirs` on Worksp
 the profile's java count, a clean tree has nothing). Fixture `boot-stray-pom-copy` (Boot 2.7 aggregator + `shop-boot`, the copy in
 `shop-boot/bin/`; real-Maven e2e: build ok, 1 LLM call, the Handover line, the copy left in place). e2e: see `docs/PLAN.md`
 (v2.1z-h row).
+
+## v2.1z-i — bundled jars: a jar in the tree that no pom declares is wired, not declared missing (2026-11-04)
+
+**Why.** Company run 2026-11-04 (diagnosis card from the in-house LLM, class (d) sbmig bug): a `spring_legacy` WAR kept
+its vendor crypto / SSO jars in `APP/WEB/src/main/webapp/WEB-INF/lib/` (`Crypt.jar`, `ssolib.jar`, … — no pom.properties,
+no Maven metadata, declared by no pom). The as-is IDE build compiled against them (web-app libraries container); Maven
+never did. The restructure moved the folder into the back module and left the jars where they were (Handover: "declare
+the jars as Maven dependencies"), the build failed with `package com….crypto.seed does not exist`, and the fix LLM —
+which never heard that the jars exist — declined for lack of coordinates → BLOCKED `needs_owner` (8 items) although the
+classes sat in the project. 704 other errors were fixed in that run.
+
+**Decisions (PM).** (1) Content-based: a *bundled jar* is any `*.jar` in the tree outside build output / `.git` / the
+intake's ignored dirs that no pom declares as a `system` dependency — no folder-name rule (`WEB-INF/lib` is where they
+usually are). (2) sbmig wires it with **0 LLM calls** when a build error needs it (pre-try `sbmig-bundled`, like
+`sbmig-version` / `sbmig-resources` / `sbmig-jakarta`): coordinates are **never guessed** — a jar whose own
+`pom.properties` coordinates the repository SET has (v2.1z-e lookup) becomes a plain dependency; every other jar is
+copied to `<module>/lib/<name>` and declared `system` scope with the Ant-intake placeholder coordinates (v2.1j rule:
+project groupId + file stem, version from the file name or "0") plus `includeSystemScope` on the boot module's
+spring-boot-maven-plugin (repackage leaves system jars out by default), and the Handover asks the owners to publish the
+jar to Nexus and replace the entry. (3) The LLM is told the fact ("the project bundles `<jar>` which provides package
+`<p>`") and a decline that claims a missing library / unknown coordinates while a bundled jar provides the case's
+package is **rejected** (no decline count), like the v2.1z-e jakarta contradiction. (4) The scan is a profile fact
+(`profile.bundled_jars`, flag `bundled-jars`, report section "Bundled jars", `logs/bundled-jars.json`) whether or not a
+build error ever needs it.
+
+### Contract
+
+* **Model** (`sbmig/core/models.py`): `JarCoordinate.provides: list[str]` — every package holding a class, uncapped
+  (`packages` stays the capped display list; `sha1` already existed); `ProjectProfile.bundled_jars: list[JarCoordinate]`.
+  `TrySource` += `sbmig-bundled` (the error list's `FixTry.source` literal — without it `begin_try` raises a ValidationError,
+  the try never reaches `errors.md` / the KB and a fixture's per-case `sources` check fails; found by the e2e).
+* **Config**: `intake.bundled_jars: true` (the scan; off → `[]`, no pre-try, no facts); the lookup follows
+  `intake.jar_lookup`; the unknown-jar policy follows `intake.unknown_jar` (`system` → wire; `skip` → facts + Handover only).
+* **Analyze** (`sbmig/analyze/bundled_jars.py`): `declared_system_jars(ws, poms) -> set[str]`,
+  `scan_bundled_jars(ws, cfg, poms, *, lookup=None) -> list[JarCoordinate]` (sorted by path; `resolve_jar` for the
+  coordinates; `provides` filled from the zip listing; never raises), `providers(jars, package) -> list[JarCoordinate]`
+  (exact `provides` entry first, then jars holding only sub-packages). `analyze_project` fills `profile.bundled_jars`
+  after the ADF detection; `step_analyze` (orchestrator) adds flag `bundled-jars`, journal
+  `{"event": "bundled_jars", "jars": [path…], "coordinates": {path: "g:a:v"|null}}`, operator log
+  `분석: 동봉 jar N개 (pom 미선언)`, and writes `logs/bundled-jars.json` (the `JarCoordinate` list as JSON).
+* **Fix loop** (`sbmig/loop/fixloop.py`): `SBMIG_BUNDLED_SOURCE = "sbmig-bundled"`; `_bundled_targets(c)` → the module poms
+  (`owning_pom` of the error files) for a cluster whose `package <p> does not exist` packages (`_PACKAGE_MISSING_RE`) or
+  `cannot find symbol … class X` imports (`import <p>.X;` in the error's file) have a provider in `profile.bundled_jars`,
+  else None; `_bundled_attempt(pr, st, c)` → `_pre_attempt(... source=SBMIG_BUNDLED_SOURCE, apply_fn=...)` calling
+  `sbmig.restructure.system_jars.wire_bundled_jar` per (module pom, jar), `repository_has` = the jar's own
+  `pom_properties` / `sha1_lookup` coordinates verified in the repository set (v2.1z-e `jakarta_discovery` lookup; an
+  unreadable repository counts as "not there" → system scope), `boot_poms` = the boot modules that package the module
+  (`profile.boot_modules` / poms carrying the Boot plugin); once per (module pom, jar) per run; commit
+  `fix(sbmig-bundled): <cluster id>`; journal `{"event": "bundled_jar_wired", "case", "jar", "pom", "coordinates",
+  "scope", "placeholder"}`; Handover line `bundled_jar_followup(w)` (⚠ when placeholder). Registered in `_pre_tries`
+  **before** `sbmig-jakarta` (a bundled javax-era jar is still wired first; the jakarta swap sees the declaration next round).
+  `_package_facts(c)` adds `the project bundles \`<jar path>\` which provides package \`<p>\` (coordinates: <g:a:v from
+  pom.properties | unknown — no pom.properties, not in the jar name table>) — wire it as a dependency (system scope at
+  \`${project.basedir}/lib/<name>\` when the repository lacks it) instead of calling the library missing` per (jar,
+  package) ≤ `PACKAGE_FACTS_ARTIFACTS`. `_decline_contradiction(c, reason)` → when the reason matches
+  `(?i)coordinates|artifact|library|jar|좌표|라이브러리|아티팩트` and a provider exists for one of the case's missing
+  packages: `\`<jar>\` in the project provides package \`<p>\` — the library is not missing, it is bundled; wire it`.
+* **Restructure** (`sbmig/restructure/system_jars.py`): `wire_bundled_jar(ws, cfg, *, module_pom, jar, repository_has,
+  boot_poms=None, project_group="") -> WiredJar`, `ensure_include_system_scope(ws, boot_pom) -> bool`,
+  `bundled_jar_followup(w) -> str` (text shape: `bundled jar \`<name>\` (<why>) wired into \`<module pom>\` as a system
+  dependency \`<g:a:v>\` — <BUNDLED_TAIL>` | `… as a compile dependency \`<g:a:v>\` (the repository has it)`). System scope: the SAME system dependency is also declared in each of `boot_poms` (Maven does not pass a `system`
+  dependency on transitively; one copy, `systemPath` = `${project.basedir}/<relpath from the boot pom dir to
+  <module dir>/lib/<name>>`), then `ensure_include_system_scope` on each of them, so the repackaged boot archive (jar or
+  war) carries the jar (amendment 2026-11-04, found by the fixture agent). The copy logic is shared with
+  `_relocate_system_dep` (one helper). The webapp-move follow-up ("N file(s) under WEB-INF/lib …
+  stay in …") names the jar files and says the loop wires a jar a build error needs.
+* **Report** (`sbmig/report/markdown.py`): section "Bundled jars (declared by no pom)" after the structure review: one row
+  per jar — path, coordinates (or "unknown"), `provides` count, used-by (module / "—"), wired (scope / "—"); flag text
+  `bundled-jars`; i18n for the flag, the section, the Handover PATTERNS (two shapes) and the fact line.
+* **Fixture** `fixtures/projects/webapp-bundled-jar` (from `company-spring5-web`): `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar`
+  (committed, tiny: `com.acme.seed.Seed` with a static `encrypt(String)`, no pom.properties) used by a source class; build
+  ok with 1 LLM call (the review); flags `bundled-jars`; journal `bundled_jars` + `bundled_jar_wired`; a fix attempt
+  with source `sbmig-bundled`; Handover regex `bundled jar \`acme-seed-1.0.jar\``; post_checks: `<name>-back/lib/acme-seed-1.0.jar`
+  exists, the back pom holds `<systemPath>${project.basedir}/lib/acme-seed-1.0.jar</systemPath>`, the boot pom holds
+  `<includeSystemScope>true</includeSystemScope>` and the same system dependency; the repackaged boot archive (a jar —
+  the fixture has no JSP) contains `acme-seed-1.0.jar` (the integrator checks it with `unzip -l`; the e2e post_checks
+  cannot look inside an archive).
+* **Not in scope**: `WEB-INF/classes` (compiled classes without sources — Handover only, as today); a jar whose
+  pom.properties coordinates the repository has under a *different* version; Gradle; the structure review does not
+  wire jars (the loop does, on evidence of a build error).
+
+### As built (v2.1z-i, 2026-11-04)
+
+* **Analyze** — `sbmig/analyze/bundled_jars.py`: `declared_system_jars` reuses `edges.system_dependencies` /
+  `resolve_system_path` (`${project.basedir}` / `${basedir}` / relative paths against the declaring pom); `scan_bundled_jars`
+  walks `ws.glob("*.jar")` (both `Workspace` and `PathView` prune `.git` / build output / `ignored_dirs`), re-checks
+  `is_build_output_path` and `ws.is_ignored`, drops the declared system jars, resolves each with `resolve_jar_scan` (one
+  jar-name table and one `Sha1Lookup` per run, `False` when `intake.jar_lookup` is off), `provides` = the uncapped
+  `JarScan.packages`, `used` via `mark_used` over the tree's `.java` files; a duplicate sha1 is kept with the note
+  `same jar as <first path>`; an unreadable jar is listed with empty `provides`. `analyze_project` fills
+  `profile.bundled_jars` after the ADF block; the orchestrator's `_note_bundled_jars` (in `_step_analyze`, after the hollow
+  check) sets the flag, writes the journal event, the operator line and `logs/bundled-jars.json` (`logs_dir(ws)`).
+* **Fix loop** — `sbmig/loop/fixloop.py`: `SBMIG_BUNDLED_SOURCE` (also in `PRE_TRY_SOURCES`), `_bundled_missing_packages`
+  (`package <p> does not exist` + the `import <p>.X;` of a `symbol: class X` error, `javax.*` / `jakarta.*` skipped),
+  `_bundled_wireable` (no `provided`-scope jar — a container API copy is never wired), `_bundled_targets` (None also when
+  every (pom, jar) pair was already tried, so a dead match does not hide the jakarta pre-try), `_bundled_plan`,
+  `_bundled_in_repository` (the loop's `RepositoryLookup`: `pom_text(g, a, v)` or `v in versions(g, a)`; only for
+  `pom_properties` / `sha1_lookup` / `name_table` coordinates; any failure → system scope), `_bundled_boot_poms(module_pom)`
+  (the current poms carrying the Boot plugin + `profile.boot_modules`, narrowed to the ones that depend on the module or
+  are it — several boot modules (MSA) must not all carry the system dependency; none matching → all), `_bundled_attempt`
+  (`_pre_attempt` with an `apply_fn` calling `wire_bundled_jar` per (module pom, jar); keys `(sbmig-bundled, pom, jar.path)`;
+  `intake.unknown_jar: skip` → a jar the repository lacks is not wired, Handover line only; journal `bundled_jar_wired`;
+  `self._followup(bundled_jar_followup(w))`), `_bundled_facts` (in front of `_package_facts`), `_bundled_contradiction`
+  (first inside `_decline_contradiction`). Registered between `sbmig-resources` and `sbmig-jakarta`.
+  **`TrySource` += `sbmig-bundled`** (`sbmig/core/models.py`): the first e2e showed the attempt recorded (`source`,
+  `outcome build_ok`) but `errors.md` with an empty tries column — `errors.begin_try` had raised a ValidationError on the
+  unknown source and the loop had only logged it; a guard test now keeps `PRE_TRY_SOURCES ⊆ TrySource`.
+* **Restructure / report** — `sbmig/restructure/system_jars.py`: `copy_jar_to_module_lib` (shared with `_relocate_system_dep`),
+  `wire_bundled_jar` (locates the jar after the restructure by sha1, then by a path ending in the as-is path, then a
+  single name match — `ValueError` when none; placeholder coordinates = module / project groupId + `maven_artifact_id(stem)` +
+  file-name version or "0"; system case: copy, `<dependency>` + the Ant-intake comment, the same dependency in each boot pom
+  with `systemPath` `${project.basedir}/<relpath>` to the one copy, `includeSystemScope` on their Boot plugin; idempotent),
+  `ensure_include_system_scope`, `bundled_jar_followup`, `webinf_left_followup` (the webapp-move line names the jars and
+  says the loop wires one a build error needs). `sbmig/report/markdown.py`: section "Bundled jars (declared by no pom)"
+  (`bundled_jars_lines`, the "wired" column read from the Handover lines), flag text; i18n for all of it.
+* **Fixture** `webapp-bundled-jar` (from `company-spring5-web`, `com.example:vault`): `WEB-INF/lib/acme-seed-1.0.jar`
+  (749 bytes, `com.acme.seed.Seed`, no pom.properties; built with JDK 21 `javac --release 8`, commands in the README) used by
+  `CryptoUtil`; the as-is Maven build fails by design (`BUILD_MATRIX` needs value `fails`, asserted by the integration test).
+  e2e: exit 0, build ok, 1 LLM call (the review), `new 1` = the pre-try, `resolved 15`, flags `bundled-jars`; the back pom
+  holds the system dependency, `vault-boot/pom.xml` the same dependency (`${project.basedir}/../vault-back/lib/…`) +
+  `includeSystemScope`, and `vault-boot/target/vault.jar` contains `BOOT-INF/lib/acme-seed-1.0.jar` (checked with `unzip -l`;
+  the fixture's boot module is a jar, not a war — no JSP).
+* **Regression e2e** (PASS): `company-spring5-web`, `ant-webapp` (now also flagged `bundled-jars`: the jars the pom synthesis
+  deliberately leaves undeclared — container API copies, unused jars — are listed in the new section; none is wired unless a
+  build error needs it, and a `provided`-scope copy never), `company-servlet-jsp`, `servlet-nonstandard-dirs`.
+* **Not done / open**: the "as-is view for the LLM" idea (serve `asis:<path>` from the first commit, an automatic as-is → now
+  diff of the error file) goes into the case-thread increment; `WEB-INF/classes` stays Handover-only.

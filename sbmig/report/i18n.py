@@ -324,6 +324,21 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "more java files lie outside the modules' source roots than inside them: they are neither built nor migrated — "
     "check whether they belong to the application":
         "모듈의 소스 루트 안보다 밖에 java 파일이 더 많다: 빌드도 이관도 되지 않는다 — 애플리케이션의 일부인지 확인할 것",
+    # v2.1z-i: 동봉 jar — 플래그 bundled-jars 설명과 "동봉 jar" 섹션(sbmig/report/markdown.py — 바꾸면 함께)
+    "jars sit in the tree (e.g. WEB-INF/lib) that no pom declares — the as-is IDE build compiled against them, Maven does "
+    "not: when a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`: a normal dependency when the "
+    "repository has its coordinates, else system scope + includeSystemScope) — see \"Bundled jars (declared by no pom)\" "
+    "and the Handover":
+        "어느 pom 도 선언하지 않은 jar 가 트리에 있다(예: WEB-INF/lib) — as-is IDE 빌드는 이것으로 컴파일했지만 Maven 은 보지 못한다: "
+        "빌드 오류가 그 jar 를 필요로 하면 sbmig 가 모듈 pom 에 연결한다(`sbmig-bundled`: 저장소에 좌표가 있으면 보통 의존성, 없으면 "
+        "system scope + includeSystemScope) — \"동봉 jar (pom 미선언)\" 섹션과 인수인계 참조",
+    "Bundled jars (declared by no pom)": "동봉 jar (pom 미선언)",
+    "Jars in the tree that no pom declares: the as-is IDE build compiled against them, Maven does not. When a build error "
+    "needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call).":
+        "어느 pom 도 선언하지 않은 트리 안의 jar: as-is IDE 빌드는 이것으로 컴파일했지만 Maven 은 보지 못한다. 빌드 오류가 그 jar 를 "
+        "필요로 하면 sbmig 가 모듈 pom 에 연결한다(`sbmig-bundled`, LLM 호출 없음).",
+    "| jar | coordinates | packages | used | wired |": "| jar | 좌표 | 패키지 | 사용 | 연결 |",
+    "unknown": "모름",
     # v2.1z-d: Oracle ADF — 플래그 설명과 "ADF 규모" 섹션(ADF 프로젝트는 변환하지 않는다 — 현업 결정 2026-11-02)
     "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf imports, ADF Model "
     "bindings, ADF Faces / task flows): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다; the run stopped at "
@@ -559,6 +574,39 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
      (r"pom 복사본 무시: `\g<p>` 은(는) `\g<q>` 와 좌표가 같고(`\g<c>`), 모듈 `\g<q2>` 옆에 있으며, 어느 pom 도 모듈로 나열하지 "
       r"않는다 — 떠도는 복사본(IDE 출력·백업 폴더)으로 보고 빌드도 이관도 하지 않고 그 자리에 둔다; 원본에서 지우거나, 진짜 모듈이면 "
       r"다른 좌표를 주고 <modules> 에 나열하라")),
+    # v2.1z-i: 동봉 jar 연결 줄(sbmig/restructure/system_jars.py bundled_jar_followup — 바꾸면 함께; 루프가 앞에 ⚠ 를 붙일 수 있다)
+    ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` \(Maven coordinates unknown — no pom\.properties, not in the jar name table\) "
+      r"wired into `(?P<p>[^`]+)` as a system dependency `(?P<c>[^`]+)` — wired by sbmig so the build sees the classes the "
+      r"as-is IDE build saw; publish the jar to Nexus \((?P<cmd>`[^`]+`)\) and replace the system dependency with the real "
+      r"coordinates$"),
+     (r"\g<w>동봉 jar `\g<n>` (Maven 좌표 모름 — pom.properties 없음, jar 이름 표에 없음)를 `\g<p>` 에 system 의존성 `\g<c>` 로 "
+      r"연결했다 — as-is IDE 빌드가 보던 클래스를 빌드가 보도록 sbmig 가 연결한 것; jar 를 Nexus 에 올리고(\g<cmd>) system 의존성을 "
+      r"진짜 좌표로 바꿀 것")),
+    ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` \((?P<src>\w+) coordinates, not in the repository\) "
+      r"wired into `(?P<p>[^`]+)` as a system dependency `(?P<c>[^`]+)` — wired by sbmig so the build sees the classes the "
+      r"as-is IDE build saw; publish the jar to Nexus \((?P<cmd>`[^`]+`)\) and replace the system dependency with the real "
+      r"coordinates$"),
+     (r"\g<w>동봉 jar `\g<n>` (\g<src> 좌표, 저장소에 없음)를 `\g<p>` 에 system 의존성 `\g<c>` 로 연결했다 — as-is IDE 빌드가 "
+      r"보던 클래스를 빌드가 보도록 sbmig 가 연결한 것; jar 를 Nexus 에 올리고(\g<cmd>) system 의존성을 진짜 좌표로 바꿀 것")),
+    ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` wired into `(?P<p>[^`]+)` as a compile dependency `(?P<c>[^`]+)` "
+      r"\(the repository has it\)$"),
+     r"\g<w>동봉 jar `\g<n>` 를 `\g<p>` 에 보통(compile) 의존성 `\g<c>` 로 연결했다(저장소에 있음)"),
+    # v2.1z-i: 웹 루트 이동 뒤 남은 WEB-INF/lib · classes · META-INF 파일(system_jars.webinf_left_followup — 바꾸면 함께)
+    ((r"^(?P<k>\d+) file\(s\) under WEB-INF/lib, WEB-INF/classes or META-INF stay in (?P<d>.+?) \(not packaged\): "
+      r"jar\(s\) (?P<j>.+?) — sbmig wires a bundled jar into its module pom when a build error needs it \(`sbmig-bundled`\), "
+      r"declare the others as Maven dependencies; move the classes into src/main/java$"),
+     (r"WEB-INF/lib, WEB-INF/classes, META-INF 아래 파일 \g<k>개가 \g<d> 에 남는다(패키징되지 않음): jar \g<j> — 빌드 오류가 "
+      r"필요로 하면 sbmig 가 모듈 pom 에 연결한다(`sbmig-bundled`), 나머지는 Maven 의존성으로 선언할 것; 클래스는 src/main/java 로 "
+      r"옮길 것")),
+    ((r"^(?P<k>\d+) file\(s\) under WEB-INF/lib, WEB-INF/classes or META-INF stay in (?P<d>.+?) \(not packaged\): "
+      r"jar\(s\) (?P<j>.+?) — sbmig wires a bundled jar into its module pom when a build error needs it \(`sbmig-bundled`\), "
+      r"declare the others as Maven dependencies$"),
+     (r"WEB-INF/lib, WEB-INF/classes, META-INF 아래 파일 \g<k>개가 \g<d> 에 남는다(패키징되지 않음): jar \g<j> — 빌드 오류가 "
+      r"필요로 하면 sbmig 가 모듈 pom 에 연결한다(`sbmig-bundled`), 나머지는 Maven 의존성으로 선언할 것")),
+    ((r"^(?P<k>\d+) file\(s\) under WEB-INF/lib, WEB-INF/classes or META-INF stay in (?P<d>.+?) \(not packaged\): "
+      r"declare the jars as Maven dependencies / move the classes into src/main/java$"),
+     (r"WEB-INF/lib, WEB-INF/classes, META-INF 아래 파일 \g<k>개가 \g<d> 에 남는다(패키징되지 않음): jar 는 Maven 의존성으로 "
+      r"선언하고 클래스는 src/main/java 로 옮길 것")),
     ((r"^sources outside the Maven reactor: (?P<counts>.+?) lie outside the modules' source roots \((?P<dirs>.+?)\) and "
       r"are not built or migrated — check whether they belong to the application \(a stale copy, a tool, or sources the "
       r"as-is build reached in another way\)$"),

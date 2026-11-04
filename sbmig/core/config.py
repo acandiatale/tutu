@@ -845,6 +845,7 @@ class IntakeConfig(BaseModel):
     synth_group_id: str = "com.company.migrated"           # placeholder groupId of a synthesized pom (company config overrides)
     synth_version: str = "1.0.0-SNAPSHOT"                   # version of a synthesized pom when build.xml names none
     unknown_jar: Literal["system", "skip"] = "system"       # system = <systemPath> dependency (build passes) | skip = not declared
+    bundled_jars: bool = True                      # v2.1z-i: scan undeclared jars in the tree (intake.bundled_jars)
     jar_lookup: bool = True                                 # sha1 lookup (build.repository_url / settings mirror / Central) for jars still unknown
     jar_names_file: str = "knowledge/libraries/jar_names.yml"   # shipped stem → coordinates table
     company_jar_names_file: str = "jar_names.yml"           # company rows under kb.dir (same format), merged over the shipped table

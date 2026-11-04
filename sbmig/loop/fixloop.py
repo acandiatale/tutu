@@ -102,12 +102,16 @@ from typing import Any, Callable, Optional
 from sbmig.core.config import Config
 from sbmig.core.interfaces import FixContext, TriageContext
 from sbmig.core.models import (GAV, AdvisoryFinding, BlockReason, BuildError, BuildResult, DecisionKind, ErrorCluster,
-                               ErrorKind, FileChange, FixAttempt, IterationRecord, KBMatch, LLMUsage, MergeConflict,
+                               ErrorKind, FileChange, FixAttempt, IterationRecord, JarCoordinate, KBMatch, LLMUsage,
+                               MergeConflict,
                                Phase,
                                PhaseResult, ProjectProfile, ScriptBase, ScriptRunResult, TriageDecision, utcnow)
 from sbmig.core.workspace import Workspace
 
 from sbmig.core.stage import stage
+
+from sbmig.analyze.bundled_jars import providers
+from sbmig.restructure.system_jars import WiredJar, bundled_jar_followup, wire_bundled_jar
 
 from .blocked_registry import BlockedRegistry, attribute, compose_suggestion, is_in_house, sanitize_errors
 from .budget import LoopBudget
@@ -457,8 +461,10 @@ MISSING_VERSION_SIG = "pom_invalid|missing_version"   # the generic signature of
 SBMIG_VERSION_SOURCE = "sbmig-version"               # FixAttempt.source of the deterministic missing-version try
 SBMIG_RESOURCES_SOURCE = "sbmig-resources"           # v2.1m: … of the nonFilteredFileExtensions try
 SBMIG_JAKARTA_SOURCE = "sbmig-jakarta"               # v2.1z-e: … of the jakarta-build swap of a javax-era dependency
+SBMIG_BUNDLED_SOURCE = "sbmig-bundled"               # v2.1z-i: … of the wiring of a jar bundled in the tree
 RESOURCE_FACTS_FILES = 10                             # binary files named in the v2.1m prompt facts
-PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE, SBMIG_JAKARTA_SOURCE})   # zero-LLM pre-tries
+PRE_TRY_SOURCES = frozenset({SBMIG_VERSION_SOURCE, SBMIG_RESOURCES_SOURCE, SBMIG_JAKARTA_SOURCE,
+                             SBMIG_BUNDLED_SOURCE})   # zero-LLM pre-tries
 JAKARTA_SEARCH_PREFIX = "repository search for a jakarta build of"   # BlockedItem.suggestion / notes evidence (v2.1z-e)
 UNMAPPED_PREFIX = "the library behind"                                # … "<owner class> could not be matched to a dependency"
 # 소유 클래스의 패키지 토큰을 선언된 의존성과 맞출 때 뜻이 없는 조각 / tokens that identify nothing when matching a class
@@ -501,6 +507,10 @@ CHAIN_PROPERTY_FACTS_MAX = 20                         # "parent chain property: 
 PACKAGE_FACTS_ARTIFACTS = 25                          # artifactIds per `managed artifacts under <group>` line
 PACKAGE_FACTS_LINES = 5                               # such lines per prompt (one per missing package)
 _PACKAGE_MISSING_RE = re.compile(r"package\s+([A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*)+)\s+does not exist")
+# v2.1z-i: `cannot find symbol … symbol: class X` → X (its package from the error file's `import <p>.X;`)
+_SYMBOL_CLASS_RE = re.compile(r"symbol:\s+class\s+([A-Za-z_]\w*)")
+BUNDLED_READ_CHARS = 200_000                          # chars of an error file read for its imports (bundled-jar check)
+BUNDLED_TRUSTED_SOURCES = ("pom_properties", "sha1_lookup", "name_table")   # jar coordinates checked in the repository
 # v2.1v (B-H1): the line for a library the new chain / the target Boot BOM manages — no repository list, no verdict
 API_CHANGED_TAIL = " — the API changed, fix the code and leave the version"
 OTHER_ERRORS_CHARS = 4000                             # FixContext.other_errors_summary, cut at a line boundary (E-L9)
@@ -3600,6 +3610,9 @@ class BuildFixLoop:
 
         The fact that contradicts a "no jakarta build" decline — a verified build discovery found for a library of the
         case — or ""."""
+        bundled = self._bundled_contradiction(c, reason)     # v2.1z-i: the "missing" library is bundled
+        if bundled:
+            return bundled
         if not self._jakarta_enabled() or not re.search(r"(?i)jakarta|javax", reason or ""):
             return ""
         try:
@@ -3612,6 +3625,23 @@ class BuildFixLoop:
         except Exception as e:  # noqa: BLE001
             log.debug("decline contradiction for %s failed: %s: %s", c.id, type(e).__name__, e)
         return ""
+
+    def _bundled_contradiction(self, c: ErrorCluster, reason: str) -> str:
+        """v2.1z-i: 좌표·라이브러리·jar 가 없다는 거절인데 케이스가 잃은 패키지를 동봉 jar 가 가지고 있으면 그 사실, 아니면 "".
+
+        The fact that contradicts a "no coordinates / library missing" decline — a bundled jar provides one of the
+        case's missing packages — or ""."""
+        if not re.search(r"(?i)coordinates|artifact|library|jar|좌표|라이브러리|아티팩트", reason or ""):
+            return ""
+        try:
+            provs = self._bundled_providers(c)
+        except Exception as e:  # noqa: BLE001
+            log.debug("bundled contradiction for %s: %s: %s", c.id, type(e).__name__, e)
+            return ""
+        if not provs:
+            return ""
+        pkg, jar, _files = provs[0]
+        return f"`{jar.path}` in the project provides package `{pkg}` — the library is not missing, it is bundled; wire it"
 
     def _jakarta_plan(self, c: ErrorCluster) -> dict[str, Any]:
         """사전 시도 ``sbmig-jakarta`` 의 계획(클러스터별로 라운드마다 한 번): javax 케이스의 라이브러리마다 탐색 → 확인된 최선의
@@ -3734,6 +3764,284 @@ class BuildFixLoop:
             solution="sbmig switches the declaration to the jakarta build it verified in the repository — no LLM call")
         self._jakarta_plans.pop(c.id, None)             # the next round plans again (the applied keys are remembered)
         return applied
+
+    # ------------------------------------------------------------------ v2.1z-i bundled jars
+    def _bundled_enabled(self) -> bool:
+        """``intake.bundled_jars`` 이고 분석이 동봉 jar 를 찾았는가."""
+        if not bool(getattr(getattr(self.cfg, "intake", None), "bundled_jars", True)):
+            return False
+        return bool(getattr(self.profile, "bundled_jars", None) or [])
+
+    def _bundled_wireable(self) -> list[JarCoordinate]:
+        """붙일 수 있는 동봉 jar — 컨테이너 API 사본(``scope == "provided"``: servlet / jsp / el, Tomcat)은 절대 붙이지 않는다.
+
+        The bundled jars that may be wired: a container API copy (`scope == "provided"`) never is."""
+        return [j for j in getattr(self.profile, "bundled_jars", None) or [] if (j.scope or "compile") != "provided"]
+
+    def _bundled_missing_packages(self, c: ErrorCluster) -> dict[str, list[str]]:
+        """v2.1z-i: 케이스가 잃은 패키지 → 그 오류 파일들. ``package <p> does not exist`` 의 ``<p>`` 와, ``cannot find symbol
+        … symbol: class X`` 오류면 오류 파일의 ``import <p>.X;`` 의 ``<p>``(파일은 ``BUNDLED_READ_CHARS`` 까지 읽는다).
+        ``javax.*`` / ``jakarta.*`` 는 jakarta 사전 시도 몫이라 뺀다. 예외 없음.
+
+        The packages the case lacks → the error files: `package <p> does not exist`, and for `cannot find symbol …
+        class X` the `<p>` of `import <p>.X;` in the error's file (read up to `BUNDLED_READ_CHARS`). `javax.*` /
+        `jakarta.*` are left to the jakarta pre-try. Never raises."""
+        out: dict[str, list[str]] = {}
+        texts: dict[str, str] = {}
+
+        def add(pkg: str, f: str) -> None:
+            if pkg.startswith(("javax.", "jakarta.")) or pkg in ("javax", "jakarta"):
+                return
+            files = out.setdefault(pkg, [])
+            if f and f not in files:
+                files.append(f)
+
+        try:
+            for e in c.errors:
+                f = _norm_path(e.file) if e.file else ""
+                blob = f"{e.message or ''}\n{e.raw or ''}"
+                m = _PACKAGE_MISSING_RE.search(blob)
+                if m:
+                    add(m.group(1), f)
+                    continue
+                s = _SYMBOL_CLASS_RE.search(blob)
+                if s is None or not f:
+                    continue
+                if f not in texts:
+                    try:
+                        texts[f] = self.ws.read(f)[:BUNDLED_READ_CHARS]
+                    except Exception:  # noqa: BLE001 - an unreadable file: no import to read
+                        texts[f] = ""
+                im = re.search(r"(?m)^\s*import\s+([A-Za-z_][\w.]*)\." + re.escape(s.group(1)) + r"\s*;", texts[f])
+                if im:
+                    add(im.group(1), f)
+        except Exception as e:  # noqa: BLE001 - facts never break the loop
+            log.debug("bundled packages for %s: %s: %s", c.id, type(e).__name__, e)
+        return out
+
+    def _bundled_providers(self, c: ErrorCluster) -> list[tuple[str, JarCoordinate, list[str]]]:
+        """(잃은 패키지, 그것을 가진 동봉 jar, 오류 파일들) — 패키지마다 ``providers`` 의 첫 jar(정확 일치 우선).
+
+        (missing package, the bundled jar providing it, error files): the first `providers` hit per package."""
+        if not self._bundled_enabled():
+            return []
+        out: list[tuple[str, JarCoordinate, list[str]]] = []
+        jars = self._bundled_wireable()
+        for pkg, files in self._bundled_missing_packages(c).items():
+            try:
+                hits = list(providers(jars, pkg) or [])
+            except Exception as e:  # noqa: BLE001
+                log.debug("providers(%s): %s: %s", pkg, type(e).__name__, e)
+                hits = []
+            if hits:
+                out.append((pkg, hits[0], files))
+        return out
+
+    def _bundled_owning_pom(self, f: str, poms: list[str]) -> str:
+        """오류 파일을 품는 현재 트리의 가장 깊은 pom(없으면 루트 pom)."""
+        from sbmig.analyze.pom_parser import owning_pom
+        from sbmig.core.models import PomInfo
+        infos = [PomInfo(path=p, artifact_id="") for p in poms]
+        hit = owning_pom(f, infos) if f else None
+        return _norm_path(hit.path) if hit is not None else "pom.xml"
+
+    def _bundled_plan(self, c: ErrorCluster) -> list[tuple[str, JarCoordinate, str]]:
+        """아직 해 보지 않은 (모듈 pom, jar, 패키지) 들 — 현재 트리의 pom 으로(재구성 뒤 배치) 오류 파일의 모듈을 정한다."""
+        provs = self._bundled_providers(c)
+        if not provs:
+            return []
+        poms = [_norm_path(p) for p in self.ws.pom_files()]
+        plan: list[tuple[str, JarCoordinate, str]] = []
+        for pkg, jar, files in provs:
+            targets = list(dict.fromkeys(self._bundled_owning_pom(f, poms) for f in files)) or ["pom.xml"]
+            for pom in targets:
+                if (SBMIG_BUNDLED_SOURCE, pom, jar.path) in self._pre_tried:
+                    continue
+                if not any(p == pom and j.path == jar.path for p, j, _ in plan):
+                    plan.append((pom, jar, pkg))
+        return plan
+
+    def _bundled_targets(self, c: ErrorCluster) -> list[str] | None:
+        """v2.1z-i: 케이스가 잃은 패키지를 동봉 jar 가 갖고 있으면 그 jar 를 붙일 모듈 pom 들(오류 파일의 ``owning_pom``,
+        없으면 루트 pom), 아니면 None(설정 꺼짐·동봉 jar 없음·제공 jar 없음·이미 다 해 봄).
+
+        The module poms (`owning_pom` of the error files, else the root pom) to wire a bundled jar into, when a bundled
+        jar provides a package the case lacks; None otherwise (config off, no bundled jars, no provider, all tried)."""
+        if self.dry_run or not self._bundled_enabled():
+            return None
+        plan = self._bundled_plan(c)
+        return list(dict.fromkeys(p for p, _j, _k in plan)) or None
+
+    def _bundled_in_repository(self, jar: JarCoordinate) -> bool:
+        """jar 자신의 좌표(pom.properties / sha1 조회 / 이름표, 버전 있음)를 저장소 SET(v2.1z-e 조회기)이 실제로 갖고 있는가.
+        조회기가 없거나 읽을 수 없으면 False(= system scope).
+
+        True only when the jar's own coordinates (with a version) are found in the repository set (the v2.1z-e
+        `RepositoryLookup`: the pom of exact `g:a:v`, else the version in the metadata); no / unreadable lookup → False."""
+        g, a, v = jar.group_id, jar.artifact_id, jar.version
+        if jar.source not in BUNDLED_TRUSTED_SOURCES or not (g and a and v):
+            return False
+        lookup = self._repository()
+        if lookup is None:
+            return False
+        try:
+            self._mark(f"repository lookup {g}:{a}:{v}")
+            if lookup.pom_text(g, a, v):
+                return True
+            return v in (lookup.versions(g, a) or [])
+        except Exception as e:  # noqa: BLE001 - an unreadable repository counts as "not there"
+            log.debug("repository check %s:%s:%s: %s: %s", g, a, v, type(e).__name__, e)
+            return False
+
+    def _bundled_boot_poms(self, module_pom: str = "") -> list[str]:
+        """현재 트리에서 spring-boot-maven-plugin 을 가진 pom 들 + 분석의 boot 모듈(``<dir>/pom.xml`` 이 있으면).
+        ``module_pom`` 이 주어지면 그 모듈을 **의존하는**(또는 그 모듈 자체인) boot pom 만 남긴다 — MSA 처럼 boot 모듈이
+        여럿일 때 무관한 서비스에 system 의존성을 심지 않기 위해; 아무것도 안 맞으면 전부(안전한 기본값).
+
+        The current poms carrying the Boot plugin plus the profile's boot modules; with `module_pom`, only the
+        boot poms that depend on that module (or are it) — several boot modules (MSA) must not all carry the
+        system dependency; none matching → all of them (safe default)."""
+        from sbmig.restructure.restructurer import BOOT_PLUGIN
+        out: list[str] = []
+        for p in self.ws.pom_files():
+            ed = self._pom_editor(p)
+            try:
+                if ed is not None and ed.has_plugin(*BOOT_PLUGIN, where="build"):
+                    out.append(_norm_path(p))
+            except Exception as e:  # noqa: BLE001 - an unreadable pom is no boot pom
+                log.debug("boot plugin check %s: %s: %s", p, type(e).__name__, e)
+        for m in getattr(self.profile, "boot_modules", None) or []:
+            rel = _norm_path(f"{m.strip('/')}/pom.xml") if m and m not in (".", "") else "pom.xml"
+            if rel not in out and self.ws.exists(rel):
+                out.append(rel)
+        if not module_pom or len(out) <= 1:
+            return out
+        mod = self._pom_editor(module_pom)
+        try:
+            g, a = (mod.effective_group_id() or "", mod.artifact_id() or "") if mod is not None else ("", "")
+        except Exception:  # noqa: BLE001 - an unreadable module pom: keep every boot pom
+            return out
+        if not a:
+            return out
+        mp = _norm_path(module_pom)
+        kept: list[str] = []
+        for b in out:
+            if b == mp:
+                kept.append(b)
+                continue
+            ed = self._pom_editor(b)
+            try:
+                if ed is not None and ed.has_dependency(g, a):
+                    kept.append(b)
+            except Exception as e:  # noqa: BLE001 - an unreadable boot pom is kept (safe default below)
+                log.debug("boot pom dependency check %s: %s: %s", b, type(e).__name__, e)
+        return kept or out
+
+    def _bundled_attempt(self, pr: PhaseResult, st: _Round, c: ErrorCluster) -> bool:
+        """v2.1z-i 사전 시도(LLM 0회): 케이스가 잃은 패키지를 가진 동봉 jar 를 오류 파일의 모듈 pom 에 붙인다 — 저장소가 jar 의
+        좌표를 가지면 보통 의존성, 아니면 ``<module>/lib/<name>`` 복사 + system scope + boot 모듈의 ``includeSystemScope``
+        (``wire_bundled_jar``). 좌표는 추측하지 않는다(자리표시 좌표 + 인수인계 ⚠). ``intake.unknown_jar: skip`` 이면 저장소에
+        없는 jar 는 붙이지 않고 사실·인수인계만. (pom, jar) 마다 실행당 한 번, 커밋 ``fix(sbmig-bundled): <cluster id>``.
+
+        The zero-LLM wiring of a bundled jar that provides a package the case lacks (`wire_bundled_jar` per (module
+        pom, jar)): commit `fix(sbmig-bundled): <cluster id>`, scored and rolled back like any try; journal
+        `bundled_jar_wired` + one Handover line per wiring. `intake.unknown_jar: skip` → a jar the repository lacks is
+        not wired (facts + Handover only). Once per (pom, jar) per run."""
+        plan = self._bundled_plan(c)
+        if not plan:
+            return False
+        policy = str(getattr(getattr(self.cfg, "intake", None), "unknown_jar", "system") or "system")
+        items: list[tuple[str, JarCoordinate, str, bool]] = []
+        for pom, jar, pkg in plan:
+            has = self._bundled_in_repository(jar)
+            if not has and policy == "skip":
+                self._pre_tried.add((SBMIG_BUNDLED_SOURCE, pom, jar.path))
+                self._followup(f"bundled jar `{PurePosixPath(jar.path).name}` provides package `{pkg}` needed by "
+                               f"`{pom}` but is not in the repository and intake.unknown_jar is skip — declare it "
+                               "as a Maven dependency (publish it to Nexus first)")
+                continue
+            items.append((pom, jar, pkg, has))
+        if not items:
+            return False
+        case_id = c.case_id or c.id
+        group = ""
+        root = self._pom_editor("pom.xml") if self.ws.exists("pom.xml") else None
+        try:
+            group = (root.effective_group_id() if root is not None else "") or ""
+        except Exception:  # noqa: BLE001
+            group = ""
+        wired: list[WiredJar] = []
+        what = "; ".join(f"{PurePosixPath(j.path).name} → {p} ({'compile' if h else 'system'})" for p, j, _k, h in items)
+        notes = [f"bundled jar {j.path} provides package {k} → wired into {p} as "
+                 + (f"a compile dependency {j.group_id}:{j.artifact_id}:{j.version} (the repository has it)" if h
+                    else "a system dependency (copied under the module's lib/)")
+                 for p, j, k, h in items]
+        log.info("sbmig 동봉 jar 연결 (LLM 0회): %s", what)
+
+        def apply() -> ScriptRunResult:
+            changed: list[str] = []
+            for pom, jar, _pkg, has in items:
+                w = wire_bundled_jar(self.ws, self.cfg, module_pom=pom, jar=jar, repository_has=has,
+                                     boot_poms=self._bundled_boot_poms(pom), project_group=group)
+                wired.append(w)
+                for f in (pom, w.copied_to, *(w.boot_poms or [])):
+                    if f and f not in changed:
+                        changed.append(f)
+            return ScriptRunResult(status="ok", changed_files=changed)
+
+        applied = self._pre_attempt(
+            pr, st, c, source=SBMIG_BUNDLED_SOURCE, apply_fn=apply, notes=notes,
+            keys=[(SBMIG_BUNDLED_SOURCE, p, j.path) for p, j, _k, _h in items],
+            rationale=f"sbmig-bundled: a jar in the project provides the missing package(s) ({what}) — wired without "
+                      "an LLM call",
+            analysis=("the build lacks package(s) that a jar bundled in the project (declared by no pom) provides: "
+                      + ", ".join(sorted({k for _p, _j, k, _h in items}))),
+            solution="sbmig declares the bundled jar as a dependency of the module (system scope when the repository "
+                     "lacks it) — no LLM call")
+        if applied:
+            for w in wired:
+                coords = f"{w.group_id}:{w.artifact_id}:{w.version}"
+                self.ws.journal({"event": "bundled_jar_wired", "case": case_id, "jar": w.jar.path, "pom": w.module_pom,
+                                 "coordinates": coords, "scope": w.scope, "placeholder": w.placeholder})
+                try:
+                    self._followup(bundled_jar_followup(w))
+                except Exception as e:  # noqa: BLE001 - the Handover line is an aid
+                    log.debug("bundled_jar_followup: %s: %s", type(e).__name__, e)
+        return applied
+
+    def _bundled_facts(self, c: ErrorCluster) -> list[str]:
+        """v2.1z-i 프롬프트 사실: (jar, 패키지)마다 "the project bundles `<jar>` which provides package `<p>` …" 한 줄
+        (``PACKAGE_FACTS_ARTIFACTS`` 개까지). 예외 없음.
+
+        One `the project bundles <jar> which provides package <p> …` line per (jar, package), capped. Never raises."""
+        out: list[str] = []
+        try:
+            if not self._bundled_enabled():
+                return []
+            jars = self._bundled_wireable()
+            for pkg in self._bundled_missing_packages(c):
+                try:
+                    hits = list(providers(jars, pkg) or [])
+                except Exception:  # noqa: BLE001
+                    hits = []
+                for jar in hits:
+                    if len(out) >= PACKAGE_FACTS_ARTIFACTS:
+                        return out
+                    if jar.source == "pom_properties" and jar.group_id and jar.artifact_id and jar.version:
+                        coords = f"{jar.group_id}:{jar.artifact_id}:{jar.version}"
+                    elif jar.group_id and jar.artifact_id and jar.version:
+                        coords = f"{jar.group_id}:{jar.artifact_id}:{jar.version} ({jar.source})"
+                    else:
+                        coords = "unknown — no pom.properties, not in the jar name table"
+                    name = PurePosixPath(jar.path).name
+                    line = (f"the project bundles `{jar.path}` which provides package `{pkg}` (coordinates: {coords}) — "
+                            f"wire it as a dependency (system scope at `${{project.basedir}}/lib/{name}` when the "
+                            "repository lacks it) instead of calling the library missing")
+                    if line not in out:
+                        out.append(line)
+        except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
+            log.debug("bundled facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
+        return out
 
     # ------------------------------------------------------------------ v2.1l dependency versions
     def _versions(self) -> VersionResolver:
@@ -4152,11 +4460,14 @@ class BuildFixLoop:
         return plan, unknown, bool(seen), pairs
 
     def _pre_tries(self) -> tuple[_PreTry, ...]:
-        """LLM 0회 사전 시도 목록(순서대로 첫 번째로 해당하는 것 하나): v2.1l 누락 버전, v2.1m 리소스 필터링.
+        """LLM 0회 사전 시도 목록(순서대로 첫 번째로 해당하는 것 하나): v2.1l 누락 버전, v2.1m 리소스 필터링, v2.1z-i 동봉
+        jar, v2.1z-e jakarta 빌드.
 
-        The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources."""
+        The zero-LLM pre-tries, in order (the first that matches a case is the one): v2.1l versions, v2.1m resources,
+        v2.1z-i bundled jars, v2.1z-e jakarta builds."""
         return (_PreTry(SBMIG_VERSION_SOURCE, self._version_targets, self._version_attempt),
                 _PreTry(SBMIG_RESOURCES_SOURCE, self._resources_targets, self._resources_attempt),
+                _PreTry(SBMIG_BUNDLED_SOURCE, self._bundled_targets, self._bundled_attempt),     # v2.1z-i, before jakarta
                 _PreTry(SBMIG_JAKARTA_SOURCE, self._jakarta_targets, self._jakarta_attempt))
 
     def _pre_try_for(self, c: ErrorCluster, d: TriageDecision) -> tuple[_PreTry | None, list[str]]:
@@ -4434,11 +4745,12 @@ class BuildFixLoop:
                     if m and not m.group(1).startswith("javax.") and m.group(1) not in pkgs:
                         pkgs.append(m.group(1))
                         break
+            bundled = self._bundled_facts(c)            # v2.1z-i: a jar in the project provides it
             if not pkgs:
-                return []
+                return bundled
             keys = self._managed_keys()
             if not keys:
-                return []
+                return bundled
             by_group: dict[str, set[str]] = {}
             for k in keys:
                 g, _, a = k.partition(":")
@@ -4456,7 +4768,7 @@ class BuildFixLoop:
                 line = f"managed artifacts under {group} (add the one that holds {pkg}, version-less): {shown}"
                 if line not in out:
                     out.append(line)
-            return out
+            return bundled + out
         except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
             log.debug("package facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
             return []
