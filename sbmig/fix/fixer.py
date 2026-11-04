@@ -447,7 +447,29 @@ class LLMFixer:
             if guidance:
                 adv_in_prompt = sum(1 for ln in guidance.splitlines() if ln.startswith("- "))
             messages = self.build_script_messages(packed, mode, base, system=system, user_template=user_t)
-            last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
+            # v2.1z-p: the case thread — an augment continues the gateway session of the base attempt with the delta only
+            continuing = (self._thread_on() and mode == "augment" and base is not None
+                          and bool(getattr(base, "session_id", None)))
+            if continuing:
+                full_chars = sum(len(m.content) for m in messages)
+                messages = self.build_thread_turn(packed, base)
+                meta["session_id"] = str(base.session_id)
+                log.info("script prompt for %s: continuing the case's gateway session %s with the delta (%d chars; the full "
+                         "prompt would be %d)", cluster.id, base.session_id, sum(len(m.content) for m in messages), full_chars)
+            else:
+                meta.pop("session_id", None)
+            try:
+                last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
+            except LLMError as e:
+                if continuing and getattr(self.cfg.llm, "thread_fallback_full", True) and e.status is not None \
+                        and 400 <= int(e.status) < 500:
+                    log.warning("thread continuation for %s rejected (HTTP %s): the full prompt goes out in a new session",
+                                cluster.id, e.status)
+                    meta.pop("session_id", None)
+                    messages = self.build_script_messages(packed, mode, base, system=system, user_template=user_t)
+                    last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
+                else:
+                    raise
             verify = parsed.verify                  # v2.1d: the latest <verify> of any round
 
             # 1) 문맥 라운드: LLM 이 파일·grep 을 더 달라면 내준다(쓸 수 있는 답이 오거나 한도에 닿으면 멈춤)
@@ -461,8 +483,7 @@ class LLMFixer:
                          "grep(s) %s", cluster.id, rounds, self.cfg.llm.max_context_rounds, len(parsed.need_files),
                          parsed.need_files[:4], len(parsed.need_grep), parsed.need_grep[:3])
                 served = self.serve_context(ws, parsed.need_files, parsed.need_grep, remaining)
-                messages = messages + [ChatMessage(role="assistant", content=last.content),
-                                       ChatMessage(role="user", content=served)]
+                messages = self._follow_up(messages, last, served, meta)
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
                 verify = parsed.verify or verify
             if parsed.wants_context and not parsed.usable and not parsed.blocked_reason:
@@ -479,8 +500,7 @@ class LLMFixer:
                 fb = self._feedback_problems(parsed, problems)
                 log.info("answer for %s cannot be used (%s) → one feedback round", cluster.id, fb[0][:160])
                 fb_text = self.script_feedback_message(parsed, fb, mode)
-                messages = messages + [ChatMessage(role="assistant", content=last.content),
-                                       ChatMessage(role="user", content=fb_text)]
+                messages = self._follow_up(messages, last, fb_text, meta)
                 last, parsed = self._call(messages, model, usage, transcript, role=role, metadata=meta, parse=parse)
                 verify = parsed.verify or verify
                 problems = self._script_problems(parsed, sbase)
@@ -673,6 +693,58 @@ class LLMFixer:
                 log.warning("no script prompts for llm.prompt_version=%s; using v1", self.cfg.llm.prompt_version)
                 self._script_prompts = load_script_prompts("v1", extra, timeout, target_text(self.cfg))
         return self._script_prompts
+
+    # v2.1z-p: 케이스 스레드 — 게이트웨이 세션은 system 프롬프트와 이전 턴을 기억한다(사용자 확인 2026-11-04). 보강 턴은 바뀐 것만
+    # 보낸다: 기준 스크립트가 한 일, 지금 남은 오류와 그 소스, (바뀔 수 있는) pom 과 버전 사실. 기준 코드·규칙·힌트·노트는 세션에 있다
+    THREAD_TURN_KEYS = ("base_result", "errors", "file_index", "files", "related_files", "pom", "library_hints")
+
+    def _thread_on(self) -> bool:
+        """``llm.case_thread`` — 케이스 스레드(한 케이스의 보강 요청들이 게이트웨이 세션 하나를 이어간다)가 켜져 있나."""
+        return bool(getattr(self.cfg.llm, "case_thread", False))
+
+    def build_thread_turn(self, packed: PackedContext, base: ScriptBase) -> list[ChatMessage]:
+        """스레드의 보강 턴(user 메시지 하나): 같은 대화라고 밝히고, 기준 스크립트의 결과·지금 오류·소스 발췌·pom·버전 사실만
+        (``THREAD_TURN_KEYS``) 붙인 뒤 "같은 출력 형식으로 COMPLETE 새 스크립트" 를 청한다. system 프롬프트·케이스 머리말·규칙·힌트·
+        노트·기준 코드는 세션이 기억하므로 보내지 않는다.
+
+        The augment turn of a case thread: one user message — "same conversation", then only what changed (the base
+        script's result, the errors now, their source windows, the poms, the version facts) and the request for the
+        COMPLETE new script in the same output format. No system prompt, no case header / rules / hints / base code."""
+        keys = list(getattr(packed, "keys", None) or [])
+        pairs = ([(t, b) for k, (t, b) in zip(keys, packed.sections) if k in self.THREAD_TURN_KEYS] if keys
+                 else list(packed.sections))
+        label = f"version {base.version}" if base.version else "this run's script"
+        kept = base.outcome in ("improved", "build_ok")
+        parts = [f"Same conversation, next turn for this case: your {label} ran here and "
+                 + ("its changes are STILL in the tree (it fixed what it targeted; the errors below appeared after it)."
+                    if kept else "was rolled back (the tree is as it was before it)."),
+                 "Only what changed follows — the case facts, the company rules, the hints and your earlier scripts are in "
+                 "this conversation already.", ""]
+        for t, b in pairs:
+            parts += [f"## {t}", b, ""]
+        if packed.truncated:
+            parts.append(f"(Context was shortened to fit the budget: {', '.join(packed.truncated)}. Ask with <need_files> / "
+                         "<need_grep> if you need more.)")
+        parts.append("Answer now with the COMPLETE new script in the same output format as before (<analysis>, <solution>, "
+                     "<verify> only after a major upgrade, <changes>, then <script> defining `def fix(p)`): it replaces "
+                     + label + (" and must also be a no-op for what is already applied" if kept
+                                else " and runs on a tree WITHOUT its changes") + ". Keep what worked, fix what the result "
+                     "shows. If no reusable script can fix this case, answer <no_script> with the reason and <edits> that fix "
+                     "this project directly.")
+        return [ChatMessage(role="user", content="\n".join(parts).strip() + "\n")]
+
+    def _follow_up(self, messages: list[ChatMessage], last: LLMResponse, text: str, meta: dict) -> list[ChatMessage]:
+        """문맥 / 피드백 라운드의 다음 메시지들: 스레드가 켜져 있고 직전 답에 세션 id 가 있으면 그 세션을 이어가며 새 user
+        메시지 하나만, 아니면 지금처럼 전체 대화(assistant 답 + user) 를 다시 보낸다.
+
+        The next round's messages: in a session (thread on, the last answer carried a session id) only the new user
+        message, continuing that session; otherwise the stateless chain (the assistant's answer + the user message)."""
+        sid = getattr(last, "session_id", None)
+        if self._thread_on() and sid:
+            meta["session_id"] = str(sid)
+            return [ChatMessage(role="user", content=text)]
+        meta.pop("session_id", None)
+        return messages + [ChatMessage(role="assistant", content=last.content), ChatMessage(role="user", content=text)]
 
     def build_script_messages(self, packed: PackedContext, mode: str = "new", base: Optional[ScriptBase] = None,
                               *, system: Optional[str] = None,
@@ -879,9 +951,15 @@ class LLMFixer:
         usage.input_tokens += u.input_tokens
         usage.output_tokens += u.output_tokens
         parsed = parse(resp.content)
+        sent = sum(len(m.content) for m in messages)
+        in_session = bool(metadata and metadata.get("session_id"))
+        if in_session:                       # v2.1z-p: the measurement the company lacks a document for (history re-billed?)
+            log.info("thread turn (session %s): sent %d chars in %d message(s) → prompt_tokens=%d", metadata["session_id"],
+                     sent, len(messages), u.input_tokens)
         transcript.append({"prompt_hash": messages_hash(messages), "response": resp.content,
                            "usage": u.model_dump(), "warnings": parsed.warnings,
-                           "session_id": getattr(resp, "session_id", None)})     # v2.1z-o: the gateway's session
+                           "session_id": getattr(resp, "session_id", None),      # v2.1z-o: the gateway's session
+                           "sent_chars": sent, "in_session": in_session})          # v2.1z-p: the thread measurement
         if parsed.warnings:
             log.debug("protocol warnings: %s", parsed.warnings)
         return resp, parsed

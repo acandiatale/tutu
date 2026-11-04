@@ -937,6 +937,7 @@ class ScriptBase(BaseModel):
     remaining_errors: list[str] = Field(default_factory=list)    # "file:line message" of the case still present
     introduced_errors: list[str] = Field(default_factory=list)   # "file:line message" new in the files it touched
     history: list[str] = Field(default_factory=list)             # earlier versions: "v1: 2 ok / 1 failed — <failure>"
+    session_id: Optional[str] = None               # v2.1z-p: the gateway session the base attempt's answer came from (continued by the augment)
 
 
 # LLM 직접 수정(Edit)의 종류: replace(문자열 치환) / write / create / delete / move / pom(pom 편집기 호출).

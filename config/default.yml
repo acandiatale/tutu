@@ -273,6 +273,10 @@ llm:
   cooldown_seconds: 60             # 2nd transport failure in a row → pause once per run, then retry (0 = unavailable at once)
   max_context_rounds: 2
   prompt_version: v1
+  case_thread: false               # v2.1z-p: one gateway session per case and run — the first ask opens it (full prompt), every
+                                   # augment of the case continues it with the delta only (last script's result, the errors now, new
+                                   # files), a fresh new / another case = a new session; needs llm.gateway: agent (sessions)
+  thread_fallback_full: true       # a continued turn rejected or no session id returned → the full prompt again in a new session
   # Per-project API cost (report "LLM usage and cost", fleet summary column llm_cost): list prices per 1M tokens.
   # OpenAI developer docs, 2026-10-22 (developers.openai.com/api/docs/models/gpt-5.6-terra, …/gpt-6-luna):
   #   GPT-5.6 Terra  $2.00 in / $12.00 out (cached in $0.20)  — the fix model

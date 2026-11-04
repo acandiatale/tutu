@@ -2543,7 +2543,8 @@ class BuildFixLoop:
                                   changed_files=list(dict.fromkeys(changed))[:100],
                                   remaining_errors=[fmt_error(e) for e in c.errors][:30],
                                   introduced_errors=[fmt_error(e) for e in a.introduced_errors][:20],
-                                  history=self._script_history(step.case_id, c))
+                                  history=self._script_history(step.case_id, c),
+                                  session_id=getattr(a, "llm_session_id", None))   # v2.1z-p: the case thread
             return ScriptBase(case_id=step.case_id, version=int(getattr(step.meta, "version", 0) or 0),
                               code=step.code, remaining_errors=[fmt_error(e) for e in c.errors][:30],
                               history=self._script_history(step.case_id, c))

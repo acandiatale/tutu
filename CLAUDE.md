@@ -258,7 +258,11 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   recorded as edits, never a stored script; obsolete Spring artifacts (spring-dao …) are removed, never version-pinned.
   **v2.1z-o:** `thread_id` is deprecated (never sent); a call that passes `metadata["session_id"]` continues that gateway session,
   one without it opens a new one — the case-thread increment's transport (`FixAttempt.llm_session_id` keeps the id; the mode
-  itself waits for the company's answers on delta-vs-history, TTL and billing).
+  itself waits for the company's answers on delta-vs-history, TTL and billing). **v2.1z-p (same night):** the session
+  remembers the system prompt and earlier turns → `llm.case_thread: true` makes a case's augments continue the base attempt's
+  session with the delta only (`LLMFixer.build_thread_turn`), context / feedback rounds send one message in the session, a
+  rejected continuation falls back to the full prompt; every turn logs `sent chars → prompt_tokens` (billing is undocumented —
+  measure it). Default off; the replay fixtures run stateless as before.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems;
   on the company's Windows PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: FAIL`, `cause=`).

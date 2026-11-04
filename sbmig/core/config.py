@@ -616,6 +616,12 @@ class LLMConfig(BaseModel):
     max_context_rounds: int = 2              # how many times the LLM may ask for more files per cluster
     extra_headers: dict[str, str] = Field(default_factory=dict)
     prompt_version: str = "v1"
+    # v2.1z-p (2026-11-04): the case thread — one gateway session per case and run (agent gateway: a session remembers the
+    # system prompt and the earlier turns, the user checked it): the first ask of a case opens it (full prompt, no session id),
+    # every augment of the same case continues it with the DELTA only (what the last script did, the errors now, new files),
+    # a fresh `new` after the augments / another case = a new session. Off = stateless asks as before.
+    case_thread: bool = False
+    thread_fallback_full: bool = True        # a continued turn rejected (4xx) / no session id back → resend the full prompt in a new session
     record_dir: Optional[str] = None         # record requests/responses for replay tests
     # company 공급자는 requests.post 한 번(Bearer LLM_API_KEY, json = model + messages + payload_extra)이다.
     # 게이트웨이 503 이후 사용자가 이 단순한 형태를 원했다 — LangChain·httpx 옵션을 더하지 않는다.

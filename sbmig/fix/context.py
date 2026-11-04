@@ -527,6 +527,7 @@ class PackedContext:
     """꾸려진 문맥: (제목, 본문) 섹션 목록(프롬프트 순서), 보여 준 파일, 이름만 적은 파일, 넣은 노트, 줄이거나
     뺀 섹션, 글자 수."""
     sections: list[tuple[str, str]] = field(default_factory=list)
+    keys: list[str] = field(default_factory=list)          # v2.1z-p: the section key of each pair (the thread turn picks by key)
     files_included: list[str] = field(default_factory=list)
     notes_included: list[str] = field(default_factory=list)
     truncated: list[str] = field(default_factory=list)
@@ -794,6 +795,7 @@ class ContextPacker:
         self._fit(secs, budget, packed, order=SCRIPT_TRUNCATE_ORDER)
         secs.sort(key=lambda s: s.order)
         packed.sections = [(s.title, s.text) for s in secs]
+        packed.keys = [s.key for s in secs]
         packed.notes_included = [s.title.removeprefix("Migration note: ") for s in secs if s.key == "notes"]
         packed.chars = sum(len(t) + len(b) + 4 for t, b in packed.sections)
         return packed

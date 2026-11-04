@@ -3759,3 +3759,34 @@ if only the delta: sbmig must send `messages = [the apply result + the request]`
 lifetime / idle expiry on the gateway (a case ladder can span an hour of builds). (3) Billing of a continued session — are the
 earlier turns counted again in `usage.prompt_tokens`? The design (`llm.case_thread: true`, `llm.thread_keep_turns`, replay keyed
 `case:<id>` + turn) follows the answers; until then every call is stateless, as today.
+
+## v2.1z-p — the case thread: one gateway session per case and run (2026-11-04)
+
+**Facts (user, 2026-11-04 night).** The agent gateway's session remembers the system prompt and the earlier turns ("system 롤로
+올린 걸 기억한다"); no idle expiry is visible; whether a continued session re-bills the earlier turns is undocumented. `thread_id` is
+deprecated. Continuation = send the returned `session_id` back; a fresh start = send none.
+
+**Design (the increment agreed 2026-11-02/03, now built).** `llm.case_thread: true` (default false; needs `llm.gateway: agent`):
+* The **first ask** of a case in a run (`new`) sends the full prompt (system + user) with no session id; the answer's
+  `session_id` is kept on `ScriptProposal.session_id` → `FixAttempt.llm_session_id`.
+* An **augment** of the same case (`ScriptBase.session_id` = the base attempt's) **continues** that session with one user
+  message, the **delta** only (`LLMFixer.build_thread_turn`, keys `THREAD_TURN_KEYS`: what the base script did, the errors now,
+  the file index and source windows, the poms, the version facts) — no system prompt, no case header / company rules / hints /
+  notes / base code (the session has them), then the request for the COMPLETE new script in the same output format.
+* **Context and feedback rounds** inside one try send one user message continuing the session of the last answer
+  (`_follow_up`); without a session id in the last answer (legacy gateway, replay) the stateless chain goes out as before.
+* A fresh `new` after the augments, another case, a stored-script base (no attempt) → no session id → a new session.
+* **Fallback** (`llm.thread_fallback_full: true`): a continued turn rejected with HTTP 4xx (unknown / expired session) → the
+  full prompt again in a new session, one WARNING; `false` → the error surfaces like any LLM failure.
+* **Measurement**: every turn in a session logs `thread turn (session …): sent N chars in M message(s) → prompt_tokens=K` and
+  the transcript / `llm-NNNN.json` carry `sent_chars` + `in_session` — compare `prompt_tokens` with `sent_chars` across the
+  turns of one case: tokens ≈ the delta → the history is not re-billed; tokens ≈ the whole history → it is (then the saving is
+  only the wire, and the mode is a quality tool, not a cost tool).
+* Off (default): everything as before — the replay fixtures and the legacy gateway are untouched.
+
+### As built
+`sbmig/fix/fixer.py` (`_thread_on`, `build_thread_turn`, `_follow_up`, the continuation + fallback around the first call, the
+measurement in `_call`), `sbmig/fix/context.py` (`PackedContext.keys`), `sbmig/core/models.py` (`ScriptBase.session_id`),
+`sbmig/loop/fixloop.py` (the base attempt's session on the `ScriptBase`), `sbmig/core/config.py` / `config/default.yml`
+(`llm.case_thread`, `llm.thread_fallback_full`). Tests `tests/fix/test_fix_thread.py`: first ask / augment delta / context round
+in the session / fallback on 4xx (and off) / mode off.
