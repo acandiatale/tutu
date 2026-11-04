@@ -411,3 +411,12 @@ notes:
   cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
   phases: [spring]
   always: false
+- file: spring-removed-artifacts.md
+  title: "Spring Framework artifacts that no longer exist on the target line (spring-dao, spring-mock, spring-hibernate3/4, ...)"
+  keywords:
+    - "spring-dao|spring-mock|spring-hibernate3|spring-hibernate4|spring-webmvc-portlet|spring-support|spring-struts|spring-ibatis"
+    - "org\\.springframework\\.dao\\.support\\.DaoSupport|SqlMapClientDaoSupport|HibernateDaoSupport"
+    - "dependency\\.version.*org\\.springframework:spring-"
+  cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
+  phases: [spring]
+  always: false

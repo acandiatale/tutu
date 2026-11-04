@@ -754,3 +754,16 @@ def test_fills_and_pre_tries_journal_the_boot_bom_source_and_the_prompt_says_so(
     c = ErrorCluster(id="case:x", kind=ErrorKind.POM_INVALID, errors=[missing(SERVLET)])
     assert loop._version_facts(c) == [f"as-is build: {SERVLET} 4.0.3 (managed)",
                                       f"target Boot BOM: manages {SERVLET} at 6.1.0 (major 4 → 6)"]   # v2.1v
+
+
+def test_an_unmanaged_spring_artifact_is_never_pinned_from_the_repository():
+    """v2.1z-n (company run: `spring-dao` lost its version and the loop would have pinned the 2007 release): a Spring
+    artifact no chain / BOM manages has no release on the target line — unknown on purpose, the LLM removes / replaces it."""
+    class Lookup:
+        def versions(self, g, a):
+            return ["2.0.8"] if a == "spring-dao" else ["1.10.0", "1.12.0"]
+
+    r = VersionResolver({"managed": {}, "direct": {}, "by_module": {}}, {"managed": {}, "direct": {}, "by_module": {}},
+                        repository=lambda: Lookup())
+    assert r.resolve("org.springframework:spring-dao", allow_repository=True, check_managed=False) == (None, "unknown")
+    assert r.resolve("org.apache.commons:commons-text", allow_repository=True, check_managed=False) == ("1.12.0", "repository")

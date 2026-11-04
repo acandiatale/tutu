@@ -427,12 +427,13 @@ def test_agent_gateway_payload_and_bearer_from_the_exchange():
     assert call["headers"] == {"Authorization": "Bearer tk-1"}                 # the exchanged token, not the static key
     body = call["json"]
     assert body["model"] == "asset-42" and body["params"] == {"role": "escalation_fixer"}
-    assert body["stream"] is False and body["async"] is False and body["session_id"] == "run-1"
+    assert body["stream"] is False and body["async"] is False and "session_id" not in body   # the gateway creates it
     assert body["trace_id"] and len(body["trace_id"]) == 32
     assert body["max_tokens"] == 8000 and body["temperature"] == 0.0 and body["x"] == 1
     assert "need_origin" not in body and "thread_id" not in body
     assert body["messages"] == [m.model_dump() for m in MSGS]
     assert resp.content == "hi" and resp.model == "gpt-5.5"                  # the gateway's model name prices the call
+    assert resp.session_id is None and c.last_session_id is None
     # the default role is the client's model; a second call reuses the cached token
     c.complete(MSGS, role="fix")
     assert post.calls[2]["json"]["params"] == {"role": "build_error_fixer"} and len(post.calls) == 3
@@ -484,3 +485,15 @@ def test_make_llm_client_builds_the_agent_client_from_the_environment(monkeypatc
     cfg.llm.gateway, cfg.llm.token_url = "legacy", ""                         # legacy: no token manager, static key
     inner = getattr(make_llm_client(cfg), "inner", make_llm_client(cfg))
     assert inner.gateway == "legacy" and inner._tokens is None
+
+
+def test_the_session_id_the_gateway_returns_is_kept_not_sent():
+    answer = FakeResponse(200, {"session_id": "sess-7", "choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                                "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "model": "gpt-5.5"})
+    post = FakePost(token_resp(), answer)
+    c = agent_client(post, TokenManager("http://gw.local/token", "app", post=post))
+    resp = c.complete(MSGS, role="fix", metadata={"run_id": "run-1"})
+    assert resp.session_id == "sess-7" and c.last_session_id == "sess-7"
+    assert "session_id" not in post.calls[1]["json"] and "thread_id" not in post.calls[1]["json"]
+    nested = FakeResponse(200, {"data": {"session_id": "sess-8", "choices": [{"message": {"content": "x"}}]}})
+    assert CompanyClient._session_of(nested.json()) == "sess-8" and CompanyClient._session_of({"choices": []}) is None

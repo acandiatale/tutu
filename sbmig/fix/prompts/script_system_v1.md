@@ -66,7 +66,11 @@ The orchestrator keeps a change when the case's errors disappear and rolls it ba
     result shows (errors still present, errors it introduced, its exception or log). If no reusable script can fix
     the case, answer `<no_script>` with the reason and give the fix for this project as `<edits>` — `<no_script>` only
     when the fix depends on this project's own code (business logic, a project class to rewrite by hand, a one-off
-    module structure).
+    module structure) **or when the case is replacing an end-of-life library by project code** (an advisory / a
+    migration note names the replacement — e.g. Spring Mobile → an in-house device resolver): new classes and
+    rewritten imports in this project are not reusable by another project, so write them as `<edits>` (`op: write`
+    for new files, `replace` for imports, `pom` for the dependency) and NO `<script>`; the attempt is recorded in the
+    report and the case history as edits.
 13. Earlier attempts listed in the prompt did not work. Do something different.
 14. Dependency versions (메이저를 올리지 않는다). Never change a dependency's MAJOR version and never swap a library
     for another on your own (porting what rule 10 names is not "on your own"). The "Dependency versions" facts are

@@ -28,8 +28,12 @@ Do not keep the old jar in `WEB-INF/lib` / as a `system` dependency.
 | `SitePreferenceHandlerInterceptor`, `SitePreferenceUtils`, `SitePreference` | the user's "show me the desktop site" cookie / parameter (rare) |
 | `DeviceWebArgumentResolver` / `@Device` controller parameters | `Device` as a handler-method argument (rare) |
 
-**The fix (one script, reusable across projects).** Replace the library with a small in-house `compat` package that keeps the
-same type and method names, so the call sites only change their `import` lines:
+**The fix — answer `<no_script>` + `<edits>`, NOT a `<script>`.** The replacement is project code (new classes under the
+project's package, rewritten imports): no other project can reuse a script for it, and a script that creates classes
+and rewrites imports fails more often than direct edits do. Give the new files as `op: write` edits, the import changes
+as `replace` edits (one per file), the pom change as a `pom` edit; the attempt is recorded in the report and the case
+history as edits. Replace the library with a small in-house `compat` package that keeps the same type and method
+names, so the call sites only change their `import` lines:
 
 1. Add under the project's base package (e.g. `com.example.app.compat.device`, in the module that compiles the controllers):
    * `Device` — an interface with `isNormal()`, `isMobile()`, `isTablet()`, `getDevicePlatform()`; a `DevicePlatform` enum
@@ -55,8 +59,9 @@ same type and method names, so the call sites only change their `import` lines:
    inside `<mvc:interceptors>`) and in `web.xml` filter classes get the compat class name. Call sites stay as they are.
 3. Remove the `org.springframework.mobile:*` dependency (and a `spring-mobile-device-*.jar` wired from `WEB-INF/lib`) from the
    poms. Nothing else in the project references the library.
-4. Report in `<analysis>` which of the rare parts (SitePreference, argument resolver, filter) the project used, and in the
-   Handover note that device detection is now a local User-Agent heuristic the owning team maintains.
+4. Report in `<analysis>` which of the rare parts (SitePreference, argument resolver, filter) the project used, and in
+   `<solution>` that device detection is now a local User-Agent heuristic the owning team maintains (this reaches the
+   report and the case history).
 
 **Do not**: keep `spring-mobile-device` at any version, add a `-jakarta` guess, edit the jar, or declare the
 device logic "out of scope" — the replacement above is small (≈150 lines) and the owners asked for a building project.

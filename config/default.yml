@@ -300,6 +300,9 @@ script:                            # v2 fix scripts (docs/v2/PLAN-v2.md §3.2): 
                                    # → Handover. Generous on purpose (2026-11-02) — lower it once the company runs show the need
   max_declines_per_case: 1         # v2.1y: answers with neither edits nor a script (a blocker outside the project) before BLOCKED
                                    # needs_owner; sibling cases with the same cause are blocked without another LLM call
+  max_edit_tries_per_case: 4       # v2.1z-n: a case the LLM fixes by direct <edits> (project code: an EOL-library replacement, a class to
+                                   # rewrite — nothing another project could reuse) gets this many edit attempts, then BLOCKED
+                                   # repeated_failure with the attempts in the report / case history (no script)
   idempotency_check: true          # v2.1y: the script runs once more right after `ok`; a second change marks it non_idempotent (not reused)
 
 errors:                            # v2.1 error list: <run dir>/errors.jsonl + errors.md, appended to <kb>/errors.jsonl

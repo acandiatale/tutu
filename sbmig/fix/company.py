@@ -236,6 +236,7 @@ class CompanyClient:
         self.asset_id = (asset_id or "").strip() or None
         self._tokens = token_manager
         self.agent_extra = dict(agent_extra or {})
+        self.last_session_id: Optional[str] = None   # v2.1z-n: the gateway's session id seen last (never sent back yet)
         self._api_key = api_key or ""
         self.model = model
         self.payload_extra = dict(payload_extra or {})
@@ -267,8 +268,9 @@ class CompanyClient:
                 temperature: Optional[float] = None, metadata: Optional[dict] = None) -> dict[str, Any]:
         """보낼 JSON 본문. legacy: `{model, messages: [{role, content}], **payload_extra}` — 게이트웨이 계약 그대로(messages 만,
         tools·생성 파라미터 없음). agent(v2.1z-m): `{model: <asset id>, messages, stream: false, async: false,
-        params: {role: <고른 모델 이름 — build_error_fixer / escalation_fixer>}, session_id (metadata.run_id), trace_id (호출마다
-        새 uuid), max_tokens, temperature, **agent_extra}`; thread_id 는 의미가 확인될 때까지 보내지 않는다.
+        params: {role: <고른 모델 이름 — build_error_fixer / escalation_fixer>}, trace_id (호출마다 새 uuid), max_tokens,
+        temperature, **agent_extra}`; session_id 는 보내지 않는다(게이트웨이가 세션을 만들어 응답에 넣어 준다 — ``LLMResponse.session_id``),
+        thread_id 는 의미가 확인될 때까지 보내지 않는다.
 
         legacy: the company contract verbatim; agent: the GPT agent gateway's shape (asset id as `model`, the chosen
         model name as `params.role`, per-call ids, the generation parameters it accepts; no `thread_id` yet)."""
@@ -277,9 +279,7 @@ class CompanyClient:
             return {"model": model or self.model, "messages": msgs, **self.payload_extra}
         body: dict[str, Any] = {"model": self.asset_id or (model or self.model), "messages": msgs, "stream": False,
                                 "async": False, "params": {"role": model or self.model}}
-        run_id = (metadata or {}).get("run_id") if isinstance(metadata, dict) else None
-        if run_id:
-            body["session_id"] = str(run_id)
+        # v2.1z-n (user): no session_id is sent — the gateway creates a session and returns its id in the answer
         body["trace_id"] = uuid.uuid4().hex
         if max_tokens is not None:
             body["max_tokens"] = int(max_tokens)
@@ -420,6 +420,18 @@ class CompanyClient:
         raise LLMError(last_status, last_body,
                        f"LLM request failed after {self.max_retries + 1} attempt(s) (status={last_status}): {last_body[:200]}")
 
+    @staticmethod
+    def _session_of(data: Any) -> Optional[str]:
+        """v2.1z-n: 응답의 세션 id(최상위 ``session_id``, 아니면 ``data`` / ``result`` 한 단계 아래). 없으면 None.
+
+        The session id the agent gateway returns (top level, or one level under `data` / `result`); None otherwise."""
+        if not isinstance(data, dict):
+            return None
+        for holder in (data, data.get("data"), data.get("result")):
+            if isinstance(holder, dict) and holder.get("session_id"):
+                return str(holder["session_id"])
+        return None
+
     def _parse(self, data: Any, model: str) -> LLMResponse:
         """게이트웨이 JSON → LLMResponse. 콘텐츠 필터에 걸림 → LLMError(이 요청만의 거절, 장애 아님), 빈 답 +
         finish_reason=length → LLMError(요청 크기 문제), 잘린
@@ -450,9 +462,14 @@ class CompanyClient:
         if str(finish or "").lower() == "length":
             log.warning("llm company: answer cut at the gateway's max_tokens (finish_reason=length, output tokens %d)",
                         out_tokens)
-        return LLMResponse(content=content, model=(data.get("model") if isinstance(data, dict) else None) or model,
+        out = LLMResponse(content=content, model=(data.get("model") if isinstance(data, dict) else None) or model,
                            input_tokens=int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0),
                            output_tokens=out_tokens, finish_reason=finish)
+        out.session_id = self._session_of(data)
+        if out.session_id and out.session_id != self.last_session_id:
+            self.last_session_id = out.session_id
+            log.info("llm gateway session_id=%s (returned by the gateway; sbmig sends none)", out.session_id)
+        return out
 
     def close(self) -> None:
         return None

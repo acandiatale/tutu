@@ -863,6 +863,12 @@ class VersionResolver:
                 return bv, "boot-bom"
             if v:
                 return v, "asis"
+            if allow_repository and key.startswith("org.springframework"):
+                # v2.1z-n (company run: `spring-dao` lost its version, the loop tried to pin it): a Spring artifact that no chain /
+                # BOM manages has no release on the target line — the repository's newest is an obsolete one (spring-dao 2.0.8,
+                # 2007) and would drag Spring 2 next to Spring 7. Unknown on purpose: the LLM removes / replaces the artifact
+                log.info("의존성 버전: %s 은 Spring 계열인데 체인 / BOM 이 관리하지 않음 — 저장소 최신으로 고정하지 않는다(단종 라인)", key)
+                return None, "unknown"
             if allow_repository:
                 v = self.repository_version(key)
                 if v:

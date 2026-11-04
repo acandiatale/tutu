@@ -3710,3 +3710,33 @@ the 401 branch in `_complete`, the probe's token step (`ProbeResult.token`). `sb
 `gateway`, requires `LLM_ASSET_ID` in agent mode, builds the `TokenManager` when `token_url` is set. Tests
 (`tests/fix/test_company_client.py`): fetch once / cached / refresh inside the margin, exchange failures, the agent payload +
 Bearer, the 401 retry (once, not twice), legacy mode unchanged, the factory from the environment.
+
+## v2.1z-n — gateway session id from the answer; EOL-library replacements as direct edits; obsolete Spring artifacts (2026-11-04)
+
+**Why (user, after the first agent-gateway run).** (1) The agent gateway creates a session when none is sent and returns its id
+in the answer — sbmig should not invent one. (2) A Spring Mobile replacement is project code (new classes under the project's
+package, rewritten imports): a script for it is reusable by nobody, and the run showed the cost — script → augment → rollback →
+ask, 20 asks burned (`repeated_failure`, `llm=29`). The LLM should fix it by **direct edits**, and the report / case history should
+record what it did; no stored script. (3) The run ended on `'dependencies.dependency.version' for org.springframework:spring-dao:jar
+is missing`: `spring-dao` is a Spring 2.x artifact that does not exist on the target line; "remove the version, the chain manages
+Spring" is wrong for it, and the `sbmig-version` pre-try would have pinned the repository's newest release (2.0.8, 2007).
+
+**Decisions.** (1) `CompanyClient` sends no `session_id`; `LLMResponse.session_id` (new optional tier-1 field) carries the one the
+gateway returns (top level, or under `data` / `result`), logged once per value and kept on `CompanyClient.last_session_id` for the
+case-thread increment (which will decide whether to send it back; `thread_id` still not sent). (2) Prompt rule 12 and
+`knowledge/notes/spring-mobile.md`: replacing an EOL library by project code is a `<no_script>` + `<edits>` answer (`op: write` for
+new files, `replace` for imports, `pom` for the dependency) — the attempt is recorded as edits in `errors.md` / the KB's case
+history (`FixTry.applied = edits`, the edit descriptions, `no_script_reason`), never as a script version. New cap
+`script.max_edit_tries_per_case` (4): when every LLM attempt of a case so far was edits-only and their count reaches the cap, the
+ladder ends with `repeated_failure` ("N direct-edit attempt(s) … did not resolve …") instead of walking on to 20. (3)
+`knowledge/notes/spring-removed-artifacts.md` (keywords `spring-dao|spring-mock|spring-hibernate3|…`, `DaoSupport`, the Maven
+"version … missing" text for `org.springframework:spring-*`): the artifact does not exist on the target line — remove it, keep the
+classes through `spring-tx` / `spring-jdbc` / `spring-orm` / `spring-test` (managed, no version), migrate the removed APIs; and
+`VersionResolver.resolve` never pins an `org.springframework*` artifact that nothing manages from the repository (unknown on purpose).
+
+### As built
+`sbmig/fix/company.py` (`_session_of`, `last_session_id`, no `session_id` in the agent payload), `sbmig/core/interfaces.py`
+(`LLMResponse.session_id`), `sbmig/fix/prompts/script_system_v1.md` rule 12, `knowledge/notes/spring-mobile.md`,
+`knowledge/notes/spring-removed-artifacts.md` + `index.yml`, `sbmig/triage/scripts.py plan_script_step` (the edit cap),
+`sbmig/core/config.py` / `config/default.yml` `script.max_edit_tries_per_case`, `sbmig/loop/fixloop.py VersionResolver.resolve`.
+Tests: the returned session id (kept, not sent), the resolver guard, the edit cap.

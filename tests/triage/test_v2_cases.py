@@ -322,3 +322,31 @@ def test_a_pinned_hint_action_keeps_the_script_ladder(cfg):
     [c] = t.cluster([err()], None)
     hit = CaseHit(case_id="abc", action=CaseAction(kind="hint"), pinned=True)
     assert t.decide(c, KBMatch(case_hits=[hit]), ctx(), make_profile()).kind == DecisionKind.SCRIPT
+
+
+# ----------------------------------------------------------------------------------------- v2.1z-n: direct-edit cap
+def _edit_att(n: int, cid: str) -> FixAttempt:
+    """An LLM answer without a script: <no_script> + <edits> applied (project code, nothing to reuse)."""
+    a = script_att("new", n, "no_change", cid, code="")
+    a.no_script_reason, a.edits_applied = "project code: an EOL-library replacement", 3
+    return a
+
+
+def test_direct_edit_attempts_end_the_ladder_at_their_own_cap(cfg):
+    """v2.1z-n (company run: a Spring Mobile replacement burned 20 asks): when every LLM attempt of the case so far was
+    edits-only, the case stops at script.max_edit_tries_per_case (4) instead of walking on to 20."""
+    [c] = cluster_cases([err()], None)
+    three = [_edit_att(i, c.id) for i in range(1, 4)]
+    st = plan_script_step(c, three, None, cfg)
+    assert st.mode == "new" and st.llm_used == 3                           # under the cap: ask again (fresh, with the history)
+    st = plan_script_step(c, three + [_edit_att(4, c.id)], None, cfg)
+    assert st.mode is None and "4 direct-edit attempt(s)" in st.why and "max_edit_tries_per_case 4" in st.why
+    assert "직접 수정 4회 한도 도달" in st.kb_line
+    # a script attempt in the history → the script ladder's own limits apply (augment the last script)
+    mixed = [_edit_att(1, c.id), _edit_att(2, c.id), _edit_att(3, c.id), _edit_att(4, c.id),
+             script_att("new", 5, "no_change", c.id, code="def fix(p):\n    pass\n")]
+    st = plan_script_step(c, mixed, None, cfg)
+    assert st.mode == "augment"
+    cfg.script.max_edit_tries_per_case = 0                                 # 0 = no separate cap
+    st = plan_script_step(c, three + [_edit_att(4, c.id)], None, cfg)
+    assert st.mode == "new"

@@ -677,6 +677,10 @@ class ScriptConfig(BaseModel):
     # v2.1y: declined answers (no edits, no script, a blocker outside the project) allowed per case before BLOCKED needs_owner;
     # sibling cases in the same files are blocked without another call
     max_declines_per_case: int = 1
+    # v2.1z-n (company run 2026-11-04: a Spring Mobile replacement burned 20 asks as script → augment → rollback): a case the
+    # LLM fixes by DIRECT EDITS (<no_script> + <edits>: project code, nothing to reuse) gets this many edit attempts before
+    # BLOCKED repeated_failure — fewer than the script ladder, each attempt is a fresh ask with the previous ones summarized
+    max_edit_tries_per_case: int = 4
     # v2.1y (E-H3): ok 직후 같은 스크립트를 한 번 더 돌려 또 바뀌면 non_idempotent 로 표시(저장은 하되 재사용 안 함)
     # v2.1y: run the script once more right after `ok`; a second change marks the stored version non_idempotent (never reused)
     idempotency_check: bool = True

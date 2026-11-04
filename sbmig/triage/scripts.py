@@ -278,6 +278,19 @@ def plan_script_step(cluster: ErrorCluster, previous: Iterable[FixAttempt], stor
         step.kb_line = (f"KB 탐색: {stored_part} → 한도 도달 (저장본 {len(failed_here)} + LLM {llm_used}회) → "
                         "blocked")
         return step
+    # v2.1z-n: a case the LLM fixes by DIRECT EDITS (<no_script> + <edits>: project code — an EOL-library replacement, a class
+    # rewritten by hand; nothing another project could reuse) gets script.max_edit_tries_per_case asks, not the script ladder:
+    # every edit attempt is a fresh ask that already carries the previous ones, and the company run burned 20 asks that way
+    max_edit = max(0, int(getattr(sc, "max_edit_tries_per_case", 4) or 0))
+    llm_tried = [a for a in tried if a.script_mode in LLM_MODES]
+    edit_tries = [a for a in llm_tried if not (getattr(a, "script_code", "") or "").strip()
+                  and (getattr(a, "no_script_reason", "") or getattr(a, "edits_applied", 0))]
+    if max_edit and llm_tried and len(edit_tries) == len(llm_tried) and len(edit_tries) >= max_edit:
+        step.why = (f"{len(edit_tries)} direct-edit attempt(s) (no script: project code) did not resolve case {case_id} "
+                    f"(script.max_edit_tries_per_case {max_edit}) — the attempts are in the report and the case history")
+        step.kb_line = (f"KB 탐색: {stored_part} → 직접 수정 {len(edit_tries)}회 한도 도달 (script.max_edit_tries_per_case) → "
+                        "blocked")
+        return step
     nth = f"{llm_used + 1}/{max_llm}"
     can_augment = augments_used < max_aug
     aug_nth = f"보강 {augments_used + 1}/{max_aug}"

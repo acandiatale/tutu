@@ -80,6 +80,9 @@ class LLMResponse(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     finish_reason: Optional[str] = None
+    # v2.1z-n: the agent gateway creates a session when none is sent and returns its id — kept for the records and the
+    # case-thread increment (sending it back continues that session); None for gateways without one
+    session_id: Optional[str] = None
 
 
 # Who is asking — lets an in-house gateway / agent platform route or budget by purpose.
