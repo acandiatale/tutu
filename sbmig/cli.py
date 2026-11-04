@@ -414,7 +414,12 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
                                                                "limit, e.g. for one oversized project)"),
               token: Optional[str] = typer.Option(None, "--token",
                                                   help="access token (default: $SBMIG_WEB_TOKEN, also read from "
-                                                       ".env); required when --host is not a loopback address")
+                                                       ".env); required when --host is not a loopback address"),
+              config: Optional[List[str]] = typer.Option(None, "--config", "-c",
+                                                         help="config/*.yml name every upload runs with (repeatable; "
+                                                              "default: $SBMIG_WEB_CONFIGS, else artifacts.yml / "
+                                                              "artifacts.local-e2e.yml when present). The page "
+                                                              "offers the full list only under 고급 설정")
               ) -> None:
     """웹 UI 를 띄운다(FastAPI + uvicorn): 프로젝트 zip 업로드 → 이관 실행 → 진행 실시간 보기 → 결과 내려받기.
 
@@ -433,6 +438,7 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
 
     from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
     from sbmig.web.app import (
+        CONFIGS_ENV,
         MAX_UPLOAD_ENV,
         TOKEN_ENV,
         create_app,
@@ -451,6 +457,7 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
         raise typer.Exit(2)
     root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
     web_log = attach_file_log(Path(out) / "sbmig-web.log")
+    default_configs = [c for c in (config or []) if c] or None       # None → $SBMIG_WEB_CONFIGS → the fallback names
     typer.echo(f"sbmig web UI: http://{host}:{port}   runs: {Path(out).resolve()}   configs: {root / 'config'}   "
                f"upload limit: {describe_max_upload(resolve_max_upload(max_upload_mb))}")
     if token:
@@ -458,13 +465,16 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
                    f"API clients send 'Authorization: Bearer <token>'")
     env_limit = f" {MAX_UPLOAD_ENV}={max_upload_mb}" if max_upload_mb is not None else ""
     env_token = f" {TOKEN_ENV}=<token>" if token else ""
-    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit}{env_token} "
-               f"uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown {graceful_timeout})")
+    env_cfg = f" {CONFIGS_ENV}={','.join(default_configs)}" if default_configs else ""
+    typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit}{env_token}"
+               f"{env_cfg} uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown "
+               f"{graceful_timeout})")
     # shutdown: open SSE streams end (RunManager.shutdown via the lifespan), running Maven processes are killed, and
     # uvicorn stops waiting for connections after `graceful_timeout` — without it Ctrl+C hung on the browser tabs
     try:
-        uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb, token=token), host=host, port=port,
-                    log_level="info", timeout_graceful_shutdown=graceful_timeout)
+        uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb, token=token,
+                               default_configs=default_configs),
+                    host=host, port=port, log_level="info", timeout_graceful_shutdown=graceful_timeout)
     finally:
         detach_file_log(web_log, None)
 

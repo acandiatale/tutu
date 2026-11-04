@@ -22,7 +22,7 @@
 | `LLM_RECORD_DIR` | 호출마다 `llm-NNNN.json` 을 남길 폴더(`llm.record_dir`) |
 | `LLM_GATEWAY`, `LLM_ASSET_ID`, `LLM_TOKEN_URL`, `LLM_APP_TOKEN` | 사내 GPT agent 게이트웨이 모드와 토큰 교환([05](05-llm-gateway-and-prompts.md)) |
 | `JAVA21_HOME` | e2e 스크립트용 JDK 21 경로 |
-| `SBMIG_WEB_OUT`, `SBMIG_MAX_UPLOAD_MB` | 웹 UI(plain uvicorn 일 때 출력 폴더 / 업로드 상한) |
+| `SBMIG_WEB_OUT`, `SBMIG_MAX_UPLOAD_MB`, `SBMIG_WEB_CONFIGS` | 웹 UI(plain uvicorn 일 때 출력 폴더 / 업로드 상한 / 모든 업로드가 돌 config 이름들) |
 
 4. **첫 점검 두 개**:
    - `sbmig llm-probe` — 게이트웨이에 작은 요청 하나. 설정 줄(provider / model / url / key_env / payload_extra), agent 모드면
@@ -40,7 +40,7 @@
 | 명령 | 하는 일과 옵션 |
 |---|---|
 | `sbmig run <dir|zip>` | 한 프로젝트를 끝까지. `--out/-o`(기본 `out`), `--run-id`, `--stop-after intake|analyze|plan|transform|restructure|verify`, `--dry-run`(결정만 저널, 적용 없음), `--llm-provider`, `--llm-plugin pkg.mod:attr`, `--fix-plugin pkg.mod:attr`, `--java-home`, `--settings`, `--repo-root` |
-| `sbmig serve` | 웹 UI(FastAPI + uvicorn, 한 번에 이관 하나, 나머지는 대기열). `--host`(기본 127.0.0.1), `--port`(8765), `--out`(기본 `out/web`), `--graceful-timeout`, `--max-upload-mb`, `--token`(루프백이 아닌 host 면 필수, `SBMIG_WEB_TOKEN`) |
+| `sbmig serve` | 웹 UI(FastAPI + uvicorn, 한 번에 이관 하나, 나머지는 대기열). `--host`(기본 127.0.0.1), `--port`(8765), `--out`(기본 `out/web`), `--graceful-timeout`, `--max-upload-mb`, `--token`(루프백이 아닌 host 면 필수, `SBMIG_WEB_TOKEN`), `--config`(모든 업로드가 돌 `config/*.yml` 이름, 여러 번; `SBMIG_WEB_CONFIGS`) |
 | `sbmig analyze <dir>` | 분석만(변경 없음): 종류, Java·Boot 버전, 라이브러리, 권고. `--json` |
 | `sbmig plan <dir>` | 분석 + 계획 단계 목록. `--json` |
 | `sbmig build <dir>` | 그 폴더에서 Maven 한 번 + 파싱된 오류와 L1 서명(디버깅). `--goal/-g`(기본 compile), `--out` |

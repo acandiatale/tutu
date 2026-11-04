@@ -187,10 +187,13 @@ class RunManager:
     Starts migrations in worker threads and answers status / event questions from memory + the run directory."""
 
     def __init__(self, out_dir: Path, repo_root: Path = PACKAGE_ROOT, *,
-                 max_finished_runs: int = DEFAULT_MAX_FINISHED_RUNS):
+                 max_finished_runs: int = DEFAULT_MAX_FINISHED_RUNS, default_configs: list[str] | None = None):
         self.out_dir = Path(out_dir).resolve()
         self.repo_root = Path(repo_root).resolve()
         self.max_finished_runs = max(0, int(max_finished_runs))
+        # 서버가 정한 기본 설정 파일 이름들(sbmig serve --config / SBMIG_WEB_CONFIGS): 화면은 이것으로 돈다
+        self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
+        self._missing_warned: set[str] = set()
         self.runs: dict[str, Run] = {}
         self._lock = threading.Lock()
         self._turns = _FifoTurns()             # one migration at a time, in upload order (shared file KB)
@@ -205,6 +208,30 @@ class RunManager:
         """페이지에서 고를 수 있는 ``config/*.yml`` 이름들. ``default.yml`` 은 늘 먼저 읽히므로 뺀다."""
         d = self.repo_root / "config"
         return sorted(p.name for p in d.glob("*.yml") if p.name != "default.yml") if d.is_dir() else []
+
+    # 아무것도 정해 주지 않았을 때 쓰는 이름(있는 첫 것): 회사 PC 의 관례 artifacts.yml, 개발 PC 의 로컬 e2e 설정
+    FALLBACK_CONFIGS = ("artifacts.yml", "artifacts.local-e2e.yml")
+
+    def default_configs(self) -> list[str]:
+        """이번 실행에 쓸 기본 설정 파일 이름들(``config/`` 안, default.yml 뒤에 읽힌다). 화면은 담당자에게 고르게
+        하지 않고 이것으로 돈다(2026-11-05: 설정은 하나로 고정, 고급 설정에서만 바꾼다). ``sbmig serve --config`` /
+        ``SBMIG_WEB_CONFIGS`` 로 준 이름 중 지금 있는 파일만 — 없는 이름은 한 번 경고하고 뺀다(나중에 생기면
+        다시 들어온다). 아무것도 안 줬으면 :attr:`FALLBACK_CONFIGS` 중 있는 첫 것, 그것도 없으면 빈 목록
+        (default.yml 만으로 돈다).
+
+        The server's default config names for a run (`sbmig serve --config` / `$SBMIG_WEB_CONFIGS`, existing files
+        only; a missing name is warned about once). Without any: the first existing of `FALLBACK_CONFIGS`, else []."""
+        d = self.repo_root / "config"
+        if self._default_configs:
+            out = []
+            for c in self._default_configs:
+                if RUN_ID_RE.match(c) and (d / c).is_file():
+                    out.append(c)
+                elif c not in self._missing_warned:
+                    self._missing_warned.add(c)
+                    log.warning("web: default config %s is not under %s — runs start without it until it exists", c, d)
+            return out
+        return next(([c] for c in self.FALLBACK_CONFIGS if (d / c).is_file()), [])
 
     # ---- lifecycle
     def incoming_path(self) -> Path:

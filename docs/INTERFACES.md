@@ -3861,3 +3861,23 @@ comment in `deploy/` is Korean (the company's reviewers do not want English comm
   the Job pod runs `run-job.sh` and POSTs report / errors / result.zip back; KB via git or a Job-mounted PVC; stop = delete Job. Web pod RBAC:
   `deploy/k8s/45-web-rbac.yaml`. Contract additions when built: `web.runner` (or a `sbmig serve` flag), `SBMIG_RESULT_POST_URL` in run-job.sh,
   the two endpoints (upload download with token, result receive), journal events on the Job's stdout.
+
+## v2.1z-w — the web UI redesigned for the project owners; the server decides the config files (2026-11-05)
+
+- `sbmig/web/static/index.html` (one file: HTML + CSS + JS, no web font / CDN — the company network is offline): the company's blue; the drop
+  zone is the page (drag-and-drop or 파일 선택, zip only, size vs the upload limit checked before the POST) → `마이그레이션 시작` →
+  the run card (status sentence, run id, LLM calls; `중단`) with the stage rail (intake → analyze → plan → one dot per planned phase →
+  finalize, lit by `node` events; Korean labels, the node name underneath) and two tabs: 진행 기록 (journal rows, last 400 kept in the
+  DOM) and 로그 (the `log` / `console` events go into a ring buffer of 20,000 lines; at most the last 1,500 are rendered, once per
+  animation frame, only while the tab is visible; DEBUG hidden by default; the full file through the `sbmig.log` link) → the result card
+  once `status.state == finished`: `보고서 받기` (report.md) and `변환된 프로젝트 받기` (result.zip) as download buttons (disabled when the
+  file is absent), the other served files as small links, the report text under 보고서 미리보기 → 지난 실행 (collapsed list; `#<run id>`
+  still re-attaches). 고급 설정 (collapsed) holds the config checkboxes, the LLM provider (`fake`) and stop_after — developer options.
+  Element ids the tests look for: `drop`, `zip`, `start`, `stop`, `rail`, `timeline`, `log`, `dl-report`, `dl-zip`, `adv`.
+- The config files a run uses are the **server's** choice: `sbmig serve --config <name>` (repeatable) → `$SBMIG_WEB_CONFIGS`
+  (comma-separated) → the first existing of `config/artifacts.yml`, `config/artifacts.local-e2e.yml` → none (default.yml only).
+  `RunManager(default_configs=…)` / `RunManager.default_configs()` (existing files only; a missing name is warned once and comes back when the
+  file appears); `create_app(default_configs=…)`. `GET /api/configs` adds `"default": [...]`; `POST /api/runs` without a `configs` parameter
+  runs with the default, `configs=` (empty) means default.yml only, a given list wins (the page sends the list only when 고급 설정 changed it).
+  `deploy/k8s/40-deployment.yaml` sets `SBMIG_WEB_CONFIGS=company.yml`.
+

@@ -13,10 +13,14 @@ FastAPI web app: upload a project zip, run the migration in-process, watch it li
 
 Routes:
     GET  /                               the page (static/index.html); /static/* = sbmig/web/static
-    GET  /api/configs                    config/*.yml names the page can tick
+    GET  /api/configs                    config/*.yml names ("configs") and the server's default choice ("default":
+                                         `sbmig serve --config` / $SBMIG_WEB_CONFIGS, else artifacts.yml /
+                                         artifacts.local-e2e.yml when present) — the page runs with the default and
+                                         shows the full list only under "고급 설정"
     GET  /api/runs                       known runs (newest first) with status
-    POST /api/runs?name=<file.zip>&configs=a.yml,b.yml[&stop_after=…][&llm_provider=…]
+    POST /api/runs?name=<file.zip>[&configs=a.yml,b.yml][&stop_after=…][&llm_provider=…]
          body = the zip bytes                                       → 202 {"run_id", "status"}
+         `configs` omitted = the server default; `configs=` (empty) = default.yml only
     GET  /api/runs/{id}                  status
     GET  /api/runs/{id}/events           SSE: status | node | error | journal | log | report | ping | end
     POST /api/runs/{id}/stop             stop after the current graph node
@@ -73,6 +77,7 @@ MAX_UPLOAD_ENV = "SBMIG_MAX_UPLOAD_MB"
 THREAD_POOL_SIZE = 256             # anyio worker threads: each open SSE stream (browser tab) holds one for the run
 _END = object()
 TOKEN_ENV = "SBMIG_WEB_TOKEN"
+CONFIGS_ENV = "SBMIG_WEB_CONFIGS"   # comma-separated config/*.yml names every upload runs with (sbmig serve --config)
 TOKEN_COOKIE = "sbmig_token"
 COOKIE_MAX_AGE_S = 7 * 24 * 3600   # the browser keeps access for a week (the token itself never leaves the server)
 _LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost"}
@@ -291,13 +296,18 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
 
 
 def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None,
-               token: str | None = None) -> FastAPI:
-    """웹 앱을 만든다: 실행 관리자, 업로드 상한, 토큰(인자 → ``$SBMIG_WEB_TOKEN``), 라우트, 정적 파일, 수명
-    주기. 토큰이 있으면 모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다.
+               token: str | None = None, default_configs: list[str] | None = None) -> FastAPI:
+    """웹 앱을 만든다: 실행 관리자, 업로드 상한, 토큰(인자 → ``$SBMIG_WEB_TOKEN``), 기본 설정 파일(인자 →
+    ``$SBMIG_WEB_CONFIGS``, 쉼표로 구분한 ``config/*.yml`` 이름), 라우트, 정적 파일, 수명 주기. 토큰이 있으면
+    모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다.
 
-    `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served."""
+    `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served.
+    `default_configs` (else `$SBMIG_WEB_CONFIGS`): the config names every upload runs with unless the request
+    names its own (`RunManager.default_configs`)."""
     load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
-    mgr = RunManager(Path(out_dir), Path(repo_root))
+    if default_configs is None:
+        default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
+    mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs)
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
 
@@ -309,8 +319,9 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         _ensure_console_logging()
         limiter = anyio.to_thread.current_default_thread_limiter()   # every SSE stream holds one of these threads
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
-        log.info("sbmig web UI ready (runs under %s, configs from %s/config, upload limit %s, %s)", mgr.out_dir,
-                 mgr.repo_root, describe_max_upload(max_upload),
+        log.info("sbmig web UI ready (runs under %s, configs from %s/config, default configs %s, upload limit %s, %s)",
+                 mgr.out_dir, mgr.repo_root, ",".join(mgr.default_configs()) or "- (default.yml only)",
+                 describe_max_upload(max_upload),
                  f"access token required ({TOKEN_ENV})" if token else "no token: loopback clients only")
         yield
         info = mgr.shutdown()
@@ -331,8 +342,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
 
     @app.get("/api/configs")
     def configs() -> dict:
-        return {"configs": mgr.configs(), "repo_root": str(mgr.repo_root), "out_dir": str(mgr.out_dir),
-                "max_upload_mb": max_upload // (1024 * 1024)}       # 0 = no limit
+        return {"configs": mgr.configs(), "default": mgr.default_configs(), "repo_root": str(mgr.repo_root),
+                "out_dir": str(mgr.out_dir), "max_upload_mb": max_upload // (1024 * 1024)}       # 0 = no limit
 
     @app.get("/api/runs")
     def runs() -> dict:
@@ -348,7 +359,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         return (f"# written to {p}\n" if p else "") + thread_dump_text()
 
     @app.post("/api/runs", status_code=202)
-    async def start(request: Request, name: str = "project.zip", configs: str = "",
+    async def start(request: Request, name: str = "project.zip", configs: str | None = None,
                     stop_after: str | None = None, llm_provider: str | None = None) -> JSONResponse:
         def too_large() -> JSONResponse:
             return JSONResponse({"error": f"zip too large (max {describe_max_upload(max_upload)})"}, status_code=413)
@@ -381,7 +392,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
                 return JSONResponse({"error": "zip body required"}, status_code=400)
             if head != b"PK":
                 return JSONResponse({"error": "body is not a zip file"}, status_code=400)
-            cfgs = [c for c in configs.split(",") if c]
+            # configs 를 아예 안 주면 서버 기본값(화면의 보통 경로), 빈 값이면 default.yml 만
+            cfgs = mgr.default_configs() if configs is None else [c for c in configs.split(",") if c]
             # 설정 읽기·zip 풀기·오케스트레이터 만들기는 막히는 작업이라 스레드풀에서. 잘못된 요청은 400
             try:
                 rid = await run_in_threadpool(mgr.start_file, tmp, name, cfgs, stop_after or None,

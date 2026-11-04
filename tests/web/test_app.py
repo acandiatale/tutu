@@ -99,10 +99,17 @@ def _manager(client: TestClient) -> RunManager:
 
 def test_page_static_configs_and_empty_runs(client):
     r = client.get("/")
-    assert r.status_code == 200 and "EventSource" in r.text and 'id="graph"' in r.text
+    assert r.status_code == 200 and "EventSource" in r.text
+    # 2026-11-05 redesign: the drop zone is the page, the stage rail replaces the graph strip, two download buttons
+    for marker in ('id="drop"', 'id="zip"', 'id="rail"', 'id="dl-report"', 'id="dl-zip"', 'id="start"', 'id="stop"',
+                   'id="log"', 'id="timeline"', 'id="adv"'):
+        assert marker in r.text, marker
+    # offline company network: no CDN script, no web font, no stylesheet from elsewhere (the favicon is a data: URI)
+    assert 'src="http' not in r.text and 'href="http' not in r.text and "@import" not in r.text and "fonts.g" not in r.text
     assert client.get("/static/index.html").status_code == 200
     d = client.get("/api/configs").json()
     assert d["configs"] == ["artifacts.local-e2e.yml"]          # default.yml hidden
+    assert d["default"] == ["artifacts.local-e2e.yml"]          # nothing configured → the fallback name that exists
     assert client.get("/api/runs").json() == {"runs": []}
     assert client.get("/api/runs/nope").status_code == 404
     assert client.get("/api/runs/nope/events").status_code == 404
@@ -476,3 +483,48 @@ def test_page_has_no_v21i_switches(client):
     html = client.get("/").text
     assert 'id="fixedits"' not in html and 'id="nokb"' not in html and "fix_mode" not in html
     assert "no_kb" not in html and "KB off" not in html and 'id="start"' in html and 'id="stop"' in html
+
+
+# ---------------------------------------------------------------- 2026-11-05: the server decides the config files
+def test_default_configs_argument_env_and_fallback(tmp_path, repo, monkeypatch):
+    """The page runs every upload with the server's config choice: `sbmig serve --config` (create_app argument) →
+    `$SBMIG_WEB_CONFIGS` → the first existing of artifacts.yml / artifacts.local-e2e.yml → []. A missing name is
+    dropped (warned once) and comes back when the file appears."""
+    monkeypatch.setattr(RunManager, "_run_thread_body", fake_body)
+    monkeypatch.delenv("SBMIG_WEB_CONFIGS", raising=False)
+    (repo / "config" / "company.yml").write_text("x: 2\n")
+    (repo / "config" / "extra.yml").write_text("x: 3\n")
+    # argument
+    c = TestClient(create_app(tmp_path / "o1", repo, default_configs=["company.yml", "extra.yml"]))
+    assert c.get("/api/configs").json()["default"] == ["company.yml", "extra.yml"]
+    # environment (comma-separated, spaces tolerated), a missing name dropped until it exists
+    monkeypatch.setenv("SBMIG_WEB_CONFIGS", "company.yml, later.yml")
+    c = TestClient(create_app(tmp_path / "o2", repo))
+    assert c.get("/api/configs").json()["default"] == ["company.yml"]
+    (repo / "config" / "later.yml").write_text("x: 4\n")
+    assert c.get("/api/configs").json()["default"] == ["company.yml", "later.yml"]
+    # fallback order: artifacts.yml first, else artifacts.local-e2e.yml
+    monkeypatch.delenv("SBMIG_WEB_CONFIGS", raising=False)
+    assert TestClient(create_app(tmp_path / "o3", repo)).get("/api/configs").json()["default"] == ["artifacts.local-e2e.yml"]
+    (repo / "config" / "artifacts.yml").write_text("x: 5\n")
+    assert TestClient(create_app(tmp_path / "o4", repo)).get("/api/configs").json()["default"] == ["artifacts.yml"]
+    # an empty argument / variable is "nothing given": the fallback names apply
+    assert TestClient(create_app(tmp_path / "o5", repo, default_configs=[])).get("/api/configs").json()["default"] == ["artifacts.yml"]
+
+
+def test_upload_without_configs_uses_the_server_default(tmp_path, repo, monkeypatch):
+    """`configs` omitted → the server default; `configs=` (empty) → default.yml only; a given list wins."""
+    monkeypatch.setattr(RunManager, "_run_thread_body", fake_body)
+    monkeypatch.delenv("SBMIG_WEB_CONFIGS", raising=False)
+    shutil.copy(repo / "config" / "artifacts.local-e2e.yml", repo / "config" / "company.yml")   # a company yml
+    client = TestClient(create_app(tmp_path / "out", repo, default_configs=["company.yml"]))
+    mgr = _manager(client)
+    rid = _start(client, "name=p.zip")
+    assert mgr.runs[rid].configs == ["company.yml"]
+    _sse(client, rid)
+    rid = _start(client, "name=p.zip&configs=artifacts.local-e2e.yml")
+    assert mgr.runs[rid].configs == ["artifacts.local-e2e.yml"]
+    _sse(client, rid)
+    # `configs=` (empty) = default.yml only: this test repo's default.yml has no artifacts section → 400, not the default
+    r = client.post("/api/runs?name=p.zip&configs=", content=_zip_bytes(), headers={"Content-Type": "application/zip"})
+    assert r.status_code == 400 and "artifacts" in r.json()["error"]

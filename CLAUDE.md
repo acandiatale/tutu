@@ -286,8 +286,12 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
   `sbmig serve`), runs migrations in-process through `stream_graph` (one worker thread per run, per-run `sbmig.log`
   by thread filter) and streams `node` / `journal` / `log` / `report` events over SSE to `sbmig/web/static/index.html`
-  (vanilla JS). Stop takes effect between graph nodes only. One migration at a time: further uploads are `queued`
-  (shared file KB).
+  (one file, vanilla HTML / CSS / JS, no web font or CDN — the company network is offline; redesigned 2026-11-05 in the
+  company's blue: drop zone → stage rail → 진행 기록 / 로그 tabs → two download buttons report.md / result.zip; the log
+  pane keeps a ring buffer and renders ≤ 1,500 lines, the fix for the browser lag). The config files every upload runs with
+  are the server's choice (`sbmig serve --config` / `SBMIG_WEB_CONFIGS`, else `artifacts.yml` / `artifacts.local-e2e.yml`;
+  `GET /api/configs` → `default`); the page shows the list only under 고급 설정. Stop takes effect between graph nodes
+  only. One migration at a time: further uploads are `queued` (shared file KB).
 - Cloud sessions may lack JDK / Maven (the 2026-10-18 cloud image had JDK 21 at `/usr/lib/jvm/java-21-openjdk-amd64`
   and Maven at `/opt/maven`); without JDK 8/11 run `fixtures/libs/install.sh` with `JAVA8_HOME=$JAVA21_HOME` (JDK 21
   compiles the 1.8-target lib with a warning) and skip the `-m integration` as-is builds. Commit and push to a

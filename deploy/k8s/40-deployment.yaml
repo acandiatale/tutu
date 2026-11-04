@@ -29,6 +29,7 @@ spec:
             - secretRef: {name: sbmig-llm}
           env:
             - {name: SBMIG_MAX_UPLOAD_MB, value: "1024"}
+            - {name: SBMIG_WEB_CONFIGS, value: "company.yml"}     # 모든 업로드가 이 config 로 돈다(= sbmig serve --config); 쉼표로 여러 개
             # - {name: NO_PROXY, value: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"}   # 클러스터에 프록시가 걸려 있을 때
           volumeMounts:
             - {name: data, mountPath: /data}

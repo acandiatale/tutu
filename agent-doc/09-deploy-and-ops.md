@@ -16,7 +16,11 @@ UI 에 올리면** 에이전트가 이관을 돌린다. 담당자는 sbmig 를 �
 담당자 브라우저 ◀──결과 내려받기── report.md, result.zip, errors.md, sbmig.log …
 ```
 
-- 화면: 업로드 → 실행 → 진행 실시간 보기 → 결과 내려받기. 설정은 `config/*.yml` 중에서 고른다(`GET /api/configs`).
+- 화면: zip 을 끌어다 놓거나 파일 선택 → `마이그레이션 시작` → 단계 레일(접수 → 분석 → 계획 → 단계들 → 마무리)과 진행 기록 / 로그 탭 →
+  끝나면 `보고서 받기(report.md)` / `변환된 프로젝트 받기(result.zip)` 버튼. **설정 파일은 서버가 정한다**: `sbmig serve --config <이름>`
+  (여러 번) 또는 `SBMIG_WEB_CONFIGS=a.yml,b.yml`, 없으면 `config/artifacts.yml` → `artifacts.local-e2e.yml` 중 있는 것(`GET /api/configs` 의
+  `default`). 담당자는 고르지 않고, 개발자는 "고급 설정"을 펼쳐 설정 파일 / LLM(fake) / 여기까지만 실행을 바꾼다. 로그 탭은 마지막 1,500 줄만
+  그린다(전체는 `sbmig.log` 링크). 화면은 `sbmig/web/static/index.html` 한 파일(HTML + CSS + JS, 웹 폰트·CDN 없음 — 사내망).
 - **한 번에 하나의 이관.** 그 사이 올라온 zip 은 `queued` 로 기다린다(파일 KB 를 공유하기 때문, 순차 이관이 운영 모델).
 - **중지**는 그래프 노드 사이에서만 먹힌다(지금 노드가 끝난 뒤).
 - **접근 토큰** `SBMIG_WEB_TOKEN`(또는 `--token`): 결과 zip 에 회사 소스가 들어가므로, 토큰이 있으면 모든 요청에 요구한다. 브라우저는
