@@ -24,7 +24,7 @@
 | `journal.jsonl` | 이벤트 한 줄씩 `{"event": …}` (§1.1) | 결정·채점·차단의 근거 |
 | `sbmig.log` | DEBUG 로그. 단계 태그 `[fix r3]`. 핵심 줄: `KB 탐색: …`(케이스의 사다리 결정), `llm call provider=… attempt n/m`, `build N: …`, `regressed`/`reverted`, `config: … since v2.1z`(설정 경고) | 시간 순서로 따라갈 때 |
 | `logs/NNN-<라벨>.log` | Maven 호출 로그(번호 순: effective-pom, rewrite, build-verify …). `[ERROR]` 줄과 javac 블록(`symbol:` / `location:`) | **실제 오류 메시지**는 여기서 |
-| `logs/effective-depmgmt.json`, `logs/depmgmt-after-restructure.json` | as-is / 재구성 뒤 관리 버전 캡처 | 버전 관련 케이스 |
+| `logs/effective-depmgmt.json`, `logs/effective-depmgmt-after-restructure.json` | as-is / 재구성 뒤 관리 버전 캡처 | 버전 관련 케이스 |
 | `logs/review-input.md` | 구조 점검에 보낸 프롬프트(사실 절 포함) | 점검 판단이 이상할 때 |
 | `project/` | 작업 복사본 = **git 저장소**(브랜치 `sbmig/<run_id>`). 커밋 하나 = 단계 또는 시도 하나: `intake: …`, `rewrite: …`, `restructure: …`, `review: …`, `fix(script:<case>:v<N> new\|augment): case:<id>`, `fix(sbmig-version\|sbmig-resources\|sbmig-jakarta): …`, 되돌림 커밋 | `git log --oneline`, `git show <sha> --stat`, `git show <sha> -- <file>` 로 시도가 실제로 무엇을 바꿨는지 |
 | `changes.patch`, `result.zip` | 전체 diff, 산출물 | 담당팀 전달용 |
@@ -79,7 +79,7 @@
 5. `errors.jsonl` 에서 그 항목의 `tries[]`: 시도마다 `source` / `result` / `analysis` / `solution` / `diff` — 무엇을 바꿨고 왜 그 결과로 채점됐는지. 되돌린 시도도 보인다.
 6. `journal.jsonl`: 그 케이스의 `decision`(rationale), `attempt_scored`, `revert`, `stall` / `oscillation`(토글한 두 오류 집합), `library_hints` 의 `lines`(LLM 이 받은 사실).
 7. LLM 기록: 해당 시도의 `llm-NNNN.json` 에서 프롬프트의 `Dependency versions` / `Previous attempts` / 레이아웃 사실 절과 응답 — **사실이 빠졌는지**, LLM 이 사실을 **무시했는지**, **거절**인지.
-8. `project/` git: `git log --oneline` 으로 시도 커밋과 되돌림 짝을 보고 `git show` 로 실제 변경 확인.
+8. `project/` git: `git log --oneline` 으로 시도 커밋과 되돌림 짝을 보고 `git show` 로 실제 변경 확인. **as-is 트리 조회**: 첫 커밋이 as-is 스냅샷(`$asis = git rev-list --max-parents=0 HEAD`) — `git grep -l -e <패턴> $asis` 로 어떤 파일(소스 / pom / jsp)이 그 이름을 갖고 있었는지, `git ls-tree -r --name-only $asis` 로 as-is 의 pom.xml / jar 전체 목록, `git show ${asis}:<경로>` 로 as-is 원문. 루트에 pom.xml 이 없던 트리(`aggregator-generated` 플래그)는 접수가 집계 pom 을 만든 것이고, 집계에 연결되지 않은 최상위 pom 은 **빠진다**(인수인계 "left out — add them to its <modules>") — 사라진 클래스가 그 모듈의 소스였는지 먼저 본다.
 9. **분류** — 카드의 "진짜 원인" 칸에 하나를 고른다:
    - **(a) 사실 부족**: 저장소·부모 체인·레이아웃·라이브러리 사실이 프롬프트에 없거나 틀림 → sbmig 개선 대상(예: `(local repository only)` 라 Nexus 의 jakarta 빌드를 못 봄).
    - **(b) LLM 반복/능력**: 같은 변경을 되풀이, 사실을 받고도 다른 접근을 못 함 → 한도·노트·프롬프트 규칙.
