@@ -1009,6 +1009,7 @@ class ScriptProposal(BaseModel):
     model: str = ""
     prompt_hash: str = ""
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
+    session_id: Optional[str] = None               # v2.1z-o: the gateway session the answer came from (continuation)
     requested_files: list[str] = Field(default_factory=list)
     raw_response: str = ""
     error: str = ""                                # why there is no script (unparsable answer, transport, refusal)
@@ -1346,6 +1347,7 @@ class FixAttempt(BaseModel):
     model: str = ""
     prompt_hash: str = ""
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
+    llm_session_id: Optional[str] = None           # v2.1z-o: the gateway session of this attempt's answer (the next rung may continue it)
     errors_before: int = 0
     errors_after: Optional[int] = None
     cluster_signatures: list[str] = Field(default_factory=list)

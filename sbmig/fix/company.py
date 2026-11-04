@@ -269,8 +269,8 @@ class CompanyClient:
         """보낼 JSON 본문. legacy: `{model, messages: [{role, content}], **payload_extra}` — 게이트웨이 계약 그대로(messages 만,
         tools·생성 파라미터 없음). agent(v2.1z-m): `{model: <asset id>, messages, stream: false, async: false,
         params: {role: <고른 모델 이름 — build_error_fixer / escalation_fixer>}, trace_id (호출마다 새 uuid), max_tokens,
-        temperature, **agent_extra}`; session_id 는 보내지 않는다(게이트웨이가 세션을 만들어 응답에 넣어 준다 — ``LLMResponse.session_id``),
-        thread_id 는 의미가 확인될 때까지 보내지 않는다.
+        temperature, **agent_extra}`; session_id 는 기본으로 보내지 않는다(게이트웨이가 세션을 만들어 응답에 넣어 준다 —
+        ``LLMResponse.session_id``) — 이어가려는 호출만 ``metadata["session_id"]`` 로 되돌려 보낸다; thread_id 는 폐기됨(보내지 않음).
 
         legacy: the company contract verbatim; agent: the GPT agent gateway's shape (asset id as `model`, the chosen
         model name as `params.role`, per-call ids, the generation parameters it accepts; no `thread_id` yet)."""
@@ -279,7 +279,11 @@ class CompanyClient:
             return {"model": model or self.model, "messages": msgs, **self.payload_extra}
         body: dict[str, Any] = {"model": self.asset_id or (model or self.model), "messages": msgs, "stream": False,
                                 "async": False, "params": {"role": model or self.model}}
-        # v2.1z-n (user): no session_id is sent — the gateway creates a session and returns its id in the answer
+        # v2.1z-n/o (user): no session_id → the gateway opens a session and returns its id; a caller that wants to CONTINUE
+        # that conversation passes it back in metadata["session_id"] (the case thread); thread_id is deprecated — never sent
+        sid = (metadata or {}).get("session_id") if isinstance(metadata, dict) else None
+        if sid:
+            body["session_id"] = str(sid)
         body["trace_id"] = uuid.uuid4().hex
         if max_tokens is not None:
             body["max_tokens"] = int(max_tokens)

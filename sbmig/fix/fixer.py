@@ -524,6 +524,7 @@ class LLMFixer:
                 model=last.model if last else (model or ""),
                 prompt_hash=messages_hash(messages),
                 llm_usage=usage,
+                session_id=getattr(last, "session_id", None) if last else None,   # v2.1z-o
                 requested_files=requested,
                 raw_response=last.content if last else "",
                 error=error,
@@ -879,7 +880,8 @@ class LLMFixer:
         usage.output_tokens += u.output_tokens
         parsed = parse(resp.content)
         transcript.append({"prompt_hash": messages_hash(messages), "response": resp.content,
-                           "usage": u.model_dump(), "warnings": parsed.warnings})
+                           "usage": u.model_dump(), "warnings": parsed.warnings,
+                           "session_id": getattr(resp, "session_id", None)})     # v2.1z-o: the gateway's session
         if parsed.warnings:
             log.debug("protocol warnings: %s", parsed.warnings)
         return resp, parsed

@@ -515,6 +515,7 @@ class _Recorder:
         rec = {
             "messages": [m.model_dump() for m in messages],
             "response": resp.content if resp else None,
+            "session_id": getattr(resp, "session_id", None) if resp else None,   # v2.1z-o: the gateway's session
             "model": resp.model if resp else None,
             "usage": usage_from(resp).model_dump() if resp else None,
             "finish_reason": resp.finish_reason if resp else None,

@@ -495,5 +495,9 @@ def test_the_session_id_the_gateway_returns_is_kept_not_sent():
     resp = c.complete(MSGS, role="fix", metadata={"run_id": "run-1"})
     assert resp.session_id == "sess-7" and c.last_session_id == "sess-7"
     assert "session_id" not in post.calls[1]["json"] and "thread_id" not in post.calls[1]["json"]
+    # continuing that conversation: the caller passes the id back; a fresh start passes none (a new session opens)
+    post.responses.append(answer)
+    c.complete(MSGS, role="fix", metadata={"run_id": "run-1", "session_id": "sess-7"})
+    assert post.calls[2]["json"]["session_id"] == "sess-7" and "thread_id" not in post.calls[2]["json"]
     nested = FakeResponse(200, {"data": {"session_id": "sess-8", "choices": [{"message": {"content": "x"}}]}})
     assert CompanyClient._session_of(nested.json()) == "sess-8" and CompanyClient._session_of({"choices": []}) is None

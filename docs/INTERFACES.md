@@ -3740,3 +3740,22 @@ classes through `spring-tx` / `spring-jdbc` / `spring-orm` / `spring-test` (mana
 `knowledge/notes/spring-removed-artifacts.md` + `index.yml`, `sbmig/triage/scripts.py plan_script_step` (the edit cap),
 `sbmig/core/config.py` / `config/default.yml` `script.max_edit_tries_per_case`, `sbmig/loop/fixloop.py VersionResolver.resolve`.
 Tests: the returned session id (kept, not sent), the resolver guard, the edit cap.
+
+## v2.1z-o — gateway sessions: `thread_id` is deprecated, continuation = the returned `session_id` sent back (2026-11-04)
+
+**Facts from the user.** The agent gateway's `thread_id` is deprecated — never sent. A call without `session_id` opens a new
+session and the answer carries its id; a call that sends that id back **continues** the conversation; a call that omits it
+starts afresh. That is the transport the agreed **case-thread** increment needs (one conversation per case and run; a fresh
+`new` after the augments = a new session).
+
+**Built now (plumbing, no behaviour change).** `CompanyClient.payload` sends `session_id` only when the caller passes
+`metadata["session_id"]` (the continuation); `LLMResponse.session_id` is read from every answer; the `llm-NNNN.json` record and
+the fixer's transcript carry `session_id`; `ScriptProposal.session_id` / `FixAttempt.llm_session_id` keep the id of the answer
+an attempt came from, so the next rung of the same case can continue it.
+
+**Open before the thread mode is switched on (asked 2026-11-04).** (1) In a continued session, does the gateway want only the
+NEW user message, or the whole history again (if the whole history: the session memory duplicates it and the prompt tokens double;
+if only the delta: sbmig must send `messages = [the apply result + the request]` without the system prompt)? (2) The session's
+lifetime / idle expiry on the gateway (a case ladder can span an hour of builds). (3) Billing of a continued session — are the
+earlier turns counted again in `usage.prompt_tokens`? The design (`llm.case_thread: true`, `llm.thread_keep_turns`, replay keyed
+`case:<id>` + turn) follows the answers; until then every call is stateless, as today.

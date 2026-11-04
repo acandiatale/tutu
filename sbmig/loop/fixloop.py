@@ -2700,6 +2700,7 @@ class BuildFixLoop:
         self.budget.charge_llm(max(1, proposal.llm_usage.calls))
         self._mark(f"LLM answered for {c.id}")
         att.model, att.prompt_hash, att.llm_usage = proposal.model, proposal.prompt_hash, proposal.llm_usage
+        att.llm_session_id = getattr(proposal, "session_id", None)      # v2.1z-o: the gateway session (continuation)
         att.analysis = proposal.analysis
         if is_llm_transport_error(proposal.analysis):
             self._fail(att, proposal.analysis.strip()[:300])

@@ -256,6 +256,9 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   no `session_id` is sent either (v2.1z-n) — the gateway creates one and returns it (`LLMResponse.session_id`). An EOL-library
   replacement by project code (Spring Mobile) is a `<no_script>` + `<edits>` answer capped by `script.max_edit_tries_per_case` (4),
   recorded as edits, never a stored script; obsolete Spring artifacts (spring-dao …) are removed, never version-pinned.
+  **v2.1z-o:** `thread_id` is deprecated (never sent); a call that passes `metadata["session_id"]` continues that gateway session,
+  one without it opens a new one — the case-thread increment's transport (`FixAttempt.llm_session_id` keeps the id; the mode
+  itself waits for the company's answers on delta-vs-history, TTL and billing).
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems;
   on the company's Windows PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: FAIL`, `cause=`).
