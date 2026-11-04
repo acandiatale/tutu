@@ -1,0 +1,40 @@
+# 웹 파드(sbmig serve, Job 디스패치 모드)가 빌드 Job 을 만들고 지켜보는 데 필요한 최소 권한.
+# 네임스페이스 안에서만 유효한 Role 이다. 디스패치 모드가 코드에 들어오면 40-deployment.yaml 의 파드 spec 에
+#   serviceAccountName: sbmig-web
+# 을 넣는다. 인프라팀이 /etc/kube/config(가이드 방식)를 주는 쪽이면 이 파일은 쓰지 않는다.
+# 빌드 Job 파드에는 어떤 권한도 주지 않는다(쿠버네티스 API 를 부르지 않는다).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sbmig-web
+  namespace: CHANGE_ME_NAMESPACE
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sbmig-web-jobs
+  namespace: CHANGE_ME_NAMESPACE
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]   # 만들기 · 상태 보기 · 중지(= 삭제)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]                       # Job 이 만든 파드를 찾는다
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]                                        # 진행 화면에 흘릴 로그
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sbmig-web-jobs
+  namespace: CHANGE_ME_NAMESPACE
+subjects:
+  - kind: ServiceAccount
+    name: sbmig-web
+    namespace: CHANGE_ME_NAMESPACE
+roleRef:
+  kind: Role
+  name: sbmig-web-jobs
+  apiGroup: rbac.authorization.k8s.io

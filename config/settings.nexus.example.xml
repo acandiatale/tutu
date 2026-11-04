@@ -1,37 +1,44 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  sbmig example Maven settings for an air-gapped migration host (RUNBOOK §0.1).
-  Copy to e.g. config/settings.nexus.xml (git-ignored pattern: *.local.xml / your choice), set the Nexus group URL,
-  then in artifacts.yml:   build: { settings_file: config/settings.nexus.xml }
-  sbmig passes "-s <this file>" to EVERY Maven call: builds, the OpenRewrite plugin, the effective-pom capture, the
-  recipe BOM fetch. Nothing is read from the user's ~/.m2/settings.xml then.
+  sbmig 용 Maven settings.xml 예시 (외부 인터넷이 막힌 이관 PC 용, docs/RUNBOOK.md §0.1)
 
-  Why a mirror and not <repositories>: the project poms themselves declare <repositories> / <pluginRepositories>
-  (an old Nexus host, Maven Central, Spring milestones …). Maven contacts those URLs directly — on a host that cannot
-  reach them every artifact costs a failure or a connect timeout. A mirror with <mirrorOf>external:*</mirrorOf>
-  rewrites every such repository (and Central) to the group below, so the declarations stay harmless. "external:*"
-  leaves file:// and localhost repositories alone (projects with a local WEB-INF/lib style repo keep working) and
-  also overrides Maven 3.8+'s default blocker for pom-declared http:// repositories ("Blocked mirror for
-  repositories"). Prefer this over `build.pom_repositories: remove` unless you also want the declarations gone
-  from the migrated poms.
+  쓰는 방법
+    1. 이 파일을 예를 들어 config/settings.nexus.xml 로 복사한다. 회사 주소가 들어가므로
+       저장소에 올리지 않는다(.gitignore 에 그 이름을 더하거나 저장소 밖에 둔다).
+    2. 아래 <url> 을 이관 PC 에서 닿는 사내 Nexus 그룹 URL 로 바꾼다.
+    3. config/artifacts.yml 에 경로를 적는다:   build: { settings_file: config/settings.nexus.xml }
+       같은 그룹 URL 을 build.repository_url 에도 적어 두면 sbmig 의 버전 조회도 같은 곳을 본다.
+
+  이렇게 하면 sbmig 는 모든 Maven 호출(빌드, OpenRewrite 플러그인, effective-pom 조회, 레시피 BOM 내려받기)에
+  "-s <이 파일>" 을 넘긴다. 그때는 사용자 ~/.m2/settings.xml 을 읽지 않는다.
+
+  왜 <repositories> 가 아니라 미러인가
+    프로젝트 pom 들은 스스로 <repositories> / <pluginRepositories> 를 선언하고 있다(옛 Nexus 주소,
+    Maven Central, Spring milestone …). Maven 은 그 주소로 직접 접속하므로, 그 주소에 닿지 않는 PC 에서는
+    아티팩트마다 실패나 접속 시간 초과를 겪는다. <mirrorOf>external:*</mirrorOf> 미러는 그런 저장소 전부
+    (Central 포함)를 아래 그룹 하나로 돌려 주므로, pom 의 선언은 그대로 두어도 해가 없다.
+    "external:*" 는 file:// 과 localhost 저장소는 건드리지 않으므로, 프로젝트 안에 로컬 저장소를 둔
+    프로젝트도 계속 동작한다. 또 Maven 3.8 이상이 pom 에 선언된 http:// 저장소를 막는 기본 차단
+    ("Blocked mirror for repositories")도 이 미러가 대신한다.
 -->
 <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
 
-  <!-- optional: a dedicated local repository for the migration host (sbmig: build.local_repo does the same) -->
+  <!-- 선택: 이관 PC 전용 로컬 저장소 위치. sbmig 의 build.local_repo 로도 같은 일을 할 수 있다. -->
   <!-- <localRepository>D:/sbmig/m2</localRepository> -->
 
   <mirrors>
     <mirror>
       <id>company-nexus</id>
       <name>Company Nexus group (proxies Central, Spring, in-house releases)</name>
-      <url>https://nexus.example.com/repository/maven-public/</url>   <!-- CHANGE ME: the reachable group URL -->
+      <url>https://nexus.example.com/repository/maven-public/</url>   <!-- 바꿀 곳: 이관 PC 에서 닿는 Nexus 그룹 URL -->
       <mirrorOf>external:*</mirrorOf>
     </mirror>
   </mirrors>
 
-  <!-- only when the group needs credentials — never commit them; Maven reads ${env.…} from the environment
+  <!-- 그룹에 로그인이 필요할 때만 쓴다. 아이디·비밀번호를 파일에 적어 올리지 않는다.
+       Maven 이 ${env.…} 를 실행 시 환경 변수에서 읽는다. <id> 는 위 미러의 <id> 와 같아야 한다.
   <servers>
     <server>
       <id>company-nexus</id>
@@ -41,6 +48,7 @@
   </servers>
   -->
 
-  <!-- the group must proxy what RUNBOOK §0 lists: org.openrewrite.* (plugin 6.46.1, recipe BOM 3.37.0),
-       org.springframework.boot:*:4.1.0, jakarta.*; nothing else is needed on this host. -->
+  <!-- sbmig 자체가 이 그룹에서 받아야 하는 것(docs/RUNBOOK.md §0): org.openrewrite.*(플러그인 6.46.1,
+       레시피 BOM 3.37.0), org.springframework.boot:*:4.1.0, jakarta.*. 그 밖에 sbmig 가 따로 필요로 하는 것은 없다.
+       물론 이관하는 프로젝트가 쓰는 라이브러리와 사내 부모·사내 아티팩트도 이 그룹에서 받는다. -->
 </settings>

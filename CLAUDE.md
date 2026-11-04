@@ -15,6 +15,11 @@ The Korean handbook for the company (`docs/handbook/`, README → 01…09 + `sbm
 explains the same system for operators; `tests/docs/test_handbook.py` keeps its paths / config keys / CLI names /
 links in sync with the code, and `scripts/handbook/` regenerates the xlsx / pptx. The KB data map for the business
 team is `docs/kb-map/` (`kb-map.html` source, `index.html` single file, `kb-map.md`; `scripts/handbook/build_kb_map.py`).
+**`agent-doc/` (2026-11-04)** is the Korean document pack the company feeds to its in-house LLMs (Sonnet / Haiku / GPT
+class) so other engineers can diagnose runs and change the code with them: README = index + rules for the LLM, 00…10 one
+topic each, ≤ 350 lines / 30 KB per file, no version tags or dates except in 10; `tests/docs/test_agent_doc.py` checks
+paths / config keys / CLI names / links / sizes. Update it with the code (unlike the handbook). The comments of `config/*.yml`
+are Korean explanations for a human deciding a value (not technical notes, no version tags); keys / values are the contract.
 **The handbook is updated only when the user asks for it** (2026-10-27: the code keeps changing, one tidy-up pass
 later); record operator-visible changes (CLI, config keys, report sections, log lines) in `docs/PLAN.md` /
 `docs/INTERFACES.md` meanwhile, and keep `tests/docs` green with minimal reference fixes only.
@@ -102,7 +107,7 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
 - The company has its own LLM API gateway and its own agent-building framework. They plug in through the adapter
   seams (`llm.plugin` tier 1, `fix.plugin` tier 2 = `propose_script`, see `docs/ADAPTERS.md`), not through new HTTP clients.
 - Operating model: **one agent migrates ~500 projects strictly sequentially**. Every fix script is recorded per
-  error case (L2 signature) so later projects reuse it without an LLM call: `sbmig fleet`, `kb-v2/scripts/`,
+  error case (L2 signature) so later projects reuse it without an LLM call: `sbmig fleet`, `kb-v2/cases/<case_id>/`,
   `sbmig kb cases list` / `sbmig kb cases show <case_id>`.
 - EOL / unmanaged libraries (springfox, hystrix, sleuth, old Spring Cloud trains, …): **no `block` policy, ever**
   (user: "정책상 빌드로 보지 않는건 없을거야" — 500 projects cannot all be perfect). Advisories are guide-only in v2:
@@ -136,17 +141,18 @@ intake (Maven only, aggregator for sibling poms, preflight) → analyze (profile
 (`transform.rewrite`, `restructure.*`, `restructure.review`, `verify.build`) → **transform** (one OpenRewrite run, no build; v2.1's `transform.compile` only with
 `plan.compile_after_rewrite: true`, off since v2.1o) → **restructure** (company layout exactly as v1, optional bump inside) → **structure review** (LLM checks
 poms / dependencies / modules / source encodings / binary resources under filtering against the company rules;
-critical → one fix script, committed `review: …`; warnings → report + `kb-v2/reviews.jsonl`) → **verify**
-(`mvn clean package -Dmaven.test.skip=true`); on failure the **script fix loop** (`loop.phases.verify`, 12 rounds):
+critical → edits (`review.ask_script: false`; a script only when true), committed `review: …`; warnings → report + error list;
+`review.record` / `reviews.jsonl` are dead) → **verify**
+(`mvn clean package -Dmaven.test.skip=true`); on failure the **script fix loop** (`loop.phases.verify.max_iterations`, 50 rounds cap):
 errors grouped per **case** (L2 signature; coarse `build` / `other` keys refined from the javac line), root causes
 first, cases whose files / module pom a script already touched this round wait for the rebuild; per case
 **reuse** the best stored script (no LLM) → **augment** this run's last script (LLM, ≤ `script.max_augments_per_case` 15)
 → augments used up: a fresh **new** (LLM) → BLOCKED `repeated_failure` at `script.max_llm_tries_per_case` 20 asks (v2.1z); every attempt is committed, scored by the rebuild (round-10 rules: improved / partial
 / no_change / regressed → reverted / inconclusive), rolled back before the case's next try unless it improved, and
-credited to the stored version (`kb-v2/scripts/<case_id>/v<N>.py` + meta: lineage, successes / failures / projects).
+credited to the stored version (`kb-v2/cases/<case_id>/fix_v<N>.py` + `case.json`: lineage, successes / failures / projects).
 Then the final build again, the report (Handover first, "Structure review", fix attempts as `script:<case>:v<N>`),
-`error_cases.*` / `fix_attempts.jsonl` in the run dir and the KB (`errors.jsonl`, `fix_attempts.jsonl`, catalog,
-views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line operators retype.
+`errors.md` / `errors.jsonl` in the run dir and the KB (`errors.jsonl`, `cases.md`, `cases/<case_id>/`; the v1-era
+`error_cases.*` / `fix_attempts.jsonl` / catalog / audit / quarantine files are no longer written). `SBMIG-RESULT … review=<verdict>` is the line operators retype.
 
 ## Status — 2026-10-27 (`flow-v2`)
 - v1 history (rounds 1–10, 2026-10-18 … 10-26, all on `main` / tag `company-v1`): pipeline + fixtures, blocked-cluster
@@ -225,7 +231,7 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   commits happen in the main session. Per round: append a "Status" table to `docs/PLAN.md`, update
   `docs/INTERFACES.md` on contract changes, add a fixture + `expected.json` (+ `replay/`) for every new scenario.
 - Setup: `uv venv && source .venv/bin/activate && uv pip install -e ".[dev]"` (plain `pip install -e ".[dev]"` works too).
-- Fast check (Python only, ~6 min): `python -m pytest -m "not integration"` → 2,032 passed, 42 deselected
+- Fast check (Python only, ~6 min): `python -m pytest -m "not integration"` → ≈ 2,930 passed, ≈ 50 deselected (2026-11-04)
   (`-q` on top of the `-q` in pyproject hides the summary line).
   `ruff check sbmig tests` has pre-existing style findings (mostly `UP045`); lint is not a gate here, so fix only what
   you touch and never run a repo-wide `ruff --fix` inside a feature round.
@@ -250,7 +256,7 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   proxies and response. `config/llm-anthropic.yml` remains for Anthropic validation runs. Keys never go into yml.
   **v2.1z-m (2026-11-04)**: the company's GPT agent gateway is `llm.gateway: agent` (`LLM_GATEWAY`): the payload is
   `{model: <LLM_ASSET_ID>, messages, stream: false, async: false, params: {role: <LLM_MODEL / LLM_ESCALATION_MODEL>},
-  session_id, trace_id, max_tokens, temperature}` — the role names (`build_error_fixer`, `escalation_fixer`) are what the
+  trace_id, max_tokens, temperature; session_id only to continue a session}` — the role names (`build_error_fixer`, `escalation_fixer`) are what the
   gateway maps to its models (gpt-5.5 / gpt-5.6-sol); `LLM_TOKEN_URL` + `LLM_APP_TOKEN` (else `LLM_API_KEY`) drive the
   token exchange (`TokenManager`: refreshed 5 min before expiry, once more after a 401). No `thread_id` until confirmed;
   no `session_id` is sent either (v2.1z-n) — the gateway creates one and returns it (`LLMResponse.session_id`). An EOL-library

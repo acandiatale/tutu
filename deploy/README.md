@@ -12,10 +12,13 @@
 | `k8s/20-configmap.yaml` | 회사 설정 `company.yml` + Nexus `settings.xml` |
 | `k8s/30-secret.example.yaml` | 비밀값 예시 — `sbmig-llm`(= PC 의 `.env` + 웹 토큰), `sbmig-git`(저장소 토큰). **복사해 채우고 커밋하지 않는다**(`30-secret.yaml` 은 git-ignore) |
 | `k8s/40-deployment.yaml`, `k8s/50-service.yaml` | 웹 UI 에이전트(`sbmig serve`) Deployment(replica 1, Recreate) + Service — Job 모델만 쓰면 불필요 |
-| `k8s/80-build-job.template.yaml`, `k8s/submit-job.sh` | **인프라 가이드(2026-11-05) 모델**: 요청별 Job 템플릿 + Agent 쪽 제출 스크립트 |
+| `k8s/45-web-rbac.yaml` | 웹 파드가 Job 을 만들고 지켜보는 최소 권한(ServiceAccount + Role + RoleBinding). 디스패치 모드용 |
+| `k8s/80-build-job.template.yaml`, `k8s/submit-job.sh` | **인프라 가이드(2026-11-05) 모델**: 요청별 Job 템플릿 + 템플릿을 손으로 돌려 보는 제출 스크립트(운영 방식이 아니라 검증 도구) |
 
-두 운영 모양 중 하나를 고른다. **① 웹 UI 에이전트**(PC 와 같은 `sbmig serve`, 10~50) 또는 **② 요청별 Job**(인프라 가이드, 20·30·80).
-설정과 비밀값(20, 30)은 둘이 공유한다.
+**운영 방식은 하나다**: 에이전트가 웹 화면을 띄우고, 이관 대상 프로젝트의 담당자가 그 화면에 프로젝트 zip 을 올리면 에이전트가
+이관을 돌린다. 담당자가 sbmig 명령을 직접 치는 일은 없다.
+**목표 구성(§3)** 은 인프라 가이드대로 웹 파드가 업로드마다 빌드 Job 을 만드는 것이다(`sbmig serve` 의 Job 디스패치 모드, 만들 것).
+**지금 바로 올릴 수 있는 구성(§2)** 은 웹 파드가 자기 프로세스 안에서 돌리는 것이다(코드 그대로). 화면·이미지·설정 파일은 둘이 같다.
 
 ## 1. 이미지 만들기
 
@@ -53,38 +56,94 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token e
 * **ConfigMap `sbmig-config`**: `company.yml` 은 `/app/config/company.yml` 로 들어가 UI 의 config 목록에 나온다. 컨테이너 경로를 여기
   적는다 — `kb.dir: /data/kb-v2`(기본 `kb-v2` 는 이미지 안이라 재시작 때 사라진다), `build.settings_file: /etc/sbmig/settings.xml`,
   `build.repository_url`, `llm.record_dir`.
-* **리소스**: Maven / OpenRewrite 는 `build.jvm_args: ["-Xmx4g"]` 로 돈다 → 메모리 limit 6~8 GiB, CPU 2~4. 업로드 상한
+* **리소스**: Maven / OpenRewrite 는 `openrewrite.jvm_args: ["-Xmx4g"]` 로 돈다 → 메모리 limit 6~8 GiB, CPU 2~4. 업로드 상한
   `SBMIG_MAX_UPLOAD_MB`(기본 512, 매니페스트는 1024). **프로브**: 인증 없는 health 경로가 없어 `tcpSocket`.
 * `sbmig serve` 가 **곧 uvicorn** 이다(안에서 `uvicorn.run`). 워커는 하나여야 한다 — 실행 큐가 프로세스 안에 있어 `--workers 2` 나
   gunicorn 은 큐를 갈라 놓는다.
 
-## 3. ② 요청별 빌드 Job 모델 (인프라 가이드 2026-11-05)
+## 3. 목표 구성 — 웹 파드(`sbmig serve`, Job 디스패치 모드) + 요청별 빌드 Job
 
-가이드의 모델: **요청마다 Job 하나**, 그 파드가 "소스 처리 → 빌드 → 분석 → 결과 저장 → 저장소 커밋" 을 전부 하고 끝난다. 작업 공간은
-`/workspace` emptyDir(파드와 함께 사라짐). Agent 는 `kubectl --kubeconfig=/etc/kube/config create -f` 로 Job 을 만들고 로그 / 결과를 본다.
-sbmig 에 맞추면 이렇게 된다.
+인프라 가이드(2026-11-05)의 "Agent 가 요청별 빌드 Job 을 만든다" 를 sbmig 에 그대로 맞춘 그림이다. **Agent = 우리 웹 파드**,
+**빌드 Job = sbmig 한 사이클**. 별도 프로젝트를 만들지 않는다. `sbmig serve` 에 실행 모드 하나(자기 안에서 | 쿠버네티스 Job)를 더해,
+업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만들어 돌린다. 화면, 이미지, 설정 파일, 결과 형식은 두 모드가 같다.
+
+```
+담당자 브라우저 ──zip 업로드──▶ 웹 파드 (sbmig serve, Job 디스패치 모드)
+                                  │ 1 zip 보관 (/data/uploads/<run id>.zip), 일회용 내려받기 토큰 발급
+                                  │ 2 Job 생성 (80-build-job.template; SBMIG_SOURCE_ZIP_URL, 결과 POST 주소)
+                                  │ 3 pods/log 스트리밍 → 화면의 진행 표시 (노드 · 저널 · 로그)
+                                  ▼
+                            빌드 Job 파드 (같은 이미지, run-job.sh 한 사이클)
+                                  │ 4 zip 내려받기 ← 웹 파드 Service
+                                  │ 5 KB clone → sbmig run → 보고서 (emptyDir /workspace)
+                                  │ 6 결과 POST → 웹 파드 (report.md, errors.md, result.zip, sbmig.log, journal.jsonl)
+                                  │ 7 KB commit + push, 프로젝트 브랜치 sbmig/<run id> push (선택)
+                                  ▼ 종료 (exit 0 / 2 / 3 / 4), ttl 뒤 정리
+담당자 브라우저 ◀──결과 내려받기── 웹 파드 (/data/out/<run id>/)
+```
+
+### 두 파드가 하는 일
+
+| | 웹 파드 (가이드의 Agent) | 빌드 Job 파드 |
+|---|---|---|
+| 프로그램 | `sbmig serve` (FastAPI + uvicorn, 워커 1, 큐 = 한 번에 하나) | `docker/run-job.sh` → `sbmig run` (LangGraph 그래프, LLM 호출, OpenRewrite, Maven, 수정 루프 전부) |
+| 이미지 | `docker/Dockerfile` (같은 이미지, JDK 는 쓰지 않는다) | 같은 이미지 |
+| 자원 | CPU 1, 메모리 1~2 GiB | CPU 2~4, 메모리 6~8 GiB (OpenRewrite `-Xmx4g`) |
+| 볼륨 | PVC `/data` (업로드, 실행 기록, 결과) | emptyDir `/workspace` 20 Gi, `~/.m2` (PVC 권장) |
+| 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`) 또는 가이드의 `/etc/kube/config` | 없음 — 쿠버네티스 API 를 부르지 않는다 |
+| 네트워크 | → 쿠버네티스 API | → 웹 파드 Service(zip, 결과), LLM 게이트웨이, Nexus, git(KB) |
+
+빌드 파드가 **에이전트 본체**다. LangGraph 그래프와 LLM 호출이 거기서 돈다. 웹 파드는 받고, 만들고, 보여 준다.
+
+### 이미 있는 것 / 만들 것
+
+| 조각 | 상태 |
+|---|---|
+| 웹 UI: zip 업로드, 접근 토큰, 큐(한 번에 하나), 진행 화면(SSE), 결과 내려받기 | 있음 (`sbmig/web/`) |
+| Job 파드 한 사이클: zip URL 입력, KB git clone / push, 결과 push 훅, 종료 코드 | 있음 (`docker/run-job.sh`, 로컬 모의 실행 검증) |
+| Job 템플릿, 손으로 제출해 보는 스크립트 | 있음 (`k8s/80-build-job.template.yaml`, `k8s/submit-job.sh`) |
+| 웹 파드 RBAC | 있음 (`k8s/45-web-rbac.yaml`, 매니페스트만) |
+| `sbmig serve` 의 실행 모드 분기(자기 안에서 / 쿠버네티스 Job) | **만들 것** |
+| Job 생성 · 감시 · 로그 · 삭제(kubernetes 클라이언트) | **만들 것** |
+| 업로드 내려받기 엔드포인트(일회용 토큰) + 결과 수신 엔드포인트 | **만들 것** |
+| Job 로그 → 화면 이벤트 다리(`sbmig run` 의 저널을 표준 출력에도 찍기) | **만들 것** |
+| `run-job.sh`: 토큰 헤더로 zip 받기, 결과를 POST 로 보내기 | **만들 것** (소폭) |
+| 가짜 kubernetes 클라이언트로 테스트 | **만들 것** |
+
+규모 2~3 일. 중지 버튼 = Job 삭제. 끝난 Job 은 `ttlSecondsAfterFinished` 로 정리. 큐가 한 번에 하나만 돌리므로 Job 도 하나씩 돈다.
+
+### 회의에서 정할 것
+
+1. **Job 분리가 필수인가.** 필수가 아니면 §2 의 구성을 먼저 올려 LLM · Nexus 연결과 실제 프로젝트 몇 건을 검증하고, 디스패치 모드는 뒤에
+   켠다. 화면 · 이미지가 같으니 실행 모드만 바꿔 끼운다.
+2. **웹 파드 권한.** `k8s/45-web-rbac.yaml` 의 ServiceAccount(네임스페이스 안: jobs create / get / list / watch / delete, pods get / list / watch,
+   pods/log get) 또는 가이드의 `/etc/kube/config`.
+3. **네트워크.** 빌드 노드 → 웹 파드 Service(8765), LLM 게이트웨이(토큰 URL + 호출 URL), Nexus, git. 웹 파드 → 쿠버네티스 API.
+4. **KB 영속성.** git 저장소(`SBMIG_KB_GIT_URL`: Job 시작에 clone, 끝에 push — 한 번에 하나라 충돌 없음) 또는 Job 이 마운트하는 PVC.
+5. **`~/.m2`.** emptyDir 이면 Job 마다 Boot BOM · 레시피 · 플러그인을 다시 받는다(수백 MB, 몇 분) → PVC(순차 실행이라 RWO 로 충분) 또는
+   미리 채운 이미지 레이어.
+6. **결과 보관.** 결과 zip 에 회사 소스가 들어간다 → 웹 파드 `/data` 의 보존 기간, 소스 저장소에 브랜치(`sbmig/<run id>`)를 push 할지.
+
+### 회의 발언용 요약
+
+- 담당자는 웹 화면에 zip 을 올린다. 명령을 치지 않는다.
+- 가이드의 Agent 자리는 우리 웹 파드, 빌드 Job 은 sbmig 한 사이클이다. 둘 다 같은 이미지.
+- 웹 파드는 "어디서 돌리나" 만 바뀐다(자기 안 → Job). 화면, 설정, 결과 형식은 그대로.
+- 빌드 파드가 에이전트 본체다. LLM 호출도 거기서 나가므로 빌드 노드에서 LLM 게이트웨이로 가는 길이 열려야 한다.
+- 웹 파드에 필요한 권한은 네임스페이스 안 Job / Pod / 로그에 대한 동사 몇 개뿐이고 매니페스트는 준비돼 있다.
+- KB 와 `~/.m2` 는 Job 사이에 살아야 한다. git 저장소인지 PVC 인지 정해 달라.
+- 디스패치 모드 구현은 2~3 일. 그 전에도 §2 구성으로 먼저 올려 검증할 수 있다.
+
+### 가이드 ↔ sbmig 대응
 
 | 가이드의 말 | sbmig 에서 |
 |---|---|
-| "빌드 이미지: JDK, 빌드 도구, 분석 도구, git" | `docker/Dockerfile` 의 이미지. `build-runner` 자리에 이 이미지 |
-| "소스 처리·빌드·분석·결과 저장·커밋 뒤 종료" | `docker/run-job.sh`: 소스 clone(또는 zip, 마운트) → KB clone → `sbmig run` → 결과 push → 종료 코드 |
-| "저장소 커밋" | 실행 디렉터리의 `project/` 는 이미 git 저장소(브랜치 `sbmig/<run id>`) → 소스 저장소에 그 브랜치를 push |
-| "결과 저장" | `report.md` / `errors.md` / `sbmig.log` / `journal.jsonl` / `logs/` 를 결과 저장소(`SBMIG_RESULT_GIT_URL`, 브랜치 = run id)에 push, 또는 `RESULT_PUSH_CMD` |
-| `/workspace` emptyDir | sbmig 의 `--out /workspace/out`; 파드가 죽기 전에 push 되는 것만 남는다 |
-| Agent: `kubectl create -f /templates/build-job.yaml` | `k8s/80-build-job.template.yaml` + `k8s/submit-job.sh`(권한 확인 → `--dry-run=server` → create → `logs -f` → `SBMIG-RESULT`) |
-| `/etc/kube/config` 는 Agent 에만 | 그대로. 빌드 파드는 쿠버네티스 API 를 부르지 않는다(sbmig 도 안 부른다) |
-
-### 꼭 결정해야 할 세 가지
-
-1. **KB 영속성.** sbmig 의 핵심 자산은 파일 KB(케이스별 수정 스크립트와 성적)이고 다음 프로젝트가 재사용해야 한다. emptyDir 에 두면
-   Job 마다 사라진다. 기본 해법: **KB 를 git 저장소로**(`SBMIG_KB_GIT_URL`) — Job 시작에 clone, 끝에 commit + push. 파일 KB 라 그대로
-   된다. 조건은 Job 을 **한 번에 하나만** 돌리는 것(동시에 둘이 push 하면 충돌; 어차피 순차 이관이 운영 모델). 인프라가 Job 에 PVC 를
-   허용하면 `sbmig-data` 류 PVC 에 `kb.dir` 을 두는 쪽이 더 단순하다.
-2. **`~/.m2`.** emptyDir 이면 Job 마다 Boot 4 BOM, OpenRewrite 레시피, 플러그인을 Nexus 에서 다시 받는다(수백 MB, 몇 분). PVC(`sbmig-m2`,
-   RWO 면 순차 실행에 충분) 로 바꾸거나, 이미지에 `~/.m2` 를 미리 채운 레이어(후속).
-3. **Agent 의 역할.** 가이드의 Agent 는 "Job 을 만들고 보는 쪽" 이다. 지금 `sbmig serve` 는 이관을 자기 프로세스 안에서 돌리고 Job 을
-   만들지 않는다. 당장은 **CLI 모델** — 운영자(또는 목록을 도는 스크립트)가 `submit-job.sh` 로 프로젝트마다 Job 을 만들고 결과는 저장소에서
-   받는다. 웹 UI 의 "Job 디스패치 모드"(업로드 → Job 생성 → 로그 스트리밍 → 결과 회수)는 필요할 때 새 증분(2~3 일).
+| "빌드 이미지: JDK, 빌드 도구, 분석 도구, git" | `docker/Dockerfile` 의 이미지 하나 |
+| "소스 처리 · 빌드 · 분석 · 결과 저장 · 커밋 뒤 종료" | `docker/run-job.sh`: zip(또는 git) → KB clone → `sbmig run` → 결과 전달 → 종료 코드 |
+| "결과 저장", "저장소 커밋" | 결과 POST(웹 파드) 또는 결과 저장소 push(`SBMIG_RESULT_GIT_URL`); 프로젝트 브랜치 `sbmig/<run id>` push |
+| `/workspace` emptyDir | `sbmig run --out /workspace/out`; 파드가 죽기 전에 밖으로 보낸 것만 남는다 |
+| Agent: `kubectl create -f /templates/build-job.yaml` | 웹 파드의 디스패치 모드(만들 것); 손으로는 `k8s/submit-job.sh` |
+| `/etc/kube/config` 는 Agent 에만 | 그대로. 빌드 파드는 쿠버네티스 API 를 부르지 않는다 |
 
 ### 템플릿에서 바꿀 자리 (가이드 2절 그대로 + sbmig 용)
 

@@ -3846,3 +3846,18 @@ What stays: one image (`Dockerfile`, now with `curl` for zip downloads and `/wor
 manifests (the Secret example gained `sbmig-git`), the web-UI Deployment + Service, the Job template and `submit-job.sh`. Every
 comment in `deploy/` is Korean (the company's reviewers do not want English comments). The `build.setup_command` /
 `teardown_command` hooks (v2.1z-s) remain in sbmig as generic per-run hooks, unset in both shapes.
+
+## v2.1z-v — Korean config comments, the `agent-doc/` pack, the Job dispatch design (2026-11-04)
+
+- `config/*.yml` and `config/settings.nexus.example.xml`: comments rewritten as Korean explanations (what a value decides, who changes it when,
+  what happens); keys / values byte-identical (checked by yaml / xml equality). No version tags in comments any more — this file and PLAN.md hold the history.
+  `review.record` and `loop.phases.{jdk21,spring,restructure}` are documented as keys without a consumer (kept for compatibility).
+- `agent-doc/` (12 Korean files, README = index + rules for the LLM): the pack the company feeds to its in-house LLMs; `tests/docs/test_agent_doc.py`
+  checks backticked repo paths, `section.key` config keys, `sbmig <command>` names, relative links, ≤ 350 lines / 30 KB per file, and that the
+  README lists every file. Dates / version tags only in `10-open-items-and-history.md`. `docs/v2/LLM-DIAGNOSIS-BRIEF-KO.md` points at `agent-doc/03`.
+- Operating model (user): project owners upload a zip in the web UI; the CLI is for developers / tests / diagnosis. Target Kubernetes design
+  (deploy/README.md §3, not built): `sbmig serve` execution mode `in-process | k8s-job`; per upload the web pod stores the zip, issues a one-time
+  download token, creates a Job from `80-build-job.template.yaml` (`SBMIG_SOURCE_ZIP_URL`, a result POST URL), streams `pods/log` into the UI;
+  the Job pod runs `run-job.sh` and POSTs report / errors / result.zip back; KB via git or a Job-mounted PVC; stop = delete Job. Web pod RBAC:
+  `deploy/k8s/45-web-rbac.yaml`. Contract additions when built: `web.runner` (or a `sbmig serve` flag), `SBMIG_RESULT_POST_URL` in run-job.sh,
+  the two endpoints (upload download with token, result receive), journal events on the Job's stdout.
