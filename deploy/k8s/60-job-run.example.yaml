@@ -1,0 +1,33 @@
+# EXAMPLE — a one-off CLI run without the web UI: `sbmig run` on a zip placed under /data/in (same image, same volumes,
+# same Secret). The results land in /data/out/<run dir>; the KB on /data/kb-v2 is shared with the web agent.
+# Do not run it while the web agent is migrating (one Maven / one KB writer at a time).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sbmig-run-<project>
+  labels: {app: sbmig, kind: run}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+      containers:
+        - name: run
+          image: <registry>/sbmig:<tag>
+          args: ["python", "-m", "sbmig.cli", "run", "/data/in/<project>.zip",
+                 "--config", "/app/config/company.yml", "--out", "/data/out"]
+          envFrom:
+            - secretRef: {name: sbmig-llm}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: m2, mountPath: /home/sbmig/.m2}
+            - {name: config, mountPath: /app/config/company.yml, subPath: company.yml, readOnly: true}
+            - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
+          resources:
+            requests: {cpu: "2", memory: 6Gi}
+            limits: {cpu: "4", memory: 8Gi}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: sbmig-data}}
+        - {name: m2, persistentVolumeClaim: {claimName: sbmig-m2}}
+        - {name: config, configMap: {name: sbmig-config}}

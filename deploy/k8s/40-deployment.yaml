@@ -1,0 +1,54 @@
+# The agent: ONE replica (one migration at a time — the queue lives in the process), Recreate (the RWO volumes move with it).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sbmig
+  labels: {app: sbmig}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: sbmig}
+  template:
+    metadata:
+      labels: {app: sbmig}
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 60      # --graceful-timeout 30 + Maven children (sbmig kills its process tree)
+      containers:
+        - name: agent
+          image: <registry>/sbmig:<tag>
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8765}
+          envFrom:
+            - secretRef: {name: sbmig-llm}
+          env:
+            - {name: SBMIG_MAX_UPLOAD_MB, value: "1024"}
+            # - {name: NO_PROXY, value: "<gateway host>,<nexus host>,localhost,127.0.0.1"}   # when a proxy is set cluster-wide
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: m2, mountPath: /home/sbmig/.m2}
+            - {name: config, mountPath: /app/config/company.yml, subPath: company.yml, readOnly: true}
+            - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
+          resources:
+            requests: {cpu: "2", memory: 6Gi}
+            limits: {cpu: "4", memory: 8Gi}      # Maven/OpenRewrite run with -Xmx4g (build.jvm_args) + Python
+          readinessProbe:
+            tcpSocket: {port: http}               # no unauthenticated health route: the token guard answers 403
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: sbmig-data}
+        - name: m2
+          persistentVolumeClaim: {claimName: sbmig-m2}
+        - name: config
+          configMap: {name: sbmig-config}

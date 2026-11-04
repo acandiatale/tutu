@@ -1,0 +1,25 @@
+# Persistent state of the agent — never inside the image. RWO is enough: one agent pod (one migration at a time).
+# (split layout with a separate builder POD on another node: /data must be ReadWriteMany — NFS / CephFS class)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sbmig-data            # /data: uploads, run dirs (out/), the KB (kb.dir), LLM records
+  labels: {app: sbmig}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 100Gi
+  # storageClassName: <company class>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sbmig-m2              # ~/.m2: the Maven local repository — without it every run downloads everything from Nexus
+  labels: {app: sbmig}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 50Gi
+  # storageClassName: <company class>

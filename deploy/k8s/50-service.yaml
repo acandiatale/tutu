@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sbmig
+  labels: {app: sbmig}
+spec:
+  selector: {app: sbmig}
+  ports:
+    - {name: http, port: 8765, targetPort: http}
+  # type: ClusterIP (default) + the company's Ingress, or NodePort / LoadBalancer for the operators' browsers

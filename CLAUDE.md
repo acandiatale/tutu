@@ -267,6 +267,10 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems;
   on the company's Windows PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: FAIL`, `cause=`).
 - `coding/` is a standalone coding agent over the same gateway contract (`coding/README.md`), not part of `sbmig`.
+- **Containers / Kubernetes (2026-11-04)**: `deploy/` — one image (`deploy/docker/Dockerfile`: Python + JDK 21 + Maven, code at
+  `/app` on `PYTHONPATH`, never `pip install`ed into site-packages because `config/` / `knowledge/` sit beside `sbmig/`), k8s
+  manifests (PVCs, ConfigMap with the company yml using container paths, Secret = `.env`, Deployment with 1 replica),
+  and the optional sidecar-builder split (`mvn-k8s` through `build.mvn`). `deploy/README.md` is the operator text (Korean).
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or

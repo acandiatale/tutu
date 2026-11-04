@@ -1,0 +1,37 @@
+# The company configuration the web UI offers per run (it lists <repo root>/config/*.yml) and Maven's settings.xml.
+# Mounted with subPath so the image's own config/default.yml etc. stay in place. Replace every <…> with company values;
+# never put a key or a token here (they go to the Secret).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sbmig-config
+  labels: {app: sbmig}
+data:
+  company.yml: |
+    # the company's artifacts.yml (config/artifacts.example.yml is the template) + the container paths
+    artifacts:
+      parent: {group_id: <company group>, artifact_id: base-parent, version: 4.0.0}
+      boot_parent: {group_id: <company group>, artifact_id: boot-jar, version: 4.0.0}
+      comp_parent: {group_id: <company group>, artifact_id: comp-jar, version: 4.0.0}
+      parent_manages_spring_boot: auto
+      mandatory: []        # the 2 mandatory in-house artifacts
+      optional: []         # the 8 optional in-house artifacts
+    build:
+      settings_file: /etc/sbmig/settings.xml
+      repository_url: <https://nexus.company/repository/maven-public/>
+      jvm_args: ["-Xmx4g"]
+    kb:
+      dir: /data/kb-v2     # the shared file KB on the volume (the image's kb-v2/ is not writable state)
+    llm:
+      record_dir: /data/llm-records
+      # case_thread: true  # one gateway session per case (deploy after the first measured run)
+  settings.xml: |
+    <settings>
+      <mirrors>
+        <mirror>
+          <id>company-nexus</id>
+          <mirrorOf>*</mirrorOf>
+          <url><https://nexus.company/repository/maven-public/></url>
+        </mirror>
+      </mirrors>
+    </settings>

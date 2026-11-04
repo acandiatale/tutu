@@ -36,3 +36,4 @@ node_modules/
 package-lock.json
 # v2 KB (flow-v2, kb.dir: kb-v2): everything in it is written by runs / fleets / `sbmig kb …`
 /kb-v2/
+deploy/k8s/30-secret.yaml

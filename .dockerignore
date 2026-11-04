@@ -1,0 +1,17 @@
+# image build context: the sbmig checkout — leave out what the running agent never reads
+.git
+.venv
+__pycache__
+*.pyc
+out/
+tests/
+fixtures/
+docs/
+coding/
+examples/
+sbmig.egg-info/
+.env
+.env.*
+!.env.example
+deploy/k8s/
+kb-v2/
