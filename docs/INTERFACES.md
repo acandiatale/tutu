@@ -3600,3 +3600,41 @@ itself in pom-only mode), boot poms = `c.boot_rel` (layout) / the Boot-plugin po
   (javax.servlet classes + pom.properties → container, untouched), `unused-tool-1.0.jar` (referenced by nothing → unused,
   Handover line). The first build passes: no loop attempt, no error case; journal `bundled_jar_wired` (stage restructure) +
   `bundled_jars_skipped`.
+
+## v2.1z-k — orphan version properties, EOL advisories on blocked items, bundled jars in the advisory match (2026-11-04)
+
+**Why (company re-run after v2.1z-j).** (1) `xxx-boot/pom.xml` still held the as-is `java-version=1.8` and
+`org.springSecurity-version=4.2.7.RELEASE`: the v2.1o/p cleanups are name-based — a property goes when its NAME is one the
+parent chain defines (`_drop_bom_property_overrides`) or when a `<version>` this pass dropped referenced it
+(`_drop_dead_version_properties`) — so an as-is spelling (`-version`, camelCase) no pom references any more survives and misleads
+people and the review. (2) `org.springframework.mobile` blocked with "no jakarta build found" only: the advisory table has known
+since v1 that Spring Mobile is EOL (attic, 2016) with a replacement, but the blocked line did not say so, and because the jar
+came from `WEB-INF/lib` (no pom declared it) the advisory match (`evaluate_advisories` over `pom_gavs`) never saw it.
+
+**Decisions.** No "spring filter": the property rule is about the VALUE and the references, not the name. A property whose value
+looks like a version or a Java level (`VERSION_LIKE_RE`: `1.8`, `17`, `4.2.7.RELEASE`, `2.5.15`, `3.0.0-M1`) and that no project
+pom references as `${name}` is an **orphan** and is removed — but only when `layout.drop_bom_property_overrides` is on AND the
+chain's facts were read (without them nothing can be known about names the chain uses: nothing is removed, as before); chain-defined
+names (the override step's job), `JAVA_PROPS` (`_fix_java` writes them) and names the chain references are skipped. This changes
+the v2.1o expectation that a dead CUSTOM version property (`my.version`) is kept — it goes now (`version_properties_removed`,
+note `N orphan version propert(ies) removed: …`). A blocked `external_javax_api` / `external_api_incompatible` / `needs_owner`
+item whose artifact the advisory table knows gets `; EOL: <title> — replacement: <replacement>` appended to its suggestion
+(`_with_eol_advisory`: the profile's findings first, else the catalog's `artifacts` globs). `evaluate_advisories` also matches the
+bundled jars' known coordinates, so the Handover, the prompt hints and the blocked line all know the library. Spring Mobile gets a
+knowledge note (`knowledge/notes/spring-mobile.md`, keywords `org\.springframework\.mobile`, `DeviceUtils|getCurrentDevice`, …;
+linked from the advisory) that tells the fix LLM to write the replacement as a script — a small in-house `compat.device` package
+with the same type / method names (`Device`, `DeviceUtils.getCurrentDevice`, `LiteDeviceResolver`,
+`DeviceResolverHandlerInterceptor implements HandlerInterceptor`) so call sites only change imports — never to transform the jar's
+bytecode (the Eclipse Transformer would rename javax → jakarta but `HandlerInterceptorAdapter` is gone from Spring 6+: a runtime
+failure) and never to keep the old jar. The KB stores that script per case, so the next project with `DeviceUtils.getCurrentDevice`
+reuses it without an LLM call.
+
+### As built
+
+* `sbmig/restructure/restructurer.py`: `VERSION_LIKE_RE`, `orphan_version_properties(eds, skip)` (pure), `_drop_orphan_version_properties(c)`
+  called right after each `_drop_bom_property_overrides(c)` (both `_layout` branches, `_boot_pom`, `_msa`); tests
+  `tests/restructure/test_orphan_version_properties.py` + the two v2.1o assertions updated (`spring-batch.version` unreferenced where
+  the BOM is not imported, `my.version` dead → both removed now).
+* `sbmig/loop/fixloop.py`: `_with_eol_advisory(suggestion, artifact)`; `sbmig/advisory/evaluate.py`: bundled jars join `gavs`;
+  `knowledge/libraries/advisories.yml` spring-mobile → `notes: knowledge/notes/spring-mobile.md`; `knowledge/notes/spring-mobile.md`.
+  Tests: `test_the_blocked_suggestion_names_the_eol_advisory`, `test_a_bundled_jar_counts_as_the_library_too`.

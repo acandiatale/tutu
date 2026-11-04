@@ -153,7 +153,8 @@ def test_no_parent_managing_boot_uses_the_facts_only_where_the_bom_is_imported(t
     assert _versions(ws)[CTX] is None
     # an imported BOM ignores the importer's properties: the override step does not run …
     assert res.bom_properties_removed == [] and _events(ws, "bom_property_overrides") == []
-    assert _props(ws)["spring-batch.version"] == "4.3.10"                  # unreferenced, but not an override here
+    # no chain facts in this scenario → the orphan rule (v2.1z-k) stays out too: unreferenced, but not an override here
+    assert _props(ws)["spring-batch.version"] == "4.3.10"
     # … while the properties only the dropped versions used go with them (whatever their names)
     assert sorted(res.version_properties_removed) == [f"{BACK}: spring-security.version=5.7.11",
                                                       f"{BACK}: spring.version=5.3.31"]
@@ -165,8 +166,8 @@ def test_bom_named_properties_are_removed_unless_referenced(tmp_path: Path, ccfg
     props = _props(ws)
     assert "spring-security.version" not in props and "spring-batch.version" not in props
     assert props["hibernate.version"] == "5.6.15.Final"          # ${hibernate.version} still used by hibernate-foo
-    assert "spring.version" not in props and props["my.version"] == "1.0"         # v2.1o: dead after the drop
-    assert res.version_properties_removed == [f"{BACK}: spring.version=5.3.31"]
+    assert "spring.version" not in props and "my.version" not in props   # v2.1z-k: a dead version value goes too
+    assert sorted(res.version_properties_removed) == [f"{BACK}: my.version=1.0", f"{BACK}: spring.version=5.3.31"]
     assert res.bom_properties_removed == [f"{BACK}: spring-security.version=5.7.11",
                                           f"{BACK}: spring-batch.version=4.3.10"]
     assert "property hibernate.version kept: still referenced by shop-back/pom.xml" in res.notes

@@ -501,6 +501,7 @@ advisories:
     replacement: User-Agent parsing in an own HandlerInterceptor (e.g. ua-parser) or a responsive front end
     replacement_version: n/a
     followup: Replace Device / DeviceUtils / SitePreference usages with a small in-house User-Agent check and remove the interceptor beans.
+    notes: knowledge/notes/spring-mobile.md
     docs:
       - https://github.com/spring-attic/spring-mobile
 

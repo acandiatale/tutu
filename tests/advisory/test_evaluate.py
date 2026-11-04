@@ -147,3 +147,17 @@ def test_httpclient4_and_jackson1_spring_and_plain_java_twins(cfg):
 def test_undertow_advisory(cfg):
     f = {x.advisory_id: x for x in evaluate_advisories(profile(libs=(LibraryUsage(name="undertow"),)), cfg)}
     assert _guide(f["undertow"]) and "spring-boot-starter-tomcat" in (f["undertow"].replacement or "")
+
+
+def test_a_bundled_jar_counts_as_the_library_too(cfg):
+    """v2.1z-k (company run 2026-11-04): spring-mobile reached the project as a jar in WEB-INF/lib, declared by no pom —
+    its EOL advisory must still be found (Handover, fix prompt hints, the blocked item's suggestion)."""
+    from sbmig.core.models import JarCoordinate
+
+    e = {"id": "acme", "artifacts": ["com.acme:legacy-*"], "title": "Acme legacy", "status": "eol"}
+    p = profile()
+    p.bundled_jars = [JarCoordinate(path="src/main/webapp/WEB-INF/lib/legacy-core-1.2.jar", group_id="com.acme",
+                                    artifact_id="legacy-core", version="1.2", source="pom_properties")]
+    [f] = evaluate_advisories(p, cfg, _cat(e))
+    assert f.advisory_id == "acme" and f.artifacts == ["com.acme:legacy-core"] and f.detected_version == "1.2"
+    assert evaluate_advisories(profile(), cfg, _cat(e)) == []

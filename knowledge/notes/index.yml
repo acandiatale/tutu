@@ -400,3 +400,14 @@ notes:
   - spring
   - restructure
   always: false
+- file: spring-mobile.md
+  title: "Spring Mobile (org.springframework.mobile) is EOL with no Jakarta build \u2014 replace\
+  \ it with a small in-house device resolver"
+  keywords:
+    - "org\\.springframework\\.mobile"
+    - "DeviceUtils|getCurrentDevice|getRequiredCurrentDevice"
+    - "DeviceResolverHandlerInterceptor|DeviceResolverRequestFilter|LiteDeviceResolver"
+    - "SitePreference|DeviceWebArgumentResolver|DevicePlatform"
+  cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
+  phases: [spring]
+  always: false

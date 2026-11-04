@@ -142,6 +142,11 @@ def evaluate_advisories(profile: ProjectProfile, cfg: Config,
     if not len(cat):
         return []
     gavs = pom_gavs(profile.poms)
+    # v2.1z-k: a library that reached the project as a jar in WEB-INF/lib (no pom declares it) is still that library —
+    # its advisory (EOL, no jakarta build) must reach the Handover and the fix prompt like a declared one
+    for j in getattr(profile, "bundled_jars", None) or []:
+        if getattr(j, "group_id", "") and getattr(j, "artifact_id", ""):
+            gavs.append(GAV(group_id=j.group_id, artifact_id=j.artifact_id, version=j.version or None))
     out: dict[str, AdvisoryFinding] = {}
     for entry in cat.entries:
         if entry.id in out:

@@ -82,7 +82,11 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   the restructure wires the bundled jars BEFORE the first build (`layout.wire_bundled_jars`, `sbmig/restructure/bundled_jars.py`:
   the Ant-intake rule — known coordinates the repository has → compile dependency, else lib + system scope; superseded /
   container-API / unreferenced / already-declared jars untouched and named), because runtime-only jars (drivers, filters,
-  taglibs) never cause a compile error; the pre-try is the safety net. The LLM is told
+  taglibs) never cause a compile error; the pre-try is the safety net. **v2.1z-k:** an as-is version property no pom
+  references (`java-version=1.8`, `org.springSecurity-version=4.2.7.RELEASE` — spellings the name rules miss) is removed by
+  value (`orphan_version_properties`, only with chain facts); a blocked javax item names its EOL advisory + replacement, and
+  a library that arrived as a bundled jar matches advisories too (spring-mobile: `knowledge/notes/spring-mobile.md` tells the
+  LLM to write the compat replacement — never a bytecode transform). The LLM is told
   the fact ("the project bundles `<jar>` which provides package `<p>`") and a coordinates / missing-library decline while a
   bundled jar provides the package is rejected (the company run had ended BLOCKED `needs_owner`). Fixture `webapp-bundled-jar`.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).

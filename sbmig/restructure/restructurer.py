@@ -413,6 +413,31 @@ class _Ctx:
             log.warning("restructure commit skipped: %s", e)
 
 
+# v2.1z-k: a property VALUE that is a version (`4.2.7.RELEASE`, `2.5.15`, `3.0.0-M1`) or a Java level (`1.8`, `17`)
+VERSION_LIKE_RE = re.compile(r"^(?:\d{1,2}|\d+(?:\.\d+)+(?:[.-][A-Za-z0-9]+)*)$")
+
+
+def orphan_version_properties(eds: dict[str, "PomEditor"], skip: set[str]) -> list[tuple[str, str, str]]:
+    """v2.1z-k: 프로젝트 pom 들의 속성 중 값이 버전 / Java 수준 모양이고(``VERSION_LIKE_RE``) 어느 pom 도 ``${이름}`` 으로
+    참조하지 않는 것을 지운다(저장은 호출자가). (pom, 이름, 값) 목록. ``skip`` 의 이름은 건드리지 않는다.
+
+    Remove (in memory; the caller saves) every property of `eds` whose value matches `VERSION_LIKE_RE` and that no
+    pom of `eds` references as `${name}`; names in `skip` are left alone. Returns (pom, name, value)."""
+    texts = {q: ed.to_string() for q, ed in eds.items()}
+    out: list[tuple[str, str, str]] = []
+    for q, ed in eds.items():
+        for name, value in list(ed.properties().items()):
+            if name in skip or not VERSION_LIKE_RE.match((value or "").strip()):
+                continue
+            ref = f"${{{name}}}"
+            if any(ref in t for t in texts.values()):
+                continue
+            ed.remove_property(name)
+            ed.remove_if_empty(ed.child(ed.root, "properties"))
+            out.append((q, name, (value or "").strip()))
+    return out
+
+
 class Restructurer(LegacyContextMixin):
     """RestructurerLike 구현. 상태를 갖지 않고 ``apply`` 마다 ``_Ctx`` 를 새로 만든다.
     ``Restructurer(commit=False)`` 는 중간 git 커밋을 하지 않는다.
@@ -554,6 +579,7 @@ class Restructurer(LegacyContextMixin):
             self._pin_asis_versions(c)
             self._drop_managed_versions(c)
             self._drop_bom_property_overrides(c)
+            self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
             self._wire_bundled_jars(c, layout=True)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
             self._placeholder_followup(c)
@@ -614,6 +640,7 @@ class Restructurer(LegacyContextMixin):
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._drop_bom_property_overrides(c)
+        self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
         self._wire_bundled_jars(c, layout=True)
         c.commit("restructure: optional artifact versions / cleanup")
 
@@ -5050,6 +5077,50 @@ class Restructurer(LegacyContextMixin):
                f"parent-managed versions were dropped: {shown}")
         log.info("version properties removed after the version drop: %s", "; ".join(removed))
 
+    def _drop_orphan_version_properties(self, c: _Ctx) -> None:
+        """v2.1z-k (현업 2026-11-04: boot pom 에 as-is 의 ``java-version=1.8``, ``org.springSecurity-version=4.2.7.RELEASE`` 가
+        남아 있었다): 값이 버전이나 Java 수준 모양인데 어느 프로젝트 pom 도 ``${이름}`` 으로 참조하지 않는 속성을 이름과 상관없이
+        지운다 — 이름 기반 규칙(체인이 정의한 이름 / 이번에 지운 버전이 참조한 이름)이 놓치는 철자(``-version``, camelCase)를
+        잡는다. 체인 이름(``_override_names`` 가 맡음)과 Java 속성(``JAVA_PROPS``, ``_fix_java`` 가 21 로 씀)은 건너뛴다.
+        ``result.version_properties_removed`` 에 적고 노트 하나. 예외 없음.
+
+        Remove every project-pom property whose VALUE looks like a version or a Java level and that no project pom
+        references any more, whatever its name (`orphan_version_properties`): the name-based rules miss as-is
+        spellings such as `java-version` / `org.springSecurity-version`, and a stale old version sitting in the boot
+        pom misleads people and the review. Chain-defined names and `JAVA_PROPS` are left to their own steps."""
+        # 같은 문(v2.1o/p)의 조건: 속성 정리 스위치가 켜져 있고 부모 체인의 사실을 읽었을 때만 — 체인을 모르면 어떤 이름이
+        # 체인 안에서 쓰이는지 알 수 없으니 아무것도 지우지 않는다(``test_without_chain_facts_nothing_is_removed``)
+        if not getattr(c.cfg.layout, "drop_bom_property_overrides", True):
+            return
+        facts = self._chain_facts(c)
+        if not (getattr(facts, "managed", None) or getattr(facts, "properties", None)):
+            return
+        try:
+            eds: dict[str, PomEditor] = {}
+            for p in self._project_poms(c):
+                try:
+                    eds[p] = PomEditor(c.ws.abs(p))
+                except PomEditError:
+                    continue
+            # 체인이 정의하는 이름은 override 단계 몫, 체인이 ``${이름}`` 으로 참조하는 이름은 프로젝트 값이 체인에 흘러드니 둔다
+            chain_refs = set(getattr(facts, "referenced_properties", None) or ())
+            skip = set(self._override_names(c)) | set(JAVA_PROPS) | set(getattr(facts, "properties", None) or {}) | chain_refs
+            removed = orphan_version_properties(eds, skip)
+            if not removed:
+                return
+            for q, _name, _value in removed:
+                eds[q].save()
+                c.changed.add(q)
+            lines = [f"{q}: {n}={v}" for q, n, v in removed]
+            res = c.result
+            res.version_properties_removed += [x for x in lines if x not in res.version_properties_removed]
+            shown = ", ".join(f"{n}={v}" for _q, n, v in removed[:6]) + (" …" if len(removed) > 6 else "")
+            c.note(f"{len(removed)} orphan version propert(ies) removed: an as-is version / Java level that no pom "
+                   f"references any more: {shown}")
+            log.info("orphan version properties removed: %s", "; ".join(lines))
+        except Exception as e:  # noqa: BLE001 - a cleanup must never fail the restructure
+            log.warning("orphan version property cleanup skipped: %s: %s", type(e).__name__, e)
+
     def _drop_bom_property_overrides(self, c: _Ctx) -> None:
         """v2.1o / v2.1p: 프로젝트 pom 의 ``<properties>`` 중 이름이 사내 부모 체인(그 pom 들 — Boot 부모를 상속하면
         Boot BOM 의 속성까지)이 정의한 버전 속성과 같은 것을 지운다 — Maven 속성 상속으로 as-is 값
@@ -5207,6 +5278,7 @@ class Restructurer(LegacyContextMixin):
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._drop_bom_property_overrides(c)
+        self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
         self._wire_bundled_jars(c, layout=False)
         r = c.result
         if boots:
@@ -5547,6 +5619,7 @@ class Restructurer(LegacyContextMixin):
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._drop_bom_property_overrides(c)
+        self._drop_orphan_version_properties(c)      # v2.1z-k: as-is spellings the name rules miss
         self._wire_bundled_jars(c, layout=False)
         self._msa_placeholders(c, svc_entries)
         c.commit("restructure: msa pom-only parent/mandatory/optional")

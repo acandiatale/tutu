@@ -1427,6 +1427,8 @@ class BuildFixLoop:
             item.suggestion = compose_suggestion(item, self.cfg, settings_file=self.cfg.build.settings_file,
                                                  repositories=list(getattr(cand, "repositories", []) or []),
                                                  extra=extra)
+            if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE, BlockReason.NEEDS_OWNER):
+                item.suggestion = self._with_eol_advisory(item.suggestion, artifact)   # v2.1z-k: "no jakarta build" + why
         if reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.NEEDS_OWNER) and _mentions_javax(errs):
             # v2.1z-e: 사람이 "어디를 찾아봤나" 를 보게 — 탐색 기록을 제안 뒤에 붙이고 메모에도 남긴다; 의존성을 못 맞춘
             # 소유 클래스는 그렇다고 말한다 / what sbmig searched (and an owner class it could not match) on the item
@@ -3887,6 +3889,50 @@ class BuildFixLoop:
                 if not any(p == pom and j.path == jar.path for p, j, _ in plan):
                     plan.append((pom, jar, pkg))
         return plan
+
+    def _with_eol_advisory(self, suggestion: str, artifact: Any) -> str:
+        """v2.1z-k (현업 2026-11-04: spring-mobile 은 "jakarta 빌드를 못 찾았다" 로만 차단됐다): 차단 아티팩트가 권고표
+        (``knowledge/libraries/advisories.yml``, 분석의 findings 우선, 없으면 카탈로그의 ``artifacts`` glob)의 EOL / 미관리
+        항목이면 제안 뒤에 "EOL: <제목> — replacement: <대체>" 를 붙인다 — jakarta 빌드가 **없는 이유**와 다음 행동을 소유팀이
+        같은 줄에서 읽게. 권고가 없으면 그대로. 예외 없음.
+
+        Append the EOL advisory (title + replacement) of the blocked artifact to the suggestion when the advisory
+        table knows it (the profile's findings first, else the catalog's `artifacts` globs); unchanged otherwise."""
+        try:
+            key = ""
+            if artifact is not None:
+                g = getattr(artifact, "group_id", "") or ""
+                a = getattr(artifact, "artifact_id", "") or ""
+                key = f"{g}:{a}" if g and a else str(getattr(artifact, "coordinates", "") or "")
+                key = ":".join(key.split(":")[:2])
+            if not key or "EOL:" in (suggestion or ""):
+                return suggestion
+            title = repl = ""
+            for f in self.advisories:
+                if key in (":".join(x.split(":")[:2]) for x in (f.artifacts or [])):
+                    title, repl = f.title, f.replacement or ""
+                    break
+            if not title:
+                import fnmatch
+                from sbmig.advisory import load_advisories
+                if not hasattr(self, "_advisory_catalog"):
+                    try:
+                        self._advisory_catalog = load_advisories(self.cfg)
+                    except Exception:  # noqa: BLE001 - no table, no advisory text
+                        self._advisory_catalog = None
+                cat = self._advisory_catalog
+                entries = (cat.entries() if callable(getattr(cat, "entries", None)) else list(cat)) if cat is not None else []
+                for adv in entries:
+                    if any(fnmatch.fnmatchcase(key, pat) for pat in (adv.artifacts or [])):
+                        title, repl = adv.title, adv.replacement or ""
+                        break
+            if not title:
+                return suggestion
+            tail = f"EOL: {title}" + (f" — replacement: {repl}" if repl else "")
+            return f"{suggestion.rstrip()}; {tail}" if suggestion else tail
+        except Exception as e:  # noqa: BLE001 - a decoration never breaks the block
+            log.debug("eol advisory lookup for %s: %s: %s", artifact, type(e).__name__, e)
+            return suggestion
 
     def _bundled_declared(self, pom: str, jar: JarCoordinate) -> bool:
         """v2.1z-j: 그 pom 이 jar 의 (알려진) g:a 를 이미 선언했는가 — 재구조화가 붙였거나 사람이 넣은 것. 좌표를 모르면 False.

@@ -348,3 +348,20 @@ def test_without_managed_keys_nothing_is_superseded(cfg, tmp_path, wired, monkey
     loop = make_loop(cfg, _ws(tmp_path), wired_build(), jars=[spring_jar()])
     monkeypatch.setattr(loop, "_managed_keys", lambda: set())
     assert loop._bundled_superseded() == []
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1z-k: a blocked javax item whose artifact the advisory table knows carries the EOL text (spring-mobile, company run)
+# ---------------------------------------------------------------------------------------------------------------------
+def test_the_blocked_suggestion_names_the_eol_advisory(cfg, tmp_path, wired):
+    from sbmig.core.models import GAV
+
+    loop = make_loop(cfg, _ws(tmp_path), wired_build())
+    mobile = GAV(group_id="org.springframework.mobile", artifact_id="spring-mobile-device", version="1.1.5.RELEASE")
+    out = loop._with_eol_advisory("no jakarta build of `org.springframework.mobile:spring-mobile-device` was found", mobile)
+    assert "EOL: Spring Mobile is end of life" in out and "replacement:" in out
+    assert out.startswith("no jakarta build of")
+    # idempotent, and an artifact the table does not know is left alone
+    assert loop._with_eol_advisory(out, mobile) == out
+    other = GAV(group_id="com.example", artifact_id="plain-lib", version="1.0")
+    assert loop._with_eol_advisory("some suggestion", other) == "some suggestion"
