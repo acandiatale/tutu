@@ -3882,9 +3882,23 @@ class BuildFixLoop:
             for pom in targets:
                 if (SBMIG_BUNDLED_SOURCE, pom, jar.path) in self._pre_tried:
                     continue
+                if self._bundled_declared(pom, jar):             # v2.1z-j: the restructure (or a person) already wired it
+                    continue
                 if not any(p == pom and j.path == jar.path for p, j, _ in plan):
                     plan.append((pom, jar, pkg))
         return plan
+
+    def _bundled_declared(self, pom: str, jar: JarCoordinate) -> bool:
+        """v2.1z-j: 그 pom 이 jar 의 (알려진) g:a 를 이미 선언했는가 — 재구조화가 붙였거나 사람이 넣은 것. 좌표를 모르면 False.
+
+        Does `pom` already declare the jar's known g:a (the restructure wired it, or a person did)? Unknown coordinates → False."""
+        if not (jar.group_id and jar.artifact_id):
+            return False
+        ed = self._pom_editor(pom)
+        try:
+            return bool(ed is not None and ed.has_dependency(jar.group_id, jar.artifact_id))
+        except Exception:  # noqa: BLE001 - an unreadable pom declares nothing we can see
+            return False
 
     def _bundled_targets(self, c: ErrorCluster) -> list[str] | None:
         """v2.1z-i: 케이스가 잃은 패키지를 동봉 jar 가 갖고 있으면 그 jar 를 붙일 모듈 pom 들(오류 파일의 ``owning_pom``,
@@ -4026,7 +4040,7 @@ class BuildFixLoop:
         if applied:
             for w in wired:
                 coords = f"{w.group_id}:{w.artifact_id}:{w.version}"
-                self.ws.journal({"event": "bundled_jar_wired", "case": case_id, "jar": w.jar.path, "pom": w.module_pom,
+                self.ws.journal({"event": "bundled_jar_wired", "stage": "loop", "case": case_id, "jar": w.jar.path, "pom": w.module_pom,
                                  "coordinates": coords, "scope": w.scope, "placeholder": w.placeholder})
                 try:
                     self._followup(bundled_jar_followup(w))

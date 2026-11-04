@@ -50,6 +50,7 @@
 | `aggregator_generated`, `no_root_pom`, `stray_pom_ignored`, `hollow_reactor`, `sources_outside_reactor`, `adf_project`, `adf_traces` | intake / analyze 판정(루트 pom 생성, 떠도는 pom 복사본 무시, 속 빈 리액터, ADF) |
 | `bundled_jars` | 분석: pom 미선언 동봉 jar 목록(`jars`)과 각 좌표(`coordinates`, 모르면 null) — 플래그 `bundled-jars` |
 | `bundled_jar_wired` | LLM 없는 pre-try `sbmig-bundled` 가 빌드 오류에 필요한 동봉 jar 를 연결함: `case`, `jar`, `pom`, `coordinates`, `scope`(`system` = `<module>/lib/<이름>` 복사 + `${project.basedir}/lib/<이름>`, boot 모듈 `includeSystemScope`), `placeholder` |
+| `bundled_jars_skipped` | 재구조화가 건드리지 않은 동봉 jar 와 이유(`superseded` 목표 체인이 관리 / `container` 컨테이너 API 복사본 / `unused` 참조 없음 / `declared` 이미 선언 / `skip` 저장소에 없고 `intake.unknown_jar: skip`) | `bundled_jar_wired` 에는 `stage: restructure`(첫 빌드 전) 또는 `loop`(사전 시도)가 붙는다 |
 | `run_aborted`, `report` | 중단 사유, 보고서 작성 |
 
 ## 2. 케이스와 사다리 — 진단에 필요한 만큼만

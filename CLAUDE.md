@@ -78,7 +78,11 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   `${project.basedir}/lib/<name>` (placeholder coordinates, never guessed) + `includeSystemScope` on the boot module's
   spring-boot-maven-plugin; the Handover asks the owners to publish the jar to Nexus and replace the entry. A bundled jar whose g:a the target
   parent chain manages (an old spring-webmvc 4.x in WEB-INF/lib) is **superseded**: never wired, the LLM is told not to
-  re-add it (user, 2026-11-04: wiring every jar found would be an anti-pattern). The LLM is told
+  re-add it (user, 2026-11-04: wiring every jar found would be an anti-pattern). **v2.1z-j (same day, the user's direction):**
+  the restructure wires the bundled jars BEFORE the first build (`layout.wire_bundled_jars`, `sbmig/restructure/bundled_jars.py`:
+  the Ant-intake rule — known coordinates the repository has → compile dependency, else lib + system scope; superseded /
+  container-API / unreferenced / already-declared jars untouched and named), because runtime-only jars (drivers, filters,
+  taglibs) never cause a compile error; the pre-try is the safety net. The LLM is told
   the fact ("the project bundles `<jar>` which provides package `<p>`") and a coordinates / missing-library decline while a
   bundled jar provides the package is rejected (the company run had ended BLOCKED `needs_owner`). Fixture `webapp-bundled-jar`.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).

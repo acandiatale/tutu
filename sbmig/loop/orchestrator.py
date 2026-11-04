@@ -1621,11 +1621,37 @@ class Orchestrator:
                                                                          None),
                          "merged_modules": merged, "kept_boot_module": kept_boot,
                          "merge_conflicts": len(conflicts), "error": res.error})
+        self._journal_restructure_jars(res)
         if not res.ok:
             pr.notes.append(f"{step.id}: restructure failed: {res.error or 'unknown error'} → skipping the rest of "
                             "the restructure phase (verify still runs)")
             self._restructure_failed(step, mode, res.error or "unknown error")
         return res.ok
+
+    def _journal_restructure_jars(self, res: Any) -> None:
+        """v2.1z-j: 재구성이 연결한 동봉 jar 마다 저널 ``bundled_jar_wired`` (stage restructure), 연결하지 않은 것은
+        ``bundled_jars_skipped`` 한 줄. 프로필의 같은 jar 에 note(``restructure: wired (<scope>)`` / ``restructure: <사유>``)
+        를 붙여 보고서 표가 단계와 상태를 읽게 한다. 인수인계 줄은 ``res.manual_followups`` 로 이미 왔다. 예외 없음.
+
+        v2.1z-j: journal one `bundled_jar_wired` (`stage: restructure`) per jar the restructure wired and one
+        `bundled_jars_skipped` for the rest; mark the profile's jars (`restructure: …` note) for the report table."""
+        try:
+            wired = list(getattr(res, "jars_wired", None) or [])
+            skipped = list(getattr(res, "jars_skipped", None) or [])
+            for w in wired:
+                self.ws.journal({"event": "bundled_jar_wired", "stage": "restructure", "jar": w.get("path"),
+                                 "pom": w.get("pom"), "coordinates": w.get("coordinates"), "scope": w.get("scope"),
+                                 "placeholder": bool(w.get("placeholder")), "boot_poms": list(w.get("boot_poms") or [])})
+            if skipped:
+                self.ws.journal({"event": "bundled_jars_skipped", "jars": skipped})
+            marks = {str(w.get("path")): f"restructure: wired ({w.get('scope')})" for w in wired}
+            marks.update({str(x.get("path")): f"restructure: {x.get('why')}" for x in skipped if x.get("path") not in marks})
+            for j in list(getattr(self.profile, "bundled_jars", None) or []):
+                mark = marks.get(j.path)
+                if mark and mark not in (j.note or ""):
+                    j.note = f"{j.note}; {mark}" if j.note else mark
+        except Exception as e:  # noqa: BLE001 - bookkeeping must never fail the run
+            log.debug("restructure bundled-jar journal skipped: %s: %s", type(e).__name__, e)
 
     # ------------------------------------------------------------------ v2: structure review
     def _make_reviewer(self) -> tuple[Any, str]:

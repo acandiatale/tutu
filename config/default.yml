@@ -45,6 +45,10 @@ layout:
   # comp_parent; a single-module Boot app is wrapped into {name}-boot) | layout = split like the other cases
   jsp_jakarta_rename: true               # v2.1h: rename the javax EE names (analyzer table) inside JSP / tag files to jakarta —
                                          # OpenRewrite never parses JSPs; false = Handover follow-up only
+  wire_bundled_jars: true               # v2.1z-j: jars in the tree that no pom declares (WEB-INF/lib) are wired at the restructure,
+                                         # before the first build — compile dependency when the repository has the jar's own
+                                         # coordinates, else <module>/lib + system scope (+ includeSystemScope); superseded /
+                                         # container-API / unreferenced jars are left alone. false = the fix loop's pre-try only
   boot_as_is: in-place
   boot_module_pattern: "*-boot"
   jsp_boot_packaging: war                # JSPs present → the boot module is an executable WAR (java -jar runs the embedded Tomcat;

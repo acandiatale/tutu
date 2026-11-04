@@ -238,6 +238,9 @@ class LayoutConfig(BaseModel):
     # False = the pre-10-28 behaviour (Handover follow-up only).
     # JSP 의 javax EE 이름을 jakarta 로 바꾼다(레시피가 JSP 를 못 보므로 재구성이 직접). 끄면 인수인계 항목만.
     jsp_jakarta_rename: bool = True
+    # v2.1z-j: the restructure wires the jars no pom declares (compile dependency when the repository has the coordinates,
+    # else <module>/lib + system scope) before the first build; False → the v2.1z-i pre-try only
+    wire_bundled_jars: bool = True
     # Boot as-is 프로젝트: in-place = 디렉토리 유지·pom 만
     # 수정(회사 규칙), layout = 다른 경우처럼 모듈로 나눔.
     boot_as_is: Literal["in-place", "layout"] = "in-place"   # Spring Boot as-is: keep directories (poms only) | split

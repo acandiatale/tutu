@@ -35,13 +35,20 @@
       {
         "event": "bundled_jars",
         "jars": [
-          "src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar"
+          "src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar",
+          "src/main/webapp/WEB-INF/lib/servlet-api-2.5.jar",
+          "src/main/webapp/WEB-INF/lib/unused-tool-1.0.jar"
         ]
       },
       {
         "event": "bundled_jar_wired",
+        "stage": "restructure",
+        "jar": "src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar",
         "scope": "system",
         "placeholder": true
+      },
+      {
+        "event": "bundled_jars_skipped"
       }
     ],
     "phases": {
@@ -54,10 +61,8 @@
       "llm_calls_max": 1
     },
     "scripts": {
-      "attempts_min": {
-        "new": 1
-      },
       "attempts_max": {
+        "new": 0,
         "augment": 0,
         "reuse": 0
       }
@@ -115,6 +120,29 @@
         "file_exists": {
           "path": "vault-boot/target/*.jar"
         }
+      },
+      {
+        "file_contains": {
+          "path": "vault-boot/pom.xml",
+          "contains": "<systemPath>${project.basedir}/../vault-back/lib/acme-seed-1.0.jar</systemPath>"
+        }
+      },
+      {
+        "pom_dependency_absent": {
+          "path": "vault-back/pom.xml",
+          "artifacts": [
+            "javax.servlet:servlet-api",
+            "com.example:unused-tool"
+          ]
+        }
+      },
+      {
+        "pom_dependency_present": {
+          "path": "vault-back/pom.xml",
+          "artifacts": [
+            "com.example:acme-seed"
+          ]
+        }
       }
     ],
     "flags": [
@@ -129,23 +157,11 @@
         "unresolved": 0,
         "blocked": 0
       },
-      "cases": [
-        {
-          "l2": "compile|package_does_not_exist|com.acme.seed",
-          "entries_min": 1,
-          "status": "resolved",
-          "sources": [
-            "sbmig-bundled"
-          ],
-          "results": [
-            "build_ok"
-          ],
-          "llm_calls": 0
-        }
-      ]
+      "cases": []
     },
     "followups_contains": [
-      "regex:^bundled jar `acme-seed-1\\.0\\.jar`.*"
+      "regex:^⚠ bundled jar `acme-seed-1\\.0\\.jar` \\(Maven coordinates unknown.*wired into `vault-back/pom\\.xml` as a system dependency `com\\.example:acme-seed:1\\.0`.*",
+      "regex:^bundled jar `unused-tool-1\\.0\\.jar` is referenced by no source.*not declared.*"
     ]
   }
 }

@@ -3512,3 +3512,91 @@ build error ever needs it.
   repository → a plain dependency when a build error needs it, unknown → lib/ + system scope + Nexus ask.
 * **Not done / open**: the "as-is view for the LLM" idea (serve `asis:<path>` from the first commit, an automatic as-is → now
   diff of the error file) goes into the case-thread increment; `WEB-INF/classes` stays Handover-only.
+
+## v2.1z-j — bundled jars are wired at the restructure, before the first build (2026-11-04)
+
+**Why.** The user's review of a real `WEB-INF/lib` (2026-11-04): "lib 안에 jar 가 있으면 jar 의 메타데이터 / pom 을 읽어 g:a:v 를 가져와
+Nexus 에 물어보고, 있으면 import, 없으면 jar 추가 — 이게 마이그레이션 방향 아닌가?" It is, and it is more complete than the v2.1z-i
+pre-try alone: a pre-try moves only when a **compile** error names the package, but **runtime-only jars** (JDBC drivers, a
+sitemesh filter registered in web.xml, taglib implementations, logging bridges) never produce one — the as-is WAR packaged
+them (the war plugin copies `WEB-INF/lib` whole), the restructure moves the web root and they silently vanish. The Ant intake
+(v2.1j) already synthesizes dependencies from jars this way; Maven projects with undeclared jars now get the same rule, at the
+restructure. Cost: a few dozen small repository requests per project. The pre-try `sbmig-bundled` stays as the safety net.
+
+**Decisions (PM).** Three buckets plus three filters, applied to every `profile.bundled_jars` entry once the layout is in
+place: (filters) a jar whose known g:a the target parent chain / Boot BOM **manages** → *superseded*, untouched (the managed
+version stands in; note for the report); a **container API** copy (`scope == "provided"`, `is_container_api`) → untouched
+(Tomcat supplies it); a jar **no source / JSP / XML / properties references** (`mark_used` over the module's source roots +
+web / resource dirs, the Ant intake's rule) → not declared, named in the Handover ("unused — not declared; add it by hand if
+a runtime needs it"); a g:a the target pom **already declares** → untouched; (buckets) known coordinates the repository SET has
+→ a plain `compile` dependency on `g:a:v` (the jar's own version; the version omitted when the chain manages it — but then it
+is superseded anyway); unknown coordinates (or known but absent from the repository, `intake.unknown_jar: system`) →
+`wire_bundled_jar` system scope (copy to `<module>/lib`, the boot poms depending on the module get the same dependency +
+`includeSystemScope`, Handover ⚠ Nexus upload); `intake.unknown_jar: skip` → Handover only. Target pom = the module that now
+holds the jar's web root / sources (`owning_pom` of the jar's post-move path; the comp module in the layout split, the module
+itself in pom-only mode), boot poms = `c.boot_rel` (layout) / the Boot-plugin poms depending on the module.
+
+### Contract
+
+* **Config**: `layout.wire_bundled_jars: true` (the restructure wiring; `false` → v2.1z-i behaviour: facts + pre-try only).
+  `intake.bundled_jars` (the scan), `intake.unknown_jar`, `intake.jar_lookup` as before.
+* **Restructure** (`sbmig/restructure/bundled_jars.py`, new): `plan_bundled_jars(ws, cfg, jars, *, module_pom, boot_poms,
+  managed_keys, repository, source_roots, extra_dirs) -> BundledPlan` (pure: per jar one of `superseded | container |
+  unused | declared | compile | system | skip`, with the reason) and `apply_bundled_jars(ws, cfg, plan, *, project_group)
+  -> list[WiredJar]` (writes through `wire_bundled_jar` for `compile` / `system`; never raises past a per-jar WARNING).
+  Called by the restructurer at the end of the webapp move (where the `left` jars are known) for the jars under that web
+  root, and once more after the layout for bundled jars elsewhere in the tree (`lib/`, …) that still sit undeclared.
+  `_Ctx.repo_lookup` (the v2.1l `RepositoryLookup`) answers "does the repository have `g:a:v`" (`pom_text` / `versions`);
+  `self._chain_facts(c).managed` + the target Boot BOM give `managed_keys`. `RestructureResult.jars_wired: list[dict]`
+  (`path, pom, coordinates, scope, placeholder, boot_poms`) and `RestructureResult.jars_skipped: list[dict]` (`path, why`)
+  carry the outcome; the orchestrator journals `{"event": "bundled_jar_wired", "stage": "restructure", …}` per wired jar
+  (the loop's event gains `"stage": "loop"`) and `{"event": "bundled_jars_skipped", "jars": [{path, why}…]}`; the Handover
+  gets `bundled_jar_followup(w)` per wired jar and one line per unused jar. The webapp-move follow-up ("N file(s) under
+  WEB-INF/lib … stay") now lists only what the rule did NOT wire.
+* **Report**: the "Bundled jars" table's `wired` column reads "restructure" / "loop" from the journal stage when available
+  (else the Handover line as today); `status` as in v2.1z-i plus `unused` / `container API`.
+* **Fix loop**: unchanged; `_bundled_plan` skips (pom, jar) pairs the restructure already wired (the g:a is declared → the
+  package exists → no error; defensive: `has_dependency`).
+* **Fixture** `webapp-bundled-jar`: the jar is wired at the restructure → the first build passes: `scripts.attempts_min` → none,
+  the `compile|package_does_not_exist|com.acme.seed` case block removed (the error never happens), journal
+  `bundled_jar_wired` with `stage: restructure`, the same post_checks (lib copy, systemPath, includeSystemScope, the boot jar
+  carries the jar). A second scenario in the same fixture: `WEB-INF/lib/servlet-api-2.5.jar`-like container copy → untouched
+  (status `container API`), and an unreferenced `WEB-INF/lib/unused-tool-1.0.jar` → Handover "unused — not declared".
+
+### As built (v2.1z-j, 2026-11-04)
+
+* **Planner / applier** — `sbmig/restructure/bundled_jars.py`: `plan_bundled_jars(ws, cfg, jars, *, module_pom, boot_poms,
+  managed_keys, repository, source_roots, extra_dirs, current, managed_known)` is pure; first rule wins: `superseded` (g:a ∈
+  managed keys) → `container` (`scope == "provided"`, `provided_scope(g, a)` or `is_container_api(provides)`) → `unused`
+  (`mark_used` on a COPY of the jar over the module's source roots + module / boot / front dirs; the analyzer's `used` is not
+  changed) → `declared` (`PomEditor.has_dependency`) → `skip` when `managed_known` is False and the coordinates are known
+  (the chain's facts could not be read: a jar that MAY be a managed library is not wired blind — integrator's guard) →
+  `compile` (coordinates from `pom_properties` / `sha1_lookup` / `name_table` with g, a, v AND `repository(g, a, v)`:
+  `RepositoryLookup.pom_text`, else `v in versions(g, a)`) → else `system` (`intake.unknown_jar: skip` → `skip`). A second jar
+  with the same sha1 follows the first. `apply_bundled_jars` writes `compile` / `system` through `wire_bundled_jar`; a failing
+  jar becomes `skip: wiring failed: …` with one WARNING; `BundledPlan.wired()` / `skipped()` give the dict shapes of
+  `RestructureResult.jars_wired` / `jars_skipped`.
+* **Hooks** — `restructurer.py`: `_populate_front` can NOT wire (the comp / boot poms do not exist yet), so it parks its
+  WEB-INF leftovers on `c.webinf_left`; one pass `_wire_bundled_jars(c, layout=…)` runs at the end of each mode (`_layout`
+  — both branches — after `_drop_bom_property_overrides` and before the final commit; `_boot_pom`; `_msa` before the
+  placeholders) for every `profile.bundled_jars` entry: the as-is path is mapped through `c.new_location(path)` (`c.moves`),
+  the target pom is `owning_pom` of the current path (a packaging-pom aggregator owner → the comp pom in the layout; pom-only
+  modes skip with a reason), the boot poms are the Boot-plugin poms (+ `profile.boot_modules`) that are the module or depend
+  on its artifactId (layout: the generated boot pom when none matches), `managed_keys` = `_chain_facts(c).managed` ∪
+  `_boot_bom_facts(c).managed`, the repository callable wraps the lazily made `c.repo_lookup` (as `_repository_release`).
+  Changed poms and the copy join `c.changed` (the mode's final commit). Follow-ups: `⚠ ` + `bundled_jar_followup(w)` (system;
+  compile without ⚠), `unused_jar_followup(name)` = "bundled jar `<name>` is referenced by no source / JSP / XML / properties
+  file — not declared (add it by hand if a runtime needs it)"; notes `bundled jars not wired (<verdict>): …` and `bundled jars:
+  N wired at the restructure …`; `webinf_left_followup` is written afterwards with the wired jars removed.
+* **Orchestrator** — `_journal_restructure_jars(res)` right after the `restructure` journal event: `bundled_jar_wired` with
+  `stage: restructure` per wired jar, one `bundled_jars_skipped` when anything was skipped, and a note on each matching
+  `profile.bundled_jars` entry (`restructure: wired (<scope>)` / `restructure: <why>`) — the report has no journal access and
+  reads these notes. The loop's `bundled_jar_wired` carries `stage: loop`; `_bundled_plan` skips a (pom, jar) whose known g:a
+  the pom already declares (`_bundled_declared`).
+* **Report** — `wired` column `system (restructure)` / `system (loop)` / the scope word; `status` adds `container API` and
+  `unused`; an intro sentence when any restructure note exists; Korean for all of it.
+* **Fixture** `webapp-bundled-jar` now holds three jars: `acme-seed-1.0.jar` (unknown coordinates, used → system at the
+  restructure: back pom + boot pom `${project.basedir}/../vault-back/lib/…` + `includeSystemScope`), `servlet-api-2.5.jar`
+  (javax.servlet classes + pom.properties → container, untouched), `unused-tool-1.0.jar` (referenced by nothing → unused,
+  Handover line). The first build passes: no loop attempt, no error case; journal `bundled_jar_wired` (stage restructure) +
+  `bundled_jars_skipped`.

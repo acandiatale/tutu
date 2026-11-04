@@ -864,6 +864,10 @@ def structure_review_lines(r: RunReport, lang: str = "en") -> list[str]:
 _BUNDLED_WIRED_RE = re.compile(r"^(?:⚠\s*)?bundled jar `(?P<name>[^`]+)` .*? as a (?P<scope>system|compile) dependency `")
 
 
+# v2.1z-j: 재구성이 연결한 jar 에 오케스트레이터가 붙이는 note
+_RESTRUCTURE_WIRED_RE = re.compile(r"restructure: wired \((?P<scope>\w+)\)")
+
+
 def _bundled_wired(r: RunReport) -> dict[str, str]:
     """jar 파일 이름 → 연결된 scope("system" / "compile"). 인수인계 후속 조치 줄에서 읽는다."""
     lines = list(r.manual_followups or [])
@@ -892,16 +896,34 @@ def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
                   "When a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call)."), "",
          tr(lang, "A jar whose coordinates the target parent chain manages (an old Spring jar, say) is superseded by the "
                   "managed version and is never wired."), "",
+         *([tr(lang, "The restructure wired every referenced jar before the first build (layout.wire_bundled_jars): "
+                     "known coordinates the repository has as a plain dependency, the others as system scope; container "
+                     "API copies, superseded and unreferenced jars are left out."), ""]
+           if any("restructure:" in (j.note or "") for j in jars) else []),
          tr(lang, "| jar | coordinates | packages | used | wired | status |"), "|---|---|---|---|---|---|"]
     for j in jars:
         coords = (f"`{j.group_id}:{j.artifact_id}:{j.version}`" if j.group_id and j.artifact_id and j.version
                   else tr(lang, "unknown"))
-        used = "—" if j.used is None else tr(lang, "yes") if j.used else tr(lang, "no")
+        note = j.note or ""
         name = j.path.replace("\\", "/").rsplit("/", 1)[-1]
+        # v2.1z-j: 오케스트레이터가 재구성 결과로 붙인 note("restructure: wired (<scope>)" / "restructure: <판정>: …")
+        m = _RESTRUCTURE_WIRED_RE.search(note)
+        unused = "restructure: unused" in note or (j.used is False and "restructure:" not in note)
+        used_flag = False if "restructure: unused" in note else True if m else j.used
+        used = "—" if used_flag is None else tr(lang, "yes") if used_flag else tr(lang, "no")
+        if m:
+            wired_cell = f"{m.group('scope')} ({tr(lang, 'restructure')})"
+        elif name in wired:
+            # 재구성이 이 jar 를 판정했는데 연결하지 않았다면 연결한 것은 루프다
+            wired_cell = f"{wired[name]} ({tr(lang, 'loop')})" if "restructure:" in note else wired[name]
+        else:
+            wired_cell = "—"
         known = bool(j.group_id and j.artifact_id and j.version)
-        status = (tr(lang, "superseded (the target chain manages it)") if "superseded:" in (j.note or "")
+        status = (tr(lang, "superseded (the target chain manages it)") if "superseded:" in note
+                  else tr(lang, "container API") if (j.scope or "") == "provided" or "restructure: container" in note
+                  else tr(lang, "unused") if unused and not m and name not in wired
                   else tr(lang, "coordinates known") if known else tr(lang, "coordinates unknown"))
-        L.append(f"| `{_cell(j.path, 200)}` | {coords} | {len(j.provides or [])} | {used} | {wired.get(name, '—')} | {status} |")
+        L.append(f"| `{_cell(j.path, 200)}` | {coords} | {len(j.provides or [])} | {used} | {wired_cell} | {status} |")
     L.append("")
     return L
 

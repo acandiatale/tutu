@@ -344,6 +344,16 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "coordinates known": "좌표 있음",
     "coordinates unknown": "좌표 없음",
     "unknown": "모름",
+    # v2.1z-j: 재구성 단계 연결 — "동봉 jar" 표의 연결 단계 / 상태 낱말과 설명 한 줄(sbmig/report/markdown.py — 바꾸면 함께)
+    "restructure": "재구성",
+    "loop": "수정 루프",
+    "container API": "컨테이너 API",
+    "unused": "참조 없음",
+    "The restructure wired every referenced jar before the first build (layout.wire_bundled_jars): known coordinates the "
+    "repository has as a plain dependency, the others as system scope; container API copies, superseded and unreferenced "
+    "jars are left out.":
+        "재구성이 첫 빌드 전에 참조되는 jar 를 모두 연결했다(layout.wire_bundled_jars): 저장소에 있는 좌표는 보통 의존성으로, "
+        "나머지는 system scope 로; 컨테이너 API 사본, 대체된 jar, 참조 없는 jar 는 빼었다.",
     # v2.1z-d: Oracle ADF — 플래그 설명과 "ADF 규모" 섹션(ADF 프로젝트는 변환하지 않는다 — 현업 결정 2026-11-02)
     "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf imports, ADF Model "
     "bindings, ADF Faces / task flows): conversion is not possible — ADF 프로젝트라 변환이 불가능합니다; the run stopped at "
@@ -596,6 +606,10 @@ PATTERNS: dict[str, list[tuple[re.Pattern[str], str]]] = {"ko": [(re.compile(p),
     ((r"^(?P<w>⚠ ?)?bundled jar `(?P<n>[^`]+)` wired into `(?P<p>[^`]+)` as a compile dependency `(?P<c>[^`]+)` "
       r"\(the repository has it\)$"),
      r"\g<w>동봉 jar `\g<n>` 를 `\g<p>` 에 보통(compile) 의존성 `\g<c>` 로 연결했다(저장소에 있음)"),
+    # v2.1z-j: 참조가 없어 선언하지 않은 동봉 jar(sbmig/restructure/bundled_jars.py unused_jar_followup — 바꾸면 함께)
+    ((r"^bundled jar `(?P<n>[^`]+)` is referenced by no source / JSP / XML / properties file — not declared \(add it by "
+      r"hand if a runtime needs it\)$"),
+     r"동봉 jar `\g<n>` 은(는) 어느 소스 / JSP / XML / properties 파일도 참조하지 않아 선언하지 않았다(런타임에 필요하면 직접 추가할 것)"),
     # v2.1z-i: 웹 루트 이동 뒤 남은 WEB-INF/lib · classes · META-INF 파일(system_jars.webinf_left_followup — 바꾸면 함께)
     ((r"^(?P<k>\d+) file\(s\) under WEB-INF/lib, WEB-INF/classes or META-INF stay in (?P<d>.+?) \(not packaged\): "
       r"jar\(s\) (?P<j>.+?) — sbmig wires a bundled jar into its module pom when a build error needs it \(`sbmig-bundled`\), "

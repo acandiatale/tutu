@@ -202,6 +202,11 @@ class RestructureResult(BaseModel):
     # v2.1o: 관리 버전보다 새 명시 버전인데 as-is 빌드는 관리 버전 이하(또는 없음)였던 것 — 레시피가 올린 버전이라
     # 지웠다. "g:a <explicit> (as-is <v | ->, managed <m>, <pom>)"
     recipe_versions_dropped: list[str] = Field(default_factory=list)
+    # v2.1z-j: bundled jars (declared by no pom) the restructure wired / left alone — dicts for the journal and the Handover:
+    # wired = {path, pom, coordinates, scope, placeholder, boot_poms}, skipped = {path, why} (superseded | container | unused |
+    # declared | skip)
+    jars_wired: list[dict[str, Any]] = Field(default_factory=list)
+    jars_skipped: list[dict[str, Any]] = Field(default_factory=list)
     # v2.1l: 새 부모로 옮기며 버전을 잃은 의존성에 as-is 빌드의 버전을 적은 것(새 부모 체인이
     # 관리하면 다시 비움), as-is 빌드도 몰라 비어 남은 것. Version-less dependencies given the as-is build's
     # version (the new chain does not manage them): "g:a: <version> ← as-is <managed by g:a:v | declared>

@@ -28,7 +28,8 @@ def test_section_rows():
     lines = bundled_jars_lines(r)
     assert lines[0] == f"## {BUNDLED_TITLE}"
     assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | unknown | 2 | yes | system | coordinates unknown |" in lines
-    assert "| `src/main/webapp/WEB-INF/lib/vendor.jar` | `com.vendor:vendor:3.1` | 1 | no | — | coordinates known |" in lines
+    # v2.1z-j: a jar no source references is `unused`
+    assert "| `src/main/webapp/WEB-INF/lib/vendor.jar` | `com.vendor:vendor:3.1` | 1 | no | — | unused |" in lines
     assert "| `lib/odd.jar` | unknown | 0 | — | — | coordinates unknown |" in lines
 
 
@@ -50,3 +51,38 @@ def test_korean():
     assert "## 동봉 jar (pom 미선언)" in md and "| jar | 좌표 | 패키지 | 사용 | 연결 |" in md
     assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | 모름 | 2 | 예 | system |" in md
     assert flag_help("bundled-jars", "ko").startswith("어느 pom 도 선언하지 않은 jar")
+
+
+# ---------------------------------------------------------------------------------------------- v2.1z-j stages
+def _staged():
+    prof = as_is_profile()
+    prof.bundled_jars = [
+        JarCoordinate(path="w/WEB-INF/lib/acme-seed-1.0.jar", provides=["com.acme.seed"], used=True,
+                      note="restructure: wired (system)"),
+        JarCoordinate(path="w/WEB-INF/lib/late.jar", provides=["com.late"], used=True,
+                      note="restructure: unused: referenced by no source / JSP / XML / properties file"),
+        JarCoordinate(path="w/WEB-INF/lib/servlet-api-2.5.jar", provides=["javax.servlet"], used=False,
+                      note="restructure: container: a servlet / JSP API copy the container supplies"),
+        JarCoordinate(path="w/WEB-INF/lib/jsp-api.jar", provides=["javax.servlet.jsp"], scope="provided"),
+        JarCoordinate(path="w/WEB-INF/lib/loopy.jar", provides=["com.loopy"], used=True,
+                      note="restructure: system: coordinates unknown"),
+    ]
+    loop_line = WIRED.replace("acme-seed-1.0.jar", "loopy.jar")
+    return make_report(profile=prof, flags=["bundled-jars"], manual_followups=[WIRED, loop_line])
+
+
+def test_section_stage_and_status_v21zj():
+    lines = bundled_jars_lines(_staged())
+    assert any(x.startswith("The restructure wired every referenced jar before the first build") for x in lines)
+    assert "| `w/WEB-INF/lib/acme-seed-1.0.jar` | unknown | 1 | yes | system (restructure) | coordinates unknown |" in lines
+    assert "| `w/WEB-INF/lib/late.jar` | unknown | 1 | no | — | unused |" in lines
+    assert "| `w/WEB-INF/lib/servlet-api-2.5.jar` | unknown | 1 | no | — | container API |" in lines
+    assert "| `w/WEB-INF/lib/jsp-api.jar` | unknown | 1 | — | — | container API |" in lines
+    assert "| `w/WEB-INF/lib/loopy.jar` | unknown | 1 | yes | system (loop) | coordinates unknown |" in lines
+
+
+def test_section_stage_korean_v21zj():
+    md = render_markdown(_staged(), "ko")
+    assert "| system (재구성) |" in md and "| system (수정 루프) |" in md
+    assert "| 참조 없음 |" in md and "| 컨테이너 API |" in md
+    assert "재구성이 첫 빌드 전에 참조되는 jar 를 모두 연결했다" in md

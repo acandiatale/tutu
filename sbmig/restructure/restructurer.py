@@ -65,6 +65,7 @@ import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 
 import jinja2
@@ -83,10 +84,17 @@ from sbmig.core.models import GAV, CaseType, MergeConflict, PluginInfo, ProjectP
 from sbmig.core.workspace import GitError, Workspace, is_build_output_path
 from sbmig.plan.versions import compare_versions, version_lt
 
+from .bundled_jars import (
+    apply_bundled_jars,
+    jar_name,
+    plan_bundled_jars,
+    repository_has_fn,
+    unused_jar_followup,
+)
 from .jsp_jakarta import rename_jsp_files
 from .legacy_apply import LegacyContextMixin
 from .pom_editor import PomEditError, PomEditor, property_ref
-from .system_jars import copy_jar_to_module_lib, webinf_left_followup
+from .system_jars import bundled_jar_followup, copy_jar_to_module_lib, webinf_left_followup
 from .webxml_registrations import CLASS_NAME as WEB_XML_CLASS
 from .webxml_registrations import RULES_FILE as WEB_XML_RULES
 from .webxml_registrations import ClassInfo, RegistrationFacts, load_skip_rules, plan_registrations
@@ -302,6 +310,10 @@ class _Ctx:
     lc_default_servlet_xml: list[str] = field(default_factory=list)   # v2.1x D8: copies with <mvc:default-servlet-handler/>
     lc_glob_keys: set[str] = field(default_factory=set)   # v2.1x D7: placeholders only a rewritten location used
     ear_roots: bool = False             # EAR context-root follow-ups were written (the WAR context-root sentence is not)
+    # v2.1z-j: the webapp move's WEB-INF/lib · classes · META-INF leftovers (files, where) — their follow-up is written
+    # after the bundled-jar wiring (`_wire_bundled_jars`) so it names only the jars the rule did not wire
+    webinf_left: list[tuple[list[str], str]] = field(default_factory=list)
+    bundled_done: set[str] = field(default_factory=set)    # as-is jar paths already planned this restructure
 
     def p(self, *parts: str) -> str:
         """프로젝트 루트(``base``) 기준 경로 → 워크스페이스 기준 정규화 경로(루트 자신은 ``.``)."""
@@ -542,6 +554,7 @@ class Restructurer(LegacyContextMixin):
             self._pin_asis_versions(c)
             self._drop_managed_versions(c)
             self._drop_bom_property_overrides(c)
+            self._wire_bundled_jars(c, layout=True)
             self._write_placeholders(c, f"{c.p(boot_mod)}/src/main/resources")
             self._placeholder_followup(c)
             c.commit("restructure: optional artifact versions / cleanup (already restructured)")
@@ -601,6 +614,7 @@ class Restructurer(LegacyContextMixin):
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._drop_bom_property_overrides(c)
+        self._wire_bundled_jars(c, layout=True)
         c.commit("restructure: optional artifact versions / cleanup")
 
     # ------------------------------------------------------------------ project name (2026-10-23)
@@ -2984,11 +2998,184 @@ class Restructurer(LegacyContextMixin):
                        "(java -jar) — its <Resource> / <Environment> entries are listed under 'Properties to set'")
         if left:
             where = ", ".join(sorted({d for d in web_dirs if any(x.startswith(d + "/") for x in left)}))
-            # v2.1z-i: jar 이름을 적고, 빌드 오류가 필요로 하면 루프가 연결한다(sbmig-bundled)고 알린다
-            c.followup(webinf_left_followup(left, where))
+            # v2.1z-j: 동봉 jar 연결(_wire_bundled_jars)이 켜져 있으면 후속 작업은 연결 뒤로 미룬다 — 연결한 jar 는 빼고 적게.
+            # 이 시점에는 comp / boot pom 이 아직 없어 여기서 연결할 수 없다
+            if self._bundled_wiring_on(c):
+                c.webinf_left.append((left, where))
+            else:
+                # v2.1z-i: jar 이름을 적고, 빌드 오류가 필요로 하면 루프가 연결한다(sbmig-bundled)고 알린다
+                c.followup(webinf_left_followup(left, where))
         if clash:
             c.followup(f"{len(clash)} web file(s) not moved to {front}: the target path was already taken "
                        f"({', '.join(clash[:3])}{' …' if len(clash) > 3 else ''}) — merge them by hand")
+
+    # ------------------------------------------------------------------ v2.1z-j: bundled jars wired at the restructure
+    @staticmethod
+    def _bundled_wiring_on(c: _Ctx) -> bool:
+        """``layout.wire_bundled_jars`` 가 켜져 있고 분석이 동봉 jar 를 찾았는가."""
+        return bool(getattr(c.cfg.layout, "wire_bundled_jars", True)) and bool(
+            getattr(c.profile, "bundled_jars", None))
+
+    def _repo_lookup(self, c: _Ctx) -> Any:
+        """재구성 한 번에 하나뿐인 ``RepositoryLookup`` (``_repository_release`` 와 같은 것; 처음 쓸 때 만든다, 실패 → None)."""
+        if not c.repo_lookup_made:
+            c.repo_lookup_made = True
+            try:
+                from sbmig.build import repo_versions
+                c.repo_lookup = repo_versions.RepositoryLookup(c.cfg)
+            except Exception as e:  # noqa: BLE001 - no repository = every jar is "not there"
+                log.debug("repository lookup unavailable: %s: %s", type(e).__name__, e)
+                c.repo_lookup = None
+        return c.repo_lookup
+
+    def _target_managed_keys(self, c: _Ctx) -> set[str]:
+        """목표 부모 체인 + 목표 Boot BOM 이 관리하는 g:a (v2.1p / v2.1o 의 사실 — 재구성 한 번에 한 번 읽은 것)."""
+        keys: set[str] = set()
+        for facts in (self._chain_facts(c), self._boot_bom_facts(c)):
+            keys |= set(getattr(facts, "managed", None) or {}) if facts is not None else set()
+        return keys
+
+    def _bundled_boot_poms(self, c: _Ctx, module_pom: str, poms: list[str], layout_boot: str) -> list[str]:
+        """``module_pom`` 을 묶는 boot pom 들: spring-boot-maven-plugin 을 가진 pom(과 분석의 boot 모듈) 중 그 모듈
+        자신이거나 그 모듈의 artifactId 를 의존하는 것. 레이아웃이면 아무것도 안 맞을 때 생성한 boot pom.
+
+        The Boot-plugin poms (plus the profile's boot modules) that are `module_pom` or depend on its artifactId; in
+        the layout the generated boot pom when none matches."""
+        try:
+            aid = PomEditor(c.ws.abs(module_pom)).artifact_id() or ""
+        except PomEditError:
+            aid = ""
+        # 분석의 boot 모듈도 후보(역할 부모가 플러그인을 물려주면 pom 에 플러그인 선언이 없을 수 있다)
+        boot_dirs = {(m.strip("/") + "/pom.xml") if m and m not in (".", "") else "pom.xml"
+                     for m in (getattr(c.profile, "boot_modules", None) or [])}
+        out: list[str] = []
+        for p in poms:
+            try:
+                ed = PomEditor(c.ws.abs(p))
+            except PomEditError:
+                continue
+            if not ed.has_plugin(*BOOT_PLUGIN, where="build") and p not in boot_dirs:
+                continue
+            if p == module_pom or (aid and any(d.artifact_id == aid for d in ed.dependencies())):
+                out.append(p)
+        if not out and layout_boot and c.ws.exists(layout_boot):
+            out.append(layout_boot)
+        return out
+
+    def _wire_bundled_jars(self, c: _Ctx, *, layout: bool) -> None:
+        """v2.1z-j: 모드의 pom 작업이 끝난 뒤 ``profile.bundled_jars`` (어느 pom 도 선언하지 않은 트리 안 jar)를 지금
+        자리(``c.new_location``)를 품는 모듈 pom 에 연결한다 — 판정은 ``bundled_jars.plan_bundled_jars`` (관리됨 → superseded,
+        컨테이너 API, 참조 없음 → unused, 이미 선언, 저장소에 있음 → compile, 그 밖 → system), 쓰기는 ``apply_bundled_jars``.
+        레이아웃이면 웹 루트 이동으로 comp 모듈에 남은 WEB-INF/lib jar 가 comp pom 으로(루트 aggregator 가 품는 jar 도 comp
+        로), boot pom = 생성한 boot 모듈; pom 만 바꾸는 모드(boot_pom / msa_pom)면 jar 를 품은 모듈 자신의 pom, boot pom =
+        그 모듈이거나 그 모듈을 의존하는 Boot 플러그인 pom. 끝에 미뤄 둔 WEB-INF 후속 작업을 연결하지 않은 jar 만으로 쓴다.
+        실패는 재구성을 멈추지 않는다.
+
+        Wire the bundled jars after the mode's pom work: group them by the pom that owns their current path (the comp
+        pom for the layout's web root / root-level jars, the module's own pom in the pom-only modes), plan, apply, record
+        `jars_wired` / `jars_skipped`, Handover lines (⚠ for system scope, one line per unused jar), notes for the
+        untouched ones; then the deferred WEB-INF follow-up lists only the jars not wired."""
+        wired_now: set[str] = set()
+        try:
+            if self._bundled_wiring_on(c):
+                wired_now = self._wire_bundled_jars_inner(c, layout=layout)
+        except Exception as e:  # noqa: BLE001 - the wiring is an add-on: never a failed restructure
+            log.warning("bundled jars not wired: %s: %s", type(e).__name__, e)
+            c.note(f"bundled jars not wired: {type(e).__name__}: {e}")
+        for left, where in c.webinf_left:
+            rest = [x for x in left if x not in wired_now]
+            if rest:
+                c.followup(webinf_left_followup(rest, where))
+        c.webinf_left = []
+
+    def _wire_bundled_jars_inner(self, c: _Ctx, *, layout: bool) -> set[str]:
+        """``_wire_bundled_jars`` 의 본체: 연결한 jar 의 지금 경로 집합을 돌려준다."""
+        from sbmig.analyze.pom_parser import owning_pom
+
+        poms = self._project_poms(c)
+        infos = [SimpleNamespace(path=p) for p in poms]
+        comp_pom = f"{c.p(c.comp_rel)}/pom.xml" if layout and c.comp_rel else ""
+        boot_pom = f"{c.p(c.boot_rel)}/pom.xml" if layout and c.boot_rel else ""
+        front_dir = c.p(c.front_rel) if layout and c.front_rel and c.front_made else ""
+        groups: dict[str, list[Any]] = {}
+        current: dict[str, str] = {}
+        skipped: list[dict[str, Any]] = []
+        for jar in list(c.profile.bundled_jars or []):
+            if jar.path in c.bundled_done:
+                continue
+            c.bundled_done.add(jar.path)
+            cur = c.new_location(jar.path.replace("\\", "/"))
+            if not c.ws.abs(cur).is_file():
+                skipped.append({"path": jar.path, "why": f"skip: not found at {cur} after the restructure"})
+                continue
+            owner = owning_pom(cur, infos)
+            pom = owner.path if owner is not None else ""
+            try:
+                aggregator = bool(pom) and PomEditor(c.ws.abs(pom)).packaging() == "pom"
+            except PomEditError:
+                aggregator = False
+            if (not pom or aggregator) and comp_pom and c.ws.exists(comp_pom):
+                pom = comp_pom                # layout: the back module holds every source of the project
+            elif not pom or aggregator:
+                skipped.append({"path": jar.path, "why": f"skip: {pom or 'no pom'} owning {cur} is an aggregator "
+                                                        "(packaging pom) — declare the jar in the module that uses it"})
+                continue
+            current[jar.path] = cur
+            groups.setdefault(pom, []).append(jar)
+        if not groups and not skipped:
+            return set()
+        managed = self._target_managed_keys(c)
+        has = repository_has_fn(self._repo_lookup(c))
+        try:
+            group = PomEditor(c.ws.abs(c.p("pom.xml"))).effective_group_id() or ""
+        except (PomEditError, OSError):
+            group = ""
+        wired_paths: set[str] = set()
+        by_verdict: dict[str, list[str]] = {}
+        for pom, jars in groups.items():
+            mdir = posixpath.dirname(pom)
+            boots = self._bundled_boot_poms(c, pom, poms, boot_pom)
+            try:
+                roots = [posixpath.join(mdir, r) if mdir else r for r in self._source_roots(c, PomEditor(c.ws.abs(pom)))]
+            except PomEditError:
+                roots = [mdir]
+            extra = [mdir or ".", *(posixpath.dirname(b) or "." for b in boots), *([front_dir] if front_dir else [])]
+            plan = plan_bundled_jars(c.ws, c.cfg, jars, module_pom=pom, boot_poms=boots, managed_keys=managed,
+                                     managed_known=bool(managed),      # no chain facts → known coords are not wired blind
+                                     repository=has, source_roots=roots,
+                                     extra_dirs=[d for d in dict.fromkeys(extra) if d],
+                                     current=current)
+            for w in apply_bundled_jars(c.ws, c.cfg, plan, project_group=group):
+                c.changed.add(w.module_pom)
+                c.changed.update(w.boot_poms)
+                if w.copied_to:
+                    c.changed.add(w.copied_to)
+                line = bundled_jar_followup(w)
+                c.followup(("⚠ " + line) if w.scope == "system" else line)
+            for item in plan.items:
+                if item.wired is not None:
+                    wired_paths.add(item.current)
+                    continue
+                by_verdict.setdefault(item.verdict, []).append(jar_name(item.jar.path))
+                if item.verdict == "unused":
+                    c.followup(unused_jar_followup(jar_name(item.jar.path)))
+            c.result.jars_wired += plan.wired()
+            c.result.jars_skipped += plan.skipped()
+        c.result.jars_skipped += skipped
+        n = len(wired_paths)
+        if n:
+            c.note(f"bundled jars: {n} wired at the restructure (no pom declared them; see the Handover)")
+        for verdict, names in sorted(by_verdict.items()):
+            if verdict == "unused":
+                continue
+            shown = ", ".join(names[:5]) + (" …" if len(names) > 5 else "")
+            c.note(f"bundled jars not wired ({verdict}): {shown}")
+        if skipped:
+            c.note(f"bundled jars not wired: {len(skipped)} not placed in a module ("
+                   + ", ".join(jar_name(x["path"]) for x in skipped[:5]) + (" …" if len(skipped) > 5 else "") + ")")
+        log.info("bundled jars at the restructure: %d wired, %d not wired", n,
+                 sum(len(v) for v in by_verdict.values()) + len(skipped))
+        return wired_paths
 
     def _strip_war_web_config(self, c: _Ctx, ed: PomEditor) -> None:
         """생성 / 재작성 pom 에서 maven-war-plugin 의 warSourceDirectory / webResources 를 뺀다: web root 는
@@ -5020,6 +5207,7 @@ class Restructurer(LegacyContextMixin):
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._drop_bom_property_overrides(c)
+        self._wire_bundled_jars(c, layout=False)
         r = c.result
         if boots:
             r.boot_module = boots[0]
@@ -5359,6 +5547,7 @@ class Restructurer(LegacyContextMixin):
         self._pin_asis_versions(c)
         self._drop_managed_versions(c)
         self._drop_bom_property_overrides(c)
+        self._wire_bundled_jars(c, layout=False)
         self._msa_placeholders(c, svc_entries)
         c.commit("restructure: msa pom-only parent/mandatory/optional")
 

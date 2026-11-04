@@ -338,6 +338,9 @@ def test_every_handover_pattern_matches_a_real_handover_line(tmp_path, cfg):
     lines.append(webinf_left_followup(["w/WEB-INF/lib/a.jar", "w/WEB-INF/classes/A.class"], "shop-back/src/main/webapp"))
     lines.append(webinf_left_followup(["w/WEB-INF/lib/a.jar"], "shop-back/src/main/webapp"))
     lines.append(webinf_left_followup(["w/META-INF/x.txt"], "shop-back/src/main/webapp"))
+    # v2.1z-j: the unused bundled jar line (restructure)
+    from sbmig.restructure.bundled_jars import unused_jar_followup
+    lines.append(unused_jar_followup("unused-tool-1.0.jar"))
 
     translated = {x: tr_line("ko", x) for x in lines}
     for rx, _ in PATTERNS["ko"]:
