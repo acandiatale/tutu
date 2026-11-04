@@ -80,7 +80,7 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   seams (`llm.plugin` tier 1, `fix.plugin` tier 2 = `propose_script`, see `docs/ADAPTERS.md`), not through new HTTP clients.
 - Operating model: **one agent migrates ~500 projects strictly sequentially**. Every fix script is recorded per
   error case (L2 signature) so later projects reuse it without an LLM call: `sbmig fleet`, `kb-v2/scripts/`,
-  `sbmig kb scripts list`.
+  `sbmig kb cases list` / `sbmig kb cases show <case_id>`.
 - EOL / unmanaged libraries (springfox, hystrix, sleuth, old Spring Cloud trains, …): **no `block` policy, ever**
   (user: "정책상 빌드로 보지 않는건 없을거야" — 500 projects cannot all be perfect). Advisories are guide-only in v2:
   hints in the script prompt + the report **Handover** section first.

@@ -60,7 +60,7 @@ Python unless `script.python` names another one (it needs pydantic + lxml, docs/
 | `sbmig fleet run <manifest>` / `resume` / `status` | many projects, one after the other, one shared KB → `<out>/fleet/summary.md`, `learning.md` |
 | `sbmig serve` | web UI (FastAPI on uvicorn, LangGraph engine): upload a zip, watch the run live, download the report |
 | `sbmig analyze` / `plan` / `inventory` | read-only: project profile, migration plan, a pom-less Tomcat tree described for its owners |
-| `sbmig kb scripts list\|show\|retire\|activate` | stored fix scripts per case (versions, successes, lineage) |
+| `sbmig kb cases list\|show\|retire\|activate\|pin\|unpin` | stored fix scripts per case (versions, successes, lineage) |
 | `sbmig kb errors …` / `cases …` / `reviews` / `stats` / `validate` / `export` / `import` | error cases, case catalog, structure reviews, KB upkeep |
 | `sbmig recipes …` / `advisories …` | the OpenRewrite recipe catalog, the library advisories |
 | `sbmig llm-probe` / `build` / `parse-log` / `clean` | gateway check, Maven debugging aids, disk cleanup |
