@@ -141,7 +141,7 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
 
 ## Known follow-ups (the user decides)
 - **Dependency versions (v2.1l, 2026-10-30)**: the versions an as-is parent managed are pinned from the as-is effective pom
-  (`logs/depmgmt.json`) inside the restructure, before the first build (`RestructureResult.versions_pinned`, Handover ⚠
+  (`logs/effective-depmgmt.json`) inside the restructure, before the first build (`RestructureResult.versions_pinned`, Handover ⚠
   "carried over"); the fix loop fills a version-less dependency the LLM added (as-is build → newest repository release) and
   tries a `missing_version` case first without the LLM (`sbmig-version`); rule 14 tells the LLM to leave unknown versions
   `null`. v1's `carry-over-managed-version` handler had been deleted with the other handlers in v2 step 4 — that gap was the
