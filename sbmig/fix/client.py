@@ -704,7 +704,16 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
     else:
         # 키는 환경변수에서만 읽는다(.env 는 load_config 가 환경으로 올림) — 오류 문구에도 변수 이름만 쓴다
         key = os.environ.get(llm.api_key_env or "")
+        # v2.1z-q: with a token exchange (llm.token_url) the APP token is the credential — LLM_API_KEY is then optional
+        token_url_set = llm.provider == "company" and not _unexpanded(str(getattr(llm, "token_url", "") or ""))
+        app_env = str(getattr(llm, "app_token_env", "") or "")
+        if not key and token_url_set and app_env and os.environ.get(app_env):
+            key = os.environ.get(app_env, "")
         if not key:
+            if token_url_set:
+                raise LLMConfigError(
+                    f"LLM provider '{llm.provider}' with a token exchange needs the app token in the environment variable "
+                    f"'{app_env or llm.api_key_env}' (or '{llm.api_key_env}'); set it, or use llm.provider=fake")
             raise LLMConfigError(
                 f"LLM provider '{llm.provider}' needs an API key in the environment variable "
                 f"'{llm.api_key_env}' (set it, or use llm.provider=fake)")

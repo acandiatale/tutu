@@ -518,9 +518,15 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
     gw = str(getattr(llm, "gateway", "legacy") or "legacy")
     if gw != "legacy" or getattr(llm, "token_url", None):            # v2.1z-m: the agent gateway / token exchange
-        typer.echo(f"gateway={gw} asset_id={getattr(llm, 'asset_id', None) or '(unset)'} "
+        from sbmig.fix.client import agent_url
+        try:
+            call_url = agent_url(llm.base_url, getattr(llm, "asset_id", None) or None)
+        except Exception as e:  # noqa: BLE001 - shown, the probe below reports the config error itself
+            call_url = f"(unresolved: {e})"
+        typer.echo(f"gateway={gw} url={call_url} asset_id={getattr(llm, 'asset_id', None) or '(unset)'} "
                    f"token_url={getattr(llm, 'token_url', None) or '(none: static key)'} "
-                   f"app_token_env={getattr(llm, 'app_token_env', '')} escalation_model={llm.escalation_model or '(unset)'}")
+                   f"app_token_env={getattr(llm, 'app_token_env', '')} escalation_model={llm.escalation_model or '(unset)'}"
+                   + (" payload_extra: legacy only (not sent in agent mode)" if gw == "agent" and llm.payload_extra else ""))
     # the same single call the fleet preflight makes (round 10); the verbose part below is only printed here
     res = probe_llm(cfg, prompt, no_system=no_system,
                     on_request=lambda payload: typer.echo("request payload: "

@@ -512,3 +512,18 @@ def test_the_asset_id_placeholder_in_the_url_is_filled_once():
     assert agent_url("https://gw/plain", None) == "https://gw/plain"
     with pytest.raises(LLMConfigError):
         agent_url("https://gw/agents/{asset_id}/chat", None)
+
+
+def test_the_app_token_alone_is_enough_with_a_token_url(monkeypatch):
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("LLM_APP_TOKEN", "app-only")
+    cfg = load_config(str(REPO / "config" / "artifacts.local-e2e.yml"))
+    cfg.llm.record_dir = None
+    cfg.llm.provider, cfg.llm.base_url, cfg.llm.model = "company", "http://gw.local/agents/{asset_id}/chat", "build_error_fixer"
+    cfg.llm.gateway, cfg.llm.asset_id, cfg.llm.token_url = "agent", "a-1", "http://gw.local/token"
+    inner = getattr(make_llm_client(cfg), "inner", None) or make_llm_client(cfg)
+    assert inner.url == "http://gw.local/agents/a-1/chat" and inner._tokens._app_token == "app-only"
+    cfg.llm.token_url = ""                                              # no exchange → the API key is required again
+    with pytest.raises(LLMConfigError) as e:
+        make_llm_client(cfg)
+    assert "LLM_API_KEY" in str(e.value)
