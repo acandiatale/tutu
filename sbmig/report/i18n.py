@@ -337,7 +337,12 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
     "needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call).":
         "어느 pom 도 선언하지 않은 트리 안의 jar: as-is IDE 빌드는 이것으로 컴파일했지만 Maven 은 보지 못한다. 빌드 오류가 그 jar 를 "
         "필요로 하면 sbmig 가 모듈 pom 에 연결한다(`sbmig-bundled`, LLM 호출 없음).",
-    "| jar | coordinates | packages | used | wired |": "| jar | 좌표 | 패키지 | 사용 | 연결 |",
+    "| jar | coordinates | packages | used | wired | status |": "| jar | 좌표 | 패키지 | 사용 | 연결 | 상태 |",
+    "A jar whose coordinates the target parent chain manages (an old Spring jar, say) is superseded by the managed version "
+    "and is never wired.": "좌표를 목표 부모 체인이 관리하는 jar(예: 옛 Spring jar)는 관리 버전이 대신하므로 절대 연결하지 않는다.",
+    "superseded (the target chain manages it)": "대체됨 (목표 체인이 관리)",
+    "coordinates known": "좌표 있음",
+    "coordinates unknown": "좌표 없음",
     "unknown": "모름",
     # v2.1z-d: Oracle ADF — 플래그 설명과 "ADF 규모" 섹션(ADF 프로젝트는 변환하지 않는다 — 현업 결정 2026-11-02)
     "an Oracle ADF (JDeveloper) project (two or more evidence families: BC4J XML, oracle.jbo / oracle.adf imports, ADF Model "

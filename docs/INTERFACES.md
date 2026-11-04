@@ -3500,5 +3500,15 @@ build error ever needs it.
 * **Regression e2e** (PASS): `company-spring5-web`, `ant-webapp` (now also flagged `bundled-jars`: the jars the pom synthesis
   deliberately leaves undeclared — container API copies, unused jars — are listed in the new section; none is wired unless a
   build error needs it, and a `provided`-scope copy never), `company-servlet-jsp`, `servlet-nonstandard-dirs`.
+* **Superseded jars (user review 2026-11-04, "있다고 다 참조 걸어주는 방식은 안티패턴")**: a real `WEB-INF/lib` holds sitemesh,
+  spring-aop / -beans / -context / -webmvc … — a bundled jar whose known g:a the target parent chain / Boot BOM MANAGES
+  (`_managed_keys`) is **superseded**: never wired (not as system scope, not pinned to its old version — two lines of one
+  library never coexist), excluded from `_bundled_wireable` / the providers / the decline contradiction; `_bundled_facts`
+  gives the LLM the opposite fact ("the as-is tree bundled `spring-webmvc-4.3.30.jar` … the chain manages it at a newer
+  line — do NOT re-add the old jar or pin the old version; migrate the code or answer <blocked>"); the orchestrator's
+  `_classify_bundled_jars` (before the report, from `effective-depmgmt-after-restructure.json`, else the loop's keys) notes
+  `superseded: g:a is managed by the target parent chain` and the report table gains a `status` column (superseded /
+  coordinates known / coordinates unknown). The three buckets: managed → superseded (nothing to do), known & in the
+  repository → a plain dependency when a build error needs it, unknown → lib/ + system scope + Nexus ask.
 * **Not done / open**: the "as-is view for the LLM" idea (serve `asis:<path>` from the first commit, an automatic as-is → now
   diff of the error file) goes into the case-thread increment; `WEB-INF/classes` stays Handover-only.

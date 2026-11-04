@@ -27,9 +27,9 @@ def test_section_rows():
     r = _report(manual_followups=[WIRED])
     lines = bundled_jars_lines(r)
     assert lines[0] == f"## {BUNDLED_TITLE}"
-    assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | unknown | 2 | yes | system |" in lines
-    assert "| `src/main/webapp/WEB-INF/lib/vendor.jar` | `com.vendor:vendor:3.1` | 1 | no | — |" in lines
-    assert "| `lib/odd.jar` | unknown | 0 | — | — |" in lines
+    assert "| `src/main/webapp/WEB-INF/lib/acme-seed-1.0.jar` | unknown | 2 | yes | system | coordinates unknown |" in lines
+    assert "| `src/main/webapp/WEB-INF/lib/vendor.jar` | `com.vendor:vendor:3.1` | 1 | no | — | coordinates known |" in lines
+    assert "| `lib/odd.jar` | unknown | 0 | — | — | coordinates unknown |" in lines
 
 
 def test_section_placement_and_flag():

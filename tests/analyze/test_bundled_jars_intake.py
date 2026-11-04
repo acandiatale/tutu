@@ -57,3 +57,26 @@ def test_a_tree_without_bundled_jars_has_no_flag(cfg, tmp_path):
     assert "bundled-jars" not in report.flags
     assert not [e for e in journal_events(ws) if e["event"] == "bundled_jars"]
     assert not (logs_dir(ws) / "bundled-jars.json").exists()
+
+
+def test_a_jar_the_target_chain_manages_is_marked_superseded_for_the_report(cfg, tmp_path):
+    """Integrator (2026-11-04): the report's status column — a bundled jar whose known g:a the post-restructure chain
+    capture manages gets the `superseded:` note; an unknown vendor jar does not."""
+    from sbmig.core.models import JarCoordinate
+
+    ws = _ws(tmp_path, {**TREE, SEED_JAR: jar_bytes()})
+    orch = make_orch(cfg, ws, analyzer=analyze_project, build=FakeBuildRunner(ws, fn=lambda w, call: ok_build()))
+    report = orch.run()
+    report.profile.bundled_jars = [
+        JarCoordinate(path="src/main/webapp/WEB-INF/lib/spring-webmvc-4.3.30.jar", group_id="org.springframework",
+                      artifact_id="spring-webmvc", version="4.3.30", source="pom_properties", provides=["org.springframework.web"]),
+        JarCoordinate(path=SEED_JAR, provides=["com.acme.seed"]),
+    ]
+    (logs_dir(ws) / "effective-depmgmt-after-restructure.json").write_text(
+        json.dumps({"managed": {"org.springframework:spring-webmvc": "7.0.0"}, "by_module": {}}), encoding="utf-8")
+    orch._classify_bundled_jars(report)
+    notes = {j.path.rsplit("/", 1)[-1]: j.note for j in report.profile.bundled_jars}
+    assert notes["spring-webmvc-4.3.30.jar"] == "superseded: org.springframework:spring-webmvc is managed by the target parent chain"
+    assert notes["acme-seed-1.0.jar"] == ""
+    orch._classify_bundled_jars(report)                                   # idempotent
+    assert report.profile.bundled_jars[0].note.count("superseded:") == 1

@@ -890,13 +890,18 @@ def bundled_jars_lines(r: RunReport, lang: str = "en") -> list[str]:
     L = [f"## {tr(lang, BUNDLED_TITLE)}", "",
          tr(lang, "Jars in the tree that no pom declares: the as-is IDE build compiled against them, Maven does not. "
                   "When a build error needs one, sbmig wires it into the module pom (`sbmig-bundled`, no LLM call)."), "",
-         tr(lang, "| jar | coordinates | packages | used | wired |"), "|---|---|---|---|---|"]
+         tr(lang, "A jar whose coordinates the target parent chain manages (an old Spring jar, say) is superseded by the "
+                  "managed version and is never wired."), "",
+         tr(lang, "| jar | coordinates | packages | used | wired | status |"), "|---|---|---|---|---|---|"]
     for j in jars:
         coords = (f"`{j.group_id}:{j.artifact_id}:{j.version}`" if j.group_id and j.artifact_id and j.version
                   else tr(lang, "unknown"))
         used = "—" if j.used is None else tr(lang, "yes") if j.used else tr(lang, "no")
         name = j.path.replace("\\", "/").rsplit("/", 1)[-1]
-        L.append(f"| `{_cell(j.path, 200)}` | {coords} | {len(j.provides or [])} | {used} | {wired.get(name, '—')} |")
+        known = bool(j.group_id and j.artifact_id and j.version)
+        status = (tr(lang, "superseded (the target chain manages it)") if "superseded:" in (j.note or "")
+                  else tr(lang, "coordinates known") if known else tr(lang, "coordinates unknown"))
+        L.append(f"| `{_cell(j.path, 200)}` | {coords} | {len(j.provides or [])} | {used} | {wired.get(name, '—')} | {status} |")
     L.append("")
     return L
 

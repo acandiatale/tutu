@@ -3772,11 +3772,36 @@ class BuildFixLoop:
             return False
         return bool(getattr(self.profile, "bundled_jars", None) or [])
 
-    def _bundled_wireable(self) -> list[JarCoordinate]:
-        """붙일 수 있는 동봉 jar — 컨테이너 API 사본(``scope == "provided"``: servlet / jsp / el, Tomcat)은 절대 붙이지 않는다.
+    def _bundled_managed_keys(self) -> set[str]:
+        """목표 부모 체인 / Boot BOM 이 관리하는 g:a 들(``_managed_keys``; 읽을 수 없으면 빈 집합 — 그러면 아무것도 superseded 가 아니다)."""
+        try:
+            return set(self._managed_keys())
+        except Exception as e:  # noqa: BLE001 - no captures / chain facts: nothing is known to be managed
+            log.debug("managed keys unavailable for the bundled-jar check: %s: %s", type(e).__name__, e)
+            return set()
 
-        The bundled jars that may be wired: a container API copy (`scope == "provided"`) never is."""
-        return [j for j in getattr(self.profile, "bundled_jars", None) or [] if (j.scope or "compile") != "provided"]
+    def _bundled_superseded(self) -> list[JarCoordinate]:
+        """좌표가 알려졌고 그 g:a 를 목표 부모 체인 / Boot BOM 이 **관리하는** 동봉 jar(WEB-INF/lib 의 옛 spring-webmvc 4.x 같은 것):
+        관리 버전이 대신한다 — 절대 붙이지 않고(옛 버전을 박거나 system 으로 거는 건 두 Spring 이 섞이는 길) LLM 에는 "옛 jar 를
+        다시 넣지 말고 코드를 옮기라" 는 사실만 준다(사용자 2026-11-04: "있다고 다 참조 걸어주는 방식은 안티패턴").
+
+        Bundled jars whose known g:a the target parent chain / Boot BOM manages (an old `spring-webmvc-4.x.jar` in
+        WEB-INF/lib): superseded by the managed version — never wired, never pinned; the LLM only gets the fact."""
+        managed = self._bundled_managed_keys()
+        if not managed:
+            return []
+        return [j for j in getattr(self.profile, "bundled_jars", None) or []
+                if j.group_id and j.artifact_id and f"{j.group_id}:{j.artifact_id}" in managed]
+
+    def _bundled_wireable(self) -> list[JarCoordinate]:
+        """붙일 수 있는 동봉 jar — 컨테이너 API 사본(``scope == "provided"``: servlet / jsp / el, Tomcat)과 목표 체인이 관리하는
+        좌표의 옛 jar(``_bundled_superseded``)는 절대 붙이지 않는다.
+
+        The bundled jars that may be wired: a container API copy (`scope == "provided"`) never is, nor a jar whose
+        coordinates the target parent chain manages (`_bundled_superseded`)."""
+        skip = {j.path for j in self._bundled_superseded()}
+        return [j for j in getattr(self.profile, "bundled_jars", None) or []
+                if (j.scope or "compile") != "provided" and j.path not in skip]
 
     def _bundled_missing_packages(self, c: ErrorCluster) -> dict[str, list[str]]:
         """v2.1z-i: 케이스가 잃은 패키지 → 그 오류 파일들. ``package <p> does not exist`` 의 ``<p>`` 와, ``cannot find symbol
@@ -4039,6 +4064,20 @@ class BuildFixLoop:
                             "repository lacks it) instead of calling the library missing")
                     if line not in out:
                         out.append(line)
+            # superseded jars: the fact says the opposite — do NOT re-add the old jar, the chain manages that g:a
+            superseded = self._bundled_superseded()
+            if superseded:
+                for pkg in self._bundled_missing_packages(c):
+                    for jar in providers(superseded, pkg) or []:
+                        if len(out) >= PACKAGE_FACTS_ARTIFACTS:
+                            return out
+                        line = (f"the as-is tree bundled `{jar.path}` ({jar.group_id}:{jar.artifact_id}:{jar.version or '?'}) which "
+                                f"provided package `{pkg}`, but the target parent chain manages `{jar.group_id}:{jar.artifact_id}` at a "
+                                "newer line — that package is gone or relocated there: do NOT re-add the old jar or pin the old "
+                                "version (two lines of one library never coexist); migrate the code to the current API of the "
+                                "managed artifact, or answer <blocked> when the API has no replacement")
+                        if line not in out:
+                            out.append(line)
         except Exception as e:  # noqa: BLE001 - facts never break a fix attempt
             log.debug("bundled facts for %s unavailable: %s: %s", c.id, type(e).__name__, e)
         return out

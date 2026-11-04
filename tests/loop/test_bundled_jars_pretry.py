@@ -309,3 +309,42 @@ def test_every_pre_try_source_is_a_valid_try_source():
     from sbmig.core.models import TrySource
 
     assert set(fl.PRE_TRY_SOURCES) <= set(typing.get_args(TrySource))
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# superseded (integrator, 2026-11-04): an old jar of a library the target chain manages is never wired
+# ---------------------------------------------------------------------------------------------------------------------
+def spring_jar() -> JarCoordinate:
+    return JarCoordinate(path="app-back/src/main/webapp/WEB-INF/lib/spring-webmvc-4.3.30.jar", group_id="org.springframework",
+                         artifact_id="spring-webmvc", version="4.3.30", source="pom_properties",
+                         provides=["org.springframework.web.servlet.mvc.annotation"], packages=["org.springframework.web"])
+
+
+def test_a_jar_the_target_chain_manages_is_never_wired(cfg, tmp_path, wired, monkeypatch):
+    loop = make_loop(cfg, _ws(tmp_path), wired_build(), jars=[spring_jar(), seed_jar()])
+    monkeypatch.setattr(loop, "_managed_keys", lambda: {"org.springframework:spring-webmvc"})
+    removed = missing(pkg="org.springframework.web.servlet.mvc.annotation")
+    assert loop._bundled_targets(cluster(removed)) is None            # the old Spring jar is not a provider
+    assert [j.path for j in loop._bundled_wireable()] == [JAR]        # the unknown vendor jar still is
+    assert loop._bundled_targets(cluster(missing())) == [BACK]
+
+
+def test_the_superseded_fact_tells_the_llm_not_to_re_add_the_old_jar(cfg, tmp_path, wired, monkeypatch):
+    loop = make_loop(cfg, _ws(tmp_path), wired_build(), jars=[spring_jar()])
+    monkeypatch.setattr(loop, "_managed_keys", lambda: {"org.springframework:spring-webmvc"})
+    facts = loop._bundled_facts(cluster(missing(pkg="org.springframework.web.servlet.mvc.annotation")))
+    assert len(facts) == 1 and "do NOT re-add the old jar" in facts[0] and "spring-webmvc-4.3.30.jar" in facts[0]
+    assert not any("wire it as a dependency" in f for f in facts)
+
+
+def test_a_decline_about_a_removed_api_is_not_contradicted_by_the_old_jar(cfg, tmp_path, wired, monkeypatch):
+    loop = make_loop(cfg, _ws(tmp_path), wired_build(), jars=[spring_jar()])
+    monkeypatch.setattr(loop, "_managed_keys", lambda: {"org.springframework:spring-webmvc"})
+    c = cluster(missing(pkg="org.springframework.web.servlet.mvc.annotation"))
+    assert loop._bundled_contradiction(c, "the library providing this package has no coordinates") == ""
+
+
+def test_without_managed_keys_nothing_is_superseded(cfg, tmp_path, wired, monkeypatch):
+    loop = make_loop(cfg, _ws(tmp_path), wired_build(), jars=[spring_jar()])
+    monkeypatch.setattr(loop, "_managed_keys", lambda: set())
+    assert loop._bundled_superseded() == []

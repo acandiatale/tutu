@@ -76,7 +76,9 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   `sbmig-bundled` wires it (`sbmig/restructure/system_jars.py wire_bundled_jar`): a plain dependency when its own pom.properties
   coordinates are in the repository set, else copied to `<module>/lib/<name>` and declared `system` scope at
   `${project.basedir}/lib/<name>` (placeholder coordinates, never guessed) + `includeSystemScope` on the boot module's
-  spring-boot-maven-plugin; the Handover asks the owners to publish the jar to Nexus and replace the entry. The LLM is told
+  spring-boot-maven-plugin; the Handover asks the owners to publish the jar to Nexus and replace the entry. A bundled jar whose g:a the target
+  parent chain manages (an old spring-webmvc 4.x in WEB-INF/lib) is **superseded**: never wired, the LLM is told not to
+  re-add it (user, 2026-11-04: wiring every jar found would be an anti-pattern). The LLM is told
   the fact ("the project bundles `<jar>` which provides package `<p>`") and a coordinates / missing-library decline while a
   bundled jar provides the package is rejected (the company run had ended BLOCKED `needs_owner`). Fixture `webapp-bundled-jar`.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).

@@ -926,6 +926,33 @@ class Orchestrator:
             log.info("sources outside the reactor: %s (%s)", res.counts_text(), res.by_dir_text())
             self.ws.journal({"event": "sources_outside_reactor", **res.as_journal()})
 
+    def _classify_bundled_jars(self, report: RunReport) -> None:
+        """v2.1z-i: 보고서의 동봉 jar 표를 위해, 좌표가 알려졋고 그 g:a 를 목표 부모 체인(재구성 뒤 캡처
+        ``effective-depmgmt-after-restructure.json``, 없으면 루프의 관리 키)이 관리하는 jar 에 note
+        "superseded: g:a is managed by the target parent chain" 을 붙인다 — 그런 jar 는 연결 대상이 아니다. 예외 없음.
+
+        Mark the bundled jars whose known g:a the target parent chain manages (the post-restructure capture, else the
+        loop's managed keys) with the note `superseded: …` for the report table. Never raises."""
+        jars = list(getattr(getattr(report, "profile", None), "bundled_jars", None) or [])
+        if not jars:
+            return
+        try:
+            from sbmig.build.effective import AFTER_RESTRUCTURE_FILE, load_effective
+            data = load_effective(self.ws, AFTER_RESTRUCTURE_FILE) or {}
+            keys = {str(k) for k in (data.get("managed") or {})}
+            for mod in (data.get("by_module") or {}).values():
+                if isinstance(mod, dict):
+                    keys |= {str(k) for k in (mod.get("managed") or {})}
+            if not keys and self.loop is not None:
+                keys = set(self.loop._managed_keys())  # noqa: SLF001 - same source of truth as the pre-try
+            for j in jars:
+                key = f"{j.group_id}:{j.artifact_id}" if j.group_id and j.artifact_id else ""
+                if key and key in keys and "superseded:" not in (j.note or ""):
+                    mark = f"superseded: {key} is managed by the target parent chain"
+                    j.note = f"{j.note}; {mark}" if j.note else mark
+        except Exception as e:  # noqa: BLE001 - a report decoration must never fail the run
+            log.debug("bundled jar classification skipped: %s: %s", type(e).__name__, e)
+
     def _note_bundled_jars(self, profile: ProjectProfile) -> None:
         """v2.1z-i: 분석이 찾은 동봉 jar(트리 안에 있지만 어떤 pom 도 선언하지 않은 jar)를 실행 기록에 남긴다 — 플래그
         ``bundled-jars``, 저널 ``bundled_jars``(경로 · 좌표), 운영자 로그 한 줄, ``logs/bundled-jars.json``(JarCoordinate 목록).
@@ -2737,6 +2764,7 @@ class Orchestrator:
                 if f not in report.flags:
                     report.flags.append(f)
             report.manual_followups += [f for f in self.loop.followups if f not in report.manual_followups]
+        self._classify_bundled_jars(report)      # v2.1z-i: superseded marks for the report (managed g:a)
         # a cap (loop.max_llm_calls > 0) reached, or -1 (the fleet's total used up) when a case needed the LLM
         if (self.budget.llm_limited and self.budget.llm_exhausted()) or (
                 self.budget.llm_off and any(it.reason.value == "budget_exhausted" for it in self.blocked.items())):
