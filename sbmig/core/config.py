@@ -622,6 +622,16 @@ class LLMConfig(BaseModel):
     # provider `company` (default): requests.post(LLM_BASE_URL, headers={Authorization: Bearer LLM_API_KEY},
     # json={"model", "messages", **payload_extra}, timeout=timeout_seconds) — see sbmig/fix/company.py
     payload_extra: dict[str, Any] = Field(default_factory=dict)      # extra top-level payload fields, sent verbatim
+    # v2.1z-m (2026-11-04): the in-house GPT agent gateway. `gateway: agent` sends {model: asset_id, messages, stream: false,
+    # async: false, params: {role: <the chosen model name — LLM_MODEL / LLM_ESCALATION_MODEL, e.g. build_error_fixer /
+    # escalation_fixer>}, session_id, trace_id, max_tokens, temperature, **agent_extra}; the Bearer token comes from a token
+    # exchange when token_url is set (POST token_url with the app token → access_token, refreshed before it expires)
+    gateway: str = "legacy"                                  # legacy | agent (LLM_GATEWAY)
+    asset_id: Optional[str] = None                           # LLM_ASSET_ID: the agent gateway's top-level `model`
+    token_url: Optional[str] = None                          # LLM_TOKEN_URL: the token exchange endpoint (empty = static key)
+    app_token_env: str = "LLM_APP_TOKEN"                     # the app token's variable; unset → LLM_API_KEY is the app token
+    token_refresh_margin_s: int = 300                        # refresh when less than this is left before expiry (5 min)
+    agent_extra: dict[str, Any] = Field(default_factory=dict)  # static extra fields of the agent payload, sent verbatim
     response_path: Optional[str] = None      # dot path to the reply text, e.g. "data.result.content"; None → auto-detect
     # 2026-10-22: per-project API cost in the report. Keys are model ids as the gateway names them (exact match first,
     # then the longest key that is a prefix of / contained in the model id, case-insensitive); unmatched models are

@@ -371,3 +371,116 @@ def test_probe_llm_one_call_and_short_lines(monkeypatch, tmp_path):
     assert res.kind == "config" and "LLM_API_KEY" in res.problem and not res.transient
     fake = probe_llm(load_config(REPO / "config" / "artifacts.example.yml", overrides={"llm": {"provider": "fake"}}))
     assert fake.ok and fake.client_name == "FakeLLMClient"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1z-m: the in-house GPT agent gateway — token exchange + the agent payload shape (user, 2026-11-04)
+# ---------------------------------------------------------------------------------------------------------------------
+from sbmig.fix.company import TokenManager
+
+
+def token_resp(tok: str = "tk-1", ttl: int = 3600) -> FakeResponse:
+    return FakeResponse(200, {"access_token": tok, "token_type": "Bearer", "expires_in": ttl})
+
+
+def llm_ok() -> FakeResponse:
+    return FakeResponse(200, {"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}],
+                              "usage": {"prompt_tokens": 1, "completion_tokens": 1}, "model": "gpt-5.5"})
+
+
+def agent_client(post, tm, **kw):
+    kw.setdefault("sleep", lambda s: None)
+    return CompanyClient("http://gw.local/chat", "unused-static-key", "build_error_fixer", post=post, gateway="agent",
+                         asset_id="asset-42", token_manager=tm, **kw)
+
+
+def test_token_manager_fetches_once_and_refreshes_inside_the_margin():
+    clock = {"t": 1000.0}
+    post = FakePost(token_resp("tk-1"), token_resp("tk-2"))
+    tm = TokenManager("http://gw.local/token", "app-secret", post=post, margin_s=300, clock=lambda: clock["t"])
+    assert tm.token() == "tk-1"
+    assert post.calls[0]["url"] == "http://gw.local/token"
+    assert post.calls[0]["headers"] == {"Authorization": "Bearer app-secret"} and "json" not in post.calls[0]
+    assert tm.token() == "tk-1" and len(post.calls) == 1                    # cached
+    clock["t"] = 1000.0 + 3600 - 299                                       # less than 5 minutes left → refreshed first
+    assert tm.token() == "tk-2" and len(post.calls) == 2 and tm.refreshes == 2
+    assert "app-secret" not in repr(tm) and "tk-" not in repr(tm)
+
+
+def test_token_exchange_failures_are_llm_errors():
+    with pytest.raises(LLMError):
+        TokenManager("http://gw.local/token", "app", post=FakePost(FakeResponse(403, "nope"))).token()
+    with pytest.raises(LLMError):
+        TokenManager("http://gw.local/token", "app", post=FakePost(FakeResponse(200, {"token_type": "Bearer"}))).token()
+    with pytest.raises(LLMError):
+        TokenManager("http://gw.local/token", "app", post=FakePost(FakeResponse(200, "not json"))).token()
+
+
+def test_agent_gateway_payload_and_bearer_from_the_exchange():
+    post = FakePost(token_resp(), llm_ok())
+    tm = TokenManager("http://gw.local/token", "app", post=post)
+    c = agent_client(post, tm, agent_extra={"x": 1})
+    resp = c.complete(MSGS, model="escalation_fixer", max_tokens=8000, temperature=0.0, role="fix_escalation",
+                      metadata={"run_id": "run-1", "attempt": "verify-1-1"})
+    assert [k["url"] for k in post.calls] == ["http://gw.local/token", "http://gw.local/chat"]
+    call = post.calls[1]
+    assert call["headers"] == {"Authorization": "Bearer tk-1"}                 # the exchanged token, not the static key
+    body = call["json"]
+    assert body["model"] == "asset-42" and body["params"] == {"role": "escalation_fixer"}
+    assert body["stream"] is False and body["async"] is False and body["session_id"] == "run-1"
+    assert body["trace_id"] and len(body["trace_id"]) == 32
+    assert body["max_tokens"] == 8000 and body["temperature"] == 0.0 and body["x"] == 1
+    assert "need_origin" not in body and "thread_id" not in body
+    assert body["messages"] == [m.model_dump() for m in MSGS]
+    assert resp.content == "hi" and resp.model == "gpt-5.5"                  # the gateway's model name prices the call
+    # the default role is the client's model; a second call reuses the cached token
+    c.complete(MSGS, role="fix")
+    assert post.calls[2]["json"]["params"] == {"role": "build_error_fixer"} and len(post.calls) == 3
+    assert "unused-static-key" not in repr(c) and "gateway='agent'" in repr(c)
+
+
+def test_a_401_refreshes_the_token_and_retries_once():
+    post = FakePost(token_resp("tk-old"), FakeResponse(401, "expired"), token_resp("tk-new"), llm_ok())
+    tm = TokenManager("http://gw.local/token", "app", post=post)
+    c = agent_client(post, tm, max_retries=0)
+    assert c.complete(MSGS, role="fix").content == "hi"
+    assert [k["url"] for k in post.calls] == ["http://gw.local/token", "http://gw.local/chat",
+                                             "http://gw.local/token", "http://gw.local/chat"]
+    assert post.calls[3]["headers"] == {"Authorization": "Bearer tk-new"}
+    # a second 401 is not retried again: the error surfaces
+    post2 = FakePost(token_resp("a"), FakeResponse(401, "expired"), token_resp("b"), FakeResponse(401, "still"))
+    c2 = agent_client(post2, TokenManager("http://gw.local/token", "app", post=post2), max_retries=0)
+    with pytest.raises(LLMError):
+        c2.complete(MSGS, role="fix")
+
+
+def test_legacy_mode_ignores_the_generation_parameters_and_token_only_when_configured():
+    post = FakePost(llm_ok())
+    c = client(post)                                                          # legacy: no token manager
+    c.complete(MSGS, max_tokens=5, temperature=0.1, metadata={"run_id": "r"})
+    body = post.calls[0]["json"]
+    assert body == {"model": "gpt-6-luna", "messages": [m.model_dump() for m in MSGS], "need_origin": True}
+    assert post.calls[0]["headers"] == {"Authorization": "Bearer sk-secret"}
+
+
+def test_make_llm_client_builds_the_agent_client_from_the_environment(monkeypatch, tmp_path):
+    for k, v in {"LLM_BASE_URL": "http://gw.local/chat", "LLM_API_KEY": "app-token-x", "LLM_MODEL": "build_error_fixer",
+                 "LLM_GATEWAY": "agent", "LLM_ASSET_ID": "asset-9", "LLM_TOKEN_URL": "http://gw.local/token",
+                 "LLM_ESCALATION_MODEL": "escalation_fixer"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("LLM_APP_TOKEN", raising=False)
+    cfg = load_config(str(REPO / "config" / "artifacts.local-e2e.yml"))
+    cfg.llm.record_dir = None
+    cfg.llm.provider, cfg.llm.base_url, cfg.llm.model = "company", "http://gw.local/chat", "build_error_fixer"
+    cfg.llm.gateway, cfg.llm.asset_id, cfg.llm.token_url = "agent", "asset-9", "http://gw.local/token"
+    c = make_llm_client(cfg)
+    inner = getattr(c, "inner", c)
+    assert isinstance(inner, CompanyClient) and inner.gateway == "agent" and inner.asset_id == "asset-9"
+    assert inner._tokens is not None and inner._tokens.token_url == "http://gw.local/token"
+    assert inner._tokens._app_token == "app-token-x"                          # LLM_APP_TOKEN unset → the API key is the app token
+    cfg.llm.asset_id = ""                                                     # agent mode without the asset id
+    with pytest.raises(LLMConfigError):
+        make_llm_client(cfg)
+    cfg.llm.gateway, cfg.llm.token_url = "legacy", ""                         # legacy: no token manager, static key
+    inner = getattr(make_llm_client(cfg), "inner", make_llm_client(cfg))
+    assert inner.gateway == "legacy" and inner._tokens is None

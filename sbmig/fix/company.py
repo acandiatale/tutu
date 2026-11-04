@@ -49,6 +49,7 @@ import json
 import logging
 import re
 import threading
+import uuid
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -147,6 +148,75 @@ def finish_reason_of(data: Any) -> Optional[str]:
     return finish or data.get("finish_reason") or data.get("stop_reason")
 
 
+class TokenManager:
+    """v2.1z-m: 사내 GPT 에이전트 게이트웨이의 토큰 교환 — ``POST <token_url>`` 에 ``Authorization: Bearer <앱 토큰>`` 을 보내면
+    ``{access_token, token_type, expires_in}`` 이 온다. 받은 토큰을 메모리에 들고 있다가(프로세스 안, 스레드 안전) 만료
+    ``margin_s``(기본 5분) 전이거나 만료됐으면 LLM 호출 **전에** 다시 받는다; 401 이 오면 ``invalidate`` 뒤 한 번 더. 토큰과 앱
+    토큰은 로그·repr·기록에 절대 나오지 않는다.
+
+    The agent gateway's token exchange: `POST token_url` with the app token as Bearer → `access_token` + `expires_in`,
+    cached in memory and refreshed `margin_s` before expiry (or after a 401). Neither token ever reaches a log."""
+
+    def __init__(self, token_url: str, app_token: str, *, post: Optional[PostFn] = None, timeout: float = 30.0,
+                 margin_s: float = 300.0, clock: Callable[[], float] = time.time):
+        self.token_url = (token_url or "").strip()
+        self._app_token = app_token or ""
+        self._post = post or requests.post
+        self.timeout = float(timeout)
+        self.margin_s = float(margin_s)
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._token = ""
+        self._expires_at = 0.0
+        self.expires_in = 0.0                   # the last answer's TTL (seconds), for the probe
+        self.refreshes = 0
+
+    def __repr__(self) -> str:                  # never leak a token
+        return f"TokenManager(url={self.token_url!r}, refreshes={self.refreshes})"
+
+    def valid(self) -> bool:
+        """토큰이 있고 만료 ``margin_s`` 전인가. / A token is held and more than `margin_s` from expiry."""
+        return bool(self._token) and self._clock() < self._expires_at - self.margin_s
+
+    def token(self) -> str:
+        """지금 쓸 토큰 — 없거나 만료 임박이면 먼저 받아 온다. / The token to send, refreshed first when (nearly) expired."""
+        with self._lock:
+            if not self.valid():
+                self._refresh_locked()
+            return self._token
+
+    def refresh(self) -> str:
+        """무조건 새로 받는다(probe, 401 뒤). / Fetch a fresh token unconditionally (the probe, after a 401)."""
+        with self._lock:
+            self._refresh_locked()
+            return self._token
+
+    def invalidate(self) -> None:
+        """다음 ``token()`` 이 다시 받게 한다. / Make the next `token()` fetch again."""
+        with self._lock:
+            self._token, self._expires_at = "", 0.0
+
+    def _refresh_locked(self) -> None:
+        resp = self._post(self.token_url, headers={"Authorization": f"Bearer {self._app_token}"}, timeout=self.timeout)
+        if resp.status_code >= 300:
+            log.error("llm token exchange HTTP %d: %s", resp.status_code, ascii_safe(resp.text, 200))
+            raise LLMError(resp.status_code, resp.text[:300], f"token exchange failed: HTTP {resp.status_code}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise LLMError(resp.status_code, resp.text[:300], "token exchange: the answer is not JSON") from exc
+        tok = data.get("access_token") if isinstance(data, dict) else None
+        if not tok:
+            raise LLMError(resp.status_code, "", "token exchange: no access_token in the answer")
+        try:
+            ttl = float(data.get("expires_in") or 3600)
+        except (TypeError, ValueError):
+            ttl = 3600.0
+        self._token, self._expires_at, self.expires_in = str(tok), self._clock() + ttl, ttl
+        self.refreshes += 1
+        log.info("llm token refreshed: expires in %.0fs (refreshed again %.0fs before expiry)", ttl, self.margin_s)
+
+
 class CompanyClient:
     """회사 LLM 게이트웨이 클라이언트(LLMClientLike). 요청 하나 =
     `requests.post(url, headers={Authorization: Bearer …}, json={model, messages, **payload_extra}, timeout)`;
@@ -157,8 +227,15 @@ class CompanyClient:
                  response_path: Optional[str] = None, timeout: float = 180.0, max_retries: int = 3,
                  extra_headers: Optional[dict[str, str]] = None, post: Optional[PostFn] = None,
                  sleep: Callable[[float], None] = time.sleep, heartbeat_s: float = 30.0,
-                 hard_deadline_s: Optional[float] = None):
+                 hard_deadline_s: Optional[float] = None, gateway: str = "legacy", asset_id: Optional[str] = None,
+                 token_manager: Optional[TokenManager] = None, agent_extra: Optional[dict] = None):
         self.url = (url or "").strip()
+        # v2.1z-m: legacy = {model, messages, **payload_extra}; agent = the in-house GPT agent gateway (asset id as
+        # `model`, the chosen model name as `params.role`, Bearer = the exchanged access token)
+        self.gateway = (gateway or "legacy").strip().lower()
+        self.asset_id = (asset_id or "").strip() or None
+        self._tokens = token_manager
+        self.agent_extra = dict(agent_extra or {})
         self._api_key = api_key or ""
         self.model = model
         self.payload_extra = dict(payload_extra or {})
@@ -177,20 +254,44 @@ class CompanyClient:
         self.hard_deadline_s = float(hard_deadline_s) if hard_deadline_s is not None else self.timeout + 30.0
 
     def __repr__(self) -> str:                        # never leak the key
-        return f"CompanyClient(url={self.url!r}, model={self.model!r})"
+        return f"CompanyClient(url={self.url!r}, model={self.model!r}, gateway={self.gateway!r})"
 
     # ---- the two things that go over the wire
     def headers(self) -> dict[str, str]:
         """보낼 헤더: `Authorization: Bearer <키>` + `llm.extra_headers`. 이 dict 는 로그·기록·화면에 내보내지
         말 것(키가 들어 있다)."""
-        return {"Authorization": f"Bearer {self._api_key}", **self.extra_headers}
+        key = self._tokens.token() if self._tokens is not None else self._api_key
+        return {"Authorization": f"Bearer {key}", **self.extra_headers}
 
-    def payload(self, messages: list[ChatMessage], model: Optional[str] = None) -> dict[str, Any]:
-        """보낼 JSON 본문: `{model, messages: [{role, content}], **payload_extra}` — 게이트웨이 계약
-        그대로(messages 만, tools·생성 파라미터 없음)."""
-        return {"model": model or self.model,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                **self.payload_extra}
+    def payload(self, messages: list[ChatMessage], model: Optional[str] = None, *, max_tokens: Optional[int] = None,
+                temperature: Optional[float] = None, metadata: Optional[dict] = None) -> dict[str, Any]:
+        """보낼 JSON 본문. legacy: `{model, messages: [{role, content}], **payload_extra}` — 게이트웨이 계약 그대로(messages 만,
+        tools·생성 파라미터 없음). agent(v2.1z-m): `{model: <asset id>, messages, stream: false, async: false,
+        params: {role: <고른 모델 이름 — build_error_fixer / escalation_fixer>}, session_id (metadata.run_id), trace_id (호출마다
+        새 uuid), max_tokens, temperature, **agent_extra}`; thread_id 는 의미가 확인될 때까지 보내지 않는다.
+
+        legacy: the company contract verbatim; agent: the GPT agent gateway's shape (asset id as `model`, the chosen
+        model name as `params.role`, per-call ids, the generation parameters it accepts; no `thread_id` yet)."""
+        msgs = [{"role": m.role, "content": m.content} for m in messages]
+        if self.gateway != "agent":
+            return {"model": model or self.model, "messages": msgs, **self.payload_extra}
+        body: dict[str, Any] = {"model": self.asset_id or (model or self.model), "messages": msgs, "stream": False,
+                                "async": False, "params": {"role": model or self.model}}
+        run_id = (metadata or {}).get("run_id") if isinstance(metadata, dict) else None
+        if run_id:
+            body["session_id"] = str(run_id)
+        body["trace_id"] = uuid.uuid4().hex
+        if max_tokens is not None:
+            body["max_tokens"] = int(max_tokens)
+        if temperature is not None:
+            body["temperature"] = float(temperature)
+        body.update(self.agent_extra)
+        return body
+
+    def _label(self, payload: dict[str, Any], role: Optional[str]) -> str:
+        """로그 라벨: role / model (+ agent 면 params.role). / The log label; agent mode adds `params.role`."""
+        extra = f" params.role={payload.get('params', {}).get('role')}" if self.gateway == "agent" else ""
+        return f"role={role or '-'} model={payload['model']}{extra}"
 
     def post_once(self, payload: dict[str, Any]) -> Any:
         """정확히 그 호출 모양의 ``requests.post`` 한 번(probe 와 재시도 루프가 함께 쓴다).
@@ -247,7 +348,7 @@ class CompanyClient:
         """메시지를 게이트웨이로 보낸다(LLMClientLike). `max_tokens` / `temperature` / `stop` / `role` /
         `metadata` 는 받기만 하고 보내지 않는다(RecordingClient 가 role / metadata 를 기록). DEBUG 로그에는
         프롬프트 해시·글자 수만."""
-        payload = self.payload(messages, model)
+        payload = self.payload(messages, model, max_tokens=max_tokens, temperature=temperature, metadata=metadata)
         if log.isEnabledFor(logging.DEBUG):
             log.debug("llm request role=%s model=%s prompt_sha256=%s chars=%d", role or "-", payload["model"],
                       messages_hash(messages)[:16], sum(len(m.content) for m in messages))
@@ -261,10 +362,14 @@ class CompanyClient:
         t0 = time.monotonic()
         last_status: Optional[int] = None
         last_body = ""
-        label = f"role={role or '-'} model={payload['model']}"
+        label = self._label(payload, role)
         chars = sum(len(m.content) for m in messages)
         cause: Optional[str] = None             # `<Class>: <message>` of the last transport failure (None after an HTTP answer)
-        for attempt in range(self.max_retries + 1):
+        auth_retried = False                    # v2.1z-m: one extra attempt after a 401 with a fresh token
+        total = self.max_retries + 1            # grows by one only when that 401 happens (other failures keep max_retries)
+        attempt = -1
+        while attempt + 1 < total:
+            attempt += 1
             wait: Optional[float] = None
             log.info("llm call provider=company %s attempt %d/%d → POST %s (prompt %d chars, timeout %.0fs)", label,
                      attempt + 1, self.max_retries + 1, self.url, chars, self.timeout)
@@ -287,13 +392,19 @@ class CompanyClient:
                              out.input_tokens, out.output_tokens, time.monotonic() - t0, out.finish_reason)
                     return out
                 last_status, last_body = resp.status_code, resp.text[:500]
+                if resp.status_code == 401 and self._tokens is not None and not auth_retried:
+                    auth_retried = True
+                    total += 1
+                    self._tokens.invalidate()
+                    log.warning("llm company HTTP 401: the access token is refreshed and the call retried once")
+                    continue
                 if resp.status_code not in RETRY_STATUS:
                     log.error("llm company HTTP %d: %s", resp.status_code, last_body[:300].replace("\n", " "))
                     raise LLMError(resp.status_code, last_body)
                 wait = _retry_after_seconds(resp)
                 log.warning("llm company HTTP %d (attempt %d/%d)", resp.status_code, attempt + 1,
                             self.max_retries + 1)
-            if attempt < self.max_retries:
+            if attempt + 1 < total:
                 delay = min(wait, 120.0) if wait is not None else min(30.0, 2.0 ** attempt)
                 log.info("llm call retrying in %.0fs (attempt %d/%d failed: status=%s%s)", delay, attempt + 1,
                          self.max_retries + 1, last_status, f" cause={cause}" if cause else "")
@@ -403,6 +514,7 @@ class ProbeResult:
     status: Optional[int] = None
     problem: str = ""                     # one ASCII line: `cause=…` / `HTTP 503: …` / the LLMError text
     hints: list[str] = field(default_factory=list)
+    token: str = ""                           # v2.1z-m: the token exchange's outcome ("ok (expires_in …)")
     reply: str = ""
     latency_s: float = 0.0
     payload: Optional[dict] = None        # company provider: the exact JSON body that was sent
@@ -462,7 +574,17 @@ def probe_llm(cfg: Any, prompt: str = PROBE_PROMPT, *, no_system: bool = False,
     t0 = time.monotonic()
     if isinstance(inner, CompanyClient):
         res.url, res.model = inner.url, inner.model
-        payload = res.payload = inner.payload(msgs)
+        if inner._tokens is not None:                     # v2.1z-m: the token exchange is a step of its own
+            try:
+                inner._tokens.refresh()
+                res.token = f"ok (expires_in {inner._tokens.expires_in:.0f}s, refreshed {inner._tokens.margin_s:.0f}s before expiry)"
+            except Exception as e:  # noqa: BLE001 - the probe reports, never raises
+                res.latency_s = time.monotonic() - t0
+                res.kind, res.problem = "token", f"token exchange: {ascii_safe(e, 200)}"
+                res.hints.append("check LLM_TOKEN_URL and the app token (LLM_APP_TOKEN, else LLM_API_KEY): POST <token_url> with "
+                                 "`Authorization: Bearer <app token>` must answer {access_token, token_type, expires_in}")
+                return res
+        payload = res.payload = inner.payload(msgs, metadata={"run_id": "probe"})
         if on_request is not None:
             on_request(payload)
         try:

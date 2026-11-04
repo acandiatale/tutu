@@ -3670,3 +3670,43 @@ values — no version literal in a rule) and the Boot BOM, and that a project pi
 * `sbmig/review/inputs.py boot_version_lines`: the Spring-family line; `sbmig/review/prompts/review_v1.md` rule 5 extended.
 * Tests: `tests/restructure/test_v21zl_depmgmt.py` (the entry removed in both role-parent copies, the newer own pin and the BOM
   import kept, the referenced property dead → gone, `java-version` orphan → gone, the switch off keeps everything).
+
+## v2.1z-m — the in-house GPT agent gateway: asset id + `params.role`, token exchange (2026-11-04)
+
+**Why.** The company moves the fix / review calls from the legacy gateway to its GPT agent gateway. Same request schema as
+discussed on 2026-11-03 (`{model, messages, stream, session_id, thread_id, trace_id, params, async}`) with two differences the
+user named today: the top-level `model` is the gateway **asset id**, and the model is chosen by `params.role` — the "model call
+name" the gateway maps itself: `build_error_fixer` → gpt-5.5, `escalation_fixer` → gpt-5.6-sol. And a pre-step: a POST to a
+token URL with `Authorization: Bearer <app token>` answers `{access_token, token_type: Bearer, expires_in: 3600}`; every LLM call
+carries that access token, refreshed before it expires.
+
+**Decisions.** No new HTTP client (the adapter seams stay): `CompanyClient` gains a `gateway` mode and a `TokenManager`.
+* `llm.gateway: legacy | agent` (`LLM_GATEWAY`, default legacy — nothing changes for the old gateway). Agent payload:
+  `{model: <LLM_ASSET_ID>, messages: [{role, content}], stream: false, async: false, params: {role: <the chosen model name>},
+  session_id: <run id> (when the call's metadata carries it), trace_id: <uuid4 per call>, max_tokens, temperature, **agent_extra}`
+  — `payload_extra` (`need_origin`) is legacy-only; **no `thread_id` until its semantics are confirmed** (the case-thread increment
+  will send it). The model choice stays the loop's: `LLM_MODEL=build_error_fixer` for the fix asks 1–2 and the structure review,
+  `LLM_ESCALATION_MODEL=escalation_fixer` from the 3rd ask / after a stall — those names are what goes into `params.role`. The
+  reply text (`_REPLY_PATHS` / `LLM_RESPONSE_PATH`), `usage.prompt_tokens` / `completion_tokens` and `choices[0].finish_reason`
+  are read as today; the response's `model` (the gateway's real model name, e.g. `gpt-5.5`) is what the cost table prices.
+* `llm.token_url` (`LLM_TOKEN_URL`): when set, `TokenManager` POSTs it with `Authorization: Bearer <app token>` (`LLM_APP_TOKEN`,
+  else `LLM_API_KEY` is the app token — `llm.app_token_env`), keeps `access_token` + `expires_in` in memory (thread-safe), and
+  refreshes it **before** an LLM call when less than `llm.token_refresh_margin_s` (300 s) is left or it has expired; a 401 from
+  the LLM call invalidates the token and the call is retried once with a fresh one (one extra attempt beyond `max_retries`).
+  Neither token ever appears in a log, a repr or a record (`LLM_RECORD_DIR` records payloads, never headers). A failed exchange
+  is an `LLMError` (HTTP status / not JSON / no `access_token`).
+* `sbmig llm-probe` prints `gateway= asset_id= token_url= app_token_env= escalation_model=`, performs the token exchange as a
+  step of its own (`token exchange: ok (expires_in 3600s, refreshed 300s before expiry)` or `TOKEN ERROR: …` with a hint), then
+  the usual request / response dump (the payload shows the asset id and `params.role`; no token).
+* Config / env: `llm.gateway`, `llm.asset_id`, `llm.token_url`, `llm.app_token_env`, `llm.token_refresh_margin_s`, `llm.agent_extra`;
+  `.env.example` documents `LLM_GATEWAY`, `LLM_ASSET_ID`, `LLM_TOKEN_URL`, `LLM_APP_TOKEN` and the two role names.
+
+### As built
+
+`sbmig/fix/company.py`: `TokenManager` (`token()`, `refresh()`, `invalidate()`, `valid()`, `expires_in`, `refreshes`; lock;
+`clock` injectable), `CompanyClient(gateway=, asset_id=, token_manager=, agent_extra=)`, `headers()` takes the exchanged token
+when a manager exists, `payload(messages, model, *, max_tokens, temperature, metadata)` builds the agent shape, `_label`,
+the 401 branch in `_complete`, the probe's token step (`ProbeResult.token`). `sbmig/fix/client.py make_llm_client`: validates
+`gateway`, requires `LLM_ASSET_ID` in agent mode, builds the `TokenManager` when `token_url` is set. Tests
+(`tests/fix/test_company_client.py`): fetch once / cached / refresh inside the margin, exchange failures, the agent payload +
+Bearer, the 401 retry (once, not twice), legacy mode unchanged, the factory from the environment.

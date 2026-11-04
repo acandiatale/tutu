@@ -158,7 +158,9 @@ default); without it the CLI stops with `config error … artifacts: Field requi
 | escalation | `llm.escalation_model` (`LLM_ESCALATION_MODEL`, empty = `LLM_MODEL`) | optional stronger model | a cluster that stalled `loop.stall_limit` rounds (round 9: from `.env`) |
 
 `config/llm-anthropic.yml` is a ready profile for the Anthropic API (key only via `LLM_API_KEY`; never in files).
-LLM calls are recorded when `LLM_RECORD_DIR` is set (e.g. `out/llm-records`, in `.env.example`). Every `sbmig run` writes
+The in-house GPT agent gateway (v2.1z-m) is `LLM_GATEWAY=agent` + `LLM_ASSET_ID` (+ `LLM_TOKEN_URL`, `LLM_APP_TOKEN` for the
+token exchange; `LLM_MODEL=build_error_fixer`, `LLM_ESCALATION_MODEL=escalation_fixer` are the `params.role` names) — check it
+with `sbmig llm-probe` (`token exchange: ok (expires_in …)` then the request / response). LLM calls are recorded when `LLM_RECORD_DIR` is set (e.g. `out/llm-records`, in `.env.example`). Every `sbmig run` writes
 `<run dir>/sbmig.log` (DEBUG: decisions, builds, LLM calls — never keys); `--log-file PATH` adds one for any
 command; `llm.record_dir` keeps each request/response as `llm-NNNN.json`. When the company operator asks for help
 (Windows PC without copy-paste), ask for specific retyped lines, not files: the `SBMIG-RESULT …` line, a

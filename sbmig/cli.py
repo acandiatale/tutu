@@ -516,10 +516,17 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
 
     typer.echo(f"provider={llm.provider} model={llm.model} url={llm.base_url} key_env={llm.api_key_env}"
                f" payload_extra={llm.payload_extra} response_path={llm.response_path or '(auto)'}")
+    gw = str(getattr(llm, "gateway", "legacy") or "legacy")
+    if gw != "legacy" or getattr(llm, "token_url", None):            # v2.1z-m: the agent gateway / token exchange
+        typer.echo(f"gateway={gw} asset_id={getattr(llm, 'asset_id', None) or '(unset)'} "
+                   f"token_url={getattr(llm, 'token_url', None) or '(none: static key)'} "
+                   f"app_token_env={getattr(llm, 'app_token_env', '')} escalation_model={llm.escalation_model or '(unset)'}")
     # the same single call the fleet preflight makes (round 10); the verbose part below is only printed here
     res = probe_llm(cfg, prompt, no_system=no_system,
                     on_request=lambda payload: typer.echo("request payload: "
                                                           + json.dumps(payload, ensure_ascii=False)[:1500]))
+    if getattr(res, "token", ""):
+        typer.echo(f"token exchange: {res.token}")
     if res.response is not None:
         _echo_wire(res.response, llm.timeout_seconds)
         typer.echo(f"HTTP {res.status}")
@@ -533,7 +540,7 @@ def llm_probe(config: Optional[List[Path]] = ConfigOpt,
         else:
             typer.echo(f"reply ({res.client_name}): {res.reply[:500]!r}")
     else:
-        label = {"config": "CONFIG ERROR", "transport": "TRANSPORT ERROR"}.get(res.kind, "PROBLEM")
+        label = {"config": "CONFIG ERROR", "transport": "TRANSPORT ERROR", "token": "TOKEN ERROR"}.get(res.kind, "PROBLEM")
         typer.echo(f"{label}: {res.problem}")
         for h in res.hints:
             typer.echo(f"hint: {h}")

@@ -249,6 +249,17 @@ llm:
     need_origin: true
   response_path: "${LLM_RESPONSE_PATH:-}"   # empty = auto-detect the reply text
   record_dir: "${LLM_RECORD_DIR:-}"   # e.g. out/llm-records in .env: every request/response as llm-NNNN.json (no secrets)
+  gateway: "${LLM_GATEWAY:-legacy}"   # v2.1z-m: legacy = {model, messages, **payload_extra}; agent = the in-house GPT agent gateway:
+                                      # {model: <LLM_ASSET_ID>, messages, stream: false, async: false, params: {role: <LLM_MODEL or
+                                      # LLM_ESCALATION_MODEL — the gateway maps build_error_fixer / escalation_fixer to its models>},
+                                      # session_id (run), trace_id (call), max_tokens, temperature} (+ agent_extra; payload_extra is
+                                      # legacy-only); the reply / usage / finish_reason paths are the same
+  asset_id: "${LLM_ASSET_ID:-}"
+  token_url: "${LLM_TOKEN_URL:-}"     # set → the Bearer token is exchanged first: POST <token_url> with `Authorization: Bearer <app
+                                      # token = LLM_APP_TOKEN, else LLM_API_KEY>` → {access_token, token_type, expires_in}; the token is
+                                      # refreshed token_refresh_margin_s before it expires, or after a 401 (one retry)
+  token_refresh_margin_s: 300
+  agent_extra: {}
   # role models (round 9): LLM_MODEL = the fix model (code patches, build-fix loop); LLM_ESCALATION_MODEL = used
   # for a cluster after `loop.stall_limit` failed rounds (empty = same as LLM_MODEL); LLM_RECIPE_MODEL = the cheaper
   # model for plan advice + KB recipe candidates (empty = same as LLM_MODEL)

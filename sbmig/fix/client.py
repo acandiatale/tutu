@@ -715,9 +715,27 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                 raise LLMConfigError("LLM_BASE_URL is not set (.env or environment: the full gateway URL)")
             if _unexpanded(llm.model):
                 raise LLMConfigError("LLM_MODEL is not set (.env or environment)")
+            from .company import TokenManager
+
+            gateway = (str(getattr(llm, "gateway", "legacy") or "legacy")).strip().lower()
+            if gateway not in ("legacy", "agent"):
+                raise LLMConfigError(f"llm.gateway must be legacy or agent, not {gateway!r} (LLM_GATEWAY)")
+            asset_id = None if _unexpanded(str(getattr(llm, "asset_id", "") or "")) else str(llm.asset_id).strip()
+            if gateway == "agent" and not asset_id:
+                raise LLMConfigError("LLM_ASSET_ID is not set (.env or environment): llm.gateway=agent sends the gateway asset "
+                                     "id as the top-level `model`")
+            tokens = None
+            token_url = str(getattr(llm, "token_url", "") or "")
+            if not _unexpanded(token_url) and token_url.strip():
+                app_env = str(getattr(llm, "app_token_env", "") or "")
+                app_token = (os.environ.get(app_env, "") if app_env else "") or key
+                tokens = TokenManager(token_url, app_token, timeout=min(30.0, float(llm.timeout_seconds)),
+                                      margin_s=float(getattr(llm, "token_refresh_margin_s", 300) or 300))
             client = CompanyClient(llm.base_url, key, llm.model, payload_extra=llm.payload_extra,
                                    response_path=llm.response_path or None, timeout=float(llm.timeout_seconds),
-                                   max_retries=llm.max_retries, extra_headers=llm.extra_headers)
+                                   max_retries=llm.max_retries, extra_headers=llm.extra_headers, gateway=gateway,
+                                   asset_id=asset_id, token_manager=tokens,
+                                   agent_extra=dict(getattr(llm, "agent_extra", None) or {}))
         else:  # pragma: no cover - non-builtin providers are routed to sbmig.llm above
             raise LLMConfigError(f"unknown llm.provider: {llm.provider}")
     if llm.record_dir:

@@ -248,6 +248,11 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   read by `load_config`, shell variables win) — no yml profile, no LangChain, no httpx knobs (the user asked for
   this after 503s on the gateway; keep it this simple). `sbmig llm-probe` (and `--bare`) prints the exact request,
   proxies and response. `config/llm-anthropic.yml` remains for Anthropic validation runs. Keys never go into yml.
+  **v2.1z-m (2026-11-04)**: the company's GPT agent gateway is `llm.gateway: agent` (`LLM_GATEWAY`): the payload is
+  `{model: <LLM_ASSET_ID>, messages, stream: false, async: false, params: {role: <LLM_MODEL / LLM_ESCALATION_MODEL>},
+  session_id, trace_id, max_tokens, temperature}` — the role names (`build_error_fixer`, `escalation_fixer`) are what the
+  gateway maps to its models (gpt-5.5 / gpt-5.6-sol); `LLM_TOKEN_URL` + `LLM_APP_TOKEN` (else `LLM_API_KEY`) drive the
+  token exchange (`TokenManager`: refreshed 5 min before expiry, once more after a 401). No `thread_id` until confirmed.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems;
   on the company's Windows PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: FAIL`, `cause=`).
