@@ -501,3 +501,14 @@ def test_the_session_id_the_gateway_returns_is_kept_not_sent():
     assert post.calls[2]["json"]["session_id"] == "sess-7" and "thread_id" not in post.calls[2]["json"]
     nested = FakeResponse(200, {"data": {"session_id": "sess-8", "choices": [{"message": {"content": "x"}}]}})
     assert CompanyClient._session_of(nested.json()) == "sess-8" and CompanyClient._session_of({"choices": []}) is None
+
+
+def test_the_asset_id_placeholder_in_the_url_is_filled_once():
+    from sbmig.fix.client import agent_url
+
+    assert agent_url("https://gw/api/serv/v1/agents/{asset_id}/chat/completions", "a-9") == \
+        "https://gw/api/serv/v1/agents/a-9/chat/completions"
+    assert agent_url("https://gw/agents/${LLM_ASSET_ID}/chat", "a-9") == "https://gw/agents/a-9/chat"
+    assert agent_url("https://gw/plain", None) == "https://gw/plain"
+    with pytest.raises(LLMConfigError):
+        agent_url("https://gw/agents/{asset_id}/chat", None)

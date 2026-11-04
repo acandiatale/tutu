@@ -3790,3 +3790,9 @@ measurement in `_call`), `sbmig/fix/context.py` (`PackedContext.keys`), `sbmig/c
 `sbmig/loop/fixloop.py` (the base attempt's session on the `ScriptBase`), `sbmig/core/config.py` / `config/default.yml`
 (`llm.case_thread`, `llm.thread_fallback_full`). Tests `tests/fix/test_fix_thread.py`: first ask / augment delta / context round
 in the session / fallback on 4xx (and off) / mode off.
+
+## v2.1z-q — the asset id in the gateway URL (2026-11-04)
+
+The agent gateway's chat URL carries the asset id in its path (`https://<host>/api/serv/v1/agents/<asset id>/chat/completions`).
+`LLM_BASE_URL` is still used verbatim, but a `{asset_id}` (or `${LLM_ASSET_ID}`) placeholder in it is filled from `LLM_ASSET_ID`
+(`sbmig.fix.client.agent_url`), so the id lives in one place; a placeholder without `LLM_ASSET_ID` is an `LLMConfigError`.

@@ -655,6 +655,19 @@ class ReplayResponder:
 # ---------------------------------------------------------------------------
 # factory
 # ---------------------------------------------------------------------------
+def agent_url(base_url: str, asset_id: Optional[str]) -> str:
+    """v2.1z-q: ``LLM_BASE_URL`` 안의 ``{asset_id}`` / ``${LLM_ASSET_ID}`` 자리표시를 에셋 id 로 채운다(에이전트 게이트웨이의
+    경로 ``…/agents/<asset id>/chat/completions``). 자리표시가 없으면 그대로; 자리표시가 있는데 id 가 없으면 LLMConfigError.
+
+    Fill a `{asset_id}` / `${LLM_ASSET_ID}` placeholder in the gateway URL from the asset id; verbatim without one."""
+    url = base_url or ""
+    if "{asset_id}" in url or "${LLM_ASSET_ID}" in url:
+        if not asset_id:
+            raise LLMConfigError("LLM_BASE_URL names {asset_id} but LLM_ASSET_ID is not set")
+        url = url.replace("{asset_id}", asset_id).replace("${LLM_ASSET_ID}", asset_id)
+    return url
+
+
 def _unexpanded(v: Optional[str]) -> bool:
     return not v or "${" in v
 
@@ -732,7 +745,10 @@ def make_llm_client(cfg: Config, *, ws: Any = None, transport: Optional[httpx.Ba
                 app_token = (os.environ.get(app_env, "") if app_env else "") or key
                 tokens = TokenManager(token_url, app_token, timeout=min(30.0, float(llm.timeout_seconds)),
                                       margin_s=float(getattr(llm, "token_refresh_margin_s", 300) or 300))
-            client = CompanyClient(llm.base_url, key, llm.model, payload_extra=llm.payload_extra,
+            # v2.1z-q: the agent gateway's URL carries the asset id in its path (…/agents/<asset id>/chat/completions) — a
+            # `{asset_id}` (or `${LLM_ASSET_ID}`) placeholder in LLM_BASE_URL is filled from LLM_ASSET_ID, so the id lives once
+            url = agent_url(llm.base_url, asset_id)
+            client = CompanyClient(url, key, llm.model, payload_extra=llm.payload_extra,
                                    response_path=llm.response_path or None, timeout=float(llm.timeout_seconds),
                                    max_retries=llm.max_retries, extra_headers=llm.extra_headers, gateway=gateway,
                                    asset_id=asset_id, token_manager=tokens,
