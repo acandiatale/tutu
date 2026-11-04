@@ -4719,6 +4719,7 @@ class Restructurer(LegacyContextMixin):
         unpinned: list[tuple[str, str, str]] = []
         managed_of: dict[str, dict[str, str]] = {}
         dropped_refs: list[tuple[str, str]] = []      # v2.1o: (pom, property) a dropped explicit version referenced
+        props_of: dict[str, dict[str, str]] = {}       # v2.1z-l: per pom, for the dependencyManagement pass
         recipe_dropped: list[str] = []                # v2.1o: newer than managed, but only because a recipe raised it
         asis = self._asis_capture(c) if mode == "gte" else None
         for p, ed in eds.items():
@@ -4742,6 +4743,7 @@ class Restructurer(LegacyContextMixin):
                     except PomEditError:
                         continue
                 props.update(q_ed.properties())
+            props_of[p] = props
             for el in ed.dependency_elements(False):
                 g = ed.gav_of(el)
                 if not g.version or g.key in protected or g.key in own or (g.scope or "") == "system":
@@ -4784,6 +4786,18 @@ class Restructurer(LegacyContextMixin):
                 else:
                     dropped.append(f"{g.key}: {explicit} → managed {m} ({p})")
                     dropped_refs += [(p, name) for name in re.findall(r"\$\{([^}]+)\}", g.version)]
+        # v2.1z-l (현업 2026-11-04): as-is <dependencyManagement> 항목은 import 한 Boot BOM 보다 우선한다(Maven: 자기 항목이
+        # 이긴다) — 역할 부모 모듈이 루트에서 물려받은 `spring-security-*:${org.springSecurity-version}`(4.2.7) 가 BOM 의 7.x 를
+        # 덮어 Spring 4 와 7 이 섞였다. 체인 / 이 pom 이 import 한 BOM 이 같은 g:a 를 같거나 더 새 줄로 관리하면 그 항목을 지운다
+        # (gte 와 같은 규칙; BOM import 자체, 자기 모듈, 보호 좌표, system 은 그대로).
+        if mode != "off":
+            dropped_mgmt = self._drop_managed_management_entries(c, eds, props_of, protected, own, dropped_refs)
+            if dropped_mgmt:
+                c.result.managed_versions_dropped.extend(d for d in dropped_mgmt
+                                                         if d not in c.result.managed_versions_dropped)
+                c.note(f"{len(dropped_mgmt)} as-is dependencyManagement entr(ies) removed: the parent chain / the imported Boot "
+                       f"BOM manages them at an equal or newer line and an own entry would win over the BOM: "
+                       f"{', '.join(d.split(': ')[0] for d in dropped_mgmt[:5])}{' …' if len(dropped_mgmt) > 5 else ''}")
         # v2.1o: 지운 명시 버전만 쓰던 버전 속성(spring.version=5.3.31 …)은 이제 아무도 안 쓴다 → 함께 지운다
         self._drop_dead_version_properties(c, eds, dropped_refs)
         for ed in eds.values():
@@ -5041,6 +5055,56 @@ class Restructurer(LegacyContextMixin):
         """``_drop_bom_property_overrides`` 가 맡을 속성 이름 전부(부모 체인의 것 + ``parent_property_names``)."""
         bom_names, parent_names = self._override_name_sets(c)
         return bom_names | parent_names
+
+    def _drop_managed_management_entries(self, c: _Ctx, eds: dict[str, PomEditor], props_of: dict[str, dict[str, str]],
+                                         protected: set[str], own: set[str],
+                                         dropped_refs: list[tuple[str, str]]) -> list[str]:
+        """v2.1z-l: 프로젝트 pom 의 ``<dependencyManagement>`` 항목 중 새 부모 체인(Boot 에 닿으면 전체, 아니면 체인 자신의
+        관리분 + 이 pom 이 import 한 Boot BOM)이 같은 g:a 를 **같거나 더 새 버전**으로 관리하는 것을 지운다 — 자기 항목이 BOM 을
+        이기므로 남기면 as-is 버전(Security 4.2.7)이 체인의 7.x 를 덮는다. BOM import(scope import / type pom), 자기 모듈,
+        보호 좌표, system, 못 푸는 ``${…}``, 관리 버전보다 새 것은 그대로. 지운 항목이 참조한 속성은 ``dropped_refs`` 에.
+        "g:a: <버전> → managed <m> (<pom>, dependencyManagement)" 목록. 예외 없음(사실을 못 읽으면 []).
+
+        Remove the project poms' own `<dependencyManagement>` entries whose g:a the new chain (or the Boot BOM this
+        pom imports) manages at an equal or newer version — an own entry wins over an imported BOM, so an as-is
+        `spring-security-*:4.2.7` would shadow the chain's 7.x. BOM imports, own modules, protected keys, system
+        scope, unresolvable `${…}` and newer-than-managed entries stay. Never raises."""
+        out: list[str] = []
+        try:
+            chain = self._chain_facts(c)
+            if chain is None or getattr(chain, "empty", True):
+                return out
+            manages_boot = self._manages_boot(c)
+            base: dict[str, str] = dict(chain.managed if manages_boot else chain.own_managed)
+            importers = self._bom_importers(c) if not manages_boot else set()
+            boot = self._boot_bom_facts(c) if importers else None
+            boot_managed: dict[str, str] = dict(getattr(boot, "managed", None) or {}) if boot is not None else {}
+            for p, ed in eds.items():
+                facts_m = {**(boot_managed if p in importers else {}), **base}
+                if not facts_m:
+                    continue
+                props = props_of.get(p, {})
+                for el in list(ed.dependency_elements(True)):
+                    g = ed.gav_of(el)
+                    if (g.scope or "") in ("import", "system") or (g.type or "jar") == "pom":
+                        continue
+                    if not g.version or not g.key or g.key in protected or g.key in own:
+                        continue
+                    m = facts_m.get(g.key)
+                    if not m:
+                        continue
+                    explicit = self._resolve_version(ed, g.version, props)
+                    if explicit is None:
+                        continue
+                    cmp = compare_versions(m, explicit)
+                    if cmp is None or cmp < 0:
+                        continue                      # unknown / newer than managed: the owners' pin stays
+                    ed.remove_managed_dependency(g.group_id, g.artifact_id)
+                    out.append(f"{g.key}: {explicit} → managed {m} ({p}, dependencyManagement)")
+                    dropped_refs += [(p, name) for name in re.findall(r"\$\{([^}]+)\}", g.version)]
+        except Exception as e:  # noqa: BLE001 - a cleanup never fails the restructure
+            log.warning("dependencyManagement cleanup skipped: %s: %s", type(e).__name__, e)
+        return out
 
     def _drop_dead_version_properties(self, c: _Ctx, eds: dict[str, PomEditor],
                                       refs: list[tuple[str, str]]) -> None:

@@ -31,7 +31,11 @@ collected, you check the build structure, and **when something is wrong you fix 
    declared"). The facts read from the parent chain's poms list `parent chain property:` (names the company chain
    defines), `explicit version on a managed artifact:` (a warning), `Spring Boot artifact on another line:` and
    `property shadows the parent chain:` — these two are **critical**: remove the `<version>` / the property; where
-   nothing manages the artifact, write `${<parent chain property>}`. A container API (servlet / JSP / EL / websocket)
+   nothing manages the artifact, write `${<parent chain property>}`. The same is critical for every Spring family
+   (Framework `org.springframework`, Security, Data, Batch, Integration, Cloud): the parent chain and the Boot BOM
+   decide their line; a project pom that pins one of them to another line — in `<dependencies>` OR in its own
+   `<dependencyManagement>` (an own entry wins over an imported BOM) — gets the version / the entry removed and the
+   as-is property (`org.springSecurity-version`, `org.springframework-version`, …) deleted once nothing references it. A container API (servlet / JSP / EL / websocket)
    declared `compile` is a warning (it belongs to `provided`).
 6. Build settings: Java level of the target (maven.compiler.release / source / target, or the parent), leftovers that
    only made sense in the old build. Binary files under a filtered `<resource>` (listed in the facts) are rewritten by

@@ -3638,3 +3638,35 @@ reuses it without an LLM call.
 * `sbmig/loop/fixloop.py`: `_with_eol_advisory(suggestion, artifact)`; `sbmig/advisory/evaluate.py`: bundled jars join `gavs`;
   `knowledge/libraries/advisories.yml` spring-mobile → `notes: knowledge/notes/spring-mobile.md`; `knowledge/notes/spring-mobile.md`.
   Tests: `test_the_blocked_suggestion_names_the_eol_advisory`, `test_a_bundled_jar_counts_as_the_library_too`.
+
+## v2.1z-l — as-is dependencyManagement entries that shadow the chain / the imported Boot BOM (2026-11-04)
+
+**Why (company re-run, `attn=… parent-chain-no-boot-bom`).** The user's facts: all in `xxx-back/pom.xml` — `java-version=1.8`,
+`org.springSecurity-version=4.2.7.RELEASE`, `<version>${org.springSecurity-version}</version>` on ~4 Spring Security entries and
+`${org.springframework-version}` on others — while the company parent manages the lines through `spring-boot.version` /
+`spring-framework.version`. Mechanism: with role parents a module does not inherit the root pom, so `_role_module` copies the
+as-is root's `<dependencyManagement>` into every module pom (`_inherit_root_content`) and, because the company chain carries no
+Boot BOM, `_boot_bom` imports `spring-boot-dependencies` into the same poms. Maven lets a pom's OWN management entry win over an
+imported BOM — so the as-is `spring-security-*:4.2.7.RELEASE` shadowed the BOM's 7.x, and the v2.1l/o version cleanup only ever
+looked at `<dependencies>` (`dependency_elements(False)`), never at management entries. The properties survived because those
+entries still referenced them (not orphans — the v2.1z-k rule was right to leave them).
+
+**Decisions.** The same gte rule for management entries: a project pom's own `<dependencyManagement>` entry whose g:a the new
+chain (the chain's full managed set when it reaches the Boot BOM, else its own entries + the Boot BOM this pom imports) manages
+at an **equal or newer** version is removed (`_drop_managed_management_entries`, called by `_drop_managed_versions` unless
+`layout.drop_managed_versions: off`); BOM imports (scope import / type pom), own modules, protected coordinates, system scope,
+unresolvable `${…}` and entries NEWER than the managed version stay; the properties the removed entries referenced go through the
+existing dead-property step (`dropped_refs`), the rest through the v2.1z-k orphan rule. Recorded in `managed_versions_dropped`
+as `g:a: <v> → managed <m> (<pom>, dependencyManagement)` + note `N as-is dependencyManagement entr(ies) removed: …`. The
+structure review (second net, the user's ask "spring 관련은 parent 기준이 맞으니 수정해"): the Company rules block states that
+the Spring Framework / Security / Data / Batch / Cloud lines are decided by the parent chain (its family property NAMES, never
+values — no version literal in a rule) and the Boot BOM, and that a project pin on another line — in `<dependencies>` or its own
+`<dependencyManagement>` — is critical; prompt rule 5 says the same.
+
+### As built
+
+* `sbmig/restructure/restructurer.py`: `_drop_managed_management_entries(c, eds, props_of, protected, own, dropped_refs)`;
+  `_drop_managed_versions` keeps `props_of` per pom and calls it before `_drop_dead_version_properties`.
+* `sbmig/review/inputs.py boot_version_lines`: the Spring-family line; `sbmig/review/prompts/review_v1.md` rule 5 extended.
+* Tests: `tests/restructure/test_v21zl_depmgmt.py` (the entry removed in both role-parent copies, the newer own pin and the BOM
+  import kept, the referenced property dead → gone, `java-version` orphan → gone, the switch off keeps everything).

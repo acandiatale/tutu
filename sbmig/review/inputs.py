@@ -561,6 +561,17 @@ def boot_version_lines(cfg: Any, results: Iterable[Any], facts: Any = None) -> l
                   else "a `spring-boot-dependencies` import in the poms (see the restructure's BOM imports)")
     java_v = ("managed by the parent chain" if a.parent_manages_java_version
               else f"maven.compiler.release {cfg.target.java_version} in the poms")
+    # v2.1z-l (company re-run 2026-11-04, the user: "spring 관련은 parent 기준이 맞으니 수정해"): the Spring families'
+    # lines come from the chain + the Boot BOM; a project pin on another line is critical, also in dependencyManagement
+    fam_props = {k: v for k, v in (getattr(facts, "properties", None) or {}).items()
+                 if k.lower().startswith(("spring", "springframework", "spring-boot", "spring-security"))}
+    shown = ", ".join(f"`{k}`" for k in sorted(fam_props)[:6]) if fam_props else ""   # names only: no version literal
+    L.append("- Spring Framework / Security / Data / Batch / Cloud lines: decided by the parent chain"
+             + (f" ({shown})" if shown else "") + (" and the Boot BOM import above" if boot_import else
+                                                   " and the Boot BOM it reaches" if eff is True else "")
+             + " — a project pom that pins one of these artifacts to another line, in `<dependencies>` or in its own "
+             "`<dependencyManagement>` (an own entry wins over an imported BOM), is critical: remove the version / the "
+             "entry and the as-is property once nothing references it")
     return [f"- Spring Boot versions: {boot_v}; Java level: {java_v}"] + L
 
 

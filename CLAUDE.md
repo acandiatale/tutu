@@ -86,7 +86,10 @@ later); record operator-visible changes (CLI, config keys, report sections, log 
   references (`java-version=1.8`, `org.springSecurity-version=4.2.7.RELEASE` — spellings the name rules miss) is removed by
   value (`orphan_version_properties`, only with chain facts); a blocked javax item names its EOL advisory + replacement, and
   a library that arrived as a bundled jar matches advisories too (spring-mobile: `knowledge/notes/spring-mobile.md` tells the
-  LLM to write the compat replacement — never a bytecode transform). The LLM is told
+  LLM to write the compat replacement — never a bytecode transform). **v2.1z-l:** an as-is `<dependencyManagement>` entry
+  copied into a role-parent module shadows the imported Boot BOM (own entries win) — `spring-security-*:4.2.7` over 7.x —
+  so the version cleanup removes own management entries the chain / imported BOM manages at an equal or newer line, and the
+  review calls a Spring-family pin on another line critical. The LLM is told
   the fact ("the project bundles `<jar>` which provides package `<p>`") and a coordinates / missing-library decline while a
   bundled jar provides the package is rejected (the company run had ended BLOCKED `needs_owner`). Fixture `webapp-bundled-jar`.
 - MSA: same parent / mandatory / optional per service, directory structure untouched (pom-only mode).
