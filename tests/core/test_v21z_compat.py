@@ -38,3 +38,10 @@ def test_removed_and_changed_keys_are_logged(caplog):
     # a yml that sets both caps, or neither, says nothing
     assert _warn_removed_keys({"script": {"max_augments_per_case": 15, "max_llm_tries_per_case": 20}}) == []
     assert _warn_removed_keys({}) == []
+
+
+def test_v1_pom_repositories_key_is_named():
+    # the company yml still carries the v1 X9 key: it is ignored, the warning points at the settings.xml mirror
+    lines = _warn_removed_keys({"build": {"pom_repositories": "keep"}})
+    assert len(lines) == 1 and lines[0].startswith("config: build.pom_repositories='keep' is ignored since v2")
+    assert "mirrorOf external:*" in lines[0] and "RUNBOOK" in lines[0]

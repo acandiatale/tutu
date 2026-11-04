@@ -21,9 +21,11 @@ resolution failure or a connect timeout. Two levers, both config (invariant 2):
   `http://` blocker ("Blocked mirror for repositories") is overridden for them. sbmig passes `-s` to every Maven
   call (builds, OpenRewrite, effective pom, BOM fetch). The analysis notes which URLs the poms declare; when no
   catch-all mirror is configured the note becomes a follow-up in the report.
-* **Strip them**: `build.pom_repositories: remove` — the pre-emptive handler `strip-pom-repositories` deletes the
-  blocks from every pom before the first build (profiles included, comments kept), so the migrated poms no longer
-  carry dead URLs. It needs the mirror above: without it the removed URLs may have been the only route.
+* **`build.pom_repositories` is gone** (v1 X9 key, `keep | remove`): the `remove` handler that deleted the `<repositories>`
+  blocks went with the v1 handlers in v2 step 4. A company yml that still sets it gets a `config: build.pom_repositories=…
+  is ignored since v2` warning at start-up and nothing else changes — the mirror above is the whole answer (every
+  pom-declared repository is rewritten to the group, so dead URLs in the poms are harmless). The pom URLs are still read:
+  the repository SET of the jakarta lookup (`sbmig repo-probe`) lists them unless the mirror covers them.
 
 If a build then says an artifact "was cached from a remote repository ID that is unavailable in current build
 context", the local repository remembers the old repository id (`_remote.repositories`): add `-llr` to

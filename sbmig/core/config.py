@@ -1119,6 +1119,13 @@ def _warn_removed_keys(data: dict) -> list[str]:
         if key in fix:
             out.append(f"config: fix.{key}={fix[key]!r} is ignored since v2.1z (the edits mode is gone; the fix is always the "
                        "script ladder) — remove it from the yml")
+    # v1 의 X9 키: `remove` 는 pom 의 <repositories> 를 지우는 핸들러를 돌렸다. v2 에서 핸들러와 함께 사라졌고 폐쇄망의 답은
+    # settings.xml 의 catch-all 미러(mirrorOf external:*)다 — 회사 yml 에 남아 있으면 조용히 무시되니 말해 준다.
+    build = data.get("build") if isinstance(data.get("build"), dict) else {}
+    if "pom_repositories" in build:
+        out.append(f"config: build.pom_repositories={build['pom_repositories']!r} is ignored since v2 (the strip handler went with "
+                   "the v1 handlers; pom-declared repositories are covered by the settings.xml mirror `mirrorOf external:*`, see "
+                   "docs/RUNBOOK.md §0.1) — remove it from the yml")
     script = data.get("script") if isinstance(data.get("script"), dict) else {}
     if "max_augments_per_case" in script and "max_llm_tries_per_case" not in script:
         out.append(f"config: script.max_augments_per_case={script['max_augments_per_case']!r} counts augment steps only since "
