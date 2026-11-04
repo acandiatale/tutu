@@ -3815,3 +3815,25 @@ Dry runs skip the hooks. Company-specific content (kubectl, pod names, namespace
 (`deploy/k8s/72-split-builder-pod.template.yaml`, `envsubst` on `${SBMIG_RUN_ID}`); `mvn-k8s` with `SBMIG_BUILDER_PER_RUN=1`
 derives the pod name `sbmig-builder-<run id>` from the cwd `/data/out/<run id>/…`. `deploy/docker/Dockerfile.agent` is the
 split layout's agent image (Python + git + kubectl + envsubst, no JDK). Tests `tests/loop/test_build_hooks.py`.
+
+## v2.1z-t — the infra team's "one build Job per request" model (guide of 2026-11-05)
+
+**The model.** The Agent (any pod / host with `kubectl` and a kubeconfig at `/etc/kube/config`) creates one Kubernetes **Job**
+per migration request from a template (`generateName` → `kubectl create`, not apply); the Job's pod does the WHOLE run
+("소스 처리, 빌드, 분석, 결과 저장 및 저장소 커밋") on an **emptyDir** `/workspace` and exits; the build pod gets no kubeconfig.
+sbmig fits it as the pod's program: `deploy/docker/run-job.sh` (in the single image) = source in (git clone / zip URL /
+mounted `/workspace/in`) → KB in (`SBMIG_KB_GIT_URL` cloned to `/workspace/kb`) → `sbmig run … --config <company yml(s)>
+--config <paths yml: kb.dir, llm.record_dir> --out /workspace/out` → results out (the run dir's `project/` git repo pushed to
+the source repository as `sbmig/<run id>`; `report.md` / `errors.md` / `sbmig.log` / `journal.jsonl` / `logs/` to
+`SBMIG_RESULT_GIT_URL` branch `<run id>`, or `RESULT_PUSH_CMD`; the KB committed and pushed back) → exit (0 when a report
+exists — sbmig exit 0 or 2, the report is the result; 3 = sbmig aborted; 4 = results could not leave the pod;
+`SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` → exit 2 on a failed build). Secrets (GIT_TOKEN, LLM_*) stay in the environment and in-memory
+URLs. Files: `deploy/k8s/80-build-job.template.yaml` (their CHANGE_ME points + sbmig's env), `deploy/k8s/submit-job.sh`
+(can-i → `--dry-run=server` → create → `logs -f` → result line), `deploy/README.md` §6 (mapping table, the three decisions).
+
+**Three things the guide does not cover and sbmig needs.** (1) The file KB must outlive the pod — a git repository (pulled /
+pushed per run; runs sequential) or a PVC. (2) `~/.m2` on an emptyDir downloads Boot 4 / OpenRewrite / plugins from Nexus on
+every Job — a PVC or a warmed image layer. (3) The Agent role in the guide (submit a Job, watch, collect) is not what `sbmig
+serve` does today (it migrates in-process); the CLI model (`submit-job.sh` per project) works now, a "Job dispatch mode" of the
+web UI is a possible later increment. sbmig itself calls no Kubernetes API in this model (the hooks of v2.1z-s are for the
+other layout and stay unset here).

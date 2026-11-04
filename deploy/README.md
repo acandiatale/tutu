@@ -13,6 +13,7 @@
 | `k8s/30-secret.example.yaml` | `.env` 에 해당하는 비밀값 — LLM 게이트웨이, 앱 토큰, 웹 토큰. **복사해 채우고 커밋하지 않는다**(`30-secret.yaml` 은 git-ignore) |
 | `k8s/40-deployment.yaml`, `k8s/50-service.yaml` | 에이전트 Deployment(replica 1, Recreate) + Service |
 | `k8s/60-job-run.example.yaml` | 웹 UI 없이 zip 하나를 `sbmig run` 으로 돌리는 Job 예시 |
+| `k8s/80-build-job.template.yaml`, `k8s/submit-job.sh`, `docker/run-job.sh` | **인프라 가이드(2026-11-05) 모델**: 요청별 Job 템플릿(generateName, nodeSelector, emptyDir), 에이전트 쪽 제출 스크립트, Job 파드의 진입 스크립트(소스 → KB → sbmig run → push) — §6 |
 | `docker/Dockerfile.agent` | 선택 — 분리 레이아웃의 에이전트 이미지(Python + git + kubectl, JDK 없음) |
 | `k8s/70-split-sidecar.example.yaml`, `k8s/71-split-rbac.yaml`, `k8s/72-split-builder-pod.template.yaml` | 선택 — 분리 레이아웃: 사이드카 빌더, RBAC, 실행마다 생기는 빌더 파드 템플릿 |
 
@@ -116,3 +117,45 @@ build:
   업로드는 zip 본문을 그대로 스트리밍하고 multipart 를 쓰지 않는다.
 * `JAVA_HOME` 은 Debian 의 고정 경로 `/usr/lib/jvm/java-21-openjdk-amd64` 로(심볼릭 링크 계산 불필요). `JAVA21_HOME` 도 같이.
 * `company.yml` 과 `settings.xml` 을 ConfigMap 으로, 비밀값은 Secret 으로 분리했고 프로브 / 리소스 / Recreate / fsGroup 을 더했다.
+
+## 6. 인프라 가이드(2026-11-05) — "요청별 빌드 Job" 모델과 sbmig 맞춤
+
+인프라팀 가이드는 §3 과 다른 모델이다: **요청마다 Job 하나**, 그 파드가 "소스 처리 → 빌드 → 분석 → 결과 저장 → 저장소 커밋" 을
+전부 하고 끝난다. 작업 공간은 `/workspace` emptyDir(파드와 함께 사라짐). sbmig 에 맞추면 이렇게 된다.
+
+| 가이드의 말 | sbmig 에서 |
+|---|---|
+| "빌드 이미지: JDK, 빌드 도구, 분석 도구, git" | **단일 이미지** `docker/Dockerfile`(Python + JDK 21 + Maven + git). `build-runner` 자리에 이 이미지 |
+| "소스 처리·빌드·분석·결과 저장·커밋 뒤 종료" | `docker/run-job.sh`: 소스 clone(또는 zip) → KB clone → `sbmig run` → 결과 push → 종료 코드 |
+| "저장소 커밋" | 실행 디렉터리의 `project/` 는 이미 git 저장소(브랜치 `sbmig/<run id>`) → 소스 저장소에 그 브랜치를 push |
+| "결과 저장" | `report.md` / `errors.md` / `sbmig.log` / `journal.jsonl` 을 결과 저장소(`SBMIG_RESULT_GIT_URL`, 브랜치 = run id)에 push, 또는 `RESULT_PUSH_CMD` |
+| `/workspace` emptyDir | sbmig 의 `--out /workspace/out`; 파드가 죽기 전에 push 되는 것만 남는다 |
+| Agent: `kubectl create -f /templates/build-job.yaml` | `k8s/80-build-job.template.yaml` + `k8s/submit-job.sh`(can-i → dry-run=server → create → logs -f → 결과) |
+| `/etc/kube/config` 는 Agent 에만 | 그대로. 빌드 파드는 API 를 부르지 않는다(sbmig 도 안 부른다) |
+
+**꼭 짚어야 할 세 가지.**
+
+1. **KB 영속성.** sbmig 의 핵심 자산은 파일 KB(`kb-v2/`: 케이스별 수정 스크립트와 성적) 이고 다음 프로젝트가 그걸 재사용해야 한다.
+   emptyDir 에 두면 Job 마다 사라진다. 해법: **KB 를 git 저장소로**(`SBMIG_KB_GIT_URL`) — Job 시작에 clone, 끝에 commit + push.
+   파일 KB 라 그대로 된다. 조건은 **Job 을 한 번에 하나만** 돌리는 것(동시에 두 개가 push 하면 충돌; 어차피 순차 이관이 운영 모델).
+   인프라가 PVC 를 허용하면 `kb` 볼륨을 PVC 로 바꾸는 쪽이 더 단순하다 — 내일 물어볼 것.
+2. **`~/.m2`.** emptyDir 이면 Job 마다 Boot 4 BOM, OpenRewrite 레시피, 플러그인을 Nexus 에서 다시 받는다(수백 MB, 수 분). 해법 둘:
+   `m2` 볼륨을 PVC 로(ReadWriteOnce 면 순차 실행에 충분), 또는 이미지 빌드 때 `~/.m2` 를 미리 채운 레이어(후속).
+3. **Agent 의 역할.** 가이드의 Agent 는 "kubectl 로 Job 을 만들고 로그와 결과를 보는 쪽" 이다. 지금 `sbmig serve` 는 이관을 **자기
+   프로세스 안에서** 돌리고 Job 을 만들지 않는다. 그래서 내일 결정할 것: (A) 당장은 **CLI 모델** — 운영자(또는 간단한 스크립트)가
+   `submit-job.sh` 로 프로젝트마다 Job 을 만들고 결과는 저장소에서 받는다(500개 순차 = 목록을 돌리는 스크립트 한 장); (B) `sbmig serve`
+   에 "Job 디스패치 모드"(업로드 → Job 생성 → 로그 스트리밍 → 결과 회수)를 새 증분으로 만든다(2~3일). A 로 시작해 B 는 필요할 때.
+
+**Job 템플릿에서 바꿀 자리(가이드 2절 그대로).** `namespace`, `nodeSelector` 라벨, `image`, `imagePullSecrets`; 그리고 sbmig 용으로
+`activeDeadlineSeconds`(이관 한 번이 1~3 시간 — 4 시간 권장), `ttlSecondsAfterFinished`(로그 보존), emptyDir `sizeLimit`(프로젝트 +
+빌드 산출물; `~/.m2` 는 별도 10 Gi), 환경 변수 `SBMIG_SOURCE_GIT_URL` / `_REF`(또는 `SBMIG_SOURCE_ZIP_URL`), `SBMIG_KB_GIT_URL`,
+`SBMIG_RESULT_GIT_URL`, Secret `sbmig-llm`(LLM_*), `sbmig-git`(`GIT_TOKEN`, 선택 `GIT_USER`). 토큰은 환경에서만 읽고 URL 에 메모리
+안에서만 붙이며 로그·push 파일에 남지 않는다.
+
+**실행 전 확인(가이드 5절 + sbmig).** config 계정 권한: `jobs` create/get/delete, `pods` get/list, `pods/log` get. 빌드 파드에서
+Nexus(Maven + `build.repository_url`), 소스 저장소(clone + push), KB·결과 저장소(push), LLM 게이트웨이(토큰 URL + 호출 URL) 가 열려
+있어야 한다. `kubectl … create --dry-run=server` 가 nodeSelector 라벨 불일치는 잡지 못한다 — Pending 이면 라벨을 본다.
+
+**종료 코드.** `run-job.sh` 는 보고서가 나왔으면 0(sbmig exit 0 또는 2 — 빌드 실패도 "결과" 다), 결과를 밖으로 못 보냈으면 4,
+sbmig 가 중단(exit 3: preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이면 빌드 실패도 Job 실패로 본다.
+

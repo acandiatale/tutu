@@ -271,7 +271,10 @@ views, audit, quarantine). `SBMIG-RESULT … review=<verdict>` is the line opera
   `/app` on `PYTHONPATH`, never `pip install`ed into site-packages because `config/` / `knowledge/` sit beside `sbmig/`), k8s
   manifests (PVCs, ConfigMap with the company yml using container paths, Secret = `.env`, Deployment with 1 replica),
   and the optional split (`mvn-k8s` through `build.mvn`; a builder sidecar, or one builder pod per run created / deleted by
-  `build.setup_command` / `build.teardown_command` — v2.1z-s). `deploy/README.md` is the operator text (Korean).
+  `build.setup_command` / `build.teardown_command` — v2.1z-s), and the infra team's one-Job-per-request model (v2.1z-t:
+  `deploy/docker/run-job.sh` runs the whole migration in the Job pod on an emptyDir and pushes the project branch, the report
+  and the git-hosted KB out before exiting; `deploy/k8s/80-build-job.template.yaml`, `submit-job.sh`). `deploy/README.md` is the
+  operator text (Korean).
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
   `inline` is the old loop, reports are identical by test); the web UI is FastAPI (`uvicorn sbmig.web.app:app` or
