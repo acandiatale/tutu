@@ -7,13 +7,14 @@
 |---|---|
 | `docker/Dockerfile` | **권장 — 이미지 하나**: Python 3.11 + JDK 21 + Maven + git + 앱 코드. 에이전트가 PC 에서처럼 mvn 을 직접 돌린다 |
 | `docker/pip-deps.py` | 이미지가 설치할 의존성을 `pyproject.toml` 에서 읽는다(목록을 두 곳에 두지 않기 위해) |
-| `docker/Dockerfile.builder`, `docker/mvn-k8s` | 선택 — 분리 레이아웃(§3)의 빌더 이미지와 `kubectl exec` 래퍼 |
+| `docker/Dockerfile.builder`, `docker/mvn-k8s` | 선택 — 분리 레이아웃(§3)의 빌더 이미지와 `kubectl exec` 래퍼(원격 kill 전달, 종료 코드 보존) |
 | `k8s/10-storage.yaml` | PVC 둘: `/data`(업로드·실행·KB·LLM 기록), `~/.m2`(Maven 로컬 저장소) |
 | `k8s/20-configmap.yaml` | 회사 설정 `company.yml`(UI 가 실행마다 고르는 config) + Nexus `settings.xml` |
 | `k8s/30-secret.example.yaml` | `.env` 에 해당하는 비밀값 — LLM 게이트웨이, 앱 토큰, 웹 토큰. **복사해 채우고 커밋하지 않는다**(`30-secret.yaml` 은 git-ignore) |
 | `k8s/40-deployment.yaml`, `k8s/50-service.yaml` | 에이전트 Deployment(replica 1, Recreate) + Service |
 | `k8s/60-job-run.example.yaml` | 웹 UI 없이 zip 하나를 `sbmig run` 으로 돌리는 Job 예시 |
-| `k8s/70-split-sidecar.example.yaml`, `k8s/71-split-rbac.yaml` | 선택 — 분리 레이아웃(사이드카 빌더) 과 그 RBAC |
+| `docker/Dockerfile.agent` | 선택 — 분리 레이아웃의 에이전트 이미지(Python + git + kubectl, JDK 없음) |
+| `k8s/70-split-sidecar.example.yaml`, `k8s/71-split-rbac.yaml`, `k8s/72-split-builder-pod.template.yaml` | 선택 — 분리 레이아웃: 사이드카 빌더, RBAC, 실행마다 생기는 빌더 파드 템플릿 |
 
 ## 1. 이미지 만들기
 
@@ -57,27 +58,47 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token e
   CPU 2~4. 업로드 상한은 `SBMIG_MAX_UPLOAD_MB`(기본 512, 매니페스트는 1024).
 * **프로브**: 인증 없는 health 경로가 없다(토큰 가드가 403 을 낸다) → `tcpSocket` 프로브를 쓴다.
 
-## 3. "공통 이미지 + 에이전트 파드 + 요청마다 생기는 빌드 파드" 안에 대하여
+## 3. 빌드만 파드로 분리하기 — 이상적인 모양
 
-가능하다. 단 비용이 있고, sbmig 의 동작 방식과 맞춰 보면 **이미지 하나가 맞는 기본값**이다.
+팀이 분리로 간다면 기준은 하나다: **mvn 이 다른 컨테이너에서 돌아도 sbmig 는 모르게**. sbmig 은 `build.mvn` 에 적힌 명령을
+모듈 디렉터리를 cwd 로 삼아 `[mvn, 인자…]` 로 부르고, 종료 코드와 출력만 본다. 그래서 분리는 **코드 변경 없이 설정 두 줄과 래퍼
+하나**로 된다.
 
-* sbmig 은 이관 한 번에 mvn 을 **수십 번** 돈다(OpenRewrite, effective-pom 캡처, 첫 빌드, 수정 시도마다 재빌드). mvn 이 다른
-  파드에 있으면 (1) 두 파드가 같은 경로에 같은 볼륨을 마운트해야 하고 — 노드가 다르면 ReadWriteMany(NFS / CephFS) 가 필요하다,
-  (2) 호출마다 `kubectl exec` 왕복, (3) sbmig 의 타임아웃 / 프로세스 트리 kill 이 로컬 `kubectl` 에만 닿아 원격 mvn 이 남을 수 있다,
-  (4) `~/.m2` 가 빌더 쪽에 있어야 매 실행 Nexus 전체 다운로드를 피한다, (5) 파드 생성 / 삭제 / 실패 정리 코드가 에이전트에 들어가야
-  한다(지금 sbmig 에는 없다).
-* 분리의 진짜 이유는 하나다: **임의의 프로젝트 빌드(= 임의의 Maven 플러그인 실행)를 LLM 앱 토큰을 가진 컨테이너에서 돌리지 않는다**는
-  보안 분리. 그게 요구 사항이면 §3-a 사이드카가 비용이 가장 작다.
+| 레이어 | 무엇 | 파일 |
+|---|---|---|
+| 에이전트 이미지 | Python + git + **kubectl + envsubst**, JDK / Maven 없음 | `docker/Dockerfile.agent` |
+| 빌더 이미지 | JDK 21 + Maven + git, Python / 앱 코드 없음, `sleep infinity` | `docker/Dockerfile.builder` |
+| 래퍼 | `build.mvn: /app/deploy/docker/mvn-k8s` — `kubectl exec` 로 같은 cwd 에서 mvn 실행. sbmig 의 타임아웃 / kill(SIGTERM) 을 받아 **원격 mvn 에도 전달**하고(pid 파일을 `/data/.sbmig-mvn/` 에), Maven 의 종료 코드를 그대로 돌려준다 | `docker/mvn-k8s` |
+| 공유 볼륨 | 두 컨테이너가 `/data` 를 **같은 경로**에 마운트. `~/.m2` 는 빌더 쪽 PVC | `k8s/10-storage.yaml` |
+| settings.xml | 빌더(mvn `-s`)와 에이전트(jakarta 빌드 탐색이 미러 주소를 읽는다) **둘 다**에 마운트 | `k8s/20-configmap.yaml` |
+| 권한 | 자기 파드 / 빌더 파드에 `pods/exec`, 실행마다 파드를 만들면 `pods` create / delete | `k8s/71-split-rbac.yaml` |
 
-**3-a. 사이드카(권장되는 분리 방식)** — `k8s/70-split-sidecar.example.yaml`. 같은 파드에 `agent`(Python) 와 `builder`(JDK + Maven)
-두 컨테이너, 둘이 `/data` 를 함께 마운트. 에이전트는 `build.mvn: /app/deploy/docker/mvn-k8s` 로 mvn 을 부르고, 래퍼가
-`kubectl exec -c builder -- bash -c "cd <같은 경로> && mvn …"` 로 넘긴다. 같은 노드라 RWX 저장소가 필요 없고, 빌더는 에이전트와
-함께 살고 죽으니 요청마다 만들고 지울 것이 없다. 필요한 것: `71-split-rbac.yaml`(자기 파드에 `pods/exec`), `kubectl` 이 든 에이전트
-이미지(단일 이미지에 `kubernetes-client` 를 더하거나 팀원의 base 이미지), 그리고 sbmig 코드 변경 없음.
+파드 단위는 둘 중 하나다. **빌드마다 파드 하나는 권하지 않는다** — 이관 한 번에 mvn 이 수십 번 돌고 파드 기동이 매번 10~30 초,
+JVM 워밍업과 `~/.m2` 캐시도 매번 잃는다.
 
-**3-b. 요청마다 빌드 파드(팀원 초안)** — 위 비용 전부 + 파드 라이프사이클 코드. 지금 sbmig 은 파드를 만들지 않으므로, 이 방식은
-운영자가(또는 별도 컨트롤러가) 빌더 파드를 띄우고 `SBMIG_BUILDER_POD` 를 에이전트에 알려 주는 형태로만 가능하다. 500 개를 순차로
-도는 용도에서 얻는 것이 없어 권하지 않는다.
+**3-a. 사이드카(프로젝트 단위 분리를 가장 싸게)** — `k8s/70-split-sidecar.example.yaml`. 같은 파드에 `agent` + `builder`. 같은
+노드라 RWX 저장소가 필요 없고, 빌더는 에이전트와 함께 살고 죽는다. 에이전트 환경 `SBMIG_BUILDER_CONTAINER=builder`, 회사 yml
+`build.mvn: /app/deploy/docker/mvn-k8s`. 끝.
+
+**3-b. 실행(프로젝트)마다 빌더 파드** — `k8s/72-split-builder-pod.template.yaml`. sbmig 에 실행 전후 훅이 있다(v2.1z-s):
+
+```yaml
+build:
+  mvn: /app/deploy/docker/mvn-k8s
+  setup_command: ["sh", "-c", "envsubst < /etc/sbmig/builder-pod.yaml | kubectl apply -f - && kubectl wait --for=condition=Ready pod/sbmig-builder-$SBMIG_RUN_ID --timeout=300s"]
+  teardown_command: ["kubectl", "delete", "pod", "sbmig-builder-$SBMIG_RUN_ID", "--ignore-not-found", "--wait=false"]
+```
+
+`setup_command` 는 첫 단계 전에 한 번(실패하면 실행 중단 — 빌더 없이는 아무것도 빌드할 수 없다), `teardown_command` 는 보고서 뒤에
+한 번(실패는 경고). 환경에 `SBMIG_RUN_ID` / `SBMIG_RUN_DIR` / `SBMIG_PROJECT_DIR` 가 들어간다. 에이전트 환경에 `SBMIG_BUILDER_PER_RUN=1`
+을 두면 래퍼가 cwd(`/data/out/<run id>/…`)에서 run id 를 읽어 `sbmig-builder-<run id>` 파드를 찾는다. 템플릿은 ConfigMap 으로
+`/etc/sbmig/builder-pod.yaml` 에 마운트한다. 빌더 파드가 다른 노드에 뜰 수 있으니 이 변형에서는 `/data` PVC 가 **ReadWriteMany**
+여야 한다(아니면 nodeSelector 로 한 노드에 묶는다).
+
+**Nexus 주소.** 두 곳에 들어간다. (1) `settings.xml` 의 `<mirror><url>` — mvn 이 모든 저장소를 그쪽으로 돌린다(`mirrorOf *`); (2)
+`company.yml` 의 `build.repository_url` — sbmig 가 메타데이터 / pom 을 직접 읽어 릴리스 목록과 jakarta 빌드를 찾는 주소. 둘 다
+`k8s/20-configmap.yaml` 의 `<https://nexus.company/…>` 자리다. 인증이 필요한 Nexus 면 `settings.xml` 의 `<servers>` 는 Secret 으로
+빼서 마운트한다(ConfigMap 에 비밀값을 두지 않는다).
 
 ## 4. uvicorn 질문
 

@@ -452,6 +452,13 @@ class BuildConfig(BaseModel):
     # → the same build once more with -U before the error is triaged
     # Nexus 404 가 로컬 저장소에 하루 동안 기억된 경우, 트리아지 전에 같은 빌드를 -U 로 한 번 더 돌린다.
     retry_negative_cache: bool = True
+    # v2.1z-s (2026-11-04, Kubernetes split layout): commands run ONCE per run around the whole migration — before the first
+    # step (setup: e.g. create the builder pod and wait for it) and after the report (teardown: delete it). argv lists, no shell;
+    # the environment carries SBMIG_RUN_ID / SBMIG_RUN_DIR / SBMIG_PROJECT_DIR. A failing setup aborts the run (nothing could
+    # build); a failing teardown is a WARNING. Empty = nothing (the default; the single-image deployment needs none)
+    setup_command: list[str] = Field(default_factory=list)
+    teardown_command: list[str] = Field(default_factory=list)
+    hook_timeout_s: int = 600
     # v2.1d: where sbmig reads `maven-metadata.xml` / poms to tell the LLM which releases exist (same major first).
     # None → the catch-all <mirror> of `settings_file` (its <server> credentials, `${env.X}` resolved), else Maven
     # Central unless `offline`; a URL here wins

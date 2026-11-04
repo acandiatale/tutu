@@ -1,0 +1,33 @@
+# OPTIONAL — the agent image of the SPLIT layout (deploy/README.md §3): Python + git + kubectl, NO JDK / Maven. Maven runs
+# in the builder container / pod through deploy/docker/mvn-k8s (set as build.mvn). For the single-image layout use
+# deploy/docker/Dockerfile instead. Build from the sbmig checkout root.
+ARG PYTHON_IMAGE=python:3.11-slim-trixie
+FROM ${PYTHON_IMAGE}
+
+ARG PIP_INDEX_URL=
+ARG PIP_TRUSTED_HOST=
+
+# kubernetes-client = kubectl (Debian trixie: 1.32); gettext-base = envsubst for the per-run builder pod template
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        kubernetes-client gettext-base git ca-certificates unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app \
+    HOME=/home/sbmig
+
+RUN useradd --create-home --uid 1000 sbmig && mkdir -p /app /data && chown -R sbmig:sbmig /app /data
+
+COPY pyproject.toml deploy/docker/pip-deps.py /tmp/
+RUN python /tmp/pip-deps.py /tmp/pyproject.toml \
+    | xargs pip install ${PIP_INDEX_URL:+--index-url "$PIP_INDEX_URL"} ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} \
+    && rm -f /tmp/pyproject.toml /tmp/pip-deps.py
+
+COPY --chown=sbmig:sbmig . /app/
+WORKDIR /app
+USER sbmig
+
+VOLUME ["/data"]
+EXPOSE 8765
+CMD ["python", "-m", "sbmig.cli", "serve", "--host", "0.0.0.0", "--port", "8765", "--out", "/data/out", \
+     "--graceful-timeout", "30", "--max-upload-mb", "1024"]

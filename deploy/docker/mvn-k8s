@@ -1,22 +1,54 @@
 #!/usr/bin/env bash
-# mvn-k8s — run Maven in the builder container through kubectl exec, on the shared /data volume (split layout only).
-# sbmig calls `build.mvn` as `[mvn, <args>]` with the module directory as cwd; the same path must exist in the builder
-# (both mount the volume at /data). Set in the company yml:   build.mvn: /app/deploy/docker/mvn-k8s
-# Environment: SBMIG_BUILDER_POD (pod name; for a sidecar: the agent's own pod, $HOSTNAME), SBMIG_BUILDER_CONTAINER
-# (sidecar container name, optional), SBMIG_BUILDER_NAMESPACE (default: the pod's namespace).
-# Limits: sbmig's timeout / kill reaches the local kubectl only — the remote mvn may run on until the builder dies;
-# the local repository (~/.m2) lives in the builder (mount a volume there, or set -Dmaven.repo.local=/data/m2).
-set -euo pipefail
-POD="${SBMIG_BUILDER_POD:-${HOSTNAME:?SBMIG_BUILDER_POD not set}}"
-NS="${SBMIG_BUILDER_NAMESPACE:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo default)}"
-CONTAINER_OPT=()
-if [ -n "${SBMIG_BUILDER_CONTAINER:-}" ]; then CONTAINER_OPT=(-c "$SBMIG_BUILDER_CONTAINER"); fi
+# mvn-k8s — Maven through `kubectl exec` into the builder container / pod, on the volume both share at /data (split layout).
+# sbmig runs `build.mvn` as `[mvn, <args>]` with the module directory as cwd; the same path must exist in the builder.
+# Company yml:   build.mvn: /app/deploy/docker/mvn-k8s
+# Environment (agent side):
+#   SBMIG_BUILDER_POD         pod name. Default: sidecar → this pod ($HOSTNAME); per-run pod (SBMIG_BUILDER_PER_RUN=1) →
+#                             sbmig-builder-<run id>, the run id taken from the cwd (/data/out/<run id>/…), as the hooks name it
+#   SBMIG_BUILDER_CONTAINER   container name (sidecar: "builder"; a dedicated pod: unset)
+#   SBMIG_BUILDER_NAMESPACE   default: this pod's namespace
+# sbmig's timeout / kill sends SIGTERM to this script: it forwards the kill to the remote mvn (pid file on /data) before the
+# SIGKILL that follows 5 s later. The exit code is Maven's. The local repository (~/.m2) is the builder's — mount a volume there.
+set -uo pipefail
 CWD="$(pwd)"
 case "$CWD" in
   /data/*) ;;
   *) echo "mvn-k8s: cwd $CWD is not under /data (the volume shared with the builder)" >&2; exit 2 ;;
 esac
+POD="${SBMIG_BUILDER_POD:-}"
+if [ -z "$POD" ]; then
+  if [ "${SBMIG_BUILDER_PER_RUN:-0}" = "1" ]; then
+    RID="$(printf '%s' "$CWD" | sed -n 's#^/data/out/\([^/]*\)/.*#\1#p')"
+    [ -n "$RID" ] || { echo "mvn-k8s: cannot tell the run id from cwd $CWD (expected /data/out/<run id>/…)" >&2; exit 2; }
+    POD="sbmig-builder-$RID"
+  else
+    POD="${HOSTNAME:?SBMIG_BUILDER_POD not set and no HOSTNAME}"
+  fi
+fi
+NS="${SBMIG_BUILDER_NAMESPACE:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null || echo default)}"
+CONTAINER_OPT=()
+[ -n "${SBMIG_BUILDER_CONTAINER:-}" ] && CONTAINER_OPT=(-c "$SBMIG_BUILDER_CONTAINER")
+KX=(kubectl exec -n "$NS" "${CONTAINER_OPT[@]}" "$POD" --)
+
+ID="$(date +%s%N)-$$"
+PIDDIR="/data/.sbmig-mvn"; PIDFILE="$PIDDIR/$ID.pid"
+mkdir -p "$PIDDIR" 2>/dev/null || true
 printf -v ARGS '%q ' "$@"
-printf -v REMOTE 'cd %q && export MAVEN_OPTS=%q JAVA_HOME=%q && exec mvn %s' "$CWD" "${MAVEN_OPTS:-}" \
-       "${JAVA_HOME:-/usr/lib/jvm/java-21-openjdk-amd64}" "$ARGS"
-exec kubectl exec -n "$NS" -i "${CONTAINER_OPT[@]}" "$POD" -- bash -c "$REMOTE"
+printf -v REMOTE 'mkdir -p %q; cd %q || exit 2; export MAVEN_OPTS=%q JAVA_HOME=%q; echo $$ > %q; exec mvn %s' \
+       "$PIDDIR" "$CWD" "${MAVEN_OPTS:-}" "${JAVA_HOME:-/opt/java21}" "$PIDFILE" "$ARGS"
+
+"${KX[@]}" bash -c "$REMOTE" &
+KPID=$!
+forward_kill() {
+  local pid
+  pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+  if [ -n "$pid" ]; then
+    "${KX[@]}" bash -c "kill -TERM -- -$pid 2>/dev/null || kill -TERM $pid 2>/dev/null; true" >/dev/null 2>&1 || true
+  fi
+  kill -TERM "$KPID" 2>/dev/null || true
+}
+trap forward_kill TERM INT HUP
+wait "$KPID"; RC=$?
+trap - TERM INT HUP
+rm -f "$PIDFILE" 2>/dev/null || true
+exit "$RC"

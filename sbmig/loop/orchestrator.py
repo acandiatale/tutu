@@ -37,6 +37,7 @@ from __future__ import annotations
 import importlib
 import json
 import logging
+import os
 import re
 import time
 from contextlib import contextmanager
@@ -458,6 +459,46 @@ class Orchestrator:
             report.timings_s["total"] = round(self.clock() - t0, 3)
             with stage("report"):
                 self._finalize(report)
+            if not dry_run:
+                self._run_hook("teardown", report)                 # v2.1z-s: after the report, whatever happened
+
+    def _run_hook(self, which: str, report: RunReport) -> bool:
+        """v2.1z-s: ``build.setup_command`` / ``build.teardown_command`` — 실행마다 한 번 도는 argv(셸 없음). 환경에 ``SBMIG_RUN_ID``,
+        ``SBMIG_RUN_DIR``, ``SBMIG_PROJECT_DIR`` 를 더해 준다. setup 실패(0 아닌 종료·타임아웃·실행 불가)는 ``_abort`` 뒤 False(빌더 없이는 아무것도
+        빌드할 수 없다); teardown 실패는 WARNING 만. 명령이 비어 있으면 True. 저널 ``build_hook`` (which, rc, seconds).
+
+        Run the per-run hook `which` ("setup" | "teardown") once: argv from `build.<which>_command` with SBMIG_RUN_ID /
+        SBMIG_RUN_DIR / SBMIG_PROJECT_DIR in the environment; a failing setup aborts the run (False), a failing teardown only
+        warns. Empty command → True. Journal `build_hook`."""
+        b = getattr(self.cfg, "build", None)
+        cmd = list(getattr(b, f"{which}_command", None) or [])
+        if not cmd:
+            return True
+        import subprocess
+        env = {**os.environ, "SBMIG_RUN_ID": str(self.ws.run_id), "SBMIG_RUN_DIR": str(self.ws.run_dir),
+               "SBMIG_PROJECT_DIR": str(self.ws.root)}
+        timeout = float(getattr(b, "hook_timeout_s", 600) or 600)
+        t0 = self.clock()
+        log.info("build %s hook: %s", which, " ".join(cmd))
+        try:
+            res = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout, check=False)
+            rc, tail = res.returncode, (res.stdout + res.stderr)[-800:]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            rc, tail = -1, f"{type(e).__name__}: {e}"
+        seconds = round(self.clock() - t0, 1)
+        try:
+            self.ws.journal({"event": "build_hook", "hook": which, "rc": rc, "seconds": seconds,
+                             "command": cmd[0] if cmd else ""})
+        except Exception:  # noqa: BLE001 - a journal problem never decides a run
+            pass
+        if rc == 0:
+            log.info("build %s hook ok (%.1fs)", which, seconds)
+            return True
+        if which == "setup":
+            self._abort(report, f"build.setup_command failed (rc={rc}): {tail.strip()[-300:]}")
+            return False
+        log.warning("build %s hook failed (rc=%s): %s", which, rc, tail.strip()[-300:])
+        return True
 
     def _verify_steps(self) -> list[PlanStep]:
         """이 실행의 최종 빌드 단계들(aggregator 없는 MSA 는 서비스마다 하나). 계획에 없고
@@ -553,6 +594,10 @@ class Orchestrator:
 
         1. intake: git snapshot, preflight, build tool (v2.1j: an Ant project gets a synthesized pom.xml), effective
         dependencyManagement. False = stop or abort."""
+        # v2.1z-s: the per-run setup hook (k8s split: the builder pod) — first thing of the run, inside the guard so that a
+        # failure ends the run like any abort (report, KB records, teardown)
+        if not self._dry_run and not self._run_hook("setup", report):
+            raise _RunAborted()
         with stage("intake"):
             return self._step_intake(report, stop_after)
 

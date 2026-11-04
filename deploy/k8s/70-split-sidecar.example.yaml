@@ -22,7 +22,7 @@ spec:
       terminationGracePeriodSeconds: 60
       containers:
         - name: agent
-          image: <registry>/sbmig-agent:<tag>      # the single image works too (its own Maven then stays unused)
+          image: <registry>/sbmig-agent:<tag>      # deploy/docker/Dockerfile.agent (Python + git + kubectl, no JDK)
           ports: [{name: http, containerPort: 8765}]
           envFrom: [{secretRef: {name: sbmig-llm}}]
           env:
@@ -31,6 +31,7 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: config, mountPath: /app/config/company.yml, subPath: company.yml, readOnly: true}
+            - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}   # the agent reads the mirrors too
           resources:
             requests: {cpu: "1", memory: 2Gi}
             limits: {cpu: "2", memory: 3Gi}

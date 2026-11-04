@@ -3796,3 +3796,22 @@ in the session / fallback on 4xx (and off) / mode off.
 The agent gateway's chat URL carries the asset id in its path (`https://<host>/api/serv/v1/agents/<asset id>/chat/completions`).
 `LLM_BASE_URL` is still used verbatim, but a `{asset_id}` (or `${LLM_ASSET_ID}`) placeholder in it is filled from `LLM_ASSET_ID`
 (`sbmig.fix.client.agent_url`), so the id lives in one place; a placeholder without `LLM_ASSET_ID` is an `LLMConfigError`.
+
+## v2.1z-s — per-run build hooks (the Kubernetes split layout) (2026-11-04)
+
+**Why.** The company will probably run Maven in a separate pod ("빌드만 파드로"). sbmig calls `build.mvn` as `[mvn, args]` with
+the module directory as cwd and reads the exit code and the output — so Maven in another container is a configuration matter
+(`build.mvn` → `deploy/docker/mvn-k8s`, a `kubectl exec` wrapper that forwards sbmig's SIGTERM to the remote Maven through a pid
+file on the shared `/data` and returns Maven's exit code). What sbmig lacked was a way to create and delete a builder pod **per
+run** (per project), which is the granularity the team may choose (one pod per build is advised against: dozens of mvn calls per
+migration, 10–30 s pod start each, no warm JVM / `~/.m2`).
+
+**Contract.** `build.setup_command` / `build.teardown_command` (argv lists, no shell; default empty = nothing),
+`build.hook_timeout_s` (600). `Orchestrator._run_guard` runs the setup once before the run's first step — a non-zero exit,
+a timeout or an unrunnable command aborts the run (`build.setup_command failed (rc=N): <output tail>`; nothing could build) — and
+the teardown once after `_finalize`, whatever happened (a failure is a WARNING). Both get `SBMIG_RUN_ID`, `SBMIG_RUN_DIR`,
+`SBMIG_PROJECT_DIR` in their environment; journal `{"event": "build_hook", "hook": setup|teardown, "rc", "seconds", "command"}`.
+Dry runs skip the hooks. Company-specific content (kubectl, pod names, namespaces) stays in the yml / the k8s template
+(`deploy/k8s/72-split-builder-pod.template.yaml`, `envsubst` on `${SBMIG_RUN_ID}`); `mvn-k8s` with `SBMIG_BUILDER_PER_RUN=1`
+derives the pod name `sbmig-builder-<run id>` from the cwd `/data/out/<run id>/…`. `deploy/docker/Dockerfile.agent` is the
+split layout's agent image (Python + git + kubectl + envsubst, no JDK). Tests `tests/loop/test_build_hooks.py`.

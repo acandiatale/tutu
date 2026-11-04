@@ -192,6 +192,10 @@ build:
   external_package_prefixes: []   # extra library namespaces for error signatures (in-house group ids are added automatically)
   require_java_major: 21        # preflight: `mvn -v` must report this Java major, else abort (jdk-not-21); 0 = no check
   retry_negative_cache: true    # "…was cached in the local repository…" → the same build once more with -U
+  setup_command: []            # v2.1z-s: argv run once before the run's first step (k8s split: create the builder pod + kubectl wait);
+                                 # SBMIG_RUN_ID / SBMIG_RUN_DIR / SBMIG_PROJECT_DIR in its environment; a failure aborts the run
+  teardown_command: []         # argv run once after the report (delete the builder pod); a failure is a WARNING only
+  hook_timeout_s: 600
   repository_url: null          # v2.1d: where maven-metadata.xml / poms are read to list releases for the LLM. Set → asked
                                 # FIRST (the operator's decision; a WARNING names both when it differs from the settings
                                 # mirror). v2.1z-e: then — or alone when null — the settings-derived set: every mirror by
