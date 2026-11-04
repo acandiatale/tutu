@@ -1951,7 +1951,7 @@ answers, the last ones saying "정책상 버전을 추정하여 추가할 수 �
 parent, or any external parent) managed are lost when the restructure moves a pom to `comp-jar` / `boot-jar` / `base-parent`;
 v1's `carry-over-managed-version` handler pinned them from the as-is effective pom, v2 step 4 deleted it with the other handlers,
 and the fix prompt's rule 14 (no invented versions) left the LLM with nothing to say. The as-is effective capture
-(`logs/depmgmt.json`, `sbmig.build.effective`) still exists and is now used again; the LLM is told to leave unknown versions
+(`logs/effective-depmgmt.json`, `sbmig.build.effective`) still exists and is now used again; the LLM is told to leave unknown versions
 empty and sbmig fills them. Decisions (user): the pins are reviewed by the LLM structure review like every other pom change
 and verified by the build; the non-Boot WAR services of an MSA tree stay pom-only for now; Spring Security recipes run only
 for projects that use Spring Security; Spring Cloud needs nothing new (the Boot 4 umbrella already runs
@@ -1961,7 +1961,7 @@ for projects that use Spring Security; Spring Cloud needs nothing new (the Boot 
 For a `<dependencies>` entry without `<version>` (and not: the in-house parent / role parents / mandatory / optional /
 `remove_when_present` artifacts, the project's own modules, `system` scope):
 1. the new parent chain manages it (post-restructure effective pom, `depmgmt-after-restructure.json`) → stays empty;
-2. the as-is build resolved it (`logs/depmgmt.json`: the module's `by_module[...].direct`, then merged `direct`, then merged
+2. the as-is build resolved it (`logs/effective-depmgmt.json`: the module's `by_module[...].direct`, then merged `direct`, then merged
    `managed`) → that version is written (`carried over`; the Handover already marks such pins ⚠ "carried over (no longer
    managed)" — `sbmig/report/handover.py`);
 3. only for a dependency the LLM has just added: the repository (`RepositoryLookup.versions`, `build.repository_url` →
@@ -2731,7 +2731,7 @@ All behind `layout.legacy_context.*` (default on); every switch off = the Handov
 | D9 | XML `CommonsMultipartResolver` | removed from the copy, `spring.servlet.multipart.*` from `maxUploadSize` / `maxInMemorySize`; `beans_removed` |
 | D10 | `@EnableWebMvc` / `WebMvcConfigurationSupport`, `<mvc:resources>` | analyzer flag (`SourceStats` via `conversion_facts["enable_web_mvc"]` — `SourceStats` has no field; the restructure scans `comp` sources) → no `spring.mvc.view.*` written, Handover instead; the copy's `InternalResourceViewResolver` prefix rewritten like `spring.mvc.view.prefix` (decision 5 keeps the JSP move); `<mvc:resources mapping=… location="/resources/">` → sentence naming the front `static/` path |
 | D12 | `*.do` mappings, `<jsp-config>`, `WebApplicationInitializer`, WAR context root, log4j 1, Security XML, `spring.profiles.active` context-param | Handover sentences (report A §2b wording); `*.do` → "`spring.mvc.servlet.path` is a prefix only; the as-is `*.do` suffix mapping needs `DispatcherServlet` registration on `*.do` — WebXmlRegistrations does it when generated, else …" |
-| E-M6 | `provided` scopes | after the recipes a dependency whose as-is declaration (`logs/depmgmt.json` capture, else the as-is pom text before the rewrite commit) had `scope provided` (javax.servlet-api → jakarta.servlet-api …) gets `provided` back; `scope_restored`; pom-verify row `scope restored: provided (as-is)` |
+| E-M6 | `provided` scopes | after the recipes a dependency whose as-is declaration (`logs/effective-depmgmt.json` capture, else the as-is pom text before the rewrite commit) had `scope provided` (javax.servlet-api → jakarta.servlet-api …) gets `provided` back; `scope_restored`; pom-verify row `scope restored: provided (as-is)` |
 | E-M9 | starter | `web_evidence` from web.xml / `spring-webmvc` / servlet-api / `@Controller` / JSP; `spring_legacy` without evidence → `spring-boot-starter` (note + Handover "no web evidence: no embedded Tomcat"); `starter` filled in every layout run |
 | D-M7 | source encoding | a module whose sampled `.java` files are MS949 / EUC-KR and whose in-project pom chain declares no matching `project.build.sourceEncoding` → the restructure writes it into the module pom (`source_encodings_written`); the review's encoding check then sees nothing |
 
