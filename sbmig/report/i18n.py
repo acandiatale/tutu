@@ -464,7 +464,7 @@ STRINGS: dict[str, dict[str, str]] = {"ko": {
         "LLM이 연속 두 번 실패했다(전송/설정). 아직 수정 스크립트가 필요한 케이스는 차단(llm_unavailable)으로 "
         "표시했다 — 저장된 스크립트와 최종 빌드는 그대로 실행했다",
     "the configured in-house parent POM (or a build extension it declares) is not resolvable — nothing can build until it is (see Blocked)":
-        "설정한 사내 parent POM을 해석할 수 없다 — 해결될 때까지 아무것도 빌드되지 않는다('차단됨' 참조) (부모가 선언한 빌드 확장 포함)",
+        "설정한 사내 parent POM(또는 그 부모가 선언한 빌드 확장)을 해석할 수 없다 — 해결될 때까지 아무것도 빌드되지 않는다('차단됨' 참조)",
     "the run was stopped on purpose after this phase (--stop-after)":
         "이 단계 뒤에서 의도적으로 실행을 멈췄다(--stop-after)",
     "the run stopped early (see Blocked / follow-ups)": "실행이 일찍 멈췄다('차단됨' / 후속 조치 참조)",
