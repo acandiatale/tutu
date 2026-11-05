@@ -4029,6 +4029,32 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   `parent_build_extensions` {checks, unresolvable, markers_removed}. Recommendation to the parent's owners (not sbmig's call):
   drop deploy transports from the parent — Maven 3.9 needs none for Nexus over http(s) and the 2007 artifact is a liability.
 
+* **k8s Job dispatch mode (2026-11-05 night, built — the user's decisions: everything on one shared PVC, one Job at a time now,
+  three later, the remediation-style API as a later md).** `sbmig serve --mode k8s-job` / `SBMIG_WEB_MODE=k8s-job`
+  (`RunManager(mode=, job_client=, job_template=)`; `SBMIG_JOB_TEMPLATE` default `deploy/k8s/81-web-job.template.yaml`,
+  `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_POLL_S` 2, `SBMIG_JOB_STOP_GRACE_S` 600). Upload → `<out>/<run id>/source.zip` + a `web_run`
+  journal line (mode k8s-job) → the FIFO queue (still one at a time) → `_run_job`: `render_job` (metadata.name `job_name(run id)`
+  = `sbmig-<run id>` RFC 1123, label `sbmig-run-id`, env SBMIG_SOURCE_ZIP / SBMIG_OUT / SBMIG_RUN_ID / SBMIG_CONFIG
+  (`<repo root>/config/<name>` — same image, same mounts) + SBMIG_STOP_AFTER / SBMIG_LLM_PROVIDER) → `K8sClient.create_job` →
+  poll `job_state` (Creating / Pending / Running / Succeeded / Failed / Missing; pod name, waiting reason, container exit code),
+  each change a `node` event `{"node": "job", "update": {"state", "job", "pod", "message"}}` (the UI's '파드' step before 접수,
+  from `status.mode`) → end on the pod's `job-status.json {exit_code}` (run-job.sh writes it) or the Job's terminal state;
+  Missing / Failed without a code → exit 3 with `Run.error`. Stop: `stop.request` written into the run dir
+  (`sbmig.graph.engine.STOP_REQUEST_FILE`; every node but finalize checks it first → `orch._abort(report, STOP_REQUEST_REASON)`,
+  the node skipped, finalize skips the final build, exit 3, journal `stop_request`), the Job deleted after the grace period;
+  a server shutdown leaves Jobs running (`shutdown()` cancels in-process runs only). The pod's progress reaches the UI through
+  the shared run dir: `events()` tails `journal.jsonl` / `sbmig.log` as before and turns `graph_node_end` lines (new: the
+  engine's `_staged(name, fn, orch)` journals {node, phase, phases, aborted, stopped} after every node) into `node` events for
+  job runs and file replays. `status()` carries `mode` and `job {name, phase, pod}` and ends a run on `job-status.json`.
+  `sbmig/web/k8s.py` is a thin in-cluster client over `requests` (SA token / CA, `KUBERNETES_SERVICE_HOST`) — no `kubernetes`
+  wheel for the offline network; `K8sClient.in_cluster()` raises `K8sError` outside a cluster and the run fails readably.
+  run-job.sh shared-volume mode: `SBMIG_SOURCE_ZIP`, `SBMIG_OUT` + `SBMIG_RUN_ID` (`--run-id`), `SBMIG_KB_DIR` (else the config's
+  kb.dir), records beside the run, no push, `job-status.json`. Manifests: `81-web-job.template.yaml` (same PVC `/data`, RWX),
+  `40-deployment.yaml` `serviceAccountName: sbmig-web` (commented until the mode is on), `10-storage.yaml` RWX note,
+  `20-configmap.yaml` commented keys; docs deploy/README §3 (켜는 법, 있는 것 / 다음 것), deploy/ENV.md rows, agent-doc/03 + 09.
+  Not built yet: three parallel Jobs (queue width + KB locking), the external intake API (`/api/migrations`, remediation's
+  contract: zip + project_name / name + Idempotency-Key), cluster measurements.
+
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but
 not read:` / `build.repository_url: <url> | not set` (2026-11-05: the value the lookup actually saw — `not set` with a value in the

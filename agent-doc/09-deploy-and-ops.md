@@ -109,27 +109,31 @@ kubectl apply -f deploy/k8s/40-deployment.yaml -f deploy/k8s/50-service.yaml
 kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 ```
 
-### ② 목표 구성 — 웹 파드가 "Agent", 업로드마다 빌드 Job (디스패치 모드, 만들 것)
+### ② Job 디스패치 모드 — 웹 파드가 "Agent", 업로드마다 빌드 Job (있음, 2026-11-05)
 
-인프라 가이드의 모양은 **요청마다 빌드 Job 하나**: Job 파드가 소스 처리 → 빌드 → 분석 → 결과 저장 → 저장소 커밋을 하고 끝난다(작업 공간은
-emptyDir). sbmig 에서는 **웹 파드가 Agent** 다. `sbmig serve` 에 실행 모드 하나(자기 안에서 | 쿠버네티스 Job)를 더해, 업로드된 zip 을 자기
-프로세스에서 돌리는 대신 Job 을 만든다: zip 보관 + 일회용 내려받기 토큰 → 템플릿으로 Job 생성 → `pods/log` 를 화면에 스트리밍 → Job 파드가
-끝날 때 보고서 · `result.zip` 을 웹 파드로 POST → 화면에서 내려받기. 빌드 파드가 에이전트 본체라(LangGraph, LLM 호출, Maven 전부 거기서)
-빌드 노드에서 LLM 게이트웨이 · Nexus · git · 웹 파드 Service 로 나가는 길이 열려야 한다. 화면 · 이미지 · 설정은 ① 과 같다.
-**이 디스패치 모드는 아직 코드에 없다**(2~3 일 증분). 지금의 `sbmig serve` 는 ① 처럼 자기 안에서 돌린다. 그림 · 역할 표 · 회의 발언용
-요약은 `deploy/README.md` §3.
+`sbmig serve --mode k8s-job`(또는 ConfigMap 의 `SBMIG_WEB_MODE=k8s-job`): 업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만든다.
+**전달·결과·KB 는 전부 공유 PVC**(`sbmig-data`, ReadWriteMany, 두 파드가 `/data` 에 마운트): 웹이 `/data/out/<run id>/source.zip` 을 두고
+`deploy/k8s/81-web-job.template.yaml` 에 실행별 env(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`, `SBMIG_RUN_ID`, `SBMIG_CONFIG`, 고급 설정의
+`SBMIG_STOP_AFTER` / `SBMIG_LLM_PROVIDER`)를 채워 Job 을 만든다 → 파드의 `run-job.sh` 가 `sbmig run --out /data/out --run-id <run id>` 를 돌려 같은
+실행 폴더에 저널·로그·보고서·`result.zip` 을 쓴다 → 웹은 그 폴더를 tail 해 SSE 로 보낸다(`graph_node_end` 저널 줄 → 화면 `node` 이벤트, 레일 앞에
+'파드' 단계: 생성 중 → 준비됨) → 끝나면 파드가 `job-status.json {exit_code}` 를 쓴다. 멈춤 = 웹이 `<run dir>/stop.request` 를 쓰고 엔진이 노드
+사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S`(600) 뒤에도 돌면 Job 삭제. 웹 파드 재시작 때 Job 은 그대로 돈다.
+큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests + 서비스 계정 토큰·CA, `kubernetes`
+패키지 없음)로 Job 생성·상태·삭제만 부른다 — 권한은 `deploy/k8s/45-web-rbac.yaml`. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
 
-이미 있는 조각:
+조각:
 
 | 파일 | 하는 일 |
 |---|---|
-| `deploy/docker/run-job.sh` | Job 파드의 진입 스크립트: 소스(`SBMIG_SOURCE_GIT_URL` / `SBMIG_SOURCE_GIT_REF`, 또는 `SBMIG_SOURCE_ZIP_URL`, 또는 마운트된 `/workspace/in`) → KB 를 `SBMIG_KB_GIT_URL` 에서 clone → `sbmig run … --config <SBMIG_CONFIG 의 yml 들> --out /workspace/out` → 프로젝트 브랜치 `sbmig/<run id>` 를 소스 저장소로 push, 보고서·로그를 `SBMIG_RESULT_GIT_URL`(또는 `RESULT_PUSH_CMD`)로, KB 를 커밋해 push. 토큰(`GIT_TOKEN`)은 환경과 메모리 안 URL 에만 |
-| `deploy/k8s/80-build-job.template.yaml` | 가이드 모양의 Job 템플릿(generateName, backoffLimit 0, nodeSelector, emptyDir, `activeDeadlineSeconds` 4시간 권장, CHANGE_ME 자리) |
-| `deploy/k8s/45-web-rbac.yaml` | 웹 파드의 최소 권한(네임스페이스 안 jobs create / get / list / watch / delete, pods get / list / watch, pods/log get) |
-| `deploy/k8s/submit-job.sh` | 템플릿을 **손으로 시험해 보는 도구**(권한 확인 → `--dry-run=server` → create → `logs -f` → `SBMIG-RESULT` 줄). 운영 모델이 아니다 |
+| `sbmig/web/runs.py` | `RunManager(mode=…)`: `_start_job`(실행 폴더 + source.zip + 저널 첫 줄) → `_run_job`(Job 생성·감시·멈춤·종료 코드), `status()` 의 `mode` / `job`, `events()` 의 `graph_node_end` → `node` 변환, `job-status.json` 으로 끝난 실행 인식 |
+| `sbmig/web/k8s.py` | `K8sClient.in_cluster()`, `create_job` / `job_state` / `delete_job`, `render_job`, `job_name` |
+| `sbmig/graph/engine.py` | 노드마다 `graph_node_end` 저널, `stop.request` 검사(`user_stop`) |
+| `deploy/docker/run-job.sh` | 공유 볼륨 모드(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT` / `SBMIG_RUN_ID`, `SBMIG_KB_DIR`, `job-status.json`); git 모드(`SBMIG_SOURCE_GIT_URL` / `SBMIG_SOURCE_ZIP_URL`, KB·결과 push)는 그대로 |
+| `deploy/k8s/81-web-job.template.yaml` | 웹이 채우는 Job 틀(공유 PVC) — `80-build-job.template.yaml` 은 git 모델(인프라팀 수동 제출용) |
+| `deploy/k8s/45-web-rbac.yaml` | 웹 파드의 최소 권한(jobs create / get / list / watch / delete, pods get / list / watch, pods/log get) |
+| `deploy/k8s/submit-job.sh` | git 모델 템플릿을 **손으로 시험해 보는 도구**. 운영 모델이 아니다 |
 
-만들 것: `sbmig serve` 의 실행 모드 분기, Job 생성 · 감시 · 로그 · 삭제, 업로드 내려받기 + 결과 수신 엔드포인트, Job 로그 → 화면 이벤트 다리,
-`run-job.sh` 의 토큰 헤더 · 결과 POST, 가짜 kubernetes 클라이언트 테스트.
+다음: 클러스터 실측(RWX·이미지·권한), 동시 Job 3 개, 외부 접수 API(remediation 과 같은 계약).
 
 `run-job.sh` 종료 코드: 보고서가 나왔으면 0(sbmig 0 또는 2 — 빌드 실패도 "결과"), sbmig 중단(exit 3: 사전 점검 / ADF / 내부 오류)이면 3,
 결과를 밖으로 못 보냈으면 4. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이면 빌드 실패를 2 로.

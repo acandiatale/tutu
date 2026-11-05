@@ -115,78 +115,70 @@ env 가 아닌 것: `company.yml` 과 `settings.xml`(ConfigMap `sbmig-config`, �
 이름 → 좌표)과 **`<kb.dir>/libraries.yml`**(사람이 승인한 라이브러리 표) — KB 볼륨(`/data/kb-v2`)에 있어 이미지와 무관하게 바꾼다. 이미지
 안의 `knowledge/`(노트, 자문, 레시피 카탈로그)는 이미지를 다시 만들어야 바뀐다.
 
-## 3. 목표 구성 — 웹 파드(`sbmig serve`, Job 디스패치 모드) + 요청별 빌드 Job
+## 3. Job 디스패치 모드 — 웹 파드(`sbmig serve --mode k8s-job`) + 업로드마다 빌드 Job (2026-11-05 결정·구현)
 
-인프라 가이드(2026-11-05)의 "Agent 가 요청별 빌드 Job 을 만든다" 를 sbmig 에 그대로 맞춘 그림이다. **Agent = 우리 웹 파드**,
-**빌드 Job = sbmig 한 사이클**. 별도 프로젝트를 만들지 않는다. `sbmig serve` 에 실행 모드 하나(자기 안에서 | 쿠버네티스 Job)를 더해,
-업로드된 zip 을 자기 프로세스에서 돌리는 대신 Job 을 만들어 돌린다. 화면, 이미지, 설정 파일, 결과 형식은 두 모드가 같다.
+인프라 가이드의 "Agent 가 요청별 빌드 Job 을 만든다" 를 sbmig 에 맞춘 그림이다. **Agent = 우리 웹 파드**, **빌드 Job = sbmig 한 사이클**.
+별도 프로젝트가 아니라 `sbmig serve` 의 실행 모드 하나(`SBMIG_WEB_MODE=k8s-job`)다. 화면·이미지·설정 파일·결과 형식은 ① 과 같다.
+**전달·결과·KB 는 전부 공유 PVC** 로 간다(사용자 결정): 웹 파드와 Job 파드가 같은 `sbmig-data` 볼륨을 같은 경로 `/data` 에 마운트한다.
+파드 안에 API 는 없고, 웹 파드 → 쿠버네티스 API 호출(Job 생성·상태·삭제)만 있다.
 
 ```
-담당자 브라우저 ──zip 업로드──▶ 웹 파드 (sbmig serve, Job 디스패치 모드)
-                                  │ 1 zip 보관 (/data/uploads/<run id>.zip), 일회용 내려받기 토큰 발급
-                                  │ 2 Job 생성 (80-build-job.template; SBMIG_SOURCE_ZIP_URL, 결과 POST 주소)
-                                  │ 3 pods/log 스트리밍 → 화면의 진행 표시 (노드 · 저널 · 로그)
+담당자 브라우저 ──zip 업로드──▶ 웹 파드 (sbmig serve --mode k8s-job)
+                                  │ 1 /data/out/<run id>/source.zip 에 보관, 저널 첫 줄
+                                  │ 2 Job 생성 (k8s/81-web-job.template.yaml + 실행별 env: SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG)
+                                  │ 3 Job/파드 상태 감시 → 화면 레일의 '파드' 단계 (생성 중 → 준비됨)
                                   ▼
-                            빌드 Job 파드 (같은 이미지, run-job.sh 한 사이클)
-                                  │ 4 zip 내려받기 ← 웹 파드 Service
-                                  │ 5 KB clone → sbmig run → 보고서 (emptyDir /workspace)
-                                  │ 6 결과 POST → 웹 파드 (report.md, errors.md, result.zip, sbmig.log, journal.jsonl)
-                                  │ 7 KB commit + push, 프로젝트 브랜치 sbmig/<run id> push (선택)
-                                  ▼ 종료 (exit 0 / 2 / 3 / 4), ttl 뒤 정리
-담당자 브라우저 ◀──결과 내려받기── 웹 파드 (/data/out/<run id>/)
+                            빌드 Job 파드 (같은 이미지, run-job.sh → sbmig run --out /data/out --run-id <run id>)
+                                  │ 4 같은 실행 폴더에 journal.jsonl / sbmig.log / report.md / result.zip 을 쓴다
+                                  │ 5 끝나면 job-status.json {exit_code}
+                                  ▼
+웹 파드: 실행 폴더의 저널·로그를 tail → SSE (node · journal · log) ──▶ 담당자 브라우저 ◀── 결과 내려받기 (/data/out/<run id>/)
 ```
+
+멈춤 = 웹이 `<run dir>/stop.request` 를 쓴다 → 파드의 엔진이 노드 사이에서 멈춘다(최종 빌드 없음, 보고서는 aborted, 종료 3). 유예
+`SBMIG_JOB_STOP_GRACE_S`(600 초) 안에 안 끝나면 Job 을 지운다. 웹 파드가 재시작되어도 Job 은 계속 돌고, 다음 서버는 폴더(`job-status.json`)로 답한다.
 
 ### 두 파드가 하는 일
 
-| | 웹 파드 (가이드의 Agent) | 빌드 Job 파드 |
+| | 웹 파드 (Agent) | 빌드 Job 파드 |
 |---|---|---|
-| 프로그램 | `sbmig serve` (FastAPI + uvicorn, 워커 1, 큐 = 한 번에 하나) | `docker/run-job.sh` → `sbmig run` (LangGraph 그래프, LLM 호출, OpenRewrite, Maven, 수정 루프 전부) |
+| 프로그램 | `sbmig serve --mode k8s-job` (FastAPI + uvicorn, 워커 1, 큐 = 한 번에 하나) | `docker/run-job.sh` → `sbmig run` (LangGraph, LLM, OpenRewrite, Maven, 수정 루프 전부) |
 | 이미지 | `docker/Dockerfile` (같은 이미지, JDK 는 쓰지 않는다) | 같은 이미지 |
 | 자원 | CPU 1, 메모리 1~2 GiB | CPU 2~4, 메모리 6~8 GiB (OpenRewrite `-Xmx4g`) |
-| 볼륨 | PVC `/data` (업로드, 실행 기록, 결과) | emptyDir `/workspace` 20 Gi, `~/.m2` (PVC 권장) |
-| 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`) 또는 가이드의 `/etc/kube/config` | 없음 — 쿠버네티스 API 를 부르지 않는다 |
-| 네트워크 | → 쿠버네티스 API | → 웹 파드 Service(zip, 결과), LLM 게이트웨이, Nexus, git(KB) |
+| 볼륨 | PVC `sbmig-data` → `/data` (업로드, 실행 폴더, KB), **ReadWriteMany** | 같은 PVC 같은 경로 + `sbmig-m2`(또는 emptyDir) |
+| 권한 | ServiceAccount `sbmig-web` (`k8s/45-web-rbac.yaml`: jobs create/get/list/watch/delete, pods get/list/watch) | 없음 |
+| 네트워크 | → 쿠버네티스 API | → LLM 게이트웨이, Nexus |
 
-빌드 파드가 **에이전트 본체**다. LangGraph 그래프와 LLM 호출이 거기서 돈다. 웹 파드는 받고, 만들고, 보여 준다.
+PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeAffinity` 를 넣어야 한다(두 파드가 동시에 마운트하기 때문).
 
-### 이미 있는 것 / 만들 것
+### 켜는 법
+
+1. `k8s/10-storage.yaml` 의 `sbmig-data` 를 `ReadWriteMany` 로(스토리지 클래스 확인).
+2. `k8s/45-web-rbac.yaml` 적용, `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 주석을 푼다.
+3. `k8s/81-web-job.template.yaml` 의 namespace·image(웹 파드와 같은 것)를 채운다. 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
+4. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_TEMPLATE`). 파드 재시작.
+5. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
+   실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
+
+### 있는 것 / 다음 것
 
 | 조각 | 상태 |
 |---|---|
-| 웹 UI: zip 업로드, 접근 토큰, 큐(한 번에 하나), 진행 화면(SSE), 결과 내려받기 | 있음 (`sbmig/web/`) |
-| Job 파드 한 사이클: zip URL 입력, KB git clone / push, 결과 push 훅, 종료 코드 | 있음 (`docker/run-job.sh`, 로컬 모의 실행 검증) |
-| Job 템플릿, 손으로 제출해 보는 스크립트 | 있음 (`k8s/80-build-job.template.yaml`, `k8s/submit-job.sh`) |
-| 웹 파드 RBAC | 있음 (`k8s/45-web-rbac.yaml`, 매니페스트만) |
-| `sbmig serve` 의 실행 모드 분기(자기 안에서 / 쿠버네티스 Job) | **만들 것** |
-| Job 생성 · 감시 · 로그 · 삭제(kubernetes 클라이언트) | **만들 것** |
-| 업로드 내려받기 엔드포인트(일회용 토큰) + 결과 수신 엔드포인트 | **만들 것** |
-| Job 로그 → 화면 이벤트 다리(`sbmig run` 의 저널을 표준 출력에도 찍기) | **만들 것** |
-| `run-job.sh`: 토큰 헤더로 zip 받기, 결과를 POST 로 보내기 | **만들 것** (소폭) |
-| 가짜 kubernetes 클라이언트로 테스트 | **만들 것** |
+| `sbmig serve --mode k8s-job`: 업로드 → 실행 폴더 + Job 생성 → 상태 감시 → 화면 → 멈춤(stop.request / 삭제) | 있음 (`sbmig/web/runs.py`, `sbmig/web/k8s.py`) |
+| 쿠버네티스 API 클라이언트(requests, 서비스 계정 토큰·CA; `kubernetes` 패키지 없음) | 있음 (`sbmig/web/k8s.py`) |
+| Job 템플릿(공유 볼륨) | 있음 (`k8s/81-web-job.template.yaml`) |
+| `run-job.sh` 공유 볼륨 모드(`SBMIG_SOURCE_ZIP`, `SBMIG_OUT`/`SBMIG_RUN_ID`, `SBMIG_KB_DIR`, `job-status.json`) | 있음 |
+| 엔진: 노드마다 `graph_node_end` 저널(화면의 node 이벤트), `stop.request` 로 노드 사이 멈춤 | 있음 (`sbmig/graph/engine.py`) |
+| 가짜 클라이언트 테스트 | 있음 (`tests/web/test_job_mode.py`, `tests/deploy/test_run_job_sh.py`) |
+| 클러스터 실측(RWX, 이미지, 권한) | **다음** — 인프라팀과 |
+| 동시 Job 3 개(큐 폭 + KB 잠금 확인) | **다음** |
+| 외부 접수 API(remediation 과 같은 계약: zip + `project_name` / `name` + `Idempotency-Key`) | **다음** — md 한 장으로 사내 LLM 에 인계 |
 
-규모 2~3 일. 중지 버튼 = Job 삭제. 끝난 Job 은 `ttlSecondsAfterFinished` 로 정리. 큐가 한 번에 하나만 돌리므로 Job 도 하나씩 돈다.
+### 회의에서 정할 것 (남은 것)
 
-### 회의에서 정할 것
-
-1. **Job 분리가 필수인가.** 필수가 아니면 §2 의 구성을 먼저 올려 LLM · Nexus 연결과 실제 프로젝트 몇 건을 검증하고, 디스패치 모드는 뒤에
-   켠다. 화면 · 이미지가 같으니 실행 모드만 바꿔 끼운다.
-2. **웹 파드 권한.** `k8s/45-web-rbac.yaml` 의 ServiceAccount(네임스페이스 안: jobs create / get / list / watch / delete, pods get / list / watch,
-   pods/log get) 또는 가이드의 `/etc/kube/config`.
-3. **네트워크.** 빌드 노드 → 웹 파드 Service(8765), LLM 게이트웨이(토큰 URL + 호출 URL), Nexus, git. 웹 파드 → 쿠버네티스 API.
-4. **KB 영속성.** git 저장소(`SBMIG_KB_GIT_URL`: Job 시작에 clone, 끝에 push — 한 번에 하나라 충돌 없음) 또는 Job 이 마운트하는 PVC.
-5. **`~/.m2`.** emptyDir 이면 Job 마다 Boot BOM · 레시피 · 플러그인을 다시 받는다(수백 MB, 몇 분) → PVC(순차 실행이라 RWO 로 충분) 또는
-   미리 채운 이미지 레이어.
-6. **결과 보관.** 결과 zip 에 회사 소스가 들어간다 → 웹 파드 `/data` 의 보존 기간, 소스 저장소에 브랜치(`sbmig/<run id>`)를 push 할지.
-
-### 회의 발언용 요약
-
-- 담당자는 웹 화면에 zip 을 올린다. 명령을 치지 않는다.
-- 가이드의 Agent 자리는 우리 웹 파드, 빌드 Job 은 sbmig 한 사이클이다. 둘 다 같은 이미지.
-- 웹 파드는 "어디서 돌리나" 만 바뀐다(자기 안 → Job). 화면, 설정, 결과 형식은 그대로.
-- 빌드 파드가 에이전트 본체다. LLM 호출도 거기서 나가므로 빌드 노드에서 LLM 게이트웨이로 가는 길이 열려야 한다.
-- 웹 파드에 필요한 권한은 네임스페이스 안 Job / Pod / 로그에 대한 동사 몇 개뿐이고 매니페스트는 준비돼 있다.
-- KB 와 `~/.m2` 는 Job 사이에 살아야 한다. git 저장소인지 PVC 인지 정해 달라.
-- 디스패치 모드 구현은 2~3 일. 그 전에도 §2 구성으로 먼저 올려 검증할 수 있다.
+1. **PVC 접근 모드.** `sbmig-data` 가 ReadWriteMany 인지. 아니면 Job 을 웹 파드 노드에 고정.
+2. **네트워크.** 빌드 노드 → LLM 게이트웨이(토큰 URL + 호출 URL), Nexus. 웹 파드 → 쿠버네티스 API.
+3. **Job 자원 상한.** `81-web-job.template.yaml` 의 requests/limits, `activeDeadlineSeconds`(4 시간).
 
 ### 가이드 ↔ sbmig 대응
 

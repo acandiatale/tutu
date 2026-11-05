@@ -1,6 +1,6 @@
-# 에이전트의 영속 상태 — 이미지 안에는 두지 않는다. 웹 UI 에이전트(40-deployment)가 쓴다. RWO 로 충분하다(파드 하나, 한 번에 한 이관).
-# 요청별 Job 모델(80-build-job)에서는 작업 공간이 emptyDir 이라 이 PVC 를 쓰지 않는다 — 단, KB 와 ~/.m2 를 PVC 로 두기로 하면
-# 같은 이름의 PVC 를 Job 템플릿의 volumes 에 연결한다(deploy/README.md §3).
+# 에이전트의 영속 상태 — 이미지 안에는 두지 않는다. 웹 UI 에이전트(40-deployment)가 쓴다. ① 자기 안에서 돌릴 때는 RWO 로 충분하다.
+# Job 디스패치 모드(README §3, 2026-11-05 결정: zip·실행 폴더·KB 전부 이 볼륨)에서는 웹 파드와 Job 파드가 동시에 마운트하므로
+# sbmig-data 는 ReadWriteMany 여야 한다(안 되면 Job 템플릿에 웹 파드 노드의 nodeAffinity). sbmig-m2 도 Job 템플릿이 함께 쓴다.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

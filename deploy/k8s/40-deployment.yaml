@@ -1,5 +1,6 @@
 # 웹 UI 에이전트(`sbmig serve`): replica 1(한 번에 한 이관 — 큐가 프로세스 안에 있다), Recreate(RWO 볼륨이 파드와 함께 옮겨간다).
-# 요청별 Job 모델만 쓰면 이 Deployment 는 필요 없다(에이전트 역할은 submit-job.sh).
+# Job 디스패치 모드(README §3, ConfigMap 의 SBMIG_WEB_MODE=k8s-job)에서는 이 파드가 Agent 다: 업로드마다 Job 을 만들고 공유 PVC 로 결과를 받는다 —
+# 그때 아래 serviceAccountName 주석을 풀고(45-web-rbac.yaml) sbmig-data 를 ReadWriteMany 로 둔다.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +15,7 @@ spec:
     metadata:
       labels: {app: sbmig}
     spec:
+      # serviceAccountName: sbmig-web        # Job 디스패치 모드(SBMIG_WEB_MODE=k8s-job)일 때: 45-web-rbac.yaml 의 권한으로 Job 을 만든다
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000

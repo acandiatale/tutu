@@ -32,6 +32,11 @@
 | `SBMIG_WEB_OPEN` | `1` | 사내망 전용 페이지라 토큰 없이 연다. 토큰 보호를 켜려면 이 변수를 지우고 Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 |
 | `SBMIG_MAX_UPLOAD_MB` | `1024` | 업로드 zip 상한(MB). 기본 512, `0` = 없음 |
 | `NO_PROXY` | `<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1` | 클러스터에 HTTP 프록시가 걸려 있을 때만 |
+| `SBMIG_WEB_MODE` | `in-process` (기본) / `k8s-job` | `k8s-job` = 업로드마다 Job 하나(공유 PVC). README §3 "켜는 법" 뒤에 켠다 |
+| `SBMIG_K8S_NAMESPACE` | (비움 = 파드의 namespace) | Job 을 다른 namespace 에 만들 때만 |
+| `SBMIG_JOB_TEMPLATE` | `deploy/k8s/81-web-job.template.yaml` | 템플릿을 다른 경로에 둘 때 |
+| `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
+| `SBMIG_JOB_STOP_GRACE_S` | `600` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) |
 
 ## 3. ConfigMap `sbmig-env` — LLM 게이트웨이 (비밀이 아닌 것)
 

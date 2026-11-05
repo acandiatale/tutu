@@ -282,7 +282,11 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   `.env`, Deployment with 1 replica) and the infra team's one-Job-per-request model (`deploy/docker/run-job.sh` runs the whole
   migration in the Job pod on an emptyDir and pushes the project branch `sbmig/<run id>`, the report and the git-hosted KB out
   before exiting; `80-build-job.template.yaml`, `submit-job.sh`). The exec-into-a-builder layout was removed (history: INTERFACES
-  v2.1z-r/s); `build.setup_command` / `teardown_command` remain generic hooks. Comments in `deploy/` are Korean (the company's
+  v2.1z-r/s); `build.setup_command` / `teardown_command` remain generic hooks. **2026-11-05: the web pod can dispatch Jobs itself** (`sbmig serve --mode k8s-job` /
+  `SBMIG_WEB_MODE=k8s-job`): upload → `/data/out/<run id>/source.zip` on the shared RWX PVC → Job from `81-web-job.template.yaml` →
+  the pod runs `sbmig run --run-id` into the same run dir, the web tails its journal / log (engine `graph_node_end` lines → UI `node`
+  events, a '파드' step first), `stop.request` stops it between nodes; `sbmig/web/k8s.py` is a requests-based in-cluster client
+  (no `kubernetes` wheel). One Job at a time; three in parallel and the remediation-style `/api/migrations` are next. Comments in `deploy/` are Korean (the company's
   reviewers asked). `deploy/README.md` is the operator text.
 - **Company convention (2026-10-20): agents run on LangGraph under uvicorn.** `loop.engine: graph` (default) drives
   the phases from a LangGraph `StateGraph` (`sbmig/graph/`, nodes intake → analyze → plan → phase×N → finalize;
