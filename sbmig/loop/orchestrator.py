@@ -1567,14 +1567,14 @@ class Orchestrator:
         # 2026-11-05: 사내 부모가 선언한 빌드 확장을 Maven 이 못 받아 OpenRewrite 가 모델 단계에서 죽었다 → 같은 중단(LLM 없음)
         m_ext = _BUILD_EXT_IN_TEXT_RE.search(err)
         if m_ext:
-            chain = self.loop._chain_extensions()          # noqa: SLF001 - same package
+            chain = self.loop._chain_extensions()          # same package
             key = f"{m_ext.group('g')}:{m_ext.group('a')}"
             if key in chain:
                 gav = GAV.parse(f"{key}:{m_ext.group('v')}")
                 e = BuildError(kind=ErrorKind.POM_INVALID, message=err.splitlines()[0][:500], raw=err[:2000], artifact=gav,
                                module=step.target)
                 br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
-                self.loop._parent_abort(pr, step.phase, br, 0)   # noqa: SLF001 - same package
+                self.loop._parent_abort(pr, step.phase, br, 0)   # same package
                 self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
                 return
         if not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
