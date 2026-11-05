@@ -4065,7 +4065,9 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   missing template file is replaced by a minimal manifest in local-job mode. Tests: tests/web/test_local_job_mode.py (a fake
   `sbmig run` script honouring stop.request; the real command line; stop reaches the local pod; the fallback and its warning).
   Not built yet: three parallel Jobs (queue width + KB locking), the external intake API (`/api/migrations`, remediation's
-  contract: zip + project_name / name + Idempotency-Key), cluster measurements.
+  contract: zip + project_name / name + Idempotency-Key — the implementation brief for the in-house LLM is
+  `docs/v2/API-MIGRATIONS-KO.md`, 2026-11-06: raw zip body + query, `<out>/_idempotency/` files, one state-translation dict,
+  `RunManager.start_file(extra=)` + `migration.json` as the only run-manager change), cluster measurements.
 
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but

@@ -135,7 +135,7 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 | `deploy/k8s/45-web-rbac.yaml` | 웹 파드의 최소 권한(jobs create / get / list / watch / delete, pods get / list / watch, pods/log get) |
 | `deploy/k8s/submit-job.sh` | git 모델 템플릿을 **손으로 시험해 보는 도구**. 운영 모델이 아니다 |
 
-다음: 클러스터 실측(RWX·이미지·권한), 동시 Job 3 개, 외부 접수 API(remediation 과 같은 계약).
+다음: 클러스터 실측(RWX·이미지·권한), 동시 Job 3 개, 외부 접수 API(remediation 과 같은 계약 — 구현 지시서 `docs/v2/API-MIGRATIONS-KO.md`).
 
 `run-job.sh` 종료 코드: 보고서가 나왔으면 0(sbmig 0 또는 2 — 빌드 실패도 "결과"), sbmig 중단(exit 3: 사전 점검 / ADF / 내부 오류)이면 3,
 결과를 밖으로 못 보냈으면 4. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이면 빌드 실패를 2 로.

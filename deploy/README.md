@@ -177,7 +177,7 @@ PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeA
 | 가짜 클라이언트 테스트 | 있음 (`tests/web/test_job_mode.py`, `tests/deploy/test_run_job_sh.py`) |
 | 클러스터 실측(RWX, 이미지, 권한) | **다음** — 인프라팀과 |
 | 동시 Job 3 개(큐 폭 + KB 잠금 확인) | **다음** |
-| 외부 접수 API(remediation 과 같은 계약: zip + `project_name` / `name` + `Idempotency-Key`) | **다음** — md 한 장으로 사내 LLM 에 인계 |
+| 외부 접수 API(remediation 과 같은 계약: zip + `project_name` / `name` + `Idempotency-Key`) | **다음** — 구현 지시서 `docs/v2/API-MIGRATIONS-KO.md`(사내 LLM 에 인계) |
 
 ### 회의에서 정할 것 (남은 것)
 
