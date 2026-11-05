@@ -3902,3 +3902,26 @@ rounds inside one ask never change the model, so they are unaffected. Thread off
 **Cost shape with the thread on.** A case's ladder is now at most two or three sessions (base model → escalation model → back),
 each opened with one full prompt; the deltas go on inside each. Tests `tests/fix/test_fix_thread.py` (model change → new session
 + full prompt, same escalation model → continued, no escalation model → same session, back to the base model → new session).
+
+## v2.1z-y — a POM problem inherited from a parent pom names the parent pom (2026-11-05)
+
+**Why (company run, 2026-11-05).** `'dependencies.dependency.version' for org.springframework:spring-dao:jar is missing` kept
+coming back although the LLM's script (the case's version 24) "removed it": the version-less `spring-dao` sat in the **root pom**,
+Maven reports an inherited problem once per child module (`The project com.company:app-back:1.0 (…/app-back/pom.xml) has 1 error`
+→ `… is missing. @ com.company:app:1.0, …/pom.xml, line 88, column 21`), and the parser recorded the error with `file =
+app-back/pom.xml` (the project that failed), so the prompt said "app-back/pom.xml: … spring-dao … is missing" and the script edited
+the child pom. The declaring pom is the path in Maven's location tail.
+
+**Rule.** `_Parser._pom_location`: the location tail `@ [<gav>, ][<path>, ]line N[, column M]` of every POM problem (missing
+version, non-resolvable parent / import POM, other model problems) gives the error its `line` / `column`, and when the tail carries
+a path (an inherited problem: the parent pom) that path, relativised to the project root, is the error's `file`; without a path the
+project's own pom stays the file. The message and the signatures are unchanged (no KB case moves). The missing-version pre-try
+(`_declaring_pom`) and the script prompt (`fmt_error`: `pom.xml:88 …`) now start from the pom that holds the declaration.
+Tests `tests/build/test_build_log_parser.py` (inherited problem under a POSIX and a Windows root → `pom.xml`, line 88, module
+`app-back`; an own-pom problem keeps the project pom and takes the line).
+
+**Open (the user decides, KB impact).** The L2 of a missing-version error is the generic `pom_invalid|missing_version` (the L1
+carries the g:a), so every version-less artifact of every project shares ONE case id — the company's case reached version 24 with
+scripts written for different artifacts. The errors the pre-try cannot fill (an obsolete Spring artifact to remove, a company
+artifact) are per-artifact problems; `pom_invalid|missing_version|<g:a>` as the L2 would give each its own case — a signature change
+that orphans the stored case (see the KB-matching review: `kb reindex --resign` first).

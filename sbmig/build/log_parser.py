@@ -84,6 +84,13 @@ _PROJECT_PROBLEMS_RE = re.compile(
     r"^\s*The project (?P<gav>\S*) \((?P<path>[^)]*)\) has \d+ errors?")
 _MISSING_VERSION_RE = re.compile(r"'(?P<field>[\w.]+\.version)' for (?P<coords>[\w.\-]+:[\w.\-]+)(?::[\w.\-]+)* is missing")
 _NON_PARSEABLE_RE = re.compile(r"Non-parseable POM (?P<path>.+?\.xml|[^:]+):\s*(?P<msg>.*)$")
+# Maven 이 pom 문제 뒤에 붙이는 위치: "@ line 88, column 21"(그 프로젝트의 pom 자체), 또는 상속된 문제면
+# "@ <부모 g:a:v>, <부모 pom 경로>, line 88, column 21" — 문제가 있는 파일은 뒤쪽 경로다(회사 실행 2026-11-05: 루트 pom 의
+# version 없는 spring-dao 가 자식 모듈 pom 의 오류로 기록돼 LLM 이 자식 pom 만 고쳤다)
+# the location Maven appends to a POM problem: `@ line N, column M` (the project's own pom) or, for an inherited
+# problem, `@ <parent g:a:v>, <parent pom path>, line N, column M` — the file to fix is that path
+_POM_LOCATION_RE = re.compile(r"\s@\s+(?:(?P<gav>[\w.\-]+:[\w.\-]+:[\w.\-]+(?::[\w.\-]+)*),\s+)?"
+                              r"(?:(?P<path>[^,]+?\.(?:xml|pom)),\s+)?line (?P<line>\d+)(?:, column (?P<col>\d+))?\s*$")
 _PARENT_RE = re.compile(r"Non-resolvable parent POM(?: for (?P<child>[\w.\-]+:[\w.\-]+:[\w.\-]+))?")
 _IMPORT_RE = re.compile(r"Non-resolvable import POM")
 _TEST_ENTRY_RE = re.compile(r"^\s{2,}(?P<entry>(?:Run \d+: )?\S.*)$")
@@ -564,6 +571,8 @@ class _Parser:
         if not msg or msg == "@" or _is_boilerplate(msg):
             return
         key = _scrub(msg, self.prefixes)
+        # 문제가 있는 pom 과 줄: 위치 꼬리의 경로(상속된 문제 = 부모 pom)가 있으면 그것, 없으면 그 프로젝트의 pom
+        pom_file, line_no, col_no = self._pom_location(msg, pom_file)
         existing = self._pom_errors.get(key)
         if existing is not None:
             if module and not existing.module:
@@ -571,6 +580,8 @@ class _Parser:
                 fill_signatures(existing)
             if pom_file and not existing.file:
                 existing.file = pom_file
+            if line_no and not existing.line:
+                existing.line, existing.column = line_no, col_no
             return
         if _PARENT_RE.search(msg):
             arts = _artifacts_in(msg)
@@ -584,13 +595,14 @@ class _Parser:
             self._parent_keys.add(k)
             err = self._add(BuildError(kind=ErrorKind.PARENT_RESOLUTION, message=msg, artifact=parent,
                                        module=module or (child.split(":")[1] if child else None),
-                                       file=pom_file, raw=raw))
+                                       file=pom_file, line=line_no, column=col_no, raw=raw))
             self._pom_errors[key] = err
             return
         if _IMPORT_RE.search(msg):
             arts = _artifacts_in(msg)
             err = self._add(BuildError(kind=ErrorKind.DEPENDENCY_RESOLUTION, message=msg,
-                                       artifact=arts[0] if arts else None, module=module, file=pom_file, raw=raw))
+                                       artifact=arts[0] if arts else None, module=module, file=pom_file,
+                                       line=line_no, column=col_no, raw=raw))
             self._pom_errors[key] = err
             return
         artifact = None
@@ -602,8 +614,22 @@ class _Parser:
         if m2 and m2.group("path").endswith(".xml"):
             file = self._rel(m2.group("path"))
         err = self._add(BuildError(kind=ErrorKind.POM_INVALID, message=msg, artifact=artifact, module=module,
-                                   file=file, raw=raw))
+                                   file=file, line=line_no, column=col_no, raw=raw))
         self._pom_errors[key] = err
+
+    def _pom_location(self, msg: str, pom_file: str | None) -> tuple[str | None, int | None, int | None]:
+        """pom 문제 메시지의 위치 꼬리 → (파일, 줄, 열). 꼬리에 경로가 있으면(상속된 문제: 부모 pom) 그 경로를 프로젝트
+        루트 기준으로, 없으면 넘겨받은 그 프로젝트의 pom. 꼬리가 없으면 (pom_file, None, None).
+
+        (file, line, column) from the message's location tail: the path in the tail (an inherited problem names the
+        parent pom) relativised, else the project's own pom; no tail → (pom_file, None, None)."""
+        m = _POM_LOCATION_RE.search(msg)
+        if not m:
+            return pom_file, None, None
+        path = (m.group("path") or "").strip()
+        file = self._rel(path) if path else pom_file
+        col = m.group("col")
+        return file, int(m.group("line")), (int(col) if col else None)
 
     def _finish_dep(self, blk: _Block) -> None:
         """의존성 해결 실패 블록 → 아티팩트마다 오류 하나. Maven 버전마다 문구가 달라 여러 패턴을 보고,

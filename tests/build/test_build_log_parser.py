@@ -367,3 +367,48 @@ def test_kind_for_windows_backslash_test_path():
     assert p._kind_for(r"D:\work\xxx\xxx-back\src\test\java\com\acme\FooTest.java", None) == ErrorKind.TEST_COMPILE
     assert p._kind_for(r"D:\work\xxx\src\main\java\com\acme\Foo.java", None) == ErrorKind.COMPILE
     assert p._kind_for("src/main/java/com/acme/Foo.java", "compiler:testCompile") == ErrorKind.TEST_COMPILE
+
+
+# ------------------------------------------------------------- (h) a POM problem inherited from a parent pom (2026-11-05)
+INHERITED_MISSING_VERSION = (
+    "[INFO] Scanning for projects...\n"
+    "[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n"
+    "[ERROR] 'dependencies.dependency.version' for org.springframework:spring-dao:jar is missing. "
+    "@ com.company:app:1.0, {root}pom.xml, line 88, column 21\n"
+    " @ \n"
+    "[ERROR] The build could not read 2 projects -> [Help 1]\n"
+    "[ERROR]   \n"
+    "[ERROR]   The project com.company:app-back:1.0 ({root}app-back{sep}pom.xml) has 1 error\n"
+    "[ERROR]     'dependencies.dependency.version' for org.springframework:spring-dao:jar is missing. "
+    "@ com.company:app:1.0, {root}pom.xml, line 88, column 21\n"
+    "[ERROR]   \n"
+    "[ERROR]   The project com.company:app-boot:1.0 ({root}app-boot{sep}pom.xml) has 1 error\n"
+    "[ERROR]     'dependencies.dependency.version' for org.springframework:spring-dao:jar is missing. "
+    "@ com.company:app:1.0, {root}pom.xml, line 88, column 21\n"
+    "[ERROR]   \n"
+    "[ERROR] -> [Help 1]\n"
+)
+
+
+@pytest.mark.parametrize("root, sep", [("/work/proj/", "/"), ("D:\\work\\proj\\", "\\")])
+def test_inherited_missing_version_points_at_the_declaring_pom(root, sep):
+    """The company run of 2026-11-05: `spring-dao` without a version sat in the ROOT pom; Maven reports the problem for
+    every child module with `@ <parent gav>, <parent pom>, line N` — the error must name the parent pom (the file the
+    fix edits), not the child module's pom, and carry the line."""
+    (e,) = parse_maven_log(INHERITED_MISSING_VERSION.format(root=root, sep=sep), root.rstrip("/\\"))
+    assert e.kind == ErrorKind.POM_INVALID and e.artifact.coordinates == "org.springframework:spring-dao"
+    assert (e.file, e.line, e.column) == ("pom.xml", 88, 21)
+    assert e.module == "app-back"                        # the first project Maven could not read
+    assert e.signature_generic == "pom_invalid|missing_version"
+
+
+def test_own_pom_problem_keeps_the_project_pom_and_takes_the_line():
+    text = ("[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n"
+            "[ERROR] 'dependencies.dependency.version' for com.acme:lib:jar is missing. @ line 12, column 21\n"
+            " @ \n[ERROR] The build could not read 1 project -> [Help 1]\n"
+            "[ERROR]   \n"
+            "[ERROR]   The project com.acme:app-back:1.0 (/work/proj/app-back/pom.xml) has 1 error\n"
+            "[ERROR]     'dependencies.dependency.version' for com.acme:lib:jar is missing. @ line 12, column 21\n")
+    (e,) = parse_maven_log(text, ROOT)
+    assert (e.file, e.line, e.column, e.module) == ("app-back/pom.xml", 12, 21, "app-back")
+
