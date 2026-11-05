@@ -225,6 +225,75 @@ def test_structural_regression_after_pom_edit_is_reverted(cfg, ws, profile):
     assert pr.ok and ws.read("pom.xml") == good_pom
 
 
+def _dep_resolution(_):
+    return BuildError(kind=ErrorKind.DEPENDENCY_RESOLUTION, file="pom.xml", module="demo",
+                      message="Could not find artifact com.company:sso-client:jar:1.0.0 in nexus (https://nexus/repository/maven-public/)",
+                      artifact=GAV(group_id="com.company", artifact_id="sso-client", version="1.0.0"),
+                      signature="dependency_resolution|com.company:sso-client:1.0.0",
+                      signature_generic="dependency_resolution|com.company:sso-client")
+
+
+def test_pom_fix_that_uncovers_the_next_stage_is_not_a_regression(cfg, ws, profile):
+    """Company run 2026-11-05: the script removed the version-less spring-dao (a stage-0 pom problem), the build advanced to
+    dependency resolution and showed `Could not find artifact …:SSOClient_Common:1.0.0` for the first time — a structural kind
+    the previous build never reached. That is the next stage uncovered, not a regression caused by the pom edit: the attempt
+    stays (improved) instead of being reverted round after round (the case had reached script version 24)."""
+    def build_fn(w, call):
+        pom = w.read("pom.xml")
+        if "<broken" in pom:                                  # stage 0: the pom problem
+            return bad_build(_pom_invalid(w))
+        if "<missing-sso" in pom:                             # stage 1: visible only once the pom problem is gone
+            return bad_build(_dep_resolution(w))
+        return ok_build()
+
+    ws.write("pom.xml", "<project><broken<missing-sso")
+    ws.commit("as-is with a pom problem that hides a dependency problem")
+    proposals = [FixProposal(changes=[FileChange(path="pom.xml", op="create", content="<project><missing-sso")],
+                             model="m", llm_usage=LLMUsage(calls=1)),
+                 FixProposal(changes=[FileChange(path="pom.xml", op="create", content="<project>")],
+                             model="m", llm_usage=LLMUsage(calls=1))]
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(proposals))
+    pr = loop.run(Phase.VERIFY, "package", 4)
+    first = pr.attempts[0]
+    assert first.outcome == "improved" and first.cluster_resolved is True
+    assert any("not a regression" in n and "dependency_resolution" in n for n in first.notes)
+    assert not any("structural error kind" in n for n in first.notes)
+    assert "<broken" not in ws.read("pom.xml")                # the pom fix was kept
+    assert pr.ok
+
+
+def test_new_structural_kind_of_the_same_stage_is_still_a_regression(cfg, ws, profile):
+    """The symmetric case keeps its verdict: a pom edit that fixes the dependency-resolution problem (stage 1) but makes a
+    plugin unresolvable (a new structural kind of the SAME stage) is a regression and is reverted."""
+    good_pom = ws.read("pom.xml")
+
+    def bad_plugin(_):
+        return BuildError(kind=ErrorKind.PLUGIN_RESOLUTION, file="pom.xml", module="demo",
+                          message="Plugin com.company:made-up-plugin:9 or one of its dependencies could not be resolved",
+                          artifact=GAV(group_id="com.company", artifact_id="made-up-plugin", version="9"),
+                          signature="plugin_resolution|com.company:made-up-plugin:9",
+                          signature_generic="plugin_resolution|com.company:made-up-plugin")
+
+    def build_fn(w, call):
+        pom = w.read("pom.xml")
+        if "<bad-plugin" in pom:
+            return bad_build(bad_plugin(w))
+        if "<missing-sso" in pom:
+            return bad_build(_dep_resolution(w))
+        return ok_build()
+
+    ws.write("pom.xml", good_pom + "<missing-sso")
+    ws.commit("as-is with a dependency problem")
+    proposals = [FixProposal(changes=[FileChange(path="pom.xml", op="create", content=good_pom + "<bad-plugin")],
+                             model="m", llm_usage=LLMUsage(calls=1)),
+                 FixProposal(changes=[FileChange(path="pom.xml", op="create", content=good_pom)],
+                             model="m", llm_usage=LLMUsage(calls=1))]
+    loop = make_loop(cfg, ws, profile, build=FakeBuildRunner(ws, fn=build_fn), fixer=FakeFixer(proposals))
+    pr = loop.run(Phase.VERIFY, "package", 4)
+    first = pr.attempts[0]
+    assert first.outcome == "reverted" and any("structural error kind(s) plugin_resolution" in n for n in first.notes)
+
+
 def test_structural_regression_reverted_even_when_not_the_last_commit(cfg, ws, profile):
     """Foo's script breaks the pom, Bar's case (a stored script: a reuse is never deferred by the pom change) is
     committed after it in the same round → the structural revert of Foo's commit is a `git revert`."""

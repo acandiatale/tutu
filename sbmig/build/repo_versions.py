@@ -286,10 +286,13 @@ def read_settings(path: Optional[str]) -> Optional[SettingsData]:
         return None
 
 
-def global_settings_file() -> Optional[Path]:
-    """Maven 의 전역 settings(``$MAVEN_HOME/conf/settings.xml`` / ``M2_HOME`` / PATH 의 ``mvn`` 에서 되짚은 설치 폴더), 없으면 None.
+def global_settings_file(cfg: Any = None) -> Optional[Path]:
+    """Maven 의 전역 settings(``$MAVEN_HOME/conf/settings.xml`` / ``M2_HOME`` / **설정한 ``build.mvn``** 또는 PATH 의 ``mvn`` 에서
+    되짚은 설치 폴더), 없으면 None. 2026-11-05: 회사 PC 는 Maven 을 PATH 에 두지 않고 ``build.mvn`` 에 전체 경로로 적어 둔다 —
+    그 설치의 ``conf/settings.xml`` 이 Nexus 미러를 들고 있는데 PATH 만 보면 못 찾아 조회 저장소에 Nexus 가 빠졌다.
 
-    Maven's global settings file (`MAVEN_HOME` / `M2_HOME` / the installation behind `mvn` on PATH), else None."""
+    Maven's global settings file: `MAVEN_HOME` / `M2_HOME`, the installation behind the configured `build.mvn` (a path,
+    or resolved like the build runner does) or `mvn` on PATH; None when none has `conf/settings.xml`."""
     try:
         import shutil
         homes: list[Path] = []
@@ -297,9 +300,19 @@ def global_settings_file() -> Optional[Path]:
             v = os.environ.get(var)
             if v:
                 homes.append(Path(v))
-        exe = shutil.which("mvn") or shutil.which("mvn.cmd")
+        exe: Optional[str] = None
+        if cfg is not None and getattr(getattr(cfg, "build", None), "mvn", None):
+            try:
+                from .mvn import mvn_executable
+                exe = mvn_executable(cfg)                      # the same resolution the build runner uses
+            except Exception as e:  # noqa: BLE001 - fall back to PATH
+                log.debug("global_settings_file: build.mvn not resolved: %s", e)
+                exe = None
+            if exe and not Path(exe).expanduser().exists():
+                exe = None
+        exe = exe or shutil.which("mvn") or shutil.which("mvn.cmd")
         if exe:
-            real = Path(exe).resolve()
+            real = Path(exe).expanduser().resolve()
             homes += [real.parent.parent, real.parent.parent / "libexec"]
         for h in homes:
             f = h / "conf" / "settings.xml"
@@ -814,7 +827,7 @@ class RepositoryLookup:
                 user = Path.home() / ".m2" / "settings.xml"
                 if user.is_file():
                     files.append((user, "~/.m2/settings.xml"))
-            g = global_settings_file()
+            g = global_settings_file(self.cfg)
             if g is not None and all(g.resolve() != f.resolve() for f, _o in files if f.exists()):
                 files.append((g, "global settings"))
             datas: list[tuple[SettingsData, str]] = []

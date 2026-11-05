@@ -3925,3 +3925,34 @@ carries the g:a), so every version-less artifact of every project shares ONE cas
 scripts written for different artifacts. The errors the pre-try cannot fill (an obsolete Spring artifact to remove, a company
 artifact) are per-artifact problems; `pom_invalid|missing_version|<g:a>` as the L2 would give each its own case — a signature change
 that orphans the stored case (see the KB-matching review: `kb reindex --resign` first).
+
+## v2.1z-z — a pom fix that uncovers the next build stage is not a regression; the global settings behind `build.mvn` (2026-11-05)
+
+**Why (company run, 2026-11-05, continued).** The `spring-dao … is missing` error sat in `xxx-back/pom.xml` itself (Maven's tail
+`@ line 506, column 21`, no path) and the LLM's script did remove it — the attempt was **reverted by the scorer**: once the
+stage-0 pom problem was gone the build advanced to dependency resolution and reported `Could not find artifact
+<group>:SSOClient_Common:jar:1.0.0` for the first time; `dependency_resolution` is a structural kind the previous build had never
+reached, and the rule "a new structural error kind after a pom edit → regressed regardless of counts" (round 10: a made-up
+dependency masked every compile error) reverted the fix. Next round the same error, another augment — the case reached script
+version 24. And the repository lookup had no Nexus: `sbmig repo-probe` listed only a pom repository and Central, because the
+company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and the Nexus mirror lives in that installation's
+`conf/settings.xml`, which `global_settings_file()` looked for only through `MAVEN_HOME` / `M2_HOME` / PATH.
+
+**Rules.**
+* `BuildFixLoop._uncovered_stage`: when a pom-editing attempt removed EVERY targeted error and all the new structural errors are
+  of a LATER stage than the targets (`STAGE`: pom 0 → dependency / plugin resolution 1 → enforcer 2 → compile 3 …), they were
+  hidden behind the fixed problem, not caused by the attempt: the attempt is scored by the normal rules (improved), with the note
+  `the build advanced past the fixed pom problem: N <kinds> error(s) of a later stage were hidden behind it — not a regression of
+  this attempt`. A new structural kind of the same or an earlier stage, or targets still present, keep the old verdict (regressed →
+  reverted). Tests `tests/loop/test_blocked_flow.py` (pom problem → dependency problem uncovered → improved, kept; dependency
+  problem fixed → plugin problem of the same stage → reverted).
+* `global_settings_file(cfg)`: the Maven installation is also taken from the configured `build.mvn` (resolved like the build runner,
+  `mvn_executable`), so `<that installation>/conf/settings.xml` joins the settings files; `RepositoryLookup.repository_urls` passes
+  its config. Test `tests/build/test_repo_versions.py` (a `bin/mvn.cmd` path off PATH → its conf/settings.xml mirror is the lookup's
+  URL; a bare `mvn` PATH does not know → Central only, as before).
+
+**Operator note.** When `sbmig repo-probe` does not list the company Nexus, the lookup set is wrong for every library: set
+`build.repository_url` (the group URL) — and `build.settings_file` when the settings are not at `~/.m2/settings.xml` — in the
+company yml; `config/settings.nexus.example.xml` says the same. A bundled jar whose coordinates sbmig could not read (no
+`pom.properties`) is declared with placeholder coordinates `<project group>:<jar stem>:<file version>`; Nexus answers 404 for those
+even when it holds the jar under its real coordinates — the real ones go into `<kb>/jar_names.yml`.

@@ -119,6 +119,8 @@ errors.md 표의 열: `# | seen | status | case | file:line | message | tries | 
 | `llm call provider=company … attempt n/m → POST <url> (prompt N chars, timeout Ts)` | LLM 요청. 끝나면 `llm call provider=company model=… in=… out=… latency=… finish=…` |
 | `llm company transport error (attempt n/m): … cause=<예외>` | 전송 실패. `cause=` 뒤가 원인 클래스 |
 | `thread turn (session <id>): sent N chars in K message(s) → prompt_tokens=T` | 케이스 스레드 턴 측정(`llm.case_thread`) |
+| 시도 메모 `the build advanced past the fixed pom problem: … not a regression of this attempt` | pom 문제를 없앤 시도 뒤 다음 단계 오류가 처음 보인 것 — 되돌리지 않고 개선으로 채점 |
+| 시도 메모 `regressed: structural error kind(s) … appeared after this attempt edited a pom.xml → reverted` | pom 편집 뒤 같은/더 이른 단계의 새 구조적 오류 종류 — 되돌림 |
 | `수정: <path> <줄> — <변경>` | 적용된 변경 하나(INFO) |
 | `메이저 업그레이드: … — 운영자 확인 필요` | 메이저 버전 변경(되돌리지 않음, Handover 로) |
 | `build N: K error(s); 새 에러 X건 추가; resolved …` / `build N: BUILD SUCCESS` | 라운드 빌드 요약 |

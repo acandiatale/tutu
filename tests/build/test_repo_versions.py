@@ -33,7 +33,7 @@ def _no_user_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("MAVEN_HOME", raising=False)
     monkeypatch.delenv("M2_HOME", raising=False)
-    monkeypatch.setattr("sbmig.build.repo_versions.global_settings_file", lambda: None)   # v2.1z-e: no global settings
+    monkeypatch.setattr("sbmig.build.repo_versions.global_settings_file", lambda *_a, **_k: None)   # v2.1z-e: no global settings
 
 
 def _cfg(tmp_path: Path, **build) -> Config:
@@ -482,12 +482,32 @@ def test_the_global_settings_are_read_when_the_user_has_none(tmp_path, monkeypat
     assert [u for u, _c, _o in RepositoryLookup(_cfg(tmp_path), fetch=FakeFetch({})).repository_urls()] == [REPO]
 
 
-def _real_global_settings_file():
+def _real_global_settings_file(cfg=None):
     """The module's real `global_settings_file` (the autouse fixture replaces it with a no-op)."""
-    import importlib
-    import sbmig.build.repo_versions as rv_mod
-    src = importlib.reload  # noqa: F841 - keep a reference to the real function below without reloading the module
-    return _GLOBAL_SETTINGS_REAL()
+    return _GLOBAL_SETTINGS_REAL(cfg)
+
+
+def test_the_global_settings_behind_the_configured_mvn_path_are_read(tmp_path, monkeypatch):
+    """2026-11-05 (company PC): Maven is not on PATH — `build.mvn` holds the full path of `bin/mvn.cmd`; the Nexus mirror lives
+    in that installation's conf/settings.xml, so the lookup must find it through build.mvn, not only through PATH / MAVEN_HOME."""
+    home = tmp_path / "tools" / "apache-maven-3.9.9"
+    (home / "bin").mkdir(parents=True)
+    (home / "conf").mkdir()
+    exe = home / "bin" / "mvn.cmd"
+    exe.write_text("@echo off\n", encoding="utf-8")
+    (home / "conf" / "settings.xml").write_text(SETTINGS % "company-nexus", encoding="utf-8")
+    monkeypatch.delenv("MAVEN_HOME", raising=False)
+    monkeypatch.delenv("M2_HOME", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    from sbmig.build import repo_versions as rv_mod
+    monkeypatch.setattr(rv_mod, "global_settings_file", _real_global_settings_file)
+    look = RepositoryLookup(_cfg(tmp_path, mvn=str(exe)), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in look.repository_urls()] == [REPO]
+    assert look.settings_files == [f"{home / 'conf' / 'settings.xml'} (global settings)"]
+    assert look.repository_urls()[0][2].startswith("settings mirror 'company-nexus'")
+    # a bare `mvn` that PATH does not know: no global settings, Central only — as before
+    look2 = RepositoryLookup(_cfg(tmp_path, mvn="mvn"), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in look2.repository_urls()] == [CENTRAL]
 
 
 import sbmig.build.repo_versions as _rv_module  # noqa: E402

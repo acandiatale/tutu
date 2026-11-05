@@ -560,6 +560,8 @@ class LoopConfig(BaseModel):
         "pom_invalid", "parent_resolution", "plugin_resolution", "dependency_resolution"])
                                              # appearing after a pom edit ⇒ revert regardless of count (round 10: a
                                              # made-up dependency an LLM added masked every compile error)
+                                             # except (2026-11-05) the LATER-stage errors a fixed pom problem had hidden —
+                                             # every target gone + new structural kinds all of a later stage = uncovered
 
 
 BUILTIN_LLM_PROVIDERS = ("company", "openai_compatible", "anthropic", "fake")

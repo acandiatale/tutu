@@ -1652,7 +1652,15 @@ class BuildFixLoop:
             pom_touched = any(t.rsplit("/", 1)[-1] == "pom.xml" for t in touched)
             # pom 을 고친 시도 뒤에 새 구조적 오류 종류(pom 무효,
             # 의존성 해결 실패 등)가 나타나면 숫자와 상관없이 되돌린다
-            if new_struct and pom_touched:
+            uncovered = self._uncovered_stage(a, left_of[id(a)], real, new_struct) if new_struct and pom_touched else []
+            if uncovered:
+                # 2026-11-05 (회사 실행): 버전 없는 spring-dao(0단계 pom 문제)를 지운 스크립트 뒤에 빌드가 1단계(의존성 해결)로
+                # 나아가 처음으로 "Could not find artifact" 를 보였다 — 이 시도가 만든 오류가 아니라 pom 문제가 가리고 있던 다음 단계.
+                # 24번 되돌리던 구멍: 대상이 전부 사라졌고 새 구조적 오류가 모두 더 뒤 단계면 악화가 아니다
+                kinds = ", ".join(sorted({e.kind.value for e in uncovered}))
+                a.notes.append(f"the build advanced past the fixed pom problem: {len(uncovered)} {kinds} error(s) of a later "
+                               "stage were hidden behind it — not a regression of this attempt")
+            elif new_struct and pom_touched:
                 a.outcome = "regressed"
                 a.notes.append(f"regressed: structural error kind(s) {', '.join(new_struct)} appeared after this "
                                "attempt edited a pom.xml → reverted regardless of error counts")
@@ -1751,6 +1759,24 @@ class BuildFixLoop:
                              "cluster": p.attempt.cluster_id, "outcome": p.attempt.outcome,
                              "cluster_resolved": p.attempt.cluster_resolved, "errors_after": total})
         return reverted
+
+    @staticmethod
+    def _uncovered_stage(a: FixAttempt, left_targeted: tuple[int, int], real: list[BuildError],
+                         new_struct: list[str]) -> list[BuildError]:
+        """pom 을 고친 시도가 대상 오류를 **전부** 없앴고, 새로 나타난 구조적 오류가 **모두 대상보다 뒤 단계**(pom 문제 0 → 의존성
+        해결 1)이면 그 오류들 — 시도가 만든 악화가 아니라 pom 문제가 가리고 있던 다음 단계다. 아니면 [](평소 규칙: 되돌림).
+
+        The new structural errors when a pom-editing attempt removed EVERY targeted error and all of them are of a LATER
+        stage than the targets (a stage-0 pom problem fixed → stage-1 dependency resolution now visible): uncovered, not
+        caused. [] otherwise (a new structural error of the same or an earlier stage is the regression it always was)."""
+        left, _targeted = left_targeted
+        if left:
+            return []
+        stage = _stage_of(a.cluster_errors)
+        new = [e for e in real if e.kind.value in new_struct]
+        if not new or any((error_stage(e) if error_stage(e) is not None else 99) <= stage for e in new):
+            return []
+        return new
 
     # ------------------------------------------------------------------ fixing
     def _kb_match(self, cluster: ErrorCluster) -> KBMatch:
