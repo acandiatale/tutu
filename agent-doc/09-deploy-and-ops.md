@@ -96,7 +96,7 @@ Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secre
 
 환경 변수는 ConfigMap `sbmig-env`(비밀 아닌 것: 웹 파드 동작 `SBMIG_WEB_*` / `SBMIG_MAX_UPLOAD_MB`, LLM 게이트웨이 주소·에셋 id·role
 이름, 설정 덮어쓰기 `SBMIG_<섹션>__<키>` — 예 `SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE`, `SBMIG_LLM__CASE_THREAD`)와 Secret `sbmig-llm`(토큰,
-`NEXUS_USER` / `NEXUS_PASSWORD`)에 나눠 둔다. 전체 표는 `deploy/README.md` 의 "env 목록" 절. 모르는 키 이름은 시작 로그에
+`NEXUS_USER` / `NEXUS_PASSWORD`)에 나눠 둔다. 전체 표는 `deploy/ENV.md`(인프라팀 전달용) 와 `deploy/README.md` 의 "env 목록" 절. 모르는 키 이름은 시작 로그에
 `config: … is not a known key` 로 뜬다.
 
 `deploy/k8s/10-storage.yaml`(PVC 둘: `/data` = 업로드·실행·KB·LLM 기록, `~/.m2`), `20-configmap`, `30-secret`, `deploy/k8s/40-deployment.yaml`
