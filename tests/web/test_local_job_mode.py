@@ -1,0 +1,132 @@
+"""2026-11-05 (the user: "로컬 개발에서는 파드 생성이 들어가면 안 돌거니까 … 개발 모드일 때는 파드 생성 없이"): `SBMIG_WEB_MODE=local-job`
+runs the Job-mode flow with a local subprocess as the pod — and `k8s-job` outside a cluster falls back to it with one warning.
+The subprocess here is a tiny script that writes what `sbmig run` writes (journal, log, report) and honours stop.request."""
+from __future__ import annotations
+
+import json
+import logging
+import shutil
+import stat
+import sys
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from sbmig.core.config import PACKAGE_ROOT
+from sbmig.web import create_app
+from sbmig.web.localjob import LocalJobClient
+from sbmig.web.runs import RunManager
+
+from .test_app import _manager, _sse, _start
+
+TEMPLATE = Path(__file__).resolve().parents[2] / "deploy" / "k8s" / "81-web-job.template.yaml"
+FAKE_RUN = r'''
+import json, os, sys, time, datetime
+args = sys.argv[1:]
+out = args[args.index("--out") + 1]; rid = args[args.index("--run-id") + 1]
+rd = os.path.join(out, rid); os.makedirs(rd, exist_ok=True)
+ts = lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+def j(ev):
+    with open(os.path.join(rd, "journal.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"ts": ts(), **ev}) + "\n")
+with open(os.path.join(rd, "sbmig.log"), "a", encoding="utf-8") as fh:
+    fh.write("2026-11-05 22:00:00,000 INFO [intake] fake run " + " ".join(args) + "\n")
+for node, phase in (("intake", "intake"), ("analyze", "analyze"), ("plan", "plan")):
+    j({"event": "graph_node_end", "node": node, "phase": phase, "phases": ["verify"] if node == "plan" else None})
+    if os.path.isfile(os.path.join(rd, "stop.request")):
+        j({"event": "stop_request", "node": node}); j({"event": "graph_node_end", "node": "finalize", "phase": None, "aborted": "stopped by user"})
+        open(os.path.join(rd, "report.md"), "w").write("# aborted\n"); sys.exit(3)
+    time.sleep(float(os.environ.get("FAKE_STEP_S", "0.05")))
+if os.environ.get("FAKE_WAIT_FOR_STOP") == "1":
+    for _ in range(200):
+        if os.path.isfile(os.path.join(rd, "stop.request")):
+            j({"event": "stop_request", "node": "phase"}); open(os.path.join(rd, "report.md"), "w").write("# aborted\n"); sys.exit(3)
+        time.sleep(0.05)
+j({"event": "graph_node_end", "node": "phase", "phase": "verify", "phases": []})
+j({"event": "graph_node_end", "node": "finalize", "phase": None})
+open(os.path.join(rd, "report.md"), "w").write("# report\n\nBUILD SUCCESS\n")
+open(os.path.join(rd, "report.json"), "w").write(json.dumps({"success": True, "blocked": [], "unresolved": [], "llm_usage": {"calls": 1}}))
+with open(os.path.join(rd, "sbmig.log"), "a", encoding="utf-8") as fh:
+    fh.write("SBMIG-RESULT ok fake\n")
+sys.exit(int(os.environ.get("FAKE_RC", "0")))
+'''
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "config").mkdir(parents=True)
+    shutil.copy(PACKAGE_ROOT / "config" / "artifacts.local-e2e.yml", repo / "config" / "artifacts.local-e2e.yml")
+    (repo / "config" / "default.yml").write_text("x: 1\n")
+    return repo
+
+
+@pytest.fixture
+def fake_cmd(tmp_path: Path):
+    script = tmp_path / "fake_run.py"
+    script.write_text(FAKE_RUN, encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return lambda env: [sys.executable, str(script), env["SBMIG_SOURCE_ZIP"], "--out", env["SBMIG_OUT"], "--run-id", env["SBMIG_RUN_ID"]]
+
+
+def _wait(mgr: RunManager, rid: str, state: str, timeout: float = 10.0) -> None:
+    deadline = time.time() + timeout
+    while mgr.status(rid)["state"] != state and time.time() < deadline:
+        time.sleep(0.02)
+
+
+def test_local_job_mode_runs_the_pod_as_a_subprocess_and_the_ui_sees_the_same_events(tmp_path: Path, repo: Path, fake_cmd, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    jc = LocalJobClient(repo, command_factory=fake_cmd)
+    client = TestClient(create_app(tmp_path / "out", repo, mode="local-job", job_client=jc))
+    rid = _start(client, "name=my%20proj.zip&configs=artifacts.local-e2e.yml")
+    events = _sse(client, rid)
+    nodes = [d for k, d in events if k == "node"]
+    job_states = [d["update"]["state"] for d in nodes if d["node"] == "job"]
+    assert job_states[0] == "created" and "running" in job_states and job_states[-1] == "succeeded"
+    assert [d["node"] for d in nodes if d["node"] != "job"] == ["intake", "analyze", "plan", "phase", "finalize"]
+    st = [d for k, d in events if k == "status"][-1]
+    assert st["state"] == "finished" and st["exit_code"] == 0 and st["mode"] == "local-job" and st["job"]["pod"].startswith("local-")
+    run_dir = tmp_path / "out" / rid
+    assert (run_dir / "source.zip").is_file() and (run_dir / "job-status.json").is_file() and (run_dir / "job-local.log").is_file()
+    assert json.loads((run_dir / "job-status.json").read_text())["exit_code"] == 0
+    assert client.get(f"/api/runs/{rid}/files/report.md").text.startswith("# report")
+    run = _manager(client).runs[rid]
+    assert ("finished", {"exit_code": 0, "success": True}) in run.history
+
+
+def test_the_real_command_is_what_run_job_sh_runs(repo: Path):
+    jc = LocalJobClient(repo)
+    cmd = jc._command({"SBMIG_SOURCE_ZIP": "/d/out/r1/source.zip", "SBMIG_OUT": "/d/out", "SBMIG_RUN_ID": "r1",
+                       "SBMIG_CONFIG": "/app/config/a.yml /app/config/b.yml", "SBMIG_STOP_AFTER": "plan", "SBMIG_LLM_PROVIDER": "fake"})
+    assert cmd[1:] == ["-m", "sbmig.cli", "run", "/d/out/r1/source.zip", "--out", "/d/out", "--run-id", "r1",
+                       "--config", "/app/config/a.yml", "--config", "/app/config/b.yml", "--stop-after", "plan", "--llm-provider", "fake"]
+
+
+def test_stop_request_reaches_the_local_pod(tmp_path: Path, repo: Path, fake_cmd, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    monkeypatch.setenv("FAKE_WAIT_FOR_STOP", "1")
+    mgr = RunManager(tmp_path / "out", repo, mode="local-job", job_client=LocalJobClient(repo, command_factory=fake_cmd),
+                     job_template=TEMPLATE)
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    _wait(mgr, rid, "running")
+    time.sleep(0.3)                                          # let the fake reach its waiting loop
+    assert mgr.stop(rid) and mgr.runs[rid].done.wait(10)
+    assert mgr.runs[rid].exit_code == 3 and (tmp_path / "out" / rid / "stop.request").is_file()
+    assert (tmp_path / "out" / rid / "report.md").read_text().startswith("# aborted")
+
+
+def test_k8s_job_outside_a_cluster_falls_back_to_local_job_with_a_warning(tmp_path: Path, repo: Path, monkeypatch, caplog):
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    with caplog.at_level(logging.WARNING, logger="sbmig.web"):
+        mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
+    assert mgr.mode == "k8s-job" and mgr.effective_mode == "local-job"
+    assert any("not inside a Kubernetes cluster" in r.getMessage() and "LOCAL subprocesses" in r.getMessage() for r in caplog.records)
+    assert isinstance(mgr._job_client_or_fail(), LocalJobClient)
+    # with an explicit client (the cluster, or a test fake) nothing degrades
+    class _C:
+        namespace = "ns"
+    mgr2 = RunManager(tmp_path / "out2", repo, mode="k8s-job", job_client=_C(), job_template=TEMPLATE)
+    assert mgr2.effective_mode == "k8s-job"

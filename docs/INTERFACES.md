@@ -4052,6 +4052,14 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   kb.dir), records beside the run, no push, `job-status.json`. Manifests: `81-web-job.template.yaml` (same PVC `/data`, RWX),
   `40-deployment.yaml` `serviceAccountName: sbmig-web` (commented until the mode is on), `10-storage.yaml` RWX note,
   `20-configmap.yaml` commented keys; docs deploy/README §3 (켜는 법, 있는 것 / 다음 것), deploy/ENV.md rows, agent-doc/03 + 09.
+  **Development without a cluster (same night, the user: "개발 모드일 때는 파드 생성 없이"):** `SBMIG_WEB_MODE=local-job`, and
+  `k8s-job` outside a cluster (`in_cluster_available()` false, no injected client) degrades to it with one WARNING
+  (`RunManager.effective_mode`, reported as `status.mode`); `sbmig/web/localjob.py LocalJobClient` implements the same three
+  calls with a subprocess: `create_job` runs the command run-job.sh would run (`python -m sbmig.cli run <zip> --out … --run-id …
+  --config …` + stop_after / llm_provider) with stdout in `<run dir>/job-local.log`, `job_state` maps the process (Running →
+  Succeeded for sbmig exit 0 / 2, Failed otherwise) and writes `job-status.json` like run-job.sh, `delete_job` terminates it; a
+  missing template file is replaced by a minimal manifest in local-job mode. Tests: tests/web/test_local_job_mode.py (a fake
+  `sbmig run` script honouring stop.request; the real command line; stop reaches the local pod; the fallback and its warning).
   Not built yet: three parallel Jobs (queue width + KB locking), the external intake API (`/api/migrations`, remediation's
   contract: zip + project_name / name + Idempotency-Key), cluster measurements.
 

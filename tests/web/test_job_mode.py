@@ -172,8 +172,12 @@ def test_server_shutdown_leaves_the_job_running(tmp_path: Path, repo: Path, monk
 
 
 def test_outside_a_cluster_the_run_fails_readably(tmp_path: Path, repo: Path, monkeypatch):
-    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
-    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)        # no client → in_cluster() fails
+    """A pod that says it is in a cluster (KUBERNETES_SERVICE_HOST) but has no usable service account: the run fails readably
+    (outside a cluster the mode degrades to local-job instead — tests/web/test_local_job_mode.py)."""
+    import sbmig.web.runs as runs_mod
+    monkeypatch.setattr(runs_mod, "in_cluster_available", lambda: True)              # no degrade …
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)                        # … but in_cluster() cannot build a client
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
     rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
     assert mgr.runs[rid].done.wait(5)
     assert mgr.runs[rid].exit_code == 3 and "not inside a Kubernetes cluster" in (mgr.runs[rid].error or "")

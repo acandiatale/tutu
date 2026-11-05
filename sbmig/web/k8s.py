@@ -30,8 +30,16 @@ POLL_ENV = "SBMIG_JOB_POLL_S"
 STOP_GRACE_ENV = "SBMIG_JOB_STOP_GRACE_S"
 DEFAULT_TEMPLATE = "deploy/k8s/81-web-job.template.yaml"
 SA_DIR = Path("/var/run/secrets/kubernetes.io/serviceaccount")
-MODES = ("in-process", "k8s-job")
+MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow with a local subprocess as the "pod" (development)
 TERMINAL_PHASES = ("Succeeded", "Failed", "Missing")
+
+
+def in_cluster_available() -> bool:
+    """이 프로세스가 클러스터 안 파드인가(``KUBERNETES_SERVICE_HOST`` + 서비스 계정 토큰). 개발 PC 에서는 False —
+    ``k8s-job`` 모드가 자동으로 ``local-job`` 으로 내려가는 기준.
+
+    Are we a pod inside a cluster (`KUBERNETES_SERVICE_HOST` + the service-account token)? False on a developer PC."""
+    return bool(os.environ.get("KUBERNETES_SERVICE_HOST")) and (SA_DIR / "token").is_file()
 
 
 class K8sError(RuntimeError):

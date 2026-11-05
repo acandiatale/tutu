@@ -120,6 +120,8 @@ kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe
 사이에서 멈춘다(최종 빌드 없음, 종료 3); `SBMIG_JOB_STOP_GRACE_S`(600) 뒤에도 돌면 Job 삭제. 웹 파드 재시작 때 Job 은 그대로 돈다.
 큐는 그대로라 Job 도 한 번에 하나(병렬 3 개는 다음 단계). 쿠버네티스 API 는 `sbmig/web/k8s.py`(requests + 서비스 계정 토큰·CA, `kubernetes`
 패키지 없음)로 Job 생성·상태·삭제만 부른다 — 권한은 `deploy/k8s/45-web-rbac.yaml`. 켜는 순서는 `deploy/README.md` §3 "켜는 법".
+개발 PC: `k8s-job` 인데 클러스터 밖이면 자동으로 `local-job`(`sbmig/web/localjob.py`, 파드 자리에 로컬 서브프로세스 `sbmig run --run-id …`)으로
+내려가 같은 흐름이 파드 없이 돈다(`--mode local-job` 으로 직접 고를 수도 있다).
 
 조각:
 

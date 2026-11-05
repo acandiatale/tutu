@@ -138,6 +138,11 @@ env 가 아닌 것: `company.yml` 과 `settings.xml`(ConfigMap `sbmig-config`, �
 멈춤 = 웹이 `<run dir>/stop.request` 를 쓴다 → 파드의 엔진이 노드 사이에서 멈춘다(최종 빌드 없음, 보고서는 aborted, 종료 3). 유예
 `SBMIG_JOB_STOP_GRACE_S`(600 초) 안에 안 끝나면 Job 을 지운다. 웹 파드가 재시작되어도 Job 은 계속 돌고, 다음 서버는 폴더(`job-status.json`)로 답한다.
 
+**개발 PC 에서는 파드 없이 같은 흐름이 돈다.** `SBMIG_WEB_MODE=k8s-job` 인데 클러스터 밖이면(`KUBERNETES_SERVICE_HOST` 없음) 자동으로
+`local-job` 으로 내려가 경고 한 줄을 찍고(`status.mode` 도 `local-job`), 파드 자리에 로컬 서브프로세스 `python -m sbmig.cli run <zip> --out … --run-id …`
+를 띄운다(`sbmig/web/localjob.py`; 표준 출력은 `<run dir>/job-local.log`). 실행 폴더·저널 tail·'파드' 단계·`stop.request`·`job-status.json` 까지 운영과
+같은 코드가 돌아서, 배포 없이 노트북에서 Job 모드를 시험한다. `sbmig serve --mode local-job` 으로 직접 고를 수도 있다.
+
 ### 두 파드가 하는 일
 
 | | 웹 파드 (Agent) | 빌드 Job 파드 |

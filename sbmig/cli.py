@@ -421,7 +421,9 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
                                                      "accepted (trusted intranet only; default: $SBMIG_WEB_OPEN=1)"),
               mode: Optional[str] = typer.Option(None, "--mode",
                                                  help="in-process (default) | k8s-job: one Kubernetes Job per upload, zip / "
-                                                      "results / KB on the shared volume (default: $SBMIG_WEB_MODE)"),
+                                                      "results / KB on the shared volume | local-job: the same flow with a local "
+                                                      "subprocess as the pod (development; k8s-job falls back to it outside a "
+                                                      "cluster) (default: $SBMIG_WEB_MODE)"),
               config: Optional[List[str]] = typer.Option(None, "--config", "-c",
                                                          help="config/*.yml name every upload runs with (repeatable; "
                                                               "default: $SBMIG_WEB_CONFIGS, else artifacts.yml / "

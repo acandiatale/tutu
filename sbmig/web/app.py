@@ -346,8 +346,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
         log.info("sbmig web UI ready (runs under %s, configs from %s/config, default configs %s, upload limit %s, %s, mode %s%s)",
                  mgr.out_dir, mgr.repo_root, ",".join(mgr.default_configs()) or "- (default.yml only)",
-                 describe_max_upload(max_upload), access, mgr.mode,
-                 f" — job template {mgr.job_template}" if mgr.mode == "k8s-job" else "")
+                 describe_max_upload(max_upload), access, mgr.effective_mode,
+                 f" — job template {mgr.job_template}" if mgr.effective_mode in ("k8s-job", "local-job") else "")
         if open_network and not token:
             log.warning("sbmig web UI is open to the network WITHOUT a token (%s): anyone who reaches it can download "
                         "result.zip (company source) and upload poms whose plugins Maven runs here — trusted intranet only",

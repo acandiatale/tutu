@@ -78,6 +78,7 @@ from sbmig.web.k8s import (
     TEMPLATE_ENV,
     K8sClient,
     K8sError,
+    in_cluster_available,
     render_job,
 )
 
@@ -216,7 +217,14 @@ class RunManager:
         self.mode = (mode or os.environ.get(MODE_ENV, "") or "in-process").strip()
         if self.mode not in MODES:
             raise ValueError(f"{MODE_ENV} must be one of {', '.join(MODES)}, not {self.mode!r}")
-        self._job_client = job_client                     # None → K8sClient.in_cluster() on the first Job
+        # 개발 PC(2026-11-05, 사용자: "개발 모드일 때는 파드 생성 없이"): k8s-job 으로 설정돼 있어도 클러스터 밖이면 local-job —
+        # 같은 Job 모드 흐름, 파드 자리는 로컬 서브프로세스. 운영 파드에서는 KUBERNETES_SERVICE_HOST 가 항상 있어 내려가지 않는다
+        self.effective_mode = self.mode
+        if self.mode == "k8s-job" and job_client is None and not in_cluster_available():
+            self.effective_mode = "local-job"
+            log.warning("%s=k8s-job but this process is not inside a Kubernetes cluster — running the Job mode with LOCAL "
+                        "subprocesses instead (development); status.mode says local-job", MODE_ENV)
+        self._job_client = job_client                     # None → K8sClient.in_cluster() / LocalJobClient on the first Job
         self.job_template = Path(job_template or os.environ.get(TEMPLATE_ENV, "") or (self.repo_root / DEFAULT_TEMPLATE))
         self.job_poll_s = max(0.05, float(os.environ.get(POLL_ENV, "2") or 2))
         self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "600") or 600))
@@ -312,7 +320,7 @@ class RunManager:
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
         run_id = f"web-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-        if self.mode == "k8s-job":
+        if self.effective_mode in ("k8s-job", "local-job"):
             return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider)
         uploads = self.out_dir / "_uploads"
         uploads.mkdir(parents=True, exist_ok=True)
@@ -361,7 +369,7 @@ class RunManager:
         zip_path = run_dir / SOURCE_ZIP
         Path(incoming).replace(zip_path)
         run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True)
-        _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": "k8s-job", "upload": safe_name,
+        _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": self.effective_mode, "upload": safe_name,
                                   "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider})
         run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run_id}", daemon=True)
         with self._lock:
@@ -374,8 +382,9 @@ class RunManager:
             with self._lock:
                 self.runs.pop(run_id, None)
             raise
-        log.info("run %s queued as a k8s Job: %s configs=%s stop_after=%s", run_id, safe_name, ",".join(configs) or "-",
-                 stop_after or "-")
+        log.info("run %s queued as a %s: %s configs=%s stop_after=%s", run_id,
+                 "k8s Job" if self.effective_mode == "k8s-job" else "local job (development)", safe_name,
+                 ",".join(configs) or "-", stop_after or "-")
         return run_id
 
     def _worker(self, run: Run) -> None:
@@ -431,7 +440,11 @@ class RunManager:
 
     def _job_client_or_fail(self) -> Any:
         if self._job_client is None:
-            self._job_client = K8sClient.in_cluster()
+            if self.effective_mode == "local-job":
+                from sbmig.web.localjob import LocalJobClient
+                self._job_client = LocalJobClient(self.repo_root)
+            else:
+                self._job_client = K8sClient.in_cluster()
         return self._job_client
 
     def _run_job(self, run: Run) -> int:
@@ -454,7 +467,11 @@ class RunManager:
                 env["SBMIG_STOP_AFTER"] = run.stop_after
             if run.llm_provider:
                 env["SBMIG_LLM_PROVIDER"] = run.llm_provider
-            manifest = render_job(self.job_template, run.run_id, env, getattr(client, "namespace", None))
+            template: Any = self.job_template
+            if self.effective_mode == "local-job" and not Path(self.job_template).is_file():
+                # the local "pod" needs only the env: a minimal manifest stands in for a template the checkout may lack
+                template = {"kind": "Job", "metadata": {}, "spec": {"template": {"spec": {"containers": [{"name": "build"}]}}}}
+            manifest = render_job(template, run.run_id, env, getattr(client, "namespace", None))
             name = client.create_job(manifest)
             run.job_name = name
             _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name,
@@ -610,7 +627,7 @@ class RunManager:
         run = self.runs.get(run_id)
         rd = self.run_dir(run_id)
         info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
-                                "mode": self.mode}
+                                "mode": self.effective_mode}
         if run is not None:
             info["state"] = "finished" if run.done.is_set() else ("running" if run.active.is_set() else "queued")
             info["exit_code"] = run.exit_code
