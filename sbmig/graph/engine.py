@@ -111,19 +111,54 @@ def _journal_node(orch: Orchestrator, node: str, phase: str | None = None) -> No
     orch.ws.journal({"event": "graph_node", "node": node, "phase": phase})
 
 
-def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[MigrationState], dict]
-            ) -> Callable[[MigrationState], dict]:
-    """노드 함수를 로그 단계(`name` 또는 `name(state)`) 안에서 돌린다. LangGraph 가 노드를 복사된 컨텍스트의
-    실행 스레드에서 돌릴 수 있어서 단계를 노드 안에서 설정하고, 노드가 어떻게 끝나든 되돌린다.
+# 2026-11-05 (쿠버네티스 Job 모드): 웹 파드와 Job 파드가 같은 볼륨을 쓴다 — 웹은 실행 폴더의 이 파일로 멈춤을 요청하고(파드 안
+# 프로세스에 신호를 보낼 수 없다), 엔진은 노드 사이에서 이 파일을 본다. 웹의 자기 프로세스 멈춤과 같은 의미: 지금 노드까지만, 최종 빌드 없음
+# k8s Job mode: the web pod asks a run in another pod to stop by writing this file into the shared run directory;
+# the engine checks it between nodes — same semantics as the in-process stop (no final build, report flagged aborted)
+STOP_REQUEST_FILE = "stop.request"
+STOP_REQUEST_REASON = "stopped by user (stop.request) — the final `mvn clean package` did not run"
 
-    The node `fn` inside its log stage (`name`, or `name(state)`); the stage is reset however the node ends."""
+
+def stop_requested(orch: Orchestrator) -> bool:
+    """실행 폴더에 ``stop.request`` 가 있나(Job 모드의 멈춤 요청). 예외 없음.
+
+    Is the run directory's `stop.request` present (the Job-mode stop request)? Never raises."""
+    try:
+        return (orch.ws.run_dir / STOP_REQUEST_FILE).is_file()
+    except Exception:  # noqa: BLE001 - an unreadable run dir is not a stop request
+        return False
+
+
+def _journal_node_end(orch: Orchestrator, node: str, out: dict) -> None:
+    """노드 끝을 저널에 남긴다(event graph_node_end: node, phase, phases, aborted, stopped) — Job 모드의 웹이 이 줄을 화면의
+    ``node`` 이벤트로 바꾼다(자기 프로세스 실행은 stream_graph 의 갱신을 직접 받는다). 예외 없음."""
+    try:
+        orch.ws.journal({"event": "graph_node_end", "node": node, "phase": out.get("phase"),
+                         "phases": out.get("phases"), "aborted": out.get("aborted"), "stopped": out.get("stopped")})
+    except Exception:  # noqa: BLE001 - a journal line never fails a node
+        log.debug("graph_node_end journal line for %s not written", node, exc_info=True)
+
+
+def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[MigrationState], dict],
+            orch: Orchestrator | None = None) -> Callable[[MigrationState], dict]:
+    """노드 함수를 로그 단계(`name` 또는 `name(state)`) 안에서 돌린다. LangGraph 가 노드를 복사된 컨텍스트의
+    실행 스레드에서 돌릴 수 있어서 단계를 노드 안에서 설정하고, 노드가 어떻게 끝나든 되돌린다. ``orch`` 를 주면 노드가
+    끝날 때 ``graph_node_end`` 저널 줄을 남긴다(Job 모드의 화면용).
+
+    The node `fn` inside its log stage (`name`, or `name(state)`); the stage is reset however the node ends. With
+    `orch`, a `graph_node_end` journal line follows every node (the Job-mode UI reads it)."""
+    node_id = getattr(fn, "__name__", "node")
+
     def node(state: MigrationState) -> dict:
         token = set_stage(name(state) if callable(name) else name)
         try:
-            return fn(state)
+            out = fn(state)
+            if orch is not None:
+                _journal_node_end(orch, node_id, out or {})
+            return out
         finally:
             reset_stage(token)
-    node.__name__ = getattr(fn, "__name__", "node")
+    node.__name__ = node_id
     return node
 
 
@@ -134,12 +169,31 @@ def build_graph(orch: Orchestrator) -> Any:
 
     Compiled `StateGraph(MigrationState)` driving `orch`'s steps. The returned graph is bound to `orch`; it
     must run inside an orchestrator run (`orch.run()`, or `run_graph` / `stream_graph`, which open one)."""
-    holder: dict[str, Any] = {"groups": [], "planned": False}
+    holder: dict[str, Any] = {"groups": [], "planned": False, "user_stopped": False}
+
+    def user_stop(node: str, phase: str | None) -> dict | None:
+        """노드를 돌리기 전에 ``stop.request`` 를 본다(Job 모드의 멈춤): 있으면 보고서를 aborted 로 표시하고 그 노드를 건너뛰어
+        finalize 로 간다 — 자기 프로세스 멈춤(웹의 _mark_stopped)과 같은 결과. 없으면 None."""
+        if holder["user_stopped"] or not stop_requested(orch):
+            return None
+        report = _report(orch)
+        holder["user_stopped"] = True
+        log.warning("stop requested (%s) — stopping before node %s (no final build)", STOP_REQUEST_FILE, node)
+        try:
+            orch.ws.journal({"event": "stop_request", "node": node, "file": STOP_REQUEST_FILE})
+        except Exception:  # noqa: BLE001
+            pass
+        if "aborted" not in report.flags:
+            orch._abort(report, STOP_REQUEST_REASON)   # noqa: SLF001 - the same marking the web's in-process stop uses
+        return {"stopped": False, "aborted": orch.abort_reason or STOP_REQUEST_REASON, "phase": phase,
+                "summary": _summary(orch, report)}
 
     def intake(state: MigrationState) -> dict:
         """접수 노드: 입력 검사·작업 공간 준비(step_intake). 실패나 stop_after 면 finalize 로 간다."""
         holder["groups"] = []
         holder["planned"] = False
+        if (stop := user_stop("intake", Phase.INTAKE.value)) is not None:
+            return {**stop, "phases": []}
         _journal_node(orch, "intake", Phase.INTAKE.value)
         report = _report(orch)
         ok = orch.step_intake(report, _stop_phase(state))
@@ -148,6 +202,8 @@ def build_graph(orch: Orchestrator) -> Any:
 
     def analyze(state: MigrationState) -> dict:
         """분석 노드: 프로필 만들기(step_analyze)."""
+        if (stop := user_stop("analyze", Phase.ANALYZE.value)) is not None:
+            return stop
         _journal_node(orch, "analyze", Phase.ANALYZE.value)
         report = _report(orch)
         ok = orch.step_analyze(report, _stop_phase(state))
@@ -156,6 +212,8 @@ def build_graph(orch: Orchestrator) -> Any:
     def plan(state: MigrationState) -> dict:
         """계획 노드: 계획을 만들고 단계 묶음을 holder 에
         담는다(step_plan). 계획 뒤 중지면 phase 없이 finalize."""
+        if (stop := user_stop("plan", Phase.PLAN.value)) is not None:
+            return {**stop, "phases": []}
         _journal_node(orch, "plan", Phase.PLAN.value)
         report = _report(orch)
         groups = orch.step_plan(report, _stop_phase(state), bool(state.get("dry_run")))
@@ -170,6 +228,8 @@ def build_graph(orch: Orchestrator) -> Any:
         """단계 노드: 남은 단계 묶음 하나(transform / restructure / verify …)를 실행한다(step_phase).
         중단은 예외로 올라간다."""
         report = _report(orch)
+        if (stop := user_stop("phase", holder["groups"][0][0].value if holder["groups"] else None)) is not None:
+            return {**stop, "phases": [p.value for p, _ in holder["groups"]]}
         ph, items = holder["groups"].pop(0)
         _journal_node(orch, "phase", ph.value)
         pr: PhaseResult | None = orch.step_phase(report, ph, items, _stop_phase(state))  # may raise _RunAborted
@@ -184,7 +244,8 @@ def build_graph(orch: Orchestrator) -> Any:
         빌드·보고서·KB 기록) — inline 엔진과 같은 조건이다."""
         _journal_node(orch, "finalize", None)
         report = _report(orch)
-        if holder["planned"]:                 # the inline engine runs step_finish only after the phase loop
+        # the inline engine runs step_finish only after the phase loop; a user stop (stop.request) skips the final build
+        if holder["planned"] and not holder["user_stopped"]:
             orch.step_finish(report, _stop_phase(state))
         return {"phase": None, "summary": _summary(orch, report)}
 
@@ -206,11 +267,11 @@ def build_graph(orch: Orchestrator) -> Any:
         return holder["groups"][0][0].value if holder["groups"] else "phase"
 
     g = StateGraph(MigrationState)
-    g.add_node("intake", _staged("intake", intake))
-    g.add_node("analyze", _staged("analyze", analyze))
-    g.add_node("plan", _staged("plan", plan))
-    g.add_node("phase", _staged(phase_stage, phase))
-    g.add_node("finalize", _staged("report", finalize))
+    g.add_node("intake", _staged("intake", intake, orch))
+    g.add_node("analyze", _staged("analyze", analyze, orch))
+    g.add_node("plan", _staged("plan", plan, orch))
+    g.add_node("phase", _staged(phase_stage, phase, orch))
+    g.add_node("finalize", _staged("report", finalize, orch))
     g.add_edge(START, "intake")
     g.add_conditional_edges("intake", after_step, {"next": "analyze", "finalize": "finalize"})
     g.add_conditional_edges("analyze", after_step, {"next": "plan", "finalize": "finalize"})

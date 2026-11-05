@@ -64,7 +64,7 @@ def comparable(report) -> dict:
 def comparable_events(ws, *, drop_graph: bool = True) -> list[dict]:
     out = []
     for e in journal_events(ws):
-        if drop_graph and e["event"] == "graph_node":
+        if drop_graph and e["event"] in ("graph_node", "graph_node_end"):
             continue
         out.append({"event": e["event"], "phase": e.get("phase"), "reason": e.get("reason")})
     return out
@@ -213,6 +213,47 @@ def test_stream_graph_yields_nodes_in_order_and_journals_them(cfg, tmp_path):
     assert graph_nodes == [("intake", "intake"), ("analyze", "analyze"), ("plan", "plan"), ("phase", "transform"),
                            ("phase", "restructure"), ("phase", "verify"), ("finalize", None)]
     assert ev[-1]["event"] == "report"                   # finalized by the guard after the stream ended
+
+
+def test_every_node_leaves_a_graph_node_end_line(cfg, tmp_path):
+    """2026-11-05 (k8s Job mode): the web pod cannot see stream_graph's updates of a run in another pod — it reads the
+    `graph_node_end` journal lines (node, phase, phases, aborted, stopped) and turns them into the UI's `node` events."""
+    ws = new_ws(tmp_path, "ends")
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    run_graph(orch)
+    ends = [e for e in journal_events(ws) if e["event"] == "graph_node_end"]
+    assert [(e["node"], e["phase"]) for e in ends] == [("intake", "intake"), ("analyze", "analyze"), ("plan", "plan"),
+                                                       ("phase", "transform"), ("phase", "restructure"),
+                                                       ("phase", "verify"), ("finalize", None)]
+    assert ends[2]["phases"] == ["transform", "restructure", "verify"] and ends[5]["phases"] == []
+    assert all(e["aborted"] is None and e["stopped"] in (False, None) for e in ends)
+
+
+def test_stop_request_file_stops_between_nodes_without_the_final_build(cfg, tmp_path):
+    """2026-11-05 (k8s Job mode): the web pod writes `stop.request` into the shared run directory; the engine sees it before
+    the next node, flags the report aborted (the in-process stop's wording) and finalize skips the final build."""
+    from sbmig.graph.engine import STOP_REQUEST_FILE, STOP_REQUEST_REASON
+    ws = new_ws(tmp_path, "stopfile")
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    orig_plan, finished = orch.step_plan, []
+
+    def plan_then_stop(*a, **k):
+        out = orig_plan(*a, **k)
+        (ws.run_dir / STOP_REQUEST_FILE).write_text("stop\n", encoding="utf-8")   # the web pod's request lands here
+        return out
+    orch.step_plan = plan_then_stop
+    orig_finish = orch.step_finish
+    orch.step_finish = lambda *a, **k: (finished.append(1), orig_finish(*a, **k))[1]
+    seen = [n for n, _ in stream_graph(orch)]
+    assert seen == ["intake", "analyze", "plan", "phase", "finalize"]          # the first phase node is skipped
+    report = orch.report
+    assert "aborted" in report.flags and orch.abort_reason == STOP_REQUEST_REASON and finished == []
+    assert report.phases == [] and run_exit_code(report) == 3
+    ev = journal_events(ws)
+    assert any(e["event"] == "stop_request" and e["node"] == "phase" for e in ev)
+    ends = [e for e in ev if e["event"] == "graph_node_end"]
+    assert ends[-2]["node"] == "phase" and ends[-2]["aborted"] == STOP_REQUEST_REASON and ends[-1]["node"] == "finalize"
+    assert ev[-1]["event"] == "report"
 
 
 def test_stream_graph_closed_early_still_finalizes(cfg, tmp_path):

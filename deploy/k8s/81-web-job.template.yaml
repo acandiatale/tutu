@@ -1,0 +1,52 @@
+# 웹 파드의 Job 디스패치 모드(2026-11-05 결정: 전달·결과·KB 전부 공유 PVC)가 업로드마다 만드는 Job 의 틀. `sbmig serve` 가
+# SBMIG_WEB_MODE=k8s-job 일 때 이 파일(SBMIG_JOB_TEMPLATE)을 읽어 metadata.name(sbmig-<run id>)과 실행별 env 를 채워 생성한다.
+#   SBMIG_SOURCE_ZIP=/data/out/<run id>/source.zip, SBMIG_OUT=/data/out, SBMIG_RUN_ID, SBMIG_CONFIG(/app/config/<yml> …),
+#   SBMIG_STOP_AFTER / SBMIG_LLM_PROVIDER(고급 설정일 때만) — 그 밖의 값은 이 파일 그대로.
+# 웹 파드(40-deployment.yaml)와 같은 이미지, 같은 ConfigMap / Secret, 같은 PVC 를 같은 경로(/data)에 마운트해야 한다. 두 파드가 동시에
+# 마운트하므로 PVC 는 ReadWriteMany 여야 한다(RWO 만 되면 nodeAffinity 로 웹 파드와 같은 노드에).
+# 멈춤: 웹이 <run dir>/stop.request 를 쓰면 엔진이 노드 사이에서 멈춘다(최종 빌드 없음); 그래도 안 끝나면 웹이 Job 을 지운다.
+# CHANGE_ME_*: namespace, image, (필요하면) nodeSelector / imagePullSecrets. 설정 파일 이름(artifacts.yml)은 ConfigMap 의 키와 같아야 한다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sbmig-RUN_ID                     # the web pod replaces this (sbmig-<run id>, lower-case)
+  namespace: CHANGE_ME_NAMESPACE
+  labels: {app: sbmig, kind: run}
+spec:
+  backoffLimit: 0                       # 이관을 무턱대고 재시도하지 않는다(실패한 실행의 보고서가 곧 결과)
+  activeDeadlineSeconds: 14400          # 4 시간
+  ttlSecondsAfterFinished: 86400        # 파드 로그를 하루 보존(결과는 볼륨에 있다)
+  template:
+    metadata:
+      labels: {app: sbmig, kind: run}
+    spec:
+      restartPolicy: Never
+      securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
+      # nodeSelector: {customer.example.com/build-worker: "true"}      # CHANGE_ME: 빌드 워커 노드가 따로 있을 때
+      # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]
+      containers:
+        - name: build
+          image: <registry>/sbmig:<tag>                                 # 웹 파드와 같은 이미지(40-deployment.yaml)
+          command: ["/app/deploy/docker/run-job.sh"]
+          env:
+            # 실행별 값(SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG …)은 웹이 Job 을 만들 때 여기에 덧붙인다
+            - {name: SBMIG_KB_DIR, value: "/data/kb-v2"}                 # 파일 KB — 웹 파드의 company/artifacts yml 의 kb.dir 과 같은 곳
+            - {name: SBMIG_FAIL_JOB_ON_BUILD_FAIL, value: "0"}
+          envFrom:
+            - configMapRef: {name: sbmig-env}
+            - secretRef: {name: sbmig-llm}
+          volumeMounts:
+            - {name: data, mountPath: /data}                             # 웹 파드와 같은 PVC, 같은 경로
+            - {name: m2, mountPath: /home/sbmig/.m2}
+            - {name: config, mountPath: /app/config/artifacts.yml, subPath: artifacts.yml, readOnly: true}
+            - {name: config, mountPath: /etc/sbmig/settings.xml, subPath: settings.xml, readOnly: true}
+          resources:
+            requests: {cpu: "2", memory: 6Gi}
+            limits: {cpu: "4", memory: 8Gi}     # openrewrite.jvm_args -Xmx4g + Python
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: sbmig-data}                 # 10-storage.yaml — ReadWriteMany
+        - name: m2
+          persistentVolumeClaim: {claimName: sbmig-m2}                   # 공유 .m2 (없으면 emptyDir: {} 로 바꾼다 — 매 Job 이 다시 받는다)
+        - name: config
+          configMap: {name: sbmig-config}
