@@ -58,6 +58,14 @@ _COORDS = r"[\w.\-]+:[\w.\-]+(?::[\w.\-]+){1,3}"
 _NEGATIVE_GAV_RE = re.compile(r"Failure to (?:find|transfer) (?P<a>" + _COORDS + r") (?:in|from)\b|"
                               r"(?P<b>" + _COORDS + r") (?:was not found in|failed to transfer from) \S+ during a "
                               r"previous attempt")
+# 2026-11-05 (회사 PC): 모델 단계의 해결 실패 — 빌드 확장, 부모 / import POM — 는 기본 출력에 "was cached" 문구가 없다. 원인이
+# 묵은 `*.lastUpdated` 표식 하나뿐이어도(HTTP 차단 미러 시절 못 받은 pom 을 Nexus 가 다시 주는데 Maven 은 하루 동안 거부)
+# `Failed to read artifact descriptor for g:a:jar:v` 만 찍힌다 → 이 문구도 -U 1회의 후보로 본다(정말 없는 아티팩트면 그 빌드 한 번만 손해)
+# A model-level failure (build extension, parent / import POM) prints no "was cached" wording even when a stale
+# `*.lastUpdated` marker is the only cause (the company PC: the pom had been unreachable behind the HTTP blocker, Nexus served
+# it again, Maven kept refusing for a day) — so these wordings are -U candidates too; a really missing artifact costs one build.
+_MODEL_RES_RE = re.compile(r"Failed to read artifact descriptor for (?P<a>" + _COORDS + r")|"
+                           r"Non-resolvable (?:parent|import) POM[^\n]*?Could not (?:find|transfer) artifact (?P<b>" + _COORDS + r")")
 
 
 def negative_cache_hits(text: str) -> list[str]:
@@ -65,14 +73,20 @@ def negative_cache_hits(text: str) -> list[str]:
     있는데 좌표를 못 읽으면 ["?"], 그런 줄이 없으면 [].
 
     Coordinates (g:a[:type]:v as Maven printed them) whose resolution failed only because the failure was cached
-    in the local repository. Empty when the log has no such line."""
+    in the local repository — plus (2026-11-05) the model-level failures that print no cached wording at all
+    (`Failed to read artifact descriptor for …`, `Non-resolvable parent / import POM … Could not find artifact …`),
+    since a stale marker shows exactly like that. Empty when the log has no such line."""
     out: list[str] = []
     cached = False
     for line in (text or "").splitlines():
-        if not _NEGATIVE_CACHE_RE.search(line):
+        if _NEGATIVE_CACHE_RE.search(line):
+            cached = True
+            for m in _NEGATIVE_GAV_RE.finditer(line):
+                gav = m.group("a") or m.group("b")
+                if gav and gav not in out:
+                    out.append(gav)
             continue
-        cached = True
-        for m in _NEGATIVE_GAV_RE.finditer(line):
+        for m in _MODEL_RES_RE.finditer(line):
             gav = m.group("a") or m.group("b")
             if gav and gav not in out:
                 out.append(gav)

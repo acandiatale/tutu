@@ -20,6 +20,7 @@ from pathlib import Path
 
 from sbmig.build.log_parser import parse_maven_log
 from sbmig.build.mvn import base_command, mvn_env, run_logged
+from sbmig.build.runner import negative_cache_hits
 from sbmig.core.config import Config
 from sbmig.core.interfaces import KnowledgeBaseLike
 from sbmig.core.models import RecipeRef, RewriteResult
@@ -357,6 +358,11 @@ class OpenRewriteRunner:
         elif not res.ok and self.cfg.openrewrite.download_retry > 0 and self._download_failure(res):
             res = self._download_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
                                        dry_run=dry_run, label=label, fork=fork)
+        # 2026-11-05 (회사 PC): 모델 단계의 해결 실패(빌드 확장 / 부모 POM)는 묵은 `*.lastUpdated` 표식일 수 있다 — 빌드 러너처럼
+        # -U 로 한 번만 다시(그 뒤 noFork 재시도도 -U 를 이어받는다). 수정 루프는 OpenRewrite 뒤라 여기서 막히면 레시피가 안 돈다
+        if not res.ok and self._may_force_update() and self._force_update_hits(res):
+            res = self._force_update_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
+                                           dry_run=dry_run, label=label, fork=fork)
         # run 은 레시피 전에 compile 을 fork 한다 → 컴파일이 안 되는 프로젝트(마이그레이션 전이라
         # 흔하다)에서는 레시피가 아예 안 돈다 → runNoFork(해결된 의존성 classpath 로 파싱)로 다시.
         # rewrite:run forks the `compile` lifecycle first; on a project that does not compile the recipes never run.
@@ -399,6 +405,36 @@ class OpenRewriteRunner:
         r"Failed to download|Could not transfer artifact|Transfer failed|status code: 429|Too Many Requests|"
         r"Connection reset|Read timed out|Connection timed out|SocketTimeoutException|UnknownHostException|"
         r"status code: 50[23]|Service Unavailable|Bad Gateway", re.IGNORECASE)
+
+    def _may_force_update(self) -> bool:
+        """-U 재시도를 할 수 있나: ``build.retry_negative_cache`` 가 켜져 있고 명령에 -U / -o 가 없을 때."""
+        if not getattr(self.cfg.build, "retry_negative_cache", True):
+            return False
+        args = list(getattr(self, "_extra_args", ()) or []) + list(getattr(self.cfg.build, "extra_args", ()) or [])
+        return not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in args) and not self.cfg.build.offline
+
+    def _force_update_hits(self, res: RewriteResult) -> list[str]:
+        """캐시된 / 모델 단계의 해결 실패 좌표(``negative_cache_hits``), 없으면 []."""
+        return negative_cache_hits(self._failure_text(res))
+
+    def _force_update_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
+                            module: str | None, dry_run: bool, label: str, fork: bool | None) -> RewriteResult:
+        """``-U`` 를 붙여 한 번 더 돌린다(이 호출의 뒤 재시도도 -U 를 이어받는다). 끝내 실패면 오류 앞에
+        ``force-update-retry: ``, 저널 ``rewrite_force_update_retry`` / ``…_result``.
+
+        One more run with `-U` (later retries of this call inherit it); a final failure is prefixed
+        `force-update-retry: `; journal `rewrite_force_update_retry` / `rewrite_force_update_retry_result`."""
+        hits = self._force_update_hits(first)
+        log.warning("rewrite: cached / model-level resolution failure (%s) → retrying once with -U", ", ".join(hits[:3]))
+        self.ws.journal({"event": "rewrite_force_update_retry", "recipes": first.recipes, "module": module,
+                         "artifacts": hits, "first_log": first.log_path})
+        self._extra_args = [*getattr(self, "_extra_args", ()), "-U"]
+        res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
+                             label=(label or ("dry" if dry_run else "run")) + "-U", fork=fork)
+        if not res.ok:
+            res.error = f"force-update-retry: {res.error or 'rewrite run failed'}"
+        self.ws.journal({"event": "rewrite_force_update_retry_result", "ok": res.ok, "log": res.log_path, "error": res.error})
+        return res
 
     def _download_failure(self, res: RewriteResult) -> str | None:
         """The matched transfer-failure wording (journalled as `reason`), or None."""

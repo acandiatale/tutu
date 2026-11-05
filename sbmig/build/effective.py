@@ -38,6 +38,7 @@ from sbmig.core.config import Config
 from sbmig.core.workspace import Workspace, logs_dir
 
 from .mvn import base_command, mvn_env, run_logged
+from .runner import negative_cache_hits
 
 log = logging.getLogger("sbmig.build.effective")
 
@@ -184,6 +185,15 @@ def capture_effective_depmgmt(ws: Workspace, cfg: Config, module: Optional[str] 
         cmd += [f"{HELP_PLUGIN}:effective-pom", f"-Doutput={xml_path}", "-q"]
         log_path = ws.new_log_path(f"effective-pom-{stem}")
         pr = run_logged(cmd, cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
+        if pr.exit_code != 0 and not xml_path.is_file() and getattr(cfg.build, "retry_negative_cache", True) \
+                and not cfg.build.offline and not any(a in ("-U", "--update-snapshots", "-o", "--offline") for a in cmd):
+            # 2026-11-05 (회사 PC): 모델 단계의 해결 실패(빌드 확장 / 부모 POM)는 묵은 `*.lastUpdated` 표식일 수 있다 → -U 1회
+            hits = negative_cache_hits(pr.text)
+            if hits:
+                log.info("effective-pom: cached / model-level resolution failure (%s) → retrying once with -U", ", ".join(hits[:3]))
+                ws.journal({"event": "effective_pom_force_update", "module": module, "artifacts": hits, "first_log": str(log_path)})
+                log_path = ws.new_log_path(f"effective-pom-{stem}-U")
+                pr = run_logged([*cmd, "-U"], cwd=ws.root, env=mvn_env(cfg), log_path=log_path, timeout_s=EFFECTIVE_TIMEOUT_S)
         if pr.exit_code != 0 or not xml_path.is_file():
             why = pr.error or ("timed out" if pr.timed_out else _last_error(pr.text) or f"exit {pr.exit_code}")
             log.warning("effective-pom of the as-is project failed (%s): %s — managed versions of the old parent "

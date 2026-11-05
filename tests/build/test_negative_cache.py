@@ -37,6 +37,22 @@ REAL_MISS = ("[ERROR] Failed to execute goal on project app: Could not resolve d
 OK = "[INFO] BUILD SUCCESS\n"
 
 
+EXT = ("[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n[ERROR] Unresolveable build extension: Plugin "
+       "org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its dependencies could not be resolved: Failed to read "
+       "artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 @ \n[ERROR] The build could not read 1 project\n")
+PARENT_PLAIN = ("[FATAL] Non-resolvable parent POM for com.acme:app:1.0: Could not find artifact com.acme:old-parent:pom:3.1 in "
+                "nexus (https://nexus/) and 'parent.relativePath' points at no local POM @ line 5, column 11\n")
+
+
+def test_model_level_failures_without_cached_wording_are_force_update_candidates():
+    """2026-11-05 (company PC): the wagon-webdav pom had been unreachable behind the HTTP blocker; after the mirror fix Nexus
+    served it, yet Maven kept failing for a day on the stale `wagon-webdav-1.0-beta-2.pom.lastUpdated` — and the model-level
+    message carries no "was cached" wording, so the -U retry never fired."""
+    assert negative_cache_hits(EXT) == ["org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2"]
+    assert negative_cache_hits(PARENT_PLAIN) == ["com.acme:old-parent:pom:3.1"]
+    assert negative_cache_hits(REAL_MISS) == []                                   # a dependency-level miss is not one
+
+
 def test_negative_cache_hits_both_maven_wordings():
     assert negative_cache_hits(M36) == ["com.acme:acme-common:jar:4.0.0"]
     assert negative_cache_hits(M39) == ["com.acme:acme-common:jar:4.0.0"]

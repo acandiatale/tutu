@@ -61,6 +61,38 @@ def _events(ws: Workspace, name: str) -> list[dict]:
     return [e for e in (json.loads(x) for x in ws.journal_path.read_text().splitlines()) if e["event"] == name]
 
 
+EXT_LOG = ("[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n[ERROR] Unresolveable build extension: "
+           "Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its dependencies could not be resolved: Failed to "
+           "read artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 @ \n"
+           "[ERROR] The build could not read 1 project -> [Help 1]\n")
+
+
+def test_model_level_resolution_failure_retries_once_with_force_update(ws, cfg, script):
+    """2026-11-05 (company PC): a stale `*.lastUpdated` of a build extension failed OpenRewrite before any recipe ran — the fix
+    loop (which retries with -U) comes only after it. One -U retry here; a second failure is final and prefixed."""
+    script["runs"] = [(1, EXT_LOG), (0, OK_LOG)]
+    res = _runner(ws, cfg, []).run([RecipeRef(id=UP21)], label="spring")
+    assert res.ok and res.error is None and len(script["calls"]) == 2
+    assert "-U" not in script["calls"][0]["cmd"] and "-U" in script["calls"][1]["cmd"] and script["calls"][1]["log"].startswith("")
+    ev = _events(ws, "rewrite_force_update_retry")
+    assert len(ev) == 1 and ev[0]["artifacts"] == ["org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2"]
+    assert _events(ws, "rewrite_force_update_retry_result")[0]["ok"] is True
+    # still failing → the second result, prefixed, and no third run
+    script["runs"] = [(1, EXT_LOG), (1, EXT_LOG)]
+    script["calls"].clear()
+    res = _runner(ws, cfg, []).run([RecipeRef(id=UP21)], label="spring")
+    assert not res.ok and res.error.startswith("force-update-retry: ") and len(script["calls"]) == 2
+    # the switch (build.retry_negative_cache) and an offline build turn it off; another failure never triggers it
+    cfg.build.retry_negative_cache = False
+    script["runs"] = [(1, EXT_LOG)]
+    script["calls"].clear()
+    assert not _runner(ws, cfg, []).run([RecipeRef(id=UP21)]).ok and len(script["calls"]) == 1
+    cfg.build.retry_negative_cache = True
+    script["runs"] = [(1, OTHER_LOG)]
+    script["calls"].clear()
+    assert not _runner(ws, cfg, []).run([RecipeRef(id=UP21)]).ok and len(script["calls"]) == 1
+
+
 def test_rate_limited_then_success(ws, cfg, script):
     cfg.openrewrite.download_retry_wait_s = 7
     script["runs"] = [(1, RATE_LOG), (0, OK_LOG)]

@@ -4006,7 +4006,18 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   flag `deploy-extensions-removed`, journal `build_extensions` (`removed`, `kept`, `poms`), one Handover line per removal;
   unlisted extensions (os-maven-plugin …) are logged and kept — an unresolvable one still reaches the loop as the
   per-extension case above. `intake.strip_deploy_extensions: false` turns it off. The note now also says the declaration may
-  sit in a parent pom (Maven names the module that failed to load) — search every pom.
+  sit in a parent pom (Maven names the module that failed to load) — search every pom. **The actual PC case (read back the
+  same night):** the project's poms declare no extension at all — it is inherited from the as-is in-house parent pom in Nexus
+  (nothing to strip; the restructure's parent swap drops it later) — and the pom's download had failed under the HTTP
+  blocker, so `~/.m2` held `wagon-webdav-1.0-beta-2.pom.lastUpdated` and Maven refused to retry for a day although Nexus now
+  serves it; the model-level message carries no "was cached" wording, so no `-U` retry fired. Now `negative_cache_hits` also
+  counts `Failed to read artifact descriptor for g:a:…` and `Non-resolvable parent / import POM … Could not find artifact g:a`
+  (a dependency-level `Could not find artifact` still does not), the build runner retries those once with `-U` as before,
+  and the two Maven calls that precede the fix loop do the same: the as-is effective-pom capture (`effective_pom_force_update`
+  journal, log `effective-pom-…-U`) and the OpenRewrite run (`OpenRewriteRunner._force_update_retry`: journal
+  `rewrite_force_update_retry` / `…_result`, a final failure prefixed `force-update-retry: `, off with
+  `build.retry_negative_cache: false` or `-o`). Operator remedy on a PC: delete the `*.lastUpdated` files under `~/.m2`, never the
+  whole `~/.m2`.
 
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but

@@ -118,6 +118,30 @@ def test_capture_writes_json_and_merges(ws: Workspace, cfg, monkeypatch):
     assert effective_version(ws, "x:y") is None
 
 
+def test_capture_retries_once_with_force_update_on_a_model_level_failure(ws: Workspace, cfg, monkeypatch):
+    """2026-11-05 (company PC): the as-is parent's build extension failed the capture on a stale `*.lastUpdated`; one -U retry."""
+    cmds: list[list[str]] = []
+    ext = ("[ERROR] Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its "
+           "dependencies could not be resolved: Failed to read artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 @ ")
+
+    def fake_run(cmd, *, cwd, env, log_path, timeout_s):
+        cmds.append(list(cmd))
+        if "-U" not in cmd:
+            return ProcessResult(exit_code=1, text=ext, duration_s=0.1)
+        out = next(c.split("=", 1)[1] for c in cmd if c.startswith("-Doutput="))
+        Path(out).write_text(SINGLE, encoding="utf-8")
+        return ProcessResult(exit_code=0, text="", duration_s=0.1)
+    monkeypatch.setattr(effmod, "run_logged", fake_run)
+    p = capture_effective_depmgmt(ws, cfg)
+    assert p is not None and p.is_file() and len(cmds) == 2 and cmds[1][-1] == "-U"
+    journal = (ws.run_dir / "journal.jsonl").read_text()
+    assert "effective_pom_force_update" in journal and "wagon-webdav" in journal
+    # switched off → no retry, the failure is reported as before
+    cfg.build.retry_negative_cache = False
+    cmds.clear()
+    assert capture_effective_depmgmt(ws, cfg, name="again.json") is None and len(cmds) == 1
+
+
 def test_capture_failure_returns_none(ws: Workspace, cfg, monkeypatch):
     monkeypatch.setattr(effmod, "run_logged", lambda cmd, **k: ProcessResult(
         exit_code=1, text="[ERROR] Non-resolvable parent POM for com.x:y:1: Could not find artifact", duration_s=0.1))
