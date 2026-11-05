@@ -282,7 +282,10 @@ def read_settings(path: Optional[str]) -> Optional[SettingsData]:
                     data.repos.append((rid or "?", _normalize_url(url), data.servers.get(rid)))
         return data
     except Exception as e:  # noqa: BLE001 - a broken settings file: nothing from it
-        log.debug("read_settings(%s): %s", path, e)
+        # 2026-11-05: a settings.xml that does not parse silently dropped the Nexus mirror from every lookup — say so
+        log.warning("settings %s could not be read (%s: %s) — its mirrors / repositories / servers are NOT used by sbmig's "
+                    "repository lookups (Maven may read it differently); fix the file or set build.repository_url", path,
+                    type(e).__name__, str(e)[:160])
         return None
 
 
@@ -630,6 +633,7 @@ class RepositoryLookup:
         self._trace: dict[tuple[str, str], list[tuple[str, str]]] = {}   # (g, a) → [(url, outcome), …]
         self._answered: dict[tuple[str, str], str] = {}           # (g, a) → the URL that listed its versions
         self.settings_files: list[str] = []                       # the settings.xml files read (user / global / configured)
+        self.settings_missing: list[str] = []                     # 2026-11-05: the candidates looked for but missing / unreadable
         self.url_notes: list[str] = []                            # why each URL is in the set / why one was not used
 
     # ------------------------------------------------------------------ http
@@ -824,9 +828,9 @@ class RepositoryLookup:
             if configured_settings and str(configured_settings).strip():
                 files.append((Path(str(configured_settings)).expanduser(), "build.settings_file"))
             else:
-                user = Path.home() / ".m2" / "settings.xml"
-                if user.is_file():
-                    files.append((user, "~/.m2/settings.xml"))
+                # Maven's user settings: `user.home`/.m2/settings.xml — Python's home is %USERPROFILE% (HOMEDRIVE+HOMEPATH
+                # without it); the probe prints the path looked for so a PC where the two differ shows it
+                files.append((Path.home() / ".m2" / "settings.xml", "~/.m2/settings.xml"))
             g = global_settings_file(self.cfg)
             if g is not None and all(g.resolve() != f.resolve() for f, _o in files if f.exists()):
                 files.append((g, "global settings"))
@@ -836,6 +840,9 @@ class RepositoryLookup:
                 if d is not None:
                     datas.append((d, origin))
                     self.settings_files.append(f"{d.path} ({origin})")
+                else:
+                    state = "unreadable (see the WARNING above)" if f.is_file() else "missing"
+                    self.settings_missing.append(f"{f} ({origin}): {state}")
             mirrors = [(mid, url, mo, creds, origin) for d, origin in datas for mid, url, mo, creds in d.mirrors]
             servers: dict[str, Optional[tuple[str, str]]] = {}
             for d, _o in reversed(datas):             # user entries win over global ones
@@ -891,6 +898,10 @@ class RepositoryLookup:
         self.url_notes = notes
         for u, _c, o in uniq:
             log.info("repository lookup: %s (%s)", u, o)
+        for m in self.settings_missing:
+            log.info("repository lookup: settings %s", m)
+        if self.project_root is None:
+            log.info("repository lookup: no project root — the poms' <repositories> are not part of this set")
         for n in notes:
             (log.warning if n.startswith(("Maven itself resolves", "build.repository_server_id")) else log.info)(
                 "repository lookup: %s", n)

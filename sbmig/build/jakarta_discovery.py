@@ -608,6 +608,10 @@ def probe_report(lookup: Any, group: str, artifact: str, current: Optional[str],
         files = list(getattr(lookup, "settings_files", []) or [])
         out.append("settings read: " + (", ".join(files) if files else "none (no ~/.m2/settings.xml, no build.settings_file, "
                                                                   "no global settings)"))
+        for m in list(getattr(lookup, "settings_missing", []) or []):
+            out.append(f"settings looked for but not read: {m}")
+        if getattr(lookup, "project_root", None) is None:
+            out.append("pom <repositories>: not included (no --project given; a run reads the project's poms)")
         out.append("repositories (in order — settings mirrors by their mirrorOf rules, then unmirrored repositories):")
         for i, (u, c, o) in enumerate(srcs, 1):
             out.append(f"  {i}. {u}  [{o}; credentials: {'yes' if c else 'no'}]")

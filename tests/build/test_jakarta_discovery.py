@@ -39,7 +39,7 @@ def _hermetic(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("MAVEN_HOME", raising=False)
     monkeypatch.delenv("M2_HOME", raising=False)
-    monkeypatch.setattr("sbmig.build.repo_versions.global_settings_file", lambda: None)
+    monkeypatch.setattr("sbmig.build.repo_versions.global_settings_file", lambda *_a, **_k: None)
 
 
 def _cfg(tmp_path: Path, **libraries) -> Config:
@@ -313,6 +313,14 @@ def test_probe_report_lists_urls_outcomes_versions_and_verdicts(tmp_path):
     assert lines[-1].startswith("REPO-PROBE ok com.example.grid8:grid8 versions=4 jakarta=com.example.grid8:grid8:2.0.5-jakarta")
     none = probe_report(RepositoryLookup(_cfg(tmp_path), fetch=lambda u, c, t: None), "g", "a", None, cfg=None)
     assert none[-1].startswith("REPO-PROBE none g:a versions=0 jakarta=-")
+    # 2026-11-05 (company PC: "repo-probe shows no Nexus"): the probe names the user settings path it looked for and says
+    # that the poms' <repositories> are not part of a probe without --project
+    text = "\n".join(none)
+    assert "settings looked for but not read: " in text and ".m2" in text and "(~/.m2/settings.xml): missing" in text
+    assert "pom <repositories>: not included (no --project given; a run reads the project's poms)" in text
+    with_project = probe_report(RepositoryLookup(_cfg(tmp_path), project_root=tmp_path, fetch=lambda u, c, t: None),
+                                "g", "a", None, cfg=None)
+    assert not any(ln.startswith("pom <repositories>: not included") for ln in with_project)
 
 
 def test_the_switch_off_is_the_v21d_behaviour(tmp_path):

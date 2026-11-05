@@ -3951,7 +3951,17 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   its config. Test `tests/build/test_repo_versions.py` (a `bin/mvn.cmd` path off PATH → its conf/settings.xml mirror is the lookup's
   URL; a bare `mvn` PATH does not know → Central only, as before).
 
-**Operator note.** When `sbmig repo-probe` does not list the company Nexus, the lookup set is wrong for every library: set
+* The lookup says what it looked for and could not use (same day, the user's probe still showed no Nexus although
+  `~/.m2/settings.xml` exists): `RepositoryLookup.settings_missing` lists every settings candidate that was missing or
+  unreadable (`<path> (~/.m2/settings.xml): missing`), logged as `repository lookup: settings …`; a settings.xml that does not
+  parse is a **WARNING** (`settings <path> could not be read (<error>) — its mirrors / repositories / servers are NOT used …`)
+  instead of a debug line; `sbmig repo-probe` prints `settings looked for but not read: …` and, without `--project`,
+  `pom <repositories>: not included (no --project given; a run reads the project's poms)` — a probe run from the sbmig checkout
+  does not see the project poms' `<repositories>` that a run does, which is the usual reason "the run saw Nexus, the probe does not".
+
+**Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
+`sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but
+not read:` / the `[origin]` of every URL. If the Nexus is still absent, the lookup set is wrong for every library: set
 `build.repository_url` (the group URL) — and `build.settings_file` when the settings are not at `~/.m2/settings.xml` — in the
 company yml; `config/settings.nexus.example.xml` says the same. A bundled jar whose coordinates sbmig could not read (no
 `pom.properties`) is declared with placeholder coordinates `<project group>:<jar stem>:<file version>`; Nexus answers 404 for those

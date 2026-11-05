@@ -504,6 +504,7 @@ def test_the_global_settings_behind_the_configured_mvn_path_are_read(tmp_path, m
     look = RepositoryLookup(_cfg(tmp_path, mvn=str(exe)), fetch=FakeFetch({}))
     assert [u for u, _c, _o in look.repository_urls()] == [REPO]
     assert look.settings_files == [f"{home / 'conf' / 'settings.xml'} (global settings)"]
+    assert look.settings_missing == [f"{Path.home() / '.m2' / 'settings.xml'} (~/.m2/settings.xml): missing"]
     assert look.repository_urls()[0][2].startswith("settings mirror 'company-nexus'")
     # a bare `mvn` that PATH does not know: no global settings, Central only — as before
     look2 = RepositoryLookup(_cfg(tmp_path, mvn="mvn"), fetch=FakeFetch({}))
@@ -512,3 +513,20 @@ def test_the_global_settings_behind_the_configured_mvn_path_are_read(tmp_path, m
 
 import sbmig.build.repo_versions as _rv_module  # noqa: E402
 _GLOBAL_SETTINGS_REAL = _rv_module.global_settings_file
+
+
+
+def test_an_unreadable_settings_file_is_named_and_warned(tmp_path, caplog):
+    """A settings.xml that does not parse (a stray byte, an unclosed tag) must not drop the Nexus silently: a WARNING names the
+    file and the lookup lists it as unreadable."""
+    import logging
+    bad = tmp_path / "settings.xml"
+    bad.write_text("<settings><mirrors><mirror><id>nexus</id><url>https://nexus.example/</url>", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="sbmig.build.repo_versions"):
+        look = RepositoryLookup(_cfg(tmp_path, settings_file=str(bad)), fetch=FakeFetch({}))
+        urls = [u for u, _c, _o in look.repository_urls()]
+    assert urls == [CENTRAL] and look.settings_files == []
+    assert look.settings_missing == [f"{bad} (build.settings_file): unreadable (see the WARNING above)"]
+    assert any(f"settings {bad} could not be read" in r.getMessage() and "build.repository_url" in r.getMessage()
+               for r in caplog.records)
+
