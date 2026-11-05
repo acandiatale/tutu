@@ -37,6 +37,8 @@
 | `SBMIG_JOB_TEMPLATE` | `deploy/k8s/81-web-job.template.yaml` | 템플릿을 다른 경로에 둘 때 |
 | `SBMIG_JOB_POLL_S` | `2` | Job 상태 조회 간격(초) |
 | `SBMIG_JOB_STOP_GRACE_S` | `600` | 멈춤 요청(stop.request) 뒤 Job 을 지우기까지 기다리는 시간(초) |
+| `SBMIG_LOCAL_JOB_ECHO` | `1` | 개발 PC 의 `local-job` 에서 서브프로세스 출력을 서버 콘솔에도 `[job <run id>]` 로 흘릴지. `0` = 파일(job-local.log)에만 |
+| `SBMIG_LOCAL_JOB_COLUMNS` | `160` | `local-job` 서브프로세스의 콘솔 줄 폭(파이프라 기본 80칸으로 접힌다). 자식은 항상 UTF-8 로 쓴다 |
 
 ## 3. ConfigMap `sbmig-env` — LLM 게이트웨이 (비밀이 아닌 것)
 
