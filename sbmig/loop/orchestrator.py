@@ -735,7 +735,38 @@ class Orchestrator:
         if getattr(self.cfg.layout, "generate_aggregator", True):
             self._intake_aggregator(report)
         self._intake_reactor_dedupe(report)
+        self._intake_build_extensions(report)     # 2026-11-05: before the first Maven call — an unresolvable one stops everything
         return True
+
+    def _intake_build_extensions(self, report: RunReport) -> None:
+        """2026-11-05 회사 실행: ``<build><extensions>`` 의 ``org.apache.maven.wagon:wagon-webdav:1.0-beta-2`` 를 저장소가 더는
+        주지 않아 Maven 이 모델 단계에서 ``Unresolveable build extension`` 으로 멈췄다 — OpenRewrite 도 빌드도 돌지 않았다.
+        배포 전송 확장은 패키징에 필요 없으므로(``knowledge/libraries/build_extensions.yml``) 첫 Maven 호출 전에 모든 pom 에서
+        지우고 ``intake: deploy transport extension(s) removed (…)`` 로 커밋, 플래그 ``deploy-extensions-removed``, 저널
+        ``build_extensions``, 인수인계 한 줄씩. 목록에 없는 확장은 기록만. 예외로 실행을 멈추지 않는다.
+
+        Remove the deploy-transport build extensions (knowledge list) from every pom before the first Maven call: commit,
+        flag `deploy-extensions-removed`, journal `build_extensions`, one Handover line each; unlisted extensions are only
+        recorded. Never raises."""
+        if not getattr(self.cfg.intake, "strip_deploy_extensions", True):
+            return
+        try:
+            from sbmig.analyze import build_extensions as bx
+            res = bx.strip_deploy_extensions(self.ws, self.cfg)
+            if not res.removed and not res.kept:
+                return
+            if res.removed:
+                self.ws.commit(bx.commit_message(res))
+                self._flag("deploy-extensions-removed")
+                report.manual_followups.extend(f for f in bx.followups(res) if f not in report.manual_followups)
+                log.info("접수: 배포 전송 빌드 확장 %d개 제거 (%s) — mvn deploy 전용이라 패키징과 OpenRewrite 에 필요 없다",
+                         len(res.removed), ", ".join(f"{r.coordinates} in {r.where()}" for r in res.removed))
+            for pom, coords in res.kept:
+                log.info("접수: 빌드 확장 %s (%s) 은 배포 전송 목록에 없어 그대로 둔다 — 저장소에 없으면 수정 루프가 다룬다", coords, pom)
+            self.ws.journal({"event": "build_extensions", "removed": [f"{r.coordinates} in {r.where()}" for r in res.removed],
+                             "kept": [f"{c} in {p}" for p, c in res.kept], "poms": res.poms_changed})
+        except Exception as e:  # noqa: BLE001 - never lose the run over this: Maven then reports it as before
+            log.warning("build extension check failed: %s: %s", type(e).__name__, e)
 
     def _intake_stray_poms(self, report: RunReport) -> None:
         """v2.1z-h 회사 사례(2026-11-03): 입력 zip 의 ``boot/bin/`` 에 boot 모듈의 통째 복사본(src, .project, pom.xml — 같은

@@ -881,6 +881,10 @@ class IntakeConfig(BaseModel):
     jar_lookup: bool = True                                 # sha1 lookup (build.repository_url / settings mirror / Central) for jars still unknown
     jar_names_file: str = "knowledge/libraries/jar_names.yml"   # shipped stem → coordinates table
     company_jar_names_file: str = "jar_names.yml"           # company rows under kb.dir (same format), merged over the shipped table
+    # 2026-11-05: <build><extensions> that are deploy transports (wagon-*) are removed before the first Maven call — an unresolvable
+    # one stops the model build, OpenRewrite included; the list is knowledge, not code
+    strip_deploy_extensions: bool = True
+    build_extensions_file: str = "knowledge/libraries/build_extensions.yml"
     min_java_source: str = "1.8"                            # build.xml source / target below this is raised (JDK 21 compiles 8+ only)
     max_jar_bytes_scan: int = 64 * 1024 * 1024              # a jar bigger than this is not opened for pom.properties / packages
     # v2.1z-d (2026-11-02, 현업 결정): Oracle ADF(JDeveloper) 프로젝트는 변환하지 않는다 — 근거 계열이 둘 이상이면 "ADF 프로젝트라 변환이

@@ -3995,7 +3995,18 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   version / credentials for it, never decline; a non-transport extension is treated like an unresolvable plugin. Why the PC saw
   it only now: the artifact had lived in `~/.m2` under the old repository id; the new user-settings mirror changed the ids Maven
   checks (`_remote.repositories`), so it was fetched again — and the `<server>` credentials keyed by the OLD repository id no
-  longer apply to the mirror id (the `<server><id>` must equal the mirror's id).
+  longer apply to the mirror id (the `<server><id>` must equal the mirror's id). **Same night, the rerun hit it again:** the
+  fix loop can only remove the extension AFTER OpenRewrite, and OpenRewrite is a Maven run too — it failed on the same
+  model error, no recipe ran, and the loop then met the extension as the first error. So the intake removes deploy-transport
+  extensions BEFORE the first Maven call: `sbmig/analyze/build_extensions.py` (`strip_deploy_extensions`) reads the knowledge
+  list `knowledge/libraries/build_extensions.yml` (`intake.build_extensions_file`; rows `group` exact + `artifact` glob —
+  shipped: `org.apache.maven.wagon:wagon-*`), removes every matching `<extension>` from every pom's `build/extensions` and
+  `profiles/*/build/extensions` (resolving `${…}` for the record, dropping an emptied `<extensions>`, Maven-skipped paths and
+  intake-ignored dirs untouched), commits `intake: deploy transport extension(s) removed (N)` with one body line per removal,
+  flag `deploy-extensions-removed`, journal `build_extensions` (`removed`, `kept`, `poms`), one Handover line per removal;
+  unlisted extensions (os-maven-plugin …) are logged and kept — an unresolvable one still reaches the loop as the
+  per-extension case above. `intake.strip_deploy_extensions: false` turns it off. The note now also says the declaration may
+  sit in a parent pom (Maven names the module that failed to load) — search every pom.
 
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but

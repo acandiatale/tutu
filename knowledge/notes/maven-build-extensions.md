@@ -25,6 +25,15 @@ Nexus over http(s), which needs no extension in Maven 3.9).
   decline because the repository "lacks" it: the artifact is not needed. Versions such as `1.0-beta-2` are 2007-era
   and often exist in a repository only as a jar without its pom — which is exactly why the descriptor cannot be read.
 
+## Where the declaration is
+The error block names the project that failed to LOAD (`The project g:a:v (…/module/pom.xml) has 1 error`), not
+necessarily the pom that declares the extension: `<build><extensions>` is inherited, so a root / parent pom's entry fails
+every module. Search every pom of the tree (profiles' `<build>` too) for the `<extension>` with that artifactId and
+remove each occurrence; editing only the named module pom changes nothing when the declaration sits in its parent.
+Note: the intake already removes the Wagon providers listed in `knowledge/libraries/build_extensions.yml` before the
+first Maven call — an extension that still reaches this error is one that list does not know (add it there when it is
+a transport) or one that is not a transport.
+
 ## Other extensions
 An extension that is not a transport (an `os-maven-plugin` detector for protobuf, a lifecycle or build-cache extension)
 does take part in the build: treat it like a plugin that cannot be resolved — a release the repository has, from the

@@ -68,6 +68,14 @@ intake:
   # 회사가 덧붙이는 같은 형식의 표. kb.dir 폴더 안의 파일 이름이며, 배포본 표 위에 덮어쓴다.
   # 재배포 없이 파일만 고치면 다음 실행부터 반영된다.
   company_jar_names_file: jar_names.yml
+  # pom 의 <build><extensions> 중 배포 전송만 하는 확장(wagon-webdav, wagon-ssh, wagon-ftp …)을 첫 Maven 호출 전에 지울지.
+  # 이런 확장은 mvn deploy 가 dav:/scp:/ftp: 주소로 올릴 때만 쓰이고 패키징에는 필요 없다. 그런데 Maven 은 어떤 goal 보다
+  # 먼저(OpenRewrite 포함) 확장을 내려받으므로, 저장소에 없는 옛 확장 하나가 실행 전체를 막는다(2026-11-05 회사 실행).
+  #   true  = 지우고 커밋한다(플래그 deploy-extensions-removed, 인수인계에 이름을 남긴다).
+  #   false = 그대로 둔다. 못 받으면 "Unresolveable build extension" 으로 OpenRewrite 가 실패하고 수정 루프가 뒤에서 고친다.
+  strip_deploy_extensions: true
+  # 어떤 확장이 배포 전송인지의 목록(배포본에 들어 있는 것). 경로는 sbmig 체크아웃 기준이다.
+  build_extensions_file: knowledge/libraries/build_extensions.yml
   # build.xml 의 source / target 이 이 값보다 낮으면 이 값으로 올려 pom 에 적는다.
   # JDK 21 은 1.8 미만 소스를 컴파일하지 못하기 때문이다. 바꿀 일은 거의 없다.
   min_java_source: "1.8"

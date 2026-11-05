@@ -1,0 +1,16 @@
+# <build><extensions> entries that only provide a DEPLOY TRANSPORT: they teach `mvn deploy` a URL scheme (dav:, scp:, ftp:, …)
+# of an old <distributionManagement>. `mvn clean package` never needs them, the company parent supplies the deploy target, and
+# Maven 3.9 deploys to Nexus over http(s) without any extension. Maven resolves extensions while it builds the project MODEL —
+# before any goal, OpenRewrite included — so one it cannot download stops everything ("Unresolveable build extension",
+# company run 2026-11-05: org.apache.maven.wagon:wagon-webdav:1.0-beta-2, a 2007 jar whose pom the repository no longer served).
+# The intake removes the extensions matched here from every pom BEFORE the first Maven call (intake.strip_deploy_extensions),
+# commits `intake: deploy transport extension(s) removed (…)`, flags `deploy-extensions-removed` and names them in the Handover.
+# Extensions NOT listed here (os-maven-plugin, build-cache, lifecycle extensions) take part in the build and are never removed
+# blind — an unresolvable one reaches the fix loop as a per-extension case (knowledge/notes/maven-build-extensions.md).
+#   group    : groupId (exact)
+#   artifact : artifactId, shell glob ("wagon-*")
+#   note     : optional
+version: 1
+deploy_transports:
+  - { group: org.apache.maven.wagon, artifact: "wagon-*",
+      note: "Wagon providers: webdav, webdav-jackrabbit, ssh, ssh-external, ftp, scm, http-lightweight — deploy transports only" }
