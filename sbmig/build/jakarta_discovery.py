@@ -610,6 +610,15 @@ def probe_report(lookup: Any, group: str, artifact: str, current: Optional[str],
                                                                   "no global settings)"))
         for m in list(getattr(lookup, "settings_missing", []) or []):
             out.append(f"settings looked for but not read: {m}")
+        # 2026-11-05 (회사 PC: "repository_url 을 넣었는데 1 번이 Central"): 조회가 본 build.repository_url 값을 그대로 찍는다 —
+        # not set 이면 yml 이 -c 로 안 들어왔거나 키가 build: 아래에 없는 것(설정 로더가 WARNING 으로 알린다)
+        c = cfg if cfg is not None else getattr(lookup, "cfg", None)
+        explicit = getattr(getattr(c, "build", None), "repository_url", None)
+        if explicit and str(explicit).strip():
+            out.append(f"build.repository_url: {str(explicit).strip()} (asked first, never mirrored, not subject to the HTTP blocker)")
+        else:
+            out.append("build.repository_url: not set — the set below is the settings mirrors / repositories, the poms' "
+                       "<repositories> and Central only (set it under build: in the company yml and run with -c <yml>)")
         if getattr(lookup, "project_root", None) is None:
             out.append("pom <repositories>: not included (no --project given; a run reads the project's poms)")
         out.append("repositories (in order — settings mirrors by their mirrorOf rules, then unmirrored repositories):")

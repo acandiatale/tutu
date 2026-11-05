@@ -307,6 +307,12 @@ def test_probe_report_lists_urls_outcomes_versions_and_verdicts(tmp_path):
     text = "\n".join(lines)
     assert lines[0] == "REPO-PROBE com.example.grid8:grid8 (current 1.0.6)"
     assert f"1. {NEXUS}  [build.repository_url (explicit: first); credentials: no]" in text
+    assert f"build.repository_url: {NEXUS} (asked first, never mirrored, not subject to the HTTP blocker)" in text
+    # 2026-11-05 (company PC: "repository_url 을 넣었는데 1 번이 Central"): the probe says when the lookup saw no explicit URL
+    bare = _cfg(tmp_path); bare.build.repository_url = None
+    text_bare = "\n".join(probe_report(RepositoryLookup(bare, fetch=lambda u, c, t: None), "g", "a", None, cfg=None))
+    assert "build.repository_url: not set — the set below is the settings mirrors / repositories, the poms' <repositories> and " \
+           "Central only (set it under build: in the company yml and run with -c <yml>)" in text_bare
     assert f"{NEXUS} → ok (4 release(s))" in text
     assert "versions: 1.0.6, 1.1.3, 1.1.15, 2.0.5-jakarta" in text
     assert "higher majors: 2.0.5-jakarta (jakarta ✓ — version qualifier)" in text

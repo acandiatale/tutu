@@ -557,7 +557,7 @@ USER_WITH_HTTP_NEXUS = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
-def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monkeypatch):
+def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monkeypatch, caplog):
     """The company PC (2026-11-05): the user settings' active-profile repository is the Nexus over plain http; Maven 3.9's global
     conf/settings.xml ships `maven-default-http-blocker` (mirrorOf external:http:*, http://0.0.0.0/) which covers it — Maven refuses
     the repository, and so does sbmig: it is not asked (the probe had shown `http://0.0.0.0/ → unreachable (WinError 10049)`), a
@@ -587,6 +587,19 @@ def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monk
                     "<activeProfiles>"), encoding="utf-8")
     look3 = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
     assert [u for u, _c, _o in look3.repository_urls()][0] == "http://nexus.company.local/repository/maven-public/"
+    # a failure while building the set is said on screen (note:) and logged as WARNING — never a silent Central-only list
+    def boom(_cfg=None):
+        raise RuntimeError("settings exploded")
+    monkeypatch.setattr(rv_mod, "global_settings_file", boom)
+    import logging as _logging
+    with caplog.at_level(_logging.WARNING, logger=rv_mod.log.name):
+        look_fail = RepositoryLookup(_cfg(tmp_path, settings_file=str(user), repository_url="http://nexus.company.local/x"),
+                                     fetch=FakeFetch({}))
+        look_fail.repository_urls()
+    assert any(n.startswith("repository set incomplete: building it failed midway (RuntimeError: settings exploded)")
+               for n in look_fail.url_notes)
+    assert any("repository set incomplete" in r.getMessage() and r.levelno == _logging.WARNING for r in caplog.records)
+    monkeypatch.setattr(rv_mod, "global_settings_file", _real_global_settings_file)
     # the blocked repository's <server> login still reaches the explicit URL that points at the same Nexus
     user.write_text(USER_WITH_HTTP_NEXUS.replace("<profiles>",
                     "<servers><server><id>xxx-internal-releases</id><username>nx</username><password>pw</password></server>"

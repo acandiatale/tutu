@@ -3980,7 +3980,13 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
 
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but
-not read:` / the `[origin]` of every URL. If the Nexus is still absent, the lookup set is wrong for every library: set
+not read:` / `build.repository_url: <url> | not set` (2026-11-05: the value the lookup actually saw — `not set` with a value in the
+yml means the yml did not arrive: no `-c`, or the key is not under `build:`) / the `[origin]` of every URL. The config loader now
+names the two silent traps behind that: `config: <file>: key 'build' appears twice (lines A and B) — YAML keeps the LAST block
+only …` (`_YamlLoader`; a second `build:` block replaces the first) and `config: repository_url is not a known key and is ignored
+(check the indentation / spelling — did you mean build.repository_url?)` (`_warn_unknown_keys`: section fields and the entries of
+`dict[str, Model]` fields such as `loop.phases` are checked, dict / list fields are not). A failure while the repository set is
+built is a `note:` / WARNING `repository set incomplete: building it failed midway (…)` instead of a silent Central-only list. If the Nexus is still absent, the lookup set is wrong for every library: set
 `build.repository_url` (the group URL) — and `build.settings_file` when the settings are not at `~/.m2/settings.xml` — in the
 company yml; `config/settings.nexus.example.xml` says the same. A bundled jar whose coordinates sbmig could not read (no
 `pom.properties`) is declared with placeholder coordinates `<project group>:<jar stem>:<file version>`; Nexus answers 404 for those

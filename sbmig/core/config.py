@@ -18,7 +18,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, get_args, get_origin
 
 import yaml
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
@@ -1107,6 +1107,116 @@ def load_dotenv_files(*extra: str | Path) -> list[Path]:
     return found
 
 
+class _YamlLoader(yaml.SafeLoader):
+    """중복 키를 기억하는 SafeLoader. PyYAML 은 한 매핑에 같은 키가 두 번 나오면(회사 yml 에 `build:` 블록을 두 번 적은 경우)
+    마지막 값만 조용히 남기고 첫 블록의 값은 사라진다 — 2026-11-05 회사 PC 에서 build.repository_url 이 "안 먹는" 원인 후보.
+
+    A SafeLoader that records duplicate mapping keys as (key, first line, second line): PyYAML silently keeps the LAST
+    value, so a company yml with two `build:` blocks loses the first block's values."""
+
+    def __init__(self, stream: Any) -> None:
+        super().__init__(stream)
+        self.duplicate_keys: list[tuple[str, int, int]] = []
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        seen: dict[Any, int] = {}
+        for key_node, _value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                hash(key)
+            except TypeError:
+                continue
+            if key in seen:
+                self.duplicate_keys.append((str(key), seen[key], key_node.start_mark.line + 1))
+            else:
+                seen[key] = key_node.start_mark.line + 1
+        return super().construct_mapping(node, deep=deep)
+
+
+def _read_yaml(path: Path) -> dict:
+    """yml 하나를 읽는다 — 중복 키는 파일명·키·두 줄 번호와 함께 WARNING(마지막 블록만 남는다는 사실을 말한다).
+
+    Read one yml; a duplicate key is a WARNING naming the file, the key and both lines (the last block wins)."""
+    with open(path, "r", encoding="utf-8") as fh:
+        loader = _YamlLoader(fh)
+        try:
+            loaded = loader.get_single_data() or {}
+        finally:
+            loader.dispose()
+    for key, first, second in loader.duplicate_keys:
+        log.warning("config: %s: key '%s' appears twice (lines %d and %d) — YAML keeps the LAST block only, the values of the "
+                    "first one are lost; merge the two blocks into one", path, key, first, second)
+    return loaded if isinstance(loaded, dict) else {}
+
+
+# the keys _warn_removed_keys explains — _warn_unknown_keys does not report them a second time
+_REMOVED_KEYS = frozenset({"fix.mode", "fix.edits_max_asks_per_case", "build.pom_repositories"})
+
+
+def _section_model(annotation: Any) -> Optional[type[BaseModel]]:
+    """필드 타입이 설정 섹션(BaseModel, Optional 포함)이면 그 모델, 아니면 None. dict / list 는 섹션이 아니다.
+
+    The BaseModel behind a field annotation (`Model` or `Optional[Model]`), else None; dict / list fields are not sections."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = get_origin(annotation)
+    if origin is not None and origin not in (dict, list, tuple, set, frozenset):
+        for arg in get_args(annotation):
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                return arg
+    return None
+
+
+def _mapping_value_model(annotation: Any) -> Optional[type[BaseModel]]:
+    """``dict[str, Model]`` 필드(loop.phases, llm.pricing)의 값 모델 — 항목 이름은 자유, 항목 안의 키는 검사한다.
+
+    The value model of a `dict[str, Model]` field: entry names are free, the keys inside each entry are checked."""
+    if get_origin(annotation) is dict:
+        args = get_args(annotation)
+        if len(args) == 2 and isinstance(args[1], type) and issubclass(args[1], BaseModel):
+            return args[1]
+    return None
+
+
+def _warn_unknown_keys(data: dict, model: Optional[type[BaseModel]] = None, prefix: str = "") -> list[str]:
+    """합쳐진 설정에서 모델이 모르는 키를 WARNING 으로 알린다 — pydantic 은 모르는 키를 조용히 버리므로, 들여쓰기가 틀려
+    `repository_url:` 이 최상위에 놓인 회사 yml 은 아무 말 없이 무시된다(2026-11-05). 섹션(BaseModel) 필드만 내려가고 dict /
+    list 필드(payload_extra, optional 목록 …)는 보지 않는다. 알려진 섹션 하나에만 있는 이름이면 "did you mean build.x" 를 붙인다.
+    돌려주는 값 = 로그에 쓴 문장들(테스트용).
+
+    Log every key the Config models do not declare (pydantic drops unknown keys silently): a mis-indented key is the
+    typical cause. Descends into section fields only (never into dict / list fields); a name that belongs to exactly
+    known sections gets a "did you mean" hint. Returns the sentences logged (for tests)."""
+    out: list[str] = []
+    model = model or Config
+    if not isinstance(data, dict):
+        return out
+    fields = model.model_fields
+    for key, value in data.items():
+        dotted = f"{prefix}{key}"
+        if key not in fields:
+            if dotted in _REMOVED_KEYS:
+                continue
+            homes = [name for name, f in Config.model_fields.items()
+                     if (m := _section_model(f.annotation)) is not None and key in m.model_fields]
+            hint = f" — did you mean {' / '.join(f'{h}.{key}' for h in homes)}?" if homes else ""
+            out.append(f"config: {dotted} is not a known key and is ignored (check the indentation / spelling{hint})")
+            continue
+        sub = _section_model(fields[key].annotation)
+        if sub is not None and isinstance(value, dict):
+            out.extend(_warn_unknown_keys(value, sub, f"{dotted}."))
+            continue
+        entry = _mapping_value_model(fields[key].annotation)
+        if entry is not None and isinstance(value, dict):
+            for name, inner in value.items():
+                if isinstance(inner, dict):
+                    out.extend(_warn_unknown_keys(inner, entry, f"{dotted}.{name}."))
+    if model is Config:
+        for line in out:
+            log.warning("%s", line)
+    return out
+
+
 def _warn_removed_keys(data: dict) -> list[str]:
     """v2.1z: 합쳐진 설정에 남은 옛 키를 경고 로그로 알린다 — `fix.mode` / `fix.edits_max_asks_per_case`(토큰 비교용 스위치, 무시됨)와,
     `script.max_augments_per_case` 만 있고 `script.max_llm_tries_per_case` 가 없는 회사 yml(이제 보강 횟수만 세고 케이스당 LLM 총
@@ -1149,9 +1259,7 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     files = [DEFAULT_CONFIG_PATH, *[Path(p) for p in paths]]
     for f in files:
         if f and Path(f).exists():
-            with open(f, "r", encoding="utf-8") as fh:
-                loaded = yaml.safe_load(fh) or {}
-            data = deep_merge(data, loaded)
+            data = deep_merge(data, _read_yaml(Path(f)))
     if overrides:
         data = deep_merge(data, overrides)
     data = _apply_env_overrides(data)
@@ -1159,4 +1267,5 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     if repo_root:
         data["repo_root"] = str(repo_root)
     _warn_removed_keys(data)
+    _warn_unknown_keys(data)
     return Config.model_validate(data)

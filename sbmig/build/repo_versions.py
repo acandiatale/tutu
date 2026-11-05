@@ -918,7 +918,9 @@ class RepositoryLookup:
                 out.insert(0, (u, creds, "build.repository_url (explicit: first)" + (f"; credentials from server {sid}"
                                                                                    if sid and creds else "")))
         except Exception as e:  # noqa: BLE001
-            log.debug("repository_urls: %s", e)
+            # 2026-11-05: 여기서 조용히 넘어가면 build.repository_url 까지 사라진 채 Central 만 남는다 — 화면(note:)과 로그에 남긴다
+            notes.append(f"repository set incomplete: building it failed midway ({type(e).__name__}: {e}) — an sbmig error, "
+                         "report this line; the URLs above are what was collected before it")
         seen: set[str] = set()
         uniq: list[tuple[str, Optional[tuple[str, str]], str]] = []
         for u, c, o in out:
@@ -934,7 +936,8 @@ class RepositoryLookup:
         if self.project_root is None:
             log.info("repository lookup: no project root — the poms' <repositories> are not part of this set")
         for n in notes:
-            (log.warning if n.startswith(("Maven itself resolves", "build.repository_server_id")) else log.info)(
+            (log.warning if n.startswith(("Maven itself resolves", "build.repository_server_id", "repository set incomplete"))
+             else log.info)(
                 "repository lookup: %s", n)
         if not uniq:
             log.info("repository lookup: no repository URL (offline, no mirror / repository / build.repository_url)")

@@ -129,6 +129,9 @@ errors.md 표의 열: `# | seen | status | case | file:line | message | tries | 
 | `결과 (build N): resolved a/b → <결과>` | 직전 시도 채점(`regressed → 되돌림`, `inconclusive (빌드가 확인 못 함)` …) |
 | `LLM 의 거절을 받지 않음: …` | 거절이 저장소 사실과 모순(`decline_rejected`) |
 | `config: … is ignored since …` | 없어진 설정 키 경고 |
+| `config: <파일>: key '<키>' appears twice (lines A and B)` | 같은 최상위 블록을 두 번 적음 — 마지막 블록만 남는다(첫 블록 값 소실) |
+| `config: <키> is not a known key and is ignored (… did you mean build.x?)` | 들여쓰기·철자가 틀린 키 — 조용히 버려지던 것 |
+| `repository lookup: repository set incomplete: …` / probe `build.repository_url: not set` | 저장소 집합 구성 실패 / yml 의 URL 이 조회에 안 옴(-c 누락, 키 위치) |
 
 ### 3.4 `project/` 의 git
 
