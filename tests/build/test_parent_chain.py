@@ -84,6 +84,19 @@ def repo(tmp_path: Path, cfg):
     return r
 
 
+def test_the_chain_lists_its_build_extensions(repo: Path, cfg) -> None:
+    """2026-11-05 (company run): base-parent 4.0.0 declares wagon-webdav in <build><extensions>; the chain facts list every
+    extension of the chain (resolved with the declaring pom's properties) and the pom that declares it."""
+    ext = ("<build><extensions><extension><groupId>org.apache.maven.wagon</groupId><artifactId>wagon-webdav</artifactId>"
+           "<version>${wagon.version}</version></extension></extensions></build>")
+    text = _pom(BASE, parent=STARTER, props={"wagon.version": "1.0-beta-2"}).replace("</project>", ext + "</project>")
+    _write(repo, BASE, text)
+    clear_cache()
+    facts = load_parent_chain_facts(cfg)
+    assert facts.build_extensions == ["org.apache.maven.wagon:wagon-webdav:1.0-beta-2"]
+    assert facts.build_extension_sources == {"org.apache.maven.wagon:wagon-webdav:1.0-beta-2": BASE}
+
+
 def test_the_chain_merge_rules(repo: Path, cfg) -> None:
     f = load_parent_chain_facts(cfg)
     assert f.roots == [BASE, "com.company:comp-jar:4.0.0"]                      # de-duplicated, in config order

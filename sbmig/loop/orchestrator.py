@@ -624,9 +624,49 @@ class Orchestrator:
         if not self._intake_layout(report):
             self._timed("intake", t)
             return False
+        self._intake_parent_extensions(report)    # 2026-11-05: before the first Maven call (the capture below)
         self._capture_effective(report)
         self._timed("intake", t)
         return not self._stop(stop_after, Phase.INTAKE)
+
+    def _intake_parent_extensions(self, report: RunReport) -> None:
+        """2026-11-05 회사 실행: 이관 대상 사내 부모(base-parent 4.0.0)가 ``<build><extensions>`` 에 wagon-webdav 를 선언한다 — 상속되는
+        확장은 자식에서 뺄 수 없고 Maven 은 goal 전에(OpenRewrite 포함) 그것을 받아야 한다. 첫 Maven 호출 전에 체인의 확장마다
+        읽히는지 보고(``check_parent_build_extensions``), 저장소는 주는데 로컬에 묵은 ``*.lastUpdated`` 만 있으면 그 표식을 지우고,
+        어디서도 못 읽으면 WARNING + 플래그 ``parent-extension-unresolvable`` + 인수인계 한 줄. 저널 ``parent_build_extensions``.
+        예외로 실행을 멈추지 않는다.
+
+        Pre-check the configured parent chain's build extensions before the first Maven call: stale markers of a
+        repository-served extension are cleared; an extension nobody serves is a WARNING, the flag
+        `parent-extension-unresolvable` and a Handover line; journal `parent_build_extensions`. Never raises."""
+        try:
+            from sbmig.build.parent_extensions import check_parent_build_extensions
+            checks = check_parent_build_extensions(self.cfg, clear_markers=bool(getattr(self.cfg.build, "retry_negative_cache", True)))
+            if not checks:
+                return
+            for c in checks:
+                if c.readable:
+                    if c.markers_removed:
+                        log.info("접수: 사내 부모 체인의 빌드 확장 %s — 저장소에 있음, 로컬 저장소의 묵은 실패 표식 %d개 제거 (%s): "
+                                 "Maven 이 하루 동안 다시 받지 않던 것", c.coordinates, len(c.markers_removed), ", ".join(c.markers_removed))
+                    else:
+                        log.info("접수: 사내 부모 체인의 빌드 확장 %s — 읽힘 (%s)", c.coordinates, c.where)
+                    continue
+                log.warning("접수: 사내 부모 체인의 빌드 확장 %s (선언: %s) 을 로컬 저장소에서도 저장소에서도 읽지 못함 (%s) — 모든 Maven "
+                            "호출이 'Unresolveable build extension' 으로 실패한다. Nexus 에 그 pom·jar(와 부모 pom)을 올리거나 부모 pom 에서 "
+                            "확장을 빼야 한다(배포 전송 확장은 패키징에 필요 없다)", c.coordinates, c.declared_by, c.where)
+                self._flag("parent-extension-unresolvable")
+                line = (f"the company parent {c.declared_by} declares the build extension {c.coordinates}, which neither the local "
+                        f"repository nor the repository set serves ({c.where}) — every Maven call fails with 'Unresolveable build "
+                        f"extension' until Nexus serves its pom and jar (and their parent poms) or the parent pom drops it (a deploy "
+                        f"transport is never needed for packaging)")
+                if line not in report.manual_followups:
+                    report.manual_followups.append(line)
+            self.ws.journal({"event": "parent_build_extensions", "checks": [c.line() for c in checks],
+                             "unresolvable": [c.coordinates for c in checks if not c.readable],
+                             "markers_removed": {c.coordinates: c.markers_removed for c in checks if c.markers_removed}})
+        except Exception as e:  # noqa: BLE001 - never lose the run over a pre-check
+            log.warning("parent build extension pre-check failed: %s: %s", type(e).__name__, e)
 
     def _check_build_tool(self, report: RunReport) -> bool:
         """회사 결정: Maven 프로젝트만 받는다. Gradle / 빌드 없음은 Maven 을 부르기 전에 중단(exit 3). v2.1j: Ant

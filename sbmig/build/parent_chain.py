@@ -72,6 +72,10 @@ class ParentChainFacts(BaseModel):
     # org.springframework.*) — the only ones the restructure may reference as ${…}; `properties` stays complete
     company_properties: dict[str, str] = Field(default_factory=dict)
     company_property_sources: dict[str, str] = Field(default_factory=dict)
+    # 2026-11-05: 체인의 pom 들이 선언한 <build><extensions> (g:a:v, ${…} 는 그 pom 의 속성으로 푼 것) 과 선언한 pom — 상속되는
+    # 확장 하나를 Maven 이 못 받으면 모든 모듈의 모든 Maven 호출이 멈춘다(회사 base-parent 4.0.0 의 wagon-webdav)
+    build_extensions: list[str] = Field(default_factory=list)
+    build_extension_sources: dict[str, str] = Field(default_factory=dict)
 
     @property
     def own_managed(self) -> dict[str, str]:
@@ -132,10 +136,15 @@ def _walk(reader: PomReader, root: tuple[str, str, str], facts: ParentChainFacts
         facts.poms += 1
         facts.sources.append(f"{coord}: {where}")
         chain.append(pom)
+        resolve = make_resolver(pom.properties, pom_builtins(pom))
+        for eg, ea, ev in pom.extensions:                     # 2026-11-05: inherited build extensions, for the intake check
+            ext = ":".join(resolve(x) or x or "?" for x in (eg, ea, ev))
+            if ext not in facts.build_extensions:
+                facts.build_extensions.append(ext)
+                facts.build_extension_sources[ext] = coord
         if not (pom.parent_group_id and pom.parent_artifact_id and pom.parent_version):
             break
         # <parent> 좌표의 ${…} 는 자식 pom 의 속성으로(저장소 좌표만 — relativePath 는 보지 않는다)
-        resolve = make_resolver(pom.properties, pom_builtins(pom))
         pg, pa, pv = resolve(pom.parent_group_id), resolve(pom.parent_artifact_id), resolve(pom.parent_version)
         if not (pg and pa and pv):
             facts.sources.append(f"{coord}: parent {pom.parent_group_id}:{pom.parent_artifact_id}:"

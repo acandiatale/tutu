@@ -4017,7 +4017,17 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   journal, log `effective-pom-…-U`) and the OpenRewrite run (`OpenRewriteRunner._force_update_retry`: journal
   `rewrite_force_update_retry` / `…_result`, a final failure prefixed `force-update-retry: `, off with
   `build.retry_negative_cache: false` or `-o`). Operator remedy on a PC: delete the `*.lastUpdated` files under `~/.m2`, never the
-  whole `~/.m2`.
+  whole `~/.m2`. **And the declaring pom turned out to be the migration TARGET parent itself (`base-parent 4.0.0`):** every
+  migrated project will inherit that extension, so Maven must be able to download it everywhere (a fresh Job pod `~/.m2` included).
+  Intake pre-check `sbmig/build/parent_extensions.py` (`check_parent_build_extensions`, called in `_step_intake` before the
+  effective-pom capture): `ParentChainFacts.build_extensions` / `build_extension_sources` (new; `PomSummary.extensions` from
+  `<build><extensions>`, `${…}` resolved with the declaring pom's properties) → per extension `PomReader.pom` (local repository,
+  then the repository set); readable from the repository but stale `*.lastUpdated` markers in `<local repo>/<g>/<a>/<v>/` → the
+  markers are deleted (that folder only, `build.retry_negative_cache` governs it) so the first Maven call succeeds without waiting
+  for a `-U` retry; readable nowhere → WARNING, flag `parent-extension-unresolvable`, one Handover line (`the company parent
+  <g:a:v> declares the build extension <g:a:v>, which neither the local repository nor the repository set serves …`); journal
+  `parent_build_extensions` {checks, unresolvable, markers_removed}. Recommendation to the parent's owners (not sbmig's call):
+  drop deploy transports from the parent — Maven 3.9 needs none for Nexus over http(s) and the 2007 artifact is a liability.
 
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but

@@ -100,6 +100,8 @@ class PomSummary(BaseModel):
     parent_version: str = ""
     properties: dict[str, str] = Field(default_factory=dict)
     managed: list[tuple[str, str, str, str, str]] = Field(default_factory=list)
+    # 2026-11-05: <build><extensions> 의 (groupId, artifactId, version) 원문 — 상속되므로 부모 체인의 것이 모든 모듈을 막을 수 있다
+    extensions: list[tuple[str, str, str]] = Field(default_factory=list)
 
     @property
     def coord(self) -> str:
@@ -134,6 +136,10 @@ def parse_pom(text: str) -> PomSummary | None:
             continue
         pom.managed.append((_text(d, "groupId"), _text(d, "artifactId"), _text(d, "version"),
                             _text(d, "type") or "jar", _text(d, "scope")))
+    exts = _child(_child(root, "build"), "extensions")
+    for e in (exts if exts is not None else []):
+        if _local(e.tag) == "extension":
+            pom.extensions.append((_text(e, "groupId"), _text(e, "artifactId"), _text(e, "version")))
     return pom
 
 
