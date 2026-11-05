@@ -30,15 +30,28 @@ def _no_env_token(monkeypatch):
     monkeypatch.delenv(OPEN_ENV, raising=False)
 
 
-def test_open_mode_serves_every_client_without_a_token(tmp_path, repo, monkeypatch, caplog):
+def test_open_mode_serves_every_client_without_a_token(tmp_path, repo, monkeypatch):
     """2026-11-05 (the user: "사내망에서만 쓸 페이지야"): `open_network` / SBMIG_WEB_OPEN=1 lets LAN clients in without a token
     (one WARNING at start); a configured token still wins."""
     import logging
-    app = create_app(tmp_path / "out", repo, open_network=True)
-    lan = TestClient(app, client=("10.20.30.40", 5000))
-    with caplog.at_level(logging.WARNING, logger="sbmig.web"), lan:
-        assert lan.get("/api/runs").status_code == 200 and lan.get("/").status_code == 200
-    assert any("open to the network WITHOUT a token" in r.getMessage() and OPEN_ENV in r.getMessage() for r in caplog.records)
+
+    # a handler on the web logger itself: the app's console-logging setup may stop propagation, which caplog relies on
+    messages: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    web_log = logging.getLogger("sbmig.web")
+    web_log.addHandler(catch := _Catch(level=logging.WARNING))
+    try:
+        app = create_app(tmp_path / "out", repo, open_network=True)
+        lan = TestClient(app, client=("10.20.30.40", 5000))
+        with lan:
+            assert lan.get("/api/runs").status_code == 200 and lan.get("/").status_code == 200
+    finally:
+        web_log.removeHandler(catch)
+    assert any("open to the network WITHOUT a token" in m and OPEN_ENV in m for m in messages)
     assert app.state.open_network is True and app.state.token_required is False
     monkeypatch.setenv(OPEN_ENV, "true")
     assert TestClient(create_app(tmp_path / "out2", repo), client=("10.20.30.40", 5001)).get("/api/configs").status_code == 200
