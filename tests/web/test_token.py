@@ -36,9 +36,8 @@ def test_open_mode_serves_every_client_without_a_token(tmp_path, repo, monkeypat
     import logging
     app = create_app(tmp_path / "out", repo, open_network=True)
     lan = TestClient(app, client=("10.20.30.40", 5000))
-    with caplog.at_level(logging.WARNING, logger="sbmig.web"):
-        with lan:
-            assert lan.get("/api/runs").status_code == 200 and lan.get("/").status_code == 200
+    with caplog.at_level(logging.WARNING, logger="sbmig.web"), lan:
+        assert lan.get("/api/runs").status_code == 200 and lan.get("/").status_code == 200
     assert any("open to the network WITHOUT a token" in r.getMessage() and OPEN_ENV in r.getMessage() for r in caplog.records)
     assert app.state.open_network is True and app.state.token_required is False
     monkeypatch.setenv(OPEN_ENV, "true")
