@@ -587,6 +587,15 @@ def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monk
                     "<activeProfiles>"), encoding="utf-8")
     look3 = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
     assert [u for u, _c, _o in look3.repository_urls()][0] == "http://nexus.company.local/repository/maven-public/"
+    # the blocked repository's <server> login still reaches the explicit URL that points at the same Nexus
+    user.write_text(USER_WITH_HTTP_NEXUS.replace("<profiles>",
+                    "<servers><server><id>xxx-internal-releases</id><username>nx</username><password>pw</password></server>"
+                    "</servers><profiles>"), encoding="utf-8")
+    look4 = RepositoryLookup(_cfg(tmp_path, settings_file=str(user),
+                                  repository_url="http://nexus.company.local/repository/releases"), fetch=FakeFetch({}))
+    first = look4.repository_urls()[0]
+    assert first[0] == "http://nexus.company.local/repository/releases/" and first[1] == ("nx", "pw")
+    assert first[2].startswith("build.repository_url (explicit: first)")
     assert is_blocking_mirror("http://0.0.0.0/") and is_blocking_mirror("https://ok/", True)
     assert not is_blocking_mirror("http://nexus.company.local/") and not is_blocking_mirror("")
 

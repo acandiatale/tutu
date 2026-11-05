@@ -901,8 +901,11 @@ class RepositoryLookup:
             if configured and str(configured).strip():
                 u = _normalize_url(str(configured))
                 # credentials: the <server> of the mirror / repository with the same URL, else build.repository_server_id
+                # 2026-11-05: 차단 미러가 덮어 set 에서 빠진 저장소(out 에 없음)의 <server> 도 같은 URL 이면 쓴다 — 운영자가
+                # build.repository_url 로 그 http Nexus 를 다시 가리킬 때 로그인이 사라지면 안 된다
                 creds = next((c for cu, c, _o in out if cu == u and c), None) or next(
-                    (mc for _i, mu, _mo, mc, _mo2, _b in mirrors if mu == u and mc), None)
+                    (mc for _i, mu, _mo, mc, _mo2, _b in mirrors if mu == u and mc), None) or next(
+                    (rc for _rid, ru, rc, _ro in repos if ru == u and rc), None)
                 sid = getattr(build, "repository_server_id", None)
                 if creds is None and sid:
                     creds = servers.get(str(sid))

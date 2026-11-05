@@ -3971,7 +3971,9 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   refuses plain-http external repositories — use an https URL, override the mirror in the user settings.xml, or set
   build.repository_url (asked first, never mirrored)`; the probe prints it as `note:`. A user settings mirror that redefines the
   blocker (same id / mirrorOf, the real URL, `<blocked>false</blocked>`) wins by order, as in Maven. The explicit
-  `build.repository_url` bypasses mirrors on purpose (the operator's decision) — the user set it the same day.
+  `build.repository_url` bypasses mirrors on purpose (the operator's decision) — the user set it the same day; the `<server>`
+  login of the blocked repository still reaches it when both name the same URL (the blocked repository has left the set, so the
+  credential lookup also reads the settings' repositories, not only the set and the mirrors), else `build.repository_server_id`.
   **Deployment consequence:** a Job pod starts with an empty `~/.m2`; if the company Nexus is http, Maven 3.9 in the image blocks
   it too and every in-house artifact fails with `Blocked mirror for repositories` — the ConfigMap's settings.xml must override
   `maven-default-http-blocker` (or the Nexus must be https). `config/settings.nexus.example.xml` and `deploy/README.md` say so.
