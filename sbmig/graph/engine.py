@@ -125,7 +125,7 @@ def stop_requested(orch: Orchestrator) -> bool:
     Is the run directory's `stop.request` present (the Job-mode stop request)? Never raises."""
     try:
         return (orch.ws.run_dir / STOP_REQUEST_FILE).is_file()
-    except Exception:  # noqa: BLE001 - an unreadable run dir is not a stop request
+    except OSError:  # an unreadable run dir is not a stop request
         return False
 
 
@@ -135,7 +135,7 @@ def _journal_node_end(orch: Orchestrator, node: str, out: dict) -> None:
     try:
         orch.ws.journal({"event": "graph_node_end", "node": node, "phase": out.get("phase"),
                          "phases": out.get("phases"), "aborted": out.get("aborted"), "stopped": out.get("stopped")})
-    except Exception:  # noqa: BLE001 - a journal line never fails a node
+    except Exception:  # a journal line never fails a node
         log.debug("graph_node_end journal line for %s not written", node, exc_info=True)
 
 
@@ -181,10 +181,10 @@ def build_graph(orch: Orchestrator) -> Any:
         log.warning("stop requested (%s) — stopping before node %s (no final build)", STOP_REQUEST_FILE, node)
         try:
             orch.ws.journal({"event": "stop_request", "node": node, "file": STOP_REQUEST_FILE})
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # the journal line is a convenience
+            log.debug("stop_request journal line not written", exc_info=True)
         if "aborted" not in report.flags:
-            orch._abort(report, STOP_REQUEST_REASON)   # noqa: SLF001 - the same marking the web's in-process stop uses
+            orch._abort(report, STOP_REQUEST_REASON)   # the same marking the web's in-process stop uses
         return {"stopped": False, "aborted": orch.abort_reason or STOP_REQUEST_REASON, "phase": phase,
                 "summary": _summary(orch, report)}
 

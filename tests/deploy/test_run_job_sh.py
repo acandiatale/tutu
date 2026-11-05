@@ -44,7 +44,7 @@ def test_shared_volume_mode_runs_in_the_web_pods_run_dir(tmp_path: Path):
            "SBMIG_KB_DIR": str(data / "kb-v2"), "SBMIG_CONFIG": "/app/config/artifacts.yml", "SBMIG_STOP_AFTER": "plan"}
     for k in ("SBMIG_SOURCE_GIT_URL", "SBMIG_SOURCE_ZIP_URL", "SBMIG_KB_GIT_URL", "SBMIG_RESULT_GIT_URL", "RESULT_PUSH_CMD"):
         env.pop(k, None)
-    r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+    r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60, check=False)
     assert r.returncode == 0, r.stdout + r.stderr
     log = (run_dir / "sbmig.log").read_text(encoding="utf-8")
     assert f"--out {data / 'out'}" in log and "--run-id web-1" in log and "stop=plan" in log
@@ -56,5 +56,5 @@ def test_shared_volume_mode_runs_in_the_web_pods_run_dir(tmp_path: Path):
     assert "결과는 공유 볼륨" in r.stdout and "SBMIG-RESULT ok fake" in r.stdout
     # an aborted run (sbmig exit 3) → Job exit 3, status written
     env["FAKE_RC"] = "3"
-    r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60)
+    r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60, check=False)
     assert r.returncode == 3 and json.loads((run_dir / "job-status.json").read_text())["exit_code"] == 3

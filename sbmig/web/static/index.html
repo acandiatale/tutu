@@ -472,10 +472,17 @@
     if (st.state === 'finished') { setCurrent(null); showResult(st, d); }
     else if (st.state === 'running' && !railSteps().some((n) => n.classList.contains('done'))) setCurrent(railSteps()[0]);
     if (st.state === 'queued') $('railnote').textContent = '한 번에 한 프로젝트만 옮깁니다 (지식 베이스를 함께 쓰기 때문). 차례가 오면 자동으로 시작합니다.';
+    if (st.mode === 'k8s-job') jobStep();                       // 쿠버네티스 Job 모드: 접수 앞에 '파드' 단계
+  }
+  function jobStep() {
+    const rail = $('rail');
+    let el = rail.querySelector('.step[data-node="job"]');
+    if (!el) { rail.insertAdjacentHTML('afterbegin', stepHtml('job', 'job')); el = rail.firstElementChild; }
+    return el;
   }
 
   // ---- 단계 레일: intake → analyze → plan → phase × N → finalize. `node` 이벤트가 켠다.
-  const KO = { intake: '접수', analyze: '분석', plan: '계획', finalize: '마무리',
+  const KO = { job: '파드', intake: '접수', analyze: '분석', plan: '계획', finalize: '마무리',
                transform: '레시피 적용', restructure: '재구성', verify: '빌드 검증', report: '보고서', jdk21: 'JDK 21', spring: 'Spring' };
   const FIXED = ['intake', 'analyze', 'plan'];
   function stepHtml(node, label, extra) {
@@ -504,6 +511,15 @@
     const name = ev.node, u = (ev.update && typeof ev.update === 'object') ? ev.update : {};
     const rail = $('rail');
     let el;
+    if (name === 'job') {                                       // 쿠버네티스 Job 모드: 파드 생성 중 → 준비됨
+      el = jobStep();
+      const s = u.state || '';
+      if (s === 'running') { el.classList.add('done'); setCurrent(railSteps()[1]); $('railnote').textContent = '파드가 준비됐습니다. 이관을 시작합니다.'; }
+      else if (s === 'failed' || s === 'missing') { el.classList.add('failed'); setCurrent(null); $('railnote').textContent = `파드 실패: ${u.message || s}`; }
+      else if (s === 'succeeded') { el.classList.add('done'); }
+      else { setCurrent(el); $('railnote').textContent = s === 'created' ? '파드 생성 중…' : `파드 생성 중 (${s}${u.message ? ': ' + u.message : ''})`; }
+      return;
+    }
     if (name === 'plan' && Array.isArray(u.phases)) {          // 계획이 단계 묶음을 정한다: 하나씩 점으로
       for (const p of rail.querySelectorAll('.step[data-phase], .step[data-placeholder]')) p.remove();
       for (const ph of u.phases) phaseStep(ph, true);

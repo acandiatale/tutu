@@ -312,7 +312,7 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
 
 def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None,
                token: str | None = None, default_configs: list[str] | None = None,
-               open_network: bool | None = None) -> FastAPI:
+               open_network: bool | None = None, mode: str | None = None, job_client: Any = None) -> FastAPI:
     """웹 앱을 만든다: 실행 관리자, 업로드 상한, 토큰(인자 → ``$SBMIG_WEB_TOKEN``), 기본 설정 파일(인자 →
     ``$SBMIG_WEB_CONFIGS``, 쉼표로 구분한 ``config/*.yml`` 이름), 라우트, 정적 파일, 수명 주기. 토큰이 있으면
     모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다 — 단 ``open_network``(인자 → ``$SBMIG_WEB_OPEN``)이면
@@ -325,7 +325,7 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
     if default_configs is None:
         default_configs = [c.strip() for c in os.environ.get(CONFIGS_ENV, "").split(",") if c.strip()]
-    mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs)
+    mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs, mode=mode, job_client=job_client)
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
     open_network = open_network_requested() if open_network is None else bool(open_network)
@@ -344,9 +344,10 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         _ensure_console_logging()
         limiter = anyio.to_thread.current_default_thread_limiter()   # every SSE stream holds one of these threads
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
-        log.info("sbmig web UI ready (runs under %s, configs from %s/config, default configs %s, upload limit %s, %s)",
+        log.info("sbmig web UI ready (runs under %s, configs from %s/config, default configs %s, upload limit %s, %s, mode %s%s)",
                  mgr.out_dir, mgr.repo_root, ",".join(mgr.default_configs()) or "- (default.yml only)",
-                 describe_max_upload(max_upload), access)
+                 describe_max_upload(max_upload), access, mgr.mode,
+                 f" — job template {mgr.job_template}" if mgr.mode == "k8s-job" else "")
         if open_network and not token:
             log.warning("sbmig web UI is open to the network WITHOUT a token (%s): anyone who reaches it can download "
                         "result.zip (company source) and upload poms whose plugins Maven runs here — trusted intranet only",

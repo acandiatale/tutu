@@ -1,0 +1,260 @@
+"""2026-11-05 (k8s Job dispatch, the user's decision: everything on one shared PVC): in `SBMIG_WEB_MODE=k8s-job` the web pod
+stores the upload as `<out>/<run id>/source.zip`, creates a Job from the template with the run's env, pushes `node` events
+named `job` while the pod is created, reads the pod's journal (`graph_node_end` → `node` events), log and reports from the same
+run dir, and ends on `job-status.json` / the Job's terminal state. A stop writes `stop.request`; after the grace period the Job
+is deleted. No migration runs in this process."""
+from __future__ import annotations
+
+import json
+import shutil
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from sbmig.core.config import PACKAGE_ROOT
+from sbmig.web import create_app
+from sbmig.web.k8s import JobState, K8sClient, K8sError, job_name, render_job
+from sbmig.web.runs import RunManager
+
+from .test_app import _manager, _sse, _start
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "config").mkdir(parents=True)
+    shutil.copy(PACKAGE_ROOT / "config" / "artifacts.local-e2e.yml", repo / "config" / "artifacts.local-e2e.yml")
+    (repo / "config" / "default.yml").write_text("x: 1\n")
+    return repo
+
+TEMPLATE = Path(__file__).resolve().parents[2] / "deploy" / "k8s" / "81-web-job.template.yaml"
+
+
+def _ts() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class FakePod:
+    """Writes what the Job pod would write into the shared run dir, after the Job turned Running."""
+
+    def __init__(self, exit_code: int = 0) -> None:
+        self.exit_code = exit_code
+
+    def run(self, run_dir: Path) -> None:
+        with open(run_dir / "journal.jsonl", "a", encoding="utf-8") as jf:
+            for node, phase, extra in (("intake", "intake", {}), ("analyze", "analyze", {}),
+                                       ("plan", "plan", {"phases": ["verify"]}), ("phase", "verify", {"phases": []}),
+                                       ("finalize", None, {})):
+                jf.write(json.dumps({"ts": _ts(), "event": "graph_node", "node": node, "phase": phase}) + "\n")
+                jf.write(json.dumps({"ts": _ts(), "event": "graph_node_end", "node": node, "phase": phase, "aborted": None,
+                                     "stopped": False, **extra}) + "\n")
+        (run_dir / "sbmig.log").write_text("2026-11-05 22:00:00,000 INFO [verify] build ok\nSBMIG-RESULT ok\n", encoding="utf-8")
+        (run_dir / "report.md").write_text("# report\n\nBUILD SUCCESS\n", encoding="utf-8")
+        (run_dir / "report.json").write_text(json.dumps({"success": True, "blocked": [], "unresolved": [],
+                                                         "llm_usage": {"calls": 2}}), encoding="utf-8")
+        (run_dir / "job-status.json").write_text(json.dumps({"exit_code": self.exit_code, "finished_at": _ts()}), encoding="utf-8")
+
+
+class FakeJobClient:
+    """Scripted Job states; the pod "runs" when the state reaches Running."""
+    namespace = "sbmig-ns"
+
+    def __init__(self, phases: list[str] | None = None, pod: FakePod | None = None, out_dir: Path | None = None):
+        self.phases = list(phases or ["Creating", "Pending", "Running"])
+        self.pod = pod
+        self.out_dir = out_dir
+        self.created: list[dict] = []
+        self.deleted: list[str] = []
+        self.states_served = 0
+
+    def create_job(self, manifest: dict) -> str:
+        self.created.append(manifest)
+        return manifest["metadata"]["name"]
+
+    def job_state(self, name: str) -> JobState:
+        self.states_served += 1
+        phase = self.phases.pop(0) if len(self.phases) > 1 else self.phases[0]
+        if phase == "Running" and self.pod is not None and self.out_dir is not None:
+            run_id = next(e["value"] for e in self.created[-1]["spec"]["template"]["spec"]["containers"][0]["env"]
+                          if e["name"] == "SBMIG_RUN_ID")
+            self.pod.run(self.out_dir / run_id)
+            self.pod = None                                  # once
+        return JobState(phase, pod=f"{name}-x1" if phase != "Creating" else None,
+                        exit_code=0 if phase == "Succeeded" else None,
+                        message="ContainerCreating" if phase == "Pending" else "")
+
+    def delete_job(self, name: str) -> None:
+        self.deleted.append(name)
+        self.phases = ["Missing"]
+
+
+@pytest.fixture
+def job_client(tmp_path: Path) -> FakeJobClient:
+    return FakeJobClient(pod=FakePod(), out_dir=tmp_path / "out")
+
+
+@pytest.fixture
+def client(tmp_path: Path, repo: Path, job_client: FakeJobClient, monkeypatch) -> TestClient:
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    monkeypatch.setenv("SBMIG_JOB_TEMPLATE", str(TEMPLATE))
+    return TestClient(create_app(tmp_path / "out", repo, mode="k8s-job", job_client=job_client))
+
+
+def test_upload_creates_a_job_and_the_ui_sees_pod_then_nodes_then_files(client: TestClient, job_client: FakeJobClient, tmp_path: Path):
+    rid = _start(client, "name=my%20proj.zip&configs=artifacts.local-e2e.yml&stop_after=verify")
+    events = _sse(client, rid)
+    kinds = [k for k, _ in events]
+    assert kinds[0] == "status" and kinds[-1] == "end" and "report" in kinds
+    final_status = [d for k, d in events if k == "status"][-1]
+    assert final_status["state"] == "finished" and final_status["exit_code"] == 0
+    # the Job: one manifest from the template with the run's env; the zip in the run dir, not under _uploads
+    assert len(job_client.created) == 1
+    m = job_client.created[0]
+    assert m["metadata"]["name"] == job_name(rid) and m["metadata"]["namespace"] == "sbmig-ns"
+    env = {e["name"]: e["value"] for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    run_dir = tmp_path / "out" / rid
+    assert env["SBMIG_SOURCE_ZIP"] == str(run_dir / "source.zip") and env["SBMIG_OUT"] == str(tmp_path / "out")
+    assert env["SBMIG_RUN_ID"] == rid and env["SBMIG_CONFIG"].endswith("config/artifacts.local-e2e.yml")
+    assert env["SBMIG_STOP_AFTER"] == "verify" and env["SBMIG_KB_DIR"] == "/data/kb-v2"      # template value kept
+    assert (run_dir / "source.zip").is_file() and not list((tmp_path / "out" / "_uploads").glob("*.zip"))
+    # the pod states, then the pod's nodes (from graph_node_end), in order
+    nodes = [d for k, d in events if k == "node"]
+    job_states = [d["update"]["state"] for d in nodes if d["node"] == "job"]
+    assert job_states[:3] == ["created", "creating", "pending"] and "running" in job_states
+    assert [d["node"] for d in nodes if d["node"] != "job"] == ["intake", "analyze", "plan", "phase", "finalize"]
+    plan = next(d for d in nodes if d["node"] == "plan")
+    assert plan["update"]["phases"] == ["verify"]
+    run = _manager(client).runs[rid]
+    assert ("finished", {"exit_code": 0, "success": True}) in run.history
+    st = client.get(f"/api/runs/{rid}").json()
+    assert st["state"] == "finished" and st["mode"] == "k8s-job" and st["job"]["name"] == job_name(rid)
+    assert st["exit_code"] == 0 and "report.md" in st["files"] and st["llm_calls"] == 2
+    assert client.get(f"/api/runs/{rid}/files/report.md").text.startswith("# report")
+    # the web wrote only its own journal lines; the migration ran "in the pod"
+    journal = [json.loads(ln) for ln in (run_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert journal[0]["event"] == "web_run" and journal[0]["mode"] == "k8s-job" and journal[1]["event"] == "job_created"
+    assert any(e["event"] == "graph_node_end" for e in journal)
+
+
+def test_stop_writes_the_request_file_then_deletes_after_the_grace_period(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    monkeypatch.setenv("SBMIG_JOB_STOP_GRACE_S", "0.2")
+    jc = FakeJobClient(phases=["Pending", "Running"], pod=None)        # the pod never finishes on its own
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    deadline = time.time() + 5
+    while mgr.status(rid)["state"] != "running" and time.time() < deadline:
+        time.sleep(0.02)
+    assert mgr.stop(rid)
+    run = mgr.runs[rid]
+    assert run.done.wait(5)
+    assert (tmp_path / "out" / rid / "stop.request").is_file() and jc.deleted == [job_name(rid)]
+    assert run.exit_code == 3 and "deleted after the grace period" in (run.error or "")
+    st = mgr.status(rid)
+    assert st["state"] == "finished" and st["stop_requested"] is True
+
+
+def test_server_shutdown_leaves_the_job_running(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    jc = FakeJobClient(phases=["Running"], pod=None)
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    deadline = time.time() + 5
+    while mgr.status(rid)["state"] != "running" and time.time() < deadline:
+        time.sleep(0.02)
+    info = mgr.shutdown()
+    assert info["stopped"] == [] and mgr.runs[rid].done.wait(5)
+    assert jc.deleted == [] and not (tmp_path / "out" / rid / "stop.request").exists()
+    assert "continues in the cluster" in (mgr.runs[rid].error or "")
+
+
+def test_outside_a_cluster_the_run_fails_readably(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)        # no client → in_cluster() fails
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(5)
+    assert mgr.runs[rid].exit_code == 3 and "not inside a Kubernetes cluster" in (mgr.runs[rid].error or "")
+    assert any(k == "error" for k, _ in mgr.runs[rid].history)
+
+
+def test_bad_mode_is_rejected(tmp_path: Path, repo: Path):
+    with pytest.raises(ValueError):
+        RunManager(tmp_path / "out", repo, mode="docker")
+
+
+# ---- the client and the template helpers
+def test_job_name_and_render_job():
+    assert job_name("web-20261105-213045-abc123") == "sbmig-web-20261105-213045-abc123"
+    assert job_name("Run_ID.With Caps") == "sbmig-run-id-with-caps" and len(job_name("x" * 80)) <= 63
+    job = render_job(TEMPLATE, "web-1", {"SBMIG_RUN_ID": "web-1", "SBMIG_KB_DIR": "/other/kb"}, namespace="ns1")
+    assert job["metadata"]["name"] == "sbmig-web-1" and job["metadata"]["namespace"] == "ns1"
+    assert "generateName" not in job["metadata"] and job["metadata"]["labels"]["sbmig-run-id"] == "web-1"
+    env = {e["name"]: e["value"] for e in job["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["SBMIG_KB_DIR"] == "/other/kb" and env["SBMIG_RUN_ID"] == "web-1" and env["SBMIG_FAIL_JOB_ON_BUILD_FAIL"] == "0"
+    assert job["spec"]["template"]["metadata"]["labels"]["sbmig-run-id"] == "web-1"
+    with pytest.raises(K8sError):
+        render_job({"kind": "Deployment"}, "x", {})
+
+
+class _Resp:
+    def __init__(self, status_code: int, body: dict | None = None):
+        self.status_code = status_code
+        self._body = body or {}
+        self.text = json.dumps(self._body)
+
+    def json(self):
+        return self._body
+
+
+class _Session:
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def request(self, method, url, **kw):
+        self.calls.append((method, url, kw))
+        key = (method, url.split("?")[0])
+        hit = self.routes.get(key)
+        if callable(hit):
+            return hit(kw)
+        return hit if hit is not None else _Resp(404, {"message": "not found"})
+
+
+def test_k8s_client_three_calls(tmp_path: Path):
+    base = "https://10.0.0.1:443"
+    jobs = f"{base}/apis/batch/v1/namespaces/ns/jobs"
+    pods = f"{base}/api/v1/namespaces/ns/pods"
+    state = {"job": {"status": {}}, "pods": {"items": []}}
+    routes = {("POST", jobs): _Resp(201, {"metadata": {"name": "sbmig-r1"}}),
+              ("GET", f"{jobs}/sbmig-r1"): lambda kw: _Resp(200, state["job"]),
+              ("GET", pods): lambda kw: _Resp(200, state["pods"]),
+              ("DELETE", f"{jobs}/sbmig-r1"): _Resp(200, {})}
+    s = _Session(routes)
+    c = K8sClient(base, "tok", "ns", verify="/ca.crt", session=s)
+    assert c.create_job({"metadata": {"name": "sbmig-r1"}}) == "sbmig-r1"
+    assert s.calls[0][2]["headers"]["Authorization"] == "Bearer tok" and s.calls[0][2]["verify"] == "/ca.crt"
+    assert c.job_state("sbmig-r1").phase == "Creating"
+    state["pods"] = {"items": [{"metadata": {"name": "sbmig-r1-abc", "creationTimestamp": "t1"},
+                                "status": {"phase": "Pending", "containerStatuses": [{"state": {"waiting": {"reason": "ImagePullBackOff", "message": "x"}}}]}}]}
+    st = c.job_state("sbmig-r1")
+    assert (st.phase, st.pod, st.message) == ("Pending", "sbmig-r1-abc", "ImagePullBackOff x")
+    state["pods"]["items"][0]["status"] = {"phase": "Running", "containerStatuses": [{"state": {"running": {}}}]}
+    assert c.job_state("sbmig-r1").phase == "Running"
+    state["pods"]["items"][0]["status"] = {"phase": "Succeeded", "containerStatuses": [{"state": {"terminated": {"exitCode": 2, "reason": "Error"}}}]}
+    state["job"] = {"status": {"succeeded": 1}}
+    st = c.job_state("sbmig-r1")
+    assert st.phase == "Succeeded" and st.exit_code == 2 and st.finished
+    state["job"] = {"status": {"failed": 1, "conditions": [{"type": "Failed", "reason": "DeadlineExceeded", "message": "too long"}]}}
+    st = c.job_state("sbmig-r1")
+    assert st.phase == "Failed" and st.message == "DeadlineExceeded too long"
+    c.delete_job("sbmig-r1")
+    assert s.calls[-1][0] == "DELETE" and s.calls[-1][2]["json"]["propagationPolicy"] == "Foreground"
+    assert c.job_state("sbmig-nope").phase == "Missing"
+    s.routes[("GET", f"{jobs}/sbmig-r1")] = _Resp(403, {"message": "forbidden"})
+    with pytest.raises(K8sError, match="HTTP 403"):
+        c.job_state("sbmig-r1")
+    with pytest.raises(K8sError, match="not inside a Kubernetes cluster"):
+        K8sClient.in_cluster()

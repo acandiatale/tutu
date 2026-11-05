@@ -419,6 +419,9 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
               open_network: bool = typer.Option(False, "--open",
                                                 help="serve a non-loopback --host WITHOUT a token: every client is "
                                                      "accepted (trusted intranet only; default: $SBMIG_WEB_OPEN=1)"),
+              mode: Optional[str] = typer.Option(None, "--mode",
+                                                 help="in-process (default) | k8s-job: one Kubernetes Job per upload, zip / "
+                                                      "results / KB on the shared volume (default: $SBMIG_WEB_MODE)"),
               config: Optional[List[str]] = typer.Option(None, "--config", "-c",
                                                          help="config/*.yml name every upload runs with (repeatable; "
                                                               "default: $SBMIG_WEB_CONFIGS, else artifacts.yml / "
@@ -486,7 +489,7 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
     # uvicorn stops waiting for connections after `graceful_timeout` — without it Ctrl+C hung on the browser tabs
     try:
         uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb, token=token,
-                               default_configs=default_configs, open_network=open_network),
+                               default_configs=default_configs, open_network=open_network, mode=mode),
                     host=host, port=port, log_level="info", timeout_graceful_shutdown=graceful_timeout)
     finally:
         detach_file_log(web_log, None)

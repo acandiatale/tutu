@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import threading
@@ -62,12 +63,23 @@ from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from sbmig.core.config import PACKAGE_ROOT
+from sbmig.web.k8s import (
+    DEFAULT_TEMPLATE,
+    MODE_ENV,
+    MODES,
+    POLL_ENV,
+    STOP_GRACE_ENV,
+    TEMPLATE_ENV,
+    K8sClient,
+    K8sError,
+    render_job,
+)
 
 log = logging.getLogger("sbmig.web")
 
@@ -86,6 +98,9 @@ KEEPALIVE_S = 15.0
 MAX_UPDATE_CHARS = 20_000          # a node update larger than this is summarized (keys only) in the `node` event
 EXIT_ABORTED = 3                   # = sbmig.cli.EXIT_ABORTED (worker crashed / stopped by the user)
 WEB_STATUS_FILE = "web-status.json"   # the worker's final status, read back for runs no longer in memory
+JOB_STATUS_FILE = "job-status.json"   # k8s Job mode: run-job.sh writes {exit_code, finished_at} on the shared volume
+STOP_REQUEST_FILE = "stop.request"    # k8s Job mode: the web asks the pod's engine to stop between nodes (sbmig.graph.engine)
+SOURCE_ZIP = "source.zip"             # k8s Job mode: the uploaded zip, in the run dir on the shared volume
 DEFAULT_MAX_FINISHED_RUNS = 200
 
 
@@ -113,6 +128,11 @@ class Run:
     error: str | None = None
     last_node: str | None = None
     started: float = field(default_factory=time.time)
+    # k8s Job 모드(2026-11-05): 이 실행은 다른 파드에서 돈다 — Job 이름과 마지막으로 본 상태
+    job: bool = False
+    job_name: str | None = None
+    job_phase: str | None = None
+    job_pod: str | None = None
 
 
 class _FifoTurns:
@@ -187,10 +207,19 @@ class RunManager:
     Starts migrations in worker threads and answers status / event questions from memory + the run directory."""
 
     def __init__(self, out_dir: Path, repo_root: Path = PACKAGE_ROOT, *,
-                 max_finished_runs: int = DEFAULT_MAX_FINISHED_RUNS, default_configs: list[str] | None = None):
+                 max_finished_runs: int = DEFAULT_MAX_FINISHED_RUNS, default_configs: list[str] | None = None,
+                 mode: str | None = None, job_client: Any = None, job_template: str | Path | None = None):
         self.out_dir = Path(out_dir).resolve()
         self.repo_root = Path(repo_root).resolve()
         self.max_finished_runs = max(0, int(max_finished_runs))
+        # 2026-11-05: 실행 모드 — in-process(이 프로세스의 스레드) | k8s-job(업로드마다 Job 하나, 공유 PVC 로 전달·결과)
+        self.mode = (mode or os.environ.get(MODE_ENV, "") or "in-process").strip()
+        if self.mode not in MODES:
+            raise ValueError(f"{MODE_ENV} must be one of {', '.join(MODES)}, not {self.mode!r}")
+        self._job_client = job_client                     # None → K8sClient.in_cluster() on the first Job
+        self.job_template = Path(job_template or os.environ.get(TEMPLATE_ENV, "") or (self.repo_root / DEFAULT_TEMPLATE))
+        self.job_poll_s = max(0.05, float(os.environ.get(POLL_ENV, "2") or 2))
+        self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "600") or 600))
         # 서버가 정한 기본 설정 파일 이름들(sbmig serve --config / SBMIG_WEB_CONFIGS): 화면은 이것으로 돈다
         self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
         self._missing_warned: set[str] = set()
@@ -283,6 +312,8 @@ class RunManager:
 
         safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(name or "project.zip").name) or "project.zip"
         run_id = f"web-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+        if self.mode == "k8s-job":
+            return self._start_job(incoming, run_id, safe, list(configs), stop_after, llm_provider)
         uploads = self.out_dir / "_uploads"
         uploads.mkdir(parents=True, exist_ok=True)
         zip_path = uploads / f"{run_id}-{safe}"
@@ -318,6 +349,35 @@ class RunManager:
                  zip_path.name, ",".join(configs) or "-", stop_after or "-", llm_provider or "-")
         return run_id
 
+    def _start_job(self, incoming: Path, run_id: str, safe_name: str, configs: list[str], stop_after: str | None,
+                   llm_provider: str | None) -> str:
+        """k8s Job 모드의 시작: 실행 폴더를 만들고 zip 을 ``source.zip`` 으로 옮기고(둘 다 공유 볼륨), 첫 저널 줄을 쓰고,
+        Job 을 만들어 지켜보는 작업 스레드를 띄운다. 이 프로세스는 이관을 돌리지 않는다.
+
+        Job mode: create the run dir, move the zip there as `source.zip` (both on the shared volume), write the first
+        journal line, start the worker that creates and watches the Job. Nothing migrates in this process."""
+        run_dir = self.out_dir / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        zip_path = run_dir / SOURCE_ZIP
+        Path(incoming).replace(zip_path)
+        run = Run(run_id, run_dir, zip_path, configs, stop_after, llm_provider, job=True)
+        _append_journal(run_dir, {"event": "web_run", "run_id": run_id, "mode": "k8s-job", "upload": safe_name,
+                                  "configs": configs, "stop_after": stop_after, "llm_provider": llm_provider})
+        run.thread = threading.Thread(target=self._worker, args=(run,), name=f"sbmig-job-{run_id}", daemon=True)
+        with self._lock:
+            self.runs[run_id] = run
+            self._turns.join(run_id)
+        try:
+            run.thread.start()
+        except RuntimeError:
+            self._turns.leave(run_id)
+            with self._lock:
+                self.runs.pop(run_id, None)
+            raise
+        log.info("run %s queued as a k8s Job: %s configs=%s stop_after=%s", run_id, safe_name, ",".join(configs) or "-",
+                 stop_after or "-")
+        return run_id
+
     def _worker(self, run: Run) -> None:
         """작업 스레드 본체. ``_turns`` 줄 맨 앞이 될 때까지 ``queued``, 차례가 오면 ``active`` → 이
         스레드 전용 ``sbmig.log`` 를 붙이고 이관을 돌린 뒤 ``SBMIG-RESULT`` 줄을 남긴다. 무슨 일이
@@ -332,6 +392,9 @@ class RunManager:
             # 예전의 threading.Lock 은 기다리는 스레드에게 넘겨주는 순서를 보장하지 않았다(A10)
             with self._turns.turn(run.run_id):         # one migration at a time, in upload order (docstring)
                 run.active.set()
+                if run.job:                            # k8s Job mode: the pod writes this run's sbmig.log — not this process
+                    run.exit_code = self._run_job(run)
+                    return
                 # thread_id: 이 스레드(와 그 컨텍스트를 물려받은 LangGraph 실행기 스레드)의 로그만 이 파일로 —
                 # 같은 프로세스의 다른 실행·서버 로그가 섞이지 않게
                 log_path = attach_file_log(run.run_dir / "sbmig.log", thread_id=threading.get_ident())
@@ -355,14 +418,93 @@ class RunManager:
             log.info("run %s finished: exit code %s", run.run_id, run.exit_code)
             if log_path is not None:
                 _detach_file_log(log_path)
-            self._push(run, "finished", {"exit_code": run.exit_code,
-                                         "success": getattr(run.report, "success", None)})
+            success = getattr(run.report, "success", None)
+            if run.job and success is None:
+                success = _report_success(run.run_dir)
+            self._push(run, "finished", {"exit_code": run.exit_code, "success": success})
             _write_web_status(run)
             run.done.set()
             with run.cond:
                 run.cond.notify_all()
             with self._lock:
                 self._prune_locked()
+
+    def _job_client_or_fail(self) -> Any:
+        if self._job_client is None:
+            self._job_client = K8sClient.in_cluster()
+        return self._job_client
+
+    def _run_job(self, run: Run) -> int:
+        """k8s Job 모드의 본체: Job 생성 → 상태 감시(``node`` 이벤트 ``job`` 으로 파드 생성 중 / 준비됨을 화면에) →
+        끝나면 종료 코드. 멈춤 요청은 실행 폴더에 ``stop.request`` 를 써서(엔진이 노드 사이에서 멈춤) 전하고, 유예
+        (``SBMIG_JOB_STOP_GRACE_S``)가 지나도 안 끝나면 Job 을 지운다. 서버 종료 때는 Job 을 그대로 두고 빠진다(결과는
+        볼륨에 쌓이고, 다음 서버가 폴더로 답한다). 저널·로그·보고서는 파드가 같은 실행 폴더에 쓰므로 SSE 는 그대로 읽는다.
+
+        Create the Job, watch it (pushing `node` events named `job` for the pod's state), return the exit code: from
+        `job-status.json` the pod wrote, else the container's. A stop request writes `stop.request` into the run dir;
+        after the grace period the Job is deleted. A server shutdown leaves the Job running."""
+        from sbmig.cli import EXIT_ABORTED as _aborted  # noqa: F401 - the same constant as the module's
+
+        name: str | None = None
+        try:
+            client = self._job_client_or_fail()
+            env = {"SBMIG_SOURCE_ZIP": str(run.zip_path), "SBMIG_OUT": str(self.out_dir), "SBMIG_RUN_ID": run.run_id,
+                   "SBMIG_CONFIG": " ".join(str(self.repo_root / "config" / c) for c in run.configs)}
+            if run.stop_after:
+                env["SBMIG_STOP_AFTER"] = run.stop_after
+            if run.llm_provider:
+                env["SBMIG_LLM_PROVIDER"] = run.llm_provider
+            manifest = render_job(self.job_template, run.run_id, env, getattr(client, "namespace", None))
+            name = client.create_job(manifest)
+            run.job_name = name
+            _append_journal(run.run_dir, {"event": "job_created", "run_id": run.run_id, "job": name,
+                                          "namespace": getattr(client, "namespace", None)})
+            self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
+            last: tuple[str, str | None] | None = None
+            stop_sent: float | None = None
+            while True:
+                st = client.job_state(name)
+                if (st.phase, st.pod) != last:
+                    last = (st.phase, st.pod)
+                    run.job_phase, run.job_pod = st.phase, st.pod
+                    self._push(run, "node", {"node": "job", "update": {"state": st.phase.lower(), "job": name,
+                                                                        "pod": st.pod, "message": st.message}})
+                    log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
+                             f" ({st.message})" if st.message else "")
+                saved = _read_job_status(run.run_dir)
+                if saved is not None:                  # the pod finished and said so on the volume
+                    return int(saved.get("exit_code", EXIT_ABORTED))
+                if st.finished:
+                    if st.phase == "Missing":
+                        run.error = f"job {name} disappeared (deleted outside sbmig?)"
+                        return EXIT_ABORTED
+                    if st.exit_code is not None:
+                        return int(st.exit_code)
+                    run.error = st.message or f"job {name} {st.phase.lower()} without a container exit code"
+                    return EXIT_ABORTED
+                if self.closing.is_set():              # server shutdown: the Job goes on, the next server answers from files
+                    run.error = "web server shut down while the job was running — the job continues in the cluster"
+                    return EXIT_ABORTED
+                if run.cancel.is_set():
+                    if stop_sent is None:
+                        (run.run_dir / STOP_REQUEST_FILE).write_text("stop requested from the web UI\n", encoding="utf-8")
+                        stop_sent = time.monotonic()
+                        _append_journal(run.run_dir, {"event": "stop_request_sent", "run_id": run.run_id, "job": name})
+                        log.info("run %s: stop requested — %s written for job %s", run.run_id, STOP_REQUEST_FILE, name)
+                    elif time.monotonic() - stop_sent > self.job_stop_grace_s:
+                        log.warning("run %s: job %s still running %.0fs after the stop request — deleting it",
+                                    run.run_id, name, self.job_stop_grace_s)
+                        client.delete_job(name)
+                        _append_journal(run.run_dir, {"event": "job_deleted", "run_id": run.run_id, "job": name})
+                        run.error = "stopped: the job was deleted after the grace period"
+                        return EXIT_ABORTED
+                with run.cond:
+                    run.cond.wait(self.job_poll_s)
+        except (K8sError, OSError) as e:
+            run.error = f"{type(e).__name__}: {e}"
+            log.error("run %s: k8s job %s failed: %s", run.run_id, name or "-", run.error)
+            self._push(run, "error", {"message": run.error})
+            return EXIT_ABORTED
 
     def _prune_locked(self) -> None:
         """끝난 실행이 ``max_finished_runs`` 를 넘으면 오래된 것부터 메모리에서 뺀다(호출자가 ``self._lock``
@@ -451,8 +593,9 @@ class RunManager:
         for run in list(self.runs.values()):
             if run.done.is_set():
                 continue
-            run.cancel.set()
-            stopped.append(run.run_id)
+            if not run.job:                       # a k8s Job keeps running; its watcher thread just wakes up and leaves
+                run.cancel.set()
+                stopped.append(run.run_id)
             with run.cond:
                 run.cond.notify_all()
         killed = kill_live_processes(reason)
@@ -466,17 +609,20 @@ class RunManager:
         report.json 이 있으면 성공·차단·미해결·LLM 호출·오류 목록 개수, 그리고 내려받을 수 있는 파일 목록."""
         run = self.runs.get(run_id)
         rd = self.run_dir(run_id)
-        info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None}
+        info: dict[str, Any] = {"run_id": run_id, "run_dir": str(rd), "exists": rd.is_dir() or run is not None,
+                                "mode": self.mode}
         if run is not None:
             info["state"] = "finished" if run.done.is_set() else ("running" if run.active.is_set() else "queued")
             info["exit_code"] = run.exit_code
             info["node"] = run.last_node
+            if run.job:
+                info["job"] = {"name": run.job_name, "phase": run.job_phase, "pod": run.job_pod}
             if run.cancel.is_set():
                 info["stop_requested"] = True
             if run.error:
                 info["error"] = run.error
         else:   # evicted, or a run of an earlier server process: only the directory is known
-            saved = _read_web_status(rd)
+            saved = _read_web_status(rd) or _read_job_status(rd)      # the pod's job-status.json also ends a run
             if saved is not None:
                 info["state"] = "finished"
                 info["exit_code"] = saved.get("exit_code")
@@ -562,6 +708,15 @@ class RunManager:
                     key = _event_time(item[0], item[1])
                     last_key = key if key is not None else last_key     # unparsable → keep its file position
                     batch.append((last_key, len(batch), item[0], item[1]))
+                    # k8s Job 모드 / 옛 실행 재생: 파드가 쓴 graph_node_end 줄이 화면의 node 이벤트가 된다(자기 프로세스 실행은
+                    # _push 로 이미 받는다)
+                    if item[0] == "journal" and isinstance(item[1], dict) and item[1].get("event") == "graph_node_end" \
+                            and (run is None or run.job):
+                        ev = item[1]
+                        update = {k: ev[k] for k in ("phase", "phases", "aborted", "stopped") if ev.get(k) is not None}
+                        batch.append((last_key, len(batch), "node", {"node": ev.get("node"), "update": update}))
+                        if run is not None:
+                            run.last_node = ev.get("node")
             for _key, _n, kind, data in sorted(batch, key=lambda t: (t[0], t[1])):
                 yield kind, data
 
@@ -607,6 +762,33 @@ def _write_web_status(run: Run) -> None:
         (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")
     except (OSError, TypeError, ValueError) as e:   # the status file is a convenience; never fail the run on it
         log.debug("cannot write %s for %s: %s", WEB_STATUS_FILE, run.run_id, e)
+
+
+def _read_job_status(rd: Path) -> dict[str, Any] | None:
+    """k8s Job 모드: 파드의 run-job.sh 가 쓴 ``job-status.json`` (없거나 깨졌으면 None)."""
+    try:
+        data = json.loads((rd / JOB_STATUS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and "exit_code" in data else None
+
+
+def _report_success(rd: Path) -> bool | None:
+    """report.json 의 success (없으면 None) — Job 모드의 finished 이벤트용."""
+    try:
+        return json.loads((rd / "report.json").read_text(encoding="utf-8")).get("success")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _append_journal(rd: Path, event: dict[str, Any]) -> None:
+    """실행 폴더의 journal.jsonl 에 한 줄(ts 포함) — Job 모드에서 웹이 쓰는 몇 줄(web_run, job_created, stop_request_sent)."""
+    try:
+        line = {"ts": datetime.now(timezone.utc).isoformat(), **event}
+        with open(rd / "journal.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, default=str) + "\n")
+    except (OSError, TypeError, ValueError) as e:
+        log.debug("journal line %s not written: %s", event.get("event"), e)
 
 
 def _read_web_status(rd: Path) -> dict[str, Any] | None:
