@@ -1260,6 +1260,9 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     for f in files:
         if f and Path(f).exists():
             data = deep_merge(data, _read_yaml(Path(f)))
+    # the yml keys only: SBMIG_* env variables that are not config keys (SBMIG_WEB_CONFIGS, SBMIG_WEB_TOKEN, SBMIG_MAX_UPLOAD_MB)
+    # also land in `data` through _apply_env_overrides and are dropped by pydantic on purpose — they are not a typo
+    _warn_unknown_keys(data)
     if overrides:
         data = deep_merge(data, overrides)
     data = _apply_env_overrides(data)
@@ -1267,5 +1270,4 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     if repo_root:
         data["repo_root"] = str(repo_root)
     _warn_removed_keys(data)
-    _warn_unknown_keys(data)
     return Config.model_validate(data)

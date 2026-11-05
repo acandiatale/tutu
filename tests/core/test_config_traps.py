@@ -47,6 +47,16 @@ def test_unknown_key_check_descends_into_dict_of_model_entries_only_by_their_key
     assert _warn_unknown_keys({"llm": {"payload_extra": {"need_origin": True}}}) == []     # dict fields are not inspected
 
 
+def test_env_variables_that_are_not_config_keys_are_not_reported(tmp_path: Path, repo_root: Path, caplog, monkeypatch):
+    # SBMIG_WEB_CONFIGS / SBMIG_WEB_TOKEN / a test's leftover SBMIG_T_X reach the merged dict through the env overlay and are
+    # dropped by pydantic on purpose — only the yml keys are checked (the full suite had three --json CLI tests broken by it)
+    monkeypatch.setenv("SBMIG_WEB_CONFIGS", "company.yml")
+    monkeypatch.setenv("SBMIG_T_LEFTOVER", "1")
+    with caplog.at_level(logging.WARNING, logger="sbmig.config"):
+        load_config(repo_root / "config" / "artifacts.local-e2e.yml")
+    assert _warnings(caplog) == []
+
+
 def test_every_shipped_yml_loads_without_a_config_warning(repo_root: Path, caplog):
     ymls = sorted(glob.glob(str(repo_root / "config" / "*.yml"))) + sorted(glob.glob(str(repo_root / "fixtures" / "*" / "sbmig.e2e.yml")))
     with caplog.at_level(logging.WARNING, logger="sbmig.config"):

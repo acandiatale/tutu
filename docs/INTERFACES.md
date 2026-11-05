@@ -3984,8 +3984,9 @@ not read:` / `build.repository_url: <url> | not set` (2026-11-05: the value the 
 yml means the yml did not arrive: no `-c`, or the key is not under `build:`) / the `[origin]` of every URL. The config loader now
 names the two silent traps behind that: `config: <file>: key 'build' appears twice (lines A and B) — YAML keeps the LAST block
 only …` (`_YamlLoader`; a second `build:` block replaces the first) and `config: repository_url is not a known key and is ignored
-(check the indentation / spelling — did you mean build.repository_url?)` (`_warn_unknown_keys`: section fields and the entries of
-`dict[str, Model]` fields such as `loop.phases` are checked, dict / list fields are not). A failure while the repository set is
+(check the indentation / spelling — did you mean build.repository_url?)` (`_warn_unknown_keys`: the yml keys only — section fields and the entries of
+`dict[str, Model]` fields such as `loop.phases` are checked, dict / list fields are not; `SBMIG_*` env overrides are not checked
+because `SBMIG_WEB_CONFIGS` / `SBMIG_WEB_TOKEN` / `SBMIG_MAX_UPLOAD_MB` land in the same dict and are dropped on purpose). A failure while the repository set is
 built is a `note:` / WARNING `repository set incomplete: building it failed midway (…)` instead of a silent Central-only list. If the Nexus is still absent, the lookup set is wrong for every library: set
 `build.repository_url` (the group URL) — and `build.settings_file` when the settings are not at `~/.m2/settings.xml` — in the
 company yml; `config/settings.nexus.example.xml` says the same. A bundled jar whose coordinates sbmig could not read (no
