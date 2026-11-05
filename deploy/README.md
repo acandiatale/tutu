@@ -47,12 +47,14 @@ kubectl rollout status deploy/sbmig
 kubectl exec deploy/sbmig -- python -m sbmig.cli llm-probe             # token exchange: ok … HTTP 200
 ```
 
-브라우저는 Service 를 통해 `http://<host>:8765/?token=<SBMIG_WEB_TOKEN>` 로 한 번 열면 7 일 쿠키가 남는다. `--host 0.0.0.0` 이라
-토큰이 없으면 서버가 뜨지 않는다(결과 zip 에 회사 소스가 들어가서 막아 둔 것).
+브라우저는 Service 를 통해 `http://<host>:8765/` 로 연다. 사내망 전용 페이지라(2026-11-05 결정) Deployment 가 `SBMIG_WEB_OPEN=1`
+로 토큰 없이 열고, 서버는 시작 때 "open to the network WITHOUT a token" 경고를 한 줄 남긴다. 토큰을 두고 싶으면 그 env 를 지우고
+Secret 의 `SBMIG_WEB_TOKEN` 을 채운다 — 그때는 `http://<host>:8765/?token=<값>` 으로 한 번 열면 7 일 쿠키가 남고, `--host 0.0.0.0` 에
+둘 다 없으면 서버가 뜨지 않는다(결과 zip 에 회사 소스가 들어가서 막아 둔 것).
 
 * **Secret `sbmig-llm`** = PC 의 `.env`: `LLM_GATEWAY=agent`, `LLM_BASE_URL`(경로의 `{asset_id}` 는 `LLM_ASSET_ID` 로 채워짐),
   `LLM_ASSET_ID`, `LLM_TOKEN_URL`, `LLM_APP_TOKEN`, `LLM_MODEL=build_error_fixer`, `LLM_ESCALATION_MODEL=escalation_fixer`,
-  `LLM_RECORD_DIR`, `SBMIG_WEB_TOKEN`.
+  `LLM_RECORD_DIR`, (선택) `SBMIG_WEB_TOKEN`.
 * **ConfigMap `sbmig-config`**: `company.yml` 은 `/app/config/company.yml` 로 들어가고, Deployment 의 `SBMIG_WEB_CONFIGS=company.yml`
   (= `sbmig serve --config company.yml`) 이 **모든 업로드를 이 설정으로 돌린다** — 담당자는 화면에서 설정을 고르지 않는다(고급 설정을
   펼쳐야 목록이 보인다). 컨테이너 경로를 여기 적는다 — `kb.dir: /data/kb-v2`(기본 `kb-v2` 는 이미지 안이라 재시작 때 사라진다),
@@ -183,7 +185,8 @@ preflight / ADF / 내부 오류)이면 3. `SBMIG_FAIL_JOB_ON_BUILD_FAIL=1` 이�
 
 ## 5. 팀원 초안(2026-11-04)에서 바꾼 것
 
-* 웹 토큰 환경 변수는 `WEB_API_TOKEN` 이 아니라 **`SBMIG_WEB_TOKEN`** 이다.
+* 웹 토큰 환경 변수는 `WEB_API_TOKEN` 이 아니라 **`SBMIG_WEB_TOKEN`** 이다 — 그리고 사내망 전용이라 기본 배포는 토큰 없이
+  `SBMIG_WEB_OPEN=1` 로 연다(2026-11-05).
 * `kb.dir` 기본값은 이미지 안 `/app/kb-v2` 라 파드가 바뀌면 KB 가 사라진다 → `company.yml` 에서 `/data/kb-v2`(웹 UI) / Job 모델은 KB 저장소.
 * 의존성 목록을 Dockerfile 에 다시 적지 않는다(`pip-deps.py` 가 `pyproject.toml` 을 읽는다). `python-multipart` 는 필요 없다 — 업로드는
   zip 본문을 그대로 스트리밍한다.

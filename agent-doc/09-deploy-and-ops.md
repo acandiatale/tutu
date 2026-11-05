@@ -23,9 +23,10 @@ UI 에 올리면** 에이전트가 이관을 돌린다. 담당자는 sbmig 를 �
   그린다(전체는 `sbmig.log` 링크). 화면은 `sbmig/web/static/index.html` 한 파일(HTML + CSS + JS, 웹 폰트·CDN 없음 — 사내망).
 - **한 번에 하나의 이관.** 그 사이 올라온 zip 은 `queued` 로 기다린다(파일 KB 를 공유하기 때문, 순차 이관이 운영 모델).
 - **중지**는 그래프 노드 사이에서만 먹힌다(지금 노드가 끝난 뒤).
-- **접근 토큰** `SBMIG_WEB_TOKEN`(또는 `--token`): 결과 zip 에 회사 소스가 들어가므로, 토큰이 있으면 모든 요청에 요구한다. 브라우저는
-  `http://<host>:8765/?token=<토큰>` 로 한 번 열면 HttpOnly 쿠키가 남는다. 토큰이 없으면 이 PC(루프백)만 받고, `--host 0.0.0.0` 인데
-  토큰이 없으면 `sbmig serve` 가 뜨지 않는다. 같은 PC 의 리버스 프록시 뒤에서는 모든 클라이언트가 루프백으로 보이니 반드시 토큰을 둔다.
+- **접근 제어**: 사내망 전용 페이지라 기본 배포는 `SBMIG_WEB_OPEN=1`(또는 `--open`)로 토큰 없이 모든 클라이언트를 받는다 — 시작 때
+  `open to the network WITHOUT a token` 경고 한 줄. 토큰을 두려면 `SBMIG_WEB_TOKEN`(또는 `--token`): 결과 zip 에 회사 소스가 들어가므로
+  토큰이 있으면 모든 요청에 요구하고(open 보다 우선), 브라우저는 `http://<host>:8765/?token=<토큰>` 로 한 번 열면 HttpOnly 쿠키가 남는다.
+  둘 다 없으면 이 PC(루프백)만 받고, `--host 0.0.0.0` 이면 `sbmig serve` 가 뜨지 않는다.
 - **업로드 상한**: `--max-upload-mb`, 기본 `$SBMIG_MAX_UPLOAD_MB` 또는 512 MB, 0 = 없음.
 - `sbmig serve` 가 곧 uvicorn 이다(안에서 `uvicorn.run`). 실행 큐가 프로세스 안에 있으므로 **워커는 하나**여야 한다.
   종료 시 `--graceful-timeout`(기본 5초) 뒤 SSE 연결을 닫고, 실행 중인 Maven / OpenRewrite 프로세스를 정리한다. 중단된 실행은 `aborted`.

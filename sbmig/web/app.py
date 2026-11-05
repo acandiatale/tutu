@@ -38,6 +38,10 @@ Access (round 10): the page hands out company source code (`result.zip`) and run
   ::ffff:127.0.0.1 a socket bound to `::` reports, A11) are served — a LAN client gets 403 with the hint, even
   when plain `uvicorn … --host 0.0.0.0` was started without one (`sbmig serve` refuses to start like that).
   Trap: behind a reverse proxy on this machine every client looks like loopback — set a token there.
+* **open mode (2026-11-05, the user: "사내망에서만 쓸 페이지야")**: `create_app(open_network=True)`, `sbmig serve --open` or
+  `SBMIG_WEB_OPEN=1` serves every client without a token — the company runs the page on its intranet only, so the
+  token (one URL per owner, a 7-day cookie) was a cost without a threat model; the server logs ONE warning at start.
+  A configured token still wins (open mode changes nothing when a token is set).
 
 
 """
@@ -77,6 +81,7 @@ MAX_UPLOAD_ENV = "SBMIG_MAX_UPLOAD_MB"
 THREAD_POOL_SIZE = 256             # anyio worker threads: each open SSE stream (browser tab) holds one for the run
 _END = object()
 TOKEN_ENV = "SBMIG_WEB_TOKEN"
+OPEN_ENV = "SBMIG_WEB_OPEN"              # "1" / "true": serve every client without a token (trusted intranet only)
 CONFIGS_ENV = "SBMIG_WEB_CONFIGS"   # comma-separated config/*.yml names every upload runs with (sbmig serve --config)
 TOKEN_COOKIE = "sbmig_token"
 COOKIE_MAX_AGE_S = 7 * 24 * 3600   # the browser keeps access for a week (the token itself never leaves the server)
@@ -127,6 +132,14 @@ def _remote_client(scope: Scope) -> bool:
         return False
 
 
+def open_network_requested(value: str | None = None) -> bool:
+    """``SBMIG_WEB_OPEN``(또는 주어진 값)이 참인가 — 1 / true / yes / on. 사내망 전용 페이지라 토큰 없이 모든 클라이언트를 받는 모드.
+
+    Is `SBMIG_WEB_OPEN` (or `value`) truthy — 1 / true / yes / on: serve every client without a token (intranet only)."""
+    v = (os.environ.get(OPEN_ENV, "") if value is None else value).strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def _cookie_value(token: str) -> str:
     """쿠키 값 = 토큰의 해시: 토큰 자체는 브라우저에 남지 않는다(서버만 안다)."""
     return hashlib.sha256(("sbmig-web:" + token).encode("utf-8")).hexdigest()
@@ -138,10 +151,11 @@ class TokenGuard:
 
     ASGI middleware (pure ASGI: SSE streams pass through untouched). See the module docstring."""
 
-    def __init__(self, app: ASGIApp, token: str | None = None):
+    def __init__(self, app: ASGIApp, token: str | None = None, open_network: bool = False):
         self.app = app
         self.token = token or None
         self.cookie = _cookie_value(token) if token else ""
+        self.open_network = bool(open_network)      # 토큰이 없을 때만 뜻이 있다: 원격 클라이언트도 받는다(사내망 전용)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """요청 하나를 거른다. 토큰 없음: 원격 클라이언트는 403. 토큰 있음: Bearer 헤더나 쿠키가 맞으면 통과,
@@ -152,10 +166,11 @@ class TokenGuard:
             return
         req = Request(scope)
         if self.token is None:
-            if _remote_client(scope):
+            if _remote_client(scope) and not self.open_network:
                 await self._deny(scope, receive, send, req, 403,
                                  f"this sbmig web UI serves this machine only: start it with {TOKEN_ENV} set "
-                                 f"(sbmig serve --token) to share it on the network")
+                                 f"(sbmig serve --token) to share it on the network, or {OPEN_ENV}=1 (sbmig serve "
+                                 f"--open) on a trusted intranet")
                 return
             await self.app(scope, receive, send)
             return
@@ -296,12 +311,15 @@ async def _stream(events: Iterator[tuple[str, Any]]) -> AsyncIterator[bytes]:
 
 
 def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int | None = None,
-               token: str | None = None, default_configs: list[str] | None = None) -> FastAPI:
+               token: str | None = None, default_configs: list[str] | None = None,
+               open_network: bool | None = None) -> FastAPI:
     """웹 앱을 만든다: 실행 관리자, 업로드 상한, 토큰(인자 → ``$SBMIG_WEB_TOKEN``), 기본 설정 파일(인자 →
     ``$SBMIG_WEB_CONFIGS``, 쉼표로 구분한 ``config/*.yml`` 이름), 라우트, 정적 파일, 수명 주기. 토큰이 있으면
-    모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다.
+    모든 요청에 요구하고, 없으면 루프백 클라이언트만 받는다 — 단 ``open_network``(인자 → ``$SBMIG_WEB_OPEN``)이면
+    토큰 없이 모든 클라이언트를 받는다(사내망 전용 페이지, 2026-11-05; 시작 때 경고 한 줄).
 
-    `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served.
+    `token` (else `$SBMIG_WEB_TOKEN`): required on every request; without one only loopback clients are served,
+    unless `open_network` (else `$SBMIG_WEB_OPEN`): every client, no token, one WARNING at start (intranet only).
     `default_configs` (else `$SBMIG_WEB_CONFIGS`): the config names every upload runs with unless the request
     names its own (`RunManager.default_configs`)."""
     load_dotenv_files()        # server-start variables (SBMIG_MAX_UPLOAD_MB) may live in .env too; the shell wins
@@ -310,6 +328,13 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     mgr = RunManager(Path(out_dir), Path(repo_root), default_configs=default_configs)
     max_upload = resolve_max_upload(max_upload_mb)       # bytes; 0 = unlimited
     token = (token if token is not None else os.environ.get(TOKEN_ENV, "")).strip() or None
+    open_network = open_network_requested() if open_network is None else bool(open_network)
+    if token:
+        access = f"access token required ({TOKEN_ENV})"
+    elif open_network:
+        access = f"no token, open to every client ({OPEN_ENV}: trusted intranet only)"
+    else:
+        access = "no token: loopback clients only"
 
     # 수명 주기 — 시작: 콘솔 로그, 스레드 한도 올림(열린 SSE 스트림마다 스레드를 하나 쥔다). 종료: 실행
     # 중·대기 중인 이관에 멈춤 요청 + 남은 Maven / OpenRewrite 프로세스 강제 종료 (안 하면 uvicorn 이 SSE
@@ -321,8 +346,11 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
         limiter.total_tokens = max(limiter.total_tokens, THREAD_POOL_SIZE)
         log.info("sbmig web UI ready (runs under %s, configs from %s/config, default configs %s, upload limit %s, %s)",
                  mgr.out_dir, mgr.repo_root, ",".join(mgr.default_configs()) or "- (default.yml only)",
-                 describe_max_upload(max_upload),
-                 f"access token required ({TOKEN_ENV})" if token else "no token: loopback clients only")
+                 describe_max_upload(max_upload), access)
+        if open_network and not token:
+            log.warning("sbmig web UI is open to the network WITHOUT a token (%s): anyone who reaches it can download "
+                        "result.zip (company source) and upload poms whose plugins Maven runs here — trusted intranet only",
+                        OPEN_ENV)
         yield
         info = mgr.shutdown()
         log.info("sbmig web UI shut down: %s", info)
@@ -331,7 +359,8 @@ def create_app(out_dir: Path, repo_root: Path = PACKAGE_ROOT, max_upload_mb: int
     app.state.manager = mgr
     app.state.max_upload_bytes = max_upload
     app.state.token_required = bool(token)
-    app.add_middleware(TokenGuard, token=token)
+    app.state.open_network = bool(open_network and not token)
+    app.add_middleware(TokenGuard, token=token, open_network=open_network)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     @app.get("/", include_in_schema=False)

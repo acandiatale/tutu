@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from sbmig.core.config import PACKAGE_ROOT
 from sbmig.web import create_app
-from sbmig.web.app import TOKEN_COOKIE, TOKEN_ENV, is_loopback_host
+from sbmig.web.app import OPEN_ENV, TOKEN_COOKIE, TOKEN_ENV, is_loopback_host
 
 TOKEN = "s3cret-token-for-tests"
 
@@ -27,6 +27,28 @@ def repo(tmp_path: Path) -> Path:
 @pytest.fixture(autouse=True)
 def _no_env_token(monkeypatch):
     monkeypatch.delenv(TOKEN_ENV, raising=False)
+    monkeypatch.delenv(OPEN_ENV, raising=False)
+
+
+def test_open_mode_serves_every_client_without_a_token(tmp_path, repo, monkeypatch, caplog):
+    """2026-11-05 (the user: "사내망에서만 쓸 페이지야"): `open_network` / SBMIG_WEB_OPEN=1 lets LAN clients in without a token
+    (one WARNING at start); a configured token still wins."""
+    import logging
+    app = create_app(tmp_path / "out", repo, open_network=True)
+    lan = TestClient(app, client=("10.20.30.40", 5000))
+    with caplog.at_level(logging.WARNING, logger="sbmig.web"):
+        with lan:
+            assert lan.get("/api/runs").status_code == 200 and lan.get("/").status_code == 200
+    assert any("open to the network WITHOUT a token" in r.getMessage() and OPEN_ENV in r.getMessage() for r in caplog.records)
+    assert app.state.open_network is True and app.state.token_required is False
+    monkeypatch.setenv(OPEN_ENV, "true")
+    assert TestClient(create_app(tmp_path / "out2", repo), client=("10.20.30.40", 5001)).get("/api/configs").status_code == 200
+    monkeypatch.setenv(OPEN_ENV, "0")
+    assert TestClient(create_app(tmp_path / "out3", repo), client=("10.20.30.40", 5002)).get("/api/configs").status_code == 403
+    # a token wins over open mode
+    app_t = create_app(tmp_path / "out4", repo, token=TOKEN, open_network=True)
+    assert TestClient(app_t, client=("10.20.30.40", 5003)).get("/api/runs").status_code == 401
+    assert app_t.state.open_network is False
 
 
 def test_loopback_hosts():
@@ -101,6 +123,13 @@ def test_serve_refuses_a_lan_address_without_a_token(monkeypatch, tmp_path):
     r = CliRunner().invoke(app, ["serve", "--out", str(tmp_path / "web")])          # 127.0.0.1: no token needed
     assert r.exit_code == 0, r.output
     assert "access token required" not in r.output
+    # 2026-11-05: --open / SBMIG_WEB_OPEN=1 serve the LAN without a token (intranet-only page), with a visible warning line
+    r = CliRunner().invoke(app, ["serve", "--host", "0.0.0.0", "--out", str(tmp_path / "web"), "--open"])
+    assert r.exit_code == 0, r.output
+    assert started[-1]["host"] == "0.0.0.0" and "open to everyone" in r.output and "trusted intranet only" in r.output
+    monkeypatch.setenv("SBMIG_WEB_OPEN", "1")
+    r = CliRunner().invoke(app, ["serve", "--host", "0.0.0.0", "--out", str(tmp_path / "web")])
+    assert r.exit_code == 0 and "SBMIG_WEB_OPEN=1" in r.output, r.output
 
 
 def test_ipv4_mapped_loopback_is_local(tmp_path, repo, monkeypatch):

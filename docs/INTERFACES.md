@@ -1163,7 +1163,11 @@ edited (shell variables still win; values the loader set earlier follow the file
   `SBMIG_WEB_TOKEN` (also from `.env`) is required for a non-loopback `--host`, else exit 2. Requests send
   `Authorization: Bearer <token>`, or `?token=` once (sets an HttpOnly SameSite=Strict cookie holding a hash of the
   token for 7 days; the page `/` is redirected without the token, an API call is answered and keeps the cookie);
-  401 / 403 bodies carry the hint the UI shows.
+  401 / 403 bodies carry the hint the UI shows. **Open mode (2026-11-05, the user: "사내망에서만 쓸 페이지야")**:
+  `create_app(open_network=True)` / `sbmig serve --open` / `SBMIG_WEB_OPEN=1` (1 / true / yes / on) serves every client
+  without a token — the start logs ONE warning (`open to the network WITHOUT a token`), `app.state.open_network` is true,
+  the 403 hint names the switch; a configured token still wins. The k8s Deployment sets `SBMIG_WEB_OPEN=1` and the Secret's
+  `SBMIG_WEB_TOKEN` is optional (deploy/README §2, 30-secret.example.yaml, 40-deployment.yaml, Dockerfile comment).
 
 ## v2 — flow-v2 (2026-10-26, branch `flow-v2`, plan `docs/v2/PLAN-v2.md`)
 

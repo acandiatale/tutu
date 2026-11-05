@@ -40,7 +40,7 @@
 | 명령 | 하는 일과 옵션 |
 |---|---|
 | `sbmig run <dir|zip>` | 한 프로젝트를 끝까지. `--out/-o`(기본 `out`), `--run-id`, `--stop-after intake|analyze|plan|transform|restructure|verify`, `--dry-run`(결정만 저널, 적용 없음), `--llm-provider`, `--llm-plugin pkg.mod:attr`, `--fix-plugin pkg.mod:attr`, `--java-home`, `--settings`, `--repo-root` |
-| `sbmig serve` | 웹 UI(FastAPI + uvicorn, 한 번에 이관 하나, 나머지는 대기열). `--host`(기본 127.0.0.1), `--port`(8765), `--out`(기본 `out/web`), `--graceful-timeout`, `--max-upload-mb`, `--token`(루프백이 아닌 host 면 필수, `SBMIG_WEB_TOKEN`), `--config`(모든 업로드가 돌 `config/*.yml` 이름, 여러 번; `SBMIG_WEB_CONFIGS`) |
+| `sbmig serve` | 웹 UI(FastAPI + uvicorn, 한 번에 이관 하나, 나머지는 대기열). `--host`(기본 127.0.0.1), `--port`(8765), `--out`(기본 `out/web`), `--graceful-timeout`, `--max-upload-mb`, `--token`(루프백이 아닌 host 면 필수, `SBMIG_WEB_TOKEN`) 또는 `--open`(토큰 없이 사내망에 공개, `SBMIG_WEB_OPEN=1`), `--config`(모든 업로드가 돌 `config/*.yml` 이름, 여러 번; `SBMIG_WEB_CONFIGS`) |
 | `sbmig analyze <dir>` | 분석만(변경 없음): 종류, Java·Boot 버전, 라이브러리, 권고. `--json` |
 | `sbmig plan <dir>` | 분석 + 계획 단계 목록. `--json` |
 | `sbmig build <dir>` | 그 폴더에서 Maven 한 번 + 파싱된 오류와 L1 서명(디버깅). `--goal/-g`(기본 compile), `--out` |

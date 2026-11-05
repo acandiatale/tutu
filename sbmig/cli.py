@@ -414,7 +414,11 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
                                                                "limit, e.g. for one oversized project)"),
               token: Optional[str] = typer.Option(None, "--token",
                                                   help="access token (default: $SBMIG_WEB_TOKEN, also read from "
-                                                       ".env); required when --host is not a loopback address"),
+                                                       ".env); required when --host is not a loopback address "
+                                                       "unless --open"),
+              open_network: bool = typer.Option(False, "--open",
+                                                help="serve a non-loopback --host WITHOUT a token: every client is "
+                                                     "accepted (trusted intranet only; default: $SBMIG_WEB_OPEN=1)"),
               config: Optional[List[str]] = typer.Option(None, "--config", "-c",
                                                          help="config/*.yml name every upload runs with (repeatable; "
                                                               "default: $SBMIG_WEB_CONFIGS, else artifacts.yml / "
@@ -425,7 +429,8 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
 
     이관은 프로세스 안에서 한 번에 하나(나머지는 대기열), LangGraph 엔진으로 돈다. 127.0.0.1 이 아닌 주소로
     열려면 토큰(SBMIG_WEB_TOKEN 또는 --token)이 필요하다 — 없으면 네트워크의 누구나 result.zip(회사 소스)을
-    받을 수 있어 시작을 거부한다.
+    받을 수 있어 시작을 거부한다. 사내망 전용 페이지(2026-11-05 결정)는 --open(또는 SBMIG_WEB_OPEN=1)으로
+    토큰 없이 연다 — 시작 때 경고 한 줄.
 
     One-page web UI (FastAPI on uvicorn): upload a project zip, run the migration in-process (LangGraph engine,
     one worker thread per run), watch graph nodes / journal / log live (SSE), download report.md / result.zip.
@@ -433,26 +438,31 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
 
     Access (round 10): on 127.0.0.1 no token is needed. Any other --host (0.0.0.0 to share on the LAN) needs
     SBMIG_WEB_TOKEN (or --token): browsers open http://<host>:<port>/?token=<token> once (an HttpOnly cookie is set),
-    API clients send `Authorization: Bearer <token>`. Without a token the server refuses to start on such a host."""
+    API clients send `Authorization: Bearer <token>`. Without a token the server refuses to start on such a host —
+    unless `--open` / `SBMIG_WEB_OPEN=1` (2026-11-05: the company's page lives on its intranet only)."""
     import uvicorn
 
     from sbmig.core.config import PACKAGE_ROOT, load_dotenv_files
     from sbmig.web.app import (
         CONFIGS_ENV,
         MAX_UPLOAD_ENV,
+        OPEN_ENV,
         TOKEN_ENV,
         create_app,
         describe_max_upload,
         is_loopback_host,
+        open_network_requested,
         resolve_max_upload,
     )
 
     load_dotenv_files()                       # .env is read once here for the server itself, then per run
     token = (token or os.environ.get(TOKEN_ENV, "")).strip() or None
-    if not token and not is_loopback_host(host):
+    open_network = bool(open_network or open_network_requested())
+    if not token and not open_network and not is_loopback_host(host):
         typer.secho(f"refusing to serve on {host} without a token: anyone on the network could download result.zip "
                     f"(company source code) or upload a pom whose plugins Maven runs here. Set {TOKEN_ENV}=<a long "
-                    f"random value> in .env or the shell (or pass --token), or bind to 127.0.0.1.",
+                    f"random value> in .env or the shell (or pass --token), bind to 127.0.0.1, or — on a trusted "
+                    f"intranet only — pass --open / set {OPEN_ENV}=1.",
                     fg=typer.colors.RED, err=True)
         raise typer.Exit(2)
     root = Path(repo_root).resolve() if repo_root else PACKAGE_ROOT
@@ -463,8 +473,11 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
     if token:
         typer.echo(f"access token required ({TOKEN_ENV}): open http://{host}:{port}/?token=<token> once per browser; "
                    f"API clients send 'Authorization: Bearer <token>'")
+    elif open_network and not is_loopback_host(host):
+        typer.secho(f"no access token: the UI is open to everyone who reaches http://{host}:{port} (--open / {OPEN_ENV}) "
+                    f"— trusted intranet only", fg=typer.colors.YELLOW)
     env_limit = f" {MAX_UPLOAD_ENV}={max_upload_mb}" if max_upload_mb is not None else ""
-    env_token = f" {TOKEN_ENV}=<token>" if token else ""
+    env_token = f" {TOKEN_ENV}=<token>" if token else (f" {OPEN_ENV}=1" if open_network else "")
     env_cfg = f" {CONFIGS_ENV}={','.join(default_configs)}" if default_configs else ""
     typer.echo(f"(same app under plain uvicorn: SBMIG_WEB_OUT={out} SBMIG_WEB_REPO_ROOT={root}{env_limit}{env_token}"
                f"{env_cfg} uvicorn sbmig.web.app:app --host {host} --port {port} --timeout-graceful-shutdown "
@@ -473,7 +486,7 @@ def serve_cmd(host: str = typer.Option("127.0.0.1", "--host", help="bind address
     # uvicorn stops waiting for connections after `graceful_timeout` — without it Ctrl+C hung on the browser tabs
     try:
         uvicorn.run(create_app(Path(out), root, max_upload_mb=max_upload_mb, token=token,
-                               default_configs=default_configs),
+                               default_configs=default_configs, open_network=open_network),
                     host=host, port=port, log_level="info", timeout_graceful_shutdown=graceful_timeout)
     finally:
         detach_file_log(web_log, None)
