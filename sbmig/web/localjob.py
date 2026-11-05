@@ -37,6 +37,8 @@ class LocalJobClient:
     namespace = "local"
 
     ECHO_ENV = "SBMIG_LOCAL_JOB_ECHO"       # "0" turns the console echo of the child's output off (default on: development)
+    COLUMNS_ENV = "SBMIG_LOCAL_JOB_COLUMNS" # the width Rich wraps the child's console lines at (a pipe is not a terminal: 80 by default)
+    DEFAULT_COLUMNS = "160"
 
     def __init__(self, repo_root: Path | str | None = None, command_factory: Any = None, python: str | None = None,
                  echo: bool | None = None) -> None:
@@ -77,7 +79,12 @@ class LocalJobClient:
         run_dir.mkdir(parents=True, exist_ok=True)
         cmd = list(self.command_factory(env))
         log_path = run_dir / "job-local.log"
-        child_env = {**os.environ, **{k: v for k, v in env.items() if k.startswith("SBMIG_")}}
+        # 2026-11-05 (한국어 Windows): 자식의 stdout 은 파이프라 로케일(cp949)로 쓰이고 Rich 는 80칸으로 접는다 — 자식을 UTF-8 로 쓰게 하고
+        # (job-local.log 도 UTF-8, `—` 로 죽는 "Logging error" 없음) 폭을 넉넉히 준다. 셸이 이미 정한 값은 그대로 둔다
+        child_env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
+                     "COLUMNS": os.environ.get(self.COLUMNS_ENV, "") or self.DEFAULT_COLUMNS,
+                     **os.environ, **{k: v for k, v in env.items() if k.startswith("SBMIG_")}}
+        child_env.setdefault("PYTHONIOENCODING", "utf-8")
         try:
             proc = subprocess.Popen(cmd, cwd=str(self.repo_root) if self.repo_root else None, env=child_env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -100,9 +107,12 @@ class LocalJobClient:
                     fh.flush()
                     if self.echo:
                         try:
-                            sys.stdout.write(prefix + raw.decode("utf-8", errors="replace"))
+                            text = prefix + raw.decode("utf-8", errors="replace")
+                            enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+                            # a cp949 console cannot show every character the child wrote (— ✓ …): replace, never raise
+                            sys.stdout.write(text.encode(enc, errors="replace").decode(enc, errors="replace"))
                             sys.stdout.flush()
-                        except (OSError, ValueError):      # a closed console never stops the job
+                        except (OSError, ValueError, LookupError):      # a closed console never stops the job
                             self.echo = False
         except (OSError, ValueError) as e:
             log.debug("local job output pump for %s ended: %s", run_id, e)

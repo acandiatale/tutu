@@ -117,6 +117,27 @@ def test_child_output_is_echoed_to_the_console_and_kept_in_the_file(tmp_path: Pa
         assert "hello from the pod" in text and "second line" in text
         out = capfd.readouterr().out
         assert (f"[job r-{int(echo)}] hello from the pod" in out) is expect
+    # a Korean Windows console (cp949) and a child that writes an em dash and Korean: UTF-8 in the file, replacements on
+    # the console, no exception — and the child is told to write UTF-8 at a wide width
+    import io
+    script.write_text("import os, sys\nprint('— 접수 ✓ ' + os.environ.get('PYTHONIOENCODING', '?') + ' cols=' + os.environ.get('COLUMNS', '?'))\n",
+                      encoding="utf-8")
+    jc = LocalJobClient(repo, command_factory=cmd, echo=True)
+    buf = io.BytesIO()
+    cp949 = io.TextIOWrapper(buf, encoding="cp949", errors="strict")
+    monkeypatch.setattr(sys, "stdout", cp949)
+    name = jc.create_job({"metadata": {"name": "sbmig-r-ko"}, "spec": {"template": {"spec": {"containers": [{"name": "b", "env": [
+        {"name": "SBMIG_SOURCE_ZIP", "value": "x.zip"}, {"name": "SBMIG_OUT", "value": str(tmp_path / "out")},
+        {"name": "SBMIG_RUN_ID", "value": "r-ko"}]}]}}}})
+    deadline = time.time() + 10
+    while not jc.job_state(name).finished and time.time() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.1)
+    cp949.flush()
+    text = (tmp_path / "out" / "r-ko" / "job-local.log").read_text(encoding="utf-8")
+    assert "— 접수 ✓ utf-8 cols=160" in text                                  # the file keeps the child's UTF-8 as is
+    shown = buf.getvalue().decode("cp949", errors="replace")
+    assert "[job r-ko]" in shown and "접수" in shown and "utf-8" in shown    # the console got the line, unencodable chars replaced
     monkeypatch.setenv("SBMIG_LOCAL_JOB_ECHO", "0")
     assert LocalJobClient(repo).echo is False
     monkeypatch.delenv("SBMIG_LOCAL_JOB_ECHO")
