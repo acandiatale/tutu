@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import Any
 
 from sbmig.core.config import PACKAGE_ROOT
+from sbmig.core.workspace import STOP_REQUEST_FILE
 from sbmig.web.k8s import (
     DEFAULT_TEMPLATE,
     MODE_ENV,
@@ -78,6 +79,7 @@ from sbmig.web.k8s import (
     TEMPLATE_ENV,
     K8sClient,
     K8sError,
+    cluster_host_present,
     in_cluster_available,
     render_job,
 )
@@ -100,8 +102,8 @@ MAX_UPDATE_CHARS = 20_000          # a node update larger than this is summarize
 EXIT_ABORTED = 3                   # = sbmig.cli.EXIT_ABORTED (worker crashed / stopped by the user)
 WEB_STATUS_FILE = "web-status.json"   # the worker's final status, read back for runs no longer in memory
 JOB_STATUS_FILE = "job-status.json"   # k8s Job mode: run-job.sh writes {exit_code, finished_at} on the shared volume
-STOP_REQUEST_FILE = "stop.request"    # k8s Job mode: the web asks the pod's engine to stop between nodes (sbmig.graph.engine)
 SOURCE_ZIP = "source.zip"             # k8s Job mode: the uploaded zip, in the run dir on the shared volume
+JOB_STALE_S = 6 * 3600                # a job run of an earlier server process older than this with no status file is "unknown"
 DEFAULT_MAX_FINISHED_RUNS = 200
 
 
@@ -221,13 +223,20 @@ class RunManager:
         # 같은 Job 모드 흐름, 파드 자리는 로컬 서브프로세스. 운영 파드에서는 KUBERNETES_SERVICE_HOST 가 항상 있어 내려가지 않는다
         self.effective_mode = self.mode
         if self.mode == "k8s-job" and job_client is None and not in_cluster_available():
+            if cluster_host_present():
+                # inside a cluster but without a usable service account: do NOT silently run migrations in the web pod
+                raise ValueError(f"{MODE_ENV}=k8s-job inside a cluster needs the web pod's service account token "
+                                 "(serviceAccountName sbmig-web, deploy/k8s/45-web-rbac.yaml; automountServiceAccountToken on)")
             self.effective_mode = "local-job"
             log.warning("%s=k8s-job but this process is not inside a Kubernetes cluster — running the Job mode with LOCAL "
                         "subprocesses instead (development); status.mode says local-job", MODE_ENV)
         self._job_client = job_client                     # None → K8sClient.in_cluster() / LocalJobClient on the first Job
         self.job_template = Path(job_template or os.environ.get(TEMPLATE_ENV, "") or (self.repo_root / DEFAULT_TEMPLATE))
         self.job_poll_s = max(0.05, float(os.environ.get(POLL_ENV, "2") or 2))
-        self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "600") or 600))
+        # the engine stops between nodes and the fix loop between build rounds — the grace must outlast one Maven build
+        # (build.timeout_minutes 30) plus an OpenRewrite run before the Job is deleted (review 2026-11-05: 600 s lost the report)
+        self.job_stop_grace_s = max(0.0, float(os.environ.get(STOP_GRACE_ENV, "2700") or 2700))
+        self.job_api_grace_s = max(0.0, float(os.environ.get("SBMIG_JOB_API_GRACE_S", "300") or 300))
         # 서버가 정한 기본 설정 파일 이름들(sbmig serve --config / SBMIG_WEB_CONFIGS): 화면은 이것으로 돈다
         self._default_configs = [c.strip() for c in (default_configs or []) if c and c.strip()]
         self._missing_warned: set[str] = set()
@@ -456,10 +465,16 @@ class RunManager:
         Create the Job, watch it (pushing `node` events named `job` for the pod's state), return the exit code: from
         `job-status.json` the pod wrote, else the container's. A stop request writes `stop.request` into the run dir;
         after the grace period the Job is deleted. A server shutdown leaves the Job running."""
-        from sbmig.cli import EXIT_ABORTED as _aborted  # noqa: F401 - the same constant as the module's
-
         name: str | None = None
         try:
+            # a stop or a server shutdown that arrived while this run was queued: never create the Job (review 2026-11-05: the
+            # shutdown cascaded through the queue and created every queued Job)
+            if run.cancel.is_set():
+                run.error = "stopped before the job was created"
+                return EXIT_ABORTED
+            if self.closing.is_set():
+                run.error = "web server shut down before the job was created"
+                return EXIT_ABORTED
             client = self._job_client_or_fail()
             env = {"SBMIG_SOURCE_ZIP": str(run.zip_path), "SBMIG_OUT": str(self.out_dir), "SBMIG_RUN_ID": run.run_id,
                    "SBMIG_CONFIG": " ".join(str(self.repo_root / "config" / c) for c in run.configs)}
@@ -479,8 +494,24 @@ class RunManager:
             self._push(run, "node", {"node": "job", "update": {"state": "created", "job": name}})
             last: tuple[str, str | None] | None = None
             stop_sent: float | None = None
+            api_failing_since: float | None = None
             while True:
-                st = client.job_state(name)
+                saved = _read_job_status(run.run_dir)
+                if saved is not None:                  # the pod finished and said so on the volume (needs no API)
+                    return int(saved.get("exit_code", EXIT_ABORTED))
+                try:
+                    st = client.job_state(name)
+                    api_failing_since = None
+                except K8sError as e:                  # a transient API hiccup must not abort a 40-minute build (review 2026-11-05)
+                    now = time.monotonic()
+                    api_failing_since = api_failing_since or now
+                    if now - api_failing_since > self.job_api_grace_s:
+                        raise
+                    log.warning("run %s: job %s state unavailable (%s) — retrying for up to %.0fs", run.run_id, name, e,
+                                self.job_api_grace_s)
+                    with run.cond:
+                        run.cond.wait(self.job_poll_s)
+                    continue
                 if (st.phase, st.pod) != last:
                     last = (st.phase, st.pod)
                     run.job_phase, run.job_pod = st.phase, st.pod
@@ -488,9 +519,6 @@ class RunManager:
                                                                         "pod": st.pod, "message": st.message}})
                     log.info("run %s: job %s %s%s%s", run.run_id, name, st.phase, f" pod {st.pod}" if st.pod else "",
                              f" ({st.message})" if st.message else "")
-                saved = _read_job_status(run.run_dir)
-                if saved is not None:                  # the pod finished and said so on the volume
-                    return int(saved.get("exit_code", EXIT_ABORTED))
                 if st.finished:
                     if st.phase == "Missing":
                         run.error = f"job {name} disappeared (deleted outside sbmig?)"
@@ -558,7 +586,8 @@ class RunManager:
                 if not run.cancel.is_set():
                     continue
                 # 최종 빌드가 이미 돌았으면 이관은 끝난 것: 여기서 멈추면 성공을 중단으로 잘못 적을 뿐이다
-                if name == "finalize" or (name == "phase" and update.get("phase") == Phase.VERIFY.value):
+                if not update.get("aborted") and (name == "finalize"
+                                                  or (name == "phase" and update.get("phase") == Phase.VERIFY.value)):
                     # the final build already ran: the migration is complete, a stop now would only mislabel it
                     log.warning("run %s: stop requested after the final build — finishing normally", run.run_id)
                     continue
@@ -648,7 +677,13 @@ class RunManager:
                 if saved.get("error"):
                     info["error"] = saved["error"]
             else:
-                info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
+                job = _journal_job(rd)                # a Job created by an earlier web process may still be running in the cluster
+                if job is not None and not (rd / "report.json").is_file():
+                    info["state"] = "running"
+                    info["job"] = {"name": job.get("job"), "phase": None, "pod": None}
+                    info["node"] = job.get("last_node")
+                else:
+                    info["state"] = "finished" if (rd / "report.json").is_file() else ("unknown" if rd.is_dir() else "missing")
                 info["exit_code"] = None
         rep = rd / "report.json"
         if rep.is_file():
@@ -779,6 +814,36 @@ def _write_web_status(run: Run) -> None:
         (run.run_dir / WEB_STATUS_FILE).write_text(json.dumps(data, default=str), encoding="utf-8")
     except (OSError, TypeError, ValueError) as e:   # the status file is a convenience; never fail the run on it
         log.debug("cannot write %s for %s: %s", WEB_STATUS_FILE, run.run_id, e)
+
+
+def _journal_job(rd: Path) -> dict[str, Any] | None:
+    """실행 폴더 저널의 ``job_created`` 줄(+ 마지막 graph_node_end 의 노드) — 이전 웹 프로세스가 만든 Job 이 아직 돌고 있을 수 있다.
+    ``JOB_STALE_S`` 보다 오래됐으면 None(끝났는데 상태 파일이 없는 것으로 본다).
+
+    The run dir's `job_created` journal line (+ the last node ended), unless older than `JOB_STALE_S`; None otherwise."""
+    try:
+        created: dict[str, Any] | None = None
+        last_node = None
+        with open(rd / "journal.jsonl", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if ev.get("event") == "job_created":
+                    created = ev
+                elif ev.get("event") == "graph_node_end":
+                    last_node = ev.get("node")
+        if created is None:
+            return None
+        ts = created.get("ts")
+        if ts:
+            started = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            if (datetime.now(timezone.utc) - started).total_seconds() > JOB_STALE_S:
+                return None
+        return {"job": created.get("job"), "last_node": last_node}
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def _read_job_status(rd: Path) -> dict[str, Any] | None:

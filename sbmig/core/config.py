@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional, get_args, get_origin
 
 import yaml
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, field_validator
 
 log = logging.getLogger("sbmig.config")
 
@@ -934,6 +934,8 @@ class Config(BaseModel):
     advisories: AdvisoryConfig = Field(default_factory=AdvisoryConfig)
     externalized: ExternalizedConfig = Field(default_factory=ExternalizedConfig)
     repo_root: str = str(PACKAGE_ROOT)
+    # 2026-11-05: load_config 가 찍은 `config: …` 경고 문장들 — 실행 로그(sbmig.log)는 설정을 읽은 뒤에 붙으므로 접수 단계가 다시 적는다
+    _config_warnings: list[str] = PrivateAttr(default_factory=list)
 
     # ---- helpers -----------------------------------------------------
     def resolve_path(self, p: str | Path) -> Path:
@@ -1123,8 +1125,13 @@ class _YamlLoader(yaml.SafeLoader):
         self.duplicate_keys: list[tuple[str, int, int]] = []
 
     def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        # `<<: *anchor` (YAML merge keys): SafeConstructor folds them in flatten_mapping — do that first, or the merge tag
+        # reaches construct_object with no constructor and a yml that shares a block between sections stops loading
+        self.flatten_mapping(node)
         seen: dict[Any, int] = {}
         for key_node, _value_node in node.value:
+            if getattr(key_node, "tag", "") == "tag:yaml.org,2002:merge":
+                continue
             key = self.construct_object(key_node, deep=deep)
             try:
                 hash(key)
@@ -1137,19 +1144,28 @@ class _YamlLoader(yaml.SafeLoader):
         return super().construct_mapping(node, deep=deep)
 
 
-def _read_yaml(path: Path) -> dict:
-    """yml 하나를 읽는다 — 중복 키는 파일명·키·두 줄 번호와 함께 WARNING(마지막 블록만 남는다는 사실을 말한다).
+def _read_yaml(path: Path, sink: Optional[list[str]] = None) -> dict:
+    """yml 하나를 읽는다 — 중복 키는 파일명·키·두 줄 번호와 함께 WARNING(마지막 블록만 남는다는 사실을 말한다); 최상위가
+    매핑이 아니면(목록·스칼라) 파일을 통째로 무시한다고 WARNING. 문장들은 ``sink`` 에도 모은다(실행 로그에 다시 적기 위해).
 
-    Read one yml; a duplicate key is a WARNING naming the file, the key and both lines (the last block wins)."""
+    Read one yml; a duplicate key is a WARNING naming the file, the key and both lines (the last block wins); a non-mapping
+    top level is a WARNING (the file is ignored). Sentences also go to `sink`."""
     with open(path, "r", encoding="utf-8") as fh:
         loader = _YamlLoader(fh)
         try:
             loaded = loader.get_single_data() or {}
         finally:
             loader.dispose()
+    lines: list[str] = []
     for key, first, second in loader.duplicate_keys:
-        log.warning("config: %s: key '%s' appears twice (lines %d and %d) — YAML keeps the LAST block only, the values of the "
-                    "first one are lost; merge the two blocks into one", path, key, first, second)
+        lines.append(f"config: {path}: key '{key}' appears twice (lines {first} and {second}) — YAML keeps the LAST block only, "
+                     "the values of the first one are lost; merge the two blocks into one")
+    if not isinstance(loaded, dict):
+        lines.append(f"config: {path}: the top level is a {type(loaded).__name__}, not a mapping of sections — the file is ignored")
+    for line in lines:
+        log.warning("%s", line)
+    if sink is not None:
+        sink.extend(lines)
     return loaded if isinstance(loaded, dict) else {}
 
 
@@ -1204,6 +1220,15 @@ def _env_override_dict() -> dict:
     return out
 
 
+def _list_item_model(annotation: Any) -> Optional[type[BaseModel]]:
+    """``list[Model]`` 필드(artifacts.mandatory / optional)의 항목 모델, 아니면 None."""
+    if get_origin(annotation) is list:
+        args = get_args(annotation)
+        if len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            return args[0]
+    return None
+
+
 def _warn_unknown_keys(data: dict, model: Optional[type[BaseModel]] = None, prefix: str = "",
                        label: str = "") -> list[str]:
     """합쳐진 설정에서 모델이 모르는 키를 WARNING 으로 알린다 — pydantic 은 모르는 키를 조용히 버리므로, 들여쓰기가 틀려
@@ -1238,6 +1263,12 @@ def _warn_unknown_keys(data: dict, model: Optional[type[BaseModel]] = None, pref
             for name, inner in value.items():
                 if isinstance(inner, dict):
                     out.extend(_warn_unknown_keys(inner, entry, f"{dotted}.{name}.", label))
+            continue
+        item = _list_item_model(fields[key].annotation)
+        if item is not None and isinstance(value, list):
+            for i, inner in enumerate(value):
+                if isinstance(inner, dict):
+                    out.extend(_warn_unknown_keys(inner, item, f"{dotted}[{i}].", label))
     if model is Config:
         for line in out:
             log.warning("%s", line)
@@ -1283,20 +1314,23 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     (`.env` files are read into the environment first, see `load_dotenv_files`)."""
     load_dotenv_files()
     data: dict = {}
+    warnings: list[str] = []
     files = [DEFAULT_CONFIG_PATH, *[Path(p) for p in paths]]
     for f in files:
         if f and Path(f).exists():
-            data = deep_merge(data, _read_yaml(Path(f)))
+            data = deep_merge(data, _read_yaml(Path(f), warnings))
     # the yml keys only: SBMIG_* env variables that are not config keys (SBMIG_WEB_CONFIGS, SBMIG_WEB_TOKEN, SBMIG_MAX_UPLOAD_MB)
     # also land in `data` through _apply_env_overrides and are dropped by pydantic on purpose — they are not a typo
-    _warn_unknown_keys(data)
+    warnings += _warn_unknown_keys(data)
     # the SBMIG_<SECTION>__<KEY> overrides (k8s ConfigMap env, 2026-11-05): a mistyped name is reported the same way
-    _warn_unknown_keys(_env_override_dict(), label="env override SBMIG_*__*: ")
+    warnings += _warn_unknown_keys(_env_override_dict(), label="env override SBMIG_*__*: ")
     if overrides:
         data = deep_merge(data, overrides)
     data = _apply_env_overrides(data)
     data = _expand_env(data)
     if repo_root:
         data["repo_root"] = str(repo_root)
-    _warn_removed_keys(data)
-    return Config.model_validate(data)
+    warnings += _warn_removed_keys(data)
+    cfg = Config.model_validate(data)
+    cfg._config_warnings = warnings
+    return cfg

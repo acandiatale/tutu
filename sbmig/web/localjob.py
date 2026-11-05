@@ -29,6 +29,30 @@ from .k8s import JobState, K8sError
 log = logging.getLogger("sbmig.web.localjob")
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """프로세스와 그 자손(Maven / Java)을 끝낸다: POSIX 는 세션(프로세스 그룹)에 TERM → KILL, Windows 는 ``taskkill /T /F``."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=30, check=False)
+        else:
+            import signal
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.debug("local job pid %d: kill tree failed (%s) — falling back to terminate", proc.pid, e)
+        proc.terminate()
+    try:
+        proc.wait(10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+
+
 class LocalJobClient:
     """로컬 서브프로세스로 Job 을 흉내 내는 클라이언트(``namespace`` 는 "local"). ``command_factory(env) -> list[str]`` 를 바꿔
     끼우면 테스트가 가짜 실행 파일을 쓸 수 있다.
@@ -84,10 +108,12 @@ class LocalJobClient:
         child_env = {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1",
                      "COLUMNS": os.environ.get(self.COLUMNS_ENV, "") or self.DEFAULT_COLUMNS,
                      **os.environ, **{k: v for k, v in env.items() if k.startswith("SBMIG_")}}
-        child_env.setdefault("PYTHONIOENCODING", "utf-8")
+        # its own process group / session: delete_job must take the Maven / Java grandchildren with it (review 2026-11-05)
+        group: dict[str, Any] = ({"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)} if os.name == "nt"
+                                 else {"start_new_session": True})
         try:
             proc = subprocess.Popen(cmd, cwd=str(self.repo_root) if self.repo_root else None, env=child_env,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **group)
         except OSError as e:
             raise K8sError(f"local job: cannot start {cmd[0]}: {e}") from e
         threading.Thread(target=self._pump, args=(proc, log_path, env["SBMIG_RUN_ID"]), name=f"sbmig-localjob-{name}",
@@ -144,9 +170,5 @@ class LocalJobClient:
             return
         proc = hit[0]
         if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+            _kill_tree(proc)
         log.info("local job %s: terminated (pid %d)", name, proc.pid)

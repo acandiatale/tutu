@@ -93,6 +93,16 @@ def test_model_level_resolution_failure_retries_once_with_force_update(ws, cfg, 
     assert not _runner(ws, cfg, []).run([RecipeRef(id=UP21)]).ok and len(script["calls"]) == 1
 
 
+def test_a_download_failure_never_stacks_a_force_update_retry(ws, cfg, script):
+    both = ("[ERROR] Non-resolvable parent POM for com.x:demo:1: Failed to read artifact descriptor for com.x:parent:pom:1: "
+            "Could not transfer artifact com.x:parent:pom:1 from/to nexus (https://nexus/): status code: 503\n[INFO] BUILD FAILURE\n")
+    cfg.openrewrite.download_retry_wait_s = 0
+    script["runs"] = [(1, both), (1, both)]
+    res = _runner(ws, cfg, []).run([RecipeRef(id=UP21)], label="spring")
+    assert not res.ok and res.error.startswith("download-retry: ") and len(script["calls"]) == 2
+    assert not any("-U" in c["cmd"] for c in script["calls"]) and not _events(ws, "rewrite_force_update_retry")
+
+
 def test_rate_limited_then_success(ws, cfg, script):
     cfg.openrewrite.download_retry_wait_s = 7
     script["runs"] = [(1, RATE_LOG), (0, OK_LOG)]

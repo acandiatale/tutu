@@ -13,6 +13,10 @@ phases: [restructure]
 artifact descriptor …` is raised while Maven builds the project MODEL, before any goal runs — so `mvn clean package`
 cannot even start. The entry sits in a pom's `<build><extensions><extension>`.
 
+A `<build><plugins><plugin>` declared with `<extensions>true</extensions>` is loaded into the same realm and fails with the
+same text: a Wagon provider declared that way is removed the same way; a real plugin declared with `<extensions>true</extensions>`
+(os-maven-plugin …) is a plugin-resolution problem — a version the repository has.
+
 ## Wagon providers are deploy transports — remove them
 `org.apache.maven.wagon:wagon-webdav`, `wagon-webdav-jackrabbit`, `wagon-ssh`, `wagon-ssh-external`, `wagon-ftp`,
 `wagon-scm` only teach `mvn deploy` a URL scheme (`dav:`, `davs:`, `scp:`, `sftp:`, `ftp:`) of an old

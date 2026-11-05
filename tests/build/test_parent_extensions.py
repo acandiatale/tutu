@@ -65,9 +65,10 @@ def test_a_locally_present_extension_needs_nothing_and_an_unserved_one_is_report
     cfg.build.local_repo = str(repo)
     d = _folder(repo)
     (d / "wagon-webdav-1.0-beta-2.pom").write_text(POM, encoding="utf-8")
-    (d / "wagon-webdav-1.0-beta-2.pom.lastUpdated").write_text("x", encoding="utf-8")    # harmless beside the real pom
+    (d / "wagon-webdav-1.0-beta-2.pom.lastUpdated").write_text("x", encoding="utf-8")    # stale beside the real pom → cleared
     checks = check_parent_build_extensions(cfg, _facts())                                  # conftest: offline lookup
-    assert checks[0].readable and checks[0].where.endswith("wagon-webdav-1.0-beta-2.pom") and checks[0].markers_removed == []
+    assert checks[0].readable and checks[0].where.endswith("wagon-webdav-1.0-beta-2.pom")
+    assert checks[0].markers_removed == ["wagon-webdav-1.0-beta-2.pom.lastUpdated"]
     # nobody serves it: not readable, markers untouched, the reason kept
     for f in d.iterdir():
         f.unlink()
@@ -102,6 +103,46 @@ def test_the_extension_poms_parent_chain_is_checked_too(tmp_path: Path, cfg, mon
     check = check_parent_build_extensions(cfg, _facts())[0]
     assert check.readable and check.ancestors == [PROVIDERS] and check.markers_removed == ["wagon-providers-1.0-beta-2.pom.lastUpdated"]
     assert f"parent poms: {PROVIDERS}" in check.line()
+
+
+def test_two_extensions_sharing_a_deep_ancestor_chain_are_both_readable(tmp_path: Path, cfg, monkeypatch):
+    # review 2026-11-05: the reader limit of 8 made the second extension "NOT readable — skipped (more than 8 poms)"
+    cfg.build.local_repo = str(tmp_path / "m2")
+    def pom(g, a, v, parent=None):
+        par = (f"<parent><groupId>{parent[0]}</groupId><artifactId>{parent[1]}</artifactId><version>{parent[2]}</version></parent>"
+               if parent else "")
+        return (f'<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>{par}<groupId>{g}</groupId>'
+                f"<artifactId>{a}</artifactId><version>{v}</version></project>")
+    chain = [("org.apache.maven.wagon", "wagon-providers", "1.0-beta-2"), ("org.apache.maven.wagon", "wagon", "1.0-beta-2"),
+             ("org.apache.maven", "maven-parent", "5"), ("org.apache", "apache", "3")]
+    served = {("org.apache.maven.wagon", "wagon-webdav", "1.0-beta-2"): pom("org.apache.maven.wagon", "wagon-webdav", "1.0-beta-2", chain[0]),
+              ("org.apache.maven.wagon", "wagon-ssh", "1.0-beta-2"): pom("org.apache.maven.wagon", "wagon-ssh", "1.0-beta-2", chain[0])}
+    for i, c in enumerate(chain):
+        served[c] = pom(*c, chain[i + 1] if i + 1 < len(chain) else None)
+
+    class _Repo:
+        def __init__(self, cfg=None, **kw):
+            pass
+
+        def pom_text(self, g, a, v):
+            return served.get((g, a, v))
+    monkeypatch.setattr(repo_versions, "RepositoryLookup", _Repo)
+    ssh = "org.apache.maven.wagon:wagon-ssh:1.0-beta-2"
+    facts = ParentChainFacts(build_extensions=[WAGON, ssh], build_extension_sources={WAGON: "p", ssh: "p"})
+    checks = check_parent_build_extensions(cfg, facts)
+    assert [c.readable for c in checks] == [True, True]
+    assert checks[1].ancestors == [":".join(c) for c in chain]
+
+
+def test_a_stale_jar_marker_beside_a_present_pom_is_cleared(tmp_path: Path, cfg):
+    repo = tmp_path / "m2"
+    cfg.build.local_repo = str(repo)
+    d = _folder(repo)
+    (d / "wagon-webdav-1.0-beta-2.pom").write_text(POM, encoding="utf-8")
+    (d / "wagon-webdav-1.0-beta-2.jar.lastUpdated").write_text("x", encoding="utf-8")     # Maven would refuse the jar for a day
+    checks = check_parent_build_extensions(cfg, _facts())
+    assert checks[0].readable and checks[0].markers_removed == ["wagon-webdav-1.0-beta-2.jar.lastUpdated"]
+    assert (d / "wagon-webdav-1.0-beta-2.pom").is_file()
 
 
 def test_no_extensions_or_unresolvable_coordinates(tmp_path: Path, cfg):

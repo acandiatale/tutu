@@ -57,7 +57,7 @@ FLAG_HELP = {
     "mvn-not-found": "Maven was not runnable on this machine",
     "llm-unavailable": "the LLM failed twice in a row (transport/config); the cases still needing a fix script are "
                        "listed as blocked (llm_unavailable) — stored scripts and the final build still ran",
-    "aborted:parent-not-found": "the configured in-house parent POM is not resolvable — nothing can build until it is "
+    "aborted:parent-not-found": "the configured in-house parent POM (or a build extension it declares) is not resolvable — nothing can build until it is "
                                 "(see Blocked)",
     "rewrite-parse-problems": "OpenRewrite could not parse some source files (see the phase notes / rewrite log): "
                               "recipes that need type information skipped them; the fix loop covered what the build "

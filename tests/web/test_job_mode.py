@@ -157,6 +157,78 @@ def test_stop_writes_the_request_file_then_deletes_after_the_grace_period(tmp_pa
     assert st["state"] == "finished" and st["stop_requested"] is True
 
 
+def test_shutdown_and_stop_never_create_a_queued_job(tmp_path: Path, repo: Path, monkeypatch):
+    """Review 2026-11-05: the shutdown cascaded through the FIFO and created every queued Job; a stop on a queued run created the
+    Job only to delete it. Neither may reach create_job."""
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    jc = FakeJobClient(phases=["Running"], pod=None)
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
+    first = mgr.start(b"PK\x05\x06" + b"\0" * 18, "a.zip", ["artifacts.local-e2e.yml"])
+    queued = [mgr.start(b"PK\x05\x06" + b"\0" * 18, f"q{i}.zip", ["artifacts.local-e2e.yml"]) for i in range(3)]
+    deadline = time.time() + 5
+    while mgr.status(first)["state"] != "running" and time.time() < deadline:
+        time.sleep(0.02)
+    assert mgr.stop(queued[0])                         # a stop while queued
+    mgr.shutdown()
+    for rid in [first, *queued]:
+        assert mgr.runs[rid].done.wait(5)
+    assert len(jc.created) == 1                         # only the running one ever had a Job
+    assert "stopped before the job was created" in (mgr.runs[queued[0]].error or "")
+    assert all("shut down before the job was created" in (mgr.runs[r].error or "") for r in queued[1:])
+
+
+def test_a_transient_api_error_does_not_end_the_run(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
+    monkeypatch.setenv("SBMIG_JOB_API_GRACE_S", "5")
+    jc = FakeJobClient(pod=FakePod(), out_dir=tmp_path / "out")
+    calls = {"n": 0}
+    real = jc.job_state
+
+    def flaky(name):
+        calls["n"] += 1
+        if calls["n"] in (2, 3):
+            raise K8sError("GET jobs: HTTP 503: apiserver busy")
+        return real(name)
+    jc.job_state = flaky
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=jc, job_template=TEMPLATE)
+    rid = mgr.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr.runs[rid].done.wait(10) and mgr.runs[rid].exit_code == 0 and mgr.runs[rid].error is None
+    # a persistent outage ends the run after the grace
+    monkeypatch.setenv("SBMIG_JOB_API_GRACE_S", "0.1")
+    jc2 = FakeJobClient(phases=["Running"], pod=None)
+    jc2.job_state = lambda name: (_ for _ in ()).throw(K8sError("GET jobs: HTTP 503"))
+    mgr2 = RunManager(tmp_path / "out2", repo, mode="k8s-job", job_client=jc2, job_template=TEMPLATE)
+    rid2 = mgr2.start(b"PK\x05\x06" + b"\0" * 18, "p.zip", ["artifacts.local-e2e.yml"])
+    assert mgr2.runs[rid2].done.wait(10) and mgr2.runs[rid2].exit_code == 3 and "HTTP 503" in (mgr2.runs[rid2].error or "")
+
+
+def test_a_job_of_an_earlier_server_process_is_still_running(tmp_path: Path, repo: Path):
+    mgr = RunManager(tmp_path / "out", repo, mode="k8s-job", job_client=FakeJobClient(), job_template=TEMPLATE)
+    rd = tmp_path / "out" / "web-old"
+    rd.mkdir(parents=True)
+    now = datetime.now(timezone.utc).isoformat()
+    (rd / "journal.jsonl").write_text(json.dumps({"ts": now, "event": "web_run", "mode": "k8s-job"}) + "\n"
+                                      + json.dumps({"ts": now, "event": "job_created", "job": "sbmig-web-old"}) + "\n"
+                                      + json.dumps({"ts": now, "event": "graph_node_end", "node": "analyze"}) + "\n", encoding="utf-8")
+    st = mgr.status("web-old")
+    assert st["state"] == "running" and st["job"]["name"] == "sbmig-web-old" and st["node"] == "analyze"
+    # finished on the volume → finished; too old without any status → unknown
+    (rd / "job-status.json").write_text(json.dumps({"exit_code": 2, "finished_at": now}), encoding="utf-8")
+    assert mgr.status("web-old")["state"] == "finished" and mgr.status("web-old")["exit_code"] == 2
+    (rd / "job-status.json").unlink()
+    old = "2020-01-01T00:00:00+00:00"
+    (rd / "journal.jsonl").write_text(json.dumps({"ts": old, "event": "job_created", "job": "sbmig-web-old"}) + "\n", encoding="utf-8")
+    assert mgr.status("web-old")["state"] == "unknown"
+
+
+def test_inside_a_cluster_without_a_service_account_refuses_to_start(tmp_path: Path, repo: Path, monkeypatch):
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    import sbmig.web.runs as runs_mod
+    monkeypatch.setattr(runs_mod, "in_cluster_available", lambda: False)
+    with pytest.raises(ValueError, match="service account"):
+        RunManager(tmp_path / "out", repo, mode="k8s-job", job_template=TEMPLATE)
+
+
 def test_server_shutdown_leaves_the_job_running(tmp_path: Path, repo: Path, monkeypatch):
     monkeypatch.setenv("SBMIG_JOB_POLL_S", "0.05")
     jc = FakeJobClient(phases=["Running"], pod=None)

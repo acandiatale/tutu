@@ -1186,6 +1186,13 @@ class BuildFixLoop:
                 if reverted:
                     pr.notes.append(f"build {build_no}: regressed attempt(s) reverted → rebuilding the reverted tree")
                     continue
+                # 2026-11-05 (k8s Job 모드): 웹의 멈춤 요청(stop.request)은 빌드 라운드 사이에서 본다 — 노드 경계까지 40분을 기다리면
+                # 웹이 유예 뒤 Job 을 지워 보고서가 사라진다. 여기서 나가면 다음 노드(또는 finalize)가 aborted 로 마감한다
+                if getattr(self.ws, "stop_requested", lambda: False)():
+                    pr.notes.append(f"build {build_no}: stop requested (stop.request) — leaving the fix loop before the next build")
+                    log.warning("stop requested (stop.request) — leaving the fix loop after build %d (no further fix)", build_no)
+                    self.ws.journal({"event": "stop_request", "phase": phase.value, "iteration": build_no, "where": "fix loop"})
+                    break
                 # 사내 parent 가 해석되지 않으면 아무것도 빌드할 수 없다 → 실행 중단(코드 수정으로는 못 고침)
                 if self._parent_abort(pr, phase, build, build_no):
                     break
@@ -1533,6 +1540,9 @@ class BuildFixLoop:
                             "artifacts.parent / boot_parent / comp_parent and rerun")
         else:
             declared = self._extension_declarer(coords)
+            cand.suggestion = (f"build extension `{coords}` declared by the company parent `{declared}` cannot be downloaded: make "
+                               "the repository serve its pom, jar, parent poms and dependencies, or drop the extension from the parent "
+                               "(a deploy transport is not needed for packaging); nothing in the project can change an inherited extension")
             self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — build extension {coords} "
                                                               f"inherited from the company parent {declared} cannot be "
                                                               "downloaded; run aborted (nothing in the project can fix it)")
@@ -1573,7 +1583,9 @@ class BuildFixLoop:
         if not cands:
             return []
         chain = self._chain_extensions()
-        return [e for e in cands if e.artifact.key in chain] if chain else []
+        # the full g:a:v: a project pom that redeclares the same g:a at another version owns that declaration (Maven merges
+        # extensions by g:a, child wins) — that one stays an LLM case
+        return [e for e in cands if chain.get(e.artifact.key) == e.artifact.coordinates] if chain else []
 
     def skips_for(self, target: Optional[str]) -> tuple[bool, bool]:
         """``target`` 빌드에 적용할 대체 결과(test-compile 건너뜀, 테스트 실행 건너뜀). 한 MSA 서비스의

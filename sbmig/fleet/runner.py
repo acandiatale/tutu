@@ -63,7 +63,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import yaml
 
 from sbmig.core.config import Config, _apply_env_overrides, _expand_env, deep_merge
 from sbmig.core.models import CaseType, FleetProjectResult, FleetState, RunReport, utcnow
@@ -338,11 +337,13 @@ class FleetRunner:
         ``kb.dir`` 은 언제나 일괄 실행 것이고(KB 는 하나), LLM 상한은 일괄 실행 예산의 남은 양으로 자른다
         (예산을 다 썼으면 -1 = LLM 호출 없음)."""
         data = self.cfg.model_dump(mode="json")
+        from sbmig.core.config import _read_yaml, _warn_unknown_keys   # the same duplicate-key / unknown-key WARNINGs as load_config
         for c in proj.configs:
-            with open(c, "r", encoding="utf-8") as fh:
-                data = deep_merge(data, _expand_env(yaml.safe_load(fh) or {}))
+            data = deep_merge(data, _expand_env(_read_yaml(Path(c))))
         if proj.overrides:
             data = deep_merge(data, _expand_env(proj.overrides))
+        if proj.configs or proj.overrides:
+            _warn_unknown_keys(data, label=f"fleet project {proj.name}: ")
         if proj.configs or proj.overrides:
             data = _apply_env_overrides(data)
         # 프로젝트 설정이 kb.dir 을 바꿔도 무시한다: 학습이 프로젝트 사이에 이어지려면 KB 가 하나여야 한다

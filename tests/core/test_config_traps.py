@@ -70,6 +70,33 @@ def test_mistyped_env_override_is_reported_and_a_right_one_applies(tmp_path: Pat
     assert cfg.script.max_llm_tries_per_case == 7 and cfg.loop.phases["verify"].max_iterations == 9 and cfg.loop.stall_limit == 2
 
 
+def test_yaml_merge_keys_still_load_and_merge(tmp_path: Path, repo_root: Path, caplog):
+    # a company yml sharing a block between sections with `<<: *anchor` must keep loading (review 2026-11-05: the duplicate-key
+    # loader had constructed the merge tag as a key)
+    yml = tmp_path / "company.yml"
+    yml.write_text("defaults: &d\n  timeout_minutes: 45\nbuild:\n  <<: *d\n  mvn: mvn\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="sbmig.config"):
+        cfg = load_config(repo_root / "config" / "artifacts.local-e2e.yml", yml)
+    assert cfg.build.timeout_minutes == 45 and cfg.build.mvn == "mvn"
+    assert [ln for ln in _warnings(caplog) if "defaults" not in ln] == []           # `defaults` itself is an unknown top-level key
+
+
+def test_a_non_mapping_yml_is_reported_not_silently_dropped(tmp_path: Path, repo_root: Path, caplog):
+    yml = tmp_path / "list.yml"
+    yml.write_text("- build\n- llm\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="sbmig.config"):
+        cfg = load_config(repo_root / "config" / "artifacts.local-e2e.yml", yml)
+    assert any(f"config: {yml}: the top level is a list, not a mapping of sections — the file is ignored" == ln for ln in _warnings(caplog))
+    # every sentence travels with the config so the run can re-log it into its own sbmig.log
+    assert cfg._config_warnings and any("not a mapping of sections" in w for w in cfg._config_warnings)
+
+
+def test_list_of_model_entries_are_checked_by_their_keys():
+    out = _warn_unknown_keys({"artifacts": {"mandatory": [{"group_id": "g", "artifact_id": "a", "verison": "1"}]}})
+    assert out == ["config: artifacts.mandatory[0].verison is not a known key and is ignored (check the indentation / spelling)"]
+    assert _warn_unknown_keys({"artifacts": {"mandatory": [{"group_id": "g", "artifact_id": "a", "version": "1"}]}}) == []
+
+
 def test_every_shipped_yml_loads_without_a_config_warning(repo_root: Path, caplog):
     ymls = sorted(glob.glob(str(repo_root / "config" / "*.yml"))) + sorted(glob.glob(str(repo_root / "fixtures" / "*" / "sbmig.e2e.yml")))
     with caplog.at_level(logging.WARNING, logger="sbmig.config"):

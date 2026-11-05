@@ -45,6 +45,11 @@ from pydantic import BaseModel
 
 log = logging.getLogger("sbmig.core.workspace")
 
+# 2026-11-05 (k8s Job 모드): 웹 파드가 다른 파드의 실행을 멈추려고 실행 폴더에 쓰는 파일 — 엔진은 노드 사이에서, 수정 루프는 빌드 라운드
+# 사이에서 본다(자기 프로세스 멈춤과 같은 뜻: 지금 단계까지만, 최종 빌드 없음)
+STOP_REQUEST_FILE = "stop.request"
+STOP_REQUEST_REASON = "stopped by user (stop.request) — the final `mvn clean package` did not run"
+
 GIT_TIMEOUT_S = 600.0      # one workspace git command (add / commit / status / reset)
 # git 명령마다 매번 거는 설정(회사 Windows 에서 겪은 문제들): 260자 넘는 경로, 전역 autocrlf 가 .sh 를 CRLF 로
 # 바꿈, 한글 파일 이름이 "\355…" 로 나옴, 다른 계정 소유 디렉토리("dubious ownership").
@@ -380,6 +385,7 @@ class Workspace:
         self.logs_dir = self.run_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.journal_path = self.run_dir / "journal.jsonl"
+        self.stop_request_path = self.run_dir / STOP_REQUEST_FILE     # 2026-11-05: the web's stop request to a run in another process
         self._log_counter = 0
         self.git_branch = f"sbmig/{run_id}"
         self._git_ready = False
@@ -581,6 +587,15 @@ class Workspace:
         self._log_counter += 1
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in label)
         return self.logs_dir / f"{self._log_counter:03d}-{safe}.{ext}"
+
+    def stop_requested(self) -> bool:
+        """실행 폴더에 ``stop.request`` 가 있나(Job 모드의 멈춤 요청). 예외 없음.
+
+        Is the run directory's `stop.request` present (the Job-mode stop request)? Never raises."""
+        try:
+            return self.stop_request_path.is_file()
+        except OSError:
+            return False
 
     def journal(self, event: dict[str, Any]) -> None:
         """journal.jsonl 에 이벤트 한 줄을 덧붙인다(웹 화면 스트림과 사후 분석의 원본)."""

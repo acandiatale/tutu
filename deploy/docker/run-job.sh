@@ -90,8 +90,8 @@ RUN_OPTS=()
 [ -n "${SBMIG_STOP_AFTER:-}" ] && RUN_OPTS+=(--stop-after "$SBMIG_STOP_AFTER")
 [ -n "${SBMIG_LLM_PROVIDER:-}" ] && RUN_OPTS+=(--llm-provider "$SBMIG_LLM_PROVIDER")
 log "sbmig run $INPUT ${CFG_OPTS[*]} --out $OUT ${RUN_OPTS[*]:-}"
-cd "${SBMIG_APP_DIR:-/app}"
-"${SBMIG_PYTHON:-python}" -m sbmig.cli run "$INPUT" "${CFG_OPTS[@]}" --out "$OUT" "${RUN_OPTS[@]}"
+cd "${SBMIG_APP_DIR:-/app}" || die "앱 디렉터리가 없다: ${SBMIG_APP_DIR:-/app}" 3
+"${SBMIG_PYTHON:-python}" -m sbmig.cli run "$INPUT" ${CFG_OPTS[@]+"${CFG_OPTS[@]}"} --out "$OUT" ${RUN_OPTS[@]+"${RUN_OPTS[@]}"}
 RC=$?
 if [ -n "${SBMIG_RUN_ID:-}" ]; then
   RUN_DIR="$OUT/$SBMIG_RUN_ID"

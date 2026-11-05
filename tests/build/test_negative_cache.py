@@ -38,8 +38,13 @@ OK = "[INFO] BUILD SUCCESS\n"
 
 
 EXT = ("[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n[ERROR] Unresolveable build extension: Plugin "
-       "org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its dependencies could not be resolved: Failed to read "
+       "org.apache.maven.wagon:wagon-webdav:1.0-beta-2 or one of its dependencies could not be resolved: Failed to read "
        "artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 @ \n[ERROR] The build could not read 1 project\n")
+REPO_DOWN = ("[ERROR] Failed to execute goal on project app: Could not resolve dependencies for project com.acme:app:jar:1.0: "
+             "Failed to read artifact descriptor for com.y:lib:jar:2.0: Could not transfer artifact com.y:lib:pom:2.0 from/to nexus "
+             "(https://nexus/): Connection refused\n")
+PARENT_DOWN = ("[FATAL] Non-resolvable parent POM for com.acme:app:1.0: Could not transfer artifact com.acme:base-parent:pom:4.0.0 "
+               "from/to nexus (https://nexus/): Connection timed out and 'parent.relativePath' points at no local POM @ line 5\n")
 PARENT_PLAIN = ("[FATAL] Non-resolvable parent POM for com.acme:app:1.0: Could not find artifact com.acme:old-parent:pom:3.1 in "
                 "nexus (https://nexus/) and 'parent.relativePath' points at no local POM @ line 5, column 11\n")
 
@@ -51,6 +56,7 @@ def test_model_level_failures_without_cached_wording_are_force_update_candidates
     assert negative_cache_hits(EXT) == ["org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2"]
     assert negative_cache_hits(PARENT_PLAIN) == ["com.acme:old-parent:pom:3.1"]
     assert negative_cache_hits(REAL_MISS) == []                                   # a dependency-level miss is not one
+    assert negative_cache_hits(REPO_DOWN) == [] and negative_cache_hits(PARENT_DOWN) == []   # the repository is down: -U cannot help
 
 
 def test_negative_cache_hits_both_maven_wordings():

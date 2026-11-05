@@ -256,6 +256,54 @@ def test_stop_request_file_stops_between_nodes_without_the_final_build(cfg, tmp_
     assert ev[-1]["event"] == "report"
 
 
+def test_stop_request_during_the_last_phase_skips_the_final_build(cfg, tmp_path):
+    """The request lands while a phase runs (the fix loop leaves between rounds): finalize must not run step_finish."""
+    from sbmig.graph.engine import STOP_REQUEST_FILE, STOP_REQUEST_REASON
+    ws = new_ws(tmp_path, "stoplate")
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    orig_phase, finished = orch.step_phase, []
+
+    def phase_then_stop(report, ph, items, stop):
+        out = orig_phase(report, ph, items, stop)
+        if ph == Phase.VERIFY:
+            (ws.run_dir / STOP_REQUEST_FILE).write_text("stop\n", encoding="utf-8")
+        return out
+    orch.step_phase = phase_then_stop
+    orch.step_finish = lambda *a, **k: finished.append(1)
+    seen = [n for n, _ in stream_graph(orch)]
+    assert seen[-1] == "finalize" and finished == [] and "aborted" in orch.report.flags
+    assert orch.abort_reason == STOP_REQUEST_REASON and run_exit_code(orch.report) == 3
+    ev = journal_events(ws)
+    assert any(e["event"] == "stop_request" and e["node"] == "finalize" for e in ev)
+
+
+def test_skipped_phase_end_line_lists_only_the_remaining_phases(cfg, tmp_path):
+    from sbmig.graph.engine import STOP_REQUEST_FILE
+    ws = new_ws(tmp_path, "stopphases")
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+    orig_plan = orch.step_plan
+
+    def plan_then_stop(*a, **k):
+        out = orig_plan(*a, **k)
+        (ws.run_dir / STOP_REQUEST_FILE).write_text("stop\n", encoding="utf-8")
+        return out
+    orch.step_plan = plan_then_stop
+    updates = dict((n, u) for n, u in stream_graph(orch) if n == "phase")
+    assert updates["phase"]["phase"] == "transform" and updates["phase"]["phases"] == ["restructure", "verify"]
+
+
+def test_a_raising_node_still_leaves_its_end_line(cfg, tmp_path):
+    ws = new_ws(tmp_path, "raise")
+    orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))
+
+    def boom(*a, **k):
+        raise RuntimeError("analyzer exploded")
+    orch.step_analyze = boom
+    orch.run()
+    ends = [e for e in journal_events(ws) if e["event"] == "graph_node_end"]
+    assert ends[-1]["node"] == "analyze" and ends[-1]["aborted"].startswith("RuntimeError: analyzer exploded")
+
+
 def test_stream_graph_closed_early_still_finalizes(cfg, tmp_path):
     ws = new_ws(tmp_path, "early")
     orch = make_orch(cfg, ws, build=FakeBuildRunner(ws, fn=files_build), rewrite=FakeRewriteRunner(ws))

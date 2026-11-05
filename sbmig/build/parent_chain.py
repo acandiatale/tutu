@@ -76,6 +76,8 @@ class ParentChainFacts(BaseModel):
     # 확장 하나를 Maven 이 못 받으면 모든 모듈의 모든 Maven 호출이 멈춘다(회사 base-parent 4.0.0 의 wagon-webdav)
     build_extensions: list[str] = Field(default_factory=list)
     build_extension_sources: dict[str, str] = Field(default_factory=dict)
+    # the raw declarations (groupId, artifactId, version, declaring pom) — resolved after the chain's properties are merged
+    extension_decls: list[tuple[str, str, str, str]] = Field(default_factory=list)
 
     @property
     def own_managed(self) -> dict[str, str]:
@@ -136,12 +138,9 @@ def _walk(reader: PomReader, root: tuple[str, str, str], facts: ParentChainFacts
         facts.poms += 1
         facts.sources.append(f"{coord}: {where}")
         chain.append(pom)
+        for eg, ea, ev in pom.extensions:                     # 2026-11-05: inherited build extensions, resolved in _load (merged props)
+            facts.extension_decls.append((eg, ea, ev, coord))
         resolve = make_resolver(pom.properties, pom_builtins(pom))
-        for eg, ea, ev in pom.extensions:                     # 2026-11-05: inherited build extensions, for the intake check
-            ext = ":".join(resolve(x) or x or "?" for x in (eg, ea, ev))
-            if ext not in facts.build_extensions:
-                facts.build_extensions.append(ext)
-                facts.build_extension_sources[ext] = coord
         if not (pom.parent_group_id and pom.parent_artifact_id and pom.parent_version):
             break
         # <parent> 좌표의 ${…} 는 자식 pom 의 속성으로(저장소 좌표만 — relativePath 는 보지 않는다)
@@ -242,6 +241,14 @@ def _load(cfg: Any, roots: list[tuple[str, str, str]], local: Any) -> ParentChai
         chain = _walk(reader, root, facts)
         read_any = read_any or bool(chain)
         reached = _merge_root(reader, chain, facts, ":".join(root), company) or reached
+    # the extensions' `${…}` resolve against the whole chain's properties (a version a parent of the declaring pom defines — the
+    # declaring pom alone left `${wagon.version}` unresolved and the pre-check called it "coordinates not resolvable")
+    resolve_all = make_resolver(facts.properties)
+    for eg, ea, ev, coord in facts.extension_decls:
+        ext = ":".join(resolve_all(x) or x or "?" for x in (eg, ea, ev))
+        if ext not in facts.build_extensions:
+            facts.build_extensions.append(ext)
+            facts.build_extension_sources[ext] = coord
     facts.reaches_boot_bom = reached if read_any else None
     manages_boot = bool(getattr(getattr(cfg, "artifacts", None), "parent_manages_spring_boot", False))
     if manages_boot and not reached:

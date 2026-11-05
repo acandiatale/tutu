@@ -600,6 +600,23 @@ def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monk
                for n in look_fail.url_notes)
     assert any("repository set incomplete" in r.getMessage() and r.levelno == _logging.WARNING for r in caplog.records)
     monkeypatch.setattr(rv_mod, "global_settings_file", _real_global_settings_file)
+    # build.repository_server_id beats the URL heuristic — two settings repositories on ONE URL with different logins (review
+    # 2026-11-05: the first URL match won while the reason named the configured server)
+    two = USER_WITH_HTTP_NEXUS.replace("<profiles>",
+        "<servers><server><id>xxx-internal-releases</id><username>ua</username><password>pa</password></server>"
+        "<server><id>xxx-snapshots</id><username>ub</username><password>pb</password></server></servers><profiles>").replace(
+        "</repositories>",
+        "<repository><id>xxx-snapshots</id><url>https://nexus.company.local/repository/group</url></repository></repositories>").replace(
+        "<url>http://nexus.company.local/repository/releases</url>", "<url>https://nexus.company.local/repository/group</url>")
+    user.write_text(two, encoding="utf-8")
+    cfg_sid = _cfg(tmp_path, settings_file=str(user), repository_url="https://nexus.company.local/repository/group")
+    cfg_sid.build.repository_server_id = "xxx-snapshots"
+    first = RepositoryLookup(cfg_sid, fetch=FakeFetch({})).repository_urls()[0]
+    assert first[1] == ("ub", "pb") and first[2].endswith("; credentials from server xxx-snapshots")
+    cfg_url = _cfg(tmp_path, settings_file=str(user), repository_url="https://nexus.company.local/repository/group")
+    first = RepositoryLookup(cfg_url, fetch=FakeFetch({})).repository_urls()[0]
+    assert first[1] == ("ua", "pa") and first[2].endswith("; credentials from the settings entry with the same URL")
+    user.write_text(USER_WITH_HTTP_NEXUS, encoding="utf-8")
     # the blocked repository's <server> login still reaches the explicit URL that points at the same Nexus
     user.write_text(USER_WITH_HTTP_NEXUS.replace("<profiles>",
                     "<servers><server><id>xxx-internal-releases</id><username>nx</username><password>pw</password></server>"

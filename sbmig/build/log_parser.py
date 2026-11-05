@@ -82,8 +82,11 @@ _RULE_RE = re.compile(r"^Rule (?P<n>\d+): (?P<rule>\S+?) failed with message:?\s
 # 2026-11-05 (회사 PC): `Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its
 # dependencies could not be resolved: Failed to read artifact descriptor …` — <build><extensions> 의 확장(배포 전송 wagon 등)을 Maven 이
 # 모델 단계에서 못 받으면 어떤 goal 도 돌지 않는다. 좌표를 읽어 확장별 케이스로 만든다 (g:a[:type]:v, type 은 jar 등 선택)
-_BUILD_EXT_RE = re.compile(r"Unresolveable build extension: Plugin (?P<g>[\w.\-]+):(?P<a>[\w.\-]+):"
+# Maven 3 prints `Plugin.getId()` = g:a:v (no type) here; the `:jar:` form appears only in the "Failed to read artifact descriptor for
+# g:a:jar:v" tail — the optional type group accepts both; Maven 4 spells it "Unresolvable" (review 2026-11-05)
+_BUILD_EXT_RE = re.compile(r"Unresolv(?:e)?able build extension: Plugin (?P<g>[\w.\-]+):(?P<a>[\w.\-]+):"
                            r"(?:(?P<t>jar|maven-plugin|pom|bundle):)?(?P<v>[\w.\-]+) or one of its dependencies could not be resolved")
+BUILD_EXTENSION_RE = _BUILD_EXT_RE      # public name for the orchestrator's OpenRewrite-failure check
 _POM_PROBLEMS_RE = re.compile(r"Some problems were encountered while processing the POMs")
 _PROJECT_PROBLEMS_RE = re.compile(
     r"^\s*The project (?P<gav>\S*) \((?P<path>[^)]*)\) has \d+ errors?")
@@ -515,7 +518,9 @@ class _Parser:
                 self._block = _Block(kind="project", module=module, pom_file=self._rel(m.group("path")), raw=[line])
                 return
             if self._block is None or self._block.kind not in ("failed_goal",):
-                if _PLUGIN_RES_RE.search(b) and not (self._block and self._block.kind == "pom"):
+                # a "Plugin … or one of its dependencies could not be resolved" line INSIDE a pom / project block is a build-extension
+                # problem of that project (Maven 3 prints it type-less there) — not a plugin resolution block of its own
+                if _PLUGIN_RES_RE.search(b) and not (self._block and self._block.kind in ("pom", "project")):
                     self._close_block()
                     self._block = _Block(kind="plugin_res", module=self.module, goal=self.goal, lines=[b], raw=[line])
                     if _HELP_SUFFIX_RE.search(b):

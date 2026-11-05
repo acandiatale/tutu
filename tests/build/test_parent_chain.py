@@ -95,6 +95,12 @@ def test_the_chain_lists_its_build_extensions(repo: Path, cfg) -> None:
     facts = load_parent_chain_facts(cfg)
     assert facts.build_extensions == ["org.apache.maven.wagon:wagon-webdav:1.0-beta-2"]
     assert facts.build_extension_sources == {"org.apache.maven.wagon:wagon-webdav:1.0-beta-2": BASE}
+    # the version property defined in the declaring pom's PARENT (review 2026-11-05: left `${wagon.version}` unresolved)
+    _write(repo, BASE, _pom(BASE, parent=STARTER).replace("</project>", ext + "</project>"))
+    _write(repo, STARTER, _pom(STARTER, parent=DEPS, props={"java.version": "17", "wagon.version": "1.0-beta-2"}))
+    clear_cache()
+    facts = load_parent_chain_facts(cfg)
+    assert facts.build_extensions == ["org.apache.maven.wagon:wagon-webdav:1.0-beta-2"]
 
 
 def test_the_chain_merge_rules(repo: Path, cfg) -> None:

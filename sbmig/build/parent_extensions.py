@@ -63,7 +63,16 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
         if not exts:
             return out
         local = local_repository(cfg)
-        reader = PomReader(cfg, local, limit=max(8, len(exts) * 2))
+        # every extension may need its whole <parent> chain (wagon-webdav → providers → wagon → maven-parent → apache); a shared
+        # ancestor is read once (memo) — the old limit of 8 made the second extension "NOT readable — skipped (more than 8 poms)"
+        reader = PomReader(cfg, local, limit=len(exts) * (MAX_ANCESTORS + 1) + 2)
+        memo: dict[tuple[str, str, str], tuple[str | None, str]] = {}
+
+        def read(g: str, a: str, v: str) -> tuple[str | None, str]:
+            key = (g, a, v)
+            if key not in memo:
+                memo[key] = reader.pom(g, a, v)
+            return memo[key]
         for coord in exts:
             declared = (getattr(facts, "build_extension_sources", {}) or {}).get(coord, "?")
             gav = _split(coord)
@@ -71,21 +80,23 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
                 out.append(ExtensionCheck(coord, declared, False, "coordinates not resolvable from the chain's properties"))
                 continue
             g, a, v = gav
-            text, where = reader.pom(g, a, v)
+            text, where = read(g, a, v)
             check = ExtensionCheck(coord, declared, bool(text), where)
-            if text and where == "repository" and clear_markers and local is not None:
+            if text and clear_markers and local is not None:
+                # readable locally or from the repository: the folder is Maven's → a stale `.jar.lastUpdated` beside a present pom
+                # would still make Maven refuse the jar for a day, so the markers go in both cases
                 check.markers_removed = _remove_stale_markers(local.joinpath(*g.split("."), a, v))
             if text:
                 # Maven reads the extension's <parent> chain too ("or one of its dependencies could not be resolved"): a 2007 pom's
                 # ancestors (wagon-providers, wagon, maven-parent, apache) must be served as well — follow them and name the first gap
-                _check_ancestors(reader, text, check, local, clear_markers)
+                _check_ancestors(read, text, check, local, clear_markers)
             out.append(check)
     except Exception as e:  # noqa: BLE001 - a pre-check never stops the intake; Maven reports the problem as before
         log.warning("parent build extension check failed: %s: %s", type(e).__name__, e)
     return out
 
 
-def _check_ancestors(reader: PomReader, text: str, check: ExtensionCheck, local: Path | None, clear_markers: bool) -> None:
+def _check_ancestors(read: Any, text: str, check: ExtensionCheck, local: Path | None, clear_markers: bool) -> None:
     """확장 pom 의 ``<parent>`` 체인을 위로 읽는다(최대 MAX_ANCESTORS). 못 읽는 조상이 있으면 그 확장은 "NOT readable" —
     이유에 조상 좌표를 적는다. 저장소에서 읽힌 조상의 묵은 표식도 지운다."""
     pom = parse_pom(text)
@@ -100,13 +111,13 @@ def _check_ancestors(reader: PomReader, text: str, check: ExtensionCheck, local:
         if coord in seen:
             return
         seen.add(coord)
-        ptext, where = reader.pom(pg, pa, pv)
+        ptext, where = read(pg, pa, pv)
         if not ptext:
             check.readable = False
             check.where = f"its parent pom {coord} is not readable — {where}"
             return
         check.ancestors.append(coord)
-        if where == "repository" and clear_markers and local is not None:
+        if clear_markers and local is not None:
             check.markers_removed += _remove_stale_markers(local.joinpath(*pg.split("."), pa, pv))
         pom = parse_pom(ptext)
 

@@ -518,7 +518,7 @@ def test_parent_failure_inside_rewrite_aborts(cfg, ws):
 
 
 WAGON_EXT = "org.apache.maven.wagon:wagon-webdav:1.0-beta-2"
-EXT_MSG = (f"Unresolveable build extension: Plugin {WAGON_EXT.replace(':1.0', ':jar:1.0')} or one of its dependencies could not be "
+EXT_MSG = (f"Unresolveable build extension: Plugin {WAGON_EXT} or one of its dependencies could not be "
            f"resolved: Failed to read artifact descriptor for {WAGON_EXT.replace(':1.0', ':jar:1.0')}")
 
 
@@ -560,6 +560,36 @@ def test_a_project_declared_extension_is_not_an_abort(cfg, ws, monkeypatch):
         return write_script({"pom.xml": w.read("pom.xml") + "\n"}, analysis="removed the extension")
     report = make_orch(cfg, ws, build=build, fixer=FakeFixer(script_fn=fix)).run()
     assert "aborted:parent-not-found" not in report.flags and asked == ["org.apache.maven.wagon:wagon-webdav"]
+
+
+def test_another_version_of_the_chains_extension_is_the_projects_own_case(cfg, ws, monkeypatch):
+    # Maven merges <extensions> by g:a (child wins): the project pins wagon-webdav 2.0 while the chain declares 1.0-beta-2 → the
+    # failing declaration is the project's → the LLM path, not an abort (review 2026-11-05: g:a-only matching aborted it)
+    _chain_with_wagon(monkeypatch)
+    msg = EXT_MSG.replace("1.0-beta-2", "2.0")
+    err = BuildError(kind=ErrorKind.POM_INVALID, file="pom.xml", message=msg, raw=msg,
+                     artifact=GAV(group_id="org.apache.maven.wagon", artifact_id="wagon-webdav", version="2.0"))
+    build = FakeBuildRunner(ws, fn=lambda w, c: bad_build(err) if not (w.root / "fixed").exists() else ok_build())
+    asked = []
+
+    def fix(w, c, ctx):
+        asked.append(c.errors[0].artifact.coordinates)
+        (w.root / "fixed").write_text("x")
+        return write_script({"pom.xml": w.read("pom.xml") + "\n"}, analysis="removed the project's extension")
+    report = make_orch(cfg, ws, build=build, fixer=FakeFixer(script_fn=fix)).run()
+    assert "aborted:parent-not-found" not in report.flags and asked == ["org.apache.maven.wagon:wagon-webdav:2.0"]
+
+
+def test_extension_text_with_the_parents_location_is_never_a_parent_abort(cfg, ws, monkeypatch):
+    # the chain does not list the extension (unreadable chain, or another one): the OpenRewrite failure text still ends with Maven's
+    # location tail naming the parent pom — the parent regex must not turn that into "configured parent not resolvable"
+    from sbmig.build import parent_chain
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", lambda cfg: parent_chain.ParentChainFacts())
+    parent = cfg.artifacts.parent
+    text = (f"[ERROR] {EXT_MSG} @ {parent.key}:{parent.version}, /m2/{parent.artifact_id}-{parent.version}.pom, line 40, column 7")
+    rw = FakeRewriteRunner(ws, ok=False, error=text)
+    report = make_orch(cfg, ws, rewrite=rw, build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
+    assert "aborted:parent-not-found" not in report.flags and not report.blocked
 
 
 def test_extension_failure_inside_rewrite_aborts(cfg, ws, monkeypatch):

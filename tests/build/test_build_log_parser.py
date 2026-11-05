@@ -143,13 +143,13 @@ def test_unresolvable_build_extension_is_one_pom_problem_per_extension():
     log = (
         "[INFO] Scanning for projects...\n"
         "[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n"
-        "[ERROR] Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its "
+        "[ERROR] Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:1.0-beta-2 or one of its "
         "dependencies could not be resolved: Failed to read artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 @ \n"
         " @ \n"
         "[ERROR] The build could not read 1 project -> [Help 1]\n"
         "[ERROR]   \n"
         "[ERROR]   The project com.example:app:1.0 (/work/proj/pom.xml) has 1 error\n"
-        "[ERROR]     Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its "
+        "[ERROR]     Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:1.0-beta-2 or one of its "
         "dependencies could not be resolved: Failed to read artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2: "
         "Could not transfer artifact org.apache.maven.wagon:wagon-webdav:pom:1.0-beta-2 from/to maven-default-http-blocker "
         "(http://nexus.company.local/repository/maven-public/): status code: 401, reason phrase: Unauthorized (401) -> [Help 2]\n"
@@ -163,6 +163,12 @@ def test_unresolvable_build_extension_is_one_pom_problem_per_extension():
     assert "status code: 401" in e.message                                       # the block's reason wins over the summary
     assert e.signature == "pom_invalid|build_extension|org.apache.maven.wagon:wagon-webdav:1.0-beta-2"
     assert e.signature_generic == "pom_invalid|build_extension|org.apache.maven.wagon:wagon-webdav"
+    assert not [x for x in errs if x.kind == ErrorKind.PLUGIN_RESOLUTION]      # the project-block line is not a plugin block
+    # the `:jar:` form some people retype and Maven 4's spelling parse the same way
+    for variant in (log.replace("wagon-webdav:1.0-beta-2 or", "wagon-webdav:jar:1.0-beta-2 or"),
+                    log.replace("Unresolveable", "Unresolvable")):
+        v = parse_maven_log(variant, Path("/work/proj"))
+        assert len(v) == 1 and v[0].artifact.key == "org.apache.maven.wagon:wagon-webdav" and v[0].kind == ErrorKind.POM_INVALID
 
 
 # ---------------------------------------------------------------------------------------------- (d) parent

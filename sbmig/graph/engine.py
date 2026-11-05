@@ -38,6 +38,8 @@ from langgraph.graph import END, START, StateGraph
 
 from sbmig.core.models import Phase, PhaseResult, RunReport
 from sbmig.core.stage import reset_stage, set_stage
+from sbmig.core.workspace import STOP_REQUEST_FILE as _STOP_REQUEST_FILE
+from sbmig.core.workspace import STOP_REQUEST_REASON as _STOP_REQUEST_REASON
 
 if TYPE_CHECKING:
     from sbmig.loop.orchestrator import Orchestrator
@@ -115,16 +117,17 @@ def _journal_node(orch: Orchestrator, node: str, phase: str | None = None) -> No
 # 프로세스에 신호를 보낼 수 없다), 엔진은 노드 사이에서 이 파일을 본다. 웹의 자기 프로세스 멈춤과 같은 의미: 지금 노드까지만, 최종 빌드 없음
 # k8s Job mode: the web pod asks a run in another pod to stop by writing this file into the shared run directory;
 # the engine checks it between nodes — same semantics as the in-process stop (no final build, report flagged aborted)
-STOP_REQUEST_FILE = "stop.request"
-STOP_REQUEST_REASON = "stopped by user (stop.request) — the final `mvn clean package` did not run"
+STOP_REQUEST_FILE = _STOP_REQUEST_FILE
+STOP_REQUEST_REASON = _STOP_REQUEST_REASON
 
 
 def stop_requested(orch: Orchestrator) -> bool:
-    """실행 폴더에 ``stop.request`` 가 있나(Job 모드의 멈춤 요청). 예외 없음.
+    """실행 폴더에 ``stop.request`` 가 있나(Job 모드의 멈춤 요청; ``Workspace.stop_requested``). 예외 없음.
 
     Is the run directory's `stop.request` present (the Job-mode stop request)? Never raises."""
     try:
-        return (orch.ws.run_dir / STOP_REQUEST_FILE).is_file()
+        fn = getattr(orch.ws, "stop_requested", None)
+        return bool(fn()) if callable(fn) else (orch.ws.run_dir / STOP_REQUEST_FILE).is_file()
     except OSError:  # an unreadable run dir is not a stop request
         return False
 
@@ -156,6 +159,10 @@ def _staged(name: str | Callable[[MigrationState], str], fn: Callable[[Migration
             if orch is not None:
                 _journal_node_end(orch, node_id, out or {})
             return out
+        except BaseException as e:            # a raising node (phase abort, internal error) still gets its end line (Job-mode UI)
+            if orch is not None:
+                _journal_node_end(orch, node_id, {"aborted": f"{type(e).__name__}: {e}"[:300]})
+            raise
         finally:
             reset_stage(token)
     node.__name__ = node_id
@@ -229,7 +236,7 @@ def build_graph(orch: Orchestrator) -> Any:
         중단은 예외로 올라간다."""
         report = _report(orch)
         if (stop := user_stop("phase", holder["groups"][0][0].value if holder["groups"] else None)) is not None:
-            return {**stop, "phases": [p.value for p, _ in holder["groups"]]}
+            return {**stop, "phases": [p.value for p, _ in holder["groups"][1:]]}   # the skipped phase is not "remaining"
         ph, items = holder["groups"].pop(0)
         _journal_node(orch, "phase", ph.value)
         pr: PhaseResult | None = orch.step_phase(report, ph, items, _stop_phase(state))  # may raise _RunAborted
@@ -244,7 +251,10 @@ def build_graph(orch: Orchestrator) -> Any:
         빌드·보고서·KB 기록) — inline 엔진과 같은 조건이다."""
         _journal_node(orch, "finalize", None)
         report = _report(orch)
-        # the inline engine runs step_finish only after the phase loop; a user stop (stop.request) skips the final build
+        # the inline engine runs step_finish only after the phase loop; a user stop (stop.request) skips the final build —
+        # also when the request arrived during the last phase (the fix loop leaves between build rounds, then lands here)
+        if not holder["user_stopped"] and stop_requested(orch):
+            user_stop("finalize", None)
         if holder["planned"] and not holder["user_stopped"]:
             orch.step_finish(report, _stop_phase(state))
         return {"phase": None, "summary": _summary(orch, report)}

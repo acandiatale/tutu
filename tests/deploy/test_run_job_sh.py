@@ -20,6 +20,7 @@ for ((i=0; i<${#args[@]}; i++)); do
     --out) out="${args[$((i+1))]}";; --run-id) rid="${args[$((i+1))]}";; --stop-after) stop="${args[$((i+1))]}";;
   esac
 done
+[ -n "$rid" ] || rid="auto-run"
 mkdir -p "$out/$rid"
 printf 'args=%s\n' "$*" > "$out/$rid/sbmig.log"
 printf 'stop=%s\n' "$stop" >> "$out/$rid/sbmig.log"
@@ -54,6 +55,11 @@ def test_shared_volume_mode_runs_in_the_web_pods_run_dir(tmp_path: Path):
     status = json.loads((run_dir / "job-status.json").read_text(encoding="utf-8"))
     assert status["exit_code"] == 0 and status["finished_at"].endswith("Z")
     assert "결과는 공유 볼륨" in r.stdout and "SBMIG-RESULT ok fake" in r.stdout
+    # no run id → empty RUN_OPTS: must not trip `set -u` on bash 3.2 (review 2026-11-05); the newest run dir is picked up
+    env2 = {k: v for k, v in env.items() if k not in ("SBMIG_RUN_ID", "SBMIG_STOP_AFTER")}
+    r = subprocess.run(["bash", str(SCRIPT)], env=env2, capture_output=True, text=True, timeout=60, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert (data / "out" / "auto-run" / "job-status.json").is_file()
     # an aborted run (sbmig exit 3) → Job exit 3, status written
     env["FAKE_RC"] = "3"
     r = subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=60, check=False)

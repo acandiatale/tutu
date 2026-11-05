@@ -110,17 +110,22 @@ def strip_deploy_extensions(ws: Any, cfg: Any, table: list[DeployTransport] | No
             for exts, profile in containers:
                 if exts is None:
                     continue
+                removed_here = 0
                 for ext in list(ed.children(exts, "extension")):
+                    # `${…}` resolved with THIS pom's properties — the match uses the resolved value (a property defined in a
+                    # parent pom stays literal and the extension is kept: the loop's note handles it)
                     g = ed.resolve(ed.text_of(ext, "groupId")) or ""
                     a = ed.resolve(ed.text_of(ext, "artifactId")) or ""
                     v = ed.resolve(ed.text_of(ext, "version")) or ""
                     coords = f"{g}:{a}" + (f":{v}" if v else "")
                     if any(r.matches(g, a) for r in rows):
                         ed.remove_node(ext)
+                        removed_here += 1
                         res.removed.append(RemovedExtension(pom=rel, coordinates=coords, profile=profile))
                     else:
                         res.kept.append((rel, coords))
-                ed.remove_if_empty(exts)
+                if removed_here:                  # an as-is empty <extensions/> is not ours to rewrite (it would ride into the next commit)
+                    ed.remove_if_empty(exts)
             if ed.changed:
                 ed.save()
                 res.poms_changed.append(rel)

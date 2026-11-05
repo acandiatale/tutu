@@ -44,6 +44,7 @@ from contextlib import contextmanager
 from pathlib import PurePosixPath
 from typing import Any, Callable, Iterator, Optional
 
+from sbmig.build.log_parser import BUILD_EXTENSION_RE
 from sbmig.core.config import Config
 from sbmig.core.models import (GAV, BlockedItem, BuildError, BuildResult, CaseType, DecisionKind, ErrorKind,
                                IterationRecord, LLMUsage, MigrationPlan, Phase, PhaseResult, PlanStep, ProjectProfile,
@@ -65,8 +66,7 @@ log = logging.getLogger("sbmig.loop")
 _MISSING_RECIPE_RE = re.compile(r"(?i)(recipe(?:s|\(s\))? (?:were )?not found|could not find recipe|no recipe(?:s)? (?:found|named)|"
                                 r"unknown recipe|recipe\s+\S+\s+(?:does not exist|not found))")
 _PARENT_UNRESOLVABLE_RE = re.compile(r"(?i)non-resolvable parent|parent pom|failed to read artifact descriptor")
-_BUILD_EXT_IN_TEXT_RE = re.compile(r"Unresolveable build extension: Plugin (?P<g>[\w.\-]+):(?P<a>[\w.\-]+):"
-                                   r"(?:(?:jar|maven-plugin|pom|bundle):)?(?P<v>[\w.\-]+) or one of its dependencies could not be resolved")
+_BUILD_EXT_IN_TEXT_RE = BUILD_EXTENSION_RE          # one regex for the parser and this check (sbmig.build.log_parser)
 # preflight (round 10): `mvn -v` detail → Java major; Maven that cannot start because of JAVA_HOME (not "install Maven")
 _JAVA_VERSION_RE = re.compile(r"(?i)java version:?\s*\"?(?P<v>[0-9][0-9._+-]*)")
 _JAVA_RUNTIME_RE = re.compile(r"(?i)runtime:\s*(?P<home>[^,;]+)")
@@ -586,8 +586,25 @@ class Orchestrator:
         if groups is None:
             return
         for phase, items in groups:
+            if self._stop_file_abort(report, f"phase {phase.value}"):
+                return
             self.step_phase(report, phase, items, stop_after)
+        if self._stop_file_abort(report, "finalize"):
+            return
         self.step_finish(report, stop_after)
+
+    def _stop_file_abort(self, report: RunReport, before: str) -> bool:
+        """2026-11-05 (k8s Job 모드): 실행 폴더의 ``stop.request`` 를 노드 사이에서 본다 — 그래프 엔진의 ``user_stop`` 과 같은 뜻
+        (보고서를 aborted 로 표시, 최종 빌드 없음). 있으면 True."""
+        fn = getattr(self.ws, "stop_requested", None)
+        if not callable(fn) or not fn():
+            return False
+        from sbmig.core.workspace import STOP_REQUEST_REASON
+        log.warning("stop requested (stop.request) — stopping before %s (no final build)", before)
+        self.ws.journal({"event": "stop_request", "node": before.split()[0], "file": "stop.request"})
+        if "aborted" not in report.flags:
+            self._abort(report, STOP_REQUEST_REASON)
+        return True
 
     # ------------------------------------------------------------------ steps (shared by both engines)
     def step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
@@ -606,6 +623,9 @@ class Orchestrator:
     def _step_intake(self, report: RunReport, stop_after: Phase | None) -> bool:
         t = self.clock()
         self.ws.git_init()
+        # 2026-11-05: 설정 경고(중복 블록·모르는 키·없어진 키)는 설정을 읽을 때 콘솔에만 찍혔다 — 실행 로그가 붙은 지금 다시 적는다
+        for line in getattr(self.cfg, "_config_warnings", None) or []:
+            log.warning("%s", line)
         setter = getattr(self.ws, "set_encoding_candidates", None)
         if callable(setter):
             setter(list(self.cfg.build.encoding_candidates))
@@ -654,14 +674,14 @@ class Orchestrator:
                     else:
                         log.info("접수: 사내 부모 체인의 빌드 확장 %s — 읽힘 (%s)", c.coordinates, c.where)
                     continue
-                log.warning("접수: 사내 부모 체인의 빌드 확장 %s (선언: %s) 을 로컬 저장소에서도 저장소에서도 읽지 못함 (%s) — 모든 Maven "
-                            "호출이 'Unresolveable build extension' 으로 실패한다. Nexus 에 그 pom·jar(와 부모 pom)을 올리거나 부모 pom 에서 "
-                            "확장을 빼야 한다(배포 전송 확장은 패키징에 필요 없다)", c.coordinates, c.declared_by, c.where)
+                log.warning("접수: 사내 부모 체인의 빌드 확장 %s (선언: %s) 을 sbmig 가 로컬 저장소에서도 저장소에서도 읽지 못했다 (%s) — Maven 도 "
+                            "못 받으면 모든 Maven 호출이 'Unresolveable build extension' 으로 실패한다. Nexus 에 그 pom·jar(와 부모 pom)을 "
+                            "올리거나 부모 pom 에서 확장을 빼야 한다(배포 전송 확장은 패키징에 필요 없다)", c.coordinates, c.declared_by, c.where)
                 self._flag("parent-extension-unresolvable")
-                line = (f"the company parent {c.declared_by} declares the build extension {c.coordinates}, which neither the local "
-                        f"repository nor the repository set serves ({c.where}) — every Maven call fails with 'Unresolveable build "
-                        f"extension' until Nexus serves its pom and jar (and their parent poms) or the parent pom drops it (a deploy "
-                        f"transport is never needed for packaging)")
+                line = (f"the company parent {c.declared_by} declares the build extension {c.coordinates}, which sbmig could not read "
+                        f"from the local repository or the repository set ({c.where}) — if Maven cannot download it either, every Maven "
+                        f"call fails with 'Unresolveable build extension' until Nexus serves its pom and jar (and their parent poms) or "
+                        f"the parent pom drops it (a deploy transport is never needed for packaging)")
                 if line not in report.manual_followups:
                     report.manual_followups.append(line)
             self.ws.journal({"event": "parent_build_extensions", "checks": [c.line() for c in checks],
@@ -1569,14 +1589,17 @@ class Orchestrator:
         if m_ext:
             chain = self.loop._chain_extensions()          # same package
             key = f"{m_ext.group('g')}:{m_ext.group('a')}"
-            if key in chain:
-                gav = GAV.parse(f"{key}:{m_ext.group('v')}")
+            coords = f"{key}:{m_ext.group('v')}"
+            if chain.get(key) == coords:                   # the full g:a:v — a project-owned version is the loop's (LLM) case
+                gav = GAV.parse(coords)
                 e = BuildError(kind=ErrorKind.POM_INVALID, message=err.splitlines()[0][:500], raw=err[:2000], artifact=gav,
                                module=step.target)
                 br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
                 self.loop._parent_abort(pr, step.phase, br, 0)   # same package
                 self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
-                return
+            # an extension failure is never a parent-resolution failure: Maven's location tail (`@ <parent gav>, <pom>`) names the
+            # parent that DECLARES it, which the parent regex below would mistake for an unresolvable parent
+            return
         if not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
             return
         key = next(k for k in keys if k in err)

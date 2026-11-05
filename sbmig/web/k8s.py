@@ -34,6 +34,11 @@ MODES = ("in-process", "k8s-job", "local-job")    # local-job: the Job-mode flow
 TERMINAL_PHASES = ("Succeeded", "Failed", "Missing")
 
 
+def cluster_host_present() -> bool:
+    """``KUBERNETES_SERVICE_HOST`` 가 있나 — 파드 안이라는 뜻(토큰은 별개)."""
+    return bool(os.environ.get("KUBERNETES_SERVICE_HOST"))
+
+
 def in_cluster_available() -> bool:
     """이 프로세스가 클러스터 안 파드인가(``KUBERNETES_SERVICE_HOST`` + 서비스 계정 토큰). 개발 PC 에서는 False —
     ``k8s-job`` 모드가 자동으로 ``local-job`` 으로 내려가는 기준.

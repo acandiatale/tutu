@@ -65,7 +65,10 @@ _NEGATIVE_GAV_RE = re.compile(r"Failure to (?:find|transfer) (?P<a>" + _COORDS +
 # `*.lastUpdated` marker is the only cause (the company PC: the pom had been unreachable behind the HTTP blocker, Nexus served
 # it again, Maven kept refusing for a day) — so these wordings are -U candidates too; a really missing artifact costs one build.
 _MODEL_RES_RE = re.compile(r"Failed to read artifact descriptor for (?P<a>" + _COORDS + r")|"
-                           r"Non-resolvable (?:parent|import) POM[^\n]*?Could not (?:find|transfer) artifact (?P<b>" + _COORDS + r")")
+                           r"Non-resolvable (?:parent|import) POM[^\n]*?Could not find artifact (?P<b>" + _COORDS + r")")
+# a model-level line that names a TRANSFER failure (`… Could not transfer artifact … Connection refused`) is the repository being
+# down, not a stale marker — -U would only double every build while Nexus is unreachable (review 2026-11-05)
+_TRANSFER_RE = re.compile(r"Could not transfer artifact|Connection refused|Connection timed out|Read timed out")
 
 
 def negative_cache_hits(text: str) -> list[str]:
@@ -85,6 +88,8 @@ def negative_cache_hits(text: str) -> list[str]:
                 gav = m.group("a") or m.group("b")
                 if gav and gav not in out:
                     out.append(gav)
+            continue
+        if _TRANSFER_RE.search(line):
             continue
         for m in _MODEL_RES_RE.finditer(line):
             gav = m.group("a") or m.group("b")

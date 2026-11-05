@@ -360,9 +360,9 @@ class OpenRewriteRunner:
                                        dry_run=dry_run, label=label, fork=fork)
         # 2026-11-05 (회사 PC): 모델 단계의 해결 실패(빌드 확장 / 부모 POM)는 묵은 `*.lastUpdated` 표식일 수 있다 — 빌드 러너처럼
         # -U 로 한 번만 다시(그 뒤 noFork 재시도도 -U 를 이어받는다). 수정 루프는 OpenRewrite 뒤라 여기서 막히면 레시피가 안 돈다
-        if not res.ok and self._may_force_update() and self._force_update_hits(res):
+        if not res.ok and not self._download_failure(res) and self._may_force_update() and self._force_update_hits(res):
             res = self._force_update_retry(res, recipes, extra_recipe_files=extra_recipe_files, module=module,
-                                           dry_run=dry_run, label=label, fork=fork)
+                                           dry_run=dry_run, label=label, fork=fork, jvm_args=jvm_args)
         # run 은 레시피 전에 compile 을 fork 한다 → 컴파일이 안 되는 프로젝트(마이그레이션 전이라
         # 흔하다)에서는 레시피가 아예 안 돈다 → runNoFork(해결된 의존성 classpath 로 파싱)로 다시.
         # rewrite:run forks the `compile` lifecycle first; on a project that does not compile the recipes never run.
@@ -418,7 +418,8 @@ class OpenRewriteRunner:
         return negative_cache_hits(self._failure_text(res))
 
     def _force_update_retry(self, first: RewriteResult, recipes: list[RecipeRef], *, extra_recipe_files: Iterable[Path],
-                            module: str | None, dry_run: bool, label: str, fork: bool | None) -> RewriteResult:
+                            module: str | None, dry_run: bool, label: str, fork: bool | None,
+                            jvm_args: Sequence[str] | None = None) -> RewriteResult:
         """``-U`` 를 붙여 한 번 더 돌린다(이 호출의 뒤 재시도도 -U 를 이어받는다). 끝내 실패면 오류 앞에
         ``force-update-retry: ``, 저널 ``rewrite_force_update_retry`` / ``…_result``.
 
@@ -430,7 +431,7 @@ class OpenRewriteRunner:
                          "artifacts": hits, "first_log": first.log_path})
         self._extra_args = [*getattr(self, "_extra_args", ()), "-U"]
         res = self._run_once(recipes, extra_recipe_files=extra_recipe_files, module=module, dry_run=dry_run,
-                             label=(label or ("dry" if dry_run else "run")) + "-U", fork=fork)
+                             label=(label or ("dry" if dry_run else "run")) + "-U", fork=fork, jvm_args=jvm_args)
         if not res.ok:
             res.error = f"force-update-retry: {res.error or 'rewrite run failed'}"
         self.ws.journal({"event": "rewrite_force_update_retry_result", "ok": res.ok, "log": res.log_path, "error": res.error})

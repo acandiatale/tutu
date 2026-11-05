@@ -903,20 +903,25 @@ class RepositoryLookup:
                 # credentials: the <server> of the mirror / repository with the same URL, else build.repository_server_id
                 # 2026-11-05: 차단 미러가 덮어 set 에서 빠진 저장소(out 에 없음)의 <server> 도 같은 URL 이면 쓴다 — 운영자가
                 # build.repository_url 로 그 http Nexus 를 다시 가리킬 때 로그인이 사라지면 안 된다
-                creds = next((c for cu, c, _o in out if cu == u and c), None) or next(
-                    (mc for _i, mu, _mo, mc, _mo2, _b in mirrors if mu == u and mc), None) or next(
-                    (rc for _rid, ru, rc, _ro in repos if ru == u and rc), None)
                 sid = getattr(build, "repository_server_id", None)
-                if creds is None and sid:
+                creds, creds_from = None, ""
+                if sid:                                   # the operator's explicit server id beats every URL heuristic
                     creds = servers.get(str(sid))
                     if creds is None:
                         notes.append(f"build.repository_server_id {sid}: no usable <server> credentials in the settings")
+                    else:
+                        creds_from = f"; credentials from server {sid}"
+                if creds is None:
+                    creds = next((c for cu, c, _o in out if cu == u and c), None) or next(
+                        (mc for _i, mu, _mo, mc, _mo2, _b in mirrors if mu == u and mc), None) or next(
+                        (rc for _rid, ru, rc, _ro in repos if ru == u and rc), None)
+                    if creds is not None:
+                        creds_from = "; credentials from the settings entry with the same URL"
                 derived = next((x[0] for x in out if x[0] != CENTRAL), None)
                 if derived and derived != u:
                     notes.append(f"Maven itself resolves from {derived} (settings); sbmig's lookups use build.repository_url {u} "
                                  "— a stale yml value would show up here")
-                out.insert(0, (u, creds, "build.repository_url (explicit: first)" + (f"; credentials from server {sid}"
-                                                                                   if sid and creds else "")))
+                out.insert(0, (u, creds, "build.repository_url (explicit: first)" + creds_from))
         except Exception as e:  # noqa: BLE001
             # 2026-11-05: 여기서 조용히 넘어가면 build.repository_url 까지 사라진 채 Central 만 남는다 — 화면(note:)과 로그에 남긴다
             notes.append(f"repository set incomplete: building it failed midway ({type(e).__name__}: {e}) — an sbmig error, "

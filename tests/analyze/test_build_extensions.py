@@ -90,6 +90,11 @@ def test_no_extensions_no_table_no_change(tmp_path, repo_root):
     ws = _tree(tmp_path / "p", {"pom.xml": _pom("plain")})
     res = strip_deploy_extensions(ws, cfg)
     assert res.removed == [] and res.kept == [] and res.poms_changed == []
+    # an as-is empty <extensions/> is not ours to rewrite (review 2026-11-05: it was dropped uncommitted and rode into the next commit)
+    ws_e = _tree(tmp_path / "e", {"pom.xml": _pom("empty", "  <build>\n    <extensions>\n    </extensions>\n  </build>\n")})
+    before = (tmp_path / "e" / "pom.xml").read_text(encoding="utf-8")
+    res = strip_deploy_extensions(ws_e, cfg)
+    assert res.poms_changed == [] and (tmp_path / "e" / "pom.xml").read_text(encoding="utf-8") == before
     # an explicit empty table removes nothing even when the pom declares wagon
     ws2 = _tree(tmp_path / "q", {"pom.xml": _pom("w", WEBDAV)})
     assert strip_deploy_extensions(ws2, cfg, table=[]).removed == []
