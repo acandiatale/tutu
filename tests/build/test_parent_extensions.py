@@ -14,6 +14,12 @@ from sbmig.build.parent_extensions import ExtensionCheck, check_parent_build_ext
 WAGON = "org.apache.maven.wagon:wagon-webdav:1.0-beta-2"
 POM = '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>org.apache.maven.wagon</groupId>' \
       "<artifactId>wagon-webdav</artifactId><version>1.0-beta-2</version></project>"
+PROVIDERS = "org.apache.maven.wagon:wagon-providers:1.0-beta-2"
+POM_WITH_PARENT = ('<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>'
+                   "<parent><groupId>org.apache.maven.wagon</groupId><artifactId>wagon-providers</artifactId><version>1.0-beta-2</version></parent>"
+                   "<artifactId>wagon-webdav</artifactId></project>")
+PROVIDERS_POM = ('<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion><groupId>org.apache.maven.wagon</groupId>'
+                 "<artifactId>wagon-providers</artifactId><version>1.0-beta-2</version><packaging>pom</packaging></project>")
 
 
 def _facts() -> ParentChainFacts:
@@ -69,6 +75,33 @@ def test_a_locally_present_extension_needs_nothing_and_an_unserved_one_is_report
     checks = check_parent_build_extensions(cfg, _facts())
     assert not checks[0].readable and "not readable from the repository" in checks[0].where
     assert (d / "wagon-webdav-1.0-beta-2.pom.lastUpdated").is_file() and "NOT readable" in checks[0].line()
+
+
+def test_the_extension_poms_parent_chain_is_checked_too(tmp_path: Path, cfg, monkeypatch):
+    """Maven resolves the extension's <parent> chain as well — a served wagon-webdav pom whose parent wagon-providers pom nobody
+    serves still fails with 'Failed to read artifact descriptor'; the pre-check names that parent."""
+    repo = tmp_path / "m2"
+    cfg.build.local_repo = str(repo)
+    served = {("org.apache.maven.wagon", "wagon-webdav", "1.0-beta-2"): POM_WITH_PARENT}
+
+    class _Repo:
+        def __init__(self, cfg=None, **kw):
+            pass
+
+        def pom_text(self, g, a, v):
+            return served.get((g, a, v))
+    monkeypatch.setattr(repo_versions, "RepositoryLookup", _Repo)
+    check = check_parent_build_extensions(cfg, _facts())[0]
+    assert not check.readable and check.where.startswith(f"its parent pom {PROVIDERS} is not readable")
+    assert check.ancestors == [] and "NOT readable" in check.line()
+    # the parent served too (with a stale marker in the local repo) → readable, the chain recorded, the marker gone
+    served[("org.apache.maven.wagon", "wagon-providers", "1.0-beta-2")] = PROVIDERS_POM
+    d = repo / "org" / "apache" / "maven" / "wagon" / "wagon-providers" / "1.0-beta-2"
+    d.mkdir(parents=True)
+    (d / "wagon-providers-1.0-beta-2.pom.lastUpdated").write_text("x", encoding="utf-8")
+    check = check_parent_build_extensions(cfg, _facts())[0]
+    assert check.readable and check.ancestors == [PROVIDERS] and check.markers_removed == ["wagon-providers-1.0-beta-2.pom.lastUpdated"]
+    assert f"parent poms: {PROVIDERS}" in check.line()
 
 
 def test_no_extensions_or_unresolvable_coordinates(tmp_path: Path, cfg):

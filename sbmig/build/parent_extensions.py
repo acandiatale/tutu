@@ -18,7 +18,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .boot_bom import PomReader, local_repository
+from .boot_bom import PomReader, local_repository, make_resolver, parse_pom, pom_builtins
+
+MAX_ANCESTORS = 8      # the extension pom's <parent> chain Maven must also read (wagon-webdav → wagon-providers → wagon → maven-parent → apache)
 
 log = logging.getLogger("sbmig.build.parent_extensions")
 
@@ -31,11 +33,13 @@ class ExtensionCheck:
     readable: bool
     where: str
     markers_removed: list[str] = field(default_factory=list)
+    ancestors: list[str] = field(default_factory=list)          # the extension pom's <parent> chain that was read
 
     def line(self) -> str:
         """로그 / 저널용 한 줄."""
         tail = f"; stale markers removed: {', '.join(self.markers_removed)}" if self.markers_removed else ""
-        return f"{self.coordinates} (declared by {self.declared_by}): {'readable' if self.readable else 'NOT readable'} — {self.where}{tail}"
+        anc = f"; parent poms: {' → '.join(self.ancestors)}" if self.ancestors else ""
+        return f"{self.coordinates} (declared by {self.declared_by}): {'readable' if self.readable else 'NOT readable'} — {self.where}{tail}{anc}"
 
 
 def _split(coord: str) -> tuple[str, str, str] | None:
@@ -71,10 +75,40 @@ def check_parent_build_extensions(cfg: Any, facts: Any = None, *, clear_markers:
             check = ExtensionCheck(coord, declared, bool(text), where)
             if text and where == "repository" and clear_markers and local is not None:
                 check.markers_removed = _remove_stale_markers(local.joinpath(*g.split("."), a, v))
+            if text:
+                # Maven reads the extension's <parent> chain too ("or one of its dependencies could not be resolved"): a 2007 pom's
+                # ancestors (wagon-providers, wagon, maven-parent, apache) must be served as well — follow them and name the first gap
+                _check_ancestors(reader, text, check, local, clear_markers)
             out.append(check)
     except Exception as e:  # noqa: BLE001 - a pre-check never stops the intake; Maven reports the problem as before
         log.warning("parent build extension check failed: %s: %s", type(e).__name__, e)
     return out
+
+
+def _check_ancestors(reader: PomReader, text: str, check: ExtensionCheck, local: Path | None, clear_markers: bool) -> None:
+    """확장 pom 의 ``<parent>`` 체인을 위로 읽는다(최대 MAX_ANCESTORS). 못 읽는 조상이 있으면 그 확장은 "NOT readable" —
+    이유에 조상 좌표를 적는다. 저장소에서 읽힌 조상의 묵은 표식도 지운다."""
+    pom = parse_pom(text)
+    seen: set[str] = set()
+    for _ in range(MAX_ANCESTORS):
+        if pom is None or not (pom.parent_group_id and pom.parent_artifact_id and pom.parent_version):
+            return
+        resolve = make_resolver(pom.properties, pom_builtins(pom))
+        pg, pa, pv = (resolve(pom.parent_group_id) or pom.parent_group_id, resolve(pom.parent_artifact_id) or pom.parent_artifact_id,
+                      resolve(pom.parent_version) or pom.parent_version)
+        coord = f"{pg}:{pa}:{pv}"
+        if coord in seen:
+            return
+        seen.add(coord)
+        ptext, where = reader.pom(pg, pa, pv)
+        if not ptext:
+            check.readable = False
+            check.where = f"its parent pom {coord} is not readable — {where}"
+            return
+        check.ancestors.append(coord)
+        if where == "repository" and clear_markers and local is not None:
+            check.markers_removed += _remove_stale_markers(local.joinpath(*pg.split("."), pa, pv))
+        pom = parse_pom(ptext)
 
 
 def _remove_stale_markers(folder: Path) -> list[str]:

@@ -4026,7 +4026,11 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   markers are deleted (that folder only, `build.retry_negative_cache` governs it) so the first Maven call succeeds without waiting
   for a `-U` retry; readable nowhere → WARNING, flag `parent-extension-unresolvable`, one Handover line (`the company parent
   <g:a:v> declares the build extension <g:a:v>, which neither the local repository nor the repository set serves …`); journal
-  `parent_build_extensions` {checks, unresolvable, markers_removed}. Recommendation to the parent's owners (not sbmig's call):
+  `parent_build_extensions` {checks, unresolvable, markers_removed}. The check follows the extension pom's `<parent>` chain as
+  well (Maven reads it — "or one of its dependencies could not be resolved"): a missing ancestor makes the extension
+  "NOT readable — its parent pom <g:a:v> is not readable …", served ancestors are listed (`ExtensionCheck.ancestors`) and their
+  stale markers cleared too; the extension's dependency jars are left to Maven (the error line's 401 / 404 reason, the -U retry).
+  Recommendation to the parent's owners (not sbmig's call):
   drop deploy transports from the parent — Maven 3.9 needs none for Nexus over http(s) and the 2007 artifact is a liability.
 
 * **k8s Job dispatch mode (2026-11-05 night, built — the user's decisions: everything on one shared PVC, one Job at a time now,
