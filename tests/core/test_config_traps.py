@@ -57,6 +57,19 @@ def test_env_variables_that_are_not_config_keys_are_not_reported(tmp_path: Path,
     assert _warnings(caplog) == []
 
 
+def test_mistyped_env_override_is_reported_and_a_right_one_applies(tmp_path: Path, repo_root: Path, caplog, monkeypatch):
+    # the k8s ConfigMap carries SBMIG_<SECTION>__<KEY> overrides (2026-11-05): a typo must not pass silently
+    monkeypatch.setenv("SBMIG_LOOP__STAL_LIMIT", "3")
+    monkeypatch.setenv("SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE", "7")
+    monkeypatch.setenv("SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS", "9")
+    with caplog.at_level(logging.WARNING, logger="sbmig.config"):
+        cfg = load_config(repo_root / "config" / "artifacts.local-e2e.yml")
+    lines = _warnings(caplog)
+    assert any(ln.startswith("config: env override SBMIG_*__*: loop.stal_limit is not a known key and is ignored") for ln in lines)
+    assert len(lines) == 1
+    assert cfg.script.max_llm_tries_per_case == 7 and cfg.loop.phases["verify"].max_iterations == 9 and cfg.loop.stall_limit == 2
+
+
 def test_every_shipped_yml_loads_without_a_config_warning(repo_root: Path, caplog):
     ymls = sorted(glob.glob(str(repo_root / "config" / "*.yml"))) + sorted(glob.glob(str(repo_root / "fixtures" / "*" / "sbmig.e2e.yml")))
     with caplog.at_level(logging.WARNING, logger="sbmig.config"):

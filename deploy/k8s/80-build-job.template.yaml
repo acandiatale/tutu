@@ -42,7 +42,8 @@ spec:
             - {name: GIT_COMMITTER_NAME, value: "sbmig"}
             - {name: GIT_COMMITTER_EMAIL, value: "sbmig@company.example"}
           envFrom:
-            - secretRef: {name: sbmig-llm}        # LLM_* (게이트웨이, 에셋 id, 토큰 URL, 앱 토큰, role 이름)
+            - configMapRef: {name: sbmig-env}     # LLM_* 중 비밀 아닌 것(게이트웨이 주소, 에셋 id, 토큰 URL, role 이름) + SBMIG_<섹션>__<키> 덮어쓰기
+            - secretRef: {name: sbmig-llm}        # LLM_APP_TOKEN(또는 LLM_API_KEY), NEXUS_USER / NEXUS_PASSWORD — 뒤에 두어 Secret 이 이긴다
             - secretRef: {name: sbmig-git}        # GIT_TOKEN (+ 선택 GIT_USER): 저장소 자격 증명 — 이미지·로그에 넣지 않는다
           volumeMounts:
             - {name: workspace, mountPath: /workspace}

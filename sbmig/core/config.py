@@ -1178,7 +1178,30 @@ def _mapping_value_model(annotation: Any) -> Optional[type[BaseModel]]:
     return None
 
 
-def _warn_unknown_keys(data: dict, model: Optional[type[BaseModel]] = None, prefix: str = "") -> list[str]:
+def _env_override_dict() -> dict:
+    """``SBMIG_<섹션>__<키>`` 환경 변수만 모은 중첩 dict(값은 자리표시) — 알 수 없는 키 검사용. 밑줄 두 개가 없는
+    ``SBMIG_WEB_CONFIGS`` 류는 설정 키가 아니라 빼고, 중첩 경로가 겹치는 이상한 조합은 무시한다.
+
+    The `SBMIG_<SECTION>__<KEY>` variables as a nested dict (placeholder values) for the unknown-key check; names
+    without a double underscore (SBMIG_WEB_CONFIGS …) are not config keys and are left out."""
+    out: dict = {}
+    for key in os.environ:
+        if not key.startswith("SBMIG_") or "__" not in key:
+            continue
+        path = [p.lower() for p in key[len("SBMIG_"):].split("__") if p]
+        cur = out
+        for p in path[:-1]:
+            cur = cur.setdefault(p, {})
+            if not isinstance(cur, dict):
+                break
+        else:
+            if path:
+                cur[path[-1]] = None
+    return out
+
+
+def _warn_unknown_keys(data: dict, model: Optional[type[BaseModel]] = None, prefix: str = "",
+                       label: str = "") -> list[str]:
     """합쳐진 설정에서 모델이 모르는 키를 WARNING 으로 알린다 — pydantic 은 모르는 키를 조용히 버리므로, 들여쓰기가 틀려
     `repository_url:` 이 최상위에 놓인 회사 yml 은 아무 말 없이 무시된다(2026-11-05). 섹션(BaseModel) 필드만 내려가고 dict /
     list 필드(payload_extra, optional 목록 …)는 보지 않는다. 알려진 섹션 하나에만 있는 이름이면 "did you mean build.x" 를 붙인다.
@@ -1200,17 +1223,17 @@ def _warn_unknown_keys(data: dict, model: Optional[type[BaseModel]] = None, pref
             homes = [name for name, f in Config.model_fields.items()
                      if (m := _section_model(f.annotation)) is not None and key in m.model_fields]
             hint = f" — did you mean {' / '.join(f'{h}.{key}' for h in homes)}?" if homes else ""
-            out.append(f"config: {dotted} is not a known key and is ignored (check the indentation / spelling{hint})")
+            out.append(f"config: {label}{dotted} is not a known key and is ignored (check the indentation / spelling{hint})")
             continue
         sub = _section_model(fields[key].annotation)
         if sub is not None and isinstance(value, dict):
-            out.extend(_warn_unknown_keys(value, sub, f"{dotted}."))
+            out.extend(_warn_unknown_keys(value, sub, f"{dotted}.", label))
             continue
         entry = _mapping_value_model(fields[key].annotation)
         if entry is not None and isinstance(value, dict):
             for name, inner in value.items():
                 if isinstance(inner, dict):
-                    out.extend(_warn_unknown_keys(inner, entry, f"{dotted}.{name}."))
+                    out.extend(_warn_unknown_keys(inner, entry, f"{dotted}.{name}.", label))
     if model is Config:
         for line in out:
             log.warning("%s", line)
@@ -1263,6 +1286,8 @@ def load_config(*paths: str | Path, overrides: Optional[dict] = None, repo_root:
     # the yml keys only: SBMIG_* env variables that are not config keys (SBMIG_WEB_CONFIGS, SBMIG_WEB_TOKEN, SBMIG_MAX_UPLOAD_MB)
     # also land in `data` through _apply_env_overrides and are dropped by pydantic on purpose — they are not a typo
     _warn_unknown_keys(data)
+    # the SBMIG_<SECTION>__<KEY> overrides (k8s ConfigMap env, 2026-11-05): a mistyped name is reported the same way
+    _warn_unknown_keys(_env_override_dict(), label="env override SBMIG_*__*: ")
     if overrides:
         data = deep_merge(data, overrides)
     data = _apply_env_overrides(data)

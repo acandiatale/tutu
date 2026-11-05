@@ -4005,7 +4005,16 @@ names the two silent traps behind that: `config: <file>: key 'build' appears twi
 only …` (`_YamlLoader`; a second `build:` block replaces the first) and `config: repository_url is not a known key and is ignored
 (check the indentation / spelling — did you mean build.repository_url?)` (`_warn_unknown_keys`: the yml keys only — section fields and the entries of
 `dict[str, Model]` fields such as `loop.phases` are checked, dict / list fields are not; `SBMIG_*` env overrides are not checked
-because `SBMIG_WEB_CONFIGS` / `SBMIG_WEB_TOKEN` / `SBMIG_MAX_UPLOAD_MB` land in the same dict and are dropped on purpose). A failure while the repository set is
+because `SBMIG_WEB_CONFIGS` / `SBMIG_WEB_TOKEN` / `SBMIG_MAX_UPLOAD_MB` land in the same dict and are dropped on purpose; the
+`SBMIG_<SECTION>__<KEY>` overrides — the names with a double underscore — ARE checked separately: `config: env override SBMIG_*__*:
+loop.stal_limit is not a known key …`). **Deployment env list (2026-11-05, the infra team asked for the ConfigMap variables):**
+ConfigMap `sbmig-env` holds everything that is not a secret (web pod: `SBMIG_WEB_CONFIGS`, `SBMIG_WEB_OPEN`, `SBMIG_MAX_UPLOAD_MB`,
+`NO_PROXY`; gateway: `LLM_GATEWAY`, `LLM_BASE_URL`, `LLM_ASSET_ID`, `LLM_TOKEN_URL`, `LLM_MODEL`, `LLM_ESCALATION_MODEL`,
+`LLM_RECORD_DIR`; the tuning knobs as commented `SBMIG_<SECTION>__<KEY>` entries with their defaults), Secret `sbmig-llm` only the
+secrets (`LLM_APP_TOKEN` / `LLM_API_KEY`, `NEXUS_USER` / `NEXUS_PASSWORD` read by settings.xml's `${env.…}`, optional
+`SBMIG_WEB_TOKEN`); the Deployment and the Job template read both through `envFrom` with the Secret last (it wins). The example
+`company.yml` had `build.jvm_args` — not a key (the heap is `openrewrite.jvm_args`); the unknown-key check would have said so.
+The table operators read is deploy/README.md "env 목록". A failure while the repository set is
 built is a `note:` / WARNING `repository set incomplete: building it failed midway (…)` instead of a silent Central-only list. If the Nexus is still absent, the lookup set is wrong for every library: set
 `build.repository_url` (the group URL) — and `build.settings_file` when the settings are not at `~/.m2/settings.xml` — in the
 company yml; `config/settings.nexus.example.xml` says the same. A bundled jar whose coordinates sbmig could not read (no

@@ -25,14 +25,11 @@ spec:
           imagePullPolicy: IfNotPresent
           ports:
             - {name: http, containerPort: 8765}
+          # 환경 변수는 전부 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정
+          # 덮어쓰기)와 Secret sbmig-llm(토큰·비밀번호). 뒤의 것이 이기므로 Secret 을 뒤에 둔다. 값은 20-configmap.yaml 의 설명을 본다
           envFrom:
+            - configMapRef: {name: sbmig-env}
             - secretRef: {name: sbmig-llm}
-          env:
-            - {name: SBMIG_MAX_UPLOAD_MB, value: "1024"}
-            - {name: SBMIG_WEB_CONFIGS, value: "company.yml"}     # 모든 업로드가 이 config 로 돈다(= sbmig serve --config); 쉼표로 여러 개
-            - {name: SBMIG_WEB_OPEN, value: "1"}                 # 사내망 전용 페이지(2026-11-05 결정): 토큰 없이 연다. 토큰을 쓰려면 이 줄을
-                                                                 # 지우고 Secret 의 SBMIG_WEB_TOKEN 을 채운다(토큰이 있으면 토큰이 우선)
-            # - {name: NO_PROXY, value: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"}   # 클러스터에 프록시가 걸려 있을 때
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: m2, mountPath: /home/sbmig/.m2}

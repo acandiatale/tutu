@@ -1,4 +1,4 @@
-# 회사 설정 두 파일. company.yml 은 웹 UI 가 실행마다 고르는 config(<레포 루트>/config/*.yml 을 나열한다) 이자 Job 의 --config 이고,
+# 회사 설정 두 파일(+ 아래 두 번째 문서 = 환경 변수 ConfigMap). company.yml 은 웹 UI 가 실행마다 고르는 config(<레포 루트>/config/*.yml 을 나열한다) 이자 Job 의 --config 이고,
 # settings.xml 은 Maven 이 Nexus 를 보게 하는 미러 설정이다. subPath 로 마운트해 이미지의 config/default.yml 등은 그대로 둔다.
 # <…> 자리를 회사 값으로 바꾼다. 키·토큰은 여기 두지 않는다(Secret 으로).
 apiVersion: v1
@@ -19,7 +19,8 @@ data:
     build:
       settings_file: /etc/sbmig/settings.xml
       repository_url: <https://nexus.company/repository/maven-public/>   # sbmig 가 메타데이터 / pom 을 직접 읽는 주소
-      jvm_args: ["-Xmx4g"]
+    openrewrite:
+      jvm_args: ["-Xmx4g"]   # OpenRewrite 를 돌리는 Maven 의 힙(MAVEN_OPTS). 파드 메모리 limit 보다 2 GiB 이상 작게
     kb:
       dir: /data/kb-v2     # 웹 UI 에이전트: 볼륨의 파일 KB (이미지 안 kb-v2/ 는 쓰기 상태가 아니다). Job 모델은 run-job.sh 가 덮어쓴다
     llm:
@@ -34,5 +35,63 @@ data:
           <url><https://nexus.company/repository/maven-public/></url>
         </mirror>
       </mirrors>
-      <!-- Nexus 에 인증이 필요하면 <servers> 는 이 ConfigMap 이 아니라 Secret 으로 마운트한다 -->
+      <!-- Nexus 에 로그인이 필요하면: 값은 Secret 의 NEXUS_USER / NEXUS_PASSWORD 에 두고 여기서는 ${env.…} 로 가리킨다.
+           Maven 도 sbmig 도 settings.xml 의 ${env.X} 를 환경 변수로 푼다. <id> 는 위 미러의 <id> 와 같아야 한다.
+      <servers>
+        <server>
+          <id>company-nexus</id>
+          <username>${env.NEXUS_USER}</username>
+          <password>${env.NEXUS_PASSWORD}</password>
+        </server>
+      </servers>
+      -->
     </settings>
+---
+# 환경 변수 ConfigMap — 비밀이 아닌 설정 전부. Deployment / Job 이 envFrom 으로 읽는다(토큰·비밀번호는 Secret sbmig-llm / sbmig-git).
+# 바꾸고 나면 파드를 재시작해야 한다(kubectl rollout restart deploy/sbmig).
+#   그룹 1 — 웹 파드 동작.   그룹 2 — LLM 게이트웨이(비밀 아닌 것).   그룹 3 — company.yml / default.yml 의 설정 키를 덮어쓰는
+#   SBMIG_<섹션>__<키>(밑줄 두 개 = 한 단계 아래; 값은 YAML 로 읽으므로 숫자·true/false·["목록"] 그대로). 시험 운영 중 자주 손대는
+#   키만 적었고, 주석을 풀면 그 값이 company.yml 보다 우선한다. 모르는 키 이름은 시작 로그에 `config: … is not a known key` 로 뜬다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sbmig-env
+  labels: {app: sbmig}
+data:
+  # ── 1. 웹 파드 ──────────────────────────────────────────────────────────────────────────────────
+  SBMIG_WEB_CONFIGS: "company.yml"      # 모든 업로드가 이 config 로 돈다(= sbmig serve --config). 쉼표로 여러 개
+  SBMIG_WEB_OPEN: "1"                   # 사내망 전용 페이지(2026-11-05 결정): 토큰 없이 연다. 토큰을 쓰려면 지우고 Secret 의 SBMIG_WEB_TOKEN
+  SBMIG_MAX_UPLOAD_MB: "1024"           # 업로드 zip 상한(MB). 0 = 없음. 기본 512
+  # NO_PROXY: "<게이트웨이 호스트>,<nexus 호스트>,localhost,127.0.0.1"   # 클러스터에 HTTP 프록시가 걸려 있을 때
+  # ── 2. LLM 게이트웨이(비밀 아닌 것) ─────────────────────────────────────────────────────────────
+  LLM_GATEWAY: "agent"                  # 사내 GPT 에이전트 게이트웨이 페이로드. 옛 모양이면 지운다(legacy)
+  LLM_BASE_URL: "https://<게이트웨이 호스트>/api/serv/v1/agents/{asset_id}/chat/completions"   # {asset_id} 는 아래 값으로 채워진다
+  LLM_ASSET_ID: "<에셋 id>"
+  LLM_TOKEN_URL: "https://<게이트웨이 호스트>/<토큰 발급 경로>"
+  LLM_MODEL: "build_error_fixer"        # params.role — 수정 1~2회차 + 구조 리뷰(게이트웨이가 모델에 매핑)
+  LLM_ESCALATION_MODEL: "escalation_fixer"   # params.role — 케이스 3회차부터 / 정체 뒤
+  LLM_RECORD_DIR: "/data/llm-records"   # 요청·응답 기록(비밀 없음). 비우면 기록 안 함
+  # LLM_RESPONSE_PATH: ""               # llm-probe 가 응답 본문을 못 찾을 때만
+  # ── 3. 자주 조정하는 설정 키(SBMIG_<섹션>__<키>) — 기본값을 적어 두었다 ─────────────────────────
+  # SBMIG_SCRIPT__MAX_LLM_TRIES_PER_CASE: "20"       # 케이스당 LLM 요청 상한(넘으면 BLOCKED repeated_failure). 회사 실행을 보며 줄인다
+  # SBMIG_SCRIPT__MAX_AUGMENTS_PER_CASE: "15"        # 그중 보강(augment) 상한
+  # SBMIG_SCRIPT__MAX_DECLINES_PER_CASE: "1"         # LLM 거절 몇 번에 needs_owner 로 넘기나
+  # SBMIG_LOOP__STALL_LIMIT: "2"                     # 같은 오류 묶음이 이 횟수 반복되면 상위 모델
+  # SBMIG_LOOP__PHASES__VERIFY__MAX_ITERATIONS: "50" # 빌드-수정 라운드 상한
+  # SBMIG_LOOP__MAX_TOTAL_MINUTES: "240"             # 실행 하나의 시간 상한(분)
+  # SBMIG_LOOP__MAX_LLM_CALLS: "0"                   # 프로젝트당 LLM 총 호출 상한. 0 = 없음, -1 = 저장 스크립트만
+  # SBMIG_LLM__CASE_THREAD: "false"                  # 케이스 스레드(세션 이어 쓰기). 첫 측정 실행 뒤 true
+  # SBMIG_LLM__TIMEOUT_SECONDS: "180"                # 게이트웨이 응답 대기
+  # SBMIG_LLM__MAX_OUTPUT_TOKENS: "8000"
+  # SBMIG_LLM__TEMPERATURE: "0.0"
+  # SBMIG_BUILD__TIMEOUT_MINUTES: "30"               # mvn clean package 한 번의 상한
+  # SBMIG_BUILD__REPOSITORY_URL: "https://<nexus>/repository/maven-public/"   # company.yml 의 값을 덮어쓸 때(환경별 Nexus)
+  # SBMIG_BUILD__REPOSITORY_TIMEOUT_SECONDS: "10"    # sbmig 의 Nexus 조회(메타데이터 / pom) 대기
+  # SBMIG_OPENREWRITE__TIMEOUT_MINUTES: "40"
+  # SBMIG_OPENREWRITE__JVM_ARGS: '["-Xmx4g"]'        # 파드 memory limit 보다 2 GiB 이상 작게
+  # SBMIG_INTAKE__ADF_POLICY: "stop"                 # ADF(JDeveloper) 프로젝트: stop(변환 불가로 끝) | warn
+  # SBMIG_LAYOUT__WIRE_BUNDLED_JARS: "true"          # WEB-INF/lib 의 선언 없는 jar 를 재구성 때 연결
+  # SBMIG_LIBRARIES__NEXUS_SEARCH: "true"            # jakarta 빌드 탐색에 Nexus 검색 API 사용
+  # SBMIG_LIBRARIES__INCLUDE_PRERELEASE: "false"
+  # SBMIG_REVIEW__FIX_CRITICAL: "true"               # 구조 리뷰의 critical 을 자동 수정
+  # SBMIG_FLEET__MIN_FREE_GB: "5"                    # 디스크 여유 하한(실행 전 확인)
