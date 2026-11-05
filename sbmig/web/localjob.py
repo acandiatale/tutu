@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,10 +36,16 @@ class LocalJobClient:
     Jobs as local subprocesses; `command_factory(env)` lets tests substitute the command."""
     namespace = "local"
 
-    def __init__(self, repo_root: Path | str | None = None, command_factory: Any = None, python: str | None = None) -> None:
+    ECHO_ENV = "SBMIG_LOCAL_JOB_ECHO"       # "0" turns the console echo of the child's output off (default on: development)
+
+    def __init__(self, repo_root: Path | str | None = None, command_factory: Any = None, python: str | None = None,
+                 echo: bool | None = None) -> None:
         self.repo_root = Path(repo_root) if repo_root else None
         self.python = python or sys.executable
         self.command_factory = command_factory or self._command
+        # 사용자(2026-11-05): "서브프로세스로 돌면 콘솔 창에는 안 뜰 거잖아?" — 개발 모드라 자식의 출력을 파일(job-local.log)에 쓰면서
+        # 서버 콘솔에도 `[job <run id>]` 접두어로 흘린다
+        self.echo = (os.environ.get(self.ECHO_ENV, "1").strip().lower() not in ("0", "false", "no", "off")) if echo is None else echo
         self._procs: dict[str, tuple[subprocess.Popen, Path, dict[str, str]]] = {}
 
     # ---- the command run-job.sh would run
@@ -72,14 +79,33 @@ class LocalJobClient:
         log_path = run_dir / "job-local.log"
         child_env = {**os.environ, **{k: v for k, v in env.items() if k.startswith("SBMIG_")}}
         try:
-            fh = open(log_path, "ab")      # noqa: SIM115 - the process keeps it; closed when it ends
             proc = subprocess.Popen(cmd, cwd=str(self.repo_root) if self.repo_root else None, env=child_env,
-                                    stdout=fh, stderr=subprocess.STDOUT)
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         except OSError as e:
             raise K8sError(f"local job: cannot start {cmd[0]}: {e}") from e
+        threading.Thread(target=self._pump, args=(proc, log_path, env["SBMIG_RUN_ID"]), name=f"sbmig-localjob-{name}",
+                         daemon=True).start()
         self._procs[name] = (proc, run_dir, env)
-        log.info("local job %s: pid %d — %s", name, proc.pid, " ".join(cmd))
+        log.info("local job %s: pid %d — %s%s", name, proc.pid, " ".join(cmd),
+                 f" (output → {log_path.name}" + (" and this console)" if self.echo else ")"))
         return name
+
+    def _pump(self, proc: subprocess.Popen, log_path: Path, run_id: str) -> None:
+        """자식의 출력을 줄마다 job-local.log 에 쓰고(echo 면) 콘솔에도 ``[job <run id>]`` 로 흘린다. 자식이 끝나면 파일을 닫는다."""
+        prefix = f"[job {run_id}] "
+        try:
+            with open(log_path, "ab") as fh, proc.stdout:  # type: ignore[union-attr]
+                for raw in iter(proc.stdout.readline, b""):
+                    fh.write(raw)
+                    fh.flush()
+                    if self.echo:
+                        try:
+                            sys.stdout.write(prefix + raw.decode("utf-8", errors="replace"))
+                            sys.stdout.flush()
+                        except (OSError, ValueError):      # a closed console never stops the job
+                            self.echo = False
+        except (OSError, ValueError) as e:
+            log.debug("local job output pump for %s ended: %s", run_id, e)
 
     def job_state(self, name: str) -> JobState:
         """프로세스 상태 → JobState. 끝났으면 ``job-status.json`` 을 쓴다(run-job.sh 와 같은 신호). 모르는 이름 → Missing."""
@@ -98,8 +124,6 @@ class LocalJobClient:
                                   encoding="utf-8")
             except OSError as e:
                 log.debug("local job %s: job-status.json not written: %s", name, e)
-            if proc.stdout is not None:
-                proc.stdout.close()
         return JobState("Succeeded" if rc in (0, 2) else "Failed", pod=pod, exit_code=rc,
                         message="" if rc in (0, 2) else f"sbmig exit {rc}")
 

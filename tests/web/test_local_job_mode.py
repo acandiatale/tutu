@@ -97,6 +97,32 @@ def test_local_job_mode_runs_the_pod_as_a_subprocess_and_the_ui_sees_the_same_ev
     assert ("finished", {"exit_code": 0, "success": True}) in run.history
 
 
+def test_child_output_is_echoed_to_the_console_and_kept_in_the_file(tmp_path: Path, repo: Path, monkeypatch, capfd):
+    """The user (2026-11-05): a subprocess shows nothing on the console — so the local pod's output is echoed with a
+    `[job <run id>]` prefix (SBMIG_LOCAL_JOB_ECHO=0 turns it off) while job-local.log keeps every line."""
+    script = tmp_path / "say.py"
+    script.write_text("import sys\nprint('hello from the pod'); print('second line', file=sys.stderr)\n", encoding="utf-8")
+    cmd = lambda env: [sys.executable, str(script)]  # noqa: E731
+    for echo, expect in ((True, True), (False, False)):
+        jc = LocalJobClient(repo, command_factory=cmd, echo=echo)
+        run_dir = tmp_path / "out" / f"r-{int(echo)}"
+        name = jc.create_job({"metadata": {"name": f"sbmig-r-{int(echo)}"}, "spec": {"template": {"spec": {"containers": [{"name": "b", "env": [
+            {"name": "SBMIG_SOURCE_ZIP", "value": "x.zip"}, {"name": "SBMIG_OUT", "value": str(tmp_path / "out")},
+            {"name": "SBMIG_RUN_ID", "value": f"r-{int(echo)}"}]}]}}}})
+        deadline = time.time() + 10
+        while not jc.job_state(name).finished and time.time() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.1)                                      # the pump thread drains the pipe
+        text = (run_dir / "job-local.log").read_text(encoding="utf-8")
+        assert "hello from the pod" in text and "second line" in text
+        out = capfd.readouterr().out
+        assert (f"[job r-{int(echo)}] hello from the pod" in out) is expect
+    monkeypatch.setenv("SBMIG_LOCAL_JOB_ECHO", "0")
+    assert LocalJobClient(repo).echo is False
+    monkeypatch.delenv("SBMIG_LOCAL_JOB_ECHO")
+    assert LocalJobClient(repo).echo is True
+
+
 def test_the_real_command_is_what_run_job_sh_runs(repo: Path):
     jc = LocalJobClient(repo)
     cmd = jc._command({"SBMIG_SOURCE_ZIP": "/d/out/r1/source.zip", "SBMIG_OUT": "/d/out", "SBMIG_RUN_ID": "r1",
