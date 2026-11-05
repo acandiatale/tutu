@@ -46,6 +46,8 @@ def test_keywords_hit_expected_notes():
     assert by["junit4-to-5.md"].score("import org.junit.Test;") > 0
     assert by["hibernate-7.md"].score("package org.hibernate.annotations.common.util.impl does not exist") > 0
     assert by["hibernate-7.md"].score("package org.jboss.logging does not exist") > 0
+    assert by["maven-build-extensions.md"].score("Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:"
+                                                 "1.0-beta-2 or one of its dependencies could not be resolved") >= 2
 
 
 def test_keywords_hit_the_v21u_notes():

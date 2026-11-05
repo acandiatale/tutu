@@ -3982,6 +3982,21 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   it too and every in-house artifact fails with `Blocked mirror for repositories` — the ConfigMap's settings.xml must override
   `maven-default-http-blocker` (or the Nexus must be https). `config/settings.nexus.example.xml` and `deploy/README.md` say so.
 
+* **Build extensions (2026-11-05, company run right after the mirror fix: `Unresolveable build extension: Plugin
+  org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its dependencies could not be resolved: Failed to read artifact
+  descriptor …`).** A `<build><extensions>` entry Maven cannot resolve stops the model build before any goal. The parser
+  (`_BUILD_EXT_RE`) now reads the extension's coordinates into `BuildError.artifact` (kind stays `pom_invalid`, stage 0), merges the
+  summary line and the project-block line of the same extension into ONE error keeping the longer message (the block carries the
+  transfer reason: 401 / 404 / timeout), and the signature is per extension: L1 `pom_invalid|build_extension|g:a:v`, L2
+  `pom_invalid|build_extension|g:a` (a new shape — no stored case moves). The new note `knowledge/notes/maven-build-extensions.md`
+  (keywords: the Maven line, `org.apache.maven.wagon` / `wagon-*`, the `dav:` / `scp:` / `ftp:` schemes) tells the LLM that Wagon
+  providers are deploy transports `mvn clean package` never needs — remove the extension (and a `dav:`-style
+  `<distributionManagement>` left in a module pom; the company parent supplies the deploy target), never add a repository /
+  version / credentials for it, never decline; a non-transport extension is treated like an unresolvable plugin. Why the PC saw
+  it only now: the artifact had lived in `~/.m2` under the old repository id; the new user-settings mirror changed the ids Maven
+  checks (`_remote.repositories`), so it was fetched again — and the `<server>` credentials keyed by the OLD repository id no
+  longer apply to the mirror id (the `<server><id>` must equal the mirror's id).
+
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but
 not read:` / `build.repository_url: <url> | not set` (2026-11-05: the value the lookup actually saw — `not set` with a value in the

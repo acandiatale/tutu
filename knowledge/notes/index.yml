@@ -411,6 +411,15 @@ notes:
   cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
   phases: [spring]
   always: false
+- file: maven-build-extensions.md
+  title: "Build extensions that cannot be resolved (wagon deploy transports in <build><extensions>)"
+  keywords:
+    - "Unresolveable build extension|<extensions>|<extension>"
+    - "org\\.apache\\.maven\\.wagon|wagon-(webdav|webdav-jackrabbit|ssh|ssh-external|ftp|scm|http-lightweight)"
+    - "dav:|davs:|scp:|scpexe:|sftp:|ftp:"
+  cases: [pure_java, spring_legacy, spring_boot, servlet_tomcat, msa]
+  phases: [restructure]
+  always: false
 - file: spring-removed-artifacts.md
   title: "Spring Framework artifacts that no longer exist on the target line (spring-dao, spring-mock, spring-hibernate3/4, ...)"
   keywords:

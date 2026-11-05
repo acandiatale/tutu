@@ -79,6 +79,11 @@ _PLUGIN_RES_RE = re.compile(r"Plugin (?P<coords>[\w.\-]+:[\w.\-]+:[\w.\-]+) or o
                             r"resolved|Error resolving version for plugin '(?P<ga>[\w.\-]+:[\w.\-]+)'|"
                             r"No plugin found for prefix '(?P<prefix>[\w.\-]+)'|Plugin not found for prefix")
 _RULE_RE = re.compile(r"^Rule (?P<n>\d+): (?P<rule>\S+?) failed with message:?\s*(?P<rest>.*)$")
+# 2026-11-05 (회사 PC): `Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its
+# dependencies could not be resolved: Failed to read artifact descriptor …` — <build><extensions> 의 확장(배포 전송 wagon 등)을 Maven 이
+# 모델 단계에서 못 받으면 어떤 goal 도 돌지 않는다. 좌표를 읽어 확장별 케이스로 만든다 (g:a[:type]:v, type 은 jar 등 선택)
+_BUILD_EXT_RE = re.compile(r"Unresolveable build extension: Plugin (?P<g>[\w.\-]+):(?P<a>[\w.\-]+):"
+                           r"(?:(?P<t>jar|maven-plugin|pom|bundle):)?(?P<v>[\w.\-]+) or one of its dependencies could not be resolved")
 _POM_PROBLEMS_RE = re.compile(r"Some problems were encountered while processing the POMs")
 _PROJECT_PROBLEMS_RE = re.compile(
     r"^\s*The project (?P<gav>\S*) \((?P<path>[^)]*)\) has \d+ errors?")
@@ -573,6 +578,10 @@ class _Parser:
         key = _scrub(msg, self.prefixes)
         # 문제가 있는 pom 과 줄: 위치 꼬리의 경로(상속된 문제 = 부모 pom)가 있으면 그것, 없으면 그 프로젝트의 pom
         pom_file, line_no, col_no = self._pom_location(msg, pom_file)
+        m_ext = _BUILD_EXT_RE.search(msg)
+        if m_ext:
+            # 같은 확장은 한 오류: 요약 줄과 프로젝트 블록 줄의 꼬리(이유)가 달라도 좌표로 합친다
+            key = f"build-extension:{m_ext.group('g')}:{m_ext.group('a')}:{m_ext.group('v')}"
         existing = self._pom_errors.get(key)
         if existing is not None:
             if module and not existing.module:
@@ -582,6 +591,14 @@ class _Parser:
                 existing.file = pom_file
             if line_no and not existing.line:
                 existing.line, existing.column = line_no, col_no
+            if m_ext and len(msg) > len(existing.message):
+                existing.message = msg                      # the project block carries the reason (401 / 404 / timeout)
+            return
+        if m_ext:
+            art = GAV(group_id=m_ext.group("g"), artifact_id=m_ext.group("a"), version=m_ext.group("v"))
+            err = self._add(BuildError(kind=ErrorKind.POM_INVALID, message=msg, artifact=art, module=module,
+                                       file=pom_file, line=line_no, column=col_no, raw=raw))
+            self._pom_errors[key] = err
             return
         if _PARENT_RE.search(msg):
             arts = _artifacts_in(msg)

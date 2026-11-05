@@ -135,6 +135,36 @@ def test_missing_dependency_version_is_pom_invalid():
     assert e.signature_generic == "pom_invalid|missing_version"
 
 
+def test_unresolvable_build_extension_is_one_pom_problem_per_extension():
+    """2026-11-05 (company run): `Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 …`
+    stops Maven before any goal; the summary line and the project block name the same extension with different tails
+    (the block carries the transfer reason) → ONE error, the extension as the artifact, a per-extension case."""
+    from sbmig.build import parse_maven_log
+    log = (
+        "[INFO] Scanning for projects...\n"
+        "[ERROR] [ERROR] Some problems were encountered while processing the POMs:\n"
+        "[ERROR] Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its "
+        "dependencies could not be resolved: Failed to read artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 @ \n"
+        " @ \n"
+        "[ERROR] The build could not read 1 project -> [Help 1]\n"
+        "[ERROR]   \n"
+        "[ERROR]   The project com.example:app:1.0 (/work/proj/pom.xml) has 1 error\n"
+        "[ERROR]     Unresolveable build extension: Plugin org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2 or one of its "
+        "dependencies could not be resolved: Failed to read artifact descriptor for org.apache.maven.wagon:wagon-webdav:jar:1.0-beta-2: "
+        "Could not transfer artifact org.apache.maven.wagon:wagon-webdav:pom:1.0-beta-2 from/to maven-default-http-blocker "
+        "(http://nexus.company.local/repository/maven-public/): status code: 401, reason phrase: Unauthorized (401) -> [Help 2]\n"
+        "[ERROR] \n"
+        "[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.\n")
+    errs = parse_maven_log(log, Path("/work/proj"))
+    assert len(errs) == 1
+    e = errs[0]
+    assert (e.kind, e.file, e.artifact.coordinates) == (ErrorKind.POM_INVALID, "pom.xml",
+                                                        "org.apache.maven.wagon:wagon-webdav:1.0-beta-2")
+    assert "status code: 401" in e.message                                       # the block's reason wins over the summary
+    assert e.signature == "pom_invalid|build_extension|org.apache.maven.wagon:wagon-webdav:1.0-beta-2"
+    assert e.signature_generic == "pom_invalid|build_extension|org.apache.maven.wagon:wagon-webdav"
+
+
 # ---------------------------------------------------------------------------------------------- (d) parent
 def test_real_non_resolvable_parent():
     errs = parse("real-bad-parent.log")

@@ -485,6 +485,11 @@ def signature_for(err: BuildError) -> tuple[str, str]:
         l2 = f"{prefix}|{a.group_id}:{a.artifact_id}"
         return (f"{l2}:{a.version}" if a.version else l2), l2
     norm = normalize_message(err.message, module=err.module)
+    if kind == ErrorKind.POM_INVALID and err.artifact is not None and "build extension" in err.message.lower():
+        # 2026-11-05: 못 받은 <build><extensions> 확장 — 확장별 케이스(L2 = pom_invalid|build_extension|g:a), 버전은 L1 에만
+        a = err.artifact
+        l2 = f"{prefix}|build_extension|{a.group_id}:{a.artifact_id}"
+        return (f"{l2}:{a.version}" if a.version else l2), l2
     if kind == ErrorKind.POM_INVALID and err.artifact is not None and "version" in norm and "missing" in norm:
         a = err.artifact
         return f"{prefix}|missing_version|{a.group_id}:{a.artifact_id}", f"{prefix}|missing_version"
