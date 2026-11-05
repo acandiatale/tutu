@@ -102,7 +102,7 @@ def test_child_output_is_echoed_to_the_console_and_kept_in_the_file(tmp_path: Pa
     `[job <run id>]` prefix (SBMIG_LOCAL_JOB_ECHO=0 turns it off) while job-local.log keeps every line."""
     script = tmp_path / "say.py"
     script.write_text("import sys\nprint('hello from the pod'); print('second line', file=sys.stderr)\n", encoding="utf-8")
-    cmd = lambda env: [sys.executable, str(script)]  # noqa: E731
+    cmd = lambda env: [sys.executable, str(script)]
     for echo, expect in ((True, True), (False, False)):
         jc = LocalJobClient(repo, command_factory=cmd, echo=echo)
         run_dir = tmp_path / "out" / f"r-{int(echo)}"
