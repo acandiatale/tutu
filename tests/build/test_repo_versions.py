@@ -9,6 +9,7 @@ from typing import Optional
 import pytest
 
 from sbmig.build.repo_versions import (
+    is_blocking_mirror,
     CENTRAL,
     RepositoryLookup,
     hint_lines,
@@ -529,4 +530,63 @@ def test_an_unreadable_settings_file_is_named_and_warned(tmp_path, caplog):
     assert look.settings_missing == [f"{bad} (build.settings_file): unreadable (see the WARNING above)"]
     assert any(f"settings {bad} could not be read" in r.getMessage() and "build.repository_url" in r.getMessage()
                for r in caplog.records)
+
+
+
+
+GLOBAL_WITH_BLOCKER = """<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <mirrors>
+    <mirror>
+      <id>maven-default-http-blocker</id>
+      <mirrorOf>external:http:*</mirrorOf>
+      <name>Pseudo repository to mirror external repositories initially using HTTP.</name>
+      <url>http://0.0.0.0/</url>
+      <blocked>true</blocked>
+    </mirror>
+  </mirrors>
+</settings>
+"""
+USER_WITH_HTTP_NEXUS = """<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <profiles><profile><id>company</id><repositories>
+    <repository><id>xxx-internal-releases</id><url>http://nexus.company.local/repository/releases</url></repository>
+  </repositories></profile></profiles>
+  <activeProfiles><activeProfile>company</activeProfile></activeProfiles>
+</settings>
+"""
+
+
+def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monkeypatch):
+    """The company PC (2026-11-05): the user settings' active-profile repository is the Nexus over plain http; Maven 3.9's global
+    conf/settings.xml ships `maven-default-http-blocker` (mirrorOf external:http:*, http://0.0.0.0/) which covers it — Maven refuses
+    the repository, and so does sbmig: it is not asked (the probe had shown `http://0.0.0.0/ → unreachable (WinError 10049)`), a
+    note says why, Central stays; an explicit build.repository_url is asked first regardless."""
+    home = tmp_path / "maven-home"
+    (home / "conf").mkdir(parents=True)
+    (home / "conf" / "settings.xml").write_text(GLOBAL_WITH_BLOCKER, encoding="utf-8")
+    user = tmp_path / "user-settings.xml"
+    user.write_text(USER_WITH_HTTP_NEXUS, encoding="utf-8")
+    monkeypatch.setenv("MAVEN_HOME", str(home))
+    from sbmig.build import repo_versions as rv_mod
+    monkeypatch.setattr(rv_mod, "global_settings_file", _real_global_settings_file)
+    look = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    urls = [u for u, _c, _o in look.repository_urls()]
+    assert urls == [CENTRAL] and not any("0.0.0.0" in u for u in urls)
+    assert any(n.startswith("xxx-internal-releases (http://nexus.company.local/repository/releases/) is blocked by Maven's HTTP "
+                            "blocker (mirror 'maven-default-http-blocker', mirrorOf external:http:*, global settings)")
+               and "build.repository_url" in n for n in look.url_notes)
+    # the operator's explicit URL is first and never mirrored
+    look2 = RepositoryLookup(_cfg(tmp_path, settings_file=str(user),
+                                  repository_url="http://nexus.company.local/repository/maven-public"), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in look2.repository_urls()] == ["http://nexus.company.local/repository/maven-public/", CENTRAL]
+    # a user settings mirror that overrides the blocker (same mirrorOf, the real URL, not blocked) wins: user mirrors come first
+    user.write_text(USER_WITH_HTTP_NEXUS.replace("<activeProfiles>",
+                    "<mirrors><mirror><id>maven-default-http-blocker</id><mirrorOf>external:http:*</mirrorOf>"
+                    "<url>http://nexus.company.local/repository/maven-public</url><blocked>false</blocked></mirror></mirrors>"
+                    "<activeProfiles>"), encoding="utf-8")
+    look3 = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in look3.repository_urls()][0] == "http://nexus.company.local/repository/maven-public/"
+    assert is_blocking_mirror("http://0.0.0.0/") and is_blocking_mirror("https://ok/", True)
+    assert not is_blocking_mirror("http://nexus.company.local/") and not is_blocking_mirror("")
 

@@ -236,6 +236,7 @@ class SettingsData:
         self.mirrors: list[tuple[str, str, str, Optional[tuple[str, str]]]] = []   # (id, url, mirrorOf, creds)
         self.repos: list[tuple[str, str, Optional[tuple[str, str]]]] = []           # (id, url, creds) of active profiles
         self.servers: dict[str, Optional[tuple[str, str]]] = {}
+        self.blocked: set[str] = set()                # 2026-11-05: mirror ids with <blocked>true</blocked> (Maven 3.8.1+)
 
 
 def read_settings(path: Optional[str]) -> Optional[SettingsData]:
@@ -268,6 +269,8 @@ def read_settings(path: Optional[str]) -> Optional[SettingsData]:
                 log.info("settings %s: mirror %s url %r has an unresolved variable — not used", p, mid, raw)
                 continue
             data.mirrors.append((mid, _normalize_url(url), _txt(m, "mirrorOf") or "*", data.servers.get(mid)))
+            if _txt(m, "blocked").strip().lower() == "true":
+                data.blocked.add(mid)
         active = {(x.text or "").strip() for x in _kids(_kid(root, "activeProfiles"), "activeProfile")}
         for prof in _kids(_kid(root, "profiles"), "profile"):
             pid = _txt(prof, "id")
@@ -324,6 +327,21 @@ def global_settings_file(cfg: Any = None) -> Optional[Path]:
     except Exception as e:  # noqa: BLE001
         log.debug("global_settings_file: %s", e)
     return None
+
+
+def is_blocking_mirror(mirror_url: str, blocked: bool = False) -> bool:
+    """Maven 3.8.1+ 의 차단 미러인가: 그 미러에 ``<blocked>true</blocked>`` 가 붙었거나 URL 의 호스트가 ``0.0.0.0`` (전역 settings 의
+    ``maven-default-http-blocker`` 가 쓰는 주소). 차단 미러가 덮은 저장소는 Maven 도 쓰지 않는다.
+
+    A Maven 3.8.1+ blocking mirror: `<blocked>true</blocked>` on it, or a URL whose host is `0.0.0.0` (what the default
+    `maven-default-http-blocker` of the global settings uses). A repository it covers is unusable for Maven too."""
+    if blocked:
+        return True
+    try:
+        from urllib.parse import urlsplit
+        return (urlsplit(mirror_url or "").hostname or "") == "0.0.0.0"
+    except Exception:  # noqa: BLE001 - a URL that does not parse blocks nothing
+        return False
 
 
 def mirror_covers(mirror_of: str, repo_id: str, repo_url: str) -> bool:
@@ -843,7 +861,9 @@ class RepositoryLookup:
                 else:
                     state = "unreadable (see the WARNING above)" if f.is_file() else "missing"
                     self.settings_missing.append(f"{f} ({origin}): {state}")
-            mirrors = [(mid, url, mo, creds, origin) for d, origin in datas for mid, url, mo, creds in d.mirrors]
+            # (id, url, mirrorOf, creds, origin, blocked) — user entries first: a user mirror that redefines the global
+            # blocker's id (the documented override) wins by order, and `blocked` is that file's flag, not the id's
+            mirrors = [(mid, url, mo, creds, origin, mid in d.blocked) for d, origin in datas for mid, url, mo, creds in d.mirrors]
             servers: dict[str, Optional[tuple[str, str]]] = {}
             for d, _o in reversed(datas):             # user entries win over global ones
                 servers.update(d.servers)
@@ -857,10 +877,18 @@ class RepositoryLookup:
             repos.append(("central", CENTRAL, None, "Maven Central"))
             settings_gave_url = False
             for rid, url, creds, origin in repos:
-                hit = next(((mid, murl, mo, mcreds, morigin) for mid, murl, mo, mcreds, morigin in mirrors
+                hit = next(((mid, murl, mo, mcreds, morigin, mblocked) for mid, murl, mo, mcreds, morigin, mblocked in mirrors
                             if mirror_covers(mo, rid, url)), None)
                 if hit is not None:
-                    mid, murl, mo, mcreds, morigin = hit
+                    mid, murl, mo, mcreds, morigin, mblocked = hit
+                    if is_blocking_mirror(murl, mblocked):
+                        # 2026-11-05 (회사 PC): Maven 3.8.1+ 의 전역 settings 가 기본으로 넣는 `maven-default-http-blocker`
+                        # (mirrorOf external:http:*, url http://0.0.0.0/) 가 사내 Nexus 의 http 주소를 덮었다 — Maven 과 똑같이 그
+                        # 저장소는 쓸 수 없다. 0.0.0.0 을 묻는 대신(WinError 10049) 왜 빠졌는지 적는다
+                        notes.append(f"{rid} ({url}) is blocked by Maven's HTTP blocker (mirror '{mid}', mirrorOf {mo}, {morigin}): "
+                                     "Maven 3.8.1+ refuses plain-http external repositories — use an https URL, override the "
+                                     "mirror in the user settings.xml, or set build.repository_url (asked first, never mirrored)")
+                        continue
                     settings_gave_url = True
                     out.append((murl, mcreds, f"settings mirror '{mid or '?'}' (mirrorOf {mo}) covering {rid} — {morigin}"))
                 elif rid == "central" and offline:
@@ -874,7 +902,7 @@ class RepositoryLookup:
                 u = _normalize_url(str(configured))
                 # credentials: the <server> of the mirror / repository with the same URL, else build.repository_server_id
                 creds = next((c for cu, c, _o in out if cu == u and c), None) or next(
-                    (mc for _i, mu, _mo, mc, _mo2 in mirrors if mu == u and mc), None)
+                    (mc for _i, mu, _mo, mc, _mo2, _b in mirrors if mu == u and mc), None)
                 sid = getattr(build, "repository_server_id", None)
                 if creds is None and sid:
                     creds = servers.get(str(sid))

@@ -3959,6 +3959,23 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   `pom <repositories>: not included (no --project given; a run reads the project's poms)` — a probe run from the sbmig checkout
   does not see the project poms' `<repositories>` that a run does, which is the usual reason "the run saw Nexus, the probe does not".
 
+* **Maven's HTTP blocker (the company PC's actual cause, read from the probe the user typed back).** `settings read:` listed the
+  user settings AND `C:\apache-maven-3.9.16\conf\settings.xml`; the repository list was `1. http://0.0.0.0/ [settings mirror
+  'maven-default-http-blocker' (mirrorOf external:http:*) covering xxx-internal-releases — global settings]`, `2. Maven Central`.
+  The company Nexus is the user settings' active-profile repository over plain **http**; Maven 3.8.1+ ships the blocker mirror in
+  the global settings, and sbmig applied it as Maven does — asking `http://0.0.0.0/` (WinError 10049) instead of the Nexus; the
+  404s came from Central. **Why it "worked before":** until v2.1z-e (2026-11-02) sbmig never read the global settings, so the
+  blocker was invisible and the http Nexus was asked directly; the user changed nothing. Now (`is_blocking_mirror`: `<blocked>true`
+  or host `0.0.0.0`; `SettingsData.blocked`) a repository covered by a blocking mirror is **not asked** and `url_notes` says
+  `<id> (<url>) is blocked by Maven's HTTP blocker (mirror '<id>', mirrorOf external:http:*, global settings): Maven 3.8.1+
+  refuses plain-http external repositories — use an https URL, override the mirror in the user settings.xml, or set
+  build.repository_url (asked first, never mirrored)`; the probe prints it as `note:`. A user settings mirror that redefines the
+  blocker (same id / mirrorOf, the real URL, `<blocked>false</blocked>`) wins by order, as in Maven. The explicit
+  `build.repository_url` bypasses mirrors on purpose (the operator's decision) — the user set it the same day.
+  **Deployment consequence:** a Job pod starts with an empty `~/.m2`; if the company Nexus is http, Maven 3.9 in the image blocks
+  it too and every in-house artifact fails with `Blocked mirror for repositories` — the ConfigMap's settings.xml must override
+  `maven-default-http-blocker` (or the Nexus must be https). `config/settings.nexus.example.xml` and `deploy/README.md` say so.
+
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but
 not read:` / the `[origin]` of every URL. If the Nexus is still absent, the lookup set is wrong for every library: set

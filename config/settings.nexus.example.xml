@@ -20,6 +20,12 @@
     "external:*" 는 file:// 과 localhost 저장소는 건드리지 않으므로, 프로젝트 안에 로컬 저장소를 둔
     프로젝트도 계속 동작한다. 또 Maven 3.8 이상이 pom 에 선언된 http:// 저장소를 막는 기본 차단
     ("Blocked mirror for repositories")도 이 미러가 대신한다.
+
+  미러 없이 사내 Nexus 를 http:// 주소의 <repository> 로만 적어 두면(사용자 settings 의 프로필이든 pom 이든)
+    Maven 3.8 이상의 conf/settings.xml 에 기본으로 들어 있는 maven-default-http-blocker 미러(mirrorOf external:http:*,
+    url http://0.0.0.0/)가 그 저장소를 덮어 Maven 도 sbmig 의 조회도 거기서 받지 못한다. 이관 PC 에서는 ~/.m2 캐시 덕에
+    티가 안 나다가 캐시가 없는 곳(새 PC, Job 파드)에서 "Blocked mirror for repositories" 로 드러난다. 이 파일처럼 미러를
+    두거나 Nexus 를 https 로 적는다. sbmig 는 막힌 저장소를 묻지 않고 "is blocked by Maven's HTTP blocker" 로 알린다.
 -->
 <settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
