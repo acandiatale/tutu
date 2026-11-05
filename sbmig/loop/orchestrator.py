@@ -65,6 +65,8 @@ log = logging.getLogger("sbmig.loop")
 _MISSING_RECIPE_RE = re.compile(r"(?i)(recipe(?:s|\(s\))? (?:were )?not found|could not find recipe|no recipe(?:s)? (?:found|named)|"
                                 r"unknown recipe|recipe\s+\S+\s+(?:does not exist|not found))")
 _PARENT_UNRESOLVABLE_RE = re.compile(r"(?i)non-resolvable parent|parent pom|failed to read artifact descriptor")
+_BUILD_EXT_IN_TEXT_RE = re.compile(r"Unresolveable build extension: Plugin (?P<g>[\w.\-]+):(?P<a>[\w.\-]+):"
+                                   r"(?:(?:jar|maven-plugin|pom|bundle):)?(?P<v>[\w.\-]+) or one of its dependencies could not be resolved")
 # preflight (round 10): `mvn -v` detail → Java major; Maven that cannot start because of JAVA_HOME (not "install Maven")
 _JAVA_VERSION_RE = re.compile(r"(?i)java version:?\s*\"?(?P<v>[0-9][0-9._+-]*)")
 _JAVA_RUNTIME_RE = re.compile(r"(?i)runtime:\s*(?P<home>[^,;]+)")
@@ -1560,7 +1562,22 @@ class Orchestrator:
 
         OpenRewrite failed because the configured in-house parent does not resolve → abort like the build loop."""
         keys = self.cfg.artifacts.parent_keys()                # root parent + boot_parent / comp_parent (round 9b)
-        if self.loop is None or not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
+        if self.loop is None:
+            return
+        # 2026-11-05: 사내 부모가 선언한 빌드 확장을 Maven 이 못 받아 OpenRewrite 가 모델 단계에서 죽었다 → 같은 중단(LLM 없음)
+        m_ext = _BUILD_EXT_IN_TEXT_RE.search(err)
+        if m_ext:
+            chain = self.loop._chain_extensions()          # noqa: SLF001 - same package
+            key = f"{m_ext.group('g')}:{m_ext.group('a')}"
+            if key in chain:
+                gav = GAV.parse(f"{key}:{m_ext.group('v')}")
+                e = BuildError(kind=ErrorKind.POM_INVALID, message=err.splitlines()[0][:500], raw=err[:2000], artifact=gav,
+                               module=step.target)
+                br = BuildResult(ok=False, goal="rewrite", command=[], exit_code=1, duration_s=0.0, log_path="", errors=[e])
+                self.loop._parent_abort(pr, step.phase, br, 0)   # noqa: SLF001 - same package
+                self._merge_blocked(pr, [it for it in self.blocked.items() if it.reason.value == "parent_not_found"])
+                return
+        if not _PARENT_UNRESOLVABLE_RE.search(err) or not any(k in err for k in keys):
             return
         key = next(k for k in keys if k in err)
         spec = next((s for s in self.cfg.artifacts.parent_specs() if key in (s.key, *s.aliases)),

@@ -1513,24 +1513,67 @@ class BuildFixLoop:
         keys = set(self.cfg.artifacts.parent_keys())           # root parent + boot_parent / comp_parent (round 9b)
         errs = [e for e in build.errors if e.kind == ErrorKind.PARENT_RESOLUTION
                 and e.artifact is not None and e.artifact.key in keys]
-        if not errs:
+        # 2026-11-05 (회사 PC): 사내 부모(base-parent 4.0.0)가 <build><extensions> 에 선언한 wagon-webdav 를 Maven 이 못 받는다 —
+        # 상속된 확장은 프로젝트에서 뺄 수 없고 어떤 goal 도 돌지 않으니 부모 해석 실패와 같은 종류: LLM 을 부르지 않고 중단한다
+        ext_errs = self._inherited_extension_errors(build) if not errs else []
+        if not errs and not ext_errs:
             return False
         from sbmig.triage.blocked import BlockedCandidate, repositories_in
-        c = self.triager.cluster(errs, self.profile)[0]
-        coords = errs[0].artifact.coordinates
-        cand = BlockedCandidate(reason=BlockReason.PARENT_NOT_FOUND, errors=errs,
-                                repositories=repositories_in("\n".join(f"{e.message}\n{e.raw}" for e in errs)),
-                                evidence=[errs[0].message[:300]])
-        self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — configured parent {coords} "
-                                                          "is not resolvable; run aborted")
-        self.aborted = (f"the configured in-house parent {coords} is not resolvable (settings: "
-                        f"{self.cfg.build.settings_file or 'default'}) — fix the repository/settings or "
-                        "artifacts.parent / boot_parent / comp_parent and rerun")
+        target = errs or ext_errs
+        c = self.triager.cluster(target, self.profile)[0]
+        coords = target[0].artifact.coordinates
+        cand = BlockedCandidate(reason=BlockReason.PARENT_NOT_FOUND, errors=target,
+                                repositories=repositories_in("\n".join(f"{e.message}\n{e.raw}" for e in target)),
+                                evidence=[target[0].message[:300]])
+        if errs:
+            self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — configured parent {coords} "
+                                                              "is not resolvable; run aborted")
+            self.aborted = (f"the configured in-house parent {coords} is not resolvable (settings: "
+                            f"{self.cfg.build.settings_file or 'default'}) — fix the repository/settings or "
+                            "artifacts.parent / boot_parent / comp_parent and rerun")
+        else:
+            declared = self._extension_declarer(coords)
+            self._register_blocked(phase, iteration, c, cand, f"blocked: parent_not_found — build extension {coords} "
+                                                              f"inherited from the company parent {declared} cannot be "
+                                                              "downloaded; run aborted (nothing in the project can fix it)")
+            self.aborted = (f"the company parent {declared} declares the build extension {coords}, which Maven cannot "
+                            f"download from the repository (settings: {self.cfg.build.settings_file or 'default'}) — every "
+                            "Maven call fails before any goal; make Nexus serve its pom, jar, parent poms and dependencies "
+                            "(or drop the extension from the parent: a deploy transport is not needed for packaging) and rerun")
         self._flag("aborted:parent-not-found")
         self._followup(f"run aborted: {self.aborted}")
         pr.notes.append(f"build {iteration}: {self.aborted}")
         self.ws.journal({"event": "abort", "phase": phase.value, "iteration": iteration, "reason": self.aborted})
         return True
+
+    def _chain_extensions(self) -> dict[str, str]:
+        """사내 부모 체인이 선언한 빌드 확장: {g:a: g:a:v}, 선언한 pom 은 ``_extension_declarer``. 못 읽으면 {}."""
+        try:
+            from sbmig.build import parent_chain
+            facts = parent_chain.load_parent_chain_facts(self.cfg)
+            out: dict[str, str] = {}
+            for coord in getattr(facts, "build_extensions", []) or []:
+                parts = coord.split(":")
+                if len(parts) >= 2:
+                    out[f"{parts[0]}:{parts[1]}"] = coord
+            self._chain_extension_sources = dict(getattr(facts, "build_extension_sources", {}) or {})
+            return out
+        except Exception as e:  # noqa: BLE001 - no chain facts: no abort on this ground
+            log.debug("parent chain extensions unavailable: %s: %s", type(e).__name__, e)
+            return {}
+
+    def _extension_declarer(self, coords: str) -> str:
+        srcs = getattr(self, "_chain_extension_sources", {}) or {}
+        return srcs.get(coords) or next((v for k, v in srcs.items() if k.rsplit(":", 1)[0] == coords.rsplit(":", 1)[0]), "?")
+
+    def _inherited_extension_errors(self, build: BuildResult) -> list[BuildError]:
+        """이 빌드의 `Unresolveable build extension` 오류 중 좌표가 사내 부모 체인의 확장과 같은 것(g:a 기준)."""
+        cands = [e for e in build.errors if e.kind == ErrorKind.POM_INVALID and e.artifact is not None
+                 and "build extension" in (e.message or "").lower()]
+        if not cands:
+            return []
+        chain = self._chain_extensions()
+        return [e for e in cands if e.artifact.key in chain] if chain else []
 
     def skips_for(self, target: Optional[str]) -> tuple[bool, bool]:
         """``target`` 빌드에 적용할 대체 결과(test-compile 건너뜀, 테스트 실행 건너뜀). 한 MSA 서비스의

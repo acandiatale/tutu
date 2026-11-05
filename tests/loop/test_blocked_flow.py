@@ -517,6 +517,60 @@ def test_parent_failure_inside_rewrite_aborts(cfg, ws):
     assert report.blocked[0].artifact.coordinates == f"{parent.key}:{parent.version}"
 
 
+WAGON_EXT = "org.apache.maven.wagon:wagon-webdav:1.0-beta-2"
+EXT_MSG = (f"Unresolveable build extension: Plugin {WAGON_EXT.replace(':1.0', ':jar:1.0')} or one of its dependencies could not be "
+           f"resolved: Failed to read artifact descriptor for {WAGON_EXT.replace(':1.0', ':jar:1.0')}")
+
+
+def _chain_with_wagon(monkeypatch):
+    from sbmig.build import parent_chain
+    facts = parent_chain.ParentChainFacts(roots=["com.company:base-parent:4.0.0"], build_extensions=[WAGON_EXT],
+                                          build_extension_sources={WAGON_EXT: "com.company:base-parent:4.0.0"})
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", lambda cfg: facts)
+
+
+def test_build_extension_inherited_from_the_company_parent_aborts_without_an_llm_call(cfg, ws, monkeypatch):
+    """2026-11-05 (company PC): base-parent 4.0.0 declares wagon-webdav as a build extension; when Maven cannot download it nothing
+    builds and no script can change a parent pom in Nexus — the run aborts like an unresolvable parent, the LLM is never asked."""
+    _chain_with_wagon(monkeypatch)
+    err = BuildError(kind=ErrorKind.POM_INVALID, file="pom.xml", message=EXT_MSG, raw=EXT_MSG,
+                     artifact=GAV(group_id="org.apache.maven.wagon", artifact_id="wagon-webdav", version="1.0-beta-2"))
+    build = FakeBuildRunner(ws, fn=lambda w, c: bad_build(err))
+    fixer = FakeFixer(script_fn=lambda *a, **k: pytest.fail("the LLM must not be asked for an inherited extension"))
+    report = make_orch(cfg, ws, build=build, fixer=fixer).run()
+    assert "aborted:parent-not-found" in report.flags and run_exit_code(report) == 3 and len(build.calls) == 1
+    [item] = report.blocked
+    assert item.reason == BlockReason.PARENT_NOT_FOUND and item.artifact.coordinates == WAGON_EXT
+    assert any("com.company:base-parent:4.0.0 declares the build extension " + WAGON_EXT in f and "drop the extension" in f
+               for f in report.manual_followups)
+
+
+def test_a_project_declared_extension_is_not_an_abort(cfg, ws, monkeypatch):
+    # the same error for an extension the chain does NOT declare: the loop handles it (the note tells the LLM to remove it)
+    from sbmig.build import parent_chain
+    monkeypatch.setattr(parent_chain, "load_parent_chain_facts", lambda cfg: parent_chain.ParentChainFacts())
+    err = BuildError(kind=ErrorKind.POM_INVALID, file="pom.xml", message=EXT_MSG, raw=EXT_MSG,
+                     artifact=GAV(group_id="org.apache.maven.wagon", artifact_id="wagon-webdav", version="1.0-beta-2"))
+    build = FakeBuildRunner(ws, fn=lambda w, c: bad_build(err) if len(w.read("pom.xml")) > 0 and not (w.root / "fixed").exists() else ok_build())
+    asked = []
+
+    def fix(w, c, ctx):
+        asked.append(c.errors[0].artifact.key)
+        (w.root / "fixed").write_text("x")
+        return write_script({"pom.xml": w.read("pom.xml") + "\n"}, analysis="removed the extension")
+    report = make_orch(cfg, ws, build=build, fixer=FakeFixer(script_fn=fix)).run()
+    assert "aborted:parent-not-found" not in report.flags and asked == ["org.apache.maven.wagon:wagon-webdav"]
+
+
+def test_extension_failure_inside_rewrite_aborts(cfg, ws, monkeypatch):
+    _chain_with_wagon(monkeypatch)
+    rw = FakeRewriteRunner(ws, ok=False, error="[ERROR] " + EXT_MSG + " @ ")
+    report = make_orch(cfg, ws, rewrite=rw, build=FakeBuildRunner(ws, fn=lambda w, c: ok_build())).run()
+    assert "aborted:parent-not-found" in report.flags and run_exit_code(report) == 3
+    assert [p.phase for p in report.phases] == [Phase.TRANSFORM]
+    assert report.blocked[0].artifact.coordinates == WAGON_EXT
+
+
 def test_mvn_missing_aborts(cfg, ws, monkeypatch):
     import sbmig.build as b
     monkeypatch.setattr(b, "maven_available", lambda *a, **k: False)
