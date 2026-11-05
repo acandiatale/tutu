@@ -450,6 +450,13 @@ class LLMFixer:
             # v2.1z-p: the case thread — an augment continues the gateway session of the base attempt with the delta only
             continuing = (self._thread_on() and mode == "augment" and base is not None
                           and bool(getattr(base, "session_id", None)))
+            # v2.1z-x (user, 2026-11-05): a gateway session cannot change its model — when this ask goes to another model
+            # (the escalation model from the case's third ask / after a stall, or back), the full prompt opens a NEW session
+            if continuing and (getattr(base, "session_model", "") or "") != (model or ""):
+                log.info("case thread for %s: the model changes (%s → %s) and a gateway session keeps its model — the full "
+                         "prompt opens a new session", cluster.id, base.session_model or "(gateway default)",
+                         model or "(gateway default)")
+                continuing = False
             if continuing:
                 full_chars = sum(len(m.content) for m in messages)
                 messages = self.build_thread_turn(packed, base)
@@ -545,6 +552,7 @@ class LLMFixer:
                 prompt_hash=messages_hash(messages),
                 llm_usage=usage,
                 session_id=getattr(last, "session_id", None) if last else None,   # v2.1z-o
+                session_model=(model or "") if last else "",                      # v2.1z-x: the model the session runs on
                 requested_files=requested,
                 raw_response=last.content if last else "",
                 error=error,

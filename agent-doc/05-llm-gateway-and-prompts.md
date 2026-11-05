@@ -79,6 +79,9 @@ token_url=… app_token_env=… escalation_model=…` ③ `request payload: …`
 - 켜면 한 케이스의 보강 요청들이 게이트웨이 세션 하나를 이어간다: 첫 요청은 전체 프롬프트(→ 세션 생성), 보강은 `LLMFixer.build_thread_turn` 이 만든
   **변화분만**(기준 스크립트의 결과, 지금 오류, 그 소스 발췌, pom, 버전 사실) user 메시지 하나로 보낸다. system 프롬프트·규칙·힌트·노트·기준 코드는 세션이 기억한다고 보고 뺀다.
   다른 케이스나 새로 작성(new)은 새 세션.
+- **열린 세션은 모델을 바꾸지 못한다**(게이트웨이 팀 확인). 사다리가 상위 모델(`llm.escalation_model`: 케이스의 세 번째 요청부터, 또는 정체 뒤)로 넘어가는 요청과
+  기본 모델로 돌아오는 요청은 세션을 잇지 않고 전체 프롬프트로 새 세션을 연다(`case thread for … : the model changes (… → …)` INFO). 세션의 모델은
+  `ScriptProposal.session_model` → `FixAttempt.llm_session_model` → `ScriptBase.session_model` 로 전해지고, 같은 모델일 때만 잇는다. 상위 모델이 설정에 없으면 같은 모델이라 세션을 잇는다.
 - 이어 보낸 턴이 4xx 로 거절되면 `llm.thread_fallback_full`(true)에 따라 새 세션에 전체 프롬프트를 다시 보낸다(`thread continuation for … rejected (HTTP …)` 경고).
 - 측정 로그: `thread turn (session <id>): sent N chars in K message(s) → prompt_tokens=T` — 세션 이력이 다시 과금되는지 보려는 줄. 문맥 / 피드백 라운드도 세션이 있으면 새 user 메시지 하나만 보낸다.
 - 세션이 있는 게이트웨이(agent 모드)에서만 뜻이 있다. 재생 픽스처는 끈 채로(상태 없이) 돈다.

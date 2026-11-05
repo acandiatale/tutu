@@ -3881,3 +3881,24 @@ comment in `deploy/` is Korean (the company's reviewers do not want English comm
   runs with the default, `configs=` (empty) means default.yml only, a given list wins (the page sends the list only when 고급 설정 changed it).
   `deploy/k8s/40-deployment.yaml` sets `SBMIG_WEB_CONFIGS=company.yml`.
 
+## v2.1z-x — a gateway session keeps its model: the case thread opens a new session when the model changes (2026-11-05)
+
+**Fact (user, 2026-11-05).** An open agent-gateway session cannot change its model: `params.role` is fixed when the session is
+created; a different model needs a new session.
+
+**Why it matters.** The fix ladder asks the escalation model (`llm.escalation_model`, role `escalation_fixer`) from a case's third
+LLM ask on and after a stall (`loop.stall_limit`), and goes back to `llm.model` when the stall ends. With `llm.case_thread: true`
+the augment continued the base attempt's session regardless — a continued session would have kept the model it was opened with
+(the escalation silently not happening) or been rejected (4xx → the full-prompt fallback, one wasted call per rung).
+
+**Rule.** The model a session runs on travels beside its id: `ScriptProposal.session_model` (the `model` sent with the call; `""` =
+the gateway default) → `FixAttempt.llm_session_model` → `ScriptBase.session_model`. `LLMFixer.propose_script` continues the base
+session only when this ask's model (`_model(ctx)`) equals `base.session_model`; otherwise it logs
+`case thread for <case>: the model changes (<a> → <b>) and a gateway session keeps its model — the full prompt opens a new session`
+and sends the full augment prompt without a session id. The next augment on the same model continues the new session. An
+escalation request without `llm.escalation_model` configured runs on the same model and keeps the session. Context / feedback
+rounds inside one ask never change the model, so they are unaffected. Thread off: nothing changes.
+
+**Cost shape with the thread on.** A case's ladder is now at most two or three sessions (base model → escalation model → back),
+each opened with one full prompt; the deltas go on inside each. Tests `tests/fix/test_fix_thread.py` (model change → new session
++ full prompt, same escalation model → continued, no escalation model → same session, back to the base model → new session).

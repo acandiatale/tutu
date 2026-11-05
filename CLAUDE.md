@@ -268,7 +268,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   remembers the system prompt and earlier turns → `llm.case_thread: true` makes a case's augments continue the base attempt's
   session with the delta only (`LLMFixer.build_thread_turn`), context / feedback rounds send one message in the session, a
   rejected continuation falls back to the full prompt; every turn logs `sent chars → prompt_tokens` (billing is undocumented —
-  measure it). Default off; the replay fixtures run stateless as before.
+  measure it). Default off; the replay fixtures run stateless as before. **v2.1z-x (2026-11-05):** an open session cannot
+  change its model (user) → the model a session runs on travels with its id (`ScriptProposal.session_model` →
+  `FixAttempt.llm_session_model` → `ScriptBase.session_model`) and an augment continues the base session only on the same
+  model; the escalation rung (third ask / stall) and the way back open a new session with the full prompt.
 - Logs: every `sbmig run` writes `<run dir>/sbmig.log` (DEBUG), fleets `fleet/sbmig.log`, any command takes
   `--log-file`; LLM request/response records go to `llm.record_dir`. The user shares these files to report problems;
   on the company's Windows PC without copy-paste, ask for specific lines (`SBMIG-RESULT`, `preflight: FAIL`, `cause=`).

@@ -271,6 +271,8 @@ class CompanyClient:
         params: {role: <고른 모델 이름 — build_error_fixer / escalation_fixer>}, trace_id (호출마다 새 uuid), max_tokens,
         temperature, **agent_extra}`; session_id 는 기본으로 보내지 않는다(게이트웨이가 세션을 만들어 응답에 넣어 준다 —
         ``LLMResponse.session_id``) — 이어가려는 호출만 ``metadata["session_id"]`` 로 되돌려 보낸다; thread_id 는 폐기됨(보내지 않음).
+        열린 세션은 모델(params.role)을 바꾸지 못한다(사용자 확인 2026-11-05) — 모델이 바뀌는 호출은 session_id 없이 새 세션을 연다
+        (판단은 ``LLMFixer.propose_script``).
 
         legacy: the company contract verbatim; agent: the GPT agent gateway's shape (asset id as `model`, the chosen
         model name as `params.role`, per-call ids, the generation parameters it accepts; no `thread_id` yet)."""

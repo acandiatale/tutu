@@ -938,6 +938,8 @@ class ScriptBase(BaseModel):
     introduced_errors: list[str] = Field(default_factory=list)   # "file:line message" new in the files it touched
     history: list[str] = Field(default_factory=list)             # earlier versions: "v1: 2 ok / 1 failed — <failure>"
     session_id: Optional[str] = None               # v2.1z-p: the gateway session the base attempt's answer came from (continued by the augment)
+    session_model: str = ""                        # v2.1z-x: the model that session was opened with ("" = the gateway default) — a session
+                                                   # cannot change its model, so a different model opens a new session instead
 
 
 # LLM 직접 수정(Edit)의 종류: replace(문자열 치환) / write / create / delete / move / pom(pom 편집기 호출).
@@ -1011,6 +1013,7 @@ class ScriptProposal(BaseModel):
     prompt_hash: str = ""
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
     session_id: Optional[str] = None               # v2.1z-o: the gateway session the answer came from (continuation)
+    session_model: str = ""                        # v2.1z-x: the model that session was opened with (the `model` sent; "" = default)
     requested_files: list[str] = Field(default_factory=list)
     raw_response: str = ""
     error: str = ""                                # why there is no script (unparsable answer, transport, refusal)
@@ -1349,6 +1352,7 @@ class FixAttempt(BaseModel):
     prompt_hash: str = ""
     llm_usage: LLMUsage = Field(default_factory=LLMUsage)
     llm_session_id: Optional[str] = None           # v2.1z-o: the gateway session of this attempt's answer (the next rung may continue it)
+    llm_session_model: str = ""                    # v2.1z-x: the model that session runs on — the next rung continues it only with the same model
     errors_before: int = 0
     errors_after: Optional[int] = None
     cluster_signatures: list[str] = Field(default_factory=list)

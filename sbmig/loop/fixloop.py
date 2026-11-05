@@ -2544,7 +2544,8 @@ class BuildFixLoop:
                                   remaining_errors=[fmt_error(e) for e in c.errors][:30],
                                   introduced_errors=[fmt_error(e) for e in a.introduced_errors][:20],
                                   history=self._script_history(step.case_id, c),
-                                  session_id=getattr(a, "llm_session_id", None))   # v2.1z-p: the case thread
+                                  session_id=getattr(a, "llm_session_id", None),   # v2.1z-p: the case thread
+                                  session_model=getattr(a, "llm_session_model", "") or "")   # v2.1z-x: its model
             return ScriptBase(case_id=step.case_id, version=int(getattr(step.meta, "version", 0) or 0),
                               code=step.code, remaining_errors=[fmt_error(e) for e in c.errors][:30],
                               history=self._script_history(step.case_id, c))
@@ -2702,6 +2703,7 @@ class BuildFixLoop:
         self._mark(f"LLM answered for {c.id}")
         att.model, att.prompt_hash, att.llm_usage = proposal.model, proposal.prompt_hash, proposal.llm_usage
         att.llm_session_id = getattr(proposal, "session_id", None)      # v2.1z-o: the gateway session (continuation)
+        att.llm_session_model = getattr(proposal, "session_model", "") or ""   # v2.1z-x: the model that session runs on
         att.analysis = proposal.analysis
         if is_llm_transport_error(proposal.analysis):
             self._fail(att, proposal.analysis.strip()[:300])
