@@ -4071,7 +4071,9 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   Not built yet: three parallel Jobs (queue width + KB locking), the external intake API (`/api/migrations`, remediation's
   contract: zip + project_name / name + Idempotency-Key — the implementation brief for the in-house LLM is
   `docs/v2/API-MIGRATIONS-KO.md`, 2026-11-06: raw zip body + query, `<out>/_idempotency/` files, one state-translation dict,
-  `RunManager.start_file(extra=)` + `migration.json` as the only run-manager change), cluster measurements.
+  `RunManager.start_file(extra=)` + `migration.json` as the only run-manager change), cluster measurements. The Main-pod ↔ Job-pod
+  run-state contract (who writes which file, ids, exit codes, stop, what a restart recovers, the one FIFO slot, how a second Job kind
+  reuses the dispatcher) is `docs/v2/JOB-RUN-STATE-CONTRACT-KO.md` (2026-11-06, for the remediation team's integration plan).
 
 **Operator note.** When `sbmig repo-probe` does not list the company Nexus, first run it as a run would:
 `sbmig repo-probe g:a:v -c config/<company>.yml --project <run dir>/project` and read `settings read:` / `settings looked for but
