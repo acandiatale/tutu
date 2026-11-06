@@ -669,10 +669,14 @@ class Orchestrator:
             for c in checks:
                 if c.readable:
                     if c.markers_removed:
-                        log.info("접수: 사내 부모 체인의 빌드 확장 %s — 저장소에 있음, 로컬 저장소의 묵은 실패 표식 %d개 제거 (%s): "
-                                 "Maven 이 하루 동안 다시 받지 않던 것", c.coordinates, len(c.markers_removed), ", ".join(c.markers_removed))
+                        log.info("접수: 사내 부모 체인의 빌드 확장 %s — 저장소에 있음 (%s), 로컬 저장소의 묵은 실패 표식 %d개 제거 (%s): "
+                                 "Maven 이 하루 동안 다시 받지 않던 것", c.coordinates, c.where, len(c.markers_removed), ", ".join(c.markers_removed))
                     else:
                         log.info("접수: 사내 부모 체인의 빌드 확장 %s — 읽힘 (%s)", c.coordinates, c.where)
+                    if c.where.startswith("repository http"):
+                        # 2026-11-06 회사 실행: sbmig 는 build.repository_url(그룹)에서 읽었는데 Maven 은 settings 미러의 다른 저장소에 물어 404
+                        log.info("접수: Maven 은 이 URL 이 아니라 settings.xml 의 미러 URL 로 받는다 — 둘이 다른 저장소면 sbmig 는 읽어도 Maven 은 "
+                                 "'Unresolveable build extension' 으로 실패할 수 있다(그 미러가 가리키는 저장소에 %s 가 있어야 한다)", c.coordinates)
                     continue
                 log.warning("접수: 사내 부모 체인의 빌드 확장 %s (선언: %s) 을 sbmig 가 로컬 저장소에서도 저장소에서도 읽지 못했다 (%s) — Maven 도 "
                             "못 받으면 모든 Maven 호출이 'Unresolveable build extension' 으로 실패한다. Nexus 에 그 pom·jar(와 부모 pom)을 "

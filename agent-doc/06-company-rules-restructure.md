@@ -140,7 +140,7 @@ pre-9c 레이아웃(`module/boot-jar` + `module/comp-jar`, front 없음, Boot �
 | 항목 | 내용 |
 |---|---|
 | 무엇 | 아직 `javax.*` 를 드러내는 의존성(`external_javax_api` 케이스)의 jakarta 빌드를 sbmig 가 직접 찾아 LLM 전에 교체(사전 시도 `sbmig-jakarta`) |
-| 찾는 곳 | 저장소 집합: `build.repository_url`(있으면 먼저) → settings 의 모든 미러(Maven 의 `mirrorOf` 규칙) → 활성 프로필 저장소 → 미러가 덮지 않는 pom 의 `<repositories>` → 전역 settings → Central(온라인일 때) |
+| 찾는 곳 | 저장소 집합: `build.repository_url`(있으면 먼저) → settings 의 모든 미러(Maven 의 `mirrorOf` 규칙) → 활성 프로필 저장소(`<pluginRepositories>` 포함 — 빌드 확장은 Maven 이 여기서 받는다) → 미러가 덮지 않는 pom 의 `<repositories>` → 전역 settings → Central(온라인일 때) |
 | 순서 | 표의 `jakarta_key` / classifier(`knowledge/libraries/jakarta_libraries.yml`, 회사 표 `libraries.company_file`) → 같은 좌표의 상위 릴리스(`2.0.5-jakarta`) → Nexus 3 검색 API(`libraries.nexus_search`) → 형제 이름 탐침(`-jakarta`, 숫자 올리기; `libraries.max_jakarta_probes`) |
 | 확인 | 버전 한정어·classifier 가 jakarta → pom 이 jakarta.* 선언 → 상한 있는 jar 스캔(`libraries.max_jar_scans`, `libraries.max_jar_scan_mb`). 확인 안 된 후보는 보고만, 적용하지 않음 |
 | 메이저 | 상위 메이저로의 교체는 이것만이 정당한 메이저 변경이고 운영자 확인 ⚠ 로 남는다 |

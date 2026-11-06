@@ -3204,7 +3204,8 @@ reason)]`, computed once per run, logged at INFO (`repository lookup: <url> (<re
    credentials from the `<server>` of the mirror / repository with the same URL, else `build.repository_server_id`
    (new, optional); when it differs from the settings-derived primary URL one WARNING names both: `Maven itself
    resolves from <settings url> (settings); sbmig's lookups use build.repository_url <url>`;
-2. the settings-derived set by Maven's rules: the repositories (the settings' active-profile `<repositories>`, the
+2. the settings-derived set by Maven's rules: the repositories (the settings' active-profile `<repositories>` and, since
+   2026-11-06, `<pluginRepositories>` — Maven resolves plugins and build extensions there; a URL already listed is asked once, the
    project poms' `<repositories>` incl. the in-repo parent chain with `${…}` interpolated, Maven Central as
    `central`) each replaced by the FIRST `<mirror>` whose `mirrorOf` covers it (`*`, `external:*`, `external:http:*`,
    explicit ids, `!id` exclusions — `mirror_covers`); with `mirrorOf *` a pom repository is never contacted, exactly
@@ -4022,7 +4023,10 @@ company PC keeps Maven off PATH (`build.mvn` = the full path of `mvn.cmd`) and t
   Intake pre-check `sbmig/build/parent_extensions.py` (`check_parent_build_extensions`, called in `_step_intake` before the
   effective-pom capture): `ParentChainFacts.build_extensions` / `build_extension_sources` (new; `PomSummary.extensions` from
   `<build><extensions>`, `${…}` resolved with the declaring pom's properties) → per extension `PomReader.pom` (local repository,
-  then the repository set); readable from the repository but stale `*.lastUpdated` markers in `<local repo>/<g>/<a>/<v>/` → the
+  then the repository set; since 2026-11-06 `ExtensionCheck.where` names the URL that served it — `repository <url>` from
+  `RepositoryLookup.pom_source`, the lookup remembering the source of every `pom_text` — and the intake log adds that Maven asks
+  its settings mirror, not that URL: the company run read the pom from `build.repository_url` while Maven got a 404 from the
+  mirror's repository and then PKIX from Central); readable from the repository but stale `*.lastUpdated` markers in `<local repo>/<g>/<a>/<v>/` → the
   markers are deleted (that folder only, `build.retry_negative_cache` governs it) so the first Maven call succeeds without waiting
   for a `-U` retry; readable nowhere → WARNING, flag `parent-extension-unresolvable`, one Handover line (`the company parent
   <g:a:v> declares the build extension <g:a:v>, which neither the local repository nor the repository set serves …`); journal

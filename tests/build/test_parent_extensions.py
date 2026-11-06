@@ -50,7 +50,7 @@ def test_stale_markers_of_a_repository_served_extension_are_removed(tmp_path: Pa
     (d / "resolver-status.properties").write_text("x", encoding="utf-8")
     monkeypatch.setattr(repo_versions, "RepositoryLookup", _Serving)
     checks = check_parent_build_extensions(cfg, _facts())
-    assert len(checks) == 1 and checks[0].readable and checks[0].where == "repository"
+    assert len(checks) == 1 and checks[0].readable and checks[0].where == "repository"      # _Serving names no URL
     assert checks[0].markers_removed == ["wagon-webdav-1.0-beta-2.jar.lastUpdated", "wagon-webdav-1.0-beta-2.pom.lastUpdated"]
     assert sorted(p.name for p in d.iterdir()) == ["resolver-status.properties"]           # only *.lastUpdated goes
     assert "stale markers removed" in checks[0].line() and checks[0].declared_by == "com.company:base-parent:4.0.0"
@@ -153,3 +153,21 @@ def test_no_extensions_or_unresolvable_coordinates(tmp_path: Path, cfg):
     checks = check_parent_build_extensions(cfg, facts)
     assert checks == [ExtensionCheck("${wagon.group}:wagon-webdav:1.0-beta-2", "g:p:1", False,
                                      "coordinates not resolvable from the chain's properties")]
+
+
+class _ServingFrom(_Serving):
+    """A lookup that also says which repository URL served the pom (RepositoryLookup.pom_source, 2026-11-06)."""
+    URL = "http://nexus.example.com:8081/repository/maven-public/"
+
+    def pom_source(self, g, a, v):
+        return self.URL if (g, a, v) == ("org.apache.maven.wagon", "wagon-webdav", "1.0-beta-2") else None
+
+
+def test_where_names_the_repository_url_that_served_the_extension(tmp_path: Path, cfg, monkeypatch):
+    """Company run 2026-11-06: the pre-check said "읽힘 (repository)" while Maven got a 404 from ANOTHER Nexus repository (its
+    settings mirror). The line now names the URL sbmig read from, so the operator can compare it with the mirror's."""
+    cfg.build.local_repo = str(tmp_path / "m2")
+    monkeypatch.setattr(repo_versions, "RepositoryLookup", _ServingFrom)
+    checks = check_parent_build_extensions(cfg, _facts())
+    assert checks[0].readable and checks[0].where == f"repository {_ServingFrom.URL}"
+    assert _ServingFrom.URL in checks[0].line()

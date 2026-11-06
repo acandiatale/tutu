@@ -218,6 +218,8 @@ def test_metadata_404_falls_back_to_the_local_repository(tmp_path):
     assert rv.error == "" and rv.source == str(d)
     assert [(c.version, c.jakarta) for c in rv.same_major] == [("2.5.1", None), ("2.6.0", True)]
     assert look.pom_text("opensymphony", "sitemesh", "2.6.0") is not None
+    assert look.pom_source("opensymphony", "sitemesh", "2.6.0") == "local repository"      # 2026-11-06: where it came from
+    assert look.pom_source("org.nothing", "here", "1.0") is None
     # nothing anywhere → the reason
     rv = look.candidates("org.nothing:here", "1.0")
     assert rv.same_major == [] and rv.higher == []
@@ -629,3 +631,68 @@ def test_maven_default_http_blocker_is_not_asked_and_is_explained(tmp_path, monk
     assert is_blocking_mirror("http://0.0.0.0/") and is_blocking_mirror("https://ok/", True)
     assert not is_blocking_mirror("http://nexus.company.local/") and not is_blocking_mirror("")
 
+
+
+def test_pom_source_names_the_repository_url_that_served_the_pom(tmp_path):
+    """2026-11-06 (company run): sbmig read the parent's build extension while Maven got a 404 from another Nexus repository (its
+    settings mirror) — the lookup now remembers which URL served each pom so the intake line can name it."""
+    look = RepositoryLookup(_cfg(tmp_path, repository_url=REPO), fetch=FakeFetch(REPO_FILES))
+    assert look.pom_source("opensymphony", "sitemesh", "2.6.0") is None            # not read yet
+    assert look.pom_text("opensymphony", "sitemesh", "2.6.0") is not None
+    assert look.pom_source("opensymphony", "sitemesh", "2.6.0") == REPO
+    assert look.pom_text("opensymphony", "sitemesh", "9.9.9") is None
+    assert look.pom_source("opensymphony", "sitemesh", "9.9.9") is None
+
+
+USER_WITH_PLUGIN_REPO = """<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+  <profiles><profile><id>company</id>
+    <repositories>
+      <repository><id>xxx-releases</id><url>http://nexus.company.local/repository/xxx-releases</url></repository>
+    </repositories>
+    <pluginRepositories>
+      <pluginRepository><id>dmz-maven-proxy</id><url>http://nexus.company.local/repository/dmz-maven-proxy</url></pluginRepository>
+      <pluginRepository><id>same-again</id><url>http://nexus.company.local/repository/xxx-releases/</url></pluginRepository>
+    </pluginRepositories>
+  </profile></profiles>
+  <activeProfiles><activeProfile>company</activeProfile></activeProfiles>
+</settings>
+"""
+
+
+def test_settings_plugin_repositories_join_the_set_and_a_catch_all_http_mirror_funnels_them(tmp_path, monkeypatch):
+    """Company PC 2026-11-06: the parent's build extension (wagon-webdav) lived only in the settings' <pluginRepositories> (a Nexus
+    proxy of Central, `dmz-maven-proxy`) — Maven resolves plugins and build extensions THERE, and sbmig's set had not read that
+    block. Also the trap the user fell into: a user mirror overriding `maven-default-http-blocker` (mirrorOf external:http:*) sends
+    EVERY http repository — the plugin proxy included — to the one URL it names, so Maven asked xxx-releases for the pom (404)."""
+    user = tmp_path / "user-settings.xml"
+    user.write_text(USER_WITH_PLUGIN_REPO, encoding="utf-8")
+    look = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    rows = look.repository_urls()
+    urls = [u for u, _c, _o in rows]
+    assert urls == ["http://nexus.company.local/repository/xxx-releases/", "http://nexus.company.local/repository/dmz-maven-proxy/",
+                    CENTRAL]                                                  # the repeated URL is asked once
+    origins = {u: o for u, _c, o in rows}
+    assert "active-profile pluginRepository 'dmz-maven-proxy'" in origins["http://nexus.company.local/repository/dmz-maven-proxy/"]
+    assert "active-profile repository 'xxx-releases'" in origins["http://nexus.company.local/repository/xxx-releases/"]
+    # the global blocker (Maven 3.8.1+) covers both http repositories: neither is asked, both are explained
+    home = tmp_path / "maven-home"
+    (home / "conf").mkdir(parents=True)
+    (home / "conf" / "settings.xml").write_text(GLOBAL_WITH_BLOCKER, encoding="utf-8")
+    monkeypatch.setenv("MAVEN_HOME", str(home))
+    from sbmig.build import repo_versions as rv_mod
+    monkeypatch.setattr(rv_mod, "global_settings_file", _real_global_settings_file)
+    blocked = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in blocked.repository_urls()] == [CENTRAL]
+    assert any(n.startswith("dmz-maven-proxy (") and "HTTP blocker" in n for n in blocked.url_notes)
+    # the user's override mirror (same mirrorOf, the releases URL) funnels BOTH http repositories into that one URL — the plugin
+    # proxy is never asked, which is exactly why Maven got a 404 for wagon-webdav on the company PC
+    user.write_text(USER_WITH_PLUGIN_REPO.replace("<activeProfiles>",
+                    "<mirrors><mirror><id>maven-default-http-blocker</id><mirrorOf>external:http:*</mirrorOf>"
+                    "<url>http://nexus.company.local/repository/xxx-releases</url><blocked>false</blocked></mirror></mirrors>"
+                    "<activeProfiles>"), encoding="utf-8")
+    funneled = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    rows = funneled.repository_urls()
+    assert [u for u, _c, _o in rows] == ["http://nexus.company.local/repository/xxx-releases/", CENTRAL]
+    assert not any("dmz-maven-proxy/" in u for u, _c, _o in rows)            # the proxy itself is never asked
+    assert rows[0][2].startswith("settings mirror 'maven-default-http-blocker' (mirrorOf external:http:*)")

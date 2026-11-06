@@ -369,7 +369,7 @@ build:
   # 어떤 버전이 존재하는지 sbmig 가 직접 읽어 볼 저장소 URL(maven-metadata.xml / pom). LLM 에게 "실제로 있는
   # 릴리스" 를 알려 주고, jakarta 빌드를 찾고, jar 좌표를 sha1 로 찾을 때 쓴다. sbmig 는 버전을 추측하지 않는다.
   # 지정하면 이 URL 을 가장 먼저 묻고(settings 미러와 다르면 경고로 둘 다 알려 준다), 그다음 settings 에서
-  # 나온 저장소들(mirrorOf 규칙에 따른 모든 미러, 활성 프로필 저장소, 미러가 덮지 않는 pom 저장소,
+  # 나온 저장소들(mirrorOf 규칙에 따른 모든 미러, 활성 프로필 저장소(pluginRepositories 포함), 미러가 덮지 않는 pom 저장소,
   # 전역 settings, 온라인이면 Central)을 차례로 묻는다. null = settings 에서 나온 저장소들만 쓴다.
   # Nexus 그룹 URL 을 settings.xml 미러와 여기 둘 다 적어 두는 것을 권한다.
   repository_url: null

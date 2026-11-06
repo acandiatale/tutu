@@ -235,18 +235,22 @@ class SettingsData:
         self.path = path
         self.mirrors: list[tuple[str, str, str, Optional[tuple[str, str]]]] = []   # (id, url, mirrorOf, creds)
         self.repos: list[tuple[str, str, Optional[tuple[str, str]]]] = []           # (id, url, creds) of active profiles
+        # 2026-11-06: 활성 프로필의 <pluginRepositories> — Maven 은 플러그인과 **빌드 확장**(<build><extensions>)을 여기서 받는다.
+        # 회사 PC 의 wagon-webdav 는 settings 의 pluginRepository(dmz 프록시)에만 있었고 sbmig 의 집합에는 빠져 있었다
+        self.plugin_repos: list[tuple[str, str, Optional[tuple[str, str]]]] = []    # (id, url, creds) of active profiles
         self.servers: dict[str, Optional[tuple[str, str]]] = {}
         self.blocked: set[str] = set()                # 2026-11-05: mirror ids with <blocked>true</blocked> (Maven 3.8.1+)
 
 
 def read_settings(path: Optional[str]) -> Optional[SettingsData]:
     """v2.1z-e: settings.xml 을 Maven 의미대로 읽는다 — 모든 ``<mirror>`` (파일 순서, mirrorOf 패턴 그대로), ``<servers>`` 의
-    자격증명(``${env.X}`` 해석, 암호화면 None), 활성 프로필(``<activeProfiles>`` + ``activeByDefault``)의 ``<repositories>``.
+    자격증명(``${env.X}`` 해석, 암호화면 None), 활성 프로필(``<activeProfiles>`` + ``activeByDefault``)의 ``<repositories>`` 와
+    ``<pluginRepositories>``(플러그인·빌드 확장은 Maven 이 여기서 받는다, 2026-11-06).
     왜: 회사 PC 의 조회가 settings 의 미러가 아닌 다른 URL 을 쓰고 있었다 — 사용자: "무조건 여기서 받고 안 받아지면 사고".
     없거나 못 읽는 파일 → None.
 
     A settings.xml by Maven's rules: every `<mirror>` in file order with its `mirrorOf` pattern, the `<servers>`
-    credentials, the active profiles' `<repositories>`. None when the file is missing / unreadable."""
+    credentials, the active profiles' `<repositories>` and `<pluginRepositories>`. None when the file is missing / unreadable."""
     try:
         if not path:
             return None
@@ -283,6 +287,11 @@ def read_settings(path: Optional[str]) -> Optional[SettingsData]:
                 rid = _txt(r, "id")
                 if url:
                     data.repos.append((rid or "?", _normalize_url(url), data.servers.get(rid)))
+            for r in _kids(_kid(prof, "pluginRepositories"), "pluginRepository"):
+                url = _resolve_env(_txt(r, "url"))
+                rid = _txt(r, "id")
+                if url:
+                    data.plugin_repos.append((rid or "?", _normalize_url(url), data.servers.get(rid)))
         return data
     except Exception as e:  # noqa: BLE001 - a broken settings file: nothing from it
         # 2026-11-05: a settings.xml that does not parse silently dropped the Nexus mirror from every lookup — say so
@@ -642,6 +651,8 @@ class RepositoryLookup:
         self._last_error = ""
         self._versions: dict[tuple[str, str], tuple[list[str], str, str]] = {}   # → (versions, source, error)
         self._poms: dict[tuple[str, str, str], Optional[str]] = {}
+        # 어느 저장소 URL 이 그 pom 을 줬는지(로컬 저장소면 'local repository'): 운영자가 Maven 의 settings 미러와 비교할 수 있게
+        self._pom_sources: dict[tuple[str, str, str], str] = {}
         self._failures = 0                                        # timeouts / connection failures in a row (primary URL)
         self._dead = ""                                           # set → the primary repository is not asked again
         # v2.1z-e: the repository SET — (url, credentials, origin) in query order — and what each URL answered per g:a
@@ -817,7 +828,7 @@ class RepositoryLookup:
 
     def repository_urls(self) -> list[tuple[str, Optional[tuple[str, str]], str]]:
         """v2.1z-e: 묻는 저장소 전부, Maven 의 의미대로 (url, 자격증명, 이유) 순서로 — settings 가 기준이다(사용자: "무조건 여기서 받고
-        안 받아지면 사고"). 저장소 목록 = settings 활성 프로필의 repositories → 프로젝트 pom(과 부모 체인)의 repositories →
+        안 받아지면 사고"). 저장소 목록 = settings 활성 프로필의 repositories(와 pluginRepositories) → 프로젝트 pom(과 부모 체인)의 repositories →
         Maven Central(``central``); 각각 그 id/URL 을 덮는 **첫 미러**(``mirrorOf`` 규칙)가 있으면 미러 URL 로 바뀐다(``mirrorOf *``
         면 pom 의 저장소는 절대 직접 묻지 않는다). offline 이면 미러 없는 Central 은 뺀다. 명시적 ``build.repository_url`` 은 운영자의
         결정이라 **맨 앞**(회사 PC 가 그렇게 설정돼 있다) — 자격증명은 같은 URL 의 미러 / 저장소의 ``<server>``, 아니면
@@ -829,7 +840,7 @@ class RepositoryLookup:
         Every repository the lookup asks, by Maven's rules, as (url, credentials, reason): an explicit
         `build.repository_url` FIRST (the operator's decision; credentials from the `<server>` of the mirror / repository
         with the same URL, else `build.repository_server_id`; one WARNING naming both when it differs from the
-        settings-derived primary), then the repositories (settings active-profile repositories, the project poms'
+        settings-derived primary), then the repositories (settings active-profile repositories and pluginRepositories, the project poms'
         repositories, Maven Central) each replaced by the FIRST settings mirror whose `mirrorOf` covers it; unmirrored
         Central dropped when offline. Settings files: `build.settings_file`, else `~/.m2/settings.xml`, plus the global
         `$MAVEN_HOME/conf/settings.xml`. Computed once; INFO lines say which URL is used and why."""
@@ -872,6 +883,11 @@ class RepositoryLookup:
             for d, origin in datas:
                 for rid, url, creds in d.repos:
                     repos.append((rid, url, creds, f"{origin} active-profile repository '{rid}'"))
+                # Maven asks the plugin repositories for plugins AND build extensions (2026-11-06: the company's wagon-webdav lived
+                # only in a settings pluginRepository); a URL already listed as a <repository> is asked once
+                for rid, url, creds in getattr(d, "plugin_repos", []):
+                    if not any(u == url for _r, u, _c, _o in repos):
+                        repos.append((rid, url, creds, f"{origin} active-profile pluginRepository '{rid}'"))
             for rid, url, origin in pom_repositories(self.project_root):
                 repos.append((rid, url, servers.get(rid), origin))
             repos.append(("central", CENTRAL, None, "Maven Central"))
@@ -1067,17 +1083,26 @@ class RepositoryLookup:
             for url, creds, _o in self._ordered_sources(group_id, artifact_id):
                 text = self._fetch(f"{url}{rel}", creds, url)
                 if text:
+                    self._pom_sources[key] = url
                     break
             if not text:
                 d = self._local_dir(group_id, artifact_id)
                 f = d / version / f"{artifact_id}-{version}.pom" if d is not None else None
                 if f is not None and f.is_file():
                     text = f.read_text(encoding="utf-8", errors="replace")
+                    self._pom_sources[key] = "local repository"
         except Exception as e:  # noqa: BLE001
             log.debug("pom_text(%s:%s:%s): %s", group_id, artifact_id, version, e)
             text = None
         self._poms[key] = text or None
         return self._poms[key]
+
+    def pom_source(self, group_id: str, artifact_id: str, version: str) -> Optional[str]:
+        """``pom_text`` 가 그 pom 을 읽어 온 저장소 URL(로컬 저장소면 'local repository'), 아직 안 읽었거나 못 읽었으면 None.
+        2026-11-06 회사 실행: sbmig 는 읽었는데 Maven 은 404 — 둘이 다른 URL 을 물었는지 로그에서 바로 보이게.
+
+        The repository URL `pom_text` read that pom from (or 'local repository'); None when not read."""
+        return self._pom_sources.get((group_id, artifact_id, version))
 
     def candidates(self, key: str, current: Optional[str]) -> RepositoryVersions:
         """``key``(groupId:artifactId)와 현재 버전으로 RepositoryVersions 를 만든다: 현재보다 새로운 같은

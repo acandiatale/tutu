@@ -219,7 +219,10 @@ class PomReader:
             log.debug("pom facts: pom_text(%s:%s:%s): %s", g, a, v, e)
             text = None
         if text:
-            return text, "repository"
+            # 어느 URL 이 줬는지 같이: Maven 이 settings 미러로 묻는 URL 과 다르면 sbmig 는 읽고 Maven 은 404 일 수 있다(2026-11-06)
+            source = getattr(lookup, "pom_source", None)
+            src = source(g, a, v) if callable(source) else None
+            return text, f"repository {src}" if src else "repository"
         return None, "not in the local repository and not readable from the repository"
 
 
