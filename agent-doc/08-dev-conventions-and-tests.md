@@ -130,6 +130,8 @@ ruff check sbmig/loop/fixloop.py
 - **`script.max_declines_per_case`**(기본 1): LLM 이 편집도 스크립트도 없이 "프로젝트 밖의 문제" 라고 거절한 답의 허용 횟수다. 넘으면 케이스는
   BLOCKED `needs_owner`, 같은 파일의 형제 케이스는 추가 호출 없이 같이 차단된다. 이 값은 LLM 총 요청 상한(`script.max_llm_tries_per_case`,
   20)이나 보강 상한(`script.max_augments_per_case`, 15)과 별개다. 직접 편집으로 고치는 케이스는 `script.max_edit_tries_per_case`(4)가 따로 센다.
+  sbmig 가 아는 사실과 모순되는 거절(저장소에 jakarta 빌드가 있음, 동봉 jar 가 그 패키지를 제공함, 대체 노트 `replacement: true` 가 맞음)은
+  세지 않고 다시 묻는다.
   단, 동봉 jar 가 그 패키지를 제공하는데 좌표 부족을 이유로 거절하면 그 거절은 받아들이지 않는다.
 - **케이스 id = L2 서명의 해시**: `sbmig/build/signatures.py` / `sbmig/triage/cluster.py` 의 규칙을 바꾸면 저장된 케이스가 고아가 된다
   (`sbmig kb reindex` 는 L2 를 다시 만들지 않는다). 서명 규칙을 바꿀 때는 픽스처 `replay` 의 `match` 와 `expected.json` 의 케이스 id 도 바뀐다.

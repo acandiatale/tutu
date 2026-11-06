@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
@@ -646,3 +647,40 @@ def classify_blocked(cluster: ErrorCluster, profile: Optional[ProjectProfile], c
 def errors_text(errors: Iterable[BuildError]) -> str:
     """오류들의 전체 글을 줄바꿈으로 이은 것."""
     return "\n".join(_text(e) for e in errors)
+
+
+def imports_text(ws, errors: Iterable[BuildError], max_files: int = 12) -> str:
+    """오류 파일들의 ``import`` 줄(파일 ``max_files`` 개까지). EOL 라이브러리의 이름은 javac 메시지(javax / jakarta 타입 불일치)가 아니라
+    import 줄에 있으므로, 노트 키워드는 이 글에도 맞춰 본다(v2.1z-aa). 읽지 못하는 파일은 건너뛴다; 작업 공간이 없으면 "".
+
+    The `import` lines of the errors' files (≤ `max_files`): an EOL library's name lives there, not in the javac message."""
+    root = getattr(ws, "root", None)
+    if root is None:
+        return ""
+    out: list[str] = []
+    seen: set[str] = set()
+    for e in errors:
+        f = getattr(e, "file", None)
+        if not f or f in seen:
+            continue
+        seen.add(f)
+        if len(seen) > max_files:
+            break
+        path = Path(f)
+        path = path if path.is_absolute() else Path(root) / f
+        try:
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("import "):
+                    out.append(stripped)
+        except OSError:
+            continue
+    return "\n".join(out)
+
+
+def note_text(ws, errors: Iterable[BuildError]) -> str:
+    """노트 키워드를 맞춰 볼 본문 하나: 오류 글(``errors_text``) + 오류 파일들의 import 줄(``imports_text``).
+
+    The text a knowledge note's keywords are matched against: the errors' text plus the import lines of their files."""
+    errs = list(errors)
+    return errors_text(errs) + "\n" + imports_text(ws, errs)

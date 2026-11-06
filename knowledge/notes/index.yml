@@ -409,6 +409,7 @@ notes:
     - "DeviceResolverHandlerInterceptor|DeviceResolverRequestFilter|LiteDeviceResolver"
     - "SitePreference|DeviceWebArgumentResolver|DevicePlatform"
   cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
+  replacement: true
   phases: [spring]
   always: false
 - file: maven-build-extensions.md

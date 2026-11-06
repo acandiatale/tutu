@@ -21,7 +21,8 @@ from sbmig.loop import BuildFixLoop, LoopBudget
 from sbmig.loop.fixloop import JAKARTA_SEARCH_PREFIX, SBMIG_JAKARTA_SOURCE, UNMAPPED_PREFIX, VersionResolver
 from sbmig.triage import Triager
 
-from .fakes import FakeFixer, FakeBuildRunner, FakeKB, FakeScriptRunner, bad_build, journal_events, make_profile, ok_build
+from .fakes import (FakeFixer, FakeBuildRunner, FakeKB, FakeScriptRunner, bad_build, journal_events, make_profile, ok_build,
+                    write_edit)
 
 NS = 'xmlns="http://maven.apache.org/POM/4.0.0"'
 FOO = "src/main/java/com/x/ExportServlet.java"
@@ -324,3 +325,56 @@ def test_the_switch_off_keeps_the_v21d_path(cfg, ws_grid):
     assert any(e["event"] == "library_lookup" and e["key"] == GRID and e["jakarta_builds"] == [] for e in ev)
     hints = fixer.script_calls[0][1].library_hints
     assert not any(h.startswith("repository also has") or h.startswith("no jakarta build of") for h in hints)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# v2.1z-aa (company run 2026-11-06, spring-mobile): a replacement note — no library block, no accepted decline
+# ---------------------------------------------------------------------------------------------------------------------
+def test_a_decline_on_a_library_a_replacement_note_knows_is_rejected(cfg, tmp_path):
+    """The LLM wrote half of the Spring-Mobile replacement, then declined; sbmig accepted the decline, blocked the case
+    `external_javax_api` and its neighbours as "same cause". A `replacement: true` note that matches the case (here through the
+    servlet's import line — the javac message names only javax / jakarta types) means the fix is project code: the decline is
+    rejected and the LLM is asked again, and the triage never classifies the case as a library block."""
+    from sbmig.fix.context import NoteEntry
+    ws = _ws(tmp_path, pom(dep_version="1.0", group="com.x", artifact="other"))
+    lookup = VendorLookup(versions=("1.0.6",))                              # javax releases only: nothing to swap
+    fixer = FakeFixer(scripts=[declining("the grid library has no jakarta build; the owners decide"), declining()])
+    cfg.script.max_llm_tries_per_case = 2
+    loop = make_loop(cfg, ws, javax_build(), fixer, locator=FakeLocator(), lookup=lookup)
+    note = NoteEntry(file="grid.md", title="GridExporter is EOL — replace it with project code",
+                     keywords=["com\\.example\\.grid\\.GridExporter"], replacement=True)
+    loop._notes_index = [note]
+    loop.triager.attach_run(notes=[note])
+    pr = loop.run(Phase.VERIFY, "package", 4)
+    assert not pr.ok and len(fixer.script_calls) == 2                      # asked again, not blocked after the decline
+    first = pr.attempts[0]
+    assert first.outcome == "apply_failed"
+    assert any(n.startswith("decline rejected: the migration note 'GridExporter is EOL — replace it with project code' (grid.md) "
+                            "gives the replacement as project code") for n in first.notes)
+    assert not any(n.startswith("declined:") for n in first.notes)
+    ev = journal_events(ws)
+    assert [e["applied"] for e in ev if e["event"] == "decline_rejected"] == [False, False]
+    blocked = [e for e in ev if e["event"] == "blocked"]
+    assert blocked and all(e["reason"] == "repeated_failure" for e in blocked)   # the ladder's cap, never the library policy
+    assert not any(e["event"] == "same_cause_blocked" for e in ev)
+
+
+def test_a_rejected_decline_that_carries_edits_applies_them(cfg, tmp_path):
+    """A `<blocked>` answer that also carries edits used to be discarded ("its edits were not applied"). When the decline is
+    rejected (here by the repository fact: the jakarta build exists), the edits are applied as an ordinary answer."""
+    ws = _ws(tmp_path, pom(dep_version="1.0", group="com.x", artifact="other"))
+    fixing = ScriptProposal(code="", analysis="javax grid API.", model="fake",
+                            blocked_reason="the vendor grid library has no jakarta build; its owners must provide one",
+                            edits=[write_edit("pom.xml", pom(dep_version="2.0.5-jakarta"))],
+                            llm_usage=LLMUsage(model="fake", calls=1))
+    fixer = FakeFixer(scripts=[fixing])
+    loop = make_loop(cfg, ws, javax_build(), fixer, locator=FakeLocator(), lookup=VendorLookup())
+    pr = loop.run(Phase.VERIFY, "package", 4)
+    assert pr.ok and len(fixer.script_calls) == 1
+    att = pr.attempts[-1]
+    assert att.outcome == "build_ok" and att.edits_applied == 1 and att.source == "llm-edit"
+    assert any(n.startswith("decline rejected: the repository has") and n.endswith("the answer's edits / script are applied")
+               for n in att.notes)
+    assert not any(n.startswith("declined:") or n.startswith("the answer named a blocker") for n in att.notes)
+    dr = [e for e in journal_events(ws) if e["event"] == "decline_rejected"]
+    assert dr and dr[0]["applied"] is True

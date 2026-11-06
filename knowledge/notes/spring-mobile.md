@@ -8,6 +8,7 @@ keywords:
 cases: [spring_legacy, servlet_tomcat, spring_boot, msa]
 phases: [spring]
 always: false
+replacement: true
 ---
 # Spring Mobile (`org.springframework.mobile`) — replace, do not carry
 
@@ -65,3 +66,13 @@ names, so the call sites only change their `import` lines:
 
 **Do not**: keep `spring-mobile-device` at any version, add a `-jakarta` guess, edit the jar, or declare the
 device logic "out of scope" — the replacement above is small (≈150 lines) and the owners asked for a building project.
+
+Three more rules, from a company run (2026-11-06) that ended blocked:
+
+* **Never answer `<blocked>` for this library.** The fix is project code; sbmig rejects such a decline and asks again.
+* **Put the compat classes under the project's package, never under `org.springframework.mobile.*`.** Shadowing the library's
+  own package leaves every class you did not write coming from the old jar with its javax signatures (those are the errors that
+  remain), keeps the jar in the build, and hides the replacement from the owners.
+* **One answer does the whole job**: the compat files, *every* import rewrite (and the class names in XML / web.xml), and the
+  pom edit. An answer that leaves the errors as they are is scored `no_change` and rolled back — the next ask starts from the
+  as-is tree, so "files first, call sites next" never lands.

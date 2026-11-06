@@ -361,3 +361,25 @@ def test_x1_owner_ranking_prefers_the_javax_requiring_library_over_a_neutral_typ
     # a single non-neutral owner is unchanged; a lone neutral owner is still reported (nothing better to say)
     assert classify_blocked(_cluster_of(VENDOR_APPLIED), make_profile(), None, ws=proj).owner_classes == ["com.vendor.up.UpHandler"]
     assert classify_blocked(_cluster_of(LOGGER_APPLIED), make_profile(), None, ws=proj).owner_class == "org.slf4j.Logger"
+
+
+def test_a_replacement_note_lifts_the_library_block(cfg, profile):
+    """v2.1z-aa (company run 2026-11-06, spring-mobile): a library a `replacement: true` note knows how to replace with project
+    code is not blocked as external_javax_api by the policy — the edit-tries cap governs the case instead."""
+    from sbmig.fix.context import NoteEntry
+    cfg.loop.blocked_policy["external_javax_api"] = 0
+    note = NoteEntry(file="legacy-helper.md", title="LegacyRequestHelper is EOL — replace it", keywords=["LegacyRequestHelper"],
+                     replacement=True)
+    t = Triager(cfg)
+    t.attach_run(notes=[note])
+    c = cases(CTOR_JAVAX)
+    d = t.decide(c, None, ctx(), profile)
+    assert d.kind == DecisionKind.SCRIPT
+    assert ("looks like external_javax_api" in d.rationale and "but the migration note 'LegacyRequestHelper is EOL — replace it' "
+            "gives the replacement as project code — not blocked, script.max_edit_tries_per_case applies" in d.rationale)
+    assert t.blocked_candidate(c.id) is None
+    # the same keywords without the flag, or a replacement note that does not match, keep the policy
+    t2 = Triager(cfg)
+    t2.attach_run(notes=[NoteEntry(file="x.md", title="x", keywords=["LegacyRequestHelper"]),
+                         NoteEntry(file="y.md", title="y", keywords=["SomethingElse"], replacement=True)])
+    assert t2.decide(cases(CTOR_JAVAX), None, ctx(), profile).kind == DecisionKind.BLOCKED

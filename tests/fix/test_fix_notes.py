@@ -147,3 +147,11 @@ def test_ibatis2_note_hits_orm_ibatis_errors():
     assert by["ibatis2.md"].score("package org.springframework.orm.ibatis does not exist") > 0
     assert by["ibatis2.md"].score("cannot find symbol class SqlMapClientDaoSupport") > 0
     assert by["ibatis2.md"].score("package org.apache.ibatis.session does not exist") == 0   # MyBatis 3
+
+
+def test_replacement_flag_marks_the_notes_sbmig_can_fix_in_project_code():
+    """v2.1z-aa: `replacement: true` (front matter + index.yml) = sbmig knows the fix is project code — the triage never blocks
+    such a library and the loop never accepts a decline on it. Only spring-mobile has it today."""
+    by = {e.file: e for e in load_notes_index(NOTES)}
+    assert by["spring-mobile.md"].replacement is True
+    assert [f for f, e in sorted(by.items()) if e.replacement] == ["spring-mobile.md"]

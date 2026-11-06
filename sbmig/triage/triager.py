@@ -47,18 +47,21 @@ class Triager:
         return plan_iteration(clusters)
 
     # run-wide blocked state (ERROR-HANDLING §1/§3) -----------------------------
-    def attach_run(self, blocked_registry=None, ws=None, cases=None) -> None:
+    def attach_run(self, blocked_registry=None, ws=None, cases=None, notes=None) -> None:
         """실행 전체의 차단 목록(BlockedRegistry), 작업 공간(프로젝트 클래스 판별용), KB 케이스
-        저장소(``kb.cases``, v2.1)를 결정 엔진과 공유한다.
+        저장소(``kb.cases``, v2.1), 지식 노트 목록(``notes``: ``knowledge/notes`` 의 NoteEntry, v2.1z-aa — ``replacement: true`` 노트가
+        맞는 라이브러리는 차단하지 않는다)을 결정 엔진과 공유한다.
 
-        Share the run-wide BlockedRegistry, the workspace (project-class checks) and the KB's case store
-        (`kb.cases`, v2.1) with the decision engine."""
+        Share the run-wide BlockedRegistry, the workspace (project-class checks), the KB's case store
+        (`kb.cases`, v2.1) and the knowledge notes (v2.1z-aa) with the decision engine."""
         if blocked_registry is not None:
             self.engine.blocked_registry = blocked_registry
         if ws is not None:
             self.engine.ws = ws
         if cases is not None:
             self.engine.cases = cases
+        if notes is not None:
+            self.engine.notes = list(notes)
 
     def set_llm_unavailable(self, reason: Optional[str]) -> None:
         """LLM 이 연속 실패해 못 쓰게 됐음을 알린다. 그 뒤로 저장된 스크립트가 없는 케이스는

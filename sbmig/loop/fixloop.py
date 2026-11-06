@@ -999,6 +999,13 @@ class BuildFixLoop:
                 attach(blocked_registry=self.blocked, ws=ws, cases=self._cases if self._cases.active else None)
             except Exception as e:  # pragma: no cover - a foreign triager
                 log.warning("triager.attach_run failed: %s", e)
+        # v2.1z-aa: 지식 노트(knowledge/notes)를 트라이어저에도 준다 — `replacement: true` 노트가 맞는 라이브러리는 차단하지 않는다
+        self._notes_index: Optional[list[Any]] = None
+        if callable(attach):
+            try:
+                attach(notes=self._knowledge_notes())
+            except Exception as e:  # pragma: no cover - a foreign triager without the keyword
+                log.debug("triager.attach_run(notes=…) not accepted: %s", e)
 
     @property
     def cases(self) -> CaseScripts:
@@ -2308,21 +2315,29 @@ class BuildFixLoop:
         # v2.1y (E-M1): <blocked> 또는 분석만 있는 답 = 거절(프로젝트 밖의 일) — 같은 질문을 되풀이하지 않는다
         declined = self._declined_reason(ans, code, edits)
         if declined:
-            att.source = requested
-            self._begin_try(att, st)
             fact = self._decline_contradiction(c, declined)
+            carries = bool(code.strip() or edits)
             if fact:
                 # v2.1z-e: "jakarta 빌드가 없다" 는 거절은 sbmig 가 저장소에서 찾은 사실과 모순이면 받지 않는다 — 거절 횟수에
-                # 세지 않고 보통의 실패 시도로 기록해 다음 라운드에 그 사실과 함께 다시 묻는다
-                # a decline claiming "no jakarta build" is rejected when discovery found one: not a decline (no count),
-                # an ordinary failed try — the case is asked again with the fact
-                att.notes.append(f"decline rejected: {fact}")
-                log.info("LLM 의 거절을 받지 않음: %s — %s", _first_sentence(declined, 160), fact)
+                # 세지 않고 보통의 실패 시도로 기록해 다음 라운드에 그 사실과 함께 다시 묻는다. v2.1z-aa: 대체 방법을 아는 노트가
+                # 맞는 라이브러리의 거절도 같다; 거절을 받지 않았는데 답에 edits / script 가 들어 있으면 버리지 않고 보통 답처럼 적용한다
+                # a decline is rejected when a fact contradicts it (a jakarta build found, a bundled jar, a replacement note):
+                # not a decline (no count). Without edits / a script: an ordinary failed try, asked again with the fact;
+                # with them (v2.1z-aa): the answer is applied below like any other
+                att.notes.append(f"decline rejected: {fact}" + ("; the answer's edits / script are applied" if carries else ""))
+                log.info("LLM 의 거절을 받지 않음: %s — %s%s", _first_sentence(declined, 160), fact,
+                         "; 답에 든 edits / script 는 적용한다" if carries else "")
                 self.ws.journal({"event": "decline_rejected", "case": att.script_case_id or c.case_id or c.id,
-                                 "attempt": att.id, "reason": declined[:300], "fact": fact})
-                return self._fail(att, f"the answer declined ({_first_sentence(declined, 200)}) but {fact} — asked "
-                                       "again with the fact")
-            return self._decline(att, c, ans, declined, ignored=bool(code.strip() or edits))
+                                 "attempt": att.id, "reason": declined[:300], "fact": fact, "applied": carries})
+                if not carries:
+                    att.source = requested
+                    self._begin_try(att, st)
+                    return self._fail(att, f"the answer declined ({_first_sentence(declined, 200)}) but {fact} — asked "
+                                           "again with the fact")
+            else:
+                att.source = requested
+                self._begin_try(att, st)
+                return self._decline(att, c, ans, declined, ignored=carries)
         # 보강했다는 스크립트가 기준 버전과 똑같으면 다시 돌리지
         # 않는다(같은 결과가 나올 뿐) — edits 가 있으면 그것으로
         if code.strip() and base is not None and att.script_mode == "augment" \
@@ -3703,6 +3718,9 @@ class BuildFixLoop:
 
         The fact that contradicts a "no jakarta build" decline — a verified build discovery found for a library of the
         case — or ""."""
+        noted = self._note_contradiction(c)                  # v2.1z-aa: a replacement note knows the fix (project code)
+        if noted:
+            return noted
         bundled = self._bundled_contradiction(c, reason)     # v2.1z-i: the "missing" library is bundled
         if bundled:
             return bundled
@@ -3718,6 +3736,38 @@ class BuildFixLoop:
         except Exception as e:  # noqa: BLE001
             log.debug("decline contradiction for %s failed: %s: %s", c.id, type(e).__name__, e)
         return ""
+
+    def _knowledge_notes(self) -> list[Any]:
+        """``knowledge/notes`` 의 노트 목록(``sbmig.fix.context.load_notes_index``; 한 번만 읽고, 못 읽으면 빈 목록). 트라이어저에
+        같은 목록을 준다(``attach_run(notes=…)``); 테스트는 ``_notes_index`` 에 직접 넣는다."""
+        if self._notes_index is None:
+            try:
+                from sbmig.fix.context import load_notes_index
+                self._notes_index = load_notes_index(self.cfg.resolve_path("knowledge/notes"))
+            except Exception as e:  # noqa: BLE001 - notes are hints; a missing folder must not stop the loop
+                log.debug("notes index unavailable: %s: %s", type(e).__name__, e)
+                self._notes_index = []
+        return self._notes_index
+
+    def _note_contradiction(self, c: ErrorCluster) -> str:
+        """v2.1z-aa: 거절된 케이스의 오류 글·오류 파일의 import 줄에 ``replacement: true`` 노트가 맞으면 그 사실(노트 제목·파일), 아니면 "".
+        회사 실행(2026-11-06): spring-mobile 케이스에서 LLM 이 compat 클래스를 반만 만들고 두 번째 답에 거절했고, 루프는 그 거절을 받아
+        external_javax_api 로 차단한 뒤 이웃 케이스까지 같은 원인으로 묶었다 — 노트가 답을 아는 라이브러리의 거절은 받지 않는다.
+
+        The fact that contradicts a decline on a library a `replacement: true` note knows how to replace — or ""."""
+        try:
+            from sbmig.fix.context import replacement_notes
+            from sbmig.triage.blocked import note_text
+            case = getattr(getattr(self.profile, "case_type", None), "value", None)
+            hits = replacement_notes(self._knowledge_notes(), note_text(self.ws, c.errors), case=case, phase=None)
+        except Exception as e:  # noqa: BLE001 - a note problem must never stop the loop
+            log.debug("note contradiction for %s failed: %s: %s", c.id, type(e).__name__, e)
+            return ""
+        if not hits:
+            return ""
+        n = hits[0]
+        return (f"the migration note '{n.title}' ({n.file}) gives the replacement as project code — the fix is inside the "
+                f"project, not a blocker")
 
     def _bundled_contradiction(self, c: ErrorCluster, reason: str) -> str:
         """v2.1z-i: 좌표·라이브러리·jar 가 없다는 거절인데 케이스가 잃은 패키지를 동봉 jar 가 가지고 있으면 그 사실, 아니면 "".

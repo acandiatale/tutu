@@ -205,6 +205,10 @@ Then the final build again, the report (Handover first, "Structure review", fix 
   pre-try `sbmig-jakarta` swaps the declaration before any LLM call (a higher major is the one justified major change,
   ⚠ for the operator). `sbmig repo-probe g:a:v` shows the URLs asked and what each answered; `journal.jsonl` has
   `library_lookup` / `library_unmapped`. Unreadable remotes are said so (`remote repositories unreadable: …`).
+  **v2.1z-aa (2026-11-06, company run spring-mobile)**: a library whose `knowledge/notes` note carries `replacement: true` (sbmig knows the
+  fix is project code) is never blocked as `external_javax_api` / `external_api_incompatible`, and the LLM's decline on it is rejected and
+  re-asked; a rejected decline that still carries edits is applied, not discarded. The note is matched against the javac text plus the
+  import lines of the errors' files (`note_text`).
 - Ladder caps (v2.1z, 2026-11-02, "여유롭게 잡고 … 점차 줄여가는 방식"): ≤ 20 LLM asks per case and run
   (`script.max_llm_tries_per_case`), of which ≤ 15 augments (`script.max_augments_per_case`); to be lowered once the
   company runs show what a case needs. A case the LLM declines (legacy-ibatis) blocks after `script.max_declines_per_case`

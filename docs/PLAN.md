@@ -713,3 +713,18 @@ once per build (`refine_build`) before the error list, the clusters, the scoring
 folders, 455 KB entries, 450 run reports, zero id inconsistencies. javac messages stay English on Korean Windows (OpenJDK localises
 javac only for ja / zh); OS-text differences (Windows `\` paths masked from one backslash, posix from two) only matter when a KB from
 macOS is merged into the company's.
+
+## Status — 2026-11-06, v2.1z-aa (replacement notes: no library block, no accepted decline — company run spring-mobile)
+
+User (2026-11-06): "spring device 쪽 파일 만들고 유틸 클래스까지만 만들고 호출부에 적용을 안 한 뒤, 다시 에러가 나니까 이미 blocked 라고 skip" —
+the log: two LLM answers, the second a decline (`declined 1/1`), then `blocked (external_javax_api) … the LLM declined` and
+`blocked (needs_owner): same cause as …` for the neighbours; the compat classes had been written under
+`org.springframework.mobile.device` itself. Contract + "As built": `docs/INTERFACES.md` "v2.1z-aa".
+
+| Increment | Deliverable | Where | Status |
+|---|---|---|---|
+| Replacement notes | `NoteEntry.replacement` (`replacement: true` in front matter / `index.yml`), `replacement_notes()`, `note_text()` = errors + the files' import lines | `sbmig/fix/context.py`, `sbmig/triage/blocked.py`, `knowledge/notes/spring-mobile.md` + `index.yml` | done |
+| No library block for a noted library | X1 / X2 candidate + matching note → `loop.blocked_policy` not applied (rationale names the note); `Triager.attach_run(notes=…)`, `BuildFixLoop._knowledge_notes()` | `sbmig/triage/decide.py`, `sbmig/triage/triager.py`, `sbmig/loop/fixloop.py` | done |
+| Decline rejected, edits applied | `_note_contradiction` first in `_decline_contradiction`; a rejected decline that carries edits / a script is applied as an ordinary answer (`decline_rejected.applied`) | `sbmig/loop/fixloop.py` | done |
+| The note's three new rules | never `<blocked>`; compat classes under the project's package, never `org.springframework.mobile.*`; one answer = files + imports + pom | `knowledge/notes/spring-mobile.md`, `config/default.yml` comments | done |
+| Tests | `tests/triage/test_blocked.py`, `tests/loop/test_v21z_jakarta.py` (2), `tests/fix/test_fix_notes.py`; loop + triage + fix + docs + kb + report 1,266 passed | — | done |

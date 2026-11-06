@@ -4098,3 +4098,35 @@ built is a `note:` / WARNING `repository set incomplete: building it failed midw
 company yml; `config/settings.nexus.example.xml` says the same. A bundled jar whose coordinates sbmig could not read (no
 `pom.properties`) is declared with placeholder coordinates `<project group>:<jar stem>:<file version>`; Nexus answers 404 for those
 even when it holds the jar under its real coordinates — the real ones go into `<kb>/jar_names.yml`.
+
+## v2.1z-aa — a library sbmig knows how to replace is neither a library block nor an accepted decline (2026-11-06)
+
+Company run (spring-mobile, 2026-11-06): the LLM's first answer wrote half of the replacement (compat classes under the library's own
+package `org.springframework.mobile.device`, no import rewrite, the jar still in the pom); the second answer declined (`<blocked>`).
+The loop accepted the decline (`script.max_declines_per_case` 1) → `_block_needs_owner` → `classify_blocked` → BLOCKED
+`external_javax_api` ("a dependency API requires javax.servlet.http.HttpServletRequest …; the LLM declined: …"), and the same-cause rule
+blocked the neighbouring cases without an LLM call ("blocked (needs_owner): same cause as …"). sbmig had the fix in
+`knowledge/notes/spring-mobile.md` all along. Contract:
+
+- **`NoteEntry.replacement: bool`** (front matter and `index.yml` key `replacement: true`; today only `spring-mobile.md`): "sbmig knows
+  the fix — it is project code". `sbmig.fix.context.replacement_notes(notes, text, case, phase)` = the matching flagged notes;
+  `sbmig.triage.blocked.note_text(ws, errors)` = the text they are matched against: the javac messages **plus the import lines of the
+  errors' files** (`imports_text`, ≤ 12 files), because a javax/jakarta type mismatch never names the library — its import line does.
+- **Triage** (`DecisionEngine.notes`, attached by the loop through `Triager.attach_run(notes=…)`; `BuildFixLoop._knowledge_notes()`
+  loads `knowledge/notes` once): an `external_javax_api` / `external_api_incompatible` candidate whose case a replacement note matches
+  (errors, import lines, owner classes) is **not** blocked by `loop.blocked_policy`; the SCRIPT rationale reads
+  `… looks like external_javax_api (…) but the migration note '<title>' gives the replacement as project code — not blocked,
+  script.max_edit_tries_per_case applies`. The edit-tries cap (4) and the LLM cap (20) still end the case (`repeated_failure`).
+- **Loop**: `_decline_contradiction` asks `_note_contradiction` first — a decline on such a case is rejected like the v2.1z-e
+  "no jakarta build" decline (attempt note `decline rejected: the migration note '<title>' (<file>) gives the replacement as project code
+  — the fix is inside the project, not a blocker`; journal `decline_rejected` now carries `applied`). **A rejected decline that carries
+  edits / a script is applied as an ordinary answer** (before: "the answer named a blocker (<blocked>): its edits / script were not
+  applied"); one without is `apply_failed` and asked again with the fact. Accepted declines are unchanged.
+- **The note** gained three rules for the LLM: never `<blocked>` for this library; compat classes under the project's package, never
+  under `org.springframework.mobile.*` (shadowing the library package leaves every class the LLM did not write coming from the old jar
+  with javax signatures — the residual errors of the company run); one answer = compat files + every import rewrite + the pom edit
+  (a `no_change` answer is rolled back).
+- Not changed: for a library without such a note, `loop.blocked_policy` still counts edits-only LLM answers as "LLM script attempts".
+- Tests: `tests/triage/test_blocked.py::test_a_replacement_note_lifts_the_library_block`,
+  `tests/loop/test_v21z_jakarta.py::test_a_decline_on_a_library_a_replacement_note_knows_is_rejected` /
+  `::test_a_rejected_decline_that_carries_edits_applies_them`, `tests/fix/test_fix_notes.py::test_replacement_flag_…`.

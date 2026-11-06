@@ -193,7 +193,7 @@ verify_guide …), `metadata`(run_id, 케이스 등). 키·헤더는 들어가�
 
 | 사유 | 뜻 | LLM 허용 |
 |---|---|---|
-| `external_javax_api` | 외부 라이브러리 API 가 아직 javax 타입 | 2 (그 전에 `sbmig-jakarta` 가 저장소의 jakarta 빌드로 교체를 시도) |
+| `external_javax_api` | 외부 라이브러리 API 가 아직 javax 타입 | 2 (그 전에 `sbmig-jakarta` 가 저장소의 jakarta 빌드로 교체를 시도; 대체 노트 `replacement: true` 가 맞으면 차단 없음) |
 | `external_api_incompatible` | 의존성 API 변경(javax 아님) | 2 |
 | `artifact_not_found` | 의존성·플러그인이 어느 저장소에도 없음 | 2 |
 | `plugin_incompatible` | JDK 21 에서 깨지는 빌드 플러그인 | 2 |

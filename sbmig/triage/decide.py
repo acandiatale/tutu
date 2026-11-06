@@ -33,7 +33,7 @@ from typing import Any, Callable, Iterable, Optional
 from sbmig.core.config import Config
 from sbmig.core.models import BlockReason, DecisionKind, ErrorCluster, FixAttempt, KBMatch, ProjectProfile, TriageDecision
 
-from .blocked import BlockedCandidate, classify_blocked
+from .blocked import BlockedCandidate, classify_blocked, note_text
 from .cluster import FILE_KINDS, RESOLUTION_KINDS, cluster_label
 from .scripts import FAILED_OUTCOMES, LLM_MODES, ScriptStep, plan_script_step, script_attempts
 
@@ -155,10 +155,32 @@ class DecisionEngine:
         self.ws = None                          # Workspace: project-class checks for the blocked rules
         self.llm_unavailable: Optional[str] = None
         self.cases: Any = None                  # v2.1: the KB's case store (`kb.cases` / CaseScripts), None = no KB
+        # v2.1z-aa: knowledge/notes entries (sbmig.fix.context.NoteEntry) — a `replacement: true` note that matches a library
+        # block candidate lifts the block: sbmig knows the fix is project code (attached by the loop, Triager.attach_run)
+        self.notes: list[Any] = []
         # cluster id → why it was blocked (read by the loop to build the BlockedItem)
         self.blocked_info: dict[str, BlockedCandidate] = {}
         # cluster id → the ladder step of its last decision (read by the loop: what to run / ask for, the KB line)
         self.script_steps: dict[str, ScriptStep] = {}
+
+    def _replacement_note(self, cluster: ErrorCluster, cand: BlockedCandidate, profile: ProjectProfile) -> Any:
+        """v2.1z-aa: 이 라이브러리 차단 후보(X1 / X2)의 오류 글·오류 파일의 import 줄·소유 클래스에 키워드가 맞는 ``replacement: true``
+        노트의 첫 것, 없으면 None — 그 노트가 "프로젝트 코드로 대체하는 법" 을 적어 두었다는 뜻이라 차단 정책을 적용하지 않는다.
+
+        The first `replacement: true` note (`sbmig.fix.context.NoteEntry`) whose keywords match the candidate's errors, their files'
+        import lines or its owner classes; None when there is none."""
+        if not self.notes:
+            return None
+        try:
+            from sbmig.fix.context import replacement_notes
+            owners = [o for o in [cand.owner_class, *(cand.owner_classes or [])] if o]
+            text = note_text(self.ws, cand.errors or cluster.errors) + "\n" + "\n".join(owners)
+            case = getattr(getattr(profile, "case_type", None), "value", None)
+            hits = replacement_notes(self.notes, text, case=case, phase=None)
+        except Exception as e:  # noqa: BLE001 - a note problem must never stop the triage
+            log.debug("replacement-note check for %s failed: %s: %s", cluster.id, type(e).__name__, e)
+            return None
+        return hits[0] if hits else None
 
     def _canon(self) -> Optional[Callable[[Optional[str]], str]]:
         """재구성이 옮긴 파일 경로를 지금 경로로 바꾸는 함수(차단 목록이 가진 것), 없으면 None."""
@@ -266,6 +288,17 @@ class DecisionEngine:
         except Exception:  # a classifier bug must never stop the loop
             # 분류기 버그로 루프가 멈추면 안 된다 — 판정 실패는 "차단 아님" 으로 보고 LLM 에게 기회를 준다
             cand = None
+        # v2.1z-aa (회사 실행 2026-11-06, spring-mobile): 라이브러리 차단 후보라도 "프로젝트 코드로 대체하는 법" 을 적은 노트가 맞으면
+        # 차단 정책을 적용하지 않는다 — sbmig 가 고치는 법을 아는 것을 "프로젝트 안에서 못 고침" 으로 분류하지 않는다. 그 케이스의 끝은
+        # 직접 수정 한도(script.max_edit_tries_per_case)와 LLM 한도가 정한다
+        # a library-block candidate whose case a `replacement: true` note matches is not blocked by the policy
+        if cand is not None and cand.reason in (BlockReason.EXTERNAL_JAVAX_API, BlockReason.EXTERNAL_API_INCOMPATIBLE):
+            note = self._replacement_note(cluster, cand, profile)
+            if note is not None:
+                policy_note = (f"; looks like {cand.reason.value} ({cand.detail()}) but the migration note "
+                               f"'{note.title}' gives the replacement as project code — not blocked, "
+                               f"script.max_edit_tries_per_case applies")
+                cand = None
         if cand is not None:
             allowed = int(self.cfg.loop.blocked_policy.get(cand.reason.value, 0))
             if len(llm_failed) >= allowed:

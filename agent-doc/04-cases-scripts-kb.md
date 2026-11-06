@@ -66,7 +66,10 @@
 - **거절**(`<blocked>` 또는 편집·스크립트가 모두 없는 답): `script.max_declines_per_case`(1)번 뒤 차단. 트리아지가 이미 구체 사유
   (`external_javax_api` / `external_api_incompatible` / `artifact_not_found` / `plugin_incompatible`)를 정했으면 그 사유를, 아니면 `needs_owner`.
   같은 원인의 형제 케이스는 LLM 호출 없이 함께 차단(`same_cause_blocked`). 단 거절이 sbmig 가 찾은 저장소 사실(예: jakarta 빌드가 있음)이나
-  동봉 jar 가 그 패키지를 제공한다는 사실과 모순이면 **거절을 받지 않는다**(`decline_rejected`, 거절로 세지 않고 사실과 함께 다시 묻는다).
+  동봉 jar 가 그 패키지를 제공한다는 사실과 모순이면, 또는 프로젝트 코드로 대체하는 법을 적은 노트(`knowledge/notes` 의 `replacement: true`,
+  예: spring-mobile — 오류 글과 오류 파일의 import 줄에 키워드를 맞춘다)가 그 케이스에 맞으면 **거절을 받지 않는다**(`decline_rejected`,
+  거절로 세지 않고 사실과 함께 다시 묻는다; 거절 답에 든 edits / script 는 버리지 않고 적용한다). 그런 노트가 맞는 라이브러리는 차단 정책
+  (`external_javax_api` / `external_api_incompatible`)으로도 차단하지 않는다 — 직접 수정 한도가 끝을 정한다.
 - **차단 정책** `loop.blocked_policy.<사유>`: `classify_blocked`(`sbmig/triage/blocked.py`)가 "프로젝트 밖" 으로 분류한 케이스에 LLM 시도를
   몇 번 줄지(0 = 바로 Handover). 사유 표는 [03](03-run-debug-and-logs.md) §5. 사람이 `block` 으로 고정한 케이스는 시도 없이 차단.
 - **정체 / 진동**: 오류 집합이 직전 빌드와 같으면 `stall`, 더 이전 빌드(`loop.oscillation_window` 4 개 안)와 같으면 `oscillation`. 둘 다 정체

@@ -77,6 +77,9 @@ class NoteEntry:
     cases: list[str] = field(default_factory=list)
     phases: list[str] = field(default_factory=list)
     always: bool = False
+    # v2.1z-aa (회사 실행 2026-11-06, spring-mobile): "이 라이브러리는 프로젝트 코드로 대체하는 법을 sbmig 가 안다" — 트라이어지는 이런
+    # 케이스를 라이브러리 차단(external_javax_api …)으로 넘기지 않고, 수정 루프는 LLM 의 거절을 받지 않는다(replacement_notes)
+    replacement: bool = False
     path: Optional[Path] = None
     _compiled: list[re.Pattern] = field(default_factory=list, repr=False)
 
@@ -167,6 +170,7 @@ def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
                 cases=list(item.get("cases") or meta.get("cases") or []),
                 phases=list(item.get("phases") or meta.get("phases") or []),
                 always=bool(item.get("always", False)),
+                replacement=bool(item.get("replacement", meta.get("replacement", False))),
                 path=p,
             ))
     elif d.is_dir():
@@ -175,8 +179,24 @@ def load_notes_index(notes_dir: str | Path) -> list[NoteEntry]:
             entries.append(NoteEntry(file=p.name, title=meta.get("title", p.stem),
                                      keywords=list(meta.get("keywords") or []), cases=list(meta.get("cases") or []),
                                      phases=list(meta.get("phases") or []), always=bool(meta.get("always", False)),
-                                     path=p))
+                                     replacement=bool(meta.get("replacement", False)), path=p))
     return entries
+
+
+def replacement_notes(notes: list[NoteEntry], text: str, case: Optional[str] = None,
+                      phase: Optional[str] = None) -> list[NoteEntry]:
+    """``replacement: true`` 노트 중 ``text``(오류 글 + 오류 파일들의 import 줄, ``sbmig.triage.blocked.note_text``)에 키워드가 맞고
+    이 케이스 종류에 쓸 수 있는 것들 — sbmig 가 "프로젝트 코드로 대체하는 법" 을 아는 라이브러리. 회사 실행(2026-11-06): spring-mobile
+    케이스에서 LLM 이 대체 클래스를 반만 만들고 두 번째 답에 거절했고, 루프는 그 거절을 받아 external_javax_api 로 차단한 뒤 이웃 케이스까지
+    같은 원인으로 묶었다. 이 노트가 맞는 케이스는 라이브러리 차단도, 거절도 받지 않는다(v2.1z-aa).
+
+    The `replacement: true` notes whose keywords match `text` and that apply to `case` / `phase`: libraries sbmig knows how to
+    replace with project code — never a library block, never an accepted decline (v2.1z-aa)."""
+    out: list[NoteEntry] = []
+    for n in notes or []:
+        if getattr(n, "replacement", False) and n.applies(case, phase) and n.score(text or "") > 0:
+            out.append(n)
+    return out
 
 
 # ---------------------------------------------------------------------------
