@@ -31,6 +31,37 @@ docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help      # 확인
 docker push <registry>/sbmig:<tag>
 ```
 
+### 1.1 레지스트리가 없을 때 — `docker save` tar 를 노드에 직접 적재 (회사 클러스터, 2026-11-06)
+
+회사 클러스터에는 이미지 레지스트리가 없다. 이미지는 PC 에서 만들어 tar 로 넘기고, 인프라팀이 **파드가 뜰 수 있는 모든 노드**에 적재한다.
+그래서 매니페스트(`40-deployment.yaml`, `80-` / `81-*.template.yaml`)의 이미지는 레지스트리 없는 이름 `sbmig:<tag>` 이고
+`imagePullPolicy: Never` 다(노드에 적재된 것만 쓴다 — 어디로도 pull 하러 가지 않는다).
+
+```bash
+deploy/docker/save-image.sh <tag>       # docker build --platform linux/amd64 … + docker save → out/images/sbmig-<tag>.tar (+ .sha256) + 적재 명령 출력
+```
+
+인프라팀이 노드마다, 컨테이너 런타임에 맞는 한 줄:
+
+| 런타임 | 적재 | 확인 |
+|---|---|---|
+| containerd (kubeadm 등 대부분) | `sudo ctr -n k8s.io images import sbmig-<tag>.tar` | `sudo crictl images \| grep sbmig` |
+| k3s / RKE2 | `sudo k3s ctr images import sbmig-<tag>.tar` (또는 tar 를 `/var/lib/rancher/k3s/agent/images/` 에 두고 agent 재시작) | `sudo k3s crictl images` |
+| Docker (cri-dockerd) | `docker load -i sbmig-<tag>.tar` | `docker images sbmig` |
+
+규칙 넷.
+- **`-n k8s.io`** 없이 `ctr images import` 하면 다른 containerd namespace 에 들어가 kubelet 이 보지 못한다.
+- **태그는 매번 새로, `latest` 금지.** `Never` 는 노드에 있는 그 태그를 그대로 쓰므로 같은 태그로 다시 적재해도 도는 파드는 옛 이미지다.
+  새 tar = 새 태그 = yaml 의 `image:` 한 줄을 바꿔 `kubectl apply`(Deployment 가 새 파드로 바뀐다).
+- **노드 전부, 아니면 고정.** 웹 파드와 Job 파드가 뜰 수 있는 노드마다 적재한다. 노드 하나에만 적재했다면 Deployment 와 Job 틀 양쪽의
+  `nodeSelector: {kubernetes.io/hostname: <node>}` 주석을 푼다(RWO PVC 일 때 필요한 고정과 같은 줄이다).
+- 이미지가 그 노드에 없으면 파드는 `ErrImageNeverPull` 로 바로 멈춘다 — `kubectl describe pod <pod>` 의 Events 에 그대로 나온다(레지스트리에 가 보려다
+  네트워크 에러로 헤매지 않는다).
+
+빌드는 **`--platform linux/amd64`** 로(노드가 amd64; Apple silicon / arm64 PC 에서 만든 arm64 이미지는 노드에서 `exec format error`). buildx 의
+provenance / SBOM attestation 이 붙은 인덱스는 `ctr images import` 가 거부할 수 있어 스크립트가 `--provenance=false --sbom=false` 로 끈다.
+tar 는 1 GB 안팎(JDK + Maven). gzip 해서 보내면 `docker load` 는 그대로 읽고, `ctr` 은 풀어서 적재한다.
+
 코드는 `/app` 에 있고 `PYTHONPATH=/app` 으로 돈다. `pip install` 로 site-packages 에 넣으면 `config/` 와 `knowledge/` 를 못 찾는다
 (`config.py` 가 자기 위치에서 레포 루트를 잡는다). apt 미러가 필요하면 `RUN apt-get` 앞에 `/etc/apt/sources.list.d/` 교체 줄을 넣는다.
 `JAVA_HOME` 은 `/opt/java21` 심볼릭 링크라 amd64 / arm64 어디서 빌드해도 맞는다.
@@ -160,7 +191,8 @@ PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeA
 
 1. `k8s/10-storage.yaml` 의 `sbmig-data` 를 `ReadWriteMany` 로(스토리지 클래스 확인).
 2. `k8s/45-web-rbac.yaml` 적용, `k8s/40-deployment.yaml` 의 `serviceAccountName: sbmig-web` 주석을 푼다.
-3. `k8s/81-web-job.template.yaml` 의 namespace·image(웹 파드와 같은 것)를 채운다. 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
+3. `k8s/81-web-job.template.yaml` 의 namespace·image 태그(웹 파드와 같은 것; 레지스트리가 없으니 `sbmig:<tag>` + `imagePullPolicy: Never`, §1.1)를
+   채운다. 설정 파일 이름(`artifacts.yml`)과 마운트는 Deployment 와 같게.
 4. ConfigMap `sbmig-env` 에 `SBMIG_WEB_MODE: "k8s-job"` (필요하면 `SBMIG_K8S_NAMESPACE`, `SBMIG_JOB_TEMPLATE`). 파드 재시작.
 5. 확인: 시작 로그 `sbmig web UI ready (… mode k8s-job — job template …)`, 업로드 뒤 `kubectl get jobs -l app=sbmig,kind=run`, 화면 레일의 '파드' 단계,
    실행 폴더에 파드가 쓴 `sbmig.log` / `job-status.json`.
@@ -199,7 +231,8 @@ PVC 가 RWO 만 된다면 Job 템플릿에 웹 파드와 같은 노드의 `nodeA
 
 ### 템플릿에서 바꿀 자리 (가이드 2절 그대로 + sbmig 용)
 
-`namespace`, `nodeSelector` 라벨, `image`, `imagePullSecrets`; `activeDeadlineSeconds`(이관 한 번이 1~3 시간 — **4 시간** 권장),
+`namespace`, `nodeSelector` 라벨, `image`(레지스트리 없이 노드에 적재한 이미지면 `sbmig:<tag>` + `imagePullPolicy: Never` — §1.1; `imagePullSecrets` 는
+레지스트리를 쓸 때만); `activeDeadlineSeconds`(이관 한 번이 1~3 시간 — **4 시간** 권장),
 `ttlSecondsAfterFinished`(로그 보존), emptyDir `sizeLimit`(작업 공간 20 Gi, `~/.m2` 10 Gi); 요청 환경 변수 `SBMIG_SOURCE_GIT_URL` /
 `_REF`(또는 `SBMIG_SOURCE_ZIP_URL`), `SBMIG_KB_GIT_URL`, `SBMIG_RESULT_GIT_URL`; Secret `sbmig-llm`(LLM_*)과 `sbmig-git`(`GIT_TOKEN`, 선택
 `GIT_USER`). 토큰은 환경에서만 읽고 URL 에 메모리 안에서만 붙이며 로그·push 파일에 남지 않는다.

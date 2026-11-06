@@ -16,6 +16,7 @@ spec:
       labels: {app: sbmig}
     spec:
       # serviceAccountName: sbmig-web        # Job 디스패치 모드(SBMIG_WEB_MODE=k8s-job)일 때: 45-web-rbac.yaml 의 권한으로 Job 을 만든다
+      # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}   # 이미지를 노드 하나에만 적재했거나 PVC 가 RWO 면 그 노드에 고정(Job 틀도 같은 노드로)
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000
@@ -23,8 +24,8 @@ spec:
       terminationGracePeriodSeconds: 60      # --graceful-timeout 30 + Maven 자식 프로세스(sbmig 이 트리를 정리한다)
       containers:
         - name: agent
-          image: <registry>/sbmig:<tag>
-          imagePullPolicy: IfNotPresent
+          image: sbmig:CHANGE_ME_TAG             # 레지스트리가 없으면 이 이름 그대로(docker save 한 tar 를 인프라팀이 노드마다 적재 — README §1.1); 있으면 <registry>/sbmig:<tag>
+          imagePullPolicy: Never                 # 노드에 적재된 이미지만 쓴다(없으면 ErrImageNeverPull 로 바로 드러난다); 레지스트리를 쓰면 IfNotPresent
           ports:
             - {name: http, containerPort: 8765}
           # 환경 변수는 전부 두 곳에서: ConfigMap sbmig-env(비밀 아닌 것 — 웹 파드 동작, LLM 게이트웨이 주소·role, SBMIG_<섹션>__<키> 설정

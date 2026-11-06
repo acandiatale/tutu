@@ -85,6 +85,12 @@ docker build -f deploy/docker/Dockerfile -t <registry>/sbmig:<tag> .
 docker run --rm <registry>/sbmig:<tag> python -m sbmig.cli --help
 ```
 
+회사 클러스터에는 이미지 레지스트리가 없다(`deploy/README.md` §1.1): `deploy/docker/save-image.sh <tag>` 가 `linux/amd64` 로 빌드해
+`out/images/sbmig-<tag>.tar` 로 저장하고, 인프라팀이 파드가 뜰 수 있는 노드마다 적재한다(containerd 는 `ctr -n k8s.io images import`,
+k3s 는 `k3s ctr images import`, docker 는 `docker load`). 그래서 매니페스트의 이미지는 `sbmig:<tag>` 에 `imagePullPolicy: Never` 이고, 태그는
+tar 마다 새로 쓴다(`latest` 금지 — `Never` 는 노드에 있는 그 태그를 그대로 쓴다). 노드 하나에만 적재했으면 Deployment 와 Job 틀의
+`nodeSelector: {kubernetes.io/hostname: <node>}` 를 푼다. 이미지가 없는 노드에서는 파드가 `ErrImageNeverPull` 로 멈춘다.
+
 설정과 비밀값은 이미지 밖: ConfigMap `deploy/k8s/20-configmap.yaml`(회사 yml 이 `/app/config/company.yml` 로 들어가 UI 의 설정 목록에 나옴,
 컨테이너 경로 — `kb.dir: /data/kb-v2`, `build.settings_file: /etc/sbmig/settings.xml`, `build.repository_url`, `llm.record_dir` — + settings.xml),
 Secret 견본 `deploy/k8s/30-secret.example.yaml`(복사해 `deploy/k8s/30-secret.yaml` 로 채움, git-ignore): `sbmig-llm`(= PC 의 `.env` + `SBMIG_WEB_TOKEN`),

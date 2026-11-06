@@ -5,7 +5,8 @@
 # 웹 파드(40-deployment.yaml)와 같은 이미지, 같은 ConfigMap / Secret, 같은 PVC 를 같은 경로(/data)에 마운트해야 한다. 두 파드가 동시에
 # 마운트하므로 PVC 는 ReadWriteMany 여야 한다(RWO 만 되면 nodeAffinity 로 웹 파드와 같은 노드에).
 # 멈춤: 웹이 <run dir>/stop.request 를 쓰면 엔진이 노드 사이에서 멈춘다(최종 빌드 없음); 그래도 안 끝나면 웹이 Job 을 지운다.
-# CHANGE_ME_*: namespace, image, (필요하면) nodeSelector / imagePullSecrets. 설정 파일 이름(artifacts.yml)은 ConfigMap 의 키와 같아야 한다.
+# CHANGE_ME_*: namespace, image 태그(웹 파드와 같은 것; 레지스트리가 없는 클러스터라 `sbmig:<tag>` + imagePullPolicy Never — README §1.1), (필요하면)
+# nodeSelector / imagePullSecrets. 설정 파일 이름(artifacts.yml)은 ConfigMap 의 키와 같아야 한다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -23,10 +24,12 @@ spec:
       restartPolicy: Never
       securityContext: {runAsUser: 1000, runAsGroup: 1000, fsGroup: 1000}
       # nodeSelector: {customer.example.com/build-worker: "true"}      # CHANGE_ME: 빌드 워커 노드가 따로 있을 때
-      # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]
+      # nodeSelector: {kubernetes.io/hostname: CHANGE_ME_NODE}         # 이미지를 노드 하나에만 적재했을 때: 웹 파드(40-deployment.yaml)와 같은 노드
+      # imagePullSecrets: [{name: CHANGE_ME_REGISTRY_PULL_SECRET}]      # 레지스트리를 쓸 때만
       containers:
         - name: build
-          image: <registry>/sbmig:<tag>                                 # 웹 파드와 같은 이미지(40-deployment.yaml)
+          image: sbmig:CHANGE_ME_TAG                                    # 웹 파드와 같은 이미지·같은 태그(40-deployment.yaml)
+          imagePullPolicy: Never                                        # 노드에 적재된 이미지만(README §1.1); 레지스트리를 쓰면 IfNotPresent
           command: ["/app/deploy/docker/run-job.sh"]
           env:
             # 실행별 값(SBMIG_SOURCE_ZIP, SBMIG_OUT, SBMIG_RUN_ID, SBMIG_CONFIG …)은 웹이 Job 을 만들 때 여기에 덧붙인다
