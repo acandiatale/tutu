@@ -696,3 +696,13 @@ def test_settings_plugin_repositories_join_the_set_and_a_catch_all_http_mirror_f
     assert [u for u, _c, _o in rows] == ["http://nexus.company.local/repository/xxx-releases/", CENTRAL]
     assert not any("dmz-maven-proxy/" in u for u, _c, _o in rows)            # the proxy itself is never asked
     assert rows[0][2].startswith("settings mirror 'maven-default-http-blocker' (mirrorOf external:http:*)")
+    # Central stays uncovered by that mirror: sbmig reads it directly (the probe's `ok`) while the PC's Maven fails there (PKIX) — said
+    assert any(n.startswith("Maven Central is not covered by any settings mirror") for n in funneled.url_notes)
+    assert not any(n.startswith("Maven Central is not covered") for n in look.url_notes)       # no mirror at all: nothing to say
+    # a catch-all mirror covers central too → no note, one URL for both sbmig and Maven
+    user.write_text(USER_WITH_PLUGIN_REPO.replace("<activeProfiles>",
+                    "<mirrors><mirror><id>nexus</id><mirrorOf>*</mirrorOf>"
+                    "<url>http://nexus.company.local/repository/maven-public</url></mirror></mirrors><activeProfiles>"), encoding="utf-8")
+    grouped = RepositoryLookup(_cfg(tmp_path, settings_file=str(user)), fetch=FakeFetch({}))
+    assert [u for u, _c, _o in grouped.repository_urls()] == ["http://nexus.company.local/repository/maven-public/"]
+    assert not any(n.startswith("Maven Central is not covered") for n in grouped.url_notes)
