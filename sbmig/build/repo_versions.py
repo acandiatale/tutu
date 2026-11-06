@@ -915,9 +915,10 @@ class RepositoryLookup:
                     if rid == "central" and any(not is_blocking_mirror(murl, mblocked) for _i, murl, _m, _c, _o, mblocked in mirrors):
                         # 2026-11-06 (회사 PC): 미러가 http 저장소만 덮고 central 은 안 덮어 sbmig 는 Central 을 직접 읽었다(probe `ok`) —
                         # 그 PC 의 Maven 은 Central 에서 PKIX 로 실패하므로 sbmig 가 거기서 본 버전·pom 을 Maven 은 받지 못한다. 말해 둔다
-                        notes.append("Maven Central is not covered by any settings mirror: sbmig asks it directly, but what it finds "
-                                     "there is only usable if Maven can download from Central too (the company PC could not: PKIX) — "
-                                     "cover central as well (mirrorOf * or external:* → the Nexus group) so sbmig and Maven read one place")
+                        notes.append("Maven Central is not covered by any settings mirror: sbmig reads it directly, which is fine ONLY if "
+                                     "Maven can download from Central too — check with one build or `mvn dependency:get`; if Maven fails "
+                                     "there (PKIX / proxy) either let Maven reach a host it can (mirrorOf central → that URL) or cover "
+                                     "central with the Nexus mirror (mirrorOf *) so sbmig and Maven read one place")
                     out.append((url, creds, origin))
             configured = getattr(build, "repository_url", None)
             if configured and str(configured).strip():
